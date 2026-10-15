@@ -252,13 +252,66 @@ describe("terrain", () => {
     expect(pb.parcels).toEqual(pa.parcels);
     expect(pb.records).toEqual(pa.records);
     expect(packTerrain(c).ground).not.toEqual(pa.ground);
-    // Reusing an eroded relief (a river or settlements change) builds what a fresh build does.
+    // Reusing an eroded relief (a river change) builds what a fresh build does; so does reusing the
+    // carved river too (a settlements and roads change), skipping its stages.
     const first = new TerrainBuilder({ seed: 7, size: 128 });
     for (let i = 0; i < first.units; i++) first.unit(i);
     const reused = new TerrainBuilder({ seed: 7, size: 128, river: 0.9 }, first);
     for (let i = 0; i < reused.units; i++) reused.unit(i);
     const fresh = generateTerrain({ seed: 7, size: 128, river: 0.9 });
     expect(packTerrain(reused.terrain).ground).toEqual(packTerrain(fresh).ground);
+    const settled = new TerrainBuilder({ seed: 7, size: 128, river: 0.9, village: 20 }, reused);
+    for (let i = 0; i < settled.units; i++) settled.unit(i);
+    const again = packTerrain(generateTerrain({ seed: 7, size: 128, river: 0.9, village: 20 }));
+    const kept = packTerrain(settled.terrain);
+    expect(kept.ground).toEqual(again.ground);
+    expect(kept.records).toEqual(again.records);
+    expect(settled.terrain.timings.river ?? 0).toBeLessThan(reused.terrain.timings.river ?? 0);
+  });
+
+  test("the village grows outward from its church: a larger one keeps every cottage of a smaller", () => {
+    const cottages = (village: number): string[] => {
+      const t = generateTerrain({ seed: 1, size: 256, village });
+      const at = t.settlements.findIndex((s) => s.kind === "village");
+      const place = t.settlements[at];
+      if (!place) throw new Error("no village");
+      return t.buildings
+        .slice(place.first, place.first + place.count)
+        .filter((b) => b.kind === "cottage")
+        .map((b) => `${b.x.toFixed(3)},${b.z.toFixed(3)},${b.facing.toFixed(4)}`);
+    };
+    let smaller = cottages(4);
+    expect(smaller.length).toBe(4);
+    for (const village of [11, 20, 30]) {
+      const larger = cottages(village);
+      expect(larger.length).toBe(village);
+      for (const cottage of smaller) expect(larger).toContain(cottage);
+      smaller = larger;
+    }
+  });
+
+  test("a settlement switched on, off or added moves none of the others", () => {
+    const sites = (options: Parameters<typeof generateTerrain>[0]): string[] =>
+      generateTerrain(options).settlements.map(
+        (s) => `${s.kind} ${s.x.toFixed(2)},${s.z.toFixed(2)}`,
+      );
+    const all = sites({ seed: 2, size: 256, hamlets: 3, farms: 8 });
+    for (const options of [
+      { castle: false },
+      { village: 0 },
+      { hamlets: 1 },
+      { farms: 2 },
+      { roads: false, tracks: false },
+    ]) {
+      for (const site of sites({ seed: 2, size: 256, hamlets: 3, farms: 8, ...options }))
+        expect(all).toContain(site);
+    }
+    const none = generateTerrain({ seed: 2, size: 256, roads: false, tracks: false });
+    expect(none.roads.length).toBe(0);
+    expect(none.bridge).toBeUndefined();
+    const tracks = generateTerrain({ seed: 2, size: 256, roads: false });
+    expect(tracks.roads.length).toBeGreaterThan(0);
+    expect(tracks.roads.every((road) => road.kind === "track")).toBe(true);
   });
 
   test("a build at the scene's size stays within its budget, unit by unit", () => {

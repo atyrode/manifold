@@ -1,15 +1,11 @@
 import { DitherRenderer } from "./src/renderer.ts";
 import { defaultsFor, paramDefaults, renderSettings } from "./src/state.ts";
 import { sceneDefs } from "./src/scenes/index.ts";
-import { verifyCountryWildlife } from "./src/scenes/country/wildlife.verify.ts";
 import { incenseVentVerify } from "./src/scenes/incense/vent.verify.ts";
 import { rippleEdgesVerify } from "./src/scenes/ripple/edges.verify.ts";
-import { verifyCountryAnimals } from "./src/scenes/country/animals.verify.ts";
 import { verifyHarmonographPrewarm } from "./src/scenes/harmonograph/prewarm.verify.ts";
 import { fragmentSourceFor, vertexSource } from "./src/shaders/index.ts";
 import { verifyFrostSky } from "./src/scenes/frost/sky.verify.ts";
-import { verifyCountryRoutes } from "./src/scenes/country/routes.verify.ts";
-import { verifyCountrySettlements } from "./src/scenes/country/settlements.verify.ts";
 import { GpuCompute } from "./src/sims/gpu.ts";
 import { verifyOrbitRingDepth } from "./src/scenes/orbit/ring-depth.verify.ts";
 import { verifySwellRelief } from "./src/scenes/swell/relief.verify.ts";
@@ -38,7 +34,6 @@ import { verifyCanopy } from "./src/scenes/forest/canopy.verify.ts";
 import { verifyWaterTiers } from "./src/scenes/island/water.verify.ts";
 import { verifyPondPlants } from "./src/scenes/pond/plants.verify.ts";
 import { islandSnowCheck } from "./src/scenes/island/snow.verify.ts";
-import { verifyCountryCoherence } from "./src/scenes/country/coherence.verify.ts";
 import {
   verifyFeaturesAll,
   verifyFeatureToggles,
@@ -47,10 +42,9 @@ import {
 import { verifyCloudTiers } from "./src/scenes/clouds/tiers.verify.ts";
 import { verifyMilkyWay } from "./src/scenes/campfire/milkyway.verify.ts";
 import { verifyStarsKnob } from "./src/scenes/shore/stars.verify.ts";
-import { verifyCountryVerges } from "./src/scenes/country/verges.verify.ts";
 import { verifyMeadowWildflowers } from "./src/scenes/meadow/wildflowers.verify.ts";
-import { verifyValleyTerrain } from "./src/scenes/valley/terrain.verify.ts";
-import { verifyValleyFeaturesAll, verifyValleyLife } from "./src/scenes/valley/life.verify.ts";
+import { verifyCountryTerrain } from "./src/scenes/country/terrain.verify.ts";
+import { verifyCountryFeaturesAll, verifyCountryLife } from "./src/scenes/country/life.verify.ts";
 
 function check(ok: boolean, message: string): void {
   if (!ok) throw new Error(message);
@@ -130,176 +124,6 @@ function forestClock(gl: WebGL2RenderingContext): number[] {
   );
   gl.deleteProgram(clock);
   return clockValues;
-}
-
-// Exercise actual GLSL selection: relative ratios, zero-weight exclusion, crop diversity,
-// scale invariance and the all-zero fallback. This catches normalization/interval regressions.
-function countryFields(gl: WebGL2RenderingContext): number[] {
-  const fields = program(
-    gl,
-    fragmentSourceFor({
-      ...sceneDefs.country,
-      entry: "regressionFields",
-      glsl:
-        sceneDefs.country.glsl +
-        `
-      Shade regressionFields(vec2 uv, vec2 cell, float t) {
-        float crop = countryFieldCrop(gl_FragCoord.x / uRes.x, K_season);
-        return shadeOf(vec3(crop / 8.0), crop / 8.0, 0.0);
-      }`,
-    }),
-  );
-  gl.canvas.width = 400;
-  gl.canvas.height = 1;
-  gl.useProgram(fields);
-  gl.viewport(0, 0, 400, 1);
-  gl.uniform2f(gl.getUniformLocation(fields, "uRes"), 400, 1);
-  gl.uniform1i(gl.getUniformLocation(fields, "uView"), 1);
-  const drawFields = (weights: readonly number[], season = 1): number[] => {
-    const knobs = {
-      ...paramDefaults("country"),
-      season,
-      crops: weights[0] ?? 0,
-      wildflowers: weights[1] ?? 0,
-      lavender: weights[2] ?? 0,
-      sunflowers: weights[3] ?? 0,
-    };
-    gl.uniform1fv(
-      gl.getUniformLocation(fields, "uParams"),
-      Float32Array.from(renderSettings(defaultsFor("country"), knobs).params),
-    );
-    gl.drawArrays(gl.TRIANGLES, 0, 3);
-    const output = pixels(gl, 400, 1);
-    return Array.from({ length: 400 }, (_, index) =>
-      Math.round(((output[index * 4] ?? 0) * 8) / 255),
-    );
-  };
-  const mixture = drawFields([2, 1, 0, 1]);
-  const counts = [0, 0, 0, 0];
-  for (const crop of mixture) {
-    const index = crop < 6 ? 0 : crop - 5;
-    counts[index] = (counts[index] ?? 0) + 1;
-  }
-  check(counts.join(",") === "200,100,0,100", `Wrong field shares/exclusion: ${counts}`);
-  check(
-    drawFields([100, 50, 0, 50]).every((crop, i) => crop === mixture[i]),
-    "Scaling all field weights changed the composition",
-  );
-  check(new Set(mixture.slice(0, 200)).size === 5, "Crop share lost seasonal crop diversity");
-  for (const season of [0, 1, 2]) {
-    const crops = drawFields([100, 0, 0, 0], season);
-    check(
-      drawFields([0, 0, 0, 0], season).every((crop, i) => crop === crops[i]),
-      `All-zero field weights lost crop fallback in season ${season}`,
-    );
-  }
-  check(
-    drawFields([0, 0, 1, 0]).every((crop) => crop === 7),
-    "Isolated lavender included another type",
-  );
-  gl.deleteProgram(fields);
-  return counts;
-}
-
-// Observe the actual scene entry away from canopy overlaps: changing species must not deform
-// exposed ground, and fully pine woodland must remain evergreen through autumn, including LOD.
-function countrySurface(gl: WebGL2RenderingContext): Record<string, number> {
-  const terrain = program(
-    gl,
-    fragmentSourceFor({
-      ...sceneDefs.country,
-      entry: "regressionCountrySurface",
-      glsl:
-        sceneDefs.country.glsl +
-        `
-      uniform int regressionHabitat;
-      Shade regressionCountrySurface(vec2 uv, vec2 cell, float t) {
-        Shade actual = sceneCountry(uv, cell, t);
-        float aspect = uRes.x / uRes.y;
-        vec2 p = vec2((uv.x - 0.5) * aspect, uv.y);
-        vec2 spots = vec2(-0.2, 0.24) * aspect + countrySeed * 0.004 * aspect;
-        for (int k = 0; k < 6; k++) {
-          float i = float(k);
-          float d = countryLayer(i).x;
-          float crest = countryGroundCrest(i, p.x, spots);
-          if (abs(crest - p.y) < 0.07 / d) break;
-          if (p.y < crest) {
-            vec2 w = vec2(p.x * d, countryDown(crest - p.y, d));
-            float woods = countryWoods(i, w.x, w.y, countrySpots(p.x, spots));
-            if (regressionHabitat == 2) return actual;
-            if (k >= 3 && (regressionHabitat == 0 ? woods < 0.001 : woods >= 1.0))
-              return actual;
-            break;
-          }
-        }
-        return shadeOf(vec3(1.0, 0.0, 1.0), 0.0, 0.0);
-      }`,
-    }),
-  );
-  gl.canvas.width = 256;
-  gl.canvas.height = 160;
-  gl.useProgram(terrain);
-  gl.viewport(0, 0, 256, 160);
-  gl.uniform2f(gl.getUniformLocation(terrain, "uRes"), 256, 160);
-  gl.uniform1i(gl.getUniformLocation(terrain, "uView"), 1);
-  gl.uniform1fv(gl.getUniformLocation(terrain, "uTriggers"), new Float32Array(8).fill(-1e4));
-  gl.uniform2f(gl.getUniformLocation(terrain, "uPassage"), 1, 0);
-  const drawTerrain = (
-    season: number,
-    pines: number,
-    habitat: number,
-    woodland = 0.5,
-  ): Uint8Array => {
-    gl.uniform1i(gl.getUniformLocation(terrain, "regressionHabitat"), habitat);
-    const knobs = {
-      ...paramDefaults("country"),
-      pines,
-      woodland,
-      season,
-      time: 0.58,
-      clouds: 0,
-      shadows: 0,
-      wind: 0,
-      fog: 0,
-    };
-    gl.uniform1fv(
-      gl.getUniformLocation(terrain, "uParams"),
-      Float32Array.from(renderSettings(defaultsFor("country"), knobs).params),
-    );
-    gl.drawArrays(gl.TRIANGLES, 0, 3);
-    return pixels(gl, 256, 160);
-  };
-  const compareSurface = (a: Uint8Array, b: Uint8Array, message: string): number => {
-    let observed = 0;
-    for (let at = 0; at < a.length; at += 4) {
-      if (a[at] === 255 && a[at + 1] === 0 && a[at + 2] === 255) continue;
-      observed++;
-      check(
-        [0, 1, 2].every((channel) => a[at + channel] === b[at + channel]),
-        `${message} at pixel ${at / 4}`,
-      );
-    }
-    check(observed >= 20, `Surface fixture lacked the requested habitat: ${observed}`);
-    return observed;
-  };
-  const exposedGroundPixels = compareSurface(
-    drawTerrain(1, 0, 0),
-    drawTerrain(1, 1, 0),
-    "Tree species changed exposed countryside ground",
-  );
-  const evergreenPixels = compareSurface(
-    drawTerrain(0, 1, 1),
-    drawTerrain(2, 1, 1),
-    "Pine woodland changed color in autumn",
-  );
-  // With woodland cleared, species must have nothing left to change anywhere on the far land.
-  const clearedPixels = compareSurface(
-    drawTerrain(2, 0, 2, 0),
-    drawTerrain(2, 1, 2, 0),
-    "Woodland cover 0 left trees standing",
-  );
-  gl.deleteProgram(terrain);
-  return { exposedGroundPixels, evergreenPixels, clearedPixels };
 }
 
 // GpuCompute passes: every blend mode applies its own blending and leaves blending off, with the
@@ -569,8 +393,6 @@ type Check = readonly [name: string, check: (gl: WebGL2RenderingContext) => unkn
  */
 export const checks: readonly Check[] = [
   ["forestClock", forestClock],
-  ["countryFields", countryFields],
-  ["countrySurface", countrySurface],
   ["gpuBlend", gpuBlend],
   ["frostWarmth", frostWarmth],
   ["rendererDissolve", rendererDissolve],
@@ -584,24 +406,20 @@ export const checks: readonly Check[] = [
   ["tidepoolExchange", verifyTidepoolExchange],
   ["lakeFreshSnow", verifyLakeFreshSnow],
   ["shanshui", verifyShanshui],
-  ["countryWildlife", verifyCountryWildlife],
   ["rippleEdges", rippleEdgesVerify],
   ["incenseVent", incenseVentVerify],
   ["runtime", verifyRuntime],
-  ["countryAnimals", verifyCountryAnimals],
   ["skywardSnow", skywardSnowCheck],
   ["fallsGorge", fallsGorgeCheck],
   ["motionClocks", verifyMotionClocks],
   ["filmRupture", verifyFilmRupture],
   ["pendulaSwing", verifyPendulaSwing],
   ["frostSky", verifyFrostSky],
-  ["countryRoutes", verifyCountryRoutes],
   ["cloudsDetail", verifyCloudsDetail],
   ["petriRegimes", petriRegimesVerify],
   ["pondKoi", verifyPondKoi],
   ["planet", verifyPlanet],
   ["streetSnow", streetSnowCheck],
-  ["countrySettlements", verifyCountrySettlements],
   ["harmonographPrewarm", verifyHarmonographPrewarm],
   ["trainLine", verifyTrainLine],
   ["canopy", verifyCanopy],
@@ -609,18 +427,16 @@ export const checks: readonly Check[] = [
   ["pondPlants", verifyPondPlants],
   ["islandSnow", islandSnowCheck],
   ["fallsBirds", verifyFallsBirds],
-  ["countryCoherence", verifyCountryCoherence],
   ["sceneFeatures", verifySceneFeatures],
   ["cloudTiers", verifyCloudTiers],
   ["milkyWay", verifyMilkyWay],
   ["starsKnob", verifyStarsKnob],
-  ["countryVerges", verifyCountryVerges],
   ["meadowWildflowers", verifyMeadowWildflowers],
-  ["valleyTerrain", verifyValleyTerrain],
+  ["countryTerrain", verifyCountryTerrain],
   ["featureToggles", verifyFeatureToggles],
   ["featuresAll", verifyFeaturesAll],
-  ["valleyLife", verifyValleyLife],
-  ["valleyFeaturesAll", verifyValleyFeaturesAll],
+  ["countryLife", verifyCountryLife],
+  ["countryFeaturesAll", verifyCountryFeaturesAll],
 ];
 
 /**

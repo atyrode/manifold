@@ -1,162 +1,211 @@
-// Countryside: overlooking rolling hills from a vantage point, a patchwork of fields with a village
-// in the middle distance and woods beyond, under the shared sky and weather. Rain and snow leave their
-// mark through the renderer's weather state (uWeather): the land, the farm track and the roofs
-// wetten while it rains and dry after, and the land turns white while it snows and thaws after. Birds
-// cross the valley and a starling murmuration wheels over it at dusk when switched on (wildlife.ts).
-// The night sky composes the shared stars, the moon's phase and shooting stars; the clouds are the
-// shared clouds' lit deck, calm deck by night and shadows; the river the shared water's ripples tier
-// when its wind ripples are up. Verges of cow parsley, campion and grass at the hedges' foot on the
-// near ridges are rooted plants of the shared plant component (verges.ts), when switched on.
-import { choice, counts, feature, range, seed, toggle } from "../../params.ts";
+// Countryside: one map of a river valley carved by running water (the terrain toolbox,
+// sims/terrain.ts and shaders/lib/terrain.ts), seen from a hill at its corner: the river lying level
+// in its bed and widening downstream, a village, hamlets, farms and a castle where people would
+// build, roads between them over one bridge, and every parcel of land given over to one use by the
+// land model (sims/landuse.ts): crops, flower fields, pasture with its herd, woodland, or open
+// grassland. Under the shared sky, clouds and weather.
+//
+// Knobs and what they rebuild (sim.ts): the land's shape, seed, relief and erosion rebuild the map
+// over a few frames (the last one stays on screen meanwhile); the river's size the river and what
+// stands near it; the settlements and roads only those and the parcels; the land's uses, the pine
+// mix and the cattle share only the allocation, packed and uploaded within the frame; the river
+// switched off only dries its bed. Herds' size, walkers, carts and birds are the shader's alone,
+// each compiled in only while on (countryFeatures).
+import type { IconName } from "../../lab/icons.ts";
+import { counts, choice, feature, range, seed, toggle } from "../../params.ts";
+import { birdKnobs, birdsGroup } from "../../shaders/lib/birds.ts";
 import { CLOUD_TIERS } from "../../shaders/lib/clouds.ts";
-import { WATER_TIERS } from "../../shaders/lib/water.ts";
+import { TERRAIN_BASES, TERRAIN_MAX_COTTAGES, TERRAIN_MAX_FARMS } from "../../sims/terrain.ts";
 import { atmosphereGroups, skyKnobs, weatherKnobs } from "../atmosphere.ts";
-import { FLOCK_SIZES, flockSim } from "../flock/sim.ts";
 import type { SceneDef } from "../types.ts";
-import { COUNTRY_METEOR_TRIGGER, countryGlsl } from "./shader.ts";
-import { countrySim } from "./verges.ts";
-import { COUNTRY_FLIGHTS, countryMurmuration } from "./wildlife.ts";
+import { COUNTRY_PASSAGE, countryGlsl } from "./shader.ts";
+import { countrySim } from "./sim.ts";
+
+/** One part of the land's uses: a relative share (the lab's "land use" bar), switched on or off. */
+const landUse = (
+  key: string,
+  on: boolean,
+  share: number,
+  swatch: string,
+  help: string,
+  icon?: IconName,
+) =>
+  feature("land", key, key, on, "share", share, help, {
+    min: 0,
+    max: 100,
+    step: 1,
+    widget: { kind: "mix", mix: "land use", part: key, swatch },
+    ...(icon === undefined ? {} : { icon }),
+  });
 
 const params = [
-  ...skyKnobs({ time: 0.7, stars: 0.4, moon: 1, meteors: { trigger: COUNTRY_METEOR_TRIGGER } }),
-  range(
-    "clouds",
-    "clouds",
-    "cloud cover",
-    0.4,
-    "How much of the sky the cloud deck covers; rain and snow thicken it.",
-  ),
-  feature(
-    "clouds",
-    "shadows",
-    "cloud shadows",
-    true,
-    "darkness",
-    0.6,
-    "Shadows of the clouds sweeping across the fields and hills.",
-  ),
+  ...skyKnobs({ time: 0.68, stars: 0.5, moon: 1 }),
+  ...weatherKnobs({
+    clouds: 0.35,
+    shadows: true,
+    rain: true,
+    snow: true,
+    fog: true,
+    wind: true,
+  }),
   choice(
-    "fields",
-    "season",
-    "season",
-    [
-      { label: "summer", value: 0 },
-      { label: "harvest", value: 1 },
-      { label: "autumn", value: 2 },
-    ],
-    1,
-    "The farming year, separate from field weights. Summer: green wheat and yellow rapeseed. Harvest: golden wheat, stubble and bales. Autumn: ploughed earth and broadleaf trees on the turn; pines remain evergreen.",
+    "terrain",
+    "shape",
+    "land shape",
+    TERRAIN_BASES.map((label, value) => ({ label, value })),
+    0,
+    "The relief the land is carved from: a river valley between hills; a coast, where the valley opens downstream into a bay of the sea; a plateau, a high table with the river in a steep-sided gorge; or rolling hills all round. Rebuilds the land.",
   ),
-  feature(
+  seed(
+    "terrain",
+    "landscape",
+    "landscape",
+    "The land's layout: its hills, the river's course, where the settlements stand, how the roads run and how the land is parcelled. The same number always returns to the same countryside.",
+  ),
+  range(
+    "terrain",
+    "relief",
+    "relief",
+    0.5,
+    "How high and rugged the hills are, from gentle downs to steep valley sides. Rebuilds the land.",
+  ),
+  range(
+    "terrain",
+    "erosion",
+    "erosion",
+    0.5,
+    "How deeply running water has carved the hills: zero leaves the raw rolling relief, higher cuts branching side valleys and sharper spurs, and the slopes slump where they grow too steep. Rebuilds the land.",
+  ),
+  landUse(
+    "crops",
+    true,
+    60,
+    "#c8a05a",
+    "Arable and hay fields, hedged: wheat, barley, rapeseed, hay meadows, grazing and the plough, each field's crop chosen by its ground (hay and grazing on the floodplain and the steep slopes). Shares are relative: crops 60 and woodland 30 give crops two parcels of land for each wooded one. The flattest, lowest ground near the roads and settlements is the crops' first.",
     "fields",
-    "verges",
-    "verges",
+  ),
+  landUse(
+    "woodland",
+    true,
+    30,
+    "#4a7a3a",
+    "Woods on the steep, high and poor ground first, growing outward from it as the share rises and giving way at their edges as it falls, whole parcels at a time; nothing else moves. Woods keep off the river, the roads and the yards, and leave the slopes under the vantage open. Off, it also fells the lone trees in the hedges and on the river's banks.",
+  ),
+  landUse(
+    "pasture",
     false,
-    "fullness",
-    0.6,
-    "Clumps of cow parsley, red campion and tussock grass at the foot of the hedges on the two nearest hills. They sway in the wind and bow as its gusts roll across the fields, follow the farming year (the parsley's white umbels in summer, gone to seed at harvest with the campion still in flower, everything browning in autumn) and carry the snow; they keep off the tracks, the river, the farmsteads and the grazed pastures. Fullness: how many clumps, from one here and there to one either side of most hedges' middles.",
+    25,
+    "#6fae5c",
+    "Fenced pasture enclosures, each with a herd of cattle or sheep grazing in its clear middle: by the river and the streams first, on ground too wet or rolling to plough.",
+    "fence",
+  ),
+  landUse(
+    "wildflowers",
+    false,
+    20,
+    "#e0719e",
+    "Wildflower meadows, on moderate slopes, in wet hollows and away from the roads first.",
+  ),
+  landUse(
+    "lavender",
+    false,
+    20,
+    "#9b86d6",
+    "Lavender in rows, on sunny, dry, well-drained slopes first.",
+    "flower",
+  ),
+  landUse(
+    "sunflowers",
+    false,
+    20,
+    "#f2c41d",
+    "Sunflower fields, on flat, sunny, low ground first.",
+    "flower",
   ),
   range(
-    "livestock",
-    "cows",
-    "cattle share",
-    0.5,
-    "The share of pasture enclosures (fields: pasture weight) grazed by cattle (black-and-white Friesians, brown Herefords or black Angus) rather than sheep. Each enclosure keeps one kind; changing the share swaps only as many herds as it must.",
-    { step: 0.05 },
-  ),
-  range(
-    "livestock",
-    "herd",
-    "herd size",
-    0.5,
-    "How many animals graze each enclosure, as many as its field has room for: zero empties the enclosures, 50% is three to seven cattle or five to nine sheep, 100% about twice that (at most fourteen).",
-    { step: 0.05 },
-  ),
-  range(
-    "woodland",
-    "woodland",
-    "woodland cover",
-    0.5,
-    "How much of the distant hills is wooded: zero clears every wood, 50% is the original valley, 100% spreads forest over most far slopes. Woods grow and shrink at their edges; trees, fields and the village stay in place. Never covers the near fields, village or chalk down.",
-    { step: 0.01 },
-  ),
-  range(
-    "woodland",
+    "land",
     "pines",
     "pine mix",
     0.25,
-    "The proportion of the distant woodland made of evergreen pines: zero is all broadleaf, 100% is pine woodland. Tapered crowns stay green through autumn; the ground and tree arrangement do not change. Field-edge trees remain broadleaf.",
-    { step: 0.01 },
-  ),
-  feature(
-    "village",
-    "lights",
-    "village lights",
-    true,
-    "windows lit",
-    0.7,
-    "Windows light up one by one as dusk falls, and most go dark late at night.",
-  ),
-  feature(
-    "village",
-    "smoke",
-    "chimney smoke",
-    true,
-    "amount",
-    0.5,
-    "Smoke curling up from the chimneys and leaning with the wind.",
-  ),
-  feature(
-    "wildlife",
-    "songbirds",
-    "birds",
-    false,
-    "how often",
-    0.5,
-    "Birds crossing the valley, now and then swooping low over the fields; nearer hills, trees and buildings hide them. They fly by day: none at night, fewer in snow and none in steady rain. The amount is how often a flight is passing.",
-  ),
-  choice(
-    "wildlife",
-    "flights",
-    "which birds",
-    COUNTRY_FLIGHTS,
-    0,
-    "Mixed follows the farming year and the hour: parties of rooks most of the day and nearly all of them at dusk, flying home to roost; swallows in summer and at harvest; a buzzard circling on a thermal from late morning; in autumn gulls following the plough and skeins of geese. Or one kind only: rooks, swallows, gulls, geese in a V, or a lone buzzard.",
-    { when: "songbirds" },
-  ),
-  feature(
-    "wildlife",
-    "murmuration",
-    "murmuration",
-    false,
-    "starlings",
-    3000,
-    "A starling murmuration wheeling over the far fields, from late afternoon until it goes down to roost at dusk (set the time of day near sunset to see it); the far hills hide it where it dips below the skyline, the wind carries it, and steady rain keeps it away. The amount is how many starlings: more make a darker cloud.",
-    { options: counts(...FLOCK_SIZES) },
+    "The share of the woods that are evergreen pine plantations with tiered boughs rather than broadleaf woods: pine on the high, steep, north-facing ground first. A wood keeps its species as the woods grow; the hedgerow trees take the same mix.",
+    { step: 0.01, when: "woodland" },
   ),
   range(
-    "routes",
+    "land",
+    "cows",
+    "cattle share",
+    0.5,
+    "The share of the pastures grazed by cattle (Friesians, Herefords or Angus) rather than sheep, cattle on the low, flat, wet ground first. Each enclosure keeps one kind; a change swaps only as many herds as it must.",
+    { step: 0.05, when: "pasture" },
+  ),
+  range(
+    "land",
+    "herd",
+    "herd size",
+    0.5,
+    "How many animals graze each enclosure, as many as its open ground has room for: zero empties them, 50% is three to seven cattle or five to nine sheep, 100% about twice that (at most fourteen). They graze, wander, lie down in the warm afternoon and at night, and bunch up standing in rain and snow, never leaving their field.",
+    { step: 0.05, when: "pasture" },
+  ),
+  feature(
+    "water",
     "river",
-    "river width",
+    "river",
+    true,
+    "size",
     0.5,
-    "How broad the river winding down toward the near field runs. 50% is the original stream; lower narrows it to a brook and zero dries it up; higher widens it into a broad river with shingle at its edges and wider reed beds, and hedgerow trees in its way give way. Its course stays put.",
-    { step: 0.01 },
+    "The river down the valley, from a brook to a wide river; it widens downstream as it gathers its side streams, and its floodplain widens with it. Its course stays where the valley takes it; a new size rebuilds the river and what stands near it. Off, the river and its streams run dry: the carved bed, its banks and the bridge stay.",
+    { min: 0, max: 1, step: 0.01 },
   ),
-  range(
-    "routes",
-    "ripples",
-    "wind ripples",
-    0,
-    "Zero: the river's own gentle shimmer of the sky. Higher lets the wind (under Weather) ruffle it: cat's-paws drift downwind and break the mirrored sky into streaks, more of them the harder it blows.",
-    { step: 0.05 },
+  feature(
+    "settlements",
+    "village",
+    "village",
+    true,
+    "cottages",
+    11,
+    "The village round its church. More cottages line its roads outward from the church, each new one beyond the last, so none moves as it grows. Rebuilds the settlements and roads.",
+    { min: 1, max: TERRAIN_MAX_COTTAGES, step: 1 },
   ),
-  range(
-    "routes",
+  feature(
+    "settlements",
+    "hamlets",
+    "hamlets",
+    true,
+    "hamlets",
+    2,
+    "Clusters of three to five cottages on open level ground near water, in sight from the hill. Each keeps its place as others come and go. Rebuilds the settlements and roads.",
+    { options: counts(1, 2, 3) },
+  ),
+  feature(
+    "settlements",
+    "farms",
+    "farms",
+    true,
+    "farms",
+    3,
+    "Farmsteads among the fields, a farmhouse and a barn at the end of a farm track. More adds farms without moving the others. Rebuilds the settlements and roads.",
+    { min: 1, max: TERRAIN_MAX_FARMS, step: 1 },
+  ),
+  toggle(
+    "settlements",
+    "castle",
+    "castle",
+    true,
+    "A castle on a prominent hilltop in sight from the vantage, its walls and keep against the sky. Rebuilds the settlements and roads; the hilltop stays its own either way.",
+  ),
+  toggle(
+    "settlements",
+    "roads",
+    "roads",
+    true,
+    "The roads joining the village, hamlets and castle, and one out over the far side, climbing no steeper than one in eight, cut into the hillsides, over the stone bridge where they cross the river. Rebuilds the settlements and roads.",
+  ),
+  toggle(
+    "settlements",
     "tracks",
-    "tracks",
-    0,
-    "How much of the road network shows. Zero keeps only the farm track over the near field. Raising it brings in the track's way on to the village (up the river's west bank, over the saddle and along the street between the cottages), then from 20% the road along the valley and a farm track over a stone bridge, then from 40% a hill track and a chalk track up the far down. Each grows plainer toward 100%; hedges open and hedgerow trees give way where tracks pass.",
-    { step: 0.01 },
+    "farm tracks",
+    true,
+    "Tracks out to the farms and down through the near field. Rebuilds the settlements and roads.",
   ),
   feature(
     "activity",
@@ -165,7 +214,7 @@ const params = [
     false,
     "busy",
     0.5,
-    "People out walking the tracks, sized by their distance: from one party to six as it gets busier, more of them in twos and threes. Half the parties stop now and then to take in the view, and some carry lanterns after dark. With no extra tracks they come over the brow on the near farm track and turn back.",
+    "People out walking the roads and tracks, from one party to six as it gets busier, more of them in twos and threes; half of them stop now and then to take in the view, and some carry lanterns after dark. They keep to the roads and cross the river by the bridge.",
     { step: 0.05 },
   ),
   feature(
@@ -175,249 +224,102 @@ const params = [
     false,
     "carts",
     2,
-    "Horses and carts and tractors with trailers on the roads and tracks, easing up the steep slopes, lamps lit after dark. With no extra tracks they come over the brow on the near farm track to a field gate and turn back.",
+    "Horses and carts and tractors with trailers going up and down the roads and tracks, lamps lit after dark.",
     { options: counts(1, 2, 3) },
   ),
-  range(
-    "village",
-    "village",
-    "cottages",
-    11,
-    "How many cottages the village has around its church: 11 is the original village. Fewer leave the ones nearest the church; more fill, in this order, a lane up the knoll beside the church, a lane down toward the river and the ends of the street, so no cottage moves as it grows. Lit windows and chimney smoke come with them.",
-    { min: 2, max: 26, step: 1 },
-  ),
-  choice(
-    "settlements",
-    "hamlets",
-    "hamlets",
-    counts(0, 1, 2, 3),
-    0,
-    "Small clusters of three to six cottages, some with a chapel, on the far hills: each in its own third of the view, on open, gently sloping ground clear of the woods and in sight over the nearer hills (a third with no such ground has none). Their windows light up at dusk.",
-  ),
-  toggle(
-    "settlements",
-    "castle",
-    "castle",
-    false,
-    "A castle on the top of the chalk down, the prominent far hill right of the middle, against the sky: battlemented curtain walls, round towers, a gatehouse and a keep, a few windows lit after dark. The woods clear from the hilltop around it.",
-  ),
-  range(
-    "settlements",
-    "farms",
-    "farmsteads",
-    0,
-    "Outlying farms among the fields of the nearer hills: a farmhouse, most with a barn, or a lone house, each at the edge of its field, clear of the woods, the river and the village, some with smoke and lit windows. With tracks shown, a farm near one has a short farm track out to it. Zero has none; more adds farms without moving the others.",
-  ),
-  ...weatherKnobs({ rain: true, snow: true, fog: true, wind: true, lightning: 0 }),
-  toggle(
-    "manifold",
-    "chalk",
-    "chalk M",
-    false,
-    "A giant M cut into the turf of a far hillside, in the manner of the Uffington White Horse.",
-  ),
-  range(
-    "fields",
-    "crops",
-    "crops weight",
-    100,
-    "Relative weight of the original seasonal crops. Weights are normalized together: 2 crops and 1 wildflowers gives about two crop fields for each flower field. Zero excludes a type; all zero restores crops.",
-    {
-      max: 100,
-      step: 1,
-      widget: { kind: "mix", mix: "field types", part: "crops", swatch: "#c8a05a" },
-    },
-  ),
-  range(
-    "fields",
-    "wildflowers",
-    "wildflowers weight",
-    0,
-    "Relative weight of colourful meadow fields among all fields; zero excludes them.",
-    {
-      max: 100,
-      step: 1,
-      widget: { kind: "mix", mix: "field types", part: "wildflowers", swatch: "#e0719e" },
-    },
-  ),
-  range(
-    "fields",
-    "lavender",
-    "lavender weight",
-    0,
-    "Relative weight of purple lavender-row fields among all fields; zero excludes them.",
-    {
-      max: 100,
-      step: 1,
-      widget: { kind: "mix", mix: "field types", part: "lavender", swatch: "#9b86d6" },
-    },
-  ),
-  range(
-    "fields",
-    "sunflowers",
-    "sunflowers weight",
-    0,
-    "Relative weight of golden sunflower fields among all fields; zero excludes them.",
-    {
-      max: 100,
-      step: 1,
-      widget: { kind: "mix", mix: "field types", part: "sunflowers", swatch: "#f2c41d" },
-    },
-  ),
-  range(
-    "fields",
-    "pasture",
-    "pasture weight",
-    0,
-    "Relative weight of fenced pasture enclosures, where herds of cattle or sheep graze, among all fields; zero excludes them. Enclosure fields take the place of other fields without moving any field border.",
-    {
-      max: 100,
-      step: 1,
-      widget: { kind: "mix", mix: "field types", part: "pasture", swatch: "#6fae5c" },
-    },
-  ),
-  seed(
-    "fields",
-    "landscape",
-    "landscape",
-    "The arrangement of the hills, fields and village; the same number always returns to the same valley. Zero keeps the original countryside. Re-seed for another view.",
-  ),
+  ...birdKnobs({
+    kind: "mixed",
+    mixed:
+      "mostly rooks in loose parties, gulls up from the river, swallows low over the fields, now and then geese, pigeons, swifts or a buzzard circling on a thermal.",
+    help: "Birds crossing the valley by day, hidden by the hills, trees and buildings nearer than them; none at night and fewer in snow and rain.",
+  }),
 ];
 
 /**
- * What the knobs compile into the program (SceneDef.featuresFor): each optional part only while its
- * knobs can show it, so the default countryside's program carries none of their code (a software
- * renderer runs every line of a program, taken or not). Each gate holds wherever the shader's own
- * runtime test of the knob draws the part, and those tests stay for the settings inside it.
- * Lightning and shooting stars stay in: their "now" button shows one while they are off.
+ * What the knobs compile in (SceneDef.featuresFor): each optional part only while it can show, so
+ * the default countryside's program carries none of the flower fields, herds, figures or birds.
  */
 export function countryFeatures(values: Readonly<Record<string, number>>): Record<string, number> {
   const on = (...keys: string[]) => (keys.some((key) => (values[key] ?? 0) > 0) ? 1 : 0);
   return {
-    COUNTRY_HAS_AGENTS: on("walkers", "carts"),
-    COUNTRY_HAS_TRACKS: on("tracks"),
-    // Hedgerow trees give way to the tracks, or to a river broader than the stream (river > 0.5).
-    COUNTRY_HAS_CLEARING: on("tracks") || (values.river ?? 0) > 0.5 ? 1 : 0,
-    // The village past its first eleven cottages (settlements.ts).
-    COUNTRY_HAS_GROWTH: (values.village ?? 0) > 11 ? 1 : 0,
-    COUNTRY_HAS_SETTLEMENTS: on("hamlets", "farms", "castle"),
-    // The farmsteads' farm tracks on to the network (settlements.ts, routes.ts).
-    COUNTRY_HAS_SPURS: (values.farms ?? 0) > 0 && (values.tracks ?? 0) > 0 ? 1 : 0,
-    // Flower and pasture fields (fields.ts, animals.ts); the herds and fences in the pastures.
-    COUNTRY_HAS_FIELDS: on("wildflowers", "lavender", "sunflowers", "pasture"),
-    COUNTRY_HAS_HERDS: on("pasture"),
-    // The clumps at the hedges' foot (verges.ts).
-    COUNTRY_HAS_VERGES: on("verges"),
-    COUNTRY_HAS_WILDLIFE: on("songbirds", "murmuration"),
-    COUNTRY_HAS_CHALK: on("chalk"),
-    // Rain and snow falling, and the valley mist (what lies wet or white follows uWeather, always in).
+    // The roads' and tracks' surfaces and the bridge.
+    COUNTRY_HAS_ROADS: on("roads", "tracks"),
     COUNTRY_HAS_RAIN: on("rain"),
     COUNTRY_HAS_SNOW: on("snow"),
     COUNTRY_HAS_FOG: on("fog"),
-    WATER_TIER: on("ripples") ? WATER_TIERS.ripples : WATER_TIERS.flat,
-    // The deck's shadows on the land (skyCloudShadow) only while they are on.
+    // Pine woods and hedgerow pines: only with woods and a pine mix.
+    COUNTRY_HAS_PINES: Math.min(on("pines"), on("woodland")),
+    // The flower fields' materials (the shared fields).
+    COUNTRY_HAS_FIELDS: on("wildflowers", "lavender", "sunflowers"),
+    // The pastures' fences and herds (the shared livestock).
+    COUNTRY_HAS_HERDS: on("pasture"),
+    COUNTRY_HAS_AGENTS: on("walkers", "carts"),
+    COUNTRY_HAS_BIRDS: on("birds"),
     CLOUD_TIER: on("shadows") ? CLOUD_TIERS.shadows : CLOUD_TIERS.lit,
-    // The full moon is skyAt's own: the phase only for a lesser one (K_moon 0 while it is off).
     ...((values.moon ?? 1) < 1 ? { SKY_MOON_PHASE: 1 } : {}),
   };
 }
 
 /**
- * Every optional part compiled in (SceneDef.featuresAll): the program a GPU draws a setting with
- * once a knob change needs another feature set. Each part's runtime test of its knobs decides, so
- * it draws every setting as that setting's own program does.
+ * Every optional part compiled in (SceneDef.featuresAll): each part's runtime test of its knobs
+ * decides, so this program draws every setting as that setting's own program does.
  */
 export const COUNTRY_ALL = countryFeatures({
-  walkers: 1,
-  tracks: 1,
-  river: 1,
-  village: 26,
-  hamlets: 3,
-  farms: 1,
-  pasture: 1,
-  verges: 1,
-  songbirds: 1,
-  chalk: 1,
+  roads: 1,
   rain: 1,
   snow: 1,
   fog: 1,
-  ripples: 1,
+  pines: 1,
+  woodland: 1,
+  wildflowers: 1,
+  pasture: 1,
+  walkers: 1,
+  birds: 1,
   shadows: 1,
   moon: 0.5,
 });
 
-/**
- * Every optional part but the verges compiled in: for checks that draw many settings with one
- * program. The verges' own check (verges.verify.ts) compiles them in; here they would only slow
- * every draw.
- */
-export const COUNTRY_FULL = { ...COUNTRY_ALL, COUNTRY_HAS_VERGES: 0 };
-
 export const countryScene: SceneDef = {
   id: "country",
   title: "Countryside",
-  blurb: "Rolling hills and patchwork fields, a village with its church in the valley.",
-  // Lamplight in the village windows.
+  blurb:
+    "A river valley carved by water: fields, woods and pastures, a village, a castle and roads over a bridge.",
+  // Lamplight in the windows.
   accent: "#ffb547",
   look: { color: "full", levels: 4 },
   params,
   groups: {
     sky: atmosphereGroups.skyNight,
-    clouds: {
-      title: "Clouds",
-      blurb: "How much cloud drifts over, and the shadows it sweeps across the fields.",
+    weather: atmosphereGroups.weather,
+    terrain: {
+      title: "Lie of the land",
+      blurb: "The valley's layout, how rugged its hills are and how deeply water has carved them.",
+      icon: "mountain",
     },
-    fields: {
-      title: "Fields",
+    land: {
+      title: "Land use",
       blurb:
-        "Mix crops, flowers and pasture enclosures with relative weights, follow the farming year, grow wild flowers along the hedges, and re-seed the valley. Zero excludes a type; all zero uses crops. Shares are approximate across the visible fields, not exact screen-area percentages.",
+        "What each parcel of land is given over to, by relative shares: each use takes the ground that suits it best first, and a change of one share moves only that use's edge. All off leaves open grassland.",
+      icon: "fields",
     },
-    woodland: {
-      title: "Woodland",
-      blurb: "How much of the far hills is wooded, and how many of the trees are evergreen pines.",
-    },
-    wildlife: {
-      title: "Wildlife",
-      blurb: "Birds over the valley by day and a starling murmuration at dusk.",
-    },
-    livestock: {
-      title: "Livestock",
-      blurb:
-        "The herds in the pasture enclosures (fields: pasture weight). They graze, wander, lie in the warm afternoon sun and at night, and bunch up standing in rain and snow; each stays inside its fence.",
-    },
-    routes: {
-      title: "River & tracks",
-      blurb:
-        "How broad the river runs and how the wind ruffles it, and how much of the network of tracks shows, from the farm track on to the village to the roads and tracks over the far hills.",
-    },
-    activity: {
-      title: "People & carts",
-      blurb: "Walkers and carts going about the tracks; they stand still while motion is off.",
-    },
-    village: {
-      title: "Village",
-      blurb:
-        "How big the village is, and its signs of life: windows lighting up at dusk, smoke from the chimneys.",
-    },
+    water: { title: "River", blurb: "The river running down the valley, and how broad it is." },
     settlements: {
       title: "Settlements",
       blurb:
-        "Beyond the village: hamlets on the far hills, a castle on a hilltop, farms among the fields.",
+        "The village, hamlets, farms and castle, and the roads and farm tracks between them; a change lays them out again without moving the hills or the river.",
     },
-    weather: atmosphereGroups.weather,
-    manifold: {
-      title: "Manifold mark",
-      blurb: "A chalk figure of the M, cut into the turf of a far hillside.",
+    activity: {
+      title: "People & carts",
+      blurb: "Walkers and carts going up and down the roads; they stand still while motion is off.",
     },
+    birds: birdsGroup,
   },
   glsl: countryGlsl,
   entry: "sceneCountry",
-  // The starling murmuration (wildlife.ts): the Murmuration scene's flock, idle while it is off;
-  // the verges' plants (verges.ts), none grown while they are off.
-  sim: countrySim(flockSim(params, countryMurmuration), params),
-  // Enter: the camera comes down from the sky and settles on the valley as the haze thins. Exit: it
-  // drifts back up toward the clouds as the light goes grey.
-  passage: { enter: 2.6, exit: 1.4 },
+  sim: countrySim(params),
+  // Enter: the camera comes down out of the sky and settles over the valley as the haze thins.
+  // Exit: it rises back toward the clouds.
+  passage: COUNTRY_PASSAGE,
   featuresFor: countryFeatures,
   featuresAll: COUNTRY_ALL,
 };

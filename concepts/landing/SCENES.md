@@ -8,21 +8,21 @@ standalone Manifold landmark that fits the scene. How to write one: `src/scenes/
 
 The first three and all of the ideas below have a first implementation in the lab:
 
-| Idea                             | Scene id  | Notes                                                                                                                                                                                                                                                                                                                                                                                               |
-| -------------------------------- | --------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Planet in orbit                  | `orbit`   | The shared giant planet as the subject (`shaders/lib/planet.ts`, hero tier), every feature a knob: clouds, storms, aurora, city lights, a day cycle, moons and the banded ring system. Behind it real constellations (with figure lines), shooting stars, captured meteors, a nebula and a drifting starfield; the M as night-side city lights or an asterism.                                      |
-| Moonlit swell                    | `swell`   | Open-ocean swell and chop rolling toward the horizon, painted flat or, with `relief`, standing up near by; its own moon (`moon` sizes it; an M in its seas as an option) and stars. Optional birds (the shared birds, gulls by default) over the night sea, hidden by the crests, and optional shooting stars (the shared meteors) glinting in the waves.                                           |
-| Koi pond                         | `pond`    | Koi seen from above, drawn with the shared fish (`sims/fish.ts`) and steered by it while drawn to the pointer; lily pads, ripples, five floor beds, water weeds, caustics (the shared water's caustics tier, "Pond water") and god rays. The border plants are the shared plant component ("Pond plants"); optional: a canopy, a current carrying petals and a paper boat, a manifold stone.        |
-| Above the clouds                 | `clouds`  | Aurora and lightning come from the shared weather layer. The sea of cloud below is the shared clouds' volume tier (`cloudSeaMarch`, `CLOUD_TIER` volume); the stars over it are the shared stars control.                                                                                                                                                                                           |
-| Waterfall                        | `falls`   | Gorge choice: basalt flows (default), sandstone ledges, or a pale limestone slot whose walls close in. Optional birds (the shared birds): swifts crossing the gorge, hidden behind the cliff they fly beyond. The shared sky components over the rim: a stars control, the moon's phase, an aurora whose arc is lifted to show its lower edge over the rim, and shooting stars that fall behind it. |
-| Countryside                      | `country` | Relative weights for seasonal crops, wildflower meadows, lavender rows, sunflowers and pasture enclosures with herds; reproducible landscape seeds. Its optional parts are compiled in only while their knobs are on (`featuresFor`).                                                                                                                                                               |
-| Murmuration                      | `flock`   | Authored deforming sheet on the CPU; optional emergent topological boids (`Boids`). The stars after dusk are the shared stars control.                                                                                                                                                                                                                                                              |
-| Paper marbling                   | `marble`  | Mathematical marbling engine.                                                                                                                                                                                                                                                                                                                                                                       |
-| Dunes                            | `dunes`   | Werner slab model. The shared sky components over the dune sea: a stars control (a dark desert sky, drawn 1.3x bright), the moon's phase (which lights the sand), an aurora under the dust and shooting stars.                                                                                                                                                                                      |
-| Ice and frost                    | `frost`   | Frost on a window pane; snowfall from the weather layer; the shared sky components (stars, moon phase, aurora, shooting stars) in the window.                                                                                                                                                                                                                                                       |
-| Snow and rain                    | merged    | Part of the shared weather layer, not a scene: rain, snow, rain on glass, ripples, fog.                                                                                                                                                                                                                                                                                                             |
-| Sea shore and bioluminescent bay | `shore`   | The stars over the sea and glinting in the wet sand are the shared stars control.                                                                                                                                                                                                                                                                                                                   |
-| Window sill                      | `sill`    | The shared sky components over the city: a stars control, the moon's phase, an aurora whose light comes in through the window, and shooting stars, all behind the cloud deck.                                                                                                                                                                                                                       |
+| Idea                             | Scene id  | Notes                                                                                                                                                                                                                                                                                                                                                                                                                                                |
+| -------------------------------- | --------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Planet in orbit                  | `orbit`   | The shared giant planet as the subject (`shaders/lib/planet.ts`, hero tier), every feature a knob: clouds, storms, aurora, city lights, a day cycle, moons and the banded ring system. Behind it real constellations (with figure lines), shooting stars, captured meteors, a nebula and a drifting starfield; the M as night-side city lights or an asterism.                                                                                       |
+| Moonlit swell                    | `swell`   | Open-ocean swell and chop rolling toward the horizon, painted flat or, with `relief`, standing up near by; its own moon (`moon` sizes it; an M in its seas as an option) and stars. Optional birds (the shared birds, gulls by default) over the night sea, hidden by the crests, and optional shooting stars (the shared meteors) glinting in the waves.                                                                                            |
+| Koi pond                         | `pond`    | Koi seen from above, drawn with the shared fish (`sims/fish.ts`) and steered by it while drawn to the pointer; lily pads, ripples, five floor beds, water weeds, caustics (the shared water's caustics tier, "Pond water") and god rays. The border plants are the shared plant component ("Pond plants"); optional: a canopy, a current carrying petals and a paper boat, a manifold stone.                                                         |
+| Above the clouds                 | `clouds`  | Aurora and lightning come from the shared weather layer. The sea of cloud below is the shared clouds' volume tier (`cloudSeaMarch`, `CLOUD_TIER` volume); the stars over it are the shared stars control.                                                                                                                                                                                                                                            |
+| Waterfall                        | `falls`   | Gorge choice: basalt flows (default), sandstone ledges, or a pale limestone slot whose walls close in. Optional birds (the shared birds): swifts crossing the gorge, hidden behind the cliff they fly beyond. The shared sky components over the rim: a stars control, the moon's phase, an aurora whose arc is lifted to show its lower edge over the rim, and shooting stars that fall behind it.                                                  |
+| Countryside                      | `country` | A river valley carved by running water on one terrain map (`src/sims/terrain.ts`): a level river, a village, hamlets, farms and a castle, roads over a bridge, and every parcel of land given one use by the land model (`src/sims/landuse.ts`): crops, wildflowers, lavender, sunflowers, pasture with its herd, woodland, or open grassland, by relative shares. Its optional parts are compiled in only while their knobs are on (`featuresFor`). |
+| Murmuration                      | `flock`   | Authored deforming sheet on the CPU; optional emergent topological boids (`Boids`). The stars after dusk are the shared stars control.                                                                                                                                                                                                                                                                                                               |
+| Paper marbling                   | `marble`  | Mathematical marbling engine.                                                                                                                                                                                                                                                                                                                                                                                                                        |
+| Dunes                            | `dunes`   | Werner slab model. The shared sky components over the dune sea: a stars control (a dark desert sky, drawn 1.3x bright), the moon's phase (which lights the sand), an aurora under the dust and shooting stars.                                                                                                                                                                                                                                       |
+| Ice and frost                    | `frost`   | Frost on a window pane; snowfall from the weather layer; the shared sky components (stars, moon phase, aurora, shooting stars) in the window.                                                                                                                                                                                                                                                                                                        |
+| Snow and rain                    | merged    | Part of the shared weather layer, not a scene: rain, snow, rain on glass, ripples, fog.                                                                                                                                                                                                                                                                                                                                                              |
+| Sea shore and bioluminescent bay | `shore`   | The stars over the sea and glinting in the wet sand are the shared stars control.                                                                                                                                                                                                                                                                                                                                                                    |
+| Window sill                      | `sill`    | The shared sky components over the city: a stars control, the moon's phase, an aurora whose light comes in through the window, and shooting stars, all behind the cloud deck.                                                                                                                                                                                                                                                                        |
 
 The shared options became libraries every outdoor scene can use, compiled into every program: sky
 and time of day (stars, the moon's phase, shooting stars), clouds in tiers (a calm deck, the lit
@@ -161,75 +161,6 @@ top. Prototype (issue #1082, N1), built from shared parts rather than scene code
 - Open: the rock reads too dark and busy at the dither, the open sea reads as mottled rather than
   as swell, and the zonation needs art direction before this leaves the prototype stage.
 
-## Valley
-
-`valley`: a prototype of a shared terrain toolbox (issue #1082), the countryside's vantage over one
-coherent map instead of six 1D ridge silhouettes, so the river can lie level and carve the land and
-the roads can form a network. Countryside is unchanged until the prototype proves itself.
-
-- **Generation** (`src/sims/terrain.ts`, `TerrainBuilder`): a 3.2 km map at 512² texels (erosion at
-  256²), deterministic per seed and built in units a frame's budget spreads (a share of the time
-  between frames, so a software renderer builds in as few frames as a GPU). Relief: a valley axis
-  laid across the view (out of the far hills on one side, close past the vantage on the other), long
-  rolling slopes below the vantage, hills beyond, fractal and ridged value noise. Erosion: implicit
-  stream power over a priority-flood drainage (steepest-descent receivers, multiple-flow areas, so
-  no grid furrows), thermal slumping. River: the drainage tree's main path, meandering on gentle
-  ground, widening with its catchment, its level the ground's running minimum smoothed (never
-  rising), carved with a bed, banks and a floodplain. Streams, settlements (village, hamlets, farms,
-  a castle on a prominent hilltop) scored for flatness, water, distance and a clear line of sight,
-  roads (A\* over slope, curvature, floodplain and fords, water impassable) over a spanning tree with
-  a shortcut and a way out over the far hills, one bridge at the narrowest crossing, cut and fill no
-  steeper than one in eight, cottages along the roads on terraces, woodland suitability, contour- and
-  road-aligned field parcels, lone trees on hedges and banks.
-- **Rendering** (`src/shaders/lib/terrain.ts`, `valley/shader.ts`): a height-field march (ground,
-  water and the trees' bounds) with a soft sun-shadow march, field parcels exact between texels with
-  hedges held to half a cell, roads likewise, the river mirroring the sky and its deck, a stone
-  bridge, far ridges in the sky, the shared sky, clouds (and their shadows), rain, snow, wetness,
-  lying snow and valley mist. Entrance: the camera comes down out of the sky.
-- **Trees** (`valley/trees.ts`, the shared `treesGlsl`): the march meets bounds (the woods'
-  envelope, each lone tree's steepened tent); near enough for a crown to span a cell, the crowns
-  are found exactly at the hit: lone trees from the four yard texels round it (centre plus a hash
-  jitter), the woods' trees cell by cell along the ray (one a 7 m cell, standing where the woods
-  reach its root), each a sphere lit with the shared dome normal or a pine's tiered cone
-  (`treePineWidth`), with a trunk; a ray between crowns goes on to the ground, so a wood's edge is a
-  row of whole crowns at pixel 1. Farther off the bound is shaded as the canopy.
-- **Buildings** (`valley/buildings.ts`): a cottage, barn or church whose gable spans over 6 cells
-  is a solid met in its own frame (a block under a pitched roof, the chimney stack, the church's
-  tower and spire), with the sprites' windows, lit at dusk; smaller ones and the castle are the
-  shared sprites. Only the two nearest buildings whose bounds hold a pixel are drawn there.
-- Base relief (`TerrainOptions.base`, the `land shape` knob): valley (default), coast (the valley
-  opening downstream into a bay, the sea flooded in from the map's edge with `stillWater`), plateau
-  (a high table over a steep-sided gorge) or rolling hills. Roads join the village, hamlets, castle
-  and the way out (a spanning tree); farms and a lane through the near field are spur tracks. Roads
-  are pale ribbons with a verge and a hedge either side, held to half a cell across.
-- **Life** (`valley/life.ts`, all off by default): the field-type mix (`crops` .. `pasture`
-  weights, the shared `fieldMix` on each parcel's hash; flower fields with the shared materials);
-  pasture enclosures fenced inside their borders with herds (shared livestock) kept to each
-  parcel's clear core (`cattle share`, `herd size`); walkers and carts (shared figures) going out
-  and back along the roads by arc length over the resampled way points (`walkers`, `carts`); birds
-  (shared `birdKnobs`, mixed); `pine mix` (0.25) for the woods and the hedges.
-- Knobs: land shape, landscape (seed), relief, erosion, woodland cover, pine mix, river size,
-  settlements, roads, field weights, cattle share, herd size, walkers, carts, birds; time of day,
-  stars, moon, clouds, cloud shadows, rain, snow, fog, wind. Each optional part is compiled in only
-  while on (`valleyFeatures`); `VALLEY_ALL` is the all-features program (`featuresAll`).
-- Checks: `src/sims/terrain.test.ts` (river level across and downstream, roads join every
-  settlement, road grade bounded and cut into the ground, way points on their roads, clear cores
-  inside their parcels by the exact metric, determinism and reuse, build budget); `valleyTerrain`
-  (the all-features program over the real sim: land, sky and river, deterministic per landscape);
-  `valleyLife` (through the scene's GLSL: every walker and cart at 64 motion times within its
-  road's half width of the generator's centreline, every animal of every herd inside its own field
-  and clear of the fence, roads and water; the frame with life deterministic and still at motion
-  0); `valleyFeaturesAll` (the all-features program draws eleven gated settings byte for byte as
-  their own programs).
-- Cost (SwiftShader, 640×360 cells, frames timed in alternation on a loaded host): the default
-  valley ≈ 0.77× the previous valley's frame (the building pass now draws two candidates a pixel),
-  ≈ 1.46× the countryside's.
-- Open (for full Countryside parity): the farming year (`season`) and its crops' catalogue and
-  stubble, bales and dots; verges (rooted plants need explicit border segments); the murmuration;
-  the chalk M; village growth and hamlet/farm/castle knobs on a stable building list; tracks knob
-  and farm-track spurs; gates in the fences and walls; the castle is still a face-on sprite; trees'
-  autumn colours; walkers' trodden snow; the plateau's near table hides the gorge.
-
 ## Above the clouds
 
 The view from a plane window: a sea of clouds below, open sky above.
@@ -310,93 +241,89 @@ A cliff face with a waterfall as the focus.
 
 ## Countryside
 
-Overlooking rolling hills with a village in the distance and forest around.
+`country`: a river valley seen from a hill at its corner, on one coherent terrain map (issue #1082
+C1: the countryside on one land model; it replaced the layered-ridge Countryside, whose setups
+replay at their pinned commits).
 
-- Layered hills with atmospheric perspective, patchwork fields, hedgerows, a winding road or river.
-- Village: cottages round a church with its spire (`cottages`, 11 the original village; more fill
-  lanes outward without moving any), windows lighting up at dusk (`village lights`) and chimney
-  smoke. Beyond it, optional settlements: hamlets on the far hills, a castle on the chalk down and
-  farmsteads among the nearer fields (`hamlets`, `castle`, `farmsteads`), all drawn with the shared
-  buildings (`src/shaders/buildings.ts`).
-- Woodland: `woodland cover` grows or clears the distant woods at their edges (50% is the original
-  valley, 0 clears every wood); `pine mix` sets how many trees are tapered evergreen pines (25% by
-  default). Woods are drawn as whole trees of varied size, with up to two per crown cell, ragged
-  edges and clearings, over a shaded forest floor — never as a translucent overlay. Pines stay
-  evergreen in autumn. Treetops raise the visible skyline and occlude what is behind them, but the
-  ground's fields and lighting follow only the bare terrain, and pixels inside the treeline are
-  always canopy. Unresolved distant crowns use an area-mean colour instead of per-crown detail.
-- Day cycle and weather (cloud shadows sweeping over the fields): the shared clouds' lit deck by
-  day, their calm deck by night and their shadows (compiled in only while `cloud shadows` is on).
-- Night sky: the shared components: `stars` (density, 0.4 the original sky), the `moon`'s phase
-  (full by default; it lights the land, clouds and river less as it wanes) and `shooting stars`
-  (off by default, "now" on trigger 1) streaking through the gaps of the deck over the far hills.
-- River: `river width` (50% the original stream) narrows it to a brook or dries it up, or widens it
-  into a broad river with shingle and reed beds. It mirrors the sky as the cloud deck covers it, as
-  the puddles on the tracks do (it used to mirror a cloudless sky whatever the cover: the woods'
-  canopy cover shadowed the sky's under one name). `wind ripples` (0 by default: the original
-  value-noise shimmer) brings in the shared water's ripples tier: cat's-paws drifting downwind break
-  the mirrored sky into streaks.
-- Tracks: `tracks` (0 by default: only the farm track over the near field) brings in the network,
-  first the track on to the village, from 20% the valley road and a farm track over a stone bridge,
-  from 40% a hill track and a chalk track up the far down, each plainer toward 100%; hedges open and
-  hedgerow trees give way where they pass.
-- Farm tracks: with farmsteads and tracks both on, a farm whose yard lies near the network gets a
-  short straight farm track from just outside its house and barn to the nearest point of the
-  nearest track, coming in as plainly as that track does as `tracks` brings it in. It keeps to its
-  own bank of the river and never moves a building; it opens the hedges it crosses, hedgerow trees
-  rooted on it give way, fences leave a gap and herds keep off it (their wall along it, and
-  `countryRouteDistance` for every animal), as for the tracks.
-- Walkers and carts (`walkers`, `carts`, off by default; the shared figures,
-  `src/shaders/lib/figures.ts`) keep to the tracks in any weather: lamps lit after dark and under a
-  heavy sky, wetted by rain, and under lying snow the tracks they use show trodden down through it.
-- Livestock: pasture enclosures (`pasture weight`, under Fields) hold herds of cattle or sheep
-  (`cattle share`, `herd size`) that graze, wander, lie down in the warm afternoon and at night and
-  bunch up standing in rain and snow, each inside its fence, on the shared livestock schedule
-  (`src/shaders/lib/livestock.ts`).
-- Wildlife: birds crossing the valley by day (`birds`, off by default; `which birds`: mixed by the
-  farming year and the hour, or one kind), the shared birds' species on the scene's own loop, and a
-  starling murmuration at dusk (`murmuration`, off by default, 1500 to 5000 starlings): the
-  Murmuration scene's sheet.
-- Verges (`verges`, off): clumps of cow parsley, red campion and tussock grass at the foot of the
-  hedges on the two near ridges, grown by the shared plant component (`country/verges.ts`), two
-  slots a field border, drawn twice life size as the birds are. They sway with the wind and bow as
-  the crops' gust bands reach them (the band of the field each grows into), follow the farming
-  season (white umbels in summer, the parsley seeded and browning at harvest with the campion still
-  flowering, no flowers in autumn), carry lying snow, keep off the lane, tracks, farm tracks, the
-  river and its reeds and the farmsteads, and grow away from grazed pastures (none between two). A
-  clump rooted nearer than a hedgerow tree, a building or a walker stands in front of it. Compiled
-  in only while on (`COUNTRY_HAS_VERGES`, kept out of `COUNTRY_FULL`); checked by `countryVerges`.
-  At the default pixel size they are a few cells tall, a sprinkle along the hedges; they read best
-  at finer pixel sizes.
-- Cost: every optional part (walkers and carts, the track network, hedgerow clearing, village
-  growth, hamlets, farms and castle, the farm tracks, flower and pasture fields, herds and fences,
-  birds and the murmuration, the chalk M, falling rain and snow, fog, wind ripples, the clouds'
-  shadows, a moon below full) is compiled into the program the scene enters with only while its
-  knobs are on (`countryFeatures`, SceneDef.featuresFor). The default program draws the same picture
-  bit for bit at about the cost of the countryside before its woodland, routes, settlements and
-  herds were added (SwiftShader, 640×400). On a GPU a change that needs another part draws with one
-  program holding them all (`COUNTRY_ALL`, SceneDef.featuresAll), built once in the background
-  (ahead while the lab is open), which draws every setting bit for bit as that setting's own
-  program; a software rasteriser builds each setting's own program instead, in the background, the
-  old frame holding meanwhile.
-- Fields: independently weight original seasonal crops, wildflowers, lavender, sunflowers and
-  pasture from 0–100, through the farming year (`season`: summer, harvest, autumn). Weights are
-  relative, not area percentages: crops 2, wildflowers 1, lavender 1 and the rest 0 give
-  approximately half crop fields, a quarter wildflowers and a quarter lavender. All zero falls back
-  to crops.
-  Whole fields retain one material and the seed/layout remains fixed while weights change. The
-  crop share retains its full seasonal catalogue, even when flowers dominate. Nearby plants have
-  rooted stems, flower heads, spikes or leaves; distant detail resolves to field material.
-- Landscape: a deterministic arrangement number changes hills, field borders and village placement
-  together. Zero preserves the original view; changing weights, season or weather keeps the
-  selected arrangement. Weights and landscape round-trip through URLs and saved setups. Previously
-  saved `fieldType` recipes migrate on read unless any new weight is explicit; rewritten URLs contain
-  only weights. Historical revision-pinned replay keeps its original controls and render.
-- Presets: the original crop baseline, flower valley, lavender rows, sunflowers and mixed patchwork;
-  woodland valley (autumn woods at full cover with a pine mix over grazed pasture, a buzzard
-  circling) and riverside (the broad river, the whole track network with walkers and carts, cattle
-  pasture, rooks and the murmuration at dusk). Their replay arrows point to the actual feature
-  revision on which these setups were tuned.
+- **Terrain** (`src/sims/terrain.ts`, `TerrainBuilder`): a 3.2 km map at 512² texels (erosion at
+  256²), deterministic per seed and built in units a frame's budget spreads (a share of the time
+  between frames, so a software renderer builds in as few frames as a GPU). Relief: a valley axis
+  laid across the view, long rolling slopes below the vantage, hills beyond, fractal and ridged
+  value noise; implicit stream-power erosion over a priority-flood drainage, thermal slumping. The
+  river: the drainage tree's main path, meandering on gentle ground, widening with its catchment,
+  its level the ground's running minimum smoothed (never rising), carved with a bed, banks and a
+  floodplain. Streams; settlements scored for flatness, water, distance and a clear line of sight;
+  roads (A\* over slope, curvature, floodplain and fords, water impassable) over a spanning tree
+  with a shortcut and a way out, farm tracks to the farms and down the near field, one bridge at the
+  narrowest crossing, cut and fill no steeper than one in eight; buildings on terraces; woodland
+  suitability; land parcels aligned to the contours and roads; lone trees on hedges and banks.
+  Base relief (`land shape`): valley, coast, plateau or rolling hills.
+- **Land use** (`src/sims/landuse.ts`): every parcel is one land unit with one use. Each use weighs
+  every parcel by its ground (slope, height, wetness, aspect to the sun, woodland suitability, how
+  near the settlements and roads lie, a seeded jitter) and each parcel takes the use bidding most
+  for it, its score plus the price `ln(share)`. A use's price is its own share's alone, so raising
+  one share converts only that use's marginal parcels (the best suited next) and moves nothing
+  between other uses; woods grow outward from their best ground; the same seed and settings give
+  the same land. Area shares meet the normalised shares within a few points (correlated ground
+  biases them; `landuse.test.ts` bounds it). Shares all off leave open grassland; woodland alone
+  takes every parcel but the near slopes under the vantage. Crops pick their kind (wheat, barley,
+  grazing, hay, ploughed, rapeseed) by their ground; pastures their herd (`cattle share`: cattle on
+  the low, flat, wet ground first, a change swapping only as many herds as it must); woods their
+  species (`pine mix`: pine on high, steep, north-facing ground, each wood keeping its species as
+  the woods grow). A change of the uses re-runs only the allocation and re-packs the parcel records
+  and the woods' canopy (a few milliseconds on SwiftShader's host, `countryTerrain`), no rebuild.
+- **Rendering** (`src/shaders/lib/terrain.ts`, `country/shader.ts`): a height-field march (ground,
+  water and the trees' bounds) with a soft sun-shadow march; each parcel drawn from its record
+  (crops of its kind, the shared flower materials, a pasture's grass, fence and herd, a wood's
+  floor, open grassland) with exact borders between texels, hedges (half a cell at least) only where
+  a farmed parcel meets another; roads likewise; the river mirroring the sky and its deck, a stone
+  bridge, far ridges in the sky, the shared sky, clouds (and their shadows), rain, snow, wetness,
+  lying snow and valley mist. Entrance: the camera comes down out of the sky.
+- **Trees** (`country/trees.ts`, the shared `treesGlsl`): the woods stand where the land model's
+  canopy says (woodland parcels, their edges pulled in on poor ground so they are ragged, signed for
+  pine woods); the march meets bounds (the woods' envelope, each lone tree's steepened tent); near
+  enough for a crown to span a cell, the crowns are found exactly at the hit, each a dome or a pine's
+  tiered cone with a trunk; a ray between crowns goes on to the ground. Hedgerow trees stand only
+  on standing hedges, riverbank trees on the banks, all felled while woodland is off.
+- **Buildings** (`country/buildings.ts`): a cottage, barn or church whose gable spans over 6 cells
+  is a solid met in its own frame (block, roof, chimney, the church's tower and spire), with the
+  sprites' windows lit at dusk and chimney smoke; smaller ones and the castle are the shared
+  sprites. Only the two nearest buildings whose bounds hold a pixel are drawn there.
+- **Settlements**: the `village` (11 cottages; 1-30, its plots taken in a fixed order from the
+  church outward along its roads, so a larger village keeps every cottage of a smaller),
+  `hamlets` (1-3), `farms` (1-8), the `castle`, `roads` and `farm tracks`. Every site is chosen
+  whether or not it is built, so switching one settlement moves no other; a change re-runs only the
+  settlement, road and parcel stages, reusing the carved river.
+- **River** (`river`, its amount the size): off, the river and its streams run dry, their beds pale
+  stones, the carved valley, banks and bridge kept (`packWater`, no rebuild).
+- **Life**: pastures' herds (shared livestock, kept to each parcel's clear core; `herd size`),
+  walkers and carts (shared figures) going out and back along the roads by arc length; birds
+  (shared `birdKnobs`, mixed).
+- Knobs: land shape, landscape (seed), relief, erosion; the land use mix (crops 60 and woodland 30
+  on, pasture 25, wildflowers, lavender and sunflowers 20 off) with pine mix, cattle share and herd
+  size; river; village, hamlets, farms, castle, roads, farm tracks; walkers, carts, birds; time of
+  day, stars, moon, clouds, cloud shadows, rain, snow, fog, wind. Each optional part is compiled in
+  only while on (`countryFeatures`); `COUNTRY_ALL` is the all-features program (`featuresAll`).
+  Pasture is off by default: its fences and herds stay out of the default program (a software
+  renderer runs every line), and the crops' catalogue already shows grazed grass.
+- Checks: `src/sims/terrain.test.ts` (river level across and downstream, roads join every
+  settlement, road grade bounded and cut into the ground, way points on their roads, clear cores
+  inside their parcels, determinism and both reuses, the village's growth, settlements that never
+  move one another, the roads' and tracks' switches, build budget); `src/sims/landuse.test.ts`
+  (shares within bounds, a raised share converting only to its use and a lowered one only from it,
+  woods on their best ground growing outward, none and woodland alone, determinism, minimal herd
+  swaps, woods keeping their species, the canopy and lone trees as packed); `countryTerrain` (the
+  all-features program over the real sim: land, sky and river, deterministic per landscape; at 9216
+  map points the shader finds each parcel with the land model's use and the woods only on woodland,
+  for four settings; a use change one sim frame, timed; the river dry and full again);
+  `countryLife` (every walker and cart on its road, every animal inside its own pasture and clear of
+  the fence, roads and water; deterministic and still at motion 0); `countryFeaturesAll` (twelve
+  gated settings drawn byte for byte as their own programs).
+- Open (the layered-ridge Countryside's parts, each to be its own module): the farming year
+  (`season`) and autumn woods; verges at the hedges' foot; the starling murmuration; the chalk M;
+  village lights and chimney smoke as knobs; the castle's model (a face-on sprite here); snow
+  trodden along the roads; wind ripples on the river; gates in the fences; the plateau's near table
+  hides the gorge.
 
 ## Hanging mobile
 

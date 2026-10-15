@@ -27,35 +27,45 @@
 //               a blend back into the valley sides. The level is the same right across the channel.
 //   streams     the tributaries above a catchment threshold, as a distance field, notched slightly.
 //   settlements sites scored by flatness, water near but not the floodplain, distance and a clear
-//               line of sight from the vantage (heightray.ts's marchHeight): a village, hamlets,
-//               farms and a castle on a prominent hilltop, kept apart.
-//   roads       a minimum spanning tree over the settlements (a crossing of the river weighed
-//               heavily, farms as tracks), a shortcut where the tree detours, and one road out over
-//               the far side; each edge a least-cost path (A* in 16 directions) on a cost grid of
-//               slope, curvature, floodplain and woods, water impassable, roads already laid
-//               cheaper; one bridge where the river is narrowest near the crossing. Each road's
-//               profile is cut and fill: the mean of the ground's upper and lower Lipschitz
-//               envelopes, so no stretch is steeper than TERRAIN_ROAD_MAX_SLOPE, and its bed is cut
-//               into the ground.
-//   buildings   cottages along the village's and hamlets' roads facing them, a church, farmhouses
-//               and barns at the tracks' ends, the castle; each on a levelled terrace.
-//   woods       how well woodland suits each texel (steep, high, poor ground), 0..1: the scene
-//               thresholds it, so its cover is a shader knob.
-//   parcels     fields: sites spread over farmland, each cell stretched along the contour (or the
-//               road beside it), the nearest two sites per texel by that metric; a kind per site.
+//               line of sight from the vantage (heightray.ts's marchHeight): a village, a castle on
+//               a prominent hilltop, up to TERRAIN_MAX_HAMLETS hamlets and TERRAIN_MAX_FARMS farms,
+//               kept apart, each chosen in that order whether or not it is built, so a settlement
+//               switched on or off never moves another.
+//   roads       a minimum spanning tree over the village, hamlets, castle and one road out over the
+//               far side (a crossing of the river weighed heavily; `roads`), a shortcut where the
+//               tree detours, and a track to each farm and down through the near field (`tracks`);
+//               each edge a least-cost path (A* in 16 directions) on a cost grid of slope,
+//               curvature and floodplain, water impassable, roads already laid cheaper; one bridge
+//               where the river is narrowest near the crossing. Each road's profile is cut and
+//               fill: the mean of the ground's upper and lower Lipschitz envelopes, so no stretch is
+//               steeper than TERRAIN_ROAD_MAX_SLOPE, and its bed is cut into the ground.
+//   buildings   the village's cottages taken in a fixed order from its centre out along its roads
+//               (so a larger village only adds cottages), its church, hamlets' cottages, farmhouses
+//               and barns at the tracks' ends, the castle; each on a levelled terrace. Each draws
+//               from hashes of its own place, never a shared sequence, so no settlement's size
+//               moves another's buildings.
+//   woods       how well woodland suits each texel (steep, high, poor ground), 0..1: the land model
+//               (landuse.ts) weighs parcels for woodland by it and roughs the woods' edges with it.
+//   parcels     land units: sites spread over the dry land, each cell stretched along the contour
+//               (or the road beside it), the nearest two sites per texel by that metric. What each
+//               parcel is used for is the land model's (landuse.ts), not the build's.
 //
 // Outputs (Terrain): ground and water level per texel; signed distance to the nearest road and
 // stream edge (metres, negative on it); woodland suitability; yards (0..1 around buildings); the
-// river's centreline with its level and width; settlements, buildings, roads with their profiles,
-// the bridge; parcel sites and the nearest two per texel. `packTerrain` lays them into the four
-// textures `terrainGlsl` (shaders/lib/terrain.ts) reads.
+// river's bed (where its own level is the water: `riverbed`); the river's centreline with its level
+// and width; settlements, buildings, roads with their profiles, the bridge; parcel sites and the
+// nearest two per texel. `packTerrain` lays them into the four textures `terrainGlsl`
+// (shaders/lib/terrain.ts) reads; `packWater` dries the river's bed in them or fills it again.
 //
 // Cost (size 512, a laptop's V8; the build reports its own per stage in `timings`): relief ~15 ms,
 // each of 20 erosion steps ~10 ms, detail ~20 ms, river ~40 ms, settlements ~30 ms, each road
 // ~5–25 ms, parcels ~120 ms in two units, pack ~15 ms; ~1 s in all. Nothing allocates per texel.
+// A build given an earlier one reuses what its options leave as they were: the eroded relief when
+// only the river or the settlements change, the carved river and streams too when only the
+// settlements and roads do.
 //
 // Usage (a sim building it over a few frames, keeping the last map on screen meanwhile):
-//   const builder = new TerrainBuilder({ seed, relief, erosion, river, settlements });
+//   const builder = new TerrainBuilder({ seed, relief, erosion, river, village }, previous);
 //   let next = 0;
 //   frame() {
 //     if (next < builder.units) next = runBudgeted((i) => builder.unit(i), 8, builder.units, next);
@@ -74,8 +84,12 @@ import { LevelHeap, stillWater } from "./shallow.ts";
 export const TERRAIN_ROAD_MAX_SLOPE = 0.12;
 /** Erosion steps (units) of a build. */
 export const TERRAIN_EROSION_STEPS = 20;
-/** Most outlying settlements (hamlets and farms) a build places. */
-export const TERRAIN_MAX_SETTLEMENTS = 10;
+/** Most hamlets a build places beyond the village. */
+export const TERRAIN_MAX_HAMLETS = 3;
+/** Most farms a build places among the fields. */
+export const TERRAIN_MAX_FARMS = 8;
+/** Most cottages the village holds round its church. */
+export const TERRAIN_MAX_COTTAGES = 30;
 /**
  * Metres across a cottage's gable as a consumer draws it (half again life size, so a house far off
  * still covers a few dither cells); buildings are spaced, set back and terraced by it.
@@ -89,15 +103,6 @@ export const TERRAIN_MAX_BUILDINGS = 128;
 export const TERRAIN_MAX_PLACES = 16;
 /** Points of the roads resampled for walkers and carts the records hold (terrainWays). */
 export const TERRAIN_MAX_WAY_POINTS = 4096;
-/** Kinds of field, by `TerrainParcels.kind`. */
-export const TERRAIN_PARCEL_KINDS = [
-  "wheat",
-  "barley",
-  "pasture",
-  "meadow",
-  "ploughed",
-  "rapeseed",
-] as const;
 /** Kinds of building, by `TerrainBuilding.kind` (its index is the packed kind). */
 export const TERRAIN_BUILDING_KINDS = ["cottage", "church", "barn", "castle"] as const;
 export type TerrainBuildingKind = (typeof TERRAIN_BUILDING_KINDS)[number];
@@ -134,8 +139,18 @@ export interface TerrainOptions {
   erosion?: number;
   /** The river's size, 0 a brook .. 1 a broad river. Default 0.5. */
   river?: number;
-  /** Hamlets and farms beyond the village and castle, 0..TERRAIN_MAX_SETTLEMENTS. Default 5. */
-  settlements?: number;
+  /** Cottages round the village's church, 0..TERRAIN_MAX_COTTAGES (0: no village). Default 11. */
+  village?: number;
+  /** Hamlets beyond the village, 0..TERRAIN_MAX_HAMLETS. Default 2. */
+  hamlets?: number;
+  /** Farms among the fields, 0..TERRAIN_MAX_FARMS. Default 3. */
+  farms?: number;
+  /** A castle on a prominent hilltop. Default true. */
+  castle?: boolean;
+  /** Roads joining the village, hamlets and castle, and one out over the far side. Default true. */
+  roads?: boolean;
+  /** Tracks out to the farms and down through the near field. Default true. */
+  tracks?: boolean;
   /** Default: 6% of the extent in from the south-west corner, looking north-east, eye 30 m up. */
   vantage?: TerrainVantage;
   /** The relief it starts from (TERRAIN_BASES). Default "valley". */
@@ -219,8 +234,8 @@ export interface TerrainParcels {
   /** Heading of the parcel's long axis (radians from +x toward +z), and its length over width. */
   angle: Float32Array;
   elongation: Float32Array;
-  /** TERRAIN_PARCEL_KINDS index. */
-  kind: Uint8Array;
+  /** 1 where the site lies on the river's floodplain. */
+  floodplain: Uint8Array;
   /** Mean woodland suitability over the parcel, 0..1. */
   wood: Float32Array;
   /** Per texel the nearest and second-nearest site, id = index + 1 (0 none): [2·k], [2·k + 1]. */
@@ -250,6 +265,8 @@ export interface Terrain {
   readonly wood: Float32Array;
   /** 0..1 around buildings (gardens, yards); -1 a lone tree (hedgerows, river banks), a texel each. */
   readonly yard: Float32Array;
+  /** 1 where the river's own level is the water (its channel and banks; not the sea), else 0. */
+  readonly riverbed: Uint8Array;
   readonly river: TerrainRiver;
   readonly settlements: readonly TerrainSettlement[];
   readonly buildings: readonly TerrainBuilding[];
@@ -279,7 +296,8 @@ const FAR = 64;
 const ROAD_ALIGN = 60;
 /** Parcel site spacing, metres. */
 const PARCEL_SPACING = 96;
-const MAX_ROUTES = TERRAIN_MAX_SETTLEMENTS + 6;
+/** Routes a build can lay: the hubs' tree and its shortcut, a track to each farm and the lane. */
+const MAX_ROUTES = TERRAIN_MAX_HAMLETS + TERRAIN_MAX_FARMS + 6;
 /** The river's catchment beyond the map, in extents², entering at its source. */
 const RIVER_INFLOW = 0.6;
 /** How far (metres, from the edge) a parcel's clear core keeps off roads and streams. */
@@ -765,10 +783,28 @@ interface Point {
   z: number;
 }
 
+/** The fine grid as the river and streams left it, which a later build keeping them starts from. */
+interface Carved {
+  ground: Float32Array;
+  level: Float32Array;
+  riverDist: Float32Array;
+  riverAlong: Float32Array;
+  banked: Uint8Array;
+  riverbed: Uint8Array;
+  stream: Float32Array;
+  bank: Int32Array;
+  channel: Uint8Array;
+  river: TerrainRiver;
+  width: (along: number) => number;
+  reach: (along: number) => number;
+}
+
 /**
  * A terrain built in units (see the header): call unit(0) .. unit(units - 1) in order, a few a
  * frame (runBudgeted), then read `terrain`. A builder given an earlier one with the same seed, size,
- * extent, relief, erosion and vantage reuses its eroded relief and skips those units.
+ * extent, relief, erosion and vantage reuses its eroded relief and skips those units; with the same
+ * river size too, it reuses the carved river and streams, and only lays out the settlements, roads
+ * and parcels again.
  */
 export class TerrainBuilder {
   readonly units: number;
@@ -790,6 +826,9 @@ export class TerrainBuilder {
   readonly #heap: LevelHeap;
   readonly #seen: Uint8Array;
   #reused = false;
+  /** The river and streams are an earlier build's (#carved), restored at the detail stage. */
+  #watered = false;
+  #carved: Carved | undefined;
   // Fine grid.
   readonly #ground: Float32Array;
   readonly #detailed: Float32Array;
@@ -798,6 +837,7 @@ export class TerrainBuilder {
   readonly #riverAlong: Float32Array;
   /** 1 where the water level is the river's (its channel and banks): later stages leave these be. */
   readonly #banked: Uint8Array;
+  readonly #riverbed: Uint8Array;
   readonly #stream: Float32Array;
   readonly #road: Float32Array;
   readonly #roadAngle: Float32Array;
@@ -834,7 +874,12 @@ export class TerrainBuilder {
       relief: clamp(options.relief ?? 0.5, 0, 1),
       erosion: clamp(options.erosion ?? 0.5, 0, 1),
       river: clamp(options.river ?? 0.5, 0, 1),
-      settlements: clamp(Math.round(options.settlements ?? 5), 0, TERRAIN_MAX_SETTLEMENTS),
+      village: clamp(Math.round(options.village ?? 11), 0, TERRAIN_MAX_COTTAGES),
+      hamlets: clamp(Math.round(options.hamlets ?? 2), 0, TERRAIN_MAX_HAMLETS),
+      farms: clamp(Math.round(options.farms ?? 3), 0, TERRAIN_MAX_FARMS),
+      castle: options.castle ?? true,
+      roads: options.roads ?? true,
+      tracks: options.tracks ?? true,
       base: options.base ?? "valley",
       vantage: options.vantage ?? {
         x: 0.06 * extent,
@@ -868,6 +913,7 @@ export class TerrainBuilder {
     this.#riverDist = new Float32Array(cells);
     this.#riverAlong = new Float32Array(cells);
     this.#banked = new Uint8Array(cells);
+    this.#riverbed = new Uint8Array(cells);
     this.#stream = new Float32Array(cells);
     this.#road = new Float32Array(cells);
     this.#roadAngle = new Float32Array(cells);
@@ -887,6 +933,11 @@ export class TerrainBuilder {
       this.#flow.area.set(reuse.#flow.area);
       this.#detailed.set(reuse.#detailed);
       this.#reused = true;
+      const carved = reuse.#carved;
+      if (carved && reuse.#riverKey() === this.#riverKey()) {
+        this.#carved = carved;
+        this.#watered = true;
+      }
     }
     const stages: (readonly [string, () => void])[] = [["relief", () => this.#relief()]];
     for (let s = 0; s < TERRAIN_EROSION_STEPS; s++) stages.push(["erosion", () => this.#erode()]);
@@ -941,6 +992,10 @@ export class TerrainBuilder {
     const o = this.options;
     const v = o.vantage;
     return [o.seed, o.size, o.extent, o.relief, o.erosion, o.base, v.x, v.z, v.dx, v.dz].join(",");
+  }
+
+  #riverKey(): string {
+    return `${this.#reliefKey()},${this.options.river}`;
   }
 
   #mix(salt: number): number {
@@ -1185,8 +1240,27 @@ export class TerrainBuilder {
     );
   }
 
-  /** The erosion grid upsampled to the fine grid (metres), with relief finer than its cells. */
+  /**
+   * The erosion grid upsampled to the fine grid (metres), with relief finer than its cells; or,
+   * when an earlier build's river and streams are kept, the fine grid as they left it.
+   */
   #detail(): void {
+    const carved = this.#carved;
+    if (this.#watered && carved) {
+      this.#ground.set(carved.ground);
+      this.#level.set(carved.level);
+      this.#riverDist.set(carved.riverDist);
+      this.#riverAlong.set(carved.riverAlong);
+      this.#banked.set(carved.banked);
+      this.#riverbed.set(carved.riverbed);
+      this.#stream.set(carved.stream);
+      this.#bank.set(carved.bank);
+      this.#channel.set(carved.channel);
+      this.#river = carved.river;
+      this.#riverWidth = carved.width;
+      this.#riverReach = carved.reach;
+      return;
+    }
     if (!this.#reused) {
       const n = this.#n;
       const m = this.#m;
@@ -1218,6 +1292,7 @@ export class TerrainBuilder {
   // ---- the river ------------------------------------------------------------------------------
 
   #carveRiver(): void {
+    if (this.#watered) return;
     const o = this.options;
     const n = this.#n;
     const m = this.#m;
@@ -1404,6 +1479,7 @@ export class TerrainBuilder {
       const orig = g[q] ?? 0;
       lv[q] = orig - 4;
       this.#banked[q] = 0;
+      this.#riverbed[q] = 0;
       const d = this.#riverDist[q] ?? Infinity;
       if (!Number.isFinite(d)) continue;
       const a = this.#riverAlong[q] ?? 0;
@@ -1424,6 +1500,7 @@ export class TerrainBuilder {
       if (d <= half + bank + 1.5 * cellF) {
         lv[q] = L;
         this.#banked[q] = 1;
+        this.#riverbed[q] = 1;
       } else lv[q] = Math.min(carved, L) - 4;
     }
     // The sea (a coast): every texel below its level connected to the map's edge, by a flood from
@@ -1440,6 +1517,7 @@ export class TerrainBuilder {
         if ((sea[q] ?? 0) <= 1e-3 && (g[q] ?? 0) < -0.05) {
           lv[q] = Math.max(lv[q] ?? 0, 0);
           this.#banked[q] = 1;
+          this.#riverbed[q] = 0;
         }
       }
     }
@@ -1487,6 +1565,7 @@ export class TerrainBuilder {
   // ---- streams --------------------------------------------------------------------------------
 
   #streams(): void {
+    if (this.#watered) return;
     const n = this.#n;
     const m = this.#m;
     const W = this.options.extent;
@@ -1555,6 +1634,23 @@ export class TerrainBuilder {
         this.#level[q] = Math.min(this.#level[q] ?? 0, (g[q] ?? 0) - 4);
       }
     }
+    // What a later build keeping this river starts from (#detail).
+    const river = this.#river;
+    if (!river) throw new TerrainError("terrain: a stage was skipped");
+    this.#carved = {
+      ground: this.#ground.slice(),
+      level: this.#level.slice(),
+      riverDist: this.#riverDist.slice(),
+      riverAlong: this.#riverAlong.slice(),
+      banked: this.#banked.slice(),
+      riverbed: this.#riverbed.slice(),
+      stream: this.#stream.slice(),
+      bank: this.#bank.slice(),
+      channel: this.#channel.slice(),
+      river,
+      width: this.#riverWidth,
+      reach: this.#riverReach,
+    };
   }
 
   // ---- settlements ----------------------------------------------------------------------------
@@ -1669,12 +1765,13 @@ export class TerrainBuilder {
         });
       }
     }
-    const placed: TerrainSettlement[] = this.#places;
-    placed.length = 0;
+    // Every site is chosen, in a fixed order, whether or not its settlement is built: one switched
+    // on, off or added never moves another.
+    const sites: TerrainSettlement[] = [];
     const deg = Math.PI / 180;
     const inView = (c: Candidate, wide: number) => 1 - smoothstep(wide - 10 * deg, wide, c.angle);
     const apart = (c: Candidate, gap: number) =>
-      placed.every((p) => Math.hypot(p.x - c.x, p.z - c.z) >= gap + p.radius);
+      sites.every((p) => Math.hypot(p.x - c.x, p.z - c.z) >= gap + p.radius);
     const choose = (
       kind: TerrainSettlementKind,
       radius: number,
@@ -1698,7 +1795,7 @@ export class TerrainBuilder {
         }
       }
       if (!pick) return;
-      placed.push({
+      sites.push({
         kind,
         x: pick.x,
         z: pick.z,
@@ -1735,9 +1832,7 @@ export class TerrainBuilder {
         inView(c, 32 * deg),
       true,
     );
-    const total = o.settlements;
-    const hamlets = Math.min(3, Math.floor((total + 1) / 3));
-    for (let h = 0; h < hamlets; h++) {
+    for (let h = 0; h < TERRAIN_MAX_HAMLETS; h++) {
       choose(
         "hamlet",
         70,
@@ -1751,7 +1846,7 @@ export class TerrainBuilder {
         true,
       );
     }
-    for (let f = hamlets; f < total; f++) {
+    for (let f = 0; f < TERRAIN_MAX_FARMS; f++) {
       choose(
         "farm",
         35,
@@ -1765,6 +1860,16 @@ export class TerrainBuilder {
         false,
       );
     }
+    let hamlets = 0;
+    let farms = 0;
+    const built = sites.filter((site) => {
+      if (site.kind === "village") return o.village > 0;
+      if (site.kind === "castle") return o.castle;
+      if (site.kind === "hamlet") return hamlets++ < o.hamlets;
+      return farms++ < o.farms;
+    });
+    this.#places.length = 0;
+    this.#places.push(...built);
   }
 
   /** The eye: above the vantage's ground (as it stands now). */
@@ -1779,7 +1884,10 @@ export class TerrainBuilder {
 
   // ---- roads ----------------------------------------------------------------------------------
 
-  /** The network: which settlements a road joins (a spanning tree, a shortcut, a way out). */
+  /**
+   * The network: which settlements a road joins (a spanning tree, a shortcut, a way out; `roads`)
+   * and which a track serves (each farm, and the lane through the near field; `tracks`).
+   */
   #network(): void {
     const places = this.#places;
     const o = this.options;
@@ -1818,7 +1926,7 @@ export class TerrainBuilder {
       bank: p.bank,
       farm: p.kind === "farm",
     }));
-    if (exit) {
+    if (exit && o.roads) {
       const bank =
         this.#bank[
           clamp(Math.floor(exit.z / cellC), 0, n - 1) * n +
@@ -1827,9 +1935,12 @@ export class TerrainBuilder {
       nodes.push({ x: exit.x, z: exit.z, bank, farm: false });
     }
     // A farm track down through the near field below the vantage, joining the network.
-    const lane = { x: v.x + v.dx * 90, z: v.z + v.dz * 90 };
-    nodes.push({ ...lane, bank: this.#bankAt(lane.x, lane.z), farm: true });
-    this.#lane = nodes.length - 1;
+    this.#lane = -1;
+    if (o.tracks) {
+      const lane = { x: v.x + v.dx * 90, z: v.z + v.dz * 90 };
+      nodes.push({ ...lane, bank: this.#bankAt(lane.x, lane.z), farm: true });
+      this.#lane = nodes.length - 1;
+    }
     const count = nodes.length;
     this.#routes.length = 0;
     if (count < 2) return;
@@ -1841,10 +1952,12 @@ export class TerrainBuilder {
       return Math.hypot(na.x - nb.x, na.z - nb.z) * (na.bank !== nb.bank ? 3 : 1);
     };
     // Prim's minimum spanning tree over the village, hamlets, castle and the way out: the roads.
-    // Then each farm (and the near field's lane) a track to the nearest of them.
+    // Then each farm (and the near field's lane) a track to the nearest of them. With no hub, the
+    // farms' tracks join each other; without tracks, a farm keeps to itself.
     const hubs = nodes.flatMap((node, index) => (node.farm ? [] : [index]));
-    const spurs = nodes.flatMap((node, index) => (node.farm ? [index] : []));
+    const spurs = o.tracks ? nodes.flatMap((node, index) => (node.farm ? [index] : [])) : [];
     const tree = hubs.length > 0 ? hubs : spurs.splice(0, spurs.length);
+    const joined = o.roads || hubs.length === 0;
     const inTree = new Uint8Array(count);
     const best = new Float64Array(count).fill(Infinity);
     const from = new Int32Array(count).fill(-1);
@@ -1857,7 +1970,7 @@ export class TerrainBuilder {
       if (u < 0) break;
       inTree[u] = 1;
       const f = from[u] ?? -1;
-      if (f >= 0) {
+      if (f >= 0 && joined) {
         this.#addRoute(f, u, nodes);
         adjacent[f]?.push(u);
         adjacent[u]?.push(f);
@@ -1895,7 +2008,7 @@ export class TerrainBuilder {
     };
     let worst = 1.6;
     let pair: [number, number] | undefined;
-    for (let a = 0; a < count; a++) {
+    for (let a = 0; a < count && o.roads; a++) {
       for (let b = a + 1; b < count; b++) {
         const na = nodes[a];
         const nb = nodes[b];
@@ -2353,12 +2466,14 @@ export class TerrainBuilder {
     const m = this.#m;
     const W = o.extent;
     const g = this.#ground;
-    const r = this.#random;
-    r.seed(this.#mix(4));
     const buildings = this.#buildings;
     buildings.length = 0;
     // Spacings were laid out for a 7 m gable; they scale with the house as drawn.
     const k = TERRAIN_HOUSE / 7;
+    // A stable 0..1 for a point and a purpose: each settlement's layout draws from its own ground,
+    // never from a sequence shared with the others, so one's size never moves another's buildings.
+    const draw = (x: number, z: number, salt: number): number =>
+      hash31(Math.round(x * 8), Math.round(z * 8), o.seed * 131 + salt);
     const free = (x: number, z: number, clear: number): boolean => {
       if (x < 20 || z < 20 || x > W - 20 || z > W - 20) return false;
       if (sampleGrid(this.#level, m, W, x, z) > sampleGrid(g, m, W, x, z) - 1) return false;
@@ -2398,113 +2513,131 @@ export class TerrainBuilder {
         y: sampleGrid(g, m, W, x, z),
         facing,
         length,
-        hash: r.next(),
+        hash: draw(x, z, 1),
         settlement,
       });
     };
+    // The heading of `road` as it leaves settlement `index`, over its first `ahead` points.
+    const leaving = (road: TerrainRoad, index: number, ahead: number): number => {
+      const end = road.from === index ? 0 : road.x.length - 1;
+      const next =
+        road.from === index ? Math.min(ahead, road.x.length - 1) : Math.max(0, end - ahead);
+      return Math.atan2(
+        (road.z[next] ?? 0) - (road.z[end] ?? 0),
+        (road.x[next] ?? 0) - (road.x[end] ?? 0),
+      );
+    };
+    interface Plot {
+      x: number;
+      z: number;
+      heading: number;
+      length: number;
+      clear: number;
+      steep: number;
+      /** Its place in the order the settlement fills its plots. */
+      rank: number;
+    }
     this.#places.forEach((place, index) => {
       place.first = buildings.length;
-      const roads = this.#roads.filter((road) => road.from === index || road.to === index);
+      const ways = this.#roads.filter((road) => road.from === index || road.to === index);
       if (place.kind === "castle") {
         add("castle", place.x, place.z, 0, 1, index);
       } else if (place.kind === "farm") {
-        const road = roads[0];
-        let heading = r.range(0, Math.PI);
-        if (road) {
-          const end = road.from === index ? 0 : road.x.length - 1;
-          const nextK = road.from === index ? Math.min(3, road.x.length - 1) : Math.max(0, end - 3);
-          heading = Math.atan2(
-            (road.z[nextK] ?? 0) - (road.z[end] ?? 0),
-            (road.x[nextK] ?? 0) - (road.x[end] ?? 0),
-          );
-        }
+        const road = ways[0];
+        const heading = road ? leaving(road, index, 3) : draw(place.x, place.z, 2) * Math.PI;
         const nx = -Math.sin(heading);
         const nz = Math.cos(heading);
         const hx = place.x + nx * 9 * k;
         const hz = place.z + nz * 9 * k;
         if (free(hx, hz, 10 * k)) add("cottage", hx, hz, heading, 1.5, index);
-        const side = r.next() < 0.5 ? -1 : 1;
+        const side = draw(place.x, place.z, 3) < 0.5 ? -1 : 1;
         const bx = place.x - nx * 10 * k + Math.cos(heading) * side * 14 * k;
         const bz = place.z - nz * 10 * k + Math.sin(heading) * side * 14 * k;
         if (free(bx, bz, 12 * k)) add("barn", bx, bz, heading + Math.PI / 2, 1.8, index);
       } else {
         const village = place.kind === "village";
-        const want = village ? 11 + r.int(5) : 3 + r.int(3);
-        let built = 0;
+        const want = village ? o.village : 3 + Math.floor(3 * draw(place.x, place.z, 4));
+        // Cottages line the roads (a place with none, its tracks); the church stands beside the
+        // first, set back from it.
+        const roads = ways.filter((road) => road.kind === "road");
+        const lined = roads.length > 0 ? roads : ways;
+        let centre = { x: place.x, z: place.z };
         if (village) {
-          // The church beside the first road out, set back from it.
-          const road = roads[0];
-          let heading = 0;
-          if (road) {
-            const end = road.from === index ? 0 : road.x.length - 1;
-            const nextK =
-              road.from === index ? Math.min(4, road.x.length - 1) : Math.max(0, end - 4);
-            heading = Math.atan2(
-              (road.z[nextK] ?? 0) - (road.z[end] ?? 0),
-              (road.x[nextK] ?? 0) - (road.x[end] ?? 0),
-            );
-          }
+          const road = lined[0];
+          const heading = road ? leaving(road, index, 4) : 0;
           for (const offset of [16 * k, -16 * k, 24 * k, -24 * k]) {
             const cx = place.x - Math.sin(heading) * offset;
             const cz = place.z + Math.cos(heading) * offset;
             if (free(cx, cz, 14 * k) && slopeAt(cx, cz) < 0.2) {
               add("church", cx, cz, heading, 2.5, index);
+              centre = { x: cx, z: cz };
               break;
             }
           }
         }
+        // Plots in a fixed order: either side of each road at a house's spacing, nearest the church
+        // (or the hamlet's middle) first, then set back between them, nearest first. The first
+        // `want` that are free are built, so a larger village keeps every cottage of a smaller one.
+        const plots: Plot[] = [];
+        const reach = village ? 300 : place.radius;
         const spacing = (village ? 19 : 17) * k;
-        for (const road of roads) {
+        for (const road of lined) {
           const forward = road.from === index;
           const count = road.x.length;
-          for (let s = 6; s < count && built < want; s += Math.round(spacing / 4)) {
-            const k = forward ? s : count - 1 - s;
-            const kx = road.x[k] ?? 0;
-            const kz = road.z[k] ?? 0;
-            if (Math.hypot(kx - place.x, kz - place.z) > place.radius) break;
-            if (road.bridgeStart >= 0 && k >= road.bridgeStart - 4 && k <= road.bridgeEnd + 4)
+          for (let s = 6; s < count; s += Math.round(spacing / 4)) {
+            const at = forward ? s : count - 1 - s;
+            const kx = road.x[at] ?? 0;
+            const kz = road.z[at] ?? 0;
+            if (Math.hypot(kx - place.x, kz - place.z) > reach) break;
+            if (road.bridgeStart >= 0 && at >= road.bridgeStart - 4 && at <= road.bridgeEnd + 4)
               continue;
-            const k2 = clamp(k + 1, 0, count - 1);
-            const k0 = clamp(k - 1, 0, count - 1);
+            const ahead = clamp(at + 1, 0, count - 1);
+            const behind = clamp(at - 1, 0, count - 1);
             const heading = Math.atan2(
-              (road.z[k2] ?? 0) - (road.z[k0] ?? 0),
-              (road.x[k2] ?? 0) - (road.x[k0] ?? 0),
+              (road.z[ahead] ?? 0) - (road.z[behind] ?? 0),
+              (road.x[ahead] ?? 0) - (road.x[behind] ?? 0),
             );
-            for (const side of r.next() < 0.5 ? [1, -1] : [-1, 1]) {
-              if (built >= want) break;
-              const off = road.halfWidth + (8 + 3 * r.next()) * k;
+            for (const side of [1, -1]) {
+              const off = road.halfWidth + (8 + 3 * draw(kx, kz, 5 + side)) * k;
               const x = kx - Math.sin(heading) * off * side;
               const z = kz + Math.cos(heading) * off * side;
-              if (!free(x, z, 13 * k) || slopeAt(x, z) > 0.22) continue;
-              add("cottage", x, z, heading, 1.3 + 0.7 * r.next(), index);
-              built++;
+              const rank = Math.hypot(x - centre.x, z - centre.z);
+              const length = 1.3 + 0.7 * draw(x, z, 7);
+              plots.push({ x, z, heading, length, clear: 13 * k, steep: 0.22, rank });
             }
           }
         }
-        // A few more set back where the roads leave room.
-        for (let tries = 0; tries < 40 && built < want; tries++) {
-          const angle = r.range(0, Math.PI * 2);
-          const dist = r.range(18 * k, place.radius * 0.8);
+        const back = village ? 160 : 0.8 * place.radius;
+        for (let t = 0; t < 48; t++) {
+          const angle = 2 * Math.PI * draw(place.x, place.z, 20 + t);
+          const dist = 18 * k + ((back - 18 * k) * (t + draw(place.x, place.z, 70 + t))) / 48;
           const x = place.x + Math.cos(angle) * dist;
           const z = place.z + Math.sin(angle) * dist;
-          if (!free(x, z, 14 * k) || slopeAt(x, z) > 0.2) continue;
-          const heading =
+          const road =
             this.#roadAngle[
               clamp(Math.floor(z / this.#cellF), 0, m - 1) * m +
                 clamp(Math.floor(x / this.#cellF), 0, m - 1)
-            ];
-          add(
-            "cottage",
-            x,
-            z,
-            Number.isFinite(heading) ? (heading ?? 0) : angle,
-            1.2 + 0.6 * r.next(),
-            index,
-          );
+            ] ?? Number.NaN;
+          const heading = Number.isFinite(road) ? road : angle;
+          const length = 1.2 + 0.6 * draw(x, z, 8);
+          plots.push({ x, z, heading, length, clear: 14 * k, steep: 0.2, rank: reach + dist });
+        }
+        plots.sort((a, b) => a.rank - b.rank);
+        let built = 0;
+        for (const plot of plots) {
+          if (built >= want) break;
+          if (!free(plot.x, plot.z, plot.clear) || slopeAt(plot.x, plot.z) > plot.steep) continue;
+          add("cottage", plot.x, plot.z, plot.heading, plot.length, index);
           built++;
         }
       }
       place.count = buildings.length - place.first;
+      // Its spread as built, which the shader looks its buildings up by.
+      for (let b = place.first; b < buildings.length; b++) {
+        const at = buildings[b];
+        if (at)
+          place.radius = Math.max(place.radius, Math.hypot(at.x - place.x, at.z - place.z) + 15);
+      }
     });
     // Terraces: each building's ground levelled to its base; the castle's whole hilltop.
     const cellF = this.#cellF;
@@ -2630,7 +2763,7 @@ export class TerrainBuilder {
     const count = xs.length;
     const angle = new Float32Array(count);
     const elongation = new Float32Array(count);
-    const kind = new Uint8Array(count);
+    const floodplain = new Uint8Array(count);
     for (let s = 0; s < count; s++) {
       const x = xs[s] ?? 0;
       const z = zs[s] ?? 0;
@@ -2651,27 +2784,8 @@ export class TerrainBuilder {
             : r.range(0, Math.PI);
       elongation[s] = 1.2 + 0.8 * r.next();
       const rd = this.#riverDist[q] ?? Infinity;
-      const plain = Number.isFinite(rd) && rd < this.#riverReach(this.#riverAlong[q] ?? 0);
-      const roll = r.next();
-      kind[s] = plain
-        ? roll < 0.6
-          ? 3
-          : 2
-        : slope > 0.3
-          ? roll < 0.75
-            ? 2
-            : 3
-          : roll < 0.3
-            ? 0
-            : roll < 0.45
-              ? 1
-              : roll < 0.67
-                ? 2
-                : roll < 0.78
-                  ? 3
-                  : roll < 0.9
-                    ? 4
-                    : 5;
+      floodplain[s] =
+        Number.isFinite(rd) && rd < this.#riverReach(this.#riverAlong[q] ?? 0) ? 1 : 0;
     }
     this.#parcels = {
       count,
@@ -2679,7 +2793,7 @@ export class TerrainBuilder {
       z: Float32Array.from(zs),
       angle,
       elongation,
-      kind,
+      floodplain,
       wood: new Float32Array(count),
       ids: this.#ids,
       coreX: new Float32Array(count),
@@ -2768,14 +2882,9 @@ export class TerrainBuilder {
   #woodTexels = new Int32Array(TERRAIN_MAX_PARCELS);
 
   #trees(): void {
-    const parcels = this.#parcels;
-    if (!parcels) throw new TerrainError("terrain: a stage was skipped");
     const m = this.#m;
-    // Woods take whole fields more often than not: each texel's suitability leans to its parcel's.
     // No tree stands in the water.
     for (let q = 0; q < m * m; q++) {
-      const id = this.#ids[2 * q] ?? 0;
-      if (id > 0) this.#wood[q] = 0.45 * (this.#wood[q] ?? 0) + 0.55 * (parcels.wood[id - 1] ?? 0);
       if ((this.#level[q] ?? 0) > (this.#ground[q] ?? 0) - 0.3) this.#wood[q] = 0;
     }
     // Lone trees: along the hedges (some hedges lined with them, some bare) and the river's banks,
@@ -2868,6 +2977,7 @@ export class TerrainBuilder {
       stream: this.#stream,
       wood: this.#wood,
       yard: this.#yard,
+      riverbed: this.#riverbed,
       river,
       settlements: this.#places,
       buildings: this.#buildings,
@@ -2964,7 +3074,9 @@ export function terrainWays(t: Terrain): TerrainWays {
 /**
  * The records texture's layout (rgba16f, nearest; read with texelFetch). Positions are split into
  * two halves each (half.ts) for ~22 bits. Rows from 0:
- *   sites      2 texels a parcel site, 32 a row: (x hi, x lo, z hi, z lo), (angle, elongation, kind, wood)
+ *   sites      2 texels a parcel site, 32 a row: (x hi, x lo, z hi, z lo), (angle, elongation, use,
+ *              its attribute): the use and attribute are the land model's (landuse.ts packLand), 0
+ *              until it writes them
  *   buildings  4 texels a building, 16 a row: (x hi, x lo, z hi, z lo), (y, facing, kind, length),
  *              (hash, settlement, 0, 0), unused
  *   places     2 texels a settlement: (x hi, x lo, z hi, z lo), (y, radius, first building, count)
@@ -2992,7 +3104,11 @@ export interface TerrainPacked {
   size: number;
   /** rgba16f, linear: ground, water level, d(ground)/dx, d(ground)/dz. */
   ground: Float32Array;
-  /** rgba16f, linear: road and stream signed distances (metres), woodland suitability, yard. */
+  /**
+   * rgba16f, linear: road and stream signed distances (metres; a dry watercourse too, see
+   * packWater), the woods' canopy (the land model's, landuse.ts packLand; 0 until it writes it),
+   * yard (-1 a lone tree).
+   */
   cover: Float32Array;
   /** rgba8, nearest: nearest parcel id (lo, hi), second nearest (lo, hi). */
   parcels: Uint8Array;
@@ -3000,7 +3116,10 @@ export interface TerrainPacked {
   records: Float32Array;
 }
 
-/** Lay a terrain out for upload (see TerrainPacked and TERRAIN_RECORDS). */
+/**
+ * Lay a terrain out for upload (see TerrainPacked and TERRAIN_RECORDS), its river full. The land's
+ * uses, the woods and which lone trees stand are the land model's to write (landuse.ts packLand).
+ */
 export function packTerrain(t: Terrain): TerrainPacked {
   const m = t.size;
   const ground = new Float32Array(m * m * 4);
@@ -3020,7 +3139,7 @@ export function packTerrain(t: Terrain): TerrainPacked {
         ((g[Math.min(m - 1, j + 1) * m + i] ?? 0) - (g[Math.max(0, j - 1) * m + i] ?? 0)) / span;
       cover[o] = clamp(t.road[q] ?? FAR, -FAR, FAR);
       cover[o + 1] = clamp(t.stream[q] ?? FAR, -FAR, FAR);
-      cover[o + 2] = t.wood[q] ?? 0;
+      cover[o + 2] = 0;
       cover[o + 3] = t.yard[q] ?? 0;
       const a = t.parcels.ids[2 * q] ?? 0;
       const b = t.parcels.ids[2 * q + 1] ?? 0;
@@ -3040,8 +3159,8 @@ export function packTerrain(t: Terrain): TerrainPacked {
     splitHalf(records, o + 2, p.z[s] ?? 0);
     records[o + 4] = p.angle[s] ?? 0;
     records[o + 5] = p.elongation[s] ?? 1;
-    records[o + 6] = p.kind[s] ?? 0;
-    records[o + 7] = p.wood[s] ?? 0;
+    records[o + 6] = 0;
+    records[o + 7] = 0;
     const c = texel(L.cores + Math.floor(s / 64), s % 64);
     if ((p.coreRadius[s] ?? 0) <= 0) continue;
     records[c] = (p.coreX[s] ?? 0) - (p.x[s] ?? 0);
@@ -3103,4 +3222,20 @@ export function packTerrain(t: Terrain): TerrainPacked {
     records[o + 4] = points[3 * k + 1] ?? 0;
   }
   return { size: m, ground, cover, parcels, records };
+}
+
+/**
+ * Fill the river's bed in a packed terrain (`water`), or leave it dry: its water level sunk under
+ * the bed, and the bed marked as a watercourse in the stream channel (-1, as a stream's own bed),
+ * which a scene draws dry while its streams run dry too. The carved valley, the banks, the bridge
+ * and the sea stay as they are; nothing else is laid out again.
+ */
+export function packWater(packed: TerrainPacked, t: Terrain, water: boolean): void {
+  for (let q = 0; q < t.size * t.size; q++) {
+    const level = t.level[q] ?? 0;
+    const ground = t.ground[q] ?? 0;
+    if (t.riverbed[q] !== 1 || level <= ground) continue;
+    packed.ground[4 * q + 1] = water ? level : ground - 4;
+    packed.cover[4 * q + 1] = water ? clamp(t.stream[q] ?? FAR, -FAR, FAR) : -1;
+  }
 }

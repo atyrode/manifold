@@ -196,22 +196,6 @@ export function readParams(scene: SceneId, q: URLSearchParams): Params {
       }
     }
   }
-  // Migrate previously saved countryside selector URLs on read; serialization writes only weights.
-  // Explicit new weights win, even when all zero. Pinned historical builds keep the old renderer.
-  if (
-    scene === "country" &&
-    q.has("fieldType") &&
-    !["crops", "wildflowers", "lavender", "sunflowers"].some((key) => q.has(key))
-  ) {
-    const type = q.get("fieldType");
-    if (type === "1" || type === "2" || type === "3") {
-      out.crops = 0;
-      const key = type === "1" ? "wildflowers" : type === "2" ? "lavender" : "sunflowers";
-      out[key] = 100;
-    } else if (type === "4") {
-      Object.assign(out, { crops: 30, wildflowers: 28, lavender: 22, sunflowers: 20 });
-    }
-  }
   return out;
 }
 

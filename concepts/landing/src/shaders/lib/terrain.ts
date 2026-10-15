@@ -6,18 +6,22 @@
 //
 //   vec4 terrainGround(sampler2D ground, vec2 p, float extent)   ground, water level, d/dx, d/dz
 //   vec4 terrainCover(sampler2D cover, vec2 p, float extent)     road and stream signed distance
-//                                                                (metres, negative on it), woodland
-//                                                                suitability 0..1, yard 0..1
+//                                                                (metres, negative on it), the
+//                                                                woods' canopy (landuse.ts packLand:
+//                                                                0..1, negative under pines), yard
+//                                                                0..1 (-1 a lone tree's texel)
 //   float terrainSurface(vec4 ground)                            what a ray meets: max(ground, water)
 //   float terrainWater(vec4 ground)                              water depth (≤ 0 dry)
 //   vec3 terrainNormal(vec4 ground)                              the ground's normal, smooth between
 //                                                                texels (from the packed slopes)
 //   TerrainParcel terrainParcel(sampler2D ids, sampler2D records, vec2 p, float extent)
-//       the field under p: its site's id (0 none), kind (TERRAIN_PARCEL_KINDS), woodland share,
-//       heading and stretch, and `border`, the distance (metres, first order) to the field's edge:
-//       the nearest two sites by each site's stretched metric among the eight the four texels
-//       around p list, so borders are exact lines between texels, not texel steps; `normal` the
-//       unit direction across the border (toward the neighbour), `other` the neighbour's id
+//       the parcel under p: its site's id (0 none), use (LAND_*) and attribute (a crop's
+//       LAND_CROP_*, a pasture's herd 1 cattle 0 sheep, a wood's species 1 pine 0 broadleaf: the
+//       land model's, sims/landuse.ts), heading and stretch, and `border`, the distance (metres,
+//       first order) to the parcel's edge: the nearest two sites by each site's stretched metric
+//       among the eight the four texels around p list, so borders are exact lines between texels,
+//       not texel steps; `normal` the unit direction across the border (toward the neighbour),
+//       `other` the neighbour's id and `otherUse` its use
 //   vec3 terrainCore(sampler2D records, float id)                parcel id's clear core (a herd's
 //                                                                ground): centre xy, radius z
 //                                                                (metres; 0 none)
@@ -33,11 +37,8 @@
 //   vec3 terrainWayAt(sampler2D records, TerrainWay way, float s, out vec2 heading)
 //       the point s metres along a road (clamped to its ends) on its surface, and its unit heading
 //       on the map: between two of its evenly spaced points, so always on the road
-import {
-  TERRAIN_BUILDING_KINDS,
-  TERRAIN_PARCEL_KINDS,
-  TERRAIN_RECORDS,
-} from "../../sims/terrain.ts";
+import { LAND_CROPS, LAND_USES } from "../../sims/landuse.ts";
+import { TERRAIN_BUILDING_KINDS, TERRAIN_RECORDS } from "../../sims/terrain.ts";
 
 const kinds = (names: readonly string[], prefix: string): string =>
   names
@@ -53,7 +54,8 @@ const int TERRAIN_MISC_ROW = ${TERRAIN_RECORDS.misc};
 const int TERRAIN_CORES_ROW = ${TERRAIN_RECORDS.cores};
 const int TERRAIN_WAYS_ROW = ${TERRAIN_RECORDS.ways};
 const int TERRAIN_POINTS_ROW = ${TERRAIN_RECORDS.points};
-${kinds(TERRAIN_PARCEL_KINDS, "TERRAIN_FIELD")}
+${kinds(LAND_USES, "LAND")}
+${kinds(LAND_CROPS, "LAND_CROP")}
 ${kinds(TERRAIN_BUILDING_KINDS, "TERRAIN_BUILDING")}
 
 vec4 terrainGround(sampler2D ground, vec2 p, float extent) {
@@ -84,7 +86,7 @@ vec2 terrainSplit(vec4 v) {
   return vec2(v.x + v.y, v.z + v.w);
 }
 
-struct TerrainParcel { float id; float other; float kind; float wood; float border; vec2 normal; vec2 site; vec2 axis; float elongation; };
+struct TerrainParcel { float id; float other; float use; float attr; float otherUse; float border; vec2 normal; vec2 site; vec2 axis; float elongation; };
 
 // Site id's stretched distance from p and its gradient: (d, dd/dx, dd/dz); fills the site's data.
 vec3 terrainSiteDistance(sampler2D records, float id, vec2 p, out vec4 data, out vec2 site) {
@@ -105,8 +107,9 @@ TerrainParcel terrainParcel(sampler2D ids, sampler2D records, vec2 p, float exte
   TerrainParcel parcel;
   parcel.id = 0.0;
   parcel.other = 0.0;
-  parcel.kind = 0.0;
-  parcel.wood = 0.0;
+  parcel.use = 0.0;
+  parcel.attr = 0.0;
+  parcel.otherUse = 0.0;
   parcel.border = 1e3;
   parcel.normal = vec2(1.0, 0.0);
   parcel.site = vec2(0.0);
@@ -118,6 +121,7 @@ TerrainParcel terrainParcel(sampler2D ids, sampler2D records, vec2 p, float exte
   float next = 1e9;
   float bestId = 0.0;
   float nextId = 0.0;
+  float nextUse = 0.0;
   vec2 bestGrad = vec2(0.0);
   vec2 nextGrad = vec2(0.0);
   vec4 bestData = vec4(0.0);
@@ -136,6 +140,7 @@ TerrainParcel terrainParcel(sampler2D ids, sampler2D records, vec2 p, float exte
           next = best;
           nextGrad = bestGrad;
           nextId = bestId;
+          nextUse = bestData.z;
         }
         best = d.x;
         bestId = id;
@@ -146,14 +151,16 @@ TerrainParcel terrainParcel(sampler2D ids, sampler2D records, vec2 p, float exte
         next = d.x;
         nextGrad = d.yz;
         nextId = id;
+        nextUse = data.z;
       }
     }
   }
   if (bestId < 0.5) return parcel;
   parcel.id = bestId;
   parcel.other = nextId;
-  parcel.kind = bestData.z;
-  parcel.wood = bestData.w;
+  parcel.otherUse = nextUse;
+  parcel.use = bestData.z;
+  parcel.attr = bestData.w;
   parcel.site = bestSite;
   parcel.axis = vec2(cos(bestData.x), sin(bestData.x));
   parcel.elongation = bestData.y;
