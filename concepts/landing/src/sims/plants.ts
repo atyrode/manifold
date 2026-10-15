@@ -574,29 +574,32 @@ export class RootedPlants {
     const dx = Math.cos(angle);
     const dy = Math.sin(angle);
     const grown = habit === PlantHabit.upright ? 0 : (this.grown[i] ?? 0);
+    const air = climate.air;
+    const salt = this.#plantSalt[plant] ?? 0;
+    const pace = (climate.time + late) * (0.18 + 0.1 * salt);
+    const wanderX = windNoise(pace, Math.floor(salt * 977));
+    const wanderY = windNoise(pace + 31.7, Math.floor(salt * 977) + 5);
     let px = 0;
     let py = 0;
     if (species.aquatic || site.submerged) {
+      // Under water: quadratic drag of the current, and the water's own stir (air.calm).
       const flow = this.#flow;
       flow[0] = 0;
       flow[1] = 0;
       climate.current?.((this.x[i] ?? 0) + dx * 0.5 * grown, (this.y[i] ?? 0) + dy * 0.5 * grown, flow);
       const speed = Math.hypot(flow[0] ?? 0, flow[1] ?? 0);
-      px = speed * (flow[0] ?? 0);
-      py = speed * (flow[1] ?? 0);
+      px = speed * (flow[0] ?? 0) + air.calm * wanderX;
+      py = speed * (flow[1] ?? 0) + air.calm * wanderY;
     } else {
-      const air = climate.air;
       const breeze = Math.hypot(air.x, air.y);
       const bx = breeze > 1e-6 ? air.x / breeze : 1;
       const by = breeze > 1e-6 ? air.y / breeze : 0;
-      const salt = this.#plantSalt[plant] ?? 0;
       const eddy = air.eddy * breeze + air.calm;
-      const pace = (climate.time + late) * (0.18 + 0.1 * salt);
       // A front crossing the scene along the breeze reaches this plant `delay` seconds after it set out.
       const delay = air.front > 0 ? (site.x * bx + site.y * by) / air.front + 2 : 0;
       const gust = this.#gusts.strength(delay - late);
-      px = air.x + eddy * windNoise(pace, Math.floor(salt * 977)) + bx * gust;
-      py = air.y + eddy * windNoise(pace + 31.7, Math.floor(salt * 977) + 5) + by * gust;
+      px = air.x + eddy * wanderX + bx * gust;
+      py = air.y + eddy * wanderY + by * gust;
     }
     const limit = species.sway.limit;
     if (habit === PlantHabit.upright) {

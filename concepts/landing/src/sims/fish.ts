@@ -1,6 +1,7 @@
 // Fish for water scenes: how they swim (CPU) and how they look (GLSL). A scene supplies the water:
 // its units and bounds, where each fish wants to be, the pointer, and the depth, refraction and
-// light the fish are drawn in. Koi in `pond` are the first consumer.
+// light the fish are drawn in. Koi in `pond` are the first consumer; the rock pool fish in
+// `tidepool` (BLENNY, FISH_BLENNY) the second.
 //
 // Swimming (FishGroup). Every fish has a position, a heading and a speed and moves the way it faces:
 // it never slides sideways, turns at most `turnRate` and changes speed at most `accel`, so whatever
@@ -40,7 +41,8 @@
 //       kohaku, showa or ogon; tone 0 dark, 1 white, 2 colour (for ink and accent)
 //   float fishSide(vec2 q)                            seen side-on, q in body lengths (x toward the
 //       snout from mid-body, y up): > 0 inside the spindle body and forked tail
-//   FISH_KOI                                          koi's FishBody
+//   FISH_KOI, FISH_BLENNY                             koi's FishBody; a rock pool fish's (slim,
+//       blunt-headed, broad pectoral fans)
 // Shadows, refraction, caustics, haze and passages stay with the scene.
 //
 // Usage (see scenes/pond/koi.ts):
@@ -95,6 +97,23 @@ export const KOI: FishSpecies = {
   spacingPull: 2,
   wander: 0.25,
   wanderRate: 0.45,
+};
+
+/**
+ * Rock pool fish (blennies, sculpins): small and alone, idling slowly over the bottom and darting
+ * off in quick turns; scene units are body-length agnostic, tuned for fish ~0.02 units long.
+ */
+export const BLENNY: FishSpecies = {
+  cruise: 0.025,
+  minSpeed: 0.004,
+  maxSpeed: 0.22,
+  turnRate: 5,
+  accel: 0.9,
+  catchUp: 1.5,
+  spacing: 1.6,
+  spacingPull: 2,
+  wander: 0.7,
+  wanderRate: 0.8,
 };
 
 export class FishError extends Error {}
@@ -410,6 +429,7 @@ struct FishBody {
 };
 
 const FishBody FISH_KOI = FishBody(0.17, 0.35, 0.2, 0.2, 0.06, 0.09);
+const FishBody FISH_BLENNY = FishBody(0.12, 0.45, 0.13, 0.17, 0.09, 0.12);
 
 // A fish from above in its own frame (x forward from the nose, y across): 0 outside, 1 body, 2 fin.
 // The nose is 0.3 lengths ahead of the frame's origin; a wave runs down the body to the tail.

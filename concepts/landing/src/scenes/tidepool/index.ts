@@ -4,8 +4,9 @@
 // keeps what the waves bring; its algae stream and its anemones close in the surge, and the
 // caustics come from the water's own surface. The rock is laid out per seed in layout.ts; the
 // shader (shader.ts) lights it through the water.
-import { choice, feature, range, seed, type ParamDef } from "../../params.ts";
+import { choice, counts, feature, range, seed, type ParamDef } from "../../params.ts";
 import { atmosphereGroups, skyKnobs, weatherKnobs } from "../atmosphere.ts";
+import { plantKnobs } from "../plants.ts";
 import type { SceneDef } from "../types.ts";
 import { TIDEPOOL_PASSAGE, tidepoolGlsl } from "./shader.ts";
 import { tidepoolSim } from "./sim.ts";
@@ -41,6 +42,9 @@ const params: readonly ParamDef[] = [
   feature("manifold", "mark", "pebble M", false, "size", 0.5, "A Manifold M of white quartz pebbles laid on the bed, wavering under the water as the surface moves."),
   range("manifold", "markX", "across", 0.5, "Where the pebbles lie, left to right.", { when: "mark", steady: true }),
   range("manifold", "markY", "height", 0.4, "Where the pebbles lie, bottom to top.", { when: "mark", steady: true }),
+  // The life on the shared components (life.ts): fish from sims/fish.ts, the plants' year and growth.
+  feature("life", "fish", "fish", false, "how many", 6, "Small rock pool fish idling over the basin's floor, darting off from a touch or a hard surge and drifting back.", { options: counts(3, 6, 10) }),
+  ...plantKnobs({ group: "life", season: 0.35, growth: 0.4 }),
 ];
 
 export const tidepoolScene: SceneDef = {

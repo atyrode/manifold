@@ -9,6 +9,8 @@
 //   glslHash12(x, y)         common.ts `hash12(vec2(x, y))` in float32 steps, as the shader runs it:
 //                            for a sim that must agree with what its shader hashes (pond's koi
 //                            loops, falls' bank ferns)
+//   glslHash22(x, y, out)    common.ts `hash22(vec2(x, y))` the same way, into out[0], out[1] (tide
+//                            pool's holdfasts)
 //
 // Usage:
 //   const fade = smoothstep(0.2, 0.6, age / life);
@@ -68,4 +70,23 @@ export function glslHash12(x: number, y: number): number {
   c = f32(c + d);
   const h = f32(f32(a + b) * c);
   return f32(h - Math.floor(h));
+}
+
+/** common.ts `hash22(vec2(x, y))`, step by step in float32, into out[0] and out[1]. */
+export function glslHash22(x: number, y: number, out: Float64Array): void {
+  const fx = f32(f32(x) * f32(0.1031));
+  const fy = f32(f32(y) * f32(0.103));
+  const fz = f32(f32(x) * f32(0.0973));
+  let a = f32(fx - Math.floor(fx));
+  let b = f32(fy - Math.floor(fy));
+  let c = f32(fz - Math.floor(fz));
+  const s = f32(33.33);
+  const d = f32(f32(f32(a * f32(b + s)) + f32(b * f32(c + s))) + f32(c * f32(a + s)));
+  a = f32(a + d);
+  b = f32(b + d);
+  c = f32(c + d);
+  const u = f32(f32(a + b) * c);
+  const v = f32(f32(a + c) * b);
+  out[0] = f32(u - Math.floor(u));
+  out[1] = f32(v - Math.floor(v));
 }
