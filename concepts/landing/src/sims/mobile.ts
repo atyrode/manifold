@@ -368,7 +368,9 @@ export function designMobile(options: MobileDesignOptions): MobileDesign {
       const plate = plates[k]?.[e];
       const hung = child[k]?.[e] ?? -1;
       return (
-        (plate === undefined ? (hung >= 0 ? (below[hung] ?? 0) : 0) + MOBILE_LOOP : plateMass(plate)) +
+        (plate === undefined
+          ? (hung >= 0 ? (below[hung] ?? 0) : 0) + MOBILE_LOOP
+          : plateMass(plate)) +
         wire / 2
       );
     });
@@ -618,7 +620,9 @@ export class Mobile {
           if (p !== undefined)
             throw new MobileError(`arm ${k}'s end ${e} holds both a plate and a ball`);
           if (!(globe.look >= 0 && globe.look < MOBILE_BALL_LOOKS))
-            throw new MobileError(`a ball's look is 0..${MOBILE_BALL_LOOKS - 1}, got ${globe.look}`);
+            throw new MobileError(
+              `a ball's look is 0..${MOBILE_BALL_LOOKS - 1}, got ${globe.look}`,
+            );
           this.#ballArm[ball] = k;
           this.#ballEnd[ball] = e;
           this.#ballPoint[ball] = e === 0 ? a : b;
@@ -1021,8 +1025,10 @@ export class Mobile {
     const s = x * (f[o + 9] ?? 0) + y * (f[o + 10] ?? 0) + z * (f[o + 11] ?? 0);
     const depth = (this.#ballRadius[i] ?? 0) + MOBILE_SLAB - Math.abs(s);
     if (depth <= 0) return false;
-    const lx = (x * (f[o + 3] ?? 0) + y * (f[o + 4] ?? 0) + z * (f[o + 5] ?? 0)) / (this.#plateEx[j] ?? 1);
-    const ly = (x * (f[o + 6] ?? 0) + y * (f[o + 7] ?? 0) + z * (f[o + 8] ?? 0)) / (this.#plateEy[j] ?? 1);
+    const lx =
+      (x * (f[o + 3] ?? 0) + y * (f[o + 4] ?? 0) + z * (f[o + 5] ?? 0)) / (this.#plateEx[j] ?? 1);
+    const ly =
+      (x * (f[o + 6] ?? 0) + y * (f[o + 7] ?? 0) + z * (f[o + 8] ?? 0)) / (this.#plateEy[j] ?? 1);
     if (lx * lx + ly * ly >= 1) return false;
     const wb = inv[pb] ?? 0;
     const wp = inv[pp] ?? 0;

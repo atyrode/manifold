@@ -208,7 +208,9 @@ export function solarMobile(set: number, clearance: number, sun: Vec3): SolarMob
     const moonMass = shellMass(moonRadius);
     const earthMass = shellMass(radius);
     const earthReach =
-      (Math.sqrt(earthMass ** 2 + 2 * MOBILE_WIRE * (moonMass * moon + (MOBILE_WIRE / 2) * moon ** 2)) -
+      (Math.sqrt(
+        earthMass ** 2 + 2 * MOBILE_WIRE * (moonMass * moon + (MOBILE_WIRE / 2) * moon ** 2),
+      ) -
         earthMass) /
       MOBILE_WIRE;
     const carried = earth
@@ -222,7 +224,12 @@ export function solarMobile(set: number, clearance: number, sun: Vec3): SolarMob
     const extents: Extent[] = [
       { from: 0, to: reach / 2, top: 0, bottom: -loop / 2 - WIRE_HALF },
       { from: reach / 2, to: reach, top: -loop / 2, bottom: -loop - WIRE_HALF },
-      { from: weightReach - weightRadius, to: weightReach + weightRadius, top: -loop + weightRadius, bottom: -loop - weightRadius },
+      {
+        from: weightReach - weightRadius,
+        to: weightReach + weightRadius,
+        top: -loop + weightRadius,
+        bottom: -loop - weightRadius,
+      },
       earth
         ? {
             from: reach - moon - moonRadius,

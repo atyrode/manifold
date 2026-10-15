@@ -219,7 +219,8 @@ Shade regressionMobile(vec2 uv, vec2 cell, float t) {
       // Pixels whose centre lies within a hair of an outline may fall either way, and a wire's
       // shadow may darken a pixel or two; anything more is the two pictures parting.
       const what = mode === 0 ? "shadow" : "bodies";
-      if (covered < 200) throw new Error(`mobile: the ${what} fixture covers only ${covered} pixels`);
+      if (covered < 200)
+        throw new Error(`mobile: the ${what} fixture covers only ${covered} pixels`);
       if (mismatched > Math.max(8, 0.04 * covered))
         throw new Error(
           `mobile: GPU ${what} differ from the CPU twin in ${mismatched} of ${covered} covered pixels`,
@@ -244,7 +245,14 @@ function heading(data: ArrayLike<number>, k: number): number {
 function verifyKepler(): Record<string, unknown> {
   const sim = new HeadlessSim(mobileScene);
   // In still air (a gust may set an arm back past its motor's slip, as it should), at full speed.
-  const knobs = { ...paramDefaults("mobile"), motor: 1, "motor-amount": 1, wind: 0, gusts: 0, drift: 0 };
+  const knobs = {
+    ...paramDefaults("mobile"),
+    motor: 1,
+    "motor-amount": 1,
+    wind: 0,
+    gusts: 0,
+    drift: 0,
+  };
   const frame = { dt: 0.05, knobs };
   const year = mobileYear(1);
   const arms = solarMobile(1, 1, MOBILE_SUN_CENTRE).arms;
@@ -367,8 +375,7 @@ function verifySunlit(gl: WebGL2RenderingContext): Record<string, unknown> {
   const texture = upload(gl, data);
   try {
     const bytes = scene.draw(texture.texture, [1, 0]);
-    const texel = (k: number, i: number, c: number) =>
-      data[(k * MOBILE_TEXELS + i) * 4 + c] ?? 0;
+    const texel = (k: number, i: number, c: number) => data[(k * MOBILE_TEXELS + i) * 4 + c] ?? 0;
     // Every ball: its centre (in the room), radius and look.
     const origin = MOBILE_TEX_ORIGIN;
     const balls: { c: Vec3; r: number; look: number }[] = [];
@@ -392,13 +399,15 @@ function verifySunlit(gl: WebGL2RenderingContext): Record<string, unknown> {
     ];
     const discs = [...balls, { c: S, r: SOLAR_SUN_RADIUS, look: -1 }].map((ball) => {
       const p = project(ball.c);
-      return { ...ball, ...p, rp: (ball.r * mobileCamera(SCENE_W / SCENE_H).focal * SCENE_H) / p.z };
+      return {
+        ...ball,
+        ...p,
+        rp: (ball.r * mobileCamera(SCENE_W / SCENE_H).focal * SCENE_H) / p.z,
+      };
     });
     const lum = (x: number, y: number) => {
       const o = (y * SCENE_W + x) * 4;
-      return (
-        0.2126 * (bytes[o] ?? 0) + 0.7152 * (bytes[o + 1] ?? 0) + 0.0722 * (bytes[o + 2] ?? 0)
-      );
+      return 0.2126 * (bytes[o] ?? 0) + 0.7152 * (bytes[o + 1] ?? 0) + 0.0722 * (bytes[o + 2] ?? 0);
     };
     const tested: Record<string, { day: number; night: number }> = {};
     for (const disc of discs) {
@@ -426,7 +435,9 @@ function verifySunlit(gl: WebGL2RenderingContext): Record<string, unknown> {
       const eye = [MOBILE_EYE[0] - disc.c[0], MOBILE_EYE[1] - disc.c[1], MOBILE_EYE[2] - disc.c[2]];
       const el = Math.hypot(eye[0] ?? 0, eye[1] ?? 0, eye[2] ?? 0);
       const phase =
-        ((eye[0] ?? 0) * (to[0] ?? 0) + (eye[1] ?? 0) * (to[1] ?? 0) + (eye[2] ?? 0) * (to[2] ?? 0)) /
+        ((eye[0] ?? 0) * (to[0] ?? 0) +
+          (eye[1] ?? 0) * (to[1] ?? 0) +
+          (eye[2] ?? 0) * (to[2] ?? 0)) /
         (el * tl);
       if (phase < -0.17) continue;
       let day = 0;

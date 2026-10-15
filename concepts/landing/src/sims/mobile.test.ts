@@ -312,7 +312,10 @@ test("a motor holds its arm's rate, and winds up the turn a knock costs it", () 
   // Knocked back against its turn, it falls behind, then catches up the whole turn it lost.
   const pos = mobile.system.positions;
   const [a, , h] = mobile.armPoints(0);
-  const out = [(pos[a * 3] ?? 0) - (pos[h * 3] ?? 0), (pos[a * 3 + 2] ?? 0) - (pos[h * 3 + 2] ?? 0)];
+  const out = [
+    (pos[a * 3] ?? 0) - (pos[h * 3] ?? 0),
+    (pos[a * 3 + 2] ?? 0) - (pos[h * 3 + 2] ?? 0),
+  ];
   const l = Math.hypot(out[0] ?? 0, out[1] ?? 0);
   let behind = 0;
   const total = turning(mobile, 0, 240 * 30, (s, turned) => {
@@ -342,7 +345,10 @@ test("arms stacked on one axis hang from the loop above and turn each on its own
   const pos = mobile.system.positions;
   const [a, b] = mobile.armPoints(0);
   const upper = (): number =>
-    Math.atan2(-((pos[a * 3 + 2] ?? 0) - (pos[b * 3 + 2] ?? 0)), (pos[a * 3] ?? 0) - (pos[b * 3] ?? 0));
+    Math.atan2(
+      -((pos[a * 3 + 2] ?? 0) - (pos[b * 3 + 2] ?? 0)),
+      (pos[a * 3] ?? 0) - (pos[b * 3] ?? 0),
+    );
   const before = upper();
   expect(turning(mobile, 1, 240 * 10)).toBeGreaterThan(8);
   expect(Math.abs(upper() - before)).toBeLessThan(0.1);
@@ -372,7 +378,10 @@ test("a ball in the way of another arm's turning wire is pushed aside instead of
       const dd = (d[0] ?? 0) ** 2 + (d[1] ?? 0) ** 2 + (d[2] ?? 0) ** 2;
       const t = Math.min(
         1,
-        Math.max(0, ((w[0] ?? 0) * (d[0] ?? 0) + (w[1] ?? 0) * (d[1] ?? 0) + (w[2] ?? 0) * (d[2] ?? 0)) / dd),
+        Math.max(
+          0,
+          ((w[0] ?? 0) * (d[0] ?? 0) + (w[1] ?? 0) * (d[1] ?? 0) + (w[2] ?? 0) * (d[2] ?? 0)) / dd,
+        ),
       );
       closest = Math.min(
         closest,
@@ -389,7 +398,10 @@ test("a ball in the way of another arm's turning wire is pushed aside instead of
 });
 
 test("the air pushes a ball along the air whatever its way, and a ball packs as its look and radius", () => {
-  const design: MobileDesign = { anchor: [0, 2, 0], arms: [ballArm(-1, 0, 0.3, [0.2, 0.1], 0.7, 0.05, 0.02)] };
+  const design: MobileDesign = {
+    anchor: [0, 2, 0],
+    arms: [ballArm(-1, 0, 0.3, [0.2, 0.1], 0.7, 0.05, 0.02)],
+  };
   const blown = new Mobile(design);
   blown.settle(480, (_x, _y, _z, out) => {
     out[0] = 1;

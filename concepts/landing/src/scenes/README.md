@@ -401,15 +401,15 @@ aurora, meteors and the canopy weather (see "Shared libraries"). A component few
 a GLSL string of its own that each consumer interpolates into its `glsl`, at the top or at least
 before the functions that call it, so no other program pays for it:
 
-| String          | File                           | Composed by                                                           | See                                |
-| --------------- | ------------------------------ | --------------------------------------------------------------------- | ---------------------------------- |
-| `birdsGlsl`     | `src/shaders/lib/birds.ts`     | aurora, country, falls, lake, lanterns, meadow, skyward, swell, train | "Birds"                            |
-| `milkyWayGlsl`  | `src/shaders/lib/milkyway.ts`  | campfire, lake                                                        | the Milky Way row below            |
-| `plantsGlsl`    | `src/shaders/lib/plants.ts`    | falls, fireflies, garden, pond, tidepool                              | "Rooted plants"                    |
-| `planetGlsl`    | `src/shaders/lib/planet.ts`    | orbit, campfire, mobile                                               | "The giant planet"                 |
-| `figuresGlsl`   | `src/shaders/lib/figures.ts`   | country                                                               | "Figures, livestock and buildings" |
-| `livestockGlsl` | `src/shaders/lib/livestock.ts` | country                                                               | "Figures, livestock and buildings" |
-| `buildingsGlsl` | `src/shaders/buildings.ts`     | country, valley                                                       | "Figures, livestock and buildings" |
+| String          | File                           | Composed by                                                           | See                                  |
+| --------------- | ------------------------------ | --------------------------------------------------------------------- | ------------------------------------ |
+| `birdsGlsl`     | `src/shaders/lib/birds.ts`     | aurora, country, falls, lake, lanterns, meadow, skyward, swell, train | "Birds"                              |
+| `milkyWayGlsl`  | `src/shaders/lib/milkyway.ts`  | campfire, lake                                                        | the Milky Way row below              |
+| `plantsGlsl`    | `src/shaders/lib/plants.ts`    | falls, fireflies, garden, pond, tidepool                              | "Rooted plants"                      |
+| `planetGlsl`    | `src/shaders/lib/planet.ts`    | orbit, campfire, mobile                                               | "The giant planet"                   |
+| `figuresGlsl`   | `src/shaders/lib/figures.ts`   | country                                                               | "Figures, livestock and buildings"   |
+| `livestockGlsl` | `src/shaders/lib/livestock.ts` | country                                                               | "Figures, livestock and buildings"   |
+| `buildingsGlsl` | `src/shaders/buildings.ts`     | country, valley                                                       | "Figures, livestock and buildings"   |
 | `terrainGlsl`   | `src/shaders/lib/terrain.ts`   | valley                                                                | `TerrainBuilder` under "Simulations" |
 
 Such a component reads no knob defines (they are the scene's own): the scene passes every value as
