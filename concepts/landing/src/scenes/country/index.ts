@@ -303,11 +303,11 @@ export function countryFeatures(values: Readonly<Record<string, number>>): Recor
 }
 
 /**
- * Every optional part but the verges compiled in: for checks that draw many settings with one
- * program. The verges' own check (verges.verify.ts) compiles them in; here they would only slow
- * every draw.
+ * Every optional part compiled in (SceneDef.featuresAll): the program the lab draws a setting with
+ * once a knob change needs another feature set. Each part's runtime test of its knobs decides, so
+ * it draws every setting as that setting's own program does.
  */
-export const COUNTRY_FULL = countryFeatures({
+export const COUNTRY_ALL = countryFeatures({
   walkers: 1,
   tracks: 1,
   river: 1,
@@ -315,6 +315,7 @@ export const COUNTRY_FULL = countryFeatures({
   hamlets: 3,
   farms: 1,
   pasture: 1,
+  verges: 1,
   songbirds: 1,
   chalk: 1,
   rain: 1,
@@ -324,6 +325,13 @@ export const COUNTRY_FULL = countryFeatures({
   shadows: 1,
   moon: 0.5,
 });
+
+/**
+ * Every optional part but the verges compiled in: for checks that draw many settings with one
+ * program. The verges' own check (verges.verify.ts) compiles them in; here they would only slow
+ * every draw.
+ */
+export const COUNTRY_FULL = { ...COUNTRY_ALL, COUNTRY_HAS_VERGES: 0 };
 
 export const countryScene: SceneDef = {
   id: "country",
@@ -391,4 +399,5 @@ export const countryScene: SceneDef = {
   // drifts back up toward the clouds as the light goes grey.
   passage: { enter: 2.6, exit: 1.4 },
   featuresFor: countryFeatures,
+  featuresAll: COUNTRY_ALL,
 };

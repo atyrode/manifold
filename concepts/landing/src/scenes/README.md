@@ -410,23 +410,39 @@ gets every knob as the shader reads it (`K_<key>`, keyed by knob key) and return
 merged over `features`, so a part behind a knob that is off is not in the program at all. This
 matters because a software rasteriser (SwiftShader, the lab's fallback and its checks) runs every
 line of a program whatever branches a pixel takes, and a loop's body at least once: an early-out
-saves nothing there, only code that is not compiled in. The renderer builds one program per
-distinct feature set (`featureKey`), keeps up to four per scene (the least recently drawn freed),
-and builds a new one off the main thread where KHR_parallel_shader_compile allows; until it is
-built the program on screen goes on drawing the settings it drew last, then the new one takes
-over. A lab change, URL, reset or preset is one settings change, so turning several gated knobs on
-builds once. `country` is the adopter (`countryFeatures`): its optional parts, the river's water
-tier, the clouds' shadows tier and the moon's phase below full. Rules:
+saves nothing there, only code that is not compiled in. Its companion `SceneDef.featuresAll` turns
+every gate on and each tier up to the highest a knob selects. That program draws every setting
+byte for byte as the setting's own does, because the shader's runtime tests of the knobs decide
+(on a GPU they are uniform branches, nearly free). The adopters are `country` (`countryFeatures`
+and `COUNTRY_ALL`: its optional parts, the river's water tier, the clouds' shadows tier and the
+moon's phase below full) and `meadow` (its wildflowers).
+
+A scene enters with the program for its setting, so the plain page draws its lean program and
+builds no other. A knob change that needs another feature set builds none either: building a
+program can stall the browser's GPU process, and every frame of the page with it, for as long as
+the driver compiles (seconds for the countryside under SwiftShader, which compiles at the first
+draw). The change draws with a program the scene entered with for exactly that set, else with the
+scene's all-features program. That one is built once per page, in the background, and never
+waited for: the renderer asks KHR_parallel_shader_compile's completion status or, without that
+extension, a fence set after the link. Once built it draws one frame, so a driver that compiles at
+the first draw does it then. While the lab is open (`DitherRenderer.expectChanges`) it is built
+ahead once the scene has arrived; otherwise the first such change starts it, and the program on
+screen goes on drawing the settings it drew last until it is built. Rules:
 
 - Gate each part on a superset of where its knobs show it (`x > 0` for `K_x > 0.0`), and keep the
-  shader's own runtime test inside the gate.
+  shader's own runtime test inside the gate: the all-features program draws by it.
 - Define each gate 0 or 1 every time and test it with `#if` (a library feature tested with
   `#ifdef` is left out instead).
 - Leave in anything a "now" button can show while its knob is off (`country` keeps its lightning
   and shooting stars).
 - Check that the default picture is bit for bit what it was.
+- Give `featuresAll` every gate and tier `featuresFor` can select. `src/features.verify.ts` checks
+  that it covers each knob's turn and, through the renderer, that it draws every gated setting
+  byte for byte as the setting's own program (`featuresAll`), that no change waits for a build or
+  builds a program after the first (`featureToggles`), and how the programs take over
+  (`sceneFeatures`).
 - Checks that draw many settings with one program compile with every gate on (`country`'s
-  `COUNTRY_FULL`); `src/features.verify.ts` (`sceneFeatures`) covers the renderer's side.
+  `COUNTRY_FULL`, `COUNTRY_ALL` without the verges).
 
 **Level of detail.** One component can be a hero subject or a far decoration. A function with a
 `foot` parameter takes the size of one dither cell at that point, in its own units. For sky
@@ -1096,10 +1112,16 @@ age in real time while the clocks stand still (Dunes' streak clears after releas
 hold); a simulation that throws while starting or drawing, and a shader that does not build, keep
 the frame loop scheduled, report the failure and recover by retry or by another scene; uniforms are
 sent only when they change, including a look change made while another scene drew; and the Lab
-never applies a setup while it is being built. `src/features.verify.ts` (`sceneFeatures`) covers
-knob-keyed features through the renderer: a gated knob builds its program and switches to it once
-built, the old frame holding until then, several gated knobs at once build once, and past four sets
-the least recently drawn program is freed.
+never applies a setup while it is being built. `src/features.verify.ts` covers knob-keyed features
+through the renderer. `sceneFeatures`: the first gated knob builds the all-features program in the
+background and switches to it once built, the old frame holding until then; turning it back
+returns to the program the scene entered with; later changes, several gated knobs at once
+included, build and free nothing. `featureToggles`, for the countryside and the meadow: the plain
+page builds only its own program; no change waits on a build (no status, log, uniform location or
+use of a program before its completion or fence was seen); after the first, no change builds a
+program; and with changes expected the all-features program is built ahead at rest, draws one
+frame without changing it, and the first change switches to it at once. `featuresAll`: that
+program draws every gated setting, dithered and as source, byte for byte as the setting's own.
 
 The shared components have checks of their own:
 

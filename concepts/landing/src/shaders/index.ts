@@ -73,6 +73,19 @@ export function sceneFeatures(
   return { ...scene.features, ...scene.featuresFor(values ?? shaderValues(scene)) };
 }
 
+/**
+ * The compile-time features of `scene`'s all-features program: `features` with `featuresAll` over
+ * them, a program that draws every setting of its knobs as that setting's own (`sceneFeatures`)
+ * program does. Undefined for a scene without knob-keyed features; throws for one with
+ * `featuresFor` but no `featuresAll`.
+ */
+export function sceneFeaturesAll(scene: SceneDef): Readonly<Record<string, number>> | undefined {
+  if (scene.featuresFor === undefined) return undefined;
+  if (scene.featuresAll === undefined)
+    throw new SceneShaderError(`scene ${scene.id}: featuresFor needs featuresAll`);
+  return { ...scene.features, ...scene.featuresAll };
+}
+
 /** A feature set's identity, its defines in name order: the renderer builds one program per key. */
 export function featureKey(features: Readonly<Record<string, number>>): string {
   return Object.keys(features)
