@@ -703,7 +703,8 @@ Helpers in `src/sims/` (each file's header has the full API and a usage example)
 - `GpuReadback` (`readback.ts`): a small float target copied back to the CPU behind a fence and
   picked up a frame or two later, without stalling (the tide pool's flow for its plants and fish).
 - `mulberry32` and `Random` (`random.ts`): the seeded generator, bit-exact with the scenes' copies
-  so a seed keeps its arrangement; `Random` adds `range`, `int` and `pick` and re-seeds in place.
+  so a seed keeps its arrangement; `Random` adds `range`, `int`, `pick` and `wait` (the gap to a
+  Poisson process's next event: street's arrivals) and re-seeds in place.
   Import it rather than carrying a copy (ferro's xorshift is deliberate: its pours depend on it).
 - `clamp`, `lerp`, `smoothstep`, `fract`, `hash31` (`math.ts`): import them rather than a local copy;
   `glslHash12` and `glslHash22`: common.ts's hashes in float32 steps, for a sim that must place

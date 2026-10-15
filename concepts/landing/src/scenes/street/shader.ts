@@ -56,6 +56,7 @@
 // shared stars and the moon in its phase, SKY_MOON_PHASE, as the windows and wet street mirror the
 // sky), K_rain, K_snow, K_fog, K_wind; the crowd, traffic and lights are the simulation's.
 import { glslFloat } from "../../shaders/glsl.ts";
+import { Random } from "../../sims/random.ts";
 import {
   BEAM_REACH,
   BIKE_BEAM_REACH,
@@ -89,7 +90,6 @@ import {
   LANE_WB_OUT,
   MARK_APEX_Z,
   PITCH,
-  Random,
   SHAPES,
   SIDE_FACADE,
   SIDE_KERB,
@@ -199,8 +199,7 @@ function buildRow(random: Random, corner: Building, length: number, side: boolea
   return row;
 }
 
-const cityRandom = new Random();
-cityRandom.seed(0x0c17e5);
+const cityRandom = new Random(0x0c17e5);
 /** The left corner: a ramen shop under red lanterns, its sign turning the corner. */
 const RAMEN: Building = { u0: 0, u1: 8.5, height: 26, tone: 3, shop: IZAKAYA, sign: 2, signTop: 8.8, seed: 0.37 };
 /** The right corner: the konbini, glass all along both fronts. */
