@@ -303,7 +303,7 @@ export function countryFeatures(values: Readonly<Record<string, number>>): Recor
 }
 
 /**
- * Every optional part compiled in (SceneDef.featuresAll): the program the lab draws a setting with
+ * Every optional part compiled in (SceneDef.featuresAll): the program a GPU draws a setting with
  * once a knob change needs another feature set. Each part's runtime test of its knobs decides, so
  * it draws every setting as that setting's own program does.
  */

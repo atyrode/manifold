@@ -400,8 +400,8 @@ export class Lab {
     this.#opener.setAttribute("aria-expanded", String(open));
     this.#prefs.open = open;
     this.#savePrefs();
-    // Knob changes are likely while the lab is open: scenes with knob-keyed features get their
-    // all-features program built ahead (DitherRenderer.expectChanges).
+    // Knob changes are likely while the lab is open: on a GPU, scenes with knob-keyed features get
+    // their all-features program built ahead (DitherRenderer.expectChanges).
     this.#host.renderer()?.expectChanges(open);
   }
 
