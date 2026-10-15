@@ -5,6 +5,7 @@
 // caustics come from the water's own surface. The rock is laid out per seed in layout.ts; the
 // shader (shader.ts) lights it through the water.
 import { choice, feature, range, seed, type ParamDef } from "../../params.ts";
+import { WATER_TIERS } from "../../shaders/lib/water.ts";
 import { atmosphereGroups, skyKnobs, weatherKnobs } from "../atmosphere.ts";
 import type { SceneDef } from "../types.ts";
 import { TIDEPOOL_PASSAGE, tidepoolGlsl } from "./shader.ts";
@@ -67,4 +68,7 @@ export const tidepoolScene: SceneDef = {
   // snapping shut ahead of it.
   passage: TIDEPOOL_PASSAGE,
   sim: tidepoolSim(params),
+  // The water: the sim's surface (sims/shallow.ts) with the breeze's ripples and their caustics on
+  // the bed (causticRipples, waterCaustic). Seen from straight above, it mirrors the sky its own way.
+  features: { WATER_TIER: WATER_TIERS.caustics },
 };

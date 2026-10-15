@@ -3,6 +3,7 @@
 // eddies along our bank, potential flow round two stones) in sim.ts; shader.ts traces each as a
 // small glowing box, with its reflection in the rippled river, the far bank, the hills and the sky.
 import { choice, counts, feature, range, seed, toggle, type ParamDef } from "../../params.ts";
+import { WATER_TIERS } from "../../shaders/lib/water.ts";
 import { atmosphereGroups, skyKnobs, skyTheme, weatherKnobs } from "../atmosphere.ts";
 import type { SceneDef } from "../types.ts";
 import { lanternsGlsl } from "./shader.ts";
@@ -46,4 +47,7 @@ export const lanternsScene: SceneDef = {
   // about 12 degrees up until it sinks back there. With the day cycle running the light keeps
   // changing, so the page stays on the night theme. The shader follows the page (inkOf).
   theme: skyTheme(params),
+  // The river: wind ripples carried by the current, tilting a mirror (rippleSpectrum, waterDrift,
+  // waterMirror).
+  features: { WATER_TIER: WATER_TIERS.flow },
 };

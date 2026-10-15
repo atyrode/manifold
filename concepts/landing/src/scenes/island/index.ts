@@ -6,6 +6,7 @@
 // at night, rain and snow falling through its depth). shader.ts raymarches the island; there is no
 // simulation: everything moves on smooth clocks.
 import { feature, range, seed, toggle, type ParamDef } from "../../params.ts";
+import { WATER_TIERS } from "../../shaders/lib/water.ts";
 import { atmosphereGroups, skyKnobs, skyTheme, weatherKnobs } from "../atmosphere.ts";
 import type { SceneDef } from "../types.ts";
 import { ISLAND_PASSAGE, islandGlsl } from "./shader.ts";
@@ -43,4 +44,6 @@ export const islandScene: SceneDef = {
   // Entrance: the camera swoops down from higher and farther and settles into the framing while the gull
   // glides in and a balloon drifts into frame. Exit: the camera lifts and backs away.
   passage: ISLAND_PASSAGE,
+  // The sea: wind ripples tilting a mirror of the sky (rippleSpectrum, waterMirror).
+  features: { WATER_TIER: WATER_TIERS.mirror },
 };

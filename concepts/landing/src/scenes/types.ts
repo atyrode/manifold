@@ -4,7 +4,7 @@
 // Shader: each scene compiles to its own WebGL2 program:
 //   common preamble (uniforms, noise, dithering helpers, Shade)   — src/shaders/common.ts
 //   + one `#define <NAME> <n>` per compile-time library feature, from `features`
-//   + shared libraries (sky, weather, surface, lightning, aurora, meteors) — src/shaders/lib/
+//   + shared libraries (sky, weather, surface, water, lightning, aurora, meteors) — src/shaders/lib/
 //   + one `#define K_<key> uParams[i]` per knob, generated from `params`
 //   + the scene's `glsl`, which defines `Shade <entry>(vec2 uv, vec2 cell, float t)`
 //   + the dithering `main`, which calls the entry.

@@ -34,6 +34,7 @@ import { verifyPondKoi } from "./src/scenes/pond/koi.verify.ts";
 import { verifyPlanet } from "./src/scenes/campfire/planet.verify.ts";
 import { streetSnowCheck } from "./src/scenes/street/snow.verify.ts";
 import { verifyCanopy } from "./src/scenes/forest/canopy.verify.ts";
+import { verifyWaterTiers } from "./src/scenes/island/water.verify.ts";
 
 function check(ok: boolean, message: string): void {
   if (!ok) throw new Error(message);
@@ -288,6 +289,7 @@ function countrySurface(gl: WebGL2RenderingContext): Record<string, number> {
 // GpuCompute passes: every blend mode applies its own blending and leaves blending off, with the
 // default equation and factors, whatever the caller had set; a preserving resize does not inherit it.
 function gpuBlend(gl: WebGL2RenderingContext): Record<string, unknown> {
+  result.waterTiers = verifyWaterTiers(gl);
   const gpu = GpuCompute.create(gl);
   if (!gpu) throw new Error("Float GPU targets unavailable");
   const target = gpu.target({ width: 1, height: 1, format: "rgba16f" });

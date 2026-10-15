@@ -9,12 +9,11 @@
 // Lengths are in frame heights (q = uv · (aspect, 1)); heights in cells of height, TIDEPOOL_RELIEF
 // cells of the frame each, so a depth d is d · RELIEF / ROWS frame heights of water. Light comes
 // from the shared sky (sun and moon by the time of day), refracts through the surface onto the bed
-// with the caustic net of the swell (the sim's focus) times the wind ripples' (causticRipples), is
-// absorbed red first on the way down and up, and glints off the facets turned toward the sun. The
-// bed is drawn at the point the water shows it (shifted by the refraction), life and all: the
-// fronds and anemones stand in the water's flow (uSim3) and the anemones close at a surge or a
-// touch (agitation) and when the water leaves them.
-import { causticsGlsl } from "../../shaders/caustics.ts";
+// with the caustic net of the swell (the sim's focus) times the wind ripples' (the water library's
+// caustics tier: causticRipples, waterCaustic), is absorbed red first on the way down and up, and
+// glints off the facets turned toward the sun. The bed is drawn at the point the water shows it
+// (shifted by the refraction), life and all: the fronds and anemones stand in the water's flow
+// (uSim3) and the anemones close at a surge or a touch (agitation) and when the water leaves them.
 import { glslFloat } from "../../shaders/glsl.ts";
 import { TIDEPOOL_RELIEF } from "./layout.ts";
 import { TIDEPOOL_ROWS } from "./sim.ts";
@@ -22,7 +21,7 @@ import { TIDEPOOL_ROWS } from "./sim.ts";
 /** Seconds of the scene's entrance and exit (SceneDef.passage). */
 export const TIDEPOOL_PASSAGE = { enter: 3, exit: 1.6 } as const;
 
-export const tidepoolGlsl = `${causticsGlsl}
+export const tidepoolGlsl = `
 // ---- tide pool ----
 
 const float TP_RELIEF = ${glslFloat(TIDEPOOL_RELIEF)};
@@ -474,8 +473,7 @@ Shade sceneTidepool(vec2 uv, vec2 cell, float t) {
     // Caustics: the swell's focus times the ripples', softened; the light dims as it goes down.
     float light = 1.0;
     if (K_caustics > 0.0) {
-      float j = water.w * causticJacobian(hessian, 0.25 * d);
-      light = mix(1.0, 1.0 / max(abs(j), 0.22), K_caustics * smoothstep(0.004, 0.02, d));
+      light = mix(1.0, waterCaustic(hessian, d, water.w, 0.22), K_caustics * smoothstep(0.004, 0.02, d));
     }
     vec3 through = exp(-TP_ABSORB * d * 2.0);
     vec3 down = exp(-TP_ABSORB * d);

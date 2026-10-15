@@ -241,7 +241,31 @@ Ground groundHit(vec3 dir, float eye, float focal);       // a viewRay dir below
 Ground planeAt(vec2 uv, float aspect, float horizon, float eye, float focal); // the same from screen uv (uv.y < horizon)
 float fresnelSchlick(float cosI, float f0, float minCos); // water f0 0.02; minCos floors cosI on a rough surface (0 smooth)
 vec3 rippleTrain(vec2 p, float tm, vec2 foot, float wavelength, vec2 along, float slope, float pace, float phase, vec2 lod);
-                                                          // one wind-ripple train, LEAN-filtered: sum them; xy slope, z slope variance too fine to draw
+                                                          // one wind-ripple train, LEAN-filtered: xy slope, z slope variance too fine to draw
+// A spectrum: up to RIPPLE_TRAINS (5) trains summed, each train's slope times gain (the wind, a knob): xy slope, z variance.
+// A fan by a law: train i wavelength.x * wavelength.y^i long, slope slope.x - slope.y * i, pace pace.x * (1 - pace.y * i),
+// phase phase * i, heading turn.x + turn.y * i + sway.x * sin(sway.y * i + sway.z) rad from +z (ahead) toward +x (right).
+struct RippleFan { int count; vec2 wavelength; vec2 slope; vec2 pace; vec2 turn; vec3 sway; float phase; vec2 lod; };
+// A table of hand-placed trains (island): each (wavelength m, steepest slope, pace, phase) and its unit heading.
+struct RippleTable { int count; vec4 train[RIPPLE_TRAINS]; vec2 along[RIPPLE_TRAINS]; vec2 lod; };
+vec3 rippleSpectrum(vec2 p, float tm, vec2 foot, float gain, RippleFan f);
+vec3 rippleSpectrum(vec2 p, float tm, vec2 foot, float gain, RippleTable t);
+
+// Water in tiers (water.ts), each only in a scene whose SceneDef.features WATER_TIER reaches it (see "Water"):
+// WATER_RIPPLES (windWater.ts): the breeze on open water under the side-on camera, mirrored in screen space.
+vec4 windRipples(Ground g, float tm, float wind, float amount); // cat's-paws' ripples: xy slope, z unresolved variance, w paw cover
+vec2 windMirror(vec4 ripples, float below, float focal);  // how far a screen-space mirror lookup moves (screen heights)
+float windMirrorSpread(vec4 ripples, float focal);        // the vertical smear (one sd) the unresolved ripples add to it
+// WATER_MIRROR
+struct WaterMirror { vec3 normal; vec3 ray; float fresnel; };
+WaterMirror waterMirror(vec3 dir, vec2 slope, float minCos); // a view ray on rippled water: normal, reflected ray, Fresnel (f0 0.02)
+// WATER_FLOW
+vec2 waterDrift(vec2 p, vec2 current, float tm);          // where to evaluate a pattern a steady current (velocity) has carried to p
+vec4 waterFlow(vec2 p, vec2 current, float tm, float period, out float weight); // a current that varies: mix(at xy, at zw, weight)
+// WATER_CAUSTICS (caustics.ts)
+vec2 causticRipples(vec2 p, float tm, vec2 wind, float scale, float steep, float pace, float foot, out vec3 hessian); // five trains with curvature
+float causticJacobian(vec3 hessian, float d);             // det(I + d H): d = 0.25 x depth for water
+float waterCaustic(vec3 hessian, float depth, float focus, float soft); // light on the bed vs still water, times a sim's focus
 
 float lightningAge(float t, float rate, int slot, out float seed); // seconds since the latest strike (random at `rate`, or the trigger)
 float lightningBolt(vec2 p, vec2 top, vec2 ground, float seed, float age); // forked bolt glow at p (aspect-corrected units)
@@ -322,6 +346,7 @@ Random events stop at motion 0 (still pictures, reduced motion), and "now" still
 | Aurora | `weatherKnobs({ aurora })`: `K_aurora` | `AURORA_CURTAINS` (3) | `auroraM(dir, tm, strength, foot)` radiance, `auroraGlow(tm, strength)` light, `auroraSeen(sky, cloud)` visibility |
 | Meteors | `skyKnobs({ meteors: { trigger } })`: `K_meteors` | | `meteorAge(tm, rate, slot, seed)` schedule, `meteorStreak(q, field, age, seed, foot)` coverage in the scene's frame (`skyAngles(dir)` on a dome) |
 | Canopy weather | `weatherKnobs({ rain, wind })`: `K_rain`, `K_wind`; the scene's seed knob | | `canopyWeather(sky, K_rain)` light (the sky under the rain's cloud, the deck's brightness, the key's side and slant); `canopyRaySources`, `canopyGap(p, wind, seed, raySrc)` coverage (where the rain pours in); `canopyGapSky(w, washed, dir, stars, p, wind, seed, deck)` radiance |
+| Water | the scene's own (`K_wind` and its water knobs) | `WATER_TIER` (tiers, see "Water") | slope and unresolved variance (`rippleSpectrum`, `windRipples`), mirror ray and Fresnel (`waterMirror`), drifted points (`waterDrift`, `waterFlow`), light on the bed (`waterCaustic`) |
 
 Bamboo and Forest compose the canopy weather under their leaves, each with its own tint on the
 washed sky, deck gain (1.3, 1.25), shelter (half, 45% of the rain under the leaves) and ray bases.
@@ -483,6 +508,40 @@ PlanetLook look = planetGiant(vec2(-0.4, 0.75), 0.12, normalize(vec3(-0.6, 0.4, 
 look.visible = sky.night;
 look.moons = K_planetMoons;                                     // from planetKnobs({ prefix: "planet", moons: true })
 col = planetOver(col, p, 1.0 / uRes.y, look, uMotionTime, uTime);
+#### Water
+Water is one component in tiers, cheapest first, each including the ones below it. A scene selects
+the highest it draws, `features: { WATER_TIER: WATER_TIERS.mirror }` (`WATER_TIERS` from
+`shaders/lib/water.ts`), and only that much is compiled into its program: calling a function of a
+higher tier fails to compile. The tiers compose the water parts that already exist rather than
+repeating them:
+| Tier | `WATER_TIER` | What the scene gets |
+| `flat` | `WATER_FLAT` 0 | nothing shared: its own tint, its sky mirrored flat if it likes |
+| `ripples` | `WATER_RIPPLES` 1 | wind ripples: `rippleSpectrum` over its own trains (surface.ts, in every program), or the breeze's cat's-paws, `windRipples`, with the screen-space mirror shift `windMirror` (`shaders/windWater.ts`) |
+| `mirror` | `WATER_MIRROR` 2 | reflections: `waterMirror`, the rippled normal, reflected ray and Fresnel; the scene looks its own sky and scenery up along the ray |
+| `flow` | `WATER_FLOW` 3 | currents: `waterDrift` carries a pattern on a steady current, `waterFlow` on one that varies from place to place (two copies, evaluated twice) |
+| `caustics` | `WATER_CAUSTICS` 4 | the bed lit through the surface: `causticRipples`' net (`shaders/caustics.ts`) and `waterCaustic`, which multiplies it by a simulated surface's own focus (`ShallowWater.surface`, `sims/shallow.ts`) |
+The shared parts own the physics: ripple trains with deep-water dispersion and their LEAN split
+between drawn slope and unresolved variance, the cat's-paws, the mirror's normal and Fresnel, the
+advection, the caustic Jacobians. The scene owns its numbers (its spectrum, its current, its
+knobs), the rain rings it adds to the slope, what it mirrors and how it keeps the reflected ray
+above its horizon, its body colour, foam, glitter and lights. GLSL code that draws its water more
+than one way tests the tier: `#if WATER_TIER >= WATER_MIRROR`.
+**Projected size.** Every tier takes `foot` and fades its detail to the area mean once a cell
+outgrows it: a ripple train is drawn from `lod.x` to `lod.y` cells per wavelength (7..14 or 8..16)
+and below that is only the variance that roughens the mirror; the caustic net fades from 12 to 6
+cells. A train faded out is not worked out at all, so far or small water costs little more than
+the flat tier whatever tier the scene selects, and resolved water is bit for bit the full-detail
+picture. Pick the tier for what the water shows at its largest: a river a few cells wide far off
+takes `ripples`, open water seen close takes `mirror` or `flow`, a pool seen from above `caustics`.
+| Scene | Tier | Uses |
+| `aurora` | ripples | `windRipples`, `windMirror` on the fjord (`K_ripples`, `K_wind`) |
+| `island` | mirror | `rippleSpectrum` (a `RippleTable`: four hand-placed trains), `waterMirror` |
+| `shore` | mirror | `rippleSpectrum` (a `RippleFan`: four trains by the golden angle, scaled by the wind), `waterMirror` |
+| `lanterns` | flow | `rippleSpectrum` (a `RippleFan`: five trains rocking about the current), `waterDrift` downstream, `waterMirror` |
+| `tidepool` | caustics | `causticRipples`, `waterCaustic` with `ShallowWater`'s focus; seen from above, it mirrors the sky its own way |
+The rest of the lab's water is still drawn its own way: `country`'s river (its ripple a value
+noise: the `ripples` tier is its way in), `lake`, `swell`, `falls`, `pond`, `fireflies`, `bamboo`,
+`forest`, `kelp`, `delta`, `ripple`.
 ### Weather in the world
 
 Rain and snow belong to the scene: they come from its sky, fall through its depth, stop at its

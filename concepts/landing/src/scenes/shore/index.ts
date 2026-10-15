@@ -3,6 +3,7 @@
 // has just risen over the sea, right of ahead, and lays its path across the breakers. By day it is
 // an ordinary turquoise seaside. The pointer's wake is tracked on the CPU (sim.ts) and read as uSim0.
 import { feature, range, toggle, type ParamDef } from "../../params.ts";
+import { WATER_TIERS } from "../../shaders/lib/water.ts";
 import { atmosphereGroups, skyKnobs, skyTheme, weatherKnobs } from "../atmosphere.ts";
 import type { SceneDef } from "../types.ts";
 import { shoreGlsl } from "./shader.ts";
@@ -47,4 +48,7 @@ export const shoreScene: SceneDef = {
   // cycle running the light keeps changing, so the page stays on the night theme. The shader's ink
   // follows the page (inkOf).
   theme: skyTheme(params),
+  // The sea: wind ripples tilting a mirror of the sky and the moon's glitter (rippleSpectrum,
+  // waterMirror); the breakers and the swash are the scene's own.
+  features: { WATER_TIER: WATER_TIERS.mirror },
 };

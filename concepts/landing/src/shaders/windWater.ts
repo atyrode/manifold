@@ -1,6 +1,7 @@
 // Wind on open water, for scenes that draw a lake, fjord, river or sea as a mirror under the side-on
-// camera (surface.ts's Ground). Include `windWaterGlsl` once in the scene's glsl; it uses `Ground`,
-// `rippleTrain` (shaders/lib/surface.ts) and `vnoise` (common), so it goes after them.
+// camera (surface.ts's Ground): the water library's ripples tier (shaders/lib/water.ts), compiled into
+// a scene's program when it selects WATER_TIER >= WATER_RIPPLES. It uses `Ground`, `rippleTrain`
+// (shaders/lib/surface.ts) and `vnoise` (common).
 //
 //   vec4 windRipples(Ground g, float tm, float wind, float amount)
 //     Where the breeze touches the water (cat's-paws: patches tens of metres across that drift
