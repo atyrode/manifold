@@ -297,19 +297,19 @@ export const presets: readonly Preset[] = [
   },
   {
     name: "Mobile · solar system at night",
-    commit: "e8df807a",
+    commit: "d99647f0",
     query: "scene=mobile",
     savedAt: "2026-10-15",
   },
   {
     name: "Mobile · inner planets, glow stars",
-    commit: "e8df807a",
+    commit: "d99647f0",
     query: "scene=mobile&planets=0&motor-amount=0.7&mark=1",
     savedAt: "2026-10-15",
   },
   {
     name: "Mobile · dwarf planets, daylight",
-    commit: "e8df807a",
+    commit: "d99647f0",
     query: "scene=mobile&planets=2&room=1&sun=0.7&softness=0.6",
     savedAt: "2026-10-15",
   },
