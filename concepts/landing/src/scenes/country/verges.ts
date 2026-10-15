@@ -193,7 +193,7 @@ export function countryVergeWindow(
   const y0 = 7.3 * ridge + seedY - pad;
   const y1 = down(high - bottom + reach, depth) * FIELDS_Y + 7.3 * ridge + seedY + pad;
   let x = Math.floor(x0) - 1;
-  let y = Math.floor(y0) - 1;
+  const y = Math.floor(y0) - 1;
   let cols = Math.floor(x1) + 2 - x;
   const rows = Math.min(Math.floor(y1) + 2 - y, COUNTRY_VERGE.rows);
   if (cols > COUNTRY_VERGE.cols) {
