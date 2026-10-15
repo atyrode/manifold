@@ -409,7 +409,8 @@ before the functions that call it, so no other program pays for it:
 | `planetGlsl`    | `src/shaders/lib/planet.ts`    | orbit, campfire, mobile                                               | "The giant planet"                 |
 | `figuresGlsl`   | `src/shaders/lib/figures.ts`   | country                                                               | "Figures, livestock and buildings" |
 | `livestockGlsl` | `src/shaders/lib/livestock.ts` | country                                                               | "Figures, livestock and buildings" |
-| `buildingsGlsl` | `src/shaders/buildings.ts`     | country                                                               | "Figures, livestock and buildings" |
+| `buildingsGlsl` | `src/shaders/buildings.ts`     | country, valley                                                       | "Figures, livestock and buildings" |
+| `terrainGlsl`   | `src/shaders/lib/terrain.ts`   | valley                                                                | `TerrainBuilder` under "Simulations" |
 
 Such a component reads no knob defines (they are the scene's own): the scene passes every value as
 an argument, and its knobs come from the component's builder where it has one (`birdKnobs`,
@@ -976,7 +977,24 @@ Helpers in `src/sims/` (each file's header has the full API and a usage example)
   pipes, local inertial flow) that runs downhill, sloshes, shoals and breaks, driven by a GLSL
   forcing snippet (a sea, a wave maker), carrying the scene's tracers (foam, wetness) through a carry
   snippet, with splats and a `surface` texture of depth, slope and caustic focus for the shader;
-  `stillWater` opens a layout settled, every pool full to its spill point (tidepool).
+  `stillWater` opens a layout settled, every pool full to its spill point (tidepool); its `LevelHeap`
+  (cells by level) serves other priority floods.
+- `TerrainBuilder`, `generateTerrain`, `packTerrain` (`terrain.ts`) and `terrainGlsl`
+  (`shaders/lib/terrain.ts`): a whole landscape on one square map (metres, deterministic per seed),
+  built in units a frame's budget spreads (`runBudgeted`): a valley laid across a vantage's view in
+  fractal and ridged value noise, carved by implicit stream-power erosion over a priority-flood
+  drainage with multiple-flow areas and slumped to the angle of repose (`HeightField.relax`); the
+  main river traced down the drainage tree, given meanders and a width from its catchment, its level
+  never rising downstream and level across its bed, banks and a floodplain; streams; settlements
+  scored for flatness, water, distance and a line of sight (`marchHeight`); roads as least-cost paths
+  (A\*, 16 directions) over a spanning tree of them with a shortcut and a way out, one bridge at the
+  narrowest crossing, each road's profile cut and fill under `TERRAIN_ROAD_MAX_SLOPE` and its bed cut
+  into the ground; buildings on terraces along the roads; woodland suitability; field parcels
+  stretched along the contours or roads; lone trees on hedges and banks. `packTerrain` lays it into
+  four textures (ground and water level with slopes; road and stream signed distances, woodland,
+  yards; the nearest two parcels; records of sites, buildings, settlements, the bridge, the eye),
+  which `terrainGlsl` reads: `terrainGround`, `terrainCover`, `terrainParcel` (exact field borders
+  between texels), `terrainBuilding`, `terrainPlace`, `terrainBridge`, `terrainEye` (valley).
 - `grayScottRegimes`, `grayScottAlong` and `grayScottGlsl` (`grayscott.ts`): Gray–Scott
   reaction–diffusion's curated Pearson classes (feed, kill, what grows), an eased loop through them,
   and the reaction step for a `GpuCompute` pass (petri). Seed a dish at the first regime's levels

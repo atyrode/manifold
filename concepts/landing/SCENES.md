@@ -161,6 +161,42 @@ top. Prototype (issue #1082, N1), built from shared parts rather than scene code
 - Open: the rock reads too dark and busy at the dither, the open sea reads as mottled rather than
   as swell, and the zonation needs art direction before this leaves the prototype stage.
 
+## Valley
+
+`valley`: a prototype of a shared terrain toolbox (issue #1082), the countryside's vantage over one
+coherent map instead of six 1D ridge silhouettes, so the river can lie level and carve the land and
+the roads can form a network. Countryside is unchanged until the prototype proves itself.
+
+- **Generation** (`src/sims/terrain.ts`, `TerrainBuilder`): a 3.2 km map at 512² texels (erosion at
+  256²), deterministic per seed and built in units a frame's budget spreads (a share of the time
+  between frames, so a software renderer builds in as few frames as a GPU). Relief: a valley axis
+  laid across the view (out of the far hills on one side, close past the vantage on the other), long
+  rolling slopes below the vantage, hills beyond, fractal and ridged value noise. Erosion: implicit
+  stream power over a priority-flood drainage (steepest-descent receivers, multiple-flow areas, so
+  no grid furrows), thermal slumping. River: the drainage tree's main path, meandering on gentle
+  ground, widening with its catchment, its level the ground's running minimum smoothed (never
+  rising), carved with a bed, banks and a floodplain. Streams, settlements (village, hamlets, farms,
+  a castle on a prominent hilltop) scored for flatness, water, distance and a clear line of sight,
+  roads (A\* over slope, curvature, floodplain and fords, water impassable) over a spanning tree with
+  a shortcut and a way out over the far hills, one bridge at the narrowest crossing, cut and fill no
+  steeper than one in eight, cottages along the roads on terraces, woodland suitability, contour- and
+  road-aligned field parcels, lone trees on hedges and banks.
+- **Rendering** (`src/shaders/lib/terrain.ts`, `valley/shader.ts`): a height-field march (ground,
+  water, the woods' canopy and lone trees) with a soft sun-shadow march, field parcels exact between
+  texels with hedges held to half a cell, roads likewise, the river mirroring the sky and its deck,
+  the shared buildings (`src/shaders/buildings.ts`) projected from their footings with lit windows and
+  smoke, a stone bridge, far ridges in the sky, the shared sky, clouds (and their shadows), rain,
+  snow, wetness, lying snow and valley mist. Entrance: the camera comes down out of the sky.
+- Knobs: landscape (seed), relief, erosion, woodland (shader-only), river size, settlements, roads;
+  time of day, stars, moon, clouds, cloud shadows, rain, snow, fog, wind. Rain, snow, fog, roads,
+  cloud shadows and a waning moon are compiled in only while on (`valleyFeatures`).
+- Checks: `src/sims/terrain.test.ts` (river level across and downstream, roads join every
+  settlement, road grade bounded and cut into the ground, determinism and reuse, build budget);
+  `valleyTerrain` (the real sim's textures through the scene's program: compiles, draws land, sky
+  and river, deterministic per landscape).
+- Open: lone trees and wood edges are texel-sized prisms close up (pixel 1); the near slopes are
+  plain pasture; buildings are side-on sprites; no herds, walkers, verges or wildlife yet.
+
 ## Above the clouds
 
 The view from a plane window: a sea of clouds below, open sky above.
