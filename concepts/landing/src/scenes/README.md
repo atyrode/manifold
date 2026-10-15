@@ -102,16 +102,19 @@ edges and `fired`, but no time, so their response is one still step. Paused, eve
 
 ### Entrances and exits
 
-Switching scenes (or first loading the page) is a passage, not a cut. The outgoing scene plays its
-exit, drawn with its own settings, while the incoming scene's program builds in the background
-(the outgoing scene goes on moving rather than freezing for a compile). Part-way through that exit
-(the lab's overlap, half by default) the incoming scene, built afresh with a new sim, starts its
-entrance and takes the screen over cell by cell in ordered-dither order (the middle first by
-default) over the blend length, 1.5 s by default. Both scenes draw while they overlap: the outgoing
-one goes on playing its exit off screen at its own cell size, into the frame the incoming one
-dissolves out of, so both sides of the dissolve move. A switch made during the blend leaves for the
-newest scene once the blend is done. The entrance's clock starts on its second frame, because the
-first one may be spent compiling the program on the GPU. Every scene gets the blend for free.
+Switching scenes (or first loading the page) is a passage, not a cut. The outgoing scene first
+idles on while the incoming scene's program builds in the background and is drawn once off to the
+side, because many drivers finish compiling a program at its first draw and hold the GPU up while
+they do. Any such pause therefore comes right at the switch, before anything moves, never in the
+middle of the passage. Then the outgoing scene plays its exit, drawn with its own settings. Part-way
+through that exit (the lab's overlap, half by default) the incoming scene, built afresh with a new
+sim, starts its entrance and takes the screen over cell by cell in ordered-dither order (the middle
+first by default) over the blend length, 1.5 s by default. Both scenes draw while they overlap: the
+outgoing one goes on playing its exit off screen at its own cell size, into the frame the incoming
+one dissolves out of, so both sides of the dissolve move. An exit that would end before the blend
+does is drawn out to end with it, so the outgoing scene never stands still under the incoming one.
+A switch made during the blend leaves for the newest scene once the blend is done. The entrance's
+clock starts on its second frame. Every scene gets the blend for free.
 The outgoing frame is sampled in normalized stage coordinates with nearest filtering, so a different
 viewport or pixel size stretches the whole image rather than fetching outside it.
 
@@ -121,7 +124,8 @@ Every scene makes the passage its own, in the world rather than by fading:
   constant the shader also reads (through `glslFloat`) when it needs seconds.
 - Read `passageIn()` and `passageOut()` in GLSL, or `frame.passage.enter` and `.exit` in a sim.
   - `passageIn()` runs linearly 0→1 over `enter` and then stays 1.
-  - `passageOut()` is 0 until the scene leaves, then 0→1 over `exit`.
+  - `passageOut()` is 0 until the scene leaves, then 0→1 over its exit (stretched to the blend if
+    that is longer).
   - Ease them yourself.
 - Things move into place, enter or leave the frame, a camera settles, a process starts up; light
   changes are at most an accent. Some examples:

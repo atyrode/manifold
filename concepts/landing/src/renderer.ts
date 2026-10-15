@@ -186,15 +186,20 @@ interface ActiveScene {
 }
 
 /**
- * A scene on its way out. Until the incoming scene enters it stays on screen, playing its exit with
- * the settings it was drawn with when it began to leave; once the incoming scene has entered
- * (`woven`) it goes on drawing off screen, into the frame the incoming one dissolves out of, until
- * that has taken the screen over. `woven.into`: the settings the incoming scene entered with.
+ * A scene on its way out. It first idles on while the incoming scene is made ready (`start` NaN:
+ * its program built and drawn once, see `#prime`), then stays on screen playing its exit with the
+ * settings it was drawn with when it began to leave; once the incoming scene has entered (`woven`)
+ * it goes on drawing off screen, into the frame the incoming one dissolves out of, until that has
+ * taken the screen over. `woven.into`: the settings the incoming scene entered with.
  */
 interface Leaving {
   settings: RenderSettings;
-  /** Passage-clock time its exit began: NaN until its first frame stamps it. */
+  /** Passage-clock time its exit began: NaN until the incoming scene is ready. */
   start: number;
+  /** Seconds its exit takes: its own length, drawn out if need be to last until the blend is done. */
+  length: number;
+  /** The incoming program once drawn (see `#prime`). */
+  primed: SceneProgram | undefined;
   woven: { scene: ActiveScene; into: RenderSettings } | undefined;
 }
 
@@ -508,7 +513,7 @@ export class DitherRenderer {
   /** Play the current scene's exit, then its entrance with a fresh simulation, even with passages off. */
   replayPassage(): void {
     if (this.#scene === undefined || this.#leaving !== undefined || this.#frozen) return;
-    this.#leaving = { settings: this.#settings, start: Number.NaN, woven: undefined };
+    this.#leaving = this.#leave(this.#settings);
   }
 
   /**
@@ -1034,10 +1039,11 @@ export class DitherRenderer {
 
   /**
    * Where the passage stands this frame. A scene starts leaving once the setup has moved on to
-   * another scene (passages on; one moving on during a blend leaves when the blend is done). The
-   * next scene enters once `overlap` of that exit has played and its program is ready: it builds in
-   * the background meanwhile, the leaving scene going on moving rather than holding still for it.
-   * A leaving scene that cannot draw gives way at once.
+   * another scene (passages on; one moving on during a blend leaves when the blend is done). It
+   * idles on until the next scene's program is built in the background and drawn once (`#prime`),
+   * so whatever the driver still holds the GPU up for comes before anything moves; then it plays
+   * its exit, and the next scene enters once `overlap` of that has played. A leaving scene that
+   * cannot draw gives way at once.
    */
   #pass(seconds: number): Leaving | undefined {
     const scene = this.#scene;
@@ -1049,28 +1055,81 @@ export class DitherRenderer {
       this.#settings.scene !== scene.id &&
       this.#passing(this.#settings)
     )
-      this.#leaving = { settings: drawn, start: Number.NaN, woven: undefined };
+      this.#leaving = this.#leave(drawn);
     const leaving = this.#leaving;
     if (leaving === undefined || leaving.woven !== undefined || scene === undefined) return leaving;
-    if (Number.isNaN(leaving.start)) leaving.start = seconds;
     const into = this.#settings;
+    const exit = sceneDefs[scene.id].passage?.exit ?? 0;
     if (scene.program !== undefined && scene.failure === undefined) {
-      const wanted = this.#want(into);
-      const ready =
-        this.#keptFor(into.scene, wanted) !== undefined ||
-        this.#buildAhead(into.scene, wanted) !== undefined;
-      const exit = sceneDefs[scene.id].passage?.exit ?? 0;
-      if (!ready || seconds - leaving.start < (1 - into.overlap) * exit) return leaving;
+      if (Number.isNaN(leaving.start)) {
+        const wanted = this.#want(into);
+        const next = this.#keptFor(into.scene, wanted);
+        if (next === undefined) {
+          this.#buildAhead(into.scene, wanted);
+          return leaving;
+        }
+        if ("program" in next && leaving.primed !== next) {
+          this.#prime(scene.program, next, leaving.settings);
+          leaving.primed = next;
+          return leaving;
+        }
+        this.#begin(leaving, exit, into, seconds);
+      }
+      if (seconds - leaving.start < (1 - into.overlap) * exit) return leaving;
+    } else if (Number.isNaN(leaving.start)) {
+      this.#begin(leaving, exit, into, seconds);
     }
     leaving.woven = { scene, into };
     this.#reenter = true;
     return leaving;
   }
 
-  /** How far `id` has played its exit, 0..1 (1 at once for a scene without one). */
+  /** A scene starting to leave with the settings `s`: it idles until the next one is ready. */
+  #leave(s: RenderSettings): Leaving {
+    return { settings: s, start: Number.NaN, length: 0, primed: undefined, woven: undefined };
+  }
+
+  /**
+   * Start the exit (of `exit` seconds) toward `into`. The incoming scene enters `overlap` of the
+   * way through it and the blend then takes `weave`; an exit that would end before the blend does
+   * is drawn out to end with it, so the leaving scene never stands still under the incoming one.
+   */
+  #begin(leaving: Leaving, exit: number, into: RenderSettings, seconds: number): void {
+    leaving.start = seconds;
+    leaving.length = Math.max(exit, (1 - into.overlap) * exit + Math.max(into.weave, 1e-3));
+  }
+
+  /**
+   * Draw the incoming program once on the canvas and the leaving one once into the leaving frame,
+   * one cell each (this frame's own draw covers the first). Many drivers finish compiling a program
+   * for a target at its first draw there, which can hold the GPU up for a moment; done before the
+   * exit starts, that moment falls while the scene still idles instead of in the middle of the
+   * passage.
+   */
+  #prime(leaving: SceneProgram, incoming: SceneProgram, os: RenderSettings): void {
+    const gl = this.#gl;
+    this.#sizeLeaving(
+      Math.max(1, Math.ceil(this.#canvas.clientWidth / os.pixel)),
+      Math.max(1, Math.ceil(this.#canvas.clientHeight / os.pixel)),
+    );
+    gl.activeTexture(gl.TEXTURE0 + LEAVING_UNIT);
+    gl.bindTexture(gl.TEXTURE_2D, this.#blank);
+    gl.viewport(0, 0, 1, 1);
+    gl.useProgram(incoming.program);
+    gl.drawArrays(gl.TRIANGLES, 0, 3);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, this.#leavingTarget);
+    gl.useProgram(leaving.program);
+    gl.drawArrays(gl.TRIANGLES, 0, 3);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+  }
+
+  /** How far `id` has played its exit, 0..1 (1 at once for a scene without one, 0 before it starts). */
   #exitShare(id: SceneId, leaving: Leaving, seconds: number): number {
     const exit = sceneDefs[id].passage?.exit ?? 0;
-    return exit <= 0 ? 1 : Math.min(1, (seconds - leaving.start) / exit);
+    if (exit <= 0) return 1;
+    return Number.isNaN(leaving.start)
+      ? 0
+      : Math.min(1, (seconds - leaving.start) / leaving.length);
   }
 
   /** Enter the scene `s` sets in place of `current`, disposing that unless it is leaving. */

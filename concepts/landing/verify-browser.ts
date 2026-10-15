@@ -289,13 +289,23 @@ function rendererPassage(_gl: WebGL2RenderingContext): Record<string, unknown> {
   const rendererGl = canvas.getContext("webgl2", { antialias: false, alpha: false });
   if (!rendererGl) throw new Error("Renderer context unavailable");
   const locations = new WeakSet<WebGLUniformLocation>();
+  const passageLocations = new WeakSet<WebGLUniformLocation>();
   const getLocation = rendererGl.getUniformLocation.bind(rendererGl);
   rendererGl.getUniformLocation = (linked, name) => {
     const location = getLocation(linked, name);
     if (location && name === "uDissolve") locations.add(location);
+    if (location && name === "uPassage") passageLocations.add(location);
     return location;
   };
   const sent: number[][] = [];
+  /** The exit each draw into the leaving frame was sent. */
+  const leavingExits: number[] = [];
+  const uniform2 = rendererGl.uniform2f.bind(rendererGl);
+  rendererGl.uniform2f = (location, x, y) => {
+    const offScreen = rendererGl.getParameter(rendererGl.FRAMEBUFFER_BINDING) !== null;
+    if (location !== null && passageLocations.has(location) && offScreen) leavingExits.push(y);
+    uniform2(location, x, y);
+  };
   const uniform = rendererGl.uniform3f.bind(rendererGl);
   let holdLeaving = false;
   // Record every dissolve sent; to read the leaving frame whole, show only it on screen (the leaving
@@ -345,14 +355,21 @@ function rendererPassage(_gl: WebGL2RenderingContext): Record<string, unknown> {
     const exit = sceneDefs.country.passage?.exit ?? 0;
     check(exit > 0, "Countryside needs an exit for this check");
     renderer.replayPassage();
-    // The exit starts on the next frame; the entrance is due half-way through it.
+    // The first frame only makes the incoming program ready: the scene idles, nothing blends.
     draw(3000);
-    draw(3000 + exit * 500 - 50);
+    check(
+      sent.length === 1 && sent[0]?.[0] === 0,
+      `Blended while preparing: ${JSON.stringify(sent)}`,
+    );
+    // The exit starts on the next frame; the entrance is due half-way through it.
+    const start = 3100;
+    draw(start);
+    draw(start + exit * 500 - 50);
     check(
       sent.length === 1 && sent[0]?.[0] === 0,
       `Entered before the overlap: ${JSON.stringify(sent)}`,
     );
-    draw(3000 + exit * 500 + 50);
+    draw(start + exit * 500 + 50);
     check(
       sent.length === 2 && sent[1]?.[0] === 1 && sent[1][1] === 1,
       `The entrance did not start over the leaving scene: ${JSON.stringify(sent)}`,
@@ -360,7 +377,7 @@ function rendererPassage(_gl: WebGL2RenderingContext): Record<string, unknown> {
     // The incoming scene at twice the leaving scene's cell size.
     renderer.update(renderSettings({ ...state, pixel: 2 }, params));
     holdLeaving = true;
-    let t = 3000 + exit * 500 + 150;
+    let t = start + exit * 500 + 150;
     draw(t);
     const first = leavingFrame();
     check(
@@ -420,8 +437,19 @@ function rendererPassage(_gl: WebGL2RenderingContext): Record<string, unknown> {
         }
       resizeResults.push(`${width}x${height} over ${sw}x${sh}`);
     }
-    // The blend ends once the incoming scene shows alone; the leaving scene is then gone.
+    // The exit is drawn out to last the blend: just before the blend's end the leaving scene is
+    // still on its way out (0.7 s of exit left at the overlap, over a 4 s blend).
     holdLeaving = false;
+    const length = exit * 0.5 + 4;
+    leavingExits.length = 0;
+    t = start + (length - 0.1) * 1000;
+    draw(t);
+    const lateExit = leavingExits.at(-1) ?? Number.NaN;
+    check(
+      lateExit > 0.95 && lateExit < 1 && (sent.at(-1)?.[0] ?? 0) > 0,
+      `The leaving scene stood still under the blend: exit ${lateExit}, ${JSON.stringify(sent)}`,
+    );
+    // The blend ends once the incoming scene shows alone; the leaving scene is then gone.
     t += 4100;
     draw(t);
     draw(t + 10);
@@ -429,7 +457,7 @@ function rendererPassage(_gl: WebGL2RenderingContext): Record<string, unknown> {
       sent.length === 1 && sent[0]?.[0] === 0,
       `The blend did not end: ${JSON.stringify(sent)}`,
     );
-    return { fps, movedTexels: moved, blendSizes: resizeResults };
+    return { fps, movedTexels: moved, blendSizes: resizeResults, lateExit };
   } finally {
     window.requestAnimationFrame = nativeRaf;
     canvas.remove();
