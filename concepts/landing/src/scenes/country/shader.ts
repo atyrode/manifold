@@ -482,15 +482,14 @@ vec3 countryMist(Sky sky, float x, float above, float overcast) {
 }
 
 // The cloud deck, straight rgb and alpha like skyClouds. By night the shared deck's domain-warped
-// detail reads as harsh moonlit swirls, so it gives way to a calm deck of the scene's own: two
-// broad octaves (the finer one dropped toward the horizon, where it would crawl), soft edges, a
-// gentle moonlit body silvered toward the moon, drifting with the wind like the day deck.
+// detail reads as harsh moonlit swirls, so it gives way to the shared calm deck (the clouds' flat
+// tier: two broad octaves, the finer one dropped toward the horizon, where it would crawl), with
+// soft edges and a gentle moonlit body silvered toward the moon, drifting with the wind like the
+// day deck.
 vec4 countryClouds(Sky sky, vec3 dir, float t, float cover, float wind) {
   vec4 day = sky.night < 1.0 ? skyClouds(sky, dir, t, cover, wind) : vec4(0.0);
   if (sky.night <= 0.0 || dir.y <= 0.015 || cover <= 0.0) return day;
-  vec2 p = dir.xz / dir.y - vec2(0.09 * wind, -0.01) * uMotionTime;
-  float fine = 1.0 - smoothstep(0.08, 0.3, 1.3 / (uRes.y * dir.y * dir.y));
-  float n = 0.62 * vnoise(p * 0.55 + 4.3) + 0.38 * mix(0.5, vnoise(p * 1.3 + 9.1), fine);
+  float n = cloudFlatField(cloudDeckPoint(dir, vec2(0.0), uMotionTime, wind), cloudFlatFine(dir));
   float th = mix(0.66, 0.3, cover);
   float alpha = smoothstep(th - 0.06, th + 0.26, n) * smoothstep(0.015, 0.22, dir.y) * 0.92;
   float thick = smoothstep(th, th + 0.4, n);
@@ -831,13 +830,12 @@ Shade sceneCountry(vec2 screenUv, vec2 cell, float t) {
     float buried = smoothstep(0.0, 0.35, lying * 1.4 - 0.3 * vnoise(w * 2.5 + 11.0) - 0.1 * (1.0 - i / 5.0));
     // The same front for the trees and buildings, which carry their own snow (snowCover).
     float lyingHere = clamp(lying * 1.4 - 0.1 * (1.0 - i / 5.0), 0.0, 1.0);
-    // Sunlight through the cloud deck: follow the sun from this point of ground up to the deck,
-    // brought down by rain as the sky shows it (countryDeck).
+    // Sunlight through the cloud deck (the clouds' shadows tier): the deck's cover where the sun's
+    // ray from this point of ground meets it, brought down by rain as the sky shows it (countryDeck).
     float sunShade = 1.0 - 0.75 * overcast;
-    if (K_shadows > 0.0 && sky.sun.y > 0.0) {
-      vec3 deck = ground + sky.sun * ((COUNTRY_CLOUD_BASE / low - ground.y) / max(sky.sun.y, 0.12));
-      sunShade *= 1.0 - K_shadows * skyClouds(sky, normalize(vec3(deck.x, deck.y * low, deck.z)), t, cover, wind).a;
-    }
+#if CLOUD_TIER >= CLOUD_SHADOWS
+    if (K_shadows > 0.0 && sky.sun.y > 0.0) sunShade *= 1.0 - K_shadows * skyCloudShadow(sky, ground, COUNTRY_CLOUD_BASE, low, t, cover, wind);
+#endif
 
     vec3 albedo = vec3(0.0);
     float settles = 1.0;   // how much of the lying snow shows here

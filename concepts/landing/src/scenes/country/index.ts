@@ -3,9 +3,11 @@
 // mark through the renderer's weather state (uWeather): the land, the farm track and the roofs
 // wetten while it rains and dry after, and the land turns white while it snows and thaws after. Birds
 // cross the valley and a starling murmuration wheels over it at dusk when switched on (wildlife.ts).
-// The night sky composes the shared stars, the moon's phase and shooting stars; the river the
-// shared water's ripples tier when its wind ripples are up.
+// The night sky composes the shared stars, the moon's phase and shooting stars; the clouds are the
+// shared clouds' lit deck, calm deck by night and shadows; the river the shared water's ripples tier
+// when its wind ripples are up.
 import { choice, counts, feature, range, seed, toggle } from "../../params.ts";
+import { CLOUD_TIERS } from "../../shaders/lib/clouds.ts";
 import { WATER_TIERS } from "../../shaders/lib/water.ts";
 import { atmosphereGroups, skyKnobs, weatherKnobs } from "../atmosphere.ts";
 import { FLOCK_SIZES, flockSim } from "../flock/sim.ts";
@@ -80,13 +82,15 @@ export function countryFeatures(values: Readonly<Record<string, number>>): Recor
     COUNTRY_HAS_SNOW: on("snow"),
     COUNTRY_HAS_FOG: on("fog"),
     WATER_TIER: on("ripples") ? WATER_TIERS.ripples : WATER_TIERS.flat,
+    // The deck's shadows on the land (skyCloudShadow) only while they are on.
+    CLOUD_TIER: on("shadows") ? CLOUD_TIERS.shadows : CLOUD_TIERS.lit,
     // The full moon is skyAt's own: the phase only for a lesser one (K_moon 0 while it is off).
     ...((values.moon ?? 1) < 1 ? { SKY_MOON_PHASE: 1 } : {}),
   };
 }
 
 /** Every optional part compiled in: for checks that draw many settings with one program. */
-export const COUNTRY_FULL = countryFeatures({ walkers: 1, tracks: 1, river: 1, village: 26, hamlets: 3, farms: 1, pasture: 1, songbirds: 1, chalk: 1, rain: 1, snow: 1, fog: 1, ripples: 1, moon: 0.5 });
+export const COUNTRY_FULL = countryFeatures({ walkers: 1, tracks: 1, river: 1, village: 26, hamlets: 3, farms: 1, pasture: 1, songbirds: 1, chalk: 1, rain: 1, snow: 1, fog: 1, ripples: 1, shadows: 1, moon: 0.5 });
 
 export const countryScene: SceneDef = {
   id: "country",

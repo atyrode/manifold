@@ -227,7 +227,8 @@ Overlooking rolling hills with a village in the distance and forest around.
   evergreen in autumn. Treetops raise the visible skyline and occlude what is behind them, but the
   ground's fields and lighting follow only the bare terrain, and pixels inside the treeline are
   always canopy. Unresolved distant crowns use an area-mean colour instead of per-crown detail.
-- Day cycle and weather (cloud shadows sweeping over the fields).
+- Day cycle and weather (cloud shadows sweeping over the fields): the shared clouds' lit deck by
+  day, their calm deck by night and their shadows (compiled in only while `cloud shadows` is on).
 - Night sky: the shared components: `stars` (density, 0.4 the original sky), the `moon`'s phase
   (full by default; it lights the land, clouds and river less as it wanes) and `shooting stars`
   (off by default, "now" on trigger 1) streaking through the gaps of the deck over the far hills.

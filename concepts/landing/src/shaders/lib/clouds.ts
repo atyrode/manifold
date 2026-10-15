@@ -132,10 +132,15 @@ vec4 skyClouds(Sky sky, vec3 dir, float t, float cover, float wind) {
 // It is the deck's cover where the sun's ray from ground (a point relative to the eye, y up, in the
 // scene's units) meets the deck base units above the eye, as the sky shows the deck there, so a gap
 // overhead toward the sun is a sunlit patch. The sun is taken at least ~7 degrees up: a low sun's
-// shadows stay near instead of reaching for the horizon's thin deck.
+// shadows stay near instead of reaching for the horizon's thin deck. low (1 and up) brings the deck
+// down to base / low, as rain does: the same clouds, nearer, for a scene that shows its sky's deck so
+// by squashing the view ray's height by low (the countryside's rain).
+float skyCloudShadow(Sky sky, vec3 ground, float base, float low, float t, float cover, float wind) {
+  vec3 deck = ground + sky.sun * ((base / low - ground.y) / max(sky.sun.y, 0.12));
+  return skyClouds(sky, normalize(vec3(deck.x, deck.y * low, deck.z)), t, cover, wind).a;
+}
 float skyCloudShadow(Sky sky, vec3 ground, float base, float t, float cover, float wind) {
-  vec3 deck = ground + sky.sun * ((base - ground.y) / max(sky.sun.y, 0.12));
-  return skyClouds(sky, normalize(deck), t, cover, wind).a;
+  return skyCloudShadow(sky, ground, base, 1.0, t, cover, wind);
 }
 #endif
 
