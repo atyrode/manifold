@@ -4,13 +4,16 @@
 // this file keeps them on the countryside's ground.
 //
 // Everything lives in field space (countryFieldSpace), where an enclosure is a Voronoi cell of
-// countryCells: its walls are the bisectors with the eight neighbouring sites, plus the farm track
-// or the river where they pass, and the crest above. A herd is a loose disc of animals round a
-// centre that wanders slowly about the field's site. Each animal's anchors (its place in the herd at
-// the start of each schedule slot plus a stray of its own) are pushed back inside every wall by the
-// clearance its body needs on screen there; it moves between anchors, so it never leaves the field.
-// Before an animal is drawn its actual footprint is checked once more against the walls, the
-// crest, the track, the river and the woods, and it is not drawn if it would touch them.
+// countryCells: its walls are the bisectors with the eight neighbouring sites, plus the nearest
+// track shown (routes.ts) and the river at its width where they pass, and the crest above. A herd is
+// a loose disc of animals round a centre that wanders slowly about the field's site. Each animal's
+// anchors (its place in the herd at the start of each schedule slot plus a stray of its own) are
+// pushed back inside every wall by the clearance its body needs on screen there; it moves between
+// anchors, so it never leaves the field. Before an animal is drawn its actual footprint is checked
+// once more against the walls, the crest, every track shown, the river's reeds, the village and the
+// woods, and it is not drawn if it would touch them. The fences leave gaps for the tracks and the
+// river likewise. Farmsteads keep out of the enclosures (settlements.ts), so no building stands
+// among a herd or across a fence.
 //
 // Drawing follows countryDots: the screen offset from the foot at the ridge's depth d and the
 // slope's own down-slope rate, with the crest's lean undone so the animals stand upright on any
@@ -98,21 +101,31 @@ float countryHerdMargin(vec2 n, mat2 J, float fore, float set, float size) {
 
 // The least clearance (world units) from point c (relative to the site, field space over
 // COUNTRY_FIELDS) to the herd's limits: xy their unit normals, z their distance from the site.
-float countryHerdRoom(vec3 limits[10], vec2 c) {
+float countryHerdRoom(vec3 limits[11], vec2 c) {
   float room = 1e3;
-  for (int w = 0; w < 10; w++) room = min(room, limits[w].z - dot(c, limits[w].xy));
+  for (int w = 0; w < 11; w++) room = min(room, limits[w].z - dot(c, limits[w].xy));
   return room;
+}
+
+// A herd's wall along a track or the river: the line \`reach\` (world) off its centre line on the
+// side of the herd's home (slope point, world), whose across distance from it is \`a\` (signed) with
+// gradient g (world). xy: its outward unit normal in field space; z: its distance from the site,
+// at most zero when the home lies within reach.
+vec3 countryHerdWall(float i, vec2 site, vec2 home, float a, vec2 g, float reach) {
+  float side = a < 0.0 ? -1.0 : 1.0;
+  vec2 n = normalize(-side * g / COUNTRY_FIELDS);
+  return vec3(n, dot(countryFieldSpace(i, home + g * (side * reach - a) / dot(g, g)) - site, n));
 }
 
 // The herd of the enclosure with this site (field space) on ridge i at depth d, and its walls: xy
 // their outward unit normals, z the distance from the site. 0..7 the neighbouring fields (the
-// bisectors of countryCells), 8 the farm track (first ridge) or the river (second) at the site's
-// level. Each wall less the clearance an animal's feet need from it (the reach of its body on
-// screen, taken where the wall stands, the most foreshortened ground it can reach that way), and
-// the crest less an animal's height, bound the herd. Its middle is the point farthest inside those
-// bounds (found by stepping away from the nearest); the herd is as large as fits round it at full
-// spread, and its centre wanders only as far as leaves every member inside.
-CountryHerd countryHerd(float i, float d, vec2 site, vec2 spots, out vec3 walls[9]) {
+// bisectors of countryCells), 8 the nearest track shown at the site (countryRouteAt), 9 the river at
+// its width (second ridge). Each wall less the clearance an animal's feet need from it (the reach of
+// its body on screen, taken where the wall stands, the most foreshortened ground it can reach that
+// way), and the crest less an animal's height, bound the herd. Its middle is the point farthest
+// inside those bounds (found by stepping away from the nearest); the herd is as large as fits round
+// it at full spread, and its centre wanders only as far as leaves every member inside.
+CountryHerd countryHerd(float i, float d, vec2 site, vec2 spots, out vec3 walls[10]) {
   CountryHerd herd;
   vec2 id = floor(site);
   herd.site = site;
@@ -141,41 +154,42 @@ CountryHerd countryHerd(float i, float d, vec2 site, vec2 spots, out vec3 walls[
     }
   }
   walls[8] = vec3(0.0, 1.0, 1e3);
+  walls[9] = vec3(0.0, 1.0, 1e3);
   float v = herd.home.y;
-  if (i < 1.5) {
-    // The track or the river crossing the field: a straight wall at the site's level on the far
-    // side of it. A site lying on it keeps no herd.
-    float z = d * (1.0 - 0.35 * smoothstep(0.0, 0.2, countryDrop(v, d)));
-    vec2 line = vec2(0.0);
-    float reach = 0.0;
-    if (i < 0.5) {
-      vec2 lane = countryLane(v, spots.x * 0.6);
-      line = lane * d / z;
-      reach = COUNTRY_LANE * 1.3 * d / z * sqrt(1.0 + lane.y * lane.y);
-    } else {
-      line = countryRiver(v, (spots.x + 0.07) * d);
-      reach = (0.012 + 0.008 * clamp(v / 0.6, 0.0, 1.0)) * 1.7 * sqrt(1.0 + line.y * line.y);
+  if (i < 2.5) {
+    // A track or the river crossing the field: a straight wall at the site's level on the far side
+    // of it. A site lying on one keeps no herd.
+    float s = countryDrop(v, d);
+    float k = countryFaceDepth(s, d) / d;
+    vec2 axis = vec2(0.0);
+    float crest = i > 1.5 ? countryGroundCrest(i, herd.home.x / d, spots) : 0.0;
+    vec4 route = countryRouteAt(i, herd.home, s, crest, spots, K_tracks, axis);
+    if (route.z > 0.0) walls[8] = countryHerdWall(i, site, herd.home, route.x, vec2(k * axis.x, axis.y), 1.3 * route.y);
+    float broad = countryRiverScale();
+    if (i > 0.5 && i < 1.5 && broad > 0.0) {
+      vec2 river = countryRiver(v, countryRiverStart(spots));
+      float n = sqrt(1.0 + river.y * river.y);
+      walls[9] = countryHerdWall(i, site, herd.home, (herd.home.x - river.x) / n, vec2(1.0, -river.y) / n, countryRiverReeds(countryRiverBank(v), broad));
     }
-    float side = herd.home.x < line.x ? -1.0 : 1.0;
-    vec2 n = normalize(-side * normalize(vec2(1.0, -line.y)) / COUNTRY_FIELDS);
-    walls[8] = vec3(n, dot(countryFieldSpace(i, vec2(line.x + side * reach, v)) - site, n));
-    if (walls[8].z <= 0.0) return herd;
-  } else {
-    // Not on the village knoll or in a wood on the third ridge.
+    if (walls[8].z <= 0.0 || walls[9].z <= 0.0) return herd;
+  }
+  if (i > 1.5) {
+    // Not on the village knoll, beyond its outermost cottages (countrySpots 0.15 at the knoll's
+    // feet; the herd's home a little farther), nor in a wood on the third ridge.
     vec2 near = countrySpots(herd.home.x / d, spots);
-    if (near.x > 0.25 || countryWoodStand(i, herd.home.x, v, near) > 0.45) return herd;
+    if (near.x > 0.12 || countryWoodStand(i, herd.home.x, v, near) > 0.45) return herd;
   }
   // The limits in world units, where the herd's spacing is the same every way.
-  vec3 limits[10];
+  vec3 limits[11];
   float set = COUNTRY_FENCE_SET * 0.0065 + COUNTRY_FENCE_POST;
-  for (int w = 0; w < 9; w++) {
+  for (int w = 0; w < 10; w++) {
     vec3 wall = walls[w];
     float fore = countryFore(v + min(wall.z * wall.y, 0.0) / COUNTRY_FIELDS.y, d);
     vec2 n = wall.xy * COUNTRY_FIELDS;
     float limit = wall.z - countryHerdMargin(wall.xy, J, fore, set, herd.size) - 0.3 * herd.size * COUNTRY_FIELDS.y;
     limits[w] = vec3(n / length(n), limit / length(n));
   }
-  limits[9] = vec3(0.0, -1.0, v - countryDown(1.6 * herd.size / d, d));
+  limits[10] = vec3(0.0, -1.0, v - countryDown(1.6 * herd.size / d, d));
   // Step away from the nearest limit, by half the gap to the next nearest (which can only gain),
   // or out of a corner between two, keeping a step only where it gains.
   vec2 c = vec2(0.0);
@@ -185,7 +199,7 @@ CountryHerd countryHerd(float i, float d, vec2 site, vec2 spots, out vec3 walls[
     float c2 = 1e3;
     vec2 m1 = vec2(0.0);
     vec2 m2 = vec2(0.0);
-    for (int w = 0; w < 10; w++) {
+    for (int w = 0; w < 11; w++) {
       float clear = limits[w].z - dot(c, limits[w].xy);
       if (clear < c1) {
         c2 = c1;
@@ -253,7 +267,7 @@ CountryStock countryHerdAt(float i, float d, vec2 q, float s, float lean, vec2 w
                            float hedgeMean, vec2 spots, out float foot) {
   CountryStock st = countryNoStock();
   foot = -1.0;
-  vec3 walls[9];
+  vec3 walls[10];
   CountryHerd herd = countryHerd(i, d, site, spots, walls);
   if (herd.count < 0.5) return st;
   float r = herd.size / d;           // body half-length on screen
@@ -296,29 +310,29 @@ CountryStock countryHerdAt(float i, float d, vec2 q, float s, float lean, vec2 w
     vec2 ds = vec2(q.x - wa.x / d, 0.0);
     ds.y = lean * ds.x + sa - s;
     if (abs(ds.x) > 1.6 * r || ds.y > 1.6 * r || ds.y < -0.4 * r) continue;
-    // Its footprint, checked where it actually stands: never on a fence, hedge, track or river,
-    // nor over the crest; otherwise it is not drawn at all.
+    // Its footprint, checked where it actually stands: never on a fence, hedge, track or the river's
+    // reeds at its width, nor over the crest (nor among the village or in a wood on the third
+    // ridge); otherwise it is not drawn at all. The body's reach is taken at the depth of the ground
+    // it stands on.
     vec2 fa = vec2(0.0);
     mat2 J = countryFieldWarp(g0, fa);
     float fore = countryFore(wa.y, d);
     bool clear = sa > 1.6 * r;
-    for (int w = 0; w < 9; w++) {
+    for (int w = 0; w < 10; w++) {
       clear = clear && walls[w].z - dot(fa - herd.site, walls[w].xy) >= countryHerdMargin(walls[w].xy, J, fore, set * d, herd.size);
     }
-    if (i < 0.5) {
-      vec2 lane = countryLane(wa.y, spots.x * 0.6);
-      float za = d * (1.0 - 0.35 * smoothstep(0.0, 0.2, sa));
-      float across = abs(wa.x / d * za - lane.x) / sqrt(1.0 + lane.y * lane.y);
-      clear = clear && (across - COUNTRY_LANE * 1.3) / za > 1.5 * r;
-    } else if (i < 1.5) {
-      vec2 river = countryRiver(wa.y, (spots.x + 0.07) * d);
-      float across = abs(wa.x - river.x) / sqrt(1.0 + river.y * river.y);
-      clear = clear && (across - (0.012 + 0.008 * clamp(wa.y / 0.6, 0.0, 1.0)) * 1.7) / d > 1.5 * r;
-    } else {
-      vec2 near = countrySpots(wa.x / d, spots);
-      clear = clear && near.x < 0.3 && countryWoods(i, wa.x, wa.y, near) <= 0.0;
-    }
     if (!clear) continue;
+    float body = 1.5 * herd.size;
+    if (countryRouteDistance(i, wa, spots) < 1.3 * 1.15 * COUNTRY_LANE + body * countryFaceDepth(sa, d) / d) continue;
+    if (i > 0.5 && i < 1.5) {
+      float bank = countryRiverBank(max(wa.y, 0.0));
+      float broad = countryRiverScale();
+      if (countryRiverDistance(i, wa, spots) < countryRiverReeds(bank, broad) - bank * broad + body) continue;
+    }
+    if (i > 1.5) {
+      vec2 near = countrySpots(wa.x / d, spots);
+      if (near.x >= 0.15 || countryWoods(i, wa.x, wa.y, near) > 0.0) continue;
+    }
     LivestockBeast beast = LivestockBeast(herd.cattle, herd.breed, hash12(vec2(k * 5.3 + 0.7, herd.seed * 19.0)));
     vec2 travel = (a1 - a0) / COUNTRY_FIELDS / herd.size;
     LivestockPose pose = livestockPose(beast, act, slot, vec2(travel.x, -travel.y), K_rain, tm);
@@ -352,9 +366,9 @@ CountryStock countryHerdAt(float i, float d, vec2 q, float s, float lean, vec2 w
 // half-widths inside its border (as the hedges measure it). The pixel sees the fence where the
 // fence line crosses the ground between it and the ground the fence's height below it on screen:
 // rails and posts at their heights above that foot. Running down the slope, the fence is seen end
-// on, as a line. Gaps where the track or the river pass. Returns colour and cover; foot gets the
+// on, as a line. Gaps where a track or the river passes. Returns colour and cover; foot gets the
 // down-slope distance of its foot (for occlusion with the animals), top how much of it holds snow.
-vec4 countryFence(float i, float d, vec2 q, float s, vec2 w, float down, vec2 field, vec2 site, vec2 axis, bool enclosed,
+vec4 countryFence(float i, float d, float s, vec2 w, float down, vec2 field, vec2 site, vec2 axis, bool enclosed,
                   float season, float hedgeMean, vec2 spots, out float foot, out float top) {
   foot = -1.0;
   top = 0.0;
@@ -412,15 +426,14 @@ vec4 countryFence(float i, float d, vec2 q, float s, vec2 w, float down, vec2 fi
     }
   }
   if (cover <= 0.0) return vec4(0.0);
-  // Gaps for the track and the river.
-  if (i < 0.5) {
-    vec2 lane = countryLane(wf.y, spots.x * 0.6);
-    float zf = d * (1.0 - 0.35 * smoothstep(0.0, 0.2, countryDrop(wf.y, d)));
-    if (abs(q.x * zf - lane.x) / sqrt(1.0 + lane.y * lane.y) < COUNTRY_LANE * 1.5) return vec4(0.0);
-  } else {
-    vec2 river = countryRiver(wf.y, (spots.x + 0.07) * d);
-    if (abs(wf.x - river.x) / sqrt(1.0 + river.y * river.y) < (0.012 + 0.008 * clamp(wf.y / 0.6, 0.0, 1.0)) * 1.7 + 0.004) return vec4(0.0);
-  }
+  // Gaps for the tracks shown (fences stand on the two near ridges only) and the river's reeds at
+  // its width.
+  vec2 dir = vec2(0.0);
+  vec4 route = countryRouteNear(i, wf, countryFaceDepth(countryDrop(wf.y, d), d) / d, spots, K_tracks, dir);
+  if (route.z > 0.0 && abs(route.x) < 1.5 * route.y) return vec4(0.0);
+  float bank = countryRiverBank(max(wf.y, 0.0));
+  float broad = countryRiverScale();
+  if (countryRiverDistance(i, wf, spots) < countryRiverReeds(bank, broad) - bank * broad + 0.004) return vec4(0.0);
   foot = wf.y;
   top = rails > 0.5 ? 0.45 : 0.25;
   vec3 timber = mix(vec3(0.42, 0.35, 0.27), vec3(0.6, 0.53, 0.42), rails) * (0.88 + 0.24 * hash12(vec2(which, site.x * 7.0)));
@@ -439,7 +452,7 @@ CountryStock countryStock(float i, vec2 q, float s, float lean, vec2 w, float do
   if (i < 1.5) {
     float fenceFoot = -1.0;
     float top = 0.0;
-    vec4 fence = countryFence(i, d, q, s, w, down, field, site, axis, crop > 8.5, season, hedgeMean, spots, fenceFoot, top);
+    vec4 fence = countryFence(i, d, s, w, down, field, site, axis, crop > 8.5, season, hedgeMean, spots, fenceFoot, top);
     if (fence.a > 0.0 && (st.cover <= 0.0 || fenceFoot > herdFoot)) {
       st.cover = fence.a;
       st.albedo = fence.rgb;

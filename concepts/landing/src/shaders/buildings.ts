@@ -60,6 +60,12 @@ float buildingCottage(vec2 q, float len, float wall, float rise, float recede, b
   float a = (rel.x * run.y - rel.y * run.x) / det;
   float b = (rafter.x * rel.y - rafter.y * rel.x) / det;
   if (a >= 0.0 && a <= 1.0 && b >= 0.0 && b <= 1.0) return 3.0;
+  // The roof's verge under its right-hand rafter, down to the eave: it closes over the top of the
+  // gable and of the long wall's corner, which stop just short of the rafter.
+  if (q.x >= ridge.x && q.x <= eave.x) {
+    float under = q.x <= 0.0 ? wall - 2.0 * rise * q.x : wall + q.x * recede;
+    if (q.y > under && q.y <= eave.y + (q.x - eave.x) * rafter.y / rafter.x) return 3.0;
+  }
   // Gable end, edged by the verge of the roof along its left-hand rafter.
   if (q.x >= -1.06 && q.x <= 0.0 && q.y >= min(0.0, ground)) {
     if (segmentDistance(q, vec2(-1.06, wall - 0.07), ridge + vec2(0.0, 0.05)) < 0.07) return 3.0;

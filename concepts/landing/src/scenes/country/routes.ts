@@ -82,12 +82,24 @@ float countryRiverDistance(float ridge, vec2 w, vec2 spots) {
   return abs(w.x - river.x) / sqrt(1.0 + river.y * river.y) - countryRiverBank(w.y) * broad;
 }
 
+// World distance from slope point w on ridge \`ridge\` to the outer edge of the broadest river's
+// reeds (K_river 1; negative among them), 1e3 off ridge 1: for placing what keeps clear of the river
+// whatever its width, so widening it never meets a building. Above the crest it measures from the
+// river's head, never farther than the true distance.
+float countryRiverReach(float ridge, vec2 w, vec2 spots) {
+  if (abs(ridge - 1.0) > 0.5) return 1e3;
+  float v = max(w.y, 0.0);
+  vec2 river = countryRiver(v, countryRiverStart(spots));
+  return abs(w.x - river.x) / sqrt(1.0 + river.y * river.y) - countryRiverReeds(countryRiverBank(v), pow(2.0, 1.807));
+}
+
 // ---- the routes ----
 
-// How plainly a part of the network of this rank shows: 0 until K_tracks passes the rank, then
-// fading in, a well-worn track at the top of the range.
-float countryTrackShow(float rank) {
-  return smoothstep(rank, rank + 0.15, K_tracks) * (0.55 + 0.45 * K_tracks);
+// How plainly a part of the network of this rank shows with the tracks knob at \`tracks\` (K_tracks,
+// or 1 for the whole network): 0 until it passes the rank, then fading in, a well-worn track at the
+// top of the range.
+float countryTrackShow(float rank, float tracks) {
+  return smoothstep(rank, rank + 0.15, tracks) * (0.55 + 0.45 * tracks);
 }
 
 // Ridge 1, the west track (route 1): the lane's way on, from behind the near field up the river's
@@ -163,8 +175,8 @@ float countryAcrossClimb(vec2 w, float x, float slope, float v, float k, out vec
 }
 
 // The nearest route shown on the two near ridges (i 0 or 1; see countryRouteAt), at ground x per
-// ridge x \`k\`: the lane, the west track and the bridge track.
-vec4 countryRouteNear(float i, vec2 w, float k, vec2 spots, out vec2 axis) {
+// ridge x \`k\`, with the tracks knob at \`tracks\`: the lane, the west track and the bridge track.
+vec4 countryRouteNear(float i, vec2 w, float k, vec2 spots, float tracks, out vec2 axis) {
   axis = vec2(1.0, 0.0);
   if (i < 0.5) {
     // The lane, in ground x (rows) as sceneCountry draws it.
@@ -175,14 +187,14 @@ vec4 countryRouteNear(float i, vec2 w, float k, vec2 spots, out vec2 axis) {
   }
   vec4 best = vec4(1e3, COUNTRY_LANE, 0.0, 0.0);
   vec2 dir = vec2(0.0);
-  float show = countryTrackShow(0.0);
+  float show = countryTrackShow(0.0, tracks);
   if (show > 0.0) {
     float v = clamp(w.y, -0.2, 1.4);
     float x = countryWestTrack(v, spots);
     float across = countryAcrossClimb(w, x, (countryWestTrack(v + 0.01, spots) - x) / 0.01, v, k, dir);
     if (abs(across) < abs(best.x)) { best = vec4(across, COUNTRY_LANE, show, 0.0); axis = dir; }
   }
-  show = countryTrackShow(0.2);
+  show = countryTrackShow(0.2, tracks);
   if (show > 0.0) {
     float x0 = countryWestTrack(COUNTRY_JUNCTION, spots);
     float x = clamp(w.x, x0, x0 + 2.6);
@@ -195,15 +207,16 @@ vec4 countryRouteNear(float i, vec2 w, float k, vec2 spots, out vec2 axis) {
   return best;
 }
 
-// The nearest route shown on ridge i to slope point w (world x at the ridge's depth, v down the
-// slope), lying s below the ridge's bare crest \`crest\` (screen; only ridge 2 reads it) at screen
-// x = w.x / depth. x: across distance (world, signed); y: the route's half-width (world); z: how
-// plainly it shows (0 with no route here, x then 1e3); w: its surface, 0 farm track, 1 metalled road,
-// 2 chalk. axis gets the across direction (world: across at the ground's own depth, down the slope).
-vec4 countryRouteAt(float i, vec2 w, float s, float crest, vec2 spots, out vec2 axis) {
+// The nearest route shown on ridge i, with the tracks knob at \`tracks\` (K_tracks, or 1 for the
+// whole network), to slope point w (world x at the ridge's depth, v down the slope), lying s below
+// the ridge's bare crest \`crest\` (screen; only ridge 2 reads it) at screen x = w.x / depth.
+// x: across distance (world, signed); y: the route's half-width (world); z: how plainly it shows
+// (0 with no route here, x then 1e3); w: its surface, 0 farm track, 1 metalled road, 2 chalk. axis
+// gets the across direction (world: across at the ground's own depth, down the slope).
+vec4 countryRouteAt(float i, vec2 w, float s, float crest, vec2 spots, float tracks, out vec2 axis) {
   float d = countryLayer(i).x;
   float k = countryFaceDepth(s, d) / d;
-  if (i < 1.5) return countryRouteNear(i, w, k, spots, axis);
+  if (i < 1.5) return countryRouteNear(i, w, k, spots, tracks, axis);
   axis = vec2(1.0, 0.0);
   vec4 best = vec4(1e3, COUNTRY_LANE, 0.0, 0.0);
   vec2 dir = vec2(0.0);
@@ -212,7 +225,7 @@ vec4 countryRouteAt(float i, vec2 w, float s, float crest, vec2 spots, out vec2 
     // The street and valley road, from its west end on east; its slope from a second crest lookup.
     float xw = spots.x - COUNTRY_STREET;
     float xs = max(qx, xw);
-    float show = mix(countryTrackShow(0.0), countryTrackShow(0.2), smoothstep(1.3, 1.8, (xs - spots.x) / 0.12));
+    float show = mix(countryTrackShow(0.0, tracks), countryTrackShow(0.2, tracks), smoothstep(1.3, 1.8, (xs - spots.x) / 0.12));
     if (show > 0.0) {
       float e = 0.004;
       float c0 = xs == qx ? crest : countryGroundCrest(2.0, xs, spots);
@@ -228,12 +241,12 @@ vec4 countryRouteAt(float i, vec2 w, float s, float crest, vec2 spots, out vec2 
         float v = clamp(w.y, vw, 1.0);
         float x = countryClimbX(3.0, v, spots);
         across = countryAcrossClimb(w, x, (countryClimbX(3.0, v + 0.01, spots) - x) / 0.01, v, k, dir);
-        if (abs(across) < abs(best.x)) { best = vec4(across, COUNTRY_LANE, countryTrackShow(0.0), 0.0); axis = dir; }
+        if (abs(across) < abs(best.x)) { best = vec4(across, COUNTRY_LANE, countryTrackShow(0.0, tracks), 0.0); axis = dir; }
       }
     }
     // The hill track, from the valley road up over the crest.
     float xe = spots.y + 0.12;
-    show = countryTrackShow(0.4);
+    show = countryTrackShow(0.4, tracks);
     if (show > 0.0 && abs(qx - xe) < 0.05) {
       float ve = countryDown(countryStreetDrop(xe, countryGroundCrest(2.0, xe, spots), spots), d);
       float v = clamp(w.y, -0.2, ve);
@@ -242,7 +255,7 @@ vec4 countryRouteAt(float i, vec2 w, float s, float crest, vec2 spots, out vec2 
       if (abs(across) < abs(best.x)) { best = vec4(across, COUNTRY_LANE, show, 0.0); axis = dir; }
     }
   } else if (i < 3.5) {
-    float show = countryTrackShow(0.4);
+    float show = countryTrackShow(0.4, tracks);
     if (show > 0.0) {
       float v = clamp(w.y, -0.2, 1.8);
       float x = countryClimbX(6.0, v, spots);
@@ -254,13 +267,27 @@ vec4 countryRouteAt(float i, vec2 w, float s, float crest, vec2 spots, out vec2 
 }
 
 // World distance from slope point w (x at the ridge's depth d, v down the slope) on ridge \`ridge\`
-// to the nearest centre line of a track shown there (the lane on ridge 0 always, the rest as
-// K_tracks brings them in); 1e3 with none. For keeping buildings, animals and fences off the tracks.
-float countryRouteDistance(float ridge, vec2 w, vec2 spots) {
+// to the nearest centre line of a track shown there with the tracks knob at \`tracks\`; 1e3 with none.
+float countryTrackDistance(float ridge, vec2 w, vec2 spots, float tracks) {
+  if (ridge > 3.5) return 1e3;
   float d = countryLayer(ridge).x;
   vec2 axis = vec2(0.0);
-  vec4 route = countryRouteAt(ridge, w, countryDrop(max(w.y, 0.0), d), countryGroundCrest(ridge, w.x / d, spots), spots, axis);
+  // Only the street on ridge 2 reads the crest.
+  float crest = ridge > 1.5 && ridge < 2.5 ? countryGroundCrest(ridge, w.x / d, spots) : 0.0;
+  vec4 route = countryRouteAt(ridge, w, countryDrop(max(w.y, 0.0), d), crest, spots, tracks, axis);
   return route.z > 0.0 ? abs(route.x) : 1e3;
+}
+
+// The same for the tracks shown now (the lane on ridge 0 always, the rest as K_tracks brings them
+// in): for keeping animals and fences off the tracks.
+float countryRouteDistance(float ridge, vec2 w, vec2 spots) {
+  return countryTrackDistance(ridge, w, spots, K_tracks);
+}
+
+// The same for the whole network, as K_tracks 1 shows it: for placing buildings, which keep clear
+// of every track whatever the knob, so raising it never meets one.
+float countryNetworkDistance(float ridge, vec2 w, vec2 spots) {
+  return countryTrackDistance(ridge, w, spots, 1.0);
 }
 
 // A track's surface (0 farm track, as the lane; 1 metalled road; 2 chalk) at u (0 its centre line,
@@ -288,7 +315,7 @@ vec3 countryTrackColor(float surface, float u, float rut, vec2 lp, float cells, 
 // w: 1 on a parapet.
 vec4 countryBridge(vec2 w, float z, float down, vec2 spots) {
   float broad = countryRiverScale();
-  if (countryTrackShow(0.2) <= 0.0 || broad <= 0.0) return vec4(0.0);
+  if (countryTrackShow(0.2, K_tracks) <= 0.0 || broad <= 0.0) return vec4(0.0);
   vec3 site = countryBridgeSite(spots);
   float a = (w.x - site.y) / site.z;
   if (abs(a) > 1.0) return vec4(0.0);
@@ -335,7 +362,7 @@ bool countryTreeCleared(vec2 root, vec2 f) {
   if (K_tracks > 0.0) {
     vec2 axis = vec2(0.0);
     float d = countryLayer(countryClearRidge).x;
-    vec4 route = countryRouteNear(countryClearRidge, w, countryFaceDepth(countryDrop(max(w.y, 0.0), d), d) / d, countryClearSpots, axis);
+    vec4 route = countryRouteNear(countryClearRidge, w, countryFaceDepth(countryDrop(max(w.y, 0.0), d), d) / d, countryClearSpots, K_tracks, axis);
     if (route.z > 0.0 && abs(route.x) < route.y + 0.016) return true;
   }
   float broad = countryRiverScale();
@@ -509,14 +536,15 @@ void countryWayAlong(inout CountryWay way, vec2 spots, vec2 joins) {
 vec4 countrySeen[6];
 
 // The walker or cart covering the pixel: standing on the ground it shows (ridge \`hit\`, point q,
-// visible crest \`crest\`, bare crest \`terrain\`) unless something stands there (object), or poking
-// over the skyline of a nearer ridge (countrySeen). dark: lamps lit after dark. frame, ridge and
-// depth get the agent's ridge frame (as countrySeen), ridge and depth. Off the figures, the result
-// carries the contact shadow at their feet and, for one too small to draw, its faint colour over
-// the ground. Bounded: COUNTRY_AGENTS candidates, each skipped unless it is out, on a ridge this
-// pixel can show it on, near that ridge's skyline or below it, and within a figure's width across
-// the screen, before the one crest lookup that places its feet; the nearest is drawn, once.
-Figure countryAgentAt(int hit, float object, vec2 q, float crest, float terrain, vec2 spots, float dark,
+// visible crest \`crest\`, bare crest \`terrain\`) unless a tree stands there (object 1) or a building
+// does (object 2) whose base on screen (front) lies lower than its feet, or poking over the skyline
+// of a nearer ridge (countrySeen). dark: lamps lit after dark. frame, ridge and depth get the
+// agent's ridge frame (as countrySeen), ridge and depth. Off the figures, the result carries the
+// contact shadow at their feet and, for one too small to draw, its faint colour over the ground.
+// Bounded: COUNTRY_AGENTS candidates, each skipped unless it is out, on a ridge this pixel can show
+// it on, near that ridge's skyline or below it, and within a figure's width across the screen,
+// before the one crest lookup that places its feet; the nearest is drawn, once.
+Figure countryAgentAt(int hit, float object, float front, vec2 q, float crest, float terrain, vec2 spots, float dark,
                       out vec4 frame, out float ridge, out float depth) {
   Figure best = figureNone();
   frame = vec4(0.0);
@@ -534,7 +562,7 @@ Figure countryAgentAt(int hit, float object, vec2 q, float crest, float terrain,
   for (int a = 0; a < candidates; a++) {
     CountryWay way;
     if (!countryWayOf(a, way)) continue;
-    if (way.ridge > float(hit) || (way.ridge > float(hit) - 0.5 && object > 0.5)) continue;
+    if (way.ridge > float(hit) || (way.ridge > float(hit) - 0.5 && object > 0.5 && object < 1.5)) continue;
     if (ridge >= 0.0 && way.ridge > ridge) continue;
     vec4 at = way.ridge < float(hit) - 0.5 ? countrySeen[int(way.ridge)] : vec4(q, crest, terrain);
     if (at.y > at.z + 0.06) continue;
@@ -592,6 +620,8 @@ Figure countryAgentAt(int hit, float object, vec2 q, float crest, float terrain,
     if (abs(at.x - x) > (walker ? 0.45 * h : 0.5 * (0.05 + 0.014) / z) + spread + px) continue;
     if (at.y < foot - 0.15 * h - spread - px || at.y > foot + 1.1 * h + spread + px) continue;
     if (ridge >= 0.0 && i > ridge - 0.5 && foot >= place.y) continue;
+    // On a building's own ridge it shows only standing in front of it, its feet below the base.
+    if (object > 1.5 && i > float(hit) - 0.5 && foot >= front) continue;
     // In a wood it walks under the trees.
     if (i > 1.5 && countryWoodStand(i, x * d, max(v, 0.0), countrySpots(x, spots)) > 0.53) continue;
     chosen = way;
