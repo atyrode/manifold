@@ -638,21 +638,21 @@ it.
   float planetMoonShadow(vec2 q, vec3 centre, float size, vec3 light); // its eclipse on the disc 0..1
   PlanetLook planetGiant(vec2 centre, float radius, vec3 light); // the decoration: palette, thin ring, features off
   vec3 planetOver(vec3 col, vec2 p, float px, PlanetLook look, float tm, float t); // the decoration over an RGB sky
-  | Feature | `orbit` (hero) | `campfire` (decoration) |
-  |---|---|---|
-  | Surface | turbulent belts, rim light | swirled teal bands, rim light |
-  | Atmosphere | sunward halo | airglow |
-  | Clouds, storms | knobs | — |
-  | Aurora | knob; pole tipped toward the eye | knob; pole on the ring's axis |
-  | City lights | knob (+ the M, its own) | knob |
-  | Day cycle | knob | knob |
-  | Ring | banded system, knobs | thin ring, fixed |
-  | Moons | knob; near face-on orbits | knob; on the ring plane, crossing in front of and behind the disc |
-  Another sky adds it in a few lines, its own foreground drawn after:
-  PlanetLook look = planetGiant(vec2(-0.4, 0.75), 0.12, normalize(vec3(-0.6, 0.4, 0.7)));
-  look.visible = sky.night;
-  look.moons = K_planetMoons; // from planetKnobs({ prefix: "planet", moons: true })
-  col = planetOver(col, p, 1.0 / uRes.y, look, uMotionTime, uTime);
+  | Feature                                                                                 | `orbit` (hero)                   | `campfire` (decoration)                                           |
+  | --------------------------------------------------------------------------------------- | -------------------------------- | ----------------------------------------------------------------- |
+  | Surface                                                                                 | turbulent belts, rim light       | swirled teal bands, rim light                                     |
+  | Atmosphere                                                                              | sunward halo                     | airglow                                                           |
+  | Clouds, storms                                                                          | knobs                            | —                                                                 |
+  | Aurora                                                                                  | knob; pole tipped toward the eye | knob; pole on the ring's axis                                     |
+  | City lights                                                                             | knob (+ the M, its own)          | knob                                                              |
+  | Day cycle                                                                               | knob                             | knob                                                              |
+  | Ring                                                                                    | banded system, knobs             | thin ring, fixed                                                  |
+  | Moons                                                                                   | knob; near face-on orbits        | knob; on the ring plane, crossing in front of and behind the disc |
+  | Another sky adds it in a few lines, its own foreground drawn after:                     |
+  | PlanetLook look = planetGiant(vec2(-0.4, 0.75), 0.12, normalize(vec3(-0.6, 0.4, 0.7))); |
+  | look.visible = sky.night;                                                               |
+  | look.moons = K_planetMoons; // from planetKnobs({ prefix: "planet", moons: true })      |
+  | col = planetOver(col, p, 1.0 / uRes.y, look, uMotionTime, uTime);                       |
 
 #### Water
 
