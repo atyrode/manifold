@@ -162,6 +162,11 @@ the scene draws with as its default: `skyKnobs({ stars: 0.6 })` adds `K_stars` (
 `weatherKnobs({ clouds: 0.3 })` adds `K_clouds` (fair-weather cover 0..1, which rain and snow
 thicken). Use `atmosphereGroups.sky` / `.weather` for their lab headings.
 
+Birds come with their library: `birdKnobs({ kind: "gulls", help })` from `src/shaders/lib/birds.ts`
+adds `K_birds` (how often a flight passes, off by default), `K_birdKind` (the species, the GLSL
+`BIRD_*` kind; -1 "mixed" where the scene offers its own mix) and `K_birdFormation` (the formation
+plus one, 0 the species' own), with `birdsGroup` as their heading (see "Birds" below).
+
 A knob with `trigger: n` gets a "now" button that stamps `uTriggers[n]` with the scene clock;
 read it with `sinceTrigger(n)` (huge while idle) in GLSL and `frame.fired[n]` in a sim. Use slots
 0..7; lightning takes the slot you give `weatherKnobs`.
@@ -311,6 +316,7 @@ Random events stop at motion 0 (still pictures, reduced motion), and "now" still
 | Moon | `skyKnobs({ moon })`: `K_moon` | `SKY_MOON_PHASE` | `skyMoonPhase(sky, K_moon)`: the disc and halo in `skyColor`, the light in `sky.moonColor` and `sky.ambient`, the glare in `skyStars`; `skyMoonCover(sky, dir)` coverage |
 | Aurora | `weatherKnobs({ aurora })`: `K_aurora` | `AURORA_CURTAINS` (3) | `auroraM(dir, tm, strength, foot)` radiance, `auroraGlow(tm, strength)` light, `auroraSeen(sky, cloud)` visibility |
 | Meteors | `skyKnobs({ meteors: { trigger } })`: `K_meteors` | | `meteorAge(tm, rate, slot, seed)` schedule, `meteorStreak(q, field, age, seed, foot)` coverage in the scene's frame (`skyAngles(dir)` on a dome) |
+| Birds | `birdKnobs({ kind })` (`shaders/lib/birds.ts`): `K_birds`, `K_birdKind`, `K_birdFormation` | opt-in `birdsGlsl` | `birdFlights(p, sky, cam, tm, pxl)` coverage, depth and albedo (`BirdHit`); `birdFlightsSeen(..., true)` the image in still water; `birdBelowHit` from below |
 
 Frost composes all four in the sky through its window (`frost/index.ts`, `frost/shader.ts`):
 
@@ -382,6 +388,33 @@ no knob.
 The rest have no sky: `bar`, `chladni`, `delta`, `ferro`, `film`, `fractal`, `harmonograph`,
 `hyperbolic`, `incense`, `lava`, `marble`, `pearl`, `pendula`, `petri`, `physarum`, `pond`,
 `prism`, `ripple`, `sandtable`, `shanshui`.
+
+#### Birds
+
+The birds family (`src/shaders/lib/birds.ts`; opt-in: put `birdsGlsl` in the scene's GLSL) decides
+what flies and how: seven species (rooks, swallows, gulls, geese, a buzzard, pigeons, swifts), each
+with its size, colour, wingbeat, party and the share of a scene's lane it keeps to (swallows near
+and low, geese far and high); four formations (solo, a loose party, a V, circling on a thermal);
+and the schedule, four flight slots on the motion clock, still at motion 0. The scene supplies its
+camera (`BirdCamera`), its lanes, hours and weather (`BirdSky`: `birdSky(K_birds * calm, K_birdKind,
+K_birdFormation - 1.0, depths, band, seed)`, then `hours`, `clock`, `swoopTo`, `parallax`), the
+occlusion (`BirdHit.depth` against the depth of its own first surface) and the light. Views:
+side-on for a level pinhole camera (`birdFlights`), the same flights' image in still water
+(`birdFlightsSeen(q, ..., true)`, looked up at the scene's own mirrored sky point, ripples and all),
+and from below for a camera looking up (`birdBelowHit`, the scene moving its birds). Level of
+detail: a bird is never narrower than its species' `cells`, its strokes about a cell wide, so a far
+flight is a few clear marks rather than flicker.
+
+| Scene | Birds | Default | Hidden by | Mirrored in |
+|---|---|---|---|---|
+| `country` | own loop (`countryBirds`: mixed by season and hour, swoops down to its ridges); `songbirds`, `flights` | off, mixed | ridges, trees, buildings, by depth | — |
+| `skyward` | `birdBelowHit` on the scene's own paths (pigeons wheeling over the street, swifts looping above); `birds` range | 0.5, pigeons and swifts | anything nearer along the ray | — |
+| `meadow` | `birdFlights`, `birdKnobs` | off, swallows | the sea of grass by depth; the near blades and clocks | — |
+| `falls` | `birdFlights` (`fallsBirds`), `birdKnobs` | off, swifts | cliff, rim trees and slot walls by depth; spray and the near bank | — |
+| `swell` | `birdFlights`, `birdKnobs` | off, gulls | the sea by depth (crests, with relief) | — |
+| `aurora` | `birdFlights` in `aurFar`, `birdKnobs` | off, geese | the near bank and birches | the fjord |
+| `lake` | `birdFlights` in `lakeBeyond`, `birdKnobs` | off, geese | the cabin and the point's grove | the black ice |
+| `lanterns` | `birdFlights`, `birdKnobs` | off, geese | (nearer than the far bank) | the rippled river |
 
 ### Weather in the world
 
