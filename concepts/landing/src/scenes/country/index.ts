@@ -40,7 +40,7 @@ const params = [
   range("village", "village", "cottages", 11, "How many cottages the village has around its church: 11 is the original village. Fewer leave the ones nearest the church; more fill, in this order, a lane up the knoll beside the church, a lane down toward the river and the ends of the street, so no cottage moves as it grows. Lit windows and chimney smoke come with them.", { min: 2, max: 26, step: 1 }),
   choice("settlements", "hamlets", "hamlets", counts(0, 1, 2, 3), 0, "Small clusters of three to six cottages, some with a chapel, on the far hills: each in its own third of the view, on open, gently sloping ground clear of the woods and in sight over the nearer hills (a third with no such ground has none). Their windows light up at dusk."),
   toggle("settlements", "castle", "castle", false, "A castle on the top of the chalk down, the prominent far hill right of the middle, against the sky: battlemented curtain walls, round towers, a gatehouse and a keep, a few windows lit after dark. The woods clear from the hilltop around it."),
-  range("settlements", "farms", "farmsteads", 0, "Outlying farms among the fields of the nearer hills: a farmhouse, most with a barn, or a lone house, each at the edge of its field, clear of the woods, the river and the village, some with smoke and lit windows. Zero has none; more adds farms without moving the others."),
+  range("settlements", "farms", "farmsteads", 0, "Outlying farms among the fields of the nearer hills: a farmhouse, most with a barn, or a lone house, each at the edge of its field, clear of the woods, the river and the village, some with smoke and lit windows. With tracks shown, a farm near one has a short farm track out to it. Zero has none; more adds farms without moving the others."),
   ...weatherKnobs({ rain: true, snow: true, fog: true, wind: true, lightning: 0 }),
   toggle("manifold", "chalk", "chalk M", false, "A giant M cut into the turf of a far hillside, in the manner of the Uffington White Horse."),
   range("fields", "crops", "crops weight", 100, "Relative weight of the original seasonal crops. Weights are normalized together: 2 crops and 1 wildflowers gives about two crop fields for each flower field. Zero excludes a type; all zero restores crops.", { max: 100, step: 1 }),
@@ -68,6 +68,8 @@ export function countryFeatures(values: Readonly<Record<string, number>>): Recor
     // The village past its first eleven cottages (settlements.ts).
     COUNTRY_HAS_GROWTH: (values.village ?? 0) > 11 ? 1 : 0,
     COUNTRY_HAS_SETTLEMENTS: on("hamlets", "farms", "castle"),
+    // The farmsteads' farm tracks on to the network (settlements.ts, routes.ts).
+    COUNTRY_HAS_SPURS: (values.farms ?? 0) > 0 && (values.tracks ?? 0) > 0 ? 1 : 0,
     // Flower and pasture fields (fields.ts, animals.ts); the herds and fences in the pastures.
     COUNTRY_HAS_FIELDS: on("wildflowers", "lavender", "sunflowers", "pasture"),
     COUNTRY_HAS_HERDS: on("pasture"),
@@ -84,7 +86,7 @@ export function countryFeatures(values: Readonly<Record<string, number>>): Recor
 }
 
 /** Every optional part compiled in: for checks that draw many settings with one program. */
-export const COUNTRY_FULL = countryFeatures({ walkers: 1, tracks: 1, river: 1, village: 26, hamlets: 3, pasture: 1, songbirds: 1, chalk: 1, rain: 1, snow: 1, fog: 1, ripples: 1, moon: 0.5 });
+export const COUNTRY_FULL = countryFeatures({ walkers: 1, tracks: 1, river: 1, village: 26, hamlets: 3, farms: 1, pasture: 1, songbirds: 1, chalk: 1, rain: 1, snow: 1, fog: 1, ripples: 1, moon: 0.5 });
 
 export const countryScene: SceneDef = {
   id: "country",

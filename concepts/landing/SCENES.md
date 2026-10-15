@@ -220,15 +220,24 @@ Overlooking rolling hills with a village in the distance and forest around.
 - Night sky: the shared components: `stars` (density, 0.4 the original sky), the `moon`'s phase
   (full by default; it lights the land, clouds and river less as it wanes) and `shooting stars`
   (off by default, "now" on trigger 1) streaking through the gaps of the deck over the far hills.
-- River: `wind ripples` (0 by default: the original value-noise shimmer) brings in the shared
+- River: it mirrors the sky as the cloud deck covers it, as the puddles on the tracks do (it used
+  to mirror a cloudless sky whatever the cover: the woods' canopy cover shadowed the sky's under
+  one name). `wind ripples` (0 by default: the original value-noise shimmer) brings in the shared
   water's ripples tier: cat's-paws drifting downwind break the mirrored sky into streaks.
+- Farm tracks: with farmsteads and tracks both on, a farm whose yard lies near the network gets a
+  short straight farm track from just outside its house and barn to the nearest point of the
+  nearest track, coming in as plainly as that track does as `tracks` brings it in. It keeps to its
+  own bank of the river and never moves a building; it opens the hedges it crosses, hedgerow trees
+  rooted on it give way, fences leave a gap and herds keep off it (their wall along it, and
+  `countryRouteDistance` for every animal), as for the tracks.
 - Cost: every optional part (walkers and carts, the track network, hedgerow clearing, village
-  growth, hamlets, farms and castle, flower and pasture fields, herds and fences, birds and the
-  murmuration, the chalk M, falling rain and snow, fog, wind ripples, a moon below full) is compiled
-  into the program only while its knobs are on (`countryFeatures`, SceneDef.featuresFor); turning
-  one on builds that program once, the old frame holding meanwhile. The default program draws
-  the same picture bit for bit at about the cost of the countryside before its woodland, routes,
-  settlements and herds were added (SwiftShader, 640×400).
+  growth, hamlets, farms and castle, the farm tracks, flower and pasture fields, herds and fences,
+  birds and the murmuration, the chalk M, falling rain and snow, fog, wind ripples, a moon below
+  full) is compiled into the program only while its knobs are on (`countryFeatures`,
+  SceneDef.featuresFor); turning one on builds that program once, the old frame holding
+  meanwhile. The default program draws the same picture bit for bit at about the cost of the
+  countryside before its woodland, routes, settlements and herds were added (SwiftShader,
+  640×400).
 - Fields: independently weight original seasonal crops, wildflowers, lavender and sunflowers from
   0–100. Weights are relative, not area percentages: 2:1:1:0 gives approximately half crop fields,
   a quarter wildflowers and a quarter lavender, with no sunflowers. All zero falls back to crops.

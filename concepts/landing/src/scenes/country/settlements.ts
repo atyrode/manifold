@@ -496,6 +496,33 @@ void countryHamlets(vec2 q, float ground, float i, vec2 spots, float tod, float 
   }
 }
 
+// The hamlets on ridge \`ridge\` that countryHamlets would return at screen x for the farms there to
+// keep clear of (near0, near1), and which hamlet each is (which.x, which.y): for looking at the
+// settlements without drawing them.
+void countryHamletsNear(float x, float ridge, vec2 spots, out vec4 near0, out vec4 near1, out vec2 which) {
+  near0 = vec4(0.0);
+  near1 = vec4(0.0);
+  which = vec2(0.0);
+  if (K_hamlets < 0.5 || ridge < 2.5) return;
+  float aspect = uRes.x / uRes.y;
+  float turn = floor(3.0 * hash12(vec2(3.3, 7.9) + countrySeed));
+  for (int k = 0; k < 3; k++) {
+    float j = float(k);
+    if (j >= K_hamlets) break;
+    vec2 win = aspect * (vec2(-0.48, -0.16) + 0.32 * mod(j + turn, 3.0));
+    if (x < win.x - 0.3 || x > win.y + 0.3) continue;
+    vec4 site = countryHamletSite(j, win, spots);
+    if (site.w != ridge) continue;
+    if (near0.w < 0.5) {
+      near0 = site;
+      which.x = j;
+    } else {
+      near1 = site;
+      which.y = j;
+    }
+  }
+}
+
 // The castle, if K_castle, on ridge 3 (q in its frame; L: its layer; ground: its bare crest at q.x):
 // on top of the chalk down, the third ridge's raised hill right of the middle (countryGroundCrest),
 // in sight over the nearer ridges with the sky above its towers. A hill fort above the chalk figure,
@@ -661,6 +688,84 @@ void countryFarms(vec2 q, float ground, float i, vec4 L, vec2 spots, vec4 near0,
   }
 }
 
+#if COUNTRY_HAS_SPURS
+const float COUNTRY_SPUR_YARD = 0.016;   // from a farm track's end to its farm buildings' footprints, world
+const float COUNTRY_SPUR_LONG = 0.5;     // the longest farm track, world
+const float COUNTRY_SPUR_ACROSS = 0.45;  // the farthest a farm track reaches across the slope from its farm site, world
+const float COUNTRY_SPUR_NEAR = 0.06;    // the farthest from a pixel's ground point its farm tracks are asked about, world
+
+// The farm tracks of the farms on ridge i (countryFarmSite, countryFarmPlan) that can come within
+// COUNTRY_SPUR_NEAR of world x wx there (routes.ts reads them): each the straight way from the
+// farm's yard, just outside its house's and barn's footprints, to the nearest point of the network
+// (countryTrackFoot), only where that track shows, the way is short and, on the second ridge, keeps
+// to its own bank of the broadest river. line gets its yard end (xy) and junction (zw), slope points
+// (world); show how plainly its track shows there, 0 for none. Each farm's track is a pure function
+// of its slot, so every pixel finds the same one.
+void countryFarmSpurs(float i, float wx, vec2 spots, out vec4 line[COUNTRY_SPURS], out float show[COUNTRY_SPURS]) {
+  for (int j = 0; j < COUNTRY_SPURS; j++) {
+    line[j] = vec4(0.0);
+    show[j] = 0.0;
+  }
+  if (K_farms <= 0.0 || i < 0.5 || i > 3.5) return;
+  float d = countryLayer(i).x;
+  vec4 near0 = vec4(0.0);
+  vec4 near1 = vec4(0.0);
+  vec2 which = vec2(0.0);
+  countryHamletsNear(wx / d, i, spots, near0, near1, which);
+  // A track keeps within COUNTRY_SPUR_ACROSS of its farm site, and that within 0.35 of its slot's
+  // middle (below), so these slots hold every one that can come near wx.
+  float first = floor((wx - 0.65 - COUNTRY_SPUR_ACROSS - COUNTRY_SPUR_NEAR) / COUNTRY_FARM_SLOT);
+  for (int j = 0; j < COUNTRY_SPURS; j++) {
+    float k = first + float(j);
+    vec4 site = countryFarmSite(i, k, spots, near0, near1, -1e3);
+    if (site.w < 0.5 || abs(site.x - (k + 0.5) * COUNTRY_FARM_SLOT) > 0.35) continue;
+    CountryHouse house;
+    CountryHouse barn;
+    countryFarmPlan(site, i, spots, house, barn);
+    if (house.size <= 0.0) continue;
+    vec3 home = countryHouseDisc(house, countryGroundCrest(i, house.base.x, spots), d);
+    float seen = 0.0;
+    vec2 foot = countryTrackFoot(i, home.xy, spots, seen);
+    // Across at the house's own depth, as the tracks measure.
+    vec2 g = vec2(countryFaceDepth(countryDrop(max(home.y, 0.0), d), d) / d, 1.0);
+    vec2 to = (foot - home.xy) * g;
+    float len = length(to);
+    vec2 dir = to / max(len, 1e-6);
+    // Out of the yard past the house's footprint, and the barn's where the way passes it.
+    float start = home.z + COUNTRY_SPUR_YARD;
+    if (barn.size > 0.0) {
+      vec3 shed = countryHouseDisc(barn, countryGroundCrest(i, barn.base.x, spots), d);
+      vec2 b = (shed.xy - home.xy) * g;
+      float along = dot(b, dir);
+      float r = shed.z + COUNTRY_SPUR_YARD;
+      float off = dot(b, b) - along * along;
+      if (along > 0.0 && off < r * r) start = max(start, along + sqrt(r * r - off));
+    }
+    vec2 yard = home.xy + dir * start / g;
+    if (len - start < COUNTRY_SPUR || len > COUNTRY_SPUR_LONG || max(abs(yard.x - site.x), abs(foot.x - site.x)) > COUNTRY_SPUR_ACROSS) continue;
+    if (i < 1.5) {
+      // On its own bank all the way, its edges clear of the broadest river's reeds.
+      float source = countryRiverStart(spots);
+      float bank = yard.x - countryRiver(max(yard.y, 0.0), source).x;
+      for (int n = 0; n < 5; n++) {
+        vec2 at = mix(yard, foot, 0.25 * float(n));
+        if (countryRiverReach(i, at, spots) < 1.5 * COUNTRY_SPUR || bank * (at.x - countryRiver(max(at.y, 0.0), source).x) <= 0.0) seen = 0.0;
+      }
+    }
+    line[j] = vec4(yard, foot);
+    show[j] = seen;
+  }
+}
+
+// Looks up the farm tracks that can reach world x wx on ridge i for countrySpurAt (routes.ts): once
+// per pixel for the second ridge, whose hedgerow trees, fences and herds keep off them, and once more
+// for a farther ridge the pixel shows.
+void countrySpursFor(float i, float wx, vec2 spots) {
+  countrySpurRidge = i;
+  countryFarmSpurs(i, wx, spots, countrySpurLine, countrySpurShow);
+}
+#endif
+
 // The buildings standing on ridge i that cover the pixel q (in the ridge's frame; ground: its bare
 // crest at q.x; L: countryLayer(i)), and their smoke and window glow there: v, the village's on this
 // ridge (countryVillage on the third, none elsewhere), with the hamlets, farms and castle the knobs
@@ -722,24 +827,17 @@ float countrySettlementDistance(float ridge, vec2 w, vec2 spots) {
   }
   vec4 near0 = vec4(0.0);
   vec4 near1 = vec4(0.0);
-  if (K_hamlets > 0.5 && ridge > 2.5) {
-    float aspect = uRes.x / uRes.y;
-    float turn = floor(3.0 * hash12(vec2(3.3, 7.9) + countrySeed));
-    for (int k = 0; k < 3; k++) {
-      float j = float(k);
-      if (j >= K_hamlets) break;
-      vec2 win = aspect * (vec2(-0.48, -0.16) + 0.32 * mod(j + turn, 3.0));
-      if (x < win.x - 0.3 || x > win.y + 0.3) continue;
-      vec4 site = countryHamletSite(j, win, spots);
-      if (site.w != ridge) continue;
-      if (near0.w < 0.5) near0 = site;
-      else near1 = site;
-      float m = countryHamletHouses(j);
-      for (int n = 0; n < 7; n++) {
-        if (float(n) > m) break;
-        CountryHouse c = countryHamletBuilding(j, float(n), m, site, spots);
-        if (c.size > 0.0) best = min(best, countryHouseDistance(c, countryGroundCrest(ridge, c.base.x, spots), d, w));
-      }
+  vec2 which = vec2(0.0);
+  countryHamletsNear(x, ridge, spots, near0, near1, which);
+  for (int h = 0; h < 2; h++) {
+    vec4 site = h == 0 ? near0 : near1;
+    if (site.w < 0.5) continue;
+    float j = h == 0 ? which.x : which.y;
+    float m = countryHamletHouses(j);
+    for (int n = 0; n < 7; n++) {
+      if (float(n) > m) break;
+      CountryHouse c = countryHamletBuilding(j, float(n), m, site, spots);
+      if (c.size > 0.0) best = min(best, countryHouseDistance(c, countryGroundCrest(ridge, c.base.x, spots), d, w));
     }
   }
   if (K_farms > 0.0 && ridge > 0.5 && ridge < 3.5) {
