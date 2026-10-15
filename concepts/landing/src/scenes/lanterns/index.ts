@@ -3,6 +3,7 @@
 // eddies along our bank, potential flow round two stones) in sim.ts; shader.ts traces each as a
 // small glowing box, with its reflection in the rippled river, the far bank, the hills and the sky.
 import { choice, counts, feature, range, seed, toggle, type ParamDef } from "../../params.ts";
+import { birdKnobs, birdsGroup } from "../../shaders/lib/birds.ts";
 import { atmosphereGroups, skyKnobs, skyTheme, weatherKnobs } from "../atmosphere.ts";
 import type { SceneDef } from "../types.ts";
 import { lanternsGlsl } from "./shader.ts";
@@ -18,6 +19,7 @@ const params: readonly ParamDef[] = [
   range("water", "mist", "mist", 0.35, "Mist lying on the river: the far bank fades into it, and each lantern wears a halo."),
   ...skyKnobs({ time: 0.79 }),
   ...weatherKnobs({ rain: true, wind: true }),
+  ...birdKnobs({ kind: "geese", help: "Birds crossing the evening sky above the far bank, geese by default, a skein against the afterglow and its image in the river; by day and into the dusk, few in the rain." }),
   toggle("manifold", "mark", "M lantern", false, "One lantern of indigo paper with the Manifold M cut through it, glowing amber. Set on the water from this bank as it comes on, it keeps to the near water where the M reads, turns back to face you, and comes round again soon after it has drifted away. Now: set it on the water again.", { trigger: 1 }),
 ];
 
@@ -33,6 +35,7 @@ export const lanternsScene: SceneDef = {
     water: { title: "Water", blurb: "How the river's surface moves and mirrors the lights, and the mist lying on it." },
     sky: atmosphereGroups.sky,
     weather: { title: atmosphereGroups.weather.title, blurb: "Rain brings cloud down over the dusk, rings the whole river, glistens on the temple roofs and streaks amber only where it falls through the lantern light; in a downpour the far bank fades and candles gutter. Wind slants it, ruffles the river and leans on the lanterns." },
+    birds: birdsGroup,
     manifold: { title: "Manifold mark", blurb: "A landmark of its own: one lantern among the others, its indigo paper cut with the M." },
   },
   glsl: lanternsGlsl,

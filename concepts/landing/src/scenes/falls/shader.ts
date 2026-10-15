@@ -1,10 +1,13 @@
 // The waterfall scene: a cliff across the frame, a fall pouring from a notch in its lip into a
-// plunge pool, seen level from the pool's edge. Sky, weather and fog come from src/shaders/lib.
+// plunge pool, seen level from the pool's edge. Sky, weather and fog come from src/shaders/lib;
+// the birds (K_birds, K_birdKind, K_birdFormation; off by default) from shaders/lib/birds.ts.
+import { birdsGlsl } from "../../shaders/lib/birds.ts";
 
 /** Seconds of the waterfall's entrance (the camera tilts down the fall to the pool) and exit (it tilts back up into the spray); SceneDef.passage. */
 export const FALLS_PASSAGE = { enter: 2.8, exit: 1.4 } as const;
 
 export const fallsGlsl = `
+${birdsGlsl}
 // ---- falls ----
 // Frame: q = ((uv.x - 0.5) * aspect, uv.y): x in screen heights from the centre, y the screen
 // height. The cliff stands at the back of the pool; the camera stands level at the pool's edge,
@@ -820,8 +823,23 @@ float fallsSpring(float x) {
   return 1.0 + u * u * (2.2 * u + 1.2);
 }
 
-// Waterfall knobs: K_flow, K_mist, K_rainbow, K_gorge, K_greenery, K_fireflies, K_time, K_cycle,
-// K_rain, K_fog, K_wind, K_mark; uWeather.x is how wet the rain has left the place.
+// ---- birds ----
+// The birds over the gorge at frame point q (the passage's frame; the pointer's parallax is added
+// per flight) on the motion clock tm (the shared birds; off by default): crossing it by day, swifts
+// by default, drawn twice life size, few in the rain, a swooping party skimming the pool. No
+// occlusion: sceneFalls hides them behind what it meets nearer.
+BirdHit fallsBirds(vec2 q, float tm) {
+  BirdSky flights = birdSky(K_birds * smoothfall(0.5, 0.1, K_rain), K_birdKind, K_birdFormation - 1.0, vec2(8.0, 45.0), vec2(0.42, 1.0), vec2(3.7, 11.9));
+  flights.hours = vec4(0.22, 0.26, 0.8, 0.84);
+  flights.clock = vec2(K_time, K_cycle);
+  flights.swoopTo = FALLS_CAM + 0.5;
+  flights.parallax = -uPointer * vec2(0.006, 0.003) * FALLS_CLIFF_Z;
+  return birdFlights(q, flights, BirdCamera(FALLS_EYE, 0.5 / tan(0.5 * FALLS_FOV), FALLS_CAM, 1.0, 2.0), tm, 1.0 / uRes.y);
+}
+
+// Waterfall knobs: K_flow, K_mist, K_rainbow, K_gorge, K_greenery, K_fireflies, K_birds,
+// K_birdKind, K_birdFormation, K_time, K_cycle, K_rain, K_fog, K_wind, K_mark; uWeather.x is how
+// wet the rain has left the place.
 Shade sceneFalls(vec2 screenUv, vec2 cell, float t) {
   fallsSetGorge(K_gorge);
   float tm = uMotionTime;
@@ -1089,6 +1107,16 @@ Shade sceneFalls(vec2 screenUv, vec2 cell, float t) {
     zm = FALLS_CAM * depth;
   }
 
+  // The birds (fallsBirds): hidden behind whatever this line of sight meets nearer than they are,
+  // else the surface the rain stops at. Drawn once the falling water and the fog are, before the
+  // spray and the near bank.
+  BirdHit bird = birdNone();
+  if (K_birds > 0.0) {
+    bird = fallsBirds(q, tm);
+    if (bird.cover > 0.5 && bird.depth < zm) zm = bird.depth;
+    else bird.cover = 0.0;
+  }
+
   // The rain between the eye and the nearest surface on this line of sight.
   float rainDepth = 1.0 - exp(-(fern > 0.5 ? FALLS_FERN_Z : qb.y < bankTop ? FALLS_BANK_Z : zm) / FALLS_RAIN_Z);
   Precip pr = Precip(0.0, 0.0, 0.0);
@@ -1131,6 +1159,13 @@ Shade sceneFalls(vec2 screenUv, vec2 cell, float t) {
   }
 
   col = mix(col, haze, fogAmount(K_fog, fogDist, clamp((qc.y - FALLS_POOL) / 0.6, 0.0, 1.0)));
+  if (bird.cover > 0.5) {
+    col = mix(bird.albedo * (L.amb * 1.2 + L.sunCol * 0.4 + L.moonCol * 0.3), haze, 1.0 - exp(-bird.depth / 250.0));
+    col = mix(col, haze, fogAmount(K_fog, mix(0.1, 0.85, clamp(bird.depth / 90.0, 0.0, 1.0)), clamp((qc.y - FALLS_POOL) / 0.6, 0.0, 1.0)));
+    white = 0.0;
+    glint = 0.0;
+    markAccent = 0.0;
+  }
 
   // Spray: the plume and fans from the plunge, and spray hugging the lower sheet and its frayed
   // edges.

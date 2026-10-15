@@ -3,6 +3,7 @@
 // by the shader (shader.ts) and the simulation (sim.ts), bows the near blades, rocks the dandelion
 // clocks, pulls their seeds off one by one and carries them glowing up and away.
 import { counts, feature, range, seed, type ParamDef } from "../../params.ts";
+import { birdKnobs, birdsGroup } from "../../shaders/lib/birds.ts";
 import { atmosphereGroups, skyKnobs, weatherKnobs } from "../atmosphere.ts";
 import type { SceneDef } from "../types.ts";
 import { meadowGlsl } from "./shader.ts";
@@ -19,6 +20,7 @@ const params: readonly ParamDef[] = [
   ...skyKnobs({ time: 0.72 }),
   range("weather", "haze", "haze", 0.45, "Golden dust and pollen in the low light: the distance softens into warm haze and the air glows around the sun."),
   ...weatherKnobs({ rain: true }),
+  ...birdKnobs({ kind: "swallows", help: "Birds crossing over the field by day, swallows by default, now and then swooping down to skim the grass tops; the grass hides any that dip behind it, and few fly in the rain." }),
   feature("manifold", "mown", "mown M", false, "visibility", 0.7, "The Manifold M mown into the down beyond the trees, a path of pale stubble. 'Now' brings it out for a while and the low sun glints along it.", { trigger: MARK_TRIGGER }),
 ];
 
@@ -35,6 +37,7 @@ export const meadowScene: SceneDef = {
     wind: { title: "Wind", blurb: "Which way the wind blows, and the gusts it sends rolling across the field." },
     sky: atmosphereGroups.sky,
     weather: { title: "Air", blurb: "Golden haze, and rain: a grey drizzle misting the distance, steady rain hanging in shafts over the hills, a downpour driven across the field in curtains by the gusts. The grass darkens, glistens and bows, beads and drips; the clocks close and hold their seeds." },
+    birds: birdsGroup,
     manifold: { title: "Manifold mark", blurb: "The M mown into a far hillside." },
   },
   glsl: meadowGlsl,

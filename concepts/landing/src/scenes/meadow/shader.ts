@@ -31,9 +31,11 @@
 // term of the gust field, in the sim too. At rest, none of it changes a pixel.
 //
 // Knobs read here: K_grassHeight, K_grassDensity, K_meadowSeed, K_wind, K_gusts (and its "now"),
-// K_gustRate, K_time, K_cycle, K_haze, K_rain, K_mown (and its "now"); uWeather.x for how wet the
-// grass is. K_dandelions only reaches the shader through the clocks the simulation grows.
+// K_gustRate, K_time, K_cycle, K_haze, K_rain, K_mown (and its "now"), K_birds, K_birdKind,
+// K_birdFormation (the shared birds, shaders/lib/birds.ts); uWeather.x for how wet the grass is.
+// K_dandelions only reaches the shader through the clocks the simulation grows.
 import { glslFloat } from "../../shaders/glsl.ts";
+import { birdsGlsl } from "../../shaders/lib/birds.ts";
 import {
   GUST_TRIGGER,
   MARK_TRIGGER,
@@ -79,6 +81,7 @@ const ROW = 0.1;
 const FIELD_NEAR = 3;
 
 export const meadowGlsl = `
+${birdsGlsl}
 // ---- the view, the gust field and the near grass: constants shared with sim.ts ----
 const float MEADOW_HORIZON = ${glslFloat(MEADOW_HORIZON)};
 const float MEADOW_FOCAL = ${glslFloat(MEADOW_FOCAL)};
@@ -1113,6 +1116,21 @@ Shade sceneMeadow(vec2 uv, vec2 cell, float t) {
     }
   }
   if (uv.y < MEADOW_HORIZON) col = meadowGrass(uv, aspect, col, wind, tm, sky.sun.y, toward, amb, sun, haze, breath, fieldScale, wet, rainExt, deck, overcast, aa, eye, moving, zHit, gHit);
+  // Birds over the field (the shared birds; off by default): by day, nearer than the tree line, so
+  // in front of the distance and behind any grass nearer than they are; few in the rain. A swooping
+  // party skims the grass tops at 1.6 m. Lit by the sky, hazed by their own distance.
+  if (K_birds > 0.0) {
+    BirdSky flights = birdSky(K_birds * smoothfall(0.5, 0.1, rain), K_birdKind, K_birdFormation - 1.0, vec2(12.0, 100.0), vec2(MEADOW_HORIZON + 0.04, 0.92), vec2(K_meadowSeed * 0.37, 5.1));
+    flights.hours = vec4(0.22, 0.26, 0.8, 0.84);
+    flights.clock = vec2(K_time, K_cycle);
+    flights.swoopTo = 1.6;
+    BirdHit bird = birdFlights(vec2(cx, uv.y), flights, BirdCamera(MEADOW_HORIZON, MEADOW_FOCAL, eye, 1.0, 1.5), tm, aa);
+    if (bird.cover > 0.5 && bird.depth < zHit) {
+      col = mix(bird.albedo * (amb * 1.2 + sun * 0.3), haze, 1.0 - exp(-bird.depth * (0.004 + rainExt)));
+      accent = 0.0;
+      zHit = bird.depth;
+    }
+  }
   // Golden haze: light scattered toward the eye around the sun, over everything beyond the near grass.
   col += sun * (0.05 + 0.3 * K_haze) * exp(-5.0 * length(dir - sky.sun)) * (1.0 - overcast);
   // Heavy rain: the gusts drive curtains of it across the field and the sky, with the honami bands.
