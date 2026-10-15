@@ -60,7 +60,7 @@ export function pondSim(gl: WebGL2RenderingContext, params: readonly ParamDef[])
   let plantsOn = false;
   let leaves = false;
   let layoutKey = "";
-  let order = new Int32Array(0);
+  let order: Int32Array = new Int32Array(0);
   let drawn = false;
 
   /** Rebuild the plants and the canopy's request from this frame's knobs. */
