@@ -4,12 +4,12 @@
 import { h } from "./dom.ts";
 import { icon, type IconName } from "./icons.ts";
 
-let openPopover: Popover | undefined;
-
 export class Popover {
   readonly el: HTMLElement;
   readonly button: HTMLButtonElement;
   readonly #onOpen: (() => void) | undefined;
+  /** The one popover open at a time, if any. */
+  static #open: Popover | undefined;
 
   constructor(
     layer: HTMLElement,
@@ -58,9 +58,9 @@ export class Popover {
   toggle(open: boolean, focus = false): void {
     if (open === this.open) return;
     if (open) {
-      openPopover?.toggle(false);
-      openPopover = this;
-    } else if (openPopover === this) openPopover = undefined;
+      Popover.#open?.toggle(false);
+      Popover.#open = this;
+    } else if (Popover.#open === this) Popover.#open = undefined;
     this.el.hidden = !open;
     this.button.setAttribute("aria-expanded", String(open));
     this.button.classList.toggle("active", open);
@@ -100,17 +100,18 @@ export class Popover {
 
   /** Close whichever popover is open (the lab hides, a press lands elsewhere). */
   static closeAll(): void {
-    openPopover?.toggle(false);
+    Popover.#open?.toggle(false);
   }
 
   static placeOpen(): void {
-    openPopover?.place();
+    Popover.#open?.place();
   }
 
   /** Whether `target` is inside the open popover or on its button. */
   static owns(target: EventTarget | null): boolean {
-    if (!openPopover || !(target instanceof Node)) return false;
-    return openPopover.el.contains(target) || openPopover.button.contains(target);
+    const open = Popover.#open;
+    if (!open || !(target instanceof Node)) return false;
+    return open.el.contains(target) || open.button.contains(target);
   }
 }
 
