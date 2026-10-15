@@ -32,6 +32,7 @@ import { petriRegimesVerify } from "./src/scenes/petri/regimes.verify.ts";
 import { verifyPondKoi } from "./src/scenes/pond/koi.verify.ts";
 import { verifyPlanet } from "./src/scenes/campfire/planet.verify.ts";
 import { streetSnowCheck } from "./src/scenes/street/snow.verify.ts";
+import { verifyPondPlants } from "./src/scenes/pond/plants.verify.ts";
 
 function check(ok: boolean, message: string): void {
   if (!ok) throw new Error(message);
@@ -584,6 +585,7 @@ export const checks: readonly Check[] = [
   ["planet", verifyPlanet],
   ["streetSnow", streetSnowCheck],
   ["countrySettlements", verifyCountrySettlements],
+  ["pondPlants", verifyPondPlants],
 ];
 
 /**

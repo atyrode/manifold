@@ -390,6 +390,34 @@ other program pays for it: `planetGlsl` and `birdsGlsl` (`src/shaders/lib/`), `w
 `causticsGlsl` (`src/shaders/`). Such a component reads no knob defines (they are the scene's own):
 the scene passes every value as an argument, and its knobs come from a shared builder where the
 component has one (`planetKnobs`).
+### Rooted plants (`src/sims/plants.ts`, `src/shaders/lib/plants.ts`, `src/scenes/plants.ts`)
+One plant component for every scene that grows things. The CPU side (`RootedPlants`) owns what
+happens: a scene lays out sites (where, which way, how lush and wet, under water or not) and picks
+a species for each (`plantFitness` weighs a species against a site's moisture); the plant keeps its
+root and structure (axes carrying leaves, fronds, blades, flowers, roots) from frame to frame. Each
+organ bends on a damped spring under the breeze, eddies and gust fronts (`GustTrain`) or, under
+water, the current's quadratic drag; a growth clock unfolds, ages and replaces leaves; the year
+(`season` 0..1 from spring; `PLANT_SUMMER` while the knob is off) turns, sheds and flowers them.
+The scene owns how they look: its projection, palette, light, what hides them and the passage.
+- **Tiers.** Two drawing tiers over the same organs: per fragment, `plantsGlsl` (opt-in, interpolate
+  it) reads `PlantTexture` records (`plantOrgan`) and draws shared shapes (`plantFrond`, `plantArc`)
+  for tens of organs a pixel looks at (falls' bank, the tide pool's grid-slotted holdfasts); or
+  `PlantSheet` rasterises hundreds into a sheet the scene samples (`plantSheetGlsl` decodes it; the
+  pond). A compile-time tier `PLANT_DETAIL` (`SceneDef.features`, default 2) drops fine shape
+  detail (1: silhouettes) for a scene that never shows it.
+- **Level of detail.** Each organ's projected length in cells (`cells` per unit, per site for a
+  camera) sets its tier: full, simplified (a flat-shaded rounder silhouette, no taper), or not
+  drawn; simplified organs follow their spring's balance instead of integrating it. Shapes taking
+  `foot` fade detail finer than two cells to its mean (`plantKeep`) and are bit for bit unchanged
+  where it is resolved.
+- **Controls.** `plantKnobs({ group, season, growth, gusts })` gives `season`, `growth` and `gusts`
+  (with its trigger), all off: adopting them never changes a picture.
+- **Consumers.** pond (sheet tier, the border), falls (the near bank's ferns per fragment; the
+  ledge ferns draw the same `plantFrond` from hashes), tidepool (kelp, surfgrass and anemones in
+  the water's flow, read back from the GPU). Next: meadow (near grass and dandelion stems on its
+  own gust field), garden (border plantings, not the maple), country (near hedgerows only),
+  fireflies (prop roots, crowns stirring under the breeze), kelp (stipes stay on Verlet).
+
 ### The giant planet (`src/shaders/lib/planet.ts`)
 One ringed gas giant, one implementation, that any sky composes: Orbit's subject and Campfire's
 scenery. It is opt-in: put `${planetGlsl}` at the top of the scene's GLSL, as both of them do. The
@@ -554,7 +582,8 @@ when the seed changes while paused.
 
 Read knobs through a `KnobReader` (`src/params.ts`): `new KnobReader("<scene>", params, keys)`
 throws a KnobError at once for a missing key; then `value(frame, key)` is the knob as the shader
-sees it, `amount(frame, key)` a feature's amount even while it is off, `initial(key)` its default
+sees it, `amount(frame, key)` a feature's amount even while it is off, `on(frame, key)` whether a
+feature is switched on (for one whose amount may be 0 while on), `initial(key)` its default
 (for constructors), `pick(frame, key, list, fallback)` a choice's item, and `trigger(key)` its
 trigger slot. `frame.fired[slot]` is true on the one frame after a "now" press stamped that slot:
 several presses between two frames give one edge, a sim's first frame gives none, and re-entering
@@ -587,10 +616,20 @@ Helpers in `src/sims/` (each file's header has the full API and a usage example)
   slide (follow a moving point, gather at one, flee, wander, school, keep personal space, soft
   walls) for a species' speeds and turning, packed for the shader; GLSL to read their poses and draw
   them from above with a koi coat or side-on (pond, kelp). The scene supplies the water and light.
+  Species: `KOI` (pond), `BLENNY` with `FISH_BLENNY` (the tide pool's rock pool fish).
+- `RootedPlants`, `PlantTexture`, `plantClimate` (`plants.ts`): the plant component (see "Rooted
+  plants" above): persistent plants rooted at the scene's sites, organs on springs under wind, gust
+  fronts or current, a growth clock, the year, and a detail tier per organ from its projected size;
+  records for `plantsGlsl`. `PlantSheet` (`plantsheet.ts`): the same organs rasterised on the GPU
+  into a mipmapped RGBA8 sheet from a sprite atlas, for hundreds of organs (pond).
+- `GpuReadback` (`readback.ts`): a small float target copied back to the CPU behind a fence and
+  picked up a frame or two later, without stalling (the tide pool's flow for its plants and fish).
 - `mulberry32` and `Random` (`random.ts`): the seeded generator, bit-exact with the scenes' copies
   so a seed keeps its arrangement; `Random` adds `range`, `int` and `pick` and re-seeds in place.
   Import it rather than carrying a copy (ferro's xorshift is deliberate: its pours depend on it).
-- `clamp`, `lerp`, `smoothstep`, `fract`, `hash31` (`math.ts`): import them rather than a local copy.
+- `clamp`, `lerp`, `smoothstep`, `fract`, `hash31` (`math.ts`): import them rather than a local copy;
+  `glslHash12` and `glslHash22`: common.ts's hashes in float32 steps, for a sim that must place
+  things where its shader hashes them (pond's koi loops, falls' ferns, the tide pool's holdfasts).
 - `LevelCamera` (`camera.ts`): world ↔ screen for the level side-on camera (horizon, eye height,
   focal): move things in the world and project them, so receding slows them across the frame and
   draws them to the horizon; `groundDrop` / `groundDepth` map ground depth to the screen height

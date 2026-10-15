@@ -195,7 +195,7 @@ export interface PlantAir {
   /** The steady breeze across the scene (push units: 1 a fresh breeze); gusts blow along it (+x when still). */
   x: number;
   y: number;
-  /** Eddies: wandering push as a share of the breeze, plus `calm`, a stir of their own in still air. */
+  /** Eddies: wandering push as a share of the breeze, plus `calm`, a stir of their own in still air (and, for aquatic plants, still water). */
   eddy: number;
   calm: number;
   /** Gust amount 0..1 (0: none of their own; "now" still sends one), and "now" this frame. */
