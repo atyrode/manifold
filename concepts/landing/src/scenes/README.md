@@ -164,6 +164,11 @@ thicken). A scene with a night of its own (an hour knob, a painted sky) takes th
 the clock from `skyComponentKnobs({ meteors, group })`. Use `atmosphereGroups.sky` / `.weather` for
 their lab headings, `.skyNight` for a sky group that also holds components.
 
+Birds come with their library: `birdKnobs({ kind: "gulls", help })` from `src/shaders/lib/birds.ts`
+adds `K_birds` (how often a flight passes, off by default), `K_birdKind` (the species, the GLSL
+`BIRD_*` kind; -1 "mixed" where the scene offers its own mix) and `K_birdFormation` (the formation
+plus one, 0 the species' own), with `birdsGroup` as their heading (see "Birds" below).
+
 A knob with `trigger: n` gets a "now" button that stamps `uTriggers[n]` with the scene clock;
 read it with `sinceTrigger(n)` (huge while idle) in GLSL and `frame.fired[n]` in a sim. Use slots
 0..7; lightning takes the slot you give `weatherKnobs`.
@@ -350,6 +355,7 @@ Random events stop at motion 0 (still pictures, reduced motion), and "now" still
 | Canopy weather | `weatherKnobs({ rain, wind })`: `K_rain`, `K_wind`; the scene's seed knob | | `canopyWeather(sky, K_rain)` light (the sky under the rain's cloud, the deck's brightness, the key's side and slant); `canopyRaySources`, `canopyGap(p, wind, seed, raySrc)` coverage (where the rain pours in); `canopyGapSky(w, washed, dir, stars, p, wind, seed, deck)` radiance |
 | Water | the scene's own (`K_wind` and its water knobs) | `WATER_TIER` (tiers, see "Water") | slope and unresolved variance (`rippleSpectrum`, `windRipples`), mirror ray and Fresnel (`waterMirror`), drifted points (`waterDrift`, `waterFlow`), light on the bed (`waterCaustic`) |
 | Meteors | `skyKnobs({ meteors: { trigger } })` (`skyComponentKnobs` without the clock): `K_meteors` | | `meteorAge(tm, rate, slot, seed)` schedule, `meteorStreak(q, field, age, seed, foot)` coverage in the scene's frame (`skyAngles(dir)` on a dome, screen heights for a flat backdrop), `METEOR_TINT` |
+| Birds | `birdKnobs({ kind })` (`shaders/lib/birds.ts`): `K_birds`, `K_birdKind`, `K_birdFormation` | opt-in `birdsGlsl` | `birdFlights(p, sky, cam, tm, pxl)` coverage, depth and albedo (`BirdHit`); `birdFlightsSeen(..., true)` the image in still water; `birdBelowHit` from below |
 
 Bamboo and Forest compose the canopy weather under their leaves, each with its own tint on the
 washed sky, deck gain (1.3, 1.25), shelter (half, 45% of the rain under the leaves) and ray bases.
@@ -427,6 +433,34 @@ The rest have no sky: `bar`, `chladni`, `delta`, `ferro`, `film`, `fractal`, `ha
 `hyperbolic`, `incense`, `lava`, `marble`, `pearl`, `pendula`, `petri`, `physarum`, `pond`,
 `prism`, `ripple`, `sandtable`, `shanshui`.
 
+#### Birds
+
+The birds family (`src/shaders/lib/birds.ts`; opt-in: put `birdsGlsl` in the scene's GLSL) decides
+what flies and how: seven species (rooks, swallows, gulls, geese, a buzzard, pigeons, swifts), each
+with its size, colour, wingbeat, party and the share of a scene's lane it keeps to (swallows near
+and low, geese far and high); four formations (solo, a loose party, a V, circling on a thermal);
+and the schedule, four flight slots on the motion clock, still at motion 0. The scene supplies its
+camera (`BirdCamera`), its lanes, hours and weather (`BirdSky`: `birdSky(K_birds * calm, K_birdKind,
+K_birdFormation - 1.0, depths, band, seed)`, then `hours`, `clock`, `swoopTo`, `parallax`), the
+occlusion (`BirdHit.depth` against the depth of its own first surface) and the light. Views:
+side-on for a level pinhole camera (`birdFlights`), the same flights' image in still water
+(`birdFlightsSeen(q, ..., true)`, looked up at the scene's own mirrored sky point, ripples and all),
+and from below for a camera looking up (`birdBelowHit`, the scene moving its birds). Level of
+detail: a bird is never narrower than its species' `cells`, its strokes about a cell wide, so a far
+flight is a few clear marks rather than flicker.
+
+| Scene | Birds | Default | Hidden by | Mirrored in |
+|---|---|---|---|---|
+| `country` | own loop (`countryBirds`: mixed by season and hour, swoops down to its ridges); `songbirds`, `flights` | off, mixed | ridges, trees, buildings, by depth | — |
+| `skyward` | `birdBelowHit` on the scene's own paths (pigeons wheeling over the street, swifts looping above); `birds` range | 0.5, pigeons and swifts | anything nearer along the ray | — |
+| `meadow` | `birdFlights`, `birdKnobs` | off, swallows | the sea of grass by depth; the near blades and clocks | — |
+| `falls` | `birdFlights` (`fallsBirds`), `birdKnobs` | off, swifts | cliff, rim trees and slot walls by depth; spray and the near bank | — |
+| `swell` | `birdFlights`, `birdKnobs` | off, gulls | the sea by depth (crests, with relief) | — |
+| `aurora` | `birdFlights` in `aurFar`, `birdKnobs` | off, geese | the near bank and birches | the fjord |
+| `lake` | `birdFlights` in `lakeBeyond`, `birdKnobs` | off, geese | the cabin and the point's grove | the black ice |
+| `lanterns` | `birdFlights`, `birdKnobs` | off, geese | (nearer than the far bank) | the rippled river |
+| `train` | `birdFlights`, `birdKnobs` (the `line` choice sets the mix) | off, mixed | the line's land and structures (the scene's) | — |
+
 **Opt-in components.** `libs` is compiled into every scene's program, so it holds only what most
 scenes use. A component few scenes compose is a GLSL string of its own that each consumer
 interpolates into its `glsl`, at the top or at least before the functions that call it, so no
@@ -441,6 +475,7 @@ on analytic stroll and shuttle clocks (country's lanes). It has no boats, and ne
 shore draws a figure for it to replace: island's distant movers are a gull and a balloon, shore's
 the surf, its plankton and fish. A scene that gains people (island's pier, shore's tideline) or a
 harbour's boats would start from it, boats as a new shape beside `figureCart`.
+component has one (`planetKnobs`, `birdKnobs`).
 ### Rooted plants (`src/sims/plants.ts`, `src/shaders/lib/plants.ts`, `src/scenes/plants.ts`)
 One plant component for every scene that grows things. The CPU side (`RootedPlants`) owns what
 happens: a scene lays out sites (where, which way, how lush and wet, under water or not) and picks

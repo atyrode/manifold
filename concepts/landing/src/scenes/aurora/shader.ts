@@ -24,6 +24,7 @@
 // layer, the mirrored water and the horizon move as one), the curtains unfurl from faint high arcs
 // or roll back up into them, and on the way in the chimney's smoke climbs. All gated to nothing at rest.
 import { glslFloat, glslPick } from "../../shaders/glsl.ts";
+import { birdsGlsl } from "../../shaders/lib/birds.ts";
 
 /** The aurora's low (oxygen green) and high (violet, red) colours by the `hue` knob, where the change begins and ends, and its gain. */
 const AURORA_LOW = ["vec3(0.28, 1.0, 0.50)", "vec3(0.28, 1.0, 0.50)", "vec3(0.45, 1.0, 0.32)"] as const;
@@ -37,6 +38,7 @@ export const AURORA_HORIZON = 0.32;
 const FOV = 1.3;
 
 export const auroraGlsl = `
+${birdsGlsl}
 const float AUR_HZ = ${glslFloat(AURORA_HORIZON)};
 const float AUR_F = ${glslFloat(0.5 / Math.tan(FOV / 2))};
 const float AUR_EYE = 1.7; // metres above the water
@@ -420,7 +422,11 @@ float aurSmoke(vec2 q) {
   return sm;
 }
 
-// Everything beyond the water, at screen point q at or above the horizon (mirror: reflected).
+// Everything beyond the water, at screen point q at or above the horizon (mirror: reflected), and
+// the birds in front of it (the shared birds; off by default): geese by default, a skein migrating
+// across the night, dark against the curtains and grey against the dark sky where the snow below
+// lights their undersides, mirrored in the water as the camera reflected under it sees them; few
+// fly in snow.
 vec3 aurFar(vec2 q, bool mirror) {
   float y = q.y - AUR_HZ;
   vec3 col = vec3(0.0);
@@ -449,6 +455,16 @@ vec3 aurFar(vec2 q, bool mirror) {
       vec3 sc = AUR_SNOW * (aurAmb * 3.2 + aurMoonLight + aurLight * 2.0)
               + AUR_WINDOW * 0.18 * exp(-max(q.y - (AUR_HZ + AUR_FOOT + 0.058 * AUR_CS), 0.0) / 0.05);
       col = mix(col, sc, 0.8 * hardEdge(sm));
+    }
+  }
+  if (K_birds > 0.0) {
+    BirdCamera cam = BirdCamera(AUR_HZ, AUR_F, AUR_EYE, 1.0, 3.0);
+    BirdSky flights = birdSky(K_birds * smoothfall(0.7, 0.3, K_snow), K_birdKind, K_birdFormation - 1.0, vec2(60.0, 420.0), vec2(AUR_HZ + 0.06, 0.95), vec2(2.9, 4.3));
+    BirdHit bird = birdFlightsSeen(q, flights, cam, aurT, aurPx, mirror);
+    if (bird.cover > 0.5) {
+      vec3 under = AUR_SNOW * (aurAmb * 2.4 + aurMoonLight * 0.9 + aurLight * 1.8) * 0.3;
+      col = mix(bird.albedo * (aurAmb * 1.5 + aurMoonLight * 0.6) + under, aurHaze, 1.0 - exp(-bird.depth / 1500.0));
+      aurAccent = 0.0;
     }
   }
   return col;

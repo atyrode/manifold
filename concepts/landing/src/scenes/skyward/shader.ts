@@ -13,12 +13,14 @@
 //
 // Overhead, nearest to farthest: a signal gantry and two street lamps, the tram wires and the spans
 // that hold them, trams on their tracks (felt more than seen), the street tree's canopy, the banner
-// (opt-in M), the birds, then the plane and its contrail beyond the clouds.
+// (opt-in M), the birds (the shared birds library, seen from below), then the plane and its
+// contrail beyond the clouds.
 //
 // Knobs (index.ts): K_towers, K_windows, K_greenery, K_traffic, K_citySeed (city); K_time, K_cycle,
 // K_stars, K_moon, K_meteors (sky); K_birds, K_planes (air); K_clouds, K_rain, K_snow, K_fog, K_wind,
 // K_snowOverhead (weather); K_mark. The shared sky components (src/scenes/README.md, "Composing
 // components"): the stars, the moon in its phase (SKY_MOON_PHASE) and shooting stars.
+import { birdsGlsl } from "../../shaders/lib/birds.ts";
 
 /** Seconds of the entrance (the view tips back from street level to the zenith) and the exit (it tips down toward the street again) (SceneDef.passage). */
 export const SKYWARD_PASSAGE = { enter: 2.8, exit: 1.5 } as const;
@@ -27,6 +29,7 @@ export const SKYWARD_PASSAGE = { enter: 2.8, exit: 1.5 } as const;
 export const SKYWARD_METEOR_TRIGGER = 0;
 
 export const skywardGlsl = `
+${birdsGlsl}
 // ---- The frame ----
 const float SKYWARD_A = 11.0;        // the avenue's walls stand at x = +-A
 const float SKYWARD_B = 9.0;         // the cross street's at z = +-B
@@ -852,23 +855,10 @@ vec3 skywardBanner(vec3 col, vec3 rd, float tw, out float accent) {
 
 // ---- Birds ----
 
-// A bird from below in its own frame (x forward, y across, 1 = half its wingspan): a signed
-// distance. open: how far the wings spread; flap: -1..1; swift: 1 for the long scythe wing.
-float skywardBird(vec2 q, float open, float flap, float swift) {
-  q.y = abs(q.y);
-  float d = sdTaperCapsule(q, vec2(0.3, 0.0), vec2(-0.3, 0.0), 0.12, 0.08);
-  d = min(d, sdTaperCapsule(q, vec2(-0.28, 0.0), vec2(-0.62, 0.0), mix(0.06, 0.03, swift), mix(0.13, 0.06, swift)));
-  float span = mix(0.3, 1.0, open) * (1.0 - 0.22 * abs(flap));
-  vec2 sh = vec2(mix(0.1, 0.05, swift), mix(0.07, 0.05, swift));
-  vec2 wrist = vec2(mix(-0.02, -0.18, swift) - 0.08 * flap, 0.5 * span);
-  vec2 tip = vec2(mix(-0.34, -0.62, swift) - 0.12 * flap, span);
-  d = min(d, sdTaperCapsule(q, sh, wrist, mix(0.2, 0.11, swift), mix(0.15, 0.08, swift)));
-  d = min(d, sdTaperCapsule(q, wrist, tip, mix(0.15, 0.08, swift), mix(0.05, 0.02, swift)));
-  return d;
-}
-
-// Pigeons wheeling over the street in a loose chain, swifts on long loops above them. Each bird is a
-// world position and velocity; its silhouette is cut per cell, wings beating slowly, gliding between.
+// Pigeons wheeling over the street in a loose chain, swifts on long loops above them: the shared
+// birds seen from below (birdBelowHit), each a world position and velocity, its silhouette cut per
+// cell, the pigeons gliding and beating slowly in bouts. Drawn life size, the swifts, far above,
+// three times; hidden behind anything nearer along the ray (tw).
 vec3 skywardBirds(vec3 rd, float tw, vec3 col) {
   float present = clamp(skywardSky.day + 0.7 * skywardSky.twilight, 0.0, 1.0) * (1.0 - 0.75 * skywardStorm);
   if (K_birds <= 0.0 || present < 0.2) return col;
@@ -878,44 +868,23 @@ vec3 skywardBirds(vec3 rd, float tw, vec3 col) {
     bool swift = (i % 3) == 2;
     vec3 pos;
     vec3 vel;
-    float span;
     if (swift) {
       float sp = float(i / 3);
       float th = 0.25 * skywardTm * (1.0 + 0.2 * sp) + sp * 2.1;
       pos = vec3(30.0 * cos(th), 52.0 + 5.0 * sin(1.7 * th + sp), 18.0 * sin(2.0 * th));
       vel = 0.25 * (1.0 + 0.2 * sp) * vec3(-30.0 * sin(th), 8.5 * cos(1.7 * th + sp), 36.0 * cos(2.0 * th));
-      span = 0.6;
     } else {
       float th = 0.42 * skywardTm + fi * 0.23;
       float r = 16.0 + 2.5 * sin(fi * 2.3 + skywardTm * 0.2);
       pos = vec3(-1.5 + r * cos(th), 31.0 + 2.0 * sin(fi * 1.7) + 4.0 * sin(th), -1.5 + r * sin(th));
       vel = vec3(-r * 0.42 * sin(th), 4.0 * 0.42 * cos(th), r * 0.42 * cos(th));
-      span = 0.36;
     }
-    vec3 dv = pos - SKYWARD_RO;
-    float db = length(dv);
-    if (db > tw) continue;
-    vec3 bd = dv / db;
-    float c = dot(rd, bd);
-    float ex = 1.4 * span / db;
-    if (c < 1.0 - 0.5 * ex * ex) continue;
-    vec3 m = rd * (db / c) - dv;
-    vec3 vp = vel - bd * dot(vel, bd);
-    float vl = length(vp);
-    vec3 hv = vl > 1e-3 ? vp / vl : normalize(cross(bd, vec3(0.0, 1.0, 0.0)));
-    vec3 sv = cross(bd, hv);
-    vec2 q = vec2(dot(m, hv), dot(m, sv)) / span;
-    // Wings: gliding with them held open most of the time, beating in bouts, slowly.
-    float hb = hash12(vec2(fi, 4.4));
-    float bout = smoothstep(0.1, 0.6, 0.5 + 0.5 * sin(skywardTm * 0.13 + fi * 2.9));
-    float flap = swift ? 0.0 : bout * sin(skywardTm * (1.15 + 0.1 * hb) * TAU + fi * 1.3);
-    float open = swift ? 1.0 : mix(0.85, 1.0, 0.5 + 0.5 * flap);
-    float aa = 0.55 * skywardPx * db / span;
-    float cov = hardFill(skywardBird(q, open, flap, swift ? 1.0 : 0.0), aa);
-    if (cov > 0.0) {
-      float pale = swift ? 0.0 : smoothstep(0.2, 0.45, abs(q.y)) * 0.4;
-      vec3 bc = mix(vec3(0.07, 0.075, 0.09), vec3(0.42, 0.44, 0.48), pale) * (0.5 + skywardAmbient * 0.8) + skywardSunLight * 0.06;
-      col = mix(col, bc, cov);
+    float kind = swift ? BIRD_SWIFT : BIRD_PIGEON;
+    float semi = birdSpecies(kind).span * (swift ? 3.0 : 1.0) * 0.5;
+    vec3 own = vec3(fi * 1.3, fi * 2.9, 0.1 * hash12(vec2(fi, 4.4)));
+    BirdHit bird = birdBelowHit(SKYWARD_RO, rd, pos, vel, kind, semi, own, skywardTm, skywardPx);
+    if (bird.cover > 0.0 && bird.depth <= tw) {
+      col = mix(col, bird.albedo * (0.5 + skywardAmbient * 0.8) + skywardSunLight * 0.06, bird.cover);
     }
   }
   return col;

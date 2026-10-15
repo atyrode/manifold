@@ -39,11 +39,17 @@
 // over a second), and drawn features stay a few cells wide or fade out before they get finer; only
 // the rain itself is made of falling drops. So the scene sets no shimmer.
 //
+// Birds (K_birds, K_birdKind, K_birdFormation; the shared birds, shaders/lib/birds.ts; off by
+// default): geese by default, a skein crossing the dusk above the far bank, nearer than it, and its
+// image in the water, looked up along the same rippled reflection as the bank's.
+//
 // Knobs: K_ripple, K_reflection, K_mist (water), K_current (ripples drift with the stream; the
 // lanterns themselves are the sim's), K_time, K_cycle, K_stars, K_meteors (sky), K_rain, K_wind,
-// K_aurora (weather). The shared sky components (src/scenes/README.md, "Composing components"): the
-// stars, the aurora and shooting stars, in the sky and (but the stars) in the river's mirror.
+// K_aurora (weather), the birds'. The shared sky components (src/scenes/README.md, "Composing
+// components"): the stars, the aurora and shooting stars, in the sky and (but the stars) in the
+// river's mirror.
 import { glslFloat } from "../../shaders/glsl.ts";
+import { birdsGlsl } from "../../shaders/lib/birds.ts";
 import { CURRENT_FAST, CURRENT_SLOW, EYE, FAR_BANK, FOCAL, FOV, HORIZON, LANTERN_HALF, LANTERN_TALL, MAX_LANTERNS, ROCK_DOWNSTREAM, ROCKS } from "./sim.ts";
 
 const rocks = ROCKS.map((rock) => `vec4(${glslFloat(rock.x)}, ${glslFloat(rock.z)}, ${glslFloat(rock.radius)}, ${glslFloat(rock.height)})`).join(", ");
@@ -55,6 +61,7 @@ export const LANTERNS_STARS = 0.55;
 export const LANTERNS_METEOR_TRIGGER = 2;
 
 export const lanternsGlsl = `
+${birdsGlsl}
 const float LANTERNS_STARS = ${glslFloat(LANTERNS_STARS)};
 // Where shooting stars set out, in the frame of the young moon and the scene's own stars (screen
 // heights from the middle of the horizon): high over the far bank.
@@ -677,6 +684,13 @@ Shade sceneLanterns(vec2 uv, vec2 cell, float t) {
   // can draw.
   vec3 drops = vec3(0.0);
   float rainFade = 0.0;
+  // The birds' flights (no flight while K_birds is off), seen above the bank and in the water;
+  // hazed by the mist over the river.
+  BirdSky flights = birdSky(K_birds * smoothfall(0.5, 0.1, K_rain), K_birdKind, K_birdFormation - 1.0, vec2(40.0, 125.0), vec2(0.62, 0.98), vec2(K_lanternSeed * 0.37, 2.9));
+  flights.hours = vec4(0.22, 0.26, 0.86, 0.9);
+  flights.clock = vec2(K_time, K_cycle);
+  BirdCamera birdCam = BirdCamera(LANTERNS_HORIZON, LANTERNS_FOCAL, LANTERNS_EYE, 1.0, 1.0);
+  float birdHaze = 0.002 + 0.012 * mist;
 
   if (!water) {
     vec2 bankLamp;
@@ -684,6 +698,11 @@ Shade sceneLanterns(vec2 uv, vec2 cell, float t) {
     col += LANTERNS_LAMP * bankLamp.x;
     lamp = bankLamp.x;
     col *= dusk;
+    BirdHit bird = birdFlights(sp, flights, birdCam, tm, 1.0 / uRes.y);
+    if (bird.cover > 0.5) {
+      col = mix(bird.albedo * lit, haze, 1.0 - exp(-bird.depth * birdHaze));
+      lamp = 0.0;
+    }
   } else {
     Ground g = groundHit(dir, LANTERNS_EYE, LANTERNS_FOCAL);
     xp = g.p.x;
@@ -755,6 +774,11 @@ Shade sceneLanterns(vec2 uv, vec2 cell, float t) {
     vec2 bankLamp;
     mirror = lanternsBeyond(vec3(xp, 0.0, zp), bands, spread * 0.7, skyM, lit, haze, dark, tm,
                             bankFoot + spread * behind * 0.3, min(0.8 * sigma * behind, 6.0), false, bankLamp);
+    BirdHit image = birdFlightsSeen(bands.xy / bands.z * LANTERNS_FOCAL + vec2(0.0, LANTERNS_HORIZON), flights, birdCam, tm, 1.0 / uRes.y, true);
+    if (image.cover > 0.5) {
+      mirror = mix(image.albedo * lit, haze, 1.0 - exp(-image.depth * birdHaze));
+      bankLamp = vec2(0.0);
+    }
     // The bank's lamps mirrored: each a wavering image, and under it glints in the rows of facets.
     float lampSeen = bankLamp.x + glint.x * smoothstep(0.35, 0.6, glint.y) * bankLamp.y * 3.0;
     mirror += LANTERNS_LAMP * lampSeen;

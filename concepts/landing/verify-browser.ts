@@ -29,6 +29,7 @@ import { verifyMotionClocks } from "./src/scenes/train/motion-clock.verify.ts";
 import { verifyTrainLine } from "./src/scenes/train/line.verify.ts";
 import { verifyFilmRupture } from "./src/scenes/film/rupture.verify.ts";
 import { verifyPendulaSwing } from "./src/scenes/pendula/swing.verify.ts";
+import { verifyFallsBirds } from "./src/scenes/falls/birds.verify.ts";
 import { petriRegimesVerify } from "./src/scenes/petri/regimes.verify.ts";
 import { verifyPondKoi } from "./src/scenes/pond/koi.verify.ts";
 import { verifyPlanet } from "./src/scenes/campfire/planet.verify.ts";
@@ -594,6 +595,7 @@ export const checks: readonly Check[] = [
   ["waterTiers", verifyWaterTiers],
   ["pondPlants", verifyPondPlants],
   ["islandSnow", islandSnowCheck],
+  ["fallsBirds", verifyFallsBirds],
 ];
 
 /**

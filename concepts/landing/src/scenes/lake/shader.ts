@@ -27,6 +27,7 @@
 // streamers over the ice and the far shore, in rows of the screen and faster the nearer the ice,
 // cut per cell. At rest none of it is drawn and uv is the screen's.
 import { glslFloat, glslPick } from "../../shaders/glsl.ts";
+import { birdsGlsl } from "../../shaders/lib/birds.ts";
 import { ABOVE_RANGE, DIST_RANGE, DRIFT_MAX, EYE, FIELD_FU, FIELD_FV, FIELD_H, FIELD_W, FOCAL, HORIZON, ICE_DEPTH, ICE_INDEX, LAKE_PASSAGE, MARK_ID, SNOW_MAX } from "./sim.ts";
 
 /** The aurora's colours by the `hue` knob (green, teal, storm, crimson): its low light and its high fringe. */
@@ -37,6 +38,7 @@ const AURORA_HIGH = ["vec3(0.78, 0.2, 0.58)", "vec3(0.38, 0.32, 1.0)", "vec3(1.0
 export const LAKE_METEOR_TRIGGER = 3;
 
 export const lakeGlsl = `
+${birdsGlsl}
 const float LAKE_HORIZON = ${glslFloat(HORIZON)};
 const float LAKE_FOCAL = ${glslFloat(FOCAL)};
 const float LAKE_EYE = ${glslFloat(EYE)};
@@ -302,7 +304,10 @@ float lakeSmoke(vec2 p) {
 // the snowbank at the waterline, the cabin and the point's grove, the far forest (dark all the way
 // back below the horizon, where the ray dips into it), the hills and mountains, all a little lost in
 // the haze, and the sky; the chimney's smoke over them (not in the mirror, where it would be lost
-// in the roughness).
+// in the roughness); and the birds in front of the far land (the shared birds; off by default):
+// geese by default, a skein migrating through the night, dark against the aurora and grey against
+// the dark sky where the snow below lights their undersides, mirrored by the ice as the eye
+// reflected under it sees them, behind the cabin and the point's grove; few fly in snow.
 vec3 lakeBeyond(vec3 o, vec3 d, bool mirror, float soft) {
   float hl = length(d.xz);
   float az = atan(d.x, d.z) + lakePar;
@@ -358,6 +363,17 @@ vec3 lakeBeyond(vec3 o, vec3 d, bool mirror, float soft) {
       vec3 lit = lakeAmb * 2.0 + lakeMoonLight * 0.9 + lakeAurLight * 1.6 + LAKE_WINDOW * 0.15 * exp(-max(sp.y, 0.0) / 3.0);
       col = mix(col, lit, smoke * 0.5);
       lakeAccent *= 1.0 - smoke * 0.5;
+    }
+  }
+  if (K_birds > 0.0 && d.z > 0.05 && (hazy < 0.0 || hazy > 0.15)) {
+    vec2 q = vec2(tan(az) * LAKE_FOCAL, LAKE_HORIZON + d.y / d.z * LAKE_FOCAL);
+    BirdCamera cam = BirdCamera(LAKE_HORIZON, LAKE_FOCAL, LAKE_EYE, 1.0, 3.0);
+    BirdSky flights = birdSky(K_birds * smoothfall(0.7, 0.3, K_snow), K_birdKind, K_birdFormation - 1.0, vec2(60.0, 450.0), vec2(LAKE_HORIZON + 0.05, 0.95), vec2(K_iceSeed * 0.37, 6.1));
+    BirdHit bird = birdFlightsSeen(q, flights, cam, lakeTm, 1.0 / uRes.y, mirror);
+    if (bird.cover > 0.5) {
+      vec3 under = LAKE_SNOW * (lakeAmb * 2.4 + lakeMoonLight * 0.9 + lakeAurLight * 1.8) * 0.3;
+      col = mix(bird.albedo * (lakeAmb * 1.5 + lakeMoonLight * 0.6) + under, horizonHaze(lakeSky, vec3(sin(az), 0.0, cos(az)), 0.03), 1.0 - exp(-bird.depth / 1500.0));
+      lakeAccent = 0.0;
     }
   }
   return col;

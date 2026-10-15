@@ -4,6 +4,7 @@
 // the ledges and fireflies over the water at dusk. All in the shader but the near bank's ferns,
 // rooted plants of the shared plant component (sim.ts) that sway with the wind and turn with the year.
 import { choice, feature, range } from "../../params.ts";
+import { birdKnobs } from "../../shaders/lib/birds.ts";
 import { atmosphereGroups, skyKnobs, weatherKnobs } from "../atmosphere.ts";
 import { plantKnobs } from "../plants.ts";
 import type { SceneDef } from "../types.ts";
@@ -24,6 +25,7 @@ export const fallsScene: SceneDef = {
     choice("falls", "gorge", "gorge", [{ label: "basalt", value: 0 }, { label: "sandstone", value: 1 }, { label: "limestone slot", value: 2 }], 0, "The rock the river has cut through. Basalt: dark lava flows stacked on rusty ash, dipping and folded, standing out as ledges. Sandstone: thin, level beds of buff and red stone stepped into ledges over soft shale, cross-bedded. Limestone slot: a narrow gorge of pale, massive limestone, its walls closing in on both sides and leaving a strip of sky, fluted by runnels, streaked dark under the lips and crusted with tufa where the water runs."),
     range("life", "greenery", "moss & ferns", 0.6, "Moss on the ledges and the wet rock, ferns and creepers hanging from them, ferns on the near bank."),
     feature("life", "fireflies", "fireflies", true, "amount", 0.5, "Fireflies blinking over the pool from dusk on, each flash doubled in the water."),
+    ...birdKnobs({ group: "life", kind: "swifts", help: "Birds crossing the gorge by day, swifts by default, sailing past the cliff and now and then swooping low over the pool; the rock, the trees on the rim and the spray hide them, and few fly in the rain." }),
     ...skyKnobs({ time: 0.55, stars: 0.45, moon: 1, meteors: { trigger: FALLS_METEOR_TRIGGER } }),
     ...weatherKnobs({ rain: true, fog: true, wind: true, aurora: true }),
     feature("manifold", "mark", "carved M", false, "parting", 0.5, "A Manifold M cut into the rock behind the falling water, glimpsed through it where it runs thin. A horn of rock at the lip splits the flow in front of it: more parts the water wider."),
@@ -32,7 +34,7 @@ export const fallsScene: SceneDef = {
   ],
   groups: {
     falls: { title: "Waterfall", blurb: "How much water pours over, the spray it throws up, the rainbow standing in it, and the rock it has cut through." },
-    life: { title: "Life", blurb: "Moss and ferns on the wet rock, fireflies over the pool after dark." },
+    life: { title: "Life", blurb: "Moss and ferns on the wet rock, birds over the gorge, fireflies over the pool after dark." },
     sky: atmosphereGroups.skyNight,
     weather: atmosphereGroups.weather,
     manifold: { title: "Manifold mark", blurb: "A landmark of its own: an M carved into the rock behind the water." },

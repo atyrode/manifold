@@ -1,6 +1,9 @@
-// The swell scene: open-ocean waves.
+// The swell scene: open-ocean waves, and the shared birds over them (shaders/lib/birds.ts; K_birds,
+// K_birdKind, K_birdFormation, off by default).
+import { birdsGlsl } from "../../shaders/lib/birds.ts";
 
 export const swellGlsl = `
+${birdsGlsl}
 // The long swells and the short chop as plain trains of waves: the sea's shape, without its texture.
 float swellWaves(vec2 w, float t, float chop) {
   float s = 0.0;
@@ -121,6 +124,7 @@ Shade sceneSwell(vec2 uv, vec2 cell, float t) {
   float front = mix(34.0, -4.0, arrived);
   float rollAmp = 1.6 * smoothstep(0.0, 0.1, arrived) * (1.0 - smoothstep(0.7, 1.0, arrived));
   Shade o = blankShade();
+  float seaDist = 1e4; // camera heights ahead (z) to the sea under this cell (the sky: as far as it gets)
   if (p.y > horizon) {
     float md = length(p - moon);
     float disc = smoothfall(moonRadius, moonRadius - 0.003, md);
@@ -135,6 +139,7 @@ Shade sceneSwell(vec2 uv, vec2 cell, float t) {
     // sea with the waves painted on it.
     float dist = camH / -rd.y;
     if (K_relief > 0.0) dist = swellMarch(camH, rd, swellRelief(K_relief, camH, chop, height, rollAmp), wt, chop, height, front, rollAmp);
+    seaDist = dist * rd.z;
     vec3 pos = rd * dist;
     vec2 w = pos.xz * 2.2;
     float e = 0.02 + dist * 0.004;
@@ -151,6 +156,19 @@ Shade sceneSwell(vec2 uv, vec2 cell, float t) {
     o.ink = spec * 1.6 + fres * 0.1 + crest * 0.18 * fog;
     o.accent = (0.05 + 0.4 * smoothstep(0.0, 0.8, h)) * fog * (1.0 - min(spec * 2.0, 1.0));
     o.shimmer = min(spec, 1.0) * 0.3;
+  }
+  // Birds over the sea (gulls by default), pale where the moon lights them, dark against its disc;
+  // in front of the sky, and of the sea where they lie nearer than the water under the cell (a
+  // swooping party skims the crests). A camera height is some 15 m.
+  if (K_birds > 0.0) {
+    BirdSky flights = birdSky(K_birds, K_birdKind, K_birdFormation - 1.0, vec2(3.0, 24.0), vec2(0.5 + horizon + 0.03, 0.95), vec2(1.3, 7.7));
+    flights.swoopTo = 0.2;
+    BirdHit bird = birdFlights(vec2(p.x, p.y + 0.5), flights, BirdCamera(0.5 + horizon, 1.6, camH, 1.0 / 15.0, 2.0), wt, 1.0 / uRes.y);
+    if (bird.cover > 0.5 && bird.depth < seaDist) {
+      o.ink = dot(bird.albedo, LUMA) * 0.75 * exp(-bird.depth * 0.02);
+      o.accent = 0.0;
+      o.shimmer = 0.0;
+    }
   }
   o.rgb = uBg + uInk * o.ink + uAccent * o.accent;
   o.source = o.rgb;

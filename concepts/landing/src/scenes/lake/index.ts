@@ -7,6 +7,7 @@
 // the aurora onto the ice as a crack sings across, and goes out as a gust of snow streams over the
 // ice and the camera tilts back up (LAKE_PASSAGE).
 import { choice, feature, range, seed, toggle, type ParamDef } from "../../params.ts";
+import { birdKnobs } from "../../shaders/lib/birds.ts";
 import { atmosphereGroups, skyComponentKnobs, weatherKnobs } from "../atmosphere.ts";
 import type { SceneDef } from "../types.ts";
 import { LAKE_METEOR_TRIGGER, lakeGlsl } from "./shader.ts";
@@ -41,6 +42,7 @@ const params: readonly ParamDef[] = [
   range("night", "stars", "stars", 0.7, "Stars and the Milky Way: none to the left, a dark northern sky to the right."),
   ...skyComponentKnobs({ group: "night", meteors: { trigger: LAKE_METEOR_TRIGGER } }),
   toggle("night", "cabin", "cabin", true, "A log cabin on the point across the ice: its window lit by the fire, its light drawn down the ice toward you, its smoke rising until it flattens under the cold air above."),
+  ...birdKnobs({ group: "night", kind: "geese", help: "Birds crossing the night over the lake, geese by default, a skein migrating under the aurora: dark against the sky, mirrored in the black ice, behind the cabin and the trees on the point; few fly in snow." }),
   ...weatherKnobs({ snow: true, fog: true, wind: true }),
   toggle("manifold", "mark", "singing M", false, "A crack in the near ice draws the Manifold M and keeps a little of the aurora's green in it. It sings in a moment after you switch it on. Now: it sings again.", { trigger: 2 }),
 ];
@@ -56,7 +58,7 @@ export const lakeScene: SceneDef = {
   groups: {
     aurora: { title: "Aurora", blurb: "The northern lights over the lake and in its ice: how bright, what colours, and the substorms that set them dancing." },
     ice: { title: "Ice", blurb: "Black ice swept by the wind: its cracks and the singing of new ones, the bubbles frozen in it, the snow lying and drifting on it. Click the ice to knock on it; drag to sweep the snow away." },
-    night: { title: "Night", blurb: "The hour, the moon, the stars, and the cabin on the far shore." },
+    night: { title: "Night", blurb: "The hour, the moon, the stars, the cabin on the far shore, and birds crossing the sky." },
     weather: { title: atmosphereGroups.weather.title, blurb: "Snow falls from a closing sky, hiding the aurora and slowly burying the ice; mist settles on the lake; the wind drives the drifting snow and leans the cabin's smoke." },
     manifold: { title: "Manifold mark", blurb: "A landmark of its own: an M cracked into the near ice." },
   },
