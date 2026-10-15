@@ -1,22 +1,26 @@
 // GPU regressions for knob-keyed compile-time features (SceneDef.featuresFor, featuresAll), through
 // the actual renderer. The countryside compiles its optional parts in only while their knobs are on
-// (countryFeatures), the meadow its wildflowers. Registered in verify-browser.ts.
+// (countryFeatures), the meadow its wildflowers. The renderer is made to take its context for a
+// hardware GPU's or a software rasteriser's (`watched`), whatever renders the check. Registered in
+// verify-browser.ts.
 //
 // sceneFeatures: the default countryside compiles none of its parts in and its all-features
-// program every one. The first knob change that needs another feature set builds that program in
-// the background and switches to it once built, the old frame holding until then; turning the knob
-// back returns to the program the scene entered with; every later change, several gated knobs at
-// once included, draws with one of the two and builds nothing.
+// program every one, which covers every knob's turn in every scene that has one. On a software
+// rasteriser nothing is built ahead; a gated knob builds the setting's own program in the
+// background (the old frame holding meanwhile, nothing waiting on the build) and switches to it;
+// turning it back finds the old program kept; several gated knobs at once build once; past four
+// sets the least recently drawn program is freed.
 //
-// featureToggles, for the countryside and the meadow: no knob change waits for a build (a compile
-// or link status or log, a uniform location or a use of a program before the renderer has seen it
-// finish building), and after the first none builds a program. With changes expected (the lab
-// open) the all-features program is built ahead once the scene is at rest and draws one frame
-// without changing it, and the first change switches to it at once. The plain page builds nothing
-// but the program it entered with.
+// featureToggles, on a GPU, for the countryside and the meadow: the plain page builds nothing but
+// the program it entered with; no knob change waits for a build (a compile or link status or log,
+// a uniform location or a use of a program before the renderer has seen it finish building); the
+// first gated change builds the all-features program in the background and no change after it
+// builds a program. With changes expected (the lab open) the all-features program is built ahead
+// once the scene is at rest and draws one frame without changing it, and the first change switches
+// to it at once.
 //
-// featuresAll: the all-features program draws every gated setting of the countryside and the
-// meadow, dithered and as source, byte for byte as that setting's own program does.
+// featuresAll, on a GPU: the all-features program draws every gated setting of the countryside and
+// the meadow, dithered and as source, byte for byte as that setting's own program does.
 import type { ParamDef } from "./params.ts";
 import { DitherRenderer, type RenderSettings, type ViewId } from "./renderer.ts";
 import { sceneDefs, type SceneId } from "./scenes/index.ts";
@@ -131,25 +135,35 @@ interface Watched {
   dispose: () => void;
 }
 
-function watched(options: { standIn: boolean }): Watched {
+/**
+ * A watched context that the renderer takes for a `gpu` of one kind, whatever renders it: its
+ * renderer string stands in for a hardware GPU's or SwiftShader's. A hardware one also has
+ * KHR_parallel_shader_compile, as GPU browsers do: where the browser lacks it, a stand-in reports
+ * each program built only on its third poll, so the frames in between show what the renderer draws
+ * while it waits. A software one keeps the browser's own (SwiftShader has none: fences).
+ */
+function watched(gpu: "hardware" | "software"): Watched {
   const canvas = document.createElement("canvas");
   canvas.style.cssText = `position:fixed;left:0;top:0;width:${WIDTH}px;height:${HEIGHT}px`;
   document.body.append(canvas);
   // The renderer asks for this same context.
   const gl = canvas.getContext("webgl2", { antialias: false, alpha: false });
   if (!gl) throw new Error("Features context unavailable");
-  if (options.standIn && gl.getExtension("KHR_parallel_shader_compile") === null) {
-    // Software WebGL without KHR_parallel_shader_compile: a stand-in reporting each program built
-    // only on its third poll, so the frames in between show what the renderer draws while it waits.
+  const UNMASKED_RENDERER_WEBGL = 0x9246;
+  const named = gpu === "hardware" ? "ANGLE (stand-in hardware GPU)" : "ANGLE (SwiftShader)";
+  const parameter = gl.getParameter.bind(gl);
+  gl.getParameter = (name: number): unknown =>
+    name === UNMASKED_RENDERER_WEBGL || name === gl.RENDERER ? named : parameter(name);
+  if (gpu === "hardware" && gl.getExtension("KHR_parallel_shader_compile") === null) {
     const extension = gl.getExtension.bind(gl);
-    const parameter = gl.getProgramParameter.bind(gl);
+    const programParameter = gl.getProgramParameter.bind(gl);
     const polls = new WeakMap<WebGLProgram, number>();
     gl.getExtension = ((name: string) =>
       name === "KHR_parallel_shader_compile"
         ? { COMPLETION_STATUS_KHR }
         : extension(name)) as typeof gl.getExtension;
     gl.getProgramParameter = (program: WebGLProgram, name: number): unknown => {
-      if (name !== COMPLETION_STATUS_KHR) return parameter(program, name);
+      if (name !== COMPLETION_STATUS_KHR) return programParameter(program, name);
       const poll = (polls.get(program) ?? 0) + 1;
       polls.set(program, poll);
       return poll >= 3;
@@ -331,8 +345,9 @@ export async function verifySceneFeatures(
     }
   }
 
+  // A software rasteriser (SwiftShader's renderer string and its own build signals: fences).
   const clock = frameClock();
-  const context = watched({ standIn: true });
+  const context = watched("software");
   try {
     // Reduced motion: the clocks stand still, so frames compare exactly.
     const renderer = new DitherRenderer(context.canvas, settings("country", defaults), true);
@@ -346,16 +361,24 @@ export async function verifySceneFeatures(
     const before = context.image();
     context.armed = true;
 
-    // The castle on: the all-features program is built and takes over, drawing the castle on the
-    // chalk down (right of the middle, its hill's woods cleared around it); until then the old
-    // frame holds.
+    // Changes expected (the lab open): nothing is built ahead.
+    renderer.expectChanges(true);
+    for (let i = 0; i < 3; i++) frame();
+    check(
+      context.links === 1 && context.drawing() === plain,
+      `A software rasteriser built ${context.links - 1} programs ahead of any change`,
+    );
+
+    // The castle on: its own program is built in the background and takes over, drawing the castle
+    // on the chalk down (right of the middle, its hill's woods cleared around it); until then the
+    // old frame holds.
     renderer.update(settings("country", { castle: 1 }));
     const heldFrames = await switchFrom(frame, context, plain, before);
     check(
       heldFrames >= 1,
       "The castle's program took over on the frame its build began: nothing was built in the background",
     );
-    const full = context.drawing();
+    const castled = context.drawing();
     const castle = changed(before, context.image());
     check(
       renderer.failure === undefined && context.links === 2,
@@ -366,37 +389,45 @@ export async function verifySceneFeatures(
       `The castle drew ${castle.count} changed cells at ${castle.box.join(",")}, not the castle right of the middle`,
     );
 
-    // Off again: the program the scene entered with draws the same frame at once.
+    // Off again: the default program is still kept, and draws the same frame at once.
     renderer.update(settings("country", {}));
     frame();
     check(
       context.drawing() === plain &&
         context.links === 2 &&
         changed(before, context.image()).count === 0,
-      "Turning the castle off did not return to the program the scene entered with",
+      "Turning the castle off did not return to the kept default program",
     );
 
-    // Three gated parts on at once: drawn at once with the all-features program, nothing built.
+    // A setup turning three gated parts on at once builds one program, which draws them all.
     renderer.update(settings("country", { castle: 1, chalk: 1, fog: 0.6 }));
-    frame();
+    await switchFrom(frame, context, plain, before);
     check(
-      context.drawing() === full && context.links === 2,
-      `Three gated knobs drew with another program, after ${context.links - 2} more builds`,
+      renderer.failure === undefined && context.links === 3,
+      `A setup turning three gated knobs on built ${context.links - 2} programs`,
     );
+    check(context.drawing() !== castled, "Three gated knobs drew with the castle's program");
     const three = changed(before, context.image()).count;
     check(
       three > castle.count,
       `Castle, chalk figure and fog changed ${three} cells, the castle alone ${castle.count}`,
     );
 
-    // More sets, and back: nothing more built, nothing freed.
-    for (const knobs of [{ chalk: 1 }, { fog: 0.6 }, { rain: 1, river: 1 }, {}]) {
-      renderer.update(settings("country", knobs));
-      frame();
-    }
+    // Past PROGRAMS_PER_SCENE (4) sets the least recently drawn program is freed, never the one
+    // drawing; no change waited on a build.
+    renderer.update(settings("country", { chalk: 1 }));
+    await switchFrom(frame, context, context.drawing(), context.image());
+    renderer.update(settings("country", { fog: 0.6 }));
+    await switchFrom(frame, context, context.drawing(), context.image());
     check(
-      context.drawing() === plain && context.links === 2 && context.frees === 0,
-      `Four more sets built ${context.links - 2} programs and freed ${context.frees}`,
+      context.links === 5 && context.frees === 1,
+      `Five sets built ${context.links} programs and freed ${context.frees}`,
+    );
+    renderer.update(settings("country", {}));
+    frame();
+    check(
+      context.drawing() === plain && context.links === 5,
+      "The default program was freed though it was drawn more recently than the castle's",
     );
     check(
       context.waits.length === 0,
@@ -417,7 +448,7 @@ export async function verifySceneFeatures(
 
 const VIEWS: readonly ViewId[] = ["source", "dithered"];
 
-/** Contexts opened for a check (`watched`, no stand-in), each closed when done or at the end. */
+/** Contexts opened for a check, taken for a hardware GPU's (`watched`), each closed when done. */
 function contextPool(): {
   open: () => Watched;
   close: (context: Watched) => void;
@@ -430,7 +461,7 @@ function contextPool(): {
   };
   return {
     open() {
-      const context = watched({ standIn: false });
+      const context = watched("hardware");
       contexts.add(context);
       return context;
     },

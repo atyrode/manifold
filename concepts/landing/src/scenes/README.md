@@ -418,16 +418,20 @@ and `COUNTRY_ALL`: its optional parts, the river's water tier, the clouds' shado
 moon's phase below full) and `meadow` (its wildflowers).
 
 A scene enters with the program for its setting, so the plain page draws its lean program and
-builds no other. A knob change that needs another feature set builds none either: building a
-program can stall the browser's GPU process, and every frame of the page with it, for as long as
-the driver compiles (seconds for the countryside under SwiftShader, which compiles at the first
-draw). The change draws with a program the scene entered with for exactly that set, else with the
-scene's all-features program. That one is built once per page, in the background, and never
-waited for: the renderer asks KHR_parallel_shader_compile's completion status or, without that
-extension, a fence set after the link. Once built it draws one frame, so a driver that compiles at
-the first draw does it then. While the lab is open (`DitherRenderer.expectChanges`) it is built
-ahead once the scene has arrived; otherwise the first such change starts it, and the program on
-screen goes on drawing the settings it drew last until it is built. Rules:
+builds no other. On a GPU a knob change that needs another feature set builds none either:
+building a program can stall the browser's GPU process, and every frame of the page with it, for
+as long as the driver compiles. The change draws with a program the scene entered with for exactly
+that set, else with the scene's all-features program. That one is built once per page, in the
+background, and never waited for: the renderer asks KHR_parallel_shader_compile's completion
+status or, without that extension, a fence set after the link. Once built it draws one frame, so a
+driver that compiles at the first draw does it then. While the lab is open
+(`DitherRenderer.expectChanges`) it is built ahead once the scene has arrived; otherwise the first
+such change starts it, and the program on screen goes on drawing the settings it drew last until
+it is built. A software rasteriser (a renderer string naming SwiftShader, llvmpipe, softpipe or
+WARP) never uses it: there every gate's code would run in every frame (the countryside's frames
+5-10x slower under SwiftShader) and it takes some 20 s to compile, a setting's own program 2-5 s.
+There a change builds the setting's own program in the background in the same way, never waited
+for, keeping up to four per scene (the least recently drawn freed). Rules:
 
 - Gate each part on a superset of where its knobs show it (`x > 0` for `K_x > 0.0`), and keep the
   shader's own runtime test inside the gate: the all-features program draws by it.
@@ -1113,15 +1117,17 @@ hold); a simulation that throws while starting or drawing, and a shader that doe
 the frame loop scheduled, report the failure and recover by retry or by another scene; uniforms are
 sent only when they change, including a look change made while another scene drew; and the Lab
 never applies a setup while it is being built. `src/features.verify.ts` covers knob-keyed features
-through the renderer. `sceneFeatures`: the first gated knob builds the all-features program in the
-background and switches to it once built, the old frame holding until then; turning it back
-returns to the program the scene entered with; later changes, several gated knobs at once
-included, build and free nothing. `featureToggles`, for the countryside and the meadow: the plain
-page builds only its own program; no change waits on a build (no status, log, uniform location or
-use of a program before its completion or fence was seen); after the first, no change builds a
-program; and with changes expected the all-features program is built ahead at rest, draws one
-frame without changing it, and the first change switches to it at once. `featuresAll`: that
-program draws every gated setting, dithered and as source, byte for byte as the setting's own.
+through the renderer, taking its context for a GPU's or a software rasteriser's whatever renders
+the check. No change waits on a build (no status, log, uniform location or use of a program before
+its completion or fence was seen). `sceneFeatures`, software: nothing is built ahead; a gated knob
+builds its own program in the background and switches to it once built, the old frame holding until
+then; several gated knobs at once build once; past four sets the least recently drawn program is
+freed. `featureToggles`, GPU, for the countryside and the meadow: the plain page builds only its
+own program; after the first gated change, which builds the all-features program in the
+background, no change builds a program; with changes expected that program is built ahead at rest,
+draws one frame without changing it, and the first change switches to it at once. `featuresAll`,
+GPU: that program draws every gated setting, dithered and as source, byte for byte as the
+setting's own.
 
 The shared components have checks of their own:
 

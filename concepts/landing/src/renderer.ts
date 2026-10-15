@@ -55,6 +55,8 @@ const NEVER = -1e4;
 const PROGRAMS_PER_SCENE = 4;
 /** Presses on these belong to the lab or the page's own controls, not to the scene. */
 const CONTROLS = "#lab, #lab-open, a, button, input, select, textarea, label, [role=switch]";
+/** Renderer strings of software rasterisers: SwiftShader, Mesa's llvmpipe and softpipe, WARP. */
+const SOFTWARE_RENDERER = /SwiftShader|llvmpipe|softpipe|Basic Render Driver|software/i;
 
 const uniformNames = [
   "uRes",
@@ -221,15 +223,21 @@ export class DitherRenderer {
   readonly #programs = new Map<SceneId, Map<string, SceneProgram | SceneFailure>>();
   /** KHR_parallel_shader_compile, when the browser has it: programs then build off the main thread. */
   readonly #parallel: { readonly COMPLETION_STATUS_KHR: number } | null;
-  /** The one program building in the background, if any: always a scene's all-features program. */
+  /** The one program building in the background, if any. */
   #building: Building | undefined;
   /**
-   * A program just built in the background that its scene does not draw with yet: the next frame
-   * of that scene draws with it once (see `#draw`).
+   * A scene's all-features program just built in the background that the scene does not draw with
+   * yet: the next frame of that scene draws with it once (see `#draw`).
    */
   #warm: { id: SceneId; program: SceneProgram } | undefined;
   /** Knob changes are likely (see `expectChanges`). */
   #expecting = false;
+  /**
+   * The context renders in software: it runs every line of a program whatever branch a pixel
+   * takes, and compiling the countryside's all-features program takes it some 20 s (its own
+   * programs 2-5 s), so a knob change builds the setting's own program instead (`#programSoon`).
+   */
+  readonly #software: boolean;
   /** The feature set the latest settings ask for (see `#want`). */
   readonly #wanted: Wanted = { settings: undefined, features: {}, key: "", all: undefined };
   #scene: ActiveScene | undefined;
@@ -335,6 +343,7 @@ export class DitherRenderer {
       ? gl.getParameter(debug.UNMASKED_RENDERER_WEBGL)
       : gl.getParameter(gl.RENDERER);
     this.glInfo = `${String(gl.getParameter(gl.VERSION))} · ${String(gpu)}`;
+    this.#software = SOFTWARE_RENDERER.test(String(gpu));
 
     this.#blank = gl.createTexture();
     gl.bindTexture(gl.TEXTURE_2D, this.#blank);
@@ -422,7 +431,8 @@ export class DitherRenderer {
   /**
    * Whether knob changes are likely (the lab is open). A scene with knob-keyed features then builds
    * its all-features program in the background once it has arrived, so the first change that needs
-   * it switches at once instead of waiting for a build; the plain page never builds it.
+   * it switches at once instead of waiting for a build; the plain page never builds it, and nor does
+   * a software rasteriser (`#software`).
    */
   expectChanges(expect: boolean): void {
     this.#expecting = expect;
@@ -649,7 +659,8 @@ export class DitherRenderer {
 
   /**
    * Keep the background build once the driver has finished it, asked without waiting (the
-   * completion status, or the fence after the link); its scene then draws with it once (`#warm`).
+   * completion status, or the fence after the link). A scene's all-features program then draws
+   * one frame of it at once (`#warm`).
    */
   #settle(): void {
     const building = this.#building;
@@ -663,7 +674,9 @@ export class DitherRenderer {
     if (!done) return;
     this.#building = undefined;
     const built = this.#finish(building);
-    if ("program" in built) this.#warm = { id: building.id, program: built };
+    const all = sceneFeaturesAll(sceneDefs[building.id]);
+    if ("program" in built && all !== undefined && featureKey(all) === building.key)
+      this.#warm = { id: building.id, program: built };
   }
 
   /**
@@ -687,12 +700,16 @@ export class DitherRenderer {
   }
 
   /**
-   * The same for a knob change, never waiting: undefined while the scene's all-features program
-   * builds in the background, started here if need be (a change never builds a program for its own
-   * set). One build at a time: one started for another scene finishes first.
+   * The same for a knob change, never waiting: undefined while a program for it builds in the
+   * background, started here if need be. That is the scene's all-features program, so a change
+   * never builds one for its own set, except on a software rasteriser (`#software`), where it is
+   * the set's own. One build at a time: one started for another set or scene finishes first.
    */
   #programSoon(id: SceneId, wanted: Wanted): SceneProgram | SceneFailure | undefined {
-    return this.#keptFor(id, wanted) ?? this.#buildAhead(id, wanted.all ?? wanted);
+    return (
+      this.#keptFor(id, wanted) ??
+      this.#buildAhead(id, this.#software ? wanted : (wanted.all ?? wanted))
+    );
   }
 
   /** Start building `id`'s program for `set` in the background unless a build is under way. */
@@ -850,10 +867,11 @@ export class DitherRenderer {
     // Knobs that change the program's compile-time features (SceneDef.featuresFor): the scene draws
     // the new setting with a program it entered with for exactly that set, else with its
     // all-features program (SceneDef.featuresAll), built once in the background and never waited
-    // for; a change never builds a program of its own. Until that one is built the program on
-    // screen goes on drawing the settings it drew last (the old frame, moving on); one that fails
-    // to build stops the scene as entering it would. With changes expected (`expectChanges`) it is
-    // built ahead, once the scene has arrived.
+    // for; a change never builds a program of its own (but on a software rasteriser, see
+    // `#software`). Until the program is built the one on screen goes on drawing the settings it
+    // drew last (the old frame, moving on); one that fails to build stops the scene as entering it
+    // would. With changes expected (`expectChanges`) the all-features program is built ahead,
+    // once the scene has arrived.
     this.#settle();
     if (scene.program !== undefined && scene.failure === undefined) {
       const wanted = this.#want(s);
@@ -869,6 +887,7 @@ export class DitherRenderer {
         const all = wanted.all;
         if (
           this.#expecting &&
+          !this.#software &&
           all !== undefined &&
           leaving === undefined &&
           passage.enter >= 1 &&

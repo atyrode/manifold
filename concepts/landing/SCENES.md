@@ -302,11 +302,14 @@ Overlooking rolling hills with a village in the distance and forest around.
 - Cost: every optional part (walkers and carts, the track network, hedgerow clearing, village
   growth, hamlets, farms and castle, the farm tracks, flower and pasture fields, herds and fences,
   birds and the murmuration, the chalk M, falling rain and snow, fog, wind ripples, the clouds'
-  shadows, a moon below full) is compiled into the program only while its knobs are on
-  (`countryFeatures`, SceneDef.featuresFor); turning one on builds that program once, the old frame
-  holding meanwhile. The default program draws the same picture bit for bit at about the cost of
-  the countryside before its woodland, routes, settlements and herds were added (SwiftShader,
-  640×400).
+  shadows, a moon below full) is compiled into the program the scene enters with only while its
+  knobs are on (`countryFeatures`, SceneDef.featuresFor). The default program draws the same picture
+  bit for bit at about the cost of the countryside before its woodland, routes, settlements and
+  herds were added (SwiftShader, 640×400). On a GPU a change that needs another part draws with one
+  program holding them all (`COUNTRY_ALL`, SceneDef.featuresAll), built once in the background
+  (ahead while the lab is open), which draws every setting bit for bit as that setting's own
+  program; a software rasteriser builds each setting's own program instead, in the background, the
+  old frame holding meanwhile.
 - Fields: independently weight original seasonal crops, wildflowers, lavender, sunflowers and
   pasture from 0–100, through the farming year (`season`: summer, harvest, autumn). Weights are
   relative, not area percentages: crops 2, wildflowers 1, lavender 1 and the rest 0 give
