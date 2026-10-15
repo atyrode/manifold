@@ -39,8 +39,11 @@ interface Base {
 
 /**
  * How the lab draws a knob beyond its kind's own control (see "Lab widgets" in scenes/README.md):
- *   mix        one part of relative weights (a range): the group's knobs sharing `mix` (the bar's
- *              name) make one stacked bar, this knob its segment named `part`, coloured `swatch`
+ *   mix        one part of relative weights: a range, or a feature whose amount is the weight while
+ *              it is on (a land use that may be left out: `min` 0, `max` 100, `step` 1); the group's
+ *              knobs sharing `mix` (the bar's name) make one stacked bar, this knob its segment named
+ *              `part`, coloured `swatch`, drawn while it is in (a range above zero, a feature while
+ *              on); a feature part also gets an on/off chip, and keeps its amount while off
  *   sky        a part of the sky dial: `time` the time of day (a range over 0..1, 0 midnight),
  *              `cycle` the day cycle and `moon` the moon's phase (features); the dial stands where
  *              its group has a `time` part, and without one the others are plain controls

@@ -1,28 +1,42 @@
-// A mix bar: relative weights (range knobs sharing a `mix` widget) as one stacked bar, each part's
-// share of the total. Drag a divider to trade weight between the two parts beside it (their sum
-// holds); each part in the legend is a slider for its own weight (arrows, Page keys, Home/End,
-// Delete for zero) with a button that leaves it out or brings it back.
+// A mix bar: relative weights (knobs sharing a `mix` widget) as one stacked bar, each part's share of
+// the total; mix-model.ts holds the rules. A part is a range, or a feature whose amount is its weight
+// while it is on: each feature part has an icon chip over the bar that switches it on (with the
+// weight it had) and off, and only the parts that are in take a segment. Drag a divider to trade
+// weight between the two parts beside it (their sum holds); each part in the legend is a slider for
+// its own weight (arrows, Page keys, Home/End, Delete for zero, which switches a feature off), and a
+// range's has a button that leaves it out or brings it back.
+import { chipButton } from "./chips.ts";
 import { row } from "./controls.ts";
-import { drag, h, keyStep, snap, type Built } from "./dom.ts";
+import { drag, h, keyStep, type Built } from "./dom.ts";
 import { icon } from "./icons.ts";
-import type { Knobs, RangeDef } from "./knobs.ts";
-
-export interface MixPart {
-  def: RangeDef;
-  part: string;
-  swatch: string;
-}
+import { knobKeys, type Knobs } from "./knobs.ts";
+import {
+  dividerDrag,
+  setWeight,
+  shareOf,
+  spans,
+  switchedOn,
+  toggleIn,
+  weightKey,
+  weightOf,
+  type KnobPatch,
+  type MixPart,
+} from "./mix-model.ts";
 
 export function mixBar(knobs: Knobs, name: string, parts: readonly MixPart[]): Built {
-  const weight = (part: MixPart) => knobs.value(part.def.key);
-  const total = () => parts.reduce((sum, part) => sum + weight(part), 0);
-  const shareText = (part: MixPart) => {
-    const sum = total();
-    return sum > 0 ? `${Math.round((weight(part) / sum) * 100)}%` : "0%";
-  };
+  const read = (key: string) => knobs.value(key);
+  const defaults = (key: string) => knobs.default(key);
+  const weight = (part: MixPart) => weightOf(part, read);
+  const shareText = (part: MixPart) => `${Math.round(shareOf(part, parts, read) * 100)}%`;
+  const features = parts.filter((part) => part.def.kind === "feature");
+  const hasRanges = features.length < parts.length;
 
   const bar = h("div", { class: "mix-bar" });
-  const empty = h("p", { class: "mix-empty" }, "all weights zero");
+  const empty = h(
+    "p",
+    { class: "mix-empty" },
+    features.length > 0 ? "nothing in the mix" : "all weights zero",
+  );
   const segments = parts.map((part) => {
     const label = h("span", { class: "mix-seg-label" });
     const segment = h("div", { class: "mix-seg", title: part.def.help }, label);
@@ -35,64 +49,64 @@ export function mixBar(knobs: Knobs, name: string, parts: readonly MixPart[]): B
   /** The two parts beside the divider being dragged: shown even at weight zero until it is let go. */
   let held: readonly MixPart[] = [];
 
-  /** The parts with weight, in order, as fractions of the bar: start and end. */
-  const spans = () => {
-    const sum = total();
-    let start = 0;
-    return parts
-      .map((part) => {
-        const width = sum > 0 ? weight(part) / sum : 0;
-        const span = { part, start, end: start + width };
-        start += width;
-        return span;
-      })
-      .filter((span) => span.end > span.start || held.includes(span.part));
-  };
-
-  /**
-   * Drag divider `index`: the two parts beside it trade share at the pointer and every other part
-   * keeps its share. Their weights keep their sum while both fit under their maximum; past it every
-   * weight scales down together, so the shares still come out as dragged.
-   */
   const startDivider = (event: PointerEvent, divider: HTMLElement, index: number) => {
     if (event.button !== 0) return;
     event.preventDefault();
-    const shown = spans();
-    const left = shown[index];
-    const right = shown[index + 1];
-    if (!left || !right) return;
-    const start = new Map(parts.map((part) => [part, weight(part)]));
-    const sum = total();
+    const trade = dividerDrag(parts, read, index);
+    if (!trade) return;
     const rect = bar.getBoundingClientRect();
-    let patch: Record<string, number> = {};
-    held = [left.part, right.part];
+    let patch: KnobPatch = {};
+    held = trade.held;
     divider.classList.add("dragging");
     drag(
       event,
       divider,
       (pointer) => {
-        const at = (pointer.clientX - rect.left) / Math.max(1, rect.width);
-        const into = Math.min(right.end, Math.max(left.start, at));
-        const next = new Map(start);
-        next.set(left.part, (into - left.start) * sum);
-        next.set(right.part, (right.end - into) * sum);
-        const over = Math.max(...parts.map((part) => (next.get(part) ?? 0) / part.def.max));
-        const scale = over > 1 ? 1 / over : 1;
-        patch = Object.fromEntries(
-          parts.map((part) => {
-            const { key, min, max, step } = part.def;
-            return [key, snap((next.get(part) ?? 0) * scale, min, max, step)];
-          }),
-        );
+        patch = trade.at((pointer.clientX - rect.left) / Math.max(1, rect.width));
         knobs.set(patch, false);
       },
       () => {
         held = [];
         divider.classList.remove("dragging");
-        knobs.set(patch, true);
+        knobs.set(trade.release(patch), true);
       },
     );
   };
+
+  /** A modified dot resetting `keys`. */
+  const resetDot = (label: string, keys: readonly string[]) => {
+    const dot = h("button", {
+      type: "button",
+      class: "modified",
+      title: "Changed: click to reset",
+      "aria-label": `Reset ${label}`,
+    });
+    dot.addEventListener("click", () => knobs.reset(keys));
+    return dot;
+  };
+
+  // The feature parts' chips: the part's icon in its swatch while it is on.
+  const chips = new Map<MixPart, HTMLButtonElement>();
+  const chipSyncs: (() => void)[] = [];
+  const chipCells = features.map((part) => {
+    const { def } = part;
+    const chip = chipButton(def, part.part);
+    chip.style.setProperty("--swatch", part.swatch);
+    chip.addEventListener("click", () => knobs.set(toggleIn(part, parts, read, defaults), true));
+    chips.set(part, chip);
+    const dot = resetDot(def.label, knobKeys(def));
+    chipSyncs.push(() => {
+      chip.setAttribute("aria-checked", String(switchedOn(part, read)));
+      dot.hidden = !knobs.modified(knobKeys(def));
+    });
+    return h(
+      "div",
+      { class: "chip-cell" },
+      dot,
+      chip,
+      h("p", { class: "hint" }, `${part.part}: ${def.help}`),
+    );
+  });
 
   const legend = new Map<MixPart, HTMLElement>();
   const legendSyncs: (() => void)[] = [];
@@ -125,31 +139,14 @@ export function mixBar(knobs: Knobs, name: string, parts: readonly MixPart[]): B
               : undefined;
       if (next === undefined) return;
       event.preventDefault();
-      knobs.set({ [def.key]: snap(next, def.min, def.max, def.step) }, true);
+      knobs.set(setWeight(part, next), true);
+      // A feature switched off leaves the legend: its chip takes the focus.
+      if (!switchedOn(part, read)) chips.get(part)?.focus();
     });
     const share = h("span", { class: "mix-share" });
     const raw = h("span", { class: "mix-weight" });
-    const outIcon = icon("close");
-    const inIcon = icon("plus");
-    const toggle = h("button", { type: "button", class: "mix-toggle" }, outIcon, inIcon);
-    toggle.addEventListener("click", () => {
-      if (weight(part) > 0) {
-        knobs.set({ [def.key]: def.min }, true);
-        return;
-      }
-      // Back in with an even share of the parts already in, or half when none is.
-      const others = parts.filter((other) => weight(other) > 0).map(weight);
-      const mean =
-        others.length > 0 ? others.reduce((a, b) => a + b, 0) / others.length : def.max / 2;
-      knobs.set({ [def.key]: snap(mean, def.min, def.max, def.step) }, true);
-    });
-    const dot = h("button", {
-      type: "button",
-      class: "modified",
-      title: "Changed: click to reset",
-      "aria-label": `Reset ${def.label}`,
-    });
-    dot.addEventListener("click", () => knobs.reset([def.key]));
+    const key = weightKey(def);
+    const dot = resetDot(def.label, [key]);
     const swatch = h("span", { class: "mix-swatch" });
     swatch.style.setProperty("--swatch", part.swatch);
     const item = h(
@@ -160,32 +157,54 @@ export function mixBar(knobs: Knobs, name: string, parts: readonly MixPart[]): B
       slider,
       share,
       raw,
-      toggle,
-      h("p", { class: "hint" }, def.help),
     );
+    let syncToggle = () => {};
+    if (def.kind === "range") {
+      // A range leaves and comes back by its cross; a feature's chip does that, and holds its help.
+      const outIcon = icon("close");
+      const inIcon = icon("plus");
+      const toggle = h("button", { type: "button", class: "mix-toggle" }, outIcon, inIcon);
+      toggle.addEventListener("click", () =>
+        knobs.set(toggleIn(part, parts, read, defaults), true),
+      );
+      item.append(toggle, h("p", { class: "hint" }, def.help));
+      syncToggle = () => {
+        const out = weight(part) <= 0;
+        toggle.title = out ? `Bring ${part.part} back in` : `Leave ${part.part} out (weight zero)`;
+        toggle.setAttribute("aria-label", toggle.title);
+        outIcon.style.display = out ? "none" : "";
+        inIcon.style.display = out ? "" : "none";
+      };
+    }
     legendSyncs.push(() => {
-      const value = weight(part);
-      const out = value <= 0;
-      item.classList.toggle("out", out);
+      const value = knobs.value(key);
+      item.hidden = !switchedOn(part, read);
+      item.classList.toggle("out", weight(part) <= 0);
       share.textContent = shareText(part);
       raw.textContent = String(value);
       slider.setAttribute("aria-valuenow", String(value));
       slider.setAttribute("aria-valuetext", `weight ${value}, ${shareText(part)} of the mix`);
-      toggle.title = out ? `Bring ${part.part} back in` : `Leave ${part.part} out (weight zero)`;
-      toggle.setAttribute("aria-label", toggle.title);
-      outIcon.style.display = out ? "none" : "";
-      inIcon.style.display = out ? "" : "none";
-      dot.hidden = !knobs.modified([def.key]);
+      syncToggle();
+      dot.hidden = !knobs.modified([key]);
     });
     return item;
   });
 
-  const keys = parts.map((part) => part.def.key);
+  const keys = parts.flatMap((part) => knobKeys(part.def));
   const built = row({
     label: name,
-    help: "Relative weights, normalised together: a part's share is its weight over the sum. Drag a divider to trade share between its neighbours; in the list, arrow keys change a part's weight and the cross leaves it out.",
+    help:
+      features.length === 0
+        ? "Relative weights, normalised together: a part's share is its weight over the sum. Drag a divider to trade share between its neighbours; in the list, arrow keys change a part's weight and the cross leaves it out."
+        : `Relative weights, normalised together: a part's share is its weight over the sum of the parts switched on. A chip switches its part on, with the weight it had, or off; drag a divider to trade share between its neighbours; in the list, arrow keys change a part's weight${hasRanges ? " and the cross leaves it out" : ""}.`,
     icon: "fields",
-    block: h("div", { class: "mix" }, bar, h("ul", { class: "mix-legend" }, ...items)),
+    block: h(
+      "div",
+      { class: "mix" },
+      chipCells.length > 0 ? h("div", { class: "chips mix-chips" }, ...chipCells) : null,
+      bar,
+      h("ul", { class: "mix-legend" }, ...items),
+    ),
     readout: () => `${parts.filter((part) => weight(part) > 0).length} of ${parts.length} in`,
     modified: () => knobs.modified(keys),
     reset: () => knobs.reset(keys),
@@ -198,7 +217,8 @@ export function mixBar(knobs: Knobs, name: string, parts: readonly MixPart[]): B
     el: built.el,
     sync: () => {
       built.sync();
-      const shown = spans();
+      for (const sync of chipSyncs) sync();
+      const shown = spans(parts, read, held);
       for (const { part, segment, label } of segments) {
         const span = shown.find((candidate) => candidate.part === part);
         segment.hidden = span === undefined;

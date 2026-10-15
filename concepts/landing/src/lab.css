@@ -1613,6 +1613,14 @@ body.lab-open .lab-opener {
 .mix-part .hint {
   grid-column: 2 / -1;
 }
+/* a feature part's chip: its icon in its segment's colour while it is on */
+.mix-chips .chip[aria-checked="true"] .chip-icon {
+  color: var(--swatch);
+}
+/* only feature parts: no range's cross, so no column for it */
+.mix-legend:not(:has(.mix-toggle)) .mix-part {
+  grid-template-columns: 10px minmax(0, 1fr) auto 26px;
+}
 
 /* pads: a direction, a compass heading, a position */
 .dir-pad {
