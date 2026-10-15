@@ -93,6 +93,19 @@ Rain everywhere falls at terminal speed in real time, along the world's vertical
 sees it (`rainFallSeen`), whatever the calm of the rest of the scene; snow does the same where the
 camera tilts (`snowFallSeen`: skyward looking up, street looking down).
 
+## Pond plants
+
+`pond`'s border is grown by the shared plant component (`src/sims/plants.ts`, issue #1082 M11):
+every clump, stem, stalk, vine, frond, tuft and flower of the old painted border, laid out draw for
+draw from the same seed, is now a rooted plant whose stems and stalks bend on their own springs
+and carry their leaves, drawn each frame on the GPU from a botany sprite atlas (`plantsheet.ts`).
+Visible differences at rest: leaves are drawn from a fixed set of variants per species instead of
+each its own, their outlines come from a 128–256-pixel atlas cell (a touch softer up close), and
+the sheet follows the frame's resolution. In the breeze each organ sways on its own (nearer layers
+more) instead of whole layers sliding together. New, all off: seasons (the year turns and sheds the
+plants, flowers keep their season), growth (leaves unfold, age and are replaced) and gusts (fronts
+crossing the pond, "now").
+
 ## Tide pool
 
 `tidepool`: a rock pool on a basalt platform, seen from straight above, with the open sea along the
@@ -113,6 +126,13 @@ top. Prototype (issue #1082, N1), built from shared parts rather than scene code
   analytic wind ripples', both det(I + D·H), D a quarter of the depth (`waterCaustic`).
 - **Passage:** entering, the last of a wave's white water drains back up the frame and the anemones
   unfurl; leaving, a wave breaks in from the sea and sweeps down over everything.
+- **Plants and fish (#1082 M11, M12):** kelp, surfgrass and anemones stand where the shader always
+  placed them but are rooted plants of the shared component: the water's flow is averaged onto a
+  coarse grid and read back each frame without stalling (`src/sims/readback.ts`), and blades stream
+  and anemones lean on springs in it (a frame or two late) instead of following the flow cell by
+  cell. Optional rock pool fish (`fish`, the shared `src/sims/fish.ts` with a `BLENNY` species)
+  idle over the basin's floor and dart from a touch or a hard surge; seasons and growth (off) turn
+  and replace the fronds.
 - Knobs: tide (and a tide cycle), swell, wave length, direction, sets (with "now"), pace, foam;
   caustics, glints, breeze; sky time and rain; anemones (and shyness), kelp, surfgrass, sea lettuce,
   sea stars, urchins, sway; rock type, mussels/barnacles, coralline, pool size, arrangement;
@@ -144,6 +164,10 @@ A cliff face with a waterfall as the focus.
   pool with ripples.
 - Rock strata, moss and ferns on the ledges (reuse the pond's botany), rainbow in the spray when
   the sun is behind the viewer.
+- The near bank's ferns are rooted plants of the shared component (`falls/sim.ts`): the same clumps
+  and fronds, each frond bending on its own spring under the wind, the fall's stir and gusts (new
+  `gusts` knob, off), turning and shedding with the year (`season`, off), replaced with `growth`
+  (off). The ledge ferns draw the same shared frond (`plantFrond`) from hashes, unchanged.
 - Gorges (`gorge`): the layered forms share one bedding model with different beds, dip, folds,
   ledges and stone: basalt flows on rusty ash (the default), or thin, level sandstone ledges on
   shale, cross-bedded. The pale limestone slot is a different form: a few thick, flush beds fluted

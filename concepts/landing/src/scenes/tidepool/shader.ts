@@ -4,28 +4,40 @@
 //   uSim0  depth (cells), level slope xy (cells per cell), caustic focus (ShallowWater.surface)
 //   uSim1  foam, agitation, wetness (the water's carried field)
 //   uSim2  bed (cells), still depth, inside the basin, in the surge channel (layout.ts)
-//   uSim3  depth, velocity xy in cells/s (ShallowWater.water, nearest)
+//   uSim3  the life (life.ts): fish, the water's coarse flow, the fronds' and anemones' records
 //
 // Lengths are in frame heights (q = uv · (aspect, 1)); heights in cells of height, TIDEPOOL_RELIEF
 // cells of the frame each, so a depth d is d · RELIEF / ROWS frame heights of water. Light comes
 // from the shared sky (sun and moon by the time of day), refracts through the surface onto the bed
-// with the caustic net of the swell (the sim's focus) times the wind ripples' (the water library's
-// caustics tier: causticRipples, waterCaustic), is absorbed red first on the way down and up, and
-// glints off the facets turned toward the sun. The bed is drawn at the point the water shows it
-// (shifted by the refraction), life and all: the fronds and anemones stand in the water's flow
-// (uSim3) and the anemones close at a surge or a touch (agitation) and when the water leaves them.
+// with the caustic net of the swell (the sim's focus) times the wind ripples' (the water library's caustics tier: causticRipples, waterCaustic), is
+// absorbed red first on the way down and up, and glints off the facets turned toward the sun. The
+// bed is drawn at the point the water shows it (shifted by the refraction), life and all: the
+// fronds and anemones are the shared plant component's (life.ts), streaming and leaning in the
+// flow on the CPU; the anemones close at a surge or a touch (agitation) and when the water leaves
+// them; the fish (sims/fish.ts) are drawn here from their poses.
 import { glslFloat } from "../../shaders/glsl.ts";
+import { plantsGlsl } from "../../shaders/lib/plants.ts";
+import { fishGlsl } from "../../sims/fish.ts";
 import { TIDEPOOL_RELIEF } from "./layout.ts";
+import { TIDEPOOL_ANEMONE_GRID, TIDEPOOL_BLADES, TIDEPOOL_FISH_MAX, TIDEPOOL_FROND_GRID, TIDEPOOL_FROND_ROWS, TIDEPOOL_LIFE_HEADER, TIDEPOOL_LIFE_WIDTH } from "./life.ts";
 import { TIDEPOOL_ROWS } from "./sim.ts";
 
 /** Seconds of the scene's entrance and exit (SceneDef.passage). */
 export const TIDEPOOL_PASSAGE = { enter: 3, exit: 1.6 } as const;
 
-export const tidepoolGlsl = `
+export const tidepoolGlsl = `${plantsGlsl}${fishGlsl}
 // ---- tide pool ----
 
 const float TP_RELIEF = ${glslFloat(TIDEPOOL_RELIEF)};
 const float TP_ROWS = ${glslFloat(TIDEPOOL_ROWS)};
+// The life texture (life.ts): its width, header row, lattices and fish.
+const int TP_LIFE_W = ${TIDEPOOL_LIFE_WIDTH};
+const int TP_LIFE_HEADER = ${TIDEPOOL_LIFE_HEADER};
+const float TP_FROND_GRID = ${glslFloat(TIDEPOOL_FROND_GRID)};
+const int TP_FROND_ROWS = ${TIDEPOOL_FROND_ROWS};
+const int TP_BLADES = ${TIDEPOOL_BLADES};
+const float TP_ANEMONE_GRID = ${glslFloat(TIDEPOOL_ANEMONE_GRID)};
+const int TP_FISH_MAX = ${TIDEPOOL_FISH_MAX};
 // Frame heights of water per cell of depth.
 const float TP_DEPTH = TP_RELIEF / TP_ROWS;
 // The frame's height in metres, for the weather's splashes and rings.
@@ -66,10 +78,24 @@ vec2 tpCells(vec2 x, float jitter, out vec2 id, out vec2 at) {
   return vec2(f1, f2 - f1);
 }
 
-// The flow (cells/s) at uv, from the sim's nearest cell.
+// The life texture's header (life.ts): flow rows, first record row, frond and anemone lattice columns.
+ivec4 tpLife() {
+  return ivec4(texelFetch(uSim3, ivec2(0, TP_LIFE_HEADER), 0) + 0.5);
+}
+
+// The flow (cells/s) at uv: the sim's flow, averaged onto the life's coarse grid and read back.
 vec2 tpFlow(vec2 uv) {
-  ivec2 size = textureSize(uSim3, 0);
-  return texelFetch(uSim3, clamp(ivec2(uv * vec2(size)), ivec2(0), size - 1), 0).yz;
+  int rows = tpLife().x;
+  vec2 g = clamp(uv * vec2(float(TP_LIFE_W), float(rows)) - 0.5, vec2(0.0), vec2(float(TP_LIFE_W - 1), float(rows - 1)));
+  ivec2 i = ivec2(floor(g));
+  ivec2 j = min(i + 1, ivec2(TP_LIFE_W - 1, rows - 1));
+  vec2 f = g - vec2(i);
+  int base = TP_LIFE_HEADER + 1;
+  vec2 a = texelFetch(uSim3, ivec2(i.x, base + i.y), 0).xy;
+  vec2 b = texelFetch(uSim3, ivec2(j.x, base + i.y), 0).xy;
+  vec2 c = texelFetch(uSim3, ivec2(i.x, base + j.y), 0).xy;
+  vec2 d = texelFetch(uSim3, ivec2(j.x, base + j.y), 0).xy;
+  return mix(mix(a, b, f.x), mix(c, d, f.x), f.y);
 }
 
 // ---- life on the bed ----------------------------------------------------------------------------
@@ -140,51 +166,46 @@ void tpAnemone(vec2 q, vec2 at, float r, float reach, float open, vec2 lean, flo
 }
 
 // Fronds from holdfasts on a jittered grid: brown kelp-like ribbons on the low rock and in the pool,
-// bright surfgrass in the surge channel, streaming with the flow and fluttering along their length.
+// bright surfgrass in the surge channel. The holdfasts and their blades are rooted plants (life.ts):
+// each blade an arc bent by the flow on the CPU (its record's bend), fluttering along its length
+// here; the knobs pick which holdfasts show by rank (b), the passage's wash leans them all.
 void tpFronds(vec2 q, float aspect, float tm, float foot, inout TpBed b) {
-  const float G = 0.085;
+  const float G = TP_FROND_GRID;
+  ivec4 life = tpLife();
   vec2 cellAt = floor(q / G);
   for (int y = -1; y <= 1; y++) {
     for (int k = -1; k <= 1; k++) {
       vec2 id = cellAt + vec2(float(k), float(y));
+      ivec2 cell = ivec2(id) + 1;
+      if (cell.x < 0 || cell.y < 0 || cell.x >= life.z || cell.y >= TP_FROND_ROWS) continue;
       vec2 h = hash22(id + 41.7);
       vec2 anchor = (id + 0.2 + 0.6 * h) * G;
-      float len = G * (0.7 + 0.6 * fract(h.x * 13.1));
+      float len = G * (0.7 + 0.6 * fract(h.x * 13.1)) * 1.15;
       vec2 rel = q - anchor;
       if (dot(rel, rel) > len * len * 1.3) continue;
-      vec2 uv = anchor / vec2(aspect, 1.0);
-      vec4 site = texture(uSim2, uv);
-      bool grass = site.w > 0.4;
-      // Surfgrass in the channel; kelp in the basin and along the low rock at the sea's edge.
-      float zone = grass ? 1.0 : max(step(0.3, site.y) * site.z, step(-2.6, site.x) * step(site.x, 0.6));
-      float density = grass ? K_surfgrass * 1.2 : K_fronds;
-      if (zone < 0.5 || fract(h.y * 7.7) > density) continue;
-      // The flow at the holdfast: fronds stream along it, more the faster it runs.
-      vec2 flow = tpFlow(uv) / 20.0 * K_response + tpLean;
-      float pull = clamp(length(flow), 0.0, 0.95);
-      vec2 rest = vec2(cos(h.x * 40.0), sin(h.x * 40.0));
-      int blades = grass ? 4 : 3;
-      for (int i = 0; i < 4; i++) {
-        if (i >= blades) break;
-        float fi = float(i);
-        float spread = (fi - 0.5 * float(blades - 1)) * (grass ? 0.18 : 0.42);
-        vec2 dir0 = rotate(rest, spread + 0.3 * sin(tm * 0.31 + h.y * 9.0 + fi));
-        vec2 dir = normalize(mix(dir0, normalize(flow + 1e-5) + 0.15 * vec2(-dir0.y, dir0.x) * spread, pull));
-        vec2 side = vec2(-dir.y, dir.x);
-        float bladeLen = len * (grass ? 1.15 : 1.0) * (0.75 + 0.25 * fract(h.x * 3.3 + fi * 0.37));
-        float s = dot(rel, dir) / bladeLen;
+      for (int i = 0; i < TP_BLADES; i++) {
+        PlantOrgan o = plantOrgan(uSim3, life.y, (cell.y * life.z + cell.x) * TP_BLADES + i);
+        if (o.tier < 0.5) continue;
+        bool grass = o.form > 0.5;
+        if (o.b > (grass ? K_surfgrass * 1.2 : K_fronds)) break;
+        vec2 dir = o.dir;
+        if (tpLean != vec2(0.0)) dir = normalize(mix(dir, normalize(tpLean), clamp(length(tpLean), 0.0, 0.95)));
+        vec2 l = vec2(dot(rel, dir), dir.x * rel.y - dir.y * rel.x);
+        float s;
+        float across = plantArc(l, o.len, o.bend, s) / o.len;
         if (s < 0.0 || s > 1.0) continue;
-        // Flutter: a wave running out along the blade, livelier in a current.
-        float flutter = (0.05 + 0.12 * pull) * s * sin(s * 9.0 - tm * (1.6 + 4.0 * pull) + fi * 2.1 + h.y * 30.0);
-        float across = dot(rel, side) / bladeLen - flutter;
+        // Flutter: a wave running out along the blade, livelier the harder the flow bends it.
+        float pull = clamp(abs(o.bend) / 1.6, 0.0, 0.95);
+        across -= (0.05 + 0.12 * pull) * s * sin(s * 9.0 - tm * (1.6 + 4.0 * pull) + o.a);
         float halfWidth = grass ? 0.016 * (1.0 - 0.6 * s) : 0.06 * sin(3.14159 * min(s * 1.25, 1.0)) * (1.0 - 0.3 * s) + 0.012;
-        if (abs(across) > halfWidth + foot / bladeLen * 0.4) continue;
+        if (abs(across) > halfWidth + foot / o.len * 0.4) continue;
         float rib = smoothstep(0.35, 0.0, abs(across) / halfWidth);
         vec3 c = grass
           ? mix(vec3(0.16, 0.5, 0.2), vec3(0.42, 0.78, 0.3), 0.4 + 0.6 * s)
           : mix(vec3(0.3, 0.24, 0.08), vec3(0.6, 0.48, 0.16), 0.3 + 0.5 * s) * (0.85 + 0.25 * rib);
-        b.albedo = c * (0.9 + 0.2 * hash12(id + fi));
-        b.tilt = side * (across / max(halfWidth, 1e-4)) * 0.6;
+        b.albedo = plantPhenology(c, o.pheno) * (0.9 + 0.2 * hash12(id + o.variant));
+        vec2 along = rotate(dir, o.bend * s);
+        b.tilt = vec2(-along.y, along.x) * (across / max(halfWidth, 1e-4)) * 0.6;
         b.gloss = 0.6;
         b.accent = 0.0;
       }
@@ -328,6 +349,33 @@ float tpMark(vec2 q, float aspect, out vec3 col) {
   return pebble;
 }
 
+// The rock pool fish (life.ts, sims/fish.ts) over the bed: a soft shadow cast away from the light,
+// then the fish, mottled olive and sand with a pale fringe on its fins, the tail beating at the
+// phase the sim keeps (tag.x).
+void tpFish(vec2 q, inout TpBed b) {
+  int count = int(K_fish + 0.5);
+  for (int i = 0; i < TP_FISH_MAX; i++) {
+    if (i >= count) break;
+    FishPose f = fishPose(uSim3, i);
+    if (f.len <= 0.0) continue;
+    vec2 rel = q - f.at;
+    if (dot(rel, rel) > f.len * f.len * 2.5) continue;
+    vec2 side = vec2(-f.dir.y, f.dir.x);
+    vec2 rs = rel + tpLight.xy * 0.4 * f.len;
+    if (fishTop(vec2(dot(rs, f.dir), dot(rs, side)), f.len, f.tag.x, FISH_BLENNY) > 0.5) b.albedo *= 0.62;
+    vec2 l = vec2(dot(rel, f.dir), dot(rel, side));
+    float shape = fishTop(l, f.len, f.tag.x, FISH_BLENNY);
+    if (shape <= 0.0) continue;
+    float mottle = vnoise(l / f.len * 7.0 + float(i) * 13.0);
+    vec3 coat = mix(vec3(0.24, 0.22, 0.12), vec3(0.62, 0.55, 0.36), smoothstep(0.35, 0.7, mottle));
+    b.albedo = shape > 1.5 ? mix(coat, vec3(0.7, 0.66, 0.5), 0.35) : coat;
+    if (fishTopEye(l, f.len)) b.albedo = vec3(0.05);
+    b.tilt = vec2(0.0);
+    b.gloss = 0.35;
+    b.accent = 0.0;
+  }
+}
+
 // Everything the bed shows at q: rock and its zones, then the life on it.
 TpBed tpBedAt(vec2 q, vec2 uv, float aspect, float tm, float foot) {
   vec4 site = texture(uSim2, uv);
@@ -351,24 +399,23 @@ TpBed tpBedAt(vec2 q, vec2 uv, float aspect, float tm, float foot) {
   tpStarsAndUrchins(q, aspect, foot, b);
   if (K_fronds > 0.0 || K_surfgrass > 0.0) tpFronds(q, aspect, tm, foot, b);
   if (K_anemones > 0.0) {
-    const float G = 0.07;
-    vec2 id = floor(q / G);
-    vec2 h = hash22(id + 3.7);
-    vec2 at = (id + 0.3 + 0.4 * h) * G;
-    vec2 atUv = at / vec2(aspect, 1.0);
-    vec4 home = texture(uSim2, atUv);
-    bool fits = (home.y > 0.5 && home.z > 0.2) || (home.x > -1.8 && home.x < 0.5 && home.y < 0.05);
-    if (fits && fract(h.y * 9.1) < K_anemones * 0.8) {
-      float giant = fract(h.x * 17.0);
-      float r = G * (giant > 0.55 ? 0.13 + 0.05 * h.y : 0.07 + 0.03 * h.y);
-      // Closed out of water, at a surge or a touch (agitation), and while the scene arrives or leaves.
-      float exposed = 1.0 - smoothstep(0.15, 0.6, texture(uSim0, atUv).x);
-      float startled = smoothstep(0.15, mix(1.0, 0.35, K_shyness), texture(uSim1, atUv).y);
-      float open = (1.0 - max(exposed, startled)) * tpOpen;
-      vec2 lean = clamp(tpFlow(atUv) / 22.0 * K_response + tpLean, vec2(-0.6), vec2(0.6));
-      tpAnemone(q, at, r, 2.1, open, lean, giant, tm, foot, b);
+    // The anemones are rooted (life.ts), one per lattice cell where one fits; the knob shows them by
+    // rank (b), and each leans with the flow on its own spring (its record's lean).
+    ivec4 life = tpLife();
+    ivec2 cell = ivec2(floor(q / TP_ANEMONE_GRID));
+    if (cell.x >= 0 && cell.y >= 0 && cell.x < life.w) {
+      PlantOrgan o = plantOrgan(uSim3, life.y, life.z * TP_FROND_ROWS * TP_BLADES + cell.y * life.w + cell.x);
+      if (o.tier > 0.5 && o.b < K_anemones * 0.8) {
+        vec2 atUv = o.at / vec2(aspect, 1.0);
+        // Closed out of water, at a surge or a touch (agitation), and while the scene arrives or leaves.
+        float exposed = 1.0 - smoothstep(0.15, 0.6, texture(uSim0, atUv).x);
+        float startled = smoothstep(0.15, mix(1.0, 0.35, K_shyness), texture(uSim1, atUv).y);
+        float open = (1.0 - max(exposed, startled)) * tpOpen;
+        tpAnemone(q, o.at, o.len, 2.1, open, clamp(o.dir + tpLean, vec2(-0.6), vec2(0.6)), o.a, tm, foot, b);
+      }
     }
   }
+  if (K_fish > 0.0) tpFish(q, b);
   return b;
 }
 

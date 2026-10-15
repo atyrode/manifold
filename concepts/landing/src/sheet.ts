@@ -1,19 +1,20 @@
-// Data textures painted on the CPU: the pond's plant and canopy sheets. Painting runs on a worker
-// thread so it never competes with the frame loop; if the worker is unavailable, it runs on the
-// page in small steps between frames instead. The last finished sheet stays bound meanwhile, and
+// Data textures painted on the CPU: the pond's plant atlas (the sprites its simulated border plants
+// are drawn from, see decor.ts and sims/plantsheet.ts) and its canopy sheet. Painting runs on a
+// worker thread so it never competes with the frame loop; if the worker is unavailable, it runs on
+// the page in small steps between frames instead. The last finished sheet stays bound meanwhile, and
 // outlives its painter for a while, so a scene entered again shows its sheets at once. A painter
 // keeps one sheet at a time on the worker: requests that come while it paints (a slider dragged
 // through many values) wait, each replacing the last, so only the newest is painted next.
 
-import { paintCanopy, paintDecor, type CanopyConfig, type DecorConfig } from "./decor.ts";
+import { paintAtlas, paintCanopy, type CanopyConfig } from "./decor.ts";
 
-/** What to paint: the plant sheet, or the canopy sheet spanning `span` frames. */
-export type SheetJob = { kind: "decor"; config: DecorConfig } | { kind: "canopy"; config: CanopyConfig; span: number };
+/** What to paint: the plant atlas, or the canopy sheet spanning `span` frames. */
+export type SheetJob = { kind: "atlas" } | { kind: "canopy"; config: CanopyConfig; span: number };
 
 export function paintJob(ctx: OffscreenCanvasRenderingContext2D, width: number, height: number, job: SheetJob): Generator<void, void> {
   switch (job.kind) {
-    case "decor":
-      return paintDecor(ctx, width, height, job.config);
+    case "atlas":
+      return paintAtlas(ctx, width, height);
     case "canopy":
       return paintCanopy(ctx, width, height, job.config, job.span);
     default: {

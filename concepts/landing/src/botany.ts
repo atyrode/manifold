@@ -1,4 +1,5 @@
-// Plant morphology for the pond's foliage, drawn with Canvas 2D into the plant sheet.
+// Plant morphology for the pond's foliage, drawn with Canvas 2D into the plant atlas (decor.ts): the
+// sprites its simulated border plants are cut from. Their stems and roots are drawn on the GPU.
 //
 // Leaf outlines follow the leaf-shape model of Coussement et al. (2018), "A flexible geometric
 // model for leaf shape descriptions with high accuracy", Silva Fennica 52(2), doi:10.14214/sf.7740,
@@ -514,25 +515,5 @@ export function frangipaniFlower(ctx: Context, brush: Brush, rand: Rand): void {
     ctx.lineWidth = 0.014;
     trace(ctx, shape, 1, (u) => [0.2 + u * 0.75, 1], 16);
     ctx.restore();
-  }
-}
-
-// ---------------------------------------------------------------------------------------------
-// Stems and roots
-
-/** A tapering stroke along a polyline, from `width` at the start to `width * end` at the tip. */
-export function stroke(ctx: Context, points: readonly Point[], material: MaterialId, brush: Brush, shade: number, width: number, end = 0.5): void {
-  ctx.strokeStyle = ink(material, brush, shade);
-  ctx.lineCap = "round";
-  ctx.lineJoin = "round";
-  const n = points.length - 1;
-  for (let i = 0; i < n; i++) {
-    const [x0, y0] = points[i] ?? [0, 0];
-    const [x1, y1] = points[i + 1] ?? [0, 0];
-    ctx.lineWidth = width * (1 + (end - 1) * (i / n));
-    ctx.beginPath();
-    ctx.moveTo(x0, y0);
-    ctx.lineTo(x1, y1);
-    ctx.stroke();
   }
 }

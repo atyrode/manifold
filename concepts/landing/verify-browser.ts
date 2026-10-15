@@ -35,6 +35,7 @@ import { verifyPlanet } from "./src/scenes/campfire/planet.verify.ts";
 import { streetSnowCheck } from "./src/scenes/street/snow.verify.ts";
 import { verifyCanopy } from "./src/scenes/forest/canopy.verify.ts";
 import { verifyWaterTiers } from "./src/scenes/island/water.verify.ts";
+import { verifyPondPlants } from "./src/scenes/pond/plants.verify.ts";
 
 function check(ok: boolean, message: string): void {
   if (!ok) throw new Error(message);
@@ -590,6 +591,7 @@ export const checks: readonly Check[] = [
   ["trainLine", verifyTrainLine],
   ["canopy", verifyCanopy],
   ["waterTiers", verifyWaterTiers],
+  ["pondPlants", verifyPondPlants],
 ];
 
 /**

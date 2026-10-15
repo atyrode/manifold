@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, expect, test } from "bun:test";
-import type { DecorConfig } from "./decor.ts";
+import type { CanopyConfig } from "./decor.ts";
 import { SheetPainter, type SheetJob, type SheetReply, type SheetRequest } from "./sheet.ts";
 
 // The real SheetPainter against a stand-in worker and GL context: what is posted to the worker is
@@ -24,7 +24,7 @@ class FakeWorker {
 }
 
 function seedOf(request: SheetRequest): number {
-  if (request.job.kind !== "decor") throw new Error("expected a decor job");
+  if (request.job.kind !== "canopy") throw new Error("expected a canopy job");
   return request.job.config.seed;
 }
 
@@ -55,9 +55,9 @@ function context(): { gl: WebGL2RenderingContext; uploads: number[] } {
   return { gl, uploads };
 }
 
-function decor(seed: number): SheetJob {
-  const config: DecorConfig = { reach: 0.45, sides: [0.6, 0.6, 0.6, 0.6], kinds: ["fern"], vines: 0.4, flowers: 0.35, grass: 0.4, bushiness: 0.55, seed };
-  return { kind: "decor", config };
+function canopy(seed: number): SheetJob {
+  const config: CanopyConfig = { coverage: 0.45, sides: [0.6, 0.6, 0.6, 0.6], seed };
+  return { kind: "canopy", config, span: 1.5 };
 }
 
 const globals = ["document", "Worker"] as const;
@@ -80,7 +80,7 @@ test("a burst of requests paints the sheet in progress and the newest only, and 
   const { gl, uploads } = context();
   const painter = new SheetPainter(gl);
   const from = posted.length;
-  for (let seed = 10; seed <= 15; seed++) painter.request(`burst-${seed}`, 1, 1, decor(seed));
+  for (let seed = 10; seed <= 15; seed++) painter.request(`burst-${seed}`, 1, 1, canopy(seed));
   expect(posted.slice(from).map(seedOf)).toEqual([10]);
   await paint(posted[from]);
   // The superseded sheet is not shown; the newest request goes out as soon as the worker is free.
@@ -96,9 +96,9 @@ test("asking again for the sheet being painted takes it as it comes, without pai
   const { gl, uploads } = context();
   const painter = new SheetPainter(gl);
   const from = posted.length;
-  painter.request("again-20", 1, 1, decor(20));
-  painter.request("again-21", 1, 1, decor(21));
-  painter.request("again-20", 1, 1, decor(20));
+  painter.request("again-20", 1, 1, canopy(20));
+  painter.request("again-21", 1, 1, canopy(21));
+  painter.request("again-20", 1, 1, canopy(20));
   await paint(posted[from]);
   expect(uploads).toEqual([20]);
   expect(posted.slice(from).map(seedOf)).toEqual([20]);
@@ -108,8 +108,8 @@ test("a disposed painter sends no waiting request and shows nothing that comes b
   const { gl, uploads } = context();
   const painter = new SheetPainter(gl);
   const from = posted.length;
-  painter.request("gone-30", 1, 1, decor(30));
-  painter.request("gone-31", 1, 1, decor(31));
+  painter.request("gone-30", 1, 1, canopy(30));
+  painter.request("gone-31", 1, 1, canopy(31));
   painter.dispose();
   await paint(posted[from]);
   expect(uploads).toEqual([]);

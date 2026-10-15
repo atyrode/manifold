@@ -1,7 +1,10 @@
 // The waterfall scene: a cliff across the frame, a fall pouring from a notch in its lip into a
 // plunge pool, seen level from the pool's edge. Sky, weather and fog come from src/shaders/lib; over
 // the rim, the shared sky components (src/scenes/README.md, "Composing components"): stars, the moon
-// in its phase, the aurora and shooting stars.
+// in its phase, the aurora and shooting stars. The ferns are the plant component's fronds
+// (shaders/lib/plants.ts), the near bank's grown by sim.ts.
+import { plantsGlsl } from "../../shaders/lib/plants.ts";
+import { FALLS_CLUMPS, FALLS_FRONDS } from "./sim.ts";
 
 /** Seconds of the waterfall's entrance (the camera tilts down the fall to the pool) and exit (it tilts back up into the spray); SceneDef.passage. */
 export const FALLS_PASSAGE = { enter: 2.8, exit: 1.4 } as const;
@@ -9,7 +12,7 @@ export const FALLS_PASSAGE = { enter: 2.8, exit: 1.4 } as const;
 /** Trigger slot of the shooting stars' "now" button. */
 export const FALLS_METEOR_TRIGGER = 0;
 
-export const fallsGlsl = `
+export const fallsGlsl = `${plantsGlsl}
 // ---- falls ----
 // Frame: q = ((uv.x - 0.5) * aspect, uv.y): x in screen heights from the centre, y the screen
 // height. The cliff stands at the back of the pool; the camera stands level at the pool's edge,
@@ -465,28 +468,12 @@ vec3 fallsRock(vec2 q, float s, float dsdy, vec3 ray, FallsLight L, float wet, f
   return col;
 }
 
-// One fern frond from its root (rel = point - root): the spine is a parabola that rises by lift
-// and droops by droop (in frond lengths), bent back up by bend toward the tip; leaflets comb along
-// it, shrinking toward the tip. u reports how far along the frond the point is, under how far it
-// lies below the spine (negative above it).
-float fallsFrond(vec2 rel, float side, float len, float lift, float droop, float bend, out float u, out float under) {
-  u = rel.x * side / len;
-  under = -1.0;
-  if (u < 0.0 || u > 1.0) return 0.0;
-  float spine = len * (lift * u - (droop - bend) * u * u);
-  under = spine - rel.y;
-  float slope = lift - 2.0 * (droop - bend) * u;
-  float dist = abs(under) / sqrt(1.0 + slope * slope);
-  float width = len * 0.17 * (1.0 - u) * (0.3 + 0.7 * abs(sin(u * 23.0))) + 0.0011;
-  return smoothfall(width, width * 0.5, dist);
-}
-
 // Ferns and creepers hanging from the ledges (the lips of the hard beds): a clump of fronds here
 // and there along a ledge that stands out far enough, arching out and drooping over the face
-// below, and curtains of creeper strands hanging straight down. Both sway with the wind and the
-// fall's draught (sway: how far the frond tips swing, in frond lengths). Looks at the two ledges
-// above q, three clumps along each. Returns coverage; tip is how far along the frond (tips are
-// younger and paler).
+// below (plantFrond: the plant component's frond, posed here from hashes rather than grown), and
+// curtains of creeper strands hanging straight down. Both sway with the wind and the fall's draught
+// (sway: how far the frond tips swing, in frond lengths). Looks at the two ledges above q, three
+// clumps along each. Returns coverage; tip is how far along the frond (tips are younger and paler).
 float fallsFerns(vec2 q, float s, float dsdy, float green, float sway, float tm, out float tip) {
   tip = 0.0;
   float cover = 0.0;
@@ -512,7 +499,7 @@ float fallsFerns(vec2 q, float s, float dsdy, float green, float sway, float tm,
         if (j == 2) side = hash12(key + 4.1) < 0.5 ? -1.0 : 1.0;
         float u = 0.0;
         float under = 0.0;
-        float frond = fallsFrond(q - root, side, reach * (1.0 - 0.25 * fj), 0.35 - 0.15 * fj, 1.2 + 0.5 * fj, swing * side, u, under);
+        float frond = plantFrond(q - root, side, reach * (1.0 - 0.25 * fj), 0.35 - 0.15 * fj, 1.2 + 0.5 * fj, swing * side, 0.0, u, under);
         if (frond > cover) {
           cover = frond;
           tip = u;
@@ -692,45 +679,50 @@ vec3 fallsFireflies(vec2 q, float aspect, float tm, float count) {
 }
 
 // Ferns on the near bank: up to four clumps toward the corners (more with more greenery), fronds
-// rising and arching over. Returns coverage; tip as for fallsFerns. wet (how wet the rain has left
-// them) hangs beads of water under the leaflets' tips: bead 0..1. drip finds the nearest frond
-// overhead, for the water dripping off it: x along that frond, y how far below it (screen
-// heights), z 1 if there is one.
+// rising and arching over: the plant component's fronds, rooted, grown and bent by the wind in the
+// sim (uSim0 holds FALLS_CLUMPS × FALLS_FRONDS records, clump by clump; a missing or shed frond's
+// tier is 0). Returns coverage; tip as for fallsFerns, pheno the year's turn of the frond in front.
+// wet (how wet the rain has left them) hangs beads of water under the leaflets' tips: bead 0..1.
+// drip finds the nearest frond overhead, for the water dripping off it: x along that frond, y how
+// far below it (screen heights), z 1 if there is one. foot: a cell in screen heights.
 // grow (1 at rest) scales the fronds and slides the clumps in from the frame's edge: the entrance
 // springs them up past 1 and back, standing upright at first and arching over as they grow.
-float fallsBankFerns(vec2 q, float aspect, float green, float sway, float tm, float wet, float grow, out float tip, out float bead, out vec3 drip) {
+const int FALLS_CLUMPS = ${FALLS_CLUMPS};
+const int FALLS_FRONDS = ${FALLS_FRONDS};
+float fallsBankFerns(vec2 q, float wet, float grow, float foot, out float tip, out float pheno, out float bead, out vec3 drip) {
   tip = 0.0;
+  pheno = 0.0;
   bead = 0.0;
   drip = vec3(0.0, 1.0, 0.0);
   float cover = 0.0;
   float len = 1.0;   // the frond in front: its length, how far below its spine q lies, its key
   float under = 0.0;
   float key = 0.0;
-  for (int c = 0; c < 4; c++) {
-    float fc = float(c);
-    if ((fc + 1.0) * 0.22 > green + 0.12) break;
-    float side = mod(fc, 2.0) < 0.5 ? -1.0 : 1.0;
-    float inward = floor(fc * 0.5);
-    vec2 root = vec2(side * (0.47 * aspect - 0.04 - 0.2 * inward - 0.06 * hash12(vec2(fc, 81.0)) + 0.08 * (1.0 - clamp(grow, 0.0, 1.0))), 0.07 + 0.08 * (1.0 - inward));
-    for (int j = 0; j < 5; j++) {
-      float fj = float(j);
-      float id = fc * 7.0 + fj;
-      float h = hash12(vec2(id, 83.0));
-      float lj = (0.07 + 0.08 * h) * (1.0 - 0.3 * inward) * grow;
-      float u = 0.0;
-      float uj = 0.0;
-      float frond = fallsFrond(q - root, mod(fj, 2.0) < 0.5 ? -1.0 : 1.0, lj, 1.4 + 1.4 * h, (1.3 + 0.8 * fract(h * 7.3)) * (1.0 - 0.6 * (1.0 - clamp(grow, 0.0, 1.0))), sway * sin(tm * 0.8 + fc * 2.1 + fj), u, uj);
-      if (frond > cover) {
-        cover = frond;
-        tip = u;
-        len = lj;
-        under = uj;
-        key = id;
-      }
-      // The water runs out along the frond and drips off its outer, drooping part, down to the
-      // ground the clump grows from.
-      if (u > 0.35 && uj > 0.0 && uj < drip.y && q.y > root.y - 0.03) drip = vec3(u * lj + 0.61 * id, uj, 1.0);
+  if (uSimOn.x < 0.5) return 0.0;
+  float g = clamp(grow, 0.0, 1.0);
+  for (int r = 0; r < FALLS_CLUMPS * FALLS_FRONDS; r++) {
+    PlantOrgan o = plantOrgan(uSim0, 0, r);
+    if (o.tier < 0.5) continue;
+    vec2 root = o.at + vec2(sign(o.at.x) * 0.08 * (1.0 - g), 0.0);
+    float lj = o.len * grow;
+    vec2 rel = q - root;
+    if (dot(rel, rel) > lj * lj * 4.0) continue;
+    float u = 0.0;
+    float uj = 0.0;
+    // The spring's turn of the frond lifts (or lowers) its tip: its bend in frond lengths.
+    float bend = o.side * o.bend * length(vec2(1.0, o.a - o.b));
+    float frond = plantFrond(rel, o.side, lj, o.a, o.b * (1.0 - 0.6 * (1.0 - g)), bend, foot, u, uj);
+    if (frond > cover) {
+      cover = frond;
+      tip = u;
+      len = lj;
+      under = uj;
+      key = o.variant;
+      pheno = o.pheno;
     }
+    // The water runs out along the frond and drips off its outer, drooping part, down to the
+    // ground the clump grows from.
+    if (u > 0.35 && uj > 0.0 && uj < drip.y && q.y > root.y - 0.03) drip = vec3(u * lj + 0.61 * o.variant, uj, 1.0);
   }
   if (wet > 0.0 && cover > 0.0) {
     // One leaflet in a few holds a bead under its tip (the leaflets peak at u = (k + 0.5) pi / 23).
@@ -912,12 +904,13 @@ Shade sceneFalls(vec2 screenUv, vec2 cell, float t) {
     bankTop = 0.018 + 0.025 * fbm3(vec2(qb.x * 4.0, 2.0)) + 0.1 * edgeness * edgeness + fallsCrowns(qb.x + 0.37, 0.11, 13.0) * (0.12 + 0.5 * edgeness);
   }
   float tip = 0.0;
+  float fernPheno = 0.0;
   float bead = 0.0;
   vec3 fernDrip = vec3(0.0);
   float fern = 0.0;
   // The bank's ferns grow toward the corners: skip the loop in the open middle.
   float fernGrow = fallsSpring((arrive - 0.5) / 0.4);
-  if (green > 0.0 && fernGrow > 0.01 && qb.y < 0.45 && abs(qb.x) > 0.47 * aspect - 0.45) fern = fallsBankFerns(qb, aspect, green, 0.04 + 0.12 * abs(wind), tm, rainWet, fernGrow, tip, bead, fernDrip);
+  if (green > 0.0 && fernGrow > 0.01 && qb.y < 0.45 && abs(qb.x) > 0.47 * aspect - 0.45) fern = fallsBankFerns(qb, rainWet, fernGrow, 1.0 / uRes.y, tip, fernPheno, bead, fernDrip);
   float front = max(step(qb.y, bankTop), fern);
 
   vec3 col = vec3(0.0);
@@ -1222,7 +1215,7 @@ Shade sceneFalls(vec2 screenUv, vec2 cell, float t) {
   // fronds; beads of it on the leaflets catch the sky.
   if (fernDrip.z > 0.0 && dripAmt > 0.0) col = mix(col, rainLight, rainDrips(fernDrip.xy * FALLS_FERN_M, t, dripAmt, 0.07));
   if (fern > 0.0) {
-    vec3 frond = wetten(mix(vec3(0.04, 0.12, 0.04), vec3(0.22, 0.4, 0.12), 0.25 + 0.6 * tip), rainWet, 0.4);
+    vec3 frond = wetten(plantPhenology(mix(vec3(0.04, 0.12, 0.04), vec3(0.22, 0.4, 0.12), 0.25 + 0.6 * tip), fernPheno), rainWet, 0.4);
     col = mix(col, mix(frond * fallsLit(L, normalize(vec3(0.0, 0.6, -1.0))), rainLight, bead), fern);
   }
   if (front > 0.0) {

@@ -188,6 +188,13 @@ export class KnobReader<K extends string> {
     return frame.params[slot.amountKey] ?? slot.def.value;
   }
 
+  /** Whether a feature or toggle is switched on (a feature whose amount may be 0 while on); any other knob: non-zero. */
+  on(frame: SimFrame, key: K): boolean {
+    const slot = this.#slot(key);
+    if (slot.def.kind === "feature") return (frame.params[key] ?? (slot.def.on ? 1 : 0)) > 0.5;
+    return this.value(frame, key) !== 0;
+  }
+
   /** What `value` reads at the scene's defaults, for a constructor that runs before the first frame. */
   initial(key: K): number {
     return this.#slot(key).initial;

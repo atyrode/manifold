@@ -1,11 +1,14 @@
 // A waterfall seen level from the edge of its plunge pool: a cliff of basalt flows and rusty ash
 // beds (or sandstone ledges, or a pale limestone slot) with fallen blocks heaped at its foot, the
 // fall pouring from a notch in the lip, spray rising from the plunge with a rainbow in it, ferns on
-// the ledges and fireflies over the water at dusk. All in the shader; no simulation.
+// the ledges and fireflies over the water at dusk. All in the shader but the near bank's ferns,
+// rooted plants of the shared plant component (sim.ts) that sway with the wind and turn with the year.
 import { choice, feature, range } from "../../params.ts";
 import { atmosphereGroups, skyKnobs, weatherKnobs } from "../atmosphere.ts";
+import { plantKnobs } from "../plants.ts";
 import type { SceneDef } from "../types.ts";
 import { FALLS_METEOR_TRIGGER, FALLS_PASSAGE, fallsGlsl } from "./shader.ts";
+import { fallsSim } from "./sim.ts";
 
 export const fallsScene: SceneDef = {
   id: "falls",
@@ -24,6 +27,8 @@ export const fallsScene: SceneDef = {
     ...skyKnobs({ time: 0.55, stars: 0.45, moon: 1, meteors: { trigger: FALLS_METEOR_TRIGGER } }),
     ...weatherKnobs({ rain: true, fog: true, wind: true, aurora: true }),
     feature("manifold", "mark", "carved M", false, "parting", 0.5, "A Manifold M cut into the rock behind the falling water, glimpsed through it where it runs thin. A horn of rock at the lip splits the flow in front of it: more parts the water wider."),
+    // The bank ferns' year, growth and gusts (scenes/plants.ts), all off.
+    ...plantKnobs({ group: "life", season: 0.35, growth: 0.4, gusts: { trigger: 0, group: "weather" } }),
   ],
   groups: {
     falls: { title: "Waterfall", blurb: "How much water pours over, the spray it throws up, the rainbow standing in it, and the rock it has cut through." },
@@ -40,4 +45,5 @@ export const fallsScene: SceneDef = {
   passage: FALLS_PASSAGE,
   // The moon takes a phase (K_moon) in the shared sky.
   features: { SKY_MOON_PHASE: 1 },
+  sim: (gl) => fallsSim(gl, fallsScene.params),
 };
