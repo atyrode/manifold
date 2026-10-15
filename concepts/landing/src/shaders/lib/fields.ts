@@ -1,25 +1,23 @@
-// Farmland, shared: the field-type mix (relative weights of crops, wildflowers, lavender, sunflowers
-// and pasture mapped onto a field's own hash), the row profile that settles to its mean where the
-// dither cannot hold it, and the flower fields' materials. Opt-in (not in `libs`): a scene with
-// fields interpolates `fieldsGlsl` into its GLSL ahead of the code that calls it (the countryside
-// and the valley do). The scene decides where its fields lie, their hashes, row space and lighting.
+// Farmland, shared: the row profile that settles to its mean where the dither cannot hold it, and
+// the flower fields' materials. Opt-in (not in `libs`): a scene with fields interpolates
+// `fieldsGlsl` into its GLSL ahead of the code that calls it (the countryside does, for its
+// wildflower, lavender and sunflower parcels). The scene decides what each field grows (the
+// countryside's land model, sims/landuse.ts), where its fields lie, their hashes, row space and
+// lighting.
 //
-// Units are the scene's own field units (the countryside's world unit, about 120 m; the valley
-// scales its metres to them): `w` a point of the land, `r` row space (rows run along r's x), `px`
-// the size of one dither cell across and down the rows in the same units.
+// Units are the scene's own field units (the countryside scales its metres to them): `w` a point
+// of the land, `r` row space (rows run along r's x), `px` the size of one dither cell across and
+// down the rows in the same units.
 //
 //   float fieldHold(float period, vec2 dir, vec2 px);         // 0..1: rows of this period hold up
 //   float fieldRows(vec2 r, vec2 dir, float period, vec2 px); // soft ridge-and-trough profile 0..1
-//   vec2 fieldMix(float h, vec4 weights, float pasture);      // x FIELD_* type, y the crops' own hash
 //   vec3 fieldFlowerMaterial(float kind, float h, float season, vec2 w, vec2 r, vec2 px,
 //                            float wind, float sway, float tm, out float relief, out float sheen);
 export const fieldsGlsl = /* glsl */ `
 // ---- fields ----
-const float FIELD_CROPS = 0.0;
 const float FIELD_WILDFLOWERS = 1.0;
 const float FIELD_LAVENDER = 2.0;
 const float FIELD_SUNFLOWERS = 3.0;
-const float FIELD_PASTURE = 4.0;
 
 // How well a texture of this period holds up in the dither: 0 when one period spans fewer than ~3
 // cells along its direction (it would shimmer), 1 from ~5 cells. px: the size of a cell across and
@@ -32,22 +30,6 @@ float fieldHold(float period, vec2 dir, vec2 px) {
 // the rows' unit normal in r. Settles to its mean where the rows get too fine to hold.
 float fieldRows(vec2 r, vec2 dir, float period, vec2 px) {
   return 0.5 + 0.5 * fieldHold(period, dir, px) * sin(dot(r, dir) * TAU / period);
-}
-
-// A field's type for its hash h (0..1) under relative weights (crops, wildflowers, lavender,
-// sunflowers) and pasture: x the FIELD_* type, y the hash the crops pick their own catalogue with
-// (h remapped over the crops' share, so a small share still holds the whole catalogue). Weights are
-// relative; all zero is crops alone. Pasture takes the top of the hash range, so a zero weight
-// leaves every other field as it was, and the layout never moves as the weights change.
-vec2 fieldMix(float h, vec4 weights, float pasture) {
-  float total = dot(weights, vec4(1.0)) + pasture;
-  if (total <= 0.0) return vec2(FIELD_CROPS, h);
-  vec3 edges = vec3(weights.x, weights.x + weights.y, weights.x + weights.y + weights.z) / total;
-  if (h < edges.x) return vec2(FIELD_CROPS, h / edges.x);
-  if (h < edges.y) return vec2(FIELD_WILDFLOWERS, h);
-  if (h < edges.z) return vec2(FIELD_LAVENDER, h);
-  if (pasture <= 0.0 || h < 1.0 - pasture / total) return vec2(FIELD_SUNFLOWERS, h);
-  return vec2(FIELD_PASTURE, h);
 }
 
 // A flower field's material (kind FIELD_WILDFLOWERS, FIELD_LAVENDER or FIELD_SUNFLOWERS) for its

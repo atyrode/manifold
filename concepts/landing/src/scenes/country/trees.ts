@@ -1,64 +1,65 @@
-// The valley's trees: the woods and the lone trees in the hedges and on the banks, drawn as whole
-// crowns with the shared shapes (shaders/lib/trees.ts: a broadleaf's dome, a pine's tiered boughs).
+// The countryside's trees: the woods and the lone trees in the hedges and on the banks, drawn as
+// whole crowns with the shared shapes (shaders/lib/trees.ts: a broadleaf's dome, a pine's tiered
+// boughs). Where the woods stand, and which are pine, is the land model's (sims/landuse.ts
+// packLand: the cover's canopy channel, negative under pines); which lone trees stand too (the
+// yard channel's -1, only on a standing hedge or a bank, and only while woodland has a share).
 //
 // The march meets bounds, never the crowns themselves: the woods' envelope (their canopy's height
 // over a band a little wider than the woods) and each lone tree's tent (its yard texel of -1
 // filtered to a pyramid over the four texels round it, steepened so it holds every crown drawn
 // there). Where a ray meets a bound close enough for a crown to span more than a cell or so, the
-// crowns are found exactly (valleyCrowns): the lone trees of the four texels round the hit, and the
-// woods' trees cell by cell along the ray (one tree a VALLEY_CROWN_CELL cell, its crown within the
+// crowns are found exactly (countryCrowns): the lone trees of the four texels round the hit, and the
+// woods' trees cell by cell along the ray (one tree a COUNTRY_CROWN_CELL cell, its crown within the
 // cell, standing where the woods reach its root), each a sphere or a cone met analytically, a pine's
 // boughs then found inside its cone. A ray that meets no crown goes on to the ground behind, so a
 // wood's edge is a row of crowns at any pixel size. Farther off the bound is shaded as the canopy.
-export const valleyTreesGlsl = /* glsl */ `
-const float VALLEY_CROWN_CELL = 7.0;   // the woods: one tree a cell, its crown inside it, metres
-const float VALLEY_WOOD_TOP = 12.5;    // the woods' envelope over the ground (its swells' crest), metres
-const float VALLEY_LONE_TOP = 12.0;    // a lone tree's bound over its texel's centre, metres
+export const countryTreesGlsl = /* glsl */ `
+const float COUNTRY_CROWN_CELL = 7.0;   // the woods: one tree a cell, its crown inside it, metres
+const float COUNTRY_WOOD_TOP = 12.5;    // the woods' envelope over the ground (its swells' crest), metres
+const float COUNTRY_LONE_TOP = 12.0;    // a lone tree's bound over its texel's centre, metres
 
-// A stable species draw: the pine mix (K_pines) of the trees.
-bool valleyPine(float h) {
-#if VALLEY_HAS_PINES
+// A stable species draw for a lone tree: the pine mix (K_pines).
+bool countryPine(float h) {
+#if COUNTRY_HAS_PINES
   return fract(h * 83.17 + 0.19) < K_pines;
 #else
   return false;
 #endif
 }
 
-// How much of the woods stands here, 0..1: the woodland suitability over the knob's threshold,
-// cleared from water, streams, roads (while drawn) and yards. loose: the band, a little wider, that
-// every crown of the woods lies within (their envelope).
-float valleyWoods(vec4 cover, float water, bool loose) {
-  if (K_woodland <= 0.0) return 0.0;
-  float th = valleyWoodTh - (loose ? 0.12 : 0.0);
-  float reach = loose ? 2.5 : 0.0;
-  float on = smoothstep(th, th + 0.14, cover.z - 1.5 * max(cover.w, 0.0));
-  on *= smoothstep(0.5 - reach, 3.5 - reach, cover.y) * smoothstep(-0.3, -1.5, water);
-  if (K_roads > 0.5) on *= smoothstep(1.5 - reach, 5.0 - reach, cover.x);
-  return on;
+// How much of the woods stands here, 0..1, from the canopy (packLand: 1 inside a woodland parcel,
+// pulled in at its edges, cleared from water, streams, roads and yards) and the water under it.
+// loose: the band, a few metres wider, that every crown of the woods lies within (their envelope):
+// trees root only where the canopy is over half (a texel or so in from where it ends), so a crown
+// never reaches past the band.
+float countryWoods(vec4 cover, float water, bool loose) {
+  float canopy = abs(cover.z);
+  float on = loose ? smoothstep(0.0, 0.2, canopy) : smoothstep(0.55, 0.85, canopy);
+  return on * smoothstep(-0.3, -1.5, water);
 }
 
 // The woods' canopy height there: crowns rise with a broad swell, so their envelope follows it.
-float valleyWoodTop(vec2 p) {
-  return VALLEY_WOOD_TOP * (0.86 + 0.14 * vnoise(p / 9.0));
+float countryWoodTop(vec2 p) {
+  return COUNTRY_WOOD_TOP * (0.86 + 0.14 * vnoise(p / 9.0));
 }
 
 // What the march meets over the ground (metres): the woods' envelope, or a lone tree's tent. bound:
 // the tent steepened to hold the whole crown (the march); otherwise rounded to about the crown's
 // size (the sun's shadows).
-float valleyCanopy(vec2 p, vec4 cover, float water, bool bound) {
+float countryCanopy(vec2 p, vec4 cover, float water, bool bound) {
   if (K_woodland <= 0.0) return 0.0;
   float w = clamp(-cover.w, 0.0, 1.0);
-  float lone = bound ? VALLEY_LONE_TOP * sqrt(sqrt(w)) : 11.0 * sqrt(clamp((w - 0.1) / 0.9, 0.0, 1.0));
-  return max(valleyWoodTop(p) * smoothstep(0.0, 0.3, valleyWoods(cover, water, true)), lone);
+  float lone = bound ? COUNTRY_LONE_TOP * sqrt(sqrt(w)) : 11.0 * sqrt(clamp((w - 0.1) / 0.9, 0.0, 1.0));
+  return max(countryWoodTop(p) * smoothstep(0.0, 0.3, countryWoods(cover, water, true)), lone);
 }
 
 // A tree: its foot on the ground (metres), its crown's radius and top over the foot, its hash and
 // species. A broadleaf's crown is a sphere under its top; a pine's a cone of tiered boughs
 // (treePineWidth) 2.4 bough units tall, a unit radius / 0.82, from its tip down.
-struct ValleyTree { vec3 foot; float radius; float top; float hash; bool pine; };
+struct CountryTree { vec3 foot; float radius; float top; float hash; bool pine; };
 
 // Where the ray first meets the tree's crown bound (sphere or cone), beyond 0; -1 none.
-float valleyTreeBound(vec3 ro, vec3 rd, ValleyTree tree) {
+float countryTreeBound(vec3 ro, vec3 rd, CountryTree tree) {
   if (!tree.pine) {
     vec3 oc = ro - (tree.foot + vec3(0.0, tree.top - tree.radius, 0.0));
     float b = dot(oc, rd);
@@ -89,14 +90,14 @@ float valleyTreeBound(vec3 ro, vec3 rd, ValleyTree tree) {
 // The ray against the tree's crown from its bound's entry t: the hit (-1 none: it passed between a
 // pine's boughs), the normal there (world, the shared dome's for a broadleaf) and how high up the
 // crown 0..1. A pine's boughs are found by a short march through its cone.
-float valleyTreeHit(vec3 ro, vec3 rd, ValleyTree tree, float t, out vec3 n, out float up) {
+float countryTreeHit(vec3 ro, vec3 rd, CountryTree tree, float t, out vec3 n, out float up) {
   n = vec3(0.0, 1.0, 0.0);
   up = 0.5;
   if (!tree.pine) {
     vec3 centre = tree.foot + vec3(0.0, tree.top - tree.radius, 0.0);
     vec3 s = (ro + rd * t - centre) / tree.radius;
     up = 0.5 + 0.5 * s.y;
-    n = normalize(valleyToWorld(treeDomeNormal(vec2(dot(s, valleyRight), s.y))));
+    n = normalize(countryToWorld(treeDomeNormal(vec2(dot(s, countryRight), s.y))));
     return t;
   }
   float unit = tree.radius / 0.82;
@@ -133,12 +134,12 @@ float valleyTreeHit(vec3 ro, vec3 rd, ValleyTree tree, float t, out vec3 n, out 
 }
 
 // The lone tree of the yard texel at (i, j), if it holds one: placed and sized by its hash.
-ValleyTree valleyLoneTree(ivec2 at, vec2 p, vec4 g) {
-  ValleyTree tree;
+CountryTree countryLoneTree(ivec2 at, vec2 p, vec4 g) {
+  CountryTree tree;
   float h = hash12(vec2(at) * 0.731 + 5.3);
-  vec2 foot = (vec2(at) + 0.5) * (VALLEY_EXTENT / float(textureSize(uSim1, 0).x)) + 1.6 * (hash22(vec2(at)) - 0.5);
+  vec2 foot = (vec2(at) + 0.5) * (COUNTRY_EXTENT / float(textureSize(uSim1, 0).x)) + 1.6 * (hash22(vec2(at)) - 0.5);
   float s = 0.85 + 0.15 * fract(h * 7.1);
-  tree.pine = valleyPine(h);
+  tree.pine = countryPine(h);
   tree.radius = (tree.pine ? 2.8 : 3.2) * s;
   tree.top = (tree.pine ? 10.5 : 10.2) * s;
   tree.foot = vec3(foot.x, terrainSurface(g) + dot(g.zw, foot - p), foot.y);
@@ -147,19 +148,23 @@ ValleyTree valleyLoneTree(ivec2 at, vec2 p, vec4 g) {
 }
 
 // The woods' tree of crown cell \`cell\`: it stands (radius > 0) where the woods at its root outgrow
-// its hash. The ground under it from g at p.
-ValleyTree valleyWoodTree(vec2 cell, vec2 p, vec4 g) {
-  ValleyTree tree;
+// its hash, a pine where the canopy there is a pine wood's. The ground under it from g at p.
+CountryTree countryWoodTree(vec2 cell, vec2 p, vec4 g) {
+  CountryTree tree;
   float h = hash12(cell + 2.3);
-  tree.pine = valleyPine(h);
   tree.hash = h;
-  float r = (tree.pine ? 2.6 : 2.7) + 0.5 * fract(h * 13.7);
-  float room = 0.5 * VALLEY_CROWN_CELL - r - 0.05;
-  vec2 root = (cell + 0.5) * VALLEY_CROWN_CELL + room * (2.0 * hash22(cell + 1.7) - 1.0);
-  vec4 cover = terrainCover(uSim1, root, VALLEY_EXTENT);
-  float stands = valleyWoods(cover, terrainWater(g), false) - (0.05 + 0.9 * fract(h * 31.7));
+  float r = 2.6 + 0.5 * fract(h * 13.7);
+  float room = 0.5 * COUNTRY_CROWN_CELL - r - 0.05;
+  vec2 root = (cell + 0.5) * COUNTRY_CROWN_CELL + room * (2.0 * hash22(cell + 1.7) - 1.0);
+  vec4 cover = terrainCover(uSim1, root, COUNTRY_EXTENT);
+#if COUNTRY_HAS_PINES
+  tree.pine = cover.z < 0.0;
+#else
+  tree.pine = false;
+#endif
+  float stands = countryWoods(cover, terrainWater(g), false) - (0.05 + 0.9 * fract(h * 31.7));
   // Under the envelope's swell, a metre lower than its least over the crown, varied tree by tree.
-  tree.top = (valleyWoodTop(root) - 1.0) * (0.85 + 0.15 * fract(h * 5.3));
+  tree.top = (countryWoodTop(root) - 1.0) * (0.85 + 0.15 * fract(h * 5.3));
   tree.radius = stands > 0.0 ? r : 0.0;
   tree.foot = vec3(root.x, terrainSurface(g) + dot(g.zw, root - p), root.y);
   return tree;
@@ -167,7 +172,7 @@ ValleyTree valleyWoodTree(vec2 cell, vec2 p, vec4 g) {
 
 // Where the ray meets the tree's trunk, a post 0.7 m across (drawn large, as the crowns are) from
 // the ground up into its crown; -1 none.
-float valleyTrunk(vec3 ro, vec3 rd, ValleyTree tree) {
+float countryTrunk(vec3 ro, vec3 rd, CountryTree tree) {
   vec2 o = ro.xz - tree.foot.xz;
   float a = dot(rd.xz, rd.xz);
   float b = dot(o, rd.xz);
@@ -182,24 +187,24 @@ float valleyTrunk(vec3 ro, vec3 rd, ValleyTree tree) {
 // The crown (or trunk) the ray (ro, rd) meets beyond the bound it met at tHit (point p, ground g
 // there): the lone trees of the four texels round p and the woods' trees in the next crown cells
 // along the ray. t: the hit (-1 none), n its normal (world), up how high up its crown (-1: the trunk).
-float valleyCrowns(vec3 ro, vec3 rd, float tHit, vec3 p, vec4 g, out ValleyTree tree, out vec3 n, out float up) {
+float countryCrowns(vec3 ro, vec3 rd, float tHit, vec3 p, vec4 g, out CountryTree tree, out vec3 n, out float up) {
   n = vec3(0.0, 1.0, 0.0);
   up = 0.5;
   float best = 1e9;
   float trunk = 1e9;
-  ValleyTree post;
+  CountryTree post;
   ivec2 size = textureSize(uSim1, 0);
-  ivec2 base = ivec2(floor(p.xz / VALLEY_EXTENT * vec2(size) - 0.5));
+  ivec2 base = ivec2(floor(p.xz / COUNTRY_EXTENT * vec2(size) - 0.5));
   for (int k = 0; k < 4; k++) {
     ivec2 at = clamp(base + ivec2(k - (k / 2) * 2, k / 2), ivec2(0), size - 1);
     if (texelFetch(uSim1, at, 0).w > -0.5) continue;
-    ValleyTree lone = valleyLoneTree(at, p.xz, g);
-    float t = valleyTreeBound(ro, rd, lone);
+    CountryTree lone = countryLoneTree(at, p.xz, g);
+    float t = countryTreeBound(ro, rd, lone);
     if (t > 0.0 && t < best) {
       best = t;
       tree = lone;
     }
-    t = valleyTrunk(ro, rd, lone);
+    t = countryTrunk(ro, rd, lone);
     if (t > 0.0 && t < trunk) {
       trunk = t;
       post = lone;
@@ -208,20 +213,20 @@ float valleyCrowns(vec3 ro, vec3 rd, float tHit, vec3 p, vec4 g, out ValleyTree 
   // The woods, crown cell by crown cell from just short of the hit (2D DDA over the cells).
   vec2 dir = rd.xz / max(length(rd.xz), 1e-4);
   vec2 from = (ro + rd * max(tHit - 1.0, 0.0)).xz;
-  vec2 cell = floor(from / VALLEY_CROWN_CELL);
+  vec2 cell = floor(from / COUNTRY_CROWN_CELL);
   vec2 stepDir = vec2(dir.x < 0.0 ? -1.0 : 1.0, dir.y < 0.0 ? -1.0 : 1.0);
-  vec2 delta = VALLEY_CROWN_CELL / max(abs(dir), 1e-4);
+  vec2 delta = COUNTRY_CROWN_CELL / max(abs(dir), 1e-4);
   vec2 safe = vec2(abs(dir.x) < 1e-4 ? 1e-4 : dir.x, abs(dir.y) < 1e-4 ? 1e-4 : dir.y);
-  vec2 edge = ((cell + max(stepDir, 0.0)) * VALLEY_CROWN_CELL - from) / safe;
+  vec2 edge = ((cell + max(stepDir, 0.0)) * COUNTRY_CROWN_CELL - from) / safe;
   for (int k = 0; k < 6; k++) {
-    ValleyTree wood = valleyWoodTree(cell, p.xz, g);
+    CountryTree wood = countryWoodTree(cell, p.xz, g);
     if (wood.radius > 0.0) {
-      float t = valleyTreeBound(ro, rd, wood);
+      float t = countryTreeBound(ro, rd, wood);
       if (t > 0.0 && t < best) {
         best = t;
         tree = wood;
       }
-      float tt = valleyTrunk(ro, rd, wood);
+      float tt = countryTrunk(ro, rd, wood);
       if (tt > 0.0 && tt < trunk) {
         trunk = tt;
         post = wood;
@@ -237,7 +242,7 @@ float valleyCrowns(vec3 ro, vec3 rd, float tHit, vec3 p, vec4 g, out ValleyTree 
       edge.y += delta.y;
     }
   }
-  float hit = best < 1e8 ? valleyTreeHit(ro, rd, tree, best, n, up) : -1.0;
+  float hit = best < 1e8 ? countryTreeHit(ro, rd, tree, best, n, up) : -1.0;
   if (trunk < 1e8 && (hit < 0.0 || trunk < hit)) {
     tree = post;
     vec2 side = normalize(ro.xz + rd.xz * trunk - post.foot.xz);
@@ -251,7 +256,7 @@ float valleyCrowns(vec3 ro, vec3 rd, float tHit, vec3 p, vec4 g, out ValleyTree 
 // A crown's leaves: broadleaf greens varied tree by tree, pines a dark blue-green; darker low in the
 // crown and between its clumps where they resolve (foot: metres a cell spans there). A trunk
 // (up < 0): bark.
-vec3 valleyLeaves(ValleyTree tree, vec3 at, float up, float foot) {
+vec3 countryLeaves(CountryTree tree, vec3 at, float up, float foot) {
   if (up < 0.0) return vec3(0.27, 0.22, 0.17);
   float h = tree.hash;
   vec3 leaf = tree.pine

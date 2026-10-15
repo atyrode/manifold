@@ -1,8 +1,8 @@
 // Tree crowns, shared: a pine's tiered, tapered outline and a broadleaf crown's leafy dome, so every
 // landscape draws its trees with the same shapes. Opt-in (not in `libs`): a scene with trees
-// interpolates `treesGlsl` into its GLSL ahead of the code that calls it (the countryside's woods
-// and hedgerow trees, the valley's lone trees and wood crowns). The scene decides where trees stand,
-// how big they are, their colours and their light.
+// interpolates `treesGlsl` into its GLSL ahead of the code that calls it (the countryside's wood
+// crowns and its hedgerow and riverbank trees). The scene decides where trees stand, how big they
+// are, their colours and their light.
 //
 // Crown units: the crown's own radius, y up.
 //

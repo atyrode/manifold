@@ -409,28 +409,26 @@ aurora, meteors and the canopy weather (see "Shared libraries"). A component few
 a GLSL string of its own that each consumer interpolates into its `glsl`, at the top or at least
 before the functions that call it, so no other program pays for it:
 
-| String          | File                           | Composed by                                                                   | See                                  |
-| --------------- | ------------------------------ | ----------------------------------------------------------------------------- | ------------------------------------ |
-| `birdsGlsl`     | `src/shaders/lib/birds.ts`     | aurora, country, falls, lake, lanterns, meadow, skyward, swell, train, valley | "Birds"                              |
-| `milkyWayGlsl`  | `src/shaders/lib/milkyway.ts`  | campfire, lake                                                                | the Milky Way row below              |
-| `plantsGlsl`    | `src/shaders/lib/plants.ts`    | falls, fireflies, garden, pond, tidepool                                      | "Rooted plants"                      |
-| `planetGlsl`    | `src/shaders/lib/planet.ts`    | orbit, campfire, mobile                                                       | "The giant planet"                   |
-| `figuresGlsl`   | `src/shaders/lib/figures.ts`   | country, valley                                                               | "Figures, livestock and buildings"   |
-| `livestockGlsl` | `src/shaders/lib/livestock.ts` | country, valley                                                               | "Figures, livestock and buildings"   |
-| `buildingsGlsl` | `src/shaders/buildings.ts`     | country, valley                                                               | "Figures, livestock and buildings"   |
-| `terrainGlsl`   | `src/shaders/lib/terrain.ts`   | valley                                                                        | `TerrainBuilder` under "Simulations" |
-| `fieldsGlsl`    | `src/shaders/lib/fields.ts`    | country, valley                                                               | the fields row below                 |
-| `treesGlsl`     | `src/shaders/lib/trees.ts`     | country, valley                                                               | the trees row below                  |
+| String          | File                           | Composed by                                                           | See                                  |
+| --------------- | ------------------------------ | --------------------------------------------------------------------- | ------------------------------------ |
+| `birdsGlsl`     | `src/shaders/lib/birds.ts`     | aurora, country, falls, lake, lanterns, meadow, skyward, swell, train | "Birds"                              |
+| `milkyWayGlsl`  | `src/shaders/lib/milkyway.ts`  | campfire, lake                                                        | the Milky Way row below              |
+| `plantsGlsl`    | `src/shaders/lib/plants.ts`    | falls, fireflies, garden, pond, tidepool                              | "Rooted plants"                      |
+| `planetGlsl`    | `src/shaders/lib/planet.ts`    | orbit, campfire, mobile                                               | "The giant planet"                   |
+| `figuresGlsl`   | `src/shaders/lib/figures.ts`   | country                                                               | "Figures, livestock and buildings"   |
+| `livestockGlsl` | `src/shaders/lib/livestock.ts` | country                                                               | "Figures, livestock and buildings"   |
+| `buildingsGlsl` | `src/shaders/buildings.ts`     | country                                                               | "Figures, livestock and buildings"   |
+| `terrainGlsl`   | `src/shaders/lib/terrain.ts`   | country                                                               | `TerrainBuilder` under "Simulations" |
+| `fieldsGlsl`    | `src/shaders/lib/fields.ts`    | country                                                               | the fields row below                 |
+| `treesGlsl`     | `src/shaders/lib/trees.ts`     | country                                                               | the trees row below                  |
 
-- **Fields** (`fieldsGlsl`): `fieldMix(h, weights, pasture)` maps a field's hash onto the relative
-  weights of crops, wildflowers, lavender, sunflowers and pasture (pasture at the top of the range,
-  the crops' share remapped over their own catalogue, all zero crops); `fieldHold` and `fieldRows`
-  (row profiles that settle to their mean where the dither cannot hold them) and
-  `fieldFlowerMaterial` (meadow, lavender and sunflower materials). The countryside's
-  `countryFieldCrop` and the valley's parcels both map their weights through it.
+- **Fields** (`fieldsGlsl`): `fieldHold` and `fieldRows` (row profiles that settle to their mean
+  where the dither cannot hold them) and `fieldFlowerMaterial` (meadow, lavender and sunflower
+  materials): the countryside's flower parcels, whose use the land model (`src/sims/landuse.ts`)
+  decides.
 - **Trees** (`treesGlsl`): `treePineWidth(y)`, a pine's tiered, tapered outline, and
-  `treeDomeNormal(dc)`, a broadleaf dome's normal in the eye's frame: the countryside's woods and
-  hedgerow trees, the valley's crowns.
+  `treeDomeNormal(dc)`, a broadleaf dome's normal in the eye's frame: the countryside's wood crowns
+  and hedgerow and riverbank trees.
 
 Such a component reads no knob defines (they are the scene's own): the scene passes every value as
 an argument, and its knobs come from the component's builder where it has one (`birdKnobs`,
@@ -458,11 +456,10 @@ line of a program whatever branches a pixel takes, and a loop's body at least on
 saves nothing there, only code that is not compiled in. Its companion `SceneDef.featuresAll` turns
 every gate on and each tier up to the highest a knob selects. That program draws every setting
 byte for byte as the setting's own does, because the shader's runtime tests of the knobs decide
-(on a GPU they are uniform branches, nearly free). The adopters are `country` (`countryFeatures`
-and `COUNTRY_ALL`: its optional parts, the river's water tier, the clouds' shadows tier and the
-moon's phase below full), `meadow` (its wildflowers) and `valley` (`valleyFeatures` and
-`VALLEY_ALL`: roads, rain, snow, fog, pines, the fields' mix, herds, walkers and carts, birds, the
-clouds' shadows tier and the moon's phase; `valleyFeaturesAll` checks each gated setting).
+(on a GPU they are uniform branches, nearly free). The adopters are `country` (`countryFeatures` and
+`COUNTRY_ALL`: roads and tracks, rain, snow, fog, pine woods, flower fields, herds, walkers and carts,
+birds, the clouds' shadows tier and the moon's phase; `countryFeaturesAll` checks each gated
+setting) and `meadow` (its wildflowers).
 
 A scene enters with the program for its setting, so the plain page draws its lean program and
 builds no other. On a GPU a knob change that needs another feature set builds none either:
@@ -484,8 +481,7 @@ for, keeping up to four per scene (the least recently drawn freed). Rules:
   shader's own runtime test inside the gate: the all-features program draws by it.
 - Define each gate 0 or 1 every time and test it with `#if` (a library feature tested with
   `#ifdef` is left out instead).
-- Leave in anything a "now" button can show while its knob is off (`country` keeps its lightning
-  and shooting stars).
+- Leave in anything a "now" button can show while its knob is off.
 - Check that the default picture is bit for bit what it was.
 - Give `featuresAll` every gate and tier `featuresFor` can select. `src/features.verify.ts` checks
   that it covers each knob's turn and, through the renderer, that it draws every gated setting
@@ -493,7 +489,7 @@ for, keeping up to four per scene (the least recently drawn freed). Rules:
   builds a program after the first (`featureToggles`), and how the programs take over
   (`sceneFeatures`).
 - Checks that draw many settings with one program compile with every gate on (`country`'s
-  `COUNTRY_FULL`, `COUNTRY_ALL` without the verges).
+  `COUNTRY_ALL`).
 
 **Level of detail.** One component can be a hero subject or a far decoration. A function with a
 `foot` parameter takes the size of one dither cell at that point, in its own units. For sky
@@ -589,7 +585,7 @@ have **open** cells: an open night sky where the component could be composed.
 | `aurora`           | the subject, mirrored in the fjord                               | own `K_stars` on a fixed night                   | own crescent                                               | own curtains                                                      | knob, trigger 1, mirrored                                                            |
 | `swell`            | over the sea                                                     | own (`starfield`, `K_stars`)                     | own disc (`K_moon` sizes it) and glitter path              | —                                                                 | knob, trigger 0, screen frame, glints in the waves                                   |
 | `clouds` †         | above the cloud sea                                              | knob 0.75                                        | own bearing, drawn by `skyColor`                           | knob (`aurora()`, scene clock)                                    | open                                                                                 |
-| `country`          | over the valley                                                  | knob 0.4                                         | knob (phase; `SKY_MOON_PHASE` compiled in only below full) | open                                                              | knob, trigger 1 (lightning keeps 0), over the far hills                              |
+| `country`          | over the valley                                                  | knob 0.5                                         | knob (phase; `SKY_MOON_PHASE` compiled in only below full) | open                                                              | open                                                                                 |
 | `flock` †          | the subject over a skyline (only the dome mirrored in its water) | knob 0.45                                        | full                                                       | open                                                              | open                                                                                 |
 | `island` †         | round the island                                                 | knob 0.6                                         | full                                                       | open                                                              | open                                                                                 |
 | `shore` †          | over the sea, in wet sand                                        | knob 0.6 (sky and wet sand)                      | full (moonrise)                                            | open                                                              | open                                                                                 |
@@ -626,8 +622,7 @@ flight is a few clear marks rather than flicker.
 
 | Scene      | Birds                                                                                                           | Default                 | Hidden by                                                         | Mirrored in       |
 | ---------- | --------------------------------------------------------------------------------------------------------------- | ----------------------- | ----------------------------------------------------------------- | ----------------- |
-| `country`  | own loop (`countryBirds`: mixed by season and hour, swoops down to its ridges); `songbirds`, `flights`          | off, mixed              | ridges, trees, buildings, by depth                                | —                 |
-| `valley`   | `birdFlights` through its level pinhole (metres), `birdKnobs` (mixed: rooks, gulls, swallows...)                | off, mixed              | land, crowns, buildings, figures, by depth                        | —                 |
+| `country`  | `birdFlights` through its level pinhole (metres), `birdKnobs` (mixed: rooks, gulls, swallows...)                | off, mixed              | land, crowns, buildings, figures, by depth                        | —                 |
 | `skyward`  | `birdBelowHit` on the scene's own paths (pigeons wheeling over the street, swifts looping above); `birds` range | 0.5, pigeons and swifts | anything nearer along the ray                                     | —                 |
 | `meadow`   | `birdFlights`, `birdKnobs`                                                                                      | off, swallows           | the sea of grass by depth; the near blades and clocks             | —                 |
 | `falls`    | `birdFlights` (`fallsBirds`), `birdKnobs`                                                                       | off, swifts             | cliff, rim trees and slot walls by depth; spray and the near bank | —                 |
@@ -647,7 +642,7 @@ countryside composes all three.
 - `figuresGlsl` (`src/shaders/lib/figures.ts`): small people and land vehicles at their world size
   (`figureWalker`, and `figureCart`: a horse and cart or a tractor and trailer), cut per cell and
   never under a cell, a faint cell below ~1.6 cells tall (`figureSpeck`), on analytic stroll and
-  shuttle clocks (`figureStroll`, `figureShuttle`; country's tracks). It has no boats, and neither
+  shuttle clocks (`figureStroll`, `figureShuttle`; country's roads). It has no boats, and neither
   island nor shore draws a figure for it to replace: island's distant movers are a gull and a
   balloon, shore's the surf, its plankton and fish. A scene that gains people (island's pier,
   shore's tideline) or a harbour's boats would start from it, boats as a new shape beside
@@ -688,7 +683,7 @@ The scene owns how they look: its projection, palette, light, what hides them an
 - **Composition.** An organ on the site may spring from a point `offset` from it (a tree's prop
   roots along its crown); `PlantClimate.wind` adds air the scene moves itself (a breeze front of its
   own, the garden's gust crossing as a front) to the breeze, and is told each organ's plant, for air
-  that differs from plant to plant (the countryside's gust bands per field, the meadow's gust field
+  that differs from plant to plant (the meadow's gust field
   at each clump's foot); an organ with a negative slot is never packed (one the scene draws its own
   way, as fireflies' crowns through the bank's profile);
   `PlantTexture.pack(a, b)` writes two systems into one texture (the garden's woods and border, each
@@ -704,10 +699,7 @@ The scene owns how they look: its projection, palette, light, what hides them an
   from grid-slotted records), garden (a stem under every crown of the woods over the wall, the
   shader drawing its old silhouette where the stems' tips carry the crowns, `plantPoint`; and an
   optional border of fern and mondo grass in the wall-foot gutter, binned records drawn per fragment
-  with `plantFrond` and `plantArc`, following the maple's season choice; not the maple), country
-  (optional verges, `verges`: clumps of cow parsley, red campion and tussock grass at the hedges'
-  foot on the two near ridges, slotted by field border in a window of field cells per ridge, swaying
-  with the wind and the crops' gust bands, following the farming season, compiled in only while on),
+  with `plantFrond` and `plantArc`, following the maple's season choice; not the maple),
   meadow (optional `wildflowers`: clumps of daisies, buttercups, knapweed and scabious bowed by its
   own gust field, compiled in only while on). Next: meadow's near grass and dandelion stems (on
   their own springs), kelp (stipes stay on Verlet).
@@ -835,15 +827,15 @@ full-detail picture. Pick the tier for what the water shows at its largest: a ri
 wide far off takes `ripples`, open water seen close takes `mirror` or `flow`, a pool seen from
 above `caustics`.
 
-| Scene      | Tier                                                              | Uses                                                                                                                                                       |
-| ---------- | ----------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `aurora`   | ripples                                                           | `windRipples`, `windMirror` on the fjord (`K_ripples`, `K_wind`)                                                                                           |
-| `country`  | ripples while its `ripples` knob is up (`featuresFor`), flat at 0 | `windRipples`, `windMirror` on the river (`K_ripples`, `K_wind`); at 0 its own value-noise shimmer, as before                                              |
-| `island`   | mirror                                                            | `rippleSpectrum` (a `RippleTable`: four hand-placed trains), `waterMirror`                                                                                 |
-| `shore`    | mirror                                                            | `rippleSpectrum` (a `RippleFan`: four trains by the golden angle, scaled by the wind), `waterMirror`                                                       |
-| `lanterns` | flow                                                              | `rippleSpectrum` (a `RippleFan`: five trains rocking about the current), `waterDrift` downstream, `waterMirror`                                            |
-| `tidepool` | caustics                                                          | `causticRipples`, `waterCaustic` with `ShallowWater`'s focus; seen from above, it mirrors the sky its own way                                              |
-| `pond`     | caustics                                                          | two layers of `causticCells` on the floor, light where their seams cross, carried by the current (`waterDrift`); its drop rings and refraction are its own |
+| Scene      | Tier                 | Uses                                                                                                                                                       |
+| ---------- | -------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `aurora`   | ripples              | `windRipples`, `windMirror` on the fjord (`K_ripples`, `K_wind`)                                                                                           |
+| `country`  | flat (none selected) | its own value-noise shimmer on the river; wind ripples are a later module's                                                                                |
+| `island`   | mirror               | `rippleSpectrum` (a `RippleTable`: four hand-placed trains), `waterMirror`                                                                                 |
+| `shore`    | mirror               | `rippleSpectrum` (a `RippleFan`: four trains by the golden angle, scaled by the wind), `waterMirror`                                                       |
+| `lanterns` | flow                 | `rippleSpectrum` (a `RippleFan`: five trains rocking about the current), `waterDrift` downstream, `waterMirror`                                            |
+| `tidepool` | caustics             | `causticRipples`, `waterCaustic` with `ShallowWater`'s focus; seen from above, it mirrors the sky its own way                                              |
+| `pond`     | caustics             | two layers of `causticCells` on the floor, light where their seams cross, carried by the current (`waterDrift`); its drop rings and refraction are its own |
 
 The rest of the lab's water is still drawn its own way: `lake`, `swell`, `falls`, `fireflies`,
 `bamboo`, `forest`, `kelp`, `delta`, `ripple`.
@@ -1041,7 +1033,10 @@ Helpers in `src/sims/` (each file's header has the full API and a usage example)
   the eye, cores, ways and way points), which `terrainGlsl` reads: `terrainGround`, `terrainCover`,
   `terrainParcel` (exact field borders between texels, and the neighbour's id), `terrainCore`,
   `terrainBuilding`, `terrainPlace`, `terrainBridge`, `terrainEye`, `terrainWay` and
-  `terrainWayAt` (a point by arc length along a road, always on it) (valley).
+  `terrainWayAt` (a point by arc length along a road, always on it) (country); `LandModel` and
+  `packLand` (`landuse.ts`): every parcel's one use from relative shares, priced so that a share's
+  change converts only that use's marginal parcels, written into the records and the woods' canopy
+  (country).
 - `grayScottRegimes`, `grayScottAlong` and `grayScottGlsl` (`grayscott.ts`): Gray–Scott
   reaction–diffusion's curated Pearson classes (feed, kill, what grows), an eased loop through them,
   and the reaction step for a `GpuCompute` pass (petri). Seed a dish at the first regime's levels

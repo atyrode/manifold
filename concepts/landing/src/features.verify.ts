@@ -4,12 +4,15 @@
 // hardware GPU's or a software rasteriser's (`watched`), whatever renders the check. Registered in
 // verify-browser.ts.
 //
-// sceneFeatures: the default countryside compiles none of its parts in and its all-features
-// program every one, which covers every knob's turn in every scene that has one. On a software
-// rasteriser nothing is built ahead; a gated knob builds the setting's own program in the
-// background (the old frame holding meanwhile, nothing waiting on the build) and switches to it;
-// turning it back finds the old program kept; several gated knobs at once build once; past four
-// sets the least recently drawn program is freed.
+// sceneFeatures: the default countryside compiles in none of the parts whose knobs are off (flower
+// fields, herds, walkers and carts, birds, rain, snow, fog) and its all-features program every
+// one, which covers every knob's turn in every scene that has one. On a software rasteriser
+// nothing is built ahead; a gated knob builds the setting's own program in the background (the old
+// frame holding meanwhile, nothing waiting on the build) and switches to it; turning it back finds
+// the old program kept; several gated knobs at once build once; past four sets the least recently
+// drawn program is freed. The countryside's sim builds its land over a few frames first (its
+// terrain); every page here is run until it shows (`landed`), so a frame that changes is a program's
+// doing, not the build's.
 //
 // featureToggles, on a GPU, for the countryside and the meadow: the plain page builds nothing but
 // the program it entered with; no knob change waits for a build (a compile or link status or log,
@@ -308,27 +311,67 @@ async function switchFrom(
   }
 }
 
+/** Scenes whose sim builds their picture over frames before it shows (the countryside's terrain). */
+const BUILT_OVER_FRAMES: Partial<Record<SceneId, true>> = { country: true };
+
+/**
+ * Frames until a scene that builds its picture over frames (BUILT_OVER_FRAMES) shows it: the frame
+ * changes from the first one drawn (the sky alone) and then holds still. A scene drawn whole from
+ * its first frame returns at once.
+ */
+async function landed(scene: SceneId, frame: () => void, context: Watched): Promise<void> {
+  if (BUILT_OVER_FRAMES[scene] !== true) return;
+  const start = performance.now();
+  frame();
+  const first = context.image();
+  let last = first;
+  let moved = false;
+  for (;;) {
+    frame();
+    const image = context.image();
+    if (moved && changed(image, last).count === 0) return;
+    moved ||= changed(image, first).count > 0;
+    last = image;
+    check(
+      performance.now() - start < BUILD_SECONDS * 1000,
+      `${scene}: its land did not show within ${BUILD_SECONDS} s`,
+    );
+    const pause = Promise.withResolvers<void>();
+    setTimeout(pause.resolve, 10);
+    await pause.promise;
+  }
+}
+
 export async function verifySceneFeatures(
   _gl: WebGL2RenderingContext,
 ): Promise<Record<string, unknown>> {
   const country = sceneDefs.country;
   const defaults = paramDefaults("country");
-  // The default setting compiles no optional part in, the all-features program every one.
-  const gates = Object.entries(sceneFeatures(country)).filter(([name]) =>
-    name.startsWith("COUNTRY_HAS_"),
-  );
+  // The default setting compiles in none of the parts whose knobs are off, the all-features program
+  // every one.
+  const off = [
+    "COUNTRY_HAS_FIELDS",
+    "COUNTRY_HAS_HERDS",
+    "COUNTRY_HAS_AGENTS",
+    "COUNTRY_HAS_BIRDS",
+    "COUNTRY_HAS_RAIN",
+    "COUNTRY_HAS_SNOW",
+    "COUNTRY_HAS_FOG",
+  ];
+  const plainSet = sceneFeatures(country);
   check(
-    gates.length > 0 && gates.every(([, value]) => value === 0),
-    `Default countryside compiles optional parts in: ${JSON.stringify(gates)}`,
+    off.every((name) => plainSet[name] === 0),
+    `Default countryside compiles optional parts in: ${JSON.stringify(plainSet)}`,
   );
   const all = sceneFeaturesAll(country) ?? {};
+  const gates = Object.keys(plainSet).filter((name) => name.startsWith("COUNTRY_HAS_"));
   check(
-    gates.every(([name]) => all[name] === 1),
+    gates.length >= off.length && gates.every((name) => all[name] === 1),
     `The countryside's all-features program leaves parts out: ${JSON.stringify(all)}`,
   );
   check(
-    sceneFeatures(country, shaderValues(country, { castle: 1 })).COUNTRY_HAS_SETTLEMENTS === 1,
-    "The castle knob does not gate the settlements in",
+    sceneFeatures(country, shaderValues(country, { pasture: 1 })).COUNTRY_HAS_HERDS === 1,
+    "The pasture knob does not gate the herds in",
   );
   // Every scene with knob-keyed features covers each knob's turn with its all-features set: the
   // same defines, each at least as high (a gate on, a tier at or above).
@@ -352,7 +395,7 @@ export async function verifySceneFeatures(
     // Reduced motion: the clocks stand still, so frames compare exactly.
     const renderer = new DitherRenderer(context.canvas, settings("country", defaults), true);
     const frame = clock.start(renderer);
-    frame();
+    await landed("country", frame, context);
     check(
       renderer.failure === undefined && context.links === 1,
       `The default countryside built ${context.links} programs: ${JSON.stringify(renderer.failure)}`,
@@ -361,25 +404,21 @@ export async function verifySceneFeatures(
     const before = context.image();
     context.armed = true;
 
-    // The castle on: its own program is built in the background and takes over, drawing the castle
-    // on the chalk down (right of the middle, its hill's woods cleared around it); until then the
-    // old frame holds.
-    renderer.update(settings("country", { castle: 1 }));
+    // Pasture on: its own program (the fences and herds) is built in the background and takes over,
+    // the land model turning some parcels to pasture; until then the old frame holds.
+    renderer.update(settings("country", { pasture: 1 }));
     const heldFrames = await switchFrom(frame, context, plain, before);
     check(
       heldFrames >= 1,
-      "The castle's program took over on the frame its build began: nothing was built in the background",
+      "The pasture's program took over on the frame its build began: nothing was built in the background",
     );
-    const castled = context.drawing();
-    const castle = changed(before, context.image());
+    const pastured = context.drawing();
+    const pasture = changed(before, context.image());
     check(
       renderer.failure === undefined && context.links === 2,
-      `The castle took ${context.links - 1} more programs to build`,
+      `The pasture took ${context.links - 1} more programs to build`,
     );
-    check(
-      castle.count >= 6 && (castle.box[0] ?? 0) > WIDTH * 0.55,
-      `The castle drew ${castle.count} changed cells at ${castle.box.join(",")}, not the castle right of the middle`,
-    );
+    check(pasture.count >= 20, `The pasture drew ${pasture.count} changed cells`);
 
     // Off again: the default program is still kept, and draws the same frame at once.
     renderer.update(settings("country", {}));
@@ -388,28 +427,28 @@ export async function verifySceneFeatures(
       context.drawing() === plain &&
         context.links === 2 &&
         changed(before, context.image()).count === 0,
-      "Turning the castle off did not return to the kept default program",
+      "Turning the pasture off did not return to the kept default program",
     );
 
     // A setup turning three gated parts on at once builds one program, which draws them all.
-    renderer.update(settings("country", { castle: 1, chalk: 1, fog: 0.6 }));
+    renderer.update(settings("country", { pasture: 1, fog: 0.6, snow: 0.6 }));
     await switchFrom(frame, context, plain, before);
     check(
       renderer.failure === undefined && context.links === 3,
       `A setup turning three gated knobs on built ${context.links - 2} programs`,
     );
-    check(context.drawing() !== castled, "Three gated knobs drew with the castle's program");
+    check(context.drawing() !== pastured, "Three gated knobs drew with the pasture's program");
     const three = changed(before, context.image()).count;
     check(
-      three > castle.count,
-      `Castle, chalk figure and fog changed ${three} cells, the castle alone ${castle.count}`,
+      three > pasture.count,
+      `Pasture, fog and snow changed ${three} cells, the pasture alone ${pasture.count}`,
     );
 
     // Past PROGRAMS_PER_SCENE (4) sets the least recently drawn program is freed, never the one
     // drawing; no change waited on a build.
-    renderer.update(settings("country", { chalk: 1 }));
-    await switchFrom(frame, context, context.drawing(), context.image());
     renderer.update(settings("country", { fog: 0.6 }));
+    await switchFrom(frame, context, context.drawing(), context.image());
+    renderer.update(settings("country", { snow: 0.6 }));
     await switchFrom(frame, context, context.drawing(), context.image());
     check(
       context.links === 5 && context.frees === 1,
@@ -419,7 +458,7 @@ export async function verifySceneFeatures(
     frame();
     check(
       context.drawing() === plain && context.links === 5,
-      "The default program was freed though it was drawn more recently than the castle's",
+      "The default program was freed though it was drawn more recently than the pasture's",
     );
 
     // Changes expected (the lab open): nothing is built ahead.
@@ -435,7 +474,7 @@ export async function verifySceneFeatures(
     );
     return {
       heldFrames,
-      castleCells: castle.count,
+      pastureCells: pasture.count,
       threeCells: three,
       links: context.links,
       frees: context.frees,
@@ -519,6 +558,7 @@ export async function verifyFeatureToggles(
       const renderer = new DitherRenderer(page.canvas, settings(scene, {}), true);
       const frame = clock.start(renderer);
       for (let i = 0; i < 4; i++) frame();
+      await landed(scene, frame, page);
       check(
         renderer.failure === undefined && page.links === 1,
         `${scene}: the default page built ${page.links} programs`,
@@ -558,6 +598,7 @@ export async function verifyFeatureToggles(
       const expecting = new DitherRenderer(ahead.canvas, settings(scene, {}), true);
       const aheadFrame = clock.start(expecting);
       aheadFrame();
+      await landed(scene, aheadFrame, ahead);
       const entered = ahead.drawing();
       ahead.armed = true;
       expecting.expectChanges(true);
@@ -622,6 +663,7 @@ export async function verifyFeaturesAll(
       const renderer = new DitherRenderer(page.canvas, settings(scene, {}), true);
       const frame = clock.start(renderer);
       frame();
+      await landed(scene, frame, page);
       const plain = page.drawing();
       renderer.update(settings(scene, first));
       await switchFrom(frame, page, plain, page.image());
@@ -643,6 +685,7 @@ export async function verifyFeaturesAll(
           true,
         );
         const ownFrame = clock.start(own);
+        await landed(scene, ownFrame, reference);
         for (const view of VIEWS)
           for (const index of indices) {
             const knobs = turns[index] ?? {};

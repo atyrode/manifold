@@ -1,0 +1,224 @@
+import { describe, expect, test } from "bun:test";
+import {
+  LAND_OPEN_NEAR,
+  LAND_SHARED,
+  LAND_USES,
+  LandModel,
+  type LandOptions,
+  packLand,
+  type SharedUse,
+} from "./landuse.ts";
+import { generateTerrain, packTerrain, type Terrain } from "./terrain.ts";
+
+// Parcels are laid out in metres, so a small map holds as many as the scene's: the suite stays quick.
+const lands = new Map<number, { terrain: Terrain; model: LandModel }>();
+function land(seed: number): { terrain: Terrain; model: LandModel } {
+  let built = lands.get(seed);
+  if (!built) {
+    const terrain = generateTerrain({ seed, size: 256 });
+    built = { terrain, model: new LandModel(terrain, seed) };
+    lands.set(seed, built);
+  }
+  return built;
+}
+
+const WOODLAND = LAND_USES.indexOf("woodland");
+const PASTURE = LAND_USES.indexOf("pasture");
+const options = (shares: LandOptions["shares"]): LandOptions => ({ shares, pines: 0.3, cows: 0.5 });
+
+/** The largest gap between a use's area share and its normalised share. */
+function worstShare(model: LandModel, shares: LandOptions["shares"]): number {
+  const allocation = model.allocate(options(shares));
+  const whole = Object.values(shares).reduce((sum, share) => sum + (share ?? 0), 0);
+  let worst = 0;
+  LAND_SHARED.forEach((use, u) => {
+    const share = shares[use] ?? 0;
+    if (share <= 0) return;
+    const got = (allocation.area[u + 1] ?? 0) / allocation.total;
+    worst = Math.max(worst, Math.abs(got - share / whole));
+  });
+  return worst;
+}
+
+/** Seeded share settings: each use on half the time, at 1..100. */
+function settings(count: number, seed: number): LandOptions["shares"][] {
+  let state = seed;
+  const next = () => (state = (state * 16807) % 2147483647) / 2147483647;
+  const out: LandOptions["shares"][] = [];
+  while (out.length < count) {
+    const shares: Partial<Record<SharedUse, number>> = {};
+    for (const use of LAND_SHARED) if (next() < 0.5) shares[use] = 1 + Math.floor(next() * 100);
+    if (Object.keys(shares).length > 0) out.push(shares);
+  }
+  return out;
+}
+
+describe("land use", () => {
+  test("each use's area meets its normalised share within a few points", () => {
+    const presets: LandOptions["shares"][] = [
+      { crops: 60, woodland: 30 },
+      { crops: 60, woodland: 30, pasture: 25 },
+      { crops: 30, woodland: 30, pasture: 10, wildflowers: 10, lavender: 10, sunflowers: 10 },
+      { crops: 50, sunflowers: 50 },
+      { woodland: 40, pasture: 60 },
+    ];
+    // Measured (seeds 0, 3, 7, 12): settings like these within 0.04-0.085, random ones a median of
+    // 0.025-0.035 and at most 0.08-0.095 (see landuse.ts on why the shares are not met exactly).
+    for (const seed of [0, 3]) {
+      const { model } = land(seed);
+      for (const shares of presets) expect(worstShare(model, shares)).toBeLessThan(0.08);
+      const gaps = settings(150, 11 + seed).map((shares) => worstShare(model, shares));
+      gaps.sort((a, b) => a - b);
+      expect(gaps[Math.floor(gaps.length / 2)] ?? 1).toBeLessThan(0.04);
+      expect(gaps[gaps.length - 1] ?? 1).toBeLessThan(0.1);
+    }
+  });
+
+  test("raising one share turns parcels only to that use; lowering it, only from it", () => {
+    const { model } = land(0);
+    for (const base of settings(40, 5)) {
+      const before = model.allocate(options(base));
+      for (const use of LAND_SHARED) {
+        const index = LAND_USES.indexOf(use);
+        // Up from where it is (from nothing too: switching a use on), and down to nothing.
+        for (const share of [(base[use] ?? 0) + 30, (base[use] ?? 0) * 3 + 1]) {
+          const after = model.allocate(options({ ...base, [use]: share }));
+          for (let s = 0; s < model.count; s++) {
+            if (after.use[s] !== before.use[s]) expect(after.use[s]).toBe(index);
+          }
+        }
+        const off = model.allocate(options({ ...base, [use]: 0 }));
+        for (let s = 0; s < model.count; s++) {
+          if (off.use[s] !== before.use[s]) expect(before.use[s]).toBe(index);
+        }
+      }
+    }
+  });
+
+  test("woods take the most suitable ground first and grow outward from it", () => {
+    const { terrain, model } = land(0);
+    const small = model.allocate(options({ crops: 90, woodland: 10 }));
+    let woods = 0;
+    let woodsN = 0;
+    let rest = 0;
+    let restN = 0;
+    for (let s = 0; s < model.count; s++) {
+      if ((model.area[s] ?? 0) <= 0) continue;
+      const suit = terrain.parcels.wood[s] ?? 0;
+      if (small.use[s] === WOODLAND) {
+        woods += suit;
+        woodsN++;
+      } else {
+        rest += suit;
+        restN++;
+      }
+    }
+    expect(woodsN).toBeGreaterThan(0);
+    expect(woods / woodsN).toBeGreaterThan(rest / restN + 0.15);
+    // Every wood of a smaller share stands in a larger one.
+    let previous = small;
+    for (const share of [20, 40, 80, 160]) {
+      const next = model.allocate(options({ crops: 90, woodland: share }));
+      for (let s = 0; s < model.count; s++)
+        if (previous.use[s] === WOODLAND) expect(next.use[s]).toBe(WOODLAND);
+      previous = next;
+    }
+  });
+
+  test("no share leaves open grassland; woodland alone takes every parcel it may", () => {
+    const { terrain, model } = land(0);
+    const none = model.allocate(options({}));
+    expect(none.use.every((use) => use === 0)).toBe(true);
+    expect(none.total).toBe(0);
+    expect(none.wooded).toBe(false);
+    const wooded = model.allocate(options({ woodland: 100 }));
+    const v = terrain.vantage;
+    let open = 0;
+    for (let s = 0; s < model.count; s++) {
+      if ((model.area[s] ?? 0) <= 0) continue;
+      const near =
+        Math.hypot((terrain.parcels.x[s] ?? 0) - v.x, (terrain.parcels.z[s] ?? 0) - v.z) <
+        LAND_OPEN_NEAR;
+      expect(wooded.use[s]).toBe(near ? 0 : WOODLAND);
+      if (near) open++;
+    }
+    expect(open).toBeGreaterThan(0);
+  });
+
+  test("the same terrain, seed and settings give the same land; another seed another", () => {
+    const shares = { crops: 60, woodland: 30, pasture: 25, lavender: 10 };
+    const a = new LandModel(generateTerrain({ seed: 4, size: 256 }), 4).allocate(options(shares));
+    const b = new LandModel(generateTerrain({ seed: 4, size: 256 }), 4).allocate(options(shares));
+    expect(b.use).toEqual(a.use);
+    expect(b.attr).toEqual(a.attr);
+    expect(land(0).model.allocate(options(shares)).use).not.toEqual(a.use);
+  });
+
+  test("the cattle share swaps only as many herds as it must, and nothing else", () => {
+    const { model } = land(3);
+    const shares = { crops: 60, woodland: 30, pasture: 50 };
+    let previous = model.allocate({ shares, pines: 0.3, cows: 0 });
+    const pastures = previous.use.filter((use) => use === PASTURE).length;
+    expect(pastures).toBeGreaterThan(20);
+    for (let step = 1; step <= 20; step++) {
+      const cows = step / 20;
+      const next = model.allocate({ shares, pines: 0.3, cows });
+      let flips = 0;
+      let cattle = 0;
+      for (let s = 0; s < model.count; s++) {
+        expect(next.use[s]).toBe(previous.use[s] ?? 0);
+        if (next.use[s] !== PASTURE) continue;
+        if (next.attr[s] !== previous.attr[s]) flips++;
+        cattle += next.attr[s] ?? 0;
+      }
+      expect(cattle).toBe(Math.round(cows * pastures));
+      expect(flips).toBe(Math.round(cows * pastures) - Math.round(((step - 1) / 20) * pastures));
+      previous = next;
+    }
+  });
+
+  test("a wood keeps its species as the woods grow", () => {
+    const { model } = land(0);
+    const before = model.allocate({ shares: { crops: 60, woodland: 20 }, pines: 0.4, cows: 0.5 });
+    const after = model.allocate({ shares: { crops: 60, woodland: 60 }, pines: 0.4, cows: 0.5 });
+    let pines = 0;
+    for (let s = 0; s < model.count; s++) {
+      if (before.use[s] !== WOODLAND) continue;
+      expect(after.attr[s]).toBe(before.attr[s] ?? 0);
+      pines += before.attr[s] ?? 0;
+    }
+    expect(pines).toBeGreaterThan(0);
+  });
+
+  test("the woods' canopy stands on woodland parcels only, pine woods signed; hedge trees on hedges", () => {
+    const { terrain, model } = land(0);
+    const packed = packTerrain(terrain);
+    const m = terrain.size;
+    const ids = terrain.parcels.ids;
+    const check = (shares: LandOptions["shares"]) => {
+      const allocation = model.allocate({ shares, pines: 0.5, cows: 0.5 });
+      packLand(packed, terrain, allocation);
+      let canopy = 0;
+      let trees = 0;
+      for (let q = 0; q < m * m; q++) {
+        const id = ids[2 * q] ?? 0;
+        const value = packed.cover[4 * q + 2] ?? 0;
+        if (value !== 0) {
+          canopy++;
+          expect(allocation.use[id - 1]).toBe(WOODLAND);
+          expect(value < 0).toBe(allocation.attr[id - 1] === 1);
+        }
+        if ((packed.cover[4 * q + 3] ?? 0) === -1) trees++;
+      }
+      return { canopy, trees };
+    };
+    const wooded = check({ crops: 60, woodland: 30 });
+    expect(wooded.canopy).toBeGreaterThan(0);
+    expect(wooded.trees).toBeGreaterThan(0);
+    // Woodland off: no woods and every lone tree felled.
+    expect(check({ crops: 60 })).toEqual({ canopy: 0, trees: 0 });
+    // Open grassland and woods only: no hedge stands, so only the banks keep lone trees.
+    const unhedged = check({ woodland: 30 });
+    expect(unhedged.trees).toBeLessThan(wooded.trees);
+  });
+});
