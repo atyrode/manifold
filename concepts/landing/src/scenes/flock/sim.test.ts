@@ -66,8 +66,15 @@ test("switching flight either way hands the birds over where they are, without a
   }
 });
 
-test("emergent birds keep to the sky over the frame, all of them drawn", () => {
-  for (const birds of [1500, 5000]) {
+// Each flight is 900 fixed steps (15 s) of the boids, most of it their neighbour search: about 2 s
+// for 1500 birds and 5 s for 5000 on a busy machine, past bun's 5 s default. The length is what the
+// test is for: 1500 birds cruising three times too fast still have 85% of the flock in frame at 9 s
+// and fall short only after that. So the flights keep their length and get the time they take, with
+// room for a loaded machine.
+const FLIGHT_TIMEOUT = 30_000;
+
+for (const birds of [1500, 5000]) {
+  test(`emergent birds keep to the sky over the frame, all of them drawn (${birds} birds)`, () => {
     const sim = new HeadlessSim(flockScene);
     let least = Number.POSITIVE_INFINITY;
     for (let f = 0; f < 900; f++) {
@@ -76,8 +83,8 @@ test("emergent birds keep to the sky over the frame, all of them drawn", () => {
     }
     // Each bird lays down about its own ink once the trail has filled: none of them off the frame.
     expect(least).toBeGreaterThan(0.85 * birds);
-  }
-});
+  }, { timeout: FLIGHT_TIMEOUT });
+}
 
 test("the falcon's strike starts a startle that runs through the boids and dies away", () => {
   const struck = new HeadlessSim(flockScene);

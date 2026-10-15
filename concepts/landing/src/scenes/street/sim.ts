@@ -95,7 +95,8 @@
 import type { ParamDef } from "../../params.ts";
 import { DataTexture } from "../../sims/texture.ts";
 import { Errand } from "../../sims/errand.ts";
-import { smoothstep } from "../../sims/math.ts";
+import { clamp, fract, smoothstep } from "../../sims/math.ts";
+import { Random } from "../../sims/random.ts";
 import type { PointerState, SceneSim, SimFactory, SimFrame } from "../types.ts";
 
 // ---- The view and the street, shared with the shader ----
@@ -631,8 +632,6 @@ type KnobKey = "crowd" | "signal" | "outing" | "traffic" | "delivery" | "rain" |
 /** The simulation was set up wrong: a knob it reads is missing, or a phase is unknown. */
 export class StreetSimError extends Error {}
 
-const clamp = (x: number, lo: number, hi: number): number => Math.min(hi, Math.max(lo, x));
-
 /** Angle a − b wrapped to −π..π. */
 const angleDiff = (a: number, b: number): number => {
   const d = (a - b) % TAU;
@@ -655,11 +654,10 @@ export const TILT_ARRIVE = 0.8;
  *  coming in it comes down with a little overshoot, then settles; going out it eases up. Exactly 0 at rest. */
 export function passageTilt(enter: number, exit: number): number {
   if (enter >= 1 && exit <= 0) return 0;
-  const x = clamp(enter / TILT_ARRIVE, 0, 1);
-  const eased = x * x * (3 - 2 * x);
+  const eased = smoothstep(0, TILT_ARRIVE, enter);
   const back = eased - 1;
   const settle = 1 + 1.8 * back * back * back + 0.8 * back * back;
-  const leave = exit * exit * (3 - 2 * exit);
+  const leave = smoothstep(0, 1, exit);
   return TILT_IN * (1 - settle) + TILT_OUT * leave;
 }
 
@@ -675,37 +673,7 @@ const ARRIVE_PACE_MAX = 1.6;
 const ARRIVE_TURN = 0.2;
 
 /** A repeatable number 0..1 from a walker's index and a salt (no draw from the simulation's random numbers). */
-const hash01 = (n: number, salt: number): number => {
-  const s = Math.sin(n * 127.1 + salt * 311.7) * 43758.5453;
-  return s - Math.floor(s);
-};
-
-/** mulberry32: a small seeded generator, so the same seed always gives the same evening (and the
- *  shader the same city). */
-export class Random {
-  #state = 0;
-
-  seed(seed: number): void {
-    this.#state = seed >>> 0;
-  }
-
-  next(): number {
-    this.#state = (this.#state + 0x6d2b79f5) >>> 0;
-    let t = this.#state;
-    t = Math.imul(t ^ (t >>> 15), t | 1);
-    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
-    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
-  }
-
-  range(lo: number, hi: number): number {
-    return lo + (hi - lo) * this.next();
-  }
-
-  /** Seconds to the next event of a Poisson process at `rate` per second. */
-  wait(rate: number): number {
-    return rate > 0 ? -Math.log(1 - this.next()) / rate : Number.POSITIVE_INFINITY;
-  }
-}
+const hash01 = (n: number, salt: number): number => fract(Math.sin(n * 127.1 + salt * 311.7) * 43758.5453);
 
 class Walker {
   alive = false;
@@ -2445,11 +2413,11 @@ class StreetCrossing implements SceneSim {
     const dx = sideStreet ? 0 : x < CAM_X ? -1 : 1;
     const dz = sideStreet ? 1 : 0;
     const walking = Math.atan2(-dz, -dx);
-    const turn = clamp((done - (1 - ARRIVE_TURN)) / ARRIVE_TURN, 0, 1);
+    const turn = smoothstep(0, 1, (done - (1 - ARRIVE_TURN)) / ARRIVE_TURN);
     const arrived = this.#arrived;
     arrived[0] = x + dx * left;
     arrived[1] = z + dz * left;
-    arrived[2] = walking + angleDiff(heading, walking) * (turn * turn * (3 - 2 * turn));
+    arrived[2] = walking + angleDiff(heading, walking) * turn;
     arrived[3] = (gait + left / STRIDE) % 1;
   }
 

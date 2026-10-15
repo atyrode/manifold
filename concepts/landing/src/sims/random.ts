@@ -7,6 +7,8 @@
 //     range(lo, hi)      lo + (hi - lo) · next()
 //     int(n)             a whole number in [0, n): floor(next() · n)
 //     pick(items)        one of `items`, by int(items.length); throws RandomError when empty
+//     wait(rate)         seconds to the next event of a Poisson process at `rate` per second:
+//                        -ln(1 - next()) / rate, Infinity (and no draw) for a rate of 0 or less
 //
 // A seed is taken as its low 32 bits (`seed >>> 0`), and both forms give the identical sequence for
 // the identical seed, bit for bit the same as the copies the scenes carried, so existing seeds keep
@@ -72,5 +74,10 @@ export class Random {
     const item = items[this.int(items.length)];
     if (item === undefined) throw new RandomError("random: nothing to pick from");
     return item;
+  }
+
+  /** Seconds to the next event of a Poisson process at `rate` per second; Infinity, drawing nothing, when `rate` <= 0. */
+  wait(rate: number): number {
+    return rate > 0 ? -Math.log(1 - this.next()) / rate : Number.POSITIVE_INFINITY;
   }
 }

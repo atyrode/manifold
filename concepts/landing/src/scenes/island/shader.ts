@@ -12,8 +12,9 @@
 // about 66% of the frame, aimed so the island sits in the lower middle.
 //
 // Light and weather are the shared ones: skyAt turned by ISL_YAW so the sun climbs over the left
-// shoulder and sets behind the viewer; rain greys the deck and the light, rainFall and snowFall fall
-// through the depth of each pixel's first surface, uWeather wets and whitens every exposed albedo.
+// shoulder and sets behind the viewer; rain greys the deck and the light, rain and snow fall through
+// the depth of each pixel's first surface along paths that close in on the point below the sea the
+// pitched-down camera sees them converge on (islVanish), uWeather wets and whitens every exposed albedo.
 //
 // Calm under the dither: moving edges (foam, swell lines, cloud shadows, sprites, sparkle, glints)
 // are cut per cell with hardEdge / hardFill, and every noise is faded out where a cell outgrows it.
@@ -412,6 +413,20 @@ vec3 islProject(vec3 P) {
   vec3 v = P - islRo;
   float zc = dot(v, islFwd);
   return vec3(ISL_FOCAL * dot(v, islRgt) / zc, ISL_FOCAL * dot(v, islUp) / zc - ISL_LENS, zc);
+}
+
+// Where a fall in the world direction dir converges on the screen (rainVanish for the camera's
+// axes; the lens shift moves the frame's centre ISL_LENS up the image plane). The camera looks down
+// on the island, so the rain's and the snow's paths both close in on a point below the sea.
+vec3 islVanish(vec3 dir) {
+  vec3 vanish = rainVanish(dir, islRgt, islUp, islFwd, ISL_FOCAL);
+  vanish.y -= ISL_LENS * vanish.z;
+  return vanish;
+}
+
+// The snow between the eye and a surface depth away, as the pitched-down camera sees it.
+Precip islSnowFall(vec2 uv, float aspect, float t, float amount, float depth) {
+  return snowFallSeen(uv, aspect, t, amount, islWind, depth, islVanish(snowFallDir(amount, islWind)));
 }
 
 // ---- clouds' shadows and the shadows of what flies ----
@@ -1234,17 +1249,13 @@ Shade sceneIsland(vec2 uv, vec2 cell, float t) {
   }
   float dep = 1.0 - exp(-zScene * ISL_METRES / 30.0);
   if (rain > 0.0) {
-    // The camera looks down on the island: the rain's paths converge toward the sea below it (the
-    // lens shift moves the frame's centre ISL_LENS up the image plane).
-    vec3 vanish = rainVanish(rainFallDir(rain, islWind), islRgt, islUp, islFwd, ISL_FOCAL);
-    vanish.y -= ISL_LENS * vanish.z;
-    Precip pr = rainFallSeen(uv, aspect, t, rain, islWind, dep, vanish);
+    Precip pr = rainFallSeen(uv, aspect, t, rain, islWind, dep, islVanish(rainFallDir(rain, islWind)));
     vec3 air = mix(vec3(dot(haze, LUMA)) * vec3(0.94, 0.97, 1.0), haze, 0.4);
     vec3 dropCol = max(greyed(haze, vec3(1.0), 0.5) * 1.2, vec3(0.08));
     col = precipOver(col, air, dropCol * (1.0 - 0.2 * pr.near), pr);
   }
   if (snow > 0.0) {
-    Precip ps = snowFall(uv, aspect, t, snow, islWind, dep);
+    Precip ps = islSnowFall(uv, aspect, t, snow, dep);
     float airL = dot(islAmb + 0.5 * islSky.sunColor + 0.4 * islSky.moonColor, LUMA);
     vec3 flake = vec3(0.95, 0.96, 1.0) * clamp(airL * 1.3 + 0.1, 0.0, 1.0);
     col = mix(col, flake * 0.92, ps.veil);
