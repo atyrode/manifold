@@ -67,6 +67,39 @@ export const presets: readonly Preset[] = [
     savedAt: "2026-10-15",
   },
   {
+    name: "Countryside · wildwood",
+    commit: "defa703a",
+    query: "scene=country&time=0.64&season=2&crops=0&woodland-amount=100&pines=0.45",
+    savedAt: "2026-10-16",
+  },
+  {
+    name: "Countryside · grazing valley",
+    commit: "defa703a",
+    query:
+      "scene=country&season=0&crops-amount=40&woodland-amount=20&pasture=1&pasture-amount=45&cows=0.7&herd=0.8&verges=1",
+    savedAt: "2026-10-16",
+  },
+  {
+    name: "Countryside · flower country",
+    commit: "defa703a",
+    query:
+      "scene=country&time=0.6&season=0&crops-amount=25&woodland-amount=15&wildflowers=1&lavender=1&sunflowers=1",
+    savedAt: "2026-10-16",
+  },
+  {
+    name: "Countryside · market town at dusk",
+    commit: "defa703a",
+    query:
+      "scene=country&time=0.78&village-amount=26&hamlets-amount=3&farms-amount=8&walkers=1&walkers-amount=0.8&carts=1&murmuration=1",
+    savedAt: "2026-10-16",
+  },
+  {
+    name: "Countryside · chalk M",
+    commit: "defa703a",
+    query: "scene=country&chalk=1&time=0.62",
+    savedAt: "2026-10-16",
+  },
+  {
     name: "Swell · heavy swell",
     commit: "f1ca6557",
     query: "scene=swell&height=0.8&chop=0.6&relief=0.6",
