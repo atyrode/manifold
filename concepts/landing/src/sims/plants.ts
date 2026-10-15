@@ -338,16 +338,18 @@ export class RootedPlants {
     this.tier = new Int8Array(n);
     this.cycle = new Int32Array(n);
     this.#gusts = new GustTrain(mulberry32(Math.imul(seed + 1, 0x9e3779b1) ^ 0x51a7), GUST_RISE, GUST_EVERY[0] * 0.5);
-    const plants = this;
+    const site = () => this.#buildSite;
+    const rand = () => this.#buildRand;
+    const vigour = () => this.#buildVigour;
     this.#builder = {
       get site() {
-        return plants.#buildSite;
+        return site();
       },
       get rand() {
-        return plants.#buildRand;
+        return rand();
       },
       get vigour() {
-        return plants.#buildVigour;
+        return vigour();
       },
       organ: (spec) => this.#organ(spec),
     };

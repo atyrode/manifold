@@ -8,14 +8,15 @@ import { SheetPainter, type SheetJob, type SheetReply, type SheetRequest } from 
 
 /** Requests posted to the worker, in order. */
 const posted: SheetRequest[] = [];
-let worker: FakeWorker | undefined;
 
 class FakeWorker {
+  /** The worker the painter created last. */
+  static current: FakeWorker | undefined;
   onmessage: ((event: { data: SheetReply }) => void) | null = null;
   onerror: ((event: { preventDefault(): void; message: string }) => void) | null = null;
 
   constructor() {
-    worker = this;
+    FakeWorker.current = this;
   }
 
   postMessage(request: SheetRequest): void {
@@ -30,6 +31,7 @@ function seedOf(request: SheetRequest): number {
 
 /** The worker finishes `request`; the painter's reply callback, queued first, runs before this resolves. */
 async function paint(request: SheetRequest | undefined): Promise<void> {
+  const worker = FakeWorker.current;
   if (!request || !worker?.onmessage) throw new Error("no such request on the worker");
   worker.onmessage({ data: { id: request.id, width: 1, height: 1, pixels: new Uint8Array([seedOf(request), 0, 0, 255]).buffer } });
   await Promise.resolve();
