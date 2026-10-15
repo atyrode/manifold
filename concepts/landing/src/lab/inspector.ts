@@ -21,7 +21,8 @@ import {
   type RangeDef,
   type SwitchDef,
 } from "./knobs.ts";
-import { mixBar, type MixPart } from "./mix.ts";
+import { mixBar } from "./mix.ts";
+import type { MixPart } from "./mix-model.ts";
 import { compassPad, directionPad, positionPad, type Strength } from "./pads.ts";
 import { Rail, type RailEntry } from "./rail.ts";
 
@@ -387,10 +388,14 @@ export class Inspector {
       }
     }
 
-    // Mix bars, at their first part.
+    // Mix bars, at their first part; a feature part is the bar's (its chip there), not the grid's.
     const mixes = new Map<string, MixPart[]>();
     for (const def of defs)
-      if (def.kind === "range" && def.widget?.kind === "mix" && !used.has(def)) {
+      if (
+        (def.kind === "range" || def.kind === "feature") &&
+        def.widget?.kind === "mix" &&
+        !used.has(def)
+      ) {
         const parts = mixes.get(def.widget.mix) ?? [];
         parts.push({ def, part: def.widget.part, swatch: def.widget.swatch });
         mixes.set(def.widget.mix, parts);

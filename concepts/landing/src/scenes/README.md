@@ -194,8 +194,12 @@ amount opens under the chips while it is on, and ranges, choices and seeds are r
 purpose-built widget with `widget` (`Widget` in `src/params.ts`); widgets only change how the lab
 draws the knob, never its URL keys, values, reset, shuffle or presets:
 
-- `{ kind: "mix", mix, part, swatch }` on range knobs of one group: one stacked bar of relative
-  weights named `mix`, each knob a segment (country's field types).
+- `{ kind: "mix", mix, part, swatch }` on range or feature knobs of one group: one stacked bar of
+  relative weights named `mix`, each knob a segment while it is in (country's land use). A range is
+  in while above zero; a feature is in while on, its amount the weight (the shader reads 0 while
+  off), and gets an on/off chip over the bar that keeps its amount while off. Make a part that may be
+  left out a feature with `min: 0`, `max: 100`, `step: 1`; a drag or key that takes it to zero
+  switches it off.
 - `{ kind: "sky", part }`: the sky dial. `skyKnobs` sets it on `time`, `cycle` and `moon`; the dial
   stands where a group holds a `time` part.
 - `{ kind: "direction" }` on a range from below 0 to above 0: a vector pad, min to the left
