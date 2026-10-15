@@ -68,7 +68,7 @@ import { splitHalf } from "./half.ts";
 import { clamp, hash31, lerp, smoothstep } from "./math.ts";
 import { fbm, valueNoise } from "./noise.ts";
 import { Random } from "./random.ts";
-import { LevelHeap } from "./shallow.ts";
+import { LevelHeap, stillWater } from "./shallow.ts";
 
 /** The steepest grade any stretch of road may have (rise over run). */
 export const TERRAIN_ROAD_MAX_SLOPE = 0.12;
@@ -100,6 +100,13 @@ export const TERRAIN_PARCEL_KINDS = [
 export const TERRAIN_BUILDING_KINDS = ["cottage", "church", "barn", "castle"] as const;
 export type TerrainBuildingKind = (typeof TERRAIN_BUILDING_KINDS)[number];
 export type TerrainSettlementKind = "village" | "hamlet" | "farm" | "castle";
+/**
+ * The relief the map starts from, the river's axis across the vantage's view in each: a valley
+ * between hills; a coast, the valley opening downstream into a bay of the sea (water level 0); a
+ * plateau, a high table the river has cut a steep-sided gorge into; rolling hills all round.
+ */
+export const TERRAIN_BASES = ["valley", "coast", "plateau", "hills"] as const;
+export type TerrainBase = (typeof TERRAIN_BASES)[number];
 
 /** Where the landscape is seen from: the valley is laid across this view. */
 export interface TerrainVantage {
@@ -129,6 +136,8 @@ export interface TerrainOptions {
   settlements?: number;
   /** Default: 6% of the extent in from the south-west corner, looking north-east, eye 30 m up. */
   vantage?: TerrainVantage;
+  /** The relief it starts from (TERRAIN_BASES). Default "valley". */
+  base?: TerrainBase;
 }
 
 export interface TerrainRiver {
@@ -703,7 +712,12 @@ class NodeHeap {
 }
 
 /** Lower and upper Lipschitz envelopes of `h` (spacing ds, grade g), averaged: cut and fill. */
-function gradeProfile(h: Float64Array, ds: number, g: number, pinned: Uint8Array | undefined): void {
+function gradeProfile(
+  h: Float64Array,
+  ds: number,
+  g: number,
+  pinned: Uint8Array | undefined,
+): void {
   const n = h.length;
   const lo = Float64Array.from(h);
   const hi = Float64Array.from(h);
@@ -808,6 +822,7 @@ export class TerrainBuilder {
       erosion: clamp(options.erosion ?? 0.5, 0, 1),
       river: clamp(options.river ?? 0.5, 0, 1),
       settlements: clamp(Math.round(options.settlements ?? 5), 0, TERRAIN_MAX_SETTLEMENTS),
+      base: options.base ?? "valley",
       vantage: options.vantage ?? {
         x: 0.06 * extent,
         z: 0.06 * extent,
@@ -846,7 +861,11 @@ export class TerrainBuilder {
     this.#wood = new Float32Array(cells);
     this.#yard = new Float32Array(cells);
     this.#ids = new Uint16Array(cells * 2);
-    if (reuse && reuse.#reliefKey() === this.#reliefKey() && reuse.#next > TERRAIN_EROSION_STEPS + 2) {
+    if (
+      reuse &&
+      reuse.#reliefKey() === this.#reliefKey() &&
+      reuse.#next > TERRAIN_EROSION_STEPS + 2
+    ) {
       this.#hf.data.set(reuse.#hf.data);
       this.#outlet.set(reuse.#outlet);
       this.#source = reuse.#source;
@@ -892,7 +911,8 @@ export class TerrainBuilder {
    * Returns true once the last has run, so runBudgeted stops there.
    */
   unit(i: number): boolean {
-    if (i !== this.#next) throw new TerrainError(`terrain: unit ${i} out of order (next ${this.#next})`);
+    if (i !== this.#next)
+      throw new TerrainError(`terrain: unit ${i} out of order (next ${this.#next})`);
     const stage = this.#stages[i];
     if (!stage) throw new TerrainError(`terrain: no unit ${i}`);
     const started = performance.now();
@@ -905,7 +925,7 @@ export class TerrainBuilder {
   #reliefKey(): string {
     const o = this.options;
     const v = o.vantage;
-    return [o.seed, o.size, o.extent, o.relief, o.erosion, v.x, v.z, v.dx, v.dz].join(",");
+    return [o.seed, o.size, o.extent, o.relief, o.erosion, o.base, v.x, v.z, v.dx, v.dz].join(",");
   }
 
   #mix(salt: number): number {
@@ -1030,16 +1050,6 @@ export class TerrainBuilder {
         const u = ((x - v.x) * v.dx + (z - v.z) * v.dz) / W;
         const vd = Math.hypot(x - v.x, z - v.z) / W;
         const floor = 6 + 46 * (1 - t);
-        // The vantage's side falls in long rolling slopes to the river, so the eye sees down to it;
-        // the far side climbs into hills.
-        const near = (found[2] ?? 1) === vantageSide;
-        const sides = near
-          ? (90 + 70 * relief) * clamp(d / vantageAway, 0, 1) ** 1.6
-          : (70 + 130 * relief) * (1 - Math.exp(-((d / 0.2) ** 2))) + 60 * d;
-        const rough = near
-          ? 6 + (22 + 50 * relief) * smoothstep(0.02, 0.16, d)
-          : 10 + (50 + 120 * relief) * smoothstep(0.03, 0.22, d);
-        const hill = 25 * Math.exp(-((vd / 0.07) ** 2));
         // Hills close the view: rising far ahead, and toward the edges the vantage looks out over.
         const edges = Math.max(
           smoothstep(0.3, 0.7, v.dx) * smoothstep(0.72, 1, X),
@@ -1048,11 +1058,44 @@ export class TerrainBuilder {
           smoothstep(0.3, 0.7, -v.dz) * smoothstep(0.72, 1, 1 - Z),
         );
         const far = (90 + 90 * relief) * Math.max(smoothstep(0.8, 1.3, u), edges);
+        const hill = 25 * Math.exp(-((vd / 0.07) ** 2));
+        const near = (found[2] ?? 1) === vantageSide;
+        let shape: number;
+        let rough: number;
+        if (o.base === "hills") {
+          // Rolling hills everywhere, the river winding between them in a shallow vale.
+          shape = floor + (35 + 55 * relief) * smoothstep(0, 0.1, d) + 0.4 * far + hill;
+          rough = 8 + (45 + 95 * relief) * smoothstep(0.01, 0.07, d);
+        } else if (o.base === "plateau") {
+          // A table of high ground with a steep rim over the gorge, the far side a step higher.
+          const rim = smoothstep(0.03, 0.085, d);
+          shape = floor + (100 + 90 * relief) * rim + (near ? 0 : 30 * rim) + 0.35 * far + hill;
+          rough = 4 + (10 + 30 * relief) * rim;
+        } else {
+          // The vantage's side falls in long rolling slopes to the river, so the eye sees down to
+          // it; the far side climbs into hills.
+          shape =
+            floor +
+            (near
+              ? (90 + 70 * relief) * clamp(d / vantageAway, 0, 1) ** 1.6
+              : (70 + 130 * relief) * (1 - Math.exp(-((d / 0.2) ** 2))) + 60 * d) +
+            hill +
+            far;
+          rough = near
+            ? 6 + (22 + 50 * relief) * smoothstep(0.02, 0.16, d)
+            : 10 + (50 + 120 * relief) * smoothstep(0.03, 0.22, d);
+          // A coast: downstream the valley floor sinks under the sea into a broad bay.
+          if (o.base === "coast") {
+            const bay = smoothstep(0.55, 0.92, t) * (1 - smoothstep(0.12, 0.42, d));
+            shape -= (floor + 45) * bay;
+            rough *= 1 - 0.7 * bay;
+          }
+        }
         const body = 2 * fbm(X * 4.5, Z * 4.5, seed, 5) - 1;
         const crest = 1 - Math.abs(2 * valueNoise(X * 3.1 + 7.7, Z * 3.1 + 1.3, seed + 31) - 1);
         const noise = 0.75 * body + 0.5 * (crest - 0.5);
         const at = j * n + i;
-        h[at] = (floor + sides + hill + far + rough * noise) / W;
+        h[at] = (shape + rough * noise) / W;
         this.#uplift[at] = smoothstep(0.04, 0.3, d) * (0.4 + 0.6 * relief);
         const edge = i === 0 || j === 0 || i === n - 1 || j === n - 1;
         this.#outlet[at] = edge ? 1 : 0;
@@ -1146,7 +1189,8 @@ export class TerrainBuilder {
           const gx =
             (coarse[clamp(Math.round(cz), 0, n - 1) * n + clamp(Math.round(cx) + 1, 0, n - 1)] ??
               0) -
-            (coarse[clamp(Math.round(cz), 0, n - 1) * n + clamp(Math.round(cx) - 1, 0, n - 1)] ?? 0);
+            (coarse[clamp(Math.round(cz), 0, n - 1) * n + clamp(Math.round(cx) - 1, 0, n - 1)] ??
+              0);
           const slope = (Math.abs(gx) * W) / (2 * this.#cellC);
           const rough = 0.6 + 2.2 * smoothstep(0.03, 0.3, slope) * (0.5 + this.options.relief);
           fine[j * m + i] = base + rough * (2 * fbm(X * 70, Z * 70, seed + 5, 3) - 1);
@@ -1193,7 +1237,7 @@ export class TerrainBuilder {
     }
     const trunk: number[] = [mouth];
     const least = most * 0.04;
-    for (let c = mouth; ; ) {
+    for (let c = mouth; ;) {
       let best = -1;
       let bestArea = least;
       for (let q = start[c] ?? 0; q < (start[c + 1] ?? 0); q++) {
@@ -1288,7 +1332,9 @@ export class TerrainBuilder {
     const z = Float32Array.from(line.z);
     const along = new Float32Array(count);
     for (let k = 1; k < count; k++)
-      along[k] = (along[k - 1] ?? 0) + Math.hypot((x[k] ?? 0) - (x[k - 1] ?? 0), (z[k] ?? 0) - (z[k - 1] ?? 0));
+      along[k] =
+        (along[k - 1] ?? 0) +
+        Math.hypot((x[k] ?? 0) - (x[k - 1] ?? 0), (z[k] ?? 0) - (z[k - 1] ?? 0));
     const width = new Float32Array(count);
     for (let k = 0; k < count; k++) width[k] = widthOf(areaAt(k / Math.max(1, count - 1)));
     // Level: the ground's running minimum from the source, smoothed (a mean of shifted copies of a
@@ -1305,7 +1351,8 @@ export class TerrainBuilder {
     for (let k = 0; k < count; k++) {
       let sum = 0;
       for (let q = -span; q <= span; q++) sum += run[clamp(k + q, 0, count - 1)] ?? 0;
-      level[k] = sum / (2 * span + 1) - 0.7;
+      // Never under the sea it runs into.
+      level[k] = Math.max(sum / (2 * span + 1) - 0.7, o.base === "coast" ? 0 : -Infinity);
     }
     this.#river = { x, z, level, width, along };
     const at = (list: Float32Array, a: number): number => {
@@ -1354,7 +1401,8 @@ export class TerrainBuilder {
       const depth = 0.8 + 0.08 * w;
       let carved: number;
       if (d <= half) carved = L - 0.15 - depth * (1 - (d / half) ** 2);
-      else if (d <= half + bank) carved = L - 0.15 + (bankH + 0.15) * smoothstep(0, 1, (d - half) / bank);
+      else if (d <= half + bank)
+        carved = L - 0.15 + (bankH + 0.15) * smoothstep(0, 1, (d - half) / bank);
       else carved = L + bankH + 0.012 * (d - half - bank);
       if (d > plain) carved = lerp(carved, orig, smoothstep(plain, plain + blend, d));
       g[q] = carved;
@@ -1362,6 +1410,23 @@ export class TerrainBuilder {
         lv[q] = L;
         this.#banked[q] = 1;
       } else lv[q] = Math.min(carved, L) - 4;
+    }
+    // The sea (a coast): every texel below its level connected to the map's edge, by a flood from
+    // the edge (shallow.ts's stillWater); pits it fills above sea level stay land.
+    if (o.base === "coast") {
+      const edge = new Uint8Array(m * m);
+      for (let q = 0; q < m * m; q++) {
+        const i = q % m;
+        const j = (q - i) / m;
+        if ((i === 0 || j === 0 || i === m - 1 || j === m - 1) && (g[q] ?? 0) < 0) edge[q] = 1;
+      }
+      const sea = stillWater(g, m, m, edge, 0);
+      for (let q = 0; q < m * m; q++) {
+        if ((sea[q] ?? 0) <= 1e-3 && (g[q] ?? 0) < -0.05) {
+          lv[q] = Math.max(lv[q] ?? 0, 0);
+          this.#banked[q] = 1;
+        }
+      }
     }
     // The channel on the erosion grid (for the banks' labels and the roads' costs).
     this.#channel.fill(0);
@@ -1413,7 +1478,7 @@ export class TerrainBuilder {
     const cellC = this.#cellC;
     const cellF = this.#cellF;
     const { rec, area } = this.#flow;
-    const threshold = 900 * (cellC * cellC) / (W * W);
+    const threshold = (900 * (cellC * cellC)) / (W * W);
     const isStream = new Uint8Array(n * n);
     for (let i = 0; i < n * n; i++) {
       if ((area[i] ?? 0) >= threshold && this.#channel[i] === 0) isStream[i] = 1;
@@ -1454,7 +1519,17 @@ export class TerrainBuilder {
       if (line.x.length < 4) continue;
       const smooth = resample(chaikin(line, 3), 2 * cellF);
       const half = 0.6 + 1.4 * Math.min(1, Math.sqrt(a / threshold) / 4);
-      nearestOnLine(smooth.x, smooth.z, smooth.x.length, () => half + 12, half, m, cellF, this.#stream, undefined);
+      nearestOnLine(
+        smooth.x,
+        smooth.z,
+        smooth.x.length,
+        () => half + 12,
+        half,
+        m,
+        cellF,
+        this.#stream,
+        undefined,
+      );
     }
     // A slight notch along each stream.
     const g = this.#ground;
@@ -1628,9 +1703,9 @@ export class TerrainBuilder {
       150,
       0,
       (c) =>
-        c.flat ** 2 *
-        Math.exp(-(((c.water - 170) / 170) ** 2)) *
-        Math.exp(-(((c.dist - prefer) / 450) ** 2)) *
+        c.flat *
+        Math.exp(-(((c.water - 200) / 280) ** 2)) *
+        Math.exp(-(((c.dist - prefer) / 320) ** 2)) *
         inView(c, 30 * deg),
       true,
     );
@@ -1731,32 +1806,38 @@ export class TerrainBuilder {
     if (exit) {
       const bank =
         this.#bank[
-          clamp(Math.floor(exit.z / cellC), 0, n - 1) * n + clamp(Math.floor(exit.x / cellC), 0, n - 1)
+          clamp(Math.floor(exit.z / cellC), 0, n - 1) * n +
+            clamp(Math.floor(exit.x / cellC), 0, n - 1)
         ] ?? -1;
       nodes.push({ x: exit.x, z: exit.z, bank, farm: false });
     }
-    const exitNode = exit ? nodes.length - 1 : -1;
+    // A farm track down through the near field below the vantage, joining the network.
+    const lane = { x: v.x + v.dx * 90, z: v.z + v.dz * 90 };
+    nodes.push({ ...lane, bank: this.#bankAt(lane.x, lane.z), farm: true });
+    this.#lane = nodes.length - 1;
     const count = nodes.length;
     this.#routes.length = 0;
     if (count < 2) return;
+    // Rivers are crossed once if at all.
     const weight = (a: number, b: number): number => {
       const na = nodes[a];
       const nb = nodes[b];
       if (!na || !nb) return Infinity;
-      const d = Math.hypot(na.x - nb.x, na.z - nb.z);
-      // Rivers are crossed once if at all; farms join the network, not one another or the way out.
-      const lonely = (na.farm && nb.farm) || ((a === exitNode || b === exitNode) && (na.farm || nb.farm));
-      return d * (na.bank !== nb.bank ? 3 : 1) * (lonely ? 4 : 1);
+      return Math.hypot(na.x - nb.x, na.z - nb.z) * (na.bank !== nb.bank ? 3 : 1);
     };
-    // Prim's minimum spanning tree.
+    // Prim's minimum spanning tree over the village, hamlets, castle and the way out: the roads.
+    // Then each farm (and the near field's lane) a track to the nearest of them.
+    const hubs = nodes.flatMap((node, index) => (node.farm ? [] : [index]));
+    const spurs = nodes.flatMap((node, index) => (node.farm ? [index] : []));
+    const tree = hubs.length > 0 ? hubs : spurs.splice(0, spurs.length);
     const inTree = new Uint8Array(count);
     const best = new Float64Array(count).fill(Infinity);
     const from = new Int32Array(count).fill(-1);
-    best[0] = 0;
+    best[tree[0] ?? 0] = 0;
     const adjacent: number[][] = nodes.map(() => []);
-    for (let it = 0; it < count; it++) {
+    for (let it = 0; it < tree.length; it++) {
       let u = -1;
-      for (let q = 0; q < count; q++)
+      for (const q of tree)
         if (inTree[q] === 0 && (u < 0 || (best[q] ?? Infinity) < (best[u] ?? Infinity))) u = q;
       if (u < 0) break;
       inTree[u] = 1;
@@ -1766,7 +1847,7 @@ export class TerrainBuilder {
         adjacent[f]?.push(u);
         adjacent[u]?.push(f);
       }
-      for (let q = 0; q < count; q++) {
+      for (const q of tree) {
         if (inTree[q] === 1) continue;
         const w = weight(u, q);
         if (w < (best[q] ?? Infinity)) {
@@ -1774,6 +1855,11 @@ export class TerrainBuilder {
           from[q] = u;
         }
       }
+    }
+    for (const s of spurs) {
+      let hub = -1;
+      for (const q of tree) if (hub < 0 || weight(s, q) < weight(s, hub)) hub = q;
+      if (hub >= 0) this.#addRoute(hub, s, nodes);
     }
     // A shortcut where the tree detours most (same bank, not farms).
     const treeDistance = (a: number, b: number): number => {
@@ -1831,8 +1917,14 @@ export class TerrainBuilder {
   }
 
   #nodes: Point[] = [];
+  /** The near field's lane in #nodes: only drawn where it finds a short way to the network. */
+  #lane = -1;
 
-  #addRoute(a: number, b: number, nodes: readonly (Point & { bank: number; farm: boolean })[]): void {
+  #addRoute(
+    a: number,
+    b: number,
+    nodes: readonly (Point & { bank: number; farm: boolean })[],
+  ): void {
     const na = nodes[a];
     const nb = nodes[b];
     if (!na || !nb) return;
@@ -1897,7 +1989,10 @@ export class TerrainBuilder {
     this.#used = new Uint8Array(n * n);
   }
 
-  #placeBridge(a: (Point & { bank: number }) | undefined, b: (Point & { bank: number }) | undefined): void {
+  #placeBridge(
+    a: (Point & { bank: number }) | undefined,
+    b: (Point & { bank: number }) | undefined,
+  ): void {
     const river = this.#river;
     if (!river || !a || !b) return;
     const count = river.x.length;
@@ -1948,7 +2043,7 @@ export class TerrainBuilder {
       z1: cz + nz * r1,
       deck0: water + 2.5,
       deck1: water + 2.5,
-      halfWidth: ROAD_HALF + 0.6,
+      halfWidth: ROAD_HALF + 1.4,
       water,
     };
   }
@@ -1999,6 +2094,15 @@ export class TerrainBuilder {
       const cells = this.#search(a, b);
       if (!cells) return;
       line = this.#shape(cells);
+    }
+    if (route.a === this.#lane || route.b === this.#lane) {
+      let length = 0;
+      for (let k = 1; k < line.x.length; k++)
+        length += Math.hypot(
+          (line.x[k] ?? 0) - (line.x[k - 1] ?? 0),
+          (line.z[k] ?? 0) - (line.z[k - 1] ?? 0),
+        );
+      if (length > 2.5 * Math.hypot(a.x - b.x, a.z - b.z) + 200) return;
     }
     this.#addRoad(route, line, bridgeStart, bridgeEnd);
   }
@@ -2061,7 +2165,8 @@ export class TerrainBuilder {
           if (Math.abs(di) + Math.abs(dj) > 1) {
             const sx = Math.sign(di);
             const sz = Math.sign(dj);
-            const m1 = (cj + (Math.abs(dj) === 2 ? sz : 0)) * n + ci + (Math.abs(di) === 2 ? sx : sx);
+            const m1 =
+              (cj + (Math.abs(dj) === 2 ? sz : 0)) * n + ci + (Math.abs(di) === 2 ? sx : sx);
             const m2 = (cj + sz) * n + ci + (Math.abs(di) === 2 ? sx : 0);
             if (!Number.isFinite(costs[m1] ?? Infinity) || !Number.isFinite(costs[m2] ?? Infinity))
               continue;
@@ -2131,7 +2236,8 @@ export class TerrainBuilder {
     const count = line.x.length;
     const h = new Float64Array(count);
     const smooth = new Float64Array(count);
-    for (let k = 0; k < count; k++) h[k] = sampleGrid(this.#ground, m, W, line.x[k] ?? 0, line.z[k] ?? 0);
+    for (let k = 0; k < count; k++)
+      h[k] = sampleGrid(this.#ground, m, W, line.x[k] ?? 0, line.z[k] ?? 0);
     for (let k = 0; k < count; k++) {
       let sum = 0;
       let weight = 0;
@@ -2244,16 +2350,22 @@ export class TerrainBuilder {
       if (sampleGrid(this.#road, m, W, x, z) < 3.5) return false;
       if (sampleGrid(this.#stream, m, W, x, z) < 4) return false;
       const rd = sampleGrid(this.#riverDist, m, W, x, z);
-      if (Number.isFinite(rd) && rd < 0.5 * this.#riverWidth(sampleGrid(this.#riverAlong, m, W, x, z)) + 12)
+      if (
+        Number.isFinite(rd) &&
+        rd < 0.5 * this.#riverWidth(sampleGrid(this.#riverAlong, m, W, x, z)) + 12
+      )
         return false;
       return buildings.every((b) => Math.hypot(b.x - x, b.z - z) >= clear);
     };
     const slopeAt = (x: number, z: number): number => {
       const e = 6;
-      return Math.hypot(
-        sampleGrid(g, m, W, x + e, z) - sampleGrid(g, m, W, x - e, z),
-        sampleGrid(g, m, W, x, z + e) - sampleGrid(g, m, W, x, z - e),
-      ) / (2 * e);
+      return (
+        Math.hypot(
+          sampleGrid(g, m, W, x + e, z) - sampleGrid(g, m, W, x - e, z),
+          sampleGrid(g, m, W, x, z + e) - sampleGrid(g, m, W, x, z - e),
+        ) /
+        (2 * e)
+      );
     };
     const add = (
       kind: TerrainBuildingKind,
@@ -2310,7 +2422,8 @@ export class TerrainBuilder {
           let heading = 0;
           if (road) {
             const end = road.from === index ? 0 : road.x.length - 1;
-            const nextK = road.from === index ? Math.min(4, road.x.length - 1) : Math.max(0, end - 4);
+            const nextK =
+              road.from === index ? Math.min(4, road.x.length - 1) : Math.max(0, end - 4);
             heading = Math.atan2(
               (road.z[nextK] ?? 0) - (road.z[end] ?? 0),
               (road.x[nextK] ?? 0) - (road.x[end] ?? 0),
@@ -2334,7 +2447,8 @@ export class TerrainBuilder {
             const kx = road.x[k] ?? 0;
             const kz = road.z[k] ?? 0;
             if (Math.hypot(kx - place.x, kz - place.z) > place.radius) break;
-            if (road.bridgeStart >= 0 && k >= road.bridgeStart - 4 && k <= road.bridgeEnd + 4) continue;
+            if (road.bridgeStart >= 0 && k >= road.bridgeStart - 4 && k <= road.bridgeEnd + 4)
+              continue;
             const k2 = clamp(k + 1, 0, count - 1);
             const k0 = clamp(k - 1, 0, count - 1);
             const heading = Math.atan2(
@@ -2359,10 +2473,19 @@ export class TerrainBuilder {
           const x = place.x + Math.cos(angle) * dist;
           const z = place.z + Math.sin(angle) * dist;
           if (!free(x, z, 14 * k) || slopeAt(x, z) > 0.2) continue;
-          const heading = this.#roadAngle[
-            clamp(Math.floor(z / this.#cellF), 0, m - 1) * m + clamp(Math.floor(x / this.#cellF), 0, m - 1)
-          ];
-          add("cottage", x, z, Number.isFinite(heading) ? (heading ?? 0) : angle, 1.2 + 0.6 * r.next(), index);
+          const heading =
+            this.#roadAngle[
+              clamp(Math.floor(z / this.#cellF), 0, m - 1) * m +
+                clamp(Math.floor(x / this.#cellF), 0, m - 1)
+            ];
+          add(
+            "cottage",
+            x,
+            z,
+            Number.isFinite(heading) ? (heading ?? 0) : angle,
+            1.2 + 0.6 * r.next(),
+            index,
+          );
           built++;
         }
       }
@@ -2386,7 +2509,11 @@ export class TerrainBuilder {
         for (let i = i0; i <= i1; i++) {
           const q = j * m + i;
           const d = Math.hypot((i + 0.5) * cellF - b.x, (j + 0.5) * cellF - b.z);
-          if ((this.#level[q] ?? 0) <= (g[q] ?? 0) && (this.#road[q] ?? FAR) > 0 && this.#banked[q] === 0) {
+          if (
+            (this.#level[q] ?? 0) <= (g[q] ?? 0) &&
+            (this.#road[q] ?? FAR) > 0 &&
+            this.#banked[q] === 0
+          ) {
             g[q] = lerp(b.y, g[q] ?? 0, smoothstep(inner, outer, d));
           }
           this.#yard[q] = Math.max(this.#yard[q] ?? 0, 1 - smoothstep(yardIn, yardOut, d));
@@ -2423,9 +2550,13 @@ export class TerrainBuilder {
         const Z = (j + 0.5) / m;
         const patch = 2 * fbm(X * 9, Z * 9, seed + 11, 4) - 1;
         const suit =
-          0.55 * smoothstep(0.08, 0.38, slope) + 0.3 * smoothstep(0.35, 0.85, high) + 0.55 * patch + 0.3;
+          0.55 * smoothstep(0.08, 0.38, slope) +
+          0.3 * smoothstep(0.35, 0.85, high) +
+          0.55 * patch +
+          0.3;
         // The vantage stands on open ground: the near slopes below it are farmland, not a wood's top.
-        const open = 1 - smoothstep(250, 550, Math.hypot((i + 0.5) * cellF - v.x, (j + 0.5) * cellF - v.z));
+        const open =
+          1 - smoothstep(250, 550, Math.hypot((i + 0.5) * cellF - v.x, (j + 0.5) * cellF - v.z));
         this.#wood[q] = clamp(suit - 0.9 * (this.#yard[q] ?? 0) - 0.9 * open, 0, 1);
       }
     }
@@ -2442,7 +2573,8 @@ export class TerrainBuilder {
     const spacingAt = (x: number, z: number): number => {
       let s = PARCEL_SPACING * (0.68 + 0.64 * valueNoise(x / 650, z / 650, this.options.seed + 41));
       for (const p of this.#places) {
-        if (p.kind !== "castle") s *= 1 - 0.3 * (1 - smoothstep(p.radius, p.radius + 350, Math.hypot(p.x - x, p.z - z)));
+        if (p.kind !== "castle")
+          s *= 1 - 0.3 * (1 - smoothstep(p.radius, p.radius + 350, Math.hypot(p.x - x, p.z - z)));
       }
       return s;
     };
@@ -2491,7 +2623,9 @@ export class TerrainBuilder {
       const gx = (sampleGrid(g, m, W, x + e, z) - sampleGrid(g, m, W, x - e, z)) / (2 * e);
       const gz = (sampleGrid(g, m, W, x, z + e) - sampleGrid(g, m, W, x, z - e)) / (2 * e);
       const slope = Math.hypot(gx, gz);
-      const q = clamp(Math.floor(z / this.#cellF), 0, m - 1) * m + clamp(Math.floor(x / this.#cellF), 0, m - 1);
+      const q =
+        clamp(Math.floor(z / this.#cellF), 0, m - 1) * m +
+        clamp(Math.floor(x / this.#cellF), 0, m - 1);
       const road = this.#roadAngle[q] ?? Number.NaN;
       // Along the contour on a slope, along a road beside one, else as it falls.
       angle[s] =
@@ -2508,7 +2642,7 @@ export class TerrainBuilder {
         ? roll < 0.6
           ? 3
           : 2
-        : slope > 0.24
+        : slope > 0.3
           ? roll < 0.75
             ? 2
             : 3
@@ -2632,7 +2766,12 @@ export class TerrainBuilder {
       for (let i = 1; i < m - 1; i++) {
         const q = j * m + i;
         if ((this.#level[q] ?? 0) > (this.#ground[q] ?? 0) - 0.5) continue;
-        if ((this.#road[q] ?? FAR) < 3 || (this.#stream[q] ?? FAR) < 2 || (this.#yard[q] ?? 0) > 0.3) continue;
+        if (
+          (this.#road[q] ?? FAR) < 3 ||
+          (this.#stream[q] ?? FAR) < 2 ||
+          (this.#yard[q] ?? 0) > 0.3
+        )
+          continue;
         const id = this.#ids[2 * q] ?? 0;
         const hedge = id !== (this.#ids[2 * q + 2] ?? 0) || id !== (this.#ids[2 * (q + m)] ?? 0);
         const d = this.#riverDist[q] ?? Infinity;

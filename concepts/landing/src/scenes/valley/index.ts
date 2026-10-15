@@ -4,9 +4,9 @@
 // roads between them over one bridge, fields hedged along the contours and woods on the steep and
 // poor ground, under the shared sky, clouds and weather. Every landscape knob rebuilds the map over
 // a few frames (the last one stays on screen meanwhile); woodland is the shader's alone.
-import { range, seed, toggle } from "../../params.ts";
+import { choice, range, seed, toggle } from "../../params.ts";
 import { CLOUD_TIERS } from "../../shaders/lib/clouds.ts";
-import { TERRAIN_MAX_SETTLEMENTS } from "../../sims/terrain.ts";
+import { TERRAIN_BASES, TERRAIN_MAX_SETTLEMENTS } from "../../sims/terrain.ts";
 import { atmosphereGroups, skyKnobs, weatherKnobs } from "../atmosphere.ts";
 import type { SceneDef } from "../types.ts";
 import { VALLEY_PASSAGE, valleyGlsl } from "./shader.ts";
@@ -22,6 +22,14 @@ const params = [
     fog: true,
     wind: true,
   }),
+  choice(
+    "land",
+    "shape",
+    "land shape",
+    TERRAIN_BASES.map((label, value) => ({ label, value })),
+    0,
+    "The relief the valley is carved from: a river valley between hills; a coast, where the valley opens downstream into a bay of the sea; a plateau, a high table with the river in a steep-sided gorge; or rolling hills all round. Rebuilds the valley.",
+  ),
   seed(
     "land",
     "landscape",

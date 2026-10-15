@@ -187,15 +187,21 @@ the roads can form a network. Countryside is unchanged until the prototype prove
   the shared buildings (`src/shaders/buildings.ts`) projected from their footings with lit windows and
   smoke, a stone bridge, far ridges in the sky, the shared sky, clouds (and their shadows), rain,
   snow, wetness, lying snow and valley mist. Entrance: the camera comes down out of the sky.
-- Knobs: landscape (seed), relief, erosion, woodland (shader-only), river size, settlements, roads;
+- Base relief (`TerrainOptions.base`, the `land shape` knob): valley (default), coast (the valley
+  opening downstream into a bay, the sea flooded in from the map's edge with `stillWater`), plateau
+  (a high table over a steep-sided gorge) or rolling hills. Roads join the village, hamlets, castle
+  and the way out (a spanning tree); farms and a lane through the near field are spur tracks. Roads
+  are pale ribbons with a verge and a hedge either side, held to half a cell across.
+- Knobs: land shape, landscape (seed), relief, erosion, woodland (shader-only), river size, settlements, roads;
   time of day, stars, moon, clouds, cloud shadows, rain, snow, fog, wind. Rain, snow, fog, roads,
   cloud shadows and a waning moon are compiled in only while on (`valleyFeatures`).
 - Checks: `src/sims/terrain.test.ts` (river level across and downstream, roads join every
   settlement, road grade bounded and cut into the ground, determinism and reuse, build budget);
   `valleyTerrain` (the real sim's textures through the scene's program: compiles, draws land, sky
   and river, deterministic per landscape).
-- Open: lone trees and wood edges are texel-sized prisms close up (pixel 1); the near slopes are
-  plain pasture; buildings are side-on sprites; no herds, walkers, verges or wildlife yet.
+- Open: lone trees are rounded tents rather than modelled crowns, and wood edges stay texel-coarse
+  close up; no gates or walls; buildings are side-on sprites; the plateau's near table hides the
+  gorge from the vantage; no herds, walkers, verges or wildlife yet.
 
 ## Above the clouds
 
