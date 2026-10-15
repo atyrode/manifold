@@ -18,7 +18,7 @@
 import { KnobReader, type ParamDef } from "../../params.ts";
 import { FixedStep } from "../../sims/clock.ts";
 import { FishGroup, FishTexture, KOI } from "../../sims/fish.ts";
-import { clamp, smoothstep } from "../../sims/math.ts";
+import { clamp, glslHash12, smoothstep } from "../../sims/math.ts";
 import type { SimFrame } from "../types.ts";
 
 /** The most koi the shader draws (its loop runs to 8). */
@@ -54,23 +54,6 @@ const WALL = 0.08;
 
 type Knob = "koi" | "swim" | "follow" | "spacing" | "eager";
 const KNOBS: readonly Knob[] = ["koi", "swim", "follow", "spacing", "eager"];
-
-const f32 = Math.fround;
-const fract32 = (x: number): number => f32(x - Math.floor(x));
-
-/** common.ts `hash12(vec2(x, y))`, step by step in float32 as the shader runs it. */
-export function glslHash12(x: number, y: number): number {
-  const k = f32(0.1031);
-  const s = f32(33.33);
-  let a = fract32(f32(f32(x) * k));
-  let b = fract32(f32(f32(y) * k));
-  let c = a;
-  const d = f32(f32(f32(a * f32(b + s)) + f32(b * f32(c + s))) + f32(c * f32(a + s)));
-  a = f32(a + d);
-  b = f32(b + d);
-  c = f32(c + d);
-  return fract32(f32(f32(a + b) * c));
-}
 
 /**
  * One koi as the shader derives it from its index: its loop (a, b, ph), body length; and, for

@@ -1,14 +1,18 @@
 // The pond scene: water, floor, koi, lilies, foliage, sun and canopy. The koi are drawn with the
-// shared fish (sims/fish.ts); while they are drawn to the pointer the sim steers them (koi.ts).
+// shared fish (sims/fish.ts); while they are drawn to the pointer the sim steers them (koi.ts). The
+// border plants come drawn in the plant sheet (uSim0, sims/plantsheet.ts), coloured here by
+// material, and turned by the year with the plant component's colours (shaders/lib/plants.ts).
 
 import { CANOPY_MARGIN } from "../../decor.ts";
 import { fishGlsl } from "../../sims/fish.ts";
+import { plantSheetGlsl } from "../../sims/plantsheet.ts";
 import { glslFloat } from "../../shaders/glsl.ts";
+import { plantsGlsl } from "../../shaders/lib/plants.ts";
 
 /** Seconds of the pond's entrance and exit (SceneDef.passage). */
 export const POND_PASSAGE = { enter: 3.2, exit: 1.8 } as const;
 
-export const pondGlsl = `${fishGlsl}
+export const pondGlsl = `${fishGlsl}${plantsGlsl}${plantSheetGlsl}
 // One layer of animated cellular light: bright where neighbouring cells meet.
 float pondCausticLayer(vec2 x, float t) {
   vec2 i = floor(x);
@@ -75,10 +79,16 @@ vec3 pondPadState(float fi, float aspect, float tm, vec2 flow, float turbulence,
   return vec3(mod(travelled + span * 0.5, span) - span * 0.5, radius);
 }
 
-// One texel of the plant sheet (uSim0), exactly as painted: material codes must never be interpolated.
+// One texel of the plant sheet (uSim0), exactly as drawn: material codes must never be interpolated.
 vec4 pondDecorTexel(vec2 at) {
   ivec2 size = textureSize(uSim0, 0);
   return texelFetch(uSim0, clamp(ivec2(at * vec2(size)), ivec2(0), size - 1), 0);
+}
+
+// A blur of the plant sheet as wide on the frame as mip 'lod' of a 2048-wide sheet, whatever the
+// sheet's size (the sim draws it at two pixels a cell, up to 2048).
+float pondSheetLod(float lod) {
+  return lod + log2(float(textureSize(uSim0, 0).x) / 2048.0);
 }
 
 // A paper boat seen from above, in its own frame (x along the keel, unit = half its length):
@@ -570,7 +580,8 @@ Shade scenePond(vec2 uv, vec2 cell, float t) {
   }
 
   // Foliage: border plants (in frame) and the canopy (above the camera). Both cast shadows away
-  // from the sun and stand in the way of its rays.
+  // from the sun and stand in the way of its rays. The border plants sway in the sim (plants.ts),
+  // each organ on its own spring; the canopy, never seen itself, sways here.
   int style = int(K_plantStyle + 0.5);
   float wind = K_wind * m;
   float gust = 0.6 + 0.4 * vnoise(vec2(t * 0.25, 3.0));
@@ -587,7 +598,7 @@ Shade scenePond(vec2 uv, vec2 cell, float t) {
     shadeAmount = max(shadeAmount, smoothstep(0.25 - 0.12 * softness, 0.6, leaves) * (0.85 - 0.25 * softness));
   }
   if (uSimOn.x > 0.5 && style != 1) {
-    vec4 hanging = textureLod(uSim0, pondFoliageWarp(uv + sunwardUV * 0.035 + sway * 1.6, plantShift, 1.0), 2.5);
+    vec4 hanging = textureLod(uSim0, pondFoliageWarp(uv + sunwardUV * 0.035, plantShift, 1.0), pondSheetLod(2.5));
     shadeAmount = max(shadeAmount, smoothstep(0.08, 0.6, hanging.r) * 0.8);
   }
   col *= 1.0 - 0.6 * shadeAmount;
@@ -604,7 +615,7 @@ Shade scenePond(vec2 uv, vec2 cell, float t) {
     for (int i = 0; i < 24; i++) {
       at += marchStep;
       float block = 0.0;
-      if (uSimOn.x > 0.5) block = textureLod(uSim0, pondFoliageWarp(at + sway, plantShift, 1.0), 2.0).r;
+      if (uSimOn.x > 0.5) block = textureLod(uSim0, pondFoliageWarp(at, plantShift, 1.0), pondSheetLod(2.0)).r;
       if (uSimOn.y > 0.5) block = max(block, smoothstep(0.15, 0.6, textureLod(uSim1, (pondFoliageWarp(at, canopyShift, 1.0) + ${CANOPY_MARGIN.toFixed(2)}) / canopySpan, 2.5).r));
       lit += (1.0 - block) * weight;
       total += weight;
@@ -623,13 +634,14 @@ Shade scenePond(vec2 uv, vec2 cell, float t) {
   o.ink = max(o.ink, glare);
 
   if (uSimOn.x > 0.5 && style != 2) {
-    // Each layer sways by its own amount: front to back, take the first texel that belongs to
-    // the layer whose offset found it, so overlapping leaves never swap from frame to frame.
+    // While the plants close in or part, each layer is held out by its own amount, nearer ones
+    // more: front to back, take the first texel that belongs to the layer whose offset found it, so
+    // overlapping leaves never swap from frame to frame. At rest the three lookups are one texel.
     vec4 leaf = vec4(0.0);
     float layer = 0.0;
     for (int l = 2; l >= 0; l--) {
-      vec4 texel = pondDecorTexel(pondFoliageWarp(uv + sway * (0.5 + 0.5 * float(l)), plantShift, 0.7 + 0.15 * float(l)));
-      if (texel.r > 0.5 && floor(mod(floor(texel.b * 255.0 + 0.5), 16.0) / 4.0) == float(l)) {
+      vec4 texel = pondDecorTexel(pondFoliageWarp(uv, plantShift, 0.7 + 0.15 * float(l)));
+      if (texel.r > 0.5 && plantSheetLayer(texel) == float(l)) {
         leaf = texel;
         layer = float(l);
         break;
@@ -638,9 +650,8 @@ Shade scenePond(vec2 uv, vec2 cell, float t) {
     if (leaf.r > 0.5) {
       // Materials (botany.ts): 0 monstera, 1 fern, 2 banana, 3 pothos, 4 hibiscus, 5 frangipani,
       // 6 pollen, 7 grass, 8 stem, 9 aerial root, 10 stigma.
-      float code = floor(leaf.b * 255.0 + 0.5);
-      float material = floor(code / 16.0);
-      layer = floor(mod(code, 16.0) / 4.0);
+      float material = plantSheetMaterial(leaf);
+      layer = plantSheetLayer(leaf);
       vec3 dark;
       vec3 bright;
       if (material < 0.5) { dark = vec3(0.04, 0.24, 0.1); bright = vec3(0.2, 0.52, 0.22); }
@@ -655,7 +666,10 @@ Shade scenePond(vec2 uv, vec2 cell, float t) {
       else if (material < 9.5) { dark = vec3(0.22, 0.15, 0.08); bright = vec3(0.5, 0.38, 0.24); }
       else { dark = vec3(0.35, 0.0, 0.05); bright = vec3(0.8, 0.05, 0.15); }
       // Leaves catch the sun on its side and dim in the canopy's shade.
-      col = mix(dark, bright, leaf.g) * (0.72 + 0.14 * layer) * (0.85 + 0.35 * power) * (1.0 - 0.35 * shadeAmount);
+      col = mix(dark, bright, leaf.g);
+      // The year and their age turn the leaves, stems and grass (the flowers come and go instead).
+      if (material < 3.5 || (material > 6.5 && material < 9.5)) col = plantPhenology(col, plantSheetPheno(leaf));
+      col *= (0.72 + 0.14 * layer) * (0.85 + 0.35 * power) * (1.0 - 0.35 * shadeAmount);
       // Red blooms take the accent; everything else is ink, pale flowers brightest.
       bool red = (material > 3.5 && material < 4.5) || material > 9.5;
       o.ink = red ? 0.0 : (0.1 + 0.55 * leaf.g) * (0.72 + 0.14 * layer) + (material > 4.5 && material < 6.5 ? 0.35 : 0.0);

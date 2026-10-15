@@ -1,7 +1,9 @@
 // A koi pond seen from above: clear water, a stone or sand floor, light through border plants and
-// an overhead canopy. The plants and canopy are painted on the CPU (sim.ts) and read as uSim0/uSim1;
-// while the koi are drawn to the pointer they are steered fish (koi.ts, sims/fish.ts) in uSim2.
+// an overhead canopy. The border plants are grown by the shared plant component and drawn each frame
+// into uSim0 (sim.ts, plants.ts); the canopy is painted on the CPU into uSim1; while the koi are
+// drawn to the pointer they are steered fish (koi.ts, sims/fish.ts) in uSim2.
 import { choice, counts, feature, range, seed, toggle, type ParamDef } from "../../params.ts";
+import { plantKnobs } from "../plants.ts";
 import type { SceneDef } from "../types.ts";
 import { POND_PASSAGE, pondGlsl } from "./shader.ts";
 import { pondSim } from "./sim.ts";
@@ -56,6 +58,8 @@ const params: readonly ParamDef[] = [
   range("manifold", "stoneX", "across", 0.45, "Where the stone stands, left to right.", { min: -1, max: 1, when: "stone", steady: true }),
   range("manifold", "stoneY", "height", -0.2, "Where the stone stands, bottom to top.", { min: -1, max: 1, when: "stone", steady: true }),
   range("manifold", "moss", "moss", 0.5, "How much moss has grown over the stone.", { when: "stone" }),
+  // The plant component's own: the year, growth and gusts (scenes/plants.ts), all off.
+  ...plantKnobs({ group: "plants", when: "plants", season: 0.35, growth: 0.4, gusts: { trigger: 2, group: "air" } }),
 ];
 
 export const pondScene: SceneDef = {
@@ -75,7 +79,7 @@ export const pondScene: SceneDef = {
     plants: { title: "Border plants", blurb: "Foliage around the edges, each plant grown its own way, with vines, flowers and grass." },
     edges: { title: "Edges", blurb: "How lush each side is. The border plants and the canopy overhead both follow it." },
     canopy: { title: "Canopy", blurb: "Leaves above the camera, out of sight, casting dappled shade over everything." },
-    air: { title: "Breeze", blurb: "Wind through the plants and the canopy." },
+    air: { title: "Breeze", blurb: "Wind through the plants and the canopy, and the gusts that cross the pond." },
     current: { title: "Water current", blurb: "Make the water flow and watch everything respond to it." },
     manifold: { title: "Manifold stone", blurb: "A landmark of its own: a carved stone M standing in the water." },
   },

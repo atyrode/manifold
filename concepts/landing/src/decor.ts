@@ -1,31 +1,12 @@
-// The pond's foliage sheets. Plants are laid out around the frame by their growth habit and drawn
-// with the botany models into data textures the shader reads (see botany.ts for the encoding).
-// Each leaf or flower is drawn alone on a scratch sheet so its cuts and holes cannot erase what
-// lies underneath, then stamped onto the sheet, back layer first.
+// The pond's foliage rasters, painted with the botany models (botany.ts has the encoding): the plant
+// atlas, one cell per variant of every leaf, frond, tuft and flower the border plants draw from
+// (sims/plantsheet.ts cuts them out as sprites, scenes/pond/plants.ts grows the plants), and the
+// overhead canopy, whose dappled shade is all that is ever seen of it. Each sprite is painted alone on
+// a black scratch cell so its cuts and holes cannot erase anything, then made crisp (one material per
+// texel) and copied into its cell.
 
-import { bananaLeaf, fernFrond, frangipaniFlower, grassTuft, hibiscusFlower, Material, monsteraLeaf, pothosLeaf, stroke, type Brush, type Context, type Rand } from "./botany.ts";
-
-/** Plants that grow in clumps along the edges. */
-export const clumpSpecies = ["monstera", "fern", "banana"] as const;
-export type ClumpSpecies = (typeof clumpSpecies)[number];
-
-export interface DecorConfig {
-  /** 0..1: how far the plants reach into the pond. */
-  reach: number;
-  /** 0..1 lushness of each edge: top, right, bottom, left. */
-  sides: readonly [number, number, number, number];
-  kinds: readonly ClumpSpecies[];
-  /** 0..1: pothos vines trailing in from the edges. */
-  vines: number;
-  /** 0..1: how many flowers bloom among the leaves. */
-  flowers: number;
-  /** 0..1: tufts of grass along the waterline. */
-  grass: number;
-  /** 0..1: a few distinct plants (0) to packed foliage with an understory (1). */
-  bushiness: number;
-  /** Arrangement variant. */
-  seed: number;
-}
+import { bananaLeaf, fernFrond, frangipaniFlower, grassTuft, hibiscusFlower, Material, monsteraLeaf, pothosLeaf, type Brush, type Context, type MaterialId, type Rand } from "./botany.ts";
+import { PLANT_ATLAS_SHADE, type PlantSheetFamily } from "./sims/plantsheet.ts";
 
 export interface CanopyConfig {
   /** 0..1: how much of the sky above the camera is leaves. */
@@ -37,13 +18,6 @@ export interface CanopyConfig {
 
 /** The canopy sheet covers uv -0.25..1.25 so shadows cast at an angle still find leaves. */
 export const CANOPY_MARGIN = 0.25;
-
-export function decorKey(config: DecorConfig): string {
-  return [config.reach, ...config.sides, config.vines, config.flowers, config.grass, config.bushiness]
-    .map((value) => value.toFixed(3))
-    .concat(config.kinds.join(","), String(config.seed))
-    .join("|");
-}
 
 export function canopyKey(config: CanopyConfig): string {
   return [config.coverage, ...config.sides].map((value) => value.toFixed(3)).concat(String(config.seed)).join("|");
@@ -59,14 +33,6 @@ function random(seed: number): Rand {
     t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
     return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
   };
-}
-
-type Point = [number, number];
-
-/** Something drawn onto the sheet, in a depth layer (0 back … 2 front). */
-interface Piece {
-  layer: number;
-  draw: (ctx: Context, stamp: Stamp) => void;
 }
 
 /** Draw in a local frame (origin, heading, scale, optional mirror) on the scratch sheet, then lay it down. */
@@ -91,257 +57,93 @@ function stamper(ctx: Context, size: number): Stamp {
   };
 }
 
-/** Points along a quadratic curve, with the heading at each. */
-function curve(p0: Point, p1: Point, p2: Point, steps: number): [number, number, number][] {
-  const out: [number, number, number][] = [];
-  for (let i = 0; i <= steps; i++) {
-    const t = i / steps;
-    const u = 1 - t;
-    const x = u * u * p0[0] + 2 * u * t * p1[0] + t * t * p2[0];
-    const y = u * u * p0[1] + 2 * u * t * p1[1] + t * t * p2[1];
-    const dx = 2 * u * (p1[0] - p0[0]) + 2 * t * (p2[0] - p1[0]);
-    const dy = 2 * u * (p1[1] - p0[1]) + 2 * t * (p2[1] - p1[1]);
-    out.push([x, y, Math.atan2(dy, dx)]);
-  }
-  return out;
+// ---------------------------------------------------------------------------------------------
+// The plant atlas
+
+/** The atlas is PLANT_ATLAS_SIZE square: rows of 256-pixel cells, then rows of 128-pixel cells. */
+export const PLANT_ATLAS_SIZE = 2048;
+const BIG = 256;
+const SMALL = 128;
+/** Where the 128-pixel cells start (pixels from the top). */
+const SMALL_TOP = 5 * BIG;
+
+/** Monstera variants below this one are mature leaves (more incised in turn); the rest are young. */
+export const MONSTERA_MATURE = 12;
+
+interface AtlasFamily {
+  material: MaterialId;
+  count: number;
+  cell: typeof BIG | typeof SMALL;
+  /** The sprite frame a cell holds: x0, y0, x1, y1 (stalk at 0, tip toward +x, y down). */
+  box: readonly [number, number, number, number];
+  draw(ctx: Context, brush: Brush, rand: Rand, variant: number): void;
 }
 
-/** A thin, wandering aerial root hanging from a node. */
-function aerialRoot(x: number, y: number, heading: number, length: number, rand: Rand): Point[] {
-  const points: Point[] = [[x, y]];
-  let angle = heading;
-  for (let i = 1; i <= 10; i++) {
-    angle += (rand() - 0.5) * 0.5;
-    const [px, py] = points[i - 1] ?? [x, y];
-    points.push([px + Math.cos(angle) * (length / 10), py + Math.sin(angle) * (length / 10)]);
+/** Every family, in atlas order; the first three in 256-pixel cells, the rest in 128-pixel ones. */
+const FAMILIES: readonly AtlasFamily[] = [
+  { material: Material.monstera, count: 16, cell: BIG, box: [-0.3, -0.66, 1.1, 0.66], draw: (ctx, brush, rand, k) => monsteraLeaf(ctx, brush, rand, k < MONSTERA_MATURE ? 0.45 + (0.55 * k) / (MONSTERA_MATURE - 1) : 0.1) },
+  { material: Material.fern, count: 12, cell: BIG, box: [-0.1, -0.6, 1.25, 0.6], draw: (ctx, brush, rand) => fernFrond(ctx, brush, rand) },
+  { material: Material.banana, count: 8, cell: BIG, box: [-0.1, -0.32, 1.15, 0.32], draw: (ctx, brush, rand, k) => bananaLeaf(ctx, brush, rand, k / 7) },
+  { material: Material.pothos, count: 12, cell: SMALL, box: [-0.3, -0.52, 1.1, 0.52], draw: (ctx, brush, rand) => pothosLeaf(ctx, brush, rand) },
+  { material: Material.hibiscus, count: 8, cell: SMALL, box: [-1.3, -1.3, 1.3, 1.3], draw: (ctx, brush, rand) => hibiscusFlower(ctx, brush, rand) },
+  { material: Material.frangipani, count: 8, cell: SMALL, box: [-1.3, -1.3, 1.3, 1.3], draw: (ctx, brush, rand) => frangipaniFlower(ctx, brush, rand) },
+  { material: Material.grass, count: 8, cell: SMALL, box: [-0.5, -1.05, 1.15, 1.05], draw: (ctx, brush, rand) => grassTuft(ctx, brush, rand, 16 + Math.floor(rand() * 16)) },
+];
+
+/** Each family's cells in atlas order: [family, variant, left, top] (atlas pixels). */
+function atlasCells(): [AtlasFamily, number, number, number][] {
+  const cells: [AtlasFamily, number, number, number][] = [];
+  let big = 0;
+  let small = 0;
+  for (const family of FAMILIES) {
+    const across = PLANT_ATLAS_SIZE / family.cell;
+    for (let k = 0; k < family.count; k++) {
+      const index = family.cell === BIG ? big++ : small++;
+      cells.push([family, k, (index % across) * family.cell, (family.cell === BIG ? 0 : SMALL_TOP) + Math.floor(index / across) * family.cell]);
+    }
   }
-  return points;
+  return cells;
 }
 
-/** Everything around the frame, as pieces. Unit is the sheet height. */
-function layout(width: number, height: number, config: DecorConfig, rand: Rand): Piece[] {
-  const kinds: readonly ClumpSpecies[] = config.kinds.length > 0 ? config.kinds : clumpSpecies;
-  const pick = (prefer: readonly ClumpSpecies[]): ClumpSpecies => {
-    const pool = kinds.filter((kind) => prefer.includes(kind));
-    const from = pool.length > 0 && rand() < 0.75 ? pool : kinds;
-    return from[Math.floor(rand() * from.length)] ?? "fern";
-  };
-  const reach = height * (0.55 + 0.9 * config.reach);
-  const pieces: Piece[] = [];
-  const brush = (layer: number): Brush => ({ layer, shade: 0.5 + 0.3 * rand() });
-
-  const bloom = (x: number, y: number) => {
-    const size = height * (0.02 + 0.02 * rand());
-    const hibiscus = rand() < 0.55;
-    const b: Brush = { layer: 2, shade: hibiscus ? 0.65 + 0.25 * rand() : 0.88 + 0.1 * rand() };
-    const seed = rand();
-    pieces.push({
-      layer: 2,
-      draw: (_ctx, stamp) => stamp(x, y, 0, size, false, (local) => (hibiscus ? hibiscusFlower : frangipaniFlower)(local, b, random(seed * 1e6))),
-    });
-  };
-
-  // Monstera climbs: a stout stem leaning in from the edge; alternate nodes each carry a long
-  // petiole with a knee (geniculum) just below the blade, some an aerial root.
-  const monsteraPlant = (x: number, y: number, inward: number, lush: number, layer: number) => {
-    const length = reach * (0.15 + 0.11 * rand()) * (0.7 + 0.5 * lush);
-    const bend = (rand() - 0.5) * 1.1;
-    const p0: Point = [x, y];
-    const p1: Point = [x + Math.cos(inward + bend * 0.5) * length * 0.5, y + Math.sin(inward + bend * 0.5) * length * 0.5];
-    const p2: Point = [x + Math.cos(inward + bend) * length, y + Math.sin(inward + bend) * length];
-    const stem = curve(p0, p1, p2, 16);
-    const b = brush(layer);
-    pieces.push({ layer, draw: (ctx) => stroke(ctx, stem.map(([px, py]) => [px, py]), Material.stem, b, 0.4, height * 0.014, 0.7) });
-    const nodes = 2 + Math.floor(rand() * 3) + Math.round(config.bushiness * 2);
-    let side = rand() < 0.5 ? -1 : 1;
-    for (let n = 0; n < nodes; n++) {
-      const t = 0.3 + (0.7 * n) / Math.max(1, nodes - 1);
-      const [nx, ny, heading] = stem[Math.round(t * 16)] ?? [x, y, inward];
-      const out = heading + side * (0.8 + 0.4 * rand());
-      const petiole = length * (0.28 + 0.12 * rand());
-      const kneeX = nx + Math.cos(out) * petiole;
-      const kneeY = ny + Math.sin(out) * petiole;
-      // At the knee the blade turns to hang toward the light.
-      const bladeAngle = out - side * (0.25 + 0.25 * rand());
-      const stalk: Point[] = curve([nx, ny], [nx + Math.cos(out) * petiole * 0.6 + Math.cos(heading) * petiole * 0.15, ny + Math.sin(out) * petiole * 0.6 + Math.sin(heading) * petiole * 0.15], [kneeX, kneeY], 8).map(([px, py]) => [px, py]);
-      const leafLength = length * (0.5 + 0.2 * rand()) * (0.8 + 0.4 * t);
-      const maturity = 0.45 + 0.55 * rand();
-      const seed = rand();
-      const leafBrush = brush(layer);
-      pieces.push({ layer, draw: (ctx) => stroke(ctx, stalk, Material.stem, leafBrush, 0.55, height * 0.006, 0.8) });
-      pieces.push({ layer, draw: (_ctx, stamp) => stamp(kneeX, kneeY, bladeAngle, leafLength, side < 0, (local) => monsteraLeaf(local, leafBrush, random(seed * 1e6), maturity)) });
-      if (rand() < 0.5) {
-        const root = aerialRoot(nx, ny, heading - side * 1.2, height * (0.06 + 0.1 * rand()), rand);
-        pieces.push({ layer: Math.max(0, layer - 1), draw: (ctx) => stroke(ctx, root, Material.root, b, 0.5, height * 0.0035, 0.5) });
-      }
-      side = -side;
-    }
-    if (rand() < config.flowers * 0.7) bloom(p2[0], p2[1]);
-  };
-
-  // Ferns and banana fan from a crown at the edge: fronds straight from the crown, banana leaves
-  // on short stout petioles.
-  const crown = (species: "fern" | "banana", x: number, y: number, inward: number, big: boolean, lush: number) => {
-    const count = (species === "fern" ? 5 : 3) + Math.floor(rand() * 2) + (lush > 0.7 ? 1 : 0) + Math.round(config.bushiness * 3);
-    const scale = 0.65 + 0.6 * lush;
-    for (let i = 0; i < count; i++) {
-      const fan = (count === 1 ? 0 : i / (count - 1) - 0.5) * (big ? 1.9 : 1.5) + (rand() - 0.5) * 0.3;
-      const angle = inward + fan;
-      const length = reach * (big ? 0.38 : 0.28) * (0.75 + 0.45 * rand()) * scale;
-      const layer = big ? 1 + Math.floor(rand() * 2) : Math.floor(rand() * 2);
-      const b = brush(layer);
-      const seed = rand();
-      const flip = rand() < 0.5;
-      if (species === "fern") {
-        pieces.push({ layer, draw: (_ctx, stamp) => stamp(x, y, angle, length, flip, (local) => fernFrond(local, b, random(seed * 1e6))) });
-      } else {
-        const petiole = length * 0.14;
-        const bx = x + Math.cos(angle) * petiole;
-        const by = y + Math.sin(angle) * petiole;
-        const wear = rand();
-        pieces.push({ layer, draw: (ctx) => stroke(ctx, [[x, y], [bx, by]], Material.banana, b, 0.85, height * 0.012, 0.8) });
-        pieces.push({ layer, draw: (_ctx, stamp) => stamp(bx, by, angle, length, flip, (local) => bananaLeaf(local, b, random(seed * 1e6), wear)) });
-      }
-      if (rand() < config.flowers * 0.4) {
-        const along = length * (0.35 + 0.45 * rand());
-        bloom(x + Math.cos(angle) * along, y + Math.sin(angle) * along);
-      }
-    }
-  };
-
-  const plant = (x: number, y: number, inward: number, big: boolean, lush: number) => {
-    const species = pick(big ? ["monstera", "banana"] : ["fern", "monstera"]);
-    if (species === "monstera") monsteraPlant(x, y, inward, lush, big ? 2 : 1);
-    else crown(species, x, y, inward, big, lush);
-  };
-
-  const tuft = (x: number, y: number, inward: number, lush: number) => {
-    const size = height * (0.12 + 0.1 * rand()) * (0.7 + 0.5 * lush);
-    const layer = rand() < 0.6 ? 0 : 1;
-    const b: Brush = { layer, shade: 0.55 + 0.3 * rand() };
-    const seed = rand();
-    const blades = 16 + Math.floor(rand() * 16);
-    const lean = inward + (rand() - 0.5) * 0.4;
-    pieces.push({ layer, draw: (_ctx, stamp) => stamp(x, y, lean, size, false, (local) => grassTuft(local, b, random(seed * 1e6), blades)) });
-  };
-
-  // Pothos trails in: a wandering vine with alternate cordate leaves on short petioles, an aerial
-  // root now and then, curling at the tip.
-  const vine = (x: number, y: number, inward: number, index: number) => {
-    const vineLength = height * (0.3 + 0.45 * rand()) * (0.6 + 0.6 * config.reach);
-    const sway = (rand() - 0.5) * 0.8;
-    const steps = 40;
-    const points: Point[] = [[x, y]];
-    for (let i = 1; i <= steps; i++) {
-      const s = i / steps;
-      const heading = inward + sway * s + Math.sin(s * 9 + index) * 0.35;
-      const [px, py] = points[i - 1] ?? [x, y];
-      points.push([px + (Math.cos(heading) * vineLength) / steps, py + (Math.sin(heading) * vineLength) / steps]);
-    }
-    const layer = rand() < 0.6 ? 2 : 1;
-    const b = brush(layer);
-    pieces.push({ layer, draw: (ctx) => stroke(ctx, points, Material.stem, b, 0.5, height * 0.0045, 0.5) });
-    let side = 1;
-    for (let i = 2; i < steps - 1; i += 2 + Math.floor(rand() * 2)) {
-      const [px, py] = points[i] ?? [x, y];
-      const [qx, qy] = points[i + 1] ?? [px, py];
-      const heading = Math.atan2(qy - py, qx - px);
-      const out = heading + side * (0.9 + 0.4 * rand());
-      const leafLength = height * (0.03 + 0.028 * rand()) * (1 - (i / steps) * 0.4);
-      const petiole = leafLength * 0.45;
-      const lx = px + Math.cos(out) * petiole;
-      const ly = py + Math.sin(out) * petiole;
-      const seed = rand();
-      const leafBrush = brush(layer);
-      pieces.push({ layer, draw: (ctx) => stroke(ctx, [[px, py], [lx, ly]], Material.stem, leafBrush, 0.6, height * 0.0025, 0.8) });
-      pieces.push({ layer, draw: (_ctx, stamp) => stamp(lx, ly, out - side * 0.3, leafLength, side < 0, (local) => pothosLeaf(local, leafBrush, random(seed * 1e6))) });
-      if (rand() < 0.12) {
-        const root = aerialRoot(px, py, heading - side * 1.4, height * 0.03, rand);
-        pieces.push({ layer, draw: (ctx) => stroke(ctx, root, Material.root, b, 0.5, height * 0.0022, 0.5) });
-      }
-      side = -side;
-    }
-  };
-
-  const [top, right, bottom, left] = config.sides;
-  const margin = height * 0.03;
-  // A corner is only as lush as the barer of its two edges: 0 on a side leaves it clear.
-  const corners: [number, number, number][] = [
-    [-margin, -margin, Math.min(top, left)],
-    [width + margin, -margin, Math.min(top, right)],
-    [-margin, height + margin, Math.min(bottom, left)],
-    [width + margin, height + margin, Math.min(bottom, right)],
-  ];
-  for (const [x, y, lush] of corners) {
-    if (lush < 0.05 || rand() < 0.15 * (1 - lush) * (1 - config.bushiness)) continue;
-    plant(x, y, Math.atan2(height / 2 - y, width / 2 - x), true, lush);
+/**
+ * The atlas's families for PlantSheet, indexed by material: their cells as texture uv rectangles
+ * (the atlas is uploaded flipped, its top row at v = 1).
+ */
+export function plantAtlasFamilies(): (PlantSheetFamily | undefined)[] {
+  const cells = FAMILIES.map((): (readonly [number, number, number, number])[] => []);
+  for (const [family, , left, top] of atlasCells()) {
+    cells[FAMILIES.indexOf(family)]?.push([left / PLANT_ATLAS_SIZE, 1 - top / PLANT_ATLAS_SIZE, (left + family.cell) / PLANT_ATLAS_SIZE, 1 - (top + family.cell) / PLANT_ATLAS_SIZE]);
   }
-  const edges: [number, number, number, number, number, number][] = [
-    [0, -margin, width, -margin, Math.PI / 2, top],
-    [width + margin, 0, width + margin, height, Math.PI, right],
-    [0, height + margin, width, height + margin, -Math.PI / 2, bottom],
-    [-margin, 0, -margin, height, 0, left],
-  ];
-  edges.forEach(([x0, y0, x1, y1, inward, lush], edge) => {
-    if (lush < 0.05) return;
-    const spacing = height * (0.85 - 0.62 * lush) * (1.35 - 0.8 * config.bushiness);
-    const length = Math.hypot(x1 - x0, y1 - y0);
-    const along = (t: number): Point => [x0 + (x1 - x0) * t, y0 + (y1 - y0) * t];
-    for (let d = spacing * (0.5 + rand() * 0.5); d < length - spacing * 0.4; d += spacing * (0.7 + rand() * 0.6)) {
-      if (rand() < 0.25 * (1 - lush) * (1 - config.bushiness)) continue;
-      const [x, y] = along(d / length);
-      plant(x, y, inward + (rand() - 0.5) * 0.5, rand() < 0.15 + 0.15 * lush, lush);
-    }
-    // Understory: young, unsplit leaves packed low along the edge, darker in the plants' shade.
-    const young = Math.round(config.bushiness * lush * (length / height) * 16);
-    for (let n = 0; n < young; n++) {
-      const [ex, ey] = along(rand());
-      const inset = height * 0.1 * rand() * (0.5 + config.reach);
-      const x = ex + Math.cos(inward) * inset;
-      const y = ey + Math.sin(inward) * inset;
-      const angle = inward + (rand() - 0.5) * 2.4;
-      const size = height * (0.06 + 0.07 * rand());
-      const b: Brush = { layer: 0, shade: 0.3 + 0.2 * rand() };
-      const seed = rand();
-      const kind = Math.floor(rand() * 3);
-      const flip = rand() < 0.5;
-      pieces.push({
-        layer: 0,
-        draw: (_ctx, stamp) => stamp(x, y, angle, size, flip, (local) => {
-          const leafRand = random(seed * 1e6);
-          if (kind === 0) monsteraLeaf(local, b, leafRand, 0.1);
-          else if (kind === 1) pothosLeaf(local, b, leafRand);
-          else fernFrond(local, b, leafRand);
-        }),
-      });
-    }
-    const tufts = Math.round(config.grass * lush * (length / height) * 7);
-    for (let n = 0; n < tufts; n++) {
-      const [x, y] = along(rand());
-      tuft(x, y, inward, lush);
-    }
-    const strands = Math.round(config.vines * lush * (length / height) * 3);
-    for (let n = 0; n < strands; n++) {
-      const [x, y] = along(rand());
-      vine(x, y, inward, edge * 10 + n);
-    }
+  const families: (PlantSheetFamily | undefined)[] = [];
+  FAMILIES.forEach((family, f) => {
+    families[family.material] = { material: family.material, cells: cells[f] ?? [], box: family.box };
   });
-  // Stable within a layer: plants keep the order they were laid out in.
-  return pieces.map((piece, index) => ({ piece, index })).sort((a, b) => a.piece.layer - b.piece.layer || a.index - b.index).map(({ piece }) => piece);
+  return families;
 }
 
-/** Paint the border sheet: black background, pieces back to front, then crisp. Yields between steps. */
-export function* paintDecor(ctx: Context, width: number, height: number, config: DecorConfig): Generator<void, void> {
-  const rand = random(17 + config.seed * 101);
+/** Paint the plant atlas: every family's variants, each crisp in its own cell. Yields between steps. */
+export function* paintAtlas(ctx: Context, width: number, height: number): Generator<void, void> {
   ctx.globalCompositeOperation = "source-over";
   ctx.fillStyle = "#000";
   ctx.fillRect(0, 0, width, height);
-  const stamp = stamper(ctx, Math.ceil(height * 1.6));
-  for (const piece of layout(width, height, config, rand)) {
-    piece.draw(ctx, stamp);
+  const scratch = new OffscreenCanvas(BIG, BIG);
+  const local = scratch.getContext("2d", { willReadFrequently: true });
+  if (!local) throw new Error("landing: 2d canvas unavailable");
+  const brush: Brush = { layer: 0, shade: PLANT_ATLAS_SHADE };
+  for (const [family, k, left, top] of atlasCells()) {
+    const [x0, y0, x1, y1] = family.box;
+    const size = family.cell;
+    local.setTransform(1, 0, 0, 1, 0, 0);
+    local.globalCompositeOperation = "source-over";
+    local.fillStyle = "#000";
+    local.fillRect(0, 0, size, size);
+    local.setTransform(size / (x1 - x0), 0, 0, size / (y1 - y0), (-x0 * size) / (x1 - x0), (-y0 * size) / (y1 - y0));
+    family.draw(local, brush, random(1009 * (family.material + 1) + 31 * k + 7), k);
+    local.setTransform(1, 0, 0, 1, 0, 0);
+    yield* crisp(local, size, size);
+    ctx.putImageData(local.getImageData(0, 0, size, size), left, top);
     yield;
   }
-  yield* crisp(ctx, width, height);
 }
 
 /** Valid material codes: material × 16 + layer × 4 + 2, layers 0..2. */
