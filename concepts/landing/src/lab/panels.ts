@@ -1,13 +1,13 @@
 // The lab's workspace: floating panels over the picture. Each panel drags by its header (or its
 // grip, by keyboard: arrows move it, Alt+arrows resize it, Enter docks it to the next edge), docks
 // to the edges it allows (a docked column or bar takes its room from the stage instead of covering
-// it), folds to an icon and keeps where it was in this browser. On a narrow screen the panels become
-// a bottom sheet with a tab each and the transport along its foot.
+// it), folds to an icon and keeps where it was in this browser. On a narrow screen the panel becomes
+// a bottom sheet, its header along the sheet's top and the transport along its foot.
 import { iconButton } from "./controls.ts";
 import { drag, h } from "./dom.ts";
 import { icon, type IconName } from "./icons.ts";
 
-export const panelIds = ["browser", "inspector", "transport"] as const;
+export const panelIds = ["inspector", "transport"] as const;
 export type PanelId = (typeof panelIds)[number];
 export type Dock = "float" | "left" | "right" | "top" | "bottom";
 
@@ -27,16 +27,16 @@ export interface PanelLayout {
 export interface PanelSpec {
   id: PanelId;
   title: string;
-  /** Its tab on the narrow-screen sheet. */
-  tab: string;
+  /** Its folded icon. */
   icon: IconName;
   /** The edges it docks to (besides floating). */
   docks: readonly Exclude<Dock, "float">[];
-  /** A bar (the transport): one row, its size its content's. */
+  /** A bar (the transport): one row, its size its content's, the body in its header. */
   bar: boolean;
   min: { w: number; h: number };
   max: { w: number };
-  actions: HTMLElement[];
+  /** A panel's header between its grip and its fold button (on the sheet, the sheet's header). */
+  head?: HTMLElement;
   body: HTMLElement;
   /** The layout before the user has moved it, for this viewport. */
   initial: (viewport: { w: number; h: number }) => PanelLayout;
@@ -52,7 +52,6 @@ export class Panel {
   readonly el: HTMLElement;
   /** The folded panel: an icon button where it stood. */
   readonly chip: HTMLButtonElement;
-  readonly sub = h("span", { class: "panel-sub" });
   readonly grip: HTMLButtonElement;
   readonly collapse: HTMLButtonElement;
   layout: PanelLayout;
@@ -74,18 +73,8 @@ export class Panel {
     this.collapse = iconButton("minus", `Fold the ${name} to an icon`, fold);
     const body = h("div", { class: "panel-body" }, spec.body);
     const head = spec.bar
-      ? h("header", { class: "panel-head" }, this.grip, body, ...spec.actions, this.collapse)
-      : h(
-          "header",
-          { class: "panel-head" },
-          this.grip,
-          h("span", { class: "panel-icon" }, icon(spec.icon)),
-          h("h2", { class: "panel-title" }, spec.title),
-          this.sub,
-          h("span", { class: "spacer" }),
-          ...spec.actions,
-          this.collapse,
-        );
+      ? h("header", { class: "panel-head" }, this.grip, body, this.collapse)
+      : h("header", { class: "panel-head" }, this.grip, spec.head, this.collapse);
     this.el = h(
       "section",
       {
@@ -155,8 +144,8 @@ export class Workspace {
   readonly #sheetBody = h("div", { class: "sheet-body" });
   readonly #sheetBar = h("div", { class: "sheet-bar" });
   readonly #sheetHandle: HTMLButtonElement;
-  readonly #tabs: HTMLButtonElement[] = [];
-  readonly #tablist = h("div", { class: "sheet-tabs", role: "tablist", "aria-label": "Lab" });
+  /** Where the panels' headers stand on the sheet. */
+  readonly #sheetHead = h("div", { class: "sheet-title" });
   readonly #sheetState: SheetState;
   /** Stage room the docked panels take, per edge. */
   readonly #docked = { left: 0, right: 0, top: 0, bottom: 0 };
@@ -181,15 +170,6 @@ export class Workspace {
       this.#persist();
       this.arrange();
     });
-    this.#tablist.addEventListener("keydown", (event) => {
-      if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
-      event.preventDefault();
-      const at = this.#tabs.findIndex((tab) => tab.dataset.panel === this.#sheetState.tab);
-      const by = event.key === "ArrowRight" ? 1 : -1;
-      const next = this.#tabs[(at + by + this.#tabs.length) % this.#tabs.length];
-      next?.click();
-      next?.focus();
-    });
     this.#sheet = h(
       "div",
       { class: "sheet", role: "region", "aria-label": "Lab" },
@@ -197,7 +177,7 @@ export class Workspace {
         "div",
         { class: "sheet-head" },
         this.#sheetHandle,
-        this.#tablist,
+        this.#sheetHead,
         iconButton("close", "Hide the lab (l)", close),
       ),
       this.#sheetBody,
@@ -235,31 +215,15 @@ export class Workspace {
           this.#resize(panel, event, axis === "x" || axis === "y" ? axis : "both");
       });
     }
-    if (!spec.bar) {
-      const tab = h(
-        "button",
-        { type: "button", role: "tab", class: "sheet-tab", "data-panel": spec.id },
-        icon(spec.icon),
-        h("span", {}, spec.tab),
-      );
-      tab.addEventListener("click", () => {
-        this.#sheetState.tab = spec.id;
-        this.#sheetState.open = true;
-        this.#persist();
-        this.arrange();
-      });
-      this.#tabs.push(tab);
-      this.#tablist.append(tab);
-    }
     return panel;
   }
 
-  /** Bring a panel up (unfolded, and in the sheet its tab). */
+  /** Bring a panel up: unfolded, or on a narrow screen the sheet raised. */
   show(id: PanelId): void {
     const panel = this.#panels.find((candidate) => candidate.spec.id === id);
     if (!panel) return;
     if (this.#narrow.matches && !panel.spec.bar) {
-      this.#sheetState.tab = id;
+      if (this.#sheetState.open) return;
       this.#sheetState.open = true;
       this.#persist();
       this.arrange();
@@ -283,18 +247,14 @@ export class Workspace {
 
   #arrangeSheet(): void {
     Object.assign(this.#docked, { left: 0, right: 0, top: 0, bottom: 0 });
-    const tab = this.#sheetState.tab;
     for (const panel of this.#panels) {
       const place = panel.spec.bar ? this.#sheetBar : this.#sheetBody;
       if (panel.el.parentElement !== place) place.append(panel.el);
+      const { head } = panel.spec;
+      if (head && head.parentElement !== this.#sheetHead) this.#sheetHead.append(head);
       panel.el.removeAttribute("style");
-      panel.el.hidden = !panel.spec.bar && panel.spec.id !== tab;
+      panel.el.hidden = false;
       panel.chip.hidden = true;
-    }
-    for (const button of this.#tabs) {
-      const selected = button.dataset.panel === tab;
-      button.setAttribute("aria-selected", String(selected));
-      button.tabIndex = selected ? 0 : -1;
     }
     this.#sheet.hidden = false;
     this.#sheet.classList.toggle("open", this.#sheetState.open);
@@ -309,8 +269,11 @@ export class Workspace {
     this.#sheet.hidden = true;
     const vw = window.innerWidth;
     const vh = window.innerHeight;
-    for (const panel of this.#panels)
+    for (const panel of this.#panels) {
       if (panel.el.parentElement !== this.#root) this.#root.insertBefore(panel.el, panel.chip);
+      const { head } = panel.spec;
+      if (head && head.parentElement === this.#sheetHead) panel.grip.after(head);
+    }
     const open = this.#panels.filter((panel) => !panel.layout.collapsed);
     const column = (dock: Dock) => open.filter((panel) => panel.layout.dock === dock);
     const left = column("left");
@@ -647,8 +610,7 @@ export class Workspace {
   }
 }
 
-/** The narrow-screen sheet: which tab shows, and whether it stands raised. */
+/** The narrow-screen sheet: whether it stands raised (lowered, only its header and the bar show). */
 export interface SheetState {
-  tab: PanelId;
   open: boolean;
 }

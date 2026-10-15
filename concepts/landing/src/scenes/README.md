@@ -184,8 +184,11 @@ transport lists every "now" of the scene as well.
 
 ### Lab widgets
 
-The lab (`src/lab.ts`, `src/lab/`) is a workspace of floating panels: the scene browser, the
-inspector (the scene's groups, then Look, Motion and Page) and the transport bar. It lays a group out
+The lab (`src/lab.ts`, `src/lab/`) is one floating inspector and a transport bar over the scene.
+The inspector has three views, picked by the icons in its header: Scenes (every scene's thumbnail,
+shelved by family), Presets (saved setups) and Controls (the scene's groups, then Look, Motion and
+Page); a rail beside each view jumps between its families, preset groups or control groups. The
+scene's name in the header and in the transport bar opens the Scenes view. Controls lay a group out
 from its knobs' metadata, never from scene ids: a switch (toggle or feature) is an icon chip whose
 amount opens under the chips while it is on, and ranges, choices and seeds are rows. A knob names a
 purpose-built widget with `widget` (`Widget` in `src/params.ts`); widgets only change how the lab
@@ -205,7 +208,7 @@ draws the knob, never its URL keys, values, reset, shuffle or presets:
 Icons come from `src/lab/icons.ts`, one line set: a knob's `icon` (or a group's `Blurb.icon`) picks
 one, otherwise the first word of its key or label that names one does.
 
-The scene browser's thumbnails are committed files, `concepts/landing/thumbs/<id>.webp`: each scene
+The Scenes view's thumbnails are committed files, `concepts/landing/thumbs/<id>.webp`: each scene
 at its defaults, settled, dithered at 240 x 150 as the page draws it. After changing how a scene
 looks at rest (or adding one), run `bun concepts/landing/scripts/thumbs.ts <id>` and commit the
 file; a scene without one shows a stand-in in its accent.

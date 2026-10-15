@@ -1,8 +1,9 @@
-// The inspector: the scene's knob groups, then the global Look, Motion and Page groups, each a
-// collapsible section under an icon heading, with a rail of the same icons to jump between them and
-// a search that narrows every group to the controls that match. A group's knobs are laid out by
-// their metadata: the sky dial, mix bars and pads where a knob names one (`ParamDef.widget`), its
-// switches as icon chips, everything else as rows.
+// The lab panel's Controls view: the scene's knob groups, then the global Look, Motion and Page
+// groups, each a collapsible section under an icon heading, with a rail of the same icons to jump
+// between them, a search that narrows every group to the controls that match and a button that
+// folds or opens them all. A group's knobs are laid out by their metadata: the sky dial, mix bars and
+// pads where a knob names one (`ParamDef.widget`), its switches as icon chips, everything else as
+// rows.
 import { formatValue, MAX_SEED, type Option, type ParamDef } from "../params.ts";
 import { colorIds, ditherIds, viewIds } from "../renderer.ts";
 import { sceneDefs, type SceneId } from "../scenes/index.ts";
@@ -22,6 +23,7 @@ import {
 } from "./knobs.ts";
 import { mixBar, type MixPart } from "./mix.ts";
 import { compassPad, directionPad, positionPad, type Strength } from "./pads.ts";
+import { Rail, type RailEntry } from "./rail.ts";
 
 export const MODE_LABEL: Record<(typeof modeIds)[number], string> = {
   landing: "Landing",
@@ -70,7 +72,7 @@ export class Inspector {
   readonly #ctx: LabContext;
   readonly #prefs: SectionPrefs;
   readonly #search: HTMLInputElement;
-  readonly #rail = h("nav", { class: "rail", "aria-label": "Groups" });
+  readonly #rail: Rail;
   readonly #body: HTMLElement;
   readonly #sceneSlot = h("div", { class: "groups" });
   readonly #globalSlot = h("div", { class: "groups" });
@@ -86,8 +88,6 @@ export class Inspector {
   #built: SceneId | undefined;
   /** Whether every group is open; the fold button flips it. */
   readonly #fold: HTMLButtonElement;
-  /** The group the rail jumped to: marked until the body is scrolled by hand (it may sit low). */
-  #pinned: string | undefined;
 
   constructor(ctx: LabContext, prefs: SectionPrefs) {
     this.#ctx = ctx;
@@ -107,15 +107,13 @@ export class Inspector {
     });
     this.#body = h(
       "div",
-      { class: "inspector-body" },
+      { class: "view-body inspector-body" },
       this.#sceneSlot,
       h("p", { class: "global-divider" }, h("span", {}, "Global")),
       this.#globalSlot,
       this.#empty,
     );
-    this.#body.addEventListener("scroll", () => this.#spy(), { passive: true });
-    for (const type of ["wheel", "touchstart", "pointerdown", "keydown"] as const)
-      this.#body.addEventListener(type, () => (this.#pinned = undefined), { passive: true });
+    this.#rail = new Rail(this.#body, "Groups", ctx.reducedMotion);
     this.#globalSections.push(this.#lookGroup(), this.#motionGroup(), this.#pageGroup());
     this.#globalSlot.append(...this.#globalSections.map((section) => section.el));
     this.#fold = iconButton("unfold", "Open every group", () => {
@@ -127,20 +125,25 @@ export class Inspector {
     });
     this.el = h(
       "div",
-      { class: "inspector" },
-      h("label", { class: "panel-search" }, icon("search"), this.#search),
-      h("div", { class: "inspector-main" }, this.#rail, this.#body),
+      { class: "view-controls" },
+      h(
+        "div",
+        { class: "view-tools" },
+        h("label", { class: "panel-search" }, icon("search"), this.#search),
+        this.#fold,
+      ),
+      h("div", { class: "view-main" }, this.#rail.el, this.#body),
     );
-  }
-
-  /** Buttons for the panel's header. */
-  actions(): HTMLElement[] {
-    return [this.#fold];
   }
 
   focusSearch(): void {
     this.#search.focus();
     this.#search.select();
+  }
+
+  /** The view came on screen. */
+  shown(): void {
+    this.#rail.spy();
   }
 
   sync(): void {
@@ -154,7 +157,6 @@ export class Inspector {
     this.#fold.title = label;
     this.#fold.setAttribute("aria-label", label);
     this.filter();
-    this.#spy();
   }
 
   #allOpen(): boolean {
@@ -224,7 +226,7 @@ export class Inspector {
       this.#prefs.sections[spec.id] = opening;
       this.#prefs.save();
       // A group opened from its header is the one in hand: the rail marks it.
-      this.#pinned = opening ? spec.id : undefined;
+      this.#rail.pin(opening ? spec.id : undefined);
       this.sync();
     });
     const sync = () => {
@@ -253,65 +255,19 @@ export class Inspector {
     };
   }
 
-  #renderRail(): void {
-    const button = (section: Section) => {
-      const el = h(
-        "button",
-        {
-          type: "button",
-          class: "rail-button",
-          title: section.title,
-          "aria-label": section.title,
-          "data-id": section.id,
-        },
-        icon(section.icon),
-      );
-      el.addEventListener("click", () => {
-        // Open at once (no height animation), so the jump lands on the group's final place.
-        this.#body.classList.add("jumping");
-        this.#pinned = section.id;
+  /** A section on the rail: the jump opens it and hands the keyboard its header. */
+  #railEntry(section: Section): RailEntry {
+    return {
+      id: section.id,
+      title: section.title,
+      icon: section.icon,
+      el: section.el,
+      focus: section.toggle,
+      open: () => {
         section.open();
         this.sync();
-        this.#body.scrollTo({
-          top: section.el.offsetTop,
-          behavior: this.#ctx.reducedMotion ? "auto" : "smooth",
-        });
-        section.toggle.focus({ preventScroll: true });
-        requestAnimationFrame(() => this.#body.classList.remove("jumping"));
-      });
-      return el;
+      },
     };
-    this.#rail.replaceChildren(
-      ...this.#sceneSections.map(button),
-      h("span", { class: "rail-divider", "aria-hidden": "true" }),
-      ...this.#globalSections.map(button),
-    );
-    this.#spy();
-  }
-
-  /**
-   * Mark the rail button of the group in view: the one the rail or a header just opened while it
-   * shows, otherwise the one taking up most of the scrolled body.
-   */
-  #spy(): void {
-    const top = this.#body.scrollTop;
-    const bottom = top + this.#body.clientHeight;
-    const sections = [...this.#sceneSections, ...this.#globalSections].filter(
-      (section) => !section.el.hidden,
-    );
-    const shown = (section: Section) =>
-      Math.min(bottom, section.el.offsetTop + section.el.offsetHeight) -
-      Math.max(top, section.el.offsetTop);
-    const pinned = sections.find((section) => section.id === this.#pinned);
-    let current = pinned && shown(pinned) > 0 ? pinned : undefined;
-    for (const section of sections)
-      if (current === undefined || (current !== pinned && shown(section) > shown(current)))
-        current = section;
-    const id = current?.id;
-    for (const el of this.#rail.querySelectorAll<HTMLElement>(".rail-button")) {
-      if (el.dataset.id === id) el.setAttribute("aria-current", "true");
-      else el.removeAttribute("aria-current");
-    }
   }
 
   filter(): void {
@@ -334,12 +290,9 @@ export class Inspector {
       el.classList.toggle("searching", searching && visible);
       if (visible) any = true;
     }
-    for (const button of this.#rail.querySelectorAll<HTMLElement>(".rail-button")) {
-      const section = sections.find((candidate) => candidate.id === button.dataset.id);
-      button.classList.toggle("dim", section?.el.hidden ?? false);
-    }
     this.#empty.hidden = any;
     if (searching) for (const sync of [...this.#syncers, ...this.#sceneSyncers]) sync();
+    this.#rail.spy();
   }
 
   // ---- the scene's groups ---------------------------------------------------------------------
@@ -358,7 +311,10 @@ export class Inspector {
       return section;
     });
     this.#sceneSlot.replaceChildren(...this.#sceneSections.map((section) => section.el));
-    this.#renderRail();
+    this.#rail.set([
+      this.#sceneSections.map((section) => this.#railEntry(section)),
+      this.#globalSections.map((section) => this.#railEntry(section)),
+    ]);
     this.#body.scrollTop = 0;
   }
 
