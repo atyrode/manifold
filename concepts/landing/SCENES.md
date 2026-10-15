@@ -96,7 +96,7 @@ A fourth batch, after the cosy-game mood (gentle, warm, unhurried) rather than a
 | Looking up at the city         | `skyward`      | Facades converging on the zenith, trams, planes and contrails, pigeons and swifts (the shared birds seen from below); rain streams out of the sky overhead, and snow too with "snow from overhead" (`snowFallSeen`); in its strip of sky, beside the stars control, the shared moon's phase and shooting stars (no aurora: looking up, its curtains hang toward the horizon, out of view)                                                                                                                                                                   |
 | Autumn park                    | `autumn`       | Leaves flutter and tumble down (the shared plate model `sims/flutter.ts`, as the garden's), build a carpet (the two-layer ground-litter lattice `sims/litter.ts`), and gusts (the shared pulse, `sims/wind.ts`) lift swirls of the top leaves off the path; over the park, the shared sky components: a stars control, the moon's phase (which sets the night light), an aurora and shooting stars behind the clouds; optional cloud shadows sweeping the park (the shared clouds' `shadows` tier)                                                          |
 | Tide pool                      | `tidepool`     | GPU shallow water (`ShallowWater`, `sims/shallow.ts`) over a rock pool seen from straight above: the swell shoals, breaks over the reefs and in the sets pours through the notch in the basin's rim; anemones close in the surge, kelp and surfgrass stream as rooted plants, optional rock pool fish dart from a touch; the caustics are the shared water's caustics tier. A prototype: see "Tide pool"                                                                                                                                                    |
-| Hanging mobile                 | `mobile`       | Balanced arms on links as coupled Verlet pendulums, plate drag in drafts, gusts and eddies, plate contacts, shadows from one or two lamps on the wall                                                                                                                                                                                                                                                                                                                                                                                                       |
+| Hanging mobile                 | `mobile`       | A solar system on balanced arms stacked under a glowing Sun: coupled Verlet pendulums with balls, motors at the planets' real periods (Kepler's third law), ball drag in drafts, gusts and eddies, contacts, the Sun lighting each planet and throwing the mobile's shadows (Saturn's rings included) on the wall                                                                                                                                                                                                                              |
 
 Rain everywhere falls at terminal speed in real time, along the world's vertical as each scene's
 camera sees it, whatever the calm of the rest of the scene: straight down the frame under a level
@@ -328,31 +328,50 @@ Overlooking rolling hills with a village in the distance and forest around.
 
 ## Hanging mobile
 
-A Calder mobile turning in a quiet room, its shadows thrown large across the wall behind it.
+A solar system hanging in a quiet room under a glowing Sun, the room's lamp (issue #1082, N3).
 
-- The mobile is a shared part (`src/sims/mobile.ts`): a seeded cascade of wire arms, each a rigid
-  triangle (two ends and a hang loop just above them) balanced by the lever rule, hung on a link
-  from the end above it, so the arms are coupled pendulums that swing, rock and turn freely. Plates
-  ride the arm ends; the air pushes on each plate along its normal (quadratic drag), and plates
-  that meet another arm's plate, wire or link are pushed apart instead of passing through. Its GLSL
-  traces plates, wires and links along a view ray and gives the share of a round lamp they hide
-  from any point, so other scenes can hang one (a window sill, a bar) and light it their own way.
-- Air (`src/sims/wind.ts`, the shared wind conventions): the draft (`wind`, -1..1) from a window,
-  gusts on the garden/autumn pulse crossing the room as a front with a "now", and the room's eddies
-  (`room air`). Uniform air barely turns a balanced arm (its plates' drag balances about the loop
-  as their weight does), so it is the difference between neighbouring plates' air that turns the
-  arms, a few degrees a second at the defaults.
-- Light: a spotlight on a stand at night (paper theme off) or a white room in daylight (paper
-  theme); `light from` moves it, `soft shadows` sizes it; a second, cooler light through a window
-  on the right throws a paler second shadow, so the two shadows take each other's colour where
-  they part. Each shadow is cut per cell against its own threshold.
-- Knobs: arms (3..7), plate outlines (leaves, discs, mixed), paint (primaries, black, white,
-  brass), clearance, design seed; draft, gusts, room air; room, light from, soft shadows, second
-  light; the Manifold M cut from red sheet at the cascade's tip. Click a plate to blow on it.
-- Passage: lowered from the ceiling on its link, bobbing once as it stops; hoisted back up on exit.
-  It is a pose applied when the mobile is packed, so the simulation at rest is untouched.
-- Cost: about the same per frame as `pendula` (software WebGL, 480×270: 108–139 ms against
-  105–136 ms; 147 ms at 7 arms); the physics is 16 µs a substep at 240 substeps a second.
+- The mobile is the shared part (`src/sims/mobile.ts`) laid out by `mobile/solar.ts`: one arm per
+  planet, stacked down the Sun's axis, each hung on a short link from the loop of the arm above
+  (`end: 2`), so the arms are still coupled pendulums that swing and rock, each turning on its own.
+  The planet rides end 0 at a reach that grows with its orbit (half its rank, half the logarithm of
+  its distance), a brass weight on end 1 balances it by the lever rule, and the Earth hangs from its
+  arm's end with the Moon on a sub-arm. Each arm hangs as far below the one above as keeps it clear
+  of everything above it that it passes under; `clearance` scales those gaps (below 1 they knock).
+  Sizes are not to scale (radius about the 0.45 power of the real one): Jupiter and Saturn are
+  clearly the biggest, Mercury and the Moon still a few cells across.
+- The shared part gained balls (globes and weights: drag along the relative air, contacts with
+  other arms' balls, plates, wires and links), arms hung from a parent's loop, and a motor
+  (`Mobile.drive`): a couple across an arm's ends that makes up for the damping, brings the turn to
+  the set rate and winds up any turn lost (up to a full turn, then it slips like a clutch), so an
+  arm keeps its rate exactly over time while gusts and knocks still set it back for a while.
+- Motor (`motor`, on): each arm turns once in its planet's period, au^1.5 years (Kepler's third
+  law), the Moon's once a sidereal month; the speed sets the Earth's year from 72 to 18 seconds of
+  the motion clock (36 at the middle, about a minute at the default motion). The arms start at the
+  planets' J2000 mean longitudes, turned 40° against the room so Jupiter and Saturn start behind
+  the Sun and the ice giants out to the right.
+- Light: the Sun (`Sun`) lights each planet from where it hangs, so phases change as the arms turn;
+  its light (`soft shadows`: the bulb inside the globe, up to the whole globe) throws the mobile's
+  shadows, Saturn's rings included, on the wall, the ceiling and the other planets (eclipses
+  happen). A dim window (`window light`) and the room's ambient keep the room and the night sides
+  readable; `room` is a dark room or a white one in daylight (paper theme).
+- Looks, from the shared planet (`src/shaders/lib/planet.ts`): Jupiter's and Saturn's belts in
+  `planetBandColor` (Jupiter with its red spot), Venus's and Neptune's `planetBelts`, the Earth's
+  oceans, land, ice caps and `planetClouds`, the rocky bodies' `planetFbm`, Saturn's tilted rings
+  in `planetRingBands` (the C ring thin, the Cassini division), shadowing its globe and the wall.
+  Each planet's markings keep their axis still in the room, as on a swivel.
+- Knobs: planets (inner four and the Moon, drawn bigger; all eight; with Ceres and Pluto), motor,
+  clearance; draft, gusts (with "now"), room air; room, Sun, soft shadows, window light; an M of
+  glow-in-the-dark stars on the wall (off). Click a planet to blow on it.
+- Passage: entering (2.8 s), the Sun and its mobile are lowered from above on the cord, the Sun an
+  ember that lights up as they come to rest with a bob; leaving (1.5 s), the motors wind down, the
+  Sun cools and the mobile is hoisted away. The lowering is a pose applied when the mobile is
+  packed and the motors only slow on the way out, so the simulation at rest is untouched.
+- Cost: about `pendula`'s per frame (software WebGL, 480×270, a loaded machine: medians 193–199 ms
+  against 157–183 ms in the same runs; 70–160 ms for the inner set); the physics is about 50 µs a
+  substep for the eight planets (75 µs with the dwarfs) at 240 substeps a second.
+- Check: `mobile` (`mobile/mobile.verify.ts`): the shared GLSL against its CPU twin for plates and
+  balls, the motors' periods (Mars against the Earth 1.881), planets lit on the Sun's side, and the
+  picture at rest after an entrance bit for bit the one without.
 
 ## Murmuration
 

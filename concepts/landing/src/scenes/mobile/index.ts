@@ -1,65 +1,52 @@
-// Hanging mobile: a Calder mobile turning in the air of a quiet room, its shadows thrown large across
-// the wall behind it. Balanced wire arms hang one from another on links, coupled pendulums that swing,
-// rock and turn; a draft from the window, its gusts and the room's slow currents push on the plates,
-// which knock against each other when the arms crowd (the shared part sims/mobile.ts, with the wind
-// conventions of sims/wind.ts; the room's air in sim.ts). The shader (shader.ts) traces the mobile and
-// the shadows it throws from one or two lights onto the wall, the floor and itself.
-import { choice, counts, feature, range, seed, type ParamDef } from "../../params.ts";
+// Hanging mobile: a solar system hung in a quiet room under a glowing Sun that is the room's lamp.
+// Mercury to Neptune (with the Moon on the Earth's sub-arm, and Ceres and Pluto if asked for) ride
+// balanced wire arms stacked down the Sun's axis, coupled pendulums that swing and rock in the air
+// of the room, a draft from the window and its gusts, and knock when they crowd; a motor turns each
+// arm at its planet's real period (the shared part sims/mobile.ts, with the wind conventions of
+// sims/wind.ts; the layout in solar.ts, the room's air in sim.ts). The shader (shader.ts) traces the
+// mobile, lights each planet from where the Sun is, and throws the mobile's shadows from the Sun onto
+// the wall, the ceiling and the other planets.
+import { choice, feature, range, type ParamDef } from "../../params.ts";
 import { paletteTheme } from "../atmosphere.ts";
 import type { SceneDef } from "../types.ts";
 import { MOBILE_PASSAGE } from "./layout.ts";
-import { MOBILE_RED, mobilePaints, mobileSceneGlsl } from "./shader.ts";
+import { MOBILE_SUN, mobileSceneGlsl } from "./shader.ts";
 import { mobileSim } from "./sim.ts";
+import { SOLAR_SETS } from "./solar.ts";
 
 const params: readonly ParamDef[] = [
   choice(
     "mobile",
-    "arms",
-    "arms",
-    counts(3, 4, 5, 6, 7),
-    5,
-    "How many arms hang one from another. Each balances what hangs from its two ends on a loop of wire, and is a little smaller than the one above.",
+    "planets",
+    "planets",
+    SOLAR_SETS.map((set, value) => ({ label: set.label, value })),
+    1,
+    "Which bodies hang under the Sun: the four inner planets and the Moon; all eight planets; or with the dwarf planets Ceres, between Mars and Jupiter, and Pluto beyond Neptune. Each has an arm of its own, farther out the farther it is from the Sun.",
   ),
-  choice(
+  feature(
     "mobile",
-    "shapes",
-    "plates",
-    [
-      { label: "leaves", value: 0 },
-      { label: "discs", value: 1 },
-      { label: "mixed", value: 2 },
-    ],
-    2,
-    "What the plates are cut as: leaves, drops and crescents; plain discs; or all of them.",
-  ),
-  choice(
-    "mobile",
-    "palette",
-    "paint",
-    mobilePaints.map((paint, value) => ({ label: paint.label, value })),
-    0,
-    "Black, red, yellow, blue and white; black with one red; white; or polished brass catching the light.",
+    "motor",
+    "motor",
+    true,
+    "speed",
+    0.5,
+    "A motor turns each arm once in its planet's year, at the real ratios (a year grows as the distance to the power 1.5): at the middle the Earth goes round in about a minute, Mercury four times as often, Mars about half as often, Jupiter once in twelve, and Saturn and beyond hardly seem to move. The Moon goes round the Earth thirteen times a year. Off: the arms only turn as the air takes them.",
+    { min: 0.05, max: 1 },
   ),
   range(
     "mobile",
     "clearance",
     "clearance",
     1,
-    "How far each arm hangs below the one above: a compact mobile to the left, a tall one whose arms swing wider to the right. Wherever plates and wires meet as the arms turn, they knock and push each other round instead of passing through.",
+    "How far each arm hangs below the one above: a compact mobile to the left, where planets and arms knock and push each other round as they pass, a tall one to the right.",
     { min: 0.5, max: 1.5 },
-  ),
-  seed(
-    "mobile",
-    "mobileSeed",
-    "design",
-    "How the arms branch, how long each is, and the plates' shapes, sizes and colours; re-seed for another mobile.",
   ),
   range(
     "air",
     "wind",
     "draft",
     0.15,
-    "Air from a window to the left or the right, and how strongly it comes: the stronger it blows, the faster the arms turn in it, and the gusts come from that side.",
+    "Air from a window to the left or the right, and how strongly it comes: the planets lean and rock in it, and the gusts come from that side.",
     { min: -1, max: 1 },
   ),
   feature(
@@ -69,7 +56,7 @@ const params: readonly ParamDef[] = [
     true,
     "strength",
     0.5,
-    "Now and then a gust from the window crosses the room: the arms swing and spin, and take a while to settle. Higher: stronger and more often. Now: a gust.",
+    "Now and then a gust from the window crosses the room: the arms swing and rock, a motor is set back for a moment, and the mobile takes a while to settle. Higher: stronger and more often. Now: a gust.",
     { trigger: 0 },
   ),
   range(
@@ -77,50 +64,50 @@ const params: readonly ParamDef[] = [
     "drift",
     "room air",
     0.5,
-    "The room's slow currents: they keep the arms turning, each its own way, even when the window is still.",
+    "The room's slow currents: they keep the arms swaying a little, each its own way, even when the window is still.",
   ),
   choice(
     "light",
     "room",
     "room",
     [
-      { label: "lamp at night", value: 0 },
+      { label: "night", value: 0 },
       { label: "daylight", value: 1 },
     ],
     0,
-    "A dark room with a spotlight on a stand throwing crisp shadows on the wall, or a white room in daylight, its shadows soft and pale.",
+    "A dark room lit by the Sun, its shadows crisp on the wall, or a white room in daylight, its shadows pale.",
   ),
   range(
     "light",
-    "lamp",
-    "light from",
-    0.15,
-    "Where the light stands, from far left to far right: the shadows fall across the wall the other way.",
+    "sun",
+    "Sun",
+    0.5,
+    "How brightly the Sun shines: the light on the planets' day sides and the warm pool it throws on the wall.",
   ),
   range(
     "light",
     "softness",
     "soft shadows",
-    0.3,
-    "How big the light is: a small bulb throws crisp shadows, a large one blurs their edges, the more the farther a plate hangs from the wall.",
+    0.4,
+    "How big the light inside the Sun is: a small bulb throws crisp shadows, the whole glowing globe soft ones, the more the farther a planet hangs from the wall.",
   ),
   feature(
     "light",
     "fill",
-    "second light",
+    "window light",
     true,
     "strength",
     0.35,
-    "A dimmer light from a window on the right, cool at night and warm by day, throws a second, paler shadow: where the two shadows part, each takes the other light's colour.",
+    "A dim light from a window on the right, cool at night and warm by day, so the room and the planets' night sides still show.",
   ),
   feature(
     "manifold",
     "mark",
-    "M plate",
+    "M of stars",
     false,
-    "size",
-    0.5,
-    "The plate at the tip of the mobile is cut as the Manifold M, in red, and throws an M on the wall.",
+    "glow",
+    0.6,
+    "Glow-in-the-dark stars stuck on the wall in the shape of the Manifold M: pale where the Sun lights them, glowing green in the planets' shadows and the dark.",
   ),
 ];
 
@@ -128,15 +115,15 @@ export const mobileScene: SceneDef = {
   id: "mobile",
   title: "Mobile",
   blurb:
-    "A Calder mobile turning in the air of a quiet room, its shadows wheeling across the wall.",
-  accent: MOBILE_RED,
+    "A solar system hung under a glowing Sun, each planet turning at its own pace, its shadow wheeling across the wall.",
+  accent: MOBILE_SUN,
   look: { color: "full", levels: 4 },
   params,
   groups: {
     mobile: {
-      title: "Mobile",
+      title: "Solar system",
       blurb:
-        "How many arms, how the plates are cut and painted, and how much room each arm has to turn. Click a plate to blow on it.",
+        "Which planets hang under the Sun, the motor that turns them at their real periods, and how much room each arm has. Click a planet to blow on it.",
     },
     air: {
       title: "Air",
@@ -144,11 +131,11 @@ export const mobileScene: SceneDef = {
     },
     light: {
       title: "Light",
-      blurb: "The room, and the lights that throw the shadows on the wall.",
+      blurb: "The room, the Sun that lights it, and the window.",
     },
     manifold: {
       title: "Manifold mark",
-      blurb: "An M cut from red sheet at the tip of the mobile.",
+      blurb: "An M of glow-in-the-dark stars on the wall.",
     },
   },
   glsl: mobileSceneGlsl,
@@ -156,6 +143,7 @@ export const mobileScene: SceneDef = {
   sim: mobileSim(params),
   // The white room by day is pale: the page copy goes dark on it.
   theme: paletteTheme(params, "room", (index) => index === 1),
-  // Entrance: lowered from the ceiling on its link, bobbing once as it stops. Exit: hoisted back up.
+  // Entrance: lowered from above on the Sun's cord as the Sun lights up. Exit: the motors wind down,
+  // the Sun cools and the mobile is hoisted away.
   passage: MOBILE_PASSAGE,
 };

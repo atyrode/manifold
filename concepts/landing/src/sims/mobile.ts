@@ -1,27 +1,39 @@
 // A hanging mobile, after Calder: balanced wire arms hung one from another, each end carrying a flat
-// plate or the link to the next arm down. A shared part: a scene designs one from a seed
-// (`designMobile`), steps it in the air it supplies (`Mobile.step`), uploads it each frame
-// (`MobileTexture`) and draws it with `mobileGlsl`: plates, wires and links traced along a view ray,
-// and the shadows they cast from a round lamp onto anything (a wall, a floor, each other).
+// plate, a ball (a painted globe, a brass weight) or the link to the next arm down. A shared part: a
+// scene designs one from a seed (`designMobile`) or lays one out itself (a `MobileDesign`), steps it
+// in the air it supplies (`Mobile.step`), uploads it each frame (`MobileTexture`) and draws it with
+// `mobileGlsl`: plates, balls, wires and links traced along a view ray, and the shadows they cast
+// from a round lamp onto anything (a wall, a floor, each other).
 //
 // Physics, on VerletSystem (verlet.ts):
 // - Every arm is a rigid triangle of three points: its ends A (end 0) and B (end 1) and the hang loop
 //   H a little above the line between them, so a balanced arm hangs level and stable. A link (one
-//   distance constraint, a ball joint at each end) ties H to the parent's end, or to the pinned
-//   ceiling anchor. The arms are coupled pendulums: each swings on its link from the one above, rocks
-//   on its loop and turns freely about its link.
+//   distance constraint, a ball joint at each end) ties H to the parent's end, to the parent's own
+//   loop (arms stacked on one axis, `end: 2`), or to the pinned ceiling anchor. The arms are coupled
+//   pendulums: each swings on its link from the one above, rocks on its loop and turns freely about
+//   its link.
 // - A plate is lumped at its arm's end: the wire runs onto the plate's centroid (where Calder riveted
 //   it). `designMobile` balances every arm on its loop by the lever rule for what hangs below each
 //   end, with a small seeded imbalance that tilts it a few degrees.
+// - A ball is lumped at its arm's end too, centred on it, with the mass its design gives (a hollow
+//   globe is light for its size, a brass weight heavy).
 // - The air pushes on every plate along its normal, quadratic in the relative speed
 //   (½ ρ C_d A |v_n| v_n), with a little skin drag in its plane, so a steady draft turns the arms
-//   toward edge-on and a gust spins and swings them. Everything feels `damping` (VerletStepOptions:
-//   a light linear drag on every point).
+//   toward edge-on and a gust spins and swings them; on a ball, along the relative air whatever its
+//   way (a sphere's C_d). Everything feels `damping` (VerletStepOptions: a light linear drag on every
+//   point).
+// - A motor (`drive`) may turn an arm about its link at a set rate, so that over time it keeps that
+//   rate exactly: a couple at the arm's two ends that makes up for the damping, brings the turn back
+//   to the rate within about MOTOR_LAG and winds up the turn it has lost (up to MOTOR_SLIP, as a
+//   slipping clutch) over about MOTOR_HOLD, never more than MOTOR_GRIP of angular acceleration, so a
+//   gust or a knock still sets the arm back and it catches up again.
 // - Contact: after each substep's solve, a plate overlapping another arm's plate, wire or link is
 //   pushed apart from it along a plate normal by the overlap, mass-weighted (PBD inequality
 //   constraints, Müller, Heidelberger, Hennix, Ratcliff, "Position Based Dynamics", 2007). A plate is
 //   tested as its equivalent ellipse (the same area and second moments) and a slab MOBILE_SLAB thick
-//   on each side; against another plate, 8 points of its rim. `contacts` counts the touches begun.
+//   on each side; against another plate, 8 points of its rim. A ball keeps its radius plus the slab
+//   clear of other arms' balls, wires and links and of their plates' slabs, and is pushed out along
+//   the line between them. `contacts` counts the touches begun.
 // - Time: fixed substeps of MOBILE_SUBSTEP, one VerletSystem step each, so the air and the contacts
 //   are evaluated every substep; `alpha` blends the drawn state between the last two.
 //
@@ -31,11 +43,12 @@
 // Arm k starts at texel k · MOBILE_TEXELS; positions less the texture's origin, blended by alpha and
 // moved by the pose:
 //   +0 end A (xyz), w 1 while the arm exists (0: no arm k, nor any after it)
-//   +1 end B, +2 the loop H, +3 the link's top (the parent's end, or the anchor)
-//   +4, +5 the plate at end 0 / 1: (code, size m, spin rad, twist rad); code 0 none, else
-//          1 + shape + 8 for the plate the Manifold M may replace
+//   +1 end B, +2 the loop H, +3 the link's top (the parent's end or loop, or the anchor)
+//   +4, +5 what hangs at end 0 / 1: (code, size m, spin rad, twist rad); code 0 none or an arm, a plate
+//          1 + shape + 8 for the plate the Manifold M may replace, a ball MOBILE_BALL_CODE + its look
+//          with size its radius
 //   +6 (tone of plate 0, tone of plate 1, depth, 0): a tone 0..1 picks a colour in the scene's palette
-//   +7 (radius round H that holds the arm's wires and plates, 0, 0, 0)
+//   +7 (radius round H that holds the arm's wires, plates and balls, 0, 0, 0)
 //
 // Usage:
 //   const mobile = new Mobile(designMobile({ seed, arms: 5, anchor: [0, 3.3, 0], span: 1, clearance: 1, shapes: [0, 1, 2, 3], top: 0.9 }));
@@ -45,15 +58,16 @@
 //   mobile.step(frame.dt * frame.motion, air);         // air(x, y, z, out): the air's velocity there now
 //   texture.upload(mobile);
 //   // GLSL: ${mobileGlsl("uSim0", [0, 1.8, 0])}, then mobileTrace(ro, rd, cellW, maxT, wireR, linkR)
-//   // and mobileShadow(P, lamp, lampRadius, skipArm, skipEnd).
+//   // and mobileShadow(P, lamp, lampRadius, skipArm, skipEnd); mobile.drive(k, rate) runs a motor.
 import { glslFloat } from "../shaders/glsl.ts";
 import { FixedStep } from "./clock.ts";
+import { clamp } from "./math.ts";
 import { Random } from "./random.ts";
 import { DataTexture } from "./texture.ts";
 import { VerletSystem, type Vec3, type VerletStepOptions } from "./verlet.ts";
 
 /** Most arms a mobile has (the texture's capacity). */
-export const MOBILE_MAX_ARMS = 8;
+export const MOBILE_MAX_ARMS = 12;
 /** Texels per arm in the texture. */
 export const MOBILE_TEXELS = 8;
 /** Seconds per substep: the contacts and the air are evaluated this often. */
@@ -68,11 +82,26 @@ const TOUCH_GAP = 24;
 /** Plate outlines, in `shape` order. The M (MOBILE_MARK_SHAPE) only ever replaces a plate in the drawing. */
 export const MOBILE_SHAPES = ["disc", "petal", "drop", "crescent"] as const;
 export const MOBILE_MARK_SHAPE = 4;
+/** A ball's code in the texture: this plus its look (0..MOBILE_BALL_LOOKS - 1), above every plate's. */
+export const MOBILE_BALL_CODE = 32;
+export const MOBILE_BALL_LOOKS = 32;
 
 /** Gravity (m/s²), the air's ½ ρ C_d for a flat plate face-on (kg/m³), and the skin drag's share of it. */
 const GRAVITY = 9.81;
 const FACE_DRAG = 0.5 * 1.2 * 1.17;
 const SKIN = 0.04;
+/** The air's ½ ρ C_d for a ball (a sphere's C_d, 0.47), on its cross-section. */
+const BALL_DRAG = 0.5 * 1.2 * 0.47;
+/**
+ * A motor's response (s): it brings its arm's turn to the set rate in about this long, and winds up
+ * the turn the arm has lost over about MOTOR_HOLD, up to MOTOR_SLIP (rad; more slips like a clutch
+ * and is let go); its grip, the most angular acceleration it gives (rad/s²), so a gust or a knock
+ * still sets the arm back.
+ */
+const MOTOR_LAG = 1.2;
+const MOTOR_HOLD = 4;
+const MOTOR_SLIP = 2 * Math.PI;
+const MOTOR_GRIP = 1.5;
 /**
  * Sheet (kg/m²: 1 mm aluminium), wire (kg/m: 2.5 mm steel), a crimped loop or hook (kg). The loop's
  * 20 g also keeps the solver honest: under a half-kilogram cascade a 4 g loop let the most loaded
@@ -80,8 +109,8 @@ const SKIN = 0.04;
  * degrees.
  */
 const SHEET = 2.7;
-const WIRE = 0.035;
-const LOOP = 0.02;
+export const MOBILE_WIRE = 0.035;
+export const MOBILE_LOOP = 0.02;
 /** Linear drag on every point (1/s): a swing rings down over ~20 s, and a turning arm keeps turning a while. */
 const DAMPING = 0.06;
 /**
@@ -188,14 +217,24 @@ export interface MobilePlateDesign {
   readonly markable: boolean;
 }
 
+/** A ball hung at an arm's end in place of a plate, centred on it: a painted globe, a brass weight. */
+export interface MobileBallDesign {
+  /** Radius (m). */
+  readonly radius: number;
+  /** Mass (kg). */
+  readonly mass: number;
+  /** What the scene draws it as, its own number 0..MOBILE_BALL_LOOKS - 1 (packed for the shader). */
+  readonly look: number;
+}
+
 export interface MobileArmDesign {
   /** The arm it hangs from, or -1 for the anchor. */
   readonly parent: number;
-  /** Which end of the parent it hangs from. */
-  readonly end: 0 | 1;
+  /** Which end of the parent it hangs from, or 2 for the parent's own loop (arms stacked on one axis). */
+  readonly end: 0 | 1 | 2;
   /** Arms above it. */
   readonly depth: number;
-  /** Length of the link from the parent's end (or the anchor) down to its loop (m). */
+  /** Length of the link from the parent's end or loop (or the anchor) down to its loop (m). */
   readonly link: number;
   /** Horizontal distance from the loop to end 0 and to end 1 (m). */
   readonly reach: readonly [number, number];
@@ -203,8 +242,10 @@ export interface MobileArmDesign {
   readonly loop: number;
   /** Which way end 1 points at rest, about +y from +x (rad). */
   readonly heading: number;
-  /** The plate at each end; undefined where an arm hangs from it instead. */
+  /** The plate at each end; undefined where a ball or an arm hangs from it instead. */
   readonly plates: readonly [MobilePlateDesign | undefined, MobilePlateDesign | undefined];
+  /** A ball at an end that has no plate; undefined where an arm (or nothing) hangs from it. */
+  readonly balls?: readonly [MobileBallDesign | undefined, MobileBallDesign | undefined];
 }
 
 export interface MobileDesign {
@@ -322,12 +363,12 @@ export function designMobile(options: MobileDesignOptions): MobileDesign {
   const reaches: [number, number][] = new Array(count);
   for (let k = count - 1; k >= 0; k--) {
     const span = spans[k] ?? 0;
-    const wire = WIRE * span;
+    const wire = MOBILE_WIRE * span;
     const mass = [0, 1].map((e) => {
       const plate = plates[k]?.[e];
       const hung = child[k]?.[e] ?? -1;
       return (
-        (plate === undefined ? (hung >= 0 ? (below[hung] ?? 0) : 0) + LOOP : plateMass(plate)) +
+        (plate === undefined ? (hung >= 0 ? (below[hung] ?? 0) : 0) + MOBILE_LOOP : plateMass(plate)) +
         wire / 2
       );
     });
@@ -335,7 +376,7 @@ export function designMobile(options: MobileDesignOptions): MobileDesign {
     const m1 = mass[1] ?? 0;
     const r0 = Math.min(0.92, Math.max(0.08, (m1 / (m0 + m1)) * (1 + (tilts[k] ?? 0))));
     reaches[k] = [span * r0, span * (1 - r0)];
-    below[k] = m0 + m1 + LOOP;
+    below[k] = m0 + m1 + MOBILE_LOOP;
   }
 
   // Links: room for the biggest plate on the parent and on the arm itself to pass each other.
@@ -386,8 +427,8 @@ export class Mobile {
   readonly design: MobileDesign;
   readonly system: VerletSystem;
   /**
-   * Touches begun since it was built (plate on plate, plate on wire or link): a pair counts again
-   * only after TOUCH_GAP apart, so a plate resting against another, pushed out and falling back
+   * Touches begun since it was built (plate or ball on plate, ball, wire or link): a pair counts
+   * again only after TOUCH_GAP apart, so a plate resting against another, pushed out and falling back
    * substep by substep, is one touch.
    */
   contacts = 0;
@@ -410,12 +451,26 @@ export class Mobile {
   readonly #plateSpin: Float64Array;
   readonly #plateTwist: Float64Array;
   readonly #frames: Float64Array;
+  /** Per ball. */
+  readonly #ballArm: Int32Array;
+  readonly #ballEnd: Int32Array;
+  readonly #ballPoint: Int32Array;
+  readonly #ballRadius: Float64Array;
   /** Segments for contact (each arm's two wires and its link): endpoints and owner. */
   readonly #segA: Int32Array;
   readonly #segB: Int32Array;
   readonly #segArm: Int32Array;
   /** The substep (counted from 1; 0: never) each plate last touched each plate / segment, for counting touches begun. */
   readonly #touched: Float64Array;
+  /** The same for each ball against each ball / plate / segment. */
+  readonly #ballTouched: Float64Array;
+  /**
+   * Per arm: its motor's rate (rad/s about +y; NaN: none), the turn it has lost to make up (rad) and
+   * its turning inertia about its link (kg m²).
+   */
+  readonly #driveRate: Float64Array;
+  readonly #driveLost: Float64Array;
+  readonly #driveInertia: Float64Array;
   #substeps = 0;
   readonly #force: Float32Array;
   readonly #air = new Float32Array(3);
@@ -443,6 +498,10 @@ export class Mobile {
       (n, arm) => n + (arm.plates[0] ? 1 : 0) + (arm.plates[1] ? 1 : 0),
       0,
     );
+    const balls = design.arms.reduce(
+      (n, arm) => n + (arm.balls?.[0] ? 1 : 0) + (arm.balls?.[1] ? 1 : 0),
+      0,
+    );
     this.#plateArm = new Int32Array(plates);
     this.#plateEnd = new Int32Array(plates);
     this.#platePoint = new Int32Array(plates);
@@ -454,20 +513,67 @@ export class Mobile {
     this.#plateSpin = new Float64Array(plates);
     this.#plateTwist = new Float64Array(plates);
     this.#frames = new Float64Array(plates * FRAME);
+    this.#ballArm = new Int32Array(balls);
+    this.#ballEnd = new Int32Array(balls);
+    this.#ballPoint = new Int32Array(balls);
+    this.#ballRadius = new Float64Array(balls);
     this.#segA = new Int32Array(3 * arms);
     this.#segB = new Int32Array(3 * arms);
     this.#segArm = new Int32Array(3 * arms);
     this.#touched = new Float64Array(plates * (plates + 3 * arms));
+    this.#ballTouched = new Float64Array(balls * (balls + plates + 3 * arms));
+    this.#driveRate = new Float64Array(arms).fill(Number.NaN);
+    this.#driveLost = new Float64Array(arms);
+    this.#driveInertia = new Float64Array(arms);
     this.#force = new Float32Array((1 + 3 * arms) * 3);
+
+    // What each end carries (its plate, ball or the loop an arm hangs from), and each arm with
+    // everything below it, from the bottom up: the motors' turning inertia.
+    const endMass = (k: number, e: 0 | 1): number => {
+      const arm = design.arms[k];
+      if (arm === undefined) return 0;
+      const plate = arm.plates[e];
+      const ball = arm.balls?.[e];
+      const own =
+        plate !== undefined ? plateMass(plate) : ball !== undefined ? ball.mass : MOBILE_LOOP;
+      return own + (MOBILE_WIRE * (arm.reach[0] + arm.reach[1])) / 2;
+    };
+    const hung = new Float64Array(arms);
+    const carried = new Float64Array(2 * arms);
+    for (let k = arms - 1; k >= 0; k--) {
+      const arm = design.arms[k];
+      if (arm === undefined) continue;
+      hung[k] = (hung[k] ?? 0) + endMass(k, 0) + endMass(k, 1) + MOBILE_LOOP;
+      carried[2 * k] = (carried[2 * k] ?? 0) + endMass(k, 0);
+      carried[2 * k + 1] = (carried[2 * k + 1] ?? 0) + endMass(k, 1);
+      if (arm.parent < 0) continue;
+      hung[arm.parent] = (hung[arm.parent] ?? 0) + (hung[k] ?? 0);
+      if (arm.end !== 2)
+        carried[2 * arm.parent + arm.end] =
+          (carried[2 * arm.parent + arm.end] ?? 0) + (hung[k] ?? 0);
+    }
 
     // Build top-down at rest: every arm level, its loop straight below the point it hangs from.
     let plate = 0;
+    let ball = 0;
     for (let k = 0; k < arms; k++) {
       const arm = design.arms[k];
       if (arm === undefined) continue;
       if (arm.parent >= k)
         throw new MobileError(`arm ${k} hangs from arm ${arm.parent}: parents come first`);
-      const top = arm.parent < 0 ? this.#anchor : (this.#ends[2 * arm.parent + arm.end] ?? 0);
+      const above = design.arms[arm.parent];
+      if (
+        above !== undefined &&
+        arm.end !== 2 &&
+        (above.plates[arm.end] !== undefined || above.balls?.[arm.end] !== undefined)
+      )
+        throw new MobileError(`arm ${k} hangs from an end of arm ${arm.parent} that holds a body`);
+      const top =
+        arm.parent < 0
+          ? this.#anchor
+          : arm.end === 2
+            ? (this.#loopPoint[arm.parent] ?? 0)
+            : (this.#ends[2 * arm.parent + arm.end] ?? 0);
       const pos = sys.positions;
       const tx = pos[top * 3] ?? 0;
       const ty = pos[top * 3 + 1] ?? 0;
@@ -475,24 +581,21 @@ export class Mobile {
       const hy = ty - arm.link;
       const dx = Math.cos(arm.heading);
       const dz = Math.sin(arm.heading);
-      const wire = WIRE * (arm.reach[0] + arm.reach[1]);
-      const endMass = (e: 0 | 1): number => {
-        const p = arm.plates[e];
-        return (p === undefined ? LOOP : plateMass(p)) + wire / 2;
-      };
+      this.#driveInertia[k] =
+        (carried[2 * k] ?? 0) * arm.reach[0] ** 2 + (carried[2 * k + 1] ?? 0) * arm.reach[1] ** 2;
       const a = sys.addPoint(
         tx - dx * arm.reach[0],
         hy - arm.loop,
         tz - dz * arm.reach[0],
-        1 / endMass(0),
+        1 / endMass(k, 0),
       );
       const b = sys.addPoint(
         tx + dx * arm.reach[1],
         hy - arm.loop,
         tz + dz * arm.reach[1],
-        1 / endMass(1),
+        1 / endMass(k, 1),
       );
-      const h = sys.addPoint(tx, hy, tz, 1 / LOOP);
+      const h = sys.addPoint(tx, hy, tz, 1 / MOBILE_LOOP);
       sys.addConstraint(a, h);
       sys.addConstraint(b, h);
       sys.addConstraint(a, b);
@@ -509,7 +612,19 @@ export class Mobile {
       this.#segB[3 * k + 2] = h;
       this.#segArm.fill(k, 3 * k, 3 * k + 3);
       for (const e of [0, 1] as const) {
+        const globe = arm.balls?.[e];
         const p = arm.plates[e];
+        if (globe !== undefined) {
+          if (p !== undefined)
+            throw new MobileError(`arm ${k}'s end ${e} holds both a plate and a ball`);
+          if (!(globe.look >= 0 && globe.look < MOBILE_BALL_LOOKS))
+            throw new MobileError(`a ball's look is 0..${MOBILE_BALL_LOOKS - 1}, got ${globe.look}`);
+          this.#ballArm[ball] = k;
+          this.#ballEnd[ball] = e;
+          this.#ballPoint[ball] = e === 0 ? a : b;
+          this.#ballRadius[ball] = globe.radius;
+          ball++;
+        }
         if (p === undefined) continue;
         const stats = SHAPE_STATS[p.shape] ?? SHAPE_STATS[0];
         this.#plateArm[plate] = k;
@@ -546,6 +661,10 @@ export class Mobile {
     return this.#platePoint.length;
   }
 
+  get balls(): number {
+    return this.#ballPoint.length;
+  }
+
   /** Share of a substep run past the last one, 0..1: the drawn state's blend. */
   get alpha(): number {
     return this.#clock.alpha;
@@ -568,6 +687,26 @@ export class Mobile {
       end: this.#plateEnd[i] ?? 0,
       point: this.#platePoint[i] ?? 0,
     };
+  }
+
+  /** Arm, end, Verlet point (its centre) and radius of ball i. */
+  ball(i: number): { arm: number; end: number; point: number; radius: number } {
+    return {
+      arm: this.#ballArm[i] ?? 0,
+      end: this.#ballEnd[i] ?? 0,
+      point: this.#ballPoint[i] ?? 0,
+      radius: this.#ballRadius[i] ?? 0,
+    };
+  }
+
+  /**
+   * Run arm k's motor at `rate` rad/s about its link, right-handed about +y (+x turns toward -z:
+   * anticlockwise seen from above); NaN switches it off and leaves the arm to turn freely.
+   */
+  drive(k: number, rate: number): void {
+    if (!(k >= 0 && k < this.arms)) return;
+    this.#driveRate[k] = rate;
+    if (Number.isNaN(rate)) this.#driveLost[k] = 0;
   }
 
   /**
@@ -593,19 +732,23 @@ export class Mobile {
     for (let s = 0; s < substeps; s++) this.#substep();
   }
 
-  /** The plate whose outline passes nearest the ray ro + t rd (rd unit), within `slack` of its reach; -1 if none. */
+  /**
+   * The plate or ball whose outline passes nearest the ray ro + t rd (rd unit), within `slack` of its
+   * reach: a plate's index, or a ball's plus `plates`; -1 if none.
+   */
   pick(ro: Vec3, rd: Vec3, slack: number): number {
     const pos = this.system.positions;
     let best = -1;
     let bestD = Infinity;
-    for (let i = 0; i < this.plates; i++) {
-      const o = (this.#platePoint[i] ?? 0) * 3;
+    for (let i = 0; i < this.plates + this.balls; i++) {
+      const ball = i >= this.plates;
+      const o = ((ball ? this.#ballPoint[i - this.plates] : this.#platePoint[i]) ?? 0) * 3;
       const wx = (pos[o] ?? 0) - ro[0];
       const wy = (pos[o + 1] ?? 0) - ro[1];
       const wz = (pos[o + 2] ?? 0) - ro[2];
       const t = wx * rd[0] + wy * rd[1] + wz * rd[2];
-      const d =
-        Math.hypot(wx - rd[0] * t, wy - rd[1] * t, wz - rd[2] * t) - (this.#plateReach[i] ?? 0);
+      const reach = (ball ? this.#ballRadius[i - this.plates] : this.#plateReach[i]) ?? 0;
+      const d = Math.hypot(wx - rd[0] * t, wy - rd[1] * t, wz - rd[2] * t) - reach;
       if (t > 0 && d < slack && d < bestD) {
         bestD = d;
         best = i;
@@ -614,9 +757,9 @@ export class Mobile {
     return best;
   }
 
-  /** Give plate i a push: a velocity change (m/s) of its point. */
+  /** Give plate i (or ball i - plates, as `pick` numbers them) a push: a velocity change (m/s) of its point. */
   kick(i: number, vx: number, vy: number, vz: number): void {
-    const p = this.#platePoint[i];
+    const p = i >= this.plates ? this.#ballPoint[i - this.plates] : this.#platePoint[i];
     if (p === undefined) return;
     const pos = this.system.positions;
     this.system.impulse(
@@ -633,6 +776,7 @@ export class Mobile {
   #substep(): void {
     for (let i = 0; i < this.plates; i++) this.#frame(i);
     this.#airForces();
+    this.#driveForces();
     this.system.step(MOBILE_SUBSTEP, this.#step);
     for (let i = 0; i < this.plates; i++) this.#frame(i);
     this.#contact();
@@ -696,7 +840,7 @@ export class Mobile {
     f[o + 11] = nz * ct - vz * st;
   }
 
-  /** The air's push on every plate, into the per-point force array the Verlet step reads. */
+  /** The air's push on every plate and ball, into the per-point force array the Verlet step reads. */
   #airForces(): void {
     const force = this.#force;
     force.fill(0);
@@ -732,29 +876,207 @@ export class Mobile {
       force[p + 1] = (force[p + 1] ?? 0) + face * ny + skin * ty;
       force[p + 2] = (force[p + 2] ?? 0) + face * nz + skin * tz;
     }
+    for (let i = 0; i < this.balls; i++) {
+      const p = (this.#ballPoint[i] ?? 0) * 3;
+      const x = pos[p] ?? 0;
+      const y = pos[p + 1] ?? 0;
+      const z = pos[p + 2] ?? 0;
+      air[0] = 0;
+      air[1] = 0;
+      air[2] = 0;
+      this.#airAt?.(x, y, z, air);
+      const rx = (x - (prev[p] ?? x)) * rate - (air[0] ?? 0);
+      const ry = (y - (prev[p + 1] ?? y)) * rate - (air[1] ?? 0);
+      const rz = (z - (prev[p + 2] ?? z)) * rate - (air[2] ?? 0);
+      const r = this.#ballRadius[i] ?? 0;
+      const drag = -BALL_DRAG * Math.PI * r * r * Math.hypot(rx, ry, rz);
+      force[p] = (force[p] ?? 0) + drag * rx;
+      force[p + 1] = (force[p + 1] ?? 0) + drag * ry;
+      force[p + 2] = (force[p + 2] ?? 0) + drag * rz;
+    }
   }
 
-  /** Push overlapping plates, wires and links apart (see the header). */
+  /**
+   * Each running motor's couple, into the force array: equal and opposite pushes across its arm's two
+   * ends, its arm's turning inertia times the acceleration the header gives (at most MOTOR_GRIP). The
+   * turn is the arm's line seen from above, now against a substep ago, so a swing or a rock of the arm
+   * does not count; the turn lost sums the rate's turn less the arm's, substep by substep.
+   */
+  #driveForces(): void {
+    const pos = this.system.positions;
+    const prev = this.system.previous;
+    const force = this.#force;
+    for (let k = 0; k < this.arms; k++) {
+      const rate = this.#driveRate[k] ?? Number.NaN;
+      if (Number.isNaN(rate)) continue;
+      const a = (this.#ends[2 * k] ?? 0) * 3;
+      const b = (this.#ends[2 * k + 1] ?? 0) * 3;
+      const ux = (pos[a] ?? 0) - (pos[b] ?? 0);
+      const uz = (pos[a + 2] ?? 0) - (pos[b + 2] ?? 0);
+      const px = (prev[a] ?? 0) - (prev[b] ?? 0);
+      const pz = (prev[a + 2] ?? 0) - (prev[b + 2] ?? 0);
+      const span = Math.hypot(ux, uz);
+      const was = Math.hypot(px, pz);
+      if (span < 1e-6 || was < 1e-6) continue;
+      const turn = Math.asin(clamp((pz * ux - px * uz) / (span * was), -1, 1)) / MOBILE_SUBSTEP;
+      const lost = clamp(
+        (this.#driveLost[k] ?? 0) + (rate - turn) * MOBILE_SUBSTEP,
+        -MOTOR_SLIP,
+        MOTOR_SLIP,
+      );
+      this.#driveLost[k] = lost;
+      const accel = clamp(
+        DAMPING * rate + (rate - turn) / MOTOR_LAG + lost / (MOTOR_LAG * MOTOR_HOLD),
+        -MOTOR_GRIP,
+        MOTOR_GRIP,
+      );
+      // Each end's push (N), along y × (A - B) at A, the way a right-handed turn about +y moves it.
+      const push = ((this.#driveInertia[k] ?? 0) * accel) / (span * span);
+      force[a] = (force[a] ?? 0) + push * uz;
+      force[a + 2] = (force[a + 2] ?? 0) - push * ux;
+      force[b] = (force[b] ?? 0) - push * uz;
+      force[b + 2] = (force[b + 2] ?? 0) + push * ux;
+    }
+  }
+
+  /** Push overlapping plates, balls, wires and links apart (see the header). */
   #contact(): void {
     const plates = this.plates;
-    const stride = plates + this.#segArm.length;
+    const segments = this.#segArm.length;
+    const stride = plates + segments;
     const now = ++this.#substeps;
     for (let i = 0; i < plates; i++) {
       for (let j = i + 1; j < plates; j++) {
         if ((this.#plateArm[i] ?? 0) !== (this.#plateArm[j] ?? -1) && this.#platePair(i, j))
-          this.#touch(i * stride + j, now);
+          this.#touch(this.#touched, i * stride + j, now);
       }
-      for (let s = 0; s < this.#segArm.length; s++) {
+      for (let s = 0; s < segments; s++) {
         if ((this.#segArm[s] ?? -1) !== (this.#plateArm[i] ?? 0) && this.#plateSegment(i, s))
-          this.#touch(i * stride + plates + s, now);
+          this.#touch(this.#touched, i * stride + plates + s, now);
+      }
+    }
+    const balls = this.balls;
+    const ballStride = balls + stride;
+    for (let i = 0; i < balls; i++) {
+      const arm = this.#ballArm[i] ?? 0;
+      for (let j = i + 1; j < balls; j++) {
+        if (arm !== (this.#ballArm[j] ?? -1) && this.#ballPair(i, j))
+          this.#touch(this.#ballTouched, i * ballStride + j, now);
+      }
+      for (let j = 0; j < plates; j++) {
+        if (arm !== (this.#plateArm[j] ?? -1) && this.#ballPlate(i, j))
+          this.#touch(this.#ballTouched, i * ballStride + balls + j, now);
+      }
+      for (let s = 0; s < segments; s++) {
+        if (arm !== (this.#segArm[s] ?? -1) && this.#ballSegment(i, s))
+          this.#touch(this.#ballTouched, i * ballStride + balls + plates + s, now);
       }
     }
   }
 
-  #touch(pair: number, now: number): void {
-    const last = this.#touched[pair] ?? 0;
+  #touch(record: Float64Array, pair: number, now: number): void {
+    const last = record[pair] ?? 0;
     if (last === 0 || now - last > TOUCH_GAP) this.contacts++;
-    this.#touched[pair] = now;
+    record[pair] = now;
+  }
+
+  /** Balls i and j: kept their radii and a slab apart along the line between their centres. True if they touched. */
+  #ballPair(i: number, j: number): boolean {
+    const pos = this.system.positions;
+    const inv = this.system.inverseMass;
+    const pi = this.#ballPoint[i] ?? 0;
+    const pj = this.#ballPoint[j] ?? 0;
+    const dx = (pos[pj * 3] ?? 0) - (pos[pi * 3] ?? 0);
+    const dy = (pos[pj * 3 + 1] ?? 0) - (pos[pi * 3 + 1] ?? 0);
+    const dz = (pos[pj * 3 + 2] ?? 0) - (pos[pi * 3 + 2] ?? 0);
+    const d = Math.hypot(dx, dy, dz);
+    const depth = (this.#ballRadius[i] ?? 0) + (this.#ballRadius[j] ?? 0) + MOBILE_SLAB - d;
+    if (depth <= 0) return false;
+    const wi = inv[pi] ?? 0;
+    const wj = inv[pj] ?? 0;
+    const w = wi + wj;
+    if (w <= 0) return true;
+    const n = d > 1e-9 ? [dx / d, dy / d, dz / d] : [1, 0, 0];
+    for (let c = 0; c < 3; c++) {
+      pos[pi * 3 + c] = (pos[pi * 3 + c] ?? 0) - ((n[c] ?? 0) * depth * wi) / w;
+      pos[pj * 3 + c] = (pos[pj * 3 + c] ?? 0) + ((n[c] ?? 0) * depth * wj) / w;
+    }
+    return true;
+  }
+
+  /**
+   * Ball i against plate j: where the ball's centre lies over the plate's equivalent ellipse, kept its
+   * radius and the slab off the plate's face, pushed apart along the plate's normal. True if they touched.
+   */
+  #ballPlate(i: number, j: number): boolean {
+    const pos = this.system.positions;
+    const inv = this.system.inverseMass;
+    const f = this.#frames;
+    const o = j * FRAME;
+    const pb = this.#ballPoint[i] ?? 0;
+    const pp = this.#platePoint[j] ?? 0;
+    const x = (pos[pb * 3] ?? 0) - (f[o] ?? 0);
+    const y = (pos[pb * 3 + 1] ?? 0) - (f[o + 1] ?? 0);
+    const z = (pos[pb * 3 + 2] ?? 0) - (f[o + 2] ?? 0);
+    const s = x * (f[o + 9] ?? 0) + y * (f[o + 10] ?? 0) + z * (f[o + 11] ?? 0);
+    const depth = (this.#ballRadius[i] ?? 0) + MOBILE_SLAB - Math.abs(s);
+    if (depth <= 0) return false;
+    const lx = (x * (f[o + 3] ?? 0) + y * (f[o + 4] ?? 0) + z * (f[o + 5] ?? 0)) / (this.#plateEx[j] ?? 1);
+    const ly = (x * (f[o + 6] ?? 0) + y * (f[o + 7] ?? 0) + z * (f[o + 8] ?? 0)) / (this.#plateEy[j] ?? 1);
+    if (lx * lx + ly * ly >= 1) return false;
+    const wb = inv[pb] ?? 0;
+    const wp = inv[pp] ?? 0;
+    const w = wb + wp;
+    if (w <= 0) return true;
+    const side = s < 0 ? -1 : 1;
+    for (let c = 0; c < 3; c++) {
+      const n = (f[o + 9 + c] ?? 0) * side * depth;
+      pos[pb * 3 + c] = (pos[pb * 3 + c] ?? 0) + (n * wb) / w;
+      pos[pp * 3 + c] = (pos[pp * 3 + c] ?? 0) - (n * wp) / w;
+    }
+    return true;
+  }
+
+  /** Ball i against segment s (a wire or link of another arm): kept its radius and the slab off it. True if they touched. */
+  #ballSegment(i: number, s: number): boolean {
+    const pos = this.system.positions;
+    const inv = this.system.inverseMass;
+    const p = this.#ballPoint[i] ?? 0;
+    const a = this.#segA[s] ?? 0;
+    const b = this.#segB[s] ?? 0;
+    const ax = pos[a * 3] ?? 0;
+    const ay = pos[a * 3 + 1] ?? 0;
+    const az = pos[a * 3 + 2] ?? 0;
+    const bx = (pos[b * 3] ?? 0) - ax;
+    const by = (pos[b * 3 + 1] ?? 0) - ay;
+    const bz = (pos[b * 3 + 2] ?? 0) - az;
+    const cx = (pos[p * 3] ?? 0) - ax;
+    const cy = (pos[p * 3 + 1] ?? 0) - ay;
+    const cz = (pos[p * 3 + 2] ?? 0) - az;
+    const bb = bx * bx + by * by + bz * bz;
+    const t = bb > 0 ? Math.min(1, Math.max(0, (cx * bx + cy * by + cz * bz) / bb)) : 0;
+    // From the segment's point nearest the centre out to the centre.
+    const qx = cx - bx * t;
+    const qy = cy - by * t;
+    const qz = cz - bz * t;
+    const d = Math.hypot(qx, qy, qz);
+    const depth = (this.#ballRadius[i] ?? 0) + MOBILE_SLAB - d;
+    if (depth <= 0) return false;
+    const wp = inv[p] ?? 0;
+    const w = wp + (inv[a] ?? 0) * (1 - t) * (1 - t) + (inv[b] ?? 0) * t * t;
+    if (w <= 0 || d < 1e-9) return true;
+    const k = depth / (w * d);
+    for (const [c, n] of [
+      [0, qx],
+      [1, qy],
+      [2, qz],
+    ] as const) {
+      const move = n * k;
+      pos[p * 3 + c] = (pos[p * 3 + c] ?? 0) + move * wp;
+      pos[a * 3 + c] = (pos[a * 3 + c] ?? 0) - move * (inv[a] ?? 0) * (1 - t);
+      pos[b * 3 + c] = (pos[b * 3 + c] ?? 0) - move * (inv[b] ?? 0) * t;
+    }
+    return true;
   }
 
   /** Plates i and j: the deepest of either's rim points inside the other's slab, pushed out. True if they touched. */
@@ -976,13 +1298,20 @@ export function packMobile(
     let bound = 0;
     for (const e of [0, 1] as const) {
       const plate = arm.plates[e];
+      const ball = arm.balls?.[e];
       const o = (base + 4 + e) * 4;
       bound = Math.max(
         bound,
         arm.reach[e] +
           arm.loop +
-          (plate === undefined ? 0 : (SHAPE_STATS[plate.shape]?.reach ?? 1) * plate.size),
+          (plate !== undefined
+            ? (SHAPE_STATS[plate.shape]?.reach ?? 1) * plate.size
+            : (ball?.radius ?? 0)),
       );
+      if (ball !== undefined) {
+        out[o] = MOBILE_BALL_CODE + ball.look;
+        out[o + 1] = ball.radius;
+      }
       if (plate === undefined) continue;
       out[o] = 1 + plate.shape + (plate.markable ? 8 : 0);
       out[o + 1] = plate.size;
@@ -1004,16 +1333,19 @@ export function packMobile(
  *   float mobileMark;                     set > 0 to draw the markable plate as the Manifold M, at that scale
  *   struct MobilePlate { vec3 c; vec3 ax; vec3 ay; vec3 n; float size; int shape; float tone; };
  *   bool mobilePlate(int k, int e, vec3 a, vec3 b, vec3 h, out MobilePlate p);  end e's plate, if any
+ *   bool mobileBall(int k, int e, vec3 a, vec3 b, out vec4 ball, out int look);  end e's ball, if any:
+ *       xyz its centre, w its radius; look the scene's number for it
  *   float mobileShape(vec2 q, int shape); signed distance to an outline, q in size units about its centroid
  *   struct MobileHit { float t; int kind; int arm; int end; vec3 n; vec2 q; float tone; int shape; };
  *   MobileHit mobileTrace(vec3 ro, vec3 rd, float cellW, float maxT, float wireR, float linkR);
- *       the nearest plate (MOBILE_PLATE), wire (MOBILE_WIRE) or link (MOBILE_LINK) along a unit ray
- *       before maxT, cut per cell (cellW: a cell's size per unit of ray length; wires and links at
- *       least about a cell wide, plates still a cell thick edge-on); n faces the eye; q the plate
- *       point in size units; kind MOBILE_NONE and t = maxT if nothing
+ *       the nearest plate (MOBILE_PLATE), ball (MOBILE_BALL), wire (MOBILE_WIRE) or link (MOBILE_LINK)
+ *       along a unit ray before maxT, cut per cell (cellW: a cell's size per unit of ray length;
+ *       wires and links at least about a cell wide, plates still a cell thick edge-on, balls at least
+ *       a cell across); n faces the eye (a ball's: its surface normal); q the plate point in size
+ *       units; shape a ball's look; kind MOBILE_NONE and t = maxT if nothing
  *   float mobileShadow(vec3 P, vec3 L, float lr, int skipArm, int skipEnd);
  *       the share of a round lamp (centre L, radius lr) the mobile hides from P, penumbrae and all;
- *       skipArm/skipEnd leave out one plate (the one P lies on), -1 for none
+ *       skipArm/skipEnd leave out one plate or ball (the one P lies on), -1 for none
  */
 export function mobileGlsl(sampler: string, origin: Vec3): string {
   const centroids = SHAPE_STATS.map((s) => `vec2(${glslFloat(s.cx)}, ${glslFloat(s.cy)})`).join(
@@ -1025,6 +1357,7 @@ const int MOBILE_NONE = 0;
 const int MOBILE_PLATE = 1;
 const int MOBILE_WIRE = 2;
 const int MOBILE_LINK = 3;
+const int MOBILE_BALL = 4;
 const vec3 MOBILE_ORIGIN = vec3(${glslFloat(origin[0])}, ${glslFloat(origin[1])}, ${glslFloat(origin[2])});
 const vec2 MOBILE_CENTROID[${SHAPE_STATS.length}] = vec2[${SHAPE_STATS.length}](${centroids});
 // Half the sheet's thickness (m).
@@ -1054,7 +1387,7 @@ struct MobilePlate {
 bool mobilePlate(int k, int e, vec3 a, vec3 b, vec3 h, out MobilePlate p) {
   vec4 g = mobileTexel(k, 4 + e);
   p = MobilePlate(vec3(0.0), vec3(1.0, 0.0, 0.0), vec3(0.0, 1.0, 0.0), vec3(0.0, 0.0, 1.0), 0.0, 0, 0.0);
-  if (g.x < 0.5) return false;
+  if (g.x < 0.5 || g.x > ${glslFloat(MOBILE_BALL_CODE - 0.5)}) return false;
   vec3 c = e == 0 ? a : b;
   vec3 u = normalize(c - (e == 0 ? b : a));
   vec3 w = h - 0.5 * (a + b);
@@ -1076,6 +1409,14 @@ bool mobilePlate(int k, int e, vec3 a, vec3 b, vec3 h, out MobilePlate p) {
   vec4 tones = mobileTexel(k, 6);
   p.tone = e == 0 ? tones.x : tones.y;
   return true;
+}
+
+// The ball at end e (0: end a, 1: end b) of arm k: xyz its centre, w its radius; look the scene's.
+bool mobileBall(int k, int e, vec3 a, vec3 b, out vec4 ball, out int look) {
+  vec4 g = mobileTexel(k, 4 + e);
+  ball = vec4(e == 0 ? a : b, g.y);
+  look = int(g.x - ${glslFloat(MOBILE_BALL_CODE)} + 0.5);
+  return g.x > ${glslFloat(MOBILE_BALL_CODE - 0.5)};
 }
 
 // Signed distance to an outline in size units, q about its centroid (the plate's mass point).
@@ -1130,6 +1471,23 @@ float mobilePlateRay(vec3 ro, vec3 rd, MobilePlate p, float cellW, out vec2 q) {
   return t;
 }
 
+// The ball along the ray: its t, or -1 where this cell misses it, cut per cell at its silhouette and
+// drawn at least about a cell across; n its surface normal there (on the rim's outer cells, the way
+// from the centre to the ray).
+float mobileBallRay(vec3 ro, vec3 rd, vec4 ball, float cellW, out vec3 n) {
+  vec3 oc = ball.xyz - ro;
+  float tc = dot(oc, rd);
+  n = vec3(0.0, 0.0, 1.0);
+  if (tc <= 0.0) return -1.0;
+  vec3 off = rd * tc - oc;
+  float d = length(off);
+  float r = max(ball.w, 0.5 * cellW * tc);
+  if (hardFill((d - r) / (cellW * tc), 0.7) < 0.5) return -1.0;
+  float h = sqrt(max(r * r - d * d, 0.0));
+  n = normalize(off - rd * h);
+  return tc - h;
+}
+
 struct MobileHit {
   float t;
   int kind;
@@ -1181,6 +1539,14 @@ MobileHit mobileTrace(vec3 ro, vec3 rd, float cellW, float maxT, float wireR, fl
       }
     }
     for (int e = 0; e < 2; e++) {
+      vec4 ball;
+      int look;
+      if (mobileBall(k, e, a, b, ball, look)) {
+        vec3 n;
+        float tb = mobileBallRay(ro, rd, ball, cellW, n);
+        if (tb > 0.0 && tb < hit.t) hit = MobileHit(tb, MOBILE_BALL, k, e, n, vec2(0.0), 0.0, look);
+        continue;
+      }
       MobilePlate p;
       if (!mobilePlate(k, e, a, b, h, p)) continue;
       vec2 q;
@@ -1247,6 +1613,19 @@ float mobileShadow(vec3 P, vec3 L, float lr, int skipArm, int skipEnd) {
     lit *= 1.0 - mobileWireShade(P, L, h, b, 0.0012, lr);
     for (int e = 0; e < 2; e++) {
       if (k == skipArm && e == skipEnd) continue;
+      vec4 ball;
+      int look;
+      if (mobileBall(k, e, a, b, ball, look)) {
+        float t = dot(ball.xyz - P, pl) / pll;
+        if (t <= 1.0e-4 || t >= 1.0) continue;
+        // The lamp's footprint where the line to it passes the ball has radius lr * t: a ball smaller
+        // than that only dims the light, by the share of the footprint it covers.
+        float w = lr * t + 2.0e-4;
+        float big = max(ball.w, w);
+        float share = ball.w / big;
+        lit *= 1.0 - share * share * softFill(length(P + pl * t - ball.xyz) - big, min(ball.w, w));
+        continue;
+      }
       MobilePlate p;
       if (!mobilePlate(k, e, a, b, h, p)) continue;
       float dn = dot(pl, p.n);
