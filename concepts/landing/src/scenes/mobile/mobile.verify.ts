@@ -29,7 +29,7 @@ import { DataTexture } from "../../sims/texture.ts";
 import type { Vec3 } from "../../sims/verlet.ts";
 import { mobileScene } from "./index.ts";
 import {
-  MOBILE_ANCHOR,
+  MOBILE_SUN_CENTRE,
   MOBILE_EYE,
   MOBILE_PASSAGE,
   MOBILE_TEX_ORIGIN,
@@ -247,7 +247,7 @@ function verifyKepler(): Record<string, unknown> {
   const knobs = { ...paramDefaults("mobile"), motor: 1, "motor-amount": 1, wind: 0, gusts: 0, drift: 0 };
   const frame = { dt: 0.05, knobs };
   const year = mobileYear(1);
-  const arms = solarMobile(1, 1, MOBILE_ANCHOR).arms;
+  const arms = solarMobile(1, 1, MOBILE_SUN_CENTRE).arms;
   const jupiter = SOLAR_BODIES.find((body) => body.name === "Jupiter")?.au ?? 0;
   const turned = new Float64Array(arms.length);
   let last = sim.step(frame).upload(0).data;
@@ -383,10 +383,12 @@ function verifySunlit(gl: WebGL2RenderingContext): Record<string, unknown> {
         });
       }
     }
+    // The Sun, threaded on its arm's loop (texel +2).
+    const sunArm = solarMobile(1, 1, MOBILE_SUN_CENTRE).sun;
     const S: Vec3 = [
-      texel(0, 3, 0) + origin[0],
-      texel(0, 3, 1) + origin[1] + SOLAR_SUN_RADIUS,
-      texel(0, 3, 2) + origin[2],
+      texel(sunArm, 2, 0) + origin[0],
+      texel(sunArm, 2, 1) + origin[1],
+      texel(sunArm, 2, 2) + origin[2],
     ];
     const discs = [...balls, { c: S, r: SOLAR_SUN_RADIUS, look: -1 }].map((ball) => {
       const p = project(ball.c);
@@ -402,7 +404,7 @@ function verifySunlit(gl: WebGL2RenderingContext): Record<string, unknown> {
     for (const disc of discs) {
       if (disc.look < 0 || disc.look === SOLAR_LOOKS.weight || disc.look === SOLAR_LOOKS.saturn)
         continue;
-      if (disc.rp < 4) continue;
+      if (disc.rp < 3) continue;
       // Clear of every other disc on the picture.
       if (discs.some((o) => o !== disc && Math.hypot(o.x - disc.x, o.y - disc.y) < o.rp + disc.rp))
         continue;
@@ -419,6 +421,14 @@ function verifySunlit(gl: WebGL2RenderingContext): Record<string, unknown> {
       const ly = ahead.y - disc.y;
       const across = Math.hypot(lx, ly) / ((step * disc.rp) / disc.r);
       if (across < 0.5) continue;
+      // A planet between the eye and the Sun shows a crescent, mostly past the limb's sampled disc:
+      // only those at least about half lit as seen are judged (phase angle under ~100°).
+      const eye = [MOBILE_EYE[0] - disc.c[0], MOBILE_EYE[1] - disc.c[1], MOBILE_EYE[2] - disc.c[2]];
+      const el = Math.hypot(eye[0] ?? 0, eye[1] ?? 0, eye[2] ?? 0);
+      const phase =
+        ((eye[0] ?? 0) * (to[0] ?? 0) + (eye[1] ?? 0) * (to[1] ?? 0) + (eye[2] ?? 0) * (to[2] ?? 0)) /
+        (el * tl);
+      if (phase < -0.17) continue;
       let day = 0;
       let night = 0;
       let dayN = 0;

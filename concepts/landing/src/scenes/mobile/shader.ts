@@ -23,8 +23,8 @@ import { MARK_VERTICES } from "../../mark.ts";
 import { glslFloat, glslVec3 } from "../../shaders/glsl.ts";
 import { planetGlsl } from "../../shaders/lib/planet.ts";
 import { mobileGlsl } from "../../sims/mobile.ts";
-import { MOBILE_ANCHOR, MOBILE_TEX_ORIGIN, mobileLayoutGlsl } from "./layout.ts";
-import { SOLAR_LOOKS, SOLAR_RINGS, solarSaturnGlsl } from "./solar.ts";
+import { MOBILE_SUN_CENTRE, MOBILE_TEX_ORIGIN, mobileLayoutGlsl } from "./layout.ts";
+import { SOLAR_LOOKS, SOLAR_RINGS, solarGlsl } from "./solar.ts";
 
 /** The Sun's gold: the accent. */
 export const MOBILE_SUN = "#f2a52c";
@@ -51,7 +51,7 @@ export const mobileSceneGlsl = `
 ${planetGlsl}
 ${mobileGlsl("uSim0", MOBILE_TEX_ORIGIN)}
 ${mobileLayoutGlsl}
-${solarSaturnGlsl(MOBILE_ANCHOR)}
+${solarGlsl(MOBILE_SUN_CENTRE)}
 ${looks}
 const vec3 MOBILE_SATURN_AXIS = ${glslVec3(SATURN_AXIS)};
 // Saturn's rings: the C ring dim, the B ring bright, the Cassini division, the A ring (Saturn radii).
@@ -59,17 +59,19 @@ const PlanetRingBands MOBILE_RINGS = PlanetRingBands(${glslFloat(SOLAR_RINGS.inn
 // The window on the right the fill comes through, and how the Sun's light falls off (m²).
 const vec3 MOBILE_WINDOW = vec3(0.62, 0.42, 0.66);
 const float MOBILE_FALLOFF = 0.5;
+// The most of the Sun's light a shadow on the room takes.
+const float MOBILE_SHADE = 0.5;
 // The M of stars on the wall: its middle (x, y) and height (m).
-const vec3 MOBILE_STARS = vec3(1.5, 2.8, 0.42);
+const vec3 MOBILE_STARS = vec3(1.55, 2.3, 0.42);
 const vec2 MOBILE_STAR[${MARK_STARS.length}] = vec2[${MARK_STARS.length}](${MARK_STARS.map(([x, y]) => `vec2(${glslFloat(x ?? 0)}, ${glslFloat(y ?? 0)})`).join(", ")});
 
 bool mobileDay() {
   return K_room > 0.5;
 }
 
-// The Sun's centre: above the hook the mobile hangs from, as the passage poses it.
+// The Sun's centre: the loop it is threaded on, as the mobile swings and the passage poses it.
 vec3 mobileSunCentre() {
-  return mobileAt(0, 3) + vec3(0.0, MOBILE_SUN_RADIUS, 0.0);
+  return mobileAt(mobileSunArm(), 2);
 }
 
 // How lit the Sun is: 1 at rest. Coming in it glows like an ember as it is lowered and lights up as
@@ -171,8 +173,10 @@ float mobileRingShade(MobileSaturn s, vec3 P, vec3 L, float lr) {
 }
 
 // Light reaching P (normal n): the Sun, hidden as far as the mobile and Saturn's rings hide it, cut
-// per cell; the window; the room's ambient. skipArm/skipEnd: the ball P lies on.
-vec3 mobileLight(vec3 P, vec3 n, MobileSaturn sat, float warm, int skipArm, int skipEnd) {
+// per cell; the window; the room's ambient. skipArm/skipEnd: the ball P lies on. On the room's own
+// surfaces (room 1) the shadows stay secondary: thrown from the whole glowing globe at least, so
+// they blur and shrink with distance, and taking at most MOBILE_SHADE of the Sun's light.
+vec3 mobileLight(vec3 P, vec3 n, MobileSaturn sat, float warm, int skipArm, int skipEnd, float room) {
   vec3 light = mobileAmbient() + mobileFill() * max(dot(n, MOBILE_WINDOW), 0.0);
   if (warm <= 0.0) return light;
   vec3 S = mobileSunCentre();
@@ -184,9 +188,10 @@ vec3 mobileLight(vec3 P, vec3 n, MobileSaturn sat, float warm, int skipArm, int 
   float facing = dot(n, toS) * inversesqrt(d2);
   float sun = facing >= wrap ? facing : facing > -wrap ? (facing + wrap) * (facing + wrap) / (4.0 * wrap) : 0.0;
   if (sun <= 0.0) return light;
-  float hidden = mobileShadow(P, S, lr, skipArm, skipEnd);
-  if (sat.on) hidden = 1.0 - (1.0 - hidden) * (1.0 - mobileRingShade(sat, P, S, lr));
-  return light + mobileSunLight(warm) * sun / (MOBILE_FALLOFF + d2) * (1.0 - hardEdge(hidden));
+  float spread = mix(lr, max(lr, MOBILE_SUN_RADIUS), room);
+  float hidden = mobileShadow(P, S, spread, skipArm, skipEnd);
+  if (sat.on) hidden = 1.0 - (1.0 - hidden) * (1.0 - mobileRingShade(sat, P, S, spread));
+  return light + mobileSunLight(warm) * sun / (MOBILE_FALLOFF + d2) * (1.0 - mix(1.0, MOBILE_SHADE, room) * hardEdge(hidden));
 }
 
 // A planet's paint at its normal nb in its own frame (y its axis, z toward the room's front), foot a
@@ -328,7 +333,7 @@ Shade sceneMobile(vec2 uv, vec2 cell, float t) {
   vec3 albedo = surface == 1 ? mobileFloor(P, cw) : surface == 2 ? (mobileDay() ? vec3(0.8) : vec3(0.45)) : mobileWall(P);
   // The rose in the ceiling the Sun's cord hangs from.
   if (surface == 2) albedo *= 1.0 - 0.6 * hardFill((length(P.xz - S.xz) - 0.06) / cw, 0.7);
-  vec3 roomLight = mobileLight(P + n * 0.002, n, sat, warm, -1, -1);
+  vec3 roomLight = mobileLight(P + n * 0.002, n, sat, warm, -1, -1, 1.0);
   vec3 col = albedo * roomLight;
   // Glow-in-the-dark stars: pale where the light falls on them, their own green glow in the dark.
   if (surface == 0 && K_mark > 0.0 && mobileStars(P, cw) > 0.5) col = vec3(0.92, 0.94, 0.8) * roomLight + vec3(0.45, 1.0, 0.4) * 0.3 * K_mark;
@@ -338,7 +343,7 @@ Shade sceneMobile(vec2 uv, vec2 cell, float t) {
   // The Sun's cord, up to the ceiling.
   float rt;
   float along;
-  float d = mobileRaySeg(ro, rd, S + vec3(0.0, MOBILE_SUN_RADIUS, 0.0), vec3(S.x, MOBILE_CEILING, S.z), rt, along);
+  float d = mobileRaySeg(ro, rd, mobileAt(0, 3), vec3(S.x, MOBILE_CEILING, S.z), rt, along);
   if (rt > 0.0 && rt < tHit && hardFill((d - max(0.004, 0.45 * cellW * rt)) / (cellW * rt), 0.6) > 0.5) {
     tHit = rt;
     col = vec3(0.02) + 0.05 * mobileAmbient();
@@ -352,11 +357,11 @@ Shade sceneMobile(vec2 uv, vec2 cell, float t) {
     vec4 ball;
     int look;
     mobileBall(hit.arm, hit.end, mobileAt(hit.arm, 0), mobileAt(hit.arm, 1), ball, look);
-    vec3 light = mobileLight(Q + hit.n * 0.002, hit.n, sat, warm, hit.arm, hit.end);
+    vec3 light = mobileLight(Q + hit.n * 0.002, hit.n, sat, warm, hit.arm, hit.end, 0.0);
     if (look == MOBILE_WEIGHT) {
       // Brass, catching the Sun.
       float glint = pow(max(dot(reflect(rd, hit.n), normalize(S - Q)), 0.0), 30.0);
-      col = vec3(0.3, 0.21, 0.1) * light + 0.6 * glint * mobileSunLight(warm) / (MOBILE_FALLOFF + dot(S - Q, S - Q));
+      col = vec3(0.62, 0.44, 0.18) * light + 0.8 * glint * mobileSunLight(warm) / (MOBILE_FALLOFF + dot(S - Q, S - Q));
     } else {
       mat3 frame = mobileFrame(mobileAxis(look));
       col = mobileBodyPaint(look, hit.n * frame, cellW * hit.t / ball.w, tm) * light;
@@ -376,7 +381,7 @@ Shade sceneMobile(vec2 uv, vec2 cell, float t) {
     if (tr > 0.0) {
       vec3 Q = ro + rd * tr;
       vec3 rn = dot(rd, sat.frame[1]) < 0.0 ? sat.frame[1] : -sat.frame[1];
-      col = vec3(0.86, 0.76, 0.58) * tone * mobileLight(Q + rn * 0.002, rn, sat, warm, -1, -1);
+      col = vec3(0.86, 0.76, 0.58) * tone * mobileLight(Q + rn * 0.002, rn, sat, warm, -1, -1, 0.0);
       tHit = tr;
     }
   }

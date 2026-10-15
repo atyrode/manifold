@@ -1,22 +1,26 @@
 // The solar system the mobile carries, laid out on the shared mobile (sims/mobile.ts): the bodies,
 // their real orbits and how they hang, for each `planets` choice.
 //
-// One arm per planet, stacked down the Sun's axis: each hangs on a short link from the loop of the
-// arm above (`end: 2`), Mercury's from the hook under the Sun. Its planet rides end 0 at a reach that
-// grows with the orbit (half its rank, half the logarithm of its distance: the inner planets apart,
-// the giants not off the frame), and a brass weight on end 1, nearer the axis, balances it by the
-// lever rule. The Earth hangs from its arm's end with the Moon on a sub-arm of its own. Each arm hangs
-// as far below the one above as keeps its wire, planet, weight (and Saturn's rings) clear of all
-// that hangs above it; `clearance` scales those gaps.
+// One arm per planet, stacked down one axis: each hangs on a short link from the loop of the arm
+// above (`end: 2`), the top one's from a hook on the ceiling's cord. From the top: the outer bodies
+// outermost first, then the inner ones from Mercury out. The Sun is a globe threaded on the axis at
+// Mercury's loop, so the arms radiate from it, the inner planets circle it close to its own height and
+// the giants' wide arms hang a little above. A long arm never passes under a shorter one's planet:
+// only shorter arms' wires pass under the weights near the axis, so the stack stays low. Each planet
+// rides end 0 at a reach that grows with its orbit (half its rank, half the logarithm of its
+// distance: the inner planets apart, the giants not off the frame), and a small brass weight on
+// end 1, near the axis, balances it by the lever rule. The Earth hangs from its arm's end with the
+// Moon on a sub-arm
+// of its own. Each arm hangs as far below the one above as keeps its wire, planet, weight (and
+// Saturn's rings) clear of all that hangs above it; `clearance` scales those gaps.
 //
 // Sizes are not to scale: radius grows as about the 0.45 power of the real one, so Jupiter and
 // Saturn are clearly the biggest and Mercury and the Moon still a few cells across. The planets'
 // globes are hollow (SHELL kg/m²), the weights solid brass.
 //
 // Periods are real: a planet's arm turns once in its orbital period, au^1.5 years (Kepler's third
-// law), the Moon's sub-arm once a sidereal month. The arms start where the planets stood at the
-// start of 2000 (J2000 mean longitudes; Standish, "Keplerian Elements for Approximate Positions of
-// the Major Planets", JPL; Ceres from its JPL Horizons elements).
+// law), the Moon's sub-arm once a sidereal month. The arms start spread round the Sun, the giants
+// to either side and behind, the ice giants in front, so the system reads at a glance.
 import { glslFloat } from "../../shaders/glsl.ts";
 import {
   MOBILE_LOOP,
@@ -50,78 +54,76 @@ export interface SolarBody {
   readonly au: number;
   /** Radius on the mobile (m). */
   readonly radius: number;
-  /** Mean longitude at J2000 (degrees). */
-  readonly longitude: number;
+  /** Where its arm points at the start: degrees anticlockwise seen from above from the room's right (90: toward the wall). */
+  readonly start: number;
   readonly dwarf: boolean;
 }
 
 /** Sun to Pluto, in order out from the Sun. */
 export const SOLAR_BODIES: readonly SolarBody[] = [
-  { name: "Mercury", look: 0, au: 0.38709927, radius: 0.022, longitude: 252.2503, dwarf: false },
-  { name: "Venus", look: 1, au: 0.72333566, radius: 0.034, longitude: 181.9791, dwarf: false },
-  { name: "Earth", look: 2, au: 1.00000261, radius: 0.036, longitude: 100.4646, dwarf: false },
-  { name: "Mars", look: 4, au: 1.52371034, radius: 0.027, longitude: 355.4466, dwarf: false },
-  { name: "Ceres", look: 5, au: 2.7675, radius: 0.012, longitude: 160.594, dwarf: true },
-  { name: "Jupiter", look: 6, au: 5.202887, radius: 0.1, longitude: 34.3964, dwarf: false },
-  { name: "Saturn", look: 7, au: 9.53667594, radius: 0.085, longitude: 49.9542, dwarf: false },
-  { name: "Uranus", look: 8, au: 19.18916464, radius: 0.061, longitude: 313.2381, dwarf: false },
-  { name: "Neptune", look: 9, au: 30.06992276, radius: 0.059, longitude: 304.88, dwarf: false },
-  { name: "Pluto", look: 10, au: 39.48211675, radius: 0.016, longitude: 238.929, dwarf: true },
+  { name: "Mercury", look: 0, au: 0.38709927, radius: 0.022, start: 200, dwarf: false },
+  { name: "Venus", look: 1, au: 0.72333566, radius: 0.034, start: 320, dwarf: false },
+  { name: "Earth", look: 2, au: 1.00000261, radius: 0.036, start: 115, dwarf: false },
+  { name: "Mars", look: 4, au: 1.52371034, radius: 0.027, start: 250, dwarf: false },
+  { name: "Ceres", look: 5, au: 2.7675, radius: 0.012, start: 230, dwarf: true },
+  { name: "Jupiter", look: 6, au: 5.202887, radius: 0.09, start: 140, dwarf: false },
+  { name: "Saturn", look: 7, au: 9.53667594, radius: 0.078, start: 20, dwarf: false },
+  { name: "Uranus", look: 8, au: 19.18916464, radius: 0.061, start: 70, dwarf: false },
+  { name: "Neptune", look: 9, au: 30.06992276, radius: 0.059, start: 300, dwarf: false },
+  { name: "Pluto", look: 10, au: 39.48211675, radius: 0.016, start: 175, dwarf: true },
 ];
 
-/** The Moon: its radius, its sub-arm's reach from the Earth (m), its sidereal month (years), its J2000 mean longitude. */
+/** The Moon: its radius, its sub-arm's reach from the Earth (m), its sidereal month (years), where it starts (degrees, as SolarBody.start). */
 export const SOLAR_MOON = {
   radius: 0.013,
   reach: 0.085,
   years: 27.321661 / 365.25636,
-  longitude: 218.3165,
+  start: 0,
 } as const;
 
-/** The Sun's radius (m): the mobile hangs from a hook under it. */
+/** The Sun's radius (m): a globe threaded on the mobile's axis at Mercury's loop. */
 export const SOLAR_SUN_RADIUS = 0.15;
 
 /** Saturn's rings, in its radii (the C ring's inner edge to the A ring's outer), and its axis's tilt from upright (rad). */
-export const SOLAR_RINGS = { inner: 1.24, outer: 2.27, tilt: 0.47 } as const;
+export const SOLAR_RINGS = { inner: 1.24, outer: 2.27, tilt: 0.3 } as const;
 
 /**
  * The `planets` choices: the inner four and the Moon; the eight planets; with Ceres and Pluto. Each
- * reaches out to `reach` (m); the inner four alone are made `size` times as big and hung `drop` (m)
- * lower, to fill the room the giants leave.
+ * reaches out to `reach` (m); the inner four alone are made `size` times as big, to fill the room the
+ * giants leave.
  */
 export const SOLAR_SETS = [
-  { label: "inner", names: ["Mercury", "Venus", "Earth", "Mars"], reach: 0.9, size: 1.5, drop: 0.3 },
+  { label: "inner", names: ["Mercury", "Venus", "Earth", "Mars"], reach: 0.95, size: 1.4 },
   {
     label: "all",
     names: ["Mercury", "Venus", "Earth", "Mars", "Jupiter", "Saturn", "Uranus", "Neptune"],
-    reach: 1.05,
+    reach: 1.3,
     size: 1,
-    drop: 0,
   },
   {
     label: "+ dwarfs",
     names: SOLAR_BODIES.map((body) => body.name),
-    reach: 1.12,
+    reach: 1.38,
     size: 1,
-    drop: 0,
   },
 ] as const;
 
-/** Where the innermost planet hangs from the axis (m). */
-const INNER_REACH = 0.28;
+/** Where the innermost planet hangs from the axis (m): clear of the Sun's globe. */
+const INNER_REACH = 0.3;
 /** Hollow globes (kg/m² of surface) and the brass weights (kg/m³). */
 const SHELL = 0.6;
 const BRASS = 8500;
 /** A weight's reach against its planet's. */
-const WEIGHT_SHARE = 0.3;
+const WEIGHT_SHARE = 0.22;
 /** The loop's height above an arm's line: a base and a share of its span (m). */
 const LOOP_BASE = 0.02;
 const LOOP_SHARE = 0.02;
 /** The links: the shortest (m), the Earth's drop below its arm's end, and the Moon's sub-arm's loop. */
-const LINK_MIN = 0.06;
+const LINK_MIN = 0.045;
 const EARTH_DROP = 0.05;
 const MOON_LOOP = 0.015;
 /** Room kept between anything of one arm and anything of an arm above it that it passes under (m). */
-const ROOM = 0.025;
+const ROOM = 0.02;
 /** Half the thickness of an arm's wire (m), for the room it needs. */
 const WIRE_HALF = 0.002;
 
@@ -131,24 +133,19 @@ export interface SolarMobile {
   readonly arms: readonly { readonly name: string; readonly years: number }[];
   /** Saturn's arm (its planet on end 0), or -1. */
   readonly saturn: number;
+  /** The arm whose loop the Sun is threaded on. */
+  readonly sun: number;
 }
 
 function shellMass(radius: number): number {
   return SHELL * 4 * Math.PI * radius * radius;
 }
 
-/**
- * How far the ecliptic is turned against the room (degrees): longitude 0 points this far round from
- * the right toward the wall, so that at the start Jupiter and Saturn hang behind the Sun, throwing
- * their shadows on the wall, and Uranus and Neptune out to the right, half lit.
- */
-const ROOM_TURN = 40;
-
-/** Where end 1 points with end 0 at mean longitude `degrees` (MobileArmDesign.heading). */
+/** Where end 1 points with end 0 at `degrees` (SolarBody.start; MobileArmDesign.heading). */
 function headingFor(degrees: number): number {
-  // A body at longitude λ sits at (cos λ, 0, -sin λ) from its arm's loop: anticlockwise seen from
+  // A body at angle λ sits at (cos λ, 0, -sin λ) from its arm's loop: anticlockwise seen from
   // above, the way the motor turns (sims/mobile.ts `drive`). End 1 points the other way.
-  const lambda = ((degrees + ROOM_TURN) * Math.PI) / 180;
+  const lambda = (degrees * Math.PI) / 180;
   return -(lambda + Math.PI);
 }
 
@@ -161,10 +158,10 @@ interface Extent {
 }
 
 /**
- * The mobile for `planets` choice `set` (0..2) hung from `anchor` (the hook under the Sun, lowered by
- * the set's drop), its links scaled by `clearance`.
+ * The mobile for `planets` choice `set` (0..2) with the Sun's centre at `sun`, its links scaled by
+ * `clearance` (the hook it hangs from is placed above to suit).
  */
-export function solarMobile(set: number, clearance: number, anchor: Vec3): SolarMobile {
+export function solarMobile(set: number, clearance: number, sun: Vec3): SolarMobile {
   const choice = SOLAR_SETS[Math.min(SOLAR_SETS.length - 1, Math.max(0, Math.round(set)))];
   const names: readonly string[] = choice?.names ?? [];
   const bodies = SOLAR_BODIES.filter((body) => names.includes(body.name));
@@ -182,9 +179,19 @@ export function solarMobile(set: number, clearance: number, anchor: Vec3): Solar
   let saturn = -1;
   // Every extent placed so far, at its loop's height below the anchor (m, downward), unscaled.
   const placed: { depth: number; extent: Extent }[] = [];
+  // Each planet's arm and how far its loop hangs below the hook (scaled).
+  const hubs: { arm: number; depth: number }[] = [];
   let hub = 0;
+  let hung = 0;
   let parent = -1;
-  bodies.forEach((body, rank) => {
+  // From the top: the outer bodies outermost first, then the inner ones from Mercury out, so the
+  // Sun on Mercury's loop has the inner planets close round it and the giants' wide arms above.
+  const order = [
+    ...bodies.filter((body) => body.au > 2).reverse(),
+    ...bodies.filter((body) => body.au <= 2),
+  ];
+  order.forEach((body) => {
+    const rank = bodies.indexOf(body);
     const share =
       0.5 * (rank / Math.max(1, n - 1)) +
       0.5 * ((Math.log(body.au) - logFirst) / (logLast - logFirst));
@@ -234,19 +241,21 @@ export function solarMobile(set: number, clearance: number, anchor: Vec3): Solar
       }
     }
     for (const extent of extents) placed.push({ depth, extent });
-    const link = (depth - hub) * (parent < 0 ? 1 : clearance);
+    const link = parent < 0 ? LINK_MIN : (depth - hub) * clearance;
     hub = depth;
+    hung += link;
 
     const k = arms.length;
+    hubs.push({ arm: k, depth: hung });
     if (ringed) saturn = k;
     arms.push({
       parent,
       end: 2,
       depth: k,
-      link: parent < 0 ? LINK_MIN : link,
+      link,
       reach: [reach, weightReach],
       loop,
-      heading: headingFor(body.longitude),
+      heading: headingFor(body.start),
       plates: [undefined, undefined],
       balls: [
         earth ? undefined : { radius, mass: shellMass(radius), look: body.look },
@@ -263,7 +272,7 @@ export function solarMobile(set: number, clearance: number, anchor: Vec3): Solar
         reach: [earthReach, moon],
         loop: MOON_LOOP,
         // The Moon rides end 1.
-        heading: headingFor(SOLAR_MOON.longitude + 180),
+        heading: headingFor(SOLAR_MOON.start + 180),
         plates: [undefined, undefined],
         balls: [
           { radius, mass: earthMass, look: body.look },
@@ -275,18 +284,24 @@ export function solarMobile(set: number, clearance: number, anchor: Vec3): Solar
     parent = k;
   });
   if (arms.length > MOBILE_MAX_ARMS) throw new Error(`solar mobile: ${arms.length} arms`);
+  // The Sun on Mercury's loop; the hook as far above it as that loop hangs.
+  const centre = hubs.find((h) => periods[h.arm]?.name === "Mercury") ?? { arm: 0, depth: 0 };
   return {
-    design: { anchor: [anchor[0], anchor[1] - (choice?.drop ?? 0), anchor[2]], arms },
+    design: { anchor: [sun[0], sun[1] + centre.depth, sun[2]], arms },
     arms: periods,
     saturn,
+    sun: centre.arm,
   };
 }
 
-/** GLSL: Saturn's arm for the `planets` choice (K_planets), -1 without it. */
-export function solarSaturnGlsl(anchor: Vec3): string {
-  const lines = SOLAR_SETS.map((_, set) => {
-    const arm = solarMobile(set, 1, anchor).saturn;
-    return `  if (K_planets < ${glslFloat(set + 0.5)}) return ${arm};`;
-  });
-  return `int mobileSaturnArm() {\n${lines.join("\n")}\n  return -1;\n}`;
+/** GLSL: Saturn's arm (-1 without it) and the Sun's arm for the `planets` choice (K_planets). */
+export function solarGlsl(sun: Vec3): string {
+  const layouts = SOLAR_SETS.map((_, set) => solarMobile(set, 1, sun));
+  const table = (name: string, pick: (layout: SolarMobile) => number, fallback: number) => {
+    const lines = layouts.map(
+      (layout, set) => `  if (K_planets < ${glslFloat(set + 0.5)}) return ${pick(layout)};`,
+    );
+    return `int ${name}() {\n${lines.join("\n")}\n  return ${fallback};\n}`;
+  };
+  return `${table("mobileSaturnArm", (layout) => layout.saturn, -1)}\n${table("mobileSunArm", (layout) => layout.sun, 0)}`;
 }
