@@ -32,7 +32,7 @@ interface GateRunResult {
 
 interface GateInvocation {
   readonly args: readonly string[];
-  readonly dist: string;
+  readonly dist?: string;
 }
 
 interface SelectedTaskRun {
