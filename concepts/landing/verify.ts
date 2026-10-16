@@ -2,8 +2,9 @@
 // Runs every check registered in verify-browser.ts (or only the named ones), each on a freshly
 // loaded page so no check inherits another's state. A check is started in the page and reports
 // through a page binding when done, so it is bounded by its own deadline (LANDING_CHECK_SECONDS,
-// default 180) rather than the driver's per-call one. A line per check goes to stderr, the merged
-// results to stdout as JSON; the run stops at the first failure and exits non-zero, naming it.
+// default 180) rather than the driver's per-call one; a check whose renderer crashes or is killed
+// fails at once, not at that deadline. A line per check goes to stderr, the merged results to
+// stdout as JSON; the run stops at the first failure and exits non-zero, naming it.
 import { Browser } from "../../scripts/cdp.ts";
 
 const BINDING = "landingCheckDone";
@@ -62,8 +63,9 @@ async function runCheck(name: string): Promise<Outcome> {
     });
     if (started.error !== undefined)
       throw new Error(`cdp Runtime.evaluate: ${started.error.message}`);
-    // verify-browser.ts `run` reports exactly this shape.
-    return JSON.parse(await reported.promise) as Outcome;
+    // verify-browser.ts `run` reports exactly this shape. A page that dies meanwhile (earlyoom
+    // kills renderers first) never reports, so its loss ends the wait.
+    return JSON.parse(await Promise.race([reported.promise, browser.lost])) as Outcome;
   } finally {
     clearTimeout(timer);
     unsubscribe();

@@ -4,7 +4,7 @@
 // lets it settle, and writes concepts/landing/thumbs/<id>.webp. Run it after changing how a scene
 // looks at rest and commit the files; the lab falls back to a stand-in for a scene without one.
 import { mkdir } from "node:fs/promises";
-import { Browser } from "../../../scripts/cdp.ts";
+import { Browser, PageLostError } from "../../../scripts/cdp.ts";
 import index from "../index.html";
 import { sceneIds } from "../src/scenes/index.ts";
 
@@ -60,12 +60,15 @@ try {
     await browser.goto(`${String(server.url)}?scene=${id}&mode=bare&transitions=off`);
     const started = performance.now();
     // While the program builds the page answers nothing (a screenshot then times out): wait for two
-    // prompt screenshots in a row.
+    // prompt screenshots in a row. A page that is gone never will.
     const prompt = async () => {
       const asked = performance.now();
       const ok = await screenshot("png").then(
         () => true,
-        () => false,
+        (error: unknown) => {
+          if (error instanceof PageLostError) throw error;
+          return false;
+        },
       );
       return ok && performance.now() - asked < RESPONSIVE;
     };
