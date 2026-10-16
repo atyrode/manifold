@@ -77,7 +77,11 @@ const params: readonly ParamDef[] = [
     0.25,
     "A moon low over the mountains: a thin crescent to a full disc. It lights the snow and draws a path of glints down the water.",
   ),
-  ...skyComponentKnobs({ meteors: { trigger: AURORA_METEOR_TRIGGER } }),
+  ...skyComponentKnobs({
+    meteors: { trigger: AURORA_METEOR_TRIGGER },
+    constellations: true,
+    planets: true,
+  }),
   toggle(
     "night",
     "cabin",

@@ -87,7 +87,13 @@ const params: readonly ParamDef[] = [
     true,
     "A little tent at the edge of the light with a lantern glowing inside, and a backpack leaning by the stones.",
   ),
-  ...skyKnobs({ time: 0.8, stars: 0.8, milkyWay: { on: true } }),
+  ...skyKnobs({
+    time: 0.8,
+    stars: 0.8,
+    milkyWay: { on: true },
+    constellations: true,
+    planets: true,
+  }),
   feature(
     "planet",
     "planet",

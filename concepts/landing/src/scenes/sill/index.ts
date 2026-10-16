@@ -137,7 +137,14 @@ const params: readonly ParamDef[] = [
     0.45,
     "Windows across the city, each switching on or off now and then as the evening goes on: how many are lit.",
   ),
-  ...skyKnobs({ time: 0.8, stars: 0.5, moon: 1, meteors: { trigger: SILL_METEOR_TRIGGER } }),
+  ...skyKnobs({
+    time: 0.8,
+    stars: 0.5,
+    moon: 1,
+    meteors: { trigger: SILL_METEOR_TRIGGER },
+    constellations: true,
+    planets: true,
+  }),
   feature(
     "weather",
     "clouds",

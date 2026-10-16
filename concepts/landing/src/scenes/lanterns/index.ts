@@ -63,7 +63,13 @@ const params: readonly ParamDef[] = [
     0.35,
     "Mist lying on the river: the far bank fades into it, and each lantern wears a halo.",
   ),
-  ...skyKnobs({ time: 0.79, stars: LANTERNS_STARS, meteors: { trigger: LANTERNS_METEOR_TRIGGER } }),
+  ...skyKnobs({
+    time: 0.79,
+    stars: LANTERNS_STARS,
+    meteors: { trigger: LANTERNS_METEOR_TRIGGER },
+    constellations: true,
+    planets: true,
+  }),
   ...weatherKnobs({ rain: true, wind: true, aurora: true }),
   ...birdKnobs({
     kind: "geese",

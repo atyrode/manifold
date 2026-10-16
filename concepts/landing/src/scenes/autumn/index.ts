@@ -66,7 +66,14 @@ const params: readonly ParamDef[] = [
     0.7,
     "The cast-iron lamp beside the path lights as the day fades or a storm darkens it, throwing a warm pool on the leaves.",
   ),
-  ...skyKnobs({ time: 0.69, stars: 0.5, moon: 1, meteors: { trigger: AUTUMN_METEOR_TRIGGER } }),
+  ...skyKnobs({
+    time: 0.69,
+    stars: 0.5,
+    moon: 1,
+    meteors: { trigger: AUTUMN_METEOR_TRIGGER },
+    constellations: true,
+    planets: true,
+  }),
   ...weatherKnobs({ clouds: 0.3, shadows: true, rain: true, fog: true, wind: true, aurora: true }),
   feature(
     "manifold",

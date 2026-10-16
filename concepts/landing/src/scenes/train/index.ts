@@ -152,7 +152,7 @@ const params: readonly ParamDef[] = [
     0.5,
     "A red velvet curtain gathered at the window's edge, swaying with the carriage's rocking and swinging forward as the train brakes.",
   ),
-  ...skyKnobs({ time: 0.15, stars: 0.75, moon: 1 }),
+  ...skyKnobs({ time: 0.15, stars: 0.75, moon: 1, constellations: true, planets: true }),
   feature(
     "weather",
     "clouds",

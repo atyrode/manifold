@@ -204,11 +204,16 @@ the scene draws with as its default: `skyKnobs({ stars: 0.6 })` adds `K_stars` (
 (the band's brightness for `milkyWay`, 1 as the component draws it, up to 2; 0 while switched off,
 off unless `on`), `skyKnobs({ moon: 1 })` adds `K_moon` (the moon's phase for `skyMoonPhase`, 1 full,
 0 while switched off: no moon), `skyKnobs({ meteors: { trigger: 1 } })` adds `K_meteors` (shooting
-stars for `meteorAge`, off by default, "now" on that slot), `weatherKnobs({ clouds: 0.3 })` adds
+stars for `meteorAge`, off by default, "now" on that slot), `skyKnobs({ constellations: true })`
+adds `K_constellations` (the figures' lines, 0.05 a trace .. 1 clear stick figures; 0 while switched
+off: no figures; off at 0.4), `skyKnobs({ planets: true })` adds `K_planets` (how many planets show,
+1 Venus .. 5 with Mercury; 0 while switched off; off at 2; `skyStars` draws both parts itself, so only
+a scene whose stars come from it takes them), `weatherKnobs({ clouds: 0.3 })` adds
 `K_clouds` (fair-weather cover 0..1, which rain and snow thicken) and `weatherKnobs({ shadows: true })`
 adds `K_shadows` (how dark the cloud deck's shadows fall, for `skyCloudShadow`: 0.6 while on, off
 unless `on: { shadows: true }`). A scene with a night of its own (an hour knob, a painted sky) takes
-the components without the clock from `skyComponentKnobs({ stars, milkyWay, moon, meteors, group })`.
+the components without the clock from `skyComponentKnobs({ stars, milkyWay, moon, meteors,
+constellations, planets, group })`.
 Use `atmosphereGroups.sky` / `.weather` for their lab headings, `.skyNight` for a sky group that
 also holds components. A scene that composes the whole shared world takes all of these, with the
 birds' below, from one call, `worldKnobs` (`src/scenes/world.ts`, see "World layers").
@@ -373,6 +378,15 @@ vec2 skyAngles(vec3 dir);                                 // (bearing from strai
 // With SKY_MOON_PHASE (SceneDef.features):
 Sky skyMoonPhase(Sky sky, float phase);                   // K_moon: 1 full (unchanged) .. 0 no moon; disc, halo, moonColor, ambient follow
 float skyMoonPhaseLight(float phase);                     // the moon's light at a phase relative to full (0.32 half, 0.11 a quarter)
+// With the scene's K_constellations / K_planets (skyComponentKnobs({ constellations, planets })), both
+// skyStars overloads also draw, over the field and only while the knob is on (never at density 0):
+//   the constellations: six figures fixed on the dome 13-42 degrees up, from 37 degrees left to 50
+//   right of ahead (clear of the full moon at midnight); their stars brighter than the field's, the
+//   stick lines at K_constellations (0.05 a trace .. 1 clear); faded as the stars (skyStarFade)
+//   the planets: the first K_planets of Venus, Jupiter, Saturn, Mars, Mercury on the band of the sun's
+//   and moon's paths (Venus the evening star low on the left, Mercury lower beside it), steady discs
+//   wider than any star, out with the first stars, hidden only behind the moon's disc
+// Both are sized in dither cells (foot; 1 / uRes.y radians without it), so they show at any cell size.
 
 // Clouds in tiers (clouds.ts), each only in a scene whose SceneDef.features CLOUD_TIER reaches it, the
 // lit deck where it selects none (see "Clouds"):
@@ -627,7 +641,9 @@ blurs, as Frost does behind thick frost. Detail finer than a cell or two fades t
 
 - a star layer whose grid falls under ~1.25 cells becomes a faint glow;
 - the aurora's finest rays become an even glow;
-- a meteor's core stays about a cell wide.
+- a meteor's core stays about a cell wide;
+- the constellations' stars and lines and the planets are sized in cells, so they keep their shape
+  at any footprint, and a figure line too short to clear its stars is left out.
 
 Where the detail is resolved (stars at 96 rows or more for a 1-radian view, the aurora's rays at 76),
 the result is bit for bit the full-detail one, so passing `foot` never changes a picture that was
@@ -639,19 +655,21 @@ Random events stop at motion 0 (still pictures, reduced motion), and "now" still
 
 The components and their three parts:
 
-| Component      | Controls                                                                                                             | Features                                | Outputs                                                                                                                                                                                                                                                                              |
-| -------------- | -------------------------------------------------------------------------------------------------------------------- | --------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| Stars          | `skyKnobs({ stars })`: `K_stars`                                                                                     |                                         | `skyStars(sky, dir, density, foot)` coverage, `SKY_STAR_TINT`; `skyStarFade`                                                                                                                                                                                                         |
-| Milky Way      | `skyKnobs({ milkyWay })` (`skyComponentKnobs` without the clock): `K_milkyWay`                                       | opt-in `milkyWayGlsl`                   | `milkyWay(dir, band)` radiance (times the scene's tint, `K_milkyWay`, `K_stars` and night), `milkyWayStars(density, band)` the stars crowding into it; the band's pole is the scene's (`MILKY_WAY_BAND`)                                                                             |
-| Moon           | `skyKnobs({ moon })`: `K_moon`                                                                                       | `SKY_MOON_PHASE`                        | `skyMoonPhase(sky, K_moon)`: the disc and halo in `skyColor`, the light in `sky.moonColor` and `sky.ambient`, the glare in `skyStars`; `skyMoonCover(sky, dir)` coverage                                                                                                             |
-| Aurora         | `weatherKnobs({ aurora })`: `K_aurora`                                                                               | `AURORA_CURTAINS` (3)                   | `auroraM(dir, tm, strength, foot)` radiance, `auroraGlow(tm, strength)` light, `auroraSeen(sky, cloud)` visibility                                                                                                                                                                   |
-| Canopy weather | `weatherKnobs({ rain, wind })`: `K_rain`, `K_wind`; the scene's seed knob                                            |                                         | `canopyWeather(sky, K_rain)` light (the sky under the rain's cloud, the deck's brightness, the key's side and slant); `canopyRaySources`, `canopyGap(p, wind, seed, raySrc)` coverage (where the rain pours in); `canopyGapSky(w, washed, dir, stars, p, wind, seed, deck)` radiance |
-| Water          | the scene's own (`K_wind` and its water knobs)                                                                       | `WATER_TIER` (tiers, see "Water")       | slope and unresolved variance (`rippleSpectrum`, `windRipples`), mirror ray and Fresnel (`waterMirror`), drifted points (`waterDrift`, `waterFlow`), light on the bed (`waterCaustic`, the cellular net `causticCells`)                                                              |
-| Clouds         | `weatherKnobs({ clouds, shadows })`: `K_clouds`, `K_shadows`; the scene's own (the cloud sea's cover, height, drift) | `CLOUD_TIER` (tiers, see "Clouds")      | the deck's plane and calm field (`cloudDeckPoint`, `cloudFlatField`), the lit deck (`skyClouds`) rgb and coverage, its shadow (`skyCloudShadow`) light on materials, the sea of tops (`cloudSeaMarch`, `cloudSeaTop`, `cloudSeaShadow`) distance, normal and light                   |
-| Meteors        | `skyKnobs({ meteors: { trigger } })` (`skyComponentKnobs` without the clock): `K_meteors`                            |                                         | `meteorAge(tm, rate, slot, seed)` schedule, `meteorStreak(q, field, age, seed, foot)` coverage in the scene's frame (`skyAngles(dir)` on a dome, screen heights for a flat backdrop), `METEOR_TINT`                                                                                  |
-| Birds          | `birdKnobs({ kind })` (`shaders/lib/birds.ts`): `K_birds`, `K_birdKind`, `K_birdFormation`                           | opt-in `birdsGlsl`                      | `birdFlights(p, sky, cam, tm, pxl)` coverage, depth and albedo (`BirdHit`); `birdFlightsSeen(..., true)` the image in still water; `birdBelowHit` from below                                                                                                                         |
-| Rooted plants  | `plantKnobs({ group, season, growth, gusts })` (`src/scenes/plants.ts`), read by the sim only                        | opt-in `plantsGlsl`, `PLANT_DETAIL` (2) | organs on springs (`RootedPlants`) packed as records (`PlantTexture`, `plantOrgan`) for shared shapes drawn per fragment (`plantFrond`, `plantArc`, `plantPoint`), or rasterised into a sheet the scene samples (`PlantSheet`, `plantSheetGlsl`); see "Rooted plants"                |
-| Giant planet   | `planetKnobs({ prefix, clouds, storms, aurora, lights, daycycle, moons, ring })` (`src/scenes/planet.ts`)            | opt-in `planetGlsl`                     | a hero composes the parts (`planetBelts`, `planetClouds`, `planetAurora`, `planetCityLights`, `planetRingBands`, `planetMoonDisc`...) as coverage and light; a decoration draws the whole giant over an RGB sky (`planetOver`); see "The giant planet"                               |
+| Component      | Controls                                                                                                             | Features                                                  | Outputs                                                                                                                                                                                                                                                                              |
+| -------------- | -------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Stars          | `skyKnobs({ stars })`: `K_stars`                                                                                     |                                                           | `skyStars(sky, dir, density, foot)` coverage, `SKY_STAR_TINT`; `skyStarFade`                                                                                                                                                                                                         |
+| Milky Way      | `skyKnobs({ milkyWay })` (`skyComponentKnobs` without the clock): `K_milkyWay`                                       | opt-in `milkyWayGlsl`                                     | `milkyWay(dir, band)` radiance (times the scene's tint, `K_milkyWay`, `K_stars` and night), `milkyWayStars(density, band)` the stars crowding into it; the band's pole is the scene's (`MILKY_WAY_BAND`)                                                                             |
+| Moon           | `skyKnobs({ moon })`: `K_moon`                                                                                       | `SKY_MOON_PHASE`                                          | `skyMoonPhase(sky, K_moon)`: the disc and halo in `skyColor`, the light in `sky.moonColor` and `sky.ambient`, the glare in `skyStars`; `skyMoonCover(sky, dir)` coverage                                                                                                             |
+| Aurora         | `weatherKnobs({ aurora })`: `K_aurora`                                                                               | `AURORA_CURTAINS` (3)                                     | `auroraM(dir, tm, strength, foot)` radiance, `auroraGlow(tm, strength)` light, `auroraSeen(sky, cloud)` visibility                                                                                                                                                                   |
+| Canopy weather | `weatherKnobs({ rain, wind })`: `K_rain`, `K_wind`; the scene's seed knob                                            |                                                           | `canopyWeather(sky, K_rain)` light (the sky under the rain's cloud, the deck's brightness, the key's side and slant); `canopyRaySources`, `canopyGap(p, wind, seed, raySrc)` coverage (where the rain pours in); `canopyGapSky(w, washed, dir, stars, p, wind, seed, deck)` radiance |
+| Water          | the scene's own (`K_wind` and its water knobs)                                                                       | `WATER_TIER` (tiers, see "Water")                         | slope and unresolved variance (`rippleSpectrum`, `windRipples`), mirror ray and Fresnel (`waterMirror`), drifted points (`waterDrift`, `waterFlow`), light on the bed (`waterCaustic`, the cellular net `causticCells`)                                                              |
+| Clouds         | `weatherKnobs({ clouds, shadows })`: `K_clouds`, `K_shadows`; the scene's own (the cloud sea's cover, height, drift) | `CLOUD_TIER` (tiers, see "Clouds")                        | the deck's plane and calm field (`cloudDeckPoint`, `cloudFlatField`), the lit deck (`skyClouds`) rgb and coverage, its shadow (`skyCloudShadow`) light on materials, the sea of tops (`cloudSeaMarch`, `cloudSeaTop`, `cloudSeaShadow`) distance, normal and light                   |
+| Meteors        | `skyKnobs({ meteors: { trigger } })` (`skyComponentKnobs` without the clock): `K_meteors`                            |                                                           | `meteorAge(tm, rate, slot, seed)` schedule, `meteorStreak(q, field, age, seed, foot)` coverage in the scene's frame (`skyAngles(dir)` on a dome, screen heights for a flat backdrop), `METEOR_TINT`                                                                                  |
+| Constellations | `skyKnobs({ constellations: true })` (`skyComponentKnobs` without the clock): `K_constellations`, off at 0.4         | the knob itself (`#ifdef K_constellations` in `skyStars`) | inside `skyStars`' coverage, no call of its own: the figures of `constellations.ts` (its `uCon*` uniforms, all but the Manifold mark) fixed on the dome, their stars brighter than the field's, the lines at `K_constellations`; faded as the stars (`skyStarFade`)                  |
+| Planets        | `skyKnobs({ planets: true })` (`skyComponentKnobs` without the clock): `K_planets`, off at 2                         | the knob itself (`#ifdef K_planets` in `skyStars`)        | inside `skyStars`' coverage: the first `K_planets` of Venus, Jupiter, Saturn, Mars and Mercury on the band of the sun's and moon's paths, steady discs wider than any star (brightness only, no tint of their own), hidden behind the moon's disc (`skyMoonCover`)                   |
+| Birds          | `birdKnobs({ kind })` (`shaders/lib/birds.ts`): `K_birds`, `K_birdKind`, `K_birdFormation`                           | opt-in `birdsGlsl`                                        | `birdFlights(p, sky, cam, tm, pxl)` coverage, depth and albedo (`BirdHit`); `birdFlightsSeen(..., true)` the image in still water; `birdBelowHit` from below                                                                                                                         |
+| Rooted plants  | `plantKnobs({ group, season, growth, gusts })` (`src/scenes/plants.ts`), read by the sim only                        | opt-in `plantsGlsl`, `PLANT_DETAIL` (2)                   | organs on springs (`RootedPlants`) packed as records (`PlantTexture`, `plantOrgan`) for shared shapes drawn per fragment (`plantFrond`, `plantArc`, `plantPoint`), or rasterised into a sheet the scene samples (`PlantSheet`, `plantSheetGlsl`); see "Rooted plants"                |
+| Giant planet   | `planetKnobs({ prefix, clouds, storms, aurora, lights, daycycle, moons, ring })` (`src/scenes/planet.ts`)            | opt-in `planetGlsl`                                       | a hero composes the parts (`planetBelts`, `planetClouds`, `planetAurora`, `planetCityLights`, `planetRingBands`, `planetMoonDisc`...) as coverage and light; a decoration draws the whole giant over an RGB sky (`planetOver`); see "The giant planet"                               |
 
 Bamboo and Forest compose the canopy weather under their leaves, each with its own tint on the
 washed sky, deck gain (1.3, 1.25), shelter (half, 45% of the rain under the leaves) and ray bases.
@@ -727,6 +745,15 @@ have **open** cells: an open night sky where the component could be composed.
 
 `aurora` and `lake` keep a night of their own: their own `K_stars` knob sets the shared stars
 (`skyStarLight`) on it.
+
+The constellations and the planets come with `skyStars`, so every scene whose stars it draws, directly,
+through `skyStarLight` or through the canopy's (`canopyGapSky`) or the world's sky, has both knobs:
+every **knob** in the Stars column above, and `aurora` and `lake` for the shared stars on their own
+nights. How much of them shows is the view's: `aurora` sees every figure; `lake`, `frost`, `campfire`
+and `sill` three or four, with Jupiter, Saturn and Mars; `flock` and `meadow` (turned toward the
+sunset) Venus and Mercury under Leo; `country` (a strip of sky some 15 degrees deep) little; `street`
+only its window glass. `swell`, `orbit` and `fireflies` draw stars of their own and have neither
+(orbit keeps a `constellations` toggle of its own).
 
 The rest have no sky: `bar`, `chladni`, `delta`, `ferro`, `film`, `fractal`, `harmonograph`,
 `hyperbolic`, `incense`, `lava`, `marble`, `mobile`, `pearl`, `pendula`, `petri`, `physarum`,
@@ -1228,7 +1255,7 @@ const float WORLD_FAR;  // 1e4: the distance of open sky
 
   | Gate              | On while                                                           | Off: the part gives                  |
   | ----------------- | ------------------------------------------------------------------ | ------------------------------------ |
-  | `WORLD_STARS`     | `stars` > 0, night can fall                                        | no stars                             |
+  | `WORLD_STARS`     | `stars` > 0, night can fall                                        | no stars, constellations or planets  |
   | `WORLD_MILKYWAY`  | `milkyWay` and `stars` > 0, night can fall                         | no band; the stars exactly `K_stars` |
   | `WORLD_METEORS`   | night can fall (its "now" shows one while the knob is off)         | no shooting stars                    |
   | `WORLD_AURORA`    | `aurora` on, night can fall                                        | no curtains, no glow                 |
@@ -1242,14 +1269,15 @@ const float WORLD_FAR;  // 1e4: the distance of open sky
   | `SKY_MOON_PHASE`  | the moon off or short of full (left out, not 0, otherwise)         | the full moon of `skyColor`          |
 
 - **Knobs and defaults** (`worldKnobs(options)`, with `worldGroups` for the headings). The shared
-  builders' own keys, labels and help: `time`, `cycle`, `stars`, `milkyWay`, `moon`, `meteors`
-  (`skyKnobs`); `clouds`, `shadows`, `rain`, `snow`, `fog`, `lightning`, `aurora`, then `wind`
-  (`weatherKnobs`, wind in `groups.wind` if given); `birds`, `birdKind`, `birdFormation`
-  (`birdKnobs`). The scene gives its hour (`time`), its trigger slots (`meteors.trigger`,
-  `lightning`) and its birds (`kind`, `help`), and may change any default. The defaults are an
-  ambient world (`WORLD_DEFAULTS`): fair-weather cloud 0.25, stars 0.6, the moon full, the Milky
-  Way on at 1 (it shows on dark nights: moonlight washes it out), birds on at 0.35 by day; shooting
-  stars, cloud shadows, rain, snow, fog, lightning and the aurora off; wind 0.2.
+  builders' own keys, labels and help: `time`, `cycle`, `stars`, `milkyWay`, `moon`, `meteors`,
+  `constellations`, `planets` (`skyKnobs`); `clouds`, `shadows`, `rain`, `snow`, `fog`, `lightning`,
+  `aurora`, then `wind` (`weatherKnobs`, wind in `groups.wind` if given); `birds`, `birdKind`,
+  `birdFormation` (`birdKnobs`). The scene gives its hour (`time`), its trigger slots
+  (`meteors.trigger`, `lightning`) and its birds (`kind`, `help`), and may change any default. The
+  defaults are an ambient world (`WORLD_DEFAULTS`): fair-weather cloud 0.25, stars 0.6, the moon
+  full, the Milky Way on at 1 (it shows on dark nights: moonlight washes it out), birds on at 0.35 by
+  day; shooting stars, the constellations, the planets, cloud shadows, rain, snow, fog, lightning and
+  the aurora off; wind 0.2.
 
 **Adopting it** (meadow, `meadow/index.ts` and `meadow/shader.ts`):
 
@@ -1504,7 +1532,8 @@ tiny constants included), `glslVec3` (from `"#rrggbb"` or a triple) and `glslPic
 fallback)` (a palette table of `if (K_<knob> < i.5) return ...;` lines). The rest serve one scene
 each: `src/botany.ts` and `src/decor.ts` paint the pond's plant atlas (the sprites `PlantSheet`
 cuts out) and its canopy sheet, on a worker (`src/sheet.ts`), and `src/constellations.ts` sends
-orbit's constellation figures as `common`'s `uCon*` uniforms.
+the constellation figures as `common`'s `uCon*` uniforms (orbit's, and the night sky's
+constellations that `skyStars` draws).
 
 Keep simulations cheap (a few ms per frame at most) and scale step counts with `dt * motion`.
 Sims must be deterministic for a given seed knob and survive `dt = 0` (paused) and resizes.
@@ -1587,6 +1616,13 @@ The shared components have checks of their own:
 - The star density knob where it replaced a fixed density (`shore/stars.verify.ts`, `starsKnob`):
   over the cloud sea, the murmuration and the shore it starts at the old density, and more stars
   light the night more.
+- The constellations and planets (`src/night-sky.verify.ts`). `nightSky`: at a clear midnight
+  `skyStars`, both overloads, lights every figure star and the middle of every figure line (the
+  lines as strong as their amount, the stars not fading with them) and the asked number of planets,
+  brightest first, each part none of the other's; they still show at a coarse footprint; by day and
+  with no stars nothing; and the knobs off draw exactly what a program without them draws.
+  `nightSkyDefaults1`, `2` and `3` (a third of the scenes each): every scene with the knobs starts
+  with both off and draws, at its defaults and at midnight, byte for byte what it draws without them.
 
 CI runs these checks (gate group `landing-webgl`) and the lab's TypeScript and unit tests
 (`landing-concept`) for every pull request that changes `concepts/landing/` or a source the lab

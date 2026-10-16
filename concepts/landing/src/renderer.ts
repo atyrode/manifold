@@ -674,8 +674,9 @@ export class DitherRenderer {
     const uniforms = Object.fromEntries(
       uniformNames.map((name) => [name, gl.getUniformLocation(program, name)]),
     ) as Record<UniformName, WebGLUniformLocation | null>;
-    // Constant for the program's lifetime: the constellation figures (only orbit reads them; the
-    // other programs drop the uniforms) and the texture unit of every sampler.
+    // Constant for the program's lifetime: the constellation figures (orbit's sky, and the shared
+    // sky's constellations where a scene has that knob; the other programs drop the uniforms) and
+    // the texture unit of every sampler.
     const figures = constellationUniforms;
     gl.uniform4fv(uniforms.uConStars, figures.stars);
     gl.uniform1fv(uniforms.uConBright, figures.brightness);

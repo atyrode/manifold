@@ -126,6 +126,8 @@ const params: readonly ParamDef[] = [
   ...skyComponentKnobs({
     milkyWay: { on: true },
     meteors: { trigger: LAKE_METEOR_TRIGGER },
+    constellations: true,
+    planets: true,
   }),
   toggle(
     "night",

@@ -39,7 +39,14 @@ const params: readonly ParamDef[] = [
     "The shape of the hills and their fields, the clouds, and the flowers in the drifts; re-seed for another view of the valley.",
   ),
   ...weatherKnobs({ wind: true, clouds: 0.55, aurora: true }),
-  ...skyKnobs({ time: 0.64, stars: 0.6, moon: 1, meteors: { trigger: BEES_METEOR_TRIGGER } }),
+  ...skyKnobs({
+    time: 0.64,
+    stars: 0.6,
+    moon: 1,
+    meteors: { trigger: BEES_METEOR_TRIGGER },
+    constellations: true,
+    planets: true,
+  }),
   feature(
     "manifold",
     "mark",

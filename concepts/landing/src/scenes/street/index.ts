@@ -71,7 +71,7 @@ const params: readonly ParamDef[] = [
     0.5,
     "Windows lit in the rooms over the shops, switching on and off now and then; in the rain the wet street mirrors them too.",
   ),
-  ...skyKnobs({ time: 0.81, stars: 0.55, moon: 1 }),
+  ...skyKnobs({ time: 0.81, stars: 0.55, moon: 1, constellations: true, planets: true }),
   ...weatherKnobs({ rain: true, snow: true, fog: true, wind: true }),
   toggle(
     "manifold",

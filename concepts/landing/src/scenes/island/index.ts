@@ -56,7 +56,7 @@ const params: readonly ParamDef[] = [
     "Every minute or two a balloon carrying a little present drifts across the sky, its shadow crossing the island. Now: send one.",
     { trigger: 0 },
   ),
-  ...skyKnobs({ time: 0.58, stars: 0.6 }),
+  ...skyKnobs({ time: 0.58, stars: 0.6, constellations: true, planets: true }),
   ...weatherKnobs({ clouds: 0.35, rain: true, snow: true, fog: true, wind: true }),
   feature(
     "manifold",

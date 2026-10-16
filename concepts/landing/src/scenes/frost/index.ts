@@ -69,7 +69,14 @@ const params: readonly ParamDef[] = [
     "What lies beyond the glass: a snowy street with lit windows and a street lamp, or a log cabin among snowy spruces.",
   ),
   // The street's own default star density; the cabin, away from the town's lights, shows 1.7x as many.
-  ...skyKnobs({ time: 0.9, stars: 0.5, moon: 1, meteors: { trigger: FROST_METEOR_TRIGGER } }),
+  ...skyKnobs({
+    time: 0.9,
+    stars: 0.5,
+    moon: 1,
+    meteors: { trigger: FROST_METEOR_TRIGGER },
+    constellations: true,
+    planets: true,
+  }),
   ...weatherKnobs({ snow: true, wind: true, aurora: true, on: { snow: true } }),
   feature(
     "manifold",

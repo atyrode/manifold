@@ -18,8 +18,13 @@ export const COLD_CORE = 0.04;
 export const COLD_EDGE = 0.2;
 /** The cold over which rain turns to snow: none falls as snow below the first, all above the second. */
 export const SNOW_SHARE = [0.35, 0.65] as const;
-/** The cold over which deep winter's own snow comes to lie, none to all. */
+/** The cold over which deep winter's own snow comes to lie, none to all of WINTER_COVER. */
 export const WINTER_LYING = [0.55, 0.95] as const;
+/**
+ * How much snow deep winter lays by itself at its coldest (uWeather.y): a cover through which the
+ * hedges, field edges and furrows still read; a snowfall lies deeper.
+ */
+export const WINTER_COVER = 0.7;
 
 export type SeasonKnob = ParamDef & { widget: { kind: "sky"; part: "season"; year: SeasonYear } };
 
@@ -135,9 +140,9 @@ export function fallingSnow(rain: number, snow: number, cold: number): number {
   return Math.max(snow, rain * snowShare(cold));
 }
 
-/** How much snow deep winter lays by itself, 0..1, beside what falls. */
+/** How much snow deep winter lays by itself, 0..WINTER_COVER, beside what falls. */
 export function climateLying(cold: number): number {
-  return smoothstep(WINTER_LYING[0], WINTER_LYING[1], cold);
+  return WINTER_COVER * smoothstep(WINTER_LYING[0], WINTER_LYING[1], cold);
 }
 
 /** The GLSL mirror of the functions above, for the shared weather library. */
@@ -154,8 +159,8 @@ vec2 climatePrecip(float rain, float snow, float cold) {
   float share = smoothstep(${SNOW_SHARE[0]}, ${SNOW_SHARE[1]}, cold);
   return vec2(rain * (1.0 - share), max(snow, rain * share));
 }
-// How much snow deep winter lays by itself, 0..1, beside what falls (uWeather.y already holds it).
+// How much snow deep winter lays by itself, 0..${WINTER_COVER}, beside what falls (uWeather.y holds it).
 float climateLying(float cold) {
-  return smoothstep(${WINTER_LYING[0]}, ${WINTER_LYING[1]}, cold);
+  return ${WINTER_COVER} * smoothstep(${WINTER_LYING[0]}, ${WINTER_LYING[1]}, cold);
 }
 `;

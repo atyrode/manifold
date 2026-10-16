@@ -6,7 +6,7 @@ import type { SceneDef } from "../types.ts";
 import { CLOUDS_PASSAGE, cloudsGlsl } from "./shader.ts";
 
 const params: ParamDef[] = [
-  ...skyKnobs({ time: 0.72, stars: 0.75 }),
+  ...skyKnobs({ time: 0.72, stars: 0.75, constellations: true, planets: true }),
   range(
     "clouds",
     "cover",

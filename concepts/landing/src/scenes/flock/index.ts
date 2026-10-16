@@ -70,7 +70,7 @@ const params: readonly ParamDef[] = [
     1,
     "The low silhouette along the bottom: rooftops, a reed bed on still water, or the sea under a headland. Lights come on as night falls.",
   ),
-  ...skyKnobs({ time: 0.76, stars: 0.45 }),
+  ...skyKnobs({ time: 0.76, stars: 0.45, constellations: true, planets: true }),
   ...weatherKnobs({ wind: true }),
   feature(
     "manifold",

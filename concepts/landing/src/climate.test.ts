@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import {
   climateCold,
   climateLying,
+  WINTER_COVER,
   fallingRain,
   fallingSnow,
   hasClimate,
@@ -67,7 +68,7 @@ describe("the climate", () => {
 
   test("lays snow of its own only in deep winter", () => {
     expect(climateLying(climateCold(0.625))).toBe(0);
-    expect(climateLying(climateCold(0.875))).toBe(1);
+    expect(climateLying(climateCold(0.875))).toBe(WINTER_COVER);
   });
 
   test("leaves every scene it applies to warm at its defaults, so no default picture changes", () => {

@@ -74,7 +74,14 @@ export const fallsScene: SceneDef = {
       kind: "swifts",
       help: "Birds crossing the gorge by day, swifts by default, sailing past the cliff and now and then swooping low over the pool; the rock, the trees on the rim and the spray hide them, and few fly in the rain.",
     }),
-    ...skyKnobs({ time: 0.55, stars: 0.45, moon: 1, meteors: { trigger: FALLS_METEOR_TRIGGER } }),
+    ...skyKnobs({
+      time: 0.55,
+      stars: 0.45,
+      moon: 1,
+      meteors: { trigger: FALLS_METEOR_TRIGGER },
+      constellations: true,
+      planets: true,
+    }),
     ...weatherKnobs({ rain: true, fog: true, wind: true, aurora: true }),
     feature(
       "manifold",

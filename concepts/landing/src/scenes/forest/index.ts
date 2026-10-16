@@ -93,7 +93,7 @@ const params: readonly ParamDef[] = [
     0.65,
     "Shafts of sun falling through gaps in the canopy, or of the moon at night: narrow at the gap and widening as they fall, slanting with the light, combed by the shadows of branches, breathing in and out. They gild what they cross and light the dust drifting in them.",
   ),
-  ...skyKnobs({ time: 0.82, stars: 0.5, moon: 1 }),
+  ...skyKnobs({ time: 0.82, stars: 0.5, moon: 1, constellations: true, planets: true }),
   ...weatherKnobs({ rain: true, wind: true }),
   feature(
     "manifold",

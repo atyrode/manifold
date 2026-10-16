@@ -38,7 +38,14 @@ const params: readonly ParamDef[] = [
     "The road you cannot see: buses and cars sweeping their shadows, headlights and glints along the lower floors, and a tram now and then, its pantograph sparking on the wire.",
   ),
   seed("city", "citySeed", "street", "Which buildings stand where: re-seed for another street."),
-  ...skyKnobs({ time: 0.58, stars: 0.3, moon: 1, meteors: { trigger: SKYWARD_METEOR_TRIGGER } }),
+  ...skyKnobs({
+    time: 0.58,
+    stars: 0.3,
+    moon: 1,
+    meteors: { trigger: SKYWARD_METEOR_TRIGGER },
+    constellations: true,
+    planets: true,
+  }),
   range(
     "air",
     "birds",
