@@ -1,15 +1,16 @@
-// The night strip's model (nightsky.ts), apart from its DOM: the parts a group holds (knobs tagged
-// `night`), where the strip's stars stand and how many are out at a density, how many streaks the
-// shooting stars draw, and what a click, a drag or a key does to a part. A part is the stars'
-// density (a range, always out) or a sky component that switches (a feature): on or off, with an
-// amount it keeps while off.
+// The Night sky section's model (nightsky.ts), apart from its DOM: the parts a group holds (knobs
+// tagged `night`), how each reads and is drawn at its setting (the moon's phase among the drawn
+// moons, how many stars, streaks and planets are out), what a click on a drawn part does, and what
+// "See it at night" sets. A part is the stars' density (a range, always out) or a sky component that
+// switches (a feature): on or off, with an amount it keeps while off.
 import { formatValue, type ParamDef } from "../params.ts";
 import { snap } from "./dom.ts";
 import type { FeatureDef, RangeDef } from "./knobs.ts";
 
-export type NightPartName = "stars" | "milkyWay" | "meteors" | "aurora";
+export type NightPartName =
+  "moon" | "stars" | "milkyWay" | "constellations" | "planets" | "aurora" | "meteors";
 
-/** A part of the strip: the stars' density, or a sky component that switches. */
+/** A part of the night sky: the stars' density, or a sky component that switches. */
 export type NightPart =
   { name: "stars"; def: RangeDef } | { name: Exclude<NightPartName, "stars">; def: FeatureDef };
 
@@ -22,14 +23,23 @@ export interface PartState {
 export type Patch = Record<string, number>;
 
 /**
- * The strip's order: the sky the stars fill, then left to right the aurora low over the horizon,
- * the Milky Way rising through the middle and the shooting stars on the right.
+ * The section's order: the moon (its own row of phases), then the chips two by two: the stars and
+ * the Milky Way, the figures and planets among them, then what comes and goes, the aurora and
+ * shooting stars.
  */
-const ORDER: readonly NightPartName[] = ["stars", "aurora", "milkyWay", "meteors"];
+const ORDER: readonly NightPartName[] = [
+  "moon",
+  "stars",
+  "milkyWay",
+  "constellations",
+  "planets",
+  "aurora",
+  "meteors",
+];
 
 /**
- * The night parts among `defs`, in the strip's order: the first knob tagged with each part's name,
- * the stars only as a range and the others only as features.
+ * The night parts among `defs`, in the section's order: the first knob tagged with each part's
+ * name, the stars only as a range and the others only as features.
  */
 export function nightParts(defs: readonly ParamDef[]): NightPart[] {
   return ORDER.flatMap((name): NightPart[] => {
@@ -49,69 +59,64 @@ export function shareOf(def: { min: number; max: number }, amount: number): numb
   return Math.min(1, Math.max(0, (amount - def.min) / (def.max - def.min)));
 }
 
-/** A part at `amount`, clamped and snapped; a feature switched on with it. */
-function amountPatch(part: NightPart, amount: number): Patch {
-  const { def } = part;
-  const value = snap(amount, def.min, def.max, def.step);
-  return part.name === "stars" ? { [def.key]: value } : { [def.key]: 1, [amountKey(part)]: value };
+/** Whether a part shows in the night sky: a feature while on, the stars above none. */
+export function partShows(part: NightPart, state: PartState): boolean {
+  return part.name === "stars" ? state.amount > part.def.min : state.on;
 }
 
-/** A click on a part: a feature switches on or off and keeps its amount; the stars take none. */
+/** A click on a drawn part: a feature switches on or off and keeps its amount; the stars take none. */
 export function clickPatch(part: NightPart, state: PartState): Patch | undefined {
   return part.name === "stars" ? undefined : { [part.def.key]: state.on ? 0 : 1 };
 }
 
-/** Pixels of drag, right or up, across a part's whole span (left or down takes it back). */
-export const DRAG_SPAN = 160;
-/** A press that moves less than this many pixels is a click. */
-export const CLICK_SLOP = 4;
+// ---- the moon -------------------------------------------------------------------------------
 
-/** Whether a press that moved (dx, dy) pixels is a drag rather than a click. */
-export function isDrag(dx: number, dy: number): boolean {
-  return Math.hypot(dx, dy) >= CLICK_SLOP;
+/**
+ * The moon's phases as the section draws them, left to right: each sets its lit share, and stands
+ * for the shares below `below` (and from the one before's): a slimmer moon than a quarter is a
+ * crescent, a fuller one gibbous, and from 0.92 the moon reads as full.
+ */
+export const MOON_PHASES = [
+  { name: "crescent", lit: 0.25, below: 0.4 },
+  { name: "quarter", lit: 0.5, below: 0.6 },
+  { name: "gibbous", lit: 0.75, below: 0.92 },
+  { name: "full", lit: 1, below: Infinity },
+] as const;
+
+/** The phase (an index into MOON_PHASES) a lit share reads as. */
+export function phaseIndex(lit: number): number {
+  const index = MOON_PHASES.findIndex((phase) => lit < phase.below);
+  return index < 0 ? MOON_PHASES.length - 1 : index;
+}
+
+/** The moon's look at a lit share: "thin crescent", "crescent", "quarter moon", "gibbous", "full moon". */
+export function phaseOf(lit: number): string {
+  if (lit < 0.15) return "thin crescent";
+  const { name } = MOON_PHASES[phaseIndex(lit)] ?? MOON_PHASES[0];
+  return name === "quarter" || name === "full" ? `${name} moon` : name;
 }
 
 /**
- * A drag of (dx, dy) pixels (y down) on a part whose amount was `from`: the amount rises with right
- * and up and falls with left and down, the same either way, and a feature comes on with it.
+ * The moon set to a phase (an index into MOON_PHASES), switched on with its lit share snapped into
+ * the knob's range; undefined puts the moon out and keeps its phase.
  */
-export function dragPatch(part: NightPart, from: number, dx: number, dy: number): Patch {
-  const { def } = part;
-  return amountPatch(part, from + ((dx - dy) / DRAG_SPAN) * (def.max - def.min));
+export function moonPatch(def: FeatureDef, phase: number | undefined): Patch {
+  const chosen = phase === undefined ? undefined : MOON_PHASES[phase];
+  if (!chosen) return { [def.key]: 0 };
+  return { [def.key]: 1, [`${def.key}-amount`]: snap(chosen.lit, def.min, def.max, def.step) };
 }
 
-/**
- * What a key does to a part; `step` is keyStep's change for it (undefined for keys that do not
- * step). Space and Enter switch a feature on or off; a step moves the amount, a feature that is off
- * coming on at the amount it had; Home and End take the amount to its ends, switching a feature on;
- * Delete and Backspace switch a feature off and put the stars out. Undefined for other keys.
- */
-export function keyPatch(
-  part: NightPart,
-  state: PartState,
-  key: string,
-  step: number | undefined,
-): Patch | undefined {
-  const { def } = part;
-  if (step !== undefined) return amountPatch(part, state.on ? state.amount + step : state.amount);
-  switch (key) {
-    case "Home":
-      return amountPatch(part, def.min);
-    case "End":
-      return amountPatch(part, def.max);
-    case " ":
-    case "Enter":
-      return clickPatch(part, state);
-    case "Delete":
-    case "Backspace":
-      return part.name === "stars" ? { [def.key]: def.min } : { [def.key]: 0 };
-    default:
-      return undefined;
-  }
+/** A disc of radius r centred on 0, lit over `lit` of it from the right, the terminator an ellipse. */
+export function moonPath(r: number, lit: number): string {
+  if (lit >= 0.995) return `M0 ${-r}A${r} ${r} 0 1 1 0 ${r}A${r} ${r} 0 1 1 0 ${-r}Z`;
+  const rx = Math.abs(1 - 2 * Math.max(0, lit)) * r;
+  return `M0 ${-r}A${r} ${r} 0 0 1 0 ${r}A${rx} ${r} 0 0 ${lit > 0.5 ? 1 : 0} 0 ${-r}Z`;
 }
 
-/** A star on the strip: across (0..1), down the sky above the ground (0..1) and size (0..1). */
-export interface StripStar {
+// ---- what the drawing shows -------------------------------------------------------------------
+
+/** A star in the drawn sky: across (0..1), down the sky above the ground (0..1) and size (0..1). */
+export interface SkyStar {
   x: number;
   y: number;
   size: number;
@@ -120,10 +125,10 @@ export interface StripStar {
 const fract = (value: number) => value - Math.floor(value);
 
 /**
- * The strip's stars in the order they come out as the density rises: an R2 sequence, so the first
- * few already spread over the whole sky and each next one fills a gap.
+ * The drawn sky's stars in the order they come out as the density rises: an R2 sequence, so the
+ * first few already spread over the whole sky and each next one fills a gap.
  */
-export const NIGHT_STARS: readonly StripStar[] = Array.from({ length: 44 }, (_, n) => ({
+export const NIGHT_STARS: readonly SkyStar[] = Array.from({ length: 52 }, (_, n) => ({
   x: fract(0.5 + n * 0.7548776662466927),
   y: fract(0.5 + n * 0.5698402909980532),
   size: fract(Math.sin(n * 91.7 + 13.1) * 43758.5453),
@@ -143,20 +148,33 @@ export function streaksOf(on: boolean, share: number): number {
   return 1 + (share >= 1 / 3 ? 1 : 0) + (share >= 2 / 3 ? 1 : 0);
 }
 
-/** A part's state in words: its amount ("60%", "1.00") while on, "off" while off. */
-export function partValue(part: NightPart, state: PartState): string {
-  return state.on ? formatValue(part.def, state.amount) : "off";
+/** The naked-eye planets, brightest first: the planets knob's amount is how many of them show. */
+export const PLANETS = ["Venus", "Jupiter", "Saturn", "Mars", "Mercury"] as const;
+
+/** How many planets an amount names (rounded, within the five), whether or not they are on. */
+export function planetCount(amount: number): number {
+  return Math.min(PLANETS.length, Math.max(0, Math.round(amount)));
 }
 
-/** A part in words: "stars 60%", "Milky Way 1.00", "shooting stars off". */
-export function partText(part: NightPart, state: PartState): string {
-  return `${part.def.label} ${partValue(part, state)}`;
+// ---- words ----------------------------------------------------------------------------------
+
+/**
+ * A part's state in words: the moon's phase, how many planets, the others' amount ("60%", "1.00");
+ * "off" while off.
+ */
+export function partValue(part: NightPart, state: PartState): string {
+  if (!state.on) return "off";
+  if (part.name === "moon") return phaseOf(state.amount);
+  if (part.name === "planets") {
+    const count = planetCount(state.amount);
+    return count === 1 ? "1 planet" : `${count} planets`;
+  }
+  return formatValue(part.def, state.amount);
 }
 
 /**
- * The strip at rest in words: a strip of one part (named by its row) as its value alone; otherwise
- * the stars' density, then a lone switching part as itself or several as how many are on
- * ("stars 60% · 2 of 3 on").
+ * The section at rest in words: a section of one part as that part's value; otherwise how many of
+ * its parts show ("4 of 7 out"), the stars counting while any are out.
  */
 export function nightSummary(
   parts: readonly NightPart[],
@@ -164,13 +182,36 @@ export function nightSummary(
 ): string {
   const [only] = parts;
   if (parts.length === 1 && only) return partValue(only, stateOf(only));
-  const stars = parts.filter((part) => part.name === "stars");
-  const switching = parts.filter((part) => part.name !== "stars");
-  const lone = switching.length === 1 ? switching : [];
-  const texts = [...stars, ...lone].map((part) => partText(part, stateOf(part)));
-  if (switching.length > 1) {
-    const on = switching.filter((part) => stateOf(part).on).length;
-    texts.push(`${on} of ${switching.length} on`);
-  }
-  return texts.join(" · ");
+  const out = parts.filter((part) => partShows(part, stateOf(part))).length;
+  return `${out} of ${parts.length} out`;
+}
+
+// ---- "See it at night" ------------------------------------------------------------------------
+
+/** The time of day "See it at night" sets: late evening, the sky dark and the moon well up. */
+export const NIGHT_TIME = 0.95;
+
+/** Whether a time of day (0 midnight, 0.5 noon) falls in the night: past dusk, before dawn. */
+export function isNight(time: number): boolean {
+  const t = fract(time);
+  return t < 0.2 || t >= 0.81;
+}
+
+/** The scene's clock: its time of day, and the day cycle that carries it round, if any. */
+export interface NightClock {
+  time: RangeDef;
+  cycle: FeatureDef | undefined;
+}
+
+/**
+ * What "See it at night" sets, as one change: the time of day at NIGHT_TIME, with the day cycle
+ * stopped so the night holds. Undefined while the clock already stands still at night.
+ */
+export function nightPatch(clock: NightClock, time: number, cycling: boolean): Patch | undefined {
+  if (isNight(time) && !cycling) return undefined;
+  const { time: def, cycle } = clock;
+  return {
+    [def.key]: snap(NIGHT_TIME, def.min, def.max, def.step),
+    ...(cycle && cycling ? { [cycle.key]: 0 } : {}),
+  };
 }

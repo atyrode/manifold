@@ -235,14 +235,19 @@ reset, shuffle or presets:
   off), and gets an on/off chip over the bar that keeps its amount while off. Make a part that may be
   left out a feature with `min: 0`, `max: 100`, `step: 1`; a drag or key that takes it to zero
   switches it off.
-- `{ kind: "sky", part }`: the almanac. `skyKnobs` sets it on `time`, `cycle` and `moon`; the sky
-  dial stands where a group holds a `time` part, its night half showing the scene's `stars` knob as
-  dots. A `season` part (with its `year`, see `SeasonYear`) and the year's cycle (`year`, a feature)
-  join the dial from any group as a season ring round it: spring on the right, summer at the top,
-  autumn on the left, winter below. A span's stretch is lit and the rest dim; a choice's seasons are
+- `{ kind: "sky", part }`: the almanac. `skyKnobs` sets it on `time` and `cycle`; the sky dial
+  stands where a group holds a `time` part, with the scene's night `moon` opposite the sun in its
+  phase and its `stars` as dots in the night half, wherever those parts stand. Under it "Day speed"
+  is the day cycle as one slider: still at the left end (`cycle` off), faster to the right (`cycle`
+  on, `cycle-amount` the pace), reading "a day in 4 min" at the fastest (`src/lab/speed-model.ts`).
+  A `season` part (with its `year`, see `SeasonYear`) and the year's cycle (`year`, a feature) join
+  the dial from any group as a season ring round it: spring on the right, summer at the top, autumn
+  on the left, winter below. A span's stretch is lit and the rest dim; a choice's seasons are
   segments a drag snaps to, its options that are no time of year chips beside it; a feature's
   switch is a chip, and dragging the marker switches it on. Arrow keys on the ring step the season.
-  Without a `time` part the season parts make a season wheel of their own in their group.
+  The year's cycle is "Year speed", as the day's ("a season in 2 min": its amount is minutes per
+  season, so its faster stops hold fewer). Without a `time` part the season parts make a season
+  wheel of their own in their group.
 - `{ kind: "direction" }` on a range from below 0 to above 0: a vector pad, min to the left
   (`weatherKnobs`' wind, kelp's and delta's currents). `{ kind: "gusts" }` on a feature in the same
   group (`plantKnobs`' gusts, meadow's) makes it the wind card: a gust lane under the arrow holds the
@@ -257,22 +262,21 @@ reset, shuffle or presets:
   often flights pass (drag or arrow keys; Delete grounds them), the species are tiles of their
   silhouettes and the formations dot diagrams of the chosen species' own party, each row a radio
   group. A group whose master is `birds` keeps the switch in its header.
-  <<<<<<< ours
 - Fader chips and scrub readouts, with no `widget`: a feature whose amount is a range carries it on
   its chip (`src/lab/chips.ts`, rules in `chips-model.ts`), a fill while on and the value on hover,
   focus and drag. A click toggles it, a drag across sets the amount and switches it on, arrow keys
   step it (Shift a tenth of the range); double-clicking the value resets the amount. A row's readout
   over a slider scrubs it (drag across, Shift finer); double-clicking a readout or label resets it.
-  ||||||| base
-  \=======
-- `{ kind: "night", part }`: the night strip. `skyComponentKnobs` sets it on `stars`, `milkyWay`
-  and `meteors`, `weatherKnobs` on `aurora`; any of them in a group make one small night sky at the
-  first, each part drawn in its state (dim and dashed while off): click a part to switch it, drag it
-  right or up for more, drag the open sky for more stars; a trigger's "now" plays on the strip too.
-  Each part is a slider for the keys (arrows, Space switches, Delete puts it out); the moon's phase
-  stays on the almanac (`src/lab/nightsky-model.ts` holds the rules).
-
-> > > > > > > theirs
+- `{ kind: "night", part }`: the Night sky section. `skyComponentKnobs` sets it on `stars` (a
+  range), `moon`, `milkyWay`, `constellations`, `planets` and `meteors`, `weatherKnobs` on `aurora`
+  (features); every one a group holds gathers into one section at the first, headed "Night sky"
+  (`src/lab/nightsky.ts`, rules in `nightsky-model.ts`). A drawn night shows each part the scene has
+  in its state, dim and dashed while off (a click on a drawn part switches it). Under it one control
+  per part: the moon's phases as drawn moons with "off" (a radio group), and a fader chip for each
+  other part, the stars' without a switch, the planets' count under its chip, the shooting stars'
+  with their "now". Each part's control answers the search and the lens on its own. While the
+  scene's `time` part stands in daylight, or the day cycle runs, "See it at night" sets the clock to
+  late evening and stops the day, as one undoable change.
 
 A group's heading may carry `recipes` (`Recipe` in `src/params.ts`): one-tap setups drawn as a strip
 of glyph chips at the top of the group, the one the setup already is lit. A recipe sets URL keys of

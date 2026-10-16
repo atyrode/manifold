@@ -68,6 +68,10 @@ const PATHS = {
   moon: "M13 9.8A5.5 5.5 0 1 1 6.2 3a4.5 4.5 0 0 0 6.8 6.8z",
   stars:
     "M7 2c.4 2.6 1 3.2 3.5 3.5C8 5.9 7.4 6.4 7 9 6.6 6.4 6 5.9 3.5 5.5 6 5.2 6.6 4.6 7 2zM11.5 9.5v4M9.5 11.5h4",
+  milkyWay:
+    "M1.5 10.5C4.5 7.5 7.5 4.5 10.5 1.5M5.5 14.5C8.5 11.5 11.5 8.5 14.5 5.5M6.5 8.5h.01M9 8h.01M11.5 5.5h.01M8 11h.01",
+  constellation:
+    "M3.3 10.7 5.2 7.8M7.4 7.1l1.7.8M11.2 7.2l1.6-2.9M1.3 12a1.2 1.2 0 1 0 2.4 0 1.2 1.2 0 1 0-2.4 0zM4.8 6.5a1.2 1.2 0 1 0 2.4 0 1.2 1.2 0 1 0-2.4 0zM9.3 8.5a1.2 1.2 0 1 0 2.4 0 1.2 1.2 0 1 0-2.4 0zM12.3 3a1.2 1.2 0 1 0 2.4 0 1.2 1.2 0 1 0-2.4 0z",
   meteor: "M3.6 12.4a2 2 0 1 0 2.8-2.8 2 2 0 0 0-2.8 2.8zM6.5 9.5l7-7M8.5 11l4-4M5 7.5 8.5 4",
   cloud: "M4.5 12.5H12a2.5 2.5 0 0 0 .3-5A4 4 0 0 0 4.6 6.6a3 3 0 0 0-.1 5.9z",
   rain: "M4.5 9.5h7a2.3 2.3 0 0 0 .2-4.6A3.6 3.6 0 0 0 4.8 4.3a2.6 2.6 0 0 0-.3 5.2zM5.5 11.5l-1 2.5M8.5 11.5l-1 2.5M11.5 11.5l-1 2.5",
@@ -181,10 +185,10 @@ const WORD_ICONS: Readonly<Record<string, IconName>> = {
   eclipses: "moon",
   star: "stars",
   stars: "stars",
-  constellations: "stars",
+  constellations: "constellation",
   twinkle: "stars",
   nebula: "stars",
-  milky: "stars",
+  milky: "milkyWay",
   meteor: "meteor",
   meteors: "meteor",
   shooting: "meteor",

@@ -1,17 +1,17 @@
 // The almanac. The sky dial: the time of day as the sun on its circle (sunrise on the right, noon at
 // the top, sunset on the left, midnight below the horizon, as skyAt draws it), with the moon opposite
-// in its phase and as many stars in the night half as the scene's `stars` knob lets out. Drag the sun
-// (or the moon) round; the day cycle plays from it and the moon switches on and off beside it, each
-// with its amount below. Keys: arrows step the hour, wrapping past midnight.
+// in its phase (the scene's night `moon` part; its controls are the Night sky's, nightsky.ts) and as
+// many stars in the night half as the scene's `stars` part lets out. Drag the sun (or the moon)
+// round; keys: arrows step the hour, wrapping past midnight. Under it, "Day speed": the day cycle as
+// one slider, still at the left end and faster to the right (speed-model.ts).
 //
 // The season ring round it is the year laid out the same way (almanac-model.ts): spring on the right,
 // summer at the top, autumn on the left, winter below, tinted through the seasons. A span knob's
 // stretch of the year is bright, the rest dim; a choice's seasons are segments that a drag snaps to,
 // its options that are no time of year chips beside the dial; a feature's switch is a chip, and
-// moving the marker switches it on. The year's cycle plays beside the day's. Keys on the ring step
-// the season. Where the scene keeps no time of day, the ring stands alone round the season's glyph
-// and name (seasonWheel).
-import { formatValue } from "../params.ts";
+// moving the marker switches it on. The year's cycle is "Year speed", as the day's. Keys on the ring
+// step the season. Where the scene keeps no time of day, the ring stands alone round the season's
+// glyph and name (seasonWheel).
 import type { Params } from "../state.ts";
 import {
   namedYear,
@@ -28,6 +28,8 @@ import { row, slider } from "./controls.ts";
 import { drag, h, keyStep, snap, svg, type Built } from "./dom.ts";
 import { icon, type IconName } from "./icons.ts";
 import { knobIcon, knobKeys, type FeatureDef, type Knobs, type RangeDef } from "./knobs.ts";
+import { isNight, moonPath } from "./nightsky-model.ts";
+import { speedStops, speedText, stopOf, stopPatch, type Cycle } from "./speed-model.ts";
 
 const C = 60;
 const ORBIT = 43;
@@ -64,7 +66,7 @@ export function clockOf(time: number): string {
 /** The part of the day a time falls in, by the sun's height (sunrise 0.25, sunset 0.75). */
 export function daypartOf(time: number): string {
   const t = ((time % 1) + 1) % 1;
-  if (t < 0.2 || t >= 0.81) return "night";
+  if (isNight(t)) return "night";
   if (t < 0.245) return "dawn";
   if (t < 0.3) return "sunrise";
   if (t < 0.45) return "morning";
@@ -72,22 +74,6 @@ export function daypartOf(time: number): string {
   if (t < 0.69) return "afternoon";
   if (t < 0.755) return "golden hour";
   return "dusk";
-}
-
-/** The moon's look at a lit share 0..1. */
-export function phaseOf(lit: number): string {
-  if (lit < 0.15) return "thin crescent";
-  if (lit < 0.4) return "crescent";
-  if (lit < 0.6) return "half moon";
-  if (lit < 0.92) return "gibbous";
-  return "full moon";
-}
-
-/** A disc of radius r lit over `lit` of it from the right, the terminator an ellipse. */
-function moonPath(r: number, lit: number): string {
-  if (lit >= 0.995) return `M0 ${-r}A${r} ${r} 0 1 1 0 ${r}A${r} ${r} 0 1 1 0 ${-r}Z`;
-  const rx = Math.abs(1 - 2 * lit) * r;
-  return `M0 ${-r}A${r} ${r} 0 0 1 0 ${r}A${rx} ${r} 0 0 ${lit > 0.5 ? 1 : 0} 0 ${-r}Z`;
 }
 
 function mix(a: readonly number[], b: readonly number[], t: number): number[] {
@@ -383,65 +369,77 @@ function seasonChips(knobs: Knobs, season: SeasonDef): { chips: HTMLElement[]; s
   };
 }
 
-/** A cycle's play/pause chip (the day's, the year's) and the row for its pace, shown while it plays. */
-function cyclePlay(
-  knobs: Knobs,
-  def: FeatureDef,
-  paceIcon: IconName,
-): { chip: HTMLButtonElement; row: HTMLElement; sync: () => void } {
+/** What each cycle's speed is called, and what it moves, for its row's label and help. */
+const SPEEDS: Readonly<Record<Cycle, { label: string; moves: string }>> = {
+  day: { label: "Day speed", moves: "How fast the sun and moon move" },
+  year: { label: "Year speed", moves: "How fast the seasons turn" },
+};
+
+/**
+ * A cycle's speed (the day's, the year's) as one slider of stops: still at the left end (the cycle
+ * off), then its amounts from the slowest to the fastest; the readout says how long a turn takes.
+ */
+function speedRow(knobs: Knobs, def: FeatureDef, cycle: Cycle, iconName: IconName): Built {
   const amountKey = `${def.key}-amount`;
-  const playIcon = icon("play");
-  const pauseIcon = icon("pause");
-  const chip = h(
-    "button",
-    { type: "button", class: "chip", title: def.help, "aria-label": def.label },
-    h("span", { class: "chip-icon" }, playIcon, pauseIcon),
-    h("span", { class: "chip-label" }, def.label),
+  const { label, moves } = SPEEDS[cycle];
+  const text = () => speedText(cycle, knobs.on(def.key), knobs.value(amountKey));
+  const control = slider(
+    label,
+    0,
+    speedStops(def),
+    1,
+    () => stopOf(cycle, def, knobs.on(def.key), knobs.value(amountKey)),
+    (stop, commit) =>
+      knobs.set(stopPatch(cycle, def, def.key, stop, knobs.default(amountKey)), commit),
+    text,
   );
-  chip.addEventListener("click", () => knobs.set({ [def.key]: knobs.on(def.key) ? 0 : 1 }, true));
-  const pace = slider(
-    `${def.label} ${def.amountLabel}`,
-    def.min,
-    def.max,
-    def.step,
-    () => knobs.value(amountKey),
-    (value, commit) => knobs.set({ [amountKey]: value }, commit),
-  );
-  const paceRow = row({
-    label: def.label,
-    help: def.help,
-    icon: paceIcon,
-    block: pace.el,
-    readout: () => `${def.amountLabel} ${formatValue(def, knobs.value(amountKey))}`,
+  const [slowest, fastest] = cycle === "day" ? [def.min, def.max] : [def.max, def.min];
+  const built = row({
+    label,
+    help: `${moves}: still at the left end, then from ${speedText(cycle, true, slowest)} up to ${speedText(cycle, true, fastest)} at full motion.`,
+    icon: iconName,
+    block: control.el,
+    readout: text,
     modified: () => knobs.modified(knobKeys(def)),
     reset: () => knobs.reset(knobKeys(def)),
   });
+  control.el.after(
+    h(
+      "div",
+      { class: "speed-scale", "aria-hidden": "true" },
+      h("span", {}, "still"),
+      h("span", {}, "fast"),
+    ),
+  );
+  built.el.classList.add("speed-row");
+  built.el.dataset.search = `${built.el.dataset.search ?? ""} ${def.label}`.toLowerCase();
+  built.el.dataset.keys = knobKeys(def).join(" ");
   return {
-    chip,
-    row: paceRow.el,
+    el: built.el,
     sync: () => {
-      pace.sync();
-      paceRow.sync();
-      const on = knobs.on(def.key);
-      chip.setAttribute("aria-pressed", String(on));
-      playIcon.style.display = on ? "none" : "";
-      pauseIcon.style.display = on ? "" : "none";
-      paceRow.el.hidden = !on;
+      control.sync();
+      built.sync();
     },
   };
 }
 
-/** Add the labels of the parts a row gathers to what the panel's search finds it by. */
-function searchAlso(el: HTMLElement, parts: readonly (FeatureDef | SeasonDef | undefined)[]): void {
-  const labels = parts.flatMap((part) => (part ? [part.label] : []));
-  el.dataset.search = [el.dataset.search ?? "", ...labels].join(" ").toLowerCase();
+/** Add the names of the parts a row gathers to what the panel's search finds it by. */
+function searchAlso(el: HTMLElement, names: readonly (string | undefined)[]): void {
+  const words = names.flatMap((name) => (name === undefined ? [] : [name]));
+  el.dataset.search = [el.dataset.search ?? "", ...words].join(" ").toLowerCase();
+}
+
+/** The sky dial's own parts: the time of day, the day cycle, and the night's moon and stars it draws. */
+export interface SkyParts {
+  time: RangeDef;
+  cycle: FeatureDef | undefined;
+  moon: FeatureDef | undefined;
+  stars: RangeDef | undefined;
 }
 
 export function skyDial(
   knobs: Knobs,
-  time: RangeDef,
-  cycle: FeatureDef | undefined,
-  moon: FeatureDef | undefined,
+  { time, cycle, moon, stars: starKnob }: SkyParts,
   { season, year }: AlmanacParts,
 ): Built {
   const angleOf = (t: number) => (t - 0.25) * TAU;
@@ -467,7 +465,6 @@ export function skyDial(
     [16, 70],
     [70, 104],
   ].map(([x, y]) => svg("circle", { class: "sky-star", cx: x ?? 0, cy: y ?? 0, r: 0.9 }));
-  const starKnob = knobs.def("stars");
   const ticks = Array.from({ length: 24 }, (_, hour) => {
     const angle = angleOf(hour / 24);
     const major = hour % 6 === 0;
@@ -581,7 +578,11 @@ export function skyDial(
     reset: () => knobs.reset([time.key]),
   });
   timeRow.el.classList.add("sky-row");
-  searchAlso(timeRow.el, [cycle, moon, season, year]);
+  searchAlso(timeRow.el, [
+    ...(cycle ? [SPEEDS.day.label, cycle.label] : []),
+    season?.label,
+    ...(year ? [SPEEDS.year.label, year.label] : []),
+  ]);
 
   const syncs: (() => void)[] = [
     timeRow.sync,
@@ -612,10 +613,9 @@ export function skyDial(
       moonLit.setAttribute("d", moonPath(5.5, moonShown() ? lit() : 0));
       clock.textContent = clockOf(value);
       part.textContent = daypartOf(value);
-      const density =
-        starKnob?.kind === "range"
-          ? (knobs.value(starKnob.key) - starKnob.min) / (starKnob.max - starKnob.min)
-          : 7 / stars.length;
+      const density = starKnob
+        ? (knobs.value(starKnob.key) - starKnob.min) / (starKnob.max - starKnob.min)
+        : 7 / stars.length;
       stars.forEach((star, index) => {
         star.classList.toggle("lit", daylight < 0.4);
         star.classList.toggle("out", index >= Math.round(density * stars.length));
@@ -625,11 +625,10 @@ export function skyDial(
       dial.classList.toggle("cycling", cycle !== undefined && knobs.on(cycle.key));
     },
   ];
-  // The season's row stands right under the dial; its chips follow the clock's beside it.
-  const seasonChipEls: HTMLElement[] = [];
+  // The season's row stands right under the dial, its chips beside it; the speeds follow.
   if (ring && season) {
     const chips = seasonChips(knobs, season);
-    seasonChipEls.push(...chips.chips);
+    side.append(...chips.chips);
     const seasonRow = row({
       label: season.label,
       help: `${season.help} ${RING_HELP}`,
@@ -645,65 +644,14 @@ export function skyDial(
       for (const chip of chips.chips) chip.hidden = !shown;
     });
   }
-  if (cycle) {
-    const play = cyclePlay(knobs, cycle, "clock");
-    side.append(play.chip);
-    timeRow.el.append(play.row);
-    syncs.push(play.sync);
+  for (const speed of [
+    cycle && speedRow(knobs, cycle, "day", "clock"),
+    year && speedRow(knobs, year, "year", knobIcon(year)),
+  ]) {
+    if (!speed) continue;
+    timeRow.el.append(speed.el);
+    syncs.push(speed.sync);
   }
-  if (year) {
-    const play = cyclePlay(knobs, year, knobIcon(year));
-    side.append(play.chip);
-    timeRow.el.append(play.row);
-    syncs.push(play.sync);
-  }
-  if (moon) {
-    const amountKey = `${moon.key}-amount`;
-    const toggle = h(
-      "button",
-      { type: "button", class: "chip", role: "switch", title: moon.help, "aria-label": moon.label },
-      h("span", { class: "chip-icon" }, icon("moon")),
-      h("span", { class: "chip-label" }, moon.label),
-    );
-    toggle.addEventListener("click", () =>
-      knobs.set({ [moon.key]: knobs.on(moon.key) ? 0 : 1 }, true),
-    );
-    const glyph = svg("path", { class: "moon-glyph-lit" });
-    const preview = svg(
-      "svg",
-      { viewBox: "-8 -8 16 16", class: "moon-glyph", "aria-hidden": "true" },
-      svg("circle", { r: 6.5, class: "moon-glyph-disc" }),
-      glyph,
-    );
-    const phase = slider(
-      `${moon.label} ${moon.amountLabel}`,
-      moon.min,
-      moon.max,
-      moon.step,
-      () => knobs.value(amountKey),
-      (value, commit) => knobs.set({ [amountKey]: value }, commit),
-      (value) => `${phaseOf(value)}, ${Math.round(value * 100)}% lit`,
-    );
-    const phaseRow = row({
-      label: `${moon.label} ${moon.amountLabel}`,
-      help: moon.help,
-      icon: "moon",
-      inline: [preview],
-      block: phase.el,
-      readout: () => phaseOf(knobs.value(amountKey)),
-      modified: () => knobs.modified(knobKeys(moon)),
-      reset: () => knobs.reset(knobKeys(moon)),
-    });
-    side.append(toggle);
-    timeRow.el.append(phaseRow.el);
-    syncs.push(phase.sync, phaseRow.sync, () => {
-      const on = knobs.on(moon.key);
-      toggle.setAttribute("aria-checked", String(on));
-      glyph.setAttribute("d", moonPath(6.5, knobs.value(amountKey)));
-      phaseRow.el.hidden = !on;
-    });
-  }
-  side.append(...seasonChipEls);
   return {
     el: timeRow.el,
     sync: () => {
@@ -714,7 +662,7 @@ export function skyDial(
 
 /**
  * The season parts of a scene that keeps no time of day: the ring round the season's own face, its
- * switches and the year's cycle beside it.
+ * switches beside it and the year's speed under it.
  */
 export function seasonWheel(knobs: Knobs, season: SeasonDef, year: FeatureDef | undefined): Built {
   const ring = seasonRing(knobs, season, year, undefined);
@@ -729,13 +677,12 @@ export function seasonWheel(knobs: Knobs, season: SeasonDef, year: FeatureDef | 
     reset: () => knobs.reset(knobKeys(season)),
   });
   wheelRow.el.classList.add("sky-row");
-  searchAlso(wheelRow.el, [year]);
+  searchAlso(wheelRow.el, year ? [SPEEDS.year.label, year.label] : []);
   const syncs = [wheelRow.sync, ring.sync, chips.sync];
   if (year) {
-    const play = cyclePlay(knobs, year, knobIcon(year));
-    side.prepend(play.chip);
-    wheelRow.el.append(play.row);
-    syncs.push(play.sync);
+    const speed = speedRow(knobs, year, "year", knobIcon(year));
+    wheelRow.el.append(speed.el);
+    syncs.push(speed.sync);
   }
   return {
     el: wheelRow.el,

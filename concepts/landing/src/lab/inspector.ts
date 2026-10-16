@@ -29,7 +29,7 @@ import {
   switchControl,
   textButton,
 } from "./controls.ts";
-import { seasonWheel, skyDial } from "./dial.ts";
+import { seasonWheel, skyDial, type SkyParts } from "./dial.ts";
 import { h, reveal, type Built, type LabContext, type Patch } from "./dom.ts";
 import { flywayCard, flywayOf } from "./flyway.ts";
 import { icon, iconFromWords, type IconName } from "./icons.ts";
@@ -59,7 +59,7 @@ import { worldDivider } from "./world.ts";
 import { shelves } from "./world-model.ts";
 import { recipeStrip } from "./recipes.ts";
 import { shownRecipes } from "./recipes-model.ts";
-import { nightStrip } from "./nightsky.ts";
+import { nightSection } from "./nightsky.ts";
 import { nightParts } from "./nightsky-model.ts";
 import { rollPatch } from "./roll-model.ts";
 
@@ -547,7 +547,8 @@ export class Inspector {
     };
 
     // The sky dial, where the group holds its time of day, with the season parts round it (from any
-    // group, see gatherAlmanac); without one, the season parts make a wheel of their own.
+    // group, see gatherAlmanac); without one, the season parts make a wheel of their own. The dial
+    // draws the scene's night moon and stars wherever they stand.
     const time = defs.find(
       (def): def is RangeDef =>
         def.kind === "range" && def.widget?.kind === "sky" && def.widget.part === "time",
@@ -555,21 +556,17 @@ export class Inspector {
     const almanac = almanacParts(defs);
     let dial: Built | undefined;
     if (time) {
-      const part = (name: "cycle" | "moon") =>
-        defs.find(
-          (def): def is FeatureDef =>
-            def.kind === "feature" && def.widget?.kind === "sky" && def.widget.part === name,
-        );
-      const cycle = part("cycle");
-      const moon = part("moon");
-      dial = holding(skyDial(knobs, time, cycle, moon, almanac), [
-        time,
-        cycle,
-        moon,
-        almanac.season,
-        almanac.year,
-      ]);
-      for (const def of [time, cycle, moon, almanac.season, almanac.year]) if (def) used.add(def);
+      const cycle = defs.find(
+        (def): def is FeatureDef =>
+          def.kind === "feature" && def.widget?.kind === "sky" && def.widget.part === "cycle",
+      );
+      const sky: SkyParts = { time, cycle, moon: undefined, stars: undefined };
+      for (const part of nightParts(sceneDefs[scene].params)) {
+        if (part.name === "moon") sky.moon = part.def;
+        else if (part.name === "stars") sky.stars = part.def;
+      }
+      dial = holding(skyDial(knobs, sky, almanac), [time, cycle, almanac.season, almanac.year]);
+      for (const def of [time, cycle, almanac.season, almanac.year]) if (def) used.add(def);
     } else if (almanac.season) {
       place(
         almanac.season,
@@ -651,11 +648,19 @@ export class Inspector {
       if (flyway.birds === master) masterAmountShown = false;
     }
 
-    // The night strip, at its first part.
+    // The Night sky section, at its first part; "See it at night" sets the scene's own clock.
     const night = nightParts(defs.filter((def) => !used.has(def)));
     const firstNight = defs.find((def) => night.some((part) => part.def === def));
     if (firstNight) {
-      place(firstNight, nightStrip(knobs, night));
+      const clock = sceneDefs[scene].params.find(
+        (def): def is RangeDef =>
+          def.kind === "range" && def.widget?.kind === "sky" && def.widget.part === "time",
+      );
+      const cycle = sceneDefs[scene].params.find(
+        (def): def is FeatureDef =>
+          def.kind === "feature" && def.widget?.kind === "sky" && def.widget.part === "cycle",
+      );
+      place(firstNight, nightSection(knobs, night, clock && { time: clock, cycle }));
       for (const part of night) used.add(part.def);
     }
 

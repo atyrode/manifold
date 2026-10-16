@@ -95,7 +95,7 @@ export function skyComponentKnobs(options: SkyComponentOptions = {}): ParamDef[]
         "phase",
         options.moon,
         "The moon on its nightly path, from a thin crescent to full, its lit side toward the sun: a slimmer moon lights the land, the clouds and the sky round it less and lets stars come out closer to it. Off: a moonless night.",
-        { min: 0.05, max: 1, widget: { kind: "sky", part: "moon" } },
+        { min: 0.05, max: 1, widget: { kind: "night", part: "moon" } },
       ),
     );
   }

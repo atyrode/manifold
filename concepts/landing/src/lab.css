@@ -1738,6 +1738,14 @@ body.lab-open .lab-opener {
   display: grid;
   gap: 6px;
 }
+/* a dial with nothing beside it stands in the middle */
+.sky-side:empty {
+  display: none;
+}
+.sky:has(> .sky-side:empty) {
+  grid-template-columns: auto;
+  justify-content: center;
+}
 /* a long readout shortens its label rather than widening the group */
 .sky-row,
 .sky-row > .row,
@@ -1747,18 +1755,13 @@ body.lab-open .lab-opener {
 .sky-row > .row {
   margin-top: 4px;
 }
-.moon-glyph {
-  width: 15px;
-  height: 15px;
-  flex: none;
-}
-.moon-glyph-disc {
-  fill: #1b2030;
-  stroke: var(--lab-muted);
-  stroke-width: 0.8;
-}
-.moon-glyph-lit {
-  fill: var(--lab-ink);
+/* a speed's ends under its slider: still at the left, fast at the right */
+.speed-scale {
+  display: flex;
+  justify-content: space-between;
+  margin-top: -6px;
+  font-size: 10px;
+  color: var(--lab-faint);
 }
 
 /* the almanac's season ring: round the sky dial, or alone round the season's glyph and name */
@@ -2459,94 +2462,183 @@ body.lab-open .lab-opener {
   white-space: nowrap;
 }
 
-/* the night strip: the sky components as one small night sky, each part dim and dashed while off,
-   lit with its amount (--level 0..1) while on */
-.night-strip {
+/* the Night sky section: a drawn night, each part dim and dashed while off and lit with its amount
+   (--level 0..1) while on, over the controls: the moon's phases as drawn moons, a chip per part */
+.night-sky {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.night-sky.no-match {
+  display: none;
+}
+.night-scene {
   position: relative;
-  height: 64px;
+  aspect-ratio: 3 / 1;
   overflow: hidden;
-  background: linear-gradient(to bottom, #05070d, #0d1322 70%, #172036);
+  background: #05070f;
   border: 1px solid var(--lab-line);
   border-radius: 5px;
-  touch-action: none;
-}
-.night-strip:hover {
-  border-color: var(--lab-line-strong);
 }
 .night-art {
-  position: absolute;
-  inset: 0;
   display: block;
   width: 100%;
   height: 100%;
-  pointer-events: none;
 }
 .night-art line,
 .night-art path {
-  vector-effect: non-scaling-stroke;
   stroke-linecap: round;
 }
-.night-part {
-  position: absolute;
-  z-index: 1;
-  border-radius: 4px;
+.night-art [data-part] {
   cursor: pointer;
 }
-.night-part.stars {
-  inset: 0;
-  z-index: 0;
-  border-radius: 0;
-  cursor: move;
+/* daylight in the scene: a note and "See it at night" under the drawing */
+.night-day {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-top: -2px;
 }
-.night-part:focus-visible {
-  outline-offset: -2px;
+.night-day-note {
+  min-width: 0;
+  font-size: 11px;
+  color: var(--lab-muted);
 }
-.night-strip .now.compact {
-  position: absolute;
-  z-index: 2;
-  width: 24px;
+.night-day .text-button {
+  flex: none;
+  padding: 4px 9px;
+  font-size: 11px;
+  color: var(--lab-ink);
+}
+.night-day .text-button .icon {
+  width: 13px;
+  height: 13px;
+  color: var(--lab-accent);
+}
+/* the moon's phases */
+.night-moons {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 4px;
+}
+.night-moon-tile {
+  display: grid;
+  justify-items: center;
+  gap: 3px;
+  min-width: 0;
+  padding: 5px 1px 4px;
+  color: var(--lab-muted);
+  background: var(--lab-raise);
+  border: 1px solid var(--lab-line);
+  border-radius: 5px;
+  transition:
+    color 120ms,
+    border-color 120ms,
+    background 120ms;
+}
+.night-moon-tile:hover {
+  color: var(--lab-ink);
+  border-color: var(--lab-line-strong);
+}
+.night-moon-tile[aria-checked="true"] {
+  color: var(--lab-ink);
+  background: var(--lab-accent-soft);
+  border-color: rgb(255 181 71 / 0.55);
+}
+.night-moon-glyph {
+  display: block;
+  width: 22px;
   height: 22px;
-  translate: -50% -50%;
-  background: rgb(11 12 16 / 0.6);
 }
+.night-moon-glyph-disc {
+  fill: #1b2030;
+  stroke: var(--lab-muted);
+  stroke-width: 0.8;
+}
+.night-moon-tile:first-child .night-moon-glyph-disc {
+  fill: none;
+  stroke-dasharray: 2 2;
+}
+.night-moon-glyph-lit {
+  fill: #e8e6df;
+}
+.night-moon-tile[aria-checked="true"] .night-moon-glyph-lit {
+  fill: #fff6dc;
+}
+.night-moon-tile-label {
+  max-width: 100%;
+  overflow: hidden;
+  font-size: 10px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* the stars' fader has no switch: its fill always shows */
+.chip.always {
+  color: var(--lab-ink);
+  cursor: ew-resize;
+}
+.chip.always > .chip-fill {
+  opacity: 1;
+}
+.chip.always > .chip-amount {
+  color: var(--lab-ink);
+}
+.chip.always .chip-icon {
+  color: var(--lab-accent);
+}
+/* a control and its drawing light up together */
+.night-sky .chip-cell.hot .chip,
+.night-moon-row.hot .night-moon-tile[aria-checked="true"] {
+  border-color: var(--lab-ink);
+}
+.night-art .hot {
+  filter: brightness(1.45);
+}
+.night-art .firing {
+  filter: brightness(1.5);
+}
+/* the stars */
 .night-star {
-  stroke: var(--lab-ink);
+  fill: var(--lab-ink);
   opacity: calc(0.35 + var(--glint, 0.5) * 0.55);
   transition: opacity 200ms;
 }
-.night-star.ghost {
+.night-stars.ghost .night-star {
   opacity: 0.16;
 }
-.night-star.out {
+.night-stars .night-star.out {
   opacity: 0;
 }
-.night-star.twinkle:not(.out, .ghost) {
+.night-star.twinkle:not(.out) {
   animation: night-twinkle 2.8s ease-in-out var(--delay, 0s) infinite alternate;
 }
+.night-stars.ghost .night-star.twinkle {
+  animation: none;
+}
 .night-stars.hot .night-star:not(.out) {
-  stroke: #fff6dc;
+  fill: #fff6dc;
 }
 .night-aurora.on,
 .night-band.on,
 .night-meteor.on {
   opacity: calc(0.4 + var(--level, 1) * 0.6);
 }
-.night-art .on.hot,
-.night-art .firing {
-  filter: brightness(1.5);
-}
+/* the aurora */
 .night-ribbon,
 .night-glow,
 .night-tail,
 .night-lane,
-.night-flash {
+.night-flash,
+.night-figure-line,
+.night-planet-ring {
   fill: none;
 }
 .night-ribbon {
-  stroke-width: 4px;
+  stroke-width: 3;
 }
 .night-glow {
-  stroke-width: 11px;
+  stroke-width: 9;
   opacity: 0.22;
 }
 .night-aurora.on .night-curtain {
@@ -2554,34 +2646,68 @@ body.lab-open .lab-opener {
   transform-origin: 50% 100%;
   animation: night-sway 5.5s ease-in-out var(--delay, 0s) infinite alternate;
 }
+/* the Milky Way */
 .night-band-outer {
-  fill: rgb(190 200 255 / 0.14);
+  fill: rgb(190 200 255 / 0.18);
 }
 .night-band-core {
-  fill: rgb(225 230 255 / 0.2);
+  fill: rgb(225 230 255 / 0.3);
 }
 .night-crowd {
-  stroke: #e9ecff;
-  opacity: 0.75;
+  fill: #e9ecff;
+  opacity: 0.8;
 }
 .night-lane {
-  stroke: #070a12;
-  stroke-width: 1.6px;
-  stroke-dasharray: 9 4 3 5;
-  opacity: 0.85;
+  stroke: #0a0e1c;
+  stroke-width: 1.3;
+  opacity: 0.75;
 }
+/* the constellation: its stars stand out, its lines as clear as the amount */
+.night-figure-line {
+  stroke: #c8d4ff;
+  stroke-width: 0.9;
+  opacity: calc(0.12 + var(--level, 1) * 0.78);
+}
+.night-figure-star {
+  fill: #fff6dc;
+}
+/* the planets, each in its own tint */
+.night-planet-disc {
+  fill: var(--tint);
+}
+.night-planet-ring {
+  stroke: #f1d38c;
+  stroke-width: 0.7;
+}
+.night-planet.gone {
+  display: none;
+}
+/* the moon, in a halo as bright as it is full */
+.night-moon-disc {
+  fill: #1b2030;
+  stroke: #c9cdd6;
+  stroke-width: 0.6;
+}
+.night-moon-lit {
+  fill: #f1eee4;
+}
+.night-moon-halo {
+  fill: rgb(225 230 255 / 0.5);
+  opacity: calc(var(--level, 1) * 0.3);
+}
+/* shooting stars */
 .night-tail {
-  stroke-width: 1.6px;
+  stroke-width: 1.3;
 }
 .night-head {
-  stroke: #fff6dc;
+  fill: #fff6dc;
 }
 .night-streak.gone {
   display: none;
 }
 .night-flash {
   stroke: #fff;
-  stroke-width: 2px;
+  stroke-width: 1.6;
   opacity: 0;
 }
 .night-meteor.firing .night-flash {
@@ -2590,24 +2716,34 @@ body.lab-open .lab-opener {
 /* off: a dim dashed outline (brighter while pointed at); a sent meteor lights it a moment */
 .night-aurora:not(.on) .night-ribbon,
 .night-band:not(.on) .night-band-outer,
-.night-meteor:not(.on, .firing) .night-tail {
+.night-meteor:not(.on, .firing) .night-tail,
+.night-figure:not(.on) .night-figure-line,
+.night-planets:not(.on) .night-planet-disc,
+.night-moon:not(.on) .night-moon-disc {
   fill: none;
   stroke: var(--lab-faint);
-  stroke-width: 1px;
-  stroke-dasharray: 2 3;
+  stroke-width: 0.8;
+  stroke-dasharray: 2 2.5;
+  opacity: 1;
 }
-.night-art .hot:not(.on) :is(.night-ribbon, .night-band-outer, .night-tail) {
+.night-art .hot:not(.on) :is(.night-ribbon, .night-band-outer, .night-tail),
+.night-art .hot:not(.on) :is(.night-figure-line, .night-planet-disc, .night-moon-disc) {
   stroke: var(--lab-muted);
+}
+.night-figure:not(.on) .night-figure-star {
+  fill: var(--lab-faint);
 }
 .night-aurora:not(.on) .night-glow,
 .night-band:not(.on) :is(.night-band-core, .night-crowd, .night-lane),
-.night-meteor:not(.on, .firing) .night-head {
+.night-meteor:not(.on, .firing) .night-head,
+.night-planets:not(.on) .night-planet-ring,
+.night-moon:not(.on) :is(.night-moon-lit, .night-moon-halo) {
   display: none;
 }
 .night-ground {
   fill: #040508;
   stroke: var(--lab-line);
-  stroke-width: 1px;
+  stroke-width: 0.8;
 }
 @keyframes night-twinkle {
   to {
@@ -2625,14 +2761,14 @@ body.lab-open .lab-opener {
 @keyframes night-fall {
   0% {
     opacity: 0;
-    transform: translate(16px, -12px);
+    transform: translate(14px, -10px);
   }
   15% {
     opacity: 1;
   }
   100% {
     opacity: 0;
-    transform: translate(-14px, 10px);
+    transform: translate(-12px, 9px);
   }
 }
 
