@@ -19,6 +19,7 @@ import {
 } from "../state.ts";
 import { almanacParts, gatherAlmanac } from "./almanac-model.ts";
 import { chipGrid } from "./chips.ts";
+import { climateMarks } from "./climate-hint-model.ts";
 import {
   dice,
   iconButton,
@@ -669,14 +670,16 @@ export class Inspector {
       (def): def is SwitchDef =>
         (def.kind === "toggle" || def.kind === "feature") && !used.has(def),
     );
-    const chips = switches.length > 0 ? chipGrid(knobs, switches) : undefined;
+    // Where the season sets the climate, its marks on the rain's and snow's chips and the recipes.
+    const marks = climateMarks(sceneDefs[scene].params);
+    const chips = switches.length > 0 ? chipGrid(knobs, switches, marks) : undefined;
     for (const def of defs)
       if (!used.has(def) && def.kind !== "toggle" && def.kind !== "feature")
         place(def, this.#knobRow(knobs, def));
 
     const content: HTMLElement[] = [];
     const keys = defs.flatMap(knobKeys);
-    const recipes = recipeStrip(knobs, info, sceneDefs[scene].params);
+    const recipes = recipeStrip(knobs, info, sceneDefs[scene].params, marks);
     if (recipes) {
       // The strip holds the group's knobs that its recipes set.
       const set = new Set(

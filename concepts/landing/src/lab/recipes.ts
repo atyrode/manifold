@@ -1,8 +1,11 @@
 // A group's recipes (`Blurb.recipes`, see recipes-model.ts) as a strip of glyph chips at the top of
 // the group: a tap sets the recipe's knobs in one change (one undo step), the recipes the setup
 // already is light up, and a line under the chips names the one under the pointer or focus, else
-// the lit one. The strip is one tab stop; arrow keys, Home and End move between its chips.
+// the lit one. The strip is one tab stop; arrow keys, Home and End move between its chips. Where the
+// season sets the climate, a recipe whose rain or snow the time of year changes carries its mark
+// (climate-hint-model.ts): a ring in the chip's corner, and the mark beside its name.
 import type { Blurb, ParamDef } from "../params.ts";
+import { recipeMark, type ClimateMark, type ClimateMarks } from "./climate-hint-model.ts";
 import { h, type Built } from "./dom.ts";
 import { icon, iconFromWords } from "./icons.ts";
 import type { Knobs } from "./knobs.ts";
@@ -15,20 +18,34 @@ const STEPS: Readonly<Record<string, number>> = {
   ArrowUp: -1,
 };
 
-/** The strip for group `info` in a scene with knobs `defs`; undefined where it shows no recipe. */
+/** A recipe's chip, and what the strip says of it. */
+interface Entry {
+  chip: HTMLButtonElement;
+  label: string;
+  help: string;
+  /** What the time of year makes of the recipe, where the season sets the climate. */
+  mark: ClimateMark | undefined;
+}
+
+/**
+ * The strip for group `info` in a scene with knobs `defs`; undefined where it shows no recipe.
+ * `marks`, where the season sets the climate, marks what the time of year makes of a recipe.
+ */
 export function recipeStrip(
   knobs: Knobs,
   info: Blurb,
   defs: readonly ParamDef[],
+  marks?: ClimateMarks,
 ): Built | undefined {
   const shown = shownRecipes(info.recipes ?? [], defs);
   if (shown.length === 0) return undefined;
   const name = h("span", { class: "recipe-name", "aria-hidden": "true" });
-  let hovered: string | undefined;
-  let litLabel: string | undefined;
+  let hovered: Entry | undefined;
+  let lit: Entry | undefined;
   const showName = () => {
-    name.textContent = hovered ?? litLabel ?? "";
-    name.classList.toggle("is-lit", (hovered ?? litLabel) === litLabel && litLabel !== undefined);
+    const named = hovered ?? lit;
+    name.textContent = named ? named.label + (named.mark ? ` · ${named.mark.text}` : "") : "";
+    name.classList.toggle("is-lit", named !== undefined && named === lit);
   };
 
   const chips = shown.map(({ recipe, patch }) => {
@@ -45,6 +62,7 @@ export function recipeStrip(
       },
       icon(recipe.icon ?? iconFromWords(recipe.label) ?? "sparkle"),
     );
+    const entry: Entry = { chip, label: recipe.label, help: recipe.help, mark: undefined };
     chip.addEventListener("click", () => {
       knobs.set(patch, true);
       chip.classList.remove("applied");
@@ -55,7 +73,7 @@ export function recipeStrip(
     chip.addEventListener("animationend", () => chip.classList.remove("applied"));
     for (const type of ["pointerenter", "focus"] as const)
       chip.addEventListener(type, () => {
-        hovered = recipe.label;
+        hovered = entry;
         showName();
       });
     for (const type of ["pointerleave", "blur"] as const)
@@ -63,22 +81,22 @@ export function recipeStrip(
         hovered = undefined;
         showName();
       });
-    return { chip, label: recipe.label, patch };
+    return { entry, patch };
   });
 
   const el = h(
     "div",
     { class: "recipes", role: "toolbar", "aria-label": `${info.title} recipes` },
-    ...chips.map(({ chip }) => chip),
+    ...chips.map(({ entry }) => entry.chip),
     name,
   );
   /** Put `to` alone in the tab order. */
   const rove = (to: HTMLButtonElement | undefined) => {
-    for (const { chip } of chips) chip.tabIndex = chip === to ? 0 : -1;
+    for (const { entry } of chips) entry.chip.tabIndex = entry.chip === to ? 0 : -1;
   };
   el.addEventListener("keydown", (event) => {
     const visible = chips
-      .map(({ chip }) => chip)
+      .map(({ entry }) => entry.chip)
       .filter((chip) => !chip.classList.contains("no-match"));
     const at = visible.findIndex((chip) => chip === document.activeElement);
     const step = STEPS[event.key];
@@ -101,18 +119,24 @@ export function recipeStrip(
   return {
     el,
     sync: () => {
-      litLabel = undefined;
-      let first: HTMLButtonElement | undefined;
-      for (const { chip, label, patch } of chips) {
-        const lit = recipeLit(patch, (key) => knobs.value(key));
-        chip.setAttribute("aria-pressed", String(lit));
-        if (lit && litLabel === undefined) {
-          litLabel = label;
-          first = chip;
-        }
+      lit = undefined;
+      const read = (key: string) => knobs.value(key);
+      for (const { entry, patch } of chips) {
+        const { chip } = entry;
+        const pressed = recipeLit(patch, read);
+        chip.setAttribute("aria-pressed", String(pressed));
+        if (pressed && lit === undefined) lit = entry;
+        entry.mark = marks ? recipeMark(marks, patch, read) : undefined;
+        if (entry.mark) chip.dataset.mark = entry.mark.kind;
+        else delete chip.dataset.mark;
+        chip.title = `${entry.label}: ${entry.help}${entry.mark ? ` ${entry.mark.help}` : ""}`;
+        chip.setAttribute(
+          "aria-label",
+          entry.mark ? `${entry.label}, ${entry.mark.text}` : entry.label,
+        );
       }
       // Off the strip, the tab lands on the lit chip (else the first).
-      if (!el.contains(document.activeElement)) rove(first ?? chips[0]?.chip);
+      if (!el.contains(document.activeElement)) rove(lit?.chip ?? chips[0]?.entry.chip);
       showName();
     },
   };

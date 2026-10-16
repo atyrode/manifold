@@ -3,9 +3,12 @@
 // hover, focus and drag; a click toggles it, a drag across sets the amount and switches it on, arrow
 // keys step it (rules in chips-model.ts). A feature whose amount is a choice opens it in a row under
 // the grid, under the same icon, while it is on. A chip with a trigger carries its "now". A chip that
-// depends on another switch (`when`) shows only while that one is on.
+// depends on another switch (`when`) shows only while that one is on. Where the season sets the
+// climate, the rain's and the snow's chips carry its marks (climate-hint-model.ts), a readout over
+// their top edge that changes nothing.
 import { formatValue, type Option, type ParamDef } from "../params.ts";
 import { chipKey, pace, pressMove, type Press } from "./chips-model.ts";
+import type { ClimateMark, ClimateMarks } from "./climate-hint-model.ts";
 import { nowButton, row, segments } from "./controls.ts";
 import { drag, h, reveal, snap, type Built } from "./dom.ts";
 import { icon } from "./icons.ts";
@@ -124,16 +127,42 @@ function fader(knobs: Knobs, def: FeatureDef, chip: HTMLButtonElement, status: H
   };
 }
 
-export function chipGrid(knobs: Knobs, defs: readonly SwitchDef[]): Chips {
+/** Climate marks built so far: each names its own element. */
+let badges = 0;
+
+/** `chip`'s climate mark, read as part of its description; hidden while it has none. */
+function markBadge(chip: HTMLButtonElement): {
+  el: HTMLElement;
+  show(mark: ClimateMark | undefined): void;
+} {
+  badges += 1;
+  const el = h("span", { class: "chip-mark", id: `chip-mark-${badges}`, hidden: true });
+  const described = chip.getAttribute("aria-describedby");
+  chip.setAttribute("aria-describedby", described ? `${described} ${el.id}` : el.id);
+  return {
+    el,
+    show: (mark) => {
+      el.hidden = mark === undefined;
+      el.textContent = mark?.text ?? "";
+      el.dataset.kind = mark?.kind ?? "";
+    },
+  };
+}
+
+/** The grid of `defs`' chips; `marks`, where the season sets the climate, marks the rain and snow. */
+export function chipGrid(knobs: Knobs, defs: readonly SwitchDef[], marks?: ClimateMarks): Chips {
   const syncs: (() => void)[] = [];
   const amountSyncs: (() => void)[] = [];
   const amountRows: HTMLElement[] = [];
   const status = h("span", { class: "chips-status", role: "status" });
+  /** The marks for the knobs as they stand, read once per sync. */
+  let marked: Readonly<Record<string, ClimateMark>> = {};
   const cells = defs.map((def) => {
     const name = knobIcon(def);
     const chip = chipButton(def);
     const faded =
       def.kind === "feature" && !def.options ? fader(knobs, def, chip, status) : undefined;
+    const badge = marks ? markBadge(chip) : undefined;
     chip.addEventListener("click", (event) => {
       if (faded?.keeps(event)) return;
       knobs.set({ [def.key]: knobs.value(def.key) > 0.5 ? 0 : 1 }, true);
@@ -156,6 +185,7 @@ export function chipGrid(knobs: Knobs, defs: readonly SwitchDef[]): Chips {
       },
       dot,
       chip,
+      badge?.el ?? null,
       slot === undefined
         ? null
         : nowButton(def.label, () => knobs.fire(slot), { compact: true, whileOff: true }),
@@ -168,6 +198,13 @@ export function chipGrid(knobs: Knobs, defs: readonly SwitchDef[]): Chips {
       cell.hidden = !knobs.on(def.when);
       dot.hidden = !knobs.modified(knobKeys(def));
       faded?.sync();
+      if (badge) {
+        const mark = marked[def.key];
+        badge.show(mark);
+        // A fader's sync words its own title; a plain chip's is its help.
+        if (!faded) chip.title = def.help;
+        if (mark) chip.title += ` ${mark.help}`;
+      }
     });
 
     if (def.kind === "feature" && def.options) {
@@ -200,6 +237,7 @@ export function chipGrid(knobs: Knobs, defs: readonly SwitchDef[]): Chips {
     grid: {
       el: h("div", { class: "chips" }, ...cells, status),
       sync: () => {
+        if (marks) marked = marks((key) => knobs.value(key));
         for (const sync of syncs) sync();
       },
     },

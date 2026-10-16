@@ -208,6 +208,16 @@ season choice (pale young fronds in spring, ferns turning gold in autumn and hal
 winter, the evergreen grass dulling, snow on them); from above they lie out toward the gravel. The
 maple, moss, rake, leaves and drying are unchanged.
 
+## Garden climate
+
+`garden`'s season sets its climate (`src/climate.ts`): in winter snow lies on the stones, the moss
+and the wall with none falling (deep winter's own, from the renderer's `uWeather.y`, as in every
+scene's winter), the rain comes down as snow, and the snow switch falls in any season, where the
+lab marks it out of season. Under winter's rain the page stays as light as under a snowfall.
+Spring, summer and autumn draw exactly as before, with or without weather, and so does winter
+without rain (`gardenClimate` check: winter's rain draws byte for byte as the same snow falling,
+and no snow lies but `uWeather.y`'s).
+
 ## Meadow wildflowers
 
 `meadow`'s optional `wildflowers` (off) are clumps of the shared plant component

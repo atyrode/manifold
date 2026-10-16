@@ -3,7 +3,8 @@
 // its leaves, the temple woods swaying over its wall. The gravel, the rake, the falling leaves and
 // the plants (the woods' trees, an optional border along the wall's foot) are simulated in sim.ts;
 // shader.ts lights it all from the veranda or from straight above.
-import { choice, feature, range, seed, type ParamDef } from "../../params.ts";
+import { climateCold, fallingRain, seasonKnob, yearAt } from "../../climate.ts";
+import { choice, effective, feature, knobDef, range, seed, type ParamDef } from "../../params.ts";
 import { atmosphereGroups, skyKnobs, skyTheme, weatherKnobs } from "../atmosphere.ts";
 import { plantKnobs } from "../plants.ts";
 import type { SceneDef } from "../types.ts";
@@ -72,7 +73,7 @@ const params: readonly ParamDef[] = [
     "season",
     gardenSeasons.map((label, value) => ({ label, value })),
     2,
-    "Spring: cherry blossom, its petals drifting down. Summer: a deep green maple, a leaf now and then, dappled shade. Autumn: the maple turns red and lets go of its leaves. Winter: bare branches, snow on the stones, the moss and the wall; turn on snow (Weather) to have it falling. The border planting (Garden) follows it.",
+    "Spring: cherry blossom, its petals drifting down. Summer: a deep green maple, a leaf now and then, dappled shade. Autumn: the maple turns red and lets go of its leaves. Winter: bare branches, and snow lying on the stones, the moss and the wall with none falling; rain (Weather) comes down as snow then, while snow (Weather) falls in any season. The border planting (Garden) follows the season.",
     { widget: { kind: "sky", part: "season", year: { at: [0.125, 0.375, 0.625, 0.875] } } },
   ),
   range(
@@ -116,6 +117,15 @@ const params: readonly ParamDef[] = [
   ),
 ];
 
+const seasonDef = seasonKnob(params);
+const rainDef = knobDef("garden", params, "rain");
+
+/** The rain that falls as rain, as the shader has it (climatePrecip): winter's comes down as snow. */
+function rainAsRain(values: Readonly<Record<string, number>>): number {
+  const cold = seasonDef ? climateCold(yearAt(seasonDef, effective(seasonDef, values))) : 0;
+  return fallingRain(effective(rainDef, values), cold);
+}
+
 export const gardenScene: SceneDef = {
   id: "garden",
   title: "Stone garden",
@@ -137,7 +147,7 @@ export const gardenScene: SceneDef = {
     weather: {
       ...atmosphereGroups.weather,
       blurb:
-        "Rain greys the sky and soaks the garden: wet gravel darkens, stones and tiles shine, water stands in the grooves and the eaves and maple drip; drizzle is a soft grey mist, a downpour closes the garden in. Snow settles, crests and stone tops first. Wind sways the maple and the woods over the wall and carries the leaves.",
+        "Rain greys the sky and soaks the garden: wet gravel darkens, stones and tiles shine, water stands in the grooves and the eaves and maple drip; drizzle is a soft grey mist, a downpour closes the garden in. In winter the rain comes down as snow. Snow settles, crests and stone tops first. Wind sways the maple and the woods over the wall and carries the leaves.",
     },
     manifold: {
       title: "Manifold M",
@@ -149,12 +159,13 @@ export const gardenScene: SceneDef = {
   sim: gardenSim(params),
   passage: GARDEN_PASSAGE,
   // White gravel in daylight is a light page, golden hour included: the copy goes dark on it from
-  // just after sunrise to just before sunset, on a still clock, unless steady rain greys it. The
-  // shader follows the page (pagePaper in inkOf).
+  // just after sunrise to just before sunset, on a still clock, unless steady rain greys it (rain
+  // that falls as rain: winter's snow leaves it white). The shader follows the page (pagePaper in
+  // inkOf).
   theme: skyTheme(params, {
     from: GARDEN_PAPER.from,
     to: GARDEN_PAPER.to,
-    rainBelow: GARDEN_PAPER.rain,
+    when: (values) => rainAsRain(values) < GARDEN_PAPER.rain,
   }),
   // The moon takes a phase (K_moon) in the shared sky: it keys the garden's light at night.
   features: { SKY_MOON_PHASE: 1 },

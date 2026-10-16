@@ -1,7 +1,8 @@
 import {
   climateCold,
   climateLying,
-  climatePrecip,
+  fallingRain,
+  fallingSnow,
   hasClimate,
   seasonKnob,
   yearAt,
@@ -1292,11 +1293,9 @@ export class DitherRenderer {
           ),
         )
       : 0;
-    const { rain, snow } = climatePrecip(
-      s.params[scene.rain] ?? 0,
-      s.params[scene.snow] ?? 0,
-      cold,
-    );
+    const rainKnob = s.params[scene.rain] ?? 0;
+    const rain = fallingRain(rainKnob, cold);
+    const snow = fallingSnow(rainKnob, s.params[scene.snow] ?? 0, cold);
     const wetTo = rain > 0 ? Math.min(1, 0.4 + 1.1 * rain) : 0;
     const lyingTo = Math.max(
       snow > 0 ? Math.min(1, 0.25 + snow) * (1 - 0.5 * rain) : 0,

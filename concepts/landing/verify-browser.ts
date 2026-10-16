@@ -34,6 +34,7 @@ import { verifyCanopy } from "./src/scenes/forest/canopy.verify.ts";
 import { verifyWaterTiers } from "./src/scenes/island/water.verify.ts";
 import { verifyPondPlants } from "./src/scenes/pond/plants.verify.ts";
 import { islandSnowCheck } from "./src/scenes/island/snow.verify.ts";
+import { gardenClimateCheck } from "./src/scenes/garden/climate.verify.ts";
 import {
   verifyFeaturesAll,
   verifyFeatureToggles,
@@ -527,6 +528,7 @@ export const checks: readonly Check[] = [
   ["waterTiers", verifyWaterTiers],
   ["pondPlants", verifyPondPlants],
   ["islandSnow", islandSnowCheck],
+  ["gardenClimate", gardenClimateCheck],
   ["fallsBirds", verifyFallsBirds],
   ["sceneFeatures", verifySceneFeatures],
   ["cloudTiers", verifyCloudTiers],

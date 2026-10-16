@@ -11,10 +11,12 @@
 // flanks turned to it catch the light, the others fall into the sky's cool shade.
 //
 // Weather (the shared library): rain and snow bring a grey deck and flat light; they fall in depth,
-// hidden behind whatever the ray meets first. The renderer's uWeather says how wet the garden is
-// and how much snow lies: wet gravel and clay darken, stone, slate and tiles turn glossy, water
-// stands in the grooves, drops burst on hard faces and drip from the eaves and the maple; snow
-// settles on whatever faces up, the gravel's crests first.
+// hidden behind whatever the ray meets first. The season sets the climate (src/climate.ts): what
+// falls is what its cold makes of the knobs (climatePrecip), so winter's rain comes down as snow.
+// The renderer's uWeather says how wet the garden is and how much snow lies, deep winter's own snow
+// included: wet gravel and clay darken, stone, slate and tiles turn glossy, water stands in the
+// grooves, drops burst on hard faces and drip from the eaves and the maple; snow settles on whatever
+// faces up, the gravel's crests first.
 import { glslFloat } from "../../shaders/glsl.ts";
 import { plantsGlsl } from "../../shaders/lib/plants.ts";
 import { gustPulseGlsl } from "../../sims/wind.ts";
@@ -602,13 +604,17 @@ Shade sceneGarden(vec2 uv, vec2 cell, float t) {
   vec3 snowWhite = vec3(0.9, 0.93, 0.98);
 
   // Weather. Rain and snow bring cloud: the sun goes in and the sky's light turns flat and grey,
-  // dimmer the harder it rains. How wet the garden is (uWeather.x) and how much snow lies on it
-  // (uWeather.y, or the season's) are the renderer's: they rise while it falls and go after.
-  float rain = K_rain;
+  // dimmer the harder it rains. What falls is what the season's cold makes of the knobs: in winter
+  // the rain comes down as snow, and the snow switch falls in any season. How wet the garden is
+  // (uWeather.x) and how much snow lies on it (uWeather.y, deep winter's own included) are the
+  // renderer's: they rise while it falls and go after.
+  vec2 fall = climatePrecip(K_rain, K_snow, climateCold(SKY_YEAR));
+  float rain = fall.x;
+  float snow = fall.y;
   float wet = uWeather.x;
-  float lying = max(uWeather.y, 0.7 * winter);
+  float lying = uWeather.y;
   // Even drizzle comes from a grey sky; snow can fall from a broken one.
-  float overcast = max(smoothstep(0.0, 0.12, rain), 0.85 * smoothstep(0.0, 0.4, K_snow));
+  float overcast = max(smoothstep(0.0, 0.12, rain), 0.85 * smoothstep(0.0, 0.4, snow));
   float heavy = smoothstep(0.35, 1.0, rain);
   vec3 cloudLight = vec3(dot(fill, LUMA) + 0.45 * dot(sun, LUMA) * max(L.z, 0.15)) * vec3(0.93, 0.97, 1.03) * (1.0 - 0.35 * heavy);
   // Under cloud the sky is still brightest high up toward the hidden sun: a broad soft key from
@@ -1322,7 +1328,7 @@ Shade sceneGarden(vec2 uv, vec2 cell, float t) {
   }
 
   // ---- falling rain and snow, in depth: only what falls nearer than the first thing the ray meets ----
-  if (rain > 0.0 || K_snow > 0.0) {
+  if (rain > 0.0 || snow > 0.0) {
     // From the veranda, the screen. Looking down, drops fall away from the eye toward the point
     // straight below, so they are drawn in log-polar coordinates round it (angle, log distance),
     // where falling is moving inward. The map draws a drop at r / 0.25 of its size, so toward the
@@ -1357,10 +1363,10 @@ Shade sceneGarden(vec2 uv, vec2 cell, float t) {
       // of drops would fall under the roof, so it is left out (the library's sheltered form).
       drops = above ? pr.cover : pr.cover * (1.0 - pr.near);
     }
-    if (K_snow > 0.0) {
-      Precip ps = snowFall(fallUv, fallAspect, t, K_snow, fallWind, zN);
+    if (snow > 0.0) {
+      Precip ps = snowFall(fallUv, fallAspect, t, snow, fallWind, zN);
       veil = max(veil, ps.veil);
-      if (zDrops < zN) ps = snowFall(fallUv, fallAspect, t, K_snow, fallWind, zDrops);
+      if (zDrops < zN) ps = snowFall(fallUv, fallAspect, t, snow, fallWind, zDrops);
       flakes = ps.cover;
     }
     col = precipOver(col, air, dropLight, Precip(drops, veil, 0.0));

@@ -13,7 +13,8 @@
 // the garden is crisp where the rake has just been and softer the longer since it passed. A coarser
 // grid (an AgeField) remembers when each spot was last raked: freshly turned gravel is darker and
 // dries back on a drying clock, which runs with garden time, or, drying with the weather, faster
-// with the weathering knob, in sun and wind, slower at dusk and night, not at all in rain.
+// with the weathering knob, in sun and wind, slower at dusk and night, not at all in rain (rain as
+// it falls: in winter it comes down as snow, src/climate.ts).
 //
 // Raking the whole garden through the tool would cost a few hundred milliseconds, so a layout (at
 // construction, and when the pattern, the stones or the M change) is laid straight from the same
@@ -40,6 +41,7 @@
 // whose first GARDEN_RECORD_ROW rows are the scene's own, islands and stones (8 × 4) plus the drying
 // clock, then the plant records (GARDEN_WOODS, GARDEN_BORDER); uSim2 rgba16f leaves (4 ×
 // GARDEN_LEAF_SLOTS); uSim3 r16f when each spot was last raked, on the drying clock (half resolution).
+import { climateCold, fallingRain, seasonKnob, yearAt, type SeasonKnob } from "../../climate.ts";
 import { markVertex } from "../../mark.ts";
 import { KnobReader, type ParamDef } from "../../params.ts";
 import { AgeField, dryingPace } from "../../sims/agefield.ts";
@@ -94,8 +96,9 @@ export const GARDEN = {
 
 /**
  * When the white gravel is in daylight and the page is a light one: times of day (still clock)
- * from just after sunrise to just before sunset, while the rain (its amount) stays lighter than
- * `rain`; harder rain greys and darkens the garden (index.ts's theme and the shader's ink).
+ * from just after sunrise to just before sunset, while the rain falling (its amount; in winter it
+ * comes down as snow, src/climate.ts) stays lighter than `rain`; harder rain greys and darkens the
+ * garden (index.ts's theme and the shader's ink).
  */
 export const GARDEN_PAPER = { from: 0.26, to: 0.745, rain: 0.35 } as const;
 
@@ -1012,6 +1015,7 @@ type GardenKnob =
   | "time"
   | "cycle"
   | "rain"
+  | "snow"
   | "wind"
   | "mark";
 const KNOBS: readonly GardenKnob[] = [
@@ -1029,6 +1033,7 @@ const KNOBS: readonly GardenKnob[] = [
   "time",
   "cycle",
   "rain",
+  "snow",
   "wind",
   "mark",
 ];
@@ -1053,7 +1058,7 @@ interface Settings {
   /** Leaf-fall knob 0..1. */
   leaves: number;
   overhead: boolean;
-  /** The sky clock's knobs and the rain, for the drying pace. */
+  /** The sky clock's knobs and the rain as it falls (snow in winter), for the drying pace. */
   time: number;
   cycle: number;
   rain: number;
@@ -1066,6 +1071,8 @@ interface Settings {
 
 class GardenSim implements SceneSim {
   readonly #knobs: KnobReader<GardenKnob>;
+  /** The season knob, whose time of year sets what falls (src/climate.ts). */
+  readonly #seasonDef: SeasonKnob | undefined;
   /** The trigger slot of the leaves knob: its "now" button shakes a gust loose. */
   readonly #gustSlot: number;
   /** The knobs as the sim reads them, rewritten in place each frame so frames allocate nothing. */
@@ -1207,6 +1214,7 @@ class GardenSim implements SceneSim {
 
   constructor(gl: WebGL2RenderingContext, params: readonly ParamDef[]) {
     this.#knobs = new KnobReader("garden", params, KNOBS);
+    this.#seasonDef = seasonKnob(params);
     this.#gustSlot = this.#knobs.trigger("leaves");
     this.#heights = new DataTexture(gl, {
       width: GARDEN.cols,
@@ -1329,7 +1337,9 @@ class GardenSim implements SceneSim {
     s.overhead = this.#knob(frame, "camera") > 0.5;
     s.time = this.#knob(frame, "time");
     s.cycle = this.#knob(frame, "cycle");
-    s.rain = this.#knob(frame, "rain");
+    const season = this.#seasonDef;
+    const cold = season ? climateCold(yearAt(season, this.#knob(frame, "season"))) : 0;
+    s.rain = fallingRain(this.#knob(frame, "rain"), cold);
     s.wind = clamp(this.#knob(frame, "wind"), -1, 1);
     s.mark = mark;
     if (pattern !== this.#signedPattern || seed !== this.#signedSeed || mark !== this.#signedMark) {

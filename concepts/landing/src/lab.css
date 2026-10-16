@@ -1541,6 +1541,31 @@ body.lab-open .lab-opener {
   flex-basis: 100%;
   padding: 4px 2px 2px;
 }
+/* a chip's climate mark: what the season makes of the rain or snow, a tab over its top edge (cold
+   blue for rain turning to snow, white for winter's lying snow, amber for snow out of season) */
+.chip-mark {
+  position: absolute;
+  top: -6px;
+  right: 7px;
+  z-index: 1;
+  padding: 0 5px;
+  font-size: 9.5px;
+  line-height: 11px;
+  color: rgb(176 200 255);
+  white-space: nowrap;
+  background: rgb(11 12 16);
+  border: 1px solid rgb(176 200 255 / 0.45);
+  border-radius: 6px;
+  pointer-events: none;
+}
+.chip-mark[data-kind="lies"] {
+  color: #e9ecff;
+  border-color: rgb(233 236 255 / 0.4);
+}
+.chip-mark[data-kind="outOfSeason"] {
+  color: var(--lab-accent);
+  border-color: rgb(255 181 71 / 0.5);
+}
 .amounts {
   display: flex;
   flex-direction: column;
@@ -1619,6 +1644,24 @@ body.lab-open .lab-opener {
 }
 .recipe-name.is-lit {
   color: var(--lab-accent);
+}
+/* a recipe the season changes: a ring in its corner, in its mark's colour (.chip-mark), unlike the
+   filled dot that marks a changed control */
+.recipe[data-mark] {
+  position: relative;
+}
+.recipe[data-mark]::after {
+  position: absolute;
+  top: 3px;
+  right: 3px;
+  width: 6px;
+  height: 6px;
+  content: "";
+  border: 1.5px solid rgb(176 200 255);
+  border-radius: 50%;
+}
+.recipe[data-mark="outOfSeason"]::after {
+  border-color: var(--lab-accent);
 }
 
 /* the sky dial */

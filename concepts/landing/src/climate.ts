@@ -120,14 +120,19 @@ export function climateCold(year: number): number {
   return 1 - smoothstep(COLD_CORE, COLD_EDGE, d);
 }
 
-/** Rain and snow as they fall in this cold: the cold's share of the rain falls as snow. */
-export function climatePrecip(
-  rain: number,
-  snow: number,
-  cold: number,
-): { rain: number; snow: number } {
-  const share = smoothstep(SNOW_SHARE[0], SNOW_SHARE[1], cold);
-  return { rain: rain * (1 - share), snow: Math.max(snow, rain * share) };
+/** The cold's share of the rain that falls as snow, 0..1. */
+export function snowShare(cold: number): number {
+  return smoothstep(SNOW_SHARE[0], SNOW_SHARE[1], cold);
+}
+
+/** The rain that falls as rain in this cold (GLSL `climatePrecip(...).x`). */
+export function fallingRain(rain: number, cold: number): number {
+  return rain * (1 - snowShare(cold));
+}
+
+/** The snow that falls in this cold: the snow switch's, or the rain turned to snow (`.y`). */
+export function fallingSnow(rain: number, snow: number, cold: number): number {
+  return Math.max(snow, rain * snowShare(cold));
 }
 
 /** How much snow deep winter lays by itself, 0..1, beside what falls. */

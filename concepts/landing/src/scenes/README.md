@@ -287,6 +287,17 @@ night) and the weather's (Clear .. Fog): give a scene's own blurb as `{ ...atmos
 blurb }` so they come along. Each group's heading also has a dice that shuffles that group alone, by
 the transport's shuffle rule (`src/lab/roll-model.ts`).
 
+Where the season sets the climate (`hasClimate`, see "The climate" under "Weather in the world"),
+the lab shows what the time of year makes of the weather, with marks that change no value (rules in
+`src/lab/climate-hint-model.ts`). They read the season knob's own time of year (`yearAt`), not
+the passing year's, so they hold still while the year cycle runs. A readout over the top edge of the
+weather's rain and snow chips says "out of season" for snow switched on while it is warm
+(`climateCold` below `SNOW_SHARE[0]`: it falls anyway), "sleet" for rain while some of it comes
+down as snow and "falls as snow" once all of it does (from `SNOW_SHARE[1]`), and, on the snow's
+chip, "snow lies" in deep winter (`climateLying` above 0). A weather recipe whose rain or snow the
+season changes gets a ring in its corner and its mark beside its name. Round the almanac, a dashed
+line of frost inside the season ring marks the deep winter where snow lies with none falling.
+
 Icons come from `src/lab/icons.ts`, one line set: a knob's `icon` (or a group's `Blurb.icon`) picks
 one, otherwise the first word of its key or label that names one does.
 

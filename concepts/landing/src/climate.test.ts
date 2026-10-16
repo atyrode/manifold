@@ -2,7 +2,8 @@ import { describe, expect, test } from "bun:test";
 import {
   climateCold,
   climateLying,
-  climatePrecip,
+  fallingRain,
+  fallingSnow,
   hasClimate,
   seasonKnob,
   yearAt,
@@ -58,11 +59,10 @@ describe("the climate", () => {
   });
 
   test("turns rain to snow as it grows cold, and leaves the snow switch's own snow falling", () => {
-    expect(climatePrecip(0.6, 0, 0)).toEqual({ rain: 0.6, snow: 0 });
-    expect(climatePrecip(0.6, 0, 1)).toEqual({ rain: 0, snow: 0.6 });
-    expect(climatePrecip(0, 0.4, 0)).toEqual({ rain: 0, snow: 0.4 });
-    const half = climatePrecip(0.6, 0, 0.5);
-    expect(half.rain + half.snow).toBeCloseTo(0.6, 9);
+    expect([fallingRain(0.6, 0), fallingSnow(0.6, 0, 0)]).toEqual([0.6, 0]);
+    expect([fallingRain(0.6, 1), fallingSnow(0.6, 0, 1)]).toEqual([0, 0.6]);
+    expect([fallingRain(0, 0), fallingSnow(0, 0.4, 0)]).toEqual([0, 0.4]);
+    expect(fallingRain(0.6, 0.5) + fallingSnow(0.6, 0, 0.5)).toBeCloseTo(0.6, 9);
   });
 
   test("lays snow of its own only in deep winter", () => {

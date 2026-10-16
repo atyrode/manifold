@@ -38,6 +38,26 @@ test("drying with the weather: rain stops it, the night slows it, more weatherin
   expect(dryingClock({ ...on, time: 0.5, soften: 0 }, 3)).toBeLessThan(0.5 * noon);
 });
 
+test("drying with the weather: winter's rain comes down as snow, which dries the gravel as snow does", () => {
+  const on = { drying: 1, "drying-amount": 0.5, wind: 0, time: 0.5 };
+  const rain = { rain: 1, "rain-amount": 0.7 };
+  const winterSnow = dryingClock({ ...on, season: 3, snow: 1, "snow-amount": 0.7 }, 3);
+  expect(winterSnow).toBeGreaterThan(1);
+  expect(dryingClock({ ...on, ...rain, season: 3 }, 3)).toBeCloseTo(winterSnow, 6);
+  // Spring, summer and autumn rain is rain.
+  for (const season of [0, 1, 2]) expect(dryingClock({ ...on, ...rain, season }, 3)).toBe(0);
+});
+
+test("the page stays light under winter's rain, which comes down as snow, and goes dark under the rest's", () => {
+  const theme = gardenScene.theme;
+  if (!theme) throw new Error("garden has no page theme");
+  const noonRain = { time: 0.5, rain: 1, "rain-amount": 0.7 };
+  expect(theme({ time: 0.5 })).toBe("paper");
+  expect(theme({ ...noonRain, season: 3 })).toBe("paper");
+  for (const season of [0, 1, 2]) expect(theme({ ...noonRain, season })).toBe("night");
+  expect(theme({ ...noonRain, season: 3, time: 0 })).toBe("night");
+});
+
 // uSim2: 4 × GARDEN_LEAF_SLOTS rgba16f, a row per leaf: (x, y, z, alpha), (chord axis, radius),
 // (span axis, kind), (hue, age on the ground 0..1, landed 0..1, 0); alpha 0: no leaf.
 interface Leaf {

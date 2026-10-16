@@ -12,6 +12,7 @@
 // moving the marker switches it on. The year's cycle is "Year speed", as the day's. Keys on the ring
 // step the season. Where the scene keeps no time of day, the ring stands alone round the season's
 // glyph and name (seasonWheel).
+import { climateCold, climateLying } from "../climate.ts";
 import type { Params } from "../state.ts";
 import {
   namedYear,
@@ -162,6 +163,27 @@ function seasonRing(
     svg("g", { class: "almanac-tint" }, ...bright),
     svg("g", { class: "almanac-tint dead" }, ...cells.filter((cell) => !bright.includes(cell))),
   ];
+  // Where the season sets the climate (a snow knob beside it, src/climate.ts), a dashed line of
+  // frost just inside the band over deep winter, the cells where snow lies with none falling.
+  const deep = Array.from({ length: CELLS }, (_, index) => index).filter(
+    (index) => climateLying(climateCold((index + 0.5) / CELLS)) > 0,
+  );
+  const [first, last] = [deep[0], deep.at(-1)];
+  const snowLine = BAND_IN - 2;
+  const frost =
+    knobs.def("snow") !== undefined && first !== undefined && last !== undefined
+      ? [
+          svg("path", {
+            class: "almanac-frost",
+            d: `M${ringPoint(first / CELLS, snowLine)}A${snowLine} ${snowLine} 0 0 0 ${ringPoint((last + 1) / CELLS, snowLine)}`,
+            fill: "none",
+            stroke: "#eef3ff",
+            "stroke-opacity": "0.7",
+            "stroke-width": "1.3",
+            "stroke-dasharray": "2 1.6",
+          }),
+        ]
+      : [];
   const segments = stops.map((stop) => {
     const title = svg("title");
     title.textContent = stop.label;
@@ -208,6 +230,7 @@ function seasonRing(
     svg("circle", { class: "almanac-rim", cx: MID, cy: MID, r: RIM }),
     ...tints,
     ...segments,
+    ...frost,
     ...words.map((word) => word.word),
     marker,
   );
