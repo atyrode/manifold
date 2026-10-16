@@ -96,6 +96,16 @@ vec3 orbitCapturePath(float tt, float start, float turn, float tilt, float roll)
   return planetOrbit(start + turn * ORBIT_CAPTURE_SWEEP * log(left), ORBIT_CAPTURE_FROM * pow(left, 2.0 / 3.0), tilt, roll);
 }
 
+// The orbit capture 'id' falls along, as orbitCapturePath takes it: x the angle it comes in at, y
+// which way round, z and w its tilt and roll.
+vec4 orbitCaptureOrbit(float id) {
+  return vec4(
+    hash12(vec2(id, 3.3)) * TAU,
+    hash12(vec2(id, 1.9)) > 0.5 ? 1.0 : -1.0,
+    0.3 + 0.55 * hash12(vec2(id, 5.1)),
+    (hash12(vec2(id, 9.7)) - 0.5) * 0.9);
+}
+
 // Captured meteor 'tau' seconds after it appears: spirals inward around the planet, ever faster,
 // and burns up in the atmosphere. q: the pixel in planet radii, foot a cell there (the shared
 // planet's frame); ringZ, ringOpacity: the ring at this pixel (its depth toward the viewer and how
@@ -105,22 +115,19 @@ vec2 orbitCapturedEvent(vec2 q, float tau, float id, float foot, float ringZ, fl
   vec2 acc = vec2(0.0);
   float duration = ${glslFloat(ORBIT_CAPTURE.seconds)};
   if (tau < 0.0 || tau > duration + 1.4) return acc;
-  float tilt = 0.3 + 0.55 * hash12(vec2(id, 5.1));
-  float roll = (hash12(vec2(id, 9.7)) - 0.5) * 0.9;
-  float start = hash12(vec2(id, 3.3)) * TAU;
-  float turn = hash12(vec2(id, 1.9)) > 0.5 ? 1.0 : -1.0;
+  vec4 orbit = orbitCaptureOrbit(id);
   for (int i = 0; i < 16; i++) {
     float back = float(i) * 0.05;
     if (tau - back < 0.0) break;
     float tt = clamp((tau - back) / duration, 0.0, 1.0);
-    vec3 pos = orbitCapturePath(tt, start, turn, tilt, roll);
+    vec3 pos = orbitCapturePath(tt, orbit.x, orbit.y, orbit.z, orbit.w);
     if (planetBehind(pos) || tau - back > duration) continue;
     float d = length(q - pos.xy) / foot;
     float seen = ringZ > pos.z ? 1.0 - ringOpacity : 1.0;
     acc.x = max(acc.x, step(d, i == 0 ? 1.4 : 0.75) * (1.0 - float(i) / 16.0) * seen);
   }
   if (tau > duration) {
-    vec3 end = orbitCapturePath(1.0, start, turn, tilt, roll);
+    vec3 end = orbitCapturePath(1.0, orbit.x, orbit.y, orbit.z, orbit.w);
     float f = (tau - duration) / 1.4;
     float d = length(q - end.xy) / foot;
     float flash = (1.0 - f) * smoothfall(3.0 + 30.0 * f, 0.0, d);

@@ -1,13 +1,26 @@
 // GPU regression for Orbit's depth order (#1082 R01): ring material nearer the eye than a moon or a
 // captured meteor covers it, and ring material behind a moon never does. It renders the real scene
 // entry with knob combinations and compares them pixel by pixel, all through its all-features program
-// (every ORBIT_* gate compiled in, the knobs deciding); registered in verify-browser.ts.
+// (every ORBIT_* gate compiled in, the knobs deciding); the captured meteor is drawn at a moment read
+// off its own path (orbitCapturePath) by a probe entry. Registered in verify-browser.ts.
+import { glslFloat } from "../../shaders/glsl.ts";
 import { fragmentSourceFor, sceneFeaturesAll, vertexSource } from "../../shaders/index.ts";
 import { defaultsFor, paramDefaults, renderSettings } from "../../state.ts";
 import { orbitScene } from "./index.ts";
+import { ORBIT_CAPTURE } from "./shader.ts";
 
 const WIDTH = 480;
 const HEIGHT = 270;
+/** orbitCapturedEvent's trail: its head and the places it passed, TRAIL in all, TRAIL_GAP seconds apart. */
+const TRAIL = 16;
+const TRAIL_GAP = 0.05;
+/**
+ * How far (planet radii) every place of the meteor's trail lies behind the ring plane at the moment
+ * drawn: well past the ring's change in depth across a drawn dot (about 0.02 here).
+ */
+const BEHIND = 0.05;
+/** Moments of a fall the probe tries, TRAIL_GAP apart: from the first with the whole trail on to the burn-up. */
+const MOMENTS = Math.round(ORBIT_CAPTURE.seconds / TRAIL_GAP) - TRAIL + 2;
 
 function check(ok: boolean, message: string): void {
   if (!ok) throw new Error(message);
@@ -34,6 +47,61 @@ function program(gl: WebGL2RenderingContext, fragment: string): WebGLProgram {
   );
   for (const shader of shaders) gl.deleteShader(shader);
   return linked;
+}
+
+/**
+ * Seconds into the fall of capture `id` (orbitCaptured's numbering, orbitCaptureOrbit its orbit) at
+ * which every place of its trail is in sight, over the ring's span and BEHIND radii or more behind
+ * the ring plane, at the ring settings in `params`: the middle of the longest run of such moments. A
+ * probe entry reads them off the scene's own GLSL, one moment per cell of the bottom row (the canvas
+ * WIDTH wide).
+ */
+function captureBehindRing(gl: WebGL2RenderingContext, params: Float32Array, id: number): number {
+  const gap = glslFloat(TRAIL_GAP);
+  const entry = `
+Shade probeCaptureBehindRing(vec2 uv, vec2 cell, float t) {
+  float tau = (floor(cell.x) + ${glslFloat(TRAIL - 1)}) * ${gap};
+  vec4 orbit = orbitCaptureOrbit(${glslFloat(id)});
+  PlanetRing plane = orbitRingPlane();
+  PlanetRingBands bands = orbitRingBands();
+  float behind = 1.0;
+  for (int i = 0; i < ${TRAIL}; i++) {
+    vec3 pos = orbitCapturePath((tau - float(i) * ${gap}) / ${glslFloat(ORBIT_CAPTURE.seconds)}, orbit.x, orbit.y, orbit.z, orbit.w);
+    vec3 ring = planetRingAt(plane, pos.xy);
+    float rho = length(ring.xy);
+    if (planetBehind(pos) || ring.z < pos.z + ${glslFloat(BEHIND)} || rho < bands.inner || rho > bands.outer) behind = 0.0;
+  }
+  return shadeOf(vec3(behind), 0.0, 0.0);
+}
+`;
+  const probe = program(
+    gl,
+    fragmentSourceFor(
+      { ...orbitScene, entry: "probeCaptureBehindRing", glsl: orbitScene.glsl + entry },
+      sceneFeaturesAll(orbitScene),
+    ),
+  );
+  gl.useProgram(probe);
+  gl.uniform2f(gl.getUniformLocation(probe, "uRes"), WIDTH, HEIGHT);
+  gl.uniform1i(gl.getUniformLocation(probe, "uView"), 1);
+  gl.uniform1fv(gl.getUniformLocation(probe, "uParams"), params);
+  gl.drawArrays(gl.TRIANGLES, 0, 3);
+  const bytes = new Uint8Array(MOMENTS * 4);
+  gl.readPixels(0, 0, MOMENTS, 1, gl.RGBA, gl.UNSIGNED_BYTE, bytes);
+  check(gl.getError() === gl.NO_ERROR, "readPixels GL error");
+  gl.deleteProgram(probe);
+  let longest = { from: 0, length: 0 };
+  let from = 0;
+  for (let moment = 0; moment <= MOMENTS; moment++) {
+    if (moment < MOMENTS && bytes[moment * 4] === 255) continue;
+    if (moment - from > longest.length) longest = { from, length: moment - from };
+    from = moment + 1;
+  }
+  check(
+    longest.length > 0,
+    `Fixture: capture ${id}'s trail never lies wholly behind the ring as it falls`,
+  );
+  return (longest.from + Math.floor(longest.length / 2) + TRAIL - 1) * TRAIL_GAP;
 }
 
 export function verifyOrbitRingDepth(gl: WebGL2RenderingContext): Record<string, unknown> {
@@ -132,13 +200,21 @@ export function verifyOrbitRingDepth(gl: WebGL2RenderingContext): Record<string,
     );
   }
 
-  // A captured meteor started by the "now" button at scene time 112, 5.5 s into its spiral: its
-  // whole visible trail lies behind the near side of the ring.
+  // A captured meteor started by the "now" button at scene time 112 (capture 1112 in orbitCaptured's
+  // numbering), drawn at a moment of its fall when its whole trail lies behind ring material nearer
+  // the eye. Its orbit crosses the ring plane, so other moments put part of the trail in front.
+  const STAMP = 112;
   const sky = { ring: 0, ...moons(0) };
-  const quiet = draw(sky, 117.5);
-  const meteor = draw(sky, 117.5, 112);
-  const ringQuiet = draw({ ...sky, ring: 1 }, 117.5);
-  const ringMeteor = draw({ ...sky, ring: 1 }, 117.5, 112);
+  const fall = captureBehindRing(
+    gl,
+    Float32Array.from(renderSettings(defaultsFor("orbit"), { ...scene, ...sky, ring: 1 }).params),
+    1000 + STAMP,
+  );
+  gl.useProgram(linked);
+  const quiet = draw(sky, STAMP + fall);
+  const meteor = draw(sky, STAMP + fall, STAMP);
+  const ringQuiet = draw({ ...sky, ring: 1 }, STAMP + fall);
+  const ringMeteor = draw({ ...sky, ring: 1 }, STAMP + fall, STAMP);
   const trail = pixelsWhere(
     (index) =>
       (meteor[index + RED] ?? 0) > (quiet[index + RED] ?? 0) &&
@@ -159,5 +235,6 @@ export function verifyOrbitRingDepth(gl: WebGL2RenderingContext): Record<string,
     ringBehindMoonPixels: behind.length,
     ringBeforeMoonPixels: before.length,
     ringBeforeMeteorPixels: trail.length,
+    meteorFallSeconds: fall,
   };
 }
