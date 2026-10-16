@@ -7,8 +7,8 @@
 // off from the waves to one they wash right across.
 //
 // The water also carries, for the shader:
-//   foam       white water made where the flow outruns its own waves (bores, the surge over the rim,
-//              swash), carried along and fading, slower on standing water
+//   foam       white water made where the flow nears or outruns its own waves (breaking crests,
+//              bores, the surge over the rim, swash), carried along and fading, slower on standing water
 //   agitation  what the anemones feel: a hard surge or a touch closes them; they reopen over seconds
 //   wetness    rock the water has run over, drying again over half a minute
 // The pointer dips a finger: a tap drops a ring of ripples and startles the anemones around it,
@@ -51,15 +51,16 @@ export const TIDEPOOL_ROWS = 200;
 /** Gravity (cells/s²): waves over the 8-cell-deep sea floor run at 0.22 frame heights a second. */
 const GRAVITY = 242;
 const FRICTION = 0.04;
-/** Momentum viscosity (ShallowOptions.viscosity): stills the grid's chequerboard ripples. */
-const VISCOSITY = 0.12;
-/** Sim step (seconds) and the most a frame takes. */
-const STEP = 1 / 120;
-const MAX_STEPS = 12;
+/**
+ * Sim step (seconds) and the most a frame takes. The step keeps dt · (|u| + |v| + 2 sqrt(g · depth))
+ * under 1 (sims/shallow.ts): 0.68 at most at the defaults, 0.84 in the biggest set at high tide.
+ */
+const STEP = 1 / 150;
+const MAX_STEPS = 15;
 /** Warm-up: steps a fresh layout runs before it is shown, at most this many ms a frame, in chunks. */
-const PREWARM_STEPS = 720;
+const PREWARM_STEPS = 900;
 const PREWARM_MS = 40;
-const PREWARM_CHUNK = 24;
+const PREWARM_CHUNK = 30;
 /** Wall-clock ms the layout's knobs and the frame's shape must rest before the rock is laid anew. */
 const RELAYOUT_MS = 300;
 /** The tide's swing either way (cells) and its period at the day-cycle knob's slow and quick ends (s). */
@@ -67,7 +68,7 @@ const TIDE_RANGE = 1.6;
 const TIDE_PERIOD = [600, 90] as const;
 /** Swell: wavelength (frame heights) at the period knob's ends; amplitude (cells) at swell 1. */
 const WAVELENGTH = [0.5, 1.2] as const;
-const SWELL = 1.6;
+const SWELL = 0.8;
 /** The second train: its length and amplitude against the first's, and its turn (radians). */
 const SECOND = { length: 0.83, amplitude: 0.45, turn: 0.12 } as const;
 /** How far the swell's heading turns at the direction knob's ends (radians). */
@@ -151,10 +152,11 @@ uniform float uFoam;  // the foam knob
 vec4 shallowCarry(vec2 uv, vec4 carried, vec4 here, vec4 water) {
   float depth = water.x;
   float speed = length(water.yz);
-  // White water where the flow outruns its own waves, the more the faster: bores, the surge over the
-  // rim, swash. It rides the flow and fades, slowly on standing water, at once on bare rock.
+  // White water where the flow nears or outruns its own waves, the more the faster: breaking crests,
+  // bores, the surge over the rim, swash. It rides the flow and fades, slowly on standing water, at
+  // once on bare rock.
   float froude = speed / sqrt(uGravity * max(depth, 0.02));
-  float source = smoothstep(0.8, 1.6, froude) * smoothstep(0.03, 0.2, depth) * smoothstep(4.0, 14.0, speed);
+  float source = smoothstep(0.7, 1.4, froude) * smoothstep(0.03, 0.2, depth) * smoothstep(3.0, 10.0, speed);
   float foam = min(carried.x * exp(-uDt * (depth > 0.05 ? 0.3 : 4.0)) + uDt * 5.0 * source * uFoam, 1.5);
   // Anemones close in a hard surge or at a touch, and reopen over some ten seconds.
   vec2 d = gl_FragCoord.xy - uPoke.xy;
@@ -358,7 +360,6 @@ export function tidepoolSim(params: readonly ParamDef[]): SimFactory {
           height: want.rows,
           gravity: GRAVITY,
           friction: FRICTION,
-          viscosity: VISCOSITY,
           // The heights are exaggerated against the frame: light bends as through water that deep.
           refraction: 0.25 * TIDEPOOL_RELIEF * TIDEPOOL_RELIEF,
           forcing: FORCING,

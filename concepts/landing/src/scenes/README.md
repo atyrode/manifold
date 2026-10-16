@@ -1589,12 +1589,15 @@ Helpers in `src/sims/` (each file's header has the full API and a usage example)
   reaches each texel, on the GPU (least time along rays from the source, then a few relaxing
   sweeps), so `T <= t` is where it has been: film's burst rim racing through thin film and crawling
   through thick.
-- `ShallowWater` and `stillWater` (`shallow.ts`): shallow water over a bed on `GpuCompute` (virtual
-  pipes, local inertial flow) that runs downhill, sloshes, shoals and breaks, driven by a GLSL
-  forcing snippet (a sea, a wave maker), carrying the scene's tracers (foam, wetness) through a carry
-  snippet, with splats and a `surface` texture of depth, slope and caustic focus for the shader;
-  `stillWater` opens a layout settled, every pool full to its spill point (tidepool); its `LevelHeap`
-  (cells by level) serves other priority floods.
+- `ShallowWater` and `stillWater` (`shallow.ts`): shallow water over a bed on `GpuCompute` (a
+  well-balanced finite volume scheme: HLL fluxes over a hydrostatic reconstruction, outflows limited
+  to what a cell holds) that runs downhill, sloshes, shoals and breaks, its bores at their true speed
+  and depth; driven by a GLSL forcing snippet (a sea, a wave maker) and a source snippet (a river's
+  stage, a held sea, evaporation), over its own bed or the caller's (a bed the delta erodes),
+  carrying the scene's tracers (foam, wetness) through a carry snippet, with splats and a `surface`
+  texture of depth, slope and caustic focus for the shader (tidepool, delta); `stillWater` opens a
+  layout settled, every pool full to its spill point (tidepool); its `LevelHeap` (cells by level)
+  serves other priority floods.
 - `TerrainBuilder`, `generateTerrain`, `packTerrain` (`terrain.ts`) and `terrainGlsl`
   (`shaders/lib/terrain.ts`): a whole landscape on one square map (metres, deterministic per seed),
   built in units a frame's budget spreads (`runBudgeted`): a valley laid across a vantage's view in

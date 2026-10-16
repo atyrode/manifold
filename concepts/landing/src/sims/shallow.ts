@@ -1,26 +1,37 @@
 // Shallow water over a bed, on the GPU (sims/gpu.ts): tide pools filling over their rims, surf
-// running up a reef and draining back, floods, puddles, a plunge pool. Water stands on a bed of any
-// shape, runs downhill, sloshes, piles up into bores, overtops ridges and settles behind them; waves
-// travel at sqrt(g · depth), so they slow, steepen and break as the water shoals.
+// running up a reef and draining back, floods, puddles, a plunge pool, a river building its delta.
+// Water stands on a bed of any shape, runs downhill, sloshes, piles up into bores, overtops ridges
+// and settles behind them; waves travel at sqrt(g · depth), so they slow, steepen and break as the
+// water shoals.
 //
-// Model. Depth on a grid of square cells; the flow through each cell's four faces is kept as
-// "virtual pipes" (Mei, Decaudin & Hu, "Fast Hydraulic Erosion Simulation and Visualization on
-// GPU", Pacific Graphics 2007) obeying the local inertial equations (Bates, Horritt & Fewtrell,
-// J. Hydrology 387, 2010): each face's outflow is pushed by the drop of the water level across it
-// times the depth of water over it, held back by bed friction (a drag of friction · speed / depth
-// per second, so thin sheets stop first), and scaled so no cell gives away more water than it holds.
-// Depths never go negative and no water is made or lost except by forcing and splats. The delta
-// scene runs the same scheme for its river (scenes/delta/sim.ts), in its own units.
+// Model. The shallow water equations in conservative form, on a grid of square cells, by a
+// first-order finite volume scheme: depth and velocity at each cell's centre, and through each face
+// the flux of the HLL Riemann solver (Harten, Lax & van Leer, SIAM Review 25, 1983) with Toro's wave
+// speeds, wet or dry ("Shock-Capturing Methods for Free-Surface Shallow Flows", 2001), so a bore runs
+// at the speed its jump conditions give and stands as deep (Stoker's dam break). The bed enters by
+// hydrostatic reconstruction (Audusse, Bouchut, Bristeau, Klein & Perthame, SIAM J. Sci. Comput. 25,
+// 2004): at each face both sides' water levels stand over the higher of the two beds, so a lake at
+// rest over any bed stays at rest and water crosses a ridge only where it stands above it. Momentum
+// along a face rides with the water from its upwind side. Bed friction drags the flow by
+// friction · speed / depth per second (a Chézy law, so thin sheets stop first). No cell gives away
+// more water than it holds: its outflows are scaled down to what it has, and their momentum with
+// them (the draining time step of Bollermann, Chen, Kurganov & Noelle, J. Sci. Comput. 2013), so
+// depths never go negative and no water is made or lost except by forcing, sources and splats. The
+// delta scene runs its river on it (scenes/delta/sim.ts), in its own units, over a bed it erodes.
 //
 // Units. Lengths and heights in cells; time in seconds. `gravity` (cells/s²) sets the wave speed,
-// sqrt(gravity · depth) cells a second. A step is stable while dt · sqrt(gravity · deepest) stays
-// under about 0.7 (a wave crosses less than a cell): pick dt from the deepest water.
+// sqrt(gravity · depth) cells a second. A step is stable while dt · (|u| + |v| + 2 sqrt(gravity · d))
+// stays under 1 in every cell (d its depth, u and v its velocity): over still water, while
+// dt · sqrt(gravity · deepest) stays under 0.5. Pick dt from the deepest water and the fastest flow.
 //
 // Textures (rows bottom to top, uv as everywhere in the lab). Edges are walls: seas, rivers and
-// drains come in through the forcing snippet.
-//   bed      r32f nearest: bed height (cells), from setBed
-//   water    rgba32f nearest ping-pong: x depth, yz velocity (cells/s), w 0
-//   flux     rgba32f nearest ping-pong: outflow through the left, right, bottom and top faces (cells²/s)
+// drains come in through the forcing and source snippets.
+//   bed      r32f nearest: bed height (cells), from setBed; or the caller's (`bed`), read in r
+//   water    rgba32f nearest ping-pong: x depth, yz velocity (cells/s), w the source snippet's own
+//            (0 without one)
+//   flux     rgba32f nearest: the water each face passed in the last step, as outflow through the
+//            left, right, bottom and top faces (cells²/s); a face's water runs one way, so either
+//            its cell or the neighbour across it holds 0 there
 //   carried  rgba16f linear ping-pong, with a carry snippet: the scene's tracers (foam, dye, wetness)
 //   surface  rgba16f linear, refreshed by view(): x depth, yz the slope of the water level (cells per
 //            cell, 0 where dry), w the caustic focus det(I + refraction · depth · H), H the level's
@@ -31,12 +42,20 @@
 // Forcing snippet (`forcing`): GLSL defining
 //     vec4 shallowForcing(vec2 uv, float bed)
 // for the texel at uv and its bed, returning (target level, target velocity xy in cells/s, rate per
-// second): the depth relaxes toward max(target - bed, 0) and the flow through the cell's faces
-// toward that velocity at that rate; rate 0 leaves the water free. A wave maker forces both the
-// level and the flow of the wave it makes (for a shallow-water wave, velocity c · η / h along its
-// heading, c = sqrt(uGravity · h)), so its waves run one way and the ones coming back are soaked
-// up; a band along an edge forced to the still sea is a beach that never reflects. It may read
-// uTime, uDt, uGravity, uTexel and uSize and declare its own uniforms (fed through `step`).
+// second): the depth relaxes toward max(target - bed, 0) and the velocity toward the target's at
+// that rate; rate 0 leaves the water free. A wave maker forces both the level and the flow of the
+// wave it makes (for a shallow-water wave, velocity c · η / h along its heading,
+// c = sqrt(uGravity · h)), so its waves run one way and the ones coming back are soaked up; a band
+// along an edge forced to the still sea is a beach that never reflects. It may read uTime, uDt,
+// uGravity, uTexel and uSize and declare its own uniforms (fed through `step`).
+//
+// Source snippet (`source`): GLSL defining
+//     vec4 shallowSource(vec2 uv, vec4 water, float bed)
+// returning the cell's water at the end of every step, from `water` as the step left it (depth,
+// velocity xy, and w as this snippet last returned it): what a forcing cannot say, such as a river
+// held at its stage, a sea held at its level, evaporation, or a mark the scene keeps in w (how
+// lately the cell was wet). The depth it returns is clamped at 0. It may read what the forcing may,
+// and declare its own uniforms and samplers (fed through `step`).
 //
 // Carry snippet (`carry`): GLSL defining
 //     vec4 shallowCarry(vec2 uv, vec4 carried, vec4 here, vec4 water)
@@ -56,9 +75,9 @@
 // rest drains. Seed `reset` with its depths so a scene opens settled. `LevelHeap` is its min-heap of
 // cells by level (push(cell, level), pop() the lowest, size), for other priority floods.
 //
-// Cost per step at 356×200 (71k cells): two passes, ~16 reads per texel. A real GPU runs hundreds of
-// steps a frame; a software rasterizer (SwiftShader) a few. `carry` and `view` add one pass each and
-// usually run once a frame.
+// Cost per step at 356×200 (71k cells): two passes, 10 and 15 reads per texel, each working out the
+// cell's four face fluxes. A real GPU runs hundreds of steps a frame; a software rasterizer
+// (SwiftShader) a few. `carry` and `view` add one pass each and usually run once a frame.
 //
 // Usage (a basin by a sea along the top edge, a wave maker in the top rows):
 //   const gpu = GpuCompute.create(gl);
@@ -105,29 +124,32 @@ export interface ShallowOptions {
   gravity: number;
   /** Bed friction: the flow slows by friction · speed / depth per second (speed in cells/s, depth in cells). Default 0.05. */
   friction?: number;
-  /**
-   * Share of each face's flow taken from the same face of its four neighbours every step, 0..0.3:
-   * stills the scheme's own chequerboard of grid-sized waves in deep, frictionless water. Default 0.
-   */
-  viscosity?: number;
-  /** Fastest the reported velocity may be (cells/s); fluxes are never clamped. Default 1000. */
+  /** Fastest the water may run (cells/s): a cap on thin sheets racing down steep beds. Default 1000. */
   maxSpeed?: number;
   /** Refraction distance per cell of depth for the caustic focus: 1 - 1/n, 0.25 for water. Default 0.25. */
   refraction?: number;
-  /** GLSL defining `vec2 shallowForcing(vec2 uv, float bed, float level)` (see the file header). */
+  /**
+   * The bed from the caller: a texture of the grid's size whose r is the bed height (cells), such as
+   * a ping-pong a scene's own pass erodes, read afresh every step (setBed is then refused). Default:
+   * the solver's own r32f bed, laid by setBed.
+   */
+  bed?: TextureSource;
+  /** GLSL defining `vec4 shallowForcing(vec2 uv, float bed)` (see the file header). */
   forcing?: string;
+  /** GLSL defining `vec4 shallowSource(vec2 uv, vec4 water, float bed)` (see the file header). */
+  source?: string;
   /** GLSL defining `vec4 shallowCarry(vec2 uv, vec4 carried, vec4 here, vec4 water)` (see the file header). */
   carry?: string;
 }
 
 export interface ShallowStep {
-  /** Seconds to advance (keep dt · sqrt(gravity · deepest) under ~0.7). At 0 only queued splats land. */
+  /** Seconds to advance (keep dt · (|u| + |v| + 2 sqrt(gravity · depth)) under 1). At 0 only queued splats land. */
   dt: number;
-  /** uTime for the forcing snippet. Default 0. */
+  /** uTime for the forcing and source snippets. Default 0. */
   time?: number;
-  /** The forcing snippet's own uniforms (they persist). */
+  /** The forcing and source snippets' own uniforms (they persist). */
   uniforms?: Readonly<Record<string, UniformValue>>;
-  /** The forcing snippet's own samplers (they persist). */
+  /** The forcing and source snippets' own samplers (they persist). */
   textures?: Readonly<Record<string, TextureSource>>;
 }
 
@@ -153,7 +175,6 @@ const RESERVED: Readonly<Record<string, true>> = {
   uTime: true,
   uGravity: true,
   uFriction: true,
-  uViscosity: true,
   uMaxSpeed: true,
   uRefraction: true,
   uSplat: true,
@@ -164,7 +185,7 @@ const RESERVED: Readonly<Record<string, true>> = {
 
 const HEAD = `
 uniform sampler2D uBed;    // r: bed height (cells)
-uniform sampler2D uWater;  // depth, velocity xy (cells/s), 0
+uniform sampler2D uWater;  // depth, velocity xy (cells/s), the source snippet's w
 uniform float uDt;
 uniform float uTime;
 uniform float uGravity;
@@ -172,88 +193,137 @@ uniform float uGravity;
 const float SHALLOW_WET = 1e-3;
 `;
 
-const FLUX = (forcing: string | undefined): string => `${HEAD}
-uniform sampler2D uFlux;   // outflow through the left, right, bottom, top faces (cells²/s)
-uniform float uFriction;
-uniform float uViscosity;
-${forcing ?? ""}
-
-// The outflow toward neighbour n: last step's, pushed by the level's drop over the face times the
-// water standing over it, held back by friction; never negative (the neighbour pushes back with its
-// own outflow). Off the grid n reads as the cell itself (and the caller shuts that face).
-float shallowPipe(ivec2 n, float bed, float level, float flow) {
-  n = clamp(n, ivec2(0), ivec2(uSize) - 1);
-  float nb = texelFetch(uBed, n, 0).x;
-  float nl = nb + texelFetch(uWater, n, 0).x;
-  float face = max(level, nl) - max(bed, nb);
-  if (face <= 0.0) return 0.0;
-  float q = flow + uDt * uGravity * face * (level - nl);
-  return q > 0.0 ? q / (1.0 + uDt * uFriction * q / (face * face)) : 0.0;
+/** The face fluxes, shared by the flux and water passes so both work out the same numbers. */
+const FACES = `
+// Bed, depth, velocity xy of the cell at c. Off the grid: 'from' mirrored across the edge whose
+// normal is n, a wall (the same water, its flow through the edge reversed).
+vec4 shallowCell(ivec2 c, vec4 from, vec2 n) {
+  if (any(lessThan(c, ivec2(0))) || any(greaterThanEqual(c, ivec2(uSize))))
+    return vec4(from.xy, from.zw - 2.0 * dot(from.zw, n) * n);
+  return vec4(texelFetch(uBed, c, 0).x, texelFetch(uWater, c, 0).xyz);
 }
 
-void main() {
-  ivec2 c = ivec2(gl_FragCoord.xy);
-  ivec2 last = ivec2(uSize) - 1;
-  float bed = texelFetch(uBed, c, 0).x;
-  float depth = texelFetch(uWater, c, 0).x;
-  vec4 flow = texelFetch(uFlux, c, 0);
-  // Viscosity: each face's flow takes a share of the same face's in the four cells around, which
-  // stills the grid's own chequerboard of short waves and costs the long ones little.
-  if (uViscosity > 0.0) {
-    vec4 around = texelFetch(uFlux, max(c - ivec2(1, 0), ivec2(0)), 0) + texelFetch(uFlux, min(c + ivec2(1, 0), last), 0)
-                + texelFetch(uFlux, max(c - ivec2(0, 1), ivec2(0)), 0) + texelFetch(uFlux, min(c + ivec2(0, 1), last), 0);
-    flow = mix(flow, 0.25 * around, uViscosity);
+// The flux through the face from cell a to cell b, whose normal n is +x or +y: x the water
+// (cells²/s), yz the momentum (cells³/s²). a and b: bed, depth, velocity xy.
+vec3 shallowFlux(vec4 a, vec4 b, vec2 n) {
+  // Hydrostatic reconstruction: both sides' levels over the higher of the two beds.
+  float top = max(a.x, b.x);
+  float ha = max(a.x + a.y - top, 0.0);
+  float hb = max(b.x + b.y - top, 0.0);
+  if (ha <= 0.0 && hb <= 0.0) return vec3(0.0);
+  float ua = dot(a.zw, n);
+  float ub = dot(b.zw, n);
+  float ca = sqrt(uGravity * ha);
+  float cb = sqrt(uGravity * hb);
+  // The fastest waves either way (Toro's estimates); onto a dry side, the front of the water.
+  float sl;
+  float sr;
+  if (ha <= 0.0) {
+    sl = ub - 2.0 * cb;
+    sr = ub + cb;
+  } else if (hb <= 0.0) {
+    sl = ua - ca;
+    sr = ua + 2.0 * ca;
+  } else {
+    float us = 0.5 * (ua + ub) + ca - cb;
+    float cs = max(0.5 * (ca + cb) + 0.25 * (ua - ub), 0.0);
+    sl = min(ua - ca, us - cs);
+    sr = max(ub + cb, us + cs);
   }
-  float level = bed + depth;
-  vec4 open = vec4(c.x > 0, c.x < last.x, c.y > 0, c.y < last.y);
-  vec4 q = open * vec4(
-    shallowPipe(c - ivec2(1, 0), bed, level, flow.x),
-    shallowPipe(c + ivec2(1, 0), bed, level, flow.y),
-    shallowPipe(c - ivec2(0, 1), bed, level, flow.z),
-    shallowPipe(c + ivec2(0, 1), bed, level, flow.w));
-${
-  forcing === undefined
-    ? ""
-    : `  // Forced: the outflows ease toward the target velocity's over the target depth.
-  vec4 force = shallowForcing(vUv, bed);
-  if (force.w > 0.0) {
-    vec4 target = open * vec4(max(-force.y, 0.0), max(force.y, 0.0), max(-force.z, 0.0), max(force.z, 0.0)) * max(force.x - bed, 0.0);
-    q = mix(q, target, 1.0 - exp(-force.w * uDt));
-  }
-`
-}  // No cell gives away more than it holds.
-  float total = q.x + q.y + q.z + q.w;
-  fragColor = total > 0.0 ? q * min(1.0, depth / (uDt * total)) : vec4(0.0);
+  vec2 fa = vec2(ha * ua, ha * ua * ua + 0.5 * uGravity * ha * ha);
+  vec2 fb = vec2(hb * ub, hb * ub * ub + 0.5 * uGravity * hb * hb);
+  // HLL, written so that two equal states pass exactly their own flux (still water stays still).
+  vec2 f = sl >= 0.0 ? fa : sr <= 0.0 ? fb
+    : 0.5 * (fa + fb) - 0.5 * (sr + sl) / (sr - sl) * (fb - fa) + sl * sr / (sr - sl) * vec2(hb - ha, hb * ub - ha * ua);
+  // Momentum along the face rides with the water, from the side it comes from.
+  vec2 along = n.yx;
+  return vec3(f.x, n * f.y + along * (f.x * dot(f.x > 0.0 ? a.zw : b.zw, along)));
 }
 `;
 
-const WATER = (forcing: string | undefined): string => `${HEAD}
-uniform sampler2D uFlux;
+const FLUX = `${HEAD}${FACES}
+void main() {
+  ivec2 c = ivec2(gl_FragCoord.xy);
+  ivec2 last = ivec2(uSize) - 1;
+  vec4 here = vec4(texelFetch(uBed, c, 0).x, texelFetch(uWater, c, 0).xyz);
+  vec2 x = vec2(1.0, 0.0);
+  vec2 y = vec2(0.0, 1.0);
+  // The water each face would pass outward; the grid's edges are walls.
+  vec4 q = vec4(
+    c.x > 0 ? max(-shallowFlux(shallowCell(c - ivec2(1, 0), here, x), here, x).x, 0.0) : 0.0,
+    c.x < last.x ? max(shallowFlux(here, shallowCell(c + ivec2(1, 0), here, x), x).x, 0.0) : 0.0,
+    c.y > 0 ? max(-shallowFlux(shallowCell(c - ivec2(0, 1), here, y), here, y).x, 0.0) : 0.0,
+    c.y < last.y ? max(shallowFlux(here, shallowCell(c + ivec2(0, 1), here, y), y).x, 0.0) : 0.0);
+  // No cell gives away more than it holds.
+  float total = q.x + q.y + q.z + q.w;
+  fragColor = total > 0.0 ? q * min(1.0, here.y / (uDt * total)) : vec4(0.0);
+}
+`;
+
+const WATER = (forcing: string | undefined, source: string | undefined): string => `${HEAD}${FACES}
+uniform sampler2D uFlux;   // the water each face passed, outward: left, right, bottom, top
+uniform float uFriction;
 uniform float uMaxSpeed;
 ${forcing ?? ""}
+${source ?? ""}
+
+// The share of a face's flux that went through: the water it passed over the water the flux would
+// carry, both outward. Where rounding leaves them of opposite signs, all of it.
+float shallowShare(float passed, float flux) {
+  return passed * flux > 0.0 ? min(passed / flux, 1.0) : 1.0;
+}
 
 void main() {
   ivec2 c = ivec2(gl_FragCoord.xy);
   ivec2 last = ivec2(uSize) - 1;
   vec4 w = texelFetch(uWater, c, 0);
-  vec4 f = texelFetch(uFlux, c, 0);
   float bed = texelFetch(uBed, c, 0).x;
-  float inL = c.x > 0 ? texelFetch(uFlux, c - ivec2(1, 0), 0).y : 0.0;
-  float inR = c.x < last.x ? texelFetch(uFlux, c + ivec2(1, 0), 0).x : 0.0;
-  float inB = c.y > 0 ? texelFetch(uFlux, c - ivec2(0, 1), 0).w : 0.0;
-  float inT = c.y < last.y ? texelFetch(uFlux, c + ivec2(0, 1), 0).z : 0.0;
-  float depth = max(w.x + uDt * (inL + inR + inB + inT - (f.x + f.y + f.z + f.w)), 0.0);
-  // The flow through the cell's faces, each axis the mean of its two, over the mean depth.
-  vec2 velocity = 0.5 * vec2(inL - f.x + f.y - inR, inB - f.z + f.w - inT) / max(0.5 * (w.x + depth), ${MIN_DEPTH.toFixed(2)});
-  float speed = length(velocity);
-  if (speed > uMaxSpeed) velocity *= uMaxSpeed / speed;
+  vec4 here = vec4(bed, w.xyz);
+  vec2 x = vec2(1.0, 0.0);
+  vec2 y = vec2(0.0, 1.0);
+  vec4 l = shallowCell(c - ivec2(1, 0), here, x);
+  vec4 r = shallowCell(c + ivec2(1, 0), here, x);
+  vec4 b = shallowCell(c - ivec2(0, 1), here, y);
+  vec4 t = shallowCell(c + ivec2(0, 1), here, y);
+  // The water each face passed outward: this cell's outflow less the neighbour's.
+  vec4 passed = texelFetch(uFlux, c, 0) - vec4(
+    c.x > 0 ? texelFetch(uFlux, c - ivec2(1, 0), 0).y : 0.0,
+    c.x < last.x ? texelFetch(uFlux, c + ivec2(1, 0), 0).x : 0.0,
+    c.y > 0 ? texelFetch(uFlux, c - ivec2(0, 1), 0).w : 0.0,
+    c.y < last.y ? texelFetch(uFlux, c + ivec2(0, 1), 0).z : 0.0);
+  float depth = max(w.x - uDt * (passed.x + passed.y + passed.z + passed.w), 0.0);
+  // Momentum: each face's flux, in the share of it that went through (all of it at a wall)...
+  vec3 fl = shallowFlux(l, here, x);
+  vec3 fr = shallowFlux(here, r, x);
+  vec3 fb = shallowFlux(b, here, y);
+  vec3 ft = shallowFlux(here, t, y);
+  vec2 flow = (c.x < last.x ? shallowShare(passed.y, fr.x) : 1.0) * fr.yz
+            - (c.x > 0 ? shallowShare(-passed.x, fl.x) : 1.0) * fl.yz
+            + (c.y < last.y ? shallowShare(passed.w, ft.x) : 1.0) * ft.yz
+            - (c.y > 0 ? shallowShare(-passed.z, fb.x) : 1.0) * fb.yz;
+  // ...and the bed's push: this cell's own pressure at each face, its depth there over the higher
+  // bed, worked out as the flux works it out, so that over still water the two cancel exactly.
+  vec4 face = max(bed + w.x - max(vec4(bed), vec4(l.x, r.x, b.x, t.x)), 0.0);
+  vec4 pressure = 0.5 * uGravity * face * face;
+  vec2 push = vec2(pressure.y - pressure.x, pressure.w - pressure.z);
+  // Velocity over the new depth, held back by friction (implicitly, so it stops a sheet, never turns it).
+  float film = max(depth, ${MIN_DEPTH.toFixed(2)});
+  vec2 velocity = (w.x * w.yz - uDt * (flow - push)) / film;
+  velocity /= 1.0 + uDt * uFriction * length(velocity) / film;
 ${
   forcing === undefined
     ? ""
     : `  vec4 force = shallowForcing(vUv, bed);
-  if (force.w > 0.0) depth = mix(depth, max(force.x - bed, 0.0), 1.0 - exp(-force.w * uDt));
+  if (force.w > 0.0) {
+    float k = 1.0 - exp(-force.w * uDt);
+    depth = mix(depth, max(force.x - bed, 0.0), k);
+    velocity = mix(velocity, force.yz, k);
+  }
 `
-}  fragColor = vec4(depth, velocity, 0.0);
+}  float speed = length(velocity);
+  if (speed > uMaxSpeed) velocity *= uMaxSpeed / speed;
+  vec4 next = vec4(depth, velocity, w.w);
+${source === undefined ? "" : "  next = shallowSource(vUv, next, bed);\n"}  fragColor = vec4(max(next.x, 0.0), next.yzw);
 }
 `;
 
@@ -330,25 +400,27 @@ void main() {
 
 /**
  * The water. Construct with a GpuCompute (`new ShallowWater(gpu, options)`, which throws GpuError on
- * a snippet that does not compile), `setBed`, `reset` it to still water, then each frame queue
- * splats, `step` a fixed dt as often as the clock asks, `carry` and `view` once, and hand the
- * renderer `surface.texture` (and `carried.texture`, `water.texture`): read them every frame, since
- * ping-pong sides swap.
+ * a snippet that does not compile), `setBed` (unless the bed is the caller's), `reset` it to still
+ * water, then each frame queue splats, `step` a fixed dt as often as the clock asks, `carry` and
+ * `view` once, and hand the renderer `surface.texture` (and `carried.texture`, `water.texture`):
+ * read them every frame, since ping-pong sides swap.
  */
 export class ShallowWater {
   readonly gpu: GpuCompute;
   readonly width: number;
   readonly height: number;
-  /** r32f nearest: bed height (cells). */
-  readonly bed: RenderTarget;
-  /** rgba32f nearest: depth (cells), velocity xy (cells/s), 0. */
+  /** The bed the passes read, in r (cells): the solver's own r32f target, or the caller's (`bed`). */
+  readonly bed: TextureSource;
+  /** rgba32f nearest: depth (cells), velocity xy (cells/s), the source snippet's w. */
   readonly water: PingPong;
-  /** rgba32f nearest: outflow through the left, right, bottom, top faces (cells²/s). */
-  readonly flux: PingPong;
+  /** rgba32f nearest: the water each face passed in the last step, outward through the left, right, bottom, top faces (cells²/s). */
+  readonly flux: RenderTarget;
   /** rgba16f linear: the carry snippet's field; undefined without one. */
   readonly carried: PingPong | undefined;
   /** rgba16f linear, as of the last `view`: depth, level slope xy, caustic focus. */
   readonly surface: RenderTarget;
+  /** The bed setBed lays; undefined when the bed is the caller's. */
+  readonly #ownBed: RenderTarget | undefined;
   readonly #flux: Pass;
   readonly #water: Pass;
   readonly #carry: Pass | undefined;
@@ -380,8 +452,8 @@ export class ShallowWater {
       return built;
     };
     try {
-      this.#flux = pass(FLUX(options.forcing), "shallow flux");
-      this.#water = pass(WATER(options.forcing), "shallow water");
+      this.#flux = pass(FLUX, "shallow flux");
+      this.#water = pass(WATER(options.forcing, options.source), "shallow water");
       this.#carry =
         options.carry === undefined ? undefined : pass(CARRY(options.carry), "shallow carry");
       this.#surface = pass(SURFACE, "shallow surface");
@@ -393,9 +465,15 @@ export class ShallowWater {
     this.#all = all;
 
     const size = { width, height };
-    this.bed = gpu.target({ ...size, format: "r32f", filter: "nearest" });
+    if (options.bed === undefined) {
+      this.#ownBed = gpu.target({ ...size, format: "r32f", filter: "nearest" });
+      this.bed = this.#ownBed;
+    } else {
+      this.#ownBed = undefined;
+      this.bed = options.bed;
+    }
     this.water = gpu.pingPong({ ...size, format: "rgba32f", filter: "nearest" });
-    this.flux = gpu.pingPong({ ...size, format: "rgba32f", filter: "nearest" });
+    this.flux = gpu.target({ ...size, format: "rgba32f", filter: "nearest" });
     this.carried =
       options.carry === undefined ? undefined : gpu.pingPong({ ...size, format: "rgba16f" });
     this.surface = gpu.target({ ...size, format: "rgba16f" });
@@ -403,25 +481,25 @@ export class ShallowWater {
     const gravity = options.gravity;
     for (const built of all)
       built.bind({ uBed: this.bed, uWater: this.water }).set({ uGravity: gravity });
-    this.#flux
-      .bind({ uFlux: this.flux })
-      .set({ uFriction: options.friction ?? DEFAULT_FRICTION, uViscosity: options.viscosity ?? 0 });
-    this.#water
-      .bind({ uFlux: this.flux })
-      .set({ uMaxSpeed: options.maxSpeed ?? DEFAULT_MAX_SPEED });
+    this.#water.bind({ uFlux: this.flux }).set({
+      uFriction: options.friction ?? DEFAULT_FRICTION,
+      uMaxSpeed: options.maxSpeed ?? DEFAULT_MAX_SPEED,
+    });
     if (this.#carry && this.carried) this.#carry.bind({ uCarry: this.carried });
     this.#surface.set({ uRefraction: options.refraction ?? DEFAULT_REFRACTION });
   }
 
-  /** Lay the bed: width × height heights in cells, row 0 at the bottom. */
+  /** Lay the bed: width × height heights in cells, row 0 at the bottom. Not for a caller's bed. */
   setBed(heights: Float32Array): void {
     this.#check();
+    if (!this.#ownBed)
+      throw new ShallowError("shallow: the bed is the caller's texture; setBed has none to lay");
     this.#checkLength(heights, "bed");
-    this.bed.seed(heights);
+    this.#ownBed.seed(heights);
   }
 
   /**
-   * Still water at these depths (width × height cells, row 0 at the bottom): no flow, no queued
+   * Still water at these depths (width × height cells, row 0 at the bottom): no flow, w 0, no queued
    * splats, the carried field emptied.
    */
   reset(depths: Float32Array): void {
@@ -447,12 +525,12 @@ export class ShallowWater {
     this.#splatCount++;
   }
 
-  /** Land the queued splats, then advance `dt` seconds: the face flows, then the depths, both forced. */
+  /** Land the queued splats, then advance `dt` seconds: the face fluxes, then the water, forced and sourced. */
   step(step: ShallowStep): void {
     this.#check();
     this.#flushSplats();
-    if (step.uniforms) this.#snippet(step.uniforms, undefined, this.#flux, this.#water);
-    if (step.textures) this.#snippet(undefined, step.textures, this.#flux, this.#water);
+    if (step.uniforms) this.#snippet(step.uniforms, undefined, this.#water);
+    if (step.textures) this.#snippet(undefined, step.textures, this.#water);
     const dt = Math.max(0, step.dt);
     if (dt === 0) return;
     const time = step.time ?? 0;
@@ -483,7 +561,7 @@ export class ShallowWater {
     if (this.#disposed) return;
     this.#disposed = true;
     for (const built of this.#all) built.dispose();
-    this.bed.dispose();
+    this.#ownBed?.dispose();
     this.water.dispose();
     this.flux.dispose();
     this.carried?.dispose();
@@ -498,26 +576,22 @@ export class ShallowWater {
     this.#splatCount = 0;
   }
 
-  /** Hand a snippet's own uniforms and samplers to the passes that compile it (a typo throws). */
+  /** Hand a snippet's own uniforms and samplers to the pass that compiles it (a typo throws). */
   #snippet(
     uniforms: Readonly<Record<string, UniformValue>> | undefined,
     textures: Readonly<Record<string, TextureSource>> | undefined,
-    ...passes: Pass[]
+    pass: Pass,
   ): void {
     for (const values of [uniforms, textures]) {
       for (const name in values) {
         if (RESERVED[name] === true)
           throw new ShallowError(`shallow: ${name} is the solver's own uniform`);
-        if (!passes.some((pass) => pass.declares(name)))
-          throw new ShallowError(
-            `shallow: the ${passes[0]?.name ?? "shallow"} snippet declares no ${name}`,
-          );
+        if (!pass.declares(name))
+          throw new ShallowError(`shallow: the ${pass.name} snippet declares no ${name}`);
       }
     }
-    for (const pass of passes) {
-      if (uniforms) pass.set(uniforms, false);
-      if (textures) pass.bind(textures, false);
-    }
+    if (uniforms) pass.set(uniforms);
+    if (textures) pass.bind(textures);
   }
 
   #checkLength(data: Float32Array, what: string): void {

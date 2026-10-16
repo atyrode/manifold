@@ -31,25 +31,20 @@ export function verifyTidepoolExchange(gl: WebGL2RenderingContext): Record<strin
     for (let y = 0; y < H; y++)
       for (let x = 0; x < W; x++)
         bed[y * W + x] = y >= H - 4 ? -3 : inBasin(x, y) ? -2 : onRim(x, y) ? 1 : 0;
-    const run = (water: ShallowWater, steps: number, sea: number): void => {
-      for (let i = 0; i < steps; i++)
-        water.step({ dt: 1 / 40, time: i / 40, uniforms: { uSea: sea } });
+    // Steps of 1/80 s: the sea and the flooded basin, 5 cells deep, keep dt · 2 sqrt(g · depth) under 1.
+    const run = (water: ShallowWater, seconds: number, sea: number): void => {
+      for (let i = 0; i < seconds * 80; i++)
+        water.step({ dt: 1 / 80, time: i / 80, uniforms: { uSea: sea } });
     };
 
     // Closed and unforced: a hump of water spreads and sloshes, and none is made or lost.
-    const box = new ShallowWater(gpu, {
-      width: W,
-      height: H,
-      gravity: 40,
-      friction: 0.05,
-      viscosity: 0.1,
-    });
+    const box = new ShallowWater(gpu, { width: W, height: H, gravity: 40, friction: 0.05 });
     box.setBed(new Float32Array(W * H).fill(-2));
     box.reset(
       Float32Array.from({ length: W * H }, (_, i) => 2 + (Math.abs((i % W) - 12) < 3 ? 1.5 : 0)),
     );
     const before = volume(gl, box, false);
-    for (let i = 0; i < 60; i++) box.step({ dt: 1 / 30 });
+    for (let i = 0; i < 120; i++) box.step({ dt: 1 / 60 });
     const after = volume(gl, box, false);
     if (Math.abs(after - before) > 1e-3 * before)
       throw new Error(`Shallow water lost or made water: ${before} -> ${after}`);
@@ -72,19 +67,19 @@ vec4 shallowForcing(vec2 uv, float bed) {
     water.reset(bed.map((b, i) => (i >= (H - 4) * W ? Math.max(-1 - b, 0) : 0)));
     const start = volume(gl, water, true);
     if (start !== 0) throw new Error(`The basin opened with water below its rim: ${start}`);
-    run(water, 80, 0.5);
+    run(water, 2, 0.5);
     const below = volume(gl, water, true);
     if (below > 1e-3) throw new Error(`A sea below the rim reached the basin: ${below}`);
-    run(water, 400, 2);
+    run(water, 10, 2);
     const flooded = volume(gl, water, true);
     // Over the rim, the basin fills toward the sea, well past its rim: 48 cells × 4 deep.
     if (flooded < 0.8 * 48 * 4)
       throw new Error(`A sea above the rim left the basin short: ${flooded}`);
-    run(water, 300, -1);
+    run(water, 7.5, -1);
     const kept = volume(gl, water, true);
     // Once the sea falls back the basin spills down toward its rim (3 deep, 144) and keeps the rest:
-    // its seiche spills a little more over the rim, but a leak would empty it and no step may make
-    // water.
+    // the last thin sheet over the crest drains slowly and a seiche may spill a little more, but a
+    // leak would empty it and no step may make water.
     if (kept < 0.6 * 48 * 3 || kept > 1.02 * 48 * 3)
       throw new Error(`The basin did not keep its water below the rim: ${kept}`);
     return { conserved: [before, after], basin: { start, below, flooded, kept } };

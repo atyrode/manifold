@@ -64,7 +64,7 @@ mathematics. All have a first implementation in the lab:
 | Petri dish                                   | `petri`      | Gray–Scott Turing patterns, Barkley BZ spirals                                                                                                                                                                                                                                                                                                                                                                                                                                             | `GpuCompute`, `grayScottRegimes`                                                                          |
 | Slime mould network (Physarum)               | `physarum`   | Jones agents over Tero's adaptive flow network linking oat flakes                                                                                                                                                                                                                                                                                                                                                                                                                          | `GpuCompute`                                                                                              |
 | Hyperbolic tiling                            | `hyperbolic` | Möbius glide over a {p,q} weave; drags re-grip when the map or screen shape changes                                                                                                                                                                                                                                                                                                                                                                                                        |                                                                                                           |
-| River delta from above                       | `delta`      | Shallow water erosion and deposition                                                                                                                                                                                                                                                                                                                                                                                                                                                       | `GpuCompute`                                                                                              |
+| River delta from above                       | `delta`      | Shallow water erosion and deposition                                                                                                                                                                                                                                                                                                                                                                                                                                                       | `ShallowWater`, `GpuCompute`                                                                              |
 | Fractals                                     | `fractal`    | Julia walk, Mandelbrot dive, Apollonian gasket, Newton garden; drag pan tethered to the frame                                                                                                                                                                                                                                                                                                                                                                                              | `ElasticPan`                                                                                              |
 | Prism                                        | `prism`      | Dispersion through glass, total internal reflection; Newton's recombination by a second prism that slides in along the fan and steps back when the first turns into it                                                                                                                                                                                                                                                                                                                     |                                                                                                           |
 
@@ -142,16 +142,17 @@ where float render targets are missing.
 `tidepool`: a rock pool on a basalt platform, seen from straight above, with the open sea along the
 top. Prototype (issue #1082, N1), built from shared parts rather than scene code:
 
-- **Water:** `ShallowWater` (`src/sims/shallow.ts`), GPU shallow water over a bed (virtual pipes,
-  local inertial flow, the scheme the delta's river uses). A wave maker in the top band forces both
-  the swell's level and its flow, so waves run in one way and reflections are soaked up; they shoal,
-  break over the reefs, run up the rock and, in the sets, pour through the notch in the basin's rim.
-  The basin keeps what comes over and spills back to its sill. `stillWater` (priority flood) opens
-  every layout settled: the basin and potholes full to their spill points.
-- **Response:** the water carries foam (made where the flow outruns its own waves), agitation (a
-  hard surge or a touch closes the anemones; they reopen over ~10 s) and wetness (rock drying over
-  half a minute). Kelp and surfgrass stream and flutter with the flow at their holdfasts; anemones
-  lean with it and close when the water leaves them.
+- **Water:** `ShallowWater` (`src/sims/shallow.ts`), GPU shallow water over a bed (a well-balanced
+  finite volume scheme, bores at their true speed and depth; the delta's river runs on it too). A
+  wave maker in the top band forces both the swell's level and its flow, so waves run in one way and
+  reflections are soaked up; they shoal, break over the reefs, run up the rock and, in the sets,
+  pour through the notch in the basin's rim. The basin keeps what comes over and spills back to its
+  sill. `stillWater` (priority flood) opens every layout settled: the basin and potholes full to
+  their spill points.
+- **Response:** the water carries foam (made where the flow nears or outruns its own waves),
+  agitation (a hard surge or a touch closes the anemones; they reopen over ~10 s) and wetness (rock
+  drying over half a minute). Kelp and surfgrass stream and flutter with the flow at their
+  holdfasts; anemones lean with it and close when the water leaves them.
 - **Caustics:** the shared water's `caustics` tier (`src/shaders/lib/water.ts` over
   `src/shaders/caustics.ts`): the swell's caustic focus from the sim's surface Hessian times
   analytic wind ripples', both det(I + D·H), D a quarter of the depth (`waterCaustic`).

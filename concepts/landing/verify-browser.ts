@@ -58,6 +58,7 @@ import { nightSkyDefaults, verifyNightPlanets, verifyNightSky } from "./src/nigh
 import { verifyInspector } from "./src/lab/inspector.verify.ts";
 import { verifyOrbitKepler } from "./src/scenes/orbit/kepler.verify.ts";
 import { verifyContextRestore, verifyFrameGovernor } from "./src/display.verify.ts";
+import { verifyShallowWater } from "./src/sims/shallow.verify.ts";
 
 function check(ok: boolean, message: string): void {
   if (!ok) throw new Error(message);
@@ -580,6 +581,7 @@ export const checks: readonly Check[] = [
   ["orbitKepler", verifyOrbitKepler],
   ["contextRestore", verifyContextRestore],
   ["frameGovernor", verifyFrameGovernor],
+  ["shallowWater", verifyShallowWater],
 ];
 
 /**
