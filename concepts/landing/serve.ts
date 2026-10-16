@@ -3,7 +3,10 @@
 //   bun concepts/landing/serve.ts [port]          committed builds only:
 //                                                   /            head of the concept branch
 //                                                   /@<sha>/     that commit, exactly as it was
-//   bun concepts/landing/serve.ts [port] --dev    this working tree with hot reload
+//                                                   /bench.html  the head's GPU timing page,
+//                                                   /@<sha>/bench.html  that commit's
+//   bun concepts/landing/serve.ts [port] --dev    this working tree with hot reload (the same
+//                                                   / and /bench.html)
 //
 // Builds come from `git archive`, so uncommitted edits never reach the public origin, and a saved
 // setup can always be replayed on the commit it was tuned on. Bun's HMR server refuses any
@@ -11,7 +14,9 @@
 import { mkdir, readdir, rename, rm } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import bench from "./bench.html";
 import index from "./index.html";
+import { buildSite, extractTree, PAGES } from "./scripts/site.ts";
 
 const args = process.argv.slice(2);
 const port = Number(args.find((arg) => /^\d+$/.test(arg)) ?? 7920);
@@ -71,35 +76,9 @@ async function buildCommit(sha: string): Promise<string> {
   await rm(work, { recursive: true, force: true });
   await mkdir(join(work, "src"), { recursive: true });
   try {
-    const archive = Bun.spawn(
-      ["git", "-C", await git("rev-parse", "--show-toplevel"), "archive", sha, "concepts/landing"],
-      { stdout: "pipe", stderr: "pipe" },
-    );
-    const untar = Bun.spawn(["tar", "-x", "-C", join(work, "src")], { stdin: archive.stdout });
-    if ((await archive.exited) !== 0 || (await untar.exited) !== 0) {
-      throw new BuildError(
-        `could not extract ${short}: ${(await new Response(archive.stderr).text()).trim()}`,
-      );
-    }
-    const source = join(work, "src", "concepts", "landing");
-    const result = await Bun.build({
-      entrypoints: [join(source, "index.html")],
-      outdir: join(work, "out"),
-      publicPath: `/@${short}/`,
-      minify: true,
-    });
-    if (!result.success) throw new BuildError(result.logs.map(String).join("\n"));
-    // The sheet worker is its own bundle, loaded next to the page (builds before it have none).
-    const worker = join(source, "src", "sheet-worker.ts");
-    if (await Bun.file(worker).exists()) {
-      const workerResult = await Bun.build({
-        entrypoints: [worker],
-        outdir: join(work, "out"),
-        naming: "sheet-worker.js",
-        minify: true,
-      });
-      if (!workerResult.success) throw new BuildError(workerResult.logs.map(String).join("\n"));
-    }
+    const toplevel = await git("rev-parse", "--show-toplevel");
+    const source = await extractTree(toplevel, sha, join(work, "src"));
+    await buildSite(source, join(work, "out"), `/@${short}/`);
     // The scene browser's thumbnails ride along as committed (builds before them have none, and
     // the lab draws stand-ins).
     const thumbs = join(source, "thumbs");
@@ -107,11 +86,15 @@ async function buildCommit(sha: string): Promise<string> {
       if (/^[a-z]+\.webp$/.test(name))
         await Bun.write(join(work, "out", "thumbs", name), Bun.file(join(thumbs, name)));
     }
-    const html = await Bun.file(join(work, "out", "index.html")).text();
-    await Bun.write(
-      join(work, "out", "index.html"),
-      html.replace("</head>", `<meta name="landing-build" content="${short}"></head>`),
-    );
+    for (const page of PAGES) {
+      const file = Bun.file(join(work, "out", page));
+      if (!(await file.exists())) continue;
+      const html = await file.text();
+      await Bun.write(
+        file,
+        html.replace("</head>", `<meta name="landing-build" content="${short}"></head>`),
+      );
+    }
     await mkdir(cacheRoot, { recursive: true });
     await rm(dist, { recursive: true, force: true });
     await rename(join(work, "out"), dist);
@@ -129,7 +112,7 @@ async function serveFile(dist: string, path: string, immutable: boolean): Promis
   const file = Bun.file(join(dist, path || "index.html"));
   if (!(await file.exists())) return new Response("not found", { status: 404 });
   const cache =
-    path === "" || path === "index.html"
+    path === "" || path.endsWith(".html")
       ? "no-cache"
       : immutable
         ? "public, max-age=31536000, immutable"
@@ -151,6 +134,8 @@ async function committed(request: Request): Promise<Response> {
     const sha = await head();
     if (!sha) return new Response(`no committed lab on ${branch}`, { status: 503 });
     if (url.pathname === "/") return await serveFile(await built(sha), "", false);
+    if (url.pathname === "/bench.html")
+      return await serveFile(await built(sha), "bench.html", false);
     // The head page is served from the root, so its worker and thumbnails load from there.
     if (url.pathname === "/sheet-worker.js")
       return await serveFile(await built(sha), "sheet-worker.js", false);
@@ -170,6 +155,7 @@ const server = args.includes("--dev")
       development: { hmr: true, console: true },
       routes: {
         "/": index,
+        "/bench.html": bench,
         "/sheet-worker.js": async () => {
           const result = await Bun.build({
             entrypoints: [new URL("./src/sheet-worker.ts", import.meta.url).pathname],

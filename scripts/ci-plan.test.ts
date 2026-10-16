@@ -286,6 +286,7 @@ describe("CI impact policy", () => {
     expect(selected.risk).toBe("standard");
     expect(selected.checks).toEqual([...MANDATORY_CHECKS, "landing-concept", "landing-webgl"]);
     expect(selected.reasons).toContain(`landing concept lab: ${path}`);
+    expect(selected.landingScenes).toBe("*");
     // landing-concept runs the lab's whole suite; the targeted runner admits no concept path.
     expect(selected.unitPaths).toEqual(["packages/protocol/test"]);
   });
@@ -305,6 +306,52 @@ describe("CI impact policy", () => {
       "landing concept lab: packages/ui/src/palette.ts -> concepts/landing/src/lab.ts -> concepts/landing/src/lab.test.ts",
     );
     expect(selected.unitPaths).toEqual(["packages/ui"]);
+  });
+
+  test("a change inside scene directories scopes the lab's browser checks to those scenes", () => {
+    const scenes = "concepts/landing/src/scenes";
+    const graph: DependencyGraph = {
+      holes: [],
+      importers: new Map([
+        // Country flies flock's birds. The roster, and whatever imports it, reaches every scene, so
+        // it widens nothing.
+        [`${scenes}/flock/boids.ts`, new Set([`${scenes}/country/sim.ts`, `${scenes}/index.ts`])],
+        [`${scenes}/index.ts`, new Set(["concepts/landing/src/state.ts"])],
+        ["concepts/landing/src/state.ts", new Set([`${scenes}/harmonograph/prewarm.verify.ts`])],
+      ]),
+    };
+    const selected = plan(
+      [
+        { status: "M", path: `${scenes}/flock/boids.ts` },
+        { status: "M", path: `${scenes}/pond/koi.ts` },
+        { status: "M", path: "concepts/landing/SCENES.md" },
+      ],
+      graph,
+    );
+    expect(selected.checks).toEqual([...MANDATORY_CHECKS, "landing-concept", "landing-webgl"]);
+    expect(selected.landingScenes).toEqual(["country", "flock", "pond"]);
+  });
+
+  test.each([
+    "concepts/landing/src/renderer.ts",
+    "concepts/landing/src/scenes/index.ts",
+    "packages/ui/src/palette.ts",
+  ])("a scene change beside %s runs every scene's browser checks", (shared) => {
+    const selected = plan([
+      { status: "M", path: "concepts/landing/src/scenes/pond/koi.ts" },
+      { status: "M", path: shared },
+    ]);
+    expect(selected.checks).toContain("landing-webgl");
+    expect(selected.landingScenes).toBe("*");
+  });
+
+  test("the lab's documentation and thumbnails select none of its proof", () => {
+    const selected = plan([
+      { status: "M", path: "concepts/landing/SCENES.md" },
+      { status: "A", path: "concepts/landing/thumbs/country.webp" },
+    ]);
+    expect(selected.risk).toBe("standard");
+    expect(selected.checks).toEqual(MANDATORY_CHECKS);
   });
 
   test("the landing lab's browser driver keeps the complete plan", () => {
@@ -426,6 +473,8 @@ describe("ci-plan CLI", () => {
       expect(exitCode).toBe(0);
       expect(stderr).toBe("");
       expect(readFileSync(output, "utf8")).toContain('unitPaths=["packages/protocol/test"]');
+      // Nothing changed between HEAD and HEAD, so nothing scopes the lab's browser checks.
+      expect(readFileSync(output, "utf8")).toContain("landingScenes=*\n");
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

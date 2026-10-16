@@ -1821,19 +1821,35 @@ and `dwell` (`state.ts` refuses to load such a scene).
   loops short (≤ 32 iterations in the common path), no nested loops over many items. The renderer
   holds every stage to that budget (`CELL_BUDGET`: a larger one, a 4K screen or a 1440p one at
   pixel 2, gets coarser cells), draws at most 60 frames a second whatever the display, and none
-  while the picture stands still (see "Time and motion").
+  while the picture stands still (see "Time and motion"). The GPU timing page (below) measures it
+  on a real device.
 
 ## Correctness checks
 
 Run `bun concepts/landing/verify.ts` from the repository root with system Chromium available
 (`MANIFOLD_CHROMIUM` can select its binary); name checks to run only those
 (`bun concepts/landing/verify.ts frostSky pondKoi`). Each check runs on a freshly loaded page, so
-it inherits nothing from the others, and has a deadline of its own: 180 s, or
-`LANDING_CHECK_SECONDS` (it is started in the page and reports back when done, so no browser
-protocol call waits on it). A check whose renderer crashes or is killed (earlyoom picks renderers
-first) fails at once with `renderer crashed`, not at the deadline. The run prints
+it inherits nothing from the others, and has a deadline of its own: three times the seconds it last
+took (`scripts/verify-timings.ts`), never under 180 s, or `LANDING_CHECK_SECONDS` for every check
+when that is set (it is started in the page and reports back when done, so no browser protocol
+call waits on it). A check whose renderer crashes or is killed (earlyoom picks renderers first)
+fails at once with `renderer crashed`, not at the deadline. The run prints
 `PASS  <name> (<seconds> s)` per check, then the results as JSON keyed by check name, and stops at
 the first failure (a throw, the deadline or a crash) with `FAIL  <name>` and a non-zero exit.
+
+- `--shard i/n` runs the `i`th of `n` disjoint shares of the checks, balanced by their recorded
+  seconds: longest first, each to the share with the least so far, so the shares differ by at most
+  the longest check; a check without a record weighs the median one.
+- `LANDING_SCENES=a,b` keeps only the checks that cover those scenes, and runs the passage speed
+  check on them alone (unset or `*`: all). A check imported from `src/scenes/<id>/` covers `<id>`,
+  the scene directories its scene files import, and every scene those files name
+  (`sceneDefs.<id>` or `"<id>"`); one that walks every scene (`sceneIds`,
+  `Object.values(sceneDefs)`), or any check from outside a scene's directory, covers them all
+  (`scripts/verify-plan.ts`).
+- `--record` rewrites `scripts/verify-timings.ts` with the seconds of the checks that passed (and
+  drops checks no longer registered); run it, without a scene scope, after adding or speeding up a
+  check and commit the file.
+
 Chromium ends with the run, however it ends, and takes its profile with it. The isolated browser
 exercises actual WebGL output: Forest's sky phase across motion changes, inherited GPU blending
 and preserving resize, Frost's warmth/trace reset while paused and after resume, the shared sky
@@ -1918,10 +1934,14 @@ The shared components have checks of their own:
   together as each alone does; an orbiting planet drifts left with the motion clock and, half a
   circuit on, has set, the sky byte for byte the empty list's.
 
-CI runs these checks (gate group `landing-webgl`) and the lab's TypeScript and unit tests
-(`landing-concept`) for every pull request that changes `concepts/landing/` or a source the lab
-imports, and on every full run (each push to `main`, each manual dispatch).
-`bun scripts/gate.ts --only landing-webgl` or `--only landing-concept` runs the same slice locally.
+CI runs these checks (gate group `landing-webgl`, four jobs `landing-webgl (1/4)` to `(4/4)`, one
+`--shard` each) and the lab's TypeScript and unit tests (`landing-concept`) for every pull request
+that changes `concepts/landing/` or a source the lab imports, other than its documentation and
+thumbnails, and on every full run (each push to `main`, each manual dispatch). A pull request that
+changes only scene directories (and documentation) runs only the checks covering those scenes and
+the scenes whose files import theirs (the planner's `landingScenes`); full runs cover every scene.
+`bun scripts/gate.ts --only landing-webgl [--shard i/4]` or `--only landing-concept` runs the same
+slice locally.
 
 To add a check, write `<topic>.verify.ts` in the scene's folder exporting a function that takes a
 `WebGL2RenderingContext`, throws on a regression and returns what it measured as plain JSON data,
@@ -1929,5 +1949,44 @@ then register it in `concepts/landing/verify-browser.ts` with one import and one
 `["<name>", verifyTopic],` line at the end of `checks`. The context is the check's own (a vertex
 array bound, the canvas at its default size): size the canvas for what it reads back, and restore
 in a `finally` any global or shared definition it patches (`window.requestAnimationFrame`, a
-scene's `glsl` or `sim`). Keep each check well under the deadline in software WebGL on a busy
-machine; split a slower one into several entries.
+scene's `glsl` or `sim`). Name each scene the check draws as `sceneDefs.<id>` (or import from its
+directory), so a run scoped to that scene keeps the check. Keep each check well under the deadline
+in software WebGL on a busy machine (split a slower one into several entries) and record its
+seconds with `--record`.
+
+### Pixel identity (`scripts/ab.ts`)
+
+`bun concepts/landing/scripts/ab.ts [--base <rev>] [setting...]` shows whether a change alters
+what the lab draws. Each setting is drawn from this working tree and from the base revision
+(default `HEAD`, so the uncommitted edits; `--base $(git merge-base HEAD origin/main)` for a
+branch), each tree built as `serve.ts` builds a commit, both in one software-WebGL Chromium, with
+the clocks frozen as a reduced-motion visitor sees the page, until the picture has held still for
+1.5 s with no sheet still painting; then the two pictures are compared cell for cell. A setting is a
+page query (`"scene=country&time=0.3"`) or a bare scene id; by default every scene at its defaults,
+dithered and `view=source`, and `--presets` adds the committed presets. A scene whose generated GLSL
+(default and all-features programs) and every file its page loads (index.html and its imports,
+short of other scenes' directories) are byte for byte the same in both trees is skipped (`--all`
+draws it anyway), so a change confined to one scene draws that scene only. It prints `SAME`,
+`DIFFERS`, `SKIPPED`, `FAILED` (no still picture within `--seconds`, default 120, or a scene that
+failed to draw), `ADDED` or `REMOVED` per setting, writes `<slug>.base.png`, `<slug>.head.png` and
+`<slug>.diff.png` (differing cells bright, the rest dimmed) for each difference and `report.json`
+to `--out` (default `/tmp/landing-ab`), and exits 1 when anything differs or failed. `--size WxH`
+sets the page in CSS pixels (default 384x240, 192×120 cells at the default pixel size). Only the
+canvas is compared: settings that act on the page around it (`dim`, `blur`, `mode`) draw the same
+cells. Use it to show that a refactor leaves the default renders pixel-identical, rather than
+keeping a copy of the old code in a check.
+
+### GPU timing (`bench.html`)
+
+The verify suite runs in software, so it says nothing of a real GPU. `bench.html` beside the lab
+(`http://127.0.0.1:7920/bench.html` from `serve.ts`, committed or `--dev`; `/@<sha>/bench.html`
+for a commit; the same paths on the public origin) times each scene at its defaults on the device
+that opens it: its program's compile and link, then, once it is on screen and warm, its frames on
+a canvas of `cells` (default 960x540, the budget above): GPU time per frame from
+`EXT_disjoint_timer_query_webgl2` when the browser has it, else the time between animation frames,
+and the main-thread time of each, with medians, 95th percentiles and ms per million cells. Beside
+them it reports the renderer string, the context's uniform and texture limits, its fragment
+precisions and extensions, and per program the uniform vectors it uses (each scalar, vector and
+matrix row counted as one). Query keys: `scenes=a,b` (default all), `cells=WxH`, `frames` (120),
+`warmup` (30) and `auto=1` to start at once. The report is JSON to copy or download; the page
+sends nothing anywhere.

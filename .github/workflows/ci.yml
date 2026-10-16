@@ -34,6 +34,7 @@ jobs:
       checks: ${{ steps.plan.outputs.checks }}
       risk: ${{ steps.plan.outputs.risk }}
       unitPaths: ${{ steps.plan.outputs.unitPaths }}
+      landingScenes: ${{ steps.plan.outputs.landingScenes }}
       identity: ${{ steps.identity.outputs.identity }}
     steps:
       - name: Check out
@@ -447,12 +448,18 @@ jobs:
           task: landing-concept
 
   landing-webgl:
-    name: landing-webgl
+    name: landing-webgl (${{ matrix.shard }}/4)
     needs: plan
     if: contains(fromJSON(needs.plan.outputs.checks), 'landing-webgl')
     runs-on: ubuntu-latest
-    # Lab regressions render one after another in software WebGL, each within LANDING_CHECK_SECONDS.
+    # Lab regressions render one after another in software WebGL, four disjoint shares balanced by
+    # their recorded seconds, each check within its own deadline. A pull request confined to some
+    # scenes' directories runs only the checks that cover those scenes.
     timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
     steps:
       - name: Check out
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -460,9 +467,10 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
       - uses: ./.github/actions/bun-workspace
-      - uses: ./.github/actions/gate-slice
-        with:
-          task: landing-webgl
+      - name: Verify landing WebGL shard
+        env:
+          LANDING_SCENES: ${{ needs.plan.outputs.landingScenes }}
+        run: bun scripts/gate.ts --only landing-webgl --shard "${{ matrix.shard }}/4"
 
   runtime-jobs:
     name: runtime-jobs

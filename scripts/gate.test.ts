@@ -203,13 +203,28 @@ describe("gate CLI", () => {
     expect(webgl.invocations).toEqual([{ args: ["concepts/landing/verify.ts"] }]);
   });
 
+  test("each landing WebGL shard hands its share to the runner, which packs the checks", async () => {
+    const shards = await Promise.all(
+      ([1, 2, 3, 4] as const).map((shard) =>
+        runSelectedTasks("landing-webgl", ["--shard", `${shard}/4`]),
+      ),
+    );
+    shards.forEach(({ result, invocations }, index) => {
+      expect(result.exitCode).toBe(0);
+      expect(result.stdout).toContain(`PASS  verify:landing-webgl (shard ${index + 1}/4)`);
+      expect(invocations).toEqual([
+        { args: ["concepts/landing/verify.ts", "--shard", `${index + 1}/4`] },
+      ]);
+    });
+  });
+
   test.each([
     [["--only"], "--only requires a value"],
     [["--list", "--list"], "--list may be specified only once"],
     [["--only", "types", "--only", "style"], "--only may be specified only once"],
     [["--list", "--only", "types"], "--list and --only cannot be combined"],
-    [["--shard", "1/4"], "--shard requires --only types"],
-    [["--only", "style", "--shard", "1/4"], "--shard requires --only types"],
+    [["--shard", "1/4"], "--shard requires --only"],
+    [["--only", "style", "--shard", "1/4"], "--shard requires --only types or a task that shards"],
     [["--only", "types", "--shard", "0/4"], "--shard requires one of"],
     [["--only", "types", "--shard", "1/3"], "--shard requires one of"],
     [["--unknown"], 'unknown argument "--unknown"'],

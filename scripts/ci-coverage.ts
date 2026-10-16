@@ -431,7 +431,7 @@ export const ciCoverageErrors = (
         errors.push(`unknown workflow selector: ${selector}`);
     }
     for (const [group, tasks] of registry) {
-      const dedicatedCommand = group === "types" || group === "smoke";
+      const dedicatedCommand = group === "types" || group === "smoke" || group === "landing-webgl";
       if (
         !dedicatedCommand &&
         !selectors.has(group) &&
@@ -456,6 +456,8 @@ export const ciCoverageErrors = (
         errors.push("plan job must expose the exact checks JSON output");
       if (String(outputs["unitPaths"] ?? "") !== "${{ steps.plan.outputs.unitPaths }}")
         errors.push("plan job must expose the exact unitPaths JSON output");
+      if (String(outputs["landingScenes"] ?? "") !== "${{ steps.plan.outputs.landingScenes }}")
+        errors.push("plan job must expose the exact landingScenes output");
       if (String(outputs["identity"] ?? "") !== "${{ steps.identity.outputs.identity }}")
         errors.push("plan job must expose the run's one build identity output");
       const steps = sequence(plan["steps"], "plan steps").map((step, index) =>
@@ -536,15 +538,23 @@ export const ciCoverageErrors = (
         errors.push(`workflow job ${id} must use planner condition: ${expected}`);
     }
 
-    const types = optionalChildMap(jobs, "types", "types job");
-    const shards = types
-      ? childMap(childMap(types, "strategy", "types strategy"), "matrix", "types matrix")["shard"]
-      : undefined;
-    if (!Array.isArray(shards) || !same(shards.map(String), ["1", "2", "3", "4"]))
-      errors.push("types job must use the complete 1/4 through 4/4 matrix");
-    const typesScript = types ? collectKey(types["steps"], "run").map(String).join("\n") : "";
-    if (!typesScript.includes('--only types --shard "${{ matrix.shard }}/4"'))
-      errors.push("types job must execute its selected four-way shard");
+    // A sharded slice runs all four of its disjoint shares, each in its own job.
+    for (const id of ["types", "landing-webgl"]) {
+      const job = optionalChildMap(jobs, id, `${id} job`);
+      const shards = job
+        ? childMap(childMap(job, "strategy", `${id} strategy`), "matrix", `${id} matrix`)["shard"]
+        : undefined;
+      if (!Array.isArray(shards) || !same(shards.map(String), ["1", "2", "3", "4"]))
+        errors.push(`${id} job must use the complete 1/4 through 4/4 matrix`);
+      const script = job ? collectKey(job["steps"], "run").map(String).join("\n") : "";
+      if (!script.includes(`--only ${id} --shard "\${{ matrix.shard }}/4"`))
+        errors.push(`${id} job must execute its selected four-way shard`);
+    }
+    // Main and dispatch plans are full, so their scope is every scene; nothing else may narrow it.
+    const landing = optionalChildMap(jobs, "landing-webgl", "landing-webgl job");
+    const scopes = landing ? collectKey(landing, "LANDING_SCENES") : [];
+    if (scopes.some((scope) => scope !== "${{ needs.plan.outputs.landingScenes }}"))
+      errors.push("landing-webgl job must take its scene scope only from the plan");
 
     const preview = optionalChildMap(jobs, "preview-environment", "preview job");
     const modes = preview

@@ -165,6 +165,37 @@ describe("risk-selected CI topology coverage", () => {
     );
   });
 
+  test("requires all four landing WebGL shards, each running its own share", () => {
+    const at = ci.indexOf("\n  landing-webgl:\n");
+    const inLanding = (from: string, to: string): string =>
+      ci.slice(0, at) + ci.slice(at).replace(from, to);
+    const threeShards = inLanding("shard: [1, 2, 3, 4]", "shard: [1, 2, 3]");
+    expect(ciCoverageErrors(registry, threeShards)).toContain(
+      "landing-webgl job must use the complete 1/4 through 4/4 matrix",
+    );
+    const oneShare = inLanding('--shard "${{ matrix.shard }}/4"', '--shard "1/4"');
+    expect(ciCoverageErrors(registry, oneShare)).toContain(
+      "landing-webgl job must execute its selected four-way shard",
+    );
+  });
+
+  test("lets only the plan narrow the landing WebGL checks to some scenes", () => {
+    const narrowed = ci.replace(
+      "LANDING_SCENES: ${{ needs.plan.outputs.landingScenes }}",
+      "LANDING_SCENES: country",
+    );
+    expect(ciCoverageErrors(registry, narrowed)).toContain(
+      "landing-webgl job must take its scene scope only from the plan",
+    );
+    const unexported = ci.replace(
+      "      landingScenes: ${{ steps.plan.outputs.landingScenes }}\n",
+      "",
+    );
+    expect(ciCoverageErrors(registry, unexported)).toContain(
+      "plan job must expose the exact landingScenes output",
+    );
+  });
+
   test("requires every preview mode, including the staged crossing rehearsal", () => {
     const noCrossing = ci.replace(
       "mode: [plain, integrated, crossing]",

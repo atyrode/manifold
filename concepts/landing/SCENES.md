@@ -735,3 +735,14 @@ How the page puts the scenes on screen (`src/renderer.ts`, `src/display.ts`, `sr
   it is lost, and on a browser without WebGL2, the scene's thumbnail stands in, still. A scene whose
   shader source does not assemble shows the failure screen. At most eight programs are kept across
   scenes.
+
+## GPU cost on real hardware
+
+Every timing elsewhere in this file is SwiftShader's, on the dev host. A scene's cost on a real
+GPU comes from the lab's GPU timing page, `bench.html` beside the lab (`/bench.html` for the head,
+`/@<sha>/bench.html` for a commit; `src/scenes/README.md`, "GPU timing"): opened on the device, it
+times each scene at its defaults on 960×540 cells, its program's compile and link and then its
+frames (GPU time where the browser has `EXT_disjoint_timer_query_webgl2`, else the time between
+frames), and gives a JSON report naming the renderer and the context's limits. Record a device's
+numbers here with its renderer string, the build and the date, starting with an integrated GPU,
+against the budget of 60 fps at that size.
