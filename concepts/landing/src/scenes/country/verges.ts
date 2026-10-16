@@ -625,12 +625,13 @@ export function vergeSlots(t: Terrain, packed: TerrainPacked, view: VergeView): 
     const rx = x + (grad[0] ?? 0) * toward;
     const rz = z + (grad[1] ?? 0) * toward;
     if (!near(rx, rz, 0) || rx < 0 || rz < 0 || rx > t.extent || rz > t.extent) return;
-    // Across a pasture's hedge its fence stands: a clump grows there only where the eye sees past
-    // it toward the fence (the root's sight line runs across the hedge, from the root's side).
-    const sight = ((rx - view.x) * (grad[0] ?? 0) + (rz - view.z) * (grad[1] ?? 0)) * -toward;
-    if (use(other) === PASTURE && sight < 0) return;
     parcels.at(rx, rz, hit);
     if (hit.best !== into || hit.next !== other || Math.abs(hit.border - V.inset) > V.slack) return;
+    // Across a pasture's hedge its fence stands: a clump grows there only where the eye sees past
+    // it toward the fence (the root's sight line runs across the hedge, from the root's side), by
+    // the hedge's normal at the root as the shader's lookup finds it (into the root's own parcel).
+    const sight = (rx - view.x) * hit.nx + (rz - view.z) * hit.nz;
+    if (use(other) === PASTURE && sight >= 0) return;
     const W = t.extent;
     if (sampleGrid(t.road, m, W, rx, rz) < V.road || sampleGrid(t.stream, m, W, rx, rz) < V.stream)
       return;

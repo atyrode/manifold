@@ -199,6 +199,7 @@ const GATED: readonly Record<string, number>[] = [
   { pines: 0 },
   { woodland: 0 },
   { roads: 0, tracks: 0 },
+  { roads: 0, tracks: 0, village: 0 },
   { wildflowers: 1, lavender: 1, sunflowers: 1 },
   { pasture: 1, "pasture-amount": 50 },
   { walkers: 1, carts: 1, "carts-amount": 3 },

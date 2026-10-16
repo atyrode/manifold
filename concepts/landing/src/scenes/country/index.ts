@@ -216,14 +216,14 @@ const params = [
     "roads",
     "roads",
     true,
-    "The roads joining the village, hamlets and castle, and one out over the far side, climbing no steeper than one in eight, cut into the hillsides, over the stone bridge where they cross the river. Rebuilds the settlements and roads.",
+    "The roads joining the village, hamlets and castle, and one out over the far side, climbing no steeper than one in eight, cut into the hillsides, over the stone bridge where they cross the river. Off, the village keeps its own street, so no cottage moves. Rebuilds the settlements and roads.",
   ),
   toggle(
     "settlements",
     "tracks",
     "farm tracks",
     true,
-    "Tracks out to the farms and down through the near field. Rebuilds the settlements and roads.",
+    "Tracks out to the farms and down through the near field. Off, the village keeps their stretch through it as its own lane, so no cottage moves. Rebuilds the settlements and roads.",
   ),
   feature(
     "activity",
@@ -331,8 +331,9 @@ export function countryFeatures(values: Readonly<Record<string, number>>): Recor
   const rain = values.rain ?? 0;
   const snow = values.snow ?? 0;
   return {
-    // The roads' and tracks' surfaces and the bridge.
-    COUNTRY_HAS_ROADS: on("roads", "tracks"),
+    // The roads' and tracks' surfaces and the bridge, and the village's own streets, which stay
+    // with both off.
+    COUNTRY_HAS_ROADS: on("roads", "tracks", "village"),
     COUNTRY_HAS_RAIN: fallingRain(rain, least) > 0 ? 1 : 0,
     COUNTRY_HAS_SNOW: fallingSnow(rain, snow, most) > 0 ? 1 : 0,
     COUNTRY_HAS_FOG: on("fog"),

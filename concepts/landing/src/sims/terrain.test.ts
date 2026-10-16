@@ -5,8 +5,10 @@ import {
   packTerrain,
   sampleGrid,
   type Terrain,
+  type TerrainOptions,
   TERRAIN_ROAD_MAX_SLOPE,
   TERRAIN_BASES,
+  TERRAIN_VILLAGE_STREETS,
   TerrainBuilder,
   terrainWays,
 } from "./terrain.ts";
@@ -291,11 +293,12 @@ describe("terrain", () => {
   });
 
   test("a settlement switched on, off or added moves none of the others", () => {
-    const sites = (options: Parameters<typeof generateTerrain>[0]): string[] =>
-      generateTerrain(options).settlements.map(
-        (s) => `${s.kind} ${s.x.toFixed(2)},${s.z.toFixed(2)}`,
-      );
-    const all = sites({ seed: 2, size: 256, hamlets: 3, farms: 8 });
+    const build = (options: Partial<TerrainOptions>): Terrain =>
+      generateTerrain({ seed: 2, size: 256, hamlets: 3, farms: 8, ...options });
+    const sites = (t: Terrain): string[] =>
+      t.settlements.map((s) => `${s.kind} ${s.x.toFixed(2)},${s.z.toFixed(2)}`);
+    const full = build({});
+    const all = sites(full);
     for (const options of [
       { castle: false },
       { village: 0 },
@@ -303,16 +306,61 @@ describe("terrain", () => {
       { farms: 2 },
       { roads: false, tracks: false },
     ]) {
-      for (const site of sites({ seed: 2, size: 256, hamlets: 3, farms: 8, ...options }))
-        expect(all).toContain(site);
+      const t = build(options);
+      for (const site of sites(t)) expect(all).toContain(site);
+      // Every site chosen stays a candidate, at its nominal radius, whatever is built.
+      expect(t.candidates).toEqual(full.candidates);
     }
-    const none = generateTerrain({ seed: 2, size: 256, roads: false, tracks: false });
+    // With no village to keep its own streets, roads and tracks off lay no way at all.
+    const none = generateTerrain({ seed: 2, size: 256, roads: false, tracks: false, village: 0 });
     expect(none.roads.length).toBe(0);
     expect(none.bridge).toBeUndefined();
-    const tracks = generateTerrain({ seed: 2, size: 256, roads: false });
+    const tracks = generateTerrain({ seed: 2, size: 256, roads: false, village: 0 });
     expect(tracks.roads.length).toBeGreaterThan(0);
     expect(tracks.roads.every((road) => road.kind === "track")).toBe(true);
   });
+
+  test("the roads or the tracks switched off move no cottage: the village keeps its own streets", () => {
+    const cottages = (t: Terrain): string[] => {
+      const place = t.settlements.find((s) => s.kind === "village");
+      if (!place) throw new Error("no village");
+      return t.buildings
+        .slice(place.first, place.first + place.count)
+        .filter((b) => b.kind === "cottage")
+        .map((b) => `${b.x},${b.z},${b.facing}`);
+    };
+    for (const seed of [0, 1, 2, 3]) {
+      const base = new TerrainBuilder({ seed, size: 512 });
+      for (let i = 0; i < base.units; i++) base.unit(i);
+      const kept = cottages(base.terrain);
+      expect(kept.length).toBe(11);
+      const points = new Set<string>();
+      for (const road of base.terrain.roads)
+        for (let k = 0; k < road.x.length; k++) points.add(`${road.x[k]},${road.z[k]}`);
+      for (const change of [{ roads: false }, { tracks: false }, { roads: false, tracks: false }]) {
+        const built = new TerrainBuilder({ seed, size: 512, ...change }, base);
+        for (let i = 0; i < built.units; i++) built.unit(i);
+        const t = built.terrain;
+        expect({ seed, change, cottages: cottages(t) }).toEqual({ seed, change, cottages: kept });
+        const village = t.settlements.find((s) => s.kind === "village");
+        if (!village) throw new Error("no village");
+        // Every way laid is one of the whole network's, or a stretch of one; those of a kind
+        // switched off are the village's streets, starting and ending within its reach (or at the
+        // bridge's ends, the bridge kept whole).
+        for (const road of t.roads) {
+          for (let k = 0; k < road.x.length; k++)
+            expect(points.has(`${road.x[k]},${road.z[k]}`)).toBe(true);
+          if ((road.kind === "road" ? change.roads : change.tracks) !== false) continue;
+          for (const k of [0, road.x.length - 1]) {
+            if (k === road.bridgeStart || k === road.bridgeEnd) continue;
+            const d = Math.hypot((road.x[k] ?? 0) - village.x, (road.z[k] ?? 0) - village.z);
+            expect(d).toBeLessThanOrEqual(TERRAIN_VILLAGE_STREETS);
+          }
+        }
+        expect(t.roads.length).toBeGreaterThan(0);
+      }
+    }
+  }, 60_000);
 
   test("a build at the scene's size stays within its budget, unit by unit", () => {
     const builder = new TerrainBuilder({ seed: 4, size: 512 });

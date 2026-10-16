@@ -8,7 +8,13 @@ import {
   packLand,
   type SharedUse,
 } from "./landuse.ts";
-import { generateTerrain, packTerrain, type Terrain } from "./terrain.ts";
+import {
+  generateTerrain,
+  packTerrain,
+  type Terrain,
+  TerrainBuilder,
+  type TerrainOptions,
+} from "./terrain.ts";
 
 // Parcels are laid out in metres, so a small map holds as many as the scene's: the suite stays quick.
 const lands = new Map<number, { terrain: Terrain; model: LandModel }>();
@@ -221,4 +227,142 @@ describe("land use", () => {
     const unhedged = check({ woodland: 30 });
     expect(unhedged.trees).toBeLessThan(wooded.trees);
   });
+});
+
+// Stability under edits (the S1 review's P1), at the scene's own size and its settings there.
+const STABLE = options({ crops: 60, woodland: 30, pasture: 25 });
+const SEEDS = [0, 1, 2, 3] as const;
+// Each seed's default build; a variant reuses its relief and river, as the scene's rebuilds do.
+const scenes = new Map<number, TerrainBuilder>();
+function variant(seed: number, change: Partial<TerrainOptions> = {}): Terrain {
+  let base = scenes.get(seed);
+  if (!base) {
+    base = new TerrainBuilder({ seed, size: 512 });
+    for (let i = 0; i < base.units; i++) base.unit(i);
+    scenes.set(seed, base);
+  }
+  if (Object.keys(change).length === 0) return base.terrain;
+  const built = new TerrainBuilder({ seed, size: 512, ...change }, base);
+  for (let i = 0; i < built.units; i++) built.unit(i);
+  return built.terrain;
+}
+
+/** Each texel's use (its parcel's) under the land model at STABLE. */
+function texelUses(t: Terrain, seed: number): Uint8Array {
+  const use = new LandModel(t, seed).allocate(STABLE).use;
+  const m = t.size;
+  const out = new Uint8Array(m * m);
+  for (let q = 0; q < m * m; q++) {
+    const id = t.parcels.ids[2 * q] ?? 0;
+    out[q] = id > 0 ? (use[id - 1] ?? 0) : 0;
+  }
+  return out;
+}
+
+/** The way points (x, z, x, z, ..) of a and b, or (`moved`) those only one of them lays. */
+function wayPoints(a: Terrain, b: Terrain, moved: boolean): number[] {
+  const keys = (t: Terrain) => {
+    const out = new Set<string>();
+    for (const road of t.roads)
+      for (let k = 0; k < road.x.length; k++) out.add(`${road.x[k]},${road.z[k]}`);
+    return out;
+  };
+  const inA = keys(a);
+  const inB = keys(b);
+  const points: number[] = [];
+  for (const t of [a, b])
+    for (const road of t.roads)
+      for (let k = 0; k < road.x.length; k++) {
+        const key = `${road.x[k]},${road.z[k]}`;
+        if (!moved || !inA.has(key) || !inB.has(key)) points.push(road.x[k] ?? 0, road.z[k] ?? 0);
+      }
+  return points;
+}
+
+function nearest(points: readonly number[], x: number, z: number): number {
+  let d = Infinity;
+  for (let k = 0; k < points.length; k += 2)
+    d = Math.min(d, Math.hypot((points[k] ?? 0) - x, (points[k + 1] ?? 0) - z));
+  return d;
+}
+
+describe("land use, stable under edits", () => {
+  test("a settlement switched, added or grown changes no land far from it but beside the ways it moves", () => {
+    for (const seed of SEEDS) {
+      const base = variant(seed);
+      const uses = texelUses(base, seed);
+      const m = base.size;
+      const site = (kind: string, k: number) => base.candidates.filter((c) => c.kind === kind)[k];
+      for (const [change, at] of [
+        [{ castle: false }, site("castle", 0)],
+        [{ hamlets: 3 }, site("hamlet", 2)],
+        [{ farms: 4 }, site("farm", 3)],
+        [{ village: 30 }, site("village", 0)],
+      ] as const) {
+        if (!at) throw new Error(`seed ${seed}: no site for ${JSON.stringify(change)}`);
+        const t = variant(seed, change);
+        const after = texelUses(t, seed);
+        const moved = wayPoints(base, t, true);
+        // A parcel a moved way passes within 64 m of (the reach the roads re-weigh) may turn whole.
+        const beside = new Map<string, boolean>();
+        const reached = (built: Terrain, id: number): boolean => {
+          const key = `${built === base ? "a" : "b"}${id}`;
+          let near = beside.get(key);
+          if (near === undefined) {
+            near = false;
+            for (let q = 0; q < m * m && !near; q++)
+              if ((built.parcels.ids[2 * q] ?? 0) === id)
+                near =
+                  nearest(
+                    moved,
+                    ((q % m) + 0.5) * built.cell,
+                    (Math.floor(q / m) + 0.5) * built.cell,
+                  ) <= 64;
+            beside.set(key, near);
+          }
+          return near;
+        };
+        let changed = 0;
+        let stray = 0;
+        for (let q = 0; q < m * m; q++) {
+          if (uses[q] === after[q]) continue;
+          changed++;
+          const x = ((q % m) + 0.5) * base.cell;
+          const z = (Math.floor(q / m) + 0.5) * base.cell;
+          if (Math.hypot(x - at.x, z - at.z) <= 500) continue;
+          if (nearest(moved, x, z) <= 150) continue;
+          if (reached(base, base.parcels.ids[2 * q] ?? 0) || reached(t, t.parcels.ids[2 * q] ?? 0))
+            continue;
+          stray++;
+        }
+        // The village grows by cottages and yards alone: nothing beyond 500 m of it changes.
+        if ("village" in change) expect(moved.length).toBe(0);
+        expect({ seed, change, stray }).toEqual({ seed, change, stray: 0 });
+        // Measured: at most 1.6% of the texels change (up to 30% before the land model read the
+        // candidate sites and the bare land).
+        expect(changed).toBeLessThan(0.03 * m * m);
+      }
+    }
+  }, 120_000);
+
+  test("switching the roads or the tracks changes no land beyond 150 m of every way", () => {
+    for (const seed of SEEDS) {
+      const base = variant(seed);
+      const uses = texelUses(base, seed);
+      const m = base.size;
+      for (const change of [{ roads: false }, { tracks: false }]) {
+        const t = variant(seed, change);
+        const after = texelUses(t, seed);
+        const ways = wayPoints(base, t, false);
+        let stray = 0;
+        for (let q = 0; q < m * m; q++) {
+          if (uses[q] === after[q]) continue;
+          const x = ((q % m) + 0.5) * base.cell;
+          const z = (Math.floor(q / m) + 0.5) * base.cell;
+          if (nearest(ways, x, z) > 150) stray++;
+        }
+        expect({ seed, change, stray }).toEqual({ seed, change, stray: 0 });
+      }
+    }
+  }, 120_000);
 });

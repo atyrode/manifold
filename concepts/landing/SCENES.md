@@ -282,6 +282,14 @@ replay at their pinned commits).
   species (`pine mix`: pine on high, steep, north-facing ground, each wood keeping its species as
   the woods grow). A change of the uses re-runs only the allocation and re-packs the parcel records
   and the woods' canopy (a few milliseconds on SwiftShader's host, `countryTerrain`), no rebuild.
+  Stable under edits (issue #1082 S1, P1): each parcel is weighed and ranked by its cell on the bare
+  land (`TerrainBare`: the ground as the river and streams left it, each site at its own heading as
+  though no road turned it) and by every candidate settlement site (`Terrain.candidates`, built or
+  not, at its nominal radius); only its nearness to the roads as laid moves its score, along that
+  fixed ranking. So a village grown changes no land at all, and a settlement, road or track
+  switched changes it only beside the ways that move (within 150 m of them, or a parcel they pass
+  within 64 m of); the network itself still re-routes far from a toggled castle, hamlet or farm
+  (up to 2.4 km on seeds 0-3), which P8's stable network takes on.
 - **Rendering** (`src/shaders/lib/terrain.ts`, `country/shader.ts`): a height-field march (ground,
   water and the trees' bounds) with a soft sun-shadow march; each parcel drawn from its record
   (crops of its kind, the shared flower materials, a pasture's grass, fence and herd, a wood's
@@ -317,7 +325,11 @@ replay at their pinned commits).
   church outward along its roads, so a larger village keeps every cottage of a smaller),
   `hamlets` (1-3), `farms` (1-8), the `castle`, `roads` and `farm tracks`. Every site is chosen
   whether or not it is built, so switching one settlement moves no other; a change re-runs only the
-  settlement, road and parcel stages, reusing the carved river.
+  settlement, road and parcel stages, reusing the carved river. Every route is planned whatever
+  `roads` and `farm tracks` say; switched off, a route keeps only its stretch through the village
+  (`TERRAIN_VILLAGE_STREETS`, the bridge whole where it reaches it) as the village's own street, so
+  no cottage moves, and those streets are drawn with both off (`COUNTRY_HAS_ROADS` holds with the
+  village).
 - **River** (`river`, its amount the size): off, the river and its streams run dry, their beds pale
   stones, the carved valley, banks and bridge kept (`packWater`, no rebuild). `wind ripples`
   (`country/ripples.ts`, 0 by default, the shared water's ripples tier compiled in only while up):
@@ -359,11 +371,15 @@ replay at their pinned commits).
   every line), and the crops' catalogue already shows grazed grass.
 - Checks: `src/sims/terrain.test.ts` (river level across and downstream, roads join every
   settlement, road grade bounded and cut into the ground, way points on their roads, clear cores
-  inside their parcels, determinism and both reuses, the village's growth, settlements that never
-  move one another, the roads' and tracks' switches, build budget); `src/sims/landuse.test.ts`
+  inside their parcels, determinism and both reuses, the village's growth, settlements and their
+  candidates that never move one another, the roads' and tracks' switches moving no cottage, the
+  village keeping its streets, build budget); `src/sims/landuse.test.ts`
   (shares within bounds, a raised share converting only to its use and a lowered one only from it,
   woods on their best ground growing outward, none and woodland alone, determinism, minimal herd
-  swaps, woods keeping their species, the canopy and lone trees as packed); `countryTerrain` (the
+  swaps, woods keeping their species, the canopy and lone trees as packed; at the scene's size, for
+  seeds 0-3 at crops 60, woodland 30 and pasture 25, the castle, a third hamlet, a fourth farm or
+  thirty cottages changing no land beyond 500 m of the site but beside the ways they move, and the
+  roads or tracks switched changing none beyond 150 m of every way); `countryTerrain` (the
   all-features program over the real sim: land, sky and river, deterministic per landscape; at 9216
   map points the shader finds each parcel with the land model's use and the woods only on woodland,
   for four settings; a use change one sim frame, timed; the river dry and full again);
@@ -372,7 +388,7 @@ replay at their pinned commits).
   single flat step it replaced lands under a third of them);
   `countryLife` (every walker and cart on its road, every animal inside its own pasture and clear of
   the fence, roads and water; deterministic and still at motion 0); `countryFeaturesAll`
-  (seventeen gated settings drawn byte for byte as their own programs, lit windows and smoke at
+  (eighteen gated settings drawn byte for byte as their own programs, lit windows and smoke at
   dusk among them); `countrySeason` (each season, the wind ripples and walkers and carts over lying
   snow drawn byte for byte by the all-features program as by their own; walkers tread the lying
   snow darker beyond the figures themselves, less while snow still falls; autumn turns broadleaf

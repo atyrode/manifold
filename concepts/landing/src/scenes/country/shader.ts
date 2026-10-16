@@ -417,7 +417,7 @@ Shade sceneCountry(vec2 screenUv, vec2 cell, float t) {
   found.z = zLimit;
   if (mapped) {
 #if COUNTRY_HAS_ROADS
-    if (K_roads > 0.5 || K_tracks > 0.5) {
+    if (K_roads > 0.5 || K_tracks > 0.5 || K_village > 0.5) {
       tBridge = countryBridge(terrainBridge(uSim3), eye, rd, bridgeN, bridgeLocal);
       if (tBridge > 0.0 && (tHit < 0.0 || tBridge < tHit)) zLimit = tBridge * ahead;
       else tBridge = -1.0;
@@ -650,7 +650,7 @@ Shade sceneCountry(vec2 screenUv, vec2 cell, float t) {
         }
 #endif
 #if COUNTRY_HAS_ROADS
-        if (K_roads > 0.5 || K_tracks > 0.5) {
+        if (K_roads > 0.5 || K_tracks > 0.5 || K_village > 0.5) {
           // The roads: pale gravel ribbons with a grass verge and a hedge either side (not in the
           // villages), each held to about half a cell across however the road turns to the view.
           vec2 across = vec2(terrainCover(uSim1, p.xz + vec2(2.0, 0.0), COUNTRY_EXTENT).x, terrainCover(uSim1, p.xz + vec2(0.0, 2.0), COUNTRY_EXTENT).x) - c.x;
