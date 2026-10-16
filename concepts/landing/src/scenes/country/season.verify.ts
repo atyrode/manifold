@@ -2,8 +2,9 @@
 // snow and its wind ripples, over the real sim's terrain through the scene's own programs:
 //
 // - The all-features program (featuresAll) draws each of their settings byte for byte as that
-//   setting's own program does: summer and autumn, wind ripples on the river, and the default,
-//   walkers and carts over lying snow once the snowfall is over.
+//   setting's own program does: summer, the harvest's bales half laid, autumn, spring, midwinter
+//   under its own lying snow and with its rain falling as snow, the passing year, wind ripples on
+//   the river, and the default, walkers and carts over lying snow once the snowfall is over.
 // - Walkers tread the roads' lying snow, and only lying snow: with snow lying and none falling, the
 //   frame with walkers out differs from the one without beyond the figures themselves (the pixels
 //   the two differ by on bare ground), darker there; snow still falling fills the way back in, so it
@@ -19,6 +20,7 @@ import {
   shaderValues,
 } from "../../shaders/index.ts";
 import { countryScene } from "./index.ts";
+import { COUNTRY_SEASONS } from "./season.ts";
 import {
   countryBuild,
   type CountryBuilt,
@@ -31,6 +33,9 @@ const WIDTH = 240;
 const HEIGHT = 135;
 /** Snow lying deep, none falling: the snowfall over. */
 const LYING = [0, 0.8] as const;
+/** Midwinter (the farming year's coldest) and the snow it lays by itself (climateLying: all). */
+const MIDWINTER = { date: 0.875 } as const;
+const WINTER_LYING = [0, 1] as const;
 
 interface Setting {
   knobs: Record<string, number>;
@@ -39,8 +44,13 @@ interface Setting {
 
 /** The parts' gated and runtime settings, each in the weather that shows it. */
 const SETTINGS: readonly Setting[] = [
-  { knobs: { season: 0 } },
-  { knobs: { season: 2 } },
+  { knobs: { date: COUNTRY_SEASONS.summer } },
+  { knobs: { date: 0.45 } },
+  { knobs: { date: COUNTRY_SEASONS.autumn } },
+  { knobs: { date: 0.2 } },
+  { knobs: MIDWINTER, weather: WINTER_LYING },
+  { knobs: { ...MIDWINTER, rain: 1, "rain-amount": 0.6 }, weather: WINTER_LYING },
+  { knobs: { year: 1, "year-amount": 2 } },
   { knobs: { ripples: 0.6, wind: 0.7 } },
   { knobs: {}, weather: LYING },
   { knobs: { walkers: 1 }, weather: LYING },
@@ -167,13 +177,13 @@ export function verifyCountrySeason(gl: WebGL2RenderingContext): Record<string, 
     // Autumn over woods alone: the broadleaf turn, the pines stay.
     built.dispose();
     built = countryBuild(gl, WOODS);
-    const woods = (pines: number, season: number) => {
-      const knobs = { ...WOODS, pines, season };
+    const woods = (pines: number, date: number) => {
+      const knobs = { ...WOODS, pines, date };
       return orange(draw(built, own(knobs), knobs));
     };
-    const turned = woods(0, 2);
-    const evergreen = woods(1, 2);
-    const harvest = woods(0, 1);
+    const turned = woods(0, COUNTRY_SEASONS.autumn);
+    const evergreen = woods(1, COUNTRY_SEASONS.autumn);
+    const harvest = woods(0, COUNTRY_SEASONS.harvest);
     check(turned >= 400, `country: autumn turns only ${turned} pixels of broadleaf woods orange`);
     check(
       evergreen <= 0.1 * turned && harvest <= 0.02 * turned,

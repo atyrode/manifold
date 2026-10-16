@@ -31,59 +31,59 @@ export const presets: readonly Preset[] = [
   {
     name: "Countryside · flower valley",
     commit: "6e72cac6",
-    query: "scene=country&time=0.58&clouds=0.25&season=0&crops=0&wildflowers=100&landscape=17",
+    query: "scene=country&time=0.58&clouds=0.25&date=0.375&crops=0&wildflowers=100&landscape=17",
     savedAt: "2026-10-14",
   },
   {
     name: "Countryside · lavender rows",
     commit: "6e72cac6",
-    query: "scene=country&season=0&crops=0&lavender=100",
+    query: "scene=country&date=0.375&crops=0&lavender=100",
     savedAt: "2026-10-14",
   },
   {
     name: "Countryside · sunflowers",
     commit: "6e72cac6",
-    query: "scene=country&season=0&crops=0&sunflowers=100",
+    query: "scene=country&date=0.375&crops=0&sunflowers=100",
     savedAt: "2026-10-14",
   },
   {
     name: "Countryside · mixed patchwork",
     commit: "6e72cac6",
-    query: "scene=country&season=0&crops=30&wildflowers=28&lavender=22&sunflowers=20",
+    query: "scene=country&date=0.375&crops=30&wildflowers=28&lavender=22&sunflowers=20",
     savedAt: "2026-10-14",
   },
   {
     name: "Countryside · woodland valley",
     commit: "f1ca6557",
     query:
-      "scene=country&time=0.64&season=2&woodland=1&pines=0.4&songbirds=1&songbirds-amount=0.8&flights=5&crops=40&pasture=60",
+      "scene=country&time=0.64&date=0.6&woodland=1&pines=0.4&songbirds=1&songbirds-amount=0.8&flights=5&crops=40&pasture=60",
     savedAt: "2026-10-15",
   },
   {
     name: "Countryside · riverside",
     commit: "f1ca6557",
     query:
-      "scene=country&time=0.72&season=0&cows=1&songbirds=1&songbirds-amount=0.8&murmuration=1&river=1&tracks=0.6&walkers=1&walkers-amount=0.7&carts=1&crops=65&pasture=35",
+      "scene=country&time=0.72&date=0.375&cows=1&songbirds=1&songbirds-amount=0.8&murmuration=1&river=1&tracks=0.6&walkers=1&walkers-amount=0.7&carts=1&crops=65&pasture=35",
     savedAt: "2026-10-15",
   },
   {
     name: "Countryside · wildwood",
     commit: "defa703a",
-    query: "scene=country&time=0.64&season=2&crops=0&woodland-amount=100&pines=0.45",
+    query: "scene=country&time=0.64&date=0.6&crops=0&woodland-amount=100&pines=0.45",
     savedAt: "2026-10-16",
   },
   {
     name: "Countryside · grazing valley",
     commit: "defa703a",
     query:
-      "scene=country&season=0&crops-amount=40&woodland-amount=20&pasture=1&pasture-amount=45&cows=0.7&herd=0.8&verges=1",
+      "scene=country&date=0.375&crops-amount=40&woodland-amount=20&pasture=1&pasture-amount=45&cows=0.7&herd=0.8&verges=1",
     savedAt: "2026-10-16",
   },
   {
     name: "Countryside · flower country",
     commit: "defa703a",
     query:
-      "scene=country&time=0.6&season=0&crops-amount=25&woodland-amount=15&wildflowers=1&lavender=1&sunflowers=1",
+      "scene=country&time=0.6&date=0.375&crops-amount=25&woodland-amount=15&wildflowers=1&lavender=1&sunflowers=1",
     savedAt: "2026-10-16",
   },
   {

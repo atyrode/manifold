@@ -166,6 +166,20 @@ export interface SceneDef {
    * setting's own program does: the shader's runtime tests of the knobs inside the gates decide.
    */
   featuresAll?: Readonly<Record<string, number>>;
+  /**
+   * URL keys the scene's knobs have outgrown, by old key: the knob that took its place (`key`) and
+   * what each old value means there (`values`, old value to new). Wherever a setup enters (a link,
+   * the lab's history, a preset, a tour: state.ts `readParams`), an old value the map lists sets the
+   * new knob unless the setup sets that already, and the old key is dropped either way, so an old
+   * link keeps its meaning. Declarative: a rename with a value map, nothing the scene runs.
+   */
+  legacy?: Readonly<Record<string, SceneLegacyKey>>;
+}
+
+/** An outgrown URL key's replacement (SceneDef.legacy): the new knob's key, and old values to new. */
+export interface SceneLegacyKey {
+  key: string;
+  values: Readonly<Record<number, number>>;
 }
 
 export type PageTheme = "night" | "paper";

@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { choice, effective, type ParamDef } from "../../params.ts";
+import { effective, type ParamDef } from "../../params.ts";
 import { LAND_USES, LandModel, type LandOptions, packLand } from "../../sims/landuse.ts";
 import {
   generateTerrain,
@@ -10,10 +10,12 @@ import {
 } from "../../sims/terrain.ts";
 import type { SimFrame } from "../types.ts";
 import { countryScene } from "./index.ts";
+import { COUNTRY_SEASONS } from "./season.ts";
 import { COUNTRY_MAP } from "./sim.ts";
 import {
   COUNTRY_VERGE,
   COUNTRY_VERGE_FORM,
+  countryVergeYear,
   CountryVerges,
   VergeParcels,
   type VergeParcel,
@@ -34,24 +36,7 @@ const use = (packed: TerrainPacked, s: number): number =>
   ] ?? 0;
 const USE = (name: (typeof LAND_USES)[number]): number => LAND_USES.indexOf(name);
 
-// The farming year: the scene's own `season` knob, or one standing in for it while it has none.
-const params: readonly ParamDef[] = countryScene.params.some((def) => def.key === "season")
-  ? countryScene.params
-  : [
-      ...countryScene.params,
-      choice(
-        "land",
-        "season",
-        "season",
-        [
-          { label: "summer", value: 0 },
-          { label: "harvest", value: 1 },
-          { label: "autumn", value: 2 },
-        ],
-        1,
-        "The farming year.",
-      ),
-    ];
+const params: readonly ParamDef[] = countryScene.params;
 
 function frame(
   knobs: Record<string, number>,
@@ -152,12 +137,28 @@ test("a fuller verge keeps a sparser one's clumps where they stood; off, the ver
   expect(verges.plants).toBeUndefined();
 });
 
-test("the clumps flower and brown with the farming year: the harvest without a season knob", () => {
+test("the verges' plant year is each key's own, the year itself from winter to summer, and never turns back", () => {
+  expect(countryVergeYear(COUNTRY_SEASONS.summer)).toBe(0.3);
+  expect(countryVergeYear(COUNTRY_SEASONS.harvest)).toBe(0.47);
+  expect(countryVergeYear(COUNTRY_SEASONS.autumn)).toBe(0.66);
+  for (const date of [0, 0.1, 0.2, 0.25, 0.75, 0.875, 0.99])
+    expect(countryVergeYear(date)).toBe(date);
+  let last = -1;
+  for (let date = 0; date < 1; date += 0.001) {
+    const year = countryVergeYear(date);
+    expect(year).toBeGreaterThan(last);
+    // No jump anywhere: a step of the date moves the plant year by at most twice as much.
+    if (last >= 0) expect(year - last).toBeLessThan(0.002 + 1e-9);
+    last = year;
+  }
+});
+
+test("the clumps flower and brown with the farming year, and pass with it: the harvest without a season knob", () => {
   const packed = land(DEFAULT_USES);
-  const census = (knobs: Record<string, number>, own = params) => {
+  const census = (knobs: Record<string, number>, own = params, motionTime = 0) => {
     const verges = new CountryVerges(own);
     for (let n = 0; n < 3; n++)
-      verges.frame(frame({ ...ON, ...knobs }, 0, own), terrain, packed, n === 0);
+      verges.frame(frame({ ...ON, ...knobs }, motionTime, own), terrain, packed, n === 0);
     const forms = new Map<number, number>();
     let turned = 0;
     for (const organ of organs(verges)) {
@@ -167,9 +168,11 @@ test("the clumps flower and brown with the farming year: the harvest without a s
     return { forms, turned };
   };
   const F = COUNTRY_VERGE_FORM;
-  const summer = census({ season: 0 });
-  const harvest = census({ season: 1 });
-  const autumn = census({ season: 2 });
+  const summer = census({ date: COUNTRY_SEASONS.summer });
+  const harvest = census({ date: COUNTRY_SEASONS.harvest });
+  const autumn = census({ date: COUNTRY_SEASONS.autumn });
+  const winter = census({ date: 0.875 });
+  const spring = census({ date: 0.15 });
   // In summer every species is out: the parsley's umbels, the campion's flowers, the grass's heads.
   for (const form of Object.values(F)) expect(summer.forms.get(form) ?? 0).toBeGreaterThan(0);
   expect(summer.turned).toBe(0);
@@ -183,10 +186,25 @@ test("the clumps flower and brown with the farming year: the harvest without a s
   expect(autumn.forms.get(F.parsleyLeaf) ?? 0).toBe(0);
   expect(autumn.forms.get(F.parsleyStem)).toBe(summer.forms.get(F.parsleyStem));
   expect(autumn.forms.get(F.blade)).toBe(summer.forms.get(F.blade));
+  // Through winter only dead stems and the tussocks' blades stand.
+  for (const form of [F.umbel, F.campion, F.panicle, F.parsleyLeaf])
+    expect(winter.forms.get(form) ?? 0).toBe(0);
+  expect(winter.forms.get(F.blade)).toBe(summer.forms.get(F.blade));
+  // In spring the parsley is back in leaf and flowers before the grass heads.
+  expect(spring.forms.get(F.parsleyLeaf) ?? 0).toBeGreaterThan(0);
+  expect(spring.forms.get(F.umbel) ?? 0).toBeGreaterThan(0);
+  expect(spring.forms.get(F.panicle) ?? 0).toBe(0);
+  // The passing year (two minutes a season) carries them from the harvest round to midwinter.
+  const passed = census(
+    { year: 1, "year-amount": 2 },
+    params,
+    (0.875 - COUNTRY_SEASONS.harvest) * 480,
+  );
+  expect(passed.forms).toEqual(winter.forms);
   // A scene without the knob keeps the harvest.
   const plain = census(
     {},
-    params.filter((def) => def.key !== "season"),
+    params.filter((def) => def.key !== "date" && def.key !== "year"),
   );
   expect(plain.forms).toEqual(harvest.forms);
 });

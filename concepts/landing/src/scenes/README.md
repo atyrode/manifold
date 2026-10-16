@@ -187,6 +187,15 @@ Declare knobs with the builders in `src/params.ts` (`range`, `toggle`, `feature`
 `counts`). Each knob gets a define: `K_<key>` reads its value (a feature reads its amount while on
 and 0 while off). Never index `uParams` by hand in new scenes. Keys are camelCase letters.
 
+URL keys and values keep their meaning: links, presets and the lab's history carry them. A knob
+that outgrows its key (a choice that becomes a range, say) declares the old one on its `SceneDef`
+as `legacy: { <old key>: { key: "<new key>", values: { <old value>: <new value>, ... } } }`.
+Wherever a setup enters (`readParams` in `src/state.ts`: a link, a preset, a tour, the lab's
+history), an old value the map lists sets the new knob unless the setup already sets it, and the
+old key is dropped either way, so the page rewrites an old link to the new key. The countryside's
+`season` (0 summer, 1 harvest, 2 autumn) opens at its `date` (0.375, 0.47, 0.6). Rewrite the
+committed presets (`src/presets.ts`) to the new key as well.
+
 Shared knobs come from `src/scenes/atmosphere.ts`: `skyKnobs({ time })` gives `K_time`, `K_cycle`;
 `weatherKnobs({...})` gives `K_rain`, `K_snow`, `K_fog`, `K_wind`, `K_lightning`, `K_aurora`
 as requested. The rest are opt-in sky components (see "Composing components"), each given the value
@@ -537,8 +546,9 @@ before the functions that call it, so no other program pays for it:
 
 - **Fields** (`fieldsGlsl`): `fieldHold` and `fieldRows` (row profiles that settle to their mean
   where the dither cannot hold them) and `fieldFlowerMaterial` (meadow, lavender and sunflower
-  materials): the countryside's flower parcels, whose use the land model (`src/sims/landuse.ts`)
-  decides.
+  materials through the year: given a year position, as `SKY_YEAR`, they flower through summer, go
+  over into autumn, lie dormant through winter and come back green in spring, `fieldFlowerYear`):
+  the countryside's flower parcels, whose use the land model (`src/sims/landuse.ts`) decides.
 - **Trees** (`treesGlsl`): `treePineWidth(y)`, a pine's tiered, tapered outline, and
   `treeDomeNormal(dc)`, a broadleaf dome's normal in the eye's frame: the countryside's wood crowns
   and hedgerow and riverbank trees.
@@ -573,9 +583,11 @@ byte for byte as the setting's own does, because the shader's runtime tests of t
 `COUNTRY_ALL`: roads and tracks, rain, snow, fog, pine woods, flower fields, herds, walkers and carts
 (and the snow they tread), birds, the harvest's bales, the verges, the murmuration, lit windows,
 chimney smoke, the chalk M, the clouds' shadows tier, the water's ripples tier and the moon's phase;
-`countryFeaturesAll` and `countrySeason` check each gated setting), `meadow` (its wildflowers,
-and the world's gates, `worldFeatures` and `WORLD_ALL`: see "World layers"), and `shore` and
-`dunes` (the world's gates alone).
+its rain and snow as the climate makes them of the knobs at the date, `climatePrecip` over the cold
+of `climateCold`, and the bales while the date lies in their stretch of the year, both at any date
+while the year passes; `countryFeaturesAll` and `countrySeason` check each gated setting), `meadow`
+(its wildflowers, and the world's gates, `worldFeatures` and `WORLD_ALL`: see "World layers"), and
+`shore` and `dunes` (the world's gates alone).
 
 A scene enters with the program for its setting, so the plain page draws its lean program and
 builds no other. On a GPU a knob change that needs another feature set builds none either:
@@ -822,8 +834,9 @@ The scene owns how they look: its projection, palette, light, what hides them an
   meadow (optional `wildflowers`: clumps of daisies, buttercups, knapweed and scabious bowed by its
   own gust field, compiled in only while on), country (optional `verges`: cow parsley, campion and
   tussock grass at the near hedges' foot, binned by bearing and drawn per fragment with `plantArc`
-  from its records atlas, bowed by the flower fields' gust bands, compiled in only while on). Next:
-  meadow's near grass and dandelion stems (on their own springs), kelp (stipes stay on Verlet).
+  from its records atlas, bowed by the flower fields' gust bands, their plant year the countryside's
+  date through `countryVergeYear`, compiled in only while on). Next: meadow's near grass and
+  dandelion stems (on their own springs), kelp (stipes stay on Verlet).
 
 #### The giant planet (`src/shaders/lib/planet.ts`)
 
@@ -1094,6 +1107,23 @@ K_snow, cold)` (x rain, y snow): the cold's share of the rain falls as snow, and
   (`climateLying(cold)`) into `uWeather.y`, so a winter scene is white without a snowfall. Draw
   winter's lying snow only from `uWeather.y`, never from the season knob directly, so every scene's
   winter agrees.
+- **A year that passes.** A scene whose time of year runs on (`bonsai`, `country`) takes a range
+  over the whole year, tagged `{ kind: "sky", part: "season", year: { span: [0, 1] } }`, and the
+  year's cycle, a feature `year` ("the year passes", its amount minutes per season) tagged
+  `{ kind: "sky", part: "year" }`. `SKY_YEAR` carries the date round on `uMotionTime`; a sim
+  follows with `yearNow(yearAt(def, k), minutes, frame.motionTime)`. Keep the year continuous. A
+  state the scene must stand at exactly on some dates (the countryside's old seasons,
+  `COUNTRY_SEASONS` in `country/season.ts`) is a key, eased to the next strictly between them, so
+  that at a key every value is computed as it was (a weight of exactly 0 or 1 there: `countryKeys`,
+  `countryBlend`). What changes field by field or tree by tree does so on dates of its own (a
+  hash): a machine's work as a front across the field, growth in patches, leaves turning and
+  falling crown by crown, so the year never turns at once. A moment of the year (the countryside's
+  round bales) is a compile-time feature keyed on the date's window, on at any date while the year
+  passes; so is a snowfall the climate can make of the rain (`climateCold`, `climatePrecip` in
+  `featuresFor`). `countryYear` (`country/year.verify.ts`) checks the countryside's: the passing
+  year draws as the date it reaches, midwinter's rain as its snow, winter's lying snow only from
+  `uWeather.y`, bare broadleaves and evergreen pines, spring's rapeseed and may, and no step of the
+  date that turns the land at once.
 
 ### World layers
 

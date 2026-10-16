@@ -12,7 +12,9 @@
 // woods' trees cell by cell along the ray (one tree a COUNTRY_CROWN_CELL cell, its crown within the
 // cell, standing where the woods reach its root), each a sphere or a cone met analytically, a pine's
 // boughs then found inside its cone. A ray that meets no crown goes on to the ground behind, so a
-// wood's edge is a row of crowns at any pixel size. Farther off the bound is shaded as the canopy.
+// wood's edge is a row of crowns at any pixel size; so does one through the gaps in a bare
+// broadleaf's twigs (season.ts's countryLeafYear: they open as its leaves fall and close as they come
+// back). Farther off the bound is shaded as the canopy.
 export const countryTreesGlsl = /* glsl */ `
 const float COUNTRY_CROWN_CELL = 7.0;   // the woods: one tree a cell, its crown inside it, metres
 const float COUNTRY_WOOD_TOP = 12.5;    // the woods' envelope over the ground (its swells' crest), metres
@@ -88,14 +90,18 @@ float countryTreeBound(vec3 ro, vec3 rd, CountryTree tree) {
 }
 
 // The ray against the tree's crown from its bound's entry t: the hit (-1 none: it passed between a
-// pine's boughs), the normal there (world, the shared dome's for a broadleaf) and how high up the
-// crown 0..1. A pine's boughs are found by a short march through its cone.
+// pine's boughs or through the gaps in a bare broadleaf's twigs), the normal there (world, the
+// shared dome's for a broadleaf) and how high up the crown 0..1. A pine's boughs are found by a
+// short march through its cone.
 float countryTreeHit(vec3 ro, vec3 rd, CountryTree tree, float t, out vec3 n, out float up) {
   n = vec3(0.0, 1.0, 0.0);
   up = 0.5;
   if (!tree.pine) {
     vec3 centre = tree.foot + vec3(0.0, tree.top - tree.radius, 0.0);
     vec3 s = (ro + rd * t - centre) / tree.radius;
+    // Bare, its twigs leave gaps the land behind shows through, a few blobs across the crown.
+    float bare = countryLeafYear(tree.hash).y;
+    if (bare > 0.0 && vnoise(vec2(dot(s, countryRight), s.y) * 2.4 + tree.hash * 37.0) < 0.5 * bare) return -1.0;
     up = 0.5 + 0.5 * s.y;
     n = normalize(countryToWorld(treeDomeNormal(vec2(dot(s, countryRight), s.y))));
     return t;
@@ -269,15 +275,15 @@ float countryCrowns(vec3 ro, vec3 rd, float tHit, vec3 p, vec4 g, out CountryTre
   return hit;
 }
 
-// A crown's leaves: broadleaf greens varied tree by tree (turned in autumn: season.ts), pines a dark
-// blue-green the year round; darker low in the crown and between its clumps where they resolve
-// (foot: metres a cell spans there). A trunk (up < 0): bark.
+// A crown's leaves: broadleaf greens varied tree by tree (through the year: season.ts's
+// countryBroadleaf), pines a dark blue-green the year round; darker low in the crown and between its
+// clumps where they resolve (foot: metres a cell spans there). A trunk (up < 0): bark.
 vec3 countryLeaves(CountryTree tree, vec3 at, float up, float foot) {
   if (up < 0.0) return vec3(0.27, 0.22, 0.17);
   float h = tree.hash;
   vec3 leaf = tree.pine
     ? mix(vec3(0.11, 0.21, 0.14), vec3(0.15, 0.26, 0.15), fract(h * 3.3))
-    : countryTurn(mix(vec3(0.21, 0.35, 0.12), vec3(0.32, 0.44, 0.15), fract(h * 9.7)), h);
+    : countryBroadleaf(mix(vec3(0.21, 0.35, 0.12), vec3(0.32, 0.44, 0.15), fract(h * 9.7)), h, countryLeafYear(h));
   float clumps = vnoise(at.xz * 0.9 + at.y * 0.7 + h * 40.0);
   leaf *= mix(1.0, 0.75 + 0.45 * clumps, smoothstep(1.2, 0.4, foot));
   return leaf * (0.7 + 0.3 * smoothstep(0.0, 0.65, up));

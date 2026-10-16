@@ -10,11 +10,15 @@
 // stands near it; the settlements and roads only those and the parcels; the land's uses, the pine
 // mix, the cattle share and the chalk M (which keeps the woods and fields off its hillside) only the
 // allocation, packed and uploaded within the frame; the river switched off only dries its bed.
-// Herds' size, walkers, carts, birds, the season (its harvest's bales), the river's wind ripples,
-// the lit windows and the chimney smoke are the shader's alone. Each optional part is compiled in
-// only while on (countryFeatures). The verges at the hedges' foot (verges.ts) and the starling
-// murmuration at dusk (murmuration.ts) are compiled in only while on too; the sim grows their
-// plants and flies their flock then, packed beside the terrain's records (atlas.ts).
+// Herds' size, walkers, carts, birds, the time of year (the date, carried round while the year
+// passes: the crops, grass, hedges and trees through the farming year, the harvest's bales, and the
+// climate that turns a winter's rain to snow; season.ts), the river's wind ripples, the lit windows
+// and the chimney smoke are the shader's alone, but for the verges' year. Each optional part is
+// compiled in only while on (countryFeatures). The verges at the hedges' foot (verges.ts) and the
+// starling murmuration at dusk (murmuration.ts) are compiled in only while on too; the sim grows
+// their plants and flies their flock then, packed beside the terrain's records (atlas.ts). Old links'
+// `season` (summer, harvest, autumn) opens at its date (`legacy`).
+import { climateCold, fallingRain, fallingSnow, seasonKnob, yearAt } from "../../climate.ts";
 import type { IconName } from "../../lab/icons.ts";
 import { counts, choice, feature, range, seed, toggle } from "../../params.ts";
 import { birdKnobs, birdsGroup } from "../../shaders/lib/birds.ts";
@@ -24,6 +28,7 @@ import { TERRAIN_BASES, TERRAIN_MAX_COTTAGES, TERRAIN_MAX_FARMS } from "../../si
 import { atmosphereGroups, skyKnobs, weatherKnobs } from "../atmosphere.ts";
 import type { SceneDef } from "../types.ts";
 import { countryMurmurationKnob } from "./murmuration.ts";
+import { COUNTRY_BALES, COUNTRY_SEASONS } from "./season.ts";
 import { COUNTRY_PASSAGE, countryGlsl } from "./shader.ts";
 import { countrySim } from "./sim.ts";
 import { countryVergesKnob } from "./verges.ts";
@@ -242,18 +247,27 @@ const params = [
   }),
   countryVergesKnob,
   countryMurmurationKnob,
-  choice(
+  range(
     "land",
-    "season",
-    "season",
-    [
-      { label: "summer", value: 0 },
-      { label: "harvest", value: 1 },
-      { label: "autumn", value: 2 },
-    ],
-    1,
-    "The farming year; each field keeps its crop and shows it as the season has it. Summer: green wheat and barley, yellow rapeseed in flower, the hay standing. Harvest: golden wheat, the barley and rapeseed cut to stubble and the barley's straw in round bales. Autumn: ploughed earth and winter wheat drilled in green rows, the grass duller, the hedges russet and the broadleaf trees on the turn, each its own colour, while the pines stay evergreen; the flower fields gone over.",
-    { widget: { kind: "sky", part: "season", year: { at: [0.375, 0.47, 0.6] } } },
+    "date",
+    "time of year",
+    COUNTRY_SEASONS.harvest,
+    "Where the farming year stands, round from the start of spring; each field keeps its crop and shows it as the year has it, every field on dates of its own. Spring: the spring crops drilled into bare earth and coming up in green rows, the rapeseed leafy and then yellow in flower, the grass fresh, the hedges white with may and the broadleaf trees leafing out. Summer: green wheat and barley, the rapeseed in flower, the hay standing. Harvest: golden wheat, the barley and rapeseed cut to stubble and the barley's straw in round bales. Autumn: ploughed earth and winter wheat drilled in green rows, the grass duller, the hedges russet and the broadleaf trees on the turn, each its own colour, while the pines stay evergreen; the flower fields gone over. Winter: the broadleaf trees and hedges bare, the winter wheat green in its rows on dark ploughland, the grass dull and pale, and in its depth snow lying of itself and rain falling as snow.",
+    {
+      step: 0.005,
+      icon: "leaf",
+      widget: { kind: "sky", part: "season", year: { span: [0, 1] } },
+    },
+  ),
+  feature(
+    "land",
+    "year",
+    "the year passes",
+    false,
+    "minutes per season",
+    2,
+    "The farming year turns on from the time of year at this pace, round and round: the land greens, ripens, is harvested, ploughed and drilled, turns and goes bare, field by field, and the climate follows (winter's snow lies and its rain falls as snow).",
+    { min: 0.5, max: 10, step: 0.5, widget: { kind: "sky", part: "year" } },
   ),
   range(
     "water",
@@ -293,14 +307,28 @@ const params = [
 /**
  * What the knobs compile in (SceneDef.featuresFor): each optional part only while it can show, so
  * the default countryside's program carries none of the flower fields, herds, figures or birds.
+ * Rain and snow fall as the climate makes them of the knobs (src/climate.ts) at the date, or at any
+ * time of year while the year passes; so do the bales lie.
  */
 export function countryFeatures(values: Readonly<Record<string, number>>): Record<string, number> {
   const on = (...keys: string[]) => (keys.some((key) => (values[key] ?? 0) > 0) ? 1 : 0);
+  const season = seasonKnob(params);
+  const date = season
+    ? yearAt(season, values[season.key] ?? season.value)
+    : COUNTRY_SEASONS.harvest;
+  const passing = (values.year ?? 0) > 0;
+  // The least and most cold the land can show, a little wider than the date's own so that a
+  // float's rounding on the GPU never lets fall what the gate left out.
+  const cold = climateCold(date);
+  const least = passing ? 0 : Math.max(0, cold - 0.01);
+  const most = passing ? 1 : Math.min(1, cold + 0.01);
+  const rain = values.rain ?? 0;
+  const snow = values.snow ?? 0;
   return {
     // The roads' and tracks' surfaces and the bridge.
     COUNTRY_HAS_ROADS: on("roads", "tracks"),
-    COUNTRY_HAS_RAIN: on("rain"),
-    COUNTRY_HAS_SNOW: on("snow"),
+    COUNTRY_HAS_RAIN: fallingRain(rain, least) > 0 ? 1 : 0,
+    COUNTRY_HAS_SNOW: fallingSnow(rain, snow, most) > 0 ? 1 : 0,
     COUNTRY_HAS_FOG: on("fog"),
     // Pine woods and hedgerow pines: only with woods and a pine mix.
     COUNTRY_HAS_PINES: Math.min(on("pines"), on("woodland")),
@@ -314,8 +342,9 @@ export function countryFeatures(values: Readonly<Record<string, number>>): Recor
     // The clumps at the hedges' foot (verges.ts) and the starlings at dusk (murmuration.ts).
     COUNTRY_HAS_VERGES: on("verges"),
     COUNTRY_HAS_MURMURATION: on("murmuration"),
-    // Round bales on the barley's stubble: at harvest, with crops.
-    COUNTRY_HAS_BALES: values.season === 1 ? on("crops") : 0,
+    // Round bales on the barley's stubble: from its cut until they are carted away, with crops.
+    COUNTRY_HAS_BALES:
+      passing || (date >= COUNTRY_BALES[0] && date < COUNTRY_BALES[1]) ? on("crops") : 0,
     // The river's wind ripples: the shared water's ripples tier, only while they are up.
     WATER_TIER: on("ripples") ? WATER_TIERS.ripples : WATER_TIERS.flat,
     // Lit windows and their glow, chimney smoke (buildings.ts).
@@ -335,7 +364,7 @@ export function countryFeatures(values: Readonly<Record<string, number>>): Recor
 export const COUNTRY_ALL = countryFeatures({
   roads: 1,
   crops: 1,
-  season: 1,
+  year: 1,
   ripples: 1,
   rain: 1,
   snow: 1,
@@ -405,4 +434,15 @@ export const countryScene: SceneDef = {
   passage: COUNTRY_PASSAGE,
   featuresFor: countryFeatures,
   featuresAll: COUNTRY_ALL,
+  // The old season choice: summer, harvest and autumn, at their dates.
+  legacy: {
+    season: {
+      key: "date",
+      values: {
+        0: COUNTRY_SEASONS.summer,
+        1: COUNTRY_SEASONS.harvest,
+        2: COUNTRY_SEASONS.autumn,
+      },
+    },
+  },
 };

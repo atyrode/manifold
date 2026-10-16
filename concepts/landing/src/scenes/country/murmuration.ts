@@ -1,6 +1,7 @@
 // The starling murmuration (`murmuration`, off by default): the Murmuration scene's flock (flock/
 // sim.ts's Flock, flown as countryMurmuration says) wheeling over the far fields from late afternoon
-// until it goes down to roost as dusk deepens, never in steady rain, carried by the scene's wind. The
+// until it goes down to roost as dusk deepens, never in steady rain nor while the starlings nest in
+// late spring (the time of year, season.ts's countryYear), carried by the scene's wind. The
 // flock keeps to its band of sky in screen heights (COUNTRY_MURMURATION.sky), which dips below the
 // skyline; the shader stands it COUNTRY_MURMURATION.depth metres out (camera depth) and inks it from
 // its density field with the flock's own ink (flockInk), only where the first surface along the ray
@@ -51,7 +52,7 @@ export const countryMurmurationKnob = feature(
   false,
   "starlings",
   3000,
-  "A starling murmuration wheeling over the far fields, from late afternoon until it goes down to roost at dusk (set the time of day near sunset to see it): the valley's sides hide it where it dips below them, the wind carries it, and steady rain keeps it away. The amount is how many starlings: more make a darker cloud.",
+  "A starling murmuration wheeling over the far fields, from late afternoon until it goes down to roost at dusk (set the time of day near sunset to see it): the valley's sides hide it where it dips below them, the wind carries it, and steady rain keeps it away, as does the nesting season from mid-spring to early summer. The amount is how many starlings: more make a darker cloud.",
   { options: counts(...FLOCK_SIZES) },
 );
 
@@ -105,12 +106,13 @@ vec2 countryFlockSheet(vec2 uv) {
 // 8000 the sky; ahead: the ray's share along the view), at uv (the passage's lens shift included),
 // lit by the sky and hazed by their distance as the land is; where they cover the pixel they become
 // that surface. They gather from late afternoon and go down to roost as dusk deepens; not in steady
-// rain.
+// rain, and not while they nest (they thin out from early spring and gather again from midsummer).
 void countryMurmuration(inout vec3 col, inout float seen, inout float accent, vec2 uv, float ahead, Sky sky, vec3 haze, float tod, float rain, float overcast) {
   if (K_murmuration <= 0.0) return;
   float far = COUNTRY_MURMURATION_DEPTH / ahead;
   if (far >= seen) return;
-  float shows = smoothstep(0.66, 0.7, tod) * smoothfall(0.84, 0.79, tod) * smoothfall(0.6, 0.2, rain);
+  float nesting = smoothstep(0.06, 0.12, countryYear) * smoothfall(0.34, 0.28, countryYear);
+  float shows = smoothstep(0.66, 0.7, tod) * smoothfall(0.84, 0.79, tod) * smoothfall(0.6, 0.2, rain) * (1.0 - nesting);
   if (shows <= 0.0 || uv.x <= 0.0 || uv.x >= 1.0 || uv.y <= 0.0 || uv.y >= 1.0) return;
   vec2 sheet = countryFlockSheet(uv);
   float cover = sheet.x * shows;

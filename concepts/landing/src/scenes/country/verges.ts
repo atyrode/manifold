@@ -4,8 +4,9 @@
 // what happens to them: which clumps stand where, their stems, leaves and flower heads, each organ
 // swaying on its spring under the scene's wind and the gust bands that roll over the field each
 // grows into (the flower fields' band, shaders/lib/fields.ts), and the farming year flowering,
-// browning and shedding them (the `season` knob where the scene has one, else the harvest). The
-// shader (countryVergeAt) finds the clump over a pixel and draws it.
+// browning and shedding them (the scene's season knob, carried round while its year passes,
+// through countryVergeYear; the harvest without one). The shader (countryVergeAt) finds the clump
+// over a pixel and draws it, in the countryside's year (season.ts).
 //
 // Where they grow. A hedge stands where a farmed parcel (crops, a flower field or a pasture) meets
 // another (shader.ts's ground branch). Each such border on the near ground (camera depth
@@ -41,7 +42,8 @@
 //                   records' a: a flexible organ's rest curl (the shader turns it by a + bend)
 // Compiled in only while the knob is on (COUNTRY_HAS_VERGES, index.ts); while it is off the sim
 // places and grows nothing and the atlas carries none of it.
-import { feature, KnobReader, type ParamDef } from "../../params.ts";
+import { seasonKnob, type SeasonKnob, yearAt, yearCycleKnob, yearNow } from "../../climate.ts";
+import { effective, feature, KnobReader, type ParamDef } from "../../params.ts";
 import { glslFloat } from "../../shaders/glsl.ts";
 import { plantsGlsl } from "../../shaders/lib/plants.ts";
 import { splitHalf, toHalf } from "../../sims/half.ts";
@@ -62,6 +64,7 @@ import {
   type TerrainPacked,
 } from "../../sims/terrain.ts";
 import type { SimFrame } from "../types.ts";
+import { COUNTRY_SEASONS } from "./season.ts";
 
 /** The verges' layout and reach (shared with the shader). */
 export const COUNTRY_VERGE = {
@@ -107,8 +110,29 @@ export const COUNTRY_VERGE_FORM = {
 /** The atlas texel holding the verges' layout (and the next). */
 export const COUNTRY_VERGE_HEAD = TERRAIN_RECORDS.width + 1;
 
-/** The plant year (sims/plants.ts) for each of `season`'s farming seasons: early summer, the harvest in August, mid-autumn. */
-export const COUNTRY_VERGE_YEAR = [0.3, 0.47, 0.66] as const;
+/**
+ * The plant year (sims/plants.ts) the verges show at each of the farming year's keys (season.ts):
+ * early summer at the summer's, the harvest in August at its own, mid-autumn at autumn's; from the
+ * start of winter round to the start of summer, the year itself.
+ */
+const VERGE_YEAR = [
+  [0.25, 0.25],
+  [COUNTRY_SEASONS.summer, 0.3],
+  [COUNTRY_SEASONS.harvest, 0.47],
+  [COUNTRY_SEASONS.autumn, 0.66],
+  [0.75, 0.75],
+] as const;
+
+/** The plant year the verges show at a year position: VERGE_YEAR's keys exactly, linear between. */
+export function countryVergeYear(date: number): number {
+  let [x0, y0]: readonly [number, number] = VERGE_YEAR[0];
+  if (date < x0) return date;
+  for (const [x1, y1] of VERGE_YEAR.slice(1)) {
+    if (date < x1) return y0 + ((date - x0) / (x1 - x0)) * (y1 - y0);
+    [x0, y0] = [x1, y1];
+  }
+  return date;
+}
 
 export const countryVergesKnob = feature(
   "land",
@@ -117,7 +141,7 @@ export const countryVergesKnob = feature(
   false,
   "fullness",
   0.6,
-  "Clumps of cow parsley, red campion and tussock grass at the foot of the hedges on the fields nearest the hill. They sway in the wind and bow as its gusts roll across the fields, follow the farming year (the parsley's white umbels in summer, gone to seed at harvest with the campion still in flower, everything browning in autumn) and carry the snow; they keep off the roads, the streams and the river, the yards, the woods and the grazed pastures. Fullness: how many clumps, from one here and there to a row along every hedge.",
+  "Clumps of cow parsley, red campion and tussock grass at the foot of the hedges on the fields nearest the hill. They sway in the wind and bow as its gusts roll across the fields, follow the farming year (new leaves in spring, the parsley's white umbels in early summer, gone to seed at harvest with the campion still in flower, everything browning in autumn, dead stems through winter) and carry the snow; they keep off the roads, the streams and the river, the yards, the woods and the grazed pastures. Fullness: how many clumps, from one here and there to a row along every hedge.",
   { icon: "flower" },
 );
 
@@ -732,13 +756,13 @@ interface Clump {
   field: number;
 }
 
-type VergeKnob = "verges" | "wind" | "season";
+type VergeKnob = "verges" | "wind";
 
 /** The verges' simulation (see the header): placed, grown and swayed while the knob is on. */
 export class CountryVerges {
   readonly #knobs: KnobReader<VergeKnob>;
-  /** The scene has a `season` knob (else the verges keep the harvest). */
-  readonly #seasons: boolean;
+  /** The scene's season knob and its year's cycle, by slot (else the verges keep the harvest). */
+  readonly #season: { def: SeasonKnob; at: number; cycle: number } | undefined;
   readonly #climate = plantClimate();
   #terrain: Terrain | undefined;
   /** The frame's aspect the slots were found for, and the view they were found through. */
@@ -757,14 +781,19 @@ export class CountryVerges {
   #stillFor = 0;
   #rested = false;
   #wind = 0;
-  #year: number = COUNTRY_VERGE_YEAR[1];
+  #year = countryVergeYear(COUNTRY_SEASONS.harvest);
   #fresh = false;
   #moved = false;
 
   constructor(params: readonly ParamDef[]) {
-    this.#seasons = params.some((def) => def.key === "season");
-    const keys: VergeKnob[] = this.#seasons ? ["verges", "wind", "season"] : ["verges", "wind"];
-    this.#knobs = new KnobReader<VergeKnob>("country verges", params, keys);
+    const season = seasonKnob(params);
+    const cycle = yearCycleKnob(params);
+    this.#season = season && {
+      def: season,
+      at: params.indexOf(season),
+      cycle: cycle ? params.indexOf(cycle) : -1,
+    };
+    this.#knobs = new KnobReader<VergeKnob>("country verges", params, ["verges", "wind"]);
     this.#climate.wind = (_x, _y, out, plant) => {
       out[0] = (out[0] ?? 0) + (this.#push[plant] ?? 0);
     };
@@ -804,8 +833,16 @@ export class CountryVerges {
     const aspect = frame.aspect > 0 ? frame.aspect : 16 / 9;
     const rows = frame.height > 0 ? frame.height : 540;
     const wind = knobs.value(frame, "wind");
-    const season = this.#seasons ? Math.round(knobs.value(frame, "season")) : 1;
-    const year = COUNTRY_VERGE_YEAR[clamp(season, 0, 2)] ?? COUNTRY_VERGE_YEAR[1];
+    // The year position now (src/climate.ts): the season knob, carried round by its cycle.
+    const season = this.#season;
+    const date = season
+      ? yearNow(
+          yearAt(season.def, frame.values[season.at] ?? effective(season.def, {})),
+          frame.values[season.cycle] ?? 0,
+          frame.motionTime,
+        )
+      : COUNTRY_SEASONS.harvest;
+    const year = countryVergeYear(date);
     if (terrain !== this.#terrain || uses || aspect !== this.#aspect) {
       this.#terrain = terrain;
       this.#aspect = aspect;
@@ -1042,11 +1079,12 @@ float countryVergeOrgan(PlantOrgan o, vec2 m, float foot, out float along, out f
 }
 
 // An organ's colour by its form, its phenology, how far along it the pixel lies and the farming
-// year (0 summer, 1 harvest, 2 autumn): the parsley's stems die back brown once it has seeded, the
+// year (x how far toward the harvest's seed and straw, y toward autumn's browning, both back to
+// green in spring: countryKeys): the parsley's stems die back brown once it has seeded, the
 // campion's late in autumn, the grass and its heads go to straw.
-vec3 countryVergeColour(float form, float pheno, float along, float season) {
-  float harvest = step(0.5, season);
-  float autumn = step(1.5, season);
+vec3 countryVergeColour(float form, float pheno, float along, vec2 year) {
+  float harvest = year.x;
+  float autumn = year.y;
   vec3 c = vec3(0.86, 0.2, 0.46);
   if (form < ${F.parsleyStem + 0.5}) c = mix(vec3(0.32, 0.45, 0.17), vec3(0.5, 0.41, 0.27), 0.55 * harvest + 0.4 * autumn);
   else if (form < ${F.parsleyLeaf + 0.5}) c = plantPhenology(vec3(0.3, 0.5, 0.15), pheno);
@@ -1076,11 +1114,7 @@ CountryVerge countryVergeAt(bool mapped, vec3 eye, vec2 q, float cellAngle, floa
   vec4 more = texelFetch(uSim3, ivec2(COUNTRY_VERGE_HEAD + 1, 0), 0);
   int clumps = int(more.x + 0.5);
   int organs = int(more.y + 0.5);
-#ifdef K_season
-  float season = K_season;
-#else
-  float season = 1.0;
-#endif
+  vec2 year = vec2(countryKeys(0.0, 1.0, 1.0, 1.0, 0.0), countryKeys(0.0, 0.0, 1.0, 1.0, 0.0));
   int count = int(head.y + 0.5);
   for (int j = 0; j < count; j++) {
     vec4 four = countryVergeTexel(row, width, bin * COUNTRY_VERGE_BIN + 1 + j / 4);
@@ -1104,7 +1138,7 @@ CountryVerge countryVergeAt(bool mapped, vec3 eye, vec2 q, float cellAngle, floa
       float up = 0.0;
       if (hardEdge(countryVergeOrgan(o, m, foot, at, up)) < 0.5) continue;
       v.cover = 1.0;
-      v.albedo = countryVergeColour(o.form, o.pheno, at, season);
+      v.albedo = countryVergeColour(o.form, o.pheno, at, year);
       v.up = up;
     }
     if (v.cover > 0.5) {

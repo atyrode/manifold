@@ -1,5 +1,7 @@
 // The lab's state and its URL encoding. Global settings live in `LabState`; the current scene's
-// knobs live in `Params` (a feature also stores `<key>-amount`). URLs carry only non-defaults.
+// knobs live in `Params` (a feature also stores `<key>-amount`). URLs carry only non-defaults. Every
+// setup enters through readParams (a link, the lab's history, a preset, a tour, a comparison's other
+// slot), which first sets a scene's outgrown keys on the knobs that replaced them (SceneDef.legacy).
 import { effective, MAX_SEED } from "./params.ts";
 import {
   blendIds,
@@ -13,6 +15,7 @@ import {
   type ViewId,
 } from "./renderer.ts";
 import { sceneDefs, sceneIds, type SceneId } from "./scenes/index.ts";
+import type { SceneDef } from "./scenes/types.ts";
 
 export const modeIds = ["landing", "loading", "instance", "bare"] as const;
 export type ModeId = (typeof modeIds)[number];
@@ -182,7 +185,26 @@ export function readState(q: URLSearchParams): LabState {
   };
 }
 
-export function readParams(scene: SceneId, q: URLSearchParams): Params {
+/**
+ * The query with the scene's outgrown keys (SceneDef.legacy) set on the knobs that replaced them:
+ * an old value the map lists sets the new key unless the query sets it already, and the old key
+ * goes either way (a value the map does not list leaves the new knob at its default).
+ */
+export function migrateLegacy(scene: SceneDef, q: URLSearchParams): URLSearchParams {
+  if (scene.legacy === undefined) return q;
+  const out = new URLSearchParams(q);
+  for (const [old, { key, values }] of Object.entries(scene.legacy)) {
+    const raw = out.get(old);
+    if (raw === null) continue;
+    out.delete(old);
+    const value = raw === "" ? undefined : values[Number(raw)];
+    if (value !== undefined && !out.has(key)) out.set(key, String(value));
+  }
+  return out;
+}
+
+export function readParams(scene: SceneId, query: URLSearchParams): Params {
+  const q = migrateLegacy(sceneDefs[scene], query);
   const out: Params = {};
   for (const def of sceneDefs[scene].params) {
     switch (def.kind) {

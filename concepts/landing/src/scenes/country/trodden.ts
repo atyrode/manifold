@@ -1,10 +1,10 @@
 // Snow trodden along the roads in use (with roads or tracks, and walkers or carts out on them:
 // COUNTRY_HAS_ROADS and COUNTRY_HAS_AGENTS): under lying snow (uWeather.y) every road and track is
 // packed down grey and thin but for a white rim at its edges, more the busier the roads (the
-// walkers' and the carts' knobs). While snow is still falling it fills the way back in, more the
-// heavier it falls, so the tracks show clearest once the snowfall is over; trodden thin, they also
-// clear first as the snow melts. Walkers and carts keep to every road and track (life.ts), so every
-// one is trodden.
+// walkers' and the carts' knobs). While snow is still falling (countryFall's: the snow knob, or a
+// winter's rain) it fills the way back in, more the heavier it falls, so the tracks show clearest
+// once the snowfall is over; trodden thin, they also clear first as the snow melts. Walkers and
+// carts keep to every road and track (life.ts), so every one is trodden.
 //
 // The ground branch sets countryTrod on the roads (countryTrodden); the lying snow is then laid on
 // every surface through countryTread.
@@ -25,7 +25,7 @@ float countryTrodden(float edge, float footRoad, float road) {
   float busy = 1.0 - (1.0 - walkers) * (1.0 - carts);
   if (busy <= 0.0) return 0.0;
   float way = mix(hardFill(edge + 0.35, 0.5 * footRoad), 0.8, smoothstep(0.8, 2.0, footRoad));
-  return road * way * busy * (1.0 - 0.6 * clamp(K_snow, 0.0, 1.0));
+  return road * way * busy * (1.0 - 0.6 * clamp(countryFall.y, 0.0, 1.0));
 }
 
 // The lying snow (buried: how much covers this surface) where it is trodden: thinner, and packed

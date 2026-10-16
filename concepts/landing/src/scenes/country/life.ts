@@ -72,8 +72,9 @@ vec2 countryHerdAnimal(CountryHerd herd, float k, float tm, out LivestockSlot sl
   slot = livestockSlot(tm, herd.span, hash12(vec2(k * 3.1, herd.seed * 77.0)));
   vec2 a0 = countryHerdAnchor(herd, k, slot.n, slot.start);
   vec2 a1 = countryHerdAnchor(herd, k, slot.n + 1.0, slot.start + herd.span);
-  // The slot's mood comes from the hour it began, so a turning day never flips it halfway.
-  vec2 mood = livestockMood(timeOfDayM(K_time, K_cycle, slot.start), K_clouds, K_rain, K_snow);
+  // The slot's mood comes from the hour it began, so a turning day never flips it halfway; the
+  // weather is what falls (countryFall: a winter's rain comes down as snow).
+  vec2 mood = livestockMood(timeOfDayM(K_time, K_cycle, slot.start), K_clouds, countryFall.x, countryFall.y);
   act = livestockAct(mood, hash12(vec2(slot.n * 0.71 + k * 13.3, herd.seed * 41.0 + 3.0)));
   way = a1 - a0;
   return mix(a0, a1, livestockPace(act, slot.u));
@@ -122,7 +123,7 @@ CountryStock countryHerdAt(vec3 eye, vec2 q, float cellAngle, float zGround, flo
     if (cells < 0.6) continue;
     LivestockBeast beast = LivestockBeast(herd.cattle, herd.breed, hash12(vec2(k * 5.3 + 0.7, herd.seed * 19.0)));
     vec2 travel = vec2(dot(way, countryRight.xz), dot(way, countryFwd.xz)) / herd.size;
-    LivestockPose pose = livestockPose(beast, act, slot, travel, K_rain, tm);
+    LivestockPose pose = livestockPose(beast, act, slot, travel, countryFall.x, tm);
     bool speck = cells < 2.2;
     float aa = 0.5 / cells;
     st.shadow = max(st.shadow, 0.42 * livestockShadow(p, pose) * (speck ? 0.5 : 1.0));

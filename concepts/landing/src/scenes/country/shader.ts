@@ -12,13 +12,16 @@
 // meets the ground or the water over it, or the trees' bounds; near enough, the trees are whole
 // crowns found at the hit (trees.ts), and a ray passing between them goes on to the ground. On the
 // ground: each parcel as the land model (sims/landuse.ts) uses it, read from its record
-// (terrainParcel): crops of its kind as the farming season has them (season.ts, the harvest's bales
-// too), a flower field (the shared fields' materials, shaders/lib/fields.ts), a pasture with its
-// fence and herd (life.ts), the floor of a wood, or open grassland; hedges where a farmed parcel
-// meets another, roads (their snow trodden where walkers and carts go: trodden.ts), yards and
-// streams (dry while the river is off), the chalk M on its hillside (chalk.ts). The river mirrors
-// the sky, ruffled by the wind (ripples.ts). The starling murmuration wheels over the far fields at
-// dusk (murmuration.ts) and birds cross the sky in front of all.
+// (terrainParcel): crops of its kind as the time of year has them (season.ts: the date, carried
+// round while the year passes; the harvest's bales too), a flower field (the shared fields'
+// materials, shaders/lib/fields.ts), a pasture with its fence and herd (life.ts), the floor of a
+// wood, or open grassland; hedges where a farmed parcel meets another, roads (their snow trodden
+// where walkers and carts go: trodden.ts), yards and streams (dry while the river is off), the chalk
+// M on its hillside (chalk.ts). The river mirrors the sky, ruffled by the wind (ripples.ts). The
+// starling murmuration wheels over the far fields at dusk (murmuration.ts) and birds cross the sky
+// in front of all. Rain and snow fall as the climate makes them of the weather's knobs at this time
+// of year (climatePrecip: a winter's rain falls as snow); the snow lying on the land is the
+// renderer's uWeather.y, which deep winter lays by itself.
 import { buildingsGlsl } from "../../shaders/buildings.ts";
 import { glslFloat } from "../../shaders/glsl.ts";
 import { birdsGlsl } from "../../shaders/lib/birds.ts";
@@ -83,6 +86,9 @@ const vec3 COUNTRY_SNOW = vec3(0.9, 0.92, 0.95);
 // The camera's frame on the map (level): right, forward.
 vec3 countryRight;
 vec3 countryFwd;
+// What falls now (x rain, y snow): the weather's knobs as the climate turns them at this time of year
+// (climatePrecip: the cold's share of the rain falls as snow). Set at the top of sceneCountry.
+vec2 countryFall = vec2(0.0);
 
 // Camera frame -> world, and back.
 vec3 countryToWorld(vec3 d) {
@@ -332,7 +338,11 @@ Shade sceneCountry(vec2 screenUv, vec2 cell, float t) {
   countryFwd = vec3(COUNTRY_HEADING.x, 0.0, COUNTRY_HEADING.y);
   countryRight = vec3(COUNTRY_HEADING.y, 0.0, -COUNTRY_HEADING.x);
   float wind = K_wind;
-  float rain = K_rain;
+  // The year the land shows (season.ts), and the rain and snow its cold makes of the knobs.
+  countryYearSet(SKY_YEAR);
+  countryFall = climatePrecip(K_rain, K_snow, climateCold(countryYear));
+  float rain = countryFall.x;
+  float snow = countryFall.y;
   float wet = uWeather.x;
   float lying = uWeather.y;
 
@@ -349,7 +359,7 @@ Shade sceneCountry(vec2 screenUv, vec2 cell, float t) {
   sky.sunColor *= 1.0 - lost;
   sky.moonColor *= 1.0 - grey * (0.4 + 0.3 * rain);
   sky.ambient = greyed(sky.ambient, vec3(0.95, 0.98, 1.04), 0.3 * grey) * (1.0 - 0.25 * rain) + diffused;
-  float cover = clamp(max(K_clouds + 0.4 * K_snow, weatherOvercast(rain, K_snow)), 0.0, 1.0);
+  float cover = clamp(max(K_clouds + 0.4 * snow, weatherOvercast(rain, snow)), 0.0, 1.0);
   float overcast = smoothstep(0.55, 1.0, cover);
   float dark = clamp(1.0 - smoothstep(-0.12, 0.2, sky.sun.y) + 0.3 * overcast + 0.2 * rain, 0.0, 1.0);
   vec3 sun = countryToWorld(sky.sun);
@@ -528,7 +538,7 @@ Shade sceneCountry(vec2 screenUv, vec2 cell, float t) {
         float pines = 0.0;
 #endif
         vec3 leaf = mix(vec3(0.17, 0.3, 0.11), vec3(0.23, 0.35, 0.13), vnoise(p.xz / 13.0));
-        leaf = countryCanopyTurn(leaf, p.xz, foot, countryLonePine(p.xz));
+        leaf = countryCanopyYear(leaf, p.xz, foot, countryLonePine(p.xz));
         leaf = mix(leaf, vec3(0.1, 0.2, 0.12), pines);
         albedo = leaf * (0.8 + 0.25 * vnoise(p.xz / 3.0));
         porous = 0.3;
@@ -558,14 +568,15 @@ Shade sceneCountry(vec2 screenUv, vec2 cell, float t) {
           float footAcross = foot * length(vec2(nb.x, nb.y / max(abs(rd.y), 0.08)));
           float footAlong = foot / max(abs(rd.y), 0.12);
           float rows = 0.5;
+          float fieldPorous = 0.5;
           vec3 field = grass;
           // A pasture's grass is grazing's (one call: a software renderer runs every line).
-          if (use == LAND_CROPS || use == LAND_PASTURE) field = countryField(use == LAND_PASTURE ? LAND_CROP_GRAZING : parcel.attr, h, r, footAlong, rows);
+          if (use == LAND_CROPS || use == LAND_PASTURE) field = countryField(use == LAND_PASTURE ? LAND_CROP_GRAZING : parcel.attr, h, r, footAlong, rows, fieldPorous);
 #if COUNTRY_HAS_FIELDS
           else if (use >= LAND_WILDFLOWERS && use <= LAND_SUNFLOWERS) {
             float relief = 0.5;
             float sheen = 0.0;
-            field = fieldFlowerMaterial(use - LAND_WILDFLOWERS + FIELD_WILDFLOWERS, h, K_season, p.xz / COUNTRY_FIELD_UNIT, r / COUNTRY_FIELD_UNIT, vec2(footAlong / COUNTRY_FIELD_UNIT), wind, 1.0 - lying, tm, relief, sheen);
+            field = fieldFlowerMaterial(use - LAND_WILDFLOWERS + FIELD_WILDFLOWERS, h, countryYear, p.xz / COUNTRY_FIELD_UNIT, r / COUNTRY_FIELD_UNIT, vec2(footAlong / COUNTRY_FIELD_UNIT), wind, 1.0 - lying, tm, relief, sheen);
           }
 #endif
           // Hedges where a farmed parcel meets another (none through a wood or across open
@@ -577,8 +588,8 @@ Shade sceneCountry(vec2 screenUv, vec2 cell, float t) {
           float hedge = hedged ? hardFill(parcel.border - hedgeHalf, 0.5 * footAcross) * (1.0 - smoothstep(18.0, 40.0, footAcross)) : 0.0;
           float verge = hedged ? 1.0 - smoothstep(hedgeHalf, hedgeHalf + 2.5, parcel.border) : 0.0;
           albedo = mix(field, grass * 1.05, verge * 0.5);
-          albedo = mix(albedo, countryHedge(), hedge);
-          porous = use == LAND_CROPS ? countryFieldPorous(parcel.attr, h) : 0.5;
+          albedo = mix(albedo, countryHedge(p.xz), hedge);
+          porous = use == LAND_CROPS ? fieldPorous : 0.5;
 #if COUNTRY_HAS_HERDS
           // A pasture's fence and its herd standing in front of the ground (life.ts).
           if (K_pasture > 0.0) {
@@ -613,9 +624,11 @@ Shade sceneCountry(vec2 screenUv, vec2 cell, float t) {
         // Yards and gardens round the buildings.
         float yard = smoothstep(0.35, 0.8, c.w);
         albedo = mix(albedo, mix(vec3(0.38, 0.45, 0.22), vec3(0.52, 0.47, 0.37), step(0.55, vnoise(p.xz / 7.0))), yard);
-        // Under the trees, between their crowns, the floor lies dark in their shade.
+        // Under the trees, between their crowns, the floor lies dark in their shade; under bare
+        // broadleaves in winter it lies open, brown with their fallen leaves (not under pines).
         float under = max(countryWoods(c, waterDepth, false), smoothstep(0.1, 0.6, -c.w));
-        albedo = mix(albedo, vec3(0.1, 0.12, 0.07), 0.6 * under);
+        float litter = c.z < 0.0 && COUNTRY_HAS_PINES == 1 ? 0.0 : countryKeys(0.0, 0.0, 0.0, 1.0, 0.0);
+        albedo = countryBlend(mix(albedo, vec3(0.1, 0.12, 0.07), 0.6 * under), mix(albedo, vec3(0.3, 0.23, 0.16), 0.45 * under), litter);
         // Streams: a ribbon of water mirroring the sky; with the river off, they and the river's
         // bed (packWater marks it so) lie dry, pale stones and silt.
         if (c.y < 0.0) {
@@ -649,7 +662,7 @@ Shade sceneCountry(vec2 screenUv, vec2 cell, float t) {
           float roadVerge = (1.0 - smoothstep(0.0, 2.4, c.x)) * step(0.0, c.x);
           vec3 gravel = mix(vec3(0.8, 0.74, 0.6), vec3(0.7, 0.64, 0.52), vnoise(p.xz / 3.0));
           albedo = mix(albedo, vec3(0.42, 0.52, 0.24), roadVerge * 0.7);
-          albedo = mix(albedo, countryHedge(), roadHedge * (1.0 - road));
+          albedo = mix(albedo, countryHedge(p.xz), roadHedge * (1.0 - road));
           albedo = mix(albedo, gravel, road);
           porous = mix(porous, 0.3, road);
           glossy = mix(glossy, 0.25, road);
@@ -766,7 +779,7 @@ Shade sceneCountry(vec2 screenUv, vec2 cell, float t) {
   // Birds crossing the country, in front of whatever lies farther along the ray (life.ts).
 #if COUNTRY_HAS_BIRDS
   if (K_birds > 0.0) {
-    BirdHit bird = countryBirds(uv, aspect, eye, rain, K_snow, pxl);
+    BirdHit bird = countryBirds(uv, aspect, eye, rain, snow, pxl);
     if (bird.cover > 0.5 && bird.depth < (seen < 7999.0 ? seen * ahead : 1e9)) {
       vec3 lit = bird.albedo * (sky.ambient * 1.3 + 0.5 * sky.sunColor + 0.3 * sky.moonColor);
       col = mix(lit, haze, 1.0 - exp(-bird.depth / 5200.0));
@@ -784,8 +797,8 @@ Shade sceneCountry(vec2 screenUv, vec2 cell, float t) {
   }
 #endif
 #if COUNTRY_HAS_SNOW
-  if (K_snow > 0.0) {
-    Precip ps = snowFall(screenUv, aspect, t, K_snow, wind, 1.0 - exp(-seen / 450.0));
+  if (snow > 0.0) {
+    Precip ps = snowFall(screenUv, aspect, t, snow, wind, 1.0 - exp(-seen / 450.0));
     vec3 flake = vec3(0.95, 0.96, 1.0) * clamp(air * 1.3 + 0.1, 0.0, 1.0);
     col = mix(col, flake * 0.92, ps.veil);
     float contrast = clamp((dot(flake, LUMA) - dot(col, LUMA)) * 3.0, 0.0, 1.0);

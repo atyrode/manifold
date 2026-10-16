@@ -50,6 +50,7 @@ import { verifyCountryBehind } from "./src/scenes/country/behind.verify.ts";
 import { verifyCountryFeaturesAll, verifyCountryLife } from "./src/scenes/country/life.verify.ts";
 import { verifyCountryMurmuration, verifyCountryVerges } from "./src/scenes/country/wild.verify.ts";
 import { verifyCountrySeason } from "./src/scenes/country/season.verify.ts";
+import { verifyCountryYear } from "./src/scenes/country/year.verify.ts";
 import { verifyCountryChalk } from "./src/scenes/country/chalk.verify.ts";
 import { passageSpeeds } from "./src/passage-speed.verify.ts";
 
@@ -545,6 +546,7 @@ export const checks: readonly Check[] = [
   ["countryMurmuration", verifyCountryMurmuration],
   ["countryVerges", verifyCountryVerges],
   ["countrySeason", verifyCountrySeason],
+  ["countryYear", verifyCountryYear],
   ["countryChalk", verifyCountryChalk],
   ["worldFeaturesAll", verifyWorldFeaturesAll],
 ];
