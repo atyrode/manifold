@@ -1,19 +1,15 @@
 import { describe, expect, test } from "bun:test";
-import { feature, range, toggle, type ParamDef } from "../params.ts";
-import { giantKnobs } from "../scenes/planet.ts";
+import { feature, range, type ParamDef } from "../params.ts";
 import type { FeatureDef, RangeDef } from "./knobs.ts";
 import {
   amountKey,
   clickPatch,
-  giantDress,
-  giantLook,
   isNight,
   MOON_PHASES,
   moonPatch,
   moonPath,
   NIGHT_STARS,
   NIGHT_TIME,
-  nightCompanions,
   nightParts,
   nightPatch,
   nightSummary,
@@ -62,10 +58,6 @@ const constellations = feature(
     widget: { kind: "night", part: "constellations" },
   },
 );
-// The sky giant as giantKnobs builds it, its switch first.
-const giantDefs = giantKnobs({ group: "sky", sky: { across: [-40, -10, 30], up: [2, 20, 44] } });
-const [giant] = giantDefs;
-if (!giant) throw new Error("giantKnobs gave no switch");
 const time = range("sky", "time", "time of day", 0.5, "help", {
   widget: { kind: "sky", part: "time" },
 });
@@ -89,7 +81,7 @@ function rangeDef(def: ParamDef): RangeDef {
   return def;
 }
 
-const all = [giant, meteors, aurora, constellations, moon, milkyWay, stars];
+const all = [meteors, aurora, constellations, moon, milkyWay, stars];
 
 describe("the parts a group holds", () => {
   test("come in the section's order, whatever the group's", () => {
@@ -98,14 +90,16 @@ describe("the parts a group holds", () => {
       "stars",
       "milkyWay",
       "constellations",
-      "giant",
       "aurora",
       "meteors",
     ]);
   });
 
   test("are any subset, and only knobs tagged as night parts of the right kind", () => {
-    expect(nightParts([meteors, giant]).map((each) => each.name)).toEqual(["giant", "meteors"]);
+    expect(nightParts([meteors, constellations]).map((each) => each.name)).toEqual([
+      "constellations",
+      "meteors",
+    ]);
     const untagged = range("river", "stars", "stars", 0.9, "help");
     const shooting = feature("sky", "shooting", "shooting stars", true, "how often", 0.4, "help");
     // The almanac's old tag: the moon is a night part only as one.
@@ -124,26 +118,7 @@ describe("the parts a group holds", () => {
 
   test("keep their amount under the stars' own key or a feature's amount key", () => {
     expect(amountKey(part(stars))).toBe("stars");
-    expect(amountKey(part(giant))).toBe("planet-amount");
-  });
-});
-
-describe("a part's companions", () => {
-  test("are the group's knobs that hang off its switch, at any remove, in the group's order", () => {
-    const group: ParamDef[] = [...giantDefs, ...all.slice(1)];
-    expect(nightCompanions(part(giant), group).map((def) => def.key)).toEqual(
-      giantDefs.slice(1).map((def) => def.key),
-    );
-    // A knob hanging off one that comes after it in the group still belongs.
-    const late = toggle("sky", "late", "late", false, "help", { when: "planetEclipses" });
-    expect(nightCompanions(part(giant), [late, ...group]).map((def) => def.key)).toContain("late");
-  });
-
-  test("are none for a part nothing hangs off, nor for the stars", () => {
-    const free = range("sky", "free", "free", 0.5, "help", { when: "cycle" });
-    expect(nightCompanions(part(meteors), [meteors, free, ...giantDefs])).toEqual([]);
-    const dimmer = range("sky", "dimmer", "dimmer", 0.5, "help", { when: "stars" });
-    expect(nightCompanions(part(stars), [stars, dimmer])).toEqual([]);
+    expect(amountKey(part(constellations))).toBe("constellations-amount");
   });
 });
 
@@ -257,56 +232,14 @@ describe("the drawn sky", () => {
     expect(streaksOf(true, 2 / 3)).toBe(3);
     expect(streaksOf(true, 1)).toBe(3);
   });
-
-  test("stands the giant where its pad puts it, as big as its size, dressed as its knobs say", () => {
-    const def = featureDef(giant);
-    const dress = giantDress(def, nightCompanions(part(giant), giantDefs));
-    expect([dress.across?.key, dress.up?.key]).toEqual(["planetX", "planetY"]);
-    expect([dress.ring?.key, dress.moons?.key, dress.palette?.key]).toEqual([
-      "planetRing",
-      "planetMoons",
-      "planetPalette",
-    ]);
-    const values: Record<string, number> = {
-      planetX: -40,
-      planetY: 44,
-      "planet-amount": 0.6,
-      planetRing: 0,
-      planetMoons: 1,
-      "planetMoons-amount": 3,
-      planetPalette: 2,
-    };
-    const look = giantLook(def, dress, (key) => values[key] ?? 0);
-    expect(look).toMatchObject({ x: 0, y: 1, ring: false, moons: 3, palette: "rose" });
-    expect(look.size).toBeCloseTo(0.5);
-    // Its starting place, ringed, its moons off, in teal; past the pad's ends it stays at its edge.
-    const start = (key: string) =>
-      ({ planetX: -10, planetY: 20, "planet-amount": 0.55, planetRing: 1, planetMoons: 0 })[key] ??
-      0;
-    expect(giantLook(def, dress, start)).toMatchObject({ ring: true, moons: 0, palette: "teal" });
-    expect(giantLook(def, dress, start).x).toBeCloseTo(30 / 70);
-    expect(giantLook(def, dress, start).y).toBeCloseTo(18 / 42);
-    expect(giantLook(def, dress, (key) => (key === "planetX" ? 99 : 0)).x).toBe(1);
-  });
-
-  test("stands a giant without its dress in the middle of the sky, ringed", () => {
-    const bare = featureDef(giant);
-    expect(giantLook(bare, giantDress(bare, []), () => 1)).toMatchObject({
-      x: 0.5,
-      y: 0.5,
-      ring: true,
-      moons: 0,
-      palette: "",
-    });
-  });
 });
 
 describe("in words", () => {
   test("a part reads as its phase, its count or its amount, and off while off", () => {
     expect(partValue(part(moon), { on: true, amount: 0.5 })).toBe("quarter moon");
     expect(partValue(part(moon), { on: false, amount: 0.5 })).toBe("off");
-    expect(partValue(part(giant), { on: true, amount: 0.6 })).toBe("60%");
-    expect(partValue(part(giant), { on: false, amount: 0.6 })).toBe("off");
+    expect(partValue(part(meteors), { on: true, amount: 0.6 })).toBe("60%");
+    expect(partValue(part(meteors), { on: false, amount: 0.6 })).toBe("off");
     expect(partValue(part(constellations), { on: true, amount: 0.4 })).toBe("40%");
     expect(partValue(part(stars), { on: true, amount: 0.6 })).toBe("60%");
     expect(partValue(part(milkyWay), { on: true, amount: 1.25 })).toBe("1.25");
@@ -323,7 +256,11 @@ describe("in words", () => {
       each.name === "stars"
         ? { on: true, amount: 0.6 }
         : { on: each.name === "moon" || each.name === "milkyWay", amount: 1 };
-    expect(nightSummary(nightParts(all), state)).toBe("3 of 7 out");
+    expect(nightSummary(nightParts(all), state)).toBe("3 of 6 out");
+    // Then the scene's planets, while it has any.
+    expect(nightSummary(nightParts(all), state, 2)).toBe("3 of 6 out · 2 planets");
+    expect(nightSummary(nightParts(all), state, 1)).toBe("3 of 6 out · 1 planet");
+    expect(nightSummary([], state, 3)).toBe("3 planets");
     expect(nightSummary(nightParts([stars, aurora]), () => ({ on: true, amount: 0 }))).toBe(
       "1 of 2 out",
     );

@@ -143,7 +143,6 @@ const params: readonly ParamDef[] = [
     moon: 1,
     meteors: { trigger: SILL_METEOR_TRIGGER },
     constellations: true,
-    giant: { across: [-38, -18, 38], up: [4, 20, 32] },
   }),
   feature(
     "weather",
@@ -182,6 +181,7 @@ export const sillScene: SceneDef = {
   accent: "#ff3d7f",
   look: { color: "full", levels: 4 },
   params,
+  planets: { group: "sky", across: [-38, -18, 38], up: [4, 20, 32] },
   groups: {
     cat: {
       title: "Cat",

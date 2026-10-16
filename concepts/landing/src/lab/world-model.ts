@@ -1,15 +1,17 @@
 // The shared world in the lab: which of a scene's knob groups stand on the Controls view's World
 // shelf (`Blurb.shelf`), in the shelf's order, and the world a scene picked with "keep the world" on
-// takes over from the one left (lab.ts #setScene): the World knobs both scenes have, by key, and the
-// season through the year it stands at (almanac-model.ts).
+// takes over from the one left (lab.ts #setScene): the World knobs both scenes have, by key, the
+// season through the year it stands at (almanac-model.ts), and the planets of its night sky.
 import { MAX_SEED, type Blurb, type ParamDef } from "../params.ts";
+import { readPlanet, type SkyPlanet, type SkyPlanets } from "../scenes/planets.ts";
 import type { Params } from "../state.ts";
 import { seasonDef, seasonPatch, yearDistance, yearOf } from "./almanac-model.ts";
 
-/** What the world needs of a scene (a SceneDef is one): its knobs and their groups' headings. */
+/** What the world needs of a scene (a SceneDef is one): its knobs, their groups' headings, its planets. */
 export interface WorldScene {
   params: readonly ParamDef[];
   groups: Readonly<Record<string, Blurb>>;
+  planets?: SkyPlanets;
 }
 
 /** The World shelf leads with these groups, whatever order the scene's knobs come in. */
@@ -64,6 +66,24 @@ export function carryWorld(
       Object.assign(out, seasonPatch(toSeason, year));
   }
   return out;
+}
+
+/**
+ * The planets the next scene takes over from the one left: every one of `planets`, each kept within
+ * the next scene's pad (readPlanet), where both scenes hold their planets in a World group; none
+ * otherwise, the next scene's own sky as it starts.
+ */
+export function carryPlanets(
+  from: WorldScene,
+  planets: readonly SkyPlanet[],
+  to: WorldScene,
+): SkyPlanet[] {
+  const spec = to.planets;
+  const world = (scene: WorldScene) =>
+    scene.planets !== undefined && scene.groups[scene.planets.group]?.shelf === "world";
+  return spec !== undefined && world(from) && world(to)
+    ? planets.map((planet) => readPlanet(spec, planet))
+    : [];
 }
 
 /** Knob `source`'s setting in `params` as a patch for `def`, a knob of the same kind. */

@@ -2616,8 +2616,62 @@ body.lab-open .lab-opener {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-/* a part's companions under the chips while it is on: the giant planet's placement and dress */
-.night-companions {
+/* the planets under the chips: a chip each (pick, remove), add, and the picked planet's controls */
+.night-planets {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.planet-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+.planet-tab {
+  display: inline-flex;
+  align-items: center;
+  border: 1px solid var(--lab-line);
+  border-radius: 999px;
+}
+.planet-tab.picked {
+  border-color: var(--lab-ink);
+}
+.planet-pick {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 2px 2px 6px;
+  border: 0;
+  background: none;
+  color: var(--lab-muted);
+  font: inherit;
+  font-size: 11px;
+  cursor: pointer;
+}
+.planet-pick[aria-pressed="true"] {
+  color: var(--lab-ink);
+}
+.planet-glyph {
+  width: 14px;
+  height: 14px;
+}
+.planet-glyph-disc {
+  fill: var(--tint);
+}
+.planet-glyph-ring {
+  fill: none;
+  stroke: #eadcb8;
+  stroke-width: 1;
+}
+.planet-glyph-ring.wide {
+  stroke-width: 2;
+}
+.planet-remove {
+  width: 20px;
+  height: 20px;
+}
+.planet-editor > .reveal-inner,
+.planet-controls {
   display: flex;
   flex-direction: column;
   gap: 8px;
@@ -2682,8 +2736,8 @@ body.lab-open .lab-opener {
 .night-lane,
 .night-flash,
 .night-figure-line,
-.night-giant-ring,
-.night-giant-band {
+.night-planet-ring,
+.night-planet-path {
   fill: none;
 }
 .night-ribbon {
@@ -2723,24 +2777,36 @@ body.lab-open .lab-opener {
 .night-figure-star {
   fill: #fff6dc;
 }
-/* the giant planet: banded in its palette's tint, a thin ring tipped across it, its moons */
-.night-giant-disc {
+/* the planets: each a disc in its palette's tint, its ring tipped across it, its moons, an orbiting
+   one's path dashed under it; the picked one outlined */
+.night-planet {
+  cursor: pointer;
+}
+.night-planet-disc {
   fill: var(--tint);
 }
-.night-giant-band {
-  stroke: rgb(4 8 20 / 0.35);
-  stroke-width: 1.2;
+.night-planet.picked .night-planet-disc {
+  stroke: var(--lab-ink);
+  stroke-width: 0.7;
 }
-.night-giant-ring {
+.night-planet-ring {
   stroke: #eadcb8;
   stroke-width: 0.9;
 }
-.night-giant-moon {
+.night-planet-ring.wide {
+  stroke-width: 2.2;
+  opacity: 0.8;
+}
+.night-planet-moon {
   fill: #d9dce4;
 }
-.night-giant.ringless .night-giant-ring,
-.night-giant-moon.gone {
-  display: none;
+.night-planet-path {
+  stroke: var(--lab-faint);
+  stroke-width: 0.7;
+  stroke-dasharray: 2 2.5;
+}
+.night-planets-art.hot .night-planet-path {
+  stroke: var(--lab-muted);
 }
 /* the moon, in a halo as bright as it is full */
 .night-moon-disc {
@@ -2778,7 +2844,6 @@ body.lab-open .lab-opener {
 .night-band:not(.on) .night-band-outer,
 .night-meteor:not(.on, .firing) .night-tail,
 .night-figure:not(.on) .night-figure-line,
-.night-giant:not(.on) .night-giant-disc,
 .night-moon:not(.on) .night-moon-disc {
   fill: none;
   stroke: var(--lab-faint);
@@ -2787,7 +2852,7 @@ body.lab-open .lab-opener {
   opacity: 1;
 }
 .night-art .hot:not(.on) :is(.night-ribbon, .night-band-outer, .night-tail),
-.night-art .hot:not(.on) :is(.night-figure-line, .night-giant-disc, .night-moon-disc) {
+.night-art .hot:not(.on) :is(.night-figure-line, .night-moon-disc) {
   stroke: var(--lab-muted);
 }
 .night-figure:not(.on) .night-figure-star {
@@ -2796,7 +2861,6 @@ body.lab-open .lab-opener {
 .night-aurora:not(.on) .night-glow,
 .night-band:not(.on) :is(.night-band-core, .night-crowd, .night-lane),
 .night-meteor:not(.on, .firing) .night-head,
-.night-giant:not(.on) :is(.night-giant-band, .night-giant-ring, .night-giant-moon),
 .night-moon:not(.on) :is(.night-moon-lit, .night-moon-halo) {
   display: none;
 }

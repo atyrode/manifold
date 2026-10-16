@@ -75,7 +75,6 @@ const params: readonly ParamDef[] = [
     moon: 1,
     meteors: { trigger: FROST_METEOR_TRIGGER },
     constellations: true,
-    giant: { across: [-45, -18, 45], up: [4, 23, 40] },
   }),
   ...weatherKnobs({ snow: true, wind: true, aurora: true, on: { snow: true } }),
   feature(
@@ -97,6 +96,7 @@ export const frostScene: SceneDef = {
   accent: "#8fd8ff",
   look: { color: "full", levels: 4 },
   params,
+  planets: { group: "sky", across: [-45, -18, 45], up: [4, 23, 40] },
   groups: {
     frost: {
       title: "Frost",

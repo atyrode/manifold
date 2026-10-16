@@ -13,13 +13,14 @@ import type { SeasonKnob } from "./climate.ts";
 import { constellationUniforms } from "./constellations.ts";
 import { MAX_PARAMS, MAX_TRIGGERS } from "./params.ts";
 import { sceneDefs, type SceneId } from "./scenes/index.ts";
+import type { PlanetUniforms } from "./scenes/planets.ts";
 import type { PointerState, SceneSim } from "./scenes/types.ts";
 import {
   featureKey,
   fragmentSourceFor,
-  knobKeyed,
   sceneFeatures,
   sceneFeaturesAll,
+  settingKeyed,
   vertexSource,
 } from "./shaders/index.ts";
 import type { Params } from "./state.ts";
@@ -54,6 +55,8 @@ export interface RenderSettings {
   params: readonly number[];
   /** The current scene's raw knobs, keyed as in the URL, for its simulation. */
   knobs: Params;
+  /** The current scene's planets as skyGiant takes them (none for a scene without). */
+  planets: PlanetUniforms;
   followPointer: boolean;
   view: ViewId;
   /** Scenes enter and leave with their own choreography and a dissolve, instead of cutting. */
@@ -79,8 +82,8 @@ const READY_WAIT = 3;
 const NEVER = -1e4;
 /**
  * Programs kept per scene: those it entered with, one per compile-time feature set
- * (`SceneDef.featuresFor` and the library gates, `knobKeyed`), and its all-features program
- * (`sceneFeaturesAll`); past this many the least recently drawn one is freed.
+ * (`SceneDef.featuresFor`, the library gates and its planets, `settingKeyed`), and its all-features
+ * program (`sceneFeaturesAll`); past this many the least recently drawn one is freed.
  */
 const PROGRAMS_PER_SCENE = 4;
 /** Presses on these belong to the lab or the page's own controls, not to the scene. */
@@ -110,6 +113,8 @@ const uniformNames = [
   "uConLineCount",
   "uConMarkStar",
   "uConMarkLine",
+  "uPlanets",
+  "uPlanetCount",
   "uProgress",
   "uTriggers",
   "uSim0",
@@ -618,10 +623,10 @@ export class DitherRenderer {
     let wanted = this.#wanted.get(s);
     if (wanted === undefined) {
       const def = sceneDefs[s.scene];
-      const values = knobKeyed(def)
+      const values = settingKeyed(def)
         ? Object.fromEntries(def.params.map((knob, index) => [knob.key, s.params[index] ?? 0]))
         : undefined;
-      const features = sceneFeatures(def, values);
+      const features = sceneFeatures(def, values, s.planets.count);
       const all = sceneFeaturesAll(def);
       wanted = {
         features,
@@ -1014,14 +1019,14 @@ export class DitherRenderer {
         ? this.#exitShare(scene.id, leaving, seconds)
         : 0;
     const dissolve = Math.max(0, 1 - since / weave);
-    // Knobs that change the program's compile-time features (SceneDef.featuresFor, the library
-    // gates: `knobKeyed`): the scene draws the new setting with a program it entered with for exactly
-    // that set, else with its all-features program (`sceneFeaturesAll`), built once in the
-    // background and never waited for; a change never builds a program of its own (but on a
-    // software rasteriser, see `#software`). Until the program is built the one on screen goes on
-    // drawing the settings it drew last (the old frame, moving on); one that fails to build stops
-    // the scene as entering it would. With changes expected (`expectChanges`) the all-features
-    // program is built ahead (`#ahead`), once the scene has arrived.
+    // Changes that change the program's compile-time features (SceneDef.featuresFor, the library
+    // gates, the planets coming or going: `settingKeyed`): the scene draws the new setting with a
+    // program it entered with for exactly that set, else with its all-features program
+    // (`sceneFeaturesAll`), built once in the background and never waited for; a change never
+    // builds a program of its own (but on a software rasteriser, see `#software`). Until the program
+    // is built the one on screen goes on drawing the settings it drew last (the old frame, moving
+    // on); one that fails to build stops the scene as entering it would. With changes expected
+    // (`expectChanges`) the all-features program is built ahead (`#ahead`), once the scene has arrived.
     if (scene.program !== undefined && scene.failure === undefined) {
       const wanted = this.#want(s);
       const next =
@@ -1400,6 +1405,8 @@ export class DitherRenderer {
       gl.uniform3f(u.uInk, ...rgb(s.ink));
       gl.uniform3f(u.uAccent, ...rgb(s.accent));
       gl.uniform1fv(u.uParams, params);
+      gl.uniform4fv(u.uPlanets, s.planets.data);
+      gl.uniform1i(u.uPlanetCount, s.planets.count);
       gl.uniform1i(u.uView, viewIds.indexOf(s.view));
     }
     if (sent.progress !== this.#progress) {

@@ -1,8 +1,9 @@
 // A scene's knobs as the lab's widgets reach them: each read falls back to the knob's default, each
 // edit is a URL patch through the lab (so undo, links and presets see it like any other change).
+// A planet's knobs reach their planet the same way, through a context of its own (planets.ts).
 import type { ParamDef } from "../params.ts";
 import type { Params } from "../state.ts";
-import type { LabContext } from "./dom.ts";
+import type { LabContext, Patch } from "./dom.ts";
 import { iconFromWords, type IconName } from "./icons.ts";
 
 export type RangeDef = Extract<ParamDef, { kind: "range" }>;
@@ -28,7 +29,7 @@ export class Knobs {
     return this.#defaults[key] ?? 0;
   }
 
-  set(patch: Record<string, number>, commit: boolean): void {
+  set(patch: Patch, commit: boolean): void {
     this.#ctx.change(patch, commit);
   }
 
@@ -44,8 +45,12 @@ export class Knobs {
     return keys.some((key) => this.value(key) !== this.#defaults[key]);
   }
 
-  reset(keys: readonly string[]): void {
-    this.#ctx.change(Object.fromEntries(keys.map((key) => [key, this.#defaults[key] ?? 0])), true);
+  /** Every one of `keys` back to its default, with `also` (other URL keys) in the same change. */
+  reset(keys: readonly string[], also: Patch = {}): void {
+    this.#ctx.change(
+      { ...Object.fromEntries(keys.map((key) => [key, this.#defaults[key] ?? 0])), ...also },
+      true,
+    );
   }
 
   fire(slot: number): void {

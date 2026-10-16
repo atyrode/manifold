@@ -45,7 +45,6 @@ const params: readonly ParamDef[] = [
     moon: 1,
     meteors: { trigger: BEES_METEOR_TRIGGER },
     constellations: true,
-    giant: { across: [-55, -34, 20], up: [3, 18, 26] },
   }),
   feature(
     "manifold",
@@ -68,6 +67,7 @@ export const beesScene: SceneDef = {
   accent: "#f2b632",
   look: { color: "full", levels: 4 },
   params,
+  planets: { group: "sky", across: [-55, -34, 20], up: [3, 18, 26] },
   groups: {
     life: {
       title: "Bees & butterflies",

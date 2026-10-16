@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import { constellationUniforms } from "../../constellations.ts";
-import { planetGlsl } from "./planet.ts";
+import { planetBodyGlsl, planetGlsl } from "./planet.ts";
 import { skyFigurePoint, skyFigures, skyGlsl } from "./sky.ts";
 
 type Vec3 = readonly [number, number, number];
@@ -102,15 +102,18 @@ test("the GLSL tables are the placed figures, compiled in only behind their gate
   expect(skyGlsl).not.toContain("#ifdef K_constellations");
 });
 
-test("the giant planet compiles in only behind its gate, the shared planet with it", () => {
-  const fallback = skyGlsl.indexOf("#ifndef SKY_GIANT\n#define SKY_GIANT 0\n#endif");
-  const gate = skyGlsl.indexOf("#if SKY_GIANT\n");
+test("the planets compile in only behind their gate, the shared planet and its body tier with them", () => {
+  const fallback = skyGlsl.indexOf("#ifndef SKY_PLANETS\n#define SKY_PLANETS 0\n#endif");
+  const gate = skyGlsl.indexOf("#if SKY_PLANETS\n");
   const otherwise = skyGlsl.indexOf("#else", gate);
   expect(fallback).toBeGreaterThan(0);
   expect(gate).toBeGreaterThan(fallback);
-  // The whole of planetGlsl and the giant itself, then a stand-in that leaves the sky as it is.
+  // The whole of planetGlsl, the body tier, the list's uniforms and skyGiant, then a stand-in that
+  // leaves the sky as it is.
   expect(skyGlsl.indexOf(planetGlsl)).toBeGreaterThan(gate);
-  expect(skyGlsl.indexOf("vec3 skyGiant(")).toBeGreaterThan(gate + planetGlsl.length);
+  expect(skyGlsl.indexOf(planetBodyGlsl)).toBeGreaterThan(skyGlsl.indexOf(planetGlsl));
+  expect(skyGlsl.indexOf("uniform vec4 uPlanets[")).toBeGreaterThan(gate);
+  expect(skyGlsl.indexOf("vec3 skyGiant(")).toBeGreaterThan(skyGlsl.indexOf(planetBodyGlsl));
   expect(otherwise).toBeGreaterThan(skyGlsl.indexOf("vec3 skyGiant("));
   expect(skyGlsl.slice(otherwise)).toMatch(
     /^#else\nvec3 skyGiant\(Sky sky, vec3 col, vec3 dir, float foot, float clear\) \{\n {2}return col;\n\}\n#endif/,

@@ -20,6 +20,13 @@
 // (the scene's cell size over the radius): detail finer than a cell fades to its mean or coarsens, so
 // the same planet is a hero filling the frame or a far decoration a few dozen cells across. Where the
 // detail spans a cell or more the output is the full-detail one bit for bit.
+//
+// The body tier (`planetBodyGlsl`, after `planetGlsl`) is the decoration tier for the sky's planets
+// (skyGiant in sky.ts): one planet of any of PLANET_BODY_KINDS (the banded giant as planetOver
+// draws it, a belted giant, a rocky, an ocean, a home-like, a lava, a crystal, an eye and a bubble
+// world), in its kind's palettes, with a thin or a wide banded ring, on its own clock.
+import { WINTER_COVER } from "../../climate.ts";
+import { glslFloat, glslVec3 } from "../glsl.ts";
 
 export const planetGlsl = `
 // ---- planet ----
@@ -416,6 +423,1009 @@ vec3 planetOver(vec3 col, vec2 p, float px, PlanetLook look, float tm, float t) 
       }
     }
     col = mix(col, disc, vis);
+  } else if (look.aurora > 0.0) {
+    col += look.auroraColor * planetAuroraCurtain(q, s.d, pole, look.auroraSize, tm, foot) * look.aurora * 1.2 * vis;
+  }
+  if (ring.z > 0.0) col = mix(col, ringCol, ringCover * vis);
+  for (int i = 0; i < 3; i++) {
+    if (float(i) >= look.moons) break;
+    PlanetMoon m = planetMoon(i, look.ring);
+    vec3 moon = planetMoonDisc(q, planetMoonAt(m, tm, 0.0, 1.0), m.size * look.moonScale, look.light, float(i), foot);
+    if (moon.x > 0.5) {
+      col = mix(col, look.moon * (0.08 + 0.85 * moon.y), vis);
+      if (ring.z > moon.z) col = mix(col, ringCol, ringCover * vis);
+    }
+  }
+  return col;
+}
+`;
+
+type Vec3 = readonly [number, number, number];
+
+/**
+ * One palette of a sky planet's kind (planetBodyColours), display sRGB 0..1 as planetGiant's: its
+ * surface's four tones, which each kind reads its own way (PLANET_BODY_KINDS), the lit limb, the
+ * glow round it, and its ring between its streaks or bands and on them. `name` is the lab's word.
+ */
+export interface PlanetColours {
+  readonly name: string;
+  readonly deep: Vec3;
+  readonly mid: Vec3;
+  readonly pale: Vec3;
+  readonly eye: Vec3;
+  readonly rim: Vec3;
+  readonly glow: Vec3;
+  readonly ringDark: Vec3;
+  readonly ringLight: Vec3;
+}
+
+/** The rings a sky planet can wear: none, planetOver's thin one, or a wide banded system. */
+export const PLANET_RINGS = ["none", "thin", "wide"] as const;
+
+/**
+ * A kind of sky planet (planetBodyOver): its id (the GLSL constant PLANET_<ID>), the ring it comes
+ * with (an index into PLANET_RINGS) and its four palettes.
+ */
+export interface PlanetBodyKind {
+  readonly id: string;
+  readonly ring: number;
+  readonly palettes: readonly [PlanetColours, PlanetColours, PlanetColours, PlanetColours];
+}
+
+const colours = (
+  name: string,
+  [deep, mid, pale, eye]: readonly [Vec3, Vec3, Vec3, Vec3],
+  [rim, glow]: readonly [Vec3, Vec3],
+  [ringDark, ringLight]: readonly [Vec3, Vec3] = [
+    [0.4, 0.4, 0.42],
+    [0.8, 0.8, 0.8],
+  ],
+): PlanetColours => ({ name, deep, mid, pale, eye, rim, glow, ringDark, ringLight });
+
+/**
+ * Every kind of sky planet, in the order the URL and the shader number them (append only), and
+ * how each reads its tones:
+ *   banded   the giant planetOver draws: storm-swirled bands deep, mid and pale round an eye
+ *            (campfire's teal first, then the night sky giant's amber, rose and ice)
+ *   belted   a ringed giant after Orbit's: turbulent belts deep to mid, pale zones and a pale cloud
+ *            deck, lightning in its night-side clouds in the eye colour; it comes with the wide ring
+ *   rocky    mottled ground deep to pale, cratered, the craters' floors in the eye colour
+ *   ocean    seas deep to mid, polar caps and swirling cloud pale, the sun's glint in the eye colour
+ *   home     our own climate: land mid with deserts in the eye colour, seas deep, cloud, sea ice and
+ *            snow pale, spreading and shrinking with its own year
+ *   lava     a crust deep to mid split by molten cracks glowing pale to the eye colour
+ *   crystal  flat facets between mid and pale over deep, sparkling in the eye colour
+ *   eye      a white (pale) round an iris (mid) and pupil (deep), veined in the eye colour, its lids
+ *            the rim colour
+ *   bubble   a film between mid and pale (rainbow in the first palette), a heart in the eye colour
+ */
+export const PLANET_BODY_KINDS: readonly PlanetBodyKind[] = [
+  {
+    id: "banded",
+    ring: 1,
+    palettes: [
+      colours(
+        "teal",
+        [
+          [0.04, 0.2, 0.22],
+          [0.12, 0.45, 0.4],
+          [0.62, 0.78, 0.62],
+          [0.8, 0.86, 0.76],
+        ],
+        [
+          [0.08, 0.3, 0.3],
+          [0.012, 0.034, 0.034],
+        ],
+        [
+          [0.42, 0.35, 0.25],
+          [0.78, 0.68, 0.5],
+        ],
+      ),
+      colours(
+        "amber",
+        [
+          [0.3, 0.13, 0.05],
+          [0.78, 0.46, 0.16],
+          [0.98, 0.84, 0.56],
+          [1.0, 0.7, 0.42],
+        ],
+        [
+          [0.45, 0.24, 0.08],
+          [0.04, 0.022, 0.008],
+        ],
+        [
+          [0.36, 0.38, 0.42],
+          [0.8, 0.82, 0.86],
+        ],
+      ),
+      colours(
+        "rose",
+        [
+          [0.28, 0.07, 0.18],
+          [0.7, 0.3, 0.46],
+          [0.98, 0.76, 0.78],
+          [1.0, 0.9, 0.82],
+        ],
+        [
+          [0.42, 0.14, 0.28],
+          [0.04, 0.014, 0.03],
+        ],
+        [
+          [0.3, 0.34, 0.46],
+          [0.7, 0.78, 0.92],
+        ],
+      ),
+      colours(
+        "ice",
+        [
+          [0.05, 0.12, 0.32],
+          [0.26, 0.46, 0.78],
+          [0.82, 0.92, 1.0],
+          [0.96, 0.98, 1.0],
+        ],
+        [
+          [0.18, 0.34, 0.62],
+          [0.012, 0.024, 0.05],
+        ],
+        [
+          [0.4, 0.46, 0.56],
+          [0.86, 0.92, 1.0],
+        ],
+      ),
+    ],
+  },
+  {
+    id: "belted",
+    ring: 2,
+    palettes: [
+      colours(
+        "gold",
+        [
+          [0.42, 0.3, 0.16],
+          [0.78, 0.64, 0.4],
+          [0.96, 0.9, 0.74],
+          [1.0, 0.95, 0.85],
+        ],
+        [
+          [0.5, 0.4, 0.22],
+          [0.03, 0.025, 0.012],
+        ],
+        [
+          [0.45, 0.4, 0.32],
+          [0.88, 0.8, 0.62],
+        ],
+      ),
+      colours(
+        "jade",
+        [
+          [0.06, 0.24, 0.18],
+          [0.3, 0.6, 0.46],
+          [0.78, 0.94, 0.84],
+          [0.9, 1.0, 0.95],
+        ],
+        [
+          [0.12, 0.36, 0.28],
+          [0.012, 0.035, 0.026],
+        ],
+        [
+          [0.3, 0.4, 0.38],
+          [0.72, 0.86, 0.8],
+        ],
+      ),
+      colours(
+        "violet",
+        [
+          [0.2, 0.1, 0.32],
+          [0.5, 0.36, 0.74],
+          [0.86, 0.8, 0.98],
+          [0.95, 0.92, 1.0],
+        ],
+        [
+          [0.3, 0.18, 0.48],
+          [0.026, 0.016, 0.045],
+        ],
+        [
+          [0.36, 0.32, 0.46],
+          [0.8, 0.74, 0.94],
+        ],
+      ),
+      colours(
+        "ash",
+        [
+          [0.16, 0.16, 0.18],
+          [0.46, 0.46, 0.48],
+          [0.86, 0.86, 0.84],
+          [1.0, 1.0, 1.0],
+        ],
+        [
+          [0.26, 0.26, 0.3],
+          [0.02, 0.02, 0.024],
+        ],
+        [
+          [0.34, 0.34, 0.36],
+          [0.78, 0.78, 0.76],
+        ],
+      ),
+    ],
+  },
+  {
+    id: "rocky",
+    ring: 0,
+    palettes: [
+      colours(
+        "grey",
+        [
+          [0.2, 0.2, 0.21],
+          [0.48, 0.47, 0.45],
+          [0.78, 0.77, 0.73],
+          [0.3, 0.29, 0.28],
+        ],
+        [
+          [0.1, 0.1, 0.1],
+          [0.0, 0.0, 0.0],
+        ],
+      ),
+      colours(
+        "rust",
+        [
+          [0.3, 0.12, 0.06],
+          [0.7, 0.36, 0.18],
+          [0.92, 0.66, 0.44],
+          [0.42, 0.18, 0.09],
+        ],
+        [
+          [0.3, 0.12, 0.06],
+          [0.02, 0.008, 0.004],
+        ],
+      ),
+      colours(
+        "ochre",
+        [
+          [0.3, 0.24, 0.12],
+          [0.66, 0.56, 0.32],
+          [0.9, 0.84, 0.62],
+          [0.4, 0.32, 0.18],
+        ],
+        [
+          [0.2, 0.16, 0.08],
+          [0.0, 0.0, 0.0],
+        ],
+      ),
+      colours(
+        "basalt",
+        [
+          [0.08, 0.09, 0.12],
+          [0.26, 0.28, 0.34],
+          [0.56, 0.6, 0.68],
+          [0.14, 0.15, 0.19],
+        ],
+        [
+          [0.1, 0.12, 0.16],
+          [0.0, 0.0, 0.0],
+        ],
+      ),
+    ],
+  },
+  {
+    id: "ocean",
+    ring: 0,
+    palettes: [
+      colours(
+        "ocean",
+        [
+          [0.03, 0.1, 0.3],
+          [0.08, 0.3, 0.58],
+          [0.92, 0.96, 1.0],
+          [1.0, 1.0, 0.95],
+        ],
+        [
+          [0.2, 0.42, 0.8],
+          [0.016, 0.032, 0.07],
+        ],
+        [
+          [0.4, 0.46, 0.56],
+          [0.86, 0.92, 1.0],
+        ],
+      ),
+      colours(
+        "teal",
+        [
+          [0.02, 0.18, 0.22],
+          [0.08, 0.46, 0.48],
+          [0.86, 0.98, 0.96],
+          [1.0, 1.0, 1.0],
+        ],
+        [
+          [0.12, 0.46, 0.48],
+          [0.01, 0.04, 0.045],
+        ],
+        [
+          [0.36, 0.46, 0.46],
+          [0.8, 0.94, 0.92],
+        ],
+      ),
+      colours(
+        "frost",
+        [
+          [0.4, 0.58, 0.72],
+          [0.68, 0.84, 0.92],
+          [0.97, 0.99, 1.0],
+          [1.0, 1.0, 1.0],
+        ],
+        [
+          [0.5, 0.7, 0.9],
+          [0.02, 0.035, 0.05],
+        ],
+        [
+          [0.4, 0.46, 0.56],
+          [0.86, 0.92, 1.0],
+        ],
+      ),
+      colours(
+        "violet",
+        [
+          [0.12, 0.05, 0.3],
+          [0.36, 0.22, 0.62],
+          [0.9, 0.86, 1.0],
+          [1.0, 0.95, 1.0],
+        ],
+        [
+          [0.4, 0.28, 0.8],
+          [0.03, 0.018, 0.06],
+        ],
+        [
+          [0.36, 0.32, 0.5],
+          [0.82, 0.76, 0.98],
+        ],
+      ),
+    ],
+  },
+  {
+    id: "home",
+    ring: 0,
+    palettes: [
+      colours(
+        "earth",
+        [
+          [0.04, 0.12, 0.34],
+          [0.2, 0.42, 0.16],
+          [0.95, 0.97, 1.0],
+          [0.74, 0.62, 0.38],
+        ],
+        [
+          [0.24, 0.48, 0.92],
+          [0.02, 0.04, 0.09],
+        ],
+      ),
+      colours(
+        "arid",
+        [
+          [0.05, 0.14, 0.3],
+          [0.52, 0.4, 0.2],
+          [0.95, 0.95, 0.92],
+          [0.86, 0.62, 0.34],
+        ],
+        [
+          [0.4, 0.4, 0.7],
+          [0.03, 0.03, 0.05],
+        ],
+      ),
+      colours(
+        "lush",
+        [
+          [0.03, 0.16, 0.3],
+          [0.1, 0.46, 0.2],
+          [0.94, 0.98, 0.96],
+          [0.4, 0.56, 0.22],
+        ],
+        [
+          [0.22, 0.56, 0.8],
+          [0.016, 0.045, 0.07],
+        ],
+      ),
+      colours(
+        "ice age",
+        [
+          [0.06, 0.14, 0.3],
+          [0.3, 0.4, 0.3],
+          [0.96, 0.98, 1.0],
+          [0.62, 0.6, 0.52],
+        ],
+        [
+          [0.4, 0.56, 0.86],
+          [0.025, 0.04, 0.08],
+        ],
+      ),
+    ],
+  },
+  {
+    id: "lava",
+    ring: 0,
+    palettes: [
+      colours(
+        "magma",
+        [
+          [0.06, 0.04, 0.035],
+          [0.2, 0.13, 0.1],
+          [1.0, 0.42, 0.08],
+          [1.0, 0.86, 0.4],
+        ],
+        [
+          [0.4, 0.1, 0.02],
+          [0.08, 0.025, 0.005],
+        ],
+      ),
+      colours(
+        "sulphur",
+        [
+          [0.1, 0.09, 0.04],
+          [0.34, 0.3, 0.12],
+          [0.86, 0.92, 0.18],
+          [1.0, 1.0, 0.6],
+        ],
+        [
+          [0.3, 0.3, 0.04],
+          [0.05, 0.05, 0.008],
+        ],
+      ),
+      colours(
+        "cobalt",
+        [
+          [0.03, 0.04, 0.08],
+          [0.12, 0.14, 0.22],
+          [0.2, 0.5, 1.0],
+          [0.7, 0.9, 1.0],
+        ],
+        [
+          [0.06, 0.14, 0.4],
+          [0.01, 0.03, 0.08],
+        ],
+      ),
+      colours(
+        "ember",
+        [
+          [0.08, 0.02, 0.02],
+          [0.22, 0.07, 0.06],
+          [0.9, 0.1, 0.06],
+          [1.0, 0.5, 0.3],
+        ],
+        [
+          [0.36, 0.04, 0.03],
+          [0.07, 0.01, 0.008],
+        ],
+      ),
+    ],
+  },
+  {
+    id: "crystal",
+    ring: 1,
+    palettes: [
+      colours(
+        "amethyst",
+        [
+          [0.22, 0.08, 0.36],
+          [0.52, 0.28, 0.8],
+          [0.86, 0.72, 1.0],
+          [1.0, 0.95, 1.0],
+        ],
+        [
+          [0.5, 0.3, 0.9],
+          [0.03, 0.015, 0.05],
+        ],
+        [
+          [0.4, 0.32, 0.5],
+          [0.86, 0.78, 0.98],
+        ],
+      ),
+      colours(
+        "emerald",
+        [
+          [0.02, 0.24, 0.12],
+          [0.1, 0.62, 0.36],
+          [0.62, 1.0, 0.78],
+          [0.95, 1.0, 0.95],
+        ],
+        [
+          [0.1, 0.6, 0.4],
+          [0.01, 0.04, 0.025],
+        ],
+        [
+          [0.3, 0.44, 0.36],
+          [0.74, 0.94, 0.82],
+        ],
+      ),
+      colours(
+        "quartz",
+        [
+          [0.4, 0.44, 0.52],
+          [0.7, 0.76, 0.84],
+          [0.96, 0.98, 1.0],
+          [1.0, 1.0, 1.0],
+        ],
+        [
+          [0.6, 0.7, 0.85],
+          [0.03, 0.035, 0.045],
+        ],
+      ),
+      colours(
+        "ruby",
+        [
+          [0.3, 0.02, 0.06],
+          [0.76, 0.1, 0.2],
+          [1.0, 0.56, 0.62],
+          [1.0, 0.92, 0.92],
+        ],
+        [
+          [0.7, 0.1, 0.2],
+          [0.05, 0.006, 0.012],
+        ],
+        [
+          [0.42, 0.3, 0.32],
+          [0.9, 0.76, 0.78],
+        ],
+      ),
+    ],
+  },
+  {
+    id: "eye",
+    ring: 0,
+    palettes: [
+      colours(
+        "blue",
+        [
+          [0.02, 0.02, 0.04],
+          [0.2, 0.48, 0.86],
+          [0.94, 0.92, 0.88],
+          [0.8, 0.16, 0.14],
+        ],
+        [
+          [0.62, 0.42, 0.38],
+          [0.02, 0.02, 0.03],
+        ],
+      ),
+      colours(
+        "green",
+        [
+          [0.02, 0.03, 0.02],
+          [0.24, 0.62, 0.3],
+          [0.94, 0.92, 0.88],
+          [0.8, 0.16, 0.14],
+        ],
+        [
+          [0.62, 0.42, 0.38],
+          [0.02, 0.03, 0.02],
+        ],
+      ),
+      colours(
+        "amber",
+        [
+          [0.03, 0.02, 0.01],
+          [0.86, 0.56, 0.12],
+          [0.94, 0.92, 0.88],
+          [0.8, 0.16, 0.14],
+        ],
+        [
+          [0.62, 0.42, 0.38],
+          [0.03, 0.02, 0.01],
+        ],
+      ),
+      colours(
+        "violet",
+        [
+          [0.03, 0.01, 0.04],
+          [0.56, 0.26, 0.86],
+          [0.94, 0.92, 0.88],
+          [0.8, 0.16, 0.14],
+        ],
+        [
+          [0.62, 0.42, 0.38],
+          [0.025, 0.012, 0.035],
+        ],
+      ),
+    ],
+  },
+  {
+    id: "bubble",
+    ring: 0,
+    palettes: [
+      colours(
+        "soap",
+        [
+          [0.5, 0.5, 0.6],
+          [0.9, 0.9, 1.0],
+          [1.0, 1.0, 1.0],
+          [0.9, 0.95, 1.0],
+        ],
+        [
+          [0.6, 0.7, 0.9],
+          [0.02, 0.025, 0.035],
+        ],
+      ),
+      colours(
+        "jelly",
+        [
+          [0.6, 0.2, 0.4],
+          [1.0, 0.52, 0.72],
+          [1.0, 0.86, 0.92],
+          [1.0, 0.6, 0.8],
+        ],
+        [
+          [0.8, 0.3, 0.5],
+          [0.05, 0.015, 0.03],
+        ],
+      ),
+      colours(
+        "lime",
+        [
+          [0.3, 0.56, 0.1],
+          [0.62, 0.96, 0.3],
+          [0.92, 1.0, 0.8],
+          [0.8, 1.0, 0.5],
+        ],
+        [
+          [0.4, 0.8, 0.2],
+          [0.025, 0.05, 0.012],
+        ],
+      ),
+      colours(
+        "ink",
+        [
+          [0.12, 0.06, 0.24],
+          [0.34, 0.18, 0.56],
+          [0.82, 0.7, 1.0],
+          [0.6, 0.4, 1.0],
+        ],
+        [
+          [0.4, 0.2, 0.7],
+          [0.02, 0.012, 0.04],
+        ],
+      ),
+    ],
+  },
+];
+
+const kindConstants = PLANET_BODY_KINDS.map(
+  (kind, index) => `const int PLANET_${kind.id.toUpperCase()} = ${index};`,
+).join("\n");
+/**
+ * planetBodyColours' cases, one per palette of every kind (index kind * 4 + palette): a chain of
+ * branches rather than a const table, which a software rasteriser would build afresh for every
+ * pixel of the program, near a planet or not.
+ */
+const colourCases = PLANET_BODY_KINDS.flatMap((kind) => kind.palettes)
+  .map((palette, at) => {
+    const set = (["deep", "mid", "pale", "eye", "rim", "glow", "ringDark", "ringLight"] as const)
+      .map((name) => `look.${name} = ${glslVec3(palette[name])};`)
+      .join(" ");
+    return `  ${at === 0 ? "if" : "else if"} (at == ${at}) { ${set} }`;
+  })
+  .join("\n");
+
+export const planetBodyGlsl = `
+// ---- the body tier: the sky's planets ----
+
+// The kinds (PLANET_BODY_KINDS in shaders/lib/planet.ts); each kind's four palettes are
+// planetBodyColours' (deep, mid, pale, eye, rim, glow, ring dark, ring light).
+${kindConstants}
+
+// A sky planet: the decoration tier's look (PlanetLook: where it stands, its light, its ring's plane,
+// its features; planetBodyColours its colours) and what the body tier adds: its kind and palette, its
+// ring (PLANET_RINGS: 0 none, 1 planetOver's thin one, 2 a wide banded system), a seed of its own,
+// and its own clock (the motion clock times its spin), which turns its surface and carries its moons
+// and ring material round.
+struct PlanetBody {
+  PlanetLook look;
+  int kind;
+  int palette;
+  int ring;
+  float seed;
+  float clock;
+};
+
+// look's colours: palette 'palette' of kind 'kind'.
+void planetBodyColours(inout PlanetLook look, int kind, int palette) {
+  int at = kind * 4 + palette;
+${colourCases}
+}
+
+// What a kind shows at a point of its disc: its colour before the light, the light it gives off
+// itself (molten cracks, a storm's flash, a glint), the normal the light falls on (a crystal's facet)
+// and how much of the sky behind it hides (all of it, but through a bubble).
+struct PlanetFace { vec3 base; vec3 glow; vec3 normal; float cover; };
+
+// A point of the sphere (planet frame) in the planet's own: y up its axis (the ring plane's normal,
+// the moons' and the aurora's), x and z round its equator, z the side toward the eye.
+vec3 planetSpun(vec3 n, PlanetRing ring) {
+  vec3 pole = planetRingNormal(ring);
+  vec3 e1 = vec3(cos(ring.roll), sin(ring.roll), 0.0);
+  return vec3(dot(n, e1), dot(n, pole), dot(n, cross(e1, pole)));
+}
+
+// Longitude in the planet's own frame, turned on by 'turn' radians: the seam stays behind the planet,
+// so a turn slides its surface round without ever showing where the ends meet.
+float planetTurned(vec3 m, float turn) {
+  return atan(m.x, m.z) + turn;
+}
+
+// A point in the planet's own frame turned 'turn' radians about its axis, as planetTurned turns it.
+vec3 planetTurn(vec3 m, float turn) {
+  vec2 r = rotate(m.xz, -turn);
+  return vec3(r.x, m.y, r.y);
+}
+
+float planetHash3(vec3 p) {
+  return hash12(p.xy + p.z * vec2(37.17, 17.31));
+}
+
+// Half-way between the light and the eye: a glint's direction.
+vec3 planetHalfway(vec3 light) {
+  return normalize(light + vec3(0.0, 0.0, 1.0));
+}
+
+// Craters over the sphere (m: a point of it, the planet's own frame turned), from a 3D grid k cells to
+// a radius, each of which may hold one: x the dark floor, y the bright rim, 0..1; one too small for a
+// cell (foot, a cell in radii) fades out.
+vec2 planetCraters(vec3 m, float k, float foot, float seed) {
+  vec3 p = m * k + seed * 7.13;
+  vec3 id = floor(p);
+  vec3 f = fract(p) - 0.5 - 0.3 * (vec3(planetHash3(id + 1.3), planetHash3(id + 2.7), planetHash3(id + 4.1)) - 0.5);
+  float r = 0.16 + 0.14 * planetHash3(id + 6.2);
+  float d = length(f) / r;
+  float keep = planetLod(2.0 * r / k, foot) * step(0.4, planetHash3(id));
+  return vec2(smoothfall(1.0, 0.7, d), bell((d - 1.08) / 0.25)) * keep;
+}
+
+// The banded giant: planetOver's storm-swirled bands, tipped with the ring.
+PlanetFace planetBanded(PlanetBody b, vec2 q, vec3 n) {
+  PlanetLook l = b.look;
+  return PlanetFace(planetBandColor(planetSwirl(q, l.ring.roll, b.clock), l.deep, l.mid, l.pale, l.eye), vec3(0.0), n, 1.0);
+}
+
+// The ringed giant after Orbit's, at backdrop scale: bands of latitude bent by turbulent belts
+// (deep and mid, pale zones), an oval storm in its eye colour riding a southern belt, a faster
+// cloud deck, and lightning in the night side's clouds while the scene moves (diffuse: the
+// sunlight's clamped cosine). Bands too fine for a cell fade to their mean.
+PlanetFace planetBelted(PlanetBody b, vec3 n, float diffuse, float foot, float t) {
+  PlanetLook l = b.look;
+  vec3 m = planetSpun(n, l.ring);
+  float lon = planetTurned(m, b.clock * 0.012 + b.seed * 2.3);
+  // The turbulence calms toward the poles, where the longitude it is drawn in closes up.
+  float calm = 1.0 - m.y * m.y;
+  float zone = sin(m.y * 10.0 + (planetBelts(m, lon, foot) - 0.5) * 5.0 * calm);
+  float keep = planetLod(0.314, foot);
+  if (keep < 1.0) zone *= keep;
+  vec3 base = mix(l.deep, l.mid, smoothstep(-0.5, 0.5, zone));
+  base = mix(base, l.pale, 0.6 * smoothstep(0.55, 0.95, zone));
+  float oval = bell(length(vec2(lon - 0.6, (m.y + 0.36) * 2.6)) / 0.26);
+  base = mix(base, mix(l.deep, l.eye, 0.45), 0.75 * oval);
+  float cloud = planetClouds(m, lon + b.clock * 0.008, b.clock, foot);
+  base = mix(base, l.pale, 0.55 * cloud * calm);
+  float storm = planetStorms(m, lon, t, 0.5 * step(0.001, uMotion), cloud, diffuse, foot);
+  return PlanetFace(base, l.eye * storm * 0.9, n, 1.0);
+}
+
+// The rocky world: mottled ground, pocked by craters of two sizes, dark floors under bright rims.
+PlanetFace planetRocky(PlanetBody b, vec3 n, float foot) {
+  PlanetLook l = b.look;
+  float turn = b.clock * 0.04;
+  vec3 m = planetSpun(n, l.ring);
+  float ground = planetFbm(vec2(planetTurned(m, turn) * 2.2, m.y * 3.4) + b.seed * 5.1, 3.4 * foot);
+  vec3 base = mix(l.deep, l.mid, smoothstep(0.32, 0.5, ground));
+  base = mix(base, l.pale, 0.7 * smoothstep(0.6, 0.8, ground));
+  vec3 at = planetTurn(m, turn);
+  vec2 big = planetCraters(at, 1.8, foot, b.seed);
+  vec2 small = planetCraters(at, 4.2, foot, b.seed + 3.0);
+  base = mix(base, l.eye, 0.9 * max(big.x, 0.85 * small.x));
+  base = mix(base, l.pale, 0.85 * max(big.y, 0.7 * small.y));
+  return PlanetFace(base, vec3(0.0), n, 1.0);
+}
+
+// The ocean world: deep and shallow seas, ragged polar caps, cloud wound into swirls, and the sun's
+// glint on open water.
+PlanetFace planetOcean(PlanetBody b, vec3 n, vec3 light, float foot) {
+  PlanetLook l = b.look;
+  vec3 m = planetSpun(n, l.ring);
+  float lon = planetTurned(m, b.clock * 0.03);
+  float depth = planetFbm(vec2(lon * 1.8, m.y * 2.8) + b.seed * 3.3, 2.8 * foot);
+  vec3 base = mix(l.deep, l.mid, smoothstep(0.35, 0.75, depth));
+  float edge = 0.74 + 0.16 * (planetFbm(vec2(lon * 3.0, m.y * 3.0) + 9.0, 3.0 * foot) - 0.5);
+  float cap = smoothstep(edge, edge + 0.03 + foot, abs(m.y));
+  vec2 sw = vec2(lon * 2.0 + b.clock * 0.01, m.y * 4.0);
+  float cloud = smoothstep(0.56, 0.72, planetFbm(sw + 0.8 * vec2(sin(sw.y * 1.3 + b.seed), cos(sw.x * 0.9)), 4.0 * foot));
+  base = mix(base, l.pale, max(cap, 0.85 * cloud));
+  float glint = pow(max(dot(n, planetHalfway(light)), 0.0), 28.0) * (1.0 - cap) * (1.0 - cloud);
+  return PlanetFace(base, l.eye * glint * 0.7, n, 1.0);
+}
+
+// The home-like world, with our own climate: continents (deserts toward the tropics) over seas, a
+// cloud deck, and a year of its own, one every two minutes of its clock, its hemispheres half a year
+// apart, in which the cold of the time of year (climateCold, climateLying: src/climate.ts) spreads sea
+// ice and snow out from its poles into winter and takes them back by summer. Palette 1 (arid) has
+// more land, 2 (lush) more sea, and 3 (ice age) lies under more snow all year.
+PlanetFace planetHome(PlanetBody b, vec3 n, vec3 light, float foot) {
+  PlanetLook l = b.look;
+  vec3 m = planetSpun(n, l.ring);
+  float lon = planetTurned(m, b.clock * 0.05);
+  float lift = planetFbm(vec2(lon * 1.5, m.y * 2.4) + b.seed * 4.7, 2.4 * foot);
+  float shore = b.palette == 1 ? 0.46 : b.palette == 2 ? 0.54 : 0.5;
+  float land = smoothstep(shore, shore + 0.02 + foot, lift);
+  float wild = planetFbm(vec2(lon * 4.0, m.y * 6.0) + 7.0, 6.0 * foot);
+  float dry = smoothstep(0.48, 0.62, wild) * smoothfall(0.5, 0.3, abs(m.y));
+  vec3 base = mix(l.deep, mix(l.mid, l.eye, dry), land);
+  float year = fract(b.clock / 120.0 + b.seed * 0.37);
+  float cold = climateCold(m.y > 0.0 ? year : fract(year + 0.5));
+  float lying = min(climateLying(cold) / ${glslFloat(WINTER_COVER)} + (b.palette == 3 ? 0.45 : 0.0), 1.0);
+  float reach = abs(m.y) + 0.06 * (wild - 0.5);
+  float seaIce = smoothstep(0.88 - 0.24 * lying, 0.91 - 0.24 * lying, reach);
+  float snow = smoothstep(0.8 - 0.4 * lying, 0.84 - 0.4 * lying, reach);
+  base = mix(base, l.pale, mix(seaIce, snow, land));
+  float cloud = planetClouds(m, lon + b.clock * 0.01, b.clock, foot);
+  base = mix(base, l.pale, 0.8 * cloud);
+  float glint = pow(max(dot(n, planetHalfway(light)), 0.0), 28.0) * (1.0 - land) * (1.0 - seaIce) * (1.0 - cloud);
+  return PlanetFace(base, vec3(0.9, 0.92, 0.85) * glint * 0.6, n, 1.0);
+}
+
+// The lava world: a dark crust split by molten cracks, at least a cell wide, that glow on its night
+// side too and pulse slowly.
+PlanetFace planetLava(PlanetBody b, vec3 n, float foot) {
+  PlanetLook l = b.look;
+  vec3 m = planetSpun(n, l.ring);
+  vec2 at = vec2(planetTurned(m, b.clock * 0.03) * 2.0, m.y * 3.2) + b.seed * 6.1;
+  float crust = planetFbm(at * 1.7 + 4.0, 5.4 * foot);
+  float flow = planetFbm(at, 3.2 * foot);
+  float width = max(0.04, 3.0 * foot);
+  float crack = smoothfall(width, 0.35 * width, abs(flow - 0.5));
+  float pulse = 0.8 + 0.2 * sin(b.clock * 1.3 + flow * 30.0);
+  vec3 base = mix(l.deep, l.mid, smoothstep(0.35, 0.75, crust)) * (1.0 - 0.8 * crack);
+  return PlanetFace(base, mix(l.pale, l.eye, crack * crack) * crack * pulse, n, 1.0);
+}
+
+// The crystal world: the sphere cut flat into facets (rounded onto a grid of directions), each its own
+// shade and lit flat, glinting, now and then one sparkling.
+PlanetFace planetCrystal(PlanetBody b, vec3 n, vec3 light) {
+  PlanetLook l = b.look;
+  float turn = b.clock * 0.05;
+  vec3 cell = floor(planetTurn(planetSpun(n, l.ring), turn) * 1.7 + 0.5);
+  vec3 f = normalize(cell);
+  // The facet's normal back in the planet frame: turned back, then out of the planet's own frame.
+  vec2 r = rotate(f.xz, turn);
+  vec3 pole = planetRingNormal(l.ring);
+  vec3 e1 = vec3(cos(l.ring.roll), sin(l.ring.roll), 0.0);
+  vec3 facet = r.x * e1 + f.y * pole + r.y * cross(e1, pole);
+  float h = planetHash3(cell + b.seed);
+  vec3 base = mix(l.deep, mix(l.mid, l.pale, h), 0.45 + 0.55 * h);
+  float glint = pow(max(dot(facet, planetHalfway(light)), 0.0), 40.0);
+  float sparkle = step(0.97, planetHash3(cell + floor(b.clock * 1.5) + b.seed)) * max(dot(facet, light), 0.0);
+  return PlanetFace(base, l.eye * (0.9 * glint + 0.5 * sparkle), facet, 1.0);
+}
+
+// The eye world: a white round an iris and pupil that gaze about the eye on its clock, veins toward
+// the back, a catchlight, and now and then its lids blinking shut.
+PlanetFace planetEye(PlanetBody b, vec3 n, vec3 light, float foot) {
+  PlanetLook l = b.look;
+  float w = b.clock * 0.25 + b.seed * 2.1;
+  vec3 gaze = normalize(vec3(0.42 * sin(w) + 0.12 * sin(w * 2.3), 0.28 * sin(w * 0.7 + 1.3), 1.0));
+  float a = acos(clamp(dot(n, gaze), -1.0, 1.0));
+  float soft = max(foot, 0.02);
+  vec3 e1 = normalize(cross(vec3(0.0, 1.0, 0.0), gaze));
+  float az = atan(dot(n, cross(gaze, e1)), dot(n, e1));
+  float stripes = 0.7 + 0.3 * sin(az * 22.0) * (0.6 + 0.4 * sin(az * 5.0 + b.seed));
+  float keep = planetLod(0.45 * 3.14159 / 22.0, foot);
+  if (keep < 1.0) stripes = mix(0.82, stripes, keep);
+  vec3 iris = l.mid * stripes * mix(1.0, 0.45, smoothstep(0.3, 0.45, a));
+  // Veins: the middle line of a smooth field (no octave finer than a sixth of a radius), a cell wide.
+  float vein = smoothfall(max(0.03, 1.5 * foot), 0.0, abs(planetFbm(n.xy * 2.2 + b.seed * 2.7, max(3.0 * foot, 0.5)) - 0.5)) * smoothstep(1.0, 1.5, a);
+  vec3 base = mix(l.pale, l.eye, 0.6 * vein);
+  base = mix(base, iris, smoothfall(0.45 + soft, 0.45 - soft, a));
+  base = mix(base, l.deep, smoothfall(0.17 + soft, 0.17 - soft, a));
+  float blink = fract(b.clock * 0.08 + b.seed * 0.29);
+  float shut = smoothstep(0.0, 0.012, blink) * smoothfall(0.03, 0.018, blink);
+  float lid = step(1.0 - 1.05 * shut, abs(n.y));
+  base = mix(base, l.rim, lid);
+  float glint = pow(max(dot(n, planetHalfway(light)), 0.0), 60.0) * (1.0 - lid);
+  return PlanetFace(base, vec3(glint), n, 1.0);
+}
+
+// The bubble world: a thin film whose swirls drift over it, thicker toward its rim, the sky showing
+// through; a soft heart drifts inside and the sun glints off it. Rainbow in palette 0.
+PlanetFace planetBubble(PlanetBody b, vec2 q, vec3 n, vec3 light, float foot) {
+  PlanetLook l = b.look;
+  float edge = pow(1.0 - n.z, 1.6);
+  float film = planetFbm(q * 1.6 + vec2(b.clock * 0.02, -b.clock * 0.015) + b.seed * 3.0, 1.6 * foot) + 0.6 * n.z;
+  vec3 tint = b.palette == 0 ? 0.55 + 0.45 * cos(6.2831853 * (film * 1.6 + vec3(0.0, 0.33, 0.67))) : mix(l.mid, l.pale, smoothstep(0.3, 0.9, film));
+  vec2 drift = 0.25 * vec2(sin(b.clock * 0.11 + b.seed), cos(b.clock * 0.08 + b.seed * 1.7));
+  float heart = bell(length(q - drift) / 0.45);
+  float glint = pow(max(dot(n, planetHalfway(light)), 0.0), 50.0);
+  return PlanetFace(tint, l.eye * heart * 0.35 + vec3(0.9 * glint) + tint * edge * 0.35, n, 0.1 + 0.8 * edge);
+}
+
+// The face of planet b at q on its disc (n the sphere's normal there). One kind per planet, each in a
+// loop of at most one turn: a software rasteriser runs every line of a branch whichever way its pixels
+// go, but no turn of a loop none of them enters, so a pixel pays for the kinds on screen only.
+PlanetFace planetBodyFace(PlanetBody b, vec2 q, vec3 n, float foot, float t) {
+  vec3 light = b.look.light;
+  int k = b.kind;
+  PlanetFace face = PlanetFace(b.look.mid, vec3(0.0), n, 1.0);
+  for (int i = 0; i < (k == PLANET_BANDED ? 1 : 0); i++) face = planetBanded(b, q, n);
+  for (int i = 0; i < (k == PLANET_BELTED ? 1 : 0); i++) face = planetBelted(b, n, max(dot(n, light), 0.0), foot, t);
+  for (int i = 0; i < (k == PLANET_ROCKY ? 1 : 0); i++) face = planetRocky(b, n, foot);
+  for (int i = 0; i < (k == PLANET_OCEAN ? 1 : 0); i++) face = planetOcean(b, n, light, foot);
+  for (int i = 0; i < (k == PLANET_HOME ? 1 : 0); i++) face = planetHome(b, n, light, foot);
+  for (int i = 0; i < (k == PLANET_LAVA ? 1 : 0); i++) face = planetLava(b, n, foot);
+  for (int i = 0; i < (k == PLANET_CRYSTAL ? 1 : 0); i++) face = planetCrystal(b, n, light);
+  for (int i = 0; i < (k == PLANET_EYE ? 1 : 0); i++) face = planetEye(b, n, light, foot);
+  for (int i = 0; i < (k == PLANET_BUBBLE ? 1 : 0); i++) face = planetBubble(b, q, n, light, foot);
+  return face;
+}
+
+// The wide banded ring: five bands of dust from 1.3 to 2.2 radii, turning as Kepler has it (smooth
+// material reads at backdrop scale where ice's grooves and rock's boulders only speckle).
+const PlanetRingBands PLANET_WIDE_RING = PlanetRingBands(1.3, 2.2, 5.0, 0.22, 0.9, 0.0, 0.4);
+
+// Planet b's ring at q ('at' its plane there, planetRingAt): its colour, and in 'cover' how much of
+// what lies behind it hides. Thin: planetOver's, all or nothing per cell; wide: PLANET_WIDE_RING's
+// bands, alternately dark and light, as thick as their material, in the planet's shadow behind it;
+// none: nothing.
+vec3 planetBodyRing(PlanetBody b, vec2 q, vec3 at, float foot, out float cover) {
+  PlanetLook l = b.look;
+  if (b.ring == 2) {
+    float band;
+    float body = planetRingBands(at.xy, PLANET_WIDE_RING, b.clock, foot / max(l.ring.facing, 0.02), band);
+    vec3 colour = mix(l.ringDark, l.ringLight, mod(band, 2.0) > 0.5 ? 0.45 : 0.9);
+    if (planetShadowed(vec3(q, at.z), l.light)) colour *= 0.18;
+    cover = min(planetRingOpacity(body) * 1.25, 1.0);
+    return colour;
+  }
+  float streak;
+  float body = planetRingThin(length(at.xy), streak);
+  cover = hardEdge(body * 0.85) * l.ringed;
+  return mix(l.ringDark, l.ringLight, streak);
+}
+
+// Planet b over 'col' at p (scene units; px a cell there), t the scene clock, drawn as planetOver
+// draws its giant, back to front (the glow round the limb, the ring's far half, aurora curtains off
+// the limb, the disc, the ring's near half, then the moons), with its kind's face on the disc, lit by
+// the face's normal, and a wide ring's shadow across it. A banded planet with a thin ring or none is
+// planetOver's giant on the planet's own clock.
+vec3 planetBodyOver(vec3 col, vec2 p, float px, PlanetBody b, float t) {
+  PlanetLook look = b.look;
+  float tm = b.clock;
+  PlanetPoint s = planetAt(p, look.centre, look.radius);
+  vec2 q = s.q;
+  if (abs(q.x) > 2.3 || abs(q.y) > 2.3) return col;
+  float vis = look.visible;
+  float foot = px / look.radius;
+  vec3 ring = planetRingAt(look.ring, q);
+  float ringCover;
+  vec3 ringCol = planetBodyRing(b, q, ring, foot, ringCover);
+  vec3 pole = planetRingNormal(look.ring);
+  col += look.glow * planetGlow(s.d, 0.9) * look.night * vis;
+  if (ring.z <= 0.0) col = mix(col, ringCol, ringCover * vis);
+  float cover = hardFill((s.d - 1.0) * look.radius, px);
+  if (cover > 0.5) {
+    vec3 n = s.normal;
+    PlanetFace face = planetBodyFace(b, q, n, foot, t);
+    float lit = smoothstep(-0.12, 0.62, dot(face.normal, look.light));
+    vec3 disc = face.base * (0.10 + 0.95 * lit) * (0.55 + 0.45 * n.z);
+    disc += look.rim * planetRim(n) * lit * 0.8;
+    if (look.lights > 0.5 || look.aurora > 0.0) {
+      float night = planetNight(max(dot(n, look.light), 0.0));
+      if (look.lights > 0.5) disc += look.lightsColor * planetCityLights(n, planetLongitude(n, tm * 0.012, 0.0), t, look.twinkle, foot) * night;
+      if (look.aurora > 0.0) disc += look.auroraColor * planetAurora(n, pole, look.auroraSize, tm, foot) * mix(0.6, 1.0, night) * look.aurora;
+    }
+    if (look.eclipses > 0.5) {
+      for (int i = 0; i < 3; i++) {
+        if (float(i) >= look.moons) break;
+        PlanetMoon m = planetMoon(i, look.ring);
+        disc *= 1.0 - 0.9 * planetMoonShadow(q, planetMoonAt(m, tm, 0.0, 1.0), m.size * look.moonScale, look.light);
+      }
+    }
+    vec2 shadowAt;
+    if (b.ring == 2 && planetRingShadowAt(look.ring, n, look.light, shadowAt)) {
+      float band;
+      disc *= 1.0 - 0.7 * min(planetRingBands(shadowAt, PLANET_WIDE_RING, tm, foot, band) * 1.3, 1.0);
+    }
+    col = mix(col, disc + face.glow, vis * face.cover);
   } else if (look.aurora > 0.0) {
     col += look.auroraColor * planetAuroraCurtain(q, s.d, pole, look.auroraSize, tm, foot) * look.aurora * 1.2 * vis;
   }

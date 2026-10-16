@@ -60,7 +60,6 @@ const params: readonly ParamDef[] = [
     time: 0.58,
     stars: 0.6,
     constellations: true,
-    giant: { across: [-33, -14, 33], up: [0, 6, 12] },
   }),
   ...weatherKnobs({ clouds: 0.35, rain: true, snow: true, fog: true, wind: true }),
   feature(
@@ -83,6 +82,7 @@ export const islandScene: SceneDef = {
   accent: "#ff7ba3",
   look: { color: "full", levels: 4 },
   params,
+  planets: { group: "sky", across: [-33, -14, 33], up: [0, 6, 12] },
   groups: {
     island: {
       title: "Island",

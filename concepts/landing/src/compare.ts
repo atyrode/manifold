@@ -6,7 +6,7 @@
 //
 // shows slot B (forest in rain) and keeps slot A (pond at motion 0.2) under the "a." prefix. With
 // both slots at defaults the prefix keys are simply absent: `?compare=b` compares pond with pond.
-import { readParams, readState, serialise, sessionKeys } from "./state.ts";
+import { readParams, readPlanets, readState, serialise, sessionKeys } from "./state.ts";
 
 export const slots = ["a", "b"] as const;
 export type Slot = (typeof slots)[number];
@@ -25,7 +25,11 @@ export function otherSlot(slot: Slot): Slot {
 /** A setup query as the page writes it: normalised and minimal. */
 export function canonicalSetup(query: URLSearchParams): string {
   const state = readState(query);
-  return serialise(state, readParams(state.scene, query)).toString();
+  return serialise(
+    state,
+    readParams(state.scene, query),
+    readPlanets(state.scene, query),
+  ).toString();
 }
 
 /** The comparison in a page query, or undefined when it has none. */

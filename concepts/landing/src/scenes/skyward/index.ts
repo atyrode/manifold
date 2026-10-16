@@ -44,7 +44,6 @@ const params: readonly ParamDef[] = [
     moon: 1,
     meteors: { trigger: SKYWARD_METEOR_TRIGGER },
     constellations: true,
-    giant: { across: [-180, 0, 180], up: [50, 82, 90] },
   }),
   range(
     "air",
@@ -88,6 +87,7 @@ export const skywardScene: SceneDef = {
   accent: "#ff8a4a",
   look: { color: "full", levels: 4 },
   params,
+  planets: { group: "sky", across: [-180, 0, 180], up: [50, 82, 90] },
   groups: {
     city: {
       title: "City",

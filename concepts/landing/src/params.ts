@@ -62,9 +62,9 @@ interface Base {
  *              card stands where a group has a `birds` part and takes that group's other parts
  *   night      a part of the Night sky section (the sky components of `skyComponentKnobs` and
  *              `weatherKnobs`): `stars` the density (a range), `moon` the moon's phase, `milkyWay`,
- *              `meteors`, `aurora`, `constellations` and `giant`, the giant planet (features); the
- *              section stands where a group holds any of them, at the first, and a part takes the
- *              group's knobs that hang off its switch (`when`, at any remove) with it
+ *              `meteors`, `aurora` and `constellations` (features); the section stands where a
+ *              group holds any of them, at the first, with the scene's planets where its
+ *              SceneDef.planets names that group
  *   gusts      gusts that ride a `direction` knob (a feature, its "now" one gust): the group's
  *              direction pad takes them as its gust lane; without one, a plain chip
  */
@@ -76,10 +76,7 @@ export type Widget =
   | { kind: "compass"; strength: string }
   | { kind: "position"; y: string; screen?: readonly [number, number] }
   | { kind: "flyway"; part: "birds" | "kind" | "formation" }
-  | {
-      kind: "night";
-      part: "stars" | "moon" | "milkyWay" | "meteors" | "aurora" | "constellations" | "giant";
-    }
+  | { kind: "night"; part: "stars" | "moon" | "milkyWay" | "meteors" | "aurora" | "constellations" }
   | { kind: "gusts" };
 
 /**
@@ -244,6 +241,61 @@ export function effective(def: ParamDef, params: Record<string, number>): number
   const value = params[def.key] ?? (def.kind === "feature" ? (def.on ? 1 : 0) : def.value);
   if (def.kind !== "feature") return value;
   return value > 0.5 ? (params[`${def.key}-amount`] ?? def.value) : 0;
+}
+
+/** A URL value as a number within min..max; absent, empty or not a number: `fallback`. */
+export function readNumber(
+  value: string | null,
+  min: number,
+  max: number,
+  fallback: number,
+): number {
+  const n = value === null || value === "" ? Number.NaN : Number(value);
+  return Number.isFinite(n) ? Math.min(max, Math.max(min, n)) : fallback;
+}
+
+/**
+ * Each of `defs` as a setup holds it, keyed as in the URL (a feature's amount as `<key>-amount`),
+ * from `get` (a URL value by key, null when absent): a range clamped into its bounds, a switch
+ * rounded to 0 or 1, a feature's amount clamped and, when segmented, one of its options, a choice one
+ * of its options, a seed rounded into 0..MAX_SEED; anything else its default.
+ */
+export function readKnobs(
+  defs: readonly ParamDef[],
+  get: (key: string) => string | null,
+): Record<string, number> {
+  const out: Record<string, number> = {};
+  for (const def of defs) {
+    switch (def.kind) {
+      case "range":
+        out[def.key] = readNumber(get(def.key), def.min, def.max, def.value);
+        break;
+      case "toggle":
+        out[def.key] = Math.round(readNumber(get(def.key), 0, 1, def.value));
+        break;
+      case "feature": {
+        out[def.key] = Math.round(readNumber(get(def.key), 0, 1, def.on ? 1 : 0));
+        const amount = readNumber(get(`${def.key}-amount`), def.min, def.max, def.value);
+        out[`${def.key}-amount`] =
+          def.options?.some((option) => option.value === amount) === false ? def.value : amount;
+        break;
+      }
+      case "choice": {
+        const raw = get(def.key);
+        const value = raw === null || raw === "" ? Number.NaN : Number(raw);
+        out[def.key] = def.options.some((option) => option.value === value) ? value : def.value;
+        break;
+      }
+      case "seed":
+        out[def.key] = Math.round(readNumber(get(def.key), 0, MAX_SEED, def.value));
+        break;
+      default: {
+        const unreachable: never = def;
+        throw new Error(`landing: unknown knob ${String(unreachable)}`);
+      }
+    }
+  }
+  return out;
 }
 
 /** A title and one-line description: lab section headings (SceneDef.groups). */

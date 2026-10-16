@@ -157,7 +157,6 @@ const params: readonly ParamDef[] = [
     stars: 0.75,
     moon: 1,
     constellations: true,
-    giant: { across: [-64, -35, 18], up: [2, 13, 24] },
   }),
   feature(
     "weather",
@@ -206,6 +205,7 @@ export const trainScene: SceneDef = {
   accent: "#ffae4a",
   look: { color: "full", levels: 4 },
   params,
+  planets: { group: "sky", across: [-64, -35, 18], up: [2, 13, 24] },
   groups: {
     journey: {
       title: "Journey",

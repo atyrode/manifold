@@ -1,6 +1,7 @@
 // DOM plumbing shared by the lab's panels and widgets: an element factory and the `Built` pair every
 // control returns (its element, and how to reflect the setup into it).
 import type { DitherRenderer } from "../renderer.ts";
+import type { SkyPlanet } from "../scenes/planets.ts";
 import type { LabState, Params } from "../state.ts";
 
 export type Child = Node | string | false | null | undefined;
@@ -65,8 +66,8 @@ export type Patch = Record<string, string | number>;
 
 /** What the lab's panels and widgets reach the setup through. */
 export interface LabContext {
-  /** The setup on screen. */
-  current(): { state: LabState; params: Params };
+  /** The setup on screen: its lab settings, its scene's knobs and planets. */
+  current(): { state: LabState; params: Params; planets: readonly SkyPlanet[] };
   /** Apply a patch over the setup on screen; `commit` records it as one undo step. */
   change(patch: Patch, commit: boolean): void;
   /** Whether switch `key` (a toggle or feature) is on; true for no key. */

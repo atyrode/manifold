@@ -67,7 +67,6 @@ const params: ParamDef[] = [
   ...worldKnobs({
     time: 0.82,
     meteors: { trigger: SHORE_METEOR_TRIGGER },
-    giant: { across: [-2, 18, 60], up: [0, 7, 14] },
     lightning: SHORE_LIGHTNING_TRIGGER,
     birds: {
       kind: "gulls",
@@ -91,6 +90,7 @@ export const shoreScene: SceneDef = {
   // Designed in full colour; the plankton light is the accent in two-tone mode.
   look: { color: "full", levels: 4 },
   params,
+  planets: { group: "sky", across: [-2, 18, 60], up: [0, 7, 14] },
   groups: {
     surf: { title: "Surf", blurb: "The breakers: how big they stand and how often they come in." },
     glow: {

@@ -10,7 +10,6 @@ const params: ParamDef[] = [
     time: 0.72,
     stars: 0.75,
     constellations: true,
-    giant: { across: [-62, -44, -32], up: [0, 7, 12] },
   }),
   range(
     "clouds",
@@ -84,6 +83,7 @@ export const cloudsScene: SceneDef = {
   accent: "#ff8a3d",
   look: { color: "full", levels: 4 },
   params,
+  planets: { group: "sky", across: [-62, -44, -32], up: [0, 7, 12] },
   groups: {
     sky: {
       ...atmosphereGroups.sky,

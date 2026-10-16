@@ -1,6 +1,7 @@
 // GPU regressions for the night sky's opt-in parts, the constellations (skyStars, src/shaders/lib/
-// sky.ts) and the giant planet (skyGiant), each compiled in only while its knob is on (the library
-// gates SKY_FIGURES and SKY_GIANT), run by concepts/landing/verify-browser.ts on real WebGL output.
+// sky.ts), compiled in only while their knob is on (the library gate SKY_FIGURES), and the planets
+// (skyGiant), compiled in only while the scene's list holds any (SKY_PLANETS); run by
+// concepts/landing/verify-browser.ts on real WebGL output.
 // - `nightSky`: a probe compiled with Frost's knobs and every gate on samples skyStars, both
 //   overloads, at every figure's stars and the middle of every figure line. At a clear midnight the
 //   figures add light there while on (the lines as strong as their amount), and the knobs off draw
@@ -9,6 +10,10 @@
 // - `nightSkyDefaults1`..`3` (a third of the scenes each, to stay well under the deadline): every
 //   scene with the knobs starts with them off and, at its defaults and at midnight, draws byte for
 //   byte what the same scene without them draws.
+// - `nightPlanets`: in two scenes, two planets of different kinds each change the midnight sky where
+//   their placements put them (the one placed further left, further left on screen), together as
+//   each alone does round itself; an orbiting planet drifts left with the motion clock and, half a
+//   circuit on, has set: the sky is then the empty list's again, byte for byte.
 import { constellationUniforms } from "./constellations.ts";
 import { effective, type ParamDef } from "./params.ts";
 import {
@@ -20,6 +25,7 @@ import {
 } from "./shaders/index.ts";
 import { skyFigurePoint, skyFigures } from "./shaders/lib/sky.ts";
 import { sceneDefs, type SceneId } from "./scenes/index.ts";
+import { planetUniforms, readPlanet, type SkyPlanet } from "./scenes/planets.ts";
 import type { SceneDef } from "./scenes/types.ts";
 import { paramDefaults } from "./state.ts";
 
@@ -50,16 +56,17 @@ function program(gl: WebGL2RenderingContext, fragment: string): WebGLProgram {
   return linked;
 }
 
-/** The shared night knobs with library gates (skyComponentKnobs' constellations and giant). */
+/** The shared night knobs with library gates (skyComponentKnobs' constellations). */
 const nightPart = (def: ParamDef): boolean =>
-  def.widget?.kind === "night" &&
-  (def.widget.part === "constellations" || def.widget.part === "giant");
+  def.widget?.kind === "night" && def.widget.part === "constellations";
 
 interface Draw {
   readonly width: number;
   readonly height: number;
   readonly params: readonly number[];
   readonly uniforms?: Readonly<Record<string, readonly number[]>>;
+  /** Integer uniforms (uPlanetCount). */
+  readonly ints?: Readonly<Record<string, number>>;
   /** A float RGBA row on texture unit 0 (uSim0), one texel per pixel across. */
   readonly row?: Float32Array;
 }
@@ -116,6 +123,7 @@ function draw(gl: WebGL2RenderingContext, linked: WebGLProgram, frame: Draw): Fl
     else if (value.length === 3) gl.uniform3fv(location, value);
     else gl.uniform4fv(location, value);
   }
+  for (const [name, value] of Object.entries(frame.ints ?? {})) gl.uniform1i(at(name), value);
   gl.drawArrays(gl.TRIANGLES, 0, 3);
   const out = new Float32Array(width * height * 4);
   gl.readPixels(0, 0, width, height, gl.RGBA, gl.FLOAT, out);
@@ -148,7 +156,7 @@ Shade nightProbe(vec2 uv, vec2 cell, float t) {
 export function verifyNightSky(gl: WebGL2RenderingContext): Record<string, unknown> {
   check(gl.getExtension("EXT_color_buffer_float") !== null, "float render targets unavailable");
   const frost = sceneDefs.frost;
-  check(frost.params.filter(nightPart).length === 2, "frost lacks the constellations or the giant");
+  check(frost.params.filter(nightPart).length === 1, "frost lacks the constellations");
   const probeDef: SceneDef = { ...frost, entry: "nightProbe", glsl: PROBE };
   const plainDef: SceneDef = {
     ...probeDef,
@@ -306,4 +314,109 @@ export function nightSkyDefaults(
     }
     return result;
   };
+}
+
+/** Where a frame differs from another: how many pixels, and their mean across (0..1 of the width). */
+function difference(a: Float32Array, b: Float32Array, width: number): { count: number; x: number } {
+  let count = 0;
+  let sum = 0;
+  for (let i = 0; i < a.length; i += 4) {
+    const moved =
+      Math.abs((a[i] ?? 0) - (b[i] ?? 0)) +
+        Math.abs((a[i + 1] ?? 0) - (b[i + 1] ?? 0)) +
+        Math.abs((a[i + 2] ?? 0) - (b[i + 2] ?? 0)) >
+      0.02;
+    if (!moved) continue;
+    count++;
+    sum += ((i / 4) % width) / width;
+  }
+  return { count, x: count > 0 ? sum / count : Number.NaN };
+}
+
+export function verifyNightPlanets(gl: WebGL2RenderingContext): Record<string, unknown> {
+  check(gl.getExtension("EXT_color_buffer_float") !== null, "float render targets unavailable");
+  const width = 160;
+  const height = 100;
+  const result: Record<string, unknown> = {};
+  for (const id of ["aurora", "island"] as const satisfies readonly SceneId[]) {
+    const scene = sceneDefs[id];
+    const spec = scene.planets;
+    check(spec !== undefined, `${id} takes no planets`);
+    if (spec === undefined) continue;
+    const knobs = { ...paramDefaults(id), time: 0 };
+    const params = scene.params.map((knob) => effective(knob, knobs));
+    const programs = new Map<number, WebGLProgram>();
+    const frame = (planets: readonly SkyPlanet[], motionTime = 24): Float32Array => {
+      const gate = planets.length > 0 ? 1 : 0;
+      const linked =
+        programs.get(gate) ??
+        program(
+          gl,
+          fragmentSourceFor(scene, sceneFeatures(scene, shaderValues(scene, knobs), gate)),
+        );
+      programs.set(gate, linked);
+      const { count, data } = planetUniforms(planets);
+      return draw(gl, linked, {
+        width,
+        height,
+        params,
+        uniforms: { uPlanets: Array.from(data), uMotionTime: [motionTime] },
+        ints: { uPlanetCount: count },
+      });
+    };
+    const [low, , high] = spec.across;
+    const up = spec.up[1];
+    const left = readPlanet(spec, {
+      kind: 3,
+      ring: 0,
+      size: 0.6,
+      across: low + (high - low) * 0.25,
+      up,
+    });
+    const right = readPlanet(spec, {
+      kind: 5,
+      ring: 0,
+      size: 0.6,
+      across: low + (high - low) * 0.75,
+      up,
+    });
+    const empty = frame([]);
+    const one = difference(frame([left]), empty, width);
+    const other = difference(frame([right]), empty, width);
+    const both = difference(frame([left, right]), empty, width);
+    check(
+      one.count > 20 && other.count > 20,
+      `${id}: a planet barely shows (${one.count}, ${other.count})`,
+    );
+    check(
+      one.x < other.x,
+      `${id}: the planet placed further left stands at ${one.x.toFixed(2)}, the other at ${other.x.toFixed(2)}`,
+    );
+    check(
+      Math.abs(both.count - one.count - other.count) < 0.1 * both.count,
+      `${id}: two planets draw ${both.count} pixels, alone ${one.count} and ${other.count}`,
+    );
+    // An orbiting planet, a circuit every half minute: on its way left, then set.
+    const orbit = readPlanet(spec, {
+      orbit: 1,
+      "orbit-amount": 0.5,
+      ring: 0,
+      size: 0.6,
+      across: (low + high) / 2,
+      up,
+    });
+    // Each against the empty list's frame at the same motion clock (the stars twinkle on it).
+    const top = difference(frame([orbit], 0), frame([], 0), width);
+    const later = difference(frame([orbit], 2), frame([], 2), width);
+    const set = frame([orbit], 15);
+    check(top.count > 20, `${id}: the orbiting planet does not show at its height`);
+    check(
+      later.count > 0 && later.x < top.x,
+      `${id}: the orbiting planet stays at ${top.x.toFixed(2)} (then ${later.x.toFixed(2)})`,
+    );
+    check(same(set, frame([], 15)), `${id}: half a circuit on, the orbiting planet still shows`);
+    for (const linked of programs.values()) gl.deleteProgram(linked);
+    result[id] = { left: one, right: other, orbit: { top: top.x, later: later.x } };
+  }
+  return result;
 }

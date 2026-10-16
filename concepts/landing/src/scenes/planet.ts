@@ -2,23 +2,14 @@
 // moons and its ring system, with the same labels, help and defaults in every scene that composes it.
 // Each feature is opt-in and starts off, so adopting one never changes a scene's picture; placement,
 // size and framing stay the scene's own knobs. The GLSL side takes the values as arguments, read
-// through the generated K_<key> defines (see "The giant planet" in src/scenes/README.md). The giant
-// itself, its switch and size with these features, comes from `giantKnobs`: a scene's own (campfire),
-// or one in the shared night sky, placed among the stars and dressed in a palette and a thin ring.
+// through the generated K_<key> defines (see "The giant planet" in src/scenes/README.md). A scene
+// that draws a giant of its own (campfire) takes its switch and size with these features from
+// `giantKnobs`. The night sky's planets are a list of their own (src/scenes/planets.ts).
 //
 // Keys: unprefixed where the planet is the subject (orbit: K_clouds, K_moons, K_ring...); a sky that
 // shows one passes a prefix so the keys never meet its own (campfire's "planet": K_planetMoons,
 // K_planetAurora...). Each knob's key is the prefix plus the name below, capitalised after a prefix.
-import {
-  choice,
-  counts,
-  feature,
-  range,
-  toggle,
-  type Blurb,
-  type Option,
-  type ParamDef,
-} from "../params.ts";
+import { choice, counts, feature, range, toggle, type Blurb, type ParamDef } from "../params.ts";
 
 export interface PlanetKnobOptions {
   /** Prepended to every key (camelCase): none for orbit's `moons`, "planet" for campfire's `planetMoons`. */
@@ -250,104 +241,36 @@ export function planetKnobs(options: PlanetKnobOptions): ParamDef[] {
   return knobs;
 }
 
-/** A placement knob's least value, where it starts, and its most. */
-export type GiantSpan = readonly [min: number, at: number, max: number];
-
 export interface GiantOptions {
   /** Lab group of every knob of the giant's. */
   group: string;
   /** Switched on from the start; default off. */
   on?: boolean;
-  /** The switch's help; default the night sky's. */
-  help?: string;
-  /**
-   * A giant in the shared night sky (`skyGiant`, src/shaders/lib/sky.ts, compiled in only while it
-   * is on): the switch is the Night sky section's `giant` part. `planetX` and `planetY` place it on
-   * the placement pad, in degrees in the scene's sky (the directions its stars are fixed to): across
-   * from straight ahead, positive to the right, and up from the horizon; `across` and `up` are each
-   * knob's [least, default, most], the stretch of sky the scene shows. `planetPalette` and
-   * `planetRing` dress it. Omit for a scene that places and draws the giant itself (campfire).
-   */
-  sky?: { across: GiantSpan; up: GiantSpan };
+  /** The switch's help. */
+  help: string;
 }
-
-/** The sky giant's palettes, GIANT_PALETTE_* in skyGiant: Campfire's teal bands first. */
-export const GIANT_PALETTES: readonly Option[] = [
-  { label: "teal", value: 0 },
-  { label: "amber", value: 1 },
-  { label: "rose", value: 2 },
-  { label: "ice", value: 3 },
-];
-
-const SKY_GIANT_HELP =
-  "A giant ringed planet hanging among the stars, banded and swirled by a great storm, fixed in the sky as the stars are: in front of them and the Milky Way, behind the clouds and everything on the ground. It fades to a pale ghost by day. Size: a large moon to the left, a giant filling a good part of the sky to the right.";
 
 /**
  * The giant planet, K_planet (its size while on, 0 off: 0.2..1, 0.55 to start) and the shared
- * planet's features a sky composes with it, all keyed "planet..." (planetKnobs' moons, aurora, city
- * lights and day cycle): campfire's own, or with `sky` the shared night sky's, its placement, palette
- * and ring first. Every knob but the switch shows only while it is on.
+ * planet's features a scene composes with it, all keyed "planet..." (planetKnobs' moons, aurora,
+ * city lights and day cycle), for a scene that places and draws the giant itself (campfire). Every
+ * knob but the switch shows only while it is on.
  */
 export function giantKnobs(options: GiantOptions): ParamDef[] {
-  const { group, sky } = options;
-  const when = { when: "planet" };
   return [
     feature(
-      group,
+      options.group,
       "planet",
       "giant planet",
       options.on ?? false,
       "size",
       0.55,
-      options.help ?? SKY_GIANT_HELP,
-      { min: 0.2, max: 1, ...(sky ? { widget: { kind: "night", part: "giant" } } : {}) },
+      options.help,
+      { min: 0.2, max: 1 },
     ),
-    ...(sky
-      ? [
-          range(
-            group,
-            "planetX",
-            "planet across",
-            sky.across[1],
-            "Where the giant stands across the sky, in degrees round from the sky's straight ahead: lower to the left, higher to the right.",
-            {
-              min: sky.across[0],
-              max: sky.across[2],
-              step: 1,
-              ...when,
-              widget: { kind: "position", y: "planetY" },
-            },
-          ),
-          range(
-            group,
-            "planetY",
-            "planet height",
-            sky.up[1],
-            "How high it stands, in degrees above the horizon.",
-            { min: sky.up[0], max: sky.up[2], step: 1, ...when },
-          ),
-          choice(
-            group,
-            "planetPalette",
-            "palette",
-            GIANT_PALETTES,
-            0,
-            "Its colours: teal bands round a pale storm, amber and gold, rose, or banded ice.",
-            { ...when, icon: "palette" },
-          ),
-          toggle(
-            group,
-            "planetRing",
-            "ring",
-            true,
-            "A thin ring of ice tipped across the planet, in front of it below and behind it above.",
-            { ...when, icon: "ring" },
-          ),
-        ]
-      : []),
     ...planetKnobs({
       prefix: "planet",
-      groups: { planet: group, moons: group },
+      groups: { planet: options.group, moons: options.group },
       when: "planet",
       aurora: true,
       lights: true,

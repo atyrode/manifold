@@ -3,10 +3,11 @@ import type { ParamDef } from "../params.ts";
 import { sceneDefs } from "../scenes/index.ts";
 import {
   fragmentSourceFor,
-  knobKeyed,
   LIBRARY_GATES,
+  PLANETS_GATE,
   sceneFeatures,
   sceneFeaturesAll,
+  settingKeyed,
   shaderValues,
 } from "./index.ts";
 
@@ -43,8 +44,31 @@ function gatesOf(params: readonly ParamDef[]): Record<string, string> {
 }
 
 describe("library gates", () => {
-  test("gate the constellations and the giant planet", () => {
-    expect(LIBRARY_GATES).toEqual({ constellations: "SKY_FIGURES", giant: "SKY_GIANT" });
+  test("gate the constellations by their knob and the planets by the list", () => {
+    expect(LIBRARY_GATES).toEqual({ constellations: "SKY_FIGURES" });
+    expect(PLANETS_GATE).toBe("SKY_PLANETS");
+  });
+
+  test("compile the planets in only while a scene that takes them holds any", () => {
+    let takers = 0;
+    for (const scene of Object.values(sceneDefs)) {
+      if (scene.planets === undefined) {
+        expect(sceneFeatures(scene, undefined, 3)[PLANETS_GATE]).toBeUndefined();
+        continue;
+      }
+      takers++;
+      expect({ id: scene.id, keyed: settingKeyed(scene) }).toEqual({ id: scene.id, keyed: true });
+      expect(sceneFeatures(scene)[PLANETS_GATE]).toBe(0);
+      expect(sceneFeatures(scene, undefined, 1)[PLANETS_GATE]).toBe(1);
+      expect(sceneFeaturesAll(scene)?.[PLANETS_GATE]).toBe(1);
+      // Its knob gates and own features stay as they are whatever the list holds.
+      const withPlanets: Readonly<Record<string, number>> = {
+        ...sceneFeatures(scene, undefined, 8),
+        [PLANETS_GATE]: 0,
+      };
+      expect(withPlanets).toEqual(sceneFeatures(scene));
+    }
+    expect(takers).toBe(16);
   });
 
   test("make every scene holding one knob-keyed, off at its defaults, on in its all-features set", () => {
@@ -54,16 +78,16 @@ describe("library gates", () => {
       const keyed = Object.keys(gates).length > 0;
       if (!keyed) {
         // A scene without them keeps its feature sets as they were, and no gate.
-        expect({ id: scene.id, keyed: knobKeyed(scene) }).toEqual({
+        expect({ id: scene.id, keyed: settingKeyed(scene) }).toEqual({
           id: scene.id,
-          keyed: scene.featuresFor !== undefined,
+          keyed: scene.featuresFor !== undefined || scene.planets !== undefined,
         });
         for (const gate of Object.values(LIBRARY_GATES))
           expect(sceneFeatures(scene)[gate]).toBeUndefined();
         continue;
       }
       gated++;
-      expect({ id: scene.id, keyed: knobKeyed(scene) }).toEqual({ id: scene.id, keyed: true });
+      expect({ id: scene.id, keyed: settingKeyed(scene) }).toEqual({ id: scene.id, keyed: true });
       const plain = sceneFeatures(scene);
       const all = sceneFeaturesAll(scene) ?? {};
       for (const [gate, key] of Object.entries(gates)) {

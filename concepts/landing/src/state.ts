@@ -1,8 +1,11 @@
 // The lab's state and its URL encoding. Global settings live in `LabState`; the current scene's
-// knobs live in `Params` (a feature also stores `<key>-amount`). URLs carry only non-defaults. Every
-// setup enters through readParams (a link, the lab's history, a preset, a tour, a comparison's other
-// slot), which first sets a scene's outgrown keys on the knobs that replaced them (SceneDef.legacy).
-import { effective, MAX_SEED } from "./params.ts";
+// knobs live in `Params` (a feature also stores `<key>-amount`), and a scene that takes planets
+// (SceneDef.planets) keeps its list of them beside its knobs, under one URL key (`PLANETS_KEY`).
+// URLs carry only non-defaults. Every setup enters through readParams and readPlanets (a link, the
+// lab's history, a preset, a tour, a comparison's other slot), which first set a scene's outgrown
+// keys on what replaced them (SceneDef.legacy, and the sky's one giant planet on the first of its
+// planets).
+import { effective, readKnobs, readNumber } from "./params.ts";
 import {
   blendIds,
   colorIds,
@@ -15,6 +18,16 @@ import {
   type ViewId,
 } from "./renderer.ts";
 import { sceneDefs, sceneIds, type SceneId } from "./scenes/index.ts";
+import {
+  decodePlanets,
+  encodePlanets,
+  GIANT_KEYS,
+  GIANT_SWITCH,
+  PLANETS_KEY,
+  planetUniforms,
+  readPlanet,
+  type SkyPlanet,
+} from "./scenes/planets.ts";
 import type { SceneDef } from "./scenes/types.ts";
 
 export const modeIds = ["landing", "loading", "instance", "bare"] as const;
@@ -87,13 +100,18 @@ export class KnobKeyError extends Error {}
 export const sessionKeys = { compare: "compare", tour: "tour", dwell: "dwell" } as const;
 const reservedKeys: readonly string[] = [...Object.keys(defaults), ...Object.values(sessionKeys)];
 
-// Scene knobs share the URL with the lab's own settings, so no knob may take one of their names.
+// Scene knobs share the URL with the lab's own settings, so no knob may take one of their names; nor,
+// in a scene that takes planets, the planets' key.
 for (const id of sceneIds) {
-  for (const def of sceneDefs[id].params) {
+  const scene = sceneDefs[id];
+  for (const def of scene.params) {
     if (reservedKeys.includes(def.key) || reservedKeys.includes(`${def.key}-amount`)) {
       throw new KnobKeyError(
         `landing: ${id}'s knob "${def.key}" collides with the lab setting of that name`,
       );
+    }
+    if (scene.planets !== undefined && def.key === PLANETS_KEY) {
+      throw new KnobKeyError(`landing: ${id}'s knob "${def.key}" collides with its planets`);
     }
   }
 }
@@ -154,11 +172,6 @@ function pick<T extends string>(allowed: readonly T[], value: string | null, fal
   return allowed.find((candidate) => candidate === value) ?? fallback;
 }
 
-function readNumber(value: string | null, min: number, max: number, fallback: number): number {
-  const n = value === null || value === "" ? Number.NaN : Number(value);
-  return Number.isFinite(n) ? Math.min(max, Math.max(min, n)) : fallback;
-}
-
 export function readState(q: URLSearchParams): LabState {
   const accent = q.get("accent") ?? "";
   const scene = pick(sceneIds, q.get("scene"), defaults.scene);
@@ -205,38 +218,28 @@ export function migrateLegacy(scene: SceneDef, q: URLSearchParams): URLSearchPar
 
 export function readParams(scene: SceneId, query: URLSearchParams): Params {
   const q = migrateLegacy(sceneDefs[scene], query);
-  const out: Params = {};
-  for (const def of sceneDefs[scene].params) {
-    switch (def.kind) {
-      case "range":
-        out[def.key] = readNumber(q.get(def.key), def.min, def.max, def.value);
-        break;
-      case "toggle":
-        out[def.key] = Math.round(readNumber(q.get(def.key), 0, 1, def.value));
-        break;
-      case "feature": {
-        out[def.key] = Math.round(readNumber(q.get(def.key), 0, 1, def.on ? 1 : 0));
-        const amount = readNumber(q.get(`${def.key}-amount`), def.min, def.max, def.value);
-        out[`${def.key}-amount`] =
-          def.options?.some((option) => option.value === amount) === false ? def.value : amount;
-        break;
-      }
-      case "choice": {
-        const raw = q.get(def.key);
-        const value = raw === null || raw === "" ? Number.NaN : Number(raw);
-        out[def.key] = def.options.some((option) => option.value === value) ? value : def.value;
-        break;
-      }
-      case "seed":
-        out[def.key] = Math.round(readNumber(q.get(def.key), 0, MAX_SEED, def.value));
-        break;
-      default: {
-        const unreachable: never = def;
-        throw new Error(`landing: unknown knob ${String(unreachable)}`);
-      }
-    }
+  return readKnobs(sceneDefs[scene].params, (key) => q.get(key));
+}
+
+/**
+ * The scene's planets (none for a scene without SceneDef.planets), from its PLANETS_KEY. Without
+ * that key, a link from before the list whose giant planet is on (GIANT_SWITCH, the night sky's
+ * one giant) opens with that giant as its one planet, its old keys read into the planet's
+ * (GIANT_KEYS); the page then writes the list in their place.
+ */
+export function readPlanets(scene: SceneId, query: URLSearchParams): SkyPlanet[] {
+  const spec = sceneDefs[scene].planets;
+  if (spec === undefined) return [];
+  const packed = query.get(PLANETS_KEY);
+  if (packed !== null) return decodePlanets(spec, packed);
+  if (Math.round(readNumber(query.get(GIANT_SWITCH), 0, 1, 0)) !== 1) return [];
+  const values: Record<string, number> = {};
+  for (const [old, key] of Object.entries(GIANT_KEYS)) {
+    const raw = query.get(old);
+    const value = raw === null || raw === "" ? Number.NaN : Number(raw);
+    if (Number.isFinite(value)) values[key] = value;
   }
-  return out;
+  return [readPlanet(spec, values)];
 }
 
 /** Each knob's default, keyed as readParams keys them. */
@@ -244,8 +247,15 @@ export function paramDefaults(scene: SceneId): Params {
   return readParams(scene, new URLSearchParams());
 }
 
-/** Minimal query: only values that differ from their defaults. */
-export function serialise(state: LabState, params: Params): URLSearchParams {
+/**
+ * Minimal query: only values that differ from their defaults, the scene's planets (when it has any)
+ * last, packed under PLANETS_KEY.
+ */
+export function serialise(
+  state: LabState,
+  params: Params,
+  planets: readonly SkyPlanet[],
+): URLSearchParams {
   const q = new URLSearchParams();
   const base = defaultsFor(state.scene);
   // The scene leads, so readers know which scene's defaults the rest is relative to.
@@ -257,10 +267,17 @@ export function serialise(state: LabState, params: Params): URLSearchParams {
   for (const [key, value] of Object.entries(params)) {
     if (value !== fallback[key]) q.set(key, String(value));
   }
+  const spec = sceneDefs[state.scene].planets;
+  if (spec !== undefined && planets.length > 0) q.set(PLANETS_KEY, encodePlanets(spec, planets));
   return q;
 }
 
-export function renderSettings(state: LabState, params: Params): RenderSettings {
+/** What the renderer draws for a setup; a sky without planets unless `planets` names some. */
+export function renderSettings(
+  state: LabState,
+  params: Params,
+  planets: readonly SkyPlanet[] = [],
+): RenderSettings {
   const colours = palette(state, params);
   return {
     scene: state.scene,
@@ -274,6 +291,7 @@ export function renderSettings(state: LabState, params: Params): RenderSettings 
     accent: accentOf(state),
     params: sceneDefs[state.scene].params.map((def) => effective(def, params)),
     knobs: params,
+    planets: planetUniforms(planets),
     followPointer: state.mouse === "follow",
     view: state.view,
     passage: state.transitions === "on",

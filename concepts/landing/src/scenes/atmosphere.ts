@@ -1,11 +1,12 @@
 // Shared lab knobs for outdoor scenes: time of day, and the weather layer (rain, snow, fog, wind,
 // lightning, aurora), plus the opt-in sky components (star density, the Milky Way, the moon's phase,
-// shooting stars, constellations, the giant planet) and fair-weather cloud with its shadows. Every
-// scene that uses them gets the same keys, labels and help, so a setting means the same thing
-// everywhere; the GLSL side lives in src/shaders/lib/ and reads them through the generated K_<key>
-// defines (K_time, K_cycle, K_stars, K_milkyWay, K_moon, K_meteors, K_constellations, K_planet and
-// its K_planet* options, K_clouds, K_shadows, K_rain, K_snow, K_fog, K_wind, K_lightning,
-// K_aurora). How a scene composes them: src/scenes/README.md.
+// shooting stars, constellations) and fair-weather cloud with its shadows. Every scene that uses
+// them gets the same keys, labels and help, so a setting means the same thing everywhere; the GLSL
+// side lives in src/shaders/lib/ and reads them through the generated K_<key> defines (K_time,
+// K_cycle, K_stars, K_milkyWay, K_moon, K_meteors, K_constellations, K_clouds, K_shadows, K_rain,
+// K_snow, K_fog, K_wind, K_lightning, K_aurora). The night sky's planets are no knobs but a list of
+// their own (SceneDef.planets, src/scenes/planets.ts). How a scene composes them:
+// src/scenes/README.md.
 //
 // The page theme is decided here too (skyTheme, paletteTheme), once, from the knobs: the shader reads
 // the outcome with pagePaper() instead of repeating the test.
@@ -19,7 +20,6 @@ import {
   type ParamDef,
   type Recipe,
 } from "../params.ts";
-import { giantKnobs, type GiantOptions } from "./planet.ts";
 import type { SceneTheme } from "./types.ts";
 
 export interface SkyComponentOptions {
@@ -49,12 +49,6 @@ export interface SkyComponentOptions {
    * 0 off: no figures), off at 0.4. Only for a scene whose stars come from `skyStars`.
    */
   constellations?: boolean;
-  /**
-   * Adds the giant planet (`giantKnobs`' sky giant, for `skyGiant`): K_planet (its size while on, 0
-   * off), off at 0.55, with its placement in the scene's sky (`across`, `up`: see GiantOptions),
-   * palette, ring, moons, aurora, city lights and day cycle. Only for a scene that draws it.
-   */
-  giant?: NonNullable<GiantOptions["sky"]>;
   /** Lab group; default "sky". */
   group?: string;
 }
@@ -67,8 +61,7 @@ export interface SkyOptions extends SkyComponentOptions {
 /**
  * The opt-in sky components alone, without the clock: for a scene that keeps a night of its own (an
  * hour knob, a fixed night, a painted sky) and composes components into it, most often shooting stars.
- * K_stars, K_milkyWay, K_moon, K_meteors, K_constellations and the giant planet's K_planet... as for
- * `skyKnobs`, in that order.
+ * K_stars, K_milkyWay, K_moon, K_meteors and K_constellations as for `skyKnobs`, in that order.
  */
 export function skyComponentKnobs(options: SkyComponentOptions = {}): ParamDef[] {
   const group = options.group ?? "sky";
@@ -141,7 +134,6 @@ export function skyComponentKnobs(options: SkyComponentOptions = {}): ParamDef[]
         { min: 0.05, max: 1, widget: { kind: "night", part: "constellations" } },
       ),
     );
-  if (options.giant !== undefined) knobs.push(...giantKnobs({ group, sky: options.giant }));
   return knobs;
 }
 
@@ -153,7 +145,6 @@ export function skyComponentKnobs(options: SkyComponentOptions = {}): ParamDef[]
  * K_moon (only with `moon`): the moon's phase for `skyMoonPhase`.
  * K_meteors (only with `meteors`): shooting-star frequency for `meteorAge`, trigger slot `meteors.trigger`.
  * K_constellations (only with `constellations`): drawn by `skyStars` itself.
- * K_planet and its options (only with `giant`): for `skyGiant`.
  */
 export function skyKnobs(options: SkyOptions = {}): ParamDef[] {
   const group = options.group ?? "sky";

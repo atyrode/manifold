@@ -62,7 +62,6 @@ const params: readonly ParamDef[] = [
     time: 0.74,
     stars: 1,
     meteors: { trigger: DUNES_METEOR_TRIGGER },
-    giant: { across: [-62, -40, 5], up: [0, 7, 14] },
     lightning: DUNES_LIGHTNING_TRIGGER,
     birds: {
       kind: "buzzard",
@@ -95,6 +94,7 @@ export const dunesScene: SceneDef = {
   accent: "#d4913a",
   look: { color: "full", levels: 4 },
   params,
+  planets: { group: "sky", across: [-62, -40, 5], up: [0, 7, 14] },
   groups: {
     dunes: {
       title: "Dunes",

@@ -74,7 +74,6 @@ const params: readonly ParamDef[] = [
     time: 0.76,
     stars: 0.45,
     constellations: true,
-    giant: { across: [-90, -18, 5], up: [3, 24, 44] },
   }),
   ...weatherKnobs({ wind: true }),
   feature(
@@ -96,6 +95,7 @@ export const flockScene: SceneDef = {
   accent: "#ff8a3d",
   look: { color: "full", levels: 4 },
   params,
+  planets: { group: "sky", across: [-90, -18, 5], up: [3, 24, 44] },
   groups: {
     flock: {
       title: "Flock",

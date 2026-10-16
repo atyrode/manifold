@@ -5,10 +5,12 @@
 // lens that narrows them to what differs from the defaults (and resets it) and a button that folds
 // or opens them all. A group's knobs are laid out by their metadata: the sky dial, mix bars and
 // pads where a knob names one (`ParamDef.widget`), its switches as icon chips, everything else as
-// rows.
+// rows; a scene's planets (SceneDef.planets) stand in their group's Night sky section, and the lens,
+// a group's reset and its dice take the list as one more of that group's knobs.
 import { formatValue, MAX_SEED, type Option, type ParamDef } from "../params.ts";
 import { colorIds, ditherIds, viewIds } from "../renderer.ts";
 import { sceneDefs, type SceneId } from "../scenes/index.ts";
+import { encodePlanets, PLANETS_KEY, type SkyPlanets } from "../scenes/planets.ts";
 import {
   accentOf,
   defaultsFor,
@@ -61,7 +63,8 @@ import { shelves } from "./world-model.ts";
 import { recipeStrip } from "./recipes.ts";
 import { shownRecipes } from "./recipes-model.ts";
 import { nightSection } from "./nightsky.ts";
-import { nightCompanions, nightParts } from "./nightsky-model.ts";
+import { nightParts } from "./nightsky-model.ts";
+import { rollPlanets } from "./planets-model.ts";
 import { rollPatch } from "./roll-model.ts";
 
 export const MODE_LABEL: Record<(typeof modeIds)[number], string> = {
@@ -278,12 +281,16 @@ export class Inspector {
     this.filter();
   }
 
-  /** Find what differs from the defaults: the lens's count and head, and the rail's dots. */
+  /**
+   * Find what differs from the defaults: the lens's count and head, and the rail's dots. A scene's
+   * planets differ while it has any (PLANETS_KEY, one knob of their group).
+   */
   #syncLens(): void {
-    const { state, params } = this.#ctx.current();
+    const { state, params, planets } = this.#ctx.current();
     this.#changed = new Set([
       ...changedKnobs(sceneDefs[state.scene].params, params, this.#defaults),
       ...changedSettings(SETTING_KEYS, state, this.#base()),
+      ...(planets.length > 0 ? [PLANETS_KEY] : []),
     ]);
     const counts = changedCounts(this.#lensGroups, this.#changed);
     this.#rail.mark(counts);
@@ -297,8 +304,8 @@ export class Inspector {
   }
 
   /**
-   * Every knob of the scene and global setting that differs from its default back to it, in one
-   * undoable change: the transport's reset, kept to what changed.
+   * Every knob of the scene and global setting that differs from its default back to it, and its
+   * planets gone, in one undoable change: the transport's reset, kept to what changed.
    */
   #resetChanged(): void {
     const base = this.#base();
@@ -306,6 +313,7 @@ export class Inspector {
     for (const [key, value] of Object.entries(this.#defaults))
       if (this.#changed.has(key)) patch[key] = value;
     for (const key of SETTING_KEYS) if (this.#changed.has(key)) patch[key] = base[key];
+    if (this.#ctx.current().planets.length > 0) patch[PLANETS_KEY] = "";
     this.#ctx.change(patch, true);
   }
 
@@ -497,10 +505,11 @@ export class Inspector {
     const groups = new Map<string, ParamDef[]>();
     for (const def of defs) groups.set(def.group, [...(groups.get(def.group) ?? []), def]);
     gatherAlmanac(groups);
+    const planets = sceneDefs[scene].planets;
     this.#lensGroups = [
       ...[...groups].map(([group, list]) => ({
         id: `${scene}:${group}`,
-        knobs: list.map(knobKeys),
+        knobs: [...list.map(knobKeys), ...(planets?.group === group ? [[PLANETS_KEY]] : [])],
       })),
       ...SETTING_GROUPS,
     ];
@@ -576,11 +585,14 @@ export class Inspector {
       for (const def of [almanac.season, almanac.year]) if (def) used.add(def);
     }
 
-    // The Night sky section, at its first part, with the knobs that hang off its parts (the giant
-    // planet's placement pad and dress): ahead of the pads, so it holds its own. "See it at night"
-    // sets the scene's own clock.
+    // The Night sky section, at its first part (or the group's first knob, for planets alone),
+    // with the scene's planets where they are this group's: ahead of the pads, so it holds its own.
+    // "See it at night" sets the scene's own clock.
+    const planets: SkyPlanets | undefined =
+      sceneDefs[scene].planets?.group === group ? sceneDefs[scene].planets : undefined;
     const night = nightParts(defs.filter((def) => !used.has(def)));
-    const firstNight = defs.find((def) => night.some((part) => part.def === def));
+    const firstNight =
+      defs.find((def) => night.some((part) => part.def === def)) ?? (planets ? defs[0] : undefined);
     if (firstNight) {
       const clock = sceneDefs[scene].params.find(
         (def): def is RangeDef =>
@@ -590,16 +602,14 @@ export class Inspector {
         (def): def is FeatureDef =>
           def.kind === "feature" && def.widget?.kind === "sky" && def.widget.part === "cycle",
       );
-      const free = defs.filter((def) => !used.has(def));
       place(
         firstNight,
         nightSection(knobs, night, clock && { time: clock, cycle }, {
-          defs: free,
-          row: (def) => this.#knobRow(knobs, def),
+          row: (rowKnobs, def) => this.#knobRow(rowKnobs, def),
+          ...(planets ? { planets: { spec: planets, ctx: this.#ctx } } : {}),
         }),
       );
-      for (const part of night)
-        for (const def of [part.def, ...nightCompanions(part, free)]) used.add(def);
+      for (const part of night) used.add(part.def);
     }
 
     // Pads: a compass's heading and strength, a position's two coordinates, a signed direction.
@@ -750,7 +760,13 @@ export class Inspector {
       icon: info.icon ?? iconFromWords(group, info.title) ?? "sliders",
       open,
       content,
-      summary: () => this.#groupSummary(knobs, defs, master),
+      summary: () => {
+        const count = planets ? this.#ctx.current().planets.length : 0;
+        return [
+          ...this.#groupSummary(knobs, defs, master),
+          ...(count > 0 ? [`${count} planet${count === 1 ? "" : "s"}`] : []),
+        ];
+      },
       ...(masterSwitch ? { master: masterSwitch } : {}),
       ...(master
         ? {
@@ -758,9 +774,23 @@ export class Inspector {
             offNote: `Switch on to shape the ${info.title.toLowerCase()}.`,
           }
         : {}),
-      modified: () => knobs.modified(keys),
-      reset: () => knobs.reset(keys),
-      ...(defs.some((def) => !def.steady) ? { roll: () => knobs.set(rollPatch(defs), true) } : {}),
+      modified: () =>
+        knobs.modified(keys) || (planets !== undefined && this.#ctx.current().planets.length > 0),
+      reset: () => knobs.reset(keys, planets ? { [PLANETS_KEY]: "" } : {}),
+      ...(defs.some((def) => !def.steady)
+        ? {
+            roll: () =>
+              knobs.set(
+                planets
+                  ? {
+                      ...rollPatch(defs),
+                      [PLANETS_KEY]: encodePlanets(planets, rollPlanets(planets)),
+                    }
+                  : rollPatch(defs),
+                true,
+              ),
+          }
+        : {}),
       syncers,
     });
   }

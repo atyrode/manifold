@@ -72,7 +72,6 @@ const params: readonly ParamDef[] = [
     moon: 1,
     meteors: { trigger: AUTUMN_METEOR_TRIGGER },
     constellations: true,
-    giant: { across: [-30, 14, 40], up: [2, 14, 26] },
   }),
   ...weatherKnobs({ clouds: 0.3, shadows: true, rain: true, fog: true, wind: true, aurora: true }),
   feature(
@@ -95,6 +94,7 @@ export const autumnScene: SceneDef = {
   accent: "#e8a23a",
   look: { color: "full", levels: 4 },
   params,
+  planets: { group: "sky", across: [-30, 14, 40], up: [2, 14, 26] },
   groups: {
     tree: {
       title: "Tree",

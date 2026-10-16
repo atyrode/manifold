@@ -80,7 +80,6 @@ const params: readonly ParamDef[] = [
   ...skyComponentKnobs({
     meteors: { trigger: AURORA_METEOR_TRIGGER },
     constellations: true,
-    giant: { across: [-62, -24, 62], up: [8, 30, 45] },
   }),
   toggle(
     "night",
@@ -110,6 +109,7 @@ export const auroraScene: SceneDef = {
   accent: "#4cf08c",
   look: { color: "full", levels: 4 },
   params,
+  planets: { group: "sky", across: [-62, -24, 62], up: [8, 30, 45] },
   groups: {
     aurora: {
       title: "Aurora",

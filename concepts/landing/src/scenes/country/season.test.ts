@@ -61,8 +61,8 @@ describe("the countryside's year", () => {
 
   test("the all-features program covers every date and the passing year", () => {
     const all = sceneFeaturesAll(countryScene) ?? {};
-    // COUNTRY_ALL, and the shared sky's library gates (its constellations and giant planet) on.
-    expect(all).toEqual({ ...COUNTRY_ALL, SKY_FIGURES: 1, SKY_GIANT: 1 });
+    // COUNTRY_ALL, and the shared sky's library gates (its constellations and planets) on.
+    expect(all).toEqual({ ...COUNTRY_ALL, SKY_FIGURES: 1, SKY_PLANETS: 1 });
     for (let date = 0; date < 1; date += 0.005)
       for (const knobs of [{ date }, { date, rain: 1 }, { date, year: 1, snow: 1 }])
         for (const [name, value] of Object.entries(features(knobs)))

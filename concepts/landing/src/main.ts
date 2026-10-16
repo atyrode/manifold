@@ -3,10 +3,12 @@
 import { Lab } from "./lab.ts";
 import { DitherRenderer } from "./renderer.ts";
 import { sceneDefs } from "./scenes/index.ts";
+import type { SkyPlanet } from "./scenes/planets.ts";
 import {
   accentOf,
   palette,
   readParams,
+  readPlanets,
   readState,
   renderSettings,
   serialise,
@@ -33,10 +35,11 @@ const stage = element("#stage", HTMLCanvasElement);
 const initial = new URLSearchParams(location.search);
 let state: LabState = readState(initial);
 let params: Params = readParams(state.scene, initial);
+let planets: SkyPlanet[] = readPlanets(state.scene, initial);
 
 let renderer: DitherRenderer | undefined;
 try {
-  renderer = new DitherRenderer(stage, renderSettings(state, params), reducedMotion);
+  renderer = new DitherRenderer(stage, renderSettings(state, params, planets), reducedMotion);
   renderer.start();
 } catch (error: unknown) {
   console.error("evt=landing.renderer.unavailable", error);
@@ -79,12 +82,13 @@ document.addEventListener("visibilitychange", () => {
 function apply(query: URLSearchParams, options: { cut?: boolean } = {}): void {
   state = readState(query);
   params = readParams(state.scene, query);
+  planets = readPlanets(state.scene, query);
   // The lab's session tools (an A/B comparison, a tour) ride beside the setup in the URL.
-  const minimal = serialise(state, params);
+  const minimal = serialise(state, params, planets);
   for (const [key, value] of lab?.sessionQuery() ?? []) minimal.append(key, value);
   const search = minimal.toString();
   showUrl(`${location.pathname}${search ? `?${search}` : ""}`);
-  const settings = renderSettings(state, params);
+  const settings = renderSettings(state, params, planets);
   renderer?.update(options.cut ? { ...settings, passage: false } : settings);
 
   document.body.dataset.scene = state.scene;
@@ -117,7 +121,7 @@ function apply(query: URLSearchParams, options: { cut?: boolean } = {}): void {
 // line of this module, and the Lab only calls `host.apply` from user actions, never while it is
 // being built (it reads `host.current()` then).
 const lab = new Lab(element("#lab", HTMLElement), element("#lab-open", HTMLButtonElement), {
-  current: () => ({ state, params }),
+  current: () => ({ state, params, planets }),
   apply,
   renderer: () => renderer,
   build,
@@ -146,7 +150,7 @@ window.addEventListener("keydown", (event) => {
     if (!lab?.skipTour(by)) lab?.stepScene(by);
   } else if (event.key === "h") {
     if (state.mode !== "bare") modeBeforeHide = state.mode;
-    const query = serialise(state, params);
+    const query = serialise(state, params, planets);
     query.set("mode", state.mode === "bare" ? modeBeforeHide : "bare");
     apply(query);
     lab?.commit();

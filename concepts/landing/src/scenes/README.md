@@ -207,16 +207,13 @@ off unless `on`), `skyKnobs({ moon: 1 })` adds `K_moon` (the moon's phase for `s
 stars for `meteorAge`, off by default, "now" on that slot), `skyKnobs({ constellations: true })`
 adds `K_constellations` (the figures' lines, 0.05 a trace .. 1 clear stick figures; 0 while switched
 off: no figures; off at 0.4; `skyStars` draws them itself, so only a scene whose stars come from it
-takes them), `skyKnobs({ giant: { across, up } })` adds the giant planet for `skyGiant` (`K_planet`,
-its size 0.2..1, 0 while switched off, off at 0.55; `K_planetX` and `K_planetY` where it stands, in
-degrees across the sky and up from the horizon, `across` and `up` each its [least, start, most], the
-stretch of the scene's sky; `K_planetPalette`, `K_planetRing` and planetKnobs' moons, aurora, city
-lights and day cycle; see "The giant planet"), `weatherKnobs({ clouds: 0.3 })` adds
+takes them), `weatherKnobs({ clouds: 0.3 })` adds
 `K_clouds` (fair-weather cover 0..1, which rain and snow thicken) and `weatherKnobs({ shadows: true })`
 adds `K_shadows` (how dark the cloud deck's shadows fall, for `skyCloudShadow`: 0.6 while on, off
 unless `on: { shadows: true }`). A scene with a night of its own (an hour knob, a painted sky) takes
 the components without the clock from `skyComponentKnobs({ stars, milkyWay, moon, meteors,
-constellations, giant, group })`.
+constellations, group })`. The night sky's planets are no knobs but a list of the scene's own
+(`SceneDef.planets`, see "The sky's planets").
 Use `atmosphereGroups.sky` / `.weather` for their lab headings, `.skyNight` for a sky group that
 also holds components. A scene that composes the whole shared world takes all of these, with the
 birds' below, from one call, `worldKnobs` (`src/scenes/world.ts`, see "World layers").
@@ -286,20 +283,22 @@ reset, shuffle or presets:
   step it (Shift a tenth of the range); double-clicking the value resets the amount. A row's readout
   over a slider scrubs it (drag across, Shift finer); double-clicking a readout or label resets it.
 - `{ kind: "night", part }`: the Night sky section. `skyComponentKnobs` sets it on `stars` (a
-  range), `moon`, `milkyWay`, `constellations`, `giant` (the giant planet) and `meteors`,
-  `weatherKnobs` on `aurora` (features); every one a group holds gathers into one section at the
-  first, headed "Night sky" (`src/lab/nightsky.ts`, rules in `nightsky-model.ts`). A drawn night
-  shows each part the scene has in its state, dim and dashed while off (a click on a drawn part
-  switches it); the giant is a small ringed planet where its pad puts it, as big as its size, in its
-  palette's tint with its ring and moons. Under it one control per part: the moon's phases as drawn
-  moons with "off" (a radio group), and a fader chip for each other part (the giant's carries its
-  size), the stars' without a switch, the shooting stars' with their "now". A part takes with it the
-  group's knobs that hang off its switch (`when`, at any remove: `nightCompanions`), shown under the
-  chips while it is on: a `position` range on its pad, switches as chips (a count's segments under
-  them), the rest as rows; so the giant brings its placement pad, its ring, moons (count), palette
-  and its aurora, city lights and day cycle. Each part's control answers the search and the lens on
-  its own. While the scene's `time` part stands in daylight, or the day cycle runs, "See it at
-  night" sets the clock to late evening and stops the day, as one undoable change.
+  range), `moon`, `milkyWay`, `constellations` and `meteors`, `weatherKnobs` on `aurora`
+  (features); every one a group holds gathers into one section at the first, headed "Night sky"
+  (`src/lab/nightsky.ts`, rules in `nightsky-model.ts`), with the scene's planets where
+  `SceneDef.planets` names the group (`src/lab/planets.ts`, rules in `planets-model.ts`). A drawn
+  night shows each part the scene has in its state, dim and dashed while off (a click on a drawn
+  part switches it), and each planet where it stands, as big as its size, in its palette's tint
+  with its ring and moons, an orbiting one over its dashed path (a click on one picks it). Under it
+  one control per part: the moon's phases as drawn moons with "off" (a radio group), and a fader
+  chip for each other part, the stars' without a switch, the shooting stars' with their "now".
+  Then the planets: a chip for each (a click picks it, its × removes it) and "+ planet" (up to the
+  cap), and under them the picked planet's own controls, laid out from its knobs (`planetDefs`) as
+  a group's are: its kind, size and palette, its placement pad, its switches as chips (orbits, real
+  phases, day cycle, moons, shadows, aurora, city lights), the rest as rows. Each part's control
+  answers the search and the lens on its own; the planets answer them as one (their URL key). While
+  the scene's `time` part stands in daylight, or the day cycle runs, "See it at night" sets the
+  clock to late evening and stops the day, as one undoable change.
 
 A group's heading may carry `recipes` (`Recipe` in `src/params.ts`): one-tap setups drawn as a strip
 of glyph chips at the top of the group, the one the setup already is lit. A recipe sets URL keys of
@@ -394,9 +393,9 @@ float skyMoonPhaseLight(float phase);                     // the moon's light at
 // midnight); their stars brighter than the field's, the stick lines at K_constellations (0.05 a
 // trace .. 1 clear); faded as the stars (skyStarFade); sized in dither cells (foot; 1 / uRes.y
 // radians without it), so they show at any cell size.
-// With the scene's giant (skyComponentKnobs({ giant }), the library gate SKY_GIANT; without it the
-// sky as it was):
-vec3 skyGiant(Sky sky, vec3 col, vec3 dir, float foot, float clear); // the giant planet over col (the sky up to its stars); see "The giant planet"
+// With the scene's planets (SceneDef.planets, the library gate SKY_PLANETS while its list holds
+// any; without it the sky as it was):
+vec3 skyGiant(Sky sky, vec3 col, vec3 dir, float foot, float clear); // the sky's planets over col (the sky up to its stars); see "The sky's planets"
 
 // Clouds in tiers (clouds.ts), each only in a scene whose SceneDef.features CLOUD_TIER reaches it, the
 // lit deck where it selects none (see "Clouds"):
@@ -613,16 +612,17 @@ while the year passes; `countryFeaturesAll` and `countrySeason` check each gated
 (its wildflowers, and the world's gates, `worldFeatures` and `WORLD_ALL`: see "World layers"), and
 `shore` and `dunes` (the world's gates alone).
 
-Library gates are knob-keyed features the shared libraries own: a night part whose code a library
-compiles in only while its knob is on (`LIBRARY_GATES` in `src/shaders/index.ts`: the
-constellations, `SKY_FIGURES`, and the giant planet, `SKY_GIANT`). `sceneFeatures` defines each gate
-of a scene that holds its knob, 0 or 1 by the knob's value, and `sceneFeaturesAll` turns it on (the
-library defines it 0 where a scene lacks the knob), so a program with the part off has none of its
-code (lake's frame under SwiftShader is as fast as before the constellations), and every such scene
-is knob-keyed (`knobKeyed`) whether or not it has `featuresFor`: the renderer takes it through the
-machinery below. `src/shaders/index.test.ts` checks that every scene's all-features set covers each
-knob's turn and its gates; the GPU checks take the gates through the `featuresFor` scenes, which
-hold them too.
+Library gates are setting-keyed features the shared libraries own: code a library compiles in only
+while it shows (`src/shaders/index.ts`): the constellations, `SKY_FIGURES`, while their night
+part's knob is on (`LIBRARY_GATES`), and the sky's planets, `SKY_PLANETS` (`PLANETS_GATE`), while
+the scene's list holds any. `sceneFeatures(scene, values, planets)` defines each gate a scene can
+hold, 0 or 1, and `sceneFeaturesAll` turns it on (the library defines it 0 where a scene lacks
+it), so a program with the part off has none of its code (lake's frame under SwiftShader is as
+fast as before the constellations), and every such scene is setting-keyed (`settingKeyed`)
+whether or not it has `featuresFor`: the renderer takes it through the machinery below.
+`src/shaders/index.test.ts` checks that every scene's all-features set covers each knob's turn and
+its gates, the planets' too; the GPU checks take the knob gates through the `featuresFor` scenes,
+which hold them too.
 
 A scene enters with the program for its setting, so the plain page draws its lean program and
 builds no other. On a GPU a knob change that needs another feature set builds none either:
@@ -778,11 +778,11 @@ nights. How much of them shows is the view's: `aurora` sees every figure; `lake`
 `street` only its window glass. `swell`, `orbit` and `fireflies` draw stars of their own and have
 none (orbit keeps a `constellations` toggle of its own).
 
-The giant planet hangs in every such sky that has room for it: `aurora`, `autumn`, `bees`,
-`clouds`, `country`, `dunes`, `flock`, `frost`, `island`, `lake`, `lanterns`, `meadow`, `shore`,
-`sill`, `skyward` and `train` (see "The giant planet"). `campfire` keeps its own; `falls` sees only a
+Planets can hang in every such sky that has room for them: `aurora`, `autumn`, `bees`, `clouds`,
+`country`, `dunes`, `flock`, `frost`, `island`, `lake`, `lanterns`, `meadow`, `shore`, `sill`,
+`skyward` and `train` (see "The sky's planets"). `campfire` keeps its own giant; `falls` sees only a
 strip of sky over its cliff under the cloud deck, `bamboo` and `forest` only gaps in the canopy, and
-`street` only reflections, so none of them takes it.
+`street` only reflections, so none of them takes them.
 
 The rest have no sky: `bar`, `chladni`, `delta`, `ferro`, `film`, `fractal`, `harmonograph`,
 `hyperbolic`, `incense`, `lava`, `marble`, `mobile`, `pearl`, `pendula`, `petri`, `physarum`,
@@ -985,30 +985,76 @@ look.moons = K_planetMoons;                                     // from planetKn
 col = planetOver(col, p, 1.0 / uRes.y, look, uMotionTime, uTime);
 ```
 
-**The sky giant.** Any night sky of the shared library hangs the same giant among its stars with
-one call, `skyGiant(sky, col, dir, foot, clear)` (`src/shaders/lib/sky.ts`, compiled in only while
-`K_planet` is on: the library gate `SKY_GIANT`, which brings `planetGlsl` with it; a stand-in that
-returns `col` otherwise). Its knobs come from `skyKnobs({ giant: { across, up } })` (`giantKnobs`
-in `src/scenes/planet.ts`): `planet` (campfire's key, label and size), `planetX` and `planetY` in
-degrees on the placement pad, each `[least, start, most]` the stretch of sky the scene shows,
-`planetPalette` (teal, amber, rose, ice), `planetRing` and planetKnobs' moons, aurora, city lights
-and day cycle, all hanging off `planet` in the Night sky section. The library maps the knobs onto
-the scene's sky directions: `dir` is the direction the scene gives `skyStars` (so the giant is fixed
-in the sky as the stars are, and moves with them under a pointer's parallax), seen square-on round
-its centre (a gnomonic view), `foot` the radians a dither cell spans, `clear` how much of the sky
-the scene's cloud leaves open where the cloud is drawn before the stars. Call it after the stars
-and the Milky Way and before the cloud, the aurora, shooting stars and the ground, in mirrors too:
+**The sky's planets.** Any night sky of the shared library hangs an open list of planets among its
+stars with one call, `skyGiant(sky, col, dir, foot, clear)` (`src/shaders/lib/sky.ts`, compiled in
+only while the scene's list holds a planet: the library gate `SKY_PLANETS`, which brings
+`planetGlsl` and the body tier `planetBodyGlsl` with it; a stand-in that returns `col` otherwise).
+A scene takes them with `SceneDef.planets: { group, across, up }`: the lab group whose Night sky
+section holds them, and the stretch of its sky the placement pad covers, in degrees across from
+straight ahead and up from the horizon, each `[least, start, most]`. The list starts empty.
+
+- **A planet** (`src/scenes/planets.ts`) is a set of values keyed as knobs are, from `planetDefs`:
+  its `kind` and `size` (as small as our moon .. a giant filling a good part of the sky; a bigger
+  planet is a nearer one and stands in front), its `palette` (four per kind), where it stands
+  (`across`, `up`) or, with `orbit` on, the path it orbits our world on: a daily circle of the
+  sky's latitude that tops out where the pad puts it, leaned by `incline`, a circuit every
+  `orbit-amount` minutes of the motion clock from `phase` of the way round, so it rises on the
+  right, crosses and sets on the left, drifting against the stars and the day and hidden below the
+  horizon; its light (`phases`: lit by the scene's own sun, so it waxes and wanes as the sun goes
+  round; off, from the upper left as campfire's giant is, with its `daycycle`), its `spin` (its own
+  clock: the surface turns, the clouds and moons go round with it; 0 holds it still), its `ring`
+  (none, thin, wide banded) with `ringTilt` and `ringRoll`, its `moons` (count, `moonSize`,
+  `eclipses`), `aurora` (`auroraSize`) and city `lights` (`twinkle`).
+- **Kinds** (`PLANET_BODY_KINDS` in `src/shaders/lib/planet.ts`), stylised for a few dozen
+  dithered cells: the banded giant (planetOver's, campfire's teal, amber, rose, ice), a ringed
+  giant after Orbit's (belts bent by turbulence, an oval storm, cloud decks, night-side lightning;
+  it comes with the wide ring), a cratered rock, an ocean world (caps, cloud swirls, the sun's
+  glint), a home-like world on our own climate (continents, deserts, cloud; its own year, one
+  every two minutes of its clock, spreads sea ice and snow from its poles by `climateCold` and
+  `climateLying` of `src/climate.ts`, its hemispheres half a year apart), a lava world (molten
+  cracks glowing on its night side), a crystal (flat facets, glints, sparkles), an eye (an iris
+  that looks about, veins, blinking lids) and a bubble (a rainbow film the stars show through).
+  Each kind's surface is a loop of at most one turn, so a software rasteriser runs only the kinds
+  on screen.
+- **In the URL** the list is one key, `planets` (`PLANETS_KEY`): base64url of unsigned varints,
+  the version (1), the count, then per planet how many of its values differ from their defaults
+  and each as a field id (`FIELDS`, append only) and its value in its step's quantum (zigzag for a
+  sign). Values sit on their steps' grid, so a list round-trips exactly; a malformed value (another
+  version, bad base64url, cut short, trailing bytes) is no planets, an out-of-range value is
+  clamped, past the cap the first eight stay; nothing throws. A link from before the list whose
+  one giant planet was on (`planet=1` with `planetX`, `planetY`, `planetPalette`, `planetRing` and
+  the `planet...` features) opens with that giant as its first planet (state.ts `readPlanets`,
+  `GIANT_KEYS`), and the page writes the list in their place.
+- **In the shader** the list is uniforms beside `uParams` (`planetUniforms`): `uPlanets`, five
+  vec4 rows per planet (its path's circle, so a fixed planet is its direction and an orbiting one
+  moves with `uMotionTime` alone; its radius; its switches packed, `SKY_PLANET_FLAGS`; its dress)
+  and `uPlanetCount`, at most `SKY_PLANET_CAP` (8, the drawn maximum; the lab adds none past it),
+  the smaller first so they draw back to front. Editing a planet sends uniforms and never builds a
+  program; only the first planet and the last one's going change the program (the gate). A cheap
+  bound finds the planets that reach a pixel, and only those are drawn, in a loop whose turns are
+  those planets, so eight planets cost little more than one. Under SwiftShader (320 x 200 cells,
+  midnight) aurora's frame takes some 57 ms without planets, 225 ms with one and 258 ms with eight,
+  its program 1.9 s to build without the gate and 4.8 s with it; country's 108, 187 and 323 ms,
+  4.0 and 6.1 s. A sky without planets compiles none of it. The palettes are a chain of branches,
+  not a const table: SwiftShader builds a dynamically indexed const array afresh in every pixel.
+
+The library maps each planet onto the scene's sky directions: `dir` is the direction the scene
+gives `skyStars` (so a fixed planet stands among the stars as they do, and moves with them under a
+pointer's parallax), each planet seen square-on round its centre (a gnomonic view), `foot` the
+radians a dither cell spans, `clear` how much of the sky the scene's cloud leaves open where the
+cloud is drawn before the stars. Call it after the stars and the Milky Way and before the cloud,
+the aurora, shooting stars and the ground, in mirrors too:
 
 ```glsl
 col += SKY_STAR_TINT * skyStars(sky, dir, K_stars, foot) * (1.0 - cloud.a);
 col = skyGiant(sky, col, dir, foot, 1.0 - cloud.a);   // frost: its deck drawn before the stars
 ```
 
-It is campfire's decoration (`planetGiant` + `planetOver`), lit from the upper left, its radius 4
-to 11.5 degrees; by day it fades to a pale ghost as campfire's does (15% of it shows: a giant this
-size reads by day as a daytime moon does), and it hides behind the moon's disc and the horizon.
-Campfire keeps its own planet, placed in its frame low over the pines, with `giantKnobs({ group,
-on, help })` for its existing knobs; orbit is its own hero.
+Each planet is drawn as campfire's decoration draws its giant (`planetBodyOver`, the body tier of
+`planetOver`: a banded planet with a thin ring or none is that giant); by day the planets fade to
+pale ghosts as campfire's does (15% of them shows), and they hide behind the moon's disc and the
+horizon. Campfire keeps its own planet, placed in its frame low over the pines, with
+`giantKnobs({ group, on, help })` for its existing knobs; orbit is its own hero.
 
 #### Water
 
@@ -1335,14 +1381,14 @@ const float WORLD_FAR;  // 1e4: the distance of open sky
 
 - **Knobs and defaults** (`worldKnobs(options)`, with `worldGroups` for the headings). The shared
   builders' own keys, labels and help: `time`, `cycle`, `stars`, `milkyWay`, `moon`, `meteors`,
-  `constellations`, the giant planet's `planet...` (`skyKnobs`, placed by the scene's `giant`);
+  `constellations` (`skyKnobs`; the scene's planets are `SceneDef.planets`);
   `clouds`, `shadows`, `rain`, `snow`, `fog`, `lightning`,
   `aurora`, then `wind` (`weatherKnobs`, wind in `groups.wind` if given); `birds`, `birdKind`,
   `birdFormation` (`birdKnobs`). The scene gives its hour (`time`), its trigger slots
   (`meteors.trigger`, `lightning`) and its birds (`kind`, `help`), and may change any default. The
   defaults are an ambient world (`WORLD_DEFAULTS`): fair-weather cloud 0.25, stars 0.6, the moon
   full, the Milky Way on at 1 (it shows on dark nights: moonlight washes it out), birds on at 0.35 by
-  day; shooting stars, the constellations, the giant planet, cloud shadows, rain, snow, fog, lightning and
+  day; shooting stars, the constellations, cloud shadows, rain, snow, fog, lightning and
   the aurora off; wind 0.2.
 
 **Adopting it** (meadow, `meadow/index.ts` and `meadow/shader.ts`):
@@ -1689,13 +1735,16 @@ The shared components have checks of their own:
 - The star density knob where it replaced a fixed density (`shore/stars.verify.ts`, `starsKnob`):
   over the cloud sea, the murmuration and the shore it starts at the old density, and more stars
   light the night more.
-- The constellations and the giant planet (`src/night-sky.verify.ts`). `nightSky`: at a clear
-  midnight `skyStars`, both overloads, lights every figure star and the middle of every figure line
-  (the lines as strong as their amount, the stars not fading with them); they still show at a
-  coarse footprint; by day and with no stars nothing; and the knobs off, in a program with every
-  gate on, draw exactly what a program without them draws. `nightSkyDefaults1`, `2` and `3` (a
-  third of the scenes each): every scene with the knobs starts with them off and draws, at its
-  defaults and at midnight, byte for byte what it draws without them.
+- The constellations and the planets (`src/night-sky.verify.ts`). `nightSky`: at a clear midnight
+  `skyStars`, both overloads, lights every figure star and the middle of every figure line (the
+  lines as strong as their amount, the stars not fading with them); they still show at a coarse
+  footprint; by day and with no stars nothing; and the knobs off, in a program with every gate on,
+  draw exactly what a program without them draws. `nightSkyDefaults1`, `2` and `3` (a third of
+  the scenes each): every scene with the knobs starts with them off and draws, at its defaults and
+  at midnight, byte for byte what it draws without them. `nightPlanets`: in aurora and island, two
+  planets of different kinds show where their placements put them (the left one further left),
+  together as each alone does; an orbiting planet drifts left with the motion clock and, half a
+  circuit on, has set, the sky byte for byte the empty list's.
 
 CI runs these checks (gate group `landing-webgl`) and the lab's TypeScript and unit tests
 (`landing-concept`) for every pull request that changes `concepts/landing/` or a source the lab

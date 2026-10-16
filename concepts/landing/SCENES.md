@@ -31,7 +31,9 @@ closed canopy and water in tiers (`src/shaders/lib/`), with shared lab knobs
 (`src/scenes/atmosphere.ts`). Others are opt-in, included only by the scenes that draw them: the
 giant ringed planet (`src/shaders/lib/planet.ts`, knobs `src/scenes/planet.ts`), which `orbit`
 draws as its subject with every feature (belts, clouds, storms, aurora, city lights, day cycle,
-banded rings, moons) and `campfire` as scenery over its pines; the Milky Way
+banded rings, moons) and `campfire` as scenery over its pines, and whose body tier hangs an open
+list of planets (up to eight, nine kinds, fixed among the stars or orbiting our world;
+`src/scenes/planets.ts`, one `planets` URL key) in sixteen night skies; the Milky Way
 (`src/shaders/lib/milkyway.ts`), over `campfire` and `lake`; the birds (`src/shaders/lib/birds.ts`);
 the rooted plants (`src/sims/plants.ts`, `src/shaders/lib/plants.ts`, knobs `src/scenes/plants.ts`);
 and the countryside's figures, livestock and buildings. Which scene composes which: "Composing

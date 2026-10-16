@@ -26,7 +26,7 @@ test("a compare link keeps the hidden slot apart from the setup on screen", () =
   // The page reads its own setup: the a.-prefixed keys never leak into it.
   const state = readState(query);
   const params = readParams(state.scene, query);
-  expect(serialise(state, params).toString()).toBe("scene=forest&motion=0.3&rain=1");
+  expect(serialise(state, params, []).toString()).toBe("scene=forest&motion=0.3&rain=1");
   expect(state.color).not.toBe("mono");
   expect(state.dim).toBe(0);
   // The hidden slot reads back as a minimal setup of its own.
@@ -48,6 +48,17 @@ test("the hidden slot is normalised like any setup, and defaults need no keys", 
   expect(readComparison(new URLSearchParams("scene=pond"))).toBeUndefined();
 });
 
+test("the hidden slot keeps its planets, normalised, and they count as one difference", () => {
+  const read = readComparison(new URLSearchParams("compare=a&b.scene=frost&b.planets=AQEA"));
+  expect(read).toEqual({ live: "a", other: "scene=frost&planets=AQEA" });
+  // A malformed list is none: the slot reads as its scene alone.
+  expect(readComparison(new URLSearchParams("compare=a&b.scene=frost&b.planets=%%"))).toEqual({
+    live: "a",
+    other: "scene=frost",
+  });
+  expect(setupDifferences("scene=frost&planets=AQEA", "scene=frost")).toEqual(["planets"]);
+});
+
 test("a page with a comparison and a tour reads back its setup and both session tools", () => {
   const tour = {
     steps: [{ scene: "orbit" as const, dwell: 45 }, { scene: "swell" as const }],
@@ -58,7 +69,9 @@ test("a page with a comparison and a tour reads back its setup and both session 
     writeTour(tour, q);
   });
   const state = readState(query);
-  expect(serialise(state, readParams(state.scene, query)).toString()).toBe("scene=orbit&pixel=3");
+  expect(serialise(state, readParams(state.scene, query), []).toString()).toBe(
+    "scene=orbit&pixel=3",
+  );
   expect(readComparison(query)).toEqual({ live: "a", other: "scene=swell&levels=4" });
   expect(readTour(query)).toEqual(tour);
 });

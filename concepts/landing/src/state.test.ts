@@ -2,14 +2,22 @@ import { describe, expect, test } from "bun:test";
 import { choice, range } from "./params.ts";
 import { parsePresets, presets } from "./presets.ts";
 import { sceneDefs } from "./scenes/index.ts";
+import { encodePlanets, planetDefaults, readPlanet } from "./scenes/planets.ts";
 import type { SceneDef } from "./scenes/types.ts";
-import { migrateLegacy, paramDefaults, readParams, readState, serialise } from "./state.ts";
+import {
+  migrateLegacy,
+  paramDefaults,
+  readParams,
+  readPlanets,
+  readState,
+  serialise,
+} from "./state.ts";
 
-/** A setup query as the page reads it back and writes it again: its scene's knobs, minimal. */
+/** A setup query as the page reads it back and writes it again: its scene's knobs and planets, minimal. */
 function reread(query: string): string {
   const q = new URLSearchParams(query);
   const state = readState(q);
-  return serialise(state, readParams(state.scene, q)).toString();
+  return serialise(state, readParams(state.scene, q), readPlanets(state.scene, q)).toString();
 }
 
 /** A scene that renamed a choice `mode` (0 low, 1 high) to a range `level`. */
@@ -86,5 +94,74 @@ describe("the countryside's old season", () => {
       readParams("country", new URLSearchParams(committed.query)),
     );
     expect(readParams("country", new URLSearchParams(committed.query)).date).toBe(0.375);
+  });
+});
+
+describe("the night sky's planets", () => {
+  const frost = sceneDefs.frost.planets;
+  if (frost === undefined) throw new Error("frost takes no planets");
+
+  test("ride in one key after the knobs, read back as they were written", () => {
+    const planets = [
+      readPlanet(frost, { kind: 3, size: 0.8, across: 12 }),
+      readPlanet(frost, { orbit: 1, "orbit-amount": 6 }),
+    ];
+    const query = serialise(
+      readState(new URLSearchParams("scene=frost")),
+      paramDefaults("frost"),
+      planets,
+    );
+    expect(query.toString()).toBe(`scene=frost&planets=${encodePlanets(frost, planets)}`);
+    expect(readPlanets("frost", query)).toEqual(planets);
+    expect(reread(query.toString())).toBe(query.toString());
+    // None: no key at all.
+    expect(reread("scene=frost&planets=")).toBe("scene=frost");
+  });
+
+  test("a link from before the list opens with its giant as the first planet, rewritten", () => {
+    const old =
+      "scene=frost&time=0&planet=1&planet-amount=0.7&planetX=10&planetY=30&planetPalette=2&planetRing=0&planetMoons=1&planetMoons-amount=3&planetEclipses=0&planetAurora=1&planetAurora-amount=0.5&planetAuroraSize=0.6&planetLights=1&planetLightsTwinkle=0.4&planetDaycycle=1&planetDaycycle-amount=0.45";
+    const giant = readPlanet(frost, {
+      size: 0.7,
+      across: 10,
+      up: 30,
+      palette: 2,
+      ring: 0,
+      moons: 1,
+      "moons-amount": 3,
+      eclipses: 0,
+      aurora: 1,
+      "aurora-amount": 0.5,
+      auroraSize: 0.6,
+      lights: 1,
+      twinkle: 0.4,
+      daycycle: 1,
+      "daycycle-amount": 0.45,
+    });
+    expect(readPlanets("frost", new URLSearchParams(old))).toEqual([giant]);
+    expect(reread(old)).toBe(`scene=frost&time=0&planets=${encodePlanets(frost, [giant])}`);
+    // The giant as it started: the first planet at its defaults, where the giant stood.
+    expect(readPlanets("frost", new URLSearchParams("scene=frost&planet=1"))).toEqual([
+      planetDefaults(frost),
+    ]);
+    // Out of range, clamped as the knobs were.
+    expect(readPlanets("frost", new URLSearchParams("planet=1&planetX=999"))[0]?.["across"]).toBe(
+      frost.across[2],
+    );
+  });
+
+  test("a giant that was off brings none, and the list wins over the old keys", () => {
+    expect(reread("scene=frost&planet=0&planetX=10&planetMoons=1")).toBe("scene=frost");
+    expect(reread("scene=frost&planetX=10")).toBe("scene=frost");
+    expect(readPlanets("frost", new URLSearchParams("planet=1&planets="))).toEqual([]);
+  });
+
+  test("belong to the scenes that take them: campfire keeps its own giant's keys, mobile its knob", () => {
+    expect(reread("scene=campfire&planet=0&planetMoons=1")).toBe(
+      "scene=campfire&planet=0&planetMoons=1",
+    );
+    expect(readPlanets("campfire", new URLSearchParams("planet=1&planets=AQEA"))).toEqual([]);
+    expect(reread("scene=pond&planets=AQEA")).toBe("");
+    expect(reread("scene=mobile&planets=2")).toBe("scene=mobile&planets=2");
   });
 });

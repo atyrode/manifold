@@ -3,8 +3,9 @@
 // the scene picker (lab/gallery.ts), the presets (lab/presets.ts) and the controls
 // (lab/inspector.ts); and the transport bar, whose popovers (lab/transport.ts) hold the A/B
 // comparison (compare.ts), the scene tour (tour.ts), every "now" and the shortcuts. Every change goes
-// through the host as a URL query, so links, presets and undo all share one representation; the
-// session tools sit beside the setup in the URL (`sessionQuery`) and never inside it.
+// through the host as a URL query (a scene's planets under their one key among its knobs), so
+// links, presets and undo all share one representation; the session tools sit beside the setup in
+// the URL (`sessionQuery`) and never inside it.
 import {
   otherSlot,
   readComparison,
@@ -22,15 +23,17 @@ import { icon } from "./lab/icons.ts";
 import { Inspector } from "./lab/inspector.ts";
 import { knobIcon } from "./lab/knobs.ts";
 import { Workspace, type PanelLayout } from "./lab/panels.ts";
+import { rollPlanets } from "./lab/planets-model.ts";
 import { PREFS_KEY, readPrefs } from "./lab/prefs.ts";
 import { PresetsView } from "./lab/presets.ts";
 import { rollPatch } from "./lab/roll-model.ts";
 import { Popover, separator } from "./lab/transport.ts";
 import { Views } from "./lab/views.ts";
-import { carryWorld } from "./lab/world-model.ts";
+import { carryPlanets, carryWorld } from "./lab/world-model.ts";
 import type { ParamDef } from "./params.ts";
 import type { DitherRenderer, SceneFailure } from "./renderer.ts";
 import { sceneDefs, sceneIds, type SceneId } from "./scenes/index.ts";
+import { encodePlanets, PLANETS_KEY, type SkyPlanet } from "./scenes/planets.ts";
 import {
   carryLook,
   paramDefaults,
@@ -42,7 +45,7 @@ import {
 import { clampDwell, readTour, TOUR_DWELL, TourPlayer, writeTour, type TourStep } from "./tour.ts";
 
 export interface LabHost {
-  current(): { state: LabState; params: Params };
+  current(): { state: LabState; params: Params; planets: readonly SkyPlanet[] };
   /**
    * Replace the whole setup. The host re-renders, then calls `Lab.sync()`. `cut`: switch scenes at
    * once, without the passage (an A/B flip).
@@ -415,19 +418,19 @@ export class Lab {
 
   // ---- state plumbing -------------------------------------------------------------------------
 
-  #current(): { state: LabState; params: Params } {
+  #current(): { state: LabState; params: Params; planets: readonly SkyPlanet[] } {
     return this.#host.current();
   }
 
   #query(): string {
-    const { state, params } = this.#current();
-    return serialise(state, params).toString();
+    const { state, params, planets } = this.#current();
+    return serialise(state, params, planets).toString();
   }
 
   /** Apply a patch over the current setup; `replace` starts from the patch alone. */
   #change(patch: Patch, commit: boolean, replace = false): void {
-    const { state, params } = this.#current();
-    const q = replace ? new URLSearchParams() : serialise(state, params);
+    const { state, params, planets } = this.#current();
+    const q = replace ? new URLSearchParams() : serialise(state, params, planets);
     for (const [key, value] of Object.entries(patch)) q.set(key, String(value));
     this.#host.apply(q);
     if (commit) this.commit();
@@ -802,9 +805,14 @@ export class Lab {
     return [blurb, start, active];
   }
 
-  /** A URL key in words: a lab setting, or a knob of one of `scenes` (a feature's amount after its name). */
+  /**
+   * A URL key in words: a lab setting, a knob of one of `scenes` (a feature's amount after its
+   * name), or the planets of one that takes them.
+   */
   #settingLabel(key: string, scenes: readonly SceneId[]): string {
     if (Object.hasOwn(SETTING_LABEL, key)) return SETTING_LABEL[key as keyof LabState];
+    if (key === PLANETS_KEY && scenes.some((scene) => sceneDefs[scene].planets !== undefined))
+      return "planets";
     const amount = key.endsWith("-amount");
     const knob = amount ? key.slice(0, -"-amount".length) : key;
     for (const scene of scenes) {
@@ -1130,22 +1138,33 @@ export class Lab {
 
   /**
    * Show `scene` at its own defaults; picked by hand (the Scenes view, [ and ], Next scene) while
-   * "keep the world" is on, under the world of the scene left (world-model.ts `carryWorld`).
+   * "keep the world" is on, under the world of the scene left (world-model.ts `carryWorld`, and its
+   * planets, `carryPlanets`).
    */
   #setScene(scene: SceneId, by: "hand" | "tour"): void {
-    const { state, params } = this.#current();
+    const { state, params, planets } = this.#current();
     if (scene === state.scene) return;
     const defaults = paramDefaults(scene);
-    const next =
-      by === "hand" && this.#prefs.keepWorld
-        ? carryWorld(sceneDefs[state.scene], params, sceneDefs[scene], defaults)
-        : defaults;
-    this.#host.apply(serialise(carryLook(state, scene), next));
+    const keep = by === "hand" && this.#prefs.keepWorld;
+    const from = sceneDefs[state.scene];
+    const to = sceneDefs[scene];
+    const next = keep ? carryWorld(from, params, to, defaults) : defaults;
+    this.#host.apply(
+      serialise(carryLook(state, scene), next, keep ? carryPlanets(from, planets, to) : []),
+    );
     this.commit();
   }
 
+  /** Every knob of the scene rolled (but its steady ones), and its planets with them. */
   #shuffle(): void {
-    this.#change(rollPatch(sceneDefs[this.#current().state.scene].params), true);
+    const scene = sceneDefs[this.#current().state.scene];
+    const knobs = rollPatch(scene.params);
+    this.#change(
+      scene.planets
+        ? { ...knobs, [PLANETS_KEY]: encodePlanets(scene.planets, rollPlanets(scene.planets)) }
+        : knobs,
+      true,
+    );
   }
 
   #copyLink(button: HTMLButtonElement): void {

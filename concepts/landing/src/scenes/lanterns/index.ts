@@ -68,7 +68,6 @@ const params: readonly ParamDef[] = [
     stars: LANTERNS_STARS,
     meteors: { trigger: LANTERNS_METEOR_TRIGGER },
     constellations: true,
-    giant: { across: [-23, 12, 23], up: [2, 8, 13] },
   }),
   ...weatherKnobs({ rain: true, wind: true, aurora: true }),
   ...birdKnobs({
@@ -92,6 +91,7 @@ export const lanternsScene: SceneDef = {
   accent: "#ffa040",
   look: { color: "full", levels: 4 },
   params,
+  planets: { group: "sky", across: [-23, 12, 23], up: [2, 8, 13] },
   groups: {
     river: {
       title: "River",

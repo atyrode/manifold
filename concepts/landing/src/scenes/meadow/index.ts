@@ -56,7 +56,6 @@ const params: readonly ParamDef[] = [
     time: 0.72,
     clouds: 0.2,
     meteors: { trigger: MEADOW_METEOR_TRIGGER },
-    giant: { across: [-84, -22, -8], up: [0, 14, 26] },
     lightning: MEADOW_LIGHTNING_TRIGGER,
     birds: {
       kind: "swallows",
@@ -109,6 +108,7 @@ export const meadowScene: SceneDef = {
   accent: "#f2b65a",
   look: { color: "full", levels: 4 },
   params,
+  planets: { group: "sky", across: [-84, -22, -8], up: [0, 14, 26] },
   groups: {
     meadow: {
       title: "Meadow",

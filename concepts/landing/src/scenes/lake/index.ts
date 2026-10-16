@@ -127,7 +127,6 @@ const params: readonly ParamDef[] = [
     milkyWay: { on: true },
     meteors: { trigger: LAKE_METEOR_TRIGGER },
     constellations: true,
-    giant: { across: [-45, -22, 45], up: [2, 21, 38] },
   }),
   toggle(
     "night",
@@ -159,6 +158,7 @@ export const lakeScene: SceneDef = {
   look: { color: "full", levels: 4 },
   passage: LAKE_PASSAGE,
   params,
+  planets: { group: "sky", across: [-45, -22, 45], up: [2, 21, 38] },
   groups: {
     aurora: {
       title: "Aurora",

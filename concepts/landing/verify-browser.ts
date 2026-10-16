@@ -54,7 +54,7 @@ import { verifyCountryYear } from "./src/scenes/country/year.verify.ts";
 import { verifyCountryChalk } from "./src/scenes/country/chalk.verify.ts";
 import { verifyCountryFog } from "./src/scenes/country/fog.verify.ts";
 import { passageSpeeds } from "./src/passage-speed.verify.ts";
-import { nightSkyDefaults, verifyNightSky } from "./src/night-sky.verify.ts";
+import { nightSkyDefaults, verifyNightPlanets, verifyNightSky } from "./src/night-sky.verify.ts";
 
 function check(ok: boolean, message: string): void {
   if (!ok) throw new Error(message);
@@ -556,6 +556,7 @@ export const checks: readonly Check[] = [
   ["nightSkyDefaults2", nightSkyDefaults(1, 3)],
   ["nightSkyDefaults3", nightSkyDefaults(2, 3)],
   ["countryFog", verifyCountryFog],
+  ["nightPlanets", verifyNightPlanets],
 ];
 
 /**

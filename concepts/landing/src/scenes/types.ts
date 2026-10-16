@@ -11,6 +11,7 @@
 //   + the dithering `main`, which calls the entry.
 // `uv` is 0..1 with y up, `cell` is the dither cell (gl_FragCoord.xy), `t` the scene clock.
 import type { Blurb, ParamDef } from "../params.ts";
+import type { SkyPlanets } from "./planets.ts";
 
 /** Lab palette modes and quantisation a scene starts from. */
 export interface SceneLook {
@@ -174,6 +175,15 @@ export interface SceneDef {
    * link keeps its meaning. Declarative: a rename with a value map, nothing the scene runs.
    */
   legacy?: Readonly<Record<string, SceneLegacyKey>>;
+  /**
+   * The planets its night sky can hang among its stars (src/scenes/planets.ts, drawn by the sky's
+   * skyGiant, which the scene calls): an open list, empty to start, under one URL key, edited in the
+   * Night sky section of this group, placed on a pad over this stretch of its sky. The list is
+   * compiled in only while it holds a planet (the library gate SKY_PLANETS). A link from before the
+   * list whose one giant planet is on opens with that giant as its first planet (state.ts
+   * `readPlanets`).
+   */
+  planets?: SkyPlanets;
 }
 
 /** An outgrown URL key's replacement (SceneDef.legacy): the new knob's key, and old values to new. */
