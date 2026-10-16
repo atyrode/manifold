@@ -138,8 +138,11 @@ float countryLoneHash(ivec2 at) {
   return hash12(vec2(at) * 0.731 + 5.3);
 }
 
-// The lone tree of the yard texel at (i, j), if it holds one: placed and sized by its hash.
-CountryTree countryLoneTree(ivec2 at, vec2 p, vec4 g) {
+// The lone tree of the yard texel at (i, j), if it holds one: placed and sized by its hash, standing
+// on the ground at its own foot. (Its height was once taken from the ground under the pixel's ray
+// carried on along that slope to the foot, so each pixel stood the same tree at its own height:
+// trees floated, sank, or were drawn twice one over the other.)
+CountryTree countryLoneTree(ivec2 at) {
   CountryTree tree;
   float h = countryLoneHash(at);
   vec2 foot = (vec2(at) + 0.5) * (COUNTRY_EXTENT / float(textureSize(uSim1, 0).x)) + 1.6 * (hash22(vec2(at)) - 0.5);
@@ -147,7 +150,7 @@ CountryTree countryLoneTree(ivec2 at, vec2 p, vec4 g) {
   tree.pine = countryPine(h);
   tree.radius = (tree.pine ? 2.8 : 3.2) * s;
   tree.top = (tree.pine ? 10.5 : 10.2) * s;
-  tree.foot = vec3(foot.x, terrainSurface(g) + dot(g.zw, foot - p), foot.y);
+  tree.foot = vec3(foot.x, terrainSurface(terrainGround(uSim0, foot, COUNTRY_EXTENT)), foot.y);
   tree.hash = h;
   return tree;
 }
@@ -160,8 +163,8 @@ bool countryLonePine(vec2 p) {
 }
 
 // The woods' tree of crown cell \`cell\`: it stands (radius > 0) where the woods at its root outgrow
-// its hash, a pine where the canopy there is a pine wood's. The ground under it from g at p.
-CountryTree countryWoodTree(vec2 cell, vec2 p, vec4 g) {
+// its hash, a pine where the canopy there is a pine wood's, on the ground at its root.
+CountryTree countryWoodTree(vec2 cell) {
   CountryTree tree;
   float h = hash12(cell + 2.3);
   tree.hash = h;
@@ -169,6 +172,7 @@ CountryTree countryWoodTree(vec2 cell, vec2 p, vec4 g) {
   float room = 0.5 * COUNTRY_CROWN_CELL - r - 0.05;
   vec2 root = (cell + 0.5) * COUNTRY_CROWN_CELL + room * (2.0 * hash22(cell + 1.7) - 1.0);
   vec4 cover = terrainCover(uSim1, root, COUNTRY_EXTENT);
+  vec4 g = terrainGround(uSim0, root, COUNTRY_EXTENT);
 #if COUNTRY_HAS_PINES
   tree.pine = cover.z < 0.0;
 #else
@@ -178,7 +182,7 @@ CountryTree countryWoodTree(vec2 cell, vec2 p, vec4 g) {
   // Under the envelope's swell, a metre lower than its least over the crown, varied tree by tree.
   tree.top = (countryWoodTop(root) - 1.0) * (0.85 + 0.15 * fract(h * 5.3));
   tree.radius = stands > 0.0 ? r : 0.0;
-  tree.foot = vec3(root.x, terrainSurface(g) + dot(g.zw, root - p), root.y);
+  tree.foot = vec3(root.x, terrainSurface(g), root.y);
   return tree;
 }
 
@@ -210,7 +214,7 @@ float countryCrowns(vec3 ro, vec3 rd, float tHit, vec3 p, vec4 g, out CountryTre
   for (int k = 0; k < 4; k++) {
     ivec2 at = clamp(base + ivec2(k - (k / 2) * 2, k / 2), ivec2(0), size - 1);
     if (texelFetch(uSim1, at, 0).w > -0.5) continue;
-    CountryTree lone = countryLoneTree(at, p.xz, g);
+    CountryTree lone = countryLoneTree(at);
     float t = countryTreeBound(ro, rd, lone);
     if (t > 0.0 && t < best) {
       best = t;
@@ -231,7 +235,7 @@ float countryCrowns(vec3 ro, vec3 rd, float tHit, vec3 p, vec4 g, out CountryTre
   vec2 safe = vec2(abs(dir.x) < 1e-4 ? 1e-4 : dir.x, abs(dir.y) < 1e-4 ? 1e-4 : dir.y);
   vec2 edge = ((cell + max(stepDir, 0.0)) * COUNTRY_CROWN_CELL - from) / safe;
   for (int k = 0; k < 6; k++) {
-    CountryTree wood = countryWoodTree(cell, p.xz, g);
+    CountryTree wood = countryWoodTree(cell);
     if (wood.radius > 0.0) {
       float t = countryTreeBound(ro, rd, wood);
       if (t > 0.0 && t < best) {

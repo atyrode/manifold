@@ -138,6 +138,87 @@ float countryMarch(vec3 ro, vec3 rd) {
   return 0.5 * (lo + hi);
 }
 
+// How many steps the ground behind a tree's bound takes at most (countryBehind), how many points
+// along the way it looks at for an earlier meeting with the land, and the most march steps a ray
+// running along the land takes instead.
+const int COUNTRY_BEHIND_STEPS = 8;
+const int COUNTRY_BEHIND_LOOKS = 8;
+const int COUNTRY_BEHIND_MARCH = 48;
+
+// The ground a ray reaches beyond a tree's bound it met at t (point p, ground g under it) without
+// meeting a crown there. Newton's steps along the ray onto the land, each taking the ground as flat
+// at the last point (height and slope g) and stepping to where the ray meets that plane; once a
+// step has gone below the land, kept within the stretch known to hold the crossing (bisected where
+// a step would leave it). A ray running along the land (the plane meets it far off, or behind)
+// that is still above it after them is marched on over the bare land as countryMarch marches, then
+// bisected. A step may have passed over a crest the ray meets first: points along the way are
+// looked at, and the first below the land is bisected back to the crossing before it. A single flat
+// step lands as far off as the ground bends over the tens of metres a shallow ray travels down
+// through a 12 m bound: the land seen between the crowns was drawn displaced, in a halo round each
+// tree.
+float countryBehind(vec3 ro, vec3 rd, float t, vec3 p, vec4 g) {
+  float start = t;
+  float lo = t;
+  float hi = -1.0;
+  for (int i = 0; i < COUNTRY_BEHIND_STEPS; i++) {
+    float gap = p.y - terrainSurface(g);
+    if (abs(gap) < 0.01) break;
+    if (gap > 0.0) lo = t;
+    else hi = t;
+    float fall = dot(g.zw, rd.xz) - rd.y;
+    float next = fall > 0.02 ? t + gap / fall : -1.0;
+    if (hi > 0.0) {
+      if (next <= lo || next >= hi) next = 0.5 * (lo + hi);
+    } else if (next <= t) {
+      next = t + max(gap / (${glslFloat(COUNTRY_MARCH.slope)} + abs(rd.y)), 0.05);
+    }
+    t = next;
+    p = ro + rd * t;
+    g = terrainGround(uSim0, p.xz, COUNTRY_EXTENT);
+  }
+  if (hi < 0.0 && p.y - terrainSurface(g) > 0.05) {
+    float last = t;
+    for (int i = 0; i < COUNTRY_BEHIND_MARCH; i++) {
+      float gap = p.y - terrainSurface(g);
+      if (gap < 0.0) {
+        hi = t;
+        break;
+      }
+      last = t;
+      t += max(gap / (${glslFloat(COUNTRY_MARCH.slope)} + abs(rd.y)), ${glslFloat(COUNTRY_MARCH.relStep)} * t + ${glslFloat(COUNTRY_MARCH.minStep)});
+      p = ro + rd * t;
+      g = terrainGround(uSim0, p.xz, COUNTRY_EXTENT);
+    }
+    if (hi > 0.0) {
+      float a = last;
+      for (int k = 0; k < 10; k++) {
+        float mid = 0.5 * (a + hi);
+        vec3 m = ro + rd * mid;
+        if (m.y < terrainSurface(terrainGround(uSim0, m.xz, COUNTRY_EXTENT))) hi = mid;
+        else a = mid;
+      }
+      t = 0.5 * (a + hi);
+    }
+  }
+  float look = (t - start) / float(COUNTRY_BEHIND_LOOKS);
+  for (int i = 1; i < COUNTRY_BEHIND_LOOKS; i++) {
+    float s = start + look * float(i);
+    vec3 q = ro + rd * s;
+    if (q.y < terrainSurface(terrainGround(uSim0, q.xz, COUNTRY_EXTENT))) {
+      float a = s - look;
+      float b = s;
+      for (int k = 0; k < 10; k++) {
+        float mid = 0.5 * (a + b);
+        vec3 m = ro + rd * mid;
+        if (m.y < terrainSurface(terrainGround(uSim0, m.xz, COUNTRY_EXTENT))) b = mid;
+        else a = mid;
+      }
+      return 0.5 * (a + b);
+    }
+  }
+  return t;
+}
+
 // Sunlight reaching p over the land: a march toward the light with a soft penumbra.
 float countryShadow(vec3 p, vec3 l) {
   if (l.y <= 0.0) return 0.0;
@@ -286,7 +367,7 @@ Shade sceneCountry(vec2 screenUv, vec2 cell, float t) {
   float tHit = mapped ? countryMarch(eye, rd) : -1.0;
 
   // Where the march met a tree's bound near enough for a crown to span a cell or so, the crown
-  // itself (trees.ts), or the ground behind it between the crowns (taken flat there); farther off,
+  // itself (trees.ts), or the ground behind it between the crowns (countryBehind); farther off,
   // the canopy shaded whole.
   bool crown = false;
   bool canopy = false;
@@ -304,7 +385,7 @@ Shade sceneCountry(vec2 screenUv, vec2 cell, float t) {
       } else {
         float tc = countryCrowns(eye, rd, tHit, p, g, tree, crownN, crownUp);
         crown = tc > 0.0;
-        tHit = crown ? tc : tHit + (p.y - ground) / fall;
+        tHit = crown ? tc : countryBehind(eye, rd, tHit, p, g);
       }
     }
   }

@@ -46,6 +46,7 @@ import { verifyMilkyWay } from "./src/scenes/campfire/milkyway.verify.ts";
 import { verifyStarsKnob } from "./src/scenes/shore/stars.verify.ts";
 import { verifyMeadowWildflowers } from "./src/scenes/meadow/wildflowers.verify.ts";
 import { verifyCountryTerrain } from "./src/scenes/country/terrain.verify.ts";
+import { verifyCountryBehind } from "./src/scenes/country/behind.verify.ts";
 import { verifyCountryFeaturesAll, verifyCountryLife } from "./src/scenes/country/life.verify.ts";
 import { verifyCountryMurmuration, verifyCountryVerges } from "./src/scenes/country/wild.verify.ts";
 import { verifyCountrySeason } from "./src/scenes/country/season.verify.ts";
@@ -536,6 +537,7 @@ export const checks: readonly Check[] = [
   ["starsKnob", verifyStarsKnob],
   ["meadowWildflowers", verifyMeadowWildflowers],
   ["countryTerrain", verifyCountryTerrain],
+  ["countryBehind", verifyCountryBehind],
   ["featureToggles", verifyFeatureToggles],
   ["featuresAll", verifyFeaturesAll],
   ["countryLife", verifyCountryLife],

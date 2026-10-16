@@ -367,6 +367,9 @@ replay at their pinned commits).
   all-features program over the real sim: land, sky and river, deterministic per landscape; at 9216
   map points the shader finds each parcel with the land model's use and the woods only on woodland,
   for four settings; a use change one sim frame, timed; the river dry and full again);
+  `countryBehind` (every ray that passes between the crowns, over the whole view, ends where it
+  first meets the land, within 5 cm along it or 0.2% of the distance, all but one in 200; the
+  single flat step it replaced lands under a third of them);
   `countryLife` (every walker and cart on its road, every animal inside its own pasture and clear of
   the fence, roads and water; deterministic and still at motion 0); `countryFeaturesAll`
   (seventeen gated settings drawn byte for byte as their own programs, lit windows and smoke at
