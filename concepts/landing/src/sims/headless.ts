@@ -17,10 +17,14 @@
 //     uploaded(slot)              whether it holds data yet (a sim warming up may hand over textures
 //                                 it has not filled)
 //     time, motionTime            the scene and motion clocks, summed as the renderer sums them
+//     now                         the wall clock handed over as SimFrame.now, milliseconds
 //     dispose()                   the sim's
 //
 // A HeadlessFrame is all optional: dt 1/60 s, motion 1, aspect 16 / 9 at 540 cells high, the pointer
-// over the page at its centre with no button, no parallax, arrived and not leaving. `knobs` are keyed
+// over the page at its centre with no button, no parallax, arrived and not leaving. The wall clock
+// (SimFrame.now) moves on by `elapsed` milliseconds a frame, by default dt's (a sixtieth of a second
+// while dt is 0, as a paused page goes on drawing), and the budget is Infinity, so a warm-up ends in
+// the first frame (give a finite `budget` to test one spread over frames). `knobs` are keyed
 // as in the URL (features also `<key>-amount`) and handed over as given, unclamped, so a test may go
 // past a slider's end; the rest are at their defaults, as the lab fills them, so `params` and
 // `values` are what the renderer would hand over. `now` presses those knobs' "now" buttons just
@@ -149,6 +153,13 @@ export class HeadlessGl {
 export interface HeadlessFrame {
   /** Seconds on the scene clock (default 1/60). */
   dt?: number;
+  /**
+   * Wall-clock milliseconds since the previous frame, added to SimFrame.now (default dt × 1000, or
+   * 1000 / 60 while dt is 0).
+   */
+  elapsed?: number;
+  /** SimFrame.budget, milliseconds (default Infinity). */
+  budget?: number;
   /** The lab's motion 0..1 (default 1). */
   motion?: number;
   /** width / height (default 16 / 9) and the height in cells (default 540). */
@@ -180,6 +191,7 @@ export class HeadlessSim {
   #textures: readonly (WebGLTexture | undefined)[] = [];
   #time = 0;
   #motionTime = 0;
+  #now = 0;
 
   constructor(scene: SceneDef, gl?: WebGL2RenderingContext) {
     const id = sceneIds.find((candidate) => candidate === scene.id);
@@ -206,6 +218,10 @@ export class HeadlessSim {
     return this.#motionTime;
   }
 
+  get now(): number {
+    return this.#now;
+  }
+
   frame(options: HeadlessFrame = {}): readonly (WebGLTexture | undefined)[] {
     const dt = options.dt ?? 1 / 60;
     const motion = options.motion ?? 1;
@@ -219,6 +235,7 @@ export class HeadlessSim {
     }
     this.#time += dt;
     this.#motionTime += dt * motion;
+    this.#now += options.elapsed ?? (dt > 0 ? dt * 1000 : 1000 / 60);
     for (let slot = 0; slot < MAX_TRIGGERS; slot++) {
       const stamp = this.#triggers[slot] ?? NEVER;
       this.#fired[slot] = !this.#entered && stamp > NEVER && stamp !== this.#seen[slot];
@@ -230,6 +247,8 @@ export class HeadlessSim {
       time: this.#time,
       motionTime: this.#motionTime,
       motion,
+      now: this.#now,
+      budget: options.budget ?? Infinity,
       width: Math.round(height * aspect),
       height,
       aspect,

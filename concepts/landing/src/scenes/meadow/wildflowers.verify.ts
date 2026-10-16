@@ -94,6 +94,8 @@ export function verifyMeadowWildflowers(gl: WebGL2RenderingContext): Record<stri
     time,
     motionTime: time,
     motion: 1,
+    now: time * 1000,
+    budget: Infinity,
     width: W,
     height: H,
     aspect: W / H,

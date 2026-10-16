@@ -13,6 +13,8 @@ function frameAt(x: number, y: number, parallax = 0): SimFrame {
     time: 0,
     motionTime: 0,
     motion: 1,
+    now: 0,
+    budget: Infinity,
     width: 960,
     height: 540,
     aspect: ASPECT,

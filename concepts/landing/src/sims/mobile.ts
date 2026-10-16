@@ -34,8 +34,8 @@
 //   on each side; against another plate, 8 points of its rim. A ball keeps its radius plus the slab
 //   clear of other arms' balls, wires and links and of their plates' slabs, and is pushed out along
 //   the line between them. `contacts` counts the touches begun.
-// - Time: fixed substeps of MOBILE_SUBSTEP, one VerletSystem step each, so the air and the contacts
-//   are evaluated every substep; `alpha` blends the drawn state between the last two.
+// - Time: one FixedStep of MOBILE_SUBSTEP (the only clock), one VerletSystem substep each, so the air
+//   and the contacts are evaluated every substep; `alpha` blends the drawn state between the last two.
 //
 // Units: metres, seconds, kilograms; y up, z toward the viewer (the Verlet convention).
 //
@@ -111,13 +111,17 @@ const MOTOR_GRIP = 1.5;
 const SHEET = 2.7;
 export const MOBILE_WIRE = 0.035;
 export const MOBILE_LOOP = 0.02;
-/** Linear drag on every point (1/s): a swing rings down over ~20 s, and a turning arm keeps turning a while. */
-const DAMPING = 0.06;
 /**
- * Constraint passes per substep. At 30, 24 designs of 5-7 arms settled in still air kept every
- * constraint within 1% and every arm within 2° of its designed balance (16 µs a substep in Bun).
+ * Linear drag on every point (1/s): a knocked mobile's swing loses about nine tenths of its energy
+ * in ten seconds, and a turning arm keeps turning a while. The solver adds next to none of its own
+ * (verlet.ts), so this is all the damping there is.
  */
-const ITERATIONS = 30;
+const DAMPING = 0.1;
+/**
+ * Constraint passes per substep. At 24, 24 designs of 5-7 arms settled 24 s in still air kept every
+ * constraint within 0.9% and the median arm within 3° of level (15 µs a substep in Bun).
+ */
+const ITERATIONS = 24;
 
 /** Signed distance to plate shape `shape` (units of its size, about the shape's own origin). */
 function shapeDistance(shape: number, x: number, y: number): number {
@@ -486,7 +490,6 @@ export class Mobile {
     const arms = design.arms.length;
     const sys = new VerletSystem({
       substep: MOBILE_SUBSTEP,
-      maxSubsteps: 1,
       points: 1 + 3 * arms,
       constraints: 4 * arms,
     });
@@ -774,6 +777,7 @@ export class Mobile {
       vx,
       vy,
       vz,
+      this.#clock.alpha,
     );
   }
 
@@ -781,7 +785,7 @@ export class Mobile {
     for (let i = 0; i < this.plates; i++) this.#frame(i);
     this.#airForces();
     this.#driveForces();
-    this.system.step(MOBILE_SUBSTEP, this.#step);
+    this.system.step(this.#step);
     for (let i = 0; i < this.plates; i++) this.#frame(i);
     this.#contact();
   }

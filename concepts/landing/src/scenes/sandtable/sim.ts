@@ -2000,7 +2000,7 @@ class SandtableSim implements SceneSim {
     }
     this.#field.relax(TALUS, RELAX_RATE, dt, RELAX_ROWS);
 
-    const now = performance.now();
+    const now = frame.now;
     // While the machines move in or out the sand is shown as it is, every frame; so it is while a
     // tool has run on past SYNC_LAG since the last upload.
     const moving = passage.arrive !== Infinity || passage.leave > 0;

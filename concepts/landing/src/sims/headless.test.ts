@@ -61,6 +61,9 @@ test("frames carry the knobs over the scene's defaults, and a 'now' fires on one
     width: 960,
     height: 540,
   });
+  // The wall clock moves on with the frames' time; the budget never runs out.
+  expect(second?.now).toBeCloseTo((1 / 60 + 0.5) * 1000, 9);
+  expect(second?.budget).toBe(Infinity);
   expect(sim.upload(0).data[0]).toBe(3);
   expect(sim.uploaded(0)).toBe(true);
   expect(() => sim.upload(1)).toThrow(HeadlessError);

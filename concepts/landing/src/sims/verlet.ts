@@ -1,20 +1,31 @@
 // Position-based Verlet dynamics for threads, chains and nets: kelp swaying in the surge (chains
 // pinned to the sea floor, buoyant), a dewy orb web plucked by the pointer (radii and a capture
-// spiral under tension, ringing out of plane), bamboo culms bending in the wind.
+// spiral under tension, ringing out of plane), a hanging mobile's rigid arms.
 //
 // Points live in flat Float32Arrays (x, y, z interleaved): position, previous position and inverse
 // mass (0 = pinned). Each substep integrates position Verlet (the velocity is the last move,
-// x - x_prev), then projects the distance constraints Gauss–Seidel style (Müller, Heidelberger,
-// Hennix, Ratcliff, "Position Based Dynamics", 2007), alternating direction every iteration so no
-// end of a chain is favoured. A constraint's stiffness is the share of its error removed per
-// substep, whatever the iteration count. Bending is a skip-one distance constraint (i to i + 2): the
-// cheap way to give a chain a spine. Stiffness and pre-tension (restScale < 1) together set how fast
-// a thread rings: tune them against the flicker metric, since fast ringing reads as shimmer.
+// x - x_prev), then projects the distance constraints Gauss–Seidel style, alternating direction
+// every pass so no end of a chain is favoured. The projection is XPBD (Macklin, Müller, Chentanez,
+// "XPBD: Position-Based Simulation of Compliant Constrained Dynamics", 2016): each constraint has a
+// compliance α, its stretch per unit of tension (0 = rigid), in physical units, so a thread's
+// stiffness is the same at any substep and pass count. A point of inverse mass w tied to a pinned
+// one by a constraint of compliance α rings at sqrt(w / α) rad/s. Bending is a skip-one distance
+// constraint (i to i + 2): the cheap way to give a chain a spine. Compliance and pre-tension
+// (restScale < 1) together set how fast a thread rings: tune them against the flicker metric, since
+// fast ringing reads as shimmer.
 //
-// Time: `step(dt)` runs whole fixed substeps (default 1/120 s) and carries the remainder, so the
-// motion is the same at 10 fps and at 144 fps, and dt = 0.1 s is just twelve small, stable steps.
-// `PointTexture` blends the last two substeps by that remainder, so motion stays smooth when a frame
-// falls between substeps.
+// Energy: the projection pushes along each constraint as it stood at the start of the substep (as
+// SHAKE does, Ryckaert, Ciccotti, Berendsen 1977) rather than as the pass left it, which keeps the
+// scheme time-reversible: an undamped chain swings on with its energy instead of losing a share to
+// every projection, and `damping` is the damping you get. Prefer more substeps to more passes
+// ("small steps", Macklin, Storey, Lu et al. 2019): one pass at a short substep converges better
+// than several at a long one, for the same work. A compliant constraint still loses some of its
+// own ringing (XPBD's step is implicit in its spring), the more the faster it rings.
+//
+// Time: `step(options, substeps)` runs whole substeps of the system's fixed `substep`; the caller
+// keeps time with a FixedStep (clock.ts) of that step, so the motion is the same at 60 and 144 Hz,
+// and draws with its `alpha`: `PointTexture` blends the last two substeps by it, so motion stays
+// smooth when a frame falls between substeps.
 //
 // Units are the scene's. The convention: view heights with y up (x in 0..aspect, y in 0..1) and z
 // toward the viewer, so a pointer at uv (u, v) is at (u · aspect, v).
@@ -22,21 +33,22 @@
 // Drag toward a current (kelp in the surge): damping c plus a force c · u(x, t) on a unit mass gives
 // dv/dt = c (u - v). The force callback reads `system.time` for the substep's clock.
 //
-// Cost: per substep O(points + iterations × constraints), no allocation. A 24-spoke, 14-turn web
-// (361 points, 695 constraints) at 4 iterations and dt = 0.1 s is 12 substeps ≈ 33k projections,
-// well under a millisecond in V8 (estimate).
+// Cost: per substep O(points + iterations × constraints), no allocation. A 24-spoke, 18-turn web
+// (about 460 points, 900 constraints) at one pass and 1/240 s is about 0.2 M projections a second.
 //
 // Usage:
-//   const sys = new VerletSystem();
+//   const sys = new VerletSystem({ substep: 1 / 240 });
 //   const web = sys.addWeb({ center: [0.9, 0.55, 0], radius: 0.42, spokes: 24, turns: 14,
-//                            restScale: 0.97, spiralStiffness: 0.3, irregularity: 0.5, seed });
+//                            restScale: 0.97, spiralCompliance: 2e-4, irregularity: 0.5, seed });
+//   const clock = new FixedStep(sys.substep, 48);
 //   const pack = new PointTexture(gl, { points: sys.count, velocity: true, origin: [0.9, 0.5, 0] });
-//   const opts: VerletStepOptions = { gravity: [0, -0.05, 0], damping: 0.8, iterations: 4 };
-//   for (let i = 0; i < 20; i++) sys.step(0.1, opts); // prewarm: let the tension settle
+//   const opts: VerletStepOptions = { gravity: [0, -0.05, 0], damping: 0.8, iterations: 1 };
+//   sys.step(opts, 480); // prewarm: let the tension settle
 //   // each frame (keep `opts`; do not rebuild it):
-//   sys.step(frame.dt * frame.motion, opts);
-//   if (frame.pointer.pressed) sys.impulseXY(frame.pointer.x * frame.aspect, frame.pointer.y, 0.06, 0, 0, 0.4);
-//   pack.upload(sys);
+//   sys.step(opts, clock.advance(frame.dt * frame.motion));
+//   if (frame.pointer.pressed)
+//     sys.impulseXY(frame.pointer.x * frame.aspect, frame.pointer.y, 0.06, 0, 0, 0.4, clock.alpha);
+//   pack.upload(sys, clock.alpha);
 //   return [pack.texture];
 //   // GLSL, two texels per point with velocity (W = pack.width, origin added back):
 //   //   vec4 webTexel(int k) { return texelFetch(uSim0, ivec2(k % W, k / W), 0); }
@@ -63,21 +75,22 @@ export type VerletForce = (
 export interface VerletStepOptions {
   /** Acceleration on every free point, units per second². */
   gravity: Vec3;
-  /** Share of velocity lost per second, as a rate: c makes speed fall to 1/e in 1/c seconds. */
+  /**
+   * Share of velocity lost per second, as a rate: c makes speed fall to 1/e in 1/c seconds. The
+   * solver loses next to nothing of its own, so this is the damping a swing gets.
+   */
   damping: number;
-  /** Constraint passes per substep; more converge better on long chains (2–8). */
+  /**
+   * Constraint passes per substep. One is the rule: a shorter substep converges better than more
+   * passes for the same work. More only where a stiff net must hold its shape against heavy loads.
+   */
   iterations: number;
   force?: VerletForce;
 }
 
 export interface VerletOptions {
-  /** Fixed internal time step, seconds. Default 1/120. */
+  /** The fixed time step, seconds: what `step` runs, and its caller's FixedStep keeps. Default 1/240. */
   substep?: number;
-  /**
-   * Most substeps one `step` runs; a longer dt is cut short (the sim slows rather than exploding or
-   * stalling). Default 16, which covers the renderer's 0.1 s clamp at the default substep.
-   */
-  maxSubsteps?: number;
   /** Points and constraints to reserve up front (the arrays otherwise grow while building). */
   points?: number;
   constraints?: number;
@@ -91,12 +104,17 @@ export interface VerletRange {
   constraints: number;
 }
 
+/**
+ * Compliance (VerletSystem's header): a constraint's stretch per unit of tension, in the scene's
+ * units, s² per unit of mass; 0 is rigid. One free point of inverse mass w on a constraint of
+ * compliance α to a pinned point rings at sqrt(w / α) rad/s, whatever the substep.
+ */
 export interface ChainOptions {
   /** Default 1. */
   invMass?: number;
-  /** Segment stiffness 0..1. Default 1. */
-  stiffness?: number;
-  /** Bending stiffness 0..1 (skip-one constraints); 0 adds none. Default 0. */
+  /** Compliance of the links. Default 0 (rigid). */
+  compliance?: number;
+  /** Compliance of skip-one bending constraints; absent adds none. */
   bend?: number;
   /** Rest length over built length: < 1 pre-tensions, > 1 leaves slack. Default 1. */
   restScale?: number;
@@ -107,8 +125,8 @@ export interface ChainOptions {
 export interface NetOptions {
   /** Default 1. */
   invMass?: number;
-  /** Default 1. */
-  stiffness?: number;
+  /** Compliance of every edge (see ChainOptions). Default 0 (rigid). */
+  compliance?: number;
   /** Rest length over built length. Default 1. */
   restScale?: number;
   /** Indices into `points` to pin. */
@@ -132,10 +150,10 @@ export interface WebOptions {
   invMass?: number;
   /** Rest length over built length for every thread: < 1 pulls the web taut. Default 1. */
   restScale?: number;
-  /** Radii stiffness 0..1. Default 1. */
-  spokeStiffness?: number;
-  /** Capture-spiral stiffness 0..1 (the stretchy silk). Default 0.6. */
-  spiralStiffness?: number;
+  /** Compliance of the radii (see ChainOptions). Default 0 (rigid). */
+  spokeCompliance?: number;
+  /** Compliance of the capture spiral, the stretchy silk. Default 1e-4. */
+  spiralCompliance?: number;
   /** 0..1: uneven radii angles, spiral spacing and anchor distances, as a spider spins. Default 0. */
   irregularity?: number;
   /** Seeds the irregularity. Default 1. */
@@ -211,7 +229,6 @@ function jitter(seed: number, n: number): number {
 
 export class VerletSystem {
   readonly #substep: number;
-  readonly #maxSubsteps: number;
   #count = 0;
   #constraintCount = 0;
   #pos: Float32Array;
@@ -225,22 +242,20 @@ export class VerletSystem {
   #a: Uint32Array;
   #b: Uint32Array;
   #rest: Float32Array;
-  #stiffness: Float32Array;
-  /** Per-iteration stiffness for `#kIterations` passes; 0 marks it stale. */
-  #k: Float32Array;
-  #kIterations = 0;
-  /** Time not yet simulated, below one substep. */
-  #carry = 0;
+  #compliance: Float32Array;
+  /** XPBD's Lagrange multiplier per constraint: the tension summed over this substep's passes. */
+  #lambda: Float64Array;
+  /** Each constraint's unit direction at the substep's start: what the solve pushes along. */
+  #push: Float32Array;
   #time = 0;
   readonly #force = new Float32Array(3);
   /** Bumped on every change, so uploads can be skipped while nothing moves. */
   version = 0;
 
   constructor(options: VerletOptions = {}) {
-    const substep = options.substep ?? 1 / 120;
+    const substep = options.substep ?? 1 / 240;
     if (!(substep > 0)) throw new VerletError(`substep must be positive, got ${substep}`);
     this.#substep = substep;
-    this.#maxSubsteps = Math.max(1, Math.floor(options.maxSubsteps ?? 16));
     const points = Math.max(GROWTH_FLOOR, Math.ceil(options.points ?? 0));
     const constraints = Math.max(GROWTH_FLOOR, Math.ceil(options.constraints ?? 0));
     this.#pos = new Float32Array(points * 3);
@@ -252,8 +267,9 @@ export class VerletSystem {
     this.#a = new Uint32Array(constraints);
     this.#b = new Uint32Array(constraints);
     this.#rest = new Float32Array(constraints);
-    this.#stiffness = new Float32Array(constraints);
-    this.#k = new Float32Array(constraints);
+    this.#compliance = new Float32Array(constraints);
+    this.#lambda = new Float64Array(constraints);
+    this.#push = new Float32Array(constraints * 3);
   }
 
   get count(): number {
@@ -303,11 +319,6 @@ export class VerletSystem {
     return this.#substep;
   }
 
-  /** How far time has run past the last substep, 0..1 of a substep: the render blend. */
-  get blend(): number {
-    return this.#carry / this.#substep;
-  }
-
   // ---- building -------------------------------------------------------------------------------
 
   /** Add a point at rest; returns its index. */
@@ -324,8 +335,11 @@ export class VerletSystem {
     return i;
   }
 
-  /** Tie points a and b; the rest length defaults to their distance now. Returns its index. */
-  addConstraint(a: number, b: number, stiffness = 1, rest = this.distance(a, b)): number {
+  /**
+   * Tie points a and b with a compliance (ChainOptions; 0 rigid); the rest length defaults to their
+   * distance now. Returns its index.
+   */
+  addConstraint(a: number, b: number, compliance = 0, rest = this.distance(a, b)): number {
     this.#check(a);
     this.#check(b);
     const c = this.#constraintCount;
@@ -333,20 +347,18 @@ export class VerletSystem {
     this.#a[c] = a;
     this.#b[c] = b;
     this.#rest[c] = Math.max(0, rest);
-    this.#stiffness[c] = Math.min(1, Math.max(0, stiffness));
+    this.#compliance[c] = Math.max(0, compliance);
     this.#constraintCount = c + 1;
-    this.#kIterations = 0;
     this.version++;
     return c;
   }
 
   /** Retune a constraint (a tension or stiffness knob) without rebuilding. */
-  setConstraint(c: number, rest: number, stiffness: number): void {
+  setConstraint(c: number, rest: number, compliance: number): void {
     if (!(Number.isInteger(c) && c >= 0 && c < this.#constraintCount))
       throw new VerletError(`no constraint ${c}`);
     this.#rest[c] = Math.max(0, rest);
-    this.#stiffness[c] = Math.min(1, Math.max(0, stiffness));
-    this.#kIterations = 0;
+    this.#compliance[c] = Math.max(0, compliance);
   }
 
   /**
@@ -355,11 +367,11 @@ export class VerletSystem {
    */
   addChain(from: Vec3, to: Vec3, segments: number, options: ChainOptions = {}): VerletRange {
     const n = Math.max(1, Math.round(segments));
-    const bend = Math.min(1, Math.max(0, options.bend ?? 0));
+    const bend = options.bend === undefined ? -1 : Math.max(0, options.bend);
     const first = this.#count;
     const firstConstraint = this.#constraintCount;
     this.#reservePoints(first + n + 1);
-    this.#reserveConstraints(firstConstraint + n + (bend > 0 ? n - 1 : 0));
+    this.#reserveConstraints(firstConstraint + n + (bend >= 0 ? n - 1 : 0));
     const invMass = options.invMass ?? 1;
     for (let s = 0; s <= n; s++) {
       const f = s / n;
@@ -373,10 +385,10 @@ export class VerletSystem {
     const link =
       (Math.hypot(to[0] - from[0], to[1] - from[1], to[2] - from[2]) / n) *
       (options.restScale ?? 1);
-    const stiffness = options.stiffness ?? 1;
+    const compliance = options.compliance ?? 0;
     for (let s = 0; s < n; s++) {
-      this.addConstraint(first + s, first + s + 1, stiffness, link);
-      if (bend > 0 && s > 0) this.addConstraint(first + s - 1, first + s + 1, bend, 2 * link);
+      this.addConstraint(first + s, first + s + 1, compliance, link);
+      if (bend >= 0 && s > 0) this.addConstraint(first + s - 1, first + s + 1, bend, 2 * link);
     }
     if (options.pinFirst === true) this.pin(first);
     if (options.pinLast === true) this.pin(first + n);
@@ -404,13 +416,13 @@ export class VerletSystem {
     this.#reserveConstraints(firstConstraint + edges.length);
     const invMass = options.invMass ?? 1;
     for (const [x, y, z] of points) this.addPoint(x, y, z, invMass);
-    const stiffness = options.stiffness ?? 1;
+    const compliance = options.compliance ?? 0;
     const restScale = options.restScale ?? 1;
     for (const [a, b] of edges)
       this.addConstraint(
         first + a,
         first + b,
-        stiffness,
+        compliance,
         this.distance(first + a, first + b) * restScale,
       );
     for (const p of options.pinned ?? []) {
@@ -437,8 +449,8 @@ export class VerletSystem {
     const seed = options.seed ?? 1;
     const invMass = options.invMass ?? 1;
     const restScale = options.restScale ?? 1;
-    const spokeStiffness = options.spokeStiffness ?? 1;
-    const spiralStiffness = options.spiralStiffness ?? 0.6;
+    const spokeCompliance = options.spokeCompliance ?? 0;
+    const spiralCompliance = options.spiralCompliance ?? 1e-4;
     const first = this.#count;
     const firstConstraint = this.#constraintCount;
     const spiralLinks = spokes * turns - 1;
@@ -474,7 +486,7 @@ export class VerletSystem {
       let from = hub;
       for (let k = 0; k <= turns; k++) {
         const to = k < turns ? spiral + s * turns + k : anchors + s;
-        this.addConstraint(from, to, spokeStiffness, this.distance(from, to) * restScale);
+        this.addConstraint(from, to, spokeCompliance, this.distance(from, to) * restScale);
         from = to;
       }
     }
@@ -484,7 +496,7 @@ export class VerletSystem {
         const here = spiral + s * turns + k;
         const next = s + 1 < spokes ? here + turns : k + 1 < turns ? spiral + k + 1 : -1;
         if (next >= 0)
-          this.addConstraint(here, next, spiralStiffness, this.distance(here, next) * restScale);
+          this.addConstraint(here, next, spiralCompliance, this.distance(here, next) * restScale);
       }
     }
     return {
@@ -505,8 +517,6 @@ export class VerletSystem {
   clear(): void {
     this.#count = 0;
     this.#constraintCount = 0;
-    this.#kIterations = 0;
-    this.#carry = 0;
     this.#time = 0;
     this.version++;
   }
@@ -605,7 +615,9 @@ export class VerletSystem {
   /**
    * Kick every free point within `radius` of (x, y, z) by the velocity (vx, vy, vz), fading as
    * (1 - d²/r²)² to nothing at the edge. A velocity change, not a momentum: heavy and light points
-   * jump alike. Returns the summed falloff (0 = nothing in reach).
+   * jump alike. `alpha` is the blend the system is drawn at (its FixedStep's): the kick is split
+   * around it so the drawn point does not twitch on the frame of the kick. Returns the summed
+   * falloff (0 = nothing in reach).
    */
   impulse(
     x: number,
@@ -615,43 +627,42 @@ export class VerletSystem {
     vx: number,
     vy: number,
     vz: number,
+    alpha: number,
   ): number {
-    return this.#kick(x, y, z, 1, radius, vx, vy, vz);
+    return this.#kick(x, y, z, 1, radius, vx, vy, vz, alpha);
   }
 
   /** As `impulse`, reaching through the screen: distance in the xy plane only (pluck, brush). */
-  impulseXY(x: number, y: number, radius: number, vx: number, vy: number, vz: number): number {
-    return this.#kick(x, y, 0, 0, radius, vx, vy, vz);
+  impulseXY(
+    x: number,
+    y: number,
+    radius: number,
+    vx: number,
+    vy: number,
+    vz: number,
+    alpha: number,
+  ): number {
+    return this.#kick(x, y, 0, 0, radius, vx, vy, vz, alpha);
   }
 
   // ---- simulation -----------------------------------------------------------------------------
 
   /**
-   * Advance by dt seconds (pass dt × motion): whole substeps, the remainder carried to the next
-   * call. dt ≤ 0 (paused) does nothing. Returns the substeps run. Allocation-free; keep `options`
-   * around rather than building it each frame.
+   * Run `substeps` whole substeps (the count a FixedStep of `substep` says is due; 0 does nothing).
+   * Allocation-free; keep `options` around rather than building it each frame.
    */
-  step(dt: number, options: VerletStepOptions): number {
-    if (!(dt > 0)) return 0;
-    const h = this.#substep;
-    let steps = Math.floor((this.#carry + dt) / h);
-    if (steps > this.#maxSubsteps) {
-      steps = this.#maxSubsteps;
-      this.#carry = 0;
-    } else {
-      this.#carry = Math.max(0, this.#carry + dt - steps * h);
-    }
+  step(options: VerletStepOptions, substeps = 1): void {
+    const steps = Math.max(0, Math.floor(substeps));
+    if (steps === 0) return;
     this.version++;
-    if (steps === 0) return 0;
+    const h = this.#substep;
     const iterations = Math.max(1, Math.round(options.iterations));
-    if (iterations !== this.#kIterations) this.#refreshStiffness(iterations);
     const keep = Math.exp(-Math.max(0, options.damping) * h);
     for (let s = 0; s < steps; s++) {
       this.#integrate(h, keep, options, steps - s);
-      this.#solve(iterations);
+      this.#solve(iterations, h);
       this.#time += h;
     }
-    return steps;
   }
 
   #integrate(h: number, keep: number, options: VerletStepOptions, remaining: number): void {
@@ -708,14 +719,38 @@ export class VerletSystem {
     }
   }
 
-  #solve(iterations: number): void {
+  /**
+   * XPBD over every constraint, `iterations` passes. Each pushes along the constraint as it stood at
+   * the substep's start (the previous positions, SHAKE's choice), which keeps the step
+   * time-reversible: a swing keeps its energy. A link turned more than 60° within one substep pushes
+   * along where it is now instead.
+   */
+  #solve(iterations: number, h: number): void {
     const pos = this.#pos;
+    const prev = this.#prev;
     const inv = this.#invMass;
     const ca = this.#a;
     const cb = this.#b;
     const rest = this.#rest;
-    const stiffness = this.#k;
+    const compliance = this.#compliance;
+    const lambda = this.#lambda;
+    const push = this.#push;
     const count = this.#constraintCount;
+    const h2 = h * h;
+    lambda.fill(0, 0, count);
+    // Each constraint's direction at the substep's start, a unit vector (0 when its ends met).
+    for (let c = 0; c < count; c++) {
+      const oa = (ca[c] ?? 0) * 3;
+      const ob = (cb[c] ?? 0) * 3;
+      const ex = (prev[ob] ?? 0) - (prev[oa] ?? 0);
+      const ey = (prev[ob + 1] ?? 0) - (prev[oa + 1] ?? 0);
+      const ez = (prev[ob + 2] ?? 0) - (prev[oa + 2] ?? 0);
+      const e2 = ex * ex + ey * ey + ez * ez;
+      const unit = e2 >= 1e-18 ? 1 / Math.sqrt(e2) : 0;
+      push[c * 3] = ex * unit;
+      push[c * 3 + 1] = ey * unit;
+      push[c * 3 + 2] = ez * unit;
+    }
     for (let it = 0; it < iterations; it++) {
       const forward = (it & 1) === 0;
       for (let s = 0; s < count; s++) {
@@ -734,26 +769,30 @@ export class VerletSystem {
         const d2 = dx * dx + dy * dy + dz * dz;
         if (d2 < 1e-18) continue;
         const d = Math.sqrt(d2);
-        const f = ((stiffness[c] ?? 0) * (d - (rest[c] ?? 0))) / (d * w);
-        pos[oa] = (pos[oa] ?? 0) + wa * f * dx;
-        pos[oa + 1] = (pos[oa + 1] ?? 0) + wa * f * dy;
-        pos[oa + 2] = (pos[oa + 2] ?? 0) + wa * f * dz;
-        pos[ob] = (pos[ob] ?? 0) - wb * f * dx;
-        pos[ob + 1] = (pos[ob + 1] ?? 0) - wb * f * dy;
-        pos[ob + 2] = (pos[ob + 2] ?? 0) - wb * f * dz;
+        let gx = push[c * 3] ?? 0;
+        let gy = push[c * 3 + 1] ?? 0;
+        let gz = push[c * 3 + 2] ?? 0;
+        const cos = (gx * dx + gy * dy + gz * dz) / d;
+        // How far the pair closes per unit of λ, along the push: w times its cosine with the link.
+        let reach = w * cos;
+        if (cos <= 0.5) {
+          gx = dx / d;
+          gy = dy / d;
+          gz = dz / d;
+          reach = w;
+        }
+        const soft = (compliance[c] ?? 0) / h2;
+        const held = lambda[c] ?? 0;
+        const dl = ((rest[c] ?? 0) - d - soft * held) / (reach + soft);
+        lambda[c] = held + dl;
+        pos[oa] = (pos[oa] ?? 0) - wa * dl * gx;
+        pos[oa + 1] = (pos[oa + 1] ?? 0) - wa * dl * gy;
+        pos[oa + 2] = (pos[oa + 2] ?? 0) - wa * dl * gz;
+        pos[ob] = (pos[ob] ?? 0) + wb * dl * gx;
+        pos[ob + 1] = (pos[ob + 1] ?? 0) + wb * dl * gy;
+        pos[ob + 2] = (pos[ob + 2] ?? 0) + wb * dl * gz;
       }
     }
-  }
-
-  /** Per-pass stiffness k' = 1 - (1 - k)^(1/n): n passes remove the share k of a lone error. */
-  #refreshStiffness(iterations: number): void {
-    const k = this.#k;
-    const stiffness = this.#stiffness;
-    for (let c = 0; c < this.#constraintCount; c++) {
-      const s = stiffness[c] ?? 0;
-      k[c] = s >= 1 ? 1 : 1 - Math.pow(1 - s, 1 / iterations);
-    }
-    this.#kIterations = iterations;
   }
 
   #nearest(
@@ -792,15 +831,16 @@ export class VerletSystem {
     vx: number,
     vy: number,
     vz: number,
+    alpha: number,
   ): number {
     if (!(radius > 0)) return 0;
     const pos = this.#pos;
     const prev = this.#prev;
     const inv = this.#invMass;
     const r2 = radius * radius;
-    // The velocity is the last move (pos - prev) / h. Split the extra move around the render blend
-    // so the drawn point (prev + (pos - prev) · blend) does not twitch on the frame of the kick.
-    const blend = this.blend;
+    // The velocity is the last move (pos - prev) / h. Split the extra move around the drawn blend
+    // so the drawn point (prev + (pos - prev) · alpha) does not twitch on the frame of the kick.
+    const blend = Math.min(1, Math.max(0, alpha));
     const back = this.#substep * blend;
     const ahead = this.#substep * (1 - blend);
     let total = 0;
@@ -867,16 +907,19 @@ export class VerletSystem {
     this.#a = growU32(this.#a, size);
     this.#b = growU32(this.#b, size);
     this.#rest = growF32(this.#rest, size);
-    this.#stiffness = growF32(this.#stiffness, size);
-    this.#k = growF32(this.#k, size);
+    this.#compliance = growF32(this.#compliance, size);
+    // Both rewritten at every substep's solve: nothing to carry over.
+    this.#lambda = new Float64Array(size);
+    this.#push = new Float32Array(size * 3);
   }
 }
 
 /**
  * A system's points packed into an rgba16f texture for `texelFetch`: point i's record starts at
  * texel k = i × stride, at (k % width, k / width). Position texel: xyz = position − origin, blended
- * between the last two substeps; w = the caller's per-point value or else the inverse mass (0 =
- * pinned). Velocity texel (when packed): xyz = velocity in units per second, w = speed.
+ * between the last two substeps by the caller's alpha; w = the caller's per-point value or else the
+ * inverse mass (0 = pinned). Velocity texel (when packed): xyz = velocity in units per second, w =
+ * speed.
  */
 export class PointTexture {
   readonly points: number;
@@ -888,6 +931,7 @@ export class PointTexture {
   readonly #data: Float32Array;
   readonly #origin: Vec3;
   #version = -1;
+  #alpha = -1;
 
   constructor(gl: WebGL2RenderingContext, options: PointTextureOptions) {
     this.points = Math.max(1, Math.floor(options.points));
@@ -916,17 +960,19 @@ export class PointTexture {
   }
 
   /**
-   * Pack and upload the system's points. Skipped (returning false) when the system has not changed
+   * Pack and upload the system's points as drawn at `alpha` (its FixedStep's: 0 the last substep
+   * but one, 1 the last). Skipped (returning false) when neither the system nor alpha has changed
    * since the last upload, unless `w` is given: per-point values for the position texel's w.
    */
-  upload(system: VerletSystem, w?: ArrayLike<number>): boolean {
-    if (w === undefined && system.version === this.#version) return false;
+  upload(system: VerletSystem, alpha: number, w?: ArrayLike<number>): boolean {
+    if (w === undefined && system.version === this.#version && alpha === this.#alpha) return false;
     this.#version = system.version;
+    this.#alpha = alpha;
     const data = this.#data;
     const pos = system.positions;
     const prev = system.previous;
     const inv = system.inverseMass;
-    const blend = system.blend;
+    const blend = Math.min(1, Math.max(0, alpha));
     const rate = 1 / system.substep;
     const [ox, oy, oz] = this.#origin;
     const velocity = this.stride === 2;

@@ -41,13 +41,11 @@ import { packCountryFog } from "./fog.ts";
 export const COUNTRY_MAP = { size: 512, extent: 3200 } as const;
 
 /**
- * Milliseconds of building a frame may take: a share of the time between frames, so a slow renderer
- * (a software one draws a frame in a second) builds as fast in frames as a fast one does in time,
- * between a floor that keeps a fast page smooth and a cap that keeps a slow one responsive. The
- * first build gets more: nothing of the land is on screen until it is done, and the entrance's
- * dissolve covers the slower frames.
+ * Milliseconds the first build takes a frame at least (more when the frame's budget allows more):
+ * nothing of the land is on screen until it is done, and the entrance's dissolve covers the slower
+ * frames. Later builds take the frame's budget (SimFrame.budget: a share of the time between frames).
  */
-const BUDGET = { share: 0.25, least: 8, first: 24, most: 120 } as const;
+const FIRST_BUDGET_MS = 24;
 
 const KNOBS = [
   "shape",
@@ -90,8 +88,6 @@ class CountrySim implements SceneSim {
   #key = "";
   #next = 0;
   #land: Land | undefined;
-  /** performance.now() at the last frame, for the time between frames. */
-  #last = Number.NaN;
 
   constructor(gl: WebGL2RenderingContext, params: readonly ParamDef[]) {
     this.#knobs = new KnobReader("country", params, KNOBS);
@@ -134,12 +130,8 @@ class CountrySim implements SceneSim {
       this.#next = 0;
     }
     const builder = this.#builder;
-    const now = performance.now();
-    const between = Number.isFinite(this.#last) ? now - this.#last : 0;
-    this.#last = now;
     if (builder && this.#next < builder.units) {
-      const least = this.#land ? BUDGET.least : BUDGET.first;
-      const budget = Math.min(BUDGET.most, Math.max(least, BUDGET.share * between));
+      const budget = this.#land ? frame.budget : Math.max(FIRST_BUDGET_MS, frame.budget);
       this.#next = runBudgeted((i) => builder.unit(i), budget, builder.units, this.#next);
       if (builder.done) {
         const terrain = builder.terrain;

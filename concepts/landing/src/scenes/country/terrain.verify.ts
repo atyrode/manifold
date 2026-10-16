@@ -71,6 +71,8 @@ function simFrame(knobs: Record<string, number>): SimFrame {
     time: 30,
     motionTime: 30,
     motion: 1,
+    now: 0,
+    budget: Infinity,
     width: WIDTH,
     height: HEIGHT,
     aspect: WIDTH / HEIGHT,

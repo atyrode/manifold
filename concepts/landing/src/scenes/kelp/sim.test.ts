@@ -56,6 +56,8 @@ function grow(knobs: Record<string, number>, seconds: number): Uploads {
       time: k / 60,
       motionTime: k / 60,
       motion: 1,
+      now: (k * 1000) / 60,
+      budget: Infinity,
       width: 960,
       height: 540,
       aspect: 16 / 9,

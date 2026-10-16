@@ -29,6 +29,8 @@ function pond(knobs: Record<string, number>, motion = 1) {
       time,
       motionTime,
       motion,
+      now: time * 1000,
+      budget: Infinity,
       width: 960,
       height: 540,
       aspect: ASPECT,

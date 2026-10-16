@@ -31,7 +31,10 @@
 // in the air the breeze plus eddies plus the gust a front crossing the scene brings to the plant, plus
 // any air the scene moves itself (`wind`: a breeze front of its own); under water |u| u for the
 // current u (quadratic drag). An upright organ leans by the same law along both axes of the push.
-// Small organs (detail tier below full) follow θ_eq at once.
+// Small organs (detail tier below full) follow θ_eq at once. The springs (sims/spring.ts) step on a
+// FixedStep of STEP (1/60 s), sampling the wind at each step's own moment, so a seed sways the same
+// at 60 and 144 Hz; `theta` and `lean` are what is drawn, blended between the last two steps by the
+// clock's alpha (a step behind the newest, smoothly).
 //
 // The year: `season` 0..1 from the start of spring (summer 0.25..0.5, autumn 0.5..0.75, winter
 // 0.75..1); PLANT_SUMMER (0.35) is high summer, every organ out and green, the picture a scene shows
@@ -64,9 +67,11 @@
 //   climate.dt = frame.dt * frame.motion; climate.time = frame.motionTime; climate.air.x = wind;
 //   plants.step(climate);
 //   records.pack(plants); records.upload();
+import { FixedStep } from "./clock.ts";
 import { splitHalf } from "./half.ts";
 import { clamp, fract, hash31, smoothstep } from "./math.ts";
 import { mulberry32 } from "./random.ts";
+import { springStep, type Spring } from "./spring.ts";
 import { DataTexture } from "./texture.ts";
 import { GustTrain, windNoise } from "./wind.ts";
 
@@ -76,8 +81,9 @@ const TAU = Math.PI * 2;
 export const PLANT_SUMMER = 0.35;
 /** Growth-clock seconds per second at growth amount 1. */
 export const PLANT_GROWTH_PACE = 4;
-/** Longest step the springs take (s); a frame's dt is split into steps no longer. */
+/** The springs' fixed step (s), and the most steps one frame catches up (a hitch drops time). */
 const STEP = 1 / 60;
+const MAX_STEPS = 8;
 /** The share of a leaf's span its node stays bare before the next leaf starts. */
 const REST = 0.25;
 /** Seconds between gusts at the gust amount's ends, and their peak push. */
@@ -289,10 +295,15 @@ export class RootedPlants {
   readonly #give: Float32Array;
   readonly #omega0: Float32Array;
   readonly #salt: Float32Array;
-  // State: the deflection (an upright organ's lean toward x), its rate, and an upright organ's lean
-  // toward y with its rate.
+  // Drawn: the deflection (an upright organ's lean toward x) and an upright organ's lean toward y,
+  // blended between the springs' last two steps.
   readonly theta: Float32Array;
   readonly lean: Float32Array;
+  // The springs: deflection and lean at the last step and the one before, and their rates.
+  readonly #thetaAt: Float32Array;
+  readonly #thetaWas: Float32Array;
+  readonly #leanAt: Float32Array;
+  readonly #leanWas: Float32Array;
   readonly #omega: Float32Array;
   readonly #leanRate: Float32Array;
   // Pose, per organ (scene units): base, direction at the base, turn over the length, grown length.
@@ -314,6 +325,9 @@ export class RootedPlants {
   readonly #plantSalt: number[] = [];
 
   readonly #gusts: GustTrain;
+  readonly #clock = new FixedStep(STEP, MAX_STEPS);
+  /** One organ's spring, read from and written back to the arrays around each step. */
+  readonly #spring: Spring = { x: 0, v: 0 };
   #growth = 0;
   #building = -1;
   #buildSite: PlantSite = { x: 0, y: 0, heading: 0 };
@@ -352,6 +366,10 @@ export class RootedPlants {
     this.#salt = new Float32Array(n);
     this.theta = new Float32Array(n);
     this.lean = new Float32Array(n);
+    this.#thetaAt = new Float32Array(n);
+    this.#thetaWas = new Float32Array(n);
+    this.#leanAt = new Float32Array(n);
+    this.#leanWas = new Float32Array(n);
     this.#omega = new Float32Array(n);
     this.#leanRate = new Float32Array(n);
     this.x = new Float64Array(n);
@@ -404,12 +422,13 @@ export class RootedPlants {
     return this.#growth;
   }
 
-  /** Forget every plant and restart the growth clock: a new layout follows. */
+  /** Forget every plant and restart the growth clock and the springs' steps: a new layout follows. */
   clear(): void {
     this.count = 0;
     this.plants = 0;
     this.dropped = 0;
     this.#growth = 0;
+    this.#clock.reset();
     this.#species.length = 0;
     this.#site.length = 0;
     this.#plantSalt.length = 0;
@@ -473,10 +492,7 @@ export class RootedPlants {
     // Salts come from the indices, not from the build's randomness: a species' build owns its
     // sequence, so a scene porting an old layout keeps it draw for draw.
     this.#salt[i] = hash31(i, p, 0x4f52);
-    this.theta[i] = 0;
-    this.lean[i] = 0;
-    this.#omega[i] = 0;
-    this.#leanRate[i] = 0;
+    this.#hold(i, 0, 0);
     this.size[i] = 1;
     this.pheno[i] = 0;
     this.cycle[i] = 0;
@@ -546,15 +562,15 @@ export class RootedPlants {
     this.pose();
     for (let i = 0; i < this.count; i++) {
       this.#target(i, climate, 0);
-      this.theta[i] = this.#push[0] ?? 0;
-      this.lean[i] = this.#push[1] ?? 0;
-      this.#omega[i] = 0;
-      this.#leanRate[i] = 0;
+      this.#hold(i, this.#push[0] ?? 0, this.#push[1] ?? 0);
     }
     this.pose();
   }
 
-  /** One frame: growth and the year, then the springs, then the pose. */
+  /**
+   * One frame: growth and the year, then the springs' whole steps due (each with the wind at its own
+   * moment), then the drawn deflections between the last two, then the pose.
+   */
   step(climate: PlantClimate): void {
     const dt = Math.max(0, climate.dt);
     const air = climate.air;
@@ -571,43 +587,59 @@ export class RootedPlants {
       this.#gusts.step(dt, air.gusts > 0 ? every : Infinity, 1, power);
     }
     this.#life(climate.season);
-    const steps = Math.ceil(dt / STEP - 1e-9);
-    const h = steps > 0 ? dt / steps : 0;
+    const clock = this.#clock;
+    const steps = clock.advance(dt);
     const push = this.#push;
+    const spring = this.#spring;
+    const thetaAt = this.#thetaAt;
+    const leanAt = this.#leanAt;
     for (let k = 0; k < steps; k++) {
-      const late = (k + 1 - steps) * h;
+      const late = -clock.lag(k);
       for (let i = 0; i < this.count; i++) {
         this.#target(i, climate, late);
         const target = push[0] ?? 0;
-        const upright = this.habit[i] === PlantHabit.upright;
         if ((this.tier[i] ?? 0) < 2) {
-          this.theta[i] = target;
-          this.#omega[i] = 0;
-          if (upright) {
-            this.lean[i] = push[1] ?? 0;
-            this.#leanRate[i] = 0;
-          }
+          this.#hold(i, target, push[1] ?? 0);
           continue;
         }
         const w0 = this.#omega0[i] ?? 1;
         const zeta = this.#species[this.plantOf[i] ?? 0]?.sway.damping ?? 1;
-        const omega =
-          (this.#omega[i] ?? 0) +
-          (w0 * w0 * (target - (this.theta[i] ?? 0)) - 2 * zeta * w0 * (this.#omega[i] ?? 0)) * h;
-        this.#omega[i] = omega;
-        this.theta[i] = (this.theta[i] ?? 0) + omega * h;
-        if (upright) {
-          const rate =
-            (this.#leanRate[i] ?? 0) +
-            (w0 * w0 * ((push[1] ?? 0) - (this.lean[i] ?? 0)) -
-              2 * zeta * w0 * (this.#leanRate[i] ?? 0)) *
-              h;
-          this.#leanRate[i] = rate;
-          this.lean[i] = (this.lean[i] ?? 0) + rate * h;
+        this.#thetaWas[i] = thetaAt[i] ?? 0;
+        spring.x = thetaAt[i] ?? 0;
+        spring.v = this.#omega[i] ?? 0;
+        springStep(spring, target, w0, zeta, STEP);
+        thetaAt[i] = spring.x;
+        this.#omega[i] = spring.v;
+        if (this.habit[i] === PlantHabit.upright) {
+          this.#leanWas[i] = leanAt[i] ?? 0;
+          spring.x = leanAt[i] ?? 0;
+          spring.v = this.#leanRate[i] ?? 0;
+          springStep(spring, push[1] ?? 0, w0, zeta, STEP);
+          leanAt[i] = spring.x;
+          this.#leanRate[i] = spring.v;
         }
       }
     }
+    const alpha = clock.alpha;
+    for (let i = 0; i < this.count; i++) {
+      const was = this.#thetaWas[i] ?? 0;
+      this.theta[i] = was + ((thetaAt[i] ?? 0) - was) * alpha;
+      const leaned = this.#leanWas[i] ?? 0;
+      this.lean[i] = leaned + ((leanAt[i] ?? 0) - leaned) * alpha;
+    }
     this.pose();
+  }
+
+  /** Organ i held still at deflection `theta` and lean `lean`: drawn so, at both steps, no rate. */
+  #hold(i: number, theta: number, lean: number): void {
+    this.theta[i] = theta;
+    this.#thetaAt[i] = theta;
+    this.#thetaWas[i] = theta;
+    this.#omega[i] = 0;
+    this.lean[i] = lean;
+    this.#leanAt[i] = lean;
+    this.#leanWas[i] = lean;
+    this.#leanRate[i] = 0;
   }
 
   /**

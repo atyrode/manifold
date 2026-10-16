@@ -44,6 +44,7 @@
 // Units: frame heights, x from the frame's left edge, y up from its bottom, z toward the viewer.
 import { KnobReader, type ParamDef } from "../../params.ts";
 import { BinLists } from "../../sims/bins.ts";
+import { FixedStep } from "../../sims/clock.ts";
 import { mulberry32 } from "../../sims/random.ts";
 import { DataTexture } from "../../sims/texture.ts";
 import {
@@ -127,11 +128,13 @@ const TURNS = 18;
 const HUB_SHARE = 0.13;
 const RIM_SHARE = 0.86;
 /**
- * Rest over built length of every thread. The pull against the moorings is what tensions the web:
- * at 0.92 the hub swings out of plane with a period of about 2.6 s and settles in a few (measured).
+ * Rest over built length of every thread: the pull against the moorings is what tensions the web.
+ * Silk stretches (compliance, verlet.ts): the radii, frame and moorings a little, which sets how
+ * taut the pull holds the web; the capture spiral, the stretchy silk, about ten times as much.
  */
 const TENSION = 0.92;
-const SPIRAL_STIFFNESS = 0.5;
+const THREAD_COMPLIANCE = 1.5e-5;
+const SPIRAL_COMPLIANCE = 1.4e-4;
 const IRREGULARITY = 0.55;
 /** Frame corners in degrees counter-clockwise from the hub's right, and their reach (× radius). */
 const CORNERS = [18, 90, 162, 234, 306] as const;
@@ -141,14 +144,19 @@ const CORNER_REACH_JITTER = 0.04;
 /** Bead spacing along a thread (frame heights) by kind: well apart, so they read as beads on a string. */
 const BEAD_SPACING = [0.024, 0.016, 0.026] as const;
 /**
- * Gravity (frame heights/s²), damping (1/s) and constraint passes per substep. The damping keeps
- * ringing short (a pluck dies away in about a second) so fine threads never shimmer for long.
+ * Gravity (frame heights/s²), damping (1/s), the web's substep and constraint passes per substep
+ * (small steps: a taut net needs the short one), and the most substeps a frame catches up (0.1 s).
+ * The damping keeps ringing short (a pluck dies away in about three seconds) so fine threads never
+ * shimmer for long.
  */
 const GRAVITY = -0.05;
-const DAMPING = 1.6;
-const ITERATIONS = 4;
+const DAMPING = 2.4;
+const SUBSTEP = 1 / 480;
+const ITERATIONS = 1;
+const MAX_SUBSTEPS = 48;
 /** Prewarm: whole 0.1 s steps run at construction so the tension has settled (it does in ~2 s). */
 const PREWARM_STEPS = 20;
+const PREWARM_SUBSTEPS = Math.round(0.1 / SUBSTEP);
 /** Seconds of drop life fast-forwarded at construction, and the step. */
 const PREWARM_DROPS = 50;
 const PREWARM_DROP_STEP = 0.25;
@@ -372,6 +380,7 @@ class DewWeb {
   readonly aspect: number;
   readonly seed: number;
   readonly sys = new VerletSystem({
+    substep: SUBSTEP,
     points: 1 + SPOKES * (TURNS + 1) + CORNERS.length * 2,
     constraints: SPOKES * (TURNS + 1) + SPOKES * TURNS + SPOKES + CORNERS.length * 2,
   });
@@ -464,7 +473,8 @@ class DewWeb {
       hub: HUB_SHARE,
       rim: RIM_SHARE,
       restScale: TENSION,
-      spiralStiffness: SPIRAL_STIFFNESS,
+      spokeCompliance: THREAD_COMPLIANCE,
+      spiralCompliance: SPIRAL_COMPLIANCE,
       irregularity: IRREGULARITY,
       seed: seed + 1,
     });
@@ -489,7 +499,7 @@ class DewWeb {
       sys.setConstraint(
         layout.firstConstraint + s * (TURNS + 1) + TURNS,
         sys.distance(last, anchor) * TENSION,
-        1,
+        THREAD_COMPLIANCE,
       );
       sys.unpin(anchor);
       sides[hit.side]?.push([hit.along, anchor]);
@@ -501,7 +511,7 @@ class DewWeb {
       let from = cornerPoints[i] ?? 0;
       const to = [...along.map((entry) => entry[1]), cornerPoints[(i + 1) % corners.length] ?? 0];
       for (const next of to) {
-        sys.addConstraint(from, next, 1, sys.distance(from, next) * TENSION);
+        sys.addConstraint(from, next, THREAD_COMPLIANCE, sys.distance(from, next) * TENSION);
         from = next;
       }
     }
@@ -523,7 +533,7 @@ class DewWeb {
       const point = sys.addPoint(x, y, 0);
       sys.pin(point);
       const c = cornerPoints[corner] ?? 0;
-      sys.addConstraint(c, point, 1, sys.distance(c, point) * TENSION);
+      sys.addConstraint(c, point, THREAD_COMPLIANCE, sys.distance(c, point) * TENSION);
       return { point, stem: s === undefined ? -1 : stem, u, x, y };
     };
     this.moorings = [
@@ -608,6 +618,8 @@ class DewSim implements SceneSim {
   /** Extra force per point this frame: the weight of the drops (y). */
   #load = new Float32Array(1);
   readonly #opts: VerletStepOptions;
+  /** The web's clock: whole substeps of SUBSTEP, the drawn web blended by its alpha. */
+  readonly #steps = new FixedStep(SUBSTEP, MAX_SUBSTEPS);
   #fz = 0;
   #fx = 0;
 
@@ -701,7 +713,7 @@ class DewSim implements SceneSim {
     const aspect = Number.isFinite(frame.aspect) && frame.aspect > 0 ? frame.aspect : 16 / 9;
     const seed = Math.round(knobs.value(frame, "webSeed"));
     if (Math.abs(aspect - this.#web.aspect) > 1e-3 || seed !== this.#web.seed)
-      this.#web = this.#spin(aspect, seed);
+      this.#web = this.#spin(aspect, seed, this.#web);
     this.#fitBins(frame.height, aspect);
 
     // The passage: the web swings in on its anchor threads as a gust settles, and out again on another.
@@ -746,24 +758,45 @@ class DewSim implements SceneSim {
 
   // ---- building -----------------------------------------------------------------------------------
 
-  /** Spin a web, let it settle, and fast-forward its dew so the first frame already glistens. */
-  #spin(aspect: number, seed: number): DewWeb {
+  /**
+   * Spin a web, let it settle, and fast-forward its dew so the first frame already glistens. Spun
+   * again for a new frame shape (`from`, the same seed), it keeps its dew: a web's threads are the
+   * same, thread for thread, at any size (the frame polygon scales about the hub with the radius),
+   * so every drop stays on its thread at its place along it, as large and as far gathered, and every
+   * thread as wet and as bared; only the web around them moves to the new frame.
+   */
+  #spin(aspect: number, seed: number, from?: DewWeb): DewWeb {
     const web = new DewWeb(aspect, seed);
+    const keep =
+      from !== undefined &&
+      from.seed === seed &&
+      from.threads === web.threads &&
+      from.kind.every((kind, c) => web.kind[c] === kind);
     this.#passing = false;
     this.#web = web;
-    this.#rand = mulberry32((Math.imul(seed + 7, 0x85ebca6b) ^ 0x6472) >>> 0);
     this.#load = new Float32Array(web.sys.count);
-    this.#state.fill(0);
-    this.#spawnIn = 0;
     this.#prewarming = true;
     this.#weather(0);
-    for (let i = 0; i < PREWARM_STEPS; i++) web.sys.step(0.1, this.#opts);
+    for (let i = 0; i < PREWARM_STEPS; i++) web.sys.step(this.#opts, PREWARM_SUBSTEPS);
+    this.#steps.reset();
     this.#focus = (web.sys.positions[web.layout.hub * 3 + 2] ?? 0) * 0.8;
-    // Seed some dew already gathered into drops, then let them run for a while.
-    for (let i = 0; i < 6; i++) this.#spawn(0.4 + 0.6 * this.#rand());
-    for (let time = 0; time < PREWARM_DROPS; time += PREWARM_DROP_STEP)
-      this.#drops(PREWARM_DROP_STEP);
-    for (let d = 0; d < DEW_DROPS; d++) if (this.#state[d] === FALLING) this.#state[d] = 0;
+    if (keep) {
+      web.wet.set(from.wet);
+      web.dry.set(from.dry);
+      for (let d = 0; d < DEW_DROPS; d++) {
+        if (this.#state[d] === RIDING) this.#place(d);
+        else this.#state[d] = 0;
+      }
+    } else {
+      // Seed some dew already gathered into drops, then let them run for a while.
+      this.#rand = mulberry32((Math.imul(seed + 7, 0x85ebca6b) ^ 0x6472) >>> 0);
+      this.#state.fill(0);
+      this.#spawnIn = 0;
+      for (let i = 0; i < 6; i++) this.#spawn(0.4 + 0.6 * this.#rand());
+      for (let time = 0; time < PREWARM_DROPS; time += PREWARM_DROP_STEP)
+        this.#drops(PREWARM_DROP_STEP);
+      for (let d = 0; d < DEW_DROPS; d++) if (this.#state[d] === FALLING) this.#state[d] = 0;
+    }
     this.#prewarming = false;
     return web;
   }
@@ -856,7 +889,7 @@ class DewSim implements SceneSim {
       load[a] = (load[a] ?? 0) - w * (1 - t);
       load[b] = (load[b] ?? 0) - w * t;
     }
-    web.sys.step(dt, this.#opts);
+    web.sys.step(this.#opts, this.#steps.advance(dt));
     if (dt > 0) {
       this.#drops(dt);
       const regrow = (WET_REGROW + WET_REGROW_DEW * this.#dew) * dt;
@@ -891,7 +924,7 @@ class DewSim implements SceneSim {
   #pluck(x: number, y: number, v: number): void {
     const sys = this.#web.sys;
     if (sys.nearestXY(x, y, PLUCK_RADIUS * 1.5, true) < 0) return;
-    sys.impulseXY(x, y, PLUCK_RADIUS, 0, -PLUCK_PULL * v, v);
+    sys.impulseXY(x, y, PLUCK_RADIUS, 0, -PLUCK_PULL * v, v, this.#steps.alpha);
     for (let d = 0; d < DEW_DROPS; d++) {
       if (this.#state[d] !== RIDING) continue;
       const dist = Math.hypot((this.#x[d] ?? 0) - x, (this.#y[d] ?? 0) - y);
@@ -1113,6 +1146,7 @@ class DewSim implements SceneSim {
       0,
       RECOIL * k * k * k,
       0.3 * RECOIL * k * k * k,
+      this.#steps.alpha,
     );
   }
 
@@ -1396,11 +1430,11 @@ class DewSim implements SceneSim {
     const dew = this.#dew;
     const focus = this.#focus;
 
-    // Drawn positions: blended between the last two substeps (as PointTexture does), seen with a
-    // little perspective about the frame's centre.
+    // Drawn positions: blended between the last two substeps by the clock's alpha (as PointTexture
+    // does), seen with a little perspective about the frame's centre.
     const pos = sys.positions;
     const prev = sys.previous;
-    const blend = sys.blend;
+    const blend = this.#steps.alpha;
     const drawn = web.drawn;
     const cx = aspect / 2;
     for (let i = 0, n = sys.count * 3; i < n; i += 3) {

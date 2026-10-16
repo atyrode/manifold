@@ -1273,7 +1273,7 @@ class GardenSim implements SceneSim {
     if (frame.aspect > 0 && Number.isFinite(frame.aspect)) this.#aspect = frame.aspect;
     this.#overhead = settings.overhead;
     const dt = Math.min(Math.max(frame.dt, 0), 0.1);
-    const now = performance.now();
+    const now = frame.now;
 
     // Pattern, arrangement or the M changed: lay the garden out afresh once the knob rests.
     if (settings.signature !== this.#signature) {

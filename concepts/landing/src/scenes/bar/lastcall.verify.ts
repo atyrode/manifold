@@ -76,6 +76,8 @@ export function verifyBarLastCall(gl: WebGL2RenderingContext): Record<string, un
       time: 0,
       motionTime: 0,
       motion: 1,
+      now: 0,
+      budget: Infinity,
       width: W,
       height: H,
       aspect: W / H,

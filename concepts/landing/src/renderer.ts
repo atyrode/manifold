@@ -81,6 +81,13 @@ const READY_WAIT = 3;
 /** Scene-clock time of a trigger or press that has not happened. */
 const NEVER = -1e4;
 /**
+ * Milliseconds a sim may block on budgeted work in a frame (SimFrame.budget): a share of the time
+ * between frames, so a slow renderer (a software one draws a frame in a second) builds as fast in
+ * frames as a fast one does in time, between a floor that keeps a fast page smooth and a cap that
+ * keeps a slow one responsive.
+ */
+const SIM_BUDGET = { share: 0.25, least: 8, most: 120 } as const;
+/**
  * Programs kept per scene: those it entered with, one per compile-time feature set
  * (`SceneDef.featuresFor`, the library gates and its planets, `settingKeyed`), and its all-features
  * program (`sceneFeaturesAll`); past this many the least recently drawn one is freed.
@@ -379,6 +386,9 @@ export class DitherRenderer {
    */
   #motionClock = 0;
   #lastFrame = 0;
+  /** This frame's rAF timestamp and its sims' budget (SimFrame.now and .budget), milliseconds. */
+  #frameNow = 0;
+  #frameBudget: number = SIM_BUDGET.least;
   #paused = false;
   /** Smoothed frames per second, for the lab footer. */
   fps = 0;
@@ -948,6 +958,11 @@ export class DitherRenderer {
     const elapsed = this.#lastFrame === 0 ? 0 : (now - this.#lastFrame) / 1000;
     const dt = Math.min(elapsed, 0.1);
     this.#lastFrame = now;
+    this.#frameNow = now;
+    this.#frameBudget = Math.min(
+      SIM_BUDGET.most,
+      Math.max(SIM_BUDGET.least, SIM_BUDGET.share * elapsed * 1000),
+    );
     // Cap simulation catch-up, not the footer's measurement of actual frame delivery.
     if (elapsed > 0)
       this.fps = this.fps === 0 ? 1 / elapsed : this.fps * 0.92 + (1 / elapsed) * 0.08;
@@ -1356,6 +1371,8 @@ export class DitherRenderer {
         time: this.#clock,
         motionTime: this.#motionClock,
         motion,
+        now: this.#frameNow,
+        budget: this.#frameBudget,
         width,
         height,
         aspect: width / height,

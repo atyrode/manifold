@@ -126,6 +126,31 @@ describe("RootedPlants", () => {
     expect(Array.from(plants.theta)).toEqual(Array.from(before));
   });
 
+  test("the springs sway the same at 60 and 144 frames a second", () => {
+    // An eddying breeze swinging three stalks for 10 s, delivered in frames of 1/60 or of 1/144 s.
+    const sway = (rate: number): Float32Array => {
+      const plants = row(stalked(), 3);
+      const climate = plantClimate();
+      climate.air.x = 0.7;
+      climate.air.eddy = 0.8;
+      climate.air.calm = 0.3;
+      plants.settle(climate);
+      climate.dt = 1 / rate;
+      for (let f = 1; f <= 10 * rate; f++) {
+        climate.time = f / rate;
+        plants.step(climate);
+      }
+      return Float32Array.from(plants.theta.subarray(0, plants.count));
+    };
+    const slow = sway(60);
+    const fast = sway(144);
+    const swung = Math.max(...Array.from(slow, Math.abs));
+    expect(swung).toBeGreaterThan(0.02);
+    slow.forEach((theta, i) =>
+      expect(Math.abs((fast[i] ?? 0) - theta)).toBeLessThan(0.002 * swung),
+    );
+  });
+
   test("a gust's front reaches the plants downwind later", () => {
     const plants = row(stalked(), 2, 1.2);
     const climate = plantClimate();

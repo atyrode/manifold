@@ -1555,7 +1555,7 @@ export function deltaSim(params: readonly ParamDef[]): SimFactory {
 
     return {
       frame(frame: SimFrame): readonly (WebGLTexture | undefined)[] {
-        const now = performance.now();
+        const now = frame.now;
         gridFor(frame, key, want);
         want.seed = knobs.value(frame, "landscape");
         if (pending === undefined || !sameKey(pending, want)) {

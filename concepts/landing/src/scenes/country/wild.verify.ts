@@ -78,6 +78,8 @@ function simFrame(knobs: Record<string, number>, time: number, exit: number): Si
     time,
     motionTime: time,
     motion: 1,
+    now: time * 1000,
+    budget: Infinity,
     width: WIDTH,
     height: HEIGHT,
     aspect: WIDTH / HEIGHT,

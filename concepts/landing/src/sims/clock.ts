@@ -16,7 +16,9 @@
 // runBudgeted(step, budgetMs, maxSteps, from = 0, chunk = 1) runs step(from), step(from + 1), ...
 // until maxSteps, until step returns true (settled), or until budgetMs of wall time has passed
 // (checked after every `chunk` steps, and only after the first chunk, so every call makes progress).
-// It returns where to resume: maxSteps once finished, else the next i.
+// It returns where to resume: maxSteps once finished, else the next i. Pass the frame's budget
+// (SimFrame.budget, or a floor raised by it): an Infinity budget, as HeadlessSim gives, never reads
+// the clock and always finishes, so a test's warm-up ends in one frame.
 //
 // Warm-up policy: a warm-up is a step count, never a duration. Machine speed must not decide the
 // opening picture (sims are deterministic for a seed, scenes/README.md "Simulations"), so:
@@ -126,14 +128,15 @@ export function runBudgeted(
 ): number {
   if (!(Number.isInteger(chunk) && chunk >= 1))
     throw new ClockError(`chunk must be a whole number ≥ 1, got ${chunk}`);
-  const started = performance.now();
+  const timed = budgetMs !== Infinity;
+  const started = timed ? performance.now() : 0;
   let i = from;
   while (i < maxSteps) {
     const end = Math.min(maxSteps, i + chunk);
     for (; i < end; i++) {
       if (step(i) === true) return maxSteps;
     }
-    if (performance.now() - started >= budgetMs) break;
+    if (timed && performance.now() - started >= budgetMs) break;
   }
   return Math.min(i, maxSteps);
 }

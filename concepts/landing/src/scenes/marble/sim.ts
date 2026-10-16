@@ -95,7 +95,7 @@ const TAU = Math.PI * 2;
 
 /** Longest side of the ink canvas in pixels; the other follows the frame's aspect. */
 const CANVAS_LONG_SIDE = 1024;
-/** Redraws of the ink canvas are capped at this rate (the shapes move slowly). */
+/** Redraws of the ink canvas are capped at this rate (the shapes move slowly), on the frame's wall clock. */
 const REDRAW_MS = 1000 / 30;
 /** Longest edge kept near the view, in sheet units (~3 px of the canvas, about a dither cell). */
 const MAX_EDGE = 0.0055;
@@ -127,14 +127,12 @@ const LIFT_SECONDS = 3;
 const QUICK_LIFT_SECONDS = 1.2;
 /**
  * Fast-forward of a fresh sheet's sprinkling, done out of sight (nothing is drawn until it ends):
- * step in routine seconds, and budget per frame. A machine already drawing slow frames (software
- * GL) gives it a third of the frame interval, up to the cap, so the sheet is laid in about a second
- * there too.
+ * step in routine seconds, and budget per frame at least. A machine already drawing slow frames
+ * (software GL) gets the frame's larger budget (a share of the frame interval), so the sheet is
+ * laid in about a second there too.
  */
 const PREROLL_STEP = 0.2;
 const PREROLL_BUDGET_MS = 12;
-const PREROLL_SLOW_SHARE = 1 / 3;
-const PREROLL_BUDGET_MAX_MS = 40;
 /** A prerolled sheet fades up from the bare tray over this many seconds. */
 const ARRIVE_SECONDS = 0.8;
 /**
@@ -957,9 +955,9 @@ class MarbleSim implements SceneSim {
   #lead = 0;
   /** The scene is leaving: the sheet on the tray is not renewed under the paper that takes it. */
   #exiting = false;
-  /** performance.now() at the previous frame, and the real interval before this one (0: unknown). */
-  #frameAt = 0;
-  #frameMs = 0;
+  /** The frame's wall clock (SimFrame.now) and budget (SimFrame.budget), for the redraw cap and the preroll. */
+  #now = 0;
+  #budget = PREROLL_BUDGET_MS;
   #sheet = 0;
   #signature: string | undefined;
   /** What the previous frame's settings were, so the unchanged frame builds no signature string. */
@@ -1029,9 +1027,8 @@ class MarbleSim implements SceneSim {
 
   frame(frame: SimFrame): readonly (WebGLTexture | undefined)[] {
     const dt = Math.min(Math.max(frame.dt, 0), MAX_STEP);
-    const now = performance.now();
-    this.#frameMs = this.#frameAt > 0 ? now - this.#frameAt : 0;
-    this.#frameAt = now;
+    this.#now = frame.now;
+    this.#budget = Math.max(PREROLL_BUDGET_MS, frame.budget);
     const settings = this.#read(frame);
     this.#fit(frame.aspect);
     if (this.#entering === undefined) this.#entering = frame.passage.enter < 1;
@@ -1247,14 +1244,10 @@ class MarbleSim implements SceneSim {
    * (the canvas is only drawn once it is done, and the sheet then fades up from the bare tray).
    */
   #fastForward(): boolean {
-    const budget = Math.min(
-      PREROLL_BUDGET_MAX_MS,
-      Math.max(PREROLL_BUDGET_MS, PREROLL_SLOW_SHARE * this.#frameMs),
-    );
     // The sprinkle is a count of steps, the same on every machine; the budget only spreads them over frames.
     const steps = Math.ceil((this.#prerollTo - this.#routine.clock) / PREROLL_STEP) + 1;
     this.#prerollMoved = false;
-    runBudgeted(this.#prerollStep, budget, steps);
+    runBudgeted(this.#prerollStep, this.#budget, steps);
     return this.#prerollMoved;
   }
 
@@ -1268,13 +1261,9 @@ class MarbleSim implements SceneSim {
     const target = sprinkleAt(this.#stageClock, this.#lead, this.#prerollTo);
     if (this.#routine.clock >= target - 1e-6) return false;
     this.#stageTarget = target;
-    const budget = Math.min(
-      PREROLL_BUDGET_MAX_MS,
-      Math.max(PREROLL_BUDGET_MS, PREROLL_SLOW_SHARE * this.#frameMs),
-    );
     const steps = Math.ceil((this.#prerollTo - this.#routine.clock) / PREROLL_STEP) + 1;
     this.#prerollMoved = false;
-    runBudgeted(this.#sprinkleStep, budget, steps);
+    runBudgeted(this.#sprinkleStep, this.#budget, steps);
     return this.#prerollMoved;
   }
 
@@ -1533,7 +1522,7 @@ class MarbleSim implements SceneSim {
   #render(): void {
     // A sheet still being prerolled is drawn once, when it is laid, not step by step.
     if (!this.#dirty || (this.#prerolling && !this.#staging)) return;
-    const now = performance.now();
+    const now = this.#now;
     if (!this.#force && now - this.#drawnAt < REDRAW_MS) return;
     this.#draw();
     // The canvas is premultiplied; keeping it so lets the GPU filter across ink/bare edges without

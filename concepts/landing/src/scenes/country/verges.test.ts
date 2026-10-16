@@ -48,6 +48,8 @@ function frame(
     time: motionTime,
     motionTime,
     motion: 1,
+    now: motionTime * 1000,
+    budget: Infinity,
     width: 960,
     height: 540,
     aspect: 16 / 9,

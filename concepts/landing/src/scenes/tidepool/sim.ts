@@ -417,7 +417,7 @@ export function tidepoolSim(params: readonly ParamDef[]): SimFactory {
 
     return {
       frame(frame) {
-        const now = performance.now();
+        const now = frame.now;
         const want: LayoutKey = {
           columns: Math.max(32, Math.round(TIDEPOOL_ROWS * frame.aspect)),
           rows: TIDEPOOL_ROWS,

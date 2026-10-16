@@ -61,6 +61,7 @@ import { LevelCamera } from "../../sims/camera.ts";
 import { FixedStep, runBudgeted } from "../../sims/clock.ts";
 import { clamp, smoothstep } from "../../sims/math.ts";
 import { Random } from "../../sims/random.ts";
+import { springStep, type Spring } from "../../sims/spring.ts";
 import { DataTexture } from "../../sims/texture.ts";
 import type { PointerState, SceneSim, SimFactory, SimFrame } from "../types.ts";
 
@@ -442,8 +443,9 @@ const PREWARM_STEPS = Math.round(PREWARM / STEP);
 const BLADE_FROM = PREWARM_STEPS - Math.round(BLADE_PREWARM / STEP);
 /**
  * The pre-run is a count of steps, never a duration, so the opening meadow does not depend on how
- * fast the machine is: this is only how long one frame may spend on it before the rest waits for
- * the next frame (the sim holds its clock and draws its opening state until it is done).
+ * fast the machine is: this is only how long one frame may spend on it (at least; the frame's own
+ * budget raises it, to all of it under test) before the rest waits for the next frame (the sim holds
+ * its clock and draws its opening state until it is done).
  */
 const PREWARM_BUDGET_MS = 90;
 /** Seeds let go this much more readily while pre-running, so the page opens with some in the air. */
@@ -621,18 +623,6 @@ function hash01(a: number, b: number): number {
   h = Math.imul(h ^ (h >>> 15), 0x85ebca6b);
   h = Math.imul(h ^ (h >>> 13), 0xc2b2ae35);
   return ((h ^ (h >>> 16)) >>> 0) / 4294967296;
-}
-
-/** A damped spring's position and velocity. */
-interface Spring {
-  x: number;
-  v: number;
-}
-
-/** One semi-implicit Euler step of a spring with natural frequency omega (rad/s) toward target. */
-function spring(state: Spring, target: number, omega: number, damping: number): void {
-  state.v += (omega * omega * (target - state.x) - 2 * damping * omega * state.v) * STEP;
-  state.x += state.v * STEP;
 }
 
 interface Blade {
@@ -862,7 +852,7 @@ class MeadowSim implements SceneSim {
       if (Number.isNaN(this.#warmClock)) this.#warmClock = tmNow;
       this.#warmFrom = runBudgeted(
         (k) => this.#prewarmStep(k),
-        PREWARM_BUDGET_MS,
+        Math.max(PREWARM_BUDGET_MS, frame.budget),
         PREWARM_STEPS,
         this.#warmFrom,
         32,
@@ -1035,7 +1025,7 @@ class MeadowSim implements SceneSim {
         const g = meadowGust(wind, CAMERA.worldX(x - 0.5 * aspect, layer.z), layer.z, tm, 0);
         const push = this.#breathAt(x, breathY);
         const sway = flutter * Math.sin(tm * blade.omega * 0.37 + blade.phase);
-        spring(
+        springStep(
           blade.lean,
           clamp(
             wind.dirX * BLADE_BEND * g + sway + this.#pushX * push * BREATH_BEND,
@@ -1044,12 +1034,14 @@ class MeadowSim implements SceneSim {
           ),
           blade.omega,
           BLADE_DAMPING,
+          STEP,
         );
-        spring(
+        springStep(
           blade.bow,
           clamp(wind.dirZ * BLADE_BOW * g + push * BREATH_BOW, -0.2, MEADOW_AWAY_MAX),
           blade.omega,
           BLADE_DAMPING,
+          STEP,
         );
       });
     });
@@ -1076,7 +1068,7 @@ class MeadowSim implements SceneSim {
       );
       const push = this.#breathAt(clock.headX, clock.headY);
       const sway = CLOCK_FLUTTER * Math.sin(tm * 1.3 + clock.phaseOffset);
-      spring(
+      springStep(
         clock.lean,
         clamp(
           wind.dirX * CLOCK_BEND * g +
@@ -1088,8 +1080,9 @@ class MeadowSim implements SceneSim {
         ),
         omega,
         CLOCK_DAMPING,
+        STEP,
       );
-      spring(
+      springStep(
         clock.bow,
         clamp(
           wind.dirZ * CLOCK_BOW * g + push * BREATH_BOW + WILT_DROOP * clock.wilt,
@@ -1098,6 +1091,7 @@ class MeadowSim implements SceneSim {
         ),
         omega,
         CLOCK_DAMPING,
+        STEP,
       );
       const x0 = clock.headX;
       const y0 = clock.headY;

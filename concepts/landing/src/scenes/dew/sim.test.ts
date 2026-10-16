@@ -22,6 +22,43 @@ function run(
   return { segments: sim.upload(0), lists: sim.upload(1), header: sim.upload(3) };
 }
 
+/** The drops riding the web (uSim2: a drop's radius > 0), each as (x, y) from the hub and its radius. */
+function drops(sim: HeadlessSim): { x: number; y: number; r: number }[] {
+  const head = sim.upload(3).data;
+  const hx = (head[0] ?? 0) + (head[2] ?? 0);
+  const hy = (head[1] ?? 0) + (head[3] ?? 0);
+  const data = sim.upload(2).data;
+  const out: { x: number; y: number; r: number }[] = [];
+  for (let o = 0; o < data.length; o += 8) {
+    const r = data[o + 4] ?? 0;
+    if (r <= 0) continue;
+    const x = (data[o] ?? 0) + (data[o + 2] ?? 0) - hx;
+    const y = (data[o + 1] ?? 0) + (data[o + 3] ?? 0) - hy;
+    out.push({ x, y, r });
+  }
+  return out;
+}
+
+test("a window resized by 2 % keeps the web's drops where they hang on it, as large as they were", () => {
+  const sim = new HeadlessSim(dewScene);
+  const still = { pointer: { inside: false } };
+  for (let f = 0; f < 600; f++) sim.step({ ...still, aspect: 16 / 9 });
+  const before = drops(sim);
+  sim.step({ ...still, aspect: (16 / 9) * 1.02 });
+  const after = drops(sim);
+  expect(before.length).toBeGreaterThan(3);
+  // Each drop still on its thread, at its place along it: within a cell or two of where it hung
+  // from the hub, and its size unchanged.
+  const kept = before.filter((drop) =>
+    after.some(
+      (other) =>
+        Math.hypot(other.x - drop.x, other.y - drop.y) < 0.004 &&
+        Math.abs(other.r / drop.r - 1) < 0.02,
+    ),
+  );
+  expect(kept.length).toBeGreaterThanOrEqual(0.8 * before.length);
+});
+
 /** Whether the segment a–b crosses the square [x0, x0 + size] × [y0, y0 + size] (Liang–Barsky). */
 function crosses(
   ax: number,

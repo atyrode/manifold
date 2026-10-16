@@ -24,8 +24,10 @@
 //          angle, length in screen heights), (width 0..1, depth m, alpha, 1). Floating: (disc u, v,
 //          angle, length in disc units), (1, depth m, alpha, 2). Unused rows are 0.
 import { KnobReader, type ParamDef } from "../../params.ts";
+import { FixedStep } from "../../sims/clock.ts";
 import { hash31, smoothstep } from "../../sims/math.ts";
 import { mulberry32 } from "../../sims/random.ts";
+import { springStep, type Spring } from "../../sims/spring.ts";
 import { DataTexture } from "../../sims/texture.ts";
 import type { PointerState, SceneSim, SimFactory, SimFrame } from "../types.ts";
 
@@ -176,8 +178,11 @@ const BREEZE_LONG = (2 * Math.PI) / 22;
 const BREEZE_SHORT = (2 * Math.PI) / 9;
 /** A gust's leading edge rises over this many metres; its tail is set per gust. */
 const GUST_RISE = 0.8;
+/** The grove's fixed step; a frame's time (at most FRAME_MAX) is caught up in whole steps of it. */
 const GROVE_STEP = 1 / 60;
 const PREWARM_SECONDS = 6;
+/** The most scene seconds one frame advances. */
+const FRAME_MAX = 0.25;
 
 /** Deflection (m at BAMBOO_SWAY_HEIGHT) per unit of breeze or gust, for the wind knob -1..1. */
 function windSway(wind: number): number {
@@ -207,6 +212,7 @@ const BRUSH_SMOOTH = 0.12;
 
 // ---- the tube (SI units: metres, kilograms, seconds) ----
 
+/** The tube's fixed step: a clack's bounce needs it short. */
 const TUBE_STEP = 1 / 240;
 const GRAVITY = 9.8;
 /** The empty tube's mass times its centre's distance along it from the pivot: behind it, so it rests mouth up. */
@@ -320,9 +326,10 @@ interface Culm {
   readonly x: number;
   /** Natural angular frequency (rad/s). */
   omega: number;
-  /** Deflection (m at BAMBOO_SWAY_HEIGHT) and its rate. */
-  deflect: number;
-  rate: number;
+  /** Deflection (m at BAMBOO_SWAY_HEIGHT, `x`) and its rate, on the culm's spring. */
+  readonly sway: Spring;
+  /** The deflection one grove step before: the drawn one lies between the two. */
+  swayWas: number;
   /** The gust on it now, 0..1. */
   gust: number;
   /** Extra deflection from the pointer brushing past. */
@@ -406,8 +413,10 @@ class BambooSim implements SceneSim {
   #seed = -1;
   #random = mulberry32(1);
 
-  /** The sim's own clock: scene seconds scaled by motion. */
+  /** The sim's own clock: scene seconds scaled by motion, advanced a grove step at a time. */
   #clock = 0;
+  readonly #groveSteps = new FixedStep(GROVE_STEP, Math.ceil(FRAME_MAX / GROVE_STEP));
+  readonly #tubeSteps = new FixedStep(TUBE_STEP, Math.ceil(FRAME_MAX / TUBE_STEP));
   #warm = false;
   #dirty = true;
   #nextGust = Number.POSITIVE_INFINITY;
@@ -415,6 +424,8 @@ class BambooSim implements SceneSim {
 
   // The tube.
   #angle: number = BAMBOO_TUBE.rest;
+  /** The tube's angle one tube step before: the drawn one lies between the two. */
+  #angleWas: number = BAMBOO_TUBE.rest;
   #spin = 0;
   #fill = 0.5;
   #slosh = waterUp(0.5);
@@ -465,8 +476,8 @@ class BambooSim implements SceneSim {
           depth,
           x: (cell - BAMBOO_CELLS / 2 + 0.5) * spacing,
           omega: 1,
-          deflect: 0,
-          rate: 0,
+          sway: { x: 0, v: 0 },
+          swayWas: 0,
           gust: 0,
           push: 0,
         });
@@ -520,7 +531,7 @@ class BambooSim implements SceneSim {
       this.#leave(aspect);
     }
 
-    const advance = Math.min(Math.max(0, frame.dt) * Math.max(0, frame.motion), 0.25);
+    const advance = Math.min(Math.max(0, frame.dt) * Math.max(0, frame.motion), FRAME_MAX);
     if (advance > 0) this.#advance(advance, aspect);
     // The water arrives with the stream and fills the tube (a floor: a "now" can still fill it faster).
     if (arriving) {
@@ -577,7 +588,10 @@ class BambooSim implements SceneSim {
   #prewarm(aspect: number): void {
     const heading = this.#wind < 0 ? -1 : 1;
     const sway = windSway(this.#wind);
-    for (const culm of this.#culms) culm.deflect = heading * sway * 0.28;
+    for (const culm of this.#culms) {
+      culm.sway.x = heading * sway * 0.28;
+      culm.swayWas = culm.sway.x;
+    }
     const mid = BAMBOO_LAYERS[2]?.depth ?? 6.4;
     const crossing = mid * SKEW_SIN - 0.15 * aspect * mid * SKEW_COS;
     this.#launchGust(
@@ -589,7 +603,7 @@ class BambooSim implements SceneSim {
     for (let s = 0; s < steps; s++) {
       this.#clock += GROVE_STEP;
       this.#scheduleGusts(aspect);
-      this.#stepGrove(GROVE_STEP, aspect);
+      this.#stepGrove(aspect);
     }
     this.#fill = TIP_FILL * (0.7 + 0.12 * this.#random());
     this.#slosh = waterUp(this.#fill);
@@ -747,35 +761,40 @@ class BambooSim implements SceneSim {
     return sum;
   }
 
+  /**
+   * `total` scene seconds: the grove and the tube in their whole fixed steps due (each grove step
+   * on the clock at its own moment), the leaves over the whole of it.
+   */
   #advance(total: number, aspect: number): void {
-    const groveSteps = Math.ceil(total / GROVE_STEP);
-    const h = total / groveSteps;
-    for (let s = 0; s < groveSteps; s++) {
-      this.#clock += h;
+    const clock = this.#clock + total;
+    const grove = this.#groveSteps;
+    for (let s = 0, n = grove.advance(total); s < n; s++) {
+      this.#clock = clock - grove.lag(s);
       this.#scheduleGusts(aspect);
-      this.#stepGrove(h, aspect);
+      this.#stepGrove(aspect);
     }
+    this.#clock = clock;
 
     // The tube: steady inflow from the spout at the period knob's pace, plus any gush.
     const steady = this.#period > 0 ? TIP_FILL / Math.max(this.#period - CYCLE_OVERHEAD, 3) : 0;
-    const tubeSteps = Math.ceil(total / TUBE_STEP);
-    const ht = total / tubeSteps;
+    const tubeSteps = this.#tubeSteps.advance(total);
     let poured = 0;
     for (let s = 0; s < tubeSteps; s++) {
       const gushing = this.#gushLeft > 0;
       if (gushing) {
-        this.#gushLeft -= ht;
+        this.#gushLeft -= TUBE_STEP;
         if (this.#angle < BAMBOO_TUBE.rest - 0.15) this.#gushLeft = 0;
       }
       let inflow = steady + (gushing ? GUSH_RATE : 0);
       if (this.#rushLeft > 0) {
-        this.#rushLeft -= ht;
+        this.#rushLeft -= TUBE_STEP;
         if (this.#angle < BAMBOO_TUBE.rest - 0.15) this.#rushLeft = 0;
         inflow += EXIT_RUSH;
       }
-      poured += this.#stepTube(ht, inflow, aspect);
+      this.#angleWas = this.#angle;
+      poured += this.#stepTube(TUBE_STEP, inflow, aspect);
     }
-    this.#outflow = poured / total;
+    if (tubeSteps > 0) this.#outflow = poured / (tubeSteps * TUBE_STEP);
     if (this.#outflow > 0.3 && this.#clock - this.#lastPourRipple > RIPPLE_EVERY) {
       this.#lastPourRipple = this.#clock;
       const landing = (bambooPourLanding(this.#angle) - BAMBOO_BASIN.x) / BAMBOO_BASIN.rx;
@@ -795,7 +814,7 @@ class BambooSim implements SceneSim {
     this.#stepLeaves(total, aspect);
   }
 
-  #stepGrove(h: number, aspect: number): void {
+  #stepGrove(aspect: number): void {
     const t = this.#clock;
     const heading = this.#wind < 0 ? -1 : 1;
     const sway = windSway(this.#wind);
@@ -811,9 +830,8 @@ class BambooSim implements SceneSim {
         0.08 * Math.sin(BREEZE_SHORT * (along - 0.8 * speed * t) + 1.7);
       const gust = this.#gustAt(culm.x, culm.depth);
       const target = sway * (heading * breeze + gust) + culm.push;
-      const w = culm.omega;
-      culm.rate += (w * w * (target - culm.deflect) - 2 * CULM_DAMPING * w * culm.rate) * h;
-      culm.deflect += culm.rate * h;
+      culm.swayWas = culm.sway.x;
+      springStep(culm.sway, target, culm.omega, CULM_DAMPING, GROVE_STEP);
       culm.gust = Math.min(1, Math.abs(gust));
       if (culm.layer >= 1 && culm.layer <= 3 && Math.abs(culm.x / culm.depth) < half) {
         gustSum += culm.gust;
@@ -1025,15 +1043,16 @@ class BambooSim implements SceneSim {
 
   #pack(aspect: number): void {
     const grove = this.#groveData;
+    const groveAlpha = this.#groveSteps.alpha;
     for (let i = 0; i < this.#culms.length; i++) {
       const culm = this.#culms[i];
       if (!culm) continue;
-      grove[i * 2] = culm.deflect;
+      grove[i * 2] = culm.swayWas + (culm.sway.x - culm.swayWas) * groveAlpha;
       grove[i * 2 + 1] = culm.gust;
     }
 
     const device = this.#deviceData;
-    device[0] = this.#angle;
+    device[0] = this.#angleWas + (this.#angle - this.#angleWas) * this.#tubeSteps.alpha;
     device[1] = this.#fill / TIP_FILL;
     device[2] = Math.min(1, this.#outflow / POUR_FULL);
     device[3] = (this.#period > 0 ? 1 : 0) + (this.#gushLeft > 0 ? 1.5 : 0);

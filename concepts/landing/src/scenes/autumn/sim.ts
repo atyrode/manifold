@@ -358,7 +358,7 @@ class AutumnSim implements SceneSim {
     this.#gather(real);
     this.#sweep(real);
     this.#fade(real);
-    this.#pack();
+    this.#pack(frame.now);
     return this.#textures;
   }
 
@@ -897,7 +897,8 @@ class AutumnSim implements SceneSim {
 
   // ---- upload ------------------------------------------------------------------------------------
 
-  #pack(): void {
+  /** Pack and upload the leaves, the carpet and the state; `now` is the frame's wall clock (SimFrame.now), for the carpet's upload rate. */
+  #pack(now: number): void {
     const { horizon, eye, focal } = AUTUMN_VIEW;
     const data = this.#leafData;
     for (let i = 0; i < SLOTS; i++) {
@@ -935,7 +936,6 @@ class AutumnSim implements SceneSim {
     }
     this.#leafTexture.upload(data);
 
-    const now = performance.now();
     if (this.#carpet.dirty && now - this.#uploadedAt >= UPLOAD_EVERY_MS) {
       this.#carpetA.upload(this.#carpet.layers[0]);
       this.#carpetB.upload(this.#carpet.layers[1]);

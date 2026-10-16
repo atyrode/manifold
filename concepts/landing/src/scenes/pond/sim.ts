@@ -161,7 +161,9 @@ export function pondSim(gl: WebGL2RenderingContext, params: readonly ParamDef[])
       const fresh = layoutKey;
       if (relayout) request((key) => knobs.value(frame, key), frame.aspect);
       if (plantsOn) {
-        atlas.advance(atlas.texture ? SHEET_BUDGET_MS : FIRST_SHEET_BUDGET_MS);
+        atlas.advance(
+          Math.max(atlas.texture ? SHEET_BUDGET_MS : FIRST_SHEET_BUDGET_MS, frame.budget),
+        );
         // The breeze wanders slowly about its heading; the wind knob is its strength.
         const wind = knobs.value(frame, "wind");
         const heading = 0.35 + 0.6 * windNoise(frame.motionTime * 0.015, 7);
@@ -195,7 +197,10 @@ export function pondSim(gl: WebGL2RenderingContext, params: readonly ParamDef[])
           drawn = true;
         }
       }
-      if (leaves) canopy.advance(canopy.texture ? SHEET_BUDGET_MS : FIRST_SHEET_BUDGET_MS);
+      if (leaves)
+        canopy.advance(
+          Math.max(canopy.texture ? SHEET_BUDGET_MS : FIRST_SHEET_BUDGET_MS, frame.budget),
+        );
       textures[0] = plantsOn && drawn ? sheet?.texture : undefined;
       textures[1] = leaves ? canopy.texture : undefined;
       textures[2] = koi.frame(frame);

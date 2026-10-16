@@ -60,7 +60,7 @@
 import { markVertex } from "../../mark.ts";
 import { KnobReader, type ParamDef } from "../../params.ts";
 import { LevelCamera } from "../../sims/camera.ts";
-import { runBudgeted } from "../../sims/clock.ts";
+import { FixedStep, runBudgeted } from "../../sims/clock.ts";
 import { clamp, glslHash12, smoothstep } from "../../sims/math.ts";
 import {
   PlantHabit,
@@ -72,6 +72,7 @@ import {
   type PlantSpecies,
 } from "../../sims/plants.ts";
 import { mulberry32 } from "../../sims/random.ts";
+import { springStep, type Spring } from "../../sims/spring.ts";
 import { DataTexture } from "../../sims/texture.ts";
 import type { PointerState, SceneSim, SimFactory, SimFrame } from "../types.ts";
 
@@ -224,6 +225,9 @@ const SWAY_SETTLE = 12;
 /** Spring that the hanging lantern follows the pointer with (rad/s) and its damping ratio. */
 const LANTERN_SPRING = 9;
 const LANTERN_DAMPING = 0.55;
+/** The lantern's fixed step (s), and the most steps one frame catches up. */
+const LANTERN_STEP = 1 / 60;
+const LANTERN_MAX_STEPS = 6;
 /** Seconds the lantern takes to appear or go out. */
 const LANTERN_FADE = 0.35;
 /** Reach (screen heights) of its light: inside it fireflies lose the beat; inside HUSH they go dark. */
@@ -863,11 +867,13 @@ class FirefliesSim implements SceneSim {
   readonly #nearX = new Float64Array(FIREFLIES_NEAR);
   readonly #nearY = new Float64Array(FIREFLIES_NEAR);
 
-  // The lantern (screen heights from the middle, uv height) and its swing.
-  #lanternX = 0;
-  #lanternY = 0.5;
-  #lanternVX = 0;
-  #lanternVY = 0;
+  // The lantern (screen heights from the middle, uv height) on its springs, where it was a step
+  // before (it is drawn between the two), and its swing.
+  readonly #lanternX: Spring = { x: 0, v: 0 };
+  readonly #lanternY: Spring = { x: 0.5, v: 0 };
+  #lanternWasX = 0;
+  #lanternWasY = 0.5;
+  readonly #lanternClock = new FixedStep(LANTERN_STEP, LANTERN_MAX_STEPS);
   #lanternShown = 0;
   #flare = 0;
   #clicks = 0;
@@ -942,7 +948,12 @@ class FirefliesSim implements SceneSim {
     // The opening seconds run in whole steps (a few frames of them on a slow machine) before the
     // swarm moves on its own.
     if (this.#warmed < PREWARM_STEPS)
-      this.#warmed = runBudgeted(this.#warmStep, PREWARM_BUDGET_MS, PREWARM_STEPS, this.#warmed);
+      this.#warmed = runBudgeted(
+        this.#warmStep,
+        Math.max(PREWARM_BUDGET_MS, frame.budget),
+        PREWARM_STEPS,
+        this.#warmed,
+      );
     this.#watchTriggers(frame.fired, knobs);
     if (this.#warmed >= PREWARM_STEPS) {
       this.#schedule(knobs);
@@ -1513,9 +1524,9 @@ class FirefliesSim implements SceneSim {
     const shown = this.#lanternShown;
     if (shown > 0.005) {
       // Over the river the lantern's light reaches the trees it mirrors: it acts at its reflection.
-      const lx = this.#lanternX;
-      const ly =
-        this.#lanternY < FIREFLIES_WATER ? 2 * FIREFLIES_WATER - this.#lanternY : this.#lanternY;
+      const lx = this.#lanternX.x;
+      const lanternY = this.#lanternY.x;
+      const ly = lanternY < FIREFLIES_WATER ? 2 * FIREFLIES_WATER - lanternY : lanternY;
       const c0 = Math.max(0, Math.floor((lx - LANTERN_REACH - x0) / FIREFLIES_CELL));
       const c1 = Math.min(cols - 1, Math.ceil((lx + LANTERN_REACH - x0) / FIREFLIES_CELL));
       const r0 = Math.max(0, Math.floor((ly - LANTERN_REACH - FIREFLIES_WATER) / FIREFLIES_CELL));
@@ -1603,8 +1614,8 @@ class FirefliesSim implements SceneSim {
     const k = NEAR_COUPLING * knobs.coupling * mean;
     for (let j = 0; j < FIREFLIES_NEAR; j++) {
       const d = Math.hypot(
-        (this.#nearX[j] ?? 0) - this.#lanternX,
-        (this.#nearY[j] ?? 0) - this.#lanternY,
+        (this.#nearX[j] ?? 0) - this.#lanternX.x,
+        (this.#nearY[j] ?? 0) - this.#lanternY.x,
       );
       const w = this.#lanternShown * Math.max(0, 1 - d / LANTERN_REACH);
       let f = this.#nearPhase[j] ?? 0;
@@ -1624,22 +1635,19 @@ class FirefliesSim implements SceneSim {
     const y = pointer.y;
     if (on && this.#lanternShown < 0.02) {
       // Lit where the pointer comes in, not swung across from where it went out.
-      this.#lanternX = x;
-      this.#lanternY = y;
-      this.#lanternVX = 0;
-      this.#lanternVY = 0;
+      this.#lanternX.x = x;
+      this.#lanternY.x = y;
+      this.#lanternX.v = 0;
+      this.#lanternY.v = 0;
+      this.#lanternWasX = x;
+      this.#lanternWasY = y;
     }
     if (dt > 0) {
-      const w = LANTERN_SPRING;
-      const steps = Math.ceil(dt / 0.02);
-      const h = dt / steps;
-      for (let s = 0; s < steps; s++) {
-        this.#lanternVX +=
-          h * (w * w * (x - this.#lanternX) - 2 * LANTERN_DAMPING * w * this.#lanternVX);
-        this.#lanternVY +=
-          h * (w * w * (y - this.#lanternY) - 2 * LANTERN_DAMPING * w * this.#lanternVY);
-        this.#lanternX += h * this.#lanternVX;
-        this.#lanternY += h * this.#lanternVY;
+      for (let s = 0, n = this.#lanternClock.advance(dt); s < n; s++) {
+        this.#lanternWasX = this.#lanternX.x;
+        this.#lanternWasY = this.#lanternY.x;
+        springStep(this.#lanternX, x, LANTERN_SPRING, LANTERN_DAMPING, LANTERN_STEP);
+        springStep(this.#lanternY, y, LANTERN_SPRING, LANTERN_DAMPING, LANTERN_STEP);
       }
       this.#lanternShown +=
         ((on ? 1 : 0) - this.#lanternShown) * (1 - Math.exp(-dt / LANTERN_FADE));
@@ -1762,6 +1770,9 @@ class FirefliesSim implements SceneSim {
     const state = this.#state;
     const span = knobs.period / Math.min(FLASH_SECONDS, FLASH_SHARE * knobs.period);
     const clock = this.#clock;
+    const alpha = this.#lanternClock.alpha;
+    const lanternX = this.#lanternWasX + (this.#lanternX.x - this.#lanternWasX) * alpha;
+    const lanternY = this.#lanternWasY + (this.#lanternY.x - this.#lanternWasY) * alpha;
     const drifters = Math.round(FIREFLIES_DRIFTERS * Math.min(1, knobs.density * DRIFT_DENSITY));
     for (let j = 0; j < FIREFLIES_NEAR; j++) {
       const drifter = j < FIREFLIES_DRIFTERS;
@@ -1784,7 +1795,7 @@ class FirefliesSim implements SceneSim {
       const y = CAMERA.screenY(height, z);
       this.#nearX[j] = x;
       this.#nearY[j] = y;
-      const d = Math.hypot(x - this.#lanternX, y - this.#lanternY);
+      const d = Math.hypot(x - lanternX, y - lanternY);
       const hush = this.#lanternShown * (1 - smoothstep(LANTERN_HUSH * 0.4, LANTERN_HUSH, d)) * 0.9;
       state[4 * j] = x;
       state[4 * j + 1] = y;
@@ -1793,8 +1804,8 @@ class FirefliesSim implements SceneSim {
       state[4 * j + 3] = flash((this.#nearPhase[j] ?? 0) * span) * (1 - hush) * this.#nearGate(j);
     }
     let at = 4 * FIREFLIES_STATE_LANTERN;
-    state[at] = this.#lanternX;
-    state[at + 1] = this.#lanternY;
+    state[at] = lanternX;
+    state[at + 1] = lanternY;
     state[at + 2] = this.#lanternShown;
     state[at + 3] = this.#flare;
     at = 4 * FIREFLIES_STATE_BANK;

@@ -200,6 +200,8 @@ function frostWarmth(gl: WebGL2RenderingContext): Record<string, boolean> {
     time: 0,
     motionTime: 0,
     motion: 1,
+    now: 0,
+    budget: Infinity,
     width: 320,
     height: 200,
     aspect: 1.6,

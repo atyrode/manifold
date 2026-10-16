@@ -34,6 +34,8 @@ function script(gl: WebGL2RenderingContext, tick: number): Sheets {
     time: 0,
     motionTime: 0,
     motion: 1,
+    now: 0,
+    budget: Infinity,
     width: 960,
     height: 540,
     aspect: 16 / 9,

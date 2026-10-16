@@ -68,14 +68,12 @@ export const DUNES_SAND = { sparse: 1.2, plenty: 13 } as const;
  */
 const WARM_CHUNK = 20_000;
 const WARM_STEPS = 75;
-/** Milliseconds of warm-up per frame at least: done in a handful of frames (some ten on a fast machine). */
-const WARM_SLICE_MS = 18;
 /**
- * Where frames come slowly (a software renderer), the share of the time between them the warm-up
- * takes instead, up to WARM_SLICE_MAX_MS: it costs such a frame little and still ends within a few.
+ * Milliseconds of warm-up per frame at least: done in a handful of frames (some ten on a fast
+ * machine). Where frames come slowly (a software renderer) the frame's budget, a share of the time
+ * between them, raises it: it costs such a frame little and still ends within a few.
  */
-const WARM_SLICE_SHARE = 0.3;
-const WARM_SLICE_MAX_MS = 250;
+const WARM_SLICE_MS = 18;
 /** Updates per second at full wind with motion on (flux grows faster than the wind does). */
 const PICKS_PER_SECOND = 500_000;
 /** Most updates spent in one frame however long it was, so a stalled tab does not lock up. */
@@ -811,13 +809,10 @@ export function dunesSim(params: readonly ParamDef[]): SimFactory {
     let owed = 0;
     let uploaded = -1;
     let lastUpload = -Infinity;
-    let lastFrame: number | undefined;
 
     return {
       frame(frame: SimFrame): readonly (WebGLTexture | undefined)[] {
-        const now = performance.now();
-        const interval = lastFrame === undefined ? 0 : now - lastFrame;
-        lastFrame = now;
+        const now = frame.now;
         const sand = knobs.value(frame, "sand");
         const arrangement = knobs.value(frame, "seed");
         const wind = knobs.value(frame, "wind");
@@ -853,11 +848,12 @@ export function dunesSim(params: readonly ParamDef[]): SimFactory {
           // Time-sliced so frames keep coming; the laid-out dunes sharpen meanwhile. Where frames come
           // slowly (a software renderer) it takes a share of the time between them instead, so it
           // still ends within a few.
-          const slice = Math.min(
-            WARM_SLICE_MAX_MS,
-            Math.max(WARM_SLICE_MS, WARM_SLICE_SHARE * interval),
+          warmed = runBudgeted(
+            () => field.step(WARM_CHUNK),
+            Math.max(WARM_SLICE_MS, frame.budget),
+            WARM_STEPS,
+            warmed,
           );
-          warmed = runBudgeted(() => field.step(WARM_CHUNK), slice, WARM_STEPS, warmed);
         } else if (frame.dt > 0) {
           // Sand flux rises steeply with wind speed; wind 0 leaves the dunes standing.
           const strength = Math.min(1, Math.abs(wind));

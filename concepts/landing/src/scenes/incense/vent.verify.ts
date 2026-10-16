@@ -51,6 +51,8 @@ export function incenseVentVerify(gl: WebGL2RenderingContext): Record<string, un
       time: 0,
       motionTime: 0,
       motion: 1,
+      now: 0,
+      budget: Infinity,
       width: 320,
       height: 180,
       aspect: ASPECT,

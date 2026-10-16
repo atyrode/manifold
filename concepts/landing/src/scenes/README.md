@@ -1471,10 +1471,17 @@ camera, so dunes' overhead view has neither); a scene that needs them keeps its 
 
 When a scene needs state (particles, a height field, ink, a growing crystal, the pointer's wake),
 give it a `sim: (gl) => SceneSim`. Each frame the renderer calls `frame(SimFrame)` (dt, time,
-motionTime, motion, size, knob values, raw params, triggers, fired, pointer, parallax, passage) and
-binds the returned textures as `uSim0..uSim3` (`uSimOn` says which are set). `parallax` is the
-shader's `uPointer`: a sim casting the pointer through a camera the shader turns with it turns it too.
-Simulation catch-up is capped at 0.1 s per frame; the FPS footer measures uncapped frame delivery.
+motionTime, motion, now, budget, size, knob values, raw params, triggers, fired, pointer, parallax,
+passage) and binds the returned textures as `uSim0..uSim3` (`uSimOn` says which are set).
+`parallax` is the shader's `uPointer`: a sim casting the pointer through a camera the shader turns
+with it turns it too. Simulation catch-up is capped at 0.1 s per frame; the FPS footer measures
+uncapped frame delivery. Wall time comes from the frame, never from `performance.now()`: `now` is
+the frame's timestamp (ms) for debounces, upload rates and the time between frames, and `budget`
+the milliseconds budgeted work (a warm-up, a build, a paint) may block this frame, handed to
+`runBudgeted` (a scene may raise it for a first build); HeadlessSim gives its own clock and an
+Infinity budget, so a test's warm-up ends in its first frame. Step motion on a `FixedStep`
+(`clock.ts`) at a fixed h, with each step sampling its clock at its own moment, and draw between
+the last two steps by its `alpha`, so a seed plays the same at 60 and 144 Hz.
 A sim with more to hand over than four slots packs it into one texture read with `texelFetch`
 (which no filter touches), a linear filter left for the one field read with `texture`: bonsai's
 field rows under its tables, the countryside's records atlas (`country/atlas.ts`: the terrain's
@@ -1498,8 +1505,12 @@ Helpers in `src/sims/` (each file's header has the full API and a usage example)
 - `DataTexture` (`texture.ts`): r8/rg8/rgba8/r16f/rg16f/rgba16f from typed arrays (rows bottom to
   top), or `uploadImage(canvas)` for an rgba8 texture drawn with Canvas 2D (top row = uv.y 1).
 - `TrailField` (`trail.ts`): where the pointer has been, fading; for stirring and melting.
-- `VerletSystem` and `PointTexture` (`verlet.ts`): 3D position-based Verlet chains, nets and orb
-  webs with impulses and nearest-point queries, packed into a texture for `texelFetch` (kelp, dew).
+- `VerletSystem` and `PointTexture` (`verlet.ts`): 3D XPBD chains, nets and orb webs (compliance
+  in physical units, so a thread is as stiff at any substep; an undamped swing keeps its energy),
+  with impulses and nearest-point queries, stepped by the caller's FixedStep and packed into a
+  texture for `texelFetch` (kelp, dew, the mobile).
+- `springStep` (`spring.ts`): the damped spring every sim eases a swinging value with (plants,
+  meadow, bamboo, the fireflies' lantern), one step on a fixed h.
 - `HeightField` (`heightfield.ts`): stamps, grooves and rakes with side ridges, angle-of-repose
   slumping, smoothing, upload to r16f (garden, sand table).
 - `marchHeight` and `sampleRepeat` (`heightray.ts`): a ray against a height field on the CPU with a
@@ -1659,7 +1670,10 @@ the constellation figures as `common`'s `uCon*` uniforms (orbit's, and the night
 constellations that `skyStars` draws).
 
 Keep simulations cheap (a few ms per frame at most) and scale step counts with `dt * motion`.
-Sims must be deterministic for a given seed knob and survive `dt = 0` (paused) and resizes.
+Sims must be deterministic for a given seed knob and survive `dt = 0` (paused) and resizes. A layout
+a resize must rebuild waits for the new shape to rest first (garden's re-layout, frost's regrowth)
+and keeps what it can: frost seeds each site's draws by where it stands, counted in from its own
+side of the pane, so a resize keeps its pattern.
 
 Knob keys share the URL with the lab's own settings, so a knob may not be called `accent`,
 `scene`, `mode`, `dither`, `color`, `pixel`, `levels`, `motion`, `instance`, `mouse`, `view`,

@@ -1,14 +1,15 @@
 // The kelp forest's moving parts, worked out on the CPU for shader.ts.
 //
 // Giant kelp: every stipe is a buoyant Verlet chain (src/sims/verlet.ts) pinned to its holdfast on
-// the sea floor. The gas bladders along it lift it taut; water drag pulls each point toward the
-// local flow (dv/dt = DRAG · (u − v)). The flow is the swell's surge, a slow back-and-forth that
-// travels across the forest as a long wave (two components, so it never quite repeats), with a
-// little vertical orbit near the surface; a steady current the forest leans into; now and then a
-// big swell rolling through from one side; and the diver's hand: dragging the pointer stirs a wake
-// that pushes the kelp aside. A grown plant is longer than the water is deep: its lift fades in a
-// damped band under the surface, so its top bends over and lies along the surface, trailing
-// downstream, and its blades hang there as the canopy.
+// the sea floor, stepped on a FixedStep of its substep and drawn between its last two substeps. The
+// gas bladders along it lift it taut; water drag pulls each point toward the local flow
+// (dv/dt = DRAG · (u − v)). The flow is the swell's surge, a slow back-and-forth that travels across
+// the forest as a long wave (two components, so it never quite repeats), with a little vertical
+// orbit near the surface; a steady current the forest leans into; now and then a big swell rolling
+// through from one side; and the diver's hand: dragging the pointer stirs a wake that pushes the
+// kelp aside. A grown plant is longer than the water is deep: its lift fades in a damped band under
+// the surface, so its top bends over and lies along the surface, trailing downstream, and its
+// blades hang there as the canopy.
 //
 // Bull kelp (the species knob: all bull, or mixed): the same chain, shorter than the water is deep,
 // with its lift gathered in one gas bulb at the top (BULL_*), so the bare stipe hangs taut under the
@@ -27,9 +28,9 @@
 // plants in from the haze and back; the near layer keeps the middle of the frame clear until the
 // forest is dense, framing the page.
 //
-// Also: a school of small silver fish (boids, fixed steps of FISH_STEP), flashing as they turn and
-// scattering from the hand; a sea lion gliding past far off now and then; and the hand's fading
-// trail, where the night plankton sparks.
+// Also: a school of small silver fish (boids, fixed steps of FISH_STEP, drawn between the last two),
+// flashing as they turn and scattering from the hand; a sea lion gliding past far off now and then;
+// and the hand's fading trail, where the night plankton sparks.
 //
 // Passage (entrance and exit, see KELP_PASSAGE): the camera sinks from just under the surface into
 // the forest and, leaving, rises toward the light (shader.ts, KELP_CAMERA); a surge rolls through
@@ -245,8 +246,15 @@ const STATE_ROWS = 6;
 const BUOYANCY = 2;
 /** Water drag rate (1/s): the kelp follows the flow with a lag of about 1/DRAG. */
 const DRAG = 1.6;
-/** Bending stiffness of a stipe (skip-one constraints): enough for a smooth curve, no more. */
-const BEND = 0.2;
+/**
+ * Compliance of a stipe's bending (skip-one constraints, verlet.ts): enough for a smooth curve, no
+ * more. The chain's substep and constraint passes per substep (small steps, one pass each), and the
+ * most substeps one frame catches up (0.1 s).
+ */
+const BEND = 5.6e-4;
+const SUBSTEP = 1 / 240;
+const ITERATIONS = 1;
+const MAX_SUBSTEPS = 24;
 /** Vertical orbit of the surge at the surface, relative to its horizontal speed. */
 const ORBIT = 0.12;
 /**
@@ -423,6 +431,10 @@ class School {
   readonly #spread = new Float32Array(KELP_FISH.max);
   readonly #ax = new Float32Array(KELP_FISH.max);
   readonly #ay = new Float32Array(KELP_FISH.max);
+  /** Place and heading one step before the last: a fish is drawn between the two. */
+  readonly #wasX = new Float32Array(KELP_FISH.max);
+  readonly #wasY = new Float32Array(KELP_FISH.max);
+  readonly #wasHeading = new Float32Array(KELP_FISH.max);
   #clock = 0;
   readonly #stepper = new FixedStep(FISH_STEP, FISH_MAX_STEPS);
   #fright = 0;
@@ -453,6 +465,21 @@ class School {
       this.#phase[i] = random.next();
       this.#spread[i] = 0.7 + 0.6 * random.next();
     }
+    this.#wasX.set(this.x);
+    this.#wasY.set(this.y);
+    this.#wasHeading.set(this.heading);
+  }
+
+  /** Fish i as drawn: between its last two steps by the school's clock, into `pose`. */
+  drawn(i: number, pose: FishPose): void {
+    const alpha = this.#stepper.alpha;
+    const wx = this.#wasX[i] ?? 0;
+    const wy = this.#wasY[i] ?? 0;
+    const was = this.#wasHeading[i] ?? 0;
+    const turned = (this.heading[i] ?? 0) - was;
+    pose.x = wx + ((this.x[i] ?? 0) - wx) * alpha;
+    pose.y = wy + ((this.y[i] ?? 0) - wy) * alpha;
+    pose.heading = was + (turned - TAU * Math.round(turned / TAU)) * alpha;
   }
 
   /** Scatter from a click at (hx, hy). */
@@ -471,13 +498,14 @@ class School {
 
   /**
    * Fish i's drawn pose `seconds` into the entrance, the school coming in from `side` (+1 the
-   * right edge): it starts just beyond the frame's edge, at about its own height, and eases into
-   * the place its boid has, pointing the way it is moving, so the school streams in and turns
-   * to its own headings as it forms up. At q = 1 this is the boid's own pose.
+   * right edge), from its boid's drawn pose in `pose` (`drawn`): it starts just beyond the frame's
+   * edge, at about its own height, and eases into the place its boid has, pointing the way it is
+   * moving, so the school streams in and turns to its own headings as it forms up. At q = 1 this is
+   * the boid's own pose.
    */
   arrive(i: number, seconds: number, side: number, aspect: number, pose: FishPose): void {
-    const x = this.x[i] ?? 0;
-    const y = this.y[i] ?? 0;
+    const x = pose.x;
+    const y = pose.y;
     const u = this.#phase[i] ?? 0;
     const late = ((this.#spread[i] ?? 1) - 0.7) / 0.6;
     const q = clamp((seconds - ARRIVE_STAGGER * late) / ARRIVE_TIME, 0, 1);
@@ -489,16 +517,17 @@ class School {
     pose.y = y + (1 - e) * dy;
     const mx = e * (this.vx[i] ?? 0) - de * dx;
     const my = (this.vy[i] ?? 0) - de * dy;
-    pose.heading = Math.hypot(mx, my) > 1e-6 ? Math.atan2(my, mx) : (this.heading[i] ?? 0);
+    if (Math.hypot(mx, my) > 1e-6) pose.heading = Math.atan2(my, mx);
   }
 
   /**
-   * Fish i's drawn pose `seconds` into the exit, the school leaving through `side`'s edge: it
-   * swims on as its boid does, then turns toward the edge and quickens out of the frame.
+   * Fish i's drawn pose `seconds` into the exit, the school leaving through `side`'s edge, from its
+   * boid's drawn pose in `pose` (`drawn`): it swims on as its boid does, then turns toward the edge
+   * and quickens out of the frame.
    */
   depart(i: number, seconds: number, side: number, aspect: number, pose: FishPose): void {
-    const x = this.x[i] ?? 0;
-    const y = this.y[i] ?? 0;
+    const x = pose.x;
+    const y = pose.y;
     const u = this.#phase[i] ?? 0;
     const late = ((this.#spread[i] ?? 1) - 0.7) / 0.6;
     const q = clamp((seconds - LEAVE_STAGGER * late) / LEAVE_TIME, 0, 1);
@@ -510,12 +539,17 @@ class School {
     pose.y = y + e * dy;
     const mx = (1 - e) * (this.vx[i] ?? 0) + de * dx;
     const my = (this.vy[i] ?? 0) + de * dy;
-    pose.heading = Math.hypot(mx, my) > 1e-6 ? Math.atan2(my, mx) : (this.heading[i] ?? 0);
+    if (Math.hypot(mx, my) > 1e-6) pose.heading = Math.atan2(my, mx);
   }
 
   advance(dt: number, count: number, aspect: number, hand: Hand): void {
     const steps = this.#stepper.advance(dt);
-    for (let i = 0; i < steps; i++) this.#step(FISH_STEP, count, aspect, hand);
+    for (let i = 0; i < steps; i++) {
+      this.#wasX.set(this.x);
+      this.#wasY.set(this.y);
+      this.#wasHeading.set(this.heading);
+      this.#step(FISH_STEP, count, aspect, hand);
+    }
   }
 
   /** Where the school is drawn toward: a slow figure wandering the middle of the frame, never off it. */
@@ -663,6 +697,8 @@ class School {
 
 class KelpSim implements SceneSim {
   readonly #system: VerletSystem;
+  /** The chains' clock: whole substeps of SUBSTEP, the drawn state blended by its alpha. */
+  readonly #steps = new FixedStep(SUBSTEP, MAX_SUBSTEPS);
   readonly #points: PointTexture;
   readonly #state: DataTexture;
   readonly #stateData = new Float32Array(KELP_STATE_WIDTH * STATE_ROWS * 4);
@@ -753,10 +789,16 @@ class KelpSim implements SceneSim {
       mark: knobs.initial("mark"),
     };
     this.#system = new VerletSystem({
+      substep: SUBSTEP,
       points: POINT_COUNT,
       constraints: KELP_STIPES * (2 * KELP_SEGMENTS - 1),
     });
-    this.#stepOptions = { gravity: [0, 0, 0], damping: DRAG, iterations: 4, force: this.#force };
+    this.#stepOptions = {
+      gravity: [0, 0, 0],
+      damping: DRAG,
+      iterations: ITERATIONS,
+      force: this.#force,
+    };
     this.#points = new PointTexture(gl, {
       points: POINT_COUNT,
       velocity: true,
@@ -796,7 +838,7 @@ class KelpSim implements SceneSim {
     this.#schedule(advance);
     this.#updateHand(frame, advance);
 
-    this.#system.step(advance, this.#stepOptions);
+    this.#system.step(this.#stepOptions, this.#steps.advance(advance));
     this.#settleBlades(advance);
     this.#updatePresence(advance);
     this.#school.advance(advance, Math.round(knob.fish), this.#aspect, this.#hand);
@@ -805,7 +847,7 @@ class KelpSim implements SceneSim {
     this.#advanceVisitor(advance);
 
     this.#trail.decay(advance, TRAIL_HALF_LIFE);
-    this.#points.upload(this.#system, this.#lean);
+    this.#points.upload(this.#system, this.#steps.alpha, this.#lean);
     this.#packState();
     this.#state.upload(this.#stateData);
     if (this.#trail.version !== this.#trailVersion) {
@@ -899,10 +941,12 @@ class KelpSim implements SceneSim {
     this.#enterT = KELP_PASSAGE.enter;
     this.#exitT = 0;
     this.#passing = false;
+    const substeps = Math.round(PREWARM_STEP / SUBSTEP);
     for (let t = 0; t < PREWARM; t += PREWARM_STEP) {
-      sys.step(PREWARM_STEP, this.#stepOptions);
+      sys.step(this.#stepOptions, substeps);
       this.#settleBlades(PREWARM_STEP);
     }
+    this.#steps.reset();
     const fish = Math.round(this.#knob.fish);
     for (let t = 0; t < 2 * PREWARM; t += PREWARM_STEP)
       this.#school.advance(PREWARM_STEP, fish, this.#aspect, this.#hand);
@@ -1260,21 +1304,17 @@ class KelpSim implements SceneSim {
     let minY = Infinity;
     let maxX = -Infinity;
     let maxY = -Infinity;
+    const pose = this.#pose;
     for (let i = 0; i < KELP_FISH.max; i++) {
       const shown = school.shown[i] ?? 0;
-      let x = school.x[i] ?? 0;
-      let y = school.y[i] ?? 0;
-      let angle = school.heading[i] ?? 0;
+      school.drawn(i, pose);
       if (this.#passing && shown > 0) {
-        const pose = this.#pose;
         if (this.#exitT > 0) school.depart(i, this.#exitT, this.#exitSide, this.#aspect, pose);
         else school.arrive(i, this.#enterT, this.#downstream, this.#aspect, pose);
-        x = pose.x;
-        y = pose.y;
-        angle = pose.heading;
       }
+      const { x, y, heading } = pose;
       const size = school.size[i] ?? 0;
-      this.#put(KELP_ROW.fishPose, i, x, y, Math.cos(angle), Math.sin(angle));
+      this.#put(KELP_ROW.fishPose, i, x, y, Math.cos(heading), Math.sin(heading));
       this.#put(
         KELP_ROW.fishLook,
         i,

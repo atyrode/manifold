@@ -7,6 +7,7 @@
 // through many values) wait, each replacing the last, so only the newest is painted next.
 
 import { paintAtlas, paintCanopy, type CanopyConfig } from "./decor.ts";
+import { runBudgeted } from "./sims/clock.ts";
 
 /** What to paint: the plant atlas, or the canopy sheet spanning `span` frames. */
 export type SheetJob = { kind: "atlas" } | { kind: "canopy"; config: CanopyConfig; span: number };
@@ -224,23 +225,21 @@ export class SheetPainter {
     }
   }
 
-  /** Paint on the page for up to `budget` milliseconds, when the worker could not. */
+  /**
+   * Paint on the page, when the worker could not, for up to `budget` milliseconds (the frame's,
+   * SimFrame.budget, or a floor it raises: Infinity paints the whole sheet now).
+   */
   advance(budget: number): void {
     const job = this.#local;
     if (!job) return;
-    const start = performance.now();
-    while (performance.now() - start < budget) {
-      if (job.steps.next().done) {
-        this.#local = undefined;
-        this.#upload(
-          job.key,
-          job.sheet.width,
-          job.sheet.height,
-          new Uint8Array(job.ctx.getImageData(0, 0, job.sheet.width, job.sheet.height).data.buffer),
-        );
-        return;
-      }
-    }
+    if (runBudgeted(() => job.steps.next().done === true, budget, Infinity) < Infinity) return;
+    this.#local = undefined;
+    this.#upload(
+      job.key,
+      job.sheet.width,
+      job.sheet.height,
+      new Uint8Array(job.ctx.getImageData(0, 0, job.sheet.width, job.sheet.height).data.buffer),
+    );
   }
 
   #paintHere(order: Order): void {

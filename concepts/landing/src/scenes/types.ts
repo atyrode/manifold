@@ -49,6 +49,21 @@ export interface SimFrame {
   motionTime: number;
   /** The lab's motion amount 0..1 (the shader's `uMotion`). */
   motion: number;
+  /**
+   * Wall time of this frame in milliseconds, on performance.now()'s origin: the renderer's
+   * requestAnimationFrame timestamp (a check's held clock under test, HeadlessSim's own). It runs on
+   * while the scene is paused or frozen. Pace real-time work by it (the time between frames, a knob
+   * resting before a relayout, an upload rate), never by performance.now(), so a held clock holds
+   * the sim too.
+   */
+  now: number;
+  /**
+   * Milliseconds this frame may block on budgeted work (warm-ups, builds, paints: hand it to
+   * `runBudgeted`, sims/clock.ts). The renderer grants a share of the time between frames, from 8 ms
+   * on a fast display to 120 ms on a slow one; HeadlessSim grants Infinity, so every warm-up ends in
+   * its first frame. A scene may raise it for a first build (`Math.max(floor, frame.budget)`).
+   */
+  budget: number;
   /** Frame size in dither cells. */
   width: number;
   height: number;
