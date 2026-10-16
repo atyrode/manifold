@@ -232,8 +232,14 @@ draws the knob, never its URL keys, values, reset, shuffle or presets:
   off), and gets an on/off chip over the bar that keeps its amount while off. Make a part that may be
   left out a feature with `min: 0`, `max: 100`, `step: 1`; a drag or key that takes it to zero
   switches it off.
-- `{ kind: "sky", part }`: the sky dial. `skyKnobs` sets it on `time`, `cycle` and `moon`; the dial
-  stands where a group holds a `time` part.
+- `{ kind: "sky", part }`: the almanac. `skyKnobs` sets it on `time`, `cycle` and `moon`; the sky
+  dial stands where a group holds a `time` part, its night half showing the scene's `stars` knob as
+  dots. A `season` part (with its `year`, see `SeasonYear`) and the year's cycle (`year`, a feature)
+  join the dial from any group as a season ring round it: spring on the right, summer at the top,
+  autumn on the left, winter below. A span's stretch is lit and the rest dim; a choice's seasons are
+  segments a drag snaps to, its options that are no time of year chips beside it; a feature's
+  switch is a chip, and dragging the marker switches it on. Arrow keys on the ring step the season.
+  Without a `time` part the season parts make a season wheel of their own in their group.
 - `{ kind: "direction" }` on a range from below 0 to above 0: a vector pad, min to the left
   (`weatherKnobs`' wind, kelp's and delta's currents).
 - `{ kind: "compass", strength }` on a heading (a turn 0..1 counter-clockwise from the right): a

@@ -1445,9 +1445,11 @@ body.lab-open .lab-opener {
 /* the sky dial */
 .sky {
   display: grid;
-  grid-template-columns: 116px minmax(0, 1fr);
+  grid-template-columns: auto minmax(0, 1fr);
   align-items: center;
   gap: 14px;
+  /* with the row's: the side column's chips shrink rather than widen the group */
+  min-width: 0;
 }
 .sky-dial {
   position: relative;
@@ -1478,9 +1480,14 @@ body.lab-open .lab-opener {
 .sky-star {
   fill: var(--lab-ink);
   opacity: 0.25;
+  transition: opacity 200ms;
 }
 .sky-star.lit {
   opacity: 0.8;
+}
+/* past the stars knob's count */
+.sky-star.out {
+  opacity: 0;
 }
 .sky-horizon {
   stroke: var(--lab-line-strong);
@@ -1552,6 +1559,12 @@ body.lab-open .lab-opener {
   display: grid;
   gap: 6px;
 }
+/* a long readout shortens its label rather than widening the group */
+.sky-row,
+.sky-row > .row,
+.sky-row .row-head {
+  min-width: 0;
+}
 .sky-row > .row {
   margin-top: 4px;
 }
@@ -1567,6 +1580,142 @@ body.lab-open .lab-opener {
 }
 .moon-glyph-lit {
   fill: var(--lab-ink);
+}
+
+/* the almanac's season ring: round the sky dial, or alone round the season's glyph and name */
+.almanac {
+  position: relative;
+  width: 148px;
+  height: 148px;
+}
+.almanac > .sky-dial {
+  position: absolute;
+  top: 16px;
+  left: 16px;
+  z-index: 1;
+}
+/* the dial's round edge takes its pointer, so the ring gets the square's corners */
+.almanac > .sky-dial .sky-face {
+  pointer-events: none;
+}
+.almanac.bare {
+  width: 116px;
+  height: 116px;
+}
+.almanac.bare > .sky-dial {
+  top: 0;
+  left: 0;
+}
+.almanac-ring {
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  cursor: grab;
+  touch-action: none;
+}
+.almanac-ring.dragging {
+  cursor: grabbing;
+}
+/* on the rim, so the group's edge never clips it */
+.almanac-ring:focus-visible {
+  outline-offset: -3px;
+}
+.almanac-face {
+  display: block;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+}
+.almanac-rim {
+  fill: none;
+  stroke: var(--lab-line-strong);
+  stroke-width: 1;
+}
+.almanac.passing .almanac-rim {
+  stroke: var(--lab-accent);
+  stroke-dasharray: 3 4;
+  animation: orbit-run 8s linear infinite;
+}
+.almanac-tint {
+  opacity: 0.8;
+  transition: opacity 160ms;
+}
+.almanac-tint.dead {
+  opacity: 0.14;
+}
+.almanac.off .almanac-tint:not(.dead) {
+  opacity: 0.42;
+}
+.almanac-stop {
+  opacity: 0.6;
+  transition: opacity 120ms;
+}
+.almanac-ring:hover .almanac-stop {
+  opacity: 0.72;
+}
+.almanac-stop.on,
+.almanac-ring:hover .almanac-stop.on {
+  opacity: 1;
+  stroke: var(--lab-ink);
+  stroke-width: 1;
+}
+.almanac-word {
+  font: 600 5.5px var(--mono);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  fill: rgb(11 12 16 / 0.82);
+  pointer-events: none;
+}
+.almanac-word.dead {
+  fill: var(--lab-faint);
+}
+.almanac-needle {
+  stroke: var(--lab-ink);
+  stroke-width: 1.4;
+  stroke-linecap: round;
+}
+.almanac-needle.halo {
+  stroke: rgb(11 12 16 / 0.7);
+  stroke-width: 3.4;
+}
+.almanac-knob {
+  stroke: var(--lab-ink);
+  stroke-width: 1.2;
+  transition: r 120ms;
+}
+.almanac-ring:hover .almanac-knob,
+.almanac-ring.dragging .almanac-knob {
+  r: 3.4px;
+}
+.almanac-marker.off .almanac-knob {
+  fill: var(--lab-bg);
+  stroke-dasharray: 1.6 1.2;
+}
+.almanac-marker.off .almanac-needle:not(.halo) {
+  stroke-dasharray: 1.6 1.6;
+}
+.almanac-centre {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-content: center;
+  justify-items: center;
+  gap: 4px;
+  pointer-events: none;
+}
+.almanac-glyph .icon {
+  width: 26px;
+  height: 26px;
+  color: var(--tint, var(--lab-muted));
+}
+.almanac-name {
+  max-width: 96px;
+  font-size: 10px;
+  line-height: 1.2;
+  letter-spacing: 0.06em;
+  text-align: center;
+  text-transform: uppercase;
+  color: var(--lab-ink);
 }
 
 /* mix bars */

@@ -9,9 +9,10 @@ import { formatValue, MAX_SEED, type Option, type ParamDef } from "../params.ts"
 import { colorIds, ditherIds, viewIds } from "../renderer.ts";
 import { sceneDefs, type SceneId } from "../scenes/index.ts";
 import { accentOf, defaultsFor, modeIds, paramDefaults, type LabState } from "../state.ts";
+import { almanacParts, gatherAlmanac } from "./almanac-model.ts";
 import { chipGrid } from "./chips.ts";
 import { dice, iconButton, nowButton, row, segments, slider, switchControl } from "./controls.ts";
-import { skyDial } from "./dial.ts";
+import { seasonWheel, skyDial } from "./dial.ts";
 import { h, reveal, type Built, type LabContext } from "./dom.ts";
 import { flywayCard, flywayOf } from "./flyway.ts";
 import { icon, iconFromWords, type IconName } from "./icons.ts";
@@ -341,17 +342,15 @@ export class Inspector {
     const defs = sceneDefs[scene].params;
     const knobs = new Knobs(this.#ctx, defs, paramDefaults(scene));
     // The world's groups lead on a shelf of their own; the scene's first group opens by default.
+    // The almanac's season and year parts stand with the time of day, wherever they are declared.
+    const groups = new Map<string, ParamDef[]>();
+    for (const def of defs) groups.set(def.group, [...(groups.get(def.group) ?? []), def]);
+    gatherAlmanac(groups);
     const { world, own } = shelves(sceneDefs[scene]);
     const section = (group: string) =>
-      this.#sceneGroup(
-        scene,
-        knobs,
-        group,
-        defs.filter((def) => def.group === group),
-        group === defs[0]?.group,
-      );
-    const worldSections = world.map(section);
-    const ownSections = own.map(section);
+      this.#sceneGroup(scene, knobs, group, groups.get(group) ?? [], group === defs[0]?.group);
+    const worldSections = world.filter((group) => groups.has(group)).map(section);
+    const ownSections = own.filter((group) => groups.has(group)).map(section);
     this.#sceneSections = [...worldSections, ...ownSections];
     this.#worldDivider.el.hidden = worldSections.length === 0;
     this.#worldSlot.replaceChildren(...worldSections.map((section) => section.el));
@@ -389,11 +388,13 @@ export class Inspector {
       items.push({ at: defs.indexOf(def), built, when: def.when });
     };
 
-    // The sky dial, where the group holds its time of day.
+    // The sky dial, where the group holds its time of day, with the season parts round it (from any
+    // group, see gatherAlmanac); without one, the season parts make a wheel of their own.
     const time = defs.find(
       (def): def is RangeDef =>
         def.kind === "range" && def.widget?.kind === "sky" && def.widget.part === "time",
     );
+    const almanac = almanacParts(defs);
     let dial: Built | undefined;
     if (time) {
       const part = (name: "cycle" | "moon") =>
@@ -403,8 +404,11 @@ export class Inspector {
         );
       const cycle = part("cycle");
       const moon = part("moon");
-      dial = skyDial(knobs, time, cycle, moon);
-      for (const def of [time, cycle, moon]) if (def) used.add(def);
+      dial = skyDial(knobs, time, cycle, moon, almanac);
+      for (const def of [time, cycle, moon, almanac.season, almanac.year]) if (def) used.add(def);
+    } else if (almanac.season) {
+      place(almanac.season, seasonWheel(knobs, almanac.season, almanac.year));
+      for (const def of [almanac.season, almanac.year]) if (def) used.add(def);
     }
 
     // Pads: a compass's heading and strength, a position's two coordinates, a signed direction.
