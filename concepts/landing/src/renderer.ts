@@ -1,3 +1,12 @@
+import {
+  climateCold,
+  climateLying,
+  climatePrecip,
+  hasClimate,
+  seasonKnob,
+  yearAt,
+} from "./climate.ts";
+import type { SeasonKnob } from "./climate.ts";
 import { constellationUniforms } from "./constellations.ts";
 import { MAX_PARAMS, MAX_TRIGGERS } from "./params.ts";
 import { sceneDefs, type SceneId } from "./scenes/index.ts";
@@ -172,9 +181,10 @@ export interface SceneFailure {
  * A scene being drawn: the program it draws with (undefined when it failed to build; while the
  * all-features program for changed knobs builds, still the one on screen), its simulation, what
  * stopped it (see `DitherRenderer.failure`), where its `rain` and `snow` knobs sit in `params`
- * (-1 when it has none, which reads as 0), its `uWeather` (how wet its world is and how much snow
- * lies, 0..1 each, on the scene clock) and its `SimFrame.passage` and `uPassage`, rewritten in
- * place each frame.
+ * (-1 when it has none, which reads as 0), its season knob and where it sits when the season sets
+ * its climate (src/climate.ts: it keeps a season and can snow), its `uWeather` (how wet its world is
+ * and how much snow lies, 0..1 each, on the scene clock) and its `SimFrame.passage` and `uPassage`,
+ * rewritten in place each frame.
  */
 interface ActiveScene {
   id: SceneId;
@@ -183,6 +193,7 @@ interface ActiveScene {
   failure: SceneFailure | undefined;
   rain: number;
   snow: number;
+  season: { def: SeasonKnob; at: number } | undefined;
   readonly weather: { wet: number; lying: number };
   readonly passage: { enter: number; exit: number };
 }
@@ -827,6 +838,10 @@ export class DitherRenderer {
       failure: "stage" in built ? built : undefined,
       rain: params.findIndex((def) => def.key === "rain"),
       snow: params.findIndex((def) => def.key === "snow"),
+      season: (() => {
+        const def = hasClimate(params) ? seasonKnob(params) : undefined;
+        return def ? { def, at: params.indexOf(def) } : undefined;
+      })(),
       weather: { wet: 0, lying: 0 },
       passage: { enter: 1, exit: 0 },
     };
@@ -1257,13 +1272,24 @@ export class DitherRenderer {
     // The world follows the scene's own rain and snow on the scene clock: where they lead (soaked in
     // steady rain, damp in drizzle; snow lying deeper the harder it snows, less in rain), approached
     // exponentially. Wetting takes 1.2 / rain s per e-fold (~9 s to soak in steady rain), drying 25 s
-    // (~75 s); settling 3 / snow s (~18 s in steady snow), melting 30 s (~90 s), faster in rain.
-    // A scene just entered, or a frozen frame, starts where its weather leads.
+    // (~75 s); settling 3 / snow s (~18 s in steady snow; 10 s for winter's own), melting 30 s
+    // (~90 s), faster in rain. Where the season sets the climate, the cold turns rain to snow and
+    // deep winter lays snow of its own. A scene just entered, or a frozen frame, starts where its
+    // weather leads.
     const weather = scene.weather;
-    const rain = s.params[scene.rain] ?? 0;
-    const snow = s.params[scene.snow] ?? 0;
+    const cold = scene.season
+      ? climateCold(yearAt(scene.season.def, s.params[scene.season.at] ?? 0))
+      : 0;
+    const { rain, snow } = climatePrecip(
+      s.params[scene.rain] ?? 0,
+      s.params[scene.snow] ?? 0,
+      cold,
+    );
     const wetTo = rain > 0 ? Math.min(1, 0.4 + 1.1 * rain) : 0;
-    const lyingTo = snow > 0 ? Math.min(1, 0.25 + snow) * (1 - 0.5 * rain) : 0;
+    const lyingTo = Math.max(
+      snow > 0 ? Math.min(1, 0.25 + snow) * (1 - 0.5 * rain) : 0,
+      climateLying(cold),
+    );
     if (draw.fresh || this.#frozen) {
       weather.wet = wetTo;
       weather.lying = lyingTo;
@@ -1273,7 +1299,9 @@ export class DitherRenderer {
       weather.lying =
         lyingTo +
         (weather.lying - lyingTo) *
-          Math.exp(-step / (weather.lying < lyingTo ? 3 / snow : 30 / (1 + 4 * rain)));
+          Math.exp(
+            -step / (weather.lying < lyingTo ? (snow > 0 ? 3 / snow : 10) : 30 / (1 + 4 * rain)),
+          );
     }
     const passage = scene.passage;
     // Simulations upload (and so bind) their textures: step them before binding this frame's units.

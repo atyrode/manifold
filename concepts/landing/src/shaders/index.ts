@@ -2,10 +2,11 @@
 // browser upscales it with `image-rendering: pixelated`, so `gl_FragCoord` is already the cell index.
 //
 // Every scene compiles to its own fragment shader (see scenes/types.ts): the common preamble, the
-// scene's compile-time features (fixed, and keyed by its knobs: one program per distinct set), the
-// shared libraries, one `#define K_<key> uParams[i]` per knob, the scene's GLSL, then `main`, which
-// calls the scene's entry and dithers the Shade it returns into the palette.
+// scene's compile-time features (fixed, and keyed by its knobs: one program per distinct set), one
+// `#define K_<key> uParams[i]` per knob and SKY_YEAR, the shared libraries, the scene's GLSL, then
+// `main`, which calls the scene's entry and dithers the Shade it returns into the palette.
 
+import { seasonKnob, yearGlsl } from "../climate.ts";
 import { effective, MAX_PARAMS } from "../params.ts";
 import type { SceneDef } from "../scenes/types.ts";
 import { common } from "./common.ts";
@@ -45,6 +46,15 @@ function knobDefines(scene: SceneDef): string {
       return `#define K_${def.key} uParams[${index}]\n`;
     })
     .join("");
+}
+
+/**
+ * `#define SKY_YEAR <expr>`: the scene's year position (src/climate.ts `yearAt`) from its season
+ * knob's define, for the climate; -1.0 for a scene that keeps no season.
+ */
+function yearDefine(scene: SceneDef): string {
+  const season = seasonKnob(scene.params);
+  return `#define SKY_YEAR ${season ? yearGlsl(season, `K_${season.key}`) : "-1.0"}\n`;
 }
 
 /** Library feature names: macros the libraries test with `#ifdef` / `#if`. */
@@ -116,11 +126,14 @@ export function fragmentSourceFor(
   scene: SceneDef,
   features: Readonly<Record<string, number>> = sceneFeatures(scene),
 ): string {
+  // Knob defines come ahead of the libraries so that a library may test for an opt-in shared knob
+  // with `#ifdef K_<key>`; the libraries read no other knob.
   return (
     common +
     featureDefines(scene, features) +
-    libs +
     knobDefines(scene) +
+    yearDefine(scene) +
+    libs +
     scene.glsl +
     main(scene.entry)
   );

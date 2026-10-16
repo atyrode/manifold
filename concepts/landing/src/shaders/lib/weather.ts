@@ -6,6 +6,8 @@
 // in src/scenes/README.md. How wet the world is and how much snow lies come from the renderer as
 // uWeather (src/renderer.ts).
 
+import { climateGlsl } from "../../climate.ts";
+
 export const weatherGlsl = `
 // ---- weather ----
 
@@ -595,4 +597,4 @@ float rainShafts(vec2 p, float tm, float amount, float wind) {
   float streak = 0.75 + 0.25 * vnoise(vec2(x * 9.0, p.y * 4.0 + tm * 0.5));
   return curtain * hang * streak * smoothstep(0.15, 0.5, a) * (0.25 + 0.75 * a * a);
 }
-`;
+${climateGlsl}`;

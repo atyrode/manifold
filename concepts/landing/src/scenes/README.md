@@ -17,8 +17,10 @@ src/scenes/<id>/sim.ts      optional SimFactory (CPU or GPU simulation feeding t
 ## The shader
 
 Each scene compiles to its own program: `common` + its library `features` (`#define`s, see
-"Composing components") + shared `libs` + generated knob defines + the scene's `glsl` + the
-dithering `main`. The entry returns a `Shade`:
+"Composing components") + generated knob defines and `SKY_YEAR` (see "The climate") + shared `libs`
+\+ the scene's `glsl` + the dithering `main`. The knob defines come ahead of the libraries so a
+library may test an opt-in shared knob with `#ifdef K_<key>`; libraries read no other knob. The
+entry returns a `Shade`:
 
 ```glsl
 struct Shade {
@@ -1065,6 +1067,18 @@ surfaces and change them. Never paste them over the frame as a flat layer.
   heavy rain with near drops and gust sheets, and 1.0 a downpour: dense sheets sweeping with the
   wind, loud splashes, and visibility falling. Let the sky, the light, the wetness and the splashes
   follow the same scale.
+- **The climate.** Where a scene keeps a season (a knob tagged as the almanac's `season` part,
+  `SeasonYear`) and can snow (it has a `snow` knob), the season sets the climate
+  (`src/climate.ts`). `SKY_YEAR` is the scene's year position, generated from the season knob's
+  tag (0 the start of spring .. 0.75 of winter, wrapping; -1.0 without a season), and
+  `climateCold(SKY_YEAR)` how cold it is: 0 from mid-spring to mid-autumn, 1 at midwinter, half at
+  the turns of winter. Fall what the cold makes of the knobs, `vec2 f = climatePrecip(K_rain,
+K_snow, cold)` (x rain, y snow): the cold's share of the rain falls as snow, and the snow switch
+  falls whatever the season, an override the lab marks as out of season. The renderer follows the
+  same: `uWeather` wets and settles from what falls, and deep winter lays snow of its own
+  (`climateLying(cold)`) into `uWeather.y`, so a winter scene is white without a snowfall. Draw
+  winter's lying snow only from `uWeather.y`, never from the season knob directly, so every scene's
+  winter agrees.
 
 ### World layers
 
