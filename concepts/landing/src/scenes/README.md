@@ -194,7 +194,13 @@ Wherever a setup enters (`readParams` in `src/state.ts`: a link, a preset, a tou
 history), an old value the map lists sets the new knob unless the setup already sets it, and the
 old key is dropped either way, so the page rewrites an old link to the new key. The countryside's
 `season` (0 summer, 1 harvest, 2 autumn) opens at its `date` (0.375, 0.47, 0.6). Rewrite the
-committed presets (`src/presets.ts`) to the new key as well.
+committed presets (`src/presets.ts`) to the new key as well. A knob that changes kind keeps its key
+but not what an old value means (a share of 0..100 that became a feature reads 30 as its switch:
+on, at the default share): rewrite the presets that set it in the knobs that now say it (the share
+on its `-amount`), their `commit` moved to a build that has those. `src/presets.test.ts` holds
+every committed preset to loading as itself: only its scene's keys and the lab's, each value as its
+knob reads it, and the whole query as the lab writes it (`canonicalSetup`), which is how the
+Presets view lights the preset just loaded.
 
 Shared knobs come from `src/scenes/atmosphere.ts`: `skyKnobs({ time })` gives `K_time`, `K_cycle`;
 `weatherKnobs({...})` gives `K_rain`, `K_snow`, `K_fog`, `K_wind`, `K_lightning`, `K_aurora`

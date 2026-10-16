@@ -82,18 +82,18 @@ describe("the countryside's old season", () => {
   test("a preset saved before the date knob loads at its season, as its rewritten form does", () => {
     const [old] = parsePresets(
       JSON.stringify({
-        name: "Countryside · lavender rows",
-        commit: "6e72cac6",
-        query: "scene=country&season=0&crops=0&lavender=100",
-        savedAt: "2026-10-14",
+        name: "Countryside · wildwood",
+        commit: "defa703a",
+        query: "scene=country&time=0.64&season=2&crops=0&woodland-amount=100&pines=0.45",
+        savedAt: "2026-10-16",
       }),
     );
-    const committed = presets.find((preset) => preset.name === "Countryside · lavender rows");
-    if (!old || !committed) throw new Error("no lavender preset");
+    const committed = presets.find((preset) => preset.name === "Countryside · wildwood");
+    if (!old || !committed) throw new Error("no wildwood preset");
     expect(readParams("country", new URLSearchParams(old.query))).toEqual(
       readParams("country", new URLSearchParams(committed.query)),
     );
-    expect(readParams("country", new URLSearchParams(committed.query)).date).toBe(0.375);
+    expect(readParams("country", new URLSearchParams(committed.query)).date).toBe(0.6);
   });
 });
 
