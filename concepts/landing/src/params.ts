@@ -241,6 +241,25 @@ export interface Blurb {
   blurb: string;
   /** The heading's lab icon; default: the first word of the group's key or title naming one. */
   icon?: IconName;
+  /** One-tap setups drawn at the top of the group (see "Lab widgets" in scenes/README.md). */
+  recipes?: readonly Recipe[];
+}
+
+/**
+ * A one-tap setup in a group's heading: URL values by key (a feature's amount as `<key>-amount`), of
+ * any of the scene's groups. A scene shows it where it has every key in `needs` and one key it sets,
+ * and takes only the keys it has, each as its knob holds it: a range clamped and snapped, a switch
+ * on for any value above 0 (so a cover written for a range turns a feature of that key on), a
+ * feature's amount only where the recipe switches the feature on, a choice only to one of its
+ * options, a seed rounded into 0..MAX_SEED. It is lit while every key it takes holds its value.
+ */
+export interface Recipe {
+  label: string;
+  /** The chip's glyph; default: the first word of its label naming one. */
+  icon?: IconName;
+  help: string;
+  set: Readonly<Record<string, number>>;
+  needs?: readonly string[];
 }
 
 /** How a knob's value reads in the lab. */

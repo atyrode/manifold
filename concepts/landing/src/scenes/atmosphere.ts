@@ -16,6 +16,7 @@ import {
   range,
   type Blurb,
   type ParamDef,
+  type Recipe,
 } from "../params.ts";
 import type { SceneTheme } from "./types.ts";
 
@@ -275,21 +276,272 @@ export function weatherKnobs(options: WeatherOptions): ParamDef[] {
 }
 
 /**
+ * The sky's recipes, for the shared sky headings: moments of the day with the clock stopped, and
+ * nights for the sky components, clearing the weather that would hide them.
+ */
+export const skyRecipes: readonly Recipe[] = [
+  {
+    label: "Dawn",
+    icon: "sunrise",
+    help: "The sun on the horizon, the first warm light; the clock stands still.",
+    set: { time: 0.25, cycle: 0 },
+    needs: ["time"],
+  },
+  {
+    label: "Noon",
+    icon: "noon",
+    help: "The sun at its highest, short shadows; the clock stands still.",
+    set: { time: 0.5, cycle: 0 },
+    needs: ["time"],
+  },
+  {
+    label: "Golden hour",
+    icon: "goldenHour",
+    help: "The sun low before it sets, long warm light; the clock stands still.",
+    set: { time: 0.7, cycle: 0 },
+    needs: ["time"],
+  },
+  {
+    label: "Starry night",
+    icon: "stars",
+    help: "Midnight with no moon and nothing overhead: every star out, and the Milky Way where there is one.",
+    set: {
+      time: 0,
+      cycle: 0,
+      stars: 1,
+      moon: 0,
+      milkyWay: 1,
+      "milkyWay-amount": 1.5,
+      clouds: 0,
+      rain: 0,
+      snow: 0,
+      fog: 0,
+    },
+    needs: ["stars"],
+  },
+  {
+    label: "Full-moon night",
+    icon: "fullMoon",
+    help: "Midnight under a full moon: moonlight on the land, a few clouds silvered by it.",
+    set: {
+      time: 0,
+      cycle: 0,
+      moon: 1,
+      "moon-amount": 1,
+      clouds: 0.2,
+      "clouds-amount": 0.2,
+      rain: 0,
+      snow: 0,
+      fog: 0,
+    },
+    needs: ["moon"],
+  },
+  {
+    label: "Meteor shower",
+    icon: "meteor",
+    help: "A clear, moonless midnight with a shooting star every few seconds.",
+    set: {
+      time: 0,
+      cycle: 0,
+      meteors: 1,
+      "meteors-amount": 1,
+      stars: 0.9,
+      moon: 0,
+      clouds: 0,
+      rain: 0,
+      snow: 0,
+      fog: 0,
+    },
+    needs: ["meteors"],
+  },
+  {
+    label: "Aurora night",
+    icon: "aurora",
+    help: "A clear, moonless midnight with the aurora's curtains bright overhead.",
+    set: {
+      time: 0,
+      cycle: 0,
+      aurora: 1,
+      "aurora-amount": 0.9,
+      moon: 0,
+      clouds: 0,
+      rain: 0,
+      snow: 0,
+      fog: 0,
+    },
+    needs: ["aurora"],
+  },
+];
+
+/**
+ * The weather's recipes, for the shared weather headings: each sets the cloud, rain, snow, fog and
+ * lightning outright (and the wind where it shapes the weather), so none inherits another's leftovers.
+ */
+export const weatherRecipes: readonly Recipe[] = [
+  {
+    label: "Clear",
+    icon: "sun",
+    help: "A clear sky: no cloud, rain, snow, fog or lightning.",
+    set: { clouds: 0, shadows: 0, rain: 0, snow: 0, fog: 0, lightning: 0 },
+  },
+  {
+    label: "Fair",
+    icon: "fair",
+    help: "Fair-weather cumulus drifting over, their shadows sweeping the ground; dry and bright.",
+    set: {
+      clouds: 0.3,
+      "clouds-amount": 0.3,
+      shadows: 1,
+      "shadows-amount": 0.5,
+      rain: 0,
+      snow: 0,
+      fog: 0,
+      lightning: 0,
+    },
+    needs: ["clouds"],
+  },
+  {
+    label: "Overcast",
+    icon: "overcast",
+    help: "A full grey deck, no sun to cast shadows; dry, the distance a little hazy.",
+    set: {
+      clouds: 0.9,
+      "clouds-amount": 0.9,
+      shadows: 0,
+      rain: 0,
+      snow: 0,
+      fog: 0.1,
+      lightning: 0,
+    },
+    needs: ["clouds"],
+  },
+  {
+    label: "Drizzle",
+    icon: "drizzle",
+    help: "A low grey sky and a fine rain falling almost straight, a soft mist over the distance.",
+    set: {
+      clouds: 0.8,
+      "clouds-amount": 0.8,
+      shadows: 0,
+      rain: 1,
+      "rain-amount": 0.15,
+      snow: 0,
+      fog: 0.15,
+      lightning: 0,
+      wind: 0.1,
+    },
+    needs: ["rain"],
+  },
+  {
+    label: "Downpour",
+    icon: "rain",
+    help: "Heavy rain out of a closed sky, slanting in the wind, the far side lost in it.",
+    set: {
+      clouds: 1,
+      "clouds-amount": 1,
+      shadows: 0,
+      rain: 1,
+      "rain-amount": 0.9,
+      snow: 0,
+      fog: 0.3,
+      lightning: 0,
+      wind: 0.35,
+    },
+    needs: ["rain"],
+  },
+  {
+    label: "Thunderstorm",
+    icon: "lightning",
+    help: "A storm: a dark deck, driving rain, a strong wind and lightning forking down.",
+    set: {
+      clouds: 1,
+      "clouds-amount": 1,
+      shadows: 0,
+      rain: 1,
+      "rain-amount": 0.75,
+      snow: 0,
+      fog: 0.15,
+      lightning: 1,
+      "lightning-amount": 0.7,
+      wind: 0.6,
+    },
+    needs: ["lightning"],
+  },
+  {
+    label: "Snowfall",
+    icon: "snow",
+    help: "Snow drifting down out of a soft grey sky on a light breeze, settling as it falls.",
+    set: {
+      clouds: 0.85,
+      "clouds-amount": 0.85,
+      shadows: 0,
+      rain: 0,
+      snow: 1,
+      "snow-amount": 0.4,
+      fog: 0.1,
+      lightning: 0,
+      wind: 0.1,
+    },
+    needs: ["snow"],
+  },
+  {
+    label: "Blizzard",
+    icon: "blizzard",
+    help: "Thick snow driven sideways by a gale, the distance whited out.",
+    set: {
+      clouds: 1,
+      "clouds-amount": 1,
+      shadows: 0,
+      rain: 0,
+      snow: 1,
+      "snow-amount": 1,
+      fog: 0.5,
+      lightning: 0,
+      wind: 0.9,
+    },
+    needs: ["snow"],
+  },
+  {
+    label: "Fog",
+    icon: "fog",
+    help: "Still air and thick fog: the distance fades to nothing under a grey sky.",
+    set: {
+      clouds: 0.6,
+      "clouds-amount": 0.6,
+      shadows: 0,
+      rain: 0,
+      snow: 0,
+      fog: 0.8,
+      lightning: 0,
+      wind: 0.05,
+    },
+    needs: ["fog"],
+  },
+];
+
+/**
  * Lab headings for the shared groups, on the lab's World shelf: `skyNight` for a sky group that also
  * holds sky components.
  */
 export const atmosphereGroups: Readonly<Record<"sky" | "skyNight" | "weather", Blurb>> = {
-  sky: { title: "Sky", shelf: "world", blurb: "Time of day, and whether the days pass." },
+  sky: {
+    title: "Sky",
+    shelf: "world",
+    blurb: "Time of day, and whether the days pass.",
+    recipes: skyRecipes,
+  },
   skyNight: {
     title: "Sky",
     shelf: "world",
     blurb:
       "Time of day, whether the days pass, and the night sky: its stars, the moon's phase, the odd shooting star.",
+    recipes: skyRecipes,
   },
   weather: {
     title: "Weather",
     shelf: "world",
     blurb: "Cloud, rain, snow, fog, wind and lightning, shared by every outdoor scene.",
+    recipes: weatherRecipes,
   },
 };
 

@@ -24,10 +24,11 @@ import { knobIcon } from "./lab/knobs.ts";
 import { Workspace, type PanelLayout } from "./lab/panels.ts";
 import { PREFS_KEY, readPrefs } from "./lab/prefs.ts";
 import { PresetsView } from "./lab/presets.ts";
+import { rollPatch } from "./lab/roll-model.ts";
 import { Popover, separator } from "./lab/transport.ts";
 import { Views } from "./lab/views.ts";
 import { carryWorld } from "./lab/world-model.ts";
-import { MAX_SEED, type ParamDef } from "./params.ts";
+import type { ParamDef } from "./params.ts";
 import type { DitherRenderer, SceneFailure } from "./renderer.ts";
 import { sceneDefs, sceneIds, type SceneId } from "./scenes/index.ts";
 import {
@@ -1144,40 +1145,7 @@ export class Lab {
   }
 
   #shuffle(): void {
-    const { state } = this.#current();
-    const patch: Patch = {};
-    const pickOne = <T>(list: readonly T[]): T | undefined =>
-      list[Math.floor(Math.random() * list.length)];
-    const within = (min: number, max: number, step: number) =>
-      Math.round((min + Math.random() * (max - min)) / step) * step;
-    for (const def of sceneDefs[state.scene].params) {
-      if (def.steady) continue;
-      switch (def.kind) {
-        case "range":
-          patch[def.key] = Number(within(def.min, def.max, def.step).toFixed(4));
-          break;
-        case "toggle":
-          patch[def.key] = Math.random() < 0.45 ? 1 : 0;
-          break;
-        case "choice":
-          patch[def.key] = pickOne(def.options)?.value ?? def.value;
-          break;
-        case "seed":
-          patch[def.key] = Math.floor(Math.random() * (MAX_SEED + 1));
-          break;
-        case "feature":
-          patch[def.key] = Math.random() < 0.55 ? 1 : 0;
-          patch[`${def.key}-amount`] = def.options
-            ? (pickOne(def.options)?.value ?? def.value)
-            : Number(within(def.min, def.max, def.step).toFixed(4));
-          break;
-        default: {
-          const unreachable: never = def;
-          throw new Error(`landing: unknown knob ${String(unreachable)}`);
-        }
-      }
-    }
-    this.#change(patch, true);
+    this.#change(rollPatch(sceneDefs[this.#current().state.scene].params), true);
   }
 
   #copyLink(button: HTMLButtonElement): void {

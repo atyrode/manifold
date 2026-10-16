@@ -7,7 +7,13 @@ import type { Blurb, ParamDef } from "../params.ts";
 import { birdKnobs, birdsGroup, type BirdOptions } from "../shaders/lib/birds.ts";
 import { CLOUD_TIERS } from "../shaders/lib/clouds.ts";
 import { WORLD_BIRD_HOURS } from "../shaders/lib/world.ts";
-import { skyKnobs, weatherKnobs, type WeatherOptions } from "./atmosphere.ts";
+import {
+  skyKnobs,
+  skyRecipes,
+  weatherKnobs,
+  weatherRecipes,
+  type WeatherOptions,
+} from "./atmosphere.ts";
 
 /** The world's defaults where a scene gives none of its own. */
 export const WORLD_DEFAULTS = {
@@ -97,12 +103,14 @@ export const worldGroups: Readonly<Record<"sky" | "weather" | "birds", Blurb>> =
     shelf: "world",
     blurb:
       "Time of day, whether the days pass, and the night sky: its stars and the Milky Way, the moon's phase, the odd shooting star and the aurora.",
+    recipes: skyRecipes,
   },
   weather: {
     title: "Weather",
     shelf: "world",
     blurb:
       "Cloud and its shadows, rain, snow, fog, wind and lightning: one weather, shared by every outdoor scene.",
+    recipes: weatherRecipes,
   },
   birds: birdsGroup,
 };

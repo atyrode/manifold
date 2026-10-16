@@ -241,6 +241,15 @@ draws the knob, never its URL keys, values, reset, shuffle or presets:
 - `{ kind: "position", y, screen? }` on the across range of a point whose height is range `y`: one
   XY pad; `screen` gives the values where the frame's edges lie when the point may leave it.
 
+A group's heading may carry `recipes` (`Recipe` in `src/params.ts`): one-tap setups drawn as a strip
+of glyph chips at the top of the group, the one the setup already is lit. A recipe sets URL keys of
+any group in one undoable change; a scene shows it only where it has every key in `needs` and one
+key it sets, and takes only the keys it has, each as its knob holds it (rules in
+`src/lab/recipes-model.ts`). The shared sky and weather headings carry the sky's (Dawn .. Aurora
+night) and the weather's (Clear .. Fog): give a scene's own blurb as `{ ...atmosphereGroups.weather,
+blurb }` so they come along. Each group's heading also has a dice that shuffles that group alone, by
+the transport's shuffle rule (`src/lab/roll-model.ts`).
+
 Icons come from `src/lab/icons.ts`, one line set: a knob's `icon` (or a group's `Blurb.icon`) picks
 one, otherwise the first word of its key or label that names one does.
 

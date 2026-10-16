@@ -996,13 +996,18 @@ body.lab-open .lab-opener {
 .group.off .group-summary {
   opacity: 0.7;
 }
-.group-reset {
+.group-reset,
+.group-roll {
   width: 24px;
   height: 24px;
 }
-.group-reset .icon {
+.group-reset .icon,
+.group-roll .icon {
   width: 13px;
   height: 13px;
+}
+.group-roll.rolling .icon {
+  animation: dice-roll 520ms cubic-bezier(0.3, 0.7, 0.4, 1);
 }
 .group-body {
   display: grid;
@@ -1366,6 +1371,74 @@ body.lab-open .lab-opener {
   display: none;
 }
 .amount-row .row-head > .icon {
+  color: var(--lab-accent);
+}
+
+/* recipes: a group's one-tap setups, a glyph each */
+.recipes {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+}
+.recipes:not(:has(.recipe:not(.no-match))) {
+  display: none;
+}
+.recipe {
+  display: inline-grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  color: var(--lab-muted);
+  background: var(--lab-raise);
+  border: 1px solid var(--lab-line);
+  border-radius: 5px;
+  transition:
+    color 120ms,
+    border-color 120ms,
+    background 120ms;
+}
+.recipe .icon {
+  width: 15px;
+  height: 15px;
+}
+.recipe:hover {
+  color: var(--lab-ink);
+  border-color: var(--lab-line-strong);
+}
+.recipe[aria-pressed="true"] {
+  color: var(--lab-accent);
+  background: var(--lab-accent-soft);
+  border-color: rgb(255 181 71 / 0.55);
+}
+.recipe.no-match {
+  display: none;
+}
+.recipe.applied .icon {
+  animation: recipe-pop 420ms cubic-bezier(0.3, 0.7, 0.4, 1.4);
+}
+@keyframes recipe-pop {
+  40% {
+    transform: scale(1.35) translateY(-1px);
+  }
+}
+/* its own line, held even while empty, so naming a chip never moves the controls under it */
+.recipe-name {
+  flex-basis: 100%;
+  min-height: 13px;
+  overflow: hidden;
+  padding-left: 1px;
+  font-size: 10.5px;
+  line-height: 13px;
+  color: var(--lab-muted);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.group.searching .recipe-name {
+  display: none;
+}
+.recipe-name.is-lit {
   color: var(--lab-accent);
 }
 

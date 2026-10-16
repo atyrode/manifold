@@ -28,6 +28,8 @@ import { compassPad, directionPad, positionPad, type Strength } from "./pads.ts"
 import { Rail, type RailEntry } from "./rail.ts";
 import { worldDivider } from "./world.ts";
 import { shelves } from "./world-model.ts";
+import { recipeStrip } from "./recipes.ts";
+import { rollPatch } from "./roll-model.ts";
 
 export const MODE_LABEL: Record<(typeof modeIds)[number], string> = {
   landing: "Landing",
@@ -196,6 +198,8 @@ export class Inspector {
     offNote?: string;
     modified?: () => boolean;
     reset?: () => void;
+    /** Shuffle the group's knobs: a dice beside the reset. */
+    roll?: () => void;
     syncers: (() => void)[];
   }): Section {
     const isOpen = () => this.#prefs.sections[spec.id] ?? spec.open;
@@ -218,6 +222,16 @@ export class Inspector {
       spec.reset?.(),
     );
     reset.classList.add("group-reset");
+    const roll = spec.roll
+      ? iconButton("dice", `Shuffle ${spec.title.toLowerCase()} (this group only)`, (button) => {
+          spec.roll?.();
+          button.classList.remove("rolling");
+          void button.offsetWidth;
+          button.classList.add("rolling");
+        })
+      : null;
+    roll?.classList.add("group-roll");
+    roll?.addEventListener("animationend", () => roll.classList.remove("rolling"));
     const offNote = spec.offNote ? h("p", { class: "group-off" }, spec.offNote) : null;
     const inner = h(
       "div",
@@ -234,7 +248,14 @@ export class Inspector {
     const el = h(
       "section",
       { class: "group", "data-id": spec.id, "data-title": spec.title.toLowerCase() },
-      h("div", { class: "group-head" }, toggle, spec.reset ? reset : null, spec.master?.el ?? null),
+      h(
+        "div",
+        { class: "group-head" },
+        toggle,
+        spec.reset ? reset : null,
+        roll,
+        spec.master?.el ?? null,
+      ),
       body,
     );
     toggle.addEventListener("click", () => {
@@ -441,6 +462,11 @@ export class Inspector {
         place(def, this.#knobRow(knobs, def));
 
     const content: HTMLElement[] = [];
+    const recipes = recipeStrip(knobs, info, sceneDefs[scene].params);
+    if (recipes) {
+      content.push(recipes.el);
+      syncers.push(recipes.sync);
+    }
     if (master?.kind === "feature" && masterAmountShown) {
       const built = this.#masterAmount(knobs, master);
       content.push(built.el);
@@ -496,6 +522,7 @@ export class Inspector {
         : {}),
       modified: () => knobs.modified(keys),
       reset: () => knobs.reset(keys),
+      ...(defs.some((def) => !def.steady) ? { roll: () => knobs.set(rollPatch(defs), true) } : {}),
       syncers,
     });
   }
