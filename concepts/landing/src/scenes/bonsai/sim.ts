@@ -4,6 +4,9 @@
 // pads swaying on springs in the breeze, gusts and the pointer's passing; leaves, petals and needles
 // fluttering down and settling on the moss, the stand and the floor, where they rot away in patches
 // through the season; and pruning: a click snips the twig under it, which falls and lies with them.
+// Everything steps STEP at a time on a FixedStep (sims/clock.ts), so the bonsai sways the same at 60
+// and at 144 Hz; the pads' sway, the falling leaves and the cut twigs are drawn between their last
+// two steps by the clock's alpha.
 //
 // Textures (layout in geometry.ts):
 //   uSim0  rgba16f map, linear: wood (distance, radius, front depth, deadness).
@@ -19,6 +22,7 @@
 //          then the shoot grid (up to four shoot indices + 1 per cell).
 import { climateCold, climateLying } from "../../climate.ts";
 import type { ParamDef } from "../../params.ts";
+import { FixedStep } from "../../sims/clock.ts";
 import { smoothstep } from "../../sims/math.ts";
 import { mulberry32 } from "../../sims/random.ts";
 import { DataTexture } from "../../sims/texture.ts";
@@ -73,7 +77,9 @@ const GUST_FLOOR = 0.08;
 const HOVER_GAIN = 0.3;
 const HOVER_REACH = 1.5;
 const SWAY_LIMIT = 0.03;
+/** The fixed step (s), and the most steps one frame catches up (a quarter of a second). */
 const STEP = 1 / 60;
+const MAX_STEPS = 15;
 
 // ---- the year ----
 /** Real seconds per year when the seasons stand still (for lifetimes measured in years). */
@@ -127,6 +133,9 @@ interface PadState {
   vx: number;
   y: number;
   vy: number;
+  /** Its sway a step before: drawn between that and x, y. */
+  wx: number;
+  wy: number;
   phase: number;
   /** Screen centre and radii for the pointer. */
   sx: number;
@@ -173,6 +182,11 @@ interface Mote {
   hue: number;
   angle: number;
   flip: number;
+  /** Its place, angle and flip a step before: drawn between those and these. */
+  wx: number;
+  wy: number;
+  wangle: number;
+  wflip: number;
 }
 
 interface Twig {
@@ -185,6 +199,10 @@ interface Twig {
   angle: number;
   spin: number;
   reach: number;
+  /** Its place and angle a step before: drawn between those and these. */
+  wx: number;
+  wy: number;
+  wangle: number;
 }
 
 interface LitterSlot {
@@ -224,6 +242,8 @@ class BonsaiSim implements SceneSim {
 
   #tree: Tree = { nodes: [], pads: [], tufts: [], tip: 0.002 };
   #pads: PadState[] = [];
+  /** Each pad's sway as drawn this frame (x, y), for the field. */
+  #sway = new Float64Array(0);
   #shoots: Shoot[] = [];
   readonly #motes: Mote[] = [];
   readonly #twigs: Twig[] = [];
@@ -243,6 +263,7 @@ class BonsaiSim implements SceneSim {
   #elapsed = 0;
   #yearIndex = Number.NaN;
   #clock = 0;
+  readonly #steps = new FixedStep(STEP, MAX_STEPS);
   #random = mulberry32(1);
   #lying = 0;
   #falling = 0;
@@ -335,6 +356,10 @@ class BonsaiSim implements SceneSim {
         hue: 0,
         angle: 0,
         flip: 1,
+        wx: 0,
+        wy: 0,
+        wangle: 0,
+        wflip: 1,
       });
     }
     for (let i = 0; i < 2; i++)
@@ -348,6 +373,9 @@ class BonsaiSim implements SceneSim {
         angle: 0,
         spin: 0,
         reach: 0.05,
+        wx: 0,
+        wy: 0,
+        wangle: 0,
       });
     for (let i = 0; i < BONSAI_LITTER_SLOTS; i++)
       this.#slots.push({ used: false, age: 0, life: 1, bounds: [0, 0, -1, -1] });
@@ -355,13 +383,16 @@ class BonsaiSim implements SceneSim {
 
   frame(frame: SimFrame): readonly (WebGLTexture | undefined)[] {
     const aspect = frame.aspect > 0 ? frame.aspect : 16 / 9;
-    const advance = Math.min(Math.max(0, frame.dt) * Math.max(0, frame.motion), 0.25);
+    const advance = Math.max(0, frame.dt) * Math.max(0, frame.motion);
     this.#readKnobs(frame.values);
     this.#watchTriggers(frame.triggers);
     this.#stepPassage(frame);
     this.#trackPointer(frame.pointer, frame.dt, aspect);
-    if (advance > 0) this.#advance(advance);
-    this.#pack();
+    for (let s = 0, n = this.#steps.advance(advance); s < n; s++) {
+      this.#keepDrawn();
+      this.#advance(STEP);
+    }
+    this.#pack(this.#steps.alpha);
     if (this.#mapsDirty) {
       this.#woodTexture.upload(this.#maps.wood);
       this.#leafTexture.upload(this.#maps.leaf);
@@ -423,6 +454,8 @@ class BonsaiSim implements SceneSim {
           vx: 0,
           y: 0,
           vy: 0,
+          wx: 0,
+          wy: 0,
           phase: i * 1.7 + this.#random() * TAU,
           sx: pad.x,
           sy: pad.y + BONSAI_TILT * pad.z,
@@ -466,6 +499,8 @@ class BonsaiSim implements SceneSim {
       const fall = 1 + this.#random() * 4;
       for (let s = 0; s < fall * 10; s++) this.#stepMote(mote, 0.1);
     }
+    // Shown as it now stands, nothing to draw between.
+    this.#keepDrawn();
   }
 
   #watchTriggers(triggers: readonly number[]): void {
@@ -511,6 +546,7 @@ class BonsaiSim implements SceneSim {
     if (pointer.pressed) this.#prune(x, y);
   }
 
+  /** One fixed step of dt seconds: the year, the gusts, the pads, the snow, the shoots, everything falling. */
   #advance(dt: number): void {
     this.#clock += dt;
     if (this.#minutes > 0) this.#elapsed += dt / this.#yearSeconds;
@@ -519,8 +555,7 @@ class BonsaiSim implements SceneSim {
     const y = this.#year;
     this.#scheduleGusts();
     this.#gust = this.#gustStrength * gustSwell(this.#clock - this.#gustAt);
-    const steps = Math.ceil(dt / STEP);
-    for (let s = 0; s < steps; s++) this.#stepPads(dt / steps, this.#push);
+    this.#stepPads(dt, this.#push);
     this.#stepSnow(y, dt);
     this.#stepShoots(y);
     // Leaves let go at the season's pace, more in a gust.
@@ -539,6 +574,21 @@ class BonsaiSim implements SceneSim {
         s.used = false;
         this.#atlasDirty = true;
       }
+    }
+  }
+
+  /** What is drawn as it stands becomes the step before: the pads' sway, the leaves and twigs in the air. */
+  #keepDrawn(): void {
+    for (const pad of this.#pads) {
+      pad.wx = pad.x;
+      pad.wy = pad.y;
+    }
+    for (const mote of this.#motes) if (mote.live) keepMote(mote);
+    for (const twig of this.#twigs) {
+      if (!twig.live) continue;
+      twig.wx = twig.x;
+      twig.wy = twig.y;
+      twig.wangle = twig.angle;
     }
   }
 
@@ -569,7 +619,11 @@ class BonsaiSim implements SceneSim {
     }
     const moved = this.#shift - before;
     for (const mote of this.#motes) if (mote.live) mote.x0 -= moved;
-    for (const twig of this.#twigs) if (twig.live) twig.x -= moved;
+    for (const twig of this.#twigs) {
+      if (!twig.live) continue;
+      twig.x -= moved;
+      twig.wx -= moved;
+    }
     const target = Math.min(SHAKEN_LEAVES, Math.floor(q * 10));
     while (this.#shaken < target) {
       this.#shaken++;
@@ -909,6 +963,7 @@ class BonsaiSim implements SceneSim {
           : bonsaiHue(species, y, t.r1, t.r2, t.outer);
     mote.angle = mote.tilt;
     mote.flip = 1;
+    keepMote(mote);
     return mote;
   }
 
@@ -1130,6 +1185,9 @@ class BonsaiSim implements SceneSim {
       angle: 0,
       spin: (this.#random() - 0.5) * 2.5,
       reach: reach * 0.5,
+      wx: ex,
+      wy: ey,
+      wangle: 0,
     });
     this.#snip = {
       x: s.x + Math.cos(s.angle) * 0.004,
@@ -1233,6 +1291,9 @@ class BonsaiSim implements SceneSim {
         angle: 0,
         spin: (this.#random() - 0.5) * 1.6,
         reach: Math.min(reach, BONSAI_SPRITE.span * 0.45),
+        wx: cx,
+        wy: cy,
+        wangle: 0,
       });
       const parent = tree.nodes[cut.parent];
       this.#snip = {
@@ -1362,19 +1423,28 @@ class BonsaiSim implements SceneSim {
 
   // ---- packing ----
 
-  #pack(): void {
+  /** Everything the shader reads, the moving parts `alpha` of the way through their last step. */
+  #pack(alpha: number): void {
     const data = this.#data;
     const maps = this.#maps;
     const y = this.#year;
+    // Each pad's sway as drawn.
+    const pads = this.#pads;
+    if (this.#sway.length !== 2 * pads.length) this.#sway = new Float64Array(2 * pads.length);
+    const sway = this.#sway;
+    for (const [i, pad] of pads.entries()) {
+      sway[2 * i] = pad.wx + (pad.x - pad.wx) * alpha;
+      sway[2 * i + 1] = pad.wy + (pad.y - pad.wy) * alpha;
+    }
     // The field: sway per texel from its two pads, and the silhouettes.
     for (let f = 0; f < FW * FH; f++) {
       const flex = maps.flex[f] ?? 0;
-      const a = this.#pads[maps.padA[f] ?? -1];
-      const b = this.#pads[maps.padB[f] ?? -1];
+      const a = maps.padA[f] ?? -1;
+      const b = maps.padB[f] ?? -1;
       const wa = maps.weightA[f] ?? 1;
       const o = f * 4;
-      data[o] = flex * ((a?.x ?? 0) * wa + (b?.x ?? 0) * (1 - wa));
-      data[o + 1] = flex * ((a?.y ?? 0) * wa + (b?.y ?? 0) * (1 - wa));
+      data[o] = flex * ((sway[2 * a] ?? 0) * wa + (sway[2 * b] ?? 0) * (1 - wa));
+      data[o + 1] = flex * ((sway[2 * a + 1] ?? 0) * wa + (sway[2 * b + 1] ?? 0) * (1 - wa));
       data[o + 2] = maps.woodSil[f] ?? 0;
       data[o + 3] = maps.leafSil[f] ?? 0;
     }
@@ -1402,18 +1472,19 @@ class BonsaiSim implements SceneSim {
     for (const [i, m] of this.#motes.entries()) {
       if (!m.live) continue;
       const o = moteRow + i * 8;
-      const sy = m.y + BONSAI_TILT * m.z;
-      data[o] = m.x;
+      const x = m.wx + (m.x - m.wx) * alpha;
+      const sy = m.wy + (m.y - m.wy) * alpha + BONSAI_TILT * m.z;
+      data[o] = x;
       data[o + 1] = sy;
-      data[o + 2] = m.angle;
+      data[o + 2] = m.wangle + (m.angle - m.wangle) * alpha;
       data[o + 3] = m.size;
       data[o + 4] = m.kind + Math.min(0.999, Math.max(0, m.hue));
-      data[o + 5] = m.flip;
+      data[o + 5] = m.wflip + (m.flip - m.wflip) * alpha;
       data[o + 6] = 1;
       data[o + 7] = 0;
-      x0 = Math.min(x0, m.x - 1.5 * m.size);
+      x0 = Math.min(x0, x - 1.5 * m.size);
       y0 = Math.min(y0, sy - 1.5 * m.size);
-      x1 = Math.max(x1, m.x + 1.5 * m.size);
+      x1 = Math.max(x1, x + 1.5 * m.size);
       y1 = Math.max(y1, sy + 1.5 * m.size);
     }
     // Litter decay per slot.
@@ -1447,13 +1518,21 @@ class BonsaiSim implements SceneSim {
     data[state + 15] = y1;
     for (const [k, twig] of this.#twigs.entries()) {
       const o = state + (4 + 2 * k) * 4;
-      data[o] = twig.x;
-      data[o + 1] = twig.y;
-      data[o + 2] = twig.angle;
+      data[o] = twig.wx + (twig.x - twig.wx) * alpha;
+      data[o + 1] = twig.wy + (twig.y - twig.wy) * alpha;
+      data[o + 2] = twig.wangle + (twig.angle - twig.wangle) * alpha;
       data[o + 3] = twig.live ? 1 : 0;
       data[o + 4] = twig.live ? 1 : 0;
     }
   }
+}
+
+/** A leaf (petal, needle) as it is becomes the step before: what its next step is drawn from. */
+function keepMote(mote: Mote): void {
+  mote.wx = mote.x;
+  mote.wy = mote.y;
+  mote.wangle = mote.angle;
+  mote.wflip = mote.flip;
 }
 
 /**

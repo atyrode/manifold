@@ -15,7 +15,9 @@
 // Each figure is sampled once onto a MODE_NODES² grid over the plate and scaled to RMS 0.5 on it.
 // The tone sweeps up through the shape's figures and back down. Between two figures the field is
 // crossfaded, u = norm·((1 − s)·u_from + s·u_to), so the nodal lines slide and reconnect and the
-// sand follows them; norm keeps the plate's overall swing steady through the mix.
+// sand follows them; norm keeps the plate's overall swing steady through the mix. The sweep and
+// the sand step STEP seconds at a time (a FixedStep); the crossfade is drawn between the last two
+// steps by the clock's alpha, and the sand field eases over SHOWN_MEMORY seconds of the frame clock.
 //
 // The sand. Every grain has its own threshold θ (grains differ in size and grip): it only moves
 // while the plate's local swing A|u| exceeds it, so it comes to rest a little way off the nodal
@@ -63,14 +65,14 @@
 //          on the move, eased over SHOWN_MEMORY seconds so passing grains never flicker.
 //   uSim1  rg16f MODE_NODES² over the same square: R the figure the plate comes from, G the one it
 //          goes to (each at RMS 0.5).
-//   uSim2  rgba16f 2×1, nearest. Texel 0: eased crossfade s, norm, swing A, share of the M in the field.
+//   uSim2  rgba16f 2×1, nearest. Texel 0: crossfade s (drawn between steps), norm, swing A, share of the M in the field.
 //          Texel 1: the passage: the strewn veil (0 at rest), the plate's tilt, the veil's gain; and
 //          the grain's relief, its angle of repose's tangent over dry sand's (1 for dry sand).
 //   uSim3  r16f CHLADNI_SAND_TEXELS² as uSim0: powder grains per texel, eased the same way; handed
 //          over only while the grain is fine enough to hold powder.
 import { KnobReader, type ParamDef } from "../../params.ts";
 import { markVertex, segmentDistance } from "../../mark.ts";
-import { runBudgeted } from "../../sims/clock.ts";
+import { FixedStep, runBudgeted } from "../../sims/clock.ts";
 import { grainAt, SAND, type Grain } from "../../sims/granular.ts";
 import { clamp, hash31, smoothstep } from "../../sims/math.ts";
 import { Random } from "../../sims/random.ts";
@@ -131,8 +133,9 @@ const DRIVE = 0.5;
 const DRIVE_RADIUS = CHLADNI_HUB * 1.15;
 /** Grains keep this far inside the rim. */
 const RIM = 0.985;
-/** Longest simulated step (s); a frame takes as many as its time needs. */
-const MAX_STEP = 0.05;
+/** The sweep and the sand step this long (s), at most MAX_STEPS a frame (0.1 s of catch-up). */
+const STEP = 1 / 60;
+const MAX_STEPS = 6;
 /**
  * Memory (s) of the sand field as shown: it eases toward where the grains are, so the count of
  * grains passing through a texel never flickers from one frame to the next.
@@ -635,6 +638,8 @@ class ChladniSim implements SceneSim {
   #moving = false;
   /** Linear progress of the crossfade 0..1; the field uses smoothstep(0, 1, #mix). */
   #mix = 0;
+  /** #mix a step before, unless the crossfade (re)started or arrived since: drawn between the two. */
+  #mixWas = 0;
   #norm = 1;
   #correlation = 0;
   #held = 0;
@@ -671,6 +676,7 @@ class ChladniSim implements SceneSim {
   #pourY = 0;
   /** Steps of settling the opening figure done so far (PREWARM_STEPS: finished). */
   #warmed = PREWARM_STEPS;
+  readonly #steps = new FixedStep(STEP, MAX_STEPS);
   #pourDebt = 0;
   #shedDebt = 0;
   #sandDirty = true;
@@ -796,7 +802,12 @@ class ChladniSim implements SceneSim {
     }
     // Settle a new plate's opening figure in steps; a slow machine takes more frames, not a different picture.
     if (this.#warmed < PREWARM_STEPS) {
-      this.#warmed = runBudgeted(() => this.#settle(), PREWARM_MS, PREWARM_STEPS, this.#warmed);
+      this.#warmed = runBudgeted(
+        () => this.#settle(),
+        Math.max(PREWARM_MS, frame.budget),
+        PREWARM_STEPS,
+        this.#warmed,
+      );
       if (this.#warmed < PREWARM_STEPS) return this.#textures;
     }
     // Switching the M on brings it as the next figure.
@@ -815,9 +826,9 @@ class ChladniSim implements SceneSim {
       // Motion scales the plate; a "now" plays out even while motion is 0, and so does the entrance.
       const span = dt * Math.max(frame.motion, this.#arriving || this.#urgent > 0 ? 1 : 0);
       this.#urgent = Math.max(0, this.#urgent - dt);
-      if (span > 0) {
-        const steps = Math.ceil(span / MAX_STEP);
-        for (let k = 0; k < steps; k++) this.#tick(span / steps, mark);
+      for (let k = 0, n = this.#steps.advance(span); k < n; k++) {
+        this.#mixWas = this.#mix;
+        this.#tick(STEP, mark);
       }
     }
 
@@ -851,10 +862,12 @@ class ChladniSim implements SceneSim {
       this.#modeTexture.upload(modes);
       this.#modesDirty = false;
     }
-    const s = smoothstep(0, 1, this.#mix);
+    // The crossfade between its last two steps.
+    const mix = this.#mixWas + (this.#mix - this.#mixWas) * this.#steps.alpha;
+    const s = smoothstep(0, 1, mix);
     const state = this.#state;
     state[0] = s;
-    state[1] = this.#norm;
+    state[1] = this.#moving ? this.#normAt(s) : 1;
     // The plate stops singing as it tilts.
     state[2] = leaving ? this.#amp * (1 - smoothstep(0, 0.25, exit)) : this.#amp;
     state[3] = this.#fromMark * (1 - s) + this.#toMark * s;
@@ -907,6 +920,7 @@ class ChladniSim implements SceneSim {
     this.#toMark = 0;
     this.#moving = false;
     this.#mix = 0;
+    this.#mixWas = 0;
     this.#norm = 1;
     this.#held = 0;
     // Settled in `frame`, in steps (the first figure never depends on the machine's speed).
@@ -1121,21 +1135,25 @@ class ChladniSim implements SceneSim {
     this.#correlation = plateMean(this.#from, this.#to, this.#round) / 0.25;
     this.#moving = true;
     this.#mix = 0;
+    this.#mixWas = 0;
     this.#norm = 1;
     this.#held = 0;
     this.#modesDirty = true;
     if (urgent) this.#urgent = this.#moveSeconds + URGENT_SETTLE;
   }
 
+  /** Two figures at RMS 0.5 mix to 0.5·√((1 − s)² + s² + 2s(1 − s)c): the norm that lifts it back to 0.5. */
+  #normAt(s: number): number {
+    return (
+      1 / Math.sqrt(Math.max(0.05, (1 - s) * (1 - s) + s * s + 2 * s * (1 - s) * this.#correlation))
+    );
+  }
+
   /** One step of the sweep and the sand. */
   #tick(dt: number, mark: number): void {
     if (this.#moving) {
       this.#mix = Math.min(1, this.#mix + dt / this.#moveSeconds);
-      const s = smoothstep(0, 1, this.#mix);
-      // Two figures at RMS 0.5 mix to 0.5·√((1 − s)² + s² + 2s(1 − s)c): lift the mix back to 0.5.
-      this.#norm =
-        1 /
-        Math.sqrt(Math.max(0.05, (1 - s) * (1 - s) + s * s + 2 * s * (1 - s) * this.#correlation));
+      this.#norm = this.#normAt(smoothstep(0, 1, this.#mix));
     } else {
       this.#held += dt;
       if (this.#held >= this.#holdSeconds) this.#moveTo(this.#target(false, mark), false);
@@ -1158,6 +1176,8 @@ class ChladniSim implements SceneSim {
       this.#fromMark = this.#toMark;
       this.#moving = false;
       this.#mix = 0;
+      // The same field in the new pair of figures: nothing to draw between.
+      this.#mixWas = 0;
       this.#norm = 1;
       this.#held = 0;
       this.#modesDirty = true;

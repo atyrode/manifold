@@ -40,6 +40,10 @@
 // them as it crosses: the stems bow downwind one after another and swing back, carrying their
 // crowns, and the roots barely give. Between breezes they stand still, the bank exactly as laid out.
 //
+// Time: the swarm steps STEP at a time on a FixedStep (sims/clock.ts), so a seed falls into step
+// the same at 60 and at 144 Hz, and is drawn between its last two steps (phases the short way
+// round), as the lantern is between its own.
+//
 // Units: x in screen heights from the middle of the view, y in uv height (0 bottom, 1 top).
 //
 // Textures:
@@ -144,16 +148,21 @@ const BOX = 3;
 const COUNT_FLOOR = 7;
 /** Seconds over which a firefly arrives or leaves when the density knob or the M asks it to. */
 const PRESENCE_EASE = 0.8;
-/** Longest simulated step (s); a frame takes as many as it needs. */
-const MAX_STEP = 0.05;
+/**
+ * The swarm's fixed step (s) and the most steps one frame catches up: every frame rate steps the
+ * same moments, and the swarm is drawn between its last two steps by the clock's alpha.
+ */
+const STEP = 1 / 60;
+const MAX_STEPS = 6;
 /**
  * Seconds of rhythm simulated before the first frame (the forest starts out of step either way), in
- * whole steps: the swarm holds still until they are done, so the opening picture never depends on
- * the machine. The budget only caps how long one frame may block; a slow machine spreads the steps
- * over a few frames.
+ * whole steps of PREWARM_STEP: the swarm holds still until they are done, so the opening picture
+ * never depends on the machine. The budget only caps how long one frame may block; a slow machine
+ * spreads the steps over a few frames.
  */
 const PREWARM_SECONDS = 2;
-const PREWARM_STEPS = Math.round(PREWARM_SECONDS / MAX_STEP);
+const PREWARM_STEP = 0.05;
+const PREWARM_STEPS = Math.round(PREWARM_SECONDS / PREWARM_STEP);
 const PREWARM_BUDGET_MS = 90;
 /**
  * How far a firefly wanders about its place, in cells, at drift 1, and its angular speeds (rad/s):
@@ -390,6 +399,17 @@ function flash(u: number): number {
   // A smooth fall, raised to 1.5 so it drops quickly from the peak and lingers as an afterglow.
   const fall = 1 - smoothstep(FLASH_RISE, 1, u);
   return fall * Math.sqrt(fall);
+}
+
+/**
+ * A phase (cycles, 0..1) `alpha` of the way from `was` to `now` the short way round: a step moves
+ * it well under half a cycle, so a flash that wrapped past 0 is drawn on from where it was.
+ */
+function between(was: number, now: number, alpha: number): number {
+  let d = now - was;
+  d -= Math.round(d);
+  const f = was + d * alpha;
+  return f - Math.floor(f);
 }
 
 /** A stable number 0..1 for a lattice cell (world column, row) and a salt: survives resizes. */
@@ -757,8 +777,9 @@ class FirefliesSim implements SceneSim {
   readonly #markSlot: number;
   readonly #textures: (WebGLTexture | undefined)[] = [undefined, undefined, undefined, undefined];
   /** One prewarm step, as runBudgeted calls it. */
-  readonly #warmStep = (): void => this.#step(MAX_STEP, this.#knobs);
+  readonly #warmStep = (): void => this.#step(PREWARM_STEP, this.#knobs);
   #warmed = 0;
+  readonly #steps = new FixedStep(STEP, MAX_STEPS);
   readonly #knobs: Knobs = {
     coupling: 0.5,
     density: 0.7,
@@ -829,9 +850,11 @@ class FirefliesSim implements SceneSim {
   #member = new Float32Array(0);
   #snapX = new Float32Array(0);
   #snapY = new Float32Array(0);
-  // Dynamic.
+  // Dynamic, and as it stood a step before: the swarm is drawn between the two (#keepDrawn).
   #phase = new Float32Array(0);
   #present = new Float32Array(0);
+  #phaseWas = new Float32Array(0);
+  #presentWas = new Float32Array(0);
   // Per step: what the lantern and breeze do to each cell, the flash field and the light seen.
   #calm = new Float32Array(0);
   #detune = new Float32Array(0);
@@ -850,6 +873,11 @@ class FirefliesSim implements SceneSim {
   #clock = 0;
   #dirty = true;
   #meanFlash = 0;
+  /** The clock, the bank's mean flash, the breeze's front and the M's strength a step before. */
+  #clockWas = 0;
+  #meanFlashWas = 0;
+  #breezeFrontWas = 0;
+  #markStrengthWas = 0;
   /** The bank's mean phase (cycles) and how much in step it is (0..1): the Kuramoto order parameter. */
   #theta = 0;
   #sync = 0;
@@ -864,6 +892,7 @@ class FirefliesSim implements SceneSim {
   readonly #nearWander = new Float64Array(FIREFLIES_NEAR * 6);
   readonly #nearRate = new Float64Array(FIREFLIES_NEAR);
   readonly #nearPhase = new Float64Array(FIREFLIES_NEAR);
+  readonly #nearPhaseWas = new Float64Array(FIREFLIES_NEAR);
   readonly #nearX = new Float64Array(FIREFLIES_NEAR);
   readonly #nearY = new Float64Array(FIREFLIES_NEAR);
 
@@ -947,13 +976,16 @@ class FirefliesSim implements SceneSim {
     }
     // The opening seconds run in whole steps (a few frames of them on a slow machine) before the
     // swarm moves on its own.
-    if (this.#warmed < PREWARM_STEPS)
+    if (this.#warmed < PREWARM_STEPS) {
       this.#warmed = runBudgeted(
         this.#warmStep,
         Math.max(PREWARM_BUDGET_MS, frame.budget),
         PREWARM_STEPS,
         this.#warmed,
       );
+      // Shown as the warm-up left it, nothing to draw between.
+      this.#keepDrawn();
+    }
     this.#watchTriggers(frame.fired, knobs);
     if (this.#warmed >= PREWARM_STEPS) {
       this.#schedule(knobs);
@@ -962,11 +994,9 @@ class FirefliesSim implements SceneSim {
       // Motion runs the swarm; a breeze or an M under way still plays while motion is 0.
       const busy = this.#breeze || this.#mark || this.#arrive < 1 || this.#leave > 0;
       const advance = dt * (frame.motion > 0 ? frame.motion : busy ? 1 : 0);
-      let left = advance;
-      while (left > 1e-6) {
-        const h = Math.min(MAX_STEP, left);
-        this.#step(h, knobs);
-        left -= h;
+      for (let s = 0, n = this.#steps.advance(advance); s < n; s++) {
+        this.#keepDrawn();
+        this.#step(STEP, knobs);
       }
       if (this.#scatterAt) this.#scatterPhases(this.#scatterAt.x, this.#scatterAt.y);
       this.#scatterAt = undefined;
@@ -1057,6 +1087,7 @@ class FirefliesSim implements SceneSim {
     this.#breeze = true;
     this.#breezeDir = cellHash(this.#gusts, 3, this.#seed * 16 + 12) < 0.6 ? 1 : -1;
     this.#breezeFront = -this.#breezeDir * (this.#aspect / 2 + 2.5 * BREEZE_WIDTH);
+    this.#breezeFrontWas = this.#breezeFront;
   }
 
   #startMark(): void {
@@ -1146,6 +1177,8 @@ class FirefliesSim implements SceneSim {
     this.#snapY = new Float32Array(n);
     this.#phase = new Float32Array(n);
     this.#present = new Float32Array(n);
+    this.#phaseWas = new Float32Array(n);
+    this.#presentWas = new Float32Array(n);
     this.#calm = new Float32Array(n);
     this.#detune = new Float32Array(n);
     this.#hush = new Float32Array(n);
@@ -1207,6 +1240,9 @@ class FirefliesSim implements SceneSim {
         this.#present[i] = this.#target(i, knobs.density) * this.#gate(i);
       }
     }
+    // A new lattice is drawn as it is laid, nothing to draw between.
+    this.#phaseWas.set(this.#phase);
+    this.#presentWas.set(this.#present);
     if (this.#mark) this.#placeMark();
     this.#dirty = true;
   }
@@ -1392,6 +1428,17 @@ class FirefliesSim implements SceneSim {
   }
 
   // ---- the rhythm ------------------------------------------------------------------------------
+
+  /** The swarm as it stands becomes the step before: what the next step is drawn from. */
+  #keepDrawn(): void {
+    this.#phaseWas.set(this.#phase);
+    this.#presentWas.set(this.#present);
+    this.#nearPhaseWas.set(this.#nearPhase);
+    this.#clockWas = this.#clock;
+    this.#meanFlashWas = this.#meanFlash;
+    this.#breezeFrontWas = this.#breezeFront;
+    this.#markStrengthWas = this.#markStrength;
+  }
 
   /** One step of h simulated seconds: disturbances, the flash field, the light seen, the phases. */
   #step(h: number, knobs: Knobs): void {
@@ -1696,7 +1743,7 @@ class FirefliesSim implements SceneSim {
 
   // ---- textures --------------------------------------------------------------------------------
 
-  /** Every firefly's place in its cell, light and soft halo, for uSim0. */
+  /** Every firefly's place in its cell, light and soft halo, drawn between the swarm's last two steps, for uSim0. */
   #pack(knobs: Knobs): void {
     const n = this.#n;
     const cols = this.#cols;
@@ -1704,12 +1751,17 @@ class FirefliesSim implements SceneSim {
     const halo = this.#halo;
     const span = knobs.period / Math.min(FLASH_SECONDS, FLASH_SHARE * knobs.period);
     const wander = WANDER * knobs.drift;
-    const clock = this.#clock;
-    const mark = this.#mark ? this.#markStrength : 0;
+    const alpha = this.#steps.alpha;
+    const clock = this.#clockWas + (this.#clock - this.#clockWas) * alpha;
+    const mark = this.#mark
+      ? this.#markStrengthWas + (this.#markStrength - this.#markStrengthWas) * alpha
+      : 0;
+    const front = this.#breezeFrontWas + (this.#breezeFront - this.#breezeFrontWas) * alpha;
     const x0 = -0.5 * cols * FIREFLIES_CELL;
     for (let i = 0; i < n; i++) {
       const at = 4 * i;
-      const p = this.#present[i] ?? 0;
+      const was = this.#presentWas[i] ?? 0;
+      const p = was + ((this.#present[i] ?? 0) - was) * alpha;
       if (p <= 0.002) {
         // No firefly here: R = -1 says so.
         data[at] = -1;
@@ -1720,7 +1772,8 @@ class FirefliesSim implements SceneSim {
       }
       const a = mark * (this.#member[i] ?? 0);
       const bright = (this.#bright[i] ?? 1) + (MARK_BRIGHT - (this.#bright[i] ?? 1)) * a;
-      const lit = Math.max(flash((this.#phase[i] ?? 0) * span), MARK_EMBER * a);
+      const phase = between(this.#phaseWas[i] ?? 0, this.#phase[i] ?? 0, alpha);
+      const lit = Math.max(flash(phase * span), MARK_EMBER * a);
       const e = p * bright * lit * (1 - (this.#hush[i] ?? 0));
       let ox =
         (this.#jitterX[i] ?? 0.5) +
@@ -1734,7 +1787,7 @@ class FirefliesSim implements SceneSim {
             clock * (this.#wanderSpeed[2 * i + 1] ?? 0) + (this.#wanderPhase[2 * i + 1] ?? 0),
           );
       if (this.#breeze) {
-        const u = (x0 + ((i % cols) + 0.5) * FIREFLIES_CELL - this.#breezeFront) / BREEZE_WIDTH;
+        const u = (x0 + ((i % cols) + 0.5) * FIREFLIES_CELL - front) / BREEZE_WIDTH;
         ox += this.#breezeDir * BREEZE_SWAY * Math.exp(-u * u);
       }
       if (a > 0) {
@@ -1765,11 +1818,12 @@ class FirefliesSim implements SceneSim {
     );
   }
 
-  /** The lights nearer than the bank, the lantern and the bank, for uSim2. */
+  /** The lights nearer than the bank, the lantern and the bank, drawn between their last two steps, for uSim2. */
   #packState(knobs: Knobs): void {
     const state = this.#state;
     const span = knobs.period / Math.min(FLASH_SECONDS, FLASH_SHARE * knobs.period);
-    const clock = this.#clock;
+    const step = this.#steps.alpha;
+    const clock = this.#clockWas + (this.#clock - this.#clockWas) * step;
     const alpha = this.#lanternClock.alpha;
     const lanternX = this.#lanternWasX + (this.#lanternX.x - this.#lanternWasX) * alpha;
     const lanternY = this.#lanternWasY + (this.#lanternY.x - this.#lanternWasY) * alpha;
@@ -1801,7 +1855,8 @@ class FirefliesSim implements SceneSim {
       state[4 * j + 1] = y;
       // A drifter the density leaves out is marked by a negative distance.
       state[4 * j + 2] = drifter && j >= drifters ? -z : z;
-      state[4 * j + 3] = flash((this.#nearPhase[j] ?? 0) * span) * (1 - hush) * this.#nearGate(j);
+      const phase = between(this.#nearPhaseWas[j] ?? 0, this.#nearPhase[j] ?? 0, step);
+      state[4 * j + 3] = flash(phase * span) * (1 - hush) * this.#nearGate(j);
     }
     let at = 4 * FIREFLIES_STATE_LANTERN;
     state[at] = lanternX;
@@ -1809,10 +1864,12 @@ class FirefliesSim implements SceneSim {
     state[at + 2] = this.#lanternShown;
     state[at + 3] = this.#flare;
     at = 4 * FIREFLIES_STATE_BANK;
-    state[at] = this.#meanFlash;
-    state[at + 1] = this.#breezeFront;
+    state[at] = this.#meanFlashWas + (this.#meanFlash - this.#meanFlashWas) * step;
+    state[at + 1] = this.#breezeFrontWas + (this.#breezeFront - this.#breezeFrontWas) * step;
     state[at + 2] = this.#breeze ? 1 : 0;
-    state[at + 3] = this.#mark ? this.#markStrength : 0;
+    state[at + 3] = this.#mark
+      ? this.#markStrengthWas + (this.#markStrength - this.#markStrengthWas) * step
+      : 0;
   }
 }
 

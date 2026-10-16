@@ -40,7 +40,7 @@ import { markDistance } from "../../mark.ts";
 import { KnobReader, type ParamDef } from "../../params.ts";
 import { gpuCommonGlsl } from "../../shaders/common.ts";
 import { glslFloat } from "../../shaders/glsl.ts";
-import { runBudgeted } from "../../sims/clock.ts";
+import { FixedStep, runBudgeted } from "../../sims/clock.ts";
 import {
   GpuCompute,
   gridSize,
@@ -63,7 +63,11 @@ const GRID_SHORT = 256;
 const ASPECT_SLACK = 1.12;
 /** Wall-clock milliseconds the landscape knob and the frame's shape must rest before a new layout. */
 const RELAYOUT_MS = 300;
-/** Simulation steps per time-lapse second at speed 1 (30 model time units a second). */
+/**
+ * Simulation steps per time-lapse second at speed 1 (30 model time units a second): the steps run on
+ * a FixedStep of 1 / STEPS_PER_SECOND time-lapse seconds, so the delta builds the same at any frame
+ * rate, each step's tide and flood taken at its own moment.
+ */
 const STEPS_PER_SECOND = 150;
 /** Most steps in one frame however long it was (a slow machine runs the time-lapse slower). */
 const MAX_FRAME_STEPS = 5;
@@ -179,8 +183,14 @@ const MARK_STROKE = 0.06;
 /** How far the M stands above the delta plain around it. */
 const MARK_RISE = 0.9;
 
-/** The view eases toward the state: share per step taken (0.35 per quarter time unit). */
+/**
+ * The view eases toward the state: share per step's worth of time-lapse time that passes (0.35 per
+ * quarter time unit), so it follows at the same pace at any frame rate; and at least VIEW_FLOOR
+ * steps' worth a second of the frame clock, so what changes with the time-lapse still (a ditch
+ * dug, the M) still shows.
+ */
 const VIEW_EASE = 0.29;
+const VIEW_FLOOR = 60;
 
 // ---- knobs -------------------------------------------------------------------------------------------
 
@@ -1318,17 +1328,17 @@ class DeltaField {
   }
 
   /**
-   * Warm-up steps from step `from` on, until PREWARM_STEPS are done or PREWARM_MS has passed (checked
+   * Warm-up steps from step `from` on, until PREWARM_STEPS are done or `budgetMs` has passed (checked
    * every PREWARM_CHUNK steps, the GPU synced then). Returns where to resume: PREWARM_STEPS when done.
    */
-  warm(from: number): number {
+  warm(from: number, budgetMs: number): number {
     const gl = this.#gpu.gl;
     return runBudgeted(
       (i) => {
         this.step();
         if ((i + 1) % PREWARM_CHUNK === 0) gl.finish();
       },
-      PREWARM_MS,
+      budgetMs,
       PREWARM_STEPS,
       from,
       PREWARM_CHUNK,
@@ -1485,8 +1495,9 @@ export function deltaSim(params: readonly ParamDef[]): SimFactory {
     let key: LayoutKey | undefined;
     let pending: LayoutKey | undefined;
     let pendingSince = 0;
+    /** Time-lapse seconds so far, and the steps they owe. */
     let clock = 0;
-    let owed = 0;
+    const steps = new FixedStep(1 / STEPS_PER_SECOND, MAX_FRAME_STEPS);
     let markShown = -1;
     /** Warm-up steps taken since the last layout; the sim holds still until all PREWARM_STEPS are done. */
     let warmed = PREWARM_STEPS;
@@ -1497,6 +1508,11 @@ export function deltaSim(params: readonly ParamDef[]): SimFactory {
     const at = { x: 0, y: 0 };
     const cell = { x: 0, y: 0 };
     const last = { x: 0, y: 0 };
+
+    /** How high the floods stand at time-lapse second `at`: the seasonal ones while on, and one asked for now. */
+    const floodAt = (at: number, seasonal: number, strength: number): number =>
+      Math.max(seasonal > 0 ? seasonalFlood(at, want.seed) : 0, floodShape(at - manualFlood)) *
+      strength;
 
     /** Lay out afresh for the grid in `want`; the frame then runs the warm-up. */
     const relayout = (frame: SimFrame): DeltaField => {
@@ -1534,7 +1550,7 @@ export function deltaSim(params: readonly ParamDef[]): SimFactory {
 
         // The warm-up: a fixed count of steps, over as many frames as the machine needs.
         if (warmed < PREWARM_STEPS) {
-          warmed = sim.warm(warmed);
+          warmed = sim.warm(warmed, Math.max(PREWARM_MS, frame.budget));
           sim.view(1);
           if (warmed < PREWARM_STEPS) return sim.textures;
         }
@@ -1546,23 +1562,19 @@ export function deltaSim(params: readonly ParamDef[]): SimFactory {
           markShown = size;
         }
 
-        // Time-lapse seconds, the floods (seasonal while on, and one now when asked) and the steps owed.
-        const lapse = frame.dt * frame.motion * knobs.value(frame, "speed");
+        // Time-lapse seconds, the floods (seasonal while on, and one now when asked) and the steps
+        // owed, each step under the tide and flood of its own moment.
+        const lapse = Math.max(0, frame.dt * frame.motion * knobs.value(frame, "speed"));
         clock += lapse;
         if (frame.fired[floodSlot] === true) manualFlood = clock;
         const seasonal = knobs.value(frame, "floods");
         const strength = seasonal > 0 ? seasonal : knobs.amount(frame, "floods");
-        const flood =
-          Math.max(
-            seasonal > 0 ? seasonalFlood(clock, want.seed) : 0,
-            floodShape(clock - manualFlood),
-          ) * strength;
-        const env = environment(frame, knobs, clock, flood);
-        owed += lapse * STEPS_PER_SECOND;
-        const steps = Math.min(MAX_FRAME_STEPS, Math.floor(owed));
-        owed = Math.min(owed - steps, MAX_FRAME_STEPS);
-        sim.setEnvironment(env);
-        for (let i = 0; i < steps; i++) sim.step();
+        const env = environment(frame, knobs, clock, floodAt(clock, seasonal, strength));
+        for (let i = 0, n = steps.advance(lapse); i < n; i++) {
+          const at = clock - steps.lag(i);
+          sim.setEnvironment(environment(frame, knobs, at, floodAt(at, seasonal, strength)));
+          sim.step();
+        }
 
         // The hand digs a ditch, or throws up a bank, wherever it is dragged. Not while the passage's
         // camera moves: the picture is not yet (or no longer) where the pointer maps it.
@@ -1586,7 +1598,12 @@ export function deltaSim(params: readonly ParamDef[]): SimFactory {
           dragging = false;
         }
 
-        sim.view(1 - (1 - VIEW_EASE) ** Math.max(steps, 1));
+        // The view follows the time-lapse time that passed, and the frame clock while that stands still.
+        const eased = Math.max(
+          Math.min(lapse * STEPS_PER_SECOND, MAX_FRAME_STEPS),
+          Math.max(frame.dt, 1 / 120) * VIEW_FLOOR,
+        );
+        sim.view(1 - (1 - VIEW_EASE) ** eased);
         return sim.textures;
       },
       dispose(): void {

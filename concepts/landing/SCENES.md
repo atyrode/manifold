@@ -753,6 +753,12 @@ How the page puts the scenes on screen (`src/renderer.ts`, `src/display.ts`, `sr
 - **Frame pacing.** At most 60 frames a second on any display, and none while the picture stands
   still (paused, reduced motion, motion 0) once the last change or input has played out; input
   draws again at once.
+- **One sim clock.** Frames come unevenly (a capped 144 Hz display alternates intervals, a slow
+  machine runs at 30), so every CPU sim and GPU solver steps a fixed time on a `FixedStep`
+  (`src/sims/clock.ts`) and is drawn between its last two steps (or, where the drawing must stay
+  over what the last step laid down, as the harmonograph's pen over its ink, ahead of it by the
+  time left over): a seed plays the same at any frame rate. Damped springs step by `springStep`
+  (`src/sims/spring.ts`).
 - **Builds never block.** Every program builds in the background, the first one too: the bare page
   shows until it is built, a cut or a retry keeps the old picture moving meanwhile.
 - **Failures.** A lost WebGL context is asked back and, once restored, the scene starts over; while

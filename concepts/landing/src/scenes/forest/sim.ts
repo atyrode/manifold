@@ -11,6 +11,10 @@
 //   stirred by the pointer; puffs from the mushrooms, from a click and from the M.
 // - The mist: a coarse field of banks advected by the same wind and relaxing toward slowly drifting
 //   banks, so the pointer leaves swirls in it that heal.
+// Time: everything steps STEP at a time on a FixedStep (sims/clock.ts; the mist every FOG_STEP of
+// it), so the forest plays the same at 60 and at 144 Hz. What moves is drawn ahead of the last step
+// by the time left over (FixedStep.pending), as pond's koi are: the motes along their drift, the stag
+// along its walk, the spirits' breathing and rising and dissolving on their own clocks.
 // The shader (shader.ts) reads three textures (rows bottom to top):
 //   uSim0  rgba16f, 3 x (FOREST_SPIRITS + 1), nearest: one row per spirit, (screen x, screen y of its
 //          feet, depth m, alpha 0..1), (head tilt rad + = its top to the left, yaw -1..1 + = its face
@@ -25,6 +29,7 @@
 //   uSim2  r16f, FOREST_FOG.width x FOREST_FOG.height over the screen's uv, linear: how thick the
 //          mist is here, about 1.
 import type { ParamDef } from "../../params.ts";
+import { FixedStep } from "../../sims/clock.ts";
 import { clamp, hash31, smoothstep } from "../../sims/math.ts";
 import { valueNoise } from "../../sims/noise.ts";
 import { mulberry32 } from "../../sims/random.ts";
@@ -275,7 +280,9 @@ function forestPerches(aspect: number): Perch[] {
 
 // ---- simulation constants ----
 
+/** The fixed step (s), and the most steps one frame catches up (a quarter of a second). */
 const STEP = 1 / 60;
+const MAX_STEPS = 15;
 const TAU = 2 * Math.PI;
 
 // Spirits.
@@ -481,6 +488,9 @@ interface Mote {
   base: number;
   kickX: number;
   kickY: number;
+  /** Its velocity over the last step: it is drawn ahead along it by the time left over. */
+  vx: number;
+  vy: number;
 }
 
 interface Wave {
@@ -552,8 +562,9 @@ class ForestSim implements SceneSim {
   #random = mulberry32(1);
   #dark = 1;
 
-  /** The sim's own clock: scene seconds scaled by motion. */
+  /** The sim's own clock: scene seconds scaled by motion, stepped by #steps. */
   #clock = 0;
+  readonly #steps = new FixedStep(STEP, MAX_STEPS);
   #fogDue = 0;
   #fogShift = 0;
   #chorusAt = Number.POSITIVE_INFINITY;
@@ -651,6 +662,8 @@ class ForestSim implements SceneSim {
         base: 0,
         kickX: 0,
         kickY: 0,
+        vx: 0,
+        vy: 0,
       });
     }
     for (let i = 0; i < WAVES; i++) this.#waves.push({ kx: 0, ky: 0, omega: 0, phase: 0, amp: 0 });
@@ -671,10 +684,10 @@ class ForestSim implements SceneSim {
     this.#watchTriggers(frame.triggers, aspect);
     this.#trackPointer(frame.pointer, frame.dt, aspect);
 
-    const advance = Math.min(Math.max(0, frame.dt) * Math.max(0, frame.motion), 0.25);
-    if (advance > 0) this.#advance(advance, aspect);
+    const advance = Math.max(0, frame.dt) * Math.max(0, frame.motion);
+    for (let s = 0, n = this.#steps.advance(advance); s < n; s++) this.#step(STEP, aspect);
     if (advance > 0 || this.#dirty) {
-      this.#pack(aspect);
+      this.#pack(aspect, this.#steps.pending);
       this.#beingTexture.upload(this.#beingData);
       this.#moteTexture.upload(this.#moteData);
       this.#fogTexture.upload(this.#fog);
@@ -836,12 +849,6 @@ class ForestSim implements SceneSim {
   #addStir(x: number, y: number, vx: number, vy: number): void {
     if (this.#stirs.length >= MAX_STIRS) this.#stirs.shift();
     this.#stirs.push({ x, y, vx, vy, age: 0 });
-  }
-
-  #advance(total: number, aspect: number): void {
-    const steps = Math.ceil(total / STEP);
-    const h = total / steps;
-    for (let s = 0; s < steps; s++) this.#step(h, aspect);
   }
 
   #step(h: number, aspect: number): void {
@@ -1296,6 +1303,8 @@ class ForestSim implements SceneSim {
     mote.base = 0.5 + 0.5 * r();
     mote.kickX = 0;
     mote.kickY = 0;
+    mote.vx = 0;
+    mote.vy = 0;
   }
 
   /** A puff of `count` bright spores from (x, y) at depth z, spreading `spread` and pushed upward by `up`. */
@@ -1318,6 +1327,8 @@ class ForestSim implements SceneSim {
       const speed = 0.03 + 0.05 * r();
       mote.kickX = Math.sin(a) * speed;
       mote.kickY = Math.cos(a) * speed * up + 0.01;
+      mote.vx = 0;
+      mote.vy = 0;
     }
   }
 
@@ -1373,8 +1384,10 @@ class ForestSim implements SceneSim {
       this.#flow(mote.x, mote.y, mote.z);
       const kick = Math.exp(-mote.age / PUFF_KICK_TIME);
       const depth = clamp(Math.sqrt(5 / mote.z), 0.55, 1.6);
-      mote.x += (this.#vx + mote.kickX * kick) * h;
-      mote.y += (this.#vy + mote.kickY * kick + MOTE_RISE * depth) * h;
+      mote.vx = this.#vx + mote.kickX * kick;
+      mote.vy = this.#vy + mote.kickY * kick + MOTE_RISE * depth;
+      mote.x += mote.vx * h;
+      mote.y += mote.vy * h;
       if (Math.abs(mote.x) > half + 0.03 || mote.y < -0.03 || mote.y > 1.03) mote.alive = false;
     }
   }
@@ -1440,22 +1453,25 @@ class ForestSim implements SceneSim {
 
   // ---- packing ----
 
-  #pack(aspect: number): void {
+  /** Everything as drawn, `ahead` seconds past the last step (the clock's time left over). */
+  #pack(aspect: number, ahead: number): void {
     const data = this.#beingData;
     data.fill(0);
+    const clock = this.#clock + ahead;
     for (const [i, spirit] of this.#spirits.entries()) {
       const perch = this.#perches[spirit.perch];
       if (spirit.state === "free" || spirit.popAt >= 0 || !perch) continue;
+      const age = spirit.age + ahead;
       let alpha = 1;
       let sink = 0;
       if (spirit.state === "rising") {
-        const x = Math.min(1, spirit.age / spirit.rise);
+        const x = Math.min(1, age / spirit.rise);
         alpha = smoothstep(0, 1, x);
         sink = (1 - x) * (1 - x);
       } else if (spirit.state === "fading") {
-        alpha = 1 - smoothstep(0, 1, spirit.age / spirit.fade);
+        alpha = 1 - smoothstep(0, 1, age / spirit.fade);
       }
-      let glow = 0.72 + 0.14 * Math.sin(this.#clock * 0.8 + spirit.breath) + 0.3 * spirit.rattle;
+      let glow = 0.72 + 0.14 * Math.sin(clock * 0.8 + spirit.breath) + 0.3 * spirit.rattle;
       const duck = spirit.shrink.amount;
       if (duck > 0) {
         // Ducked: down in the moss to its eyes, its glow drawn in.
@@ -1482,16 +1498,17 @@ class ForestSim implements SceneSim {
     }
     const st = this.#stag;
     if (st.active) {
+      const walk = st.speed * ahead;
       data.set(
         [
-          st.x,
-          st.gait,
+          st.x + st.dir * walk,
+          (st.gait + walk / STAG_CYCLE) % 1,
           st.dir,
           st.alpha,
           st.look,
           st.headUp,
           st.startX,
-          st.walked,
+          st.walked + walk,
           1 - st.speed / STAG_SPEED,
         ],
         FOREST_SPIRITS * 12,
@@ -1504,12 +1521,13 @@ class ForestSim implements SceneSim {
     const rows = FOREST_MOTE_ROWS;
     for (const mote of this.#motes) {
       if (!mote.alive) continue;
-      const fadeIn = smoothstep(0, MOTE_FADE_IN, mote.age);
-      const fadeOut = smoothstep(0, MOTE_FADE_OUT, mote.life - mote.age);
+      const age = mote.age + ahead;
+      const fadeIn = smoothstep(0, MOTE_FADE_IN, age);
+      const fadeOut = smoothstep(0, MOTE_FADE_OUT, mote.life - age);
       const glow = mote.base * fadeIn * fadeOut;
       if (glow < 0.004) continue;
-      const gx = (mote.x + 0.5 * aspect) * rows;
-      const gy = mote.y * rows;
+      const gx = (mote.x + mote.vx * ahead + 0.5 * aspect) * rows;
+      const gy = (mote.y + mote.vy * ahead) * rows;
       const bx = Math.floor(gx);
       const by = Math.floor(gy);
       if (bx < 0 || by < 0 || bx >= cols || by >= rows) continue;

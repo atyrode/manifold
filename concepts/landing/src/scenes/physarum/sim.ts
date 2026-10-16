@@ -69,7 +69,7 @@
 //          strokes), G salt, B feeding (1 in a flake's pool, 0.5 at its rim, a fringe beyond),
 //          A light (the lit sea, and everything past the dish's glass wall).
 import { KnobReader, type ParamDef } from "../../params.ts";
-import { runBudgeted } from "../../sims/clock.ts";
+import { FixedStep, runBudgeted } from "../../sims/clock.ts";
 import {
   GpuCompute,
   type Pass,
@@ -123,7 +123,11 @@ export const PHYSARUM_AGENTS_DEFAULT = 1;
 
 // ---- the mould --------------------------------------------------------------------------------
 
-/** Agent steps per second at tempo 1 (one texel each): calm growth, a link in five to ten seconds. */
+/**
+ * Agent steps per second at tempo 1 (one texel each): calm growth, a link in five to ten seconds.
+ * They run on a FixedStep of 1 / STEPS_PER_SECOND sim seconds, so the mould grows the same at any
+ * frame rate; the view eases over VIEW_SECONDS of the frame clock, which hides the steps.
+ */
 const STEPS_PER_SECOND = 40;
 /** Most steps in one frame; a slow machine's mould runs slow rather than skipping. */
 const MAX_STEPS = 4;
@@ -429,7 +433,7 @@ class PhysarumSim implements SceneSim {
   #paint = false;
   #saltLeft = 0;
   #envDirty = true;
-  #stepDebt = 0;
+  readonly #steps = new FixedStep(1 / STEPS_PER_SECOND, MAX_STEPS);
   #stepCount = 0;
   #stride = 1;
   #memoryDebt = 0;
@@ -532,7 +536,7 @@ class PhysarumSim implements SceneSim {
     if (fired[this.#feedSlot] === true) this.#food.constellation();
     this.#touch(frame.pointer, frame.aspect, settings.salt);
     if (this.#warmed < PREWARM_STEPS) {
-      this.#warm();
+      this.#warm(Math.max(PREWARM_MS, frame.budget));
       if (this.#warmed < PREWARM_STEPS) return this.#textures(this.#growth.advance(frame, false));
     }
 
@@ -548,9 +552,7 @@ class PhysarumSim implements SceneSim {
       this.#envDirty = false;
     }
 
-    this.#stepDebt += simDt * STEPS_PER_SECOND;
-    const steps = Math.min(Math.floor(this.#stepDebt), MAX_STEPS);
-    this.#stepDebt = Math.min(this.#stepDebt - steps, 1);
+    const steps = this.#steps.advance(simDt);
     for (let i = 0; i < steps; i++) this.#step();
     this.#grown += steps;
     if (dt > 0) {
@@ -618,7 +620,7 @@ class PhysarumSim implements SceneSim {
     this.#dist.seed(stampDistance(pic, flakes, grid));
     this.#salt.clear(0);
     this.#saltLeft = 0;
-    this.#stepDebt = 0;
+    this.#steps.reset();
     this.#memoryDebt = 0;
     this.#grown = 0;
 
@@ -640,7 +642,7 @@ class PhysarumSim implements SceneSim {
    * the same ones in the same order; a slow one only takes more frames (frame() holds still until
    * #warmed reaches PREWARM_STEPS).
    */
-  #warm(): void {
+  #warm(budgetMs: number): void {
     const gl = this.#gpu.gl;
     this.#warmed = runBudgeted(
       (i) => {
@@ -652,7 +654,7 @@ class PhysarumSim implements SceneSim {
         this.#trace(1);
         gl.finish();
       },
-      PREWARM_MS,
+      budgetMs,
       PREWARM_STEPS,
       this.#warmed,
       PREWARM_CHUNK,

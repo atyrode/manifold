@@ -28,8 +28,9 @@
 // Pace. Real ripple tanks are watched under a strobe that slows the waves to a crawl; here the
 // dippers beat at a quarter hertz and the waves crawl at 0.028 short sides a second, so the screen
 // moves slowly enough for the dither. The sim steps at STEP scene seconds (shorter if the Courant
-// number would pass COURANT) and the view interpolates between the last two steps, so the picture
-// moves smoothly at any frame rate.
+// number would pass COURANT) on each tank's FixedStep, counted in steps so a knob that changes the
+// step keeps the phase owed, and the view interpolates between the last two steps by its alpha, so
+// the picture moves the same at any frame rate.
 //
 // Experiments. A fresh tank is seeded with the experiment's steady state worked out in closed form
 // (rings from each dipper, the bar's plane waves and their reflection off the barrier, the slits as
@@ -45,6 +46,7 @@
 // sponges (the Doppler dipper's carriage halts). It is the same water at the same step, only more
 // steps a frame and the dippers' strength differ, and at rest (no passage) neither is touched.
 import type { ParamDef } from "../../params.ts";
+import { FixedStep } from "../../sims/clock.ts";
 import {
   GpuCompute,
   gridSize,
@@ -566,8 +568,11 @@ class Tank {
   /** Seconds since its experiment started (negative while it is being prepared), and the drive's phase. */
   time = 0;
   phase = 0;
-  /** Steps owed: after stepping, how far into the next step the frame is. */
-  pending = 0;
+  /**
+   * The steps owed, counted in steps (so a knob that changes the step's length keeps how far the
+   * frame is into the next); its alpha is how far the frame is past the step before last.
+   */
+  readonly clock = new FixedStep(1, PASSAGE_STEPS);
   /** Scale for the step's previous height on the next step (the step's length changed). */
   prevScale = 1;
   /** Where the dragged dippers (0..3) and the M (4) have been moved from their places, short sides. */
@@ -954,7 +959,7 @@ class RippleLab implements SceneSim {
     tank.experiment = experiment;
     tank.time = time;
     tank.phase = (physics.omega * time) % TAU;
-    tank.pending = 0;
+    tank.clock.reset();
     tank.prevScale = 1;
     tank.offsets.fill(undefined);
     tank.layoutKey = "";
@@ -1105,8 +1110,8 @@ class RippleLab implements SceneSim {
   }
 
   /**
-   * Step a tank through `seconds` of its time, at most `most` steps (a slow machine's tank runs
-   * slow), its dippers at `gain` of their strength.
+   * Step a tank through `seconds` of its time on its FixedStep, at most `most` of the steps due (a
+   * slow machine's tank runs slow), its dippers at `gain` of their strength.
    */
   #advance(
     tank: Tank,
@@ -1116,10 +1121,8 @@ class RippleLab implements SceneSim {
     gain: number,
   ): void {
     const physics = this.#need();
-    tank.pending += seconds / physics.step;
-    const steps = Math.min(Math.floor(tank.pending), most);
+    const steps = Math.min(tank.clock.advance(seconds / physics.step), most);
     for (let i = 0; i < steps; i++) this.#stepTank(tank, finger, gain);
-    tank.pending = Math.min(tank.pending - steps, 0.999);
   }
 
   /** One step: move the dippers to where they are now and push the water, the dippers at `gain` of their strength. */
@@ -1229,7 +1232,7 @@ class RippleLab implements SceneSim {
       textures: { uState: tank.state },
       uniforms: {
         uFrame: this.#frameSize,
-        uFrac: tank.pending,
+        uFrac: tank.clock.alpha,
         uFocus: kappa / (k * k),
         uSlope: 1 / k,
         uLambda: physics.lambda,

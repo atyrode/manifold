@@ -20,6 +20,11 @@
 //
 // Throughout, the sand slumps to its angle of repose (HeightField.relax).
 //
+// Time: the ball and the funnel step on FixedSteps (sims/clock.ts) of BALL_SUBSTEP and
+// SWING_SUBSTEP of their own clocks (drawing time, or the real clock while a hand holds them), the
+// ball's spring by springStep (sims/spring.ts), so a table draws the same at 60 and at 144 Hz; each
+// is drawn between its last two substeps. The opening table's warm-up slices its time as before.
+//
 // Passages (SANDTABLE_PASSAGE), in the world and on the sim's own clock: the ball rolls in from the
 // side of the frame and ploughs along its track as far as the opening table has it (or, with the M
 // track on, draws the M as far as it is drawn at first); the funnel is carried in on its string and
@@ -40,8 +45,10 @@
 //      fill 0..1; 0
 import { markVertex } from "../../mark.ts";
 import { KnobReader, type ParamDef } from "../../params.ts";
+import { FixedStep } from "../../sims/clock.ts";
 import { domeProfile, HeightField, type GrooveOptions } from "../../sims/heightfield.ts";
 import { clamp, smoothstep } from "../../sims/math.ts";
+import { springStep, type Spring } from "../../sims/spring.ts";
 import { mulberry32 } from "../../sims/random.ts";
 import { DataTexture } from "../../sims/texture.ts";
 import type { SceneSim, SimFactory, SimFrame } from "../types.ts";
@@ -723,7 +730,12 @@ const BALL_SPEED = 0.11;
 /** The ball chases the magnet on a damped spring: natural frequency (rad/s) and damping ratio. */
 const SPRING = 9;
 const SPRING_DAMPING = 0.85;
+/**
+ * The ball's fixed step (s of its clock), and the most one frame takes: MAX_STEP (0.1 s) of drawing
+ * at the speed knob's top, 4.
+ */
 const BALL_SUBSTEP = 1 / 120;
+const BALL_MAX_STEPS = 48;
 /** The groove is extended once the ball has moved this far (field units). */
 const GROOVE_STEP = 0.0025;
 /**
@@ -776,6 +788,15 @@ class Ball {
   #rested = 0;
   readonly #magnet = { x: 0, y: 0 };
   readonly #ball = { x: 0, y: 0, vx: 0, vy: 0 };
+  /**
+   * The ball's clock, where it was a substep before, and how far between that and where it is it is
+   * drawn (the clock's alpha after stepping; anything that moves it by other means sets #was too).
+   */
+  readonly #steps = new FixedStep(BALL_SUBSTEP, BALL_MAX_STEPS);
+  readonly #was = { x: 0, y: 0 };
+  #alpha = 0;
+  /** Scratch for springStep along one axis. */
+  readonly #axis: Spring = { x: 0, v: 0 };
   /** Where the groove has been drawn to. */
   readonly #cut = { x: 0, y: 0 };
   readonly #point = { x: 0, y: 0 };
@@ -851,6 +872,8 @@ class Ball {
         this.#beginEntry(aspect, Math.min(track.length, PREWARM_LEAD * BALL_SPEED * track.pace));
     }
     for (let pass = 0; pass < 2; pass++) this.#field.relax(TALUS, 30, 1);
+    this.#steps.reset();
+    this.#keep();
   }
 
   frame(
@@ -865,6 +888,7 @@ class Ball {
     this.#retune(settings);
     if (passage.leave > 0) {
       this.#leave(passage);
+      this.#keep();
       return;
     }
     const signature = `${settings.pattern}|${settings.seed}`;
@@ -873,6 +897,7 @@ class Ball {
     if (this.#entry !== undefined) {
       if (signature === this.#signature && !next && !markNow && !(markOn && !this.#markOn)) {
         this.#roll(passage.arrive);
+        this.#keep();
         return;
       }
       this.#entry = undefined;
@@ -924,7 +949,7 @@ class Ball {
     }
     // The M is an event and plays on the scene clock; the drawings follow the lab's motion.
     const clock = this.#track?.kind === "mark" ? dt : dt * motion;
-    this.#drive(clock * settings.speed, GROOVE_STEP);
+    this.#run(clock * settings.speed);
   }
 
   write(data: Float32Array): void {
@@ -935,8 +960,9 @@ class Ball {
       this.#markDrawn = Math.max(this.#markDrawn, track.drawn + this.#s - track.lead - lag);
     }
     const wipe = this.#wipe;
-    data[0] = this.#ball.x;
-    data[1] = this.#ball.y;
+    const was = this.#was;
+    data[0] = was.x + (this.#ball.x - was.x) * this.#alpha;
+    data[1] = was.y + (this.#ball.y - was.y) * this.#alpha;
     data[2] = 1;
     data[3] = 0;
     data[4] = wipe === undefined ? 1 : wipe.nx;
@@ -1034,16 +1060,37 @@ class Ball {
     this.#carve(0);
   }
 
-  /** `time` seconds of drawing time: the magnet walks its track, the ball chases and ploughs. */
+  /**
+   * The warm-up's `time` seconds of drawing time, in as many equal substeps as BALL_SUBSTEP needs:
+   * the magnet walks its track, the ball chases and ploughs.
+   */
   #drive(time: number, grooveStep: number): void {
     if (!(time > 0)) return;
     const n = Math.ceil(time / BALL_SUBSTEP);
     const h = time / n;
-    for (let i = 0; i < n; i++) {
-      if (this.#phase === "draw") this.#advance(h);
-      this.#spring(h);
-      this.#carve(grooveStep);
+    for (let i = 0; i < n; i++) this.#substep(h, grooveStep);
+  }
+
+  /** `time` seconds of drawing time on the ball's clock, whole substeps; the ball drawn between the last two. */
+  #run(time: number): void {
+    for (let i = 0, n = this.#steps.advance(time); i < n; i++) {
+      this.#keep();
+      this.#substep(BALL_SUBSTEP, GROOVE_STEP);
     }
+    this.#alpha = this.#steps.alpha;
+  }
+
+  /** h seconds: the magnet walks its track, the ball chases and ploughs. */
+  #substep(h: number, grooveStep: number): void {
+    if (this.#phase === "draw") this.#advance(h);
+    this.#spring(h);
+    this.#carve(grooveStep);
+  }
+
+  /** The ball as it is becomes the substep before: it is drawn from here (and here alone, until it steps). */
+  #keep(): void {
+    this.#was.x = this.#ball.x;
+    this.#was.y = this.#ball.y;
   }
 
   /** Walk the magnet `time` seconds along its track, waiting at its stops; rest at its end. */
@@ -1084,15 +1131,21 @@ class Ball {
     this.#magnet.y = this.#point.y * SANDTABLE.track;
   }
 
+  /** h seconds of the ball's spring after the magnet, each axis by springStep. */
   #spring(h: number): void {
     const b = this.#ball;
     const m = this.#magnet;
-    const k = SPRING * SPRING;
-    const c = 2 * SPRING_DAMPING * SPRING;
-    b.vx += (k * (m.x - b.x) - c * b.vx) * h;
-    b.vy += (k * (m.y - b.y) - c * b.vy) * h;
-    b.x += b.vx * h;
-    b.y += b.vy * h;
+    const axis = this.#axis;
+    axis.x = b.x;
+    axis.v = b.vx;
+    springStep(axis, m.x, SPRING, SPRING_DAMPING, h);
+    b.x = axis.x;
+    b.vx = axis.v;
+    axis.x = b.y;
+    axis.v = b.vy;
+    springStep(axis, m.y, SPRING, SPRING_DAMPING, h);
+    b.y = axis.x;
+    b.vy = axis.v;
   }
 
   #carve(step: number): void {
@@ -1105,22 +1158,20 @@ class Ball {
     cut.y = b.y;
   }
 
-  /** The magnet chases the pointer (on the real clock), up to FOLLOW_SPEED, inside the track's reach. */
+  /** The magnet chases the pointer (on the real clock), up to FOLLOW_SPEED, inside the track's reach, on the ball's clock. */
   #chase(dt: number, touch: Touch): void {
-    if (!(dt > 0)) return;
     const r = Math.hypot(touch.x, touch.y);
     const k = r > SANDTABLE.track ? SANDTABLE.track / r : 1;
     const tx = touch.x * k;
     const ty = touch.y * k;
     const m = this.#magnet;
-    const n = Math.ceil(dt / BALL_SUBSTEP);
-    const h = dt / n;
-    for (let i = 0; i < n; i++) {
+    const reach = FOLLOW_SPEED * BALL_SUBSTEP;
+    for (let i = 0, n = this.#steps.advance(dt); i < n; i++) {
+      this.#keep();
       if (this.#held) {
         const dx = tx - m.x;
         const dy = ty - m.y;
         const d = Math.hypot(dx, dy);
-        const reach = FOLLOW_SPEED * h;
         if (d > reach) {
           m.x += (dx / d) * reach;
           m.y += (dy / d) * reach;
@@ -1129,9 +1180,10 @@ class Ball {
           m.y = ty;
         }
       }
-      this.#spring(h);
+      this.#spring(BALL_SUBSTEP);
       this.#carve(GROOVE_STEP);
     }
+    this.#alpha = this.#steps.alpha;
   }
 
   /**
@@ -1312,7 +1364,12 @@ const FLOW = 0.045;
 /** A hand on the funnel: spring toward the pointer (1/s²) and its damping (1/s). */
 const PULL = 30;
 const PULL_DAMPING = 8;
+/**
+ * The swing's fixed step (s of its clock), and the most one frame takes: MAX_STEP (0.1 s) of swing
+ * at the speed knob's top, 4.
+ */
 const SWING_SUBSTEP = 1 / 240;
+const SWING_MAX_STEPS = 96;
 /** Seconds for the stream to open or close, and for the straight edge to appear or go. */
 const STREAM_FADE = 0.4;
 const EDGE_FADE = 0.6;
@@ -1430,6 +1487,15 @@ class Pendulum {
   /** The funnel over the table, field units from its centre. */
   #x = 0;
   #y = 0;
+  /**
+   * The swing's clock, where the funnel was a substep before, and how far between that and where it
+   * is it is drawn (the clock's alpha after stepping; anything that moves it by other means sets
+   * #wasX, #wasY too).
+   */
+  readonly #steps = new FixedStep(SWING_SUBSTEP, SWING_MAX_STEPS);
+  #wasX = 0;
+  #wasY = 0;
+  #alpha = 0;
   #phase: "swing" | "rest" | "wipe" | "launch" = "swing";
   #stream = 0;
   #fill = 1;
@@ -1482,6 +1548,8 @@ class Pendulum {
     }
     this.#field.relax(TALUS, 30, 1);
     if (aspect !== undefined) this.#beginArrival(aspect);
+    this.#steps.reset();
+    this.#keep();
   }
 
   frame(
@@ -1526,7 +1594,7 @@ class Pendulum {
           this.#fill > 0 && this.#arrival === undefined ? 1 : 0,
           time / STREAM_FADE,
         );
-        this.#swing(time, flow, this.#held ? touch : undefined);
+        this.#swingOn(time, flow, this.#held ? touch : undefined);
         // Both axes' amplitudes together: the turn trades swing between them but does no work, so
         // this dies away evenly, on time.
         const amplitude = Math.hypot(this.#u, this.#du / this.#wu, this.#v, this.#dv / this.#wv);
@@ -1538,7 +1606,7 @@ class Pendulum {
       }
       case "rest":
         this.#stream = approach(this.#stream, 0, time / STREAM_FADE);
-        this.#swing(time, flow, undefined);
+        this.#swingOn(time, flow, undefined);
         if (settings.pause !== undefined) {
           this.#rested += dt * motion;
           if (this.#rested >= settings.pause) this.#startWipe(settings);
@@ -1546,7 +1614,7 @@ class Pendulum {
         break;
       case "wipe": {
         this.#stream = 0;
-        this.#swing(time, 0, undefined);
+        this.#swingOn(time, 0, undefined);
         const edge = this.#edge;
         const from = edge.lead;
         edge.lead = Math.min(edge.end, edge.lead + WIPE_SPEED * time);
@@ -1562,6 +1630,8 @@ class Pendulum {
         this.#y = l.y + (this.#sin * l.u + this.#cos * l.v - l.y) * f;
         this.#fill = Math.max(this.#fill, f);
         if (l.t >= LAUNCH_SECONDS) this.#release();
+        // Drawn back by hand, not swung: shown where it is.
+        this.#keep();
         break;
       }
       default: {
@@ -1574,8 +1644,8 @@ class Pendulum {
   }
 
   write(data: Float32Array): void {
-    data[0] = this.#x + this.#offX;
-    data[1] = this.#y + this.#offY;
+    data[0] = this.#wasX + (this.#x - this.#wasX) * this.#alpha + this.#offX;
+    data[1] = this.#wasY + (this.#y - this.#wasY) * this.#alpha + this.#offY;
     data[2] = 1;
     data[3] = this.#stream * Math.min(1, 6 * this.#fill);
     const edge = this.#edge;
@@ -1634,11 +1704,28 @@ class Pendulum {
     this.#y = this.#sin * this.#u + this.#cos * this.#v;
   }
 
-  /** `time` seconds of swing (semi-implicit Euler), pouring at `flow` while the stream is open. */
+  /** The funnel as it is becomes the substep before: it is drawn here (and here alone, until it steps). */
+  #keep(): void {
+    this.#wasX = this.#x;
+    this.#wasY = this.#y;
+  }
+
+  /** The warm-up's `time` seconds of swing, in as many equal substeps as SWING_SUBSTEP needs. */
   #swing(time: number, flow: number, pull: Touch | undefined): void {
     if (!(time > 0)) return;
     const n = Math.ceil(time / SWING_SUBSTEP);
-    const h = time / n;
+    this.#integrate(n, time / n, flow, pull);
+  }
+
+  /** `time` seconds of swing on the funnel's clock, whole substeps; the funnel drawn between the last two. */
+  #swingOn(time: number, flow: number, pull: Touch | undefined): void {
+    this.#integrate(this.#steps.advance(time), SWING_SUBSTEP, flow, pull);
+    this.#alpha = this.#steps.alpha;
+  }
+
+  /** n substeps of h seconds of swing (semi-implicit Euler), pouring at `flow` while the stream is open. */
+  #integrate(n: number, h: number, flow: number, pull: Touch | undefined): void {
+    if (n <= 0) return;
     const wu2 = this.#wu * this.#wu;
     const wv2 = this.#wv * this.#wv;
     const g = 2 * this.#damping;
@@ -1656,7 +1743,11 @@ class Pendulum {
     let v = this.#v;
     let du = this.#du;
     let dv = this.#dv;
+    let lastU = u;
+    let lastV = v;
     for (let i = 0; i < n; i++) {
+      lastU = u;
+      lastV = v;
       let au = -wu2 * u - g * du + c * dv;
       let av = -wv2 * v - g * dv - c * du;
       if (pull !== undefined) {
@@ -1695,6 +1786,8 @@ class Pendulum {
     this.#v = v;
     this.#du = du;
     this.#dv = dv;
+    this.#wasX = this.#cos * lastU - this.#sin * lastV;
+    this.#wasY = this.#sin * lastU + this.#cos * lastV;
     this.#place();
   }
 
@@ -1776,7 +1869,7 @@ class Pendulum {
     this.#held = false;
     const leaving = this.#leaving ?? this.#beginLeave(passage.aspect);
     if (this.#phase !== "launch")
-      this.#swing(dt * motion * settings.speed, flowOf(settings.depth), undefined);
+      this.#swingOn(dt * motion * settings.speed, flowOf(settings.depth), undefined);
     this.#stream = approach(this.#stream, 0, dt / SHUT_SECONDS);
     const carried = clamp((passage.leave - CARRY_FROM) / (CARRY_TO - CARRY_FROM), 0, 1);
     const away = leaving.reach * carried * carried;

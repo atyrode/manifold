@@ -1691,7 +1691,8 @@ Helpers in `src/sims/` (each file's header has the full API and a usage example)
   with impulses and nearest-point queries, stepped by the caller's FixedStep and packed into a
   texture for `texelFetch` (kelp, dew, the mobile).
 - `springStep` (`spring.ts`): the damped spring every sim eases a swinging value with (plants,
-  meadow, bamboo, the fireflies' lantern), one step on a fixed h.
+  meadow, bamboo, the fireflies' lantern, ferro's pool and spikes, the prism let go, the sand
+  table's ball), one step on a fixed h.
 - `HeightField` (`heightfield.ts`): stamps, grooves and rakes with side ridges, angle-of-repose
   slumping, smoothing, upload to r16f (garden, sand table).
 - `marchHeight` and `sampleRepeat` (`heightray.ts`): a ray against a height field on the CPU with a
@@ -1791,7 +1792,11 @@ Helpers in `src/sims/` (each file's header has the full API and a usage example)
   when let go (fractal).
 - `FixedStep` and `runBudgeted` (`clock.ts`): a fixed-step accumulator (`advance` returns the steps
   due; `alpha`, `lag(i)`), and warm-ups counted in steps, which a time budget only spreads over
-  frames, so the opening picture never depends on the machine's speed.
+  frames, so the opening picture never depends on the machine's speed. Sims step on one and draw
+  between their last two steps by `alpha`; a few draw ahead of the last step by
+  `pending` instead, along its motion (fish, the forest's motes and stag, the harmonograph's pen,
+  which must stay over the ink its step laid). A solver whose step follows a knob counts in steps
+  (`new FixedStep(1, max)` advanced by seconds / step: ripple's tanks).
 - `pendulumStretch`, `pendulumAngle`, `pendulumFadingSwings` and `pendulumGlsl` (`pendulum.ts`): a
   pendulum swinging beyond the small-angle approximation, the same maths in TS and GLSL (pendula's
   real pendulums).

@@ -39,7 +39,9 @@
 // Values that need more than half precision are stored as two halves (hi + lo), each exactly
 // representable, so however the GPU converts the upload it cannot round them.
 import { KnobReader, type ParamDef } from "../../params.ts";
+import { FixedStep } from "../../sims/clock.ts";
 import { clamp, smoothstep } from "../../sims/math.ts";
+import { springStep, type Spring } from "../../sims/spring.ts";
 import { splitHalf } from "../../sims/half.ts";
 import { DataTexture } from "../../sims/texture.ts";
 import type { PointerState, SceneSim, SimFactory, SimFrame } from "../types.ts";
@@ -263,8 +265,12 @@ const MARK_SMALL = 0.06;
 const MARK_LARGE = 0.13;
 const MARK_FADE = 2.5;
 const MARK_VISIT = 24;
-/** A released prism returns to its rock (critically damped, s) or, spinning, coasts to a stop (s). */
+/**
+ * A released prism returns to its rock (critically damped, s), on springStep at RETURN_STEP on a
+ * FixedStep and drawn between its last two steps; or, spinning, coasts to a stop (s).
+ */
 const RETURN = 2.5;
+const RETURN_STEP = 1 / 60;
 const COAST = 1.5;
 /** Drags within this radius of the prism's centre (screen heights) barely turn it. */
 const GRIP_INNER = 0.03;
@@ -464,6 +470,11 @@ class PrismSim implements SceneSim {
   #wasSpinning = false;
   #user = 0;
   #userVelocity = 0;
+  /** Springing back to the rock: #user a step before, the spring's clock and its scratch. */
+  #returning = false;
+  #userWas = 0;
+  readonly #returnSteps = new FixedStep(RETURN_STEP, Math.ceil(MAX_STEP / RETURN_STEP));
+  readonly #returnSpring: Spring = { x: 0, v: 0 };
   #dragging = false;
   #dragAngle = 0;
   #eclipseAge = Number.POSITIVE_INFINITY;
@@ -670,8 +681,11 @@ class PrismSim implements SceneSim {
 
     // Switching between rock and spin hands the difference to the user offset, so nothing jumps.
     const base = this.#restingTurn();
-    if (Number.isFinite(this.#base) && this.#spinning !== this.#wasSpinning)
-      this.#user += wrap(this.#base - base, THIRD);
+    if (Number.isFinite(this.#base) && this.#spinning !== this.#wasSpinning) {
+      const handed = wrap(this.#base - base, THIRD);
+      this.#user += handed;
+      this.#userWas += handed;
+    }
     this.#wasSpinning = this.#spinning;
     this.#base = base;
 
@@ -695,7 +709,7 @@ class PrismSim implements SceneSim {
 
     this.#turnByHand(dt, pointer);
 
-    const pose = base + this.#user;
+    const pose = base + this.#drawnUser();
     const shade = this.#eclipseEnvelope();
     this.#angle = pose + shade * (this.#eclipseTarget - pose) + this.#leaveTurn;
 
@@ -724,6 +738,7 @@ class PrismSim implements SceneSim {
     const x = (pointer.x - 0.5) * this.#aspect - this.#centreX;
     const y = pointer.y - 0.5 - this.#centreY;
     const held = pointer.down && pointer.inside;
+    this.#returning = false;
     if (held) {
       const angle = Math.atan2(y, x);
       if (!this.#dragging) {
@@ -740,24 +755,42 @@ class PrismSim implements SceneSim {
         if (dt > 0) this.#userVelocity += (turn / dt - this.#userVelocity) * Math.min(1, dt / 0.1);
       }
       this.#dragAngle = angle;
+      this.#settleReturn();
       return;
     }
     this.#dragging = false;
-    if (dt <= 0) return;
     if (this.#spinning) {
-      this.#user += this.#userVelocity * dt;
-      this.#userVelocity *= Math.exp(-dt / COAST);
-      this.#user = wrap(this.#user, TAU * 3);
+      if (dt > 0) {
+        this.#user += this.#userVelocity * dt;
+        this.#userVelocity *= Math.exp(-dt / COAST);
+        this.#user = wrap(this.#user, TAU * 3);
+      }
+      this.#settleReturn();
       return;
     }
-    // Critically damped return, in small steps for stability.
-    const steps = Math.ceil(dt / 0.02);
-    const h = dt / steps;
-    const w = 1 / RETURN;
-    for (let i = 0; i < steps; i++) {
-      this.#userVelocity += (-w * w * this.#user - 2 * w * this.#userVelocity) * h;
-      this.#user += this.#userVelocity * h;
+    // Critically damped return.
+    this.#returning = true;
+    const spring = this.#returnSpring;
+    for (let i = 0, n = this.#returnSteps.advance(dt); i < n; i++) {
+      this.#userWas = this.#user;
+      spring.x = this.#user;
+      spring.v = this.#userVelocity;
+      springStep(spring, 0, 1 / RETURN, 1, RETURN_STEP);
+      this.#user = spring.x;
+      this.#userVelocity = spring.v;
     }
+  }
+
+  /** The hand's offset is drawn as it is (no spring between steps); the next return starts afresh. */
+  #settleReturn(): void {
+    this.#userWas = this.#user;
+    this.#returnSteps.reset();
+  }
+
+  /** The hand's offset as drawn: springing back, between its last two steps. */
+  #drawnUser(): number {
+    if (!this.#returning) return this.#user;
+    return this.#userWas + (this.#user - this.#userWas) * this.#returnSteps.alpha;
   }
 
   // ---- geometry --------------------------------------------------------------------------------
