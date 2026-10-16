@@ -35,7 +35,9 @@ function script(gl: WebGL2RenderingContext, tick: number): Sheets {
     motionTime: 0,
     motion: 1,
     now: 0,
-    budget: Infinity,
+    // A fast display's budget (the renderer grants 8 to 120 ms): an Infinity one, as HeadlessSim
+    // grants, never reads the clock, so every warm-up would end in its first frame on any machine.
+    budget: 8,
     width: 960,
     height: 540,
     aspect: 16 / 9,

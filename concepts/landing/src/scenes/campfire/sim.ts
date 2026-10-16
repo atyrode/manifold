@@ -3,6 +3,8 @@
 // shader as CAMPFIRE_FUEL_TEXELS texels of uSim0 (rgba16f, nearest), written by campfireFuelTexels:
 //   0, 1, 2   log i: wood left (0 burnt away), char, slump 0..1, laid on 0..1
 //   3         the bed: heat (flames, 1 a steady fire), embers, smoke 0..1, spark burst 0..1
+// The bed steps FUEL_STEP (a twentieth of a second) at a time; the texels are drawn between its last
+// two steps by the clock's alpha, so the fire changes smoothly at any frame rate.
 // While the knob is off nothing is stepped or uploaded and the shader draws the fire it always has.
 // Each time it is switched on (and in every new sim that starts with it on) the fire opens under way
 // (STEADY_FIRE: the back log 70% wood, the front ones 45 and 25%), so the same knobs show the same fire.
@@ -39,6 +41,9 @@ class CampfireFuel implements SceneSim {
   readonly #tendSlot: number;
   readonly #texture: DataTexture;
   readonly #textures: readonly (WebGLTexture | undefined)[];
+  /** The texels after the step before last and after the last; uploaded between them. */
+  readonly #was = new Float32Array(CAMPFIRE_FUEL_TEXELS * 4);
+  readonly #now = new Float32Array(CAMPFIRE_FUEL_TEXELS * 4);
   readonly #data = new Float32Array(CAMPFIRE_FUEL_TEXELS * 4);
   readonly #bed = new FuelBed(CAMPFIRE_LOGS, SEED);
   readonly #clock = new FixedStep(FUEL_STEP, 4);
@@ -62,6 +67,8 @@ class CampfireFuel implements SceneSim {
     if (on && !this.#on) {
       this.#bed.open(STEADY_FIRE);
       this.#clock.reset();
+      campfireFuelTexels(this.#bed, this.#now);
+      this.#was.set(this.#now);
     }
     this.#on = on;
     if (!on) return this.#textures;
@@ -69,9 +76,20 @@ class CampfireFuel implements SceneSim {
     if (frame.fired[this.#tendSlot]) bed.addLog();
     const tend = this.#knobs.value(frame, "tend") > 0.5;
     const steps = this.#clock.advance(Math.max(0, frame.dt) * Math.max(0, frame.motion));
-    for (let i = 0; i < steps; i++) bed.step(FUEL_STEP, minutes * 60, tend);
-    campfireFuelTexels(bed, this.#data);
-    this.#texture.upload(this.#data);
+    for (let i = 0; i < steps; i++) {
+      this.#was.set(this.#now);
+      bed.step(FUEL_STEP, minutes * 60, tend);
+      campfireFuelTexels(bed, this.#now);
+    }
+    const alpha = this.#clock.alpha;
+    const was = this.#was;
+    const now = this.#now;
+    const data = this.#data;
+    for (let i = 0; i < data.length; i++) {
+      const a = was[i] ?? 0;
+      data[i] = a + ((now[i] ?? 0) - a) * alpha;
+    }
+    this.#texture.upload(data);
     return this.#textures;
   }
 

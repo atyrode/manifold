@@ -4,6 +4,11 @@
 // sheet's life: draw, (sign with the Manifold M), rest, slide the sheet off, slide a fresh one in,
 // lower the pen, draw again. The shader (shader.ts) paints the desk, the paper, the ink and the pen.
 //
+// Time: the pendulums and the sheet's life step STEP at a time on a FixedStep (sims/clock.ts). The
+// pen and the sheet are drawn ahead of the last step by the time left over, along that step's
+// motion (as pond's koi are), never behind it: the ink is laid at every step, and a pen drawn a
+// step late would trail its own line.
+//
 // Units: "p units" are view heights on a landscape screen (on a portrait one, divided by its fit
 // scale, see harmonographScale): the sheet is 2 * HARMONOGRAPH.half = 0.8 across, centred at (cx, 0)
 // and tilted by `tilt`; the ink texture covers exactly the sheet.
@@ -137,12 +142,12 @@ const PREWARM_MIN = 30;
 const PREWARM_MAX = 90;
 const PREWARM_SHARE = 0.9;
 /**
- * Wall time one frame may spend on that warm-up, ms. A sheet already on screen stays there, pen and
- * all, until the warm-up is done, so a reseed or a new figure takes a few short frames instead of one
- * long one; the first sheet has nothing to hold and gets the safety cap the other scenes' warm-ups
- * use. The warm-up is a count of steps either way: a slow machine shows the same sheet, later.
+ * Wall time the first sheet's warm-up may take a frame at least, ms (more when the frame's budget
+ * allows): it has nothing to hold, and gets the safety cap the other scenes' warm-ups use. A sheet
+ * already on screen stays there, pen and all, until the warm-up is done, so a reseed or a new
+ * figure takes the frame's budget alone (SimFrame.budget), a few short frames instead of one long
+ * one. The warm-up is a count of steps either way: a slow machine shows the same sheet, later.
  */
-const PREWARM_BUDGET_MS = 6;
 const FIRST_PREWARM_BUDGET_MS = 90;
 /** Warm-up steps between two looks at the clock. */
 const PREWARM_CHUNK = 32;
@@ -438,6 +443,9 @@ type HoverTo = "mark" | "start";
 
 const ease = (s: number): number => 0.5 - 0.5 * Math.cos(Math.PI * clamp(s, 0, 1));
 
+/** A value carried on past `now` along its last step (from `was`) for `ahead` of a step. */
+const onward = (was: number, now: number, ahead: number): number => now + (now - was) * ahead;
+
 function toWorld(lx: number, ly: number, tilt: number, cx: number, out: Point): void {
   const cos = Math.cos(tilt);
   const sin = Math.sin(tilt);
@@ -501,6 +509,13 @@ class HarmonographSim implements SceneSim {
   #liftTarget = 0;
   #bob = 0;
   #drawT = 0;
+  /** The pen, the sheet's place and tilt, the lift and the bob as they stood a step before. */
+  #penWasX = 0;
+  #penWasY = 0;
+  #uWas = 0;
+  #tiltWas = 0;
+  #liftWas = 0;
+  #bobWas = 0;
   /** The pen's tip in the world, and where a hover set out from. */
   #penX = 0;
   #penY = 0;
@@ -570,7 +585,9 @@ class HarmonographSim implements SceneSim {
           PREWARM_CHUNK,
         );
       this.#leave(frame);
-      this.#upload();
+      // The exit moves the sheet and the pen frame by frame: drawn as they are.
+      this.#keepDrawn();
+      this.#upload(0);
       return this.#textures;
     }
 
@@ -590,23 +607,31 @@ class HarmonographSim implements SceneSim {
     if (this.#warmed < this.#warmSteps) {
       this.#warmed = runBudgeted(
         this.#warmStep,
-        this.#shown ? PREWARM_BUDGET_MS : FIRST_PREWARM_BUDGET_MS,
+        this.#shown ? frame.budget : Math.max(FIRST_PREWARM_BUDGET_MS, frame.budget),
         this.#warmSteps,
         this.#warmed,
         PREWARM_CHUNK,
       );
+      // The warm-up is no motion to draw along.
+      this.#keepDrawn();
       // Until it is done the clock holds and the textures keep what they show.
       if (this.#warmed < this.#warmSteps) return this.#textures;
     }
 
     const dt = Math.min(Math.max(Number.isFinite(frame.dt) ? frame.dt : 0, 0), MAX_FRAME);
     const steps = this.#clock.advance(dt * frame.motion);
-    for (let i = 0; i < steps; i++) this.#step(STEP, st);
+    for (let i = 0; i < steps; i++) {
+      this.#keepDrawn();
+      this.#step(STEP, st);
+    }
     // The blank sheet slides in on the passage clock whatever the motion: arriving at speed, it
     // settles in its place.
-    if (this.#phase === "arrive") this.#u = (1 - clamp(this.#enterP / ARRIVE_SHARE, 0, 1)) ** 2;
+    if (this.#phase === "arrive") {
+      this.#u = (1 - clamp(this.#enterP / ARRIVE_SHARE, 0, 1)) ** 2;
+      this.#uWas = this.#u;
+    }
 
-    this.#upload();
+    this.#upload(this.#clock.alpha);
     return this.#textures;
   }
 
@@ -666,7 +691,8 @@ class HarmonographSim implements SceneSim {
       const start = this.#startOf(this.#plan);
       this.#penX = start.x;
       this.#penY = start.y;
-      this.#writeState();
+      this.#keepDrawn();
+      this.#writeState(0);
     }
   }
 
@@ -685,13 +711,16 @@ class HarmonographSim implements SceneSim {
     const start = this.#startOf(this.#plan);
     this.#penX = start.x;
     this.#penY = start.y;
+    this.#keepDrawn();
   }
 
-  /** A blank sheet for the current plan, the pendulums at rest at their start. */
+  /** A blank sheet for the current plan, the pendulums at rest at their start (and drawn so, not slid to). */
   #beginSheet(): void {
     this.#swing.reset(this.#plan);
     this.#tilt = this.#plan.tilt;
+    this.#tiltWas = this.#tilt;
     this.#u = 0;
+    this.#uWas = 0;
     this.#ink.clear();
     this.#signed = false;
     this.#drawT = 0;
@@ -929,6 +958,7 @@ class HarmonographSim implements SceneSim {
     this.#beginSheet();
     this.#figureStarted = false;
     this.#u = 1;
+    this.#uWas = 1;
     this.#phase = "slideIn";
     this.#phaseT = 0;
   }
@@ -976,23 +1006,34 @@ class HarmonographSim implements SceneSim {
 
   // ---- upload ------------------------------------------------------------------------------------
 
-  /** The ink that changed, and the pen and the sheet. */
-  #upload(): void {
+  /** Pen, sheet, lift and bob as they stand become the step before: the next step is drawn on from them. */
+  #keepDrawn(): void {
+    this.#penWasX = this.#penX;
+    this.#penWasY = this.#penY;
+    this.#uWas = this.#u;
+    this.#tiltWas = this.#tilt;
+    this.#liftWas = this.#lift;
+    this.#bobWas = this.#bob;
+  }
+
+  /** The ink that changed, and the pen and the sheet `ahead` of a step past the last (see #writeState). */
+  #upload(ahead: number): void {
     this.#ink.upload(this.#inkTexture);
-    this.#writeState();
+    this.#writeState(ahead);
     this.#shown = true;
   }
 
-  #writeState(): void {
+  /** The pen and the sheet carried on along the last step's motion for `ahead` of a step (FixedStep.alpha). */
+  #writeState(ahead: number): void {
     const data = this.#stateData;
-    splitHalf(data, 0, this.#penX);
-    splitHalf(data, 2, this.#penY);
-    splitHalf(data, 4, this.#u * this.#slide);
-    data[6] = this.#tilt;
-    const lift = clamp(this.#lift, 0, 1);
+    splitHalf(data, 0, onward(this.#penWasX, this.#penX, ahead));
+    splitHalf(data, 2, onward(this.#penWasY, this.#penY, ahead));
+    splitHalf(data, 4, onward(this.#uWas, this.#u, ahead) * this.#slide);
+    data[6] = onward(this.#tiltWas, this.#tilt, ahead);
+    const lift = clamp(onward(this.#liftWas, this.#lift, ahead), 0, 1);
     data[7] =
       HARMONOGRAPH.down +
-      0.0022 * (0.5 + 0.5 * Math.sin(this.#bob)) * (1 - lift) +
+      0.0022 * (0.5 + 0.5 * Math.sin(onward(this.#bobWas, this.#bob, ahead))) * (1 - lift) +
       HARMONOGRAPH.rise * lift;
     this.#stateTexture.upload(data);
   }

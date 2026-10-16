@@ -34,7 +34,8 @@
 // on every beat, now and then settling on a flower where the wings slowly open and close.
 //
 // A thing is drawn in the cell its projection falls in, and only changes cell once it has clearly left
-// it (hysteresis, followCell), so a hovering bee never flickers between two.
+// it (hysteresis, followCell), so a hovering bee never flickers between two. It is drawn between its
+// last two steps by the clock's alpha, so the traffic moves as smoothly at 144 Hz as at 60.
 //
 // Passage (BEES_PASSAGE). An entrance skips the pre-run: the colony starts asleep and nearly every bee
 // comes out of its hive within the first two seconds and flies at once for its flowers (a little hurried,
@@ -227,6 +228,10 @@ interface Bee {
   /** Where it is drawn: cell, hysteretic (NaN: not yet placed). */
   cx: number;
   cy: number;
+  /** World position one step before (drawn between it and x, z, h). */
+  px: number;
+  pz: number;
+  ph: number;
 }
 
 type ButterflyMode = "fly" | "approach" | "settle";
@@ -260,6 +265,10 @@ interface Butterfly {
   quiet: number;
   cx: number;
   cy: number;
+  /** World position one step before (drawn between it and x, z, h). */
+  px: number;
+  pz: number;
+  ph: number;
 }
 
 function newBee(hive: number): Bee {
@@ -290,6 +299,9 @@ function newBee(hive: number): Bee {
     pour: false,
     cx: Number.NaN,
     cy: Number.NaN,
+    px: 0,
+    pz: 10,
+    ph: 0,
   };
 }
 
@@ -323,7 +335,24 @@ function newButterfly(kind: number): Butterfly {
     quiet: 0,
     cx: Number.NaN,
     cy: Number.NaN,
+    px: 0,
+    pz: 8,
+    ph: 1,
   };
+}
+
+/** Draw a bee or butterfly from where it is now, as if it had been there a step ago too. */
+function settle(thing: {
+  x: number;
+  z: number;
+  h: number;
+  px: number;
+  pz: number;
+  ph: number;
+}): void {
+  thing.px = thing.x;
+  thing.pz = thing.z;
+  thing.ph = thing.h;
 }
 
 /** How fast a thing at depth z moves, as a share of its nominal speed: the same on screen near and far. */
@@ -408,8 +437,9 @@ class BeesSim implements SceneSim {
     const advance = Math.max(0, frame.dt) * Math.max(0, frame.motion);
     const steps = this.#clock.advance(advance);
     for (let i = 0; i < steps; i++) this.#step(STEP);
-    if (steps > 0 || this.#dirty) {
-      this.#paint();
+    // Drawn between the last two steps, so every frame that moves the clock repaints.
+    if (advance > 0 || this.#dirty) {
+      this.#paint(this.#clock.alpha);
       // Only the tiles whose cells changed go up (the whole map after a resize): a few KB a frame.
       this.#specks.upload(this.#texture);
       this.#dirty = false;
@@ -428,10 +458,12 @@ class BeesSim implements SceneSim {
     this.#stage = stage;
     for (const bee of this.#bees) {
       bee.x *= ratio;
+      bee.px *= ratio;
       bee.tx *= ratio;
     }
     for (const butterfly of this.#butterflies) {
       butterfly.x *= ratio;
+      butterfly.px *= ratio;
       butterfly.tx *= ratio;
     }
   }
@@ -462,6 +494,7 @@ class BeesSim implements SceneSim {
         g.glide = 0;
         g.quiet = rand.range(2, 9);
         g.cx = Number.NaN;
+        settle(g);
         this.#waypoint(g, false);
       } else if (!want) {
         g.active = false;
@@ -491,6 +524,7 @@ class BeesSim implements SceneSim {
       g.x = this.#pt.x;
       g.z = this.#pt.z;
       g.h = this.#pt.h + rand.range(0.3, 1.2);
+      settle(g);
     }
   }
 
@@ -624,8 +658,15 @@ class BeesSim implements SceneSim {
   // ---- stepping -----------------------------------------------------------------------------------
 
   #step(dt: number): void {
-    for (const [i, bee] of this.#bees.entries()) this.#stepBee(bee, i, dt);
-    for (const g of this.#butterflies) if (g.active) this.#stepButterfly(g, dt);
+    for (const [i, bee] of this.#bees.entries()) {
+      settle(bee);
+      this.#stepBee(bee, i, dt);
+    }
+    for (const g of this.#butterflies) {
+      if (!g.active) continue;
+      settle(g);
+      this.#stepButterfly(g, dt);
+    }
   }
 
   /**
@@ -762,6 +803,8 @@ class BeesSim implements SceneSim {
         b.vx = 0;
         b.vz = 0;
         b.vh = 0;
+        // Out of the hive: drawn from here, not from where it went in.
+        settle(b);
         if (b.newbie) {
           this.#begin(b, "orient", rand.range(9, 16));
           b.fly = true;
@@ -1026,18 +1069,23 @@ class BeesSim implements SceneSim {
 
   // ---- drawing into the cell map ------------------------------------------------------------------------
 
-  #paint(): void {
+  /** Every insect into the cell map, `alpha` of the way from where it was a step ago to where it is. */
+  #paint(alpha: number): void {
     const specks = this.#specks;
     specks.clear();
     const h = specks.height;
     const w = specks.width;
     for (const b of this.#bees) {
-      if (b.mode === "inside" || b.z < 0.8) continue;
+      if (b.mode === "inside") continue;
+      const z = b.pz + (b.z - b.pz) * alpha;
+      if (z < 0.8) continue;
+      const x = b.px + (b.x - b.px) * alpha;
+      const lift = b.ph + (b.h - b.ph) * alpha;
       // Its projection (the shader's own ground mapping) in cells, and its real size in cells there.
-      b.cx = followCell(b.cx, CAMERA.screenX(b.x, b.z) * h + 0.5 * w);
-      b.cy = followCell(b.cy, CAMERA.screenY(b.h, b.z) * h);
-      const depth = Math.min(255, Math.round(b.z * BEES_DEPTH_STEP));
-      const n = (BEE_LENGTH * h * CAMERA.focal) / b.z;
+      b.cx = followCell(b.cx, CAMERA.screenX(x, z) * h + 0.5 * w);
+      b.cy = followCell(b.cy, CAMERA.screenY(lift, z) * h);
+      const depth = Math.min(255, Math.round(z * BEES_DEPTH_STEP));
+      const n = (BEE_LENGTH * h * CAMERA.focal) / z;
       if (n < 1.7) {
         specks.plot(
           b.cx,
@@ -1055,14 +1103,18 @@ class BeesSim implements SceneSim {
       if (b.fly) specks.block(b.cx, b.cy + tall, length - 1, 1, BEES_CODE.beeWing, depth);
     }
     for (const g of this.#butterflies) {
-      if (!g.active || g.z < 0.8) continue;
-      g.cx = followCell(g.cx, CAMERA.screenX(g.x, g.z) * h + 0.5 * w);
-      g.cy = followCell(g.cy, CAMERA.screenY(g.h, g.z) * h);
-      const depth = Math.min(255, Math.round(g.z * BEES_DEPTH_STEP));
+      if (!g.active) continue;
+      const z = g.pz + (g.z - g.pz) * alpha;
+      if (z < 0.8) continue;
+      const x = g.px + (g.x - g.px) * alpha;
+      const lift = g.ph + (g.h - g.ph) * alpha;
+      g.cx = followCell(g.cx, CAMERA.screenX(x, z) * h + 0.5 * w);
+      g.cy = followCell(g.cy, CAMERA.screenY(lift, z) * h);
+      const depth = Math.min(255, Math.round(z * BEES_DEPTH_STEP));
       const open = BUTTERFLY_OPEN[g.kind] ?? BEES_CODE.orange;
       const shut = BUTTERFLY_SHUT[g.kind] ?? BEES_CODE.orangeDim;
       // The wingbeat is the size of the speck: its half span in cells decides how many cells each wing is.
-      const half = (0.5 * (BUTTERFLY_SPAN * h) * CAMERA.focal) / g.z;
+      const half = (0.5 * (BUTTERFLY_SPAN * h) * CAMERA.focal) / z;
       if (half < 0.75) {
         specks.plot(g.cx, g.cy, g.open > 0.45 ? open : shut, depth);
       } else if (half < 1.5) {

@@ -1,9 +1,11 @@
 // The tide pool's life on the shared components: kelp and surfgrass on their holdfasts and the
 // anemones on the rock are rooted plants (sims/plants.ts), streaming and leaning in the water's flow
 // as the sim reads it back from the GPU; with the `fish` knob, rock pool fish (sims/fish.ts, BLENNY)
-// idle over the basin's floor and dart off from a touch or a surge. Holdfasts and anemones stand
-// where the shader always placed them (its hash22 lattices, glslHash22 here) wherever the layout
-// gives them a home; the density knobs still pick which show, in the shader, by each one's rank.
+// idle over the basin's floor and dart off from a touch or a surge, stepped FISH_STEP at a time and
+// drawn ahead of their last step by the time left over (packFish's `ahead`), as pond's koi are.
+// Holdfasts and anemones stand where the shader always placed them (its hash22 lattices, glslHash22
+// here) wherever the layout gives them a home; the density knobs still pick which show, in the
+// shader, by each one's rank.
 //
 // Everything rides one texture, uSim3 (rgba16f, TIDEPOOL_LIFE_WIDTH wide, nearest):
 //   rows 0..2       the fish (FishTexture's rows: the group holds TIDEPOOL_LIFE_WIDTH fish)
@@ -13,6 +15,7 @@
 //   then            plant records (PlantTexture, shaders/lib/plants.ts): TIDEPOOL_BLADES per frond
 //                   lattice cell (from cell -1, -1), then one per anemone lattice cell
 // Units: frame heights, x across 0..aspect and y up 0..1 (the shader's q).
+import { FixedStep } from "../../sims/clock.ts";
 import { BLENNY, FishGroup, packFish } from "../../sims/fish.ts";
 import { fract, glslHash22 } from "../../sims/math.ts";
 import { mulberry32 } from "../../sims/random.ts";
@@ -42,6 +45,9 @@ export const TIDEPOOL_FISH_MAX = 10;
 const FLOW_PUSH = 20;
 /** Plant forms in the records. */
 export const TIDEPOOL_FORMS = { kelp: 0, surfgrass: 1, anemone: 2 } as const;
+/** The fish's fixed step (s), and the most steps one frame catches up. */
+const FISH_STEP = 1 / 60;
+const FISH_MAX_STEPS = 8;
 
 /** The holdfast being grown (the species' builds read it). */
 const hold = { len: 0, salt: 0, phase: 0, rank: 0, blades: 3, grass: false };
@@ -131,6 +137,7 @@ export class TidepoolLife {
   readonly #plants = new RootedPlants(8192, 5);
   readonly #climate = plantClimate();
   readonly #fish = new FishGroup(BLENNY, TIDEPOOL_LIFE_WIDTH);
+  readonly #fishClock = new FixedStep(FISH_STEP, FISH_MAX_STEPS);
   #records: PlantTexture | undefined;
   #layout: TidepoolLayout | undefined;
   #aspect = 16 / 9;
@@ -265,8 +272,8 @@ export class TidepoolLife {
   }
 
   /**
-   * One frame: the fish swim (dt seconds of motion), the plants stream in the flow (`flow` as last
-   * read back), then everything is packed and uploaded.
+   * One frame: the fish swim (dt seconds of motion, `time` the motion clock at its end), the plants
+   * stream in the flow (`flow` as last read back), then everything is packed and uploaded.
    */
   step(
     dt: number,
@@ -288,7 +295,7 @@ export class TidepoolLife {
     this.#plants.step(climate);
     this.#swim(dt, time, Math.round(knobs.fish), pointer);
     const data = records.data;
-    packFish(this.#fish, Math.round(knobs.fish), 0, data);
+    packFish(this.#fish, Math.round(knobs.fish), this.#fishClock.pending, data);
     const header = TIDEPOOL_LIFE_HEADER * TIDEPOOL_LIFE_WIDTH * 4;
     data[header] = this.flowRows;
     data[header + 1] = records.rowBase;
@@ -329,8 +336,10 @@ export class TidepoolLife {
 
   /** The fish: idling over the basin's floor, keeping to its water, darting from a touch or a hard surge. */
   #swim(dt: number, time: number, count: number, pointer: PointerState): void {
+    const clock = this.#fishClock;
+    const steps = clock.advance(dt);
     const layout = this.#layout;
-    if (!layout || count <= 0 || !(dt > 0)) return;
+    if (!layout || count <= 0) return;
     const fish = this.#fish;
     const pool = layout.pool;
     if (pointer.inside && pointer.pressed) {
@@ -338,14 +347,15 @@ export class TidepoolLife {
       this.#startleX = pointer.x * this.#aspect;
       this.#startleY = pointer.y;
     }
-    this.#startle = Math.max(0, this.#startle - dt);
-    const steps = Math.min(8, Math.ceil(dt / (1 / 60)));
-    const h = dt / steps;
+    this.#startle = Math.max(0, this.#startle - Math.max(0, dt));
+    const h = FISH_STEP;
     const probe = this.#probe;
     for (let s = 0; s < steps; s++) {
+      // Each step weaves at its own moment on the motion clock.
+      const at = time - clock.lag(s);
       fish.clear(count);
       for (let i = 0; i < count; i++) {
-        fish.wander(i, time + s * h);
+        fish.wander(i, at);
         fish.within(
           i,
           pool.x - pool.rx,

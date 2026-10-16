@@ -450,7 +450,7 @@ export function tidepoolSim(params: readonly ParamDef[]): SimFactory {
                 gl.finish();
               }
             },
-            PREWARM_MS,
+            Math.max(PREWARM_MS, frame.budget),
             PREWARM_STEPS,
             warmed,
             PREWARM_CHUNK,
