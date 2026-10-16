@@ -21,7 +21,9 @@
 // starling murmuration wheels over the far fields at dusk (murmuration.ts) and birds cross the sky
 // in front of all. Rain and snow fall as the climate makes them of the weather's knobs at this time
 // of year (climatePrecip: a winter's rain falls as snow); the snow lying on the land is the
-// renderer's uWeather.y, which deep winter lays by itself.
+// renderer's uWeather.y, which deep winter lays by itself. The fog lies in the valley along the
+// river's level and is seen through along each ray, to the land, the far ridges and the sky
+// (fog.ts).
 import { buildingsGlsl } from "../../shaders/buildings.ts";
 import { glslFloat } from "../../shaders/glsl.ts";
 import { birdsGlsl } from "../../shaders/lib/birds.ts";
@@ -32,6 +34,7 @@ import { terrainGlsl } from "../../shaders/lib/terrain.ts";
 import { treesGlsl } from "../../shaders/lib/trees.ts";
 import { countryBuildingsGlsl } from "./buildings.ts";
 import { countryChalkGlsl } from "./chalk.ts";
+import { countryFogGlsl } from "./fog.ts";
 import { countryLifeGlsl } from "./life.ts";
 import { countryMurmurationGlsl } from "./murmuration.ts";
 import { countryRipplesGlsl } from "./ripples.ts";
@@ -313,6 +316,7 @@ float countryBridge(TerrainBridge b, vec3 ro, vec3 rd, out vec3 n, out vec2 loca
   return enter;
 }
 
+${countryFogGlsl}
 ${countryBuildingsGlsl}
 ${countryLifeGlsl}
 ${countryVergesGlsl}
@@ -374,6 +378,10 @@ Shade sceneCountry(vec2 screenUv, vec2 cell, float t) {
 
   // The horizon in this heading: the colour the land fades into.
   vec3 haze = countrySkyDome(sky, normalize(vec3(dirCam.x, 0.015, 1.0)), rain) + sky.night * vec3(0.03, 0.04, 0.07);
+#if COUNTRY_HAS_FOG
+  // The valley fog along this ray at this hour and season (fog.ts).
+  if (K_fog > 0.0) countryFogSet(sky, eye, rd, sun, haze, tod, climateCold(countryYear), wind, overcast, tm);
+#endif
   float tHit = mapped ? countryMarch(eye, rd) : -1.0;
 
   // Where the march met a tree's bound near enough for a crown to span a cell or so, the crown
@@ -405,8 +413,11 @@ Shade sceneCountry(vec2 screenUv, vec2 cell, float t) {
   float accent = 0.0;
   float glint = 0.0;
   float glow = 0.0;
+  float halo = 0.0;
   float smoke = 0.0;
   float seen = 8000.0;
+  // How much of what lies along the ray the valley fog lets through (fog.ts).
+  float clear = 1.0;
 
   // The bridge, and the buildings in front of whatever the march met.
   vec3 bridgeN = vec3(0.0, 1.0, 0.0);
@@ -423,7 +434,7 @@ Shade sceneCountry(vec2 screenUv, vec2 cell, float t) {
       else tBridge = -1.0;
     }
 #endif
-    found = countryBuildings(eye, rd, q, cellAngle, zLimit, tod, dark, wind, glow, smoke);
+    found = countryBuildings(eye, rd, q, cellAngle, zLimit, tod, dark, wind, glow, halo, smoke);
   }
   // A clump of the verges at a hedge's foot standing in front of all that (verges.ts); zFront: the
   // nearest surface yet.
@@ -736,14 +747,15 @@ Shade sceneCountry(vec2 screenUv, vec2 cell, float t) {
 #if COUNTRY_HAS_CHALK
     accent = max(accent, 0.75 * chalk);
 #endif
-    // Atmospheric perspective: the far land paler and bluer, more so in haze, rain and fog.
-    float thick = 1.0 / (5200.0 - 2600.0 * overcast - 2500.0 * K_fog);
+    // Atmospheric perspective: the far land paler and bluer, more so in haze and rain.
+    float thick = 1.0 / (5200.0 - 2600.0 * overcast);
     col = mix(col, haze * mix(vec3(1.0), vec3(0.84, 0.88, 0.95), grey), 1.0 - exp(-seen * thick));
-    // Mist lying in the country bottoms (thicker low down), when the fog knob is up.
 #if COUNTRY_HAS_FOG
+    // The valley fog between the eye and the surface, ground mist where it is met in a hollow
+    // (fog.ts); the bank there lies in the sun or shade as the surface does.
     if (K_fog > 0.0) {
-      float low = exp(-max(p.y - 20.0, 0.0) / 60.0);
-      col = mix(col, haze * 1.05 + 0.03, fogAmount(K_fog, clamp(seen / 3000.0, 0.0, 1.0), low) * 0.85);
+      clear = 1.0 - countryFogged(col, seen, mix(shade, 1.0, 0.3), countryFogHollow(p, seen));
+      accent *= clear;
     }
 #endif
     // The camera's descent: the morning's haze thinning off the land.
@@ -763,11 +775,17 @@ Shade sceneCountry(vec2 screenUv, vec2 cell, float t) {
     if (e < ridge.y) col = mix(col, ridgeFar, hardEdge(1.0 - smoothstep(ridge.y - cellAngle, ridge.y + cellAngle, e)));
     if (e < ridge.x) col = mix(col, ridgeNear, hardEdge(1.0 - smoothstep(ridge.x - cellAngle, ridge.x + cellAngle, e)));
 #if COUNTRY_HAS_FOG
-    if (K_fog > 0.0) col = mix(col, haze * 1.05 + 0.03, fogAmount(K_fog, 1.0, max(e, 0.0) * 30.0) * 0.6);
+    // The valley fog out to the far ridges, or along the open sky (fog.ts): the land's own integral
+    // carried on, so the bank lies round the ridges' feet and the horizon's sky sits in it.
+    if (K_fog > 0.0) clear = 1.0 - countryFogged(col, e < ridge.x ? 6000.0 : (e < ridge.y ? 9500.0 : 16000.0), 1.0, 0.0);
 #endif
   }
 
-  // Lamplight round lit windows, smoke drifting over what lies behind.
+  // Lamplight round lit windows (in the valley fog dimmed by it, and the fog round them aglow with
+  // the light it scatters), smoke drifting over what lies behind.
+#if COUNTRY_HAS_FOG
+  glow = glow * clear + halo;
+#endif
   col += COUNTRY_AMBER * min(glow, 2.0) * 0.1 * dark * (1.0 + wet);
   vec3 air = sky.ambient + 0.5 * sky.sunColor + 0.4 * sky.moonColor;
   col = mix(col, vec3(0.8, 0.8, 0.83) * air, clamp(smoke, 0.0, 1.0) * 0.7);
@@ -784,6 +802,9 @@ Shade sceneCountry(vec2 screenUv, vec2 cell, float t) {
     if (bird.cover > 0.5 && bird.depth < (seen < 7999.0 ? seen * ahead : 1e9)) {
       vec3 lit = bird.albedo * (sky.ambient * 1.3 + 0.5 * sky.sunColor + 0.3 * sky.moonColor);
       col = mix(lit, haze, 1.0 - exp(-bird.depth / 5200.0));
+#if COUNTRY_HAS_FOG
+      if (K_fog > 0.0) countryFogged(col, bird.depth / ahead, 1.0, 0.0);
+#endif
     }
   }
 #endif

@@ -256,8 +256,10 @@ C1: the countryside on one land model; it replaced the layered-ridge Countryside
 replay at their pinned commits).
 
 - **Terrain** (`src/sims/terrain.ts`, `TerrainBuilder`): a 3.2 km map at 512² texels (erosion at
-  256²), deterministic per seed and built in units a frame's budget spreads (a share of the time
-  between frames, so a software renderer builds in as few frames as a GPU). Relief: a valley axis
+  256²), deterministic per seed (its distances by `hypot2`/`hypot3`, V8's `Math.hypot` bit for bit
+  in any engine: each engine rounds its own `Math.hypot` differently, which moved seed 0's river
+  and farms in Safari) and built in units a frame's budget spreads (a share of the time between
+  frames, so a software renderer builds in as few frames as a GPU). Relief: a valley axis
   laid across the view, long rolling slopes below the vantage, hills beyond, fractal and ridged
   value noise; implicit stream-power erosion over a priority-flood drainage, thermal slumping. The
   river: the drainage tree's main path, meandering on gentle ground, widening with its catchment,
@@ -296,7 +298,7 @@ replay at their pinned commits).
   floor, open grassland) with exact borders between texels, hedges (half a cell at least) only where
   a farmed parcel meets another; roads likewise; the river mirroring the sky and its deck, a stone
   bridge, far ridges in the sky, the shared sky, clouds (and their shadows), rain, snow, wetness,
-  lying snow and valley mist. Entrance: the camera comes down out of the sky.
+  lying snow and the valley fog (below). Entrance: the camera comes down out of the sky.
 - **Trees** (`country/trees.ts`, the shared `treesGlsl`): the woods stand where the land model's
   canopy says (woodland parcels, their edges pulled in on poor ground so they are ragged, signed for
   pine woods); the march meets bounds (the woods' envelope, each lone tree's steepened tent); near
@@ -361,6 +363,29 @@ replay at their pinned commits).
   wind, absent in steady rain, hidden by any land nearer than it.
 - Neither needs a sampler slot: the sim packs the flock's field and the verges' plants beside and
   above the terrain's records in one texture (`country/atlas.ts`), only while they are on.
+- **Valley fog** (`fog`, its amount; `country/fog.ts`, compiled in only while on): a bank of mist
+  lying on the valley floor with a mist thinning upward over it, seen through along each ray rather
+  than blended at the surface the ray meets. The floor is the river's level down the valley: the
+  sim packs it once per terrain into the records' misc row (`packCountryFog`: the river's course
+  projected on its axis, 16 samples, each the lowest the river has come down to by there), so the
+  bank follows the river down past the vantage, fills the plateau's gorge and runs out over the
+  coast's sea, shallower up the valley where the cold air drains away. The bank is full to its top
+  (the floor and a depth that grows with the knob) and fades over a soft margin (a logistic step);
+  the mist over it falls off exponentially with height. Both are integrated in closed form along
+  the straight ray from the eye (the step through its softplus), the floor taken linear between the
+  eye's and the ray's end: a ray down into the valley whitens, the valley's sides, ridges, trees and
+  roofs rise out of it, a crest stands sharp against the bank behind it, and the far land, the far
+  ridges (6 and 9.5 km) and the horizon's sky (16 km) take the same integral, so the land's fog
+  and the sky's meet without a seam. Patches drifting down the valley and with the wind lift and
+  lower its top and thin or thicken it where a ray ends (less the farther); ground mist lies in the
+  hollows, the side valleys above the bank too, as deep as each is sunk below the land 70 m round.
+  It is deepest and thickest at dawn and burns off through the morning to a thin, low remnant (less
+  of it in a cold season, and less the thicker the fog), gathering again from late afternoon; wind
+  and an overcast sky soften its top. Its light is the sky's and the moon's and the sun's scattered
+  forward (Henyey-Greenstein, g 0.6): it glows toward a low sun and lies grey in the hills'
+  shadows; dim by night, where lit windows deep in it are dimmed by it and haloed by the light it
+  scatters. The general haze no longer thickens with the knob: the fog's mist carries the distance.
+  With it off the scene draws as before, byte for byte; on, about 5% more of SwiftShader's frame.
 - Knobs: land shape, landscape (seed), relief, erosion; the land use mix (crops 60 and woodland 30
   on, pasture 25, wildflowers, lavender and sunflowers 20 off) with pine mix, cattle share, herd size
   and season; river with its wind ripples; village, hamlets, farms, castle, roads, farm tracks;
@@ -379,7 +404,9 @@ replay at their pinned commits).
   swaps, woods keeping their species, the canopy and lone trees as packed; at the scene's size, for
   seeds 0-3 at crops 60, woodland 30 and pasture 25, the castle, a third hamlet, a fourth farm or
   thirty cottages changing no land beyond 500 m of the site but beside the ways they move, and the
-  roads or tracks switched changing none beyond 150 m of every way); `countryTerrain` (the
+  roads or tracks switched changing none beyond 150 m of every way); `src/sims/math.test.ts`
+  (`hypot2` and `hypot3` giving V8's recorded `Math.hypot` bits for zeros, NaN, subnormals,
+  overflow, ties and map distances JavaScriptCore's rounds otherwise); `countryTerrain` (the
   all-features program over the real sim: land, sky and river, deterministic per landscape; at 9216
   map points the shader finds each parcel with the land model's use and the woods only on woodland,
   for four settings; a use change one sim frame, timed; the river dry and full again);
@@ -399,7 +426,12 @@ replay at their pinned commits).
   them); `countryMurmuration` (the flock shows at dusk and is never drawn over land nearer than it
   as it pours down to roost); `countryChalk` (for three landscapes the M the knob cuts is one
   upright M wholly in the default view below the horizon, both legs and an open foot to its
-  middle).
+  middle); `country/fog.test.ts` (for every land shape the fog's floor runs down the valley within
+  the river's levels, never rising, to the lowest at the mouth's end, and its packing touches no
+  other record); `countryFog` (the fog's program at 0 draws the fog-off picture byte for byte, at
+  dawn and at night with the windows lit; at dawn the lowest quarter of the land in each band of
+  distance changes far more than the highest quarter; the sky over the skyline takes the fog; by
+  midday the same knob changes the land less than at dawn).
 - Open: gates in the fences; the plateau's near table hides the gorge.
 
 ## Hanging mobile

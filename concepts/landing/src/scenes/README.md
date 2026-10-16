@@ -230,8 +230,9 @@ planet's from `planetKnobs` (`src/scenes/planet.ts`, see "The giant planet").
 
 A knob with `trigger: n` gets a "now" button (a lightning bolt, whatever the knob's kind) that stamps
 `uTriggers[n]` with the scene clock; read it with `sinceTrigger(n)` (huge while idle) in GLSL and
-`frame.fired[n]` in a sim. Use slots 0..7; lightning takes the slot you give `weatherKnobs`. The lab's
-transport lists every "now" of the scene as well.
+`frame.fired[n]` in a sim. Use slots 0..7, each for one knob only: the button stamps the slot, so
+two knobs on one slot fire together (`triggers.test.ts` checks every scene). Lightning takes the
+slot you give `weatherKnobs`. The lab's transport lists every "now" of the scene as well.
 
 ### Lab widgets
 
@@ -631,11 +632,13 @@ that set, else with the scene's all-features program. That one is built once per
 background, and never waited for: the renderer asks KHR_parallel_shader_compile's completion
 status or, without that extension, a fence set after the link. Once built it draws one frame, so a
 driver that compiles at the first draw does it then. While the lab is open
-(`DitherRenderer.expectChanges`) it is built ahead once the scene has arrived; otherwise the first
-such change starts it, and the program on screen goes on drawing the settings it drew last until
-it is built. A software rasteriser (a renderer string naming SwiftShader, llvmpipe, softpipe or
-WARP) never uses it: there every gate's code would run in every frame (the countryside's frames
-5-10x slower under SwiftShader) and it takes some 20 s to compile, a setting's own program 2-5 s.
+(`DitherRenderer.expectChanges`) it is built ahead once the scene has arrived, beside whatever else
+builds: the next scene's program never waits for it, and a build for a scene passed over finishes
+aside the same way; otherwise the first such change starts it, and the program on screen goes on
+drawing the settings it drew last until it is built. A software rasteriser (a renderer string naming
+SwiftShader, llvmpipe, softpipe or WARP) never uses it: there every gate's code would run in every
+frame (the countryside's frames 5-10x slower under SwiftShader) and it takes some 20 s to compile, a
+setting's own program 2-5 s.
 There a change builds the setting's own program in the background in the same way, never waited
 for, keeping up to four per scene (the least recently drawn freed). Rules:
 
@@ -1174,6 +1177,16 @@ surfaces and change them. Never paste them over the frame as a flat layer.
   heavy rain with near drops and gust sheets, and 1.0 a downpour: dense sheets sweeping with the
   wind, loud splashes, and visibility falling. Let the sky, the light, the wetness and the splashes
   follow the same scale.
+- **Fog.** Fog lies in the scene's air: reckon it along the ray to the first surface (and to the
+  far ridges and the horizon's sky, so the land's fog and the sky's meet), thickest where cold air
+  pools, and fade what lies behind it toward the fog's own light. Most scenes blend per pixel with
+  `fogAmount(K_fog, distance, height)` (above): the distance's share of the far field and the
+  height of the point seen over the ground or water, 0 at the bottom of the layer (pass it that way
+  round: a 1 there is the layer's thin top). A scene that knows its land integrates instead: the
+  countryside's valley fog (`country/fog.ts`) is a bank on the river's level down the valley with
+  a mist thinning over it, both integrated in closed form along the straight ray (the bank's soft
+  top through its softplus), so the valley whitens while the ridges, trees and roofs rise out of
+  it; it burns off by day, glows toward a low sun and dims the lit windows in it.
 - **The climate.** Where a scene keeps a season (a knob tagged as the almanac's `season` part,
   `SeasonYear`) and can snow (it has a `snow` knob), the season sets the climate
   (`src/climate.ts`). `SKY_YEAR` is the scene's year position, generated from the season knob's
@@ -1510,9 +1523,14 @@ Helpers in `src/sims/` (each file's header has the full API and a usage example)
   Import it rather than carrying a copy (ferro's xorshift is deliberate: its pours depend on it).
 - `clamp`, `lerp`, `smoothstep`, `fract`, `hash31` (`math.ts`): import them rather than a local copy;
   `glslHash12` and `glslHash22`: common.ts's hashes in float32 steps, for a sim that must place
-  things where its shader hashes them (pond's koi loops, falls' ferns, the tide pool's holdfasts).
+  things where its shader hashes them (pond's koi loops, falls' ferns, the tide pool's holdfasts);
+  `hypot2` and `hypot3`: V8's `Math.hypot` (Chrome's) bit for bit in any engine, for a seeded
+  layout that must come out the same in every browser (each engine rounds `Math.hypot` its own
+  way): country's terrain, land use, chalk M and verges.
 - `valueNoise` and `fbm` (`noise.ts`): seeded value noise on the CPU for laying out terrain, coasts
-  and beds before a sim starts, bit for bit the delta's own; not the shader's noise (tidepool).
+  and beds before a sim starts (tidepool, delta, the forest's mist, lake's snow, pearl's pour); not
+  the shader's noise. Import them rather than a local copy: a copy that hashed `hash31(i, j, salt)`
+  is `valueNoise(x, y, salt - 1)` bit for bit.
 - `LevelCamera` (`camera.ts`): world ↔ screen for the level side-on camera (horizon, eye height,
   focal): move things in the world and project them, so receding slows them across the frame and
   draws them to the horizon; `groundDrop` / `groundDepth` map ground depth to the screen height
@@ -1617,15 +1635,17 @@ Run `bun concepts/landing/verify.ts` from the repository root with system Chromi
 (`bun concepts/landing/verify.ts frostSky pondKoi`). Each check runs on a freshly loaded page, so
 it inherits nothing from the others, and has a deadline of its own: 180 s, or
 `LANDING_CHECK_SECONDS` (it is started in the page and reports back when done, so no browser
-protocol call waits on it). The run prints `PASS  <name> (<seconds> s)` per check, then the
-results as JSON keyed by check name, and stops at the first failure (a throw or the deadline) with
-`FAIL  <name>` and a non-zero exit. The isolated browser exercises actual WebGL output: Forest's
-sky phase across motion changes, inherited GPU blending and preserving resize, Frost's
-warmth/trace reset while paused and after resume, the shared sky components' outputs (stars, the
-moon's phase, aurora, meteors) and their coupling in Frost's picture (`frost/sky.verify.ts`), the
-canopy weather (`forest/canopy.verify.ts`), uncapped FPS, and saved-frame dissolve sampling across
-larger, smaller, aspect-changed, and unchanged render sizes. Software WebGL is deliberate; this
-check is not a real-device performance qualification.
+protocol call waits on it). A check whose renderer crashes or is killed (earlyoom picks renderers
+first) fails at once with `renderer crashed`, not at the deadline. The run prints
+`PASS  <name> (<seconds> s)` per check, then the results as JSON keyed by check name, and stops at
+the first failure (a throw, the deadline or a crash) with `FAIL  <name>` and a non-zero exit.
+Chromium ends with the run, however it ends, and takes its profile with it. The isolated browser
+exercises actual WebGL output: Forest's sky phase across motion changes, inherited GPU blending
+and preserving resize, Frost's warmth/trace reset while paused and after resume, the shared sky
+components' outputs (stars, the moon's phase, aurora, meteors) and their coupling in Frost's
+picture (`frost/sky.verify.ts`), the canopy weather (`forest/canopy.verify.ts`), uncapped FPS,
+and saved-frame dissolve sampling across larger, smaller, aspect-changed, and unchanged render
+sizes. Software WebGL is deliberate; this check is not a real-device performance qualification.
 
 `src/runtime.verify.ts` adds the renderer's runtime: under reduced motion a press and a trigger
 age in real time while the clocks stand still (Dunes' streak clears after release; paused, ages

@@ -189,11 +189,12 @@ CountryFind countryBuilding(TerrainBuilding b, vec3 eye, vec3 rd, vec2 q, float 
   return CountryFind(face, pane, b.hash, b.kind, zb, px, normalize(countryToWorld(nc)), h * unit);
 }
 
-// The building under this pixel nearer than zLimit, and the glow of lit windows and the smoke of
-// chimneys around. The settlements near the pixel's column are walked for the two nearest houses
-// whose bounds hold the pixel, then only those two are drawn (countryBuilding), so the cost per pixel
-// stays two buildings' however many a village holds; and the castle, where its bounds hold it.
-CountryFind countryBuildings(vec3 eye, vec3 rd, vec2 q, float pxl, float zLimit, float tod, float dark, float wind, inout float glow, inout float smoke) {
+// The building under this pixel nearer than zLimit, and the glow of lit windows (and in the valley
+// fog their halo, the light the fog round them scatters, fog.ts) and the smoke of chimneys around.
+// The settlements near the pixel's column are walked for the two nearest houses whose bounds hold
+// the pixel, then only those two are drawn (countryBuilding), so the cost per pixel stays two
+// buildings' however many a village holds; and the castle, where its bounds hold it.
+CountryFind countryBuildings(vec3 eye, vec3 rd, vec2 q, float pxl, float zLimit, float tod, float dark, float wind, inout float glow, inout float halo, inout float smoke) {
   ivec2 counts = terrainCounts(uSim3);
   int first = -1;
   int second = -1;
@@ -209,6 +210,10 @@ CountryFind countryBuildings(vec3 eye, vec3 rd, vec2 q, float pxl, float zLimit,
     vec2 centre = vec2(dot(d, countryRight), d.y) / zc;
     float reach = (place.radius + 70.0) / zc;
     if (abs(q.x - centre.x) > reach || q.y < centre.y - reach || q.y > centre.y + reach + 80.0 / zc) continue;
+#if COUNTRY_HAS_LIGHTS && COUNTRY_HAS_FOG
+    // How much light the valley fog round this settlement scatters from its lit windows.
+    float spread = K_lights > 0.0 && K_fog > 0.0 ? countryFogHalo(place.at) : 0.0;
+#endif
     // The village's cottages and its church, the most any settlement holds.
     for (int k = 0; k < ${TERRAIN_MAX_COTTAGES + 1}; k++) {
       if (k >= place.count) break;
@@ -238,6 +243,9 @@ CountryFind countryBuildings(vec3 eye, vec3 rd, vec2 q, float pxl, float zLimit,
           float lit = buildingWindow(fract(b.hash * 91.0 + 0.13), tod, dark, share) + buildingWindow(fract(b.hash * 91.0 + 0.57), tod, dark, share);
           vec2 g = (q - at) * zm / unit - vec2(0.0, 0.4);
           glow += lit * exp(-dot(g, g) * 0.3);
+#if COUNTRY_HAS_FOG
+          halo += lit * spread * exp(-dot(g, g) * 0.05);
+#endif
         }
 #endif
 #if COUNTRY_HAS_SMOKE

@@ -52,6 +52,7 @@ import { verifyCountryMurmuration, verifyCountryVerges } from "./src/scenes/coun
 import { verifyCountrySeason } from "./src/scenes/country/season.verify.ts";
 import { verifyCountryYear } from "./src/scenes/country/year.verify.ts";
 import { verifyCountryChalk } from "./src/scenes/country/chalk.verify.ts";
+import { verifyCountryFog } from "./src/scenes/country/fog.verify.ts";
 import { passageSpeeds } from "./src/passage-speed.verify.ts";
 import { nightSkyDefaults, verifyNightSky } from "./src/night-sky.verify.ts";
 
@@ -554,6 +555,7 @@ export const checks: readonly Check[] = [
   ["nightSkyDefaults1", nightSkyDefaults(0, 3)],
   ["nightSkyDefaults2", nightSkyDefaults(1, 3)],
   ["nightSkyDefaults3", nightSkyDefaults(2, 3)],
+  ["countryFog", verifyCountryFog],
 ];
 
 /**

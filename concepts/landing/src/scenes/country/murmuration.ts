@@ -104,9 +104,10 @@ vec2 countryFlockSheet(vec2 uv) {
 
 // The starlings in front of the surface shaded at this pixel (seen: its distance along the ray,
 // 8000 the sky; ahead: the ray's share along the view), at uv (the passage's lens shift included),
-// lit by the sky and hazed by their distance as the land is; where they cover the pixel they become
-// that surface. They gather from late afternoon and go down to roost as dusk deepens; not in steady
-// rain, and not while they nest (they thin out from early spring and gather again from midsummer).
+// lit by the sky and hazed by their distance as the land is, in the valley fog too (fog.ts); where
+// they cover the pixel they become that surface. They gather from late afternoon and go down to
+// roost as dusk deepens; not in steady rain, and not while they nest (they thin out from early
+// spring and gather again from midsummer).
 void countryMurmuration(inout vec3 col, inout float seen, inout float accent, vec2 uv, float ahead, Sky sky, vec3 haze, float tod, float rain, float overcast) {
   if (K_murmuration <= 0.0) return;
   float far = COUNTRY_MURMURATION_DEPTH / ahead;
@@ -117,8 +118,11 @@ void countryMurmuration(inout vec3 col, inout float seen, inout float accent, ve
   vec2 sheet = countryFlockSheet(uv);
   float cover = sheet.x * shows;
   vec3 light = sky.ambient * 1.2 + sky.sunColor * 0.3 + sky.moonColor * 0.25;
-  float thick = 1.0 / (5200.0 - 2600.0 * overcast - 2500.0 * K_fog);
+  float thick = 1.0 / (5200.0 - 2600.0 * overcast);
   vec3 ink = mix(COUNTRY_STARLING * light, haze, 1.0 - exp(-far * thick));
+#if COUNTRY_HAS_FOG
+  if (K_fog > 0.0) countryFogged(ink, far, 1.0, 0.0);
+#endif
   col = mix(col, mix(ink, col, 0.1 * (1.0 - sheet.y)), cover);
   accent *= 1.0 - cover;
   if (cover > 0.5) seen = far;

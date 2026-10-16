@@ -7,9 +7,9 @@
 //   uSim2  rgba8 nearest    the nearest two parcels per texel
 //   uSim3  rgba16f linear   records: parcel sites with their use and attribute, buildings,
 //                           settlements, the bridge, the eye, the roads' way points, the chalk M's
-//                           site (chalk.ts) (texelFetch); beside and above them the murmuration's
-//                           field and the verges' plants while they are on (the records atlas,
-//                           atlas.ts)
+//                           site (chalk.ts), the valley floor under the fog (fog.ts) (texelFetch);
+//                           beside and above them the murmuration's field and the verges' plants
+//                           while they are on (the records atlas, atlas.ts)
 // Three tiers of change, cheapest last:
 //   the terrain (land shape, landscape, relief, erosion, the river's size, the settlements and
 //     roads): a new build over a few frames, reusing what the change leaves alone (terrain.ts); the
@@ -35,6 +35,7 @@ import { DataTexture } from "../../sims/texture.ts";
 import type { SceneSim, SimFactory, SimFrame } from "../types.ts";
 import { CountryAtlas } from "./atlas.ts";
 import { type ChalkSite, chalkSite, keepChalkOpen, packChalk } from "./chalk.ts";
+import { packCountryFog } from "./fog.ts";
 
 /** The map: texels a side and metres a side. */
 export const COUNTRY_MAP = { size: 512, extent: 3200 } as const;
@@ -143,6 +144,7 @@ class CountrySim implements SceneSim {
       if (builder.done) {
         const terrain = builder.terrain;
         const packed = packTerrain(terrain);
+        packCountryFog(packed, terrain);
         this.#land = {
           terrain,
           model: new LandModel(terrain, seed),
