@@ -38,7 +38,7 @@ export function plantKnobs(options: PlantKnobOptions): ParamDef[] {
         {
           ...when,
           steady: true,
-          widget: { kind: "sky", part: "season", year: { span: [0, 1], off: 0.375 } },
+          widget: { kind: "sky", part: "season", year: { span: [0.05, 1], off: 0.35 } },
         },
       ),
     );
