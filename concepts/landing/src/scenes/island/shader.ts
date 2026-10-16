@@ -393,6 +393,43 @@ float islShadow(vec3 p, vec3 l) {
   return smoothstep(0.0, 1.0, clamp(res, 0.0, 1.0));
 }
 
+// Whether islShadow(p, l) from a point on the sea is sure to return exactly 1, so it need not run.
+// It returns 1 when no sample finds islMap below tt / 7 (res never drops under 1). Its samples lie
+// at most 3.63 along l (from 0.03, nine steps of at most 0.4), where tt / 7 is at most 0.52. Away
+// from the island islMap returns bounds: the spheres round the trees, the palm, the cottage and the
+// driftwood, the rocks and the bushes, all inside the cylinder r < 3.75, y < 2.75 (the palm's
+// sphere reaches r 3.68 and y 2.68 at most; the trees' 3.19 and 2.41, over every seed), and the
+// pier's box; a bound gives way to the detail it holds only within 0.2 of it. Beyond r 3.39 (the
+// widest shore, 2.79, and the 0.6 the bed takes to fall) the land is the sea bed at -0.25, at 0.62
+// of its height above it. So a segment that keeps 0.53 clear of the cylinder and of the pier's box,
+// with l steep enough that the bed stays below it (0.62 * (0.27 + l.y tt) >= tt / 7 to tt 3.63),
+// leaves every sample fully lit: skipping the march changes nothing. l.y >= 0.119 (islSdir).
+bool islShadowClear(vec3 p, vec3 l) {
+  const float reach = 3.63;
+  const float clear = 0.53;
+  if (reach * (1.0 - 4.34 * l.y) > 1.17) return false;
+  // The cylinder, from the start up to where the segment rises past its top.
+  float tEnd = min(reach, (2.75 + clear - p.y) / l.y);
+  float b = dot(p.xz, l.xz);
+  float c = dot(p.xz, p.xz) - (3.75 + clear) * (3.75 + clear);
+  if (c < 0.0) return false;
+  float a = dot(l.xz, l.xz);
+  float disc = b * b - a * c;
+  if (b < 0.0 && disc > 0.0 && -b - sqrt(disc) < tEnd * a) return false;
+  // The pier's box, in the island's own x (islMap's q); no axis of the ray left exactly 0.
+  vec3 q = vec3(p.x * islSide, p.y, p.z);
+  vec3 d = vec3(l.x * islSide, l.y, l.z);
+  d.xz = mix(d.xz, vec2(1e-6), lessThan(abs(d.xz), vec2(1e-6)));
+  vec3 inv = 1.0 / d;
+  vec3 lo = (vec3(1.65, -0.4, ISL_PIER_Z - 0.45) - clear - q) * inv;
+  vec3 hi = (vec3(4.25, 1.0, ISL_PIER_Z + 0.45) + clear - q) * inv;
+  vec3 near = min(lo, hi);
+  vec3 far = max(lo, hi);
+  float enter = max(max(near.x, near.y), max(near.z, 0.0));
+  float leave = min(min(far.x, far.y), min(far.z, reach));
+  return enter > leave;
+}
+
 float islAO(vec3 p, vec3 n) {
   float h1 = islMap(p + n * 0.07).x;
   float h2 = islMap(p + n * 0.22).x;
@@ -885,8 +922,12 @@ vec3 islSea(vec3 Pfull, vec3 rd, float t) {
 
   // Light: the island and the clouds, the gull and the balloon all shade the water.
   float cs = max(islCloudShadow(P, islCover * (1.0 - islStorm)) * smoothstep(0.02, 0.25, islLdir.y), islAirShadow(P));
+  // The island's shadow, marched only where it can reach (islShadowClear).
   float sh = 1.0;
-  if (r < 5.3 && islLdir.y > 0.04 && dot(islLcol, vec3(0.333)) > 0.02) sh = islShadow(P + vec3(0.0, 0.02, 0.0), islSdir);
+  vec3 shadowFrom = P + vec3(0.0, 0.02, 0.0);
+  if (r < 5.3 && islLdir.y > 0.04 && dot(islLcol, vec3(0.333)) > 0.02 && !islShadowClear(shadowFrom, islSdir)) {
+    sh = islShadow(shadowFrom, islSdir);
+  }
   vec3 ambN = mix(vec3(dot(islAmb, LUMA)), islAmb, 0.6);
   vec3 lm = ambN * (1.15 * (1.0 - 0.15 * cs)) + islLcol * (0.34 * sh * (1.0 - 0.85 * cs));
   vec3 col = base * lm * 1.1;
@@ -899,7 +940,13 @@ vec3 islSea(vec3 Pfull, vec3 rd, float t) {
     rr3 = rainRipples(P.xz * 2.4, islTime, K_rain);
     sl.xy += rr3.xy * 0.5 * ringFade;
   }
-  WaterMirror sea = waterMirror(rd, sl.xy, 0.12);
+  // The slope variance the cells do not draw (waterGlitter's s2): the ripples finer than the four
+  // trains, after Cox & Munk's clean-sea fit 0.003 + 0.00512 U for a wind of U m/s (the wind knob's
+  // 1 taken as 10 m/s), the rain's rings, and the trains themselves wherever they fade (sl.z), so
+  // the mirror blurs and the glitter path widens toward the horizon. A surface that rough never
+  // turns into the full grazing mirror: its rms slope floors the Fresnel cosine.
+  float rough = 0.003 + 0.0512 * abs(islWind) + 0.004 * K_rain + sl.z;
+  WaterMirror sea = waterMirror(rd, sl.xy, 0.8 * sqrt(rough));
   vec3 rr = sea.ray;
   rr.y = max(rr.y, 0.02);
   rr = normalize(rr);
@@ -962,22 +1009,24 @@ vec3 islSea(vec3 Pfull, vec3 rd, float t) {
     col += vec3(1.0, 0.99, 0.92) * (spkL * 0.8 * hardEdge(spk * 1.1));
   }
 
-  // The sun's or moon's glitter path on the broken mirror, in flecks; a tight glint, and the
-  // lantern's long streak.
+  // The sun's or moon's glitter path (waterGlitter): solid where the facets crowd to mirror it, the
+  // ripples drawn near by breaking it into their own shapes and the trains too fine to draw widening
+  // it toward the horizon; flecks kindling in its wider tail; and the lantern's own path.
+  vec3 view = -rd;
   float lightL = dot(islLcol, vec3(0.333));
   if (lightL > 0.02) {
-    float a = 1.0 - dot(rr, islLdir);
-    col += islLcol * (0.9 * hardEdge(exp(-a * 380.0) * lightL * 1.3));
+    float path = waterGlitter(sea.normal, view, islLdir, rough);
+    col += islLcol * (0.9 * hardEdge(path * lightL * 1.3));
     if (lodS > 0.0) {
       float fleck = smoothstep(0.35, 0.75, vnoise(P.xz * vec2(2.2, 3.2) + vec2(islT * 0.08, 0.0)));
-      col += islLcol * (0.45 * hardEdge(exp(-a * 22.0) * fleck * lodS * min(lightL * 1.6, 1.0)));
+      float tail = waterGlitter(sea.normal, view, islLdir, 6.0 * rough);
+      col += islLcol * (0.45 * hardEdge(tail * fleck * lodS * min(lightL * 1.6, 1.0)));
     }
   }
   if (islDark > 0.02) {
-    vec3 tl = normalize(islLampL - P);
-    float al = 1.0 - dot(rr, tl);
+    float lamp = waterGlitter(sea.normal, view, normalize(islLampL - P), rough);
     vec2 dl = P.xz - islLampL.xz;
-    col += vec3(1.0, 0.76, 0.42) * (hardEdge(exp(-al * 260.0) * islDark * 1.4) * 0.9 + islDark * 0.2 * exp(-dot(dl, dl) * 0.9));
+    col += vec3(1.0, 0.76, 0.42) * (hardEdge(lamp * islDark * 1.4) * 0.9 + islDark * 0.2 * exp(-dot(dl, dl) * 0.9));
   }
 
   // Rain rings.

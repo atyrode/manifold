@@ -8,6 +8,7 @@
 // ice and the camera tilts back up (LAKE_PASSAGE).
 import { choice, feature, range, seed, toggle, type ParamDef } from "../../params.ts";
 import { birdKnobs, birdsGroup } from "../../shaders/lib/birds.ts";
+import { WATER_TIERS } from "../../shaders/lib/water.ts";
 import { atmosphereGroups, skyComponentKnobs, weatherKnobs } from "../atmosphere.ts";
 import type { SceneDef } from "../types.ts";
 import { LAKE_METEOR_TRIGGER, lakeGlsl } from "./shader.ts";
@@ -194,4 +195,7 @@ export const lakeScene: SceneDef = {
   glsl: lakeGlsl,
   entry: "sceneLake",
   sim: lakeSim(params),
+  // The moon's and the window's paths down the ice: the water's glitter (waterGlitter, its mirror
+  // tier); the ice's own mirror, bubbles and cracks are the scene's.
+  features: { WATER_TIER: WATER_TIERS.mirror },
 };

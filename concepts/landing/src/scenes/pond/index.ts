@@ -131,7 +131,7 @@ const params: readonly ParamDef[] = [
     "depth",
     "depth",
     0.5,
-    "Deeper water dims the floor and pushes shadows further from the fish.",
+    "Deeper water dims the floor, bends it further through the ripples and pushes shadows further from the fish.",
   ),
   choice(
     "floor",
@@ -310,7 +310,7 @@ const params: readonly ParamDef[] = [
     "wind",
     "wind",
     0.4,
-    "How much the plants and canopy stir in the breeze; nearer leaves move most.",
+    "How much the plants and canopy stir in the breeze, nearer leaves most, and how much it ruffles the water the sun glints on.",
   ),
   feature(
     "current",
@@ -436,7 +436,7 @@ export const pondScene: SceneDef = {
   // they part outward again, the koi glide off and a breeze crosses the water.
   passage: POND_PASSAGE,
   // The floor's caustics: the shared water's cellular net (causticCells), carried by the current
-  // (waterDrift).
+  // (waterDrift); the sun's glint on the rings: its glitter (waterGlitter).
   features: { WATER_TIER: WATER_TIERS.caustics },
   sim: (gl) => pondSim(gl, params),
 };

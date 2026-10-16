@@ -4,9 +4,9 @@
 // a float target: the spectra the three open-water scenes draw are bit for bit the sums they drew
 // before they shared rippleSpectrum, the pond's caustics are bit for bit the layer it drew before it
 // shared the cellular net, the trains, caustic waves and net seams too fine to draw are skipped
-// without changing a value (or leave only the net's mean), and the mirror, the flow and the caustic
-// light behave. Then the tiers: each tier's functions exist from its tier up and not below, and each
-// adopting scene compiles at the tier it selects and not one lower.
+// without changing a value (or leave only the net's mean), and the mirror, the glitter, the flow and
+// the caustic light behave. Then the tiers: each tier's functions exist from its tier up and not
+// below, and each adopting scene compiles at the tier it selects and not one lower.
 import { fragmentSourceFor, vertexSource } from "../../shaders/index.ts";
 import { WATER_TIERS } from "../../shaders/lib/water.ts";
 import { sceneDefs } from "../index.ts";
@@ -186,6 +186,15 @@ Shade waterProbe(vec2 uv, vec2 cell, float t) {
     float cellFoot = uProbeB.y > 0.0 ? uProbeB.y : foot.x;
     float net = causticCells(p, tm, cellFoot);
     v = vec3(net != probeCells(p, tm) ? 1.0 : 0.0, net, cellFoot);
+  } else if (uProbe == 7) {
+    // The glitter over a grid of half vectors (uProbeA.z of tangent a cell, level at the middle
+    // cell), the eye along uProbeB.xyz, the light mirrored about each, on water sloped uProbeA.xy
+    // with variance uProbeA.w; y: the same light sunk below the horizon.
+    vec2 tilt = (floor(cell) - floor(0.5 * uRes)) * uProbeA.z;
+    vec3 view = normalize(uProbeB.xyz);
+    vec3 light = reflect(-view, normalize(vec3(tilt.x, 1.0, tilt.y)));
+    vec3 n = normalize(vec3(-uProbeA.x, 1.0, -uProbeA.y));
+    v = vec3(waterGlitter(n, view, light, uProbeA.w), waterGlitter(n, view, vec3(light.x, -abs(light.y), light.z), uProbeA.w), light.y);
   } else {
     // The caustic light: still water; no focus at all (capped); half focus; a curved surface.
     float x = floor(cell.x);
@@ -388,6 +397,71 @@ export function verifyWaterTiers(gl: WebGL2RenderingContext): Record<string, unk
     "a facet rising away from the eye does not lean toward it",
   );
 
+  // The glitter (waterGlitter), over the half vector's tangent plane: on level water it is 1 at the
+  // heart of the path, where the half vector is the normal, and spreads over exactly the variance it
+  // is given, holding pi times that: a sea four times as rough draws a path twice as wide holding
+  // four times the light, never a dimmer one. Tilting the water moves the heart onto its normal
+  // (the tangent plane, laid about the vertical, warps the lobe a little there); a light below the
+  // horizon lays none.
+  const G = 65;
+  const gmid = (G - 1) / 2;
+  const glitter: { s2: number; area: number; spread: number }[] = [];
+  for (const [s2, slopeX, slopeZ] of [
+    [0.002, 0, 0],
+    [0.008, 0, 0],
+    [0.032, 0, 0],
+    [0.008, 0.1, -0.05],
+  ] as const) {
+    const cell = (3.2 * Math.sqrt(s2)) / gmid;
+    const lobe = draw(gl, probe, G, G, {
+      uProbe: [7],
+      uProbeA: [slopeX, slopeZ, cell, s2],
+      uProbeB: [0, 1, -0.25, 0],
+    });
+    let sum = 0;
+    let mx = 0;
+    let mz = 0;
+    let second = 0;
+    for (let y = 0; y < G; y++) {
+      for (let x = 0; x < G; x++) {
+        const value = at(lobe, G, x, y, 0);
+        check(at(lobe, G, x, y, 2) > 0, "the glitter probe's light dipped below the horizon");
+        check(
+          at(lobe, G, x, y, 1) === 0,
+          `a light below the horizon glitters ${at(lobe, G, x, y, 1)}`,
+        );
+        const tx = (x - gmid) * cell;
+        const tz = (y - gmid) * cell;
+        sum += value;
+        mx += value * tx;
+        mz += value * tz;
+        second += value * (tx * tx + tz * tz);
+      }
+    }
+    const centre = [mx / sum, mz / sum] as const;
+    const sigma = Math.sqrt(s2);
+    check(
+      Math.abs(centre[0] + slopeX) < 0.05 * sigma && Math.abs(centre[1] + slopeZ) < 0.05 * sigma,
+      `the glitter's heart lies at ${centre.join(", ")}, not on the normal of slope ${slopeX}, ${slopeZ}`,
+    );
+    if (slopeX !== 0 || slopeZ !== 0) continue;
+    const area = sum * cell * cell;
+    const spread = second / sum - centre[0] ** 2 - centre[1] ** 2;
+    check(
+      at(lobe, G, gmid, gmid, 0) > 0.9999,
+      `the glitter's heart is ${at(lobe, G, gmid, gmid, 0)}, not 1`,
+    );
+    check(
+      Math.abs(area / (Math.PI * s2) - 1) < 0.01,
+      `the glitter holds ${area}, not pi times its variance ${s2}`,
+    );
+    check(
+      Math.abs(spread / s2 - 1) < 0.01,
+      `the glitter spreads over ${spread}, not its variance ${s2}`,
+    );
+    glitter.push({ s2, area: Number(area.toFixed(6)), spread: Number(spread.toFixed(6)) });
+  }
+
   // The flow: no current carries nothing; on a current the mix is continuous through every reset
   // (a single copy jumps by the current times the period), and the copy being put back is hidden.
   const T = 256;
@@ -522,6 +596,8 @@ export function verifyWaterTiers(gl: WebGL2RenderingContext): Record<string, unk
     ["aurora", "ripples"],
     ["island", "mirror"],
     ["shore", "mirror"],
+    ["swell", "mirror"],
+    ["lake", "mirror"],
     ["lanterns", "flow"],
     ["tidepool", "caustics"],
     ["pond", "caustics"],
@@ -551,5 +627,6 @@ export function verifyWaterTiers(gl: WebGL2RenderingContext): Record<string, unk
     netSeamCells: seams,
     netAverage: Number(netAverage.toFixed(4)),
     flowLargestStep: Number(largest.toFixed(4)),
+    glitter,
   };
 }

@@ -76,22 +76,24 @@ export function verifySwellRelief(gl: WebGL2RenderingContext): Record<string, un
   gl.uniform1i(at("uView"), 1);
   gl.uniform3f(at("uBg"), 0, 0, 0);
   // At rest the march reaches the sea within its steps; during the entrance, with the camera low over
-  // the long rolling wave, grazing rays may run out of steps while skimming crests (they stop there,
-  // by design), but must still never step over one, and the waves must stay under the camera.
+  // the long rolling wave (camera: its height, the wave's height and how far ahead its crest is, in
+  // camera heights: the entrance's tallest roll part way in), grazing rays may run out of steps while
+  // skimming crests (they stop there, by design), but must still never step over one, and the waves
+  // must stay under the camera.
   const cases = [
     { name: "default", knobs: { relief: 1 }, camera: [1, 0, 0], atRest: true },
     { name: "tallest", knobs: { relief: 1, height: 1, chop: 1 }, camera: [1, 0, 0], atRest: true },
     {
       name: "entranceTallest",
       knobs: { relief: 1, height: 1, chop: 1 },
-      camera: [0.35, 1.6, 10],
+      camera: [0.35, 0.18, 4.5],
       atRest: false,
     },
     // A calm sea, so the rolling wave alone sets how high the relief may go below the low camera.
     {
       name: "entranceCalm",
       knobs: { relief: 1, height: 0.05 },
-      camera: [0.35, 1.6, 10],
+      camera: [0.35, 0.18, 4.5],
       atRest: false,
     },
   ] as const;

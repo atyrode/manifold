@@ -3,7 +3,9 @@
 // border plants come drawn in the plant sheet (uSim0, sims/plantsheet.ts), coloured here by
 // material, and turned by the year with the plant component's colours (shaders/lib/plants.ts). The
 // floor's caustics are the shared water's cellular net, carried by the current (its caustics tier,
-// shaders/caustics.ts and shaders/lib/water.ts).
+// shaders/caustics.ts and shaders/lib/water.ts); the floor is seen through the drop rings' slope, as
+// far as the water is deep, and the sun glints on them with the shared glitter (waterGlitter). Where
+// the pads, the koi on their loops and the petals are comes from the layout pass (uSim3, layout.ts).
 
 import { CANOPY_MARGIN } from "../../decor.ts";
 import { fishGlsl } from "../../sims/fish.ts";
@@ -14,24 +16,19 @@ import { plantsGlsl } from "../../shaders/lib/plants.ts";
 /** Seconds of the pond's entrance and exit (SceneDef.passage). */
 export const POND_PASSAGE = { enter: 3.2, exit: 1.8 } as const;
 
-export const pondGlsl = `${fishGlsl}${plantsGlsl}${plantSheetGlsl}
-// Pebble floor: cells with dark seams, each stone its own shade. Returns brightness.
-float pondPebbles(vec2 x) {
-  vec2 i = floor(x);
-  vec2 f = fract(x);
-  float f1 = 8.0;
-  float f2 = 8.0;
-  float shade = 0.0;
-  for (int y = -1; y <= 1; y++) {
-    for (int k = -1; k <= 1; k++) {
-      vec2 g = vec2(float(k), float(y));
-      vec2 o = 0.15 + 0.7 * vec2(hash12(i + g + 3.1), hash12(i + g + 8.7));
-      float d = length(g + o - f);
-      if (d < f1) { f2 = f1; f1 = d; shade = hash12(i + g + 1.3); } else if (d < f2) { f2 = d; }
-    }
-  }
-  return smoothstep(0.02, 0.12, f2 - f1) * (0.35 + 0.65 * shade) * (1.0 - 0.5 * f1);
-}
+/** The most lily pads, koi and petals the pond draws (the layout's rows run to the widest). */
+export const POND_LAYOUT = { pads: 9, koi: 8, petals: 18 } as const;
+
+/**
+ * Where the pads, the koi on their loops and the petals are this frame: the same for every pixel.
+ * The layout pass (layout.ts) works it out once a frame into uSim3; scenePond reads it there, and
+ * works it out per pixel with these same functions only where float targets are missing (uSimOn.w
+ * 0), so both draw byte for byte alike. Reads passageIn(), passageOut(), hash12, vnoise and TAU.
+ */
+export const pondLayoutGlsl = `
+// Passage, in seconds (POND_PASSAGE).
+const float POND_ENTER = ${glslFloat(POND_PASSAGE.enter)};
+const float POND_EXIT = ${glslFloat(POND_PASSAGE.exit)};
 
 // Smooth looping swim path for koi number i at path time s (mirrored for steering in koi.ts).
 vec2 pondKoiPath(float i, float s, float aspect) {
@@ -42,6 +39,13 @@ vec2 pondKoiPath(float i, float s, float aspect) {
     sin(s * a + ph) * 0.42 * aspect + sin(s * a * 2.3 + ph * 1.7) * 0.12,
     sin(s * b + ph * 0.7) * 0.34 + cos(s * b * 1.9 + ph) * 0.1
   );
+}
+
+// Koi i on its loop at swimTime: where it is (xy) and its path's step over 0.1 of path time (zw),
+// whose direction is its heading.
+vec4 pondKoiSwim(float fi, float swimTime, float aspect) {
+  float s = swimTime + fi * 11.0;
+  return vec4(pondKoiPath(fi, s, aspect), pondKoiPath(fi, s + 0.05, aspect) - pondKoiPath(fi, s - 0.05, aspect));
 }
 
 // Lily pad i: centre (xy) and radius (z); 'anchor' is where its stem is rooted in the floor.
@@ -61,6 +65,90 @@ vec3 pondPadState(float fi, float aspect, float tm, vec2 flow, float turbulence,
   vec2 span = vec2(aspect * 1.15, 1.15);
   vec2 travelled = anchor + flow * tm * 0.05 + roam + eddy;
   return vec3(mod(travelled + span * 0.5, span) - span * 0.5, radius);
+}
+
+// A lily pad's drift while the scene passes: settling in from a little way off (moving from the
+// start, done by 2.7 s), then carried off downwind with the breeze, gathering speed.
+vec2 pondPadPassage(float fi) {
+  float settle = 1.0 - clamp(passageIn() * POND_ENTER / 2.7, 0.0, 1.0);
+  float bearing = hash12(vec2(fi, 73.0)) * TAU;
+  float gust = passageOut() * passageOut();
+  return vec2(cos(bearing), sin(bearing)) * (0.04 + 0.04 * hash12(vec2(fi, 74.0))) * settle * settle
+    + vec2(0.9, 0.4) * (0.02 + 0.02 * hash12(vec2(fi, 75.0))) * gust;
+}
+
+// The first 'pads' lily pads (centre, radius; their stems' roots): where each wants to float, then
+// two passes pushing overlapping pairs apart, so pads crowded by the current just touch and nudge
+// rather than stack.
+void pondPads(int pads, float aspect, float tm, vec2 flow, float turbulence, float placement, float wander, bool tethered, out vec3 padAt[${POND_LAYOUT.pads}], out vec2 padRoot[${POND_LAYOUT.pads}]) {
+  for (int i = 0; i < ${POND_LAYOUT.pads}; i++) {
+    if (i >= pads) break;
+    vec2 anchor;
+    padAt[i] = pondPadState(float(i), aspect, tm, flow, turbulence, placement, wander, tethered, anchor);
+    padAt[i].xy += pondPadPassage(float(i));
+    padRoot[i] = anchor;
+  }
+  for (int pass = 0; pass < 2; pass++) {
+    for (int i = 0; i < ${POND_LAYOUT.pads}; i++) {
+      if (i >= pads) break;
+      for (int j = 0; j < ${POND_LAYOUT.pads}; j++) {
+        if (j >= pads) break;
+        if (j <= i) continue;
+        vec2 gap = padAt[j].xy - padAt[i].xy;
+        float apart = length(gap);
+        float touching = (padAt[i].z + padAt[j].z) * 0.97;
+        if (apart < touching) {
+          vec2 away = apart > 1e-4 ? gap / apart : vec2(1.0, 0.0);
+          vec2 push = away * (touching - apart) * 0.5;
+          padAt[i].xy -= push;
+          padAt[j].xy += push;
+        }
+      }
+    }
+  }
+}
+
+// Whether lily pad i carries a flower.
+bool pondPadFlower(float fi, float placement) {
+  return hash12(vec2(fi, 24.0 + placement)) > 0.6;
+}
+
+// Petal i of those riding the current over a pond 'span' wide, recycled when it leaves: where it is
+// (xy) and how far it has turned (z).
+vec3 pondPetal(float fi, vec2 span, vec2 flow, float tm, float turbulence) {
+  vec2 start = (vec2(hash12(vec2(fi, 51.0)), hash12(vec2(fi, 52.0))) - 0.5) * span;
+  vec2 eddy = (vec2(vnoise(vec2(tm * 0.5 + fi, 3.0)), vnoise(vec2(tm * 0.5 + fi, 8.0))) - 0.5) * turbulence * 0.1;
+  vec2 at = mod(start + flow * tm * (0.07 + 0.03 * hash12(vec2(fi, 53.0))) + eddy + span * 0.5, span) - span * 0.5;
+  return vec3(at, tm * (0.6 + hash12(vec2(fi, 54.0))) + fi);
+}
+`;
+
+export const pondGlsl = `${fishGlsl}${plantsGlsl}${plantSheetGlsl}${pondLayoutGlsl}
+// The water, in screen heights (the frame some 3 m from top to bottom, a koi half a metre long):
+// its depth, 0.15 plus 0.3 per unit of K_depth; the steepest slope of a fresh drop's ring; how high
+// the eye stands over it (a view 45 degrees tall); and the slope variance of a calm surface,
+// ruffled further by K_wind, that the sun's glint spreads over (waterGlitter).
+const vec2 POND_DEPTH = vec2(0.15, 0.3);
+const float POND_RING_SLOPE = 0.08;
+const float POND_EYE = 1.2;
+const vec2 POND_CALM = vec2(0.0003, 0.0012);
+
+// Pebble floor: cells with dark seams, each stone its own shade. Returns brightness.
+float pondPebbles(vec2 x) {
+  vec2 i = floor(x);
+  vec2 f = fract(x);
+  float f1 = 8.0;
+  float f2 = 8.0;
+  float shade = 0.0;
+  for (int y = -1; y <= 1; y++) {
+    for (int k = -1; k <= 1; k++) {
+      vec2 g = vec2(float(k), float(y));
+      vec2 o = 0.15 + 0.7 * vec2(hash12(i + g + 3.1), hash12(i + g + 8.7));
+      float d = length(g + o - f);
+      if (d < f1) { f2 = f1; f1 = d; shade = hash12(i + g + 1.3); } else if (d < f2) { f2 = d; }
+    }
+  }
+  return smoothstep(0.02, 0.12, f2 - f1) * (0.35 + 0.65 * shade) * (1.0 - 0.5 * f1);
 }
 
 // One texel of the plant sheet (uSim0), exactly as drawn: material codes must never be interpolated.
@@ -98,10 +186,6 @@ vec4 pondPaperBoat(vec2 q, float litSide) {
   return vec4(paper * shade, 1.0);
 }
 
-// Passage, in seconds (POND_PASSAGE).
-const float POND_ENTER = ${glslFloat(POND_PASSAGE.enter)};
-const float POND_EXIT = ${glslFloat(POND_PASSAGE.exit)};
-
 // Koi i's glide in from, or out beyond, the frame's edge while the scene passes. 'base' is where its
 // swim path has it; the koi comes and goes along a fixed bearing of its own, from or to just clear of
 // the frame. 'slideVel' is the glide's velocity, for the heading.
@@ -127,16 +211,6 @@ vec2 pondKoiPassage(float fi, vec2 base, float len, float aspect, out vec2 slide
   float rest = 1.0 - arrive;
   slideVel = n * clear * (-3.0 * rest * rest / arriveFor * comingIn + 3.0 * leave * leave / leaveFor * goingOut);
   return n * clear * (rest * rest * rest + leave * leave * leave);
-}
-
-// A lily pad's drift while the scene passes: settling in from a little way off (moving from the
-// start, done by 2.7 s), then carried off downwind with the breeze, gathering speed.
-vec2 pondPadPassage(float fi) {
-  float settle = 1.0 - clamp(passageIn() * POND_ENTER / 2.7, 0.0, 1.0);
-  float bearing = hash12(vec2(fi, 73.0)) * TAU;
-  float gust = passageOut() * passageOut();
-  return vec2(cos(bearing), sin(bearing)) * (0.04 + 0.04 * hash12(vec2(fi, 74.0))) * settle * settle
-    + vec2(0.9, 0.4) * (0.02 + 0.02 * hash12(vec2(fi, 75.0))) * gust;
 }
 
 // How far the foliage at each edge (left, right, bottom, top, in sheet UV) is held out beyond the
@@ -206,8 +280,15 @@ Shade scenePond(vec2 uv, vec2 cell, float t) {
     canopyShift = pondFoliageShift(tin, tout, 0.5, 0.12);
   }
 
-  // Surface: rings spreading from drops, carried by the current; used for refraction and glints.
-  float surface = 0.0;
+  // Surface: rings spreading from drops, carried by the current. Each is a short train of ripples,
+  // its height POND_RING_SLOPE / 160 * sin((dist - radius) * 160) under a bell 0.012 wide, summed
+  // here as its analytic slope (dh/dx, dh/dy). The slope bends the light to the floor and tilts the
+  // mirror the sun glints in; drawn only where the cells resolve the rings' 0.039 wavelength (7 to
+  // 14 cells, as rippleTrain does), and below that it is only the variance (ringRough) that
+  // roughens the glint.
+  vec2 slope = vec2(0.0);
+  float ringRough = 0.0;
+  float ringSeen = smoothstep(7.0, 14.0, TAU / 160.0 * uRes.y);
   float ringLight = 0.0;
   if (K_ripples > 0.0) {
     vec2 grid = p / 0.28;
@@ -221,7 +302,10 @@ Shade scenePond(vec2 uv, vec2 cell, float t) {
         float dist = length(p - drop);
         float radius = age * 0.07;
         float fade = exp(-age * 1.1) * step(0.3, hash12(id + floor(kk) * 3.1));
-        surface += sin((dist - radius) * 160.0) * bell((dist - radius) / 0.012) * fade;
+        float x = (dist - radius) / 0.012;
+        float ring = POND_RING_SLOPE * bell(x) * fade;
+        slope += ring * (cos(x * 1.92) - sin(x * 1.92) * x / 0.96) * (p - drop) / max(dist, 1e-5);
+        ringRough += 0.5 * ring * ring;
         ringLight = max(ringLight, smoothfall(0.004, 0.0, abs(dist - radius)) * fade + smoothfall(0.003, 0.0, abs(dist - radius * 0.6)) * fade * 0.6);
       }
     }
@@ -233,7 +317,10 @@ Shade scenePond(vec2 uv, vec2 cell, float t) {
     float dist = length(p - drop);
     float radius = dropAge * 0.07;
     float fade = exp(-dropAge * 0.9);
-    surface += sin((dist - radius) * 160.0) * bell((dist - radius) / 0.012) * fade;
+    float x = (dist - radius) / 0.012;
+    float ring = POND_RING_SLOPE * bell(x) * fade;
+    slope += ring * (cos(x * 1.92) - sin(x * 1.92) * x / 0.96) * (p - drop) / max(dist, 1e-5);
+    ringRough += 0.5 * ring * ring;
     ringLight = max(ringLight, (smoothfall(0.004, 0.0, abs(dist - radius)) + 0.6 * smoothfall(0.003, 0.0, abs(dist - radius * 0.6))) * fade);
   }
   // Arriving: a few drops ring the water as the koi swim in, each ring dying away before the end.
@@ -251,8 +338,14 @@ Shade scenePond(vec2 uv, vec2 cell, float t) {
       ringLight = max(ringLight, 0.9 * hardEdge(line * fade));
     }
   }
-  vec2 bend = vec2(dFdx(surface), dFdy(surface)) * 0.01 + vec2(sin(p.y * 9.0 + tm * 0.7), cos(p.x * 8.0 + tm * 0.6)) * 0.0025 * m;
-  vec2 floorP = p + bend;
+  // The rings drawn where the cells resolve them, their variance below that; a slow swell over the
+  // whole pond while the water moves. The light reaching the floor bends through that surface:
+  // 0.25 of the water's depth times its slope (refraction into water, n 1.33, at small slopes, as
+  // caustics.ts takes it), so deep water shifts the floor further than shallow.
+  slope = slope * ringSeen + vec2(sin(p.y * 9.0 + tm * 0.7), cos(p.x * 8.0 + tm * 0.6)) * 0.033 * m;
+  ringRough *= 1.0 - ringSeen;
+  float waterDepth = POND_DEPTH.x + POND_DEPTH.y * depth;
+  vec2 floorP = p + 0.25 * waterDepth * slope;
 
   // Floor: pebbles or silt with moss between, dimmer when deep. 'col' is the full-colour picture;
   // ink and accent coverage carry the same layers for the accent and mono palettes.
@@ -328,34 +421,26 @@ Shade scenePond(vec2 uv, vec2 cell, float t) {
   }
   col = mix(col, vec3(0.2, 0.52, 0.24) * (0.7 + 0.5 * weed), step(0.001, weed) * 0.85);
 
-  // Lily pads: where each wants to float, then two passes pushing overlapping pairs apart, so
-  // pads crowded by the current just touch and nudge rather than stack.
+  // Lily pads: this frame's layout (pondPads), worked out once a frame into uSim3 by the layout
+  // pass, or here where it is missing.
   int pads = int(K_lilies * 9.0 + 0.5);
   vec3 padAt[9];
   vec2 padRoot[9];
-  for (int i = 0; i < 9; i++) {
-    if (i >= pads) break;
-    vec2 anchor;
-    padAt[i] = pondPadState(float(i), aspect, tm, flow, turbulence, K_lilySeed, K_lilyDrift, tethered, anchor);
-    padAt[i].xy += pondPadPassage(float(i));
-    padRoot[i] = anchor;
-  }
-  for (int pass = 0; pass < 2; pass++) {
+  bool padFlower[9];
+  bool laid = uSimOn.w > 0.5;
+  if (laid) {
     for (int i = 0; i < 9; i++) {
       if (i >= pads) break;
-      for (int j = 0; j < 9; j++) {
-        if (j >= pads) break;
-        if (j <= i) continue;
-        vec2 gap = padAt[j].xy - padAt[i].xy;
-        float apart = length(gap);
-        float touching = (padAt[i].z + padAt[j].z) * 0.97;
-        if (apart < touching) {
-          vec2 away = apart > 1e-4 ? gap / apart : vec2(1.0, 0.0);
-          vec2 push = away * (touching - apart) * 0.5;
-          padAt[i].xy -= push;
-          padAt[j].xy += push;
-        }
-      }
+      vec4 at = texelFetch(uSim3, ivec2(i, 0), 0);
+      padAt[i] = at.xyz;
+      padFlower[i] = at.w > 0.5;
+      padRoot[i] = texelFetch(uSim3, ivec2(i, 1), 0).xy;
+    }
+  } else {
+    pondPads(pads, aspect, tm, flow, turbulence, K_lilySeed, K_lilyDrift, tethered, padAt, padRoot);
+    for (int i = 0; i < 9; i++) {
+      if (i >= pads) break;
+      padFlower[i] = pondPadFlower(float(i), K_lilySeed);
     }
   }
   // Stems, rooted in the floor and seen through the water.
@@ -382,9 +467,9 @@ Shade scenePond(vec2 uv, vec2 cell, float t) {
   for (int i = 0; i < 8; i++) {
     if (i >= count) break;
     float fi = float(i);
-    float s = swimTime + fi * 11.0;
-    vec2 pos = pondKoiPath(fi, s, aspect);
-    vec2 pathDiff = pondKoiPath(fi, s + 0.05, aspect) - pondKoiPath(fi, s - 0.05, aspect);
+    vec4 swum = laid ? texelFetch(uSim3, ivec2(i, 2), 0) : pondKoiSwim(fi, swimTime, aspect);
+    vec2 pos = swum.xy;
+    vec2 pathDiff = swum.zw;
     vec2 dir = normalize(pathDiff + 1e-5);
     // How fast it goes per second of the scene clock, for the passage's heading.
     vec2 vel = pathDiff * (10.0 * (0.6 + 2.4 * K_swim) * m);
@@ -444,7 +529,7 @@ Shade scenePond(vec2 uv, vec2 cell, float t) {
       padCol = mix(vec3(0.1, 0.34, 0.14), vec3(0.36, 0.62, 0.28), rim) * (1.0 - 0.25 * veins) * (0.9 + 0.2 * vnoise(d * 40.0)) * (0.8 + 0.4 * power);
     }
     padShadow = max(padShadow, step(length(p - centre - shadowOffset * 0.6), radius));
-    if (hash12(vec2(fi, 24.0 + K_lilySeed)) > 0.6) {
+    if (padFlower[i]) {
       vec2 f = rotate(p - centre - vec2(radius * 0.25, radius * 0.1), tm * 0.05);
       float fr = radius * 0.32;
       float petals = fr * (0.55 + 0.45 * abs(cos(atan(f.y, f.x) * 4.0)));
@@ -460,6 +545,9 @@ Shade scenePond(vec2 uv, vec2 cell, float t) {
     o.accent = fishAccent;
     col = fishCol + vec3(0.7, 1.0, 0.92) * caustic * 0.2;
   }
+  // What floats on the water (pads, flowers, petals, the boat) or stands in it (the stone) is dry:
+  // the sun glints on the water around it, never on it.
+  bool dry = pad > 0.0 || flower > 0.0;
   if (pad > 0.0) { o.ink = pad; o.accent = 0.0; col = padCol; }
   if (flower > 0.0) {
     o.ink = flower > 1.5 ? 0.0 : 0.95;
@@ -467,21 +555,21 @@ Shade scenePond(vec2 uv, vec2 cell, float t) {
     col = flower > 1.5 ? vec3(1.0, 0.85, 0.3) : vec3(1.0, 0.72, 0.84);
   }
 
-  // Petals riding the current, recycled when they leave the pond.
+  // Petals riding the current, recycled when they leave the pond (pondPetal, in uSim3's last row
+  // when the layout pass has run).
   if (K_current > 0.0 && K_petals > 0.0) {
     int petals = int(K_petals * 18.0 + 0.5);
     vec2 span = vec2(aspect * 1.1, 1.1);
     for (int i = 0; i < 18; i++) {
       if (i >= petals) break;
       float fi = float(i);
-      vec2 start = (vec2(hash12(vec2(fi, 51.0)), hash12(vec2(fi, 52.0))) - 0.5) * span;
-      vec2 eddy = (vec2(vnoise(vec2(tm * 0.5 + fi, 3.0)), vnoise(vec2(tm * 0.5 + fi, 8.0))) - 0.5) * turbulence * 0.1;
-      vec2 at = mod(start + flow * tm * (0.07 + 0.03 * hash12(vec2(fi, 53.0))) + eddy + span * 0.5, span) - span * 0.5;
-      vec2 d = rotate(p - at, tm * (0.6 + hash12(vec2(fi, 54.0))) + fi);
+      vec3 petal = laid ? texelFetch(uSim3, ivec2(i, 3), 0).xyz : pondPetal(fi, span, flow, tm, turbulence);
+      vec2 d = rotate(p - petal.xy, petal.z);
       if (length(d / vec2(0.011, 0.006)) < 1.0) {
         o.ink = 0.9;
         o.accent = 0.0;
         col = mix(vec3(1.0, 0.75, 0.86), vec3(1.0, 0.97, 0.95), hash12(vec2(fi, 55.0)));
+        dry = true;
       }
     }
   }
@@ -531,6 +619,7 @@ Shade scenePond(vec2 uv, vec2 cell, float t) {
         o.ink = 0.55 + 0.4 * boat.r;
         o.accent = 0.0;
         o.shimmer = 0.0;
+        dry = true;
       }
     }
   }
@@ -561,6 +650,7 @@ Shade scenePond(vec2 uv, vec2 cell, float t) {
       o.ink = mix(0.35 + 0.5 * light * grain, 0.22, growth);
       o.accent = 0.0;
       o.shimmer = 0.0;
+      dry = true;
     } else if (d < 0.07) {
       // Water lapping at the stone: a foam line and small waves running outward.
       float foam = smoothfall(0.03, 0.0, d) * (0.6 + 0.4 * vnoise(p * 140.0 + tm * 2.0));
@@ -619,8 +709,16 @@ Shade scenePond(vec2 uv, vec2 cell, float t) {
     col += vec3(1.0, 0.95, 0.78) * rays * 0.55;
     o.ink += rays * 0.45;
   }
-  // Glare where the sun itself is in frame.
-  float glare = exp(-length(p - sunP) * 11.0) * power;
+  // The sun's glint on the water (waterGlitter). Seen from POND_EYE over the frame's middle, the sun
+  // stands where its mirror image falls on the pond: at sunP, on screen or off it. The drawn rings
+  // and the slow swell tilt the mirror; the calm surface, the breeze and the rings too fine to draw
+  // spread the glint; a wider sheen lies round it. Only on open water, and only where the leaves
+  // let the sun through.
+  vec3 sunDir = normalize(vec3(sunP.x, POND_EYE, sunP.y));
+  vec3 view = normalize(vec3(-p.x, POND_EYE, -p.y));
+  vec3 n = normalize(vec3(-slope.x, 1.0, -slope.y));
+  float rough = POND_CALM.x + POND_CALM.y * K_wind + ringRough;
+  float glare = dry ? 0.0 : (waterGlitter(n, view, sunDir, rough) + 0.2 * waterGlitter(n, view, sunDir, 0.006)) * power * (1.0 - shadeAmount);
   col += vec3(1.0, 0.97, 0.85) * glare * 0.7;
   o.ink = max(o.ink, glare);
 

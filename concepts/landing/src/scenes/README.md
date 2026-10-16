@@ -107,6 +107,14 @@ once and settles (Dunes' pouring streak fades 0.6 s after the press, and is held
 button is down); anything driven by `t` or `uMotionTime` stays put. Sims see the press and release
 edges and `fired`, but no time, so their response is one still step. Paused, every age holds.
 
+A picture that stands still is not redrawn. Paused, under reduced motion or at motion 0, the page
+draws while something is on its way (an entrance, a passage, a program building, the parallax
+easing to the pointer, a sim whose `ready()` is false) and for a while after each change or input
+(`SETTLE_SECONDS`, 5 s; after a press, its release or a "now" trigger while the interaction clock
+runs, `RESPONSE_SECONDS`, 20 s: `src/governor.ts`), then stops until the next. Bound a response to
+that, and a sim that works on over frames at `dt` 0 (a budgeted rebuild, a sheet painted on a
+worker) reports `ready()` false until it is done, or its picture can stop half-way.
+
 ### Entrances and exits
 
 Switching scenes (or first loading the page) is a passage, not a cut. The outgoing scene first
@@ -125,7 +133,11 @@ off screen at its own cell size, into the frame the incoming one dissolves out o
 of the dissolve move. An exit that would end before the blend does is drawn out to end with it,
 so the outgoing scene never stands still under the incoming one. A switch made during the blend
 leaves for the newest scene once the blend is done. The entrance's clock starts on its second
-frame. Every scene gets the blend for free.
+frame. Every scene gets the blend for free. On first load the bare page shows while the program
+builds, and the scene dissolves in out of it. With passages off, under reduced motion or at motion
+0 a switch is a cut, and so is a retry: the scene on screen goes on as it last drew until the next
+one's program is built in the background, and then the next one is there. A context the browser
+restores after losing it starts over as on first load. Nothing ever waits for a build.
 The outgoing frame is sampled in normalized stage coordinates with nearest filtering, so a different
 viewport or pixel size stretches the whole image rather than fetching outside it.
 
@@ -500,6 +512,7 @@ float windMirrorSpread(vec4 ripples, float focal);        // the vertical smear 
 // WATER_MIRROR
 struct WaterMirror { vec3 normal; vec3 ray; float fresnel; };
 WaterMirror waterMirror(vec3 dir, vec2 slope, float minCos); // a view ray on rippled water: normal, reflected ray, Fresnel (f0 0.02)
+float waterGlitter(vec3 n, vec3 view, vec3 light, float s2); // the sun's or moon's glitter 0..1: Beckmann lobe, variance s2, 1 at its heart
 // WATER_FLOW
 vec2 waterDrift(vec2 p, vec2 current, float tm);          // where to evaluate a pattern a steady current (velocity) has carried to p
 vec4 waterFlow(vec2 p, vec2 current, float tm, float period, out float weight); // a current that varies: mix(at xy, at zw, weight)
@@ -661,23 +674,28 @@ whether or not it has `featuresFor`: the renderer takes it through the machinery
 its gates, the planets' too; the GPU checks take the knob gates through the `featuresFor` scenes,
 which hold them too.
 
-A scene enters with the program for its setting, so the plain page draws its lean program and
-builds no other. On a GPU a knob change that needs another feature set builds none either:
-building a program can stall the browser's GPU process, and every frame of the page with it, for
-as long as the driver compiles. The change draws with a program the scene entered with for exactly
-that set, else with the scene's all-features program. That one is built once per page, in the
-background, and never waited for: the renderer asks KHR_parallel_shader_compile's completion
-status or, without that extension, a fence set after the link. Once built it draws one frame, so a
-driver that compiles at the first draw does it then. While the lab is open
-(`DitherRenderer.expectChanges`) it is built ahead once the scene has arrived, beside whatever else
-builds: the next scene's program never waits for it, and a build for a scene passed over finishes
-aside the same way; otherwise the first such change starts it, and the program on screen goes on
-drawing the settings it drew last until it is built. A software rasteriser (a renderer string naming
-SwiftShader, llvmpipe, softpipe or WARP) never uses it: there every gate's code would run in every
-frame (the countryside's frames 5-10x slower under SwiftShader) and it takes some 20 s to compile, a
-setting's own program 2-5 s.
+A scene enters with the program for its setting, built in the background like every program (see
+"Entrances and exits"), so the plain page draws its lean program and builds no other. On a GPU a
+knob change that needs another feature set builds none either: building a program can stall the
+browser's GPU process, and every frame of the page with it, for as long as the driver compiles.
+The change draws with a program the scene entered with for exactly that set, else with the scene's
+all-features program. That one is built once per page, in the background, and never waited for:
+the renderer asks KHR_parallel_shader_compile's completion status or, without that extension, a
+fence set after the link, and then asks about the link no sooner than links have taken so far for
+a source of its length, one a frame (the fence only says the GPU has run what came before it;
+ANGLE links on threads of its own past that, so asking at once could wait out the whole link).
+Once built it draws one frame, so a driver that compiles at the first draw does it then. While the
+lab is open (`DitherRenderer.expectChanges`) it is built ahead once the scene has arrived, beside
+whatever else builds: the next scene's program never waits for it, and a build for a scene passed
+over finishes aside the same way; otherwise the first such change starts it, and the program on
+screen goes on drawing the settings it drew last until it is built. A software rasteriser (a
+renderer string naming SwiftShader, llvmpipe, softpipe or WARP) never uses it: there every gate's
+code would run in every frame (the countryside's frames 5-10x slower under SwiftShader) and it takes
+some 20 s to compile, a setting's own program 2-5 s.
 There a change builds the setting's own program in the background in the same way, never waited
-for, keeping up to four per scene (the least recently drawn freed). Rules:
+for. The renderer keeps up to four programs per scene and eight in all (the least recently drawn
+freed, never one on screen or in a passage). A scene whose source does not assemble
+(`SceneShaderError`) fails as one whose program does not compile. Rules:
 
 - Gate each part on a superset of where its knobs show it (`x > 0` for `K_x > 0.0`), and keep the
   shader's own runtime test inside the gate: the all-features program draws by it.
@@ -793,7 +811,7 @@ have **open** cells: an open night sky where the component could be composed.
 | `street`           | in reflections only                                              | knob 0.55 (window glass)                         | knob (phase; the windows and wet street)                   | —                                                                 | —                                                                                    |
 | `lake`             | over the ice, mirrored                                           | own `K_stars` + shared Milky Way (knob)          | own phase, fixed bearing                                   | knob (`aurora()` on the sim's substorm clock, rough-ice tap)      | knob, trigger 3, mirrored                                                            |
 | `aurora`           | the subject, mirrored in the fjord                               | own `K_stars` on a fixed night                   | own crescent                                               | own curtains                                                      | knob, trigger 1, mirrored                                                            |
-| `swell`            | over the sea                                                     | own (`starfield`, `K_stars`)                     | own disc (`K_moon` sizes it) and glitter path              | —                                                                 | knob, trigger 0, screen frame, glints in the waves                                   |
+| `swell`            | over the sea                                                     | own (`starfield`, `K_stars`)                     | own disc (`K_moon` sizes it), its `waterGlitter` path      | —                                                                 | knob, trigger 0, screen frame, glints in the waves                                   |
 | `clouds` †         | above the cloud sea                                              | knob 0.75                                        | own bearing, drawn by `skyColor`                           | knob (`aurora()`, scene clock)                                    | open                                                                                 |
 | `country`          | over the valley                                                  | knob 0.5                                         | knob (phase; `SKY_MOON_PHASE` compiled in only below full) | open                                                              | open                                                                                 |
 | `flock` †          | the subject over a skyline (only the dome mirrored in its water) | knob 0.45                                        | full                                                       | open                                                              | open                                                                                 |
@@ -1107,15 +1125,16 @@ repeating them:
 | ---------- | ------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `flat`     | `WATER_FLAT` 0     | nothing shared: its own tint, its sky mirrored flat if it likes                                                                                                                                                                                                                                                                           |
 | `ripples`  | `WATER_RIPPLES` 1  | wind ripples: `rippleSpectrum` over its own trains (surface.ts, in every program), or the breeze's cat's-paws, `windRipples`, with the screen-space mirror shift `windMirror` (`shaders/windWater.ts`)                                                                                                                                    |
-| `mirror`   | `WATER_MIRROR` 2   | reflections: `waterMirror`, the rippled normal, reflected ray and Fresnel; the scene looks its own sky and scenery up along the ray                                                                                                                                                                                                       |
+| `mirror`   | `WATER_MIRROR` 2   | reflections: `waterMirror`, the rippled normal, reflected ray and Fresnel; the scene looks its own sky and scenery up along the ray. The sun's or moon's glitter, `waterGlitter`: a Beckmann lobe (Cox & Munk) on the variance the cells do not draw, 1 at its heart                                                                      |
 | `flow`     | `WATER_FLOW` 3     | currents: `waterDrift` carries a pattern on a steady current, `waterFlow` on one that varies from place to place (two copies, evaluated twice)                                                                                                                                                                                            |
 | `caustics` | `WATER_CAUSTICS` 4 | the bed lit through the surface: `causticRipples`' net (`shaders/caustics.ts`) and `waterCaustic`, which multiplies it by a simulated surface's own focus (`ShallowWater.surface`, `sims/shallow.ts`); or, for water with no spectrum of its own, the stylised cellular net `causticCells` (seams where a wandering lattice's cells meet) |
 
 The shared parts own the physics: ripple trains with deep-water dispersion and their LEAN split
 between drawn slope and unresolved variance, the cat's-paws, the mirror's normal and Fresnel, the
-advection, the caustic Jacobians. The scene owns its numbers (its spectrum, its current, its
-knobs), the rain rings it adds to the slope, what it mirrors and how it keeps the reflected ray
-above its horizon, its body colour, foam, glitter and lights. GLSL code that draws its water more
+glitter's lobe, the advection, the caustic Jacobians. The scene owns its numbers (its spectrum, its
+current, its knobs, the roughness finer than its trains that it adds to their variance for the
+glitter), the rain rings it adds to the slope, what it mirrors and how it keeps the reflected ray
+above its horizon, its body colour, foam, sparkle and lights. GLSL code that draws its water more
 than one way tests the tier: `#if WATER_TIER >= WATER_MIRROR`.
 
 **Projected size.** Every tier takes `foot` and fades its detail to the area mean once a cell
@@ -1128,18 +1147,20 @@ full-detail picture. Pick the tier for what the water shows at its largest: a ri
 wide far off takes `ripples`, open water seen close takes `mirror` or `flow`, a pool seen from
 above `caustics`.
 
-| Scene      | Tier               | Uses                                                                                                                                                       |
-| ---------- | ------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `aurora`   | ripples            | `windRipples`, `windMirror` on the fjord (`K_ripples`, `K_wind`)                                                                                           |
-| `country`  | ripples, else flat | `windRipples` on the river while `K_ripples` is up (`K_wind`): the cat's-paws tilt its reflected ray, their finer ripples jitter it cell by cell           |
-| `island`   | mirror             | `rippleSpectrum` (a `RippleTable`: four hand-placed trains), `waterMirror`                                                                                 |
-| `shore`    | mirror             | `rippleSpectrum` (a `RippleFan`: four trains by the golden angle, scaled by the wind), `waterMirror`                                                       |
-| `lanterns` | flow               | `rippleSpectrum` (a `RippleFan`: five trains rocking about the current), `waterDrift` downstream, `waterMirror`                                            |
-| `tidepool` | caustics           | `causticRipples`, `waterCaustic` with `ShallowWater`'s focus; seen from above, it mirrors the sky its own way                                              |
-| `pond`     | caustics           | two layers of `causticCells` on the floor, light where their seams cross, carried by the current (`waterDrift`); its drop rings and refraction are its own |
+| Scene      | Tier               | Uses                                                                                                                                             |
+| ---------- | ------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `aurora`   | ripples            | `windRipples`, `windMirror` on the fjord (`K_ripples`, `K_wind`)                                                                                 |
+| `country`  | ripples, else flat | `windRipples` on the river while `K_ripples` is up (`K_wind`): the cat's-paws tilt its reflected ray, their finer ripples jitter it cell by cell |
+| `island`   | mirror             | `rippleSpectrum` (a `RippleTable`: four hand-placed trains), `waterMirror`, `waterGlitter` for the sun, the moon and the lantern                 |
+| `shore`    | mirror             | `rippleSpectrum` (a `RippleFan`: four trains by the golden angle, scaled by the wind), `waterMirror`, `waterGlitter`                             |
+| `swell`    | mirror             | three Gerstner swells of its own and `rippleSpectrum` (a `RippleFan` of chop), `waterMirror`, `waterGlitter` for the moon                        |
+| `lake`     | mirror             | `waterGlitter` for the moon's and the cabin window's paths down the black ice; the ice's mirror, bubbles and cracks are its own                  |
+| `lanterns` | flow               | `rippleSpectrum` (a `RippleFan`: five trains rocking about the current), `waterDrift` downstream, `waterMirror`                                  |
+| `tidepool` | caustics           | `causticRipples`, `waterCaustic` with `ShallowWater`'s focus; seen from above, it mirrors the sky its own way                                    |
+| `pond`     | caustics           | two layers of `causticCells` on the floor, carried by the current (`waterDrift`); `waterGlitter` for the sun; its drop rings are its own         |
 
-The rest of the lab's water is still drawn its own way: `lake`, `swell`, `falls`, `fireflies`,
-`bamboo`, `forest`, `kelp`, `delta`, `ripple`.
+The rest of the lab's water is still drawn its own way: `falls`, `fireflies`, `bamboo`, `forest`,
+`kelp`, `delta`, `ripple`.
 
 #### Clouds
 
@@ -1722,7 +1743,10 @@ and `dwell` (`state.ts` refuses to load such a scene).
 
 - Everything is seen through a dither at 2–4 CSS px per cell. Bold, readable shapes beat fine
   detail; features thinner than ~2 cells shimmer as they move. Avoid per-frame random noise in
-  colours (it reads as flicker); animate with smooth time functions instead.
+  colours (it reads as flicker); animate with smooth time functions instead. A cell covers whole
+  device pixels (`src/display.ts`): `pixel` CSS px rounded to them (3 device px for 2 at 125 %
+  scaling), since a cell 2.5 device px wide would show as columns of 2 and 3 and bend the dither's
+  tone.
 - Calm by default: a landing page sits on top. Slow, continuous motion; occasional events.
 - Night-friendly dark palette, rich in full colour (`look: { color: "full", levels: 4 }` is the
   usual default), still legible in two-tone accent mode.
@@ -1730,7 +1754,10 @@ and `dwell` (`state.ts` refuses to load such a scene).
   has a carved stone M). Off or subtle by default, in its own `manifold` group.
 - Every effect is a knob with plain-language help; occasional events get a "now" trigger.
 - Performance: one full-screen pass at ~960×540 cells must hold 60 fps on an integrated GPU. Keep
-  loops short (≤ 32 iterations in the common path), no nested loops over many items.
+  loops short (≤ 32 iterations in the common path), no nested loops over many items. The renderer
+  holds every stage to that budget (`CELL_BUDGET`: a larger one, a 4K screen or a 1440p one at
+  pixel 2, gets coarser cells), draws at most 60 frames a second whatever the display, and none
+  while the picture stands still (see "Time and motion").
 
 ## Correctness checks
 
@@ -1753,13 +1780,23 @@ sizes. Software WebGL is deliberate; this check is not a real-device performance
 
 `src/runtime.verify.ts` adds the renderer's runtime: under reduced motion a press and a trigger
 age in real time while the clocks stand still (Dunes' streak clears after release; paused, ages
-hold); a simulation that throws while starting or drawing, and a shader that does not build, keep
-the frame loop scheduled, report the failure and recover by retry or by another scene; uniforms are
-sent only when they change, including a look change made while another scene drew; and the Lab
-never applies a setup while it is being built. `src/features.verify.ts` covers knob-keyed features
-through the renderer, taking its context for a GPU's or a software rasteriser's whatever renders
-the check. No change waits on a build (no status, log, uniform location or use of a program before
-its completion or fence was seen). `sceneFeatures`, software: nothing is built ahead; a gated knob
+hold); a simulation that throws while starting or drawing, and a shader that does not build (its
+program built in the background, the scene on screen going on meanwhile), keep the frame loop
+scheduled, report the failure and recover by retry or by another scene; uniforms are sent only
+when they change, including a look change made while another scene drew; and the Lab never
+applies a setup while it is being built. `src/display.verify.ts` adds the display:
+`contextRestore`, a lost context draws nothing while the frame loop goes on, and once the browser
+restores it the scene enters again and draws; `frameGovernor`, a moving scene on a 120 Hz display
+draws at most 60 frames a second, and paused or at motion 0 the picture stops issuing draws once
+the change has played out, until input wakes it (`src/display.test.ts` and `src/governor.test.ts`
+check the cells on whole device pixels at 125 %, the budget and the pacing without a browser).
+Checks that drive frames by hand start the renderer unpaced (`start({ paced: false })`) and run
+frames, a little real time apart, until it is no longer `waiting` for a scene's program.
+
+`src/features.verify.ts` covers knob-keyed features through the renderer, taking its context for a
+GPU's or a software rasteriser's whatever renders the check. No change waits on a build (no status,
+log, uniform location or use of a program before its completion or fence was seen).
+`sceneFeatures`, software: nothing is built ahead; a gated knob
 builds its own program in the background and switches to it once built, the old frame holding until
 then; several gated knobs at once build once; past four sets the least recently drawn program is
 freed. `featureToggles`, GPU, for every scene with `featuresFor` (country, meadow, shore, dunes,

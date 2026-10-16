@@ -522,23 +522,23 @@ vec3 lakeClearIce(Ground g, float fu, float fv, float range, vec3 dir, vec3 snow
 
   col = mix(col, mirror, refl);
 
-  // The moon's path: facets of the ice tipped toward it, glinting below its image.
-  float azr = atan(r.x, r.z) + lakePar;
-  float elr = r.y / length(r.xz);
+  // The moon's path and the window's: the shared glitter (waterGlitter), the ice's facets tipped to
+  // mirror each light toward the eye about the drawn surface, their slopes spread past what the
+  // undulations draw by an rms of 5 rough + 0.012 (the rougher the ice, the wider and longer each
+  // path), with single facets glinting in the moon's.
+  vec3 view = -dir;
+  float facets = (5.0 * rough + 0.012) * (5.0 * rough + 0.012);
   if (lakePhase > 0.0) {
-    float spread = rough * 2.5 + 0.006;
-    float da = (azr - lakeMoonAz) / (0.012 + spread * 0.6);
-    float de = (elr - lakeMoonEl) / (spread * 4.0);
-    float path = exp(-da * da - de * de);
+    float path = waterGlitter(n, view, lakeMoon, facets);
     float facet = hash12(floor(P * vec2(16.0, 5.0)) + 0.37);
     col += lakeMoonLight * (0.6 * path + 1.6 * hardEdge(path * smoothstep(0.82, 0.97, facet))) * (1.0 - lakeOver);
   }
-  // The window's light, drawn down the ice toward us.
+  // The window, 1.3 m up on the cabin across the ice, 1.1 m left of its middle.
   if (K_cabin > 0.5) {
-    float elw = (LAKE_BANK + 1.3) / max(LAKE_CABIN_Z - range, 5.0);
-    float da = (azr - lakeCabinAz + 1.1 / LAKE_CABIN_Z) / (0.004 + rough * 0.25);
-    float de = (elr - elw) / (0.004 + rough * 3.5);
-    col += LAKE_WINDOW * exp(-da * da - de * de) * 0.5 * refl;
+    float bearing = lakeCabinAz - 1.1 / LAKE_CABIN_Z - lakePar;
+    vec3 pane = vec3(sin(bearing) * LAKE_CABIN_Z, LAKE_BANK + 1.3, cos(bearing) * LAKE_CABIN_Z);
+    float path = waterGlitter(n, view, normalize(pane - vec3(P.x, 0.0, P.y)), facets);
+    col += LAKE_WINDOW * path * 0.5 * refl;
   }
 
   // Hoarfrost: here and there a crystal on the bare ice catches the light.

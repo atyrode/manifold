@@ -2,8 +2,10 @@
 // (plants.ts, sims/plants.ts) and drawn every frame on the GPU into the plant sheet
 // (sims/plantsheet.ts) from the botany atlas, painted once on the worker (sheet.ts, decor.ts); the
 // overhead canopy (uSim1), a sheet painted on the worker whenever its knobs or the frame's shape
-// change; and the koi while they are drawn to the pointer (uSim2, koi.ts). The last finished canopy
-// stays bound while a new one paints; the plants show as soon as the atlas is ready.
+// change; the koi while they are drawn to the pointer (uSim2, koi.ts); and this frame's layout of
+// the pads, the koi on their loops and the petals, worked out once on the GPU (uSim3, layout.ts).
+// The last finished canopy stays bound while a new one paints; the plants show as soon as the atlas
+// is ready.
 import {
   canopyKey,
   CANOPY_MARGIN,
@@ -18,6 +20,7 @@ import { PLANT_SUMMER, plantClimate, RootedPlants } from "../../sims/plants.ts";
 import { windNoise } from "../../sims/wind.ts";
 import type { SceneSim } from "../types.ts";
 import { PondKoi } from "./koi.ts";
+import { PondLayout } from "./layout.ts";
 import {
   growPondPlants,
   POND_ORGANS,
@@ -85,8 +88,9 @@ export function pondSim(gl: WebGL2RenderingContext, params: readonly ParamDef[])
   const gustSlot = knobs.trigger("gusts");
   let sheet: PlantSheet | undefined;
   const maxSize = Number(gl.getParameter(gl.MAX_TEXTURE_SIZE)) || 4096;
-  const textures: (WebGLTexture | undefined)[] = [undefined, undefined, undefined];
+  const textures: (WebGLTexture | undefined)[] = [undefined, undefined, undefined, undefined];
   const koi = new PondKoi(params, gl);
+  const layoutPass = new PondLayout(gl, params);
   // The knobs as last seen, then the frame's aspect: the layout is rebuilt only when one of its
   // inputs moves, so a steady frame allocates nothing.
   const seen = new Float64Array(KNOBS.length + 1).fill(Number.NaN);
@@ -204,6 +208,7 @@ export function pondSim(gl: WebGL2RenderingContext, params: readonly ParamDef[])
       textures[0] = plantsOn && drawn ? sheet?.texture : undefined;
       textures[1] = leaves ? canopy.texture : undefined;
       textures[2] = koi.frame(frame);
+      textures[3] = layoutPass.frame(frame);
       return textures;
     },
     // The plant and canopy sheets are painted on a worker: ready once those it shows are back.
@@ -215,6 +220,7 @@ export function pondSim(gl: WebGL2RenderingContext, params: readonly ParamDef[])
       canopy.dispose();
       sheet?.dispose();
       koi.dispose();
+      layoutPass.dispose();
     },
   };
 }

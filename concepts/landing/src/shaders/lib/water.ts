@@ -8,7 +8,8 @@
 //   flat      WATER_FLAT 0      the scene's own tint (and, if it likes, its sky mirrored flat): no surface
 //   ripples   WATER_RIPPLES 1   wind ripples: rippleSpectrum (surface.ts, a scene's own trains) and the
 //                               breeze's cat's-paws with their screen-space mirror (windWater.ts)
-//   mirror    WATER_MIRROR 2    reflections: the rippled normal, the reflected ray and Fresnel (waterMirror)
+//   mirror    WATER_MIRROR 2    reflections: the rippled normal, the reflected ray and Fresnel
+//                               (waterMirror), and the sun's or moon's glitter on it (waterGlitter)
 //   flow      WATER_FLOW 3      currents: patterns carried by a steady current (waterDrift) or by one
 //                               that changes from place to place (waterFlow)
 //   caustics  WATER_CAUSTICS 4  the bed lit through the surface: causticRipples' net (caustics.ts) times
@@ -55,6 +56,23 @@ WaterMirror waterMirror(vec3 dir, vec2 slope, float minCos) {
   m.ray = reflect(dir, m.normal);
   m.fresnel = fresnelSchlick(dot(m.normal, -dir), 0.02, minCos);
   return m;
+}
+
+// The sun's or moon's glitter on the water, after Cox & Munk's 1954 sea-slope measurements: the
+// share of the surface's facets tilted to mirror light (toward the sun or moon, y up; none once it
+// is down) into view (toward the eye), about the drawn normal n, their slopes spread with variance
+// s2. s2 is the roughness the cells do not draw: rippleSpectrum's z (the trains too fine for them)
+// plus the scene's own floor for ripples finer still, so the path widens with the wind and toward
+// the horizon, where trains fade into it. A Beckmann distribution of the half vector, normalised to
+// 1 at the heart of the path: a rougher surface draws a wider path rather than a dimmer one, and the
+// path never burns out into a solid block. Its half width at half height, in the tangent of the
+// half vector's tilt, is sqrt(s2 ln 2); its area over that tangent plane is pi s2.
+float waterGlitter(vec3 n, vec3 view, vec3 light, float s2) {
+  if (light.y <= 0.0) return 0.0;
+  vec3 h = normalize(view + light);
+  float c = max(dot(n, h), 1e-3);
+  float tan2 = (1.0 - c * c) / (c * c);
+  return exp(-tan2 / s2);
 }
 #endif
 
