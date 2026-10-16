@@ -182,8 +182,8 @@ vec3 lakeMoonAt(vec3 d, out float cover) {
 }
 
 // The night sky for a ray: the dome, moonlight in the air and the aurora's glow low in the north,
-// the Milky Way and stars (fainter in the mirror), our moon, a shooting star, the aurora, and cloud
-// while it snows. Adds the aurora's light that shows to lakeAccent.
+// the Milky Way and stars (fainter in the mirror), the giant planet, our moon, a shooting star, the
+// aurora, and cloud while it snows. Adds the aurora's light that shows to lakeAccent.
 vec3 lakeSkyAt(vec3 d, bool mirror, float soft) {
   vec3 col = skyColor(lakeSky, d);
   float hh = max(d.y, 0.0);
@@ -195,10 +195,12 @@ vec3 lakeSkyAt(vec3 d, bool mirror, float soft) {
   col += vec3(0.045, 0.048, 0.064) * mw;
   float density = milkyWayStars(K_stars, mw) * (1.0 - 0.6 * lakePhase);
   col += skyStarLight(starry, d, mirror ? 0.5 * density : density) * (mirror ? 0.6 : 1.0);
+  float foot = max(1.0 / (LAKE_FOCAL * uRes.y), soft);
+  col = skyGiant(starry, col, d, foot, 1.0);
   float disc;
   vec3 moon = lakeMoonAt(d, disc);
   col = col * (1.0 - 0.9 * disc) + moon;
-  float meteor = meteorStreak(skyAngles(d), LAKE_METEOR_FIELD, lakeMeteorAt, lakeMeteorSeed, max(1.0 / (LAKE_FOCAL * uRes.y), soft));
+  float meteor = meteorStreak(skyAngles(d), LAKE_METEOR_FIELD, lakeMeteorAt, lakeMeteorSeed, foot);
   col += METEOR_TINT * hardEdge(meteor * lakeSky.night * (1.0 - disc)) * (mirror ? 0.6 : 1.0);
   vec3 aur = lakeAurora(d, soft);
   col += aur;

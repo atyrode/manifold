@@ -1,12 +1,15 @@
 // Shared sky: the clock, sun and moon, a side-on camera ray, an analytic sky dome with sun and moon
 // discs, and stars; helpers to turn the sky to a scene's facing, mirror it for reflections, sample the
 // horizon haze and tint the stars, and the moon's coverage. With the SKY_MOON_PHASE feature
-// (SceneDef.features) the moon also takes a phase (skyMoonPhase). A scene with the constellations' or
-// the planets' knob (skyComponentKnobs) has skyStars draw them too, from the tables built below. The
-// cloud deck is clouds.ts, compiled right after it. Compiled into every scene program right after the
-// common preamble; the contract and conventions are in src/scenes/README.md.
+// (SceneDef.features) the moon also takes a phase (skyMoonPhase). Two parts of the night compile in
+// only while their knob is on, behind library gates (LIBRARY_GATES in src/shaders/index.ts): the
+// constellations, which skyStars draws from the tables built below (SKY_FIGURES), and the giant
+// planet that skyGiant hangs among the stars (SKY_GIANT, with the shared planet's planetGlsl). The
+// cloud deck is clouds.ts, compiled right after it. Compiled into every scene program right after
+// the common preamble; the contract and conventions are in src/scenes/README.md.
 import { constellationUniforms, type ConstellationUniforms } from "../../constellations.ts";
 import { glslFloat } from "../glsl.ts";
+import { planetGlsl } from "./planet.ts";
 
 type Vec3 = readonly [number, number, number];
 
@@ -22,35 +25,12 @@ const SIN_LAT = 0.258819;
  * on the plane touching the dome at its anchor. That spreads them 13-42 degrees up, from 37 degrees
  * left to 50 right of straight ahead: the sky side-on views frame (most show 30-37 degrees up the
  * middle), turned a little right so that no star of theirs comes within the full moon's glare at
- * midnight (30 degrees up, straight ahead), and clear of the planets.
+ * midnight (30 degrees up, straight ahead).
  */
 const FIGURE_TURN = 0.1;
 const FIGURE_BEARING = 0.8;
 const FIGURE_BASE = 0.32;
 const FIGURE_RISE = 1;
-
-/**
- * The planets, brightest first (K_planets shows the first n), each fixed like the stars on a daily
- * circle in the band of the sun's (-28 degrees) and the moon's (-45 degrees) paths, this sky's zodiac:
- * [hour angle (radians, positive toward the sunset on the left), declination (degrees), radius in
- * dither cells]. Venus is the evening star low on the sunset side, Mercury lower still beside it, and
- * Jupiter, Saturn and Mars stand between the figures, at least 7 degrees from any of their stars.
- * The smallest is wider than any star.
- */
-const PLANETS: readonly Vec3[] = [
-  [0.97, -41, 2.8], // Venus: 40 degrees left, 14 up
-  [0.27, -42.5, 2.4], // Jupiter: 13 left, 31 up
-  [-0.5, -40, 2.1], // Saturn: 25 right, 29 up
-  [-0.8, -44, 2.1], // Mars: 33 right, 18 up
-  [1.17, -38, 2], // Mercury: 47 left, 8 up
-];
-
-/** skyBody's direction: a body at hour angle h on the daily circle of declination dec (radians). */
-function dailyCircle(h: number, dec: number): Vec3 {
-  const c = Math.cos(dec) * Math.cos(h);
-  const s = Math.sin(dec);
-  return [-Math.cos(dec) * Math.sin(h), c * COS_LAT + s * SIN_LAT, c * SIN_LAT - s * COS_LAT];
-}
 
 function at(values: Float32Array, index: number): number {
   const value = values[index];
@@ -136,40 +116,36 @@ export function skyFigurePoint(figure: SkyFigure, [x, y]: readonly [number, numb
   return [point[0] / size, point[1] / size, point[2] / size];
 }
 
-const planets = PLANETS.map(([h, dec, cells]) => ({
-  direction: dailyCircle(h, (dec * Math.PI) / 180),
-  cells,
-}));
-
-/** The planets' directions as skyStars draws them, brightest first. */
-export const skyPlanets: readonly Vec3[] = planets.map((planet) => planet.direction);
-
 /** GLSL float literals for `values`, comma-separated: a vector constructor's arguments. */
 const floats = (values: readonly number[]): string => values.map(glslFloat).join(", ");
 
 /** A GLSL table of the figures, one row each. */
 const figureTable = (type: string, name: string, row: (figure: SkyFigure) => string): string =>
-  `const ${type} ${name}[SKY_FIGURES] = ${type}[SKY_FIGURES](\n  ${skyFigures.map(row).join(",\n  ")}\n);`;
+  `const ${type} ${name}[SKY_FIGURE_COUNT] = ${type}[SKY_FIGURE_COUNT](\n  ${skyFigures.map(row).join(",\n  ")}\n);`;
 
 // The figures as GLSL: per figure SKY_FIGURE_SPAN (stars [x, y), lines [z, w) in the uCon* uniforms),
 // SKY_FIGURE_CONE (the anchor's direction, and the reach) and the plane touching the dome there
 // (SKY_FIGURE_RIGHT, _UP).
 const figureTables = [
-  `const int SKY_FIGURES = ${skyFigures.length};`,
+  `const int SKY_FIGURE_COUNT = ${skyFigures.length};`,
   figureTable("ivec4", "SKY_FIGURE_SPAN", (f) => `ivec4(${[...f.stars, ...f.lines].join(", ")})`),
   figureTable("vec4", "SKY_FIGURE_CONE", (f) => `vec4(${floats([...f.centre, f.reach])})`),
   figureTable("vec3", "SKY_FIGURE_RIGHT", (f) => `vec3(${floats(f.right)})`),
   figureTable("vec3", "SKY_FIGURE_UP", (f) => `vec3(${floats(f.up)})`),
 ].join("\n");
 
-// SKY_PLANET: per planet its direction and its radius in dither cells.
-const planetTable = `const int SKY_PLANETS = ${planets.length};
-const vec4 SKY_PLANET[SKY_PLANETS] = vec4[SKY_PLANETS](
-  ${planets.map(({ direction, cells }) => `vec4(${floats([...direction, cells])})`).join(",\n  ")}
-);`;
-
 export const skyGlsl = `
 // ---- sky ----
+
+// The library gates (LIBRARY_GATES in src/shaders/index.ts): 1 compiles in the constellations
+// (SKY_FIGURES) or the giant planet (SKY_GIANT), each defined 0 or 1 in a scene with its knob, as it
+// is off or on; 0 in any other.
+#ifndef SKY_FIGURES
+#define SKY_FIGURES 0
+#endif
+#ifndef SKY_GIANT
+#define SKY_GIANT 0
+#endif
 
 // The clock: K_time and K_cycle -> 0..1 (0 midnight, .25 sunrise, .5 noon, .75 sunset). At cycle 1 a
 // whole day passes in four minutes. motionTime = uMotionTime is the scene clock integrated with
@@ -489,7 +465,7 @@ float skyStarFade(Sky sky, vec3 dir) {
   return sky.night * smoothstep(0.0, 0.22, dir.y) * moon;
 }
 
-#ifdef K_constellations
+#if SKY_FIGURES
 // The constellations (constellations.ts, every figure but the Manifold mark), placed on the dome by
 // placeFigures in sky.ts: the stars' offsets, brightness and lines come from the uCon* uniforms.
 ${figureTables}
@@ -502,7 +478,7 @@ ${figureTables}
 // is left out. A figure's stars and lines are visited only within its cone.
 float skyFigures(vec3 dir, float perCell, float lines) {
   float lit = 0.0;
-  for (int f = 0; f < SKY_FIGURES; f++) {
+  for (int f = 0; f < SKY_FIGURE_COUNT; f++) {
     vec4 cone = SKY_FIGURE_CONE[f];
     vec3 off = dir - cone.xyz;
     float reach = cone.w + 5.0 / perCell;
@@ -532,54 +508,27 @@ float skyFigures(vec3 dir, float perCell, float lines) {
 }
 #endif
 
-#ifdef K_planets
-// The planets (PLANETS in sky.ts), brightest first: direction, radius in dither cells.
-${planetTable}
-
-// The first 'count' planets over dir, 0..1: steady discs, wider than any star, out with the first
-// stars and low into the horizon's haze, hidden only behind the moon's disc. perCell: dither cells a
-// radian.
-float skyPlanets(Sky sky, vec3 dir, float perCell, float count) {
-  float lit = 0.0;
-  for (int i = 0; i < SKY_PLANETS; i++) {
-    if (float(i) >= count) break;
-    vec4 p = SKY_PLANET[i];
-    lit = max(lit, smoothfall(p.w + 0.5, p.w - 0.5, length(dir - p.xyz) * perCell));
-  }
-  if (lit <= 0.0) return 0.0;
-  return lit * smoothstep(0.0, 0.25, sky.night) * smoothstep(0.0, 0.06, dir.y) * (1.0 - skyMoonCover(sky, dir));
-}
-#endif
-
-// skyStars' field of stars (coverage 'field', faded by 'fade', skyStarFade) with the night's opt-in
-// parts over it, each only in a scene with its knob (skyComponentKnobs) and only while it is on: the
-// constellations (K_constellations, faded as the stars) and the planets (K_planets). foot: radians a
-// dither cell spans. Without either knob it is the field.
-float skyStarParts(Sky sky, vec3 dir, float field, float fade, float foot) {
-  float lit = field;
-#if defined(K_constellations) || defined(K_planets)
-  float perCell = 1.0 / max(foot, 1e-6);
-#endif
-#ifdef K_constellations
+// skyStars' field of stars (coverage 'field', faded by 'fade', skyStarFade) with the constellations
+// over it while they are on (K_constellations, faded as the stars), in a program that compiles them
+// in (SKY_FIGURES). foot: radians a dither cell spans. Without them it is the field.
+float skyStarFigures(vec3 dir, float field, float fade, float foot) {
+#if SKY_FIGURES
   if (K_constellations > 0.0 && fade > 0.0)
-    lit = max(lit, skyFigures(dir, perCell, K_constellations) * fade);
+    return max(field, skyFigures(dir, 1.0 / max(foot, 1e-6), K_constellations) * fade);
 #endif
-#ifdef K_planets
-  if (K_planets > 0.0) lit = max(lit, skyPlanets(sky, dir, perCell, K_planets));
-#endif
-  return lit;
+  return field;
 }
 
 // Stars for a view ray, 0..1: a dense layer of faint stars and a sparse one of bright stars. density
 // 0..1 (1 is a dark-site sky). Already faded by daylight, toward the horizon and around the moon. The
-// constellations and planets of a scene with their knobs come with them (none at density 0), sized
-// for a 1-radian view: a dither cell 1 / uRes.y radians.
+// constellations of a scene with their knob come with them (none at density 0), sized for a 1-radian
+// view: a dither cell 1 / uRes.y radians.
 float skyStars(Sky sky, vec3 dir, float density) {
   if (dir.y <= 0.0 || sky.night <= 0.0 || density <= 0.0) return 0.0;
   float s = skyStarLayer(dir, 120.0, 0.22 * density, 0.2, 0.0)
           + skyStarLayer(dir, 44.0, 0.1 * density, 0.09, 7.0) * 1.3;
   float fade = skyStarFade(sky, dir);
-  return skyStarParts(sky, dir, clamp(s * fade, 0.0, 1.0), fade, 1.0 / uRes.y);
+  return skyStarFigures(dir, clamp(s * fade, 0.0, 1.0), fade, 1.0 / uRes.y);
 }
 
 // One star layer at a footprint (foot: radians one dither cell spans): once its grid cells, (pi / 2) /
@@ -596,14 +545,14 @@ float skyStarLayerLod(vec3 dir, float cells, float fill, float size, float salt,
 // along dir (about the vertical field of view over uRes.y). The faint layer keeps its stars while its
 // grid cells span 1.25 dither cells or more (a 1-radian view at 96 rows or finer), the bright layer
 // down to 35 rows; there its field is exactly skyStars(sky, dir, density)'s. Coarser, a layer fades to
-// its faint mean glow instead of crawling as single cells. The constellations and planets are sized
-// in these cells.
+// its faint mean glow instead of crawling as single cells. The constellations are sized in these
+// cells.
 float skyStars(Sky sky, vec3 dir, float density, float foot) {
   if (dir.y <= 0.0 || sky.night <= 0.0 || density <= 0.0) return 0.0;
   float s = skyStarLayerLod(dir, 120.0, 0.22 * density, 0.2, 0.0, foot, 0.0064)
           + skyStarLayerLod(dir, 44.0, 0.1 * density, 0.09, 7.0, foot, 0.0013) * 1.3;
   float fade = skyStarFade(sky, dir);
-  return skyStarParts(sky, dir, clamp(s * fade, 0.0, 1.0), fade, foot);
+  return skyStarFigures(dir, clamp(s * fade, 0.0, 1.0), fade, foot);
 }
 
 // The cool white most scenes give their stars.
@@ -613,4 +562,67 @@ const vec3 SKY_STAR_TINT = vec3(0.85, 0.9, 1.0);
 vec3 skyStarLight(Sky sky, vec3 dir, float density) {
   return SKY_STAR_TINT * skyStars(sky, dir, density);
 }
+
+// ---- the giant planet ----
+
+#if SKY_GIANT
+${planetGlsl}
+
+// The giant planet hanging in the sky (giantKnobs' sky giant: K_planet its size while on, 0 off, and
+// its K_planet* options) over 'col', the sky along dir so far: the dome, the Milky Way and the stars,
+// which it stands in front of. dir is the direction the scene's stars are fixed to (what it gives
+// skyStars), foot the radians a dither cell spans there, clear how much of the sky the scene's cloud
+// leaves open there (1 none, 0 behind a solid deck). It stands K_planetX degrees right of straight
+// ahead and K_planetY up, its radius 4..11.5 degrees, seen square-on from wherever the view looks
+// (the sky round it as a gnomonic view): fixed in the sky, it keeps its shape at the edge of a wide
+// view. The shared planet's decoration tier draws it (planetGiant, planetOver): K_planetPalette's
+// colours, its thin ring while K_planetRing is on, lit from the upper left as campfire's is, its
+// moons, aurora, city lights and day cycle as campfire's. It fades to a pale ghost by day as
+// campfire's does, and hides behind the moon's disc and under the horizon. Draw the cloud, the
+// aurora, shooting stars and the ground over it.
+vec3 skyGiant(Sky sky, vec3 col, vec3 dir, float foot, float clear) {
+  if (K_planet <= 0.0) return col;
+  float across = radians(K_planetX);
+  float up = radians(K_planetY);
+  vec3 centre = vec3(cos(up) * sin(across), sin(up), cos(up) * cos(across));
+  float ahead = dot(dir, centre);
+  if (ahead <= 0.0) return col;
+  vec3 right = vec3(cos(across), 0.0, -sin(across));
+  vec2 p = vec2(dot(dir, right), dot(dir, cross(centre, right))) / ahead;
+  vec3 light = normalize(vec3(-0.62, 0.42, 0.66));
+  if (K_planetDaycycle > 0.0) light = planetSun(light, uMotionTime * K_planetDaycycle * 0.25);
+  PlanetLook look = planetGiant(vec2(0.0), 0.07 + 0.13 * K_planet, light);
+  // K_planetPalette past campfire's teal: 1 amber, 2 rose, 3 ice.
+  if (K_planetPalette > 2.5) {
+    look.deep = vec3(0.05, 0.12, 0.32); look.mid = vec3(0.26, 0.46, 0.78);
+    look.pale = vec3(0.82, 0.92, 1.0); look.eye = vec3(0.96, 0.98, 1.0);
+    look.rim = vec3(0.18, 0.34, 0.62); look.glow = vec3(0.012, 0.024, 0.05);
+    look.ringDark = vec3(0.40, 0.46, 0.56); look.ringLight = vec3(0.86, 0.92, 1.0);
+  } else if (K_planetPalette > 1.5) {
+    look.deep = vec3(0.28, 0.07, 0.18); look.mid = vec3(0.70, 0.30, 0.46);
+    look.pale = vec3(0.98, 0.76, 0.78); look.eye = vec3(1.0, 0.90, 0.82);
+    look.rim = vec3(0.42, 0.14, 0.28); look.glow = vec3(0.04, 0.014, 0.03);
+    look.ringDark = vec3(0.30, 0.34, 0.46); look.ringLight = vec3(0.70, 0.78, 0.92);
+  } else if (K_planetPalette > 0.5) {
+    look.deep = vec3(0.30, 0.13, 0.05); look.mid = vec3(0.78, 0.46, 0.16);
+    look.pale = vec3(0.98, 0.84, 0.56); look.eye = vec3(1.0, 0.70, 0.42);
+    look.rim = vec3(0.45, 0.24, 0.08); look.glow = vec3(0.04, 0.022, 0.008);
+    look.ringDark = vec3(0.36, 0.38, 0.42); look.ringLight = vec3(0.80, 0.82, 0.86);
+  }
+  look.ringed = K_planetRing;
+  look.visible = (1.0 - 0.85 * sky.day) * clear * (1.0 - skyMoonCover(sky, dir)) * smoothstep(-0.004, 0.004, dir.y);
+  look.night = sky.night;
+  look.moons = K_planetMoons;
+  look.eclipses = K_planetEclipses;
+  look.aurora = K_planetAurora;
+  look.auroraSize = K_planetAuroraSize;
+  look.lights = K_planetLights;
+  look.twinkle = K_planetLightsTwinkle;
+  return planetOver(col, p, foot, look, uMotionTime, uTime);
+}
+#else
+vec3 skyGiant(Sky sky, vec3 col, vec3 dir, float foot, float clear) {
+  return col;
+}
+#endif
 `;

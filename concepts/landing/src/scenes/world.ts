@@ -12,6 +12,7 @@ import {
   skyRecipes,
   weatherKnobs,
   weatherRecipes,
+  type SkyComponentOptions,
   type WeatherOptions,
 } from "./atmosphere.ts";
 
@@ -38,6 +39,8 @@ export interface WorldOptions {
   milkyWay?: { on?: boolean; value?: number };
   /** K_meteors: the "now" button's trigger slot; off unless `on`, at `value` (default 0.3). */
   meteors: { trigger: number; on?: boolean; value?: number };
+  /** The giant planet's placement in the scene's sky: its pad's stretch and start (GiantOptions). */
+  giant: NonNullable<SkyComponentOptions["giant"]>;
   /** K_clouds' fair-weather cover; default WORLD_DEFAULTS.clouds. */
   clouds?: number;
   /** K_lightning's "now" trigger slot. */
@@ -55,12 +58,12 @@ export interface WorldOptions {
 
 /**
  * The whole atmosphere as knobs, in the shared builders' keys: K_time, K_cycle, K_stars,
- * K_milkyWay, K_moon, K_meteors, K_constellations, K_planets (skyKnobs); K_clouds, K_shadows,
- * K_rain, K_snow, K_fog, K_lightning, K_aurora, then K_wind (weatherKnobs); K_birds, K_birdKind,
- * K_birdFormation (birdKnobs). Defaults: an ambient world, with fair-weather cloud, the stars, the
- * moon and the Milky Way at night and birds by day on; shooting stars, the constellations, the
- * planets, cloud shadows, rain, snow, fog, lightning and the aurora off; wind 0.2. The scene gives its
- * hour, its trigger slots and its birds.
+ * K_milkyWay, K_moon, K_meteors, K_constellations, K_planet and its options (skyKnobs); K_clouds,
+ * K_shadows, K_rain, K_snow, K_fog, K_lightning, K_aurora, then K_wind (weatherKnobs); K_birds,
+ * K_birdKind, K_birdFormation (birdKnobs). Defaults: an ambient world, with fair-weather cloud, the
+ * stars, the moon and the Milky Way at night and birds by day on; shooting stars, the
+ * constellations, the giant planet, cloud shadows, rain, snow, fog, lightning and the aurora off;
+ * wind 0.2. The scene gives its hour, its trigger slots, its birds and where its giant stands.
  */
 export function worldKnobs(options: WorldOptions): ParamDef[] {
   const groups = options.groups ?? {};
@@ -75,7 +78,7 @@ export function worldKnobs(options: WorldOptions): ParamDef[] {
       moon: options.moon ?? WORLD_DEFAULTS.moon,
       meteors: options.meteors,
       constellations: true,
-      planets: true,
+      giant: options.giant,
     }),
     ...weatherKnobs({
       group: weather,
@@ -105,7 +108,7 @@ export const worldGroups: Readonly<Record<"sky" | "weather" | "birds", Blurb>> =
     title: "Sky",
     shelf: "world",
     blurb:
-      "Time of day, whether the days pass, and the night sky: its stars, constellations and planets, the Milky Way, the moon's phase, the odd shooting star and the aurora.",
+      "Time of day, whether the days pass, and the night sky: its stars and constellations, the Milky Way, the moon's phase, a giant planet, the odd shooting star and the aurora.",
     recipes: skyRecipes,
   },
   weather: {

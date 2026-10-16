@@ -410,6 +410,9 @@ vec3 lanternsBeyond(vec3 o, vec3 r, float lift, Sky sky, vec3 lit, vec3 haze, fl
     shown *= K_stars < LANTERNS_STARS ? K_stars / LANTERNS_STARS : 1.0; // fewer stars, fainter
     col += vec3(0.82, 0.87, 1.0) * 0.75 * lanternsStars(vec2(ex, ey)) * shown;
   }
+  // The giant planet over the stars, mirrored too, softened by a rough mirror's lift; the young moon
+  // and the deck drawn over it.
+  col = skyGiant(sky, col, r, max(1.0 / (LANTERNS_FOCAL * uRes.y), lift), 1.0);
   vec3 moon = lanternsMoon(vec2(ex, ey), 0.5 * lift);
   float evening = (1.0 - smoothstep(-0.06, 0.02, sky.sun.y)) * (1.0 - 0.9 * deck.w); // dim through thin cloud
   col += (vec3(0.056, 0.063, 0.084) * moon.y + vec3(1.0, 0.9, 0.72) * 1.3 * moon.x + vec3(0.5, 0.45, 0.4) * 0.1 * moon.z) * evening;

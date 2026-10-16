@@ -75,14 +75,14 @@ vec3 skywardDeck;
 
 // ---- The sky ----
 
-// Sky colour with the city's glow on the air and the stars, before the clouds.
+// Sky colour with the city's glow on the air, the stars and the giant planet, before the clouds.
 vec3 skywardSkyBase(vec3 dir) {
   vec3 c = skyColor(skywardSky, dir);
   c = mix(c, skywardDeck, skywardOver * 0.9);
   float glow = skywardSky.night * (0.35 + 0.65 * (1.0 - clamp(dir.y, 0.0, 1.0)));
   c += mix(vec3(0.3, 0.14, 0.07), vec3(0.15, 0.07, 0.19), clamp(dir.y, 0.0, 1.0)) * glow * 0.6 * (1.0 + 1.5 * skywardOver);
   c += skyStarLight(skywardSky, dir, K_stars) * (1.0 - skywardOver);
-  return c;
+  return skyGiant(skywardSky, c, dir, skywardPx, 1.0 - skywardOver);
 }
 
 // The cloud deck over c. The deck is scaled up so a few cloud bodies fit the strip of sky.

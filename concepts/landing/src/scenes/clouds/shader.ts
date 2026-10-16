@@ -494,6 +494,8 @@ vec3 cloudsView(vec2 p, vec2 head, vec2 frame, float px, float t, float tm, Sky 
     vec3 dw = cloudsToWorld(rd);
     stars = skyStars(sky, dw, K_stars);
     col += vec3(0.88, 0.92, 1.0) * stars;
+    // The giant planet over the stars, under the aurora; the towers stand in front of both.
+    col = skyGiant(sky, col, dw, 1.0 / (cloudsFocal * uRes.y), 1.0);
     if (K_aurora > 0.0) col += aurora(dw, t, K_aurora) * sky.night;
   }
 

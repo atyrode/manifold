@@ -272,8 +272,10 @@ vec4 sillCity(vec2 p, float aspect, float t, float tm, float px, float soft, Sky
   vec3 dir = viewRay(sp / vec2(aspect, 1.0) + 0.5, aspect, 0.5 + SILL_HORIZON, 1.0);
   vec3 col = skyColor(sky, dir);
   col += vec3(0.85, 0.88, 1.0) * skyStars(sky, dir, K_stars) * (1.0 - 0.7 * smoothstep(0.001, 0.006, soft)) * (1.0 - ov.x);
-  // The aurora over the city, and shooting stars in the gaps of the deck, softened with the rest.
+  // The giant planet among the stars; the aurora over the city, and shooting stars in the gaps of
+  // the deck, softened with the rest.
   float foot = max(2.0 * tan(0.5) / uRes.y, soft);
+  col = skyGiant(sky, col, dir, foot, 1.0);
   col += auroraM(dir, tm, K_aurora, foot) * auroraSeen(sky, ov.x);
   vec3 deck = haze * (0.85 - 0.3 * ov.y) + vec3(0.3, 0.15, 0.1) * dark * (0.3 * ov.x + 0.25 * lying);
   col = mix(col, deck, 0.85 * ov.x);

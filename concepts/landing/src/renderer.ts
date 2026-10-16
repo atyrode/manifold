@@ -17,6 +17,7 @@ import type { PointerState, SceneSim } from "./scenes/types.ts";
 import {
   featureKey,
   fragmentSourceFor,
+  knobKeyed,
   sceneFeatures,
   sceneFeaturesAll,
   vertexSource,
@@ -78,8 +79,8 @@ const READY_WAIT = 3;
 const NEVER = -1e4;
 /**
  * Programs kept per scene: those it entered with, one per compile-time feature set
- * (`SceneDef.featuresFor`), and its all-features program (`SceneDef.featuresAll`); past this many
- * the least recently drawn one is freed.
+ * (`SceneDef.featuresFor` and the library gates, `knobKeyed`), and its all-features program
+ * (`sceneFeaturesAll`); past this many the least recently drawn one is freed.
  */
 const PROGRAMS_PER_SCENE = 4;
 /** Presses on these belong to the lab or the page's own controls, not to the scene. */
@@ -611,10 +612,9 @@ export class DitherRenderer {
     let wanted = this.#wanted.get(s);
     if (wanted === undefined) {
       const def = sceneDefs[s.scene];
-      const values =
-        def.featuresFor === undefined
-          ? undefined
-          : Object.fromEntries(def.params.map((knob, index) => [knob.key, s.params[index] ?? 0]));
+      const values = knobKeyed(def)
+        ? Object.fromEntries(def.params.map((knob, index) => [knob.key, s.params[index] ?? 0]))
+        : undefined;
       const features = sceneFeatures(def, values);
       const all = sceneFeaturesAll(def);
       wanted = {
@@ -997,14 +997,14 @@ export class DitherRenderer {
         ? this.#exitShare(scene.id, leaving, seconds)
         : 0;
     const dissolve = Math.max(0, 1 - since / weave);
-    // Knobs that change the program's compile-time features (SceneDef.featuresFor): the scene draws
-    // the new setting with a program it entered with for exactly that set, else with its
-    // all-features program (SceneDef.featuresAll), built once in the background and never waited
-    // for; a change never builds a program of its own (but on a software rasteriser, see
-    // `#software`). Until the program is built the one on screen goes on drawing the settings it
-    // drew last (the old frame, moving on); one that fails to build stops the scene as entering it
-    // would. With changes expected (`expectChanges`) the all-features program is built ahead,
-    // once the scene has arrived.
+    // Knobs that change the program's compile-time features (SceneDef.featuresFor, the library
+    // gates: `knobKeyed`): the scene draws the new setting with a program it entered with for exactly
+    // that set, else with its all-features program (`sceneFeaturesAll`), built once in the
+    // background and never waited for; a change never builds a program of its own (but on a
+    // software rasteriser, see `#software`). Until the program is built the one on screen goes on
+    // drawing the settings it drew last (the old frame, moving on); one that fails to build stops
+    // the scene as entering it would. With changes expected (`expectChanges`) the all-features
+    // program is built ahead, once the scene has arrived.
     if (scene.program !== undefined && scene.failure === undefined) {
       const wanted = this.#want(s);
       const next =

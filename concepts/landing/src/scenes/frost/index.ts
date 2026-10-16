@@ -75,7 +75,7 @@ const params: readonly ParamDef[] = [
     moon: 1,
     meteors: { trigger: FROST_METEOR_TRIGGER },
     constellations: true,
-    planets: true,
+    giant: { across: [-45, -18, 45], up: [4, 23, 40] },
   }),
   ...weatherKnobs({ snow: true, wind: true, aurora: true, on: { snow: true } }),
   feature(

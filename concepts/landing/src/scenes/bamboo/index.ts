@@ -87,7 +87,7 @@ const params: readonly ParamDef[] = [
     0.7,
     "A small stone lantern on its stepping stone beside the water clock, its paper window glowing as the light fails, haloed in the mist and warm on the water.",
   ),
-  ...skyKnobs({ time: 0.27, stars: 0.5, moon: 1, constellations: true, planets: true }),
+  ...skyKnobs({ time: 0.27, stars: 0.5, moon: 1, constellations: true }),
   ...weatherKnobs({ rain: true, wind: true }),
   feature(
     "manifold",

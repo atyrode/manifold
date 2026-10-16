@@ -10,7 +10,7 @@
 // the Milky Way too (shaders/lib/milkyway.ts, its knob from skyKnobs).
 import { feature, range, toggle, type ParamDef } from "../../params.ts";
 import { atmosphereGroups, skyKnobs, skyTheme, weatherKnobs } from "../atmosphere.ts";
-import { planetKnobs } from "../planet.ts";
+import { giantKnobs } from "../planet.ts";
 import type { SceneDef } from "../types.ts";
 import { campfireGlsl } from "./shader.ts";
 import { campfireSim } from "./sim.ts";
@@ -92,27 +92,13 @@ const params: readonly ParamDef[] = [
     stars: 0.8,
     milkyWay: { on: true },
     constellations: true,
-    planets: true,
   }),
-  feature(
-    "planet",
-    "planet",
-    "giant planet",
-    true,
-    "size",
-    0.55,
-    "A giant banded planet with a storm swirl and a thin ring, low over the far pines, half hidden by the trees; it fades into the sky by day.",
-    { min: 0.2, max: 1 },
-  ),
-  // The shared planet's features this sky composes, all off: no clouds, storms or ring system.
-  ...planetKnobs({
-    prefix: "planet",
-    groups: { planet: "planet", moons: "planet" },
-    when: "planet",
-    aurora: true,
-    lights: true,
-    daycycle: true,
-    moons: true,
+  // The giant and the shared planet's features this sky composes, all off: no clouds, storms or
+  // ring system.
+  ...giantKnobs({
+    group: "planet",
+    on: true,
+    help: "A giant banded planet with a storm swirl and a thin ring, low over the far pines, half hidden by the trees; it fades into the sky by day.",
   }),
   feature(
     "sky",

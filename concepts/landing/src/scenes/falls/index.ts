@@ -80,7 +80,6 @@ export const fallsScene: SceneDef = {
       moon: 1,
       meteors: { trigger: FALLS_METEOR_TRIGGER },
       constellations: true,
-      planets: true,
     }),
     ...weatherKnobs({ rain: true, fog: true, wind: true, aurora: true }),
     feature(

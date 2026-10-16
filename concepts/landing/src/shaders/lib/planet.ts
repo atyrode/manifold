@@ -355,7 +355,7 @@ float planetMoonShadow(vec2 q, vec3 centre, float size, vec3 light) {
 // and sizes it, gives its sun, how much of it shows (faded by daylight) and how dark the sky is (the
 // glow round its limb), picks the features, and draws its own foreground over it afterwards.
 // planetGiant fills in a teal banded giant with a pale thin ring and every feature off; set any field
-// after.
+// after (ringed 0 takes the ring away).
 struct PlanetLook {
   vec2 centre; float radius;       // the scene's flat units
   vec3 light;                      // toward the sun (planetSun turns it for phases or a day cycle)
@@ -365,6 +365,7 @@ struct PlanetLook {
   vec3 deep; vec3 mid; vec3 pale; vec3 eye; // band colours and the storm eye (planetBandColor)
   vec3 rim; vec3 glow;             // the lit limb, the airglow round it
   vec3 ringDark; vec3 ringLight;   // the ring between its streaks and on them
+  float ringed;                    // 1 the thin ring, 0 none
   float moons; float moonScale; float eclipses; vec3 moon; // 0..3 moons, drawn moonScale times their size, casting shadows (0/1)
   float aurora; float auroraSize; vec3 auroraColor;        // strength (0 off) and oval size (planetAurora)
   float lights; float twinkle; vec3 lightsColor;           // city lights (0/1) and their flicker
@@ -373,7 +374,7 @@ struct PlanetLook {
 PlanetLook planetGiant(vec2 centre, float radius, vec3 light) {
   return PlanetLook(centre, radius, light, 1.0, 1.0, PlanetRing(0.20, 0.32),
     vec3(0.04, 0.20, 0.22), vec3(0.12, 0.45, 0.40), vec3(0.62, 0.78, 0.62), vec3(0.80, 0.86, 0.76),
-    vec3(0.08, 0.30, 0.30), vec3(0.012, 0.034, 0.034), vec3(0.42, 0.35, 0.25), vec3(0.78, 0.68, 0.50),
+    vec3(0.08, 0.30, 0.30), vec3(0.012, 0.034, 0.034), vec3(0.42, 0.35, 0.25), vec3(0.78, 0.68, 0.50), 1.0,
     0.0, 2.5, 1.0, vec3(0.62, 0.64, 0.66), 0.0, 0.4, vec3(0.25, 1.0, 0.55), 0.0, 0.0, vec3(0.9, 0.6, 0.3));
 }
 
@@ -391,7 +392,7 @@ vec3 planetOver(vec3 col, vec2 p, float px, PlanetLook look, float tm, float t) 
   float streak;
   float ringBody = planetRingThin(length(ring.xy), streak);
   vec3 ringCol = mix(look.ringDark, look.ringLight, streak);
-  float ringCover = hardEdge(ringBody * 0.85);
+  float ringCover = hardEdge(ringBody * 0.85) * look.ringed;
   vec3 pole = planetRingNormal(look.ring);
   col += look.glow * planetGlow(s.d, 0.9) * look.night * vis;
   if (ring.z <= 0.0) col = mix(col, ringCol, ringCover * vis);

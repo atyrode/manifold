@@ -390,8 +390,10 @@ vec4 autumnFarRow(vec2 p, float k) {
 vec3 autumnBackdrop(vec2 uv, vec2 p, vec3 dir, float t, out float depthZ) {
   vec3 sk = skyColor(autumnSky, dir);
   sk += skyStarLight(autumnSky, dir, K_stars) * (1.0 - autumnOvercast);
-  // The aurora and shooting stars over the far crowns, behind the clouds; the rain's deck shuts them out.
   float foot = 1.0 / (AUTUMN_FOCAL * uRes.y);
+  // The giant planet among the stars; the aurora and shooting stars over the far crowns; all behind
+  // the clouds, and the rain's deck shuts them out.
+  sk = skyGiant(autumnSky, sk, dir, foot, 1.0 - autumnOvercast);
   sk += auroraM(dir, autumnTm, K_aurora, foot) * auroraSeen(autumnSky, autumnOvercast);
   vec4 cl = skyClouds(autumnSky, dir, t, autumnCover, K_wind);
   sk = mix(sk, cl.rgb, cl.a);

@@ -67,6 +67,7 @@ const params: ParamDef[] = [
   ...worldKnobs({
     time: 0.82,
     meteors: { trigger: SHORE_METEOR_TRIGGER },
+    giant: { across: [-2, 18, 60], up: [0, 7, 14] },
     lightning: SHORE_LIGHTNING_TRIGGER,
     birds: {
       kind: "gulls",

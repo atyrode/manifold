@@ -56,6 +56,7 @@ const params: readonly ParamDef[] = [
     time: 0.72,
     clouds: 0.2,
     meteors: { trigger: MEADOW_METEOR_TRIGGER },
+    giant: { across: [-84, -22, -8], up: [0, 14, 26] },
     lightning: MEADOW_LIGHTNING_TRIGGER,
     birds: {
       kind: "swallows",

@@ -80,7 +80,7 @@ const params: readonly ParamDef[] = [
   ...skyComponentKnobs({
     meteors: { trigger: AURORA_METEOR_TRIGGER },
     constellations: true,
-    planets: true,
+    giant: { across: [-62, -24, 62], up: [8, 30, 45] },
   }),
   toggle(
     "night",

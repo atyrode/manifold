@@ -249,6 +249,8 @@ Shade sceneFlock(vec2 uv, vec2 cell, float t) {
   vec3 dir = flockRay(uv, aspect);
   vec3 col = skyColor(sky, dir);
   col += vec3(0.86, 0.88, 1.0) * skyStars(sky, dir, K_stars);
+  // The giant planet among the stars, behind the flock and the skyline.
+  col = skyGiant(sky, col, dir, FLOCK_FOV / uRes.y, 1.0);
   // The accent palette keeps the afterglow: low sky toward the sun, while there is twilight.
   float accent = 0.8 * pow(max(dot(dir, sky.sun), 0.0), 10.0) * exp(-max(dir.y, 0.0) * 5.0) * clamp(sky.twilight + 0.3 * sky.day, 0.0, 1.0);
   float lights = clamp(sky.night + 0.6 * sky.twilight, 0.0, 1.0);

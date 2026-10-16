@@ -795,11 +795,13 @@ vec3 islHaze(vec3 rd) {
   return islSkyCol(normalize(vec3(rd.x, 0.025, rd.z)));
 }
 
+// The dome: the sky, the stars and the giant planet in the cloud's gaps, the cloud over them.
 vec3 islDome(vec3 rd) {
   vec3 c = islSkyCol(rd);
   vec4 cl = skyClouds(islSky, rd, islTime, islCover, islWind);
   cl.rgb = greyed(cl.rgb, vec3(0.94, 0.96, 1.0), 0.6 * islGrey) * (1.0 + 0.2 * islGrey - 0.35 * K_rain);
   c += skyStarLight(islSky, rd, K_stars) * (1.0 - cl.a);
+  c = skyGiant(islSky, c, rd, 1.0 / (ISL_FOCAL * uRes.y), 1.0);
   return mix(c, cl.rgb, cl.a);
 }
 

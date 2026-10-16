@@ -222,9 +222,9 @@ struct WorldSky {
 };
 
 // The sky behind everything along the view's ray, in order: the dome (sun and moon discs), the
-// aurora behind the clouds, the cloud deck, the stars and the Milky Way in its gaps, shooting stars
-// (starting in meteorField, skyAngles of the camera's ray: xy its lower left corner, zw its size),
-// then the lightning (strike). Draw the scene's land, distance and near things over it.
+// aurora behind the clouds, the cloud deck, the stars, the Milky Way and the giant planet in its gaps,
+// shooting stars (starting in meteorField, skyAngles of the camera's ray: xy its lower left corner,
+// zw its size), then the lightning (strike). Draw the scene's land, distance and near things over it.
 WorldSky worldSky(World w, WorldView v, vec4 meteorField) {
   vec3 col = skyColor(w.sky, v.dir);
 #if WORLD_AURORA
@@ -249,6 +249,7 @@ WorldSky worldSky(World w, WorldView v, vec4 meteorField) {
 #endif
   col += SKY_STAR_TINT * skyStars(w.sky, v.dir, density, v.foot) * (1.0 - cloud);
 #endif
+  col = skyGiant(w.sky, col, v.dir, v.foot, 1.0 - cloud);
 #if WORLD_METEORS
   float streak = meteorStreak(skyAngles(v.ray), meteorField, w.meteorAge, w.meteorSeed, v.foot);
   col += METEOR_TINT * hardEdge(streak * auroraSeen(w.sky, max(cloud, w.overcast)));
@@ -440,11 +441,12 @@ WorldView worldMirrorView(WorldView v, vec3 ray, float blur) {
 // The sky a level mirror shows along m's ray (worldMirrorView), in worldSky's order: the dome with
 // the moon swung round behind the viewer (skyMirror: no reflection shows a broken sliver of its
 // disc, so draw the moon's path on the water as glitter), the aurora, the cloud deck (lit by the
-// true moon, so its silver lining shows under it), the Milky Way and the stars in its gaps (faded
-// in the true moon's glare as the sky's are) and shooting stars, all at m's footprint: a rough
-// mirror fades the stars to their glow and dims a streak to the share of its blur one cell is. In
-// strike the lightning's bolt mirrored at m's screen point, as dim, and the flash's glow. A scene
-// that drops its bolts out of its own storm draws their image itself and leaves strike's out.
+// true moon, so its silver lining shows under it), the Milky Way, the stars and the giant planet in
+// its gaps (faded in the true moon's glare as the sky's are) and shooting stars, all at m's
+// footprint: a rough mirror fades the stars to their glow, softens the giant and dims a streak to
+// the share of its blur one cell is. In strike the lightning's bolt mirrored at m's screen point, as
+// dim, and the flash's glow. A scene that drops its bolts out of its own storm draws their image
+// itself and leaves strike's out.
 WorldSky worldMirrorSky(World w, WorldView m, vec4 meteorField) {
   vec3 col = skyColor(skyMirror(w.sky), m.dir);
   float cell = 1.0 / (m.focal * uRes.y);
@@ -468,6 +470,7 @@ WorldSky worldMirrorSky(World w, WorldView m, vec4 meteorField) {
 #endif
   col += SKY_STAR_TINT * skyStars(w.sky, m.dir, density, m.foot) * (1.0 - cloud);
 #endif
+  col = skyGiant(w.sky, col, m.dir, m.foot, 1.0 - cloud);
 #if WORLD_METEORS
   float streak = meteorStreak(skyAngles(m.ray), meteorField, w.meteorAge, w.meteorSeed, cell);
   col += METEOR_TINT * hardEdge(streak * auroraSeen(w.sky, max(cloud, w.overcast))) * sharp;

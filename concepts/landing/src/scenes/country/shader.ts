@@ -749,10 +749,11 @@ Shade sceneCountry(vec2 screenUv, vec2 cell, float t) {
     // The camera's descent: the morning's haze thinning off the land.
     if (lift > 0.0) col = mix(col, haze, 0.4 * lift);
   } else {
-    // Sky, with the far ridges beyond the map.
+    // Sky, with the giant planet among the stars and the far ridges beyond the map.
     col = countrySkyDome(sky, dirCam, rain);
     vec4 deck = countryDeck(sky, dirCam, t, cover, wind, rain);
     col += skyStars(sky, dirCam, K_stars, cellAngle) * vec3(0.9, 0.93, 1.0) * (1.0 - deck.a);
+    col = skyGiant(sky, col, dirCam, cellAngle, 1.0);
     col = mix(col, deck.rgb, deck.a);
     float bearing = atan(dirCam.x, dirCam.z);
     vec2 ridge = countryRidges(bearing);

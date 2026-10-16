@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 import { constellationUniforms } from "../../constellations.ts";
-import { skyFigurePoint, skyFigures, skyGlsl, skyPlanets } from "./sky.ts";
+import { planetGlsl } from "./planet.ts";
+import { skyFigurePoint, skyFigures, skyGlsl } from "./sky.ts";
 
 type Vec3 = readonly [number, number, number];
 
@@ -84,44 +85,34 @@ test("the figures stand in the forward sky side-on views frame, clear of the mid
   expect(elevation(shoulder.dir)).toBeGreaterThan(elevation(foot.dir));
 });
 
-test("the planets: brightest first on the zodiac's band, Venus the evening star with Mercury below", () => {
-  expect(skyPlanets.length).toBe(5);
-  // On a daily circle between the sun's (-28 degrees) and the moon's (-45 degrees): the declination
-  // is the angle from the celestial equator, whose pole is at (0, sin 15, -cos 15).
-  const lat = (15 * Math.PI) / 180;
-  for (const dir of skyPlanets) {
-    const declination = degrees(Math.asin(dir[1] * Math.sin(lat) - dir[2] * Math.cos(lat)));
-    expect(declination).toBeLessThanOrEqual(-28);
-    expect(declination).toBeGreaterThanOrEqual(-45);
-    expect(dir[1]).toBeGreaterThan(0.06); // over the planets' horizon fade
-  }
-  const [venus, jupiter, saturn, mars, mercury] = skyPlanets;
-  if (!venus || !jupiter || !saturn || !mars || !mercury) throw new Error("a planet missing");
-  // Venus low on the sunset side (left), Mercury lower still beside it.
-  expect(bearing(venus)).toBeLessThan(0);
-  expect(degrees(elevation(venus))).toBeLessThan(20);
-  expect(elevation(mercury)).toBeLessThan(elevation(venus));
-  expect(bearing(mercury)).toBeLessThan(0);
-  expect(degrees(angle(mercury, venus))).toBeLessThan(12);
-  // None among the figures' stars or on another planet.
-  for (const planet of skyPlanets) {
-    for (const { dir } of stars) expect(degrees(angle(planet, dir))).toBeGreaterThan(6);
-    for (const other of skyPlanets)
-      if (other !== planet) expect(degrees(angle(planet, other))).toBeGreaterThan(6);
-  }
-});
-
-test("the GLSL tables are the placed figures and planets, behind their knobs", () => {
+test("the GLSL tables are the placed figures, compiled in only behind their gate", () => {
   const spans = [...skyGlsl.matchAll(/ivec4\((\d+), (\d+), (\d+), (\d+)\)/g)].map((m) =>
     m.slice(1, 5).map(Number),
   );
   expect(spans).toEqual(skyFigures.map((figure) => [...figure.stars, ...figure.lines]));
-  expect(skyGlsl).toContain(`const int SKY_FIGURES = ${skyFigures.length};`);
-  expect(skyGlsl).toContain(`const int SKY_PLANETS = ${skyPlanets.length};`);
-  // Both parts compile only into a program with their knob.
-  const figures = skyGlsl.indexOf("#ifdef K_constellations");
-  const planets = skyGlsl.indexOf("#ifdef K_planets");
-  expect(figures).toBeGreaterThan(0);
-  expect(skyGlsl.indexOf("float skyFigures(")).toBeGreaterThan(figures);
-  expect(skyGlsl.indexOf("float skyPlanets(")).toBeGreaterThan(planets);
+  expect(skyGlsl).toContain(`const int SKY_FIGURE_COUNT = ${skyFigures.length};`);
+  // SKY_FIGURES is 0 unless a scene defines it: the tables and skyFigures sit behind `#if`.
+  const fallback = skyGlsl.indexOf("#ifndef SKY_FIGURES\n#define SKY_FIGURES 0\n#endif");
+  const gate = skyGlsl.indexOf("#if SKY_FIGURES\n");
+  expect(fallback).toBeGreaterThan(0);
+  expect(gate).toBeGreaterThan(fallback);
+  expect(skyGlsl.indexOf("const int SKY_FIGURE_COUNT")).toBeGreaterThan(gate);
+  expect(skyGlsl.indexOf("float skyFigures(")).toBeGreaterThan(gate);
+  expect(skyGlsl).not.toContain("K_planets");
+  expect(skyGlsl).not.toContain("#ifdef K_constellations");
+});
+
+test("the giant planet compiles in only behind its gate, the shared planet with it", () => {
+  const fallback = skyGlsl.indexOf("#ifndef SKY_GIANT\n#define SKY_GIANT 0\n#endif");
+  const gate = skyGlsl.indexOf("#if SKY_GIANT\n");
+  const otherwise = skyGlsl.indexOf("#else", gate);
+  expect(fallback).toBeGreaterThan(0);
+  expect(gate).toBeGreaterThan(fallback);
+  // The whole of planetGlsl and the giant itself, then a stand-in that leaves the sky as it is.
+  expect(skyGlsl.indexOf(planetGlsl)).toBeGreaterThan(gate);
+  expect(skyGlsl.indexOf("vec3 skyGiant(")).toBeGreaterThan(gate + planetGlsl.length);
+  expect(otherwise).toBeGreaterThan(skyGlsl.indexOf("vec3 skyGiant("));
+  expect(skyGlsl.slice(otherwise)).toMatch(
+    /^#else\nvec3 skyGiant\(Sky sky, vec3 col, vec3 dir, float foot, float clear\) \{\n {2}return col;\n\}\n#endif/,
+  );
 });

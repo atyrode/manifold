@@ -44,7 +44,7 @@ const params: readonly ParamDef[] = [
     moon: 1,
     meteors: { trigger: SKYWARD_METEOR_TRIGGER },
     constellations: true,
-    planets: true,
+    giant: { across: [-180, 0, 180], up: [50, 82, 90] },
   }),
   range(
     "air",

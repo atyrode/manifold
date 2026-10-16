@@ -68,7 +68,7 @@ const params: readonly ParamDef[] = [
     stars: LANTERNS_STARS,
     meteors: { trigger: LANTERNS_METEOR_TRIGGER },
     constellations: true,
-    planets: true,
+    giant: { across: [-23, 12, 23], up: [2, 8, 13] },
   }),
   ...weatherKnobs({ rain: true, wind: true, aurora: true }),
   ...birdKnobs({

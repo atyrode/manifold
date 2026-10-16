@@ -15,7 +15,9 @@
 // terrain); every page here is run until it shows (`landed`), so a frame that changes is a program's
 // doing, not the build's.
 //
-// featureToggles, on a GPU, for every scene with knob-keyed features (KNOB_KEYED): the plain page
+// featureToggles, on a GPU, for every scene with `featuresFor` (KNOB_KEYED; their library gates,
+// the night sky's constellations and giant planet, among their gated turns; the scenes keyed by
+// their library gates alone are proven structurally by src/shaders/index.test.ts): the plain page
 // builds nothing but the program it entered with; no knob change waits for a build (a compile or
 // link status or log, a uniform location or a use of a program before the renderer has seen it
 // finish building); the first gated change builds the all-features program in the background and
@@ -92,7 +94,10 @@ function gatedTurns(scene: SceneId): Params[] {
   return [...turns, Object.assign({}, ...turns) as Params];
 }
 
-/** Every scene with knob-keyed features (SceneDef.featuresFor), in lab order. */
+/**
+ * Every scene with `featuresFor`, in lab order. A scene keyed by its library gates alone draws with
+ * the same machinery; src/shaders/index.test.ts checks that its all-features set covers its gates.
+ */
 const KNOB_KEYED = sceneIds.filter((scene) => sceneDefs[scene].featuresFor !== undefined);
 
 /**
@@ -690,7 +695,7 @@ export async function verifyFeaturesAll(
   return featuresAllOf(["country"]);
 }
 
-/** featuresAll for the shared world's adopters: every other scene with knob-keyed features. */
+/** featuresAll for the shared world's adopters: every other scene with `featuresFor`. */
 export async function verifyWorldFeaturesAll(
   _gl: WebGL2RenderingContext,
 ): Promise<Record<string, unknown>> {

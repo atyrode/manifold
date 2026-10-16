@@ -1,14 +1,15 @@
 // The Night sky section's model (nightsky.ts), apart from its DOM: the parts a group holds (knobs
-// tagged `night`), how each reads and is drawn at its setting (the moon's phase among the drawn
-// moons, how many stars, streaks and planets are out), what a click on a drawn part does, and what
-// "See it at night" sets. A part is the stars' density (a range, always out) or a sky component that
-// switches (a feature): on or off, with an amount it keeps while off.
+// tagged `night`) and the knobs that hang off them, how each reads and is drawn at its setting (the
+// moon's phase among the drawn moons, how many stars and streaks are out, where the giant planet
+// stands and how it is dressed), what a click on a drawn part does, and what "See it at night" sets.
+// A part is the stars' density (a range, always out) or a sky component that switches (a feature):
+// on or off, with an amount it keeps while off.
 import { formatValue, type ParamDef } from "../params.ts";
 import { snap } from "./dom.ts";
 import type { FeatureDef, RangeDef } from "./knobs.ts";
 
 export type NightPartName =
-  "moon" | "stars" | "milkyWay" | "constellations" | "planets" | "aurora" | "meteors";
+  "moon" | "stars" | "milkyWay" | "constellations" | "giant" | "aurora" | "meteors";
 
 /** A part of the night sky: the stars' density, or a sky component that switches. */
 export type NightPart =
@@ -24,15 +25,15 @@ export type Patch = Record<string, number>;
 
 /**
  * The section's order: the moon (its own row of phases), then the chips two by two: the stars and
- * the Milky Way, the figures and planets among them, then what comes and goes, the aurora and
- * shooting stars.
+ * the Milky Way, the figures and the giant planet among them, then what comes and goes, the aurora
+ * and shooting stars.
  */
 const ORDER: readonly NightPartName[] = [
   "moon",
   "stars",
   "milkyWay",
   "constellations",
-  "planets",
+  "giant",
   "aurora",
   "meteors",
 ];
@@ -47,6 +48,25 @@ export function nightParts(defs: readonly ParamDef[]): NightPart[] {
     if (name === "stars") return def?.kind === "range" ? [{ name, def }] : [];
     return def?.kind === "feature" ? [{ name, def }] : [];
   });
+}
+
+/**
+ * The knobs of `defs` that hang off a part's switch, at any remove (shown only while it is on, or
+ * while one of them is: `when`), in `defs`' order: what the section shows with the part (the giant
+ * planet's placement, dress and features). None for the stars, which do not switch.
+ */
+export function nightCompanions(part: NightPart, defs: readonly ParamDef[]): ParamDef[] {
+  if (part.name === "stars") return [];
+  const held = new Set([part.def.key]);
+  for (let grown = true; grown;) {
+    grown = false;
+    for (const def of defs)
+      if (def.when !== undefined && held.has(def.when) && !held.has(def.key)) {
+        held.add(def.key);
+        grown = true;
+      }
+  }
+  return defs.filter((def) => def !== part.def && held.has(def.key));
 }
 
 /** The URL key holding a part's amount: the stars' own, a feature's `<key>-amount`. */
@@ -148,27 +168,86 @@ export function streaksOf(on: boolean, share: number): number {
   return 1 + (share >= 1 / 3 ? 1 : 0) + (share >= 2 / 3 ? 1 : 0);
 }
 
-/** The naked-eye planets, brightest first: the planets knob's amount is how many of them show. */
-export const PLANETS = ["Venus", "Jupiter", "Saturn", "Mars", "Mercury"] as const;
+// ---- the giant planet -------------------------------------------------------------------------
 
-/** How many planets an amount names (rounded, within the five), whether or not they are on. */
-export function planetCount(amount: number): number {
-  return Math.min(PLANETS.length, Math.max(0, Math.round(amount)));
+/** The giant planet's own knobs among its companions (nightCompanions), each where the group has it. */
+export interface GiantDress {
+  /** Its placement: across the sky (the pad's x, a range with a `position` widget) and up (its y). */
+  across: RangeDef | undefined;
+  up: RangeDef | undefined;
+  /** Its ring (a toggle), its moons (a feature counting them) and its palette (a choice). */
+  ring: ParamDef | undefined;
+  moons: ParamDef | undefined;
+  palette: ParamDef | undefined;
+}
+
+/**
+ * The giant's dress among `companions`: the pad by its widget, the rest by their keys, the giant's
+ * own key and Ring, Moons, Palette (giantKnobs: `planetRing`, `planetMoons`, `planetPalette`).
+ */
+export function giantDress(giant: FeatureDef, companions: readonly ParamDef[]): GiantDress {
+  const named = (name: string) => companions.find((def) => def.key === `${giant.key}${name}`);
+  const across = companions.find(
+    (def): def is RangeDef => def.kind === "range" && def.widget?.kind === "position",
+  );
+  const upKey = across?.widget?.kind === "position" ? across.widget.y : undefined;
+  const up = companions.find((def): def is RangeDef => def.kind === "range" && def.key === upKey);
+  return {
+    across,
+    up,
+    ring: named("Ring"),
+    moons: named("Moons"),
+    palette: named("Palette"),
+  };
+}
+
+/** The giant as the drawing shows it: where it stands and how big, how it is dressed. */
+export interface GiantLook {
+  /** Across the drawn sky from the left and up it from the horizon, 0..1 each. */
+  x: number;
+  y: number;
+  /** Its size between the least and the most, 0..1. */
+  size: number;
+  ring: boolean;
+  /** How many moons circle it, 0 while they are off. */
+  moons: number;
+  /** The palette's name ("teal", "amber"...), "" without one. */
+  palette: string;
+}
+
+/**
+ * The giant's look from its knobs' values (`read`: a knob's value, a feature's amount under
+ * `<key>-amount`): its placement as shares of its knobs' ranges (the middle of the sky without a
+ * pad), its size as a share of the giant's, and its dress (a ring without a ring knob; no moons).
+ */
+export function giantLook(
+  giant: FeatureDef,
+  dress: GiantDress,
+  read: (key: string) => number,
+): GiantLook {
+  const { across, up, ring, moons, palette } = dress;
+  const choice =
+    palette?.kind === "choice"
+      ? palette.options.find((option) => option.value === read(palette.key))
+      : undefined;
+  return {
+    x: across ? shareOf(across, read(across.key)) : 0.5,
+    y: up ? shareOf(up, read(up.key)) : 0.5,
+    size: shareOf(giant, read(`${giant.key}-amount`)),
+    ring: ring ? read(ring.key) > 0.5 : true,
+    moons: moons && read(moons.key) > 0.5 ? Math.round(read(`${moons.key}-amount`)) : 0,
+    palette: choice?.label ?? "",
+  };
 }
 
 // ---- words ----------------------------------------------------------------------------------
 
 /**
- * A part's state in words: the moon's phase, how many planets, the others' amount ("60%", "1.00");
- * "off" while off.
+ * A part's state in words: the moon's phase, the others' amount ("60%", "1.00"); "off" while off.
  */
 export function partValue(part: NightPart, state: PartState): string {
   if (!state.on) return "off";
   if (part.name === "moon") return phaseOf(state.amount);
-  if (part.name === "planets") {
-    const count = planetCount(state.amount);
-    return count === 1 ? "1 planet" : `${count} planets`;
-  }
   return formatValue(part.def, state.amount);
 }
 

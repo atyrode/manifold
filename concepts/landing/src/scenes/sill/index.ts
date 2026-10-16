@@ -143,7 +143,7 @@ const params: readonly ParamDef[] = [
     moon: 1,
     meteors: { trigger: SILL_METEOR_TRIGGER },
     constellations: true,
-    planets: true,
+    giant: { across: [-38, -18, 38], up: [4, 20, 32] },
   }),
   feature(
     "weather",

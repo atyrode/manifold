@@ -1,18 +1,24 @@
-// GPU regressions for the night sky's opt-in parts, the constellations and the planets, which
-// skyStars (src/shaders/lib/sky.ts) draws in every scene with their knobs (skyComponentKnobs), run
-// by concepts/landing/verify-browser.ts on real WebGL output.
-// - `nightSky`: a probe compiled with Frost's knobs samples skyStars, both overloads, at every
-//   figure's stars, the middle of every figure line and every planet. At a clear midnight each part
-//   adds light there while on (the lines as strong as their amount, the planets as many as asked),
-//   and the knobs off draw exactly what a program without them draws; by day, and with no stars,
-//   nothing; at a coarse footprint the points still show.
+// GPU regressions for the night sky's opt-in parts, the constellations (skyStars, src/shaders/lib/
+// sky.ts) and the giant planet (skyGiant), each compiled in only while its knob is on (the library
+// gates SKY_FIGURES and SKY_GIANT), run by concepts/landing/verify-browser.ts on real WebGL output.
+// - `nightSky`: a probe compiled with Frost's knobs and every gate on samples skyStars, both
+//   overloads, at every figure's stars and the middle of every figure line. At a clear midnight the
+//   figures add light there while on (the lines as strong as their amount), and the knobs off draw
+//   exactly what a program without them draws; by day, and with no stars, nothing; at a coarse
+//   footprint the points still show.
 // - `nightSkyDefaults1`..`3` (a third of the scenes each, to stay well under the deadline): every
-//   scene with the knobs starts with both off and, at its defaults and at midnight, draws byte for
-//   byte what the same scene without the two knobs draws.
+//   scene with the knobs starts with them off and, at its defaults and at midnight, draws byte for
+//   byte what the same scene without them draws.
 import { constellationUniforms } from "./constellations.ts";
 import { effective, type ParamDef } from "./params.ts";
-import { fragmentSourceFor, sceneFeatures, shaderValues, vertexSource } from "./shaders/index.ts";
-import { skyFigurePoint, skyFigures, skyPlanets } from "./shaders/lib/sky.ts";
+import {
+  fragmentSourceFor,
+  sceneFeatures,
+  sceneFeaturesAll,
+  shaderValues,
+  vertexSource,
+} from "./shaders/index.ts";
+import { skyFigurePoint, skyFigures } from "./shaders/lib/sky.ts";
 import { sceneDefs, type SceneId } from "./scenes/index.ts";
 import type { SceneDef } from "./scenes/types.ts";
 import { paramDefaults } from "./state.ts";
@@ -44,10 +50,10 @@ function program(gl: WebGL2RenderingContext, fragment: string): WebGLProgram {
   return linked;
 }
 
-/** The two shared night knobs (skyComponentKnobs' constellations and planets). */
+/** The shared night knobs with library gates (skyComponentKnobs' constellations and giant). */
 const nightPart = (def: ParamDef): boolean =>
   def.widget?.kind === "night" &&
-  (def.widget.part === "constellations" || def.widget.part === "planets");
+  (def.widget.part === "constellations" || def.widget.part === "giant");
 
 interface Draw {
   readonly width: number;
@@ -142,16 +148,16 @@ Shade nightProbe(vec2 uv, vec2 cell, float t) {
 export function verifyNightSky(gl: WebGL2RenderingContext): Record<string, unknown> {
   check(gl.getExtension("EXT_color_buffer_float") !== null, "float render targets unavailable");
   const frost = sceneDefs.frost;
-  check(frost.params.filter(nightPart).length === 2, "frost lacks the constellations or planets");
+  check(frost.params.filter(nightPart).length === 2, "frost lacks the constellations or the giant");
   const probeDef: SceneDef = { ...frost, entry: "nightProbe", glsl: PROBE };
   const plainDef: SceneDef = {
     ...probeDef,
     params: probeDef.params.filter((def) => !nightPart(def)),
   };
-  const probe = program(gl, fragmentSourceFor(probeDef));
+  const probe = program(gl, fragmentSourceFor(probeDef, sceneFeaturesAll(probeDef)));
   const plain = program(gl, fragmentSourceFor(plainDef));
 
-  // The samples: each figure's stars, the middle of each of its lines, then each planet.
+  // The samples: each figure's stars, then the middle of each of its lines.
   const offset = (star: number): [number, number] => [
     constellationUniforms.stars[star * 4 + 2] ?? 0,
     constellationUniforms.stars[star * 4 + 3] ?? 0,
@@ -167,7 +173,7 @@ export function verifyNightSky(gl: WebGL2RenderingContext): Record<string, unkno
       lines.push(skyFigurePoint(figure, [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2]));
     }
   }
-  const samples = [...stars, ...lines, ...skyPlanets];
+  const samples = [...stars, ...lines];
   const width = samples.length;
   const row = new Float32Array(width * 4);
   samples.forEach((dir, i) => row.set(dir, i * 4));
@@ -195,17 +201,15 @@ export function verifyNightSky(gl: WebGL2RenderingContext): Record<string, unkno
     Array.from({ length: to - from }, (_, k) => from + k);
   const starIndices = indices(0, stars.length);
   const lineIndices = indices(stars.length, figureSamples);
-  const planetIndices = indices(figureSamples, width);
 
   const midnight = [0, 0.5, 0.002] as const;
   const constellations = { constellations: 1, "constellations-amount": 1 };
-  const planets = (count: number) => ({ planets: 1, "planets-amount": count });
 
   // Off: what a program without the knobs draws, and nothing of the parts.
   const off = sky(probe, probeDef, {}, midnight);
   check(same(off, sky(plain, plainDef, {}, midnight)), "the knobs off change skyStars");
 
-  // The figures: every star and line lit, adding light over the field's stars; the planets untouched.
+  // The figures: every star and line lit, adding light over the field's stars.
   const figures = sky(probe, probeDef, constellations, midnight);
   const dim = [...starIndices, ...lineIndices].filter((i) => value(figures, i) < 0.85);
   check(dim.length === 0, `figure stars or lines dim at midnight: samples ${dim.join(", ")}`);
@@ -214,10 +218,6 @@ export function verifyNightSky(gl: WebGL2RenderingContext): Record<string, unkno
     0,
   );
   check(added > 0.5 * figureSamples, `the figures add little light: ${added.toFixed(2)}`);
-  check(
-    planetIndices.every((i) => value(figures, i) === value(off, i)),
-    "the constellations light the planets",
-  );
 
   // The lines' amount: at a trace the stars stand out as before, the lines barely there.
   const trace = sky(
@@ -233,35 +233,16 @@ export function verifyNightSky(gl: WebGL2RenderingContext): Record<string, unkno
   const traced = lineIndices.filter((i) => value(trace, i) > value(off, i) + 0.1);
   check(traced.length === 0, `lines at 0.05 more than a trace: samples ${traced.join(", ")}`);
 
-  // The planets: as many as asked, brightest first, and nothing of the figures.
-  const all = sky(probe, probeDef, planets(5), midnight);
-  check(
-    planetIndices.every((i) => value(all, i) >= 0.95),
-    "a planet missing or dim at midnight",
-  );
-  check(
-    [...starIndices, ...lineIndices].every((i) => value(all, i) === value(off, i)),
-    "the planets light the figures",
-  );
-  const two = sky(probe, probeDef, planets(2), midnight);
-  check(
-    planetIndices.every((i, k) =>
-      k < 2 ? value(two, i) >= 0.95 : value(two, i) === value(off, i),
-    ),
-    "planets 2 shows other than Venus and Jupiter",
-  );
-
   // Coarse cells (a 1-radian view at 100 rows): the points are sized in cells and still show.
-  const coarse = sky(probe, probeDef, { ...constellations, ...planets(5) }, [0, 0.5, 0.01]);
+  const coarse = sky(probe, probeDef, constellations, [0, 0.5, 0.01]);
   check(
-    [...starIndices, ...planetIndices].every((i) => value(coarse, i) >= 0.85),
-    "figure stars or planets lost at a coarse footprint",
+    starIndices.every((i) => value(coarse, i) >= 0.85),
+    "figure stars lost at a coarse footprint",
   );
 
   // Nothing by day, nor without stars.
-  const both = { ...constellations, ...planets(5) };
-  const day = sky(probe, probeDef, both, [0.5, 0.5, 0.002]);
-  const starless = sky(probe, probeDef, both, [0, 0, 0.002]);
+  const day = sky(probe, probeDef, constellations, [0.5, 0.5, 0.002]);
+  const starless = sky(probe, probeDef, constellations, [0, 0, 0.002]);
   check(
     day.every((v, i) => i % 4 > 1 || v === 0),
     "night parts by day",
@@ -274,7 +255,7 @@ export function verifyNightSky(gl: WebGL2RenderingContext): Record<string, unkno
   gl.deleteProgram(probe);
   gl.deleteProgram(plain);
   return {
-    samples: { stars: stars.length, lines: lines.length, planets: planetIndices.length },
+    samples: { stars: stars.length, lines: lines.length },
     added: Number(added.toFixed(2)),
   };
 }

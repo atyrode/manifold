@@ -51,7 +51,13 @@ const landUse = (
   });
 
 const params = [
-  ...skyKnobs({ time: 0.68, stars: 0.5, moon: 1, constellations: true, planets: true }),
+  ...skyKnobs({
+    time: 0.68,
+    stars: 0.5,
+    moon: 1,
+    constellations: true,
+    giant: { across: [-33, 14, 33], up: [0, 8, 16] },
+  }),
   ...weatherKnobs({
     clouds: 0.35,
     shadows: true,

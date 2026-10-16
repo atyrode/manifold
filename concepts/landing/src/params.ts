@@ -62,8 +62,9 @@ interface Base {
  *              card stands where a group has a `birds` part and takes that group's other parts
  *   night      a part of the Night sky section (the sky components of `skyComponentKnobs` and
  *              `weatherKnobs`): `stars` the density (a range), `moon` the moon's phase, `milkyWay`,
- *              `meteors`, `aurora`, `constellations` and `planets` (features); the section stands
- *              where a group holds any of them, at the first
+ *              `meteors`, `aurora`, `constellations` and `giant`, the giant planet (features); the
+ *              section stands where a group holds any of them, at the first, and a part takes the
+ *              group's knobs that hang off its switch (`when`, at any remove) with it
  *   gusts      gusts that ride a `direction` knob (a feature, its "now" one gust): the group's
  *              direction pad takes them as its gust lane; without one, a plain chip
  */
@@ -77,7 +78,7 @@ export type Widget =
   | { kind: "flyway"; part: "birds" | "kind" | "formation" }
   | {
       kind: "night";
-      part: "stars" | "moon" | "milkyWay" | "meteors" | "aurora" | "constellations" | "planets";
+      part: "stars" | "moon" | "milkyWay" | "meteors" | "aurora" | "constellations" | "giant";
     }
   | { kind: "gusts" };
 

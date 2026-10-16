@@ -271,7 +271,11 @@ vec3 aurSky(vec2 q, bool mirror) {
   vec3 stars = skyStarLight(aurStars, d, mirror ? 0.55 * dens : dens) * (mirror ? 0.6 : 1.0) * aurVis;
   vec3 au = (aurAurora(q, aurT) + aurCoronaLight(d, aurT) + aurMarkLight(q, aurT)) * aurVis;
   float seen = dot(au, LUMA);
-  col += stars * (1.0 - min(seen * 3.0, 1.0)) * (1.0 - cover) + au;
+  // The stars, faded where the curtains outshine them and behind the moon's disc, then the giant
+  // planet over them and the curtains over all.
+  col += stars * (1.0 - min(seen * 3.0, 1.0)) * (1.0 - cover);
+  col = skyGiant(aurStars, col, d, aurPx / AUR_F, 1.0);
+  col += au;
   // A shooting star over the curtains (the moon's disc, drawn next, hides it), fainter in the water
   // like the stars.
   float meteor = meteorStreak(skyAngles(d), AUR_METEOR_FIELD, aurMeteorAt, aurMeteorSeed, aurPx / AUR_F);

@@ -533,9 +533,9 @@ vec3 trainNightGlow(vec3 dir) {
 }
 
 // The night sky behind the glass, for a direction in the sky's own frame: the shared dome with the
-// moon, the moonlit band low over the land, stars, the M asterism, shooting stars, aurora, the deck;
-// under rain a low grey sky with shafts of heavier rain hanging near the horizon. Reflections skip
-// the fine things.
+// moon, the moonlit band low over the land, stars, the giant planet, the M asterism, shooting stars,
+// aurora, the deck; under rain a low grey sky with shafts of heavier rain hanging near the horizon.
+// Reflections skip the fine things.
 vec3 trainSkyCol(vec3 dir, float t, bool detail, inout float accent) {
   Sky s = trainSky;
   vec3 col = skyColor(s, dir) + trainNightGlow(dir);
@@ -543,6 +543,7 @@ vec3 trainSkyCol(vec3 dir, float t, bool detail, inout float accent) {
   float mark = 0.0;
   if (detail) {
     col += vec3(0.85, 0.9, 1.0) * skyStars(s, dir, K_stars) * clear;
+    col = skyGiant(s, col, dir, trainPx / TRAIN_F, clear);
     mark = trainMarkStars(dir) * clear * s.night;
     col += vec3(0.9, 0.95, 1.0) * trainMeteor(dir, t) * clear * s.night;
     if (K_aurora > 0.0) col += aurora(dir, t, K_aurora) * s.night * clear;

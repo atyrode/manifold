@@ -303,6 +303,7 @@ vec3 beesSky(vec2 p, vec3 dir, Sky sky, float tm) {
   col += METEOR_TINT * hardEdge(meteorStreak(p, BEES_METEOR_FIELD, meteorAt, meteorSeed, beesAa) * sky.night);
   float span = 2.0 * beesW + 1.7;
   float cover = clamp(K_clouds, 0.0, 1.0);
+  float open = 1.0;
   for (int i = 0; i < BEES_CLOUD_N; i++) {
     bool puff = i < BEES_CLOUD_PUFFS;
     if (!puff && i == BEES_CLOUD_N - 2 && cover < 0.2) continue;
@@ -311,8 +312,10 @@ vec3 beesSky(vec2 p, vec3 dir, Sky sky, float tm) {
     float x = mod(BEES_CLOUD_F[i] * beesW + tm * 0.0035 + 0.5 * span, span) - 0.5 * span + sign(BEES_CLOUD_F[i]) * lead;
     vec4 cl = beesCloudAt(p, x, BEES_CLOUD_Y[i], s, BEES_CLOUD_T[i], BEES_CLOUD_SEED[i]);
     col = mix(col, cl.rgb, cl.a);
+    open *= 1.0 - cl.a;
   }
-  return col + skyStarLight(sky, dir, K_stars);
+  // The giant planet over the stars, behind the cumulus: shown where they leave the sky open.
+  return skyGiant(sky, col + skyStarLight(sky, dir, K_stars), dir, BEES_FOV / uRes.y, open);
 }
 
 // The shadow of the clouds on the land, drifting slowly: 1 in shadow, per cell.

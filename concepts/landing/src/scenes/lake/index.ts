@@ -127,7 +127,7 @@ const params: readonly ParamDef[] = [
     milkyWay: { on: true },
     meteors: { trigger: LAKE_METEOR_TRIGGER },
     constellations: true,
-    planets: true,
+    giant: { across: [-45, -22, 45], up: [2, 21, 38] },
   }),
   toggle(
     "night",

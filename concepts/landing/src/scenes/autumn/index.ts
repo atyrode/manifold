@@ -72,7 +72,7 @@ const params: readonly ParamDef[] = [
     moon: 1,
     meteors: { trigger: AUTUMN_METEOR_TRIGGER },
     constellations: true,
-    planets: true,
+    giant: { across: [-30, 14, 40], up: [2, 14, 26] },
   }),
   ...weatherKnobs({ clouds: 0.3, shadows: true, rain: true, fog: true, wind: true, aurora: true }),
   feature(

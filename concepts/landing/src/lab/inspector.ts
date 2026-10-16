@@ -61,7 +61,7 @@ import { shelves } from "./world-model.ts";
 import { recipeStrip } from "./recipes.ts";
 import { shownRecipes } from "./recipes-model.ts";
 import { nightSection } from "./nightsky.ts";
-import { nightParts } from "./nightsky-model.ts";
+import { nightCompanions, nightParts } from "./nightsky-model.ts";
 import { rollPatch } from "./roll-model.ts";
 
 export const MODE_LABEL: Record<(typeof modeIds)[number], string> = {
@@ -576,6 +576,32 @@ export class Inspector {
       for (const def of [almanac.season, almanac.year]) if (def) used.add(def);
     }
 
+    // The Night sky section, at its first part, with the knobs that hang off its parts (the giant
+    // planet's placement pad and dress): ahead of the pads, so it holds its own. "See it at night"
+    // sets the scene's own clock.
+    const night = nightParts(defs.filter((def) => !used.has(def)));
+    const firstNight = defs.find((def) => night.some((part) => part.def === def));
+    if (firstNight) {
+      const clock = sceneDefs[scene].params.find(
+        (def): def is RangeDef =>
+          def.kind === "range" && def.widget?.kind === "sky" && def.widget.part === "time",
+      );
+      const cycle = sceneDefs[scene].params.find(
+        (def): def is FeatureDef =>
+          def.kind === "feature" && def.widget?.kind === "sky" && def.widget.part === "cycle",
+      );
+      const free = defs.filter((def) => !used.has(def));
+      place(
+        firstNight,
+        nightSection(knobs, night, clock && { time: clock, cycle }, {
+          defs: free,
+          row: (def) => this.#knobRow(knobs, def),
+        }),
+      );
+      for (const part of night)
+        for (const def of [part.def, ...nightCompanions(part, free)]) used.add(def);
+    }
+
     // Pads: a compass's heading and strength, a position's two coordinates, a signed direction.
     let masterAmountShown = master?.kind === "feature";
     for (const def of defs) {
@@ -647,22 +673,6 @@ export class Inspector {
       );
       for (const def of [flyway.birds, flyway.kind, flyway.formation]) if (def) used.add(def);
       if (flyway.birds === master) masterAmountShown = false;
-    }
-
-    // The Night sky section, at its first part; "See it at night" sets the scene's own clock.
-    const night = nightParts(defs.filter((def) => !used.has(def)));
-    const firstNight = defs.find((def) => night.some((part) => part.def === def));
-    if (firstNight) {
-      const clock = sceneDefs[scene].params.find(
-        (def): def is RangeDef =>
-          def.kind === "range" && def.widget?.kind === "sky" && def.widget.part === "time",
-      );
-      const cycle = sceneDefs[scene].params.find(
-        (def): def is FeatureDef =>
-          def.kind === "feature" && def.widget?.kind === "sky" && def.widget.part === "cycle",
-      );
-      place(firstNight, nightSection(knobs, night, clock && { time: clock, cycle }));
-      for (const part of night) used.add(part.def);
     }
 
     // Switches as chips; the rest as rows.

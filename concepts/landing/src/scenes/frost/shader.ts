@@ -134,10 +134,11 @@ vec3 frostOutside(vec2 uv, float aspect, float blur, float t, Sky sky, out vec3 
 
   // Sky: the snow cloud closes in with the snowfall and darkens toward a blizzard (over the town
   // it glows with the streets' light); stars only in its gaps and through clear glass, fewer over
-  // the town than over the woods. The aurora and shooting stars show where the deck leaves the sky
-  // open; houses, trees and lamps drawn after hide them. foot is one dither cell in radians (the
-  // view spans one radian of height): the components' level of detail, coarsened by the blur
-  // behind the frost so the aurora's rays and a meteor's streak go soft with everything else.
+  // the town than over the woods, and the giant planet among them (behind the deck, softened with
+  // the rest). The aurora and shooting stars show where the deck leaves the sky open; houses,
+  // trees and lamps drawn after hide them. foot is one dither cell in radians (the view spans one
+  // radian of height): the components' level of detail, coarsened by the blur behind the frost so
+  // the aurora's rays and a meteor's streak go soft with everything else.
   vec3 dir = viewRay(uv, aspect, FROST_HORIZON, 1.0);
   float foot = 1.0 / uRes.y;
   vec3 col = skyColor(sky, dir);
@@ -146,6 +147,7 @@ vec3 frostOutside(vec2 uv, float aspect, float blur, float t, Sky sky, out vec3 
   float sharp = 1.0 - smoothstep(0.01, 0.03, blur);
   float stars = skyStars(sky, dir, street ? K_stars : K_stars * 1.7, foot) * (1.0 - cloud.a) * sharp;
   col += SKY_STAR_TINT * stars;
+  col = skyGiant(sky, col, dir, max(foot, blur), 1.0 - cloud.a);
   float open = auroraSeen(sky, cloud.a);
   col += auroraM(dir, tm, K_aurora, max(foot, blur)) * open;
   float meteorSeed;

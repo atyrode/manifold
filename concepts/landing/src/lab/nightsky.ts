@@ -1,41 +1,54 @@
 // The Night sky section: every sky component a group holds (knobs tagged `night`: the moon, the
-// stars, the Milky Way, constellations, planets, the aurora, shooting stars; any of them) under one
-// heading. A drawn night shows each part in its state, dim and dashed while off and lit with its
-// amount while on (a click on a drawn part switches it). Under it the controls, one per part: the
-// moon's phases as drawn moons with "off" (a radio group, as the birds card's species), the stars'
-// density as a fader chip without a switch, and every other part as a fader chip (chips.ts: a click
-// switches it, a drag across or the arrow keys set how much; the shooting stars keep their "now",
-// which falls on the drawing too). While the scene's clock stands in daylight (or the day passes),
-// "See it at night" sets a night hour as one change. nightsky-model.ts holds the rules.
-import { formatValue } from "../params.ts";
+// stars, the Milky Way, constellations, the giant planet, the aurora, shooting stars; any of them)
+// under one heading. A drawn night shows each part in its state, dim and dashed while off and lit
+// with its amount while on (a click on a drawn part switches it). Under it the controls, one per
+// part: the moon's phases as drawn moons with "off" (a radio group, as the birds card's species),
+// the stars' density as a fader chip without a switch, and every other part as a fader chip
+// (chips.ts: a click switches it, a drag across or the arrow keys set how much; the shooting stars
+// keep their "now", which falls on the drawing too). A part's companions, the knobs that hang off
+// its switch (the giant planet's placement, palette, ring, moons and features), show under the
+// chips while it is on: a placement on the position pad, switches as chips, the rest as rows. While
+// the scene's clock stands in daylight (or the day passes), "See it at night" sets a night hour as
+// one change. nightsky-model.ts holds the rules.
+import { formatValue, type ParamDef } from "../params.ts";
 import { chipKey, pace, pressMove, type Press } from "./chips-model.ts";
 import { chipGrid } from "./chips.ts";
 import { row, textButton } from "./controls.ts";
-import { drag, h, snap, svg, type Built } from "./dom.ts";
+import { drag, h, reveal, snap, svg, type Built } from "./dom.ts";
 import { tileStep } from "./flyway-model.ts";
 import { icon } from "./icons.ts";
-import { knobIcon, knobKeys, type FeatureDef, type Knobs, type RangeDef } from "./knobs.ts";
+import {
+  knobIcon,
+  knobKeys,
+  type FeatureDef,
+  type Knobs,
+  type RangeDef,
+  type SwitchDef,
+} from "./knobs.ts";
 import {
   amountKey,
   clickPatch,
+  giantDress,
+  giantLook,
   MOON_PHASES,
   moonPatch,
   moonPath,
   NIGHT_STARS,
+  nightCompanions,
   nightPatch,
   nightSummary,
   partValue,
   phaseIndex,
-  planetCount,
-  PLANETS,
   shareOf,
   starsOut,
   streaksOf,
+  type GiantDress,
   type NightClock,
   type NightPart,
   type NightPartName,
   type PartState,
 } from "./nightsky-model.ts";
+import { positionPad } from "./pads.ts";
 
 const HELP =
   "What the sky shows once it is dark: the moon in its phase, and each part on or off with how much of it there is.";
@@ -72,14 +85,24 @@ const FIGURE = {
     [6, 3],
   ],
 } as const;
-/** Where each planet shines, low over the hills on the right, in PLANETS order; its size and tint. */
-const PLANET_LOOK: readonly { x: number; y: number; r: number; tint: string; ring?: true }[] = [
-  { x: 210, y: 54, r: 2.6, tint: "#fffbea" },
-  { x: 188, y: 47, r: 2.2, tint: "#ffe6bd" },
-  { x: 167, y: 53, r: 1.8, tint: "#f1d38c", ring: true },
-  { x: 150, y: 61, r: 1.6, tint: "#ff8a5c" },
-  { x: 231, y: 63, r: 1.3, tint: "#d8d2c4" },
-];
+/** The giant planet's tint in each of its palettes (GIANT_PALETTES in scenes/planet.ts), teal's first. */
+const GIANT_TINTS: Readonly<Record<string, string>> = {
+  teal: "#5fae98",
+  amber: "#d99a45",
+  rose: "#c9708f",
+  ice: "#8fb4e6",
+};
+/**
+ * Where the drawn giant stands: its centre from `left` to `right` across the sky and from `low`
+ * over the hills to `high`, its radius from `small` to `large` with its size.
+ */
+const GIANT = { left: 16, right: 224, low: 58, high: 16, small: 4, large: 10 } as const;
+/**
+ * The giant's two bands, each its height on the disc in radii, and its moons on its ring's plane,
+ * each its turn round it in degrees.
+ */
+const GIANT_BANDS = [-0.38, 0.22] as const;
+const GIANT_MOONS = [160, 20, 300] as const;
 
 /** A part as drawn: its group, and what of its state shows beyond on/off and its level. */
 interface Art {
@@ -214,37 +237,62 @@ function figureArt(): Art {
   };
 }
 
-/** The planets low over the hills, brightest first, as many as the amount names. */
-function planetArt(): Art {
-  const planets = PLANET_LOOK.map(({ x, y, r, tint, ring }, index) => {
-    const title = svg("title");
-    title.textContent = PLANETS[index] ?? "";
-    const disc = circle("night-planet-disc", x, y, r);
-    disc.style.setProperty("--tint", tint);
-    return svg(
-      "g",
-      { class: "night-planet" },
-      title,
-      ...(ring
-        ? [
-            svg("ellipse", {
-              class: "night-planet-ring",
-              cx: x,
-              cy: y,
-              rx: r * 2.1,
-              ry: r * 0.7,
-              transform: `rotate(-18 ${x} ${y})`,
-            }),
-          ]
-        : []),
-      disc,
-    );
-  });
+/**
+ * The giant planet where its placement puts it (giantLook), as big as its size: a disc in its
+ * palette's tint with two bands and a thin ring tipped across it (the far half behind the disc),
+ * its moons on the ring's plane. `clip` names the clip path that keeps the bands on the disc.
+ */
+function giantArt(knobs: Knobs, giant: FeatureDef, dress: GiantDress, clip: string): Art {
+  const back = svg("path", { class: "night-giant-ring" });
+  const front = svg("path", { class: "night-giant-ring" });
+  const disc = circle("night-giant-disc", 0, 0, GIANT.small);
+  const edge = circle("", 0, 0, GIANT.small);
+  const bands = GIANT_BANDS.map((at) => ({
+    at,
+    el: svg("ellipse", { class: "night-giant-band" }),
+  }));
+  const moons = GIANT_MOONS.map(() => circle("night-giant-moon", 0, 0, 1));
+  const tipped = svg(
+    "g",
+    { transform: "rotate(-18)" },
+    back,
+    disc,
+    svg("clipPath", { id: clip }, edge),
+    svg("g", { "clip-path": `url(#${clip})` }, ...bands.map((band) => band.el)),
+    front,
+    ...moons,
+  );
+  const el = svg("g", { class: "night-giant", "data-part": "giant" }, tipped);
+  const title = svg("title");
+  title.textContent = giant.label;
+  el.prepend(title);
   return {
-    el: svg("g", { class: "night-planets", "data-part": "planets" }, ...planets),
-    sync: (state) => {
-      const count = planetCount(state.amount);
-      planets.forEach((planet, index) => planet.classList.toggle("gone", index >= count));
+    el,
+    sync: () => {
+      const look = giantLook(giant, dress, (key) => knobs.value(key));
+      const x = GIANT.left + look.x * (GIANT.right - GIANT.left);
+      const y = GIANT.low - look.y * (GIANT.low - GIANT.high);
+      const r = GIANT.small + look.size * (GIANT.large - GIANT.small);
+      el.setAttribute("transform", `translate(${x.toFixed(2)} ${y.toFixed(2)})`);
+      for (const each of [disc, edge]) each.setAttribute("r", r.toFixed(2));
+      for (const band of bands) {
+        band.el.setAttribute("cy", (band.at * r).toFixed(2));
+        band.el.setAttribute("rx", (r * 1.05).toFixed(2));
+        band.el.setAttribute("ry", (r * 0.16).toFixed(2));
+      }
+      const rx = r * 2.05;
+      const ry = r * 0.42;
+      back.setAttribute("d", `M${-rx} 0A${rx} ${ry} 0 0 1 ${rx} 0`);
+      front.setAttribute("d", `M${-rx} 0A${rx} ${ry} 0 0 0 ${rx} 0`);
+      el.classList.toggle("ringless", !look.ring);
+      moons.forEach((moon, index) => {
+        const turn = ((GIANT_MOONS[index] ?? 0) * Math.PI) / 180;
+        moon.setAttribute("cx", (Math.cos(turn) * r * 1.8).toFixed(2));
+        moon.setAttribute("cy", (-Math.sin(turn) * r * 0.5).toFixed(2));
+        moon.setAttribute("r", Math.max(1, r * 0.13).toFixed(2));
+        moon.classList.toggle("gone", index >= look.moons);
+      });
+      disc.style.setProperty("--tint", GIANT_TINTS[look.palette] ?? "#5fae98");
     },
   };
 }
@@ -283,9 +331,17 @@ function meteorArt(gradient: string): Art {
   };
 }
 
-/** A part's drawing; the stars' field is drawn whether or not they are a part. */
-function artOf(name: Exclude<NightPartName, "stars">, id: string): Art {
-  switch (name) {
+/**
+ * A part's drawing; the stars' field is drawn whether or not they are a part. The giant follows its
+ * companions (nightCompanions).
+ */
+function artOf(
+  knobs: Knobs,
+  part: Exclude<NightPart, { name: "stars" }>,
+  companions: readonly ParamDef[],
+  id: string,
+): Art {
+  switch (part.name) {
     case "moon":
       return moonArt();
     case "milkyWay":
@@ -294,12 +350,12 @@ function artOf(name: Exclude<NightPartName, "stars">, id: string): Art {
       return auroraArt(`${id}-aurora`);
     case "constellations":
       return figureArt();
-    case "planets":
-      return planetArt();
+    case "giant":
+      return giantArt(knobs, part.def, giantDress(part.def, companions), `${id}-giant`);
     case "meteors":
       return meteorArt(`${id}-meteor`);
     default: {
-      const never: never = name;
+      const never: never = part.name;
       throw new Error(`night sky: no drawing for ${String(never)}`);
     }
   }
@@ -310,7 +366,7 @@ const LAYERS: readonly Exclude<NightPartName, "stars">[] = [
   "milkyWay",
   "aurora",
   "constellations",
-  "planets",
+  "giant",
   "meteors",
   "moon",
 ];
@@ -535,29 +591,97 @@ function nightButton(knobs: Knobs, clock: NightClock): Built {
   };
 }
 
+/**
+ * The controls of a part's companions (nightCompanions), shown while the part is on: a placement on
+ * the position pad (a range with a `position` widget, and its y), the switches as chips (a count's
+ * segments under them while it is on), every other knob as `knobRow` makes it, each shown while what
+ * it hangs off is on.
+ */
+function companionControls(
+  knobs: Knobs,
+  part: FeatureDef,
+  companions: readonly ParamDef[],
+  knobRow: (def: Exclude<ParamDef, SwitchDef>) => Built,
+): Built {
+  const placed = new Set<ParamDef>();
+  const pads = companions.flatMap((def) => {
+    const widget = def.widget;
+    if (def.kind !== "range" || widget?.kind !== "position") return [];
+    const y = companions.find(
+      (other): other is RangeDef => other.kind === "range" && other.key === widget.y,
+    );
+    if (!y) return [];
+    placed.add(def).add(y);
+    const pad = positionPad(knobs, def, y, widget.screen);
+    pad.el.dataset.keys = `${def.key} ${y.key}`;
+    return [pad];
+  });
+  const switches = companions.filter(
+    (def): def is SwitchDef => def.kind === "toggle" || def.kind === "feature",
+  );
+  const chips = switches.length > 0 ? chipGrid(knobs, switches) : undefined;
+  const rows = companions.flatMap((def): Built[] => {
+    if (placed.has(def) || def.kind === "toggle" || def.kind === "feature") return [];
+    const built = knobRow(def);
+    built.el.dataset.keys = def.key;
+    if (def.when === part.key) return [built];
+    const shown = reveal(built.el, () => knobs.on(def.when));
+    return [
+      {
+        el: shown.el,
+        sync: () => {
+          built.sync();
+          shown.sync();
+        },
+      },
+    ];
+  });
+  const block = h(
+    "div",
+    { class: "night-companions" },
+    ...pads.map((pad) => pad.el),
+    chips?.grid.el,
+    chips?.amounts.el,
+    ...rows.map((each) => each.el),
+  );
+  const shown = reveal(block, () => knobs.on(part.key));
+  return {
+    el: shown.el,
+    sync: () => {
+      for (const each of [...pads, ...rows]) each.sync();
+      chips?.grid.sync();
+      chips?.amounts.sync();
+      shown.sync();
+    },
+  };
+}
+
 // ---- the section -------------------------------------------------------------------------------
 
 /**
- * The Night sky section for a group's night parts (nightParts: at least one); `clock` is the
- * scene's time of day and day cycle, for "See it at night" (none: no button).
+ * The Night sky section for a group's night parts (nightParts: at least one), with their companions
+ * among the group's knobs (`defs`; `row` lays out a range or a choice as the group's rows are);
+ * `clock` is the scene's time of day and day cycle, for "See it at night" (none: no button).
  */
 export function nightSection(
   knobs: Knobs,
   parts: readonly NightPart[],
   clock: NightClock | undefined,
+  group: { defs: readonly ParamDef[]; row: (def: Exclude<ParamDef, SwitchDef>) => Built },
 ): Built {
   const id = `night-${++sections}`;
   const stateOf = (part: NightPart): PartState => ({
     on: part.name === "stars" || knobs.value(part.def.key) > 0.5,
     amount: knobs.value(amountKey(part)),
   });
+  const companions = new Map(parts.map((part) => [part, nightCompanions(part, group.defs)]));
 
   // The drawing: every part present, each linked to its control.
   const starPart = parts.find((part) => part.name === "stars");
   const field = starArt(starPart === undefined);
   const drawn = parts.map((part) => ({
     part,
-    art: part.name === "stars" ? field : artOf(part.name, id),
+    art: part.name === "stars" ? field : artOf(knobs, part, companions.get(part) ?? [], id),
   }));
   const layered = LAYERS.flatMap((name) =>
     drawn.flatMap(({ part, art }) => (part.name === name ? [art.el] : [])),
@@ -633,6 +757,13 @@ export function nightSection(
   const stars = starPart ? starsChip(knobs, starPart.def) : undefined;
   const grid = chips?.grid.el ?? (stars ? h("div", { class: "chips" }) : undefined);
   if (stars) grid?.prepend(stars.el);
+  // Under the chips, each part's companions while it is on (the giant planet's).
+  const held = switching.flatMap((part) => {
+    const list = companions.get(part) ?? [];
+    return list.length > 0
+      ? [{ part, built: companionControls(knobs, part.def, list, group.row) }]
+      : [];
+  });
 
   // A control and its drawing light up together while either is pointed at or focused.
   let hot: NightPart | undefined;
@@ -646,12 +777,14 @@ export function nightSection(
   ];
   // A search for the section finds each of its parts.
   for (const { el } of links) el.dataset.search = `${el.dataset.search ?? ""} night sky`;
+  // ... and so do a part's companions with its drawing.
+  const lit = [...links, ...held.map(({ part, built }) => ({ part, el: built.el }))];
   const light = (part: NightPart | undefined) => {
     hot = part;
-    for (const { part: each, el } of links) el.classList.toggle("hot", each === part);
+    for (const { part: each, el } of lit) el.classList.toggle("hot", each === part);
     for (const { part: each, art } of drawn) art.el.classList.toggle("hot", each === part);
   };
-  for (const { part, el } of links) {
+  for (const { part, el } of lit) {
     el.addEventListener("pointerenter", () => light(part));
     el.addEventListener("pointerleave", () => light(hot === part ? undefined : hot));
     el.addEventListener("focusin", () => light(part));
@@ -668,7 +801,8 @@ export function nightSection(
     if (play) el.querySelector(".now")?.addEventListener("click", play);
   }
 
-  const keys = parts.flatMap((part) => knobKeys(part.def));
+  const holds = parts.flatMap((part) => [part.def, ...(companions.get(part) ?? [])]);
+  const keys = holds.flatMap(knobKeys);
   const header = row({
     label: "Night sky",
     help: HELP,
@@ -685,7 +819,7 @@ export function nightSection(
   const words = [
     "night sky",
     HELP,
-    ...parts.map(({ def }) =>
+    ...holds.map((def) =>
       def.kind === "feature"
         ? `${def.label} ${def.amountLabel} ${def.help}`
         : `${def.label} ${def.help}`,
@@ -703,6 +837,7 @@ export function nightSection(
     moon?.el,
     grid,
     chips?.amounts.el,
+    ...held.map(({ built }) => built.el),
   );
 
   return {
@@ -714,6 +849,7 @@ export function nightSection(
       stars?.sync();
       chips?.grid.sync();
       chips?.amounts.sync();
+      for (const { built } of held) built.sync();
       for (const { part, art } of drawn) {
         const state = stateOf(part);
         const share = shareOf(part.def, state.amount);
