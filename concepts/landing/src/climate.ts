@@ -30,6 +30,28 @@ export function seasonKnob(params: readonly ParamDef[]): SeasonKnob | undefined 
   );
 }
 
+export type YearCycleKnob = ParamDef & { kind: "feature"; widget: { kind: "sky"; part: "year" } };
+
+/** The scene's year cycle ("the year passes": a feature, its amount minutes per season), if any. */
+export function yearCycleKnob(params: readonly ParamDef[]): YearCycleKnob | undefined {
+  return params.find(
+    (def): def is YearCycleKnob =>
+      def.kind === "feature" && def.widget?.kind === "sky" && def.widget.part === "year",
+  );
+}
+
+/** Seconds of motion clock per season at one minute per season. */
+const SEASON_SECONDS = 60;
+
+/**
+ * The year position now: `year` carried round the whole year by the cycle's `minutes` per season
+ * (its value as the shader has it, 0 while off) on the motion clock; -1 stays -1.
+ */
+export function yearNow(year: number, minutes: number, motionTime: number): number {
+  if (year < 0 || minutes <= 0) return year;
+  return wrap(year + motionTime / (4 * SEASON_SECONDS * minutes));
+}
+
 /** Whether the season sets the climate: the scene keeps a season and can snow. */
 export function hasClimate(params: readonly ParamDef[]): boolean {
   return seasonKnob(params) !== undefined && params.some((def) => def.key === "snow");
@@ -76,6 +98,14 @@ export function yearGlsl(def: SeasonKnob, k: string): string {
   const scale = def.max === def.min ? 0 : spanLength(year.span) / (def.max - def.min);
   const on = `fract(${glslFloat(year.span[0])} + (${k} - ${glslFloat(def.min)}) * ${glslFloat(scale)})`;
   return def.kind === "feature" ? `(${k} <= 0.0 ? ${glslFloat(year.off ?? -1)} : ${on})` : on;
+}
+
+/** `yearNow` of `yearGlsl`, as GLSL: the year position SKY_YEAR holds. */
+export function yearNowGlsl(season: SeasonKnob, cycle: YearCycleKnob | undefined): string {
+  const at = yearGlsl(season, `K_${season.key}`);
+  if (!cycle) return at;
+  const k = `K_${cycle.key}`;
+  return `(${k} > 0.0 && ${at} >= 0.0 ? fract(${at} + uMotionTime / (${4 * SEASON_SECONDS}.0 * ${k})) : ${at})`;
 }
 
 const smoothstep = (a: number, b: number, x: number) => {

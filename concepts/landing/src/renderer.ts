@@ -5,6 +5,8 @@ import {
   hasClimate,
   seasonKnob,
   yearAt,
+  yearCycleKnob,
+  yearNow,
 } from "./climate.ts";
 import type { SeasonKnob } from "./climate.ts";
 import { constellationUniforms } from "./constellations.ts";
@@ -193,7 +195,7 @@ interface ActiveScene {
   failure: SceneFailure | undefined;
   rain: number;
   snow: number;
-  season: { def: SeasonKnob; at: number } | undefined;
+  season: { def: SeasonKnob; at: number; cycle: number } | undefined;
   readonly weather: { wet: number; lying: number };
   readonly passage: { enter: number; exit: number };
 }
@@ -840,7 +842,10 @@ export class DitherRenderer {
       snow: params.findIndex((def) => def.key === "snow"),
       season: (() => {
         const def = hasClimate(params) ? seasonKnob(params) : undefined;
-        return def ? { def, at: params.indexOf(def) } : undefined;
+        const cycle = yearCycleKnob(params);
+        return def
+          ? { def, at: params.indexOf(def), cycle: cycle ? params.indexOf(cycle) : -1 }
+          : undefined;
       })(),
       weather: { wet: 0, lying: 0 },
       passage: { enter: 1, exit: 0 },
@@ -1277,8 +1282,15 @@ export class DitherRenderer {
     // deep winter lays snow of its own. A scene just entered, or a frozen frame, starts where its
     // weather leads.
     const weather = scene.weather;
-    const cold = scene.season
-      ? climateCold(yearAt(scene.season.def, s.params[scene.season.at] ?? 0))
+    const season = scene.season;
+    const cold = season
+      ? climateCold(
+          yearNow(
+            yearAt(season.def, s.params[season.at] ?? 0),
+            s.params[season.cycle] ?? 0,
+            this.#motionClock,
+          ),
+        )
       : 0;
     const { rain, snow } = climatePrecip(
       s.params[scene.rain] ?? 0,

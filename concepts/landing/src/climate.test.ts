@@ -6,6 +6,7 @@ import {
   hasClimate,
   seasonKnob,
   yearAt,
+  yearNow,
 } from "./climate.ts";
 import { yearOf } from "./lab/almanac-model.ts";
 import { effective } from "./params.ts";
@@ -36,6 +37,13 @@ describe("a scene's year position", () => {
         expect(shader).toBeCloseTo(lab ?? -1, 9);
       }
     }
+  });
+
+  test("goes round the whole year at the cycle's minutes per season, and stands while it is off", () => {
+    expect(yearNow(0.5, 1, 60)).toBeCloseTo(0.75, 9);
+    expect(yearNow(0.5, 2, 240)).toBeCloseTo(0, 9);
+    expect(yearNow(0.5, 0, 999)).toBe(0.5);
+    expect(yearNow(-1, 1, 60)).toBe(-1);
   });
 });
 

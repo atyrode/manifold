@@ -6,7 +6,7 @@
 // `#define K_<key> uParams[i]` per knob and SKY_YEAR, the shared libraries, the scene's GLSL, then
 // `main`, which calls the scene's entry and dithers the Shade it returns into the palette.
 
-import { seasonKnob, yearGlsl } from "../climate.ts";
+import { seasonKnob, yearCycleKnob, yearNowGlsl } from "../climate.ts";
 import { effective, MAX_PARAMS } from "../params.ts";
 import type { SceneDef } from "../scenes/types.ts";
 import { common } from "./common.ts";
@@ -49,12 +49,13 @@ function knobDefines(scene: SceneDef): string {
 }
 
 /**
- * `#define SKY_YEAR <expr>`: the scene's year position (src/climate.ts `yearAt`) from its season
- * knob's define, for the climate; -1.0 for a scene that keeps no season.
+ * `#define SKY_YEAR <expr>`: the scene's year position now (src/climate.ts `yearAt`, carried round
+ * by its year cycle, `yearNow`) from its knobs' defines, for the climate; -1.0 without a season.
  */
 function yearDefine(scene: SceneDef): string {
   const season = seasonKnob(scene.params);
-  return `#define SKY_YEAR ${season ? yearGlsl(season, `K_${season.key}`) : "-1.0"}\n`;
+  const year = season ? yearNowGlsl(season, yearCycleKnob(scene.params)) : "-1.0";
+  return `#define SKY_YEAR ${year}\n`;
 }
 
 /** Library feature names: macros the libraries test with `#ifdef` / `#if`. */

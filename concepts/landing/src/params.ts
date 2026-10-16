@@ -60,9 +60,10 @@ interface Base {
  *   flyway     a part of the birds card (`birdKnobs`): `birds` the switch and how often a flight
  *              passes (a feature), `kind` the species and `formation` the formation (choices); the
  *              card stands where a group has a `birds` part and takes that group's other parts
- *   night      a part of the night strip (the sky components of `skyComponentKnobs` and
- *              `weatherKnobs`): `stars` the density (a range), `milkyWay`, `meteors` and `aurora`
- *              (features); the strip stands where a group holds any of them, at the first
+ *   night      a part of the Night sky section (the sky components of `skyComponentKnobs` and
+ *              `weatherKnobs`): `stars` the density (a range), `moon` the moon's phase, `milkyWay`,
+ *              `meteors`, `aurora`, `constellations` and `planets` (features); the section stands
+ *              where a group holds any of them, at the first
  *   gusts      gusts that ride a `direction` knob (a feature, its "now" one gust): the group's
  *              direction pad takes them as its gust lane; without one, a plain chip
  */
@@ -74,7 +75,10 @@ export type Widget =
   | { kind: "compass"; strength: string }
   | { kind: "position"; y: string; screen?: readonly [number, number] }
   | { kind: "flyway"; part: "birds" | "kind" | "formation" }
-  | { kind: "night"; part: "stars" | "milkyWay" | "meteors" | "aurora" }
+  | {
+      kind: "night";
+      part: "stars" | "moon" | "milkyWay" | "meteors" | "aurora" | "constellations" | "planets";
+    }
   | { kind: "gusts" };
 
 /**
