@@ -1,11 +1,25 @@
 // The orbit scene: the shared giant planet (shaders/lib/planet.ts, included at the top of its GLSL)
 // as the subject, with every feature (surface, clouds, storms, aurora, city lights, day cycle, ring
 // system, moons), drawn in ink and accent coverage; plus constellations, shooting stars, captured
-// meteors and the M city lights.
+// meteors and the M city lights. The parts behind knobs that start off compile in only while their
+// knob is on (ORBIT_* gates, orbitFeatures in index.ts); storms, shooting stars and captured meteors
+// always do, as a "now" shows them with their knob off.
+import { glslFloat } from "../../shaders/glsl.ts";
 import { planetGlsl } from "../../shaders/lib/planet.ts";
 
 /** Seconds of the orbit's entrance and exit (SceneDef.passage). */
 export const ORBIT_PASSAGE = { enter: 2.8, exit: 1.5 } as const;
+
+/**
+ * A captured meteor's fall: it comes in at `from` planet radii and burns up at `to`, `turns` times
+ * round in `seconds`. Its orbit decays as Kepler's third law has it (see orbitCapturePath): the
+ * radius goes as (1 - u)^(2/3) for u = fall × (share of the time), so the period shrinks in step
+ * with the clock and the angle swept is -ln(1 - u) times the opening rate: wide and slow at first,
+ * ever tighter and faster as it falls.
+ */
+export const ORBIT_CAPTURE = { from: 3.4, to: 1.02, turns: 1.4, seconds: 8 } as const;
+const captureFall = 1 - (ORBIT_CAPTURE.to / ORBIT_CAPTURE.from) ** 1.5;
+const captureSweep = (2 * Math.PI * ORBIT_CAPTURE.turns) / Math.log(1 - captureFall);
 
 export const orbitGlsl = `
 ${planetGlsl}
@@ -70,13 +84,26 @@ float orbitMeteors(vec2 p, float rate, float px, float tm) {
   return acc;
 }
 
-// Captured meteor 'tau' seconds after it appears: spirals inward around the planet and burns up in
-// the atmosphere. q: the pixel in planet radii, foot a cell there (the shared planet's frame);
-// ringZ, ringOpacity: the ring at this pixel (its depth toward the viewer and how much it hides, see
-// orbitRingOver); the meteor dims behind ring material nearer the eye. Returns (ink, accent).
+// A captured meteor's place tt (0..1) of the way through its fall (ORBIT_CAPTURE): a decaying orbit
+// on Kepler's third law, its radius (1 - u)^(2/3) of the way in and its angle -ln(1 - u) round, u
+// = ORBIT_CAPTURE_FALL * tt, so its rate (r^-1.5) and speed rise as it falls. 'start' the angle it
+// comes in at, 'turn' which way round (1 or -1), tilt and roll its orbit's (planetOrbit).
+const float ORBIT_CAPTURE_FROM = ${glslFloat(ORBIT_CAPTURE.from)};
+const float ORBIT_CAPTURE_FALL = ${glslFloat(captureFall)};
+const float ORBIT_CAPTURE_SWEEP = ${glslFloat(captureSweep)};
+vec3 orbitCapturePath(float tt, float start, float turn, float tilt, float roll) {
+  float left = 1.0 - ORBIT_CAPTURE_FALL * tt;
+  return planetOrbit(start + turn * ORBIT_CAPTURE_SWEEP * log(left), ORBIT_CAPTURE_FROM * pow(left, 2.0 / 3.0), tilt, roll);
+}
+
+// Captured meteor 'tau' seconds after it appears: spirals inward around the planet, ever faster,
+// and burns up in the atmosphere. q: the pixel in planet radii, foot a cell there (the shared
+// planet's frame); ringZ, ringOpacity: the ring at this pixel (its depth toward the viewer and how
+// much it hides, see orbitRingOver); the meteor dims behind ring material nearer the eye. Returns
+// (ink, accent).
 vec2 orbitCapturedEvent(vec2 q, float tau, float id, float foot, float ringZ, float ringOpacity) {
   vec2 acc = vec2(0.0);
-  float duration = 8.0;
+  float duration = ${glslFloat(ORBIT_CAPTURE.seconds)};
   if (tau < 0.0 || tau > duration + 1.4) return acc;
   float tilt = 0.3 + 0.55 * hash12(vec2(id, 5.1));
   float roll = (hash12(vec2(id, 9.7)) - 0.5) * 0.9;
@@ -86,14 +113,14 @@ vec2 orbitCapturedEvent(vec2 q, float tau, float id, float foot, float ringZ, fl
     float back = float(i) * 0.05;
     if (tau - back < 0.0) break;
     float tt = clamp((tau - back) / duration, 0.0, 1.0);
-    vec3 pos = planetOrbit(start + turn * TAU * 1.4 * pow(tt, 0.8), mix(3.4, 1.02, pow(tt, 1.25)), tilt, roll);
+    vec3 pos = orbitCapturePath(tt, start, turn, tilt, roll);
     if (planetBehind(pos) || tau - back > duration) continue;
     float d = length(q - pos.xy) / foot;
     float seen = ringZ > pos.z ? 1.0 - ringOpacity : 1.0;
     acc.x = max(acc.x, step(d, i == 0 ? 1.4 : 0.75) * (1.0 - float(i) / 16.0) * seen);
   }
   if (tau > duration) {
-    vec3 end = planetOrbit(start + turn * TAU * 1.4, 1.02, tilt, roll);
+    vec3 end = orbitCapturePath(1.0, start, turn, tilt, roll);
     float f = (tau - duration) / 1.4;
     float d = length(q - end.xy) / foot;
     float flash = (1.0 - f) * smoothfall(3.0 + 30.0 * f, 0.0, d);
@@ -217,11 +244,13 @@ Shade sceneOrbit(vec2 uv, vec2 cell, float t) {
   o.ink = starfield(floor(sky * uRes.y), 0.001 + 0.009 * K_stars, K_twinkle, K_scatter);
   o.ink += 0.16 * K_nebula * smoothstep(0.5, 0.95, fbm(p * 1.8 + vec2(tm * 0.012 * K_drift, 3.0)));
   o.accent = 0.08 * K_nebula * smoothstep(0.55, 0.95, fbm(p * 2.4 + vec2(9.0, -tm * 0.008 * K_drift)));
+#if ORBIT_FIGURES
   if (K_constellations > 0.5 || K_mark > 0.5) {
     vec2 figures = orbitConstellations(sky, aspect, px, K_constellations > 0.5, K_lines > 0.5, K_mark > 0.5, tm);
     o.ink = max(o.ink, figures.x);
     o.accent = max(o.accent, figures.y * 0.6);
   }
+#endif
   o.ink = max(o.ink, orbitMeteors(p, K_meteors, px, tm));
 
   // The shared planet (shaders/lib/planet.ts) with every feature, in planet radii; foot is a cell.
@@ -237,6 +266,7 @@ Shade sceneOrbit(vec2 uv, vec2 cell, float t) {
   float ring = 0.0;
   float ringInk = 0.0;
   float ringZ = 0.0;
+#if ORBIT_RING
   PlanetRing ringPlane = orbitRingPlane();
   PlanetRingBands ringBands = orbitRingBands();
   if (K_ring > 0.5) {
@@ -247,6 +277,7 @@ Shade sceneOrbit(vec2 uv, vec2 cell, float t) {
     if (planetShadowed(vec3(q, at.z), L)) ring *= 0.15;
     ringZ = at.z;
   }
+#endif
 
   if (d < 1.0) {
     vec3 normal = s.normal;
@@ -256,10 +287,16 @@ Shade sceneOrbit(vec2 uv, vec2 cell, float t) {
     float rim = planetRim(normal);
     float limbSun = smoothstep(-0.2, 0.6, planetSunward(q, L));
     float night = planetNight(diff);
+#if ORBIT_LIGHTS
     float lights = K_lights > 0.5 ? planetCityLights(normal, lon, t, K_lightsTwinkle, foot) * night : 0.0;
+#else
+    float lights = 0.0;
+#endif
     o.ink = diff * diff * (0.2 + 0.6 * bands) * 0.85;
     o.accent = rim * limbSun * 1.4 + lights * 0.85;
+#if ORBIT_AURORA
     if (K_aurora > 0.0) o.accent = max(o.accent, planetAurora(normal, ORBIT_AURORA_POLE, K_auroraSize, tm, foot) * mix(0.6, 1.0, night) * K_aurora * 2.0);
+#endif
     // Cloud decks drift faster than the surface and catch the light; a passage's spin drags them
     // round a little behind it.
     float cloud = planetClouds(normal, planetLongitude(normal, tm * 0.012, cloudSpin), tm, foot);
@@ -270,6 +307,7 @@ Shade sceneOrbit(vec2 uv, vec2 cell, float t) {
     float storm = planetStorms(normal, lon, t, stormLevel, cloud, diff, foot);
     o.ink = max(o.ink, storm);
     o.shimmer = storm * 0.3;
+#if ORBIT_MARK_LIGHTS
     if (K_mlights > 0.5) {
       // City lights on the night side, laid out as the M.
       vec2 at = (normal.xy + normalize(L.xy + 1e-4) * 0.45) / 0.3;
@@ -277,6 +315,8 @@ Shade sceneOrbit(vec2 uv, vec2 cell, float t) {
       float lit = step(0.6, hash12(town)) * (0.8 + 0.2 * hash12(town + 3.0));
       o.accent = max(o.accent, step(markDistance(at), 0.06) * lit * smoothfall(0.25, 0.0, diff));
     }
+#endif
+#if ORBIT_RING
     // The rings' shadow bands across the surface.
     vec2 shadowAt;
     if (K_ring > 0.5 && planetRingShadowAt(ringPlane, normal, L, shadowAt)) {
@@ -284,6 +324,7 @@ Shade sceneOrbit(vec2 uv, vec2 cell, float t) {
       float shadow = planetRingBands(shadowAt, ringBands, tm, foot, band);
       o.ink *= 1.0 - 0.75 * min(shadow * 1.3, 1.0);
     }
+#endif
     // Rings in front of the planet's surface cover it; rings behind it are hidden.
     if (ring > 0.0 && ringZ < normal.z) ring = 0.0;
   } else {
@@ -293,7 +334,9 @@ Shade sceneOrbit(vec2 uv, vec2 cell, float t) {
     if (ringZ > 0.0) halo *= 1.0 - cover;
     else ring *= 1.0 - 0.8 * min(halo, 1.0);
     // Where the oval meets the horizon its curtains rise into space.
+#if ORBIT_AURORA
     if (K_aurora > 0.0) halo += planetAuroraCurtain(q, d, ORBIT_AURORA_POLE, K_auroraSize, tm, foot) * K_aurora * 1.2;
+#endif
     o.accent += halo * 0.9;
     o.ink *= 1.0 - min(halo, 1.0);
   }
@@ -301,6 +344,7 @@ Shade sceneOrbit(vec2 uv, vec2 cell, float t) {
 
   // Moons on inclined orbits (planetMoon's family about a nearly face-on frame): they cross the sky
   // round the planet, pass in front of and behind the rings, and can cast their shadow onto it.
+#if ORBIT_MOONS
   for (int i = 0; i < 3; i++) {
     if (float(i) >= K_moons) break;
     float fi = float(i);
@@ -319,6 +363,7 @@ Shade sceneOrbit(vec2 uv, vec2 cell, float t) {
       if (ringZ > disc.z) orbitRingOver(o, ring, ringInk);
     }
   }
+#endif
 
   vec2 meteor = orbitCaptured(q, tm, K_captures, foot, ringZ, planetRingOpacity(ring));
   o.ink = max(o.ink, meteor.x);

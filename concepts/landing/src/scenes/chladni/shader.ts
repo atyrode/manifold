@@ -4,6 +4,9 @@
 //   uSim1  the plate's field over the same square: R the figure it comes from, G the one it goes to
 //   uSim2  texel 0: eased crossfade s, norm, swing A, share of the M in the field; texel 1: the
 //          passage (xyz) and the grain's relief (w)
+//   uSim3  powder per texel over the same square, only while the grain is fine enough to hold it
+// A plate fragment reads the sand 35 times (the depth and its slope share their taps, see
+// chladniDepths) and the field once.
 // Knobs read here: K_shape, K_tone, K_sand, K_lamp, K_lampHue, K_shimmer, K_grainSize (its look:
 // the sim reads its physics); the rest drive the sim.
 import { glslFloat, glslPick, glslVec3 } from "../../shaders/glsl.ts";
@@ -154,6 +157,31 @@ float chladniDepth(vec2 st) {
   return sum / 6.0;
 }
 
+// chladniDepth at st and, for the ridge's slope, at st ± g along each axis (g twice the kernel's
+// diagonal offset): each outer kernel's two inner diagonal taps are the middle kernel's own, so the
+// five take 16 taps besides st's own (mid, read once with the dust) rather than 25. Returns the
+// depth at st; sides the depths at st + (g, 0), st - (g, 0), st + (0, g) and st - (0, g).
+float chladniDepths(vec2 st, float g, float mid, out vec4 sides) {
+  float o = 0.8 / CHLADNI_TEXELS;
+  float ne = texture(uSim0, st + vec2(o, o)).r;
+  float nw = texture(uSim0, st + vec2(-o, o)).r;
+  float se = texture(uSim0, st + vec2(o, -o)).r;
+  float sw = texture(uSim0, st + vec2(-o, -o)).r;
+  vec2 e = st + vec2(g, 0.0);
+  vec2 w = st - vec2(g, 0.0);
+  vec2 n = st + vec2(0.0, g);
+  vec2 s = st - vec2(0.0, g);
+  sides.x = (2.0 * texture(uSim0, e).r + texture(uSim0, e + vec2(o, o)).r + ne
+    + texture(uSim0, e + vec2(o, -o)).r + se) / 6.0;
+  sides.y = (2.0 * texture(uSim0, w).r + nw + texture(uSim0, w + vec2(-o, o)).r
+    + sw + texture(uSim0, w + vec2(-o, -o)).r) / 6.0;
+  sides.z = (2.0 * texture(uSim0, n).r + texture(uSim0, n + vec2(o, o)).r
+    + texture(uSim0, n + vec2(-o, o)).r + ne + nw) / 6.0;
+  sides.w = (2.0 * texture(uSim0, s).r + se + sw
+    + texture(uSim0, s + vec2(o, -o)).r + texture(uSim0, s + vec2(-o, -o)).r) / 6.0;
+  return (2.0 * mid + ne + nw + se + sw) / 6.0;
+}
+
 // The height a depth of sand heaps to: it keeps rising where the depth is already great, so a deep
 // ridge stays rounded rather than flat topped.
 float chladniLift(float depth) {
@@ -246,7 +274,11 @@ Shade sceneChladni(vec2 uv, vec2 cell, float t) {
     if (uSimOn.x > 0.5) {
       vec2 st = q * 0.5 + 0.5;
       float tx = 1.0 / CHLADNI_TEXELS;
-      float depth = chladniDepth(st);
+      vec2 c = texture(uSim0, st).rg;
+      // The depth here and, for the slope below, a little way off along each axis.
+      float g = 1.6 * tx;
+      vec4 sides;
+      float depth = chladniDepths(st, g, c.r, sides);
       // The grain's relief (sim): its angle of repose over dry sand's, so grit's ridges stand steeper.
       float relief = uSimOn.z > 0.5 ? stage.w : 1.0;
       // A ridge is where the smoothed depth passes about a grain per texel: a few cells wide, with
@@ -257,13 +289,11 @@ Shade sceneChladni(vec2 uv, vec2 cell, float t) {
       crest = chladniLift(depth);
       // The sand's own surface: its slope from the smoothed depth, lit from the lamp. A flank that
       // faces the lamp falls away toward it.
-      float g = 1.6 * tx;
       vec2 slope = vec2(
-        chladniLift(chladniDepth(st + vec2(g, 0.0))) - chladniLift(chladniDepth(st - vec2(g, 0.0))),
-        chladniLift(chladniDepth(st + vec2(0.0, g))) - chladniLift(chladniDepth(st - vec2(0.0, g)))
+        chladniLift(sides.x) - chladniLift(sides.y),
+        chladniLift(sides.z) - chladniLift(sides.w)
       );
       lamb = clamp(dot(normalize(vec3(-3.0 * relief * slope, 1.0)), CHLADNI_LAMP_DIR), 0.0, 1.0);
-      vec2 c = texture(uSim0, st).rg;
       vec2 e = texture(uSim0, st + vec2(tx, 0.0)).rg;
       vec2 w = texture(uSim0, st - vec2(tx, 0.0)).rg;
       vec2 n = texture(uSim0, st + vec2(0.0, tx)).rg;
@@ -338,6 +368,15 @@ Shade sceneChladni(vec2 uv, vec2 cell, float t) {
     float grainy = max(loose, strewnCell);
     vec3 top = mix(plate, looseSand, grainy);
     top = mix(top, flyingSand, 0.85 * flying);
+    // Powder (the grain knob's fine end, uSim3): the dust the plate's air heaps where it swings
+    // hardest, in pale, soft mounds; each cell holds some once the mound is deep enough for its own
+    // threshold, so their edges fray into single motes.
+    if (uSimOn.w > 0.5) {
+      float motes = texture(uSim3, q * 0.5 + 0.5).r;
+      float dusted = hardEdge(smoothstep(0.2, 2.5, motes), hash12(cell + 41.3)) * (1.0 - body);
+      vec3 pale = chladniSandLit(mix(albedo, vec3(0.92), 0.55), soft, 0.62 + 0.12 * smoothstep(1.0, 6.0, motes));
+      top = mix(top, pale * (0.94 + 0.12 * g1), dusted);
+    }
     top = mix(top, sand, body);
     top += (light * 0.6 + 0.3) * glint;
 

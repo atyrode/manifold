@@ -9,7 +9,8 @@
 // and tilted by `tilt`; the ink texture covers exactly the sheet.
 //
 // Uploads:
-//   uSim0  rg8, HARMONOGRAPH.grid square, in the sheet's frame (row 0 = the sheet's bottom):
+//   uSim0  rg8, HARMONOGRAPH.grid square, in the sheet's frame (row 0 = the sheet's bottom); each
+//          frame sends only the rectangle the pen has inked since the last (InkSheet):
 //          r  the figure's ink 0..1 (coverage; pooled and overlapped ink is deeper)
 //          g  the signature's ink 0..1 (the Manifold M, drawn by hand)
 //   uSim1  rgba16f, 2 texels (positions are splitHalf pairs, decode with unsplitHalf):
@@ -287,20 +288,45 @@ const TEXELS = HARMONOGRAPH.grid / (2 * HARMONOGRAPH.half);
 const NIB_THIN = 1.8;
 const NIB_BOLD = 4.8;
 
-/** The ink the pen has laid on the sheet, two channels (figure, signature). */
+/**
+ * The ink the pen has laid on the sheet, two channels (figure, signature), and the rectangle of
+ * texels changed since it was last uploaded: a frame's strokes touch a few dozen texels of the
+ * sheet's million, and only those go to the GPU.
+ */
 class InkSheet {
   readonly data = new Uint8Array(HARMONOGRAPH.grid * HARMONOGRAPH.grid * 2);
-  dirty = true;
+  /** Changed texels: columns x0..x1 by rows y0..y1, ends excluded (none while x1 <= x0); all at first. */
+  #x0 = 0;
+  #y0 = 0;
+  #x1: number = HARMONOGRAPH.grid;
+  #y1: number = HARMONOGRAPH.grid;
 
   clear(): void {
     this.data.fill(0);
-    this.dirty = true;
+    this.#touch(0, 0, HARMONOGRAPH.grid, HARMONOGRAPH.grid);
   }
 
   /** Wipe the signature channel only. */
   clearSignature(): void {
     for (let i = 1; i < this.data.length; i += 2) this.data[i] = 0;
-    this.dirty = true;
+    this.#touch(0, 0, HARMONOGRAPH.grid, HARMONOGRAPH.grid);
+  }
+
+  /** Send the texels changed since the last call (if any) to `texture`, the sheet's own. */
+  upload(texture: DataTexture): void {
+    if (this.#x1 <= this.#x0) return;
+    texture.uploadRegion(this.data, this.#x0, this.#y0, this.#x1 - this.#x0, this.#y1 - this.#y0);
+    this.#x0 = HARMONOGRAPH.grid;
+    this.#y0 = HARMONOGRAPH.grid;
+    this.#x1 = 0;
+    this.#y1 = 0;
+  }
+
+  #touch(x0: number, y0: number, x1: number, y1: number): void {
+    this.#x0 = Math.min(this.#x0, x0);
+    this.#y0 = Math.min(this.#y0, y0);
+    this.#x1 = Math.max(this.#x1, x1);
+    this.#y1 = Math.max(this.#y1, y1);
   }
 
   /**
@@ -357,7 +383,7 @@ class InkSheet {
         data[at] = Math.round(flat ? v + c * (255 - v) : Math.max(v, c * 255));
       }
     }
-    this.dirty = true;
+    if (minX <= maxX && minY <= maxY) this.#touch(minX, minY, maxX + 1, maxY + 1);
   }
 }
 
@@ -950,12 +976,9 @@ class HarmonographSim implements SceneSim {
 
   // ---- upload ------------------------------------------------------------------------------------
 
-  /** The ink, when it changed, and the pen and the sheet. */
+  /** The ink that changed, and the pen and the sheet. */
   #upload(): void {
-    if (this.#ink.dirty) {
-      this.#inkTexture.upload(this.#ink.data);
-      this.#ink.dirty = false;
-    }
+    this.#ink.upload(this.#inkTexture);
     this.#writeState();
     this.#shown = true;
   }

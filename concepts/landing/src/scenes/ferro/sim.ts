@@ -3,8 +3,12 @@
 // stretches and sloshes when the magnet moves, and draws in and heaps up when the field rises. Over
 // the pool, a field of spike heights follows the magnet's field past the Rosensweig threshold (height
 // growing as a power of the excess, each patch on its own slightly springy oscillator), with a lean
-// that splays the spikes outward along the field lines. The shader (shader.ts) stands the spikes on
-// a hexagonal lattice centred on the magnet and lights the fluid as a black mirror in a studio.
+// that splays the spikes outward along the field lines. The instability is subcritical (Gollwitzer,
+// Matthies, Richter, Rehberg & Tobiska, arXiv:nlin/0604009): a patch's spikes jump up to a finite
+// height once the field passes the threshold and, once up, hold until it falls a little below it (a
+// latch per texel), so the crown pops up late as the field rises and lingers as it falls, then drops.
+// The shader (shader.ts) stands the spikes on a hexagonal lattice centred on the magnet and lights the
+// fluid as a black mirror in a studio.
 //
 // The passage (FERRO_PASSAGE): the magnet's field is gated. Coming in, the pool lies flat with no
 // spikes and the field comes on from the strength where the crown begins, so the crown rises from
@@ -114,8 +118,22 @@ const MAGNET_DEPTH = 0.56;
 const THRESHOLD = 0.35;
 const ONSET = 0.6;
 const EXCESS_CAP = 1.6;
-/** Between breaths the field rests at this share of its peak: a heaped pool, below the threshold. */
-const BREATH_FLOOR = 0.28;
+/**
+ * The subcritical latch: spikes once up stand until the field falls to LOWER of the threshold,
+ * HYSTERESIS below it in units of the excess. Heights go as the excess^ONSET, an amplitude² far past
+ * the threshold; the amplitude equation's upper branch, εa + ga² − a³ = 0 with ε the excess, is
+ * a = √Δ + √(Δ + ε) for Δ = g²/4 = HYSTERESIS: 2√Δ at the threshold (JUMP = 4Δ, squared), the height
+ * the spikes stand up to at once, and √Δ at the fold (a quarter of JUMP), the height they drop from.
+ */
+const LOWER = 0.9;
+const HYSTERESIS = (THRESHOLD * (1 - LOWER)) / (1 - THRESHOLD);
+const JUMP = 4 * HYSTERESIS;
+/**
+ * Between breaths the field rests here (1 at full strength over the magnet): just under where a
+ * standing crown falls (LOWER of THRESHOLD), so every breath lets the crown fall right back however
+ * strong the magnet, and the field turns slowly near the latch's band.
+ */
+const BREATH_REST = 0.3;
 /** Seconds per breath at the middle speed; the scene opens near the top of a rise. */
 const BREATH_SECONDS = 30;
 const START_PHASE = 0.36;
@@ -175,6 +193,17 @@ function fieldGate(enterSeconds: number, exitSeconds: number, field: number): nu
   const rising = 1 - clamp(enterSeconds / FIELD_ON, 0, 1);
   const falling = clamp(exitSeconds / FERRO_PASSAGE.exit, 0, 1);
   return (1 - (1 - onset) * rising * rising * rising) * (1 - falling * falling);
+}
+
+/**
+ * A standing patch's height, in units of the excess (the spike stands settings.height × this^ONSET):
+ * past the threshold the excess itself, never under the jump it stood up with; under it, down to the
+ * fold, the amplitude equation's upper branch (see LOWER), a² = JUMP·((1 + √(1 + ε/Δ)) / 2)².
+ */
+function standingCrest(excess: number): number {
+  if (excess >= 0) return Math.max(Math.min(excess, EXCESS_CAP), JUMP);
+  const branch = 0.5 + 0.5 * Math.sqrt(Math.max(0, 1 + excess / HYSTERESIS));
+  return JUMP * branch * branch;
 }
 
 /** Xorshift32 stream in [0, 1), seeded from the pour knob. */
@@ -347,6 +376,8 @@ class FerroSim implements SceneSim {
   /** Each texel's spike height and its rate of change. */
   readonly #amp = new Float32Array(FERRO_GRID * FERRO_GRID);
   readonly #vel = new Float32Array(FERRO_GRID * FERRO_GRID);
+  /** Each texel's latch: 1 while its spikes stand (see LOWER); a texel without fluid has none. */
+  readonly #standing = new Uint8Array(FERRO_GRID * FERRO_GRID);
   readonly #blobs: Blob[];
   readonly #magnet: Body = { x: 0, y: 0, vx: 0, vy: 0 };
   #wanderPhase: readonly [number, number, number] = [0, 0, 0];
@@ -443,7 +474,7 @@ class FerroSim implements SceneSim {
     // the passage gates it (1 at rest).
     const breath = breathCurve(this.#phase);
     const breathField = settings.breathing ? (this.#markBreath ? 0 : breath) : 1;
-    const breathing = settings.peak * (BREATH_FLOOR + (1 - BREATH_FLOOR) * breathField);
+    const breathing = settings.peak * breathField + BREATH_REST * (1 - breathField);
     const gate = fieldGate(enterSeconds, exitSeconds, breathing);
     const markTarget = Math.max(this.#markBreath ? breath : 0, episodeShow(this.#episode)) * gate;
     this.#mark = this.#primed ? approach(this.#mark, markTarget, dt, MARK_EASE) : markTarget;
@@ -642,9 +673,9 @@ class FerroSim implements SceneSim {
   }
 
   /**
-   * Every texel: the pool's field φ, the spike height the magnet (or the M) calls for there, the
-   * spring carrying the height toward it, and the lean. Returns the largest φ and height, and how
-   * far the fluid reaches from the middle blob: the shader's bounds on the surface.
+   * Every texel: the pool's field φ, its latch, the spike height the magnet (or the M) calls for
+   * there, the spring carrying the height toward it, and the lean. Returns the largest φ and
+   * height, and how far the fluid reaches from the middle blob: the shader's bounds on the surface.
    */
   #spikes(
     settings: Settings,
@@ -689,6 +720,7 @@ class FerroSim implements SceneSim {
     const c = 2 * (leaving ? SLUMP_DAMPING : SPIKE_DAMPING) * omega;
     const amp = this.#amp;
     const vel = this.#vel;
+    const standing = this.#standing;
     const data = this.#fieldData;
     let phiMax = 0;
     let ampMax = 0;
@@ -718,16 +750,20 @@ class FerroSim implements SceneSim {
         const mx = x - magnet.x;
         const my = y - magnet.y;
         let target = 0;
+        let up = 0;
         if (phi > 1) {
           const q = 1 + (mx * mx + my * my) * invDepth2;
           const excess = (crown / (q * Math.sqrt(q)) - THRESHOLD) / (1 - THRESHOLD);
-          if (excess > 0) target = settings.height * Math.pow(Math.min(excess, EXCESS_CAP), ONSET);
+          // The latch: up once past the threshold, down only under the lower one (see LOWER).
+          up = excess > 0 || (standing[at] === 1 && excess >= -HYSTERESIS) ? 1 : 0;
+          if (up === 1) target = settings.height * Math.pow(standingCrest(excess), ONSET);
           if (markLift > 0) {
             const d = markDistance(x / scale, y / scale) * scale;
             target += markLift * (1 - smoothstep(markCore, markFade, d));
           }
           target *= smoothstep(1.05, 1.45, phi);
         }
+        standing[at] = up;
 
         let a = amp[at] ?? 0;
         let v = vel[at] ?? 0;

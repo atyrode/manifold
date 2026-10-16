@@ -24,7 +24,7 @@ const params: readonly ParamDef[] = [
     true,
     "speed",
     0.5,
-    "The field swells and fades: spikes rise from the middle into a crown, hold, and sink back into a mirror-smooth pool. Off: the field holds and the crown stands.",
+    "The field swells and fades: spikes pop up from the middle into a crown, hold, and sink back into a mirror-smooth pool, lingering a little below the field that raised them before they drop. Off: the field holds and the crown stands.",
   ),
   range(
     "magnet",

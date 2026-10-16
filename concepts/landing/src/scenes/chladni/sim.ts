@@ -36,9 +36,20 @@
 // thrown further and faster. A new grain is a new batch: it is strewn over the plate again and
 // sung into the figure. The shader raises the ridges by the grain's angle of repose (uSim2).
 //
+// Powder. Below POWDER_FROM on the grain knob a share of the batch is powder, dust as fine as
+// lycopodium, which the air the plate stirs (acoustic streaming) sweeps the other way: to where the
+// plate swings hardest, heaping in its cells while the sand draws the lines (Faraday, "On a peculiar
+// class of acoustical figures", 1831: Chladni's figures inverted). A powder grain drifts up the
+// slope of A|u| and rests by the same threshold rule on the swing still above it, A·(U − |u|), U
+// the crest of the antinode its place climbs to on the grid (`fillCrests`), so it settles in a
+// mound round the crest as wide as its own threshold; it keeps off the hub, the bolt the plate is
+// driven through.
+//
 // Clicking pours a pinch of sand at the pointer and dragging pours a trail; the grains are taken up
 // at random from the plate, so the amount of sand stays as set. The grains are splatted into a
-// density field (cloud-in-cell) and uploaded only when something moved: settled sand costs nothing.
+// density field (cloud-in-cell), and only the texels it changed since the last frame are uploaded
+// (a rectangle per band of rows, `ChangedBands`): settled sand costs nothing, a few dancing grains
+// cost their own corner of the plate.
 //
 // The passage. A sim built while the scene comes in plays its entrance in place of settling the
 // opening figure: sand is poured evenly over the still plate (grains land in a front sweeping down
@@ -55,6 +66,8 @@
 //   uSim2  rgba16f 2×1, nearest. Texel 0: eased crossfade s, norm, swing A, share of the M in the field.
 //          Texel 1: the passage: the strewn veil (0 at rest), the plate's tilt, the veil's gain; and
 //          the grain's relief, its angle of repose's tangent over dry sand's (1 for dry sand).
+//   uSim3  r16f CHLADNI_SAND_TEXELS² as uSim0: powder grains per texel, eased the same way; handed
+//          over only while the grain is fine enough to hold powder.
 import { KnobReader, type ParamDef } from "../../params.ts";
 import { markVertex, segmentDistance } from "../../mark.ts";
 import { runBudgeted } from "../../sims/clock.ts";
@@ -134,6 +147,24 @@ const SHED_HEAP = 4;
 const SHED_DRAWS = 4;
 /** The same on the way into the M, much more: its strokes are few and far apart, and must be fed evenly. */
 const MARK_SHED = 0.6;
+/**
+ * Powder (see the header): below grain size POWDER_FROM a share of the batch is powder, rising as
+ * the square of the way to the knob's end, where it is POWDER_SHARE (chladniPowderShare).
+ * POWDER_SALT seeds the hash that picks which grains it is. The hub's drive keeps it off the hub
+ * as it keeps the sand.
+ */
+const POWDER_FROM = 0.15;
+const POWDER_SHARE = 0.35;
+const POWDER_SALT = 0x70d3;
+
+/** The share of a batch of grain `grainSize` (the knob, 0..1) that is powder. */
+export function chladniPowderShare(grainSize: number): number {
+  const fine = Math.max(0, 1 - grainSize / POWDER_FROM);
+  return POWDER_SHARE * fine * fine;
+}
+
+/** Rows of the sand field per band: each band uploads the rectangle its changed texels span. */
+const BAND_ROWS = 16;
 
 // The sweep.
 /** The figure seed 0 opens on (a ring on a cross, or eight spokes and a ring); other seeds count on from it. */
@@ -435,6 +466,121 @@ function fillFigure(out: Float32Array, figure: Figure, turn: number, round: bool
   for (let k = 0; k < out.length; k++) out[k] = (out[k] ?? 0) * scale;
 }
 
+/**
+ * Each grid node's crest: the |u| of the summit that steepest ascent over the grid (eight
+ * neighbours) climbs to from it, the antinode whose cell holds the node (powder heaps there; see the
+ * header). On the round plate the climb stays on the disc. `next` is scratch, MODE_SIZE long.
+ */
+function fillCrests(
+  field: Float32Array,
+  out: Float32Array,
+  next: Int32Array,
+  round: boolean,
+): void {
+  for (let j = 0; j < MODE_NODES; j++) {
+    for (let i = 0; i < MODE_NODES; i++) {
+      const k = j * MODE_NODES + i;
+      let best = k;
+      let top = Math.abs(field[k] ?? 0);
+      for (let dj = -1; dj <= 1; dj++) {
+        const jj = j + dj;
+        if (jj < 0 || jj >= MODE_NODES) continue;
+        for (let di = -1; di <= 1; di++) {
+          const ii = i + di;
+          const n = jj * MODE_NODES + ii;
+          if (ii < 0 || ii >= MODE_NODES || n === k || (round && (NODE_RADIUS[n] ?? 0) > 1))
+            continue;
+          const v = Math.abs(field[n] ?? 0);
+          if (v > top) {
+            top = v;
+            best = n;
+          }
+        }
+      }
+      next[k] = best;
+    }
+  }
+  // Every climb rises strictly, so each ends at a summit; shorten the paths as they are walked.
+  for (let k = 0; k < MODE_SIZE; k++) {
+    let summit = k;
+    while (next[summit] !== summit) summit = next[summit] ?? summit;
+    out[k] = Math.abs(field[summit] ?? 0);
+    for (let at = k; at !== summit;) {
+      const up = next[at] ?? summit;
+      next[at] = summit;
+      at = up;
+    }
+  }
+}
+
+/**
+ * The texels of a sand-sized field (CHLADNI_SAND_TEXELS square) that changed since it was last
+ * uploaded: per band of BAND_ROWS rows, the rectangle they span, so a few grains dancing in one
+ * corner never send the rest of the plate. Every texel at first: a texture never uploaded holds
+ * nothing yet.
+ */
+class ChangedBands {
+  readonly #x0 = new Int32Array(CHLADNI_SAND_TEXELS / BAND_ROWS);
+  readonly #x1 = new Int32Array(CHLADNI_SAND_TEXELS / BAND_ROWS).fill(CHLADNI_SAND_TEXELS - 1);
+  readonly #y0 = Int32Array.from(this.#x0, (_, band) => band * BAND_ROWS);
+  readonly #y1 = Int32Array.from(this.#x0, (_, band) => (band + 1) * BAND_ROWS - 1);
+
+  /** Texel (x, y) changed. */
+  mark(x: number, y: number): void {
+    const band = (y / BAND_ROWS) | 0;
+    if (x < (this.#x0[band] ?? 0)) this.#x0[band] = x;
+    if (x > (this.#x1[band] ?? 0)) this.#x1[band] = x;
+    if (y < (this.#y0[band] ?? 0)) this.#y0[band] = y;
+    if (y > (this.#y1[band] ?? 0)) this.#y1[band] = y;
+  }
+
+  /** Send each band's changed rectangle of `data` (the whole field) to `texture`, and forget them. */
+  upload(texture: DataTexture, data: Float32Array): void {
+    for (let band = 0; band < this.#x0.length; band++) {
+      const x0 = this.#x0[band] ?? 0;
+      const x1 = this.#x1[band] ?? -1;
+      const y0 = this.#y0[band] ?? 0;
+      const y1 = this.#y1[band] ?? -1;
+      if (x1 < x0) continue;
+      texture.uploadRegion(data, x0, y0, x1 - x0 + 1, y1 - y0 + 1);
+      this.#x0[band] = CHLADNI_SAND_TEXELS;
+      this.#x1[band] = -1;
+      this.#y0[band] = CHLADNI_SAND_TEXELS;
+      this.#y1[band] = -1;
+    }
+  }
+}
+
+/**
+ * Ease the shown field toward the grains' (`channels` a texel), keeping `keep` of each gap, and
+ * done once within a hair of them; marks the texels it changed. Whether any still eases.
+ */
+function ease(
+  shown: Float32Array,
+  target: Float32Array,
+  channels: number,
+  keep: number,
+  changed: ChangedBands,
+): boolean {
+  let easing = false;
+  for (let k = 0; k < shown.length; k++) {
+    const was = shown[k] ?? 0;
+    const goal = target[k] ?? 0;
+    const gap = (was - goal) * keep;
+    if (gap > 0.01 || gap < -0.01) {
+      shown[k] = goal + gap;
+      easing = true;
+    } else {
+      shown[k] = goal;
+    }
+    if (shown[k] !== was) {
+      const texel = (k / channels) | 0;
+      changed.mark(texel % CHLADNI_SAND_TEXELS, (texel / CHLADNI_SAND_TEXELS) | 0);
+    }
+  }
+  return easing;
+}
+
 // ---- the simulation ------------------------------------------------------------------------------
 
 type ChladniKnob = "shape" | "sweep" | "vibration" | "plateSeed" | "grains" | "grainSize" | "mark";
@@ -444,12 +590,21 @@ class ChladniSim implements SceneSim {
   readonly #sweepTrigger: number;
   readonly #markTrigger: number;
   readonly #textures: readonly (WebGLTexture | undefined)[];
+  /** The same with the powder's texture in slot 3, while the batch holds powder. */
+  readonly #powderedTextures: readonly (WebGLTexture | undefined)[];
   readonly #sandTexture: DataTexture;
   readonly #modeTexture: DataTexture;
   readonly #stateTexture: DataTexture;
+  readonly #powderTexture: DataTexture;
   /** Where the grains are (rg per texel, see the header), and the field as shown, easing toward it. */
   readonly #sand = new Float32Array(CHLADNI_SAND_TEXELS * CHLADNI_SAND_TEXELS * 2);
   readonly #shown = new Float32Array(CHLADNI_SAND_TEXELS * CHLADNI_SAND_TEXELS * 2);
+  /** The same for the powder (one channel). */
+  readonly #powder = new Float32Array(CHLADNI_SAND_TEXELS * CHLADNI_SAND_TEXELS);
+  readonly #shownPowder = new Float32Array(CHLADNI_SAND_TEXELS * CHLADNI_SAND_TEXELS);
+  /** The shown fields' texels changed since they were last uploaded. */
+  readonly #shownChanged = new ChangedBands();
+  readonly #powderChanged = new ChangedBands();
   readonly #modes = new Float32Array(MODE_SIZE * 2);
   /** Texel 0: crossfade, norm, swing, M share. Texel 1: the strewn veil, the plate's tilt, the veil's gain, the grain's relief. */
   readonly #state = new Float32Array(8);
@@ -468,6 +623,9 @@ class ChladniSim implements SceneSim {
   /** 0 at rest, up to 1 on the move. */
   readonly #airborne = new Float32Array(MAX_GRAINS);
   #count = 0;
+  /** Which grains of the batch are powder (1), and the share that is (0 from POWDER_FROM up). */
+  readonly #isPowder = new Uint8Array(MAX_GRAINS);
+  #powderShare = 0;
 
   // The field: the figure the plate comes from and the one it goes to, crossfaded by #mix.
   #from = new Float32Array(MODE_SIZE);
@@ -482,6 +640,12 @@ class ChladniSim implements SceneSim {
   #held = 0;
   #holdSeconds = 0;
   #moveSeconds = 0;
+  /** Each figure's crests (fillCrests), for the powder; worked out only once powder needs them. */
+  #crestFrom = new Float32Array(MODE_SIZE);
+  #crestTo = new Float32Array(MODE_SIZE);
+  #crestFromStale = true;
+  #crestToStale = true;
+  readonly #climb = new Int32Array(MODE_SIZE);
 
   // The sweep through the shape's figures.
   #figures: readonly Figure[] = SQUARE_FIGURES;
@@ -513,6 +677,9 @@ class ChladniSim implements SceneSim {
   /** The shown field has not caught up with the grains yet; `#snap` shows them as they are at once. */
   #easing = false;
   #snap = true;
+  /** The powder's shown field is still easing out; the powder field may hold grains (to clear). */
+  #powderEasing = false;
+  #powderHeld = false;
   #modesDirty = true;
 
   // The scene's passage (see the header). All off, and `#pace` 1, once the entrance is over (or never was).
@@ -559,11 +726,17 @@ class ChladniSim implements SceneSim {
       format: "rgba16f",
       filter: "nearest",
     });
+    this.#powderTexture = new DataTexture(gl, {
+      width: CHLADNI_SAND_TEXELS,
+      height: CHLADNI_SAND_TEXELS,
+      format: "r16f",
+    });
     this.#textures = [
       this.#sandTexture.texture,
       this.#modeTexture.texture,
       this.#stateTexture.texture,
     ];
+    this.#powderedTextures = [...this.#textures, this.#powderTexture.texture];
   }
 
   frame(frame: SimFrame): readonly (WebGLTexture | undefined)[] {
@@ -656,9 +829,16 @@ class ChladniSim implements SceneSim {
     }
     if (this.#easing) {
       const memory = this.#arriving || this.#sliding ? PASSAGE_MEMORY : SHOWN_MEMORY;
-      this.#ease(this.#snap || dt <= 0 ? 0 : Math.exp(-dt / memory));
+      const keep = this.#snap || dt <= 0 ? 0 : Math.exp(-dt / memory);
       this.#snap = false;
-      this.#sandTexture.upload(this.#shown);
+      this.#easing = ease(this.#shown, this.#sand, 2, keep, this.#shownChanged);
+      this.#shownChanged.upload(this.#sandTexture, this.#shown);
+      // The powder's field, while it holds any or still eases out.
+      if (this.#powderShare > 0 || this.#powderEasing) {
+        this.#powderEasing = ease(this.#shownPowder, this.#powder, 1, keep, this.#powderChanged);
+        this.#easing ||= this.#powderEasing;
+        this.#powderChanged.upload(this.#powderTexture, this.#shownPowder);
+      }
     }
     if (this.#modesDirty) {
       const modes = this.#modes;
@@ -689,13 +869,14 @@ class ChladniSim implements SceneSim {
     state[6] = (STREW_REFERENCE / this.#count) * (this.#round ? 4 / Math.PI : 1);
     state[7] = this.#grain.talus / SAND.talus;
     this.#stateTexture.upload(state);
-    return this.#textures;
+    return this.#powderShare > 0 ? this.#powderedTextures : this.#textures;
   }
 
   dispose(): void {
     this.#sandTexture.dispose();
     this.#modeTexture.dispose();
     this.#stateTexture.dispose();
+    this.#powderTexture.dispose();
   }
 
   /** A fresh plate for a new seed: sand strewn evenly, then settled into the sweep's first figure. */
@@ -721,6 +902,7 @@ class ChladniSim implements SceneSim {
     this.#markQueued = false;
     this.#urgent = 0;
     fillFigure(this.#from, this.#figures[this.#index] ?? MARK, plan.next() * TAU, round);
+    this.#crestFromStale = true;
     this.#fromMark = 0;
     this.#toMark = 0;
     this.#moving = false;
@@ -736,11 +918,20 @@ class ChladniSim implements SceneSim {
     if (this.#arriving) this.#beginArrival();
   }
 
-  /** Each grain's threshold from its draw, for the grain the plate is strewn with (see THRESHOLD_MAX). */
+  /**
+   * Each grain's threshold from its draw, for the grain the plate is strewn with (see
+   * THRESHOLD_MAX), and which of them are powder (see POWDER_FROM).
+   */
   #grade(): void {
     const { grip, spread } = this.#grain;
     for (let i = 0; i < MAX_GRAINS; i++)
       this.#threshold[i] = THRESHOLD_MAX * grip * Math.pow(this.#draw[i] ?? 0, spread);
+    const share = chladniPowderShare(this.#grainSize);
+    this.#powderShare = share;
+    if (share === 0) this.#isPowder.fill(0);
+    else
+      for (let i = 0; i < MAX_GRAINS; i++)
+        this.#isPowder[i] = hash31(i, 0, POWDER_SALT) < share ? 1 : 0;
   }
 
   /**
@@ -889,6 +1080,8 @@ class ChladniSim implements SceneSim {
     }
     this.#index = Math.min(this.#figures.length - 1, this.#index);
     this.#direction = 1;
+    // The powder's crests climb over the other plate now.
+    this.#crestFromStale = true;
     this.#moveTo(this.#figures[this.#index] ?? MARK, true);
     this.#sandDirty = true;
   }
@@ -919,9 +1112,11 @@ class ChladniSim implements SceneSim {
       const to = this.#to;
       for (let k = 0; k < MODE_SIZE; k++) from[k] = a * (from[k] ?? 0) + b * (to[k] ?? 0);
       this.#fromMark = this.#fromMark * (1 - s) + this.#toMark * s;
+      this.#crestFromStale = true;
     }
     // Each visit turns a round figure anew.
     fillFigure(this.#to, figure, this.#plan.next() * TAU, this.#round);
+    this.#crestToStale = true;
     this.#toMark = figure.kind === "mark" ? 1 : 0;
     this.#correlation = plateMean(this.#from, this.#to, this.#round) / 0.25;
     this.#moving = true;
@@ -955,6 +1150,11 @@ class ChladniSim implements SceneSim {
       const from = this.#from;
       this.#from = this.#to;
       this.#to = from;
+      const crest = this.#crestFrom;
+      this.#crestFrom = this.#crestTo;
+      this.#crestTo = crest;
+      this.#crestFromStale = this.#crestToStale;
+      this.#crestToStale = true;
       this.#fromMark = this.#toMark;
       this.#moving = false;
       this.#mix = 0;
@@ -964,11 +1164,28 @@ class ChladniSim implements SceneSim {
     }
   }
 
+  /** The crests the powder climbs toward (fillCrests), worked out again where the field changed. */
+  #freshCrests(): void {
+    if (this.#crestFromStale) {
+      fillCrests(this.#from, this.#crestFrom, this.#climb, this.#round);
+      this.#crestFromStale = false;
+    }
+    if (this.#moving && this.#crestToStale) {
+      fillCrests(this.#to, this.#crestTo, this.#climb, this.#round);
+      this.#crestToStale = false;
+    }
+  }
+
   /**
    * Step the grains on the plate by dt (see the header); `still` skips grains at rest because the
    * field has not changed since they settled. Returns how many grains moved or came to rest.
    */
   #advance(dt: number, dance: number, still: boolean): number {
+    const powdered = this.#powderShare > 0;
+    if (powdered) this.#freshCrests();
+    const isPowder = this.#isPowder;
+    const crestFrom = this.#crestFrom;
+    const crestTo = this.#crestTo;
     const count = this.#count;
     const xs = this.#x;
     const ys = this.#y;
@@ -1023,6 +1240,24 @@ class ChladniSim implements SceneSim {
       let level = u * side;
       let sx = ((u10 - u00) * (1 - ty) + (u11 - u01) * ty) * scale * side;
       let sy = ((u01 - u00) * (1 - tx) + (u11 - u10) * tx) * scale * side;
+      if (powdered && isPowder[i] === 1) {
+        // Powder: the swing still above it up to its antinode's crest, A·(U − |u|), which it
+        // descends (up the swing's slope); the hub's drive below keeps it off the hub as it does sand.
+        let c00 = (crestFrom[k] ?? 0) * wFrom;
+        let c10 = (crestFrom[k + 1] ?? 0) * wFrom;
+        let c01 = (crestFrom[k + MODE_NODES] ?? 0) * wFrom;
+        let c11 = (crestFrom[k + MODE_NODES + 1] ?? 0) * wFrom;
+        if (blend) {
+          c00 += (crestTo[k] ?? 0) * wTo;
+          c10 += (crestTo[k + 1] ?? 0) * wTo;
+          c01 += (crestTo[k + MODE_NODES] ?? 0) * wTo;
+          c11 += (crestTo[k + MODE_NODES + 1] ?? 0) * wTo;
+        }
+        const crest = (c00 + (c10 - c00) * tx) * (1 - ty) + (c01 + (c11 - c01) * tx) * ty;
+        level = amp * crest - level;
+        sx = -sx;
+        sy = -sy;
+      }
       const r2 = x * x + y * y;
       if (r2 < driveReach) {
         const hub = drive * Math.exp(-r2 * driveFall);
@@ -1133,28 +1368,20 @@ class ChladniSim implements SceneSim {
     }
   }
 
-  /** Ease the shown field toward the grains, keeping `keep` of the difference; done once within a hair of them. */
-  #ease(keep: number): void {
-    const shown = this.#shown;
-    const sand = this.#sand;
-    let easing = false;
-    for (let k = 0; k < shown.length; k++) {
-      const target = sand[k] ?? 0;
-      const gap = ((shown[k] ?? 0) - target) * keep;
-      if (gap > 0.01 || gap < -0.01) {
-        shown[k] = target + gap;
-        easing = true;
-      } else {
-        shown[k] = target;
-      }
-    }
-    this.#easing = easing;
-  }
-
-  /** Cloud-in-cell: each grain shares itself bilinearly among the four nearest texels. */
+  /**
+   * Cloud-in-cell: each grain shares itself bilinearly among the four nearest texels, sand at rest
+   * and on the move apart, powder (resting or not) in a field of its own.
+   */
   #splat(): void {
     const field = this.#sand;
     field.fill(0);
+    const powdered = this.#powderShare > 0;
+    // A batch with no powder after one with some: the shown powder eases out (see `frame`).
+    if (powdered || this.#powderHeld) this.#powder.fill(0);
+    if (!powdered && this.#powderHeld) this.#powderEasing = true;
+    this.#powderHeld = powdered;
+    const powder = this.#powder;
+    const isPowder = this.#isPowder;
     const size = CHLADNI_SAND_TEXELS;
     const half = size / 2;
     const last = size - 2;
@@ -1175,14 +1402,22 @@ class ChladniSim implements SceneSim {
       const j0 = Math.min(last, Math.max(0, Math.floor(gy)));
       const ax = Math.min(1, Math.max(0, gx - i0));
       const ay = Math.min(1, Math.max(0, gy - j0));
-      const flying = airborne[i] ?? 0;
-      const resting = 1 - flying;
-      const k = (j0 * size + i0) * 2;
-      const up = size * 2;
       const w00 = (1 - ax) * (1 - ay);
       const w10 = ax * (1 - ay);
       const w01 = (1 - ax) * ay;
       const w11 = ax * ay;
+      if (powdered && isPowder[i] === 1) {
+        const p = j0 * size + i0;
+        powder[p] = (powder[p] ?? 0) + w00;
+        powder[p + 1] = (powder[p + 1] ?? 0) + w10;
+        powder[p + size] = (powder[p + size] ?? 0) + w01;
+        powder[p + size + 1] = (powder[p + size + 1] ?? 0) + w11;
+        continue;
+      }
+      const flying = airborne[i] ?? 0;
+      const resting = 1 - flying;
+      const k = (j0 * size + i0) * 2;
+      const up = size * 2;
       field[k] = (field[k] ?? 0) + w00 * resting;
       field[k + 1] = (field[k + 1] ?? 0) + w00 * flying;
       field[k + 2] = (field[k + 2] ?? 0) + w10 * resting;

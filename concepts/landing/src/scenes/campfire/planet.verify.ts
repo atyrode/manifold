@@ -268,9 +268,10 @@ export function verifyPlanet(gl: WebGL2RenderingContext): Record<string, unknown
     shown[name] = changed;
   }
 
-  // The third moon orbits edge-on through the planet's centre (campfire's ring plane, 0.032 rad/s
-  // from phase 3, 1.56 radii out): at 53.5 s it crosses in front of the disc's centre, at 151.7 s
-  // behind it. Eclipses off, so only the moon itself can differ between two and three moons.
+  // The third moon orbits edge-on through the planet's centre (campfire's ring plane, from phase 3,
+  // 1.56 radii out, at Kepler's 0.06·(1.2 / 1.56)^1.5 = 0.0405 rad/s): at 42.3 s it crosses in
+  // front of the disc's centre, at 119.9 s behind it. Eclipses off, so only the moon itself can
+  // differ between two and three moons.
   const moons = (count: number) => ({
     planetMoons: 1,
     "planetMoons-amount": count,
@@ -286,8 +287,8 @@ export function verifyPlanet(gl: WebGL2RenderingContext): Record<string, unknown
     }
     return changed;
   };
-  const transit = changedPixels(render(moons(3), 53.5), render(moons(2), 53.5), true);
-  const hidden = changedPixels(render(moons(3), 151.7), render(moons(2), 151.7), false);
+  const transit = changedPixels(render(moons(3), 42.3), render(moons(2), 42.3), true);
+  const hidden = changedPixels(render(moons(3), 119.9), render(moons(2), 119.9), false);
   check(
     transit >= 6,
     `A moon crossing in front of Campfire's planet was not drawn over it: ${transit} pixels`,

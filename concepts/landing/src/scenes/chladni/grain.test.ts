@@ -1,7 +1,10 @@
 import { expect, test } from "bun:test";
 import { HeadlessSim, type HeadlessFrame } from "../../sims/headless.ts";
 import { chladniScene } from "./index.ts";
-import { CHLADNI_SAND_TEXELS } from "./sim.ts";
+import { CHLADNI_SAND_TEXELS, chladniPowderShare } from "./sim.ts";
+
+/** Grains for a plate of the finest grain holding the default plate's sand (the rest is powder). */
+const FINE_GRAINS = Math.round(25000 / (1 - chladniPowderShare(0)));
 
 interface Sand {
   /** Texels holding at least a grain at rest: how wide the lines lie. */
@@ -21,14 +24,14 @@ interface Sand {
  * run `seconds` at motion 0 with the clock running, as a user dragging the knob on a still lab. Read
  * on the headless stand-in: the sim's real output, without a GPU.
  */
-function plate(grainSize: number, next?: number, seconds = 0): Sand {
+function plate(grainSize: number, next?: number, seconds = 0, grains = 25000): Sand {
   const sim = new HeadlessSim(chladniScene);
   const frame: HeadlessFrame = {
     dt: 0,
     motion: 0,
     aspect: 16 / 9,
     height: 360,
-    knobs: { grainSize },
+    knobs: { grainSize, grains },
     pointer: { inside: false },
   };
   // Paused frames finish the (time-budgeted) settling of the opening figure: a slow machine takes more.
@@ -36,7 +39,7 @@ function plate(grainSize: number, next?: number, seconds = 0): Sand {
   while (!sim.uploaded(0)) sim.step(frame);
   if (next !== undefined) {
     for (let t = 0; t < seconds; t += 0.05)
-      sim.step({ ...frame, dt: 0.05, knobs: { grainSize: next } });
+      sim.step({ ...frame, dt: 0.05, knobs: { grainSize: next, grains } });
   }
   const sand = sim.upload(0).data;
   const state = sim.upload(2).data;
@@ -57,10 +60,11 @@ function plate(grainSize: number, next?: number, seconds = 0): Sand {
 }
 
 test("finer sand settles into thinner, denser lines; grit into broad bands with a loose halo", () => {
-  const fine = plate(0);
+  const fine = plate(0, undefined, 0, FINE_GRAINS);
   const sand = plate(0.5);
   const grit = plate(1);
-  // Measured at the default seed: occupied 5761 / 7203 / 8653, peak 28.9 / 24.1 / 13.1, halo 3.3% / 6.0% / 10.5%.
+  // Measured at the default seed, the fine plate holding as much sand as the others: occupied
+  // 5755 / 7203 / 8653, peak 31.0 / 24.1 / 13.1, halo 3.4% / 6.0% / 10.5%.
   expect(fine.occupied).toBeLessThan(0.9 * sand.occupied);
   expect(grit.occupied).toBeGreaterThan(1.1 * sand.occupied);
   expect(fine.peak).toBeGreaterThan(sand.peak);
@@ -76,8 +80,8 @@ test("finer sand settles into thinner, denser lines; grit into broad bands with 
 test("a new grain is strewn and sung into the figure even with motion off, grit arriving first", () => {
   const fineSoon = plate(0.5, 0, 3);
   const gritSoon = plate(0.5, 1, 3);
-  // Three seconds in, fine sand is still creeping in (measured 11225 grains moving) while grit has
-  // mostly arrived (3052).
+  // Three seconds in, fine sand is still creeping in (measured 7175 grains moving, the rest of the
+  // batch powder) while grit has mostly arrived (3052).
   expect(fineSoon.moving).toBeGreaterThan(2 * gritSoon.moving);
   expect(gritSoon.moving).toBeGreaterThan(250);
   // Twelve seconds in both have gathered into their lines, as wide as a plate built with that grain.

@@ -1,15 +1,16 @@
 // Scene simulations outside the renderer, the one harness for sim regressions. `HeadlessGl` is a
 // stand-in WebGL2 context for `bun test` (or a browser check that wants a sim's data rather than its
 // picture): it takes the texture calls a sim makes through DataTexture (texture.ts), or the same
-// calls by hand, and keeps each texture's size and last data upload, so a test reads back exactly
-// what the shader would sample. It draws nothing: any other member (GpuCompute's, a program's)
+// calls by hand, and keeps each texture's size and its data as uploaded (a whole upload replaces
+// it, a sub-rectangle, `uploadRegion`, lands in it), so a test reads back exactly what the shader
+// would sample. It draws nothing: any other member (GpuCompute's, a program's)
 // throws HeadlessError naming it. `HeadlessSim` drives a registered scene's real sim frame by frame,
 // on a HeadlessGl or on a real context, each frame built the way the renderer builds it.
 //
 //   new HeadlessGl()              `.gl`, the context to build a sim on
-//     upload(texture)             { width, height, data }: the texture's size and a copy of its last
-//                                 upload, the same array until the next one; throws HeadlessError for
-//                                 no texture, or one never uploaded from data
+//     upload(texture)             { width, height, data }: the texture's size and a copy of its data
+//                                 as uploaded, the same array until the next upload; throws
+//                                 HeadlessError for no texture, or one never uploaded from data
 //   new HeadlessSim(scene, gl?)   the scene's sim on a fresh HeadlessGl, unless a real context is given
 //     frame(frame?)               one frame: the textures the sim returns, in slot order (uSim0..uSim3)
 //     step(frame?)                the same frame, on the HeadlessGl; returns the HeadlessSim
@@ -57,11 +58,15 @@ class HeadlessTexture {
   width = 0;
   height = 0;
   data: Float32Array | Uint8Array | undefined;
+  /** `data` has been handed out (`upload`): the next sub-rectangle writes into a copy, not into it. */
+  shared = false;
 }
 
 export class HeadlessGl {
   readonly gl: WebGL2RenderingContext;
   #bound: HeadlessTexture | undefined;
+  /** UNPACK_ROW_LENGTH: texels between the starts of two rows of a sub-rectangle's source (0: its width). */
+  #rowLength = 0;
 
   constructor() {
     const context: Record<string, unknown> = {
@@ -75,6 +80,7 @@ export class HeadlessGl {
       CLAMP_TO_EDGE: 0x812f,
       REPEAT: 0x2901,
       UNPACK_ALIGNMENT: 0x0cf5,
+      UNPACK_ROW_LENGTH: 0x0cf2,
       UNPACK_FLIP_Y_WEBGL: 0x9240,
       UNSIGNED_BYTE: 0x1401,
       FLOAT: 0x1406,
@@ -94,7 +100,9 @@ export class HeadlessGl {
       },
       deleteTexture: (): void => undefined,
       texParameteri: (): void => undefined,
-      pixelStorei: (): void => undefined,
+      pixelStorei: (name: number, value: number): void => {
+        if (name === 0x0cf2) this.#rowLength = value;
+      },
       // (target, level, internal, width, height, border, format, type, pixels), or from an image
       // (target, level, internal, format, type, source): its size is kept, its pixels are not.
       texImage2D: (...args: unknown[]): void => {
@@ -108,7 +116,12 @@ export class HeadlessGl {
           pixels instanceof Float32Array || pixels instanceof Uint8Array
             ? pixels.slice()
             : undefined;
+        texture.shared = false;
       },
+      // (target, level, x, y, width, height, format, type, data, srcOffset?): the whole texture
+      // replaces the kept copy; a sub-rectangle lands in it (on zeros if the texture had none, as
+      // texImage2D(null) leaves it), its rows read from srcOffset UNPACK_ROW_LENGTH texels apart. A
+      // copy already handed out stays as it was: the first sub-rectangle after that writes a new one.
       texSubImage2D: (
         _target: number,
         _level: number,
@@ -116,14 +129,48 @@ export class HeadlessGl {
         y: number,
         width: number,
         height: number,
-        _format: number,
+        format: number,
         _type: number,
         data: Float32Array | Uint8Array,
+        srcOffset = 0,
       ): void => {
         const texture = this.#texture();
-        if (x !== 0 || y !== 0 || width !== texture.width || height !== texture.height)
-          throw new HeadlessError("headless: only whole-texture uploads are kept");
-        texture.data = data.slice();
+        const channels = format === 0x1903 ? 1 : format === 0x8227 ? 2 : 4;
+        const stride = (this.#rowLength > 0 ? this.#rowLength : width) * channels;
+        if (
+          x < 0 ||
+          y < 0 ||
+          x + width > texture.width ||
+          y + height > texture.height ||
+          srcOffset + (height - 1) * stride + width * channels > data.length
+        )
+          throw new HeadlessError("headless: texSubImage2D outside the texture or its data");
+        const whole = width === texture.width && height === texture.height;
+        const shared = texture.shared;
+        texture.shared = false;
+        if (whole && srcOffset === 0 && stride === width * channels) {
+          texture.data = data.slice();
+          return;
+        }
+        const size = texture.width * texture.height * channels;
+        const kept =
+          texture.data === undefined
+            ? data instanceof Float32Array
+              ? new Float32Array(size)
+              : new Uint8Array(size)
+            : shared
+              ? texture.data.slice()
+              : texture.data;
+        if (kept.length !== size)
+          throw new HeadlessError("headless: a sub-rectangle in another format than the texture's");
+        for (let row = 0; row < height; row++) {
+          const from = srcOffset + row * stride;
+          kept.set(
+            data.subarray(from, from + width * channels),
+            ((y + row) * texture.width + x) * channels,
+          );
+        }
+        texture.data = kept;
       },
     };
     // DataTexture's surface and nothing more: any other member throws rather than quietly misleads.
@@ -136,10 +183,11 @@ export class HeadlessGl {
     }) as unknown as WebGL2RenderingContext;
   }
 
-  /** The texture's size and its last upload (a copy); throws if there is none. */
+  /** The texture's size and its data as uploaded (a copy); throws if there is none. */
   upload(texture: WebGLTexture | undefined): HeadlessUpload {
     if (!(texture instanceof HeadlessTexture) || texture.data === undefined)
       throw new HeadlessError("headless: that texture has not been uploaded");
+    texture.shared = true;
     return { width: texture.width, height: texture.height, data: texture.data };
   }
 

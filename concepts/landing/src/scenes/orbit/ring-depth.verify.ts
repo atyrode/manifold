@@ -1,7 +1,8 @@
 // GPU regression for Orbit's depth order (#1082 R01): ring material nearer the eye than a moon or a
 // captured meteor covers it, and ring material behind a moon never does. It renders the real scene
-// entry with knob combinations and compares them pixel by pixel; registered in verify-browser.ts.
-import { fragmentSourceFor, vertexSource } from "../../shaders/index.ts";
+// entry with knob combinations and compares them pixel by pixel, all through its all-features program
+// (every ORBIT_* gate compiled in, the knobs deciding); registered in verify-browser.ts.
+import { fragmentSourceFor, sceneFeaturesAll, vertexSource } from "../../shaders/index.ts";
 import { defaultsFor, paramDefaults, renderSettings } from "../../state.ts";
 import { orbitScene } from "./index.ts";
 
@@ -36,7 +37,7 @@ function program(gl: WebGL2RenderingContext, fragment: string): WebGLProgram {
 }
 
 export function verifyOrbitRingDepth(gl: WebGL2RenderingContext): Record<string, unknown> {
-  const linked = program(gl, fragmentSourceFor(orbitScene));
+  const linked = program(gl, fragmentSourceFor(orbitScene, sceneFeaturesAll(orbitScene)));
   gl.canvas.width = WIDTH;
   gl.canvas.height = HEIGHT;
   gl.viewport(0, 0, WIDTH, HEIGHT);
@@ -84,20 +85,32 @@ export function verifyOrbitRingDepth(gl: WebGL2RenderingContext): Record<string,
     Array.from({ length: WIDTH * HEIGHT }, (_, pixel) => pixel * 4).filter(test);
 
   // At motion time 281 the inner moon is crossing the near side of the ring, which lies well in
-  // front of it, while the outer (third) moon sits over the far side, well behind it.
+  // front of it; at 222 the outer (third) moon sits over the far side, well behind it.
   const moons = (count: number) => ({
     moons: count > 0 ? 1 : 0,
     "moons-amount": Math.max(count, 1),
   });
-  const bare = draw({ ring: 0, ...moons(0) }, 281);
-  const inner = draw({ ring: 0, ...moons(1) }, 281);
-  const two = draw({ ring: 0, ...moons(2) }, 281);
-  const three = draw({ ring: 0, ...moons(3) }, 281);
-  const ring = draw({ ring: 1, ...moons(0) }, 281);
-  const both = draw({ ring: 1, ...moons(3) }, 281);
-  const ringed = (index: number) => (ring[index + BLUE] ?? 0) >= (bare[index + BLUE] ?? 0) + 32;
-  const before = pixelsWhere((index) => inner[index + RED] !== bare[index + RED] && ringed(index));
-  const behind = pixelsWhere((index) => three[index + RED] !== two[index + RED] && ringed(index));
+  const NEAR = 281;
+  const FAR = 222;
+  const bare = draw({ ring: 0, ...moons(0) }, NEAR);
+  const inner = draw({ ring: 0, ...moons(1) }, NEAR);
+  const ring = draw({ ring: 1, ...moons(0) }, NEAR);
+  const near = draw({ ring: 1, ...moons(1) }, NEAR);
+  const bareFar = draw({ ring: 0, ...moons(0) }, FAR);
+  const two = draw({ ring: 0, ...moons(2) }, FAR);
+  const three = draw({ ring: 0, ...moons(3) }, FAR);
+  const ringFar = draw({ ring: 1, ...moons(0) }, FAR);
+  const both = draw({ ring: 1, ...moons(3) }, FAR);
+  const before = pixelsWhere(
+    (index) =>
+      inner[index + RED] !== bare[index + RED] &&
+      (ring[index + BLUE] ?? 0) >= (bare[index + BLUE] ?? 0) + 32,
+  );
+  const behind = pixelsWhere(
+    (index) =>
+      three[index + RED] !== two[index + RED] &&
+      (ringFar[index + BLUE] ?? 0) >= (bareFar[index + BLUE] ?? 0) + 32,
+  );
   check(
     before.length >= 3,
     `Fixture lost the inner moon behind the near ring: ${before.length} pixels`,
@@ -114,7 +127,7 @@ export function verifyOrbitRingDepth(gl: WebGL2RenderingContext): Record<string,
   }
   for (const index of before) {
     check(
-      (both[index + RED] ?? 0) < (three[index + RED] ?? 0) && (both[index + BLUE] ?? 0) > 0,
+      (near[index + RED] ?? 0) < (inner[index + RED] ?? 0) && (near[index + BLUE] ?? 0) > 0,
       `Moon showed through the ring in front of it at pixel ${index / 4}`,
     );
   }

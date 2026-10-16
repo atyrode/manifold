@@ -6,6 +6,35 @@ import { planetGroups, planetKnobs } from "../planet.ts";
 import type { SceneDef } from "../types.ts";
 import { ORBIT_PASSAGE, orbitGlsl } from "./shader.ts";
 
+/**
+ * What the knobs compile in (SceneDef.featuresFor): each part whose knob starts off only while it
+ * is on, so the default orbit's program carries none of them: the figures in the stars (the
+ * constellations or the M among them), the aurora, the city lights, the M's lights, the moons and
+ * the ring system. Storms, shooting stars and captured meteors stay in, as a "now" shows them with
+ * their knob off; so do the cloud decks, which the storms flash in.
+ */
+export function orbitFeatures(values: Readonly<Record<string, number>>): Record<string, number> {
+  const on = (key: string): number => ((values[key] ?? 0) > 0 ? 1 : 0);
+  return {
+    ORBIT_FIGURES: Math.max(on("constellations"), on("mark")),
+    ORBIT_AURORA: on("aurora"),
+    ORBIT_LIGHTS: on("lights"),
+    ORBIT_MARK_LIGHTS: on("mlights"),
+    ORBIT_MOONS: on("moons"),
+    ORBIT_RING: on("ring"),
+  };
+}
+
+/** Every part compiled in (SceneDef.featuresAll): the shader's runtime tests of the knobs decide. */
+export const ORBIT_ALL = orbitFeatures({
+  constellations: 1,
+  aurora: 1,
+  lights: 1,
+  mlights: 1,
+  moons: 1,
+  ring: 1,
+});
+
 export const orbitScene: SceneDef = {
   id: "orbit",
   title: "Orbit",
@@ -128,4 +157,6 @@ export const orbitScene: SceneDef = {
   // The camera swings round and the planet slides in from the right and settles while the moons
   // catch up along their orbits; leaving, the camera pulls back and the planet slides off left.
   passage: ORBIT_PASSAGE,
+  featuresFor: orbitFeatures,
+  featuresAll: ORBIT_ALL,
 };

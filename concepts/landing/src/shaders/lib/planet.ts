@@ -303,12 +303,14 @@ float planetRingThin(float rho, out float streak) {
 
 // Moon i (0..2) of the family: its angular rate (radians per second of the motion clock), phase,
 // orbit radius and own radius (planet radii), and its orbit's tilt and roll (as planetOrbit). The
-// orbits lie near the plane 'frame', each inclined a little more off it than the last.
+// orbits lie near the plane 'frame', each inclined a little more off it than the last. The rates
+// follow Kepler's third law (rate ~ distance^-1.5, period^2 ~ distance^3) from the inner moon's 0.06.
 struct PlanetMoon { float rate; float phase; float distance; float size; float tilt; float roll; };
 
 PlanetMoon planetMoon(int i, PlanetRing frame) {
   float fi = float(i);
-  return PlanetMoon(0.06 - 0.014 * fi, 1.2 + fi * 0.9, 1.2 + 0.18 * fi, (0.016 + 0.01 * fi) / 1.12, frame.facing - 0.1 * fi, frame.roll + 0.15 * fi);
+  float distance = 1.2 + 0.18 * fi;
+  return PlanetMoon(0.06 * pow(1.2 / distance, 1.5), 1.2 + fi * 0.9, distance, (0.016 + 0.01 * fi) / 1.12, frame.facing - 0.1 * fi, frame.roll + 0.15 * fi);
 }
 
 // A point on an inclined circular orbit about the centre at 'angle': tilt is the orbit's facing (the
