@@ -221,10 +221,11 @@ The inspector has three views, picked by the icons in its header: Scenes (every 
 shelved by family), Presets (saved setups) and Controls (the scene's groups, then Look, Motion and
 Page); a rail beside each view jumps between its families, preset groups or control groups. The
 scene's name in the header and in the transport bar opens the Scenes view. Controls lay a group out
-from its knobs' metadata, never from scene ids: a switch (toggle or feature) is an icon chip whose
-amount opens under the chips while it is on, and ranges, choices and seeds are rows. A knob names a
-purpose-built widget with `widget` (`Widget` in `src/params.ts`); widgets only change how the lab
-draws the knob, never its URL keys, values, reset, shuffle or presets:
+from its knobs' metadata, never from scene ids: a switch (toggle or feature) is an icon chip (a
+feature's amount on its chip, or under the chips while it is on when it is a choice), and ranges,
+choices and seeds are rows. A knob names a purpose-built widget with `widget` (`Widget` in
+`src/params.ts`); widgets only change how the lab draws the knob, never its URL keys, values,
+reset, shuffle or presets:
 
 - `{ kind: "mix", mix, part, swatch }` on range or feature knobs of one group: one stacked bar of
   relative weights named `mix`, each knob a segment while it is in (country's land use). A range is
@@ -252,6 +253,11 @@ draws the knob, never its URL keys, values, reset, shuffle or presets:
   often flights pass (drag or arrow keys; Delete grounds them), the species are tiles of their
   silhouettes and the formations dot diagrams of the chosen species' own party, each row a radio
   group. A group whose master is `birds` keeps the switch in its header.
+- Fader chips and scrub readouts, with no `widget`: a feature whose amount is a range carries it on
+  its chip (`src/lab/chips.ts`, rules in `chips-model.ts`), a fill while on and the value on hover,
+  focus and drag. A click toggles it, a drag across sets the amount and switches it on, arrow keys
+  step it (Shift a tenth of the range); double-clicking the value resets the amount. A row's readout
+  over a slider scrubs it (drag across, Shift finer); double-clicking a readout or label resets it.
 
 A group's heading may carry `recipes` (`Recipe` in `src/params.ts`): one-tap setups drawn as a strip
 of glyph chips at the top of the group, the one the setup already is lit. A recipe sets URL keys of

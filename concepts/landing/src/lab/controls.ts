@@ -1,6 +1,7 @@
 // The lab's plain controls: buttons, switches, sliders, segments, the "now" trigger and the seed's
 // dice, and the row that labels a control with its readout, reset and help.
-import { h, type Built } from "./dom.ts";
+import { pace, pressMove, SCRUB_SPAN, type Press } from "./chips-model.ts";
+import { drag, h, snap, type Built } from "./dom.ts";
 import { icon, type IconName } from "./icons.ts";
 
 export function iconButton(
@@ -145,7 +146,57 @@ export function nowButton(
   return button;
 }
 
-/** One control row: label, help toggle, readout and inline controls on top, a block control under. */
+/**
+ * Let a readout scrub the range input of its row (rules in chips-model.ts): a drag across moves the
+ * value, finer with Shift, through the input's own events, so the row sets it while dragging and the
+ * lab records it on release, as it does a drag of the slider.
+ */
+function scrubber(readout: HTMLElement, input: HTMLInputElement): void {
+  readout.classList.add("scrub");
+  readout.title = "Drag across to scrub (Shift: finer); double-click to reset";
+  readout.addEventListener("pointerdown", (event) => {
+    if (event.button !== 0) return;
+    event.preventDefault();
+    const bounds = { min: Number(input.min), max: Number(input.max), step: Number(input.step) };
+    const perPixel = pace(bounds, SCRUB_SPAN);
+    let press: Press = {
+      x: event.clientX,
+      y: event.clientY,
+      value: Number(input.value),
+      scrub: undefined,
+    };
+    drag(
+      event,
+      readout,
+      (pointer) => {
+        press = pressMove(
+          press,
+          pointer.clientX,
+          pointer.clientY,
+          perPixel,
+          pointer.shiftKey,
+          bounds,
+        );
+        if (!press.scrub) return;
+        readout.classList.add("scrubbing");
+        const value = String(snap(press.scrub.value, bounds.min, bounds.max, bounds.step));
+        if (value === input.value) return;
+        input.value = value;
+        input.dispatchEvent(new Event("input", { bubbles: true }));
+      },
+      () => {
+        if (!press.scrub) return;
+        readout.classList.remove("scrubbing");
+        input.dispatchEvent(new Event("change", { bubbles: true }));
+      },
+    );
+  });
+}
+
+/**
+ * One control row: label, help toggle, readout and inline controls on top, a block control under. A
+ * readout over a range input scrubs it; double-clicking the label or the readout resets the row.
+ */
 export function row(spec: {
   label: string;
   help: string;
@@ -198,9 +249,12 @@ export function row(spec: {
     spec.block ?? null,
     hint,
   );
+  if (spec.readout && spec.block instanceof HTMLInputElement && spec.block.type === "range")
+    scrubber(readout, spec.block);
   if (spec.reset)
     el.addEventListener("dblclick", (event) => {
-      if (event.target instanceof Element && event.target.closest(".row-label")) spec.reset?.();
+      if (event.target instanceof Element && event.target.closest(".row-label, .readout"))
+        spec.reset?.();
     });
   return {
     el,
