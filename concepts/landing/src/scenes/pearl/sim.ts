@@ -70,6 +70,7 @@ import {
   type RenderTarget,
 } from "../../sims/gpu.ts";
 import { clamp, hash31, lerp, smoothstep } from "../../sims/math.ts";
+import { valueNoise } from "../../sims/noise.ts";
 import { mulberry32 } from "../../sims/random.ts";
 import type { SceneSim, SimFactory, SimFrame } from "../types.ts";
 
@@ -613,19 +614,6 @@ function markRod(elapsed: number, size: number, aspect: number, out: Rod): boole
 
 // ---- the pour -----------------------------------------------------------------------------------
 
-/** Smooth value noise, 0..1. */
-function valueNoise(x: number, y: number, seed: number): number {
-  const ix = Math.floor(x);
-  const iy = Math.floor(y);
-  const ux = smoothstep(0, 1, x - ix);
-  const uy = smoothstep(0, 1, y - iy);
-  const a = hash31(ix, iy, seed);
-  const b = hash31(ix + 1, iy, seed);
-  const c = hash31(ix, iy + 1, seed);
-  const d = hash31(ix + 1, iy + 1, seed);
-  return a + (b - a) * ux + (c - a) * uy + (a - b - c + d) * ux * uy;
-}
-
 /**
  * An eddy of the pour: a Gaussian stream function a·exp(−|p − c|² / r²) (a > 0 turns
  * counter-clockwise), which had already wound the fluid `twist` radians round at its centre.
@@ -982,9 +970,10 @@ class PearlTank implements SceneSim {
       });
     }
     this.#drifters = drifters;
-    const silk = Math.floor(rand() * 0x7fffffff);
-    const ripple = Math.floor(rand() * 0x7fffffff);
-    const sheen = Math.floor(rand() * 0x7fffffff);
+    // valueNoise hashes seed + 1: one less keeps each pour's silk where it has always lain.
+    const silk = Math.floor(rand() * 0x7fffffff) - 1;
+    const ripple = Math.floor(rand() * 0x7fffffff) - 1;
+    const sheen = Math.floor(rand() * 0x7fffffff) - 1;
     const flow = new Float64Array(2);
 
     const velocity = fluid.velocity;

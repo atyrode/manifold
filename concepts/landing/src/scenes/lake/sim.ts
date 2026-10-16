@@ -60,6 +60,7 @@
 import type { ParamDef } from "../../params.ts";
 import { LevelCamera } from "../../sims/camera.ts";
 import { clamp, hash31, smoothstep } from "../../sims/math.ts";
+import { valueNoise } from "../../sims/noise.ts";
 import { Random } from "../../sims/random.ts";
 import { DataTexture } from "../../sims/texture.ts";
 import type { SceneSim, SimFactory, SimFrame } from "../types.ts";
@@ -234,21 +235,6 @@ type KnobKey = "substorm" | "cracks" | "fractures" | "drift" | "iceSeed" | "wind
 /** The simulation was set up wrong: a knob it reads is missing. */
 export class LakeSimError extends Error {}
 
-/** Smooth value noise 0..1. */
-function noise2(x: number, y: number, salt: number): number {
-  const i = Math.floor(x);
-  const j = Math.floor(y);
-  const fx = x - i;
-  const fy = y - j;
-  const ux = fx * fx * (3 - 2 * fx);
-  const uy = fy * fy * (3 - 2 * fy);
-  const a = hash31(i, j, salt);
-  const b = hash31(i + 1, j, salt);
-  const c = hash31(i, j + 1, salt);
-  const d = hash31(i + 1, j + 1, salt);
-  return a + (b - a) * ux + (c - a) * uy + (a - b - c + d) * ux * uy;
-}
-
 /**
  * One octave of the snow patches at (x, z) on the ice (m): noise stretched sx by sz metres, eased to
  * its mean where a texel spans more than about a third of it (`across` by `along` metres).
@@ -263,7 +249,8 @@ function patchOctave(
   salt: number,
 ): number {
   const keep = 1 - smoothstep(0.3, 0.8, Math.max(across / sx, along / sz));
-  return 0.5 + (noise2(x / sx, z / sz, salt) - 0.5) * keep;
+  // valueNoise hashes seed + 1: salt - 1 keeps each seed's snow where it has always lain.
+  return 0.5 + (valueNoise(x / sx, z / sz, salt - 1) - 0.5) * keep;
 }
 
 /** A clock for the shader as two half floats: a multiple of 32 (exact) and the rest (to ~1/64). */

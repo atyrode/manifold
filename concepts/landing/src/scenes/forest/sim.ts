@@ -26,6 +26,7 @@
 //          mist is here, about 1.
 import type { ParamDef } from "../../params.ts";
 import { clamp, hash31, smoothstep } from "../../sims/math.ts";
+import { valueNoise } from "../../sims/noise.ts";
 import { mulberry32 } from "../../sims/random.ts";
 import { atEase, facing, isShy, stepShrink, type Shrink } from "../../sims/temperament.ts";
 import { DataTexture } from "../../sims/texture.ts";
@@ -378,21 +379,6 @@ const FOG_RELAX = 16;
 const FOG_DEPTH = 6;
 /** How long the sim runs before the first frame (s): motes and mist already in motion. */
 const PREWARM_SECONDS = 1.5;
-
-/** Smooth value noise 0..1 on the integer lattice. */
-function valueNoise(x: number, y: number, salt: number): number {
-  const ix = Math.floor(x);
-  const iy = Math.floor(y);
-  const fx = x - ix;
-  const fy = y - iy;
-  const ux = fx * fx * (3 - 2 * fx);
-  const uy = fy * fy * (3 - 2 * fy);
-  const a = hash31(ix, iy, salt);
-  const b = hash31(ix + 1, iy, salt);
-  const c = hash31(ix, iy + 1, salt);
-  const d = hash31(ix + 1, iy + 1, salt);
-  return a + (b - a) * ux + (c - a) * uy + (a - b - c + d) * ux * uy;
-}
 
 /**
  * A rattling turn: progress 0..1 of the whole turn mapped onto `ticks` quick snaps, each easing out
@@ -1403,8 +1389,8 @@ class ForestSim implements SceneSim {
       0.15 * Math.exp(-(((y - 0.05) / 0.1) ** 2));
     const shift = this.#fogShift;
     const n =
-      0.6 * valueNoise(x * 1.6 - shift, y * 3.2 + 0.7, 11) +
-      0.4 * valueNoise(x * 3.7 - 1.6 * shift, y * 6 + 2.1, 12);
+      0.6 * valueNoise(x * 1.6 - shift, y * 3.2 + 0.7, 10) +
+      0.4 * valueNoise(x * 3.7 - 1.6 * shift, y * 6 + 2.1, 11);
     return band * (0.62 + 0.76 * n);
   }
 

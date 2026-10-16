@@ -54,7 +54,8 @@ import {
   type PingPong,
   type RenderTarget,
 } from "../../sims/gpu.ts";
-import { smoothstep } from "../../sims/math.ts";
+import { hash31, smoothstep } from "../../sims/math.ts";
+import { fbm, valueNoise } from "../../sims/noise.ts";
 import { mulberry32 } from "../../sims/random.ts";
 import { DataTexture } from "../../sims/texture.ts";
 import type { SceneSim, SimFactory, SimFrame } from "../types.ts";
@@ -201,43 +202,6 @@ const DELTA_KNOBS = [
 type DeltaKnob = (typeof DELTA_KNOBS)[number];
 
 // ---- noise ---------------------------------------------------------------------------------------------
-
-function lattice(i: number, j: number, seed: number): number {
-  let h = Math.imul(i, 0x27d4eb2d) ^ Math.imul(j, 0x165667b1) ^ Math.imul(seed + 1, 0x9e3779b1);
-  h = Math.imul(h ^ (h >>> 15), 0x85ebca6b);
-  h = Math.imul(h ^ (h >>> 13), 0xc2b2ae35);
-  h ^= h >>> 16;
-  return (h >>> 0) / 4294967296;
-}
-
-function valueNoise(x: number, y: number, seed: number): number {
-  const i = Math.floor(x);
-  const j = Math.floor(y);
-  const fx = x - i;
-  const fy = y - j;
-  const ux = fx * fx * (3 - 2 * fx);
-  const uy = fy * fy * (3 - 2 * fy);
-  const a = lattice(i, j, seed);
-  const b = lattice(i + 1, j, seed);
-  const c = lattice(i, j + 1, seed);
-  const d = lattice(i + 1, j + 1, seed);
-  return a + (b - a) * ux + (c - a) * uy + (a - b - c + d) * ux * uy;
-}
-
-/** Fractal value noise, 0..1. */
-function fbm(x: number, y: number, seed: number, octaves: number): number {
-  let sum = 0;
-  let amp = 0.5;
-  let norm = 0;
-  for (let o = 0; o < octaves; o++) {
-    sum += amp * valueNoise(x, y, seed + o * 17);
-    norm += amp;
-    x = x * 2.03 + 17.1;
-    y = y * 2.03 + 9.2;
-    amp *= 0.5;
-  }
-  return sum / norm;
-}
 
 /**
  * fbm over the whole grid, `scale` cells per noise unit, sampled every `step` cells and filled in
@@ -1176,7 +1140,7 @@ function seasonalFlood(clock: number, seed: number): number {
   for (let k = cycle - 1; k <= cycle; k++) {
     if (k < 0) continue;
     const start =
-      k * FLOOD_EVERY + FLOOD_EVERY * 0.35 + FLOOD_JITTER * (lattice(k, 7, seed) - 0.5) * 2;
+      k * FLOOD_EVERY + FLOOD_EVERY * 0.35 + FLOOD_JITTER * (hash31(k, 7, seed + 1) - 0.5) * 2;
     level = Math.max(level, floodShape(clock - start));
   }
   return level;

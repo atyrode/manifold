@@ -4,8 +4,8 @@
 //   fbm(x, y, seed, octaves)        fractal sum of valueNoise, 0..1: each octave twice as fine (×2.03,
 //                                   shifted) at half the weight, each with its own seed (seed + 17·o)
 //
-// The lattice hash is `hash31(i, j, seed + 1)` (math.ts), so these are bit for bit the delta scene's
-// own `valueNoise` and `fbm` (scenes/delta/sim.ts): it can switch to them without moving a landscape.
+// The lattice hash is `hash31(i, j, seed + 1)` (math.ts): a copy that hashed `hash31(i, j, salt)`
+// is `valueNoise(x, y, salt - 1)` bit for bit, so it can switch without moving a layout.
 // GLSL noise (vnoise, fbm) is a different hash: a layout drawn here is not the shader's noise.
 //
 // Usage:
