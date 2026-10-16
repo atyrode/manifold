@@ -6,7 +6,7 @@ import {
   TapOrHold,
   writeComparison,
 } from "./compare.ts";
-import { readParams, readState, serialise } from "./state.ts";
+import { defaultsFor, readParams, readState, serialise } from "./state.ts";
 import { readTour, writeTour } from "./tour.ts";
 
 /** The page's URL as main.ts writes it: the setup, then the lab's session keys. */
@@ -64,15 +64,18 @@ test("a page with a comparison and a tour reads back its setup and both session 
     steps: [{ scene: "orbit" as const, dwell: 45 }, { scene: "swell" as const }],
     dwell: 20,
   };
+  // A levels value that is never swell's own default, so it is kept in the slot's query.
+  const levels = defaultsFor("swell").levels === 2 ? 3 : 2;
+  const other = `scene=swell&levels=${levels}`;
   const query = pageQuery("scene=orbit&pixel=3", (q) => {
-    writeComparison({ live: "a", other: "scene=swell&levels=4" }, q);
+    writeComparison({ live: "a", other }, q);
     writeTour(tour, q);
   });
   const state = readState(query);
   expect(serialise(state, readParams(state.scene, query), []).toString()).toBe(
     "scene=orbit&pixel=3",
   );
-  expect(readComparison(query)).toEqual({ live: "a", other: "scene=swell&levels=4" });
+  expect(readComparison(query)).toEqual({ live: "a", other });
   expect(readTour(query)).toEqual(tour);
 });
 
