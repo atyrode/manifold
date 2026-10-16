@@ -13,6 +13,8 @@ const WIDTH = 64;
 const HEIGHT = 40;
 /** Real seconds a program may take to build under software WebGL on a busy machine. */
 const BUILD_SECONDS = 120;
+/** Real seconds the browser may take to lose or restore a context. */
+const EVENT_SECONDS = 20;
 /** rAF milliseconds between the frames of a 120 Hz display. */
 const HZ_120 = 1000 / 120;
 
@@ -42,7 +44,12 @@ interface Page {
    * screen; the last frame's time.
    */
   arrive: (now: number, step: number) => Promise<number>;
-  /** The next `name` event on the canvas. */
+  /**
+   * The next `name` event on the canvas, in a task after its dispatch, within EVENT_SECONDS. The
+   * browser reads whether a listener prevented a lost context's default (the renderer does, so it
+   * may be restored) only once every listener has run, and a promise settled in a listener resumes
+   * its awaiter before that: a restore asked for then is refused and the context stays lost.
+   */
   next: (name: "webglcontextlost" | "webglcontextrestored") => Promise<void>;
   dispose: () => void;
 }
@@ -108,8 +115,16 @@ function page(paced: boolean): Page {
       return at;
     },
     next(name) {
-      const { promise, resolve } = Promise.withResolvers<void>();
-      canvas.addEventListener(name, () => resolve(), { once: true });
+      const { promise, resolve, reject } = Promise.withResolvers<void>();
+      const timeout = setTimeout(() => {
+        canvas.removeEventListener(name, dispatched);
+        reject(new Error(`No ${name} event within ${EVENT_SECONDS} s`));
+      }, EVENT_SECONDS * 1000);
+      const dispatched = () => {
+        clearTimeout(timeout);
+        setTimeout(resolve);
+      };
+      canvas.addEventListener(name, dispatched, { once: true });
       return promise;
     },
     dispose() {
