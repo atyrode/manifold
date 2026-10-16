@@ -40,7 +40,10 @@ export interface WorldOptions {
   on?: WeatherOptions["on"];
   /** The birds: the scene's species and help; on unless `on: false`, at WORLD_DEFAULTS.birds. */
   birds: BirdOptions;
-  /** Lab groups: "sky", "weather" (wind too unless `wind` names its own) and "birds" by default. */
+  /**
+   * Lab groups: "sky" (the aurora too), "weather" (wind too unless `wind` names its own) and
+   * "birds" by default.
+   */
   groups?: { sky?: string; weather?: string; wind?: string; birds?: string };
 }
 
@@ -54,10 +57,11 @@ export interface WorldOptions {
  */
 export function worldKnobs(options: WorldOptions): ParamDef[] {
   const groups = options.groups ?? {};
+  const sky = groups.sky ?? "sky";
   const weather = groups.weather ?? "weather";
   return [
     ...skyKnobs({
-      group: groups.sky ?? "sky",
+      group: sky,
       time: options.time,
       stars: options.stars ?? WORLD_DEFAULTS.stars,
       milkyWay: { on: true, ...options.milkyWay },
@@ -66,6 +70,7 @@ export function worldKnobs(options: WorldOptions): ParamDef[] {
     }),
     ...weatherKnobs({
       group: weather,
+      auroraGroup: sky,
       clouds: options.clouds ?? WORLD_DEFAULTS.clouds,
       shadows: true,
       rain: true,
@@ -85,17 +90,19 @@ export function worldKnobs(options: WorldOptions): ParamDef[] {
   ];
 }
 
-/** Lab headings for worldKnobs' groups. */
+/** Lab headings for worldKnobs' groups, on the lab's World shelf. */
 export const worldGroups: Readonly<Record<"sky" | "weather" | "birds", Blurb>> = {
   sky: {
     title: "Sky",
+    shelf: "world",
     blurb:
-      "Time of day, whether the days pass, and the night sky: its stars and the Milky Way, the moon's phase, the odd shooting star.",
+      "Time of day, whether the days pass, and the night sky: its stars and the Milky Way, the moon's phase, the odd shooting star and the aurora.",
   },
   weather: {
     title: "Weather",
+    shelf: "world",
     blurb:
-      "Cloud and its shadows, rain, snow, fog, wind, lightning and the aurora: one weather, shared by every outdoor scene.",
+      "Cloud and its shadows, rain, snow, fog, wind and lightning: one weather, shared by every outdoor scene.",
   },
   birds: birdsGroup,
 };

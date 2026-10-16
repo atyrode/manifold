@@ -150,6 +150,8 @@ export function skyKnobs(options: SkyOptions = {}): ParamDef[] {
 
 export interface WeatherOptions {
   group?: string;
+  /** Lab group of the aurora, which hangs in the sky; default "sky". */
+  auroraGroup?: string;
   /**
    * Adds K_clouds, fair-weather cloud cover 0..1 (0 clear .. 1 a full deck) starting at this value:
    * give it the cover the scene draws with in dry weather. Rain and snow thicken the deck beyond it.
@@ -260,7 +262,7 @@ export function weatherKnobs(options: WeatherOptions): ParamDef[] {
   if (options.aurora)
     knobs.push(
       feature(
-        group,
+        options.auroraGroup ?? "sky",
         "aurora",
         "aurora",
         on.aurora ?? false,
@@ -272,17 +274,22 @@ export function weatherKnobs(options: WeatherOptions): ParamDef[] {
   return knobs;
 }
 
-/** Lab headings for the shared groups: `skyNight` for a sky group that also holds sky components. */
+/**
+ * Lab headings for the shared groups, on the lab's World shelf: `skyNight` for a sky group that also
+ * holds sky components.
+ */
 export const atmosphereGroups: Readonly<Record<"sky" | "skyNight" | "weather", Blurb>> = {
-  sky: { title: "Sky", blurb: "Time of day, and whether the days pass." },
+  sky: { title: "Sky", shelf: "world", blurb: "Time of day, and whether the days pass." },
   skyNight: {
     title: "Sky",
+    shelf: "world",
     blurb:
       "Time of day, whether the days pass, and the night sky: its stars, the moon's phase, the odd shooting star.",
   },
   weather: {
     title: "Weather",
-    blurb: "Rain, snow, fog, wind, lightning and aurora, shared by every outdoor scene.",
+    shelf: "world",
+    blurb: "Cloud, rain, snow, fog, wind and lightning, shared by every outdoor scene.",
   },
 };
 

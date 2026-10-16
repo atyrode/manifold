@@ -116,13 +116,15 @@ export const meadowScene: SceneDef = {
     },
     wind: {
       title: "Wind",
+      shelf: "world",
       blurb: "Which way the wind blows, and the gusts it sends rolling across the field.",
     },
     sky: worldGroups.sky,
     weather: {
+      ...worldGroups.weather,
       title: "Air",
       blurb:
-        "Golden haze, cloud and its shadows, and the weather: a grey drizzle misting the distance, steady rain hanging in shafts over the hills, a downpour driven across the field in curtains by the gusts; snow settling on the grass and the hills; fog filling the distance; lightning behind the hills. The grass darkens, glistens and bows, beads and drips; the clocks close and hold their seeds. On a clear night, the aurora over the hills.",
+        "Golden haze, cloud and its shadows, and the weather: a grey drizzle misting the distance, steady rain hanging in shafts over the hills, a downpour driven across the field in curtains by the gusts; snow settling on the grass and the hills; fog filling the distance; lightning behind the hills. The grass darkens, glistens and bows, beads and drips; the clocks close and hold their seeds.",
     },
     birds: worldGroups.birds,
     manifold: { title: "Manifold mark", blurb: "The M mown into a far hillside." },

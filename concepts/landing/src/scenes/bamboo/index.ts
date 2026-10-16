@@ -125,7 +125,7 @@ export const bambooScene: SceneDef = {
     },
     sky: atmosphereGroups.sky,
     weather: {
-      title: atmosphereGroups.weather.title,
+      ...atmosphereGroups.weather,
       blurb:
         "Rain closes the sky and greys the mist; the canopy shelters the grove but pours through its gaps, the leaves gather water and drip, long after the rain, stems and stones go dark and glossy, pools gather on the floor and rings spread on the basin. The wind sets how hard the grove sways and which way the gusts travel.",
     },

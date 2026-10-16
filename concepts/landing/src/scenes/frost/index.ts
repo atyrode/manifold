@@ -104,9 +104,9 @@ export const frostScene: SceneDef = {
       blurb: "The winter night beyond the glass, out of focus behind the frost.",
     },
     sky: {
-      title: atmosphereGroups.sky.title,
+      ...atmosphereGroups.sky,
       blurb:
-        "Time of day, and the night over the town or the woods: its stars, the moon's phase, the odd shooting star.",
+        "Time of day, and the night over the town or the woods: its stars, the moon's phase, the odd shooting star and the aurora.",
     },
     weather: atmosphereGroups.weather,
     manifold: {

@@ -4,7 +4,7 @@
 // moon draw their paths down it. shader.ts draws everything from smooth functions of the motion
 // clock; there is no simulation.
 import { choice, feature, range, toggle, type ParamDef } from "../../params.ts";
-import { birdKnobs } from "../../shaders/lib/birds.ts";
+import { birdKnobs, birdsGroup } from "../../shaders/lib/birds.ts";
 import { WATER_TIERS } from "../../shaders/lib/water.ts";
 import { atmosphereGroups, skyComponentKnobs, weatherKnobs } from "../atmosphere.ts";
 import type { SceneDef } from "../types.ts";
@@ -62,14 +62,14 @@ const params: readonly ParamDef[] = [
     "0: a still fjord, a clear mirror of the sky. Higher lets the wind (under Weather) ruffle the open water: cat's-paws drift downwind and break the reflections into long vertical streaks. Ice stays still.",
   ),
   range(
-    "night",
+    "sky",
     "stars",
     "stars",
     0.7,
     "How many stars show: none to the left, a dark northern sky to the right. The aurora outshines the ones behind it.",
   ),
   feature(
-    "night",
+    "sky",
     "moon",
     "crescent moon",
     true,
@@ -77,7 +77,7 @@ const params: readonly ParamDef[] = [
     0.25,
     "A moon low over the mountains: a thin crescent to a full disc. It lights the snow and draws a path of glints down the water.",
   ),
-  ...skyComponentKnobs({ group: "night", meteors: { trigger: AURORA_METEOR_TRIGGER } }),
+  ...skyComponentKnobs({ meteors: { trigger: AURORA_METEOR_TRIGGER } }),
   toggle(
     "night",
     "cabin",
@@ -86,7 +86,6 @@ const params: readonly ParamDef[] = [
     "A small red cabin on the far shore with its window lit by the fire, its light drawn down the water, and a thread of smoke leaning with the wind.",
   ),
   ...birdKnobs({
-    group: "night",
     kind: "geese",
     help: "Birds crossing the night sky, geese by default, a skein migrating across the curtains: dark against the light, mirrored in the open water, behind the birches on the near bank; few fly in snow.",
   }),
@@ -114,13 +113,19 @@ export const auroraScene: SceneDef = {
         "The curtains overhead and in the water: how bright, how lively, which colours, and the corona that gathers now and then.",
     },
     water: { title: "Water", blurb: "Open water that mirrors the sky, or a fjord freezing over." },
-    night: {
-      title: "Night",
+    sky: {
+      ...atmosphereGroups.skyNight,
       blurb:
-        "The stars and the odd shooting star, seen again in the water, the moon, the cabin on the far shore, and birds crossing the sky.",
+        "The night sky over the fjord: its stars and the odd shooting star, seen again in the water, and the moon.",
     },
+    night: {
+      title: "Cabin",
+      blurb: "The cabin on the far shore, its window lit and its smoke leaning with the wind.",
+      icon: "house",
+    },
+    birds: birdsGroup,
     weather: {
-      title: atmosphereGroups.weather.title,
+      ...atmosphereGroups.weather,
       blurb:
         "Snow falls from a closing sky, hiding the aurora and whitening the land; mist lies on the fjord; the wind leans the smoke.",
     },

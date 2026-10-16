@@ -81,8 +81,9 @@ export const cloudsScene: SceneDef = {
   params,
   groups: {
     sky: {
-      title: atmosphereGroups.sky.title,
-      blurb: "Time of day, whether the days pass, and the stars over the cloud sea at night.",
+      ...atmosphereGroups.sky,
+      blurb:
+        "Time of day, whether the days pass, and the stars and the aurora over the cloud sea at night.",
     },
     clouds: {
       title: "Cloud sea",

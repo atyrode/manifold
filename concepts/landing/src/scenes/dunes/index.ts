@@ -105,7 +105,7 @@ export const dunesScene: SceneDef = {
     weather: {
       ...worldGroups.weather,
       blurb:
-        "Cloud and its shadows on the sand, rain, snow, wind, lightning and the aurora: one weather, shared by every outdoor scene. The wind drives the dunes downwind and blows sand off their crests; the fog is desert dust, and with a hard wind it becomes a sandstorm; rain darkens the sand and stills it, snow lies on the slopes, and a high sun on dry sand makes the distance shimmer.",
+        "Cloud and its shadows on the sand, rain, snow, wind and lightning: one weather, shared by every outdoor scene. The wind drives the dunes downwind and blows sand off their crests; the fog is desert dust, and with a hard wind it becomes a sandstorm; rain darkens the sand and stills it, snow lies on the slopes, and a high sun on dry sand makes the distance shimmer.",
     },
     birds: worldGroups.birds,
     manifold: {

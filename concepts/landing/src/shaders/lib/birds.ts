@@ -492,8 +492,9 @@ export function birdKnobs(options: BirdOptions): ParamDef[] {
   ];
 }
 
-/** Lab heading for the default "birds" group. */
+/** Lab heading for the default "birds" group, on the lab's World shelf. */
 export const birdsGroup: Blurb = {
   title: "Birds",
+  shelf: "world",
   blurb: "Flights of birds crossing the sky: which, how they fly, and how often.",
 };

@@ -886,7 +886,7 @@ body.lab-open .lab-opener {
 .inspector-body {
   padding-bottom: 24px;
 }
-.global-divider {
+.shelf-divider {
   display: flex;
   align-items: center;
   gap: 10px;
@@ -896,15 +896,43 @@ body.lab-open .lab-opener {
   text-transform: uppercase;
   color: var(--lab-faint);
 }
-.global-divider::before,
-.global-divider::after {
+.shelf-divider::before,
+.shelf-divider::after {
   content: "";
   flex: 1;
   height: 1px;
   background: var(--lab-line);
 }
-.view-controls.searching .global-divider {
+.view-controls.searching .shelf-divider {
   display: none;
+}
+/* "keep the world": a pill on the World divider, lit while a picked scene keeps the world */
+.world-keep {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px 2px 6px;
+  letter-spacing: inherit;
+  text-transform: inherit;
+  background: none;
+  border: 1px solid var(--lab-line-strong);
+  border-radius: 999px;
+  transition:
+    color 120ms,
+    background 120ms,
+    border-color 120ms;
+}
+.world-keep .icon {
+  width: 11px;
+  height: 11px;
+}
+.world-keep:hover {
+  color: var(--lab-ink);
+}
+.world-keep[aria-pressed="true"] {
+  color: var(--lab-accent);
+  background: var(--lab-accent-soft);
+  border-color: currentColor;
 }
 
 /* groups */

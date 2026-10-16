@@ -1,7 +1,7 @@
 // A moonlit sea rolling toward the horizon.
 import { range, toggle } from "../../params.ts";
 import { birdKnobs, birdsGroup } from "../../shaders/lib/birds.ts";
-import { skyComponentKnobs } from "../atmosphere.ts";
+import { atmosphereGroups, skyComponentKnobs } from "../atmosphere.ts";
 import type { SceneDef } from "../types.ts";
 import { SWELL_METEOR_TRIGGER, swellGlsl } from "./shader.ts";
 
@@ -39,7 +39,7 @@ export const swellScene: SceneDef = {
   groups: {
     sea: { title: "Sea", blurb: "The swell and its surface chop." },
     sky: {
-      title: "Sky",
+      ...atmosphereGroups.skyNight,
       blurb: "The moon, the stars, and the odd shooting star with its glints in the waves.",
     },
     birds: birdsGroup,

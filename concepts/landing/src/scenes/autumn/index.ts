@@ -98,11 +98,15 @@ export const autumnScene: SceneDef = {
       blurb: "How the leaves let go and fall, and the gusts that carry them.",
     },
     park: { title: "Park", blurb: "The lamp post beside the path." },
-    sky: atmosphereGroups.skyNight,
-    weather: {
-      title: atmosphereGroups.weather.title,
+    sky: {
+      ...atmosphereGroups.skyNight,
       blurb:
-        "Clouds drift over, and if you like their shadows sweep across the park. Rain greys the light and darkens the canopy; the path and the leaves turn dark and glossy, pools gather on the gravel and rings spread in them. Fog fades the far trees. The wind leans the leaves as they fall and carries the gusts. On a clear night the aurora may hang over the far trees.",
+        "Time of day, whether the days pass, and the night sky over the park: its stars, the moon's phase, the odd shooting star, and on a clear night the aurora over the far trees.",
+    },
+    weather: {
+      ...atmosphereGroups.weather,
+      blurb:
+        "Clouds drift over, and if you like their shadows sweep across the park. Rain greys the light and darkens the canopy; the path and the leaves turn dark and glossy, pools gather on the gravel and rings spread in them. Fog fades the far trees. The wind leans the leaves as they fall and carries the gusts.",
     },
     manifold: { title: "Manifold mark", blurb: "An M of gold leaves swept together on the path." },
   },

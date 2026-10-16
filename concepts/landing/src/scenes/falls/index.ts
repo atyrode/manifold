@@ -4,7 +4,7 @@
 // the ledges and fireflies over the water at dusk. All in the shader but the near bank's ferns,
 // rooted plants of the shared plant component (sim.ts) that sway with the wind and turn with the year.
 import { choice, feature, range } from "../../params.ts";
-import { birdKnobs } from "../../shaders/lib/birds.ts";
+import { birdKnobs, birdsGroup } from "../../shaders/lib/birds.ts";
 import { atmosphereGroups, skyKnobs, weatherKnobs } from "../atmosphere.ts";
 import { plantKnobs } from "../plants.ts";
 import type { SceneDef } from "../types.ts";
@@ -71,7 +71,6 @@ export const fallsScene: SceneDef = {
       "Fireflies blinking over the pool from dusk on, each flash doubled in the water.",
     ),
     ...birdKnobs({
-      group: "life",
       kind: "swifts",
       help: "Birds crossing the gorge by day, swifts by default, sailing past the cliff and now and then swooping low over the pool; the rock, the trees on the rim and the spray hide them, and few fly in the rain.",
     }),
@@ -102,11 +101,15 @@ export const fallsScene: SceneDef = {
     },
     life: {
       title: "Life",
-      blurb:
-        "Moss and ferns on the wet rock, birds over the gorge, fireflies over the pool after dark.",
+      blurb: "Moss and ferns on the wet rock, fireflies over the pool after dark.",
     },
-    sky: atmosphereGroups.skyNight,
+    sky: {
+      ...atmosphereGroups.skyNight,
+      blurb:
+        "Time of day, whether the days pass, and the night sky over the gorge: its stars, the moon's phase, the odd shooting star and the aurora.",
+    },
     weather: atmosphereGroups.weather,
+    birds: birdsGroup,
     manifold: {
       title: "Manifold mark",
       blurb: "A landmark of its own: an M carved into the rock behind the water.",

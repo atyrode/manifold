@@ -38,7 +38,7 @@ const params: readonly ParamDef[] = [
     "landscape",
     "The shape of the hills and their fields, the clouds, and the flowers in the drifts; re-seed for another view of the valley.",
   ),
-  ...weatherKnobs({ group: "air", wind: true, clouds: 0.55, aurora: true }),
+  ...weatherKnobs({ wind: true, clouds: 0.55, aurora: true }),
   ...skyKnobs({ time: 0.64, stars: 0.6, moon: 1, meteors: { trigger: BEES_METEOR_TRIGGER } }),
   feature(
     "manifold",
@@ -67,12 +67,15 @@ export const beesScene: SceneDef = {
       blurb: "The insects: a colony working three hives and a few butterflies.",
     },
     scenery: { title: "Landscape", blurb: "Which valley you are looking over." },
-    air: {
-      title: "Air",
-      blurb:
-        "The wind through the grass and the cumulus building over the hills; on a clear night, the aurora over them.",
+    weather: {
+      ...atmosphereGroups.weather,
+      blurb: "The wind through the grass and the cumulus building over the hills.",
     },
-    sky: atmosphereGroups.skyNight,
+    sky: {
+      ...atmosphereGroups.skyNight,
+      blurb:
+        "Time of day, whether the days pass, and the night sky: its stars, the moon's phase, the odd shooting star, and on a clear night the aurora over the hills.",
+    },
     manifold: { title: "Manifold mark", blurb: "The M, painted on a hive." },
   },
   glsl: beesGlsl,

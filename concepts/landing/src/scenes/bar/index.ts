@@ -163,7 +163,7 @@ export const barScene: SceneDef = {
         "The street outside the front window, the sign hanging in it, and what the glass reflects.",
     },
     weather: {
-      title: atmosphereGroups.weather.title,
+      ...atmosphereGroups.weather,
       blurb:
         "Rain on the street outside: it streaks past the lamps and headlights, pools and splashes on the road, drips from the awning, beads the glass and leaves a wet umbrella dripping by the door; wind slants it.",
     },

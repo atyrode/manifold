@@ -3,7 +3,7 @@
 // way Pteroptyx do along Malaysian rivers. The bank, the mirror of the water, the foreground bokeh
 // and the lantern the pointer carries are drawn in shader.ts.
 import { choice, counts, feature, range, seed, toggle, type ParamDef } from "../../params.ts";
-import { skyComponentKnobs } from "../atmosphere.ts";
+import { atmosphereGroups, skyComponentKnobs } from "../atmosphere.ts";
 import type { SceneDef } from "../types.ts";
 import { FIREFLIES_METEOR_TRIGGER, firefliesGlsl } from "./shader.ts";
 import { FIREFLIES_PASSAGE, firefliesSim } from "./sim.ts";
@@ -91,9 +91,9 @@ const params: readonly ParamDef[] = [
     0.35,
     "Mist lying on the water and under the trees, glowing green with each pulse.",
   ),
-  range("river", "stars", "stars", 0.5, "Sparse stars high over the trees."),
+  range("sky", "stars", "stars", 0.5, "Sparse stars high over the trees."),
   // The shared shooting stars (scenes/atmosphere.ts), off: the moonless night sky is the scene's own.
-  ...skyComponentKnobs({ meteors: { trigger: FIREFLIES_METEOR_TRIGGER }, group: "river" }),
+  ...skyComponentKnobs({ meteors: { trigger: FIREFLIES_METEOR_TRIGGER } }),
   feature(
     "manifold",
     "mark",
@@ -120,9 +120,10 @@ export const firefliesScene: SceneDef = {
         "Each firefly flashes on its own clock and is nudged by the flashes it sees, until the whole bank pulses together. The breeze breaks the beat now and then.",
     },
     lantern: { title: "Lantern", blurb: "The light you carry along the river." },
-    river: {
-      title: "River & sky",
-      blurb: "The mirror of the water, the mist, the stars and shooting stars.",
+    river: { title: "River", blurb: "The mirror of the water, and the mist." },
+    sky: {
+      ...atmosphereGroups.skyNight,
+      blurb: "The moonless night over the river: sparse stars and the odd shooting star.",
     },
     manifold: {
       title: "Manifold mark",

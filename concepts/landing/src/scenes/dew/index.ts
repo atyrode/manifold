@@ -84,7 +84,7 @@ export const dewScene: SceneDef = {
     },
     scene: { title: "Backdrop", blurb: "What lies behind the web, far out of focus." },
     sky: {
-      title: atmosphereGroups.sky.title,
+      ...atmosphereGroups.sky,
       blurb: "Time of day: the low sun sets the glints and the colour of the light.",
     },
     manifold: { title: "Manifold mark", blurb: "The spider's own landmark, woven into the hub." },

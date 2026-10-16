@@ -183,7 +183,7 @@ export const kelpScene: SceneDef = {
         "Sunlight from the surface: the shafts through the canopy's gaps, the caustics and the surface itself.",
     },
     sky: {
-      title: atmosphereGroups.sky.title,
+      ...atmosphereGroups.sky,
       blurb: "The time of day above the water: sunlight by day, moonlight by night.",
     },
     life: { title: "Life", blurb: "The fish, the drifting snow and the odd visitor." },

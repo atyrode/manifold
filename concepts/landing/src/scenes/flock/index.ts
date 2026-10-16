@@ -99,12 +99,12 @@ export const flockScene: SceneDef = {
     },
     skyline: { title: "Skyline", blurb: "The thin silhouette that grounds the sky." },
     sky: {
-      title: atmosphereGroups.sky.title,
+      ...atmosphereGroups.sky,
       blurb:
         "Time of day, whether the days pass, and the stars that come out over the flock after dusk.",
     },
     weather: {
-      title: atmosphereGroups.weather.title,
+      ...atmosphereGroups.weather,
       blurb: "Wind carries the flock downwind, and stirs the reeds and the water.",
     },
     manifold: { title: "Manifold mark", blurb: "The flock itself draws the M, then lets it go." },

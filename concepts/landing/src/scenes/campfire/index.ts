@@ -149,7 +149,7 @@ export const campfireScene: SceneDef = {
       blurb: "How far the firelight reaches, and the tent and pack at the edge of it.",
     },
     sky: {
-      title: atmosphereGroups.sky.title,
+      ...atmosphereGroups.sky,
       blurb:
         "From dusk to deep night, the stars and the Milky Way, and shooting stars. Run the day cycle and dawn comes to the clearing.",
     },
@@ -159,7 +159,7 @@ export const campfireScene: SceneDef = {
         "The ringed giant low over the pines, and what else it can show: moons, an aurora, city lights on its night side, its own day sweeping round it.",
     },
     weather: {
-      title: atmosphereGroups.weather.title,
+      ...atmosphereGroups.weather,
       blurb:
         "The breeze leans the flames, bends the smoke, drifts the sparks and sways the pines; mist settles between the trees.",
     },

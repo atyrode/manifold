@@ -85,12 +85,12 @@ export const islandScene: SceneDef = {
     },
     life: { title: "Life", blurb: "The gull, the fish in the shallows and the gift balloon." },
     sky: {
-      title: atmosphereGroups.sky.title,
+      ...atmosphereGroups.sky,
       blurb:
         "Time of day: the sun climbs over the left shoulder and sets behind you, the cottage window and the pier's lantern light up at dusk, stars come out over the sea at night.",
     },
     weather: {
-      title: atmosphereGroups.weather.title,
+      ...atmosphereGroups.weather,
       blurb:
         "Clouds drift by and their shadows cross the island. Rain greys the sky and the sea, wets the sand, the lawn and the planks, and rings the water; snow settles on the roofs, crowns and beach. Wind carries the clouds and sways the trees and the palm.",
     },

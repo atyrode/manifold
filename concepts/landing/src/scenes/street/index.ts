@@ -100,7 +100,7 @@ export const streetScene: SceneDef = {
     city: { title: "City", blurb: "The shops, signs and windows round the crossing." },
     sky: atmosphereGroups.sky,
     weather: {
-      title: atmosphereGroups.weather.title,
+      ...atmosphereGroups.weather,
       blurb:
         "Rain opens the umbrellas one by one and turns the street into a mirror of signs, windows and lamps, streaked toward you; puddles ring, tyres throw spray, awnings drip. Snow settles everywhere but the wheel tracks and the trodden crosswalks.",
     },

@@ -139,7 +139,7 @@ const params: readonly ParamDef[] = [
   ),
   ...skyKnobs({ time: 0.8, stars: 0.5, moon: 1, meteors: { trigger: SILL_METEOR_TRIGGER } }),
   feature(
-    "sky",
+    "weather",
     "clouds",
     "clouds",
     true,
@@ -188,7 +188,11 @@ export const sillScene: SceneDef = {
       title: "City",
       blurb: "The skyline across the street, its windows lighting up and going dark.",
     },
-    sky: atmosphereGroups.skyNight,
+    sky: {
+      ...atmosphereGroups.skyNight,
+      blurb:
+        "Time of day, whether the days pass, and the night over the city: its stars, the moon's phase, the odd shooting star and the aurora.",
+    },
     weather: atmosphereGroups.weather,
     manifold: {
       title: "Manifold sign",

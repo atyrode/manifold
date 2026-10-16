@@ -97,14 +97,14 @@ export const lanternsScene: SceneDef = {
       blurb: "How the river's surface moves and mirrors the lights, and the mist lying on it.",
     },
     sky: {
-      title: atmosphereGroups.sky.title,
+      ...atmosphereGroups.sky,
       blurb:
-        "Time of day, whether the days pass, and the night over the temple: its stars, and the odd shooting star, seen again in the river.",
+        "Time of day, whether the days pass, and the night over the temple: its stars, the odd shooting star and on a clear night the aurora, all seen again in the river.",
     },
     weather: {
-      title: atmosphereGroups.weather.title,
+      ...atmosphereGroups.weather,
       blurb:
-        "Rain brings cloud down over the dusk, rings the whole river, glistens on the temple roofs and streaks amber only where it falls through the lantern light; in a downpour the far bank fades and candles gutter. Wind slants it, ruffles the river and leans on the lanterns. On a clear night the aurora hangs over the temple, trembling in the water.",
+        "Rain brings cloud down over the dusk, rings the whole river, glistens on the temple roofs and streaks amber only where it falls through the lantern light; in a downpour the far bank fades and candles gutter. Wind slants it, ruffles the river and leans on the lanterns.",
     },
     birds: birdsGroup,
     manifold: {

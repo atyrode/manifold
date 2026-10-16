@@ -233,6 +233,11 @@ export function effective(def: ParamDef, params: Record<string, number>): number
 /** A title and one-line description: lab section headings (SceneDef.groups). */
 export interface Blurb {
   title: string;
+  /**
+   * The lab's World shelf, ahead of the scene's own groups: a group of the shared world (its sky,
+   * weather and birds) that a scene picked with "keep the world" on carries over by knob key.
+   */
+  shelf?: "world";
   blurb: string;
   /** The heading's lab icon; default: the first word of the group's key or title naming one. */
   icon?: IconName;

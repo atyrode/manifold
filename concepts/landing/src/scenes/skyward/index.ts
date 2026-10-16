@@ -90,7 +90,7 @@ export const skywardScene: SceneDef = {
     sky: atmosphereGroups.skyNight,
     air: { title: "In the air", blurb: "Who is up there with you." },
     weather: {
-      title: atmosphereGroups.weather.title,
+      ...atmosphereGroups.weather,
       blurb:
         "Rain comes down out of the strip of sky straight at you, streaks the glass and darkens the stone; snow drifts down, and settles on the ledges.",
     },

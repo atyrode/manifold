@@ -1,5 +1,6 @@
-// The lab panel's Controls view: the scene's knob groups, then the global Look, Motion and Page
-// groups, each a collapsible section under an icon heading, with a rail of the same icons to jump
+// The lab panel's Controls view: the scene's knob groups, the shared world's first on a World shelf
+// (with its "keep the world" switch, world.ts), then the global Look, Motion and Page groups, each
+// a collapsible section under an icon heading, with a rail of the same icons to jump
 // between them, a search that narrows every group to the controls that match and a button that
 // folds or opens them all. A group's knobs are laid out by their metadata: the sky dial, mix bars and
 // pads where a knob names one (`ParamDef.widget`), its switches as icon chips, everything else as
@@ -25,6 +26,8 @@ import { mixBar } from "./mix.ts";
 import type { MixPart } from "./mix-model.ts";
 import { compassPad, directionPad, positionPad, type Strength } from "./pads.ts";
 import { Rail, type RailEntry } from "./rail.ts";
+import { worldDivider } from "./world.ts";
+import { shelves } from "./world-model.ts";
 
 export const MODE_LABEL: Record<(typeof modeIds)[number], string> = {
   landing: "Landing",
@@ -50,9 +53,12 @@ const COLOR_LABEL: Record<(typeof colorIds)[number], string> = {
 };
 const SWATCHES = ["#4c6ef5", "#ff004e", "#ff7a2f", "#f2c94c", "#2bd9a8", "#e8e6df"] as const;
 
-/** Open (true) or folded (false) per section id; missing means the section's default. */
+/** The lab preferences the Controls view reads and sets (lab/prefs.ts), and how to store them. */
 export interface SectionPrefs {
+  /** Open (true) or folded (false) per section id; missing means the section's default. */
   sections: Record<string, boolean>;
+  /** Whether a scene picked by hand keeps the world (the World divider's switch). */
+  keepWorld: boolean;
   save(): void;
 }
 
@@ -75,6 +81,10 @@ export class Inspector {
   readonly #search: HTMLInputElement;
   readonly #rail: Rail;
   readonly #body: HTMLElement;
+  readonly #worldSlot = h("div", { class: "groups" });
+  /** The World shelf's divider and its "keep the world" switch. */
+  readonly #worldDivider: Built;
+  readonly #sceneDivider = h("p", { class: "shelf-divider" });
   readonly #sceneSlot = h("div", { class: "groups" });
   readonly #globalSlot = h("div", { class: "groups" });
   readonly #empty = h(
@@ -106,11 +116,16 @@ export class Inspector {
       this.filter();
       this.#search.blur();
     });
+    this.#worldDivider = worldDivider(prefs);
+    this.#syncers.push(this.#worldDivider.sync);
     this.#body = h(
       "div",
       { class: "view-body inspector-body" },
+      this.#worldDivider.el,
+      this.#worldSlot,
+      this.#sceneDivider,
       this.#sceneSlot,
-      h("p", { class: "global-divider" }, h("span", {}, "Global")),
+      h("p", { class: "shelf-divider" }, h("span", {}, "Global")),
       this.#globalSlot,
       this.#empty,
     );
@@ -303,19 +318,28 @@ export class Inspector {
     this.#sceneSyncers = [];
     const defs = sceneDefs[scene].params;
     const knobs = new Knobs(this.#ctx, defs, paramDefaults(scene));
-    const groups = new Map<string, ParamDef[]>();
-    for (const def of defs) groups.set(def.group, [...(groups.get(def.group) ?? []), def]);
-    let first = true;
-    this.#sceneSections = [...groups.entries()].map(([group, list]) => {
-      const section = this.#sceneGroup(scene, knobs, group, list, first);
-      first = false;
-      return section;
-    });
-    this.#sceneSlot.replaceChildren(...this.#sceneSections.map((section) => section.el));
-    this.#rail.set([
-      this.#sceneSections.map((section) => this.#railEntry(section)),
-      this.#globalSections.map((section) => this.#railEntry(section)),
-    ]);
+    // The world's groups lead on a shelf of their own; the scene's first group opens by default.
+    const { world, own } = shelves(sceneDefs[scene]);
+    const section = (group: string) =>
+      this.#sceneGroup(
+        scene,
+        knobs,
+        group,
+        defs.filter((def) => def.group === group),
+        group === defs[0]?.group,
+      );
+    const worldSections = world.map(section);
+    const ownSections = own.map(section);
+    this.#sceneSections = [...worldSections, ...ownSections];
+    this.#worldDivider.el.hidden = worldSections.length === 0;
+    this.#worldSlot.replaceChildren(...worldSections.map((section) => section.el));
+    this.#sceneDivider.replaceChildren(h("span", {}, sceneDefs[scene].title));
+    this.#sceneSlot.replaceChildren(...ownSections.map((section) => section.el));
+    this.#rail.set(
+      [worldSections, ownSections, this.#globalSections].map((list) =>
+        list.map((section) => this.#railEntry(section)),
+      ),
+    );
     this.#body.scrollTop = 0;
   }
 

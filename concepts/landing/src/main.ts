@@ -2,12 +2,10 @@
 // and hands the lab a host interface. Every change is a URL query applied here.
 import { Lab } from "./lab.ts";
 import { DitherRenderer } from "./renderer.ts";
-import { sceneDefs, sceneIds } from "./scenes/index.ts";
+import { sceneDefs } from "./scenes/index.ts";
 import {
   accentOf,
-  carryLook,
   palette,
-  paramDefaults,
   readParams,
   readState,
   renderSettings,
@@ -109,12 +107,9 @@ window.addEventListener("keydown", (event) => {
   }
   if (mod || event.altKey) return;
   if (event.key === "[" || event.key === "]") {
+    const by = event.key === "]" ? 1 : -1;
     // While a tour plays, the keys step along it instead of the whole catalogue.
-    if (lab?.skipTour(event.key === "]" ? 1 : -1)) return;
-    const step = event.key === "]" ? 1 : sceneIds.length - 1;
-    const scene = sceneIds[(sceneIds.indexOf(state.scene) + step) % sceneIds.length] ?? state.scene;
-    apply(serialise(carryLook(state, scene), paramDefaults(scene)));
-    lab?.commit();
+    if (!lab?.skipTour(by)) lab?.stepScene(by);
   } else if (event.key === "h") {
     if (state.mode !== "bare") modeBeforeHide = state.mode;
     const query = serialise(state, params);

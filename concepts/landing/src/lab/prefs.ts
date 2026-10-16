@@ -1,8 +1,9 @@
-// The lab's preferences in this browser: whether it is open, explanations on, each group folded or
-// open, each panel's place and the narrow-screen sheet raised or not. Read defensively: anything
-// missing or malformed falls back, and what older layouts kept that this one has no use for is
-// dropped (the Scenes panel's place, `panels.browser`, from before it became a view of the one
-// panel; the sheet's tab, `sheet.tab`, from when the sheet had a tab per panel).
+// The lab's preferences in this browser: whether it is open, explanations on, a picked scene keeping
+// the world, each group folded or open, each panel's place and the narrow-screen sheet raised or
+// not. Read defensively: anything missing or malformed falls back, and what older layouts kept that
+// this one has no use for is dropped (the Scenes panel's place, `panels.browser`, from before it
+// became a view of the one panel; the sheet's tab, `sheet.tab`, from when the sheet had a tab per
+// panel).
 import { panelIds, type SheetState } from "./panels.ts";
 
 export const PREFS_KEY = "landing.lab.v3";
@@ -10,6 +11,8 @@ export const PREFS_KEY = "landing.lab.v3";
 export interface Prefs {
   open: boolean;
   explain: boolean;
+  /** A scene picked by hand opens under the world of the one left (lab.ts #setScene). */
+  keepWorld: boolean;
   /** Open (true) or folded (false) per section id; missing means the section's default. */
   sections: Record<string, boolean>;
   /** Each panel's place, as the workspace saved it (it checks each value as it loads). */
@@ -22,6 +25,7 @@ export function readPrefs(stored: string | null): Prefs {
   const fallback: Prefs = {
     open: false,
     explain: false,
+    keepWorld: false,
     sections: {},
     panels: {},
     sheet: { open: true },
@@ -41,6 +45,7 @@ export function readPrefs(stored: string | null): Prefs {
   return {
     open: record.open === true,
     explain: record.explain === true,
+    keepWorld: record.keepWorld === true,
     sections: Object.fromEntries(
       Object.entries(object(record.sections)).filter(
         (entry): entry is [string, boolean] => typeof entry[1] === "boolean",

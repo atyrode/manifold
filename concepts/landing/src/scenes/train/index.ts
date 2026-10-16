@@ -154,7 +154,7 @@ const params: readonly ParamDef[] = [
   ),
   ...skyKnobs({ time: 0.15, stars: 0.75, moon: 1 }),
   feature(
-    "sky",
+    "weather",
     "clouds",
     "clouds",
     true,
@@ -222,11 +222,15 @@ export const trainScene: SceneDef = {
         "Your side of the glass: the reading lamp, its reflection, the glass of tea and the curtain.",
     },
     birds: birdsGroup,
-    sky: atmosphereGroups.sky,
-    weather: {
-      title: atmosphereGroups.weather.title,
+    sky: {
+      ...atmosphereGroups.skyNight,
       blurb:
-        "Rain closes the sky, wets the land (the platforms and roads shine with the lamps) and is driven back along the pane; snow streams past the window and settles on the fields, the roofs and the foot of the glass. Fog lies in the hollows; the train's own speed slants whatever falls.",
+        "Time of day, whether the days pass, and the night over the line: its stars, the moon's phase, the odd shooting star and the aurora.",
+    },
+    weather: {
+      ...atmosphereGroups.weather,
+      blurb:
+        "A deck of cloud drifts back over the train. Rain closes the sky, wets the land (the platforms and roads shine with the lamps) and is driven back along the pane; snow streams past the window and settles on the fields, the roofs and the foot of the glass. Fog lies in the hollows; the train's own speed slants whatever falls.",
     },
     manifold: {
       title: "Manifold mark",

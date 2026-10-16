@@ -244,6 +244,18 @@ draws the knob, never its URL keys, values, reset, shuffle or presets:
 Icons come from `src/lab/icons.ts`, one line set: a knob's `icon` (or a group's `Blurb.icon`) picks
 one, otherwise the first word of its key or label that names one does.
 
+Controls put the shared world first: a group whose heading has `shelf: "world"` (the shared
+headings `atmosphereGroups`, `worldGroups` and `birdsGroup` have it; spread one, `{ ...heading,
+blurb }`, to word it for the scene, or set it on a world group of the scene's own, as meadow's wind)
+stands on a World shelf, sky, weather, wind and birds first, above the scene's own groups and the
+Global ones; the rail shows the same three. The World divider's "keep" switch (a lab preference, off
+by default) has a scene picked by hand (the Scenes view, `[` `]`, "Next scene") open under the world
+of the one left: each World knob takes the value of the World knob with its key and kind, kept in
+its range (a choice only where offered), and the season goes over through the year (`carryWorld` in
+`src/lab/world-model.ts`); presets, tours and links keep their own. So the sky's knobs, the aurora
+among them (`weatherKnobs` puts it in "sky", or `auroraGroup`), belong in the sky's group, and a
+scene's subject (lake's aurora) in a group of its own.
+
 The Scenes view's thumbnails are committed files, `concepts/landing/thumbs/<id>.webp`: each scene
 at its defaults, settled, dithered at 240 x 150 as the page draws it. After changing how a scene
 looks at rest (or adding one), run `bun concepts/landing/scripts/thumbs.ts <id>` and commit the

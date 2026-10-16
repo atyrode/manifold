@@ -258,9 +258,9 @@ export const tidepoolScene: SceneDef = {
         "The tide, the swell and the sets that pour into the pool. Tap the water to drop a pebble; drag to trail a finger.",
     },
     light: { title: "Light", blurb: "The light through and on the water." },
-    sky: { title: atmosphereGroups.sky.title, blurb: "The time of day over the shore." },
+    sky: { ...atmosphereGroups.sky, blurb: "The time of day over the shore." },
     weather: {
-      title: atmosphereGroups.weather.title,
+      ...atmosphereGroups.weather,
       blurb: "Rain ringing the pool and darkening the rock.",
     },
     life: {

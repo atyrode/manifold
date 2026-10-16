@@ -1,7 +1,14 @@
 import { expect, spyOn, test } from "bun:test";
 import { readPrefs } from "./prefs.ts";
 
-const defaults = { open: false, explain: false, sections: {}, panels: {}, sheet: { open: true } };
+const defaults = {
+  open: false,
+  explain: false,
+  keepWorld: false,
+  sections: {},
+  panels: {},
+  sheet: { open: true },
+};
 
 test("no stored preferences read as the defaults", () => {
   expect(readPrefs(null)).toEqual(defaults);
@@ -14,6 +21,7 @@ test("a layout from before the Scenes panel became a view keeps everything but t
   const stored = JSON.stringify({
     open: true,
     explain: true,
+    keepWorld: true,
     sections: { "pond:koi": false, look: true, broken: "yes" },
     panels: {
       browser: { dock: "float", ax: "left", x: 16, ay: "top", y: 16, w: 252, h: 808 },
@@ -25,6 +33,7 @@ test("a layout from before the Scenes panel became a view keeps everything but t
   expect(readPrefs(stored)).toEqual({
     open: true,
     explain: true,
+    keepWorld: true,
     sections: { "pond:koi": false, look: true },
     panels: { inspector, transport },
     sheet: { open: false },
@@ -41,5 +50,7 @@ test("unreadable or malformed preferences fall back without throwing", () => {
   }
   expect(readPrefs("3")).toEqual(defaults);
   expect(readPrefs("null")).toEqual(defaults);
-  expect(readPrefs(JSON.stringify({ panels: [1, 2], sheet: "up", sections: 4 }))).toEqual(defaults);
+  expect(
+    readPrefs(JSON.stringify({ panels: [1, 2], sheet: "up", sections: 4, keepWorld: "yes" })),
+  ).toEqual(defaults);
 });

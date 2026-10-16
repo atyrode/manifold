@@ -128,7 +128,7 @@ export const forestScene: SceneDef = {
     light: { title: "Light", blurb: "Shafts of sun or moon through the canopy." },
     sky: atmosphereGroups.sky,
     weather: {
-      title: atmosphereGroups.weather.title,
+      ...atmosphereGroups.weather,
       blurb:
         "Rain closes the sky and greys the mist; the canopy shelters the forest but pours through its gaps. The beards of lichen, the torii and the canopy gather water and drip long after; roots and stones go dark and glossy, pools gather on the floor, rings spread on the stream and drops burst on the stones. The wind slants the rain and sets the mist and the spores drifting.",
     },

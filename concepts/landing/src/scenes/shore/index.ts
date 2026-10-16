@@ -97,14 +97,14 @@ export const shoreScene: SceneDef = {
       blurb: "Plankton that light up when the water is stirred: by the surf, by fish, by you.",
     },
     sky: {
-      title: worldGroups.sky.title,
+      ...worldGroups.sky,
       blurb:
-        "Time of day, whether the days pass, and the night sky over the sea: its stars and the Milky Way, glinting in the wet sand, the moon's phase, the odd shooting star.",
+        "Time of day, whether the days pass, and the night sky over the sea: its stars and the Milky Way, glinting in the wet sand, the moon's phase, the odd shooting star and the aurora.",
     },
     weather: {
-      title: worldGroups.weather.title,
+      ...worldGroups.weather,
       blurb:
-        "Cloud and its shadows on the sand and the sea, rain, snow, fog, wind, lightning out of a storm bank at sea and the aurora, all mirrored in the water and the wet sand. Rain greys the sky and hangs in shafts out at sea, rings the water and soaks the beach; snow settles on the dry sand.",
+        "Cloud and its shadows on the sand and the sea, rain, snow, fog, wind and lightning out of a storm bank at sea, all mirrored in the water and the wet sand. Rain greys the sky and hangs in shafts out at sea, rings the water and soaks the beach; snow settles on the dry sand.",
     },
     birds: worldGroups.birds,
     manifold: {

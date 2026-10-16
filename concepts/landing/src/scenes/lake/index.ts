@@ -7,14 +7,14 @@
 // the aurora onto the ice as a crack sings across, and goes out as a gust of snow streams over the
 // ice and the camera tilts back up (LAKE_PASSAGE).
 import { choice, feature, range, seed, toggle, type ParamDef } from "../../params.ts";
-import { birdKnobs } from "../../shaders/lib/birds.ts";
+import { birdKnobs, birdsGroup } from "../../shaders/lib/birds.ts";
 import { atmosphereGroups, skyComponentKnobs, weatherKnobs } from "../atmosphere.ts";
 import type { SceneDef } from "../types.ts";
 import { LAKE_METEOR_TRIGGER, lakeGlsl } from "./shader.ts";
 import { LAKE_PASSAGE, lakeSim } from "./sim.ts";
 
 const params: readonly ParamDef[] = [
-  ...weatherKnobs({ group: "aurora", aurora: true, on: { aurora: true } }),
+  ...weatherKnobs({ auroraGroup: "aurora", aurora: true, on: { aurora: true } }),
   choice(
     "aurora",
     "hue",
@@ -108,7 +108,7 @@ const params: readonly ParamDef[] = [
     "From the blue hour, the last light glowing low on the left, to the deep of the night.",
   ),
   feature(
-    "night",
+    "sky",
     "moon",
     "moon",
     true,
@@ -117,14 +117,13 @@ const params: readonly ParamDef[] = [
     "A moon low over the mountains on the right, from a thin crescent to full: it lights the snow, draws a path of glints down the ice and drowns the faintest stars.",
   ),
   range(
-    "night",
+    "sky",
     "stars",
     "stars",
     0.7,
     "How many stars come out over the lake: none to the left, a dark northern sky to the right. The Milky Way fades with them.",
   ),
   ...skyComponentKnobs({
-    group: "night",
     milkyWay: { on: true },
     meteors: { trigger: LAKE_METEOR_TRIGGER },
   }),
@@ -136,7 +135,6 @@ const params: readonly ParamDef[] = [
     "A log cabin on the point across the ice: its window lit by the fire, its light drawn down the ice toward you, its smoke rising until it flattens under the cold air above.",
   ),
   ...birdKnobs({
-    group: "night",
     kind: "geese",
     help: "Birds crossing the night over the lake, geese by default, a skein migrating under the aurora: dark against the sky, mirrored in the black ice, behind the cabin and the trees on the point; few fly in snow.",
   }),
@@ -173,10 +171,16 @@ export const lakeScene: SceneDef = {
     night: {
       title: "Night",
       blurb:
-        "The hour, the moon, the stars and the Milky Way, the cabin on the far shore, and birds crossing the sky.",
+        "The hour, from the last light of the blue hour to the deep of the night, and the cabin on the far shore.",
     },
+    sky: {
+      ...atmosphereGroups.skyNight,
+      blurb:
+        "The night sky over the lake: the moon's phase, the stars and the Milky Way, the odd shooting star, all mirrored in the ice.",
+    },
+    birds: birdsGroup,
     weather: {
-      title: atmosphereGroups.weather.title,
+      ...atmosphereGroups.weather,
       blurb:
         "Snow falls from a closing sky, hiding the aurora and slowly burying the ice; mist settles on the lake; the wind drives the drifting snow and leans the cabin's smoke.",
     },

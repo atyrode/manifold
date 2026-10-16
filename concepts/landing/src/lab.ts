@@ -26,6 +26,7 @@ import { PREFS_KEY, readPrefs } from "./lab/prefs.ts";
 import { PresetsView } from "./lab/presets.ts";
 import { Popover, separator } from "./lab/transport.ts";
 import { Views } from "./lab/views.ts";
+import { carryWorld } from "./lab/world-model.ts";
 import { MAX_SEED, type ParamDef } from "./params.ts";
 import type { DitherRenderer, SceneFailure } from "./renderer.ts";
 import { sceneDefs, sceneIds, type SceneId } from "./scenes/index.ts";
@@ -179,7 +180,7 @@ export class Lab {
     root.classList.toggle("explain", this.#prefs.explain);
 
     const save = () => this.#savePrefs();
-    this.#gallery = new SceneGallery(this.#ctx, (scene) => this.#setScene(scene));
+    this.#gallery = new SceneGallery(this.#ctx, (scene) => this.#setScene(scene, "hand"));
     this.#presets = new PresetsView(this.#ctx, {
       load: (query) => {
         host.apply(new URLSearchParams(query));
@@ -188,8 +189,15 @@ export class Lab {
       query: () => this.#query(),
       build: host.build,
     });
+    const prefs = this.#prefs;
     this.#inspector = new Inspector(this.#ctx, {
-      sections: this.#prefs.sections,
+      sections: prefs.sections,
+      get keepWorld() {
+        return prefs.keepWorld;
+      },
+      set keepWorld(keep: boolean) {
+        prefs.keepWorld = keep;
+      },
       save,
     });
     this.#views = new Views(
@@ -397,6 +405,13 @@ export class Lab {
     return true;
   }
 
+  /** Go to the previous (-1) or next (1) scene of the catalogue, as a scene picked by hand. */
+  stepScene(by: -1 | 1): void {
+    const { scene } = this.#current().state;
+    const next = sceneIds[(sceneIds.indexOf(scene) + by + sceneIds.length) % sceneIds.length];
+    this.#setScene(next ?? scene, "hand");
+  }
+
   // ---- state plumbing -------------------------------------------------------------------------
 
   #current(): { state: LabState; params: Params } {
@@ -446,10 +461,7 @@ export class Lab {
       el.hidden = true;
     });
     const next = textButton("next", "Next scene", "Go on to the next scene", () => {
-      const { state } = this.#current();
-      this.#setScene(
-        sceneIds[(sceneIds.indexOf(state.scene) + 1) % sceneIds.length] ?? state.scene,
-      );
+      this.stepScene(1);
       el.hidden = true;
     });
     const el = h(
@@ -950,7 +962,7 @@ export class Lab {
     );
     go.style.setProperty("--dot", accent);
     go.addEventListener("click", () => {
-      this.#setScene(step.scene);
+      this.#setScene(step.scene, "tour");
       this.sync();
     });
     const seconds = h("input", {
@@ -1070,7 +1082,7 @@ export class Lab {
   #beginTour(play: boolean): void {
     const tour = this.#tour;
     if (!tour) return;
-    if (!tour.follow(this.#current().state.scene)) this.#setScene(tour.step.scene);
+    if (!tour.follow(this.#current().state.scene)) this.#setScene(tour.step.scene, "tour");
     tour.playing = play;
     this.#runTour();
     this.sync();
@@ -1080,7 +1092,7 @@ export class Lab {
   #stepTour(by: number): void {
     const tour = this.#tour;
     if (!tour) return;
-    this.#setScene(tour.skip(by));
+    this.#setScene(tour.skip(by), "tour");
     this.sync();
   }
 
@@ -1108,17 +1120,26 @@ export class Lab {
     const seconds = this.#tourLast === undefined ? 0 : (now - this.#tourLast) / 1000;
     this.#tourLast = now;
     const next = tour.tick(seconds, this.#host.renderer()?.paused ?? false);
-    if (next !== undefined) this.#setScene(next);
+    if (next !== undefined) this.#setScene(next, "tour");
     this.#syncTourClock();
     this.#tourFrame = requestAnimationFrame(this.#tourTick);
   };
 
   // ---- actions --------------------------------------------------------------------------------
 
-  #setScene(scene: SceneId): void {
-    const { state } = this.#current();
+  /**
+   * Show `scene` at its own defaults; picked by hand (the Scenes view, [ and ], Next scene) while
+   * "keep the world" is on, under the world of the scene left (world-model.ts `carryWorld`).
+   */
+  #setScene(scene: SceneId, by: "hand" | "tour"): void {
+    const { state, params } = this.#current();
     if (scene === state.scene) return;
-    this.#host.apply(serialise(carryLook(state, scene), paramDefaults(scene)));
+    const defaults = paramDefaults(scene);
+    const next =
+      by === "hand" && this.#prefs.keepWorld
+        ? carryWorld(sceneDefs[state.scene], params, sceneDefs[scene], defaults)
+        : defaults;
+    this.#host.apply(serialise(carryLook(state, scene), next));
     this.commit();
   }
 
