@@ -603,6 +603,70 @@ body.lab-open .lab-opener {
   gap: 6px;
   padding: 10px 10px 8px;
 }
+/* the "changed" lens beside the search: a pill with the count, lit while it narrows the groups */
+.lens-toggle {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: 5px;
+  height: 28px;
+  padding: 0 8px;
+  color: var(--lab-muted);
+  background: none;
+  border: 1px solid var(--lab-line);
+  border-radius: 999px;
+  transition:
+    color 120ms,
+    background 120ms,
+    border-color 120ms;
+}
+.lens-toggle .icon {
+  width: 13px;
+  height: 13px;
+}
+.lens-toggle:hover {
+  color: var(--lab-ink);
+  border-color: var(--lab-line-strong);
+}
+.lens-toggle[aria-pressed="true"] {
+  color: var(--lab-accent);
+  background: var(--lab-accent-soft);
+  border-color: currentColor;
+}
+.lens-count {
+  font-size: 10.5px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.lens-count:empty {
+  display: none;
+}
+/* under the tools while the lens shows something: what it shows, and its reset */
+.lens-head {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 8px;
+  padding: 0 10px 8px;
+}
+.lens-caption {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  font-size: 10.5px;
+  color: var(--lab-muted);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.lens-head .text-button {
+  flex: none;
+  padding: 4px 9px;
+  font-size: 11px;
+}
+.lens-head .text-button .icon {
+  width: 12px;
+  height: 12px;
+}
 .view-main {
   display: grid;
   flex: 1;
@@ -876,6 +940,23 @@ body.lab-open .lab-opener {
 .rail-button.dim {
   opacity: 0.25;
 }
+/* a group with changes: an accent dot in its button's corner */
+.rail-button.changed::after {
+  content: "";
+  position: absolute;
+  top: 3px;
+  right: 3px;
+  width: 5px;
+  height: 5px;
+  background: var(--lab-accent);
+  border-radius: 50%;
+  animation: change-dot 260ms cubic-bezier(0.3, 0.7, 0.4, 1.4);
+}
+@keyframes change-dot {
+  from {
+    transform: scale(0);
+  }
+}
 .rail-divider {
   flex: none;
   width: 16px;
@@ -1067,6 +1148,13 @@ body.lab-open .lab-opener {
 }
 .row.no-match,
 .chip-cell.no-match {
+  display: none;
+}
+/* what the search or the lens leaves out takes no room: a dependent control's reveal, a chip grid
+   or the amounts under it with nothing left to show */
+.reveal:has(> .reveal-inner > .no-match),
+.chips:not(:has(> .chip-cell:not(.no-match))),
+.amounts:not(:has(> .reveal.open > .reveal-inner > :not(.no-match))) {
   display: none;
 }
 .row-head {

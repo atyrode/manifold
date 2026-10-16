@@ -277,6 +277,13 @@ its range (a choice only where offered), and the season goes over through the ye
 among them (`weatherKnobs` puts it in "sky", or `auroraGroup`), belong in the sky's group, and a
 scene's subject (lake's aurora) in a group of its own.
 
+- The lens beside the Controls search ("n changed") narrows every group to the controls that differ
+  from their defaults (Global settings against the scene's own), with the search's words if any;
+  the rail dots each group with changes and "Reset what changed" restores them all in one undoable
+  change (rules in `src/lab/lens-model.ts`). A control holds the knobs its element, or the widget
+  round it, lists in `data-keys`: the inspector's `place` tags a widget with its knob's keys, so tag
+  one that holds several knobs with all of theirs.
+
 The Scenes view's thumbnails are committed files, `concepts/landing/thumbs/<id>.webp`: each scene
 at its defaults, settled, dithered at 240 x 150 as the page draws it. After changing how a scene
 looks at rest (or adding one), run `bun concepts/landing/scripts/thumbs.ts <id>` and commit the

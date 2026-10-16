@@ -1,6 +1,7 @@
 // The icon rail beside a view's scrolling body: a button per section that jumps to it, the section
-// in view marked as the body scrolls, and the sections a search hides dimmed. Each view of the lab
-// panel has its own: scene families (Scenes), preset groups (Presets), control groups (Controls).
+// in view marked as the body scrolls, the sections a search hides dimmed and, where the view counts
+// them, a dot on those with changes. Each view of the lab panel has its own: scene families
+// (Scenes), preset groups (Presets), control groups (Controls).
 import { h } from "./dom.ts";
 import { icon, type IconName } from "./icons.ts";
 
@@ -81,6 +82,19 @@ export class Rail {
   /** Mark `id` as the section in hand (opened from its own header), or nothing. */
   pin(id: string | undefined): void {
     this.#pinned = id;
+  }
+
+  /** Dot the buttons of the sections with changes, `counts` by id; their names say how many. */
+  mark(counts: ReadonlyMap<string, number>): void {
+    for (const entry of this.#entries) {
+      const button = this.#buttons.get(entry.id);
+      if (!button) continue;
+      const count = counts.get(entry.id) ?? 0;
+      const label = count > 0 ? `${entry.title} (${count} changed)` : entry.title;
+      button.classList.toggle("changed", count > 0);
+      button.title = label;
+      button.setAttribute("aria-label", label);
+    }
   }
 
   /**

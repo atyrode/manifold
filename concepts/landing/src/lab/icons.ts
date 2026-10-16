@@ -37,6 +37,7 @@ const PATHS = {
   fold: "M4 2.5l4 4 4-4M4 13.5l4-4 4 4",
   unfold: "M4 6l4-4 4 4M4 10l4 4 4-4",
   sliders: "M2.5 4.5h11M2.5 11.5h11M5.5 3v3M10.5 10v3",
+  changed: "M6.5 4.5h7M6.5 8h7M6.5 11.5h7M3 9a1 1 0 1 0 0-2 1 1 0 0 0 0 2z",
   grid: "M2.5 2.5h4.5v4.5H2.5zM9 2.5h4.5v4.5H9zM2.5 9h4.5v4.5H2.5zM9 9h4.5v4.5H9z",
   bookmark: "M4 1.5h8v13l-4-3-4 3z",
   pin: "M5.5 2h5M6.5 2v4.5L4 9.5h8L9.5 6.5V2M8 9.5V14",

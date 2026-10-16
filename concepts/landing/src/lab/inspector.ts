@@ -1,19 +1,36 @@
 // The lab panel's Controls view: the scene's knob groups, the shared world's first on a World shelf
 // (with its "keep the world" switch, world.ts), then the global Look, Motion and Page groups, each
-// a collapsible section under an icon heading, with a rail of the same icons to jump
-// between them, a search that narrows every group to the controls that match and a button that
-// folds or opens them all. A group's knobs are laid out by their metadata: the sky dial, mix bars and
+// a collapsible section under an icon heading, with a rail of the same icons to jump between them
+// (a dot on a group with changes), a search that narrows every group to the controls that match, a
+// lens that narrows them to what differs from the defaults (and resets it) and a button that folds
+// or opens them all. A group's knobs are laid out by their metadata: the sky dial, mix bars and
 // pads where a knob names one (`ParamDef.widget`), its switches as icon chips, everything else as
 // rows.
 import { formatValue, MAX_SEED, type Option, type ParamDef } from "../params.ts";
 import { colorIds, ditherIds, viewIds } from "../renderer.ts";
 import { sceneDefs, type SceneId } from "../scenes/index.ts";
-import { accentOf, defaultsFor, modeIds, paramDefaults, type LabState } from "../state.ts";
+import {
+  accentOf,
+  defaultsFor,
+  modeIds,
+  paramDefaults,
+  type LabState,
+  type Params,
+} from "../state.ts";
 import { almanacParts, gatherAlmanac } from "./almanac-model.ts";
 import { chipGrid } from "./chips.ts";
-import { dice, iconButton, nowButton, row, segments, slider, switchControl } from "./controls.ts";
+import {
+  dice,
+  iconButton,
+  nowButton,
+  row,
+  segments,
+  slider,
+  switchControl,
+  textButton,
+} from "./controls.ts";
 import { seasonWheel, skyDial } from "./dial.ts";
-import { h, reveal, type Built, type LabContext } from "./dom.ts";
+import { h, reveal, type Built, type LabContext, type Patch } from "./dom.ts";
 import { flywayCard, flywayOf } from "./flyway.ts";
 import { icon, iconFromWords, type IconName } from "./icons.ts";
 import {
@@ -24,6 +41,16 @@ import {
   type RangeDef,
   type SwitchDef,
 } from "./knobs.ts";
+import {
+  changedCounts,
+  changedKnobs,
+  changedSettings,
+  groupShows,
+  itemShows,
+  titleHolds,
+  type LensGroup,
+  type LensQuery,
+} from "./lens-model.ts";
 import { mixBar } from "./mix.ts";
 import type { MixPart } from "./mix-model.ts";
 import { compassPad, directionPad, positionPad, type Strength } from "./pads.ts";
@@ -31,6 +58,7 @@ import { Rail, type RailEntry } from "./rail.ts";
 import { worldDivider } from "./world.ts";
 import { shelves } from "./world-model.ts";
 import { recipeStrip } from "./recipes.ts";
+import { shownRecipes } from "./recipes-model.ts";
 import { rollPatch } from "./roll-model.ts";
 
 export const MODE_LABEL: Record<(typeof modeIds)[number], string> = {
@@ -56,6 +84,38 @@ const COLOR_LABEL: Record<(typeof colorIds)[number], string> = {
   full: "Full",
 };
 const SWATCHES = ["#4c6ef5", "#ff004e", "#ff7a2f", "#f2c94c", "#2bd9a8", "#e8e6df"] as const;
+
+/**
+ * The global groups' settings: what their resets restore, and what the lens compares, against the
+ * scene's defaults (`defaultsFor`).
+ */
+const SETTINGS = {
+  look: ["view", "dither", "color", "accent", "levels", "pixel"],
+  motion: ["motion", "mouse", "transitions", "overlap", "weave", "blend", "slowmo"],
+  page: ["mode", "dim", "blur"],
+} as const satisfies Record<string, readonly (keyof LabState)[]>;
+const SETTING_KEYS = [...SETTINGS.look, ...SETTINGS.motion, ...SETTINGS.page];
+/** The global groups as the lens counts them (by section id): each setting a knob of its own. */
+const SETTING_GROUPS: readonly LensGroup[] = Object.entries<readonly string[]>(SETTINGS).map(
+  ([id, keys]) => ({ id, knobs: keys.map((key) => [key]) }),
+);
+
+/**
+ * Tag `built` with the URL keys of the knobs it holds (`data-keys`): the lens shows it while any of
+ * them differs from its default, and with it a control inside that has no keys of its own.
+ */
+function holding(built: Built, defs: readonly (ParamDef | undefined)[]): Built {
+  built.el.dataset.keys = defs.flatMap((def) => (def ? knobKeys(def) : [])).join(" ");
+  return built;
+}
+
+/** Tag a global group's rows, in the order of its settings, each with the setting it shows. */
+function tagSettings(rows: readonly Built[], keys: readonly string[]): void {
+  for (const [index, key] of keys.entries()) {
+    const built = rows[index];
+    if (built) built.el.dataset.keys = key;
+  }
+}
 
 /** The lab preferences the Controls view reads and sets (lab/prefs.ts), and how to store them. */
 export interface SectionPrefs {
@@ -91,11 +151,8 @@ export class Inspector {
   readonly #sceneDivider = h("p", { class: "shelf-divider" });
   readonly #sceneSlot = h("div", { class: "groups" });
   readonly #globalSlot = h("div", { class: "groups" });
-  readonly #empty = h(
-    "p",
-    { class: "lab-empty" },
-    "Nothing matches. Try another word, or press Esc.",
-  );
+  /** Where nothing shows: what the search or the lens found nothing for (set by filter). */
+  readonly #empty = h("p", { class: "lab-empty" });
   readonly #syncers: (() => void)[] = [];
   #sceneSyncers: (() => void)[] = [];
   #sceneSections: Section[] = [];
@@ -103,6 +160,17 @@ export class Inspector {
   #built: SceneId | undefined;
   /** Whether every group is open; the fold button flips it. */
   readonly #fold: HTMLButtonElement;
+  /** The "changed" lens: while on, every group narrows to what differs from the defaults. */
+  #lens = false;
+  readonly #lensToggle: HTMLButtonElement;
+  readonly #lensCount = h("span", { class: "lens-count" });
+  /** Over the groups while the lens is on and something changed: its "reset what changed". */
+  readonly #lensHead: HTMLElement;
+  /** The URL keys that differ from their defaults: the scene's knobs and the global settings. */
+  #changed: ReadonlySet<string> = new Set();
+  /** The scene's knob defaults, and every group as the lens counts it (the global ones last). */
+  #defaults: Params = {};
+  #lensGroups: LensGroup[] = [];
 
   constructor(ctx: LabContext, prefs: SectionPrefs) {
     this.#ctx = ctx;
@@ -143,6 +211,31 @@ export class Inspector {
       this.#prefs.save();
       this.sync();
     });
+    this.#lensToggle = h(
+      "button",
+      { type: "button", class: "lens-toggle" },
+      icon("changed"),
+      this.#lensCount,
+    );
+    this.#lensToggle.addEventListener("click", () => {
+      this.#lens = !this.#lens;
+      this.#body.scrollTop = 0;
+      this.sync();
+    });
+    this.#lensHead = h(
+      "div",
+      { class: "lens-head", hidden: true },
+      h("span", { class: "lens-caption" }, "Changed from defaults"),
+      textButton(
+        "reset",
+        "Reset what changed",
+        "Every control here back to its default, in one step (undo brings them back)",
+        () => {
+          this.#resetChanged();
+          this.#lensToggle.focus();
+        },
+      ),
+    );
     this.el = h(
       "div",
       { class: "view-controls" },
@@ -150,8 +243,10 @@ export class Inspector {
         "div",
         { class: "view-tools" },
         h("label", { class: "panel-search" }, icon("search"), this.#search),
+        this.#lensToggle,
         this.#fold,
       ),
+      this.#lensHead,
       h("div", { class: "view-main" }, this.#rail.el, this.#body),
     );
   }
@@ -176,7 +271,39 @@ export class Inspector {
     const label = all ? "Fold every group" : "Open every group";
     this.#fold.title = label;
     this.#fold.setAttribute("aria-label", label);
+    this.#syncLens();
     this.filter();
+  }
+
+  /** Find what differs from the defaults: the lens's count and head, and the rail's dots. */
+  #syncLens(): void {
+    const { state, params } = this.#ctx.current();
+    this.#changed = new Set([
+      ...changedKnobs(sceneDefs[state.scene].params, params, this.#defaults),
+      ...changedSettings(SETTING_KEYS, state, this.#base()),
+    ]);
+    const counts = changedCounts(this.#lensGroups, this.#changed);
+    this.#rail.mark(counts);
+    const total = [...counts.values()].reduce((sum, count) => sum + count, 0);
+    this.#lensCount.textContent = total > 0 ? `${total} changed` : "";
+    const label = `Only what changed (${total > 0 ? `${total} changed` : "nothing yet"})`;
+    this.#lensToggle.title = `${label}: narrow every group to the controls that differ from this scene's defaults`;
+    this.#lensToggle.setAttribute("aria-label", label);
+    this.#lensToggle.setAttribute("aria-pressed", String(this.#lens));
+    this.#lensHead.hidden = !this.#lens || total === 0;
+  }
+
+  /**
+   * Every knob of the scene and global setting that differs from its default back to it, in one
+   * undoable change: the transport's reset, kept to what changed.
+   */
+  #resetChanged(): void {
+    const base = this.#base();
+    const patch: Patch = {};
+    for (const [key, value] of Object.entries(this.#defaults))
+      if (this.#changed.has(key)) patch[key] = value;
+    for (const key of SETTING_KEYS) if (this.#changed.has(key)) patch[key] = base[key];
+    this.#ctx.change(patch, true);
   }
 
   #allOpen(): boolean {
@@ -309,28 +436,48 @@ export class Inspector {
     };
   }
 
+  /** Narrow every group to the controls that match the search and, while it is on, the lens. */
   filter(): void {
-    const text = this.#search.value.trim().toLowerCase();
-    const searching = text.length > 0;
-    this.el.classList.toggle("searching", searching);
+    const query: LensQuery = {
+      text: this.#search.value.trim().toLowerCase(),
+      lens: this.#lens,
+      changed: this.#changed,
+    };
+    const filtering = query.text !== "" || query.lens;
+    this.el.classList.toggle("searching", filtering);
     let any = false;
     const sections = [...this.#sceneSections, ...this.#globalSections];
     for (const section of sections) {
       const el = section.el;
-      let matches = 0;
-      const titleHit = searching && (el.dataset.title ?? "").includes(text);
+      let shown = 0;
+      const titleHit = titleHolds(el.dataset.title ?? "", query);
       for (const item of el.querySelectorAll<HTMLElement>("[data-search]")) {
-        const hit = !searching || titleHit || (item.dataset.search ?? "").includes(text);
+        // A control's knobs are its own, else those of the widget it stands in.
+        const keys = item.closest<HTMLElement>("[data-keys]")?.dataset.keys ?? "";
+        const hit = itemShows(
+          {
+            search: item.dataset.search ?? "",
+            keys: keys.split(" "),
+            held: item.contains(document.activeElement),
+          },
+          titleHit,
+          query,
+        );
         item.classList.toggle("no-match", !hit);
-        if (hit) matches++;
+        if (hit) shown++;
       }
-      const visible = !searching || matches > 0 || titleHit;
+      const visible = groupShows(shown, titleHit, query);
       el.hidden = !visible;
-      el.classList.toggle("searching", searching && visible);
+      el.classList.toggle("searching", filtering && visible);
       if (visible) any = true;
     }
     this.#empty.hidden = any;
-    if (searching) for (const sync of [...this.#syncers, ...this.#sceneSyncers]) sync();
+    this.#empty.textContent = !query.lens
+      ? "Nothing matches. Try another word, or press Esc."
+      : query.changed.size === 0
+        ? "Nothing has changed: every control is at this scene's default."
+        : "Nothing changed matches. Try another word, or press Esc.";
+    if (filtering) for (const sync of [...this.#syncers, ...this.#sceneSyncers]) sync();
     this.#rail.spy();
   }
 
@@ -340,12 +487,20 @@ export class Inspector {
     this.#built = scene;
     this.#sceneSyncers = [];
     const defs = sceneDefs[scene].params;
-    const knobs = new Knobs(this.#ctx, defs, paramDefaults(scene));
+    this.#defaults = paramDefaults(scene);
+    const knobs = new Knobs(this.#ctx, defs, this.#defaults);
     // The world's groups lead on a shelf of their own; the scene's first group opens by default.
     // The almanac's season and year parts stand with the time of day, wherever they are declared.
     const groups = new Map<string, ParamDef[]>();
     for (const def of defs) groups.set(def.group, [...(groups.get(def.group) ?? []), def]);
     gatherAlmanac(groups);
+    this.#lensGroups = [
+      ...[...groups].map(([group, list]) => ({
+        id: `${scene}:${group}`,
+        knobs: list.map(knobKeys),
+      })),
+      ...SETTING_GROUPS,
+    ];
     const { world, own } = shelves(sceneDefs[scene]);
     const section = (group: string) =>
       this.#sceneGroup(scene, knobs, group, groups.get(group) ?? [], group === defs[0]?.group);
@@ -385,6 +540,7 @@ export class Inspector {
     const used = new Set<ParamDef>(master ? [master] : []);
     const items: { at: number; built: Built; when: string | undefined }[] = [];
     const place = (def: ParamDef, built: Built) => {
+      built.el.dataset.keys ??= knobKeys(def).join(" ");
       items.push({ at: defs.indexOf(def), built, when: def.when });
     };
 
@@ -404,10 +560,19 @@ export class Inspector {
         );
       const cycle = part("cycle");
       const moon = part("moon");
-      dial = skyDial(knobs, time, cycle, moon, almanac);
+      dial = holding(skyDial(knobs, time, cycle, moon, almanac), [
+        time,
+        cycle,
+        moon,
+        almanac.season,
+        almanac.year,
+      ]);
       for (const def of [time, cycle, moon, almanac.season, almanac.year]) if (def) used.add(def);
     } else if (almanac.season) {
-      place(almanac.season, seasonWheel(knobs, almanac.season, almanac.year));
+      place(
+        almanac.season,
+        holding(seasonWheel(knobs, almanac.season, almanac.year), [almanac.season, almanac.year]),
+      );
       for (const def of [almanac.season, almanac.year]) if (def) used.add(def);
     }
 
@@ -423,14 +588,14 @@ export class Inspector {
           def: power,
           key: power.kind === "feature" ? `${power.key}-amount` : power.key,
         };
-        place(def, compassPad(knobs, def, strength));
+        place(def, holding(compassPad(knobs, def, strength), [def, power]));
         used.add(def);
         if (power === master) masterAmountShown = false;
         else if (defs.includes(power) && power.kind === "range") used.add(power);
       } else if (widget?.kind === "position") {
         const y = knobs.def(widget.y);
         if (y?.kind !== "range" || !defs.includes(y)) continue;
-        place(def, positionPad(knobs, def, y, widget.screen));
+        place(def, holding(positionPad(knobs, def, y, widget.screen), [def, y]));
         used.add(def).add(y);
       } else if (widget?.kind === "direction" && def.min < 0 && def.max > 0) {
         place(def, directionPad(knobs, def, knobIcon(def)));
@@ -453,13 +618,27 @@ export class Inspector {
       }
     for (const [name, parts] of mixes) {
       const head = parts[0];
-      if (head) place(head.def, mixBar(knobs, name, parts));
+      if (head)
+        place(
+          head.def,
+          holding(
+            mixBar(knobs, name, parts),
+            parts.map((part) => part.def),
+          ),
+        );
     }
 
     // The birds card, at its switch (the header's, when the birds are the group's master).
     const flyway = flywayOf(defs);
     if (flyway) {
-      place(flyway.birds, flywayCard(knobs, flyway, flyway.birds === master));
+      place(
+        flyway.birds,
+        holding(flywayCard(knobs, flyway, flyway.birds === master), [
+          flyway.birds,
+          flyway.kind,
+          flyway.formation,
+        ]),
+      );
       for (const def of [flyway.birds, flyway.kind, flyway.formation]) if (def) used.add(def);
       if (flyway.birds === master) masterAmountShown = false;
     }
@@ -475,13 +654,21 @@ export class Inspector {
         place(def, this.#knobRow(knobs, def));
 
     const content: HTMLElement[] = [];
+    const keys = defs.flatMap(knobKeys);
     const recipes = recipeStrip(knobs, info, sceneDefs[scene].params);
     if (recipes) {
+      // The strip holds the group's knobs that its recipes set.
+      const set = new Set(
+        shownRecipes(info.recipes ?? [], sceneDefs[scene].params).flatMap(({ patch }) =>
+          Object.keys(patch),
+        ),
+      );
+      recipes.el.dataset.keys = keys.filter((key) => set.has(key)).join(" ");
       content.push(recipes.el);
       syncers.push(recipes.sync);
     }
     if (master?.kind === "feature" && masterAmountShown) {
-      const built = this.#masterAmount(knobs, master);
+      const built = holding(this.#masterAmount(knobs, master), [master]);
       content.push(built.el);
       syncers.push(built.sync);
     }
@@ -517,7 +704,11 @@ export class Inspector {
           },
         )
       : undefined;
-    const keys = defs.flatMap(knobKeys);
+    if (master && masterSwitch) {
+      // The header's switch is one of the group's controls: the search and the lens find it too.
+      masterSwitch.el.dataset.search = `${master.label} ${master.help}`.toLowerCase();
+      holding(masterSwitch, [master]);
+    }
     return this.#section({
       id: `${scene}:${group}`,
       title: info.title,
@@ -830,7 +1021,8 @@ export class Inspector {
         if (document.activeElement !== custom) custom.value = accentOf(state);
       },
     );
-    const keys = ["view", "dither", "color", "accent", "levels", "pixel"] as const;
+    const keys = SETTINGS.look;
+    tagSettings(rows, keys);
     return this.#section({
       id: "look",
       title: "Look",
@@ -991,7 +1183,8 @@ export class Inspector {
     ];
     // Overlap, blend length, pattern and speed tune transitions: shown only while they are on.
     const tuning = rows.slice(3, 7);
-    const passageKeys = ["transitions", "overlap", "weave", "blend", "slowmo"] as const;
+    const keys = SETTINGS.motion;
+    tagSettings(rows, keys);
     const playIcon = icon("play");
     const pauseIcon = icon("pause");
     const playLabel = h("span");
@@ -1032,16 +1225,8 @@ export class Inspector {
           state.transitions === "on" ? "" : "cuts",
         ].filter(Boolean);
       },
-      modified: () =>
-        this.#state().motion !== this.#base().motion ||
-        this.#state().mouse !== this.#base().mouse ||
-        passageKeys.some((key) => this.#state()[key] !== this.#base()[key]),
-      reset: () =>
-        change({
-          motion: this.#base().motion,
-          mouse: this.#base().mouse,
-          ...Object.fromEntries(passageKeys.map((key) => [key, this.#base()[key]])),
-        }),
+      modified: () => keys.some((key) => this.#state()[key] !== this.#base()[key]),
+      reset: () => change(Object.fromEntries(keys.map((key) => [key, this.#base()[key]]))),
       syncers: this.#syncers,
     });
   }
@@ -1123,6 +1308,8 @@ export class Inspector {
         if (document.activeElement !== nameInput) nameInput.value = this.#state().instance;
       },
     );
+    const keys = SETTINGS.page;
+    tagSettings(rows, keys);
     const [pageRow, ...rest] = rows;
     return this.#section({
       id: "page",
@@ -1141,12 +1328,8 @@ export class Inspector {
           state.blur > 0 ? "blurred" : "",
         ].filter(Boolean);
       },
-      modified: () => {
-        const state = this.#state();
-        const base = this.#base();
-        return state.mode !== base.mode || state.dim !== 0 || state.blur !== 0;
-      },
-      reset: () => change({ mode: this.#base().mode, dim: 0, blur: 0 }),
+      modified: () => keys.some((key) => this.#state()[key] !== this.#base()[key]),
+      reset: () => change(Object.fromEntries(keys.map((key) => [key, this.#base()[key]]))),
       syncers: this.#syncers,
     });
   }
