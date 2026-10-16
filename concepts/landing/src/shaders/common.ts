@@ -27,15 +27,26 @@ vec2 hash22(vec2 p) {
   return fract((p3.xx + p3.yz) * p3.zy);
 }
 
-float vnoise(vec2 p) {
-  vec2 i = floor(p);
-  vec2 f = fract(p);
+// vnoise's lattice values round its cell i (floor of the point): x at i, y at i + (1, 0), z at
+// i + (0, 1), w at i + (1, 1). A loop that steps across the lattice can carry them from point to
+// point (vnoiseLatticeNext) instead of hashing every cell again.
+vec4 vnoiseLattice(vec2 i) {
+  return vec4(hash12(i), hash12(i + vec2(1.0, 0.0)), hash12(i + vec2(0.0, 1.0)), hash12(i + vec2(1.0, 1.0)));
+}
+
+// The lattice values of cell i from those of the cell before it in x (i - (1, 0)): two hashes, not four.
+vec4 vnoiseLatticeNext(vec4 before, vec2 i) {
+  return vec4(before.y, hash12(i + vec2(1.0, 0.0)), before.w, hash12(i + vec2(1.0, 1.0)));
+}
+
+// vnoise at the point f = fract(p) within its cell, from the cell's lattice values (vnoiseLattice).
+float vnoiseFrom(vec4 lattice, vec2 f) {
   vec2 u = f * f * (3.0 - 2.0 * f);
-  return mix(
-    mix(hash12(i), hash12(i + vec2(1.0, 0.0)), u.x),
-    mix(hash12(i + vec2(0.0, 1.0)), hash12(i + vec2(1.0, 1.0)), u.x),
-    u.y
-  );
+  return mix(mix(lattice.x, lattice.y, u.x), mix(lattice.z, lattice.w, u.x), u.y);
+}
+
+float vnoise(vec2 p) {
+  return vnoiseFrom(vnoiseLattice(floor(p)), fract(p));
 }
 
 // vnoise (the same lattice, so the same values) with its gradient: x the value, y d/dp.x, z d/dp.y.
@@ -123,6 +134,13 @@ float softFill(float d, float aa) {
 // The Gaussian bell: 1 at 0, 1/e at x = +-1.
 float bell(float x) {
   return exp(-x * x);
+}
+
+// The polynomial smooth minimum (Quilez): min(a, b) with the corner rounded over a blend k wide, so
+// shapes melt into one another instead of meeting at a crease.
+float smin(float a, float b, float k) {
+  float h = clamp(0.5 + 0.5 * (b - a) / k, 0.0, 1.0);
+  return mix(b, a, h) - k * h * (1.0 - h);
 }
 
 // Signed distance to a box centred on the origin with half extents halfSize, its corners rounded
@@ -309,6 +327,14 @@ float passageIn() {
 }
 float passageOut() {
   return uPassage.y;
+}
+
+// An entrance's ease-out with an overshoot: 0 at x = 0 and moving fastest there (slope s + 3),
+// running past 1 by 4s³ / (27 (s + 1)²) (about 5% at s = 1.2) and braking to rest on exactly 1 from
+// x = 1: 1 + (s + 1) u³ + s u², u = clamp(x, 0, 1) - 1.
+float passageSettle(float x, float s) {
+  float u = clamp(x, 0.0, 1.0) - 1.0;
+  return 1.0 + (s + 1.0) * u * u * u + s * u * u;
 }
 
 struct Shade {

@@ -810,6 +810,19 @@ void meadowLayer(int layer, vec2 p, float aspect, float hScale, float density, v
   vec3 seedCol = wetten(MEADOW_HEAD, wet, 0.7);
   float gloss = wetGloss(wet, 0.3);
   vec3 bead = deck * MEADOW_DROP_SKY + amb * 0.3 + sun * (0.4 + 2.0 * behind + sunNear);
+  // A column holds a stalk where its hash falls under a share the clumps raise (a slow noise over the
+  // columns: more stalks in some stretches, fewer in the gaps between). The share never leaves these
+  // bounds, so only a hash between them needs the noise. A lattice cell of either octave of the noise
+  // spans one to five columns: their lattice values are carried from column to column, and a cell is
+  // hashed only as the columns reach it (clumpCellA, B: the cells held, none yet).
+  float stalksFew = min(MEADOW_STALKS[layer] * MEADOW_CLUMP_GAP, 0.9);
+  float stalksMany = min(MEADOW_STALKS[layer] * (MEADOW_CLUMP_GAP + MEADOW_CLUMP_GAIN), 0.9);
+  float clumpCellA = -1.0e9;
+  float clumpCellB = -1.0e9;
+  vec4 clumpA = vec4(0.0);
+  vec4 clumpB = vec4(0.0);
+  // A column's hashes are drawn only where they can change this cell: a stalk's only for a stalk, the
+  // blade's shape only below its top, its colour only where it covers the cell, its head's near it.
   for (int k = -reach; k <= reach; k++) {
     float i = column + float(k);
     vec2 key = vec2(i, salt);
@@ -817,23 +830,40 @@ void meadowLayer(int layer, vec2 p, float aspect, float hScale, float density, v
     float x0 = (i + hash12(key + 3.1)) * pitch;
     float edge = smoothstep(0.15, 0.75, abs(x0 / aspect - 0.5) * 2.0);
     if (hash12(key) > density * mix(MEADOW_CENTRE[layer], 1.0, edge)) continue;
-    // Stalks come in clumps: a slow noise over the columns raises their share in some stretches and
-    // lets it fall away in the gaps between.
-    float clump = smoothstep(0.4, 0.68, 0.65 * vnoise(vec2(i * MEADOW_CLUMP_SCALE, salt)) + 0.35 * vnoise(vec2(i * MEADOW_CLUMP_SCALE * 3.7 + 9.1, salt)));
-    bool stalk = hash12(key + 11.3) < min(MEADOW_STALKS[layer] * (MEADOW_CLUMP_GAP + MEADOW_CLUMP_GAIN * clump), 0.9);
+    float stalkH = hash12(key + 11.3);
+    bool stalk = stalkH < stalksFew;
+    if (!stalk && stalkH < stalksMany) {
+      vec2 pa = vec2(i * MEADOW_CLUMP_SCALE, salt);
+      vec2 pb = vec2(i * MEADOW_CLUMP_SCALE * 3.7 + 9.1, salt);
+      vec2 ia = floor(pa);
+      vec2 ib = floor(pb);
+      if (ia.x == clumpCellA + 1.0) clumpA = vnoiseLatticeNext(clumpA, ia);
+      else if (ia.x != clumpCellA) clumpA = vnoiseLattice(ia);
+      if (ib.x == clumpCellB + 1.0) clumpB = vnoiseLatticeNext(clumpB, ib);
+      else if (ib.x != clumpCellB) clumpB = vnoiseLattice(ib);
+      clumpCellA = ia.x;
+      clumpCellB = ib.x;
+      float clump = smoothstep(0.4, 0.68, 0.65 * vnoiseFrom(clumpA, fract(pa)) + 0.35 * vnoiseFrom(clumpB, fract(pb)));
+      stalk = stalkH < min(MEADOW_STALKS[layer] * (MEADOW_CLUMP_GAP + MEADOW_CLUMP_GAIN * clump), 0.9);
+    }
     float hHeight = hash12(key + 7.7);
     float h = mix(hMin, hMax, stalk ? sqrt(hHeight) : hHeight) * mix(low, 1.0, edge);
     // What the stalk carries: nothing (0), a panicle (1) or a plain ear (2), and how long it is.
-    float kindH = hash12(key + 53.9);
-    int kind = !stalk || kindH < MEADOW_BARE_SHARE ? 0 : (kindH < MEADOW_BARE_SHARE + MEADOW_EAR_SHARE ? 2 : 1);
-    float lenH = hash12(key + 47.3);
-    float headLen = kind == 0 ? 0.0 : spike * (kind == 1 ? 0.9 + 0.5 * lenH : 0.6 + 0.4 * lenH);
+    int kind = 0;
+    float headLen = 0.0;
+    if (stalk) {
+      float kindH = hash12(key + 53.9);
+      kind = kindH < MEADOW_BARE_SHARE ? 0 : (kindH < MEADOW_BARE_SHARE + MEADOW_EAR_SHARE ? 2 : 1);
+      float lenH = hash12(key + 47.3);
+      headLen = kind == 0 ? 0.0 : spike * (kind == 1 ? 0.9 + 0.5 * lenH : 0.6 + 0.4 * lenH);
+    }
     vec2 bend = bent ? texelFetch(uSim1, ivec2(clamp(int(i) + MEADOW_MARGIN, 0, columns - 1), layer), 0).rg : vec2(0.0);
-    float lean = clamp(MEADOW_CURL * (hash12(key + 17.9) - 0.5) + (stalk ? MEADOW_STALK_LEAN * 2.0 * (hash12(key + 59.3) - 0.5) : 0.0) + bend.x, -MEADOW_LEAN_MAX, MEADOW_LEAN_MAX);
     float bow = clamp(bend.y + MEADOW_WET_BOW * wet, -0.2, MEADOW_AWAY_MAX);
     float tall = h * (1.0 - MEADOW_BOW * bow);
     float s = yy / tall;
     if (s > 1.0 + headLen / tall) continue;
+    float leanH = hash12(key + 17.9);
+    float lean = clamp(MEADOW_CURL * (leanH - 0.5) + (stalk ? MEADOW_STALK_LEAN * 2.0 * (hash12(key + 59.3) - 0.5) : 0.0) + bend.x, -MEADOW_LEAN_MAX, MEADOW_LEAN_MAX);
     // The centreline: offset tip x (s^curve); curve 2 is the blades' own bow, a stalk's runs from a
     // quick lean near the root to a late bend near the head.
     float curve = stalk ? mix(MEADOW_STALK_CURVE_MIN, MEADOW_STALK_CURVE_MAX, hash12(key + 41.9)) : 2.0;
@@ -848,94 +878,101 @@ void meadowLayer(int layer, vec2 p, float aspect, float hScale, float density, v
     float cover = s <= 1.0 ? 1.0 - smoothstep(w - soft, w + soft, d) : 0.0;
     // Stalks are cut per cell, so a swaying edge changes one cell at a time, once.
     if (stalk || moving) cover = hardEdge(cover);
-    // The backlit edge on the side facing the sun only, fading across the blade: as a blade sways,
-    // a cell sees one soft change of light, not a thin bright line passing.
-    float facing = clamp(across * sign(sunX - p.x) / max(w, aa), 0.0, 1.0);
-    float rim = facing * facing * cover;
     float pressed = clamp(bend.y, 0.0, 1.0); // bowed by the wind (not the rain) shows the light through it
-    vec3 body = stalk ? stem * mix(vec3(0.75), vec3(1.4, 1.2, 0.8), hash12(key + 61.1)) : leaf;
-    vec3 shade = body * (amb * 0.3 + sun * (0.1 + 0.55 * behind)) * MEADOW_SHADE[layer];
-    shade += sun * MEADOW_THROUGH * pressed * (0.45 + behind) * 0.9;
-    shade += sun * MEADOW_RIM * rim * (MEADOW_RIM_BASE + 1.1 * behind + 0.6 * sunNear);
-    shade += gloss * (deck * 0.4 + sun * (0.15 + 0.8 * behind)) * facing;
-    shade = mix(shade, MEADOW_SNOW * (amb * 1.0 + sun * (0.25 + 0.6 * behind)), MEADOW_SNOW_NEAR * lying * smoothstep(0.4, 1.0, s));
-    col = mix(col, shade, cover);
-    accent *= 1.0 - cover;
-    zHit = mix(zHit, layerZ, cover);
-    if (wet > 0.0 && cover > 0.0 && s < 0.95) {
-      // Beads of rain caught along the blade, more as it gets wetter, fixed to it as it sways.
-      float n = floor(s * MEADOW_BEADS);
-      float hb = hash12(key + vec2(n * 1.7, 29.3));
-      if (hb < wet * MEADOW_BEAD_SHARE) {
-        float sb = (n + 0.3 + 0.4 * fract(hb * 13.1)) / MEADOW_BEADS;
-        float rb = max(0.55 * (stalk ? w : girth * pow(max(1.0 - sb, 0.0), 0.6)), 1.3 * aa);
-        vec2 bv = vec2(across - (fract(hb * 7.3) - 0.5) * w, (s - sb) * tall);
-        float drop = (1.0 - smoothstep(rb - aa, rb + aa, length(bv))) * min(1.0, 2.0 * cover);
-        col = mix(col, bead, 0.85 * drop);
+    if (cover > 0.0) {
+      // The backlit edge on the side facing the sun only, fading across the blade: as a blade sways,
+      // a cell sees one soft change of light, not a thin bright line passing.
+      float facing = clamp(across * sign(sunX - p.x) / max(w, aa), 0.0, 1.0);
+      float rim = facing * facing * cover;
+      vec3 body = stalk ? stem * mix(vec3(0.75), vec3(1.4, 1.2, 0.8), hash12(key + 61.1)) : leaf;
+      vec3 shade = body * (amb * 0.3 + sun * (0.1 + 0.55 * behind)) * MEADOW_SHADE[layer];
+      shade += sun * MEADOW_THROUGH * pressed * (0.45 + behind) * 0.9;
+      shade += sun * MEADOW_RIM * rim * (MEADOW_RIM_BASE + 1.1 * behind + 0.6 * sunNear);
+      shade += gloss * (deck * 0.4 + sun * (0.15 + 0.8 * behind)) * facing;
+      shade = mix(shade, MEADOW_SNOW * (amb * 1.0 + sun * (0.25 + 0.6 * behind)), MEADOW_SNOW_NEAR * lying * smoothstep(0.4, 1.0, s));
+      col = mix(col, shade, cover);
+      accent *= 1.0 - cover;
+      zHit = mix(zHit, layerZ, cover);
+      if (wet > 0.0 && s < 0.95) {
+        // Beads of rain caught along the blade, more as it gets wetter, fixed to it as it sways.
+        float n = floor(s * MEADOW_BEADS);
+        float hb = hash12(key + vec2(n * 1.7, 29.3));
+        if (hb < wet * MEADOW_BEAD_SHARE) {
+          float sb = (n + 0.3 + 0.4 * fract(hb * 13.1)) / MEADOW_BEADS;
+          float rb = max(0.55 * (stalk ? w : girth * pow(max(1.0 - sb, 0.0), 0.6)), 1.3 * aa);
+          vec2 bv = vec2(across - (fract(hb * 7.3) - 0.5) * w, (s - sb) * tall);
+          float drop = (1.0 - smoothstep(rb - aa, rb + aa, length(bv))) * min(1.0, 2.0 * cover);
+          col = mix(col, bead, 0.85 * drop);
+        }
       }
     }
     if (kind > 0) {
       // The head, nodding on along the stalk's tip; heavy with rain it droops toward the side the
       // stalk leans, glistens, and drips from its end.
-      float nodSide = hash12(key + 17.9) < 0.5 ? -1.0 : 1.0;
-      vec2 axis = rotate(normalize(vec2(curve * tip / tall, 1.0)), -nodSide * MEADOW_WET_NOD * wet);
       vec2 base = vec2(x0 + tip, MEADOW_ROOT[layer] + tall);
       vec2 q = p - base;
       float reachHead = headLen + 3.0 * spikeGirth + 2.0 * aa;
-      float head = 0.0;
-      float e = 1.0; // 0 along the head's axis, 1 at its rim
-      if (dot(q, q) < reachHead * reachHead) {
-        float u = dot(q, axis);
-        float v = dot(q, vec2(axis.y, -axis.x));
-        if (kind == 2) {
-          // A plain ear: a dense ellipse of seeds.
-          float girthEar = spikeGirth * (0.8 + 0.5 * hash12(key + 43.3));
-          e = length(vec2(2.0 * u / headLen - 1.0, v / girthEar));
-          head = 1.0 - smoothstep(1.0 - 0.5 * aa / girthEar, 1.0 + 0.5 * aa / girthEar, e);
-        } else {
-          // A panicle: a rachis arching to one side, a spikelet hung from it every few cells,
-          // alternating sides, longest in the middle.
-          float spikelets = clamp(floor(headLen / (MEADOW_SPIKELET_CELLS * aa)), 3.0, 8.0);
-          float gapU = headLen / spikelets;
-          float arch = (hash12(key + 67.3) < 0.5 ? -1.0 : 1.0) * 0.22 * headLen;
-          float ut = clamp(u / headLen, 0.0, 1.0);
-          float wv = v - arch * ut * ut;
-          float rachis = length(vec2(u - clamp(u, 0.0, headLen), wv));
-          float dist = 1e3;
-          float n1 = floor(u / gapU - 0.5);
-          for (int dn = 0; dn < 2; dn++) {
-            float n = n1 - float(dn);
-            if (n < 0.0 || n >= spikelets) continue;
-            float fr = (n + 0.5) / spikelets;
-            float hn = hash12(key + vec2(n * 1.3, 71.7));
-            float sgn = mod(n, 2.0) < 0.5 ? 1.0 : -1.0;
-            float lat = MEADOW_PANICLE_WIDTH * spikeGirth * (0.35 + 0.65 * sin(0.5 * TAU * fr)) * (0.8 + 0.4 * hn);
-            vec2 a = vec2(fr * headLen, arch * fr * fr);
-            vec2 b = a + vec2(gapU * (0.9 + 0.5 * hn), sgn * lat);
-            dist = min(dist, segmentDistance(vec2(u, v), a, b));
+      bool headNear = dot(q, q) < reachHead * reachHead;
+      if (headNear || wet > 0.0) {
+        float nodSide = leanH < 0.5 ? -1.0 : 1.0;
+        vec2 axis = rotate(normalize(vec2(curve * tip / tall, 1.0)), -nodSide * MEADOW_WET_NOD * wet);
+        float head = 0.0;
+        float e = 1.0; // 0 along the head's axis, 1 at its rim
+        if (headNear) {
+          float u = dot(q, axis);
+          float v = dot(q, vec2(axis.y, -axis.x));
+          if (kind == 2) {
+            // A plain ear: a dense ellipse of seeds.
+            float girthEar = spikeGirth * (0.8 + 0.5 * hash12(key + 43.3));
+            e = length(vec2(2.0 * u / headLen - 1.0, v / girthEar));
+            head = 1.0 - smoothstep(1.0 - 0.5 * aa / girthEar, 1.0 + 0.5 * aa / girthEar, e);
+          } else {
+            // A panicle: a rachis arching to one side, a spikelet hung from it every few cells,
+            // alternating sides, longest in the middle.
+            float spikelets = clamp(floor(headLen / (MEADOW_SPIKELET_CELLS * aa)), 3.0, 8.0);
+            float gapU = headLen / spikelets;
+            float arch = (hash12(key + 67.3) < 0.5 ? -1.0 : 1.0) * 0.22 * headLen;
+            float ut = clamp(u / headLen, 0.0, 1.0);
+            float wv = v - arch * ut * ut;
+            float rachis = length(vec2(u - clamp(u, 0.0, headLen), wv));
+            float dist = 1e3;
+            float n1 = floor(u / gapU - 0.5);
+            for (int dn = 0; dn < 2; dn++) {
+              float n = n1 - float(dn);
+              if (n < 0.0 || n >= spikelets) continue;
+              float fr = (n + 0.5) / spikelets;
+              float hn = hash12(key + vec2(n * 1.3, 71.7));
+              float sgn = mod(n, 2.0) < 0.5 ? 1.0 : -1.0;
+              float lat = MEADOW_PANICLE_WIDTH * spikeGirth * (0.35 + 0.65 * sin(0.5 * TAU * fr)) * (0.8 + 0.4 * hn);
+              vec2 a = vec2(fr * headLen, arch * fr * fr);
+              vec2 b = a + vec2(gapU * (0.9 + 0.5 * hn), sgn * lat);
+              dist = min(dist, segmentDistance(vec2(u, v), a, b));
+            }
+            float r = 0.7 * aa;
+            head = 1.0 - smoothstep(r - 0.5 * aa, r + 0.5 * aa, min(rachis, dist));
+            e = clamp(abs(wv) / (MEADOW_PANICLE_WIDTH * spikeGirth), 0.0, 1.0);
           }
-          float r = 0.7 * aa;
-          head = 1.0 - smoothstep(r - 0.5 * aa, r + 0.5 * aa, min(rachis, dist));
-          e = clamp(abs(wv) / (MEADOW_PANICLE_WIDTH * spikeGirth), 0.0, 1.0);
+          head = hardEdge(head);
         }
-        head = hardEdge(head);
-      }
-      vec3 seeds = seedCol * mix(0.7, 1.3, hash12(key + 73.1)) * (amb * 0.35 + sun * (0.2 + 0.9 * behind + 0.4 * pressed));
-      seeds += sun * MEADOW_RIM * smoothstep(0.2, 1.0, e) * (MEADOW_RIM_BASE + 1.6 * behind + sunNear);
-      seeds += gloss * (deck * 0.5 + sun * (0.2 + behind)) * smoothstep(0.3, 1.0, e);
-      col = mix(col, seeds, head);
-      accent *= 1.0 - head;
-      zHit = mix(zHit, layerZ, head);
-      if (wet > 0.0) {
-        vec2 end = base + axis * headLen;
-        vec2 below = vec2(p.x - end.x, end.y - p.y);
-        if (below.y > 0.0 && below.y < 5.0 * dripWidth && abs(below.x) < 0.5 * dripWidth) {
-          // Each head drips from a lane of its own (so on its own clock), placed on that lane's drip
-          // point (weather.ts: lane k drips at (k + 0.3 + 0.4 hash12(k, 3.7)) x width), while it is wet.
-          float lane = floor(hash12(key + 23.1) * 256.0);
-          float dripAt = (lane + 0.3 + 0.4 * hash12(vec2(lane, 3.7))) * dripWidth;
-          float drip = rainDrips(vec2(below.x + dripAt, below.y), uTime, max(K_rain, 0.4 * wet), dripWidth);
-          col = mix(col, bead, drip);
+        if (head > 0.0) {
+          vec3 seeds = seedCol * mix(0.7, 1.3, hash12(key + 73.1)) * (amb * 0.35 + sun * (0.2 + 0.9 * behind + 0.4 * pressed));
+          seeds += sun * MEADOW_RIM * smoothstep(0.2, 1.0, e) * (MEADOW_RIM_BASE + 1.6 * behind + sunNear);
+          seeds += gloss * (deck * 0.5 + sun * (0.2 + behind)) * smoothstep(0.3, 1.0, e);
+          col = mix(col, seeds, head);
+          accent *= 1.0 - head;
+          zHit = mix(zHit, layerZ, head);
+        }
+        if (wet > 0.0) {
+          vec2 end = base + axis * headLen;
+          vec2 below = vec2(p.x - end.x, end.y - p.y);
+          if (below.y > 0.0 && below.y < 5.0 * dripWidth && abs(below.x) < 0.5 * dripWidth) {
+            // Each head drips from a lane of its own (so on its own clock), placed on that lane's drip
+            // point (weather.ts: lane k drips at (k + 0.3 + 0.4 hash12(k, 3.7)) x width), while it is wet.
+            float lane = floor(hash12(key + 23.1) * 256.0);
+            float dripAt = (lane + 0.3 + 0.4 * hash12(vec2(lane, 3.7))) * dripWidth;
+            float drip = rainDrips(vec2(below.x + dripAt, below.y), uTime, max(K_rain, 0.4 * wet), dripWidth);
+            col = mix(col, bead, drip);
+          }
         }
       }
     }

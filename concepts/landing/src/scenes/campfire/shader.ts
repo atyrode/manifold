@@ -59,11 +59,6 @@ bool campfireFuelOn;
 vec4 campfireFuelLog[CAMPFIRE_LOGS];
 vec4 campfireFuelBed;
 
-float campfireSmin(float a, float b, float k) {
-  float h = clamp(0.5 + 0.5 * (b - a) / k, 0.0, 1.0);
-  return mix(b, a, h) - k * h * (1.0 - h);
-}
-
 // The passage's eases between progress lo and hi: in, from rest and fastest at hi (u²); out, fastest
 // at lo and coming to rest at hi (1 - (1 - u)²). Both exactly 0 before lo and 1 after hi.
 float campfireEaseIn(float lo, float hi, float x) {
@@ -477,7 +472,7 @@ float campfireTongues(vec2 q, float wk, float hk) {
     float xc = ax + lean * pow(clamp(hh, 0.0, 1.2), 1.5);
     float hw = 0.042 * wk * (1.0 - 0.25 * abs(c)) * pow(clamp(1.0 - hh, 0.0, 1.0), 0.8);
     float dt = max(abs(q.x - xc) - hw, max(q.y - height, -q.y - 0.03));
-    d = campfireSmin(d, dt, 0.02 * wk);
+    d = smin(d, dt, 0.02 * wk);
   }
   if (wk > 0.95) {
     for (int j = 0; j < 3; j++) {

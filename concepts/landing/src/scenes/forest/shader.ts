@@ -23,6 +23,7 @@
 // phase, SKY_MOON_PHASE, in the canopy's gaps and its shafts), K_rain, K_wind, K_mark; triggers 2
 // (the M) and 3 (spores).
 import { glslFloat } from "../../shaders/glsl.ts";
+import { canopyGroveGlsl } from "../../shaders/lib/canopy.ts";
 import {
   FOREST_BEARD_SPACING,
   FOREST_BRANCH,
@@ -142,7 +143,6 @@ const vec3 FOREST_STAG_COAT = vec3(0.16, 0.13, 0.11);
 Sky forestSky;
 float forestAspect;
 float forestLA;        // the aspect the layout is made for (never narrower than FOREST_MIN_ASPECT)
-float forestTh;        // this cell's dither threshold
 float forestLevel;     // how bright the sky is (luminance of its ambient light)
 vec3 forestFill;       // the soft light under the canopy, on every side of things
 vec3 forestTop;        // the light from the canopy's gaps on whatever faces up (moss tops, the floor)
@@ -217,16 +217,6 @@ vec2 forestAt(vec2 p, float z) {
   return forestScale(p, z) + forestPar / z;
 }
 
-// The coverage of something that moves, made all-or-nothing against this cell's dither threshold, so
-// a passing edge flips each cell once instead of stepping its three colour channels apart.
-float forestHard(float cover) {
-  return cover > forestTh ? 1.0 : 0.0;
-}
-
-float forestBell(float x) {
-  return exp(-x * x);
-}
-
 float forestCapsule(vec2 p, vec2 a, vec2 b, float r) {
   return segmentDistance(p, a, b) - r;
 }
@@ -283,29 +273,12 @@ float forestTransmit(float z, float height) {
   return exp(-dens * (z - forestCamD) * (1.0 + 0.6 * exp(-max(height, 0.0) / 1.1)));
 }
 
-// The shafts: three beams falling from gaps in the canopy (forestRaySrc) at forestRaySlant, narrow at
-// the gap and widening as they fall, combed by the shadows of what they passed, each breathing in and
-// out over a couple of minutes. x: how much this point lies in a beam, y: the beam's glow in the air.
-vec2 forestRays(vec2 p, float tm) {
-  float sl = forestRaySlant;
-  float b = max(1.02 - p.y, 0.0) / cos(sl);
-  float at = p.x + sin(sl) * b;
-  float lit = 0.0;
-  float glow = 0.0;
-  for (int r = 0; r < 3; r++) {
-    float h = hash12(vec2(float(r) * 3.7 + 1.0, K_forestSeed * 0.913 + 5.0));
-    float across = (at - forestRaySrc[r]) * cos(sl);
-    float width = 0.01 + (0.06 + 0.04 * h) * b;
-    float beam = 1.0 - smoothstep(0.25 * width, width, abs(across));
-    if (beam <= 0.0) continue;
-    float comb = smoothstep(0.6, 0.8, vnoise(vec2(across / width * 3.0 + h * 17.0, 0.5)));
-    float breathe = 0.75 + 0.25 * sin(tm * (0.045 + 0.03 * h) + h * TAU);
-    beam *= (1.0 - 0.6 * comb) * breathe * (0.65 + 0.35 * h);
-    lit = max(lit, beam);
-    glow += beam * exp(-0.55 * b);
-  }
-  return vec2(lit, glow);
-}
+// The grove under the canopy (shaders/lib/canopy.ts), in the forest's shapes: a ragged ceiling of
+// dark cedar foliage, its underside about 0.84 up the frame; drips in columns 14 cm wide, a fifth of
+// them dripping at amount 1, from tips 0.8 to 1.02 up the frame.
+${canopyGroveGlsl}
+const CanopyCrowns FOREST_CROWNS = CanopyCrowns(vec3(0.84, 0.08, 2.1), vec2(6.0, 9.0), vec2(17.0, 21.0), vec3(0.08, 0.1, 0.2), vec3(0.62, 0.8, 0.9), vec4(0.06, 0.9, 0.82, 0.97));
+const CanopyDrips FOREST_DRIPS = CanopyDrips(FOREST_HORIZON, FOREST_EYE, 0.14, 0.2, vec2(0.8, 0.22));
 
 // The mushrooms' light falling on something at screen point p, depth z: each cluster lights about
 // half a metre round it.
@@ -361,7 +334,7 @@ vec3 forestBark(float kind, float u, float h, float hw, float salt, float aa, fl
              + forestShroomLight(at, z) * (0.4 + 0.6 * nz);
   vec3 col = albedo * light;
   col += FOREST_MOSS_LIT * forestKey * (0.15 + forestBeam) * mossy * lit * cushion * 0.3;
-  col += forestSheen * forestGloss * (1.0 - 0.7 * mossy) * (1.0 - furrow) * 0.4 * forestBell((u - 0.4 * face) / 0.28) * (0.6 + 0.4 * fib);
+  col += forestSheen * forestGloss * (1.0 - 0.7 * mossy) * (1.0 - furrow) * 0.4 * bell((u - 0.4 * face) / 0.28) * (0.6 + 0.4 * fib);
   col += forestMist * 0.15 * pow(1.0 - nz, 6.0);
   return col;
 }
@@ -517,7 +490,7 @@ vec4 forestBranch(vec2 q, float t, float tm, out float drip) {
     float up = 0.5 + 0.5 * v;
     vec3 light = forestFill * (0.3 + 0.5 * up) * (0.7 + 0.3 * nz) + forestTop * 1.2 * max(v, 0.0) + forestKey * (0.25 + 1.2 * forestBeam) * up * 0.7 + forestShroomLight(q, z) * 0.5;
     col = albedo * light + FOREST_MOSS_LIT * (forestKey * (0.15 + forestBeam) + forestTop * 0.3) * mossy * up * 0.3;
-    col += forestSheen * forestGloss * (1.0 - mossy) * 0.3 * forestBell((v - 0.5) / 0.3);
+    col += forestSheen * forestGloss * (1.0 - mossy) * 0.3 * bell((v - 0.5) / 0.3);
   }
   // Beards: one strand per lane of FOREST_BEARD, hung where rainDrips puts that lane's drip point,
   // so the drops fall from the tips.
@@ -628,15 +601,15 @@ vec4 forestRoots(vec2 q, vec2 c, vec2 rs, float z, float mark, float markGlow, o
   vec4 root = vec4(1e9, 1.0, 0.0, 0.0);
   float cover = 0.0;
   float isM = 0.0;
-  if (forestHard(coverA) > 0.0 && always.x < root.x) {
+  if (hardEdge(coverA) > 0.0 && always.x < root.x) {
     root = always;
     cover = 1.0;
   }
-  if (forestHard(coverB) > 0.0 && natural.x < root.x) {
+  if (hardEdge(coverB) > 0.0 && natural.x < root.x) {
     root = natural;
     cover = 1.0;
   }
-  if (forestHard(coverM) > 0.0 && grown.x < root.x) {
+  if (hardEdge(coverM) > 0.0 && grown.x < root.x) {
     root = grown;
     cover = 1.0;
     isM = 1.0;
@@ -653,7 +626,7 @@ vec4 forestRoots(vec2 q, vec2 c, vec2 rs, float z, float mark, float markGlow, o
   float key = max(dot(n, forestKeyDir), 0.0);
   vec3 light = forestFill * (0.3 + 0.4 * (0.5 + 0.5 * n.y)) + forestTop * 1.1 * max(n.y, 0.0) + forestKey * key * (0.3 + 1.3 * forestBeam) + forestShroomLight(q, z);
   vec3 col = albedo * light;
-  col += forestSheen * wetGloss(forestWet, n.y) * (1.0 - mossy) * 0.5 * forestBell((v - 0.45) / 0.35);
+  col += forestSheen * wetGloss(forestWet, n.y) * (1.0 - mossy) * 0.5 * bell((v - 0.45) / 0.35);
   if (isM > 0.0) {
     glow = markGlow * (0.4 + 0.6 * smoothstep(-0.2, 0.6, n.y));
     col += FOREST_GLOW * glow * 0.75;
@@ -1005,30 +978,21 @@ vec4 forestMotes(vec2 p, float hitZ) {
     nearShroom = max(nearShroom, exp(-dot(v, v) / 0.025));
   }
   float show = clamp(1.5 * forestBeam * step(0.001, K_shafts) + forestNight * (0.1 + 0.9 * nearShroom), 0.0, 1.0);
-  if (forestHard(best * show) <= 0.0) return vec4(0.0);
+  if (hardEdge(best * show) <= 0.0) return vec4(0.0);
   vec3 spore = FOREST_GLOW * 0.75 * forestNight;
   vec3 dust = forestRayLight * forestBeam * 1.1 + forestFill * 0.3;
   vec3 col = mix(forestMist, spore + dust, mix(forestTransmit(bestZ, 1.5), 1.0, 0.5 * forestNight));
   return vec4(col, 0.85);
 }
 
-// The canopy overhead: a ragged ceiling of dark cedar foliage, swaying a little, thinning into gaps
-// toward the top of the frame and open where the shafts come through.
+// The canopy overhead (FOREST_CROWNS), swaying a little, thinning into gaps toward the top of the
+// frame and open where the shafts come through.
 vec4 forestCanopy(vec2 p, float tm) {
   vec2 q = p + forestPar / 20.0;
   q.x += 0.006 * (0.4 + abs(K_wind)) * sin(tm * 0.3 + q.x * 2.0) * smoothstep(0.75, 1.0, q.y);
-  float edge = 0.84 + 0.08 * vnoise(vec2(q.x * 2.1 + K_forestSeed * 0.37, 0.5));
-  float n = 0.6 * vnoise(q * vec2(6.0, 9.0)) + 0.4 * vnoise(q * vec2(17.0, 21.0) + 3.1);
-  float dens = smoothstep(edge - 0.08, edge + 0.1, q.y + 0.2 * (n - 0.5));
-  float gap = smoothstep(0.62, 0.8, n) * smoothstep(0.9, 1.02, q.y);
-  float open = 0.0;
-  if (K_shafts > 0.0) {
-    for (int r = 0; r < 3; r++) open = max(open, forestBell((p.x - forestRaySrc[r]) / 0.06));
-  }
-  dens *= 1.0 - 0.9 * open * smoothstep(0.82, 0.97, p.y);
-  float behind = 0.3 + 0.7 * clamp(forestKeySide.y * 1.5, 0.0, 1.0);
-  vec3 col = FOREST_NEEDLE * (0.7 + 0.5 * n) * forestFill + FOREST_MOSS_LIT * forestKey * forestBeam * behind * 0.15;
-  return vec4(col, clamp(dens * (1.0 - gap), 0.0, 1.0));
+  vec3 c = canopyCrowns(q, p, FOREST_CROWNS, K_forestSeed, K_shafts > 0.0, forestRaySrc, forestKeySide);
+  vec3 col = FOREST_NEEDLE * (0.7 + 0.5 * c.y) * forestFill + FOREST_MOSS_LIT * forestKey * forestBeam * c.z * 0.15;
+  return vec4(col, c.x);
 }
 
 // The stream's water at floor point w (m: x across, depth): flowing toward you, its surface tilted by
@@ -1125,47 +1089,11 @@ vec3 forestGround(vec2 p, float t, float tm, out float zg) {
     vec3 bedLight = forestFill * 1.1 + forestTop * 0.5 + forestKey * forestBeam * 0.6;
     vec3 bed = mix(FOREST_LITTER * 0.6, FOREST_ROCK * (0.5 + 0.45 * hb), pebble) * bedLight;
     vec3 inner = K_stream > 0.0 ? forestWater(q, w, zc, t, tm, keep, wetten(bed, 1.0, 0.3) * 0.7) : wetten(bed, forestWet, 0.3);
-    float lip = forestBell((abs(s) - 1.0) / 0.09);
+    float lip = bell((abs(s) - 1.0) / 0.09);
     col = mix(inner, col, smoothstep(0.92, 1.18, abs(s)));
     col = mix(col, wetten(FOREST_MOSS_DEEP, 1.0, 0.9) * light, lip * 0.75 * keep);
   }
   return col;
-}
-
-// Water gathered in the canopy running off and falling through the forest at depth z: columns 14 cm
-// wide, a fifth of them (at amount 1) holding a tip that drips over and over: a bead swells for half
-// the beat, lets go and falls as a streak lengthening with its speed. Returns coverage.
-float forestDrip(vec2 q, float tm, float amount, float z, float salt) {
-  vec2 w = vec2(q.x * z, (q.y - FOREST_HORIZON) * z + FOREST_EYE);
-  float cw = 0.14;
-  float cx = floor(w.x / cw);
-  float h = hash12(vec2(cx + 0.5, salt * 17.0 + 3.0));
-  if (h > 0.2 * amount) return 0.0;
-  float period = mix(4.5, 2.0, amount) * (0.75 + 0.5 * fract(h * 37.3));
-  float ph = tm / period + fract(h * 91.0);
-  float n = floor(ph);
-  float age = (ph - n) * period;
-  float hn = hash12(vec2(cx + 0.5, n + salt * 11.0));
-  float tipY = (0.8 + 0.22 * hn - FOREST_HORIZON) * z + FOREST_EYE;
-  float x = (cx + 0.2 + 0.6 * fract(hn * 17.3)) * cw;
-  float aa = z / uRes.y;
-  float hw = max(0.003, 1.2 * aa);
-  float hang = 0.5 * period;
-  vec2 a = vec2(x, tipY);
-  vec2 b = a;
-  float r = hw;
-  if (age < hang) {
-    r = hw * (0.7 + 0.6 * age / hang);
-    a = vec2(x, tipY - r);
-    b = a;
-  } else {
-    float fall = age - hang;
-    float y = tipY - 4.9 * fall * fall;
-    if (y < 0.0) return 0.0;
-    a = vec2(x, y);
-    b = vec2(x, y + clamp(0.3 * fall, 2.0 * hw, 0.25));
-  }
-  return 1.0 - smoothstep(r - 0.6 * aa, r + 0.6 * aa, segmentDistance(w, a, b));
 }
 
 Shade sceneForest(vec2 uv, vec2 cell, float t) {
@@ -1176,7 +1104,6 @@ Shade sceneForest(vec2 uv, vec2 cell, float t) {
   vec2 p = vec2((uv.x - 0.5) * aspect, uv.y);
   float tm = t * uMotion;
   forestCamD = forestCamera();
-  forestTh = threshold(cell);
   Sky sky = skyMoonPhase(skyAt(timeOfDayM(K_time, K_cycle, uMotionTime)), K_moon);
   // The rain's cloud closes over the sky as the rain sets in (the shared canopy weather): a drizzle
   // still lets some sun through, from about a quarter of the knob up the sun and moon are gone,
@@ -1207,7 +1134,7 @@ Shade sceneForest(vec2 uv, vec2 cell, float t) {
   // The shafts: three, at seed-chosen places, drifting very slowly.
   forestRaySlant = weather.slant;
   forestRaySrc = canopyRaySources(vec3(-0.3, 0.04, 0.32), 0.1, K_forestSeed, aspect, tm, forestRaySlant);
-  vec2 rays = K_shafts > 0.0 ? forestRays(p, tm) : vec2(0.0);
+  vec2 rays = K_shafts > 0.0 ? canopyRays(p, tm, forestRaySrc, forestRaySlant, K_forestSeed, vec2(0.01, 0.06)) : vec2(0.0);
   forestBeam = K_shafts > 0.0 ? rays.x : 0.3;
   forestRayLight = sky.sunColor * FOREST_SUNLIT + sky.moonColor * vec3(0.6, 0.8, 0.95) * 1.6;
   vec3 beamGlow = forestRayLight * rays.y * K_shafts * (0.45 + 0.9 * K_mist) * 2.2;
@@ -1267,7 +1194,7 @@ Shade sceneForest(vec2 uv, vec2 cell, float t) {
     vec3 gapCol = canopyGapSky(weather, washed, dir, K_stars, p, K_wind, K_forestSeed, 1.25);
     col = mix(col, max(gapCol, mist), smoothstep(0.78, 1.0, p.y));
     vec4 canopy = forestCanopy(p, tm);
-    if (forestHard(canopy.a) > 0.0) {
+    if (hardEdge(canopy.a) > 0.0) {
       // Crowns at about 20 m: the nearer trunks rise in front of them, the farthest vanish into them.
       col = mix(mist, canopy.rgb, forestTransmit(6.0, 9.0));
       hitZ = 20.0;
@@ -1288,7 +1215,7 @@ Shade sceneForest(vec2 uv, vec2 cell, float t) {
     float height;
     float depth;
     vec4 tree = forestTrees(q, i, depth, height);
-    if (forestHard(tree.a) > 0.0 && z < hitZ) {
+    if (hardEdge(tree.a) > 0.0 && z < hitZ) {
       col = mix(mist, tree.rgb, forestTransmit(depth, height));
       hitZ = depth;
     }
@@ -1309,7 +1236,7 @@ Shade sceneForest(vec2 uv, vec2 cell, float t) {
         if (kk >= 1.0 && age >= 0.0 && hitZ > sz - 1.0) {
           vec2 sv = (vec2(xw - (sb.z + sa.z * kk * FOREST_STAG_STRIDE), hgt - 0.05)) / vec2(0.07, 0.1);
           float bloom = (1.0 - smoothstep(0.7, 1.0, length(sv))) * exp(-age / 3.5) * smoothstep(0.0, 0.25, age) * sa.w * (0.25 + 0.75 * forestNight);
-          if (forestHard(bloom) > 0.0) {
+          if (hardEdge(bloom) > 0.0) {
             col = mix(col, FOREST_GLOW * mix(0.5, 1.1, forestNight), 0.85);
             accent = max(accent, 0.8 * forestNight);
           }
@@ -1319,7 +1246,7 @@ Shade sceneForest(vec2 uv, vec2 cell, float t) {
           float stand = texelFetch(uSim0, ivec2(2, FOREST_SPIRITS), 0).x;
           float d = forestStagDist(l, sa.y, sb.x, sb.y, stand, aa);
           float cover = (1.0 - smoothstep(-0.7 * aa, 0.7 * aa, d)) * sa.w * step(0.0, hgt);
-          if (forestHard(cover) > 0.0) {
+          if (hardEdge(cover) > 0.0) {
             float rim = 1.0 - smoothstep(0.0, 0.06, -d);
             vec3 coat = FOREST_STAG_COAT * (forestFill * 0.8 + forestKey * 0.1) + mist * 0.25 * rim;
             vec3 c = mix(mist, coat, forestTransmit(sz, hgt));
@@ -1340,13 +1267,13 @@ Shade sceneForest(vec2 uv, vec2 cell, float t) {
       if ((tq.y - FOREST_HORIZON) * tz + FOREST_EYE >= -0.02) {
         vec2 P = forestToriiFrame(tq);
         vec4 torii = forestTorii(P, tz / uRes.y);
-        if (forestHard(torii.a) > 0.0) {
+        if (hardEdge(torii.a) > 0.0) {
           col = mix(mist, torii.rgb, forestTransmit(tz, max(P.y, 0.0)));
           hitZ = tz;
         }
         float glow;
         vec4 sh = forestShrooms(tq, 4, glow);
-        if (forestHard(sh.a) > 0.0) {
+        if (hardEdge(sh.a) > 0.0) {
           col = mix(mist, sh.rgb, forestTransmit(tz, 0.3)) + FOREST_SHROOM_GLOW * glow * 0.3;
           hitZ = tz;
           accent = max(accent, glow);
@@ -1368,14 +1295,14 @@ Shade sceneForest(vec2 uv, vec2 cell, float t) {
     vec2 q = forestAt(p, z);
     float up;
     vec4 fallen = forestLog(q, up);
-    if (forestHard(fallen.a) > 0.0) {
+    if (hardEdge(fallen.a) > 0.0) {
       col = mix(mist, fallen.rgb, forestTransmit(z, 0.5));
       hitZ = z;
     }
     for (int k = 2; k <= 3; k++) {
       float glow;
       vec4 sh = forestShrooms(q, k, glow);
-      if (forestHard(sh.a) > 0.0) {
+      if (hardEdge(sh.a) > 0.0) {
         col = mix(mist, sh.rgb, forestTransmit(z, 0.7)) + FOREST_SHROOM_GLOW * glow * 0.3;
         hitZ = z;
         accent = max(accent, glow);
@@ -1391,14 +1318,14 @@ Shade sceneForest(vec2 uv, vec2 cell, float t) {
       float height;
       float u;
       vec4 tree = forestBigTree(q, forestElderX, z, FOREST_ELDER_SHAPE, 1.0, 7.7, 0.9, height, u);
-      if (forestHard(tree.a) > 0.0) {
+      if (hardEdge(tree.a) > 0.0) {
         col = mix(mist, tree.rgb, forestTransmit(z, height));
         hitZ = z;
       }
     }
     float drip;
     vec4 branch = forestBranch(q, t, tm, drip);
-    if (forestHard(branch.a) > 0.0) {
+    if (hardEdge(branch.a) > 0.0) {
       col = mix(mist, branch.rgb, forestTransmit(z, 3.0));
       hitZ = z;
     } else if (drip > 0.0) {
@@ -1415,7 +1342,7 @@ Shade sceneForest(vec2 uv, vec2 cell, float t) {
     vec2 rs = st.zw / z;
     float up;
     vec4 stone = forestRock(q, c, rs, z, c.y - 0.08 * rs.y, 11.0 + float(k) * 3.7, 0.35, t, up);
-    if (forestHard(stone.a) > 0.0) {
+    if (hardEdge(stone.a) > 0.0) {
       col = mix(mist, stone.rgb, forestTransmit(z, 0.1));
       hitZ = z;
     }
@@ -1427,13 +1354,13 @@ Shade sceneForest(vec2 uv, vec2 cell, float t) {
     vec2 q = forestAt(p, z);
     float up;
     vec4 rock = forestRock(q, rockRC, rockRR, z, FOREST_HORIZON - FOREST_EYE / (z - 0.6), 4.1, 0.85, t, up);
-    if (forestHard(rock.a) > 0.0) {
+    if (hardEdge(rock.a) > 0.0) {
       col = mix(mist, rock.rgb, forestTransmit(z, 0.4));
       hitZ = z;
     }
     float glow;
     vec4 sh = forestShrooms(q, 5, glow);
-    if (forestHard(sh.a) > 0.0) {
+    if (hardEdge(sh.a) > 0.0) {
       col = mix(mist, sh.rgb, forestTransmit(z, 0.5)) + FOREST_SHROOM_GLOW * glow * 0.3;
       hitZ = z;
       accent = max(accent, glow);
@@ -1448,9 +1375,9 @@ Shade sceneForest(vec2 uv, vec2 cell, float t) {
       float height;
       float u;
       vec4 tree = forestBigTree(q, forestHeroX, z, FOREST_HERO_SHAPE, 0.0, FOREST_HERO_SALT, 1.25, height, u);
-      if (forestHard(tree.a) > 0.0) {
+      if (hardEdge(tree.a) > 0.0) {
         vec4 rope = forestRope(q, max(height, 0.0), u, tm);
-        vec3 c = mix(tree.rgb, rope.rgb, forestHard(rope.a));
+        vec3 c = mix(tree.rgb, rope.rgb, hardEdge(rope.a));
         col = mix(mist, c, forestTransmit(z, height));
         hitZ = z;
       }
@@ -1463,7 +1390,7 @@ Shade sceneForest(vec2 uv, vec2 cell, float t) {
     vec2 q = forestAt(p, z);
     float up;
     vec4 rock = forestRock(q, rockLC, rockLR, z, -1.0, 2.3, 1.0, t, up);
-    if (forestHard(rock.a) > 0.0) {
+    if (hardEdge(rock.a) > 0.0) {
       col = mix(mist, rock.rgb, forestTransmit(z, 0.4));
       hitZ = z;
     }
@@ -1476,7 +1403,7 @@ Shade sceneForest(vec2 uv, vec2 cell, float t) {
     }
     for (int k = 0; k <= 1; k++) {
       vec4 sh = forestShrooms(q, k, glow);
-      if (forestHard(sh.a) > 0.0) {
+      if (hardEdge(sh.a) > 0.0) {
         col = mix(mist, sh.rgb, forestTransmit(z, 0.5)) + FOREST_SHROOM_GLOW * glow * 0.3;
         hitZ = z;
         accent = max(accent, glow);
@@ -1491,7 +1418,7 @@ Shade sceneForest(vec2 uv, vec2 cell, float t) {
     vec4 fern = forestFern(q, vec2(0.5 * forestLA - 0.07, -0.05), 0.42, 1.0, tm);
     vec4 fern2 = forestFern(q, vec2(-0.5 * forestLA + 0.07, -0.06), 0.34, 5.0, tm);
     if (fern2.a > fern.a) fern = fern2;
-    if (forestHard(fern.a) > 0.0) {
+    if (hardEdge(fern.a) > 0.0) {
       col = mix(mist, fern.rgb, forestTransmit(z, 0.5));
       hitZ = z;
     }
@@ -1520,7 +1447,7 @@ Shade sceneForest(vec2 uv, vec2 cell, float t) {
       if (abs(l.x) > 0.55 || l.y > 1.05 || hitZ < z - 0.35) continue;
       if (l.y < 0.03 + 0.03 * sin(l.x * 23.0 + float(s))) continue;
       vec4 shape = forestSpiritShape(l + vec2(0.0, sc.x * 0.45), sb.x, sb.y, sb.w, hs * uRes.y);
-      if (forestHard(shape.x * sa.w) <= 0.0) continue;
+      if (hardEdge(shape.x * sa.w) <= 0.0) continue;
       vec3 body = FOREST_SPIRIT * (forestFill * 1.6 + forestTop * 0.6 + forestKey * (0.2 + 0.4 * forestBeam) + forestShroomLight(q, z) * 0.6) * (0.75 + 0.25 * shape.z);
       vec3 inner = FOREST_GLOW * sb.z * forestNight * (0.5 + 0.5 * shape.w) * 0.6;
       vec3 c = mix(mist, body, T) + inner * mix(T, 1.0, 0.5);
@@ -1560,9 +1487,9 @@ Shade sceneForest(vec2 uv, vec2 cell, float t) {
   float dripAmount = forestWet * (0.3 + 0.5 * clamp(1.6 * K_rain, 0.0, 1.0));
   if (dripAmount > 0.0) {
     float drip = 0.0;
-    if (hitZ > FOREST_ELDER_Z) drip = forestDrip(forestAt(p, FOREST_ELDER_Z), tm, dripAmount, FOREST_ELDER_Z, 1.0);
-    if (hitZ > FOREST_TREE_Z[0]) drip = max(drip, 0.75 * forestDrip(forestAt(p, FOREST_TREE_Z[0]), tm, 0.75 * dripAmount, FOREST_TREE_Z[0], 2.0));
-    col = mix(col, forestDropLit * 1.1, forestHard(drip) * 0.85);
+    if (hitZ > FOREST_ELDER_Z) drip = canopyDrip(forestAt(p, FOREST_ELDER_Z), tm, dripAmount, FOREST_ELDER_Z, 1.0, FOREST_DRIPS);
+    if (hitZ > FOREST_TREE_Z[0]) drip = max(drip, 0.75 * canopyDrip(forestAt(p, FOREST_TREE_Z[0]), tm, 0.75 * dripAmount, FOREST_TREE_Z[0], 2.0, FOREST_DRIPS));
+    col = mix(col, forestDropLit * 1.1, hardEdge(drip) * 0.85);
   }
   // The rain, in depth: each layer of drops hidden behind the first surface along this pixel, its
   // unresolved haze laid over the distance like the mist, the nearest, out of focus, fainter.

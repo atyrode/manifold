@@ -62,15 +62,10 @@ struct LavaLamp {
 struct LavaField { float f; vec2 grad; float temp; float mark; };
 
 // Set once per pixel by sceneLava.
-float lavaTh;       // this cell's dither threshold
 float lavaPx;       // one cell, in frame heights
 float lavaAccent;   // the accent gathered while drawing
 float lavaSpill;    // how much of the lamps' light reaches the room
 vec3 lavaAmbient;   // the room's own dim light: the lamps' glow bounced about, a little moonlight
-
-float lavaBell(float x) {
-  return exp(-x * x);
-}
 
 // The palettes, in K_wax order: red in yellow on gold, purple in blue on silver, green in aqua on
 // black, white in clear on silver.
@@ -276,8 +271,8 @@ vec3 lavaMetal(LavaLamp L, float xi, float v, float up, float down) {
   vec3 shine = mix(tint, vec3(1.0), 0.3);
   vec3 warm = L.ink.light * L.bulb;
   vec3 col = tint * (0.03 + 0.05 * face) + 2.0 * tint * lavaAmbient;
-  col += shine * LAVA_MOON * K_moon * lavaBell((xi + 0.52) / 0.12);
-  col += tint * warm * 0.24 * lavaBell((xi - 0.4) / 0.25);
+  col += shine * LAVA_MOON * K_moon * bell((xi + 0.52) / 0.12);
+  col += tint * warm * 0.24 * bell((xi - 0.4) / 0.25);
   col += tint * warm * up * face * 0.7;
   col += tint * warm * down * 0.2 * lavaSpill;
   col *= 0.95 + 0.05 * sin(v * 130.0);
@@ -339,7 +334,7 @@ vec3 lavaGlass(vec3 behind, LavaLamp L, vec2 l, float s, float rg, float aa) {
     float depth = w.f - L.iso;
     float cell = aa / LAVA_GLASS_H * 0.5 * (1.0 + LAVA_LENS + 3.0 * (1.0 - LAVA_LENS) * xi * xi);
     float cover = clamp(0.5 + depth / (max(length(w.grad), 1e-3) * cell), 0.0, 1.0);
-    if (cover > lavaTh) {
+    if (cover > cellTh) {
       float dd = max(depth, 0.0);
       vec3 n = normalize(vec3(-w.grad * LAVA_BULGE / (2.0 * sqrt(dd + 0.002)), 1.0));
       float thick = 1.0 - exp(-2.4 * dd);
@@ -365,9 +360,9 @@ vec3 lavaGlass(vec3 behind, LavaLamp L, vec2 l, float s, float rg, float aa) {
   // the moonlit window mirrored in a narrow streak down the left, the room's glow broad on the right.
   float wall = smoothstep(ri - aa, ri + aa, ax);
   col = mix(col, col * 0.5 + ink.liquid * glow * 0.12, wall);
-  col += (vec3(0.06) + ink.light * 0.14 * L.bulb) * lavaBell((ax - rg + 0.8 * aa) / (1.1 * aa));
-  col += LAVA_MOON * (0.04 + 0.5 * K_moon) * lavaBell((xo + 0.56) / 0.075) * (0.5 + 0.5 * smoothstep(0.0, 0.4, s));
-  col += ink.light * 0.06 * L.bulb * lavaBell((xo - 0.5) / 0.2);
+  col += (vec3(0.06) + ink.light * 0.14 * L.bulb) * bell((ax - rg + 0.8 * aa) / (1.1 * aa));
+  col += LAVA_MOON * (0.04 + 0.5 * K_moon) * bell((xo + 0.56) / 0.075) * (0.5 + 0.5 * smoothstep(0.0, 0.4, s));
+  col += ink.light * 0.06 * L.bulb * bell((xo - 0.5) / 0.2);
   return col;
 }
 
@@ -485,7 +480,7 @@ vec3 lavaTop(vec2 p, LavaLamp A, LavaLamp B, bool twin, float aspect) {
   vec3 seen = lavaAura(A, m);
   if (twin) seen += lavaAura(B, m);
   col += LAVA_PAPER * seen * lavaSpill * (0.03 + 0.12 * depth) * shade;
-  col += LAVA_TEAK * (light * 1.6 + 0.015) * lavaBell((p.y - LAVA_TOP_FRONT - 1.5 * lavaPx) / (1.5 * lavaPx));
+  col += LAVA_TEAK * (light * 1.6 + 0.015) * bell((p.y - LAVA_TOP_FRONT - 1.5 * lavaPx) / (1.5 * lavaPx));
   return col;
 }
 
@@ -634,7 +629,6 @@ Shade sceneLava(vec2 uv, vec2 cell, float t) {
   Shade o = blankShade();
   float aspect = uRes.x / uRes.y;
   vec2 p = vec2(uv.x * aspect, uv.y);
-  lavaTh = threshold(cell);
   lavaPx = 1.0 / uRes.y;
   lavaAccent = 0.0;
   lavaSpill = 1.2 * K_spill;

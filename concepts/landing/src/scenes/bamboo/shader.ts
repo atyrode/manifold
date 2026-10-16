@@ -11,6 +11,7 @@
 // K_cycle, K_stars and K_moon (the shared stars and the moon in its phase, SKY_MOON_PHASE, in the
 // canopy's gaps), K_rain, K_wind, K_mark (trigger 2 summons the M).
 import { glslFloat } from "../../shaders/glsl.ts";
+import { canopyGroveGlsl } from "../../shaders/lib/canopy.ts";
 import {
   BAMBOO_BASIN,
   BAMBOO_CELLS,
@@ -53,7 +54,6 @@ const int BAMBOO_CELLS = ${BAMBOO_CELLS};
 const float BAMBOO_SWAY_HEIGHT = ${f(BAMBOO_SWAY_HEIGHT)};
 // Canopy sprays on layers 1 and 2: one fan of leaves per cell of this grid (metres).
 const vec2 BAMBOO_SPRAY_CELL = vec2(0.5, 0.36);
-const int BAMBOO_RAYS = 3;
 
 // The water clock, in device units (see sim.ts).
 const vec2 BAMBOO_PIVOT = vec2(${f(BAMBOO_TUBE.x)}, ${f(BAMBOO_TUBE.y)});
@@ -161,31 +161,12 @@ float bambooTransmit(float z, float height) {
   return exp(-dens * z * (1.0 + 0.6 * exp(-max(height, 0.0) / 1.1)));
 }
 
-// The god rays: BAMBOO_RAYS beams falling from gaps in the canopy (bambooRaySrc, where each leaves the
-// top of the frame) at bambooRaySlant. Each is narrow where it leaves its gap and widens as it falls,
-// fades with distance, breathes in and out over a couple of minutes, and is combed by the shadows of
-// the stems it passed on the way (a few streaks along it, spreading with the beam). Returns x: how
-// much this point lies in a beam (to light what it falls on), y: the beam's glow in the air.
-vec2 bambooRays(vec2 p, float tm) {
-  float sl = bambooRaySlant;
-  float b = max(1.02 - p.y, 0.0) / cos(sl);
-  float at = p.x + sin(sl) * b;
-  float lit = 0.0;
-  float glow = 0.0;
-  for (int r = 0; r < BAMBOO_RAYS; r++) {
-    float h = hash12(vec2(float(r) * 3.7 + 1.0, K_groveSeed * 0.913 + 5.0));
-    float across = (at - bambooRaySrc[r]) * cos(sl);
-    float width = 0.008 + (0.07 + 0.04 * h) * b;
-    float beam = 1.0 - smoothstep(0.25 * width, width, abs(across));
-    if (beam <= 0.0) continue;
-    float comb = smoothstep(0.6, 0.8, vnoise(vec2(across / width * 3.0 + h * 17.0, 0.5)));
-    float breathe = 0.75 + 0.25 * sin(tm * (0.045 + 0.03 * h) + h * TAU);
-    beam *= (1.0 - 0.6 * comb) * breathe * (0.65 + 0.35 * h);
-    lit = max(lit, beam);
-    glow += beam * exp(-0.55 * b);
-  }
-  return vec2(lit, glow);
-}
+// The grove under the canopy (shaders/lib/canopy.ts), in the grove's shapes: the far canopy's ragged
+// underside about 0.8 up the frame, finer-leaved than the forest's; leaf tips dripping in columns
+// 12 cm wide, 22% of them at amount 1, from 0.66 to 0.92 up the frame.
+${canopyGroveGlsl}
+const CanopyCrowns BAMBOO_CROWNS = CanopyCrowns(vec3(0.8, 0.09, 2.3), vec2(9.0, 12.0), vec2(23.0, 27.0), vec3(0.1, 0.12, 0.16), vec3(0.6, 0.78, 0.86), vec4(0.07, 0.85, 0.8, 0.96));
+const CanopyDrips BAMBOO_DRIPS = CanopyDrips(BAMBOO_HORIZON, BAMBOO_EYE, 0.12, 0.22, vec2(0.66, 0.26));
 
 // The lantern's warm light reaching something at screen point p, depth z.
 vec3 bambooLanternLight(vec2 p, float z) {
@@ -501,8 +482,8 @@ vec4 bambooSprays(vec2 q, int i, float tm) {
   return vec4(mix(bambooLeafColor(tone, q, z), twigColor, twigged), cover);
 }
 
-// The canopy overhead, far off in the mist: a ragged ceiling of foliage breathing with the far
-// stems' sway, thinning into gaps toward the top of the frame, and open where the rays come through.
+// The canopy overhead (BAMBOO_CROWNS), far off in the mist, breathing with the far stems' sway,
+// thinning into gaps toward the top of the frame, and open where the rays come through.
 vec4 bambooCanopy(vec2 p) {
   int back = BAMBOO_LAYERS - 1;
   float sway = 0.0;
@@ -511,18 +492,9 @@ vec4 bambooCanopy(vec2 p) {
     sway = texture(uSim0, vec2((p.x * BAMBOO_Z[back] / BAMBOO_SPACING[back] + 0.5 * cells) / cells, (float(back) + 0.5) / float(BAMBOO_LAYERS))).r;
   }
   vec2 q = vec2(p.x - 0.04 * sway, p.y);
-  float edge = 0.8 + 0.09 * vnoise(vec2(q.x * 2.3 + K_groveSeed * 0.37, 0.5));
-  float n = 0.6 * vnoise(q * vec2(9.0, 12.0)) + 0.4 * vnoise(q * vec2(23.0, 27.0) + 3.1);
-  float dens = smoothstep(edge - 0.1, edge + 0.12, q.y + 0.16 * (n - 0.5));
-  float gap = smoothstep(0.6, 0.78, n) * smoothstep(0.86, 1.02, q.y);
-  float open = 0.0;
-  if (K_shafts > 0.0) {
-    for (int r = 0; r < BAMBOO_RAYS; r++) open = max(open, bell((p.x - bambooRaySrc[r]) / 0.07));
-  }
-  dens *= 1.0 - 0.85 * open * smoothstep(0.8, 0.96, p.y);
-  float behind = 0.3 + 0.7 * clamp(bambooKeySide.y * 1.5, 0.0, 1.0);
-  vec3 col = BAMBOO_LEAF * (0.8 + 0.4 * n) * bambooFill + BAMBOO_LEAF_LIT * bambooKey * bambooBeam * behind * 0.2;
-  return vec4(col, clamp(dens * (1.0 - gap), 0.0, 1.0));
+  vec3 c = canopyCrowns(q, p, BAMBOO_CROWNS, K_groveSeed, K_shafts > 0.0, bambooRaySrc, bambooKeySide);
+  vec3 col = BAMBOO_LEAF * (0.8 + 0.4 * c.y) * bambooFill + BAMBOO_LEAF_LIT * bambooKey * bambooBeam * c.z * 0.2;
+  return vec4(col, c.x);
 }
 
 // The grove floor at screen point p (below the horizon): leaf litter with moss, strewn with fallen
@@ -1020,47 +992,6 @@ vec3 bambooDevice(vec2 d, vec2 p, float aa, float t, float tm, vec3 col, inout f
   return col;
 }
 
-// Water gathered on the leaves running off their tips: big drops letting go of the sprays of the
-// culms at depth z and falling through the grove. In metres at that depth, columns 12 cm wide each
-// hold one leaf tip that drips over and over: a bead swells at the tip for half the beat, lets go and
-// falls under gravity as a streak lengthening with its speed, down to the floor; then a fresh tip in
-// the column takes its turn. amount 0..1 sets the share of tips dripping and how quickly they refill.
-// Returns coverage, never narrower than two cells.
-float bambooDrip(vec2 q, float tm, float amount, float z, float salt) {
-  vec2 w = vec2(q.x * z, (q.y - BAMBOO_HORIZON) * z + BAMBOO_EYE);
-  float cw = 0.12;
-  float cx = floor(w.x / cw);
-  float h = hash12(vec2(cx + 0.5, salt * 17.0 + 3.0));
-  if (h > 0.22 * amount) return 0.0;
-  float period = mix(4.5, 2.0, amount) * (0.75 + 0.5 * fract(h * 37.3));
-  float ph = tm / period + fract(h * 91.0);
-  float n = floor(ph);
-  float age = (ph - n) * period;
-  float hn = hash12(vec2(cx + 0.5, n + salt * 11.0));
-  float tipY = (0.66 + 0.26 * hn - BAMBOO_HORIZON) * z + BAMBOO_EYE;
-  float x = (cx + 0.2 + 0.6 * fract(hn * 17.3)) * cw;
-  float aa = z / uRes.y;
-  float hw = max(0.003, 1.2 * aa);
-  float hang = 0.5 * period;
-  vec2 a;
-  vec2 b;
-  float r;
-  if (age < hang) {
-    // The bead swelling at the tip.
-    r = hw * (0.7 + 0.6 * age / hang);
-    a = vec2(x, tipY - r);
-    b = a;
-  } else {
-    float fall = age - hang;
-    float y = tipY - 4.9 * fall * fall;
-    if (y < 0.0) return 0.0;
-    r = hw;
-    a = vec2(x, y);
-    b = vec2(x, y + clamp(0.3 * fall, 2.0 * hw, 0.25));
-  }
-  return 1.0 - smoothstep(r - 0.6 * aa, r + 0.6 * aa, segmentDistance(w, a, b));
-}
-
 Shade sceneBamboo(vec2 uv, vec2 cell, float t) {
   float aspect = uRes.x / uRes.y;
   bambooAspect = aspect;
@@ -1105,7 +1036,7 @@ Shade sceneBamboo(vec2 uv, vec2 cell, float t) {
   // The god rays: three, crossing mid-frame at seed-chosen places, drifting very slowly.
   bambooRaySlant = weather.slant;
   bambooRaySrc = canopyRaySources(vec3(-0.32, -0.02, 0.28), 0.12, K_groveSeed, aspect, tm, bambooRaySlant);
-  vec2 rays = K_shafts > 0.0 ? bambooRays(p, tm) : vec2(0.0);
+  vec2 rays = K_shafts > 0.0 ? canopyRays(p, tm, bambooRaySrc, bambooRaySlant, K_groveSeed, vec2(0.008, 0.07)) : vec2(0.0);
   // The canopy shelters the grove: under its leaves half the rain gets through (the rest gathers on
   // them and drips); it pours in full through the gaps, the same gaps the rays come through, in
   // columns slanting with the wind.
@@ -1238,8 +1169,8 @@ Shade sceneBamboo(vec2 uv, vec2 cell, float t) {
   vec3 dropLit = vec3(0.94, 0.97, 1.0) * bambooCloud * 1.2 + bambooKey * bambooBeam * 0.5 + bambooLanternLight(p, 2.5) * 1.3;
   if (bambooDripAmount > 0.0) {
     float drip = 0.0;
-    if (hitZ > BAMBOO_Z[1]) drip = bambooDrip(p + par / BAMBOO_Z[1], tm, bambooDripAmount, BAMBOO_Z[1], 1.0);
-    if (hitZ > BAMBOO_Z[2]) drip = max(drip, 0.75 * bambooDrip(p + par / BAMBOO_Z[2], tm, 0.75 * bambooDripAmount, BAMBOO_Z[2], 2.0));
+    if (hitZ > BAMBOO_Z[1]) drip = canopyDrip(p + par / BAMBOO_Z[1], tm, bambooDripAmount, BAMBOO_Z[1], 1.0, BAMBOO_DRIPS);
+    if (hitZ > BAMBOO_Z[2]) drip = max(drip, 0.75 * canopyDrip(p + par / BAMBOO_Z[2], tm, 0.75 * bambooDripAmount, BAMBOO_Z[2], 2.0, BAMBOO_DRIPS));
     col = mix(col, dropLit * 1.1, hardEdge(drip) * 0.85);
   }
   // The rain, in depth: each layer of drops hidden behind the first surface along this pixel (the

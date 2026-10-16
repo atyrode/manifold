@@ -423,8 +423,7 @@ float shoreSurge() {
 float shoreLens() {
   float pin = passageIn();
   if (pin >= 1.0) return 0.0;
-  float u = pin - 1.0;
-  float settle = 1.0 + 2.7 * u * u * u + 1.7 * u * u; // ease out with a little overshoot
+  float settle = passageSettle(pin, 1.7); // ease out with a little overshoot
   return -SHORE_TILT * (1.0 - settle);
 }
 

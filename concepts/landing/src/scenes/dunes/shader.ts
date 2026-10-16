@@ -329,8 +329,7 @@ Shade sceneDunes(vec2 uv, vec2 cell, float t) {
   if (passing && !overhead && pin < 1.0) {
     // Arriving: the eye glides forward from upwind and low, rising to its place with the faintest
     // overshoot (an ease-out-back), and never dips into the sand under it.
-    float back = max(1.0 - pin, 0.0);
-    float rise = 1.0 - 2.2 * back * back * back + 1.2 * back * back;
+    float rise = passageSettle(pin, 1.2);
     ro.xz -= vec2(-sin(DUNES_TURN), cos(DUNES_TURN)) * DUNES_PASSAGE_BACK * left;
     ro.y -= DUNES_PASSAGE_DROP * (1.0 - rise);
     ro.y = max(ro.y, dunesHeight(ro.xz) + 1.5);

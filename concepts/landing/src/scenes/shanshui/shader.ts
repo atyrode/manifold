@@ -874,8 +874,7 @@ struct ShanUnroll {
 // of the way out after a third of the entrance), runs past a little and settles back; the winding
 // up starts gently and gathers pace until the scroll is shut.
 float shanOpen() {
-  float v = clamp(passageIn(), 0.0, 1.0) - 1.0;
-  float arrive = 1.0 + 1.9 * v * v * v + 0.9 * v * v;
+  float arrive = passageSettle(passageIn(), 0.9);
   float x = clamp(passageOut(), 0.0, 1.0);
   return arrive * (1.0 - x * x);
 }

@@ -989,14 +989,6 @@ vec3 islSea(vec3 Pfull, vec3 rd, float t) {
   return mix(col, islHaze(rd) * vec3(0.92, 0.96, 1.0), 0.85 * hz);
 }
 
-// ---- passage ----
-
-// 0 -> 1 as k does: arriving at full speed and settling with an overshoot of about 5%, at rest at 1.
-float islSettle(float k) {
-  float m = clamp(k, 0.0, 1.0) - 1.0;
-  return 1.0 + 2.2 * m * m * m + 1.2 * m * m;
-}
-
 // ---- tiny life ----
 
 vec3 islGullAt(float tm) {
@@ -1142,7 +1134,7 @@ Shade sceneIsland(vec2 uv, vec2 cell, float t) {
   float cosP = ISL_COSP;
   float D = 7.0 * max(1.0, 1.65 / aspect);
   if (passing) {
-    float swoop = 1.0 - islSettle(pin);
+    float swoop = 1.0 - passageSettle(pin, 1.2);
     float away = pout * pout;
     float pitch = ISL_PITCH + swoop * ISL_SWOOP_PITCH + away * ISL_LIFT_PITCH;
     sinP = sin(pitch);

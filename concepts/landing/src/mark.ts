@@ -70,7 +70,8 @@ const vec2 = (v: MarkVertex): string => `vec2(${glslFloat(v[0])}, ${glslFloat(v[
 export const markGlsl = `
 float segmentDistance(vec2 p, vec2 a, vec2 b) {
   vec2 pa = p - a, ba = b - a;
-  return length(pa - ba * clamp(dot(pa, ba) / dot(ba, ba), 0.0, 1.0));
+  float len2 = dot(ba, ba);
+  return length(pa - ba * (len2 > 0.0 ? clamp(dot(pa, ba) / len2, 0.0, 1.0) : 0.0));
 }
 
 // The Manifold M, after the app icon, in mark units: x in [-0.47, 0.47], y in [-0.5, 0.5].

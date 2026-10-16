@@ -591,16 +591,21 @@ float autumnCanopyEdge(float x) {
   return edge - 0.07 * exp(-tx * tx);
 }
 
-// The canopy at screen point p: x how much there is (0 sky .. 1 solid), y how thin it is (1 at the
-// edge and round the holes, where the light shines through). Holes open, and the whole thins, as the
-// season runs on.
-vec2 autumnMassField(vec2 p) {
-  float edge = autumnCanopyEdge(p.x);
-  float base = smoothstep(edge - 0.02, edge + 0.12, p.y);
+// How far into the canopy screen point p lies (edge: autumnCanopyEdge at p.x): 0 under its ragged
+// underside, rising to 1 a little above it. The canopy before its holes open: the mass field never
+// exceeds it, so where it is small the holes need not be looked at.
+float autumnCanopyDepth(vec2 p, float edge) {
+  return smoothstep(edge - 0.02, edge + 0.12, p.y);
+}
+
+// The canopy at screen point p (edge and depth: autumnCanopyEdge and autumnCanopyDepth there): x how
+// much there is (0 sky .. 1 solid, never more than depth), y how thin it is (1 at the edge and round
+// the holes, where the light shines through). Holes open, and the whole thins, as the season runs on.
+vec2 autumnMassField(vec2 p, float edge, float depth) {
   float holes = 0.6 * fbm3(p * 2.6 + vec2(K_parkSeed * 3.1, 1.7)) + 0.4 * fbm3(p * 1.25 + vec2(7.3, K_parkSeed * 1.3));
   float cut = mix(0.6, 1.25, autumnThin);
-  float v = holes + 0.25 * base;
-  float mass = base * smoothstep(cut, cut + 0.1, v);
+  float v = holes + 0.25 * depth;
+  float mass = depth * smoothstep(cut, cut + 0.1, v);
   float thin = 1.0 - smoothstep(cut + 0.05, cut + 0.3, v) * smoothstep(edge, edge + 0.2, p.y);
   return vec2(mass, thin);
 }
@@ -616,22 +621,27 @@ float autumnCanopyBump(vec2 p) {
   return fbm3(p * 4.2 + vec2(K_parkSeed * 1.9, 4.0)) + 0.35 * vnoise(p * 11.0 + 3.0);
 }
 
-// How lit the canopy is at p, about 0.25 in deep shade to 1.1 in full sun: clumps that face the sun
-// are bright, their far flanks and the underside of the canopy dark, the top of the frame brighter.
-float autumnCanopyLight(vec2 p) {
+// How lit the canopy is at p (edge: autumnCanopyEdge at p.x), about 0.25 in deep shade to 1.1 in
+// full sun: clumps that face the sun are bright, their far flanks and the underside of the canopy
+// dark, the top of the frame brighter.
+float autumnCanopyLight(vec2 p, float edge) {
   vec2 toSun = normalize(vec2(autumnL.x, 0.55));
   float facing = clamp(0.5 + (autumnCanopyBump(p) - autumnCanopyBump(p + toSun * 0.04)) * 3.2, 0.0, 1.0);
-  float under = smoothstep(0.0, 0.28, p.y - autumnCanopyEdge(p.x));
+  float under = smoothstep(0.0, 0.28, p.y - edge);
   float top = smoothstep(0.7, 1.05, p.y);
   return (0.25 + 0.85 * facing) * (0.5 + 0.5 * under) * (0.9 + 0.3 * top);
 }
 
 // The canopy's body: clumps of leaves in patches of red, orange and gold, lit on the sun's side and
-// dark under it, a fine leafy grain, and the sun glowing through where it is thin.
+// dark under it, a fine leafy grain, and the sun glowing through where it is thin. Below the
+// canopy's underside its depth is cut already, and the holes are never looked at.
 vec4 autumnCanopyBody(vec2 p) {
-  vec2 mf = autumnMassField(p);
+  float edge = autumnCanopyEdge(p.x);
+  float depth = autumnCanopyDepth(p, edge);
+  if (hardEdge(depth) <= 0.0) return vec4(0.0);
+  vec2 mf = autumnMassField(p, edge, depth);
   if (hardEdge(mf.x) <= 0.0) return vec4(0.0);
-  float lightK = autumnCanopyLight(p);
+  float lightK = autumnCanopyLight(p, edge);
   vec3 base = autumnLeafTop(autumnCanopyHue(p));
   float speck = 0.5 + 0.5 * smoothstep(0.3, 0.65, vnoise(p * 95.0 + 5.0));
   vec3 col = base * (autumnAmb * 0.5 + autumnSun * lightK * 0.8);
@@ -672,13 +682,18 @@ vec4 autumnCanopyLayer(vec2 p, float cs, float salt, float density, float shadeK
     vec2 d = p - cp - sway;
     float r = cs * 0.62 * autumnLeafScale(h2);
     if (dot(d, d) > r * r * 2.4) continue;
-    vec2 mf = autumnMassField(cp);
+    // The canopy's depth bounds its mass, and its thinness is at most 1: where even those would hold
+    // no leaf, the holes are never looked at.
+    float edge = autumnCanopyEdge(cp.x);
+    float depth = autumnCanopyDepth(cp, edge);
+    if (h > depth * density * (0.7 + 1.0)) continue;
+    vec2 mf = autumnMassField(cp, edge, depth);
     if (h > mf.x * density * (0.7 + mf.y)) continue;
     float ang = (hash12(id + 9.1 + salt) - 0.5) * 6.2831 + 0.12 * sin(autumnTm * 0.31 + ph);
     vec2 q = rotate(d, -ang) / r;
     float cov = hardFill(autumnLeafD(q, h2) * r, aa);
     if (cov <= 0.0) continue;
-    float lightK = autumnCanopyLight(cp);
+    float lightK = autumnCanopyLight(cp, edge);
     float hue = clamp(autumnCanopyHue(cp) + (hash12(id * 0.37 + salt * 2.1) - 0.5) * 0.3, 0.0, 1.0);
     bool top = hash12(id + 3.3 + salt) < 0.5;
     vec3 nv = normalize(vec3((jit.x - 0.5) * 1.4, (jit.y - 0.5) * 1.2 + 0.25, -1.0));

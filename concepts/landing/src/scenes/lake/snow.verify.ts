@@ -70,7 +70,6 @@ export function verifyLakeFreshSnow(gl: WebGL2RenderingContext): Record<string, 
       glsl: `${lakeScene.glsl}
     Shade regressionLakeSnow(vec2 uv, vec2 cell, float t) {
       float aspect = uRes.x / uRes.y;
-      lakeTh = threshold(cell);
       lakeSetup(t, aspect);
       if (uv.y > LAKE_HORIZON - 0.02) return shadeOf(vec3(0.0, 0.0, 1.0), 0.0, 0.0);
       LakeSnow s = lakeSnowAt(uv, aspect);

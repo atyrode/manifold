@@ -261,12 +261,6 @@ vec3 pendulaBobAt(vec3 piv, float L, float amp, float phase) {
   return piv + vec3(0.0, -cos(th), sin(th)) * L;
 }
 
-// Ease-out with a gentle overshoot (about 4.5%): 0 at 0, 1 at 1.
-float pendulaBack(float u) {
-  float v = u - 1.0;
-  return 1.0 + 2.1 * v * v * v + 1.1 * v * v;
-}
-
 // The passage's effect on pendulum fi of the row (thread length L): x the thread's length, y the
 // factor on the swing. Exactly (L, 1) once arrived and not leaving. Entering, the bobs drop and the
 // swing builds at once, both easing out; leaving, each bob is hoisted from its moment in the ripple,
@@ -280,7 +274,7 @@ vec2 pendulaPassage(float L, float br, float fi, float cnt) {
   if (pin < 1.0) {
     float tin = pin * PENDULA_ENTER;
     float fall = PENDULA_DROP + 0.5 * sqrt(L / PENDULA_LMAX);
-    hang = pendulaBack(clamp(tin / fall, 0.0, 1.0));
+    hang = passageSettle(tin / fall, 1.1);
     float build = 1.0 - clamp(tin / (0.5 * fall + PENDULA_BUILD), 0.0, 1.0);
     swing = 1.0 - build * build;
   }

@@ -30,7 +30,7 @@
 //
 // Flicker: everything that moves (people, the bartender and what he holds, cars, passers-by, the
 // fan's blades and their shadows, moving lights and their reflections) is cut against the cell's
-// dither threshold (barHard), so a passing edge flips a cell once, all channels together; moving
+// dither threshold (hardEdge), so a passing edge flips a cell once, all channels together; moving
 // bodies are flat inside or banded along their motion. Everything else is still or changes slowly.
 // No shimmer.
 //
@@ -202,7 +202,6 @@ const float BAR_CAR_LEN = 4.4;
 
 // ---- This frame
 
-float barTh;        // the cell's dither threshold
 float barPx;        // one cell, screen heights
 float barT;         // the scene clock (for the weather library, which applies uMotion itself)
 float barTm;        // the scene clock × motion
@@ -226,22 +225,7 @@ vec4 barP2[4];      // talking, umbrella, wet coat
 vec4 barGl[4];      // glasses on the counter: fill, kind, x, source slot
 vec4 barMisc;       // candle draught xy, fan angle, seconds since last call (-1: none)
 
-// ---- Helpers
-
-// Coverage of something that moves, made all-or-nothing against the cell's threshold: a passing
-// edge flips each cell once, all three channels together; half coverage still dithers half.
-float barHard(float cover) {
-  return cover > barTh ? 1.0 : 0.0;
-}
-
 // ---- Passage (the entrance and exit: you sit down in the booth, you stand up to leave)
-
-// Ease-out with a gentle overshoot: 0 at x = 0 and moving fastest there, past 1 near the end, braking
-// to rest at exactly 1 from x = 1.
-float barSettle(float x) {
-  float d = clamp(x, 0.0, 1.0) - 1.0;
-  return 1.0 + 3.2 * d * d * d + 2.2 * d * d;
-}
 
 // The camera's passage: the eye's lift (m, into barEye) and the view's turn (screen heights, added
 // to p). Sitting down, the eye starts high and looking down toward the door, already on its way, and
@@ -254,8 +238,8 @@ void barPassage() {
   float pout = passageOut();
   if (pin < 1.0) {
     float tin = pin * BAR_ENTER;
-    barPassEye.y += 0.13 * (1.0 - barSettle(tin / 2.4));
-    barPassTurn += vec2(-0.05, -0.02) * (1.0 - barSettle(tin / 2.6));
+    barPassEye.y += 0.13 * (1.0 - passageSettle(tin / 2.4, 2.2));
+    barPassTurn += vec2(-0.05, -0.02) * (1.0 - passageSettle(tin / 2.6, 2.2));
   }
   if (pout > 0.0) {
     float tout = pout * BAR_EXIT;
@@ -281,39 +265,12 @@ vec2 barNear(vec2 p, float z) {
   return barAt(p, z) * (z / BAR_F) + vec2(0.0, BAR_TABLE_EYE);
 }
 
-float barSmin(float a, float b, float k) {
-  float h = clamp(0.5 + 0.5 * (b - a) / k, 0.0, 1.0);
-  return mix(b, a, h) - k * h * (1.0 - h);
-}
-
-// Signed distance to an ellipse: exact enough inside, gradient-normalised outside (Quilez).
-float barEllipse(vec2 p, vec2 r) {
-  float k0 = length(p / r);
-  if (k0 < 1.0) return (k0 - 1.0) * min(r.x, r.y);
-  return k0 * (k0 - 1.0) / length(p / (r * r));
-}
-
-float barBox(vec2 p, vec2 b) {
-  vec2 d = abs(p) - b;
-  return length(max(d, 0.0)) + min(max(d.x, d.y), 0.0);
-}
-
-// A capsule tapering from radius ra at a to rb at b.
+// A capsule tapering from radius ra at a to rb at b: sdTaperCapsule, guarded for a zero-length segment.
 float barSeg(vec2 p, vec2 a, vec2 b, float ra, float rb) {
   vec2 pa = p - a;
   vec2 ba = b - a;
   float u = clamp(dot(pa, ba) / max(dot(ba, ba), 1e-8), 0.0, 1.0);
   return length(pa - ba * u) - mix(ra, rb, u);
-}
-
-// Soft coverage of a shape from its distance, aa wide.
-float barFill(float d, float aa) {
-  return 1.0 - smoothstep(-aa, aa, d);
-}
-
-// A bell, 1 at x = 0 (exp(-x²); pow() of a negative base is undefined in GLSL).
-float barBell(float x) {
-  return exp(-x * x);
 }
 
 // The elbow for a shoulder s and a hand h (upper arm a, forearm b long), jutting out to the side
@@ -395,9 +352,9 @@ vec3 barFanLight(vec3 P, vec3 N) {
 
 // One letter of OPEN in tube, q metres from its centre (0.07 wide, 0.12 tall): O, P, E, N.
 float barGlyph(vec2 q, int g) {
-  if (g == 0) return abs(barEllipse(q, vec2(0.038, 0.058)));
+  if (g == 0) return abs(sdEllipse(q, vec2(0.038, 0.058)));
   float stem = segmentDistance(q, vec2(-0.034, -0.06), vec2(-0.034, 0.06));
-  if (g == 1) return min(stem, abs(barBox(q - vec2(-0.008, 0.028), vec2(0.022, 0.018)) - 0.012));
+  if (g == 1) return min(stem, abs(sdBox(q - vec2(-0.008, 0.028), vec2(0.022, 0.018), 0.0) - 0.012));
   if (g == 2) {
     float bars = min(segmentDistance(q, vec2(-0.034, 0.06), vec2(0.034, 0.06)), segmentDistance(q, vec2(-0.034, -0.06), vec2(0.034, -0.06)));
     return min(min(stem, bars), segmentDistance(q, vec2(-0.034, 0.0), vec2(0.02, 0.0)));
@@ -416,7 +373,7 @@ vec2 barOpen(vec2 q, bool mirrored) {
     g = 3 - g;
     lq.x = -lq.x;
   }
-  return vec2(barGlyph(lq, g), abs(barBox(q, vec2(0.215, 0.075)) - 0.02));
+  return vec2(barGlyph(lq, g), abs(sdBox(q, vec2(0.215, 0.075), 0.0) - 0.02));
 }
 
 // ---- Outside: the street through the front window
@@ -461,33 +418,33 @@ vec3 barFacade(vec2 w, float soft) {
       }
       inside = mix(inside, drum, door);
       vec2 pq = vec2(x + 13.15, y);
-      float person = min(barEllipse(pq - vec2(0.0, 1.36 + 0.01 * sin(barTm * 0.3)), vec2(0.1, 0.12)), barBox(pq - vec2(0.03, 0.95), vec2(0.15, 0.3)) - 0.05);
-      inside = mix(inside, vec3(0.1, 0.09, 0.11), barFill(person, soft));
-      col = mix(col, inside, barFill(barBox(vec2(x + 14.0, y - 1.66), vec2(1.52, 1.1)), soft));
-      col = mix(col, vec3(0.75, 0.82, 0.85) * 0.55, barFill(barBox(vec2(x + 14.0, y - 3.08), vec2(1.5, 0.17)), soft));
+      float person = min(sdEllipse(pq - vec2(0.0, 1.36 + 0.01 * sin(barTm * 0.3)), vec2(0.1, 0.12)), sdBox(pq - vec2(0.03, 0.95), vec2(0.15, 0.3), 0.0) - 0.05);
+      inside = mix(inside, vec3(0.1, 0.09, 0.11), softFill(person, soft));
+      col = mix(col, inside, softFill(sdBox(vec2(x + 14.0, y - 1.66), vec2(1.52, 1.1), 0.0), soft));
+      col = mix(col, vec3(0.75, 0.82, 0.85) * 0.55, softFill(sdBox(vec2(x + 14.0, y - 3.08), vec2(1.5, 0.17), 0.0), soft));
     } else if (x > -11.9 && x < -10.9) {
-      col = mix(col, vec3(0.025, 0.02, 0.02) + vec3(0.04, 0.025, 0.012) * smoothstep(1.8, 0.0, y), barFill(barBox(vec2(x + 11.4, y - 1.1), vec2(0.45, 1.1)), soft));
+      col = mix(col, vec3(0.025, 0.02, 0.02) + vec3(0.04, 0.025, 0.012) * smoothstep(1.8, 0.0, y), softFill(sdBox(vec2(x + 11.4, y - 1.1), vec2(0.45, 1.1), 0.0), soft));
       vec2 lq = vec2(x + 11.4, y - 2.55);
-      col += vec3(1.0, 0.72, 0.42) * (0.9 * barFill(length(lq) - 0.07, soft) + 0.15 * exp(-length(lq) / 0.35));
+      col += vec3(1.0, 0.72, 0.42) * (0.9 * softFill(length(lq) - 0.07, soft) + 0.15 * exp(-length(lq) / 0.35));
     } else if (x > -10.7 && x < -7.8) {
       float shelf = step(0.82, fract((y - 0.6) / 0.42));
       float spine = hash12(vec2(floor(x / 0.07), floor((y - 0.6) / 0.42)));
       vec3 books = mix(vec3(0.5, 0.2, 0.12), vec3(0.15, 0.25, 0.3), step(0.5, spine)) * (0.4 + 0.6 * spine);
       vec3 inside = mix(books, vec3(0.3, 0.2, 0.12), shelf) * vec3(1.0, 0.7, 0.45) * 0.5 * (0.6 + 0.4 * smoothstep(2.6, 1.2, y));
-      col = mix(col, inside, barFill(barBox(vec2(x + 9.25, y - 1.65), vec2(1.3, 1.05)), soft));
+      col = mix(col, inside, softFill(sdBox(vec2(x + 9.25, y - 1.65), vec2(1.3, 1.05), 0.0), soft));
     }
   } else if (y > 3.85 && y < 5.65) {
     float gx = (x + 16.0) / 1.6;
     vec2 id = vec2(floor(gx), 1.0);
     vec2 f = vec2((fract(gx) - 0.5) * 1.6, y - 4.8);
     float folds = 0.75 + 0.25 * sin(f.x * 40.0 + hash12(id) * 6.0);
-    col = mix(col, vec3(0.02, 0.022, 0.03) + barFlat(id) * folds, barFill(barBox(f, vec2(0.45, 0.8)), soft));
-    col = mix(col, wetten(vec3(0.45, 0.43, 0.4), barWet, 0.3) * lit * 1.2, barFill(barBox(f + vec2(0.0, 0.86), vec2(0.52, 0.05)), soft));
+    col = mix(col, vec3(0.02, 0.022, 0.03) + barFlat(id) * folds, softFill(sdBox(f, vec2(0.45, 0.8), 0.0), soft));
+    col = mix(col, wetten(vec3(0.45, 0.43, 0.4), barWet, 0.3) * lit * 1.2, softFill(sdBox(f + vec2(0.0, 0.86), vec2(0.52, 0.05), 0.0), soft));
   }
   // A chemist's green cross over the street, lit all night, glowing in the wet air.
   vec2 cq = abs(w - BAR_CROSS);
   float plus = min(max(cq.x - 0.27, cq.y - 0.09), max(cq.x - 0.09, cq.y - 0.27));
-  col = mix(col, vec3(0.45, 1.0, 0.65), barFill(plus, soft));
+  col = mix(col, vec3(0.45, 1.0, 0.65), softFill(plus, soft));
   col += vec3(0.15, 0.9, 0.45) * 0.25 * exp(-max(plus, 0.0) / 0.25);
   return col;
 }
@@ -501,10 +458,10 @@ vec3 barStreaks(float x, float down, float y) {
   float fall = exp(-down / 0.05);
   vec3 c = vec3(0.56, 0.72, 0.74) * 0.7 * smoothstep(0.012, 0.0, max(-15.5 * k - x, x + 12.5 * k)) * fall;
   c += vec3(1.0, 0.7, 0.45) * 0.2 * smoothstep(0.01, 0.0, max(-10.5 * k - x, x + 8.0 * k)) * fall;
-  c += vec3(1.0, 0.72, 0.42) * 0.5 * barBell((x + 11.4 * k) / 0.006) * fall;
-  c += vec3(0.2, 1.0, 0.5) * 0.6 * barBell((x - BAR_CROSS.x * k) / 0.008) * exp(-down / 0.07);
+  c += vec3(1.0, 0.72, 0.42) * 0.5 * bell((x + 11.4 * k) / 0.006) * fall;
+  c += vec3(0.2, 1.0, 0.5) * 0.6 * bell((x - BAR_CROSS.x * k) / 0.008) * exp(-down / 0.07);
   float lampX = BAR_F * BAR_STREETLAMP.x / BAR_STREETLAMP.z;
-  c += BAR_SODIUM * 1.0 * barBell((x - lampX) / 0.009) * exp(-down / 0.1);
+  c += BAR_SODIUM * 1.0 * bell((x - lampX) / 0.009) * exp(-down / 0.1);
   return c * ripple;
 }
 
@@ -545,21 +502,21 @@ vec4 barPasserLook(vec2 q, float dir, float walked, float seed, float aa, vec3 f
     vec2 hip = vec2(0.0, 0.92 + 0.012 * abs(sin(ph)));
     vec2 knee = hip + vec2(sin(a) * dir, -cos(a)) * 0.45;
     vec2 ankle = knee + vec2(sin(a - b) * dir, -cos(a - b)) * 0.43;
-    float leg = min(min(barSeg(q, hip, knee, 0.075, 0.058), barSeg(q, knee, ankle, 0.056, 0.045)), barEllipse(q - ankle - vec2(0.05 * dir, -0.03), vec2(0.1, 0.035)));
+    float leg = min(min(barSeg(q, hip, knee, 0.075, 0.058), barSeg(q, knee, ankle, 0.056, 0.045)), sdEllipse(q - ankle - vec2(0.05 * dir, -0.03), vec2(0.1, 0.035)));
     if (leg < d) {
       d = leg;
       part = 1.0;
     }
   }
   vec2 hand = open ? vec2(0.2 * dir, 1.22) : vec2(0.06 * dir + 0.08 * sin(ph) * dir, 0.88);
-  float coat = barSmin(barSeg(q, vec2(0.0, 0.9), vec2(0.03 * dir, 1.42), 0.17, 0.13), barEllipse(q - vec2(0.0, 0.95), vec2(0.17, 0.12)), 0.05);
+  float coat = smin(barSeg(q, vec2(0.0, 0.9), vec2(0.03 * dir, 1.42), 0.17, 0.13), sdEllipse(q - vec2(0.0, 0.95), vec2(0.17, 0.12)), 0.05);
   coat = min(coat, barSeg(q, vec2(0.02 * dir, 1.36), hand, 0.055, 0.042));
   if (coat < d) {
     d = coat;
     part = 0.0;
   }
   vec2 hc = vec2(0.05 * dir, 1.6 + 0.012 * abs(sin(ph)));
-  float head = min(barEllipse(q - hc, vec2(0.09, 0.11)), barEllipse(q - hc - vec2(0.085 * dir, -0.015), vec2(0.022, 0.017)));
+  float head = min(sdEllipse(q - hc, vec2(0.09, 0.11)), sdEllipse(q - hc - vec2(0.085 * dir, -0.015), vec2(0.022, 0.017)));
   if (head < d) {
     d = head;
     part = 2.0;
@@ -567,19 +524,19 @@ vec4 barPasserLook(vec2 q, float dir, float walked, float seed, float aa, vec3 f
   if (open) {
     vec2 apex = vec2(0.14 * dir, 2.08);
     float rimY = 1.86 - 0.04 * abs(sin((q.x - apex.x) * BAR_PI / 0.27));
-    float canopy = min(max(barEllipse(q - vec2(apex.x, 1.86), vec2(0.56, 0.24)), rimY - q.y), barSeg(q, hand, apex, 0.012, 0.012));
+    float canopy = min(max(sdEllipse(q - vec2(apex.x, 1.86), vec2(0.56, 0.24)), rimY - q.y), barSeg(q, hand, apex, 0.012, 0.012));
     if (canopy < d) {
       d = canopy;
       part = 3.0;
     }
   }
-  float cover = barFill(d, aa);
+  float cover = softFill(d, aa);
   if (cover <= 0.0) return vec4(0.0);
   float h = fract(seed * 17.3);
   vec3 coatC = h < 0.3 ? vec3(0.08, 0.08, 0.09) : h < 0.55 ? vec3(0.32, 0.22, 0.13) : h < 0.8 ? vec3(0.07, 0.09, 0.16) : vec3(0.25, 0.07, 0.07);
   float u = fract(seed * 41.7);
   vec3 brollyC = u < 0.45 ? vec3(0.03) : u < 0.6 ? vec3(0.06, 0.08, 0.16) : u < 0.75 ? vec3(0.45, 0.05, 0.06) : u < 0.88 ? vec3(0.05, 0.14, 0.08) : vec3(0.6, 0.48, 0.1);
-  bool hair = barEllipse(q - hc - vec2(-0.02 * dir, 0.03), vec2(0.095, 0.09)) < 0.0 && dot(q - hc, vec2(dir, 0.0)) < 0.03;
+  bool hair = sdEllipse(q - hc - vec2(-0.02 * dir, 0.03), vec2(0.095, 0.09)) < 0.0 && dot(q - hc, vec2(dir, 0.0)) < 0.03;
   vec3 albedo = part == 1.0 ? vec3(0.04) : part == 2.0 ? (hair ? vec3(0.06, 0.045, 0.035) : vec3(0.6, 0.42, 0.32)) : part == 3.0 ? brollyC : coatC;
   float edge = 1.0 - smoothstep(0.0, 0.045, -d);
   vec3 c = albedo * (front + barCity * 0.6) + rim * edge * 0.5;
@@ -591,7 +548,7 @@ vec4 barPasserLook(vec2 q, float dir, float walked, float seed, float aa, vec3 f
 // A car side-on: c = (metres from its rear toward its front, height over the road). Returns the
 // silhouette's distance; glass: 1 in the window band.
 float barCarShape(vec2 c, out float glass) {
-  float body = barBox(c - vec2(2.2, 0.62), vec2(2.1, 0.3)) - 0.07;
+  float body = sdBox(c - vec2(2.2, 0.62), vec2(2.1, 0.3), 0.0) - 0.07;
   float k = clamp((c.y - 0.92) / 0.48, 0.0, 1.0);
   float cabin = max(max(mix(1.05, 1.6, k) - c.x, c.x - mix(3.2, 2.75, k)), max(0.9 - c.y, c.y - 1.4)) - 0.03;
   float shape = max(min(body, cabin), -(min(length(c - vec2(0.85, 0.3)), length(c - vec2(3.55, 0.3))) - 0.37));
@@ -636,16 +593,16 @@ float barCarDraw(vec2 sp, float z, float dir, vec2 car, float soft, inout vec3 c
   vec2 w = barWorld(sp, z);
   vec2 c = vec2((w.x - car.x) * dir, w.y - BAR_ROAD_Y);
   float ahead = c.x - BAR_CAR_LEN;
-  if (ahead > 0.0 && ahead < 9.0) beam += vec3(1.0, 0.9, 0.75) * 0.5 * barBell((c.y - 0.62) / (0.22 + 0.09 * ahead)) * exp(-ahead / 4.0);
+  if (ahead > 0.0 && ahead < 9.0) beam += vec3(1.0, 0.9, 0.75) * 0.5 * bell((c.y - 0.62) / (0.22 + 0.09 * ahead)) * exp(-ahead / 4.0);
   // The lamps' glare in the wet air: a halo round each headlamp and a smaller red one round each
   // tail lamp, switched per cell as they move.
   float glare = exp(-length((c - vec2(BAR_CAR_LEN, 0.68)) / vec2(1.4, 1.0)) / 0.22);
   float redGlare = exp(-length((c - vec2(0.0, 0.8)) / vec2(1.3, 1.0)) / 0.15);
-  col += vec3(1.0, 0.92, 0.78) * 0.3 * barHard(glare * 1.2) + vec3(0.9, 0.12, 0.08) * 0.25 * barHard(redGlare * 1.1);
+  col += vec3(1.0, 0.92, 0.78) * 0.3 * hardEdge(glare * 1.2) + vec3(0.9, 0.12, 0.08) * 0.25 * hardEdge(redGlare * 1.1);
   if (c.x < -0.5 || c.x > BAR_CAR_LEN + 0.5 || c.y > 1.6) return 0.0;
   float aa = (barPx + soft) * z / BAR_F;
   float glass = 0.0;
-  float cover = barHard(barFill(barCarShape(c, glass), aa));
+  float cover = hardEdge(softFill(barCarShape(c, glass), aa));
   bool taxi = car.y > 0.86;
   float h = fract(car.y * 13.7);
   vec3 paint = taxi ? vec3(0.62, 0.45, 0.08) : h < 0.3 ? vec3(0.03) : h < 0.5 ? vec3(0.22, 0.04, 0.04) : h < 0.7 ? vec3(0.05, 0.07, 0.14) : h < 0.85 ? vec3(0.3, 0.31, 0.33) : vec3(0.5);
@@ -659,9 +616,9 @@ float barCarDraw(vec2 sp, float z, float dir, vec2 car, float soft, inout vec3 c
   float wheel = min(length(c - vec2(0.85, 0.31)), length(c - vec2(3.55, 0.31)));
   if (wheel < 0.3) body = vec3(0.015) + barCity * 0.3 * step(0.18, wheel);
   // Headlamps at the front, tail lamps at the back, a taxi's roof sign.
-  body = mix(body, vec3(1.0, 0.96, 0.85), barHard(barFill(length((c - vec2(BAR_CAR_LEN - 0.08, 0.68)) / vec2(0.7, 1.0)) - 0.08, aa)));
-  body = mix(body, vec3(1.0, 0.12, 0.08), barHard(barFill(length((c - vec2(0.06, 0.8)) / vec2(0.6, 1.0)) - 0.07, aa)));
-  if (taxi) body = mix(body, vec3(1.0, 0.85, 0.45), barHard(barFill(barBox(c - vec2(2.2, 1.48), vec2(0.18, 0.06)), aa)));
+  body = mix(body, vec3(1.0, 0.96, 0.85), hardEdge(softFill(length((c - vec2(BAR_CAR_LEN - 0.08, 0.68)) / vec2(0.7, 1.0)) - 0.08, aa)));
+  body = mix(body, vec3(1.0, 0.12, 0.08), hardEdge(softFill(length((c - vec2(0.06, 0.8)) / vec2(0.6, 1.0)) - 0.07, aa)));
+  if (taxi) body = mix(body, vec3(1.0, 0.85, 0.45), hardEdge(softFill(sdBox(c - vec2(2.2, 1.48), vec2(0.18, 0.06), 0.0), aa)));
   col = mix(col, body, cover);
   return cover;
 }
@@ -716,7 +673,7 @@ vec3 barOutside(vec2 sp, float xl, out float zHit, out vec3 dropLit) {
     vec2 fromLamp = vec2(gx - BAR_STREETLAMP.x, z - BAR_STREETLAMP.z);
     vec3 light = barCity * 1.1 + BAR_SODIUM * 0.45 * exp(-dot(fromLamp, fromLamp) / 10.0);
     // The bar's own light thrown out through the window onto the near pavement; the sign's red.
-    if (nearPave) light += (barLamp * 0.22 + barShelf * 0.12) * smoothstep(BAR_NEAR_CURB + 0.3, 3.8, z) + BAR_NEON * barSign * 0.2 * barBell((gx - BAR_SIGN.x) / 1.3);
+    if (nearPave) light += (barLamp * 0.22 + barShelf * 0.12) * smoothstep(BAR_NEAR_CURB + 0.3, 3.8, z) + BAR_NEON * barSign * 0.2 * bell((gx - BAR_SIGN.x) / 1.3);
     col = wetten(albedo, barWet, road ? 0.15 : 0.35) * light;
     if (kerb) col += light * 0.15;
     if (barWet > 0.0 && !kerb) {
@@ -728,7 +685,7 @@ vec3 barOutside(vec2 sp, float xl, out float zHit, out vec3 dropLit) {
       vec3 mirrored = barCity * 0.7 + barStreaks(fq.x, max(-BAR_F * BAR_EYE / BAR_FACADE_Z - fq.y, 0.0), sp.y);
       col = mix(col, mirrored + light * 0.15 * albedo, gloss * 0.9);
       if (K_rain > 0.0) {
-        float ring = barHard(rainRipples(vec2(sp.x * 24.0, sp.y * 60.0), barT, K_rain).z);
+        float ring = hardEdge(rainRipples(vec2(sp.x * 24.0, sp.y * 60.0), barT, K_rain).z);
         col = mix(col, barCity * 2.2 + BAR_SODIUM * 0.15, ring * pool * 0.6);
         col += (barCity * 1.6 + light * 0.3) * rainSplashes(vec2(sp.x * 20.0, sp.y * 30.0), barT, K_rain) * (1.0 - pool);
       }
@@ -746,7 +703,7 @@ vec3 barOutside(vec2 sp, float xl, out float zHit, out vec3 dropLit) {
     vec3 who = barPasser(w.x, mix(30.0, 7.0, traffic), dir, 41.0 + float(k) * 9.0, traffic > 0.0 ? 0.7 : 0.0, xl * z / BAR_F, xr * z / BAR_F);
     if (who.z < 0.0) continue;
     vec4 f = barPasserLook(vec2(w.x - who.x, w.y), dir, who.y, who.z, (barPx + soft) * z / BAR_F, barCity * 1.2 + BAR_SODIUM * 0.1, vec3(0.13, 0.16, 0.16), true);
-    float c = barHard(f.a);
+    float c = hardEdge(f.a);
     col = mix(col, f.rgb, c);
     if (c > 0.0) zHit = z;
   }
@@ -756,9 +713,9 @@ vec3 barOutside(vec2 sp, float xl, out float zHit, out vec3 dropLit) {
   if (zHit > BAR_STREETLAMP.z) {
     float lpx = (barPx + soft) * BAR_STREETLAMP.z / BAR_F;
     float post = max(abs(lw.x) - 0.055, max(-BAR_STREETLAMP.y - lw.y, lw.y + 0.24));
-    float cap = barBox(lw - vec2(0.0, 0.27), vec2(0.2, 0.04));
-    float metal = barFill(min(post, cap), lpx);
-    float lantern = barFill(barBox(lw, vec2(0.14, 0.22)) - 0.02, lpx);
+    float cap = sdBox(lw - vec2(0.0, 0.27), vec2(0.2, 0.04), 0.0);
+    float metal = softFill(min(post, cap), lpx);
+    float lantern = softFill(sdBox(lw, vec2(0.14, 0.22), 0.0) - 0.02, lpx);
     col = mix(col, vec3(0.03) + barCity * 0.3, metal);
     col = mix(col, BAR_SODIUM * 1.4, lantern);
     if (max(metal, lantern) > 0.5) zHit = BAR_STREETLAMP.z;
@@ -777,10 +734,10 @@ vec3 barOutside(vec2 sp, float xl, out float zHit, out vec3 dropLit) {
     if (road && barWet > 0.0 && q.y < yc) {
       float down = yc - q.y;
       float gloss = wetGloss(barWet, 1.0);
-      float head = barBell((q.x - BAR_F * (car.x + (BAR_CAR_LEN - 0.08) * dir) / z) / 0.007) * exp(-down / 0.05);
-      float tail = barBell((q.x - BAR_F * (car.x + 0.06 * dir) / z) / 0.006) * exp(-down / 0.04);
-      col = mix(col, vec3(1.0, 0.92, 0.78), barHard(head * gloss * 1.3) * 0.8);
-      col = mix(col, vec3(0.9, 0.1, 0.06), barHard(tail * gloss * 1.2) * 0.7);
+      float head = bell((q.x - BAR_F * (car.x + (BAR_CAR_LEN - 0.08) * dir) / z) / 0.007) * exp(-down / 0.05);
+      float tail = bell((q.x - BAR_F * (car.x + 0.06 * dir) / z) / 0.006) * exp(-down / 0.04);
+      col = mix(col, vec3(1.0, 0.92, 0.78), hardEdge(head * gloss * 1.3) * 0.8);
+      col = mix(col, vec3(0.9, 0.1, 0.06), hardEdge(tail * gloss * 1.2) * 0.7);
     }
     if (zHit < z) continue;
     if (barCarDraw(sp, z, dir, car, soft, col, beam) > 0.0) zHit = z;
@@ -795,9 +752,9 @@ vec3 barOutside(vec2 sp, float xl, out float zHit, out vec3 dropLit) {
     vec2 w = barWorld(sp, z);
     vec3 who = barPasser(w.x, mix(26.0, 6.0, traffic), dir, 83.0 + float(k) * 13.0, traffic > 0.0 ? 0.75 : 0.0, xl * z / BAR_F, xr * z / BAR_F);
     if (who.z < 0.0) continue;
-    vec3 front = barLamp * 0.3 + barShelf * 0.15 + BAR_NEON * barSign * 0.25 * barBell(w.x - BAR_SIGN.x);
+    vec3 front = barLamp * 0.3 + barShelf * 0.15 + BAR_NEON * barSign * 0.25 * bell(w.x - BAR_SIGN.x);
     vec4 f = barPasserLook(vec2(w.x - who.x, w.y), dir, who.y, who.z, (barPx + soft) * z / BAR_F, front, barCity * 2.0 + BAR_SODIUM * 0.1, k == 0);
-    float c = barHard(f.a);
+    float c = hardEdge(f.a);
     col = mix(col, f.rgb, c);
     // Under the awning nothing falls between them and the glass.
     if (c > 0.0) zHit = z < BAR_AWNING_Z ? 0.0 : z;
@@ -834,13 +791,13 @@ vec3 barJukebox(vec2 p) {
   float swell = song >= 0.0 ? exp(-song / 8.0) : 0.0;
   float arch = q.y > 0.3 ? length((q - vec2(0.0, 0.3)) / vec2(1.0, 0.7)) - 1.0 : abs(q.x) - 1.0;
   arch = max(arch, -1.0 - q.y);
-  float body = barFill(arch, 0.06);
-  float tube = barFill(abs(arch + 0.12) - 0.07, 0.05);
+  float body = softFill(arch, 0.06);
+  float tube = softFill(abs(arch + 0.12) - 0.07, 0.05);
   float along = q.y > 0.3 ? atan(q.x, q.y - 0.3) : sign(q.x) * (1.6 + 0.3 - q.y);
   float hue = along * 0.35 - barTm * (0.04 + 0.2 * swell);
   vec3 tint = mix(0.5 + 0.5 * cos(TAU * (hue + vec3(0.0, 0.33, 0.67))), vec3(1.0, 0.6, 0.2), 0.35);
-  float grille = barFill(barBox(q - vec2(0.0, -0.55), vec2(0.6, 0.3)), 0.05) * (0.7 + 0.3 * step(0.5, fract(q.x * 4.0)));
-  float window = barFill(barEllipse(q - vec2(0.0, 0.45), vec2(0.55, 0.35)), 0.05);
+  float grille = softFill(sdBox(q - vec2(0.0, -0.55), vec2(0.6, 0.3), 0.0), 0.05) * (0.7 + 0.3 * step(0.5, fract(q.x * 4.0)));
+  float window = softFill(sdEllipse(q - vec2(0.0, 0.45), vec2(0.55, 0.35)), 0.05);
   vec3 c = tint * tube * 0.9 + vec3(1.0, 0.62, 0.25) * (grille * 0.5 + window * 0.35) + vec3(0.25, 0.15, 0.1) * body * 0.15;
   return c * K_jukebox * 0.4 * (1.0 + 1.3 * swell);
 }
@@ -885,7 +842,7 @@ vec3 barPane(vec2 p, vec2 uv, float aspect, float xl, vec2 w) {
     if (car.y >= 0.0) {
       vec2 lamp = vec2(car.x + BAR_CAR_LEN - 0.08, 0.68 + BAR_ROAD_Y - BAR_EYE) * (BAR_F / z);
       vec2 d = (barAt(p, z) - lamp) / vec2(0.075, 0.012);
-      col = mix(col, vec3(1.0, 0.93, 0.8), barHard(exp(-dot(d, d)) * smoothstep(0.0, 0.5, onGlass)) * 0.55);
+      col = mix(col, vec3(1.0, 0.93, 0.8), hardEdge(exp(-dot(d, d)) * smoothstep(0.0, 0.5, onGlass)) * 0.55);
     }
   }
   // Mist on the inside of the glass low down, where the warm room meets the cold pane.
@@ -907,9 +864,9 @@ vec3 barPane(vec2 p, vec2 uv, float aspect, float xl, vec2 w) {
       vec3 blue = vec3(0.3, 0.5, 1.0);
       col += BAR_NEON * barSign * 0.35 * exp(-od.x / 0.03) + blue * barSign * 0.2 * exp(-od.y / 0.03);
       float chain = min(abs(sq.x + 0.17), abs(sq.x - 0.17));
-      col = mix(col, vec3(0.25, 0.22, 0.18) * (barAmbient * 3.0 + BAR_NEON * barSign * 0.3), barFill(chain - max(0.004, 0.6 * spx), spx) * step(0.095, sq.y));
-      col = mix(col, mix(vec3(0.12, 0.07, 0.08), mix(BAR_NEON, vec3(1.0, 0.85, 0.85), 0.45), barSign), barFill(od.x - 0.009, spx));
-      col = mix(col, mix(vec3(0.08, 0.09, 0.12), mix(blue, vec3(0.85, 0.9, 1.0), 0.4), barSign), barFill(od.y - 0.008, spx));
+      col = mix(col, vec3(0.25, 0.22, 0.18) * (barAmbient * 3.0 + BAR_NEON * barSign * 0.3), softFill(chain - max(0.004, 0.6 * spx), spx) * step(0.095, sq.y));
+      col = mix(col, mix(vec3(0.12, 0.07, 0.08), mix(BAR_NEON, vec3(1.0, 0.85, 0.85), 0.45), barSign), softFill(od.x - 0.009, spx));
+      col = mix(col, mix(vec3(0.08, 0.09, 0.12), mix(blue, vec3(0.85, 0.9, 1.0), 0.4), barSign), softFill(od.y - 0.008, spx));
     }
   }
   return col;
@@ -941,7 +898,7 @@ vec3 barFrontWall(vec2 p, vec2 uv, float aspect, float xl) {
     return vec3(0.2, 0.11, 0.06) * room * (1.0 + 0.8 * top) + barCity * 0.6 * top;
   }
   float gx = fract((w.x + 0.1) / 0.62);
-  float panel = barFill(max(abs(gx - 0.5) * 0.62 - 0.24, abs(w.y - 0.2) - 0.13), px);
+  float panel = softFill(max(abs(gx - 0.5) * 0.62 - 0.24, abs(w.y - 0.2) - 0.13), px);
   return vec3(0.14, 0.07, 0.04) * room * (0.8 + 0.3 * panel);
 }
 
@@ -956,8 +913,8 @@ vec3 barColumn(vec2 p) {
   c *= 1.0 - 0.3 * step(w.y, 0.25) + 0.25 * step(abs(w.y - 0.26), 0.012);
   float k = clamp((w.y - BAR_SCONCE.y + 0.05) / 0.1, 0.0, 1.0);
   float shade = max(abs(w.x - BAR_SCONCE.x) - mix(0.07, 0.04, k), abs(w.y - BAR_SCONCE.y) - 0.05);
-  c = mix(c, vec3(0.5, 0.35, 0.15) * light, barFill(barBox(w - BAR_SCONCE - vec2(0.0, -0.08), vec2(0.008, 0.04)), px));
-  c = mix(c, vec3(1.0, 0.62, 0.3) * 0.9 * barLevel, barFill(shade, px));
+  c = mix(c, vec3(0.5, 0.35, 0.15) * light, softFill(sdBox(w - BAR_SCONCE - vec2(0.0, -0.08), vec2(0.008, 0.04), 0.0), px));
+  c = mix(c, vec3(1.0, 0.62, 0.3) * 0.9 * barLevel, softFill(shade, px));
   return c + vec3(1.0, 0.62, 0.3) * 0.12 * barLevel * exp(-length(w - BAR_SCONCE) / 0.15);
 }
 
@@ -973,11 +930,11 @@ void barCoat(vec2 p, inout vec3 col) {
   float hw = mix(0.07, 0.19, smoothstep(1.72, 1.52, w.y)) + 0.04 * smoothstep(1.4, 0.9, w.y);
   float coat = max(abs(w.x - hook.x + 0.03) - hw, max(0.92 - w.y + 0.02 * sin(w.x * 40.0), w.y - 1.74));
   float fold = 0.7 + 0.3 * sin((w.x - hook.x) * 55.0 + 1.3 * sin(w.y * 4.0));
-  col = mix(col, wetten(vec3(0.34, 0.25, 0.15), barWet * 0.5, 0.8) * light * fold * (0.8 + 0.4 * smoothstep(1.3, 1.7, w.y)), barFill(coat, px));
+  col = mix(col, wetten(vec3(0.34, 0.25, 0.15), barWet * 0.5, 0.8) * light * fold * (0.8 + 0.4 * smoothstep(1.3, 1.7, w.y)), softFill(coat, px));
   vec2 tip = vec2(-1.3, 0.84);
   float umb = min(min(barSeg(w, hook + vec2(0.1, -0.06), tip, 0.035, 0.006), barSeg(w, hook + vec2(0.1, -0.2), hook + vec2(0.115, -0.55), 0.05, 0.04)), max(abs(length(w - hook - vec2(0.06, -0.02)) - 0.04) - 0.009, hook.y - 0.02 - w.y));
   vec3 black = vec3(0.025, 0.025, 0.03) * light * 2.0 + barLamp * 0.02 + vec3(0.2, 0.22, 0.25) * barWet * 0.1 * smoothstep(0.02, 0.0, abs(w.x - hook.x - 0.13));
-  col = mix(col, black, barFill(umb, px));
+  col = mix(col, black, softFill(umb, px));
   // Dripping from its tip: one drip point, its lane lined up on the tip (README: rainDrips).
   float wetU = 0.6 * barWet;
   if (wetU > 0.02 && w.y < tip.y) {
@@ -1017,7 +974,7 @@ vec3 barFloor(vec2 p) {
   vec3 c = wood * light;
   if (barWet > 0.05) {
     vec2 pd = (vec2(x, z) - vec2(-1.3, 2.42)) / vec2(0.16, 0.12);
-    float puddle = barFill(length(pd) - 0.4 - 0.6 * smoothstep(0.1, 0.8, barWet), 0.08);
+    float puddle = softFill(length(pd) - 0.4 - 0.6 * smoothstep(0.1, 0.8, barWet), 0.08);
     c = mix(c, c * 0.5 + vec3(1.0, 0.62, 0.3) * 0.12 * barLevel + barCity * 0.5, puddle);
   }
   return c;
@@ -1060,7 +1017,7 @@ vec3 barCeiling(vec2 p) {
   // way up, their shadows.
   vec3 L = vec3(BAR_FAN.x, BAR_FAN_LAMP_Y, BAR_FAN.z);
   vec3 B = L + (P - L) * ((BAR_FAN.y - L.y) / (BAR_CEIL - L.y));
-  float shadow = barHard(barFill(barBlades(B.xz - BAR_FAN.xz, barFanAngle), 0.012));
+  float shadow = hardEdge(softFill(barBlades(B.xz - BAR_FAN.xz, barFanAngle), 0.012));
   vec2 fromFan = (P.xz - BAR_FAN.xz) / 1.1;
   light += barFanCol * 0.8 * exp(-dot(fromFan, fromFan)) * (1.0 - 0.85 * shadow);
   return tin * light;
@@ -1076,17 +1033,17 @@ void barFan(vec2 p, inout vec3 col) {
   float m = BAR_FAN.z / BAR_F;
   vec2 lq = q * m;
   float px = barPx * m;
-  float rod = barBox(lq - vec2(0.0, 0.32), vec2(0.014, 0.2));
-  float motor = barEllipse(lq - vec2(0.0, 0.06), vec2(0.12, 0.07));
+  float rod = sdBox(lq - vec2(0.0, 0.32), vec2(0.014, 0.2), 0.0);
+  float motor = sdEllipse(lq - vec2(0.0, 0.06), vec2(0.12, 0.07));
   vec3 bronze = vec3(0.16, 0.11, 0.07) * (barAmbient * 2.0 + barLamp * 0.05) + barFanCol * 0.25 * smoothstep(0.03, -0.01, lq.y) + barShelf * 0.06 * smoothstep(0.07, 0.11, abs(lq.x));
-  col = mix(col, bronze, barFill(min(rod, motor), px));
+  col = mix(col, bronze, softFill(min(rod, motor), px));
   float py = q.y + hub.y;
   if (py > 0.02) {
     float z = BAR_F * (BAR_FAN.y - BAR_EYE) / py;
     vec2 d = vec2(barAt(p, z).x * z / BAR_F - BAR_FAN.x, z - BAR_FAN.z);
     float dd = barBlades(d, barFanAngle);
     float aa = barPx * z * z / (BAR_F * (BAR_FAN.y - BAR_EYE));
-    if (barHard(barFill(dd, aa)) > 0.0) {
+    if (hardEdge(softFill(dd, aa)) > 0.0) {
       // Shaded by distance from the hub only, so a turning blade changes nothing inside itself:
       // dark wood, the bowl's glow near the hub, the lamps' warm light on the tips.
       float r = length(d);
@@ -1094,9 +1051,9 @@ void barFan(vec2 p, inout vec3 col) {
       col = wood * (barAmbient * 2.5 + barFanCol * 0.8 * exp(-r / 0.2)) + (barLamp * 0.14 + barShelf * 0.06) * smoothstep(0.5, 0.64, r);
     }
   }
-  float bowl = barEllipse(lq - vec2(0.0, -0.13), vec2(0.07, 0.06));
+  float bowl = sdEllipse(lq - vec2(0.0, -0.13), vec2(0.07, 0.06));
   col += barFanCol * 0.15 * exp(-max(bowl, 0.0) / 0.05);
-  col = mix(col, mix(barFanCol, vec3(1.0, 0.95, 0.85), 0.5) * 1.2, barFill(bowl, px));
+  col = mix(col, mix(barFanCol, vec3(1.0, 0.95, 0.85), 0.5) * 1.2, softFill(bowl, px));
 }
 
 // ---- The back bar
@@ -1130,7 +1087,7 @@ vec4 barBottle(float u, float v, float h, vec3 liquid, float blur, vec3 glow, ve
   float l1 = length(vec2(u - side * a.x * 0.5, v - a.y * 0.75));
   float l2 = length(vec2(u - side * mix(a.x, a.w, 0.6) * 0.6, v - mix(a.y, a.z, 0.55)));
   float disc = max((1.0 - smoothstep(r * 0.85, r, l1)) * (0.8 + 0.2 * smoothstep(0.5 * r, 0.9 * r, l1)), 0.6 * (1.0 - smoothstep(r * 0.55, r * 0.7, l2)));
-  float cover = barFill(d, blur);
+  float cover = softFill(d, blur);
   if (cover <= 0.0 && disc <= 0.0) return vec4(0.0);
   float tg = fract(h * 31.7);
   vec3 tint = tg < 0.4 ? vec3(0.8, 0.82, 0.76) : tg < 0.65 ? vec3(0.32, 0.58, 0.32) : tg < 0.85 ? vec3(0.62, 0.38, 0.18) : tg < 0.95 ? vec3(0.3, 0.42, 0.75) : vec3(0.9, 0.88, 0.82);
@@ -1140,7 +1097,7 @@ vec4 barBottle(float u, float v, float h, vec3 liquid, float blur, vec3 glow, ve
   // The liquid glows brightest just under its surface, where the light from above comes through.
   c += liquid * tint * glow * 0.5 * filled * exp(-max(level - v, 0.0) / 0.03);
   float lab = fract(h * 5.9);
-  float label = barFill(max(abs(u) - a.x * 0.8, abs(v - a.y * 0.47) - a.y * 0.25), blur) * step(0.2, lab);
+  float label = softFill(max(abs(u) - a.x * 0.8, abs(v - a.y * 0.47) - a.y * 0.25), blur) * step(0.2, lab);
   vec3 paper = lab < 0.45 ? vec3(0.85, 0.8, 0.66) : lab < 0.65 ? vec3(0.08, 0.07, 0.06) : lab < 0.85 ? vec3(0.78, 0.6, 0.26) : vec3(0.55, 0.1, 0.1);
   c = mix(c, paper * (glow * 0.25 + lamp * 0.8 + 0.03), label);
   c = mix(c, (lab < 0.5 ? vec3(0.7, 0.55, 0.25) : vec3(0.06)) * (glow * 0.3 + lamp * 0.7 + 0.03), smoothstep(b.x - blur, b.x + blur, v));
@@ -1177,12 +1134,12 @@ vec3 barMirror(vec2 p) {
   for (int k = 0; k < 4; k++) {
     if (barP0[k].z < 0.9 || barP1[k].x <= 0.0) continue;
     vec2 fq = (m - vec2(0.0, 0.03) - vec2(barP0[k].x + 0.03 * barP1[k].z, 1.53 - BAR_EYE) * (BAR_F / zf)) * (zf / BAR_F);
-    float face = barEllipse(fq, vec2(0.08, 0.1));
+    float face = sdEllipse(fq, vec2(0.08, 0.1));
     if (face < 0.01) {
       float h = barP1[k].x;
       vec3 skin = mix(vec3(0.72, 0.5, 0.38), vec3(0.42, 0.27, 0.19), step(0.6, fract(h * 2.71))) * (barLamp * 0.5 + barShelf * 0.2 + 0.03);
       vec3 hair = mix(vec3(0.05, 0.04, 0.03), vec3(0.3, 0.16, 0.08), fract(h * 9.1)) * 0.5;
-      c = mix(c, fq.y > 0.03 - 0.6 * fq.x * fq.x ? hair : skin, barFill(face, 0.006));
+      c = mix(c, fq.y > 0.03 - 0.6 * fq.x * fq.x ? hair : skin, softFill(face, 0.006));
     }
   }
   return c * 0.85;
@@ -1224,11 +1181,11 @@ vec3 barMark(vec2 w, float px, vec3 col, inout float accent) {
     float age = barEvent(barTm, 41.0, 77.0, pick);
     float run = since >= 0.0 && since < 3.0 ? since : age >= 0.0 && age < 3.0 ? age : -10.0;
     float a = barMarkAlong(q);
-    float glint = step(0.0, run) * barBell((a - (run * 1.4 - 0.2)) / 0.22);
-    float stroke = barFill(d - 0.07, e);
-    float cut = barFill(abs(d - 0.07) - 0.014, e);
+    float glint = step(0.0, run) * bell((a - (run * 1.4 - 0.2)) / 0.22);
+    float stroke = softFill(d - 0.07, e);
+    float cut = softFill(abs(d - 0.07) - 0.014, e);
     float lit = 0.55 + 0.45 * barLampNear(BAR_MARK.x * BAR_LAMP_Z / BAR_BACK_Z, 0.9);
-    float spots = max(barBell((a - 1.0) / 0.07), barBell((a - 2.494) / 0.07)) * 0.8 + barBell((a - 1.747) / 0.05) * 0.5;
+    float spots = max(bell((a - 1.0) / 0.07), bell((a - 2.494) / 0.07)) * 0.8 + bell((a - 1.747) / 0.05) * 0.5;
     float shine = max(spots * lit, glint);
     col += (barLamp + barShelf) * 0.02 * stroke;
     col += mix(barLamp, vec3(1.0, 0.95, 0.85), 0.4) * 0.7 * shine * cut;
@@ -1262,12 +1219,12 @@ vec3 barMark(vec2 w, float px, vec3 col, inout float accent) {
 // down in a row, and the brass till with its little lit display.
 vec3 barBackCounter(vec2 s, float px, vec3 light, vec3 col) {
   vec2 tq = s - vec2(2.5, 1.17);
-  if (barBox(tq, vec2(0.21, 0.13)) - 0.02 < 0.0) {
+  if (sdBox(tq, vec2(0.21, 0.13), 0.0) - 0.02 < 0.0) {
     vec3 brass = vec3(0.5, 0.34, 0.13) * (light * 1.6 + barLamp * 0.2) * (0.8 + 0.2 * step(0.5, fract(tq.x / 0.05 + 0.25)) * step(tq.y, 0.0));
-    return mix(brass, vec3(0.25, 0.9, 0.55) * 0.5, barFill(barBox(tq - vec2(0.0, 0.1), vec2(0.07, 0.018)), px));
+    return mix(brass, vec3(0.25, 0.9, 0.55) * 0.5, softFill(sdBox(tq - vec2(0.0, 0.1), vec2(0.07, 0.018), 0.0), px));
   }
   float gx = (fract(s.x / 0.085) - 0.5) * 0.085;
-  float glass = barFill(barBox(vec2(gx, s.y - 1.09), vec2(0.03, 0.065)), px);
+  float glass = softFill(sdBox(vec2(gx, s.y - 1.09), vec2(0.03, 0.065), 0.0), px);
   float edge = glass * (1.0 - smoothstep(0.0, 0.007, 0.03 - abs(gx)));
   return mix(col, col * 0.75 + light * 0.18, glass * 0.6) + barShelf * 0.35 * edge;
 }
@@ -1289,8 +1246,8 @@ vec3 barBackWall(vec2 p, float taken, out float accent) {
   }
   if (w.x < BAR_BACKBAR_X0 - 0.08) {
     vec3 c = vec3(0.13, 0.085, 0.06) * light;
-    float door = barFill(barBox(w - vec2(-2.22, 1.05), vec2(0.2, 1.05)), px);
-    c = mix(c, wood * light * 1.3, max(barFill(barBox(w - vec2(-2.22, 1.08), vec2(0.25, 1.1)), px) - door, 0.0));
+    float door = softFill(sdBox(w - vec2(-2.22, 1.05), vec2(0.2, 1.05), 0.0), px);
+    c = mix(c, wood * light * 1.3, max(softFill(sdBox(w - vec2(-2.22, 1.08), vec2(0.25, 1.1), 0.0), px) - door, 0.0));
     return mix(c, vec3(0.02, 0.015, 0.012) + vec3(0.035, 0.02, 0.008) * smoothstep(1.6, 0.2, w.y), door);
   }
   float pd = abs(w.x - BAR_BACKBAR_X0 + 0.03) - 0.07;
@@ -1338,8 +1295,8 @@ vec3 barBackWall(vec2 p, float taken, out float accent) {
   }
   for (int j = 0; j < 2; j++) {
     float dy = s.y - (j == 0 ? BAR_SHELF_Y0 : BAR_SHELF_Y1);
-    col = mix(col, vec3(0.3, 0.42, 0.36) * light + barLamp * 0.35 * lampHere, barFill(abs(dy) - 0.011, px) * 0.85);
-    col += barShelf * 0.9 * barFill(abs(dy + 0.017) - 0.004, px);
+    col = mix(col, vec3(0.3, 0.42, 0.36) * light + barLamp * 0.35 * lampHere, softFill(abs(dy) - 0.011, px) * 0.85);
+    col += barShelf * 0.9 * softFill(abs(dy + 0.017) - 0.004, px);
   }
   return col;
 }
@@ -1473,13 +1430,13 @@ BarTender barTenderPose() {
 float barTenderShape(vec2 q, BarTender T, out float part) {
   float w = 0.19 * T.width;
   float ys = 1.45 - T.lean;
-  float body = barSmin(barSeg(q, vec2(0.0, 0.95), vec2(0.0, ys - 0.09), 0.16 * T.width + 0.015, 0.17 * T.width + 0.015), barSeg(q, vec2(-w + 0.06, ys - 0.045), vec2(w - 0.06, ys - 0.045), 0.062, 0.062), 0.05);
+  float body = smin(barSeg(q, vec2(0.0, 0.95), vec2(0.0, ys - 0.09), 0.16 * T.width + 0.015, 0.17 * T.width + 0.015), barSeg(q, vec2(-w + 0.06, ys - 0.045), vec2(w - 0.06, ys - 0.045), 0.062, 0.062), 0.05);
   vec2 sa = vec2(-w + 0.05, ys - 0.065);
   vec2 sb = vec2(w - 0.05, ys - 0.065);
   float sleeve = min(min(barSeg(q, sa, T.ea, 0.058, 0.05), barSeg(q, sb, T.eb, 0.058, 0.05)), min(barSeg(q, T.ea, mix(T.ea, T.ha, 0.25), 0.053, 0.05), barSeg(q, T.eb, mix(T.eb, T.hb, 0.25), 0.053, 0.05)));
   float skin = min(min(barSeg(q, T.ea, T.ha, 0.044, 0.036), barSeg(q, T.eb, T.hb, 0.044, 0.036)), min(length(q - T.ha), length(q - T.hb)) - 0.042);
   float neck = barSeg(q, vec2(0.0, ys - 0.01), T.head - vec2(0.0, 0.07), 0.05, 0.046);
-  float head = min(barEllipse(q - T.head, vec2(0.086, 0.106)), barEllipse(vec2(abs(q.x - T.head.x) - 0.084 * mix(1.0, 0.7, abs(sin(T.yaw))), q.y - T.head.y + 0.005), vec2(0.018, 0.03)));
+  float head = min(sdEllipse(q - T.head, vec2(0.086, 0.106)), sdEllipse(vec2(abs(q.x - T.head.x) - 0.084 * mix(1.0, 0.7, abs(sin(T.yaw))), q.y - T.head.y + 0.005), vec2(0.018, 0.03)));
   float d = min(min(min(body, sleeve), min(skin, neck)), head);
   bool front = T.back < 0.5;
   if (head < 0.0) part = 3.0;
@@ -1515,7 +1472,7 @@ vec3 barTenderAlbedo(vec2 q, BarTender T, float part) {
   if (hq.y > 0.04 - 0.6 * (hq.x - turn) * (hq.x - turn) || (abs(hq.x - turn) > 0.075 && hq.y > -0.01)) return hair;
   vec2 fq = hq - vec2(turn, 0.02 * T.pitch);
   float eyes = min(length((fq - vec2(-0.032, 0.012)) / vec2(1.0, 0.55)), length((fq - vec2(0.032, 0.012)) / vec2(1.0, 0.55))) - 0.011;
-  float moustache = barBox(fq - vec2(0.0, -0.038), vec2(0.03, 0.007)) - 0.003;
+  float moustache = sdBox(fq - vec2(0.0, -0.038), vec2(0.03, 0.007), 0.0) - 0.003;
   if (eyes < 0.0 || moustache < 0.0) return hair * 0.8;
   return skin * (0.85 + 0.15 * smoothstep(-0.02, 0.04, fq.y));
 }
@@ -1533,7 +1490,7 @@ void barTender(vec2 p, inout vec3 col) {
   float part = 0.0;
   float d = barTenderShape(q, T, part);
   // Turned to the shelf, what he holds is in front of him, so behind him from here.
-  float figure = barHard(barFill(d, pxm));
+  float figure = hardEdge(softFill(d, pxm));
   float shown = 1.0 - figure * step(0.5, T.back);
   if (figure > 0.0) {
     float tmp = 0.0;
@@ -1547,22 +1504,22 @@ void barTender(vec2 p, inout vec3 col) {
   vec3 lit = barLampLight(vec3(barB0.x + q.x, q.y, BAR_BT_Z - 0.3), vec3(0.0, 0.3, -0.95)) + barAmbient * 2.0 + barShelf * 0.1;
   float carry = barB1.x;
   if (act == BAR_POLISH) {
-    float glass = barBox(q - T.hb - vec2(0.0, 0.05), vec2(0.035, 0.045)) - 0.004;
-    col = mix(col, col * 0.5 + lit * (0.2 + 0.4 * (1.0 - smoothstep(0.0, 0.008, -glass))), barHard(barFill(glass, pxm)));
-    col = mix(col, vec3(0.85, 0.83, 0.78) * lit * (0.8 + 0.2 * sin(q.y * 120.0)), barHard(barFill(barSeg(q, T.ha + vec2(0.0, 0.02), T.ha + vec2(0.035, -0.13), 0.03, 0.05), pxm)));
+    float glass = sdBox(q - T.hb - vec2(0.0, 0.05), vec2(0.035, 0.045), 0.0) - 0.004;
+    col = mix(col, col * 0.5 + lit * (0.2 + 0.4 * (1.0 - smoothstep(0.0, 0.008, -glass))), hardEdge(softFill(glass, pxm)));
+    col = mix(col, vec3(0.85, 0.83, 0.78) * lit * (0.8 + 0.2 * sin(q.y * 120.0)), hardEdge(softFill(barSeg(q, T.ha + vec2(0.0, 0.02), T.ha + vec2(0.035, -0.13), 0.03, 0.05), pxm)));
   }
-  if (act == BAR_WIPE) col = mix(col, vec3(0.85, 0.83, 0.78) * lit, barHard(barFill(barSeg(q, T.hb, T.hb + vec2(0.05, -0.03), 0.04, 0.035), pxm)));
+  if (act == BAR_WIPE) col = mix(col, vec3(0.85, 0.83, 0.78) * lit, hardEdge(softFill(barSeg(q, T.hb, T.hb + vec2(0.05, -0.03), 0.04, 0.035), pxm)));
   if (abs(carry - BAR_CARRY_BOTTLE) < 0.5) {
     float ang = act == BAR_POUR ? T.tilt * 2.0 : 0.0;
     vec2 axis = vec2(-sin(ang), cos(ang));
     vec2 rel = q - T.hb;
     float slot = barB1.y;
     vec4 b = barBottle(dot(rel, vec2(axis.y, -axis.x)), dot(rel, axis) + 0.1, hash12(vec2(slot * 1.37 + 5.0, 1.0)), barLiquid(slot), pxm, barShelf * 0.6, lit, 1.0);
-    col = mix(col, b.rgb, barHard(b.a) * shown);
+    col = mix(col, b.rgb, hardEdge(b.a) * shown);
     if (act == BAR_POUR && T.tilt > 0.9) {
       vec2 mouth = T.hb + axis * 0.2;
       float yEnd = BAR_EYE + (BAR_TOP_Y + 0.08 - BAR_EYE) * BAR_BT_Z / BAR_GLASS_Z;
-      col = mix(col, barLiquid(slot) * (lit * 1.3 + 0.1), barHard(barFill(barSeg(q, mouth, vec2(mouth.x + 0.004, yEnd), max(0.006, pxm), max(0.005, 0.9 * pxm)), pxm)));
+      col = mix(col, barLiquid(slot) * (lit * 1.3 + 0.1), hardEdge(softFill(barSeg(q, mouth, vec2(mouth.x + 0.004, yEnd), max(0.006, pxm), max(0.005, 0.9 * pxm)), pxm)));
     }
   }
   if (act == BAR_SHAKE || (act == BAR_STRAIN && abs(carry - BAR_CARRY_SHAKER) < 0.5)) {
@@ -1573,16 +1530,16 @@ void barTender(vec2 p, inout vec3 col) {
     vec2 rel = q - c0;
     vec2 l = vec2(dot(rel, vec2(axis.y, -axis.x)), dot(rel, axis));
     vec3 steel = vec3(0.5, 0.52, 0.55) * (lit * 0.7 + 0.04) + barShelf * 0.6 * smoothstep(0.015, 0.03, l.x);
-    col = mix(col, steel, barHard(barFill(barSeg(l, vec2(0.0, -0.09), vec2(0.0, 0.08), 0.045, 0.036), pxm)));
+    col = mix(col, steel, hardEdge(softFill(barSeg(l, vec2(0.0, -0.09), vec2(0.0, 0.08), 0.045, 0.036), pxm)));
     if (act == BAR_STRAIN && T.tilt > 0.9) {
       vec2 mouth = c0 + axis * 0.09;
       float yEnd = BAR_EYE + (BAR_TOP_Y + 0.13 - BAR_EYE) * BAR_BT_Z / BAR_GLASS_Z;
-      col = mix(col, vec3(0.95, 0.55, 0.45) * (lit * 1.2 + 0.1), barHard(barFill(barSeg(q, mouth, vec2(mouth.x + 0.004, yEnd), max(0.006, pxm), max(0.005, 0.9 * pxm)), pxm)));
+      col = mix(col, vec3(0.95, 0.55, 0.45) * (lit * 1.2 + 0.1), hardEdge(softFill(barSeg(q, mouth, vec2(mouth.x + 0.004, yEnd), max(0.006, pxm), max(0.005, 0.9 * pxm)), pxm)));
     }
   }
   if (abs(carry - BAR_CARRY_GLASS) < 0.5) {
-    float glass = barBox(q - T.hb - vec2(0.0, 0.05), vec2(0.035, 0.045)) - 0.004;
-    col = mix(col, col * 0.5 + lit * 0.35, barHard(barFill(glass, pxm)));
+    float glass = sdBox(q - T.hb - vec2(0.0, 0.05), vec2(0.035, 0.045), 0.0) - 0.004;
+    col = mix(col, col * 0.5 + lit * 0.35, hardEdge(softFill(glass, pxm)));
   }
   if (act == BAR_BELL) {
     // The bell hangs from the hand by its wooden handle, swinging as he rings it.
@@ -1595,8 +1552,8 @@ void barTender(vec2 p, inout vec3 col) {
     float flare = clamp((l.y - 0.025) / 0.07, 0.0, 1.0);
     float bell = min(max(abs(l.x) - mix(0.02, 0.043, flare * flare), max(0.025 - l.y, l.y - 0.095)), length(l - vec2(0.0, 0.03)) - 0.021);
     vec3 brass = vec3(0.7, 0.5, 0.18) * (lit * 1.5 + 0.06) + barShelf * 0.25 * smoothstep(0.0, 0.04, l.x);
-    col = mix(col, vec3(0.16, 0.08, 0.04) * (lit + 0.05), barHard(barFill(handle, pxm)));
-    col = mix(col, brass, barHard(barFill(bell, pxm)));
+    col = mix(col, vec3(0.16, 0.08, 0.04) * (lit + 0.05), hardEdge(softFill(handle, pxm)));
+    col = mix(col, brass, hardEdge(softFill(bell, pxm)));
   }
 }
 
@@ -1610,21 +1567,21 @@ vec4 barGlass(vec2 q, float kind, float fill, vec3 liquid, vec3 light, float px)
   float d;
   float wet;
   if (kind < 0.5) {
-    d = barBox(q - vec2(0.0, 0.045), vec2(0.037, 0.045));
+    d = sdBox(q - vec2(0.0, 0.045), vec2(0.037, 0.045), 0.0);
     wet = step(0.012, q.y) * step(q.y, 0.012 + fill * 0.068) * step(abs(q.x), 0.033);
   } else if (kind < 1.5) {
-    float bowl = max(barEllipse(q - vec2(0.0, 0.13), vec2(0.042, 0.052)), q.y - 0.168);
-    d = min(min(bowl, barBox(q - vec2(0.0, 0.045), vec2(stem, 0.04))), barEllipse(q - vec2(0.0, 0.004), vec2(0.035, 0.005)));
+    float bowl = max(sdEllipse(q - vec2(0.0, 0.13), vec2(0.042, 0.052)), q.y - 0.168);
+    d = min(min(bowl, sdBox(q - vec2(0.0, 0.045), vec2(stem, 0.04), 0.0)), sdEllipse(q - vec2(0.0, 0.004), vec2(0.035, 0.005)));
     wet = step(bowl, -0.003) * step(q.y, 0.085 + fill * 0.06);
   } else if (kind < 2.5) {
-    float bowl = max(barEllipse(q - vec2(0.0, 0.135), vec2(0.056, 0.04)), q.y - 0.135);
-    d = min(min(bowl, barBox(q - vec2(0.0, 0.05), vec2(stem, 0.045))), barEllipse(q - vec2(0.0, 0.004), vec2(0.035, 0.005)));
+    float bowl = max(sdEllipse(q - vec2(0.0, 0.135), vec2(0.056, 0.04)), q.y - 0.135);
+    d = min(min(bowl, sdBox(q - vec2(0.0, 0.05), vec2(stem, 0.045), 0.0)), sdEllipse(q - vec2(0.0, 0.004), vec2(0.035, 0.005)));
     wet = step(bowl, -0.003) * step(q.y, 0.1 + fill * 0.033);
   } else {
-    d = barBox(q - vec2(0.0, 0.07), vec2(0.03, 0.07));
+    d = sdBox(q - vec2(0.0, 0.07), vec2(0.03, 0.07), 0.0);
     wet = step(0.01, q.y) * step(q.y, 0.01 + fill * 0.12) * step(abs(q.x), 0.026);
   }
-  float cover = barFill(d, px);
+  float cover = softFill(d, px);
   if (cover <= 0.0) return vec4(0.0);
   float edge = 1.0 - smoothstep(0.0, max(0.005, 1.5 * px), -d);
   vec3 c = mix(vec3(0.05, 0.055, 0.06) + light * 0.12, liquid * (light * 0.9 + 0.08), wet) + light * 0.55 * edge;
@@ -1658,17 +1615,17 @@ vec4 barCounter(vec2 p) {
   float cover = 0.0;
   vec2 f = barWorld(p, BAR_COUNTER_Z);
   float pxc = barPx * BAR_COUNTER_Z / BAR_F;
-  float body = barFill(max(max(-f.y, f.y - BAR_EDGE_Y0), BAR_COUNTER_X0 - f.x), pxc);
+  float body = softFill(max(max(-f.y, f.y - BAR_EDGE_Y0), BAR_COUNTER_X0 - f.x), pxc);
   if (body > 0.0) {
     // Lit by the fan's bowl in front of it, the lamps' light bouncing off the floor and the
     // patrons; darker in the shade of the top's overhang.
     vec3 light = (barAmbient * 2.0 + barFanLight(vec3(f, BAR_COUNTER_Z), vec3(0.0, 0.0, -1.0)) * 1.5 + barLamp * 0.1 * (0.4 + 0.6 * barLampNear(f.x, 0.8))) * (0.5 + 0.5 * smoothstep(BAR_EDGE_Y0, BAR_EDGE_Y0 - 0.2, f.y));
     vec2 pq = vec2((fract((f.x - BAR_COUNTER_X0) / 0.78) - 0.5) * 0.78, f.y - 0.53);
-    float bevel = step(barBox(pq, vec2(0.31, 0.33)), 0.0) * step(0.0, barBox(pq, vec2(0.26, 0.28)));
+    float bevel = step(sdBox(pq, vec2(0.31, 0.33), 0.0), 0.0) * step(0.0, sdBox(pq, vec2(0.26, 0.28), 0.0));
     vec2 rel = pq / vec2(0.31, 0.33);
     float topFace = bevel * step(abs(rel.x), rel.y);
     float bottomFace = bevel * step(abs(rel.x), -rel.y);
-    float field = step(barBox(pq, vec2(0.26, 0.28)), 0.0);
+    float field = step(sdBox(pq, vec2(0.26, 0.28), 0.0), 0.0);
     vec3 wood = vec3(0.3, 0.12, 0.065) * (0.88 + 0.12 * vnoise(vec2(f.x * 3.0, f.y * 40.0)));
     c = wood * light * (1.0 + 0.7 * topFace - 0.35 * bottomFace + 0.15 * field) * (1.0 - 0.6 * step(f.y, 0.1));
     cover = body;
@@ -1678,7 +1635,7 @@ vec4 barCounter(vec2 p) {
   if (ty < 0.0) {
     float z = BAR_F * (BAR_TOP_Y - BAR_EYE) / ty;
     float x = barAt(p, z).x * z / BAR_F;
-    float top = barFill(max(max(BAR_EDGE_Z - z, z - BAR_TOP_Z1), BAR_COUNTER_X0 - 0.07 - x), barPx * z / BAR_F);
+    float top = softFill(max(max(BAR_EDGE_Z - z, z - BAR_TOP_Z1), BAR_COUNTER_X0 - 0.07 - x), barPx * z / BAR_F);
     if (top > 0.0) {
       vec3 P = vec3(x, BAR_TOP_Y, z);
       vec3 wood = vec3(0.36, 0.16, 0.075) * (0.85 + 0.15 * vnoise(vec2(x * 2.0 + 2.0 * vnoise(vec2(x * 7.0, z * 9.0)), z * 30.0)));
@@ -1696,7 +1653,7 @@ vec4 barCounter(vec2 p) {
   vec2 r = barWorld(p, BAR_EDGE_Z);
   float mid = 0.5 * (BAR_EDGE_Y0 + BAR_TOP_Y);
   float halfH = 0.5 * (BAR_TOP_Y - BAR_EDGE_Y0);
-  float edge = barFill(max(abs(r.y - mid) - halfH, BAR_COUNTER_X0 - 0.07 - r.x), barPx * BAR_EDGE_Z / BAR_F);
+  float edge = softFill(max(abs(r.y - mid) - halfH, BAR_COUNTER_X0 - 0.07 - r.x), barPx * BAR_EDGE_Z / BAR_F);
   if (edge > 0.0) {
     float v = clamp((r.y - mid) / halfH, -1.0, 1.0);
     vec3 N = normalize(vec3(0.0, v, -sqrt(max(1.0 - v * v, 0.0)) - 0.05));
@@ -1708,12 +1665,12 @@ vec4 barCounter(vec2 p) {
   vec2 fr = barWorld(p, BAR_FOOT_Z);
   float pxf = barPx * BAR_FOOT_Z / BAR_F;
   if (fr.x > BAR_COUNTER_X0 + 0.05) {
-    float tube = barFill(abs(fr.y - BAR_FOOT_Y) - 0.024, pxf);
-    float bracket = barFill(max(abs(fract((fr.x - BAR_COUNTER_X0) / 1.2) - 0.5) * 1.2 - 0.012, abs(fr.y - BAR_FOOT_Y - 0.06) - 0.06), pxf);
+    float tube = softFill(abs(fr.y - BAR_FOOT_Y) - 0.024, pxf);
+    float bracket = softFill(max(abs(fract((fr.x - BAR_COUNTER_X0) / 1.2) - 0.5) * 1.2 - 0.012, abs(fr.y - BAR_FOOT_Y - 0.06) - 0.06), pxf);
     float brass = max(tube, bracket);
     if (brass > 0.0) {
       float v = (fr.y - BAR_FOOT_Y) / 0.024;
-      vec3 bc = vec3(0.55, 0.38, 0.15) * (barAmbient * 2.0 + barFanLight(vec3(fr, BAR_FOOT_Z), vec3(0.0, 0.6, -0.8)) * 1.5) + (barFanCol * 0.5 + barShelf * 0.25) * barBell((v - 0.45) / 0.25) * tube;
+      vec3 bc = vec3(0.55, 0.38, 0.15) * (barAmbient * 2.0 + barFanLight(vec3(fr, BAR_FOOT_Z), vec3(0.0, 0.6, -0.8)) * 1.5) + (barFanCol * 0.5 + barShelf * 0.25) * bell((v - 0.45) / 0.25) * tube;
       c = mix(c, bc, brass);
       cover = max(cover, brass);
     }
@@ -1740,15 +1697,15 @@ void barLamps(vec2 p, inout vec3 col, inout float accent) {
   float k = clamp(l.y / 0.24, 0.0, 1.0);
   float wd = 0.17 * sqrt(max(1.0 - k * k, 0.0));
   float dome = max(abs(l.x) - wd, max(-l.y, l.y - 0.24));
-  float cap = barBox(l - vec2(0.0, 0.26), vec2(0.03, 0.025));
+  float cap = sdBox(l - vec2(0.0, 0.26), vec2(0.03, 0.025), 0.0);
   float cord = max(abs(l.x) - max(0.004, 0.8 * px), -l.y);
-  float shade = barFill(min(min(dome, cap), cord), px);
+  float shade = softFill(min(min(dome, cap), cord), px);
   vec3 enamel = vec3(0.05, 0.16, 0.1) * (barAmbient * 2.0 + barShelf * 0.12) + barLamp * 0.25 * smoothstep(0.6, 1.0, abs(l.x) / max(wd, 1e-3)) * step(l.y, 0.2);
   col = mix(col, enamel, shade);
   accent *= 1.0 - shade;
-  float inner = barFill(barEllipse(l, vec2(0.162, 0.162 * (BAR_LAMP_Y - BAR_EYE) / BAR_LAMP_Z)), px);
+  float inner = softFill(sdEllipse(l, vec2(0.162, 0.162 * (BAR_LAMP_Y - BAR_EYE) / BAR_LAMP_Z)), px);
   col = mix(col, barLamp * 1.1, inner);
-  float bulb = barFill(length(l - vec2(0.0, -0.012)) - 0.03, px);
+  float bulb = softFill(length(l - vec2(0.0, -0.012)) - 0.03, px);
   col = mix(col, mix(barLamp, vec3(1.0), 0.5) * 1.6, bulb);
   accent = max(accent, bulb * 0.9);
 }
@@ -1801,7 +1758,7 @@ float barFigure(vec2 q, BarPose P, out float part) {
   float yShoulder = yHip + 0.5 * P.hs;
   float lean = 0.04 * P.face * walk + P.shift;
   float w = mix(0.2 * P.build, 0.12, prof);
-  float coat = barSmin(barSmin(barSeg(q, vec2(P.shift * 0.3, yHip + 0.05), vec2(lean, yShoulder - 0.08), mix(0.155, 0.12, prof) * P.build, mix(0.17, 0.125, prof) * P.build), barSeg(q, vec2(lean - w + 0.06, yShoulder - 0.045), vec2(lean + w - 0.06, yShoulder - 0.045), 0.065, 0.065), 0.06), barEllipse(q - vec2(0.0, yHip), vec2(mix(0.19, 0.14, prof) * P.build, 0.1)), 0.05);
+  float coat = smin(smin(barSeg(q, vec2(P.shift * 0.3, yHip + 0.05), vec2(lean, yShoulder - 0.08), mix(0.155, 0.12, prof) * P.build, mix(0.17, 0.125, prof) * P.build), barSeg(q, vec2(lean - w + 0.06, yShoulder - 0.045), vec2(lean + w - 0.06, yShoulder - 0.045), 0.065, 0.065), 0.06), sdEllipse(q - vec2(0.0, yHip), vec2(mix(0.19, 0.14, prof) * P.build, 0.1)), 0.05);
   if (walk > 0.0) coat = min(coat, barSeg(q, vec2(0.0, yHip - 0.02), vec2(-0.02 * dir * prof, yHip - 0.3), mix(0.16, 0.13, prof), mix(0.17, 0.15, prof)) + 0.3 * P.sit);
   vec2 hc = vec2(lean + 0.025 * sin(P.turn) * (1.0 - prof) + 0.02 * dir * prof, yShoulder + 0.19 + P.nod + 0.008 * P.sip);
   float glassD = 1e3;
@@ -1823,7 +1780,7 @@ float barFigure(vec2 q, BarPose P, out float part) {
     vec2 elbow = mix(eStand, eSeat, P.sit);
     coat = min(coat, min(barSeg(q, sh, elbow, 0.058, 0.05), barSeg(q, elbow, hand, 0.05, 0.042)));
     handD = min(handD, length(q - hand) - 0.042);
-    if (k == 1 && P.sip > 0.05) glassD = barBox(q - hand - vec2(0.0, 0.05), vec2(0.032, 0.045)) - 0.004;
+    if (k == 1 && P.sip > 0.05) glassD = sdBox(q - hand - vec2(0.0, 0.05), vec2(0.032, 0.045), 0.0) - 0.004;
     if (k == 0 && P.umbrella > 0.5 && walk > 0.5) umbD = min(barSeg(q, hand + vec2(0.0, 0.02), hand + vec2(0.1 * dir, -0.7), 0.03, 0.008), max(abs(length(q - hand - vec2(0.03 * dir, 0.05)) - 0.04) - 0.01, hand.y + 0.05 - q.y));
   }
   float legs = 1e3;
@@ -1838,20 +1795,20 @@ float barFigure(vec2 q, BarPose P, out float part) {
     hip = mix(hip, vec2(s * 0.09, 0.8), P.sit);
     knee = mix(knee, vec2(s * 0.09, 0.74), P.sit);
     ankle = mix(ankle, vec2(s * 0.1, 0.33), P.sit);
-    float shoe = barEllipse(q - ankle - vec2(0.05 * dir * prof, -0.03), vec2(mix(0.055, 0.11, prof), 0.035));
+    float shoe = sdEllipse(q - ankle - vec2(0.05 * dir * prof, -0.03), vec2(mix(0.055, 0.11, prof), 0.035));
     legs = min(legs, min(min(barSeg(q, hip, knee, 0.075, 0.06), barSeg(q, knee, ankle, 0.058, 0.045)), shoe));
   }
   float yaw = mix(P.turn, dir * 1.5, prof);
   float ys = yaw < 0.0 ? -1.0 : 1.0;
   float side = smoothstep(0.5, 1.2, abs(yaw));
-  float skull = barEllipse(q - hc, vec2(0.083, 0.104));
-  float nose = barEllipse(q - hc - vec2(ys * 0.083, -0.015), vec2(0.022, 0.017)) + 0.05 * (1.0 - side);
+  float skull = sdEllipse(q - hc, vec2(0.083, 0.104));
+  float nose = sdEllipse(q - hc - vec2(ys * 0.083, -0.015), vec2(0.022, 0.017)) + 0.05 * (1.0 - side);
   float neck = barSeg(q, vec2(lean, yShoulder - 0.02), hc - vec2(0.0, 0.07), 0.05, 0.045);
   float hair = skull;
-  if (P.style == 1.0) hair = min(hair, barBox(q - vec2(hc.x - ys * 0.012 * side, hc.y - 0.11), vec2(0.075, 0.115)) - 0.022);
+  if (P.style == 1.0) hair = min(hair, sdBox(q - vec2(hc.x - ys * 0.012 * side, hc.y - 0.11), vec2(0.075, 0.115), 0.0) - 0.022);
   if (P.style == 2.0) hair = min(hair, length(q - hc - vec2(-ys * 0.04 * side, 0.095)) - 0.046);
   float hat = 1e3;
-  if (P.style == 3.0) hat = min(barEllipse(q - hc - vec2(0.0, 0.07), vec2(0.15, 0.022)), barBox(q - hc - vec2(0.0, 0.115), vec2(0.078, 0.045)) - 0.018);
+  if (P.style == 3.0) hat = min(sdEllipse(q - hc - vec2(0.0, 0.07), vec2(0.15, 0.022)), sdBox(q - hc - vec2(0.0, 0.115), vec2(0.078, 0.045), 0.0) - 0.018);
   bool face = (q.x - hc.x) * ys > 0.05 - 0.08 * side && q.y < hc.y + 0.03;
   bool nape = P.style == 0.0 && q.y < hc.y - 0.075;
   float d = min(min(min(hat, min(hair, skull)), min(min(nose, neck), umbD)), min(min(coat, glassD), min(handD, legs)));
@@ -1889,7 +1846,7 @@ vec4 barPatron(vec2 p, int k, out float part) {
   BarPose P = barPoseOf(k);
   float pxm = barPx * z / BAR_F;
   float d = barFigure(q, P, part);
-  if (barHard(barFill(d, pxm)) <= 0.0) {
+  if (hardEdge(softFill(d, pxm)) <= 0.0) {
     part = -1.0;
     return vec4(0.0);
   }
@@ -1924,11 +1881,11 @@ vec4 barPatron(vec2 p, int k, out float part) {
 // A bar stool, q metres from its foot: a round oxblood leather seat on a chrome column with a foot
 // ring, seen from a little above. light: what reaches its seat. Colour and coverage.
 vec4 barStool(vec2 q, vec3 light, float px) {
-  float seatTop = barEllipse(q - vec2(0.0, 0.78), vec2(0.19, 0.035));
-  float seat = min(seatTop, barBox(q - vec2(0.0, 0.745), vec2(0.19, 0.035)) - 0.01);
-  float column = barBox(q - vec2(0.0, 0.38), vec2(0.026, 0.34));
-  float chrome = min(min(column, abs(barEllipse(q - vec2(0.0, 0.32), vec2(0.17, 0.03))) - 0.011), barEllipse(q - vec2(0.0, 0.02), vec2(0.2, 0.03)));
-  float cover = barFill(min(seat, chrome), px);
+  float seatTop = sdEllipse(q - vec2(0.0, 0.78), vec2(0.19, 0.035));
+  float seat = min(seatTop, sdBox(q - vec2(0.0, 0.745), vec2(0.19, 0.035), 0.0) - 0.01);
+  float column = sdBox(q - vec2(0.0, 0.38), vec2(0.026, 0.34), 0.0);
+  float chrome = min(min(column, abs(sdEllipse(q - vec2(0.0, 0.32), vec2(0.17, 0.03))) - 0.011), sdEllipse(q - vec2(0.0, 0.02), vec2(0.2, 0.03)));
+  float cover = softFill(min(seat, chrome), px);
   if (cover <= 0.0) return vec4(0.0);
   if (seat < chrome) return vec4(vec3(0.3, 0.07, 0.05) * (light + barAmbient) * (seatTop < 0.0 ? 1.4 : 0.9), cover);
   float streak = column < 0.0 ? smoothstep(0.5, 1.0, cos(q.x / 0.026 * 2.2 - 0.6)) : smoothstep(0.0, 0.03, q.y - 0.31) * step(q.y, 0.36);
@@ -1970,17 +1927,17 @@ vec4 barCoffee(vec2 q, float px, vec3 flame) {
   float dip = (BAR_TABLE_EYE - BAR_TABLE_Y) / BAR_COFFEE.y;
   float r = 0.042;
   float h = 0.07;
-  float saucer = min(barEllipse(q - vec2(0.0, 0.012), vec2(0.072, 0.072 * dip * 0.95)), barBox(q - vec2(0.0, 0.006), vec2(0.066, 0.006)));
-  float rim = barEllipse(q - vec2(0.0, h), vec2(r, r * dip * 0.88));
+  float saucer = min(sdEllipse(q - vec2(0.0, 0.012), vec2(0.072, 0.072 * dip * 0.95)), sdBox(q - vec2(0.0, 0.006), vec2(0.066, 0.006), 0.0));
+  float rim = sdEllipse(q - vec2(0.0, h), vec2(r, r * dip * 0.88));
   float handle = max(abs(length((q - vec2(r + 0.01, 0.043)) / vec2(1.0, 1.25)) - 0.017) - 0.005, r - 0.006 - q.x);
   float cup = min(min(max(abs(q.x) - r * mix(0.8, 1.0, smoothstep(0.012, 0.04, q.y)), max(0.008 - q.y, q.y - h)), rim), handle);
-  float cover = barFill(min(saucer, cup), px);
+  float cover = softFill(min(saucer, cup), px);
   if (cover <= 0.0) return vec4(0.0);
   vec3 light = barAmbient * 2.0 + flame * 0.35 * (0.55 + 0.45 * clamp(-q.x / r, -1.0, 1.0)) + barLamp * 0.04;
   vec3 porcelain = vec3(0.86, 0.84, 0.8);
   vec3 c = porcelain * light * (saucer < cup ? 0.85 : 1.0);
-  c += flame * 0.25 * barBell((q.x + r * 0.55) / 0.007) * step(cup, 0.0) * step(q.y, h);
-  float coffee = barEllipse(q - vec2(0.0, h - 0.004), vec2(r - 0.005, (r - 0.005) * dip * 0.85));
+  c += flame * 0.25 * bell((q.x + r * 0.55) / 0.007) * step(cup, 0.0) * step(q.y, h);
+  float coffee = sdEllipse(q - vec2(0.0, h - 0.004), vec2(r - 0.005, (r - 0.005) * dip * 0.85));
   if (coffee < 0.0) c = vec3(0.06, 0.03, 0.018) * (light * 0.6 + 0.05) + flame * 0.4 * exp(-length((q - vec2(-0.012, h - 0.004)) / vec2(0.012, 0.004)));
   else if (rim < 0.0) c = porcelain * light * 1.05;
   return vec4(c, cover);
@@ -1995,14 +1952,14 @@ vec4 barWhisky(vec2 q, float px, vec3 flame) {
   float r = 0.04;
   float h = 0.088;
   float foot = -r * (BAR_TABLE_EYE - BAR_TABLE_Y) / zc * sqrt(max(1.0 - q.x * q.x / (r * r), 0.0));
-  float top = barEllipse(q - vec2(0.0, h), vec2(r, r * (BAR_TABLE_EYE - BAR_TABLE_Y - h) / zc));
-  float cover = barFill(min(max(abs(q.x) - r, max(foot - q.y, q.y - h)), top), px);
+  float top = sdEllipse(q - vec2(0.0, h), vec2(r, r * (BAR_TABLE_EYE - BAR_TABLE_Y - h) / zc));
+  float cover = softFill(min(max(abs(q.x) - r, max(foot - q.y, q.y - h)), top), px);
   if (cover <= 0.0) return vec4(0.0);
   float x = q.x / r;
   vec3 amber = vec3(0.9, 0.42, 0.09);
   vec3 c = vec3(0.025, 0.02, 0.018) + barAmbient;
   float level = 0.04;
-  float surf = barEllipse(q - vec2(0.0, level), vec2(r - 0.004, r * (BAR_TABLE_EYE - BAR_TABLE_Y - level) / zc));
+  float surf = sdEllipse(q - vec2(0.0, level), vec2(r - 0.004, r * (BAR_TABLE_EYE - BAR_TABLE_Y - level) / zc));
   if ((q.y < level && q.y > 0.012 && abs(q.x) < r - 0.004) || surf < 0.0) {
     c = amber * (0.06 + flame * (0.25 + 0.75 * smoothstep(0.3, -0.9, x)));
     c += amber * flame * 0.5 * exp(-abs(q.y - level) / 0.004);
@@ -2015,7 +1972,7 @@ vec4 barWhisky(vec2 q, float px, vec3 flame) {
     float mine = step(0.5, pick) == fi ? settle : 0.0;
     vec2 at = (i == 0 ? vec2(-0.012, level + 0.006) : vec2(0.014, level - 0.001)) - vec2(0.0, 0.003 * mine);
     vec2 iq = rotate(q - at, (i == 0 ? 0.35 : -0.25) + 0.15 * mine);
-    float cube = barBox(iq, vec2(0.012 - 0.001 * fi)) - 0.003;
+    float cube = sdBox(iq, vec2(0.012 - 0.001 * fi), 0.0) - 0.003;
     if (cube < 0.0) {
       c = mix(amber * 0.6, vec3(0.85, 0.88, 0.9), 0.5 + 0.4 * step(level, q.y)) * (0.1 + flame * 0.55);
       // their edges and corners catch the flame
@@ -2023,7 +1980,7 @@ vec4 barWhisky(vec2 q, float px, vec3 flame) {
     }
   }
   c = mix(c, (amber * 0.3 + vec3(0.35, 0.33, 0.3) * 0.3) * flame, step(q.y, 0.012) * step(foot, q.y) * 0.7);
-  c += flame * (0.7 * barBell((x - 0.88) / 0.06) + 0.2 * barBell((x + 0.9) / 0.05)) * step(q.y, h);
+  c += flame * (0.7 * bell((x - 0.88) / 0.06) + 0.2 * bell((x + 0.9) / 0.05)) * step(q.y, h);
   c += flame * 0.5 * (1.0 - smoothstep(0.0, 0.0025, abs(top)));
   return vec4(c, cover);
 }
@@ -2038,20 +1995,20 @@ vec4 barCandle(vec2 q, float px, vec3 flameCol, out float flame) {
   float h = 0.056;
   float eTop = r * (BAR_TABLE_EYE - BAR_TABLE_Y - h) / BAR_CANDLE.z;
   float foot = -r * (BAR_TABLE_EYE - BAR_TABLE_Y) / BAR_CANDLE.z * sqrt(max(1.0 - q.x * q.x / (r * r), 0.0));
-  float glassD = min(max(abs(q.x) - r, max(foot - q.y, q.y - h)), barEllipse(q - vec2(0.0, h), vec2(r, eTop)));
+  float glassD = min(max(abs(q.x) - r, max(foot - q.y, q.y - h)), sdEllipse(q - vec2(0.0, h), vec2(r, eTop)));
   float size = 0.7 + 0.5 * K_candle;
   float sway = 0.0015 * sin(barTm * 2.1) + 0.001 * sin(barTm * 3.3 + 1.0) + 0.016 * barMisc.x;
   float tall = 0.04 * size * (1.0 + 0.05 * sin(barTm * 1.7) + 0.25 * barMisc.y - 0.2 * abs(barMisc.x));
   vec2 wick = vec2(0.0, 0.03);
-  float fl = barSmin(barSeg(q, wick + vec2(0.0, 0.006), wick + vec2(sway, tall), 0.0062 * size, 0.0), length(q - wick - vec2(0.0, 0.006)) - 0.0064 * size, 0.004);
-  float fc = barHard(barFill(fl, px));
-  float cover = max(barFill(glassD, px), fc);
+  float fl = smin(barSeg(q, wick + vec2(0.0, 0.006), wick + vec2(sway, tall), 0.0062 * size, 0.0), length(q - wick - vec2(0.0, 0.006)) - 0.0064 * size, 0.004);
+  float fc = hardEdge(softFill(fl, px));
+  float cover = max(softFill(glassD, px), fc);
   if (cover <= 0.0) return vec4(0.0);
   vec3 c = vec3(0.0);
   if (glassD < 0.0) {
     float x = clamp(q.x / r, -1.0, 1.0);
     c = vec3(1.0, 0.5, 0.16) * flameCol * (0.35 + 0.65 * smoothstep(0.0, h, q.y)) * (0.75 + 0.25 * cos(asin(x) * 12.0)) * (1.0 - 0.4 * x * x);
-    if (barEllipse(q - vec2(0.0, h), vec2(r - 0.004, eTop * 0.85)) < 0.0) c = flameCol * 0.9 + vec3(0.25, 0.15, 0.05);
+    if (sdEllipse(q - vec2(0.0, h), vec2(r - 0.004, eTop * 0.85)) < 0.0) c = flameCol * 0.9 + vec3(0.25, 0.15, 0.05);
   }
   if (fc > 0.0) {
     float core = smoothstep(0.0, -0.003 * size, fl);
@@ -2101,13 +2058,13 @@ void barTable(vec2 p, inout vec3 col, inout float accent) {
     float z = BAR_F * (BAR_TABLE_Y - BAR_TABLE_EYE) / min(barAt(p, 0.7).y, -1e-3);
     float x = barAt(p, z).x * z / BAR_F;
     float px = barPx * z / BAR_F;
-    float cover = barFill(BAR_TABLE_X0 - x, px) * barFill(te.y - yEdge, barPx);
+    float cover = softFill(BAR_TABLE_X0 - x, px) * softFill(te.y - yEdge, barPx);
     if (cover > 0.0) {
       vec3 wood = vec3(0.22, 0.11, 0.055) * (0.8 + 0.2 * vnoise(vec2(x * 2.5 + 3.0 * vnoise(vec2(x * 8.0, z * 30.0)), z * 40.0)));
       vec2 dc = vec2(x - BAR_CANDLE.x, z - BAR_CANDLE.z);
       vec3 c = wood * (barAmbient * 2.5 + barLamp * 0.06 + flameCol * 0.03 / (0.012 + dot(dc, dc)));
       // Varnish: the flame's glow drawn toward you in it; along the far edge, the bar's warm light.
-      c += flameCol * 0.35 * barBell(dc.x / 0.025) * exp(-max(-dc.y, 0.0) / 0.15) * step(z, BAR_CANDLE.z);
+      c += flameCol * 0.35 * bell(dc.x / 0.025) * exp(-max(-dc.y, 0.0) / 0.15) * step(z, BAR_CANDLE.z);
       c += (barLamp * 0.12 + barShelf * 0.1) * smoothstep(BAR_TABLE_Z - 0.12, BAR_TABLE_Z, z);
       if (K_whisky > 0.5) {
         vec2 ca = (vec2(x, z) - BAR_WHISKY + vec2(0.075, 0.03)) / vec2(0.05, 0.03);
@@ -2137,7 +2094,7 @@ void barTable(vec2 p, inout vec3 col, inout float accent) {
   if (K_steam > 0.0) {
     vec2 rim = vec2(BAR_COFFEE.x, BAR_TABLE_Y + 0.07 - BAR_TABLE_EYE) * (BAR_F / BAR_COFFEE.y);
     float steam = barSteam((barAt(p, BAR_COFFEE.y) - rim) / 1.4, K_steam);
-    col += vec3(0.78, 0.72, 0.64) * (0.1 + flameCol * 0.3) * barHard(steam * 0.85);
+    col += vec3(0.78, 0.72, 0.64) * (0.1 + flameCol * 0.3) * hardEdge(steam * 0.85);
   }
 }
 
@@ -2145,7 +2102,6 @@ void barTable(vec2 p, inout vec3 col, inout float accent) {
 
 Shade sceneBar(vec2 uv, vec2 cell, float t) {
   float aspect = uRes.x / uRes.y;
-  barTh = threshold(cell);
   barPx = 1.0 / uRes.y;
   barT = t;
   barTm = t * uMotion;

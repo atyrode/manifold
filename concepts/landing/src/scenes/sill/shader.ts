@@ -51,13 +51,6 @@ const float SILL_D_FAR = 0.98;
 
 // ---- Shapes
 
-// Polynomial smooth minimum (Inigo Quilez): unions two distance fields with a fillet of size k, so
-// the cat's parts flow into one body instead of reading as stacked ellipses.
-float sillSmin(float a, float b, float k) {
-  float h = clamp(0.5 + 0.5 * (b - a) / k, 0.0, 1.0);
-  return mix(b, a, h) - k * h * (1.0 - h);
-}
-
 // Exact distance to a triangle (Quilez), either winding.
 float sillTriangle(vec2 p, vec2 a, vec2 b, vec2 c) {
   vec2 e0 = b - a;
@@ -881,23 +874,23 @@ float sillCatDist(vec2 q, SillCat c, float edge, out vec4 part) {
   // Small fillets keep a crease where each thigh tucks under the flank, and a notch between the
   // near thigh and the hind foot showing beneath it.
   float d = sdEllipse(q - vec2(0.0, 0.14), vec2(0.2, 0.15));
-  d = sillSmin(d, sdEllipse(q - SILL_THIGH_NEAR.xy, SILL_THIGH_NEAR.zw), 0.035);
-  d = sillSmin(d, sdEllipse(q - SILL_THIGH_FAR.xy, SILL_THIGH_FAR.zw), 0.035);
-  d = sillSmin(d, sdEllipse(q - vec2(0.2, 0.024), vec2(0.075, 0.026)), 0.02);
-  d = sillSmin(d, sdEllipse(q - vec2(-0.225, 0.028), vec2(0.06, 0.03)), 0.02);
-  d = sillSmin(d, sdEllipse(q - vec2(0.0, 0.38), vec2(0.195, 0.25) * swell), 0.07);
+  d = smin(d, sdEllipse(q - SILL_THIGH_NEAR.xy, SILL_THIGH_NEAR.zw), 0.035);
+  d = smin(d, sdEllipse(q - SILL_THIGH_FAR.xy, SILL_THIGH_FAR.zw), 0.035);
+  d = smin(d, sdEllipse(q - vec2(0.2, 0.024), vec2(0.075, 0.026)), 0.02);
+  d = smin(d, sdEllipse(q - vec2(-0.225, 0.028), vec2(0.06, 0.03)), 0.02);
+  d = smin(d, sdEllipse(q - vec2(0.0, 0.38), vec2(0.195, 0.25) * swell), 0.07);
   vec2 shoulder = vec2(0.03 * c.turn, 0.6 + 0.008 * c.breath);
-  d = sillSmin(d, sdEllipse(q - shoulder, vec2(0.16, 0.095)), 0.06);
+  d = smin(d, sdEllipse(q - shoulder, vec2(0.16, 0.095)), 0.06);
   float u = 0.0;
-  d = sillSmin(d, sdTaperCapsule(q, shoulder + vec2(0.0, 0.04), c.head - vec2(0.0, 0.08), 0.11, 0.098, u), 0.035);
+  d = smin(d, sdTaperCapsule(q, shoulder + vec2(0.0, 0.04), c.head - vec2(0.0, 0.08), 0.11, 0.098, u), 0.035);
   vec2 h = q - c.head;
   float skull = sdEllipse(h, vec2(0.17, 0.148));
-  skull = sillSmin(skull, sdEllipse(h - vec2(0.0, -0.047), vec2(0.182, 0.1)), 0.04);
-  skull = sillSmin(skull, sdEllipse(h - vec2(0.135 * sin(c.yaw), -0.058 + 0.02 * c.pitch), vec2(0.078, 0.06)), 0.035);
+  skull = smin(skull, sdEllipse(h - vec2(0.0, -0.047), vec2(0.182, 0.1)), 0.04);
+  skull = smin(skull, sdEllipse(h - vec2(0.135 * sin(c.yaw), -0.058 + 0.02 * c.pitch), vec2(0.078, 0.06)), 0.035);
   float ears = min(sillEar(h, -1.0, c.yaw, c.pitch, c.ears.x), sillEar(h, 1.0, c.yaw, c.pitch, c.ears.y));
   part.yz = vec2(ears, skull);
-  float earless = max(sillSmin(d, skull, 0.03), -q.y - 0.004);
-  d = sillSmin(d, sillSmin(skull, ears, 0.03), 0.03);
+  float earless = max(smin(d, skull, 0.03), -q.y - 0.004);
+  d = smin(d, smin(skull, ears, 0.03), 0.03);
   // Sitting flat on the sill.
   d = max(d, -q.y - 0.004);
   // The tail lies across the sill to its edge, then hangs, slender, tapering to a fine tip: a
@@ -921,8 +914,8 @@ float sillCatDist(vec2 q, SillCat c, float edge, out vec4 part) {
     r0 = r1;
   }
   if (tail < d) part.x = along;
-  part.w = sillSmin(earless, tail, 0.025);
-  return sillSmin(d, tail, 0.025);
+  part.w = smin(earless, tail, 0.025);
+  return smin(d, tail, 0.025);
 }
 
 Shade sceneSill(vec2 uv, vec2 cell, float t) {

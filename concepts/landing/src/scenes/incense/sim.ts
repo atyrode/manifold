@@ -148,15 +148,10 @@ export const incenseLayoutGlsl = `
 
 /**
  * Side-on silhouettes as signed distances (frame heights, negative inside), q from the anchor: the
- * fluid's obstacle and the shader's drawing share them. They use sdBox, from the shared GLSL (the
- * scene's `common`, or `gpuCommonGlsl` in the obstacle's pass).
+ * fluid's obstacle and the shader's drawing share them. They use sdBox and smin, from the shared GLSL
+ * (the scene's `common`, or `gpuCommonGlsl` in the obstacle's pass).
  */
 export const incenseShapesGlsl = `
-float incenseSmin(float a, float b, float k) {
-  float h = clamp(0.5 + 0.5 * (b - a) / k, 0.0, 1.0);
-  return mix(b, a, h) - k * h * (1.0 - h);
-}
-
 // The glazed dish a stick or a cone stands in.
 float incenseDish(vec2 q) {
   return sdBox(q - vec2(0.0, 0.5 * INCENSE_DISH_H), vec2(INCENSE_DISH_W, 0.5 * INCENSE_DISH_H), 0.005);
@@ -171,9 +166,9 @@ float incensePlate(vec2 q) {
 // cup on top for its cone. The cold smoke pours from an outlet on the top ledge's right face.
 float incenseMountain(vec2 q) {
   float d = sdBox(q - vec2(0.0, 0.022), vec2(0.1, 0.022), 0.016);
-  d = incenseSmin(d, sdBox(q - vec2(-0.022, 0.07), vec2(0.068, 0.028), 0.018), 0.01);
-  d = incenseSmin(d, sdBox(q - vec2(-0.04, 0.122), vec2(0.04, 0.026), 0.018), 0.01);
-  return incenseSmin(d, sdBox(q - vec2(INCENSE_MOUNT_CUP_X, 0.157), vec2(0.022, 0.012), 0.008), 0.006);
+  d = smin(d, sdBox(q - vec2(-0.022, 0.07), vec2(0.068, 0.028), 0.018), 0.01);
+  d = smin(d, sdBox(q - vec2(-0.04, 0.122), vec2(0.04, 0.026), 0.018), 0.01);
+  return smin(d, sdBox(q - vec2(INCENSE_MOUNT_CUP_X, 0.157), vec2(0.022, 0.012), 0.008), 0.006);
 }
 
 // What the incense stands on, by kind (0 stick, 1 cone, 2 coil, 3 waterfall).

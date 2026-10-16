@@ -85,14 +85,8 @@ bool deltaAtRest() {
   return passageIn() >= 1.0 && passageOut() <= 0.0;
 }
 
-// 0 to 1 over x in 0..1, overshooting a little on the way and ending exactly on 1.
-float deltaSettle(float x) {
-  float u = clamp(x, 0.0, 1.0) - 1.0;
-  return 1.0 + (DELTA_SETTLE + 1.0) * u * u * u + DELTA_SETTLE * u * u;
-}
-
 vec3 deltaCamera() {
-  float arrive = 1.0 - deltaSettle(passageIn());
+  float arrive = 1.0 - passageSettle(passageIn(), DELTA_SETTLE);
   float leave = passageOut() * passageOut();
   return vec3(1.0 + DELTA_ZOOM_IN * arrive + DELTA_ZOOM_OUT * leave, DELTA_DRIFT * (arrive - leave));
 }

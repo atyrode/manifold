@@ -174,7 +174,7 @@ function trainCheck(gl: WebGL2RenderingContext): Record<string, number> {
     `
     uniform int regressionPart;
     Shade regressionTrain(vec2 uv, vec2 cell, float t) {
-      trainSetup(cell, t);
+      trainSetup(t);
       vec2 p = (uv - 0.5) * vec2(uRes.x / uRes.y, 1.0);
       float hitZ = 1e6;
       float accent = 0.0;

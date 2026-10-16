@@ -100,7 +100,6 @@ const float RIPPLE_CORNER = 0.03;
 ${STOP_AT}
 ${STOP_RGB}
 ${RIPPLE_LENS_GLSL}
-float rippleTh = 0.5;
 float ripplePx = 0.002;
 
 struct RippleLook {
@@ -119,11 +118,6 @@ struct RippleFix {
   float lens;   // over the lens plate
   float edge;   // the plate's rim
 };
-
-// A cell flips once as a soft edge passes: coverage cut against its own threshold.
-float rippleHard(float cover) {
-  return cover > rippleTh ? 1.0 : 0.0;
-}
 
 // The palette's own colour nearest c, nudged so the dither never rounds it down a level.
 vec3 rippleSnap(vec3 c) {
@@ -146,7 +140,7 @@ vec3 rippleRamp(float b, int light, out vec3 smoothCol) {
   vec3 hi = RIPPLE_RGB[base + i];
   float t = a1 > a0 ? clamp((b - a0) / (a1 - a0), 0.0, 1.0) : 1.0;
   smoothCol = mix(lo, hi, t);
-  return rippleSnap(t > rippleTh ? hi : lo);
+  return rippleSnap(t > cellTh ? hi : lo);
 }
 
 vec2 ripplePlace(float a, float b, bool portrait) {
@@ -255,7 +249,7 @@ RippleLook rippleProjection(int row, vec2 p, vec2 F, vec2 lamp, float pool) {
   b *= 1.0 - f.shade;
   b *= 1.0 - 0.08 * f.lens;
   b += pool * (0.2 * f.edge * (1.0 - f.lens * 0.5) + RIPPLE_RIM * f.rim);
-  float solid = rippleHard(max(max(f.wall, f.bar), f.tip));
+  float solid = hardEdge(max(max(f.wall, f.bar), f.tip));
   b = mix(b, 0.03 * pool, solid);
   return RippleLook(b, f.mark * (1.0 - solid), pool * 0.8);
 }
@@ -272,9 +266,9 @@ RippleLook rippleSurface(int row, vec2 p, vec2 F, vec2 lamp) {
   b += 0.8 * exp(-dot(q, q) / 0.0025) + 0.08 * exp(-dot(d, d) / 0.05);
   RippleFix f = rippleFixtures(row, p, lamp);
   b += 0.05 * f.lens + 0.14 * f.edge + 0.12 * f.rim;
-  b = mix(b, 0.48 + 0.12 * exp(-dot(d, d) / 0.8), rippleHard(f.wall));
-  b = mix(b, 0.34, rippleHard(f.bar));
-  b = mix(b, 0.06, rippleHard(f.tip));
+  b = mix(b, 0.48 + 0.12 * exp(-dot(d, d) / 0.8), hardEdge(f.wall));
+  b = mix(b, 0.34, hardEdge(f.bar));
+  b = mix(b, 0.06, hardEdge(f.tip));
   return RippleLook(b, f.mark, 0.9);
 }
 
@@ -326,12 +320,11 @@ RippleLook rippleStill(vec2 p, vec2 F, float pool, float t) {
   float J = 1.0 - kappa * h;
   float b = pool * (1.0 - exp(-RIPPLE_TONE / sqrt(J * J + RIPPLE_SOFT * RIPPLE_SOFT)));
   float ball = 1.0 - smoothstep(-ripplePx, ripplePx, min(r0, r1) - RIPPLE_DIPPER_R);
-  b = mix(b, 0.03 * pool, rippleHard(ball));
+  b = mix(b, 0.03 * pool, hardEdge(ball));
   return RippleLook(b, 0.0, pool);
 }
 
 Shade sceneRipple(vec2 uv, vec2 cell, float t) {
-  rippleTh = threshold(cell);
   float aspect = uRes.x / uRes.y;
   vec2 F = aspect >= 1.0 ? vec2(aspect, 1.0) : vec2(1.0, 1.0 / aspect);
   bool portrait = F.y > F.x;
@@ -366,7 +359,7 @@ Shade sceneRipple(vec2 uv, vec2 cell, float t) {
   vec3 smoothCol;
   vec3 col = rippleRamp(look.b, clamp(int(K_light + 0.5), 0, ${LIGHTS.length - 1}), smoothCol);
   vec3 tint = uAccent * (0.25 + 0.9 * look.lit);
-  float mark = rippleHard(look.m);
+  float mark = hardEdge(look.m);
   if (mark > 0.5) col = rippleSnap(tint);
   smoothCol = mix(smoothCol, tint, look.m);
 

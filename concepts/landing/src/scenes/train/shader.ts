@@ -18,7 +18,7 @@
 // tunnel goes through rising round it; the country line draws exactly what it always drew.
 //
 // Flicker: everything that moves is drawn with a hard edge against the cell's own threshold
-// (trainHard), and any detail the train would carry past a cell in under about half a second, or
+// (hardEdge), and any detail the train would carry past a cell in under about half a second, or
 // that would shrink under a few cells, gives way to its mean (trainKeep). Near things are blurred
 // by the distance they travel while the eye takes them in (TRAIN_SHUTTER), so poles and girders
 // whip past as soft smears rather than strobing.
@@ -108,7 +108,6 @@ float trainInto;       // metres into the block, exact
 float trainS;          // the odometer as one float (far things only)
 float trainV;          // speed (m/s)
 float trainAcc;        // acceleration along the line (m/s/s, eased)
-float trainTh;         // the cell's dither threshold
 float trainPx;         // a cell, in screen heights
 float trainSalt;       // the route
 vec2 trainEyeOff;      // the head's offset from the pointer (m)
@@ -338,30 +337,14 @@ float trainProfile(float d, float L, float z, float salt, int octaves) {
   return s / total;
 }
 
-// The coverage of something that moves, made all-or-nothing against the cell's threshold: a passing
-// edge flips each cell once instead of stepping it through the colour levels channel by channel.
-float trainHard(float cover) {
-  return cover > trainTh ? 1.0 : 0.0;
-}
-
 // Hard coverage of a signed distance (m) at the blur or cell size aa (m).
 float trainSolid(float dist, float aa) {
-  return trainHard(clamp(0.5 - dist / aa, 0.0, 1.0));
+  return hardEdge(clamp(0.5 - dist / aa, 0.0, 1.0));
 }
 
 // The edge softness at depth z (m): a cell there, or half the blur of the train's motion.
 float trainAA(float z) {
   return max(trainPx * z / TRAIN_F, 0.5 * trainV * TRAIN_SHUTTER);
-}
-
-float trainBox(vec2 p, vec2 h, float r) {
-  vec2 d = abs(p) - h + r;
-  return length(max(d, 0.0)) + min(max(d.x, d.y), 0.0) - r;
-}
-
-// A bell curve, exp(-x^2): highlights and streaks across a shape.
-float trainBell(float x) {
-  return exp(-x * x);
 }
 
 // ---- Light outside ----
@@ -607,7 +590,7 @@ vec3 trainHillsCol(float d, float h, float top, bool detail, inout float accent)
       float cellM = trainPx * TRAIN_HILLS_Z / TRAIN_F;
       vec2 dv = vec2(tl.y - (0.2 + 0.6 * fract(hf * 13.1)) * 128.0, below - 6.0 - 22.0 * fract(hf * 7.7)) / cellM;
       float r = length(dv);
-      float core = trainHard(1.0 - smoothstep(0.8, 1.6, r)) * trainLampsOn;
+      float core = hardEdge(1.0 - smoothstep(0.8, 1.6, r)) * trainLampsOn;
       c = mix(c, TRAIN_GLOW * 1.1, core);
       c += TRAIN_GLOW * 0.08 * exp(-r * r / 6.0) * trainLampsOn;
       accent = max(accent, core);
@@ -647,7 +630,7 @@ vec3 trainVillage(vec2 o, inout float accent) {
     float spread = fract(hi * 13.7);
     vec2 at = vec2((fract(hi * 71.3) - 0.5) * 380.0 * (0.4 + 0.6 * spread), 15.0 + 170.0 * spread * spread * fract(hi * 5.1));
     float r = length(vec2(u, hy) - at) / cellM;
-    float core = trainHard(1.0 - smoothstep(0.7, 1.4, r));
+    float core = hardEdge(1.0 - smoothstep(0.7, 1.4, r));
     float kind = fract(hi * 29.3);
     vec3 tint = kind > 0.85 ? vec3(0.7, 0.82, 1.0) : (kind > 0.6 ? TRAIN_SODIUM : TRAIN_GLOW);
     float tw = 0.8 + 0.2 * sin(uMotionTime * (0.6 + fract(hi * 3.3)) + hi * 40.0);
@@ -666,10 +649,10 @@ vec4 trainMast(float d, float h, inout float accent) {
   float x = tl.y - (0.25 + 0.5 * fract(hm * 5.3)) * 2048.0;
   if (abs(x) > 3.0 * cellM) return vec4(0.0);
   float top = trainRidgeH(d - x) + 75.0;
-  float bar = trainHard(clamp(0.5 - (abs(x) - 0.6 * cellM) / cellM, 0.0, 1.0)) * step(h, top);
+  float bar = hardEdge(clamp(0.5 - (abs(x) - 0.6 * cellM) / cellM, 0.0, 1.0)) * step(h, top);
   float phase = fract(uMotionTime / 1.6 + hm * 7.0);
   float blink = smoothstep(0.0, 0.08, phase) * (1.0 - smoothstep(0.42, 0.52, phase)) * trainLampsOn;
-  float light = trainHard(1.0 - smoothstep(0.7, 1.5, length(vec2(x, h - top - 2.0)) / cellM)) * blink;
+  float light = hardEdge(1.0 - smoothstep(0.7, 1.5, length(vec2(x, h - top - 2.0)) / cellM)) * blink;
   vec3 c = mix(trainFade(vec3(0.02, 0.022, 0.03), TRAIN_RIDGE_Z, h), TRAIN_SIGNAL * 1.2, light);
   accent = max(accent, light);
   return vec4(c, max(bar, light));
@@ -684,7 +667,7 @@ vec3 trainFar(vec2 o, float t, bool detail, inout float hitZ, inout float accent
   if (hH < 80.0 * trainHillsLift + trainTunnelHill) {
     float dH = o.x * TRAIN_HILLS_Z / TRAIN_F + trainEyeOff.x;
     float top = trainHillsH(dH);
-    if (trainHard(clamp((top - hH) / (trainPx * TRAIN_HILLS_Z / TRAIN_F) + 0.5, 0.0, 1.0)) > 0.5) {
+    if (hardEdge(clamp((top - hH) / (trainPx * TRAIN_HILLS_Z / TRAIN_F) + 0.5, 0.0, 1.0)) > 0.5) {
       hitZ = TRAIN_HILLS_Z;
       return trainHillsCol(dH, hH, top, detail, accent);
     }
@@ -693,7 +676,7 @@ vec3 trainFar(vec2 o, float t, bool detail, inout float hitZ, inout float accent
   if (hR < 575.0 * trainRidgeLift + 75.0) {
     float dR = o.x * TRAIN_RIDGE_Z / TRAIN_F + trainEyeOff.x;
     float top = trainRidgeH(dR);
-    if (trainHard(clamp((top - hR) / (trainPx * TRAIN_RIDGE_Z / TRAIN_F) + 0.5, 0.0, 1.0)) > 0.5) {
+    if (hardEdge(clamp((top - hR) / (trainPx * TRAIN_RIDGE_Z / TRAIN_F) + 0.5, 0.0, 1.0)) > 0.5) {
       hitZ = TRAIN_RIDGE_Z;
       vec3 c = trainRidgeCol(dR, hR, top);
       if (detail) c += trainVillage(o, accent);
@@ -736,7 +719,7 @@ vec3 trainWater(vec2 o, float z, float d, float t) {
   float path = exp(-tilt * tilt / (sigma * sigma)) * smoothstep(-0.02, 0.05, trainMoonC.y) * (1.0 - 0.8 * trainOver);
   if (path > 0.01) {
     float n = mix(0.5, trainNoise(d + tm * 0.6, 8.0, 170.0 + row * 1.7), trainKeep(8.0, z));
-    float glint = trainHard(smoothstep(0.5, 0.8, n) * path * 1.6);
+    float glint = hardEdge(smoothstep(0.5, 0.8, n) * path * 1.6);
     col += trainMoonLight * (1.4 * path + 3.0 * glint);
   }
   return col;
@@ -928,7 +911,7 @@ vec4 trainCarSide(vec2 o, vec3 car, inout vec3 glow, inout float accent) {
   float lamps = trainLampsOn * 0.8 + 0.2;
   glow += vec3(1.0, 0.92, 0.75) * 0.5 * lamps * exp(-dot(head, head) / 0.5);
   glow += vec3(1.0, 0.1, 0.06) * 0.25 * lamps * exp(-dot(tail, tail) / 0.25);
-  float body = trainBox(vec2(x, h - 0.68), vec2(2.18, 0.36), 0.18);
+  float body = sdBox(vec2(x, h - 0.68), vec2(2.18, 0.36), 0.18);
   float cabin = max(abs(x + 0.2) - (1.2 - 0.55 * (h - 0.9)), max(0.9 - h, h - 1.45));
   float dist = min(body, cabin);
   if (trainSolid(dist, aa) < 0.5) return vec4(0.0);
@@ -937,12 +920,12 @@ vec4 trainCarSide(vec2 o, vec3 car, inout vec3 glow, inout float accent) {
   c += trainMoonLight * 0.12 * smoothstep(1.3, 1.45, h);
   if (cabin < 0.0 && body > 0.0) {
     // the windows: dark glass, the dashboard's faint glow
-    c = vec3(0.02, 0.025, 0.035) + vec3(0.25, 0.4, 0.3) * 0.15 * trainBell((x - 0.5) / 0.3) * step(h, 1.05);
+    c = vec3(0.02, 0.025, 0.035) + vec3(0.25, 0.4, 0.3) * 0.15 * bell((x - 0.5) / 0.3) * step(h, 1.05);
   }
   float wheel = length(vec2(abs(x) - 1.35, h - 0.32)) - 0.32;
   if (wheel < 0.0) c = vec3(0.012);
-  float lens = trainHard(1.0 - smoothstep(0.08, 0.15, length(head)));
-  float red = trainHard(1.0 - smoothstep(0.06, 0.12, length(tail)));
+  float lens = hardEdge(1.0 - smoothstep(0.08, 0.15, length(head)));
+  float red = hardEdge(1.0 - smoothstep(0.06, 0.12, length(tail)));
   c = mix(c, vec3(1.0, 0.95, 0.8) * 1.4, lens * lamps);
   c = mix(c, vec3(0.9, 0.08, 0.05), red * lamps);
   accent = max(accent, lens * lamps);
@@ -985,7 +968,7 @@ vec3 trainGround(vec2 o, float zg, float dg, float t) {
   bool crossing = abs(dg - trainCrossing.x) < 3.3 && zg > 11.0;
   if (crossing) {
     float xc = dg - trainCrossing.x;
-    float line = trainHard(1.0 - smoothstep(0.08, 0.08 + 0.8 * trainPx * zg / TRAIN_F, abs(xc))) * step(0.45, fract(zg / 6.0));
+    float line = hardEdge(1.0 - smoothstep(0.08, 0.08 + 0.8 * trainPx * zg / TRAIN_F, abs(xc))) * step(0.45, fract(zg / 6.0));
     alb = mix(vec3(0.075, 0.075, 0.08), vec3(0.45, 0.44, 0.4), line * 0.7);
     porous = 0.1;
     hard = true;
@@ -998,7 +981,7 @@ vec3 trainGround(vec2 o, float zg, float dg, float t) {
     // The road: asphalt, its edge lines, the centre line's dashes (one line at speed).
     float edge = max(1.0 - smoothstep(0.08, 0.08 + cellZ, abs(zg - 23.8)), 1.0 - smoothstep(0.08, 0.08 + cellZ, abs(zg - 29.2)));
     float centre = (1.0 - smoothstep(0.06, 0.06 + cellZ, abs(zg - TRAIN_ROAD_Z))) * mix(0.33, step(trainTile(dg, 8.0).y, 3.0), trainKeep(3.0, zg));
-    alb = vec3(0.075, 0.075, 0.08) + vec3(0.32) * trainHard(max(edge * 0.8, centre));
+    alb = vec3(0.075, 0.075, 0.08) + vec3(0.32) * hardEdge(max(edge * 0.8, centre));
     porous = 0.1;
     hard = true;
     rut = min(min(abs(zg - TRAIN_ROAD_Z + 1.95), abs(zg - TRAIN_ROAD_Z + 0.65)), min(abs(zg - TRAIN_ROAD_Z - 0.65), abs(zg - TRAIN_ROAD_Z - 1.95))) / max(0.22, cellZ);
@@ -1039,7 +1022,7 @@ vec3 trainGround(vec2 o, float zg, float dg, float t) {
   mirror = max(mirror, pool * 0.9);
   c = mix(c, trainAir * 1.25 + light * 0.25, mirror * 0.7);
   // Snow over everything; on the roads, tyre tracks run through it.
-  float snow = snowCover(up, world * 0.07, trainLying) * (1.0 - 0.7 * trainHard(1.0 - smoothstep(0.8, 1.2, rut)));
+  float snow = snowCover(up, world * 0.07, trainLying) * (1.0 - 0.7 * hardEdge(1.0 - smoothstep(0.8, 1.2, rut)));
   c = mix(c, trainLit(TRAIN_SNOW, up) + TRAIN_SNOW * light, snow);
   return trainFade(c, zg, 0.0);
 }
@@ -1069,7 +1052,7 @@ bool trainValley(vec2 o, float zg, float dg, float t, out vec3 col, out float z)
       col = mix(col, trainLit(TRAIN_SNOW, up), snowCover(up, vec2(x, zf) * 0.1, trainLying));
       // a cottage by the water, its window lit
       vec2 lv = vec2((x - c - w - 6.0) * TRAIN_F / zf, o.y - (TRAIN_HORIZON - (TRAIN_EYE + trainGorge - 1.5) * TRAIN_F / 160.0));
-      col += TRAIN_GLOW * trainLampsOn * K_lights * trainHard(1.0 - smoothstep(1.0, 2.0, length(lv) / trainPx)) * step(abs(zf - 160.0), 40.0);
+      col += TRAIN_GLOW * trainLampsOn * K_lights * hardEdge(1.0 - smoothstep(1.0, 2.0, length(lv) / trainPx)) * step(abs(zf - 160.0), 40.0);
     }
   } else {
     // the wooded sides falling away below the fields
@@ -1223,7 +1206,7 @@ vec3 trainVerge(vec2 o, float t, vec3 col, inout float hitZ) {
       float b = trainV * TRAIN_SHUTTER + cellM;
       float x = abs(tl.y - 1.0);
       float post = mix(0.04, clamp((0.06 + 0.5 * b - x) / b, 0.0, 1.0), trainKeep(2.0, z)) * step(hr, 1.25);
-      float cover = max(trainHard(wire), trainHard(post));
+      float cover = max(hardEdge(wire), hardEdge(post));
       if (cover > 0.5) {
         vec3 c = trainLit(vec3(0.09, 0.085, 0.08), vec3(0.0, 0.5, -0.86)) + trainMoonLight * 0.15 * wire;
         col = trainFade(c, z, hr);
@@ -1318,19 +1301,19 @@ vec3 trainStationScene(vec2 o, float t, vec3 col, inout float hitZ, inout float 
           float lx = 7.0 + 14.0 * (j + float(k));
           if (lx < 0.0 || lx > L || abs(lx - mid) < 27.0) continue;
           float sx = (st.x + lx - trainEyeOff.x) * TRAIN_F / 5.4;
-          streak += trainBell((o.x - sx) / (0.005 + 0.008 * (1.0 - pool)));
+          streak += bell((o.x - sx) / (0.005 + 0.008 * (1.0 - pool)));
         }
         float xg = o.x * 6.2 / TRAIN_F + trainEyeOff.x - st.x;
         float gi = floor((xg - mid + 20.0) / 8.0 + 0.5);
         if (gi >= -0.5 && gi <= 5.5) {
           float sx = (st.x + mid - 20.0 + 8.0 * gi - trainEyeOff.x) * TRAIN_F / 6.2;
-          streak += trainBell((o.x - sx) / (0.005 + 0.008 * (1.0 - pool)));
+          streak += bell((o.x - sx) / (0.005 + 0.008 * (1.0 - pool)));
         }
-        c += TRAIN_GLOW * trainHard(min(streak, 1.0)) * gloss * (0.3 + 0.7 * pool) * trainLampsOn;
+        c += TRAIN_GLOW * hardEdge(min(streak, 1.0)) * gloss * (0.3 + 0.7 * pool) * trainLampsOn;
         float open = 1.0 - step(abs(x - mid), 26.0) * step(6.0, zp);
         if (K_rain > 0.0 && open > 0.5) {
           vec3 dropLight = vec3(0.9, 0.95, 1.0) * dot(trainAir, LUMA) * 1.2 + light * 0.6 + 0.04;
-          float ring = pool > 0.5 ? trainHard(rainRipples(vec2(x, zp * 3.0) * 1.6, t, K_rain).z) : 0.0;
+          float ring = pool > 0.5 ? hardEdge(rainRipples(vec2(x, zp * 3.0) * 1.6, t, K_rain).z) : 0.0;
           float metre = TRAIN_F / (zp * trainPx);
           float splash = rainSplashes(vec2(x, zp), t, K_rain) * smoothstep(15.0, 25.0, metre);
           c = mix(c, dropLight, max(ring * 0.5, splash * 0.8));
@@ -1446,7 +1429,7 @@ vec3 trainStationScene(vec2 o, float t, vec3 col, inout float hitZ, inout float 
         hitZ = z;
         vec3 light = trainStationLight(x + mid + 11.0, z - 0.5, yp - TRAIN_PLATFORM);
         col = vec3(0.04, 0.06, 0.1) * (0.12 + light);
-        float lamp = trainHard(1.0 - smoothstep(0.04, 0.08, lr));
+        float lamp = hardEdge(1.0 - smoothstep(0.04, 0.08, lr));
         col = mix(col, TRAIN_GLOW * 1.3, lamp * trainLampsOn);
         accent = max(accent, lamp * trainLampsOn);
       }
@@ -1580,7 +1563,7 @@ vec3 trainCrossingScene(vec2 o, float t, vec3 col, inout float hitZ, inout float
     float r = length(vec2(x, y)) / max(cellM, 0.22);
     glow += TRAIN_SODIUM * 0.3 * exp(-r * r / 30.0) * trainLampsOn;
     float post = j < 2 ? max(abs(x + 0.3) - max(0.08, 0.6 * cellM), max(y, -6.1 - y)) : 1e3;
-    float head = trainHard(1.0 - smoothstep(0.6, 1.3, r));
+    float head = hardEdge(1.0 - smoothstep(0.6, 1.3, r));
     if (head > 0.5 || trainSolid(post, max(cellM, trainAA(z))) > 0.5) {
       hitZ = z;
       col = head > 0.5 ? TRAIN_SODIUM * (0.3 + 1.0 * trainLampsOn) : trainLit(vec3(0.07), vec3(0.0, 0.0, -1.0));
@@ -1595,11 +1578,11 @@ vec3 trainCrossingScene(vec2 o, float t, vec3 col, inout float hitZ, inout float
     float y = rise * z / TRAIN_F + trainEyeOff.y + 4.2;   // above the road
     vec2 lq = vec2(abs(x) - 0.62, y - 0.7);
     glow += vec3(1.0, 0.92, 0.75) * 0.6 * exp(-dot(lq, lq) / 0.4);
-    float body = trainBox(vec2(x, y - 0.68), vec2(0.9, 0.38), 0.12);
+    float body = sdBox(vec2(x, y - 0.68), vec2(0.9, 0.38), 0.12);
     float cabin = max(abs(x) - (0.75 - 0.3 * (y - 1.05)), max(1.05 - y, y - 1.45));
     if (trainSolid(min(body, cabin), trainAA(z)) > 0.5) {
       hitZ = z;
-      float lamp = trainHard(1.0 - smoothstep(0.08, 0.15, length(lq)));
+      float lamp = hardEdge(1.0 - smoothstep(0.08, 0.15, length(lq)));
       col = cabin < body ? vec3(0.02, 0.025, 0.03) : vec3(0.06, 0.06, 0.07) * (0.3 + trainLampsOn * 0.2);
       col = mix(col, vec3(1.0, 0.96, 0.85) * 1.5, lamp);
       accent = max(accent, lamp);
@@ -1618,7 +1601,7 @@ vec3 trainCrossingScene(vec2 o, float t, vec3 col, inout float hitZ, inout float
         vec3 light = trainEventLight(x + c, z, y - 3.0, tm) + trainCarriageLight(z, y - 3.0);
         col = mix(vec3(0.85, 0.82, 0.78), vec3(0.75, 0.08, 0.06), stripe) * (0.08 + light) + trainAmbient * 0.1;
         float lampX = mod(x + 4.0, 2.6) - 1.3;
-        float lamp = trainHard(1.0 - smoothstep(0.05, 0.1, length(vec2(lampX, y - 1.08)))) * mix(flash.x, flash.y, step(0.0, x));
+        float lamp = hardEdge(1.0 - smoothstep(0.05, 0.1, length(vec2(lampX, y - 1.08)))) * mix(flash.x, flash.y, step(0.0, x));
         col = mix(col, TRAIN_SIGNAL * 1.4, lamp);
         accent = max(accent, lamp);
       }
@@ -1648,8 +1631,8 @@ vec3 trainCrossingScene(vec2 o, float t, vec3 col, inout float hitZ, inout float
           float band = step(0.5, fract(length(aq) / 0.22));
           col = mix(vec3(0.85, 0.83, 0.8), vec3(0.8, 0.1, 0.07), band) * (0.15 + light) + TRAIN_SIGNAL * 0.25 * (flash.x + flash.y);
         }
-        float lampA = trainHard(1.0 - smoothstep(0.08, 0.13, length(la))) * flash.x;
-        float lampB = trainHard(1.0 - smoothstep(0.08, 0.13, length(lb))) * flash.y;
+        float lampA = hardEdge(1.0 - smoothstep(0.08, 0.13, length(la))) * flash.x;
+        float lampB = hardEdge(1.0 - smoothstep(0.08, 0.13, length(lb))) * flash.y;
         col = mix(col, TRAIN_SIGNAL * 1.6, max(lampA, lampB));
         accent = max(accent, max(lampA, lampB));
       }
@@ -1694,14 +1677,14 @@ vec3 trainPoles(vec2 o, float t, vec3 col, inout float hitZ) {
     vec2 a = vec2(ox / 3.3, TRAIN_HORIZON + (1.62 - trainEyeOff.y) * TRAIN_F / 3.3);
     vec2 bb = vec2(ox / 4.3, TRAIN_HORIZON + (1.62 - trainEyeOff.y) * TRAIN_F / 4.3);
     float aaS = max(trainPx, 0.5 * blur * TRAIN_F / z);
-    float arm = trainHard(clamp(0.5 - (segmentDistance(o, a, bb) - 0.06 * TRAIN_F / z) / aaS, 0.0, 1.0));
+    float arm = hardEdge(clamp(0.5 - (segmentDistance(o, a, bb) - 0.06 * TRAIN_F / z) / aaS, 0.0, 1.0));
     float glass = 0.0;
     for (int i = 0; i < 3; i++) {
       float zw = 3.4 + 0.4 * float(i);
       vec2 at = vec2(ox / zw, TRAIN_HORIZON + (1.7 - trainEyeOff.y) * TRAIN_F / zw);
-      glass = max(glass, trainHard(clamp(0.5 - (length((o - at) * vec2(1.0, 0.8)) - 0.05 * TRAIN_F / zw) / aaS, 0.0, 1.0)));
+      glass = max(glass, hardEdge(clamp(0.5 - (length((o - at) * vec2(1.0, 0.8)) - 0.05 * TRAIN_F / zw) / aaS, 0.0, 1.0)));
     }
-    if (max(max(trainHard(cov), arm), glass) > 0.5) {
+    if (max(max(hardEdge(cov), arm), glass) > 0.5) {
       hitZ = z;
       vec3 wood = wetten(vec3(0.14, 0.11, 0.08), trainWet, 0.6);
       vec3 light = trainCarriageLight(z, y) * 1.6 + trainEventLight(poleD, z, y, tm);
@@ -1722,7 +1705,7 @@ vec3 trainPoles(vec2 o, float t, vec3 col, inout float hitZ) {
     float u = (tw.y - pa) / (pb - pa);
     float sy = TRAIN_HORIZON + (1.72 - 3.4 * u * (1.0 - u) - trainEyeOff.y) * TRAIN_F / zw;
     float hw = max(0.9 * trainPx, 0.012 * TRAIN_F / zw);
-    if (trainHard(clamp(0.5 + (hw - abs(o.y - sy)) / trainPx, 0.0, 1.0)) > 0.5 && !trainNoPoles(dw)) {
+    if (hardEdge(clamp(0.5 + (hw - abs(o.y - sy)) / trainPx, 0.0, 1.0)) > 0.5 && !trainNoPoles(dw)) {
       hitZ = zw;
       col = vec3(0.025, 0.026, 0.03) + trainMoonLight * 0.12 + trainSunLight * 0.05;
     }
@@ -1813,7 +1796,7 @@ vec3 trainTunnelScene(vec2 o, float t, vec3 col, inout float hitZ) {
   vec3 c = brick * light;
   float cables = 0.0;
   for (int i = 0; i < 3; i++) cables = max(cables, 1.0 - smoothstep(0.012, 0.012 + trainPx * z / TRAIN_F, abs(y - 0.42 - 0.08 * float(i))));
-  c = mix(c, vec3(0.012), trainHard(cables) * 0.9);
+  c = mix(c, vec3(0.012), hardEdge(cables) * 0.9);
   float portal = smoothstep(1.2, 0.6, min(x, tn.y - x));
   c = mix(c, vec3(0.3, 0.27, 0.24) * (light + 0.1 * (trainAmbient + trainMoonLight)), portal * 0.7);
   // a lamp now and then
@@ -1967,20 +1950,20 @@ vec3 trainMirror(vec2 q, float aspect, float jolt, float teaX, inout float accen
   // The rack: two bright rails, a suitcase on them.
   float rails = min(abs(room.y - 0.352), abs(room.y - 0.384)) - 0.003;
   c = mix(c, vec3(0.7, 0.65, 0.55) * (0.2 + pool), step(rails, 0.0) * step(abs(room.x), 0.46 * aspect));
-  float suitcase = trainBox(room - vec2(-0.17 * aspect, 0.42), vec2(0.09 * aspect, 0.032), 0.006);
+  float suitcase = sdBox(room - vec2(-0.17 * aspect, 0.42), vec2(0.09 * aspect, 0.032), 0.006);
   if (suitcase < 0.0) c = vec3(0.3, 0.17, 0.09) * (0.15 + pool) + vec3(0.7, 0.55, 0.3) * pool * step(abs(abs(room.x + 0.17 * aspect) - 0.05 * aspect), 0.006) * step(room.y, 0.4);
   // The door: its frame, a pane of cool corridor light.
-  float door = trainBox(room - vec2(-0.41 * aspect, 0.06), vec2(0.06 * aspect, 0.34), 0.008);
+  float door = sdBox(room - vec2(-0.41 * aspect, 0.06), vec2(0.06 * aspect, 0.34), 0.008);
   if (door < 0.0) {
     c = vec3(0.3, 0.2, 0.12) * (0.1 + pool * 0.6);
-    if (trainBox(room - vec2(-0.41 * aspect, 0.2), vec2(0.04 * aspect, 0.14), 0.01) < 0.0) c = vec3(0.16, 0.2, 0.24) * 0.8;
+    if (sdBox(room - vec2(-0.41 * aspect, 0.2), vec2(0.04 * aspect, 0.14), 0.01) < 0.0) c = vec3(0.16, 0.2, 0.24) * 0.8;
   }
   // The seat's back behind you: velour, white headrest cloths.
   vec2 sq = room - vec2(0.12 * aspect, 0.0);
-  if (trainBox(sq, vec2(0.36 * aspect, 0.17), 0.05) < 0.0) {
+  if (sdBox(sq, vec2(0.36 * aspect, 0.17), 0.05) < 0.0) {
     c = vec3(0.17, 0.09, 0.08) * (0.25 + 1.2 * pool);
     float slot = clamp(floor(sq.x / (0.26 * aspect) + 0.5), -1.0, 1.0);
-    if (trainBox(sq - vec2(slot * 0.26 * aspect, 0.12), vec2(0.06, 0.045), 0.008) < 0.0) c = vec3(0.82, 0.8, 0.74) * (0.25 + 1.2 * pool);
+    if (sdBox(sq - vec2(slot * 0.26 * aspect, 0.12), vec2(0.06, 0.045), 0.008) < 0.0) c = vec3(0.82, 0.8, 0.74) * (0.25 + 1.2 * pool);
   }
   // You: dark hair, a face lit from the lamp's side, a sweater with the lamp along one shoulder.
   vec2 hq = (me - vec2(0.0, 0.19)) / vec2(0.06, 0.078);
@@ -2075,7 +2058,7 @@ vec4 trainTea(vec2 q, vec3 light, vec3 back, vec4 knock, float press, float slos
     float vh = (q.y + k * hr * sqH) / hold;
     vec3 silver = vec3(0.74, 0.72, 0.68);
     c = silver * light * (0.22 + 0.8 * smoothstep(-0.75, 0.45, uh) * (1.0 - smoothstep(0.82, 1.0, uh)));
-    c += vec3(1.0, 0.92, 0.8) * light * 0.9 * trainBell((uh - 0.42) / 0.09);
+    c += vec3(1.0, 0.92, 0.8) * light * 0.9 * bell((uh - 0.42) / 0.09);
     c += back * 0.35 * smoothstep(-0.55, -0.95, uh);
     if (vh > 0.16 && vh < 0.82 && abs(uh) < 0.9) {
       vec2 f = vec2(fract(theta * 6.0 / 3.14159 + 0.5) - 0.5, (vh - 0.49) / 0.3);
@@ -2085,13 +2068,13 @@ vec4 trainTea(vec2 q, vec3 light, vec3 back, vec4 knock, float press, float slos
     }
     if (handle < 0.0 && holder >= 0.0) {
       float side = smoothstep(-0.02, 0.03, hq.y + hq.x * 0.5);
-      c = silver * light * (0.35 + 0.8 * side) + vec3(1.0, 0.92, 0.8) * light * 0.5 * trainBell((hq.x - 0.02) / 0.006);
+      c = silver * light * (0.35 + 0.8 * side) + vec3(1.0, 0.92, 0.8) * light * 0.5 * bell((hq.x - 0.02) / 0.006);
     }
   } else {
     // The glass above the holder: its facets catching the lamp in thin upright lines, deep tea up to
     // its trembling level, clear glass above it with the window showing through.
     float facet = fract((asin(u) / 3.14159 + 0.5) * 9.0);
-    float edgeLine = trainBell((facet - 0.5) / 0.08) * smoothstep(-0.2, 0.7, u);
+    float edgeLine = bell((facet - 0.5) / 0.08) * smoothstep(-0.2, 0.7, u);
     float line = level - k * (R - 0.004) * sqR + slosh * 0.25 * q.x;
     if (q.y < line) {
       c = tea * (0.55 + 0.45 * sqrt(1.0 - u * u)) * (0.92 + 0.08 * facet);
@@ -2099,7 +2082,7 @@ vec4 trainTea(vec2 q, vec3 light, vec3 back, vec4 knock, float press, float slos
       c = light * 0.06 + back * 0.12;
       alpha = cover * 0.3;
     }
-    c += light * (0.4 * trainBell((u - 0.58) / 0.08) + 0.12 * trainBell((u + 0.86) / 0.06) + 0.18 * edgeLine);
+    c += light * (0.4 * bell((u - 0.58) / 0.08) + 0.12 * bell((u + 0.86) / 0.06) + 0.18 * edgeLine);
   }
   // Over the brim, into the glass: the tea's surface, ringing at the clacks.
   vec2 sc = vec2(q.x, (q.y - level - slosh * 0.25 * q.x) / k) / (R - 0.004);
@@ -2121,7 +2104,7 @@ vec4 trainTea(vec2 q, vec3 light, vec3 back, vec4 knock, float press, float slos
     vec3 surface = (vec3(0.3, 0.1, 0.025) * (0.25 + 0.6 * light) + vec3(0.8, 0.32, 0.06) * back * 0.5) * (1.0 + 0.2 * h);
     // the lamp's reflection, broken by the rings, drifting as the tea sloshes
     vec2 hl = sc - vec2(0.38 - slosh * 0.6, 0.32) + normalize(sc + 1e-4) * slope * 0.12;
-    surface += TRAIN_LAMP * K_lamp * 1.6 * trainHard(exp(-dot(hl, hl) / 0.03));
+    surface += TRAIN_LAMP * K_lamp * 1.6 * hardEdge(exp(-dot(hl, hl) / 0.03));
     // the slice of lemon: rind, pith, pulp in segments
     vec2 lq = sc - vec2(-0.3 + 0.05 * sin(slosh * 3.0), -0.08) - normalize(sc + 1e-4) * h * 0.02;
     float lr = length(lq) / 0.44;
@@ -2186,7 +2169,7 @@ vec4 trainCurtain(vec2 p, float aspect, float swing, vec3 light, vec3 spill) {
   float cord = abs(p.y - tie - 0.012 * (u - 0.5)) - 0.006;
   if (cord < 0.0) c = vec3(0.75, 0.55, 0.22) * light * (0.7 + 0.5 * crest);
   vec2 tq = p - vec2(edge - 0.008, tie - 0.03);
-  if (trainBox(tq, vec2(0.006, 0.02), 0.004) < 0.0) c = vec3(0.8, 0.58, 0.24) * light;
+  if (sdBox(tq, vec2(0.006, 0.02), 0.004) < 0.0) c = vec3(0.8, 0.58, 0.24) * light;
   return vec4(c, cover);
 }
 
@@ -2213,7 +2196,7 @@ vec3 trainTableTop(vec2 p, float aspect, float depth, vec3 room, vec3 spill, vec
   }
   // The ticket.
   vec2 kq = rotate(p - vec2(-0.07 * aspect, -0.35), 0.14);
-  if (trainBox(kq, vec2(0.062, 0.03), 0.003) < 0.0) {
+  if (sdBox(kq, vec2(0.062, 0.03), 0.003) < 0.0) {
     vec3 paper = vec3(0.88, 0.84, 0.7);
     vec3 ink = paper;
     if (kq.y > 0.015) {
@@ -2231,29 +2214,28 @@ vec3 trainTableTop(vec2 p, float aspect, float depth, vec3 room, vec3 spill, vec
     c = ink * lit;
     if (length(kq - vec2(-0.05, -0.016)) < 0.0045) c = wood * lit * 0.85;
   } else {
-    c *= 1.0 - 0.35 * smoothstep(0.005, 0.0, trainBox(kq - vec2(-0.004, 0.004), vec2(0.062, 0.03), 0.003));
+    c *= 1.0 - 0.35 * smoothstep(0.005, 0.0, sdBox(kq - vec2(-0.004, 0.004), vec2(0.062, 0.03), 0.003));
   }
   // Two sugar lumps in their wrappers: a lit top, a shaded front, a blue band over both, a red mark.
   for (int i = 0; i < 2; i++) {
     vec2 bq = p - teaFoot - vec2(-0.112 - 0.036 * float(i), -0.006 + 0.014 * float(i));
-    float topFace = trainBox(bq - vec2(0.0, 0.008), vec2(0.017, 0.007), 0.002);
-    float frontFace = trainBox(bq + vec2(0.0, 0.004), vec2(0.017, 0.006), 0.0015);
+    float topFace = sdBox(bq - vec2(0.0, 0.008), vec2(0.017, 0.007), 0.002);
+    float frontFace = sdBox(bq + vec2(0.0, 0.004), vec2(0.017, 0.006), 0.0015);
     if (min(topFace, frontFace) < 0.0) {
       bool upper = topFace < 0.0;
       vec3 wrap = abs(bq.x) < 0.004 ? vec3(0.2, 0.32, 0.62) : vec3(0.92, 0.9, 0.86);
       if (upper && length(bq - vec2(0.009, 0.009)) < 0.0025) wrap = vec3(0.75, 0.15, 0.12);
       c = wrap * lit * (upper ? 1.05 : 0.62);
     } else {
-      c *= 1.0 - 0.3 * smoothstep(0.006, 0.0, trainBox(bq - vec2(-0.006, 0.008), vec2(0.019, 0.012), 0.004));
+      c *= 1.0 - 0.3 * smoothstep(0.006, 0.0, sdBox(bq - vec2(-0.006, 0.008), vec2(0.019, 0.012), 0.004));
     }
   }
   return c;
 }
 
 // This cell's journey, sky and light, and the line's swing: the globals everything outside reads.
-void trainSetup(vec2 cell, float t) {
+void trainSetup(float t) {
   trainPx = 1.0 / uRes.y;
-  trainTh = threshold(cell);
   trainRead(t);
   trainLine();
   trainSalt = mod(K_route, 1000.0) * 0.731;
@@ -2299,7 +2281,7 @@ Shade sceneTrain(vec2 uv, vec2 cell, float t) {
   float aspect = uRes.x / uRes.y;
   vec2 p = (uv - 0.5) * vec2(aspect, 1.0);
   Shade o = blankShade();
-  trainSetup(cell, t);
+  trainSetup(t);
 
   // The rails' rhythm: seconds since each of the carriage's four axles last crossed a joint, and
   // what that does: a jolt, the carriage's slow rock.
@@ -2318,7 +2300,7 @@ Shade sceneTrain(vec2 uv, vec2 cell, float t) {
   vec2 gC = vec2(0.0, 0.1);
   vec2 gH = vec2(0.4 * aspect, 0.32);
   float gR = 0.075;
-  float sdG = trainBox(p - gC, gH, gR);
+  float sdG = sdBox(p - gC, gH, gR);
   float teaX = 0.22 * aspect;
   vec2 teaFoot = vec2(teaX, -0.395);
 
@@ -2336,8 +2318,8 @@ Shade sceneTrain(vec2 uv, vec2 cell, float t) {
     // Through the glass: rain driven along it, refracting what lies behind each drop.
     float streaks = K_rain * K_streaks * (1.0 - smoothstep(0.0, 60.0, -trainTunnel.x) * smoothstep(0.0, 60.0, trainTunnel.x + trainTunnel.y));
     vec4 pane = trainPaneRain(p, t, streaks);
-    float drop = trainHard(pane.z);
-    float bead = trainHard(pane.w) * (1.0 - drop);
+    float drop = hardEdge(pane.z);
+    float bead = hardEdge(pane.w) * (1.0 - drop);
     vec2 at = p + pane.xy * drop;
     vec2 ctr = vec2(0.0, TRAIN_HORIZON);
     vec2 img = rotate(at - ctr, trainRoll) + ctr + vec2(TRAIN_F * trainLook, 0.0);
@@ -2347,7 +2329,7 @@ Shade sceneTrain(vec2 uv, vec2 cell, float t) {
     if (trainLying > 0.0) {
       float corner = min(p.x + gH.x, gH.x - p.x);
       float h = (0.004 + 0.02 * exp(-corner / 0.06)) * snowCover(vec3(0.0, 1.0, 0.0), vec2(p.x * 14.0, 0.3), trainLying);
-      float bank = trainHard(clamp((gC.y - gH.y + h - p.y) / trainPx + 0.5, 0.0, 1.0)) * step(0.0005, h);
+      float bank = hardEdge(clamp((gC.y - gH.y + h - p.y) / trainPx + 0.5, 0.0, 1.0)) * step(0.0005, h);
       col = mix(col, TRAIN_SNOW * (dot(trainAmbient + trainMoonLight, LUMA) * 1.2 + 0.05) + room * 0.25, bank);
       accent *= 1.0 - bank;
     }
@@ -2372,8 +2354,8 @@ Shade sceneTrain(vec2 uv, vec2 cell, float t) {
       // The frame: a rounded bead of enamel, lit from the lamp above right, its inner lip catching
       // the light from outside.
       float e = 0.002;
-      vec2 g = normalize(vec2(trainBox(p - gC + vec2(e, 0.0), gH, gR) - trainBox(p - gC - vec2(e, 0.0), gH, gR),
-                              trainBox(p - gC + vec2(0.0, e), gH, gR) - trainBox(p - gC - vec2(0.0, e), gH, gR)) + 1e-6);
+      vec2 g = normalize(vec2(sdBox(p - gC + vec2(e, 0.0), gH, gR) - sdBox(p - gC - vec2(e, 0.0), gH, gR),
+                              sdBox(p - gC + vec2(0.0, e), gH, gR) - sdBox(p - gC - vec2(0.0, e), gH, gR)) + 1e-6);
       float u = (sdG - 0.007) / 0.038;
       vec3 n = normalize(vec3(g * cos(u * 3.14159 - 1.57), 0.6 + sin(u * 3.14159)));
       vec3 toLamp = normalize(vec3(0.5, 0.6, 0.6));
@@ -2382,7 +2364,7 @@ Shade sceneTrain(vec2 uv, vec2 cell, float t) {
       col += TRAIN_LAMP * K_lamp * 0.25 * pow(max(dot(reflect(-toLamp, n), vec3(0.0, 0.0, 1.0)), 0.0), 12.0);
       // the brass catch at the top of the frame
       vec2 cq = p - vec2(0.0, gC.y + gH.y + 0.024);
-      if (trainBox(cq, vec2(0.035, 0.007), 0.004) < 0.0) col = vec3(0.8, 0.6, 0.3) * (room * 1.1 + 0.03);
+      if (sdBox(cq, vec2(0.035, 0.007), 0.004) < 0.0) col = vec3(0.8, 0.6, 0.3) * (room * 1.1 + 0.03);
     } else {
       // The wall: warm wood-grain laminate, a seam at each panel's edge.
       float grain = 0.88 + 0.12 * vnoise(vec2(p.x * 3.0 + 4.0 * vnoise(vec2(p.x * 1.5, p.y * 20.0)), p.y * 90.0));
@@ -2395,7 +2377,7 @@ Shade sceneTrain(vec2 uv, vec2 cell, float t) {
       float tableW = 0.34 * aspect;
       if (p.y < gC.y - gH.y - 0.04 && p.y > -0.445 && abs(tx) < tableW) {
         float depth = clamp((p.y + 0.425) / (gC.y - gH.y - 0.04 + 0.425), 0.0, 1.0);
-        float cornerD = trainBox(vec2(tx, p.y + 0.36), vec2(tableW, 0.085), 0.03);
+        float cornerD = sdBox(vec2(tx, p.y + 0.36), vec2(tableW, 0.085), 0.03);
         if (cornerD < 0.0 || p.y > -0.36) {
           if (p.y > -0.425) {
             col = trainTableTop(p, aspect, depth, room, spill, teaFoot);

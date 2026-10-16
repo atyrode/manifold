@@ -1932,8 +1932,7 @@ float streetTiltAt() {
   float pin = passageIn();
   float pout = passageOut();
   if (pin >= 1.0 && pout <= 0.0) return 0.0;
-  float back = clamp(pin / STREET_TILT_ARRIVE, 0.0, 1.0) - 1.0;
-  float settle = 1.0 + 1.8 * back * back * back + 0.8 * back * back;
+  float settle = passageSettle(pin / STREET_TILT_ARRIVE, 0.8);
   return STREET_TILT_IN * (1.0 - settle) + STREET_TILT_OUT * pout * pout;
 }
 

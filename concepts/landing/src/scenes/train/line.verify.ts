@@ -74,7 +74,6 @@ export function verifyTrainLine(gl: WebGL2RenderingContext): Record<string, unkn
     uniform int regressionPart;
     Shade regressionTrainLine(vec2 uv, vec2 cell, float t) {
       trainPx = 1.0 / uRes.y;
-      trainTh = threshold(cell);
       trainRead(t);
       trainLine();
       trainSalt = mod(K_route, 1000.0) * 0.731;

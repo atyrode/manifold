@@ -517,7 +517,7 @@ class BonsaiSim implements SceneSim {
     if (index !== this.#yearIndex) this.#newYear(index, true);
     const y = this.#year;
     this.#scheduleGusts();
-    this.#gust = this.#gustStrength * gustPulse(this.#clock - this.#gustAt);
+    this.#gust = this.#gustStrength * gustSwell(this.#clock - this.#gustAt);
     const steps = Math.ceil(dt / STEP);
     for (let s = 0; s < steps; s++) this.#stepPads(dt / steps, this.#push);
     this.#stepSnow(y, dt);
@@ -769,7 +769,7 @@ class BonsaiSim implements SceneSim {
           (0.5 * Math.sin(0.62 * lag + s.phase * 0.25) +
             0.3 * Math.sin(1.07 * lag + 1.3) +
             0.2 * Math.sin(0.29 * lag + s.phase)) +
-        1.6 * gustPulse(t - this.#gustAt - pad.x * 1.2) * this.#gustStrength;
+        1.6 * gustSwell(t - this.#gustAt - pad.x * 1.2) * this.#gustStrength;
       let fx = s.omega * s.omega * amp * wind * (0.6 + 0.4 * Math.min(1, pad.long / 0.2));
       let fy = s.omega * s.omega * amp * 0.3 * calm * Math.sin(0.83 * lag + s.phase);
       if (push !== 0) fx -= push * (0.6 + 0.4 * Math.min(1, pad.long / 0.2));
@@ -1454,8 +1454,11 @@ class BonsaiSim implements SceneSim {
   }
 }
 
-/** A gust's swell and fade over its age in seconds: up in 1.5 s, gone over ~6. */
-function gustPulse(age: number): number {
+/**
+ * A bonsai gust's swell and fade over its age in seconds: up in 1.5 s, gone over ~6. Its own shape,
+ * not sims/wind.ts gustPulse (garden's and autumn's).
+ */
+function gustSwell(age: number): number {
   if (age < 0) return 0;
   return (1 - Math.exp(-age / 1.5)) * Math.exp(-age / 4);
 }

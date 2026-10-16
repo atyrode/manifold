@@ -102,7 +102,6 @@ const float LAKE_LAYER[5] = float[5](0.04, 0.13, 0.26, 0.42, 0.62);
 const float LAKE_SEEP = 1.1;
 
 // Set once per pixel by lakeSetup.
-float lakeTh;          // this cell's dither threshold
 float lakeT;           // the scene clock
 float lakeTm;          // the motion clock
 Sky lakeSky;           // the sky, with the library's own moon put away: the lake draws its own
@@ -125,12 +124,6 @@ float lakePar;         // the backdrop's parallax turn (rad)
 float lakeAccent;      // aurora light gathered by lakeSkyAt
 float lakeMeteorAt;    // seconds since the latest shooting star, and its id (meteorAge)
 float lakeMeteorSeed;
-
-// The coverage of something with a crisp edge, made all-or-nothing against this cell's threshold:
-// a soft edge would step its three channels through the levels at different moments.
-float lakeHard(float cover) {
-  return cover > lakeTh ? 1.0 : 0.0;
-}
 
 vec3 lakeAuroraLowColour() {
 ${glslPick("hue", AURORA_LOW, AURORA_LOW[0])}
@@ -497,7 +490,7 @@ vec3 lakeClearIce(Ground g, float fu, float fv, float range, vec3 dir, vec3 snow
     float idN = floor(ids.r * 255.0 + 0.5);
     float flash = uSimOn.z > 0.5 ? lakeGlow(idN, ids.g) : 0.0;
     float w = mix(0.5, 1.2, near.b) + 0.6 * flash;
-    line = lakeHard((1.0 - smoothstep(w - 0.7, w + 0.7, cells)) * far * step(0.02, near.b));
+    line = hardEdge((1.0 - smoothstep(w - 0.7, w + 0.7, cells)) * far * step(0.02, near.b));
     halo = flash * exp(-cells / 3.0) * far;
     lineCol = LAKE_SNOW * (under * 2.2 + lakeMoonLight * 0.5) * (0.55 + 0.45 * near.b) + LAKE_FLASH * flash * 0.9;
     if (idN > LAKE_MARK - 0.5) {
@@ -514,7 +507,7 @@ vec3 lakeClearIce(Ground g, float fu, float fv, float range, vec3 dir, vec3 snow
       float q = near.g * LAKE_ABOVE / max(span, 1e-5);
       if (q < 1.0) {
         float hackle = 0.5 + 0.5 * vnoise(vec2(fu * 150.0, q * 2.5 + idA));
-        float plane = lakeHard((1.0 - smoothstep(0.75, 1.0, q)) * (0.6 + 0.4 * hackle) * far);
+        float plane = hardEdge((1.0 - smoothstep(0.75, 1.0, q)) * (0.6 + 0.4 * hackle) * far);
         float sung = uSimOn.z > 0.5 ? lakeGlow(idA, ids.a) : 0.0;
         vec3 sheet = under * mix(vec3(0.95, 1.0, 1.0), vec3(0.6, 0.8, 1.0), q) * (0.35 + 0.65 * pow(1.0 - q, 1.5)) * (0.5 + 0.5 * hackle) * (0.45 + 0.55 * near.a) * 1.8;
         sheet += LAKE_FLASH * sung * (1.0 - q) * 0.8;
@@ -538,7 +531,7 @@ vec3 lakeClearIce(Ground g, float fu, float fv, float range, vec3 dir, vec3 snow
     float de = (elr - lakeMoonEl) / (spread * 4.0);
     float path = exp(-da * da - de * de);
     float facet = hash12(floor(P * vec2(16.0, 5.0)) + 0.37);
-    col += lakeMoonLight * (0.6 * path + 1.6 * lakeHard(path * smoothstep(0.82, 0.97, facet))) * (1.0 - lakeOver);
+    col += lakeMoonLight * (0.6 * path + 1.6 * hardEdge(path * smoothstep(0.82, 0.97, facet))) * (1.0 - lakeOver);
   }
   // The window's light, drawn down the ice toward us.
   if (K_cabin > 0.5) {
@@ -554,7 +547,7 @@ vec3 lakeClearIce(Ground g, float fu, float fv, float range, vec3 dir, vec3 snow
   if (hf > 0.985 && g.foot.x < 0.02) {
     vec2 c = (fc + 0.3 + 0.4 * vec2(fract(hf * 61.0), fract(hf * 83.0))) * 0.06;
     float dd = length((P - c) / max(g.foot, vec2(0.006)));
-    col = mix(col, LAKE_SNOW * (under * 2.0 + lakeMoonLight * 0.8), lakeHard(1.0 - smoothstep(0.6, 1.6, dd)) * 0.8);
+    col = mix(col, LAKE_SNOW * (under * 2.0 + lakeMoonLight * 0.8), hardEdge(1.0 - smoothstep(0.6, 1.6, dd)) * 0.8);
   }
 
   col = mix(col, LAKE_SNOW * snowLight * 0.7, dust);
@@ -600,12 +593,12 @@ LakeSnow lakeSnowAt(vec2 uv, float aspect) {
     s.near = texture(uSim0, fuv);
     s.ids = texelFetch(uSim1, ivec2(clamp(fuv, vec2(0.0), vec2(0.9999)) * LAKE_FIELD), 0);
   }
-  s.bare = s.ids.r * 255.0 > LAKE_MARK - 0.5 && s.near.r * LAKE_DIST * uRes.y < 4.0 + 2.0 * lakeTh;
+  s.bare = s.ids.r * 255.0 > LAKE_MARK - 0.5 && s.near.r * LAKE_DIST * uRes.y < 4.0 + 2.0 * cellTh;
   s.powder = K_fresh * (0.65 + 0.35 * s.sn.b);
   // Powder feathers the patches' edges into a stipple, evenly either side of where they begin, so
   // about as much of the ice stays covered.
   float feather = 0.05 + 0.12 * s.powder;
-  s.cover = s.bare ? 0.0 : max(lakeHard(smoothstep(s.th0 - feather, s.th0 + feather, s.amount)), lakeHard(s.lying));
+  s.cover = s.bare ? 0.0 : max(hardEdge(smoothstep(s.th0 - feather, s.th0 + feather, s.amount)), hardEdge(s.lying));
   return s;
 }
 
@@ -645,7 +638,7 @@ vec3 lakeIce(vec2 uv, float aspect, vec3 dir, float range, out float glow) {
       vec2 c = (gc + 0.3 + 0.4 * vec2(fract(hg * 57.0), fract(hg * 91.0))) * 0.05;
       float dd = length((P - c) / max(g.foot, vec2(0.004)));
       float twinkle = 0.55 + 0.45 * sin(lakeTm * (0.3 + 0.5 * fract(hg * 13.0)) + hg * 70.0);
-      col = mix(col, LAKE_SNOW * (snowLight * 1.6 + lakeMoonLight * 2.0), lakeHard((1.0 - smoothstep(0.5, 1.4, dd)) * twinkle));
+      col = mix(col, LAKE_SNOW * (snowLight * 1.6 + lakeMoonLight * 2.0), hardEdge((1.0 - smoothstep(0.5, 1.4, dd)) * twinkle));
     }
   } else {
     // A dusting blown off the patches, wider round fresh powder.
@@ -663,7 +656,7 @@ vec3 lakeIce(vec2 uv, float aspect, vec3 dir, float range, out float glow) {
     float load = min(drift * 4.0, 1.0);
     float streams = smoothstep(0.56, 0.8, vnoise(vec2(xi * 0.21, P.y * 3.2 + wave * 3.0))) * load;
     float snake = mix(0.22 * load, streams, 1.0 - smoothstep(0.035, 0.09, g.foot.y));
-    col = mix(col, LAKE_SNOW * snowLight * 1.05, lakeHard(snake) * 0.85);
+    col = mix(col, LAKE_SNOW * snowLight * 1.05, hardEdge(snake) * 0.85);
     col = mix(col, LAKE_SNOW * snowLight * 0.85, clamp(drift * 0.6 * smoothstep(4.0, 60.0, range), 0.0, 0.4));
   }
 
@@ -753,7 +746,6 @@ Shade sceneLake(vec2 screenUv, vec2 cell, float t) {
   float pout = passageOut();
   if (pin < 1.0) uv.y += LAKE_TILT * lakeArrive(pin);
   if (pout > 0.0) uv.y += LAKE_TILT * lakeLeave(pout);
-  lakeTh = threshold(cell);
   lakeSetup(t, aspect);
   vec2 sp = vec2((uv.x - 0.5) * aspect, uv.y - LAKE_HORIZON);
   vec3 dir = normalize(vec3(sp, LAKE_FOCAL));
@@ -786,7 +778,7 @@ Shade sceneLake(vec2 screenUv, vec2 cell, float t) {
   }
   // The exit's gust of blown snow, low over the ice and the far shore.
   if (pout > 0.0) {
-    float hit = lakeHard(lakeGust(uv, aspect, pout));
+    float hit = hardEdge(lakeGust(uv, aspect, pout));
     vec3 blown = LAKE_SNOW * (lakeAmb * 2.6 + lakeMoonLight * 0.9 + lakeAurLight * 2.2);
     col = mix(col, blown, 0.85 * hit);
     glow *= 1.0 - 0.85 * hit;

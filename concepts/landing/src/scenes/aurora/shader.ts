@@ -680,8 +680,7 @@ void aurPassage() {
   float pin = passageIn();
   float pout = passageOut();
   if (pin >= 1.0 && pout <= 0.0) return;
-  float back = clamp(pin / 0.82, 0.0, 1.0) - 1.0;
-  float settle = 1.0 + 2.1 * back * back * back + 1.1 * back * back;
+  float settle = passageSettle(pin / 0.82, 1.1);
   float leave = pout * pout;
   aurTilt = 0.22 * (1.0 - settle) + 0.26 * leave;
   float glow = 0.0;
