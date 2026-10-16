@@ -29,11 +29,17 @@
 // next waypoint at the walker's own pace, exponential repulsion from the people near it, stronger
 // from those ahead than behind, a firm push on contact, and a sidestep to the left from people
 // coming the other way, which sorts counterflowing crowds into lanes on the crossing. Walkers
-// keep to their sidewalk (soft walls, the corners rounded) except on a crossing, step round the
-// lamp and signal poles and the vending machines, and a share of them come in pairs, keeping
-// beside each other. People on the crossing when the green man flashes hurry. Standing walkers
-// are frozen in place until somebody squeezes past: under the dither, a fidgeting crowd would
-// shimmer.
+// keep to their sidewalk (soft walls, the corners rounded) except on a crossing, and a share of
+// them come in pairs, keeping beside each other. Along a sidewalk they keep in from the kerb,
+// stepping out to it only where they cross, and round the inside corner of a far block rather
+// than into its wall. They step round the lamp and signal poles and the vending machines: these
+// stand by the kerb or the wall, where the walkable sidewalk leaves no room behind them, so a
+// walker held up by one in its way slides round it on the side that has room (a repulsion alone
+// would stand it still there for good). A watchdog sees to any walker still pinned on its way: it
+// joins the crowd at its kerb if it is that near, else steps aside, and in the end gives up and
+// leaves, so nobody stands there for good or keeps newcomers away (they come while the crowd is
+// short). People on the crossing when the green man flashes hurry. Standing walkers are frozen in
+// place until somebody squeezes past: under the dither, a fidgeting crowd would shimmer.
 //
 // Rain or snow: each walker with an umbrella (most have one) opens it a few seconds after the
 // fall starts (some at the first drops, some only when it is coming down properly) and closes it
@@ -45,7 +51,7 @@
 //
 // The school outing (a feature with a "now" trigger): a teacher leads small children in yellow
 // hats two by two, each following the child ahead, an assistant at the end of the line; they wait
-// and cross with everyone else.
+// and cross with everyone else, the line kept to its sidewalk until the one ahead steps off.
 //
 // The late delivery (a feature with a "now" trigger, off by default): now and then a white van comes
 // along the avenue, crosses the junction and pulls in to the far kerb past the konbini, beyond the
@@ -61,14 +67,18 @@
 // traffic states in empirical observations and microscopic simulations", Phys. Rev. E 62, 2000):
 // a free-road pace, eased on bends, a safe gap to the vehicle ahead in the lanes their path runs
 // along, a stop line that is a standing obstacle while their light is red (or amber, if they can
-// still stop), and any walker still on the street in front of them. Cars, taxis, kei cars, vans
-// and bicycles come in from the three ends at random (the `traffic` knob) and queue at the red.
+// still stop) or while the way out of the junction has no room for them (they never stand in it
+// across the cross traffic's way), and any walker still on the street in front of them; turning,
+// they give way to anyone coming along the lanes they turn across (a left turn waits for the
+// bicycles in the kerb lane). Cars, taxis, kei cars, vans and bicycles come in from the three ends
+// at random (the `traffic` knob) and queue at the red.
 //
 // Time runs in fixed steps of STEP seconds of simulated time (motion-scaled), so the street depends
 // only on the knobs, the seed and simulated time, not on the frame rate; positions are
 // interpolated between the last two steps for drawing. The first frame lays the street out a few
 // seconds before the scramble (crowds waiting at the kerbs, the avenue's traffic queued at its red
-// light) and runs it for PREWARM seconds. Nothing is allocated per frame.
+// light) and runs it for PREWARM seconds, the walkers on the opening's own paths (#layingOut).
+// Nothing is allocated per frame.
 //
 // The scene's passage (SceneDef.passage, STREET_PASSAGE): the camera comes down from the skyline onto
 // the crossing as the crowd walks in along its sidewalks to where it gathers, and on the way out it
@@ -472,6 +482,31 @@ const CROSSINGS: readonly Crossing[] = [
   }, // N
 ];
 
+/** What walkers step round: the lamp and signal poles (a point and its radius) and the vending
+ *  machines (a box, radius 0), each with its open side (ix, iz: the way toward the middle of its
+ *  sidewalk, away from the kerb or the wall it stands by). */
+interface Obstacle {
+  readonly x0: number;
+  readonly x1: number;
+  readonly z0: number;
+  readonly z1: number;
+  readonly r: number;
+  readonly ix: number;
+  readonly iz: number;
+}
+
+function obstacle(x0: number, x1: number, z0: number, z1: number, r: number): Obstacle {
+  const open = new Float64Array(2);
+  towardMiddle((x0 + x1) / 2, (z0 + z1) / 2, open);
+  return { x0, x1, z0, z1, r, ix: open[0] ?? 0, iz: open[1] ?? 0 };
+}
+
+const OBSTACLES: readonly Obstacle[] = [
+  ...LAMPS.map((pole) => obstacle(pole.x, pole.x, pole.z, pole.z, 0.14)),
+  ...SIGNAL_POLES.map((pole) => obstacle(pole.x, pole.x, pole.z, pole.z, 0.16)),
+  ...VENDING.map(([x0, x1, z0, z1]) => obstacle(x0, x1, z0, z1, 0)),
+];
+
 const MAX_WAYPOINTS = 8;
 /** Walking pace (m/s): adults, and the outing (teacher and children). */
 const PACE_MIN = 1.1;
@@ -495,6 +530,33 @@ const WALL = 0.32;
 /** Waypoints count as reached within this (m); kerb points closer. */
 const REACH = 0.8;
 const REACH_KERB = 0.5;
+/** The lamp and signal poles stand just inside the kerb, and the vending machines against the
+ *  walls. A walker held up by one in its way (moving toward where it is going at less than HELD of
+ *  the speed it wants) has this share of its push turned sideways, round it on the side with room. */
+const SLIDE = 1.2;
+const HELD = 0.5;
+/** Along a sidewalk walkers keep this far in from the kerb (m), steering at a point CARROT metres
+ *  ahead kept that far in, and step out to the kerb only over the last STEP_OUT metres to a
+ *  crossing's kerb point; so they pass the poles on the kerb on their open side. */
+const KERB_INSET = 0.9;
+const CARROT = 1.5;
+const STEP_OUT = 3;
+/** A walker whose way along a far corner's L would cut through the building at its inside corner
+ *  (the side street's facade meeting the avenue's) steers at a point this far in from that corner
+ *  (m, each way) until its way is clear of it. */
+const CORNER_CUT = 0.5;
+/** The watchdog: a walker on its way that stays within STUCK_RADIUS (m) of one place for STUCK_TIME
+ *  seconds, further than STUCK_FAR (m) from where it is going, is pinned. Near a crossing's kerb it
+ *  joins the crowd waiting there; elsewhere it steps DETOUR_STEP metres aside (toward the middle of
+ *  its sidewalk) for up to DETOUR_TIME seconds, and after STUCK_TRIES such detours without getting
+ *  STUCK_CLEAR metres from where it was pinned it gives up and leaves (is retired). */
+const STUCK_RADIUS = 0.3;
+const STUCK_TIME = 4;
+const STUCK_FAR = 1;
+const DETOUR_STEP = 1.2;
+const DETOUR_TIME = 2.5;
+const STUCK_TRIES = 3;
+const STUCK_CLEAR = 3;
 /** Waiting: the spot search (tries), how far back the crowd may stand (m), and the space each
  *  keeps (m). A standing walker settles (stops dead) below this speed near its spot, and is only
  *  moved again by a push stronger than UNSETTLE (m/s²). */
@@ -580,6 +642,21 @@ const IDM_T = 1.3;
 const LOOKAHEAD = 45;
 const YIELD_LOOK = 14;
 const YIELD_STEP = 1.5;
+/** The points a driver looks at along its way, from 0.5 m ahead of its front every YIELD_STEP. */
+const WAY_POINTS = Math.floor((YIELD_LOOK - 0.5) / YIELD_STEP) + 1;
+/** A turning vehicle gives way, across the lanes it turns over, to whoever is on its way or will be
+ *  within this many seconds at their speed along their own path (a bicycle coming up the kerb lane
+ *  beside it), that road looked at every SWEEP_STEP metres, at most SWEEP_POINTS of them (the
+ *  fastest car covers 14.3 m in SWEEP). */
+const SWEEP = 2.5;
+const SWEEP_STEP = 0.75;
+const SWEEP_POINTS = 20;
+/** Don't block the box: short of its stop line a vehicle waits there unless the way out of the
+ *  junction has room for it (its length and the standstill gap) before whatever stands in its way: a
+ *  vehicle slower than BOX_SLOW (m/s), less the room the moving ones ahead will take queueing behind
+ *  it, or a walker. Else a queue backed up from beyond would leave it standing across the cross
+ *  traffic's way when the lights change. */
+const BOX_SLOW = 1;
 /** Vehicles per minute from each end at traffic 1: from the west, east, and down the side street. */
 const RATE_EB = 28;
 const RATE_WB = 28;
@@ -765,6 +842,21 @@ class Walker {
   porter = false;
   goalX = 0;
   goalZ = 0;
+  /** Where it is going this step (the waypoint, its spot, its place in line), and how far off. */
+  awayX = 0;
+  awayZ = 0;
+  away = 0;
+  /** The watchdog: where it has stood since `anchorAt` (clock), where it was last pinned, the
+   *  detours since it got anywhere, and the one it is on (to detourX, detourZ until detourEnd). */
+  anchorX = Number.NaN;
+  anchorZ = Number.NaN;
+  anchorAt = 0;
+  pinX = Number.NaN;
+  pinZ = Number.NaN;
+  tries = 0;
+  detourX = 0;
+  detourZ = 0;
+  detourEnd = Number.NEGATIVE_INFINITY;
 }
 
 /** A stretch of a path running along one lane, so drivers on different paths see each other there. */
@@ -812,6 +904,9 @@ class VehiclePath {
   /** Which light it obeys, and the path distance where the front stops for it. */
   readonly signal: "avenue" | "side";
   readonly stop: number;
+  /** Path distance where it has left the junction (the box between the stop lines), beyond which a
+   *  vehicle must find room before it crosses its stop line. */
+  readonly exit: number;
 
   constructor(signal: "avenue" | "side", stop: number, segments: readonly Segment[]) {
     this.signal = signal;
@@ -884,6 +979,12 @@ class VehiclePath {
         Math.sqrt(after * after + 2 * IDM_B * PATH_STEP),
       );
     }
+    let exit = stop;
+    for (let k = 0; k < n; k++) {
+      if (inJunction(this.xs[k] ?? 0, this.zs[k] ?? 0))
+        exit = Math.max(exit, Math.min((k + 1) * PATH_STEP, this.length));
+    }
+    this.exit = exit;
   }
 
   /** Position and heading at path distance s, linearly between samples. */
@@ -1083,6 +1184,16 @@ class StreetCrossing implements SceneSim {
   readonly #point2 = new Float64Array(3);
   readonly #force = new Float64Array(2);
   readonly #box = new Float64Array(4);
+  /** Scratch: the vehicles ahead of the one driving, where each is along its path (m), its length
+   *  (m) and speed (m/s). */
+  readonly #aheadAt = new Float64Array(MAX_VEHICLES);
+  readonly #aheadLength = new Float64Array(MAX_VEHICLES);
+  readonly #aheadSpeed = new Float64Array(MAX_VEHICLES);
+  /** Scratch: a turning driver's way ahead (WAY_POINTS points), and the road another comes to. */
+  readonly #wayX = new Float64Array(WAY_POINTS);
+  readonly #wayZ = new Float64Array(WAY_POINTS);
+  readonly #sweepX = new Float64Array(SWEEP_POINTS);
+  readonly #sweepZ = new Float64Array(SWEEP_POINTS);
 
   #aspect = 16 / 9;
   #crowd = 0.5;
@@ -1112,6 +1223,11 @@ class StreetCrossing implements SceneSim {
   #porter: Walker | undefined;
   /** A delivery is due to set out as soon as the avenue's way in is clear. */
   #deliveryDue = false;
+  /** The street is being laid out (#reset's prewarm). Walkers then keep to the opening's paths as
+   *  composed: the slide round obstacles, the steering in from the kerb and round the inside corners
+   *  and the watchdog take over once it is on screen, so the first frame keeps the same people where
+   *  they always were (any of them changes who reaches a kerb when, and with it every later draw). */
+  #layingOut = false;
 
   #primed = false;
   #seenSignal = 0;
@@ -1306,7 +1422,9 @@ class StreetCrossing implements SceneSim {
     this.#nextOuting = this.#outing > 0 ? OUTING_FIRST : Number.POSITIVE_INFINITY;
     this.#nextDelivery = this.#delivery > 0 ? DELIVERY_FIRST : Number.POSITIVE_INFINITY;
 
+    this.#layingOut = true;
     for (let s = 0; s < PREWARM / STEP; s++) this.#step(STEP);
+    this.#layingOut = false;
     for (const walker of this.#walkers) {
       walker.lastX = walker.x;
       walker.lastZ = walker.z;
@@ -1497,6 +1615,18 @@ class StreetCrossing implements SceneSim {
     walker.umbrellaUp = walker.hasUmbrella && this.#precip > walker.umbrellaKeen;
     walker.umbrella = walker.umbrellaUp ? 1 : 0;
     walker.porter = false;
+    this.#unpin(walker);
+  }
+
+  /** Clear the watchdog's record: nowhere stood, never pinned, no detour. */
+  #unpin(walker: Walker): void {
+    walker.anchorX = Number.NaN;
+    walker.anchorZ = Number.NaN;
+    walker.anchorAt = this.#clock;
+    walker.pinX = Number.NaN;
+    walker.pinZ = Number.NaN;
+    walker.tries = 0;
+    walker.detourEnd = Number.NEGATIVE_INFINITY;
   }
 
   /** Start moving toward the first waypoint, already facing it. */
@@ -1881,6 +2011,7 @@ class StreetCrossing implements SceneSim {
     w.goalZ = w.z;
     w.faceX = -1;
     w.faceZ = 0;
+    this.#unpin(w);
     this.#porter = w;
   }
 
@@ -1996,12 +2127,13 @@ class StreetCrossing implements SceneSim {
     this.#weatherAndPointer(dt);
   }
 
-  /** Waypoints reached, kerbs, stepping off, leaving. */
+  /** Waypoints reached, kerbs, stepping off, leaving; the watchdog. */
   #decide(w: Walker): void {
     const signals = this.#signals;
     const clock = this.#clock;
     // The delivery's driver goes where its errand sends it (#stepDelivery).
     if (w.mode === "errand") return;
+    if (this.#watch(w)) return;
     if (w.mode === "follow") {
       const ahead = w.ahead;
       if (ahead && !ahead.alive) w.ahead = undefined;
@@ -2023,16 +2155,7 @@ class StreetCrossing implements SceneSim {
     const dist = Math.hypot(tx - w.x, tz - w.z);
     if (dist > (kerb ? REACH_KERB : REACH)) return;
     if (kerb) {
-      const crossing = CROSSINGS[w.crossing[w.next] ?? 0];
-      const len = crossing ? Math.hypot(crossing.bx - crossing.ax, crossing.bz - crossing.az) : 18;
-      const brave =
-        signals.flash && signals.remaining > len / (w.pace * HURRY) && (w.seed * 13.7) % 1 < 0.35;
-      if (signals.walk || brave) {
-        w.mode = "cross";
-        w.next++;
-      } else {
-        this.#startWaiting(w);
-      }
+      this.#atKerb(w);
       return;
     }
     if (w.next >= w.count - 1) {
@@ -2042,6 +2165,78 @@ class StreetCrossing implements SceneSim {
     }
     w.next++;
     if (w.mode === "cross") w.mode = "walk";
+  }
+
+  /** At its crossing's kerb: across with the green man (or, the brave, while it flashes with time
+   *  enough left), else into the crowd waiting there. */
+  #atKerb(w: Walker): void {
+    const signals = this.#signals;
+    const crossing = CROSSINGS[w.crossing[w.next] ?? 0];
+    const len = crossing ? Math.hypot(crossing.bx - crossing.ax, crossing.bz - crossing.az) : 18;
+    const brave =
+      signals.flash && signals.remaining > len / (w.pace * HURRY) && (w.seed * 13.7) % 1 < 0.35;
+    if (signals.walk || brave) {
+      w.mode = "cross";
+      w.next++;
+    } else {
+      this.#startWaiting(w);
+    }
+  }
+
+  /** The watchdog: a walker pinned on its way (against a pole, a wall or the crowd) joins the crowd
+   *  at its crossing's kerb if it is that near, else steps aside for a moment, and after STUCK_TRIES
+   *  detours that got it nowhere gives up and leaves, so it neither stands there for good nor keeps
+   *  newcomers away (they come while the crowd is short). Returns true once it has stopped walking
+   *  its way (it waits at the kerb now, or has gone). */
+  #watch(w: Walker): boolean {
+    const clock = this.#clock;
+    const moved = Math.hypot(w.x - w.anchorX, w.z - w.anchorZ);
+    if (this.#layingOut || w.mode === "wait" || !(moved <= STUCK_RADIUS) || w.away < STUCK_FAR) {
+      w.anchorX = w.x;
+      w.anchorZ = w.z;
+      w.anchorAt = clock;
+      if (!(Math.hypot(w.x - w.pinX, w.z - w.pinZ) < STUCK_CLEAR)) w.tries = 0;
+      return false;
+    }
+    if (clock - w.anchorAt < STUCK_TIME) return false;
+    w.anchorAt = clock;
+    w.pinX = w.x;
+    w.pinZ = w.z;
+    const tx = w.wx[w.next] ?? w.x;
+    const tz = w.wz[w.next] ?? w.z;
+    if (
+      w.mode === "walk" &&
+      (w.crossing[w.next] ?? -1) >= 0 &&
+      Math.hypot(tx - w.x, tz - w.z) < SPOT_DEPTH + 1
+    ) {
+      this.#atKerb(w);
+      return true;
+    }
+    if (w.tries >= STUCK_TRIES) {
+      this.#retire(w);
+      return true;
+    }
+    w.tries++;
+    // Aside: square to its way, toward the middle of its sidewalk first (the open side of a pole on
+    // the kerb or a machine by the wall), then the other way; on the street, left first.
+    const gd = Math.hypot(w.awayX - w.x, w.awayZ - w.z) || 1;
+    const gx = (w.awayX - w.x) / gd;
+    const gz = (w.awayZ - w.z) / gd;
+    const point = this.#point2;
+    let side = 1;
+    if (!w.onRoad) {
+      towardMiddle(w.x, w.z, point);
+      if (-gz * (point[0] ?? 0) + gx * (point[1] ?? 0) < 0) side = -1;
+    }
+    if (w.tries % 2 === 0) side = -side;
+    point[0] = w.x - gz * side * DETOUR_STEP + gx * 0.5;
+    point[1] = w.z + gx * side * DETOUR_STEP + gz * 0.5;
+    if (w.mode === "walk") clampRegion(w.region[w.next] ?? "near", point);
+    else if (w.mode === "follow" && !w.onRoad) clampRegion(regionAt(w.x, w.z), point);
+    w.detourX = point[0] ?? w.x;
+    w.detourZ = point[1] ?? w.z;
+    w.detourEnd = clock + DETOUR_TIME;
+    return false;
   }
 
   #retire(w: Walker): void {
@@ -2100,6 +2295,48 @@ class StreetCrossing implements SceneSim {
         throw new StreetSimError(`street: unknown walker mode ${String(unreachable)}`);
       }
     }
+    w.awayX = tx;
+    w.awayZ = tz;
+    w.away = Math.hypot(tx - w.x, tz - w.z);
+    const onItsWay =
+      !this.#layingOut && (w.mode === "walk" || w.mode === "cross" || w.mode === "follow");
+    if (onItsWay && w.detourEnd > this.#clock) {
+      // Stepping aside (the watchdog's detour), until it is there.
+      if (Math.hypot(w.detourX - w.x, w.detourZ - w.z) < 0.3) {
+        w.detourEnd = Number.NEGATIVE_INFINITY;
+      } else {
+        tx = w.detourX;
+        tz = w.detourZ;
+        speed = w.pace;
+        arrive = false;
+      }
+    } else if (onItsWay && w.mode === "walk") {
+      const region = w.region[w.next] ?? "near";
+      const point = this.#point2;
+      if (roundCorner(region, w.x, w.z, tx, tz, point)) {
+        tx = point[0] ?? tx;
+        tz = point[1] ?? tz;
+      } else if (!((w.crossing[w.next] ?? -1) >= 0 && w.away < STEP_OUT)) {
+        // Along its sidewalk, in from the kerb: a point a little ahead on its way that comes within
+        // KERB_INSET of the kerb is held that far in, and it steers at that instead (the walls are
+        // as before); not while it steps out to the kerb point it crosses from.
+        const reach = w.away > CARROT ? CARROT / w.away : 1;
+        const carrotX = w.x + (tx - w.x) * reach;
+        const carrotZ = w.z + (tz - w.z) * reach;
+        point[0] = carrotX;
+        point[1] = carrotZ;
+        clampRegion(region, point, Number.NaN, KERB_INSET);
+        const insetX = point[0] ?? carrotX;
+        const insetZ = point[1] ?? carrotZ;
+        point[0] = carrotX;
+        point[1] = carrotZ;
+        clampRegion(region, point);
+        if (insetX !== point[0] || insetZ !== point[1]) {
+          tx = insetX;
+          tz = insetZ;
+        }
+      }
+    }
     let dx = tx - w.x;
     let dz = tz - w.z;
     const dist = Math.hypot(dx, dz);
@@ -2111,6 +2348,10 @@ class StreetCrossing implements SceneSim {
     want *= 1 - LOOK_SLOW * w.look;
     let ax = (dx * want - w.vx) / RELAX;
     let az = (dz * want - w.vz) / RELAX;
+    // How far it is held up: 0 while it makes HELD of the headway it wants, 1 standing (waiting
+    // walkers stand by choice).
+    const held =
+      onItsWay && want > 0.2 ? clamp(1 - (w.vx * dx + w.vz * dz) / (HELD * want), 0, 1) : 0;
 
     // Pairs keep beside each other while they walk.
     const partner = w.partner;
@@ -2182,10 +2423,15 @@ class StreetCrossing implements SceneSim {
     const force = this.#force;
     force[0] = sx;
     force[1] = sz;
-    for (const pole of LAMPS) this.#avoidPoint(w, pole.x, pole.z, 0.14);
-    for (const pole of SIGNAL_POLES) this.#avoidPoint(w, pole.x, pole.z, 0.16);
-    for (const box of VENDING)
-      this.#avoidPoint(w, clamp(w.x, box[0], box[1]), clamp(w.z, box[2], box[3]), 0);
+    // The sidewalk it is kept to, if any, for the room round an obstacle (#move's clamps).
+    const keptTo =
+      w.mode === "walk"
+        ? (w.region[w.next] ?? "near")
+        : w.mode === "follow" && !w.onRoad && !w.ahead?.onRoad
+          ? regionAt(w.x, w.z)
+          : undefined;
+    for (const o of OBSTACLES)
+      this.#avoid(w, clamp(w.x, o.x0, o.x1), clamp(w.z, o.z0, o.z1), o, dx, dz, held, keptTo);
     sx = force[0] ?? sx;
     sz = force[1] ?? sz;
     // A walker caught on the street keeps clear of the vehicles.
@@ -2216,18 +2462,56 @@ class StreetCrossing implements SceneSim {
     w.az = az + sz;
   }
 
-  /** Add the repulsion from a fixed point (a pole's centre, the nearest point of a box) of radius r
-   *  to #force. */
-  #avoidPoint(w: Walker, px: number, pz: number, r: number): void {
+  /** Add the push from an obstacle to #force: the repulsion from its nearest point (px, pz), and
+   *  for a walker held up (0..1) by it in its way (going gx, gz) a slide round it. A repulsion alone
+   *  stands a walker pressed onto a pole by its pull still, and on the kerb side of a pole, or the
+   *  wall side of a machine, the walker's sidewalk (`keptTo`) leaves it no room to pass. */
+  #avoid(
+    w: Walker,
+    px: number,
+    pz: number,
+    o: Obstacle,
+    gx: number,
+    gz: number,
+    held: number,
+    keptTo: Region | undefined,
+  ): void {
     const nx = w.x - px;
     const nz = w.z - pz;
     const d = Math.sqrt(nx * nx + nz * nz);
     if (d > 1.6 || d < 1e-6) return;
     const f =
-      SOCIAL_A * 1.2 * Math.exp((w.radius + r + 0.08 - d) / SOCIAL_B) +
-      (d < w.radius + r ? CONTACT * (w.radius + r - d) : 0);
-    this.#force[0] = (this.#force[0] ?? 0) + (nx / d) * f;
-    this.#force[1] = (this.#force[1] ?? 0) + (nz / d) * f;
+      SOCIAL_A * 1.2 * Math.exp((w.radius + o.r + 0.08 - d) / SOCIAL_B) +
+      (d < w.radius + o.r ? CONTACT * (w.radius + o.r - d) : 0);
+    const force = this.#force;
+    force[0] = (force[0] ?? 0) + (nx / d) * f;
+    force[1] = (force[1] ?? 0) + (nz / d) * f;
+    // How squarely it stands in the way (1: dead ahead).
+    const ahead = -(gx * nx + gz * nz) / d;
+    if (held <= 0 || ahead <= 0) return;
+    // Square to the push: on the side toward where it is going (dead ahead, its open side), unless
+    // its sidewalk has no room for it beside the obstacle there (past a machine's far end).
+    const tx = -nz / d;
+    const tz = nx / d;
+    const toward = tx * gx + tz * gz;
+    let side = Math.abs(toward) > 0.05 ? Math.sign(toward) : tx * o.ix + tz * o.iz < 0 ? -1 : 1;
+    if (keptTo !== undefined) {
+      const ux = side * tx;
+      const uz = side * tz;
+      const past =
+        Math.max(o.x0 * ux, o.x1 * ux) + Math.max(o.z0 * uz, o.z1 * uz) - (px * ux + pz * uz);
+      const clear = past + w.radius + o.r + 0.05;
+      const room = this.#point;
+      const qx = px + ux * clear;
+      const qz = pz + uz * clear;
+      room[0] = qx;
+      room[1] = qz;
+      clampRegion(keptTo, room);
+      if (room[0] !== qx || room[1] !== qz) side = -side;
+    }
+    const slide = SLIDE * f * ahead * held * side;
+    force[0] = (force[0] ?? 0) + tx * slide;
+    force[1] = (force[1] ?? 0) + tz * slide;
   }
 
   #move(w: Walker, dt: number): void {
@@ -2245,6 +2529,10 @@ class StreetCrossing implements SceneSim {
       if (w.mode === "walk" || w.mode === "wait")
         this.#keepToSidewalk(w, w.region[w.next] ?? "near");
       else if (w.mode === "errand") this.#keepToSidewalk(w, "fr", SERVICE_DOOR);
+      // The outing's line keeps to the sidewalk it is on until the one ahead steps off to cross
+      // (else the crowd at a kerb would press the waiting children into the traffic).
+      else if (w.mode === "follow" && !w.onRoad && !w.ahead?.onRoad)
+        this.#keepToSidewalk(w, regionAt(w.x, w.z));
       // Settle: on the spot, or wherever the crowd has come to rest round it.
       const fromSpot = Math.hypot(w.spotX - w.x, w.spotZ - w.z);
       if (
@@ -2474,25 +2762,48 @@ class StreetCrossing implements SceneSim {
         }
       }
 
-      // Vehicles ahead along the lanes this path runs on; one turning off it, by where it is.
+      // Vehicles ahead along the lanes this path runs on; one turning off it, by where it is; and
+      // while turning, across other lanes, anyone going along them whose body is on the way (a left
+      // turn yields to the bicycles going straight on along the kerb).
       const hx = Math.cos(me.heading);
       const hz = Math.sin(me.heading);
+      const turning =
+        (me.lane >= L_ARC_EBL && me.lane <= L_ARC_SBB) ||
+        (me.s < path.turnAt && path.turnAt - front < YIELD_LOOK);
+      if (turning) {
+        for (let k = 0; k < WAY_POINTS; k++) {
+          path.at(front + 0.5 + k * YIELD_STEP, this.#point2);
+          this.#wayX[k] = this.#point2[0] ?? 0;
+          this.#wayZ[k] = this.#point2[1] ?? 0;
+        }
+      }
+      const aheadAt = this.#aheadAt;
+      const aheadLength = this.#aheadLength;
+      const aheadSpeed = this.#aheadSpeed;
+      let seen = 0;
       for (const other of vehicles) {
         if (other === me || !other.alive) continue;
         const otherShape = SHAPES[other.kind];
         const otherLength = otherShape?.length ?? 4.5;
+        const otherWidth = otherShape?.width ?? 1.7;
         let at = path.locate(other.lane, other.laneC);
         // Round the parked delivery van a cyclist rides in the outer lane for a while.
         if (Number.isNaN(at) && other.swerve > 0.35) at = path.locate(L_EB_OUT, other.laneC);
         if (Number.isNaN(at) && me.swerve > 0.35 && other.lane === L_EB_OUT)
           at = me.s + other.laneC - me.laneC;
-        if (Number.isNaN(at) && other.lane >= L_ARC_EBL && other.lane <= L_ARC_SBB) {
+        const onArc = other.lane >= L_ARC_EBL && other.lane <= L_ARC_SBB;
+        if (Number.isNaN(at) && onArc) {
           const along = (other.x - me.x) * hx + (other.z - me.z) * hz;
           const across = Math.abs((other.z - me.z) * hx - (other.x - me.x) * hz);
-          if (along > 0 && across < (width + (otherShape?.width ?? 1.7)) / 2 + 0.3)
-            at = me.s + along;
+          if (along > 0 && across < (width + otherWidth) / 2 + 0.3) at = me.s + along;
         }
+        if (Number.isNaN(at) && turning && !onArc)
+          at = this.#onTheWay(front, width, other, otherLength, otherWidth);
         if (Number.isNaN(at) || at <= me.s || at - me.s > LOOKAHEAD) continue;
+        aheadAt[seen] = at;
+        aheadLength[seen] = otherLength;
+        aheadSpeed[seen] = other.v;
+        seen++;
         const g = at - me.s - (length + otherLength) / 2;
         if (g < gap) {
           gap = g;
@@ -2501,6 +2812,7 @@ class StreetCrossing implements SceneSim {
       }
 
       // Anyone still on the street in front.
+      let walkerAt = Number.POSITIVE_INFINITY;
       for (const w of this.#walkers) {
         if (!w.alive || !w.onRoad) continue;
         if (Math.hypot(w.x - me.x, w.z - me.z) > YIELD_LOOK + length) continue;
@@ -2510,6 +2822,7 @@ class StreetCrossing implements SceneSim {
             Math.hypot(w.x - (this.#point2[0] ?? 0), w.z - (this.#point2[1] ?? 0)) <
             width / 2 + 0.8
           ) {
+            walkerAt = Math.min(walkerAt, front + ds - 0.5);
             if (ds - 0.5 < gap) {
               gap = ds - 0.5;
               lead = 0;
@@ -2519,11 +2832,29 @@ class StreetCrossing implements SceneSim {
         }
       }
 
+      // Don't block the box: short of the stop line, wait at it unless the way out has room.
+      const s0 = bike ? IDM_S0_BIKE : IDM_S0;
+      if (toLine > -0.5 && toLine < gap) {
+        let jam = walkerAt;
+        for (let k = 0; k < seen; k++) {
+          if ((aheadSpeed[k] ?? 0) < BOX_SLOW)
+            jam = Math.min(jam, (aheadAt[k] ?? 0) - (aheadLength[k] ?? 0) / 2);
+        }
+        let room = jam - path.exit - length - s0;
+        for (let k = 0; k < seen; k++) {
+          const tail = (aheadAt[k] ?? 0) - (aheadLength[k] ?? 0) / 2;
+          if ((aheadSpeed[k] ?? 0) >= BOX_SLOW && tail < jam) room -= (aheadLength[k] ?? 0) + s0;
+        }
+        if (room < 0) {
+          gap = Math.max(toLine, 0);
+          lead = 0;
+        }
+      }
+
       // The intelligent driver model, with the bend ahead as a speed limit.
       const v = me.v;
       const ahead = clamp(Math.round((front + v * 1.5) / PATH_STEP), 0, path.vmax.length - 1);
       const limit = Math.min(me.pace, path.vmax[ahead] ?? me.pace);
-      const s0 = bike ? IDM_S0_BIKE : IDM_S0;
       let acc = IDM_A * (1 - Math.pow(v / Math.max(limit, 0.5), 4));
       if (Number.isFinite(gap)) {
         const sStar =
@@ -2568,6 +2899,55 @@ class StreetCrossing implements SceneSim {
         this.#swerve(me, kerbVan, dt);
       }
     }
+  }
+
+  /** Whether another vehicle's body, or the road ahead of it along its own path that it covers in
+   *  the next SWEEP seconds at its speed, lies on the way ahead of a front at path distance `front`
+   *  (the WAY_POINTS points of #wayX, #wayZ, YIELD_STEP apart from 0.5 m on; each side within its
+   *  half width and ours): the path distance to take as its centre, so the gap to it is the way to
+   *  where it comes; NaN if the way is clear. */
+  #onTheWay(
+    front: number,
+    width: number,
+    other: Vehicle,
+    otherLength: number,
+    otherWidth: number,
+  ): number {
+    const wayX = this.#wayX;
+    const wayZ = this.#wayZ;
+    const half = otherLength / 2;
+    const sweep = Math.min(other.v * SWEEP, (SWEEP_POINTS - 1) * SWEEP_STEP);
+    const reach = (width + otherWidth) / 2 + 0.2;
+    // The way runs within half its length of its middle point.
+    const mid = WAY_POINTS >> 1;
+    const far = Math.hypot(other.x - (wayX[mid] ?? 0), other.z - (wayZ[mid] ?? 0));
+    if (far > YIELD_LOOK / 2 + YIELD_STEP + half + sweep + reach) return Number.NaN;
+    const sweepX = this.#sweepX;
+    const sweepZ = this.#sweepZ;
+    const otherPath = PATHS[other.path];
+    let swept = 0;
+    for (let k = 0.5; k <= sweep; k += SWEEP_STEP) {
+      otherPath.at(other.s + half + k, this.#point);
+      sweepX[swept] = this.#point[0] ?? 0;
+      sweepZ[swept] = this.#point[1] ?? 0;
+      swept++;
+    }
+    const hx = Math.cos(other.heading);
+    const hz = Math.sin(other.heading);
+    for (let w = 0; w < WAY_POINTS; w++) {
+      const mx = wayX[w] ?? 0;
+      const mz = wayZ[w] ?? 0;
+      const at = front + 0.5 + w * YIELD_STEP + half;
+      // Its body where it stands...
+      const px = mx - other.x;
+      const pz = mz - other.z;
+      const along = clamp(px * hx + pz * hz, -half, half);
+      if (Math.hypot(px - hx * along, pz - hz * along) < reach) return at;
+      // ...and the road it comes to.
+      for (let k = 0; k < swept; k++)
+        if (Math.hypot(mx - (sweepX[k] ?? 0), mz - (sweepZ[k] ?? 0)) < reach) return at;
+    }
+    return Number.NaN;
   }
 
   /** Whether the delivery van stands at the kerb this step: while its driver is out, and afterwards,
@@ -2908,19 +3288,19 @@ function swerveRound(van: Vehicle, c: number): number {
 /** Clamp a point (x, z in p[0], p[1]) into a region's walkable sidewalk: the near sidewalk, or a far
  *  corner's L (along the avenue, up the side street, the corner's kerb rounded; doors let walkers
  *  through the facades, and `door` (x) lets one more through: the konbini's service door, for the
- *  delivery's driver only). */
-function clampRegion(region: Region, p: Float64Array, door = Number.NaN): void {
+ *  delivery's driver only). `kerb`: the margin kept from the kerbs (m; the walls keep WALL). */
+function clampRegion(region: Region, p: Float64Array, door = Number.NaN, kerb = WALL): void {
   let x = p[0] ?? 0;
   let z = p[1] ?? 0;
   if (region === "near") {
-    p[1] = clamp(z, FACADE_NEAR - 1.6, KERB_NEAR - WALL);
+    p[1] = clamp(z, FACADE_NEAR - 1.6, KERB_NEAR - kerb);
     return;
   }
   const sign = region === "fl" ? -1 : 1;
   let u = sign * x;
-  const inner = SIDE_KERB + WALL;
+  const inner = SIDE_KERB + kerb;
   const outer = SIDE_FACADE - WALL;
-  const front = KERB_FAR + WALL;
+  const front = KERB_FAR + kerb;
   const doorway =
     Math.abs(x - CAFE_DOOR) < 0.9 || Math.abs(x - KONBINI_DOOR) < 0.9 || Math.abs(x - door) < 0.9;
   const back = doorway ? FACADE_FAR + 1.5 : FACADE_FAR - WALL;
@@ -2936,7 +3316,7 @@ function clampRegion(region: Region, p: Float64Array, door = Number.NaN): void {
     const du = u - cu;
     const dz = z - cz;
     const d = Math.hypot(du, dz);
-    const lim = CORNER_RADIUS - WALL;
+    const lim = CORNER_RADIUS - kerb;
     if (d > lim) {
       u = cu + (du * lim) / d;
       z = cz + (dz * lim) / d;
@@ -2945,6 +3325,74 @@ function clampRegion(region: Region, p: Float64Array, door = Number.NaN): void {
   x = sign * u;
   p[0] = x;
   p[1] = z;
+}
+
+/** The sidewalk a point is on (the near one, or a far corner's), going by which side of the avenue's
+ *  middle and of the side street's it lies. */
+function regionAt(x: number, z: number): Region {
+  if (z < AVENUE_MID) return "near";
+  return x < 0 ? "fl" : "fr";
+}
+
+/** Whether the way from (x, z) to (tx, tz) along a far corner's L cuts through the building at its
+ *  inside corner, where the side street's facade meets the avenue's: then the point CORNER_CUT in
+ *  from that corner, to steer at instead, goes into p[0], p[1]. */
+function roundCorner(
+  region: Region,
+  x: number,
+  z: number,
+  tx: number,
+  tz: number,
+  p: Float64Array,
+): boolean {
+  if (region === "near") return false;
+  const sign = region === "fl" ? -1 : 1;
+  const u0 = sign * x;
+  const u1 = sign * tx;
+  const outer = SIDE_FACADE - WALL;
+  const back = FACADE_FAR - WALL;
+  // One end up the side street, the other along the avenue, and the way past the facade's line
+  // behind the corner.
+  if (u0 <= outer === u1 <= outer) return false;
+  if (z + ((tz - z) * (outer - u0)) / (u1 - u0) <= back) return false;
+  p[0] = sign * (outer - CORNER_CUT);
+  p[1] = back - CORNER_CUT;
+  return true;
+}
+
+/** Whether a point on the road is in the junction: the avenue between the stop lines, or the side
+ *  street's mouth up to its stop line. */
+function inJunction(x: number, z: number): boolean {
+  if (Math.abs(x) < STOP_WB && z > KERB_NEAR && z < KERB_FAR) return true;
+  return Math.abs(x) < SIDE_KERB && z >= KERB_FAR && z < STOP_SB;
+}
+
+/** The way from (x, z) toward the middle of its sidewalk (a unit vector into p[0], p[1]; 0, 0 on the
+ *  middle): across the near sidewalk, or toward the L running along the middle of a far corner's
+ *  (along the avenue, and up the side street). Away from the kerb, or from a wall. */
+function towardMiddle(x: number, z: number, p: Float64Array): void {
+  let dx = 0;
+  let dz = 0;
+  if (z < AVENUE_MID) {
+    dz = (FACADE_NEAR + KERB_NEAR) / 2 - z;
+  } else {
+    const sign = x < 0 ? -1 : 1;
+    const u = sign * x;
+    const midU = (SIDE_KERB + SIDE_FACADE) / 2;
+    const midZ = (KERB_FAR + FACADE_FAR) / 2;
+    // The nearer of the L's two arms: along the avenue (z = midZ, u ≥ midU), up the side street
+    // (u = midU, z ≥ midZ).
+    const alongU = Math.max(u, midU) - u;
+    const alongZ = midZ - z;
+    const upU = midU - u;
+    const upZ = Math.max(z, midZ) - z;
+    const along = Math.hypot(alongU, alongZ) <= Math.hypot(upU, upZ);
+    dx = sign * (along ? alongU : upU);
+    dz = along ? alongZ : upZ;
+  }
+  const d = Math.hypot(dx, dz);
+  p[0] = d > 1e-9 ? dx / d : 0;
+  p[1] = d > 1e-9 ? dz / d : 0;
 }
 
 /** The crossing's simulation for a scene whose knobs are `params` (looked up by key). */
