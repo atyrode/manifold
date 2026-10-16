@@ -11,7 +11,7 @@ The first three and all of the ideas below have a first implementation in the la
 | Idea                             | Scene id  | Notes                                                                                                                                                                                                                                                                                                                                                                                                                                                |
 | -------------------------------- | --------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Planet in orbit                  | `orbit`   | The shared giant planet as the subject (`shaders/lib/planet.ts`, hero tier), every feature a knob: clouds, storms, aurora, city lights, a day cycle, moons and the banded ring system. Behind it real constellations (with figure lines), shooting stars, captured meteors, a nebula and a drifting starfield; the M as night-side city lights or an asterism.                                                                                       |
-| Moonlit swell                    | `swell`   | Open-ocean swell and chop rolling toward the horizon, painted flat or, with `relief`, standing up near by; its own moon (`moon` sizes it; an M in its seas as an option) and stars. Optional birds (the shared birds, gulls by default) over the night sea, hidden by the crests, and optional shooting stars (the shared meteors) glinting in the waves.                                                                                            |
+| Moonlit swell                    | `swell`   | A moonlit open sea on the shared water (its mirror tier): three long Gerstner swells and the chop break the moon's glitter path (`waterGlitter`) into rows near by and widen it toward the horizon; painted flat or, with `relief`, standing up near by; its own moon (`moon` sizes it; an M in its seas) and stars. Optional birds (the shared birds, gulls by default), hidden by the crests, and shooting stars glinting in the waves.            |
 | Koi pond                         | `pond`    | Koi seen from above, drawn with the shared fish (`sims/fish.ts`) and steered by it while drawn to the pointer; lily pads, ripples, five floor beds, water weeds, caustics (the shared water's caustics tier, "Pond water") and god rays. The border plants are the shared plant component ("Pond plants"); optional: a canopy, a current carrying petals and a paper boat, a manifold stone.                                                         |
 | Above the clouds                 | `clouds`  | Aurora and lightning come from the shared weather layer. The sea of cloud below is the shared clouds' volume tier (`cloudSeaMarch`, `CLOUD_TIER` volume); the stars over it are the shared stars control.                                                                                                                                                                                                                                            |
 | Waterfall                        | `falls`   | Gorge choice: basalt flows (default), sandstone ledges, or a pale limestone slot whose walls close in. Optional birds (the shared birds): swifts crossing the gorge, hidden behind the cliff they fly beyond. The shared sky components over the rim: a stars control, the moon's phase, an aurora whose arc is lifted to show its lower edge over the rim, and shooting stars that fall behind it.                                                  |
@@ -62,7 +62,7 @@ mathematics. All have a first implementation in the lab:
 | Soap film                                    | `film`       | Thin-film interference, gravity drainage, pops whose rim crosses the film from the break in least time                                                                                                                                                                                                                                                                                                                                                                                     | `FluidSim`, `ArrivalField`                                                                                |
 | Pearlescent fluid (rheoscopic)               | `pearl`      | Flake orientation advected and turned by the flow                                                                                                                                                                                                                                                                                                                                                                                                                                          | `FluidSim`                                                                                                |
 | Petri dish                                   | `petri`      | Gray–Scott Turing patterns, Barkley BZ spirals                                                                                                                                                                                                                                                                                                                                                                                                                                             | `GpuCompute`, `grayScottRegimes`                                                                          |
-| Slime mould network (Physarum)               | `physarum`   | Jones agent model linking oat flakes                                                                                                                                                                                                                                                                                                                                                                                                                                                       | `GpuCompute`                                                                                              |
+| Slime mould network (Physarum)               | `physarum`   | Jones agents over Tero's adaptive flow network linking oat flakes                                                                                                                                                                                                                                                                                                                                                                                                                          | `GpuCompute`                                                                                              |
 | Hyperbolic tiling                            | `hyperbolic` | Möbius glide over a {p,q} weave; drags re-grip when the map or screen shape changes                                                                                                                                                                                                                                                                                                                                                                                                        |                                                                                                           |
 | River delta from above                       | `delta`      | Shallow water erosion and deposition                                                                                                                                                                                                                                                                                                                                                                                                                                                       | `GpuCompute`                                                                                              |
 | Fractals                                     | `fractal`    | Julia walk, Mandelbrot dive, Apollonian gasket, Newton garden; drag pan tethered to the frame                                                                                                                                                                                                                                                                                                                                                                                              | `ElasticPan`                                                                                              |
@@ -125,8 +125,17 @@ crossing the pond, "now").
 cellular net (`causticCells`, `src/shaders/caustics.ts`), light where their seams cross, carried by
 the current with the `flow` tier's `waterDrift`; the same picture as the pond's own layers drew.
 Where the seams would be thinner than a dither cell (the pond drawn under ~94 cells high, only at
-the coarsest pixel sizes) they fade to an even glow instead of flickering. The drop rings and the
-refraction they bend the floor with stay the pond's own.
+the coarsest pixel sizes) they fade to an even glow instead of flickering. The drop rings stay the
+pond's own, as wave trains with an analytic slope. The floor is seen through that slope: a quarter
+of the water's depth times it (refraction into water at small slopes, as the caustics take it), so
+deeper water (`depth`) bends the floor further, whatever the pixel size; rings finer than 7 to 14
+cells a wavelength are not drawn but roughen the surface instead. The sun's glint is the shared
+glitter (`waterGlitter`), seen from above with the sun where its image falls (`sunX`, `sunY`): the
+rings tilt it, the breeze (`wind`) and the rings too fine to draw spread it, and it lies on open
+water only. Where the pads, the koi on their loops and the petals are is the same for every pixel:
+a layout pass works it out once a frame on the GPU (`layout.ts`, read as `uSim3`) with the shader's
+own functions, so the picture is the same as working it out per pixel, which the shader still does
+where float render targets are missing.
 
 ## Tide pool
 
@@ -563,8 +572,17 @@ Gray–Scott Turing patterns or Belousov–Zhabotinsky spirals in a glass dish (
 
 ## Slime mould
 
-Jeff Jones's agent model of Physarum linking oat flakes on agar (`physarum`).
+Jeff Jones's agent model of Physarum linking oat flakes on agar (`physarum`), over Tero et al.'s
+adaptive flow network (the model of their Tokyo rail experiment).
 
+- The network: a fine mesh of tubes over the dish, grown on the CPU. Food drives a flow through it
+  and each tube swells with the flow it carries and withers without it (dD/dt = f(|Q|) − D), so
+  the flakes are joined by trunks, Steiner junctions and a few loops. It opens the scene (drawn as
+  the first frame's trail) and stays on as a faint film the specks ride, so the veins follow the
+  food: the veins that served only an eaten flake are out of the film about a minute after it
+  starts to be eaten, and a new flake is joined by a vein within a few seconds (at the default
+  evaporation; evaporation sets how fast unused tubes wither, from about two minutes at 0 to under
+  half a minute at 1).
 - Habits: sensor reach, sensor angle and evaporation act together, and three coupled settings
   read as distinct networks (lab presets rather than a knob, so the three sliders stay the only
   controls: lace, ink lace, routes and Tokyo rail routes ship as presets; woven stays a recipe, as
@@ -691,3 +709,23 @@ setups and "copy link" carries both:
   plays or pauses, `[` and `]` step along it while it plays, and choosing a scene off the tour
   pauses it. A tour link plays as it opens, except under reduced motion, where it waits for play
   and cuts. Example: `?mode=bare&tour=physarum-60.petri-45.delta-60.frost-45`.
+
+## Display, pacing and failures
+
+How the page puts the scenes on screen (`src/renderer.ts`, `src/display.ts`, `src/governor.ts`):
+
+- **Cells on whole device pixels.** The canvas is sized from a ResizeObserver's device-pixel box,
+  and `pixel` (`&pixel=`) means about that many CSS px per cell, rounded to whole device pixels:
+  at 125 % scaling pixel 2 gives 3 device px a cell, where 2.5 showed as columns of 2 and 3 and
+  bent the dither's tone by up to 8 points. At 100 % and a whole `pixel` the cells are as before.
+- **A cell budget.** No frame draws more than ~960 × 540 cells (`CELL_BUDGET`, the scenes' budget):
+  a 4K screen at 100 % gets cells of 4 device px at pixel 2, a 1440p one 3.
+- **Frame pacing.** At most 60 frames a second on any display, and none while the picture stands
+  still (paused, reduced motion, motion 0) once the last change or input has played out; input
+  draws again at once.
+- **Builds never block.** Every program builds in the background, the first one too: the bare page
+  shows until it is built, a cut or a retry keeps the old picture moving meanwhile.
+- **Failures.** A lost WebGL context is asked back and, once restored, the scene starts over; while
+  it is lost, and on a browser without WebGL2, the scene's thumbnail stands in, still. A scene whose
+  shader source does not assemble shows the failure screen. At most eight programs are kept across
+  scenes.

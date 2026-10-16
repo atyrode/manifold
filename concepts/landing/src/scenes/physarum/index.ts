@@ -1,8 +1,9 @@
 // Physarum polycephalum, the slime mould: a living network of golden veins that links its oat
 // flakes into an efficient transport network, thickens the good paths and lets the rest go (Tero
-// et al.'s Tokyo rail experiment). Hundreds of thousands of specks grown on the GPU after Jeff
-// Jones's agent model (sim.ts), drawn as plasmodium on agar, a sumi drawing or a night rail map
-// (shader.ts).
+// et al.'s Tokyo rail experiment). Tero's adaptive flow network on the CPU (network.ts) lays out
+// where the veins run; tens of thousands of specks grown over it on the GPU after Jeff Jones's
+// agent model (sim.ts) are the living mould, drawn as plasmodium on agar, a sumi drawing or a
+// night rail map (shader.ts).
 import { choice, feature, range, seed, type ParamDef } from "../../params.ts";
 import { paletteTheme } from "../atmosphere.ts";
 import type { SceneDef } from "../types.ts";
@@ -48,7 +49,7 @@ const params: readonly ParamDef[] = [
     "decay",
     "evaporation",
     0.4,
-    "How quickly the mould's trail fades. Low: a dense lace where many paths survive. High: only the busiest trunks are kept, and abandoned ones vanish fast.",
+    "How quickly the mould's trail fades and its unused veins wither. Low: a dense lace where many paths survive. High: only the busiest trunks are kept, and abandoned ones vanish fast.",
   ),
   range(
     "mould",
