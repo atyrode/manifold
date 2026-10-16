@@ -136,7 +136,11 @@ export interface SceneSim {
 export type SimFactory = (gl: WebGL2RenderingContext) => SceneSim;
 
 export interface SceneDef {
-  /** URL and registry id: lowercase letters only. */
+  /**
+   * URL and registry id: lowercase letters only. Links keep it: renaming or removing a scene retires
+   * the id with an alias to its successor, and a knob key that changes goes through a step of the
+   * URL schema (both in state.ts MIGRATIONS).
+   */
   id: string;
   /** Lab card. */
   title: string;
@@ -190,28 +194,14 @@ export interface SceneDef {
    */
   featuresAll?: Readonly<Record<string, number>>;
   /**
-   * URL keys the scene's knobs have outgrown, by old key: the knob that took its place (`key`) and
-   * what each old value means there (`values`, old value to new). Wherever a setup enters (a link,
-   * the lab's history, a preset, a tour: state.ts `readParams`), an old value the map lists sets the
-   * new knob unless the setup sets that already, and the old key is dropped either way, so an old
-   * link keeps its meaning. Declarative: a rename with a value map, nothing the scene runs.
-   */
-  legacy?: Readonly<Record<string, SceneLegacyKey>>;
-  /**
    * The planets its night sky can hang among its stars (src/scenes/planets.ts, drawn by the sky's
    * skyGiant, which the scene calls): an open list, empty to start, under one URL key, edited in the
    * Night sky section of this group, placed on a pad over this stretch of its sky. The list is
    * compiled in only while it holds a planet (the library gate SKY_PLANETS). A link from before the
    * list whose one giant planet is on opens with that giant as its first planet (state.ts
-   * `readPlanets`).
+   * MIGRATIONS).
    */
   planets?: SkyPlanets;
-}
-
-/** An outgrown URL key's replacement (SceneDef.legacy): the new knob's key, and old values to new. */
-export interface SceneLegacyKey {
-  key: string;
-  values: Readonly<Record<number, number>>;
 }
 
 export type PageTheme = "night" | "paper";

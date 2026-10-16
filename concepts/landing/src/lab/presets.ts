@@ -10,7 +10,7 @@ import {
   type Preset,
 } from "../presets.ts";
 import { sceneDefs, sceneIds, type SceneId } from "../scenes/index.ts";
-import { defaults } from "../state.ts";
+import { defaults, resolveScene } from "../state.ts";
 import { flash, iconButton, textButton } from "./controls.ts";
 import { h, reveal, type LabContext } from "./dom.ts";
 import { families, sceneFamily } from "./families.ts";
@@ -39,7 +39,11 @@ interface Group {
   count: HTMLElement;
 }
 
-const sceneOf = (query: string) => new URLSearchParams(query).get("scene") ?? defaults.scene;
+/** The scene a preset opens: the one it names, or its successor where that scene was retired. */
+const sceneOf = (query: string) => {
+  const named = new URLSearchParams(query).get("scene") ?? defaults.scene;
+  return resolveScene(named) ?? named;
+};
 
 export class PresetsView {
   readonly el: HTMLElement;

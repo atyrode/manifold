@@ -439,7 +439,7 @@ export function decodePlanets(spec: SkyPlanets, text: string): SkyPlanet[] {
 /**
  * The night sky's one giant (the knobs `giantKnobs` gave the sky scenes before the list), by the
  * planet value each became: a link with its switch, GIANT_SWITCH, on opens with that giant as its
- * one planet (state.ts `readPlanets`).
+ * one planet (a step of the URL schema: state.ts MIGRATIONS).
  */
 export const GIANT_SWITCH = "planet";
 export const GIANT_KEYS: Readonly<Record<string, string>> = {

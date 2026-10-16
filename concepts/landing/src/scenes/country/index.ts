@@ -17,7 +17,7 @@
 // compiled in only while on (countryFeatures). The verges at the hedges' foot (verges.ts) and the
 // starling murmuration at dusk (murmuration.ts) are compiled in only while on too; the sim grows
 // their plants and flies their flock then, packed beside the terrain's records (atlas.ts). Old links'
-// `season` (summer, harvest, autumn) opens at its date (`legacy`).
+// `season` (summer, harvest, autumn) opens at its date (state.ts MIGRATIONS).
 import { climateCold, fallingRain, fallingSnow, seasonKnob, yearAt } from "../../climate.ts";
 import type { IconName } from "../../lab/icons.ts";
 import { counts, choice, feature, range, seed, toggle } from "../../params.ts";
@@ -441,15 +441,4 @@ export const countryScene: SceneDef = {
   passage: COUNTRY_PASSAGE,
   featuresFor: countryFeatures,
   featuresAll: COUNTRY_ALL,
-  // The old season choice: summer, harvest and autumn, at their dates.
-  legacy: {
-    season: {
-      key: "date",
-      values: {
-        0: COUNTRY_SEASONS.summer,
-        1: COUNTRY_SEASONS.harvest,
-        2: COUNTRY_SEASONS.autumn,
-      },
-    },
-  },
 };

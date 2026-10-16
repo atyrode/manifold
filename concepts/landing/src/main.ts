@@ -1,5 +1,6 @@
 // Page controller: owns the current setup (from the URL), drives the renderer and the page on top,
-// and hands the lab a host interface. Every change is a URL query applied here.
+// and hands the lab a host interface. Every change is a URL query applied here, read as a link is
+// (state.ts `readSetup`: brought up to this build's URL schema, an unknown scene reported).
 import { Lab } from "./lab.ts";
 import { thumbUrl } from "./lab/thumbs.ts";
 import { DitherRenderer } from "./renderer.ts";
@@ -8,11 +9,11 @@ import type { SkyPlanet } from "./scenes/planets.ts";
 import {
   accentOf,
   palette,
-  readParams,
-  readPlanets,
-  readState,
+  readSetup,
   renderSettings,
   serialise,
+  URL_VERSION,
+  VERSION_KEY,
   type LabState,
   type ModeId,
   type Params,
@@ -34,9 +35,10 @@ const instanceName = element("#instance-name", HTMLElement);
 const stage = element("#stage", HTMLCanvasElement);
 
 const initial = new URLSearchParams(location.search);
-let state: LabState = readState(initial);
-let params: Params = readParams(state.scene, initial);
-let planets: SkyPlanet[] = readPlanets(state.scene, initial);
+const opened = readSetup(initial);
+let state: LabState = opened.state;
+let params: Params = opened.params;
+let planets: SkyPlanet[] = opened.planets;
 
 let renderer: DitherRenderer | undefined;
 try {
@@ -86,9 +88,10 @@ document.addEventListener("visibilitychange", () => {
 });
 
 function apply(query: URLSearchParams, options: { cut?: boolean } = {}): void {
-  state = readState(query);
-  params = readParams(state.scene, query);
-  planets = readPlanets(state.scene, query);
+  const setup = readSetup(query);
+  state = setup.state;
+  params = setup.params;
+  planets = setup.planets;
   // The lab's session tools (an A/B comparison, a tour) ride beside the setup in the URL.
   const minimal = serialise(state, params, planets);
   for (const [key, value] of lab?.sessionQuery() ?? []) minimal.append(key, value);
@@ -126,6 +129,8 @@ function apply(query: URLSearchParams, options: { cut?: boolean } = {}): void {
       : "";
   instanceName.textContent = state.instance;
   if (state.mode !== "loading") renderer?.setProgress(-1);
+  // A link (or a preset) naming a scene this build lacks opened the default scene: the lab says so.
+  if (setup.unknownScene !== undefined) lab?.noteUnknownScene(setup.unknownScene);
   lab?.sync();
 }
 
@@ -164,6 +169,8 @@ window.addEventListener("keydown", (event) => {
     if (state.mode !== "bare") modeBeforeHide = state.mode;
     const query = serialise(state, params, planets);
     query.set("mode", state.mode === "bare" ? modeBeforeHide : "bare");
+    // In this build's keys: read as this schema, never as an older link.
+    query.set(VERSION_KEY, String(URL_VERSION));
     apply(query);
     lab?.commit();
   } else if (event.key === "l") {

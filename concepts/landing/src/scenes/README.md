@@ -215,19 +215,14 @@ Declare knobs with the builders in `src/params.ts` (`range`, `toggle`, `feature`
 and 0 while off). Never index `uParams` by hand in new scenes. Keys are camelCase letters.
 
 URL keys and values keep their meaning: links, presets and the lab's history carry them. A knob
-that outgrows its key (a choice that becomes a range, say) declares the old one on its `SceneDef`
-as `legacy: { <old key>: { key: "<new key>", values: { <old value>: <new value>, ... } } }`.
-Wherever a setup enters (`readParams` in `src/state.ts`: a link, a preset, a tour, the lab's
-history), an old value the map lists sets the new knob unless the setup already sets it, and the
-old key is dropped either way, so the page rewrites an old link to the new key. The countryside's
-`season` (0 summer, 1 harvest, 2 autumn) opens at its `date` (0.375, 0.47, 0.6). Rewrite the
-committed presets (`src/presets.ts`) to the new key as well. A knob that changes kind keeps its key
-but not what an old value means (a share of 0..100 that became a feature reads 30 as its switch:
-on, at the default share): rewrite the presets that set it in the knobs that now say it (the share
-on its `-amount`), their `commit` moved to a build that has those. `src/presets.test.ts` holds
-every committed preset to loading as itself: only its scene's keys and the lab's, each value as its
-knob reads it, and the whole query as the lab writes it (`canonicalSetup`), which is how the
-Presets view lights the preset just loaded.
+that outgrows its key (a choice that becomes a range, say) or changes kind (a share of 0..100 that
+became a feature would read 30 as its switch: on, at the default share) takes a step of the URL
+schema that rewrites older links into the knobs that now say it (`MIGRATIONS` in `src/state.ts`; see
+"Links and the URL schema" below). Rewrite the committed presets (`src/presets.ts`) in those knobs
+as well (the share on its `-amount`), their `commit` moved to a build that has them.
+`src/presets.test.ts` holds every committed preset to loading as itself: only its scene's keys and
+the lab's, each value as its knob reads it, and the whole query as the lab writes it
+(`canonicalSetup`), which is how the Presets view lights the preset just loaded.
 
 Shared knobs come from `src/scenes/atmosphere.ts`: `skyKnobs({ time })` gives `K_time`, `K_cycle`;
 `weatherKnobs({...})` gives `K_rain`, `K_snow`, `K_fog`, `K_wind`, `K_lightning`, `K_aurora`
@@ -263,6 +258,66 @@ A knob with `trigger: n` gets a "now" button (a lightning bolt, whatever the kno
 `frame.fired[n]` in a sim. Use slots 0..7, each for one knob only: the button stamps the slot, so
 two knobs on one slot fire together (`triggers.test.ts` checks every scene). Lightning takes the
 slot you give `weatherKnobs`. The lab's transport lists every "now" of the scene as well.
+
+### Links and the URL schema
+
+A setup is a URL query: the lab's settings, the scene's knobs and its lists, each only where it
+differs from its default, `scene` first. Links, presets, the lab's history and each slot of an A/B
+comparison (under its `a.` or `b.` prefix) are that one form, and all of them enter through
+`readSetup` (`src/state.ts`), which brings an older query up to this build's schema, then reads it.
+
+**Versions.** A query's keys belong to a schema, numbered from 1, and `v=<n>` names it only where
+the query needs it: the lab writes `v` when a reader taking the query for schema 1, as it takes
+every link without `v`, would read it otherwise (`withVersion`). Every link from before versions is
+schema 1. Schema 2 only rewrote keys that no build writes any more, so no link needs `v` yet. When
+a range becomes a feature, say, the step that turns an old `<key>=30` into `<key>=1&<key>-amount=30`
+would misread a new `<key>=1`, so every link that sets that knob from then on carries `v`, and only
+those. Writing `v` always would lengthen every link and, at each new version, unlight every
+committed preset until it was rewritten. A link of a later schema than the build knows (a newer
+build's, opened on an older one) is read as it stands.
+
+**Migrations.** `MIGRATIONS` is the schema's history, in order. Each step makes the version
+`since`; a query of an earlier version runs every step past its own, in order, so a schema 1 link
+runs them all and each step rewrites the query as the steps before it left it. Two kinds:
+
+- `keys`: outgrown keys of the scene the query names at that point (`renameKey` renames one with a
+  map of its values). Schema 2 holds two: the countryside's `season` (0 summer, 1 harvest, 2
+  autumn) opens at its `date` (0.375, 0.47, 0.6), and the night skies' one giant planet becomes the
+  first of their planets.
+- `alias`: a retired scene id (renamed, merged into another scene or removed) whose links open its
+  successor, `to`, which a later alias may retire in turn. Its `keys` move the retired scene's keys
+  onto the successor's: rename them, and set the successor's knobs whose defaults differ from what
+  the retired scene showed, since a link leaves defaults out.
+
+To change what a key means, append a step of the next version (`since: URL_VERSION + 1`) that
+rewrites older queries into the new keys; to retire a scene, append an alias of the next version
+and take the scene out of the registry. Never edit, move or drop a step that has shipped: links rely
+on it. A step that calls live code (`COUNTRY_SEASONS`, `encodePlanets`, a scene's `planets`) must
+keep writing its own version's keys, so freeze what it uses before that code changes meaning, and
+retiring a scene that an earlier step reads (a sky that takes planets) means handing that step the
+part it read. The chain reads a query that names no scene as today's default scene's: changing the
+default scene needs each version's default kept first. `checkMigrations` runs at load: steps in
+version order, and each alias retires, once, an id no scene has, for a successor that leads to one.
+
+A setup naming a scene this build lacks, once its aliases have run, opens the default scene with
+its lab settings, and the lab says so in one line over the scene until another scene is on screen.
+A tour names scenes only, so it needs no version of its own: each step resolves through the
+aliases (`resolveScene`) whatever the link's version, since a retired id never names a scene
+again, and a step naming no scene is dropped.
+
+**Lists.** A list of items, each a set of knob-like values (the night sky's planets,
+`src/scenes/planets.ts`), lives beside the knobs as one key per list (`planets=`): packed
+(`encodePlanets`, base64url varints), last in the query and absent while the list is empty. Its
+value has its own format version, its first varint, apart from the URL schema's. The schema says
+which key holds the list and what it replaced (the giant's keys, a schema 2 step); the packing says
+how the value's bytes read, and grows by appending field ids, which needs no new version of either.
+A packing that reorders or reinterprets fields takes a new packing version, whose decoder reads the
+old one too, or a schema step that re-encodes old values. As one key a list goes wherever keys go:
+minimal links, undo steps, presets, the `a.`/`b.` prefix and `setupDifferences` (the list is one
+difference). The lab edits the list decoded (`readPlanets`) and writes it back whole
+(`encodePlanets`), and the shader takes it as uniforms beside `uParams` (`planetUniforms`), so items
+cost no knob slots. A new list follows the same pattern under a key of its own that no knob of its
+scenes may take (`state.ts` checks `planets`).
 
 ### Lab widgets
 
@@ -1091,8 +1146,9 @@ straight ahead and up from the horizon, each `[least, start, most]`. The list st
   version, bad base64url, cut short, trailing bytes) is no planets, an out-of-range value is
   clamped, past the cap the first eight stay; nothing throws. A link from before the list whose
   one giant planet was on (`planet=1` with `planetX`, `planetY`, `planetPalette`, `planetRing` and
-  the `planet...` features) opens with that giant as its first planet (state.ts `readPlanets`,
-  `GIANT_KEYS`), and the page writes the list in their place.
+  the `planet...` features) opens with that giant as its first planet (a step of the URL schema,
+  state.ts `MIGRATIONS`, by `GIANT_KEYS`), and the page writes the list in their place. How a list
+  lives beside the knobs: "Links and the URL schema".
 - **In the shader** the list is uniforms beside `uParams` (`planetUniforms`): `uPlanets`, five
   vec4 rows per planet (its path's circle, so a fixed planet is its direction and an orbiting one
   moves with `uMotionTime` alone; its radius; its switches packed, `SKY_PLANET_FLAGS`; its dress)

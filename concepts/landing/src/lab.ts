@@ -47,6 +47,8 @@ import {
   paramDefaults,
   readState,
   serialise,
+  URL_VERSION,
+  VERSION_KEY,
   type LabState,
   type Params,
 } from "./state.ts";
@@ -161,6 +163,16 @@ export class Lab {
   readonly #status = h("span", { class: "bar-status" });
   readonly #statusLong = h("p", { class: "keys-status" });
   readonly #failure: { el: HTMLElement; sync: () => void };
+  /** One line over the scene: the link just applied named a scene this build does not have. */
+  readonly #noticeText = h("span", { class: "lab-notice-text" });
+  readonly #notice = h(
+    "div",
+    { class: "lab-notice", role: "status", hidden: true },
+    this.#noticeText,
+    iconButton("close", "Dismiss", () => this.#dismissNotice()),
+  );
+  /** The scene on screen when the notice went up: it goes once another scene is. */
+  #noticeScene: SceneId | undefined;
 
   constructor(root: HTMLElement, opener: HTMLButtonElement, host: LabHost) {
     this.#root = root;
@@ -302,7 +314,7 @@ export class Lab {
     });
 
     this.#failure = this.#failureAlert();
-    root.append(this.#failure.el);
+    root.append(h("div", { class: "lab-alerts" }, this.#notice, this.#failure.el));
     root.addEventListener("change", () => this.commit());
     opener.addEventListener("click", () => this.setOpen(true));
     document.addEventListener(
@@ -343,6 +355,8 @@ export class Lab {
   /** Reflect the host's current state into every control. */
   sync(): void {
     const { state } = this.#current();
+    // The notice explains the scene it went up over: once another scene is on screen, it goes.
+    if (this.#noticeScene !== undefined && state.scene !== this.#noticeScene) this.#dismissNotice();
     // A step of the tour (its own switch or the user's) becomes the current one; another scene holds it.
     this.#tour?.follow(state.scene);
     if (this.#views.current === "scenes") this.#gallery.sync();
@@ -352,6 +366,25 @@ export class Lab {
     const scene = sceneDefs[state.scene];
     this.#views.setScene(scene.title, scene.accent);
     this.#syncHistory();
+  }
+
+  /**
+   * The setup just applied came from a link or a preset naming `id`, a scene this build does not
+   * have, so the default scene opened instead: say so in one line, until another scene comes on
+   * screen or the notice is dismissed.
+   */
+  noteUnknownScene(id: string): void {
+    const { scene } = this.#current().state;
+    const text = `No scene "${id}" in this build: showing ${sceneDefs[scene].title} instead.`;
+    this.#noticeScene = scene;
+    setText(this.#noticeText, text);
+    setAttr(this.#notice, "title", text);
+    setHidden(this.#notice, false);
+  }
+
+  #dismissNotice(): void {
+    this.#noticeScene = undefined;
+    setHidden(this.#notice, true);
   }
 
   /** Open the scene picker: the inspector's Scenes view, the keyboard on the scene on screen. */
@@ -447,6 +480,8 @@ export class Lab {
     const { state, params, planets } = this.#current();
     const q = replace ? new URLSearchParams() : serialise(state, params, planets);
     for (const [key, value] of Object.entries(patch)) q.set(key, String(value));
+    // The patch is in this build's keys: it is read as this schema, never as an older link.
+    q.set(VERSION_KEY, String(URL_VERSION));
     this.#host.apply(q);
     if (commit) this.commit();
   }

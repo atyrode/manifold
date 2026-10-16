@@ -9,16 +9,12 @@ const features = (knobs: Record<string, number>) =>
   sceneFeatures(countryScene, shaderValues(countryScene, knobs));
 
 describe("the countryside's year", () => {
-  test("its date is the almanac's season, and the old season's dates are its keys", () => {
+  test("its date is the almanac's season, keyed at the old season choice's dates", () => {
     const date = seasonKnob(countryScene.params);
     if (!date) throw new Error("no season knob");
     expect(date.key).toBe("date");
     for (const key of Object.values(COUNTRY_SEASONS)) expect(yearAt(date, key)).toBe(key);
     expect(date.value).toBe(COUNTRY_SEASONS.harvest);
-    expect(countryScene.legacy?.season).toEqual({
-      key: "date",
-      values: { 0: COUNTRY_SEASONS.summer, 1: COUNTRY_SEASONS.harvest, 2: COUNTRY_SEASONS.autumn },
-    });
   });
 
   test("the bales are compiled in only while the date lies in their stretch, or the year passes", () => {

@@ -6,6 +6,10 @@
 //                                  its own dwell
 //   dwell=40                       seconds for the others (omitted at TOUR_DWELL.fallback)
 //
+// The tour names scenes only, so it needs no schema version of its own: a scene since renamed or
+// merged into another plays as its successor, through the aliases of the URL schema (state.ts
+// `resolveScene`), whatever the link's version, since a retired id never names a scene again.
+//
 // A step's dwell runs from the switch to it (its predecessor's exit included) to the next switch,
 // on the scene clock's pace: each frame counts its real duration capped as the renderer caps its
 // clock, and nothing while the clock is paused or the tab hidden. A slow machine therefore grows
@@ -14,8 +18,8 @@
 //   const player = new TourPlayer(readTour(query) ?? tour, true);
 //   const next = player.tick(frameSeconds, renderer.paused); // a scene to switch to, or undefined
 //   player.follow(state.scene);                              // after every page change
-import { sceneIds, type SceneId } from "./scenes/index.ts";
-import { sessionKeys } from "./state.ts";
+import type { SceneId } from "./scenes/index.ts";
+import { MIGRATIONS, resolveScene, sessionKeys, type Migration } from "./state.ts";
 
 /** Seconds per step. The floor leaves a moment at rest after the longest exit and the longest
  *  entrance in the catalogue (harmonograph's 2.4 s and 5 s). */
@@ -43,12 +47,18 @@ export function clampDwell(seconds: number): number {
   return Math.min(TOUR_DWELL.max, Math.max(TOUR_DWELL.min, Math.round(seconds)));
 }
 
-/** The tour in a query, or undefined when it has none (unknown and repeated scenes are dropped). */
-export function readTour(query: URLSearchParams): Tour | undefined {
+/**
+ * The tour in a query, or undefined when it has none: a retired scene plays as its successor
+ * (`chain`'s aliases), and unknown and repeated scenes are dropped.
+ */
+export function readTour(
+  query: URLSearchParams,
+  chain: readonly Migration[] = MIGRATIONS,
+): Tour | undefined {
   const steps: TourStep[] = [];
   for (const part of (query.get(sessionKeys.tour) ?? "").split(".")) {
     const match = /^([a-z]+)(?:-(\d+))?$/.exec(part);
-    const scene = sceneIds.find((id) => id === match?.[1]);
+    const scene = resolveScene(match?.[1] ?? "", chain);
     if (scene === undefined || steps.some((step) => step.scene === scene)) continue;
     const own = match?.[2];
     steps.push(own === undefined ? { scene } : { scene, dwell: clampDwell(Number(own)) });

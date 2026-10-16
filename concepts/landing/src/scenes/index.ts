@@ -1,5 +1,7 @@
 // The scene registry, in lab order (cards, `[` / `]` cycling). A scene is one folder under
-// src/scenes/ (see README.md); adding one is an import and an entry here, keyed by its id.
+// src/scenes/ (see README.md); adding one is an import and an entry here, keyed by its id. Removing
+// or renaming one retires its id: an alias in the URL schema (state.ts MIGRATIONS) opens its links
+// on the scene that took its place, and the id is never used again.
 import { auroraScene } from "./aurora/index.ts";
 import { autumnScene } from "./autumn/index.ts";
 import { bambooScene } from "./bamboo/index.ts";

@@ -6,7 +6,7 @@ import {
   TapOrHold,
   writeComparison,
 } from "./compare.ts";
-import { defaultsFor, readParams, readState, serialise } from "./state.ts";
+import { defaultsFor, readParams, readSetup, readState, serialise, URL_VERSION } from "./state.ts";
 import { readTour, writeTour } from "./tour.ts";
 
 /** The page's URL as main.ts writes it: the setup, then the lab's session keys. */
@@ -59,6 +59,22 @@ test("the hidden slot keeps its planets, normalised, and they count as one diffe
   expect(setupDifferences("scene=frost&planets=AQEA", "scene=frost")).toEqual(["planets"]);
 });
 
+test("each slot is read at its own schema version, and a version is no difference", () => {
+  // A slot from before the countryside's date knob opens at its season's date...
+  expect(readComparison(new URLSearchParams("compare=b&a.scene=country&a.season=2"))).toEqual({
+    live: "b",
+    other: "scene=country&date=0.6",
+  });
+  // ...whatever the page's own version, but not once the slot says it has this schema.
+  const page = new URLSearchParams(`v=${URL_VERSION}&compare=b&a.scene=country&a.season=2`);
+  expect(readComparison(page)?.other).toBe("scene=country&date=0.6");
+  const current = new URLSearchParams(`compare=b&a.v=${URL_VERSION}&a.scene=country&a.season=2`);
+  expect(readComparison(current)?.other).toBe("scene=country");
+  expect(setupDifferences(`v=${URL_VERSION}&scene=forest&rain=1`, "scene=forest&rain=1")).toEqual(
+    [],
+  );
+});
+
 test("a page with a comparison and a tour reads back its setup and both session tools", () => {
   const tour = {
     steps: [{ scene: "orbit" as const, dwell: 45 }, { scene: "swell" as const }],
@@ -77,6 +93,31 @@ test("a page with a comparison and a tour reads back its setup and both session 
   );
   expect(readComparison(query)).toEqual({ live: "a", other });
   expect(readTour(query)).toEqual(tour);
+});
+
+test("links from before versions (SCENES.md's among them) read back as the page writes them", () => {
+  for (const link of [
+    "scene=forest&rain=1&compare=b&a.scene=forest",
+    "mode=bare&tour=physarum-60.petri-45.delta-60.frost-45",
+    "scene=orbit&pixel=3&compare=a&b.scene=swell&b.levels=3&tour=orbit-45.swell&dwell=20",
+  ]) {
+    const query = new URLSearchParams(link);
+    const { state, params, planets } = readSetup(query);
+    // As main.ts writes the page: the setup, then the lab's session tools.
+    const written = serialise(state, params, planets);
+    const comparison = readComparison(query);
+    if (comparison) writeComparison(comparison, written);
+    const tour = readTour(query);
+    if (tour) writeTour(tour, written);
+    expect(written.toString()).toBe(link);
+    // Named as schema 1, or as this one, it is the same page.
+    for (const version of [1, URL_VERSION]) {
+      const named = new URLSearchParams(`v=${version}&${link}`);
+      expect(readSetup(named)).toEqual(readSetup(query));
+      expect(readComparison(named)).toEqual(comparison);
+      expect(readTour(named)).toEqual(tour);
+    }
+  }
 });
 
 test("differences name the scene first, then every key either setup changes", () => {

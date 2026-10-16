@@ -732,6 +732,14 @@ setups and "copy link" carries both:
   pauses it. A tour link plays as it opens, except under reduced motion, where it waits for play
   and cuts. Example: `?mode=bare&tour=physarum-60.petri-45.delta-60.frost-45`.
 
+Links keep working from build to build. A setup carries the version of the URL schema it is written
+in (`v=`) where it needs one, and an older link is brought up to the current keys as it opens
+(`MIGRATIONS` in `src/state.ts`; "Links and the URL schema" in `src/scenes/README.md`): a renamed
+key takes its value along, and a scene since renamed or merged into another opens its successor,
+in a link, a preset saved in the browser, either slot of a comparison (each carries its own
+version, `a.v=`) and a tour. A link naming a scene the lab does not have opens the default scene,
+and the lab says so in one line over the scene.
+
 ## Display, pacing and failures
 
 How the page puts the scenes on screen (`src/renderer.ts`, `src/display.ts`, `src/governor.ts`):

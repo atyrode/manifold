@@ -3379,8 +3379,8 @@ kbd {
   overflow-wrap: anywhere;
 }
 
-/* a scene that failed: what broke, a retry and a way on */
-.lab-failure {
+/* over the scene, top centre: a note on the link just opened, and a scene that failed */
+.lab-alerts {
   position: absolute;
   top: 14px;
   left: 50%;
@@ -3388,12 +3388,39 @@ kbd {
   display: grid;
   gap: 8px;
   width: min(380px, calc(100vw - 24px));
+  transform: translateX(-50%);
+  pointer-events: none;
+}
+.lab-alerts > * {
+  pointer-events: auto;
+}
+/* a link that named a scene this build lacks: one line, and a way to dismiss it */
+.lab-notice {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 4px 4px 12px;
+  background: var(--lab-bg);
+  border: 1px solid var(--lab-line);
+  border-radius: var(--lab-radius);
+  box-shadow: var(--lab-shadow);
+}
+.lab-notice-text {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* a scene that failed: what broke, a retry and a way on */
+.lab-failure {
+  display: grid;
+  gap: 8px;
   padding: 10px 12px;
   background: var(--lab-bg);
   border: 1px solid var(--lab-accent);
   border-radius: var(--lab-radius);
   box-shadow: var(--lab-shadow);
-  transform: translateX(-50%);
 }
 .lab-failure p {
   margin: 0;
@@ -3500,7 +3527,7 @@ kbd {
   width: auto;
   max-height: 58vh !important;
 }
-.lab.sheet-mode .lab-failure {
+.lab.sheet-mode .lab-alerts {
   top: 8px;
 }
 /* in the sheet the pads a press steers both ways (a swipe on one moves it, not the sheet) stand
