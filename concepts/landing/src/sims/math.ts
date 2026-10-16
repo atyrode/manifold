@@ -11,6 +11,10 @@
 //                            loops, falls' bank ferns)
 //   glslHash22(x, y, out)    common.ts `hash22(vec2(x, y))` the same way, into out[0], out[1] (tide
 //                            pool's holdfasts)
+//   hypot2(x, y)             √(x² + y²) and √(x² + y² + z²) with the bits of V8's Math.hypot (the
+//   hypot3(x, y, z)          page's in Chrome) in every engine: for a seeded layout that must come
+//                            out the same in every browser (country's terrain, land use, chalk M
+//                            and verges)
 //
 // Usage:
 //   const fade = smoothstep(0.2, 0.6, age / life);
@@ -90,4 +94,43 @@ export function glslHash22(x: number, y: number, out: Float64Array): void {
   const v = f32(f32(a + c) * b);
   out[0] = f32(u - Math.floor(u));
   out[1] = f32(v - Math.floor(v));
+}
+
+// Math.hypot is only approximated, each engine its own way: JavaScriptCore (Safari, bun) rounds a
+// third of the map's distances otherwise than V8 (Chrome, node), enough that one seed built two
+// different countrysides. hypot2 and hypot3 are V8's algorithm (src/builtins/math.tq, MathHypot:
+// each magnitude over the largest, squared and summed, the third square Kahan-compensated) in
+// arithmetic IEEE 754 rounds alike in every engine. The argument count is part of it:
+// hypot3(x, y, 0) may round otherwise than hypot2(x, y), as Math.hypot does in V8.
+
+/** √(x² + y²), with the bits V8's `Math.hypot(x, y)` gives, in any engine. */
+export function hypot2(x: number, y: number): number {
+  const a = Math.abs(x);
+  const b = Math.abs(y);
+  if (a === Infinity || b === Infinity) return Infinity;
+  const max = Math.max(a, b);
+  if (Number.isNaN(max)) return Number.NaN;
+  if (max === 0) return 0;
+  const p = a / max;
+  const q = b / max;
+  return Math.sqrt(p * p + q * q) * max;
+}
+
+/** √(x² + y² + z²), with the bits V8's `Math.hypot(x, y, z)` gives, in any engine. */
+export function hypot3(x: number, y: number, z: number): number {
+  const a = Math.abs(x);
+  const b = Math.abs(y);
+  const c = Math.abs(z);
+  if (a === Infinity || b === Infinity || c === Infinity) return Infinity;
+  const max = Math.max(a, b, c);
+  if (Number.isNaN(max)) return Number.NaN;
+  if (max === 0) return 0;
+  const p = a / max;
+  const q = b / max;
+  const r = c / max;
+  const pp = p * p;
+  const qq = q * q;
+  // What rounding lost from the first two squares' sum, taken back from the third.
+  const lost = pp + qq - pp - qq;
+  return Math.sqrt(pp + qq + (r * r - lost)) * max;
 }

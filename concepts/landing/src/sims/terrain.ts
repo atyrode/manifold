@@ -85,7 +85,7 @@
 import { type HeightMarch, marchHeight, type RayHit } from "./heightray.ts";
 import { HeightField } from "./heightfield.ts";
 import { splitHalf } from "./half.ts";
-import { clamp, hash31, lerp, smoothstep } from "./math.ts";
+import { clamp, hash31, hypot2, hypot3, lerp, smoothstep } from "./math.ts";
 import { fbm, valueNoise } from "./noise.ts";
 import { Random } from "./random.ts";
 import { LevelHeap, stillWater } from "./shallow.ts";
@@ -436,7 +436,7 @@ function resample(line: Polyline, ds: number): Polyline {
     const az = line.z[k] ?? 0;
     const bx = line.x[k + 1] ?? 0;
     const bz = line.z[k + 1] ?? 0;
-    const length = Math.hypot(bx - ax, bz - az);
+    const length = hypot2(bx - ax, bz - az);
     let at = ds - carry;
     while (at <= length) {
       const t = at / length;
@@ -448,7 +448,7 @@ function resample(line: Polyline, ds: number): Polyline {
   }
   const lx = line.x[line.x.length - 1] ?? 0;
   const lz = line.z[line.z.length - 1] ?? 0;
-  if (Math.hypot(lx - (x[x.length - 1] ?? 0), lz - (z[z.length - 1] ?? 0)) > 0.25 * ds) {
+  if (hypot2(lx - (x[x.length - 1] ?? 0), lz - (z[z.length - 1] ?? 0)) > 0.25 * ds) {
     x.push(lx);
     z.push(lz);
   } else {
@@ -509,7 +509,7 @@ function segmentDistance(
   const ez = bz - az;
   const len2 = ex * ex + ez * ez;
   const t = len2 > 0 ? clamp(((px - ax) * ex + (pz - az) * ez) / len2, 0, 1) : 0;
-  return Math.hypot(px - ax - ex * t, pz - az - ez * t);
+  return hypot2(px - ax - ex * t, pz - az - ez * t);
 }
 
 /**
@@ -1111,7 +1111,7 @@ export class TerrainBuilder {
     // Along-axis distance, normalised 0 (source) .. 1 (mouth).
     const along: number[] = [0];
     for (let k = 1; k < count; k++) {
-      const d = Math.hypot(
+      const d = hypot2(
         (axis.x[k] ?? 0) - (axis.x[k - 1] ?? 0),
         (axis.z[k] ?? 0) - (axis.z[k - 1] ?? 0),
       );
@@ -1172,7 +1172,7 @@ export class TerrainBuilder {
         const X = x / W;
         const Z = z / W;
         const u = ((x - v.x) * v.dx + (z - v.z) * v.dz) / W;
-        const vd = Math.hypot(x - v.x, z - v.z) / W;
+        const vd = hypot2(x - v.x, z - v.z) / W;
         const floor = 6 + 46 * (1 - t);
         // Hills close the view: rising far ahead, and toward the edges the vantage looks out over.
         const edges = Math.max(
@@ -1431,7 +1431,7 @@ export class TerrainBuilder {
     for (let k = 1; k < raw.x.length; k++) {
       rawAlong.push(
         (rawAlong[k - 1] ?? 0) +
-          Math.hypot((raw.x[k] ?? 0) - (raw.x[k - 1] ?? 0), (raw.z[k] ?? 0) - (raw.z[k - 1] ?? 0)),
+          hypot2((raw.x[k] ?? 0) - (raw.x[k - 1] ?? 0), (raw.z[k] ?? 0) - (raw.z[k - 1] ?? 0)),
       );
     }
     const rawTotal = rawAlong[rawAlong.length - 1] ?? 1;
@@ -1459,7 +1459,7 @@ export class TerrainBuilder {
       const kn = Math.min(count0 - 1, k + 4);
       const tx = (smooth.x[kn] ?? 0) - (smooth.x[kp] ?? 0);
       const tz = (smooth.z[kn] ?? 0) - (smooth.z[kp] ?? 0);
-      const tl = Math.hypot(tx, tz) || 1;
+      const tl = hypot2(tx, tz) || 1;
       const hp = sampleGrid(this.#ground, m, W, smooth.x[kp] ?? 0, smooth.z[kp] ?? 0);
       const hn = sampleGrid(this.#ground, m, W, smooth.x[kn] ?? 0, smooth.z[kn] ?? 0);
       const grade = Math.abs(hp - hn) / tl;
@@ -1477,8 +1477,7 @@ export class TerrainBuilder {
     const along = new Float32Array(count);
     for (let k = 1; k < count; k++)
       along[k] =
-        (along[k - 1] ?? 0) +
-        Math.hypot((x[k] ?? 0) - (x[k - 1] ?? 0), (z[k] ?? 0) - (z[k - 1] ?? 0));
+        (along[k - 1] ?? 0) + hypot2((x[k] ?? 0) - (x[k - 1] ?? 0), (z[k] ?? 0) - (z[k - 1] ?? 0));
     const width = new Float32Array(count);
     for (let k = 0; k < count; k++) width[k] = widthOf(areaAt(k / Math.max(1, count - 1)));
     // Level: the ground's running minimum from the source, smoothed (a mean of shifted copies of a
@@ -1766,7 +1765,7 @@ export class TerrainBuilder {
       const dx = x - eye.x;
       const dy = y - eye.y;
       const dz = z - eye.z;
-      const len = Math.hypot(dx, dy, dz);
+      const len = hypot3(dx, dy, dz);
       if (!marchHeight(surface, eye.x, eye.y, eye.z, dx / len, dy / len, dz / len, march, hit))
         return true;
       return hit.t > len - 25;
@@ -1796,7 +1795,7 @@ export class TerrainBuilder {
         const z = (fj + 0.5) * cellF;
         const gx = ((g[q + near] ?? 0) - (g[q - near] ?? 0)) / (2 * near * cellF);
         const gz = ((g[q + near * m] ?? 0) - (g[q - near * m] ?? 0)) / (2 * near * cellF);
-        const slope = Math.hypot(gx, gz);
+        const slope = hypot2(gx, gz);
         const ax = x - v.x;
         const az = z - v.z;
         const depth = ax * v.dx + az * v.dz;
@@ -1811,7 +1810,7 @@ export class TerrainBuilder {
           y,
           flat: 1 - smoothstep(0.02, 0.12, slope),
           water: (toWater[j * k + i] ?? Infinity) * step * cellF,
-          dist: Math.hypot(ax, az),
+          dist: hypot2(ax, az),
           angle: Math.atan2(Math.abs(across), depth),
           prominence: y - mean(fi, fj, reach),
           plain,
@@ -1825,7 +1824,7 @@ export class TerrainBuilder {
     const deg = Math.PI / 180;
     const inView = (c: Candidate, wide: number) => 1 - smoothstep(wide - 10 * deg, wide, c.angle);
     const apart = (c: Candidate, gap: number) =>
-      sites.every((p) => Math.hypot(p.x - c.x, p.z - c.z) >= gap + p.radius);
+      sites.every((p) => hypot2(p.x - c.x, p.z - c.z) >= gap + p.radius);
     const choose = (
       kind: TerrainSettlementKind,
       radius: number,
@@ -2005,7 +2004,7 @@ export class TerrainBuilder {
       const na = nodes[a];
       const nb = nodes[b];
       if (!na || !nb) return Infinity;
-      return Math.hypot(na.x - nb.x, na.z - nb.z) * (na.bank !== nb.bank ? 3 : 1);
+      return hypot2(na.x - nb.x, na.z - nb.z) * (na.bank !== nb.bank ? 3 : 1);
     };
     // Prim's minimum spanning tree over the village, hamlets, castle and the way out: the roads.
     // Then each farm (and the near field's lane) a track to the nearest of them. With no hub, the
@@ -2055,7 +2054,7 @@ export class TerrainBuilder {
           if (Number.isFinite(dist[q] ?? Infinity)) continue;
           const nu = nodes[u];
           const nq = nodes[q];
-          dist[q] = (dist[u] ?? 0) + (nu && nq ? Math.hypot(nu.x - nq.x, nu.z - nq.z) : 0);
+          dist[q] = (dist[u] ?? 0) + (nu && nq ? hypot2(nu.x - nq.x, nu.z - nq.z) : 0);
           stack.push(q);
         }
       }
@@ -2069,7 +2068,7 @@ export class TerrainBuilder {
         const nb = nodes[b];
         if (!na || !nb || na.farm || nb.farm || na.bank !== nb.bank) continue;
         if (adjacent[a]?.includes(b)) continue;
-        const direct = Math.hypot(na.x - nb.x, na.z - nb.z);
+        const direct = hypot2(na.x - nb.x, na.z - nb.z);
         if (direct > 1600) continue;
         const ratio = treeDistance(a, b) / direct;
         if (ratio > worst) {
@@ -2082,11 +2081,11 @@ export class TerrainBuilder {
     // Roads first, shortest first, so tracks and longer roads can join them.
     this.#routes.sort((p, q) => {
       if (p.kind !== q.kind) return p.kind === "road" ? -1 : 1;
-      const lp = Math.hypot(
+      const lp = hypot2(
         (nodes[p.a]?.x ?? 0) - (nodes[p.b]?.x ?? 0),
         (nodes[p.a]?.z ?? 0) - (nodes[p.b]?.z ?? 0),
       );
-      const lq = Math.hypot(
+      const lq = hypot2(
         (nodes[q.a]?.x ?? 0) - (nodes[q.b]?.x ?? 0),
         (nodes[q.a]?.z ?? 0) - (nodes[q.b]?.z ?? 0),
       );
@@ -2153,7 +2152,7 @@ export class TerrainBuilder {
         const no = ground[Math.min(n - 1, j + 1) * n + i] ?? 0;
         const so = ground[Math.max(0, j - 1) * n + i] ?? 0;
         const c = ground[q] ?? 0;
-        const slope = Math.hypot(e - w, no - so) / (2 * cell);
+        const slope = hypot2(e - w, no - so) / (2 * cell);
         const bend = Math.abs(e + w + no + so - 4 * c) / (cell * cell);
         const fq = (2 * j + 1) * m + 2 * i + 1;
         const plain =
@@ -2182,12 +2181,12 @@ export class TerrainBuilder {
     const W = this.options.extent;
     let best = -1;
     let bestScore = Infinity;
-    const direct = Math.hypot(a.x - b.x, a.z - b.z);
+    const direct = hypot2(a.x - b.x, a.z - b.z);
     for (let k = Math.floor(count * 0.08); k < Math.ceil(count * 0.92); k++) {
       const x = river.x[k] ?? 0;
       const z = river.z[k] ?? 0;
       if (x < 150 || z < 150 || x > W - 150 || z > W - 150) continue;
-      const detour = Math.hypot(a.x - x, a.z - z) + Math.hypot(x - b.x, z - b.z) - direct;
+      const detour = hypot2(a.x - x, a.z - z) + hypot2(x - b.x, z - b.z) - direct;
       const score = (river.width[k] ?? 0) * 8 + detour * 0.25;
       if (score < bestScore) {
         bestScore = score;
@@ -2199,7 +2198,7 @@ export class TerrainBuilder {
     const k1 = Math.min(count - 1, best + 3);
     const tx = (river.x[k1] ?? 0) - (river.x[k0] ?? 0);
     const tz = (river.z[k1] ?? 0) - (river.z[k0] ?? 0);
-    const tl = Math.hypot(tx, tz) || 1;
+    const tl = hypot2(tx, tz) || 1;
     const nx = -tz / tl;
     const nz = tx / tl;
     const w = river.width[best] ?? 0;
@@ -2258,7 +2257,7 @@ export class TerrainBuilder {
       const end0Near =
         aBank === end0Bank ||
         (aBank !== this.#bankAt(end1.x, end1.z) &&
-          Math.hypot(a.x - end0.x, a.z - end0.z) < Math.hypot(a.x - end1.x, a.z - end1.z));
+          hypot2(a.x - end0.x, a.z - end0.z) < hypot2(a.x - end1.x, a.z - end1.z));
       const [near, far] = end0Near ? [end0, end1] : [end1, end0];
       const first = this.#search(a, near);
       const second = this.#search(far, b);
@@ -2281,11 +2280,11 @@ export class TerrainBuilder {
     if (route.a === this.#lane || route.b === this.#lane) {
       let length = 0;
       for (let k = 1; k < line.x.length; k++)
-        length += Math.hypot(
+        length += hypot2(
           (line.x[k] ?? 0) - (line.x[k - 1] ?? 0),
           (line.z[k] ?? 0) - (line.z[k - 1] ?? 0),
         );
-      if (length > 2.5 * Math.hypot(a.x - b.x, a.z - b.z) + 200) return;
+      if (length > 2.5 * hypot2(a.x - b.x, a.z - b.z) + 200) return;
     }
     this.#addRoad(route, line, bridgeStart, bridgeEnd);
   }
@@ -2310,7 +2309,7 @@ export class TerrainBuilder {
     const heap = new NodeHeap(4096);
     const heuristic = (q: number) => {
       const qi = q % n;
-      return 0.45 * cell * Math.hypot(qi - gi, (q - qi) / n - gj);
+      return 0.45 * cell * hypot2(qi - gi, (q - qi) / n - gj);
     };
     const grade = TERRAIN_ROAD_MAX_SLOPE;
     for (const limit of [1.3 * grade, 2 * grade, Infinity]) {
@@ -2354,7 +2353,7 @@ export class TerrainBuilder {
             if (!Number.isFinite(costs[m1] ?? Infinity) || !Number.isFinite(costs[m2] ?? Infinity))
               continue;
           }
-          const len = Math.hypot(di, dj) * cell;
+          const len = hypot2(di, dj) * cell;
           const rise = Math.abs((ground[q] ?? 0) - hc) / len;
           if (rise > limit) continue;
           const reuse = used[c] === 1 && used[q] === 1 ? 0.45 : 1;
@@ -2453,7 +2452,7 @@ export class TerrainBuilder {
       // The deck runs from x0 at deck0: order the ends along this road.
       const sx = line.x[bridgeStart] ?? 0;
       const sz = line.z[bridgeStart] ?? 0;
-      if (Math.hypot(sx - bridge.x0, sz - bridge.z0) > Math.hypot(sx - bridge.x1, sz - bridge.z1)) {
+      if (hypot2(sx - bridge.x0, sz - bridge.z0) > hypot2(sx - bridge.x1, sz - bridge.z1)) {
         const deck0 = bridge.deck0;
         bridge.deck0 = bridge.deck1;
         bridge.deck1 = deck0;
@@ -2488,7 +2487,7 @@ export class TerrainBuilder {
     let k0 = -1;
     let k1 = -1;
     for (let k = 0; k < count; k++) {
-      const d = Math.hypot((road.x[k] ?? 0) - village.x, (road.z[k] ?? 0) - village.z);
+      const d = hypot2((road.x[k] ?? 0) - village.x, (road.z[k] ?? 0) - village.z);
       if (d > TERRAIN_VILLAGE_STREETS) continue;
       if (k0 < 0) k0 = k;
       k1 = k;
@@ -2583,12 +2582,12 @@ export class TerrainBuilder {
         rd < 0.5 * this.#riverWidth(sampleGrid(this.#riverAlong, m, W, x, z)) + 12
       )
         return false;
-      return buildings.every((b) => Math.hypot(b.x - x, b.z - z) >= clear);
+      return buildings.every((b) => hypot2(b.x - x, b.z - z) >= clear);
     };
     const slopeAt = (x: number, z: number): number => {
       const e = 6;
       return (
-        Math.hypot(
+        hypot2(
           sampleGrid(g, m, W, x + e, z) - sampleGrid(g, m, W, x - e, z),
           sampleGrid(g, m, W, x, z + e) - sampleGrid(g, m, W, x, z - e),
         ) /
@@ -2686,7 +2685,7 @@ export class TerrainBuilder {
             const at = forward ? s : count - 1 - s;
             const kx = road.x[at] ?? 0;
             const kz = road.z[at] ?? 0;
-            if (Math.hypot(kx - place.x, kz - place.z) > reach) break;
+            if (hypot2(kx - place.x, kz - place.z) > reach) break;
             if (road.bridgeStart >= 0 && at >= road.bridgeStart - 4 && at <= road.bridgeEnd + 4)
               continue;
             const ahead = clamp(at + 1, 0, count - 1);
@@ -2699,7 +2698,7 @@ export class TerrainBuilder {
               const off = road.halfWidth + (8 + 3 * draw(kx, kz, 5 + side)) * k;
               const x = kx - Math.sin(heading) * off * side;
               const z = kz + Math.cos(heading) * off * side;
-              const rank = Math.hypot(x - centre.x, z - centre.z);
+              const rank = hypot2(x - centre.x, z - centre.z);
               const length = 1.3 + 0.7 * draw(x, z, 7);
               plots.push({ x, z, heading, length, clear: 13 * k, steep: 0.22, rank });
             }
@@ -2733,8 +2732,7 @@ export class TerrainBuilder {
       // Its spread as built, which the shader looks its buildings up by.
       for (let b = place.first; b < buildings.length; b++) {
         const at = buildings[b];
-        if (at)
-          place.radius = Math.max(place.radius, Math.hypot(at.x - place.x, at.z - place.z) + 15);
+        if (at) place.radius = Math.max(place.radius, hypot2(at.x - place.x, at.z - place.z) + 15);
       }
     });
     // Terraces: each building's ground levelled to its base; the castle's whole hilltop.
@@ -2754,7 +2752,7 @@ export class TerrainBuilder {
       for (let j = j0; j <= j1; j++) {
         for (let i = i0; i <= i1; i++) {
           const q = j * m + i;
-          const d = Math.hypot((i + 0.5) * cellF - b.x, (j + 0.5) * cellF - b.z);
+          const d = hypot2((i + 0.5) * cellF - b.x, (j + 0.5) * cellF - b.z);
           if (
             (this.#level[q] ?? 0) <= (g[q] ?? 0) &&
             (this.#road[q] ?? FAR) > 0 &&
@@ -2798,7 +2796,7 @@ export class TerrainBuilder {
       s: number,
       rest: number,
     ): number => {
-      const slope = Math.hypot((h[e] ?? 0) - (h[w] ?? 0), (h[n] ?? 0) - (h[s] ?? 0)) / (2 * cellF);
+      const slope = hypot2((h[e] ?? 0) - (h[w] ?? 0), (h[n] ?? 0) - (h[s] ?? 0)) / (2 * cellF);
       const high = ((h[q] ?? 0) - bottom) / span;
       return 0.55 * smoothstep(0.08, 0.38, slope) + 0.3 * smoothstep(0.35, 0.85, high) + rest;
     };
@@ -2814,7 +2812,7 @@ export class TerrainBuilder {
         const patch = 2 * fbm(X * 9, Z * 9, seed + 11, 4) - 1;
         // The vantage stands on open ground: the near slopes below it are farmland, not a wood's top.
         const open =
-          1 - smoothstep(250, 550, Math.hypot((i + 0.5) * cellF - v.x, (j + 0.5) * cellF - v.z));
+          1 - smoothstep(250, 550, hypot2((i + 0.5) * cellF - v.x, (j + 0.5) * cellF - v.z));
         const rest = 0.55 * patch + 0.3 - 0.9 * open;
         // On the bare land, without the roads' cuts and the yards: what the land model weighs each
         // parcel for woodland by (TerrainParcels.wood).
@@ -2850,7 +2848,7 @@ export class TerrainBuilder {
     const spacingAt = (x: number, z: number): number => {
       let s = PARCEL_SPACING * (0.68 + 0.64 * valueNoise(x / 650, z / 650, this.options.seed + 41));
       for (const p of homes)
-        s *= 1 - 0.3 * (1 - smoothstep(p.radius, p.radius + 350, Math.hypot(p.x - x, p.z - z)));
+        s *= 1 - 0.3 * (1 - smoothstep(p.radius, p.radius + 350, hypot2(p.x - x, p.z - z)));
       return s;
     };
     // Buckets half the widest spacing across, each a list of its sites: two buckets either way
@@ -2876,7 +2874,7 @@ export class TerrainBuilder {
           const ni = bi + a;
           if (ni < 0 || ni >= nb) continue;
           for (let s = heads[nj * nb + ni] ?? -1; s >= 0 && !near; s = links[s] ?? -1) {
-            if (Math.hypot((xs[s] ?? 0) - x, (zs[s] ?? 0) - z) < spacing) near = true;
+            if (hypot2((xs[s] ?? 0) - x, (zs[s] ?? 0) - z) < spacing) near = true;
           }
         }
       }
@@ -2898,7 +2896,7 @@ export class TerrainBuilder {
       const e = 10;
       const gx = (sampleGrid(g, m, W, x + e, z) - sampleGrid(g, m, W, x - e, z)) / (2 * e);
       const gz = (sampleGrid(g, m, W, x, z + e) - sampleGrid(g, m, W, x, z - e)) / (2 * e);
-      const slope = Math.hypot(gx, gz);
+      const slope = hypot2(gx, gz);
       const q =
         clamp(Math.floor(z / this.#cellF), 0, m - 1) * m +
         clamp(Math.floor(x / this.#cellF), 0, m - 1);
@@ -3202,7 +3200,7 @@ export function terrainWays(t: Terrain): TerrainWays {
   const lengths = t.roads.map((road) => {
     let length = 0;
     for (let k = 1; k < road.x.length; k++)
-      length += Math.hypot(
+      length += hypot2(
         (road.x[k] ?? 0) - (road.x[k - 1] ?? 0),
         (road.z[k] ?? 0) - (road.z[k - 1] ?? 0),
       );
@@ -3223,7 +3221,7 @@ export function terrainWays(t: Terrain): TerrainWays {
     for (let step = 0; step <= steps; step++) {
       const s = step === steps ? length : step * spacing;
       for (;;) {
-        const seg = Math.hypot(
+        const seg = hypot2(
           (road.x[k + 1] ?? 0) - (road.x[k] ?? 0),
           (road.z[k + 1] ?? 0) - (road.z[k] ?? 0),
         );

@@ -25,7 +25,7 @@
 // the terrain's own (TERRAIN_RECORDS: it uses 0..5), which countryChalk reads in the ground branch,
 // cut per cell.
 import type { LandAllocation, LandModel } from "../../sims/landuse.ts";
-import { smoothstep } from "../../sims/math.ts";
+import { hypot2, hypot3, smoothstep } from "../../sims/math.ts";
 import {
   sampleGrid,
   TERRAIN_RECORDS,
@@ -112,14 +112,14 @@ export function chalkSite(t: Terrain): ChalkSite | null {
       const side = cx * rx + cz * rz;
       const bearing = Math.abs(Math.atan2(side, depth));
       if (depth < CHALK.near || depth > CHALK.far || bearing > CHALK.bearing) continue;
-      const distance = Math.hypot(cx, cy, cz);
+      const distance = hypot3(cx, cy, cz);
       // The plane through its footprint, over about its half breadth.
       const half = 0.5 * CHALK.size * distance;
       const gx = (ground(x + half, z) - ground(x - half, z)) / (2 * half);
       const gz = (ground(x, z + half) - ground(x, z - half)) / (2 * half);
-      const grade = Math.hypot(gx, gz);
+      const grade = hypot2(gx, gz);
       if (grade < CHALK.gentlest || grade > CHALK.steepest) continue;
-      const facing = (gx * cx - cy + gz * cz) / Math.hypot(gx, 1, gz) / distance;
+      const facing = (gx * cx - cy + gz * cz) / hypot3(gx, 1, gz) / distance;
       if (facing < CHALK.facing) continue;
       // The eye's view at the site, to first order (screen right and up per metre over the mark's
       // size across and, squatter where the slope cannot hold it whole, up), and through it the map
@@ -229,8 +229,7 @@ function footprint(t: Terrain, c: Candidate): number {
     const ex = v.x - x;
     const ey = v.y - g;
     const ez = v.z - z;
-    if ((-gx * ex + ey - gz * ez) / Math.hypot(gx, 1, gz) / Math.hypot(ex, ey, ez) < 0.06)
-      return -1;
+    if ((-gx * ex + ey - gz * ez) / hypot3(gx, 1, gz) / hypot3(ex, ey, ez) < 0.06) return -1;
     wood += (t.wood[q] ?? 0) / 25;
   }
   return wood;
@@ -249,12 +248,12 @@ function inSight(
   surface: (x: number, z: number) => number,
   wood: number,
 ): boolean {
-  const length = Math.hypot(x - eye.x, y - eye.y, z - eye.z);
+  const length = hypot3(x - eye.x, y - eye.y, z - eye.z);
   for (let d = 30; d < length - 3; d += 6) {
     const f = d / length;
     const px = eye.x + (x - eye.x) * f;
     const pz = eye.z + (z - eye.z) * f;
-    const wooded = wood > 0 && !opened(c, px, pz) && Math.hypot(px - eye.x, pz - eye.z) > 300;
+    const wooded = wood > 0 && !opened(c, px, pz) && hypot2(px - eye.x, pz - eye.z) > 300;
     if (eye.y + (y - eye.y) * f < surface(px, pz) + (wooded ? wood : 0)) return false;
   }
   return true;
@@ -277,7 +276,7 @@ function offBanks(t: Terrain, x: number, z: number): boolean {
   const r = t.river;
   for (let k = 0; k < r.x.length; k += 2) {
     const w = r.width[k] ?? 0;
-    if (Math.hypot((r.x[k] ?? 0) - x, (r.z[k] ?? 0) - z) < 0.75 * w + 25) return false;
+    if (hypot2((r.x[k] ?? 0) - x, (r.z[k] ?? 0) - z) < 0.75 * w + 25) return false;
   }
   return true;
 }

@@ -44,6 +44,7 @@
 //   // GLSL: float h = texture(uSim0, uv).r;  with e = vec2(1.0 / 512.0, 0.0):
 //   //   float dhdx = (texture(uSim0, uv + e).r - texture(uSim0, uv - e).r) / (2.0 * e.x * aspect);
 //   //   (dhdy likewise with e = vec2(0, 1/288) and no aspect); normal = normalize(vec3(-dhdx, -dhdy, 1))
+import { hypot2 } from "./math.ts";
 import type { DataTexture } from "./texture.ts";
 
 /** A radial profile: the height at r = distance / radius, r in [0, 1). */
@@ -229,7 +230,8 @@ export class HeightField {
     const th = 1 / height;
     const limitX = slope * tw;
     const limitY = slope * th;
-    const limitD = slope * Math.hypot(tw, th);
+    // hypot2: the countryside's erosion slumps through here, the same in every browser.
+    const limitD = slope * hypot2(tw, th);
     // Alternate the sweep direction every cycle, so sand does not drift with the scan.
     const reverse = (this.#relaxCycle & 1) === 1;
     let moved = false;

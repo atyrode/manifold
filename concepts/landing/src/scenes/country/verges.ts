@@ -48,7 +48,7 @@ import { glslFloat } from "../../shaders/glsl.ts";
 import { plantsGlsl } from "../../shaders/lib/plants.ts";
 import { splitHalf, toHalf } from "../../sims/half.ts";
 import { LAND_USES, type LandUse } from "../../sims/landuse.ts";
-import { clamp, fract, glslHash12, hash31, lerp } from "../../sims/math.ts";
+import { clamp, fract, glslHash12, hash31, hypot2, lerp } from "../../sims/math.ts";
 import {
   PlantHabit,
   PlantRole,
@@ -404,7 +404,7 @@ export class VergeParcels {
     const dz = z - (p.z[s] ?? 0);
     const mx = (dx * c + dz * n) / e;
     const mz = -dx * n + dz * c;
-    const r = Math.max(Math.hypot(mx, mz), 1e-3);
+    const r = Math.max(hypot2(mx, mz), 1e-3);
     grad[0] = ((mx / e) * c - mz * n) / r;
     grad[1] = ((mx / e) * n + mz * c) / r;
     return r;
@@ -466,7 +466,7 @@ export class VergeParcels {
     hit.next = nextId;
     const cx = nx - bx;
     const cz = nz - bz;
-    const closing = Math.hypot(cx, cz);
+    const closing = hypot2(cx, cz);
     hit.border = nextId >= 0 ? (next - best) / Math.max(closing, 0.05) : 1e3;
     hit.nx = closing > 1e-4 ? cx / closing : 1;
     hit.nz = closing > 1e-4 ? cz / closing : 0;
@@ -618,7 +618,7 @@ export function vergeSlots(t: Terrain, packed: TerrainPacked, view: VergeView): 
     if (into < 0) return;
     const other = into === a ? b : a;
     parcels.gap(a, b, x, z, grad);
-    const g = Math.hypot(grad[0] ?? 0, grad[1] ?? 0);
+    const g = hypot2(grad[0] ?? 0, grad[1] ?? 0);
     if (g < 1e-6) return;
     // The way across, from a toward b; the root lies the inset into its own parcel.
     const toward = into === a ? -V.inset / g : V.inset / g;
@@ -659,7 +659,7 @@ export function vergeSlots(t: Terrain, packed: TerrainPacked, view: VergeView): 
     const az = t.parcels.z[a] ?? 0;
     const bx = t.parcels.x[b] ?? 0;
     const bz = t.parcels.z[b] ?? 0;
-    const span = Math.hypot(bx - ax, bz - az) || 1;
+    const span = hypot2(bx - ax, bz - az) || 1;
     // Along the border: across the line from a to b, from its midpoint.
     const ux = -(bz - az) / span;
     const uz = (bx - ax) / span;
@@ -689,7 +689,7 @@ export function vergeSlots(t: Terrain, packed: TerrainPacked, view: VergeView): 
         let s = s0;
         for (let n = 0; n < 600; n++) {
           parcels.gap(a, b, x, z, grad);
-          const g = Math.hypot(grad[0] ?? 0, grad[1] ?? 0);
+          const g = hypot2(grad[0] ?? 0, grad[1] ?? 0);
           if (g < 1e-6) break;
           // The tangent, turned to run the way `way` along the border.
           let tx = -(grad[1] ?? 0) / g;

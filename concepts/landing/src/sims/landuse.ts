@@ -50,7 +50,7 @@
 // and the options.
 import type { Terrain, TerrainPacked } from "./terrain.ts";
 import { TERRAIN_RECORDS } from "./terrain.ts";
-import { clamp, hash31, smoothstep } from "./math.ts";
+import { clamp, hash31, hypot2, smoothstep } from "./math.ts";
 
 /** A parcel's use, by index: the packed use. */
 export const LAND_USES = [
@@ -200,7 +200,7 @@ export class LandModel {
             (bare.ground[Math.max(0, j - 1) * m + i] ?? 0)) /
           (2 * t.cell);
         texels[s] = (texels[s] ?? 0) + 1;
-        slope[s] = (slope[s] ?? 0) + Math.hypot(gx, gz);
+        slope[s] = (slope[s] ?? 0) + hypot2(gx, gz);
         high[s] = (high[s] ?? 0) + (g - bottom) / span;
         // Rising to the north: the slope faces south, toward the sun.
         north[s] = (north[s] ?? 0) + gz;
@@ -229,10 +229,10 @@ export class LandModel {
       const plain = p.floodplain[s] ?? 0;
       let toRiver = Infinity;
       for (let k = 0; k < river.x.length; k += 4)
-        toRiver = Math.min(toRiver, Math.hypot((river.x[k] ?? 0) - x, (river.z[k] ?? 0) - z));
+        toRiver = Math.min(toRiver, hypot2((river.x[k] ?? 0) - x, (river.z[k] ?? 0) - z));
       const riverside = 1 - smoothstep(60, 500, toRiver);
       let toHome = Infinity;
-      for (const place of homes) toHome = Math.min(toHome, Math.hypot(place.x - x, place.z - z));
+      for (const place of homes) toHome = Math.min(toHome, hypot2(place.x - x, place.z - z));
       const near = 1 - smoothstep(150, 900, toHome);
       const flat = 1 - smoothstep(0.04, 0.22, grade);
       const gentle = 1 - smoothstep(0.15, 0.4, grade);
@@ -255,7 +255,7 @@ export class LandModel {
         weights[w + u] = (weights[w + u] ?? 0) + (JITTER[u] ?? 0) * hash31(s, u, seed * 7919 + 17);
         eligible[w + u] = 1;
       }
-      if (Math.hypot(x - v.x, z - v.z) < LAND_OPEN_NEAR) eligible[w + WOODLAND - 1] = 0;
+      if (hypot2(x - v.x, z - v.z) < LAND_OPEN_NEAR) eligible[w + WOODLAND - 1] = 0;
       // The crops' kind: hay and grazing on the floodplain and the steep ground, the arable
       // rotation elsewhere.
       const roll = hash31(s, 101, seed * 7919 + 23);
@@ -422,7 +422,7 @@ export function packLand(packed: TerrainPacked, t: Terrain, land: LandAllocation
     const dz = z - (p.z[s] ?? 0);
     const c = cos[s] ?? 1;
     const n = sin[s] ?? 0;
-    return Math.hypot((dx * c + dz * n) / (p.elongation[s] ?? 1), -dx * n + dz * c);
+    return hypot2((dx * c + dz * n) / (p.elongation[s] ?? 1), -dx * n + dz * c);
   };
   for (let j = 0; j < m; j++) {
     for (let i = 0; i < m; i++) {
