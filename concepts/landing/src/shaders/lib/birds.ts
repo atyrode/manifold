@@ -453,7 +453,8 @@ export type BirdOptions = {
  * The birds component's knobs, for a scene that flies `birdsGlsl`:
  * K_birds how often a flight passes (0 off; BirdSky.often), K_birdKind the species (the GLSL kind,
  * -1 mixed: BirdSky.kind), K_birdFormation the formation (K_birdFormation - 1.0, -1 the species'
- * own: BirdSky.formation). Off unless `on`; the choices show only while it is on.
+ * own: BirdSky.formation). Off unless `on`; the choices show only while it is on. The lab draws the
+ * three as one birds card (widget `flyway`, src/lab/flyway.ts).
  */
 export function birdKnobs(options: BirdOptions): ParamDef[] {
   const group = options.group ?? "birds";
@@ -470,6 +471,7 @@ export function birdKnobs(options: BirdOptions): ParamDef[] {
       "how often",
       options.often ?? 0.5,
       `${options.help} The amount is how often a flight passes.`,
+      { widget: { kind: "flyway", part: "birds" } },
     ),
     choice(
       group,
@@ -478,7 +480,7 @@ export function birdKnobs(options: BirdOptions): ParamDef[] {
       kinds,
       kind,
       `${mixed}Rooks rowing in loose parties, swallows flickering low and near, pale gulls on crooked wings, geese in a V far and high, a buzzard circling on a thermal, pigeons wheeling in a flock, swifts sailing on stiff scythe wings.`,
-      { when: "birds" },
+      { when: "birds", widget: { kind: "flyway", part: "kind" } },
     ),
     choice(
       group,
@@ -487,7 +489,7 @@ export function birdKnobs(options: BirdOptions): ParamDef[] {
       BIRD_FORMATIONS,
       0,
       "How they fly: as that kind usually does, alone, as a loose party, in a V, or circling on a thermal (a party wheels round one circle).",
-      { when: "birds" },
+      { when: "birds", widget: { kind: "flyway", part: "formation" } },
     ),
   ];
 }

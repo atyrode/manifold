@@ -13,6 +13,7 @@ import { chipGrid } from "./chips.ts";
 import { dice, iconButton, nowButton, row, segments, slider, switchControl } from "./controls.ts";
 import { skyDial } from "./dial.ts";
 import { h, reveal, type Built, type LabContext } from "./dom.ts";
+import { flywayCard, flywayOf } from "./flyway.ts";
 import { icon, iconFromWords, type IconName } from "./icons.ts";
 import {
   knobIcon,
@@ -449,6 +450,14 @@ export class Inspector {
     for (const [name, parts] of mixes) {
       const head = parts[0];
       if (head) place(head.def, mixBar(knobs, name, parts));
+    }
+
+    // The birds card, at its switch (the header's, when the birds are the group's master).
+    const flyway = flywayOf(defs);
+    if (flyway) {
+      place(flyway.birds, flywayCard(knobs, flyway, flyway.birds === master));
+      for (const def of [flyway.birds, flyway.kind, flyway.formation]) if (def) used.add(def);
+      if (flyway.birds === master) masterAmountShown = false;
     }
 
     // Switches as chips; the rest as rows.

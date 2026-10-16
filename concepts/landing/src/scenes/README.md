@@ -240,6 +240,12 @@ draws the knob, never its URL keys, values, reset, shuffle or presets:
   vector pad whose length is knob `strength`, a range or a feature's amount (pond's current).
 - `{ kind: "position", y, screen? }` on the across range of a point whose height is range `y`: one
   XY pad; `screen` gives the values where the frame's edges lie when the point may leave it.
+- `{ kind: "flyway", part }`: the birds card. `birdKnobs` sets it on `birds` (the switch and how
+  often), `birdKind` (`kind`) and `birdFormation` (`formation`); the card stands where a group holds
+  the `birds` part and takes that group's other parts. A sky strip draws more birds aloft the more
+  often flights pass (drag or arrow keys; Delete grounds them), the species are tiles of their
+  silhouettes and the formations dot diagrams of the chosen species' own party, each row a radio
+  group. A group whose master is `birds` keeps the switch in its header.
 
 A group's heading may carry `recipes` (`Recipe` in `src/params.ts`): one-tap setups drawn as a strip
 of glyph chips at the top of the group, the one the setup already is lit. A recipe sets URL keys of
