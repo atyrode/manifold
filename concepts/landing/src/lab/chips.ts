@@ -10,7 +10,7 @@ import { formatValue, type Option, type ParamDef } from "../params.ts";
 import { chipKey, pace, pressMove, type Press } from "./chips-model.ts";
 import type { ClimateMark, ClimateMarks } from "./climate-hint-model.ts";
 import { nowButton, row, segments } from "./controls.ts";
-import { drag, h, reveal, snap, type Built } from "./dom.ts";
+import { drag, h, reveal, setAttr, setHidden, setText, snap, type Built } from "./dom.ts";
 import { icon } from "./icons.ts";
 import { knobIcon, knobKeys, type FeatureDef, type Knobs, type SwitchDef } from "./knobs.ts";
 
@@ -120,8 +120,8 @@ function fader(knobs: Knobs, def: FeatureDef, chip: HTMLButtonElement, status: H
       const value = knobs.value(amountKey);
       const share = Math.min(1, Math.max(0, (value - def.min) / (def.max - def.min)));
       fill.style.setProperty("--fill", `${(share * 100).toFixed(2)}%`);
-      amount.textContent = formatValue(def, value);
-      description.textContent = `${reading(value)}; arrow keys set it`;
+      setText(amount, formatValue(def, value));
+      setText(description, `${reading(value)}; arrow keys set it`);
       chip.title = `${def.help} ${reading(value)}: drag across the chip or use the arrow keys.`;
     },
   };
@@ -142,8 +142,8 @@ function markBadge(chip: HTMLButtonElement): {
   return {
     el,
     show: (mark) => {
-      el.hidden = mark === undefined;
-      el.textContent = mark?.text ?? "";
+      setHidden(el, mark === undefined);
+      setText(el, mark?.text ?? "");
       el.dataset.kind = mark?.kind ?? "";
     },
   };
@@ -193,10 +193,10 @@ export function chipGrid(knobs: Knobs, defs: readonly SwitchDef[], marks?: Clima
     );
     syncs.push(() => {
       const on = knobs.value(def.key) > 0.5;
-      chip.setAttribute("aria-checked", String(on));
+      setAttr(chip, "aria-checked", String(on));
       cell.classList.toggle("on", on);
-      cell.hidden = !knobs.on(def.when);
-      dot.hidden = !knobs.modified(knobKeys(def));
+      setHidden(cell, !knobs.on(def.when));
+      setHidden(dot, !knobs.modified(knobKeys(def)));
       faded?.sync();
       if (badge) {
         const mark = marked[def.key];

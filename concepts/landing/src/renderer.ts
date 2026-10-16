@@ -303,8 +303,14 @@ export class DitherRenderer {
   readonly #programs = new Map<SceneId, Map<string, SceneProgram | SceneFailure>>();
   /** KHR_parallel_shader_compile, when the browser has it: programs then build off the main thread. */
   readonly #parallel: { readonly COMPLETION_STATUS_KHR: number } | null;
-  /** The one program building in the background, if any. */
+  /** The program building in the background for what is wanted now (a change, the next scene), if any. */
   #building: Building | undefined;
+  /**
+   * A program building beside `#building` that nothing waits for: a scene's all-features program
+   * built ahead of any change (`expectChanges`), or one for a scene passed over (`#pass`). The next
+   * scene's program never waits for it, nor a change it does not serve.
+   */
+  #ahead: Building | undefined;
   /**
    * A scene's all-features program just built in the background that the scene does not draw with
    * yet: the next frame of that scene draws with it once (see `#draw`).
@@ -762,26 +768,30 @@ export class DitherRenderer {
     );
   }
 
-  /**
-   * Keep the background build once the driver has finished it, asked without waiting (the
-   * completion status, or the fence after the link). A scene's all-features program then draws
-   * one frame of it at once (`#warm`).
-   */
+  /** Keep each background build once the driver has finished it (`#settled`). */
   #settle(): void {
-    const building = this.#building;
-    if (building === undefined) return;
+    if (this.#building !== undefined && this.#settled(this.#building)) this.#building = undefined;
+    if (this.#ahead !== undefined && this.#settled(this.#ahead)) this.#ahead = undefined;
+  }
+
+  /**
+   * Keep a background build if the driver has finished it, asked without waiting (the completion
+   * status, or the fence after the link), and say whether it had. A scene's all-features program
+   * then draws one frame of it at once (`#warm`).
+   */
+  #settled(building: Building): boolean {
     const gl = this.#gl;
     const done =
       this.#parallel !== null
         ? gl.getProgramParameter(building.program, this.#parallel.COMPLETION_STATUS_KHR) === true
         : building.fence === null ||
           gl.getSyncParameter(building.fence, gl.SYNC_STATUS) === gl.SIGNALED;
-    if (!done) return;
-    this.#building = undefined;
+    if (!done) return false;
     const built = this.#finish(building);
     const all = sceneFeaturesAll(sceneDefs[building.id]);
     if ("program" in built && all !== undefined && featureKey(all) === building.key)
       this.#warm = { id: building.id, program: built };
+    return true;
   }
 
   /**
@@ -801,6 +811,11 @@ export class DitherRenderer {
       this.#building = undefined;
       return this.#finish(building);
     }
+    const ahead = this.#ahead;
+    if (ahead !== undefined && ahead.id === id && ahead.key === wanted.all?.key) {
+      this.#ahead = undefined;
+      return this.#finish(ahead);
+    }
     return this.#finish(this.#build(id, wanted, false));
   }
 
@@ -808,13 +823,15 @@ export class DitherRenderer {
    * The same for a knob change, never waiting: undefined while a program for it builds in the
    * background, started here if need be. That is the scene's all-features program, so a change
    * never builds one for its own set, except on a software rasteriser (`#software`), where it is
-   * the set's own. One build at a time: one started for another set or scene finishes first.
+   * the set's own. One build at a time: one started for another set or scene finishes first (the
+   * all-features program building ahead counts only for the changes it serves).
    */
   #programSoon(id: SceneId, wanted: Wanted): SceneProgram | SceneFailure | undefined {
-    return (
-      this.#keptFor(id, wanted) ??
-      this.#buildAhead(id, this.#software ? wanted : (wanted.all ?? wanted))
-    );
+    const kept = this.#keptFor(id, wanted);
+    if (kept !== undefined) return kept;
+    const set = this.#software ? wanted : (wanted.all ?? wanted);
+    if (this.#ahead?.id === id && this.#ahead.key === set.key) return undefined;
+    return this.#buildAhead(id, set);
   }
 
   /** Start building `id`'s program for `set` in the background unless a build is under way. */
@@ -1004,7 +1021,7 @@ export class DitherRenderer {
     // software rasteriser, see `#software`). Until the program is built the one on screen goes on
     // drawing the settings it drew last (the old frame, moving on); one that fails to build stops
     // the scene as entering it would. With changes expected (`expectChanges`) the all-features
-    // program is built ahead, once the scene has arrived.
+    // program is built ahead (`#ahead`), once the scene has arrived.
     if (scene.program !== undefined && scene.failure === undefined) {
       const wanted = this.#want(s);
       const next =
@@ -1023,9 +1040,13 @@ export class DitherRenderer {
           all !== undefined &&
           leaving === undefined &&
           passage.enter >= 1 &&
+          this.#ahead === undefined &&
+          !(this.#building?.id === scene.id && this.#building.key === all.key) &&
           this.#programs.get(scene.id)?.has(all.key) !== true
-        )
-          this.#buildAhead(scene.id, all);
+        ) {
+          const started = this.#build(scene.id, all, true);
+          if (!("stage" in started)) this.#ahead = started;
+        }
       }
     }
     this.#drawn = s;
@@ -1148,6 +1169,13 @@ export class DitherRenderer {
       const wanted = this.#want(into);
       const built = this.#keptFor(into.scene, wanted);
       if (built === undefined) {
+        // A build for a scene passed over (or for a change of the one leaving) finishes beside it,
+        // as one ahead, rather than holding the next scene's up.
+        const stale = this.#building;
+        if (stale !== undefined && stale.id !== into.scene && this.#ahead === undefined) {
+          this.#ahead = stale;
+          this.#building = undefined;
+        }
         this.#buildAhead(into.scene, wanted);
         return leaving;
       }

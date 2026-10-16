@@ -1,7 +1,7 @@
 // The lab's plain controls: buttons, switches, sliders, segments, the "now" trigger and the seed's
 // dice, and the row that labels a control with its readout, reset and help.
 import { pace, pressMove, SCRUB_SPAN, type Press } from "./chips-model.ts";
-import { drag, h, snap, type Built } from "./dom.ts";
+import { drag, h, setAttr, setHidden, setText, snap, type Built } from "./dom.ts";
 import { icon, type IconName } from "./icons.ts";
 
 export function iconButton(
@@ -58,7 +58,7 @@ export function switchControl(
     h("span", { class: "knob" }),
   );
   el.addEventListener("click", () => set(!get()));
-  return { el, sync: () => el.setAttribute("aria-checked", String(get())) };
+  return { el, sync: () => setAttr(el, "aria-checked", String(get())) };
 }
 
 export function slider(
@@ -82,7 +82,7 @@ export function slider(
     const value = get();
     if (document.activeElement !== el) el.value = String(value);
     el.style.setProperty("--fill", `${((value - min) / (max - min)) * 100}%`);
-    if (valueText) el.setAttribute("aria-valuetext", valueText(value));
+    if (valueText) setAttr(el, "aria-valuetext", valueText(value));
   };
   return { el, sync };
 }
@@ -106,7 +106,7 @@ export function segments(
     el,
     sync: () => {
       for (const button of buttons)
-        button.setAttribute("aria-pressed", String(button.dataset.value === get()));
+        setAttr(button, "aria-pressed", String(button.dataset.value === get()));
     },
   };
 }
@@ -259,8 +259,8 @@ export function row(spec: {
   return {
     el,
     sync: () => {
-      dot.hidden = !(spec.modified?.() ?? false);
-      if (spec.readout) readout.textContent = spec.readout();
+      setHidden(dot, !(spec.modified?.() ?? false));
+      if (spec.readout) setText(readout, spec.readout());
     },
   };
 }

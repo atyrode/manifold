@@ -42,6 +42,40 @@ try {
   console.error("evt=landing.renderer.unavailable", error);
 }
 
+/**
+ * The address bar follows the setup, written at most once per URL_EVERY ms: a slider drag applies a
+ * change a frame, and browsers refuse history writes that come faster than about 20 a second
+ * (Chromium ignores those past 200 in 10 s, leaving the address on an old setup; Firefox and Safari
+ * throw, which would stop the change applying). The last setup is always written: once the interval
+ * is up, or at once when the page is hidden.
+ */
+const URL_EVERY = 400;
+let urlPending: string | undefined;
+let urlTimer: number | undefined;
+let urlWritten = Number.NEGATIVE_INFINITY;
+
+function writeUrl(): void {
+  window.clearTimeout(urlTimer);
+  urlTimer = undefined;
+  if (urlPending === undefined) return;
+  history.replaceState(null, "", urlPending);
+  urlPending = undefined;
+  urlWritten = performance.now();
+}
+
+function showUrl(url: string): void {
+  urlPending = url;
+  if (urlTimer !== undefined) return;
+  const wait = urlWritten + URL_EVERY - performance.now();
+  if (wait <= 0) writeUrl();
+  else urlTimer = window.setTimeout(writeUrl, wait);
+}
+
+addEventListener("pagehide", writeUrl);
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "hidden") writeUrl();
+});
+
 function apply(query: URLSearchParams, options: { cut?: boolean } = {}): void {
   state = readState(query);
   params = readParams(state.scene, query);
@@ -49,7 +83,7 @@ function apply(query: URLSearchParams, options: { cut?: boolean } = {}): void {
   const minimal = serialise(state, params);
   for (const [key, value] of lab?.sessionQuery() ?? []) minimal.append(key, value);
   const search = minimal.toString();
-  history.replaceState(null, "", `${location.pathname}${search ? `?${search}` : ""}`);
+  showUrl(`${location.pathname}${search ? `?${search}` : ""}`);
   const settings = renderSettings(state, params);
   renderer?.update(options.cut ? { ...settings, passage: false } : settings);
 

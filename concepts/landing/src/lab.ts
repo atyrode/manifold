@@ -1152,9 +1152,10 @@ export class Lab {
     const setup = new URLSearchParams(this.#query());
     for (const [key, value] of this.sessionQuery()) setup.append(key, value);
     const query = setup.toString();
+    // From the setup, not the address bar, which the page writes a moment late (main.ts `showUrl`).
     const url = this.#host.build
       ? `${location.origin}/@${this.#host.build}/${query ? `?${query}` : ""}`
-      : location.href;
+      : `${location.origin}${location.pathname}${query ? `?${query}` : ""}`;
     navigator.clipboard.writeText(url).then(
       () => this.#confirm(button, "Link copied"),
       () => this.#confirm(button, "Copy failed"),

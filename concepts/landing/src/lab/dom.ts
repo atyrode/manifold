@@ -42,6 +42,25 @@ export interface Built {
   sync: () => void;
 }
 
+// Reflecting the setup writes only what changed. The lab syncs every control on every change, a
+// frame at a time while a slider moves, and writing text, `hidden` or an attribute even to what it
+// already is restyles or lays out the element again (its text node is replaced, its attribute set).
+
+/** Set `el`'s text unless it already reads so. */
+export function setText(el: Element, text: string): void {
+  if (el.textContent !== text) el.textContent = text;
+}
+
+/** Hide or show `el` unless it already is. */
+export function setHidden(el: HTMLElement, hidden: boolean): void {
+  if (el.hidden !== hidden) el.hidden = hidden;
+}
+
+/** Set `el`'s attribute `name` unless it already holds `value`. */
+export function setAttr(el: Element, name: string, value: string): void {
+  if (el.getAttribute(name) !== value) el.setAttribute(name, value);
+}
+
 export type Patch = Record<string, string | number>;
 
 /** What the lab's panels and widgets reach the setup through. */
