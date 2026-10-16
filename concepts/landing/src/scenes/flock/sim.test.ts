@@ -2,6 +2,7 @@ import { expect, spyOn, test } from "bun:test";
 import { Boids, type BoidRules } from "../../sims/boids.ts";
 import { HeadlessSim } from "../../sims/headless.ts";
 import type { Random } from "../../sims/random.ts";
+import { DataTexture } from "../../sims/texture.ts";
 import { flockScene } from "./index.ts";
 import { boidNear, FLOCK_SIZES } from "./sim.ts";
 
@@ -186,3 +187,37 @@ test(
   },
   { timeout: FLIGHT_TIMEOUT },
 );
+
+test("the density texture holds the field, but for texels too faint for a half float to tell from 0", () => {
+  // Each paint uploads only the box it changed; outside it the texture keeps an older paint's values,
+  // which must be ones the rg16f texture holds as 0, as it does the field's own there now. Through a
+  // strike, a new frame shape (a new field), the flock leaving and growing afresh, and emergent flight.
+  const faint = 2 ** -25; // half the smallest half float: anything under it is held as 0
+  const region = spyOn(DataTexture.prototype, "uploadRegion");
+  const sim = new HeadlessSim(flockScene);
+  let checked = 0;
+  let wrong = 0;
+  try {
+    for (let f = 0; f < 600; f++) {
+      const calls = region.mock.calls.length;
+      sim.step({
+        aspect: f < 200 ? 16 / 9 : 4 / 3,
+        now: f % 150 === 75 ? ["predator"] : [],
+        knobs: f >= 300 && f < 320 ? { birds: 0 } : f >= 400 ? EMERGENT : {},
+      });
+      const field = region.mock.calls.length > calls ? region.mock.lastCall?.[0] : undefined;
+      if (field === undefined) continue;
+      const shown = sim.upload(0).data;
+      checked++;
+      for (let k = 0; k < field.length; k++) {
+        const a = field[k] ?? 0;
+        const b = shown[k] ?? 0;
+        if (a !== b && (Math.abs(a) >= faint || Math.abs(b) >= faint)) wrong++;
+      }
+    }
+  } finally {
+    region.mockRestore();
+  }
+  expect(checked).toBeGreaterThan(500);
+  expect(wrong).toBe(0);
+});

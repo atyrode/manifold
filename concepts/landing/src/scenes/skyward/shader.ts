@@ -174,7 +174,7 @@ vec3 skywardSkyDirect(vec3 rd) {
 // ---- Lots ----
 
 struct SkywardLot {
-  float h;       // roof height of the main block (m)
+  float h;       // roof height of the main block (m): a clean flat roofline, so lots read as solid massing against the sky
   float kind;    // 0 glass tower, 1 stone, 2 brick, 3 concrete
   float seed;
   float u0;
@@ -186,22 +186,29 @@ float skywardEdge(float fid, float k) {
   return (k + (hash12(vec2(k * 1.37 + 5.0, fid * 7.1 + skywardSeedOff)) - 0.5) * 0.4) * SKYWARD_LOT;
 }
 
-float skywardLotIndex(float fid, float u) {
-  float k = floor(u / SKYWARD_LOT);
-  if (u < skywardEdge(fid, k)) return k - 1.0;
-  if (u >= skywardEdge(fid, k + 1.0)) return k + 1.0;
-  return k;
-}
-
+// The lot of face fid at u (from the corner): lot k spans its two jittered edges, so u short of the
+// k-th's first edge or past its second lies in the lot before or after, which shares that edge.
+// Each edge is hashed once.
 SkywardLot skywardLot(float fid, float u) {
-  float k = skywardLotIndex(fid, u);
+  float k = floor(u / SKYWARD_LOT);
+  float u0 = skywardEdge(fid, k);
+  float u1 = skywardEdge(fid, k + 1.0);
+  if (u < u0) {
+    k -= 1.0;
+    u1 = u0;
+    u0 = skywardEdge(fid, k);
+  } else if (u >= u1) {
+    k += 1.0;
+    u0 = u1;
+    u1 = skywardEdge(fid, k + 1.0);
+  }
   SkywardLot l;
   l.seed = hash12(vec2(k * 3.17 + 1.3, fid * 5.3 + 2.7 + skywardSeedOff));
   float a = fract(l.seed * 41.3);
   float b = fract(l.seed * 97.1);
   float c = fract(l.seed * 173.7);
-  l.u0 = skywardEdge(fid, k);
-  l.u1 = skywardEdge(fid, k + 1.0);
+  l.u0 = u0;
+  l.u1 = u1;
   l.variant = b;
   // Each face stands at its own height, its buildings within 20-40% of it: no needles.
   float base = 30.0 + 6.0 * hash12(vec2(fid * 3.7 + 1.0, skywardSeedOff + 9.0));
@@ -220,11 +227,6 @@ SkywardLot skywardLot(float fid, float u) {
     l.h = base * (0.95 + 0.3 * b) * corner;
   }
   return l;
-}
-
-// The roofline: a clean flat edge, so lots read as solid massing against the sky.
-float skywardRoof(SkywardLot l, float u) {
-  return l.h;
 }
 
 struct SkywardHit {
@@ -259,7 +261,7 @@ SkywardHit skywardTrace(vec3 ro, vec3 rd) {
         float fid = (sx > 0.0 ? 1.0 : 0.0) + (sz > 0.0 ? 2.0 : 0.0);
         float u = abs(p.z) - SKYWARD_B;
         SkywardLot l = skywardLot(fid, u);
-        if (p.y < skywardRoof(l, u)) {
+        if (p.y < l.h) {
           h.t = t;
           h.fid = fid;
           h.u = u;
@@ -282,7 +284,7 @@ SkywardHit skywardTrace(vec3 ro, vec3 rd) {
         float fid = 4.0 + (sx > 0.0 ? 1.0 : 0.0) + (sz > 0.0 ? 2.0 : 0.0);
         float u = abs(p.x) - SKYWARD_A;
         SkywardLot l = skywardLot(fid, u);
-        if (p.y < skywardRoof(l, u)) {
+        if (p.y < l.h) {
           h.t = t;
           h.fid = fid;
           h.u = u;
@@ -549,12 +551,27 @@ vec3 skywardFacade(SkywardHit h, vec3 rd) {
   vec3 col;
   if (k < 0.5) {
     col = skywardGlassTower(h, rd, fp, E);
-  } else if (k < 1.5) {
-    col = skywardMasonry(h, fp, slope, skywardStoneTone(h.lot.variant), E, Eu, mix(3.3, 3.9, h.lot.variant), mix(2.8, 3.4, fract(h.lot.variant * 5.3)), 0.4, 0.26, 0.84, 0.5);
-  } else if (k < 2.5) {
-    col = skywardMasonry(h, fp, slope, skywardBrickTone(h.lot.variant), E, Eu, 3.2, 2.5, 0.42, 0.25, 0.8, 0.18);
   } else {
-    col = skywardMasonry(h, fp, slope, skywardConcreteTone(h.lot.variant), E, Eu, 3.6, 6.0, 0.9, 0.35, 0.78, 0.0);
+    // Stone, brick or concrete: the kind's tone, storey, bay and windows (width, sill, head as
+    // shares of the bay and the storey) and the odds of a balcony, then one masonry for all three.
+    float v = h.lot.variant;
+    vec3 tone;
+    vec2 grid;
+    vec4 win;
+    if (k < 1.5) {
+      tone = skywardStoneTone(v);
+      grid = vec2(mix(3.3, 3.9, v), mix(2.8, 3.4, fract(v * 5.3)));
+      win = vec4(0.4, 0.26, 0.84, 0.5);
+    } else if (k < 2.5) {
+      tone = skywardBrickTone(v);
+      grid = vec2(3.2, 2.5);
+      win = vec4(0.42, 0.25, 0.8, 0.18);
+    } else {
+      tone = skywardConcreteTone(v);
+      grid = vec2(3.6, 6.0);
+      win = vec4(0.9, 0.35, 0.78, 0.0);
+    }
+    col = skywardMasonry(h, fp, slope, tone, E, Eu, grid.x, grid.y, win.x, win.y, win.z, win.w);
   }
   // The road below, felt: shade and light sliding over the lower floors.
   vec2 tr = skywardTraffic(h);
@@ -587,16 +604,19 @@ float skywardSegment(vec3 rd, vec3 a, vec3 b, out float s) {
   return length(q - rd * s);
 }
 
-// A rod or wire of radius r from a to b, never thinner than ~1.6 cells (it fades instead), drawn
-// per cell. strength < 1 for the finest wires.
-vec3 skywardRod(vec3 col, vec3 rd, float tw, vec3 a, vec3 b, float r, vec3 alb, float strength) {
+// A rod or wire from a.xyz to b.xyz of radius a.w, never thinner than ~1.6 cells (it fades instead),
+// drawn per cell; strength b.w < 1 for the finest wires. The lamps, the gantry, the wires and the
+// pantograph keep their rods in const tables of such records (two vec4s a rod), drawn in order by a
+// loop around one call, so the shader holds a handful of rods rather than a copy per rod.
+vec3 skywardRod(vec3 col, vec3 rd, float tw, vec4 a, vec4 b, vec3 alb) {
   float s;
-  float d = skywardSegment(rd, a, b, s);
+  float d = skywardSegment(rd, a.xyz, b.xyz, s);
   if (s <= 0.0 || s >= tw) return col;
+  float r = a.w;
   float w = max(r / s, 0.8 * skywardPx);
   float cov = hardFill(d / s - w, 0.5 * skywardPx);
   if (cov <= 0.0) return col;
-  float thin = clamp(r / (s * 0.8 * skywardPx), 0.3, 1.0) * strength;
+  float thin = clamp(r / (s * 0.8 * skywardPx), 0.3, 1.0) * b.w;
   vec3 lit = alb * (skywardAmbient * 0.9 + skywardSunLight * 0.25) + 0.02;
   return mix(col, lit, cov * thin);
 }
@@ -688,18 +708,26 @@ vec3 skywardLuminaire(vec3 col, vec3 rd, float tw, vec3 lo, vec3 hi) {
   return col;
 }
 
+// The two street lamps, each a pole, its arm and the arm's outreach (rod records, see skywardRod),
+// then its luminaire (SKYWARD_LUMINAIRE: lo, hi). Right of the frame: the pole at the kerb, its arm
+// reaching over the avenue. Left of the frame, among the branches: the corner's lamp over the cross
+// street.
+const vec4 SKYWARD_LAMP_ROD[12] = vec4[12](
+  vec4(-9.4, 0.0, 3.8, 0.1), vec4(-9.4, 8.0, 3.8, 1.0),
+  vec4(-9.4, 8.0, 3.8, 0.07), vec4(-8.5, 8.75, 3.8, 1.0),
+  vec4(-8.5, 8.75, 3.8, 0.06), vec4(-7.3, 8.6, 3.8, 1.0),
+  vec4(9.4, 0.0, -9.2, 0.1), vec4(9.4, 8.3, -9.2, 1.0),
+  vec4(9.4, 8.3, -9.2, 0.07), vec4(8.4, 8.9, -9.2, 1.0),
+  vec4(8.4, 8.9, -9.2, 0.06), vec4(7.2, 8.75, -9.2, 1.0)
+);
+const vec3 SKYWARD_LUMINAIRE[4] = vec3[4](vec3(-7.55, 8.34, 3.6), vec3(-6.45, 8.6, 4.0), vec3(7.45, 8.5, -9.4), vec3(6.35, 8.76, -9.0));
+
 vec3 skywardLamps(vec3 col, vec3 rd, float tw) {
   vec3 steel = vec3(0.12, 0.14, 0.14);
-  // Right of the frame: the pole at the kerb, its arm reaching over the avenue.
-  col = skywardRod(col, rd, tw, vec3(-9.4, 0.0, 3.8), vec3(-9.4, 8.0, 3.8), 0.1, steel, 1.0);
-  col = skywardRod(col, rd, tw, vec3(-9.4, 8.0, 3.8), vec3(-8.5, 8.75, 3.8), 0.07, steel, 1.0);
-  col = skywardRod(col, rd, tw, vec3(-8.5, 8.75, 3.8), vec3(-7.3, 8.6, 3.8), 0.06, steel, 1.0);
-  col = skywardLuminaire(col, rd, tw, vec3(-7.55, 8.34, 3.6), vec3(-6.45, 8.6, 4.0));
-  // Left of the frame, among the branches: the corner's lamp over the cross street.
-  col = skywardRod(col, rd, tw, vec3(9.4, 0.0, -9.2), vec3(9.4, 8.3, -9.2), 0.1, steel, 1.0);
-  col = skywardRod(col, rd, tw, vec3(9.4, 8.3, -9.2), vec3(8.4, 8.9, -9.2), 0.07, steel, 1.0);
-  col = skywardRod(col, rd, tw, vec3(8.4, 8.9, -9.2), vec3(7.2, 8.75, -9.2), 0.06, steel, 1.0);
-  col = skywardLuminaire(col, rd, tw, vec3(7.45, 8.5, -9.4), vec3(6.35, 8.76, -9.0));
+  for (int i = 0; i < 2; i++) {
+    for (int k = 3 * i; k < 3 * i + 3; k++) col = skywardRod(col, rd, tw, SKYWARD_LAMP_ROD[2 * k], SKYWARD_LAMP_ROD[2 * k + 1], steel);
+    col = skywardLuminaire(col, rd, tw, SKYWARD_LUMINAIRE[2 * i], SKYWARD_LUMINAIRE[2 * i + 1]);
+  }
   return col;
 }
 
@@ -708,13 +736,17 @@ vec4 skywardLamp(vec2 f, float off, vec3 lampCol, float on) {
   return vec4(lampCol * (0.06 + 1.7 * on), cov);
 }
 
-// The signal gantry across the cross street: pole, arm, three heads facing the crossing; the lights
-// turn green, amber and red over 46 seconds.
+// The signal gantry across the cross street: pole, arm and the arm's brace (rod records, see
+// skywardRod), three heads facing the crossing; the lights turn green, amber and red over 46 seconds.
+const vec4 SKYWARD_GANTRY_ROD[6] = vec4[6](
+  vec4(9.4, 0.0, -4.0, 0.15), vec4(9.4, 6.4, -4.0, 1.0),
+  vec4(9.4, 6.35, -4.0, 0.12), vec4(-4.4, 6.35, -4.0, 1.0),
+  vec4(9.4, 4.6, -4.0, 0.07), vec4(6.6, 6.3, -4.0, 1.0)
+);
+
 vec3 skywardGantry(vec3 col, vec3 rd, float tw) {
   vec3 steel = vec3(0.16, 0.17, 0.18);
-  col = skywardRod(col, rd, tw, vec3(9.4, 0.0, -4.0), vec3(9.4, 6.4, -4.0), 0.15, steel, 1.0);
-  col = skywardRod(col, rd, tw, vec3(9.4, 6.35, -4.0), vec3(-4.4, 6.35, -4.0), 0.12, steel, 1.0);
-  col = skywardRod(col, rd, tw, vec3(9.4, 4.6, -4.0), vec3(6.6, 6.3, -4.0), 0.07, steel, 1.0);
+  for (int k = 0; k < 3; k++) col = skywardRod(col, rd, tw, SKYWARD_GANTRY_ROD[2 * k], SKYWARD_GANTRY_ROD[2 * k + 1], steel);
   float ph = fract(skywardTm / 46.0);
   float green = 1.0 - smoothstep(0.46, 0.5, ph);
   float amber = smoothstep(0.46, 0.5, ph) * (1.0 - smoothstep(0.56, 0.6, ph));
@@ -725,7 +757,7 @@ vec3 skywardGantry(vec3 col, vec3 rd, float tw) {
   float halo = 1.0 + 1.8 * skywardStorm + K_fog;
   for (int i = 0; i < 3; i++) {
     float x = 5.2 - 4.0 * float(i);
-    col = skywardRod(col, rd, tw, vec3(x, 6.35, -4.0), vec3(x, 6.0, -4.0), 0.05, steel, 1.0);
+    col = skywardRod(col, rd, tw, vec4(x, 6.35, -4.0, 0.05), vec4(x, 6.0, -4.0, 1.0), steel);
     vec3 n;
     float t = skywardBox(rd, vec3(x - 0.2, 5.0, -4.18), vec3(x + 0.2, 6.0, -3.82), n);
     if (t > 0.0 && t < tw) {
@@ -749,24 +781,35 @@ vec3 skywardGantry(vec3 col, vec3 rd, float tw) {
   return col;
 }
 
-// The tram wires: a contact wire and its messenger over each track, spans from facade to facade,
-// and a pair crossing the avenue's at the crossing.
+// The tram wires (rod records, see skywardRod): a contact wire and its messenger over each track, a
+// pair crossing the avenue's at the crossing, and spans from a rosette on each facade, sagging in the
+// middle.
+const vec4 SKYWARD_WIRE[20] = vec4[20](
+  vec4(-SKYWARD_RAIL, 6.0, -140.0, 0.012), vec4(-SKYWARD_RAIL, 6.0, 140.0, 0.9),
+  vec4(-SKYWARD_RAIL, 6.55, -140.0, 0.009), vec4(-SKYWARD_RAIL, 6.55, 140.0, 0.8),
+  vec4(SKYWARD_RAIL, 6.0, -140.0, 0.012), vec4(SKYWARD_RAIL, 6.0, 140.0, 0.9),
+  vec4(SKYWARD_RAIL, 6.55, -140.0, 0.009), vec4(SKYWARD_RAIL, 6.55, 140.0, 0.8),
+  vec4(-140.0, 6.3, -2.2, 0.011), vec4(140.0, 6.3, -2.2, 0.9),
+  vec4(-140.0, 6.3, 2.2, 0.011), vec4(140.0, 6.3, 2.2, 0.9),
+  vec4(-SKYWARD_A, 7.9, -15.0, 0.012), vec4(0.0, 7.0, -15.0, 0.9),
+  vec4(0.0, 7.0, -15.0, 0.012), vec4(SKYWARD_A, 7.9, -15.0, 0.9),
+  vec4(-SKYWARD_A, 7.9, 16.0, 0.012), vec4(0.0, 7.0, 16.0, 0.9),
+  vec4(0.0, 7.0, 16.0, 0.012), vec4(SKYWARD_A, 7.9, 16.0, 0.9)
+);
+
 vec3 skywardWires(vec3 col, vec3 rd, float tw) {
-  vec3 wire = vec3(0.05);
-  for (int i = 0; i < 2; i++) {
-    float x = i == 0 ? -SKYWARD_RAIL : SKYWARD_RAIL;
-    col = skywardRod(col, rd, tw, vec3(x, 6.0, -140.0), vec3(x, 6.0, 140.0), 0.012, wire, 0.9);
-    col = skywardRod(col, rd, tw, vec3(x, 6.55, -140.0), vec3(x, 6.55, 140.0), 0.009, wire, 0.8);
-  }
-  col = skywardRod(col, rd, tw, vec3(-140.0, 6.3, -2.2), vec3(140.0, 6.3, -2.2), 0.011, wire, 0.9);
-  col = skywardRod(col, rd, tw, vec3(-140.0, 6.3, 2.2), vec3(140.0, 6.3, 2.2), 0.011, wire, 0.9);
-  // Spans: from a rosette on each facade, sagging in the middle.
-  col = skywardRod(col, rd, tw, vec3(-SKYWARD_A, 7.9, -15.0), vec3(0.0, 7.0, -15.0), 0.012, wire, 0.9);
-  col = skywardRod(col, rd, tw, vec3(0.0, 7.0, -15.0), vec3(SKYWARD_A, 7.9, -15.0), 0.012, wire, 0.9);
-  col = skywardRod(col, rd, tw, vec3(-SKYWARD_A, 7.9, 16.0), vec3(0.0, 7.0, 16.0), 0.012, wire, 0.9);
-  col = skywardRod(col, rd, tw, vec3(0.0, 7.0, 16.0), vec3(SKYWARD_A, 7.9, 16.0), 0.012, wire, 0.9);
+  for (int k = 0; k < 10; k++) col = skywardRod(col, rd, tw, SKYWARD_WIRE[2 * k], SKYWARD_WIRE[2 * k + 1], vec3(0.05));
   return col;
 }
+
+// The pantograph, from the tram's roof up to the contact wire at 6 m: its lower arm, its upper arm
+// and the pan across the wire, as rod records (see skywardRod) with x across from the track and z
+// along the tram's travel from the pantograph's foot.
+const vec4 SKYWARD_PANTOGRAPH[6] = vec4[6](
+  vec4(0.0, 3.45, 0.0, 0.035), vec4(0.0, 4.9, -0.9, 1.0),
+  vec4(0.0, 4.9, -0.9, 0.03), vec4(0.0, 5.97, 0.0, 1.0),
+  vec4(-0.75, 5.99, 0.0, 0.04), vec4(0.75, 5.99, 0.0, 1.0)
+);
 
 // A tram on its track: a long body gliding past the foot of the frame (felt more than seen), its
 // pantograph on the contact wire, a small spark now and then where they meet.
@@ -800,13 +843,14 @@ vec3 skywardTram(vec3 col, vec3 rd, float tw, float side) {
     }
     col = body;
   }
-  // The pantograph on the roof, reaching the wire at 6 m.
+  // The pantograph on the roof.
   float dirSign = side > 0.0 ? 1.0 : -1.0;
   float pz = zc - 7.0 * dirSign;
-  vec3 dark = vec3(0.07);
-  col = skywardRod(col, rd, tw, vec3(x0, 3.45, pz), vec3(x0, 4.9, pz - 0.9 * dirSign), 0.035, dark, 1.0);
-  col = skywardRod(col, rd, tw, vec3(x0, 4.9, pz - 0.9 * dirSign), vec3(x0, 5.97, pz), 0.03, dark, 1.0);
-  col = skywardRod(col, rd, tw, vec3(x0 - 0.75, 5.99, pz), vec3(x0 + 0.75, 5.99, pz), 0.04, dark, 1.0);
+  for (int k = 0; k < 6; k += 2) {
+    vec4 a = SKYWARD_PANTOGRAPH[k];
+    vec4 b = SKYWARD_PANTOGRAPH[k + 1];
+    col = skywardRod(col, rd, tw, vec4(x0 + a.x, a.y, pz + a.z * dirSign, a.w), vec4(x0 + b.x, b.y, pz + b.z * dirSign, b.w), vec3(0.07));
+  }
   float sk = skywardTm * 0.9 + side * 3.1;
   float hh = hash12(vec2(floor(sk), 9.0 + side));
   float env = hh > 0.55 ? bell((fract(sk) - 0.3) / 0.12) : 0.0;
@@ -826,14 +870,13 @@ vec3 skywardBanner(vec3 col, vec3 rd, float tw, out float accent) {
   if (K_mark < 0.5 || rd.y < 0.2) return col;
   vec2 rh = normalize(skywardR.xz);
   vec2 uh = normalize(skywardU.xz);
-  vec3 cable = vec3(0.07);
   for (int i = 0; i < 4; i++) {
     float ca = (i == 0 || i == 3) ? 5.0 : -5.0;
     float cb = i < 2 ? 5.0 : -5.0;
     vec2 cw = rh * ca + uh * cb;
     vec3 from = vec3(cw.x, SKYWARD_SAIL_Y, cw.y);
     vec3 to = vec3(cw.x > 0.0 ? SKYWARD_A : -SKYWARD_A, SKYWARD_SAIL_Y + 4.5, cw.y > 0.0 ? SKYWARD_B + 8.0 : -SKYWARD_B - 8.0);
-    col = skywardRod(col, rd, tw, from, to, 0.04, cable, 1.0);
+    col = skywardRod(col, rd, tw, vec4(from, 0.04), vec4(to, 1.0), vec3(0.07));
   }
   float t = (SKYWARD_SAIL_Y - SKYWARD_RO.y) / rd.y;
   if (t >= tw) return col;
@@ -1026,8 +1069,7 @@ Shade sceneSkyward(vec2 uv, vec2 cell, float t) {
   col = skywardBanner(col, rd, tw, accent);
   col = skywardCanopy(col, rd, tw);
   col = skywardWires(col, rd, tw);
-  col = skywardTram(col, rd, tw, -1.0);
-  col = skywardTram(col, rd, tw, 1.0);
+  for (int i = 0; i < 2; i++) col = skywardTram(col, rd, tw, float(2 * i - 1)); // the side -1, then 1
   col = skywardLamps(col, rd, tw);
   col = skywardGantry(col, rd, tw);
 

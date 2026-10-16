@@ -59,7 +59,8 @@
 // Textures:
 //   uSim0  rg16f, about FIELD_PER_CELL texels per cell (at most FIELD_ROWS rows): R birds per texel
 //          (a short exponential trail smooths their motion), G the same weighted by how hard the
-//          birds roll. (Flock.field, fieldWidth × fieldHeight.)
+//          birds roll. (Flock.field, fieldWidth × fieldHeight.) Each paint uploads only the box it
+//          changed as a half float holds it (Flock.fieldChange): the flock's last second or so.
 //   uSim1  rgba16f 3×1, nearest: texel 0 falcon (uv xy, heading cos, sin); texel 1 falcon (shown,
 //          wings open 0..1, wingbeat sin) and, in w, the birds per texel of a sheet at
 //          REFERENCE_DENSITY; texel 2 Manifold M (strength 0..1, centre uv xy, height in screen
@@ -295,6 +296,12 @@ const FIELD_PER_CELL = 0.8;
 const FIELD_ROWS = 240;
 /** Exponential trail of the density field (s): softens the specks' motion into short streaks. */
 const TRAIL = 0.03;
+/**
+ * Half the smallest half float: a density below it is held as 0 by the field's rg16f texture,
+ * rounded to the nearest (ties either way) or toward zero. A texel this faint now and at the previous
+ * paint reads 0 on the GPU either way, so the upload skips it (Flock.fieldChange).
+ */
+const FIELD_FAINT = 2 ** -25;
 
 /**
  * The racetrack the birds stream along while they draw the M: up the strokes on one side and back
@@ -425,6 +432,11 @@ export class Flock {
   #field = new Float32Array(2);
   #fieldW = 0;
   #fieldH = 0;
+  /** The box (texels, inclusive; empty: infinite x0, y0) of the latest paint's texels at FIELD_FAINT or more. */
+  readonly #lit = { x0: Infinity, x1: -Infinity, y0: Infinity, y1: -Infinity };
+  /** What the latest paint changed as the GPU holds it (fieldChange); a new field is all of it. */
+  readonly #change = { x: 0, y: 0, width: 0, height: 0 };
+  #fieldNew = true;
 
   #aspect = 16 / 9;
   #time = 0;
@@ -517,6 +529,16 @@ export class Flock {
     return this.#fieldH;
   }
 
+  /**
+   * The texels (a rectangle, rows bottom to top) the latest paint changed as the field's rg16f texture
+   * holds them: outside it every texel was under FIELD_FAINT at the previous paint and still is,
+   * which a half float holds as 0 either way. A texture holding the previous paint needs only this; a
+   * new field (a new size) is all of it. Empty (width 0) when nothing is lit.
+   */
+  get fieldChange(): Readonly<{ x: number; y: number; width: number; height: number }> {
+    return this.#change;
+  }
+
   /** The state texels: falcon, falcon and reference density, M (3 × rgba). */
   get state(): Float32Array {
     return this.#stateData;
@@ -594,6 +616,7 @@ export class Flock {
     this.#fieldW = w;
     this.#fieldH = h;
     this.#field = new Float32Array(w * h * 2);
+    this.#fieldNew = true;
     this.#dirty = true;
   }
 
@@ -1308,14 +1331,32 @@ export class Flock {
    * Splat the birds into the density field (cloud-in-cell: each bird shares its ink bilinearly
    * among the four nearest texels; Hockney & Eastwood, "Computer Simulation Using Particles"),
    * blended over the last frame's field as a short trail. `keep` is how much of the old field
-   * survives; `between` how far the clock is from the previous step to the latest one.
+   * survives; `between` how far the clock is from the previous step to the latest one. On the way
+   * it boxes the texels at FIELD_FAINT or more, for the upload (fieldChange).
    */
   #paint(keep: number, between: number): void {
     const field = this.#field;
     const w = this.#fieldW;
     const h = this.#fieldH;
     const n = this.#n;
-    for (let k = 0; k < field.length; k++) field[k] = (field[k] ?? 0) * keep;
+    let x0 = Infinity;
+    let x1 = -Infinity;
+    let y0 = Infinity;
+    let y1 = -Infinity;
+    for (let j = 0, k = 0; j < h; j++) {
+      for (let i = 0; i < w; i++, k += 2) {
+        // As stored (float32): the value the texture is given, and the one the threshold judges.
+        const r = Math.fround((field[k] ?? 0) * keep);
+        const g = Math.fround((field[k + 1] ?? 0) * keep);
+        field[k] = r;
+        field[k + 1] = g;
+        if (Math.abs(r) < FIELD_FAINT && Math.abs(g) < FIELD_FAINT) continue;
+        if (i < x0) x0 = i;
+        if (i > x1) x1 = i;
+        if (j < y0) y0 = j;
+        y1 = j;
+      }
+    }
     const gain = 1 - keep;
     const sx = w / this.#aspect;
     const sy = h;
@@ -1394,6 +1435,10 @@ export class Flock {
       const ay = gy - j0;
       const mass = gain * (ink[i] ?? 1);
       const dark = mass * (roll[i] ?? 0);
+      x0 = Math.min(x0, Math.max(0, i0));
+      x1 = Math.max(x1, Math.min(w - 1, i0 + 1));
+      y0 = Math.min(y0, Math.max(0, j0));
+      y1 = Math.max(y1, Math.min(h - 1, j0 + 1));
       for (let dj = 0; dj < 2; dj++) {
         const j = j0 + dj;
         if (j < 0 || j >= h) continue;
@@ -1408,6 +1453,24 @@ export class Flock {
         }
       }
     }
+    // What the upload must send: the lit box with the previous paint's, whose texels may have faded
+    // to nothing since; a new field all of it.
+    const lit = this.#lit;
+    const change = this.#change;
+    const left = this.#fieldNew ? 0 : Math.min(x0, lit.x0);
+    const right = this.#fieldNew ? w - 1 : Math.max(x1, lit.x1);
+    const bottom = this.#fieldNew ? 0 : Math.min(y0, lit.y0);
+    const top = this.#fieldNew ? h - 1 : Math.max(y1, lit.y1);
+    const some = right >= left;
+    change.x = some ? left : 0;
+    change.y = some ? bottom : 0;
+    change.width = some ? right - left + 1 : 0;
+    change.height = some ? top - bottom + 1 : 0;
+    lit.x0 = x0;
+    lit.x1 = x1;
+    lit.y0 = y0;
+    lit.y1 = y1;
+    this.#fieldNew = false;
 
     const d = this.#stateData;
     const a = this.#aspect;
@@ -1455,7 +1518,7 @@ function markTrackAt(u: number, out: Float32Array): void {
   out[3] = (by - ay) / length;
 }
 
-/** A Flock with its two textures (uSim0, uSim1), uploaded whenever it repaints them. */
+/** A Flock with its two textures (uSim0, uSim1), uploaded whenever it repaints them: of the density, only what the paint changed (fieldChange). */
 class FlockSim implements SceneSim {
   readonly #flock: Flock;
   readonly #density: DataTexture;
@@ -1477,7 +1540,8 @@ class FlockSim implements SceneSim {
     if (!flock.frame(frame)) return IDLE;
     if (flock.painted) {
       this.#density.resize(flock.fieldWidth, flock.fieldHeight);
-      this.#density.upload(flock.field);
+      const change = flock.fieldChange;
+      this.#density.uploadRegion(flock.field, change.x, change.y, change.width, change.height);
       this.#state.upload(flock.state);
     }
     return [this.#density.texture, this.#state.texture];

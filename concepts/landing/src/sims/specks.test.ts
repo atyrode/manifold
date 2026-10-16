@@ -1,5 +1,8 @@
-import { expect, test } from "bun:test";
+import { expect, spyOn, test } from "bun:test";
+import { HeadlessGl } from "./headless.ts";
+import { Random } from "./random.ts";
 import { followCell, SpeckMap } from "./specks.ts";
+import { DataTexture } from "./texture.ts";
 
 const cell = (map: SpeckMap, cx: number, cy: number): [number, number] => {
   const at = (cy * map.width + cx) * 2;
@@ -72,4 +75,34 @@ test("followCell holds a hovering speck in its cell until it has clearly left", 
   }
   expect(followCell(drawn, 11.4)).toBe(11);
   expect(followCell(drawn, 9.6)).toBe(9);
+});
+
+test("each upload leaves the texture holding the map, sending only the tiles that changed", () => {
+  // A dozen specks wandering a cell at a time, as the bees do: after every upload the texture is the
+  // map, the cells they left cleared, while a frame sends a few tiles rather than the whole map.
+  const width = 320;
+  const height = 180;
+  const headless = new HeadlessGl();
+  const texture = new DataTexture(headless.gl, { width, height, format: "rg8", filter: "nearest" });
+  const map = new SpeckMap();
+  map.resize(width, height);
+  const random = new Random(11);
+  const specks = Array.from({ length: 12 }, () => ({
+    x: random.int(width),
+    y: random.int(height),
+  }));
+  const region = spyOn(texture, "uploadRegion");
+  for (let frame = 0; frame < 60; frame++) {
+    map.clear();
+    for (const [i, speck] of specks.entries()) {
+      speck.x += random.int(3) - 1;
+      speck.y += random.int(3) - 1;
+      map.block(speck.x, speck.y, 1 + (i % 3), 1 + (i % 2), 1 + i, 4 * i);
+    }
+    region.mockClear();
+    map.upload(texture);
+    expect(headless.upload(texture.texture).data).toEqual(map.data);
+    const sent = region.mock.calls.reduce((cells, call) => cells + call[3] * call[4], 0);
+    if (frame > 0) expect(sent).toBeLessThan(0.1 * width * height);
+  }
 });

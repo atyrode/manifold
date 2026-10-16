@@ -410,7 +410,8 @@ class BeesSim implements SceneSim {
     for (let i = 0; i < steps; i++) this.#step(STEP);
     if (steps > 0 || this.#dirty) {
       this.#paint();
-      this.#texture.upload(this.#specks.data);
+      // Only the tiles whose cells changed go up (the whole map after a resize): a few KB a frame.
+      this.#specks.upload(this.#texture);
       this.#dirty = false;
     }
     return this.#textures;

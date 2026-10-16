@@ -256,14 +256,12 @@ vec4 beesSkyline(float x) {
 
 // ---- the sky -------------------------------------------------------------------------------------------
 
-// The signed distance (in the cloud's own units, roughly) to a cumulus: a union of ellipse lobes, cut
-// flat at the base.
-float beesCloudSdf(vec2 q, float seed) {
+// The signed distance (in the cloud's own units, roughly) to a cumulus: a union of its ellipse lobes
+// (BEES_CLOUDLOBE jittered by the cloud's seed, see beesCloudAt), cut flat at the base.
+float beesCloudSdf(vec2 q, vec4 lobes[17]) {
   float d = 1e3;
   for (int k = 0; k < 17; k++) {
-    vec4 c = BEES_CLOUDLOBE[k];
-    c.xy += (hash22(vec2(float(k), seed)) - 0.5) * 0.06;
-    c.zw *= 0.88 + 0.28 * hash12(vec2(float(k) + 7.0, seed));
+    vec4 c = lobes[k];
     d = min(d, (length((q - c.xy) / c.zw) - 1.0) * min(c.z, c.w));
   }
   return max(d, -q.y);
@@ -272,15 +270,23 @@ float beesCloudSdf(vec2 q, float seed) {
 // One cumulus at p: rgb and coverage (0 or 1). The light comes from the outline's normal (taken over a
 // wide step, so the billows blend into one mass) mixed with the cloud's overall facing: the sunward side
 // and the crown are bright cream, the shaded side and the flat base blue-grey, the sunward rim glows.
+// The lobes are jittered once, then shared by the outline and the four samples of its normal.
 vec4 beesCloudAt(vec2 p, float cx, float by, float s, float tall, float seed) {
   vec2 q = vec2((p.x - cx) / s, (p.y - by) / (s * tall));
   if (q.x < -1.15 || q.x > 1.2 || q.y < -0.05 || q.y > 1.5) return vec4(0.0);
   float sd = seed + beesSeed;
-  float d = beesCloudSdf(q, sd);
+  vec4 lobes[17];
+  for (int k = 0; k < 17; k++) {
+    vec4 c = BEES_CLOUDLOBE[k];
+    c.xy += (hash22(vec2(float(k), sd)) - 0.5) * 0.06;
+    c.zw *= 0.88 + 0.28 * hash12(vec2(float(k) + 7.0, sd));
+    lobes[k] = c;
+  }
+  float d = beesCloudSdf(q, lobes);
   d += 0.045 * (vnoise(q * 9.0 + seed) - 0.5) + 0.02 * (vnoise(q * 23.0 + seed) - 0.5);
   if (hardFill(d * s, beesAa) < 0.5) return vec4(0.0);
   float e = 0.12;
-  vec2 grad = vec2(beesCloudSdf(q + vec2(e, 0.0), sd) - beesCloudSdf(q - vec2(e, 0.0), sd), beesCloudSdf(q + vec2(0.0, e), sd) - beesCloudSdf(q - vec2(0.0, e), sd));
+  vec2 grad = vec2(beesCloudSdf(q + vec2(e, 0.0), lobes) - beesCloudSdf(q - vec2(e, 0.0), lobes), beesCloudSdf(q + vec2(0.0, e), lobes) - beesCloudSdf(q - vec2(0.0, e), lobes));
   vec2 n = grad / max(length(grad), 1e-3);
   vec2 toSun = normalize(vec2(beesSunDir.x, beesSunDir.y / tall));
   float facing = dot(n, toSun);

@@ -21,9 +21,9 @@ test("each species flies as birdSpecies has it: its own formation and flock", ()
       Number(m[2]),
     ]),
   );
-  // birdSpecies returns one BirdSpecies per kind, in kind order: ..., formation, flock (vec2), ...
+  // birdSpecies' table holds one BirdSpecies per kind, in kind order: ..., formation, flock (vec2), ...
   const rows = [
-    ...birdsGlsl.matchAll(/return BirdSpecies\(.*?BIRD_(\w+), vec2\(([\d.]+), ([\d.]+)\)/g),
+    ...birdsGlsl.matchAll(/^\s*BirdSpecies\(.*?BIRD_(\w+), vec2\(([\d.]+), ([\d.]+)\)/gm),
   ];
   const species = (Object.keys(BIRD_KIND) as BirdKind[]).sort((a, b) => kind(a) - kind(b));
   expect(rows.length).toBe(species.length);

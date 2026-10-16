@@ -23,8 +23,8 @@ test("the which-birds choice is valued as the GLSL species, one table entry per 
   for (const [label, value] of Object.entries(BIRD_KIND))
     expect(constants.get(glslName[label as keyof typeof glslName])).toBe(value);
   expect(BIRD_KINDS.map((option) => option.value)).toEqual([0, 1, 2, 3, 4, 5, 6]);
-  // birdSpecies (and birdPose) answer every kind with one branch each, the last one the fallthrough.
-  expect(birdsGlsl.match(/return BirdSpecies\(/g)?.length).toBe(BIRD_KINDS.length);
+  // birdSpecies' table holds one row per kind, in kind order.
+  expect(birdsGlsl.match(/^\s*BirdSpecies\(/gm)?.length).toBe(BIRD_KINDS.length);
 });
 
 test("the formation choice is the GLSL formation plus one, 0 the species' own", () => {

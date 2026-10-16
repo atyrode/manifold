@@ -25,7 +25,7 @@
 //   const float BIRD_SOLO, BIRD_LOOSE, BIRD_SKEIN, BIRD_CIRCLING;                 // formations
 //   struct BirdSpecies { span, cells, spacing, hz, broad, neck, dihedral, albedo, formation, flock,
 //                        lane, scythe, fold, underwing };
-//   BirdSpecies birdSpecies(float kind);
+//   BirdSpecies birdSpecies(float kind);  // a row of the const table BIRD_SPECIES, by the nearest kind
 //   struct BirdCamera { horizon, focal, eye, unit, enlarge };
 //   struct BirdFlight { kind, formation, count, dir, lead, radius, swoop, key };
 //   struct BirdHit { cover, depth, albedo };
@@ -88,14 +88,21 @@ struct BirdSpecies {
   vec4 underwing;  // seen from below: the underwing's colour, and how much of it shows toward the tips
 };
 
+// One row per species, in kind order (BIRD_CROW = 0 ... BIRD_SWIFT = 6): a lookup, not a branch per
+// kind, so the many loops that ask for a bird's species stay small.
+const BirdSpecies BIRD_SPECIES[7] = BirdSpecies[7](
+  BirdSpecies(0.9, 6.0, 7.0, 2.4, 0.0, 0.22, 0.0, vec3(0.06, 0.055, 0.065), BIRD_LOOSE, vec2(2.0, 6.0), vec4(0.1, 0.7, 0.1, 0.85), 0.15, 0.85, vec4(0.06, 0.055, 0.065, 0.0)),
+  BirdSpecies(0.33, 5.0, 5.0, 4.0, 0.0, 0.18, 0.0, vec3(0.045, 0.05, 0.08), BIRD_LOOSE, vec2(2.0, 4.0), vec4(0.0, 0.25, 0.0, 0.55), 0.8, 0.85, vec4(0.55, 0.5, 0.45, 0.3)),
+  BirdSpecies(1.3, 7.0, 9.0, 1.6, 0.0, 0.22, 0.1, vec3(0.78, 0.8, 0.82), BIRD_LOOSE, vec2(1.0, 4.0), vec4(0.1, 0.8, 0.1, 0.8), 0.55, 0.9, vec4(0.78, 0.8, 0.82, 0.0)),
+  BirdSpecies(1.6, 7.0, 9.0, 2.0, 0.3, 0.55, 0.0, vec3(0.2, 0.18, 0.15), BIRD_SKEIN, vec2(5.0, 9.0), vec4(0.35, 1.0, 0.4, 1.0), 0.3, 0.85, vec4(0.42, 0.4, 0.36, 0.4)),
+  BirdSpecies(1.3, 8.0, 0.0, 3.0, 1.0, 0.18, 0.25, vec3(0.2, 0.14, 0.09), BIRD_CIRCLING, vec2(1.0, 1.0), vec4(0.2, 0.7, 0.25, 0.8), 0.0, 0.95, vec4(0.55, 0.45, 0.35, 0.5)),
+  BirdSpecies(0.72, 5.0, 4.0, 1.15, 0.2, 0.15, 0.0, vec3(0.07, 0.075, 0.09), BIRD_CIRCLING, vec2(5.0, 9.0), vec4(0.0, 0.5, 0.0, 0.6), 0.0, 0.85, vec4(0.42, 0.44, 0.48, 0.4)),
+  BirdSpecies(0.4, 5.0, 6.0, 0.0, 0.0, 0.1, 0.0, vec3(0.07, 0.075, 0.09), BIRD_LOOSE, vec2(3.0, 7.0), vec4(0.2, 0.9, 0.4, 1.0), 1.0, 1.0, vec4(0.07, 0.075, 0.09, 0.0))
+);
+
+// The species of a kind, rounded to the nearest (below crows: crows; above swifts: swifts).
 BirdSpecies birdSpecies(float kind) {
-  if (kind < 0.5) return BirdSpecies(0.9, 6.0, 7.0, 2.4, 0.0, 0.22, 0.0, vec3(0.06, 0.055, 0.065), BIRD_LOOSE, vec2(2.0, 6.0), vec4(0.1, 0.7, 0.1, 0.85), 0.15, 0.85, vec4(0.06, 0.055, 0.065, 0.0));
-  if (kind < 1.5) return BirdSpecies(0.33, 5.0, 5.0, 4.0, 0.0, 0.18, 0.0, vec3(0.045, 0.05, 0.08), BIRD_LOOSE, vec2(2.0, 4.0), vec4(0.0, 0.25, 0.0, 0.55), 0.8, 0.85, vec4(0.55, 0.5, 0.45, 0.3));
-  if (kind < 2.5) return BirdSpecies(1.3, 7.0, 9.0, 1.6, 0.0, 0.22, 0.1, vec3(0.78, 0.8, 0.82), BIRD_LOOSE, vec2(1.0, 4.0), vec4(0.1, 0.8, 0.1, 0.8), 0.55, 0.9, vec4(0.78, 0.8, 0.82, 0.0));
-  if (kind < 3.5) return BirdSpecies(1.6, 7.0, 9.0, 2.0, 0.3, 0.55, 0.0, vec3(0.2, 0.18, 0.15), BIRD_SKEIN, vec2(5.0, 9.0), vec4(0.35, 1.0, 0.4, 1.0), 0.3, 0.85, vec4(0.42, 0.4, 0.36, 0.4));
-  if (kind < 4.5) return BirdSpecies(1.3, 8.0, 0.0, 3.0, 1.0, 0.18, 0.25, vec3(0.2, 0.14, 0.09), BIRD_CIRCLING, vec2(1.0, 1.0), vec4(0.2, 0.7, 0.25, 0.8), 0.0, 0.95, vec4(0.55, 0.45, 0.35, 0.5));
-  if (kind < 5.5) return BirdSpecies(0.72, 5.0, 4.0, 1.15, 0.2, 0.15, 0.0, vec3(0.07, 0.075, 0.09), BIRD_CIRCLING, vec2(5.0, 9.0), vec4(0.0, 0.5, 0.0, 0.6), 0.0, 0.85, vec4(0.42, 0.44, 0.48, 0.4));
-  return BirdSpecies(0.4, 5.0, 6.0, 0.0, 0.0, 0.1, 0.0, vec3(0.07, 0.075, 0.09), BIRD_LOOSE, vec2(3.0, 7.0), vec4(0.2, 0.9, 0.4, 1.0), 1.0, 1.0, vec4(0.07, 0.075, 0.09, 0.0));
+  return BIRD_SPECIES[int(clamp(kind + 0.5, 0.0, 6.0))];
 }
 
 // The party a species flies in some other formation: one alone, at least two in a loose party, a
