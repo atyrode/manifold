@@ -21,7 +21,7 @@ import { verifyCloudsDetail } from "./src/scenes/clouds/detail.verify.ts";
 import type { SimFrame } from "./src/scenes/types.ts";
 import { verifyLakeFreshSnow } from "./src/scenes/lake/snow.verify.ts";
 import { verifyShanshui } from "./src/scenes/shanshui/shanshui.verify.ts";
-import { verifyMotionClocks } from "./src/scenes/train/motion-clock.verify.ts";
+import { motionClocksAll, verifyMotionClocks } from "./src/scenes/train/motion-clock.verify.ts";
 import { verifyTrainLine } from "./src/scenes/train/line.verify.ts";
 import { verifyFilmRupture } from "./src/scenes/film/rupture.verify.ts";
 import { verifyPendulaSwing } from "./src/scenes/pendula/swing.verify.ts";
@@ -578,6 +578,10 @@ export const checks: readonly Check[] = [
   ["nightSkyDefaults2", nightSkyDefaults(1, 3)],
   ["nightSkyDefaults3", nightSkyDefaults(2, 3)],
   ["countryFog", verifyCountryFog],
+  ["motionClocksAll1", motionClocksAll(0, 4)],
+  ["motionClocksAll2", motionClocksAll(1, 4)],
+  ["motionClocksAll3", motionClocksAll(2, 4)],
+  ["motionClocksAll4", motionClocksAll(3, 4)],
   ["nightPlanets", verifyNightPlanets],
   ["labInspector", verifyInspector],
   ["orbitKepler", verifyOrbitKepler],

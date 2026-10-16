@@ -6,15 +6,18 @@ export const lightningGlsl = `
 // ---- lightning ----
 
 // Seconds since the latest strike: the random storm's or the trigger's, whichever is more recent;
-// 1e4 when there is none. The storm cuts its clock into windows that each hold at most one strike at
-// a hashed moment (70% of them do), so the mean interval is ~window / 0.7: ~24 s at rate 0.35, ~4 s at
-// rate 1. Random strikes stop when motion is off (no flashing for reduced-motion visitors); the
-// trigger still fires. seed is a stable id for the strike, to shape its bolt.
-float lightningAge(float t, float rate, int slot, out float seed) {
+// 1e4 when there is none. The storm cuts the motion clock tm (uMotionTime) into windows that each
+// hold at most one strike at a hashed moment (70% of them do), so the mean interval is ~window / 0.7
+// motion seconds: ~24 s at rate 0.35, ~4 s at rate 1. The age runs in real seconds (the motion
+// seconds since the strike over the current motion), so a strike flickers at its own pace whatever
+// the motion; only moving the slider soon after a strike rescales its age (upward, it can replay one
+// that just ended). Random strikes stop when motion is off (no flashing for reduced-motion visitors);
+// the trigger still fires.
+// seed is a stable id for the strike, to shape its bolt.
+float lightningAge(float tm, float rate, int slot, out float seed) {
   float age = 1e4;
   seed = 0.0;
   if (rate > 0.0 && uMotion > 0.01) {
-    float tm = t * uMotion;
     float window = mix(24.0, 3.0, clamp(rate, 0.0, 1.0));
     float k = floor(tm / window);
     for (int i = 0; i < 3; i++) {

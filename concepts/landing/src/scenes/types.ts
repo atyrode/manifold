@@ -76,6 +76,13 @@ export interface SimFrame {
   /** Scene-clock time each trigger slot last fired; -1e4 while idle. */
   triggers: readonly number[];
   /**
+   * The motion clock (`motionTime`) when each trigger slot last fired (the shader's
+   * `uMotionTriggers`), for a response that plays at the motion's pace: its age is `motionTime -
+   * motionTriggers[slot]` while `triggers[slot]` is not idle. The renderer rewrites it in place each
+   * frame: read it, don't keep it. Absent (hand-built frames in tests) means every slot is idle.
+   */
+  motionTriggers?: readonly number[];
+  /**
    * Per trigger slot (MAX_TRIGGERS long): true on the one frame after the slot was stamped by a
    * "now" press, i.e. `triggers[slot]` moved to a new time since this sim's previous frame (several
    * presses between two frames fire once; a second press while paused, at the same stamp, does not

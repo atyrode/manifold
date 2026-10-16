@@ -462,7 +462,7 @@ vec4 forestRope(vec2 q, float hh, float u, float tm) {
 // The beech's branch reaching left at q (the beech's parallax): moss thick along its top, beards of
 // lichen hanging from it and swaying slowly, and, while it is wet, drops gathering at the beards' tips
 // (or the bare underside) and falling. Returns colour and coverage; drip out: the drops, 0/1.
-vec4 forestBranch(vec2 q, float t, float tm, out float drip) {
+vec4 forestBranch(vec2 q, float tf, float tm, out float drip) {
   drip = 0.0;
   float z = FOREST_ELDER_Z;
   vec2 w = vec2(q.x * z, (q.y - FOREST_HORIZON) * z + FOREST_EYE);
@@ -517,7 +517,7 @@ vec4 forestBranch(vec2 q, float t, float tm, out float drip) {
     }
     float amount = max(K_rain, 0.4 * forestWet);
     // The tip hangs at the lane's drip point shifted by the sway: shift the lane back onto it.
-    if (amount > 0.0) drip = rainDrips(vec2(along + sway, top - len - w.y), t, amount, FOREST_BEARD);
+    if (amount > 0.0) drip = rainDrips(vec2(along + sway, top - len - w.y), tf, amount, FOREST_BEARD);
   }
   return vec4(col, cover);
 }
@@ -526,7 +526,7 @@ vec4 forestBranch(vec2 q, float t, float tm, out float drip) {
 // the water in front of it covers it. Its lower flanks are lumpy, its top (where spirits stand) the
 // plain dome. Moss carpets the top and spills down in cushions; the bare stone is grey with lichen,
 // glossy when wet, and drops burst on it in the rain. Returns lit colour and coverage; up: normal y.
-vec4 forestRock(vec2 q, vec2 c, vec2 rs, float z, float cutY, float salt, float mossAmt, float t, out float up) {
+vec4 forestRock(vec2 q, vec2 c, vec2 rs, float z, float cutY, float salt, float mossAmt, float tf, out float up) {
   up = 0.0;
   vec2 d = (q - c) / rs;
   if (abs(d.x) > 1.15 || abs(d.y) > 1.15 || q.y < cutY) return vec4(0.0);
@@ -553,7 +553,7 @@ vec4 forestRock(vec2 q, vec2 c, vec2 rs, float z, float cutY, float salt, float 
   col += forestSheen * wetGloss(forestWet, n.y) * (1.0 - mossy) * 0.5;
   if (forestRainHere > 0.0 && n.y > 0.4) {
     // Crowns ~5 cells across: the library's units scaled so one spans ~22 cells here.
-    float splash = rainSplashes(vec2(q.x * z, (q.y - c.y) * z * 3.0) * (uRes.y / (22.0 * z)), t, forestRainHere);
+    float splash = rainSplashes(vec2(q.x * z, (q.y - c.y) * z * 3.0) * (uRes.y / (22.0 * z)), tf, forestRainHere);
     col = mix(col, forestDropLit, splash * (1.0 - mossy) * smoothstep(0.4, 0.8, n.y) * 0.8);
   }
   return vec4(col, cover);
@@ -999,7 +999,7 @@ vec4 forestCanopy(vec2 p, float tm) {
 // long slow ripples; near, the pebbled bed shows through; farther it mirrors the mist above and, in
 // front of the torii, the torii upside down; long streaks of light along the current, foam round the
 // stepping stones, rings in the rain. bed: the pebbled bed's colour here.
-vec3 forestWater(vec2 q, vec2 w, float zg, float t, float tm, float keep, vec3 bed) {
+vec3 forestWater(vec2 q, vec2 w, float zg, float tf, float tm, float keep, vec3 bed) {
   float flow = 0.12 + 0.38 * K_stream;
   vec2 fw = vec2(w.x * 2.6, (w.y + tm * flow) * 0.75);
   vec2 tilt = (vec2(vnoise(fw), vnoise(fw * vec2(1.9, 1.6) + 4.0)) - 0.5) * 0.5 * keep;
@@ -1007,7 +1007,7 @@ vec3 forestWater(vec2 q, vec2 w, float zg, float t, float tm, float keep, vec3 b
   if (forestRainHere > 0.0) {
     // Rings only where the water is not so foreshortened that they would sparkle.
     float ringKeep = 1.0 - smoothstep(0.03, 0.08, zg * zg / (FOREST_EYE * uRes.y) * 2.4);
-    vec3 rr = rainRipples(w * 2.4, t, forestRainHere);
+    vec3 rr = rainRipples(w * 2.4, tf, forestRainHere);
     tilt += rr.xy * ringKeep;
     ring = rr.z * ringKeep;
   }
@@ -1048,7 +1048,7 @@ vec3 forestWater(vec2 q, vec2 w, float zg, float t, float tm, float keep, vec3 b
 // detail giving way to its mean once finer than a few cells; gold in a shaft, green round the
 // mushrooms; the stream (or, with it off, its dry stony bed) winding through with a wet mossy lip;
 // pools gathering in the rain, mirroring the mist. zg out: its depth.
-vec3 forestGround(vec2 p, float t, float tm, out float zg) {
+vec3 forestGround(vec2 p, float tf, float tm, out float zg) {
   float zc = FOREST_EYE / max(FOREST_HORIZON - p.y, 1e-3);
   vec2 q = p + forestPar / zc;
   zc = FOREST_EYE / max(FOREST_HORIZON - q.y, 1e-3);
@@ -1088,7 +1088,7 @@ vec3 forestGround(vec2 p, float t, float tm, out float zg) {
     float pebble = (1.0 - smoothstep(0.25, 0.42, length(fract(bp) - 0.5 - cen))) * keep;
     vec3 bedLight = forestFill * 1.1 + forestTop * 0.5 + forestKey * forestBeam * 0.6;
     vec3 bed = mix(FOREST_LITTER * 0.6, FOREST_ROCK * (0.5 + 0.45 * hb), pebble) * bedLight;
-    vec3 inner = K_stream > 0.0 ? forestWater(q, w, zc, t, tm, keep, wetten(bed, 1.0, 0.3) * 0.7) : wetten(bed, forestWet, 0.3);
+    vec3 inner = K_stream > 0.0 ? forestWater(q, w, zc, tf, tm, keep, wetten(bed, 1.0, 0.3) * 0.7) : wetten(bed, forestWet, 0.3);
     float lip = bell((abs(s) - 1.0) / 0.09);
     col = mix(inner, col, smoothstep(0.92, 1.18, abs(s)));
     col = mix(col, wetten(FOREST_MOSS_DEEP, 1.0, 0.9) * light, lip * 0.75 * keep);
@@ -1102,7 +1102,7 @@ Shade sceneForest(vec2 uv, vec2 cell, float t) {
   forestAspect = aspect;
   forestLA = max(aspect, FOREST_MIN_ASPECT);
   vec2 p = vec2((uv.x - 0.5) * aspect, uv.y);
-  float tm = t * uMotion;
+  float tm = uMotionTime;
   forestCamD = forestCamera();
   Sky sky = skyMoonPhase(skyAt(timeOfDayM(K_time, K_cycle, uMotionTime)), K_moon);
   // The rain's cloud closes over the sky as the rain sets in (the shared canopy weather): a drizzle
@@ -1202,7 +1202,7 @@ Shade sceneForest(vec2 uv, vec2 cell, float t) {
   }
   if (p.y < FOREST_HORIZON) {
     float zg;
-    vec3 ground = forestGround(p, t, tm, zg);
+    vec3 ground = forestGround(p, uFallTime, tm, zg);
     col = mix(mist, ground, forestTransmit(zg, 0.0));
     hitZ = zg;
   }
@@ -1282,7 +1282,7 @@ Shade sceneForest(vec2 uv, vec2 cell, float t) {
         float ext = FOREST_TORII_SPAN + FOREST_TORII_OVER;
         float bottom = forestKasagiBottom(P.x);
         if (eaves > 0.0 && abs(P.x) < ext && P.y < bottom && P.y > bottom - 2.2) {
-          float drip = rainDrips(vec2(P.x + ext, bottom - P.y), t, eaves, 0.4);
+          float drip = rainDrips(vec2(P.x + ext, bottom - P.y), uFallTime, eaves, 0.4);
           col = mix(col, forestDropLit, drip * 0.85 * forestTransmit(tz, 2.5));
         }
       }
@@ -1324,7 +1324,7 @@ Shade sceneForest(vec2 uv, vec2 cell, float t) {
       }
     }
     float drip;
-    vec4 branch = forestBranch(q, t, tm, drip);
+    vec4 branch = forestBranch(q, uFallTime, tm, drip);
     if (hardEdge(branch.a) > 0.0) {
       col = mix(mist, branch.rgb, forestTransmit(z, 3.0));
       hitZ = z;
@@ -1341,7 +1341,7 @@ Shade sceneForest(vec2 uv, vec2 cell, float t) {
     vec2 c = vec2((forestStreamX(z) + st.y) / z, FOREST_HORIZON - FOREST_EYE / z);
     vec2 rs = st.zw / z;
     float up;
-    vec4 stone = forestRock(q, c, rs, z, c.y - 0.08 * rs.y, 11.0 + float(k) * 3.7, 0.35, t, up);
+    vec4 stone = forestRock(q, c, rs, z, c.y - 0.08 * rs.y, 11.0 + float(k) * 3.7, 0.35, uFallTime, up);
     if (hardEdge(stone.a) > 0.0) {
       col = mix(mist, stone.rgb, forestTransmit(z, 0.1));
       hitZ = z;
@@ -1353,7 +1353,7 @@ Shade sceneForest(vec2 uv, vec2 cell, float t) {
     float z = FOREST_ROCKR.y;
     vec2 q = forestAt(p, z);
     float up;
-    vec4 rock = forestRock(q, rockRC, rockRR, z, FOREST_HORIZON - FOREST_EYE / (z - 0.6), 4.1, 0.85, t, up);
+    vec4 rock = forestRock(q, rockRC, rockRR, z, FOREST_HORIZON - FOREST_EYE / (z - 0.6), 4.1, 0.85, uFallTime, up);
     if (hardEdge(rock.a) > 0.0) {
       col = mix(mist, rock.rgb, forestTransmit(z, 0.4));
       hitZ = z;
@@ -1389,7 +1389,7 @@ Shade sceneForest(vec2 uv, vec2 cell, float t) {
     float z = FOREST_ROCKL.y;
     vec2 q = forestAt(p, z);
     float up;
-    vec4 rock = forestRock(q, rockLC, rockLR, z, -1.0, 2.3, 1.0, t, up);
+    vec4 rock = forestRock(q, rockLC, rockLR, z, -1.0, 2.3, 1.0, uFallTime, up);
     if (hardEdge(rock.a) > 0.0) {
       col = mix(mist, rock.rgb, forestTransmit(z, 0.4));
       hitZ = z;
@@ -1494,7 +1494,7 @@ Shade sceneForest(vec2 uv, vec2 cell, float t) {
   // The rain, in depth: each layer of drops hidden behind the first surface along this pixel, its
   // unresolved haze laid over the distance like the mist, the nearest, out of focus, fainter.
   if (forestRain > 0.0) {
-    Precip rain = rainFall(uv, aspect, t, forestRainHere, K_wind, 1.0 - exp(-max(hitZ - forestCamD, 0.0) / 30.0));
+    Precip rain = rainFall(uv, aspect, tm, uFallTime, forestRainHere, K_wind, 1.0 - exp(-max(hitZ - forestCamD, 0.0) / 30.0));
     col = mix(col, mist, rain.veil);
     col = mix(col, forestDropLit, rain.cover * mix(0.9, 0.55, rain.near));
   }

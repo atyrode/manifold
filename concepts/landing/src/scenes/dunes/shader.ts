@@ -252,7 +252,7 @@ Shade sceneDunes(vec2 uv, vec2 cell, float t) {
   bool overhead = K_camera > 0.5;
   // The shared world now (shaders/lib/world.ts): the sky and its light, the deck rain or snow closes
   // over it, the aurora's glow and the lightning's flash in that light.
-  World world = worldAt(t, DUNES_METEOR_SLOT, DUNES_LIGHTNING_SLOT);
+  World world = worldAt(DUNES_METEOR_SLOT, DUNES_LIGHTNING_SLOT);
   Sky sky = world.sky;
   float windSign = world.wind < 0.0 ? -1.0 : 1.0;
   // How hard it blows: drives the blowing sand, the ripples' creep and, with the dust, a sandstorm.

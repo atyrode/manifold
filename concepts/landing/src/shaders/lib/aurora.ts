@@ -5,8 +5,8 @@
 export const auroraGlsl = `
 // ---- aurora ----
 
-// Curtains hung one behind another (aurora, auroraM): 3 unless the scene selects fewer (or more) with
-// the AURORA_CURTAINS feature, e.g. 1 for a far, small patch of sky.
+// Curtains hung one behind another (auroraCurtains, auroraM): 3 unless the scene selects fewer (or
+// more) with the AURORA_CURTAINS feature, e.g. 1 for a far, small patch of sky.
 #ifndef AURORA_CURTAINS
 #define AURORA_CURTAINS 3
 #endif
@@ -54,7 +54,8 @@ vec3 auroraCurtain(vec3 dir, float dist, float T, float salt, float keep) {
   return mix(vec3(0.25, 1.0, 0.55), vec3(0.78, 0.2, 0.58), smoothstep(0.2, 0.75, hn)) * lum;
 }
 
-// The curtains at clock T (motion seconds), nearer ones higher, farther ones crowding the horizon.
+// The curtains at clock T (motion seconds: uMotionTime, or a scene's own motion clock), nearer ones
+// higher, farther ones crowding the horizon; keep as for auroraCurtain (1: full detail).
 vec3 auroraCurtains(vec3 dir, float T, float strength, float keep) {
   if (strength <= 0.0 || dir.y <= 0.0 || dir.z <= 0.05) return vec3(0.0);
   vec3 c = vec3(0.0);
@@ -77,12 +78,6 @@ vec3 auroraCurtains(vec3 dir, float T, float strength, float keep) {
 // (dir.y flipped) and the scene's own dimming.
 vec3 auroraM(vec3 dir, float tm, float strength, float foot) {
   return auroraCurtains(dir, tm, strength, smoothstep(1.0, 2.0, 0.026 / max(foot, 1e-6)));
-}
-
-// auroraM on the scene clock t (curtains ripple with t * uMotion), at full detail: kept for the
-// scenes that hand it their own clocks. New code uses auroraM.
-vec3 aurora(vec3 dir, float t, float strength) {
-  return auroraCurtains(dir, t * uMotion, strength, 1.0);
 }
 
 // The aurora's light on the land under it, green from the curtains' lower edges and breathing with

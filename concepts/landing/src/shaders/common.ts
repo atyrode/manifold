@@ -207,6 +207,7 @@ uniform int uView;       // 0 dithered, 1 source, 2 split (source left)
 uniform float uLevels;
 uniform float uMotion;
 uniform float uMotionTime; // the scene clock integrated with motion (seconds of motion-scaled time): no jump when uMotion changes
+uniform float uFallTime;   // the scene clock integrated with min(1, 2.5 uMotion): gravity's clock, real time once motion is above 0.4
 uniform vec2 uPointer;   // -1..1, smoothed
 uniform vec4 uMouse;     // raw pointer: xy in uv (y up), z 1 while pressed, w uTime of the last press (-1e4: none)
 uniform float uProgress; // loading page progress 0..1, -1 elsewhere
@@ -222,6 +223,7 @@ uniform int uConLineCount;
 uniform int uConMarkStar;  // first star / line of the Manifold asterism
 uniform int uConMarkLine;
 uniform float uTriggers[MAX_TRIGGERS]; // uTime when each "now" button fired
+uniform float uMotionTriggers[MAX_TRIGGERS]; // uMotionTime when each "now" button fired
 uniform sampler2D uSim0;  // the scene simulation's textures (see scenes/types.ts SceneSim)
 uniform sampler2D uSim1;
 uniform sampler2D uSim2;
@@ -310,14 +312,15 @@ vec4 hardRamp(float b, float cover, vec3 tint, float th) {
 }
 
 // Mostly steady stars that dim now and then. 'twinkle' sets the rate (0 = steady); 'scatter'
-// spreads rates and phases and shortens the dips so stars flicker independently.
+// spreads rates and phases and shortens the dips so stars flicker independently. The twinkle runs
+// on the motion clock (uMotionTime) and its dips deepen with the motion: still stars at motion 0.
 float starfield(vec2 cell, float density, float twinkle, float scatter) {
   float h = hash12(cell);
   float on = step(1.0 - density, h);
   float h2 = fract(h * 431.7);
   float h3 = fract(h * 719.3);
   float rate = (0.15 + 2.5 * twinkle) * mix(1.0, 0.25 + 1.75 * h2, scatter);
-  float wave = 0.5 + 0.5 * sin(uTime * rate * uMotion + h3 * TAU * (1.0 + 9.0 * scatter));
+  float wave = 0.5 + 0.5 * sin(uMotionTime * rate + h3 * TAU * (1.0 + 9.0 * scatter));
   float dip = pow(wave, mix(1.0, 9.0, scatter)) * step(0.001, twinkle);
   return on * (1.0 - 0.75 * dip * uMotion) * (0.4 + 0.6 * fract(h * 97.0));
 }
@@ -325,6 +328,12 @@ float starfield(vec2 cell, float density, float twinkle, float scatter) {
 // Seconds since a "now" button fired (negative or huge when idle).
 float sinceTrigger(int slot) {
   return uTime - uTriggers[slot];
+}
+
+// Motion seconds (uMotionTime) since a "now" button fired: for a response that plays at the motion's
+// pace, as the scene's own events on uMotionTime do. Huge while the slot is idle (uTriggers -1e4).
+float sinceTriggerM(int slot) {
+  return uTriggers[slot] < -1000.0 ? 1e4 : uMotionTime - uMotionTriggers[slot];
 }
 
 // A scene's entrance and exit (scenes/types.ts SceneDef.passage), linear in real time: ease them.

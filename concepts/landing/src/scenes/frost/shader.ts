@@ -105,7 +105,7 @@ float frostSpruce(vec2 q, float height, float halfWidth, float laden, out float 
 // sources' wide halos: the frost and the condensation scatter it. Snow lies on the roofs, sills,
 // boughs, rails and lamp cap as deep as uWeather.y says, and falls through the air between the pane
 // and whatever each pixel sees, the farthest of it a veil of lit air.
-vec3 frostOutside(vec2 uv, float aspect, float blur, float t, Sky sky, out vec3 glow) {
+vec3 frostOutside(vec2 uv, float aspect, float blur, Sky sky, out vec3 glow) {
   glow = vec3(0.0);
   float tm = uMotionTime;
   vec2 p = vec2((uv.x - 0.5) * aspect, uv.y);
@@ -142,7 +142,7 @@ vec3 frostOutside(vec2 uv, float aspect, float blur, float t, Sky sky, out vec3 
   vec3 dir = viewRay(uv, aspect, FROST_HORIZON, 1.0);
   float foot = 1.0 / uRes.y;
   vec3 col = skyColor(sky, dir);
-  vec4 cloud = skyClouds(sky, dir, t, 0.3 + 0.7 * overcast, K_wind);
+  vec4 cloud = skyClouds(sky, dir, tm, 0.3 + 0.7 * overcast, K_wind);
   col = mix(col, cloud.rgb * (1.0 - 0.4 * heavy) + town, cloud.a);
   float sharp = 1.0 - smoothstep(0.01, 0.03, blur);
   float stars = skyStars(sky, dir, street ? K_stars : K_stars * 1.7, foot) * (1.0 - cloud.a) * sharp;
@@ -389,7 +389,7 @@ vec3 frostOutside(vec2 uv, float aspect, float blur, float t, Sky sky, out vec3 
   // blizzard); flakes catch the lamp and window light near them, glittering in the lamps' cones;
   // the nearest are big soft discs like the lamps' bokeh, lit faintly by the room behind the pane.
   // Behind thick frost the view smears, and flakes melt into the veil.
-  Precip fall = snowFall(uv, aspect, t, K_snow, K_wind, dep);
+  Precip fall = snowFall(uv, aspect, tm, K_snow, K_wind, dep);
   float smear = smoothstep(0.015, 0.05, blur);
   vec3 air = vec3(0.42, 0.46, 0.55) * (lit * 1.2 + 0.02) + glow * 0.45 + beam * 0.6 + town * 0.7;
   col = mix(col, air, clamp(fall.veil + smear * fall.cover * 0.3, 0.0, 1.0));
@@ -540,7 +540,7 @@ Shade sceneFrost(vec2 uv, vec2 cell, float t) {
   vec2 film = (vec2(vnoise(p * 26.0 + 3.0), vnoise(p * 26.0 + 9.0)) - 0.5) * 0.006 * clear;
   vec2 view = uv + vec2(right - left, up - down) * 0.025 + film + uPointer * vec2(0.006, 0.004);
   vec3 glow;
-  vec3 outside = frostOutside(view, aspect, 0.007 + dens * 0.05 + haze * 0.025, t, sky, glow);
+  vec3 outside = frostOutside(view, aspect, 0.007 + dens * 0.05 + haze * 0.025, sky, glow);
   vec3 col = mix(outside, vec3(0.1, 0.12, 0.15) + glow * 0.35 + outside * 0.3, clamp(haze, 0.0, 1.0) * 0.55);
 
   // Light in the ice: the room's dim light on this side, and the night behind the pane scattered

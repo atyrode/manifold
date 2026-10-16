@@ -463,7 +463,7 @@ float cloudsWisps(vec2 p, float stream, float amount) {
 
 // Everything beyond the pane: sky, thunderheads, the passing plane, the cloud sea, the wing.
 // 'frame' is the half-size of what frames the view (the porthole, or the screen without it).
-vec3 cloudsView(vec2 p, vec2 head, vec2 frame, float px, float t, float tm, Sky sky, CloudsLight li, out float stars, out float accent) {
+vec3 cloudsView(vec2 p, vec2 head, vec2 frame, float px, float tm, Sky sky, CloudsLight li, out float stars, out float accent) {
   stars = 0.0;
   accent = 0.0;
   // The world rolls a fraction of a degree as the aircraft rides the air; wing and window don't.
@@ -480,7 +480,7 @@ vec3 cloudsView(vec2 p, vec2 head, vec2 frame, float px, float t, float tm, Sky 
   vec3 col = bg;
 
   float lseed = 0.0;
-  float lage = lightningAge(t, K_lightning, 0, lseed);
+  float lage = lightningAge(tm, K_lightning, 0, lseed);
   float flash = lightningFlash(lage);
   bool towersOn = K_thunderheads > 0.0;
   float tall = 0.55 + 0.9 * K_thunderheads;
@@ -496,7 +496,7 @@ vec3 cloudsView(vec2 p, vec2 head, vec2 frame, float px, float t, float tm, Sky 
     col += vec3(0.88, 0.92, 1.0) * stars;
     // The giant planet over the stars, under the aurora; the towers stand in front of both.
     col = skyGiant(sky, col, dw, 1.0 / (cloudsFocal * uRes.y), 1.0);
-    if (K_aurora > 0.0) col += aurora(dw, t, K_aurora) * sky.night;
+    if (K_aurora > 0.0) col += auroraCurtains(dw, tm, K_aurora, 1.0) * sky.night;
   }
 
   if (towersOn && hv.y > -0.03) {
@@ -720,7 +720,7 @@ Shade sceneClouds(vec2 uv, vec2 cell, float t) {
   vec3 col = vec3(0.0);
   float stars = 0.0;
   float accent = 0.0;
-  if (dP < px) col = cloudsView(p, head, frame, px, t, tm, sky, li, stars, accent);
+  if (dP < px) col = cloudsView(p, head, frame, px, tm, sky, li, stars, accent);
   if (windowOn) {
     vec2 sunAt = li.dir.xy / max(li.dir.z, 0.05) * cloudsFocal + vec2(0.0, cloudsHorizon);
     col = cloudsWindow(col, p, qp, dP, dT, size, radius, pitch, cx, px, sky, li, sunAt);

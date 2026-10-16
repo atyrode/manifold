@@ -268,8 +268,8 @@ vec3 countrySkyDome(Sky sky, vec3 dir, float rain) {
   return greyed(c, vec3(0.92, 0.95, 1.0), 0.6 * grey) * (1.0 - 0.2 * rain);
 }
 
-vec4 countryDeck(Sky sky, vec3 dir, float t, float cover, float wind, float rain) {
-  vec4 c = skyClouds(sky, normalize(vec3(dir.x, dir.y * (1.0 + 0.8 * rain), dir.z)), t, cover, wind);
+vec4 countryDeck(Sky sky, vec3 dir, float tm, float cover, float wind, float rain) {
+  vec4 c = skyClouds(sky, normalize(vec3(dir.x, dir.y * (1.0 + 0.8 * rain), dir.z)), tm, cover, wind);
   float grey = smoothstep(0.0, 0.05, rain);
   c.rgb = greyed(c.rgb, vec3(0.94, 0.96, 1.0), 0.6 * grey) * (1.0 + 0.2 * grey - 0.35 * rain);
   return c;
@@ -701,7 +701,7 @@ Shade sceneCountry(vec2 screenUv, vec2 cell, float t) {
     // Cloud shadows sweeping over the land.
     float sunShade = 1.0 - 0.75 * overcast;
 #if CLOUD_TIER >= CLOUD_SHADOWS
-    if (K_shadows > 0.0 && sky.sun.y > 0.0) sunShade *= 1.0 - K_shadows * skyCloudShadow(sky, countryToCamera(p - eye), COUNTRY_CLOUD_BASE, 1.0 + 0.8 * rain, t, cover, wind);
+    if (K_shadows > 0.0 && sky.sun.y > 0.0) sunShade *= 1.0 - K_shadows * skyCloudShadow(sky, countryToCamera(p - eye), COUNTRY_CLOUD_BASE, 1.0 + 0.8 * rain, tm, cover, wind);
 #endif
     shade *= sunShade;
     albedo = wetten(albedo, wet, porous);
@@ -714,7 +714,7 @@ Shade sceneCountry(vec2 screenUv, vec2 cell, float t) {
     if (water) {
       // The water mirrors the sky (and its deck) along the reflected ray, by Fresnel; ripples and
       // rain rings break it.
-      vec3 rings = rainRipples(p.xz * 2.0, t, rain);
+      vec3 rings = rainRipples(p.xz * 2.0, uFallTime, rain);
       vec2 tilt = rings.xy * 0.4 + 0.03 * (vec2(vnoise(p.xz * 0.4 + vec2(tm * 0.3, 0.0)), vnoise(p.zx * 0.4 - vec2(0.0, tm * 0.25))) - 0.5);
 #if WATER_TIER >= WATER_RIPPLES
       // The breeze's cat's-paws (ripples.ts) tilt it further.
@@ -726,7 +726,7 @@ Shade sceneCountry(vec2 screenUv, vec2 cell, float t) {
       refl.y = max(refl.y, 0.02);
       vec3 rc = countryToCamera(refl);
       vec3 mirror = countrySkyDome(sky, rc, rain);
-      vec4 deck = countryDeck(sky, rc, t, cover, wind, rain);
+      vec4 deck = countryDeck(sky, rc, tm, cover, wind, rain);
       mirror = mix(mirror, deck.rgb, deck.a);
       float fres = fresnelSchlick(max(dot(-rd, nw), 0.0), 0.02, 0.0);
       float mirrorShare = mix(0.35, 1.0, fres) * (waterDepth > 0.1 ? 1.0 : 0.6);
@@ -763,7 +763,7 @@ Shade sceneCountry(vec2 screenUv, vec2 cell, float t) {
   } else {
     // Sky, with the giant planet among the stars and the far ridges beyond the map.
     col = countrySkyDome(sky, dirCam, rain);
-    vec4 deck = countryDeck(sky, dirCam, t, cover, wind, rain);
+    vec4 deck = countryDeck(sky, dirCam, tm, cover, wind, rain);
     col += skyStars(sky, dirCam, K_stars, cellAngle) * vec3(0.9, 0.93, 1.0) * (1.0 - deck.a);
     col = skyGiant(sky, col, dirCam, cellAngle, 1.0);
     col = mix(col, deck.rgb, deck.a);
@@ -812,7 +812,7 @@ Shade sceneCountry(vec2 screenUv, vec2 cell, float t) {
   // Rain and snow through the air, as far as the first surface (compressed: the land lies far off).
 #if COUNTRY_HAS_RAIN
   if (rain > 0.0) {
-    Precip pr = rainFall(screenUv, aspect, t, rain, wind, 1.0 - exp(-seen / 650.0));
+    Precip pr = rainFall(screenUv, aspect, tm, uFallTime, rain, wind, 1.0 - exp(-seen / 650.0));
     col = mix(col, mix(vec3(dot(haze, LUMA)) * vec3(0.94, 0.97, 1.0), haze, 0.4), pr.veil);
     vec3 dropCol = max(greyed(haze, vec3(1.0), 0.5) * 1.2, vec3(0.08));
     col = mix(col, dropCol * (1.0 - 0.15 * pr.near), pr.cover);
@@ -820,7 +820,7 @@ Shade sceneCountry(vec2 screenUv, vec2 cell, float t) {
 #endif
 #if COUNTRY_HAS_SNOW
   if (snow > 0.0) {
-    Precip ps = snowFall(screenUv, aspect, t, snow, wind, 1.0 - exp(-seen / 450.0));
+    Precip ps = snowFall(screenUv, aspect, tm, snow, wind, 1.0 - exp(-seen / 450.0));
     vec3 flake = vec3(0.95, 0.96, 1.0) * clamp(air * 1.3 + 0.1, 0.0, 1.0);
     col = mix(col, flake * 0.92, ps.veil);
     float contrast = clamp((dot(flake, LUMA) - dot(col, LUMA)) * 3.0, 0.0, 1.0);

@@ -203,8 +203,7 @@ const float BAR_CAR_LEN = 4.4;
 // ---- This frame
 
 float barPx;        // one cell, screen heights
-float barT;         // the scene clock (for the weather library, which applies uMotion itself)
-float barTm;        // the scene clock × motion
+float barTm;        // the motion clock (uMotionTime): everything in the room and the street moves on it
 vec2 barEye;        // the eye's offset (m), from the pointer
 vec2 barPassEye;    // the passage's lift of the eye (m)
 vec2 barPassTurn;   // the passage's turn of the view (screen heights)
@@ -577,7 +576,7 @@ vec2 barCar(float x, float period, float dir, float salt, float share, float x0,
     }
   }
   if (near) {
-    float e = sinceTrigger(1) * uMotion;
+    float e = sinceTriggerM(1);
     if (e >= 0.0 && e < 14.0) {
       float rear = x0 - BAR_CAR_LEN - 0.5 + 3.8 * e;
       float mid = rear + 0.5 * BAR_CAR_LEN;
@@ -685,9 +684,9 @@ vec3 barOutside(vec2 sp, float xl, out float zHit, out vec3 dropLit) {
       vec3 mirrored = barCity * 0.7 + barStreaks(fq.x, max(-BAR_F * BAR_EYE / BAR_FACADE_Z - fq.y, 0.0), sp.y);
       col = mix(col, mirrored + light * 0.15 * albedo, gloss * 0.9);
       if (K_rain > 0.0) {
-        float ring = hardEdge(rainRipples(vec2(sp.x * 24.0, sp.y * 60.0), barT, K_rain).z);
+        float ring = hardEdge(rainRipples(vec2(sp.x * 24.0, sp.y * 60.0), uFallTime, K_rain).z);
         col = mix(col, barCity * 2.2 + BAR_SODIUM * 0.15, ring * pool * 0.6);
-        col += (barCity * 1.6 + light * 0.3) * rainSplashes(vec2(sp.x * 20.0, sp.y * 30.0), barT, K_rain) * (1.0 - pool);
+        col += (barCity * 1.6 + light * 0.3) * rainSplashes(vec2(sp.x * 20.0, sp.y * 30.0), uFallTime, K_rain) * (1.0 - pool);
       }
     }
   } else {
@@ -770,7 +769,7 @@ vec3 barOutside(vec2 sp, float xl, out float zHit, out vec3 dropLit) {
     float drip = max(K_rain, 0.4 * barWet);
     if (drip > 0.0) {
       vec2 w = barWorld(sp, BAR_AWNING_Z);
-      col = mix(col, barLamp * 0.4 + barShelf * 0.2 + barCity * 1.5, rainDrips(vec2(w.x, (BAR_AWNING_Y - w.y) * 0.42), barT, drip, 0.25) * 0.85);
+      col = mix(col, barLamp * 0.4 + barShelf * 0.2 + barCity * 1.5, rainDrips(vec2(w.x, (BAR_AWNING_Y - w.y) * 0.42), uFallTime, drip, 0.25) * 0.85);
     }
   }
 
@@ -787,7 +786,7 @@ vec3 barJukebox(vec2 p) {
   if (K_jukebox <= 0.0) return vec3(0.0);
   vec2 q = (barAt(p, 4.2) - vec2(-0.645, -0.1)) / vec2(0.07, 0.115);
   if (abs(q.x) > 1.4 || abs(q.y) > 1.4) return vec3(0.0);
-  float song = sinceTrigger(2) * uMotion;
+  float song = sinceTriggerM(2);
   float swell = song >= 0.0 ? exp(-song / 8.0) : 0.0;
   float arch = q.y > 0.3 ? length((q - vec2(0.0, 0.3)) / vec2(1.0, 0.7)) - 1.0 : abs(q.x) - 1.0;
   arch = max(arch, -1.0 - q.y);
@@ -812,7 +811,7 @@ vec3 barPane(vec2 p, vec2 uv, float aspect, float xl, vec2 w) {
   float lens = 0.0;
   float onGlass = max(K_rain * 0.8, 0.3 * smoothstep(0.3, 1.0, barWet));
   if (K_drops > 0.5 && onGlass > 0.0) {
-    drop = glassDrops(uv, aspect, barT, onGlass);
+    drop = glassDrops(uv, aspect, barTm, onGlass);
     sp += drop.xy * vec2(aspect, 1.0);
     if (drop.z > 0.0) {
       // Each drop is a little lens holding a small upside-down picture of the lit street, fixed to
@@ -829,7 +828,7 @@ vec3 barPane(vec2 p, vec2 uv, float aspect, float xl, vec2 w) {
   vec3 col = barOutside(sp, xl, zHit, dropLit);
   // The rain out there, none at arm's length (that would be in here).
   if (K_rain > 0.0) {
-    Precip fall = rainFall(uv + drop.xy, aspect, barT, K_rain, K_wind, weatherDepth(zHit));
+    Precip fall = rainFall(uv + drop.xy, aspect, barTm, uFallTime, K_rain, K_wind, weatherDepth(zHit));
     col = mix(col, barCity * 1.1 + dropLit * 0.2, fall.veil);
     col = mix(col, max(dropLit * 1.2, vec3(0.08)), fall.cover * (1.0 - fall.near));
   }
@@ -942,7 +941,7 @@ void barCoat(vec2 p, inout vec3 col) {
     vec2 tipQ = vec2(tip.x, tip.y - BAR_EYE) * (BAR_F / z);
     float width = 0.045;
     float along = q.x - tipQ.x + (0.3 + 0.4 * hash12(vec2(0.0, 3.7))) * width;
-    if (along >= 0.0 && along < width) col = mix(col, barLamp * 0.4 + vec3(1.0, 0.62, 0.3) * 0.3, rainDrips(vec2(along, (tipQ.y - q.y) * 0.6), barT, wetU, width) * 0.85);
+    if (along >= 0.0 && along < width) col = mix(col, barLamp * 0.4 + vec3(1.0, 0.62, 0.3) * 0.3, rainDrips(vec2(along, (tipQ.y - q.y) * 0.6), uFallTime, wetU, width) * 0.85);
   }
 }
 
@@ -1174,7 +1173,7 @@ vec3 barMark(vec2 w, float px, vec3 col, inout float accent) {
   vec2 q = (w - BAR_MARK.xy) / BAR_MARK.z;
   if (abs(q.x) > 1.4 || abs(q.y) > 1.4) return col;
   float e = px / BAR_MARK.z;
-  float since = sinceTrigger(3) * uMotion;
+  float since = sinceTriggerM(3);
   float pick = 0.0;
   if (K_mark < 1.5) {
     float d = markDistance(q);
@@ -2103,8 +2102,7 @@ void barTable(vec2 p, inout vec3 col, inout float accent) {
 Shade sceneBar(vec2 uv, vec2 cell, float t) {
   float aspect = uRes.x / uRes.y;
   barPx = 1.0 / uRes.y;
-  barT = t;
-  barTm = t * uMotion;
+  barTm = uMotionTime;
   barPassage();
   barEye = uPointer * vec2(0.06, 0.025) + barPassEye;
   float pan = -max(0.0, BAR_PAN_FROM - aspect) * BAR_PAN_RATE;

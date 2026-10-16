@@ -529,7 +529,7 @@ vec3 trainSkyCol(vec3 dir, float t, bool detail, inout float accent) {
     col = skyGiant(s, col, dir, trainPx / TRAIN_F, clear);
     mark = trainMarkStars(dir) * clear * s.night;
     col += vec3(0.9, 0.95, 1.0) * trainMeteor(dir, t) * clear * s.night;
-    if (K_aurora > 0.0) col += aurora(dir, t, K_aurora) * s.night * clear;
+    if (K_aurora > 0.0) col += auroraCurtains(dir, uMotionTime, K_aurora, 1.0) * s.night * clear;
   }
   col = mix(col, vec3(dot(col, LUMA)) * vec3(0.92, 0.95, 1.0), 0.7 * trainOver) * (1.0 - 0.3 * trainStorm);
   vec4 cloud = trainClouds(dir, t, detail);
@@ -1313,9 +1313,9 @@ vec3 trainStationScene(vec2 o, float t, vec3 col, inout float hitZ, inout float 
         float open = 1.0 - step(abs(x - mid), 26.0) * step(6.0, zp);
         if (K_rain > 0.0 && open > 0.5) {
           vec3 dropLight = vec3(0.9, 0.95, 1.0) * dot(trainAir, LUMA) * 1.2 + light * 0.6 + 0.04;
-          float ring = pool > 0.5 ? hardEdge(rainRipples(vec2(x, zp * 3.0) * 1.6, t, K_rain).z) : 0.0;
+          float ring = pool > 0.5 ? hardEdge(rainRipples(vec2(x, zp * 3.0) * 1.6, uFallTime, K_rain).z) : 0.0;
           float metre = TRAIN_F / (zp * trainPx);
-          float splash = rainSplashes(vec2(x, zp), t, K_rain) * smoothstep(15.0, 25.0, metre);
+          float splash = rainSplashes(vec2(x, zp), uFallTime, K_rain) * smoothstep(15.0, 25.0, metre);
           c = mix(c, dropLight, max(ring * 0.5, splash * 0.8));
         }
       }
@@ -1515,7 +1515,7 @@ vec3 trainStationScene(vec2 o, float t, vec3 col, inout float hitZ, inout float 
     // Rain running off the valance in a row of drips, warm in the lamplight.
     float drip = max(K_rain, 0.4 * trainWet);
     if (drip > 0.0 && abs(xv) < 26.0 && yv < 0.88 && zv < hitZ + 0.5) {
-      float dr = rainDrips(vec2(xv + 26.0, 0.88 - yv), t, drip, 0.6);
+      float dr = rainDrips(vec2(xv + 26.0, 0.88 - yv), uFallTime, drip, 0.6);
       col = mix(col, TRAIN_GLOW * 0.6 * trainLampsOn + trainAir * 1.2 + 0.03, dr * 0.85);
     }
   }
@@ -1864,13 +1864,13 @@ vec3 trainOutside(vec2 o, vec2 rainUV, float aspect, float t, inout float accent
   // Rain and snow close by catch the carriage's light and the lamps passing.
   vec3 lamplit = trainCarriageLight(2.0, 0.0) * 0.6 + trainEventLight(o.x * 4.0 / TRAIN_F + trainEyeOff.x, 4.0, 0.0, tm) * 0.4;
   if (K_rain > 0.0) {
-    Precip pr = rainFall(rainUV, aspect, t, K_rain, wind, depth);
+    Precip pr = rainFall(rainUV, aspect, tm, uFallTime, K_rain, wind, depth);
     col = mix(col, trainAir * 1.05 + lamplit * 0.15, pr.veil);
     vec3 dropLight = max(vec3(0.9, 0.95, 1.0) * dot(trainAir, LUMA) * 1.2 + lamplit, vec3(0.08));
     col = mix(col, dropLight, pr.cover * (1.0 - pr.near));
   }
   if (K_snow > 0.0) {
-    Precip ps = snowFall(rainUV, aspect, t, K_snow, wind, depth);
+    Precip ps = snowFall(rainUV, aspect, tm, K_snow, wind, depth);
     vec3 air = mix(trainAir, TRAIN_SNOW * (dot(trainAmbient, LUMA) * 1.5 + 0.06), 0.5) + lamplit * 0.15;
     col = mix(col, air, ps.veil);
     col = mix(col, TRAIN_SNOW * (dot(trainAmbient + trainMoonLight, LUMA) * 1.3 + 0.1) + lamplit * 1.2, ps.cover * (1.0 - ps.near));

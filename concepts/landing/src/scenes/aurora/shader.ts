@@ -761,7 +761,7 @@ Shade sceneAurora(vec2 screenUv, vec2 cell, float t) {
   }
   // Falling snow, in depth to the first thing the eye meets.
   if (K_snow > 0.0) {
-    Precip pr = snowFall(screenUv, aspect, t, K_snow, K_wind, depth);
+    Precip pr = snowFall(screenUv, aspect, aurT, K_snow, K_wind, depth);
     vec3 air = AUR_SNOW * (aurAmb * 2.4 + aurMoonLight * 0.6 + aurLight * 1.5);
     col = precipOver(col, air, max(air * 1.3, vec3(0.08)), pr);
     aurAccent *= 1.0 - pr.veil;

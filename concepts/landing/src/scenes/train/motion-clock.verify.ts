@@ -5,11 +5,23 @@
 // crossing's flashers; an hour more on the motion clock does change them. Each scene sets its clock
 // globals as it draws (streetHour, trainSetup); small entries then draw those parts on their own,
 // since software WebGL takes many seconds to compile either whole scene.
+//
+// `motionClocksAll1`..`4` (a quarter of the scenes each, to stay under the deadline): every scene's
+// own program at its defaults, at rest, draws the same source frame at the same motion and fall
+// clocks (uMotionTime, uFallTime) whatever the scene clock, and whatever the motion amount but for
+// the scenes in MOTION_AMPLITUDE, which scale something by the motion itself (no phase): nothing
+// animates on uTime times uMotion.
 import { defaultsFor, paramDefaults, renderSettings } from "../../state.ts";
-import { fragmentSourceFor, vertexSource } from "../../shaders/index.ts";
+import { effective } from "../../params.ts";
+import {
+  fragmentSourceFor,
+  sceneFeatures,
+  shaderValues,
+  vertexSource,
+} from "../../shaders/index.ts";
 import { DataTexture } from "../../sims/texture.ts";
 import type { SceneDef } from "../types.ts";
-import { sceneDefs } from "../index.ts";
+import { sceneDefs, type SceneId } from "../index.ts";
 import { TRAIN_CROSSING, TRAIN_STATION, TRAIN_TEXELS } from "./sim.ts";
 
 export interface Clocks {
@@ -17,17 +29,49 @@ export interface Clocks {
   time: number;
   /** uMotionTime, the motion clock. */
   motionTime: number;
+  /** uFallTime, the fall clock. */
+  fallTime: number;
   /** uMotion, the slider. */
   motion: number;
 }
 
+/**
+ * Scenes whose defaults scale an amplitude by uMotion (allowed: `uMotion` alone is for amplitudes),
+ * so only the scene clock is varied for them, each with what it scales: pond bends its surface and
+ * turns its koi by it; swell's stars (`starfield`) dip deeper as they twinkle the more motion there
+ * is, still at motion 0.
+ */
+const MOTION_AMPLITUDE: Partial<Record<SceneId, true>> = { pond: true, swell: true };
+
 export const WIDTH = 64;
 export const HEIGHT = 36;
 /** A motion clock that the scene clock times no tested motion amount reproduces (600 × 1, 0.25, 0). */
-export const BASE: Clocks = { time: 600, motionTime: 240, motion: 1 };
+export const BASE: Clocks = { time: 600, motionTime: 240, fallTime: 600, motion: 1 };
 
 function fail(message: string): never {
   throw new Error(`motion clock: ${message}`);
+}
+
+/** `fragment` (a whole fragment source) linked with the vertex stage; `label` names it in failures. */
+function link(gl: WebGL2RenderingContext, label: string, fragment: string): WebGLProgram {
+  const linked = gl.createProgram();
+  for (const [type, source] of [
+    [gl.VERTEX_SHADER, vertexSource],
+    [gl.FRAGMENT_SHADER, fragment],
+  ] as const) {
+    const shader = gl.createShader(type);
+    if (!shader) fail("shader allocation failed");
+    gl.shaderSource(shader, source);
+    gl.compileShader(shader);
+    if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS))
+      fail(`${label}: ${gl.getShaderInfoLog(shader) ?? "compile failed"}`);
+    gl.attachShader(linked, shader);
+    gl.deleteShader(shader);
+  }
+  gl.linkProgram(linked);
+  if (!gl.getProgramParameter(linked, gl.LINK_STATUS))
+    fail(`${label}: ${gl.getProgramInfoLog(linked) ?? "link failed"}`);
+  return linked;
 }
 
 export function compile(
@@ -36,24 +80,7 @@ export function compile(
   entry: string,
   glsl: string,
 ): WebGLProgram {
-  const linked = gl.createProgram();
-  for (const [type, source] of [
-    [gl.VERTEX_SHADER, vertexSource],
-    [gl.FRAGMENT_SHADER, fragmentSourceFor({ ...scene, entry, glsl: scene.glsl + glsl })],
-  ] as const) {
-    const shader = gl.createShader(type);
-    if (!shader) fail("shader allocation failed");
-    gl.shaderSource(shader, source);
-    gl.compileShader(shader);
-    if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS))
-      fail(`${scene.id}: ${gl.getShaderInfoLog(shader) ?? "compile failed"}`);
-    gl.attachShader(linked, shader);
-    gl.deleteShader(shader);
-  }
-  gl.linkProgram(linked);
-  if (!gl.getProgramParameter(linked, gl.LINK_STATUS))
-    fail(`${scene.id}: ${gl.getProgramInfoLog(linked) ?? "link failed"}`);
-  return linked;
+  return link(gl, scene.id, fragmentSourceFor({ ...scene, entry, glsl: scene.glsl + glsl }));
 }
 
 /** One source-view frame of `linked` at `clocks` with the knobs `values`, uSim0 = `sim` if given. */
@@ -72,11 +99,13 @@ export function draw(
   gl.uniform2f(at("uRes"), WIDTH, HEIGHT);
   gl.uniform1f(at("uTime"), clocks.time);
   gl.uniform1f(at("uMotionTime"), clocks.motionTime);
+  gl.uniform1f(at("uFallTime"), clocks.fallTime);
   gl.uniform1f(at("uMotion"), clocks.motion);
   gl.uniform1i(at("uView"), 1);
   gl.uniform4f(at("uMouse"), 0.5, 0.5, 0, -1e4);
   gl.uniform1fv(at("uParams"), Float32Array.from(values));
   gl.uniform1fv(at("uTriggers"), new Float32Array(8).fill(-1e4));
+  gl.uniform1fv(at("uMotionTriggers"), new Float32Array(8).fill(-1e4));
   gl.uniform2f(at("uPassage"), 1, 0);
   gl.uniform2f(at("uWeather"), 0, 0);
   gl.activeTexture(gl.TEXTURE0);
@@ -230,4 +259,51 @@ function trainCheck(gl: WebGL2RenderingContext): Record<string, number> {
 /** The check: throws on a jump; returns the pixels an hour of motion clock changes in each part. */
 export function verifyMotionClocks(gl: WebGL2RenderingContext): Record<string, unknown> {
   return { motionClock: { street: streetCheck(gl), train: trainCheck(gl) } };
+}
+
+/**
+ * `motionClocksAll`, split `parts` ways to keep each entry under the deadline: every `parts`-th
+ * scene from the `part`-th (0-based), each its own program at its defaults. At the same motion and
+ * fall clocks its source frame must not change with the scene clock (uTime 600 or 2400 at motion
+ * 0.6), nor with the motion (1 or 0.6 at uTime 600; not for MOTION_AMPLITUDE), and must change an
+ * hour of motion clock later where the scene shows anything moving. Returns each scene's pixels that
+ * hour changed.
+ */
+export function motionClocksAll(
+  part: number,
+  parts: number,
+): (gl: WebGL2RenderingContext) => Record<string, number> {
+  return (gl) => {
+    const result: Record<string, number> = {};
+    const scenes = Object.entries(sceneDefs) as [SceneId, SceneDef][];
+    for (const [id, scene] of scenes.filter((_, i) => i % parts === part)) {
+      const knobs = paramDefaults(id);
+      const linked = link(
+        gl,
+        id,
+        fragmentSourceFor(scene, sceneFeatures(scene, shaderValues(scene, knobs))),
+      );
+      try {
+        const values = scene.params.map((def) => effective(def, knobs));
+        const rest: Clocks = { ...BASE, motion: 0.6 };
+        const base = draw(gl, linked, values, undefined, rest);
+        const others: Clocks[] = [{ ...rest, time: 2400 }];
+        if (MOTION_AMPLITUDE[id] === undefined) others.push({ ...rest, motion: 1 });
+        for (const clocks of others) {
+          const changed = differing(base, draw(gl, linked, values, undefined, clocks));
+          if (changed > 0)
+            fail(
+              `${id}: ${changed} of ${WIDTH * HEIGHT} pixels jumped at the same motion clock (uTime ${clocks.time}, uMotion ${clocks.motion})`,
+            );
+        }
+        result[id] = differing(
+          base,
+          draw(gl, linked, values, undefined, { ...rest, motionTime: rest.motionTime + 10 }),
+        );
+      } finally {
+        gl.deleteProgram(linked);
+      }
+    }
+    return result;
+  };
 }

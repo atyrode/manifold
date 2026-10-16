@@ -301,9 +301,9 @@ float rippleTable(float b, vec2 p, vec2 F, vec2 lamp, float tray) {
   return mix(b, 0.28 + 0.4 * lamplit, lip);
 }
 
-// Without the sim: two dippers' rings summed, the screen's focus worked out from the height (a
-// ring's curvature is -k^2 times its height).
-RippleLook rippleStill(vec2 p, vec2 F, float pool, float t) {
+// Without the sim: two dippers' rings summed on the motion clock tm, the screen's focus worked out
+// from the height (a ring's curvature is -k^2 times its height).
+RippleLook rippleStill(vec2 p, vec2 F, float pool, float tm) {
   bool portrait = F.y > F.x;
   float L = max(F.x, F.y);
   float lambda = RIPPLE_C * K_speed / (RIPPLE_F * K_frequency);
@@ -311,7 +311,7 @@ RippleLook rippleStill(vec2 p, vec2 F, float pool, float t) {
   vec2 s0 = ripplePlace(0.3 * L, 0.5 - 0.5 * d, portrait);
   vec2 s1 = ripplePlace(0.3 * L, 0.5 + 0.5 * d, portrait);
   float k = TAU / lambda;
-  float phase = TAU * RIPPLE_F * K_frequency * t * uMotion;
+  float phase = TAU * RIPPLE_F * K_frequency * tm;
   float r0 = distance(p, s0);
   float r1 = distance(p, s1);
   float h = sqrt(lambda / max(r0, 0.25 * lambda)) * sin(phase - k * r0 - 0.785)
@@ -349,7 +349,7 @@ Shade sceneRipple(vec2 uv, vec2 cell, float t) {
       look.lit = mix(look.lit, next.lit, fade);
     }
   } else {
-    look = rippleStill(p, F, pool, t);
+    look = rippleStill(p, F, pool, uMotionTime);
   }
   float tray = rippleTray(p, F);
   if (surface) look.b = rippleTable(look.b, p, F, lamp, tray);

@@ -193,8 +193,11 @@ export class MeadowWildflowers {
     // The gust field as the meadow's own simulation reads it: the 'now' gust's age on the motion
     // clock, the passage's gust only while gusts are on.
     const motion = Math.max(0, frame.motion);
-    const fired = frame.triggers[GUST_TRIGGER] ?? -1e4;
-    const nowAge = fired < -1e3 ? -1 : (frame.time - fired) * motion;
+    const fired = frame.motionTriggers?.[GUST_TRIGGER];
+    const nowAge =
+      fired === undefined || (frame.triggers[GUST_TRIGGER] ?? -1e4) < -1e3
+        ? -1
+        : frame.motionTime - fired;
     const pass = meadowPassageGust(this.#pass, frame.passage.enter, frame.passage.exit);
     if (gusts <= 0) pass.amp = 0;
     const wind = meadowWind(

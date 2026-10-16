@@ -171,6 +171,7 @@ export function verifyTrainLine(gl: WebGL2RenderingContext): Record<string, unkn
         const bytes = draw(gl, linked, onLine(1, more), none.texture, {
           time: m,
           motionTime: m,
+          fallTime: m,
           motion: 1,
         });
         for (let i = 0; i < bytes.length; i += 4) if ((bytes[i] ?? 0) > 127) n++;

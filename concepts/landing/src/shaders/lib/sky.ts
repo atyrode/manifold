@@ -386,8 +386,9 @@ float skyStarLayer(vec3 dir, float height, float cells, float fill, float size, 
   float m = u * u * u; // magnitudes: many faint stars, a few bright ones
   float r = size * (0.4 + 0.6 * m);
   float star = (1.0 - smoothstep(0.0, r, length(g - id - c))) * (0.3 + 0.7 * m);
-  // Gentle twinkle, each star at its own slow rate; deeper near the horizon (scintillation).
-  float wave = 0.5 + 0.5 * sin(uTime * uMotion * (0.8 + 2.2 * fract(h2 * 13.7)) + TAU * fract(h2 * 29.1));
+  // Gentle twinkle on the motion clock, each star at its own slow rate; deeper near the horizon
+  // (scintillation).
+  float wave = 0.5 + 0.5 * sin(uMotionTime * (0.8 + 2.2 * fract(h2 * 13.7)) + TAU * fract(h2 * 29.1));
   float depth = mix(0.12, 0.45, 1.0 - smoothstep(0.05, 0.45, height));
   return star * (1.0 - depth * wave);
 }

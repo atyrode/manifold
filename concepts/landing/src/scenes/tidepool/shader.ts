@@ -500,7 +500,7 @@ Shade sceneTidepool(vec2 uv, vec2 cell, float t) {
   vec3 hessian;
   float breeze = 0.02 + 0.07 * K_ripples;
   vec2 ripple = causticRipples(q, tm, normalize(vec2(0.8, 0.6)), 0.075, breeze, 0.32, foot, hessian);
-  vec3 rings = rain > 0.0 ? rainRipples(q * TP_METRES * 2.5, t, rain) : vec3(0.0);
+  vec3 rings = rain > 0.0 ? rainRipples(q * TP_METRES * 2.5, uFallTime, rain) : vec3(0.0);
   vec2 slope = water.yz * TP_RELIEF + ripple + rings.xy * 0.25;
   float d = depth * TP_DEPTH;
   bool wet = depth > 0.02;
@@ -557,7 +557,7 @@ Shade sceneTidepool(vec2 uv, vec2 cell, float t) {
     col = albedo * (tpAmbient + tpLightCol * sunUp * shade);
     float gloss = wetGloss(wetness, n.z) * (0.4 + bed.gloss);
     col += tpLightCol * pow(max(dot(n, normalize(tpLight + vec3(0.0, 0.0, 1.0))), 0.0), 60.0) * gloss * 0.6;
-    if (rain > 0.0) col += vec3(0.75, 0.8, 0.85) * (tpAmbient.g + 0.15) * rainSplashes(q * TP_METRES, t, rain);
+    if (rain > 0.0) col += vec3(0.75, 0.8, 0.85) * (tpAmbient.g + 0.15) * rainSplashes(q * TP_METRES, uFallTime, rain);
     ink = 0.0;
   }
 
@@ -585,7 +585,7 @@ Shade sceneTidepool(vec2 uv, vec2 cell, float t) {
   if (rain > 0.0) {
     vec3 dir = rainFallDir(rain, 0.0);
     vec3 vanish = rainVanish(dir, vec3(1.0, 0.0, 0.0), vec3(0.0, 0.0, 1.0), vec3(0.0, -1.0, 0.0), 1.2);
-    Precip pr = rainFallSeen(uv, aspect, t, rain, 0.0, 1.0 - exp(-3.5 / 30.0), vanish);
+    Precip pr = rainFallSeen(uv, aspect, tm, uFallTime, rain, 0.0, 1.0 - exp(-3.5 / 30.0), vanish);
     vec3 air = vec3(dot(tpAmbient, LUMA)) * vec3(0.95, 0.98, 1.0);
     vec3 drop = max(air * 1.2, vec3(0.08));
     col = precipOver(col, air, drop * (1.0 - 0.2 * pr.near), pr);

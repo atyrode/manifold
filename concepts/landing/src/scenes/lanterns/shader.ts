@@ -776,7 +776,7 @@ Shade sceneLanterns(vec2 uv, vec2 cell, float t) {
       vec2 rp = vec2(xp * 2.5, zp * 0.8);
       float band = 0.1 * min(1.0 / (2.5 * cellX), 1.0 / (0.8 * cellZ));
       rainFade = smoothstep(2.5, 4.0, band);
-      drops = rainRipples(rp, t * 0.7, K_rain) * rainFade;
+      drops = rainRipples(rp, uFallTime * 0.7, K_rain) * rainFade;
       slope += drops.xy * 0.35;
       hidden += K_rain * 0.008 * (1.0 - rainFade);
     }
@@ -990,7 +990,7 @@ Shade sceneLanterns(vec2 uv, vec2 cell, float t) {
     // threads elsewhere; out-of-focus drops right in front of us catch less of the lanterns.
     float reachZ = water ? length(vec2(xp, zp)) : 1e4;
     if (nearest < 1e3) reachZ = mix(reachZ, nearest, solidCover);
-    Precip p = rainFall(uv, aspect, t, K_rain, K_wind, 1.0 - exp(-reachZ / 30.0));
+    Precip p = rainFall(uv, aspect, tm, uFallTime, K_rain, K_wind, 1.0 - exp(-reachZ / 30.0));
     vec3 air = greyed(haze, vec3(1.0), 0.5) * 0.85 + inAir * 0.6;
     glow *= 1.0 - 0.5 * p.veil;
     // Drops shine with the cloud base they refract (a floor so some rain still reads in the dark),

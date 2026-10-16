@@ -40,9 +40,10 @@ with `return shadeOf(col, inkOf(col, gain, gamma), accent);`: `inkOf` turns the 
 paper page (`pagePaper()`, see "Page theme"), so it can never disagree with the page.
 
 Available in GLSL (from `common`): `uRes`, `uTime`, `uMotion` (the lab's motion 0..1),
-`uMotionTime` (the motion clock, below), `uPointer` (smoothed -1..1 parallax, 0 when the pointer is
-not followed), `uMouse` (raw pointer: xy in uv, z = button held, w = scene time of the last press),
-`uBg` (the page background), `uParams[]`, `uTriggers[]`, `sinceTrigger(slot)`, `uSim0..uSim3` +
+`uMotionTime` (the motion clock, below), `uFallTime` (the fall clock, below), `uPointer` (smoothed
+-1..1 parallax, 0 when the pointer is not followed), `uMouse` (raw pointer: xy in uv, z = button
+held, w = scene time of the last press), `uBg` (the page background), `uParams[]`, `uTriggers[]`,
+`sinceTrigger(slot)`, `uMotionTriggers[]`, `sinceTriggerM(slot)` (below), `uSim0..uSim3` +
 `uSimOn` (textures from the scene's sim), `uWeather` (x: how wet the world is, y: how much snow
 lies, both 0..1; see "Weather in the world"), `hash12`, `vnoise`, `fbm`, `rotate`, `rotateAbout`,
 `segmentDistance` (a zero-length segment gives the distance to its end, as the TS twin in `mark.ts`
@@ -91,10 +92,18 @@ scene changes. Anything that moves at the lab's motion pace reads `uMotionTime` 
 `frame.motionTime`): the renderer sums each frame's scene-clock step times `uMotion`, from the same
 origin as `uTime`. It equals `t * uMotion` while the slider stands still, and moving the slider
 changes the pace instead of jumping every phase, as `t * uMotion` does (with the day cycle on, by
-hours after a few minutes). Never write `t * uMotion` in new code; `uMotion` alone is for
-amplitudes. The sky uses `timeOfDayM(K_time, K_cycle, uMotionTime)` in every scene; CPU
-day/night decisions use the same `frame.motionTime / 240` phase. Other library functions with a
-`tm` or `motionTime` parameter take `uMotionTime`; those that take `t` still scale it themselves.
+hours after a few minutes). Never write `t * uMotion`, or divide a clock by `uMotion` (only
+`meteorAge` and `lightningAge` do, to give a sub-second flash its real-time pace); `uMotion` alone
+is for amplitudes. The sky uses `timeOfDayM(K_time, K_cycle, uMotionTime)` in every scene;
+CPU day/night decisions use the same `frame.motionTime / 240` phase. Library functions take the
+clocks they run on: a `tm` or `motionTime` parameter takes `uMotionTime` (or the scene's own motion
+clock), a `tf` parameter `uFallTime`, the fall clock: each scene-clock step times
+min(1, 2.5 × motion), for what gravity drives (falling rain, splashes, rings, drips), so rain keeps
+real time above motion 0.4 and still stops at 0, and never jumps either. A "now" response that
+plays at the motion's pace, as the scene's own events on `uMotionTime` do, keys on
+`sinceTriggerM(slot)`: the motion seconds since the press (`uMotionTime - uMotionTriggers[slot]`,
+huge while idle; a sim: `frame.motionTime - frame.motionTriggers[slot]`). It stands still with the
+motion clock, so under reduced motion such a response holds its first frame.
 `main` already stills `shimmer` with the motion: don't multiply it by `uMotion` again.
 
 Under reduced motion the scene holds still but interactions still end. The scene clock and the
@@ -443,11 +452,11 @@ vec2 cloudDeckPoint(vec3 dir, vec2 travel, float tm, float wind); // where dir m
 float cloudFlatField(vec2 p, float fine);                 // the calm deck: two broad octaves 0..1, the finer kept by fine
 float cloudFlatFine(vec3 dir);                            // how much of the finer octave a view along dir keeps (none toward the horizon)
 // CLOUD_LIT (and without CLOUD_TIER)
-vec4 skyClouds(Sky sky, vec3 dir, float t, float cover, float wind); // the lit deck seen from below: rgb, alpha
-float skyCloudField(vec2 p, float foot, float t);         // its density at a deck point, octaves faded to their mean below ~3 cells
+vec4 skyClouds(Sky sky, vec3 dir, float tm, float cover, float wind); // the lit deck seen from below: rgb, alpha
+float skyCloudField(vec2 p, float foot, float tm);        // its density at a deck point, octaves faded to their mean below ~3 cells
 // CLOUD_SHADOWS
-float skyCloudShadow(Sky sky, vec3 ground, float base, float t, float cover, float wind); // 0..1 its shadow at ground (eye-relative), the deck base above the eye
-float skyCloudShadow(Sky sky, vec3 ground, float base, float low, float t, float cover, float wind); // the same under a deck rain brought down to base / low
+float skyCloudShadow(Sky sky, vec3 ground, float base, float tm, float cover, float wind); // 0..1 its shadow at ground (eye-relative), the deck base above the eye
+float skyCloudShadow(Sky sky, vec3 ground, float base, float low, float tm, float cover, float wind); // the same under a deck rain brought down to base / low
 // CLOUD_VOLUME: a sea of tops below the eye (drift, cover, boil: the tops' slow change, drop: the highest domes' depth, amp: their height range)
 struct CloudSea { vec2 drift; float cover; float boil; float drop; float amp; };
 float cloudSeaMarch(vec3 rd, CloudSea sea, float tFar);   // distance to the tops along rd, -1 past tFar
@@ -466,28 +475,27 @@ float rainShafts(vec2 p, float tm, float amount, float wind); // 0..1 toward clo
 // cover: drops/flakes (all layers, binarised per cell); veil: unresolved distant rain/snow (mix toward
 // the air colour); near: share of cover from the nearest, out-of-focus layer.
 struct Precip { float cover; float veil; float near; };
-Precip rainFall(vec2 uv, float aspect, float t, float amount, float wind, float depth); // level camera: paths straight down the frame
+Precip rainFall(vec2 uv, float aspect, float tm, float tf, float amount, float wind, float depth); // level camera: paths straight down the frame; gusts on tm, drops on tf
 // A camera pitched up or down: the drops' paths meet at the vanishing point of their fall direction.
 // right/up/fwd: camera axes in the world; focal in screen heights (ray = fwd*focal + right*x + up*y,
 // x, y about the frame's centre). Shift vanish.y by -lens * vanish.z for a lens-shifted frame.
 vec3 rainFallDir(float amount, float wind);               // the drops' world direction (terminal speed 4..9 m/s, wind drift)
 vec3 rainVanish(vec3 dir, vec3 right, vec3 up, vec3 fwd, float focal);
-Precip rainFallSeen(vec2 uv, float aspect, float t, float amount, float wind, float depth, vec3 vanish);
-float weatherRainClock(float t);                          // real time for gravity-driven things once motion > 0.4
-Precip snowFall(vec2 uv, float aspect, float t, float amount, float wind, float depth);
+Precip rainFallSeen(vec2 uv, float aspect, float tm, float tf, float amount, float wind, float depth, vec3 vanish);
+Precip snowFall(vec2 uv, float aspect, float tm, float amount, float wind, float depth);
 vec3 snowFallDir(float amount, float wind);               // the flakes' world direction, for rainVanish
-Precip snowFallSeen(vec2 uv, float aspect, float t, float amount, float wind, float depth, vec3 vanish); // tilted camera: flakes stream out of (or into) the vanishing point; vanish.z = 0 is snowFall
+Precip snowFallSeen(vec2 uv, float aspect, float tm, float amount, float wind, float depth, vec3 vanish); // tilted camera: flakes stream out of (or into) the vanishing point; vanish.z = 0 is snowFall
 vec3 precipOver(vec3 col, vec3 air, vec3 dropLight, Precip p); // the veil toward air, then the drops toward dropLight (see below)
 
 // Surfaces (p in the scene's own ground units, roughly metres; scale freely):
-float rainSplashes(vec2 p, float t, float amount);        // 0 or the light of brief splash crowns on hard upward-facing ground
-vec3 rainRipples(vec2 p, float t, float amount);          // rings on water or puddles: xy normal tilt, z ring light (p in ring cells)
+float rainSplashes(vec2 p, float tf, float amount);       // 0 or the light of brief splash crowns on hard upward-facing ground
+vec3 rainRipples(vec2 p, float tf, float amount);         // rings on water or puddles: xy normal tilt, z ring light (p in ring cells)
 float rainPuddles(vec2 p, float wet);                     // 0..1 where water pools on flat ground as wet (uWeather.x) rises
 vec3 wetten(vec3 albedo, float wet, float porous);        // wet albedo: darker, richer; porous 0 stone/metal/glass .. 1 soil/wood/cloth
 float wetGloss(float wet, float up);                      // 0..1 extra specular/reflection; up = normal.y (flat ground pools and mirrors)
-float rainDrips(vec2 p, float t, float amount, float width); // drops gathering and falling from an edge: p.x along it, p.y down; width = drip spacing
+float rainDrips(vec2 p, float tf, float amount, float width); // drops gathering and falling from an edge: p.x along it, p.y down; width = drip spacing
 float snowCover(vec3 n, vec2 p, float lying);             // 0..1 snow on a surface with normal n (y up), lying = uWeather.y
-vec3 glassDrops(vec2 uv, float aspect, float t, float amount); // rain on a pane: xy refraction offset, z drop coverage
+vec3 glassDrops(vec2 uv, float aspect, float tm, float amount); // rain on a pane: xy refraction offset, z drop coverage
 float fogAmount(float fog, float distance, float height); // 0..1 of fog colour to mix in (distance 0 near..1 far)
 
 // Level ground or water under the side-on camera (surface.ts). p: (x right, depth z) in eye's units;
@@ -525,7 +533,7 @@ float causticJacobian(vec3 hessian, float d);             // det(I + d H): d = 0
 float waterCaustic(vec3 hessian, float depth, float focus, float soft); // light on the bed vs still water, times a sim's focus
 float causticCells(vec2 x, float t, float foot);           // the stylised cellular net 0..1 (seams where the cells meet), x in net cells
 
-float lightningAge(float t, float rate, int slot, out float seed); // seconds since the latest strike (random at `rate`, or the trigger)
+float lightningAge(float tm, float rate, int slot, out float seed); // real seconds since the latest strike (random at `rate` on tm, or the trigger)
 float lightningBolt(vec2 p, vec2 top, vec2 ground, float seed, float age); // forked bolt glow at p (aspect-corrected units)
 float lightningFlash(float age);                               // sky-wide flash 0..1
 
@@ -533,7 +541,7 @@ float lightningFlash(float age);                               // sky-wide flash
 vec3 auroraM(vec3 dir, float tm, float strength, float foot);   // curtains of light for a view ray, to add to the night sky
 vec3 auroraGlow(float tm, float strength);                       // its light on the land, to add to ambient (times auroraSeen)
 float auroraSeen(Sky sky, float cloud);                          // night and open sky: multiply the curtains and their glow by it
-vec3 aurora(vec3 dir, float t, float strength);                  // auroraM on t * uMotion at full detail, for scenes with their own clocks
+vec3 auroraCurtains(vec3 dir, float tm, float strength, float keep); // keep 1: full detail, for scenes with their own motion clock (lake's surge) or detail
 
 // Shooting stars: when, and the streak in the scene's own flat sky frame (skyAngles for a dome).
 float meteorAge(float tm, float rate, int slot, out float seed); // seconds since the latest one (random at `rate` while motion > 0, or slot's "now")
@@ -772,7 +780,7 @@ Sky sky = skyMoonPhase(skyAt(timeOfDayM(K_time, K_cycle, uMotionTime)), K_moon);
 // ... behind the glass, sky first:
 float foot = 1.0 / uRes.y;                             // a cell in radians: the view spans 1 radian
 vec3 col = skyColor(sky, dir);                         // the moon's disc and halo in its phase
-vec4 cloud = skyClouds(sky, dir, t, cover, K_wind);
+vec4 cloud = skyClouds(sky, dir, uMotionTime, cover, K_wind);
 col = mix(col, cloud.rgb, cloud.a);
 col += SKY_STAR_TINT * skyStars(sky, dir, K_stars, foot) * (1.0 - cloud.a) * sharp;
 float open = auroraSeen(sky, cloud.a);
@@ -796,36 +804,36 @@ the shared component at a fixed value. **full**: the ordinary full moon of `skyC
 **own**: a scene-specific version kept on purpose. **—**: not applicable, no knob. Rows marked † still
 have **open** cells: an open night sky where the component could be composed.
 
-| Scene              | Sky seen                                                         | Stars                                            | Moon                                                       | Aurora                                                            | Meteors                                                                              |
-| ------------------ | ---------------------------------------------------------------- | ------------------------------------------------ | ---------------------------------------------------------- | ----------------------------------------------------------------- | ------------------------------------------------------------------------------------ |
-| `train`            | through the window                                               | knob 0.75                                        | knob (phase) + night glow                                  | knob (`aurora()`)                                                 | own: `K_meteors`, trigger 5, window and tunnel                                       |
-| `frost`            | through the window                                               | knob 0.5 (cabin ×1.7)                            | knob (phase)                                               | knob                                                              | knob, trigger 1                                                                      |
-| `autumn`           | over the park, under the canopy                                  | knob 0.5                                         | knob (phase; keys the night light)                         | knob, behind the clouds                                           | knob, trigger 2                                                                      |
-| `bees`             | over the valley                                                  | knob 0.6                                         | knob (phase)                                               | knob, behind the cumulus                                          | knob, trigger 0, screen frame                                                        |
-| `dunes`            | over the dune sea (the world's sky; none overhead)               | knob 1 + the world's Milky Way (knob, on)        | knob (phase; keys the sand's light)                        | knob, behind the clouds and the dust                              | knob, trigger 0, behind the clouds and the dust                                      |
-| `falls`            | above the cliff                                                  | knob 0.45                                        | knob (phase)                                               | knob, its arc lifted over the rim                                 | knob, trigger 0, falling behind the rim                                              |
-| `garden`           | the haze over the wall (the horizon is the frame's top edge)     | —                                                | knob (phase; keys the night light)                         | —                                                                 | —                                                                                    |
-| `lanterns`         | over the river, mirrored                                         | knob 0.55 (+ own sparse stars, thinned below it) | own young crescent, fixed in the frame                     | knob, mirrored                                                    | knob, trigger 2, mirrored                                                            |
-| `meadow`           | over the meadow (the world's sky, "World layers")                | knob 0.6 + the world's Milky Way (knob, on)      | knob (phase)                                               | knob, behind the clouds                                           | knob, trigger 2                                                                      |
-| `shore`            | over the sea and mirrored in it and the wet sand (the world's)   | knob 0.6 + the world's Milky Way (knob, on)      | knob (phase, compiled in at every setting; moonrise)       | knob, behind the clouds, mirrored                                 | knob, trigger 2, mirrored                                                            |
-| `sill`             | over the city                                                    | knob 0.5                                         | knob (phase)                                               | knob, light through the window                                    | knob, trigger 3                                                                      |
-| `skyward`          | a strip between roofs                                            | knob 0.3                                         | knob (phase)                                               | — (looking up: the curtains hang toward the horizon, out of view) | knob, trigger 0, camera frame                                                        |
-| `bamboo`, `forest` | canopy gaps                                                      | knob 0.5                                         | knob (phase; the gaps and the night rays)                  | —                                                                 | —                                                                                    |
-| `street`           | in reflections only                                              | knob 0.55 (window glass)                         | knob (phase; the windows and wet street)                   | —                                                                 | —                                                                                    |
-| `lake`             | over the ice, mirrored                                           | own `K_stars` + shared Milky Way (knob)          | own phase, fixed bearing                                   | knob (`aurora()` on the sim's substorm clock, rough-ice tap)      | knob, trigger 3, mirrored                                                            |
-| `aurora`           | the subject, mirrored in the fjord                               | own `K_stars` on a fixed night                   | own crescent                                               | own curtains                                                      | knob, trigger 1, mirrored                                                            |
-| `swell`            | over the sea                                                     | own (`starfield`, `K_stars`)                     | own disc (`K_moon` sizes it), its `waterGlitter` path      | —                                                                 | knob, trigger 0, screen frame, glints in the waves                                   |
-| `clouds` †         | above the cloud sea                                              | knob 0.75                                        | own bearing, drawn by `skyColor`                           | knob (`aurora()`, scene clock)                                    | open                                                                                 |
-| `country`          | over the valley                                                  | knob 0.5                                         | knob (phase; `SKY_MOON_PHASE` compiled in only below full) | open                                                              | open                                                                                 |
-| `flock` †          | the subject over a skyline (only the dome mirrored in its water) | knob 0.45                                        | full                                                       | open                                                              | open                                                                                 |
-| `island` †         | round the island                                                 | knob 0.6                                         | full                                                       | open                                                              | open                                                                                 |
-| `campfire` †       | above the pines                                                  | knob 0.8 + shared Milky Way (knob)               | — (the giant planet replaces it)                           | open                                                              | own: `K_shooting`, trigger 0, under the planet                                       |
-| `kelp`             | Snell's window                                                   | —                                                | full, refracted                                            | —                                                                 | —                                                                                    |
-| `tidepool`         | the sky in the pools' mirror                                     | —                                                | full, mirrored                                             | —                                                                 | —                                                                                    |
-| `dew`              | out-of-focus dawn backdrop                                       | —                                                | —                                                          | —                                                                 | —                                                                                    |
-| `bonsai`           | none (its light only)                                            | —                                                | —                                                          | —                                                                 | —                                                                                    |
-| `orbit`            | its own sky                                                      | own                                              | own                                                        | —                                                                 | own (captured meteors)                                                               |
-| `fireflies`        | its own moonless sky over the mangroves                          | own                                              | — (moonless)                                               | —                                                                 | knob (`skyComponentKnobs`), trigger 2, over the hills behind the trees, not mirrored |
+| Scene              | Sky seen                                                         | Stars                                            | Moon                                                       | Aurora                                                             | Meteors                                                                              |
+| ------------------ | ---------------------------------------------------------------- | ------------------------------------------------ | ---------------------------------------------------------- | ------------------------------------------------------------------ | ------------------------------------------------------------------------------------ |
+| `train`            | through the window                                               | knob 0.75                                        | knob (phase) + night glow                                  | knob (`auroraCurtains`, full detail)                               | own: `K_meteors`, trigger 5, window and tunnel                                       |
+| `frost`            | through the window                                               | knob 0.5 (cabin ×1.7)                            | knob (phase)                                               | knob                                                               | knob, trigger 1                                                                      |
+| `autumn`           | over the park, under the canopy                                  | knob 0.5                                         | knob (phase; keys the night light)                         | knob, behind the clouds                                            | knob, trigger 2                                                                      |
+| `bees`             | over the valley                                                  | knob 0.6                                         | knob (phase)                                               | knob, behind the cumulus                                           | knob, trigger 0, screen frame                                                        |
+| `dunes`            | over the dune sea (the world's sky; none overhead)               | knob 1 + the world's Milky Way (knob, on)        | knob (phase; keys the sand's light)                        | knob, behind the clouds and the dust                               | knob, trigger 0, behind the clouds and the dust                                      |
+| `falls`            | above the cliff                                                  | knob 0.45                                        | knob (phase)                                               | knob, its arc lifted over the rim                                  | knob, trigger 0, falling behind the rim                                              |
+| `garden`           | the haze over the wall (the horizon is the frame's top edge)     | —                                                | knob (phase; keys the night light)                         | —                                                                  | —                                                                                    |
+| `lanterns`         | over the river, mirrored                                         | knob 0.55 (+ own sparse stars, thinned below it) | own young crescent, fixed in the frame                     | knob, mirrored                                                     | knob, trigger 2, mirrored                                                            |
+| `meadow`           | over the meadow (the world's sky, "World layers")                | knob 0.6 + the world's Milky Way (knob, on)      | knob (phase)                                               | knob, behind the clouds                                            | knob, trigger 2                                                                      |
+| `shore`            | over the sea and mirrored in it and the wet sand (the world's)   | knob 0.6 + the world's Milky Way (knob, on)      | knob (phase, compiled in at every setting; moonrise)       | knob, behind the clouds, mirrored                                  | knob, trigger 2, mirrored                                                            |
+| `sill`             | over the city                                                    | knob 0.5                                         | knob (phase)                                               | knob, light through the window                                     | knob, trigger 3                                                                      |
+| `skyward`          | a strip between roofs                                            | knob 0.3                                         | knob (phase)                                               | — (looking up: the curtains hang toward the horizon, out of view)  | knob, trigger 0, camera frame                                                        |
+| `bamboo`, `forest` | canopy gaps                                                      | knob 0.5                                         | knob (phase; the gaps and the night rays)                  | —                                                                  | —                                                                                    |
+| `street`           | in reflections only                                              | knob 0.55 (window glass)                         | knob (phase; the windows and wet street)                   | —                                                                  | —                                                                                    |
+| `lake`             | over the ice, mirrored                                           | own `K_stars` + shared Milky Way (knob)          | own phase, fixed bearing                                   | knob (`auroraCurtains` on the sim's substorm clock, rough-ice tap) | knob, trigger 3, mirrored                                                            |
+| `aurora`           | the subject, mirrored in the fjord                               | own `K_stars` on a fixed night                   | own crescent                                               | own curtains                                                       | knob, trigger 1, mirrored                                                            |
+| `swell`            | over the sea                                                     | own (`starfield`, `K_stars`)                     | own disc (`K_moon` sizes it), its `waterGlitter` path      | —                                                                  | knob, trigger 0, screen frame, glints in the waves                                   |
+| `clouds` †         | above the cloud sea                                              | knob 0.75                                        | own bearing, drawn by `skyColor`                           | knob (`auroraCurtains`, full detail)                               | open                                                                                 |
+| `country`          | over the valley                                                  | knob 0.5                                         | knob (phase; `SKY_MOON_PHASE` compiled in only below full) | open                                                               | open                                                                                 |
+| `flock` †          | the subject over a skyline (only the dome mirrored in its water) | knob 0.45                                        | full                                                       | open                                                               | open                                                                                 |
+| `island` †         | round the island                                                 | knob 0.6                                         | full                                                       | open                                                               | open                                                                                 |
+| `campfire` †       | above the pines                                                  | knob 0.8 + shared Milky Way (knob)               | — (the giant planet replaces it)                           | open                                                               | own: `K_shooting`, trigger 0, under the planet                                       |
+| `kelp`             | Snell's window                                                   | —                                                | full, refracted                                            | —                                                                  | —                                                                                    |
+| `tidepool`         | the sky in the pools' mirror                                     | —                                                | full, mirrored                                             | —                                                                  | —                                                                                    |
+| `dew`              | out-of-focus dawn backdrop                                       | —                                                | —                                                          | —                                                                  | —                                                                                    |
+| `bonsai`           | none (its light only)                                            | —                                                | —                                                          | —                                                                  | —                                                                                    |
+| `orbit`            | its own sky                                                      | own                                              | own                                                        | —                                                                  | own (captured meteors)                                                               |
+| `fireflies`        | its own moonless sky over the mangroves                          | own                                              | — (moonless)                                               | —                                                                  | knob (`skyComponentKnobs`), trigger 2, over the hills behind the trees, not mirrored |
 
 `aurora` and `lake` keep a night of their own: their own `K_stars` knob sets the shared stars
 (`skyStarLight`) on it.
@@ -1263,11 +1271,11 @@ surfaces and change them. Never paste them over the frame as a flat layer.
   marks pools ~1.5–4 m across: ~3% of the ground after drizzle, ~20% in steady rain, ~26% when
   soaked. Make them full mirrors of the sky and lights with `rainRipples` rings while it rains,
   clearly brighter or darker than the ground around them.
-- **Splashes and drips.** Hard, upward-facing ground gets `rainSplashes(p.xz, t, K_rain)` (p in
+- **Splashes and drips.** Hard, upward-facing ground gets `rainSplashes(p.xz, uFallTime, K_rain)` (p in
   metres) times the drop light. A crown is ~5 cells across where a metre spans 25 cells. Fade it
   out where a metre spans fewer than ~15 cells, and don't use it on water, where `rainRipples`
   belongs. Edges (eaves, leaves, branches, sills, rails) get
-  `rainDrips(vec2(along, below), t, max(K_rain, 0.4 * uWeather.x), spacing)`, keeping the spacing
+  `rainDrips(vec2(along, below), uFallTime, max(K_rain, 0.4 * uWeather.x), spacing)`, keeping the spacing
   at least ~15 cells on screen. To drip from a given tip, lane k drips at
   `(k + 0.3 + 0.4 * hash12(vec2(k, 3.7))) * spacing`.
 - **Snow.** `snowFall` works like `rainFall`, from a flurry to a blizzard whiteout; its veil mixes
@@ -1397,13 +1405,13 @@ are meadow (the first), shore and dunes.
 ```glsl
 struct World {        // the world now: worldAt, once per pixel, before anything is drawn
   Sky sky;            // clock, sun, moon in its phase; light under the deck (+ aurora glow, lightning flash)
-  float time, t, tm;  // time of day 0..1, the scene clock, the motion clock
+  float time, tm, tf; // time of day 0..1, the motion clock, the fall clock
   float rain, snow, fog, wind;           // the knobs (0 while off or gated out)
   float storm, overcast, heavy, cover;   // max(rain, 0.85 snow); weatherOvercast; heavy rain/snow; K_clouds thickened
   vec3 glow;          // the aurora's light on the land (in sky.ambient)
   float flash, boltAge, boltSeed, meteorAge, meteorSeed;
 };
-World worldAt(float t, int meteorSlot, int lightningSlot);
+World worldAt(int meteorSlot, int lightningSlot);
 struct WorldView {    // the scene's camera at this pixel: a level pinhole with a shifted lens, or its own ray on it
   vec3 ray, dir;      // viewRay's frame (x right, y up, z ahead); the sky's frame, skyFacing(ray, yaw)
   float yaw;          // camera frame -> sky frame
@@ -1532,7 +1540,7 @@ featuresAll: { ...WORLD_ALL, MEADOW_HAS_WILDFLOWERS: 1 },
 ```glsl
 ${worldGlsl}   // at the top of the scene's GLSL
 // ... in the entry:
-World world = worldAt(t, MEADOW_METEOR_SLOT, MEADOW_LIGHTNING_SLOT);
+World world = worldAt(MEADOW_METEOR_SLOT, MEADOW_LIGHTNING_SLOT);
 WorldView view = worldView(uv, MEADOW_HORIZON, MEADOW_FOCAL, eye, MEADOW_TURN, 1.0);  // metres
 vec3 sun = world.sky.sunColor * worldSunlit(world, view, groundPoint);
 float zHit = WORLD_FAR;

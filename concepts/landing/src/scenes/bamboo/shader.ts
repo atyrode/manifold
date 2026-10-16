@@ -556,7 +556,7 @@ float bambooLanternWidth(float y) {
 // round the fire box is warmed by the flame. The fire box opens in an arched window showing the glowing
 // inside and the flame; with the Manifold mark (0..1) a screen across the window lets the light out
 // only through an M. 'glow' returns how much of its light shows here (the accent).
-vec4 bambooLantern(vec2 q, float t, float aaM, float mark, out float glow) {
+vec4 bambooLantern(vec2 q, float tf, float aaM, float mark, out float glow) {
   glow = 0.0;
   float hw = bambooLanternWidth(q.y);
   // The eaves' corners turn up.
@@ -593,7 +593,7 @@ vec4 bambooLantern(vec2 q, float t, float aaM, float mark, out float glow) {
     col += (bambooSheen * 0.5 * upFace + BAMBOO_FLAME * bambooLanternLit * (0.6 * sill + 0.3 * under + 0.2 * byFlame)) * gloss * 0.7;
   }
   // Splash crowns at half the library's size (it takes ~metres).
-  if (bambooRainHere > 0.0) col += bambooSheen * rainSplashes(q * 2.0, t, bambooRainHere) * upFace * 0.8;
+  if (bambooRainHere > 0.0) col += bambooSheen * rainSplashes(q * 2.0, tf, bambooRainHere) * upFace * 0.8;
 
   // The arched window.
   vec2 wq = q - vec2(0.0, 0.64);
@@ -676,7 +676,7 @@ vec3 bambooRipples(vec2 w) {
 // the near side the canopy overhead, darker), bent by the rings; the sky's glint lies on the far water
 // toward the light and breaks up when rings cross it; the lantern's warm sheen on the side toward it;
 // foam where the pour lands; leaves floating on it.
-vec3 bambooWater(vec2 w, vec2 p, float t, float landing, float pour, vec3 lantern, float face, inout float accent) {
+vec3 bambooWater(vec2 w, vec2 p, float tf, float landing, float pour, vec3 lantern, float face, inout float accent) {
   vec3 rip = bambooRipples(w);
   float farSide = 0.5 + 0.5 * w.y;
   vec3 mirror = bambooMistColor(vec2(p.x + rip.x * 0.08, mix(0.88, 0.55, farSide) + rip.y * 0.3));
@@ -697,7 +697,7 @@ vec3 bambooWater(vec2 w, vec2 p, float t, float landing, float pour, vec3 lanter
   // flattened by the angle the water is seen at. The basin is only a dozen cells tall, too thin for
   // rings growing across it to hold still under the dither; a crown lights a few cells and is gone.
   float plinks = max(bambooRainHere, 0.25 * bambooDripAmount);
-  if (plinks > 0.0) col = mix(col, bambooMist * 1.5 + lantern + 0.03, rainSplashes(vec2(w.x, 0.5 * w.y), t, plinks) * 0.8);
+  if (plinks > 0.0) col = mix(col, bambooMist * 1.5 + lantern + 0.03, rainSplashes(vec2(w.x, 0.5 * w.y), tf, plinks) * 0.8);
   if (uSimOn.z > 0.5) {
     float aa = 1.5 / (uRes.y * BAMBOO_BASIN.z);
     for (int i = 0; i < BAMBOO_LEAVES; i++) {
@@ -726,17 +726,17 @@ float bambooMoss(vec2 d, float amount) {
 // Rain on a stone of the water clock at d (device units), up 0 for a side .. 1 for a top: wet, it
 // mirrors the canopy's light and the lantern's warmth; on its top the rain splashes. A device unit
 // is about 1.7 m at the clock's depth; splashes are drawn at half the library's size (it takes ~m).
-vec3 bambooRainOnStone(vec2 d, float up, float t, vec3 lantern) {
+vec3 bambooRainOnStone(vec2 d, float up, float tf, vec3 lantern) {
   vec3 c = vec3(0.0);
   if (bambooWet > 0.0) c += (bambooSheen * 0.6 + lantern * 0.8) * wetGloss(bambooWet, up) * 0.5;
-  if (bambooRainHere > 0.0) c += bambooSheen * rainSplashes(d * 3.4, t, bambooRainHere) * smoothstep(0.5, 0.9, up) * 0.8;
+  if (bambooRainHere > 0.0) c += bambooSheen * rainSplashes(d * 3.4, tf, bambooRainHere) * smoothstep(0.5, 0.9, up) * 0.8;
   return c;
 }
 
 // The water clock in the near right corner, painted over col. d is in device units (sim.ts), p the
 // screen point, aa one cell in device units. Adds to accent where the lantern's light shows; sets
 // hitZ to its depth where it hides what lies behind it (the rain, the drips).
-vec3 bambooDevice(vec2 d, vec2 p, float aa, float t, float tm, vec3 col, inout float accent, inout float hitZ) {
+vec3 bambooDevice(vec2 d, vec2 p, float aa, float tf, float tm, vec3 col, inout float accent, inout float hitZ) {
   vec4 st = vec4(BAMBOO_REST, 0.0, 0.0, 1.0);
   if (uSimOn.y > 0.5) st = texelFetch(uSim1, ivec2(0, 0), 0);
   float theta = st.x;
@@ -777,7 +777,7 @@ vec3 bambooDevice(vec2 d, vec2 p, float aa, float t, float tm, vec3 col, inout f
       vec3 albedo = wetten(BAMBOO_GRANITE * (0.75 + 0.35 * vnoise(d * 60.0)), bambooWet, 0.45);
       float worn = bell((d.x - BAMBOO_STRIKE.x) / 0.02) * smoothstep(BAMBOO_STRIKE.y - 0.015, BAMBOO_STRIKE.y, d.y) * (1.0 - pad);
       albedo = mix(albedo, vec3(0.55, 0.54, 0.5), worn * 0.6);
-      vec3 c2 = albedo * light * (0.5 + 0.3 * side + 0.45 * up) + bambooRainOnStone(d, up, t, lantern);
+      vec3 c2 = albedo * light * (0.5 + 0.3 * side + 0.45 * up) + bambooRainOnStone(d, up, tf, lantern);
       float moss = bambooMoss(d, 0.55 * (1.0 - worn)) * (1.0 - smoothstep(0.7, 1.0, up));
       moss = max(moss, smoothstep(0.25, 0.6, pad) * smoothstep(0.55, 0.85, up));
       col = mix(col, mix(c2, mossCol * mossLight * (0.6 + 0.4 * side), moss), cv);
@@ -937,13 +937,13 @@ vec3 bambooDevice(vec2 d, vec2 p, float aa, float t, float tm, vec3 col, inout f
       float topFace = 1.0 - smoothstep(0.96, 1.04, outer);
       float side = clamp(0.5 + 0.5 * face * bq.x / flank, 0.0, 1.0);
       float shade = mix(0.5 + 0.4 * side, 1.15, topFace);
-      vec3 c = albedo * light * shade + bambooRainOnStone(d, topFace, t, lantern);
+      vec3 c = albedo * light * shade + bambooRainOnStone(d, topFace, tf, lantern);
       float moss = bambooMoss(d, mix(0.8, 0.3, smoothstep(-0.12, 0.02, bq.y)));
       c = mix(c, mossCol * mossLight * shade, moss);
       float opening = length(vec2(bq.x / 0.082, bq.y / 0.021));
       if (opening < 1.05) {
         vec2 w = vec2((d.x - BAMBOO_BASIN.x) / BAMBOO_BASIN.z, (d.y - BAMBOO_BASIN.y) / BAMBOO_BASIN.w);
-        vec3 surface = bambooWater(w, p, t, landing, pour, lantern, face, accent);
+        vec3 surface = bambooWater(w, p, tf, landing, pour, lantern, face, accent);
         vec3 inside = mix(albedo * 0.3 * light, surface, 1.0 - smoothstep(0.94, 1.0, length(w)));
         c = mix(c, inside, 1.0 - smoothstep(0.95, 1.02, opening));
       }
@@ -982,7 +982,7 @@ vec3 bambooDevice(vec2 d, vec2 p, float aa, float t, float tm, vec3 col, inout f
       float up = clamp(sq.y, 0.0, 1.0);
       float side = clamp(0.5 + 0.5 * face * sq.x, 0.0, 1.0);
       vec3 stone = wetten(BAMBOO_GRANITE * (0.7 + 0.4 * vnoise(d * 50.0)), bambooWet, 0.45) * light * (0.45 + 0.3 * side + 0.4 * up);
-      stone += bambooRainOnStone(d, up, t, lantern);
+      stone += bambooRainOnStone(d, up, tf, lantern);
       float moss = bambooMoss(d + float(i) * 3.0, 0.45 + 0.5 * up);
       col = mix(col, mix(stone, mossCol * mossLight * (0.6 + 0.3 * side + 0.4 * up), moss), cv);
       solid = max(solid, cv);
@@ -1133,7 +1133,7 @@ Shade sceneBamboo(vec2 uv, vec2 cell, float t) {
       vec2 lq = (p - lanternFoot) / lanternScale;
       if (abs(lq.x) < 0.38 && lq.y > -0.08 && lq.y < 1.12) {
         float glow;
-        vec4 stone = bambooLantern(lq, t, 1.0 / (uRes.y * lanternScale), mark, glow);
+        vec4 stone = bambooLantern(lq, uFallTime, 1.0 / (uRes.y * lanternScale), mark, glow);
         float through = bambooTransmit(BAMBOO_LANTERN_DEPTH, max(lq.y, 0.5));
         col = mix(col, mix(mist, stone.rgb, through), stone.a);
         col += BAMBOO_FLAME * glow * (1.0 - through) * 0.8;
@@ -1145,7 +1145,7 @@ Shade sceneBamboo(vec2 uv, vec2 cell, float t) {
         float eaves = max(K_rain, 0.4 * bambooWet);
         if (eaves > 0.0 && lq.y < 0.775 && abs(lq.x) < 0.28) {
           float spacing = 18.0 / (uRes.y * lanternScale);
-          float drip = hardEdge(rainDrips(vec2(lq.x + 0.28, 0.775 - lq.y), t, eaves, spacing));
+          float drip = hardEdge(rainDrips(vec2(lq.x + 0.28, 0.775 - lq.y), uFallTime, eaves, spacing));
           col = mix(col, bambooMist * 1.3 + bambooLanternLight(p, BAMBOO_LANTERN_DEPTH) * 1.5 + 0.02, drip * 0.85);
         }
       }
@@ -1161,7 +1161,7 @@ Shade sceneBamboo(vec2 uv, vec2 cell, float t) {
   col = mix(col, falling.rgb, hardEdge(falling.a));
 
   vec2 d = (p - vec2(0.5 * aspect, 0.0) + par / BAMBOO_DEVICE_DEPTH) / k;
-  if (d.x > -0.56 && d.y < 0.42) col = bambooDevice(d, p, 1.0 / (uRes.y * k), t, tm, col, accent, hitZ);
+  if (d.x > -0.56 && d.y < 0.42) col = bambooDevice(d, p, 1.0 / (uRes.y * k), uFallTime, tm, col, accent, hitZ);
 
   // Drops off the leaves, falling through the second and third rows of culms behind whatever stands
   // nearer. Like the rain they are water against the sky: they take its brightness, so they read
@@ -1178,7 +1178,7 @@ Shade sceneBamboo(vec2 uv, vec2 cell, float t) {
   // its drops (already binarised per cell) lit by the light where they are; the nearest, out of
   // focus, fainter.
   if (bambooRain > 0.0) {
-    Precip rain = rainFall(uv, aspect, t, bambooRainHere, K_wind, 1.0 - exp(-hitZ / 30.0));
+    Precip rain = rainFall(uv, aspect, tm, uFallTime, bambooRainHere, K_wind, 1.0 - exp(-hitZ / 30.0));
     // The nearest, out-of-focus drops are fainter, so the rain never buries the grove.
     rain.cover *= mix(0.9, 0.55, rain.near);
     col = precipOver(col, bambooMist, dropLit, rain);

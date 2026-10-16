@@ -234,7 +234,7 @@ export interface MeadowWind {
   strength: number;
   /** The gate's threshold, from the 'gust frequency' knob. */
   threshold: number;
-  /** Seconds (× motion) since 'now' sent a big gust; negative while idle. */
+  /** Motion seconds (on the motion clock) since 'now' sent a big gust; negative while idle. */
   nowAge: number;
   /** The passage gust's front (ground distance along the wind) and amplitude; 0 outside a passage. */
   passFront: number;
@@ -844,8 +844,9 @@ class MeadowSim implements SceneSim {
     // The shader's clock: everything it draws moves on the motion clock (uMotionTime).
     const motion = Math.max(0, frame.motion);
     const tmNow = frame.motionTime;
-    const fired = frame.triggers[GUST_TRIGGER] ?? -1e4;
-    const ageNow = fired < -1e3 ? -1 : (frame.time - fired) * motion;
+    const fired = frame.motionTriggers?.[GUST_TRIGGER];
+    const ageNow =
+      fired === undefined || (frame.triggers[GUST_TRIGGER] ?? -1e4) < -1e3 ? -1 : tmNow - fired;
     if (!this.#warm) {
       // Pre-run PREWARM seconds up to the clock of the first frame, a step count over as many
       // frames as the budget needs; until it is done nothing else moves.

@@ -642,7 +642,7 @@ Shade sceneLava(vec2 uv, vec2 cell, float t) {
   if (p.y > LAVA_TOP_BACK) col = lavaWall(p, A, B, twin, aspect);
   else if (p.y > LAVA_TOP_FRONT) col = lavaCord(lavaTop(p, A, B, twin, aspect), p, A);
   else col = lavaFront(p, A, B, twin);
-  if (K_shelf > 0.5) col = lavaShelf(col, p, A, B, twin, aspect, t * uMotion);
+  if (K_shelf > 0.5) col = lavaShelf(col, p, A, B, twin, aspect, uMotionTime);
   if (K_sleeve > 0.5) col = lavaSleeve(col, p, A, B, twin, aspect);
   if (twin) col = lavaDrawLamp(col, p, B);
   col = max(lavaDrawLamp(col, p, A), 0.0);

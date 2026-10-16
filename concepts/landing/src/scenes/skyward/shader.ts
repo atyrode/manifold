@@ -59,7 +59,6 @@ vec3 skywardU;
 vec3 skywardF;
 float skywardPx;       // radians per cell
 float skywardTm;       // the motion clock
-float skywardT;        // the scene clock
 float skywardSeedOff;
 float skywardThB;      // two more cell thresholds, decorrelated from cellTh
 float skywardThC;
@@ -89,7 +88,7 @@ vec3 skywardSkyBase(vec3 dir) {
 vec3 skywardCloudsOver(vec3 dir, vec3 c) {
   if (skywardCover <= 0.0) return c;
   vec3 cd = normalize(vec3(dir.x * 1.9, dir.y, dir.z * 1.9));
-  vec4 cl = skyClouds(skywardSky, cd, skywardT, skywardCover, K_wind);
+  vec4 cl = skyClouds(skywardSky, cd, skywardTm, skywardCover, K_wind);
   vec3 rgb = cl.rgb + vec3(0.16, 0.08, 0.04) * skywardSky.night * 0.45;
   return mix(c, rgb, cl.a);
 }
@@ -999,19 +998,18 @@ vec3 skywardGround(vec3 rd, float tg, SkywardHit h) {
   return col;
 }
 
-// The snow between the eye and depth (weatherDepth), seen through the camera sceneSkyward set up:
-// down the frame as a level camera sees it, or with K_snowOverhead streaming out of the patch of sky
-// the flakes fall from (vanish.z = 0 is the level camera's snow, snowFall).
-Precip skywardSnow(vec2 uv, float aspect, float t, float depth) {
+// The snow between the eye and depth (weatherDepth), seen through the camera sceneSkyward set up, on
+// the motion clock tm: down the frame as a level camera sees it, or with K_snowOverhead streaming out
+// of the patch of sky the flakes fall from (vanish.z = 0 is the level camera's snow, snowFall).
+Precip skywardSnow(vec2 uv, float aspect, float tm, float depth) {
   vec3 vanish = K_snowOverhead > 0.5 ? rainVanish(snowFallDir(K_snow, K_wind), skywardR, skywardU, skywardF, SKYWARD_FOCAL) : vec3(0.0, -1.0, 0.0);
-  return snowFallSeen(uv, aspect, t, K_snow, K_wind, depth, vanish);
+  return snowFallSeen(uv, aspect, tm, K_snow, K_wind, depth, vanish);
 }
 
 // ---- The picture ----
 
 Shade sceneSkyward(vec2 uv, vec2 cell, float t) {
   float aspect = uRes.x / uRes.y;
-  skywardT = t;
   skywardTm = uMotionTime;
   skywardPx = 1.0 / (uRes.y * SKYWARD_FOCAL);
   skywardSeedOff = K_citySeed * 0.317;
@@ -1079,7 +1077,7 @@ Shade sceneSkyward(vec2 uv, vec2 cell, float t) {
   float stars = 0.0;
   if (K_rain > 0.0) {
     vec3 vanish = rainVanish(rainFallDir(K_rain, K_wind), skywardR, skywardU, skywardF, SKYWARD_FOCAL);
-    Precip pr = rainFallSeen(uv, aspect, t, K_rain, K_wind, depth, vanish);
+    Precip pr = rainFallSeen(uv, aspect, skywardTm, uFallTime, K_rain, K_wind, depth, vanish);
     // Every path bunches into the zenith: thin the streaks out there so the centre is not a smear.
     vec2 vp = vanish.xy / (abs(vanish.z) < 1e-3 ? 1e-3 : vanish.z);
     float vd = length(vec2((uv.x - 0.5) * aspect, uv.y - 0.5) - vp);
@@ -1089,7 +1087,7 @@ Shade sceneSkyward(vec2 uv, vec2 cell, float t) {
     col = precipOver(col, air, dropLight * (1.0 - 0.2 * pr.near), pr);
   }
   if (K_snow > 0.0) {
-    Precip ps = skywardSnow(uv, aspect, t, depth);
+    Precip ps = skywardSnow(uv, aspect, skywardTm, depth);
     vec3 air = mix(skywardDeck * 1.3, vec3(0.75, 0.78, 0.85) * (skywardAmbient + 0.1), 0.5);
     col = mix(col, air, ps.veil);
     col = mix(col, max(vec3(0.8, 0.83, 0.9) * (skywardDeck * 1.6 + skywardAmbient * 0.4), vec3(0.1)), ps.cover);

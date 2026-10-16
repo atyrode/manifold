@@ -117,6 +117,7 @@ const uniformNames = [
   "uRes",
   "uTime",
   "uMotionTime",
+  "uFallTime",
   "uDither",
   "uColor",
   "uLevels",
@@ -139,6 +140,7 @@ const uniformNames = [
   "uPlanetCount",
   "uProgress",
   "uTriggers",
+  "uMotionTriggers",
   "uSim0",
   "uSim1",
   "uSim2",
@@ -167,6 +169,7 @@ interface SceneProgram {
     settings: RenderSettings | undefined;
     progress: number;
     triggers: number[];
+    motionTriggers: number[];
     simOn: number;
   };
 }
@@ -278,6 +281,8 @@ interface SceneDraw {
   /** Entered this frame: its weather starts where it leads and it reports no presses. */
   fresh: boolean;
   triggers: readonly number[];
+  /** The same presses' stamps on the motion clock (`uMotionTriggers`). */
+  motionTriggers: readonly number[];
   fired: readonly boolean[];
   pressedAt: number;
   /** Draw one cell only: a scene run off screen before it enters (see `Leaving.next`). */
@@ -501,6 +506,12 @@ export class DitherRenderer {
    * still and moving the slider changes the pace without jumping the phase.
    */
   #motionClock = 0;
+  /**
+   * Fall clock (`uFallTime`): each scene-clock step times min(1, 2.5 × motion), on the same origin,
+   * for what gravity drives (falling rain, splashes, drips): real time once motion is above 0.4,
+   * slower below and still at 0, and like the motion clock it never jumps when the slider moves.
+   */
+  #fallClock = 0;
   #lastFrame = 0;
   /** This frame's rAF timestamp and its sims' budget (SimFrame.now and .budget), milliseconds. */
   #frameNow = 0;
@@ -513,6 +524,8 @@ export class DitherRenderer {
   readonly #params = new Float32Array(MAX_PARAMS);
   /** Interaction-clock time each trigger slot last fired; far in the past when idle. */
   readonly #triggers: number[] = Array.from({ length: MAX_TRIGGERS }, () => NEVER);
+  /** `uMotionTriggers` and `SimFrame.motionTriggers`: the motion clock when each slot last fired. */
+  readonly #motionTriggers: number[] = Array.from({ length: MAX_TRIGGERS }, () => NEVER);
   /** `uTriggers` and `SimFrame.triggers`: the stamps on the scene clock, rewritten in place each frame. */
   readonly #shownTriggers: number[] = Array.from({ length: MAX_TRIGGERS }, () => NEVER);
   /** Each slot's stamp as the current scene's sim last saw it, to find the next frame's presses. */
@@ -610,6 +623,7 @@ export class DitherRenderer {
   trigger(slot: number): void {
     if (slot < 0 || slot >= MAX_TRIGGERS) return;
     this.#triggers[slot] = this.#interactionClock;
+    this.#motionTriggers[slot] = this.#motionClock;
     this.#governor.wake(this.#response());
   }
 
@@ -654,6 +668,7 @@ export class DitherRenderer {
     if (settings.scene !== this.#triggerScene) {
       this.#triggerScene = settings.scene;
       this.#triggers.fill(NEVER);
+      this.#motionTriggers.fill(NEVER);
       this.#mouse.pressedAt = NEVER;
     }
   }
@@ -860,7 +875,13 @@ export class DitherRenderer {
       key: building.key,
       program,
       uniforms,
-      sent: { settings: undefined, progress: Number.NaN, triggers, simOn: -1 },
+      sent: {
+        settings: undefined,
+        progress: Number.NaN,
+        triggers,
+        motionTriggers: [...triggers],
+        simOn: -1,
+      },
     };
   }
 
@@ -1236,6 +1257,7 @@ export class DitherRenderer {
     this.#clock += step;
     this.#interactionClock += live;
     this.#motionClock += step * motion;
+    this.#fallClock += step * Math.min(1, 2.5 * motion);
     // While the program of the scene the setup asks for builds in the background (the page's first
     // frames, a cut, a retry, a restored context), the scene on screen goes on as it last drew, or
     // the bare page shows before there is one.
@@ -1350,6 +1372,7 @@ export class DitherRenderer {
         oneCell: false,
         fresh: false,
         triggers: this.#quietTriggers,
+        motionTriggers: this.#quietTriggers,
         fired: this.#quietFired,
         pressedAt: NEVER,
         dissolve: 0,
@@ -1370,6 +1393,7 @@ export class DitherRenderer {
         oneCell: true,
         fresh: true,
         triggers: this.#quietTriggers,
+        motionTriggers: this.#quietTriggers,
         fired: this.#quietFired,
         pressedAt: NEVER,
         dissolve: 0,
@@ -1406,6 +1430,7 @@ export class DitherRenderer {
       oneCell: false,
       fresh: entered,
       triggers: shown,
+      motionTriggers: this.#motionTriggers,
       fired: this.#fired,
       pressedAt: this.#mouse.pressedAt > NEVER ? this.#mouse.pressedAt - lag : NEVER,
       dissolve,
@@ -1630,6 +1655,7 @@ export class DitherRenderer {
         values: s.params,
         params: s.knobs,
         triggers: draw.triggers,
+        motionTriggers: draw.motionTriggers,
         fired: draw.fired,
         pointer,
         parallax: this.#pointer,
@@ -1652,6 +1678,7 @@ export class DitherRenderer {
     gl.uniform2f(u.uRes, width, height);
     gl.uniform1f(u.uTime, this.#clock);
     gl.uniform1f(u.uMotionTime, this.#motionClock);
+    gl.uniform1f(u.uFallTime, this.#fallClock);
     gl.uniform2f(u.uPointer, this.#pointer.x, this.#pointer.y);
     gl.uniform4f(u.uMouse, pointer.x, pointer.y, pointer.down ? 1 : 0, draw.pressedAt);
     gl.uniform2f(u.uWeather, weather.wet, weather.lying);
@@ -1680,12 +1707,21 @@ export class DitherRenderer {
       gl.uniform1f(u.uProgress, this.#progress);
     }
     let triggersChanged = false;
+    let motionTriggersChanged = false;
     for (let slot = 0; slot < MAX_TRIGGERS; slot++) {
-      if (sent.triggers[slot] === draw.triggers[slot]) continue;
-      sent.triggers[slot] = draw.triggers[slot] ?? NEVER;
-      triggersChanged = true;
+      const stamp = draw.triggers[slot] ?? NEVER;
+      if (sent.triggers[slot] !== stamp) {
+        sent.triggers[slot] = stamp;
+        triggersChanged = true;
+      }
+      const motionStamp = draw.motionTriggers[slot] ?? NEVER;
+      if (sent.motionTriggers[slot] !== motionStamp) {
+        sent.motionTriggers[slot] = motionStamp;
+        motionTriggersChanged = true;
+      }
     }
     if (triggersChanged) gl.uniform1fv(u.uTriggers, draw.triggers);
+    if (motionTriggersChanged) gl.uniform1fv(u.uMotionTriggers, draw.motionTriggers);
     const simOn =
       (simTextures[0] ? 1 : 0) |
       (simTextures[1] ? 2 : 0) |

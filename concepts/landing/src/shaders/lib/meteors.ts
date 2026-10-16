@@ -14,8 +14,10 @@ const vec3 METEOR_TINT = vec3(0.9, 0.95, 1.0);
 // Seconds since the latest shooting star, the random one's or the trigger's (slot; -1 for none),
 // whichever is more recent; 1e4 when there is none. The motion clock tm (uMotionTime) is cut into
 // windows of 60 s (rate near 0) down to 5 s (rate 1), each holding one meteor at a hashed moment in 80%
-// of them; the age runs in real seconds, so each flies at its own pace whatever the motion. Random
-// meteors stop when motion is off (no flashes for reduced-motion visitors); the trigger still fires.
+// of them; the age runs in real seconds (the motion seconds since over the current motion), so each
+// flies at its own pace whatever the motion; only moving the slider soon after one rescales its age.
+// Random meteors stop when motion is off (no flashes for reduced-motion visitors); the trigger still
+// fires.
 // seed: a stable id for the meteor, for meteorStreak.
 float meteorAge(float tm, float rate, int slot, out float seed) {
   float age = 1e4;

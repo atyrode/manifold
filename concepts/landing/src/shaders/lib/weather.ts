@@ -29,19 +29,18 @@ float weatherDepth(float z) {
   return 1.0 - exp(-z / 30.0);
 }
 
-// The clock for things gravity drives (falling drops, their splashes, rings and drips): real time
-// once the motion knob is above 0.4, slower below and stopped at 0. A calm scene may drift slowly,
-// but rain slowed with it looks weightless.
-float weatherRainClock(float t) {
-  return t * clamp(uMotion * 2.5, 0.0, 1.0);
-}
+// Two clocks drive the weather, both passed in: tm, the motion clock (uMotionTime), for what drifts
+// with the scene's calm (gust curtains, snow, beads and drops sliding down a pane); tf, the fall clock
+// (uFallTime), for what gravity drives (falling drops, their splashes, rings and drips): real time
+// once the motion knob is above 0.4, slower below and stopped at 0. A calm scene may drift slowly, but
+// rain slowed with it looks weightless. Neither jumps when the motion slider moves.
 
 // Gust curtains 0..1: bands of heavier rain or snow ~8 m wide in the world, travelling with the
 // wind and slowly changing shape. x runs across the fall in screen heights, z is the distance (m)
 // the bands are seen at, so nearer bands look wider and sweep faster. Still air drifts them slowly.
-float weatherGust(float x, float z, float t, float wind) {
+float weatherGust(float x, float z, float tm, float wind) {
   float drift = (0.8 + 5.0 * abs(wind)) * (wind < 0.0 ? -1.0 : 1.0);
-  return smoothstep(0.3, 0.72, vnoise(vec2((x * z - t * drift) * 0.12, t * 0.04)));
+  return smoothstep(0.3, 0.72, vnoise(vec2((x * z - tm * drift) * 0.12, tm * 0.04)));
 }
 
 // One depth layer of rain, q in screen heights, already turned so the rain falls along -y. Columns
@@ -87,9 +86,10 @@ const float weatherRainLevel[6] = float[6](0.8, 0.9, 0.75, 0.6, 0.45, 0.35);
 // wind -1..1 slants it (positive: to the right), more for slow drizzle than for heavy drops.
 //
 // Drops fall at their terminal speed (drizzle ~4 m/s, big drops ~9 m/s), whatever the scene's calm:
-// gravity does not slow down with the motion knob, so the rain keeps real time once motion is above
-// 0.4 (and still stops at motion 0). The frame is about as tall as the distance to it (~53 degrees),
-// so a drop at z metres crosses the screen at v / z screen heights per second.
+// they fall on the fall clock tf (uFallTime), so the rain keeps real time once motion is above 0.4
+// (and still stops at motion 0), while its gust curtains drift on the motion clock tm (uMotionTime).
+// The frame is about as tall as the distance to it (~53 degrees), so a drop at z metres crosses the
+// screen at v / z screen heights per second.
 //
 // rainFall assumes a level camera, so the drops fall straight down the frame (slanted by the wind).
 // A scene whose camera tilts passes where the rain's paths meet instead (rainFallSeen with
@@ -111,12 +111,10 @@ vec3 rainVanish(vec3 dir, vec3 right, vec3 up, vec3 fwd, float focal) {
   return vec3(focal * dot(dir, right), focal * dot(dir, up), dot(dir, fwd));
 }
 
-Precip rainFallSeen(vec2 uv, float aspect, float t, float amount, float wind, float depth, vec3 vanish) {
+Precip rainFallSeen(vec2 uv, float aspect, float tm, float tf, float amount, float wind, float depth, vec3 vanish) {
   Precip o = Precip(0.0, 0.0, 0.0);
   if (amount <= 0.0) return o;
   float a = clamp(amount, 0.0, 1.0);
-  float tm = t * uMotion;
-  float tr = weatherRainClock(t);
   float fall = mix(4.0, 9.0, smoothstep(0.05, 0.85, a)); // m/s: drizzle drifts, a downpour hurtles
   float bright = mix(0.75, 1.0, smoothstep(0.05, 0.7, a));
   float thick = mix(0.8, 1.35, a);
@@ -144,7 +142,7 @@ Precip rainFallSeen(vec2 uv, float aspect, float t, float amount, float wind, fl
     // Each streak is its drop's path over the eye's shutter, 1/30 s for the nearest drops, longer
     // for far ones (0.1 s at 32 m) so that the fine rain still reads as streaks, not dots.
     float speed = fall / z;
-    vec2 r = weatherRainLayer(q, tr, min(6.0 * pow(z, 1.25), uRes.y / 7.0), speed, speed * 0.033 * pow(z, 0.32),
+    vec2 r = weatherRainLayer(q, tf, min(6.0 * pow(z, 1.25), uRes.y / 7.0), speed, speed * 0.033 * pow(z, 0.32),
                               2.5 - 0.1 * f, 0.011 * pow(z, -0.8) * thick * spread, i == 0 ? 0.15 : 0.6, min(fill, 0.95),
                               vec2(weatherDepth(z / 1.41), weatherDepth(z * 1.41)), depth, f * 7.3 + 1.0);
     float c = (r.x > th ? 1.0 : 0.0) * r.y * bright * weatherRainLevel[i];
@@ -162,9 +160,9 @@ Precip rainFallSeen(vec2 uv, float aspect, float t, float amount, float wind, fl
 }
 
 // Rain seen by a level camera: the paths are parallel, straight down the frame and slanted by the wind.
-Precip rainFall(vec2 uv, float aspect, float t, float amount, float wind, float depth) {
+Precip rainFall(vec2 uv, float aspect, float tm, float tf, float amount, float wind, float depth) {
   vec3 dir = rainFallDir(amount, wind);
-  return rainFallSeen(uv, aspect, t, amount, wind, depth, vec3(dir.xy, 0.0));
+  return rainFallSeen(uv, aspect, tm, tf, amount, wind, depth, vec3(dir.xy, 0.0));
 }
 
 // One depth layer of snow, q in screen heights, scale m (1 nearest .. ~0.15 farthest). Cells hold at
@@ -203,7 +201,8 @@ vec2 weatherSnowLayer(vec2 q, float t, float m, float fall, float drift, float f
   return vec2(shape, (0.6 + 0.4 * fract(h * 31.7)) * (0.75 + 0.25 * sin(spin * 2.0)));
 }
 
-// Snow between the eye and the first surface; depth, wind and the result as for rainFall. Five
+// Snow between the eye and the first surface; depth, wind and the result as for rainFall. Light
+// flakes drift with the scene's calm: all of it moves on the motion clock tm (uMotionTime). Five
 // layers at ~1, 2.2, 4.8, 10.6 and 23 m: the nearest big, soft and tumbling, the farthest fine. A
 // flurry (0.1-0.2) is a few lazy flakes; steady snow (0.5) fills every layer with a soft veil
 // behind; a blizzard (1.0) is dense, wind-driven and streaked, swirling hard, with gust surges and a
@@ -228,11 +227,10 @@ vec3 snowFallDir(float amount, float wind) {
   return normalize(vec3(wind * (0.15 + 0.45 * a), -0.2 * mix(0.85, 1.3, a), 0.0));
 }
 
-Precip snowFallSeen(vec2 uv, float aspect, float t, float amount, float wind, float depth, vec3 vanish) {
+Precip snowFallSeen(vec2 uv, float aspect, float tm, float amount, float wind, float depth, vec3 vanish) {
   Precip o = Precip(0.0, 0.0, 0.0);
   if (amount <= 0.0) return o;
   float a = clamp(amount, 0.0, 1.0);
-  float tm = t * uMotion;
   float storm = smoothstep(0.55, 1.0, a);
   bool level = abs(vanish.z) * 50.0 <= length(vanish.xy);
   float push = level ? wind * (0.15 + 0.45 * a) : 0.0; // sideways drift of the nearest layer, screen heights/s
@@ -292,8 +290,8 @@ Precip snowFallSeen(vec2 uv, float aspect, float t, float amount, float wind, fl
 }
 
 // Snow seen by a level camera: the flakes come down the frame, drifting with the wind.
-Precip snowFall(vec2 uv, float aspect, float t, float amount, float wind, float depth) {
-  return snowFallSeen(uv, aspect, t, amount, wind, depth, vec3(0.0, -1.0, 0.0));
+Precip snowFall(vec2 uv, float aspect, float tm, float amount, float wind, float depth) {
+  return snowFallSeen(uv, aspect, tm, amount, wind, depth, vec3(0.0, -1.0, 0.0));
 }
 
 // Rain or snow over a shaded colour, as "Weather in the world" in the README asks: the veil toward
@@ -330,13 +328,12 @@ float weatherSplash(vec2 p, float t, float a, float salt) {
 // and brighter as the rain gets heavier (almost none in drizzle). Where a unit spans 25 cells a
 // crown is ~5 cells across and lights ~10 of them in steady rain. Each crown switches cells on
 // against the dither threshold, so the result is 0 or the splash's light 0.7..1. Fade it out where
-// a unit spans fewer than ~15 cells: smaller crowns only sparkle.
-float rainSplashes(vec2 p, float t, float amount) {
+// a unit spans fewer than ~15 cells: smaller crowns only sparkle. tf: the fall clock (uFallTime).
+float rainSplashes(vec2 p, float tf, float amount) {
   if (amount <= 0.0) return 0.0;
   float a = clamp(amount, 0.0, 1.0);
-  float tm = weatherRainClock(t);
   vec2 g = p / 0.5;
-  float s = max(weatherSplash(g, tm, a, 0.0), weatherSplash(g + 0.5, tm, a, 11.3));
+  float s = max(weatherSplash(g, tf, a, 0.0), weatherSplash(g + 0.5, tf, a, 11.3));
   return s > weatherThreshold() ? 0.7 + 0.3 * a : 0.0;
 }
 
@@ -420,10 +417,10 @@ vec4 weatherSlide(vec2 q, float t, float fill, float scale, float salt) {
 // Rain on a window pane: static beads, plus larger drops (two sizes) now and then sliding down and
 // leaving a trail of small beads in a wiped channel. Returns xy = refraction offset in uv units (draw
 // what lies behind the glass at uv + xy) and z = drop coverage 0..1 (for a highlight or darkening).
-vec3 glassDrops(vec2 uv, float aspect, float t, float amount) {
+// The beads form and the drops slide on the motion clock tm (uMotionTime).
+vec3 glassDrops(vec2 uv, float aspect, float tm, float amount) {
   if (amount <= 0.0) return vec3(0.0);
   vec2 q = vec2(uv.x * aspect, uv.y);
-  float tm = t * uMotion;
   float a = clamp(amount, 0.0, 1.0);
   vec4 large = weatherSlide(q, tm, 0.7 * a, 1.0, 0.0);
   vec4 medium = weatherSlide(q, tm, 0.85 * a, 1.8, 5.0);
@@ -436,10 +433,10 @@ vec3 glassDrops(vec2 uv, float aspect, float t, float amount) {
 // Raindrops landing on a wet surface. p is in drop-site cells (scale it so one unit is about the
 // largest ring you want); each cell hosts a drop every ~1.1-1.8 s at a fresh random spot, its rings
 // growing to radius 0.9 and fading out before the next, so nothing ever pops. amount 0..1 is the
-// share of cells that rain. Returns xy = surface normal tilt (~-0.5..0.5), z = light on the crests.
-vec3 rainRipples(vec2 p, float t, float amount) {
+// share of cells that rain. tf: the fall clock (uFallTime). Returns xy = surface normal tilt
+// (~-0.5..0.5), z = light on the crests.
+vec3 rainRipples(vec2 p, float tf, float amount) {
   if (amount <= 0.0) return vec3(0.0);
-  float tm = weatherRainClock(t);
   vec2 id = floor(p);
   vec2 fr = p - id;
   vec2 tilt = vec2(0.0);
@@ -449,7 +446,7 @@ vec3 rainRipples(vec2 p, float t, float amount) {
       vec2 o = vec2(float(i), float(j));
       vec2 cid = id + o;
       float h = hash12(cid + 0.5);
-      float ph = tm * (0.55 + 0.35 * h) + h * 13.0;
+      float ph = tf * (0.55 + 0.35 * h) + h * 13.0;
       float n = floor(ph);
       float age = ph - n;
       float on = step(hash12(cid + vec2(n * 0.123, n * 0.731)), amount);
@@ -501,19 +498,19 @@ float wetGloss(float wet, float up) {
 // (k + 0.3 + 0.4 * hash12(vec2(k, 3.7))) * width: a bead swells under the edge (radius up to 0.11
 // width), lets go, and the drop falls, accelerating and drawn out by its speed, fading 3..5 widths
 // down. Heavier rain drips more often; some beats are skipped. Pass amount = max(K_rain,
-// 0.4 * uWeather.x) to keep edges dripping while they dry. Returns 0 or 1 per cell (the drop's light).
-float rainDrips(vec2 p, float t, float amount, float width) {
+// 0.4 * uWeather.x) to keep edges dripping while they dry. tf: the fall clock (uFallTime). Returns 0
+// or 1 per cell (the drop's light).
+float rainDrips(vec2 p, float tf, float amount, float width) {
   if (amount <= 0.0 || width <= 0.0) return 0.0;
   vec2 u = p / width;
   if (u.y < 0.0 || u.y > 5.2) return 0.0;
   float a = clamp(amount, 0.0, 1.0);
-  float tm = weatherRainClock(t);
   float k = floor(u.x);
   float h = hash12(vec2(k, 3.7));
   float x0 = k + 0.3 + 0.4 * h;
   float drop = 0.8; // seconds a drop takes to fall out of sight
   float period = drop + mix(3.2, 0.6, a) * (0.7 + 0.6 * fract(h * 13.1));
-  float ph = tm / period + fract(h * 7.3);
+  float ph = tf / period + fract(h * 7.3);
   float n = floor(ph);
   if (hash12(vec2(k + 0.5, n)) > 0.35 + 0.65 * a) return 0.0;
   float age = (ph - n) * period;

@@ -102,7 +102,6 @@ const float LAKE_LAYER[5] = float[5](0.04, 0.13, 0.26, 0.42, 0.62);
 const float LAKE_SEEP = 1.1;
 
 // Set once per pixel by lakeSetup.
-float lakeT;           // the scene clock
 float lakeTm;          // the motion clock
 Sky lakeSky;           // the sky, with the library's own moon put away: the lake draws its own
 vec3 lakeMoon;         // our moon's direction, its bearing and elevation (rad)
@@ -115,7 +114,7 @@ vec3 lakeAurLow;       // the aurora's colours
 vec3 lakeAurHigh;
 vec3 lakeAurLight;     // the aurora's light on the land
 float lakeAurGain;     // K_aurora times the substorm's surge
-float lakeAurClock;    // the clock to hand aurora()
+float lakeAurClock;    // the curtains' clock: the sim's, motion time sped up through a surge
 float lakeSurge;       // the substorm, 0..1
 float lakeAurVis;      // how much of the aurora twilight and cloud let through
 float lakeOver;        // overcast 0..1
@@ -139,11 +138,11 @@ ${glslPick("hue", AURORA_HIGH, AURORA_HIGH[0])}
 // up and down as rough ice does in its mirror.
 vec3 lakeAurora(vec3 d, float soft) {
   if (lakeAurGain <= 0.0 || d.y <= 0.0) return vec3(0.0);
-  vec3 a = aurora(d, lakeAurClock, lakeAurGain);
-  if (soft > 0.0) a = 0.5 * (a + aurora(normalize(d + vec3(0.0, soft, 0.0)), lakeAurClock, lakeAurGain));
+  vec3 a = auroraCurtains(d, lakeAurClock, lakeAurGain, 1.0);
+  if (soft > 0.0) a = 0.5 * (a + auroraCurtains(normalize(d + vec3(0.0, soft, 0.0)), lakeAurClock, lakeAurGain, 1.0));
   if (lakeSurge > 0.03) {
     vec3 high = normalize(vec3(d.x * 1.15, d.y * 0.6, d.z));
-    a += aurora(high, lakeAurClock * 1.3 + 41.0, lakeAurGain * 0.8 * smoothstep(0.03, 0.7, lakeSurge));
+    a += auroraCurtains(high, lakeAurClock * 1.3 + 41.0, lakeAurGain * 0.8 * smoothstep(0.03, 0.7, lakeSurge), 1.0);
   }
   float low = max(0.78 * a.g - 0.2 * a.r, 0.0) / 0.73;
   float fringe = max(a.r - 0.25 * a.g, 0.0) / 0.73;
@@ -199,7 +198,7 @@ vec3 lakeSkyAt(vec3 d, bool mirror, float soft) {
   col += aur;
   float seen = dot(aur, LUMA);
   if (lakeOver > 0.0) {
-    vec4 deck = skyClouds(lakeSky, d, lakeT, lakeOver, K_wind);
+    vec4 deck = skyClouds(lakeSky, d, lakeTm, lakeOver, K_wind);
     col = mix(col, deck.rgb, deck.a);
     seen *= 1.0 - deck.a;
   }
@@ -704,8 +703,7 @@ float lakeGust(vec2 uv, float aspect, float gp) {
 
 // The night: twilight to deep night by K_hour, our moon, the aurora's colours and the sim's surge,
 // the light on the land, overcast while it snows, the cabin's and the moon's bearings for the frame.
-void lakeSetup(float t, float aspect) {
-  lakeT = t;
+void lakeSetup(float aspect) {
   lakeTm = uMotionTime;
   float hour = clamp(K_hour, 0.0, 1.0);
   Sky sky = skyAt(0.78 + 0.075 * hour * hour);
@@ -727,9 +725,7 @@ void lakeSetup(float t, float aspect) {
   vec4 au = uSimOn.z > 0.5 ? texelFetch(uSim2, ivec2(0, 1), 0) : vec4(1.0, uMotionTime, 0.0, 0.0);
   lakeSurge = au.w;
   lakeAurGain = K_aurora * au.x;
-  // aurora() runs its curtains on t * uMotion: hand it the sim's clock (already motion time,
-  // sped up through a surge) with the motion divided back out.
-  lakeAurClock = (au.y + au.z) / max(uMotion, 1e-4);
+  lakeAurClock = au.y + au.z;
   lakeAurVis = mix(0.45, 1.0, sky.night) * (1.0 - 0.9 * lakeOver);
   lakeAurLow = lakeAuroraLowColour();
   lakeAurHigh = lakeAuroraHighColour();
@@ -746,7 +742,7 @@ Shade sceneLake(vec2 screenUv, vec2 cell, float t) {
   float pout = passageOut();
   if (pin < 1.0) uv.y += LAKE_TILT * lakeArrive(pin);
   if (pout > 0.0) uv.y += LAKE_TILT * lakeLeave(pout);
-  lakeSetup(t, aspect);
+  lakeSetup(aspect);
   vec2 sp = vec2((uv.x - 0.5) * aspect, uv.y - LAKE_HORIZON);
   vec3 dir = normalize(vec3(sp, LAKE_FOCAL));
   float az = atan(sp.x, LAKE_FOCAL) + lakePar;
@@ -785,7 +781,7 @@ Shade sceneLake(vec2 screenUv, vec2 cell, float t) {
   }
   // Falling snow, in depth to the first thing the eye meets.
   if (K_snow > 0.0) {
-    Precip p = snowFall(uv, aspect, t, K_snow, K_wind, weatherDepth(range));
+    Precip p = snowFall(uv, aspect, lakeTm, K_snow, K_wind, weatherDepth(range));
     vec3 air = LAKE_SNOW * (lakeAmb * 2.4 + lakeMoonLight * 0.6 + lakeAurLight * 1.5);
     col = precipOver(col, air, max(air * 1.3, vec3(0.08)), p);
     glow *= 1.0 - p.veil;

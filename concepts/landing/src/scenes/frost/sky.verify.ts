@@ -86,7 +86,7 @@ Shade toolboxProbe(vec2 uv, vec2 cell, float t) {
   } else if (uProbe == 4) {
     v = auroraM(probeDir(cell), uProbeC.x, uProbeC.y, uProbeC.z);
   } else if (uProbe == 5) {
-    v = aurora(probeDir(cell), uProbeC.x, uProbeC.y);
+    v = auroraCurtains(probeDir(cell), uProbeC.x, uProbeC.y, 1.0);
   } else if (uProbe == 6) {
     v = cell.x < 1.0
       ? vec3(auroraSeen(skyAt(0.5), 0.0), auroraSeen(skyAt(0.0), 1.0), auroraSeen(skyAt(0.0), 0.0))
@@ -318,7 +318,8 @@ export function verifyFrostSky(gl: WebGL2RenderingContext): Record<string, unkno
   result.moon = { disc, halfLit: quarter, lightRatio: ratio };
 
   // Aurora: on the motion clock (the same picture at any motion for the same uMotionTime), the
-  // legacy entry exactly auroraM at t * uMotion, a level of detail that keeps the glow, visibility.
+  // full-detail entry (auroraCurtains at keep 1, what lake, train and clouds draw) exactly auroraM at
+  // a fine footprint, a level of detail that keeps the glow, visibility.
   // A band 3-21 degrees up and 70 degrees wide across the middle of the view, 0.0064 rad a pixel.
   const AH = 48;
   const sky = (
@@ -341,8 +342,8 @@ export function verifyFrostSky(gl: WebGL2RenderingContext): Record<string, unkno
     "aurora depends on motion beyond its clock",
   );
   check(
-    same(sky(5, 0.5, 100, 0.8, 0), sky(4, 0.5, 50, 0.8, 0.002)),
-    "aurora(dir, t, s) differs from auroraM(dir, t * uMotion, s)",
+    same(sky(5, 0.5, 50, 0.8, 0), sky(4, 0.5, 50, 0.8, 0.002)),
+    "auroraCurtains(dir, tm, s, 1) differs from auroraM(dir, tm, s, fine foot)",
   );
   check(
     channel(curtains, 1).some((value) => value > 0.05),

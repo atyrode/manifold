@@ -440,7 +440,7 @@ vec3 streetBounce;   // the city's own warm light bounced about at night
 float streetWet;      // uWeather.x
 float streetLying;    // uWeather.y
 float streetLit;      // share of the windows lit
-float streetTm;       // motion-scaled clock
+float streetTm;       // the motion clock (uMotionTime)
 vec3 streetAmbient;   // sky light plus the city's own bounce
 vec3 streetSun;       // direct sun
 vec3 streetDeck;      // the cloud base
@@ -1944,9 +1944,10 @@ vec3 streetVanish(vec3 dir, float cp, float sp) {
   return rainVanish(dir, vec3(1.0, 0.0, 0.0), vec3(0.0, cp, sp), vec3(0.0, -sp, cp), STREET_FOCAL);
 }
 
-// Snow past the window: the flakes close in on the point under the eye, as the rain's paths do.
-Precip streetSnow(vec2 uv, float aspect, float t, float depth, float cp, float sp) {
-  return snowFallSeen(uv, aspect, t, K_snow, K_wind, depth, streetVanish(snowFallDir(K_snow, K_wind), cp, sp));
+// Snow past the window on the motion clock tm: the flakes close in on the point under the eye, as the
+// rain's paths do.
+Precip streetSnow(vec2 uv, float aspect, float tm, float depth, float cp, float sp) {
+  return snowFallSeen(uv, aspect, tm, K_snow, K_wind, depth, streetVanish(snowFallDir(K_snow, K_wind), cp, sp));
 }
 
 // The hour, and the weather over it: rain or snow close the sky, flatten and dim the light; at
@@ -2157,7 +2158,7 @@ Shade sceneStreet(vec2 uv, vec2 cell, float t) {
       vec3 rr = reflect(rd, vec3(0.0, 1.0, 0.0));
       vec3 ring = vec3(0.0);
       if (puddle > 0.0 && K_rain > 0.0) {
-        ring = rainRipples(P.xz * 2.4, t, K_rain);
+        ring = rainRipples(P.xz * 2.4, uFallTime, K_rain);
         rr = normalize(rr + vec3(ring.x, 0.0, ring.y) * 0.04);
       }
       float mirror = mix(gloss * 0.32, 0.72, puddle) * (1.0 - snowy);
@@ -2207,7 +2208,7 @@ Shade sceneStreet(vec2 uv, vec2 cell, float t) {
   // Splashes on hard ground; drips from the awnings' edges.
   if (ground && K_rain > 0.0 && shelter < 0.5) {
     float cpm = 1.0 / fw;
-    float splash = rainSplashes(P.xz, t, K_rain) * smoothstep(13.0, 18.0, cpm);
+    float splash = rainSplashes(P.xz, uFallTime, K_rain) * smoothstep(13.0, 18.0, cpm);
     col = mix(col, dropLight, splash * 0.85);
   }
   if (K_rain > 0.0 || streetWet > 0.1) {
@@ -2220,7 +2221,7 @@ Shade sceneStreet(vec2 uv, vec2 cell, float t) {
       int b = streetBuildingAt(f, u);
       vec4 A = STREET_BLD_A[b];
       if (streetHasAwning(STREET_BLD_B[b]) && u - A.x > 0.35 && A.y - u > 0.35) {
-        col = mix(col, dropLight * 1.2, rainDrips(vec2(u, 2.62 - qf.y), t, amount, 1.0));
+        col = mix(col, dropLight * 1.2, rainDrips(vec2(u, 2.62 - qf.y), uFallTime, amount, 1.0));
       }
     }
   }
@@ -2248,14 +2249,14 @@ Shade sceneStreet(vec2 uv, vec2 cell, float t) {
   float depth = weatherDepth(hit.t);
   if (K_rain > 0.0) {
     // From the window the rain falls past a camera pitched down: its paths converge below the street.
-    Precip pr = rainFallSeen(uv, aspect, t, K_rain, K_wind, depth, streetVanish(rainFallDir(K_rain, K_wind), cp, sp));
+    Precip pr = rainFallSeen(uv, aspect, streetTm, uFallTime, K_rain, K_wind, depth, streetVanish(rainFallDir(K_rain, K_wind), cp, sp));
     vec3 air = streetDeck * 0.9 + streetBounce + glow * 0.25;
     col = mix(col, air, pr.veil);
     // At the window there are no drops at arm's length.
     col = mix(col, dropLight * 1.1, pr.cover * (1.0 - pr.near));
   }
   if (K_snow > 0.0) {
-    Precip ps = streetSnow(uv, aspect, t, depth, cp, sp);
+    Precip ps = streetSnow(uv, aspect, streetTm, depth, cp, sp);
     vec3 air = mix(streetDeck * 1.3, vec3(0.75, 0.78, 0.85) * (streetAmbient + 0.1), 0.5) + glow * 0.3;
     col = mix(col, air, ps.veil);
     col = mix(col, max(vec3(0.8, 0.83, 0.9) * (streetDeck * 1.6 + E * 0.4 + glow * 0.5), vec3(0.1)), ps.cover);

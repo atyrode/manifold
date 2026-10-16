@@ -264,7 +264,7 @@ vec4 autumnCarpetLayer(vec2 pw, float layer, float aa, float lit, float lod, out
 
 // The lawn, path and carpet under the pixel: the colour, the depth in metres, whether it is a leaf of
 // the M, and the dryness.
-vec3 autumnGround(vec2 uv, float aspect, float t, out float depthZ, out float markCov) {
+vec3 autumnGround(vec2 uv, float aspect, float tf, out float depthZ, out float markCov) {
   Ground g = planeAt(uv, aspect, AUTUMN_HORIZON, AUTUMN_EYE, AUTUMN_FOCAL);
   vec2 w = g.p;
   depthZ = w.y;
@@ -323,12 +323,12 @@ vec3 autumnGround(vec2 uv, float aspect, float t, out float depthZ, out float ma
     vec3 mirror = autumnHaze * 0.9 + autumnLampLight(w) * 0.5;
     col = mix(col, mirror, pool * 0.75);
     if (K_rain > 0.0) {
-      vec3 ring = rainRipples(w * 1.8, t, K_rain);
+      vec3 ring = rainRipples(w * 1.8, tf, K_rain);
       col += vec3(ring.z) * 0.3 * pool * (1.0 - smoothstep(0.05, 0.2, g.foot.y));
     }
   }
   if (K_rain > 0.0 && g.foot.x < 0.067) {
-    float splash = rainSplashes(w * (uRes.y / 200.0), t, K_rain);
+    float splash = rainSplashes(w * (uRes.y / 200.0), tf, K_rain);
     col = mix(col, max(autumnAmb * 1.2, vec3(0.1)), splash * 0.5 * (1.0 - pool));
   }
 
@@ -387,7 +387,7 @@ vec4 autumnFarRow(vec2 p, float k) {
   return vec4(mix(lit, autumnHaze, 0.36 + 0.2 * k), 1.0);
 }
 
-vec3 autumnBackdrop(vec2 uv, vec2 p, vec3 dir, float t, out float depthZ) {
+vec3 autumnBackdrop(vec2 uv, vec2 p, vec3 dir, out float depthZ) {
   vec3 sk = skyColor(autumnSky, dir);
   sk += skyStarLight(autumnSky, dir, K_stars) * (1.0 - autumnOvercast);
   float foot = 1.0 / (AUTUMN_FOCAL * uRes.y);
@@ -395,7 +395,7 @@ vec3 autumnBackdrop(vec2 uv, vec2 p, vec3 dir, float t, out float depthZ) {
   // the clouds, and the rain's deck shuts them out.
   sk = skyGiant(autumnSky, sk, dir, foot, 1.0 - autumnOvercast);
   sk += auroraM(dir, autumnTm, K_aurora, foot) * auroraSeen(autumnSky, autumnOvercast);
-  vec4 cl = skyClouds(autumnSky, dir, t, autumnCover, K_wind);
+  vec4 cl = skyClouds(autumnSky, dir, autumnTm, autumnCover, K_wind);
   sk = mix(sk, cl.rgb, cl.a);
   float meteorSeed;
   float meteorAt = meteorAge(autumnTm, K_meteors, AUTUMN_METEOR_SLOT, meteorSeed);
@@ -815,16 +815,16 @@ Shade sceneAutumn(vec2 screenUv, vec2 cell, float t) {
   // anything here, so that one point shades everything the pixel shows.
   if (K_shadows > 0.0 && autumnSky.sun.y > 0.0) {
     float z = uv.y < AUTUMN_HORIZON ? min(AUTUMN_EYE * AUTUMN_FOCAL / (AUTUMN_HORIZON - uv.y), 120.0) : AUTUMN_CANOPY.y;
-    autumnSun *= 1.0 - K_shadows * skyCloudShadow(autumnSky, dir * (z / dir.z), AUTUMN_CLOUD_BASE, t, autumnCover, K_wind);
+    autumnSun *= 1.0 - K_shadows * skyCloudShadow(autumnSky, dir * (z / dir.z), AUTUMN_CLOUD_BASE, autumnTm, autumnCover, K_wind);
   }
 
   float markCov = 0.0;
   float hitZ = 1e4;
   vec3 col;
   if (uv.y < AUTUMN_HORIZON - 1e-4) {
-    col = autumnGround(uv, aspectE, t, hitZ, markCov);
+    col = autumnGround(uv, aspectE, uFallTime, hitZ, markCov);
   } else {
-    col = autumnBackdrop(uv, p, dir, t, hitZ);
+    col = autumnBackdrop(uv, p, dir, hitZ);
   }
   float opaqueZ = hitZ;
 
@@ -896,7 +896,7 @@ Shade sceneAutumn(vec2 screenUv, vec2 cell, float t) {
   // Rain falls through the depth of what each cell shows; mist thickens with distance.
   float depth = 1.0 - exp(-hitZ / 30.0);
   if (K_rain > 0.0) {
-    Precip pr = rainFall(uv, aspect, t, K_rain, K_wind, depth);
+    Precip pr = rainFall(uv, aspect, autumnTm, uFallTime, K_rain, K_wind, depth);
     vec3 drop = max(autumnAmb * 1.2, vec3(0.08)) + autumnSun * 0.2;
     col = precipOver(col, autumnHaze * 0.9, drop, pr);
   }

@@ -8,7 +8,7 @@
 // and takes its knobs from worldKnobs. It composes the birds (birds.ts) and the Milky Way
 // (milkyway.ts) itself, so such a scene does not put birdsGlsl or milkyWayGlsl in its GLSL again.
 //
-//   World worldAt(float t, int meteorSlot, int lightningSlot);   // the world now, once per pixel
+//   World worldAt(int meteorSlot, int lightningSlot);   // the world now, once per pixel
 //   WorldView worldView(vec2 uv, float horizon, float focal, float eye, float yaw, float unit);
 //   WorldView worldViewOf(vec3 ray, vec2 uv, float horizon, float focal, float eye, float yaw, float unit);
 //   WorldSky worldSky(World w, WorldView v, vec4 meteorField);   // behind the scene
@@ -93,8 +93,8 @@ struct World {
                     // ambient, twilight) dimmed and greyed by the deck rain or snow closes over, the
                     // aurora's glow and the lightning's flash in its ambient. Light the scene with it.
   float time;       // the time of day 0..1 (0 midnight, .25 sunrise, .5 noon, .75 sunset)
-  float t;          // the scene clock (the entry's t): the cloud deck, rain and snow run on it
-  float tm;         // the motion clock (uMotionTime)
+  float tm;         // the motion clock (uMotionTime): the sky, the cloud deck, snow, gusts, the storm
+  float tf;         // the fall clock (uFallTime): falling rain
   float rain;       // K_rain, K_snow, K_fog: 0 while off; K_wind -1..1
   float snow;
   float fog;
@@ -111,12 +111,12 @@ struct World {
   float meteorSeed;
 };
 
-// The world at the scene clock t, from the world's knobs; meteorSlot and lightningSlot: the scene's
+// The world now, from the world's knobs and the clocks; meteorSlot and lightningSlot: the scene's
 // trigger slots for their "now" buttons. Once per pixel, before anything is drawn.
-World worldAt(float t, int meteorSlot, int lightningSlot) {
+World worldAt(int meteorSlot, int lightningSlot) {
   World w;
-  w.t = t;
   w.tm = uMotionTime;
+  w.tf = uFallTime;
   w.time = timeOfDayM(K_time, K_cycle, uMotionTime);
   Sky sky = skyAt(w.time);
 #ifdef SKY_MOON_PHASE
@@ -154,7 +154,7 @@ World worldAt(float t, int meteorSlot, int lightningSlot) {
   w.boltSeed = 0.0;
   w.flash = 0.0;
 #if WORLD_LIGHTNING
-  w.boltAge = lightningAge(t, K_lightning, lightningSlot, w.boltSeed);
+  w.boltAge = lightningAge(w.tm, K_lightning, lightningSlot, w.boltSeed);
   w.flash = lightningFlash(w.boltAge);
 #endif
   w.meteorAge = 1e4;
@@ -234,7 +234,7 @@ WorldSky worldSky(World w, WorldView v, vec4 meteorField) {
 #endif
   float cloud = 0.0;
 #if WORLD_CLOUDS
-  vec4 deck = skyClouds(w.sky, v.dir, w.t, w.cover, w.wind);
+  vec4 deck = skyClouds(w.sky, v.dir, w.tm, w.cover, w.wind);
   col = mix(col, deck.rgb, deck.a);
   cloud = deck.a;
 #endif
@@ -282,7 +282,7 @@ WorldSky worldSky(World w, WorldView v, vec4 meteorField) {
 float worldSunlit(World w, WorldView v, vec3 at) {
 #if WORLD_SHADOWS
   if (K_shadows > 0.0 && w.cover > 0.0) {
-    return 1.0 - K_shadows * skyCloudShadow(w.sky, skyFacing(at / v.unit, v.yaw), WORLD_CLOUD_BASE, w.t, w.cover, w.wind);
+    return 1.0 - K_shadows * skyCloudShadow(w.sky, skyFacing(at / v.unit, v.yaw), WORLD_CLOUD_BASE, w.tm, w.cover, w.wind);
   }
 #endif
   return 1.0;
@@ -343,14 +343,14 @@ void worldPrecip(World w, WorldView v, vec3 air, vec3 dropLight, float z, inout 
   float depth = weatherDepth(z / v.unit);
 #if WORLD_RAIN
   if (w.rain > 0.0) {
-    Precip fall = rainFall(v.uv, v.aspect, w.t, w.rain, w.wind, depth);
+    Precip fall = rainFall(v.uv, v.aspect, w.tm, w.tf, w.rain, w.wind, depth);
     col = precipOver(col, air, dropLight * (1.0 - WORLD_NEAR_DIM * fall.near), fall);
     accent *= 1.0 - fall.veil;
   }
 #endif
 #if WORLD_SNOW
   if (w.snow > 0.0) {
-    Precip fall = snowFall(v.uv, v.aspect, w.t, w.snow, w.wind, depth);
+    Precip fall = snowFall(v.uv, v.aspect, w.tm, w.snow, w.wind, depth);
     vec3 flake = WORLD_FLAKE * (dot(w.sky.ambient, LUMA) * 1.6 + dot(w.sky.sunColor, LUMA) * 0.5 + 0.04);
     col = precipOver(col, mix(air, flake, 0.5), flake * (1.0 - WORLD_NEAR_DIM * fall.near), fall);
     accent *= 1.0 - fall.veil;
@@ -368,7 +368,7 @@ void worldPrecipSeen(World w, WorldView v, vec3 right, vec3 up, vec3 fwd, vec3 a
 #if WORLD_RAIN
   if (w.rain > 0.0) {
     vec3 vanish = rainVanish(rainFallDir(w.rain, w.wind), right, up, fwd, v.focal);
-    Precip fall = rainFallSeen(v.uv, v.aspect, w.t, w.rain, w.wind, depth, vanish);
+    Precip fall = rainFallSeen(v.uv, v.aspect, w.tm, w.tf, w.rain, w.wind, depth, vanish);
     col = precipOver(col, air, dropLight * (1.0 - WORLD_NEAR_DIM * fall.near), fall);
     accent *= 1.0 - fall.veil;
   }
@@ -376,7 +376,7 @@ void worldPrecipSeen(World w, WorldView v, vec3 right, vec3 up, vec3 fwd, vec3 a
 #if WORLD_SNOW
   if (w.snow > 0.0) {
     vec3 vanish = rainVanish(snowFallDir(w.snow, w.wind), right, up, fwd, v.focal);
-    Precip fall = snowFallSeen(v.uv, v.aspect, w.t, w.snow, w.wind, depth, vanish);
+    Precip fall = snowFallSeen(v.uv, v.aspect, w.tm, w.snow, w.wind, depth, vanish);
     vec3 flake = WORLD_FLAKE * (dot(w.sky.ambient, LUMA) * 1.6 + dot(w.sky.sunColor, LUMA) * 0.5 + 0.04);
     col = precipOver(col, mix(air, flake, 0.5), flake * (1.0 - WORLD_NEAR_DIM * fall.near), fall);
     accent *= 1.0 - fall.veil;
@@ -400,7 +400,7 @@ void worldPrecipThinned(World w, WorldView v, vec3 air, vec3 dropLight, float z,
   float depth = weatherDepth(z / v.unit);
 #if WORLD_RAIN
   if (w.rain > 0.0) {
-    Precip fall = rainFall(v.uv, v.aspect, w.t, w.rain, w.wind, depth);
+    Precip fall = rainFall(v.uv, v.aspect, w.tm, w.tf, w.rain, w.wind, depth);
     fall.cover *= mix(thin.x, thin.y, fall.near);
     col = precipOver(col, air, dropLight * (1.0 - WORLD_NEAR_DIM * fall.near), fall);
     accent *= 1.0 - fall.veil;
@@ -408,7 +408,7 @@ void worldPrecipThinned(World w, WorldView v, vec3 air, vec3 dropLight, float z,
 #endif
 #if WORLD_SNOW
   if (w.snow > 0.0) {
-    Precip fall = snowFall(v.uv, v.aspect, w.t, w.snow, w.wind, depth);
+    Precip fall = snowFall(v.uv, v.aspect, w.tm, w.snow, w.wind, depth);
     fall.cover *= mix(thin.x, thin.y, fall.near);
     vec3 flake = WORLD_FLAKE * (dot(w.sky.ambient, LUMA) * 1.6 + dot(w.sky.sunColor, LUMA) * 0.5 + 0.04);
     col = precipOver(col, mix(air, flake, 0.5), flake * (1.0 - WORLD_NEAR_DIM * fall.near), fall);
@@ -457,7 +457,7 @@ WorldSky worldMirrorSky(World w, WorldView m, vec4 meteorField) {
 #endif
   float cloud = 0.0;
 #if WORLD_CLOUDS
-  vec4 deck = skyClouds(w.sky, m.dir, w.t, w.cover, w.wind);
+  vec4 deck = skyClouds(w.sky, m.dir, w.tm, w.cover, w.wind);
   col = mix(col, deck.rgb, deck.a);
   cloud = deck.a;
 #endif

@@ -387,7 +387,7 @@ struct MeadowWind {
   float speed;     // front speed, world units per second
   float strength;  // K_gusts
   float threshold; // the gate's threshold, from K_gustRate
-  float nowAge;    // seconds (x motion) since 'now' sent a big gust; negative while idle
+  float nowAge;    // motion seconds (sinceTriggerM) since 'now' sent a big gust; negative while idle
   float passFront; // the passage gust's front (ground distance along the wind) ...
   float passAmp;   // ... and its amplitude; 0 outside a passage
 };
@@ -435,7 +435,7 @@ MeadowWind meadowWind() {
   w.speed = MEADOW_SPEED + MEADOW_SPEED_WIND * abs(K_wind);
   w.strength = K_gusts;
   w.threshold = MEADOW_GATE_RARE + (MEADOW_GATE_OFTEN - MEADOW_GATE_RARE) * K_gustRate;
-  w.nowAge = uTriggers[MEADOW_GUST_TRIGGER] < -1000.0 ? -1.0 : sinceTrigger(MEADOW_GUST_TRIGGER) * uMotion;
+  w.nowAge = uTriggers[MEADOW_GUST_TRIGGER] < -1000.0 ? -1.0 : sinceTriggerM(MEADOW_GUST_TRIGGER);
   w.passFront = MEADOW_PASS_FROM;
   w.passAmp = 0.0;
   if (K_gusts > 0.0) meadowPassageGust(w);
@@ -970,7 +970,7 @@ void meadowLayer(int layer, vec2 p, float aspect, float hScale, float density, v
             // point (weather.ts: lane k drips at (k + 0.3 + 0.4 hash12(k, 3.7)) x width), while it is wet.
             float lane = floor(hash12(key + 23.1) * 256.0);
             float dripAt = (lane + 0.3 + 0.4 * hash12(vec2(lane, 3.7))) * dripWidth;
-            float drip = rainDrips(vec2(below.x + dripAt, below.y), uTime, max(K_rain, 0.4 * wet), dripWidth);
+            float drip = rainDrips(vec2(below.x + dripAt, below.y), uFallTime, max(K_rain, 0.4 * wet), dripWidth);
             col = mix(col, bead, drip);
           }
         }
@@ -1147,7 +1147,7 @@ Shade sceneMeadow(vec2 uv, vec2 cell, float t) {
   // sinking sun from the sky's (world units are metres): the sky now and its light, the deck rain
   // or snow closes over it with the first drizzle dimming and greying the light (overcast), darker
   // the heavier it falls (heavy).
-  World world = worldAt(t, MEADOW_METEOR_SLOT, MEADOW_LIGHTNING_SLOT);
+  World world = worldAt(MEADOW_METEOR_SLOT, MEADOW_LIGHTNING_SLOT);
   WorldView view = worldView(uv, MEADOW_HORIZON, MEADOW_FOCAL, eye, MEADOW_TURN, 1.0);
   Sky sky = world.sky;
   float rain = world.rain;

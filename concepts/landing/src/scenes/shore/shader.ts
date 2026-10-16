@@ -439,7 +439,7 @@ Shade sceneShore(vec2 screenUv, vec2 cell, float t) {
   // The shared world (shaders/lib/world.ts) through the beach's camera, a level pinhole SHORE_EYE
   // metres over the still water (world units are metres), its frame turned toward moonrise from the
   // sky's: the sky now and its light, under the deck rain or snow closes over it.
-  World world = worldAt(t, SHORE_METEOR_SLOT, SHORE_LIGHTNING_SLOT);
+  World world = worldAt(SHORE_METEOR_SLOT, SHORE_LIGHTNING_SLOT);
   WorldView camera = worldView(uv, SHORE_HORIZON, focal, SHORE_EYE, -SHORE_FACING, 1.0);
   vec3 dir = camera.ray;
   vec3 view = -dir;
@@ -627,7 +627,7 @@ Shade sceneShore(vec2 screenUv, vec2 cell, float t) {
       vec2 rs = vec2(3.0, 1.2) * mix(1.15, 0.85, cloud.heavy);
       float fade = 1.0 - smoothstep(0.04, 0.07, max(cellX * rs.x, cellZ * rs.y));
       if (fade > 0.0) {
-        drops = rainRipples(g * rs, t, min(rain * 1.3, 1.0)) * fade;
+        drops = rainRipples(g * rs, uFallTime, min(rain * 1.3, 1.0)) * fade;
         ring = drops.z > 0.1 + 0.9 * th ? 1.0 : 0.0; // never the rings' faint tails
       }
     }
@@ -933,7 +933,7 @@ Shade sceneShore(vec2 screenUv, vec2 cell, float t) {
         vec2 sq = vec2(2.5, 1.1);
         float fine = 1.0 - smoothstep(0.04, 0.067, max(cellX * sq.x, cellZ * sq.y));
         if (fine > 0.0) {
-          float splash = rainSplashes(g * sq, t, rain * 0.6) * fine * mix(0.35, 1.0, max(max(wet, rained), pool));
+          float splash = rainSplashes(g * sq, uFallTime, rain * 0.6) * fine * mix(0.35, 1.0, max(max(wet, rained), pool));
           col += splash * (air * 1.6 + lit * 0.5);
           glow += splash * exp(-drained / 5.0);
         }

@@ -243,7 +243,7 @@ float sillRow(vec2 p, float w, float lo, float hi, float salt, float soft, out v
 // (uWeather.x): brick darkens, roofs shine and pool water that mirrors the sign, edges drip, the
 // ledge splashes; snow settles on every face turned to the sky (uWeather.y). Returns colour, and
 // the neon's accent coverage in .a.
-vec4 sillCity(vec2 p, float aspect, float t, float tm, float px, float soft, Sky sky, vec3 haze, float dark, vec2 signAt, vec2 opening, vec4 neon, float boltAge, float boltSeed, float flash) {
+vec4 sillCity(vec2 p, float aspect, float tf, float tm, float px, float soft, Sky sky, vec3 haze, float dark, vec2 signAt, vec2 opening, vec4 neon, float boltAge, float boltSeed, float flash) {
   float density = K_lights;
   vec2 ov = sillOvercast();
   float wet = uWeather.x;
@@ -275,7 +275,7 @@ vec4 sillCity(vec2 p, float aspect, float t, float tm, float px, float soft, Sky
   float clouds = max(K_clouds, ov.x);
   float cloudCover = 0.0;
   if (clouds > 0.0) {
-    vec4 cloud = skyClouds(sky, normalize(vec3(dir.x, dir.y * (1.0 + 1.5 * ov.y), dir.z)), t, clouds, K_wind);
+    vec4 cloud = skyClouds(sky, normalize(vec3(dir.x, dir.y * (1.0 + 1.5 * ov.y), dir.z)), tm, clouds, K_wind);
     col = mix(col, (cloud.rgb + vec3(0.22, 0.11, 0.07) * dark * 0.5) * (1.0 - 0.4 * ov.y), cloud.a);
     cloudCover = cloud.a;
   }
@@ -407,7 +407,7 @@ vec4 sillCity(vec2 p, float aspect, float t, float tm, float px, float soft, Sky
   depth = mix(depth, SILL_D_NEAR + 0.04, coverB);
   if (dripOn > 0.0 && np.x < bx1 + 0.006) {
     float lane = step(hash12(vec2(floor(np.x / 0.03), 5.3)), dripOn);
-    col = mix(col, mix(dripLit, haze, nearFog), rainDrips(vec2(np.x, roofB - 0.012 - np.y), t, drip, 0.03) * lane * 0.85);
+    col = mix(col, mix(dripLit, haze, nearFog), rainDrips(vec2(np.x, roofB - 0.012 - np.y), tf, drip, 0.03) * lane * 0.85);
   }
   float capB = sillCap(np.y - roofB - 0.006, np.x * 20.0, 0.007, lying, px) * softFill(np.x - bx1 - 0.006, soft);
   col = mix(col, mix(snowLit, haze, 0.06 + nearFog), capB);
@@ -430,7 +430,7 @@ vec4 sillCity(vec2 p, float aspect, float t, float tm, float px, float soft, Sky
       if (wet > 0.0) {
         float pool = rainPuddles(ground, wet);
         float gloss = max(wetGloss(wet, 1.0), pool);
-        vec3 ripple = rainRipples(np * 14.0, t, K_rain);
+        vec3 ripple = rainRipples(np * 14.0, tf, K_rain);
         vec2 rq = (vec2(np.x + ripple.x * 0.006, roofBack + (roofBack - np.y) * 2.4) - signAt) / 0.1;
         vec4 rd = vec4(segmentDistance(rq, M0, M1), segmentDistance(rq, M1, M2), segmentDistance(rq, M2, M3), segmentDistance(rq, M3, M4));
         vec4 rg = exp(-rd * 10.0) * neon;
@@ -462,7 +462,7 @@ vec4 sillCity(vec2 p, float aspect, float t, float tm, float px, float soft, Sky
     if (dripOn > 0.0) {
       // Off the parapet's coping, pink in the sign's light.
       float lane = step(hash12(vec2(floor((np.x - ax0) / 0.03), 6.1)), dripOn);
-      float d = rainDrips(vec2(np.x - ax0, roofFront - np.y), t, drip, 0.03) * lane * step(ax0 + 0.004, np.x) * step(np.x, ax1 - 0.004) * coverA;
+      float d = rainDrips(vec2(np.x - ax0, roofFront - np.y), tf, drip, 0.03) * lane * step(ax0 + 0.004, np.x) * step(np.x, ax1 - 0.004) * coverA;
       col = mix(col, mix(dripLit + uAccent * neonMean * 0.5 * (0.35 + 0.65 * dark), haze, nearFog), d * 0.85);
       accent = max(accent, d * neonMean * 0.4);
     }
@@ -531,10 +531,10 @@ vec4 sillCity(vec2 p, float aspect, float t, float tm, float px, float soft, Sky
       c = mix(c, deck * 0.6 + vec3(1.0, 0.72, 0.45) * lights * 0.25, gloss * 0.65);
       c += uAccent * mirrored * 0.45;
       if (K_rain > 0.0) {
-        c += vec3(0.6, 0.65, 0.75) * rainRipples(p * 60.0, t, K_rain).z * pool * 0.25;
+        c += vec3(0.6, 0.65, 0.75) * rainRipples(p * 60.0, tf, K_rain).z * pool * 0.25;
         // Splash crowns, flattened by the grazing view of the ledge: ~30 cells to the unit across
         // it, ~15 into it at 540 rows.
-        c += (rainLight + SILL_LAMP * spill * 0.6) * rainSplashes(vec2(p.x * 18.0, p.y * 36.0), t, K_rain);
+        c += (rainLight + SILL_LAMP * spill * 0.6) * rainSplashes(vec2(p.x * 18.0, p.y * 36.0), tf, K_rain);
       }
     }
     float snowy = snowCover(up, vec2(p.x * 15.0, v * 0.6), lying);
@@ -552,7 +552,7 @@ vec4 sillCity(vec2 p, float aspect, float t, float tm, float px, float soft, Sky
   vec2 wuv = (p + uPointer * vec2(0.012, 0.005)) / vec2(aspect, 1.0) + 0.5;
   vec3 airCol = mix(haze, deck, 0.6 * ov.x) + vec3(1.0, 0.52, 0.28) * street * (0.03 + 0.15 * dark) + uAccent * air * 0.3 + vec3(0.45, 0.5, 0.65) * flash * 0.4;
   if (K_rain > 0.0) {
-    Precip fall = rainFall(wuv, aspect, t, K_rain, K_wind, depth);
+    Precip fall = rainFall(wuv, aspect, tm, tf, K_rain, K_wind, depth);
     float shafts = sillShafts(sp, tm, K_wind) * smoothstep(0.1, 0.5, K_rain) * smoothstep(0.86, 0.97, depth);
     fall.veil = 1.0 - (1.0 - fall.veil) * (1.0 - 0.5 * shafts);
     accent *= 1.0 - 0.7 * fall.veil;
@@ -560,7 +560,7 @@ vec4 sillCity(vec2 p, float aspect, float t, float tm, float px, float soft, Sky
     col = precipOver(col, airCol, drop, fall);
   }
   if (K_snow > 0.0) {
-    Precip fall = snowFall(wuv, aspect, t, K_snow, K_wind, depth);
+    Precip fall = snowFall(wuv, aspect, tm, K_snow, K_wind, depth);
     vec3 flake = vec3(0.8, 0.82, 0.9) * (0.38 + 0.5 * sky.day * (1.0 - 0.3 * ov.y)) + vec3(0.14, 0.07, 0.04) * dark + uAccent * air * 0.5 + SILL_LAMP * spill * 0.9 * fall.near + vec3(0.5) * flash;
     accent *= 1.0 - 0.7 * fall.veil;
     col = precipOver(col, mix(airCol, flake, 0.5), flake, fall);
@@ -572,7 +572,7 @@ vec4 sillCity(vec2 p, float aspect, float t, float tm, float px, float soft, Sky
   // ledge before it fades.
   if (dripOn > 0.0) {
     float lane = step(hash12(vec2(floor(p.x / 0.05), 8.1)), 0.55 * dripOn);
-    float d = rainDrips(vec2(p.x / 0.05, (SILL_LINTEL - p.y) / 0.27), t, drip, 1.0) * lane * smoothstep(ledge0, SILL_LEDGE, p.y);
+    float d = rainDrips(vec2(p.x / 0.05, (SILL_LINTEL - p.y) / 0.27), tf, drip, 1.0) * lane * smoothstep(ledge0, SILL_LEDGE, p.y);
     col = mix(col, rainLight * 1.1 + SILL_LAMP * spill * 0.9, d);
     accent *= 1.0 - d;
   }
@@ -957,7 +957,7 @@ Shade sceneSill(vec2 uv, vec2 cell, float t) {
   // On a clear night the aurora's green comes in through the window too.
   cool += auroraGlow(tm, K_aurora) * auroraSeen(sky, ov.x);
   float boltSeed = 0.0;
-  float boltAge = lightningAge(t, K_lightning, 1, boltSeed);
+  float boltAge = lightningAge(tm, K_lightning, 1, boltSeed);
   float flash = lightningFlash(boltAge);
   // How wet the world is and how much snow lies, integrated by the renderer from the knobs.
   float wet = uWeather.x;
@@ -983,7 +983,7 @@ Shade sceneSill(vec2 uv, vec2 cell, float t) {
     if (inGlass) {
       soft += 0.0012 + 0.005 * K_rain;
       if (K_drops > 0.5 && K_rain > 0.0) {
-        drop = glassDrops(uv, aspect, t, K_rain);
+        drop = glassDrops(uv, aspect, tm, K_rain);
         at += drop.xy * vec2(aspect, 1.0);
         if (drop.z > 0.0) {
           // Each drop is a little lens onto the lit city: a small inverted picture of the skyline
@@ -998,7 +998,7 @@ Shade sceneSill(vec2 uv, vec2 cell, float t) {
         }
       }
     }
-    vec4 city = sillCity(at, aspect, t, tm, px, soft, sky, haze, dark, signAt, vec2(xw0 + reveal, xw1 - reveal), neon, boltAge, boltSeed, flash);
+    vec4 city = sillCity(at, aspect, uFallTime, tm, px, soft, sky, haze, dark, signAt, vec2(xw0 + reveal, xw1 - reveal), neon, boltAge, boltSeed, flash);
     col = city.rgb;
     accent = city.a;
     if (inGlass) {

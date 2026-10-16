@@ -907,7 +907,7 @@ Shade sceneBonsai(vec2 uv, vec2 cell, float t) {
 
   // Winter's snow, falling in depth in front of the wall and through the tree.
   if (bonsaiFalling > 0.0) {
-    Precip p = snowFall(uv, aspect, t, bonsaiFalling, 0.12 * K_breeze, 1.0 - exp(-depth / 30.0));
+    Precip p = snowFall(uv, aspect, uMotionTime, bonsaiFalling, 0.12 * K_breeze, 1.0 - exp(-depth / 30.0));
     vec3 air = vec3(0.70, 0.74, 0.80) * (dot(bonsaiAmb, LUMA) * 1.4 + dot(bonsaiSun, LUMA) * 0.3 + 0.03);
     col = mix(col, air, p.veil);
     vec3 flake = BONSAI_SNOW * (dot(bonsaiAmb, LUMA) * 1.6 + dot(bonsaiSun, LUMA) * 0.6 + dot(bonsaiLampLight, LUMA) * 0.08 + 0.06);

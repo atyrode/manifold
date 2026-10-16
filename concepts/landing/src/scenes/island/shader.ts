@@ -67,8 +67,7 @@ vec4 islBush[3];
 vec4 islWood;
 float islTrans;
 // Clocks, weather, light.
-float islT;
-float islTime;
+float islT;         // the motion clock (uMotionTime)
 float islWind;
 float islCover;
 float islGrey;
@@ -462,8 +461,8 @@ vec3 islVanish(vec3 dir) {
 }
 
 // The snow between the eye and a surface depth away, as the pitched-down camera sees it.
-Precip islSnowFall(vec2 uv, float aspect, float t, float amount, float depth) {
-  return snowFallSeen(uv, aspect, t, amount, islWind, depth, islVanish(snowFallDir(amount, islWind)));
+Precip islSnowFall(vec2 uv, float aspect, float tm, float amount, float depth) {
+  return snowFallSeen(uv, aspect, tm, amount, islWind, depth, islVanish(snowFallDir(amount, islWind)));
 }
 
 // ---- clouds' shadows and the shadows of what flies ----
@@ -816,7 +815,7 @@ vec3 islLand(vec3 pos, vec3 n, float id, vec3 rd) {
   vec3 col = islLit(alb, n, pos, rd, sh, ao, cs, gloss);
   col += islEmit;
   if (K_rain > 0.0 && islHardS > 0.5 && n.y > 0.7) {
-    col += islDrop * (rainSplashes(vec2(pos.x * islSide, pos.z) * 3.2, islTime, K_rain) * 0.4);
+    col += islDrop * (rainSplashes(vec2(pos.x * islSide, pos.z) * 3.2, uFallTime, K_rain) * 0.4);
   }
   return col;
 }
@@ -835,7 +834,7 @@ vec3 islHaze(vec3 rd) {
 // The dome: the sky, the stars and the giant planet in the cloud's gaps, the cloud over them.
 vec3 islDome(vec3 rd) {
   vec3 c = islSkyCol(rd);
-  vec4 cl = skyClouds(islSky, rd, islTime, islCover, islWind);
+  vec4 cl = skyClouds(islSky, rd, islT, islCover, islWind);
   cl.rgb = greyed(cl.rgb, vec3(0.94, 0.96, 1.0), 0.6 * islGrey) * (1.0 + 0.2 * islGrey - 0.35 * K_rain);
   c += skyStarLight(islSky, rd, K_stars) * (1.0 - cl.a);
   c = skyGiant(islSky, c, rd, 1.0 / (ISL_FOCAL * uRes.y), 1.0);
@@ -937,7 +936,7 @@ vec3 islSea(vec3 Pfull, vec3 rd, float t) {
   float ringFade = 1.0 - smoothstep(10.0, 20.0, t);
   vec3 rr3 = vec3(0.0);
   if (K_rain > 0.0) {
-    rr3 = rainRipples(P.xz * 2.4, islTime, K_rain);
+    rr3 = rainRipples(P.xz * 2.4, uFallTime, K_rain);
     sl.xy += rr3.xy * 0.5 * ringFade;
   }
   // The slope variance the cells do not draw (waterGlitter's s2): the ripples finer than the four
@@ -1047,7 +1046,8 @@ vec3 islGullAt(float tm) {
 }
 
 // A gift balloon floats across every minute or two, or when asked: left to right or the other way,
-// at its own height and depth, taking as long as half the interval to cross.
+// at its own height and depth, taking as long as half the interval to cross. tm: the motion clock;
+// since: motion seconds since it was asked for (sinceTriggerM).
 void islBalloonSetup(float tm, float since) {
   islBallOn = 0.0;
   islBall = vec3(0.0);
@@ -1057,9 +1057,8 @@ void islBalloonSetup(float tm, float since) {
   float span = 0.5 * P;
   float prog = -1.0;
   float hs = 0.0;
-  float ts = since * uMotion;
-  if (ts >= 0.0 && ts < span) {
-    prog = ts / span;
+  if (since >= 0.0 && since < span) {
+    prog = since / span;
     hs = hash12(vec2(floor(uTriggers[0]), 7.7));
   } else if (K_balloon > 0.0) {
     float u = tm / P + 0.8;
@@ -1137,7 +1136,6 @@ vec4 islBalloonSprite(vec2 sp, vec3 pj) {
 
 Shade sceneIsland(vec2 uv, vec2 cell, float t) {
   islT = uMotionTime;
-  islTime = t;
   islWind = K_wind;
   islCell = cell;
   float aspect = uRes.x / uRes.y;
@@ -1170,7 +1168,7 @@ Shade sceneIsland(vec2 uv, vec2 cell, float t) {
   islGullOn = (K_gull > 0.5 && rain < 0.35 && islSky.night < 0.7) ? 1.0 : 0.0;
   islGull = islGullAt(islT);
   islGullAhead = islGullAt(islT + 0.6);
-  islBalloonSetup(islT, sinceTrigger(0));
+  islBalloonSetup(islT, sinceTriggerM(0));
   if (rain > 0.7) islBallOn = 0.0;
 
   // Passage: the camera's swoop (1 at the start, 0 once settled; it dips a little below 0 in the
@@ -1292,13 +1290,13 @@ Shade sceneIsland(vec2 uv, vec2 cell, float t) {
   }
   float dep = 1.0 - exp(-zScene * ISL_METRES / 30.0);
   if (rain > 0.0) {
-    Precip pr = rainFallSeen(uv, aspect, t, rain, islWind, dep, islVanish(rainFallDir(rain, islWind)));
+    Precip pr = rainFallSeen(uv, aspect, islT, uFallTime, rain, islWind, dep, islVanish(rainFallDir(rain, islWind)));
     vec3 air = mix(vec3(dot(haze, LUMA)) * vec3(0.94, 0.97, 1.0), haze, 0.4);
     vec3 dropCol = max(greyed(haze, vec3(1.0), 0.5) * 1.2, vec3(0.08));
     col = precipOver(col, air, dropCol * (1.0 - 0.2 * pr.near), pr);
   }
   if (snow > 0.0) {
-    Precip ps = islSnowFall(uv, aspect, t, snow, dep);
+    Precip ps = islSnowFall(uv, aspect, islT, snow, dep);
     float airL = dot(islAmb + 0.5 * islSky.sunColor + 0.4 * islSky.moonColor, LUMA);
     vec3 flake = vec3(0.95, 0.96, 1.0) * clamp(airL * 1.3 + 0.1, 0.0, 1.0);
     col = mix(col, flake * 0.92, ps.veil);
