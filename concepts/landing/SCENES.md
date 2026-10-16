@@ -602,6 +602,10 @@ Wind over a sand sea.
   on the snow and in the room), an aurora (off by default) whose green lights the snow while the
   sky is open, and shooting stars (off by default, "now" on trigger 1) in the sky over the roofs.
   The snow cloud hides them all and shuts out their light; the frost's blur coarsens their detail.
+- The pane keeps its frost through a resize: every frond, scratch and nucleus takes its random
+  draws from where it stands, counted in from its own side of the pane, so a wider or narrower
+  window regrows the same pattern (each half following its own edge; only a few branches down the
+  middle change), once the new shape has rested about a fifth of a second (`frost/sim.test.ts`).
 
 ## Weather: snow and rain
 

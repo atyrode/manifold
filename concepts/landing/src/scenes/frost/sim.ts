@@ -1,7 +1,7 @@
 // Frost on a window pane: the crystals that grow over the glass, and where warmth melted them.
 //
-// uSim0  crystals, rgba16f, about 512×288 texels (a half-resolution pass comes first), per
-//        pattern seed and frame shape. Each texel describes the nearest crystal branch:
+// uSim0  crystals, rgba16f, GROWTH_ROWS texels high and as wide as the frame (512×288 at 16:9; a
+//        half-resolution pass comes first). Each texel describes the nearest crystal branch:
 //          r  growth-clock seconds at which the branch reached its point nearest this texel
 //          g  signed distance across the branch, frame heights (+ on its left). It is linear
 //             across a branch, so linear filtering reproduces it exactly and the shader draws
@@ -43,12 +43,23 @@
 // The growth clock itself runs on real time between frames, so a slow machine frosts over at the
 // same pace.
 //
+// Resize. The branches grow on a texel grid fixed in frame heights, and every site frost nucleates
+// at (a frond on the frame, a scratch, a nucleus behind the front) is counted in from the nearer
+// side of the pane, with draws of its own seeded by where it is; every branch has draws of its own
+// too. So a wider or narrower pane grows the same frost: each half keeps its branches where they
+// were from its own edge, and only down the middle, where the halves meet, do a few branches run
+// into different neighbours. A new frame shape waits until it has rested RESHAPE_MS, as a dragged
+// window edge comes to rest, and the field on show stays up, stretched, until the regrown one is
+// finished.
+//
 // Melt. A TrailField records the pointer's warmth. Where it is warm enough the frost melts; once
 // it cools, the meltwater refreezes from the cleared patch's edges inward (only texels next to
-// frozen glass refreeze quickly), and the new frost there starts thin and thickens back.
+// frozen glass refreeze quickly), and the new frost there starts thin and thickens back. While no
+// warmth is left and nothing is melted or regrowing, the melt grid is not stepped at all.
 import { KnobReader, type ParamDef } from "../../params.ts";
+import { runBudgeted } from "../../sims/clock.ts";
 import { smoothstep } from "../../sims/math.ts";
-import { mulberry32 } from "../../sims/random.ts";
+import { Random } from "../../sims/random.ts";
 import { DataTexture } from "../../sims/texture.ts";
 import { TrailField } from "../../sims/trail.ts";
 import type { SceneSim, SimFactory, SimFrame } from "../types.ts";
@@ -102,19 +113,30 @@ export function furSlowness(style: number): number {
   return FUR_SLOW_FERN * Math.pow(FUR_SLOW_FUR / FUR_SLOW_FERN, style);
 }
 
-/** Texels in the crystal field, whatever the frame's shape (512×288 at 16:9). */
-const GROWTH_TEXELS = 512 * 288;
+/**
+ * Rows of the crystal field per frame height, whatever the frame's shape (512×288 texels at 16:9).
+ * The branches grow on this texel grid, so it is fixed in frame heights: a resize only widens or
+ * narrows the pane, and every branch grows on the texels it grew on before.
+ */
+const GROWTH_ROWS = 288;
 /** The quick first field has this fraction of the full field's resolution, across and up. */
 const COARSE_DIVISOR = 2;
 /**
  * How the growth is spread over frames, counted in slices of work (a lockstep round of the branches,
  * or a few rows of the field), never in time, so the field on show after n frames does not depend on
  * the machine: until a pattern's first field is up, as many slices as that takes; after that
- * REFINE_SLICES a frame. The caps in milliseconds only bound how long one frame may block.
+ * REFINE_SLICES a frame. The caps in milliseconds only bound how long one frame may block (raised to
+ * the frame's budget, SimFrame.budget, where that is more).
  */
 const REFINE_SLICES = 8;
 const FIRST_CAP_MS = 250;
 const SLICE_CAP_MS = 50;
+/**
+ * Milliseconds a new frame shape must rest before the pane regrows for it (a dragged window edge),
+ * as the garden waits before it re-lays. The field on show stays up, stretched to the new shape,
+ * until the regrown one is complete: the same pattern, so there is nothing to race for.
+ */
+const RESHAPE_MS = 220;
 /**
  * Longest real time one frame may add to the growth clock, seconds. The clock runs on the time
  * between frames, not the scene clock, which the renderer holds to 0.1 s a frame: on a slow
@@ -140,8 +162,27 @@ const MIN_BRANCH = 0.01;
 const FRONT = { bottom: [-4, 0.0055], side: [6, 0.0055], top: [14, 0.0045] } as const;
 /** Growth seconds over which the fronts from two edges blend, so corners frost first. */
 const FRONT_BLEND = 5;
-/** Spacing of the nucleation sites behind the front, frame heights. */
+/**
+ * Growth seconds after the first front to reach a site past which a later one no longer counts (its
+ * weight would be under 0.3%), so a front never reaches across the pane: moving one edge leaves the
+ * sites on the far half as they were.
+ */
+const FRONT_REACH = 6 * FRONT_BLEND;
+/**
+ * Where frost nucleates. Each site belongs to the nearer half of the pane and is counted in from
+ * that half's edge (left or right) at a fixed spacing in frame heights, with random draws of its own
+ * (siteSeed): a big frond every BOTTOM_SPACING along the bottom and TOP_SPACING along the top, a
+ * scratch every SCRATCH_SPACING from SCRATCH_INSET in, a nucleus behind the front every
+ * NUCLEUS_SPACING. A resize moves each half's sites with its own edge and leaves them as they were;
+ * only down the middle, where the halves meet, do fronds meet new neighbours.
+ */
+const BOTTOM_SPACING = 0.12;
+const TOP_SPACING = 0.25;
+const SCRATCH_INSET = 0.25;
+const SCRATCH_SPACING = 0.5;
 const NUCLEUS_SPACING = 0.07;
+/** The kinds of site, for their seeds. */
+const SITE = { scratch: 1, bottom: 2, corner: 3, side: 4, top: 5, nucleus: 6 } as const;
 
 interface Level {
   /** Half-width at its root, frame heights; it tapers to 55% of that at its tip. */
@@ -224,11 +265,27 @@ interface Size {
   height: number;
 }
 
-/** Crystal field size for a frame shape: about GROWTH_TEXELS, rounded so small resizes reuse it. */
+/** Crystal field size for a frame shape: GROWTH_ROWS high and as wide as the frame. */
 function growthSize(aspect: number): Size {
-  const shape = Math.min(4, Math.max(0.25, Math.round(aspect * 50) / 50));
-  const width = Math.max(16, Math.round(Math.sqrt(GROWTH_TEXELS * shape)));
-  return { width, height: Math.max(16, Math.round(width / shape)) };
+  const shape = Math.min(4, Math.max(0.25, aspect));
+  return { width: Math.round(GROWTH_ROWS * shape), height: GROWTH_ROWS };
+}
+
+/** `seed` with `value` folded in, through the murmur3 finaliser. */
+function fold(seed: number, value: number): number {
+  let h = seed ^ Math.imul(value | 0, 0x9e3779b1);
+  h = Math.imul(h ^ (h >>> 16), 0x85ebca6b);
+  h = Math.imul(h ^ (h >>> 13), 0xc2b2ae35);
+  return h ^ (h >>> 16);
+}
+
+/**
+ * The seed of a site's draws: its pattern, its kind (SITE), its side or corner, and its place
+ * counted in from there. Each branch from the site draws its own seed from the site's draws, and
+ * each side branch from its parent's.
+ */
+function siteSeed(pattern: number, kind: number, side: number, index: number): number {
+  return fold(fold(fold(fold(0x5bd1e995, pattern), kind), side), index);
 }
 
 /** Offsets of a skeleton point's fields in Skeleton.data. */
@@ -348,6 +405,9 @@ interface Tip {
   paired: boolean;
   /** A random number of its own (uSim3 a). */
   kin: number;
+  /** Its own draws, and their seed: its meander, its side branches and theirs. */
+  seed: number;
+  rand: Random;
   /** Its latest point in the skeleton; -1 before the first. */
   last: number;
   /** A nucleus behind the frost front: it only sprouts if the glass just ahead is still clear. */
@@ -357,7 +417,10 @@ interface Tip {
 
 /**
  * Grow the branches for one pattern on a width × height texel grid (one frame height = height
- * texels), yielding after every lockstep round. Deterministic for a seed and size.
+ * texels), yielding after every lockstep round. Deterministic for a seed and size. Every site
+ * (scratch, frond, nucleus) draws from a stream of its own, seeded by where it is, and every branch
+ * from one of its own, seeded by its parent's: a branch grows the same whatever changes elsewhere on
+ * the pane, until it runs into something new.
  */
 function* growSkeleton(
   pattern: number,
@@ -366,8 +429,7 @@ function* growSkeleton(
 ): Generator<undefined, Skeleton, undefined> {
   const unit = height;
   const frame = FROST_FRAME * unit;
-  const rand = mulberry32(Math.imul(pattern + 1, 0x9e3779b1) ^ 0x5bd1e995);
-  const range = (lo: number, hi: number): number => lo + (hi - lo) * rand();
+  const half = width / 2;
   const skeleton = new Skeleton(width / height);
   // Which branch first claimed each texel (a plus round every point, so tips cannot slip between
   // the diagonal texels of another line): tips stop when they run into someone else's ice.
@@ -401,9 +463,16 @@ function* growSkeleton(
     claim(px, py + 1, id);
     return skeleton.add(x / unit, y / unit, dx, dy, t, along / unit, barbs, w, bright, kin);
   };
+  /**
+   * The x of a site `inset` texels in from the left (side 0) or the right (side 1) edge; undefined
+   * past the middle, where the other half's sites are.
+   */
+  const inHalf = (side: number, inset: number): number | undefined =>
+    inset >= half ? undefined : side === 0 ? inset : width - inset;
 
   const tips: Tip[] = [];
   let nextId = 0;
+  /** A new branch tip, its own draws seeded from `from`: its site's draws, or its parent's. */
   const sprout = (
     x: number,
     y: number,
@@ -413,11 +482,14 @@ function* growSkeleton(
     level: number,
     parent: Tip | undefined,
     origin: number,
+    from: Random,
     probe = false,
   ): void => {
     const spec = LEVELS[level];
     if (!spec) return;
     const id = nextId++;
+    const seed = from.int(4294967296) | 0;
+    const rand = new Random(seed);
     const spacing = Math.max(2, spec.spacing * unit);
     const grace = parent ? 2.5 + parent.spec.width * unit * 2 : 5;
     tips.push({
@@ -435,14 +507,16 @@ function* growSkeleton(
       start,
       speed: parent ? parent.speed * 0.8 : STEM_SPEED * unit,
       curl: parent
-        ? parent.curl * 0.4 + (rand() - 0.5) * (0.3 / length)
-        : (rand() - 0.5) * (2.2 / length),
+        ? parent.curl * 0.4 + (rand.next() - 0.5) * (0.3 / length)
+        : (rand.next() - 0.5) * (2.2 / length),
       wobble: spec.wobble,
       grace,
-      nextSprout: grace + spacing * range(0.4, 0.8),
-      side: rand() < 0.5 ? 1 : -1,
-      paired: level === 0 ? rand() < 0.5 : level === 1 ? rand() < 0.65 : false,
-      kin: rand(),
+      nextSprout: grace + spacing * rand.range(0.4, 0.8),
+      side: rand.next() < 0.5 ? 1 : -1,
+      paired: level === 0 ? rand.next() < 0.5 : level === 1 ? rand.next() < 0.65 : false,
+      kin: rand.next(),
+      seed,
+      rand,
       last: -1,
       probe,
       alive: true,
@@ -454,154 +528,187 @@ function* growSkeleton(
   };
 
   // Scratches: short lines of frost that nucleate later, each sending a few stems out sideways.
-  const scratches = 2 + Math.floor(rand() * 2);
-  for (let i = 0; i < scratches; i++) {
-    const id = nextId++;
-    const cx = range(0.15, 0.85) * width;
-    const cy = range(0.25, 0.8) * height;
-    const length = range(0.05, 0.14) * unit;
-    const angle = rand() * Math.PI;
-    const bend = (rand() - 0.5) * 0.8;
-    const t = range(16, 40);
-    const kin = rand();
-    const points: { x: number; y: number; heading: number }[] = [];
-    let last = -1;
-    for (let s = -length / 2; s <= length / 2; s += STEP) {
-      const heading = angle + Math.atan((2 * bend * s) / length);
-      const x =
-        cx + Math.cos(angle) * s + (Math.cos(angle + Math.PI / 2) * bend * (s * s)) / length;
-      const y =
-        cy + Math.sin(angle) * s + (Math.sin(angle + Math.PI / 2) * bend * (s * s)) / length;
-      const index = plant(
-        x,
-        y,
-        Math.cos(heading),
-        Math.sin(heading),
-        t + Math.abs(s) * 0.02,
-        s + length / 2,
-        0.004,
-        0.0012,
-        0.6,
-        kin,
-        id,
-      );
-      if (last < 0) skeleton.mark(index, ROOT);
-      last = index;
-      points.push({ x, y, heading });
-    }
-    if (last >= 0) skeleton.mark(last, TIP);
-    const stems = 3 + Math.floor(rand() * 2);
-    for (let j = 0; j < stems; j++) {
-      const at = points[Math.floor(rand() * points.length)];
-      if (!at) continue;
-      const out = at.heading + (rand() < 0.5 ? 1 : -1) * (Math.PI / 2 + (rand() - 0.5) * 1.2);
-      sprout(at.x, at.y, out, range(0.12, 0.3) * unit, t + range(0.5, 3.5), 0, undefined, id);
+  for (const side of [0, 1]) {
+    for (let i = 0; (SCRATCH_INSET + i * SCRATCH_SPACING) * unit < half; i++) {
+      const rand = new Random(siteSeed(pattern, SITE.scratch, side, i));
+      const cx = inHalf(side, (SCRATCH_INSET + (i + rand.next()) * SCRATCH_SPACING) * unit);
+      if (cx === undefined) continue;
+      const id = nextId++;
+      const cy = rand.range(0.25, 0.8) * height;
+      const length = rand.range(0.05, 0.14) * unit;
+      const angle = rand.next() * Math.PI;
+      const bend = (rand.next() - 0.5) * 0.8;
+      const t = rand.range(16, 40);
+      const kin = rand.next();
+      const points: { x: number; y: number; heading: number }[] = [];
+      let last = -1;
+      for (let s = -length / 2; s <= length / 2; s += STEP) {
+        const heading = angle + Math.atan((2 * bend * s) / length);
+        const x =
+          cx + Math.cos(angle) * s + (Math.cos(angle + Math.PI / 2) * bend * (s * s)) / length;
+        const y =
+          cy + Math.sin(angle) * s + (Math.sin(angle + Math.PI / 2) * bend * (s * s)) / length;
+        const index = plant(
+          x,
+          y,
+          Math.cos(heading),
+          Math.sin(heading),
+          t + Math.abs(s) * 0.02,
+          s + length / 2,
+          0.004,
+          0.0012,
+          0.6,
+          kin,
+          id,
+        );
+        if (last < 0) skeleton.mark(index, ROOT);
+        last = index;
+        points.push({ x, y, heading });
+      }
+      if (last >= 0) skeleton.mark(last, TIP);
+      const stems = 3 + rand.int(2);
+      for (let j = 0; j < stems; j++) {
+        const at = points[rand.int(points.length)];
+        if (!at) continue;
+        const out =
+          at.heading + (rand.next() < 0.5 ? 1 : -1) * (Math.PI / 2 + (rand.next() - 0.5) * 1.2);
+        sprout(
+          at.x,
+          at.y,
+          out,
+          rand.range(0.12, 0.3) * unit,
+          t + rand.range(0.5, 3.5),
+          0,
+          undefined,
+          id,
+          rand,
+        );
+      }
     }
   }
 
   // Big fronds from every edge: up from the bottom, fanning, and out of the corners, all frosting
   // before the pane opens (FROST_START); in from the sides and down from the top soon after.
-  const along = width - 2 * frame;
-  const bottom = Math.max(2, Math.round(along / (0.12 * unit)));
-  for (let i = 0; i < bottom; i++) {
-    const x = frame + ((i + range(0.2, 0.8)) / bottom) * along;
-    sprout(
-      x,
-      frame + 1,
-      Math.PI / 2 + (rand() - 0.5) * 1.7,
-      range(0.25, 0.45) * unit,
-      range(-14, 8),
-      0,
-      undefined,
-      -1,
-    );
-  }
-  for (const [x, y, toward, start] of [
-    [frame + 1, frame + 1, 0, -12],
-    [width - frame - 1, frame + 1, Math.PI, -12],
-    [frame + 1, height - frame - 1, 0, 0],
-    [width - frame - 1, height - frame - 1, Math.PI, 0],
-  ] as const) {
-    const up = y < height / 2 ? 1 : -1;
-    for (let j = 0; j < 3; j++) {
-      const tilt = range(0.3, 1.25) * up;
-      const angle = toward === 0 ? tilt : Math.PI - tilt;
-      const length = (up > 0 ? range(0.3, 0.45) : range(0.22, 0.35)) * unit;
-      sprout(x, y, angle, length, start + range(0, 12), 0, undefined, -1);
-    }
-  }
-  for (const [x, inward] of [
-    [frame + 1, 0],
-    [width - frame - 1, Math.PI],
-  ] as const) {
-    for (let j = 0; j < 3; j++) {
+  for (const side of [0, 1]) {
+    for (let i = 0; frame + i * BOTTOM_SPACING * unit < half; i++) {
+      const rand = new Random(siteSeed(pattern, SITE.bottom, side, i));
+      const x = inHalf(side, frame + (i + rand.range(0.2, 0.8)) * BOTTOM_SPACING * unit);
+      if (x === undefined) continue;
       sprout(
         x,
-        ((j + range(0.2, 0.8)) / 3) * (height - 2 * frame) + frame,
-        inward + (rand() - 0.5) * 1.2,
-        range(0.18, 0.3) * unit,
-        range(2, 24),
+        frame + 1,
+        Math.PI / 2 + (rand.next() - 0.5) * 1.7,
+        rand.range(0.25, 0.45) * unit,
+        rand.range(-14, 8),
         0,
         undefined,
         -1,
+        rand,
       );
     }
   }
-  const top = Math.max(1, Math.round(along / (0.25 * unit)));
-  for (let i = 0; i < top; i++) {
-    const x = frame + ((i + range(0.2, 0.8)) / top) * along;
-    sprout(
-      x,
-      height - frame - 1,
-      -Math.PI / 2 + (rand() - 0.5) * 1.2,
-      range(0.12, 0.25) * unit,
-      range(14, 34),
-      0,
-      undefined,
-      -1,
-    );
+  for (const [corner, x, y, toward, start] of [
+    [0, frame + 1, frame + 1, 0, -12],
+    [1, width - frame - 1, frame + 1, Math.PI, -12],
+    [2, frame + 1, height - frame - 1, 0, 0],
+    [3, width - frame - 1, height - frame - 1, Math.PI, 0],
+  ] as const) {
+    const up = y < height / 2 ? 1 : -1;
+    for (let j = 0; j < 3; j++) {
+      const rand = new Random(siteSeed(pattern, SITE.corner, corner, j));
+      const tilt = rand.range(0.3, 1.25) * up;
+      const angle = toward === 0 ? tilt : Math.PI - tilt;
+      const length = (up > 0 ? rand.range(0.3, 0.45) : rand.range(0.22, 0.35)) * unit;
+      sprout(x, y, angle, length, start + rand.range(0, 12), 0, undefined, -1, rand);
+    }
+  }
+  for (const [side, x, inward] of [
+    [0, frame + 1, 0],
+    [1, width - frame - 1, Math.PI],
+  ] as const) {
+    for (let j = 0; j < 3; j++) {
+      const rand = new Random(siteSeed(pattern, SITE.side, side, j));
+      sprout(
+        x,
+        ((j + rand.range(0.2, 0.8)) / 3) * (height - 2 * frame) + frame,
+        inward + (rand.next() - 0.5) * 1.2,
+        rand.range(0.18, 0.3) * unit,
+        rand.range(2, 24),
+        0,
+        undefined,
+        -1,
+        rand,
+      );
+    }
+  }
+  for (const side of [0, 1]) {
+    for (let i = 0; frame + i * TOP_SPACING * unit < half; i++) {
+      const rand = new Random(siteSeed(pattern, SITE.top, side, i));
+      const x = inHalf(side, frame + (i + rand.range(0.2, 0.8)) * TOP_SPACING * unit);
+      if (x === undefined) continue;
+      sprout(
+        x,
+        height - frame - 1,
+        -Math.PI / 2 + (rand.next() - 0.5) * 1.2,
+        rand.range(0.12, 0.25) * unit,
+        rand.range(14, 34),
+        0,
+        undefined,
+        -1,
+        rand,
+      );
+    }
   }
 
   // Nuclei behind the frost front: as the front creeps in from the edges, fronds sprout from the
   // frost it has reached and grow on into whatever clear glass is left, so the pane keeps frosting
   // over long after the big fronds have run into one another.
   const span = width / unit;
-  const columns = Math.max(1, Math.round((span - 2 * FROST_FRAME) / NUCLEUS_SPACING));
   const rows = Math.max(1, Math.round((1 - 2 * FROST_FRAME) / NUCLEUS_SPACING));
-  for (let j = 0; j < rows; j++) {
-    for (let i = 0; i < columns; i++) {
-      const fx = FROST_FRAME + ((i + range(0.15, 0.85)) / columns) * (span - 2 * FROST_FRAME);
-      const fy = FROST_FRAME + ((j + range(0.15, 0.85)) / rows) * (1 - 2 * FROST_FRAME);
-      // Each edge's front reaches here at its own time; blended, the earliest wins, corners come
-      // sooner still, and the frond heads the way the frost is creeping.
-      const fronts = [
-        [FRONT.bottom[0] + (fy - FROST_FRAME) / FRONT.bottom[1], 0, 1],
-        [FRONT.side[0] + (fx - FROST_FRAME) / FRONT.side[1], 1, 0],
-        [FRONT.side[0] + (span - FROST_FRAME - fx) / FRONT.side[1], -1, 0],
-        [FRONT.top[0] + (1 - FROST_FRAME - fy) / FRONT.top[1], 0, -1],
-      ] as const;
-      const first = Math.min(...fronts.map((front) => front[0]));
-      let weight = 0;
-      let dx = 0;
-      let dy = 0;
-      for (const [t, ux, uy] of fronts) {
-        const w = Math.exp((first - t) / FRONT_BLEND);
-        weight += w;
-        dx += w * ux;
-        dy += w * uy;
+  for (const side of [0, 1]) {
+    for (let i = 0; (FROST_FRAME + i * NUCLEUS_SPACING) * unit < half; i++) {
+      for (let j = 0; j < rows; j++) {
+        const rand = new Random(siteSeed(pattern, SITE.nucleus, side, i * rows + j));
+        const x = inHalf(
+          side,
+          (FROST_FRAME + (i + rand.range(0.15, 0.85)) * NUCLEUS_SPACING) * unit,
+        );
+        if (x === undefined) continue;
+        const fx = x / unit;
+        const fy = FROST_FRAME + ((j + rand.range(0.15, 0.85)) / rows) * (1 - 2 * FROST_FRAME);
+        // Each edge's front reaches here at its own time; blended, the earliest wins, corners come
+        // sooner still, and the frond heads the way the frost is creeping.
+        const fronts = [
+          [FRONT.bottom[0] + (fy - FROST_FRAME) / FRONT.bottom[1], 0, 1],
+          [FRONT.side[0] + (fx - FROST_FRAME) / FRONT.side[1], 1, 0],
+          [FRONT.side[0] + (span - FROST_FRAME - fx) / FRONT.side[1], -1, 0],
+          [FRONT.top[0] + (1 - FROST_FRAME - fy) / FRONT.top[1], 0, -1],
+        ] as const;
+        const first = Math.min(...fronts.map((front) => front[0]));
+        let weight = 0;
+        let dx = 0;
+        let dy = 0;
+        for (const [t, ux, uy] of fronts) {
+          if (t - first > FRONT_REACH) continue;
+          const w = Math.exp((first - t) / FRONT_BLEND);
+          weight += w;
+          dx += w * ux;
+          dy += w * uy;
+        }
+        const arrival = first - FRONT_BLEND * Math.log(weight);
+        sprout(
+          x,
+          fy * unit,
+          Math.atan2(dy, dx) + (rand.next() - 0.5) * 1.2,
+          rand.range(0.1, 0.24) * unit,
+          arrival + rand.range(-3, 3),
+          0,
+          undefined,
+          -1,
+          rand,
+          true,
+        );
       }
-      const arrival = first - FRONT_BLEND * Math.log(weight);
-      sprout(
-        fx * unit,
-        fy * unit,
-        Math.atan2(dy, dx) + (rand() - 0.5) * 1.2,
-        range(0.1, 0.24) * unit,
-        arrival + range(-3, 3),
-        0,
-        undefined,
-        -1,
-        true,
-      );
     }
   }
 
@@ -635,7 +742,7 @@ function* growSkeleton(
         const s = tip.walked;
         const f = s / tip.length;
         tip.heading =
-          tip.angle + tip.curl * s + tip.wobble * 2 * (noise(s / (0.05 * unit), tip.id, 5) - 0.5);
+          tip.angle + tip.curl * s + tip.wobble * 2 * (noise(s / (0.05 * unit), tip.seed, 5) - 0.5);
         const dx = Math.cos(tip.heading);
         const dy = Math.sin(tip.heading);
         tip.x += dx * STEP;
@@ -681,12 +788,13 @@ function* growSkeleton(
           const sides = tip.paired ? [1, -1] : [tip.side];
           tip.side = -tip.side;
           for (const side of sides) {
-            const length = tip.length * spec.ratio * envelope * range(0.7, 1.3);
+            const length = tip.length * spec.ratio * envelope * tip.rand.range(0.7, 1.3);
             if (length < MIN_BRANCH * unit) continue;
-            const angle = tip.heading + side * (Math.PI / 3 + (rand() - 0.5) * 0.14);
-            sprout(tip.x, tip.y, angle, length, arrival + range(0.3, 1.3), tip.level + 1, tip, -1);
+            const angle = tip.heading + side * (Math.PI / 3 + (tip.rand.next() - 0.5) * 0.14);
+            const start = arrival + tip.rand.range(0.3, 1.3);
+            sprout(tip.x, tip.y, angle, length, start, tip.level + 1, tip, -1, tip.rand);
           }
-          tip.nextSprout = s + Math.max(2, spec.spacing * unit) * range(0.75, 1.25);
+          tip.nextSprout = s + Math.max(2, spec.spacing * unit) * tip.rand.range(0.75, 1.25);
         }
       }
       if (tip.alive && tip.walked + STEP > tip.length) stop(tip);
@@ -835,19 +943,37 @@ function* rasterize(
 
 /**
  * The crystal field for one pattern and frame shape: the branches, then a quick half-resolution
- * field (yielded), then the full one (returned). Yields undefined between slices of work.
+ * field (yielded) when `quick`, then the full one (returned). Yields undefined between slices of
+ * work.
  */
 function* growFrost(
   pattern: number,
   size: Size,
+  quick: boolean,
 ): Generator<GrowthField | undefined, GrowthField, undefined> {
   const skeleton = yield* growSkeleton(pattern, size.width, size.height);
-  yield yield* rasterize(
-    skeleton,
-    Math.max(16, Math.round(size.width / COARSE_DIVISOR)),
-    Math.max(16, Math.round(size.height / COARSE_DIVISOR)),
-  );
+  if (quick)
+    yield yield* rasterize(
+      skeleton,
+      Math.max(16, Math.round(size.width / COARSE_DIVISOR)),
+      Math.max(16, Math.round(size.height / COARSE_DIVISOR)),
+    );
   return yield* rasterize(skeleton, size.width, size.height);
+}
+
+/**
+ * Fade a trail of warmth, unless it is known to hold nothing. `empty` is the trail's version
+ * (TrailField.version, which every stroke bumps) when it was last found empty, else -1; returns the
+ * same as it stands after this call. A decay zeroes every value too faint to show as a byte, so once
+ * one has run, all-zero bytes mean an empty trail.
+ */
+function fade(trail: TrailField, empty: number, dt: number): number {
+  if (trail.version === empty) return empty;
+  trail.decay(dt, HEAT_HALF_LIFE);
+  if (dt <= 0) return -1;
+  const data = trail.data;
+  for (let k = 0; k < data.length; k++) if (data[k] !== 0) return -1;
+  return trail.version;
 }
 
 /** Melting and refreezing on a grid at half the growth field's resolution. */
@@ -864,6 +990,14 @@ class MeltField {
   readonly #mark: Float32Array;
   /** Per-texel refreezing pace, so the frost closes in by a ragged, crystalline edge. */
   readonly #pace: Float32Array;
+  /**
+   * Cold glass: the trails' versions when last found empty (fade), and whether the last step left
+   * every texel at rest (no warmth, melt, regrowth or trace), as a new field is. While all three
+   * hold, a step would change nothing, and is skipped.
+   */
+  #heatEmpty = 0;
+  #fingerEmpty = 0;
+  #rest = true;
 
   constructor(width: number, height: number) {
     this.width = width;
@@ -884,9 +1018,10 @@ class MeltField {
    * scaled by motion). Returns whether the texels changed.
    */
   step(dt: number, cool: number): boolean {
-    this.heat.decay(dt, HEAT_HALF_LIFE);
-    this.finger.decay(dt, HEAT_HALF_LIFE);
+    this.#heatEmpty = fade(this.heat, this.#heatEmpty, dt);
+    this.#fingerEmpty = fade(this.finger, this.#fingerEmpty, dt);
     if (dt <= 0) return false;
+    if (this.#rest && this.#heatEmpty >= 0 && this.#fingerEmpty >= 0) return false;
     const { width, height, bytes } = this;
     const melt = this.#melt;
     const regrow = this.#regrow;
@@ -894,6 +1029,7 @@ class MeltField {
     const heat = this.heat.data;
     const finger = this.finger.data;
     let changed = false;
+    let rest = true;
     for (let y = 0; y < height; y++) {
       for (let x = 0; x < width; x++) {
         const k = y * width + x;
@@ -924,6 +1060,7 @@ class MeltField {
         regrow[k] = young;
         const traceMark = traced > MELT_ONSET ? 1 : Math.min(mark[k] ?? 0, young);
         mark[k] = traceMark;
+        if (warmth > 0 || level > 0 || young > 0 || traceMark > 0) rest = false;
         const o = k * 4;
         const r = Math.round(level * 255);
         const g = Math.round(young * 255);
@@ -938,6 +1075,7 @@ class MeltField {
         }
       }
     }
+    this.#rest = rest;
     return changed;
   }
 }
@@ -983,9 +1121,14 @@ export function frostSim(params: readonly ParamDef[]): SimFactory {
     const clockData = new Float32Array(1);
     let field: GrowthField | undefined;
     let job: Generator<GrowthField | undefined, GrowthField, undefined> | undefined;
+    /** The pattern and texel size the pane grows (or grew) for, as `${pattern}|${width}x${height}`. */
     let jobKey = "";
-    /** The job key of the field on show: until it matches, the job races to its first field. */
-    let shownKey = "";
+    let jobSize: Size | undefined;
+    /** The pattern of the field on show: until it is the job's, the job races to its first field. */
+    let shownPattern: number | undefined;
+    /** A new frame shape waiting to rest before the pane regrows for it, and since when (ms). */
+    let pendingKey = "";
+    let pendingSince = 0;
     let lastFrame: number | undefined;
     let pattern: number | undefined;
     let clock = FROST_START;
@@ -1130,7 +1273,7 @@ export function frostSim(params: readonly ParamDef[]): SimFactory {
 
     return {
       frame(frame) {
-        const now = performance.now();
+        const now = frame.now;
         const interval =
           lastFrame === undefined ? 16 : Math.min(1000, Math.max(0, now - lastFrame));
         lastFrame = now;
@@ -1144,7 +1287,8 @@ export function frostSim(params: readonly ParamDef[]): SimFactory {
           ];
         }
 
-        // A new pattern frosts over afresh from the opening state; a new frame shape regrows it.
+        // A new pattern frosts over afresh from the opening state; a new frame shape, once it has
+        // rested RESHAPE_MS, regrows the same pattern (see "Resize" above).
         const seed = Math.round(knobs.value(frame, "pattern"));
         if (pattern !== undefined && seed !== pattern) {
           clock = FROST_START;
@@ -1162,29 +1306,41 @@ export function frostSim(params: readonly ParamDef[]): SimFactory {
         pattern = seed;
         const size = growthSize(aspect);
         const key = `${seed}|${size.width}x${size.height}`;
-        if (key !== jobKey) {
+        let grow = false;
+        if (key === jobKey) pendingKey = "";
+        else if (shownPattern !== seed) grow = true;
+        else {
+          if (key !== pendingKey) {
+            pendingKey = key;
+            pendingSince = now;
+          }
+          grow = now - pendingSince >= RESHAPE_MS;
+        }
+        if (grow) {
           jobKey = key;
-          job = growFrost(seed, size);
+          jobSize = size;
+          job = growFrost(seed, size, shownPattern !== seed);
+          pendingKey = "";
         }
         if (job) {
           // Race to this pattern's first field, then refine a few slices a frame (REFINE_SLICES).
-          const first = shownKey !== jobKey;
-          const until = now + (first ? FIRST_CAP_MS : SLICE_CAP_MS);
-          let slices = 0;
-          for (;;) {
-            const step = job.next();
-            if (step.value) {
-              show(step.value);
-              shownKey = jobKey;
-            }
-            if (step.done) {
-              job = undefined;
-              break;
-            }
-            slices++;
-            if (first ? step.value !== undefined : slices >= REFINE_SLICES) break;
-            if (performance.now() >= until) break;
-          }
+          // Regrown for a new shape, the same pattern grows no quick field: the old one stays up
+          // until the new one is finished.
+          const steps = job;
+          const race = shownPattern !== seed;
+          runBudgeted(
+            () => {
+              const step = steps.next();
+              if (step.value) {
+                show(step.value);
+                shownPattern = seed;
+              }
+              if (step.done) job = undefined;
+              return step.done === true || (race && step.value !== undefined);
+            },
+            Math.max(race ? FIRST_CAP_MS : SLICE_CAP_MS, frame.budget),
+            race ? Number.POSITIVE_INFINITY : REFINE_SLICES,
+          );
         }
 
         // The growth clock: real time between frames while the scene runs (see MAX_FRAME_SECONDS),
@@ -1208,8 +1364,9 @@ export function frostSim(params: readonly ParamDef[]): SimFactory {
           uploadedClock = shown;
         }
 
-        const meltWidth = Math.ceil(size.width / 2);
-        const meltHeight = Math.ceil(size.height / 2);
+        // The melt grid: half the resolution of the field the pane grows for.
+        const meltWidth = Math.ceil((jobSize ?? size).width / 2);
+        const meltHeight = Math.ceil((jobSize ?? size).height / 2);
         if (!melt || melt.width !== meltWidth || melt.height !== meltHeight) {
           melt = new MeltField(meltWidth, meltHeight);
           meltTexture.resize(meltWidth, meltHeight);
