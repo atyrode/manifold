@@ -1,12 +1,15 @@
 // Pads for knobs that are directions or places. A direction pad draws a signed strength (the wind,
 // a current) as an arrow out of calm, a compass pad a heading and its strength as one vector, a
 // position pad a point in the frame. Each is a slider for assistive technology: arrow keys move it
-// (Shift for larger steps), and a drag sets it on release.
+// (Shift for larger steps), and a drag sets it on release. Gusts riding a direction (widget `gusts`)
+// make its pad the wind card: a gust lane under the arrow switches them, sets their strength and
+// sends one now, and while they are on the arrow puffs out now and then (a sent one surges it).
 import { formatValue } from "../params.ts";
-import { row } from "./controls.ts";
+import { chipButton } from "./chips.ts";
+import { nowButton, row, segments, slider } from "./controls.ts";
 import { drag, h, keyStep, snap, svg, type Built } from "./dom.ts";
 import type { IconName } from "./icons.ts";
-import type { FeatureDef, Knobs, RangeDef } from "./knobs.ts";
+import { knobKeys, type FeatureDef, type Knobs, type RangeDef } from "./knobs.ts";
 
 const TAU = Math.PI * 2;
 /** The eight headings from the right, counter-clockwise: a word and an arrow each. */
@@ -21,8 +24,16 @@ const HEADINGS = [
   ["down and right", "↘"],
 ] as const;
 
-/** A signed strength, min to the left, max to the right, zero in the middle. */
-export function directionPad(knobs: Knobs, def: RangeDef, iconName: IconName): Built {
+/**
+ * A signed strength, min to the left, max to the right, zero in the middle; with `gusts` the wind
+ * card, the gusts' lane under it.
+ */
+export function directionPad(
+  knobs: Knobs,
+  def: RangeDef,
+  iconName: IconName,
+  gusts: FeatureDef | undefined,
+): Built {
   const vector = h("div", { class: "pad-vector" });
   const flow = h("div", { class: "pad-flow" });
   const pad = h(
@@ -83,19 +94,33 @@ export function directionPad(knobs: Knobs, def: RangeDef, iconName: IconName): B
     set(next, true);
   });
 
+  const lane = gusts ? gustLane(knobs, gusts, pad) : undefined;
+  const keys = [def.key, ...(gusts ? knobKeys(gusts) : [])];
+  const gustText = () => {
+    if (!gusts) return "";
+    const amount = formatValue(gusts, knobs.value(`${gusts.key}-amount`));
+    return knobs.value(gusts.key) > 0.5 ? ` · ${gusts.label} ${amount}` : ` · no ${gusts.label}`;
+  };
   const built = row({
     label: def.label,
-    help: `${def.help} Drag the arrow out of the middle, or use the arrow keys; 0 calms it.`,
+    help: gusts
+      ? `${def.help} Drag the arrow out of the middle, or use the arrow keys; 0 calms it. ${gusts.label}: ${gusts.help} The lane under the arrow switches them and sets their ${gusts.amountLabel}; while they are on the arrow puffs out now and then.`
+      : `${def.help} Drag the arrow out of the middle, or use the arrow keys; 0 calms it.`,
     icon: iconName,
-    block: pad,
-    readout: () => describe(knobs.value(def.key)),
-    modified: () => knobs.modified([def.key]),
-    reset: () => knobs.reset([def.key]),
+    block: lane ? h("div", { class: "wind-card" }, pad, lane.el) : pad,
+    readout: () => describe(knobs.value(def.key)) + gustText(),
+    modified: () => knobs.modified(keys),
+    reset: () => knobs.reset(keys),
   });
+  if (gusts) {
+    built.el.dataset.search = `${def.label} ${def.help} ${gusts.label} ${gusts.help}`.toLowerCase();
+    built.el.dataset.keys = keys.join(" ");
+  }
   return {
     el: built.el,
     sync: () => {
       built.sync();
+      lane?.sync();
       const value = knobs.value(def.key);
       const share = value < 0 ? value / -def.min : value / def.max;
       vector.style.setProperty("--share", Math.abs(share).toFixed(4));
@@ -109,6 +134,67 @@ export function directionPad(knobs: Knobs, def: RangeDef, iconName: IconName): B
         "aria-valuetext",
         `${describe(value)} ${value < 0 ? "to the left" : value > 0 ? "to the right" : ""}`.trim(),
       );
+    },
+  };
+}
+
+/** How long a sent gust surges the wind's arrow, in ms (its CSS animation's length). */
+const GUST_SURGE = 1100;
+
+/**
+ * The wind card's gust lane: the gusts' switch, their strength (a drag switches them on with it)
+ * and their "now", which also surges the arrow on `pad`; while they are on, `pad` puffs (CSS
+ * `gusty`, `--gust` their strength 0..1).
+ */
+function gustLane(knobs: Knobs, gusts: FeatureDef, pad: HTMLElement): Built {
+  const amountKey = `${gusts.key}-amount`;
+  const on = () => knobs.value(gusts.key) > 0.5;
+  const chip = chipButton(gusts);
+  chip.addEventListener("click", () => knobs.set({ [gusts.key]: on() ? 0 : 1 }, true));
+  const strength = gusts.options
+    ? segments(
+        `${gusts.label} ${gusts.amountLabel}`,
+        gusts.options.map((option) => ({ label: option.label, value: String(option.value) })),
+        () => String(knobs.value(amountKey)),
+        (value) => knobs.set({ [gusts.key]: 1, [amountKey]: Number(value) }, true),
+      )
+    : slider(
+        `${gusts.label} ${gusts.amountLabel}`,
+        gusts.min,
+        gusts.max,
+        gusts.step,
+        () => knobs.value(amountKey),
+        (value, commit) => knobs.set({ [gusts.key]: 1, [amountKey]: value }, commit),
+        (value) => (on() ? `${gusts.amountLabel} ${formatValue(gusts, value)}` : "off"),
+      );
+  const slot = gusts.trigger;
+  let surging: number | undefined;
+  const now =
+    slot === undefined
+      ? undefined
+      : nowButton(
+          gusts.label,
+          () => {
+            knobs.fire(slot);
+            pad.classList.remove("gusting");
+            void pad.offsetWidth;
+            pad.classList.add("gusting");
+            window.clearTimeout(surging);
+            surging = window.setTimeout(() => pad.classList.remove("gusting"), GUST_SURGE);
+          },
+          { compact: true, whileOff: true },
+        );
+  const el = h("div", { class: "gust-lane" }, chip, strength.el, now);
+  return {
+    el,
+    sync: () => {
+      strength.sync();
+      const lit = on();
+      chip.setAttribute("aria-checked", String(lit));
+      el.classList.toggle("on", lit);
+      pad.classList.toggle("gusty", lit);
+      const share = (knobs.value(amountKey) - gusts.min) / (gusts.max - gusts.min);
+      pad.style.setProperty("--gust", Math.min(1, Math.max(0, share)).toFixed(3));
     },
   };
 }

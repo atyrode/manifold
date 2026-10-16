@@ -67,7 +67,7 @@ export function plantKnobs(options: PlantKnobOptions): ParamDef[] {
         "strength",
         options.gusts.value ?? 0.5,
         "Now and then a gust crosses as a front: the plants bow one after another as it reaches them, then swing back. Higher: stronger and more often. Now: a gust.",
-        { trigger: options.gusts.trigger },
+        { trigger: options.gusts.trigger, widget: { kind: "gusts" } },
       ),
     );
   }

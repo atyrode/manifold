@@ -71,7 +71,7 @@ const params: readonly ParamDef[] = [
     "strength",
     0.7,
     "Gusts sweeping across the field: the grass bows and shows its paler side, so each one travels as a broad wave of light. 'Now' sends a big one across the whole field, through the grass around you.",
-    { trigger: GUST_TRIGGER },
+    { trigger: GUST_TRIGGER, widget: { kind: "gusts" } },
   ),
   range(
     "wind",

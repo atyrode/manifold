@@ -67,6 +67,7 @@ export function skyComponentKnobs(options: SkyComponentOptions = {}): ParamDef[]
         "stars",
         options.stars,
         "How many stars come out once the sky is dark: none to the left, a dark country sky to the right.",
+        { widget: { kind: "night", part: "stars" } },
       ),
     );
   if (options.milkyWay !== undefined) {
@@ -80,7 +81,7 @@ export function skyComponentKnobs(options: SkyComponentOptions = {}): ParamDef[]
         "brightness",
         value,
         "The band of our galaxy across the dark sky: soft clouds of stars split by a dark lane of dust, more stars crowding into it than the sky around it. Faint to the left, twice as bright to the right. Off: no band, the stars as thin everywhere as they are away from it.",
-        { min: 0.1, max: 2 },
+        { min: 0.1, max: 2, widget: { kind: "night", part: "milkyWay" } },
       ),
     );
   }
@@ -109,7 +110,7 @@ export function skyComponentKnobs(options: SkyComponentOptions = {}): ParamDef[]
         "frequency",
         value,
         "Now and then a shooting star streaks across the open night sky: one every minute or two at the left end, every ten seconds or so at the right. Now: one at once.",
-        { trigger },
+        { trigger, widget: { kind: "night", part: "meteors" } },
       ),
     );
   }
@@ -270,6 +271,7 @@ export function weatherKnobs(options: WeatherOptions): ParamDef[] {
         "strength",
         0.6,
         "Curtains of green and violet light rippling across the night sky.",
+        { widget: { kind: "night", part: "aurora" } },
       ),
     );
   return knobs;

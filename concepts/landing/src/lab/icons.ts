@@ -74,6 +74,7 @@ const PATHS = {
   snow: "M8 1.5v13M2.4 4.75l11.2 6.5M2.4 11.25l11.2-6.5M6.3 2.8 8 4.5l1.7-1.7M6.3 13.2 8 11.5l1.7 1.7",
   fog: "M2 5.5h12M3.5 8h9M2 10.5h12M5 13h6",
   wind: "M1.5 6h8.5a2 2 0 1 0-2-2M1.5 10h11a2 2 0 1 1-2 2M1.5 8h5",
+  gust: "M1.5 5.5h6a2 2 0 1 0-2-2M1.5 8.5h8.5M1.5 11.5h5.5M12.5 5l1.5-1.5M12.5 8.5h2M12.5 12l1.5 1.5",
   lightning:
     "M4.5 8.5h7a2.3 2.3 0 0 0 .2-4.6A3.6 3.6 0 0 0 4.8 3.3a2.6 2.6 0 0 0-.3 5.2zM8.8 9 7 12h2.4L8 14.8",
   aurora:
@@ -208,8 +209,8 @@ const WORD_ICONS: Readonly<Record<string, IconName>> = {
   haze: "fog",
   wind: "wind",
   breeze: "wind",
-  gusts: "wind",
-  gust: "wind",
+  gusts: "gust",
+  gust: "gust",
   air: "wind",
   draft: "wind",
   vent: "wind",

@@ -59,6 +59,8 @@ import { worldDivider } from "./world.ts";
 import { shelves } from "./world-model.ts";
 import { recipeStrip } from "./recipes.ts";
 import { shownRecipes } from "./recipes-model.ts";
+import { nightStrip } from "./nightsky.ts";
+import { nightParts } from "./nightsky-model.ts";
 import { rollPatch } from "./roll-model.ts";
 
 export const MODE_LABEL: Record<(typeof modeIds)[number], string> = {
@@ -598,8 +600,14 @@ export class Inspector {
         place(def, holding(positionPad(knobs, def, y, widget.screen), [def, y]));
         used.add(def).add(y);
       } else if (widget?.kind === "direction" && def.min < 0 && def.max > 0) {
-        place(def, directionPad(knobs, def, knobIcon(def)));
+        // The wind card: the group's gusts ride its pad.
+        const gusts = defs.find(
+          (other): other is FeatureDef =>
+            other.kind === "feature" && other.widget?.kind === "gusts" && !used.has(other),
+        );
+        place(def, directionPad(knobs, def, knobIcon(def), gusts));
         used.add(def);
+        if (gusts) used.add(gusts);
       }
     }
 
@@ -641,6 +649,14 @@ export class Inspector {
       );
       for (const def of [flyway.birds, flyway.kind, flyway.formation]) if (def) used.add(def);
       if (flyway.birds === master) masterAmountShown = false;
+    }
+
+    // The night strip, at its first part.
+    const night = nightParts(defs.filter((def) => !used.has(def)));
+    const firstNight = defs.find((def) => night.some((part) => part.def === def));
+    if (firstNight) {
+      place(firstNight, nightStrip(knobs, night));
+      for (const part of night) used.add(part.def);
     }
 
     // Switches as chips; the rest as rows.

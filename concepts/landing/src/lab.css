@@ -2231,6 +2231,86 @@ body.lab-open .lab-opener {
     0 0 0 9px rgb(255 181 71 / 0.25);
 }
 
+/* the wind card: the direction pad over its gusts' lane; gusts on, the arrow puffs out now and
+   then (--gust their strength 0..1), and a sent gust surges it */
+.wind-card {
+  overflow: hidden;
+  background: var(--lab-raise);
+  border: 1px solid var(--lab-line);
+  border-radius: 5px;
+}
+.wind-card .dir-pad {
+  background: none;
+  border: 0;
+  border-bottom: 1px solid var(--lab-line);
+  border-radius: 0;
+}
+.dir-pad.gusty .pad-vector {
+  animation: pad-puff 4.2s ease-in-out infinite;
+}
+.dir-pad.gusty .pad-flow:not(.still) {
+  animation:
+    pad-flow calc(2.4s - var(--strength, 0) * 1.9s) linear infinite,
+    pad-flow-puff 4.2s ease-in-out infinite;
+}
+.dir-pad.gusting {
+  box-shadow: inset 0 0 0 1px rgb(255 181 71 / 0.55);
+}
+.dir-pad.gusting .pad-vector {
+  animation: pad-surge 1.1s cubic-bezier(0.2, 0.7, 0.3, 1);
+}
+.dir-pad.gusting .pad-flow {
+  animation:
+    pad-flow 0.45s linear infinite,
+    pad-flow-puff 1.1s ease-out;
+}
+@keyframes pad-puff {
+  0%,
+  58%,
+  100% {
+    width: calc(var(--share, 0) * (50% - 10px));
+  }
+  70% {
+    width: min(50% - 10px, calc(var(--share, 0) * (50% - 10px) + 6px + var(--gust, 0) * 30px));
+  }
+}
+@keyframes pad-surge {
+  0%,
+  100% {
+    width: calc(var(--share, 0) * (50% - 10px));
+  }
+  22% {
+    width: min(50% - 10px, calc(var(--share, 0) * (50% - 10px) + 18px + var(--gust, 0) * 40px));
+  }
+}
+@keyframes pad-flow-puff {
+  70% {
+    opacity: calc(0.3 + var(--strength, 0) * 0.5 + var(--gust, 0) * 0.3);
+  }
+}
+.gust-lane {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 5px 6px;
+}
+.gust-lane .chip {
+  flex: none;
+  min-height: 26px;
+  padding: 3px 9px;
+}
+.gust-lane input[type="range"],
+.gust-lane .segments {
+  flex: 1;
+  min-width: 0;
+}
+.gust-lane:not(.on) input[type="range"] {
+  opacity: 0.45;
+}
+.gust-lane .now.compact {
+  height: 26px;
+}
+
 /* the birds card: a sky strip for how often, tiles for the species and the formation */
 .flyway {
   /* a column, so a closed picker's pull-up (.group-body .reveal) cancels the gap before it */
@@ -2377,6 +2457,183 @@ body.lab-open .lab-opener {
   font-size: 10px;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+/* the night strip: the sky components as one small night sky, each part dim and dashed while off,
+   lit with its amount (--level 0..1) while on */
+.night-strip {
+  position: relative;
+  height: 64px;
+  overflow: hidden;
+  background: linear-gradient(to bottom, #05070d, #0d1322 70%, #172036);
+  border: 1px solid var(--lab-line);
+  border-radius: 5px;
+  touch-action: none;
+}
+.night-strip:hover {
+  border-color: var(--lab-line-strong);
+}
+.night-art {
+  position: absolute;
+  inset: 0;
+  display: block;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+}
+.night-art line,
+.night-art path {
+  vector-effect: non-scaling-stroke;
+  stroke-linecap: round;
+}
+.night-part {
+  position: absolute;
+  z-index: 1;
+  border-radius: 4px;
+  cursor: pointer;
+}
+.night-part.stars {
+  inset: 0;
+  z-index: 0;
+  border-radius: 0;
+  cursor: move;
+}
+.night-part:focus-visible {
+  outline-offset: -2px;
+}
+.night-strip .now.compact {
+  position: absolute;
+  z-index: 2;
+  width: 24px;
+  height: 22px;
+  translate: -50% -50%;
+  background: rgb(11 12 16 / 0.6);
+}
+.night-star {
+  stroke: var(--lab-ink);
+  opacity: calc(0.35 + var(--glint, 0.5) * 0.55);
+  transition: opacity 200ms;
+}
+.night-star.ghost {
+  opacity: 0.16;
+}
+.night-star.out {
+  opacity: 0;
+}
+.night-star.twinkle:not(.out, .ghost) {
+  animation: night-twinkle 2.8s ease-in-out var(--delay, 0s) infinite alternate;
+}
+.night-stars.hot .night-star:not(.out) {
+  stroke: #fff6dc;
+}
+.night-aurora.on,
+.night-band.on,
+.night-meteor.on {
+  opacity: calc(0.4 + var(--level, 1) * 0.6);
+}
+.night-art .on.hot,
+.night-art .firing {
+  filter: brightness(1.5);
+}
+.night-ribbon,
+.night-glow,
+.night-tail,
+.night-lane,
+.night-flash {
+  fill: none;
+}
+.night-ribbon {
+  stroke-width: 4px;
+}
+.night-glow {
+  stroke-width: 11px;
+  opacity: 0.22;
+}
+.night-aurora.on .night-curtain {
+  transform-box: fill-box;
+  transform-origin: 50% 100%;
+  animation: night-sway 5.5s ease-in-out var(--delay, 0s) infinite alternate;
+}
+.night-band-outer {
+  fill: rgb(190 200 255 / 0.14);
+}
+.night-band-core {
+  fill: rgb(225 230 255 / 0.2);
+}
+.night-crowd {
+  stroke: #e9ecff;
+  opacity: 0.75;
+}
+.night-lane {
+  stroke: #070a12;
+  stroke-width: 1.6px;
+  stroke-dasharray: 9 4 3 5;
+  opacity: 0.85;
+}
+.night-tail {
+  stroke-width: 1.6px;
+}
+.night-head {
+  stroke: #fff6dc;
+}
+.night-streak.gone {
+  display: none;
+}
+.night-flash {
+  stroke: #fff;
+  stroke-width: 2px;
+  opacity: 0;
+}
+.night-meteor.firing .night-flash {
+  animation: night-fall 800ms cubic-bezier(0.2, 0.6, 0.4, 1);
+}
+/* off: a dim dashed outline (brighter while pointed at); a sent meteor lights it a moment */
+.night-aurora:not(.on) .night-ribbon,
+.night-band:not(.on) .night-band-outer,
+.night-meteor:not(.on, .firing) .night-tail {
+  fill: none;
+  stroke: var(--lab-faint);
+  stroke-width: 1px;
+  stroke-dasharray: 2 3;
+}
+.night-art .hot:not(.on) :is(.night-ribbon, .night-band-outer, .night-tail) {
+  stroke: var(--lab-muted);
+}
+.night-aurora:not(.on) .night-glow,
+.night-band:not(.on) :is(.night-band-core, .night-crowd, .night-lane),
+.night-meteor:not(.on, .firing) .night-head {
+  display: none;
+}
+.night-ground {
+  fill: #040508;
+  stroke: var(--lab-line);
+  stroke-width: 1px;
+}
+@keyframes night-twinkle {
+  to {
+    opacity: 0.15;
+  }
+}
+@keyframes night-sway {
+  from {
+    transform: skewX(-5deg);
+  }
+  to {
+    transform: skewX(6deg);
+  }
+}
+@keyframes night-fall {
+  0% {
+    opacity: 0;
+    transform: translate(16px, -12px);
+  }
+  15% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0;
+    transform: translate(-14px, 10px);
+  }
 }
 
 /* accent swatches */

@@ -242,7 +242,9 @@ reset, shuffle or presets:
   switch is a chip, and dragging the marker switches it on. Arrow keys on the ring step the season.
   Without a `time` part the season parts make a season wheel of their own in their group.
 - `{ kind: "direction" }` on a range from below 0 to above 0: a vector pad, min to the left
-  (`weatherKnobs`' wind, kelp's and delta's currents).
+  (`weatherKnobs`' wind, kelp's and delta's currents). `{ kind: "gusts" }` on a feature in the same
+  group (`plantKnobs`' gusts, meadow's) makes it the wind card: a gust lane under the arrow holds the
+  gusts' switch, strength and "now" (which surges the arrow), and while they are on the arrow puffs.
 - `{ kind: "compass", strength }` on a heading (a turn 0..1 counter-clockwise from the right): a
   vector pad whose length is knob `strength`, a range or a feature's amount (pond's current).
 - `{ kind: "position", y, screen? }` on the across range of a point whose height is range `y`: one
@@ -253,11 +255,22 @@ reset, shuffle or presets:
   often flights pass (drag or arrow keys; Delete grounds them), the species are tiles of their
   silhouettes and the formations dot diagrams of the chosen species' own party, each row a radio
   group. A group whose master is `birds` keeps the switch in its header.
+  <<<<<<< ours
 - Fader chips and scrub readouts, with no `widget`: a feature whose amount is a range carries it on
   its chip (`src/lab/chips.ts`, rules in `chips-model.ts`), a fill while on and the value on hover,
   focus and drag. A click toggles it, a drag across sets the amount and switches it on, arrow keys
   step it (Shift a tenth of the range); double-clicking the value resets the amount. A row's readout
   over a slider scrubs it (drag across, Shift finer); double-clicking a readout or label resets it.
+  ||||||| base
+  \=======
+- `{ kind: "night", part }`: the night strip. `skyComponentKnobs` sets it on `stars`, `milkyWay`
+  and `meteors`, `weatherKnobs` on `aurora`; any of them in a group make one small night sky at the
+  first, each part drawn in its state (dim and dashed while off): click a part to switch it, drag it
+  right or up for more, drag the open sky for more stars; a trigger's "now" plays on the strip too.
+  Each part is a slider for the keys (arrows, Space switches, Delete puts it out); the moon's phase
+  stays on the almanac (`src/lab/nightsky-model.ts` holds the rules).
+
+> > > > > > > theirs
 
 A group's heading may carry `recipes` (`Recipe` in `src/params.ts`): one-tap setups drawn as a strip
 of glyph chips at the top of the group, the one the setup already is lit. A recipe sets URL keys of
