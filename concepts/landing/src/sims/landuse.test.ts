@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import {
   LAND_OPEN_NEAR,
+  LAND_PINE_FLAG,
   LAND_SHARED,
   LAND_USES,
   LandModel,
@@ -196,7 +197,7 @@ describe("land use", () => {
     expect(pines).toBeGreaterThan(0);
   });
 
-  test("the woods' canopy stands on woodland parcels only, pine woods signed; hedge trees on hedges", () => {
+  test("the woods' canopy stands on woodland parcels only, whole where a pine wood meets a broadleaf one; hedge trees on hedges", () => {
     const { terrain, model } = land(0);
     const packed = packTerrain(terrain);
     const m = terrain.size;
@@ -206,23 +207,42 @@ describe("land use", () => {
       packLand(packed, terrain, allocation);
       let canopy = 0;
       let trees = 0;
+      let pines = 0;
+      // Texels whose id, canopy or species is not their parcel's; pine wood beside broadleaf, and
+      // of those where the canopy filtered between the two texels is not whole.
+      let wrong = 0;
+      let borders = 0;
+      let gaps = 0;
       for (let q = 0; q < m * m; q++) {
         const id = ids[2 * q] ?? 0;
         const value = packed.cover[4 * q + 2] ?? 0;
+        const high = packed.parcels[4 * q + 1] ?? 0;
+        const pine = (high & LAND_PINE_FLAG) !== 0;
+        if (pine) pines++;
+        if ((packed.parcels[4 * q] ?? 0) + 256 * (high & ~LAND_PINE_FLAG) !== id) wrong++;
         if (value !== 0) {
           canopy++;
-          expect(allocation.use[id - 1]).toBe(WOODLAND);
-          expect(value < 0).toBe(allocation.attr[id - 1] === 1);
+          const wood = allocation.use[id - 1] === WOODLAND && value > 0;
+          if (!wood || pine !== (allocation.attr[id - 1] === 1)) wrong++;
+        }
+        const east = q + 1;
+        const next = packed.cover[4 * east + 2] ?? 0;
+        const nextPine = ((packed.parcels[4 * east + 1] ?? 0) & LAND_PINE_FLAG) !== 0;
+        if ((q % m) + 1 < m && value >= 0.85 && next >= 0.85 && pine !== nextPine) {
+          borders++;
+          if (0.5 * (value + next) < 0.85) gaps++;
         }
         if ((packed.cover[4 * q + 3] ?? 0) === -1) trees++;
       }
-      return { canopy, trees };
+      expect({ wrong, gaps }).toEqual({ wrong: 0, gaps: 0 });
+      return { canopy, trees, borders, pines };
     };
     const wooded = check({ crops: 60, woodland: 30 });
     expect(wooded.canopy).toBeGreaterThan(0);
     expect(wooded.trees).toBeGreaterThan(0);
-    // Woodland off: no woods and every lone tree felled.
-    expect(check({ crops: 60 })).toEqual({ canopy: 0, trees: 0 });
+    expect(wooded.borders).toBeGreaterThan(0);
+    // Woodland off: no woods, no pines and every lone tree felled.
+    expect(check({ crops: 60 })).toEqual({ canopy: 0, trees: 0, borders: 0, pines: 0 });
     // Open grassland and woods only: no hedge stands, so only the banks keep lone trees.
     const unhedged = check({ woodland: 30 });
     expect(unhedged.trees).toBeLessThan(wooded.trees);
@@ -363,6 +383,39 @@ describe("land use, stable under edits", () => {
         }
         expect({ seed, change, stray }).toEqual({ seed, change, stray: 0 });
       }
+    }
+  }, 120_000);
+
+  test("a change of the river's size moves no settlement, and the land it changes lies by the river", () => {
+    for (const seed of SEEDS) {
+      const base = variant(seed);
+      const t = variant(seed, { river: 0.55 });
+      expect(t.candidates.map(({ x, z }) => [x, z])).toEqual(
+        base.candidates.map(({ x, z }) => [x, z]),
+      );
+      const uses = texelUses(base, seed);
+      const after = texelUses(t, seed);
+      const m = base.size;
+      // Either river's centreline (every other point: 12.5 m apart).
+      const river: number[] = [];
+      for (const built of [base, t])
+        for (let k = 0; k < built.river.x.length; k += 2)
+          river.push(built.river.x[k] ?? 0, built.river.z[k] ?? 0);
+      let dry = 0;
+      let far = 0;
+      for (let q = 0; q < m * m; q++) {
+        if ((base.level[q] ?? 0) > (base.ground[q] ?? 0)) continue;
+        dry++;
+        if (uses[q] === after[q]) continue;
+        const x = ((q % m) + 0.5) * base.cell;
+        const z = (Math.floor(q / m) + 0.5) * base.cell;
+        if (nearest(river, x, z) > 400) far++;
+      }
+      // Measured: 0-0.28% of the dry land beyond 400 m of the river changes, a few parcels whose
+      // bids were all but tied, nudged by the ranks the riverside parcels share with them (14-19%
+      // while the settlements were weighed against the carved river and every parcel's draws were
+      // keyed by its index).
+      expect({ seed, far: far < 0.005 * dry }).toEqual({ seed, far: true });
     }
   }, 120_000);
 });

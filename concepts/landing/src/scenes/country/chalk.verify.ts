@@ -1,9 +1,11 @@
 // GPU check (verify-browser.ts, `countryChalk`): the chalk M reads at the default framing. For the
-// default landscape and two others, the countryside's real sim with the chalk M on, then off over
-// the same land (the knob re-runs the allocation alone), drawn by the scene's own program: the
-// largest group of pixels the M turns to chalk is one upright M wholly inside the view, below the
-// horizon, about as tall as wide, its two legs (its bounds' outer columns) chalk over a third of its height
-// and the foot of its middle (between the legs, low down) open turf.
+// default landscape and two others, the countryside's real sim with the chalk M on, drawn by the
+// scene's own program with the M cut and without it (K_chalk off) over the same land, its hillside
+// kept open: the largest group of pixels the M turns to chalk is one upright M wholly inside the
+// view, below the horizon, about as tall as wide, its two legs (its bounds' outer columns) chalk
+// over a third of its height and the foot of its middle (between the legs, low down) open turf.
+// The M is measured against the open grass it is cut through, not the crops the land model would
+// grow there with the knob off: those may be as pale as a ripe field.
 import { fragmentSourceFor, sceneFeatures, shaderValues } from "../../shaders/index.ts";
 import { countryScene } from "./index.ts";
 import { countryBuild, countryDraw, countryProgram } from "./terrain.verify.ts";
@@ -81,7 +83,6 @@ export function verifyCountryChalk(gl: WebGL2RenderingContext): Record<string, u
       try {
         const options = { width: WIDTH, height: HEIGHT };
         const drawn = countryDraw(gl, program, built, { landscape, ...on }, options);
-        built.step({ landscape });
         const mask = chalked(drawn, countryDraw(gl, program, built, { landscape }, options));
         let count = 0;
         let x0 = WIDTH;

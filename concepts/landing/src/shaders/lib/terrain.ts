@@ -8,8 +8,8 @@
 //   vec4 terrainCover(sampler2D cover, vec2 p, float extent)     road and stream signed distance
 //                                                                (metres, negative on it), the
 //                                                                woods' canopy (landuse.ts packLand:
-//                                                                0..1, negative under pines), yard
-//                                                                0..1 (-1 a lone tree's texel)
+//                                                                0..1), yard 0..1 (-1 a lone
+//                                                                tree's texel)
 //   float terrainSurface(vec4 ground)                            what a ray meets: max(ground, water)
 //   float terrainWater(vec4 ground)                              water depth (≤ 0 dry)
 //   vec3 terrainNormal(vec4 ground)                              the ground's normal, smooth between
@@ -37,8 +37,9 @@
 //   vec3 terrainWayAt(sampler2D records, TerrainWay way, float s, out vec2 heading)
 //       the point s metres along a road (clamped to its ends) on its surface, and its unit heading
 //       on the map: between two of its evenly spaced points, so always on the road
-import { LAND_CROPS, LAND_USES } from "../../sims/landuse.ts";
+import { LAND_CROPS, LAND_PINE_FLAG, LAND_USES } from "../../sims/landuse.ts";
 import { TERRAIN_BUILDING_KINDS, TERRAIN_RECORDS } from "../../sims/terrain.ts";
+import { glslFloat } from "../glsl.ts";
 
 const kinds = (names: readonly string[], prefix: string): string =>
   names
@@ -129,8 +130,10 @@ TerrainParcel terrainParcel(sampler2D ids, sampler2D records, vec2 p, float exte
   for (int k = 0; k < 4; k++) {
     ivec2 at = clamp(base + ivec2(k - (k / 2) * 2, k / 2), ivec2(0), size - 1);
     vec4 t = texelFetch(ids, at, 0) * 255.0;
+    // The nearest's high byte carries the land model's pine flag over its id's (LAND_PINE_FLAG).
+    float high = mod(floor(t.y + 0.5), ${glslFloat(LAND_PINE_FLAG)});
     for (int c = 0; c < 2; c++) {
-      float id = floor((c == 0 ? t.x + 256.0 * t.y : t.z + 256.0 * t.w) + 0.5);
+      float id = floor((c == 0 ? t.x + 256.0 * high : t.z + 256.0 * t.w) + 0.5);
       if (id < 0.5 || id == bestId) continue;
       vec4 data;
       vec2 site;

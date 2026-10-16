@@ -2,9 +2,9 @@
 // units a frame (runBudgeted), each parcel given its use by the land model (sims/landuse.ts), packed
 // into the four textures the shader reads through terrainGlsl:
 //   uSim0  rgba16f linear   ground, water level, the ground's slope (d/dx, d/dz)
-//   uSim1  rgba16f linear   road and stream signed distance, the woods' canopy (negative under
-//                           pines), yard (-1 a standing lone tree)
-//   uSim2  rgba8 nearest    the nearest two parcels per texel
+//   uSim1  rgba16f linear   road and stream signed distance, the woods' canopy, yard (-1 a
+//                           standing lone tree)
+//   uSim2  rgba8 nearest    the nearest two parcels per texel, the first flagged in pine woods
 //   uSim3  rgba16f linear   records: parcel sites with their use and attribute, buildings,
 //                           settlements, the bridge, the eye, the roads' way points, the chalk M's
 //                           site (chalk.ts), the valley floor under the fog (fog.ts) (texelFetch);
@@ -16,7 +16,7 @@
 //     last map stays on screen until it is done;
 //   the land's uses (the shares, the pine mix, the cattle share, the chalk M keeping its parcels
 //     open, its site looked for once per terrain): the allocation (LandModel.allocate) and packLand
-//     within the frame, uploading only uSim1 and uSim3;
+//     within the frame, uploading only uSim1, uSim2 and uSim3;
 //   the river switched on or off: packWater within the frame, uploading uSim0 and uSim1.
 // Nothing is drawn before the first build: the shader shows the sky meanwhile, which the entrance
 // looks into.
@@ -32,6 +32,7 @@ import {
   type TerrainPacked,
 } from "../../sims/terrain.ts";
 import { DataTexture } from "../../sims/texture.ts";
+import { skyState } from "../../world-clock.ts";
 import type { SceneSim, SimFactory, SimFrame } from "../types.ts";
 import { CountryAtlas } from "./atlas.ts";
 import { type ChalkSite, chalkSite, keepChalkOpen, packChalk } from "./chalk.ts";
@@ -62,6 +63,7 @@ const KNOBS = [
   "pines",
   "cows",
   "chalk",
+  "time",
   ...LAND_SHARED,
 ] as const;
 type Knob = (typeof KNOBS)[number];
@@ -145,7 +147,6 @@ class CountrySim implements SceneSim {
           water: undefined,
           chalk: undefined,
         };
-        this.#parcels.upload(packed.parcels);
       }
     }
     const land = this.#land;
@@ -167,7 +168,8 @@ class CountrySim implements SceneSim {
       const allocation = land.model.allocate(uses);
       if (chalk) {
         if (land.chalk === undefined) {
-          land.chalk = chalkSite(land.terrain);
+          // Weighed in the light of the default hour, wherever the clock stands now.
+          land.chalk = chalkSite(land.terrain, skyState(knobs.initial("time")));
           packChalk(land.packed, land.chalk);
         }
         keepChalkOpen(allocation, land.model, land.chalk);
@@ -181,6 +183,7 @@ class CountrySim implements SceneSim {
       this.#ground.upload(land.packed.ground);
     }
     if (allocate || flow) this.#cover.upload(land.packed.cover);
+    if (allocate) this.#parcels.upload(land.packed.parcels);
     const records = this.#atlas.frame(frame, land.terrain, land.packed, allocate);
     return [this.#ground.texture, this.#cover.texture, this.#parcels.texture, records];
   }

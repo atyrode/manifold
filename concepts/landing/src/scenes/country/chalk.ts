@@ -12,12 +12,15 @@
 // Its site (chalkSite, once per terrain the first time the knob is on): candidates on a grid inside
 // the default framing (within CHALK.bearing of the heading, CHALK.near..CHALK.far ahead) are weighed
 // on the plane through their footprint: steep enough (CHALK.gentlest..CHALK.steepest) and turned to
-// the eye (CHALK.facing), so the M stands as tall as it should; central and not too far. Every point
-// of the footprint with a margin round it must be dry ground off the roads, streams and yards, turned
-// to the eye. The best are then marched from the eye, nine points of each (the ground away from the
-// figure and the vantage's open slopes raised by a wood's height, so no wood the land model may grow
-// hides it; where none of the best is in sight so, over the bare land), and kept off the river's
-// banks (where its lone trees stand): the first in sight is the site. None passes, no figure.
+// the eye (CHALK.facing), so the M stands as tall as it should; central and not too far; and lit at
+// the default hour (the sky at the scene's default time of day, from the sim): the sun on that
+// plane, none from behind it, and the sky, squared as its squat is. Chalk the sun has turned from
+// lies in the sky's blue light alone and reads grey, not white. Every point of the footprint with a
+// margin round it must be dry ground off the roads, streams and yards, turned to the eye. The best
+// are then marched from the eye, nine points of each (the ground away from the figure and the
+// vantage's open slopes raised by a wood's height, so no wood the land model may grow hides it;
+// where none of the best is in sight so, over the bare land), and kept off the river's banks (where
+// its lone trees stand): the first in sight is the site. None passes, no figure.
 //
 // The parcels it lies on, and those just below its foot whose woods would hide it, are kept open
 // grassland while it shows (keepChalkOpen, after the land model's allocation), so no wood, field,
@@ -32,6 +35,7 @@ import {
   type Terrain,
   type TerrainPacked,
 } from "../../sims/terrain.ts";
+import type { SkyState } from "../../world-clock.ts";
 
 /** The chalk figure's numbers (metres and radians but where noted). */
 export const CHALK = {
@@ -90,8 +94,11 @@ interface Candidate {
   score: number;
 }
 
-/** The slope that shows the M best from the vantage, or null where none in sight will do. */
-export function chalkSite(t: Terrain): ChalkSite | null {
+/**
+ * The slope that shows the M best from the vantage, or null where none in sight will do. sky: the
+ * sky at the scene's default time of day (skyState), whose light the M is weighed in.
+ */
+export function chalkSite(t: Terrain, sky: SkyState): ChalkSite | null {
   const { size: m, extent: W } = t;
   const v = t.vantage;
   const ground = (x: number, z: number) => sampleGrid(t.ground, m, W, x, z);
@@ -101,6 +108,15 @@ export function chalkSite(t: Terrain): ChalkSite | null {
   const fz = v.dz;
   const rx = v.dz;
   const rz = -v.dx;
+  // The default hour's sun on the map (the sky's frame, x right and z ahead, turned to the
+  // heading), and the strengths of its light and the sky's (their colours' sums).
+  const sun = [
+    rx * sky.sun[0] + fx * sky.sun[2],
+    sky.sun[1],
+    rz * sky.sun[0] + fz * sky.sun[2],
+  ] as const;
+  const sunlight = sky.sunColor[0] + sky.sunColor[1] + sky.sunColor[2];
+  const skylight = sky.ambient[0] + sky.ambient[1] + sky.ambient[2];
   const candidates: Candidate[] = [];
   for (let z = CHALK.step / 2; z < W; z += CHALK.step) {
     for (let x = CHALK.step / 2; x < W; x += CHALK.step) {
@@ -145,12 +161,16 @@ export function chalkSite(t: Terrain): ChalkSite | null {
       };
       const wood = footprint(t, candidate);
       if (wood < 0) continue;
+      // The light on its chalk, over full sun's: the sun on the slope's plane and the sky.
+      const sunward = (sun[1] - gx * sun[0] - gz * sun[2]) / hypot3(gx, 1, gz);
+      const lit = (skylight + sunlight * Math.max(0, sunward)) / (skylight + sunlight);
       candidate.score =
         squat ** 2 *
         Math.sqrt(facing) *
         (1 - 0.5 * smoothstep(0.1, CHALK.bearing, bearing)) *
         Math.exp(-(((distance - 1100) / 800) ** 2)) *
-        (1 - 0.3 * wood);
+        (1 - 0.3 * wood) *
+        lit ** 2;
       candidates.push(candidate);
     }
   }

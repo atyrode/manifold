@@ -281,7 +281,9 @@ replay at their pinned commits).
   value noise; implicit stream-power erosion over a priority-flood drainage, thermal slumping. The
   river: the drainage tree's main path, meandering on gentle ground, widening with its catchment,
   its level the ground's running minimum smoothed (never rising), carved with a bed, banks and a
-  floodplain. Streams; settlements scored for flatness, water, distance and a clear line of sight;
+  floodplain. Streams; settlements scored for flatness, water, distance and a clear line of sight,
+  on the land before the river is carved and against its course (off the largest river's
+  floodplain, its meanders' widest sway included), so the river's size moves none of them;
   roads (A\* over slope, curvature, floodplain and fords, water impassable) over a spanning tree
   with a shortcut and a way out, farm tracks to the farms and down the near field, one bridge at the
   narrowest crossing, cut and fill no steeper than one in eight; buildings on terraces; woodland
@@ -299,8 +301,9 @@ replay at their pinned commits).
   grazing, hay, ploughed, rapeseed) by their ground; pastures their herd (`cattle share`: cattle on
   the low, flat, wet ground first, a change swapping only as many herds as it must); woods their
   species (`pine mix`: pine on high, steep, north-facing ground, each wood keeping its species as
-  the woods grow). A change of the uses re-runs only the allocation and re-packs the parcel records
-  and the woods' canopy (a few milliseconds on SwiftShader's host, `countryTerrain`), no rebuild.
+  the woods grow). A change of the uses re-runs only the allocation and re-packs the parcel records,
+  the woods' canopy and their species (a few milliseconds on SwiftShader's host, `countryTerrain`),
+  no rebuild.
   Stable under edits (issue #1082 S1, P1): each parcel is weighed and ranked by its cell on the bare
   land (`TerrainBare`: the ground as the river and streams left it, each site at its own heading as
   though no road turned it) and by every candidate settlement site (`Terrain.candidates`, built or
@@ -308,20 +311,32 @@ replay at their pinned commits).
   fixed ranking. So a village grown changes no land at all, and a settlement, road or track
   switched changes it only beside the ways that move (within 150 m of them, or a parcel they pass
   within 64 m of); the network itself still re-routes far from a toggled castle, hamlet or farm
-  (up to 2.4 km on seeds 0-3), which P8's stable network takes on.
+  (up to 2.4 km on seeds 0-3), which P8's stable network takes on. A new `river` size moves no
+  settlement and drops or keeps only the parcel sites in the water between the two sizes, and each
+  parcel's seeded draws (jitter, crop, herd, species, its shape) are hashes of its place, not its
+  index: a nudge from 0.5 to 0.55 changes 1.6-3.1% of the land on seeds 0-3, at most 0.28% of it
+  beyond 400 m of the river (a few parcels whose bids were all but tied, nudged by the ranks they
+  share with the riverside ones; 23-29% and 14-19% while the settlements were weighed against the
+  carved river and the draws keyed by index), and the ways re-route within some 900 m of it.
 - **Rendering** (`src/shaders/lib/terrain.ts`, `country/shader.ts`): a height-field march (ground,
-  water and the trees' bounds) with a soft sun-shadow march; each parcel drawn from its record
-  (crops of its kind, the shared flower materials, a pasture's grass, fence and herd, a wood's
-  floor, open grassland) with exact borders between texels, hedges (half a cell at least) only where
-  a farmed parcel meets another; roads likewise; the river mirroring the sky and its deck, a stone
-  bridge, far ridges in the sky, the shared sky, clouds (and their shadows), rain, snow, wetness,
-  lying snow and the valley fog (below). Entrance: the camera comes down out of the sky.
+  water and the trees' bounds; up to 144 steps, so rays grazing the land reach the far hills under
+  the skyline rather than stopping in the air, the crossing refined by two regula-falsi steps)
+  with a soft sun-shadow march; buildings, walkers, carts, herds and the verges' clumps placed
+  through the same pinhole as the march's rays (`country/camera.ts`); each parcel drawn from its
+  record (crops of its kind, the shared flower materials, a pasture's grass, fence and herd, a
+  wood's floor, open grassland) with exact borders between texels, hedges (half a cell at least)
+  only where a farmed parcel meets another; roads likewise; the river mirroring the sky and its
+  deck, a stone bridge, far ridges in the sky, the shared sky, clouds (and their shadows), rain,
+  snow, wetness, lying snow and the valley fog (below). Entrance: the camera comes down out of the
+  sky.
 - **Trees** (`country/trees.ts`, the shared `treesGlsl`): the woods stand where the land model's
-  canopy says (woodland parcels, their edges pulled in on poor ground so they are ragged, signed for
-  pine woods); the march meets bounds (the woods' envelope, each lone tree's steepened tent); near
-  enough for a crown to span a cell, the crowns are found exactly at the hit, each a dome or a pine's
-  tiered cone with a trunk; a ray between crowns goes on to the ground. Hedgerow trees stand only
-  on standing hedges, riverbank trees on the banks, all felled while woodland is off.
+  canopy says (woodland parcels, their edges pulled in on poor ground so they are ragged), pine
+  where its flag in the parcels' map says, kept out of the filtered canopy so a pine wood meets a
+  broadleaf one with no gap; the march meets bounds (the woods' envelope, each lone tree's
+  steepened tent); near enough for a crown to span a cell, the crowns are found exactly at the
+  hit, each a dome or a pine's tiered cone with a trunk; a ray between crowns goes on to the
+  ground. Hedgerow trees stand only on standing hedges, riverbank trees on the banks, all felled
+  while woodland is off.
 - **Buildings** (`country/buildings.ts`): a cottage, barn or church whose gable spans over 6 cells
   is a solid met in its own frame (block, roof, chimney, the church's tower and spire), with the
   sprites' windows; smaller ones are the shared sprites. Only the two nearest buildings whose bounds
@@ -335,11 +350,12 @@ replay at their pinned commits).
   leaning with the wind, thicker as the light goes) are each compiled in only while on.
 - **Chalk M** (`chalk`, off; `country/chalk.ts`): a giant M on the hillside that shows it best from
   the vantage, found once per terrain (steep enough, turned to the eye, inside the default framing,
+  preferring a slope the default hour's sun lights, as chalk in the sky's light alone reads grey;
   clear of water, roads, streams, yards and the river's banks, in sight over any wood that may grow
   else over the bare land), laid out as the vantage's eye sees it so it reads upright, drawn out up
   the slope by at most 2.4 times its proportions; the parcels under it and just below its foot are
-  kept open grassland (an allocation, no rebuild). Found for every valley and coast landscape tried
-  (0-9), 9 of 10 rolling hills and 2 of 10 plateaus.
+  kept open grassland (an allocation, no rebuild). Found for every valley, coast and rolling-hills
+  landscape tried (0-9) and 2 of 10 plateaus.
 - **Settlements**: the `village` (11 cottages; 1-30, its plots taken in a fixed order from the
   church outward along its roads, so a larger village keeps every cottage of a smaller),
   `hamlets` (1-3), `farms` (1-8), the `castle`, `roads` and `farm tracks`. Every site is chosen

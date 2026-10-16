@@ -64,6 +64,7 @@ import {
   type TerrainPacked,
 } from "../../sims/terrain.ts";
 import type { SimFrame } from "../types.ts";
+import { COUNTRY_CAMERA } from "./camera.ts";
 import { COUNTRY_SEASONS } from "./season.ts";
 
 /** The verges' layout and reach (shared with the shader). */
@@ -147,8 +148,6 @@ export const countryVergesKnob = feature(
 
 /** Texels a bin takes: its head, then its clumps four a texel. */
 const BIN = 1 + COUNTRY_VERGE.perBin / 4;
-/** shader.ts's camera: its focal length (screen heights) for the frame's bearing. */
-const FOCAL = 0.5 / Math.tan(0.78 / 2);
 /** Bearing (pinhole x) the bins reach past the frame's sides. */
 const MARGIN = 0.02;
 /** shader.ts's COUNTRY_FIELD_UNIT: metres a unit of the shared fields' materials (their gust bands). */
@@ -498,7 +497,7 @@ export function vergeView(t: Terrain, aspect: number): VergeView {
     fz: v.dz,
     rx: v.dz,
     rz: -v.dx,
-    reach: aspect / 2 / FOCAL + MARGIN,
+    reach: aspect / 2 / COUNTRY_CAMERA.focal + MARGIN,
   };
 }
 
@@ -981,7 +980,7 @@ export class CountryVerges {
           heading: Math.PI / 2,
           moisture: 0.5,
           lush: slot.lush,
-          cells: (V.large * FOCAL * rows) / slot.depth,
+          cells: (V.large * COUNTRY_CAMERA.focal * rows) / slot.depth,
           kind: slot.kind,
           slot: c * V.organs,
         },

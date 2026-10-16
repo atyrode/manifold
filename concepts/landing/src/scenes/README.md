@@ -1675,22 +1675,24 @@ Helpers in `src/sims/` (each file's header has the full API and a usage example)
   drainage with multiple-flow areas and slumped to the angle of repose (`HeightField.relax`); the
   main river traced down the drainage tree, given meanders and a width from its catchment, its level
   never rising downstream and level across its bed, banks and a floodplain; streams; settlements
-  scored for flatness, water, distance and a line of sight (`marchHeight`); roads as least-cost paths
+  scored for flatness, water, distance and a line of sight (`marchHeight`) on the land before the
+  river is carved and against its course, so the river's size moves none; roads as least-cost paths
   (A\*, 16 directions) over a spanning tree of them with a shortcut and a way out, one bridge at the
   narrowest crossing, each road's profile cut and fill under `TERRAIN_ROAD_MAX_SLOPE` and its bed cut
   into the ground; buildings on terraces along the roads; woodland suitability; field parcels
-  stretched along the contours or roads, each with its clear core (the widest disc clear of its
-  border, water, roads, streams, yards and lone trees: a herd's ground); lone trees on hedges and
-  banks; the roads resampled evenly for walkers and carts (`terrainWays`). `packTerrain` lays it
-  into four textures (ground and water level with slopes; road and stream signed distances,
-  woodland, yards; the nearest two parcels; records of sites, buildings, settlements, the bridge,
-  the eye, cores, ways and way points), which `terrainGlsl` reads: `terrainGround`, `terrainCover`,
-  `terrainParcel` (exact field borders between texels, and the neighbour's id), `terrainCore`,
-  `terrainBuilding`, `terrainPlace`, `terrainBridge`, `terrainEye`, `terrainWay` and
-  `terrainWayAt` (a point by arc length along a road, always on it) (country); `LandModel` and
-  `packLand` (`landuse.ts`): every parcel's one use from relative shares, priced so that a share's
-  change converts only that use's marginal parcels, written into the records and the woods' canopy
-  (country).
+  (those in the water dropped, each drawing from hashes of its place) stretched along the contours
+  or roads, each with its clear core (the widest disc clear of its border, water, roads, streams,
+  yards and lone trees: a herd's ground); lone trees on hedges and banks; the roads resampled
+  evenly for walkers and carts (`terrainWays`). `packTerrain` lays it into four textures (ground
+  and water level with slopes; road and stream signed distances, woodland, yards; the nearest two
+  parcels, the first's high byte keeping a bit for the land model's pine flag; records of sites,
+  buildings, settlements, the bridge, the eye, cores, ways and way points), which `terrainGlsl`
+  reads: `terrainGround`, `terrainCover`, `terrainParcel` (exact field borders between texels, and
+  the neighbour's id), `terrainCore`, `terrainBuilding`, `terrainPlace`, `terrainBridge`,
+  `terrainEye`, `terrainWay` and `terrainWayAt` (a point by arc length along a road, always on it)
+  (country); `LandModel` and `packLand` (`landuse.ts`): every parcel's one use from relative
+  shares, priced so that a share's change converts only that use's marginal parcels, written into
+  the records, the woods' canopy and their species (`LAND_PINE_FLAG`) (country).
 - `grayScottRegimes`, `grayScottAlong` and `grayScottGlsl` (`grayscott.ts`): Gray–Scott
   reaction–diffusion's curated Pearson classes (feed, kill, what grows), an eased loop through them,
   and the reaction step for a `GpuCompute` pass (petri). Seed a dish at the first regime's levels

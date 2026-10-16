@@ -2,9 +2,10 @@
 // seen from its vantage, ray-marched as a height field in metres under the shared sky and weather.
 //
 // World frame: map metres, x east, z north, y up. The camera stands at the vantage (the records'
-// eye) looking along COUNTRY_HEADING, level, through the shared viewRay (horizon COUNTRY_HORIZON,
-// focal one screen height); the sky library's frame is the camera's, so the sun sets where the sky
-// shows it and lights the land from there.
+// eye) looking along COUNTRY_HEADING, level, through the shared viewRay at COUNTRY_CAMERA's horizon
+// and field of view (camera.ts); what stands on the land is placed through the same pinhole, its
+// focal length viewRay's own. The sky library's frame is the camera's, so the sun sets where the
+// sky shows it and lights the land from there.
 //
 // What a ray meets, nearest first: a walker or cart on the roads (life.ts), a clump of the verges at
 // a hedge's foot (verges.ts), a building (modelled near, the shared sprite far, the castle always
@@ -33,6 +34,7 @@ import { livestockGlsl } from "../../shaders/lib/livestock.ts";
 import { terrainGlsl } from "../../shaders/lib/terrain.ts";
 import { treesGlsl } from "../../shaders/lib/trees.ts";
 import { countryBuildingsGlsl } from "./buildings.ts";
+import { COUNTRY_CAMERA } from "./camera.ts";
 import { countryChalkGlsl } from "./chalk.ts";
 import { countryFogGlsl } from "./fog.ts";
 import { countryLifeGlsl } from "./life.ts";
@@ -47,15 +49,21 @@ import { countryTroddenGlsl } from "./trodden.ts";
 /** Seconds of the entrance (the camera comes down out of the sky and settles) and exit. */
 export const COUNTRY_PASSAGE = { enter: 2.8, exit: 1.4 } as const;
 
-/** The ray march's numbers: highest ground, farthest look, slope bound, shortest steps, steps. */
+/**
+ * The ray march's numbers: highest ground, farthest look, slope bound, shortest steps (minStep +
+ * relStep · distance), most steps, and regula-falsi steps refining the one that crossed the land.
+ * Enough steps for a ray grazing the land to reach the far hills under the skyline: one out of
+ * steps is drawn where it stopped, in the air (march.test.ts holds a CPU mirror of countryMarch
+ * to a dense march over the bare land).
+ */
 export const COUNTRY_MARCH = {
   top: 520,
   far: 7000,
   slope: 0.85,
   minStep: 1.5,
   relStep: 0.006,
-  steps: 72,
-  refine: 5,
+  steps: 144,
+  refine: 2,
 } as const;
 
 export const countryGlsl = /* glsl */ `
@@ -75,9 +83,9 @@ ${figuresGlsl}
 ${birdsGlsl}
 #endif
 const float COUNTRY_EXTENT = ${glslFloat(COUNTRY_MAP.extent)};
-const float COUNTRY_HORIZON = 0.63;
-const float COUNTRY_FOV = 0.78;          // a little long, so the middle distance reads at the dither
-const float COUNTRY_FOCAL = 1.2138;      // viewRay's focal length there, screen heights: 0.5 / tan(fov / 2)
+const float COUNTRY_HORIZON = ${glslFloat(COUNTRY_CAMERA.horizon)};
+const float COUNTRY_FOV = ${glslFloat(COUNTRY_CAMERA.fov)};
+const float COUNTRY_FOCAL = ${glslFloat(COUNTRY_CAMERA.focal)};   // viewRay's, screen heights
 const vec2 COUNTRY_HEADING = vec2(0.70710678, 0.70710678);
 const float COUNTRY_CLOUD_BASE = 900.0;  // the cloud deck over the eye, metres
 const float COUNTRY_FIELD_UNIT = 60.0;   // metres a unit of the shared fields' materials (rows, patches)
@@ -113,7 +121,9 @@ float countryHeight(vec2 p, bool bound) {
 }
 
 // March the land from the eye (slope-bound steps, never shorter than a share of the distance), then
-// bisect the crossing step. -1: sky, or off the map.
+// refine the crossing step by regula falsi on the gaps either side of it, keeping the stretch that
+// holds the crossing (a point on the land counts as above it, so the gap below never reaches 0).
+// -1: sky, or off the map.
 float countryMarch(vec3 ro, vec3 rd) {
   float t = 0.0;
   if (ro.y > COUNTRY_TOP) {
@@ -121,17 +131,21 @@ float countryMarch(vec3 ro, vec3 rd) {
     t = (ro.y - COUNTRY_TOP) / -rd.y;
   }
   float last = t;
+  float above = 0.0;
+  float below = 0.0;
   bool hit = false;
   for (int i = 0; i < ${COUNTRY_MARCH.steps}; i++) {
     vec3 p = ro + rd * t;
     if (p.x < -40.0 || p.z < -40.0 || p.x > COUNTRY_EXTENT + 40.0 || p.z > COUNTRY_EXTENT + 40.0) return -1.0;
     float gap = p.y - countryHeight(p.xz, true);
     if (gap < 0.0) {
+      below = gap;
       hit = true;
       break;
     }
     if (rd.y >= 0.0 && p.y > COUNTRY_TOP) return -1.0;
     last = t;
+    above = gap;
     t += max(gap / (${glslFloat(COUNTRY_MARCH.slope)} + abs(rd.y)), ${glslFloat(COUNTRY_MARCH.relStep)} * t + ${glslFloat(COUNTRY_MARCH.minStep)});
     if (t > COUNTRY_FAR) return -1.0;
   }
@@ -139,12 +153,18 @@ float countryMarch(vec3 ro, vec3 rd) {
   float lo = last;
   float hi = t;
   for (int i = 0; i < ${COUNTRY_MARCH.refine}; i++) {
-    float mid = 0.5 * (lo + hi);
+    float mid = lo + (hi - lo) * above / (above - below);
     vec3 p = ro + rd * mid;
-    if (p.y > countryHeight(p.xz, true)) lo = mid;
-    else hi = mid;
+    float gap = p.y - countryHeight(p.xz, true);
+    if (gap >= 0.0) {
+      lo = mid;
+      above = gap;
+    } else {
+      hi = mid;
+      below = gap;
+    }
   }
-  return 0.5 * (lo + hi);
+  return lo + (hi - lo) * above / (above - below);
 }
 
 // How many steps the ground behind a tree's bound takes at most (countryBehind), how many points
@@ -539,12 +559,12 @@ Shade sceneCountry(vec2 screenUv, vec2 cell, float t) {
       waterDepth = terrainWater(g);
       if (canopy) {
         // The woods or a lone tree far off, whole: the canopy lit on its sunward sides, darker in
-        // between (its own slope over a cell or more), pine woods darker (the canopy's sign).
+        // between (its own slope over a cell or more), pine woods darker (packLand's pine flags).
         float e = max(1.6, foot);
         vec2 slope = vec2(countryHeight(p.xz + vec2(e, 0.0), false) - countryHeight(p.xz - vec2(e, 0.0), false), countryHeight(p.xz + vec2(0.0, e), false) - countryHeight(p.xz - vec2(0.0, e), false)) / (2.0 * e);
         n = normalize(vec3(-slope.x, 1.0, -slope.y));
 #if COUNTRY_HAS_PINES
-        float pines = clamp(-3.0 * c.z, 0.0, 1.0);
+        float pines = countryPines(p.xz);
 #else
         float pines = 0.0;
 #endif
@@ -636,9 +656,10 @@ Shade sceneCountry(vec2 screenUv, vec2 cell, float t) {
         float yard = smoothstep(0.35, 0.8, c.w);
         albedo = mix(albedo, mix(vec3(0.38, 0.45, 0.22), vec3(0.52, 0.47, 0.37), step(0.55, vnoise(p.xz / 7.0))), yard);
         // Under the trees, between their crowns, the floor lies dark in their shade; under bare
-        // broadleaves in winter it lies open, brown with their fallen leaves (not under pines).
+        // broadleaves in winter it lies open, brown with their fallen leaves (not in a pine wood).
         float under = max(countryWoods(c, waterDepth, false), smoothstep(0.1, 0.6, -c.w));
-        float litter = c.z < 0.0 && COUNTRY_HAS_PINES == 1 ? 0.0 : countryKeys(0.0, 0.0, 0.0, 1.0, 0.0);
+        bool pinewood = floor(parcel.use + 0.5) == LAND_WOODLAND && parcel.attr > 0.5;
+        float litter = pinewood && COUNTRY_HAS_PINES == 1 ? 0.0 : countryKeys(0.0, 0.0, 0.0, 1.0, 0.0);
         albedo = countryBlend(mix(albedo, vec3(0.1, 0.12, 0.07), 0.6 * under), mix(albedo, vec3(0.3, 0.23, 0.16), 0.45 * under), litter);
         // Streams: a ribbon of water mirroring the sky; with the river off, they and the river's
         // bed (packWater marks it so) lie dry, pale stones and silt.

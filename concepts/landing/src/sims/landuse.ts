@@ -22,6 +22,11 @@
 // parcel's score along the fixed ranking (interpolated between the weights about it), so a road
 // laid or lifted re-weighs only the parcels within 64 m of it, and no other parcel changes use.
 // What the shares count is each parcel's clear ground as drawn (dry, off the roads and yards).
+// A parcel's seeded draws (its jitter, crop, herd and species) are hashes of its site's place,
+// never of its index among the sites; the river's size moves no settlement and drops or keeps only
+// the sites in its water (terrain.ts), so a new size re-weighs the parcels by the river, and
+// elsewhere only the few whose bids were all but tied may turn, nudged by the ranks they share
+// with the riverside parcels.
 //
 // Allocation (allocate): each parcel takes argmax_u s_u(p) + λ_u over the uses with a share, with
 // the price λ_u = ln(share_u). A use's price is its own share's logarithm, never another's, so
@@ -77,6 +82,11 @@ export type SharedUse = (typeof LAND_SHARED)[number];
 export const LAND_CROPS = ["wheat", "barley", "grazing", "hay", "ploughed", "rapeseed"] as const;
 /** The near slopes under the vantage stay open (metres from it to a parcel's site). */
 export const LAND_OPEN_NEAR = 320;
+/**
+ * The bit packLand sets in a texel's nearest parcel id's high byte (TerrainPacked.parcels) where
+ * the wood its canopy belongs to is pine; ids stop at TERRAIN_MAX_PARCELS (2048), so it is free.
+ */
+export const LAND_PINE_FLAG = 128;
 
 export interface LandOptions {
   /** Relative shares of the land by use (any scale); 0 or absent leaves a use out. */
@@ -251,14 +261,19 @@ export class LandModel {
       weights[w + 4] = 0.35 * riverside + 0.25 * wet + 0.2 * gentle + 0.2 * plain;
       // woodland: steep, high, poor ground (terrain.ts's woods), away from the settlements
       weights[w + 5] = 0.8 * wood + 0.2 * (1 - near);
+      // Its draws come from hashes of its site's place, never its index among the sites, so no
+      // site added or dropped elsewhere (the river's size drops those in its water) re-rolls it.
+      const ix = Math.round(x * 8);
+      const iz = Math.round(z * 8);
       for (let u = 0; u < USES; u++) {
-        weights[w + u] = (weights[w + u] ?? 0) + (JITTER[u] ?? 0) * hash31(s, u, seed * 7919 + 17);
+        const jitter = hash31(ix, iz, seed * 7919 + 17 + u);
+        weights[w + u] = (weights[w + u] ?? 0) + (JITTER[u] ?? 0) * jitter;
         eligible[w + u] = 1;
       }
       if (hypot2(x - v.x, z - v.z) < LAND_OPEN_NEAR) eligible[w + WOODLAND - 1] = 0;
       // The crops' kind: hay and grazing on the floodplain and the steep ground, the arable
       // rotation elsewhere.
-      const roll = hash31(s, 101, seed * 7919 + 23);
+      const roll = hash31(ix, iz, seed * 7919 + 23);
       const kind = plain
         ? roll < 0.6
           ? 3
@@ -280,12 +295,12 @@ export class LandModel {
                     : 5;
       this.#crop[s] = kind;
       this.#cattle[s] =
-        0.4 * riverside + 0.3 * flat + 0.3 * (1 - height) + 0.3 * hash31(s, 102, seed * 7919 + 29);
+        0.4 * riverside + 0.3 * flat + 0.3 * (1 - height) + 0.3 * hash31(ix, iz, seed * 7919 + 29);
       this.#pine[s] =
         0.35 * height +
         0.25 * smoothstep(0.1, 0.4, grade) +
         0.2 * (1 - sunny) +
-        0.4 * hash31(s, 103, seed * 7919 + 31);
+        0.4 * hash31(ix, iz, seed * 7919 + 31);
     }
     // Each use's weights into scores by rank among the parcels it may take, each weighted by its
     // dry ground on the bare land, through the Gumbel quantile. A parcel the roads reach leans off
@@ -400,10 +415,14 @@ function enclosed(use: number): boolean {
  * Write a land allocation into a packed terrain (terrain.ts packTerrain): each parcel site's use and
  * attribute (TERRAIN_RECORDS sites), and texel by texel the woods' canopy (cover z: 0..1 inside
  * woodland parcels, pulled in from their edges on poor ground by up to some 18 m, so a wood's edge
- * is as ragged as its suitability, clear of water, streams, roads and yards; negative under pines)
- * and which lone trees stand (cover w -1: a hedgerow tree only where its hedge stands, between two
- * parcels of which at least one is farmed, and outside the woods; none while woodland has no
- * share). Rewrites only those; packing the terrain again is not needed.
+ * is as ragged as its suitability, clear of water, streams, roads and yards), the woods' species
+ * (LAND_PINE_FLAG in the parcels' map where the wood the texel's canopy belongs to is pine: its own
+ * parcel's, else the next parcel's, the wood a texel just outside it is filtered from) and which
+ * lone trees stand (cover w -1: a hedgerow tree only where its hedge stands, between two parcels of
+ * which at least one is farmed, and outside the woods; none while woodland has no share). Rewrites
+ * only those; packing the terrain again is not needed. The species stays out of the canopy, which
+ * the shader samples filtered: a signed canopy fell through 0 between a pine wood and a broadleaf
+ * one, leaving a treeless strip along their border.
  */
 export function packLand(packed: TerrainPacked, t: Terrain, land: LandAllocation): void {
   const p = t.parcels;
@@ -447,14 +466,18 @@ export function packLand(packed: TerrainPacked, t: Terrain, land: LandAllocation
           smoothstep(0.5, 3.5, t.stream[q] ?? 64) *
           smoothstep(1.5, 5, t.road[q] ?? 64) *
           (1 - smoothstep(0.1, 0.4, t.yard[q] ?? 0));
-        if ((land.attr[id - 1] ?? 0) === 1) canopy = -canopy;
       }
       packed.cover[o + 2] = canopy;
+      const wood =
+        use === WOODLAND ? id : other > 0 && land.use[other - 1] === WOODLAND ? other : 0;
+      const high = (packed.parcels[o + 1] ?? 0) & ~LAND_PINE_FLAG;
+      const pine = wood > 0 && land.attr[wood - 1] === 1;
+      packed.parcels[o + 1] = pine ? high | LAND_PINE_FLAG : high;
       const yard = t.yard[q] ?? 0;
       if (yard >= 0) continue;
       // A lone tree: on a hedge (its texel's parcel differs from the next one's) only while the
       // hedge stands; on the river's banks while woodland has a share.
-      let stands = land.wooded && Math.abs(canopy) < 0.5;
+      let stands = land.wooded && canopy < 0.5;
       const across =
         i + 1 < m && (p.ids[2 * (q + 1)] ?? 0) !== id
           ? (p.ids[2 * (q + 1)] ?? 0)
