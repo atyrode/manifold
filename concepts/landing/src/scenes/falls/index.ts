@@ -91,12 +91,13 @@ export const fallsScene: SceneDef = {
       0.5,
       "A Manifold M cut into the rock behind the falling water, glimpsed through it where it runs thin. A horn of rock at the lip splits the flow in front of it: more parts the water wider.",
     ),
-    // The bank ferns' year, growth and gusts (scenes/plants.ts), all off.
+    // The bank ferns' year, growth and gusts (scenes/plants.ts), all off; the gusts' "now" on
+    // slot 1 (0 is the shooting stars').
     ...plantKnobs({
       group: "life",
       season: 0.35,
       growth: 0.4,
-      gusts: { trigger: 0, group: "weather" },
+      gusts: { trigger: 1, group: "weather" },
     }),
   ],
   groups: {

@@ -39,9 +39,10 @@
 // wave; nothing else steers them, so the flock's shape, its turns, its splits and its dark knots at
 // a turn are its own. The knobs set the rules: cohesion the spacing and pull, chaos the noise and how
 // weakly they align, speed the cruise. Drawing, the M, the falcon and the passage are shared with
-// the sheet. Switching hands the birds over where they are: to the boids on the level plane flying
-// along the sheet, back to the sheet with each bird pushed off its place by where it flew, so the
-// falcon's spring brings it home.
+// the sheet; among the boids the falcon flies on their plane where it is drawn, so they flee it
+// where it is seen to pass. Switching hands the birds over where they are: to the boids on the
+// level plane flying along the sheet, back to the sheet with each bird pushed off its place by
+// where it flew, so the falcon's spring brings it home.
 //
 // Time runs in fixed steps of STEP seconds of simulated time, so the flight depends only on the
 // knobs and simulated time, not on the frame rate; positions are interpolated between the last two
@@ -950,9 +951,15 @@ export class Flock {
     rules.reach.x = Math.max(0.05, aspect / 2 - SIDE_MARGIN - BOIDS_INSET_X);
     rules.reach.y = Math.max(0.05, (sky.high - sky.low) / 2 - BOIDS_INSET_Y);
     rules.wind.x = BOIDS_WIND * this.#wind;
+    // The falcon flies among the birds: where it is drawn, on their plane (as #toBoids hands them
+    // over), so its flee reaches the birds it is seen passing through.
+    const eyeX = aspect / 2;
+    const threatZ = clamp(this.#planeDepth(this.#falconY), -BOIDS_DEPTH, BOIDS_DEPTH);
+    const far = (DISTANCE + threatZ) / DISTANCE;
     rules.threatRadius = this.#falcon ? FEAR_RADIUS : 0;
-    rules.threat.x = this.#falconX;
-    rules.threat.y = this.#falconY;
+    rules.threat.x = eyeX + (this.#falconX - eyeX) * far;
+    rules.threat.y = 0.5 + (this.#falconY - 0.5) * far;
+    rules.threat.z = threatZ;
     boids.step(STEP, rules, this.#boidRandom);
 
     const { x, y, z, vx, vy, alarm } = boids;
@@ -963,14 +970,13 @@ export class Flock {
     const pulled = this.#pulled;
     const nx = this.#x2;
     const ny = this.#y2;
-    const eyeX = aspect / 2;
     let sumX = 0;
     let sumY = 0;
     let headX = 0;
     let headY = 0;
     for (let i = 0; i < n; i++) {
       // Seen from the ground: a little perspective about the middle of the frame.
-      const near = DISTANCE / Math.max(0.2, DISTANCE + (z[i] ?? 0));
+      const near = boidNear(z[i] ?? 0);
       let px = eyeX + ((x[i] ?? 0) - eyeX) * near;
       let py = 0.5 + ((y[i] ?? 0) - 0.5) * near;
       if (mark) {
@@ -1008,8 +1014,6 @@ export class Flock {
     const n = this.#n;
     const boids = this.#boids;
     const up = this.#rules.up;
-    const sky = this.#setup.sky;
-    const homeY = (sky.low + sky.high) / 2;
     const eyeX = this.#aspect / 2;
     const cosHeading = this.#shapes[SH_HEADING_COS] ?? 1;
     const sinHeading = this.#shapes[SH_HEADING_SIN] ?? 0;
@@ -1023,7 +1027,7 @@ export class Flock {
     for (let i = 0; i < n; i++) {
       const sx = x[i] ?? 0;
       const sy = y[i] ?? 0;
-      const plane = ((homeY - sy) * up.y) / (up.z + ((sy - 0.5) * up.y) / DISTANCE);
+      const plane = this.#planeDepth(sy);
       const z = clamp(plane + (this.#depth[i] ?? 0) * THICKNESS, -BOIDS_DEPTH, BOIDS_DEPTH);
       const far = (DISTANCE + z) / DISTANCE;
       let vx = cruise * cosHeading + (sx - (x2[i] ?? sx)) / STEP;
@@ -1039,6 +1043,17 @@ export class Flock {
     }
     this.#flying = true;
     this.#catchUp = false;
+  }
+
+  /**
+   * The depth (z) at which the line of sight to screen height sy meets the level plane the boids
+   * fly in: the one through the middle of the band of sky that rules.up stands upright on.
+   */
+  #planeDepth(sy: number): number {
+    const up = this.#rules.up;
+    const sky = this.#setup.sky;
+    const homeY = (sky.low + sky.high) / 2;
+    return ((homeY - sy) * up.y) / (up.z + ((sy - 0.5) * up.y) / DISTANCE);
   }
 
   /** Hand the birds back to the sheet: on its next step each springs from where it flew to its place. */
@@ -1411,6 +1426,14 @@ export class Flock {
     d[10] = this.#markY;
     d[11] = MARK_SIZE;
   }
+}
+
+/**
+ * How much bigger than at the flock's middle the eye sees a boid at depth z (its drawn place scales
+ * by this about the middle of the frame): a little perspective.
+ */
+export function boidNear(z: number): number {
+  return DISTANCE / Math.max(0.2, DISTANCE + z);
 }
 
 /** A point on the M's racetrack at arclength u (wrapping): out[0..1] position, out[2..3] direction, mark units. */

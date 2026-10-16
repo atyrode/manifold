@@ -1,6 +1,9 @@
-import { expect, test } from "bun:test";
+import { expect, spyOn, test } from "bun:test";
+import { Boids, type BoidRules } from "../../sims/boids.ts";
 import { HeadlessSim } from "../../sims/headless.ts";
+import type { Random } from "../../sims/random.ts";
 import { flockScene } from "./index.ts";
+import { boidNear, FLOCK_SIZES } from "./sim.ts";
 
 const EMERGENT = { emergent: 1, "emergent-amount": 7 };
 
@@ -112,3 +115,74 @@ test("the falcon's strike starts a startle that runs through the boids and dies 
   for (let f = 0; f < 240; f++) after = rolling(struck);
   expect(after).toBeLessThan(0.02);
 });
+
+// The falcon's wingspan as the shader draws it (twice FLOCK_FALCON_SPAN, flock/shader.ts): a bird
+// drawn within it of the falcon is one the falcon is seen passing through.
+const FALCON_WINGSPAN = 2 * 0.018;
+
+test(
+  "emergent birds flee the falcon wherever it is seen passing through them",
+  () => {
+    const aspect = 16 / 9;
+    const sim = new HeadlessSim(flockScene);
+    for (let f = 0; f < 240; f++) sim.step({ knobs: EMERGENT, aspect });
+    // Each boid step with the falcon out: where every bird is drawn as the step begins (a frame of
+    // 1/60 s is one step, and shows the birds there), and whether the falcon's threat holds it, so
+    // that it flees and is startled (sims/boids.ts).
+    let birds = 0;
+    let threatened = false;
+    const drawnX = new Float64Array(Math.max(...FLOCK_SIZES));
+    const drawnY = new Float64Array(drawnX.length);
+    const held = new Uint8Array(drawnX.length);
+    const fly = Boids.prototype.step;
+    const spy = spyOn(Boids.prototype, "step").mockImplementation(function (
+      this: Boids,
+      dt: number,
+      rules: BoidRules,
+      random: Random,
+    ) {
+      birds = this.count;
+      threatened = rules.threatRadius > 0;
+      if (threatened) {
+        const { threat } = rules;
+        for (let i = 0; i < birds; i++) {
+          const x = this.x[i] ?? 0;
+          const y = this.y[i] ?? 0;
+          const z = this.z[i] ?? 0;
+          const near = boidNear(z);
+          drawnX[i] = aspect / 2 + (x - aspect / 2) * near;
+          drawnY[i] = 0.5 + (y - 0.5) * near;
+          const d = Math.hypot(x - threat.x, y - threat.y, z - threat.z);
+          held[i] = d < rules.threatRadius ? 1 : 0;
+        }
+      }
+      fly.call(this, dt, rules, random);
+    });
+    let passed = 0;
+    let fled = 0;
+    try {
+      // Three strikes, each sent "now" and given time to come and go.
+      for (let f = 0; f < 450; f++) {
+        threatened = false;
+        sim.step({ knobs: EMERGENT, aspect, now: f % 150 === 0 ? ["predator"] : [] });
+        if (!threatened) continue;
+        // The falcon where the frame draws it (uSim1 texel 0: uv x, y).
+        const state = sim.upload(1).data;
+        const fx = (state[0] ?? 0) * aspect;
+        const fy = state[1] ?? 0;
+        for (let i = 0; i < birds; i++) {
+          const d = Math.hypot((drawnX[i] ?? 0) - fx, (drawnY[i] ?? 0) - fy);
+          if (d >= FALCON_WINGSPAN) continue;
+          passed++;
+          fled += held[i] ?? 0;
+        }
+      }
+    } finally {
+      spy.mockRestore();
+    }
+    // The strikes did pass through the flock, and the birds there fled, whatever their depth.
+    expect(passed).toBeGreaterThan(1000);
+    expect(fled / passed).toBeGreaterThanOrEqual(0.9);
+  },
+  { timeout: FLIGHT_TIMEOUT },
+);
