@@ -3,6 +3,11 @@
    from the stage (--dock-*), floating ones cover it. */
 :root {
   --lab-bg: rgb(11 12 16 / 0.93);
+  /* A floating panel's ground: --lab-bg over the page's own background, opaque. The panels used to
+     blur the scene under them (backdrop-filter), which the browser redid every frame over the
+     moving canvas; behind 93 % cover that blur only tinted them toward the scene's mean colour,
+     about the page's background. */
+  --lab-panel: color-mix(in srgb, rgb(11 12 16) 93%, var(--bg));
   --lab-raise: rgb(232 230 223 / 0.04);
   --lab-ink: #e8e6df;
   --lab-muted: #8f8d86;
@@ -125,11 +130,10 @@ body.lab-open .lab-opener {
   display: flex;
   flex-direction: column;
   min-width: 0;
-  background: var(--lab-bg);
+  background: var(--lab-panel);
   border: 1px solid var(--lab-line-strong);
   border-radius: var(--lab-radius);
   box-shadow: var(--lab-shadow);
-  backdrop-filter: blur(14px) saturate(1.1);
   overflow: hidden;
 }
 .panel[data-dock="left"],
@@ -355,11 +359,10 @@ body.lab-open .lab-opener {
   height: 40px;
   padding: 0;
   color: var(--lab-accent);
-  background: var(--lab-bg);
+  background: var(--lab-panel);
   border: 1px solid var(--lab-line-strong);
   border-radius: 10px;
   box-shadow: var(--lab-shadow);
-  backdrop-filter: blur(14px);
   touch-action: none;
 }
 .panel-chip:hover {
@@ -3130,11 +3133,10 @@ body.lab-open .lab-opener {
   max-width: calc(100vw - 16px);
   padding: 12px 14px 14px;
   overflow-y: auto;
-  background: rgb(13 14 19 / 0.97);
+  background: color-mix(in srgb, rgb(13 14 19) 97%, var(--bg));
   border: 1px solid var(--lab-line-strong);
   border-radius: var(--lab-radius);
   box-shadow: var(--lab-shadow);
-  backdrop-filter: blur(14px);
   scrollbar-width: thin;
 }
 .popover-head {
@@ -3415,7 +3417,6 @@ kbd {
   z-index: 6;
   isolation: isolate;
   background: #0b0c10;
-  backdrop-filter: blur(18px);
   border-top: 1px solid var(--lab-line-strong);
   border-radius: 12px 12px 0 0;
   box-shadow: 0 -10px 30px rgb(0 0 0 / 0.4);
@@ -3477,7 +3478,6 @@ kbd {
   border: 0;
   border-radius: 0;
   box-shadow: none;
-  backdrop-filter: none;
 }
 .sheet .panel:not(.is-bar) > .panel-head,
 .sheet .panel-resize,

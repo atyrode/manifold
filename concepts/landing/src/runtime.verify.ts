@@ -4,7 +4,7 @@
 // alive and recovers by retry or by another scene, uniforms sent only when they change and always
 // when they do, and a Lab that never applies while it is being built (main.ts declares `const lab`
 // after `apply`, which reads it). One renderer, two scenes: every program compiled costs seconds
-// under software WebGL.
+// under software WebGL. A scene enters once its program is built in the background (`arrive`).
 import { Lab } from "./lab.ts";
 import { DitherRenderer, type RenderSettings } from "./renderer.ts";
 import { sceneDefs, type SceneId } from "./scenes/index.ts";
@@ -33,7 +33,7 @@ function settings(
   );
 }
 
-export function verifyRuntime(_gl: WebGL2RenderingContext): Record<string, unknown> {
+export async function verifyRuntime(_gl: WebGL2RenderingContext): Promise<Record<string, unknown>> {
   const result: Record<string, unknown> = {};
   const nativeRaf = window.requestAnimationFrame;
   let scheduled: FrameRequestCallback | undefined;
@@ -123,13 +123,28 @@ export function verifyRuntime(_gl: WebGL2RenderingContext): Record<string, unkno
   dunes.sim = standIn;
   try {
     const renderer = new DitherRenderer(canvas, settings("dunes"), true);
-    renderer.start();
+    renderer.start({ paced: false });
     let now = 1000;
+    /**
+     * Frames, a little real time apart (a build's status changes only between tasks), until the
+     * scene the setup asks for is on screen: it enters once its program is built.
+     */
+    const arrive = async (): Promise<void> => {
+      const started = performance.now();
+      while (renderer.waiting) {
+        check(performance.now() - started < 120_000, "No scene on screen within 120 s");
+        const pause = Promise.withResolvers<void>();
+        setTimeout(pause.resolve, 20);
+        await pause.promise;
+        frame((now += 16));
+      }
+    };
 
     // F3: frozen (reduced motion), a press still ends. Dunes draws a pouring streak while the button
     // is held and fades it over 0.6 s from the press; the press's age used to stay 0 forever, so the
     // streak never left.
     frame(now);
+    await arrive();
     frame((now += 16));
     // The streak runs up from the pointer (uv 0.5, 0.3): a band of it above the pointer.
     const band = () => pixels(157, 64, 6, 20);
@@ -195,9 +210,13 @@ export function verifyRuntime(_gl: WebGL2RenderingContext): Record<string, unkno
     );
     result.reducedMotion = { pressAge: age, triggerAge, streakCleared: true };
 
-    // F7: a scene that throws keeps the frame loop alive, says why, and recovers. Small from here.
+    // F7: a scene that throws keeps the frame loop alive, says why, and recovers. Small from here,
+    // once the canvas's observer has reported its new size (a rendering update).
     canvas.style.width = "64px";
     canvas.style.height = "40px";
+    const resized = Promise.withResolvers<void>();
+    nativeRaf(() => setTimeout(resized.resolve, 0));
+    await resized.promise;
     const image = () => pixels(0, 0, 64, 40);
     const drawn = () => {
       const bytes = image();
@@ -245,10 +264,12 @@ export function verifyRuntime(_gl: WebGL2RenderingContext): Record<string, unkno
       renderer.failure === undefined && built === 2 && drawn(),
       "Retry did not bring the scene back",
     );
-    // A shader that does not build is reported too, and retry builds it again once it is fixed.
+    // A shader that does not build is reported too (its program built in the background meanwhile,
+    // the scene on screen going on), and retry builds it again once it is fixed.
     aurora.glsl = `${auroraGlsl}\n#error injected build fault\n`;
     renderer.update(settings("aurora"));
     check(frame((now += 16)), "No next frame was scheduled after a shader failed to build");
+    await arrive();
     check(
       renderer.failure?.stage === "build",
       `Build fault not reported: ${JSON.stringify(renderer.failure)}`,
@@ -256,6 +277,7 @@ export function verifyRuntime(_gl: WebGL2RenderingContext): Record<string, unkno
     aurora.glsl = auroraGlsl;
     renderer.retry();
     frame((now += 16));
+    await arrive();
     check(renderer.failure === undefined && drawn(), "Retry did not rebuild a fixed shader");
     // Another scene recovers from a failure too.
     renderer.update(settings("dunes"));

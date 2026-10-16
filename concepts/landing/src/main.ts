@@ -1,6 +1,7 @@
 // Page controller: owns the current setup (from the URL), drives the renderer and the page on top,
 // and hands the lab a host interface. Every change is a URL query applied here.
 import { Lab } from "./lab.ts";
+import { thumbUrl } from "./lab/thumbs.ts";
 import { DitherRenderer } from "./renderer.ts";
 import { sceneDefs } from "./scenes/index.ts";
 import type { SkyPlanet } from "./scenes/planets.ts";
@@ -44,6 +45,11 @@ try {
 } catch (error: unknown) {
   console.error("evt=landing.renderer.unavailable", error);
 }
+// Without WebGL2, and while the context is lost (until the browser gives it back), the scene's
+// committed thumbnail stands in for the canvas, still (`body.poster`, styles.css).
+document.body.classList.toggle("poster", renderer === undefined);
+stage.addEventListener("webglcontextlost", () => document.body.classList.add("poster"));
+stage.addEventListener("webglcontextrestored", () => document.body.classList.remove("poster"));
 
 /**
  * The address bar follows the setup, written at most once per URL_EVERY ms: a slider drag applies a
@@ -101,6 +107,7 @@ function apply(query: URLSearchParams, options: { cut?: boolean } = {}): void {
   root.setProperty("--ink", colours.ink);
   root.setProperty("--muted", colours.muted);
   root.setProperty("--line", colours.line);
+  root.setProperty("--poster", `url("${new URL(thumbUrl(state.scene), location.href).href}")`);
   for (const node of document.querySelectorAll<HTMLElement>("[data-show]")) {
     node.hidden = !(node.dataset.show ?? "").split(" ").includes(state.mode);
   }
@@ -110,8 +117,13 @@ function apply(query: URLSearchParams, options: { cut?: boolean } = {}): void {
     state.dim > 0 || state.blur > 0
       ? `blur(${(state.blur * 12).toFixed(1)}px) brightness(${(1 - state.dim * 0.85).toFixed(2)})`
       : "";
-  // Scale up slightly while blurred so the soft edges stay off screen.
-  stage.style.transform = state.blur > 0 ? `scale(${(1 + state.blur * 0.05).toFixed(3)})` : "";
+  // Scale up slightly while blurred so the soft edges stay off screen, about the middle (the
+  // renderer puts the canvas's transform origin at its top left: src/display.ts).
+  const edge = (state.blur * 2.5).toFixed(2);
+  stage.style.transform =
+    state.blur > 0
+      ? `translate(-${edge}%, -${edge}%) scale(${(1 + state.blur * 0.05).toFixed(3)})`
+      : "";
   instanceName.textContent = state.instance;
   if (state.mode !== "loading") renderer?.setProgress(-1);
   lab?.sync();

@@ -57,6 +57,7 @@ import { passageSpeeds } from "./src/passage-speed.verify.ts";
 import { nightSkyDefaults, verifyNightPlanets, verifyNightSky } from "./src/night-sky.verify.ts";
 import { verifyInspector } from "./src/lab/inspector.verify.ts";
 import { verifyOrbitKepler } from "./src/scenes/orbit/kepler.verify.ts";
+import { verifyContextRestore, verifyFrameGovernor } from "./src/display.verify.ts";
 
 function check(ok: boolean, message: string): void {
   if (!ok) throw new Error(message);
@@ -279,12 +280,13 @@ function frostWarmth(gl: WebGL2RenderingContext): Record<string, boolean> {
   return { heated: true, pristineOnReseed: true, pristineOnResume: true };
 }
 
-// The real renderer on a hand-driven frame clock (its own canvas and context): 1 fps delivery
-// reports 1 fps; a replayed passage enters `overlap` of the way through the exit; while the blend
-// runs the leaving scene goes on drawing (its frame changes from one frame to the next), and the
-// screen samples it exactly at larger, smaller, aspect-changed and unchanged sizes, with the
-// incoming scene at a coarser cell size than the leaving one.
-function rendererPassage(_gl: WebGL2RenderingContext): Record<string, unknown> {
+// The real renderer on a hand-driven frame clock (its own canvas and context, unpaced): 1 fps
+// delivery reports 1 fps; the scene enters once its program is built in the background; a replayed
+// passage enters `overlap` of the way through the exit; while the blend runs the leaving scene goes
+// on drawing (its frame changes from one frame to the next), and the screen samples it exactly at
+// larger, smaller, aspect-changed and unchanged sizes, with the incoming scene at a coarser cell
+// size than the leaving one.
+async function rendererPassage(_gl: WebGL2RenderingContext): Promise<Record<string, unknown>> {
   const canvas = document.createElement("canvas");
   canvas.style.cssText = "width:320px;height:200px";
   document.body.append(canvas);
@@ -362,23 +364,32 @@ function rendererPassage(_gl: WebGL2RenderingContext): Record<string, unknown> {
     return { bytes, width, height };
   }
   try {
-    renderer.start();
+    renderer.start({ paced: false });
     draw(1000);
     draw(2000);
     check(Math.abs(renderer.fps - 1) < 1e-9, `1fps delivery reported ${renderer.fps}`);
     const fps = renderer.fps;
+    // Frames a millisecond apart, a little real time apart too (a build's status changes only
+    // between tasks), until the scene is on screen.
+    let at = 2000;
+    while (renderer.waiting) {
+      const pause = Promise.withResolvers<void>();
+      setTimeout(pause.resolve, 20);
+      await pause.promise;
+      draw((at += 1));
+    }
     const exit = sceneDefs.country.passage?.exit ?? 0;
     check(exit > 0, "Countryside needs an exit for this check");
     renderer.replayPassage();
     // The first frame only makes the incoming program ready: the scene idles, nothing blends.
-    draw(3000);
+    at += 1000;
+    draw(at);
     check(
       sent.length === 1 && sent[0]?.[0] === 0,
       `Blended while preparing: ${JSON.stringify(sent)}`,
     );
     // Then the incoming scene runs ahead off screen (one cell, no blend) while the leaving one
     // still idles, until its sim has built its land: only then does the exit start.
-    let at = 3000;
     let waited = 0;
     for (; waited < 400; waited++) {
       at += 20;
@@ -429,6 +440,10 @@ function rendererPassage(_gl: WebGL2RenderingContext): Record<string, unknown> {
       if (cssWidth === undefined || cssHeight === undefined) throw new Error("Missing dimensions");
       canvas.style.width = `${cssWidth}px`;
       canvas.style.height = `${cssHeight}px`;
+      // The canvas takes its new size from its observer, which reports at a rendering update.
+      const resized = Promise.withResolvers<void>();
+      nativeRaf(() => setTimeout(resized.resolve, 0));
+      await resized.promise;
       t += 10;
       draw(t);
       // Read the screen first: reading the leaving frame binds another framebuffer.
@@ -563,6 +578,8 @@ export const checks: readonly Check[] = [
   ["nightPlanets", verifyNightPlanets],
   ["labInspector", verifyInspector],
   ["orbitKepler", verifyOrbitKepler],
+  ["contextRestore", verifyContextRestore],
+  ["frameGovernor", verifyFrameGovernor],
 ];
 
 /**

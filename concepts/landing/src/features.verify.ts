@@ -101,8 +101,9 @@ function gatedTurns(scene: SceneId): Params[] {
 const KNOB_KEYED = sceneIds.filter((scene) => sceneDefs[scene].featuresFor !== undefined);
 
 /**
- * Frames on demand: rAF is held, and each renderer started here draws a frame only when the
- * function `start` returned for it is called, 16 ms of rAF time after the previous one.
+ * Frames on demand: rAF is held, and each renderer started here (unpaced: every frame asked for
+ * draws) draws a frame only when the function `start` returned for it is called, 16 ms of rAF time
+ * after the previous one.
  */
 function frameClock(): {
   start: (renderer: DitherRenderer) => () => void;
@@ -117,7 +118,7 @@ function frameClock(): {
   let now = 1000;
   return {
     start(renderer) {
-      renderer.start();
+      renderer.start({ paced: false });
       let tick = requested;
       requested = undefined;
       return () => {
@@ -325,6 +326,26 @@ async function switchFrom(
   }
 }
 
+/**
+ * Frames, a little real time apart (a build's status updates between tasks), from the first one
+ * until the scene the setup asks for is on screen: it enters once its program is built in the
+ * background (the bare page showing meanwhile).
+ */
+async function arrive(frame: () => void, renderer: DitherRenderer): Promise<void> {
+  const start = performance.now();
+  frame();
+  while (renderer.waiting) {
+    check(
+      performance.now() - start < BUILD_SECONDS * 1000,
+      `No scene on screen within ${BUILD_SECONDS} s`,
+    );
+    const pause = Promise.withResolvers<void>();
+    setTimeout(pause.resolve, 20);
+    await pause.promise;
+    frame();
+  }
+}
+
 /** Scenes whose sim builds their picture over frames before it shows (the countryside's terrain). */
 const BUILT_OVER_FRAMES: Partial<Record<SceneId, true>> = { country: true };
 
@@ -430,6 +451,7 @@ export async function verifySceneFeatures(
     // Reduced motion: the clocks stand still, so frames compare exactly.
     const renderer = new DitherRenderer(context.canvas, settings("country", defaults), true);
     const frame = clock.start(renderer);
+    await arrive(frame, renderer);
     await landed("country", frame, context);
     check(
       renderer.failure === undefined && context.links === 1,
@@ -595,7 +617,8 @@ export async function verifyFeatureToggles(
       const page = pool.open();
       const renderer = new DitherRenderer(page.canvas, settings(scene, {}), true);
       const frame = clock.start(renderer);
-      for (let i = 0; i < 4; i++) frame();
+      await arrive(frame, renderer);
+      for (let i = 0; i < 3; i++) frame();
       await landed(scene, frame, page);
       settle(frame, page);
       check(
@@ -636,7 +659,7 @@ export async function verifyFeatureToggles(
       const ahead = pool.open();
       const expecting = new DitherRenderer(ahead.canvas, settings(scene, {}), true);
       const aheadFrame = clock.start(expecting);
-      aheadFrame();
+      await arrive(aheadFrame, expecting);
       await landed(scene, aheadFrame, ahead);
       settle(aheadFrame, ahead);
       const entered = ahead.drawing();
@@ -719,7 +742,7 @@ async function featuresAllOf(scenes: readonly SceneId[]): Promise<Record<string,
       const page = pool.open();
       const renderer = new DitherRenderer(page.canvas, settings(scene, {}), true);
       const frame = clock.start(renderer);
-      frame();
+      await arrive(frame, renderer);
       await landed(scene, frame, page);
       settle(frame, page);
       const plain = page.drawing();
@@ -742,7 +765,7 @@ async function featuresAllOf(scenes: readonly SceneId[]): Promise<Record<string,
       const reference = pool.open("software");
       const own = new DitherRenderer(reference.canvas, settings(scene, {}), true);
       const ownFrame = clock.start(own);
-      ownFrame();
+      await arrive(ownFrame, own);
       await landed(scene, ownFrame, reference);
       settle(ownFrame, reference);
       let current = featureKey(sceneFeatures(def));

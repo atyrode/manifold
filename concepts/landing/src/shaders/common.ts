@@ -188,6 +188,10 @@ ${markGlsl}`;
 
 export const common = `#version 300 es
 precision highp float;
+// Fragment shaders default to mediump int and lowp sampler2D: where those are fp16 (Mali, ANGLE on
+// Vulkan), a 32-bit sim texture would be read at half precision.
+precision highp int;
+precision highp sampler2D;
 
 #define MAX_PARAMS ${MAX_PARAMS}
 #define MAX_CON_STARS 48
@@ -232,7 +236,9 @@ out vec4 outColor;
 
 const vec3 LUMA = vec3(0.299, 0.587, 0.114);
 ${gpuCommonGlsl}
-float bayer2(vec2 a) { a = floor(a); return fract(dot(a, vec2(0.5, a.y * 0.75))); }
+// Only each coordinate's parity counts: reduced to it first, the product a.y * a.y stays exact in
+// float32 on every row (unreduced, it went wrong from row 2365 on).
+float bayer2(vec2 a) { a = mod(floor(a), 2.0); return fract(dot(a, vec2(0.5, a.y * 0.75))); }
 float bayer4(vec2 a) { return bayer2(0.5 * a) * 0.25 + bayer2(a); }
 float bayer8(vec2 a) { return bayer4(0.5 * a) * 0.25 + bayer2(a); }
 

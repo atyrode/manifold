@@ -28,6 +28,7 @@ a {
   color: inherit;
 }
 
+/* Sized by the renderer: a texel per dither cell, each on whole device pixels (src/display.ts). */
 #stage {
   position: fixed;
   inset: 0;
@@ -35,7 +36,18 @@ a {
   height: 100vh;
   display: block;
   image-rendering: pixelated;
-  image-rendering: crisp-edges;
+}
+
+/* Without WebGL2, or while the context is lost: the scene's committed thumbnail, still (main.ts). */
+body.poster::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  background: var(--poster) center / cover no-repeat;
+  image-rendering: pixelated;
+}
+body.poster #stage {
+  visibility: hidden;
 }
 
 .overlay {

@@ -111,15 +111,20 @@ export async function passageSpeeds(_gl: WebGL2RenderingContext): Promise<Record
   const rows: Record<string, string> = {};
   const failures: string[] = [];
   try {
-    renderer.start();
+    renderer.start({ paced: false });
     for (const id of ids) {
       const passage = sceneDefs[id].passage;
       if (passage === undefined) continue;
       renderer.update(settingsFor(id));
-      // At least 3 s of frames, then until the picture holds still: some sims build their world
-      // over many frames, showing nothing of it until done (the countryside's land, on a time
-      // budget), so a still picture alone does not mean it is ready.
+      // The scene enters (a cut) once its program is built in the background; then at least 3 s
+      // of frames, and until the picture holds still: some sims build their world over many
+      // frames, showing nothing of it until done (the countryside's land, on a time budget), so a
+      // still picture alone does not mean it is ready.
       let shown = draw(now + 100);
+      while (renderer.waiting) {
+        await yieldPage();
+        shown = draw(now + 50);
+      }
       for (let frame = 0, still = 0; frame < 200 && (frame < 60 || still < 3); frame++) {
         await yieldPage();
         const next = draw(now + 50);
