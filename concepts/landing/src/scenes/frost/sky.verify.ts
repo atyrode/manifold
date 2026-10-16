@@ -299,16 +299,18 @@ export function verifyFrostSky(gl: WebGL2RenderingContext): Record<string, unkno
     channel(moonGrid(probe, 2, 0), 0).every((value) => value === 0),
     "a moonless sky still covers stars",
   );
-  // Its light: Lambert-sphere fall-off (0.318 at half), none without a moon; ambient follows.
+  // Its light: Lambert-sphere fall-off (0.318 at half: at 0.95 the half moon, a quarter of the sky
+  // east of the sun, stands as high as the full moon), none without a moon; ambient follows.
   const light = (phase: number): Float32Array =>
     draw(gl, probe, 3, 1, { uProbe: [3], uParams: params, uProbeB: [0.95, phase, 0, 0] });
   const moonLum = (phase: number): number => luma(light(phase), 0);
   const ratio = moonLum(0.5) / moonLum(1);
   check(Math.abs(ratio - 0.3183) < 0.01, `half moon light ratio ${ratio}`);
   check(moonLum(0) === 0 && luma(light(0), 1) < luma(light(1), 1), "no moon still lights the land");
-  // A slim moon lets stars come closer: the fade 0.035 rad from it (just outside the disc).
+  // A slim moon lets stars come closer: the fade 0.035 rad from it (just outside the disc), in the
+  // evening (0.85), while a moon in that phase still stands with the full moon above the horizon.
   const fade = (phase: number): number => {
-    const grid = moonGrid(probe, 2, phase);
+    const grid = moonGrid(probe, 2, phase, 0.85);
     const i = (D / 2) * D + D / 2 + 29; // 29.5 pixels right of centre: 0.035 rad
     return grid[i * 4 + 2] ?? -1;
   };

@@ -7,6 +7,7 @@ import type { Blurb, ParamDef } from "../params.ts";
 import { birdKnobs, birdsGroup, type BirdOptions } from "../shaders/lib/birds.ts";
 import { CLOUD_TIERS } from "../shaders/lib/clouds.ts";
 import { WORLD_BIRD_HOURS } from "../shaders/lib/world.ts";
+import { SUNRISE, SUNSET } from "../world-clock.ts";
 import {
   skyKnobs,
   skyRecipes,
@@ -117,21 +118,17 @@ export const worldGroups: Readonly<Record<"sky" | "weather" | "birds", Blurb>> =
   birds: birdsGroup,
 };
 
-/** The K_time contract: the sun crosses the horizon at these times of day, and is up between. */
-const SUNRISE = 0.25;
-const SUNSET = 0.75;
-
 /**
  * The world's compile-time gates for knob values as the shader reads them (SceneDef.featuresFor:
  * merge them into the scene's own), each 0 or 1, on wherever its knobs can show its part:
  * WORLD_STARS, WORLD_MILKYWAY, WORLD_AURORA and WORLD_METEORS only where night can fall (the day
- * cycle on, or the hour outside sunrise..sunset, where the sky's night is exactly 0), WORLD_BIRDS
- * only within WORLD_BIRD_HOURS; WORLD_CLOUDS while there is fair-weather cloud, rain or snow,
- * WORLD_SHADOWS (with CLOUD_TIER at the shadows tier) while they are on too; WORLD_RAIN, WORLD_SNOW,
- * WORLD_FOG while on. Shooting stars and lightning have a "now" button that shows one while their
- * knob is off, so their gates hold whenever one could show: the meteors' whenever night can fall,
- * lightning's always. SKY_MOON_PHASE while the moon is off or short of full (a full moon is the
- * sky library's own).
+ * cycle on, or the hour outside the world clock's SUNRISE..SUNSET, between which the sky's night is
+ * exactly 0 on any date), WORLD_BIRDS only within WORLD_BIRD_HOURS; WORLD_CLOUDS while there is
+ * fair-weather cloud, rain or snow, WORLD_SHADOWS (with CLOUD_TIER at the shadows tier) while they
+ * are on too; WORLD_RAIN, WORLD_SNOW, WORLD_FOG while on. Shooting stars and lightning have a "now"
+ * button that shows one while their knob is off, so their gates hold whenever one could show: the
+ * meteors' whenever night can fall, lightning's always. SKY_MOON_PHASE while the moon is off or
+ * short of full (a full moon is the sky library's own).
  */
 export function worldFeatures(values: Readonly<Record<string, number>>): Record<string, number> {
   const on = (key: string) => ((values[key] ?? 0) > 0 ? 1 : 0);

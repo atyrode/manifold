@@ -137,7 +137,7 @@ void campfireSetup(float aspect) {
 vec3 campfireSkyAt(vec3 d) {
   Sky sky = campfireSkyState;
   vec3 col = skyColor(sky, d);
-  float mw = milkyWay(d, CAMPFIRE_GALAXY) * K_milkyWay * K_stars * sky.night;
+  float mw = milkyWay(skyStarFrame(sky, d), CAMPFIRE_GALAXY) * K_milkyWay * K_stars * sky.night;
   col += vec3(0.085, 0.080, 0.110) * mw;
   col += skyStarLight(sky, d, milkyWayStars(K_stars, mw));
   // A faint skyglow along the horizon, so the pines keep a backdrop even in the deepest night.

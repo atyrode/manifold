@@ -1,4 +1,5 @@
 import { expect, test } from "bun:test";
+import { DAY_SECONDS, skyNow } from "../world-clock.ts";
 import { AGE_REBASE, AgeField, dryingPace } from "./agefield.ts";
 import type { DataTexture } from "./texture.ts";
 
@@ -47,14 +48,19 @@ test("uploads go out only after a stamp, a rebase or a reset", () => {
 });
 
 test("damp dries fastest in a still midday sun, slower at dusk and night, faster in wind, not in rain", () => {
-  const noon = dryingPace(0.5, 0, 0);
+  const at = (time: number) => skyNow({ time, cycle: 0, motionTime: 0 });
+  const noon = dryingPace(at(0.5), 0, 0);
   expect(noon).toBeCloseTo(1, 6);
-  expect(dryingPace(0.735, 0, 0)).toBeLessThan(noon);
-  expect(dryingPace(0.0, 0, 0)).toBeLessThan(dryingPace(0.735, 0, 0));
-  expect(dryingPace(0.0, 0, 0)).toBeGreaterThan(0);
-  expect(dryingPace(0.5, -0.6, 0)).toBeGreaterThan(noon);
-  expect(dryingPace(0.5, 0.6, 0)).toBeCloseTo(dryingPace(0.5, -0.6, 0), 9);
-  expect(dryingPace(0.5, 0, 0.4)).toBe(0);
-  // The sky clock wraps: a day later is the same hour.
-  expect(dryingPace(1.5, 0.3, 0)).toBeCloseTo(dryingPace(0.5, 0.3, 0), 9);
+  expect(dryingPace(at(0.735), 0, 0)).toBeLessThan(noon);
+  expect(dryingPace(at(0.0), 0, 0)).toBeLessThan(dryingPace(at(0.735), 0, 0));
+  expect(dryingPace(at(0.0), 0, 0)).toBeGreaterThan(0);
+  expect(dryingPace(at(0.5), -0.6, 0)).toBeGreaterThan(noon);
+  expect(dryingPace(at(0.5), 0.6, 0)).toBeCloseTo(dryingPace(at(0.5), -0.6, 0), 9);
+  expect(dryingPace(at(0.5), 0, 0.4)).toBe(0);
+  // The day cycle carries the hour on: a whole day later it dries as it did.
+  const later = skyNow({ time: 0.5, cycle: 1, motionTime: DAY_SECONDS });
+  expect(dryingPace(later, 0.3, 0)).toBeCloseTo(dryingPace(at(0.5), 0.3, 0), 9);
+  // A dated sky's summer sun stands higher than its winter's, and dries faster.
+  const dated = (year: number) => skyNow({ time: 0.5, cycle: 0, motionTime: 0, year, anchor: 0.6 });
+  expect(dryingPace(dated(0.25), 0, 0)).toBeGreaterThan(dryingPace(dated(0.75), 0, 0));
 });

@@ -812,8 +812,8 @@ Shade sceneBonsai(vec2 uv, vec2 cell, float t) {
   bonsaiFalling = state.z;
   bonsaiLeafy = state.w;
   bonsaiShift = bonsaiTable(BONSAI_ROW_STATE, 2).y;
-  // Midsummer warm and high, midwinter cold and low.
-  bonsaiCold = 0.5 + 0.5 * cos(TAU * (bonsaiYear - 0.875));
+  // Midsummer warm and high, midwinter cold and low: the year's chill (src/climate.ts).
+  bonsaiCold = climateChill(bonsaiYear);
 
   // The light: the sky's sun, turned so it comes in from the front at the knob's angle and
   // sweeping across with the hours; lower and colder in winter. Its sky dims under snow cloud.

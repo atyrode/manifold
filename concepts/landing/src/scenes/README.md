@@ -405,22 +405,25 @@ components (`birds.ts`, `plants.ts`, `planet.ts`, `figures.ts`, `livestock.ts` a
 
 ```glsl
 float timeOfDayM(float time, float cycle, float motionTime); // K_time, K_cycle, uMotionTime -> 0..1 (0 midnight, .25 sunrise, .5 noon, .75 sunset)
-struct Sky { vec3 sun; vec3 moon; float day; float twilight; float night; vec3 sunColor; vec3 ambient; vec3 moonColor; }; // + float moonPhase with SKY_MOON_PHASE
-Sky skyAt(float tod);                                     // sun rises on the right, crosses high, sets on the left; moon opposite
+struct Sky { vec3 sun; vec3 moon; float day; float twilight; float night; vec3 sunColor; vec3 ambient; vec3 moonColor; float starTurn; }; // + float moonPhase with SKY_MOON_PHASE
+Sky skyAt(float tod);                                     // the world clock's sky: sun rises on the right, crosses high, sets on the left; the staged full moon; dated by SKY_YEAR in a dated sky; stars turned by the day cycle
+Sky skyAtWorld(float tod, float shift, float turn);       // the same with the date's sun shift (worldDateShift) and the stars' turn (worldStarTurn) given
 vec3 viewRay(vec2 uv, float aspect, float horizon, float fov); // side-on camera, horizon at screen height `horizon`
 vec3 skyColor(Sky sky, vec3 dir);                         // gradient, sunset glow, sun and moon discs (no stars)
-float skyStars(Sky sky, vec3 dir, float density);         // stars faded by daylight, stable per direction
+vec3 skyDome(Sky sky, vec3 dir);                          // skyColor without the sun's and moon's discs (aureole and halo kept): what haze and fog take on
+vec3 skyStarFrame(Sky sky, vec3 dir);                     // a sky direction in the stars' frame (turned back about the pole by sky.starTurn): look a Milky Way up at it
+float skyStars(Sky sky, vec3 dir, float density);         // stars faded by daylight, stable in the stars' frame
 float skyStars(Sky sky, vec3 dir, float density, float foot); // the same with a level of detail: foot = radians a dither cell spans
 float skyStarFade(Sky sky, vec3 dir);                     // where stars show at all: night, height, away from the moon's disc and glare
 vec3 skyStarLight(Sky sky, vec3 dir, float density);      // skyStars tinted SKY_STAR_TINT (cool white), to add to the sky
 vec3 skyFacing(vec3 dir, float yaw);                      // turn a direction about +y (+x toward +z): a camera looking off-axis
 Sky skyFacing(Sky sky, float yaw);                        // the sun and moon turned with it
 Sky skyMirror(Sky sky);                                   // moon swung behind the viewer, for reflections
-vec3 horizonHaze(Sky sky, vec3 dir, float lift);          // the sky just above the horizon in dir's heading (lift 0..0.04)
+vec3 horizonHaze(Sky sky, vec3 dir, float lift);          // the dome without discs just above the horizon in dir's heading (lift 0..0.04)
 float skyMoonCover(Sky sky, vec3 dir);                    // 0..1 the moon's disc (unlit part too) over dir: hide what lies behind it
 vec2 skyAngles(vec3 dir);                                 // (bearing from straight ahead, elevation) in radians: a flat frame on the dome
 // With SKY_MOON_PHASE (SceneDef.features):
-Sky skyMoonPhase(Sky sky, float phase);                   // K_moon: 1 full (unchanged) .. 0 no moon; disc, halo, moonColor, ambient follow
+Sky skyMoonPhase(Sky sky, float phase);                   // K_moon: 1 full (unchanged) .. 0 no moon; a partial moon stands acos(1 - 2 phase) from the sun, moving onto the full moon above 0.9; disc, halo, moonColor, ambient follow
 float skyMoonPhaseLight(float phase);                     // the moon's light at a phase relative to full (0.32 half, 0.11 a quarter)
 // With the scene's K_constellations (skyComponentKnobs({ constellations })), both skyStars overloads
 // also draw, over the field and only while the knob is on (never at density 0), in a program that
@@ -1322,6 +1325,64 @@ K_snow, cold)` (x rain, y snow): the cold's share of the rain falls as snow, and
   year draws as the date it reaches, midwinter's rain as its snow, winter's lying snow only from
   `uWeather.y`, bare broadleaves and evergreen pines, spring's rapeseed and may, and no step of the
   date that turns the land at once.
+- **The cold.** One model of the year's cold (`src/climate.ts`), read two ways off the year's
+  distance from midwinter: `climateChill(year)`, a cosine from 0 at midsummer to 1 at midwinter, for
+  light and colour that follow the season smoothly (bonsai's lower, cooler winter light), and
+  `climateCold(year)`, nil from mid-spring to mid-autumn and full round midwinter, rising wherever
+  the chill does, for what falls and lies (bonsai's snow, too, melts slowly only while it would lie).
+  Write no cold curve of your own.
+
+### The world clock
+
+One model of where the sky stands, `src/world-clock.ts`: TypeScript for the sims and the lab
+(`skyNow`, `skyState`, `timeOfDay`), its GLSL mirror `worldClockGlsl` compiled into every program
+by the sky library (`skyAt`, `skyAtWorld`, `skyMoonPhase`, `skyStarFrame`), checked against each
+other on the GPU by `worldClock` (`src/world-clock.verify.ts`). A sim or a lab part that needs the
+hour, the daylight or the night reads `skyNow` (forest's spirits, the garden's drying, the lab's
+"See it at night" and its sky dial); never write a day curve of your own.
+
+- **Staged by default.** The sky is a low-latitude one (15 degrees) facing the equator, the pole
+  low behind the viewer: a winter sun's arc (-28 degrees) in front, the K_time warp keeping sunrise
+  at .25 and sunset at .75. Every undated scene draws exactly that sky on any date.
+- **Dated skies.** A scene whose season sets its climate (`hasClimate`: country, garden) gets
+  `SKY_DATE_ANCHOR`, its default date (`skyAnchor`): there its sky is the staged one, and as the
+  date moves the sun's declination moves as Earth's does (23.44 degrees either side), the warp
+  following its sunrise hour angle so sunrise stays at .25, the staged full moon swinging the other
+  way. The sky reads the date in ten-thousandths of a year, so a date the passing year reaches draws
+  as the same date set.
+- **The moon by its phase.** K_moon 1 is the staged full moon every default draws. A lesser phase
+  stands `acos(1 - 2 phase)` from the sun, eastward along its daily circle: its lit share its
+  elongation's. A crescent hangs over the sunset, a half moon a quarter of the sky east of the sun.
+  The staged full moon stands ~105 degrees from the sun, not opposite it, so from 0.9
+  (`MOON_STAGED_FROM`) the moon moves off its elongation onto it (`moonStaging`): its place runs on
+  with its phase, never jumping as it reaches full.
+- **The stars turn.** With the day cycle on the stars, the constellations and the world's Milky Way
+  turn about the pole a sidereal day's turn a day (`sky.starTurn`; look anything fixed among the
+  stars up at `skyStarFrame(sky, dir)`); in a dated sky they turn once more a year as the date
+  moves. Still, they stand as staged. The planets (`skyGiant`) and the aurora stay staged objects.
+- **Haze takes on the dome, not the discs.** `horizonHaze` is `skyDome`: the sun's aureole
+  brightens far haze toward it, but no disc paints a bar into distant land.
+- **Overcast reaches the horizon.** `skyClouds` fades its deck toward the horizon against crawl;
+  past broken cloud (cover 0.6) that fade gives way, and an overcast (1) closes right down to it.
+
+**Stage 2: one sky composer.** Eight outdoor scenes still compose the sky stack `worldSky` owns by
+hand, each in its own order: autumn, frost, sill, bees, lanterns, falls, lake and skyward. The plan
+is to move them onto the shared world sky one at a time, each with a bit-diff review of its picture:
+
+1. Frost and sill first: their stacks (dome, stars, aurora, deck, meteors) are closest to
+   `worldSky`. Each adopts `worldAt` and `worldSky` (or `worldMirrorSky`), keeping the components
+   the table in "Composing components" marks as its own, and drops its `*_METEOR_TRIGGER` wiring
+   and private overcast curve for `weatherOvercast` and the `WORLD_DECK_*` shares.
+2. Then autumn, bees, falls and skyward, whose differences are a yaw, a cover curve and a deck
+   squash; `worldView`'s yaw and unit carry the first, the rest become World fields where two
+   scenes need them.
+3. Lake and lanterns last, after their private moons and star fields go (the shared moon now
+   stands where a crescent reads, beside the dusk): they adopt `skyMoonPhase` and `skyStars`.
+
+The sky state stays the world clock's throughout, so adopting the composer changes only the order
+and occlusion of the layers; each scene's default picture changes and is reviewed as it moves. A
+later step may upload the clock's per-frame values as uniforms once its GPU mirror has shown the
+float32 results agree cell for cell.
 
 ### World layers
 

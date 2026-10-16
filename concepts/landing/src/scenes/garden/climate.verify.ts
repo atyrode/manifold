@@ -3,7 +3,8 @@
 // the snow switch does, while outside winter rain stays rain; the snow switch falls in any season;
 // and the snow lying on the garden is uWeather.y's alone (the renderer lays winter's own there), never
 // the season's. Below the maple (the only other thing the season changes in the shader) winter with
-// no snow lying draws the garden exactly as autumn does.
+// no snow lying draws the garden exactly as autumn does. The garden's sky is dated (world-clock.ts):
+// autumn's sun and winter's, either side of midwinter, stand alike, so those two seasons compare.
 import { fragmentSourceFor, vertexSource } from "../../shaders/index.ts";
 import { defaultsFor, paramDefaults, renderSettings, type Params } from "../../state.ts";
 import type { SimFrame } from "../types.ts";
@@ -14,7 +15,6 @@ const HEIGHT = 135;
 /** Rows from the bottom that the maple never reaches (the shader skips it below ~0.77 of the height). */
 const BELOW_MAPLE = Math.round(HEIGHT * 0.6);
 /** Garden's season choice. */
-const SUMMER = 1;
 const AUTUMN = 2;
 const WINTER = 3;
 
@@ -120,7 +120,7 @@ export function gardenClimateCheck(gl: WebGL2RenderingContext): Record<string, u
   const winterSnow = draw({ season: WINTER, ...snow }, 1);
   const winterStill = draw({ season: WINTER }, 1);
   const winterBare = draw({ season: WINTER }, 0);
-  const summerSnow = draw({ season: SUMMER, ...snow }, 1);
+  const autumnSnowLying = draw({ season: AUTUMN, ...snow }, 1);
   const autumnRain = draw({ season: AUTUMN, ...rain }, 0);
   const autumnSnow = draw({ season: AUTUMN, ...snow }, 0);
   const autumnBare = draw({ season: AUTUMN }, 0);
@@ -137,7 +137,7 @@ export function gardenClimateCheck(gl: WebGL2RenderingContext): Record<string, u
     winterRainVsStill: changed(winterRain, winterStill),
     autumnRainVsSnow: changed(autumnRain, autumnSnow),
     autumnRainVsBare: changed(autumnRain, autumnBare),
-    summerVsWinterSnowBelowMaple: changed(summerSnow, winterSnow, BELOW_MAPLE),
+    autumnVsWinterSnowBelowMaple: changed(autumnSnowLying, winterSnow, BELOW_MAPLE),
     winterVsAutumnBareBelowMaple: changed(winterBare, autumnBare, BELOW_MAPLE),
     lyingChanged: changed(winterStill, winterBare, BELOW_MAPLE) / (BELOW_MAPLE * WIDTH * 4),
     bareBrightness: brightness(winterBare, BELOW_MAPLE),
@@ -148,9 +148,9 @@ export function gardenClimateCheck(gl: WebGL2RenderingContext): Record<string, u
   if (measured.winterRainVsStill === 0) fail("winter's rain draws nothing falling");
   if (measured.autumnRainVsBare === 0) fail("autumn's rain draws nothing falling");
   if (measured.autumnRainVsSnow === 0) fail("autumn's rain draws as snow");
-  if (measured.summerVsWinterSnowBelowMaple !== 0)
+  if (measured.autumnVsWinterSnowBelowMaple !== 0)
     fail(
-      `the snow switch falls differently in summer: ${measured.summerVsWinterSnowBelowMaple} bytes below the maple`,
+      `the snow switch falls differently in autumn: ${measured.autumnVsWinterSnowBelowMaple} bytes below the maple`,
     );
   if (measured.winterVsAutumnBareBelowMaple !== 0)
     fail(

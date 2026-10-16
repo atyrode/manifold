@@ -85,7 +85,7 @@ float skyCloudField(vec2 p, float foot, float t) {
 // around sunset, moonlit at night. Returns straight (not premultiplied) rgb and alpha, which fades
 // out toward the horizon: col = mix(col, c.rgb, c.a).
 vec4 skyClouds(Sky sky, vec3 dir, float t, float cover, float wind) {
-  if (dir.y <= 0.015 || cover <= 0.0) return vec4(0.0);
+  if (cover <= 0.0 || dir.y <= (cover > 0.6 ? 0.001 : 0.015)) return vec4(0.0);
   float tm = t * uMotion;
   vec2 p = cloudDeckPoint(dir, vec2(0.0), tm, wind);
   // Deck units per pixel, taking a screen height as ~1 radian of view.
@@ -100,7 +100,7 @@ vec4 skyClouds(Sky sky, vec3 dir, float t, float cover, float wind) {
   // Light across the deck from the sun (by day and dusk) or the moon: brighter where the cloud thins
   // toward the light, from a second, coarse density tap a step toward it.
   vec3 light = sky.sun.y > -0.1 ? sky.sun : sky.moon;
-  vec2 lxz = normalize(light.xz); // neither body ever reaches the zenith
+  vec2 lxz = dot(light.xz, light.xz) > 1e-8 ? normalize(light.xz) : vec2(1.0, 0.0); // x for a body overhead
   float n2 = skyCloudField(p + lxz * 0.22, max(foot, 0.12), tm);
   float side = clamp(0.5 + (n - n2) * 3.5, 0.0, 1.0);
 
@@ -125,7 +125,12 @@ vec4 skyClouds(Sky sky, vec3 dir, float t, float cover, float wind) {
   col += sky.moonColor * exp(-dot(mv, mv) * 16.0) * thin * 2.0;
   // Moonlit body.
   col += sky.moonColor * (0.45 + 0.4 * side) * (1.0 - 0.5 * thick);
-  return vec4(col, alpha * smoothstep(0.015, 0.16, dir.y));
+  // The deck fades out toward the horizon, where a fair-weather deck would crawl as it packs into the
+  // distance; past broken cloud (cover .6) the fade gives way until an overcast (1) closes right down
+  // to the horizon, so no band of clear sky shows under a grey day.
+  float horizon = smoothstep(0.015, 0.16, dir.y);
+  if (cover > 0.6) horizon = mix(horizon, 1.0, smoothstep(0.6, 1.0, cover));
+  return vec4(col, alpha * horizon);
 }
 #endif
 

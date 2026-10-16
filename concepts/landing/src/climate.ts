@@ -1,14 +1,21 @@
 // The climate: how cold a scene's time of year is, and what that does to its weather. A scene's year
 // position comes from its season knob's `SeasonYear` tag (params.ts): 0..1, wrapping, 0 the start of
 // spring, 0.25 of summer, 0.5 of autumn, 0.75 of winter; -1 for a season that is no time of year.
-// The cold peaks at midwinter (0.875), is half gone at the turns of winter (0.75 and 1) and nil from
-// mid-spring to mid-autumn (0.125..0.675). Where a scene both keeps
+// One model of the year's cold serves every scene, the world clock's (src/world-clock.ts), read two
+// ways off the year's distance from midwinter (0.875). The chill (climateChill) is how far the year
+// has turned toward winter, a cosine from 0 at midsummer (0.375) to 1 at midwinter: for what follows
+// the season smoothly, a scene's light lower and cooler toward winter (bonsai). The cold
+// (climateCold) is how near midwinter's freeze it is: full within COLD_CORE of midwinter, about half
+// at the turns of winter (0.75 and 1) and nil beyond COLD_EDGE (0.075..0.675, mid-spring to
+// mid-autumn), rising wherever the chill does; what falls and lies follows it, and so does a scene's
+// own snow (bonsai's melts slowly while the cold would lay snow of its own). Where a scene both keeps
 // a season and can snow (it has a season knob and a `snow` knob), the season sets the climate: as it
 // grows cold, rain falls as snow, and in deep winter snow lies without any falling. The snow switch
 // stays an explicit override that falls whatever the season. The renderer (src/renderer.ts) applies
-// it to how much snow lies; the shared weather library mirrors it in GLSL (climateCold,
+// it to how much snow lies; the shared weather library mirrors it in GLSL (climateChill, climateCold,
 // climatePrecip, climateLying in src/shaders/lib/weather.ts) for what falls, and every scene's
-// program gets its year position as SKY_YEAR (src/shaders/index.ts).
+// program gets its year position as SKY_YEAR (src/shaders/index.ts). `worldClock`
+// (src/world-clock.verify.ts) checks the GLSL against the functions here.
 import type { ParamDef, SeasonYear } from "./params.ts";
 
 /** Midwinter's year position. */
@@ -118,7 +125,19 @@ const smoothstep = (a: number, b: number, x: number) => {
   return t * t * (3 - 2 * t);
 };
 
-/** How cold the time of year is: 0 from mid-spring to mid-autumn and for no time of year, 1 at midwinter. */
+/**
+ * How far the year has turned toward winter: 0 at midsummer .. 1 at midwinter, a cosine round the
+ * year; 0 for no time of year.
+ */
+export function climateChill(year: number): number {
+  if (year < 0) return 0;
+  return 0.5 + 0.5 * Math.cos(2 * Math.PI * (year - MIDWINTER));
+}
+
+/**
+ * How cold the time of year is: 0 from mid-spring to mid-autumn and for no time of year, 1 round
+ * midwinter; it rises wherever climateChill does.
+ */
 export function climateCold(year: number): number {
   if (year < 0) return 0;
   const d = Math.abs(wrap(year - MIDWINTER + 0.5) - 0.5);
@@ -148,7 +167,13 @@ export function climateLying(cold: number): number {
 /** The GLSL mirror of the functions above, for the shared weather library. */
 export const climateGlsl = /* glsl */ `
 // ---- climate (src/climate.ts) ----
-// How cold a year position is (SKY_YEAR; -1 none): 0 from mid-spring to mid-autumn, 1 at midwinter.
+// How far a year position (SKY_YEAR; -1 none) has turned toward winter: 0 at midsummer .. 1 at
+// midwinter, a cosine round the year; 0 for no time of year.
+float climateChill(float year) {
+  if (year < 0.0) return 0.0;
+  return 0.5 + 0.5 * cos(TAU * (year - ${MIDWINTER}));
+}
+// How cold a year position is: 0 from mid-spring to mid-autumn, 1 round midwinter.
 float climateCold(float year) {
   if (year < 0.0) return 0.0;
   float d = abs(fract(year - ${MIDWINTER} + 0.5) - 0.5);

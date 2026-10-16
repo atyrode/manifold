@@ -5,6 +5,7 @@
 // switches (a feature): on or off, with an amount it keeps while off. The section's planets are
 // planets-model.ts's.
 import { formatValue, type ParamDef } from "../params.ts";
+import { skyState } from "../world-clock.ts";
 import { snap } from "./dom.ts";
 import type { FeatureDef, RangeDef } from "./knobs.ts";
 
@@ -182,10 +183,15 @@ export function nightSummary(
 /** The time of day "See it at night" sets: late evening, the sky dark and the moon well up. */
 export const NIGHT_TIME = 0.95;
 
-/** Whether a time of day (0 midnight, 0.5 noon) falls in the night: past dusk, before dawn. */
+/** How dark the sky (SkyState.night) must be for a time to count as night: the stars well out. */
+export const NIGHT_DARK = 0.75;
+
+/**
+ * Whether a time of day (0 midnight, 0.5 noon) falls in the night, as the scenes' sky has it (skyState
+ * in src/world-clock.ts): past dusk, before dawn, the sun some 11 degrees down.
+ */
 export function isNight(time: number): boolean {
-  const t = fract(time);
-  return t < 0.2 || t >= 0.81;
+  return skyState(time).night >= NIGHT_DARK;
 }
 
 /** The scene's clock: its time of day, and the day cycle that carries it round, if any. */

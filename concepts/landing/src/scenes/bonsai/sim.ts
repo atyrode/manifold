@@ -17,6 +17,7 @@
 //          2 (blossom, -, -, -), 3 (the box round every mote: x0, y0, x1, y1), 4 + 2k / 5 + 2k
 //          twig k (x, y, angle, alpha), (active, -, -, -);
 //          then the shoot grid (up to four shoot indices + 1 per cell).
+import { climateCold, climateLying } from "../../climate.ts";
 import type { ParamDef } from "../../params.ts";
 import { smoothstep } from "../../sims/math.ts";
 import { mulberry32 } from "../../sims/random.ts";
@@ -816,7 +817,8 @@ class BonsaiSim implements SceneSim {
       this.#flurryLeft = 0;
     }
     this.#falling = Math.min(1, falling);
-    const cold = y > 0.74 && y < 0.985;
+    // Snow keeps while the climate's cold would lay snow of its own (src/climate.ts).
+    const cold = climateLying(climateCold(y)) > 0;
     const melt = cold ? SNOW_MELT_COLD : SNOW_MELT_WARM;
     this.#lying += (SNOW_SETTLE * this.#falling * (1 - this.#lying) - melt * this.#lying) * dt;
     this.#lying = Math.max(0, Math.min(1, this.#lying));

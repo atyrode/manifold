@@ -60,6 +60,7 @@ import {
 import { mulberry32 } from "../../sims/random.ts";
 import { DataTexture } from "../../sims/texture.ts";
 import { gustPulse, windSign } from "../../sims/wind.ts";
+import { dateShift, skyAnchor, skyState, timeOfDay, type SkyState } from "../../world-clock.ts";
 import type { PointerState, SceneSim, SimFactory, SimFrame } from "../types.ts";
 
 export const gardenPatterns = ["waves", "straight", "circles"] as const;
@@ -1058,9 +1059,13 @@ interface Settings {
   /** Leaf-fall knob 0..1. */
   leaves: number;
   overhead: boolean;
-  /** The sky clock's knobs and the rain as it falls (snow in winter), for the drying pace. */
+  /**
+   * The sky clock's knobs, the date (SKY_YEAR; -1 none) and the rain as it falls (snow in winter),
+   * for the drying pace.
+   */
   time: number;
   cycle: number;
+  year: number;
   rain: number;
   wind: number;
   /** The M's height, 0 when off. */
@@ -1091,6 +1096,7 @@ class GardenSim implements SceneSim {
     overhead: false,
     time: 0,
     cycle: 0,
+    year: -1,
     rain: 0,
     wind: 0,
     mark: 0,
@@ -1211,10 +1217,16 @@ class GardenSim implements SceneSim {
 
   #aspect = 16 / 9;
   #overhead = false;
+  /** The sky's staged date (skyAnchor; -1 none); the sky the drying last read, its hour and date. */
+  readonly #anchor: number;
+  #sky: SkyState | undefined = undefined;
+  #skyTod = Number.NaN;
+  #skyYear = Number.NaN;
 
   constructor(gl: WebGL2RenderingContext, params: readonly ParamDef[]) {
     this.#knobs = new KnobReader("garden", params, KNOBS);
     this.#seasonDef = seasonKnob(params);
+    this.#anchor = skyAnchor(params) ?? -1;
     this.#gustSlot = this.#knobs.trigger("leaves");
     this.#heights = new DataTexture(gl, {
       width: GARDEN.cols,
@@ -1338,7 +1350,8 @@ class GardenSim implements SceneSim {
     s.time = this.#knob(frame, "time");
     s.cycle = this.#knob(frame, "cycle");
     const season = this.#seasonDef;
-    const cold = season ? climateCold(yearAt(season, this.#knob(frame, "season"))) : 0;
+    s.year = season ? yearAt(season, this.#knob(frame, "season")) : -1;
+    const cold = climateCold(s.year);
     s.rain = fallingRain(this.#knob(frame, "rain"), cold);
     s.wind = clamp(this.#knob(frame, "wind"), -1, 1);
     s.mark = mark;
@@ -1357,14 +1370,21 @@ class GardenSim implements SceneSim {
   }
 
   /**
-   * The drying clock's pace while drying with the weather: dryingPace for the sky's hour (the
-   * shader's timeOfDayM), the wind and the rain, times the weathering knob's own pace, 1 at its
-   * default and doubling with every 0.3 more, so the one knob ages a mark's relief and its damp alike.
+   * The drying clock's pace while drying with the weather: dryingPace for the sky as the shader has
+   * it (skyState at its hour and, the garden's sky being dated, its date), the wind and the rain,
+   * times the weathering knob's own pace, 1 at its default and doubling with every 0.3 more, so the
+   * one knob ages a mark's relief and its damp alike. The sky is worked out again only as its hour or
+   * date moves.
    */
   #dryingRate(frame: SimFrame, settings: Settings): number {
-    const tod = settings.time + (settings.cycle * frame.motionTime) / 240;
+    const tod = timeOfDay(settings.time, settings.cycle, frame.motionTime);
+    if (this.#sky === undefined || tod !== this.#skyTod || settings.year !== this.#skyYear) {
+      this.#sky = skyState(tod, { shift: dateShift(settings.year, this.#anchor) });
+      this.#skyTod = tod;
+      this.#skyYear = settings.year;
+    }
     const weathering = 2 ** ((settings.weathering - this.#knobs.initial("soften")) / 0.3);
-    return weathering * dryingPace(tod, settings.wind, settings.rain);
+    return weathering * dryingPace(this.#sky, settings.wind, settings.rain);
   }
 
   // ---- laying out ----------------------------------------------------------------------------------

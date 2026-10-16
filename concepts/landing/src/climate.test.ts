@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import {
+  climateChill,
   climateCold,
   climateLying,
   WINTER_COVER,
@@ -57,6 +58,17 @@ describe("the climate", () => {
     expect(climateCold(0.75)).toBeLessThan(1);
     expect(climateCold(0.99)).toBeCloseTo(climateCold(0.76), 9);
     expect(climateCold(-1)).toBe(0);
+  });
+
+  test("turns toward winter as one model: the cold rises wherever the chill does", () => {
+    expect(climateChill(0.375)).toBeCloseTo(0, 12);
+    expect(climateChill(0.875)).toBe(1);
+    expect(climateChill(-1)).toBe(0);
+    const years = Array.from({ length: 200 }, (_, i) => i / 200);
+    for (const a of years)
+      for (const b of years)
+        if (climateChill(a) > climateChill(b) + 1e-9)
+          expect(climateCold(a)).toBeGreaterThanOrEqual(climateCold(b));
   });
 
   test("turns rain to snow as it grows cold, and leaves the snow switch's own snow falling", () => {

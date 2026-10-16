@@ -24,6 +24,7 @@ import {
   type LabState,
   type Params,
 } from "../state.ts";
+import { skyAnchor } from "../world-clock.ts";
 import { almanacParts, gatherAlmanac } from "./almanac-model.ts";
 import {
   groupShows,
@@ -628,7 +629,13 @@ export class Inspector {
         (def): def is FeatureDef =>
           def.kind === "feature" && def.widget?.kind === "sky" && def.widget.part === "cycle",
       );
-      const sky: SkyParts = { time, cycle, moon: undefined, stars: undefined };
+      const sky: SkyParts = {
+        time,
+        cycle,
+        moon: undefined,
+        stars: undefined,
+        anchor: skyAnchor(sceneDefs[scene].params),
+      };
       for (const part of nightParts(sceneDefs[scene].params)) {
         if (part.name === "moon") sky.moon = part.def;
         else if (part.name === "stars") sky.stars = part.def;

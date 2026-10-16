@@ -101,7 +101,7 @@ export function skyComponentKnobs(options: SkyComponentOptions = {}): ParamDef[]
         true,
         "phase",
         options.moon,
-        "The moon on its nightly path, from a thin crescent to full, its lit side toward the sun: a slimmer moon lights the land, the clouds and the sky round it less and lets stars come out closer to it. Off: a moonless night.",
+        "The moon, from a thin crescent to full, standing where its phase puts it, its lit side toward the sun: a crescent trails the sun and hangs over the sunset, a half moon stands a quarter of the sky from it, a fuller moon rises toward dusk. A slimmer moon lights the land, the clouds and the sky round it less and lets stars come out closer to it. Off: a moonless night.",
         { min: 0.05, max: 1, widget: { kind: "night", part: "moon" } },
       ),
     );
@@ -130,7 +130,7 @@ export function skyComponentKnobs(options: SkyComponentOptions = {}): ParamDef[]
         false,
         "lines",
         0.4,
-        "Six familiar figures among the stars: Orion, the Big Dipper, Cassiopeia, Cygnus, Leo and the Southern Cross, their stars brighter than the rest, in the same place every night. Lines: the stars standing out with the faintest trace of the figures to the left, clear stick figures to the right. They come out with the stars.",
+        "Six familiar figures among the stars: Orion, the Big Dipper, Cassiopeia, Cygnus, Leo and the Southern Cross, their stars brighter than the rest, in the same place every night and turning with the stars while the days pass. Lines: the stars standing out with the faintest trace of the figures to the left, clear stick figures to the right. They come out with the stars.",
         { min: 0.05, max: 1, widget: { kind: "night", part: "constellations" } },
       ),
     );
@@ -164,7 +164,7 @@ export function skyKnobs(options: SkyOptions = {}): ParamDef[] {
       false,
       "speed",
       0.3,
-      "The sun and moon keep moving: days pass at this pace.",
+      "The sun and moon keep moving and the stars turn: days pass at this pace.",
       { widget: { kind: "sky", part: "cycle" } },
     ),
     ...skyComponentKnobs({ ...options, group }),

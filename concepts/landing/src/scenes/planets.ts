@@ -8,13 +8,8 @@
 // key, PLANETS_KEY, packed (encodePlanets); the shader takes it as uniforms (planetUniforms).
 import { choice, counts, feature, range, readKnobs, toggle, type ParamDef } from "../params.ts";
 import { PLANET_BODY_KINDS, PLANET_RINGS } from "../shaders/lib/planet.ts";
-import {
-  COS_LAT,
-  SIN_LAT,
-  SKY_PLANET_CAP,
-  SKY_PLANET_FLAGS,
-  SKY_PLANET_ROWS,
-} from "../shaders/lib/sky.ts";
+import { SKY_PLANET_CAP, SKY_PLANET_FLAGS, SKY_PLANET_ROWS } from "../shaders/lib/sky.ts";
+import { COS_LAT, SIN_LAT } from "../world-clock.ts";
 
 /** A placement's least value, where it starts, and its most. */
 export type PlanetSpan = readonly [min: number, at: number, max: number];

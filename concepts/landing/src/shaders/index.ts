@@ -4,13 +4,15 @@
 // Every scene compiles to its own fragment shader (see scenes/types.ts): the common preamble, the
 // scene's compile-time features (fixed, and keyed by its setting: one program per distinct set, the
 // library gates of its night parts and of its planets among them), one `#define K_<key> uParams[i]`
-// per knob and SKY_YEAR, the shared libraries, the scene's GLSL, then `main`, which calls the
-// scene's entry and dithers the Shade it returns into the palette.
+// per knob, SKY_YEAR (and a dated sky's SKY_DATE_ANCHOR), the shared libraries, the scene's GLSL,
+// then `main`, which calls the scene's entry and dithers the Shade it returns into the palette.
 
 import { seasonKnob, yearCycleKnob, yearNowGlsl } from "../climate.ts";
 import { effective, MAX_PARAMS, type Widget } from "../params.ts";
 import type { SceneDef } from "../scenes/types.ts";
+import { skyAnchor } from "../world-clock.ts";
 import { common } from "./common.ts";
+import { glslFloat } from "./glsl.ts";
 import { libs } from "./lib/index.ts";
 import { main } from "./main.ts";
 
@@ -51,12 +53,16 @@ function knobDefines(scene: SceneDef): string {
 
 /**
  * `#define SKY_YEAR <expr>`: the scene's year position now (src/climate.ts `yearAt`, carried round
- * by its year cycle, `yearNow`) from its knobs' defines, for the climate; -1.0 without a season.
+ * by its year cycle, `yearNow`) from its knobs' defines, for the climate; -1.0 without a season. A
+ * dated sky (src/world-clock.ts `skyAnchor`: the season sets the scene's climate) also gets
+ * `#define SKY_DATE_ANCHOR <year>`, the date it is staged at, which dates its sky (skyAt).
  */
 function yearDefine(scene: SceneDef): string {
   const season = seasonKnob(scene.params);
   const year = season ? yearNowGlsl(season, yearCycleKnob(scene.params)) : "-1.0";
-  return `#define SKY_YEAR ${year}\n`;
+  const anchor = skyAnchor(scene.params);
+  const dated = anchor === undefined ? "" : `#define SKY_DATE_ANCHOR ${glslFloat(anchor)}\n`;
+  return `#define SKY_YEAR ${year}\n${dated}`;
 }
 
 /** Library feature names: macros the libraries test with `#ifdef` / `#if`. */

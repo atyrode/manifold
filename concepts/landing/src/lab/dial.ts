@@ -1,9 +1,13 @@
 // The almanac. The sky dial: the time of day as the sun on its circle (sunrise on the right, noon at
-// the top, sunset on the left, midnight below the horizon, as skyAt draws it), with the moon opposite
-// in its phase (the scene's night `moon` part; its controls are the Night sky's, nightsky.ts) and as
-// many stars in the night half as the scene's `stars` part lets out. Drag the sun (or the moon)
-// round; keys: arrows step the hour, wrapping past midnight. Under it, "Day speed": the day cycle as
-// one slider, still at the left end and faster to the right (speed-model.ts).
+// the top, sunset on the left, midnight below the horizon), with the moon in its phase where its
+// phase puts it (the scene's night `moon` part; its controls are the Night sky's, nightsky.ts): as far
+// round behind the sun as it trails the sun in the sky, a crescent just behind it, a half moon a
+// quarter of the day, the full moon opposite, a moon nearing full moving onto it as the sky's does.
+// The dial's light, the sun and moon going down and the stars coming out follow the scene's own sky
+// (skyNow, src/world-clock.ts, dated with the scene's date where its sky is), with as many stars in
+// the night half as the scene's `stars` part lets out. Drag the sun (or the moon) round; keys: arrows
+// step the hour, wrapping past midnight. Under it, "Day speed": the day cycle as one slider, still at
+// the left end and faster to the right (speed-model.ts).
 //
 // The season ring round it is the year laid out the same way (almanac-model.ts): spring on the right,
 // summer at the top, autumn on the left, winter below, tinted through the seasons. A span knob's
@@ -14,6 +18,7 @@
 // glyph and name (seasonWheel).
 import { climateCold, climateLying } from "../climate.ts";
 import type { Params } from "../state.ts";
+import { moonElongation, moonStaging, skyNow } from "../world-clock.ts";
 import {
   namedYear,
   seasonPatch,
@@ -434,17 +439,21 @@ function searchAlso(el: HTMLElement, names: readonly (string | undefined)[]): vo
   el.dataset.search = [el.dataset.search ?? "", ...words].join(" ").toLowerCase();
 }
 
-/** The sky dial's own parts: the time of day, the day cycle, and the night's moon and stars it draws. */
+/**
+ * The sky dial's own parts: the time of day, the day cycle, the night's moon and stars it draws, and
+ * the date the scene's sky is staged at where the date moves its sky (skyAnchor).
+ */
 export interface SkyParts {
   time: RangeDef;
   cycle: FeatureDef | undefined;
   moon: FeatureDef | undefined;
   stars: RangeDef | undefined;
+  anchor: number | undefined;
 }
 
 export function skyDial(
   knobs: Knobs,
-  { time, cycle, moon, stars: starKnob }: SkyParts,
+  { time, cycle, moon, stars: starKnob, anchor }: SkyParts,
   { season, year }: AlmanacParts,
 ): Built {
   const angleOf = (t: number) => (t - 0.25) * TAU;
@@ -519,6 +528,14 @@ export function skyDial(
 
   const lit = () => (moon ? knobs.value(`${moon.key}-amount`) : 1);
   const moonShown = () => moon === undefined || knobs.on(moon.key);
+  /**
+   * How far round the dial the moon trails the sun: its elongation in its phase, moved onto the
+   * staged full moon's half a day as it nears full, as the sky moves it (moonStaging).
+   */
+  const lag = () => {
+    const staging = moonStaging(lit());
+    return moonElongation(lit()) * (1 - staging) + Math.PI * staging;
+  };
   const timeAt = (value: number) => ({
     [time.key]: snap(((value % 1) + 1) % 1, time.min, time.max, time.step),
   });
@@ -546,12 +563,12 @@ export function skyDial(
         y: ((pointer.clientY - rect.top) / rect.height) * 120,
       });
       const start = point(down);
-      const moonAt = at(angleOf(knobs.value(time.key)) + Math.PI);
+      const moonAt = at(angleOf(knobs.value(time.key)) - lag());
       const grabbedMoon = moonShown() && Math.hypot(start.x - moonAt.x, start.y - moonAt.y) < 12;
       return (pointer) => {
         const p = point(pointer);
         if (Math.hypot(p.x - C, p.y - C) < 6) return undefined;
-        const angle = Math.atan2(C - p.y, p.x - C) + (grabbedMoon ? Math.PI : 0);
+        const angle = Math.atan2(C - p.y, p.x - C) + (grabbedMoon ? lag() : 0);
         return timeAt(angle / TAU + 0.25);
       };
     },
@@ -561,7 +578,7 @@ export function skyDial(
   const side = h("div", { class: "sky-side" });
   const timeRow = row({
     label: time.label,
-    help: `${time.help} Drag the sun round the dial (or the moon, opposite it); arrow keys step it, Home is midnight and End noon.`,
+    help: `${time.help} Drag the sun round the dial (or the moon behind it); arrow keys step it, Home is midnight and End noon.`,
     icon: "sky",
     block: h("div", { class: "sky" }, ring?.el ?? dial, side),
     modified: () => knobs.modified([time.key]),
@@ -579,23 +596,32 @@ export function skyDial(
     () => {
       const value = knobs.value(time.key);
       const angle = angleOf(value);
-      const height = Math.sin(angle);
-      const daylight = Math.min(1, Math.max(0, (height + 0.08) / 0.45));
-      const glow = Math.max(0, 1 - Math.abs(height) / 0.32) * (height > -0.25 ? 1 : 0);
+      // The scene's sky at the knob's hour: its moon in its phase and, where it is dated, its date.
+      const sky = skyNow({
+        time: value,
+        cycle: 0,
+        motionTime: 0,
+        phase: moonShown() ? lit() : 0,
+        year:
+          season && anchor !== undefined ? (yearOf(season, seasonParams(knobs, season)) ?? -1) : -1,
+        anchor: anchor ?? -1,
+      });
       const [r = 0, g = 0, b = 0] = mix(
-        mix([16, 21, 38], [48, 80, 122], daylight),
+        mix([16, 21, 38], [48, 80, 122], sky.day),
         [214, 118, 62],
-        glow * 0.55,
+        sky.twilight * 0.55,
       );
       setAttr(day, "fill", `rgb(${Math.round(r)} ${Math.round(g)} ${Math.round(b)})`);
       const sunAt = at(angle);
       setAttr(sun, "transform", `translate(${sunAt.x.toFixed(2)} ${sunAt.y.toFixed(2)})`);
-      sun.classList.toggle("below", height < -0.02);
-      const moonAt = at(angle + Math.PI);
+      sun.classList.toggle("below", sky.sun[1] < 0);
+      const moonAngle = angle - lag();
+      const moonAt = at(moonAngle);
       setAttr(moonGroup, "transform", `translate(${moonAt.x.toFixed(2)} ${moonAt.y.toFixed(2)})`);
-      // The lit side faces the sun.
-      setAttr(moonBody, "transform", `rotate(${((-angle * 180) / Math.PI).toFixed(1)})`);
-      moonGroup.classList.toggle("below", height > 0.02);
+      // The lit side faces the sun, along the chord between them.
+      const toSun = (angle + moonAngle) / 2 + Math.PI / 2;
+      setAttr(moonBody, "transform", `rotate(${((-toSun * 180) / Math.PI).toFixed(1)})`);
+      moonGroup.classList.toggle("below", sky.moon[1] < 0);
       moonGroup.classList.toggle("off", !moonShown());
       setAttr(moonLit, "d", moonPath(5.5, moonShown() ? lit() : 0));
       setText(clock, clockOf(value));
@@ -604,7 +630,7 @@ export function skyDial(
         ? (knobs.value(starKnob.key) - starKnob.min) / (starKnob.max - starKnob.min)
         : 7 / stars.length;
       stars.forEach((star, index) => {
-        star.classList.toggle("lit", daylight < 0.4);
+        star.classList.toggle("lit", sky.night > 0);
         star.classList.toggle("out", index >= Math.round(density * stars.length));
       });
       syncSlider();

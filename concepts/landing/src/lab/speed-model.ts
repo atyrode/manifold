@@ -2,12 +2,13 @@
 // as one slider of stops, still at the left end, then the cycle's amounts from the slowest to the
 // fastest. The URL keeps the knob's own keys: still is the switch off; any other stop switches it
 // on with that amount. The day's amount is a pace (at 1 a whole day passes in DAY_MINUTES of the
-// motion clock, timeOfDayM in shaders/lib/sky.ts); the year's is minutes per season (yearNow in
+// motion clock, timeOfDay in src/world-clock.ts); the year's is minutes per season (yearNow in
 // climate.ts), so its faster stops hold fewer minutes.
+import { DAY_SECONDS } from "../world-clock.ts";
 import { snap } from "./dom.ts";
 
-/** Minutes of the motion clock a whole day takes at day cycle 1 (timeOfDayM's 240 s). */
-export const DAY_MINUTES = 4;
+/** Minutes of the motion clock a whole day takes at day cycle 1 (the world clock's DAY_SECONDS). */
+export const DAY_MINUTES = DAY_SECONDS / 60;
 
 /** A cycle's amount: its range and step. */
 export interface Pace {

@@ -40,6 +40,11 @@ and the countryside's figures, livestock and buildings. Which scene composes whi
 components" in `src/scenes/README.md`. The sections after the tables keep the original briefs, with
 notes on what was built.
 
+Every sky reads one world clock (`src/world-clock.ts`, its GLSL in the sky library): the staged
+low-latitude sky by default, a sun whose height follows the date in the scenes whose season sets
+their climate (country, garden), a moon standing as far from the sun as its phase needs, and stars
+that turn about the pole while the days pass; the year's cold is one model (`src/climate.ts`).
+
 ## Zen batch
 
 A second batch of calm scenes whose subject is a simulation, from grounded scenery to pure

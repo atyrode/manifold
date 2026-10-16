@@ -44,9 +44,10 @@ ${birdsGlsl}
 #endif
 #if WORLD_MILKYWAY
 ${milkyWayGlsl}
-// The galaxy's plane, fixed in the sky's own frame (so every scene's yaw shows its own stretch of
-// it): an arc leaning out of the horizon on the sunset side of the sky's ahead and climbing ~60
-// degrees over it toward the sunrise side.
+// The galaxy's plane, fixed in the stars' frame (skyStarFrame: so every scene's yaw shows its own
+// stretch of it, and it turns with the stars as the night passes): staged as an arc leaning out of
+// the horizon on the sunset side of the sky's ahead and climbing ~60 degrees over it toward the
+// sunrise side.
 const MilkyWayBand WORLD_GALAXY = MILKY_WAY_BAND(normalize(vec3(0.13, -0.86, 0.5)));
 #endif
 
@@ -243,7 +244,7 @@ WorldSky worldSky(World w, WorldView v, vec4 meteorField) {
   // On dark nights: moonlight washes it out. K_stars stays the density away from the band (with the
   // band off the stars are exactly K_stars'); in it they crowd as milkyWayStars has them.
   float moonlit = clamp(dot(w.sky.moonColor, LUMA) / WORLD_GALAXY_MOONLIT, 0.0, 1.0);
-  float band = milkyWay(v.dir, WORLD_GALAXY) * K_milkyWay * K_stars * w.sky.night * (1.0 - WORLD_GALAXY_MOON * moonlit);
+  float band = milkyWay(skyStarFrame(w.sky, v.dir), WORLD_GALAXY) * K_milkyWay * K_stars * w.sky.night * (1.0 - WORLD_GALAXY_MOON * moonlit);
   col += WORLD_GALAXY_TINT * band * (1.0 - cloud);
   if (band > 0.0) density = K_stars * milkyWayStars(1.0, band) / milkyWayStars(1.0, 0.0);
 #endif
@@ -464,7 +465,7 @@ WorldSky worldMirrorSky(World w, WorldView m, vec4 meteorField) {
   float density = K_stars;
 #if WORLD_MILKYWAY
   float moonlit = clamp(dot(w.sky.moonColor, LUMA) / WORLD_GALAXY_MOONLIT, 0.0, 1.0);
-  float band = milkyWay(m.dir, WORLD_GALAXY) * K_milkyWay * K_stars * w.sky.night * (1.0 - WORLD_GALAXY_MOON * moonlit);
+  float band = milkyWay(skyStarFrame(w.sky, m.dir), WORLD_GALAXY) * K_milkyWay * K_stars * w.sky.night * (1.0 - WORLD_GALAXY_MOON * moonlit);
   col += WORLD_GALAXY_TINT * band * (1.0 - cloud);
   if (band > 0.0) density = K_stars * milkyWayStars(1.0, band) / milkyWayStars(1.0, 0.0);
 #endif

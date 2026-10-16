@@ -30,6 +30,7 @@ import { valueNoise } from "../../sims/noise.ts";
 import { mulberry32 } from "../../sims/random.ts";
 import { atEase, facing, isShy, stepShrink, type Shrink } from "../../sims/temperament.ts";
 import { DataTexture } from "../../sims/texture.ts";
+import { skyNow } from "../../world-clock.ts";
 import type { PointerState, SceneSim, SimFactory, SimFrame } from "../types.ts";
 
 // ---- the forest's layout, shared with shader.ts ----
@@ -698,10 +699,9 @@ class ForestSim implements SceneSim {
     this.#wind = values[index.wind] ?? this.#wind;
     this.#time = values[index.time] ?? this.#time;
     this.#cycle = values[index.cycle] ?? this.#cycle;
-    // The same clock as the shader's timeOfDayM(K_time, K_cycle, uMotionTime).
-    const tod = this.#time + (this.#cycle * frame.motionTime) / 240;
-    const t = tod - Math.floor(tod);
-    this.#dark = 1 - smoothstep(0.24, 0.31, t) * (1 - smoothstep(0.69, 0.76, t));
+    // The dark of the shader's sky (src/world-clock.ts): none once the sun is ~12 degrees up.
+    this.#dark =
+      1 - skyNow({ time: this.#time, cycle: this.#cycle, motionTime: frame.motionTime }).day;
     const seed = Math.round(values[index.forestSeed] ?? 0);
     if (seed !== this.#seed) {
       this.#seed = seed;

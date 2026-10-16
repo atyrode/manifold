@@ -21,10 +21,11 @@
 //   const fresh = new AgeField(336, 140, aspect, 1);
 //   const texture = new DataTexture(gl, { width: 336, height: 140, format: "r16f" });
 //   // each frame:
-//   fresh.advance(frame.dt * frame.motion * dryingPace(tod, wind, rain));
+//   fresh.advance(frame.dt * frame.motion * dryingPace(skyNow(clock), wind, rain));
 //   fresh.stamp(rakeX0, rakeY0, rakeX1, rakeY1, swathHalfWidth);
 //   fresh.upload(texture);
 //   // GLSL: float age = clock - texture(uSim3, p / vec2(aspect, 1.0)).r;  damp = exp(-age / 45.0);
+import { skyState, type SkyState } from "../world-clock.ts";
 import { smoothstep } from "./math.ts";
 import type { DataTexture } from "./texture.ts";
 
@@ -104,16 +105,17 @@ export class AgeField {
   }
 }
 
+/** The staged noon sun's elevation sine: the sun's height at which dryingPace's sun counts 1. */
+const NOON_SUN = skyState(0.5).sun[1];
+
 /**
  * How fast damp ground dries, against a still, sunny midday (1): slower as the sun sinks and at night
  * (0.35 in the dark), faster in wind (up to 1.8× at full wind), and not at all once it rains (gone by
- * rain 0.15). `tod` is the sky clock 0..1 (0 midnight, .25 sunrise, .5 noon, .75 sunset), as
- * timeOfDayM gives it: fract(K_time + K_cycle · frame.motionTime / 240).
+ * rain 0.15). `sky` is the sky now as the shader has it (skyNow in src/world-clock.ts): its daylight
+ * and how high its sun stands against the staged noon's, so a dated sky's summer sun dries faster.
  */
-export function dryingPace(tod: number, wind: number, rain: number): number {
-  const t = tod - Math.floor(tod);
-  const day = smoothstep(0.24, 0.31, t) * (1 - smoothstep(0.69, 0.76, t));
-  const high = Math.max(0, Math.sin((Math.PI * (t - 0.25)) / 0.5));
-  const sun = 0.35 + 0.65 * day * (0.4 + 0.6 * high);
+export function dryingPace(sky: SkyState, wind: number, rain: number): number {
+  const high = Math.max(0, sky.sun[1]) / NOON_SUN;
+  const sun = 0.35 + 0.65 * sky.day * (0.4 + 0.6 * high);
   return sun * (1 + 0.8 * Math.min(1, Math.abs(wind))) * (1 - smoothstep(0, 0.15, rain));
 }
