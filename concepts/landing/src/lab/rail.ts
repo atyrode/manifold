@@ -1,8 +1,9 @@
 // The icon rail beside a view's scrolling body: a button per section that jumps to it, the section
 // in view marked as the body scrolls, the sections a search hides dimmed and, where the view counts
 // them, a dot on those with changes. Each view of the lab panel has its own: scene families
-// (Scenes), preset groups (Presets), control groups (Controls).
-import { h } from "./dom.ts";
+// (Scenes), preset groups (Presets), control groups (Controls). Marking the section in view reads
+// the layout, so it waits for the next frame and runs once however often it is asked for.
+import { h, setAttr } from "./dom.ts";
 import { icon, type IconName } from "./icons.ts";
 
 export interface RailEntry {
@@ -28,6 +29,8 @@ export class Rail {
    * too low to reach the top), however its controls are used meanwhile.
    */
   #pinned: string | undefined;
+  /** The frame the next spy runs in, while one is asked for. */
+  #spying: number | undefined;
 
   constructor(body: HTMLElement, label: string, reducedMotion: boolean) {
     this.#body = body;
@@ -92,17 +95,27 @@ export class Rail {
       const count = counts.get(entry.id) ?? 0;
       const label = count > 0 ? `${entry.title} (${count} changed)` : entry.title;
       button.classList.toggle("changed", count > 0);
-      button.title = label;
-      button.setAttribute("aria-label", label);
+      setAttr(button, "title", label);
+      setAttr(button, "aria-label", label);
     }
   }
 
   /**
-   * Mark the button of the section in view: the one jumped to or opened while it shows, otherwise
-   * the first at the top of the body, the last at its end, and in between the one under a reading
-   * line a little below the top. Hidden sections' buttons are dimmed.
+   * Mark, in the next frame, the button of the section in view: the one jumped to or opened while
+   * it shows, otherwise the first at the top of the body, the last at its end, and in between the
+   * one under a reading line a little below the top. Hidden sections' buttons are dimmed. Asked for
+   * on a scroll, when the view shows, is rebuilt or its sections show, hide, open or fold; the frame
+   * lays the body out anyway, so reading it then forces no layout of its own.
    */
   spy(): void {
+    if (this.#spying !== undefined) return;
+    this.#spying = requestAnimationFrame(() => {
+      this.#spying = undefined;
+      this.#mark();
+    });
+  }
+
+  #mark(): void {
     const body = this.#body;
     const top = body.scrollTop;
     const bottom = top + body.clientHeight;
@@ -125,7 +138,7 @@ export class Rail {
       const button = this.#buttons.get(entry.id);
       if (!button) continue;
       button.classList.toggle("dim", entry.el.hidden);
-      if (entry === current) button.setAttribute("aria-current", "true");
+      if (entry === current) setAttr(button, "aria-current", "true");
       else button.removeAttribute("aria-current");
     }
   }

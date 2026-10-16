@@ -1,7 +1,8 @@
 // The Controls view's "changed" lens, apart from its DOM: which URL keys differ from their defaults
 // (a scene's knobs against its knob defaults, as Knobs.modified compares them; the global groups'
-// settings against the scene's `defaultsFor`, as their resets do), how many knobs of each group
-// changed, and which controls and groups show under the lens and the search together.
+// settings against the scene's `defaultsFor`, as their resets do) and how many knobs of each group
+// changed. A knob counts whether or not it takes effect: one whose switch is off still rides the
+// link, and shows dormant under the lens (availability-model.ts, which decides what shows).
 import type { ParamDef } from "../params.ts";
 import type { Params } from "../state.ts";
 import { knobKeys } from "./knobs.ts";
@@ -50,46 +51,4 @@ export function changedCounts(
     if (count > 0) counts.set(group.id, count);
   }
   return counts;
-}
-
-/** What narrows the controls: the search's words (trimmed, lower case; empty for none) and the lens. */
-export interface LensQuery {
-  text: string;
-  lens: boolean;
-  /** The URL keys that differ from their defaults. */
-  changed: ReadonlySet<string>;
-}
-
-/** A control as the search and the lens see it. */
-export interface LensItem {
-  /** Its words (`data-search`). */
-  search: string;
-  /** The URL keys of the knobs it holds (`data-keys`): a widget of several knobs, all of theirs. */
-  keys: readonly string[];
-  /** In hand (it holds the focus): it stays under the lens while it is used, back at its default or not. */
-  held: boolean;
-}
-
-/** Whether a group's title holds the search's words. */
-export function titleHolds(title: string, query: LensQuery): boolean {
-  return query.text !== "" && title.includes(query.text);
-}
-
-/**
- * Whether a control shows: its words, or its group's title (`titleHit`), hold the search's; and
- * under the lens, one of its knobs changed or it is in hand.
- */
-export function itemShows(item: LensItem, titleHit: boolean, query: LensQuery): boolean {
-  const found = query.text === "" || titleHit || item.search.includes(query.text);
-  return found && (!query.lens || item.held || item.keys.some((key) => query.changed.has(key)));
-}
-
-/**
- * Whether a group shows with `shown` of its controls showing: every group while nothing narrows
- * them, under the search alone also one whose title holds the words, under the lens only one with a
- * control to show.
- */
-export function groupShows(shown: number, titleHit: boolean, query: LensQuery): boolean {
-  if (query.lens) return shown > 0;
-  return query.text === "" || shown > 0 || titleHit;
 }

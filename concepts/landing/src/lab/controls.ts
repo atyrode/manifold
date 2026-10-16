@@ -1,7 +1,19 @@
 // The lab's plain controls: buttons, switches, sliders, segments, the "now" trigger and the seed's
-// dice, and the row that labels a control with its readout, reset and help.
-import { pace, pressMove, SCRUB_SPAN, type Press } from "./chips-model.ts";
-import { drag, h, setAttr, setHidden, setText, snap, type Built } from "./dom.ts";
+// dice, the row that labels a control with its readout, reset and help, and what every custom
+// slider-like widget shares: its slider behaviour (sliderBehaviour), a drag that lets a vertical
+// swipe scroll the panel (dragAcross) and the "changed" dot (resetDot).
+import { dragsAcross, pace, pressMove, SCRUB_SPAN, type Press } from "./chips-model.ts";
+import {
+  drag,
+  h,
+  setAttr,
+  setHidden,
+  setStyle,
+  setText,
+  snap,
+  type Built,
+  type Patch,
+} from "./dom.ts";
 import { icon, type IconName } from "./icons.ts";
 
 export function iconButton(
@@ -80,8 +92,8 @@ export function slider(
   el.addEventListener("input", () => set(Number(el.value), false));
   const sync = () => {
     const value = get();
-    if (document.activeElement !== el) el.value = String(value);
-    el.style.setProperty("--fill", `${((value - min) / (max - min)) * 100}%`);
+    if (document.activeElement !== el && el.value !== String(value)) el.value = String(value);
+    setStyle(el, "--fill", `${((value - min) / (max - min)) * 100}%`);
     if (valueText) setAttr(el, "aria-valuetext", valueText(value));
   };
   return { el, sync };
@@ -144,6 +156,120 @@ export function nowButton(
     cooling = window.setTimeout(() => button.classList.remove("firing"), 900);
   });
   return button;
+}
+
+/**
+ * A control's "changed" dot, hidden until its owner's sync shows it (while the control differs
+ * from its default): a click resets it. It hangs off the control's left edge.
+ */
+export function resetDot(label: string, reset: (() => void) | undefined): HTMLButtonElement {
+  const dot = h("button", {
+    type: "button",
+    class: "modified",
+    title: "Changed: click to reset",
+    "aria-label": `Reset ${label}`,
+    hidden: true,
+  });
+  if (reset) dot.addEventListener("click", reset);
+  return dot;
+}
+
+/**
+ * Follow a press on a one-dimensional widget as `drag` does, except a touch (or pen): that waits
+ * until it moves across (chips-model.ts dragsAcross), so a swipe down scrolls the panel (the
+ * widget's `touch-action: pan-y`; the browser then cancels the press) and changes nothing, and a
+ * tap that never moved lands once where it was let go.
+ */
+export function dragAcross(
+  event: PointerEvent,
+  target: HTMLElement,
+  move: (event: PointerEvent) => void,
+  end: (event: PointerEvent) => void,
+): void {
+  if (event.pointerType === "mouse") {
+    drag(event, target, move, end);
+    return;
+  }
+  let across = false;
+  drag(
+    event,
+    target,
+    (pointer) => {
+      across ||= dragsAcross(pointer.clientX - event.clientX, pointer.clientY - event.clientY);
+      if (across) move(pointer);
+    },
+    (last) => {
+      if (!across && last.type === "pointerup") move(last);
+      end(last);
+    },
+  );
+}
+
+/**
+ * Make `el` a slider for the keyboard and assistive technology, its value in `min..max`: in the
+ * tab order, a key sets `key`'s patch at once (one undo step), and a press, where `press` takes it,
+ * sets the patch at each pointer position as it moves and records the last on release. `press`
+ * gets the pointerdown and returns where each position lands (undefined there: nothing), or
+ * undefined for a press that is not the widget's (it is left to what lies under it). `across`: the
+ * widget runs one way across, so a touch waits until it moves across (dragAcross). While pressed
+ * the widget is `dragging`. Returns the sync of its value and words (aria-valuenow, -valuetext).
+ */
+export function sliderBehaviour(
+  el: HTMLElement,
+  spec: {
+    min: number;
+    max: number;
+    now: () => number;
+    text: () => string;
+    set: (patch: Patch, commit: boolean) => void;
+    key: (event: KeyboardEvent) => Patch | undefined;
+    press?: (down: PointerEvent) => ((pointer: PointerEvent) => Patch | undefined) | undefined;
+    across?: boolean;
+  },
+): () => void {
+  el.setAttribute("role", "slider");
+  el.tabIndex = 0;
+  el.setAttribute("aria-valuemin", String(spec.min));
+  el.setAttribute("aria-valuemax", String(spec.max));
+  el.addEventListener("keydown", (event) => {
+    const patch = spec.key(event);
+    if (!patch) return;
+    event.preventDefault();
+    spec.set(patch, true);
+  });
+  const { press } = spec;
+  if (press)
+    el.addEventListener("pointerdown", (event) => {
+      if (event.button !== 0) return;
+      const at = press(event);
+      if (!at) return;
+      event.preventDefault();
+      el.focus();
+      el.classList.add("dragging");
+      let patch: Patch | undefined;
+      let held = "";
+      (spec.across ? dragAcross : drag)(
+        event,
+        el,
+        (pointer) => {
+          const next = at(pointer);
+          if (!next) return;
+          const key = JSON.stringify(next);
+          if (key === held) return;
+          held = key;
+          patch = next;
+          spec.set(next, false);
+        },
+        () => {
+          el.classList.remove("dragging");
+          if (patch) spec.set(patch, true);
+        },
+      );
+    });
+  return () => {
+    setAttr(el, "aria-valuenow", String(spec.now()));
+    setAttr(el, "aria-valuetext", spec.text());
+  };
 }
 
 /**
@@ -224,13 +350,7 @@ export function row(spec: {
     hintToggle.setAttribute("aria-expanded", String(open));
     el.classList.toggle("hint-open", open);
   });
-  const dot = h("button", {
-    type: "button",
-    class: "modified",
-    title: "Changed: click to reset",
-    "aria-label": `Reset ${spec.label}`,
-  });
-  if (spec.reset) dot.addEventListener("click", spec.reset);
+  const dot = resetDot(spec.label, spec.reset);
   const readout = h("span", { class: "readout" });
   const el = h(
     "div",

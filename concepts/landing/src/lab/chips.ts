@@ -1,18 +1,37 @@
 // Icon chips: a group's switches (toggles and features) as a grid of icon toggles. A feature whose
 // amount is a range is a fader chip: the amount fills the chip while it is on and shows on it on
 // hover, focus and drag; a click toggles it, a drag across sets the amount and switches it on, arrow
-// keys step it (rules in chips-model.ts). A feature whose amount is a choice opens it in a row under
-// the grid, under the same icon, while it is on. A chip with a trigger carries its "now". A chip that
-// depends on another switch (`when`) shows only while that one is on. Where the season sets the
-// climate, the rain's and the snow's chips carry its marks (climate-hint-model.ts), a readout over
-// their top edge that changes nothing.
+// keys step it (rules in chips-model.ts). The same fader without a switch is a range's slider (the
+// night's stars, nightsky.ts). A feature whose amount is a choice opens it in a row under the grid,
+// under the same icon, while it is on. A chip with a trigger carries its "now". A chip that hangs on
+// another switch (`when`, to any depth) is a gate: the Controls view shows it while that one is on
+// (availability-model.ts). Where the season sets the climate, the rain's and the snow's chips carry
+// its marks (climate-hint-model.ts), a readout over their top edge that changes nothing.
 import { formatValue, type Option, type ParamDef } from "../params.ts";
 import { chipKey, pace, pressMove, type Press } from "./chips-model.ts";
 import type { ClimateMark, ClimateMarks } from "./climate-hint-model.ts";
-import { nowButton, row, segments } from "./controls.ts";
-import { drag, h, reveal, setAttr, setHidden, setText, snap, type Built } from "./dom.ts";
+import { nowButton, resetDot, row, segments } from "./controls.ts";
+import {
+  dependent,
+  drag,
+  gate,
+  h,
+  setAttr,
+  setHidden,
+  setStyle,
+  setText,
+  snap,
+  type Built,
+} from "./dom.ts";
 import { icon } from "./icons.ts";
-import { knobIcon, knobKeys, type FeatureDef, type Knobs, type SwitchDef } from "./knobs.ts";
+import {
+  knobIcon,
+  knobKeys,
+  type FeatureDef,
+  type Knobs,
+  type RangeDef,
+  type SwitchDef,
+} from "./knobs.ts";
 
 const options = (list: readonly Option[]) =>
   list.map((option) => ({ label: option.label, value: String(option.value) }));
@@ -34,29 +53,51 @@ export function chipButton(def: ParamDef, label = def.label): HTMLButtonElement 
 }
 
 /** A fader chip's amount, built onto its chip. */
-interface Fader {
+export interface Fader {
   /** Whether a click on the chip is the fader's (a drag's end, a press on the amount), not a toggle. */
   keeps(event: MouseEvent): boolean;
-  sync(): void;
+  /** Reflect the amount; `note` follows the chip's title. */
+  sync(note?: string): void;
 }
 
 /** Faders built so far: each names its own description. */
 let faders = 0;
 
-/** Make `chip` the fader of `def`'s amount; `status` speaks what its keys set. */
-function fader(knobs: Knobs, def: FeatureDef, chip: HTMLButtonElement, status: HTMLElement): Fader {
-  const amountKey = `${def.key}-amount`;
+/**
+ * Make `chip` the fader of `def`: a feature's amount on its switch's chip (a button whose owner
+ * sets aria-checked; a drag or a key switches it on, `status` speaks what a key sets, a description
+ * reads the amount), or a range itself on a chip that is its slider. Double-clicking the amount
+ * resets it.
+ */
+export function fader(
+  knobs: Knobs,
+  def: FeatureDef | RangeDef,
+  chip: HTMLElement,
+  status: HTMLElement | undefined,
+): Fader {
+  const switched = def.kind === "feature";
+  const key = switched ? `${def.key}-amount` : def.key;
   const fill = h("span", { class: "chip-fill" });
   const amount = h("span", { class: "chip-amount" });
-  faders += 1;
-  const description = h("span", { id: `chip-amount-${faders}`, hidden: true });
   chip.classList.add("fader");
   chip.prepend(fill);
-  chip.append(amount, description);
-  chip.setAttribute("aria-describedby", description.id);
-  const reading = (value: number) => `${def.amountLabel} ${formatValue(def, value)}`;
+  chip.append(amount);
+  let description: HTMLElement | undefined;
+  if (switched) {
+    faders += 1;
+    description = h("span", { id: `chip-amount-${faders}`, hidden: true });
+    chip.append(description);
+    chip.setAttribute("aria-describedby", description.id);
+  } else {
+    chip.setAttribute("role", "slider");
+    chip.tabIndex = 0;
+    chip.setAttribute("aria-valuemin", String(def.min));
+    chip.setAttribute("aria-valuemax", String(def.max));
+  }
+  const reading = (value: number) =>
+    `${switched ? def.amountLabel : def.label} ${formatValue(def, value)}`;
   const set = (value: number, commit: boolean) =>
-    knobs.set({ [def.key]: 1, [amountKey]: value }, commit);
+    knobs.set(switched ? { [def.key]: 1, [key]: value } : { [key]: value }, commit);
 
   // The drag captures the pointer, so the click and double-click that follow a press land on the
   // chip whatever was under it: the press records whether a mouse began it on the amount (a touch
@@ -74,7 +115,7 @@ function fader(knobs: Knobs, def: FeatureDef, chip: HTMLButtonElement, status: H
     let press: Press = {
       x: event.clientX,
       y: event.clientY,
-      value: knobs.value(amountKey),
+      value: knobs.value(key),
       scrub: undefined,
     };
     let last: number | undefined;
@@ -99,14 +140,15 @@ function fader(knobs: Knobs, def: FeatureDef, chip: HTMLButtonElement, status: H
     );
   });
   chip.addEventListener("dblclick", () => {
-    if (onAmount) knobs.reset([amountKey]);
+    if (onAmount) knobs.reset([key]);
   });
   chip.addEventListener("keydown", (event) => {
-    const next = chipKey(event, knobs.value(def.key) > 0.5, knobs.value(amountKey), def);
+    const on = !switched || knobs.value(def.key) > 0.5;
+    const next = chipKey(event, on, knobs.value(key), def);
     if (next === undefined) return;
     event.preventDefault();
     set(next, true);
-    status.textContent = `${def.label} ${reading(next)}`;
+    if (status) status.textContent = `${def.label} ${reading(next)}`;
   });
 
   return {
@@ -116,13 +158,21 @@ function fader(knobs: Knobs, def: FeatureDef, chip: HTMLButtonElement, status: H
       dragged = false;
       return kept;
     },
-    sync: () => {
-      const value = knobs.value(amountKey);
+    sync: (note = "") => {
+      const value = knobs.value(key);
       const share = Math.min(1, Math.max(0, (value - def.min) / (def.max - def.min)));
-      fill.style.setProperty("--fill", `${(share * 100).toFixed(2)}%`);
+      setStyle(fill, "--fill", `${(share * 100).toFixed(2)}%`);
       setText(amount, formatValue(def, value));
-      setText(description, `${reading(value)}; arrow keys set it`);
-      chip.title = `${def.help} ${reading(value)}: drag across the chip or use the arrow keys.`;
+      if (description) setText(description, `${reading(value)}; arrow keys set it`);
+      else {
+        setAttr(chip, "aria-valuenow", String(value));
+        setAttr(chip, "aria-valuetext", formatValue(def, value));
+      }
+      setAttr(
+        chip,
+        "title",
+        `${def.help} ${reading(value)}: drag across the chip or use the arrow keys.${note}`,
+      );
     },
   };
 }
@@ -144,7 +194,7 @@ function markBadge(chip: HTMLButtonElement): {
     show: (mark) => {
       setHidden(el, mark === undefined);
       setText(el, mark?.text ?? "");
-      el.dataset.kind = mark?.kind ?? "";
+      setAttr(el, "data-kind", mark?.kind ?? "");
     },
   };
 }
@@ -167,13 +217,7 @@ export function chipGrid(knobs: Knobs, defs: readonly SwitchDef[], marks?: Clima
       if (faded?.keeps(event)) return;
       knobs.set({ [def.key]: knobs.value(def.key) > 0.5 ? 0 : 1 }, true);
     });
-    const dot = h("button", {
-      type: "button",
-      class: "modified",
-      title: "Changed: click to reset",
-      "aria-label": `Reset ${def.label}`,
-    });
-    dot.addEventListener("click", () => knobs.reset(knobKeys(def)));
+    const dot = resetDot(def.label, () => knobs.reset(knobKeys(def)));
     const slot = def.trigger;
     const words = def.kind === "feature" ? `${def.label} ${def.amountLabel}` : def.label;
     const cell = h(
@@ -191,20 +235,18 @@ export function chipGrid(knobs: Knobs, defs: readonly SwitchDef[], marks?: Clima
         : nowButton(def.label, () => knobs.fire(slot), { compact: true, whileOff: true }),
       h("p", { class: "hint" }, `${def.label}: ${def.help}`),
     );
+    if (def.when !== undefined) gate(cell, knobs.chain(def.when), () => knobs.live(def.when));
     syncs.push(() => {
       const on = knobs.value(def.key) > 0.5;
       setAttr(chip, "aria-checked", String(on));
       cell.classList.toggle("on", on);
-      setHidden(cell, !knobs.on(def.when));
       setHidden(dot, !knobs.modified(knobKeys(def)));
-      faded?.sync();
-      if (badge) {
-        const mark = marked[def.key];
-        badge.show(mark);
-        // A fader's sync words its own title; a plain chip's is its help.
-        if (!faded) chip.title = def.help;
-        if (mark) chip.title += ` ${mark.help}`;
-      }
+      // A fader's title words its amount, a plain chip's is its help; a climate mark follows.
+      const mark = badge ? marked[def.key] : undefined;
+      badge?.show(mark);
+      const note = mark ? ` ${mark.help}` : "";
+      if (faded) faded.sync(note);
+      else if (badge) setAttr(chip, "title", `${def.help}${note}`);
     });
 
     if (def.kind === "feature" && def.options) {
@@ -225,10 +267,11 @@ export function chipGrid(knobs: Knobs, defs: readonly SwitchDef[], marks?: Clima
         reset: () => knobs.reset([amountKey]),
       });
       amount.el.classList.add("amount-row");
-      amount.el.dataset.keys = knobKeys(def).join(" ");
-      const shown = reveal(amount.el, () => knobs.value(def.key) > 0.5 && knobs.on(def.when));
-      amountRows.push(shown.el);
-      amountSyncs.push(control.sync, amount.sync, shown.sync);
+      amount.el.dataset.keys = amountKey;
+      // Open while its feature is on (and whatever that hangs on).
+      const chain = [def.key, ...knobs.chain(def.when)];
+      amountRows.push(dependent(amount.el, chain, () => knobs.on(def.key) && knobs.live(def.when)));
+      amountSyncs.push(control.sync, amount.sync);
     }
     return cell;
   });

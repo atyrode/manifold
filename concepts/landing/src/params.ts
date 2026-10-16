@@ -25,7 +25,10 @@ interface Base {
   help: string;
   /** Lab section heading. */
   group: string;
-  /** Only shown while this toggle or feature (same scene) is on. */
+  /**
+   * Takes effect, and shows in the lab, only while this toggle or feature of the same scene is on,
+   * and whatever that one hangs on in turn, to any depth (lab/availability-model.ts switchChain).
+   */
   when?: string;
   /** Slot in the shader's `uTriggers`: adds a "now" button that fires one occurrence at once. */
   trigger?: number;

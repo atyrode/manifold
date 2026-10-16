@@ -25,8 +25,8 @@ import {
   type AlmanacParts,
   type SeasonDef,
 } from "./almanac-model.ts";
-import { row, slider } from "./controls.ts";
-import { drag, h, keyStep, snap, svg, type Built } from "./dom.ts";
+import { row, slider, sliderBehaviour } from "./controls.ts";
+import { gate, h, keyStep, setAttr, setStyle, setText, snap, svg, type Built } from "./dom.ts";
 import { icon, type IconName } from "./icons.ts";
 import { knobIcon, knobKeys, type FeatureDef, type Knobs, type RangeDef } from "./knobs.ts";
 import { isNight, moonPath } from "./nightsky-model.ts";
@@ -238,8 +238,6 @@ function seasonRing(
     "div",
     {
       class: "almanac-ring",
-      role: "slider",
-      tabIndex: 0,
       "aria-label": season.label,
       title:
         stops.length > 0
@@ -254,47 +252,39 @@ function seasonRing(
       : season.kind === "range" || season.kind === "feature"
         ? { min: season.min, max: season.max, count: (season.max - season.min) / season.step }
         : { min: 0, max: 1, count: 1 };
-  ring.setAttribute("aria-valuemin", String(scale.min));
-  ring.setAttribute("aria-valuemax", String(scale.max));
-
-  ring.addEventListener("pointerdown", (event) => {
-    if (event.button !== 0) return;
-    const rect = ring.getBoundingClientRect();
-    const point = (pointer: PointerEvent) => ({
-      x: ((pointer.clientX - rect.left) / rect.width) * WHEEL - MID,
-      y: MID - ((pointer.clientY - rect.top) / rect.height) * WHEEL,
-    });
-    const start = point(event);
-    // The face's middle is no grip (round the dial, the dial takes it).
-    if (Math.hypot(start.x, start.y) < BAND_IN - 24) return;
-    event.preventDefault();
-    ring.focus();
-    ring.classList.add("dragging");
-    let held = "";
-    let patch: Params = {};
-    drag(
-      event,
-      ring,
-      (pointer) => {
+  const syncSlider = sliderBehaviour(ring, {
+    min: scale.min,
+    max: scale.max,
+    now: () => {
+      const params = seasonParams(knobs, season);
+      return season.kind === "choice"
+        ? season.options.findIndex((option) => option.value === params[season.key])
+        : (params[season.kind === "feature" ? `${season.key}-amount` : season.key] ?? 0);
+    },
+    text: () => seasonText(season, seasonParams(knobs, season)),
+    set: (patch, commit) => knobs.set(patch, commit),
+    key: (event) => {
+      const steps = keyStep(event, 1, scale.count);
+      return steps === undefined
+        ? undefined
+        : stepSeason(season, seasonParams(knobs, season), steps);
+    },
+    press: (down) => {
+      const rect = ring.getBoundingClientRect();
+      const point = (pointer: PointerEvent) => ({
+        x: ((pointer.clientX - rect.left) / rect.width) * WHEEL - MID,
+        y: MID - ((pointer.clientY - rect.top) / rect.height) * WHEEL,
+      });
+      const start = point(down);
+      // The face's middle is no grip (round the dial, the dial takes it).
+      if (Math.hypot(start.x, start.y) < BAND_IN - 24) return undefined;
+      return (pointer) => {
         const p = point(pointer);
-        if (Math.hypot(p.x, p.y) < 6) return;
-        patch = seasonPatch(season, Math.atan2(p.y, p.x) / TAU + 0.125);
-        const key = JSON.stringify(patch);
-        if (key === held) return;
-        held = key;
-        knobs.set(patch, false);
-      },
-      () => {
-        ring.classList.remove("dragging");
-        if (held !== "") knobs.set(patch, true);
-      },
-    );
-  });
-  ring.addEventListener("keydown", (event) => {
-    const steps = keyStep(event, 1, scale.count);
-    if (steps === undefined) return;
-    event.preventDefault();
-    knobs.set(stepSeason(season, seasonParams(knobs, season), steps), true);
+        return Math.hypot(p.x, p.y) < 6
+          ? undefined
+          : seasonPatch(season, Math.atan2(p.y, p.x) / TAU + 0.125);
+      };
+    },
   });
 
   const glyphs = SEASON_ICONS.map((name) => icon(name));
@@ -302,6 +292,8 @@ function seasonRing(
   const middle = dial
     ? undefined
     : h("div", { class: "almanac-centre" }, h("span", { class: "almanac-glyph" }, ...glyphs), name);
+  // Round the dial, the ring and the season's chips follow the season's row, a gate on what the
+  // season hangs on (skyDial; lab.css hides them with it); a wheel's group gates the whole wheel.
   const el = h("div", { class: dial ? "almanac" : "almanac alone" }, dial, ring, middle);
   return {
     el,
@@ -310,34 +302,24 @@ function seasonRing(
       const at = yearOf(season, params);
       const text = seasonText(season, params);
       const on = season.kind !== "feature" || knobs.on(season.key);
-      // Round the dial the ring follows its `when` itself; a wheel's group reveals the whole wheel.
-      ring.hidden = dial !== undefined && !knobs.on(season.when);
-      el.classList.toggle("bare", ring.hidden);
       el.classList.toggle("off", !on);
       el.classList.toggle("passing", year !== undefined && knobs.on(year.key));
-      marker.style.display = at === undefined ? "none" : "";
+      setStyle(marker, "display", at === undefined ? "none" : "");
       if (at !== undefined) {
         const turn = (-yearAngle(at) * 180) / Math.PI;
-        marker.setAttribute("transform", `translate(${MID} ${MID}) rotate(${turn.toFixed(1)})`);
-        knob.setAttribute("fill", yearTint(at));
+        setAttr(marker, "transform", `translate(${MID} ${MID}) rotate(${turn.toFixed(1)})`);
+        setAttr(knob, "fill", yearTint(at));
       }
       marker.classList.toggle("off", !on);
       segments.forEach((segment, index) =>
         segment.classList.toggle("on", stops[index]?.value === knobs.value(season.key)),
       );
-      const value =
-        season.kind === "choice"
-          ? season.options.findIndex((option) => option.value === params[season.key])
-          : (params[season.kind === "feature" ? `${season.key}-amount` : season.key] ?? 0);
-      ring.setAttribute("aria-valuenow", String(value));
-      ring.setAttribute("aria-valuetext", text);
-      name.textContent = text;
+      syncSlider();
+      setText(name, text);
       const named = namedYear(season, params);
       const quarter = named === undefined ? -1 : Math.floor((((named % 1) + 1) % 1) * 4);
-      glyphs.forEach((glyph, index) => {
-        glyph.style.display = index === quarter ? "" : "none";
-      });
-      if (named !== undefined) middle?.style.setProperty("--tint", yearTint(named));
+      glyphs.forEach((glyph, index) => setStyle(glyph, "display", index === quarter ? "" : "none"));
+      if (named !== undefined && middle) setStyle(middle, "--tint", yearTint(named));
     },
   };
 }
@@ -365,7 +347,7 @@ function seasonChips(knobs: Knobs, season: SeasonDef): { chips: HTMLElement[]; s
     );
     return {
       chips: [chip],
-      sync: () => chip.setAttribute("aria-checked", String(knobs.on(season.key))),
+      sync: () => setAttr(chip, "aria-checked", String(knobs.on(season.key))),
     };
   }
   if (season.kind !== "choice" || !("at" in season.widget.year))
@@ -387,7 +369,7 @@ function seasonChips(knobs: Knobs, season: SeasonDef): { chips: HTMLElement[]; s
     chips: chips.map(({ chip }) => chip),
     sync: () => {
       for (const { chip, option } of chips)
-        chip.setAttribute("aria-pressed", String(knobs.value(season.key) === option.value));
+        setAttr(chip, "aria-pressed", String(knobs.value(season.key) === option.value));
     },
   };
 }
@@ -529,11 +511,7 @@ export function skyDial(
     "div",
     {
       class: "sky-dial",
-      role: "slider",
-      tabIndex: 0,
       "aria-label": time.label,
-      "aria-valuemin": "0",
-      "aria-valuemax": "1",
       title: "Drag the sun or the moon round; arrow keys step the hour",
     },
     face,
@@ -541,53 +519,42 @@ export function skyDial(
 
   const lit = () => (moon ? knobs.value(`${moon.key}-amount`) : 1);
   const moonShown = () => moon === undefined || knobs.on(moon.key);
-  const setTime = (value: number, commit: boolean) =>
-    knobs.set({ [time.key]: snap(((value % 1) + 1) % 1, time.min, time.max, time.step) }, commit);
-
-  let grabbedMoon = false;
-  let lastValue = knobs.value(time.key);
-  dial.addEventListener("pointerdown", (event) => {
-    if (event.button !== 0) return;
-    event.preventDefault();
-    dial.focus();
-    const rect = face.getBoundingClientRect();
-    const point = (pointer: PointerEvent) => ({
-      x: ((pointer.clientX - rect.left) / rect.width) * 120,
-      y: ((pointer.clientY - rect.top) / rect.height) * 120,
-    });
-    const start = point(event);
-    const moonAt = at(angleOf(knobs.value(time.key)) + Math.PI);
-    grabbedMoon = moonShown() && Math.hypot(start.x - moonAt.x, start.y - moonAt.y) < 12;
-    dial.classList.add("dragging");
-    drag(
-      event,
-      dial,
-      (pointer) => {
-        const p = point(pointer);
-        if (Math.hypot(p.x - C, p.y - C) < 6) return;
-        const angle = Math.atan2(C - p.y, p.x - C) + (grabbedMoon ? Math.PI : 0);
-        lastValue = angle / TAU + 0.25;
-        setTime(lastValue, false);
-      },
-      () => {
-        dial.classList.remove("dragging");
-        setTime(lastValue, true);
-      },
-    );
+  const timeAt = (value: number) => ({
+    [time.key]: snap(((value % 1) + 1) % 1, time.min, time.max, time.step),
   });
-  dial.addEventListener("keydown", (event) => {
-    const value = knobs.value(time.key);
-    const big = 1 / 24 >= time.step ? Math.round(1 / 24 / time.step) * time.step : time.step;
-    let next: number | undefined;
-    if (event.key === "ArrowRight" || event.key === "ArrowUp") next = value + time.step;
-    else if (event.key === "ArrowLeft" || event.key === "ArrowDown") next = value - time.step;
-    else if (event.key === "PageUp") next = value + big * 3;
-    else if (event.key === "PageDown") next = value - big * 3;
-    else if (event.key === "Home") next = 0;
-    else if (event.key === "End") next = 0.5;
-    if (next === undefined) return;
-    event.preventDefault();
-    setTime(next, true);
+  const syncSlider = sliderBehaviour(dial, {
+    min: 0,
+    max: 1,
+    now: () => knobs.value(time.key),
+    text: () => `${clockOf(knobs.value(time.key))}, ${daypartOf(knobs.value(time.key))}`,
+    set: (patch, commit) => knobs.set(patch, commit),
+    key: (event) => {
+      const value = knobs.value(time.key);
+      const big = 1 / 24 >= time.step ? Math.round(1 / 24 / time.step) * time.step : time.step;
+      if (event.key === "ArrowRight" || event.key === "ArrowUp") return timeAt(value + time.step);
+      if (event.key === "ArrowLeft" || event.key === "ArrowDown") return timeAt(value - time.step);
+      if (event.key === "PageUp") return timeAt(value + big * 3);
+      if (event.key === "PageDown") return timeAt(value - big * 3);
+      if (event.key === "Home") return timeAt(0);
+      if (event.key === "End") return timeAt(0.5);
+      return undefined;
+    },
+    press: (down) => {
+      const rect = face.getBoundingClientRect();
+      const point = (pointer: PointerEvent) => ({
+        x: ((pointer.clientX - rect.left) / rect.width) * 120,
+        y: ((pointer.clientY - rect.top) / rect.height) * 120,
+      });
+      const start = point(down);
+      const moonAt = at(angleOf(knobs.value(time.key)) + Math.PI);
+      const grabbedMoon = moonShown() && Math.hypot(start.x - moonAt.x, start.y - moonAt.y) < 12;
+      return (pointer) => {
+        const p = point(pointer);
+        if (Math.hypot(p.x - C, p.y - C) < 6) return undefined;
+        const angle = Math.atan2(C - p.y, p.x - C) + (grabbedMoon ? Math.PI : 0);
+        return timeAt(angle / TAU + 0.25);
+      };
+    },
   });
 
   const ring = season ? seasonRing(knobs, season, year, dial) : undefined;
@@ -620,22 +587,19 @@ export function skyDial(
         [214, 118, 62],
         glow * 0.55,
       );
-      day.setAttribute("fill", `rgb(${Math.round(r)} ${Math.round(g)} ${Math.round(b)})`);
+      setAttr(day, "fill", `rgb(${Math.round(r)} ${Math.round(g)} ${Math.round(b)})`);
       const sunAt = at(angle);
-      sun.setAttribute("transform", `translate(${sunAt.x.toFixed(2)} ${sunAt.y.toFixed(2)})`);
+      setAttr(sun, "transform", `translate(${sunAt.x.toFixed(2)} ${sunAt.y.toFixed(2)})`);
       sun.classList.toggle("below", height < -0.02);
       const moonAt = at(angle + Math.PI);
-      moonGroup.setAttribute(
-        "transform",
-        `translate(${moonAt.x.toFixed(2)} ${moonAt.y.toFixed(2)})`,
-      );
+      setAttr(moonGroup, "transform", `translate(${moonAt.x.toFixed(2)} ${moonAt.y.toFixed(2)})`);
       // The lit side faces the sun.
-      moonBody.setAttribute("transform", `rotate(${((-angle * 180) / Math.PI).toFixed(1)})`);
+      setAttr(moonBody, "transform", `rotate(${((-angle * 180) / Math.PI).toFixed(1)})`);
       moonGroup.classList.toggle("below", height > 0.02);
       moonGroup.classList.toggle("off", !moonShown());
-      moonLit.setAttribute("d", moonPath(5.5, moonShown() ? lit() : 0));
-      clock.textContent = clockOf(value);
-      part.textContent = daypartOf(value);
+      setAttr(moonLit, "d", moonPath(5.5, moonShown() ? lit() : 0));
+      setText(clock, clockOf(value));
+      setText(part, daypartOf(value));
       const density = starKnob
         ? (knobs.value(starKnob.key) - starKnob.min) / (starKnob.max - starKnob.min)
         : 7 / stars.length;
@@ -643,12 +607,12 @@ export function skyDial(
         star.classList.toggle("lit", daylight < 0.4);
         star.classList.toggle("out", index >= Math.round(density * stars.length));
       });
-      dial.setAttribute("aria-valuenow", String(value));
-      dial.setAttribute("aria-valuetext", `${clockOf(value)}, ${daypartOf(value)}`);
+      syncSlider();
       dial.classList.toggle("cycling", cycle !== undefined && knobs.on(cycle.key));
     },
   ];
-  // The season's row stands right under the dial, its chips beside it; the speeds follow.
+  // The season's row stands right under the dial, its chips beside it; the speeds follow. The row
+  // is a gate on what the season hangs on; the ring and the chips follow it (lab.css).
   if (ring && season) {
     const chips = seasonChips(knobs, season);
     side.append(...chips.chips);
@@ -660,12 +624,12 @@ export function skyDial(
       modified: () => knobs.modified(knobKeys(season)),
       reset: () => knobs.reset(knobKeys(season)),
     });
+    seasonRow.el.classList.add("season-row");
+    seasonRow.el.dataset.keys = knobKeys(season).join(" ");
+    if (season.when !== undefined)
+      gate(seasonRow.el, knobs.chain(season.when), () => knobs.live(season.when));
     timeRow.el.append(seasonRow.el);
-    syncs.push(ring.sync, chips.sync, seasonRow.sync, () => {
-      const shown = knobs.on(season.when);
-      seasonRow.el.hidden = !shown;
-      for (const chip of chips.chips) chip.hidden = !shown;
-    });
+    syncs.push(ring.sync, chips.sync, seasonRow.sync);
   }
   for (const speed of [
     cycle && speedRow(knobs, cycle, "day", "clock"),

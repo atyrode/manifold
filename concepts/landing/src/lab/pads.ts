@@ -1,13 +1,15 @@
 // Pads for knobs that are directions or places. A direction pad draws a signed strength (the wind,
 // a current) as an arrow out of calm, a compass pad a heading and its strength as one vector, a
-// position pad a point in the frame. Each is a slider for assistive technology: arrow keys move it
-// (Shift for larger steps), and a drag sets it on release. Gusts riding a direction (widget `gusts`)
-// make its pad the wind card: a gust lane under the arrow switches them, sets their strength and
-// sends one now, and while they are on the arrow puffs out now and then (a sent one surges it).
+// position pad a point in the frame. Each is a slider for assistive technology (sliderBehaviour):
+// arrow keys move it (Shift for larger steps), and a drag sets it on release; on a touch screen a
+// direction pad waits for a drag across, so a swipe down scrolls the panel. Gusts riding a
+// direction (widget `gusts`) make its pad the wind card: a gust lane under the arrow switches them,
+// sets their strength and sends one now, and while they are on the arrow puffs out now and then (a
+// sent one surges it).
 import { formatValue } from "../params.ts";
 import { chipButton } from "./chips.ts";
-import { nowButton, row, segments, slider } from "./controls.ts";
-import { drag, h, keyStep, snap, svg, type Built } from "./dom.ts";
+import { nowButton, row, segments, slider, sliderBehaviour } from "./controls.ts";
+import { h, keyStep, setAttr, setHidden, setStyle, snap, svg, type Built } from "./dom.ts";
 import type { IconName } from "./icons.ts";
 import { knobKeys, type FeatureDef, type Knobs, type RangeDef } from "./knobs.ts";
 
@@ -38,14 +40,7 @@ export function directionPad(
   const flow = h("div", { class: "pad-flow" });
   const pad = h(
     "div",
-    {
-      class: "dir-pad",
-      role: "slider",
-      tabIndex: 0,
-      "aria-label": def.label,
-      "aria-valuemin": String(def.min),
-      "aria-valuemax": String(def.max),
-    },
+    { class: "dir-pad", "aria-label": def.label },
     flow,
     h("span", { class: "pad-axis" }),
     vector,
@@ -57,41 +52,32 @@ export function directionPad(
     const share = Math.round((Math.abs(value) / (value < 0 ? -def.min : def.max)) * 100);
     return `${value < 0 ? "←" : "→"} ${share}%`;
   };
-  const set = (value: number, commit: boolean) =>
-    knobs.set({ [def.key]: snap(value, def.min, def.max, def.step) }, commit);
-
-  pad.addEventListener("pointerdown", (event) => {
-    if (event.button !== 0) return;
-    event.preventDefault();
-    pad.focus();
-    const rect = pad.getBoundingClientRect();
-    let last = knobs.value(def.key);
-    drag(
-      event,
-      pad,
-      (pointer) => {
+  const to = (value: number) => ({ [def.key]: snap(value, def.min, def.max, def.step) });
+  const syncSlider = sliderBehaviour(pad, {
+    min: def.min,
+    max: def.max,
+    now: () => knobs.value(def.key),
+    text: () => {
+      const value = knobs.value(def.key);
+      return `${describe(value)} ${value < 0 ? "to the left" : value > 0 ? "to the right" : ""}`.trim();
+    },
+    set: (patch, commit) => knobs.set(patch, commit),
+    key: (event) => {
+      const delta = keyStep(event, def.step, def.max - def.min);
+      if (delta !== undefined) return to(knobs.value(def.key) + delta);
+      if (event.key === "Home") return to(def.min);
+      if (event.key === "End") return to(def.max);
+      if (event.key === "Delete" || event.key === "0") return to(0);
+      return undefined;
+    },
+    press: () => {
+      const rect = pad.getBoundingClientRect();
+      return (pointer) => {
         const at = ((pointer.clientX - rect.left) / Math.max(1, rect.width)) * 2 - 1;
-        last = at < 0 ? at * -def.min : at * def.max;
-        set(last, false);
-      },
-      () => set(last, true),
-    );
-  });
-  pad.addEventListener("keydown", (event) => {
-    const delta = keyStep(event, def.step, def.max - def.min);
-    const next =
-      delta !== undefined
-        ? knobs.value(def.key) + delta
-        : event.key === "Home"
-          ? def.min
-          : event.key === "End"
-            ? def.max
-            : event.key === "Delete" || event.key === "0"
-              ? 0
-              : undefined;
-    if (next === undefined) return;
-    event.preventDefault();
-    set(next, true);
+        return to(at < 0 ? at * -def.min : at * def.max);
+      };
+    },
+    across: true,
   });
 
   const lane = gusts ? gustLane(knobs, gusts, pad) : undefined;
@@ -121,19 +107,15 @@ export function directionPad(
     sync: () => {
       built.sync();
       lane?.sync();
+      syncSlider();
       const value = knobs.value(def.key);
       const share = value < 0 ? value / -def.min : value / def.max;
-      vector.style.setProperty("--share", Math.abs(share).toFixed(4));
+      setStyle(vector, "--share", Math.abs(share).toFixed(4));
       vector.classList.toggle("back", share < 0);
-      vector.hidden = value === 0;
-      flow.style.setProperty("--strength", Math.abs(share).toFixed(3));
-      flow.style.setProperty("--flow-to", `${share < 0 ? -24 : 24}px`);
+      setHidden(vector, value === 0);
+      setStyle(flow, "--strength", Math.abs(share).toFixed(3));
+      setStyle(flow, "--flow-to", `${share < 0 ? -24 : 24}px`);
       flow.classList.toggle("still", value === 0);
-      pad.setAttribute("aria-valuenow", String(value));
-      pad.setAttribute(
-        "aria-valuetext",
-        `${describe(value)} ${value < 0 ? "to the left" : value > 0 ? "to the right" : ""}`.trim(),
-      );
     },
   };
 }
@@ -190,11 +172,11 @@ function gustLane(knobs: Knobs, gusts: FeatureDef, pad: HTMLElement): Built {
     sync: () => {
       strength.sync();
       const lit = on();
-      chip.setAttribute("aria-checked", String(lit));
+      setAttr(chip, "aria-checked", String(lit));
       el.classList.toggle("on", lit);
       pad.classList.toggle("gusty", lit);
       const share = (knobs.value(amountKey) - gusts.min) / (gusts.max - gusts.min);
-      pad.style.setProperty("--gust", Math.min(1, Math.max(0, share)).toFixed(3));
+      setStyle(pad, "--gust", Math.min(1, Math.max(0, share)).toFixed(3));
     },
   };
 }
@@ -239,33 +221,43 @@ export function compassPad(knobs: Knobs, heading: RangeDef, strength: Strength):
     "div",
     {
       class: "compass-pad",
-      role: "slider",
-      tabIndex: 0,
       "aria-label": `${heading.label}; up and down arrows change the ${power.kind === "feature" ? power.amountLabel : power.label}`,
-      "aria-valuemin": String(heading.min),
-      "aria-valuemax": String(heading.max),
     },
     face,
   );
   const share = (value: number) => (value - power.min) / (power.max - power.min);
   const heading8 = () => HEADINGS[Math.round(knobs.value(heading.key) * 8) % 8] ?? HEADINGS[0];
   const amount = () => formatValue(power, knobs.value(powerKey));
-
-  pad.addEventListener("pointerdown", (event) => {
-    if (event.button !== 0) return;
-    event.preventDefault();
-    pad.focus();
-    const rect = face.getBoundingClientRect();
-    let patch: Record<string, number> = {};
-    drag(
-      event,
-      pad,
-      (pointer) => {
+  const syncSlider = sliderBehaviour(pad, {
+    min: heading.min,
+    max: heading.max,
+    now: () => knobs.value(heading.key),
+    text: () => `toward ${heading8()[0]}, ${amount()}`,
+    set: (patch, commit) => knobs.set(patch, commit),
+    key: (event) => {
+      const big = event.shiftKey ? 2 : 1;
+      if (event.key === "ArrowLeft" || event.key === "ArrowRight") {
+        const turn = knobs.value(heading.key);
+        const next = turn + (event.key === "ArrowLeft" ? heading.step : -heading.step) * big;
+        return {
+          [heading.key]: snap(((next % 1) + 1) % 1, heading.min, heading.max, heading.step),
+        };
+      }
+      if (event.key === "ArrowUp" || event.key === "ArrowDown") {
+        const next =
+          knobs.value(powerKey) + (event.key === "ArrowUp" ? power.step : -power.step) * big;
+        return { [powerKey]: snap(next, power.min, power.max, power.step) };
+      }
+      return undefined;
+    },
+    press: () => {
+      const rect = face.getBoundingClientRect();
+      return (pointer) => {
         const x = ((pointer.clientX - rect.left) / rect.width) * 100 - 50;
         const y = 50 - ((pointer.clientY - rect.top) / rect.height) * 100;
         const turn = (((Math.atan2(y, x) / TAU) % 1) + 1) % 1;
         const reach = Math.min(1, Math.hypot(x, y) / R);
-        patch = {
+        return {
           [heading.key]: snap(turn, heading.min, heading.max, heading.step),
           [powerKey]: snap(
             power.min + reach * (power.max - power.min),
@@ -274,26 +266,8 @@ export function compassPad(knobs: Knobs, heading: RangeDef, strength: Strength):
             power.step,
           ),
         };
-        knobs.set(patch, false);
-      },
-      () => knobs.set(patch, true),
-    );
-  });
-  pad.addEventListener("keydown", (event) => {
-    let patch: Record<string, number> | undefined;
-    const turn = knobs.value(heading.key);
-    const big = event.shiftKey ? 2 : 1;
-    if (event.key === "ArrowLeft" || event.key === "ArrowRight") {
-      const next = turn + (event.key === "ArrowLeft" ? heading.step : -heading.step) * big;
-      patch = { [heading.key]: snap(((next % 1) + 1) % 1, heading.min, heading.max, heading.step) };
-    } else if (event.key === "ArrowUp" || event.key === "ArrowDown") {
-      const next =
-        knobs.value(powerKey) + (event.key === "ArrowUp" ? power.step : -power.step) * big;
-      patch = { [powerKey]: snap(next, power.min, power.max, power.step) };
-    }
-    if (!patch) return;
-    event.preventDefault();
-    knobs.set(patch, true);
+      };
+    },
   });
 
   const keys = [heading.key, powerKey];
@@ -310,19 +284,18 @@ export function compassPad(knobs: Knobs, heading: RangeDef, strength: Strength):
     el: built.el,
     sync: () => {
       built.sync();
+      syncSlider();
       const angle = knobs.value(heading.key) * TAU;
       const length = 8 + share(knobs.value(powerKey)) * (R - 8);
       const x = 50 + Math.cos(angle) * length;
       const y = 50 - Math.sin(angle) * length;
-      shaft.setAttribute("x2", x.toFixed(2));
-      shaft.setAttribute("y2", y.toFixed(2));
-      tip.setAttribute("cx", x.toFixed(2));
-      tip.setAttribute("cy", y.toFixed(2));
+      setAttr(shaft, "x2", x.toFixed(2));
+      setAttr(shaft, "y2", y.toFixed(2));
+      setAttr(tip, "cx", x.toFixed(2));
+      setAttr(tip, "cy", y.toFixed(2));
       const head = (offset: number) =>
         `${(x - Math.cos(angle + offset) * 9).toFixed(2)} ${(y + Math.sin(angle + offset) * 9).toFixed(2)}`;
-      arrow.setAttribute("d", `M${head(0.45)}L${x.toFixed(2)} ${y.toFixed(2)}L${head(-0.45)}`);
-      pad.setAttribute("aria-valuenow", String(knobs.value(heading.key)));
-      pad.setAttribute("aria-valuetext", `toward ${heading8()[0]}, ${amount()}`);
+      setAttr(arrow, "d", `M${head(0.45)}L${x.toFixed(2)} ${y.toFixed(2)}L${head(-0.45)}`);
     },
   };
 }
@@ -357,11 +330,7 @@ export function positionPad(
     "div",
     {
       class: "pos-pad",
-      role: "slider",
-      tabIndex: 0,
       "aria-label": `${label}: left and right arrows move it ${x.label}, up and down ${y.label}`,
-      "aria-valuemin": String(x.min),
-      "aria-valuemax": String(x.max),
     },
     frame,
     across,
@@ -370,45 +339,36 @@ export function positionPad(
   );
   const describe = () =>
     `${formatValue(x, knobs.value(x.key))} · ${formatValue(y, knobs.value(y.key))}`;
-
-  pad.addEventListener("pointerdown", (event) => {
-    if (event.button !== 0) return;
-    event.preventDefault();
-    pad.focus();
-    const rect = pad.getBoundingClientRect();
-    let patch: Record<string, number> = {};
-    pad.classList.add("dragging");
-    drag(
-      event,
-      pad,
-      (pointer) => {
+  const syncSlider = sliderBehaviour(pad, {
+    min: x.min,
+    max: x.max,
+    now: () => knobs.value(x.key),
+    text: () =>
+      `${x.label} ${formatValue(x, knobs.value(x.key))}, ${y.label} ${formatValue(y, knobs.value(y.key))}`,
+    set: (patch, commit) => knobs.set(patch, commit),
+    key: (event) => {
+      const big = event.shiftKey ? 5 : 1;
+      if (event.key === "ArrowLeft" || event.key === "ArrowRight") {
+        const next = knobs.value(x.key) + (event.key === "ArrowRight" ? x.step : -x.step) * big;
+        return { [x.key]: snap(next, x.min, x.max, x.step) };
+      }
+      if (event.key === "ArrowUp" || event.key === "ArrowDown") {
+        const next = knobs.value(y.key) + (event.key === "ArrowUp" ? y.step : -y.step) * big;
+        return { [y.key]: snap(next, y.min, y.max, y.step) };
+      }
+      return undefined;
+    },
+    press: () => {
+      const rect = pad.getBoundingClientRect();
+      return (pointer) => {
         const u = (pointer.clientX - rect.left) / Math.max(1, rect.width);
         const v = 1 - (pointer.clientY - rect.top) / Math.max(1, rect.height);
-        patch = {
+        return {
           [x.key]: snap(x.min + u * (x.max - x.min), x.min, x.max, x.step),
           [y.key]: snap(y.min + v * (y.max - y.min), y.min, y.max, y.step),
         };
-        knobs.set(patch, false);
-      },
-      () => {
-        pad.classList.remove("dragging");
-        knobs.set(patch, true);
-      },
-    );
-  });
-  pad.addEventListener("keydown", (event) => {
-    const big = event.shiftKey ? 5 : 1;
-    let patch: Record<string, number> | undefined;
-    if (event.key === "ArrowLeft" || event.key === "ArrowRight") {
-      const next = knobs.value(x.key) + (event.key === "ArrowRight" ? x.step : -x.step) * big;
-      patch = { [x.key]: snap(next, x.min, x.max, x.step) };
-    } else if (event.key === "ArrowUp" || event.key === "ArrowDown") {
-      const next = knobs.value(y.key) + (event.key === "ArrowUp" ? y.step : -y.step) * big;
-      patch = { [y.key]: snap(next, y.min, y.max, y.step) };
-    }
-    if (!patch) return;
-    event.preventDefault();
-    knobs.set(patch, true);
+      };
+    },
   });
 
   const keys = [x.key, y.key];
@@ -425,17 +385,13 @@ export function positionPad(
     el: built.el,
     sync: () => {
       built.sync();
+      syncSlider();
       const left = `${fx(knobs.value(x.key)).toFixed(3)}%`;
       const top = `${fy(knobs.value(y.key)).toFixed(3)}%`;
-      point.style.left = left;
-      point.style.top = top;
-      up.style.left = left;
-      across.style.top = top;
-      pad.setAttribute("aria-valuenow", String(knobs.value(x.key)));
-      pad.setAttribute(
-        "aria-valuetext",
-        `${x.label} ${formatValue(x, knobs.value(x.key))}, ${y.label} ${formatValue(y, knobs.value(y.key))}`,
-      );
+      setStyle(point, "left", left);
+      setStyle(point, "top", top);
+      setStyle(up, "left", left);
+      setStyle(across, "top", top);
     },
   };
 }

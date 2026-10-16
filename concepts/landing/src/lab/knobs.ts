@@ -3,6 +3,7 @@
 // A planet's knobs reach their planet the same way, through a context of its own (planets.ts).
 import type { ParamDef } from "../params.ts";
 import type { Params } from "../state.ts";
+import { available, switchChain } from "./availability-model.ts";
 import type { LabContext, Patch } from "./dom.ts";
 import { iconFromWords, type IconName } from "./icons.ts";
 
@@ -14,6 +15,8 @@ export class Knobs {
   readonly #ctx: LabContext;
   readonly #defaults: Params;
   readonly #defs: readonly ParamDef[];
+  /** switchChain by `when`, worked out once. */
+  readonly #chains = new Map<string | undefined, readonly string[]>();
 
   constructor(ctx: LabContext, defs: readonly ParamDef[], defaults: Params) {
     this.#ctx = ctx;
@@ -37,8 +40,24 @@ export class Knobs {
     return this.#defs.find((def) => def.key === key);
   }
 
+  /** Whether switch `key` itself is on (its own value, whatever the switches above it say). */
   on(key: string | undefined): boolean {
     return this.#ctx.on(key);
+  }
+
+  /**
+   * The switches a control hanging on `when` waits on, nearest first: `when`, its own `when`, and
+   * so on to any depth (availability-model.ts switchChain).
+   */
+  chain(when: string | undefined): readonly string[] {
+    let chain = this.#chains.get(when);
+    if (!chain) this.#chains.set(when, (chain = switchChain(this.#defs, when)));
+    return chain;
+  }
+
+  /** Whether a control hanging on `when` takes effect: every switch of its chain on. */
+  live(when: string | undefined): boolean {
+    return available(this.chain(when), (key) => this.on(key));
   }
 
   modified(keys: readonly string[]): boolean {

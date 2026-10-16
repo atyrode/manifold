@@ -3,16 +3,7 @@ import { choice, counts, feature, range, toggle, type ParamDef } from "../params
 import { sceneDefs } from "../scenes/index.ts";
 import { defaultsFor, paramDefaults } from "../state.ts";
 import { knobKeys } from "./knobs.ts";
-import {
-  changedCounts,
-  changedKnobs,
-  changedSettings,
-  groupShows,
-  itemShows,
-  titleHolds,
-  type LensGroup,
-  type LensQuery,
-} from "./lens-model.ts";
+import { changedCounts, changedKnobs, changedSettings, type LensGroup } from "./lens-model.ts";
 
 const defs: ParamDef[] = [
   range("terrain", "relief", "relief", 0.5, "help"),
@@ -94,52 +85,5 @@ describe("changedCounts", () => {
         ["terrain", 1],
       ]),
     );
-  });
-});
-
-describe("the lens and the search together", () => {
-  const changed = new Set(["rain", "relief"]);
-  const query = (text: string, lens: boolean): LensQuery => ({ text, lens, changed });
-  const rain = { search: "rain how hard it rains", keys: ["rain", "rain-amount"], held: false };
-  const snow = { search: "snow how hard it snows", keys: ["snow", "snow-amount"], held: false };
-  const clock = { search: "clock freeze time", keys: [], held: false };
-
-  test("nothing narrows: every control and group shows", () => {
-    for (const item of [rain, snow, clock])
-      expect(itemShows(item, false, query("", false))).toBe(true);
-    expect(groupShows(0, false, query("", false))).toBe(true);
-  });
-
-  test("the search alone: a control's words or its group's title", () => {
-    expect(itemShows(rain, false, query("rain", false))).toBe(true);
-    expect(itemShows(snow, false, query("rain", false))).toBe(false);
-    const titleHit = titleHolds("weather", query("weath", false));
-    expect(itemShows(snow, titleHit, query("weath", false))).toBe(true);
-    expect(groupShows(0, titleHit, query("weath", false))).toBe(true);
-    expect(groupShows(0, false, query("weath", false))).toBe(false);
-    expect(titleHolds("weather", query("", false))).toBe(false);
-  });
-
-  test("the lens alone: a control with a changed knob, or the one in hand", () => {
-    expect(itemShows(rain, false, query("", true))).toBe(true);
-    expect(itemShows(snow, false, query("", true))).toBe(false);
-    expect(itemShows({ ...snow, held: true }, false, query("", true))).toBe(true);
-    expect(itemShows(clock, false, query("", true))).toBe(false);
-  });
-
-  test("under the lens a group needs a control to show, its title alone is not enough", () => {
-    const titleHit = titleHolds("weather", query("weather", true));
-    expect(groupShows(0, titleHit, query("weather", true))).toBe(false);
-    expect(groupShows(0, false, query("", true))).toBe(false);
-    expect(groupShows(1, false, query("", true))).toBe(true);
-  });
-
-  test("both: a control must match the words and have changed", () => {
-    expect(itemShows(rain, false, query("rain", true))).toBe(true);
-    expect(itemShows(rain, false, query("snow", true))).toBe(false);
-    expect(itemShows(snow, false, query("snow", true))).toBe(false);
-    expect(itemShows({ ...snow, held: true }, false, query("rain", true))).toBe(false);
-    expect(itemShows(snow, true, query("weather", true))).toBe(false);
-    expect(itemShows(rain, true, query("weather", true))).toBe(true);
   });
 });

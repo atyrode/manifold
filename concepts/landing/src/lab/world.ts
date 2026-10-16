@@ -1,7 +1,7 @@
 // The Controls view's World divider, over the shelf of the scene's shared-world groups (sky,
 // weather, birds: `Blurb.shelf`), with the "keep the world" switch: while it is on, a scene picked by
 // hand opens under the world of the one left (world-model.ts `carryWorld`, applied in lab.ts).
-import { h, type Built } from "./dom.ts";
+import { h, setAttr, type Built } from "./dom.ts";
 import { icon } from "./icons.ts";
 
 /** The preference the switch keeps (lab/prefs.ts `keepWorld`), and how to store it. */
@@ -23,7 +23,7 @@ export function worldDivider(prefs: KeepWorld): Built {
     icon("pin"),
     h("span", {}, "keep"),
   );
-  const sync = () => keep.setAttribute("aria-pressed", String(prefs.keepWorld));
+  const sync = () => setAttr(keep, "aria-pressed", String(prefs.keepWorld));
   keep.addEventListener("click", () => {
     prefs.keepWorld = !prefs.keepWorld;
     prefs.save();

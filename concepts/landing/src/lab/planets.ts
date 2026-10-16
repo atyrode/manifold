@@ -2,10 +2,11 @@
 // of the scene's planets, which picks the one the controls under them shape, a remove button on
 // each, and an add button (up to PLANET_CAP); under them the picked planet's knobs (planetDefs),
 // laid out from their kinds and widgets as a group's are: its placement on the position pad, its
-// switches as chips, the rest as rows, each shown while what it hangs off is on. A planet is edited
-// through a lab context of its own whose knobs are the planet's values, so every control a group
-// uses works on it: each edit writes the whole list back under the scene's one planets key, as one
-// change (one undo step). The rules apart from the DOM: planets-model.ts.
+// switches as chips, the rest as rows, each a gate that shows while what it hangs off is on (dom.ts
+// gate, availability-model.ts). A planet is edited through a lab context of its own whose knobs
+// are the planet's values, so every control a group uses works on it: each edit writes the whole
+// list back under the scene's one planets key, as one change (one undo step). The rules apart from
+// the DOM: planets-model.ts.
 import type { ParamDef } from "../params.ts";
 import {
   encodePlanets,
@@ -19,7 +20,7 @@ import {
 } from "../scenes/planets.ts";
 import { chipGrid } from "./chips.ts";
 import { iconButton, row, textButton } from "./controls.ts";
-import { h, reveal, svg, type Built, type LabContext } from "./dom.ts";
+import { dependent, h, reveal, svg, type Built, type LabContext } from "./dom.ts";
 import { Knobs, type SwitchDef } from "./knobs.ts";
 import { positionPad } from "./pads.ts";
 import {
@@ -150,22 +151,18 @@ function drawn(art: PlanetArt, index: number, picked: boolean, name: string): SV
 /**
  * A planet's controls from its knobs, in their order: the placement pad where its across knob
  * stands, every switch as one grid of chips where the first stands (a count's segments under it),
- * the rest as `knobRow` makes them, each shown while what it hangs off is on.
+ * the rest as `knobRow` makes them, each a gate on what it hangs off.
  */
 function planetControls(knobs: Knobs, defs: readonly ParamDef[], knobRow: PlanetRow): Built {
   const items: { at: number; built: Built }[] = [];
   const placed = new Set<ParamDef>();
-  const shown = (def: ParamDef, built: Built): Built => {
-    if (def.when === undefined) return built;
-    const revealed = reveal(built.el, () => knobs.on(def.when));
-    return {
-      el: revealed.el,
-      sync: () => {
-        built.sync();
-        revealed.sync();
-      },
-    };
-  };
+  const shown = (def: ParamDef, built: Built): Built =>
+    def.when === undefined
+      ? built
+      : {
+          el: dependent(built.el, knobs.chain(def.when), () => knobs.live(def.when)),
+          sync: built.sync,
+        };
   defs.forEach((def, at) => {
     const widget = def.widget;
     if (def.kind !== "range" || widget?.kind !== "position") return;

@@ -8,14 +8,13 @@
 // chip (chips.ts: a click switches it, a drag across or the arrow keys set how much; the shooting
 // stars keep their "now", which falls on the drawing too); then the planets (planets.ts): a chip
 // each, add and remove, and the picked planet's own controls. While the scene's clock stands in
-// daylight (or the day passes), "See it at night" sets a night hour as one change.
-// nightsky-model.ts holds the rules.
-import { formatValue } from "../params.ts";
+// daylight (or the day passes), "See it at night" sets a night hour as one change. A part that
+// hangs on another switch (`when`) is drawn while that one is on, and its control is a gate the
+// Controls view shows (availability-model.ts). nightsky-model.ts holds the rules.
 import { PLANETS_KEY } from "../scenes/planets.ts";
-import { chipKey, pace, pressMove, type Press } from "./chips-model.ts";
-import { chipGrid } from "./chips.ts";
-import { row, textButton } from "./controls.ts";
-import { drag, h, snap, svg, type Built } from "./dom.ts";
+import { chipGrid, fader } from "./chips.ts";
+import { resetDot, row, textButton } from "./controls.ts";
+import { gate, h, setAttr, setHidden, setStyle, setText, svg, type Built } from "./dom.ts";
 import { tileStep } from "./flyway-model.ts";
 import { icon } from "./icons.ts";
 import { knobIcon, knobKeys, type FeatureDef, type Knobs, type RangeDef } from "./knobs.ts";
@@ -126,7 +125,7 @@ function moonArt(): Art {
         lit,
       ),
     ),
-    sync: (state) => lit.setAttribute("d", moonPath(MOON.r, state.on ? state.amount : 0)),
+    sync: (state) => setAttr(lit, "d", moonPath(MOON.r, state.on ? state.amount : 0)),
   };
 }
 
@@ -263,7 +262,12 @@ function artOf(part: Exclude<NightPart, { name: "stars" }>, id: string): Art {
   }
 }
 
-/** The drawing's layers, back to front: those behind the planets, then those in front of them. */
+/**
+ * The drawing's layers, back to front: the parts behind the planets, then those in front of them.
+ * An aurora's curtains sway all the time: where the night has one, they get a drawing of their own
+ * over what is behind them and under what is in front (nightSection), so their animation repaints
+ * that layer alone.
+ */
 const LAYERS: Readonly<Record<"behind" | "front", readonly Exclude<NightPartName, "stars">[]>> = {
   behind: ["milkyWay", "aurora", "constellations"],
   front: ["meteors", "moon"],
@@ -271,85 +275,20 @@ const LAYERS: Readonly<Record<"behind" | "front", readonly Exclude<NightPartName
 
 // ---- the controls ------------------------------------------------------------------------------
 
-/** A control's "changed" dot, which resets its keys. */
-function changedDot(knobs: Knobs, label: string, keys: readonly string[]): HTMLButtonElement {
-  const dot = h("button", {
-    type: "button",
-    class: "modified",
-    title: "Changed: click to reset",
-    "aria-label": `Reset ${label}`,
-  });
-  dot.addEventListener("click", () => knobs.reset(keys));
-  return dot;
-}
-
 /**
- * The stars' density as a fader chip without a switch (the stars are always out): the amount fills
- * the chip and shows on it on hover, focus and drag; a drag across sets it and arrow keys step it
- * (chips-model.ts); double-clicking the amount resets it.
+ * The stars' density as a fader chip without a switch (the stars are always out): chips.ts's fader
+ * on a range, so the amount fills the chip and shows on it on hover, focus and drag, a drag across
+ * sets it and arrow keys step it, double-clicking the amount resets it.
  */
 function starsChip(knobs: Knobs, def: RangeDef): Built {
-  const fill = h("span", { class: "chip-fill" });
-  const amount = h("span", { class: "chip-amount" });
   const chip = h(
     "div",
-    {
-      class: "chip fader always",
-      role: "slider",
-      tabIndex: 0,
-      "aria-label": def.label,
-      "aria-valuemin": String(def.min),
-      "aria-valuemax": String(def.max),
-    },
-    fill,
+    { class: "chip always", "aria-label": def.label },
     h("span", { class: "chip-icon" }, icon(knobIcon(def))),
     h("span", { class: "chip-label" }, def.label),
-    amount,
   );
-  const set = (value: number, commit: boolean) => knobs.set({ [def.key]: value }, commit);
-  let onAmount = false;
-  chip.addEventListener("pointerdown", (event) => {
-    onAmount =
-      event.pointerType === "mouse" &&
-      event.target instanceof Node &&
-      amount.contains(event.target);
-    if (event.button !== 0) return;
-    const perPixel = pace(def, chip.getBoundingClientRect().width);
-    let press: Press = {
-      x: event.clientX,
-      y: event.clientY,
-      value: knobs.value(def.key),
-      scrub: undefined,
-    };
-    let last: number | undefined;
-    drag(
-      event,
-      chip,
-      (pointer) => {
-        press = pressMove(press, pointer.clientX, pointer.clientY, perPixel, pointer.shiftKey, def);
-        if (!press.scrub) return;
-        chip.classList.add("dragging");
-        const value = snap(press.scrub.value, def.min, def.max, def.step);
-        if (value === last) return;
-        last = value;
-        set(value, false);
-      },
-      () => {
-        chip.classList.remove("dragging");
-        if (last !== undefined) set(last, true);
-      },
-    );
-  });
-  chip.addEventListener("dblclick", () => {
-    if (onAmount) knobs.reset([def.key]);
-  });
-  chip.addEventListener("keydown", (event) => {
-    const next = chipKey(event, true, knobs.value(def.key), def);
-    if (next === undefined) return;
-    event.preventDefault();
-    set(next, true);
-  });
-  const dot = changedDot(knobs, def.label, [def.key]);
+  const faded = fader(knobs, def, chip, undefined);
+  const dot = resetDot(def.label, () => knobs.reset([def.key]));
   const cell = h(
     "div",
     {
@@ -361,18 +300,12 @@ function starsChip(knobs: Knobs, def: RangeDef): Built {
     chip,
     h("p", { class: "hint" }, `${def.label}: ${def.help}`),
   );
+  if (def.when !== undefined) gate(cell, knobs.chain(def.when), () => knobs.live(def.when));
   return {
     el: cell,
     sync: () => {
-      const value = knobs.value(def.key);
-      const text = formatValue(def, value);
-      fill.style.setProperty("--fill", `${(shareOf(def, value) * 100).toFixed(2)}%`);
-      amount.textContent = text;
-      chip.setAttribute("aria-valuenow", String(value));
-      chip.setAttribute("aria-valuetext", text);
-      chip.title = `${def.help} ${def.label} ${text}: drag across the chip or use the arrow keys.`;
-      cell.hidden = !knobs.on(def.when);
-      dot.hidden = !knobs.modified([def.key]);
+      faded.sync();
+      setHidden(dot, !knobs.modified([def.key]));
     },
   };
 }
@@ -451,16 +384,16 @@ function moonRow(knobs: Knobs, def: FeatureDef): Built {
   });
   built.el.classList.add("night-moon-row");
   built.el.dataset.keys = knobKeys(def).join(" ");
+  if (def.when !== undefined) gate(built.el, knobs.chain(def.when), () => knobs.live(def.when));
   return {
     el: built.el,
     sync: () => {
       built.sync();
       const at = chosen();
       tiles.forEach(({ button }, index) => {
-        button.setAttribute("aria-checked", String(index === at));
-        button.tabIndex = index === at ? 0 : -1;
+        setAttr(button, "aria-checked", String(index === at));
+        setAttr(button, "tabindex", index === at ? "0" : "-1");
       });
-      built.el.hidden = !knobs.on(def.when);
     },
   };
 }
@@ -483,8 +416,8 @@ function nightButton(knobs: Knobs, clock: NightClock): Built {
   return {
     el,
     sync: () => {
-      el.hidden = patch() === undefined;
-      note.textContent = cycling() ? "The day is passing." : "Daytime in the scene.";
+      setHidden(el, patch() === undefined);
+      setText(note, cycling() ? "The day is passing." : "Daytime in the scene.");
     },
   };
 }
@@ -519,14 +452,7 @@ export function nightSection(
   }));
   const layered = (names: readonly NightPartName[]) =>
     names.flatMap((name) => drawn.flatMap(({ part, art }) => (part.name === name ? [art.el] : [])));
-  const drawing = svg(
-    "svg",
-    {
-      class: "night-art",
-      viewBox: `0 0 ${WIDTH} ${HEIGHT}`,
-      "aria-hidden": "true",
-      focusable: "false",
-    },
+  const layers: SVGElement[] = [
     svg(
       "defs",
       {},
@@ -560,10 +486,33 @@ export function nightSection(
       class: "night-ground",
       d: "M0 80V71C26 68.5 54 72 90 70.5S150 68.5 186 71 222 69 240 70V80Z",
     }),
+  ];
+  // An aurora's layer alone between what is behind it and what is in front, three drawings over
+  // one another; without one, a single drawing.
+  const aurora = drawn.find(({ part }) => part.name === "aurora")?.art.el;
+  const at = aurora ? layers.indexOf(aurora) : -1;
+  const stack =
+    aurora && at >= 0 ? [layers.slice(0, at), [aurora], layers.slice(at + 1)] : [layers];
+  const scene = h(
+    "div",
+    { class: "night-scene" },
+    ...stack.map((children) =>
+      svg(
+        "svg",
+        {
+          class: "night-art",
+          viewBox: `0 0 ${WIDTH} ${HEIGHT}`,
+          "aria-hidden": "true",
+          focusable: "false",
+        },
+        ...children,
+      ),
+    ),
   );
-  // A click on a drawn part switches it, on a planet picks it (the controls under the drawing are
-  // the way in for the keyboard).
-  drawing.addEventListener("click", (event) => {
+  // A click on a drawn part switches it, on a planet picks it, whichever drawing holds it (the
+  // drawings over the first let a click through but on their parts and planets); the controls
+  // under the drawing are the way in for the keyboard.
+  scene.addEventListener("click", (event) => {
     const target = event.target instanceof Element ? event.target : undefined;
     const planet = target?.closest<SVGElement>("[data-planet]")?.dataset.planet;
     if (planets && planet !== undefined) {
@@ -640,7 +589,7 @@ export function nightSection(
     label: "Night sky",
     help: HELP,
     icon: "stars",
-    block: h("div", { class: "night-scene" }, drawing),
+    block: scene,
     readout: () => nightSummary(parts, stateOf, planetCount()),
     modified: () => knobs.modified(keys) || planetCount() > 0,
     reset: () => knobs.reset(keys, planets ? { [PLANETS_KEY]: "" } : {}),
@@ -688,8 +637,8 @@ export function nightSection(
         const state = stateOf(part);
         const share = shareOf(part.def, state.amount);
         art.el.classList.toggle("on", state.on);
-        art.el.style.setProperty("--level", share.toFixed(3));
-        art.el.style.display = knobs.on(part.def.when) ? "" : "none";
+        setStyle(art.el, "--level", share.toFixed(3));
+        setStyle(art.el, "display", knobs.live(part.def.when) ? "" : "none");
         art.sync?.(state, share);
       }
     },

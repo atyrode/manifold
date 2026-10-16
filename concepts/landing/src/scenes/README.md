@@ -45,8 +45,9 @@ not followed), `uMouse` (raw pointer: xy in uv, z = button held, w = scene time 
 `uBg` (the page background), `uParams[]`, `uTriggers[]`, `sinceTrigger(slot)`, `uSim0..uSim3` +
 `uSimOn` (textures from the scene's sim), `uWeather` (x: how wet the world is, y: how much snow
 lies, both 0..1; see "Weather in the world"), `hash12`, `vnoise`, `fbm`, `rotate`, `rotateAbout`,
-`segmentDistance`, `markDistance` (the Manifold M in mark units: x in [-0.47, 0.47], y in
-[-0.5, 0.5]), `starfield`, `threshold`, `LUMA`, `TAU`, and (`[...]` marks an overload):
+`segmentDistance` (a zero-length segment gives the distance to its end, as the TS twin in `mark.ts`
+does), `markDistance` (the Manifold M in mark units: x in [-0.47, 0.47], y in [-0.5, 0.5]),
+`starfield`, `threshold`, `LUMA`, `TAU`, and (`[...]` marks an overload):
 
 ```glsl
 float cellTh;                                         // this cell's threshold(cell), set by main before the entry: read only
@@ -61,6 +62,9 @@ float inkOf(vec3 col, float gain, float gamma[, vec2 paper]); // night: gain * l
 Shade shadeOf(vec3 col, float ink, float accent);     // rgb = source = col, no shimmer
 
 vec2 hash22(vec2 p);                                  // its own hash, not a hash12 pair: swapping one for a pair moves seeded positions
+vec4 vnoiseLattice(vec2 i);                           // vnoise's four lattice values round cell i = floor(p)
+vec4 vnoiseLatticeNext(vec4 before, vec2 i);          // cell i's, from the cell before it in x: two hashes, not four
+float vnoiseFrom(vec4 lattice, vec2 f);               // vnoise from its cell's lattice values at f = fract(p), bit for bit
 vec3 vnoiseD(vec2 p);                                 // vnoise with its gradient (x value, yz d/dp)
 vec2 vnoise1(float x, float seed);                    // 1D value noise 0..1 and d/dx
 float fbm3(vec2 p);                                   // three octaves of vnoise, 0..1
@@ -69,6 +73,7 @@ vec2 fbmLod(vec2 p, float foot, int octaves);         // fbm whose octaves fade 
 float smoothfall(float a, float b, float x);          // 1 at x <= b .. 0 at x >= a: write this, never smoothstep with edge0 > edge1
 float softFill(float d, float aa);                    // 1 - smoothstep(-aa, aa, d): an SDF's inside, soft
 float bell(float x);                                  // exp(-x * x)
+float smin(float a, float b, float k);                // polynomial smooth minimum: min(a, b) rounded over a blend k wide
 float sdBox(vec2 p, vec2 halfSize, float r);          // rounded box (r = 0: sharp corners)
 float sdTaperCapsule(vec2 p, vec2 a, vec2 b, float ra, float rb[, out float t]); // t: position along a..b
 float sdEllipse(vec2 p, vec2 r);
@@ -138,8 +143,9 @@ Every scene makes the passage its own, in the world rather than by fading:
     `passageOut()` reaches 1 (`pout²`, `pout³`; never an ease-in-out such as `smoothstep`, and
     never motion that finishes early and then holds);
   - an entrance arrives moving and settles, at or near full speed at `passageIn()` 0 and at rest at
-    1 (`1 - (1 - pin)²`, a settle with a small overshoot; never a start from rest or a hold before
-    the motion begins); light and fade accents may still be staged.
+    1 (`1 - (1 - pin)²`, or `passageSettle(pin, s)` from `common`: a settle overshooting by as much
+    as s sets, about 5% at 1.2; never a start from rest or a hold before the motion begins); light
+    and fade accents may still be staged.
   - `bun concepts/landing/verify.ts passageSpeeds` measures it on the real renderer at motion 0:
     the picture change over the last steps of the exit and the first steps of the entrance as a
     share of the passage's fastest step (`LANDING_PASSAGE_SCENES=a,b` limits it to some scenes).
@@ -288,6 +294,8 @@ reset, shuffle or presets:
   focus and drag. A click toggles it, a drag across sets the amount and switches it on, arrow keys
   step it (Shift a tenth of the range); double-clicking the value resets the amount. A row's readout
   over a slider scrubs it (drag across, Shift finer); double-clicking a readout or label resets it.
+  On a touch screen these and the one-way pads (a direction, the birds' strip, a mix's dividers)
+  wait for a drag across, so a swipe down scrolls the panel.
 - `{ kind: "night", part }`: the Night sky section. `skyComponentKnobs` sets it on `stars` (a
   range), `moon`, `milkyWay`, `constellations` and `meteors`, `weatherKnobs` on `aurora`
   (features); every one a group holds gathers into one section at the first, headed "Night sky"
@@ -295,7 +303,9 @@ reset, shuffle or presets:
   `SceneDef.planets` names the group (`src/lab/planets.ts`, rules in `planets-model.ts`). A drawn
   night shows each part the scene has in its state, dim and dashed while off (a click on a drawn
   part switches it), and each planet where it stands, as big as its size, in its palette's tint
-  with its ring and moons, an orbiting one over its dashed path (a click on one picks it). Under it
+  with its ring and moons, an orbiting one over its dashed path (a click on one picks it). With an
+  aurora the drawing is three layers, the curtains alone in the middle one so their sway repaints
+  that layer only, and a click reaches whatever part or planet is under it. Under it
   one control per part: the moon's phases as drawn moons with "off" (a radio group), and a fader
   chip for each other part, the stars' without a switch, the shooting stars' with their "now".
   Then the planets: a chip for each (a click picks it, its × removes it) and "+ planet" (up to the
@@ -347,6 +357,14 @@ scene's subject (lake's aurora) in a group of its own.
   change (rules in `src/lab/lens-model.ts`). A control holds the knobs its element, or the widget
   round it, lists in `data-keys`: the inspector's `place` tags a widget with its knob's keys, so tag
   one that holds several knobs with all of theirs.
+- A knob with `when` hangs on that switch and on whatever the switch hangs on, to any depth: it
+  takes effect, and its control shows, while every one of them is on (`switchChain` in
+  `src/lab/availability-model.ts`; a `when` names a toggle or feature of the same scene, without a
+  loop, as `availability-model.test.ts` checks for every scene). Its control is a gate (`gate` in
+  `src/lab/dom.ts`), and after every sync the Controls view alone decides what shows. A change
+  behind a switch that is off still counts under the lens: the lens and the search show it dormant
+  (dimmed, still in reach) beside the switches it waits on, never folded away. Folded groups and
+  closed controls leave the tab order.
 
 The Scenes view's thumbnails are committed files, `concepts/landing/thumbs/<id>.webp`: each scene
 at its defaults, settled, dithered at 240 x 150 as the page draws it. After changing how a scene
@@ -506,7 +524,7 @@ float meteorAge(float tm, float rate, int slot, out float seed); // seconds sinc
 float meteorStreak(vec2 q, vec4 field, float age, float seed, float foot); // 0..1 coverage; starts in field (xy corner, zw size)
 const vec3 METEOR_TINT;                                          // the streak's cool white, times hardEdge(coverage)
 
-// Weather under a closed canopy (canopy.ts; bamboo, forest). The scene keeps its tint, fill, shelter, rays and mist.
+// Weather under a closed canopy (canopy.ts; bamboo, forest). The scene keeps its tint, fill, shelter and mist.
 struct CanopyWeather { Sky sky; float rain; float overcast; float cloud; vec2 keySide; float slant; };
 CanopyWeather canopyWeather(Sky clear, float rain);       // the sky under the rain's cloud (sun and moon gone from rain 0.25, ambient
                                                           // toward the deck's grey), overcast 0..1, the deck's luminance, the key
@@ -515,6 +533,15 @@ vec3 canopyRaySources(vec3 base, float spread, float seed, float aspect, float t
 float canopyGap(vec2 p, float wind, float seed, vec3 raySrc); // 0 under the leaves .. 1 open overhead (always under a shaft), leaning with the wind
 vec3 canopyGapSky(CanopyWeather w, vec3 washed, vec3 dir, float stars, vec2 p, float wind, float seed, float deck);
                                                           // the sky in a gap: the scene's washed sky, stars while clear, the rain deck (gain deck) with shafts
+
+// The grove under it (canopy.ts, opt-in: put canopyGroveGlsl in the scene's GLSL), shaped by the scene's constants.
+vec2 canopyRays(vec2 p, float tm, vec3 raySrc, float slant, float seed, vec2 width); // three shafts: x how much p lies in one, y their glow;
+                                                          // width.x at the gap, widening by width.y (+ up to 0.04) per unit fallen
+struct CanopyCrowns { vec3 edge; vec2 grain; vec2 fine; vec3 rise; vec3 gaps; vec4 opening; }; // a canopy's shape (see canopy.ts)
+vec3 canopyCrowns(vec2 q, vec2 p, CanopyCrowns c, float seed, bool shafts, vec3 raySrc, vec2 keySide);
+                                                          // the canopy overhead: x cover, y the leaves' noise, z the key light from behind
+struct CanopyDrips { float horizon; float eye; float width; float share; vec2 tip; }; // the view and the dripping tips' columns
+float canopyDrip(vec2 q, float tm, float amount, float z, float salt, CanopyDrips drips); // drops off the canopy at depth z: coverage
 
 // The Milky Way (milkyway.ts, opt-in: put milkyWayGlsl in the scene's GLSL, see "Opt-in components").
 struct MilkyWayBand { vec3 pole; vec3 across; };          // where a band runs; declare it once: const MilkyWayBand X = MILKY_WAY_BAND(pole);
@@ -559,19 +586,20 @@ aurora, meteors and the canopy weather (see "Shared libraries"). A component few
 a GLSL string of its own that each consumer interpolates into its `glsl`, at the top or at least
 before the functions that call it, so no other program pays for it:
 
-| String          | File                           | Composed by                                                                | See                                  |
-| --------------- | ------------------------------ | -------------------------------------------------------------------------- | ------------------------------------ |
-| `worldGlsl`     | `src/shaders/lib/world.ts`     | meadow, shore, dunes (it composes `birdsGlsl` and `milkyWayGlsl` itself)   | "World layers"                       |
-| `birdsGlsl`     | `src/shaders/lib/birds.ts`     | aurora, country, falls, lake, lanterns, skyward, swell, train; the world's | "Birds"                              |
-| `milkyWayGlsl`  | `src/shaders/lib/milkyway.ts`  | campfire, lake; the world's                                                | the Milky Way row below              |
-| `plantsGlsl`    | `src/shaders/lib/plants.ts`    | falls, fireflies, garden, pond, tidepool                                   | "Rooted plants"                      |
-| `planetGlsl`    | `src/shaders/lib/planet.ts`    | orbit, campfire, mobile; `skyGiant` behind its gate (`SKY_GIANT`)          | "The giant planet"                   |
-| `figuresGlsl`   | `src/shaders/lib/figures.ts`   | country                                                                    | "Figures, livestock and buildings"   |
-| `livestockGlsl` | `src/shaders/lib/livestock.ts` | country                                                                    | "Figures, livestock and buildings"   |
-| `buildingsGlsl` | `src/shaders/buildings.ts`     | country                                                                    | "Figures, livestock and buildings"   |
-| `terrainGlsl`   | `src/shaders/lib/terrain.ts`   | country                                                                    | `TerrainBuilder` under "Simulations" |
-| `fieldsGlsl`    | `src/shaders/lib/fields.ts`    | country                                                                    | the fields row below                 |
-| `treesGlsl`     | `src/shaders/lib/trees.ts`     | country                                                                    | the trees row below                  |
+| String            | File                           | Composed by                                                                | See                                  |
+| ----------------- | ------------------------------ | -------------------------------------------------------------------------- | ------------------------------------ |
+| `worldGlsl`       | `src/shaders/lib/world.ts`     | meadow, shore, dunes (it composes `birdsGlsl` and `milkyWayGlsl` itself)   | "World layers"                       |
+| `birdsGlsl`       | `src/shaders/lib/birds.ts`     | aurora, country, falls, lake, lanterns, skyward, swell, train; the world's | "Birds"                              |
+| `milkyWayGlsl`    | `src/shaders/lib/milkyway.ts`  | campfire, lake; the world's                                                | the Milky Way row below              |
+| `canopyGroveGlsl` | `src/shaders/lib/canopy.ts`    | bamboo, forest                                                             | "Shared libraries" (the canopy)      |
+| `plantsGlsl`      | `src/shaders/lib/plants.ts`    | falls, fireflies, garden, pond, tidepool                                   | "Rooted plants"                      |
+| `planetGlsl`      | `src/shaders/lib/planet.ts`    | orbit, campfire, mobile; `skyGiant` behind its gate (`SKY_GIANT`)          | "The giant planet"                   |
+| `figuresGlsl`     | `src/shaders/lib/figures.ts`   | country                                                                    | "Figures, livestock and buildings"   |
+| `livestockGlsl`   | `src/shaders/lib/livestock.ts` | country                                                                    | "Figures, livestock and buildings"   |
+| `buildingsGlsl`   | `src/shaders/buildings.ts`     | country                                                                    | "Figures, livestock and buildings"   |
+| `terrainGlsl`     | `src/shaders/lib/terrain.ts`   | country                                                                    | `TerrainBuilder` under "Simulations" |
+| `fieldsGlsl`      | `src/shaders/lib/fields.ts`    | country                                                                    | the fields row below                 |
+| `treesGlsl`       | `src/shaders/lib/trees.ts`     | country                                                                    | the trees row below                  |
 
 - **Fields** (`fieldsGlsl`): `fieldHold` and `fieldRows` (row profiles that settle to their mean
   where the dither cannot hold them) and `fieldFlowerMaterial` (meadow, lavender and sunflower
@@ -615,8 +643,11 @@ chimney smoke, the chalk M, the clouds' shadows tier, the water's ripples tier a
 its rain and snow as the climate makes them of the knobs at the date, `climatePrecip` over the cold
 of `climateCold`, and the bales while the date lies in their stretch of the year, both at any date
 while the year passes; `countryFeaturesAll` and `countrySeason` check each gated setting), `meadow`
-(its wildflowers, and the world's gates, `worldFeatures` and `WORLD_ALL`: see "World layers"), and
-`shore` and `dunes` (the world's gates alone).
+(its wildflowers, and the world's gates, `worldFeatures` and `WORLD_ALL`: see "World layers"),
+`shore` and `dunes` (the world's gates alone), and `orbit` (`orbitFeatures` and `ORBIT_ALL`: the
+figures in its stars, the planet's aurora and city lights, the M's lights, the moons and the ring
+system, all off at its defaults; its storms, shooting stars and captured meteors stay in, as a
+"now" shows them, and so do the cloud decks the storms flash in).
 
 Library gates are setting-keyed features the shared libraries own: code a library compiles in only
 while it shows (`src/shaders/index.ts`): the constellations, `SKY_FIGURES`, while their night
@@ -702,7 +733,9 @@ The components and their three parts:
 | Giant planet   | `planetKnobs({ prefix, clouds, storms, aurora, lights, daycycle, moons, ring })` (`src/scenes/planet.ts`)            | opt-in `planetGlsl`                                 | a hero composes the parts (`planetBelts`, `planetClouds`, `planetAurora`, `planetCityLights`, `planetRingBands`, `planetMoonDisc`...) as coverage and light; a decoration draws the whole giant over an RGB sky (`planetOver`); see "The giant planet"                               |
 
 Bamboo and Forest compose the canopy weather under their leaves, each with its own tint on the
-washed sky, deck gain (1.3, 1.25), shelter (half, 45% of the rain under the leaves) and ray bases.
+washed sky, deck gain (1.3, 1.25), shelter (half, 45% of the rain under the leaves) and ray bases;
+and the grove under it (`canopyGroveGlsl`): the shafts, the crowns overhead and the drips off the
+leaves, each in the scene's own shapes (`FOREST_CROWNS`, `BAMBOO_DRIPS`, the shafts' widths).
 
 Frost composes the four sky components through its window (`frost/index.ts`, `frost/shader.ts`):
 
@@ -960,7 +993,7 @@ struct PlanetRingBands { float inner; float outer; float count; float spacing; f
 float planetRingBands(vec2 plane, PlanetRingBands b, float tm, float foot, out float band); // the banded system's cover (orbit)
 float planetRingThin(float rho, out float streak);               // a thin streaked ring with a gap (campfire)
 struct PlanetMoon { float rate; float phase; float distance; float size; float tilt; float roll; };
-PlanetMoon planetMoon(int i, PlanetRing frame);                  // moon 0..2 of a family orbiting near the plane `frame`
+PlanetMoon planetMoon(int i, PlanetRing frame);                  // moon 0..2 of a family orbiting near the plane `frame`, at Kepler's rates
 vec3 planetOrbit(float angle, float radius, float tilt, float roll); // a point on an inclined orbit
 bool planetBehind(vec3 p);                                       // hidden behind the disc
 vec3 planetMoonAt(PlanetMoon m, float tm, float swing, float spread); // its centre (a passage may swing and spread it)
@@ -1503,7 +1536,9 @@ a scene builds a fresh sim that never replays an old press. Sims keep no copy of
 Helpers in `src/sims/` (each file's header has the full API and a usage example):
 
 - `DataTexture` (`texture.ts`): r8/rg8/rgba8/r16f/rg16f/rgba16f from typed arrays (rows bottom to
-  top), or `uploadImage(canvas)` for an rgba8 texture drawn with Canvas 2D (top row = uv.y 1).
+  top), whole (`upload`) or only the rectangle that changed (`uploadRegion(data, x, y, w, h)`, read
+  in place from the whole array: the harmonograph's ink, the Chladni plate's sand), or
+  `uploadImage(canvas)` for an rgba8 texture drawn with Canvas 2D (top row = uv.y 1).
 - `TrailField` (`trail.ts`): where the pointer has been, fading; for stirring and melting.
 - `VerletSystem` and `PointTexture` (`verlet.ts`): 3D XPBD chains, nets and orb webs (compliance
   in physical units, so a thread is as stiff at any substep; an undamped swing keeps its energy),
@@ -1615,9 +1650,11 @@ Helpers in `src/sims/` (each file's header has the full API and a usage example)
   `BIN_PAGE` entries, so a dense patch never drops one. Read in GLSL with `binListsGlsl`.
 - `SpeckMap` and `followCell` (`specks.ts`): creatures a cell or a few across drawn into an rg8 map,
   one per dither cell with its depth, the nearest winning the cell whatever the plotting order, so
-  the shader hides each behind only what stands in front of it; `followCell` keeps a hovering speck
-  from flickering between two cells (bees). Not for a fixed slot per lattice cell (fireflies), a
-  list the shader walks (lanterns), or per-tile lists sorted nearest first (street).
+  the shader hides each behind only what stands in front of it; `upload(texture)` sends only the
+  8 × 8-cell tiles whose cells were plotted or cleared since the last one (a few KB a frame for the
+  bees' 80-odd specks, not the 1 MB map); `followCell` keeps a hovering speck from flickering
+  between two cells (bees). Not for a fixed slot per lattice cell (fireflies), a list the shader
+  walks (lanterns), or per-tile lists sorted nearest first (street).
 - `isShy`, `facing`, `atEase` and `stepShrink` (`temperament.ts`): how a creature takes the pointer
   coming near, curious ones turning to look and shy ones (a share of the population) shrinking away
   and coming back out a while after it has gone (forest's kodama).
@@ -1625,10 +1662,11 @@ Helpers in `src/sims/` (each file's header has the full API and a usage example)
   a plane and have sunk into one another past a given share, a limited distance per step, coincident
   ones included; for soft-contact crowds (lanterns).
 - `HeadlessSim` and `HeadlessGl` (`headless.ts`): the one harness for sim regressions. `HeadlessGl`
-  is a stand-in context that takes a sim's `DataTexture` calls and keeps each texture's size and last
-  upload (anything else throws, naming the call); `HeadlessSim` drives a scene's real sim on it (or
-  on a real context) with frames built as the renderer builds them: knobs over their defaults, "now"
-  presses by knob, pointer, passage. `step(frame).upload(slot)` is what the shader would sample.
+  is a stand-in context that takes a sim's `DataTexture` calls and keeps each texture's size and its
+  data as uploaded, sub-rectangles included (anything else throws, naming the call); `HeadlessSim`
+  drives a scene's real sim on it (or on a real context) with frames built as the renderer builds
+  them: knobs over their defaults, "now" presses by knob, pointer, passage.
+  `step(frame).upload(slot)` is what the shader would sample.
   Tests use it rather than a stand-in context of their own (dew, fractal, sand table, prism...).
 - `Errand` (`errand.ts`): a kerbside errand's choreography (a vehicle pulls in, hazards on, a porter
   carries loads to a door in trips, climbs back in, the vehicle leaves); the scene drives and walks
@@ -1724,15 +1762,24 @@ the check. No change waits on a build (no status, log, uniform location or use o
 its completion or fence was seen). `sceneFeatures`, software: nothing is built ahead; a gated knob
 builds its own program in the background and switches to it once built, the old frame holding until
 then; several gated knobs at once build once; past four sets the least recently drawn program is
-freed. `featureToggles`, GPU, for every scene with `featuresFor` (country, meadow, shore, dunes):
-the plain page builds only its own program; after the first gated change, which builds the
+freed. `featureToggles`, GPU, for every scene with `featuresFor` (country, meadow, shore, dunes,
+orbit): the plain page builds only its own program; after the first gated change, which builds the
 all-features program in the background, no change builds a program; with changes expected that
 program is built ahead at rest, draws one frame without changing it, and the first change switches
 to it at once. `featuresAll` (country) and `worldFeaturesAll` (every other scene with
-`featuresFor`: meadow, shore, dunes), GPU, two checks to keep each well under the deadline: the
-all-features program draws every gated setting, dithered and as source, byte for byte as the
+`featuresFor`: meadow, shore, dunes, orbit), GPU, two checks to keep each well under the deadline:
+the all-features program draws every gated setting, dithered and as source, byte for byte as the
 setting's own (drawn on a renderer taken for a software rasteriser's that enters at the same
 starting setting, settles and switches the same way, so the sims share their history).
+
+`src/lab/inspector.verify.ts` (`labInspector`) lays the lab's Controls view out under `lab.css` and
+draws no WebGL: folded groups and closed controls take no focus (`inert`), and a group folding with
+the focus in it hands it to its header; under the lens a change behind a switch that is off shows
+dormant beside the switches it waits on, its "changed" dot whole under the pointer, and a `when` two
+levels up closes its grandchildren; a sync that changes nothing writes nothing (a MutationObserver
+over country's, pond's and dunes' views, plain, under the lens and under a search); in a night with
+an aurora, drawn in three layers, a click picks a planet and switches the aurora and the Milky Way
+under the layers over them.
 
 The shared components have checks of their own:
 
@@ -1740,6 +1787,10 @@ The shared components have checks of their own:
   line of sight, the plane and the shadow on the planet; its level of detail leaves resolved belts
   bit for bit and merges far city lights into blocks; and Campfire's composed moons, aurora, lights
   and day cycle show only where the planet does, with a moon behind it hidden.
+- Orbital motion (`orbit/kepler.verify.ts`, `orbitKepler`), read back from the GLSL: the shared
+  moons' rates keep Kepler's third law (rate² × distance³ one constant across them), and Orbit's
+  captured meteor falls on a decaying orbit whose rate rises as distance^-1.5 all the way down, its
+  speed with it.
 - The water's tiers (`island/water.verify.ts`, `waterTiers`): the spectra of the three open-water
   scenes and the pond's cellular net are bit for bit what those scenes drew before they shared
   them, detail too fine to draw is skipped without changing a value, the mirror, the flow and the

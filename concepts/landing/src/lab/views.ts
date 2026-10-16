@@ -1,7 +1,7 @@
 // The lab panel's views, Scenes, Presets and Controls: one shows at a time, picked with segmented
 // icon tabs in the panel's header (on a narrow screen, the sheet's). Beside the tabs stand the
 // view's name and the scene on screen; the scene's name opens the scene picker (the Scenes view).
-import { h } from "./dom.ts";
+import { h, setAttr, setStyle, setText } from "./dom.ts";
 import { icon, type IconName } from "./icons.ts";
 
 export type ViewId = "scenes" | "presets" | "controls";
@@ -81,6 +81,11 @@ export class Views {
     this.#render();
   }
 
+  /** The view on screen (in the panel, whether or not the lab is open). */
+  get current(): ViewId {
+    return this.#current;
+  }
+
   /** Show view `id` and bring the panel up. */
   show(id: ViewId): void {
     const changed = id !== this.#current;
@@ -92,9 +97,9 @@ export class Views {
 
   /** The scene on screen, beside the view's name. */
   setScene(title: string, accent: string): void {
-    if (this.#sceneName.textContent !== title) this.#sceneName.textContent = title;
-    this.#scene.style.setProperty("--dot", accent);
-    this.#scene.setAttribute("aria-label", `Scene: ${title}. Pick another`);
+    setText(this.#sceneName, title);
+    setStyle(this.#scene, "--dot", accent);
+    setAttr(this.#scene, "aria-label", `Scene: ${title}. Pick another`);
   }
 
   #render(): void {

@@ -6,7 +6,7 @@
 // (climate-hint-model.ts): a ring in the chip's corner, and the mark beside its name.
 import type { Blurb, ParamDef } from "../params.ts";
 import { recipeMark, type ClimateMark, type ClimateMarks } from "./climate-hint-model.ts";
-import { h, type Built } from "./dom.ts";
+import { h, setAttr, setText, type Built } from "./dom.ts";
 import { icon, iconFromWords } from "./icons.ts";
 import type { Knobs } from "./knobs.ts";
 import { recipeLit, shownRecipes } from "./recipes-model.ts";
@@ -44,7 +44,7 @@ export function recipeStrip(
   let lit: Entry | undefined;
   const showName = () => {
     const named = hovered ?? lit;
-    name.textContent = named ? named.label + (named.mark ? ` · ${named.mark.text}` : "") : "";
+    setText(name, named ? named.label + (named.mark ? ` · ${named.mark.text}` : "") : "");
     name.classList.toggle("is-lit", named !== undefined && named === lit);
   };
 
@@ -92,7 +92,7 @@ export function recipeStrip(
   );
   /** Put `to` alone in the tab order. */
   const rove = (to: HTMLButtonElement | undefined) => {
-    for (const { entry } of chips) entry.chip.tabIndex = entry.chip === to ? 0 : -1;
+    for (const { entry } of chips) setAttr(entry.chip, "tabindex", entry.chip === to ? "0" : "-1");
   };
   el.addEventListener("keydown", (event) => {
     const visible = chips
@@ -124,13 +124,18 @@ export function recipeStrip(
       for (const { entry, patch } of chips) {
         const { chip } = entry;
         const pressed = recipeLit(patch, read);
-        chip.setAttribute("aria-pressed", String(pressed));
+        setAttr(chip, "aria-pressed", String(pressed));
         if (pressed && lit === undefined) lit = entry;
         entry.mark = marks ? recipeMark(marks, patch, read) : undefined;
-        if (entry.mark) chip.dataset.mark = entry.mark.kind;
-        else delete chip.dataset.mark;
-        chip.title = `${entry.label}: ${entry.help}${entry.mark ? ` ${entry.mark.help}` : ""}`;
-        chip.setAttribute(
+        if (entry.mark) setAttr(chip, "data-mark", entry.mark.kind);
+        else chip.removeAttribute("data-mark");
+        setAttr(
+          chip,
+          "title",
+          `${entry.label}: ${entry.help}${entry.mark ? ` ${entry.mark.help}` : ""}`,
+        );
+        setAttr(
+          chip,
           "aria-label",
           entry.mark ? `${entry.label}, ${entry.mark.text}` : entry.label,
         );

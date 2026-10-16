@@ -1,14 +1,26 @@
 // The birds card: the birds component's knobs (`birdKnobs`, widget `flyway`) as one instrument. A sky
 // strip is the switch and how often a flight passes: the further along, the more often and the more
 // birds aloft in it (bobbing on beating wings unless motion is reduced); a drag or the arrow keys
-// set it and let the birds fly, Delete grounds them. Under it, while the birds are on, the species
-// as tiles of their silhouettes seen from below, and the formation as dot diagrams drawn for the
-// chosen species' own party, its usual formation on the "usual" tile. Each row of tiles is a radio
-// group: the arrow keys move along it and choose. flyway-model.ts holds the rules.
+// set it and let the birds fly, Delete grounds them (a slider, sliderBehaviour: on a touch screen it
+// waits for a drag across, so a swipe down scrolls the panel). Under it, the species as tiles of
+// their silhouettes seen from below, and the formation as dot diagrams drawn for the chosen
+// species' own party, its usual formation on the "usual" tile, each a gate shown while the birds
+// are on (availability-model.ts). Each row of tiles is a radio group: the arrow keys move along it
+// and choose. flyway-model.ts holds the rules.
 import { formatValue, type Option, type ParamDef } from "../params.ts";
 import type { BirdKind } from "../shaders/lib/birds.ts";
-import { row, switchControl } from "./controls.ts";
-import { drag, h, keyStep, reveal, snap, svg, type Built } from "./dom.ts";
+import { row, sliderBehaviour, switchControl } from "./controls.ts";
+import {
+  dependent,
+  h,
+  keyStep,
+  setAttr,
+  setHidden,
+  setStyle,
+  snap,
+  svg,
+  type Built,
+} from "./dom.ts";
 import { icon } from "./icons.ts";
 import { knobIcon, knobKeys, type FeatureDef, type Knobs } from "./knobs.ts";
 import {
@@ -379,6 +391,7 @@ function tileRow(
     modified: () => knobs.modified([def.key]),
     reset: () => knobs.reset([def.key]),
   });
+  built.el.dataset.keys = def.key;
   let drawn: number | undefined;
   return {
     el: built.el,
@@ -397,8 +410,8 @@ function tileRow(
       const chosen = tiles.some((tile) => tile.option.value === value);
       for (const [index, { option, button }] of tiles.entries()) {
         const on = option.value === value;
-        button.setAttribute("aria-checked", String(on));
-        button.tabIndex = on || (!chosen && index === 0) ? 0 : -1;
+        setAttr(button, "aria-checked", String(on));
+        setAttr(button, "tabindex", on || (!chosen && index === 0) ? "0" : "-1");
       }
     },
   };
@@ -414,6 +427,7 @@ export function flywayCard(knobs: Knobs, parts: Flyway, headed: boolean): Built 
   const span = birds.max - birds.min;
   const flying = () => knobs.value(birds.key) > 0.5;
   const kindValue = () => (kind ? knobs.value(kind.key) : -1);
+  const share = () => Math.min(1, Math.max(0, (knobs.value(amountKey) - birds.min) / span));
 
   // The sky strip: how often, as birds aloft up to the fill.
   const fill = h("span", { class: "flyway-fill" });
@@ -430,11 +444,7 @@ export function flywayCard(knobs: Knobs, parts: Flyway, headed: boolean): Built 
     "div",
     {
       class: "flyway-strip",
-      role: "slider",
-      tabIndex: 0,
       "aria-label": `${birds.label}: ${birds.amountLabel}`,
-      "aria-valuemin": String(birds.min),
-      "aria-valuemax": String(birds.max),
       title:
         "Drag along, or use the arrow keys: further right, flights pass more often. Delete grounds them.",
     },
@@ -442,47 +452,40 @@ export function flywayCard(knobs: Knobs, parts: Flyway, headed: boolean): Built 
     ...flock,
     quiet,
   );
-  const fly = (amount: number, commit: boolean) =>
-    knobs.set(
-      { [birds.key]: 1, [amountKey]: snap(amount, birds.min, birds.max, birds.step) },
-      commit,
-    );
-  strip.addEventListener("pointerdown", (event) => {
-    if (event.button !== 0) return;
-    event.preventDefault();
-    strip.focus();
-    const rect = strip.getBoundingClientRect();
-    let amount = knobs.value(amountKey);
-    drag(
-      event,
-      strip,
-      (pointer) => {
-        amount = birds.min + ((pointer.clientX - rect.left) / Math.max(1, rect.width)) * span;
-        fly(amount, false);
-      },
-      () => fly(amount, true),
-    );
+  const fly = (amount: number) => ({
+    [birds.key]: 1,
+    [amountKey]: snap(amount, birds.min, birds.max, birds.step),
   });
-  strip.addEventListener("keydown", (event) => {
-    if (event.key === "Delete" || event.key === "Backspace") {
-      event.preventDefault();
-      knobs.set({ [birds.key]: 0 }, true);
-      return;
-    }
-    const delta = keyStep(event, birds.step, span);
-    const amount = knobs.value(amountKey);
-    const next =
-      delta !== undefined
-        ? amount + delta
-        : event.key === "Home"
-          ? birds.min
-          : event.key === "End"
-            ? birds.max
-            : undefined;
-    if (next === undefined) return;
-    event.preventDefault();
-    // Grounded, a key lets them fly at the amount they had.
-    fly(flying() ? next : amount, true);
+  const syncStrip = sliderBehaviour(strip, {
+    min: birds.min,
+    max: birds.max,
+    now: () => knobs.value(amountKey),
+    text: () =>
+      flying()
+        ? `${formatValue(birds, knobs.value(amountKey))}, ${aloft(true, share())} birds aloft`
+        : "off, no birds",
+    set: (patch, commit) => knobs.set(patch, commit),
+    key: (event) => {
+      if (event.key === "Delete" || event.key === "Backspace") return { [birds.key]: 0 };
+      const delta = keyStep(event, birds.step, span);
+      const amount = knobs.value(amountKey);
+      const next =
+        delta !== undefined
+          ? amount + delta
+          : event.key === "Home"
+            ? birds.min
+            : event.key === "End"
+              ? birds.max
+              : undefined;
+      // Grounded, a key lets them fly at the amount they had.
+      return next === undefined ? undefined : fly(flying() ? next : amount);
+    },
+    press: () => {
+      const rect = strip.getBoundingClientRect();
+      return (pointer) =>
+        fly(birds.min + ((pointer.clientX - rect.left) / Math.max(1, rect.width)) * span);
+    },
+    across: true,
   });
   const toggle = headed
     ? undefined
@@ -498,6 +501,7 @@ export function flywayCard(knobs: Knobs, parts: Flyway, headed: boolean): Built 
     modified: () => knobs.modified(knobKeys(birds)),
     reset: () => knobs.reset(knobKeys(birds)),
   });
+  often.el.dataset.keys = knobKeys(birds).join(" ");
 
   const species = kind
     ? tileRow(knobs, kind, {
@@ -540,11 +544,11 @@ export function flywayCard(knobs: Knobs, parts: Flyway, headed: boolean): Built 
   const pickers = [
     { def: kind, built: species },
     { def: formation, built: flights },
-  ].flatMap(({ def, built }) => {
-    if (!def || !built) return [];
-    const shown = reveal(built.el, () => knobs.on(def.when));
-    return [{ built, shown }];
-  });
+  ].flatMap(({ def, built }) =>
+    def && built
+      ? [{ built, el: dependent(built.el, knobs.chain(def.when), () => knobs.live(def.when)) }]
+      : [],
+  );
   const el = h(
     "div",
     {
@@ -555,7 +559,7 @@ export function flywayCard(knobs: Knobs, parts: Flyway, headed: boolean): Built 
         .toLowerCase(),
     },
     often.el,
-    ...pickers.map(({ shown }) => shown.el),
+    ...pickers.map((picker) => picker.el),
   );
 
   return {
@@ -563,23 +567,14 @@ export function flywayCard(knobs: Knobs, parts: Flyway, headed: boolean): Built 
     sync: () => {
       often.sync();
       toggle?.sync();
+      syncStrip();
       const on = flying();
-      const share = Math.min(1, Math.max(0, (knobs.value(amountKey) - birds.min) / span));
-      const count = aloft(on, share);
+      const count = aloft(on, share());
       for (const [index, bird] of flock.entries()) bird.classList.toggle("aloft", index < count);
-      fill.style.setProperty("--fill", `${(share * 100).toFixed(2)}%`);
+      setStyle(fill, "--fill", `${(share() * 100).toFixed(2)}%`);
       strip.classList.toggle("grounded", !on);
-      quiet.hidden = on;
-      const amount = knobs.value(amountKey);
-      strip.setAttribute("aria-valuenow", String(amount));
-      strip.setAttribute(
-        "aria-valuetext",
-        on ? `${formatValue(birds, amount)}, ${count} birds aloft` : "off, no birds",
-      );
-      for (const { built, shown } of pickers) {
-        built.sync();
-        shown.sync();
-      }
+      setHidden(quiet, on);
+      for (const { built } of pickers) built.sync();
     },
   };
 }

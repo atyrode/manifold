@@ -1113,7 +1113,9 @@ body.lab-open .lab-opener {
   border: 1px dashed var(--lab-line-strong);
   border-radius: 4px;
 }
-.group.off .group-body > :not(.group-blurb, .group-off) {
+/* a switched-off group dims what stands in it, except what the lens or the search shows dormant
+   (dimmed on its own, and still in reach) */
+.group.off .group-body > :not(.group-blurb, .group-off, .dormant, :has(.dormant)) {
   opacity: 0.35;
   pointer-events: none;
 }
@@ -1135,13 +1137,29 @@ body.lab-open .lab-opener {
 .jumping .reveal {
   transition: none;
 }
+/* only the height animates, so only the height clips: a row's "changed" dot, hanging off its left
+   edge, stays whole (`clip` leaves the other axis visible; `hidden` would make it scroll) */
 .reveal-inner {
   min-height: 0;
-  overflow: hidden;
+  overflow-x: visible;
+  overflow-y: clip;
+}
+@supports not (overflow-y: clip) {
+  .reveal-inner {
+    overflow: hidden;
+    padding-inline-start: 15px;
+    margin-inline-start: -15px;
+  }
 }
 .group-body .reveal:not(.open),
 .amounts .reveal:not(.open) {
   margin-top: -14px;
+}
+/* a control whose switch is off, shown because the lens or the search found it (or a dormant one
+   waits on it): dimmed, still in reach, beside the switch that would wake it */
+.dormant:not(.reveal),
+.reveal.open.dormant {
+  opacity: 0.5;
 }
 
 /* rows */
@@ -1194,7 +1212,8 @@ body.lab-open .lab-opener {
   padding: 2px 4px;
   border-radius: 3px;
   cursor: ew-resize;
-  touch-action: none;
+  /* a swipe down scrolls the panel; a drag across scrubs (chips-model.ts pressMove) */
+  touch-action: pan-y;
   user-select: none;
   transition:
     color 120ms,
@@ -1823,13 +1842,21 @@ body.lab-open .lab-opener {
 .almanac > .sky-dial .sky-face {
   pointer-events: none;
 }
-.almanac.bare {
+/* round the dial, the season's ring and chips follow the season's row: gone while it is closed
+   (what the season hangs on is off), dimmed while it is dormant */
+.sky-row:has(> .season-row[hidden]) .almanac {
   width: 116px;
   height: 116px;
 }
-.almanac.bare > .sky-dial {
+.sky-row:has(> .season-row[hidden]) .almanac > .sky-dial {
   top: 0;
   left: 0;
+}
+.sky-row:has(> .season-row[hidden]) :is(.almanac-ring, .sky-side > .chip) {
+  display: none;
+}
+.sky-row:has(> .season-row.dormant) :is(.almanac-ring, .sky-side > .chip) {
+  opacity: 0.5;
 }
 .almanac-ring {
   position: absolute;
@@ -1989,7 +2016,8 @@ body.lab-open .lab-opener {
   width: 14px;
   margin-left: -7px;
   cursor: ew-resize;
-  touch-action: none;
+  /* a swipe down scrolls the panel; a drag across trades (controls.ts dragAcross) */
+  touch-action: pan-y;
 }
 .mix-divider::before {
   content: "";
@@ -2106,7 +2134,8 @@ body.lab-open .lab-opener {
   border: 1px solid var(--lab-line);
   border-radius: 5px;
   cursor: ew-resize;
-  touch-action: none;
+  /* a swipe down scrolls the panel; a drag across sets it (controls.ts dragAcross) */
+  touch-action: pan-y;
 }
 .pad-flow {
   position: absolute;
@@ -2381,7 +2410,8 @@ body.lab-open .lab-opener {
   border: 1px solid var(--lab-line);
   border-radius: 5px;
   cursor: ew-resize;
-  touch-action: none;
+  /* a swipe down scrolls the panel; a drag across sets it (controls.ts dragAcross) */
+  touch-action: pan-y;
 }
 .flyway-strip:hover {
   border-color: var(--lab-line-strong);
@@ -2534,6 +2564,17 @@ body.lab-open .lab-opener {
 }
 .night-art [data-part] {
   cursor: pointer;
+}
+/* a night with an aurora: the swaying curtains in a drawing of their own, and what stands in front
+   of them in another, each over the first (so the sway repaints its layer alone); they let a click
+   through to the drawing under them, but on a part or a planet */
+.night-art ~ .night-art {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+.night-art ~ .night-art :is([data-part], [data-planet]) {
+  pointer-events: auto;
 }
 /* daylight in the scene: a note and "See it at night" under the drawing */
 .night-day {
@@ -3461,6 +3502,58 @@ kbd {
 }
 .lab.sheet-mode .lab-failure {
   top: 8px;
+}
+/* in the sheet the pads a press steers both ways (a swipe on one moves it, not the sheet) stand
+   smaller, so most of the sheet scrolls under a thumb */
+.lab.sheet-mode .pos-pad {
+  width: min(100%, 184px);
+}
+.lab.sheet-mode .compass-pad {
+  width: 104px;
+  height: 104px;
+}
+/* touch screens: targets a finger can hit (24px and more, WCAG 2.5.8), and what a mouse finds by
+   hovering shown outright */
+@media (pointer: coarse) {
+  .row-head {
+    min-height: 32px;
+  }
+  .switch {
+    width: 40px;
+    height: 24px;
+    border-radius: 12px;
+  }
+  .switch .knob {
+    width: 18px;
+    height: 18px;
+  }
+  .switch[aria-checked="true"] .knob {
+    left: 18px;
+  }
+  .lab input[type="range"] {
+    height: 28px;
+  }
+  .lab input[type="range"]::-webkit-slider-thumb {
+    width: 20px;
+    height: 20px;
+    margin-top: -9px;
+  }
+  .lab input[type="range"]::-moz-range-thumb {
+    width: 20px;
+    height: 20px;
+  }
+  .modified::after {
+    inset: -9px;
+  }
+  .hint-toggle {
+    width: 24px;
+    height: 24px;
+    line-height: 22px;
+    opacity: 1;
+  }
+  .chip.fader > .chip-amount {
+    opacity: 1;
+  }
 }
 @media (max-width: 720px) {
   body.lab-open .ab-badge {

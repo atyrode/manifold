@@ -1,8 +1,8 @@
 // The lab panel's Scenes view: every scene as a thumbnail card, shelved by family with a rail of the
 // families, searchable, the one on screen marked. Arrow keys move between cards (one card in the tab
-// order), Enter or Space shows the scene.
+// order), Enter or Space shows the scene. The lab syncs it while it shows, and as it comes on screen.
 import { sceneDefs, sceneIds, type SceneId } from "../scenes/index.ts";
-import { h, type LabContext } from "./dom.ts";
+import { h, setAttr, type LabContext } from "./dom.ts";
 import { families, sceneFamily } from "./families.ts";
 import { icon } from "./icons.ts";
 import { Rail } from "./rail.ts";
@@ -92,8 +92,8 @@ export class SceneGallery {
     const { scene } = this.#ctx.current().state;
     for (const [id, card] of this.#cards) {
       const current = id === scene;
-      card.setAttribute("aria-pressed", String(current));
-      if (current) card.setAttribute("aria-current", "true");
+      setAttr(card, "aria-pressed", String(current));
+      if (current) setAttr(card, "aria-current", "true");
       else card.removeAttribute("aria-current");
     }
     // One card in the tab order: the current scene's, unless the keyboard is already in the gallery.
@@ -103,7 +103,6 @@ export class SceneGallery {
       if (!this.el.contains(document.activeElement))
         this.#cards.get(scene)?.scrollIntoView({ block: "nearest" });
     }
-    this.#rail.spy();
   }
 
   #card(id: SceneId, setScene: (scene: SceneId) => void): HTMLButtonElement {

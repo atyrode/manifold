@@ -6,7 +6,12 @@
 // or opens them all. A group's knobs are laid out by their metadata: the sky dial, mix bars and
 // pads where a knob names one (`ParamDef.widget`), its switches as icon chips, everything else as
 // rows; a scene's planets (SceneDef.planets) stand in their group's Night sky section, and the lens,
-// a group's reset and its dice take the list as one more of that group's knobs.
+// a group's reset and its dice take the list as one more of that group's knobs. A control that hangs
+// on a switch (`when`, to any depth; a global setting's on another setting) is a gate (dom.ts): after
+// every sync this view alone decides which controls and groups show, from one availability model
+// (availability-model.ts) that the lens, the search, the folds and the summaries share. A change the
+// lens counts behind a switch that is off shows dormant, dimmed beside that switch, never folded
+// away; folded groups and closed controls leave the tab order (inert).
 import { formatValue, MAX_SEED, type Option, type ParamDef } from "../params.ts";
 import { colorIds, ditherIds, viewIds } from "../renderer.ts";
 import { sceneDefs, type SceneId } from "../scenes/index.ts";
@@ -20,6 +25,15 @@ import {
   type Params,
 } from "../state.ts";
 import { almanacParts, gatherAlmanac } from "./almanac-model.ts";
+import {
+  groupShows,
+  narrow,
+  narrowing,
+  titleHolds,
+  type LensGate,
+  type LensQuery,
+  type NarrowItem,
+} from "./availability-model.ts";
 import { chipGrid } from "./chips.ts";
 import { climateMarks } from "./climate-hint-model.ts";
 import {
@@ -33,7 +47,20 @@ import {
   textButton,
 } from "./controls.ts";
 import { seasonWheel, skyDial, type SkyParts } from "./dial.ts";
-import { h, reveal, type Built, type LabContext, type Patch } from "./dom.ts";
+import {
+  dependent,
+  h,
+  isLive,
+  setAttr,
+  setHidden,
+  setOpen,
+  setStyle,
+  setText,
+  showGate,
+  type Built,
+  type LabContext,
+  type Patch,
+} from "./dom.ts";
 import { flywayCard, flywayOf } from "./flyway.ts";
 import { icon, iconFromWords, type IconName } from "./icons.ts";
 import {
@@ -44,16 +71,7 @@ import {
   type RangeDef,
   type SwitchDef,
 } from "./knobs.ts";
-import {
-  changedCounts,
-  changedKnobs,
-  changedSettings,
-  groupShows,
-  itemShows,
-  titleHolds,
-  type LensGroup,
-  type LensQuery,
-} from "./lens-model.ts";
+import { changedCounts, changedKnobs, changedSettings, type LensGroup } from "./lens-model.ts";
 import { mixBar } from "./mix.ts";
 import type { MixPart } from "./mix-model.ts";
 import { compassPad, directionPad, positionPad, type Strength } from "./pads.ts";
@@ -98,7 +116,7 @@ const SWATCHES = ["#4c6ef5", "#ff004e", "#ff7a2f", "#f2c94c", "#2bd9a8", "#e8e6d
 const SETTINGS = {
   look: ["view", "dither", "color", "accent", "levels", "pixel"],
   motion: ["motion", "mouse", "transitions", "overlap", "weave", "blend", "slowmo"],
-  page: ["mode", "dim", "blur"],
+  page: ["mode", "instance", "dim", "blur"],
 } as const satisfies Record<string, readonly (keyof LabState)[]>;
 const SETTING_KEYS = [...SETTINGS.look, ...SETTINGS.motion, ...SETTINGS.page];
 /** The global groups as the lens counts them (by section id): each setting a knob of its own. */
@@ -142,6 +160,8 @@ interface Section {
   el: HTMLElement;
   toggle: HTMLButtonElement;
   open(): void;
+  /** Reflect the setup into the heading and open or fold the body (open while `searching`). */
+  sync(searching: boolean): void;
 }
 
 export class Inspector {
@@ -157,15 +177,19 @@ export class Inspector {
   readonly #sceneDivider = h("p", { class: "shelf-divider" });
   readonly #sceneSlot = h("div", { class: "groups" });
   readonly #globalSlot = h("div", { class: "groups" });
-  /** Where nothing shows: what the search or the lens found nothing for (set by filter). */
+  /** Where nothing shows: what the search or the lens found nothing for (set by #narrow). */
   readonly #empty = h("p", { class: "lab-empty" });
   readonly #syncers: (() => void)[] = [];
   #sceneSyncers: (() => void)[] = [];
   #sceneSections: Section[] = [];
   readonly #globalSections: Section[] = [];
   #built: SceneId | undefined;
-  /** Whether every group is open; the fold button flips it. */
+  /** The fold button: folds every group while every one is open, else opens them all. */
   readonly #fold: HTMLButtonElement;
+  /** Whether every group was open as the fold button last showed it. */
+  #allShown: boolean | undefined;
+  /** Which groups showed and were open, as the rail last marked them. */
+  #layout = "";
   /** The "changed" lens: while on, every group narrows to what differs from the defaults. */
   #lens = false;
   readonly #lensToggle: HTMLButtonElement;
@@ -187,11 +211,11 @@ export class Inspector {
       "aria-label": "Find a control",
       spellcheck: false,
     });
-    this.#search.addEventListener("input", () => this.filter());
+    this.#search.addEventListener("input", () => this.#narrow());
     this.#search.addEventListener("keydown", (event) => {
       if (event.key !== "Escape") return;
       this.#search.value = "";
-      this.filter();
+      this.#narrow();
       this.#search.blur();
     });
     this.#worldDivider = worldDivider(prefs);
@@ -267,23 +291,23 @@ export class Inspector {
     this.#rail.spy();
   }
 
+  /**
+   * Reflect the setup into every control, then decide once what shows (#narrow): a sync that
+   * changes nothing writes nothing.
+   */
   sync(): void {
     const { scene } = this.#ctx.current().state;
     if (this.#built !== scene) this.#build(scene);
     for (const sync of this.#syncers) sync();
     for (const sync of this.#sceneSyncers) sync();
-    const all = this.#allOpen();
-    this.#fold.replaceChildren(icon(all ? "fold" : "unfold"));
-    const label = all ? "Fold every group" : "Open every group";
-    this.#fold.title = label;
-    this.#fold.setAttribute("aria-label", label);
     this.#syncLens();
-    this.filter();
+    this.#narrow();
   }
 
   /**
    * Find what differs from the defaults: the lens's count and head, and the rail's dots. A scene's
-   * planets differ while it has any (PLANETS_KEY, one knob of their group).
+   * planets differ while it has any (PLANETS_KEY, one knob of their group). A knob counts whether
+   * or not its switch is on: the lens shows it dormant beside that switch.
    */
   #syncLens(): void {
     const { state, params, planets } = this.#ctx.current();
@@ -295,12 +319,16 @@ export class Inspector {
     const counts = changedCounts(this.#lensGroups, this.#changed);
     this.#rail.mark(counts);
     const total = [...counts.values()].reduce((sum, count) => sum + count, 0);
-    this.#lensCount.textContent = total > 0 ? `${total} changed` : "";
+    setText(this.#lensCount, total > 0 ? `${total} changed` : "");
     const label = `Only what changed (${total > 0 ? `${total} changed` : "nothing yet"})`;
-    this.#lensToggle.title = `${label}: narrow every group to the controls that differ from this scene's defaults`;
-    this.#lensToggle.setAttribute("aria-label", label);
-    this.#lensToggle.setAttribute("aria-pressed", String(this.#lens));
-    this.#lensHead.hidden = !this.#lens || total === 0;
+    setAttr(
+      this.#lensToggle,
+      "title",
+      `${label}: narrow every group to the controls that differ from this scene's defaults`,
+    );
+    setAttr(this.#lensToggle, "aria-label", label);
+    setAttr(this.#lensToggle, "aria-pressed", String(this.#lens));
+    setHidden(this.#lensHead, !this.#lens || total === 0);
   }
 
   /**
@@ -340,7 +368,6 @@ export class Inspector {
     reset?: () => void;
     /** Shuffle the group's knobs: a dice beside the reset. */
     roll?: () => void;
-    syncers: (() => void)[];
   }): Section {
     const isOpen = () => this.#prefs.sections[spec.id] ?? spec.open;
     const bodyId = `group-${spec.id.replace(/[^a-z0-9]+/gi, "-")}`;
@@ -372,7 +399,9 @@ export class Inspector {
       : null;
     roll?.classList.add("group-roll");
     roll?.addEventListener("animationend", () => roll.classList.remove("rolling"));
-    const offNote = spec.offNote ? h("p", { class: "group-off" }, spec.offNote) : null;
+    const offNote = spec.offNote
+      ? h("p", { class: "group-off", hidden: true }, spec.offNote)
+      : null;
     const inner = h(
       "div",
       { class: "group-body" },
@@ -406,19 +435,6 @@ export class Inspector {
       this.#rail.pin(opening ? spec.id : undefined);
       this.sync();
     });
-    const sync = () => {
-      const open = isOpen() || el.classList.contains("searching");
-      body.classList.toggle("open", open);
-      el.classList.toggle("is-open", isOpen());
-      toggle.setAttribute("aria-expanded", String(open));
-      const on = spec.masterOn?.() ?? true;
-      el.classList.toggle("off", !on);
-      if (offNote) offNote.hidden = on;
-      spec.master?.sync();
-      reset.hidden = !(spec.modified?.() ?? false);
-      summary.textContent = open ? "" : spec.summary().join(" · ");
-    };
-    spec.syncers.push(sync);
     return {
       id: spec.id,
       title: spec.title,
@@ -428,6 +444,19 @@ export class Inspector {
       open: () => {
         this.#prefs.sections[spec.id] = true;
         this.#prefs.save();
+      },
+      sync: (searching) => {
+        const open = isOpen() || searching;
+        // Folded, the body leaves the tab order; the focus it held goes to the header.
+        setOpen(body, open, toggle);
+        el.classList.toggle("is-open", isOpen());
+        setAttr(toggle, "aria-expanded", String(open));
+        const on = spec.masterOn?.() ?? true;
+        el.classList.toggle("off", !on);
+        if (offNote) setHidden(offNote, on);
+        spec.master?.sync();
+        setHidden(reset, !(spec.modified?.() ?? false));
+        setText(summary, open ? "" : spec.summary().join(" · "));
       },
     };
   }
@@ -447,49 +476,78 @@ export class Inspector {
     };
   }
 
-  /** Narrow every group to the controls that match the search and, while it is on, the lens. */
-  filter(): void {
+  /**
+   * Decide what shows, from one availability model (availability-model.ts narrow): in each group,
+   * the controls the search and, while it is on, the lens find (with the switches a dormant one
+   * waits on), each gate open, dormant or closed, and the group shown or not, open or folded; then
+   * the note for nothing found and the fold button. The rail marks again when a group shows, hides,
+   * opens or folds.
+   */
+  #narrow(): void {
     const query: LensQuery = {
       text: this.#search.value.trim().toLowerCase(),
       lens: this.#lens,
       changed: this.#changed,
     };
-    const filtering = query.text !== "" || query.lens;
+    const filtering = narrowing(query);
     this.el.classList.toggle("searching", filtering);
     let any = false;
-    const sections = [...this.#sceneSections, ...this.#globalSections];
-    for (const section of sections) {
-      const el = section.el;
-      let shown = 0;
-      const titleHit = titleHolds(el.dataset.title ?? "", query);
-      for (const item of el.querySelectorAll<HTMLElement>("[data-search]")) {
-        // A control's knobs are its own, else those of the widget it stands in.
-        const keys = item.closest<HTMLElement>("[data-keys]")?.dataset.keys ?? "";
-        const hit = itemShows(
-          {
-            search: item.dataset.search ?? "",
-            keys: keys.split(" "),
-            held: item.contains(document.activeElement),
-          },
-          titleHit,
-          query,
-        );
-        item.classList.toggle("no-match", !hit);
-        if (hit) shown++;
-      }
-      const visible = groupShows(shown, titleHit, query);
-      el.hidden = !visible;
+    let layout = "";
+    for (const section of [...this.#sceneSections, ...this.#globalSections]) {
+      const { el } = section;
+      const titleHit = titleHolds(section.title.toLowerCase(), query);
+      const items = [...el.querySelectorAll<HTMLElement>("[data-search]")];
+      const gates = [...el.querySelectorAll<HTMLElement>("[data-when]")];
+      const gateAt = new Map<Element, number>(gates.map((gate, at) => [gate, at]));
+      const narrowItems = items.map((item): NarrowItem => {
+        const standsIn: number[] = [];
+        for (let up: Element | null = item; up && up !== el; up = up.parentElement) {
+          const at = gateAt.get(up);
+          if (at !== undefined) standsIn.push(at);
+        }
+        return {
+          search: item.dataset.search ?? "",
+          // A control's knobs are its own, else those of the widget it stands in.
+          keys: (item.closest<HTMLElement>("[data-keys]")?.dataset.keys ?? "").split(" "),
+          held: item.contains(document.activeElement),
+          gates: standsIn,
+        };
+      });
+      const lensGates = gates.map((gate): LensGate => ({
+        chain: (gate.dataset.when ?? "").split(" ").filter((key) => key !== ""),
+        live: isLive(gate),
+      }));
+      const narrowed = narrow(narrowItems, lensGates, titleHit, query);
+      items.forEach((item, at) => item.classList.toggle("no-match", narrowed.found[at] !== true));
+      gates.forEach((gate, at) => showGate(gate, narrowed.gates[at] ?? "closed", section.toggle));
+      const visible = groupShows(narrowed.shown, titleHit, query);
+      setHidden(el, !visible);
       el.classList.toggle("searching", filtering && visible);
+      section.sync(filtering && visible);
       if (visible) any = true;
+      layout += `${visible ? 1 : 0}${el.classList.contains("is-open") ? 1 : 0}`;
     }
-    this.#empty.hidden = any;
-    this.#empty.textContent = !query.lens
-      ? "Nothing matches. Try another word, or press Esc."
-      : query.changed.size === 0
-        ? "Nothing has changed: every control is at this scene's default."
-        : "Nothing changed matches. Try another word, or press Esc.";
-    if (filtering) for (const sync of [...this.#syncers, ...this.#sceneSyncers]) sync();
-    this.#rail.spy();
+    setHidden(this.#empty, any);
+    setText(
+      this.#empty,
+      !query.lens
+        ? "Nothing matches. Try another word, or press Esc."
+        : query.changed.size === 0
+          ? "Nothing has changed: every control is at this scene's default."
+          : "Nothing changed matches. Try another word, or press Esc.",
+    );
+    const all = this.#allOpen();
+    if (all !== this.#allShown) {
+      this.#allShown = all;
+      this.#fold.replaceChildren(icon(all ? "fold" : "unfold"));
+      const label = all ? "Fold every group" : "Open every group";
+      setAttr(this.#fold, "title", label);
+      setAttr(this.#fold, "aria-label", label);
+    }
+    if (`${filtering}${layout}` !== this.#layout) {
+      this.#layout = `${filtering}${layout}`;
+      this.#rail.spy();
+    }
   }
 
   // ---- the scene's groups ---------------------------------------------------------------------
@@ -717,22 +775,26 @@ export class Inspector {
       syncers.push(built.sync);
     }
     if (dial) {
-      content.push(dial.el);
+      // Where the time of day itself hangs on a switch, the whole dial is its gate.
+      const when = time?.when;
+      content.push(
+        when === undefined
+          ? dial.el
+          : dependent(dial.el, knobs.chain(when), () => knobs.live(when)),
+      );
       syncers.push(dial.sync);
     }
     if (chips) {
       content.push(chips.grid.el, chips.amounts.el);
       syncers.push(chips.grid.sync, chips.amounts.sync);
     }
-    for (const item of items.sort((a, b) => a.at - b.at)) {
-      syncers.push(item.built.sync);
-      if (item.when === undefined) {
-        content.push(item.built.el);
-        continue;
-      }
-      const dependent = reveal(item.built.el, () => knobs.on(item.when));
-      content.push(dependent.el);
-      syncers.push(dependent.sync);
+    for (const { built, when } of items.sort((a, b) => a.at - b.at)) {
+      syncers.push(built.sync);
+      content.push(
+        when === undefined
+          ? built.el
+          : dependent(built.el, knobs.chain(when), () => knobs.live(when)),
+      );
     }
 
     const masterSwitch = master
@@ -791,7 +853,6 @@ export class Inspector {
               ),
           }
         : {}),
-      syncers,
     });
   }
 
@@ -907,12 +968,13 @@ export class Inspector {
     }
   }
 
+  /** A folded group in words: what of it takes effect (a knob whose switches are off says nothing). */
   #groupSummary(knobs: Knobs, defs: readonly ParamDef[], master: SwitchDef | undefined): string[] {
     if (master && !knobs.on(master.key)) return ["off"];
     const parts: string[] = [];
     for (const def of defs) {
       if (def === master && def.kind !== "feature") continue;
-      if (def.when !== undefined && !knobs.on(def.when)) continue;
+      if (!knobs.live(def.when)) continue;
       const value = knobs.value(def.key);
       switch (def.kind) {
         case "toggle":
@@ -1076,13 +1138,11 @@ export class Inspector {
       () => {
         const state = this.#state();
         for (const swatch of swatches) {
-          swatch.setAttribute("aria-pressed", String(swatch.dataset.value === state.accent));
-          swatch.style.setProperty(
-            "--swatch",
-            swatch.dataset.value || sceneDefs[state.scene].accent,
-          );
+          setAttr(swatch, "aria-pressed", String(swatch.dataset.value === state.accent));
+          setStyle(swatch, "--swatch", swatch.dataset.value || sceneDefs[state.scene].accent);
         }
-        if (document.activeElement !== custom) custom.value = accentOf(state);
+        const accent = accentOf(state);
+        if (document.activeElement !== custom && custom.value !== accent) custom.value = accent;
       },
     );
     const keys = SETTINGS.look;
@@ -1105,7 +1165,6 @@ export class Inspector {
       },
       modified: () => keys.some((key) => this.#state()[key] !== this.#base()[key]),
       reset: () => change(Object.fromEntries(keys.map((key) => [key, this.#base()[key]]))),
-      syncers: this.#syncers,
     });
   }
 
@@ -1245,8 +1304,9 @@ export class Inspector {
         block: play,
       }),
     ];
-    // Overlap, blend length, pattern and speed tune transitions: shown only while they are on.
-    const tuning = rows.slice(3, 7);
+    // Overlap, blend length, pattern and speed tune transitions: gates on the Transitions setting.
+    const tuning = new Set(rows.slice(3, 7));
+    const passing = () => this.#state().transitions === "on";
     const keys = SETTINGS.motion;
     tagSettings(rows, keys);
     const playIcon = icon("play");
@@ -1264,10 +1324,9 @@ export class Inspector {
       ...rows.map((built) => built.sync),
       () => {
         const paused = this.#ctx.renderer()?.paused ?? false;
-        playIcon.style.display = paused ? "" : "none";
-        pauseIcon.style.display = paused ? "none" : "";
-        playLabel.textContent = paused ? "Play" : "Pause";
-        for (const built of tuning) built.el.hidden = this.#state().transitions !== "on";
+        setStyle(playIcon, "display", paused ? "" : "none");
+        setStyle(pauseIcon, "display", paused ? "none" : "");
+        setText(playLabel, paused ? "Play" : "Pause");
       },
     );
     return this.#section({
@@ -1276,7 +1335,9 @@ export class Inspector {
       blurb: "How much things move, whether the scene follows you, and how scenes come and go.",
       icon: "motion",
       open: false,
-      content: rows.map((built) => built.el),
+      content: rows.map((built) =>
+        tuning.has(built) ? dependent(built.el, ["transitions"], passing) : built.el,
+      ),
       summary: () => {
         const state = this.#state();
         return [
@@ -1291,7 +1352,6 @@ export class Inspector {
       },
       modified: () => keys.some((key) => this.#state()[key] !== this.#base()[key]),
       reset: () => change(Object.fromEntries(keys.map((key) => [key, this.#base()[key]]))),
-      syncers: this.#syncers,
     });
   }
 
@@ -1315,8 +1375,9 @@ export class Inspector {
       label: "Instance name",
       help: "Shown on the sign-in card of a private instance.",
       block: nameInput,
+      modified: () => this.#state().instance !== this.#base().instance,
+      reset: () => change({ instance: this.#base().instance }),
     });
-    const nameReveal = reveal(nameRow.el, () => this.#state().mode === "instance");
     const dim = slider(
       "Dim background",
       0,
@@ -1342,6 +1403,7 @@ export class Inspector {
         modified: () => this.#state().mode !== this.#base().mode,
         reset: () => change({ mode: this.#base().mode }),
       }),
+      nameRow,
       row({
         label: "Dim background",
         help: "Darken the scene behind the page, to judge whether the copy needs help to stand out.",
@@ -1361,28 +1423,23 @@ export class Inspector {
         reset: () => change({ blur: 0 }),
       }),
     ];
-    this.#syncers.push(
-      page.sync,
-      nameRow.sync,
-      nameReveal.sync,
-      dim.sync,
-      blur.sync,
-      ...rows.map((built) => built.sync),
-      () => {
-        if (document.activeElement !== nameInput) nameInput.value = this.#state().instance;
-      },
-    );
+    this.#syncers.push(page.sync, dim.sync, blur.sync, ...rows.map((built) => built.sync), () => {
+      const { instance } = this.#state();
+      if (document.activeElement !== nameInput && nameInput.value !== instance)
+        nameInput.value = instance;
+    });
     const keys = SETTINGS.page;
     tagSettings(rows, keys);
-    const [pageRow, ...rest] = rows;
+    // The instance name: a gate on the page being the sign-in card.
+    const named = () => this.#state().mode === "instance";
     return this.#section({
       id: "page",
       title: "Page",
       blurb: "What sits on top of the picture, and how the picture sits behind it.",
       icon: "page",
       open: false,
-      content: [pageRow?.el, nameReveal.el, ...rest.map((built) => built.el)].filter(
-        (el): el is HTMLElement => el !== undefined,
+      content: rows.map((built) =>
+        built === nameRow ? dependent(built.el, ["mode"], named) : built.el,
       ),
       summary: () => {
         const state = this.#state();
@@ -1394,7 +1451,6 @@ export class Inspector {
       },
       modified: () => keys.some((key) => this.#state()[key] !== this.#base()[key]),
       reset: () => change(Object.fromEntries(keys.map((key) => [key, this.#base()[key]]))),
-      syncers: this.#syncers,
     });
   }
 }

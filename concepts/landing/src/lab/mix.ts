@@ -2,12 +2,13 @@
 // the total; mix-model.ts holds the rules. A part is a range, or a feature whose amount is its weight
 // while it is on: each feature part has an icon chip over the bar that switches it on (with the
 // weight it had) and off, and only the parts that are in take a segment. Drag a divider to trade
-// weight between the two parts beside it (their sum holds); each part in the legend is a slider for
-// its own weight (arrows, Page keys, Home/End, Delete for zero, which switches a feature off), and a
-// range's has a button that leaves it out or brings it back.
+// weight between the two parts beside it (their sum holds; on a touch screen once the drag runs
+// across, so a swipe down scrolls the panel); each part in the legend is a slider for its own weight
+// (sliderBehaviour: arrows, Page keys, Home/End, Delete for zero, which switches a feature off), and
+// a range's has a button that leaves it out or brings it back.
 import { chipButton } from "./chips.ts";
-import { row } from "./controls.ts";
-import { drag, h, keyStep, type Built } from "./dom.ts";
+import { dragAcross, resetDot, row, sliderBehaviour } from "./controls.ts";
+import { h, keyStep, setAttr, setHidden, setStyle, setText, type Built } from "./dom.ts";
 import { icon } from "./icons.ts";
 import { knobKeys, type Knobs } from "./knobs.ts";
 import {
@@ -58,7 +59,7 @@ export function mixBar(knobs: Knobs, name: string, parts: readonly MixPart[]): B
     let patch: KnobPatch = {};
     held = trade.held;
     divider.classList.add("dragging");
-    drag(
+    dragAcross(
       event,
       divider,
       (pointer) => {
@@ -73,18 +74,6 @@ export function mixBar(knobs: Knobs, name: string, parts: readonly MixPart[]): B
     );
   };
 
-  /** A modified dot resetting `keys`. */
-  const resetDot = (label: string, keys: readonly string[]) => {
-    const dot = h("button", {
-      type: "button",
-      class: "modified",
-      title: "Changed: click to reset",
-      "aria-label": `Reset ${label}`,
-    });
-    dot.addEventListener("click", () => knobs.reset(keys));
-    return dot;
-  };
-
   // The feature parts' chips: the part's icon in its swatch while it is on.
   const chips = new Map<MixPart, HTMLButtonElement>();
   const chipSyncs: (() => void)[] = [];
@@ -94,15 +83,15 @@ export function mixBar(knobs: Knobs, name: string, parts: readonly MixPart[]): B
     chip.style.setProperty("--swatch", part.swatch);
     chip.addEventListener("click", () => knobs.set(toggleIn(part, parts, read, defaults), true));
     chips.set(part, chip);
-    const dot = resetDot(def.label, knobKeys(def));
+    const reset = resetDot(def.label, () => knobs.reset(knobKeys(def)));
     chipSyncs.push(() => {
-      chip.setAttribute("aria-checked", String(switchedOn(part, read)));
-      dot.hidden = !knobs.modified(knobKeys(def));
+      setAttr(chip, "aria-checked", String(switchedOn(part, read)));
+      setHidden(reset, !knobs.modified(knobKeys(def)));
     });
     return h(
       "div",
       { class: "chip-cell" },
-      dot,
+      reset,
       chip,
       h("p", { class: "hint" }, `${part.part}: ${def.help}`),
     );
@@ -114,45 +103,44 @@ export function mixBar(knobs: Knobs, name: string, parts: readonly MixPart[]): B
     const { def } = part;
     const slider = h(
       "span",
-      {
-        class: "mix-name",
-        role: "slider",
-        tabIndex: 0,
-        "aria-label": def.label,
-        "aria-valuemin": String(def.min),
-        "aria-valuemax": String(def.max),
-        title: def.help,
-      },
+      { class: "mix-name", "aria-label": def.label, title: def.help },
       part.part,
     );
     legend.set(part, slider);
+    const key = weightKey(def);
+    const syncSlider = sliderBehaviour(slider, {
+      min: def.min,
+      max: def.max,
+      now: () => knobs.value(key),
+      text: () => `weight ${knobs.value(key)}, ${shareText(part)} of the mix`,
+      set: (patch, commit) => knobs.set(patch, commit),
+      key: (event) => {
+        const delta = keyStep(event, def.step, def.max - def.min);
+        const zero = event.key === "Home" || event.key === "Delete" || event.key === "Backspace";
+        const next =
+          delta !== undefined
+            ? weight(part) + delta
+            : zero
+              ? def.min
+              : event.key === "End"
+                ? def.max
+                : undefined;
+        return next === undefined ? undefined : setWeight(part, next);
+      },
+    });
+    // A feature switched off by a key leaves the legend: its chip takes the focus.
     slider.addEventListener("keydown", (event) => {
-      const delta = keyStep(event, def.step, def.max - def.min);
-      const zero = event.key === "Home" || event.key === "Delete" || event.key === "Backspace";
-      const next =
-        delta !== undefined
-          ? weight(part) + delta
-          : zero
-            ? def.min
-            : event.key === "End"
-              ? def.max
-              : undefined;
-      if (next === undefined) return;
-      event.preventDefault();
-      knobs.set(setWeight(part, next), true);
-      // A feature switched off leaves the legend: its chip takes the focus.
-      if (!switchedOn(part, read)) chips.get(part)?.focus();
+      if (event.defaultPrevented && !switchedOn(part, read)) chips.get(part)?.focus();
     });
     const share = h("span", { class: "mix-share" });
     const raw = h("span", { class: "mix-weight" });
-    const key = weightKey(def);
-    const dot = resetDot(def.label, [key]);
+    const reset = resetDot(def.label, () => knobs.reset([key]));
     const swatch = h("span", { class: "mix-swatch" });
     swatch.style.setProperty("--swatch", part.swatch);
     const item = h(
       "li",
       { class: "mix-part", "data-search": `${def.label} ${def.help}`.toLowerCase() },
-      dot,
+      reset,
       swatch,
       slider,
       share,
@@ -170,22 +158,21 @@ export function mixBar(knobs: Knobs, name: string, parts: readonly MixPart[]): B
       item.append(toggle, h("p", { class: "hint" }, def.help));
       syncToggle = () => {
         const out = weight(part) <= 0;
-        toggle.title = out ? `Bring ${part.part} back in` : `Leave ${part.part} out (weight zero)`;
-        toggle.setAttribute("aria-label", toggle.title);
-        outIcon.style.display = out ? "none" : "";
-        inIcon.style.display = out ? "" : "none";
+        const title = out ? `Bring ${part.part} back in` : `Leave ${part.part} out (weight zero)`;
+        setAttr(toggle, "title", title);
+        setAttr(toggle, "aria-label", title);
+        setStyle(outIcon, "display", out ? "none" : "");
+        setStyle(inIcon, "display", out ? "" : "none");
       };
     }
     legendSyncs.push(() => {
-      const value = knobs.value(key);
-      item.hidden = !switchedOn(part, read);
+      setHidden(item, !switchedOn(part, read));
       item.classList.toggle("out", weight(part) <= 0);
-      share.textContent = shareText(part);
-      raw.textContent = String(value);
-      slider.setAttribute("aria-valuenow", String(value));
-      slider.setAttribute("aria-valuetext", `weight ${value}, ${shareText(part)} of the mix`);
+      setText(share, shareText(part));
+      setText(raw, String(knobs.value(key)));
+      syncSlider();
       syncToggle();
-      dot.hidden = !knobs.modified([key]);
+      setHidden(reset, !knobs.modified([key]));
     });
     return item;
   });
@@ -221,13 +208,15 @@ export function mixBar(knobs: Knobs, name: string, parts: readonly MixPart[]): B
       const shown = spans(parts, read, held);
       for (const { part, segment, label } of segments) {
         const span = shown.find((candidate) => candidate.part === part);
-        segment.hidden = span === undefined;
-        segment.style.flexGrow = String(weight(part));
+        setHidden(segment, span === undefined);
+        setStyle(segment, "flex-grow", String(weight(part)));
         const width = span ? span.end - span.start : 0;
-        label.textContent =
-          width >= 0.3 ? `${part.part} ${shareText(part)}` : width >= 0.1 ? shareText(part) : "";
+        setText(
+          label,
+          width >= 0.3 ? `${part.part} ${shareText(part)}` : width >= 0.1 ? shareText(part) : "",
+        );
       }
-      empty.hidden = shown.length > 0;
+      setHidden(empty, shown.length > 0);
       // One divider between each pair of neighbours; rebuilt only when their number changes, so a
       // divider being dragged keeps its pointer capture.
       while (dividers.length < shown.length - 1) {
@@ -239,8 +228,8 @@ export function mixBar(knobs: Knobs, name: string, parts: readonly MixPart[]): B
       }
       for (const [index, divider] of dividers.entries()) {
         const span = shown[index];
-        divider.hidden = index >= shown.length - 1 || span === undefined;
-        if (span) divider.style.left = `${(span.end * 100).toFixed(3)}%`;
+        setHidden(divider, index >= shown.length - 1 || span === undefined);
+        if (span) setStyle(divider, "left", `${(span.end * 100).toFixed(3)}%`);
       }
       for (const sync of legendSyncs) sync();
     },

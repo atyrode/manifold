@@ -18,7 +18,15 @@ import {
 } from "./compare.ts";
 import { SceneGallery } from "./lab/gallery.ts";
 import { iconButton, nowButton, row, slider, textButton } from "./lab/controls.ts";
-import { h, type LabContext, type Patch } from "./lab/dom.ts";
+import {
+  h,
+  setAttr,
+  setHidden,
+  setStyle,
+  setText,
+  type LabContext,
+  type Patch,
+} from "./lab/dom.ts";
 import { icon } from "./lab/icons.ts";
 import { Inspector } from "./lab/inspector.ts";
 import { knobIcon } from "./lab/knobs.ts";
@@ -204,6 +212,7 @@ export class Lab {
       },
       save,
     });
+    // The Scenes and Presets views reflect the setup only while on screen, and as they come on.
     this.#views = new Views(
       [
         {
@@ -211,14 +220,20 @@ export class Lab {
           label: "Scenes",
           icon: "grid",
           el: this.#gallery.el,
-          shown: () => this.#gallery.shown(),
+          shown: () => {
+            this.#gallery.sync();
+            this.#gallery.shown();
+          },
         },
         {
           id: "presets",
           label: "Presets",
           icon: "bookmark",
           el: this.#presets.el,
-          shown: () => this.#presets.shown(),
+          shown: () => {
+            this.#presets.sync();
+            this.#presets.shown();
+          },
         },
         {
           id: "controls",
@@ -330,8 +345,8 @@ export class Lab {
     const { state } = this.#current();
     // A step of the tour (its own switch or the user's) becomes the current one; another scene holds it.
     this.#tour?.follow(state.scene);
-    this.#gallery.sync();
-    this.#presets.sync();
+    if (this.#views.current === "scenes") this.#gallery.sync();
+    if (this.#views.current === "presets") this.#presets.sync();
     this.#inspector.sync();
     for (const sync of this.#syncers) sync();
     const scene = sceneDefs[state.scene];
@@ -441,8 +456,9 @@ export class Lab {
   }
 
   #syncHistory(): void {
-    this.#undoButton.disabled = this.#history.undo.length === 0;
-    this.#redoButton.disabled = this.#history.redo.length === 0;
+    const [undo, redo] = [this.#history.undo.length === 0, this.#history.redo.length === 0];
+    if (this.#undoButton.disabled !== undo) this.#undoButton.disabled = undo;
+    if (this.#redoButton.disabled !== redo) this.#redoButton.disabled = redo;
   }
 
   #syncStatus(): void {
@@ -450,9 +466,9 @@ export class Lab {
     const gpu = renderer?.glInfo.split(" · ")[1] ?? "WebGL2 unavailable";
     const build = this.#host.build ? `build ${this.#host.build}` : "working tree";
     const fps = renderer ? `${Math.round(renderer.fps)} fps` : "no WebGL";
-    this.#status.textContent = renderer?.paused ? `${fps} · paused` : fps;
-    this.#status.title = `${build} · ${fps}\n${gpu}`;
-    this.#statusLong.textContent = `${build} · ${fps} · ${gpu}`;
+    setText(this.#status, renderer?.paused ? `${fps} · paused` : fps);
+    setAttr(this.#status, "title", `${build} · ${fps}\n${gpu}`);
+    setText(this.#statusLong, `${build} · ${fps} · ${gpu}`);
     this.#failure.sync();
   }
 
@@ -479,11 +495,15 @@ export class Lab {
       el,
       sync: () => {
         const failure = this.#host.renderer()?.failure;
-        el.hidden = failure === undefined;
+        setHidden(el, failure === undefined);
         if (failure === undefined) return;
-        what.textContent = `${sceneDefs[failure.scene].title}: ${FAILURE_LABEL[failure.stage]}.`;
-        detail.textContent = failure.message.split("\n")[0] ?? "";
-        el.title = `${failure.message}\n\nThe console has the full error (evt=landing.renderer.scene_failed).`;
+        setText(what, `${sceneDefs[failure.scene].title}: ${FAILURE_LABEL[failure.stage]}.`);
+        setText(detail, failure.message.split("\n")[0] ?? "");
+        setAttr(
+          el,
+          "title",
+          `${failure.message}\n\nThe console has the full error (evt=landing.renderer.scene_failed).`,
+        );
       },
     };
   }
@@ -659,19 +679,21 @@ export class Lab {
 
     this.#syncers.push(() => {
       const paused = this.#host.renderer()?.paused ?? false;
-      playIcon.style.display = paused ? "" : "none";
-      pauseIcon.style.display = paused ? "none" : "";
+      setStyle(playIcon, "display", paused ? "" : "none");
+      setStyle(pauseIcon, "display", paused ? "none" : "");
       const playLabel = paused ? "Play (p)" : "Pause (p)";
-      play.title = playLabel;
-      play.setAttribute("aria-label", playLabel);
-      play.setAttribute("aria-pressed", String(paused));
+      setAttr(play, "title", playLabel);
+      setAttr(play, "aria-label", playLabel);
+      setAttr(play, "aria-pressed", String(paused));
       motion.sync();
-      motionReadout.textContent =
-        state().motion === 0 ? "still" : `${Math.round(state().motion * 100)}%`;
+      setText(
+        motionReadout,
+        state().motion === 0 ? "still" : `${Math.round(state().motion * 100)}%`,
+      );
       const passing = state().transitions === "on";
-      transitions.setAttribute("aria-pressed", String(passing));
-      transitions.title = `Scene transitions: ${passing ? "on" : "off (cuts)"}`;
-      explain.setAttribute("aria-pressed", String(this.#prefs.explain));
+      setAttr(transitions, "aria-pressed", String(passing));
+      setAttr(transitions, "title", `Scene transitions: ${passing ? "on" : "off (cuts)"}`);
+      setAttr(explain, "aria-pressed", String(this.#prefs.explain));
 
       const scene = state().scene;
       const { title, accent } = sceneDefs[scene];
@@ -712,12 +734,12 @@ export class Lab {
       }
 
       const comparison = this.#comparison;
-      flipGroup.hidden = comparison === undefined;
-      comparePop.button.setAttribute("aria-pressed", String(comparison !== undefined));
+      setHidden(flipGroup, comparison === undefined);
+      setAttr(comparePop.button, "aria-pressed", String(comparison !== undefined));
       for (const { slot, button } of flips)
-        button.setAttribute("aria-pressed", String(slot === comparison?.live));
+        setAttr(button, "aria-pressed", String(slot === comparison?.live));
       tourPop.button.classList.toggle("touring", this.#tour?.playing === true);
-      tourPop.button.setAttribute("aria-pressed", String(this.#tour !== undefined));
+      setAttr(tourPop.button, "aria-pressed", String(this.#tour !== undefined));
     });
     return bar;
   }
@@ -783,24 +805,26 @@ export class Lab {
     );
     this.#syncers.push(onRow.sync, () => {
       const comparison = this.#comparison;
-      start.hidden = comparison !== undefined;
-      active.hidden = comparison === undefined;
-      this.#badge.hidden = comparison === undefined;
+      setHidden(start, comparison !== undefined);
+      setHidden(active, comparison === undefined);
+      setHidden(this.#badge, comparison === undefined);
       if (!comparison) return;
       const here = this.#query();
       const live = this.#current().state.scene;
       const hidden = readState(new URLSearchParams(comparison.other)).scene;
       for (const { slot, button, scene } of slotButtons) {
-        button.setAttribute("aria-pressed", String(slot === comparison.live));
-        scene.textContent = sceneDefs[slot === comparison.live ? live : hidden].title;
+        setAttr(button, "aria-pressed", String(slot === comparison.live));
+        setText(scene, sceneDefs[slot === comparison.live ? live : hidden].title);
       }
       const keys = setupDifferences(here, comparison.other);
-      differs.textContent =
+      setText(
+        differs,
         keys.length === 0
           ? "A and B are the same setup: change the one on screen."
-          : `They differ in ${keys.map((key) => this.#settingLabel(key, [live, hidden])).join(", ")}.`;
-      copyLabel.textContent = `Copy to ${otherSlot(comparison.live).toUpperCase()}`;
-      this.#badge.textContent = `${comparison.live.toUpperCase()} · ${sceneDefs[live].title}`;
+          : `They differ in ${keys.map((key) => this.#settingLabel(key, [live, hidden])).join(", ")}.`,
+      );
+      setText(copyLabel, `Copy to ${otherSlot(comparison.live).toUpperCase()}`);
+      setText(this.#badge, `${comparison.live.toUpperCase()} · ${sceneDefs[live].title}`);
     });
     return [blurb, start, active];
   }
@@ -928,7 +952,7 @@ export class Lab {
           steps.querySelector<HTMLElement>(`[data-focus="${focus}"]`)?.focus();
       }
       for (const [index, item] of [...steps.children].entries()) {
-        if (index === tour?.index) item.setAttribute("aria-current", "step");
+        if (index === tour?.index) setAttr(item, "aria-current", "step");
         else item.removeAttribute("aria-current");
       }
       const available = sceneIds.filter((id) => !list.some((step) => step.scene === id));
@@ -939,13 +963,17 @@ export class Lab {
           ...available.map((id) => h("option", { value: id }, sceneDefs[id].title)),
         );
       }
-      if (document.activeElement !== picker && available.includes(scene)) picker.value = scene;
-      for (const control of [picker, add, addAll]) control.disabled = available.length === 0;
+      if (document.activeElement !== picker && available.includes(scene) && picker.value !== scene)
+        picker.value = scene;
+      for (const control of [picker, add, addAll])
+        if (control.disabled !== (available.length === 0))
+          control.disabled = available.length === 0;
       const playing = tour?.playing === true;
-      playIcon.style.display = playing ? "none" : "";
-      pauseIcon.style.display = playing ? "" : "none";
-      playLabel.textContent = playing ? "Pause" : "Play";
-      for (const button of [previous, play, next, clear]) button.disabled = tour === undefined;
+      setStyle(playIcon, "display", playing ? "none" : "");
+      setStyle(pauseIcon, "display", playing ? "" : "none");
+      setText(playLabel, playing ? "Pause" : "Play");
+      for (const button of [previous, play, next, clear])
+        if (button.disabled !== (tour === undefined)) button.disabled = tour === undefined;
       this.#syncTourClock();
     });
     return [
@@ -1028,10 +1056,10 @@ export class Lab {
     const tour = this.#tour;
     const status = this.#tourStatus;
     const progress = this.#tourProgress;
-    progress.hidden = tour === undefined;
-    this.#barProgress.hidden = tour === undefined;
+    setHidden(progress, tour === undefined);
+    setHidden(this.#barProgress, tour === undefined);
     if (!tour) {
-      status.textContent = "Add scenes to build a tour.";
+      setText(status, "Add scenes to build a tour.");
       return;
     }
     const where =
@@ -1040,11 +1068,13 @@ export class Lab {
         : tour.playing
           ? `${Math.ceil(tour.dwell - tour.elapsed)} s left`
           : "paused";
-    const text = `${tour.index + 1} / ${tour.tour.steps.length} · ${sceneDefs[tour.step.scene].title} · ${where}`;
-    if (status.textContent !== text) status.textContent = text;
+    setText(
+      status,
+      `${tour.index + 1} / ${tour.tour.steps.length} · ${sceneDefs[tour.step.scene].title} · ${where}`,
+    );
     const share = Math.round((tour.elapsed / tour.dwell) * 200) / 200;
     if (progress.value !== share) progress.value = share;
-    this.#barProgress.style.setProperty("--share", String(share));
+    setStyle(this.#barProgress, "--share", String(share));
   }
 
   /** Keep the setup on screen as A and go on editing a copy of it as B, with the history so far. */

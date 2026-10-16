@@ -1,8 +1,10 @@
-// DOM plumbing shared by the lab's panels and widgets: an element factory and the `Built` pair every
-// control returns (its element, and how to reflect the setup into it).
+// DOM plumbing shared by the lab's panels and widgets: an element factory, the `Built` pair every
+// control returns (its element, and how to reflect the setup into it), write-if-changed setters,
+// reveals, and the gates through which the Controls view shows what hangs on a switch.
 import type { DitherRenderer } from "../renderer.ts";
 import type { SkyPlanet } from "../scenes/planets.ts";
 import type { LabState, Params } from "../state.ts";
+import type { GateState } from "./availability-model.ts";
 
 export type Child = Node | string | false | null | undefined;
 
@@ -46,6 +48,8 @@ export interface Built {
 // Reflecting the setup writes only what changed. The lab syncs every control on every change, a
 // frame at a time while a slider moves, and writing text, `hidden` or an attribute even to what it
 // already is restyles or lays out the element again (its text node is replaced, its attribute set).
+// So a sync that changes nothing writes nothing. Toggling a class to the state it is in writes
+// nothing either (DOMTokenList.toggle with `force`); `add` and `remove` always do.
 
 /** Set `el`'s text unless it already reads so. */
 export function setText(el: Element, text: string): void {
@@ -62,6 +66,22 @@ export function setAttr(el: Element, name: string, value: string): void {
   if (el.getAttribute(name) !== value) el.setAttribute(name, value);
 }
 
+/** The inline style values setStyle last wrote, by element and property. */
+const styled = new WeakMap<Element, Map<string, string>>();
+
+/**
+ * Set `el`'s inline style property `name` (a custom property too; "" removes it) unless setStyle
+ * last wrote it so. It compares with what it wrote, not with the style read back, which the browser
+ * normalises ("12.500%" reads "12.5%").
+ */
+export function setStyle(el: HTMLElement | SVGElement, name: string, value: string): void {
+  let written = styled.get(el);
+  if (!written) styled.set(el, (written = new Map()));
+  if (written.get(name) === value) return;
+  written.set(name, value);
+  el.style.setProperty(name, value);
+}
+
 export type Patch = Record<string, string | number>;
 
 /** What the lab's panels and widgets reach the setup through. */
@@ -76,10 +96,74 @@ export interface LabContext {
   readonly reducedMotion: boolean;
 }
 
-/** Open while `isOpen` holds; animates its height through a grid row. */
+/** Open while `isOpen` holds; animates its height through a grid row (setOpen). */
 export function reveal(child: HTMLElement, isOpen: () => boolean): Built {
   const el = h("div", { class: "reveal" }, h("div", { class: "reveal-inner" }, child));
-  return { el, sync: () => el.classList.toggle("open", isOpen()) };
+  return { el, sync: () => setOpen(el, isOpen()) };
+}
+
+/**
+ * Open or close reveal `el`. Closed, its content leaves the tab order and the accessibility tree
+ * (`inert`) while its height animates away; the focus it held goes to `fallback`, if given.
+ */
+export function setOpen(el: HTMLElement, open: boolean, fallback?: HTMLElement): void {
+  const inner = el.firstElementChild;
+  if (!open && fallback && el.contains(document.activeElement)) fallback.focus();
+  el.classList.toggle("open", open);
+  if (inner instanceof HTMLElement && inner.inert === open) inner.inert = !open;
+}
+
+/** Whether each gate's switches are on (gate), by element. */
+const gates = new WeakMap<Element, () => boolean>();
+
+/**
+ * Mark `el` as a control that hangs on switches: `chain` their URL keys, nearest first, `live`
+ * whether they are all on (availability-model.ts). The Controls view alone shows it or not, after
+ * every sync (showGate): open while live; while not, closed, unless the search or the lens finds
+ * what it holds, then dormant. It starts as `live` says, so a gate built between syncs (a planet's
+ * controls) stands right. A reveal (`dependent`) opens and closes; any other element hides.
+ */
+export function gate<E extends HTMLElement>(
+  el: E,
+  chain: readonly string[],
+  live: () => boolean,
+): E {
+  el.dataset.when = chain.join(" ");
+  gates.set(el, live);
+  showGate(el, live() ? "open" : "closed");
+  return el;
+}
+
+/** `child` in a reveal that is a gate (above). */
+export function dependent(
+  child: HTMLElement,
+  chain: readonly string[],
+  live: () => boolean,
+): HTMLElement {
+  return gate(
+    h("div", { class: "reveal" }, h("div", { class: "reveal-inner" }, child)),
+    chain,
+    live,
+  );
+}
+
+/** Whether gate `el`'s switches are all on (true for an element that is no gate). */
+export function isLive(el: Element): boolean {
+  return gates.get(el)?.() ?? true;
+}
+
+/**
+ * Show gate `el` in `state`: a dormant one dimmed but in reach; a closed one hands the focus it held
+ * to `fallback`, if given.
+ */
+export function showGate(el: HTMLElement, state: GateState, fallback?: HTMLElement): void {
+  el.classList.toggle("dormant", state === "dormant");
+  if (el.classList.contains("reveal")) {
+    setOpen(el, state !== "closed", fallback);
+    return;
+  }
+  if (state === "closed" && fallback && el.contains(document.activeElement)) fallback.focus();
+  setHidden(el, state === "closed");
 }
 
 /** `value` clamped to min..max and snapped to `step` from `min`, without float dust. */
