@@ -15,14 +15,27 @@
 //                 SIGGRAPH 2001) plus the scene's force snippet, v += dt · a
 //   4. advect     the velocity carries itself (semi-Lagrangian, midpoint back-trace), fading
 //   5. divergence of the velocity; walls and the obstacle let nothing through their faces
-//   6. pressure   `iterations` Jacobi sweeps of ∇²p = ∇·v, warm-started from the last solve
+//   6. pressure   ∇²p = ∇·v by one multigrid V-cycle (`cycles`), started from the last step's
+//                 pressure: a red–black Gauss–Seidel sweep on each level of a pyramid of grids,
+//                 each half the last, the residual handed down, the coarsest (≤ 16 cells) solved
+//                 outright, each level's correction carried back up and swept again
 //   7. project    v −= ∇p: divergence free, zero inside the obstacle
 //   8. dye        carried by the projected velocity: MacCormack (Selle, Fedkiw, Kim, Liu &
 //                 Rossignac, "An Unconditionally Stable MacCormack Method", 2008), clamped to the
 //                 texels it read so it never rings, or plain semi-Lagrangian; then faded
 // Splats queued since the last step land first. `advect(field)` carries any other ping-pong field
 // (a director field, a second dye) with the velocity of the last step. Pressure is kept in
-// velocity units (p divided by a velocity texel's height), which half floats hold comfortably.
+// velocity units (p divided by a velocity texel's height), in 32-bit floats: the solve converges
+// further than half floats resolve.
+//
+// Incompressible at every scale. One V-cycle from rest removes over 80 % of the divergence at
+// every wavelength the frame holds, its longest included (a little less beside an obstacle), and
+// started from the last step's pressure it leaves a few percent: dye neither piles up where the
+// flow converges nor thins where it spreads. (The 20 Jacobi sweeps this replaced removed under
+// 10 % at the frame's scale, so a steady source such as buoyancy built divergence up to ten times
+// and more what one step adds.) What remains is the collocated grid's own floor: velocities live
+// at cell centres, so the projected field keeps a little divergence at the scale of a texel and in
+// the cells along walls and the obstacle, most along a curved wall (sims/fluid.verify.ts).
 //
 // Edges (`boundary`, each "wall" by default): "wall" is a free-slip wall (nothing crosses it,
 // fluid slides along it), "open" lets fluid leave and enter (pressure 0 beyond it; dye flows in
@@ -51,14 +64,18 @@
 // Cost per step at the defaults, 16:9 (velocity 228×128 = 29,184 texels, dye 683×384 = 262,272):
 //   pass          reads/texel       pass          reads/texel
 //   curl          4                 divergence    5  (+5 with an obstacle)
-//   forces        6  (+4 force)     pressure      5 × 20 sweeps
+//   forces        6  (+4 force)     pressure      ≈ 51 (+5 with an obstacle), in 25 draws
 //   advect        3  (+1 obstacle)  project       6  (+2)
 //   dye           13 MacCormack (forward 3, correction 10), 3 semi-Lagrangian
-// ≈ 3.7 M reads on the velocity grid and 3.4 M on the dye (0.8 M semi-Lagrangian), in 27 draws
+// The V-cycle reads 38 per velocity texel on the velocity grid (a sweep each way, 13 on average:
+// a black cell relaxes its four red neighbours itself; the residual handed down, 7; the correction
+// back, 5) and a third as much again on the coarser levels, in 4 draws per level but the coarsest
+// and 1 for that: 25 for 228×128's seven levels.
+// ≈ 2.2 M reads on the velocity grid and 3.4 M on the dye (0.8 M semi-Lagrangian), in 32 draws
 // (+1 with an obstacle, +1 per batch of up to 16 splats per grid, +2 per `advect`ed field with
 // MacCormack, +1 semi-Lagrangian). That is well under a millisecond on an integrated GPU; on a
 // software rasterizer (SwiftShader) budget tens of milliseconds, and prewarm with few, long steps
-// (semi-Lagrangian advection stays stable at dt = 0.1). Memory ≈ 0.5 MB on the velocity side,
+// (semi-Lagrangian advection stays stable at dt = 0.1). Memory ≈ 0.9 MB on the velocity side,
 // 6.3 MB for an rgba16f dye with its MacCormack scratch.
 //
 // Example: an incense stick. dye.r is smoke, dye.g heat; heat rises and fades fast, smoke lingers.
@@ -106,6 +123,7 @@ import {
   type Pass,
   type PingPong,
   type RenderTarget,
+  type RunOptions,
   type TargetWrap,
   type TextureSource,
   type UniformValue,
@@ -153,8 +171,11 @@ export interface FluidStep {
   dt: number;
   /** uTime for the snippets. Default 0. */
   time?: number;
-  /** Jacobi sweeps of the pressure solve. Default 20; fewer leaves the flow a little compressible. */
-  iterations?: number;
+  /**
+   * Multigrid V-cycles of the pressure solve. Default 1: started from the last step's pressure,
+   * one leaves a few percent of the divergence; more only help a flow torn up from step to step.
+   */
+  cycles?: number;
   /**
    * Vorticity confinement ε (Fedkiw et al., with h one velocity texel): 0 off, ~5–15 curling
    * smoke, 30+ boils. Default 0.
@@ -164,8 +185,6 @@ export interface FluidStep {
   velocityDissipation?: number;
   /** Dye fade per second: one rate, or one per channel (missing ones 0). Default 0. */
   dyeDissipation?: number | ArrayLike<number>;
-  /** Share of the last pressure the solve starts from, 0..1. Default 0.8. */
-  pressureRetain?: number;
   /** The snippets' own uniforms (they persist, so set them when they change). */
   uniforms?: Readonly<Record<string, UniformValue>>;
   /** The snippets' own samplers (they persist). */
@@ -193,8 +212,11 @@ export class FluidError extends GpuError {}
 const SPLATS = 16;
 const DEFAULT_VELOCITY_RESOLUTION = 128;
 const DEFAULT_DYE_RESOLUTION = 384;
-const DEFAULT_ITERATIONS = 20;
-const DEFAULT_PRESSURE_RETAIN = 0.8;
+const DEFAULT_CYCLES = 1;
+/** The pressure solve's coarsest level has at most this many cells, solved outright in one pass. */
+const COARSEST_CELLS = 16;
+/** Gauss–Seidel sweeps of that outright solve (in registers, per fragment). */
+const COARSEST_SWEEPS = 32;
 /** Coarsest grid the solver accepts on the short side. */
 const MIN_RESOLUTION = 8;
 const KEEP_ALL: readonly number[] = [1, 1, 1, 1];
@@ -379,30 +401,324 @@ void main() {
   if (fluidBeyond(vUv + dx, FLUID_WALL)) r = -c.x;
   if (fluidBeyond(vUv - dy, FLUID_WALL)) b = -c.y;
   if (fluidBeyond(vUv + dy, FLUID_WALL)) t = -c.y;
-  // The same at the obstacle's faces, noting them for the pressure passes: 1 left, 2 right,
-  // 4 below, 8 above.
-  float faces = 0.0;
+  // The same at the obstacle's faces, closing them for the pressure passes; a solid cell is closed
+  // on every side.
+  vec4 open = vec4(1.0);
 #if FLUID_OBSTACLE
-  if (fluidSolid(vUv - dx)) { l = -c.x; faces += 1.0; }
-  if (fluidSolid(vUv + dx)) { r = -c.x; faces += 2.0; }
-  if (fluidSolid(vUv - dy)) { b = -c.y; faces += 4.0; }
-  if (fluidSolid(vUv + dy)) { t = -c.y; faces += 8.0; }
+  if (fluidSolid(vUv - dx)) { l = -c.x; open.x = 0.0; }
+  if (fluidSolid(vUv + dx)) { r = -c.x; open.y = 0.0; }
+  if (fluidSolid(vUv - dy)) { b = -c.y; open.z = 0.0; }
+  if (fluidSolid(vUv + dy)) { t = -c.y; open.w = 0.0; }
 #endif
   // Times a texel's height, so the solve runs in velocity units.
   float divergence = 0.5 * ((r - l) * cell.y / cell.x + (t - b));
-  if (fluidSolid(vUv)) divergence = 0.0;
-  fragColor = vec4(divergence, faces, 0.0, 1.0);
+  if (fluidSolid(vUv)) {
+    divergence = 0.0;
+    open = vec4(0.0);
+  }
+  fragColor = vec4(divergence, fluidPack(open), 0.0, 1.0);
 }
 `;
 
-const PRESSURE = `
+/**
+ * The pressure solve: one multigrid V-cycle (or `cycles`) of ∇²p = ∇·v a step, warm-started from
+ * the last step's pressure. Level 0 is the velocity grid (x the pressure, the right-hand side the
+ * divergence); each level below halves the one above (rounding up) over the same frame, down to at
+ * most COARSEST_CELLS cells, and solves for the error of the level above (x a correction, the
+ * right-hand side its residual). A coarse cell gathers the finer cells whose centres fall in it.
+ * Every cell carries how open each of its faces is: 1 between fluid cells, 0 at the obstacle; a
+ * coarse face is the mean of the finer faces along it, so the obstacle stays closed all the way
+ * down. Edges hold on every level as on the finest: nothing through a wall, the opposite edge
+ * across a wrap, and past an open edge a pressure of 0 half a finest cell out.
+ */
+const FACES = `
+// How open the faces of a cell are (left, right, below, above), 0..1, in sixteenths, packed 5 bits
+// each into one float (exact in 32 bits). Without an obstacle every face is open.
+float fluidPack(vec4 open) {
+  ivec4 q = ivec4(clamp(open, 0.0, 1.0) * 16.0 + 0.5);
+  return float(q.x | (q.y << 5) | (q.z << 10) | (q.w << 15));
+}
+
+vec4 fluidUnpack(float packed) {
+#if FLUID_OBSTACLE
+  int p = int(packed + 0.5);
+  return vec4(ivec4(p, p >> 5, p >> 10, p >> 15) & 31) / 16.0;
+#else
+  return vec4(1.0);
+#endif
+}
+`;
+
+const LEVEL = `
+uniform vec2 uFine;      // level 0's size in texels
+uniform sampler2D uX;    // the level's x
+uniform sampler2D uRhs;  // the level's right-hand side and packed faces
+
+// The level worked on: its size; k = (cell height / cell width)^2, the weight of its left and
+// right faces against those below and above; and how far beyond its outermost centres, in its own
+// cells, an open edge's zero pressure lies.
+ivec2 gSize;
+float gK;
+vec2 gGap;
+
+void fluidLevel(ivec2 size) {
+  gSize = size;
+  float ratio = float(size.x) * uDomain.y / (uDomain.x * float(size.y));
+  gK = ratio * ratio;
+  gGap = 0.5 + 0.5 * vec2(size) / uFine;
+}
+
+const ivec2 FLUID_FACE[4] = ivec2[4](ivec2(-1, 0), ivec2(1, 0), ivec2(0, -1), ivec2(0, 1));
+
+// The cell across face f (left, right, below, above) of q, round a wrapping edge. False past a
+// wall or an open edge, with the face's share of the diagonal there in open: 1 / gap past an open
+// edge (the pressure falls linearly to 0 at the gap), 0 past a wall.
+bool fluidAcross(ivec2 q, int f, out ivec2 n, out float open) {
+  n = q + FLUID_FACE[f];
+  open = 0.0;
+  if (n.x < 0 || n.x >= gSize.x) {
+#if FLUID_LEFT == FLUID_WRAP
+    n.x = (n.x + gSize.x) % gSize.x;
+#else
+    if ((n.x < 0 ? FLUID_LEFT : FLUID_RIGHT) == FLUID_OPEN) open = 1.0 / gGap.x;
+    return false;
+#endif
+  }
+  if (n.y < 0 || n.y >= gSize.y) {
+#if FLUID_BOTTOM == FLUID_WRAP
+    n.y = (n.y + gSize.y) % gSize.y;
+#else
+    if ((n.y < 0 ? FLUID_BOTTOM : FLUID_TOP) == FLUID_OPEN) open = 1.0 / gGap.y;
+    return false;
+#endif
+  }
+  return true;
+}
+
+// The level's equation at q, sum over faces of k_f open_f (x_across - x_q) = rhs_q, as
+// (sum k_f open_f x_across, the diagonal sum k_f open_f, rhs_q); x is 0 on a fresh level.
+vec3 fluidStencil(ivec2 q, bool fresh) {
+  vec2 rhs = texelFetch(uRhs, q, 0).xy;
+  vec4 weight = fluidUnpack(rhs.y) * vec4(gK, gK, 1.0, 1.0);
+  float sum = 0.0;
+  float diagonal = 0.0;
+  for (int f = 0; f < 4; f++) {
+    if (weight[f] <= 0.0) continue;
+    ivec2 n;
+    float open;
+    if (fluidAcross(q, f, n, open)) {
+      diagonal += weight[f];
+      if (!fresh) sum += weight[f] * texelFetch(uX, n, 0).x;
+    } else {
+      diagonal += weight[f] * open;
+    }
+  }
+  return vec3(sum, diagonal, rhs.x);
+}
+`;
+
+// One red–black Gauss–Seidel sweep in one pass: a red cell (i + j even) relaxes against its
+// neighbours' x, a black cell against its red neighbours as this sweep leaves them, recomputing
+// each. A cell closed on every side holds 0.
+const SMOOTH = `
+uniform bool uFresh;  // the level's x is not set yet this cycle: start from 0
+
+float fluidRelax(ivec2 q) {
+  vec3 s = fluidStencil(q, uFresh);
+  return s.y > 0.0 ? (s.x - s.z) / s.y : 0.0;
+}
+
+void main() {
+  fluidLevel(ivec2(uSize));
+  ivec2 q = ivec2(gl_FragCoord.xy);
+  float x;
+  if (((q.x + q.y) & 1) == 0) {
+    x = fluidRelax(q);
+  } else {
+    vec2 rhs = texelFetch(uRhs, q, 0).xy;
+    vec4 weight = fluidUnpack(rhs.y) * vec4(gK, gK, 1.0, 1.0);
+    float sum = 0.0;
+    float diagonal = 0.0;
+    for (int f = 0; f < 4; f++) {
+      if (weight[f] <= 0.0) continue;
+      ivec2 n;
+      float open;
+      if (fluidAcross(q, f, n, open)) {
+        diagonal += weight[f];
+        sum += weight[f] * fluidRelax(n);
+      } else {
+        diagonal += weight[f] * open;
+      }
+    }
+    x = diagonal > 0.0 ? (sum - rhs.x) / diagonal : 0.0;
+  }
+  fragColor = vec4(x, 0.0, 0.0, 1.0);
+}
+`;
+
+// The next level's right-hand side: the finer level's residual averaged over the finer cells
+// whose centres fall in each coarse cell (one or two a side; a closed one counts as 0), scaled by
+// the cells' squared height ratio; and its faces, the mean of the finer faces along each side.
+const RESTRICT = `
+void main() {
+  ivec2 coarse = ivec2(uSize);
+  ivec2 at = ivec2(gl_FragCoord.xy);
+  fluidLevel(textureSize(uRhs, 0));
+  ivec2 lo = (2 * at * gSize + coarse - 1) / (2 * coarse);
+  ivec2 hi = (2 * (at + 1) * gSize + coarse - 1) / (2 * coarse) - 1;
+  float residual = 0.0;
+  float cells = 0.0;
+  vec4 open = vec4(0.0);
+  vec4 along = vec4(0.0);
+  for (int j = 0; j < 2; j++) {
+    for (int i = 0; i < 2; i++) {
+      ivec2 q = lo + ivec2(i, j);
+      if (q.x > hi.x || q.y > hi.y) continue;
+      vec3 s = fluidStencil(q, false);
+      if (s.y > 0.0) residual += s.z - (s.x - s.y * texelFetch(uX, q, 0).x);
+      cells += 1.0;
+      vec4 faces = fluidUnpack(texelFetch(uRhs, q, 0).y);
+      vec4 side = vec4(equal(q.xxyy, ivec4(lo.x, hi.x, lo.y, hi.y)));
+      open += side * faces;
+      along += side;
+    }
+  }
+  float ratio = float(gSize.y) / float(coarse.y);
+  fragColor = vec4(ratio * ratio * residual / cells, fluidPack(open / along), 0.0, 1.0);
+}
+`;
+
+// x += the coarser level's correction, bilinear between the coarse cells round this one's centre.
+// Coarse cells closed on every side (inside an obstacle) hold no correction and are left out of the
+// blend; past an edge the correction goes on as the coarse equation has it (clamped at a wall, to
+// 0 at an open edge's gap, round a wrap).
+const PROLONG = `
+uniform sampler2D uCoarse;     // the coarser level's x
+uniform sampler2D uCoarseRhs;  // and its packed faces
+
+// The correction at coarse cell q (x) and whether it holds one (y).
+vec2 fluidCoarse(ivec2 q) {
+  float scale = 1.0;
+  if (q.x < 0 || q.x >= gSize.x) {
+#if FLUID_LEFT == FLUID_WRAP
+    q.x = (q.x + gSize.x) % gSize.x;
+#else
+    if ((q.x < 0 ? FLUID_LEFT : FLUID_RIGHT) == FLUID_OPEN) scale *= 1.0 - 1.0 / gGap.x;
+    q.x = clamp(q.x, 0, gSize.x - 1);
+#endif
+  }
+  if (q.y < 0 || q.y >= gSize.y) {
+#if FLUID_BOTTOM == FLUID_WRAP
+    q.y = (q.y + gSize.y) % gSize.y;
+#else
+    if ((q.y < 0 ? FLUID_BOTTOM : FLUID_TOP) == FLUID_OPEN) scale *= 1.0 - 1.0 / gGap.y;
+    q.y = clamp(q.y, 0, gSize.y - 1);
+#endif
+  }
+#if FLUID_OBSTACLE
+  float holds = texelFetch(uCoarseRhs, q, 0).y > 0.5 ? 1.0 : 0.0;
+#else
+  float holds = 1.0;
+#endif
+  return vec2(scale * texelFetch(uCoarse, q, 0).x, holds);
+}
+
+void main() {
+  ivec2 q = ivec2(gl_FragCoord.xy);
+  fluidLevel(textureSize(uCoarse, 0));
+  vec2 at = (vec2(q) + 0.5) * vec2(gSize) / uSize - 0.5;
+  ivec2 base = ivec2(floor(at));
+  vec2 f = at - vec2(base);
+  vec2 a = fluidCoarse(base);
+  vec2 b = fluidCoarse(base + ivec2(1, 0));
+  vec2 c = fluidCoarse(base + ivec2(0, 1));
+  vec2 d = fluidCoarse(base + ivec2(1, 1));
+  vec4 blend = vec4((1.0 - f.x) * (1.0 - f.y), f.x * (1.0 - f.y), (1.0 - f.x) * f.y, f.x * f.y)
+             * vec4(a.y, b.y, c.y, d.y);
+  float total = blend.x + blend.y + blend.z + blend.w;
+  float correction = total > 0.0 ? dot(blend, vec4(a.x, b.x, c.x, d.x)) / total : 0.0;
+  fragColor = vec4(texelFetch(uX, q, 0).x + correction, 0.0, 0.0, 1.0);
+}
+`;
+
+// The coarsest level (at most COARSEST cells) solved outright: every fragment runs Gauss–Seidel
+// over the whole level and keeps its own cell. In a closed domain (no open edge) pressure is only
+// defined up to a constant: the right-hand side's mean is taken out, so the solve is consistent,
+// and so is the correction's, so the pressure never drifts.
+const COARSEST = `
+#define FLUID_CELLS ${COARSEST_CELLS}
+void main() {
+  fluidLevel(ivec2(uSize));
+  int count = gSize.x * gSize.y;
+  float rhs[FLUID_CELLS];
+  float x[FLUID_CELLS];
+  float diagonal[FLUID_CELLS];
+  vec4 weight[FLUID_CELLS];
+  float mean = 0.0;
+  float live = 0.0;
+  for (int i = 0; i < FLUID_CELLS; i++) {
+    if (i >= count) break;
+    ivec2 q = ivec2(i % gSize.x, i / gSize.x);
+    vec2 t = texelFetch(uRhs, q, 0).xy;
+    rhs[i] = t.x;
+    x[i] = 0.0;
+    weight[i] = fluidUnpack(t.y) * vec4(gK, gK, 1.0, 1.0);
+    diagonal[i] = 0.0;
+    for (int f = 0; f < 4; f++) {
+      ivec2 n;
+      float open;
+      diagonal[i] += weight[i][f] * (fluidAcross(q, f, n, open) ? 1.0 : open);
+    }
+    if (diagonal[i] > 0.0) {
+      mean += t.x;
+      live += 1.0;
+    }
+  }
+#if FLUID_CLOSED
+  mean /= max(live, 1.0);
+  for (int i = 0; i < FLUID_CELLS; i++) {
+    if (i >= count) break;
+    if (diagonal[i] > 0.0) rhs[i] -= mean;
+  }
+#endif
+  for (int sweep = 0; sweep < ${COARSEST_SWEEPS}; sweep++) {
+    for (int i = 0; i < FLUID_CELLS; i++) {
+      if (i >= count) break;
+      if (diagonal[i] <= 0.0) continue;
+      ivec2 q = ivec2(i % gSize.x, i / gSize.x);
+      float sum = 0.0;
+      for (int f = 0; f < 4; f++) {
+        ivec2 n;
+        float open;
+        if (weight[i][f] > 0.0 && fluidAcross(q, f, n, open)) sum += weight[i][f] * x[n.y * gSize.x + n.x];
+      }
+      x[i] = (sum - rhs[i]) / diagonal[i];
+    }
+  }
+  ivec2 q = ivec2(gl_FragCoord.xy);
+  float own = x[q.y * gSize.x + q.x];
+#if FLUID_CLOSED
+  float drift = 0.0;
+  for (int i = 0; i < FLUID_CELLS; i++) {
+    if (i >= count) break;
+    if (diagonal[i] > 0.0) drift += x[i];
+  }
+  if (diagonal[q.y * gSize.x + q.x] > 0.0) own -= drift / max(live, 1.0);
+#endif
+  fragColor = vec4(own, 0.0, 0.0, 1.0);
+}
+`;
+
+const PROJECT = `
+uniform sampler2D uVelocity;
 uniform sampler2D uPressure;
 uniform sampler2D uDivergence;
-// The pressure left, right, below and above: 0 past an open edge; the centre's own past a wall
-// (the clamped sample already is) or an obstacle face, so no flow is driven through them.
-vec4 fluidAround(float faces) {
+void main() {
+  vec2 cell = uTexel * uDomain;
   vec2 dx = vec2(uTexel.x, 0.0);
   vec2 dy = vec2(0.0, uTexel.y);
+  // The pressure left, right, below and above: 0 past an open edge; the centre's own past a wall
+  // (the clamped sample already is) or an obstacle face, so no flow is driven through them.
   vec4 p = vec4(texture(uPressure, vUv - dx).x, texture(uPressure, vUv + dx).x,
                 texture(uPressure, vUv - dy).x, texture(uPressure, vUv + dy).x);
   if (fluidBeyond(vUv - dx, FLUID_OPEN)) p.x = 0.0;
@@ -410,35 +726,9 @@ vec4 fluidAround(float faces) {
   if (fluidBeyond(vUv - dy, FLUID_OPEN)) p.z = 0.0;
   if (fluidBeyond(vUv + dy, FLUID_OPEN)) p.w = 0.0;
 #if FLUID_OBSTACLE
-  int solid = int(faces + 0.5);
-  if (solid != 0) {
-    float centre = texture(uPressure, vUv).x;
-    if ((solid & 1) != 0) p.x = centre;
-    if ((solid & 2) != 0) p.y = centre;
-    if ((solid & 4) != 0) p.z = centre;
-    if ((solid & 8) != 0) p.w = centre;
-  }
+  p = mix(vec4(texture(uPressure, vUv).x), p,
+          fluidUnpack(texelFetch(uDivergence, ivec2(gl_FragCoord.xy), 0).y));
 #endif
-  return p;
-}
-`;
-
-const JACOBI = `
-uniform float uRetain;  // scales the previous solve on the first sweep (warm start), then 1
-void main() {
-  vec2 cell = uTexel * uDomain;
-  float k = (cell.y * cell.y) / (cell.x * cell.x);
-  vec2 d = texture(uDivergence, vUv).xy;
-  vec4 p = uRetain * fluidAround(d.y);
-  fragColor = vec4((k * (p.x + p.y) + p.z + p.w - d.x) / (2.0 * k + 2.0), 0.0, 0.0, 1.0);
-}
-`;
-
-const PROJECT = `
-uniform sampler2D uVelocity;
-void main() {
-  vec2 cell = uTexel * uDomain;
-  vec4 p = fluidAround(texture(uDivergence, vUv).y);
   vec2 velocity = texture(uVelocity, vUv).xy - 0.5 * vec2((p.y - p.x) * cell.y / cell.x, p.w - p.z);
   if (fluidSolid(vUv)) velocity = vec2(0.0);
   fragColor = vec4(velocity, 0.0, 1.0);
@@ -478,7 +768,10 @@ interface FluidPasses {
   readonly advect: Pass;
   readonly correct: Pass;
   readonly divergence: Pass;
-  readonly jacobi: Pass;
+  readonly smooth: Pass;
+  readonly restrict: Pass;
+  readonly prolong: Pass;
+  readonly coarsest: Pass;
   readonly project: Pass;
   readonly splat: Pass;
 }
@@ -492,10 +785,12 @@ function buildPasses(
   edges: Edges,
   options: FluidOptions,
 ): { passes: FluidPasses; all: readonly Pass[] } {
+  const closed = ![edges.left, edges.right, edges.bottom, edges.top].includes("open");
   const head = `#define FLUID_LEFT ${EDGE_CODE[edges.left]}
 #define FLUID_RIGHT ${EDGE_CODE[edges.right]}
 #define FLUID_BOTTOM ${EDGE_CODE[edges.bottom]}
 #define FLUID_TOP ${EDGE_CODE[edges.top]}
+#define FLUID_CLOSED ${closed ? 1 : 0}
 #define FLUID_OBSTACLE ${options.obstacle === undefined ? 0 : 1}
 #define FLUID_FORCE ${options.force === undefined ? 0 : 1}
 ${EDGE_TESTS}`;
@@ -516,9 +811,12 @@ ${EDGE_TESTS}`;
       forces: pass(FORCES_HEAD + (options.force ?? "") + FORCES_MAIN, "fluid forces"),
       advect: pass(SOLID + TRACE + ADVECT, "fluid advect"),
       correct: pass(SOLID + TRACE + CORRECT, "fluid maccormack"),
-      divergence: pass(SOLID + DIVERGENCE, "fluid divergence"),
-      jacobi: pass(PRESSURE + JACOBI, "fluid pressure"),
-      project: pass(SOLID + PRESSURE + PROJECT, "fluid project"),
+      divergence: pass(SOLID + FACES + DIVERGENCE, "fluid divergence"),
+      smooth: pass(FACES + LEVEL + SMOOTH, "fluid pressure smooth"),
+      restrict: pass(FACES + LEVEL + RESTRICT, "fluid pressure restrict"),
+      prolong: pass(FACES + LEVEL + PROLONG, "fluid pressure prolong"),
+      coarsest: pass(FACES + LEVEL + COARSEST, "fluid pressure coarsest"),
+      project: pass(SOLID + FACES + PROJECT, "fluid project"),
       splat: pass(SPLAT, "fluid splat"),
     };
     return { passes, all };
@@ -535,6 +833,19 @@ interface SplatBatch {
   count: number;
 }
 
+/** A level of the pressure solve: its x (pressure or correction) and its right-hand side with the faces. */
+interface Level {
+  readonly x: PingPong;
+  readonly rhs: RenderTarget;
+}
+
+/** One draw of a V-cycle, laid out once per grid size. */
+interface Draw {
+  readonly pass: Pass;
+  readonly target: RenderTarget | PingPong;
+  readonly options: RunOptions;
+}
+
 /**
  * The fluid. Construct with a GpuCompute (`new FluidSim(gpu, options)`, which throws GpuError on a
  * snippet that does not compile); each frame queue splats, `step`, `advect` any extra fields, and
@@ -547,12 +858,16 @@ export class FluidSim {
   readonly velocity: PingPong;
   /** What the fluid carries (smoke and heat, film thickness, ink...): the scene's to define. */
   readonly dye: PingPong;
-  /** r16f: the last pressure solve, in velocity units (pressure / velocity texel height). */
+  /**
+   * r32f: the last pressure solve, in velocity units (pressure / velocity texel height); the next
+   * step's solve starts from it.
+   */
   readonly pressure: PingPong;
   /** r16f: vorticity per second (counter-clockwise positive), from the start of the last step. */
   readonly curl: RenderTarget;
   /** r8: share of each velocity cell inside the obstacle; undefined without one. */
   readonly solid: RenderTarget | undefined;
+  /** rg32f: the velocity's divergence and each cell's packed faces (level 0's right-hand side). */
   readonly #divergence: RenderTarget;
   readonly #passes: FluidPasses;
   readonly #all: readonly Pass[];
@@ -563,6 +878,10 @@ export class FluidSim {
   readonly #scratch = new Map<string, RenderTarget>();
   readonly #domain = new Float32Array(2);
   readonly #keep = new Float32Array(4);
+  /** The pressure solve's levels below the velocity grid, and one V-cycle's draws over all of them. */
+  #coarse: readonly Level[] = [];
+  #cycle: readonly Draw[] = [];
+  readonly #fine = new Float32Array(2);
   readonly #velocitySplats: SplatBatch = {
     at: new Float32Array(SPLATS * 4),
     value: new Float32Array(SPLATS * 4),
@@ -616,9 +935,9 @@ export class FluidSim {
     const v = gridSize(this.#aspect, this.#velocityResolution);
     const d = gridSize(this.#aspect, this.#dyeResolution);
     this.velocity = gpu.pingPong({ ...v, format: "rg16f", wrap });
-    this.pressure = gpu.pingPong({ ...v, format: "r16f", wrap });
+    this.pressure = gpu.pingPong({ ...v, format: "r32f", wrap });
     this.curl = gpu.target({ ...v, format: "r16f", wrap });
-    this.#divergence = gpu.target({ ...v, format: "rg16f", wrap });
+    this.#divergence = gpu.target({ ...v, format: "rg32f", filter: "nearest", wrap });
     this.solid =
       options.obstacle === undefined ? undefined : gpu.target({ ...v, format: "r8", wrap });
     this.dye = gpu.pingPong({ ...d, format: options.dyeFormat ?? "rgba16f", wrap });
@@ -631,7 +950,6 @@ export class FluidSim {
     p.advect.bind({ uVelocity: this.velocity });
     p.correct.bind({ uVelocity: this.velocity });
     p.divergence.bind({ uVelocity: this.velocity });
-    p.jacobi.bind({ uPressure: this.pressure, uDivergence: this.#divergence });
     p.project.bind({
       uVelocity: this.velocity,
       uPressure: this.pressure,
@@ -641,6 +959,7 @@ export class FluidSim {
       for (const reader of [p.advect, p.correct, p.divergence, p.project])
         reader.bind({ uSolid: this.solid });
     this.#setDomain();
+    this.#layLevels();
   }
 
   /** The frame's width / height the grids are laid out for. */
@@ -693,10 +1012,9 @@ export class FluidSim {
       textures: { uSource: this.velocity },
     });
     p.divergence.run(this.#divergence);
-    const iterations = Math.max(0, Math.round(step.iterations ?? DEFAULT_ITERATIONS));
-    const retain = Math.min(1, Math.max(0, step.pressureRetain ?? DEFAULT_PRESSURE_RETAIN));
-    for (let i = 0; i < iterations; i++)
-      p.jacobi.run(this.pressure, { uniforms: { uRetain: i === 0 ? retain : 1 } });
+    const cycles = Math.max(0, Math.round(step.cycles ?? DEFAULT_CYCLES));
+    for (let cycle = 0; cycle < cycles; cycle++)
+      for (const draw of this.#cycle) draw.pass.run(draw.target, draw.options);
     p.project.run(this.velocity);
     this.#advect(this.dye, dt, step.dyeDissipation ?? 0, this.#dyeScheme);
   }
@@ -739,6 +1057,7 @@ export class FluidSim {
     this.solid?.resize(v.width, v.height);
     this.dye.resize(d.width, d.height, keep);
     this.#dropScratch();
+    this.#layLevels();
     return true;
   }
 
@@ -765,6 +1084,10 @@ export class FluidSim {
     this.#divergence.dispose();
     this.solid?.dispose();
     this.#dropScratch();
+    for (const level of this.#coarse) {
+      level.x.dispose();
+      level.rhs.dispose();
+    }
   }
 
   #check(): void {
@@ -783,6 +1106,55 @@ export class FluidSim {
     this.#domain[0] = this.#aspect;
     this.#domain[1] = 1;
     for (const built of this.#all) built.set({ uDomain: this.#domain });
+  }
+
+  /**
+   * Lay out the pressure solve's levels for the velocity grid (freeing the old ones) and one
+   * V-cycle's draws: down the levels a sweep, then the residual into the next level; the coarsest
+   * solved outright; back up, the correction added, then a sweep.
+   */
+  #layLevels(): void {
+    for (const level of this.#coarse) {
+      level.x.dispose();
+      level.rhs.dispose();
+    }
+    const levels: Level[] = [{ x: this.pressure, rhs: this.#divergence }];
+    let width = this.velocity.width;
+    let height = this.velocity.height;
+    while (width * height > COARSEST_CELLS) {
+      width = Math.ceil(width / 2);
+      height = Math.ceil(height / 2);
+      levels.push({
+        x: this.gpu.pingPong({ width, height, format: "r32f", filter: "nearest" }),
+        rhs: this.gpu.target({ width, height, format: "rg32f", filter: "nearest" }),
+      });
+    }
+    this.#coarse = levels.slice(1);
+    const p = this.#passes;
+    const down: Draw[] = [];
+    const up: Draw[] = [];
+    for (const [index, level] of levels.entries()) {
+      const textures = { uX: level.x, uRhs: level.rhs };
+      const next = levels[index + 1];
+      if (!next) {
+        down.push({ pass: p.coarsest, target: level.x, options: { textures } });
+        break;
+      }
+      // Below the velocity grid a level starts each cycle from 0.
+      const uniforms = { uFresh: index > 0 };
+      down.push({ pass: p.smooth, target: level.x, options: { textures, uniforms } });
+      down.push({ pass: p.restrict, target: next.rhs, options: { textures } });
+      const coarse = { ...textures, uCoarse: next.x, uCoarseRhs: next.rhs };
+      up.unshift(
+        { pass: p.prolong, target: level.x, options: { textures: coarse } },
+        { pass: p.smooth, target: level.x, options: { textures, uniforms: { uFresh: false } } },
+      );
+    }
+    this.#cycle = [...down, ...up];
+    this.#fine[0] = this.velocity.width;
+    this.#fine[1] = this.velocity.height;
+    for (const pass of [p.smooth, p.restrict, p.prolong, p.coarsest])
+      pass.set({ uFine: this.#fine });
   }
 
   #queue(

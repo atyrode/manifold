@@ -60,6 +60,7 @@ import { verifyOrbitKepler } from "./src/scenes/orbit/kepler.verify.ts";
 import { verifyContextRestore, verifyFrameGovernor } from "./src/display.verify.ts";
 import { verifyShallowWater } from "./src/sims/shallow.verify.ts";
 import { verifyWorldClock } from "./src/world-clock.verify.ts";
+import { verifyFluidPressure } from "./src/sims/fluid.verify.ts";
 
 function check(ok: boolean, message: string): void {
   if (!ok) throw new Error(message);
@@ -584,6 +585,7 @@ export const checks: readonly Check[] = [
   ["frameGovernor", verifyFrameGovernor],
   ["shallowWater", verifyShallowWater],
   ["worldClock", verifyWorldClock],
+  ["fluidPressure", verifyFluidPressure],
 ];
 
 /**

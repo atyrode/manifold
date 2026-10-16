@@ -190,7 +190,6 @@ float incenseCandleBody(vec2 q) {
 /** Velocity and dye texels on the frame's short side. */
 const VELOCITY_RES = 112;
 const DYE_RES = 320;
-const PRESSURE_ITERATIONS = 16;
 /** Longest simulated step and most steps per frame (a slow frame steps twice, then slows the clock). */
 const MAX_STEP = 0.05;
 const MAX_STEPS = 2;
@@ -1041,7 +1040,6 @@ class Plume {
   readonly #fluidStep: FluidStep = {
     dt: 0,
     time: 0,
-    iterations: PRESSURE_ITERATIONS,
     vorticity: 0,
     velocityDissipation: VELOCITY_FADE,
     dyeDissipation: this.#dissipation,

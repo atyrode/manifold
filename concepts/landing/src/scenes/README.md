@@ -1644,8 +1644,9 @@ Helpers in `src/sims/` (each file's header has the full API and a usage example)
   scatters for GPU simulations (petri, physarum, delta). `create` returns undefined without float
   render targets: the scene must then draw a still picture instead. It leaves the GL state the
   renderer expects (framebuffer unbound, blending off, the renderer's vertex array bound).
-- `FluidSim` (`fluid.ts`): 2D stable fluids on `GpuCompute` with MacCormack dye, vorticity, walls,
-  a GLSL force snippet, an obstacle SDF, splats and `advect` for extra fields (incense, film, pearl).
+- `FluidSim` (`fluid.ts`): 2D stable fluids on `GpuCompute`, incompressible at every scale (a
+  warm-started multigrid pressure solve), with MacCormack dye, vorticity, walls, a GLSL force
+  snippet, an obstacle SDF, splats and `advect` for extra fields (incense, film, pearl).
 - `ArrivalField` (`front.ts`): when a front spreading from one point through a field of speeds
   reaches each texel, on the GPU (least time along rays from the source, then a few relaxing
   sweeps), so `T <= t` is where it has been: film's burst rim racing through thin film and crawling
