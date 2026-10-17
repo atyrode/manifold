@@ -65,6 +65,6 @@ export const swellScene: SceneDef = {
   // the far sea. Exit: it sinks toward the waves and tips down into them.
   passage: { enter: 2.8, exit: 1.5 },
   // The sea: long Gerstner swells and the chop (rippleSpectrum) tilting a mirror of the night sky
-  // (waterMirror), and the moon's glitter path on it (waterGlitter).
+  // (waterMirror), and the moon's glitter path on it (waterGlint).
   features: { WATER_TIER: WATER_TIERS.mirror },
 };

@@ -3,8 +3,8 @@
 // on Island's program (so it reads Island's own spectrum table) evaluates the library over grids into
 // a float target: the trains and caustic waves too fine to draw are skipped without changing a value
 // (each against its unskipped form), the cellular net's seams draw where they span a cell and leave
-// only its mean where they do not, and the mirror, the glitter and the caustic light
-// behave. Then the tiers: each tier's functions exist from its tier up and not below, and each
+// only its mean where they do not, and the mirror, the glint and the caustic light behave. Then the
+// tiers: each tier's functions exist from its tier up and not below, and each
 // adopting scene compiles at the tier it selects and not one lower.
 import { sceneDefs } from "../../scenes/index.ts";
 import type { SceneDef } from "../../scenes/types.ts";
@@ -118,14 +118,23 @@ Shade waterProbe(vec2 uv, vec2 cell, float t) {
     float cellFoot = uProbeB.y > 0.0 ? uProbeB.y : foot.x;
     v = vec3(causticCells(p, tm, cellFoot), cellFoot, 0.0);
   } else if (uProbe == 7) {
-    // The glitter over a grid of half vectors (uProbeA.z of tangent a cell, level at the middle
-    // cell), the eye along uProbeB.xyz, the light mirrored about each, on water sloped uProbeA.xy
-    // with variance uProbeA.w; y: the same light sunk below the horizon.
+    // The glint over a grid of half vectors (uProbeA.z of tangent a cell, level at the middle cell),
+    // the eye along uProbeB.xyz, the light mirrored about each, on water sloped uProbeA.xy with
+    // variance uProbeA.w, at exposure uProbeB.w; y: the same light sunk below the horizon.
     vec2 tilt = (floor(cell) - floor(0.5 * uRes)) * uProbeA.z;
     vec3 view = normalize(uProbeB.xyz);
     vec3 light = reflect(-view, normalize(vec3(tilt.x, 1.0, tilt.y)));
     vec3 n = normalize(vec3(-uProbeA.x, 1.0, -uProbeA.y));
-    v = vec3(waterGlitter(n, view, light, uProbeA.w), waterGlitter(n, view, vec3(light.x, -abs(light.y), light.z), uProbeA.w), light.y);
+    v = vec3(waterGlint(n, view, light, uProbeA.w, uProbeB.w), waterGlint(n, view, vec3(light.x, -abs(light.y), light.z), uProbeA.w, uProbeB.w), light.y);
+  } else if (uProbe == 8) {
+    // The glint at the heart of the path on level water, the light (cell + 0.5) * uProbeA.z radians
+    // up and the eye on its mirror image, variance uProbeA.w, exposure uProbeB.w; y: Smith's share
+    // for that height; z: the same with the water tipped away from the eye past the view.
+    float e = (floor(cell.x) + 0.5) * uProbeA.z;
+    vec3 light = vec3(0.0, sin(e), cos(e));
+    vec3 view = vec3(0.0, sin(e), -cos(e));
+    vec3 away = vec3(0.0, cos(e + 0.1), sin(e + 0.1));
+    v = vec3(waterGlint(vec3(0.0, 1.0, 0.0), view, light, uProbeA.w, uProbeB.w), waterMasking(sin(e), uProbeA.w), waterGlint(away, view, light, uProbeA.w, uProbeB.w));
   } else {
     // The caustic light: still water; no focus at all (capped); half focus; a curved surface.
     float x = floor(cell.x);
@@ -189,6 +198,13 @@ function draw(
 
 const at = (pixels: Float32Array, width: number, x: number, y: number, c: number): number =>
   pixels[(y * width + x) * 4 + c] ?? Number.NaN;
+
+type Vec3 = readonly [number, number, number];
+const dot = (a: Vec3, b: Vec3): number => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+const unit = (v: Vec3): Vec3 => {
+  const length = Math.hypot(v[0], v[1], v[2]);
+  return [v[0] / length, v[1] / length, v[2] / length];
+};
 
 /** A scene whose entry only calls `call`, compiled with `features`. */
 function gate(base: SceneDef, call: string, features: Readonly<Record<string, number>>): string {
@@ -295,15 +311,30 @@ export function verifyWaterTiers(gl: WebGL2RenderingContext): Record<string, unk
     "a facet rising away from the eye does not lean toward it",
   );
 
-  // The glitter (waterGlitter), over the half vector's tangent plane: on level water it is 1 at the
-  // heart of the path, where the half vector is the normal, and spreads over exactly the variance it
-  // is given, holding pi times that: a sea four times as rough draws a path twice as wide holding
-  // four times the light, never a dimmer one. Tilting the water moves the heart onto its normal
-  // (the tangent plane, laid about the vertical, warps the lobe a little there); a light below the
-  // horizon lays none.
+  // The glint (waterGlint), over the half vector's tangent plane, read back as radiance (the
+  // exposure's saturation undone) and divided by its geometry (Fresnel on the facet, Smith's share
+  // seen and lit, 1 / (4 (n.v) (n.h)^4)): what is left is the facets' slope density, which on level
+  // water peaks at 1 / (pi s2) where the half vector is the normal, holds 1 and spreads over exactly
+  // the variance it is given, so a sea four times as rough lays a path twice as wide and a quarter
+  // as bright at its heart. Tilting the water moves the heart onto its normal (the tangent plane,
+  // laid about the vertical, warps the lobe a little there); a light below the horizon lays none.
+  const masking = (c: number, s2: number): number => {
+    if (c <= 0) return 0;
+    const a = c / Math.sqrt(s2 * Math.max(1 - c * c, 1e-6));
+    return a < 1.6 ? (3.535 * a + 2.181 * a * a) / (1 + 2.276 * a + 2.577 * a * a) : 1;
+  };
+  /** F(v.h) G(v) G(l) / (4 (n.v) (n.h)^4) for unit view, light and normal. */
+  const geometry = (view: Vec3, light: Vec3, n: Vec3, s2: number): number => {
+    const half = unit([view[0] + light[0], view[1] + light[1], view[2] + light[2]]);
+    const nv = dot(n, view);
+    const c = dot(n, half);
+    const fresnel = 0.02 + 0.98 * (1 - dot(view, half)) ** 5;
+    return (fresnel * masking(nv, s2) * masking(dot(n, light), s2)) / (4 * nv * c ** 4);
+  };
   const G = 65;
   const gmid = (G - 1) / 2;
-  const glitter: { s2: number; area: number; spread: number }[] = [];
+  const eye = unit([0, 1, -0.25]);
+  const glint: { s2: number; area: number; spread: number }[] = [];
   for (const [s2, slopeX, slopeZ] of [
     [0.002, 0, 0],
     [0.008, 0, 0],
@@ -311,10 +342,18 @@ export function verifyWaterTiers(gl: WebGL2RenderingContext): Record<string, unk
     [0.008, 0.1, -0.05],
   ] as const) {
     const cell = (3.2 * Math.sqrt(s2)) / gmid;
+    const n = unit([-slopeX, 1, -slopeZ]);
+    const lightAt = (x: number, y: number): Vec3 => {
+      const h = unit([(x - gmid) * cell, 1, (y - gmid) * cell]);
+      const k = 2 * dot(h, eye);
+      return [k * h[0] - eye[0], k * h[1] - eye[1], k * h[2] - eye[2]];
+    };
+    // An exposure that lays 1 - 1/e at the heart: far from saturating the tails' rounding away.
+    const exposure = (Math.PI * s2) / geometry(eye, lightAt(gmid, gmid), n, s2);
     const lobe = draw(gl, probe, G, G, {
       uProbe: [7],
       uProbeA: [slopeX, slopeZ, cell, s2],
-      uProbeB: [0, 1, -0.25, 0],
+      uProbeB: [...eye, exposure],
     });
     let sum = 0;
     let mx = 0;
@@ -323,42 +362,81 @@ export function verifyWaterTiers(gl: WebGL2RenderingContext): Record<string, unk
     for (let y = 0; y < G; y++) {
       for (let x = 0; x < G; x++) {
         const value = at(lobe, G, x, y, 0);
-        check(at(lobe, G, x, y, 2) > 0, "the glitter probe's light dipped below the horizon");
+        check(at(lobe, G, x, y, 2) > 0, "the glint probe's light dipped below the horizon");
+        check(value >= 0 && value < 1, `the glint leaves 0..1: ${value}`);
         check(
           at(lobe, G, x, y, 1) === 0,
-          `a light below the horizon glitters ${at(lobe, G, x, y, 1)}`,
+          `a light below the horizon glints ${at(lobe, G, x, y, 1)}`,
         );
+        const density = -Math.log1p(-value) / exposure / geometry(eye, lightAt(x, y), n, s2);
         const tx = (x - gmid) * cell;
         const tz = (y - gmid) * cell;
-        sum += value;
-        mx += value * tx;
-        mz += value * tz;
-        second += value * (tx * tx + tz * tz);
+        sum += density;
+        mx += density * tx;
+        mz += density * tz;
+        second += density * (tx * tx + tz * tz);
       }
     }
     const centre = [mx / sum, mz / sum] as const;
     const sigma = Math.sqrt(s2);
     check(
       Math.abs(centre[0] + slopeX) < 0.05 * sigma && Math.abs(centre[1] + slopeZ) < 0.05 * sigma,
-      `the glitter's heart lies at ${centre.join(", ")}, not on the normal of slope ${slopeX}, ${slopeZ}`,
+      `the glint's heart lies at ${centre.join(", ")}, not on the normal of slope ${slopeX}, ${slopeZ}`,
     );
     if (slopeX !== 0 || slopeZ !== 0) continue;
     const area = sum * cell * cell;
     const spread = second / sum - centre[0] ** 2 - centre[1] ** 2;
+    const heart = at(lobe, G, gmid, gmid, 0);
     check(
-      at(lobe, G, gmid, gmid, 0) > 0.9999,
-      `the glitter's heart is ${at(lobe, G, gmid, gmid, 0)}, not 1`,
+      Math.abs(heart - (1 - Math.exp(-1))) < 1e-4,
+      `the glint's heart is ${heart}, not 1 - 1/e: its density there is not 1 / (pi s2)`,
     );
-    check(
-      Math.abs(area / (Math.PI * s2) - 1) < 0.01,
-      `the glitter holds ${area}, not pi times its variance ${s2}`,
-    );
+    check(Math.abs(area - 1) < 0.01, `the facets' slope density holds ${area}, not 1 (s2 ${s2})`);
     check(
       Math.abs(spread / s2 - 1) < 0.01,
-      `the glitter spreads over ${spread}, not its variance ${s2}`,
+      `the glint spreads over ${spread}, not its variance ${s2}`,
     );
-    glitter.push({ s2, area: Number(area.toFixed(6)), spread: Number(spread.toFixed(6)) });
+    glint.push({ s2, area: Number(area.toFixed(6)), spread: Number(spread.toFixed(6)) });
   }
+
+  // Down the heart of the path against the light's height (level water, variance 0.01): the
+  // radiance is Fresnel times Smith's share seen and lit over (4 pi s2 sin e), so a light low over
+  // the water lays a brighter heart than a high one, finite even skimming the horizon; water
+  // tipped away from the eye shows none, and the brightest exposure never passes 1.
+  const HEIGHTS = 32;
+  const step = Math.fround(1.4 / HEIGHTS);
+  const heights = draw(gl, probe, HEIGHTS, 1, {
+    uProbe: [8],
+    uProbeA: [0, 0, step, 0.01],
+    uProbeB: [0, 0, 0, 0.01],
+  });
+  let previous = Infinity;
+  for (let x = 0; x < HEIGHTS; x++) {
+    const e = Math.fround(Math.fround(x + 0.5) * step);
+    const s = Math.sin(e);
+    const shown = masking(s, 0.01);
+    // Relative, as the radiance below: near grazing the share is steep in e, and float32 shows it.
+    check(
+      Math.abs(at(heights, HEIGHTS, x, 0, 1) / shown - 1) < 1e-3,
+      `Smith's share at ${e} rad is ${at(heights, HEIGHTS, x, 0, 1)}, not ${shown}`,
+    );
+    const radiance = -Math.log1p(-at(heights, HEIGHTS, x, 0, 0)) / 0.01;
+    const expected = ((0.02 + 0.98 * (1 - s) ** 5) * shown * shown) / (4 * Math.PI * 0.01 * s);
+    check(
+      Math.abs(radiance / expected - 1) < 1e-3,
+      `the path's heart with the light ${e} rad up is ${radiance}, not ${expected}`,
+    );
+    check(radiance < previous, `a light ${e} rad up lays a heart as bright as a lower one's`);
+    previous = radiance;
+    check(at(heights, HEIGHTS, x, 0, 2) === 0, `water tipped away from the eye glints ${e} rad up`);
+  }
+  const blinding = draw(gl, probe, HEIGHTS, 1, {
+    uProbe: [8],
+    uProbeA: [0, 0, step, 0.01],
+    uProbeB: [0, 0, 0, 1e6],
+  });
+  for (let x = 0; x < HEIGHTS; x++)
+    check(at(blinding, HEIGHTS, x, 0, 0) <= 1, `a blinding light's glint passes 1 at ${x}`);
 
   // The caustic light: still water is 1, a sim focusing nothing is capped at 1 / soft, and the two
   // Jacobians multiply.
@@ -426,6 +504,10 @@ export function verifyWaterTiers(gl: WebGL2RenderingContext): Record<string, unk
   const calls: readonly [keyof typeof WATER_TIERS, string][] = [
     ["ripples", "vec4 r = windRipples(planeAt(uv, 1.0, 0.6, 1.7, 1.2), t, 0.5, 1.0)"],
     ["mirror", "WaterMirror m = waterMirror(vec3(0.0, -0.3, 1.0), vec2(0.0), 0.0)"],
+    [
+      "mirror",
+      "float g = waterGlint(vec3(0.0, 1.0, 0.0), vec3(0.0, 0.3, -1.0), vec3(0.0, 0.3, 1.0), 0.01, 1.0)",
+    ],
     ["flow", "vec2 f = waterDrift(uv, vec2(1.0, 0.0), t)"],
     [
       "caustics",
@@ -486,6 +568,6 @@ export function verifyWaterTiers(gl: WebGL2RenderingContext): Record<string, unk
     nearCausticCells: curved,
     netSeamCells: seams,
     netAverage: Number(netAverage.toFixed(4)),
-    glitter,
+    glint,
   };
 }

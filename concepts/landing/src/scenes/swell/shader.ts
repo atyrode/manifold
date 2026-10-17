@@ -2,7 +2,7 @@
 // tier). Three long Gerstner swells and the wind's chop (rippleSpectrum) tilt the surface where the
 // cells resolve them and only roughen it where they do not, so the far sea never crawls; the surface
 // mirrors the shared night sky (skyAt, skyColor) through waterMirror and lays the moon's glitter
-// path (waterGlitter), which the swells break into rows near by and which widens toward the horizon
+// path (waterGlint), which the swells break into rows near by and which widens toward the horizon
 // as the trains fade into its roughness. With `relief` the nearer swells stand up for real (a
 // bounded march). Its own moon (K_moon sizes it; an M in its seas as an option) and stars; the
 // shared birds (shaders/lib/birds.ts; K_birds, K_birdKind, K_birdFormation, off by default) and
@@ -39,12 +39,19 @@ const float SWELL_FOLD = 0.7;
 // The wind's chop on the swells: four trains rocking about the swells' heading, from 3 m down to
 // half a metre, their slopes times the chop knob (rippleSpectrum).
 const RippleFan SWELL_CHOP = RippleFan(4, vec2(0.2, 0.55), vec2(0.09, 0.012), vec2(1.0, 0.0), vec2(3.0, 0.0), vec3(0.7, 2.4, 0.0), 1.7, vec2(8.0, 16.0));
+// The moon's glitter (waterGlint): its exposure, set so the path across the row that mirrors the
+// moon is as bright at half its height as it always was; and the share of the facets in the sea's
+// broad tail (variance 0.03), which lays a wide sheen round it.
+const float SWELL_GLINT = 0.173;
+const float SWELL_TAIL = 0.25;
 
 // The long swells at x (camera heights: across, ahead) at tm. x is where the surface lies, not where
-// its water came from, so one fixed-point step back finds that first. amp: each train's amplitude;
-// seen: how much of each train the cells draw (1 for the relief's shape). Returns the height (x),
-// the slope dh/dx, dh/dz (yz) and the squeeze (w: 1 on flat water, toward 1 - SWELL_FOLD under the
-// sharpest crests).
+// its water came from (X(x0) = x0 + sum q a d cos(phase)), so that is found first: a fixed-point
+// step back, then one Newton step on X, whose Jacobian is I - sum q k a sin(phase) d d^T. The
+// fixed-point step alone leaves the crests half as sharp as the trochoid's; with the Newton step
+// the curvature at a crest is within 1% of it. amp: each train's amplitude; seen: how much of each
+// train the cells draw (1 for the relief's shape). Returns the height (x), the slope dh/dx, dh/dz
+// (yz) and the squeeze (w: 1 on flat water, toward 1 - SWELL_FOLD under the sharpest crests).
 vec4 swellLong(vec2 x, float tm, vec3 amp, vec3 seen) {
   vec3 k = TAU / vec3(SWELL_WAVE[0].x, SWELL_WAVE[1].x, SWELL_WAVE[2].x);
   vec3 omega = sqrt(SWELL_G * k);
@@ -53,6 +60,14 @@ vec4 swellLong(vec2 x, float tm, vec3 amp, vec3 seen) {
   for (int i = 0; i < 3; i++) {
     x0 -= q * amp[i] * SWELL_ALONG[i] * cos(k[i] * dot(SWELL_ALONG[i], x) - omega[i] * tm + SWELL_WAVE[i].z);
   }
+  vec2 miss = x0 - x;
+  mat2 jacobian = mat2(1.0);
+  for (int i = 0; i < 3; i++) {
+    float ph = k[i] * dot(SWELL_ALONG[i], x0) - omega[i] * tm + SWELL_WAVE[i].z;
+    miss += q * amp[i] * SWELL_ALONG[i] * cos(ph);
+    jacobian -= q * k[i] * amp[i] * sin(ph) * outerProduct(SWELL_ALONG[i], SWELL_ALONG[i]);
+  }
+  x0 -= inverse(jacobian) * miss;
   float h = 0.0;
   vec2 rise = vec2(0.0);
   float squeeze = 1.0;
@@ -230,20 +245,21 @@ Shade sceneSwell(vec2 uv, vec2 cell, float t) {
     vec3 refl = sea.ray;
     refl.y = max(refl.y, 0.01);
     refl = normalize(refl);
-    // The moon's path (waterGlitter): the chop drawn near by breaks it into flecks that come and go
+    // The moon's path (waterGlint): the chop drawn near by breaks it into flecks that come and go
     // as the ripples run, farther off it is the swells' rows, and toward the horizon, where the
-    // trains fade into the roughness, a widening smooth path. Round it a wide moonlit sheen, the same
-    // glitter on a rougher scale: it lights the backs of the swells well out to either side and
-    // leaves the faces turned to the viewer dark, so every row reads.
+    // trains fade into the roughness and the water mirrors more, a widening path that brightens.
+    // Round it a wide moonlit sheen, the facets of the sea's broad tail (SWELL_TAIL): it lights the
+    // backs of the swells well out to either side and leaves the faces turned to the viewer dark,
+    // so every row reads.
     vec3 view = -rd;
-    float path = waterGlitter(sea.normal, view, moonDir, rough);
-    float sheen = waterGlitter(sea.normal, view, moonDir, 0.03);
+    float path = waterGlint(sea.normal, view, moonDir, rough, SWELL_GLINT * (1.0 - SWELL_TAIL));
+    float sheen = waterGlint(sea.normal, view, moonDir, 0.03, SWELL_GLINT * SWELL_TAIL);
     // Deep water, a little of the moon's light scattered back out of it under the crests; whitecaps
     // where the swells squeeze the surface hardest.
     float crest = smoothstep(0.0, 1.0, (swell.x + roll.x) / max(amp.x + amp.y + amp.z + rollAmp, 1e-3));
     vec3 body = vec3(0.004, 0.018, 0.036) + vec3(0.01, 0.05, 0.07) * moonLight * (0.3 + 0.7 * crest);
     vec3 mirror = skyColor(sky, refl) + air * 0.5;
-    col = mix(body, mirror, sea.fresnel) + moonLight * (path * 1.2 + sheen * 0.22);
+    col = mix(body, mirror, sea.fresnel) + moonLight * (path + sheen);
     float foam = (1.0 - smoothstep(1.0 - SWELL_FOLD + 0.05, 1.0 - SWELL_FOLD + 0.2, swell.w)) * seen.x;
     col = mix(col, moonLight * 0.55 + sky.ambient, hardEdge(foam * 0.8));
     // The shooting star glints in the waves that face it: the sky point each one mirrors, in the

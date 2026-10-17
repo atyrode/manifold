@@ -9,7 +9,7 @@
 //   ripples   WATER_RIPPLES 1   wind ripples: rippleSpectrum (surface.ts, a scene's own trains) and the
 //                               breeze's cat's-paws with their screen-space mirror (windWater.ts)
 //   mirror    WATER_MIRROR 2    reflections: the rippled normal, the reflected ray and Fresnel
-//                               (waterMirror), and the sun's or moon's glitter on it (waterGlitter)
+//                               (waterMirror), and the glitter of a light on it (waterGlint)
 //   flow      WATER_FLOW 3      currents: a pattern carried by a steady current (waterDrift)
 //   caustics  WATER_CAUSTICS 4  the bed lit through the surface: causticRipples' net (caustics.ts) times
 //                               a simulated surface's focus (ShallowWater.surface, sims/shallow.ts);
@@ -57,21 +57,40 @@ WaterMirror waterMirror(vec3 dir, vec2 slope, float minCos) {
   return m;
 }
 
-// The sun's or moon's glitter on the water, after Cox & Munk's 1954 sea-slope measurements: the
-// share of the surface's facets tilted to mirror light (toward the sun or moon, y up; none once it
-// is down) into view (toward the eye), about the drawn normal n, their slopes spread with variance
-// s2. s2 is the roughness the cells do not draw: rippleSpectrum's z (the trains too fine for them)
-// plus the scene's own floor for ripples finer still, so the path widens with the wind and toward
-// the horizon, where trains fade into it. A Beckmann distribution of the half vector, normalised to
-// 1 at the heart of the path: a rougher surface draws a wider path rather than a dimmer one, and the
-// path never burns out into a solid block. Its half width at half height, in the tangent of the
-// half vector's tilt, is sqrt(s2 ln 2); its area over that tangent plane is pi s2.
-float waterGlitter(vec3 n, vec3 view, vec3 light, float s2) {
-  if (light.y <= 0.0) return 0.0;
+// The share of a rough water surface's facets (slope variance s2) that a direction at cosine c to
+// its normal sees, or lights, unhidden by the others: Smith's masking for a Beckmann surface, in the
+// fit of Walter, Marschner, Li & Torrance (2007). 1 face on, falling off at grazing, 0 behind.
+float waterMasking(float c, float s2) {
+  if (c <= 0.0) return 0.0;
+  float a = c / sqrt(s2 * max(1.0 - c * c, 1e-6));
+  return a < 1.6 ? (3.535 * a + 2.181 * a * a) / (1.0 + 2.276 * a + 2.577 * a * a) : 1.0;
+}
+
+// The glitter of a light (the sun, the moon, a lamp) on the water: toward the eye (view) from the
+// light (toward it, y up; none once it is down), about the drawn normal n, the facets' slopes spread
+// with variance s2. s2 is the roughness the cells do not draw: rippleSpectrum's z (the trains too
+// fine for them) plus the scene's own floor for ripples finer still, so the path widens with the
+// wind and toward the horizon, where trains fade into it. Its radiance against the light's is Cox &
+// Munk's (1954), F(v.h) P(h) G / (4 (n.v) (n.h)^4): P the facets' slope density (a Gaussian
+// holding 1 over the half vector's tangent plane, so a rougher sea lays a wider and dimmer path),
+// F the Fresnel reflectance on a facet, G Smith's share of it neither hidden from the eye nor
+// shaded from the light. So a low light lays a long blazing path that brightens toward the
+// horizon, a high one a short faint one. exposure is the light's radiance times the solid angle it
+// fills, in the scene's units of brightness; for a lamp, its intensity over the squared distance
+// to the water, so its path fades away from it. Returns 1 - exp(-exposure * radiance): 0..1 of the
+// light's colour, filling in where the facets crowd to mirror it, so a brighter light widens the
+// path's solid core rather than burning through the dither, as glitter photographs.
+float waterGlint(vec3 n, vec3 view, vec3 light, float s2, float exposure) {
+  float nv = dot(n, view);
+  float nl = dot(n, light);
+  if (light.y <= 0.0 || nv <= 0.0 || nl <= 0.0) return 0.0;
   vec3 h = normalize(view + light);
-  float c = max(dot(n, h), 1e-3);
-  float tan2 = (1.0 - c * c) / (c * c);
-  return exp(-tan2 / s2);
+  float c2 = max(dot(n, h), 1e-3);
+  c2 *= c2;
+  float density = exp((c2 - 1.0) / (c2 * s2)) / (0.5 * TAU * s2);
+  float shown = waterMasking(nv, s2) * waterMasking(nl, s2);
+  float radiance = fresnelSchlick(dot(view, h), 0.02, 0.0) * density * shown / (4.0 * nv * c2 * c2);
+  return 1.0 - exp(-exposure * radiance);
 }
 #endif
 

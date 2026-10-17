@@ -39,10 +39,10 @@
 // wave; nothing else steers them, so the flock's shape, its turns, its splits and its dark knots at
 // a turn are its own. The knobs set the rules: cohesion the spacing and pull, chaos the noise and how
 // weakly they align, speed the cruise. Drawing, the M, the falcon and the passage are shared with
-// the sheet; among the boids the falcon flies on their plane where it is drawn, so they flee it
-// where it is seen to pass. Switching hands the birds over where they are: to the boids on the
-// level plane flying along the sheet, back to the sheet with each bird pushed off its place by
-// where it flew, so the falcon's spring brings it home.
+// the sheet; among the boids the falcon's fear runs along the line of sight through it, so they
+// flee it where it is seen to pass, across that line: on screen. Switching hands the birds over
+// where they are: to the boids on the level plane flying along the sheet, back to the sheet with
+// each bird pushed off its place by where it flew, so the falcon's spring brings it home.
 //
 // Time runs in fixed steps of STEP seconds of simulated time, so the flight depends only on the
 // knobs and simulated time, not on the frame rate; positions are interpolated between the last two
@@ -177,8 +177,8 @@ const FALCON_CRUISE = 0.5;
 /** Pursuit and pull-out turn rates (rad/s). */
 const FALCON_TURN = 2.2;
 const FALCON_CLIMB = 1.6;
-/** Birds within FEAR (heights) are pushed aside, up to FLEE heights/s² right at the falcon. */
-const FEAR_RADIUS = 0.11;
+/** Birds drawn within this (heights) of the falcon are pushed aside, up to FLEE heights/s² right at it. */
+export const FLOCK_FEAR_RADIUS = 0.11;
 const FLEE = 5;
 /** The spring that brings a pushed bird back to its place: natural frequency (rad/s) and damping ratio. */
 const SPRING = 3;
@@ -903,8 +903,8 @@ export class Flock {
         const dx = px + ox - fx;
         const dy = py + oy - fy;
         const d = Math.hypot(dx, dy) + 1e-6;
-        if (d < FEAR_RADIUS) {
-          panic = 1 - d / FEAR_RADIUS;
+        if (d < FLOCK_FEAR_RADIUS) {
+          panic = 1 - d / FLOCK_FEAR_RADIUS;
           const flee = (FLEE * panic * panic) / d;
           ax += dx * flee;
           ay += dy * flee;
@@ -973,15 +973,24 @@ export class Flock {
     rules.reach.x = Math.max(0.05, aspect / 2 - SIDE_MARGIN - BOIDS_INSET_X);
     rules.reach.y = Math.max(0.05, (sky.high - sky.low) / 2 - BOIDS_INSET_Y);
     rules.wind.x = BOIDS_WIND * this.#wind;
-    // The falcon flies among the birds: where it is drawn, on their plane (as #toBoids hands them
-    // over), so its flee reaches the birds it is seen passing through.
+    // The falcon flies among the birds where it is drawn, and they fear it along the line of sight
+    // through it (from the eye at (eyeX, 0.5, -DISTANCE)), whatever their depth: its reach is a
+    // cylinder about that line, as wide on their plane as FLOCK_FEAR_RADIUS is on screen, so the
+    // birds it holds are those it is seen passing through, and they scatter across the line: on
+    // screen, opening a hole round it.
     const eyeX = aspect / 2;
     const threatZ = clamp(this.#planeDepth(this.#falconY), -BOIDS_DEPTH, BOIDS_DEPTH);
     const far = (DISTANCE + threatZ) / DISTANCE;
-    rules.threatRadius = this.#falcon ? FEAR_RADIUS : 0;
-    rules.threat.x = eyeX + (this.#falconX - eyeX) * far;
-    rules.threat.y = 0.5 + (this.#falconY - 0.5) * far;
+    const sightX = this.#falconX - eyeX;
+    const sightY = this.#falconY - 0.5;
+    const sight = Math.hypot(sightX, sightY, DISTANCE);
+    rules.threatRadius = this.#falcon ? FLOCK_FEAR_RADIUS * far : 0;
+    rules.threat.x = eyeX + sightX * far;
+    rules.threat.y = 0.5 + sightY * far;
     rules.threat.z = threatZ;
+    rules.threatAxis.x = sightX / sight;
+    rules.threatAxis.y = sightY / sight;
+    rules.threatAxis.z = DISTANCE / sight;
     boids.step(STEP, rules, this.#boidRandom);
 
     const { x, y, z, vx, vy, alarm } = boids;

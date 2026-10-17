@@ -215,3 +215,64 @@ test("between breezes the trees stand still", () => {
   expect(sim.upload(1).data).toEqual(rest);
   expect(sim.upload(3).data).toEqual(restRoots);
 });
+
+/**
+ * The bank's pulses after `settle` seconds without breezes, watched for `watch` seconds at 60 frames
+ * a second: how widely the flashes of a pulse start about its middle (ms from the 10th to the 90th
+ * percentile, every pulse pooled), and the mean seconds from one pulse to the next. A flash starts
+ * where a firefly's light (uSim0 B) leaves 0; a pulse is a run of starts without a 0.15 s gap.
+ */
+function pulses(unison: number, settle: number, watch: number): { spread: number; period: number } {
+  const knobs = { unison, unrest: 0 };
+  const pointer = { inside: false };
+  const sim = new HeadlessSim(firefliesScene);
+  for (let f = 0; f < 20; f++) sim.step({ dt: 0, pointer, knobs });
+  for (let f = 0; f < settle * 60; f++) sim.step({ pointer, knobs });
+  const starts: number[] = [];
+  let was = new Float32Array(0);
+  for (let f = 0; f < watch * 60; f++) {
+    const swarm = sim.step({ pointer, knobs }).upload(0).data;
+    const light = new Float32Array(swarm.length / 4);
+    for (let i = 0; i < light.length; i++) light[i] = swarm[4 * i + 2] ?? 0;
+    if (was.length === light.length) {
+      for (let i = 0; i < light.length; i++) {
+        if ((was[i] ?? 0) === 0 && (light[i] ?? 0) > 0) starts.push(f / 60);
+      }
+    }
+    was = light;
+  }
+  sim.dispose();
+  const runs: number[][] = [];
+  for (const t of starts) {
+    const run = runs.at(-1);
+    if (run && t - (run.at(-1) ?? t) <= 0.15) run.push(t);
+    else runs.push([t]);
+  }
+  // The pulses, not the few stubborn fireflies flashing alone between them.
+  const big = runs.filter((run) => run.length >= 0.02 * starts.length);
+  const offsets: number[] = [];
+  const middles = big.map((run) => run[Math.floor(run.length / 2)] ?? 0);
+  big.forEach((run, k) => {
+    for (const t of run) offsets.push(1000 * (t - (middles[k] ?? t)));
+  });
+  offsets.sort((a, b) => a - b);
+  const at = (q: number): number => offsets[Math.floor(q * (offsets.length - 1))] ?? 0;
+  return {
+    spread: at(0.9) - at(0.1),
+    period: ((middles.at(-1) ?? 0) - (middles[0] ?? 0)) / Math.max(1, middles.length - 1),
+  };
+}
+
+test(
+  "with unison up the bank flashes as one at its own period; without, each pulse sweeps out as a wave",
+  () => {
+    // Measured: the wave spreads its flashes over about 425 ms, unison over about 50 ms (75 ms by
+    // a minute in), both pulsing every 2.9–3.0 s at the default 3 s period.
+    const wave = pulses(0, 60, 10);
+    const unison = pulses(1, 90, 10);
+    expect(wave.spread).toBeGreaterThan(250);
+    expect(unison.spread).toBeLessThan(120);
+    expect(Math.abs(unison.period - 3)).toBeLessThan(0.06);
+  },
+  { timeout: 60_000 },
+);

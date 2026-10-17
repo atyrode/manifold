@@ -1,6 +1,7 @@
-// GPU regression for the tide pool's water (sims/shallow.ts): a walled box keeps its water, a sea
-// below a basin's rim leaves the basin alone, a sea above it pours in, and the basin keeps what came
-// over once the sea falls back. Small grids: float read-back is slow on software WebGL.
+// GPU regression for the tide pool's water (sims/shallow.ts, at the second order the scene runs): a
+// walled box keeps its water, a sea below a basin's rim leaves the basin alone, a sea above it pours
+// in, and the basin keeps what came over once the sea falls back. Small grids: float read-back is
+// slow on software WebGL.
 import { GpuCompute } from "../../sims/gpu.ts";
 import { ShallowWater } from "../../sims/shallow.ts";
 
@@ -38,7 +39,13 @@ export function verifyTidepoolExchange(gl: WebGL2RenderingContext): Record<strin
     };
 
     // Closed and unforced: a hump of water spreads and sloshes, and none is made or lost.
-    const box = new ShallowWater(gpu, { width: W, height: H, gravity: 40, friction: 0.05 });
+    const box = new ShallowWater(gpu, {
+      width: W,
+      height: H,
+      gravity: 40,
+      friction: 0.05,
+      order: 2,
+    });
     box.setBed(new Float32Array(W * H).fill(-2));
     box.reset(
       Float32Array.from({ length: W * H }, (_, i) => 2 + (Math.abs((i % W) - 12) < 3 ? 1.5 : 0)),
@@ -56,6 +63,7 @@ export function verifyTidepoolExchange(gl: WebGL2RenderingContext): Record<strin
       height: H,
       gravity: 120,
       friction: 0.05,
+      order: 2,
       forcing: `
 uniform float uSea;
 vec4 shallowForcing(vec2 uv, float bed) {

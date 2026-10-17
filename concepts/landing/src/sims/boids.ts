@@ -18,7 +18,9 @@
 // - home: outside the ellipsoid of half-axes `reach` about `home`, pulled back by `homePull` per
 //   second² per unit beyond it (the roost a flock wheels over, the water a school keeps to);
 // - threat: within `threatRadius` of `threat`, it flees at up to `flee` (0 radius: no threat) and
-//   is startled;
+//   is startled; with a `threatAxis` (a unit vector; zero: none), the reach is a cylinder about the
+//   line through `threat` along it, measured and pushed across the line only (a predator's line of
+//   sight, so a flock seen in perspective scatters where the eye sees the predator pass);
 // - noise: a random kick each step, a Wiener increment of `noise` units/s^1.5, so its effect does
 //   not depend on the step;
 // - wind carries every boid: it is added to the boid's position, not to its air speed.
@@ -124,6 +126,8 @@ export interface BoidRules {
   homePull: number;
   readonly wind: Vec3;
   readonly threat: Vec3;
+  /** Unit vector: the threat's reach is a cylinder along it through `threat` (zero: a sphere about it). */
+  readonly threatAxis: Vec3;
   threatRadius: number;
   flee: number;
   /** Startle relay: seconds before a startled boid passes it on, seconds it lasts, seconds until it can come again. */
@@ -154,6 +158,7 @@ export function boidRules(): BoidRules {
     homePull: 0,
     wind: { x: 0, y: 0, z: 0 },
     threat: { x: 0, y: 0, z: 0 },
+    threatAxis: { x: 0, y: 0, z: 0 },
     threatRadius: 0,
     flee: 0,
     relay: 0.05,
@@ -343,7 +348,7 @@ export class Boids {
       startled,
       refractory,
     } = rules;
-    const { up, home, reach, threat } = rules;
+    const { up, home, reach, threat, threatAxis } = rules;
     const levelK = level * level;
     const levelC = 2 * level;
     const homeUp = home.x * up.x + home.y * up.y + home.z * up.z;
@@ -435,11 +440,15 @@ export class Boids {
           fz += oz * f;
         }
       }
-      // Threat.
+      // Threat: from its point, or across its line.
       if (threatRadius > 0) {
-        const dx = xi - threat.x;
-        const dy = yi - threat.y;
-        const dz = zi - threat.z;
+        let dx = xi - threat.x;
+        let dy = yi - threat.y;
+        let dz = zi - threat.z;
+        const along = dx * threatAxis.x + dy * threatAxis.y + dz * threatAxis.z;
+        dx -= threatAxis.x * along;
+        dy -= threatAxis.y * along;
+        dz -= threatAxis.z * along;
         const d = Math.sqrt(dx * dx + dy * dy + dz * dz);
         if (d < threatRadius) {
           calm = 0;

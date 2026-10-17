@@ -36,10 +36,12 @@
 // stand by the kerb or the wall, where the walkable sidewalk leaves no room behind them, so a
 // walker held up by one in its way slides round it on the side that has room (a repulsion alone
 // would stand it still there for good). A watchdog sees to any walker still pinned on its way: it
-// joins the crowd at its kerb if it is that near, else steps aside, and in the end gives up and
-// leaves, so nobody stands there for good or keeps newcomers away (they come while the crowd is
-// short). People on the crossing when the green man flashes hurry. Standing walkers are frozen in
-// place until somebody squeezes past: under the dither, a fidgeting crowd would shimmer.
+// joins the crowd at its kerb if it is that near, else steps aside, and in the end gives up its way:
+// out of view it leaves there and then, in view it sets off for the nearest way out of its
+// sidewalk (never vanishing where it can be seen), so nobody stands there for good or keeps
+// newcomers away (they come while the crowd is short). People on the crossing when the green man
+// flashes hurry. Standing walkers are frozen in place until somebody squeezes past: under the
+// dither, a fidgeting crowd would shimmer.
 //
 // Rain or snow: each walker with an umbrella (most have one) opens it a few seconds after the
 // fall starts (some at the first drops, some only when it is coming down properly) and closes it
@@ -251,20 +253,30 @@ export const SHAPES: readonly VehicleShape[] = [
   { length: 0, width: 0, body: 0, top: 0, cabinBack: 0, cabinFront: 0 },
 ];
 
+/** The simulation was set up wrong: a knob it reads is missing, a phase is unknown, or its slots
+ *  outgrow the tile lists. */
+class StreetSimError extends Error {}
+
 /** Walker and vehicle slots: walkers first. */
 export const MAX_WALKERS = 160;
-const MAX_VEHICLES = 40;
+const MAX_VEHICLES = 54;
 export const MAX_AGENTS = MAX_WALKERS + MAX_VEHICLES;
 
-/** The tile grid over the street (m): origin, size, count; slots per tile. */
-export const TILE_X0 = -38;
+/** The tile grid over the street (m): origin, size, count; slots per tile. It spans what the window
+ *  sees at the far kerb on the widest frame (32:9: x from about −62 to 52 at z = 40). */
+export const TILE_X0 = -64;
 export const TILE_Z0 = 12;
 export const TILE = 1;
-export const TILES_X = 72;
+export const TILES_X = 120;
 export const TILES_Z = 72;
-export const TILE_BODIES = 12;
+export const TILE_BODIES = 16;
 export const TILE_LIGHTS = 12;
 export const TILE_TEXELS = (TILE_BODIES + TILE_LIGHTS) / 4;
+// A tile lists an agent as its slot + 1 in a byte (0: none), which the shader reads back as
+// int(code · 255 + 0.5) − 1; the slots stay under 255, with the byte's top value to spare.
+if (MAX_AGENTS > 254) {
+  throw new StreetSimError(`street: ${MAX_AGENTS} agent slots do not fit the tile lists' bytes`);
+}
 
 /** The tallest a walker stands with an open umbrella over it (m); its widest reach from its feet
  *  (m: an umbrella tipped forward, into the wind and back to look up). */
@@ -432,7 +444,7 @@ interface Portal {
   readonly weight: number;
 }
 
-const PORTALS: readonly Portal[] = [
+export const PORTALS: readonly Portal[] = [
   { region: "near", x: -37, z: 18, sx: 0, sz: 2.8, weight: 1.0 },
   { region: "near", x: 33, z: 18, sx: 0, sz: 2.8, weight: 1.0 },
   { region: "near", x: -14.0, z: 12.9, sx: 1.6, sz: 0, weight: 1.3 }, // the station stairs below the window
@@ -553,7 +565,8 @@ const CORNER_CUT = 0.5;
  *  seconds, further than STUCK_FAR (m) from where it is going, is pinned. Near a crossing's kerb it
  *  joins the crowd waiting there; elsewhere it steps DETOUR_STEP metres aside (toward the middle of
  *  its sidewalk) for up to DETOUR_TIME seconds, and after STUCK_TRIES such detours without getting
- *  STUCK_CLEAR metres from where it was pinned it gives up and leaves (is retired). */
+ *  STUCK_CLEAR metres from where it was pinned it gives up its way: out of view it leaves (is
+ *  retired), in view it heads for the nearest way out and the detours start over. */
 const STUCK_RADIUS = 0.3;
 const STUCK_TIME = 4;
 const STUCK_FAR = 1;
@@ -759,9 +772,6 @@ const TAU = Math.PI * 2;
 
 type KnobKey =
   "crowd" | "signal" | "outing" | "traffic" | "delivery" | "rain" | "snow" | "streetSeed";
-
-/** The simulation was set up wrong: a knob it reads is missing, or a phase is unknown. */
-class StreetSimError extends Error {}
 
 /** Angle a − b wrapped to −π..π. */
 const angleDiff = (a: number, b: number): number => {
@@ -2230,9 +2240,10 @@ class StreetCrossing implements SceneSim {
 
   /** The watchdog: a walker pinned on its way (against a pole, a wall or the crowd) joins the crowd
    *  at its crossing's kerb if it is that near, else steps aside for a moment, and after STUCK_TRIES
-   *  detours that got it nowhere gives up and leaves, so it neither stands there for good nor keeps
-   *  newcomers away (they come while the crowd is short). Returns true once it has stopped walking
-   *  its way (it waits at the kerb now, or has gone). */
+   *  detours that got it nowhere gives up its way: out of view it leaves there and then, in view it
+   *  sets off for the nearest way out (#leaveNearest) and goes on stepping aside while it is held
+   *  up, so it neither stands there for good, nor keeps newcomers away, nor vanishes before the
+   *  eye. Returns true once it has stopped walking its way (it waits at the kerb now, or has gone). */
   #watch(w: Walker): boolean {
     const clock = this.#clock;
     const moved = Math.hypot(w.x - w.anchorX, w.z - w.anchorZ);
@@ -2258,8 +2269,12 @@ class StreetCrossing implements SceneSim {
       return true;
     }
     if (w.tries >= STUCK_TRIES) {
-      this.#retire(w);
-      return true;
+      if (!this.#inView(w.x, w.z)) {
+        this.#retire(w);
+        return true;
+      }
+      this.#leaveNearest(w);
+      w.tries = 0;
     }
     w.tries++;
     // Aside: square to its way, toward the middle of its sidewalk first (the open side of a pole on
@@ -2286,8 +2301,71 @@ class StreetCrossing implements SceneSim {
 
   #retire(w: Walker): void {
     w.alive = false;
+    this.#alone(w);
+  }
+
+  /** It walks on alone: no partner, and nobody's. */
+  #alone(w: Walker): void {
     w.partner = undefined;
     for (const other of this.#walkers) if (other.partner === w) other.partner = undefined;
+  }
+
+  /** A walker that has given up its way sets off alone for the nearest way out (its portal's spread
+   *  picked by its seed): out of the sidewalk it is walking along, or, on a crossing, out of the one
+   *  it is crossing to, reaching that kerb first. An outing's child keeps to its line. */
+  #leaveNearest(w: Walker): void {
+    if (w.mode !== "walk" && w.mode !== "cross") return;
+    const region = w.region[w.next] ?? "near";
+    const crossing = w.mode === "cross";
+    const fromX = crossing ? (w.wx[w.next] ?? w.x) : w.x;
+    const fromZ = crossing ? (w.wz[w.next] ?? w.z) : w.z;
+    let exit: Portal | undefined;
+    let nearest = Number.POSITIVE_INFINITY;
+    for (const portal of PORTALS) {
+      const d = Math.hypot(portal.x - fromX, portal.z - fromZ);
+      if (portal.region === region && d < nearest) {
+        nearest = d;
+        exit = portal;
+      }
+    }
+    if (!exit) return;
+    const spread = 2 * ((w.seed * 7.31) % 1) - 1;
+    const ex = exit.x + exit.sx * spread;
+    const ez = exit.z + exit.sz * spread;
+    w.count = 0;
+    w.next = 0;
+    if (crossing) this.#push(w, fromX, fromZ, region, -1, 0);
+    this.#pushAlong(w, region, fromX, fromZ, ex, ez);
+    this.#push(w, ex, ez, region, -1, 0);
+    this.#alone(w);
+  }
+
+  /** Whether any of a walker standing at (x, z) shows in the frame as the window sees it now: its
+   *  feet to the top of an open umbrella, and its reach either side. */
+  #inView(x: number, z: number): boolean {
+    const pitch = PITCH - this.#tilt;
+    const sin = Math.sin(pitch);
+    const cos = Math.cos(pitch);
+    let left = Number.POSITIVE_INFINITY;
+    let right = Number.NEGATIVE_INFINITY;
+    let low = Number.POSITIVE_INFINITY;
+    let high = Number.NEGATIVE_INFINITY;
+    for (let k = 0; k < 2; k++) {
+      // Relative to the window (CAM_X, CAM_H, 0), looking along +z pitched down (#toGround's ray).
+      const dy = k * WALKER_TOP - CAM_H;
+      const depth = z * cos - dy * sin;
+      if (depth <= 1e-3) continue;
+      const f = FOCAL / depth;
+      const sx = (x - CAM_X) * f;
+      const sy = (dy * cos + z * sin) * f;
+      const reach = WALKER_REACH * f;
+      left = Math.min(left, sx - reach);
+      right = Math.max(right, sx + reach);
+      low = Math.min(low, sy - reach);
+      high = Math.max(high, sy + reach);
+    }
+    const half = this.#aspect / 2;
+    return right >= -half && left <= half && high >= -0.5 && low <= 0.5;
   }
 
   #forces(w: Walker, i: number): void {

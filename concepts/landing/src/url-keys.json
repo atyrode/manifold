@@ -806,6 +806,7 @@
       "reflections": "range",
       "seed": "seed",
       "stars": "range",
+      "unison": "range",
       "unrest": "feature",
       "unrest-amount": "range"
     },

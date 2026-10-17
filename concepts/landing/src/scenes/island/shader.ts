@@ -882,6 +882,13 @@ const RippleTable ISL_RIPPLES = RippleTable(4,
   vec4[RIPPLE_TRAINS](vec4(4.0, 0.03, 0.35, 1.0), vec4(1.5, 0.035, 0.35, 0.0), vec4(0.9, 0.03, 0.35, 2.0), vec4(0.55, 0.025, 0.35, 4.0), vec4(0.0)),
   vec2[RIPPLE_TRAINS](normalize(vec2(0.25, 1.0)), normalize(vec2(1.0, 0.35)), normalize(vec2(-0.5, 1.0)), normalize(vec2(0.7, -0.7)), vec2(0.0)),
   vec2(7.0, 14.0));
+// The glitter (waterGlint): the sun's or the moon's exposure per unit of its light (both discs are
+// as wide, so one number serves), set so the default afternoon sun, 34 degrees up, lays the path it
+// always did; a fleck's, a single facet mirroring the whole disc into its cell; and the lantern's
+// intensity, over the squared distance (units) to the water it lights.
+const float ISL_GLINT = 4.4;
+const float ISL_FLECK = 50.0;
+const float ISL_LAMP = 5.7;
 
 vec3 islSea(vec3 Pfull, vec3 rd, float t) {
   // Past ~140 units everything below is faded flat anyway; keep the coordinates sane.
@@ -932,14 +939,18 @@ vec3 islSea(vec3 Pfull, vec3 rd, float t) {
   vec3 col = base * lm * 1.1;
 
   // Wind ripples and a long swell: the slope tilts the mirror of the sky; the rain rings add their own.
-  vec3 sl = rippleSpectrum(P.xz, islT, foot, 1.0, ISL_RIPPLES);
+  // The trains' slopes follow the wind as the rms slope of Cox & Munk's fit below does, 1 at the
+  // default wind 0.2: a calm evening mirrors near and far, a gale ruffles the near water as it
+  // widens the far path.
+  float ruffle = sqrt((0.003 + 0.0512 * abs(islWind)) / (0.003 + 0.0512 * 0.2));
+  vec3 sl = rippleSpectrum(P.xz, islT, foot, ruffle, ISL_RIPPLES);
   float ringFade = 1.0 - smoothstep(10.0, 20.0, t);
   vec3 rr3 = vec3(0.0);
   if (K_rain > 0.0) {
     rr3 = rainRipples(P.xz * 2.4, uFallTime, K_rain);
     sl.xy += rr3.xy * 0.5 * ringFade;
   }
-  // The slope variance the cells do not draw (waterGlitter's s2): the ripples finer than the four
+  // The slope variance the cells do not draw (waterGlint's s2): the ripples finer than the four
   // trains, after Cox & Munk's clean-sea fit 0.003 + 0.00512 U for a wind of U m/s (the wind knob's
   // 1 taken as 10 m/s), the rain's rings, and the trains themselves wherever they fade (sl.z), so
   // the mirror blurs and the glitter path widens toward the horizon. A surface that rough never
@@ -1008,24 +1019,27 @@ vec3 islSea(vec3 Pfull, vec3 rd, float t) {
     col += vec3(1.0, 0.99, 0.92) * (spkL * 0.8 * hardEdge(spk * 1.1));
   }
 
-  // The sun's or moon's glitter path (waterGlitter): solid where the facets crowd to mirror it, the
+  // The sun's or moon's glitter path (waterGlint): solid where the facets crowd to mirror it, the
   // ripples drawn near by breaking it into their own shapes and the trains too fine to draw widening
-  // it toward the horizon; flecks kindling in its wider tail; and the lantern's own path.
+  // it toward the horizon; long and blazing from a low sun, short and faint from a high one. Flecks
+  // kindle in its wider tail: single facets, each mirroring the whole disc into its cell, as likely
+  // as the tail's glint is bright. And the lantern's own path, fading away from it.
   vec3 view = -rd;
   float lightL = dot(islLcol, vec3(0.333));
   if (lightL > 0.02) {
-    float path = waterGlitter(sea.normal, view, islLdir, rough);
-    col += islLcol * (0.9 * hardEdge(path * lightL * 1.3));
+    float path = waterGlint(sea.normal, view, islLdir, rough, ISL_GLINT * lightL);
+    col += islLcol * (0.9 * hardEdge(path));
     if (lodS > 0.0) {
       float fleck = smoothstep(0.35, 0.75, vnoise(P.xz * vec2(2.2, 3.2) + vec2(islT * 0.08, 0.0)));
-      float tail = waterGlitter(sea.normal, view, islLdir, 6.0 * rough);
-      col += islLcol * (0.45 * hardEdge(tail * fleck * lodS * min(lightL * 1.6, 1.0)));
+      float tail = waterGlint(sea.normal, view, islLdir, 6.0 * rough, ISL_FLECK * lightL);
+      col += islLcol * (0.45 * hardEdge(tail * fleck * lodS));
     }
   }
   if (islDark > 0.02) {
-    float lamp = waterGlitter(sea.normal, view, normalize(islLampL - P), rough);
+    vec3 toLamp = islLampL - P;
+    float lamp = waterGlint(sea.normal, view, normalize(toLamp), rough, ISL_LAMP * islDark / dot(toLamp, toLamp));
     vec2 dl = P.xz - islLampL.xz;
-    col += vec3(1.0, 0.76, 0.42) * (hardEdge(lamp * islDark * 1.4) * 0.9 + islDark * 0.2 * exp(-dot(dl, dl) * 0.9));
+    col += vec3(1.0, 0.76, 0.42) * (hardEdge(lamp) * 0.9 + islDark * 0.2 * exp(-dot(dl, dl) * 0.9));
   }
 
   // Rain rings.

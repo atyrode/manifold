@@ -300,10 +300,10 @@ export const lakeScene: SceneDef = {
   glsl: lakeGlsl,
   entry: "sceneLake",
   sim: lakeSim(params),
-  // The moon's and the window's paths down the ice: the water's glitter (waterGlitter, its mirror
-  // tier); the ice's own mirror, bubbles and cracks are the scene's. The fjord's open water: the
-  // breeze's cat's-paws breaking up its screen-space mirror (windRipples, windMirror: the ripples
-  // tier, which the mirror tier includes).
+  // The moon's and the window's paths down the ice and over the fjord: the water's glint
+  // (waterGlint, its mirror tier); the ice's own mirror, bubbles and cracks are the scene's. The
+  // fjord's open water: the breeze's cat's-paws breaking up its screen-space mirror and widening the
+  // paths (windRipples, windMirror: the ripples tier, which the mirror tier includes).
   features: { WATER_TIER: WATER_TIERS.mirror },
   featuresFor: lakeFeatures,
   featuresAll: lakeFeatures({ setting: 1, drapes: 1 }),

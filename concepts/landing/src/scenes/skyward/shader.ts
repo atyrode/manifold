@@ -228,8 +228,8 @@ struct SkywardHit {
   SkywardLot lot;
 };
 
-// The first facade a ray meets from ro (inside the canyon): at most one plane of each axis.
-SkywardHit skywardTrace(vec3 ro, vec3 rd) {
+// A ray that meets no facade.
+SkywardHit skywardMiss() {
   SkywardHit h;
   h.t = SKYWARD_FAR;
   h.fid = 0.0;
@@ -239,6 +239,12 @@ SkywardHit skywardTrace(vec3 ro, vec3 rd) {
   h.p = vec3(0.0);
   h.hit = false;
   h.lot = SkywardLot(0.0, 0.0, 0.0, 0.0, 1.0, 0.0);
+  return h;
+}
+
+// The first facade a ray meets from ro (inside the canyon): at most one plane of each axis.
+SkywardHit skywardTrace(vec3 ro, vec3 rd) {
+  SkywardHit h = skywardMiss();
   if (abs(rd.x) > 1e-4) {
     float sx = rd.x > 0.0 ? 1.0 : -1.0;
     float t = (sx * SKYWARD_A - ro.x) / rd.x;
@@ -476,32 +482,80 @@ vec3 skywardMasonry(SkywardHit h, vec2 fp, float slope, vec3 tone, vec3 E, vec3 
   return col;
 }
 
-// A curtain wall: panels of tinted glass mirroring the sky, the clouds, the opposite roofline and,
-// where the angle is right, the sun; spandrel bands between floors; offices lit at night.
-vec3 skywardGlassTower(SkywardHit h, vec3 rd, vec2 fp, vec3 E) {
+// A glass tower's panels: the bay's width and the storey's height (m) on its lot.
+vec2 skywardPanelSize(SkywardLot l) {
+  return vec2(mix(1.35, 1.8, fract(l.variant * 3.7)), 3.9);
+}
+
+// How the glass panel at the hit reflects rd: each panel sits a hair off true, so the reflection
+// breaks up panel by panel.
+vec3 skywardPanelReflect(SkywardHit h, vec3 rd) {
+  vec2 panel = floor(vec2(h.u - h.lot.u0, h.y) / skywardPanelSize(h.lot));
+  vec2 jit = (hash22(panel + h.lot.seed * 13.0) - 0.5) * 0.06;
+  vec3 uaxis = h.fid < 3.5 ? vec3(0.0, 0.0, 1.0) : vec3(1.0, 0.0, 0.0);
+  vec3 nn = normalize(h.n + uaxis * jit.x + vec3(0.0, 1.0, 0.0) * jit.y);
+  return reflect(rd, nn);
+}
+
+// The one ray of the world's sky a pixel sees, if any, worked out before its surface is shaded:
+// straight up past the walls, mirrored in a glass tower's panel (without the airliners), or in the
+// wet road, whichever its first surface is. Where that mirror's ray meets a facade first (wall.hit)
+// it mirrors the facade instead and sees no sky. The sky's colour is worked out here alone, so the
+// program holds one copy of it (the dome, the deck, the stars, the giant and the planets), not one
+// per surface that can show it.
+struct SkywardSeen {
+  vec3 dir;         // the ray to the sky (or to the facade a mirror's ray meets)
+  SkywardHit wall;  // the facade a mirror's ray meets first
+  vec3 col;         // the sky along dir; black where it sees none
+};
+
+SkywardSeen skywardSeen(vec3 rd, SkywardHit hit, bool ground, float tg) {
+  SkywardSeen s;
+  s.dir = rd;
+  s.wall = skywardMiss();
+  s.col = vec3(0.0);
+  bool open = !ground && !hit.hit;
+  bool planes = true;
+  if (ground) {
+    // The road mirrors what stands over it wherever it is wet enough to (skywardGround).
+    if (wetGloss(skywardWet, 1.0) > 0.01) {
+      vec2 q = SKYWARD_RO.xz + rd.xz * tg;
+      s.dir = vec3(rd.x, -rd.y, rd.z);
+      s.wall = skywardTrace(vec3(q.x, 0.0, q.y), s.dir);
+      open = !s.wall.hit;
+    }
+  } else if (hit.hit && hit.lot.kind < 0.5) {
+    s.dir = skywardPanelReflect(hit, rd);
+    s.wall = skywardTrace(hit.p, s.dir);
+    open = !s.wall.hit;
+    planes = false;
+  }
+  if (open) s.col = skywardSkyAlong(s.dir, planes);
+  return s;
+}
+
+// A curtain wall: panels of tinted glass mirroring what they face (sky: the facade the panel's
+// reflection meets, else the world's sky, the clouds and, where the angle is right, the sun);
+// spandrel bands between floors; offices lit at night.
+vec3 skywardGlassTower(SkywardHit h, vec2 fp, vec3 E, SkywardSeen sky) {
   SkywardLot l = h.lot;
   float x = h.u - l.u0;
   float y = h.y;
-  float sh = 3.9;
-  float pw = mix(1.35, 1.8, fract(l.variant * 3.7));
+  vec2 size = skywardPanelSize(l);
+  float sh = size.y;
+  float pw = size.x;
   float fi = floor(y / sh);
   float bi = floor(x / pw);
   vec3 tint = skywardGlassTint(fract(l.seed * 29.0));
   float vx = skywardCover1(x, pw, 0.03, 0.97, fp.x);
   float vy = skywardCover1(y, sh, 0.28, 0.97, fp.y);
 
-  // Each panel sits a hair off true, so the reflection breaks up panel by panel.
-  vec2 jit = (hash22(vec2(bi, fi) + l.seed * 13.0) - 0.5) * 0.06;
-  vec3 uaxis = h.fid < 3.5 ? vec3(0.0, 0.0, 1.0) : vec3(1.0, 0.0, 0.0);
-  vec3 nn = normalize(h.n + uaxis * jit.x + vec3(0.0, 1.0, 0.0) * jit.y);
-  vec3 refl = reflect(rd, nn);
-  SkywardHit rh = skywardTrace(h.p, refl);
   vec3 seen;
-  if (rh.hit) {
-    seen = skywardCheap(rh);
+  if (sky.wall.hit) {
+    seen = skywardCheap(sky.wall);
   } else {
-    seen = skywardSkyAlong(refl, false);
-    vec3 dv = refl - skywardSky.sun;
+    seen = sky.col;
+    vec3 dv = sky.dir - skywardSky.sun;
     seen += skywardSky.sunColor * exp(-0.5 * dot(dv, dv) * 55.0) * 1.6;
   }
   float gloss = 0.8 + 0.2 * wetGloss(skywardWet, 0.0);
@@ -529,7 +583,7 @@ vec3 skywardGlassTower(SkywardHit h, vec3 rd, vec2 fp, vec3 E) {
   return col;
 }
 
-vec3 skywardFacade(SkywardHit h, vec3 rd) {
+vec3 skywardFacade(SkywardHit h, vec3 rd, SkywardSeen sky) {
   vec2 fp = skywardFoot(h, rd);
   float slope = rd.y / max(abs(dot(rd, h.n)), 0.05);
   float sunLit = skywardSunLit(h);
@@ -538,7 +592,7 @@ vec3 skywardFacade(SkywardHit h, vec3 rd) {
   float k = h.lot.kind;
   vec3 col;
   if (k < 0.5) {
-    col = skywardGlassTower(h, rd, fp, E);
+    col = skywardGlassTower(h, fp, E, sky);
   } else {
     // Stone, brick or concrete: the kind's tone, storey, bay and windows (width, sill, head as
     // shares of the bay and the storey) and the odds of a balcony, then one masonry for all three.
@@ -926,8 +980,9 @@ vec3 skywardBirds(vec3 rd, float tw, vec3 col) {
 // The road, the kerb and sidewalks at the foot of the facades, the zebra and the lane dashes. The
 // camera lies in the middle of the crossing looking up, so at rest no ray reaches it; the entrance
 // and the exit tip the view down to it. Every edge is a hard per-cell cut of a world-fixed shape,
-// and the detail drops out with distance rather than aliasing.
-vec3 skywardGround(vec3 rd, float tg, SkywardHit h) {
+// and the detail drops out with distance rather than aliasing. Wet, it mirrors what its mirror ray
+// meets (sky: skywardSeen's).
+vec3 skywardGround(vec3 rd, float tg, SkywardHit h, SkywardSeen sky) {
   vec2 q = SKYWARD_RO.xz + rd.xz * tg;
   vec2 a = abs(q);
   float foot = skywardPx * tg / max(-rd.y, 0.04);
@@ -969,9 +1024,7 @@ vec3 skywardGround(vec3 rd, float tg, SkywardHit h) {
   // Wet road mirrors what stands over it, more so at a grazing angle.
   float gloss = wetGloss(skywardWet, 1.0) * (1.0 - 0.7 * walk);
   if (gloss > 0.01) {
-    vec3 mr = vec3(rd.x, -rd.y, rd.z);
-    SkywardHit rh = skywardTrace(gh.p, mr);
-    vec3 seen = rh.hit ? skywardCheap(rh) : skywardSkyAlong(mr, true);
+    vec3 seen = sky.wall.hit ? skywardCheap(sky.wall) : sky.col;
     float fres = 0.05 + 0.95 * pow(1.0 - clamp(-rd.y, 0.0, 1.0), 5.0);
     col = mix(col, seen, gloss * clamp(0.15 + 0.7 * fres, 0.0, 1.0));
   }
@@ -1055,7 +1108,9 @@ Shade sceneSkyward(vec2 uv, vec2 cell, float t) {
   float tg = (passing && rd.y < -1e-3) ? SKYWARD_RO.y / -rd.y : SKYWARD_FAR;
   bool ground = tg < (hit.hit ? hit.t : SKYWARD_FAR);
   float tw = ground ? tg : (hit.hit ? hit.t : SKYWARD_FAR);
-  vec3 col = ground ? skywardGround(rd, tg, hit) : hit.hit ? skywardFacade(hit, rd) : skywardSkyAlong(rd, true);
+  // The sky this pixel sees, once, whichever surface shows it (skywardSeen).
+  SkywardSeen sky = skywardSeen(rd, hit, ground, tg);
+  vec3 col = ground ? skywardGround(rd, tg, hit, sky) : hit.hit ? skywardFacade(hit, rd, sky) : sky.col;
 
   // Overhead, far to near.
   col = skywardBirds(rd, tw, col);

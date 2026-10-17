@@ -18,6 +18,13 @@ const params: readonly ParamDef[] = [
   ),
   range(
     "swarm",
+    "unison",
+    "unison",
+    0,
+    "How far each firefly's own pace gives way to the beat it sees. At 0 each keeps its own pace, so every pulse sweeps out from the fastest trees as a wave. Higher, each adapts its pace to the beat, as the mangrove fireflies of Malaysia do, and the bank flashes in a single instant.",
+  ),
+  range(
+    "swarm",
     "density",
     "fireflies",
     0.65,

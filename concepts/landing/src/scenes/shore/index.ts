@@ -125,7 +125,7 @@ export const shoreScene: SceneDef = {
   // follows the page (inkOf).
   theme: skyTheme(params),
   // The sea: wind ripples tilting a mirror of the sky and the moon's glitter (rippleSpectrum,
-  // waterMirror, waterGlitter); the breakers and the swash are the scene's own. The moon's phase is
+  // waterMirror, waterGlint); the breakers and the swash are the scene's own. The moon's phase is
   // compiled in at every setting, a full moon's too (where the world leaves it out): the glitter's
   // narrow lobe magnifies the last bits of the moon's direction, which the phase code's presence
   // shifts, so a full moon's own program would not draw byte for byte as the all-features one does.

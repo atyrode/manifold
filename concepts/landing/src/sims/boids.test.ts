@@ -263,6 +263,30 @@ test("a threat scatters the boids within its reach and startles them; the rest f
   expect([boids.x[2], boids.vx[2], boids.alarm[2]]).toEqual([3, 0, Number.POSITIVE_INFINITY]);
 });
 
+test("a threat with an axis reaches along its whole line, and pushes across it only", () => {
+  const fly = (axis: number): Boids => {
+    const rules = bare();
+    rules.speed = 0;
+    rules.threatRadius = 1;
+    rules.flee = 4;
+    rules.threatAxis.z = axis;
+    const boids = new Boids(2);
+    boids.count = 2;
+    // Far down the line but near it, and near the threat's point but off the line.
+    boids.place(0, 0.3, 0, 5, 0, 0, 0);
+    boids.place(1, 0, 1.5, 0.2, 0, 0, 0);
+    boids.step(1 / 60, rules, new Random(1));
+    return boids;
+  };
+  const line = fly(1);
+  expect(line.vx[0] ?? 0).toBeGreaterThan(0);
+  expect([line.vy[0], line.vz[0], line.alarm[0]]).toEqual([0, 0, 0]);
+  expect([line.vy[1], line.alarm[1]]).toEqual([0, Number.POSITIVE_INFINITY]);
+  // With no axis the same threat is a sphere about its point: the first is out of its reach.
+  const sphere = fly(0);
+  expect([sphere.vx[0], sphere.alarm[0]]).toEqual([0, Number.POSITIVE_INFINITY]);
+});
+
 test("level flight flattens the flock across its up axis, and home brings strays back", () => {
   const rules = boidRules();
   rules.spacing = 1;

@@ -24,7 +24,7 @@
 //   const float BIRD_CROW, BIRD_SWALLOW, BIRD_GULL, BIRD_GOOSE, BIRD_RAPTOR, BIRD_PIGEON, BIRD_SWIFT; // species
 //   const float BIRD_SOLO, BIRD_LOOSE, BIRD_SKEIN, BIRD_CIRCLING;                 // formations
 //   struct BirdSpecies { span, cells, spacing, hz, broad, neck, dihedral, albedo, formation, flock,
-//                        lane, scythe, fold, underwing };
+//                        lane, scythe, fold, underwing, tips };
 //   BirdSpecies birdSpecies(float kind);  // a row of the const table BIRD_SPECIES, by the nearest kind
 //   struct BirdCamera { horizon, focal, eye, unit, enlarge };
 //   struct BirdFlight { kind, formation, count, dir, lead, radius, swoop, key };
@@ -39,6 +39,7 @@
 //   BirdHit birdFlightHit(vec2 p, BirdFlight f, BirdCamera cam, float tm, float pxl);
 //   vec2 birdPose(float kind, float tm, float phase | vec3 own); // x wingbeat -1..1, y wings held up (dihedral)
 //   float birdShape(vec2 l, vec2 pose, BirdSpecies s);  // glyph distance in half-spans
+//   float birdUnderwing(BirdSpecies s, float across);   // how much underwing shows, half-spans out
 //
 // A scene's sky (see swell, meadow, falls...), with p and cam in its own projection:
 //   BirdSky sky = birdSky(K_birds * calm, K_birdKind, K_birdFormation - 1.0, depths, band, seed);
@@ -85,19 +86,20 @@ struct BirdSpecies {
   vec4 lane;       // the share of a scene's lane it keeps to: depths (near, far), band (low, high), 0..1
   float scythe;    // seen from below: 0 a rounded wing .. 1 a swift's long scythe
   float fold;      // seen from below: how far the wings still spread at the bottom of a beat
-  vec4 underwing;  // seen from below: the underwing's colour, and how much of it shows toward the tips
+  vec4 underwing;  // seen from below (or soaring above the eye): its colour, how much shows toward the tips
+  float tips;      // how dark the wingtips stay past the pale underwing (a buzzard's dark fingers)
 };
 
 // One row per species, in kind order (BIRD_CROW = 0 ... BIRD_SWIFT = 6): a lookup, not a branch per
 // kind, so the many loops that ask for a bird's species stay small.
 const BirdSpecies BIRD_SPECIES[7] = BirdSpecies[7](
-  BirdSpecies(0.9, 6.0, 7.0, 2.4, 0.0, 0.22, 0.0, vec3(0.06, 0.055, 0.065), BIRD_LOOSE, vec2(2.0, 6.0), vec4(0.1, 0.7, 0.1, 0.85), 0.15, 0.85, vec4(0.06, 0.055, 0.065, 0.0)),
-  BirdSpecies(0.33, 5.0, 5.0, 4.0, 0.0, 0.18, 0.0, vec3(0.045, 0.05, 0.08), BIRD_LOOSE, vec2(2.0, 4.0), vec4(0.0, 0.25, 0.0, 0.55), 0.8, 0.85, vec4(0.55, 0.5, 0.45, 0.3)),
-  BirdSpecies(1.3, 7.0, 9.0, 1.6, 0.0, 0.22, 0.1, vec3(0.78, 0.8, 0.82), BIRD_LOOSE, vec2(1.0, 4.0), vec4(0.1, 0.8, 0.1, 0.8), 0.55, 0.9, vec4(0.78, 0.8, 0.82, 0.0)),
-  BirdSpecies(1.6, 7.0, 9.0, 2.0, 0.3, 0.55, 0.0, vec3(0.2, 0.18, 0.15), BIRD_SKEIN, vec2(5.0, 9.0), vec4(0.35, 1.0, 0.4, 1.0), 0.3, 0.85, vec4(0.42, 0.4, 0.36, 0.4)),
-  BirdSpecies(1.3, 8.0, 0.0, 3.0, 1.0, 0.18, 0.25, vec3(0.2, 0.14, 0.09), BIRD_CIRCLING, vec2(1.0, 1.0), vec4(0.2, 0.7, 0.25, 0.8), 0.0, 0.95, vec4(0.55, 0.45, 0.35, 0.5)),
-  BirdSpecies(0.72, 5.0, 4.0, 1.15, 0.2, 0.15, 0.0, vec3(0.07, 0.075, 0.09), BIRD_CIRCLING, vec2(5.0, 9.0), vec4(0.0, 0.5, 0.0, 0.6), 0.0, 0.85, vec4(0.42, 0.44, 0.48, 0.4)),
-  BirdSpecies(0.4, 5.0, 6.0, 0.0, 0.0, 0.1, 0.0, vec3(0.07, 0.075, 0.09), BIRD_LOOSE, vec2(3.0, 7.0), vec4(0.2, 0.9, 0.4, 1.0), 1.0, 1.0, vec4(0.07, 0.075, 0.09, 0.0))
+  BirdSpecies(0.9, 6.0, 7.0, 2.4, 0.0, 0.22, 0.0, vec3(0.06, 0.055, 0.065), BIRD_LOOSE, vec2(2.0, 6.0), vec4(0.1, 0.7, 0.1, 0.85), 0.15, 0.85, vec4(0.06, 0.055, 0.065, 0.0), 0.0),
+  BirdSpecies(0.33, 5.0, 5.0, 4.0, 0.0, 0.18, 0.0, vec3(0.045, 0.05, 0.08), BIRD_LOOSE, vec2(2.0, 4.0), vec4(0.0, 0.25, 0.0, 0.55), 0.8, 0.85, vec4(0.55, 0.5, 0.45, 0.3), 0.0),
+  BirdSpecies(1.3, 7.0, 9.0, 1.6, 0.0, 0.22, 0.1, vec3(0.78, 0.8, 0.82), BIRD_LOOSE, vec2(1.0, 4.0), vec4(0.1, 0.8, 0.1, 0.8), 0.55, 0.9, vec4(0.78, 0.8, 0.82, 0.0), 0.0),
+  BirdSpecies(1.6, 7.0, 9.0, 2.0, 0.3, 0.55, 0.0, vec3(0.2, 0.18, 0.15), BIRD_SKEIN, vec2(5.0, 9.0), vec4(0.35, 1.0, 0.4, 1.0), 0.3, 0.85, vec4(0.42, 0.4, 0.36, 0.4), 0.0),
+  BirdSpecies(1.3, 10.0, 0.0, 3.0, 1.0, 0.18, 0.25, vec3(0.2, 0.14, 0.09), BIRD_CIRCLING, vec2(1.0, 1.0), vec4(0.2, 0.7, 0.25, 0.8), 0.0, 0.95, vec4(0.55, 0.45, 0.35, 0.5), 1.0),
+  BirdSpecies(0.72, 5.0, 4.0, 1.15, 0.2, 0.15, 0.0, vec3(0.07, 0.075, 0.09), BIRD_CIRCLING, vec2(5.0, 9.0), vec4(0.0, 0.5, 0.0, 0.6), 0.0, 0.85, vec4(0.42, 0.44, 0.48, 0.4), 0.0),
+  BirdSpecies(0.4, 5.0, 6.0, 0.0, 0.0, 0.1, 0.0, vec3(0.07, 0.075, 0.09), BIRD_LOOSE, vec2(3.0, 7.0), vec4(0.2, 0.9, 0.4, 1.0), 1.0, 1.0, vec4(0.07, 0.075, 0.09, 0.0), 0.0)
 );
 
 // The species of a kind, rounded to the nearest (below crows: crows; above swifts: swifts).
@@ -241,9 +243,19 @@ float birdShape(vec2 l, vec2 pose, BirdSpecies s) {
   return min(wing, sdTaperCapsule(l, vec2(s.neck, -0.04), vec2(-0.2, -0.08), 0.06 + 0.03 * (1.0 - s.neck), 0.06));
 }
 
+// How much of the species' underwing colour shows at \`across\` half-spans out along a wing (from
+// below, or side-on with its undersides toward the eye): none over the body, more toward the tips,
+// and the tips themselves dark again where the species' are.
+float birdUnderwing(BirdSpecies s, float across) {
+  float a = abs(across);
+  return smoothstep(0.2, 0.45, a) * s.underwing.a * (1.0 - s.tips * smoothstep(0.75, 0.9, a));
+}
+
 // The nearest bird of flight f covering screen point p (cut per cell; no occlusion, the scene
 // compares depth with its own surfaces). Each bird is at least the species' cells across, its strokes
-// at least about a cell wide, so it reads however far it flies.
+// at least about a cell wide, so it reads however far it flies. A bird above the eye holding its
+// wings up in a V (soaring: pose.y, the buzzard's dihedral) shows their undersides, the more the
+// steeper the eye looks up at it: its pale underwing toward the tips (birdUnderwing).
 BirdHit birdFlightHit(vec2 p, BirdFlight f, BirdCamera cam, float tm, float pxl) {
   BirdHit hit = birdNone();
   BirdSpecies s = birdSpecies(f.kind);
@@ -279,8 +291,12 @@ BirdHit birdFlightHit(vec2 p, BirdFlight f, BirdCamera cam, float tm, float pxl)
     vec2 l = (p - seen) / size;
     if (dot(l, l) > 2.0 || at.z >= hit.depth) continue;
     l.x *= heading;
-    float d = birdShape(l, birdPose(f.kind, tm, TAU * hm), s) * size - max(0.0, 0.45 * pxl - 0.08 * size);
-    if (hardFill(d, 0.35 * pxl) > 0.5) hit = BirdHit(1.0, at.z, s.albedo);
+    vec2 pose = birdPose(f.kind, tm, TAU * hm);
+    float d = birdShape(l, pose, s) * size - max(0.0, 0.45 * pxl - 0.08 * size);
+    if (hardFill(d, 0.35 * pxl) > 0.5) {
+      float under = clamp(4.0 * pose.y, 0.0, 1.0) * smoothstep(0.0, 0.3, (at.y - cam.eye) / at.z);
+      hit = BirdHit(1.0, at.z, mix(s.albedo, s.underwing.rgb, birdUnderwing(s, l.x) * under));
+    }
   }
   return hit;
 }
@@ -385,7 +401,8 @@ float birdBelowShape(vec2 q, float open, float flap, BirdSpecies s) {
 // A bird of \`kind\` at world position pos flying along vel, drawn with half-span semi (world units:
 // the scene's own enlargement), as the eye ray (ro, rd) sees it from below: cover (cut per cell),
 // depth (its distance from the eye; the scene hides it behind nearer surfaces) and albedo (the
-// underwing paler toward the tips where the species' is). own: as birdPose; px: radians a cell spans.
+// underwing paler toward the tips where the species' is: birdUnderwing). own: as birdPose; px:
+// radians a cell spans.
 BirdHit birdBelowHit(vec3 ro, vec3 rd, vec3 pos, vec3 vel, float kind, float semi, vec3 own, float tm, float px) {
   vec3 dv = pos - ro;
   float db = length(dv);
@@ -405,7 +422,7 @@ BirdHit birdBelowHit(vec3 ro, vec3 rd, vec3 pos, vec3 vel, float kind, float sem
   float open = mix(s.fold, 1.0, 0.5 + 0.5 * flap);
   float aa = 0.55 * px * db / semi;
   float cover = hardFill(birdBelowShape(q, open, flap, s), aa);
-  return BirdHit(cover, db, mix(s.albedo, s.underwing.rgb, smoothstep(0.2, 0.45, abs(q.y)) * s.underwing.a));
+  return BirdHit(cover, db, mix(s.albedo, s.underwing.rgb, birdUnderwing(s, q.y)));
 }
 `;
 

@@ -659,7 +659,8 @@ float windMirrorSpread(vec4 ripples, float focal);        // the vertical smear 
 // WATER_MIRROR
 struct WaterMirror { vec3 normal; vec3 ray; float fresnel; };
 WaterMirror waterMirror(vec3 dir, vec2 slope, float minCos); // a view ray on rippled water: normal, reflected ray, Fresnel (f0 0.02)
-float waterGlitter(vec3 n, vec3 view, vec3 light, float s2); // the sun's or moon's glitter 0..1: Beckmann lobe, variance s2, 1 at its heart
+float waterMasking(float c, float s2);                    // Smith's share of a rough surface's facets seen (or lit) at cosine c: 1 face on, 0 behind
+float waterGlint(vec3 n, vec3 view, vec3 light, float s2, float exposure); // a light's glitter 0..1 of its colour: Cox & Munk with Fresnel and masking, saturating
 // WATER_FLOW
 vec2 waterDrift(vec2 p, vec2 current, float tm);          // where to evaluate a pattern a steady current (velocity) has carried to p
 // WATER_CAUSTICS (caustics.ts)
@@ -964,7 +965,7 @@ have **open** cells: an open night sky where the component could be composed.
 | `bamboo`, `forest` | canopy gaps                                                      | knob 0.5                                    | knob (phase; the gaps and the night rays)                  | —                                                                 | —                                                                                    |
 | `street`           | in reflections only                                              | knob 0.55 (window glass)                    | knob (phase; the windows and wet street)                   | —                                                                 | —                                                                                    |
 | `lake`             | over the ice or the fjord, mirrored                              | own `K_stars` + shared Milky Way (knob)     | own phase, fixed bearing (right; over the fjord left)      | knob (`auroraCurtains`, substorm clock) or own `drapes`           | knob, trigger 3, mirrored                                                            |
-| `swell`            | over the sea                                                     | own (`starfield`, `K_stars`)                | own disc (`K_moon` sizes it), its `waterGlitter` path      | —                                                                 | knob, trigger 0, screen frame, glints in the waves                                   |
+| `swell`            | over the sea                                                     | own (`starfield`, `K_stars`)                | own disc (`K_moon` sizes it), its `waterGlint` path        | —                                                                 | knob, trigger 0, screen frame, glints in the waves                                   |
 | `clouds` †         | above the cloud sea                                              | knob 0.75                                   | own bearing, drawn by `skyColor`                           | knob (`auroraCurtains`, full detail)                              | open                                                                                 |
 | `country`          | over the valley                                                  | knob 0.5                                    | knob (phase; `SKY_MOON_PHASE` compiled in only below full) | open                                                              | open                                                                                 |
 | `flock` †          | the subject over a skyline (only the dome mirrored in its water) | knob 0.45                                   | full                                                       | open                                                              | open                                                                                 |
@@ -1017,7 +1018,10 @@ side-on for a level pinhole camera (`birdFlights`), the same flights' image in s
 (`birdFlightsSeen(q, ..., true)`, looked up at the scene's own mirrored sky point, ripples and all),
 and from below for a camera looking up (`birdBelowHit`, the scene moving its birds). Level of
 detail: a bird is never narrower than its species' `cells`, its strokes about a cell wide, so a far
-flight is a few clear marks rather than flicker.
+flight is a few clear marks rather than flicker. The buzzard, at least 10 cells to the rooks' 6,
+reads apart from them in a still frame: soaring above the eye with its wings held up in a V, it
+shows their undersides side-on as from below (`birdUnderwing`: pale toward the tips, the tips
+themselves dark), the more the steeper the eye looks up at it.
 
 | Scene      | Birds                                                                                                           | Default                  | Hidden by                                                         | Mirrored in       |
 | ---------- | --------------------------------------------------------------------------------------------------------------- | ------------------------ | ----------------------------------------------------------------- | ----------------- |
@@ -1283,21 +1287,32 @@ the highest it draws, `features: { WATER_TIER: WATER_TIERS.mirror }` (`WATER_TIE
 higher tier fails to compile. The tiers compose the water parts that already exist rather than
 repeating them:
 
-| Tier       | `WATER_TIER`       | What the scene gets                                                                                                                                                                                                                                                                                                                       |
-| ---------- | ------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `flat`     | `WATER_FLAT` 0     | nothing shared: its own tint, its sky mirrored flat if it likes                                                                                                                                                                                                                                                                           |
-| `ripples`  | `WATER_RIPPLES` 1  | wind ripples: `rippleSpectrum` over its own trains (surface.ts, in every program), or the breeze's cat's-paws, `windRipples`, with the screen-space mirror shift `windMirror` (`shaders/windWater.ts`)                                                                                                                                    |
-| `mirror`   | `WATER_MIRROR` 2   | reflections: `waterMirror`, the rippled normal, reflected ray and Fresnel; the scene looks its own sky and scenery up along the ray. The sun's or moon's glitter, `waterGlitter`: a Beckmann lobe (Cox & Munk) on the variance the cells do not draw, 1 at its heart                                                                      |
-| `flow`     | `WATER_FLOW` 3     | currents: `waterDrift` carries a pattern on a steady current                                                                                                                                                                                                                                                                              |
-| `caustics` | `WATER_CAUSTICS` 4 | the bed lit through the surface: `causticRipples`' net (`shaders/caustics.ts`) and `waterCaustic`, which multiplies it by a simulated surface's own focus (`ShallowWater.surface`, `sims/shallow.ts`); or, for water with no spectrum of its own, the stylised cellular net `causticCells` (seams where a wandering lattice's cells meet) |
+| Tier       | `WATER_TIER`       | What the scene gets                                                                                                                                                                                                                                                                                                                                         |
+| ---------- | ------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `flat`     | `WATER_FLAT` 0     | nothing shared: its own tint, its sky mirrored flat if it likes                                                                                                                                                                                                                                                                                             |
+| `ripples`  | `WATER_RIPPLES` 1  | wind ripples: `rippleSpectrum` over its own trains (surface.ts, in every program), or the breeze's cat's-paws, `windRipples`, with the screen-space mirror shift `windMirror` (`shaders/windWater.ts`)                                                                                                                                                      |
+| `mirror`   | `WATER_MIRROR` 2   | reflections: `waterMirror`, the rippled normal, reflected ray and Fresnel; the scene looks its own sky and scenery up along the ray. A light's glitter, `waterGlint`: Cox & Munk's glitter radiance (a Beckmann slope density on the variance the cells do not draw, Fresnel, Smith's masking) times the light's exposure, saturating to 0..1 of its colour |
+| `flow`     | `WATER_FLOW` 3     | currents: `waterDrift` carries a pattern on a steady current                                                                                                                                                                                                                                                                                                |
+| `caustics` | `WATER_CAUSTICS` 4 | the bed lit through the surface: `causticRipples`' net (`shaders/caustics.ts`) and `waterCaustic`, which multiplies it by a simulated surface's own focus (`ShallowWater.surface`, `sims/shallow.ts`); or, for water with no spectrum of its own, the stylised cellular net `causticCells` (seams where a wandering lattice's cells meet)                   |
 
 The shared parts own the physics: ripple trains with deep-water dispersion and their LEAN split
 between drawn slope and unresolved variance, the cat's-paws, the mirror's normal and Fresnel, the
-glitter's lobe, the advection, the caustic Jacobians. The scene owns its numbers (its spectrum, its
-current, its knobs, the roughness finer than its trains that it adds to their variance for the
-glitter), the rain rings it adds to the slope, what it mirrors and how it keeps the reflected ray
-above its horizon, its body colour, foam, sparkle and lights. GLSL code that draws its water more
-than one way tests the tier: `#if WATER_TIER >= WATER_MIRROR`.
+glitter's radiance, the advection, the caustic Jacobians. The scene owns its numbers (its spectrum,
+its current, its knobs, the roughness finer than its trains that it adds to their variance for the
+glitter, one exposure per light), the rain rings it adds to the slope, what it mirrors and how it
+keeps the reflected ray above its horizon, its body colour, foam, sparkle and lights. GLSL code
+that draws its water more than one way tests the tier: `#if WATER_TIER >= WATER_MIRROR`.
+
+**Glitter.** `waterGlint` is physically based: a path's brightness follows from the light's height,
+the view and the roughness, not from gains at the call site. A low sun or moon lays a long path
+that brightens toward the horizon, where Fresnel and foreshortening pile up; a high one a short,
+faint one; a rougher sea a wider, dimmer one. Each light carries one exposure (its radiance times
+its solid angle, in the scene's units of brightness; a lamp's intensity over its squared distance
+to the water, so its path fades away from it), and the result saturates (1 - exp(-exposure ·
+radiance)) so a brighter light widens the path's solid core instead of burning through the dither.
+Scenes set each exposure so the path at their default hour matches its old look at half its
+height, and lay a wider sheen as a share of the same light on a rougher scale (the sea's broad
+tail of slopes).
 
 **Projected size.** Every tier takes `foot` and fades its detail to the area mean once a cell
 outgrows it: a ripple train is drawn from `lod.x` to `lod.y` cells per wavelength (7..14 or 8..16)
@@ -1309,16 +1324,16 @@ full-detail picture. Pick the tier for what the water shows at its largest: a ri
 wide far off takes `ripples`, open water seen close takes `mirror` or `flow`, a pool seen from
 above `caustics`.
 
-| Scene      | Tier               | Uses                                                                                                                                             |
-| ---------- | ------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `country`  | ripples, else flat | `windRipples` on the river while `K_ripples` is up (`K_wind`): the cat's-paws tilt its reflected ray, their finer ripples jitter it cell by cell |
-| `island`   | mirror             | `rippleSpectrum` (a `RippleTable`: four hand-placed trains), `waterMirror`, `waterGlitter` for the sun, the moon and the lantern                 |
-| `shore`    | mirror             | `rippleSpectrum` (a `RippleFan`: four trains by the golden angle, scaled by the wind), `waterMirror`, `waterGlitter`                             |
-| `swell`    | mirror             | three Gerstner swells of its own and `rippleSpectrum` (a `RippleFan` of chop), `waterMirror`, `waterGlitter` for the moon                        |
-| `lake`     | mirror             | `waterGlitter`: the moon's and window's paths down the black ice; the fjord's `windRipples`, `windMirror` (`K_ripples`, `K_wind`)                |
-| `lanterns` | flow               | `rippleSpectrum` (a `RippleFan`: five trains rocking about the current), `waterDrift` downstream, `waterMirror`                                  |
-| `tidepool` | caustics           | `causticRipples`, `waterCaustic` with `ShallowWater`'s focus; seen from above, it mirrors the sky its own way                                    |
-| `pond`     | caustics           | two layers of `causticCells` on the floor, carried by the current (`waterDrift`); `waterGlitter` for the sun; its drop rings are its own         |
+| Scene      | Tier               | Uses                                                                                                                                                                     |
+| ---------- | ------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `country`  | ripples, else flat | `windRipples` on the river while `K_ripples` is up (`K_wind`): the cat's-paws tilt its reflected ray, their finer ripples jitter it cell by cell                         |
+| `island`   | mirror             | `rippleSpectrum` (a `RippleTable`: four hand-placed trains, their slopes following the wind), `waterMirror`, `waterGlint` for the sun, the moon and the lantern          |
+| `shore`    | mirror             | `rippleSpectrum` (a `RippleFan`: four trains by the golden angle, scaled by the wind), `waterMirror`, `waterGlint` for the moon and the sun, on the sea and the wet sand |
+| `swell`    | mirror             | three Gerstner swells of its own and `rippleSpectrum` (a `RippleFan` of chop), `waterMirror`, `waterGlint` for the moon                                                  |
+| `lake`     | mirror             | `waterGlint`: the moon's and window's paths down the black ice and over the fjord; the fjord's `windRipples`, `windMirror` (`K_ripples`, `K_wind`)                       |
+| `lanterns` | flow               | `rippleSpectrum` (a `RippleFan`: five trains rocking about the current), `waterDrift` downstream, `waterMirror`                                                          |
+| `tidepool` | caustics           | `causticRipples`, `waterCaustic` with `ShallowWater`'s focus; seen from above, it mirrors the sky its own way                                                            |
+| `pond`     | caustics           | two layers of `causticCells` on the floor, carried by the current (`waterDrift`); `waterGlint` for the sun; its drop rings are its own                                   |
 
 The rest of the lab's water is still drawn its own way: `falls`, `fireflies`, `bamboo`, `forest`,
 `kelp`, `delta`, `ripple`.
@@ -1908,7 +1923,8 @@ Helpers in `src/sims/` (each file's header has the full API and a usage example)
   through thick.
 - `ShallowWater` and `stillWater` (`shallow.ts`): shallow water over a bed on `GpuCompute` (a
   well-balanced finite volume scheme: HLL fluxes over a hydrostatic reconstruction, outflows limited
-  to what a cell holds) that runs downhill, sloshes, shoals and breaks, its bores at their true speed
+  to what a cell holds; first order, or at `order: 2` MUSCL–Hancock, whose waves keep their height
+  as they travel) that runs downhill, sloshes, shoals and breaks, its bores at their true speed
   and depth; driven by a GLSL forcing snippet (a sea, a wave maker) and a source snippet (a river's
   stage, a held sea, evaporation), over its own bed or the caller's (a bed the delta erodes),
   carrying the scene's tracers (foam, wetness) through a carry snippet, with splats and a `surface`
@@ -2066,9 +2082,9 @@ Helpers in `src/sims/` (each file's header has the full API and a usage example)
 - `Boids` and `boidRules` (`boids.ts`): topological boids in 3D for flocks and schools of a few
   thousand: separation, cohesion and alignment with each boid's K nearest, found through a spatial
   hash with a bounded search (refreshed by turns), plus cruise, level flight, a home to wheel over,
-  a threat, wind and noise, and startles relayed through the neighbours as a wave. Deterministic
-  for a seed; the rules are one mutable object the caller sets each step (the murmuration's
-  emergent flight).
+  a threat (about a point, or along a line such as a predator's line of sight, pushing across it),
+  wind and noise, and startles relayed through the neighbours as a wave. Deterministic for a seed;
+  the rules are one mutable object the caller sets each step (the murmuration's emergent flight).
 
 Outside `src/sims/`: `src/mark.ts` is the Manifold M for TS (`MARK_VERTICES`, `markVertex`,
 `segmentDistance`, `markDistance`) and the source of the GLSL one (`markGlsl`), so a stamped M and

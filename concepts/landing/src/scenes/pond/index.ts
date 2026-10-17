@@ -436,7 +436,7 @@ export const pondScene: SceneDef = {
   // they part outward again, the koi glide off and a breeze crosses the water.
   passage: POND_PASSAGE,
   // The floor's caustics: the shared water's cellular net (causticCells), carried by the current
-  // (waterDrift); the sun's glint on the rings: its glitter (waterGlitter).
+  // (waterDrift); the sun's glint on the rings (waterGlint).
   features: { WATER_TIER: WATER_TIERS.caustics },
   sim: (gl) => pondSim(gl, params),
 };

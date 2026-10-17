@@ -4,7 +4,7 @@
 // material, and turned by the year with the plant component's colours (shaders/lib/plants.ts). The
 // floor's caustics are the shared water's cellular net, carried by the current (its caustics tier,
 // shaders/caustics.ts and shaders/lib/water.ts); the floor is seen through the drop rings' slope, as
-// far as the water is deep, and the sun glints on them with the shared glitter (waterGlitter). Where
+// far as the water is deep, and the sun glints on them with the shared glint (waterGlint). Where
 // the pads, the koi on their loops and the petals are comes from the layout pass (uSim3, layout.ts).
 
 import { fishGlsl } from "../../sims/fish.ts";
@@ -125,13 +125,20 @@ vec3 pondPetal(float fi, vec2 span, vec2 flow, float tm, float turbulence) {
 
 export const pondGlsl = `${fishGlsl}${plantsGlsl}${plantSheetGlsl}${pondLayoutGlsl}
 // The water, in screen heights (the frame some 3 m from top to bottom, a koi half a metre long):
-// its depth, 0.15 plus 0.3 per unit of K_depth; the steepest slope of a fresh drop's ring; how high
-// the eye stands over it (a view 45 degrees tall); and the slope variance of a calm surface,
-// ruffled further by K_wind, that the sun's glint spreads over (waterGlitter).
+// its depth, 0.15 plus 0.3 per unit of K_depth; the steepest slope of a fresh drop's ring; how fast
+// a ring's crests turn (radians a second: ripples 160 a screen height, some 12 cm long, run at
+// 0.144 screen heights a second, about twice the 0.07 their rings spread at, their group speed);
+// how high the eye stands over it (a view 45 degrees tall); the slope variance of a calm surface,
+// ruffled further by K_wind, that the sun's glint spreads over; and the glint's exposure per unit
+// of the sun's strength, and the share of the facets in the swell's broader tilts (variance 0.006),
+// set so the glint is as bright at half its height as it always was (waterGlint).
 const vec2 POND_DEPTH = vec2(0.15, 0.3);
 const float POND_RING_SLOPE = 0.08;
+const float POND_RING_OMEGA = 23.1;
 const float POND_EYE = 1.2;
 const vec2 POND_CALM = vec2(0.0003, 0.0012);
+const float POND_GLINT = 1.04;
+const float POND_TAIL = 0.585;
 
 // Pebble floor: cells with dark seams, each stone its own shade. Returns brightness.
 float pondPebbles(vec2 x) {
@@ -281,11 +288,12 @@ Shade scenePond(vec2 uv, vec2 cell, float t) {
   }
 
   // Surface: rings spreading from drops, carried by the current. Each is a short train of ripples,
-  // its height POND_RING_SLOPE / 160 * sin((dist - radius) * 160) under a bell 0.012 wide, summed
-  // here as its analytic slope (dh/dx, dh/dy). The slope bends the light to the floor and tilts the
-  // mirror the sun glints in; drawn only where the cells resolve the rings' 0.039 wavelength (7 to
-  // 14 cells, as rippleTrain does), and below that it is only the variance (ringRough) that
-  // roughens the glint.
+  // its height POND_RING_SLOPE / 160 * sin(160 * dist - POND_RING_OMEGA * age) under a bell 0.012
+  // wide that spreads at 0.07 a second: the crests run through their ring at twice its speed, each
+  // born at its inside and dying at its front, as real ripples do. Summed here as its analytic
+  // slope (dh/dx, dh/dy). The slope bends the light to the floor and tilts the mirror the sun
+  // glints in; drawn only where the cells resolve the rings' 0.039 wavelength (7 to 14 cells, as
+  // rippleTrain does), and below that it is only the variance (ringRough) that roughens the glint.
   vec2 slope = vec2(0.0);
   float ringRough = 0.0;
   float ringSeen = smoothstep(7.0, 14.0, TAU / 160.0 * uRes.y);
@@ -304,7 +312,8 @@ Shade scenePond(vec2 uv, vec2 cell, float t) {
         float fade = exp(-age * 1.1) * step(0.3, hash12(id + floor(kk) * 3.1));
         float x = (dist - radius) / 0.012;
         float ring = POND_RING_SLOPE * bell(x) * fade;
-        slope += ring * (cos(x * 1.92) - sin(x * 1.92) * x / 0.96) * (p - drop) / max(dist, 1e-5);
+        float phase = 160.0 * dist - POND_RING_OMEGA * age;
+        slope += ring * (cos(phase) - sin(phase) * x / 0.96) * (p - drop) / max(dist, 1e-5);
         ringRough += 0.5 * ring * ring;
         ringLight = max(ringLight, smoothfall(0.004, 0.0, abs(dist - radius)) * fade + smoothfall(0.003, 0.0, abs(dist - radius * 0.6)) * fade * 0.6);
       }
@@ -319,7 +328,8 @@ Shade scenePond(vec2 uv, vec2 cell, float t) {
     float fade = exp(-dropAge * 0.9);
     float x = (dist - radius) / 0.012;
     float ring = POND_RING_SLOPE * bell(x) * fade;
-    slope += ring * (cos(x * 1.92) - sin(x * 1.92) * x / 0.96) * (p - drop) / max(dist, 1e-5);
+    float phase = 160.0 * dist - POND_RING_OMEGA * dropAge;
+    slope += ring * (cos(phase) - sin(phase) * x / 0.96) * (p - drop) / max(dist, 1e-5);
     ringRough += 0.5 * ring * ring;
     ringLight = max(ringLight, (smoothfall(0.004, 0.0, abs(dist - radius)) + 0.6 * smoothfall(0.003, 0.0, abs(dist - radius * 0.6))) * fade);
   }
@@ -709,16 +719,18 @@ Shade scenePond(vec2 uv, vec2 cell, float t) {
     col += vec3(1.0, 0.95, 0.78) * rays * 0.55;
     o.ink += rays * 0.45;
   }
-  // The sun's glint on the water (waterGlitter). Seen from POND_EYE over the frame's middle, the sun
+  // The sun's glint on the water (waterGlint). Seen from POND_EYE over the frame's middle, the sun
   // stands where its mirror image falls on the pond: at sunP, on screen or off it. The drawn rings
   // and the slow swell tilt the mirror; the calm surface, the breeze and the rings too fine to draw
-  // spread the glint; a wider sheen lies round it. Only on open water, and only where the leaves
-  // let the sun through.
+  // spread the glint; the broader tilts of the swell (POND_TAIL of the facets) lay a wider sheen
+  // round it. Its exposure is the sun's strength, only on open water, and only where the leaves let
+  // the sun through.
   vec3 sunDir = normalize(vec3(sunP.x, POND_EYE, sunP.y));
   vec3 view = normalize(vec3(-p.x, POND_EYE, -p.y));
   vec3 n = normalize(vec3(-slope.x, 1.0, -slope.y));
   float rough = POND_CALM.x + POND_CALM.y * K_wind + ringRough;
-  float glare = dry ? 0.0 : (waterGlitter(n, view, sunDir, rough) + 0.2 * waterGlitter(n, view, sunDir, 0.006)) * power * (1.0 - shadeAmount);
+  float sun = POND_GLINT * power * (1.0 - shadeAmount);
+  float glare = dry ? 0.0 : waterGlint(n, view, sunDir, rough, sun * (1.0 - POND_TAIL)) + waterGlint(n, view, sunDir, 0.006, sun * POND_TAIL);
   col += vec3(1.0, 0.97, 0.85) * glare * 0.7;
   o.ink = max(o.ink, glare);
 

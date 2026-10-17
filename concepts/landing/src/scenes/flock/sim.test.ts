@@ -4,7 +4,7 @@ import { HeadlessSim } from "../../sims/headless.ts";
 import type { Random } from "../../sims/random.ts";
 import { DataTexture } from "../../sims/texture.ts";
 import { flockScene } from "./index.ts";
-import { boidNear, FLOCK_SIZES } from "./sim.ts";
+import { boidNear, FLOCK_FEAR_RADIUS, FLOCK_SIZES } from "./sim.ts";
 
 const EMERGENT = { emergent: 1, "emergent-amount": 7 };
 
@@ -117,19 +117,16 @@ test("the falcon's strike starts a startle that runs through the boids and dies 
   expect(after).toBeLessThan(0.02);
 });
 
-// The falcon's wingspan as the shader draws it (twice FLOCK_FALCON_SPAN, flock/shader.ts): a bird
-// drawn within it of the falcon is one the falcon is seen passing through.
-const FALCON_WINGSPAN = 2 * 0.018;
-
 test(
-  "emergent birds flee the falcon wherever it is seen passing through them",
+  "emergent birds flee the falcon wherever it is seen passing through them, and only there",
   () => {
     const aspect = 16 / 9;
     const sim = new HeadlessSim(flockScene);
     for (let f = 0; f < 240; f++) sim.step({ knobs: EMERGENT, aspect });
     // Each boid step with the falcon out: where every bird is drawn as the step begins (a frame of
     // 1/60 s is one step, and shows the birds there), and whether the falcon's threat holds it, so
-    // that it flees and is startled (sims/boids.ts).
+    // that it flees and is startled (sims/boids.ts: within the radius of the threat's point, or of
+    // its line when it has an axis).
     let birds = 0;
     let threatened = false;
     const drawnX = new Float64Array(Math.max(...FLOCK_SIZES));
@@ -145,7 +142,7 @@ test(
       birds = this.count;
       threatened = rules.threatRadius > 0;
       if (threatened) {
-        const { threat } = rules;
+        const { threat, threatAxis: axis } = rules;
         for (let i = 0; i < birds; i++) {
           const x = this.x[i] ?? 0;
           const y = this.y[i] ?? 0;
@@ -153,14 +150,20 @@ test(
           const near = boidNear(z);
           drawnX[i] = aspect / 2 + (x - aspect / 2) * near;
           drawnY[i] = 0.5 + (y - 0.5) * near;
-          const d = Math.hypot(x - threat.x, y - threat.y, z - threat.z);
+          const dx = x - threat.x;
+          const dy = y - threat.y;
+          const dz = z - threat.z;
+          const along = dx * axis.x + dy * axis.y + dz * axis.z;
+          const d = Math.hypot(dx - axis.x * along, dy - axis.y * along, dz - axis.z * along);
           held[i] = d < rules.threatRadius ? 1 : 0;
         }
       }
       fly.call(this, dt, rules, random);
     });
-    let passed = 0;
+    let inReach = 0;
     let fled = 0;
+    let holds = 0;
+    let unseen = 0;
     try {
       // Three strikes, each sent "now" and given time to come and go.
       for (let f = 0; f < 450; f++) {
@@ -172,18 +175,27 @@ test(
         const fx = (state[0] ?? 0) * aspect;
         const fy = state[1] ?? 0;
         for (let i = 0; i < birds; i++) {
-          const d = Math.hypot((drawnX[i] ?? 0) - fx, (drawnY[i] ?? 0) - fy);
-          if (d >= FALCON_WINGSPAN) continue;
-          passed++;
-          fled += held[i] ?? 0;
+          const drawn =
+            Math.hypot((drawnX[i] ?? 0) - fx, (drawnY[i] ?? 0) - fy) < FLOCK_FEAR_RADIUS;
+          const h = held[i] ?? 0;
+          if (drawn) {
+            inReach++;
+            fled += h;
+          }
+          holds += h;
+          if (h && !drawn) unseen++;
         }
       }
     } finally {
       spy.mockRestore();
     }
-    // The strikes did pass through the flock, and the birds there fled, whatever their depth.
-    expect(passed).toBeGreaterThan(1000);
-    expect(fled / passed).toBeGreaterThanOrEqual(0.9);
+    // The strikes did pass through the flock. The birds drawn within the falcon's reach on screen
+    // fled, whatever their depth (a sphere about it on their plane holds about 60% of them: the
+    // plane is seen aslant, so the birds under it on screen spread deeper than its reach), and few
+    // of the birds it held were drawn beyond that reach.
+    expect(inReach).toBeGreaterThan(10_000);
+    expect(fled / inReach).toBeGreaterThanOrEqual(0.9);
+    expect(unseen / holds).toBeLessThanOrEqual(0.15);
   },
   { timeout: FLIGHT_TIMEOUT },
 );

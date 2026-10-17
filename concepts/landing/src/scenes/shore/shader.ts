@@ -92,6 +92,16 @@ const WorldFlyway SHORE_FLYWAY = WorldFlyway(vec2(12.0, 160.0), vec2(SHORE_HORIZ
 const float SHORE_BIRD_HAZE = 0.002;
 // How far the dull sand blurs what it mirrors (radians): the gloss of a film of water sharpens it.
 const float SHORE_SAND_BLUR = 0.05;
+// The glitter of the moon and the sun (waterGlint): each one's exposure per unit of its strength
+// (the brightest channel of its light), set so the moon at the default hour, 6 degrees up, and
+// the sun 8 degrees up lay the paths they always did; the share of the facets in the sea's broad
+// tail (the swell's and the breeze's slopes the drawn surface leaves out, variance 0.03), which
+// lays a wide sheen round the moon's path; and how much more a cell is exposed where a single
+// facet catches the moon or the sun (shoreGlints).
+const float SHORE_MOON_GLINT = 0.049;
+const float SHORE_SUN_GLINT = 0.012;
+const float SHORE_TAIL = 0.66;
+const vec2 SHORE_FLICKER = vec2(2.2, 2.5);
 // Snow lying on the dry sand.
 const vec3 SHORE_SNOW = vec3(0.86, 0.88, 0.92);
 const vec2 SHORE_MARK = vec2(2.0, 7.5);       // the M's centre on the sand (x, z)
@@ -706,20 +716,30 @@ Shade sceneShore(vec2 screenUv, vec2 cell, float t) {
     vec3 image = worldMirrorSky(world, mirrored, SHORE_METEOR_FIELD).col;
     if (gloss > 0.0) worldBirdsMirrored(world, mirrored, SHORE_FLYWAY, mist, SHORE_BIRD_HAZE, gloss, image);
     vec3 mirror = (cloud.overcast > 0.0 ? mix(image, shoreGrey(cloud, look), cloud.overcast) : image) + vec3(0.1, 0.11, 0.16) * flash;
+    // The moon's and the sun's glitter fill in to each one's own hue at full strength, exposed by
+    // how strongly it shines (waterGlint).
+    float moonShine = max(sky.moonColor.r, max(sky.moonColor.g, sky.moonColor.b));
+    vec3 moonHue = sky.moonColor / max(moonShine, 1e-4);
+    float sunShine = max(sky.sunColor.r, max(sky.sunColor.g, sky.sunColor.b));
+    vec3 sunHue = sky.sunColor / max(sunShine, 1e-4);
 
     if (water) {
       // The moon's path on the water (the sun's by day), broken by the swell into rows, and glints
       // in it: single facets catching the light for a moment. Around it a wide moonlit sheen, the
-      // tail of the same glitter on a rougher scale: it lights the backs and troughs of the swell
+      // facets of the sea's broad tail (SHORE_TAIL): it lights the backs and troughs of the swell
       // well out to either side and leaves the faces turned to the viewer dark, so every row reads.
-      float moonPath = waterGlitter(n, view, sky.moon, rough);
-      float sunPath = waterGlitter(n, view, sky.sun, rough);
+      // A low moon lays a long blazing path, a high one a short faint one.
       vec2 gp = vec2(hx, SHORE_EYE) / hz * focal * uRes.y; // dither cells, fixed to the water
-      float glint = shoreGlints(gp, tm);
-      float sheen = waterGlitter(n, view, sky.moon, 0.03);
-      vec3 shine = sky.moonColor * (moonPath * (1.8 + 4.0 * glint) + sheen * 0.35) + sky.sunColor * sunPath * (0.8 + 2.0 * glint);
-      // How strongly the moon lights rough white water here: brightest along its path.
-      float moonOnFoam = waterGlitter(vec3(0.0, 1.0, 0.0), view, sky.moon, 0.03);
+      vec2 flicker = 1.0 + SHORE_FLICKER * shoreGlints(gp, tm);
+      float moonPath = waterGlint(n, view, sky.moon, rough, SHORE_MOON_GLINT * moonShine * (1.0 - SHORE_TAIL) * flicker.x);
+      float sheen = waterGlint(n, view, sky.moon, 0.03, SHORE_MOON_GLINT * moonShine * SHORE_TAIL);
+      float sunPath = waterGlint(n, view, sky.sun, rough, SHORE_SUN_GLINT * sunShine * flicker.y);
+      vec3 shine = moonHue * (moonPath + sheen) + sunHue * sunPath;
+      // How strongly the moon lights rough white water here: brightest along its path, a lobe as
+      // broad as the sheen about the half vector between the eye and the moon, 1 at its heart.
+      vec3 toMoon = normalize(view + sky.moon);
+      float foamC = max(toMoon.y, 1e-3);
+      float moonOnFoam = sky.moon.y > 0.0 ? exp(-((1.0 - foamC * foamC) / (foamC * foamC)) / 0.03) : 0.0;
 
       // Water: dark blue offshore, turquoise over the sand in the shallows (muted at night), the
       // sand itself showing through the thin sheet of the swash.
@@ -897,7 +917,8 @@ Shade sceneShore(vec2 screenUv, vec2 cell, float t) {
 
       // By day damp sand keeps a soft sheen of the bright sky; by night only the glossy band shows.
       float soak = wet * mix(1.0, 0.2, dark);
-      vec3 shine = (sky.moonColor * waterGlitter(n, view, sky.moon, rough) * 1.6 + sky.sunColor * waterGlitter(n, view, sky.sun, rough) * 0.8) * (soak * 0.3 + gloss * 0.9);
+      float wetShare = soak * 0.3 + gloss * 0.9;
+      vec3 shine = (moonHue * waterGlint(n, view, sky.moon, rough, SHORE_MOON_GLINT * moonShine * (1.0 - SHORE_TAIL)) + sunHue * waterGlint(n, view, sky.sun, rough, SHORE_SUN_GLINT * sunShine)) * wetShare;
       col = mix(sand, mirror, clamp(fres * (soak * 0.7 + gloss * 1.4), 0.0, 1.0)) + shine;
       // The rain's glaze: the film on soaked sand is rough enough to blur the sky it mirrors down
       // toward the horizon, where the cloud is lighter; it shines more where the view grazes it, so

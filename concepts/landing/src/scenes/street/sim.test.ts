@@ -1,7 +1,19 @@
 import { expect, test } from "bun:test";
 import { HeadlessSim } from "../../sims/headless.ts";
 import { streetScene } from "./index.ts";
-import { KIND_BIKE, KIND_VAN, MAX_AGENTS, MAX_WALKERS, SHAPES, Z_REF } from "./sim.ts";
+import {
+  CAM_H,
+  CAM_X,
+  FOCAL,
+  KIND_BIKE,
+  KIND_VAN,
+  MAX_AGENTS,
+  MAX_WALKERS,
+  PITCH,
+  PORTALS,
+  SHAPES,
+  Z_REF,
+} from "./sim.ts";
 
 /** Frames of 0.2 s: six of the sim's steps each, the most it takes in one frame. */
 const FRAME = 0.2;
@@ -111,6 +123,51 @@ test("at the defaults nobody stands pinned for good and the crowd keeps coming, 
   // Pinned walkers would count toward the crowd the knob asks for and keep newcomers away: in the
   // second hour people still arrive at least three quarters as fast as in the first ten minutes.
   expect(late / 3600).toBeGreaterThanOrEqual((0.75 * early) / 600);
+}, 150_000);
+
+/** Whether the street point (x, z) shows in a 16:9 frame from the window at rest. */
+function inView(x: number, z: number): boolean {
+  const depth = z * Math.cos(PITCH) + CAM_H * Math.sin(PITCH);
+  const across = ((x - CAM_X) * FOCAL) / depth;
+  const up = ((z * Math.sin(PITCH) - CAM_H * Math.cos(PITCH)) * FOCAL) / depth;
+  return Math.abs(across) <= 8 / 9 && Math.abs(up) <= 0.5;
+}
+
+test("at a full crowd no walker vanishes in view but through a way out, twenty minutes on", () => {
+  // Where each walker slot's walker was last seen (its seed tells one walker from the next).
+  const seed = new Float64Array(MAX_WALKERS).fill(Number.NaN);
+  const lastX = new Float64Array(MAX_WALKERS);
+  const lastZ = new Float64Array(MAX_WALKERS);
+  const gone: string[] = [];
+  let left = 0;
+  run({ crowd: 1 }, 1200, 1, (data, t) => {
+    for (let i = 0; i < MAX_WALKERS; i++) {
+      const o = i * 4;
+      const alive = Boolean(data[o + 3]);
+      const now = data[MAX_AGENTS * 4 + o + 3] ?? 0;
+      const was = seed[i] ?? Number.NaN;
+      if (!Number.isNaN(was) && (!alive || now !== was)) {
+        left++;
+        const x = lastX[i] ?? 0;
+        const z = lastZ[i] ?? 0;
+        // A way out: a portal (a frame edge, a door, the station stairs), within its spread and
+        // a stride or two.
+        const out = PORTALS.some(
+          (portal) =>
+            Math.hypot(x - portal.x, z - portal.z) <= Math.max(portal.sx, portal.sz) + 1.5,
+        );
+        if (inView(x, z) && !out)
+          gone.push(`${t.toFixed(1)} s at (${x.toFixed(1)}, ${z.toFixed(1)})`);
+      }
+      seed[i] = alive ? now : Number.NaN;
+      lastX[i] = data[o] ?? 0;
+      lastZ[i] = (data[o + 1] ?? 0) + Z_REF;
+    }
+  });
+  // Walkers did come and go (about 2,100 in twenty minutes), and none was seen to vanish: one the
+  // watchdog gives up on in view sets off for the nearest way out instead.
+  expect(left).toBeGreaterThan(1000);
+  expect(gone).toEqual([]);
 }, 150_000);
 
 test("with the school outing out often and traffic at its top, no vehicle stands for good and none overlaps another", () => {

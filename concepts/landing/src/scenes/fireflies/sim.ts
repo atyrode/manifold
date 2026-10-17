@@ -14,7 +14,10 @@
 // flash of its neighbours within BOX cells (a box blur of the flash field, so it costs the same at
 // any reach), plus a little of the whole bank's mean flash. Dense trees fall into step first; the
 // beat spreads from them as waves that hop from crown to crown, and once the whole bank pulses
-// together each pulse still sweeps out from the fastest patch, its pacemaker.
+// together each pulse still sweeps out from the fastest patch, its pacemaker. With `unison` up, each
+// firefly's own rate also adapts toward the beat it sees (frequency adaptation, Ermentrout 1991;
+// ADAPT_GAIN), so its detuning stops costing it a lag: the sweep closes up and the bank flashes as
+// one, within tens of milliseconds, as the mangrove's Pteroptyx malaccae do.
 //
 // One firefly per square lattice cell, FIREFLIES_CELL screen heights wide, from the waterline to
 // the top of the frame and as wide as the frame, centred: columns are counted from the middle of the
@@ -146,6 +149,24 @@ const COUPLING_GLOBAL = 0.63;
 const BOX = 3;
 /** A sparse neighbourhood's light is averaged over at least this many fireflies, so loners answer less. */
 const COUNT_FLOOR = 7;
+/**
+ * Frequency adaptation (the `unison` knob; G. B. Ermentrout, "An adaptive model for synchrony in the
+ * firefly Pteroptyx malaccae", J. Math. Biol. 29, 1991): each firefly's own rate drifts toward the
+ * rhythm it is driven at and relaxes back to its natural rate over ADAPT_RETURN seconds. It compares
+ * when it sees its neighbours' light with where in its own cycle it shows its own flash: light seen
+ * earlier means it is behind them and it speeds up, later means ahead and it slows down, at
+ * ADAPT_GAIN × unison per second of the drive it sees at coupling up to ADAPT_COUPLING, and no
+ * harder above it (a stronger pull overshoots and rings). Unlike the phase response, this runs
+ * through its own flash too, so the leaders are slowed as the laggers are hurried and the beat
+ * keeps its period. Detuning then stops costing a lag behind the fastest patch, so each pulse no
+ * longer sweeps out as a wave: the bank flashes as one, within tens of milliseconds, as Pteroptyx
+ * malaccae does. At unison 0 every rate stays natural.
+ */
+const ADAPT_GAIN = 0.1;
+const ADAPT_RETURN = 20;
+const ADAPT_COUPLING = 0.5;
+/** Samples of the flash envelope its centre in the cycle is taken over (flashCentre). */
+const CENTRE_SAMPLES = 64;
 /** Seconds over which a firefly arrives or leaves when the density knob or the M asks it to. */
 const PRESENCE_EASE = 0.8;
 /**
@@ -354,10 +375,21 @@ const NEAR_OUT_SPAN = 0.5;
 const NEAR_OUT_RAMP = 0.2;
 
 type KnobKey =
-  "coupling" | "density" | "habitat" | "period" | "drift" | "unrest" | "lantern" | "mark" | "seed";
+  | "coupling"
+  | "unison"
+  | "density"
+  | "habitat"
+  | "period"
+  | "drift"
+  | "unrest"
+  | "lantern"
+  | "mark"
+  | "seed";
 
 interface Knobs {
   coupling: number;
+  /** Frequency adaptation 0..1 (0: natural rates, the pulse a wave). */
+  unison: number;
   density: number;
   period: number;
   /** The open bank (habitat 1) instead of the dense crowns. */
@@ -399,6 +431,22 @@ function flash(u: number): number {
   // A smooth fall, raised to 1.5 so it drops quickly from the peak and lingers as an afterglow.
   const fall = 1 - smoothstep(FLASH_RISE, 1, u);
   return fall * Math.sqrt(fall);
+}
+
+/**
+ * Where in its own cycle (cycles) a firefly in step with its neighbours sees their light: the
+ * circular mean of its flash envelope over a cycle `span` flashes long.
+ */
+function flashCentre(span: number): number {
+  let s = 0;
+  let c = 0;
+  for (let k = 0; k < CENTRE_SAMPLES; k++) {
+    const u = (k + 0.5) / CENTRE_SAMPLES;
+    const e = flash(u);
+    s += e * Math.sin((TAU * u) / span);
+    c += e * Math.cos((TAU * u) / span);
+  }
+  return Math.atan2(s, c) / TAU;
 }
 
 /**
@@ -782,6 +830,7 @@ class FirefliesSim implements SceneSim {
   readonly #steps = new FixedStep(STEP, MAX_STEPS);
   readonly #knobs: Knobs = {
     coupling: 0.5,
+    unison: 0,
     density: 0.7,
     period: 3,
     open: false,
@@ -855,6 +904,8 @@ class FirefliesSim implements SceneSim {
   #present = new Float32Array(0);
   #phaseWas = new Float32Array(0);
   #presentWas = new Float32Array(0);
+  /** Each firefly's rate adapted toward the rhythm it is driven at (cycles/s; the `unison` knob). */
+  #adapt = new Float32Array(0);
   // Per step: what the lantern and breeze do to each cell, the flash field and the light seen.
   #calm = new Float32Array(0);
   #detune = new Float32Array(0);
@@ -892,6 +943,8 @@ class FirefliesSim implements SceneSim {
   readonly #nearWander = new Float64Array(FIREFLIES_NEAR * 6);
   readonly #nearRate = new Float64Array(FIREFLIES_NEAR);
   readonly #nearPhase = new Float64Array(FIREFLIES_NEAR);
+  /** Their rates adapted toward the bank's beat (the `unison` knob). */
+  readonly #nearAdapt = new Float64Array(FIREFLIES_NEAR);
   readonly #nearPhaseWas = new Float64Array(FIREFLIES_NEAR);
   readonly #nearX = new Float64Array(FIREFLIES_NEAR);
   readonly #nearY = new Float64Array(FIREFLIES_NEAR);
@@ -929,6 +982,7 @@ class FirefliesSim implements SceneSim {
   constructor(gl: WebGL2RenderingContext, params: readonly ParamDef[]) {
     this.#reader = new KnobReader("fireflies", params, [
       "coupling",
+      "unison",
       "density",
       "habitat",
       "period",
@@ -1031,6 +1085,7 @@ class FirefliesSim implements SceneSim {
     const reader = this.#reader;
     const knobs = this.#knobs;
     knobs.coupling = reader.value(frame, "coupling");
+    knobs.unison = reader.value(frame, "unison");
     knobs.density = reader.value(frame, "density");
     knobs.open = reader.value(frame, "habitat") > 0.5;
     knobs.period = Math.max(0.5, reader.value(frame, "period"));
@@ -1135,6 +1190,7 @@ class FirefliesSim implements SceneSim {
       this.#nearRate[k] = 1 + RATE_SPREAD * (near() + near() - 1);
       this.#nearPhase[k] = near();
     }
+    this.#nearAdapt.fill(0);
     this.#clock = 0;
     this.#mark = false;
     this.#markStrength = 0;
@@ -1157,6 +1213,7 @@ class FirefliesSim implements SceneSim {
     const oldCols = this.#cols;
     const oldPhase = this.#phase;
     const oldPresent = this.#present;
+    const oldAdapt = this.#adapt;
     const n = cols * FIREFLIES_ROWS;
     this.#cols = cols;
     this.#n = n;
@@ -1179,6 +1236,7 @@ class FirefliesSim implements SceneSim {
     this.#present = new Float32Array(n);
     this.#phaseWas = new Float32Array(n);
     this.#presentWas = new Float32Array(n);
+    this.#adapt = new Float32Array(n);
     this.#calm = new Float32Array(n);
     this.#detune = new Float32Array(n);
     this.#hush = new Float32Array(n);
@@ -1235,6 +1293,7 @@ class FirefliesSim implements SceneSim {
         const j = row * oldCols + oldColumn;
         this.#phase[i] = oldPhase[j] ?? 0;
         this.#present[i] = oldPresent[j] ?? 0;
+        this.#adapt[i] = oldAdapt[j] ?? 0;
       } else {
         this.#phase[i] = cellHash(column, row, salt + 10);
         this.#present[i] = this.#target(i, knobs.density) * this.#gate(i);
@@ -1495,6 +1554,13 @@ class FirefliesSim implements SceneSim {
     const refractory = 1 / span;
     const receptive = 1 / (1 - refractory);
     const psi = this.#markPsi;
+    // Frequency adaptation: light seen before the centre of its own flash hurries a firefly's own
+    // rate, light seen after it slows it, and the rate relaxes back to its natural one (it stays
+    // natural at unison 0).
+    const adapt = this.#adapt;
+    const adaptGain = ADAPT_GAIN * knobs.unison * Math.min(1, ADAPT_COUPLING / knobs.coupling);
+    const adaptKeep = Math.exp(-h / ADAPT_RETURN);
+    const centre = adaptGain > 0 ? flashCentre(span) : 0;
     for (let i = 0; i < n; i++) {
       const own = glowIn[i] ?? 0;
       const ownCount = presIn[i] ?? 0;
@@ -1505,16 +1571,22 @@ class FirefliesSim implements SceneSim {
         (kLocal * light + kGlobal) * (this.#pull[i] ?? 1) * (this.#calm[i] ?? 1) * (1 - a);
       let f = phase[i] ?? 0;
       const response = f < refractory ? 0 : -Math.sin(TAU * (f - refractory) * receptive);
+      const adapted = adapt[i] ?? 0;
       let rate =
-        omega * (this.#rate[i] ?? 1) * Math.max(0.2, 1 + (this.#detune[i] ?? 0)) + drive * response;
+        omega * (this.#rate[i] ?? 1) * Math.max(0.2, 1 + (this.#detune[i] ?? 0)) +
+        adapted +
+        drive * response;
       if (a > 0) rate += a * MARK_PULL * Math.sin(TAU * (psi - f));
+      if (adaptGain > 0)
+        adapt[i] = adapted * adaptKeep + h * adaptGain * drive * Math.sin(TAU * (centre - f));
+      else if (adapted !== 0) adapt[i] = adapted * adaptKeep;
       // A held-back firefly can stall but never runs backwards through its flash.
       f += h * Math.max(0, rate);
       f -= Math.floor(f);
       phase[i] = f;
     }
     if (this.#mark) this.#measureOrder();
-    this.#stepNear(h, knobs, mean);
+    this.#stepNear(h, knobs, mean, adaptGain, centre);
   }
 
   /** The bank's mean phase and how much in step it is (the Kuramoto order parameter), without the M. */
@@ -1655,22 +1727,36 @@ class FirefliesSim implements SceneSim {
     }
   }
 
-  /** The foreground fireflies follow the bank's mean flash; the lantern unsettles them too. */
-  #stepNear(h: number, knobs: Knobs, mean: number): void {
+  /**
+   * The foreground fireflies follow the bank's mean flash, adapting their own rates as the bank's
+   * do (adaptGain, centre: #step's); the lantern unsettles them too.
+   */
+  #stepNear(h: number, knobs: Knobs, mean: number, adaptGain: number, centre: number): void {
     const omega = 1 / knobs.period;
     const k = NEAR_COUPLING * knobs.coupling * mean;
+    const adaptKeep = Math.exp(-h / ADAPT_RETURN);
     for (let j = 0; j < FIREFLIES_NEAR; j++) {
       const d = Math.hypot(
         (this.#nearX[j] ?? 0) - this.#lanternX.x,
         (this.#nearY[j] ?? 0) - this.#lanternY.x,
       );
       const w = this.#lanternShown * Math.max(0, 1 - d / LANTERN_REACH);
-      let f = this.#nearPhase[j] ?? 0;
+      const f = this.#nearPhase[j] ?? 0;
       const detune = 1 + LANTERN_SCATTER * w * (j % 2 === 0 ? 1 : -1);
-      f +=
+      const drive = k * (1 - w);
+      const adapted = this.#nearAdapt[j] ?? 0;
+      const next =
+        f +
         h *
-        Math.max(0, omega * (this.#nearRate[j] ?? 1) * detune - k * (1 - w) * Math.sin(TAU * f));
-      this.#nearPhase[j] = f - Math.floor(f);
+          Math.max(
+            0,
+            omega * (this.#nearRate[j] ?? 1) * detune + adapted - drive * Math.sin(TAU * f),
+          );
+      if (adaptGain > 0)
+        this.#nearAdapt[j] =
+          adapted * adaptKeep + h * adaptGain * drive * Math.sin(TAU * (centre - f));
+      else if (adapted !== 0) this.#nearAdapt[j] = adapted * adaptKeep;
+      this.#nearPhase[j] = next - Math.floor(next);
     }
   }
 

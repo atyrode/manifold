@@ -150,6 +150,11 @@ const float LAKE_EXIT_S = ${glslFloat(LAKE_PASSAGE.exit)};
 const float LAKE_CABIN_Z = 92.0;
 const float LAKE_BANK = 1.0;
 const vec3 LAKE_WINDOW = vec3(1.0, 0.58, 0.24);
+// The glints on the ice (waterGlint): the moon's exposure, set so its path across the row that
+// mirrors it is as bright at half its height as it always was, and the cabin window's intensity,
+// over the squared distance (m) to the ice it lights.
+const float LAKE_MOON_GLINT = 0.0081;
+const float LAKE_WINDOW_GLINT = 2.86;
 const vec3 LAKE_SNOW = vec3(0.86, 0.9, 1.0);
 const vec3 LAKE_FLASH = vec3(0.78, 0.93, 1.0);
 const vec3 LAKE_WATER = vec3(0.003, 0.009, 0.012);
@@ -812,23 +817,23 @@ vec3 lakeClearIce(Ground g, float fu, float fv, float range, vec3 dir, vec3 snow
 
   col = mix(col, mirror, refl);
 
-  // The moon's path and the window's: the shared glitter (waterGlitter), the ice's facets tipped to
+  // The moon's path and the window's: the shared glint (waterGlint), the ice's facets tipped to
   // mirror each light toward the eye about the drawn surface, their slopes spread past what the
-  // undulations draw by an rms of 5 rough + 0.012 (the rougher the ice, the wider and longer each
-  // path), with single facets glinting in the moon's.
+  // undulations draw by an rms of 5 rough + 0.012 (the rougher the ice, the wider and dimmer each
+  // path), with single facets glinting in the moon's. The window's light falls off with the square
+  // of its distance, so its path fades from the far shore toward us.
   vec3 view = -dir;
   float facets = (5.0 * rough + 0.012) * (5.0 * rough + 0.012);
   if (lakePhase > 0.0) {
-    float path = waterGlitter(n, view, lakeMoon, facets);
+    float path = waterGlint(n, view, lakeMoon, facets, LAKE_MOON_GLINT * (1.0 - lakeOver));
     float facet = hash12(floor(P * vec2(16.0, 5.0)) + 0.37);
-    col += lakeMoonLight * (0.6 * path + 1.6 * hardEdge(path * smoothstep(0.82, 0.97, facet))) * (1.0 - lakeOver);
+    col += lakeMoonLight * (path + 1.6 * hardEdge(path * smoothstep(0.82, 0.97, facet)));
   }
   // The window, 1.3 m up on the cabin across the ice, 1.1 m left of its middle.
   if (K_cabin > 0.5) {
     float bearing = lakeCabinAz - 1.1 / LAKE_CABIN_Z - lakePar;
-    vec3 pane = vec3(sin(bearing) * LAKE_CABIN_Z, LAKE_BANK + 1.3, cos(bearing) * LAKE_CABIN_Z);
-    float path = waterGlitter(n, view, normalize(pane - vec3(P.x, 0.0, P.y)), facets);
-    col += LAKE_WINDOW * path * 0.5 * refl;
+    vec3 toPane = vec3(sin(bearing) * LAKE_CABIN_Z - P.x, LAKE_BANK + 1.3, cos(bearing) * LAKE_CABIN_Z - P.y);
+    col += LAKE_WINDOW * waterGlint(n, view, normalize(toPane), facets, LAKE_WINDOW_GLINT / dot(toPane, toPane));
   }
 
   // Hoarfrost: here and there a crystal on the bare ice catches the light.
@@ -1061,12 +1066,18 @@ const float LAKE_FJ_EYE = 1.7; // metres above the water
 const vec3 LAKE_FJ_WALL = vec3(0.80, 0.12, 0.08);
 const float LAKE_FJ_CS = 2.0;     // the cabin's size: its own units times this
 const float LAKE_FJ_FOOT = 0.014; // its foot above the waterline, on a small knoll of snow
+// The glints on the open water (waterGlint): the slope variance of the calm fjord's ripples finer
+// than any drawn, and the exposures of the cabin's window and of the moon (per unit of its phase),
+// set so their paths down the rows that mirror them are as bright at half their height as the
+// hand-drawn paths they replace.
+const float LAKE_FJ_CALM = 0.005;
+const float LAKE_FJ_WINDOW_GLINT = 0.0035;
+const float LAKE_FJ_MOON_GLINT = 0.0225;
 
 // Set once per pixel by lakeFjord.
 float lakeFjPx;          // one dither cell, in screen heights
 float lakeFjSx;          // 1 on a wide frame, less on a narrow one: the near bank and trees shrink with it
 float lakeFjCabinX;      // the cabin's place along the far shore
-vec2 lakeFjMoonAt;       // the moon's screen point at rest
 vec3 lakeFjHaze;         // the air above the far shore
 float lakeFjTilt;        // passage: the camera's tilt up from rest, in screen heights (0 at rest)
 float lakeFjSmokeFront;  // passage: how far up the chimney smoke has climbed (1 at rest)
@@ -1302,8 +1313,9 @@ vec3 lakeFjWater(vec2 p, out float range) {
   // A breeze on open water (the ripples knob, blowing with the wind): its ripples tip the mirror and
   // stretch what it shows into vertical streaks; the ripples too fine to draw smear it, each cell
   // looking a little up or down for the dither to average.
+  vec4 rip = vec4(0.0);
   if (K_ripples > 0.0 && iceMask < 0.5) {
-    vec4 rip = windRipples(planeAt(vec2(p.x / (2.0 * lakeFjHW) + 0.5, p.y), 2.0 * lakeFjHW, LAKE_FJ_HZ, LAKE_FJ_EYE, LAKE_FJ_F), lakeTm, K_wind, K_ripples);
+    rip = windRipples(planeAt(vec2(p.x / (2.0 * lakeFjHW) + 0.5, p.y), 2.0 * lakeFjHW, LAKE_FJ_HZ, LAKE_FJ_EYE, LAKE_FJ_F), lakeTm, K_wind, K_ripples);
     vec2 shift = windMirror(rip, h, LAKE_FJ_F) + vec2(0.0, (cellTh - 0.5) * 2.0 * windMirrorSpread(rip, LAKE_FJ_F));
     q = vec2(q.x + shift.x, max(q.y + shift.y, LAKE_FJ_HZ + 0.0006));
   }
@@ -1320,19 +1332,24 @@ vec3 lakeFjWater(vec2 p, out float range) {
   col += lakeAurLight * 0.4 * (1.0 - iceMask);
   lakeAccent = reflAccent * fres;
 
-  // The window's light and the moon's, drawn down the water toward us in slowly drifting bands.
+  // The window's light and the moon's on the water (waterGlint), about the cat's-paws' slope, the
+  // facets spread by the calm water's own roughness and the ripples too fine to draw, so each path
+  // widens where the breeze crosses it; drawn down the water in slowly drifting bands, where the
+  // long undulations turn the facets toward the light or away. Both lights stand far beyond the
+  // water we see, so the same light reaches all of it. At the waterline the far shore's mirror
+  // image takes over.
+  vec3 view = -normalize(vec3(p.x, -h, LAKE_FJ_F));
+  vec3 normal = normalize(vec3(-rip.x, 1.0, -rip.y));
+  float facets = LAKE_FJ_CALM + rip.z;
   float bands = 0.35 + 0.65 * smoothstep(0.3, 0.75, vnoise(vec2(p.x * 24.0, P.y * 2.2 - tm * 0.07)));
   vec3 path = vec3(0.0);
   if (K_cabin > 0.5) {
-    float wx = (p.x - (lakeFjCabinX - 0.011 * LAKE_FJ_CS)) / (0.008 + 0.05 * h);
-    path += LAKE_WINDOW * exp(-wx * wx) * exp(-h * 6.0) * smoothstep(0.004, 0.03, h) * bands * 0.7;
+    vec3 pane = normalize(vec3(lakeFjCabinX - 0.011 * LAKE_FJ_CS, LAKE_FJ_FOOT + 0.0155 * LAKE_FJ_CS, LAKE_FJ_F));
+    path += LAKE_WINDOW * waterGlint(normal, view, pane, facets, LAKE_FJ_WINDOW_GLINT);
   }
-  if (lakePhase > 0.0) {
-    float mx = (p.x - lakeFjMoonAt.x) / (0.012 + 0.07 * h);
-    float mh = (h - (lakeFjMoonAt.y - LAKE_FJ_HZ)) / 0.14;
-    path += vec3(0.80, 0.85, 0.95) * exp(-mx * mx) * (0.2 + 0.8 * exp(-mh * mh)) * smoothstep(0.004, 0.03, h) * bands * 0.25 * lakePhase * (1.0 - 0.7 * lakeOver);
-  }
-  col += path * mix(1.0, 0.35, iceMask);
+  if (lakePhase > 0.0)
+    path += vec3(0.80, 0.85, 0.95) * waterGlint(normal, view, lakeMoon, facets, LAKE_FJ_MOON_GLINT * lakePhase * (1.0 - 0.7 * lakeOver));
+  col += path * bands * smoothstep(0.004, 0.03, h) * mix(1.0, 0.35, iceMask);
 
   if (iceMask > 0.5) {
     // Soft drifts: a wide, stippled transition between bare ice and snow.
@@ -1460,7 +1477,6 @@ Shade lakeFjord(vec2 screenUv, float aspect) {
   lakeFjHW = 0.5 * aspect;
   lakeFjSx = clamp(aspect / 1.78, 0.45, 1.0);
   lakeFjCabinX = 0.40 * lakeFjHW;
-  lakeFjMoonAt = vec2(LAKE_FJ_MOON.x * lakeFjHW, LAKE_FJ_MOON.y);
   lakeFjHaze = horizonHaze(lakeSky, vec3(0.0, 0.0, 1.0), 0.03) + lakeAurLight * 1.1 + lakeMoonLight * 0.2;
   // The camera's tilt (zero at rest, where uv == screenUv). The snow is weather in front of the
   // lens and stays in screen space.
