@@ -278,10 +278,11 @@ comparison (under its `a.` or `b.` prefix) are that one form, and all of them en
 **Versions.** A query's keys belong to a schema, numbered from 1, and `v=<n>` names it only where
 the query needs it: the lab writes `v` when a reader taking the query for schema 1, as it takes
 every link without `v`, would read it otherwise (`withVersion`). Every link from before versions is
-schema 1. Schemas 2 and 3 only rewrote keys and a scene that no build writes any more, so no link
-needs `v` yet. When a range becomes a feature, say, the step that turns an old `<key>=30` into
-`<key>=1&<key>-amount=30` would misread a new `<key>=1`, so every link that sets that knob from then
-on carries `v`, and only those. Writing `v` always would lengthen every link and, at each new
+schema 1. Schema 2 only rewrote keys and a scene that no build writes any more. Schema 3 gave bees'
+`clouds` a new meaning (the world's deck; the old towers' size is now `cumulus-amount`), so a bees
+link that sets `clouds` carries `v=3`, and only those. Likewise, when a range becomes a feature, the
+step that turns an old `<key>=30` into `<key>=1&<key>-amount=30` would misread a new `<key>=1`, so
+every link that sets that knob from then on carries `v`. Writing `v` always would lengthen every link and, at each new
 version, unlight every committed preset until it was rewritten. A link of a later schema than the
 build knows (a newer build's, opened on an older one) is read as it stands.
 
@@ -292,7 +293,7 @@ runs them all and each step rewrites the query as the steps before it left it. T
 - `keys`: outgrown keys of the scene the query names at that point (`renameKey` renames one with a
   map of its values). Schema 2 holds two: the countryside's `season` (0 summer, 1 harvest, 2
   autumn) opens at its `date` (0.375, 0.47, 0.6), and the night skies' one giant planet becomes the
-  first of their planets.
+  first of their planets. Schema 3 holds bees' `clouds`, which becomes `cumulus-amount`.
 - `alias`: a retired scene id (renamed, merged into another scene or removed) whose links open its
   successor, `to`, which a later alias may retire in turn. Its `keys` move the retired scene's keys
   onto the successor's: rename them, and set the successor's knobs whose defaults differ from what
