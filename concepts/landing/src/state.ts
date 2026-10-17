@@ -4,6 +4,7 @@
 // URLs carry only non-defaults. Every setup enters through readSetup (a link, the lab's history, a
 // preset, a comparison's other slot), which reads this build's keys, ignores any other and reports
 // a scene the link names that this build does not have.
+import { restIds, type RestId } from "./governor.ts";
 import { effective, readKnobs, readNumber } from "./params.ts";
 import { MAX_AGENTS } from "./principals.ts";
 import {
@@ -50,6 +51,8 @@ export interface LabState {
   mouse: MouseId;
   /** Agents of the cast present beside the visitor, 0..MAX_AGENTS (src/principals.ts). */
   agents: number;
+  /** The rate the picture draws at while nothing is touched: the full rate, or half of it. */
+  rest: RestId;
   view: ViewId;
   /** 0..1: darken the scene behind the page, to judge the copy's legibility. */
   dim: number;
@@ -79,6 +82,7 @@ export const defaults: LabState = {
   instance: "tyrode",
   mouse: "follow",
   agents: 0,
+  rest: "full",
   view: "dithered",
   dim: 0,
   blur: 0,
@@ -192,6 +196,7 @@ export function readState(q: URLSearchParams): LabState {
     mouse: pick(mouseIds, q.get("mouse"), defaults.mouse),
     // A count: between two, the nearer.
     agents: Math.round(readNumber(q.get("agents"), 0, MAX_AGENTS, defaults.agents)),
+    rest: pick(restIds, q.get("rest"), defaults.rest),
     view: pick(viewIds, q.get("view"), defaults.view),
     dim: readNumber(q.get("dim"), 0, 1, defaults.dim),
     blur: readNumber(q.get("blur"), 0, 1, defaults.blur),
@@ -299,6 +304,7 @@ export function renderSettings(
     planets: planetUniforms(planets),
     followPointer: state.mouse === "follow",
     agents: state.agents,
+    rest: state.rest,
     view: state.view,
     passage: state.transitions === "on",
     overlap: state.overlap,

@@ -806,7 +806,8 @@ How the page puts the scenes on screen (`src/renderer.ts`, `src/program-cache.ts
 - **Frame pacing.** Frames come every n-th refresh, n whole, so each stays up as long as the last:
   the even divisor of the measured refresh rate nearest 60 frames a second (75 at 75 Hz, 45 at
   90, 72 at 144, 55 at 165) while input, a trigger's response, a passage or an entrance lasts, and
-  at rest about half that (30 at 60, 90, 120 and 240 Hz); none while the picture stands still
+  at rest too unless the lab's "At rest" setting says half rate: about half that (30 at 60, 90, 120
+  and 240 Hz); none while the picture stands still
   (paused, reduced motion, motion 0) once the last change or input has played out. Input draws again
   at once, a pointer that only moves for a quarter of a second.
 - **A clock per scene.** Each scene's clocks count from its own start, so the float32 `uTime` and

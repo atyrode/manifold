@@ -29,6 +29,14 @@ describe("a link", () => {
       expect(readSetup(q(known)).unknownScene).toBeUndefined();
   });
 
+  test("draws at the full rate at rest unless it names the half rate", () => {
+    expect(defaults.rest).toBe("full");
+    expect(readSetup(q("rest=half")).state.rest).toBe("half");
+    expect(reread("rest=half")).toBe("rest=half");
+    expect(reread("rest=full")).toBe("");
+    expect(reread("rest=slow")).toBe("");
+  });
+
   test("holds whole tones, while a dot size keeps its fraction for the display to round", () => {
     expect(readSetup(q("levels=3.5")).state.levels).toBe(4);
     expect(reread("levels=3.4")).toBe("levels=3");

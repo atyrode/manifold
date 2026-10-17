@@ -149,11 +149,12 @@ edges and `fired`, but no time, so their response is one still step. Paused, eve
 Frames come every n-th refresh of the display, n whole, so each stays up as long as the last
 (`src/governor.ts`, which measures the refresh rate from the frames the browser gives). A moving
 picture draws at the full rate, the even divisor of the refresh rate nearest 60 frames a second
-(60 at 60, 120 and 240 Hz; 75 at 75 Hz, 45 at 90, 72 at 144, 55 at 165), while input lasts (the
-pointer, a key or the wheel, over the page or the lab: `SETTLE_SECONDS`, 5 s), a press's or a
-trigger's response plays (`RESPONSE_SECONDS`, 20 s) or a passage or an entrance runs; otherwise it
-rests at half that, or at the divisor nearest 30 where that is faster: 30 frames a second at 60,
-90, 120 and 240 Hz. So nothing may move by the frame: step on `dt` (a sim on its `FixedStep`), or
+(60 at 60, 120 and 240 Hz; 75 at 75 Hz, 45 at 90, 72 at 144, 55 at 165), at rest too. The lab's
+"At rest" setting (`&rest=half`; `full` is the default) lets it rest at half that, or at the
+divisor nearest 30 where that is faster (30 frames a second at 60, 90, 120 and 240 Hz), whenever
+no input lasts (the pointer, a key or the wheel, over the page or the lab: `SETTLE_SECONDS`, 5 s),
+no press's or trigger's response plays (`RESPONSE_SECONDS`, 20 s) and no passage or entrance runs.
+So nothing may move by the frame: step on `dt` (a sim on its `FixedStep`), or
 key motion to a clock.
 
 A picture that stands still is not redrawn. Paused, under reduced motion or at motion 0, the page
@@ -2178,7 +2179,7 @@ keeps its pattern.
 
 Knob keys share the URL with the lab's own settings, so a knob may not be called `accent`,
 `scene`, `mode`, `dither`, `color`, `pixel`, `levels`, `motion`, `instance`, `mouse`, `agents`,
-`view`, `dim`, `blur`, `transitions`, `overlap`, `weave`, `blend` or `slowmo`, nor take the keys of the lab's session tools, `compare`, `tour`
+`rest`, `view`, `dim`, `blur`, `transitions`, `overlap`, `weave`, `blend` or `slowmo`, nor take the keys of the lab's session tools, `compare`, `tour`
 and `dwell` (`state.ts` refuses to load such a scene).
 
 ## Composers
@@ -2663,8 +2664,8 @@ pointer.
   loops short (≤ 32 iterations in the common path), no nested loops over many items. The renderer
   holds every stage to that budget (`CELL_BUDGET`, with 25 % to spare before cells coarsen: a
   larger stage, a 4K screen or a 1440p one at pixel 2, gets coarser cells), draws every n-th
-  refresh, nearest 60 frames a second (75 at 75 Hz, 72 at 144) and about half that at rest, and
-  none while the picture stands still (see "Time and motion"). The GPU timing page (below)
+  refresh, nearest 60 frames a second (75 at 75 Hz, 72 at 144; about half that at rest where the lab's
+  `rest` says half), and none while the picture stands still (see "Time and motion"). The GPU timing page (below)
   measures it on a real device.
 
 ## Correctness checks
@@ -2723,8 +2724,8 @@ uLeaving unit, none held back within the reveal's 0.8 s; a lost context draws no
 frame loop goes on, and once the browser restores it the scene appears again the same way and
 draws, its plant atlas painted anew (no frame binds a texture made before the loss, as the sheet
 the pond kept from its last visit would be);
-`frameGovernor`, a moving scene on a 120 Hz display draws 30 frames a second at rest and 60 from
-the first frame after input until it has played out, and paused or at motion 0 the picture stops
+`frameGovernor`, a moving scene on a 120 Hz display draws 60 frames a second at rest, or with `rest=half` 30
+and 60 from the first frame after input until it has played out, and paused or at motion 0 the picture stops
 issuing draws once the change has played out, until input wakes it, a pointer that moves nothing
 for a moment only (`src/display.test.ts` and `src/governor.test.ts` check the cells on whole device
 pixels at 125 %, the budget and its slack, the frame divisors, the pacing through jitter and

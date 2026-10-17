@@ -10,8 +10,8 @@
 // lost context draws nothing (the frame loop goes on) and, once restored, the scene appears again
 // the same way and draws, its plant atlas painted again: nothing binds a texture made before the
 // loss (the sheets a painter keeps, src/sheet.ts, go with their context). frameGovernor: a moving
-// scene on a 120 Hz display draws 30 frames a second at rest and 60 from the first frame after
-// input; paused, and then at motion 0, the picture stands still and stops issuing draws once the
+// scene on a 120 Hz display draws 60 frames a second at rest by default and, with the lab's `rest`
+// at half, 30, and 60 from the first frame after input; paused, and then at motion 0, the picture stands still and stops issuing draws once the
 // change has played out (SETTLE_SECONDS); input wakes it, a pointer that only moves for a moment
 // (POINTER_SECONDS).
 import { stageCells } from "./display.ts";
@@ -413,12 +413,21 @@ export async function verifyFrameGovernor(
   };
   try {
     let now = await arrive(1000, HZ_120);
-    // A moving scene at rest, nothing touched since it arrived: every fourth frame of a 120 Hz
-    // display, 30 a second.
-    const resting = run(now, 1);
+    // A moving scene at rest, nothing touched since it arrived, at the default: every second frame
+    // of a 120 Hz display, 60 a second, as with input.
+    const full = run(now, 1);
+    check(
+      full.drew >= 59 && full.drew <= 61,
+      `At rest by default, a 120 Hz display drew ${full.drew} frames in a second`,
+    );
+    now = full.at;
+    // With the setting at half rate, every fourth frame, 30 a second, once the change has played out.
+    renderer.update({ ...settings(), rest: "half" });
+    const settled = run(now, SETTLE_SECONDS);
+    const resting = run(settled.at, 1);
     check(
       resting.drew >= 29 && resting.drew <= 31,
-      `At rest, a 120 Hz display drew ${resting.drew} frames in a second`,
+      `At half rate, a 120 Hz display drew ${resting.drew} frames in a second at rest`,
     );
     now = resting.at;
     // Input just after a frame brings the full rate back at once: the frame after next draws
@@ -479,7 +488,8 @@ export async function verifyFrameGovernor(
       `At motion 0, ${still.drew} frames drew, ${still.last} of them in the last second`,
     );
     return {
-      restAt120Hz: resting.drew,
+      restAt120Hz: full.drew,
+      halfRestAt120Hz: resting.drew,
       inputAt120Hz: lively.drew / (SETTLE_SECONDS - 1),
       paused: paused.drew,
       pointerMove: hover.drew,

@@ -96,6 +96,7 @@ const SETTING_LABEL: Record<keyof LabState, string> = {
   instance: "instance name",
   mouse: "follow mouse",
   agents: "agents",
+  rest: "rate at rest",
   view: "view",
   dim: "dim",
   blur: "blur",

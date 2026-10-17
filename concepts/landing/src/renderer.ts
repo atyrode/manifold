@@ -17,6 +17,7 @@ import {
   RESPONSE_SECONDS,
   SETTLE_SECONDS,
   type Picture,
+  type RestId,
 } from "./governor.ts";
 import { MAX_PARAMS, MAX_TRIGGERS, type ParamDef } from "./params.ts";
 import { Cast, Presence, principal } from "./principals.ts";
@@ -74,6 +75,8 @@ export interface RenderSettings {
   followPointer: boolean;
   /** Agents of the cast present beside the visitor, 0..MAX_AGENTS (src/principals.ts). */
   agents: number;
+  /** The rate frames draw at while nothing is touched (src/governor.ts): `full`, or `half` of it. */
+  rest: RestId;
   view: ViewId;
   /** Scenes enter and leave with their own choreography and a dissolve, instead of cutting. */
   passage: boolean;
@@ -336,8 +339,8 @@ export class DitherRenderer {
   /** The canvas's box in device pixels and the cells laid over it (src/display.ts). */
   readonly #stage: StageBox;
   /**
-   * Frames on every n-th refresh, at the full rate or at rest, and none while the picture stands
-   * still (see `start`).
+   * Frames on every n-th refresh, at the full rate or, by `rest`, at half of it at rest, and none
+   * while the picture stands still (see `start`).
    */
   readonly #governor = new FrameGovernor();
   /** What the context holds for every program: made again once a lost context is restored. */
@@ -495,6 +498,7 @@ export class DitherRenderer {
     if (!gl) throw new RendererError("WebGL2 unavailable");
     this.#gl = gl;
     this.#settings = settings;
+    this.#governor.rest = settings.rest;
     this.#frozen = frozen;
     this.#gpu = glResources(gl);
     this.#programs = new ScenePrograms(
@@ -627,6 +631,7 @@ export class DitherRenderer {
    */
   update(settings: RenderSettings, options: { keepClocks?: boolean } = {}): void {
     this.#settings = settings;
+    this.#governor.rest = settings.rest;
     this.#governor.wake(SETTLE_SECONDS);
     this.#governor.input(SETTLE_SECONDS);
     if (settings.scene !== this.#triggerScene) {
@@ -646,11 +651,12 @@ export class DitherRenderer {
   /**
    * Draw on requestAnimationFrame. Paced (the default), every n-th refresh of the display, n whole,
    * so every frame stays up as long: at the full rate (the divisor of the refresh rate nearest 60
-   * frames a second) while input, a press's or a trigger's response, a passage or an entrance
-   * lasts, at rest (half that) otherwise, and while the picture stands still (`#still`) none at all
-   * once the last change or input has played out (see FrameGovernor); `paced: false` draws every
-   * frame asked for, for checks that drive frames by hand and the GPU timing page (src/bench.ts),
-   * which times every frame the display gives it. Nothing draws while the context is lost.
+   * frames a second), or, where the setting `rest` is `half`, while input, a press's or a trigger's
+   * response, a passage or an entrance lasts only, at half that otherwise; and while the picture
+   * stands still (`#still`) none at all once the last change or input has played out (see
+   * FrameGovernor); `paced: false` draws every frame asked for, for checks that drive frames by
+   * hand and the GPU timing page (src/bench.ts), which times every frame the display gives it.
+   * Nothing draws while the context is lost.
    */
   start(options: { paced?: boolean } = {}): void {
     const paced = options.paced ?? true;

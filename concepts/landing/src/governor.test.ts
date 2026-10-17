@@ -29,7 +29,7 @@ function gaps(refreshes: readonly number[]): number[] {
   return refreshes.slice(1).map((refresh, i) => refresh - (refreshes[i] ?? 0));
 }
 
-test("the full rate is the refresh rate's even divisor nearest 60 frames a second, the rest rate half that or the one nearest 30", () => {
+test("the full rate is the refresh rate's even divisor nearest 60 frames a second, the half rate half that or the one nearest 30", () => {
   for (const [hertz, full, rest] of [
     [30, 1, 1],
     [50, 1, 2],
@@ -84,8 +84,20 @@ test("the refresh rate is measured through dropped frames and stalls", () => {
   expect(new Set(spans)).toEqual(new Set([3]));
 });
 
-test("a moving picture draws at the rest rate until input, which brings the full rate back at once", () => {
+test("a moving picture draws at the full rate with no input, by default", () => {
   const governor = new FrameGovernor();
+  expect(governor.rest).toBe("full");
+  // Nothing touched: every second refresh of a 120 Hz display, 60 a second, as with input.
+  const resting = drawn(governor, 120, "moving", 0, SETTLE_SECONDS * 120 * 2);
+  expect(new Set(gaps(resting))).toEqual(new Set([2]));
+  governor.input(SETTLE_SECONDS);
+  const lively = drawn(governor, 120, "moving", SETTLE_SECONDS * 240, 120);
+  expect(new Set(gaps(lively))).toEqual(new Set([2]));
+});
+
+test("a moving picture at half rate draws at the rest rate until input, which brings the full rate back at once", () => {
+  const governor = new FrameGovernor();
+  governor.rest = "half";
   // At rest: every fourth refresh of a 120 Hz display, 30 a second.
   const resting = drawn(governor, 120, "moving", 0, 121);
   expect(new Set(gaps(resting))).toEqual(new Set([4]));
@@ -100,12 +112,17 @@ test("a moving picture draws at the rest rate until input, which brings the full
   expect(new Set(gaps(after))).toEqual(new Set([4]));
   const passing = drawn(governor, 120, "passing", 241 + SETTLE_SECONDS * 120, 120);
   expect(new Set(gaps(passing))).toEqual(new Set([2]));
+  // Back to the full rate: the setting applies at once.
+  governor.rest = "full";
+  const full = drawn(governor, 120, "moving", 361 + SETTLE_SECONDS * 120, 120);
+  expect(new Set(gaps(full))).toEqual(new Set([2]));
 });
 
 test("a still picture stops drawing once a wake has played out, and a wake draws it again", () => {
   const governor = new FrameGovernor();
-  governor.wake(SETTLE_SECONDS);
+  governor.rest = "half";
   const end = (SETTLE_SECONDS + 2) * 60;
+  governor.wake(SETTLE_SECONDS);
   const woken = drawn(governor, 60, "still", 0, end);
   // At the rest rate while nothing is touched: every other refresh of a 60 Hz display, as long as
   // the wake lasts.
@@ -119,4 +136,13 @@ test("a still picture stops drawing once a wake has played out, and a wake draws
   expect(drawn(governor, 60, "still", end + 60, 1)).toEqual([end + 60]);
   // A picture that moves draws whatever the wake.
   expect(new FrameGovernor().due(1000, "moving")).toBe(true);
+});
+
+test("a still picture woken at the default rate draws every refresh while the wake lasts", () => {
+  const governor = new FrameGovernor();
+  governor.wake(SETTLE_SECONDS);
+  const woken = drawn(governor, 60, "still", 0, (SETTLE_SECONDS + 2) * 60);
+  expect(new Set(gaps(woken))).toEqual(new Set([1]));
+  expect(woken.length).toBeGreaterThan(SETTLE_SECONDS * 60 - 2);
+  expect(woken.at(-1)).toBeLessThan(SETTLE_SECONDS * 60);
 });

@@ -112,7 +112,17 @@ const SWATCHES = ["#4c6ef5", "#ff004e", "#ff7a2f", "#f2c94c", "#2bd9a8", "#e8e6d
  */
 const SETTINGS = {
   look: ["view", "dither", "color", "accent", "levels", "pixel", "dim", "blur"],
-  motion: ["motion", "mouse", "agents", "transitions", "overlap", "weave", "blend", "slowmo"],
+  motion: [
+    "motion",
+    "mouse",
+    "agents",
+    "rest",
+    "transitions",
+    "overlap",
+    "weave",
+    "blend",
+    "slowmo",
+  ],
   page: ["mode", "instance"],
 } as const satisfies Record<string, readonly (keyof LabState)[]>;
 const SETTING_KEYS = [...SETTINGS.look, ...SETTINGS.motion, ...SETTINGS.page];
@@ -1368,6 +1378,15 @@ export class Inspector {
       () => String(this.#state().agents),
       (value) => change({ agents: Number(value) }),
     );
+    const rest = segments(
+      "At rest",
+      [
+        { label: "Full rate", value: "full" },
+        { label: "Half rate (saves battery)", value: "half" },
+      ],
+      () => this.#state().rest,
+      (value) => change({ rest: value }),
+    );
     const transitions = switchControl(
       "Scene transitions",
       () => this.#state().transitions === "on",
@@ -1441,6 +1460,14 @@ export class Inspector {
         reset: () => change({ agents: this.#base().agents }),
       }),
       row({
+        label: "At rest",
+        help: "How often a moving scene draws while nothing is touched: the full rate, about 60 frames a second, or half of it, which saves battery. A press, a key, the wheel or the pointer over the page or the lab, a passage and an entrance draw at the full rate either way, and a picture that stands still draws nothing.",
+        icon: "clock",
+        block: rest.el,
+        modified: () => this.#state().rest !== this.#base().rest,
+        reset: () => change({ rest: this.#base().rest }),
+      }),
+      row({
         label: "Transitions",
         help: "Scenes come in and leave gracefully: many play their own entrance and exit (a camera settling, a fire catching, lanterns arriving), and the next scene takes over part-way through the leaving one's exit, dot by dot, while both still move. Off: a straight cut. Skipped at motion 0 and under reduced motion; now plays this scene's exit, then its entrance, anyway.",
         icon: "transition",
@@ -1484,7 +1511,7 @@ export class Inspector {
       }),
     ];
     // Overlap, blend length, pattern and speed tune transitions: gates on the Transitions setting.
-    const tuning = new Set(rows.slice(4));
+    const tuning = new Set(rows.slice(5));
     const passing = () => this.#state().transitions === "on";
     const keys = SETTINGS.motion;
     tagSettings(rows, keys);
@@ -1492,6 +1519,7 @@ export class Inspector {
       motion.sync,
       follow.sync,
       agents.sync,
+      rest.sync,
       transitions.sync,
       overlap.sync,
       weave.sync,
@@ -1503,7 +1531,7 @@ export class Inspector {
       id: "motion",
       title: "Motion",
       blurb:
-        "How much things move, whether the scene follows you, who is here with you, and how scenes come and go.",
+        "How much things move, whether the scene follows you, who is here with you, how often it draws at rest, and how scenes come and go.",
       icon: "motion",
       shelf: "global",
       open: false,
@@ -1516,6 +1544,7 @@ export class Inspector {
           this.#ctx.renderer()?.paused ? "paused" : amount(state.motion),
           state.mouse === "follow" ? "follows mouse" : "fixed camera",
           state.agents > 0 ? `${state.agents} ${state.agents === 1 ? "agent" : "agents"}` : "",
+          state.rest === "half" ? "half rate at rest" : "",
           state.transitions === "on" ? "" : "cuts",
         ].filter(Boolean);
       },

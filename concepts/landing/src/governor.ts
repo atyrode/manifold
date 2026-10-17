@@ -9,6 +9,13 @@
 // out rAF jitter; it follows the window to a display of another rate within a few tenths of a
 // second.
 
+/**
+ * What the picture draws at while nothing is touched: the `full` rate, or `half` of it (the lab's
+ * `rest` setting, read and written as the URL key `rest`).
+ */
+export const restIds = ["full", "half"] as const;
+export type RestId = (typeof restIds)[number];
+
 /** Frames a second the full rate comes nearest, in log terms (75 Hz draws 75, 144 Hz 72). */
 const FULL_FPS = 60;
 /** Frames a second the rest rate comes nearest where half the full rate is less (90 Hz: 30). */
@@ -38,8 +45,9 @@ export const RESPONSE_SECONDS = 20;
 
 /**
  * What the picture does: `still`, nothing moves on its own and nothing is on its way, so it draws
- * only while a wake lasts; `moving`, it moves on its own, at the full rate while an input lasts
- * and at rest otherwise; `passing`, a passage or an entrance plays, at the full rate.
+ * only while a wake lasts; `moving`, it moves on its own, at the full rate (and, where `rest` is
+ * `half`, only while an input lasts, at half otherwise); `passing`, a passage or an entrance plays,
+ * at the full rate.
  */
 export type Picture = "still" | "moving" | "passing";
 
@@ -84,6 +92,9 @@ export class FrameGovernor {
   /** Seconds asked for by `input` since the last call. */
   #input = 0;
 
+  /** The rate frames draw at while nothing is touched: `full`, or `half` of it. */
+  rest: RestId = "full";
+
   /** Keep still frames drawing for `seconds` from the next frame. */
   wake(seconds: number): void {
     this.#wake = Math.max(this.#wake, seconds);
@@ -97,8 +108,8 @@ export class FrameGovernor {
   /**
    * Whether to draw the frame of rAF time `now` (ms), called for every frame the display gives: not
    * while the picture is `still` once the last wake has run out, and otherwise on every
-   * `frameDivisor`-th refresh, at the full rate while `passing` or an input lasts and at rest
-   * otherwise. A refresh up to half a period early still counts.
+   * `frameDivisor`-th refresh, at the full rate, or, where `rest` is `half`, at half of it unless
+   * the picture is `passing` or an input lasts. A refresh up to half a period early still counts.
    */
   due(now: number, picture: Picture): boolean {
     this.#measure(now);
@@ -111,7 +122,7 @@ export class FrameGovernor {
       this.#input = 0;
     }
     if (picture === "still" && now >= this.#awake) return false;
-    const rest = picture !== "passing" && now >= this.#lively;
+    const rest = this.rest === "half" && picture !== "passing" && now >= this.#lively;
     if (now - this.#last < (frameDivisor(this.#period, rest) - 0.5) * this.#period) return false;
     this.#last = now;
     return true;
