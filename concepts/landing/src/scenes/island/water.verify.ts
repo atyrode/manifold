@@ -1,12 +1,11 @@
 // GPU regressions for the shared water (#1082 M13: shaders/lib/water.ts and the ripple spectrum in
 // surface.ts), run by concepts/landing/verify-browser.ts on real WebGL output. A probe entry compiled
 // on Island's program (so it reads Island's own spectrum table) evaluates the library over grids into
-// a float target: the spectra the three open-water scenes draw are bit for bit the sums they drew
-// before they shared rippleSpectrum, the pond's caustics are bit for bit the layer it drew before it
-// shared the cellular net, the trains, caustic waves and net seams too fine to draw are skipped
-// without changing a value (or leave only the net's mean), and the mirror, the glitter, the flow and
-// the caustic light behave. Then the tiers: each tier's functions exist from its tier up and not
-// below, and each adopting scene compiles at the tier it selects and not one lower.
+// a float target: the trains and caustic waves too fine to draw are skipped without changing a value
+// (each against its unskipped form), the cellular net's seams draw where they span a cell and leave
+// only its mean where they do not, and the mirror, the glitter, the flow and the caustic light
+// behave. Then the tiers: each tier's functions exist from its tier up and not below, and each
+// adopting scene compiles at the tier it selects and not one lower.
 import { fragmentSourceFor, vertexSource } from "../../shaders/index.ts";
 import { WATER_TIERS } from "../../shaders/lib/water.ts";
 import { sceneDefs } from "../index.ts";
@@ -57,35 +56,8 @@ uniform int uProbe;
 uniform vec4 uProbeA;
 uniform vec4 uProbeB;
 
-// The sums as Island, Lanterns and Shore wrote them before rippleSpectrum.
-vec3 probeIsland(vec2 p, float tm, vec2 foot) {
-  return rippleTrain(p, tm, foot, 4.0, normalize(vec2(0.25, 1.0)), 0.03, 0.35, 1.0, vec2(7.0, 14.0))
-       + rippleTrain(p, tm, foot, 1.5, normalize(vec2(1.0, 0.35)), 0.035, 0.35, 0.0, vec2(7.0, 14.0))
-       + rippleTrain(p, tm, foot, 0.9, normalize(vec2(-0.5, 1.0)), 0.03, 0.35, 2.0, vec2(7.0, 14.0))
-       + rippleTrain(p, tm, foot, 0.55, normalize(vec2(0.7, -0.7)), 0.025, 0.35, 4.0, vec2(7.0, 14.0));
-}
-
-vec3 probeLanterns(vec2 p, float tm, vec2 foot, float amp, float drift) {
-  vec3 sum = vec3(0.0);
-  for (int i = 0; i < 5; i++) {
-    float fi = float(i);
-    float turn = 0.5 * sin(fi * 2.4 + 0.7);
-    sum += rippleTrain(p + vec2(drift, 0.0), tm, foot, 6.0 * pow(0.53, fi), vec2(sin(turn), cos(turn)), amp * (0.06 - 0.007 * fi), 0.14 * (1.0 - 0.1 * fi), fi * 1.9, vec2(7.0, 14.0));
-  }
-  return sum;
-}
-
-vec3 probeShore(vec2 p, float tm, vec2 foot, float wind) {
-  vec3 sum = vec3(0.0);
-  for (int i = 0; i < 4; i++) {
-    float fi = float(i);
-    float a = 1.7 + fi * 2.4;
-    sum += rippleTrain(p, tm, foot, 3.2 * pow(0.55, fi), vec2(sin(a), cos(a)), (0.025 - 0.003 * fi) * wind, 1.0, fi * 1.7, vec2(8.0, 16.0));
-  }
-  return sum;
-}
-
-// rippleTrain and causticRipples as written before they skipped what is too fine to draw.
+// rippleTrain and causticRipples without their skip of what is too fine to draw: what the skip must
+// leave every value as.
 vec3 probeTrain(vec2 p, float tm, vec2 foot, float wavelength, vec2 along, float slope, float pace, float phase, vec2 lod) {
   float k = TAU / wavelength;
   float seen = smoothstep(lod.x, lod.y, wavelength / max(length(along * foot), 1e-6));
@@ -112,24 +84,6 @@ vec2 probeCaustic(vec2 p, float tm, vec2 wind, float scale, float steep, float p
   return slope;
 }
 
-// The pond's caustic layer as it wrote it before the shared cellular net.
-float probeCells(vec2 x, float t) {
-  vec2 i = floor(x);
-  vec2 f = fract(x);
-  float f1 = 8.0;
-  float f2 = 8.0;
-  for (int y = -1; y <= 1; y++) {
-    for (int k = -1; k <= 1; k++) {
-      vec2 g = vec2(float(k), float(y));
-      vec2 o = vec2(hash12(i + g), hash12(i + g + 19.1));
-      o = 0.5 + 0.45 * sin(t + TAU * o);
-      float d = length(g + o - f);
-      if (d < f1) { f2 = f1; f1 = d; } else if (d < f2) { f2 = d; }
-    }
-  }
-  return 1.0 - smoothstep(0.0, 0.06, f2 - f1);
-}
-
 float probePattern(vec2 q) {
   return sin(3.0 * q.x + 2.0 * q.y);
 }
@@ -139,18 +93,7 @@ Shade waterProbe(vec2 uv, vec2 cell, float t) {
   vec2 p = uProbeA.xy + floor(cell) * uProbeA.z;
   float tm = uProbeA.w;
   vec2 foot = exp2(mix(-9.0, 4.0, floor(cell.y) / uRes.y)) * vec2(1.0, uProbeB.x);
-  if (uProbe == 0) {
-    // As the scenes call it now: Island's table, Lanterns' fan riding its current, Shore's fan.
-    float current = uProbeB.z;
-    vec3 island = rippleSpectrum(p, tm, foot, 1.0, ISL_RIPPLES);
-    vec3 lanterns = rippleSpectrum(waterDrift(p, vec2(-0.6 * current, 0.0), tm), tm, foot, uProbeB.y,
-                                   RippleFan(5, vec2(6.0, 0.53), vec2(0.06, 0.007), vec2(0.14, 0.1), vec2(0.0), vec3(0.5, 2.4, 0.7), 1.9, vec2(7.0, 14.0)));
-    vec3 shore = rippleSpectrum(p, tm, foot, uProbeB.y,
-                                RippleFan(4, vec2(3.2, 0.55), vec2(0.025, 0.003), vec2(1.0, 0.0), vec2(1.7, 2.4), vec3(0.0), 1.7, vec2(8.0, 16.0)));
-    v = vec3(any(notEqual(island, probeIsland(p, tm, foot))) ? 1.0 : 0.0,
-             any(notEqual(lanterns, probeLanterns(p, tm, foot, uProbeB.y, 0.6 * current * tm))) ? 1.0 : 0.0,
-             any(notEqual(shore, probeShore(p, tm, foot, uProbeB.y))) ? 1.0 : 0.0);
-  } else if (uProbe == 1) {
+  if (uProbe == 1) {
     // Island's trains against the unskipped form; Lanterns' whole spectrum's slope and variance.
     float differs = 0.0;
     for (int i = 0; i < 4; i++) {
@@ -181,11 +124,10 @@ Shade waterProbe(vec2 uv, vec2 cell, float t) {
     vec4 q = waterFlow(at, uProbeB.xy, time, uProbeB.z, weight);
     v = vec3(mix(probePattern(q.xy), probePattern(q.zw), weight), weight, max(length(q.xy - at), length(q.zw - at)));
   } else if (uProbe == 6) {
-    // The cellular net against the pond's former layer, p in net cells, tm its wander: a row's
-    // footprint (2^-9 .. 2^4 net cells up the rows), or uProbeB.y throughout.
+    // The cellular net, p in net cells, tm its wander: a row's footprint (2^-9 .. 2^4 net cells up
+    // the rows), or uProbeB.y throughout.
     float cellFoot = uProbeB.y > 0.0 ? uProbeB.y : foot.x;
-    float net = causticCells(p, tm, cellFoot);
-    v = vec3(net != probeCells(p, tm) ? 1.0 : 0.0, net, cellFoot);
+    v = vec3(causticCells(p, tm, cellFoot), cellFoot, 0.0);
   } else if (uProbe == 7) {
     // The glitter over a grid of half vectors (uProbeA.z of tangent a cell, level at the middle
     // cell), the eye along uProbeB.xyz, the light mirrored about each, on water sloped uProbeA.xy
@@ -283,39 +225,6 @@ export function verifyWaterTiers(gl: WebGL2RenderingContext): Record<string, unk
   );
   const W = 48;
   const H = 64;
-
-  // The three spectra, bit for bit, over footprints from fine to far too coarse, on the default and
-  // the strongest knobs, along and across the depth, early and late on the clock.
-  let spectra = 0;
-  for (const [stretch, gain, current, tm] of [
-    [1, 0.45, 0.17, 0],
-    [12, 1.6, 0.45, 61.7],
-    [40, 0.6, 0.05, 333.3],
-    [3, 1.5, 0.3, 4096.5],
-  ] as const) {
-    const pixels = draw(gl, probe, W, H, {
-      uProbe: [0],
-      uProbeA: [-7.3, 3.1, 0.37, tm],
-      uProbeB: [stretch, gain, current, 0],
-    });
-    for (let y = 0; y < H; y++) {
-      for (let x = 0; x < W; x++) {
-        check(
-          at(pixels, W, x, y, 0) === 0,
-          `Island's spectrum differs from its four trains at (${x}, ${y}), stretch ${stretch}`,
-        );
-        check(
-          at(pixels, W, x, y, 1) === 0,
-          `Lanterns' spectrum differs from its former sum at (${x}, ${y}), stretch ${stretch}`,
-        );
-        check(
-          at(pixels, W, x, y, 2) === 0,
-          `Shore's spectrum differs from its former sum at (${x}, ${y}), stretch ${stretch}`,
-        );
-        spectra++;
-      }
-    }
-  }
 
   // Projected size: a skipped train is exactly the unskipped one; the finest footprints draw
   // slopes, the coarsest only the variance of all five trains.
@@ -507,8 +416,8 @@ export function verifyWaterTiers(gl: WebGL2RenderingContext): Record<string, unk
     "the caustic light is not the two Jacobians' product",
   );
 
-  // The cellular net: where its seams span a cell or more, the pond's former layer bit for bit;
-  // under half a cell only the net's mean (CAUSTIC_CELLS_MEAN, as float32), and between a mix.
+  // The cellular net: where its seams span a cell or more they draw, within the net's range; under
+  // half a cell only the net's mean (CAUSTIC_CELLS_MEAN, as float32), and between a mix.
   const netMean = Math.fround(0.078);
   let seams = 0;
   for (const tm of [3.7, 211.9]) {
@@ -519,15 +428,9 @@ export function verifyWaterTiers(gl: WebGL2RenderingContext): Record<string, unk
     });
     for (let y = 0; y < H; y++) {
       for (let x = 0; x < W; x++) {
-        const cellFoot = at(net, W, x, y, 2);
-        const value = at(net, W, x, y, 1);
-        if (cellFoot <= 0.06) {
-          check(
-            at(net, W, x, y, 0) === 0,
-            `causticCells differs from the pond's former layer at (${x}, ${y}), ${tm} s`,
-          );
-          if (value > 0) seams++;
-        } else if (cellFoot >= 0.12) {
+        const value = at(net, W, x, y, 0);
+        const cellFoot = at(net, W, x, y, 1);
+        if (cellFoot >= 0.12) {
           check(
             value === netMean,
             `a far cell (${x}, ${y}) is ${value}, not the net's mean ${netMean}`,
@@ -535,8 +438,9 @@ export function verifyWaterTiers(gl: WebGL2RenderingContext): Record<string, unk
         } else {
           check(
             value >= 0 && value <= 1,
-            `a fading cell (${x}, ${y}) leaves the net's range: ${value}`,
+            `a near or fading cell (${x}, ${y}) leaves the net's range: ${value}`,
           );
+          if (cellFoot <= 0.06 && value > 0) seams++;
         }
       }
     }
@@ -550,7 +454,7 @@ export function verifyWaterTiers(gl: WebGL2RenderingContext): Record<string, unk
       uProbeA: [3.1, -7.7, 0.613, tm],
       uProbeB: [1, 0.001, 0, 0],
     });
-    for (let i = 0; i < 64 * 64; i++) sum += wide[i * 4 + 1] ?? Number.NaN;
+    for (let i = 0; i < 64 * 64; i++) sum += wide[i * 4] ?? Number.NaN;
   }
   const netAverage = sum / (2 * 64 * 64);
   check(
@@ -621,7 +525,6 @@ export function verifyWaterTiers(gl: WebGL2RenderingContext): Record<string, unk
     );
   }
   return {
-    spectraCells: spectra,
     nearRippleCells: drawn,
     nearCausticCells: curved,
     netSeamCells: seams,

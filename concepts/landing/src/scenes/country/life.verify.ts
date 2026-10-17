@@ -1,23 +1,12 @@
-// GPU checks of the countryside's life and its compile-time features, over the real sim's terrain
-// (verify-browser.ts):
-//
-// `countryLife`: through the scene's own GLSL (probe entries over countryGlsl), every walking party
+// GPU check of the countryside's life, over the real sim's terrain (verify-browser.ts,
+// `countryLife`): through the scene's own GLSL (probe entries over countryGlsl), every walking party
 // and cart at many motion times stands on one of the generator's roads (within its half width of
 // its centreline, the bridge's span included: checked against the same terrain built on the CPU),
 // and every animal of every pasture's herd (the land model's pastures, read from their records)
 // stands inside its own parcel, its fence's set and a body's length clear of the parcel's edge, off
 // the roads, streams and water; the scene with all its life drawn is the same picture twice, stands
 // still at motion 0 and differs from the scene without it.
-//
-// `countryFeaturesAll`: the all-features program (featuresAll) draws each gated setting byte for
-// byte as that setting's own program (featuresFor) does.
-import {
-  featureKey,
-  fragmentSourceFor,
-  sceneFeatures,
-  sceneFeaturesAll,
-  shaderValues,
-} from "../../shaders/index.ts";
+import { fragmentSourceFor, sceneFeaturesAll } from "../../shaders/index.ts";
 import { generateTerrain } from "../../sims/terrain.ts";
 import { countryScene } from "./index.ts";
 import { COUNTRY_MAP } from "./sim.ts";
@@ -184,67 +173,6 @@ export function verifyCountryLife(gl: WebGL2RenderingContext): Record<string, un
   } finally {
     gl.deleteProgram(probe);
     gl.deleteProgram(scene);
-    built.dispose();
-  }
-}
-
-/**
- * Gated settings: each turns one or more of countryFeatures' gates or tiers on (or off). The land's
- * uses go through the sim (its allocation, the chalk M's open parcels too); the roads' change would
- * rebuild the terrain, so they are drawn over the land already built, as a frame during that build
- * is. Lit windows and smoke are drawn at dusk, where they show.
- */
-const GATED: readonly Record<string, number>[] = [
-  {},
-  { pines: 0 },
-  { woodland: 0 },
-  { roads: 0, tracks: 0 },
-  { roads: 0, tracks: 0, village: 0 },
-  { wildflowers: 1, lavender: 1, sunflowers: 1 },
-  { pasture: 1, "pasture-amount": 50 },
-  { walkers: 1, carts: 1, "carts-amount": 3 },
-  { birds: 1 },
-  { rain: 0.5, fog: 0.4 },
-  { snow: 0.6 },
-  { shadows: 0 },
-  { moon: 0.4 },
-  { verges: 1 },
-  { murmuration: 1, time: 0.72 },
-  { time: 0.8 },
-  { time: 0.8, lights: 0, smoke: 0 },
-  { chalk: 1 },
-];
-
-export function verifyCountryFeaturesAll(gl: WebGL2RenderingContext): Record<string, unknown> {
-  const built = countryBuild(gl, {});
-  const programs = new Map<string, WebGLProgram>();
-  const programFor = (features: Readonly<Record<string, number>>): WebGLProgram => {
-    const key = featureKey(features);
-    let program = programs.get(key);
-    if (!program) {
-      program = countryProgram(gl, fragmentSourceFor(countryScene, features));
-      programs.set(key, program);
-    }
-    return program;
-  };
-  try {
-    const all = programFor(sceneFeaturesAll(countryScene) ?? {});
-    const options = { width: 160, height: 90, motionTime: 40 };
-    GATED.forEach((knobs) => {
-      built.step(knobs);
-      const own = programFor(sceneFeatures(countryScene, shaderValues(countryScene, knobs)));
-      const count = differing(
-        countryDraw(gl, own, built, knobs, options),
-        countryDraw(gl, all, built, knobs, options),
-      );
-      check(
-        count === 0,
-        `country: featuresAll draws ${JSON.stringify(knobs)} other than its own program (${count} pixels)`,
-      );
-    });
-    return { settings: GATED.length, programs: programs.size };
-  } finally {
-    for (const program of programs.values()) gl.deleteProgram(program);
     built.dispose();
   }
 }

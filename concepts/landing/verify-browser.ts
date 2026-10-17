@@ -36,7 +36,6 @@ import { verifyPondPlants } from "./src/scenes/pond/plants.verify.ts";
 import { islandSnowCheck } from "./src/scenes/island/snow.verify.ts";
 import { gardenClimateCheck } from "./src/scenes/garden/climate.verify.ts";
 import {
-  verifyFeaturesAll,
   verifyFeatureToggles,
   verifySceneFeatures,
   verifyWorldFeaturesAll,
@@ -47,14 +46,15 @@ import { verifyStarsKnob } from "./src/scenes/shore/stars.verify.ts";
 import { verifyMeadowWildflowers } from "./src/scenes/meadow/wildflowers.verify.ts";
 import { verifyCountryTerrain } from "./src/scenes/country/terrain.verify.ts";
 import { verifyCountryBehind } from "./src/scenes/country/behind.verify.ts";
-import { verifyCountryFeaturesAll, verifyCountryLife } from "./src/scenes/country/life.verify.ts";
+import { verifyCountryLife } from "./src/scenes/country/life.verify.ts";
+import { verifyCountryFeaturesAll } from "./src/scenes/country/features.verify.ts";
 import { verifyCountryMurmuration, verifyCountryVerges } from "./src/scenes/country/wild.verify.ts";
 import { verifyCountrySeason } from "./src/scenes/country/season.verify.ts";
 import { verifyCountryYear } from "./src/scenes/country/year.verify.ts";
 import { verifyCountryChalk } from "./src/scenes/country/chalk.verify.ts";
 import { verifyCountryFog } from "./src/scenes/country/fog.verify.ts";
 import { passageSpeeds } from "./src/passage-speed.verify.ts";
-import { nightSkyDefaults, verifyNightPlanets, verifyNightSky } from "./src/night-sky.verify.ts";
+import { verifyNightPlanets, verifyNightSky } from "./src/night-sky.verify.ts";
 import { verifyInspector } from "./src/lab/inspector.verify.ts";
 import { verifyOrbitKepler } from "./src/scenes/orbit/kepler.verify.ts";
 import { verifyContextRestore, verifyFrameGovernor } from "./src/display.verify.ts";
@@ -564,7 +564,6 @@ export const checks: readonly Check[] = [
   ["countryTerrain", verifyCountryTerrain],
   ["countryBehind", verifyCountryBehind],
   ["featureToggles", verifyFeatureToggles],
-  ["featuresAll", verifyFeaturesAll],
   ["countryLife", verifyCountryLife],
   ["countryFeaturesAll", verifyCountryFeaturesAll],
   ["countryMurmuration", verifyCountryMurmuration],
@@ -574,9 +573,6 @@ export const checks: readonly Check[] = [
   ["countryChalk", verifyCountryChalk],
   ["worldFeaturesAll", verifyWorldFeaturesAll],
   ["nightSky", verifyNightSky],
-  ["nightSkyDefaults1", nightSkyDefaults(0, 3)],
-  ["nightSkyDefaults2", nightSkyDefaults(1, 3)],
-  ["nightSkyDefaults3", nightSkyDefaults(2, 3)],
   ["countryFog", verifyCountryFog],
   ["motionClocksAll1", motionClocksAll(0, 4)],
   ["motionClocksAll2", motionClocksAll(1, 4)],

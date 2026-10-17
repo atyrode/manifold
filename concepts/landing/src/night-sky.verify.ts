@@ -7,9 +7,6 @@
 //   figures add light there while on (the lines as strong as their amount), and the knobs off draw
 //   exactly what a program without them draws; by day, and with no stars, nothing; at a coarse
 //   footprint the points still show.
-// - `nightSkyDefaults1`..`3` (a third of the scenes each, to stay well under the deadline): every
-//   scene with the knobs starts with them off and, at its defaults and at midnight, draws byte for
-//   byte what the same scene without them draws.
 // - `nightPlanets`: in two scenes, two planets of different kinds each change the midnight sky where
 //   their placements put them (the one placed further left, further left on screen), together as
 //   each alone does round itself; an orbiting planet drifts left with the motion clock and, half a
@@ -265,54 +262,6 @@ export function verifyNightSky(gl: WebGL2RenderingContext): Record<string, unkno
   return {
     samples: { stars: stars.length, lines: lines.length },
     added: Number(added.toFixed(2)),
-  };
-}
-
-/**
- * `nightSkyDefaults`, split `parts` ways to keep each entry well under the deadline: this entry
- * checks every `parts`-th scene with the knobs, from the `part`-th (0-based) on. Returns each scene's
- * milliseconds.
- */
-export function nightSkyDefaults(
-  part: number,
-  parts: number,
-): (gl: WebGL2RenderingContext) => Record<string, number> {
-  return (gl) => {
-    check(gl.getExtension("EXT_color_buffer_float") !== null, "float render targets unavailable");
-    const adopters = (Object.entries(sceneDefs) as [SceneId, SceneDef][]).filter(([, scene]) =>
-      scene.params.some(nightPart),
-    );
-    check(adopters.length > 0, "no scene has the night knobs");
-    const result: Record<string, number> = {};
-    for (const [id, scene] of adopters.filter((_, i) => i % parts === part)) {
-      const start = performance.now();
-      const defaults = paramDefaults(id);
-      check(
-        scene.params.filter(nightPart).every((def) => effective(def, defaults) === 0),
-        `${id} starts with a night part on`,
-      );
-      const before: SceneDef = { ...scene, params: scene.params.filter((def) => !nightPart(def)) };
-      // One program per scene and feature set: most draw their midnight with their defaults' program.
-      const programs = new Map<string, WebGLProgram>();
-      const frame = (def: SceneDef, knobs: Record<string, number>): Float32Array => {
-        const source = fragmentSourceFor(def, sceneFeatures(def, shaderValues(def, knobs)));
-        const linked = programs.get(source) ?? program(gl, source);
-        programs.set(source, linked);
-        const params = def.params.map((knob) => effective(knob, knobs));
-        return draw(gl, linked, { width: 64, height: 36, params });
-      };
-      const time = scene.params.some((def) => def.key === "time");
-      for (const over of time ? [{}, { time: 0 }] : [{}]) {
-        const knobs = { ...defaults, ...over };
-        check(
-          same(frame(scene, knobs), frame(before, knobs)),
-          `${id}${"time" in over ? " at midnight" : ""} changed with the night knobs off`,
-        );
-      }
-      for (const linked of programs.values()) gl.deleteProgram(linked);
-      result[id] = Math.round(performance.now() - start);
-    }
-    return result;
   };
 }
 

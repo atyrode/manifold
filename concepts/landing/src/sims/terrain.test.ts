@@ -362,24 +362,19 @@ describe("terrain", () => {
     }
   }, 60_000);
 
-  test("a build at the scene's size stays within its budget, unit by unit", () => {
+  test("a build at the scene's size runs unit by unit, a budget's worth a frame", () => {
+    // With no time to spare a frame runs exactly one unit and the next frame carries on from it, so
+    // the build spreads over as many frames as it has units, each frame blocking for one unit at
+    // most past its budget.
     const builder = new TerrainBuilder({ seed: 4, size: 512 });
-    const started = performance.now();
-    let longest = 0;
     let next = 0;
-    let frames = 0;
     while (next < builder.units) {
-      const frame = performance.now();
-      next = runBudgeted((i) => builder.unit(i), 8, builder.units, next);
-      longest = Math.max(longest, performance.now() - frame);
-      frames++;
+      const ran = runBudgeted((i) => builder.unit(i), 0, builder.units, next);
+      expect(ran).toBe(next + 1);
+      next = ran;
     }
-    const total = performance.now() - started;
-    // About a second on a laptop; generous for a loaded CI machine.
-    expect(total).toBeLessThan(6000);
-    // No frame blocks for long: a frame runs at most one unit past its 8 ms.
-    expect(longest).toBeLessThan(400);
-    expect(frames).toBeGreaterThan(10);
+    expect(builder.units).toBeGreaterThan(10);
+    expect(builder.done).toBe(true);
     expect(builder.terrain.timings.erosion).toBeGreaterThan(0);
   });
 });

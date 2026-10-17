@@ -4,10 +4,11 @@
 // frame draws bit for bit the same twice, and another landscape draws another picture. The land is
 // drawn from the records: at sample points over the map, the parcel the shader finds carries the
 // use the land model (built again here on the CPU) gave it, and the woods stand only on woodland
-// parcels; a change of the land's uses rebuilds nothing (one sim frame, timed) and redraws the
-// land, and the river switched off leaves its bed dry. Sizes are small: software WebGL runs every
-// line of the march. The helpers (a program, the real sim's textures, a frame drawn with them) serve
-// the countryside's other checks too (life.verify.ts).
+// parcels; a change of the land's uses rebuilds nothing (one sim frame, timed, writes neither the
+// ground nor the parcels' textures) and redraws the land, and the river switched off leaves its bed
+// dry (writing no parcels either). Sizes are small: software WebGL runs every line of the march.
+// The helpers (a program, the real sim's textures, a frame drawn with them) serve the
+// countryside's other checks too (life.verify.ts).
 import { fragmentSourceFor, sceneFeaturesAll, vertexSource } from "../../shaders/index.ts";
 import { LandModel, LAND_USES } from "../../sims/landuse.ts";
 import { generateTerrain } from "../../sims/terrain.ts";
@@ -180,6 +181,37 @@ export function differing(a: Uint8Array, b: Uint8Array): number {
   return count;
 }
 
+/** The slots of `textures` that `run` writes (texImage2D or texSubImage2D while one is bound). */
+function writtenDuring(
+  gl: WebGL2RenderingContext,
+  textures: readonly (WebGLTexture | undefined)[],
+  run: () => void,
+): number[] {
+  const slots = new Set<number>();
+  const note = () => {
+    const bound = gl.getParameter(gl.TEXTURE_BINDING_2D) as WebGLTexture | null;
+    const slot = bound === null ? -1 : textures.indexOf(bound);
+    if (slot >= 0) slots.add(slot);
+  };
+  const sub = gl.texSubImage2D;
+  const image = gl.texImage2D;
+  gl.texSubImage2D = function (this: WebGL2RenderingContext, ...args: unknown[]) {
+    note();
+    return Reflect.apply(sub, this, args);
+  };
+  gl.texImage2D = function (this: WebGL2RenderingContext, ...args: unknown[]) {
+    note();
+    return Reflect.apply(image, this, args);
+  };
+  try {
+    run();
+  } finally {
+    gl.texSubImage2D = sub;
+    gl.texImage2D = image;
+  }
+  return [...slots].sort((a, b) => a - b);
+}
+
 // The land probe: a grid of PROBE × PROBE map points at fine texel centres, a pixel each: r the
 // parcel id's high byte, g its low byte, b its use × 16, plus 8 where the woods stand.
 const PROBE = 96;
@@ -277,7 +309,16 @@ export function verifyCountryTerrain(gl: WebGL2RenderingContext): Record<string,
       const result: Record<string, unknown> = { buildFrames: first.frames, sky, land, water };
       const pictures = new Map<string, string>();
       for (const [name, knobs] of Object.entries(settings)) {
-        const ms = built.step(knobs);
+        // One sim frame, timed. A rebuild would write the ground (uSim0); the parcels (uSim2) carry
+        // the pine woods' flag, so a change of uses may rewrite them along with uSim1 and uSim3.
+        let ms = 0;
+        const written = writtenDuring(gl, built.textures, () => {
+          ms = built.step(knobs);
+        });
+        check(
+          !written.includes(0),
+          `${name}: a change of the land's uses rebuilt the land (it wrote uSim${written.join(", uSim")})`,
+        );
         const picture = countryDraw(gl, program, built, knobs);
         pictures.set(name, fnv(picture));
         const values = { ...paramDefaults("country"), ...knobs };
@@ -326,7 +367,7 @@ export function verifyCountryTerrain(gl: WebGL2RenderingContext): Record<string,
         if (name === "felled")
           check(wooded === 0, `${name}: ${wooded} wooded points with woodland off`);
         else check(wooded > 0.02 * points, `${name}: only ${wooded} of ${points} points wooded`);
-        result[name] = { ms: Number(ms.toFixed(2)), points, agreed, wooded };
+        result[name] = { ms: Number(ms.toFixed(2)), written, points, agreed, wooded };
       }
       check(
         new Set(pictures.values()).size === pictures.size,
@@ -335,7 +376,8 @@ export function verifyCountryTerrain(gl: WebGL2RenderingContext): Record<string,
       // The river switched off: its bed dry, the rest as it was (nothing laid out again).
       built.step({});
       const flowing = countryDraw(gl, program, built, {});
-      built.step({ river: 0 });
+      const dryWritten = writtenDuring(gl, built.textures, () => built.step({ river: 0 }));
+      check(!dryWritten.includes(2), "the river switched off laid the parcels out again");
       const dry = countryDraw(gl, program, built, { river: 0 });
       let wet = 0;
       for (let k = 0; k < WIDTH * HEIGHT; k++) {

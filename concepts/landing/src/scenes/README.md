@@ -224,6 +224,14 @@ as well (the share on its `-amount`), their `commit` moved to a build that has t
 the lab's, each value as its knob reads it, and the whole query as the lab writes it
 (`canonicalSetup`), which is how the Presets view lights the preset just loaded.
 
+`src/url-keys.json` lists every URL key the lab has published: its own settings, and each scene's
+keys (its knobs, the `-amount` of each feature, its planets, and the outgrown keys its migrations
+map). The list only grows: add a new knob's keys to it, and never take one out.
+`src/url-keys.test.ts` fails while a key the lab reads is missing from it, and while a key in it
+reaches nothing: no knob of its scene, nor its planets, nor a step of the migration chain
+(`MIGRATIONS` in `src/state.ts`) that maps it onto one of them or drops it on purpose, so a renamed
+or removed key needs its migration.
+
 Shared knobs come from `src/scenes/atmosphere.ts`: `skyKnobs({ time })` gives `K_time`, `K_cycle`;
 `weatherKnobs({...})` gives `K_rain`, `K_snow`, `K_fog`, `K_wind`, `K_lightning`, `K_aurora`
 as requested. The rest are opt-in sky components (see "Composing components"), each given the value
@@ -721,9 +729,9 @@ byte for byte as the setting's own does, because the shader's runtime tests of t
 chimney smoke, the chalk M, the clouds' shadows tier, the water's ripples tier and the moon's phase;
 its rain and snow as the climate makes them of the knobs at the date, `climatePrecip` over the cold
 of `climateCold`, and the bales while the date lies in their stretch of the year, both at any date
-while the year passes; `countryFeaturesAll` and `countrySeason` check each gated setting), `meadow`
-(its wildflowers, and the world's gates, `worldFeatures` and `WORLD_ALL`: see "World layers"),
-`shore` and `dunes` (the world's gates alone), and `orbit` (`orbitFeatures` and `ORBIT_ALL`: the
+while the year passes; `countryFeaturesAll` checks each gated setting), `meadow` (its wildflowers,
+and the world's gates, `worldFeatures` and `WORLD_ALL`: see "World layers"), `shore` and `dunes`
+(the world's gates alone), and `orbit` (`orbitFeatures` and `ORBIT_ALL`: the
 figures in its stars, the planet's aurora and city lights, the M's lights, the moons and the ring
 system, all off at its defaults; its storms, shooting stars and captured meteors stay in, as a
 "now" shows them, and so do the cloud decks the storms flash in).
@@ -768,12 +776,16 @@ freed, never one on screen or in a passage). A scene whose source does not assem
 - Define each gate 0 or 1 every time and test it with `#if` (a library feature tested with
   `#ifdef` is left out instead).
 - Leave in anything a "now" button can show while its knob is off.
-- Check that the default picture is bit for bit what it was.
-- Give `featuresAll` every gate and tier `featuresFor` can select. `src/features.verify.ts` checks
-  that it covers each knob's turn and, through the renderer, that it draws every gated setting
-  byte for byte as the setting's own program (`featuresAll` for country, `worldFeaturesAll` for
-  the world's adopters), that no change waits for a build or builds a program after the first
-  (`featureToggles`), and how the programs take over (`sceneFeatures`).
+- Check that the default picture is bit for bit what it was (`scripts/ab.ts`).
+- Give `featuresAll` every gate and tier `featuresFor` can select. `src/shaders/index.test.ts`
+  checks that it covers each knob's turn. The GPU checks draw every gated setting (each knob turn
+  that changes the program, derived from the knobs by `src/knob-turns.ts`, and all of them at once)
+  with it, dithered and as source, and require it byte for byte as the setting's own program:
+  `countryFeaturesAll` (`src/scenes/country/features.verify.ts`, over the countryside's land
+  directly, with the settings no single turn reaches added by name) and `worldFeaturesAll`
+  (`src/features.verify.ts`, the world's adopters, through the renderer). Through the renderer,
+  `featureToggles` checks that no change waits for a build or builds a program after the first,
+  and `sceneFeatures` how the programs take over.
 - Checks that draw many settings with one program compile with every gate on (`country`'s
   `COUNTRY_ALL`).
 
@@ -1948,18 +1960,19 @@ frames, a little real time apart, until it is no longer `waiting` for a scene's 
 `src/features.verify.ts` covers knob-keyed features through the renderer, taking its context for a
 GPU's or a software rasteriser's whatever renders the check. No change waits on a build (no status,
 log, uniform location or use of a program before its completion or fence was seen).
-`sceneFeatures`, software: nothing is built ahead; a gated knob
-builds its own program in the background and switches to it once built, the old frame holding until
-then; several gated knobs at once build once; past four sets the least recently drawn program is
-freed. `featureToggles`, GPU, for every scene with `featuresFor` (country, meadow, shore, dunes,
-orbit): the plain page builds only its own program; after the first gated change, which builds the
-all-features program in the background, no change builds a program; with changes expected that
-program is built ahead at rest, draws one frame without changing it, and the first change switches
-to it at once. `featuresAll` (country) and `worldFeaturesAll` (every other scene with
-`featuresFor`: meadow, shore, dunes, orbit), GPU, two checks to keep each well under the deadline:
-the all-features program draws every gated setting, dithered and as source, byte for byte as the
-setting's own (drawn on a renderer taken for a software rasteriser's that enters at the same
-starting setting, settles and switches the same way, so the sims share their history).
+`sceneFeatures`, software: nothing is built ahead; a gated knob builds its own program in the
+background and switches to it once built, the old frame holding until then; several gated knobs at
+once build once; past four sets the least recently drawn program is freed. `featureToggles`, GPU,
+for every scene with `featuresFor` (country, meadow, shore, dunes, orbit): the plain page builds
+only its own program; after the first gated change, which builds the all-features program in the
+background, no change builds a program; with changes expected that program is built ahead at rest,
+draws one frame without changing it, and the first change switches to it at once.
+`worldFeaturesAll` (every scene with `featuresFor` but the countryside: meadow, shore, dunes,
+orbit), GPU: the all-features program draws every gated setting, dithered and as source, byte for
+byte as the setting's own (drawn on a renderer taken for a software rasteriser's that enters at the
+same starting setting, settles and switches the same way, so the sims share their history).
+`countryFeaturesAll` (`src/scenes/country/features.verify.ts`) checks the same of the countryside
+over its land directly, each distinct program compiled once.
 
 `src/lab/inspector.verify.ts` (`labInspector`) lays the lab's Controls view out under `lab.css` and
 draws no WebGL: folded groups and closed controls take no focus (`inert`), and a group folding with
@@ -1980,11 +1993,11 @@ The shared components have checks of their own:
   moons' rates keep Kepler's third law (rate² × distance³ one constant across them), and Orbit's
   captured meteor falls on a decaying orbit whose rate rises as distance^-1.5 all the way down, its
   speed with it.
-- The water's tiers (`island/water.verify.ts`, `waterTiers`): the spectra of the three open-water
-  scenes and the pond's cellular net are bit for bit what those scenes drew before they shared
-  them, detail too fine to draw is skipped without changing a value, the mirror, the flow and the
-  caustic light behave, and each tier's functions exist from that tier up while each adopter
-  compiles at the tier it selects and not one lower.
+- The water's tiers (`island/water.verify.ts`, `waterTiers`): detail too fine to draw is skipped
+  without changing a value (each wave train and the caustic net against its unskipped form), the
+  cellular net draws its seams where they span a cell and only its mean where they do not, the
+  mirror, the glitter, the flow and the caustic light behave, and each tier's functions exist from
+  that tier up while each adopter compiles at the tier it selects and not one lower.
 - The clouds' tiers (`clouds/tiers.verify.ts`, `cloudTiers`): each tier's functions exist from that
   tier up (the lit deck also without `CLOUD_TIER`), each adopter needs its tier, the deck's shadow
   over the eye is the cloud the sky shows over the sun, and Autumn's cloud shadows only darken,
@@ -1999,12 +2012,11 @@ The shared components have checks of their own:
   `skyStars`, both overloads, lights every figure star and the middle of every figure line (the
   lines as strong as their amount, the stars not fading with them); they still show at a coarse
   footprint; by day and with no stars nothing; and the knobs off, in a program with every gate on,
-  draw exactly what a program without them draws. `nightSkyDefaults1`, `2` and `3` (a third of
-  the scenes each): every scene with the knobs starts with them off and draws, at its defaults and
-  at midnight, byte for byte what it draws without them. `nightPlanets`: in aurora and island, two
-  planets of different kinds show where their placements put them (the left one further left),
-  together as each alone does; an orbiting planet drifts left with the motion clock and, half a
-  circuit on, has set, the sky byte for byte the empty list's.
+  draw exactly what a program without them draws (`src/shaders/index.test.ts` holds every scene's
+  knob to off at its defaults, its gate out of the default program). `nightPlanets`: in aurora and
+  island, two planets of different kinds show where their placements put them (the left one further
+  left), together as each alone does; an orbiting planet drifts left with the motion clock and,
+  half a circuit on, has set, the sky byte for byte the empty list's.
 
 CI runs these checks (gate group `landing-webgl`, four jobs `landing-webgl (1/4)` to `(4/4)`, one
 `--shard` each) and the lab's TypeScript and unit tests (`landing-concept`) for every pull request

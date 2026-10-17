@@ -431,7 +431,7 @@ replay at their pinned commits).
   settlement, road grade bounded and cut into the ground, way points on their roads, clear cores
   inside their parcels, determinism and both reuses, the village's growth, settlements and their
   candidates that never move one another, the roads' and tracks' switches moving no cottage, the
-  village keeping its streets, build budget); `src/sims/landuse.test.ts`
+  village keeping its streets, the build running a unit a frame); `src/sims/landuse.test.ts`
   (shares within bounds, a raised share converting only to its use and a lowered one only from it,
   woods on their best ground growing outward, none and woodland alone, determinism, minimal herd
   swaps, woods keeping their species, the canopy and lone trees as packed; at the scene's size, for
@@ -442,17 +442,20 @@ replay at their pinned commits).
   overflow, ties and map distances JavaScriptCore's rounds otherwise); `countryTerrain` (the
   all-features program over the real sim: land, sky and river, deterministic per landscape; at 9216
   map points the shader finds each parcel with the land model's use and the woods only on woodland,
-  for four settings; a use change one sim frame, timed; the river dry and full again);
+  for four settings; a use change one sim frame, timed, rewriting neither the ground nor the
+  parcels; the river dry and full again);
   `countryBehind` (every ray that passes between the crowns, over the whole view, ends where it
   first meets the land, within 5 cm along it or 0.2% of the distance, all but one in 200; the
   single flat step it replaced lands under a third of them);
   `countryLife` (every walker and cart on its road, every animal inside its own pasture and clear of
-  the fence, roads and water; deterministic and still at motion 0); `countryFeaturesAll`
-  (eighteen gated settings drawn byte for byte as their own programs, lit windows and smoke at
-  dusk among them); `countrySeason` (each season, the wind ripples and walkers and carts over lying
-  snow drawn byte for byte by the all-features program as by their own; walkers tread the lying
-  snow darker beyond the figures themselves, less while snow still falls; autumn turns broadleaf
-  woods orange and leaves pine woods and the harvest green); `country/verges.test.ts` (every clump
+  the fence, roads and water; deterministic and still at motion 0); `countryFeaturesAll` (the
+  all-features program draws every setting, as source and dithered, byte for byte as its own
+  program: each knob turn that changes the program and all of them at once, then dusk with and
+  without the lit windows and smoke, the murmuration's hour, each season, midwinter's snow and its
+  rain falling as snow, the passing year, the wind ripples, walkers and carts over lying snow, and
+  the roads, tracks and village off); `countrySeason` (walkers tread the lying snow darker beyond
+  the figures themselves, less while snow still falls; autumn turns broadleaf woods orange and
+  leaves pine woods and the harvest green); `country/verges.test.ts` (every clump
   at a hedge's foot, off roads, streams, water, yards, woods and pastures; a fuller verge keeping a
   sparser one's clumps; the farming year; sway and an exact rest); `countryVerges` (every clump's
   root, looked up by the shader in the atlas, at a hedge's foot on its ground; the scene draws

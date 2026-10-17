@@ -6,14 +6,14 @@
 // verify-browser.ts.
 //
 // sceneFeatures: the default countryside compiles in none of the parts whose knobs are off (flower
-// fields, herds, walkers and carts, birds, rain, snow, fog) and its all-features program every
-// one, which covers every knob's turn in every scene that has one. On a software rasteriser
-// nothing is built ahead; a gated knob builds the setting's own program in the background (the old
-// frame holding meanwhile, nothing waiting on the build) and switches to it; turning it back finds
-// the old program kept; several gated knobs at once build once; past four sets the least recently
-// drawn program is freed. The countryside's sim builds its land over a few frames first (its
-// terrain); every page here is run until it shows (`landed`), so a frame that changes is a program's
-// doing, not the build's.
+// fields, herds, walkers and carts, birds, rain, snow, fog) and its all-features program every one
+// (src/shaders/index.test.ts checks that each scene's covers every knob's turn). On a software
+// rasteriser nothing is built ahead; a gated knob builds the setting's own program in the
+// background (the old frame holding meanwhile, nothing waiting on the build) and switches to it;
+// turning it back finds the old program kept; several gated knobs at once build once; past four
+// sets the least recently drawn program is freed. The countryside's sim builds its land over a few
+// frames first (its terrain); every page here is run until it shows (`landed`), so a frame that
+// changes is a program's doing, not the build's.
 //
 // featureToggles, on a GPU, for every scene with `featuresFor` (KNOB_KEYED; their library gates,
 // the night sky's constellations and giant planet, among their gated turns; the scenes keyed by
@@ -25,14 +25,15 @@
 // program is built ahead once the scene is at rest and draws one frame without changing it, and the
 // first change switches to it at once.
 //
-// featuresAll (the countryside) and worldFeaturesAll (the shared world's adopters, the rest of
-// KNOB_KEYED), on a GPU: the all-features program draws every gated setting, dithered and as
-// source, byte for byte as that setting's own program does; two checks, so each stays well under
-// its deadline. The own program draws on a renderer taken for a software rasteriser's (which builds
-// a changed setting's own program): it enters at the same starting setting as the all-features
-// page, settles there and switches the same way, at the same frozen clocks, so the sims share their
-// history (the meadow's clocks close in the rain) and only the program differs.
-import type { ParamDef } from "./params.ts";
+// worldFeaturesAll (the shared world's adopters, the rest of KNOB_KEYED), on a GPU: the
+// all-features program draws every gated setting, dithered and as source, byte for byte as that
+// setting's own program does. The own program draws on a renderer taken for a software
+// rasteriser's (which builds a changed setting's own program): it enters at the same starting
+// setting as the all-features page, settles there and switches the same way, at the same frozen
+// clocks, so the sims share their history (the meadow's clocks close in the rain) and only the
+// program differs. The countryside's own check of that (`countryFeaturesAll`) draws over its land
+// directly, without the renderer (src/scenes/country/features.verify.ts).
+import { gatedTurns } from "./knob-turns.ts";
 import { DitherRenderer, type RenderSettings, type ViewId } from "./renderer.ts";
 import { sceneDefs, sceneIds, type SceneId } from "./scenes/index.ts";
 import { featureKey, sceneFeatures, sceneFeaturesAll, shaderValues } from "./shaders/index.ts";
@@ -60,38 +61,6 @@ function settings(scene: SceneId, knobs: Params, view: ViewId = "source"): Rende
     },
     { ...paramDefaults(scene), ...knobs },
   );
-}
-
-/** A knob turned from its default: a switch flipped, a range to its far end, the next choice. */
-function turned(def: ParamDef): Params {
-  switch (def.kind) {
-    case "toggle":
-      return { [def.key]: def.value > 0.5 ? 0 : 1 };
-    case "feature":
-      return { [def.key]: def.on ? 0 : 1 };
-    case "range":
-      return { [def.key]: def.value >= def.max ? def.min : def.max };
-    case "choice": {
-      const at = def.options.findIndex((option) => option.value === def.value);
-      return { [def.key]: def.options[(at + 1) % def.options.length]?.value ?? def.value };
-    }
-    case "seed":
-      return { [def.key]: def.value + 1 };
-    default: {
-      const unreachable: never = def;
-      throw new Error(`unknown knob ${String(unreachable)}`);
-    }
-  }
-}
-
-/** Each single knob turn of `scene` that changes its program's features, and all of them at once. */
-function gatedTurns(scene: SceneId): Params[] {
-  const def = sceneDefs[scene];
-  const plain = featureKey(sceneFeatures(def));
-  const turns = def.params
-    .map(turned)
-    .filter((knobs) => featureKey(sceneFeatures(def, shaderValues(def, knobs))) !== plain);
-  return [...turns, Object.assign({}, ...turns) as Params];
 }
 
 /**
@@ -429,20 +398,6 @@ export async function verifySceneFeatures(
     sceneFeatures(country, shaderValues(country, { pasture: 1 })).COUNTRY_HAS_HERDS === 1,
     "The pasture knob does not gate the herds in",
   );
-  // Every scene with knob-keyed features covers each knob's turn with its all-features set: the
-  // same defines, each at least as high (a gate on, a tier at or above).
-  for (const def of Object.values(sceneDefs)) {
-    const most = sceneFeaturesAll(def);
-    if (most === undefined) continue;
-    for (const knob of def.params) {
-      const set = sceneFeatures(def, shaderValues(def, turned(knob)));
-      for (const [name, value] of Object.entries(set))
-        check(
-          (most[name] ?? -Infinity) >= value,
-          `${def.id}: turning ${knob.key} needs ${name}=${value}, which featuresAll does not cover`,
-        );
-    }
-  }
 
   // A software rasteriser (SwiftShader's renderer string and its own build signals: fences).
   const clock = frameClock();
@@ -608,7 +563,7 @@ export async function verifyFeatureToggles(
   try {
     for (const scene of KNOB_KEYED) {
       const started = performance.now();
-      const turns = gatedTurns(scene);
+      const turns = gatedTurns(sceneDefs[scene]);
       const [first = {}] = turns;
 
       // The default page: entered with the program for its setting, it builds nothing more. It
@@ -711,30 +666,22 @@ export async function verifyFeatureToggles(
   }
 }
 
-/** featuresAll for the countryside. */
-export async function verifyFeaturesAll(
-  _gl: WebGL2RenderingContext,
-): Promise<Record<string, unknown>> {
-  return featuresAllOf(["country"]);
-}
-
-/** featuresAll for the shared world's adopters: every other scene with `featuresFor`. */
+/**
+ * worldFeaturesAll: for each scene with `featuresFor` but the countryside (whose own check draws
+ * over its land directly), the all-features program draws every gated setting as its own program
+ * does (see the header).
+ */
 export async function verifyWorldFeaturesAll(
   _gl: WebGL2RenderingContext,
 ): Promise<Record<string, unknown>> {
-  return featuresAllOf(KNOB_KEYED.filter((scene) => scene !== "country"));
-}
-
-/** featuresAll's and worldFeaturesAll's check of each of `scenes` (see the header). */
-async function featuresAllOf(scenes: readonly SceneId[]): Promise<Record<string, unknown>> {
   const clock = frameClock();
   const pool = contextPool();
   const result: Record<string, unknown> = {};
   try {
-    for (const scene of scenes) {
+    for (const scene of KNOB_KEYED.filter((id) => id !== "country")) {
       const started = performance.now();
       const def = sceneDefs[scene];
-      const turns = gatedTurns(scene);
+      const turns = gatedTurns(def);
       const [first = {}] = turns;
 
       // Every gated setting, in two views, drawn with the all-features program, after the page has

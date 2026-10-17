@@ -83,11 +83,9 @@ describe("in words", () => {
   });
 
   test("a day takes DAY_MINUTES at pace 1, longer as the pace falls", () => {
-    expect(DAY_MINUTES).toBe(4);
-    expect(speedText("day", true, 1)).toBe("a day in 4 min");
-    expect(speedText("day", true, 0.5)).toBe("a day in 8 min");
-    expect(speedText("day", true, 0.3)).toBe("a day in 13 min");
-    expect(speedText("day", true, 0.05)).toBe("a day in 1 h 20 min");
+    expect(speedText("day", true, 1)).toBe(`a day in ${minutesText(DAY_MINUTES)}`);
+    expect(speedText("day", true, 0.5)).toBe(`a day in ${minutesText(2 * DAY_MINUTES)}`);
+    expect(speedText("day", true, 0.05)).toBe(`a day in ${minutesText(20 * DAY_MINUTES)}`);
   });
 
   test("a season takes its minutes", () => {

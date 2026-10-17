@@ -16,7 +16,6 @@ import {
   partShows,
   partValue,
   phaseIndex,
-  phaseOf,
   starsOut,
   streaksOf,
   type NightPart,
@@ -163,14 +162,6 @@ describe("the moon's phases", () => {
     expect(phaseIndex(0.91)).toBe(2);
     expect(phaseIndex(0.92)).toBe(3);
     expect(phaseIndex(1)).toBe(3);
-  });
-
-  test("name the phase as the tiles do, and a sliver as a thin crescent", () => {
-    expect(phaseOf(0.1)).toBe("thin crescent");
-    expect(phaseOf(0.25)).toBe("crescent");
-    expect(phaseOf(0.5)).toBe("quarter moon");
-    expect(phaseOf(0.8)).toBe("gibbous");
-    expect(phaseOf(1)).toBe("full moon");
   });
 
   test("set the lit share within the knob's own range and step", () => {

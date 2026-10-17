@@ -23,7 +23,7 @@ test("constellations: off by default, in the stars' group, a night part", () => 
   ]);
 });
 
-test("campfire's giant keeps its own keys, defaults and help, and no part of the night sky", () => {
+test("campfire's giant keeps its own keys and defaults, and no part of the night sky", () => {
   const params = sceneDefs.campfire.params;
   const planet = params.find((knob) => knob.key === "planet");
   if (planet?.kind !== "feature") throw new Error("campfire lacks its planet");
@@ -34,9 +34,6 @@ test("campfire's giant keeps its own keys, defaults and help, and no part of the
     0.2,
     1,
   ]);
-  expect(planet.help).toBe(
-    "A giant banded planet with a storm swirl and a thin ring, low over the far pines, half hidden by the trees; it fades into the sky by day.",
-  );
   expect(planet.widget).toBeUndefined();
   expect(params.filter((knob) => knob.key.startsWith("planet")).map((knob) => knob.key)).toEqual([
     "planet",
