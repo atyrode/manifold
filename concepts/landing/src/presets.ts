@@ -356,7 +356,7 @@ export const presets: readonly Preset[] = [
   },
   {
     name: "Bees · overgrown meadow",
-    commit: "PENDING",
+    commit: "0877fa68",
     query:
       "scene=bees&grass=1&wildflowers=1&wildflowers-amount=1&flowers=1.6&grassHeight=0.3&grassDensity=0.45&overgrowth=0.15",
     savedAt: "2026-10-17",
