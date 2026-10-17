@@ -112,7 +112,7 @@ const SWATCHES = ["#4c6ef5", "#ff004e", "#ff7a2f", "#f2c94c", "#2bd9a8", "#e8e6d
  */
 const SETTINGS = {
   look: ["view", "dither", "color", "accent", "levels", "pixel", "dim", "blur"],
-  motion: ["motion", "mouse", "transitions", "overlap", "weave", "blend", "slowmo"],
+  motion: ["motion", "mouse", "agents", "transitions", "overlap", "weave", "blend", "slowmo"],
   page: ["mode", "instance"],
 } as const satisfies Record<string, readonly (keyof LabState)[]>;
 const SETTING_KEYS = [...SETTINGS.look, ...SETTINGS.motion, ...SETTINGS.page];
@@ -1335,8 +1335,9 @@ export class Inspector {
   }
 
   /**
-   * Motion: how much things move, whether the scene follows the pointer, and how scenes come and
-   * go; its only home (pausing the clock is the tools' play button, `p`).
+   * Motion: how much things move, whether the scene follows the pointer, who moves in it beside
+   * you, and how scenes come and go; its only home (pausing the clock is the tools' play button,
+   * `p`).
    */
   #motionGroup(): Section {
     const change = (patch: Record<string, string | number>, commit = true) =>
@@ -1355,6 +1356,17 @@ export class Inspector {
       "Follow mouse",
       () => this.#state().mouse === "follow",
       (on) => change({ mouse: on ? "follow" : "still" }),
+    );
+    const agents = segments(
+      "Agents",
+      [
+        { label: "none", value: "0" },
+        { label: "one", value: "1" },
+        { label: "two", value: "2" },
+        { label: "three", value: "3" },
+      ],
+      () => String(this.#state().agents),
+      (value) => change({ agents: Number(value) }),
     );
     const transitions = switchControl(
       "Scene transitions",
@@ -1421,6 +1433,14 @@ export class Inspector {
         reset: () => change({ mouse: this.#base().mouse }),
       }),
       row({
+        label: "Agents",
+        help: "Others in the scene beside you: agents who wander, go to what can be done here, pause, act and move on, each drawn as a small ring of the scene's accent trailing where it came from. The scene answers their hands as it answers yours.",
+        icon: "pointer",
+        block: agents.el,
+        modified: () => this.#state().agents !== this.#base().agents,
+        reset: () => change({ agents: this.#base().agents }),
+      }),
+      row({
         label: "Transitions",
         help: "Scenes come in and leave gracefully: many play their own entrance and exit (a camera settling, a fire catching, lanterns arriving), and the next scene takes over part-way through the leaving one's exit, dot by dot, while both still move. Off: a straight cut. Skipped at motion 0 and under reduced motion; now plays this scene's exit, then its entrance, anyway.",
         icon: "transition",
@@ -1464,13 +1484,14 @@ export class Inspector {
       }),
     ];
     // Overlap, blend length, pattern and speed tune transitions: gates on the Transitions setting.
-    const tuning = new Set(rows.slice(3));
+    const tuning = new Set(rows.slice(4));
     const passing = () => this.#state().transitions === "on";
     const keys = SETTINGS.motion;
     tagSettings(rows, keys);
     this.#syncers.push(
       motion.sync,
       follow.sync,
+      agents.sync,
       transitions.sync,
       overlap.sync,
       weave.sync,
@@ -1481,7 +1502,8 @@ export class Inspector {
     return this.#section({
       id: "motion",
       title: "Motion",
-      blurb: "How much things move, whether the scene follows you, and how scenes come and go.",
+      blurb:
+        "How much things move, whether the scene follows you, who is here with you, and how scenes come and go.",
       icon: "motion",
       shelf: "global",
       open: false,
@@ -1493,6 +1515,7 @@ export class Inspector {
         return [
           this.#ctx.renderer()?.paused ? "paused" : amount(state.motion),
           state.mouse === "follow" ? "follows mouse" : "fixed camera",
+          state.agents > 0 ? `${state.agents} ${state.agents === 1 ? "agent" : "agents"}` : "",
           state.transitions === "on" ? "" : "cuts",
         ].filter(Boolean);
       },

@@ -81,7 +81,7 @@ import {
 import { mulberry32 } from "../../sims/random.ts";
 import { springStep, type Spring } from "../../sims/spring.ts";
 import { DataTexture } from "../../sims/texture.ts";
-import type { PointerState, SceneSim, SimFactory, SimFrame } from "../types.ts";
+import type { PrincipalState, SceneSim, SimFactory, SimFrame } from "../types.ts";
 
 /** Lattice pitch in screen heights: one firefly per square cell (5–6 dither cells at 540 rows). */
 export const FIREFLIES_CELL = 0.01;
@@ -959,7 +959,8 @@ class FirefliesSim implements SceneSim {
   #lanternShown = 0;
   #flare = 0;
   #clicks = 0;
-  #scatterAt: { x: number; y: number } | undefined;
+  /** This frame's clicks, each scattering the phases about where it fell, numbered by `#clicks`. */
+  readonly #scatters: { x: number; y: number; click: number }[] = [];
 
   // The breeze.
   #breeze = false;
@@ -1044,6 +1045,7 @@ class FirefliesSim implements SceneSim {
     if (this.#warmed >= PREWARM_STEPS) {
       this.#schedule(knobs);
       this.#steerLantern(frame.pointer, knobs, dt);
+      this.#othersClick(frame.principals, knobs);
 
       // Motion runs the swarm; a breeze or an M under way still plays while motion is 0.
       const busy = this.#breeze || this.#mark || this.#arrive < 1 || this.#leave > 0;
@@ -1052,8 +1054,8 @@ class FirefliesSim implements SceneSim {
         this.#keepDrawn();
         this.#step(STEP, knobs);
       }
-      if (this.#scatterAt) this.#scatterPhases(this.#scatterAt.x, this.#scatterAt.y);
-      this.#scatterAt = undefined;
+      for (const at of this.#scatters) this.#scatterPhases(at.x, at.y, at.click);
+      this.#scatters.length = 0;
       // The trees swing while a breeze crosses and for a while after (at the breeze's pace while
       // motion is 0); then they stand exactly as laid out.
       if (this.#breeze) this.#swaying = SWAY_SETTLE;
@@ -1762,7 +1764,7 @@ class FirefliesSim implements SceneSim {
 
   // ---- the lantern -----------------------------------------------------------------------------
 
-  #steerLantern(pointer: PointerState, knobs: Knobs, dt: number): void {
+  #steerLantern(pointer: PrincipalState, knobs: Knobs, dt: number): void {
     const on = knobs.lantern && pointer.inside;
     const x = (pointer.x - 0.5) * this.#aspect;
     const y = pointer.y;
@@ -1788,18 +1790,33 @@ class FirefliesSim implements SceneSim {
     if (on && pointer.pressed) {
       this.#flare = 1;
       this.#clicks++;
-      this.#scatterAt = { x, y };
+      this.#scatters.push({ x, y, click: this.#clicks });
       this.#dirty = true;
     }
   }
 
-  /** A click: the lantern flares and every phase within reach jumps by its own random amount. */
-  #scatterPhases(x: number, y: number): void {
+  /**
+   * The principals after the visitor carry no lantern, but a click of theirs scatters the rhythm
+   * about it as the visitor's does, while lanterns are on.
+   */
+  #othersClick(principals: readonly PrincipalState[], knobs: Knobs): void {
+    if (!knobs.lantern) return;
+    for (let i = 1; i < principals.length; i++) {
+      const hand = principals[i];
+      if (hand === undefined || !hand.inside || !hand.pressed) continue;
+      this.#clicks++;
+      this.#scatters.push({ x: (hand.x - 0.5) * this.#aspect, y: hand.y, click: this.#clicks });
+      this.#dirty = true;
+    }
+  }
+
+  /** Click number `click`: every phase within reach of (x, y) jumps by its own random amount. */
+  #scatterPhases(x: number, y: number, click: number): void {
     const ly = y < FIREFLIES_WATER ? 2 * FIREFLIES_WATER - y : y;
     const cols = this.#cols;
     const x0 = -0.5 * cols * FIREFLIES_CELL;
     const half = cols / 2;
-    const salt = this.#seed * 16 + 17 + this.#clicks * 977;
+    const salt = this.#seed * 16 + 17 + click * 977;
     const c0 = Math.max(0, Math.floor((x - CLICK_REACH - x0) / FIREFLIES_CELL));
     const c1 = Math.min(cols - 1, Math.ceil((x + CLICK_REACH - x0) / FIREFLIES_CELL));
     const r0 = Math.max(0, Math.floor((ly - CLICK_REACH - FIREFLIES_WATER) / FIREFLIES_CELL));

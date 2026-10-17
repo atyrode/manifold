@@ -737,15 +737,15 @@ function markHit(
 const sandHit: RayHit = { t: 0, x: 0, y: 0, z: 0 };
 
 /**
- * The grid point under the pointer, written to `out`; false where there is no sand to pour on.
- * Overhead: a straight map centred on the M. Aerial: the pointer's ray as the shader casts it
- * (viewRay's lens-shifted pinhole, turned by the pointer's parallax and on into grid space), marched
- * with DUNES_MARCH against `ground`, the surface as last uploaded, so the point is the one the
- * picture shows under the pointer: the face of the dune in front, not the mean level behind it.
- * Where the M stands in front of the sand, the point on its face (sand poured there runs down to its
- * foot). Sky, and the far field the march gives up on, give false. `sand` is the supply knob (it
- * sets the eye's height) and `mark` the M's size knob, 0 while off. The shader's heat shimmer, a
- * few rows' waver along the horizon under a high sun, is left out.
+ * The grid point under `hand` (a principal: by default the visitor), written to `out`; false where
+ * there is no sand to pour on. Overhead: a straight map centred on the M. Aerial: the hand's ray as
+ * the shader casts it (viewRay's lens-shifted pinhole, turned by the pointer's parallax and on into
+ * grid space), marched with DUNES_MARCH against `ground`, the surface as last uploaded, so the point
+ * is the one the picture shows under the hand: the face of the dune in front, not the mean level
+ * behind it. Where the M stands in front of the sand, the point on its face (sand poured there runs
+ * down to its foot). Sky, and the far field the march gives up on, give false. `sand` is the supply
+ * knob (it sets the eye's height) and `mark` the M's size knob, 0 while off. The shader's heat
+ * shimmer, a few rows' waver along the horizon under a high sun, is left out.
  */
 export function dunesPointerCell(
   frame: SimFrame,
@@ -754,8 +754,9 @@ export function dunesPointerCell(
   mark: number,
   ground: (x: number, z: number) => number,
   out: { x: number; y: number },
+  hand: Readonly<{ x: number; y: number }> = frame.pointer,
 ): boolean {
-  const { x, y } = frame.pointer;
+  const { x, y } = hand;
   if (view >= 0.5) {
     out.x = DUNES_MARK.x + (x - 0.5) * frame.aspect * DUNES_MAP.span;
     out.y = DUNES_MARK.z + (y - 0.5) * DUNES_MAP.span;
@@ -878,14 +879,24 @@ export function dunesSim(params: readonly ParamDef[]): SimFactory {
           if (picks > 0) field.step(picks);
         }
 
-        const pointer = frame.pointer;
-        // While the camera glides in or the view settles the pointer's ray is not the rest camera's, so no pouring.
+        // Sand pours under every hand held down: a heap where it lands, then a trickle while held.
+        // While the camera glides in or the view settles a hand's ray is not the rest camera's, so
+        // no pouring.
         const resting = frame.passage.enter >= 1 && frame.passage.exit <= 0;
-        if (resting && pointer.inside && (pointer.pressed || pointer.down)) {
-          const slabs = pointer.pressed ? HEAP_SLABS : Math.round(POUR_PER_SECOND * frame.dt);
+        for (const hand of frame.principals) {
+          if (!resting || !hand.inside || !(hand.pressed || hand.down)) continue;
+          const slabs = hand.pressed ? HEAP_SLABS : Math.round(POUR_PER_SECOND * frame.dt);
           if (
             slabs > 0 &&
-            dunesPointerCell(frame, knobs.value(frame, "camera"), sand, markSize, ground, cell)
+            dunesPointerCell(
+              frame,
+              knobs.value(frame, "camera"),
+              sand,
+              markSize,
+              ground,
+              cell,
+              hand,
+            )
           ) {
             field.pour(cell.x, cell.y, slabs);
             edited = true;

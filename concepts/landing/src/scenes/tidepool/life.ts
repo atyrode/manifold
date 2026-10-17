@@ -28,7 +28,7 @@ import {
   type PlantBuilder,
   type PlantSpecies,
 } from "../../sims/plants.ts";
-import type { PointerState } from "../types.ts";
+import type { PrincipalState } from "../types.ts";
 import type { TidepoolLayout } from "./layout.ts";
 
 export const TIDEPOOL_LIFE_WIDTH = 64;
@@ -279,7 +279,7 @@ export class TidepoolLife {
     dt: number,
     time: number,
     knobs: { response: number; fish: number; season: number; growth: number },
-    pointer: PointerState,
+    pointer: PrincipalState,
   ): void {
     const records = this.#records;
     const layout = this.#layout;
@@ -335,7 +335,7 @@ export class TidepoolLife {
   readonly #probe = new Float32Array(3);
 
   /** The fish: idling over the basin's floor, keeping to its water, darting from a touch or a hard surge. */
-  #swim(dt: number, time: number, count: number, pointer: PointerState): void {
+  #swim(dt: number, time: number, count: number, pointer: PrincipalState): void {
     const clock = this.#fishClock;
     const steps = clock.advance(dt);
     const layout = this.#layout;

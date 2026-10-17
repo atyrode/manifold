@@ -76,7 +76,7 @@ function draw(gl: WebGL2RenderingContext, linked: WebGLProgram, frame: Draw): Fl
         uMotion: [0.6],
         uMotionTime: [24],
         uPassage: [1, 0],
-        uMouse: [-1, -1, 0, -1e4],
+        uPrincipals: [-1, -1, 0, -1e4],
         uBg: [0.03, 0.03, 0.05],
         ...frame.uniforms,
       };

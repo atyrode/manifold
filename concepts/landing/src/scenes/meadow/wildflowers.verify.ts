@@ -2,6 +2,7 @@
 // the actual scene shader and simulation: switched off they add nothing, compiled in or not and
 // whatever texture is bound; switched on, they stand out of the grass; the gusts bow them, and once
 // the air is still they stand exactly as clumps grown in it.
+import { visitorAlone } from "../../principals.ts";
 import {
   fragmentSourceFor,
   packParams,
@@ -102,7 +103,7 @@ export function verifyMeadowWildflowers(gl: WebGL2RenderingContext): Record<stri
     triggers: Array.from({ length: 8 }, () => -1e4),
     fired: Array.from({ length: 8 }, () => false),
     passage: { enter: 1, exit: 0 },
-    pointer: { x: 0.5, y: 0.5, inside: false, down: false, pressed: false, released: false },
+    ...visitorAlone(),
   });
   const run = (sim: SceneSim, knobs: Params, from: number, seconds: number) => {
     let flowers: WebGLTexture | undefined;

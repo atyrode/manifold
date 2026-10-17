@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { effective } from "../../params.ts";
+import { visitorAlone } from "../../principals.ts";
 import type { SimFrame } from "../types.ts";
 import { pondScene } from "./index.ts";
 import { koiLoop, koiLoops, PondKoi } from "./koi.ts";
@@ -38,7 +39,7 @@ function pond(knobs: Record<string, number>, motion = 1) {
       params: raw,
       triggers: [],
       fired: [],
-      pointer: { ...pointer, down: false, pressed: false, released: false },
+      ...visitorAlone(pointer),
       passage: { enter: 1, exit: 0 },
     };
     return koi.frame(simFrame);

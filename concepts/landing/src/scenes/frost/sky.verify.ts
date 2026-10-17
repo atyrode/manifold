@@ -150,7 +150,7 @@ function draw(
     uMotionTime: [24],
     uPassage: [1, 0],
     uTriggers: Array.from({ length: 8 }, () => -1e4),
-    uMouse: [-1, -1, 0, -1e4],
+    uPrincipals: [-1, -1, 0, -1e4],
     uBg: [0.03, 0.03, 0.05],
   };
   for (const [name, value] of Object.entries({ ...base, ...uniforms })) set(name, value);

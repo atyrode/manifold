@@ -81,7 +81,7 @@ import {
 import { clamp, easeFactor } from "../../sims/math.ts";
 import { mulberry32 } from "../../sims/random.ts";
 import { DataTexture } from "../../sims/texture.ts";
-import type { PointerState, SceneSim, SimFactory, SimFrame } from "../types.ts";
+import type { PrincipalState, SceneSim, SimFactory, SimFrame } from "../types.ts";
 import { Film, picture, seedAgents, stampDistance, stampSketch } from "./draw.ts";
 import {
   cityMap,
@@ -120,13 +120,13 @@ import {
 } from "./passes.ts";
 
 /**
- * The `agents` knob's choices, by index (the knob's value; URL `agents=0..2`). State textures are
+ * The `specks` knob's choices, by index (the knob's value; URL `specks=0..2`). State textures are
  * 256 wide. In the dish on a 16:9 frame (~270k texels) they occupy ~7.5%, ~15% and ~23% of it:
  * Jones's model knits a reticulated network at a few to ~15% occupancy and condenses into a few
  * thick bands and loops well above it.
  */
 export const physarumAgentCounts = [20_480, REFERENCE_AGENTS, 61_440] as const;
-/** The `agents` knob's default index. */
+/** The `specks` knob's default index. */
 export const PHYSARUM_AGENTS_DEFAULT = 1;
 
 // ---- the mould --------------------------------------------------------------------------------
@@ -234,7 +234,7 @@ const STEP_WRAP = 1 << 24;
 // ---- knobs ------------------------------------------------------------------------------------
 
 const PHYSARUM_KNOBS = [
-  "agents",
+  "specks",
   "angle",
   "reach",
   "decay",
@@ -276,7 +276,7 @@ const markHeight = (amount: number): number =>
   MARK_MIN + (MARK_MAX - MARK_MIN) * clamp(amount, 0, 1);
 
 function readSettings(knobs: KnobReader<PhysarumKnob>, frame: SimFrame): Settings {
-  const agents = physarumAgentCounts[Math.round(knobs.value(frame, "agents"))] ?? REFERENCE_AGENTS;
+  const agents = physarumAgentCounts[Math.round(knobs.value(frame, "specks"))] ?? REFERENCE_AGENTS;
   const feeding = knobs.value(frame, "feeding");
   const mark = knobs.value(frame, "mark");
   const decay = clamp(knobs.value(frame, "decay"), 0, 1);
@@ -872,7 +872,7 @@ class PhysarumSim implements SceneSim {
   }
 
   /** Click: an oat flake where it landed. Drag: a line of salt along it. */
-  #touch(pointer: PointerState, aspect: number, salt: boolean): void {
+  #touch(pointer: PrincipalState, aspect: number, salt: boolean): void {
     this.#paint = false;
     if (pointer.pressed && pointer.inside) {
       this.#press = { x: pointer.x, y: pointer.y, dragging: false };

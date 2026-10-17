@@ -1,3 +1,4 @@
+import { visitorAlone } from "./src/principals.ts";
 import { DitherRenderer } from "./src/renderer.ts";
 import { defaultsFor, paramDefaults, renderSettings } from "./src/state.ts";
 import { sceneDefs } from "./src/scenes/index.ts";
@@ -194,7 +195,7 @@ function frostWarmth(gl: WebGL2RenderingContext): Record<string, boolean> {
     triggers: [],
     fired: [],
     passage: { enter: 1, exit: 0 },
-    pointer: { x: 0.5, y: 0.5, inside: true, down: false, pressed: false, released: false },
+    ...visitorAlone({ inside: true }),
     parallax: { x: 0, y: 0 },
   };
   function mask(): Uint8Array {

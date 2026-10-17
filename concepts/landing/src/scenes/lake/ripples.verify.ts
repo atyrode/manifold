@@ -57,7 +57,7 @@ export function verifyLakeRipples(gl: WebGL2RenderingContext): Record<string, un
   gl.uniform1f(at("uLevels"), 4);
   gl.uniform1f(at("uMotion"), 1);
   gl.uniform2f(at("uPassage"), 1, 0);
-  gl.uniform4f(at("uMouse"), 0.5, 0.5, 0, -1e4);
+  gl.uniform4f(at("uPrincipals"), 0.5, 0.5, 0, -1e4);
   gl.uniform1fv(at("uTriggers"), new Float32Array(8).fill(-1e4));
   gl.uniform3f(at("uBg"), 0.02, 0.03, 0.05);
   gl.uniform3f(at("uInk"), 0.9, 0.9, 0.9);

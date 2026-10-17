@@ -44,7 +44,7 @@ import { clamp, easeFactor, smoothstep } from "../../sims/math.ts";
 import { springStep, type Spring } from "../../sims/spring.ts";
 import { splitHalf } from "../../sims/half.ts";
 import { DataTexture } from "../../sims/texture.ts";
-import type { PointerState, SceneSim, SimFactory, SimFrame } from "../types.ts";
+import type { PrincipalState, SceneSim, SimFactory, SimFrame } from "../types.ts";
 
 export class PrismError extends Error {}
 
@@ -672,7 +672,7 @@ class PrismSim implements SceneSim {
     return 0;
   }
 
-  #advance(dt: number, motion: number, pointer: PointerState): void {
+  #advance(dt: number, motion: number, pointer: PrincipalState): void {
     const calm = dt * motion;
     this.#clock += calm;
     const speed = this.#speed;
@@ -734,7 +734,7 @@ class PrismSim implements SceneSim {
    * Dragging turns the prism about its centre. Let go, a rocking prism springs back to its rock
    * (critically damped); a spinning one keeps the turn and coasts to a stop.
    */
-  #turnByHand(dt: number, pointer: PointerState): void {
+  #turnByHand(dt: number, pointer: PrincipalState): void {
     const x = (pointer.x - 0.5) * this.#aspect - this.#centreX;
     const y = pointer.y - 0.5 - this.#centreY;
     const held = pointer.down && pointer.inside;

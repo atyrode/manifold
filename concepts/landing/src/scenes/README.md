@@ -46,8 +46,9 @@ paper page (`pagePaper()`, see "Page theme"), so it can never disagree with the 
 
 Available in GLSL (from `common`): `uRes`, `uTime`, `uMotion` (the lab's motion 0..1),
 `uMotionTime` (the motion clock, below), `uFallTime` (the fall clock, below), `uPointer` (smoothed
--1..1 parallax, 0 when the pointer is not followed), `uMouse` (raw pointer: xy in uv, z = button
-held, w = scene time of the last press), `uBg` (the page background), `uParams` (the knobs, four a
+-1..1 parallax, 0 when the pointer is not followed), `uPrincipals[MAX_PRINCIPALS]` (everyone
+present, the visitor first, then the cast's agents: xy in uv, z = button held, w = scene time of
+the last press), `uPrincipalCount`, `principalMotion(i)` (velocity, uv/s), `uBg` (the page background), `uParams` (the knobs, four a
 row: read them as `K_<key>`), `uTriggers[]`,
 `sinceTrigger(slot)`, `uMotionTriggers[]`, `sinceTriggerM(slot)` (below), `uSim0..uSim3` +
 `uSimOn` (textures from the scene's sim), `uWeather` (x: how wet the world is, y: how much snow
@@ -126,8 +127,8 @@ Under reduced motion (the system's setting, followed as it changes) the scene ho
 interactions still end. The scene clock and the motion clock stand still, sims get `dt` 0, weather
 sits where it leads, the parallax rests (`uPointer` eases back to 0) and there are no passages.
 A press over the page or a "now" trigger is stamped on a clock that keeps real time, and reaches
-the shader (`uMouse.w`, `uTriggers`) and sims (`frame.triggers`) moved back by as much, so
-`t - uMouse.w`, `sinceTrigger(slot)` and `frame.time - frame.triggers[slot]` count real seconds
+the shader (`uPrincipals[0].w`, `uTriggers`) and sims (`frame.triggers`) moved back by as much, so
+`t - uPrincipals[0].w`, `sinceTrigger(slot)` and `frame.time - frame.triggers[slot]` count real seconds
 since it happened. Key a press's or a trigger's response to that age and bound it, so it plays
 once and settles (Dunes' pouring streak fades 0.6 s after the press, and is held only while the
 button is down); anything driven by `t` or `uMotionTime` stays put. Sims see the press and release
@@ -1881,7 +1882,9 @@ camera, so dunes' overhead view has neither); a scene that needs them keeps its 
 
 When a scene needs state (particles, a height field, ink, a growing crystal, the pointer's wake),
 give it a `sim: (gl) => SceneSim`. Each frame the renderer calls `frame(SimFrame)` (dt, time,
-motionTime, motion, now, budget, size, knob values, raw params, triggers, fired, pointer, parallax,
+motionTime, motion, now, budget, size, knob values, raw params, triggers, fired, pointer (the
+visitor), principals (everyone present: the visitor, then the cast's agents; see "Principals"),
+parallax,
 passage) and binds the returned textures as `uSim0..uSim3` (`uSimOn` says which are set).
 `parallax` is the shader's `uPointer`: a sim casting the pointer through a camera the shader turns
 with it turns it too. Simulation catch-up is capped at 0.1 s per frame; the FPS footer measures
@@ -2159,8 +2162,8 @@ seeds each site's draws by where it stands, counted in from its own side of the 
 keeps its pattern.
 
 Knob keys share the URL with the lab's own settings, so a knob may not be called `accent`,
-`scene`, `mode`, `dither`, `color`, `pixel`, `levels`, `motion`, `instance`, `mouse`, `view`,
-`dim`, `blur`, `transitions`, `overlap`, `weave`, `blend` or `slowmo`, nor take the keys of the lab's session tools, `compare`, `tour`
+`scene`, `mode`, `dither`, `color`, `pixel`, `levels`, `motion`, `instance`, `mouse`, `agents`,
+`view`, `dim`, `blur`, `transitions`, `overlap`, `weave`, `blend` or `slowmo`, nor take the keys of the lab's session tools, `compare`, `tour`
 and `dwell` (`state.ts` refuses to load such a scene).
 
 ## Composers
@@ -2562,11 +2565,19 @@ chance drawn on steps. GPU solvers keep their own passes and hand their output t
 
 ### Principals and chores
 
-Principals (I-20) are a composer service. The composed sim gives each principal its screen point,
-its point in the site through the rig (the ground outdoors, the ledge or floor indoors, the patch
-from above), and the claim and layer under it. GLSL gets `uPrincipalGround[8]` beside
-`uPrincipals[8]`. The composer draws every cursor last; humans and agents differ by motion alone
-(I-40). The visitor is principal 0.
+Principals (I-20) are a renderer concept today (`src/principals.ts`): the visitor is principal 0,
+then up to `MAX_AGENTS` (3) agents of a scripted cast, set by the lab's `agents` setting (Motion
+group, default 0). The cast wanders, goes to the points a scene's sim declares
+(`SceneSim.interest`), pauses, presses briefly and moves on, deterministic from the scene's seed
+knob and its motion clock; it is a `PresenceSource`, so live presence (I-23) replaces only the
+source. Sims get `SimFrame.principals` and react to all of them where many hands are natural (a
+wave source, a breath, a lure), keeping `pointer` for what follows one hand. GLSL gets
+`uPrincipals[4]` (4 vectors), `uPrincipalCount` (1) and, for the cursors, `uPrincipalMotion[2]`
+(2): 7 of the 8 allotted. The agents' cursors (a soft ring of the accent with a short wisp) are
+drawn by `main` over every scene behind the gate `PRINCIPAL_CURSORS` (only while there are
+agents; on in every all-features set); humans and agents differ by motion alone (I-40). In the
+composers the composed sim will add each principal's point in the site through the rig and the
+claim and layer under it (`uPrincipalGround[4]`), and the composer draws every cursor last.
 
 A **chore** is a layer that `requires` its host and acts through affordances the host's sim
 exposes:

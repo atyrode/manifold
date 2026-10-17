@@ -3,10 +3,11 @@
 //
 // Every scene compiles to its own fragment shader (see scenes/types.ts): the common preamble, the
 // scene's compile-time features (fixed, and keyed by its setting: one program per distinct set, the
-// library gates of its night parts and of its planets among them), one `#define K_<key>` per knob
-// (its component of the packed `uParams`), one `#define PHASE_<key>` per rate knob, SKY_YEAR (and a
-// dated sky's SKY_DATE_ANCHOR), the shared libraries, the scene's GLSL, then `main`, which calls the
-// scene's entry and dithers the Shade it returns into the palette (`assembleFragment`). The driver
+// library gates of its night parts and of its planets among them, and the gate of the other
+// principals' cursors), one `#define K_<key>` per knob (its component of the packed `uParams`), one
+// `#define PHASE_<key>` per rate knob, SKY_YEAR (and a dated sky's SKY_DATE_ANCHOR), the shared
+// libraries, the scene's GLSL, then `main`, which calls the scene's entry, dithers the Shade it
+// returns into the palette and draws the cursors over it (`assembleFragment`). The driver
 // gets that program shaken (shaders/shake.ts): its conditionals resolved with its features, its
 // comments gone and only what `main` reaches, line for line (`fragmentSourceFor`).
 
@@ -114,6 +115,12 @@ export const LIBRARY_GATES: Readonly<Partial<Record<NightPartName, string>>> = {
   constellations: "SKY_FIGURES",
 };
 export const PLANETS_GATE = "SKY_PLANETS";
+/**
+ * The renderer's gate for the other principals' cursors (shaders/main.ts), drawn over every scene
+ * while the cast has agents (RenderSettings.agents): in a scene's feature set only then, tested
+ * with `#ifdef`, and in every all-features set, whose program draws none while there are none.
+ */
+export const CURSORS_GATE = "PRINCIPAL_CURSORS";
 
 /** The library gates `scene`'s knobs hold (LIBRARY_GATES): each knob's key and its gate. */
 function libraryGates(scene: SceneDef): (readonly [key: string, gate: string])[] {
@@ -136,16 +143,28 @@ export function settingKeyed(scene: SceneDef): boolean {
 
 /**
  * The compile-time features of `scene`'s program for knob values as its shader reads them (keyed by
- * knob key; default: the scene's defaults) and how many planets it holds: `features`, its library
- * gates and `featuresFor(values)` over them.
+ * knob key; default: the scene's defaults), how many planets it holds and whether other principals'
+ * cursors are drawn over it (`cursors`): `features`, its library gates and `featuresFor(values)`
+ * over them, and CURSORS_GATE while `cursors`.
  */
 export function sceneFeatures(
   scene: SceneDef,
   values?: Readonly<Record<string, number>>,
   planets = 0,
+  cursors = false,
 ): Readonly<Record<string, number>> {
-  if (!settingKeyed(scene)) return scene.features ?? {};
-  const knobs = values ?? shaderValues(scene);
+  const own = settingKeyed(scene)
+    ? keyedFeatures(scene, values ?? shaderValues(scene), planets)
+    : (scene.features ?? {});
+  return cursors ? { ...own, [CURSORS_GATE]: 1 } : own;
+}
+
+/** A setting-keyed scene's features for these knob values and planets (see `sceneFeatures`). */
+function keyedFeatures(
+  scene: SceneDef,
+  knobs: Readonly<Record<string, number>>,
+  planets: number,
+): Readonly<Record<string, number>> {
   return {
     ...scene.features,
     ...Object.fromEntries(
@@ -157,10 +176,11 @@ export function sceneFeatures(
 }
 
 /**
- * The compile-time features of `scene`'s all-features program: `features`, every library gate on
- * and `featuresAll` over them, a program that draws every setting of its knobs and planets as that
- * setting's own (`sceneFeatures`) program does. Undefined for a scene whose program does not depend
- * on its setting (`settingKeyed`); throws for one with `featuresFor` but no `featuresAll`.
+ * The compile-time features of `scene`'s all-features program: `features`, every library gate and
+ * CURSORS_GATE on and `featuresAll` over them, a program that draws every setting of its knobs and
+ * planets, with or without cursors, as that setting's own (`sceneFeatures`) program does.
+ * Undefined for a scene whose program does not depend on its setting (`settingKeyed`); throws for
+ * one with `featuresFor` but no `featuresAll`.
  */
 export function sceneFeaturesAll(scene: SceneDef): Readonly<Record<string, number>> | undefined {
   if (!settingKeyed(scene)) return undefined;
@@ -171,6 +191,7 @@ export function sceneFeaturesAll(scene: SceneDef): Readonly<Record<string, numbe
     ...Object.fromEntries(libraryGates(scene).map(([, gate]) => [gate, 1])),
     ...(scene.planets === undefined ? {} : { [PLANETS_GATE]: 1 }),
     ...scene.featuresAll,
+    [CURSORS_GATE]: 1,
   };
 }
 

@@ -23,18 +23,36 @@ export interface SceneLook {
   levels?: number;
 }
 
-/** The pointer, in scene uv (0..1, y up). */
-export interface PointerState {
+/** Who a principal is: the visitor or another person, or an agent. */
+export type PrincipalKind = "human" | "agent";
+
+/**
+ * Someone present in the scene (AXIOMS A2: humans and agents are principals alike), as a pointer
+ * in scene uv (0..1, y up): the visitor, or an agent of the cast (src/principals.ts). What a hand
+ * does is the same whoever's it is; `kind` says whose, for what is drawn of them, never for what
+ * the scene does with them.
+ */
+export interface PrincipalState {
   x: number;
   y: number;
-  /** Over the page (not over the lab or a page control). */
+  /** Over the page (not over the lab or a page control); an agent always is. */
   inside: boolean;
-  /** Primary button held. */
+  /** Primary button held (an agent's: while it acts). */
   down: boolean;
   /** Went down since the previous frame. */
   pressed: boolean;
   /** Went up since the previous frame. */
   released: boolean;
+  /** Uv per second: how far it moved since the previous frame, over the time between the two. */
+  vx: number;
+  vy: number;
+  kind: PrincipalKind;
+}
+
+/** A place in the scene, in uv (0..1, y up). */
+export interface ScenePoint {
+  readonly x: number;
+  readonly y: number;
 }
 
 /** What a simulation sees each frame. */
@@ -104,7 +122,16 @@ export interface SimFrame {
    * visit never replay. The renderer rewrites this array in place each frame: read it, don't keep it.
    */
   fired: readonly boolean[];
-  pointer: PointerState;
+  /** The visitor: principal 0, `principals[0]`, for what follows one hand only (a drag, a gaze). */
+  pointer: PrincipalState;
+  /**
+   * Everyone present, at most MAX_PRINCIPALS (src/principals.ts): the visitor first (`pointer`),
+   * then the agents of the cast, as the shader's `uPrincipals` holds them. React to every one of
+   * them where many hands are natural (each a wave source, a lantern, a breath on the glass); keep
+   * to `pointer` where the scene follows one hand (a drag of the view, a magnet, a gaze). The
+   * renderer rewrites the list and its principals in place each frame: read them, don't keep them.
+   */
+  principals: readonly PrincipalState[];
   /**
    * The smoothed pointer parallax, as the shader's `uPointer`: -1..1 across the window each way,
    * easing toward the pointer, 0 while the lab does not follow it. A sim that casts the pointer
@@ -142,6 +169,12 @@ export interface SceneSim {
    * so the scene enters with its world in place. Absent: always ready.
    */
   ready?(): boolean;
+  /**
+   * Where a press does something here, in scene uv for a frame of `aspect`: the points the cast's
+   * agents go to and act at (src/principals.ts), asked as one sets off for its next. Absent or
+   * empty: they wander the middle of the frame and act wherever they stop.
+   */
+  interest?(aspect: number): readonly ScenePoint[];
   /** Release GL resources; called when the lab leaves the scene. */
   dispose(): void;
 }

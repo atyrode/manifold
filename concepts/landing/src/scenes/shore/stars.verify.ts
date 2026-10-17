@@ -63,7 +63,7 @@ function light(
   gl.uniform1f(at("uTime"), 40);
   gl.uniform2f(at("uPassage"), 1, 0);
   gl.uniform1fv(at("uTriggers"), new Float32Array(8).fill(-1e4));
-  gl.uniform4f(at("uMouse"), -1, -1, 0, -1e4);
+  gl.uniform4f(at("uPrincipals"), -1, -1, 0, -1e4);
   gl.uniform3f(at("uBg"), 0.03, 0.03, 0.05);
   gl.uniform4fv(at("uParams"), packParams(params));
   gl.drawArrays(gl.TRIANGLES, 0, 3);

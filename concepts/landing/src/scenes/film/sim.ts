@@ -61,6 +61,7 @@
 // Without float render targets the shader draws an analytic film (filmAnalytic) that still lives
 // the life above, which runs here on the CPU either way.
 import { KnobReader, type ParamDef } from "../../params.ts";
+import { MAX_PRINCIPALS } from "../../principals.ts";
 import { gpuCommonGlsl } from "../../shaders/common.ts";
 import { glslFloat } from "../../shaders/glsl.ts";
 import { FieldBetween } from "../../sims/between.ts";
@@ -175,7 +176,7 @@ const STIR = 0.005;
 /** Thin-film patches pulled from the wire per second at full plumes, and how many may be under way. */
 const PLUME_RATE = 0.5;
 const MAX_PLUMES = 6;
-/** Thinning sources the physics pass takes: the pointer's breath and the plumes. */
+/** Thinning sources the physics pass takes: the hands' breaths, then the plumes, past which none. */
 const SPOTS = 8;
 /** Prewarm: steps of this many seconds when a film is (re)made, so the first frame has settled. */
 const PREWARM_STEPS = 5;
@@ -187,7 +188,7 @@ const PREWARM_DT = 0.2;
 const STEP = 1 / 60;
 const MAX_STEPS = 3;
 
-// ---- the pointer's breath -----------------------------------------------------------------------
+// ---- the hands' breath --------------------------------------------------------------------------
 
 /** Share of the pointer's velocity a frame passes into the film, per second, at full breath, and the most one frame may add. */
 const BLOW_GAIN = 2.5;
@@ -858,8 +859,8 @@ class FilmLife {
     return cleared;
   }
 
-  /** The thinning sources for the physics pass, `extra` (the pointer) first; returns how many. */
-  packSpots(target: Float32Array, extra: Spot | undefined): number {
+  /** The thinning sources for the physics pass, `breaths` (the hands') first; returns how many. */
+  packSpots(target: Float32Array, breaths: readonly Spot[]): number {
     let count = 0;
     const put = (spot: Spot, rate: number): void => {
       if (count >= SPOTS || rate <= 0) return;
@@ -869,7 +870,7 @@ class FilmLife {
       target[count * 4 + 3] = rate;
       count++;
     };
-    if (extra) put(extra, extra.rate);
+    for (const breath of breaths) put(breath, breath.rate);
     for (const plume of this.#plumes)
       put(plume, plume.rate * Math.sin(Math.PI * Math.min(plume.age / plume.duration, 1)));
     return count;
@@ -1184,17 +1185,24 @@ export function filmSim(params: readonly ParamDef[]): SimFactory {
       mark: 0,
     };
     const flowStep: FlowStep = { dt: 0, time: 0, tuning, hole, draw, spots, spotCount: 0 };
-    const breath = { x: 0, y: 0, radius: BLOW_SPOT_RADIUS, rate: 0 };
+    /** Each hand's breath (by principal), and those breathing on the film this frame. */
+    const breaths = Array.from({ length: MAX_PRINCIPALS }, () => ({
+      x: 0,
+      y: 0,
+      radius: BLOW_SPOT_RADIUS,
+      rate: 0,
+    }));
+    const breathing: Spot[] = [];
     const impulse = { velocity: new Float32Array(2) };
     const textures: (WebGLTexture | undefined)[] = [undefined, undefined, undefined, undefined];
     const clock = new FixedStep(STEP, MAX_STEPS);
     let time = 0;
     let shownShape: FilmShape | undefined;
     let shownSeed: number | undefined;
-    /** Where the pointer was last frame while blowing (if it was). */
-    let blowing = false;
-    let lastX = 0;
-    let lastY = 0;
+    /** Each hand: whether it was blowing last frame, and where. */
+    const blowing = new Array<boolean>(MAX_PRINCIPALS).fill(false);
+    const lastX = new Float64Array(MAX_PRINCIPALS);
+    const lastY = new Float64Array(MAX_PRINCIPALS);
     /** Whether the scene was entered through a passage (decided on the first frame), until its film is drawn. */
     let arriving: boolean | undefined;
     /** The burst the rim's arrival field was made for. */
@@ -1208,7 +1216,7 @@ export function filmSim(params: readonly ParamDef[]): SimFactory {
     };
 
     /** One step of the life and the flow; `last`, the frame's last, keeps the film it starts from (FieldBetween). */
-    const advance = (dt: number, breathing: boolean, last: boolean): void => {
+    const advance = (dt: number, last: boolean): void => {
       if (life.advance(dt, tuning)) flow?.fluid.clear();
       breakRim();
       life.packState(stateData, tuning.outline, 0, 0);
@@ -1216,7 +1224,7 @@ export function filmSim(params: readonly ParamDef[]): SimFactory {
       if (!flow) return;
       flowStep.dt = dt;
       flowStep.time = time;
-      flowStep.spotCount = life.packSpots(spots, breathing ? breath : undefined);
+      flowStep.spotCount = life.packSpots(spots, breathing);
       if (last) flow.shown.keep();
       flow.step(flowStep);
     };
@@ -1225,7 +1233,8 @@ export function filmSim(params: readonly ParamDef[]): SimFactory {
     const restart = (entering: boolean): void => {
       shownShape = tuning.shape;
       shownSeed = tuning.seed;
-      blowing = false;
+      blowing.fill(false);
+      breathing.length = 0;
       // A new or changed film owes no steps and is shown as it stands until it next steps.
       clock.reset();
       flow?.shown.settle();
@@ -1242,7 +1251,7 @@ export function filmSim(params: readonly ParamDef[]): SimFactory {
         return;
       }
       flow.reseed(tuning.shape, tuning.seed);
-      for (let i = 0; i < PREWARM_STEPS; i++) advance(PREWARM_DT, false, false);
+      for (let i = 0; i < PREWARM_STEPS; i++) advance(PREWARM_DT, false);
     };
 
     return {
@@ -1262,39 +1271,44 @@ export function filmSim(params: readonly ParamDef[]): SimFactory {
         if (frame.fired[popSlot] === true) life.burst(tuning.outline);
         breakRim();
 
-        // The pointer blows on the film: a push along its motion, and a thin spot under it.
+        // Every hand over the film blows on it: a push along its motion, and a thin spot under it.
         const dt = frame.dt * frame.motion;
-        const { pointer } = frame;
         const amount = knobs.value(frame, "blow");
-        const hadLast = blowing;
-        const fromX = lastX;
-        const fromY = lastY;
-        blowing = flow !== undefined && amount > 0 && pointer.inside;
-        lastX = pointer.x;
-        lastY = pointer.y;
-        let breathing = false;
-        if (flow && blowing && hadLast && dt > 0 && frame.dt > 0) {
-          const vx = ((pointer.x - fromX) * frame.aspect) / frame.dt;
-          const vy = (pointer.y - fromY) / frame.dt;
+        breathing.length = 0;
+        for (let i = 0; i < MAX_PRINCIPALS; i++) {
+          const hand = frame.principals[i];
+          const hadLast = blowing[i] === true;
+          const fromX = lastX[i] ?? 0;
+          const fromY = lastY[i] ?? 0;
+          const on = flow !== undefined && amount > 0 && hand?.inside === true;
+          blowing[i] = on;
+          if (hand === undefined) continue;
+          lastX[i] = hand.x;
+          lastY[i] = hand.y;
+          const breath = breaths[i];
+          if (!flow || !on || !hadLast || dt <= 0 || frame.dt <= 0 || breath === undefined)
+            continue;
+          const vx = ((hand.x - fromX) * frame.aspect) / frame.dt;
+          const vy = (hand.y - fromY) / frame.dt;
           const speed = Math.hypot(vx, vy);
           if (speed > BLOW_STILL) {
             const gain = Math.min(BLOW_GAIN * amount * dt, BLOW_MAX / speed);
             impulse.velocity[0] = gain * vx;
             impulse.velocity[1] = gain * vy;
-            flow.fluid.splat(pointer.x, pointer.y, BLOW_RADIUS, impulse);
+            flow.fluid.splat(hand.x, hand.y, BLOW_RADIUS, impulse);
           }
-          breath.x = (pointer.x - 0.5) * frame.aspect;
-          breath.y = pointer.y - 0.5;
+          breath.x = (hand.x - 0.5) * frame.aspect;
+          breath.y = hand.y - 0.5;
           breath.rate =
             amount *
-            (BLOW_THIN * Math.min(1, speed / BLOW_FULL_SPEED) + (pointer.down ? BLOW_HOLD : 0));
-          breathing = true;
+            (BLOW_THIN * Math.min(1, speed / BLOW_FULL_SPEED) + (hand.down ? BLOW_HOLD : 0));
+          breathing.push(breath);
         }
 
         // The entrance and the exit run on frame time, whatever the motion amount, through the
         // same fixed steps; the film is shown between the last two, the rim as of now.
         const steps = clock.advance(life.entering || life.leaving ? frame.dt : dt);
-        for (let i = 0; i < steps; i++) advance(STEP, breathing, i === steps - 1);
+        for (let i = 0; i < steps; i++) advance(STEP, i === steps - 1);
         if (!life.entering) arriving = false;
         life.packState(stateData, tuning.outline, clock.pending, STEP - clock.pending);
         state.upload(stateData);

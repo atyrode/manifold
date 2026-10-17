@@ -320,8 +320,8 @@ vec3 lavaGlass(vec3 behind, LavaLamp L, vec2 l, float s, float rg, float aa) {
   col = mix(col, milky, 0.85 * cloud);
   col *= 1.0 - 0.75 * lavaCoil(q, aa / LAVA_GLASS_H);
   // Your hand on the glass: the liquid under it warms and glows a little.
-  if (K_hand > 0.5 && uMouse.z > 0.5) {
-    vec2 hand = (uMouse.xy * vec2(uRes.x / uRes.y, 1.0) - L.foot) / L.size - l;
+  if (K_hand > 0.5 && uPrincipals[0].z > 0.5) {
+    vec2 hand = (uPrincipals[0].xy * vec2(uRes.x / uRes.y, 1.0) - L.foot) / L.size - l;
     col += ink.light * 0.12 * L.bulb * exp(-dot(hand, hand) / 0.004);
   }
 

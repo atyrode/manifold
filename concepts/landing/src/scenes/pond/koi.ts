@@ -2,11 +2,12 @@
 // (sims/fish.ts) instead of on the shader's own loops.
 //
 // Off (the default), the shader swims each koi round its loop (pondKoiPath) and this stands idle.
-// On, every koi still follows its loop until the pointer is over the pond and has moved within the
-// last few seconds: then the koi that are near enough notice it one after another (`eager`: how far
-// they notice, how soon they come, how long they wait once it rests), come to it and mill about it,
-// noses in, each keeping its personal space (`spacing`) instead of piling onto the others. When the
-// pointer rests or leaves they lose interest and swim back to their loops. Turned off, they swim home
+// On, every koi still follows its loop until a principal (the visitor, or an agent of the cast) is
+// over the pond and has moved within the last few seconds: then the koi that are near enough notice
+// it one after another (`eager`: how far they notice, how soon they come, how long they wait once it
+// rests), each going to the nearest of those still moving, come to it and mill about it, noses in,
+// each keeping its personal space (`spacing`) instead of piling onto the others. When their hand
+// rests or leaves they lose interest and swim back to their loops. Turned off, they swim home
 // and the shader takes them over again, blending over HANDOFF seconds.
 //
 // The loops are the shader's, mirrored here (koiLoop, with common.ts's hash12 in float32 steps), so
@@ -16,6 +17,7 @@
 // pond units (p: x across ±aspect/2, y ±0.5); tag.x is how much of the steered koi the shader shows
 // rather than its own loop, the same for all (0 while idle: the texture is then not bound at all).
 import { KnobReader, type ParamDef } from "../../params.ts";
+import { MAX_PRINCIPALS } from "../../principals.ts";
 import { FixedStep } from "../../sims/clock.ts";
 import { FishGroup, FishTexture, KOI } from "../../sims/fish.ts";
 import { clamp, glslHash12, smoothstep } from "../../sims/math.ts";
@@ -110,10 +112,16 @@ export class PondKoi {
   /** Seconds since follow was turned off while steering (−1 while on or idle). */
   #homing = -1;
   #started = false;
-  /** The pointer: where it was last seen to move, how long ago (scene seconds). */
-  #lureX = 0;
-  #lureY = 0;
-  #still = Infinity;
+  /**
+   * Each principal as a lure, by its index: where it was last seen to move over the pond (pond
+   * units) and how long ago (scene seconds; Infinity while away). And the lure each koi last went to.
+   */
+  readonly #lures = Array.from({ length: MAX_PRINCIPALS }, () => ({
+    x: 0,
+    y: 0,
+    still: Infinity,
+  }));
+  readonly #lureOf = new Uint8Array(KOI_MAX);
   #aspect = 16 / 9;
   /** The species as swum, rebuilt only when the spacing knob moves. */
   #spacing = Number.NaN;
@@ -141,7 +149,7 @@ export class PondKoi {
     // The shader's swimTime per motion second.
     const pace = 0.6 + 2.4 * knobs.value(frame, "swim");
     const real = Math.max(0, frame.dt);
-    this.#watchPointer(frame, real);
+    this.#watchLures(frame, real);
 
     // Taken over this frame: the koi stand where the loops have them now, and swim from the next.
     const fresh = follow && this.#shown <= 0;
@@ -219,21 +227,25 @@ export class PondKoi {
     return far;
   }
 
-  /** Where the pointer is over the pond (pond units) and how long it has rested. */
-  #watchPointer(frame: SimFrame, dt: number): void {
-    const pointer = frame.pointer;
-    if (!pointer.inside) {
-      this.#still = Infinity;
-      return;
-    }
-    const x = (pointer.x - 0.5) * this.#aspect;
-    const y = pointer.y - 0.5;
-    if (!Number.isFinite(this.#still) || Math.hypot(x - this.#lureX, y - this.#lureY) > STIR) {
-      this.#lureX = x;
-      this.#lureY = y;
-      this.#still = 0;
-    } else {
-      this.#still += dt;
+  /** Where each principal is over the pond (pond units) and how long it has rested. */
+  #watchLures(frame: SimFrame, dt: number): void {
+    for (let p = 0; p < MAX_PRINCIPALS; p++) {
+      const lure = this.#lures[p];
+      if (lure === undefined) continue;
+      const principal = frame.principals[p];
+      if (principal === undefined || !principal.inside) {
+        lure.still = Infinity;
+        continue;
+      }
+      const x = (principal.x - 0.5) * this.#aspect;
+      const y = principal.y - 0.5;
+      if (!Number.isFinite(lure.still) || Math.hypot(x - lure.x, y - lure.y) > STIR) {
+        lure.x = x;
+        lure.y = y;
+        lure.still = 0;
+      } else {
+        lure.still += dt;
+      }
     }
   }
 
@@ -243,7 +255,7 @@ export class PondKoi {
     const reach = REACH[0] + (REACH[1] - REACH[0]) * eager;
     const keen = KEEN[0] + (KEEN[1] - KEEN[0]) * eager;
     const patience = PATIENCE[0] + (PATIENCE[1] - PATIENCE[0]) * eager;
-    const lured = follow && this.#still <= patience;
+    const lures = this.#lures;
     const group = this.group;
     group.pace = pace;
     const spacing = SPACE * clamp(knobs.value(frame, "spacing"), 0, 1);
@@ -257,10 +269,20 @@ export class PondKoi {
     for (let i = 0; i < KOI_MAX; i++) {
       const loop = this.#loops[i];
       if (!loop) continue;
-      // Interest: each koi near enough warms to a moving pointer at its own rate, and cools once it rests.
-      const dx = this.#lureX - (group.x[i] ?? 0);
-      const dy = this.#lureY - (group.y[i] ?? 0);
-      const near = lured && Math.hypot(dx, dy) < reach + (this.#interest[i] ?? 0) * 0.3;
+      // Interest: each koi near enough warms to a moving lure at its own rate, the nearest of those
+      // moving, and cools once they all rest; it keeps going to the one it went to last meanwhile.
+      let lure = lures[this.#lureOf[i] ?? 0] ?? lures[0];
+      let nearest = Infinity;
+      for (let p = 0; follow && p < lures.length; p++) {
+        const candidate = lures[p];
+        if (candidate === undefined || candidate.still > patience) continue;
+        const d = Math.hypot(candidate.x - (group.x[i] ?? 0), candidate.y - (group.y[i] ?? 0));
+        if (d >= nearest) continue;
+        nearest = d;
+        lure = candidate;
+        this.#lureOf[i] = p;
+      }
+      const near = nearest < reach + (this.#interest[i] ?? 0) * 0.3;
       const rate = near ? keen * loop.keen : -BORED;
       const interest = clamp((this.#interest[i] ?? 0) + rate * STEP, 0, 1);
       this.#interest[i] = interest;
@@ -269,12 +291,12 @@ export class PondKoi {
       if (pull < 1)
         group.follow(i, at[0] ?? 0, at[1] ?? 0, (at[2] ?? 0) * pace, (at[3] ?? 0) * pace, 1 - pull);
       if (pull > 0) {
-        // Each aims at its own spot just off the pointer, slowing as it comes: they arrive spread out.
+        // Each aims at its own spot just off its lure, slowing as it comes: they arrive spread out.
         const spot = SPOT * loop.len;
         group.gather(
           i,
-          this.#lureX + loop.spotX * spot,
-          this.#lureY + loop.spotY * spot,
+          (lure?.x ?? 0) + loop.spotX * spot,
+          (lure?.y ?? 0) + loop.spotY * spot,
           SLOW * loop.len,
           pull * (1 + eager),
         );

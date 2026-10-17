@@ -56,7 +56,7 @@ import {
   type VerletStepOptions,
   type WebLayout,
 } from "../../sims/verlet.ts";
-import type { PointerState, SceneSim, SimFactory, SimFrame } from "../types.ts";
+import type { PrincipalState, SceneSim, SimFactory, SimFrame } from "../types.ts";
 
 // ---- shared with the shader -----------------------------------------------------------------------
 
@@ -1215,7 +1215,7 @@ class DewSim implements SceneSim {
   // ---- the pointer --------------------------------------------------------------------------------
 
   /** Press: pluck the threads under the pointer. Drag: strum them. */
-  #play(pointer: PointerState, aspect: number): void {
+  #play(pointer: PrincipalState, aspect: number): void {
     if (!pointer.inside) return;
     const x = pointer.x * aspect;
     const y = pointer.y;

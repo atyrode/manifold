@@ -17,6 +17,7 @@ import {
   sceneFeaturesAll,
   vertexSource,
 } from "../../shaders/index.ts";
+import { visitorAlone } from "../../principals.ts";
 import { type LandAllocation, landCanopy, LandModel, LAND_USES } from "../../sims/landuse.ts";
 import { RatePhases } from "../../rate-phase.ts";
 import { generateTerrain } from "../../sims/terrain.ts";
@@ -89,7 +90,7 @@ function simFrame(knobs: Record<string, number>): SimFrame {
     params: { ...paramDefaults("country"), ...knobs },
     triggers: new Array(8).fill(-1e4),
     fired: new Array(8).fill(false),
-    pointer: { x: 0.5, y: 0.5, inside: false, down: false, pressed: false, released: false },
+    ...visitorAlone(),
     passage: { enter: 1, exit: 0 },
   };
 }

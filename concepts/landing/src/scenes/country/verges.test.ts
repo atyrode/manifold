@@ -1,6 +1,7 @@
 import { RatePhases } from "../../rate-phase.ts";
 import { expect, test } from "bun:test";
 import { effective, type ParamDef } from "../../params.ts";
+import { visitorAlone } from "../../principals.ts";
 import { LAND_USES, LandModel, type LandOptions, packLand } from "../../sims/landuse.ts";
 import {
   generateTerrain,
@@ -63,7 +64,7 @@ function frame(
     phases: phases.byKey,
     triggers: new Array<number>(8).fill(-1e4),
     fired: new Array<boolean>(8).fill(false),
-    pointer: { x: 0.5, y: 0.5, inside: false, down: false, pressed: false, released: false },
+    ...visitorAlone(),
     passage: { enter: 1, exit: 0 },
   };
 }

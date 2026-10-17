@@ -65,7 +65,7 @@ import { mulberry32 } from "../../sims/random.ts";
 import { DataTexture } from "../../sims/texture.ts";
 import { gustPulse, windSign } from "../../sims/wind.ts";
 import { dateShift, skyAnchor, skyState, timeOfDay, type SkyState } from "../../world-clock.ts";
-import type { PointerState, SceneSim, SimFactory, SimFrame } from "../types.ts";
+import type { PrincipalState, SceneSim, SimFactory, SimFrame } from "../types.ts";
 
 export const gardenPatterns = ["waves", "straight", "circles"] as const;
 export type GardenPattern = (typeof gardenPatterns)[number];
@@ -1688,7 +1688,7 @@ class GardenSim implements SceneSim {
   }
 
   /** Drag on the gravel: rake your own lines with a hand rake. */
-  #handRake(pointer: PointerState, settings: Settings): void {
+  #handRake(pointer: PrincipalState, settings: Settings): void {
     const at = this.#ground;
     if (
       !(pointer.inside && pointer.down && this.#groundUnder(pointer.x, pointer.y, at)) ||

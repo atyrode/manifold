@@ -572,11 +572,14 @@ Shade sceneDunes(vec2 uv, vec2 cell, float t) {
     }
   }
 
-  // Pouring sand: a stream falls onto the pointer while the button is held (the sim heaps it up).
-  float pouring = max(uMouse.z, 1.0 - smoothstep(0.0, 0.6, t - uMouse.w));
-  // Only where the sim can heap it: on the sand, below the horizon.
-  if (!overhead && pouring > 0.0 && uMouse.y < DUNES_HORIZON - 0.01) {
-    vec2 q = (uv - uMouse.xy) * vec2(aspect, 1.0);
+  // Pouring sand: a stream falls onto each hand while its button is held (the sim heaps it up),
+  // only where the sim can heap it: on the sand, below the horizon.
+  for (int i = 0; i < MAX_PRINCIPALS; i++) {
+    if (i >= uPrincipalCount) break;
+    vec4 hand = uPrincipals[i];
+    float pouring = max(hand.z, 1.0 - smoothstep(0.0, 0.6, t - hand.w));
+    if (overhead || pouring <= 0.0 || hand.y >= DUNES_HORIZON - 0.01) continue;
+    vec2 q = (uv - hand.xy) * vec2(aspect, 1.0);
     float width = 0.006 + 0.012 * smoothfall(0.02, -0.01, q.y);
     float stream = smoothfall(width, 0.0, abs(q.x)) * smoothstep(-0.015, 0.0, q.y) * smoothfall(0.24, 0.1, q.y);
     stream *= 0.55 + 0.45 * vnoise(vec2(q.x * 260.0, q.y * 50.0 + t * 12.0));

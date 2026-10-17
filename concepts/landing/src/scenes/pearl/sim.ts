@@ -64,6 +64,7 @@
 // x its radius about (PEARL_REVEAL_X, PEARL_REVEAL_Y), w 1 while the tank is arriving (0 at rest).
 // Without float render targets the scene returns no textures and the shader draws still eddies.
 import { KnobReader, type ParamDef } from "../../params.ts";
+import { MAX_PRINCIPALS } from "../../principals.ts";
 import { markVertex } from "../../mark.ts";
 import { glslFloat } from "../../shaders/glsl.ts";
 import { FieldBetween } from "../../sims/between.ts";
@@ -847,9 +848,10 @@ class PearlTank implements SceneSim {
   /** The flakes and the dye as the shader sees them: between their last two steps. */
   readonly #flakesShown: FieldBetween;
   readonly #dyeShown: FieldBetween;
-  #stirring = false;
-  #lastX = 0;
-  #lastY = 0;
+  /** Each hand (by principal) stirring since last frame, and where it was then. */
+  readonly #stirring = new Array<boolean>(MAX_PRINCIPALS).fill(false);
+  readonly #lastX = new Float64Array(MAX_PRINCIPALS);
+  readonly #lastY = new Float64Array(MAX_PRINCIPALS);
 
   constructor(gpu: GpuCompute, knobs: KnobReader<PearlKnob>) {
     this.#gpu = gpu;
@@ -1178,36 +1180,38 @@ class PearlTank implements SceneSim {
   }
 
   /**
-   * Stir along the pointer's path while the button is held: splats a little apart along this
-   * frame's stretch, each adding its share of the pointer's velocity, so a pass of the hand leaves
-   * the fluid it crossed moving at about STIR_GAIN of its speed, whatever the frame rate.
+   * Stir along every hand's path while its button is held: splats a little apart along this
+   * frame's stretch, each adding its share of the hand's velocity, so a pass of the hand leaves the
+   * fluid it crossed moving at about STIR_GAIN of its speed, whatever the frame rate.
    */
   #stir(frame: SimFrame, h: number): void {
-    const pointer = frame.pointer;
-    if (!pointer.inside || !pointer.down) {
-      this.#stirring = false;
-      return;
-    }
-    const was = this.#stirring;
-    const x0 = this.#lastX;
-    const y0 = this.#lastY;
-    this.#stirring = true;
-    this.#lastX = pointer.x;
-    this.#lastY = pointer.y;
-    if (!was || h <= 0 || frame.dt <= 0) return;
-    const dx = (pointer.x - x0) * this.#fluid.aspect;
-    const dy = pointer.y - y0;
-    const travel = Math.hypot(dx, dy);
-    if (travel < 1e-6) return;
-    const gain = Math.min(STIR_GAIN, (STIR_MAX * frame.dt) / travel);
-    const n = Math.min(STIR_SPLATS, Math.max(1, Math.ceil(travel / (0.5 * STIR_RADIUS))));
-    const k = ((gain / frame.dt) * (travel / n)) / (1.77 * STIR_RADIUS);
-    const impulse = this.#impulse;
-    impulse.velocity[0] = dx * k;
-    impulse.velocity[1] = dy * k;
-    for (let i = 1; i <= n; i++) {
-      const s = i / n;
-      this.#fluid.splat(x0 + (pointer.x - x0) * s, y0 + (pointer.y - y0) * s, STIR_RADIUS, impulse);
+    for (let p = 0; p < MAX_PRINCIPALS; p++) {
+      const hand = frame.principals[p];
+      if (hand === undefined || !hand.inside || !hand.down) {
+        this.#stirring[p] = false;
+        continue;
+      }
+      const was = this.#stirring[p] === true;
+      const x0 = this.#lastX[p] ?? 0;
+      const y0 = this.#lastY[p] ?? 0;
+      this.#stirring[p] = true;
+      this.#lastX[p] = hand.x;
+      this.#lastY[p] = hand.y;
+      if (!was || h <= 0 || frame.dt <= 0) continue;
+      const dx = (hand.x - x0) * this.#fluid.aspect;
+      const dy = hand.y - y0;
+      const travel = Math.hypot(dx, dy);
+      if (travel < 1e-6) continue;
+      const gain = Math.min(STIR_GAIN, (STIR_MAX * frame.dt) / travel);
+      const n = Math.min(STIR_SPLATS, Math.max(1, Math.ceil(travel / (0.5 * STIR_RADIUS))));
+      const k = ((gain / frame.dt) * (travel / n)) / (1.77 * STIR_RADIUS);
+      const impulse = this.#impulse;
+      impulse.velocity[0] = dx * k;
+      impulse.velocity[1] = dy * k;
+      for (let i = 1; i <= n; i++) {
+        const s = i / n;
+        this.#fluid.splat(x0 + (hand.x - x0) * s, y0 + (hand.y - y0) * s, STIR_RADIUS, impulse);
+      }
     }
   }
 

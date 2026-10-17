@@ -2,6 +2,7 @@
 // texture a slow machine ends up with is the one a fast machine draws in a single frame, a sheet on
 // screen stays until a reseed's warm-up is done, a knob moved meanwhile does not change the new
 // sheet, and an exit that begins mid warm-up slides off the finished sheet.
+import { visitorAlone } from "../../principals.ts";
 import { defaultsFor, paramDefaults, renderSettings } from "../../state.ts";
 import type { SimFrame } from "../types.ts";
 import { harmonographScene } from "./index.ts";
@@ -46,7 +47,7 @@ function script(gl: WebGL2RenderingContext, tick: number): Sheets {
     triggers: [],
     fired: [],
     passage: { enter: 1, exit: 0 },
-    pointer: { x: 0.5, y: 0.5, inside: false, down: false, pressed: false, released: false },
+    ...visitorAlone(),
   };
   const set = (key: string, value: number): void => {
     knobs[key] = value;

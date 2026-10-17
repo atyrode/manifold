@@ -6,6 +6,7 @@
 // no snow lying draws the garden exactly as autumn does. The garden's sky is dated (world-clock.ts):
 // autumn's sun and winter's, either side of midwinter, stand alike, so those two seasons compare.
 import { fragmentSourceFor, packParams, vertexSource } from "../../shaders/index.ts";
+import { visitorAlone } from "../../principals.ts";
 import { defaultsFor, paramDefaults, renderSettings, type Params } from "../../state.ts";
 import type { SimFrame } from "../types.ts";
 import { gardenScene } from "./index.ts";
@@ -75,7 +76,7 @@ export function gardenClimateCheck(gl: WebGL2RenderingContext): Record<string, u
     triggers: [],
     fired: [],
     passage: { enter: 1, exit: 0 },
-    pointer: { x: 0.5, y: 0.5, inside: false, down: false, pressed: false, released: false },
+    ...visitorAlone(),
   };
   const textures = sim.frame(frame);
   const linked = compile(gl, fragmentSourceFor(gardenScene));
@@ -91,7 +92,7 @@ export function gardenClimateCheck(gl: WebGL2RenderingContext): Record<string, u
   gl.uniform1f(uniform("uMotionTime"), 40);
   gl.uniform1f(uniform("uMotion"), 1);
   gl.uniform2f(uniform("uPassage"), 1, 0);
-  gl.uniform4f(uniform("uMouse"), 0, 0, 0, -1e4);
+  gl.uniform4f(uniform("uPrincipals"), 0, 0, 0, -1e4);
   gl.uniform1fv(uniform("uTriggers"), new Float32Array(8).fill(-1e4));
   textures.forEach((texture, slot) => {
     gl.activeTexture(gl.TEXTURE0 + slot);

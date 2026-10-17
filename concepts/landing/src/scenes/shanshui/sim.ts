@@ -6,7 +6,7 @@
 //   - how far the mist has drifted along it and how far its billows have reshaped,
 //   - the skein of wild geese crossing the sky (when it sets off, where it is, how many birds),
 //   - the seal last pressed onto the paper (with "now" or a click), carried along with the scroll,
-//   - the pointer's breath over the mist (a fading TrailField).
+//   - every hand's breath over the mist (a fading TrailField, a stroke a principal).
 //
 // uSim0, rgba16f, 4 x 1, nearest. Half floats hold integers exactly to 2048 but only ~11 bits of
 // fraction, so positions are split (see `split3`/`split2`) and rebuilt in the shader:
@@ -18,11 +18,12 @@
 //   texel 2  geese: leader x (hi, lo) in screen heights, leader y (uv), skein number
 //   texel 3  seal: x (hi, lo) in screen heights, y (uv), seconds since pressed (-1: none yet)
 //            value = (hi + lo) / 64
-// uSim1, r8: the pointer's trail over the page (uv), thinning the mist where it has passed.
+// uSim1, r8: the hands' trails over the page (uv), thinning the mist where they have passed.
 // Texel 2 alpha is the skein's number (1, 2, ...; 0 while the sky is empty), so each skein can
 // fly in its own loose line.
 import { KnobReader, type ParamDef } from "../../params.ts";
 import { approach } from "../../sims/math.ts";
+import { firstPress, MAX_PRINCIPALS } from "../../principals.ts";
 import { Random } from "../../sims/random.ts";
 import { DataTexture } from "../../sims/texture.ts";
 import { TrailField } from "../../sims/trail.ts";
@@ -232,17 +233,19 @@ class ShanshuiSim implements SceneSim {
     }
   }
 
-  /** A click on the page, or "now", presses the seal onto the paper; it then travels with the scroll. */
+  /**
+   * A click on the page (the first principal's to press this frame), or "now", presses the seal
+   * onto the paper; it then travels with the scroll.
+   */
   #pressSeal(frame: SimFrame, dt: number, seal: number, aspect: number, now: boolean): void {
-    const pointer = frame.pointer;
-    const clicked = seal > 0 && pointer.inside && pointer.pressed;
-    if (clicked || (now && seal > 0)) {
+    const hand = seal > 0 ? firstPress(frame.principals) : undefined;
+    if (hand !== undefined || (now && seal > 0)) {
       const random = this.#random;
       let x: number;
       let y: number;
-      if (clicked) {
-        x = pointer.x * aspect;
-        y = pointer.y;
+      if (hand !== undefined) {
+        x = hand.x * aspect;
+        y = hand.y;
       } else {
         // A collector's place: the empty sky toward the top right, a little different each press.
         x = aspect * (0.62 + 0.26 * random.next());
@@ -265,7 +268,7 @@ class ShanshuiSim implements SceneSim {
     }
   }
 
-  /** The pointer's breath over the page thins the mist along its path, fading on the scene clock. */
+  /** Every hand's breath over the page thins the mist along its path, fading on the scene clock. */
   #breathe(frame: SimFrame, aspect: number): void {
     const columns = Math.min(256, Math.max(8, Math.round(TRAIL_ROWS * aspect)));
     if (this.#trail === undefined || this.#trail.width !== columns) {
@@ -274,9 +277,11 @@ class ShanshuiSim implements SceneSim {
       this.#uploaded = -1;
     }
     const trail = this.#trail;
-    const pointer = frame.pointer;
-    if (pointer.inside) trail.stroke(pointer.x, pointer.y, TRAIL_RADIUS, TRAIL_PASS, aspect);
-    else trail.lift();
+    for (let i = 0; i < MAX_PRINCIPALS; i++) {
+      const hand = frame.principals[i];
+      if (hand?.inside === true) trail.stroke(hand.x, hand.y, TRAIL_RADIUS, TRAIL_PASS, aspect, i);
+      else trail.lift(i);
+    }
     trail.decay(frame.dt * frame.motion, TRAIL_HALF_LIFE);
     if (trail.version !== this.#uploaded) {
       this.#trailTexture?.upload(trail.data);

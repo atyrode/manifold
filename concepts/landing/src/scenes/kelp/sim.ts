@@ -846,8 +846,10 @@ class KelpSim implements SceneSim {
     this.#settleBlades(advance);
     this.#updatePresence(advance);
     this.#school.advance(advance, Math.round(knob.fish), this.#aspect, this.#hand);
-    if (frame.pointer.pressed && frame.pointer.inside)
-      this.#school.scatter((frame.pointer.x - 0.5) * this.#aspect, frame.pointer.y);
+    // Every hand's press startles the school away from it; the hand that sways the kelp is the
+    // visitor's (#updateHand).
+    for (const hand of frame.principals)
+      if (hand.pressed && hand.inside) this.#school.scatter((hand.x - 0.5) * this.#aspect, hand.y);
     this.#advanceVisitor(advance);
 
     this.#trail.decay(advance, TRAIL_HALF_LIFE);

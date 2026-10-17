@@ -2,6 +2,7 @@
 // OPEN sign in the window is lit, and once last call has been called it is closing time, the sign
 // dark, whatever the time-of-night knob says.
 import { fragmentSourceFor, packParams, vertexSource } from "../../shaders/index.ts";
+import { visitorAlone } from "../../principals.ts";
 import { defaultsFor, paramDefaults, renderSettings } from "../../state.ts";
 import type { SimFrame } from "../types.ts";
 import { barScene } from "./index.ts";
@@ -85,7 +86,7 @@ export function verifyBarLastCall(gl: WebGL2RenderingContext): Record<string, un
       values: params,
       triggers,
       fired: Array.from({ length: 8 }, () => false),
-      pointer: { x: 0.5, y: 0.5, inside: false, down: false, pressed: false, released: false },
+      ...visitorAlone(),
       passage: { enter: 1, exit: 0 },
     };
     let texture = sim.frame(frame)[0];

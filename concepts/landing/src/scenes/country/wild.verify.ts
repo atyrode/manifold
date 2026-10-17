@@ -15,6 +15,7 @@
 // fields): on the default land and on it with its woods off. And the scene draws them, on the land
 // with its woods off: the woods may fill the near ground the verges keep to, leaving few hedges in
 // view there.
+import { visitorAlone } from "../../principals.ts";
 import { glslFloat } from "../../shaders/glsl.ts";
 import { fragmentSourceFor, sceneFeaturesAll } from "../../shaders/index.ts";
 import { paramDefaults } from "../../state.ts";
@@ -92,7 +93,7 @@ function simFrame(knobs: Record<string, number>, time: number, exit: number): Si
     params: { ...paramDefaults("country"), ...knobs },
     triggers: new Array<number>(8).fill(-1e4),
     fired: new Array<boolean>(8).fill(false),
-    pointer: { x: 0.5, y: 0.5, inside: false, down: false, pressed: false, released: false },
+    ...visitorAlone(),
     passage: { enter: 1, exit },
   };
 }

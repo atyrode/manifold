@@ -1136,7 +1136,7 @@ Shade sceneSill(vec2 uv, vec2 cell, float t) {
     float ageR = sillEvent(tm, earPeriod * 1.17, 23.0, pickR);
     float twitchL = step(0.3, pickL) * max(sillTwitch(ageL, 0.06, 0.08 + 0.3 * pickL, 0.35), step(0.8, pickL) * sillTwitch(ageL - 0.6, 0.05, 0.05, 0.3));
     float twitchR = step(0.3, pickR) * max(sillTwitch(ageR, 0.06, 0.08 + 0.3 * pickR, 0.35), step(0.8, pickR) * sillTwitch(ageR - 0.6, 0.05, 0.05, 0.3));
-    float press = sillTwitch(t - uMouse.w, 0.05, 0.12, 0.45);
+    float press = sillTwitch(t - uPrincipals[0].w, 0.05, 0.12, 0.45);
     float perk = sillTwitch(gaze.w, 0.1, 0.2, 0.6) * gaze.z;
     cat.ears = vec2(twitchL, twitchR) + press * 0.8 - perk * 0.35 - cat.turn * 0.25;
     // Tail: a slow swing, a lash running down it, and a tip that flicks.

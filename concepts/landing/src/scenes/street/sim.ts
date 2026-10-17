@@ -113,7 +113,7 @@ import { DataTexture } from "../../sims/texture.ts";
 import { Errand } from "../../sims/errand.ts";
 import { clamp, fract, smoothstep } from "../../sims/math.ts";
 import { Random } from "../../sims/random.ts";
-import type { PointerState, SceneSim, SimFactory, SimFrame } from "../types.ts";
+import type { PrincipalState, SceneSim, SimFactory, SimFrame } from "../types.ts";
 
 // ---- The view and the street, shared with the shader ----
 
@@ -1389,7 +1389,7 @@ class StreetCrossing implements SceneSim {
   }
 
   /** The pointer: where on the street it points (walkers near it look up); a click changes the lights. */
-  #follow(pointer: PointerState): void {
+  #follow(pointer: PrincipalState): void {
     this.#hover = pointer.inside && this.#toGround(pointer.x, pointer.y);
     if (this.#hover) {
       this.#hoverX = this.#point[0] ?? 0;

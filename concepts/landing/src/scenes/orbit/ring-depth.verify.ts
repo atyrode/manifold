@@ -120,7 +120,7 @@ export function verifyOrbitRingDepth(gl: WebGL2RenderingContext): Record<string,
   gl.uniform1i(at("uView"), 1);
   gl.uniform1f(at("uMotion"), 1);
   gl.uniform2f(at("uPassage"), 1, 0);
-  gl.uniform4f(at("uMouse"), 0.5, 0.5, 0, -1e4);
+  gl.uniform4f(at("uPrincipals"), 0.5, 0.5, 0, -1e4);
   // Ink in red, the accent (the ring's default tone) in blue: each channel reads one layer.
   gl.uniform3f(at("uInk"), 1, 0, 0);
   gl.uniform3f(at("uAccent"), 0, 0, 1);

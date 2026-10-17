@@ -125,13 +125,13 @@ export async function verifyRuntime(_gl: WebGL2RenderingContext): Promise<Record
     canvas.dispatchEvent(new PointerEvent("pointerdown", at));
     frame((now += 16));
     check(
-      (uniform("uMouse") as Float32Array)[2] === 1 && !same(band(), before),
+      (uniform("uPrincipals") as Float32Array)[2] === 1 && !same(band(), before),
       "Dunes drew no pouring streak while the button was held",
     );
     canvas.dispatchEvent(new PointerEvent("pointerup", at));
     for (let i = 0; i < 7; i++) frame((now += 100));
     const age =
-      (uniform("uTime") as number) - ((uniform("uMouse") as Float32Array)[3] ?? Number.NaN);
+      (uniform("uTime") as number) - ((uniform("uPrincipals") as Float32Array)[3] ?? Number.NaN);
     check(
       uniform("uTime") === time && uniform("uMotionTime") === motionTime,
       "Reduced motion let the scene or motion clock run",
@@ -148,7 +148,7 @@ export async function verifyRuntime(_gl: WebGL2RenderingContext): Promise<Record
     renderer.setPaused(true);
     for (let i = 0; i < 2; i++) frame((now += 100));
     const pausedAge =
-      (uniform("uTime") as number) - ((uniform("uMouse") as Float32Array)[3] ?? Number.NaN);
+      (uniform("uTime") as number) - ((uniform("uPrincipals") as Float32Array)[3] ?? Number.NaN);
     check(Math.abs(pausedAge - age) < 1e-6, `A paused frame let the press age: ${pausedAge} s`);
     renderer.setPaused(false);
     // A "now" trigger ages the same way for sims, and each press fires once even though the scene

@@ -57,7 +57,7 @@ import {
 } from "../../sims/gpu.ts";
 import { lerp, smoothstep } from "../../sims/math.ts";
 import { mulberry32 } from "../../sims/random.ts";
-import type { PointerState, SceneSim, SimFactory, SimFrame } from "../types.ts";
+import type { PrincipalState, SceneSim, SimFactory, SimFrame } from "../types.ts";
 import {
   MARK,
   RIPPLE_DIPPER,
@@ -722,6 +722,7 @@ class RippleLab implements SceneSim {
     this.#pebbleCount = 0;
     this.#pebbles.fill(0);
     this.#pointer(frame.pointer, frame.dt > 0);
+    this.#others(frame.principals, frame.dt > 0);
     this.#drip(frame, seconds);
 
     const [shown, coming] = this.#order();
@@ -1275,7 +1276,7 @@ class RippleLab implements SceneSim {
    * Press on a dipper (or the M) to pick it up and drag it; press on open water to drop a pebble,
    * and drag on from there to draw a finger through the water, beating like a dipper.
    */
-  #pointer(pointer: PointerState, live: boolean): void {
+  #pointer(pointer: PrincipalState, live: boolean): void {
     const physics = this.#need();
     const [shown] = this.#order();
     const layout = shown.layout;
@@ -1323,6 +1324,22 @@ class RippleLab implements SceneSim {
     }
     if (this.#finger || Math.hypot(p.x - this.#pressedAt.x, p.y - this.#pressedAt.y) > DIP)
       this.#finger = p;
+  }
+
+  /**
+   * The principals after the visitor: a press on the water drops a pebble, as the visitor's does.
+   * One hand holds a dipper or draws the finger (the visitor's, `#pointer`), so theirs only drop.
+   */
+  #others(principals: readonly PrincipalState[], live: boolean): void {
+    const physics = this.#need();
+    if (!live || !this.#order()[0].layout) return;
+    for (let i = 1; i < principals.length; i++) {
+      const hand = principals[i];
+      if (hand === undefined || !hand.inside || !hand.pressed) continue;
+      const x = hand.x * physics.frame.width;
+      const y = hand.y * physics.frame.height;
+      this.#addPebble(x, y, PEBBLE.radius * physics.lambda, PEBBLE.height);
+    }
   }
 
   /** The layout texture: each tank's fixtures where they are now, and how far the coming one has faded in. */

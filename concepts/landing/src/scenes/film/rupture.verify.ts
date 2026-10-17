@@ -1,6 +1,7 @@
 // The soap film's burst on the GPU (verify-browser.ts): the hole is one piece growing from the break.
 // A thin spot blown low in the film, under thicker bands, must open only once the rim has crossed
 // those bands, never on its own ahead of it (the rim's arrival field, sim.ts and sims/front.ts).
+import { visitorAlone } from "../../principals.ts";
 import { defaultsFor, paramDefaults, renderSettings } from "../../state.ts";
 import type { SimFrame } from "../types.ts";
 import { sceneDefs } from "../index.ts";
@@ -74,7 +75,7 @@ export function verifyFilmRupture(gl: WebGL2RenderingContext): Record<string, un
     fired: [],
     passage: { enter: 1, exit: 0 },
     // Held low in the middle, under the bands of thicker film.
-    pointer: { x: 0.5, y: 0.3, inside: true, down: true, pressed: true, released: false },
+    ...visitorAlone({ x: 0.5, y: 0.3, inside: true, down: true, pressed: true }),
   };
   try {
     let textures = sim.frame(frame);
@@ -87,7 +88,7 @@ export function verifyFilmRupture(gl: WebGL2RenderingContext): Record<string, un
     const film = textures[0];
     if (!film) throw new Error("film: no film texture");
     const before = readFilm(gl, film, SIDE, SIDE);
-    frame.pointer = { x: 0.5, y: 0.3, inside: false, down: false, pressed: false, released: true };
+    Object.assign(frame.pointer, { inside: false, down: false, pressed: false, released: true });
     frame.dt = 1 / 30;
     frame.fired = Array.from({ length: 8 }, (_, slot) => slot === popSlot);
     let gone = 0;

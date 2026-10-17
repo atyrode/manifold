@@ -16,7 +16,7 @@ import { mulberry32 } from "../../sims/random.ts";
 import { approach, clamp, easeFactor, smoothstep } from "../../sims/math.ts";
 import { DataTexture } from "../../sims/texture.ts";
 import type {
-  PointerState,
+  PrincipalState,
   SceneSim,
   ScenePassageProgress,
   SimFactory,
@@ -1127,7 +1127,7 @@ class HyperbolicSim implements SceneSim {
   }
 
   /** The pointer's screen-disk point, kept off the rim. */
-  #pointerPoint(pointer: PointerState, aspect: number, model: Model): Complex {
+  #pointerPoint(pointer: PrincipalState, aspect: number, model: Model): Complex {
     const z = diskPoint(model, complex((pointer.x - 0.5) * aspect, pointer.y - 0.5), aspect);
     const r = size(z);
     return r > DRAG_REACH ? scaled(z, DRAG_REACH / r) : z;
@@ -1140,7 +1140,7 @@ class HyperbolicSim implements SceneSim {
    * mid-drag moves every point on screen, not the hand: the grip is taken again where the pointer
    * now is, and the plane neither jumps nor flings off at the speed of that jump.
    */
-  #drag(pointer: PointerState, dt: number, aspect: number, model: Model): void {
+  #drag(pointer: PrincipalState, dt: number, aspect: number, model: Model): void {
     if (this.#grab === undefined) {
       if (pointer.down && pointer.inside) {
         this.#grab = this.#pointerPoint(pointer, aspect, model);

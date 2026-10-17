@@ -3,6 +3,7 @@
 // labyrinth seed (the seed is laid at the loop start's levels) would leave the dish bare; a regime
 // that never reached the pass would grow the same stripes as any other.
 import { effective } from "../../params.ts";
+import { visitorAlone } from "../../principals.ts";
 import { grayScottRegimes } from "../../sims/grayscott.ts";
 import type { SimFrame } from "../types.ts";
 import { petriScene } from "./index.ts";
@@ -90,7 +91,7 @@ export function petriRegimesVerify(gl: WebGL2RenderingContext): Record<string, u
       triggers: Array.from({ length: 8 }, () => -1e4),
       fired: Array.from({ length: 8 }, () => false),
       passage: { enter: 1, exit: 0 },
-      pointer: { x: 0.5, y: 0.5, inside: false, down: false, pressed: false, released: false },
+      ...visitorAlone(),
     };
     try {
       let view: WebGLTexture | undefined;

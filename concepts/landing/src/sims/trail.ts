@@ -1,19 +1,25 @@
-// A fading field of where the pointer has been: stir water, melt frost, wake the plankton.
-// Values 0..1 in an r8 grid (row 0 = uv.y 0), deposited along the pointer's path and decaying.
+// A fading field of where the principals have been: stir water, melt frost, wake the plankton.
+// Values 0..1 in an r8 grid (row 0 = uv.y 0), deposited along each hand's path and decaying.
 //
 // Ink is laid per unit of path. `stroke` splats every half radius along the segment from the last
 // point, each its share of the segment's ink, so one pass leaves `strength` along its middle (before
 // the cap of 1) however fast it went and however many frames it took: the same mark at 60 and at
 // 144 Hz. A pointer held still lays nothing by a stroke; `hold` lays an amount at one point, which
 // the caller makes a rate times the frame's seconds, so that too is the same at any frame rate.
+// Each principal carries a stroke of its own (`hand`, its index in SimFrame.principals: 0 the
+// visitor), so two hands never ink the path between them.
 //
-// Usage (a frame of a pointer that leaves a wake, and glows where it is held):
-//   if (!pointer.inside) trail.lift();
-//   else {
-//     trail.stroke(pointer.x, pointer.y, 0.035, 0.3, aspect);
-//     if (pointer.down) trail.hold(pointer.x, pointer.y, 0.05, 7 * dt, aspect);
+// Usage (a frame of hands that leave a wake, and glow where they are held):
+//   for (let i = 0; i < MAX_PRINCIPALS; i++) {
+//     const hand = frame.principals[i];
+//     if (hand === undefined || !hand.inside) trail.lift(i);
+//     else {
+//       trail.stroke(hand.x, hand.y, 0.035, 0.3, aspect, i);
+//       if (hand.down) trail.hold(hand.x, hand.y, 0.05, 7 * dt, aspect);
+//     }
 //   }
 //   trail.decay(dt, 1.4);
+import { MAX_PRINCIPALS } from "../principals.ts";
 
 /** A splat's falloff (1 − d²)² summed along a straight pass through its middle, in radii: ∫ over −1..1. */
 const PASS = 16 / 15;
@@ -24,10 +30,8 @@ export class TrailField {
   /** r8 texels, rows bottom to top. */
   readonly data: Uint8Array;
   readonly #value: Float32Array;
-  /** Where the current stroke last reached, if one is under way. */
-  #stroking = false;
-  #lastX = 0;
-  #lastY = 0;
+  /** Where each hand's stroke last reached, while one is under way. */
+  readonly #strokes = Array.from({ length: MAX_PRINCIPALS }, () => ({ on: false, x: 0, y: 0 }));
   /** Bumped whenever `data` changes, so uploads can be skipped when nothing moved. */
   version = 0;
 
@@ -39,17 +43,19 @@ export class TrailField {
   }
 
   /**
-   * Carry the stroke on to (x, y), in uv (0..1, y up), inking the path from where it last reached
-   * (a stroke's first point only marks where it starts). `radius` is in uv heights; `strength` is
-   * what one pass leaves along its middle, added to what is there and capped at 1.
+   * Carry hand `hand`'s stroke on to (x, y), in uv (0..1, y up), inking the path from where it last
+   * reached (a stroke's first point only marks where it starts). `radius` is in uv heights;
+   * `strength` is what one pass leaves along its middle, added to what is there and capped at 1.
    */
-  stroke(x: number, y: number, radius: number, strength: number, aspect: number): void {
-    const fromX = this.#lastX;
-    const fromY = this.#lastY;
-    const started = this.#stroking;
-    this.#stroking = true;
-    this.#lastX = x;
-    this.#lastY = y;
+  stroke(x: number, y: number, radius: number, strength: number, aspect: number, hand = 0): void {
+    const last = this.#strokes[hand];
+    if (last === undefined) return;
+    const fromX = last.x;
+    const fromY = last.y;
+    const started = last.on;
+    last.on = true;
+    last.x = x;
+    last.y = y;
     if (!started || !(strength > 0)) return;
     const length = Math.hypot((x - fromX) * aspect, y - fromY);
     if (!(length > 0)) return;
@@ -70,9 +76,10 @@ export class TrailField {
     this.version++;
   }
 
-  /** End the current stroke: the next one starts fresh instead of joining it. */
-  lift(): void {
-    this.#stroking = false;
+  /** End hand `hand`'s stroke: its next one starts fresh instead of joining it. */
+  lift(hand = 0): void {
+    const last = this.#strokes[hand];
+    if (last !== undefined) last.on = false;
   }
 
   /** Fade everything with the given half-life in seconds. */

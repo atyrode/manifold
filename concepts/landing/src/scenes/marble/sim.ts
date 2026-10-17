@@ -29,7 +29,7 @@ import { runBudgeted } from "../../sims/clock.ts";
 import { clamp, smoothstep } from "../../sims/math.ts";
 import { mulberry32 } from "../../sims/random.ts";
 import { DataTexture } from "../../sims/texture.ts";
-import type { PointerState, SceneSim, SimFactory, SimFrame } from "../types.ts";
+import type { PrincipalState, SceneSim, SimFactory, SimFrame } from "../types.ts";
 
 export const marblePatterns = ["stone", "gel-git", "nonpareil", "bouquet", "chevron"] as const;
 export type MarblePattern = (typeof marblePatterns)[number];
@@ -1130,7 +1130,7 @@ class MarbleSim implements SceneSim {
   }
 
   /** Click: a drop of the next ink where the pointer is. Drag: a stylus along the drag. */
-  #play(pointer: PointerState, settings: Settings): boolean {
+  #play(pointer: PrincipalState, settings: Settings): boolean {
     const at = this.#at;
     at.x = (pointer.x - 0.5) * this.#aspect;
     at.y = pointer.y - 0.5;

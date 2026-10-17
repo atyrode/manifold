@@ -29,7 +29,7 @@ import { approach, hash31, smoothstep } from "../../sims/math.ts";
 import { mulberry32 } from "../../sims/random.ts";
 import { springStep, type Spring } from "../../sims/spring.ts";
 import { DataTexture } from "../../sims/texture.ts";
-import type { PointerState, SceneSim, SimFactory, SimFrame } from "../types.ts";
+import type { PrincipalState, SceneSim, SimFactory, SimFrame } from "../types.ts";
 
 /**
  * Seconds the scene's entrance and exit take (SceneDef.passage; the shader reads the same). The
@@ -641,7 +641,7 @@ class BambooSim implements SceneSim {
   }
 
   /** Moving the pointer through the stems brushes them aside; a click sends a gust or rings the basin. */
-  #trackPointer(pointer: PointerState, dt: number, aspect: number): void {
+  #trackPointer(pointer: PrincipalState, dt: number, aspect: number): void {
     if (!pointer.inside) {
       this.#pointerX = undefined;
       this.#pointerSpeed = 0;

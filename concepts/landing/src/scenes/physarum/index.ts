@@ -22,7 +22,7 @@ const INK = PALETTES.indexOf("ink");
 const params: readonly ParamDef[] = [
   choice(
     "mould",
-    "agents",
+    "specks",
     "plasmodium",
     physarumAgentCounts.map((count, value) => ({ label: `${count / 1024}k`, value })),
     PHYSARUM_AGENTS_DEFAULT,

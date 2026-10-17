@@ -1,6 +1,8 @@
-// The pointer's wake on the shore: wherever the pointer moves over the page it stirs the water and
-// the wet sand, leaving a fading trail (uSim0.r) that the shader turns into swirls of plankton light.
-// Noctiluca flashes only while it is being disturbed, so the trail fades within a couple of seconds.
+// Hands' wakes on the shore: wherever a principal (the visitor, an agent) moves over the page it
+// stirs the water and the wet sand, leaving a fading trail (uSim0.r) that the shader turns into
+// swirls of plankton light. Noctiluca flashes only while it is being disturbed, so the trail fades
+// within a couple of seconds.
+import { MAX_PRINCIPALS } from "../../principals.ts";
 import { DataTexture } from "../../sims/texture.ts";
 import { TrailField } from "../../sims/trail.ts";
 import type { SceneSim, SimFactory, SimFrame } from "../types.ts";
@@ -12,7 +14,7 @@ const HALF_LIFE = 1.4;
 /** Radius of the stirred patch, in uv heights; a held button stirs a wider patch. */
 const RADIUS = 0.035;
 const HELD_RADIUS = 0.05;
-/** Light one pass of the pointer leaves along its middle, however fast it goes. */
+/** Light one pass of a hand leaves along its middle, however fast it goes. */
 const PASS = 0.33;
 /** Light per second while the button is held, moving or not: poking the water. */
 const HELD = 7.2;
@@ -41,12 +43,16 @@ export const shoreSim: SimFactory = (gl) => {
         texture = new DataTexture(gl, { width: columns, height: ROWS, format: "r8" });
       texture.resize(columns, ROWS);
 
-      const pointer = frame.pointer;
-      if (pointer.inside) {
-        const radius = pointer.down ? HELD_RADIUS : RADIUS;
-        field.stroke(pointer.x, pointer.y, radius, PASS, frame.aspect);
-        if (pointer.down) field.hold(pointer.x, pointer.y, radius, HELD * frame.dt, frame.aspect);
-      } else field.lift();
+      for (let i = 0; i < MAX_PRINCIPALS; i++) {
+        const hand = frame.principals[i];
+        if (hand === undefined || !hand.inside) {
+          field.lift(i);
+          continue;
+        }
+        const radius = hand.down ? HELD_RADIUS : RADIUS;
+        field.stroke(hand.x, hand.y, radius, PASS, frame.aspect, i);
+        if (hand.down) field.hold(hand.x, hand.y, radius, HELD * frame.dt, frame.aspect);
+      }
       // The glow fades on the scene's own clock, so a paused or frozen scene keeps its swirls.
       field.decay(frame.dt * frame.motion, HALF_LIFE);
 

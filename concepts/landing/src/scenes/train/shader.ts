@@ -2291,7 +2291,7 @@ Shade sceneTrain(vec2 uv, vec2 cell, float t) {
   for (int i = 0; i < 4; i++) jolt += exp(-knock[i] * 14.0) * sin(knock[i] * 70.0);
   jolt *= 0.5 * beat;
   jolt += trainPassRattle;
-  float press = t - uMouse.w;
+  float press = t - uPrincipals[0].w;
   if (trainPassAge >= 0.0) press = min(press, trainPassAge);
   float rock = (0.3 + 0.7 * K_rhythm) * smoothstep(1.0, 10.0, trainV) * (0.6 * sin(tm * 1.7 + 0.8 * sin(tm * 0.23)) + 0.4 * sin(tm * 2.9 + 1.3));
   float brake = clamp(-trainAcc, -1.5, 1.5);

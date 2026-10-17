@@ -54,12 +54,14 @@
 // window edge comes to rest, and the field on show stays up, stretched, until the regrown one has
 // landed; a newer shape or pattern supersedes a growth still in progress.
 //
-// Melt. A TrailField records the pointer's warmth. Where it is warm enough the frost melts; once
-// it cools, the meltwater refreezes from the cleared patch's edges inward (only texels next to
-// frozen glass refreeze quickly), and the new frost there starts thin and thickens back. While no
-// warmth is left and nothing is melted or regrowing, the melt grid is not stepped at all.
+// Melt. A TrailField records the principals' warmth, a stroke each. Where it is warm enough the
+// frost melts; once it cools, the meltwater refreezes from the cleared patch's edges inward (only
+// texels next to frozen glass refreeze quickly), and the new frost there starts thin and thickens
+// back. While no warmth is left and nothing is melted or regrowing, the melt grid is not stepped at
+// all.
 import { MARK_VERTICES } from "../../mark.ts";
 import { KnobReader, type ParamDef } from "../../params.ts";
+import { MAX_PRINCIPALS } from "../../principals.ts";
 import { type BuildKind, BuildSlot } from "../../sims/build.ts";
 import { smoothstep } from "../../sims/math.ts";
 import { Random } from "../../sims/random.ts";
@@ -1174,21 +1176,27 @@ export function frostSim(params: readonly ParamDef[]): SimFactory {
       detailTexture.upload(next.detail);
     };
 
-    /** Warm the glass under the pointer: a held fingertip melts, a passing hand only breathes on it. */
+    /**
+     * Warm the glass under every hand over it (each principal's its own stroke): a held fingertip
+     * melts, a passing hand only breathes on it.
+     */
     const touch = (frame: SimFrame, glass: MeltField): void => {
       const warmth = knobs.value(frame, "warmth");
-      const { pointer, aspect, dt } = frame;
-      if (warmth <= 0 || !pointer.inside || dt <= 0) {
-        glass.heat.lift();
-        return;
-      }
+      const { aspect, dt } = frame;
       const radius = TOUCH_RADIUS[0] + (TOUCH_RADIUS[1] - TOUCH_RADIUS[0]) * warmth;
-      if (pointer.pressed) glass.heat.lift();
-      if (pointer.down) {
-        const heat = 0.55 + 0.45 * warmth;
-        glass.heat.stroke(pointer.x, pointer.y, radius, HELD_PASS * heat, aspect);
-        glass.heat.hold(pointer.x, pointer.y, radius, Math.min(1, dt * WARM_RATE) * heat, aspect);
-      } else glass.heat.stroke(pointer.x, pointer.y, radius * 1.25, HOVER_PASS, aspect);
+      for (let i = 0; i < MAX_PRINCIPALS; i++) {
+        const hand = frame.principals[i];
+        if (warmth <= 0 || hand === undefined || !hand.inside || dt <= 0) {
+          glass.heat.lift(i);
+          continue;
+        }
+        if (hand.pressed) glass.heat.lift(i);
+        if (hand.down) {
+          const heat = 0.55 + 0.45 * warmth;
+          glass.heat.stroke(hand.x, hand.y, radius, HELD_PASS * heat, aspect, i);
+          glass.heat.hold(hand.x, hand.y, radius, Math.min(1, dt * WARM_RATE) * heat, aspect);
+        } else glass.heat.stroke(hand.x, hand.y, radius * 1.25, HOVER_PASS, aspect, i);
+      }
     };
 
     /** The Manifold M: a fingertip writes it in the frost on "now", and now and then while on. */

@@ -3,6 +3,7 @@
 // slope) is read back: bare walls must send waves back into the tank, while the open water away from
 // the edges starts out the same either way (the knob is not a second damping).
 import { effective } from "../../params.ts";
+import { visitorAlone } from "../../principals.ts";
 import { GpuCompute } from "../../sims/gpu.ts";
 import type { SimFrame } from "../types.ts";
 import { rippleScene } from "./index.ts";
@@ -106,7 +107,7 @@ export function rippleEdgesVerify(gl: WebGL2RenderingContext): Record<string, un
       params: raw,
       triggers: Array.from({ length: 8 }, () => -1e4),
       fired: Array.from({ length: 8 }, () => false),
-      pointer: { x: 0.5, y: 0.5, inside: false, down: false, pressed: false, released: false },
+      ...visitorAlone(),
       passage: { enter: 1, exit: 0 },
     };
     const first = read(sim.frame(frame)[0]);

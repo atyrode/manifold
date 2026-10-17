@@ -66,7 +66,7 @@ import { clamp, lerp, smoothstep } from "../../sims/math.ts";
 import { Random } from "../../sims/random.ts";
 import { springStep, type Spring } from "../../sims/spring.ts";
 import { DataTexture } from "../../sims/texture.ts";
-import type { PointerState, SceneSim, SimFactory, SimFrame } from "../types.ts";
+import type { PrincipalState, SceneSim, SimFactory, SimFrame } from "../types.ts";
 
 const TAU = Math.PI * 2;
 /** TAU as the shader spells it, so the gust phases match the GLSL. */
@@ -1406,7 +1406,7 @@ class MeadowSim implements SceneSim {
   }
 
   /** Follow the pointer: present over the page, stronger as it moves or while held. */
-  #follow(pointer: PointerState, dt: number): void {
+  #follow(pointer: PrincipalState, dt: number): void {
     if (dt <= 0) return;
     const x = pointer.x * this.#aspect;
     const y = pointer.y;
@@ -1448,7 +1448,7 @@ class MeadowSim implements SceneSim {
   }
 
   /** A click blows a handful of seeds off the clock nearest the pointer, away from it. */
-  #blowNearest(pointer: PointerState): void {
+  #blowNearest(pointer: PrincipalState): void {
     const x = pointer.x * this.#aspect;
     const y = pointer.y;
     let best: Clock | undefined;

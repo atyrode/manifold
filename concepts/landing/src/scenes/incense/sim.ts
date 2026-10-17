@@ -38,6 +38,7 @@
 // Units are frame heights, p = uv * (aspect, 1), as in the fluid. Everything stands on the table at
 // the anchor (INCENSE_X of the width, INCENSE_FLOOR up); the table is the fluid's floor.
 import { KnobReader, type ParamDef } from "../../params.ts";
+import { MAX_PRINCIPALS } from "../../principals.ts";
 import { gpuCommonGlsl } from "../../shaders/common.ts";
 import { glslFloat } from "../../shaders/glsl.ts";
 import { FieldBetween } from "../../sims/between.ts";
@@ -1048,10 +1049,10 @@ class Plume {
   #seeded = false;
   /** Prewarm steps done so far. */
   #warmed = 0;
-  /** Whether the pointer was over the page last frame, and where. */
-  #handed = false;
-  #handX = 0;
-  #handY = 0;
+  /** Each hand (by principal): whether it was over the page last frame, and where. */
+  readonly #handed = new Array<boolean>(MAX_PRINCIPALS).fill(false);
+  readonly #handX = new Float64Array(MAX_PRINCIPALS);
+  readonly #handY = new Float64Array(MAX_PRINCIPALS);
   /** The entrance's thread: how high its head has been drawn, and the last row of veils (heights above the source). */
   #headH = 0;
   #veilH = VEIL_FROM - VEIL_STEP;
@@ -1261,35 +1262,38 @@ class Plume {
   }
 
   /**
-   * A hand moving through the air pushes it along: a share of its speed, up to HAND_MAX, given to
-   * the air for each step's worth of time this frame holds, so a sweep of the hand pushes as hard at
-   * any frame rate.
+   * Every hand moving through the air pushes it along: a share of its speed, up to HAND_MAX, given
+   * to the air for each step's worth of time this frame holds, so a sweep of the hand pushes as hard
+   * at any frame rate.
    */
   #touch(frame: SimFrame, aspect: number, on: boolean): void {
-    const pointer = frame.pointer;
-    const hadHand = this.#handed;
-    const lastX = this.#handX;
-    const lastY = this.#handY;
-    this.#handed = pointer.inside;
-    this.#handX = pointer.x;
-    this.#handY = pointer.y;
     const dt = frame.dt * frame.motion;
-    if (!on || !hadHand || !pointer.inside || dt <= 0 || frame.dt <= 0) return;
-    let vx = ((pointer.x - lastX) * aspect) / frame.dt;
-    let vy = (pointer.y - lastY) / frame.dt;
-    const speed = Math.hypot(vx, vy);
-    if (speed < 0.01) return;
-    const scale = Math.min(HAND_GAIN, HAND_MAX / speed) * (dt / STEP);
-    vx *= scale;
-    vy *= scale;
-    this.#push[0] = vx;
-    this.#push[1] = vy;
-    this.fluid.splat(
-      pointer.x,
-      pointer.y,
-      pointer.down ? 1.4 * HAND_RADIUS : HAND_RADIUS,
-      this.#splatHand,
-    );
+    for (let p = 0; p < MAX_PRINCIPALS; p++) {
+      const hand = frame.principals[p];
+      const hadHand = this.#handed[p] === true;
+      const lastX = this.#handX[p] ?? 0;
+      const lastY = this.#handY[p] ?? 0;
+      this.#handed[p] = hand?.inside === true;
+      if (hand === undefined) continue;
+      this.#handX[p] = hand.x;
+      this.#handY[p] = hand.y;
+      if (!on || !hadHand || !hand.inside || dt <= 0 || frame.dt <= 0) continue;
+      let vx = ((hand.x - lastX) * aspect) / frame.dt;
+      let vy = (hand.y - lastY) / frame.dt;
+      const speed = Math.hypot(vx, vy);
+      if (speed < 0.01) continue;
+      const scale = Math.min(HAND_GAIN, HAND_MAX / speed) * (dt / STEP);
+      vx *= scale;
+      vy *= scale;
+      this.#push[0] = vx;
+      this.#push[1] = vy;
+      this.fluid.splat(
+        hand.x,
+        hand.y,
+        hand.down ? 1.4 * HAND_RADIUS : HAND_RADIUS,
+        this.#splatHand,
+      );
+    }
   }
 
   #step(dt: number, burner: Burner, doors: Doors, settings: Settings, aspect: number): void {

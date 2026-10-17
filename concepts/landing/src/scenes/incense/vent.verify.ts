@@ -4,6 +4,7 @@
 // ceiling along while leaving the air the fresh thread rises through as it was, where a draft that
 // moves the ceiling layer at all bends the thread with it.
 import { effective } from "../../params.ts";
+import { visitorAlone } from "../../principals.ts";
 import { GpuCompute } from "../../sims/gpu.ts";
 import type { SimFrame } from "../types.ts";
 import { incenseScene } from "./index.ts";
@@ -60,7 +61,7 @@ export function incenseVentVerify(gl: WebGL2RenderingContext): Record<string, un
       params: raw,
       triggers: Array.from({ length: 8 }, () => -1e4),
       fired: Array.from({ length: 8 }, () => false),
-      pointer: { x: 0.5, y: 0.5, inside: false, down: false, pressed: false, released: false },
+      ...visitorAlone(),
       passage: { enter: 1, exit: 0 },
     };
     // The prewarm takes at least a step a frame, however slow the machine, and holds still at dt 0

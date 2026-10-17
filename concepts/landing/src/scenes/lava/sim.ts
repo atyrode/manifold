@@ -56,7 +56,7 @@ import { runBudgeted } from "../../sims/clock.ts";
 import { materialAt } from "../../sims/material.ts";
 import { approach, clamp, easeFactor, smoothstep } from "../../sims/math.ts";
 import { DataTexture } from "../../sims/texture.ts";
-import type { PointerState, SceneSim, SimFactory, SimFrame } from "../types.ts";
+import type { PrincipalState, SceneSim, SimFactory, SimFrame } from "../types.ts";
 
 // ---- the lamp's shape and the room's layout, shared with the shader -----------------------------
 
@@ -961,7 +961,7 @@ class Lamp {
 // ---- the simulation ----------------------------------------------------------------------------
 
 /** Where the pointer rests on lamp `index`'s glass (glass units), if it does. */
-function handOn(pointer: PointerState, aspect: number, index: number): Hand | undefined {
+function handOn(pointer: PrincipalState, aspect: number, index: number): Hand | undefined {
   const lamp = LAMPS[index === 0 ? 0 : 1];
   const lx = (pointer.x * aspect - lamp.x * aspect) / lamp.size;
   const gy = ((pointer.y - lamp.foot) / lamp.size - SHAPE.base) / SHAPE.glass;

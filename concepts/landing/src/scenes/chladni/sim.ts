@@ -80,7 +80,7 @@ import { halfBits } from "../../sims/half.ts";
 import { clamp, hash31, smoothstep } from "../../sims/math.ts";
 import { Random } from "../../sims/random.ts";
 import { DataTexture, DirtyRegion } from "../../sims/texture.ts";
-import type { PointerState, SceneSim, SimFactory, SimFrame } from "../types.ts";
+import type { PrincipalState, SceneSim, SimFactory, SimFrame } from "../types.ts";
 
 const TAU = Math.PI * 2;
 
@@ -1367,7 +1367,7 @@ class ChladniSim implements SceneSim {
   }
 
   /** Click: a pinch of sand where the pointer is. Drag: a trail of it, and a trickle while held still. */
-  #pourAt(pointer: PointerState, dt: number, aspect: number): void {
+  #pourAt(pointer: PrincipalState, dt: number, aspect: number): void {
     const a = aspect > 0 ? aspect : 16 / 9;
     const half = Math.min(CHLADNI_PLATE, (CHLADNI_PLATE_FIT * a) / 2);
     const x = ((pointer.x - 0.5) * a) / half;

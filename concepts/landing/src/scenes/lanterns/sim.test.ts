@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import { HeadlessSim, type HeadlessFrame } from "../../sims/headless.ts";
-import type { PointerState } from "../types.ts";
+import type { PrincipalState } from "../types.ts";
 import { lanternsScene } from "./index.ts";
 import { EYE, FOCAL, HORIZON, LANTERN_HALF, MAX_LANTERNS, ROCKS } from "./sim.ts";
 
@@ -11,12 +11,15 @@ interface Seen {
   age: number;
 }
 
+/** The visitor as the river's frames hold it: where it is and its button, its velocity derived. */
+type Hand = Omit<PrincipalState, "vx" | "vy" | "kind">;
+
 /** The river's frames: sixtieths of a second at 16:9, the pointer over the water, changed in place. */
 function river(): {
   sim: HeadlessSim;
-  frame: HeadlessFrame & { aspect: number; pointer: PointerState };
+  frame: HeadlessFrame & { aspect: number; pointer: Hand };
 } {
-  const pointer: PointerState = {
+  const pointer: Hand = {
     x: 0.4,
     y: 0.3,
     inside: true,

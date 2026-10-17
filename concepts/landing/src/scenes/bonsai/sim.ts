@@ -29,7 +29,7 @@ import { FixedStep } from "../../sims/clock.ts";
 import { easeFactor, smoothstep } from "../../sims/math.ts";
 import { mulberry32 } from "../../sims/random.ts";
 import { DataTexture } from "../../sims/texture.ts";
-import type { PointerState, SceneSim, SimFactory, SimFrame } from "../types.ts";
+import type { PrincipalState, SceneSim, SimFactory, SimFrame } from "../types.ts";
 import {
   BONSAI_ATLAS,
   BONSAI_FIELD,
@@ -597,7 +597,7 @@ class BonsaiSim implements SceneSim {
   }
 
   /** The pointer in display units; moving over a pad stirs it, a press prunes what is under it. */
-  #trackPointer(pointer: PointerState, dt: number, aspect: number): void {
+  #trackPointer(pointer: PrincipalState, dt: number, aspect: number): void {
     if (!pointer.inside) {
       this.#pointerX = undefined;
       this.#pointerVX = 0;

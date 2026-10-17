@@ -1,4 +1,5 @@
 import { expect, test } from "bun:test";
+import { visitorAlone } from "../../principals.ts";
 import { HeadlessSim } from "../../sims/headless.ts";
 import type { SimFrame } from "../types.ts";
 import { dunesScene } from "./index.ts";
@@ -24,7 +25,7 @@ function frameAt(x: number, y: number, parallax = 0): SimFrame {
     params: {},
     triggers: [],
     fired: [],
-    pointer: { x, y, inside: true, down: true, pressed: true, released: false },
+    ...visitorAlone({ x, y, inside: true, down: true, pressed: true }),
     parallax: { x: parallax, y: 0 },
     passage: { enter: 1, exit: 0 },
   };

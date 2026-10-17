@@ -28,7 +28,7 @@ import { KnobReader, type ParamDef } from "../../params.ts";
 import { clamp, easeFactor, smoothstep } from "../../sims/math.ts";
 import { ElasticPan } from "../../sims/pan.ts";
 import type {
-  PointerState,
+  PrincipalState,
   SceneDef,
   ScenePassageProgress,
   SceneSim,
@@ -603,7 +603,7 @@ class FractalSim implements SceneSim {
    * than the frame's half-diagonal, as it would unpanned: no stack of drags flings the picture off
    * screen or drives c far off its walk.
    */
-  #steer(pointer: PointerState, dt: number): void {
+  #steer(pointer: PrincipalState, dt: number): void {
     const aspect = this.#aspect;
     const at: Complex = [(pointer.x - 0.5) * aspect * 2, (pointer.y - 0.5) * 2];
     const dragging = pointer.down && pointer.inside;
@@ -852,7 +852,7 @@ class FractalSim implements SceneSim {
     return unimodular(compose(flow, compose(GASKET_CLASSIC, compose(turn, compose(lean, shrink)))));
   }
 
-  #advanceGarden(drift: number, real: number, pointer: PointerState): void {
+  #advanceGarden(drift: number, real: number, pointer: PrincipalState): void {
     const knobs = this.#knobs;
     this.#dance += drift;
     this.#rake += drift / GARDEN_RAKE;

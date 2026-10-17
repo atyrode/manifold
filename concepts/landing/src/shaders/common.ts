@@ -4,6 +4,7 @@
 
 import { markGlsl } from "../mark.ts";
 import { MAX_PARAMS, MAX_TRIGGERS } from "../params.ts";
+import { MAX_PRINCIPALS } from "../principals.ts";
 
 /**
  * The preamble's GLSL helpers that read no uniform: hashing, value noise, band-limited fbm,
@@ -197,6 +198,7 @@ precision highp sampler2D;
 #define MAX_CON_STARS 48
 #define MAX_CON_LINES 48
 #define MAX_TRIGGERS ${MAX_TRIGGERS}
+#define MAX_PRINCIPALS ${MAX_PRINCIPALS}
 #define TAU 6.2831853
 
 uniform vec2 uRes;
@@ -209,7 +211,9 @@ uniform float uMotion;
 uniform float uMotionTime; // the scene clock integrated with motion (seconds of motion-scaled time): no jump when uMotion changes
 uniform float uFallTime;   // the scene clock integrated with min(1, 2.5 uMotion): gravity's clock, real time once motion is above 0.4
 uniform vec2 uPointer;   // -1..1, smoothed
-uniform vec4 uMouse;     // raw pointer: xy in uv (y up), z 1 while pressed, w uTime of the last press (-1e4: none)
+uniform vec4 uPrincipals[MAX_PRINCIPALS]; // everyone present (src/principals.ts), the visitor first, then the agents: xy in uv (y up), z 1 while pressed, w uTime of its last press (-1e4: none)
+uniform int uPrincipalCount; // how many of uPrincipals are present: 1 (the visitor) and up
+uniform vec4 uPrincipalMotion[MAX_PRINCIPALS / 2]; // each principal's velocity in uv per second, two a row: read it with principalMotion
 uniform vec3 uBg;
 uniform vec3 uInk;
 uniform vec3 uAccent;
@@ -334,6 +338,12 @@ float conBright(int i) {
 ivec2 conLine(int i) {
   vec4 pair = uConLines[i >> 1];
   return ivec2((i & 1) == 0 ? pair.xy : pair.zw);
+}
+
+// Principal i's velocity in uv per second (uPrincipalMotion holds two principals a row).
+vec2 principalMotion(int i) {
+  vec4 pair = uPrincipalMotion[i >> 1];
+  return (i & 1) == 0 ? pair.xy : pair.zw;
 }
 
 // Seconds since a "now" button fired (negative or huge when idle).

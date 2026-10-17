@@ -32,6 +32,7 @@
 //          mist is here, about 1.
 import { markVertex } from "../../mark.ts";
 import type { ParamDef } from "../../params.ts";
+import { MAX_PRINCIPALS } from "../../principals.ts";
 import { type BuildKind, BuildSlot } from "../../sims/build.ts";
 import { FixedStep } from "../../sims/clock.ts";
 import { approach, clamp, easeFactor, hash31, lerp, smoothstep } from "../../sims/math.ts";
@@ -40,7 +41,7 @@ import { mulberry32, Random } from "../../sims/random.ts";
 import { atEase, facing, isShy, stepShrink, type Shrink } from "../../sims/temperament.ts";
 import { DataTexture } from "../../sims/texture.ts";
 import { skyNow } from "../../world-clock.ts";
-import type { PointerState, SceneSim, SimFactory, SimFrame } from "../types.ts";
+import type { PrincipalState, SceneSim, SimFactory, SimFrame } from "../types.ts";
 
 // ---- the forest's layout, shared with shader.ts ----
 
@@ -616,10 +617,14 @@ class ForestLife {
   #vx = 0;
   #vy = 0;
 
-  // The pointer, in screen units (x from the centre); undefined while it is away.
-  #pointerX: number | undefined;
-  #pointerY = 0;
-  #sinceStir = 0;
+  // Each hand (by principal), in screen units (x from the centre), `on` while it is over the page,
+  // and the seconds since it last stirred the air.
+  readonly #hands = Array.from({ length: MAX_PRINCIPALS }, () => ({
+    on: false,
+    x: 0,
+    y: 0,
+    sinceStir: 0,
+  }));
 
   // Triggers: a "now" stamps its slot with the scene clock, so any change fires.
   #primed = false;
@@ -812,11 +817,12 @@ class ForestLife {
     if (this.#arriving) this.#stageEntrance();
   }
 
-  /** One frame: the passage, the "now"s, the pointer, the steps due; true when there is something new to upload. */
+  /** One frame: the passage, the "now"s, the hands, the steps due; true when there is something new to upload. */
   frame(frame: SimFrame, aspect: number): boolean {
     this.#playPassage(frame.passage.enter, frame.passage.exit);
     this.#watchTriggers(frame.triggers, aspect);
-    this.#trackPointer(frame.pointer, frame.dt, aspect);
+    for (let p = 0; p < MAX_PRINCIPALS; p++)
+      this.#trackHand(p, frame.principals[p], frame.dt, aspect);
     const advance = Math.max(0, frame.dt) * Math.max(0, frame.motion);
     for (let s = 0, n = this.#steps.advance(advance); s < n; s++) this.#step(STEP, aspect);
     if (!(advance > 0 || this.#dirty)) return false;
@@ -839,27 +845,33 @@ class ForestLife {
     this.#primed = true;
   }
 
-  /** The pointer drags the air (and the motes and the mist) along behind it; a click calls a spirit. */
-  #trackPointer(pointer: PointerState, dt: number, aspect: number): void {
-    if (!pointer.inside) {
-      this.#pointerX = undefined;
+  /**
+   * Hand `p` (undefined: not present) drags the air (and the motes and the mist) along behind it; a
+   * click calls a spirit.
+   */
+  #trackHand(p: number, pointer: PrincipalState | undefined, dt: number, aspect: number): void {
+    const hand = this.#hands[p];
+    if (hand === undefined) return;
+    if (pointer === undefined || !pointer.inside) {
+      hand.on = false;
       return;
     }
     const px = (pointer.x - 0.5) * aspect;
     const py = pointer.y;
-    if (this.#pointerX !== undefined && dt > 0) {
-      const vx = (px - this.#pointerX) / dt;
-      const vy = (py - this.#pointerY) / dt;
-      this.#sinceStir += dt;
+    if (hand.on && dt > 0) {
+      const vx = (px - hand.x) / dt;
+      const vy = (py - hand.y) / dt;
+      hand.sinceStir += dt;
       const speed = Math.hypot(vx, vy);
-      if (speed > 0.05 && this.#sinceStir >= STIR_EVERY) {
-        this.#sinceStir = 0;
+      if (speed > 0.05 && hand.sinceStir >= STIR_EVERY) {
+        hand.sinceStir = 0;
         const k = Math.min(1, STIR_MAX_SPEED / (speed * STIR_GAIN));
         this.#addStir(px, py, vx * STIR_GAIN * k, vy * STIR_GAIN * k);
       }
     }
-    this.#pointerX = px;
-    this.#pointerY = py;
+    hand.on = true;
+    hand.x = px;
+    hand.y = py;
     if (pointer.pressed) this.#press(px, py);
   }
 
@@ -1105,17 +1117,26 @@ class ForestLife {
       spirit.rattle = approach(spirit.rattle, spirit.turnAge >= 0 ? 1 : 0, h, 0.15);
       spirit.yawHold = Math.max(0, spirit.yawHold - h);
 
-      // The pointer near its head: a curious spirit turns to look at it, a shy one ducks into the moss
-      // looking away, and peeps back up a while after the pointer has gone (sims/temperament.ts).
+      // The nearest hand near its head: a curious spirit turns to look at it, a shy one ducks into
+      // the moss looking away, and peeps back up a while after it has gone (sims/temperament.ts).
       const perch = this.#perches[spirit.perch];
       const shy = isShy(spirit.trait, this.#shyness);
       let engaged = false;
-      if (perch && this.#pointerX !== undefined && spirit.state !== "fading") {
-        const dx = this.#pointerX - perch.x;
-        const dy = this.#pointerY - (perch.y + (0.75 * spirit.size) / perch.z);
+      if (perch && spirit.state !== "fading") {
+        const headY = perch.y + (0.75 * spirit.size) / perch.z;
         const reach = shy ? SHY_REACH : CURIOUS_REACH;
-        if (dx * dx + dy * dy < reach * reach) {
+        let nearest = reach * reach;
+        let dx = 0;
+        for (const hand of this.#hands) {
+          if (!hand.on) continue;
+          const hx = hand.x - perch.x;
+          const hy = hand.y - headY;
+          if (hx * hx + hy * hy >= nearest) continue;
+          nearest = hx * hx + hy * hy;
+          dx = hx;
           engaged = true;
+        }
+        if (engaged) {
           spirit.yawTo = facing(dx, 0.1, shy);
           const want = (shy ? 1 : -1) * Math.sign(dx) * 0.3 * (0.8 + 0.4 * spirit.variant);
           if (spirit.turnAge < 0 && spirit.sinceTurn > 0.8 && Math.abs(spirit.turnTo - want) > 0.25)

@@ -28,16 +28,18 @@
 //     now                         the wall clock handed over as SimFrame.now, milliseconds
 //     dispose()                   the sim's
 //
-// A HeadlessFrame is all optional: dt 1/60 s, motion 1, aspect 16 / 9 at 540 cells high, the pointer
-// over the page at its centre with no button, no parallax, arrived and not leaving. The wall clock
-// (SimFrame.now) moves on by `elapsed` milliseconds a frame, by default dt's (a sixtieth of a second
-// while dt is 0, as a paused page goes on drawing), and the budget is Infinity, so a warm-up ends in
-// the first frame (give a finite `budget` to test one spread over frames). `knobs` are keyed
-// as in the URL (features also `<key>-amount`) and handed over as given, unclamped, so a test may go
-// past a slider's end; the rest are at their defaults, as the lab fills them, so `params` and
-// `values` are what the renderer would hand over. `now` presses those knobs' "now" buttons just
-// before the frame: each slot is stamped on the clock as it stood and keeps its stamp, as the lab's,
-// and the frame reports it fired; a sim's first frame, as in the renderer, reports no presses.
+// A HeadlessFrame is all optional: dt 1/60 s, motion 1, aspect 16 / 9 at 540 cells high, the visitor
+// over the page at its centre with no button and no agents beside it, no parallax, arrived and not
+// leaving. Each principal moves at what it moved since the previous frame over the frame's wall
+// time, unless its velocity is given. The wall clock (SimFrame.now) moves on by `elapsed`
+// milliseconds a frame, by default dt's (a sixtieth of a second while dt is 0, as a paused page goes
+// on drawing), and the budget is Infinity, so a warm-up ends in the first frame (give a finite
+// `budget` to test one spread over frames). `knobs` are keyed as in the URL (features also
+// `<key>-amount`) and handed over as given, unclamped, so a test may go past a slider's end; the
+// rest are at their defaults, as the lab fills them, so `params` and `values` are what the renderer
+// would hand over. `now` presses those knobs' "now" buttons just before the frame: each slot is
+// stamped on the clock as it stood and keeps its stamp, as the lab's, and the frame reports it
+// fired; a sim's first frame, as in the renderer, reports no presses.
 //
 // Usage (a drag held still while the screen turns portrait must not move the plane):
 //   const sim = new HeadlessSim(hyperbolicScene);
@@ -48,9 +50,10 @@
 //
 // Rows run bottom to top, as DataTexture uploads them.
 import { effective, knobDef, MAX_TRIGGERS } from "../params.ts";
+import { principal } from "../principals.ts";
 import { RatePhases } from "../rate-phase.ts";
 import { sceneIds } from "../scenes/index.ts";
-import type { PointerState, ScenePassageProgress, SceneDef, SceneSim } from "../scenes/types.ts";
+import type { PrincipalState, ScenePassageProgress, SceneDef, SceneSim } from "../scenes/types.ts";
 import { paramDefaults } from "../state.ts";
 import { halfValue } from "./half.ts";
 
@@ -279,8 +282,10 @@ export interface HeadlessFrame {
   height?: number;
   /** Knobs keyed as in the URL (features also `<key>-amount`), as given; the rest at their defaults. */
   knobs?: Readonly<Record<string, number>>;
-  /** Over the page at its centre, no button, unless given. */
-  pointer?: Partial<PointerState>;
+  /** The visitor (principal 0, SimFrame.pointer): over the page at its centre, no button, unless given. */
+  pointer?: Partial<PrincipalState>;
+  /** The principals after the visitor, in order: agents over the page, unless given (default none). */
+  agents?: readonly Partial<PrincipalState>[];
   /** The smoothed pointer parallax, -1..1 each way (default 0, 0). */
   parallax?: Partial<{ x: number; y: number }>;
   /** Knobs whose "now" was pressed since the previous frame. */
@@ -305,6 +310,8 @@ export class HeadlessSim {
   #motionTime = 0;
   #now = 0;
   readonly #phases: RatePhases;
+  /** The previous frame's principals, for their velocities. */
+  #principals: readonly PrincipalState[] = [];
 
   constructor(scene: SceneDef, gl?: WebGL2RenderingContext) {
     const id = sceneIds.find((candidate) => candidate === scene.id);
@@ -358,7 +365,17 @@ export class HeadlessSim {
     this.#time += dt;
     this.#motionTime += dt * motion;
     this.#phases.step(values, dt * motion);
-    this.#now += options.elapsed ?? (dt > 0 ? dt * 1000 : 1000 / 60);
+    const elapsed = options.elapsed ?? (dt > 0 ? dt * 1000 : 1000 / 60);
+    this.#now += elapsed;
+    const seconds = Math.min(elapsed / 1000, 0.1);
+    const visitor = this.#principal(0, { inside: true, ...options.pointer }, seconds);
+    const principals = [
+      visitor,
+      ...(options.agents ?? []).map((agent, i) =>
+        this.#principal(i + 1, { inside: true, kind: "agent", ...agent }, seconds),
+      ),
+    ];
+    this.#principals = principals;
     for (let slot = 0; slot < MAX_TRIGGERS; slot++) {
       const stamp = this.#triggers[slot] ?? NEVER;
       this.#fired[slot] = !this.#entered && stamp > NEVER && stamp !== this.#seen[slot];
@@ -380,15 +397,8 @@ export class HeadlessSim {
       phases: this.#phases.byKey,
       triggers: this.#triggers,
       fired: this.#fired,
-      pointer: {
-        x: 0.5,
-        y: 0.5,
-        inside: true,
-        down: false,
-        pressed: false,
-        released: false,
-        ...options.pointer,
-      },
+      pointer: visitor,
+      principals,
       parallax: { x: 0, y: 0, ...options.parallax },
       passage: { enter: 1, exit: 0, ...options.passage },
     });
@@ -416,6 +426,18 @@ export class HeadlessSim {
 
   dispose(): void {
     this.#sim.dispose();
+  }
+
+  /**
+   * Principal `index` as given (`at` over a principal at rest, see `principal`), moving at what it
+   * moved since the previous frame over `seconds`, unless its velocity is given.
+   */
+  #principal(index: number, at: Partial<PrincipalState>, seconds: number): PrincipalState {
+    const p = principal(at);
+    const was = this.#principals[index];
+    if (at.vx === undefined) p.vx = was !== undefined && seconds > 0 ? (p.x - was.x) / seconds : 0;
+    if (at.vy === undefined) p.vy = was !== undefined && seconds > 0 ? (p.y - was.y) / seconds : 0;
+    return p;
   }
 
   #standIn(): HeadlessGl {

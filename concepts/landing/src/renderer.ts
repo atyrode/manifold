@@ -18,7 +18,8 @@ import {
   SETTLE_SECONDS,
   type Picture,
 } from "./governor.ts";
-import { MAX_PARAMS, MAX_TRIGGERS } from "./params.ts";
+import { MAX_PARAMS, MAX_TRIGGERS, type ParamDef } from "./params.ts";
+import { Cast, Presence, principal } from "./principals.ts";
 import { RatePhases } from "./rate-phase.ts";
 import {
   annotate,
@@ -30,7 +31,7 @@ import {
 } from "./program-cache.ts";
 import { sceneDefs, type SceneId } from "./scenes/index.ts";
 import type { PlanetUniforms } from "./scenes/planets.ts";
-import type { PointerState, SceneSim } from "./scenes/types.ts";
+import type { PrincipalState, SceneSim } from "./scenes/types.ts";
 import { vertexSource } from "./shaders/index.ts";
 import { forgetSheets } from "./scenes/pond/sheet.ts";
 import type { Params } from "./state.ts";
@@ -71,6 +72,8 @@ export interface RenderSettings {
   /** The current scene's planets as skyGiant takes them (none for a scene without). */
   planets: PlanetUniforms;
   followPointer: boolean;
+  /** Agents of the cast present beside the visitor, 0..MAX_AGENTS (src/principals.ts). */
+  agents: number;
   view: ViewId;
   /** Scenes enter and leave with their own choreography and a dissolve, instead of cutting. */
   passage: boolean;
@@ -155,6 +158,27 @@ interface ActiveScene {
    * small however long the page has been open.
    */
   readonly origin: { readonly clock: number; readonly motion: number; readonly fall: number };
+  /** Who is present in it beside the visitor: see `ScenePresence`. */
+  readonly presence: ScenePresence;
+}
+
+/**
+ * A scene's principals (src/principals.ts): what its sim and shader see of them each frame, and the
+ * cast that places its agents, from the scene's seed knob (where `seed` sits in `params`, -1
+ * without one; the cast is drawn afresh when that knob turns) and its motion clock.
+ */
+interface ScenePresence {
+  readonly frame: Presence;
+  cast: Cast;
+  readonly seed: number;
+}
+
+function scenePresence(params: readonly ParamDef[]): ScenePresence {
+  return {
+    frame: new Presence(),
+    cast: new Cast(0),
+    seed: params.findIndex((def) => def.kind === "seed"),
+  };
 }
 
 /**
@@ -343,7 +367,7 @@ export class DitherRenderer {
   #entering = false;
   /** Smoothed parallax (-1..1 over the window), eased toward the target `tx`, `ty`. */
   readonly #pointer = { x: 0, y: 0, tx: 0, ty: 0 };
-  /** The raw pointer for `uMouse` and simulations; mapped to stage uv once per frame. */
+  /** The visitor's pointer as the page reports it; mapped to stage uv once per frame (`#visitor`). */
   readonly #mouse = {
     clientX: window.innerWidth / 2,
     clientY: window.innerHeight / 2,
@@ -355,6 +379,13 @@ export class DitherRenderer {
     /** Interaction-clock time of the last press that started over the page. */
     pressedAt: NEVER,
   };
+  /**
+   * The visitor, principal 0 (`SimFrame.pointer`, `uPrincipals[0]`), rewritten in place once a
+   * frame by `#visitorState`.
+   */
+  readonly #visitor: PrincipalState = principal();
+  /** This frame's real seconds since the previous one (0.1 at most): what velocities are over. */
+  #frameSeconds = 0;
   #settings: RenderSettings;
   /**
    * Scene clock in seconds; stands still while paused or frozen. Never reset: each scene counts it
@@ -363,18 +394,18 @@ export class DitherRenderer {
   #clock = 0;
   /**
    * Interaction clock: what a press or a "now" trigger is stamped with. It stands still only while
-   * paused, so it runs with the scene clock unless frozen. Stamps reach the shader (`uMouse.w`,
-   * `uTriggers`) and sims (`SimFrame.triggers`) moved back by how far this clock has run ahead of
-   * the scene clock, on the scene's own clock (`ActiveScene.origin`).
+   * paused, so it runs with the scene clock unless frozen. Stamps reach the shader
+   * (`uPrincipals[0].w`, `uTriggers`) and sims (`SimFrame.triggers`) moved back by how far this
+   * clock has run ahead of the scene clock, on the scene's own clock (`ActiveScene.origin`).
    *
    * Reduced-motion policy (frozen): what moves on its own holds still (the scene and motion clocks,
-   * sim steps, weather approach, passages), and a discrete interaction plays its bounded response
-   * and settles. A stamp lands as far behind the still scene clock as real time has run since, so
-   * `t - uMouse.w` and `sinceTrigger` count real seconds: a press's fade or a trigger's event ends
-   * instead of holding its first frame, and what is held only while the button is down ends at
-   * release. Sims see the press and release edges and `fired` but no time (dt 0), so whatever they
-   * do in response is one still step. Unfrozen, the two clocks run alike and a stamp reaches the
-   * shader as the scene's clock read when it was made.
+   * sim steps, weather approach, passages, the cast's agents), and a discrete interaction plays its
+   * bounded response and settles. A stamp lands as far behind the still scene clock as real time has
+   * run since, so `t - uPrincipals[0].w` and `sinceTrigger` count real seconds: a press's fade or a
+   * trigger's event ends instead of holding its first frame, and what is held only while the button
+   * is down ends at release. Sims see the press and release edges and `fired` but no time (dt 0), so
+   * whatever they do in response is one still step. Unfrozen, the two clocks run alike and a stamp
+   * reaches the shader as the scene's clock read when it was made.
    */
   #interactionClock = 0;
   /**
@@ -759,6 +790,7 @@ export class DitherRenderer {
       phases: new RatePhases(params),
       weather: { wet: 0, lying: 0 },
       passage: { enter: 1, exit: 0 },
+      presence: scenePresence(params),
       origin: from?.origin ?? {
         clock: this.#clock,
         motion: this.#motionClock,
@@ -867,22 +899,26 @@ export class DitherRenderer {
   }
 
   /**
-   * The pointer over the `cells` on screen, in stage uv, for this frame; consumes the press and
-   * release edges.
+   * The visitor over the `cells` on screen, in stage uv, for this frame (`#visitor`, rewritten in
+   * place): where it is and how fast it moved there over the frame's `dt` real seconds; consumes
+   * the press and release edges.
    */
-  #pointerState(cells: Cells): PointerState {
+  #visitorState(cells: Cells, dt: number): PrincipalState {
     const mouse = this.#mouse;
-    const state: PointerState = {
-      x: this.#stage.across(mouse.clientX, cells),
-      y: 1 - this.#stage.down(mouse.clientY, cells),
-      inside: mouse.inside,
-      down: mouse.down,
-      pressed: mouse.pressed,
-      released: mouse.released,
-    };
+    const visitor = this.#visitor;
+    const x = this.#stage.across(mouse.clientX, cells);
+    const y = 1 - this.#stage.down(mouse.clientY, cells);
+    visitor.vx = dt > 0 ? (x - visitor.x) / dt : 0;
+    visitor.vy = dt > 0 ? (y - visitor.y) / dt : 0;
+    visitor.x = x;
+    visitor.y = y;
+    visitor.inside = mouse.inside;
+    visitor.down = mouse.down;
+    visitor.pressed = mouse.pressed;
+    visitor.released = mouse.released;
     mouse.pressed = false;
     mouse.released = false;
-    return state;
+    return visitor;
   }
 
   #draw(now: number): void {
@@ -944,7 +980,8 @@ export class DitherRenderer {
     const ease = 1 - (1 - PARALLAX_EASE) ** (dt * 60);
     p.x += (tx - p.x) * ease;
     p.y += (ty - p.y) * ease;
-    const pointer = this.#pointerState(cells);
+    this.#frameSeconds = dt;
+    const visitor = this.#visitorState(cells, dt);
     if (scene === undefined) {
       const gl = this.#gl;
       gl.bindFramebuffer(gl.FRAMEBUFFER, null);
@@ -1036,7 +1073,7 @@ export class DitherRenderer {
       this.#sizeLeaving(oc.width, oc.height);
       out.passage.enter = 1;
       out.passage.exit = this.#exitShare(out.id, leaving, seconds);
-      this.#render(out, os, out.program, step, pointer, {
+      this.#render(out, os, out.program, step, visitor, {
         target: this.#gpu.leavingTarget,
         width: oc.width,
         height: oc.height,
@@ -1057,7 +1094,7 @@ export class DitherRenderer {
       const nc = this.#stage.cells(ns.pixel);
       next.passage.enter = 0;
       next.passage.exit = 0;
-      this.#render(next, ns, next.program, 0, pointer, {
+      this.#render(next, ns, next.program, 0, visitor, {
         target: null,
         width: nc.width,
         height: nc.height,
@@ -1098,7 +1135,7 @@ export class DitherRenderer {
       const motionStamp = this.#motionTriggers[slot] ?? NEVER;
       shownMotion[slot] = motionStamp > NEVER ? motionStamp - scene.origin.motion : NEVER;
     }
-    const drew = this.#render(scene, s, program, step, pointer, {
+    const drew = this.#render(scene, s, program, step, visitor, {
       target: null,
       width,
       height,
@@ -1251,15 +1288,16 @@ export class DitherRenderer {
   }
 
   /**
-   * Step `scene`'s simulation and draw it with `program` into `draw.target`; a scene that cannot draw
-   * (no program, or failed) clears the target to its background instead. Whether it drew.
+   * Step `scene`'s simulation and draw it with `program` into `draw.target`, with `visitor` and the
+   * cast's agents present; a scene that cannot draw (no program, or failed) clears the target to
+   * its background instead. Whether it drew.
    */
   #render(
     scene: ActiveScene,
     s: RenderSettings,
     program: SceneProgram | undefined,
     step: number,
-    pointer: PointerState,
+    visitor: PrincipalState,
     draw: SceneDraw,
   ): boolean {
     const gl = this.#gl;
@@ -1320,6 +1358,14 @@ export class DitherRenderer {
           );
     }
     const passage = scene.passage;
+    // Who is present: the visitor, then the cast's agents on the scene's motion clock, drawn from
+    // its seed knob (a cast drawn afresh when the knob turns) and going where its sim points.
+    const aspect = width / height;
+    const presence = scene.presence;
+    const seed = s.params[presence.seed] ?? 0;
+    if (presence.cast.seed !== seed) presence.cast = new Cast(seed);
+    const others = presence.cast.poses(motionTime, aspect, s.agents, scene.sim);
+    presence.frame.update(visitor, draw.pressedAt, others, this.#frameSeconds, time);
     // Simulations upload (and so bind) their textures: step them before binding this frame's units.
     const simTextures =
       scene.sim?.frame({
@@ -1331,14 +1377,15 @@ export class DitherRenderer {
         budget: this.#frameBudget,
         width,
         height,
-        aspect: width / height,
+        aspect,
         values: s.params,
         params: s.knobs,
         phases: scene.phases.byKey,
         triggers: draw.triggers,
         motionTriggers: draw.motionTriggers,
         fired: draw.fired,
-        pointer,
+        pointer: visitor,
+        principals: presence.frame.principals,
         parallax: this.#pointer,
         passage,
       }) ?? [];
@@ -1363,7 +1410,9 @@ export class DitherRenderer {
     gl.uniform1f(u.uFallTime, fallTime);
     gl.uniform4fv(u.uPhases, scene.phases.upload);
     gl.uniform2f(u.uPointer, this.#pointer.x, this.#pointer.y);
-    gl.uniform4f(u.uMouse, pointer.x, pointer.y, pointer.down ? 1 : 0, draw.pressedAt);
+    gl.uniform4fv(u.uPrincipals, presence.frame.upload);
+    gl.uniform1i(u.uPrincipalCount, presence.frame.principals.length);
+    gl.uniform4fv(u.uPrincipalMotion, presence.frame.motion);
     gl.uniform2f(u.uWeather, weather.wet, weather.lying);
     gl.uniform2f(u.uPassage, passage.enter, passage.exit);
     gl.uniform3f(

@@ -2,6 +2,7 @@
 // of the ice it covers. The real sim lays the night's snow; the scene's own lakeSnowAt / lakeSnowShade
 // say, per pixel of the near and middle ice, whether snow covers it and how it is lit.
 import { fragmentSourceFor, packParams, vertexSource } from "../../shaders/index.ts";
+import { visitorAlone } from "../../principals.ts";
 import { defaultsFor, paramDefaults, renderSettings } from "../../state.ts";
 import type { SimFrame } from "../types.ts";
 import { lakeScene } from "./index.ts";
@@ -59,7 +60,7 @@ export function verifyLakeFreshSnow(gl: WebGL2RenderingContext): Record<string, 
     triggers: [],
     fired: [],
     passage: { enter: 1, exit: 0 },
-    pointer: { x: 0.5, y: 0.5, inside: false, down: false, pressed: false, released: false },
+    ...visitorAlone(),
   };
   const textures = sim.frame(frame);
   const linked = compile(

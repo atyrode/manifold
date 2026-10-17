@@ -1,6 +1,5 @@
 import { expect, test } from "bun:test";
 import { HeadlessSim } from "../../sims/headless.ts";
-import type { PointerState } from "../types.ts";
 import { forestScene } from "./index.ts";
 import { FOREST_SPIRITS } from "./sim.ts";
 
@@ -21,14 +20,7 @@ interface SpiritRow {
 function approach(shy: number): { near: SpiritRow; away: SpiritRow[] } {
   const sim = new HeadlessSim(forestScene);
   const aspect = 16 / 9;
-  const pointer: PointerState = {
-    x: 0.5,
-    y: 0.5,
-    inside: false,
-    down: false,
-    pressed: false,
-    released: false,
-  };
+  const pointer = { x: 0.5, y: 0.5, inside: false, down: false, pressed: false, released: false };
   const step = (): void => {
     sim.step({ aspect, height: 360, knobs: { shy }, pointer });
   };

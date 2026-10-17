@@ -21,8 +21,9 @@ export const SIM_SLOTS = 4;
 export const LEAVING_UNIT = SIM_SLOTS;
 /**
  * Programs kept per scene: those it entered with, one per compile-time feature set
- * (`SceneDef.featuresFor`, the library gates and its planets, `settingKeyed`), and its all-features
- * program (`sceneFeaturesAll`); past this many the least recently drawn one is freed.
+ * (`SceneDef.featuresFor`, the library gates and its planets, `settingKeyed`, and the cursors' gate
+ * while the cast has agents), and its all-features program (`sceneFeaturesAll`); past this many the
+ * least recently drawn one is freed.
  */
 const PROGRAMS_PER_SCENE = 4;
 /**
@@ -44,7 +45,9 @@ const uniformNames = [
   "uLevels",
   "uMotion",
   "uPointer",
-  "uMouse",
+  "uPrincipals",
+  "uPrincipalCount",
+  "uPrincipalMotion",
   "uBg",
   "uInk",
   "uAccent",
@@ -263,7 +266,7 @@ export class ScenePrograms {
         const values = settingKeyed(def)
           ? Object.fromEntries(def.params.map((knob, index) => [knob.key, s.params[index] ?? 0]))
           : undefined;
-        const features = sceneFeatures(def, values, s.planets.count);
+        const features = sceneFeatures(def, values, s.planets.count, s.agents > 0);
         const all = sceneFeaturesAll(def);
         wanted = {
           features,

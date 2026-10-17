@@ -226,7 +226,7 @@ export function verifyPlanet(gl: WebGL2RenderingContext): Record<string, unknown
   gl.uniform1i(where("uView"), 1);
   gl.uniform1f(where("uMotion"), 1);
   gl.uniform2f(where("uPassage"), 1, 0);
-  gl.uniform4f(where("uMouse"), 0.5, 0.5, 0, -1e4);
+  gl.uniform4f(where("uPrincipals"), 0.5, 0.5, 0, -1e4);
   gl.uniform1fv(where("uTriggers"), new Float32Array(8).fill(-1e4));
   const render = (knobs: Record<string, number>, time: number): Uint8Array => {
     gl.uniform1f(where("uTime"), time);

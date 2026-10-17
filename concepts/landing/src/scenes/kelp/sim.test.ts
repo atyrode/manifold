@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { effective } from "../../params.ts";
+import { visitorAlone } from "../../principals.ts";
 import type { SimFrame } from "../types.ts";
 import { kelpScene } from "./index.ts";
 import {
@@ -65,7 +66,7 @@ function grow(knobs: Record<string, number>, seconds: number): Uploads {
       params,
       triggers: new Array<number>(8).fill(-1e4),
       fired: new Array<boolean>(8).fill(false),
-      pointer: { x: 0.5, y: 0.5, inside: false, down: false, pressed: false, released: false },
+      ...visitorAlone(),
       passage: { enter: 1, exit: 0 },
     };
     sim.frame(frame);
