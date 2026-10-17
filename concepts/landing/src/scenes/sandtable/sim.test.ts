@@ -198,7 +198,8 @@ test("an agent combs the sand, the ball's erase spirals groom it away, the same 
   expect(first.combed).toBeGreaterThan(1);
   expect(first.groomed).toBeLessThan(0.25 * first.combed);
   expect(run()).toEqual(first);
-});
+  // Two runs of 100 s of table each: seconds of work, longer than bun's 5 s default under load.
+}, 30_000);
 
 test("the cast's agent combs the table; a drag rakes it and leaves the ball be", () => {
   const sim = new HeadlessSim(sandtableScene);

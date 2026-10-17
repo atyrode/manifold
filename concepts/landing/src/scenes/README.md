@@ -287,7 +287,8 @@ a lunation: waxing up to 1 full, waning past it to 1.95; 0 while switched off: n
 stars for `meteorAge`, off by default, "now" on that slot), `skyKnobs({ constellations: true })`
 adds `K_constellations` (the figures' lines, 0.05 a trace .. 1 clear stick figures; 0 while switched
 off: no figures; off at 0.4; `skyStars` draws them itself, so only a scene whose stars come from it
-takes them), `weatherKnobs({ clouds: 0.3 })` adds
+takes them) and with it `K_join` (the agents' star-joining: the figures they join a night, 1..6, on
+at 6; see "Principals and chores"), `weatherKnobs({ clouds: 0.3 })` adds
 `K_clouds` (fair-weather cover 0..1, which rain and snow thicken) and `weatherKnobs({ shadows: true })`
 adds `K_shadows` (how dark the cloud deck's shadows fall, for `skyCloudShadow`: 0.6 while on, off
 unless `on: { shadows: true }`). A scene with a night of its own (an hour knob, a painted sky) takes
@@ -2639,7 +2640,15 @@ for the cast and its own headless test:
 - **Cairns** (shore, knob `cairns`): `src/sims/stack.ts` stacks stones as rigid boxes with
   friction; agents carry pebbles to sites on the wet sand, and the swash (mirrored from the shader
   in `shore/beach.ts`) of the bigger waves knocks them down. No tide.
-- Star-joining is not built yet.
+- **Star-joining** (every scene with the shared constellations, knob `join` beside them, how many
+  figures a night; it acts while they are on): no sim state, but a schedule of the world clock and
+  the motion clock (`src/constellations.ts`). From nightfall the agents take the night's figures in
+  turn, starting one further on each night; `skyFigures` (`shaders/lib/sky.ts`, in a program with
+  `PRINCIPAL_CURSORS`) grows each line behind a cursor of the sky's own at the tip, in the stars'
+  frame, and draws the figures whole while there are no agents. `skyJoinAway`, the schedule's CPU
+  twin, takes the agents up in the sky off the page (`Pose.inside` false: no hand in the scene,
+  `uPrincipals` off the page) where the renderer asks the cast. The lines stand until dawn fades
+  them with the stars.
 
 ### Porting a scene
 

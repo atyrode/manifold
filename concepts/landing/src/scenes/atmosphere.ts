@@ -1,16 +1,17 @@
 // Shared lab knobs for outdoor scenes: time of day, and the weather layer (rain, snow, fog, wind,
 // lightning, aurora), plus the opt-in sky components (star density, the Milky Way, the moon's phase,
-// shooting stars, constellations) and fair-weather cloud with its shadows. Every scene that uses
-// them gets the same keys, labels and help, so a setting means the same thing everywhere; the GLSL
-// side lives in src/shaders/lib/ and reads them through the generated K_<key> defines (K_time,
-// K_cycle, K_stars, K_milkyWay, K_moon, K_meteors, K_constellations, K_clouds, K_shadows, K_rain,
-// K_snow, K_fog, K_wind, K_lightning, K_aurora). The night sky's planets are no knobs but a list of
-// their own (SceneDef.planets, src/scenes/planets.ts). How a scene composes them:
-// src/scenes/README.md.
+// shooting stars, constellations and the agents' star-joining) and fair-weather cloud with its
+// shadows. Every scene that uses them gets the same keys, labels and help, so a setting means the
+// same thing everywhere; the GLSL side lives in src/shaders/lib/ and reads them through the
+// generated K_<key> defines (K_time, K_cycle, K_stars, K_milkyWay, K_moon, K_meteors,
+// K_constellations, K_join, K_clouds, K_shadows, K_rain, K_snow, K_fog, K_wind, K_lightning,
+// K_aurora). The night sky's planets are no knobs but a list of their own (SceneDef.planets,
+// src/scenes/planets.ts). How a scene composes them: src/scenes/README.md.
 //
 // The page theme is decided here too (skyTheme, paletteTheme), once, from the knobs: the shader reads
 // the outcome with pagePaper() instead of repeating the test.
 import {
+  counts,
   effective,
   feature,
   knobDef,
@@ -48,7 +49,9 @@ export interface SkyComponentOptions {
   meteors?: { trigger: number; on?: boolean; value?: number };
   /**
    * Adds K_constellations, the stick figures' lines for `skyStars` (0.05 a trace .. 1 clear while on,
-   * 0 off: no figures), off at 0.4. Only for a scene whose stars come from `skyStars`.
+   * 0 off: no figures), off at 0.4, and after it K_join, the agents' star-joining (how many
+   * figures they join a night while on, 0 off; src/constellations.ts), on at all six. Only for a
+   * scene whose stars come from `skyStars`.
    */
   constellations?: boolean;
   /** Lab group; default "sky". */
@@ -63,7 +66,8 @@ export interface SkyOptions extends SkyComponentOptions {
 /**
  * The opt-in sky components alone, without the clock: for a scene that keeps a night of its own (an
  * hour knob, a fixed night, a painted sky) and composes components into it, most often shooting stars.
- * K_stars, K_milkyWay, K_moon, K_meteors and K_constellations as for `skyKnobs`, in that order.
+ * K_stars, K_milkyWay, K_moon, K_meteors, K_constellations and K_join as for `skyKnobs`, in that
+ * order.
  */
 export function skyComponentKnobs(options: SkyComponentOptions = {}): ParamDef[] {
   const group = options.group ?? "sky";
@@ -135,6 +139,16 @@ export function skyComponentKnobs(options: SkyComponentOptions = {}): ParamDef[]
         "Six familiar figures among the stars: Orion, the Big Dipper, Cassiopeia, Cygnus, Leo and the Southern Cross, their stars brighter than the rest, in the same place every night and turning with the stars while the days pass. Lines: the stars standing out with the faintest trace of the figures to the left, clear stick figures to the right. They come out with the stars.",
         { min: 0.05, max: 1, widget: { kind: "night", part: "constellations" } },
       ),
+      feature(
+        group,
+        "join",
+        "star-joining",
+        true,
+        "figures",
+        6,
+        "The agents' chore while the lab has agents in the scene and the constellations are out: once night has fallen they leave the page in turn to join a figure's stars, its lines growing star by star behind a cursor among the stars, and come back between figures. The lines stand until dawn fades them with the stars; the next night the figures are joined afresh, starting one further on. Figures: how many of the six they join a night.",
+        { options: counts(1, 2, 3, 4, 5, 6), when: "constellations", icon: "constellation" },
+      ),
     );
   return knobs;
 }
@@ -146,7 +160,8 @@ export function skyComponentKnobs(options: SkyComponentOptions = {}): ParamDef[]
  * K_milkyWay (only with `milkyWay`): the Milky Way's brightness for `milkyWay`.
  * K_moon (only with `moon`): the moon's phase for `skyMoonPhase` (below 1 waxing, 1 full, above waning).
  * K_meteors (only with `meteors`): shooting-star frequency for `meteorAge`, trigger slot `meteors.trigger`.
- * K_constellations (only with `constellations`): drawn by `skyStars` itself.
+ * K_constellations (only with `constellations`): drawn by `skyStars` itself, as is K_join, the
+ * agents' star-joining that comes with it.
  */
 export function skyKnobs(options: SkyOptions = {}): ParamDef[] {
   const group = options.group ?? "sky";

@@ -4,13 +4,22 @@
 // horizon haze and tint the stars, and the moon's coverage. With the SKY_MOON_PHASE feature
 // (SceneDef.features) the moon also takes a phase (skyMoonPhase). Two parts of the night compile in
 // only while they are out, behind library gates (src/shaders/index.ts): the constellations, which
-// skyStars draws from the tables built below (SKY_FIGURES, while their knob is on), and the planets
+// skyStars draws from the tables built below (SKY_FIGURES, while their knob is on; in a program that
+// draws the agents' cursors, with the agents' star-joining, constellations.ts), and the planets
 // skyGiant hangs among the stars (SKY_PLANETS, while the scene's list holds any: the shared planet's
 // planetGlsl and planetBodyGlsl with them). The cloud deck is clouds.ts, compiled right after it.
 // Compiled into every scene program right after the common preamble; the contract and conventions
 // are in src/scenes/README.md.
-import { constellationUniforms, type ConstellationUniforms } from "../../constellations.ts";
-import { worldClockGlsl } from "../../world-clock.ts";
+import {
+  constellationUniforms,
+  JOIN_FIRST,
+  JOIN_REST,
+  JOIN_STAGGER,
+  JOIN_WINDOW,
+  joinPlan,
+  type ConstellationUniforms,
+} from "../../constellations.ts";
+import { DAY_SECONDS, SUNSET, worldClockGlsl } from "../../world-clock.ts";
 import { glslFloat } from "../glsl.ts";
 import { planetBodyGlsl, planetGlsl } from "./planet.ts";
 
@@ -144,7 +153,11 @@ export function skyFigurePoint(figure: SkyFigure, [x, y]: readonly [number, numb
 const floats = (values: readonly number[]): string => values.map(glslFloat).join(", ");
 
 /** A GLSL table of the figures, one row each. */
-const figureTable = (type: string, name: string, row: (figure: SkyFigure) => string): string =>
+const figureTable = (
+  type: string,
+  name: string,
+  row: (figure: SkyFigure, index: number) => string,
+): string =>
   `const ${type} ${name}[SKY_FIGURE_COUNT] = ${type}[SKY_FIGURE_COUNT](\n  ${skyFigures.map(row).join(",\n  ")}\n);`;
 
 // The figures as GLSL: per figure SKY_FIGURE_SPAN (stars [x, y), lines [z, w) in the uCon* uniforms),
@@ -156,6 +169,26 @@ const figureTables = [
   figureTable("vec4", "SKY_FIGURE_CONE", (f) => `vec4(${floats([...f.centre, f.reach])})`),
   figureTable("vec3", "SKY_FIGURE_RIGHT", (f) => `vec3(${floats(f.right)})`),
   figureTable("vec3", "SKY_FIGURE_UP", (f) => `vec3(${floats(f.up)})`),
+].join("\n");
+
+// Star-joining as GLSL (constellations.ts joinPlan): per figure line SKY_JOIN_TIME (seconds into its
+// figure's job: the cursor leaves the star it is on, reaches the line's first, starts drawing,
+// reaches its second), per figure SKY_JOIN_SECONDS (its job, landing to leaving) and SKY_JOIN_FLIPS
+// (bit k set: its kth line is drawn from the second of its stars in uConLines to the first).
+const joinLines = joinPlan.lines.length;
+const joinTimes = joinPlan.lines.map(
+  (line) => `vec4(${floats([line.leave, line.arrive, line.start, line.end])})`,
+);
+const joinTables = [
+  `const vec4 SKY_JOIN_TIME[${joinLines}] = vec4[${joinLines}](\n  ${joinTimes.join(",\n  ")}\n);`,
+  figureTable("float", "SKY_JOIN_SECONDS", (_, i) => glslFloat(joinPlan.figures[i]?.seconds ?? 0)),
+  figureTable("int", "SKY_JOIN_FLIPS", (f) => {
+    let flips = 0;
+    for (let i = f.lines[0]; i < f.lines[1]; i++)
+      if (joinPlan.lines[i]?.from !== constellationUniforms.lines[i * 2])
+        flips |= 1 << (i - f.lines[0]);
+    return String(flips);
+  }),
 ].join("\n");
 
 export const skyGlsl = `
@@ -449,18 +482,129 @@ float skyStarFade(Sky sky, vec3 dir) {
 // placeFigures in sky.ts: the stars' offsets, brightness and lines come from the uCon* uniforms.
 ${figureTables}
 
+#ifdef PRINCIPAL_CURSORS
+// Star-joining, the agents' chore (constellations.ts: the schedule, joinPlan, and its twin, which
+// takes the agents at work off the page): while the cast has agents and K_join is on they join the
+// figures' lines star by star each night, behind a cursor the sky draws at the tip, and the lines
+// stand till dawn fades them with the stars; without agents the figures are drawn whole. Only a
+// program that draws the agents' cursors (PRINCIPAL_CURSORS) has it.
+${joinTables}
+
+// Tonight's star-joining (constellations.ts JoinNight).
+struct SkyJoin {
+  int agents;  // agents joining stars: 0 for none, the figures drawn whole
+  int figures; // figures they join a night (K_join)
+  float work;  // seconds of the motion clock they have worked tonight; below 0, not begun
+  bool open;   // whether they may be at it now: night has fallen and not begun to lift
+  int first;   // the night's first figure
+};
+
+// The cast's agents (uPrincipalCount after the visitor) joining K_join figures a night, on the world
+// clock (K_time and the days its cycle has run, at K_cycle's pace) and the motion clock: they may
+// work from ${JOIN_WINDOW[0]} to ${JOIN_WINDOW[1]} days after sunset (JOIN_WINDOW), the work counted
+// from its opening, taken back at the day cycle's pace now and never from before the scene began,
+// or with the clock standing in it from the scene's start; a sky without K_time keeps a night of its
+// own, always open (constellations.ts joinNight).
+SkyJoin skyJoinNight() {
+  SkyJoin j;
+  j.figures = int(K_join + 0.5);
+  j.agents = j.figures > 0 ? max(uPrincipalCount - 1, 0) : 0;
+#ifdef K_time
+  float since = K_time + skyDays() - ${glslFloat(SUNSET)};
+  float into = fract(since);
+  j.open = into >= ${glslFloat(JOIN_WINDOW[0])} && into < ${glslFloat(JOIN_WINDOW[1])};
+#ifdef K_cycle
+  float pace = K_cycle;
+#else
+  float pace = 0.0;
+#endif
+  j.work = pace > 0.0
+    ? min(uMotionTime, (min(into, ${glslFloat(JOIN_WINDOW[1])}) - ${glslFloat(JOIN_WINDOW[0])}) * ${glslFloat(DAY_SECONDS)} / pace)
+    : (j.open ? uMotionTime : -1.0);
+  j.first = int(mod(floor(since), float(SKY_FIGURE_COUNT)));
+#else
+  j.work = uMotionTime;
+  j.open = true;
+  j.first = 0;
+#endif
+  return j;
+}
+
+// Seconds into the job of the agent joining figure f tonight (0 as it lands on the first star,
+// SKY_JOIN_SECONDS[f] as it leaves the last; below 0 it has not come), -1e9 where none joins it
+// tonight (constellations.ts joinTime). The night's kth figure is agent k's, landing JOIN_FIRST +
+// k JOIN_STAGGER seconds into the work, then agent k's again every 'agents' figures, JOIN_REST
+// seconds after its last.
+float skyJoinTime(SkyJoin j, int f) {
+  int slot = (f - j.first + SKY_FIGURE_COUNT) % SKY_FIGURE_COUNT;
+  if (j.agents <= 0 || slot >= j.figures) return -1e9;
+  int agent = slot % j.agents;
+  float start = ${glslFloat(JOIN_FIRST)} + float(agent) * ${glslFloat(JOIN_STAGGER)};
+  for (int k = agent; k < slot; k += j.agents)
+    start += SKY_JOIN_SECONDS[(k + j.first) % SKY_FIGURE_COUNT] + ${glslFloat(JOIN_REST)};
+  return j.work - start;
+}
+
+// Figure f tonight at q (radians on its plane, as skyFigures takes it): its lines at coverage
+// 'lines' as far as its agent has joined them, each growing from its first star to its second
+// behind the cursor and none drawn before its turn; and while the agent is at work, its cursor as
+// main's principalCursors draws an agent's, a ring 'ring' cells round the tip that draws in to a
+// dot while a line runs, landing and leaving over 0.4 seconds.
+float skyJoinFigure(SkyJoin j, int f, vec2 q, float perCell, float lines, float ring) {
+  float t = skyJoinTime(j, f);
+  ivec4 span = SKY_FIGURE_SPAN[f];
+  float lit = 0.0;
+  vec2 tip = vec2(0.0);
+  float pen = 0.0;
+  for (int i = span.z; i < span.w; i++) {
+    vec4 when = SKY_JOIN_TIME[i];
+    if (t < when.x) break;
+    ivec2 ends = ((SKY_JOIN_FLIPS[f] >> (i - span.z)) & 1) == 1 ? conLine(i).yx : conLine(i);
+    vec2 a = uConStars[ends.x].zw;
+    vec2 ab = uConStars[ends.y].zw - a;
+    tip = i == span.z ? a : mix(tip, a, smoothstep(0.0, 1.0, (t - when.x) / max(when.y - when.x, 1e-3)));
+    if (t < when.z) continue;
+    float grown = smoothstep(when.z, when.w, t);
+    tip = a + ab * grown;
+    pen = t < when.w ? 1.0 : 0.0;
+    float h = clamp(dot(q - a, ab) / dot(ab, ab), 0.0, 1.0);
+    float across = length(q - a - ab * h) * perCell;
+    float fromEnds = min(h, 1.0 - h) * length(ab) * perCell;
+    float behind = (grown - h) * length(ab) * perCell;
+    lit = max(lit, lines * smoothfall(0.9, 0.35, across) * smoothstep(2.5, 3.5, fromEnds) * smoothstep(-0.5, 0.5, behind));
+  }
+  float seconds = SKY_JOIN_SECONDS[f];
+  if (!j.open || t < 0.0 || t >= seconds) return lit;
+  float shown = smoothstep(0.0, 0.4, t) * smoothstep(0.0, 0.4, seconds - t);
+  float w = max(1.25, 0.22 * ring);
+  float d = length(q - tip) * perCell;
+  float c = softFill(abs(d - ring * (1.0 - 0.3 * pen) * (2.0 - shown)) - 0.5 * w, 0.9);
+  c = max(c, pen * softFill(d - 0.35 * ring, 0.9));
+  return max(lit, shown * c);
+}
+#endif
+
 // The figures over dir, 0..1 before the stars' fade: their stars, discs of 0.8..1.4 dither cells'
 // radius (brightness 0.4..1) with a one-cell cross of glint reaching 2.7..4.5 cells out, that outshine
 // the field's and twinkle as gently as its brightest, and their stick lines at coverage 'lines', a
-// dotted trace at 0.05 .. solid at 1. perCell: dither cells a radian; everything is sized in cells, so
-// nothing is finer than one and nothing crawls, and a line too short to clear its stars by three cells
-// is left out. A figure's stars and lines are visited only within its cone.
+// dotted trace at 0.05 .. solid at 1, or as far as tonight's agents have joined them, with their
+// cursors (skyJoinFigure). perCell: dither cells a radian; everything is sized in cells, so nothing
+// is finer than one and nothing crawls, and a line too short to clear its stars by three cells is
+// left out. A figure's stars and lines are visited only within its cone.
 float skyFigures(vec3 dir, float perCell, float lines) {
   float lit = 0.0;
+#ifdef PRINCIPAL_CURSORS
+  SkyJoin join = skyJoinNight();
+  // The cursors' rings, sized as main's principalCursors sizes them.
+  float ring = max(4.0, 0.011 * uRes.y);
+#endif
   for (int f = 0; f < SKY_FIGURE_COUNT; f++) {
     vec4 cone = SKY_FIGURE_CONE[f];
     vec3 off = dir - cone.xyz;
     float reach = cone.w + 5.0 / perCell;
+#ifdef PRINCIPAL_CURSORS
+    if (join.agents > 0) reach = cone.w + (2.0 * ring + 2.0) / perCell;
+#endif
     if (dot(off, off) > reach * reach) continue;
     // dir on the plane touching the dome at the figure, in radians: a gnomonic view, so the lines
     // between stars are great circles.
@@ -474,6 +618,12 @@ float skyFigures(vec3 dir, float perCell, float lines) {
       float wave = 0.5 + 0.5 * sin(uMotionTime * (0.9 + 0.17 * float(i)) + 2.3 * float(i));
       lit = max(lit, max(smoothfall(r + 0.5, r - 0.5, length(d)), 0.7 * glint) * (1.0 - 0.1 * wave));
     }
+#ifdef PRINCIPAL_CURSORS
+    if (join.agents > 0) {
+      lit = max(lit, skyJoinFigure(join, f, q, perCell, lines, ring));
+      continue;
+    }
+#endif
     for (int i = span.z; i < span.w; i++) {
       vec2 a = uConStars[conLine(i).x].zw;
       vec2 ab = uConStars[conLine(i).y].zw - a;

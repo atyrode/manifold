@@ -5,23 +5,29 @@ import { loadScenes, sceneDefs } from "./index.ts";
 
 const scenes = await loadScenes();
 
-test("constellations: off by default, in the stars' group, a night part", () => {
+test("constellations: off by default, in the stars' group, a night part, star-joining after them", () => {
   const knobs = skyComponentKnobs({ stars: 0.5, constellations: true, group: "night" });
-  expect(knobs.map((knob) => knob.key)).toEqual(["stars", "constellations"]);
-  const [, constellations] = knobs;
-  if (constellations?.kind !== "feature") throw new Error("unexpected knob kind");
+  expect(knobs.map((knob) => knob.key)).toEqual(["stars", "constellations", "join"]);
+  const [, constellations, join] = knobs;
+  if (constellations?.kind !== "feature" || join?.kind !== "feature")
+    throw new Error("unexpected knob kind");
   expect(knobs.every((knob) => knob.group === "night")).toBe(true);
   // The shader reads 0 while off, the amount while on.
   expect(effective(constellations, {})).toBe(0);
   expect(effective(constellations, { constellations: 1 })).toBe(0.4);
   expect([constellations.min, constellations.max]).toEqual([0.05, 1]);
   expect(constellations.widget).toEqual({ kind: "night", part: "constellations" });
+  // The agents' chore: on at all six figures, a control of its own hanging on the figures.
+  expect(effective(join, {})).toBe(6);
+  expect(effective(join, { join: 0 })).toBe(0);
+  expect([join.min, join.max, join.when, join.widget]).toEqual([1, 6, "constellations", undefined]);
   // Only when asked, after the other components, and skyKnobs passes it on.
   expect(skyComponentKnobs({ stars: 0.5 }).map((knob) => knob.key)).toEqual(["stars"]);
   expect(skyKnobs({ constellations: true }).map((knob) => knob.key)).toEqual([
     "time",
     "cycle",
     "constellations",
+    "join",
   ]);
 });
 

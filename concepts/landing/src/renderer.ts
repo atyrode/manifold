@@ -10,6 +10,7 @@ import {
   yearNow,
 } from "./climate.ts";
 import type { SeasonKnob } from "./climate.ts";
+import { skyJoinAway } from "./constellations.ts";
 import { StageBox, type Cells } from "./display.ts";
 import {
   FrameGovernor,
@@ -1375,6 +1376,7 @@ export class DitherRenderer {
     const seed = s.params[presence.seed] ?? 0;
     if (presence.cast.seed !== seed) presence.cast = new Cast(seed);
     const others = presence.cast.poses(motionTime, aspect, s.agents, scene.sim);
+    skyJoinAway(others, sceneDefs[scene.id].params, s.params, scene.phases.byKey, motionTime);
     presence.frame.update(visitor, draw.pressedAt, others, this.#frameSeconds, time);
     // Simulations upload (and so bind) their textures: step them before binding this frame's units.
     const simTextures =

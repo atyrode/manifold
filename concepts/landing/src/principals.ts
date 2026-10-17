@@ -13,12 +13,15 @@
 // `Presence` turns a source's poses into what a frame hands over: SimFrame.principals, with press
 // and release edges and velocities worked out from the frame before, and the shader's uPrincipals
 // (x, y, 1 while pressed, the scene-clock time of the last press) and uPrincipalMotion (velocities,
-// two principals a row), which the agents' cursors are drawn from (shaders/main.ts).
+// two principals a row), which the agents' cursors are drawn from (shaders/main.ts). An agent away
+// from the page (Pose.inside false: up in the sky joining stars, constellations.ts skyJoinAway) is
+// no hand in the scene, and stands off the page in uPrincipals.
 //
 // Usage (the renderer, once a frame for each scene it draws):
 //   const cast = new Cast(seed);
 //   const presence = new Presence();
 //   const poses = cast.poses(motionTime, aspect, agents, sim);
+//   skyJoinAway(poses, params, values, phases, motionTime);
 //   presence.update(visitor, visitorPressedAt, poses, dt, time);
 //   sim.frame({ ..., pointer: visitor, principals: presence.principals });
 import type { PrincipalState, ScenePoint, SceneSim } from "./scenes/types.ts";
@@ -65,11 +68,13 @@ export function firstPress(principals: readonly PrincipalState[]): PrincipalStat
   return undefined;
 }
 
-/** Where one of the others is, in scene uv, and whether it presses. */
+/** Where one of the others is, in scene uv, whether it presses, and whether it is on the page. */
 export interface Pose {
   x: number;
   y: number;
   down: boolean;
+  /** False while it is away from the page (joining stars: constellations.ts skyJoinAway). */
+  inside: boolean;
 }
 
 /** What a source may ask of the scene: its points of interest (its sim's, SceneSim.interest). */
@@ -79,7 +84,8 @@ export type InterestSource = Pick<SceneSim, "interest">;
  * Where the others are: `count` of them (at most MAX_AGENTS) at `time`, motion-clock seconds since
  * the scene began, over a frame of `aspect`, in scene uv and inside the frame. `scene` gives the
  * scene's points of interest, asked only when a source wants them. The array and its poses are the
- * source's, rewritten by its next call: read them, don't keep them.
+ * source's, rewritten by its next call: read them, and mark those away from the page (skyJoinAway),
+ * but don't keep them.
  */
 export interface PresenceSource {
   poses(
@@ -87,7 +93,7 @@ export interface PresenceSource {
     aspect: number,
     count: number,
     scene: InterestSource | undefined,
-  ): readonly Readonly<Pose>[];
+  ): readonly Pose[];
 }
 
 const NO_POINTS: readonly ScenePoint[] = [];
@@ -189,6 +195,7 @@ class Agent {
     if (!this.#started || time < leg.start) this.#begin();
     while (time >= leg.start + leg.travel + leg.dwell) this.#next(aspect, scene);
     const t = time - leg.start;
+    out.inside = true;
     if (t < leg.travel) {
       const s = along(t, leg.travel);
       const a = (1 - s) * (1 - s);
@@ -287,6 +294,7 @@ export class Cast implements PresenceSource {
     x: 0.5,
     y: 0.5,
     down: false,
+    inside: true,
   }));
   readonly seed: number;
 
@@ -300,7 +308,7 @@ export class Cast implements PresenceSource {
     aspect: number,
     count: number,
     scene: InterestSource | undefined,
-  ): readonly Readonly<Pose>[] {
+  ): readonly Pose[] {
     const poses = this.#poses;
     const n = Math.max(0, Math.min(MAX_AGENTS, Math.round(count)));
     poses.length = 0;
@@ -328,7 +336,7 @@ export class Presence {
   readonly principals: PrincipalState[] = [];
   /**
    * uPrincipals, MAX_PRINCIPALS rows: x, y (uv), 1 while pressed, the scene-clock time of its last
-   * press (-1e4: none).
+   * press (-1e4: none). An agent away from the page stands at (-1, -1), still.
    */
   readonly upload = new Float32Array(4 * MAX_PRINCIPALS);
   /** uPrincipalMotion: each principal's velocity (uv per second), two principals a row. */
@@ -371,6 +379,7 @@ export class Presence {
       other.x = pose.x;
       other.y = pose.y;
       other.down = pose.down;
+      other.inside = pose.inside;
       other.pressed = pose.down && !was;
       other.released = !pose.down && was;
       if (!known) this.#pressedAt[i] = NEVER;
@@ -383,11 +392,14 @@ export class Presence {
 
   #row(row: number, p: PrincipalState, pressedAt: number): void {
     const at = 4 * row;
-    this.upload[at] = p.x;
-    this.upload[at + 1] = p.y;
-    this.upload[at + 2] = p.down ? 1 : 0;
+    // The visitor keeps its last point while off the page; an agent away from it stands off it, so
+    // no cursor, hand or wake of it shows there.
+    const away = p.kind === "agent" && !p.inside;
+    this.upload[at] = away ? -1 : p.x;
+    this.upload[at + 1] = away ? -1 : p.y;
+    this.upload[at + 2] = p.down && !away ? 1 : 0;
     this.upload[at + 3] = pressedAt;
-    this.motion[2 * row] = p.vx;
-    this.motion[2 * row + 1] = p.vy;
+    this.motion[2 * row] = away ? 0 : p.vx;
+    this.motion[2 * row + 1] = away ? 0 : p.vy;
   }
 }

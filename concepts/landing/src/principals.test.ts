@@ -115,12 +115,12 @@ describe("a frame's principals", () => {
   test("the visitor first, then the agents, with press edges, velocities and press times", () => {
     const presence = new Presence();
     const visitor = principal({ inside: true, x: 0.2, y: 0.3 });
-    presence.update(visitor, -1e4, [{ x: 0.5, y: 0.5, down: false }], 1 / 60, 10);
+    presence.update(visitor, -1e4, [{ x: 0.5, y: 0.5, down: false, inside: true }], 1 / 60, 10);
     expect(presence.principals.map((p) => p.kind)).toEqual(["human", "agent"]);
     expect(presence.principals[0]).toBe(visitor);
     // Newly come: no velocity yet.
     expect(presence.principals[1]).toMatchObject({ vx: 0, vy: 0, pressed: false, inside: true });
-    presence.update(visitor, -1e4, [{ x: 0.51, y: 0.5, down: true }], 0.5, 10.5);
+    presence.update(visitor, -1e4, [{ x: 0.51, y: 0.5, down: true, inside: true }], 0.5, 10.5);
     expect(presence.principals[1]?.vx).toBeCloseTo(0.02, 9);
     expect(presence.principals[1]).toMatchObject({ down: true, pressed: true, released: false });
     expect(Array.from(presence.upload.slice(4, 8))).toEqual([
@@ -129,11 +129,26 @@ describe("a frame's principals", () => {
       1,
       Math.fround(10.5),
     ]);
-    presence.update(visitor, -1e4, [{ x: 0.51, y: 0.5, down: false }], 0.5, 11);
+    presence.update(visitor, -1e4, [{ x: 0.51, y: 0.5, down: false, inside: true }], 0.5, 11);
     expect(presence.principals[1]).toMatchObject({ down: false, pressed: false, released: true });
     // The agents leave: the visitor alone.
     presence.update(visitor, -1e4, [], 0.5, 11.5);
     expect(presence.principals).toEqual([visitor]);
+  });
+
+  test("an agent away from the page is no hand on it, and stands off it", () => {
+    const presence = new Presence();
+    const visitor = principal({ inside: false, x: 0.2, y: 0.3 });
+    presence.update(visitor, -1e4, [{ x: 0.5, y: 0.5, down: true, inside: true }], 1 / 60, 10);
+    presence.update(visitor, -1e4, [{ x: 0.6, y: 0.5, down: false, inside: false }], 0.5, 10.5);
+    expect(presence.principals[1]).toMatchObject({ x: 0.6, y: 0.5, inside: false, down: false });
+    expect(Array.from(presence.upload.slice(4, 8))).toEqual([-1, -1, 0, Math.fround(10)]);
+    expect(Array.from(presence.motion.slice(2, 4))).toEqual([0, 0]);
+    // The visitor off the page keeps its last point; the agent back on it stands where it is.
+    expect(Array.from(presence.upload.slice(0, 2))).toEqual([Math.fround(0.2), Math.fround(0.3)]);
+    presence.update(visitor, -1e4, [{ x: 0.62, y: 0.5, down: false, inside: true }], 0.5, 11);
+    expect(presence.principals[1]?.inside).toBe(true);
+    expect(Array.from(presence.upload.slice(4, 6))).toEqual([Math.fround(0.62), Math.fround(0.5)]);
   });
 
   test("a sim reacts to every principal: an agent's hand stirs the shore as the visitor's does", () => {
