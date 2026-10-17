@@ -45,6 +45,7 @@ import {
   BEES_CODE,
   BEES_COSMOS,
   BEES_DAISY,
+  BEES_FOXGLOVES as FOXGLOVES,
   BEES_HIVE,
   BEES_HIVE_SCALE,
   BEES_HIVES,
@@ -54,6 +55,7 @@ import {
   BEES_POPPY,
   BEES_STAGE_MIN,
   BEES_WILD,
+  BEES_TREES as TREES,
   BEES_DEPTH_STEP,
   BEES_YH,
 } from "./sim.ts";
@@ -71,29 +73,11 @@ const HIVE_ORDER = BEES_HIVES.map((hive, i) => ({ hive, i }))
   .sort((a, b) => b.hive.y - a.hive.y)
   .map((entry) => entry.i);
 
-/** Foxgloves in the foreground: x (fraction of the stage), the y of their feet, height (m). */
-const FOXGLOVES: readonly (readonly [number, number, number])[] = [
-  [-0.92, 0.035, 1.2],
-  [-0.8, 0.075, 1.0],
-  [0.83, 0.04, 1.15],
-  [0.93, 0.09, 1.0],
-  [0.5, 0.28, 1.0],
-  [0.45, 0.3, 0.9],
-];
-
 /** Foreground blooms with their petals drawn: x, the y of the head, kind (0 poppy, 1 daisy). */
 const BLOOMS: readonly (readonly [number, number, number])[] = [
   [-0.5, 0.11, 0],
   [-0.33, 0.06, 1],
   [0.55, 0.07, 0],
-];
-
-/** The orchard, far to near: x (fraction of the stage), the y of the trunk's foot, size, seed. */
-const TREES: readonly (readonly [number, number, number, number])[] = [
-  [-0.74, 0.389, 0.65, 3.1],
-  [0.62, 0.388, 0.75, 19.4],
-  [-0.22, 0.385, 1.0, 7.7],
-  [0.2, 0.383, 0.85, 12.3],
 ];
 
 /** Trigger slots of the shooting stars' and the lightning's "now" buttons. */
@@ -161,6 +145,14 @@ const int BEES_C_WHITE_DIM = ${BEES_CODE.whiteDim};
 const int BEES_C_BLUE_DIM = ${BEES_CODE.blueDim};
 const int BEES_C_DIM = ${BEES_CODE.beeDim};
 const int BEES_C_FAINT = ${BEES_CODE.beeFaint};
+const int BEES_C_SWARM = ${BEES_CODE.swarm};
+const int BEES_C_BUMBLE = ${BEES_CODE.bumblebee};
+const int BEES_C_BAND = ${BEES_CODE.bumblebeeBand};
+const int BEES_C_HOVER = ${BEES_CODE.hoverfly};
+const int BEES_C_DRAGON = ${BEES_CODE.dragonfly};
+const int BEES_C_DRAGON_WING = ${BEES_CODE.dragonflyWing};
+const int BEES_C_FIREFLY = ${BEES_CODE.firefly};
+const int BEES_C_GLOW = ${BEES_CODE.fireflyGlow};
 const float BEES_DEPTH_STEP = ${glslFloat(BEES_DEPTH_STEP)};
 // Seconds of the entrance and the exit (BEES_PASSAGE).
 const float BEES_ENTER = ${glslFloat(BEES_PASSAGE.enter)};
@@ -833,7 +825,10 @@ void beesBlades(vec2 p, float tm, inout vec3 col) {
 // ---- the specks --------------------------------------------------------------------------------------------
 
 // What the simulation's cell map holds: a bee (near-black, a golden back cell with pollen), the pale
-// glint of its wing, the dotted line it leaves in the air, a butterfly's wings and body.
+// glint of its wing, the dotted line it leaves in the air, a butterfly's wings and body; the honey-brown
+// mass of a swarm's cluster, a bumblebee's black fur and yellow band, an amber hoverfly, a blue
+// dragonfly and the glint of its wings, a firefly's yellow-green flash and its glow, which lights what
+// is under it.
 vec3 beesSpeck(int code, vec3 under) {
   if (code == BEES_C_BEE) return vec3(0.05, 0.03, 0.02);
   if (code == BEES_C_DIM) return mix(under, vec3(0.05, 0.03, 0.02), 0.6);
@@ -846,6 +841,14 @@ vec3 beesSpeck(int code, vec3 under) {
   if (code == BEES_C_BLUE) return vec3(0.30, 0.55, 1.0);
   if (code == BEES_C_ORANGE_DIM) return vec3(0.62, 0.30, 0.08);
   if (code == BEES_C_WHITE_DIM) return vec3(0.78, 0.76, 0.66);
+  if (code == BEES_C_SWARM) return vec3(0.55, 0.32, 0.06);
+  if (code == BEES_C_BUMBLE) return vec3(0.06, 0.05, 0.04);
+  if (code == BEES_C_BAND) return vec3(1.0, 0.80, 0.22);
+  if (code == BEES_C_HOVER) return vec3(0.70, 0.50, 0.08);
+  if (code == BEES_C_DRAGON) return vec3(0.10, 0.45, 0.70);
+  if (code == BEES_C_DRAGON_WING) return mix(under, vec3(0.92, 0.97, 1.0), 0.8);
+  if (code == BEES_C_FIREFLY) return vec3(0.85, 1.0, 0.35);
+  if (code == BEES_C_GLOW) return min(under + vec3(0.30, 0.40, 0.08), vec3(1.0));
   return vec3(0.22, 0.34, 0.66);
 }
 

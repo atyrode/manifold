@@ -1449,8 +1449,9 @@ One model of where the sky stands, `src/world-clock.ts`: TypeScript for the sims
 (`skyNow`, `skyState`, `timeOfDay`), its GLSL mirror `worldClockGlsl` compiled into every program
 by the sky library (`skyAt`, `skyAtWorld`, `skyMoonPhase`, `skyStarFrame`), checked against each
 other on the GPU by `worldClock` (`src/world-clock.verify.ts`). A sim or a lab part that needs the
-hour, the daylight or the night reads `skyNow` (forest's spirits, the garden's drying, the lab's
-"See it at night" and its sky dial); never write a day curve of your own.
+hour, the daylight or the night reads `skyNow` (forest's spirits, the garden's drying, the bees'
+hives shutting at dusk and their fireflies after it, the lab's "See it at night" and its sky dial);
+never write a day curve of your own.
 
 - **Staged by default.** The sky is a low-latitude one (15 degrees) facing the equator, the pole
   low behind the viewer: a winter sun's arc (-28 degrees) in front, the K_time warp keeping sunrise
@@ -1906,8 +1907,9 @@ Helpers in `src/sims/` (each file's header has the full API and a usage example)
 - `SpeckMap` and `followCell` (`specks.ts`): creatures a cell or a few across drawn into an rg8 map,
   one per dither cell with its depth, the nearest winning the cell whatever the plotting order, so
   the shader hides each behind only what stands in front of it; `upload(texture)` sends only the
-  8 × 8-cell tiles whose cells were plotted or cleared since the last one (a few KB a frame for the
-  bees' 80-odd specks, not the 1 MB map); `followCell` keeps a hovering speck from flickering
+  8 × 8-cell tiles whose cells were plotted or cleared since the last one (the bees' default garden,
+  some 80 specks: ~46 rectangles and ~7 KB a frame at 640 × 360 cells; 200 bees and a swarm of 360:
+  ~120 rectangles and ~28 KB, not the 450 KB map); `followCell` keeps a hovering speck from flickering
   between two cells (bees). Not for a fixed slot per lattice cell (fireflies), a list the shader
   walks (lanterns), or per-tile lists sorted nearest first (street).
 - `isShy`, `facing`, `atEase` and `stepShrink` (`temperament.ts`): how a creature takes the pointer
