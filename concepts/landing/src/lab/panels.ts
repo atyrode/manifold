@@ -1,13 +1,14 @@
-// The lab's workspace: floating panels over the picture. Each panel drags by its header (or its
-// grip, by keyboard: arrows move it, Alt+arrows resize it, Enter docks it to the next edge), docks
-// to the edges it allows (a docked column or bar takes its room from the stage instead of covering
-// it), folds to an icon and keeps where it was in this browser. On a narrow screen the panel becomes
-// a bottom sheet, its header along the sheet's top and the transport along its foot.
+// The lab's workspace: panels over the picture. Each panel drags by its header (or its grip, by
+// keyboard: arrows move it, Alt+arrows resize it, Enter docks it to the next edge), docks to the
+// edges it allows (a docked column or bar takes its room from the stage instead of covering it) and
+// keeps where it was in this browser. The lab's presentation (lab.ts) shows one of its two panels:
+// the inspector or the compact bar. On a narrow screen the inspector becomes a bottom sheet, its
+// header along the sheet's top, and the bar runs along the bottom edge; neither moves there.
 import { iconButton } from "./controls.ts";
 import { drag, h } from "./dom.ts";
-import { icon, type IconName } from "./icons.ts";
+import { icon } from "./icons.ts";
 
-export const panelIds = ["inspector", "transport"] as const;
+export const panelIds = ["inspector", "bar"] as const;
 export type PanelId = (typeof panelIds)[number];
 export type Dock = "float" | "left" | "right" | "top" | "bottom";
 
@@ -21,21 +22,18 @@ export interface PanelLayout {
   y: number;
   w: number;
   h: number;
-  collapsed: boolean;
 }
 
 export interface PanelSpec {
   id: PanelId;
   title: string;
-  /** Its folded icon. */
-  icon: IconName;
   /** The edges it docks to (besides floating). */
   docks: readonly Exclude<Dock, "float">[];
-  /** A bar (the transport): one row, its size its content's, the body in its header. */
+  /** A bar (the compact lab): one row, its size its content's, the body in its header. */
   bar: boolean;
   min: { w: number; h: number };
   max: { w: number };
-  /** A panel's header between its grip and its fold button (on the sheet, the sheet's header). */
+  /** A panel's header between its grip and its close button (on the sheet, the sheet's header). */
   head?: HTMLElement;
   body: HTMLElement;
   /** The layout before the user has moved it, for this viewport. */
@@ -45,18 +43,18 @@ export interface PanelSpec {
 const EDGE = 28;
 const GAP = 12;
 const STEP = 16;
-const NARROW = "(max-width: 720px)";
+/** A narrow screen: the inspector is a bottom sheet, the bar spans the bottom edge. */
+export const NARROW = "(max-width: 720px)";
 
 export class Panel {
   readonly spec: PanelSpec;
   readonly el: HTMLElement;
-  /** The folded panel: an icon button where it stood. */
-  readonly chip: HTMLButtonElement;
   readonly grip: HTMLButtonElement;
-  readonly collapse: HTMLButtonElement;
   layout: PanelLayout;
+  /** Whether the lab's presentation shows it (Workspace.setShown). */
+  shown = true;
 
-  constructor(spec: PanelSpec, layout: PanelLayout, fold: () => void) {
+  constructor(spec: PanelSpec, layout: PanelLayout, close: () => void) {
     this.spec = spec;
     this.layout = layout;
     const name = spec.title.toLowerCase();
@@ -70,11 +68,11 @@ export class Panel {
       },
       icon("grip"),
     );
-    this.collapse = iconButton("minus", `Fold the ${name} to an icon`, fold);
+    const hide = iconButton("close", "Hide the lab (l)", close);
     const body = h("div", { class: "panel-body" }, spec.body);
     const head = spec.bar
-      ? h("header", { class: "panel-head" }, this.grip, body, this.collapse)
-      : h("header", { class: "panel-head" }, this.grip, spec.head, this.collapse);
+      ? h("header", { class: "panel-head" }, this.grip, body, hide)
+      : h("header", { class: "panel-head" }, this.grip, spec.head, hide);
     this.el = h(
       "section",
       {
@@ -89,17 +87,6 @@ export class Panel {
         : (["x", "y", "both"] as const).map((axis) =>
             h("div", { class: "panel-resize", "data-axis": axis, "aria-hidden": "true" }),
           )),
-    );
-    this.chip = h(
-      "button",
-      {
-        type: "button",
-        class: "panel-chip",
-        title: `${spec.title} (folded): click to open, drag to move`,
-        "aria-label": `Open the ${spec.title.toLowerCase()}`,
-        "data-panel": spec.id,
-      },
-      icon(spec.icon),
     );
   }
 }
@@ -122,7 +109,6 @@ function clampLayout(raw: unknown, fallback: PanelLayout, spec: PanelSpec): Pane
     y: Math.max(0, num(record.y, fallback.y)),
     w: Math.min(spec.max.w, Math.max(spec.min.w, num(record.w, fallback.w))),
     h: Math.max(spec.min.h, num(record.h, fallback.h)),
-    collapsed: record.collapsed === true,
   };
 }
 
@@ -138,17 +124,19 @@ export class Workspace {
   readonly #panels: Panel[] = [];
   readonly #saved: Record<string, unknown>;
   readonly #save: (layouts: Record<PanelId, PanelLayout>, sheet: SheetState) => void;
+  readonly #close: () => void;
   readonly #zone = h("div", { class: "dock-zone", hidden: true });
   readonly #narrow = matchMedia(NARROW);
   readonly #sheet: HTMLElement;
   readonly #sheetBody = h("div", { class: "sheet-body" });
-  readonly #sheetBar = h("div", { class: "sheet-bar" });
   readonly #sheetHandle: HTMLButtonElement;
   /** Where the panels' headers stand on the sheet. */
   readonly #sheetHead = h("div", { class: "sheet-title" });
   readonly #sheetState: SheetState;
   /** Stage room the docked panels take, per edge. */
   readonly #docked = { left: 0, right: 0, top: 0, bottom: 0 };
+  /** Watches the bars' sizes (see the constructor). */
+  readonly #bars: ResizeObserver;
 
   constructor(
     root: HTMLElement,
@@ -159,6 +147,7 @@ export class Workspace {
     this.#root = root;
     this.#saved = saved.panels;
     this.#save = save;
+    this.#close = close;
     this.#sheetState = { ...saved.sheet };
     this.#sheetHandle = h(
       "button",
@@ -181,21 +170,32 @@ export class Workspace {
         iconButton("close", "Hide the lab (l)", close),
       ),
       this.#sheetBody,
-      this.#sheetBar,
     );
     root.append(this.#zone, this.#sheet);
     this.#narrow.addEventListener("change", () => this.arrange());
     window.addEventListener("resize", () => this.arrange());
+    // A bar is as wide as its content: when that changes (its chips fit, A and B show), it stands
+    // again where it is anchored, in the next frame.
+    let pending: number | undefined;
+    this.#bars = new ResizeObserver(() => {
+      if (pending !== undefined) return;
+      pending = requestAnimationFrame(() => {
+        pending = undefined;
+        this.arrange();
+      });
+    });
   }
 
   add(spec: PanelSpec): Panel {
     const viewport = { w: window.innerWidth, h: window.innerHeight };
     const layout = clampLayout(this.#saved[spec.id], spec.initial(viewport), spec);
-    const panel = new Panel(spec, layout, () => this.#fold(panel, true));
+    const panel = new Panel(spec, layout, this.#close);
     this.#panels.push(panel);
-    this.#root.append(panel.el, panel.chip);
+    this.#sheet.before(panel.el);
+    if (spec.bar) this.#bars.observe(panel.el);
     panel.el.querySelector(".panel-head")?.addEventListener("pointerdown", (event) => {
-      if (!(event instanceof PointerEvent) || event.button !== 0) return;
+      // Panels stand still on a narrow screen: the sheet and the bar keep to the bottom edge.
+      if (!(event instanceof PointerEvent) || event.button !== 0 || this.#narrow.matches) return;
       const target = event.target instanceof Element ? event.target : null;
       // Controls in the header keep their clicks; the grip and the bare header move the panel.
       const control = target?.closest("button, input, select, textarea, a, [role=slider]");
@@ -203,11 +203,6 @@ export class Workspace {
       this.#move(panel, event);
     });
     panel.grip.addEventListener("keydown", (event) => this.#key(panel, event));
-    panel.chip.addEventListener("pointerdown", (event) => this.#moveChip(panel, event));
-    // Enter or Space on the folded icon (a click without a pointer) unfolds it.
-    panel.chip.addEventListener("click", (event) => {
-      if (event.detail === 0) this.#fold(panel, false);
-    });
     for (const handle of panel.el.querySelectorAll<HTMLElement>(".panel-resize")) {
       const { axis } = handle.dataset;
       handle.addEventListener("pointerdown", (event) => {
@@ -218,16 +213,18 @@ export class Workspace {
     return panel;
   }
 
-  /** Bring a panel up: unfolded, or on a narrow screen the sheet raised. */
-  show(id: PanelId): void {
+  /** Show or hide panel `id`, as the lab's presentation has it; `arrange` lays it out. */
+  setShown(id: PanelId, shown: boolean): void {
     const panel = this.#panels.find((candidate) => candidate.spec.id === id);
-    if (!panel) return;
-    if (this.#narrow.matches && !panel.spec.bar) {
-      if (this.#sheetState.open) return;
-      this.#sheetState.open = true;
-      this.#persist();
-      this.arrange();
-    } else if (panel.layout.collapsed) this.#fold(panel, false);
+    if (panel) panel.shown = shown;
+  }
+
+  /** On a narrow screen, raise the sheet (a view was picked). */
+  raiseSheet(): void {
+    if (!this.#narrow.matches || this.#sheetState.open) return;
+    this.#sheetState.open = true;
+    this.#persist();
+    this.arrange();
   }
 
   get narrow(): boolean {
@@ -238,25 +235,39 @@ export class Workspace {
   arrange(): void {
     const narrow = this.#narrow.matches;
     this.#root.classList.toggle("sheet-mode", narrow);
-    if (narrow) this.#arrangeSheet();
+    Object.assign(this.#docked, { left: 0, right: 0, top: 0, bottom: 0 });
+    for (const panel of this.#panels) panel.el.hidden = !panel.shown;
+    if (narrow) this.#arrangeNarrow();
     else this.#arrangeFloating();
     const style = document.documentElement.style;
     for (const [edge, size] of Object.entries(this.#docked))
       style.setProperty(`--dock-${edge}`, `${Math.round(size)}px`);
   }
 
-  #arrangeSheet(): void {
-    Object.assign(this.#docked, { left: 0, right: 0, top: 0, bottom: 0 });
-    for (const panel of this.#panels) {
-      const place = panel.spec.bar ? this.#sheetBar : this.#sheetBody;
-      if (panel.el.parentElement !== place) place.append(panel.el);
-      const { head } = panel.spec;
-      if (head && head.parentElement !== this.#sheetHead) this.#sheetHead.append(head);
-      panel.el.removeAttribute("style");
-      panel.el.hidden = false;
-      panel.chip.hidden = true;
+  /** A narrow screen: the inspector in the bottom sheet, the bar across the bottom edge. */
+  #arrangeNarrow(): void {
+    const vw = window.innerWidth;
+    const vh = window.innerHeight;
+    let sheet = false;
+    for (const panel of this.#panels.filter((candidate) => candidate.shown)) {
+      const { el, spec } = panel;
+      if (spec.bar) {
+        // As tall as its content, which it takes from the stage.
+        el.dataset.dock = "bottom";
+        el.style.left = "0px";
+        el.style.width = `${vw}px`;
+        el.style.height = "";
+        this.#docked.bottom = el.offsetHeight;
+        el.style.top = `${vh - this.#docked.bottom}px`;
+        continue;
+      }
+      sheet = true;
+      if (el.parentElement !== this.#sheetBody) this.#sheetBody.append(el);
+      if (spec.head && spec.head.parentElement !== this.#sheetHead)
+        this.#sheetHead.append(spec.head);
+      el.removeAttribute("style");
     }
-    this.#sheet.hidden = false;
+    this.#sheet.hidden = !sheet;
     this.#sheet.classList.toggle("open", this.#sheetState.open);
     this.#sheetHandle.setAttribute("aria-expanded", String(this.#sheetState.open));
     this.#sheetHandle.setAttribute(
@@ -270,11 +281,11 @@ export class Workspace {
     const vw = window.innerWidth;
     const vh = window.innerHeight;
     for (const panel of this.#panels) {
-      if (panel.el.parentElement !== this.#root) this.#root.insertBefore(panel.el, panel.chip);
+      if (panel.el.parentElement !== this.#root) this.#sheet.before(panel.el);
       const { head } = panel.spec;
       if (head && head.parentElement === this.#sheetHead) panel.grip.after(head);
     }
-    const open = this.#panels.filter((panel) => !panel.layout.collapsed);
+    const open = this.#panels.filter((panel) => panel.shown);
     const column = (dock: Dock) => open.filter((panel) => panel.layout.dock === dock);
     const left = column("left");
     const right = column("right");
@@ -330,40 +341,13 @@ export class Workspace {
         });
       });
     }
-    for (const panel of this.#panels) {
-      panel.el.hidden = panel.layout.collapsed;
-      panel.chip.hidden = !panel.layout.collapsed;
+    for (const panel of open) {
       panel.el.dataset.dock = panel.layout.dock;
       panel.el.dataset.anchor = panel.layout.ax;
-      if (panel.layout.dock === "float" && !panel.layout.collapsed)
-        this.#place(panel, this.#floatRect(panel));
-    }
-    // Folded panels sit where their panel stood: a floating one at its corner, a docked one along its edge.
-    const stacks = { left: 0, right: 0, top: 0, bottom: 0 };
-    for (const panel of this.#panels.filter((candidate) => candidate.layout.collapsed)) {
-      const size = 40;
-      const { dock } = panel.layout;
-      let at: { left: number; top: number };
-      if (dock === "float") {
-        const rect = this.#floatRect(panel);
-        at = {
-          left: panel.layout.ax === "right" ? rect.left + rect.width - size : rect.left,
-          top: panel.layout.ay === "bottom" ? rect.top + rect.height - size : rect.top,
-        };
-      } else {
-        const index = stacks[dock]++;
-        at =
-          dock === "left"
-            ? { left: GAP, top: GAP + index * (size + 8) }
-            : dock === "right"
-              ? { left: vw - size - GAP, top: GAP + index * (size + 8) }
-              : {
-                  left: vw / 2 - size / 2 + index * (size + 8),
-                  top: dock === "top" ? GAP : vh - size - GAP,
-                };
-      }
-      panel.chip.style.left = `${Math.round(Math.min(vw - size, Math.max(0, at.left)))}px`;
-      panel.chip.style.top = `${Math.round(Math.min(vh - size, Math.max(0, at.top)))}px`;
+      if (panel.layout.dock !== "float") continue;
+      // A bar is measured at its content's width (not the one a narrow screen gave it).
+      if (panel.spec.bar) panel.el.style.width = "";
+      this.#place(panel, this.#floatRect(panel));
     }
   }
 
@@ -498,41 +482,6 @@ export class Workspace {
     );
   }
 
-  #moveChip(panel: Panel, event: PointerEvent): void {
-    if (event.button !== 0) return;
-    event.preventDefault();
-    const start = { x: event.clientX, y: event.clientY };
-    const origin = panel.chip.getBoundingClientRect();
-    let moved = false;
-    drag(
-      event,
-      panel.chip,
-      (pointer) => {
-        if (!moved && Math.hypot(pointer.clientX - start.x, pointer.clientY - start.y) < 5) return;
-        moved = true;
-        panel.chip.style.left = `${origin.left + pointer.clientX - start.x}px`;
-        panel.chip.style.top = `${origin.top + pointer.clientY - start.y}px`;
-      },
-      () => {
-        if (!moved) {
-          this.#fold(panel, false);
-          return;
-        }
-        // The panel unfolds where its icon was left.
-        const chip = panel.chip.getBoundingClientRect();
-        const vw = window.innerWidth;
-        const width = panel.spec.bar ? panel.el.offsetWidth || panel.layout.w : panel.layout.w;
-        const left = chip.left + chip.width / 2 < vw / 2 ? chip.left : chip.right - width;
-        const height = panel.spec.bar ? 44 : panel.layout.h;
-        const top =
-          chip.top + chip.height / 2 < window.innerHeight / 2 ? chip.top : chip.bottom - height;
-        this.#anchor(panel, { left, top, width, height });
-        this.#persist();
-        this.arrange();
-      },
-    );
-  }
-
   /** Drag a resize handle: `x` the inner side edge, `y` the bottom edge, `both` the corner. */
   #resize(panel: Panel, event: PointerEvent, axis: "x" | "y" | "both"): void {
     event.preventDefault();
@@ -597,20 +546,13 @@ export class Workspace {
     this.arrange();
   }
 
-  #fold(panel: Panel, folded: boolean): void {
-    panel.layout.collapsed = folded;
-    this.#persist();
-    this.arrange();
-    (folded ? panel.chip : panel.grip).focus();
-  }
-
   #persist(): void {
     const layouts = Object.fromEntries(this.#panels.map((panel) => [panel.spec.id, panel.layout]));
     this.#save(layouts as Record<PanelId, PanelLayout>, this.#sheetState);
   }
 }
 
-/** The narrow-screen sheet: whether it stands raised (lowered, only its header and the bar show). */
+/** The narrow-screen sheet: whether it stands raised (lowered, only its header shows). */
 export interface SheetState {
   open: boolean;
 }

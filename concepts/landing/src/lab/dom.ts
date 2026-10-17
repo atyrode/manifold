@@ -96,6 +96,16 @@ export interface LabContext {
   readonly reducedMotion: boolean;
 }
 
+/**
+ * Take `el` from where it stands, leaving a mark in its place; the returned function puts it back
+ * there. The compact bar's popovers show the panel's own views and sections this way (menu.ts).
+ */
+export function borrow(el: HTMLElement): () => void {
+  const mark = document.createComment("");
+  el.replaceWith(mark);
+  return () => mark.replaceWith(el);
+}
+
 /** Open while `isOpen` holds; animates its height through a grid row (setOpen). */
 export function reveal(child: HTMLElement, isOpen: () => boolean): Built {
   const el = h("div", { class: "reveal" }, h("div", { class: "reveal-inner" }, child));

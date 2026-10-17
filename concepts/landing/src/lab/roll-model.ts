@@ -1,4 +1,4 @@
-// The shuffle's rule, apart from its buttons: the transport's shuffle rolls every knob of the scene,
+// The shuffle's rule, apart from its buttons: the tools' shuffle rolls every knob of the scene,
 // a group's dice the knobs of that group. Each knob takes a random value of its kind's own (a seed a
 // new arrangement); a steady knob (framing that would otherwise lose the subject) keeps its value.
 import { MAX_SEED, type ParamDef } from "../params.ts";

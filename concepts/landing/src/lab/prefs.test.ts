@@ -1,8 +1,9 @@
 import { expect, spyOn, test } from "bun:test";
-import { readPrefs } from "./prefs.ts";
+import { readPrefs, type Prefs } from "./prefs.ts";
 
-const defaults = {
+const defaults: Prefs = {
   open: false,
+  presentation: "expanded",
   explain: false,
   keepWorld: false,
   sections: {},
@@ -15,7 +16,7 @@ test("no stored preferences read as the defaults", () => {
   expect(readPrefs("{}")).toEqual(defaults);
 });
 
-test("a layout from before the Scenes panel became a view keeps everything but that panel", () => {
+test("an older layout keeps everything but the panels it no longer has", () => {
   const inspector = { dock: "right", ax: "right", x: 0, ay: "top", y: 0, w: 380, h: 700 };
   const transport = { dock: "bottom", ax: "center", x: 0, ay: "bottom", y: 16, w: 640, h: 44 };
   const stored = JSON.stringify({
@@ -32,11 +33,21 @@ test("a layout from before the Scenes panel became a view keeps everything but t
   });
   expect(readPrefs(stored)).toEqual({
     open: true,
+    presentation: "expanded",
     explain: true,
     keepWorld: true,
     sections: { "pond:koi": false, look: true },
-    panels: { inspector, transport },
+    panels: { inspector },
     sheet: { open: false },
+  });
+});
+
+test("the compact presentation and the bar's place are kept", () => {
+  const bar = { dock: "float", ax: "center", x: 0, ay: "bottom", y: 16, w: 640, h: 44 };
+  expect(readPrefs(JSON.stringify({ presentation: "compact", panels: { bar } }))).toEqual({
+    ...defaults,
+    presentation: "compact",
+    panels: { bar },
   });
 });
 
@@ -51,6 +62,14 @@ test("unreadable or malformed preferences fall back without throwing", () => {
   expect(readPrefs("3")).toEqual(defaults);
   expect(readPrefs("null")).toEqual(defaults);
   expect(
-    readPrefs(JSON.stringify({ panels: [1, 2], sheet: "up", sections: 4, keepWorld: "yes" })),
+    readPrefs(
+      JSON.stringify({
+        panels: [1, 2],
+        sheet: "up",
+        sections: 4,
+        keepWorld: "yes",
+        presentation: "tiny",
+      }),
+    ),
   ).toEqual(defaults);
 });

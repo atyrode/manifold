@@ -1,15 +1,20 @@
-// The lab's preferences in this browser: whether it is open, explanations on, a picked scene keeping
-// the world, each group folded or open, each panel's place and the narrow-screen sheet raised or
-// not. Read defensively: anything missing or malformed falls back, and what older layouts kept that
-// this one has no use for is dropped (the Scenes panel's place, `panels.browser`, from before it
-// became a view of the one panel; the sheet's tab, `sheet.tab`, from when the sheet had a tab per
-// panel).
+// The lab's preferences in this browser: whether it is open, and in which presentation,
+// explanations on, a picked scene keeping the world, each group folded or open, each panel's place
+// and the narrow-screen sheet raised or not. Read defensively: anything missing or malformed falls
+// back, and what older layouts kept that this one has no use for is dropped (the Scenes panel's
+// place, `panels.browser`, from before it became a view of the one panel; the transport bar's,
+// `panels.transport`, from before the compact bar took its place; the sheet's tab, `sheet.tab`,
+// from when the sheet had a tab per panel).
 import { panelIds, type SheetState } from "./panels.ts";
 
 export const PREFS_KEY = "landing.lab.v3";
 
+/** The lab's two presentations of one menu: the inspector panel, or the compact bar. */
+export type Presentation = "expanded" | "compact";
+
 export interface Prefs {
   open: boolean;
+  presentation: Presentation;
   explain: boolean;
   /** A scene picked by hand opens under the world of the one left (lab.ts #setScene). */
   keepWorld: boolean;
@@ -24,6 +29,7 @@ export interface Prefs {
 export function readPrefs(stored: string | null): Prefs {
   const fallback: Prefs = {
     open: false,
+    presentation: "expanded",
     explain: false,
     keepWorld: false,
     sections: {},
@@ -44,6 +50,7 @@ export function readPrefs(stored: string | null): Prefs {
   const panels = object(record.panels);
   return {
     open: record.open === true,
+    presentation: record.presentation === "compact" ? "compact" : "expanded",
     explain: record.explain === true,
     keepWorld: record.keepWorld === true,
     sections: Object.fromEntries(

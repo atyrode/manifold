@@ -266,7 +266,7 @@ A knob with `trigger: n` gets a "now" button (a lightning bolt, whatever the kno
 `uTriggers[n]` with the scene clock; read it with `sinceTrigger(n)` (huge while idle) in GLSL and
 `frame.fired[n]` in a sim. Use slots 0..7, each for one knob only: the button stamps the slot, so
 two knobs on one slot fire together (`triggers.test.ts` checks every scene). Lightning takes the
-slot you give `weatherKnobs`. The lab's transport lists every "now" of the scene as well.
+slot you give `weatherKnobs`. The lab's tools list every "now" of the scene as well.
 
 ### Links and the URL schema
 
@@ -330,16 +330,43 @@ scenes may take (`state.ts` checks `planets`).
 
 ### Lab widgets
 
-The lab (`src/lab.ts`, `src/lab/`) is one floating inspector and a transport bar over the scene.
-The inspector has three views, picked by the icons in its header: Scenes (every scene's thumbnail,
-shelved by family), Presets (saved setups) and Controls (the scene's groups, then Look, Motion and
-Page); a rail beside each view jumps between its families, preset groups or control groups. The
-scene's name in the header and in the transport bar opens the Scenes view. Controls lay a group out
-from its knobs' metadata, never from scene ids: a switch (toggle or feature) is an icon chip (a
-feature's amount on its chip, or under the chips while it is on when it is a choice), and ranges,
-choices and seeds are rows. A knob names a purpose-built widget with `widget` (`Widget` in
-`src/params.ts`); widgets only change how the lab draws the knob, never its URL keys, values,
-reset, shuffle or presets:
+The lab (`src/lab.ts`, `src/lab/`) is one menu over the scene in two presentations, a lab
+preference (`presentation` in `src/lab/prefs.ts`): expanded, a floating inspector panel, and
+compact, a bar along the bottom edge. The inspector has three views, picked by the icons in its
+header: Scenes (every scene's thumbnail, shelved by family), Presets (saved setups) and Controls (the
+scene's groups, then Look, Motion and Page); a rail beside each view jumps between its families,
+preset groups or control groups. The scene's name in the header opens the Scenes view, and the
+header's last icons minimise the lab to the bar and hide it.
+
+The compact bar (`src/lab/menu.ts`, rules in `menu-model.ts`) is the same menu laid flat: the scene's
+chip (its dot and name) opens the Scenes view, a Presets chip the presets, then one chip per
+Controls section in the Controls order (the World shelf, the scene's groups, Global), its icon and
+title as the rail and the headings pick them. A chip is lit while its section differs from its
+defaults, as the lens counts it, and a section with a master switch shows it on or off. A chip
+opens a popover (`src/lab/popover.ts`) holding the panel's own element, lent while it is open
+(`Inspector.lend`, `borrow` in `src/lab/dom.ts`), never a copy: one set of controls, one set of
+syncs. A section shows open and whole there, under its own heading with its recipes and dice (the
+search and the lens wait while the lab is compact), in a popover as wide as the inspector, at most
+most of the screen tall and scrolling; on a narrow screen a popover is a sheet the full width of the
+screen, standing on the bar. While the chips do not all fit with their titles they go icon-only
+together, the title their tooltip and name, and then the strip scrolls (a wheel over it too): every
+section stays one press away, in one order, where a "more" chip would hide the rest behind a
+popover of popovers. The fit is measured, never decided by scene. The chips are one tab stop (the
+arrow keys, Home and End move along them); Escape closes a popover and hands the keyboard back to
+its chip, and a popover's controls are in the tab order only while it is open. The bar docks top or
+bottom or floats like any panel, and "expand" takes the lab back to the panel.
+
+Both presentations carry one row of tools, in the panel's foot or on the bar: play or pause, undo,
+redo and shuffle; A and B while a comparison runs; the tour's place while it plays; and "⋯", a
+popover with the motion, the transitions and their replay, every "now" of the scene, the A/B
+comparison, the tour, reset, the link, the explanations, the shortcuts and the build's status. `l`
+hides the whole lab, and `/` opens the panel at the control search.
+
+Controls lay a group out from its knobs' metadata, never from scene ids: a switch (toggle or
+feature) is an icon chip (a feature's amount on its chip, or under the chips while it is on when it
+is a choice), and ranges, choices and seeds are rows. A knob names a purpose-built widget with
+`widget` (`Widget` in `src/params.ts`); widgets only change how the lab draws the knob, never its
+URL keys, values, reset, shuffle or presets:
 
 - `{ kind: "mix", mix, part, swatch }` on range or feature knobs of one group: one stacked bar of
   relative weights named `mix`, each knob a segment while it is in (country's land use). A range is
@@ -408,7 +435,7 @@ key it sets, and takes only the keys it has, each as its knob holds it (rules in
 `src/lab/recipes-model.ts`). The shared sky and weather headings carry the sky's (Dawn .. Aurora
 night) and the weather's (Clear .. Fog): give a scene's own blurb as `{ ...atmosphereGroups.weather,
 blurb }` so they come along. Each group's heading also has a dice that shuffles that group alone, by
-the transport's shuffle rule (`src/lab/roll-model.ts`).
+the tools' shuffle rule (`src/lab/roll-model.ts`).
 
 Where the season sets the climate (`hasClimate`, see "The climate" under "Weather in the world"),
 the lab shows what the time of year makes of the weather, with marks that change no value (rules in

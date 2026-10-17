@@ -9,15 +9,22 @@
 // - `writes`: a sync that changes nothing writes nothing (a MutationObserver over the view), plain,
 //   under the lens and under a search, in three scenes; a sync that changes something does write;
 // - `night`: in a night with an aurora (three drawings over one another), a click on a planet picks
-//   it, and one on the aurora, or on the Milky Way under the drawings over it, switches that part.
+//   it, and one on the aurora, or on the Milky Way under the drawings over it, switches that part;
+// - `compact`: the compact bar (menu.ts) has a chip per section in the Controls order, each opening
+//   the section's own element, open and whole, in the tab order only while open; Escape gives it
+//   back where it stood and the keyboard to its chip; the arrows walk the chips; a change lights
+//   its chip and a sync that changes nothing writes nothing; country's chips drop their titles,
+//   then scroll, as the room shrinks; another scene closes its sections' popovers, not Global's.
 import labCss from "../lab.css" with { type: "text" };
 import { sceneDefs } from "../scenes/index.ts";
 import { encodePlanets, PLANETS_KEY, type SkyPlanet } from "../scenes/planets.ts";
 import { readParams, readPlanets, readState, serialise } from "../state.ts";
 import type { LabContext, Patch } from "./dom.ts";
 import { Inspector } from "./inspector.ts";
+import { MenuBar } from "./menu.ts";
 import { nightParts } from "./nightsky-model.ts";
 import { addedPlanet } from "./planets-model.ts";
+import { Popover } from "./popover.ts";
 
 function check(ok: boolean, message: string): asserts ok {
   if (!ok) throw new Error(`lab controls: ${message}`);
@@ -33,6 +40,8 @@ interface View {
   sections: Record<string, boolean>;
   /** Every patch it applied, in order. */
   changes: Patch[];
+  /** Apply a patch, as the lab does. */
+  change(patch: Patch): void;
   remove(): void;
 }
 
@@ -63,7 +72,13 @@ function view(query: URLSearchParams, sections: Record<string, boolean> = {}): V
   box.append(inspector.el);
   document.body.append(box);
   inspector.sync();
-  return { inspector, sections, changes, remove: () => box.remove() };
+  return {
+    inspector,
+    sections,
+    changes,
+    change: (patch) => ctx.change(patch, true),
+    remove: () => box.remove(),
+  };
 }
 
 const setup = (text: string) => new URLSearchParams(text);
@@ -359,6 +374,177 @@ async function night(): Promise<Record<string, unknown>> {
   }
 }
 
+/** The compact bar (menu.ts) over a Controls view of its own, in a lab layer, the lab compact. */
+function compactBar(query: URLSearchParams, sections: Record<string, boolean>) {
+  const controls = view(query, sections);
+  const layer = document.createElement("div");
+  layer.className = "lab";
+  const box = document.createElement("div");
+  box.style.cssText = "position: absolute; left: 0; bottom: 0; display: flex; background: #0b0c10";
+  const nothing = { el: document.createElement("div"), shown: () => {} };
+  const bar = new MenuBar(
+    layer,
+    controls.inspector,
+    { scenes: nothing, presets: nothing },
+    () => {},
+  );
+  box.append(bar.el);
+  layer.append(box);
+  document.body.append(layer);
+  controls.inspector.compact = true;
+  controls.inspector.sync();
+  bar.sync();
+  return {
+    ...controls,
+    bar,
+    /** Make the bar `width` px wide and its chips fit; how they fit. */
+    async widen(width: number): Promise<string | undefined> {
+      box.style.width = `${width}px`;
+      await frame();
+      await frame();
+      await frame();
+      return element<HTMLElement>(bar.el, ".menu-strip").dataset.fit;
+    },
+    remove: () => {
+      Popover.closeAll();
+      layer.remove();
+      controls.remove();
+    },
+  };
+}
+
+/**
+ * The compact bar: a chip per section in the Controls order, each opening that section's own
+ * element (one set of controls) open and whole, in the tab order only while open; Escape gives it
+ * back where it stood and the keyboard to its chip; the arrows walk the chips; the chips light
+ * with changes, show their switches, go icon-only and then scroll as the room shrinks, and a sync
+ * that changes nothing writes nothing; a scene change closes a scene section's popover.
+ */
+async function compact(): Promise<Record<string, unknown>> {
+  const country = compactBar(setup("scene=country"), { "country:sky": false });
+  try {
+    const { inspector, bar } = country;
+    const order = [...inspector.el.querySelectorAll<HTMLElement>("section.group")].map(
+      (section) => section.dataset.id,
+    );
+    const chips = [...bar.el.querySelectorAll<HTMLButtonElement>(".menu-chip[data-id]")];
+    check(
+      chips.map((chip) => chip.dataset.id).join() === order.join(),
+      `the chips (${chips.map((chip) => chip.dataset.id).join()}) are not the sections in order (${order.join()})`,
+    );
+    check(
+      chips.some((chip) => chip.dataset.switch === "on"),
+      "no chip of country shows its section's master switch",
+    );
+
+    // The sky's chip opens the sky's own section, open though folded in the panel.
+    const sky = element<HTMLElement>(inspector.el, 'section.group[data-id="country:sky"]');
+    const before = sky.previousElementSibling;
+    const chip = element<HTMLButtonElement>(bar.el, '.menu-chip[data-id="country:sky"]');
+    check(
+      sky.querySelector(".group-body")?.closest(".reveal.open") === null,
+      "the sky starts open",
+    );
+    chip.click();
+    const popover = sky.closest<HTMLElement>(".popover");
+    check(
+      popover !== null && !popover.hidden,
+      "the sky's chip does not show the sky's own section",
+    );
+    check(!inspector.el.contains(sky), "the sky's section is in the panel and the popover at once");
+    check(chip.getAttribute("aria-expanded") === "true", "the sky's chip is not expanded");
+    check(
+      sky.querySelector(":scope > .reveal.open") !== null,
+      "the lent sky's section shows folded",
+    );
+    const dial = element<HTMLElement>(sky, '[role="slider"], input');
+    check(takesFocus(dial), "a control in the open popover takes no focus");
+
+    // Escape gives it back where it stood, folded as before, and the keyboard to its chip.
+    dial.focus();
+    dial.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+    check(popover.hidden, "Escape leaves the sky's popover open");
+    check(document.activeElement === chip, "Escape does not hand the keyboard back to the chip");
+    check(chip.getAttribute("aria-expanded") === "false", "the closed sky's chip stays expanded");
+    check(
+      sky.previousElementSibling === before && inspector.el.contains(sky),
+      "the sky's section does not come back where it stood",
+    );
+    check(popover.querySelector("button, input") === null, "the closed popover keeps controls");
+    check(
+      sky.querySelector(":scope > .reveal.open") === null,
+      "the given-back sky's section stays open though folded",
+    );
+
+    // The arrows walk the chips, one tab stop.
+    const all = [...bar.el.querySelectorAll<HTMLButtonElement>(".menu-chip")];
+    const [scene, presets] = all;
+    scene?.focus();
+    scene?.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true }));
+    check(document.activeElement === presets, "ArrowRight does not move to the next chip");
+    presets?.dispatchEvent(new KeyboardEvent("keydown", { key: "End", bubbles: true }));
+    check(document.activeElement === all.at(-1), "End does not move to the last chip");
+    check(all.filter((each) => each.tabIndex === 0).length === 1, "the chips are not one tab stop");
+
+    // A change lights its section's chip; a sync that changes nothing writes nothing.
+    const weather = element<HTMLButtonElement>(bar.el, '.menu-chip[data-id="country:weather"]');
+    check(!weather.classList.contains("lit"), "the weather's chip is lit at the defaults");
+    inspector.sync();
+    const observer = new MutationObserver(() => {});
+    observer.observe(bar.el, {
+      attributes: true,
+      childList: true,
+      characterData: true,
+      subtree: true,
+    });
+    bar.sync();
+    const records = observer.takeRecords();
+    observer.disconnect();
+    check(records.length === 0, `a bar sync that changes nothing writes: ${described(records)}`);
+    const rain = element<HTMLButtonElement>(inspector.el, '.chip-cell[data-keys~="rain"] .chip');
+    rain.click();
+    bar.sync();
+    check(weather.classList.contains("lit"), "a change to the weather does not light its chip");
+
+    // Short of room the chips drop their titles, then scroll.
+    const fits = {
+      wide: await country.widen(3000),
+      middling: await country.widen(900),
+      narrow: await country.widen(320),
+    };
+    check(
+      fits.wide === "titled" && fits.middling === "icons" && fits.narrow === "scroll",
+      `country's chips fit ${JSON.stringify(fits)}, not titled, icons, scroll`,
+    );
+
+    // Another scene closes a scene section's popover and brings its own chips; Global's stay, an
+    // open one open.
+    chip.click();
+    country.change({ scene: "pond" });
+    bar.sync();
+    check(sky.closest(".popover:not([hidden])") === null, "the sky of the scene left stays open");
+    check(
+      bar.el.querySelector('.menu-chip[data-id^="country:"]') === null &&
+        bar.el.querySelector('.menu-chip[data-id="pond:koi"]') !== null,
+      "the chips do not follow the scene",
+    );
+    const look = element<HTMLButtonElement>(bar.el, '.menu-chip[data-id="look"]');
+    look.click();
+    const section = element<HTMLElement>(document.body, 'section.group[data-id="look"]');
+    country.change({ scene: "country" });
+    bar.sync();
+    check(
+      element(bar.el, '.menu-chip[data-id="look"]') === look &&
+        look.getAttribute("aria-expanded") === "true" &&
+        section.closest(".popover:not([hidden])") !== null,
+      "an open Global section closes, or its chip goes, with the scene",
+    );
+    return { fits, chips: chips.length, writes: records.length };
+  } finally {
+    country.remove();
+  }
+}
+
 /** Every Controls view regression above, under the lab's own stylesheet. */
 export async function verifyInspector(
   _gl: WebGL2RenderingContext,
@@ -373,6 +559,7 @@ export async function verifyInspector(
       dormant: await dormant(),
       writes: await writes(),
       night: await night(),
+      compact: await compact(),
     };
   } finally {
     style.remove();

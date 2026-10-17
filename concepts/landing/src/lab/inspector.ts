@@ -11,7 +11,9 @@
 // every sync this view alone decides which controls and groups show, from one availability model
 // (availability-model.ts) that the lens, the search, the folds and the summaries share. A change the
 // lens counts behind a switch that is off shows dormant, dimmed beside that switch, never folded
-// away; folded groups and closed controls leave the tab order (inert).
+// away; folded groups and closed controls leave the tab order (inert). The compact bar (menu.ts)
+// shows the same sections: it borrows one at a time (`lend`), which shows open and whole, nothing
+// narrowing it, until given back, so both presentations share these controls and their syncs.
 import { formatValue, MAX_SEED, type Option, type ParamDef } from "../params.ts";
 import { colorIds, ditherIds, viewIds } from "../renderer.ts";
 import { sceneDefs, type SceneId } from "../scenes/index.ts";
@@ -49,6 +51,7 @@ import {
 } from "./controls.ts";
 import { seasonWheel, skyDial, type SkyParts } from "./dial.ts";
 import {
+  borrow,
   dependent,
   h,
   isLive,
@@ -154,10 +157,20 @@ export interface SectionPrefs {
 const options = (list: readonly Option[]) =>
   list.map((option) => ({ label: option.label, value: String(option.value) }));
 
-interface Section {
+/** Where a section stands in the Controls order: on the World shelf, the scene's own, or Global. */
+export type Shelf = "world" | "scene" | "global";
+
+/** A section as the compact bar shows it: a chip, which opens the section itself (`lend`). */
+export interface MenuSection {
   id: string;
   title: string;
   icon: IconName;
+  shelf: Shelf;
+  /** Its master switch, on or off; undefined without one. */
+  on(): boolean | undefined;
+}
+
+interface Section extends MenuSection {
   el: HTMLElement;
   toggle: HTMLButtonElement;
   open(): void;
@@ -202,6 +215,14 @@ export class Inspector {
   /** The scene's knob defaults, and every group as the lens counts it (the global ones last). */
   #defaults: Params = {};
   #lensGroups: LensGroup[] = [];
+  /** How many knobs of each group differ from their defaults, by section id (the lens's count). */
+  #counts: ReadonlyMap<string, number> = new Map();
+  /** Every section in the Controls order; a new list each time the scene's are built. */
+  #menu: readonly Section[] = [];
+  /** The section the compact bar has borrowed, and how to put it back where it stood. */
+  #lent: { section: Section; back: () => void } | undefined;
+  /** While the lab is compact nothing narrows: the bar shows a section whole. */
+  #compact = false;
 
   constructor(ctx: LabContext, prefs: SectionPrefs) {
     this.#ctx = ctx;
@@ -235,6 +256,7 @@ export class Inspector {
     this.#rail = new Rail(this.#body, "Groups", ctx.reducedMotion);
     this.#globalSections.push(this.#lookGroup(), this.#motionGroup(), this.#pageGroup());
     this.#globalSlot.append(...this.#globalSections.map((section) => section.el));
+    this.#menu = [...this.#globalSections];
     this.#fold = iconButton("unfold", "Open every group", () => {
       const open = !this.#allOpen();
       for (const section of [...this.#sceneSections, ...this.#globalSections])
@@ -292,6 +314,44 @@ export class Inspector {
     this.#rail.spy();
   }
 
+  /** The sections in the Controls order (World shelf, the scene's, Global), for the compact bar. */
+  get menu(): readonly MenuSection[] {
+    return this.#menu;
+  }
+
+  /** How many knobs of section `id` differ from their defaults, as the lens counts them. */
+  changes(id: string): number {
+    return this.#counts.get(id) ?? 0;
+  }
+
+  /** Whether the lab is compact: then nothing narrows, and a lent section shows whole. */
+  set compact(compact: boolean) {
+    this.#compact = compact;
+  }
+
+  /**
+   * Lend section `id` to the compact bar's popover (menu.ts), giving back any other first: its own
+   * element, taken from where it stands, open whatever its fold, its toggle a plain heading, until
+   * `giveBack`. Undefined for no such section.
+   */
+  lend(id: string): HTMLElement | undefined {
+    this.giveBack();
+    const section = this.#menu.find((candidate) => candidate.id === id);
+    if (!section) return undefined;
+    this.#lent = { section, back: borrow(section.el) };
+    this.#narrow();
+    return section.el;
+  }
+
+  /** Put the lent section back where it stood, folded or open as before. */
+  giveBack(): void {
+    const lent = this.#lent;
+    if (!lent) return;
+    this.#lent = undefined;
+    lent.back();
+    this.#narrow();
+  }
+
   /**
    * Reflect the setup into every control, then decide once what shows (#narrow): a sync that
    * changes nothing writes nothing.
@@ -318,6 +378,7 @@ export class Inspector {
       ...(planets.length > 0 ? [PLANETS_KEY] : []),
     ]);
     const counts = changedCounts(this.#lensGroups, this.#changed);
+    this.#counts = counts;
     this.#rail.mark(counts);
     const total = [...counts.values()].reduce((sum, count) => sum + count, 0);
     setText(this.#lensCount, total > 0 ? `${total} changed` : "");
@@ -334,7 +395,7 @@ export class Inspector {
 
   /**
    * Every knob of the scene and global setting that differs from its default back to it, and its
-   * planets gone, in one undoable change: the transport's reset, kept to what changed.
+   * planets gone, in one undoable change: the tools' reset, kept to what changed.
    */
   #resetChanged(): void {
     const base = this.#base();
@@ -359,6 +420,7 @@ export class Inspector {
     title: string;
     blurb: string;
     icon: IconName;
+    shelf: Shelf;
     open: boolean;
     content: HTMLElement[];
     summary: () => string[];
@@ -440,6 +502,8 @@ export class Inspector {
       id: spec.id,
       title: spec.title,
       icon: spec.icon,
+      shelf: spec.shelf,
+      on: () => spec.masterOn?.(),
       el,
       toggle,
       open: () => {
@@ -447,10 +511,14 @@ export class Inspector {
         this.#prefs.save();
       },
       sync: (searching) => {
-        const open = isOpen() || searching;
+        // Lent to the compact bar, it shows open, its toggle a heading that folds nothing.
+        const lent = this.#lent?.section.id === spec.id;
+        const open = isOpen() || searching || lent;
         // Folded, the body leaves the tab order; the focus it held goes to the header.
         setOpen(body, open, toggle);
         el.classList.toggle("is-open", isOpen());
+        el.classList.toggle("lent", lent);
+        if (toggle.disabled !== lent) toggle.disabled = lent;
         setAttr(toggle, "aria-expanded", String(open));
         const on = spec.masterOn?.() ?? true;
         el.classList.toggle("off", !on);
@@ -482,12 +550,12 @@ export class Inspector {
    * the controls the search and, while it is on, the lens find (with the switches a dormant one
    * waits on), each gate open, dormant or closed, and the group shown or not, open or folded; then
    * the note for nothing found and the fold button. The rail marks again when a group shows, hides,
-   * opens or folds.
+   * opens or folds. While the lab is compact the search and the lens wait: nothing narrows.
    */
   #narrow(): void {
     const query: LensQuery = {
-      text: this.#search.value.trim().toLowerCase(),
-      lens: this.#lens,
+      text: this.#compact ? "" : this.#search.value.trim().toLowerCase(),
+      lens: this.#lens && !this.#compact,
       changed: this.#changed,
     };
     const filtering = narrowing(query);
@@ -545,7 +613,7 @@ export class Inspector {
       setAttr(this.#fold, "title", label);
       setAttr(this.#fold, "aria-label", label);
     }
-    if (`${filtering}${layout}` !== this.#layout) {
+    if (!this.#compact && `${filtering}${layout}` !== this.#layout) {
       this.#layout = `${filtering}${layout}`;
       this.#rail.spy();
     }
@@ -573,11 +641,21 @@ export class Inspector {
       ...SETTING_GROUPS,
     ];
     const { world, own } = shelves(sceneDefs[scene]);
-    const section = (group: string) =>
-      this.#sceneGroup(scene, knobs, group, groups.get(group) ?? [], group === defs[0]?.group);
-    const worldSections = world.filter((group) => groups.has(group)).map(section);
-    const ownSections = own.filter((group) => groups.has(group)).map(section);
+    const section = (shelf: Shelf) => (group: string) =>
+      this.#sceneGroup(
+        scene,
+        knobs,
+        group,
+        groups.get(group) ?? [],
+        group === defs[0]?.group,
+        shelf,
+      );
+    const worldSections = world.filter((group) => groups.has(group)).map(section("world"));
+    const ownSections = own.filter((group) => groups.has(group)).map(section("scene"));
     this.#sceneSections = [...worldSections, ...ownSections];
+    this.#menu = [...this.#sceneSections, ...this.#globalSections];
+    // A lent section of the scene left is gone with it: the bar closes its popover (menu.ts).
+    if (this.#lent && !this.#globalSections.includes(this.#lent.section)) this.#lent = undefined;
     this.#worldDivider.el.hidden = worldSections.length === 0;
     this.#worldSlot.replaceChildren(...worldSections.map((section) => section.el));
     this.#sceneDivider.replaceChildren(h("span", {}, sceneDefs[scene].title));
@@ -604,6 +682,7 @@ export class Inspector {
     group: string,
     defs: readonly ParamDef[],
     open: boolean,
+    shelf: Shelf,
   ): Section {
     const info = sceneDefs[scene].groups[group] ?? { title: group, blurb: "" };
     const master = this.#masterOf(defs);
@@ -826,6 +905,7 @@ export class Inspector {
       id: `${scene}:${group}`,
       title: info.title,
       blurb: info.blurb,
+      shelf,
       icon: info.icon ?? iconFromWords(group, info.title) ?? "sliders",
       open,
       content,
@@ -1159,6 +1239,7 @@ export class Inspector {
       title: "Look",
       blurb: "How the picture becomes dots: pattern, palette and resolution.",
       icon: "dither",
+      shelf: "global",
       open: false,
       content: rows.map((built) => built.el),
       summary: () => {
@@ -1341,6 +1422,7 @@ export class Inspector {
       title: "Motion",
       blurb: "How much things move, whether the scene follows you, and how scenes come and go.",
       icon: "motion",
+      shelf: "global",
       open: false,
       content: rows.map((built) =>
         tuning.has(built) ? dependent(built.el, ["transitions"], passing) : built.el,
@@ -1444,6 +1526,7 @@ export class Inspector {
       title: "Page",
       blurb: "What sits on top of the picture, and how the picture sits behind it.",
       icon: "page",
+      shelf: "global",
       open: false,
       content: rows.map((built) =>
         built === nameRow ? dependent(built.el, ["mode"], named) : built.el,

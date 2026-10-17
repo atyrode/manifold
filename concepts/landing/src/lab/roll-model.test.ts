@@ -103,7 +103,7 @@ describe("a roll", () => {
   });
 });
 
-/** The transport's shuffle as lab.ts wrote it before the rule moved here, transcribed. */
+/** The scene's shuffle as lab.ts wrote it before the rule moved here, transcribed. */
 function shuffleBefore(params: readonly ParamDef[], next: Random): Record<string, number> {
   const patch: Record<string, number> = {};
   const pickOne = <T>(list: readonly T[]): T | undefined => list[Math.floor(next() * list.length)];
@@ -139,7 +139,7 @@ function shuffleBefore(params: readonly ParamDef[], next: Random): Record<string
   return patch;
 }
 
-test("the transport's shuffle of every scene rolls exactly as it did before", () => {
+test("the scene's shuffle of every scene rolls exactly as it did before", () => {
   for (const [index, id] of sceneIds.entries()) {
     const params = sceneDefs[id].params;
     expect(rollPatch(params, random(1082 + index))).toEqual(

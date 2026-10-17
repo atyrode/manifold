@@ -125,7 +125,7 @@ export function segments(
 
 /**
  * A knob's "now": fires one occurrence of its event (`fire`) and plays a short cooldown sweep (a
- * colour change alone under reduced motion). `compact` drops the word, for chips and the transport.
+ * colour change alone under reduced motion). `compact` drops the word, for chips and pads.
  * A switch's "now" plays its event even while the switch is off.
  */
 export function nowButton(

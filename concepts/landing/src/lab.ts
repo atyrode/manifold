@@ -1,11 +1,13 @@
-// The lab: a floating-inspector workspace over the scene, built entirely from the scene catalogue
-// and knob definitions. Two panels (lab/panels.ts): the inspector, whose views (lab/views.ts) are
-// the scene picker (lab/gallery.ts), the presets (lab/presets.ts) and the controls
-// (lab/inspector.ts); and the transport bar, whose popovers (lab/transport.ts) hold the A/B
-// comparison (compare.ts), the scene tour (tour.ts), every "now" and the shortcuts. Every change goes
-// through the host as a URL query (a scene's planets under their one key among its knobs), so
-// links, presets and undo all share one representation; the session tools sit beside the setup in
-// the URL (`sessionQuery`) and never inside it.
+// The lab: one menu over the scene, built entirely from the scene catalogue and knob definitions,
+// in two presentations (a lab preference): expanded, the inspector panel, whose views
+// (lab/views.ts) are the scene picker (lab/gallery.ts), the presets (lab/presets.ts) and the
+// controls (lab/inspector.ts); and compact, a bar of chips that open the same views and sections in
+// popovers (lab/menu.ts). Both carry one row of tools: play, undo, redo, shuffle, and "⋯", a
+// popover (lab/popover.ts) with the motion, transitions, every "now", the A/B comparison
+// (compare.ts), the scene tour (tour.ts), reset, links, explanations and the shortcuts. Every
+// change goes through the host as a URL query (a scene's planets under their one key among its
+// knobs), so links, presets and undo all share one representation; the session tools sit beside
+// the setup in the URL (`sessionQuery`) and never inside it.
 import {
   otherSlot,
   readComparison,
@@ -17,7 +19,15 @@ import {
   type Slot,
 } from "./compare.ts";
 import { SceneGallery } from "./lab/gallery.ts";
-import { iconButton, nowButton, row, slider, textButton } from "./lab/controls.ts";
+import {
+  flash,
+  iconButton,
+  nowButton,
+  row,
+  slider,
+  switchControl,
+  textButton,
+} from "./lab/controls.ts";
 import {
   h,
   setAttr,
@@ -30,12 +40,13 @@ import {
 import { icon } from "./lab/icons.ts";
 import { Inspector } from "./lab/inspector.ts";
 import { knobIcon } from "./lab/knobs.ts";
+import { MenuBar } from "./lab/menu.ts";
 import { Workspace, type PanelLayout } from "./lab/panels.ts";
 import { rollPlanets } from "./lab/planets-model.ts";
-import { PREFS_KEY, readPrefs } from "./lab/prefs.ts";
+import { fold, Popover } from "./lab/popover.ts";
+import { PREFS_KEY, readPrefs, type Presentation } from "./lab/prefs.ts";
 import { PresetsView } from "./lab/presets.ts";
 import { rollPatch } from "./lab/roll-model.ts";
-import { Popover, separator } from "./lab/transport.ts";
 import { Views } from "./lab/views.ts";
 import { carryPlanets, carryWorld } from "./lab/world-model.ts";
 import type { ParamDef } from "./params.ts";
@@ -44,6 +55,7 @@ import { sceneDefs, sceneIds, type SceneId } from "./scenes/index.ts";
 import { encodePlanets, PLANETS_KEY, type SkyPlanet } from "./scenes/planets.ts";
 import {
   carryLook,
+  defaultsFor,
   paramDefaults,
   readState,
   serialise,
@@ -133,6 +145,14 @@ export class Lab {
   readonly #gallery: SceneGallery;
   readonly #presets: PresetsView;
   readonly #inspector: Inspector;
+  /** The compact presentation: the menu laid flat along a bar. */
+  readonly #bar: MenuBar;
+  /** The tools, in the inspector's foot or on the bar, as the presentation has them. */
+  readonly #tools: HTMLElement;
+  /** The inspector panel's foot: the tools, while expanded. */
+  readonly #foot = h("div", { class: "panel-foot" });
+  /** The way from the inspector to the bar (the bar's own leads back, MenuBar.expand). */
+  readonly #minimise: HTMLButtonElement;
   readonly #syncers: (() => void)[] = [];
   /** The undo history of the setup on screen (with a comparison, the live slot's). */
   #history: History;
@@ -156,12 +176,15 @@ export class Lab {
   #tourDwell: number = TOUR_DWELL.fallback;
   readonly #tourStatus = h("p", { class: "tour-status" });
   readonly #tourProgress = h("progress", { max: 1, value: 0, "aria-label": "Time on this scene" });
-  readonly #barProgress = h("span", { class: "bar-progress", "aria-hidden": "true" });
+  /** The tour's place beside the tools while it plays: the step, and the step's time as a line. */
+  readonly #tourMark = h("span", { class: "tool-tour", hidden: true });
+  readonly #tourStep = h("span", { class: "tool-tour-step" });
+  readonly #tourBar = h("span", { class: "tool-tour-bar", "aria-hidden": "true" });
   readonly #reducedMotion = matchMedia("(prefers-reduced-motion: reduce)").matches;
   readonly #undoButton: HTMLButtonElement;
   readonly #redoButton: HTMLButtonElement;
-  readonly #status = h("span", { class: "bar-status" });
-  readonly #statusLong = h("p", { class: "keys-status" });
+  /** The build, the frame rate and the GPU, at the foot of the tools' popover. */
+  readonly #status = h("p", { class: "tools-status" });
   readonly #failure: { el: HTMLElement; sync: () => void };
   /** One line over the scene: the link just applied named a scene this build does not have. */
   readonly #noticeText = h("span", { class: "lab-notice-text" });
@@ -224,6 +247,9 @@ export class Lab {
       },
       save,
     });
+    this.#minimise = iconButton("minimise", "Minimise the lab to a bar", () =>
+      this.#present("compact", true),
+    );
     // The Scenes and Presets views reflect the setup only while on screen, and as they come on.
     this.#views = new Views(
       [
@@ -255,11 +281,36 @@ export class Lab {
           shown: () => this.#inspector.shown(),
         },
       ],
-      () => this.#workspace.show("inspector"),
+      () => this.#workspace.raiseSheet(),
       () => this.#pickScene(),
+      [this.#minimise],
     );
     this.#undoButton = iconButton("undo", "Undo (Ctrl Z)", () => this.undo());
     this.#redoButton = iconButton("redo", "Redo (Ctrl ⇧ Z)", () => this.redo());
+    this.#tools = this.#toolRow();
+    // The bar opens the panel's own views and sections, lent to its popovers while they are open.
+    this.#bar = new MenuBar(
+      root,
+      this.#inspector,
+      {
+        scenes: {
+          el: this.#gallery.el,
+          shown: () => {
+            this.#gallery.sync();
+            this.#gallery.shown();
+          },
+          focus: () => this.#gallery.focusCurrent(),
+        },
+        presets: {
+          el: this.#presets.el,
+          shown: () => {
+            this.#presets.sync();
+            this.#presets.shown();
+          },
+        },
+      },
+      () => this.#present("expanded", true),
+    );
 
     this.#workspace = new Workspace(
       root,
@@ -274,13 +325,12 @@ export class Lab {
     this.#workspace.add({
       id: "inspector",
       title: "Inspector",
-      icon: "sliders",
       docks: ["left", "right"],
       bar: false,
       min: { w: 280, h: 240 },
       max: { w: 560 },
       head: this.#views.head,
-      body: this.#views.body,
+      body: h("div", { class: "panel-frame" }, this.#views.body, this.#foot),
       initial: ({ h: vh }) => ({
         dock: "float",
         ax: "right",
@@ -288,19 +338,17 @@ export class Lab {
         ay: "top",
         y: 16,
         w: 352,
-        h: Math.round(vh - 16 - 76),
-        collapsed: false,
+        h: Math.round(vh - 32),
       }),
     });
     this.#workspace.add({
-      id: "transport",
-      title: "Transport",
-      icon: "play",
+      id: "bar",
+      title: "Lab bar",
       docks: ["top", "bottom"],
       bar: true,
       min: { w: 200, h: 40 },
       max: { w: 4000 },
-      body: this.#transportBar(),
+      body: this.#bar.el,
       initial: () => ({
         dock: "float",
         ax: "center",
@@ -309,9 +357,9 @@ export class Lab {
         y: 16,
         w: 640,
         h: 44,
-        collapsed: false,
       }),
     });
+    this.#layOut(this.#prefs.presentation);
 
     this.#failure = this.#failureAlert();
     root.append(h("div", { class: "lab-alerts" }, this.#notice, this.#failure.el));
@@ -348,6 +396,7 @@ export class Lab {
 
   focusSearch(): void {
     this.setOpen(true);
+    if (this.#prefs.presentation === "compact") this.#present("expanded");
     this.#views.show("controls");
     this.#inspector.focusSearch();
   }
@@ -355,17 +404,47 @@ export class Lab {
   /** Reflect the host's current state into every control. */
   sync(): void {
     const { state } = this.#current();
+    const compact = this.#prefs.presentation === "compact";
     // The notice explains the scene it went up over: once another scene is on screen, it goes.
     if (this.#noticeScene !== undefined && state.scene !== this.#noticeScene) this.#dismissNotice();
     // A step of the tour (its own switch or the user's) becomes the current one; another scene holds it.
     this.#tour?.follow(state.scene);
-    if (this.#views.current === "scenes") this.#gallery.sync();
-    if (this.#views.current === "presets") this.#presets.sync();
+    // The Scenes and Presets views reflect the setup only while on screen, in the panel or the bar.
+    if (compact ? this.#bar.showing("scenes") : this.#views.current === "scenes")
+      this.#gallery.sync();
+    if (compact ? this.#bar.showing("presets") : this.#views.current === "presets")
+      this.#presets.sync();
     this.#inspector.sync();
+    if (compact) this.#bar.sync();
     for (const sync of this.#syncers) sync();
     const scene = sceneDefs[state.scene];
     this.#views.setScene(scene.title, scene.accent);
+    this.#bar.setScene(scene.title, scene.accent);
     this.#syncHistory();
+  }
+
+  /**
+   * Show the lab as `presentation` from now on (a preference): the popovers close, the tools move
+   * there, and the keyboard, if `focus`, goes to the way back.
+   */
+  #present(presentation: Presentation, focus = false): void {
+    Popover.closeAll();
+    this.#prefs.presentation = presentation;
+    this.#savePrefs();
+    this.#layOut(presentation);
+    if (this.open) this.#workspace.arrange();
+    this.sync();
+    if (presentation === "expanded" && this.#views.current === "controls") this.#inspector.shown();
+    if (focus) (presentation === "compact" ? this.#bar.expand : this.#minimise).focus();
+  }
+
+  /** Put the tools and the panels where `presentation` has them. */
+  #layOut(presentation: Presentation): void {
+    const compact = presentation === "compact";
+    (compact ? this.#bar.tools : this.#foot).append(this.#tools);
+    this.#inspector.compact = compact;
+    this.#workspace.setShown("inspector", !compact);
+    this.#workspace.setShown("bar", compact);
   }
 
   /**
@@ -501,9 +580,7 @@ export class Lab {
     const gpu = renderer?.glInfo.split(" · ")[1] ?? "WebGL2 unavailable";
     const build = this.#host.build ? `build ${this.#host.build}` : "working tree";
     const fps = renderer ? `${Math.round(renderer.fps)} fps` : "no WebGL";
-    setText(this.#status, renderer?.paused ? `${fps} · paused` : fps);
-    setAttr(this.#status, "title", `${build} · ${fps}\n${gpu}`);
-    setText(this.#statusLong, `${build} · ${fps} · ${gpu}`);
+    setText(this.#status, `${build} · ${renderer?.paused ? `${fps}, paused` : fps} · ${gpu}`);
     this.#failure.sync();
   }
 
@@ -543,22 +620,14 @@ export class Lab {
     };
   }
 
-  // ---- the transport bar ----------------------------------------------------------------------
+  // ---- the tools ------------------------------------------------------------------------------
 
-  #transportBar(): HTMLElement {
-    const layer = this.#root;
-    const state = () => this.#current().state;
-
-    // The scene picker: the scene on screen, a click from the inspector's Scenes view.
-    const sceneName = h("span", { class: "bar-scene-name" });
-    const scenePick = h(
-      "button",
-      { type: "button", class: "bar-scene" },
-      h("span", { class: "scene-dot" }),
-      sceneName,
-    );
-    scenePick.addEventListener("click", () => this.#pickScene());
-
+  /**
+   * The tools, in either presentation (the inspector's foot, or the bar): play or pause, undo, redo
+   * and shuffle at hand; A and B while a comparison runs; the tour's place while it plays; and
+   * "⋯", a popover with the rest.
+   */
+  #toolRow(): HTMLElement {
     const playIcon = icon("play");
     const pauseIcon = icon("pause");
     const play = h("button", { type: "button", class: "icon-button" }, playIcon, pauseIcon);
@@ -567,6 +636,66 @@ export class Lab {
       renderer?.setPaused(!renderer.paused);
       this.sync();
     });
+    const flips = slots.map((slot) => {
+      const button = h(
+        "button",
+        { type: "button", class: "tool-slot", title: `Show ${slot.toUpperCase()} (b flips)` },
+        slot.toUpperCase(),
+      );
+      button.addEventListener("click", () => this.#showSlot(slot));
+      return { slot, button };
+    });
+    const flipGroup = h(
+      "div",
+      { class: "tool-slots", role: "group", "aria-label": "Setup on screen", hidden: true },
+      ...flips.map(({ button }) => button),
+    );
+    this.#tourMark.append(icon("tour"), this.#tourStep, this.#tourBar);
+    const more = new Popover(this.#root, {
+      id: "tools",
+      title: "Tools",
+      icon: "more",
+      label: "More tools: motion, transitions, every now, A/B, tour, reset, link and shortcuts",
+      content: this.#toolsContent(),
+    });
+    this.#syncers.push(() => {
+      const paused = this.#host.renderer()?.paused ?? false;
+      setStyle(playIcon, "display", paused ? "" : "none");
+      setStyle(pauseIcon, "display", paused ? "none" : "");
+      const playLabel = paused ? "Play (p)" : "Pause (p)";
+      setAttr(play, "title", playLabel);
+      setAttr(play, "aria-label", playLabel);
+      setAttr(play, "aria-pressed", String(paused));
+      const comparison = this.#comparison;
+      setHidden(flipGroup, comparison === undefined);
+      for (const { slot, button } of flips)
+        setAttr(button, "aria-pressed", String(slot === comparison?.live));
+    });
+    return h(
+      "div",
+      { class: "tool-row", role: "group", "aria-label": "Tools" },
+      play,
+      this.#undoButton,
+      this.#redoButton,
+      iconButton("shuffle", "Shuffle this scene's knobs (framing stays put)", () =>
+        this.#shuffle(),
+      ),
+      flipGroup,
+      this.#tourMark,
+      h("span", { class: "spacer" }),
+      more.button,
+    );
+  }
+
+  /**
+   * The tools' popover: the motion and the transitions, the setup's own actions (reset, link,
+   * explanations), then a fold each for every "now", the A/B comparison, the tour and the
+   * shortcuts, and the build's status at the foot.
+   */
+  #toolsContent(): HTMLElement[] {
+    const state = () => this.#current().state;
+    const base = () => defaultsFor(state().scene);
+    const amount = (value: number) => (value === 0 ? "still" : `${Math.round(value * 100)}%`);
     const motion = slider(
       "Motion",
       0,
@@ -574,39 +703,63 @@ export class Lab {
       0.05,
       () => state().motion,
       (value, commit) => this.#change({ motion: value }, commit),
-      (value) => (value === 0 ? "still" : `${Math.round(value * 100)}%`),
+      amount,
     );
-    const motionReadout = h("span", { class: "bar-readout" });
-    const motionBox = h(
-      "label",
-      { class: "bar-motion", title: "Motion: how much things move (0 is a still frame)" },
-      icon("motion"),
-      motion.el,
-      motionReadout,
+    const motionRow = row({
+      label: "Motion",
+      help: "How much things move. 0 is a still frame; triggered events still play.",
+      icon: "motion",
+      block: motion.el,
+      readout: () => amount(state().motion),
+      modified: () => state().motion !== base().motion,
+      reset: () => this.#change({ motion: base().motion }, true),
+    });
+    const transitions = switchControl(
+      "Scene transitions",
+      () => state().transitions === "on",
+      (on) => this.#change({ transitions: on ? "on" : "off" }, true),
     );
-    const transitions = iconButton("transition", "Scene transitions", () =>
-      this.#change({ transitions: state().transitions === "on" ? "off" : "on" }, true),
+    const transitionsRow = row({
+      label: "Transitions",
+      help: "Scenes come and go through their own exits and entrances; off, a straight cut. Now plays this scene's exit, then its entrance.",
+      icon: "transition",
+      inline: [
+        nowButton("this scene's exit, then its entrance", () =>
+          this.#host.renderer()?.replayPassage(),
+        ),
+        transitions.el,
+      ],
+      modified: () => state().transitions !== base().transitions,
+      reset: () => this.#change({ transitions: base().transitions }, true),
+    });
+    const explain = textButton("info", "Explain", "Explain every control", () => {
+      this.#prefs.explain = !this.#prefs.explain;
+      this.#root.classList.toggle("explain", this.#prefs.explain);
+      this.#savePrefs();
+      this.sync();
+    });
+    const actions = h(
+      "div",
+      { class: "lab-actions" },
+      textButton("reset", "Reset", "Reset this scene to its defaults", () =>
+        this.#change({ scene: state().scene }, true, true),
+      ),
+      textButton(
+        "link",
+        "Copy link",
+        "Copy a link that replays this exact setup on this build, with its A/B comparison and tour",
+        (button) => this.#copyLink(button),
+      ),
+      explain,
     );
-    const replay = iconButton(
-      "replay",
-      "Replay this scene's exit, then its entrance, now",
-      (button) => {
-        this.#host.renderer()?.replayPassage();
-        button.classList.remove("firing");
-        void button.offsetWidth;
-        button.classList.add("firing");
-      },
-    );
-    replay.addEventListener("animationend", () => replay.classList.remove("firing"));
 
     // Every "now" of the scene, in one list.
     const nowList = h("ul", { class: "now-list" });
     let nowScene: SceneId | undefined;
-    const nowPop = new Popover(layer, {
+    const now = fold({
       id: "now",
-      title: "Now",
       icon: "bolt",
-      label: "Now: set off one of this scene's events",
+      title: "Now",
       content: [
         h(
           "p",
@@ -616,51 +769,17 @@ export class Lab {
         nowList,
       ],
     });
-    const nowCount = h("span", { class: "bar-count" });
-    nowPop.button.append(nowCount);
-
-    const comparePop = new Popover(layer, {
+    const compare = fold({
       id: "compare",
-      title: "Compare A/B",
       icon: "compare",
-      label: "Compare two setups, A and B",
+      title: "Compare A/B",
       content: this.#compareContent(),
     });
-    const flips = slots.map((slot) => {
-      const button = h(
-        "button",
-        { type: "button", class: "bar-slot", title: `Show ${slot.toUpperCase()} (b flips)` },
-        slot.toUpperCase(),
-      );
-      button.addEventListener("click", () => this.#showSlot(slot));
-      return { slot, button };
-    });
-    const flipGroup = h(
-      "div",
-      { class: "bar-slots", role: "group", "aria-label": "Setup on screen" },
-      ...flips.map(({ button }) => button),
-    );
-
-    const tourPop = new Popover(layer, {
-      id: "tour",
-      title: "Tour",
-      icon: "tour",
-      label: "Tour: play chosen scenes one after another (t)",
-      content: this.#tourContent(),
-    });
-    tourPop.button.append(this.#barProgress);
-
-    const explain = iconButton("info", "Explain every control", () => {
-      this.#prefs.explain = !this.#prefs.explain;
-      this.#root.classList.toggle("explain", this.#prefs.explain);
-      this.#savePrefs();
-      this.sync();
-    });
-    const keysPop = new Popover(layer, {
+    const tour = fold({ id: "tour", icon: "tour", title: "Tour", content: this.#tourContent() });
+    const keys = fold({
       id: "keys",
-      title: "Shortcuts",
       icon: "keyboard",
-      label: "Keyboard shortcuts",
+      title: "Shortcuts",
       content: [
         h(
           "dl",
@@ -671,73 +790,12 @@ export class Lab {
           ]),
         ),
         h("p", { class: "pop-note" }, "Shortcuts work anywhere on the page, outside text fields."),
-        this.#statusLong,
       ],
     });
 
-    const link = iconButton(
-      "link",
-      "Copy a link that replays this exact setup on this build, with its A/B comparison and tour",
-      (button) => this.#copyLink(button),
-    );
-    const bar = h(
-      "div",
-      { class: "bar-items" },
-      scenePick,
-      separator(),
-      play,
-      motionBox,
-      separator(),
-      transitions,
-      replay,
-      nowPop.button,
-      separator(),
-      comparePop.button,
-      flipGroup,
-      tourPop.button,
-      separator(),
-      this.#undoButton,
-      this.#redoButton,
-      iconButton("shuffle", "Shuffle this scene's knobs (framing stays put)", () =>
-        this.#shuffle(),
-      ),
-      iconButton("reset", "Reset this scene to its defaults", () =>
-        this.#change({ scene: state().scene }, true, true),
-      ),
-      link,
-      separator(),
-      explain,
-      keysPop.button,
-      this.#status,
-      iconButton("close", "Hide the lab (l)", () => this.setOpen(false)),
-    );
-
-    this.#syncers.push(() => {
-      const paused = this.#host.renderer()?.paused ?? false;
-      setStyle(playIcon, "display", paused ? "" : "none");
-      setStyle(pauseIcon, "display", paused ? "none" : "");
-      const playLabel = paused ? "Play (p)" : "Pause (p)";
-      setAttr(play, "title", playLabel);
-      setAttr(play, "aria-label", playLabel);
-      setAttr(play, "aria-pressed", String(paused));
-      motion.sync();
-      setText(
-        motionReadout,
-        state().motion === 0 ? "still" : `${Math.round(state().motion * 100)}%`,
-      );
-      const passing = state().transitions === "on";
-      setAttr(transitions, "aria-pressed", String(passing));
-      setAttr(transitions, "title", `Scene transitions: ${passing ? "on" : "off (cuts)"}`);
+    this.#syncers.push(motion.sync, motionRow.sync, transitions.sync, transitionsRow.sync, () => {
       setAttr(explain, "aria-pressed", String(this.#prefs.explain));
-
       const scene = state().scene;
-      const { title, accent } = sceneDefs[scene];
-      if (sceneName.textContent !== title) {
-        sceneName.textContent = title;
-        scenePick.style.setProperty("--dot", accent);
-        scenePick.title = `${title}: pick another scene ([ and ] step through them)`;
-        scenePick.setAttribute("aria-label", `Scene: ${title}. Pick another`);
-      }
       if (nowScene !== scene) {
         nowScene = scene;
         const triggers = sceneDefs[scene].params.filter(
@@ -757,26 +815,31 @@ export class Lab {
             );
           }),
         );
-        nowCount.textContent = triggers.length > 0 ? String(triggers.length) : "";
-        nowPop.button.disabled = triggers.length === 0;
-        const label =
-          triggers.length > 0
-            ? `Now: set off one of this scene's ${triggers.length} events`
-            : "This scene has no events to set off";
-        nowPop.button.title = label;
-        nowPop.button.setAttribute("aria-label", label);
-        if (triggers.length === 0) nowPop.toggle(false);
+        // A scene without events has no list to fold.
+        setHidden(now.el, triggers.length === 0);
+        setText(now.note, `${triggers.length} event${triggers.length === 1 ? "" : "s"}`);
       }
-
       const comparison = this.#comparison;
-      setHidden(flipGroup, comparison === undefined);
-      setAttr(comparePop.button, "aria-pressed", String(comparison !== undefined));
-      for (const { slot, button } of flips)
-        setAttr(button, "aria-pressed", String(slot === comparison?.live));
-      tourPop.button.classList.toggle("touring", this.#tour?.playing === true);
-      setAttr(tourPop.button, "aria-pressed", String(this.#tour !== undefined));
+      setText(compare.note, comparison ? `${comparison.live.toUpperCase()} on screen` : "");
+      const touring = this.#tour;
+      const steps = touring?.tour.steps.length ?? 0;
+      setText(
+        tour.note,
+        touring
+          ? `${steps} scene${steps === 1 ? "" : "s"}${touring.playing ? " · playing" : ""}`
+          : "",
+      );
     });
-    return bar;
+    return [
+      motionRow.el,
+      transitionsRow.el,
+      actions,
+      now.el,
+      compare.el,
+      tour.el,
+      keys.el,
+      this.#status,
+    ];
   }
 
   // ---- session tools: A/B comparison and tour -------------------------------------------------
@@ -1086,13 +1149,16 @@ export class Lab {
     );
   }
 
-  /** The tour's place in words and as a bar; runs every frame while it plays. */
+  /**
+   * The tour's place in words and as bars, in its fold and beside the tools; runs every frame
+   * while it plays.
+   */
   #syncTourClock(): void {
     const tour = this.#tour;
     const status = this.#tourStatus;
     const progress = this.#tourProgress;
     setHidden(progress, tour === undefined);
-    setHidden(this.#barProgress, tour === undefined);
+    setHidden(this.#tourMark, tour?.playing !== true);
     if (!tour) {
       setText(status, "Add scenes to build a tour.");
       return;
@@ -1103,13 +1169,18 @@ export class Lab {
         : tour.playing
           ? `${Math.ceil(tour.dwell - tour.elapsed)} s left`
           : "paused";
-    setText(
-      status,
-      `${tour.index + 1} / ${tour.tour.steps.length} · ${sceneDefs[tour.step.scene].title} · ${where}`,
+    const steps = tour.tour.steps.length;
+    const title = sceneDefs[tour.step.scene].title;
+    setText(status, `${tour.index + 1} / ${steps} · ${title} · ${where}`);
+    setText(this.#tourStep, `${tour.index + 1}/${steps}`);
+    setAttr(
+      this.#tourMark,
+      "title",
+      `Tour: ${title}, ${tour.index + 1} of ${steps} · ${where} (t pauses)`,
     );
     const share = Math.round((tour.elapsed / tour.dwell) * 200) / 200;
     if (progress.value !== share) progress.value = share;
-    setStyle(this.#barProgress, "--share", String(share));
+    setStyle(this.#tourBar, "--share", String(share));
   }
 
   /** Keep the setup on screen as A and go on editing a copy of it as B, with the history so far. */
@@ -1241,15 +1312,8 @@ export class Lab {
       ? `${location.origin}/@${this.#host.build}/${query ? `?${query}` : ""}`
       : `${location.origin}${location.pathname}${query ? `?${query}` : ""}`;
     navigator.clipboard.writeText(url).then(
-      () => this.#confirm(button, "Link copied"),
-      () => this.#confirm(button, "Copy failed"),
+      () => flash(button, "Link copied"),
+      () => flash(button, "Copy failed"),
     );
-  }
-
-  /** A short word over an icon button (it has no text of its own to flash). */
-  #confirm(button: HTMLButtonElement, text: string): void {
-    const tip = h("span", { class: "bar-tip", role: "status" }, text);
-    button.append(tip);
-    setTimeout(() => tip.remove(), 1500);
   }
 }

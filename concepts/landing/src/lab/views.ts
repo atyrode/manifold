@@ -1,6 +1,7 @@
 // The lab panel's views, Scenes, Presets and Controls: one shows at a time, picked with segmented
 // icon tabs in the panel's header (on a narrow screen, the sheet's). Beside the tabs stand the
-// view's name and the scene on screen; the scene's name opens the scene picker (the Scenes view).
+// view's name and the scene on screen, whose name opens the scene picker (the Scenes view), then
+// the header's own tools (the way to the compact bar).
 import { h, setAttr, setStyle, setText } from "./dom.ts";
 import { icon, type IconName } from "./icons.ts";
 
@@ -27,8 +28,16 @@ export class Views {
   readonly #onShow: () => void;
   #current: ViewId = "controls";
 
-  /** `onShow`: a view was picked (the panel should come up); `onScene`: the scene's name was. */
-  constructor(views: readonly View[], onShow: () => void, onScene: () => void) {
+  /**
+   * `onShow`: a view was picked (the panel should come up); `onScene`: the scene's name was;
+   * `tools`: the header's own buttons, after the scene.
+   */
+  constructor(
+    views: readonly View[],
+    onShow: () => void,
+    onScene: () => void,
+    tools: readonly HTMLElement[],
+  ) {
     this.#onShow = onShow;
     const tablist = h("div", { class: "view-tabs", role: "tablist", "aria-label": "Lab views" });
     this.#views = views.map((view) => {
@@ -76,7 +85,7 @@ export class Views {
       this.#sceneName,
     );
     this.#scene.addEventListener("click", onScene);
-    this.head = h("div", { class: "view-head" }, tablist, this.#title, this.#scene);
+    this.head = h("div", { class: "view-head" }, tablist, this.#title, this.#scene, ...tools);
     this.body = h("div", { class: "views" }, ...this.#views.map(({ panel }) => panel));
     this.#render();
   }
