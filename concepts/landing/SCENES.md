@@ -789,13 +789,22 @@ How the page puts the scenes on screen (`src/renderer.ts`, `src/program-cache.ts
   and `pixel` (`&pixel=`) means about that many CSS px per cell, rounded to whole device pixels:
   at 125 % scaling pixel 2 gives 3 device px a cell, where 2.5 showed as columns of 2 and 3 and
   bent the dither's tone by up to 8 points. At 100 % and a whole `pixel` the cells are as before.
-- **A cell budget.** No frame draws more than ~960 × 540 cells (`CELL_BUDGET`, the scenes' budget):
-  a 4K screen at 100 % gets cells of 4 device px at pixel 2, a 1440p one 3.
-- **Frame pacing.** At most 60 frames a second on any display, and none while the picture stands
-  still (paused, reduced motion, motion 0) once the last change or input has played out; input
-  draws again at once, a pointer that only moves for a quarter of a second.
-- **One sim clock.** Frames come unevenly (a capped 144 Hz display alternates intervals, a slow
-  machine runs at 30), so every CPU sim and GPU solver steps a fixed time on a `FixedStep`
+- **A cell budget.** A frame draws ~960 × 540 cells (`CELL_BUDGET`, the scenes' budget), and a
+  stage coarsens its cells only past 25 % more (`BUDGET_SLACK`): one CSS row past 1080p and a
+  windowed 1920 × 1200 browser keep 2 px cells, where a hard cap halved them; a 4K screen at 100 %
+  gets cells of 4 device px at pixel 2, a 1440p one 3.
+- **Frame pacing.** Frames come every n-th refresh, n whole, so each stays up as long as the last:
+  the even divisor of the measured refresh rate nearest 60 frames a second (75 at 75 Hz, 45 at
+  90, 72 at 144, 55 at 165) while input, a trigger's response, a passage or an entrance lasts, and
+  at rest about half that (30 at 60, 90, 120 and 240 Hz); none while the picture stands still
+  (paused, reduced motion, motion 0) once the last change or input has played out. Input draws again
+  at once, a pointer that only moves for a quarter of a second.
+- **A clock per scene.** Each scene's clocks count from its own start, so the float32 `uTime` and
+  `uMotionTime` stay small however long the page is open; through a passage the leaving and the
+  incoming scene each keep their own, and a scene picked with "keep the world" or flipped to in a
+  comparison takes over the clocks of the one it replaces, its hours, year and stars going on.
+- **One sim clock.** Frames come at many rates (72 a second on a 144 Hz display, 30 at rest, fewer
+  on a slow machine), so every CPU sim and GPU solver steps a fixed time on a `FixedStep`
   (`src/sims/clock.ts`) and is drawn between its last two steps (a GPU solver's fields through
   `FieldBetween`, `src/sims/between.ts`: the incense's smoke, the pearl tank's flakes; or, where the
   drawing must stay over what the last step laid down, as the harmonograph's pen over its ink,
@@ -808,13 +817,14 @@ How the page puts the scenes on screen (`src/renderer.ts`, `src/program-cache.ts
   web, the bonsai's tree and its maps, the dry garden's layout, the forest's warm-up, the slime
   mould's dish, the pond's sheets) runs on the build worker (`src/sims/build.ts`), byte for byte
   the page's; the sim is not ready until its first lands, so a passage enters with it in place.
-- **Builds never block.** Every program builds in the background, the first one too: the bare page
-  shows until it is built, a cut or a retry keeps the old picture moving meanwhile.
+- **Builds never block.** Every program builds in the background, the first one too: the scene's
+  thumbnail shows until it is built, a cut or a retry keeps the old picture moving meanwhile.
 - **Failures.** A lost WebGL context is asked back and, once restored, the scene starts over; while
-  it is lost, and on a browser without WebGL2, the scene's thumbnail stands in, still. Without
-  JavaScript the page shows the landing copy over the default scene's thumbnail. A scene whose
-  shader source does not assemble shows the failure screen. At most eight programs are kept across
-  scenes.
+  it is lost, and on a browser without WebGL2, the scene's thumbnail stands in, still. It also
+  stands in from the page's first paint (the scene the link names) until the scene draws, which
+  dissolves out of it. Without JavaScript the page shows the landing copy over the default scene's
+  thumbnail. A scene whose shader source does not assemble shows the failure screen. At most eight
+  programs are kept across scenes.
 
 ## GPU cost on real hardware
 

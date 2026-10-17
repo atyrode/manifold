@@ -6,11 +6,19 @@
 // curve (by up to 8 points of 64 at 2.5) and bands smooth gradients.
 
 /**
- * The most cells a frame draws: the scene budget (src/scenes/README.md, "Art direction"), one
+ * The cells a frame is budgeted: the scene budget (src/scenes/README.md, "Art direction"), one
  * full-screen pass at ~960 × 540 cells holding 60 fps on an integrated GPU. A larger stage (a 4K
- * screen at 100 %, a 1440p one at pixel 2) gets coarser cells instead of more of them.
+ * screen at 100 %, a 1440p one at pixel 2) gets coarser cells instead of more of them, once it
+ * would draw more than BUDGET_SLACK times as many.
  */
 export const CELL_BUDGET = 960 * 540;
+/**
+ * How far past its budget a stage may draw before its cells coarsen: a whole step coarser draws
+ * about half as many cells or fewer, so a hard cap would halve them for one CSS row past 1080p, and
+ * a windowed 1920 × 1200 browser (1.01 × the budget at 2 px cells) would draw as few as a
+ * 1366 × 768 laptop.
+ */
+export const BUDGET_SLACK = 1.25;
 
 export interface Cells {
   /** Device pixels a cell covers each way. */
@@ -26,7 +34,7 @@ export interface Cells {
 /**
  * The cells over a stage of `deviceWidth` × `deviceHeight` device pixels at `dpr` device pixels
  * per CSS pixel, each about `pixel` CSS px: `pixel × dpr` rounded to whole device pixels (at least
- * one), then coarser while there would be more than `budget` cells.
+ * one), then coarser while there would be more than `budget` × BUDGET_SLACK cells.
  */
 export function stageCells(
   deviceWidth: number,
@@ -37,8 +45,9 @@ export function stageCells(
 ): Cells {
   const width = Math.max(1, Math.round(deviceWidth));
   const height = Math.max(1, Math.round(deviceHeight));
-  let cell = Math.max(1, Math.round(pixel * dpr), Math.floor(Math.sqrt((width * height) / budget)));
-  while (Math.ceil(width / cell) * Math.ceil(height / cell) > budget) cell++;
+  const most = budget * BUDGET_SLACK;
+  let cell = Math.max(1, Math.round(pixel * dpr), Math.floor(Math.sqrt((width * height) / most)));
+  while (Math.ceil(width / cell) * Math.ceil(height / cell) > most) cell++;
   return { cell, width: Math.ceil(width / cell), height: Math.ceil(height / cell) };
 }
 
@@ -53,6 +62,38 @@ export function cellScale(cells: Cells, deviceWidth: number, deviceHeight: numbe
   return x === 1 && y === 1 ? "" : `${x} ${y}`;
 }
 
+/** A rectangle in cells, from the cells' top left. */
+export interface CellRect {
+  readonly x: number;
+  readonly y: number;
+  readonly width: number;
+  readonly height: number;
+}
+
+/**
+ * Where an image of `width` × `height` px lands in `cells` laid over a box of `deviceWidth` ×
+ * `deviceHeight` device pixels (from its top left, as `cellScale` lays them) when CSS lays it over
+ * that box with `background: center / cover`: scaled to the least size that covers the box, and
+ * centred on it.
+ */
+export function coverCells(
+  cells: Cells,
+  deviceWidth: number,
+  deviceHeight: number,
+  width: number,
+  height: number,
+): CellRect {
+  const boxWidth = Math.max(1, Math.round(deviceWidth));
+  const boxHeight = Math.max(1, Math.round(deviceHeight));
+  const scale = Math.max(boxWidth / width, boxHeight / height);
+  return {
+    x: (boxWidth - width * scale) / 2 / cells.cell,
+    y: (boxHeight - height * scale) / 2 / cells.cell,
+    width: (width * scale) / cells.cell,
+    height: (height * scale) / cells.cell,
+  };
+}
+
 /**
  * A canvas's box in device pixels, kept by a ResizeObserver (its device-pixel content box; where
  * the browser lacks that, Safari, its CSS box times devicePixelRatio), and where it sits on the
@@ -64,7 +105,7 @@ export function cellScale(cells: Cells, deviceWidth: number, deviceHeight: numbe
 export class StageBox {
   readonly #canvas: HTMLCanvasElement;
   readonly #resized: () => void;
-  /** The most cells a frame draws (see `stageCells`). */
+  /** The cells a frame is budgeted (see `stageCells`). */
   readonly #budget: number;
   /** The content box in device pixels, and in CSS pixels from the viewport's top left. */
   #deviceWidth = 1;
@@ -84,8 +125,8 @@ export class StageBox {
   #scale = "";
 
   /**
-   * `resized`: called whenever the box changes, after it is measured. `budget`: the most cells a
-   * frame draws (see `stageCells`).
+   * `resized`: called whenever the box changes, after it is measured. `budget`: the cells a frame
+   * is budgeted (see `stageCells`).
    */
   constructor(canvas: HTMLCanvasElement, resized: () => void, budget: number = CELL_BUDGET) {
     this.#canvas = canvas;
@@ -115,6 +156,14 @@ export class StageBox {
       this.#cells.set(pixel, cells);
     }
     return cells;
+  }
+
+  /**
+   * Where an image of `width` × `height` px lands in `cells` as the page lays it over the box with
+   * `background: center / cover` (`coverCells`).
+   */
+  cover(cells: Cells, width: number, height: number): CellRect {
+    return coverCells(cells, this.#deviceWidth, this.#deviceHeight, width, height);
   }
 
   /** Size the canvas to `cells`, stretched so each lands on whole device pixels (`cellScale`). */

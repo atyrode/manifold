@@ -1,56 +1,122 @@
 import { expect, test } from "bun:test";
-import { FrameGovernor, SETTLE_SECONDS } from "./governor.ts";
+import { FrameGovernor, frameDivisor, SETTLE_SECONDS, type Picture } from "./governor.ts";
 
-/** Frames a governor draws out of a display's at `hertz`, per whole second over `seconds`. */
-function drawnPerSecond(hertz: number, seconds: number, jitter = 0): number[] {
-  const governor = new FrameGovernor();
-  const perSecond = Array.from({ length: seconds }, () => 0);
-  for (let frame = 0; frame < hertz * seconds; frame++) {
-    // A fixed pattern of early and late frames, up to `jitter` ms either way.
-    const now = 1000 + (frame * 1000) / hertz + jitter * Math.sin(frame * 2.3);
-    const second = Math.floor((frame * 1000) / hertz / 1000);
-    if (governor.due(now, false)) perSecond[second] = (perSecond[second] ?? 0) + 1;
+/**
+ * Which of `count` refreshes of a display at `hertz`, numbered on from `from`, a governor draws:
+ * each comes up to `jitter` ms early or late in a fixed pattern, and none comes where `dropped`
+ * says (a frame the browser dropped, or a stall).
+ */
+function drawn(
+  governor: FrameGovernor,
+  hertz: number,
+  picture: Picture,
+  from: number,
+  count: number,
+  options: { jitter?: number; dropped?: (refresh: number) => boolean } = {},
+): number[] {
+  const { jitter = 0, dropped = () => false } = options;
+  const refreshes: number[] = [];
+  for (let refresh = from; refresh < from + count; refresh++) {
+    if (dropped(refresh)) continue;
+    const now = 1000 + (refresh * 1000) / hertz + jitter * Math.sin(refresh * 2.3);
+    if (governor.due(now, picture)) refreshes.push(refresh);
   }
-  return perSecond;
+  return refreshes;
 }
 
-test("a 120 Hz display draws at most 60 frames a second", () => {
-  for (const drawn of drawnPerSecond(120, 3)) {
-    expect(drawn).toBeLessThanOrEqual(60);
-    expect(drawn).toBeGreaterThanOrEqual(59);
+/** Refreshes between each drawn frame and the next. */
+function gaps(refreshes: readonly number[]): number[] {
+  return refreshes.slice(1).map((refresh, i) => refresh - (refreshes[i] ?? 0));
+}
+
+test("the full rate is the refresh rate's even divisor nearest 60 frames a second, the rest rate half that or the one nearest 30", () => {
+  for (const [hertz, full, rest] of [
+    [30, 1, 1],
+    [50, 1, 2],
+    [60, 1, 2],
+    [75, 1, 2],
+    [90, 2, 3],
+    [100, 2, 3],
+    [120, 2, 4],
+    [144, 2, 4],
+    [165, 3, 6],
+    [240, 4, 8],
+  ] as const) {
+    expect([hertz, frameDivisor(1000 / hertz)]).toEqual([hertz, full]);
+    expect([hertz, frameDivisor(1000 / hertz, true)]).toEqual([hertz, rest]);
   }
 });
 
-test("a 60 Hz display draws every frame, early and late ones too", () => {
-  expect(drawnPerSecond(60, 3, 2)).toEqual([60, 60, 60]);
+test("every frame stays up for the same number of refreshes, through rAF jitter", () => {
+  for (const [hertz, divisor, jitter] of [
+    [60, 1, 2],
+    [75, 1, 0.3],
+    [90, 2, 0.3],
+    [120, 2, 0.3],
+    [144, 2, 0.3],
+    [165, 3, 0.3],
+    [240, 4, 0.3],
+  ] as const) {
+    // The first few intervals measure the display roughly; from a tenth of a second on it holds.
+    const refreshes = drawn(new FrameGovernor(), hertz, "passing", 0, hertz * 3, {
+      jitter,
+    }).filter((refresh) => refresh >= hertz / 10);
+    expect([hertz, new Set(gaps(refreshes))]).toEqual([hertz, new Set([divisor])]);
+  }
 });
 
-test("75 and 144 Hz displays draw close to 60 frames a second", () => {
-  for (const hertz of [75, 90, 144, 240])
-    for (const drawn of drawnPerSecond(hertz, 3)) {
-      expect(drawn).toBeLessThanOrEqual(60);
-      expect(drawn).toBeGreaterThanOrEqual(55);
-    }
+test("the refresh rate is measured through dropped frames and stalls", () => {
+  // A dropped frame every 25 refreshes and a stall of six every 60: an average interval would put
+  // a 165 Hz display at about 140 Hz and draw every other refresh.
+  const dropped = (refresh: number) => refresh % 25 === 24 || refresh % 60 >= 54;
+  // From a tenth of a second on, as above.
+  const refreshes = drawn(new FrameGovernor(), 165, "passing", 0, 165 * 4, {
+    jitter: 1,
+    dropped,
+  }).filter((refresh) => refresh >= 16);
+  const spans = gaps(refreshes).filter((_, i) => {
+    const end = refreshes[i + 1] ?? 0;
+    for (let refresh = (refreshes[i] ?? 0) + 1; refresh < end; refresh++)
+      if (dropped(refresh)) return false;
+    return true;
+  });
+  expect(spans.length).toBeGreaterThan(100);
+  expect(new Set(spans)).toEqual(new Set([3]));
 });
 
-test("a still picture stops drawing once a wake has played out, and input wakes it", () => {
+test("a moving picture draws at the rest rate until input, which brings the full rate back at once", () => {
   const governor = new FrameGovernor();
-  const frame = 1000 / 60;
+  // At rest: every fourth refresh of a 120 Hz display, 30 a second.
+  const resting = drawn(governor, 120, "moving", 0, 121);
+  expect(new Set(gaps(resting))).toEqual(new Set([4]));
+  // Input just after a frame: the next one draws a full-rate frame on, not a resting one, and so
+  // on while the input lasts.
+  governor.input(SETTLE_SECONDS);
+  const lively = drawn(governor, 120, "moving", 121, SETTLE_SECONDS * 120);
+  expect(lively[0]).toBe((resting.at(-1) ?? 0) + 2);
+  expect(new Set(gaps(lively))).toEqual(new Set([2]));
+  // Then at rest again; a passage or an entrance plays at the full rate whatever the input.
+  const after = drawn(governor, 120, "moving", 121 + SETTLE_SECONDS * 120, 120);
+  expect(new Set(gaps(after))).toEqual(new Set([4]));
+  const passing = drawn(governor, 120, "passing", 241 + SETTLE_SECONDS * 120, 120);
+  expect(new Set(gaps(passing))).toEqual(new Set([2]));
+});
+
+test("a still picture stops drawing once a wake has played out, and a wake draws it again", () => {
+  const governor = new FrameGovernor();
   governor.wake(SETTLE_SECONDS);
-  let drawn = 0;
-  let lastDrawn = Number.NaN;
   const end = (SETTLE_SECONDS + 2) * 60;
-  for (let at = 0; at < end; at++)
-    if (governor.due(1000 + at * frame, true)) {
-      drawn++;
-      lastDrawn = at * frame;
-    }
-  expect(drawn).toBeGreaterThan(SETTLE_SECONDS * 60 - 2);
-  expect(lastDrawn).toBeLessThan(SETTLE_SECONDS * 1000);
-  // Nothing more while still, until something wakes it.
-  expect(governor.due(1000 + end * frame, true)).toBe(false);
+  const woken = drawn(governor, 60, "still", 0, end);
+  // At the rest rate while nothing is touched: every other refresh of a 60 Hz display, as long as
+  // the wake lasts.
+  expect(new Set(gaps(woken))).toEqual(new Set([2]));
+  expect(woken.length).toBeGreaterThan(SETTLE_SECONDS * 30 - 2);
+  expect(woken.at(-1)).toBeLessThan(SETTLE_SECONDS * 60);
+  // Nothing more while still: input sets the rate, not whether a still picture draws.
+  governor.input(SETTLE_SECONDS);
+  expect(drawn(governor, 60, "still", end, 60)).toEqual([]);
   governor.wake(SETTLE_SECONDS);
-  expect(governor.due(1000 + (end + 1) * frame, true)).toBe(true);
+  expect(drawn(governor, 60, "still", end + 60, 1)).toEqual([end + 60]);
   // A picture that moves draws whatever the wake.
-  expect(new FrameGovernor().due(1000, false)).toBe(true);
+  expect(new FrameGovernor().due(1000, "moving")).toBe(true);
 });

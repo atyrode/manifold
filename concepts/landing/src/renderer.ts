@@ -11,7 +11,13 @@ import {
 } from "./climate.ts";
 import type { SeasonKnob } from "./climate.ts";
 import { StageBox, type Cells } from "./display.ts";
-import { FrameGovernor, POINTER_SECONDS, RESPONSE_SECONDS, SETTLE_SECONDS } from "./governor.ts";
+import {
+  FrameGovernor,
+  POINTER_SECONDS,
+  RESPONSE_SECONDS,
+  SETTLE_SECONDS,
+  type Picture,
+} from "./governor.ts";
 import { MAX_PARAMS, MAX_TRIGGERS } from "./params.ts";
 import {
   annotate,
@@ -92,6 +98,8 @@ const NEVER = -1e4;
 const SIM_BUDGET = { share: 0.25, least: 8, most: 120 } as const;
 /** Parallax (-1..1 over the window) left to ease toward the pointer that still moves a frame. */
 const EASED = 1e-3;
+/** Share of the way left the parallax eases toward the pointer in a 60th of a second. */
+const PARALLAX_EASE = 0.04;
 /** Presses on these belong to the lab or the page's own controls, not to the scene. */
 const CONTROLS = "#lab, #lab-open, a, button, input, select, textarea, label, [role=switch]";
 /** Renderer strings of software rasterisers: SwiftShader, Mesa's llvmpipe and softpipe, WARP. */
@@ -112,8 +120,8 @@ export interface SceneFailure {
  * stopped it (see `DitherRenderer.failure`), where its `rain` and `snow` knobs sit in `params`
  * (-1 when it has none, which reads as 0), its season knob and where it sits when the season sets
  * its climate (src/climate.ts: it keeps a season and can snow), its `uWeather` (how wet its world is
- * and how much snow lies, 0..1 each, on the scene clock) and its `SimFrame.passage` and `uPassage`,
- * rewritten in place each frame.
+ * and how much snow lies, 0..1 each, on the scene clock), its `SimFrame.passage` and `uPassage`,
+ * rewritten in place each frame, and where its clocks count from.
  */
 interface ActiveScene {
   id: SceneId;
@@ -125,6 +133,13 @@ interface ActiveScene {
   season: { def: SeasonKnob; at: number; cycle: number } | undefined;
   readonly weather: { wet: number; lying: number };
   readonly passage: { enter: number; exit: number };
+  /**
+   * The renderer's scene, motion and fall clocks when it was created (or, taking over the clocks
+   * of the scene it replaced, that one's: see `DitherRenderer.update`): what it sees of them, and
+   * so the float32 `uTime`, `uMotionTime` and `uFallTime`, counts from its own start, and stays
+   * small however long the page has been open.
+   */
+  readonly origin: { readonly clock: number; readonly motion: number; readonly fall: number };
 }
 
 /**
@@ -161,16 +176,21 @@ interface SceneDraw {
   height: number;
   /** Entered this frame: its weather starts where it leads and it reports no presses. */
   fresh: boolean;
+  /** Each slot's stamp on the scene's own clock (`uTriggers`). */
   triggers: readonly number[];
-  /** The same presses' stamps on the motion clock (`uMotionTriggers`). */
+  /** The same presses' stamps on the scene's own motion clock (`uMotionTriggers`). */
   motionTriggers: readonly number[];
   fired: readonly boolean[];
   pressedAt: number;
   /** Draw one cell only: a scene run off screen before it enters (see `Leaving.next`). */
   oneCell: boolean;
-  /** `uDissolve`: share of the outgoing frame still showing, whether that is the outgoing scene (else the bare page), and the blend. */
+  /** `uDissolve.x`: share of the outgoing frame still showing. */
   dissolve: number;
-  fromScene: boolean;
+  /**
+   * The outgoing frame it dissolves out of (`uLeaving`, `uDissolve.y` 1): the leaving scene's, or
+   * the poster's (`DitherRenderer.setPoster`); undefined for the bare page (`uBg`).
+   */
+  from: WebGLTexture | undefined;
   blend: BlendId;
 }
 
@@ -197,6 +217,20 @@ function compile(
 function rgb(hex: string): [number, number, number] {
   const n = Number.parseInt(hex.replace("#", ""), 16);
   return [((n >> 16) & 255) / 255, ((n >> 8) & 255) / 255, (n & 255) / 255];
+}
+
+/**
+ * A texture for a whole frame, made and bound on the active unit: a texel a cell, nearest, clamped
+ * (the leaving scene's frame, the poster).
+ */
+function frameTexture(gl: WebGL2RenderingContext): WebGLTexture {
+  const texture = gl.createTexture();
+  gl.bindTexture(gl.TEXTURE_2D, texture);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+  return texture;
 }
 
 /**
@@ -239,12 +273,7 @@ function glResources(gl: WebGL2RenderingContext): GlResources {
     gl.UNSIGNED_BYTE,
     new Uint8Array([0, 0, 0, 255]),
   );
-  const leavingFrame = gl.createTexture();
-  gl.bindTexture(gl.TEXTURE_2D, leavingFrame);
-  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
-  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
-  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
-  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+  const leavingFrame = frameTexture(gl);
   gl.texImage2D(
     gl.TEXTURE_2D,
     0,
@@ -276,7 +305,10 @@ export class DitherRenderer {
   readonly #gl: WebGL2RenderingContext;
   /** The canvas's box in device pixels and the cells laid over it (src/display.ts). */
   readonly #stage: StageBox;
-  /** At most 60 frames a second, and none while the picture stands still (see `start`). */
+  /**
+   * Frames on every n-th refresh, at the full rate or at rest, and none while the picture stands
+   * still (see `start`).
+   */
   readonly #governor = new FrameGovernor();
   /** What the context holds for every program: made again once a lost context is restored. */
   #gpu: GlResources;
@@ -301,6 +333,8 @@ export class DitherRenderer {
   #waiting = false;
   /** The last frame moved something, or something was on its way (see `#still`). */
   #moving = false;
+  /** The last frame played an entrance: the scene on screen still coming in, or dissolving. */
+  #entering = false;
   /** Smoothed parallax (-1..1 over the window), eased toward the target `tx`, `ty`. */
   readonly #pointer = { x: 0, y: 0, tx: 0, ty: 0 };
   /** The raw pointer for `uMouse` and simulations; mapped to stage uv once per frame. */
@@ -316,13 +350,16 @@ export class DitherRenderer {
     pressedAt: NEVER,
   };
   #settings: RenderSettings;
-  /** Scene clock in seconds; stands still while paused or frozen. Never reset: scenes share it. */
+  /**
+   * Scene clock in seconds; stands still while paused or frozen. Never reset: each scene counts it
+   * from its own start (`ActiveScene.origin`), as it does the motion and fall clocks.
+   */
   #clock = 0;
   /**
    * Interaction clock: what a press or a "now" trigger is stamped with. It stands still only while
-   * paused, so it is the scene clock unless frozen. Stamps reach the shader (`uMouse.w`,
+   * paused, so it runs with the scene clock unless frozen. Stamps reach the shader (`uMouse.w`,
    * `uTriggers`) and sims (`SimFrame.triggers`) moved back by how far this clock has run ahead of
-   * the scene clock.
+   * the scene clock, on the scene's own clock (`ActiveScene.origin`).
    *
    * Reduced-motion policy (frozen): what moves on its own holds still (the scene and motion clocks,
    * sim steps, weather approach, passages), and a discrete interaction plays its bounded response
@@ -330,8 +367,8 @@ export class DitherRenderer {
    * `t - uMouse.w` and `sinceTrigger` count real seconds: a press's fade or a trigger's event ends
    * instead of holding its first frame, and what is held only while the button is down ends at
    * release. Sims see the press and release edges and `fired` but no time (dt 0), so whatever they
-   * do in response is one still step. Unfrozen, the two clocks are equal and stamps reach the
-   * shader exactly as stamped.
+   * do in response is one still step. Unfrozen, the two clocks run alike and a stamp reaches the
+   * shader as the scene's clock read when it was made.
    */
   #interactionClock = 0;
   /**
@@ -358,10 +395,12 @@ export class DitherRenderer {
   readonly #params = new Float32Array(MAX_PARAMS);
   /** Interaction-clock time each trigger slot last fired; far in the past when idle. */
   readonly #triggers: number[] = Array.from({ length: MAX_TRIGGERS }, () => NEVER);
-  /** `uMotionTriggers` and `SimFrame.motionTriggers`: the motion clock when each slot last fired. */
+  /** The motion clock when each slot last fired; far in the past when idle. */
   readonly #motionTriggers: number[] = Array.from({ length: MAX_TRIGGERS }, () => NEVER);
   /** `uTriggers` and `SimFrame.triggers`: the stamps on the scene clock, rewritten in place each frame. */
   readonly #shownTriggers: number[] = Array.from({ length: MAX_TRIGGERS }, () => NEVER);
+  /** `uMotionTriggers` and `SimFrame.motionTriggers`: the same on the scene's motion clock. */
+  readonly #shownMotionTriggers: number[] = Array.from({ length: MAX_TRIGGERS }, () => NEVER);
   /** Each slot's stamp as the current scene's sim last saw it, to find the next frame's presses. */
   readonly #seenTriggers: number[] = Array.from({ length: MAX_TRIGGERS }, () => NEVER);
   /** `SimFrame.fired`, rewritten in place each frame. */
@@ -369,17 +408,36 @@ export class DitherRenderer {
   /** The scene the triggers and the last press belong to: both reset when it changes. */
   #triggerScene = "";
   /**
+   * The scene the setup changed to while asking it to take over the clocks of the one on screen
+   * (see `update`), until it enters.
+   */
+  #keepClocks: SceneId | undefined;
+  /**
    * Scene passage, on the passage clock: real seconds (`requestAnimationFrame` time, so it plays
    * whatever the motion) slowed by `slowmo`. A scene leaves (`#leaving`, see `Leaving`) playing its
    * exit; the next scene, built in the background meanwhile, enters afresh (`#reenter`, even the
    * same one replayed) `overlap` of the way through that exit, once its program is ready, and
    * dissolves out of the outgoing scene, which goes on drawing into the leaving frame
    * (`GlResources.leavingFrame`) until the dissolve is done. `#arrival.start`: NaN on an
-   * entrance's first frame (see `#draw`), -Infinity when arrived without one (a cut).
+   * entrance's first frame (see `#draw`), -Infinity when arrived without one (a cut);
+   * `#arrival.from`: the frame it dissolves out of (`SceneDraw.from`).
    */
   #passageClock = 0;
   #leaving: Leaving | undefined;
-  readonly #arrival = { start: -Infinity, fromScene: false };
+  readonly #arrival: { start: number; from: WebGLTexture | undefined } = {
+    start: -Infinity,
+    from: undefined,
+  };
+  /**
+   * The thumbnail a scene entering from nothing dissolves out of (see `setPoster`), until one
+   * enters, and the texture it was painted into while that scene dissolves out of it.
+   */
+  #poster: { scene: SceneId; image: HTMLImageElement } | undefined;
+  #posterFrame: WebGLTexture | undefined;
+  /** Called once a scene shows after the page opened or a lost context was restored (`shown`). */
+  readonly #shown: (() => void) | undefined;
+  /** This frame entered a scene from nothing: `#shown` is due once it is drawn. */
+  #unveil = false;
   #reenter = false;
   readonly #leavingSize = { width: 0, height: 0 };
   /** What the leaving scene's sim and shader see of the triggers: none fire. */
@@ -388,14 +446,17 @@ export class DitherRenderer {
   readonly #reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)");
 
   /**
-   * `frozen`: reduced motion (see `#interactionClock`). `options.cellBudget`: the most cells a frame
-   * draws (default CELL_BUDGET, src/display.ts; the GPU timing page lifts it to time larger grids).
+   * `frozen`: reduced motion (see `#interactionClock`). `options.cellBudget`: the cells a frame is
+   * budgeted (default CELL_BUDGET, src/display.ts; the GPU timing page lifts it to time larger
+   * grids). `options.shown`: called once a scene shows, on the frame it first draws (or enters
+   * failed) after the page opened or a lost context was restored: the page's poster then goes
+   * (main.ts).
    */
   constructor(
     canvas: HTMLCanvasElement,
     settings: RenderSettings,
     frozen: boolean,
-    options: { cellBudget?: number } = {},
+    options: { cellBudget?: number; shown?: () => void } = {},
   ) {
     const gl = canvas.getContext("webgl2", {
       antialias: false,
@@ -406,6 +467,7 @@ export class DitherRenderer {
     this.#gl = gl;
     this.#settings = settings;
     this.#frozen = frozen;
+    this.#shown = options.shown;
     this.#gpu = glResources(gl);
     this.#programs = new ScenePrograms(
       gl,
@@ -427,6 +489,7 @@ export class DitherRenderer {
     canvas.addEventListener("webglcontextrestored", () => this.#restore());
 
     const mouse = this.#mouse;
+    const governor = this.#governor;
     const track = (event: PointerEvent) => {
       mouse.clientX = event.clientX;
       mouse.clientY = event.clientY;
@@ -436,27 +499,30 @@ export class DitherRenderer {
       if (!mouse.down) return;
       mouse.down = false;
       mouse.released = true;
-      this.#governor.wake(this.#response());
+      this.#respond();
     };
-    // Input wakes a still picture (see `start`): the pointer passing over it for a moment, long
-    // enough to draw it where it is now (the parallax then eases on toward it while it moves, see
+    // Input, over the page or the lab alike, draws a moving picture at the full rate for a while
+    // (see `start`), and wakes a still one: the pointer passing over it for a moment, long enough
+    // to draw it where it is now (the parallax then eases on toward it while it moves, see
     // `#still`); a drag, a press and its release for longer, a press setting off a response that
     // plays out in real time.
     window.addEventListener("pointermove", (event) => {
       this.#pointer.tx = (event.clientX / window.innerWidth) * 2 - 1;
       this.#pointer.ty = 1 - (event.clientY / window.innerHeight) * 2;
       track(event);
-      this.#governor.wake(mouse.down ? SETTLE_SECONDS : POINTER_SECONDS);
+      governor.wake(mouse.down ? SETTLE_SECONDS : POINTER_SECONDS);
+      governor.input(SETTLE_SECONDS);
     });
     window.addEventListener("pointerdown", (event) => {
       track(event);
-      this.#governor.wake(SETTLE_SECONDS);
+      governor.wake(SETTLE_SECONDS);
+      governor.input(SETTLE_SECONDS);
       // Only presses that start over the page count: the lab and page controls keep theirs.
       if (!event.isPrimary || event.button !== 0 || !mouse.inside) return;
       mouse.down = true;
       mouse.pressed = true;
       mouse.pressedAt = this.#interactionClock;
-      this.#governor.wake(this.#response());
+      this.#respond();
     });
     window.addEventListener("pointerup", (event) => {
       if (event.isPrimary && event.button === 0) lift();
@@ -467,8 +533,16 @@ export class DitherRenderer {
     // Leaving the window (no related target) leaves the page too.
     window.addEventListener("pointerout", (event) => {
       if (event.relatedTarget === null) mouse.inside = false;
-      this.#governor.wake(mouse.down ? SETTLE_SECONDS : POINTER_SECONDS);
+      governor.wake(mouse.down ? SETTLE_SECONDS : POINTER_SECONDS);
+      governor.input(SETTLE_SECONDS);
     });
+    // Keys and the wheel change nothing on a still picture by themselves (a change they make wakes
+    // it, see `update`); caught before any control can keep them.
+    for (const type of ["keydown", "wheel"] as const)
+      window.addEventListener(type, () => governor.input(SETTLE_SECONDS), {
+        capture: true,
+        passive: true,
+      });
   }
 
   /** Fire one occurrence of the current scene's occasional effect in `slot` right now. */
@@ -476,7 +550,7 @@ export class DitherRenderer {
     if (slot < 0 || slot >= MAX_TRIGGERS) return;
     this.#triggers[slot] = this.#interactionClock;
     this.#motionTriggers[slot] = this.#motionClock;
-    this.#governor.wake(this.#response());
+    this.#respond();
   }
 
   get paused(): boolean {
@@ -486,6 +560,7 @@ export class DitherRenderer {
   setPaused(paused: boolean): void {
     this.#paused = paused;
     this.#governor.wake(SETTLE_SECONDS);
+    this.#governor.input(SETTLE_SECONDS);
   }
 
   /**
@@ -508,6 +583,17 @@ export class DitherRenderer {
     this.#expecting = expect;
   }
 
+  /**
+   * The committed thumbnail of `scene` (thumbs/<id>.webp, dithered as the page draws it), which the
+   * page shows in the canvas's place until a scene draws (main.ts). `scene` entering from nothing
+   * (the page's first frame, a restored context) with passages on dissolves out of it, laid over
+   * the stage as the page lays it (`background: center / cover`), instead of out of the bare page.
+   * Taken by the next scene to enter from nothing, and shown only if that is `scene`.
+   */
+  setPoster(scene: SceneId, image: HTMLImageElement): void {
+    this.#poster = { scene, image };
+  }
+
   /** Play the current scene's exit, then its entrance with a fresh simulation, even with passages off. */
   replayPassage(): void {
     if (this.#scene === undefined || this.#leaving !== undefined || this.#frozen) return;
@@ -516,16 +602,22 @@ export class DitherRenderer {
 
   /**
    * Draw with `settings` from the next frame. Pass a new object for every change: a program sends
-   * its look and knobs again only when the object differs from the one it last drew with.
+   * its look and knobs again only when the object differs from the one it last drew with. A change
+   * counts as input. Every scene's clocks count from its own start, unless `keepClocks`: the scene
+   * it changes to then takes over those of the scene on screen, so a world kept across scenes (the
+   * lab's "keep the world", an A/B flip) goes on where it stood: its hours under the day cycle, its
+   * passing year, its turning stars.
    */
-  update(settings: RenderSettings): void {
+  update(settings: RenderSettings, options: { keepClocks?: boolean } = {}): void {
     this.#settings = settings;
     this.#governor.wake(SETTLE_SECONDS);
+    this.#governor.input(SETTLE_SECONDS);
     if (settings.scene !== this.#triggerScene) {
       this.#triggerScene = settings.scene;
       this.#triggers.fill(NEVER);
       this.#motionTriggers.fill(NEVER);
       this.#mouse.pressedAt = NEVER;
+      this.#keepClocks = options.keepClocks === true ? settings.scene : undefined;
     }
   }
 
@@ -535,18 +627,20 @@ export class DitherRenderer {
   }
 
   /**
-   * Draw on requestAnimationFrame. Paced (the default), at most 60 frames a second whatever the
-   * display's refresh rate, and while the picture stands still (`#still`) none at all once the last
-   * change or input has played out (see FrameGovernor); `paced: false` draws every frame asked for,
-   * for checks that drive frames by hand and the GPU timing page (src/bench.ts), which times every
-   * frame the display gives it. Nothing draws while the context is lost.
+   * Draw on requestAnimationFrame. Paced (the default), every n-th refresh of the display, n whole,
+   * so every frame stays up as long: at the full rate (the divisor of the refresh rate nearest 60
+   * frames a second) while input, a press's or a trigger's response, a passage or an entrance
+   * lasts, at rest (half that) otherwise, and while the picture stands still (`#still`) none at all
+   * once the last change or input has played out (see FrameGovernor); `paced: false` draws every
+   * frame asked for, for checks that drive frames by hand and the GPU timing page (src/bench.ts),
+   * which times every frame the display gives it. Nothing draws while the context is lost.
    */
   start(options: { paced?: boolean } = {}): void {
     const paced = options.paced ?? true;
     const tick = (now: number) => {
       // Asked for first, so a frame that throws cannot end the loop.
       requestAnimationFrame(tick);
-      if (this.#gl.isContextLost() || (paced && !this.#governor.due(now, this.#still()))) return;
+      if (this.#gl.isContextLost() || (paced && !this.#governor.due(now, this.#picture()))) return;
       try {
         this.#draw(now);
       } catch (error: unknown) {
@@ -554,13 +648,22 @@ export class DitherRenderer {
         if (scene !== undefined && scene.failure === undefined) this.#fail(scene, "frame", error);
         else console.error("evt=landing.renderer.frame_failed", error);
       }
+      if (this.#unveil) {
+        this.#unveil = false;
+        this.#shown?.();
+      }
     };
     requestAnimationFrame(tick);
   }
 
-  /** How long a press or a trigger's response plays: real seconds, unless paused (ages hold). */
-  #response(): number {
-    return this.#paused ? SETTLE_SECONDS : RESPONSE_SECONDS;
+  /**
+   * A press over the page, its release or a trigger: its response plays out at the full rate and
+   * on a still picture, for real seconds unless paused (ages hold).
+   */
+  #respond(): void {
+    const seconds = this.#paused ? SETTLE_SECONDS : RESPONSE_SECONDS;
+    this.#governor.wake(seconds);
+    this.#governor.input(seconds);
   }
 
   /**
@@ -583,6 +686,15 @@ export class DitherRenderer {
     );
   }
 
+  /**
+   * What the picture does, for the frame governor: stands still (`#still`), plays a passage or an
+   * entrance (`#entering`), at the full rate whatever the input, or moves on its own.
+   */
+  #picture(): Picture {
+    if (this.#still()) return "still";
+    return this.#leaving !== undefined || this.#reenter || this.#entering ? "passing" : "moving";
+  }
+
   /** Why the scene on screen is not drawing (the background shows instead), or undefined while it draws. */
   get failure(): SceneFailure | undefined {
     return this.#scene?.failure;
@@ -590,9 +702,10 @@ export class DitherRenderer {
 
   /**
    * Whether the scene the setup asks for is not on screen yet for want of its program, which builds
-   * in the background meanwhile: on the page's first frames (the bare page shows), after a cut or
-   * a retry (the scene on screen goes on as it last drew) and after a restored context. A program
-   * that fails to build ends it too, the scene entering failed (`failure`).
+   * in the background meanwhile: on the page's first frames (the bare page shows, under the page's
+   * poster), after a cut or a retry (the scene on screen goes on as it last drew) and after a
+   * restored context. A program that fails to build ends it too, the scene entering failed
+   * (`failure`).
    */
   get waiting(): boolean {
     return this.#waiting;
@@ -642,12 +755,14 @@ export class DitherRenderer {
 
   /**
    * A scene for `s` with `built`, the program for its features (or why it failed to build), and a
-   * fresh simulation. A program that failed to build or a simulation that throws while starting
-   * leaves it failed (see `failure`).
+   * fresh simulation, its clocks counting from now, or from where those of the scene on screen
+   * count when it takes them over (see `update`). A program that failed to build or a simulation
+   * that throws while starting leaves it failed (see `failure`).
    */
   #create(s: RenderSettings, built: SceneProgram | SceneFailure): ActiveScene {
     const id = s.scene;
     const params = sceneDefs[id].params;
+    const from = this.#keepClocks === id ? this.#scene : undefined;
     const scene: ActiveScene = {
       id,
       program: "program" in built ? built : undefined,
@@ -664,6 +779,11 @@ export class DitherRenderer {
       })(),
       weather: { wet: 0, lying: 0 },
       passage: { enter: 1, exit: 0 },
+      origin: from?.origin ?? {
+        clock: this.#clock,
+        motion: this.#motionClock,
+        fall: this.#fallClock,
+      },
     };
     if (scene.program !== undefined) {
       try {
@@ -697,6 +817,7 @@ export class DitherRenderer {
       scene = this.#create(s, built);
     }
     this.#scene = scene;
+    if (scene?.id === this.#keepClocks) this.#keepClocks = undefined;
     return scene;
   }
 
@@ -716,6 +837,10 @@ export class DitherRenderer {
     this.#reenter = false;
     this.#rebuild = false;
     this.#waiting = false;
+    this.#entering = false;
+    // The poster's texture went with the context too (the page hands the poster over again).
+    this.#posterFrame = undefined;
+    this.#arrival.from = undefined;
     this.#programs.lose();
     forgetSheets(this.#gl);
   }
@@ -834,12 +959,14 @@ export class DitherRenderer {
     const { width, height } = cells;
 
     // The parallax follows the pointer, unless frozen (reduced motion): then it eases back to rest.
+    // It eases by the time the frame stands for, so at the same pace at any frame rate.
     const p = this.#pointer;
     const follow = s.followPointer && !this.#frozen;
     const tx = follow ? p.tx : 0;
     const ty = follow ? p.ty : 0;
-    p.x += (tx - p.x) * 0.04;
-    p.y += (ty - p.y) * 0.04;
+    const ease = 1 - (1 - PARALLAX_EASE) ** (dt * 60);
+    p.x += (tx - p.x) * ease;
+    p.y += (ty - p.y) * ease;
     const pointer = this.#pointerState(cells);
     if (scene === undefined) {
       const gl = this.#gl;
@@ -852,14 +979,21 @@ export class DitherRenderer {
     const entered = scene !== current;
     const arrival = this.#arrival;
     if (entered) {
-      // After a passage it dissolves out of the leaving scene; on the page's first frame out of the
-      // bare page; after a cut it is simply there. A passing entrance's clock starts on its second
-      // frame: the first one compiles the program on the GPU (drivers do it at the first draw), which
-      // can take longer than the whole dissolve, so it is shown as the dissolve's start.
+      // After a passage it dissolves out of the leaving scene; entering from nothing (the page's
+      // first frame, a restored context) out of its poster where the page handed that over (see
+      // `setPoster`), else out of the bare page; after a cut it is simply there. A passing
+      // entrance's clock starts on its second frame: the first one compiles the program on the GPU
+      // (drivers do it at the first draw), which can take longer than the whole dissolve, so it is
+      // shown as the dissolve's start.
       const passed = this.#reenter;
-      arrival.start =
-        passed || (current === undefined && this.#passing(s)) ? Number.NaN : -Infinity;
-      arrival.fromScene = passed;
+      const passing = passed || (current === undefined && this.#passing(s));
+      arrival.start = passing ? Number.NaN : -Infinity;
+      arrival.from = passed ? this.#gpu.leavingFrame : undefined;
+      if (current === undefined) {
+        if (passing) arrival.from = this.#paintPoster(scene.id, cells);
+        this.#poster = undefined;
+        this.#unveil = true;
+      }
       this.#reenter = false;
       this.#rebuild = false;
     } else if (Number.isNaN(arrival.start)) {
@@ -935,7 +1069,7 @@ export class DitherRenderer {
         fired: this.#quietFired,
         pressedAt: NEVER,
         dissolve: 0,
-        fromScene: false,
+        from: undefined,
         blend: os.blend,
       });
     } else if (leaving?.next !== undefined) {
@@ -956,7 +1090,7 @@ export class DitherRenderer {
         fired: this.#quietFired,
         pressedAt: NEVER,
         dissolve: 0,
-        fromScene: false,
+        from: undefined,
         blend: ns.blend,
       });
     }
@@ -972,14 +1106,19 @@ export class DitherRenderer {
     // A slot fired when its stamp moved to a real press since the sim's previous frame. A scene just
     // entered has a fresh sim with nothing to compare against: its first frame reports no presses
     // (stamps were reset to idle when the scene changed, so an earlier visit's never replay).
-    // Stamps reach the shader and sims on the scene clock (`#interactionClock`); `lag` is 0 unfrozen.
-    const lag = this.#interactionClock - this.#clock;
+    // Stamps reach the shader and sims on the scene's own clocks: an interaction-clock stamp moved
+    // back by `lag`, how far that clock has run ahead of the scene clock (0 unfrozen) and where the
+    // scene's clock counts from; a motion-clock stamp by where its motion clock does.
+    const lag = this.#interactionClock - this.#clock + scene.origin.clock;
     const shown = this.#shownTriggers;
+    const shownMotion = this.#shownMotionTriggers;
     for (let slot = 0; slot < MAX_TRIGGERS; slot++) {
       const stamp = this.#triggers[slot] ?? NEVER;
       this.#fired[slot] = !entered && stamp > NEVER && stamp !== this.#seenTriggers[slot];
       this.#seenTriggers[slot] = stamp;
       shown[slot] = stamp > NEVER ? stamp - lag : NEVER;
+      const motionStamp = this.#motionTriggers[slot] ?? NEVER;
+      shownMotion[slot] = motionStamp > NEVER ? motionStamp - scene.origin.motion : NEVER;
     }
     const drew = this.#render(scene, s, program, step, pointer, {
       target: null,
@@ -988,11 +1127,11 @@ export class DitherRenderer {
       oneCell: false,
       fresh: entered,
       triggers: shown,
-      motionTriggers: this.#motionTriggers,
+      motionTriggers: shownMotion,
       fired: this.#fired,
       pressedAt: this.#mouse.pressedAt > NEVER ? this.#mouse.pressedAt - lag : NEVER,
       dissolve,
-      fromScene: arrival.fromScene,
+      from: arrival.from,
       blend: s.blend,
     });
     // The blend is done once the incoming scene shows alone (at once if it cannot draw).
@@ -1000,10 +1139,17 @@ export class DitherRenderer {
       this.#release(woven.scene);
       this.#leaving = undefined;
     }
-    // Whether this frame moved anything still on its way (see `#still`).
+    // The poster's texture goes once nothing dissolves out of it any more.
+    const posterFrame = this.#posterFrame;
+    if (posterFrame !== undefined && (arrival.from !== posterFrame || dissolve <= 0)) {
+      this.#gl.deleteTexture(posterFrame);
+      this.#posterFrame = undefined;
+      if (arrival.from === posterFrame) arrival.from = undefined;
+    }
+    // Whether this frame moved anything still on its way (see `#still`), and played an entrance.
+    this.#entering = dissolve > 0 || passage.enter < 1;
     this.#moving =
-      dissolve > 0 ||
-      passage.enter < 1 ||
+      this.#entering ||
       leaving !== undefined ||
       scene.sim?.ready?.() === false ||
       Math.abs(tx - p.x) + Math.abs(ty - p.y) > EASED;
@@ -1134,6 +1280,35 @@ export class DitherRenderer {
   }
 
   /**
+   * The poster handed over for `scene` (see `setPoster`) painted over `cells` where the page lays
+   * it, a texel a cell, into a texture of its own (`#posterFrame`) for the scene to dissolve out
+   * of; undefined without one for `scene`.
+   */
+  #paintPoster(scene: SceneId, cells: Cells): WebGLTexture | undefined {
+    const poster = this.#poster;
+    if (poster?.scene !== scene) return undefined;
+    const { image } = poster;
+    const canvas = new OffscreenCanvas(cells.width, cells.height);
+    const context = canvas.getContext("2d");
+    if (context === null || image.naturalWidth === 0 || image.naturalHeight === 0) return undefined;
+    // Nearest, as the page's `image-rendering: pixelated` shows it.
+    context.imageSmoothingEnabled = false;
+    const at = this.#stage.cover(cells, image.naturalWidth, image.naturalHeight);
+    context.drawImage(image, at.x, at.y, at.width, at.height);
+    const gl = this.#gl;
+    if (this.#posterFrame !== undefined) gl.deleteTexture(this.#posterFrame);
+    gl.activeTexture(gl.TEXTURE0 + LEAVING_UNIT);
+    const texture = frameTexture(gl);
+    // The canvas's rows run top down, a texture's up from uv.y 0; every other upload expects the
+    // flip off (src/sims/gpu.ts).
+    gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, canvas);
+    gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
+    this.#posterFrame = texture;
+    return texture;
+  }
+
+  /**
    * Step `scene`'s simulation and draw it with `program` into `draw.target`; a scene that cannot draw
    * (no program, or failed) clears the target to its background instead. Whether it drew.
    */
@@ -1158,6 +1333,10 @@ export class DitherRenderer {
     }
     this.#drawing = scene;
     const motion = this.#frozen ? 0 : s.motion;
+    // The clocks as this scene sees them: from its own start (`ActiveScene.origin`).
+    const time = this.#clock - scene.origin.clock;
+    const motionTime = this.#motionClock - scene.origin.motion;
+    const fallTime = this.#fallClock - scene.origin.fall;
     // The world follows the scene's own rain and snow on the scene clock: where they lead (soaked in
     // steady rain, damp in drizzle; snow lying deeper the harder it snows, less in rain), approached
     // exponentially. Wetting takes 1.2 / rain s per e-fold (~9 s to soak in steady rain), drying 25 s
@@ -1172,7 +1351,7 @@ export class DitherRenderer {
           yearNow(
             yearAt(season.def, s.params[season.at] ?? 0),
             s.params[season.cycle] ?? 0,
-            this.#motionClock,
+            motionTime,
           ),
         )
       : 0;
@@ -1202,8 +1381,8 @@ export class DitherRenderer {
     const simTextures =
       scene.sim?.frame({
         dt: step,
-        time: this.#clock,
-        motionTime: this.#motionClock,
+        time,
+        motionTime,
         motion,
         now: this.#frameNow,
         budget: this.#frameBudget,
@@ -1228,20 +1407,26 @@ export class DitherRenderer {
       gl.activeTexture(gl.TEXTURE0 + slot);
       gl.bindTexture(gl.TEXTURE_2D, simTextures[slot] ?? gpu.blank);
     }
-    // Never the frame being drawn into: sampling it would be a feedback loop.
+    // The frame it dissolves out of, if any: never the frame being drawn into, which the leaving
+    // scene's draw has none of (sampling it would be a feedback loop).
     gl.activeTexture(gl.TEXTURE0 + LEAVING_UNIT);
-    gl.bindTexture(gl.TEXTURE_2D, target === gpu.leavingTarget ? gpu.blank : gpu.leavingFrame);
+    gl.bindTexture(gl.TEXTURE_2D, draw.from ?? gpu.blank);
 
     const u = program.uniforms;
     gl.uniform2f(u.uRes, width, height);
-    gl.uniform1f(u.uTime, this.#clock);
-    gl.uniform1f(u.uMotionTime, this.#motionClock);
-    gl.uniform1f(u.uFallTime, this.#fallClock);
+    gl.uniform1f(u.uTime, time);
+    gl.uniform1f(u.uMotionTime, motionTime);
+    gl.uniform1f(u.uFallTime, fallTime);
     gl.uniform2f(u.uPointer, this.#pointer.x, this.#pointer.y);
     gl.uniform4f(u.uMouse, pointer.x, pointer.y, pointer.down ? 1 : 0, draw.pressedAt);
     gl.uniform2f(u.uWeather, weather.wet, weather.lying);
     gl.uniform2f(u.uPassage, passage.enter, passage.exit);
-    gl.uniform3f(u.uDissolve, draw.dissolve, draw.fromScene ? 1 : 0, blendIds.indexOf(draw.blend));
+    gl.uniform3f(
+      u.uDissolve,
+      draw.dissolve,
+      draw.from === undefined ? 0 : 1,
+      blendIds.indexOf(draw.blend),
+    );
     // The rest only when it changed since this program last drew (see SceneProgram).
     const sent = program.sent;
     if (sent.settings !== s) {

@@ -4,6 +4,7 @@
 import { Lab } from "./lab.ts";
 import { thumbUrl } from "./lab/thumbs.ts";
 import { DitherRenderer } from "./renderer.ts";
+import type { SceneId } from "./scenes/index.ts";
 import type { SkyPlanet } from "./scenes/planets.ts";
 import {
   accentOf,
@@ -44,16 +45,42 @@ try {
     stage,
     renderSettings(state, params, planets),
     reducedMotion.matches,
+    { shown: () => document.body.classList.remove("poster") },
   );
   renderer.start();
 } catch (error: unknown) {
   console.error("evt=landing.renderer.unavailable", error);
 }
-// Without WebGL2, and while the context is lost (until the browser gives it back), the scene's
-// committed thumbnail stands in for the canvas, still (`body.poster`, styles.css).
-document.body.classList.toggle("poster", renderer === undefined);
-stage.addEventListener("webglcontextlost", () => document.body.classList.add("poster"));
-stage.addEventListener("webglcontextrestored", () => document.body.classList.remove("poster"));
+
+/**
+ * The scene's committed thumbnail stands in for the canvas (`body.poster`, styles.css): index.html
+ * puts it up as the page opens, and it stays until the renderer shows the scene, which dissolves
+ * out of it (`DitherRenderer.setPoster`, handed over by `handPoster` for the scene the setup
+ * shows); again from a lost context until the restored scene draws; for good without WebGL2.
+ * `posterScene`: the scene whose poster was last handed over while it stood in.
+ */
+let posterScene: SceneId | undefined;
+function handPoster(): void {
+  if (renderer === undefined || !document.body.classList.contains("poster")) return;
+  if (posterScene === state.scene) return;
+  const scene = state.scene;
+  posterScene = scene;
+  const image = new Image();
+  image.src = thumbUrl(scene);
+  // A scene without a thumbnail (a new one) enters out of the bare page instead; one the setup has
+  // since left is not handed over.
+  image.decode().then(
+    () => {
+      if (posterScene === scene) renderer?.setPoster(scene, image);
+    },
+    () => undefined,
+  );
+}
+stage.addEventListener("webglcontextlost", () => {
+  document.body.classList.add("poster");
+  posterScene = undefined;
+  handPoster();
+});
 
 // Reduced motion follows the system's setting as it changes, not only as the page opened.
 reducedMotion.addEventListener("change", (event) => renderer?.setFrozen(event.matches));
@@ -92,7 +119,15 @@ document.addEventListener("visibilitychange", () => {
   if (document.visibilityState === "hidden") writeUrl();
 });
 
-function apply(query: URLSearchParams, options: { cut?: boolean } = {}): void {
+/**
+ * Show the setup `query` holds (see `LabHost.apply`): `cut` switches scenes without the passage,
+ * `keepClocks` lets the scene switched to take over the clocks of the one left (the lab keeping the
+ * world, `DitherRenderer.update`).
+ */
+function apply(
+  query: URLSearchParams,
+  options: { cut?: boolean; keepClocks?: boolean } = {},
+): void {
   const setup = readSetup(query);
   state = setup.state;
   params = setup.params;
@@ -103,7 +138,10 @@ function apply(query: URLSearchParams, options: { cut?: boolean } = {}): void {
   const search = minimal.toString();
   showUrl(`${location.pathname}${search ? `?${search}` : ""}`);
   const settings = renderSettings(state, params, planets);
-  renderer?.update(options.cut ? { ...settings, passage: false } : settings);
+  renderer?.update(options.cut ? { ...settings, passage: false } : settings, {
+    keepClocks: options.keepClocks === true,
+  });
+  handPoster();
 
   document.body.dataset.scene = state.scene;
   document.body.dataset.mode = state.mode;

@@ -38,7 +38,10 @@ export interface PointerState {
 export interface SimFrame {
   /** Seconds since the previous frame on the scene clock; 0 while paused or frozen. */
   dt: number;
-  /** The scene clock (the shader's `uTime`). */
+  /**
+   * The scene clock (the shader's `uTime`), counted from the scene's start (or, where it took the
+   * clocks of the scene it replaced over, from that one's: DitherRenderer.update).
+   */
   time: number;
   /**
    * The motion clock (the shader's `uMotionTime`): every step of the scene clock times the motion

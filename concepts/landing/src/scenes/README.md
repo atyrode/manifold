@@ -87,11 +87,16 @@ uniforms, `TAU` or `LUMA`) to a pass body.
 
 ### Time and motion
 
-The entry's `t` is `uTime`, the scene clock: it stands still while paused and keeps running across
-scene changes. Anything that moves at the lab's motion pace reads `uMotionTime` (a sim:
-`frame.motionTime`): the renderer sums each frame's scene-clock step times `uMotion`, from the same
-origin as `uTime`. It equals `t * uMotion` while the slider stands still, and moving the slider
-changes the pace instead of jumping every phase, as `t * uMotion` does (with the day cycle on, by
+The entry's `t` is `uTime`, the scene clock: it stands still while paused, and counts from the
+scene's own start. A scene's clocks start at 0 as it is created, and through a passage the leaving
+and the incoming scene each keep their own, so the float32 clocks stay as small as the scene is
+young however long the page is open. A scene picked with "keep the world", or flipped to in an A/B
+comparison, takes over the clocks of the one it replaces, so the world's hours, year and stars go
+on where they stood. Anything that moves at the lab's motion pace reads `uMotionTime` (a sim:
+`frame.motionTime`): the renderer sums each frame's scene-clock step times `uMotion`, from the
+same origin as `uTime`. It equals `t * uMotion` while the slider stands still, and moving the
+slider changes the pace instead of jumping every phase, as `t * uMotion` does (with the day cycle
+on, by
 hours after a few minutes). Never write `t * uMotion`, or divide a clock by `uMotion` (only
 `meteorAge` and `lightningAge` do, to give a sub-second flash its real-time pace); `uMotion` alone
 is for amplitudes. The sky uses `timeOfDayM(K_time, K_cycle, uMotionTime)` in every scene;
@@ -116,6 +121,16 @@ since it happened. Key a press's or a trigger's response to that age and bound i
 once and settles (Dunes' pouring streak fades 0.6 s after the press, and is held only while the
 button is down); anything driven by `t` or `uMotionTime` stays put. Sims see the press and release
 edges and `fired`, but no time, so their response is one still step. Paused, every age holds.
+
+Frames come every n-th refresh of the display, n whole, so each stays up as long as the last
+(`src/governor.ts`, which measures the refresh rate from the frames the browser gives). A moving
+picture draws at the full rate, the even divisor of the refresh rate nearest 60 frames a second
+(60 at 60, 120 and 240 Hz; 75 at 75 Hz, 45 at 90, 72 at 144, 55 at 165), while input lasts (the
+pointer, a key or the wheel, over the page or the lab: `SETTLE_SECONDS`, 5 s), a press's or a
+trigger's response plays (`RESPONSE_SECONDS`, 20 s) or a passage or an entrance runs; otherwise it
+rests at half that, or at the divisor nearest 30 where that is faster: 30 frames a second at 60,
+90, 120 and 240 Hz. So nothing may move by the frame: step on `dt` (a sim on its `FixedStep`), or
+key motion to a clock.
 
 A picture that stands still is not redrawn. Paused, under reduced motion or at motion 0, the page
 draws while something is on its way (an entrance, a passage, a program building, the parallax
@@ -146,11 +161,14 @@ off screen at its own cell size, into the frame the incoming one dissolves out o
 of the dissolve move. An exit that would end before the blend does is drawn out to end with it,
 so the outgoing scene never stands still under the incoming one. A switch made during the blend
 leaves for the newest scene once the blend is done. The entrance's clock starts on its second
-frame. Every scene gets the blend for free. On first load the bare page shows while the program
-builds, and the scene dissolves in out of it. With passages off, under reduced motion or at motion
-0 a switch is a cut, and so is a retry: the scene on screen goes on as it last drew until the next
-one's program is built in the background, and then the next one is there. A context the browser
-restores after losing it starts over as on first load. Nothing ever waits for a build.
+frame. Every scene gets the blend for free. On first load the scene's committed thumbnail
+(`thumbs/<id>.webp`, the scene the link names) stands in from the first paint while the program
+builds, and the scene dissolves in out of it, laid over the stage as the page laid it; a scene
+without one dissolves in out of the bare page. With passages off, under reduced motion or at
+motion 0 a switch is a cut, and so is a retry: the scene on screen goes on as it last drew until
+the next one's program is built in the background, and then the next one is there. A context the
+browser restores after losing it starts over as on first load, its thumbnail standing in
+meanwhile. Nothing ever waits for a build.
 The outgoing frame is sampled in normalized stage coordinates with nearest filtering, so a different
 viewport or pixel size stretches the whole image rather than fetching outside it.
 
@@ -2124,10 +2142,11 @@ and `dwell` (`state.ts` refuses to load such a scene).
 - Every effect is a knob with plain-language help; occasional events get a "now" trigger.
 - Performance: one full-screen pass at ~960×540 cells must hold 60 fps on an integrated GPU. Keep
   loops short (≤ 32 iterations in the common path), no nested loops over many items. The renderer
-  holds every stage to that budget (`CELL_BUDGET`: a larger one, a 4K screen or a 1440p one at
-  pixel 2, gets coarser cells), draws at most 60 frames a second whatever the display, and none
-  while the picture stands still (see "Time and motion"). The GPU timing page (below) measures it
-  on a real device.
+  holds every stage to that budget (`CELL_BUDGET`, with 25 % to spare before cells coarsen: a
+  larger stage, a 4K screen or a 1440p one at pixel 2, gets coarser cells), draws every n-th
+  refresh, nearest 60 frames a second (75 at 75 Hz, 72 at 144) and about half that at rest, and
+  none while the picture stands still (see "Time and motion"). The GPU timing page (below)
+  measures it on a real device.
 
 ## Correctness checks
 
@@ -2177,13 +2196,17 @@ program built in the background, the scene on screen going on meanwhile), keep t
 scheduled, report the failure and recover by retry or by another scene; uniforms are sent only
 when they change, including a look change made while another scene drew; and the Lab never
 applies a setup while it is being built. `src/display.verify.ts` adds the display:
-`contextRestore`, on the pond, a lost context draws nothing while the frame loop goes on, and once
-the browser restores it the scene enters again and draws, its plant atlas painted anew (no frame
-binds a texture made before the loss, as the sheet the pond kept from its last visit would be);
-`frameGovernor`, a moving scene on a 120 Hz display draws at most 60 frames a second, and paused or
-at motion 0 the picture stops issuing draws once the change has played out, until input wakes it,
-a pointer that moves nothing for a moment only (`src/display.test.ts` and `src/governor.test.ts`
-check the cells on whole device pixels at 125 %, the budget and the pacing without a browser).
+`contextRestore`, on the pond, its poster stands in until it draws: its first frame is the poster
+exactly as the page lays it (`center / cover`), its clock at 0, and only then is the page told it
+shows; a lost context draws nothing while the frame loop goes on, and once the browser restores
+it the scene enters again the same way and draws, its plant atlas painted anew (no frame binds a
+texture made before the loss, as the sheet the pond kept from its last visit would be);
+`frameGovernor`, a moving scene on a 120 Hz display draws 30 frames a second at rest and 60 from
+the first frame after input until it has played out, and paused or at motion 0 the picture stops
+issuing draws once the change has played out, until input wakes it, a pointer that moves nothing
+for a moment only (`src/display.test.ts` and `src/governor.test.ts` check the cells on whole device
+pixels at 125 %, the budget and its slack, the poster's placement, the frame divisors, the pacing
+through jitter and dropped frames and the rest rate without a browser).
 Checks that drive frames by hand start the renderer unpaced (`start({ paced: false })`) and run
 frames, a little real time apart, until it is no longer `waiting` for a scene's program.
 

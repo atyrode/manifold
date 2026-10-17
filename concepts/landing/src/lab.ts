@@ -71,9 +71,10 @@ export interface LabHost {
   current(): { state: LabState; params: Params; planets: readonly SkyPlanet[] };
   /**
    * Replace the whole setup. The host re-renders, then calls `Lab.sync()`. `cut`: switch scenes at
-   * once, without the passage (an A/B flip).
+   * once, without the passage (an A/B flip). `keepClocks`: the scene switched to takes over the
+   * clocks of the one left, so the world kept goes on where it stood (DitherRenderer.update).
    */
-  apply(query: URLSearchParams, options?: { cut?: boolean }): void;
+  apply(query: URLSearchParams, options?: { cut?: boolean; keepClocks?: boolean }): void;
   renderer(): DitherRenderer | undefined;
   /** Commit the page was built from; empty for a working tree. */
   build: string;
@@ -1206,7 +1207,10 @@ export class Lab {
     this.#host.apply(new URLSearchParams(this.#query()));
   }
 
-  /** Show `slot`'s setup at once; the one on screen waits in its own slot, with its own undo. */
+  /**
+   * Show `slot`'s setup at once, on the clocks of the setup left (two scenes compared at the same
+   * moment); the one on screen waits in its own slot, with its own undo.
+   */
   #showSlot(slot: Slot): void {
     const comparison = this.#comparison;
     if (!comparison || comparison.live === slot) return;
@@ -1215,7 +1219,7 @@ export class Lab {
     this.#history = this.#hiddenHistory ?? historyAt(comparison.other);
     this.#hiddenHistory = leaving;
     this.#comparison = { live: slot, other: leaving.committed };
-    this.#host.apply(new URLSearchParams(comparison.other), { cut: true });
+    this.#host.apply(new URLSearchParams(comparison.other), { cut: true, keepClocks: true });
   }
 
   /** Make the hidden slot the setup on screen, as an undo step of the hidden slot's own. */
@@ -1296,6 +1300,7 @@ export class Lab {
     const next = keep ? carryWorld(from, params, to, defaults) : defaults;
     this.#host.apply(
       serialise(carryLook(state, scene), next, keep ? carryPlanets(from, planets, to) : []),
+      { keepClocks: keep },
     );
     this.#commit(by === "advance" ? "advance" : "hand");
   }
