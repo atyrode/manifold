@@ -2626,6 +2626,21 @@ The host owns the state and nature's undo; the chore owns the plan and the tool.
 deterministic for the seed and stand still at motion 0. Principal 0 may do the same chore with the
 pointer.
 
+Built ahead of the composers, in the scenes' own sims, each a feature knob on by default that acts
+only through the cast's agents (so a page without agents draws as before), with `interest` points
+for the cast and its own headless test:
+
+- **Leaf raking** (autumn, knob `rake`): `Litter.rake` (`src/sims/litter.ts`) drags a stroke's band
+  into a `LitterPile`, heaped under its top once its cells are full; a pile takes six strokes along
+  the path, and a gust lifts it away.
+- **Sand raking** (sand table, knob `rake`, the ball's table): an agent's press takes the rake up
+  and `HeightField.rake` combs its run between two sites; a drag on the sand rakes too (a press on
+  the ball still leads it). The ball's drawings and erase spirals groom it away.
+- **Cairns** (shore, knob `cairns`): `src/sims/stack.ts` stacks stones as rigid boxes with
+  friction; agents carry pebbles to sites on the wet sand, and the swash (mirrored from the shader
+  in `shore/beach.ts`) of the bigger waves knocks them down. No tide.
+- Star-joining is not built yet.
+
 ### Porting a scene
 
 1. Record the witness set (above) at the revision before the port.

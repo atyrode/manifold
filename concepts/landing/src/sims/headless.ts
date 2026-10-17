@@ -29,6 +29,8 @@
 //                                 integrates them
 //     now                         the wall clock handed over as SimFrame.now, milliseconds
 //     dispose()                   the sim's
+//     interest(aspect)            the sim's points of interest (SceneSim.interest; none without it),
+//                                 for a test that runs the cast (src/principals.ts) against the sim
 //
 // A HeadlessFrame is all optional: dt 1/60 s, motion 1, aspect 16 / 9 at 540 cells high, the visitor
 // over the page at its centre with no button and no agents beside it, no parallax, arrived and not
@@ -59,6 +61,7 @@ import type {
   LoadedScene,
   PrincipalState,
   ScenePassageProgress,
+  ScenePoint,
   SceneSim,
 } from "../scenes/types.ts";
 import { paramDefaults } from "../state.ts";
@@ -433,6 +436,10 @@ export class HeadlessSim {
 
   dispose(): void {
     this.#sim.dispose();
+  }
+
+  interest(aspect: number): readonly ScenePoint[] {
+    return this.#sim.interest?.(aspect) ?? [];
   }
 
   /**

@@ -3,7 +3,7 @@
 // the last drawing as it crosses it; or a swinging funnel trickling rosettes of sand onto dark
 // slate, wiped clean and swung again once the swing has died away. The shader (shader.ts) lights
 // the sand's relief with the raking lamp, every groove a bright side and a shadowed one.
-import { choice, feature, range, seed, type ParamDef } from "../../params.ts";
+import { choice, counts, feature, range, seed, type ParamDef } from "../../params.ts";
 import type { SceneDef } from "../types.ts";
 import {
   SANDTABLE_PASSAGE,
@@ -60,6 +60,16 @@ const params: readonly ParamDef[] = [
     "drawings",
     "drawings",
     "The run of drawings: their proportions, turns and directions. Re-seed for another run.",
+  ),
+  feature(
+    "table",
+    "rake",
+    "rake",
+    true,
+    "tines",
+    5,
+    "The agents' chore on the ball's table, while the lab has agents in the scene: they comb the sand with a rake, taking it up at one side of the table and combing across to the other, band after band of parallel lines, while the ball's drawings and erase spirals slowly plough them away. While it is on, a drag on the sand rakes it too (press on the ball to lead the ball). Tines: how many lines a stroke combs.",
+    { options: counts(3, 5, 7) },
   ),
   choice(
     "look",
@@ -138,7 +148,7 @@ export const sandtableScene: SceneDef = {
     table: {
       title: "Sand table",
       blurb:
-        "What draws in the sand, and how fast. Drag on the table to lead the ball, or to push the pendulum.",
+        "What draws in the sand, and how fast, and the agents' rake. Drag on the sand to rake it or on the ball to lead it; on the slate, drag to push the pendulum.",
     },
     look: {
       title: "Sand and lamp",

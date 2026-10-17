@@ -16,6 +16,15 @@
 // flying again. The Manifold M is leaves swept together into a road-marking M along the path (the cells
 // under its strokes fill with gold leaves, the cells round them are cleared).
 //
+// The rake is the agents' chore (knob `rake`): an agent of the cast that presses on the ground by the
+// path draws one stroke of a rake along the path toward a pile there (Litter.rake): the leaves in the
+// band it passes over are lifted and laid in the pile, heaped under its top once its cells are full,
+// and the raked ground is kept bare. A pile takes six strokes, from up and down the path and either
+// side of its middle, so the agents come back to it (`interest`: the piles under way, and a fresh
+// station along the path for each agent beyond them). Nature undoes it: a gust lifts the piles' leaves
+// and flings them up or down the wind until a pile is blown flat and its ground left to the carpet
+// again, and the leaves go on falling on the raked ground. Without agents none of it runs.
+//
 // The scene's passage (layout.ts AUTUMN_PASSAGE) is played here too: as it comes in a gust blows a flurry of
 // leaves in from beyond the windward edge of the frame, and as it leaves a stronger gust and a vortex lift
 // leaves off the carpet and whirl them up across the frame, with a shower from the canopy. At rest none of
@@ -36,12 +45,19 @@
 import { markDistance } from "../../mark.ts";
 import { KnobReader, type ParamDef } from "../../params.ts";
 import { FlutterPlates } from "../../sims/flutter.ts";
-import { CLEARED, Litter, PINNED, type LitterItem } from "../../sims/litter.ts";
+import {
+  CLEARED,
+  HEAPED,
+  Litter,
+  PINNED,
+  type LitterItem,
+  type LitterPile,
+} from "../../sims/litter.ts";
 import { clamp, hash31, lerp, smoothstep } from "../../sims/math.ts";
 import { mulberry32 } from "../../sims/random.ts";
 import { DataTexture } from "../../sims/texture.ts";
 import { gustPulse, gustWait, windSign } from "../../sims/wind.ts";
-import type { SceneSim, SimFactory, SimFrame } from "../types.ts";
+import type { SceneSim, ScenePoint, SimFactory, SimFrame } from "../types.ts";
 import { AUTUMN_PASSAGE } from "./constants.ts";
 import {
   AUTUMN_CARPET,
@@ -55,8 +71,17 @@ import {
   autumnPathX,
 } from "./layout.ts";
 
-type Knob = "species" | "fall" | "gusts" | "season" | "wind" | "mark" | "parkSeed";
-const KNOBS: readonly Knob[] = ["species", "fall", "gusts", "season", "wind", "mark", "parkSeed"];
+type Knob = "species" | "fall" | "gusts" | "season" | "wind" | "mark" | "rake" | "parkSeed";
+const KNOBS: readonly Knob[] = [
+  "species",
+  "fall",
+  "gusts",
+  "season",
+  "wind",
+  "mark",
+  "rake",
+  "parkSeed",
+];
 
 const TAU = Math.PI * 2;
 const SLOTS = AUTUMN_SLOTS;
@@ -165,6 +190,59 @@ const MARK_SECONDS = 8;
 const MARK_HOLD = 45;
 const UPLOAD_EVERY_MS = 1000 / 24;
 
+// ---- the rake ------------------------------------------------------------------------------------
+
+/** The narrowest frame the park is laid out for (the shader's aspectE): a narrower one is squeezed. */
+const WIDE = 1.45;
+/** Piles at once; the stations along the path fresh ones are started at (depths, m), each this far from the path's middle, on alternate sides. */
+const PILES = 6;
+const PILE_STATIONS = [5.6, 7.2, 9.0, 11.0, 13.4, 16.2] as const;
+const PILE_SIDE = 0.6;
+/** A press within this far (m) of a pile works on it; one farther from the path's middle than its half width and this starts none. */
+const PILE_MERGE = 1.6;
+const PILE_OFF_PATH = 0.5;
+/** A pile's radius (m): to start with, what it grows by with the square root of its leaves, at most. */
+const PILE_RADIUS = 0.3;
+const PILE_GROW = 0.06;
+const PILE_MAX = 0.8;
+/**
+ * The strokes that rake a pile together, in order: from up the path (+1) or down it (-1), and how far
+ * across it from the pile's middle (m) the stroke sets out; each closes in toward the middle.
+ */
+const STROKES: readonly (readonly [number, number])[] = [
+  [1, 0],
+  [-1, 0],
+  [1, -0.5],
+  [-1, 0.5],
+  [1, 0.5],
+  [-1, -0.5],
+];
+/** A stroke's run (s), the half width of its band (m), and how far out it sets off (m) over the knob's travel. */
+const STROKE_SECONDS = 1.6;
+const STROKE_WIDTH = 0.26;
+const REACH_MIN = 1.0;
+const REACH_RANGE = 1.6;
+/** A gust lifts a pile's leaves while it blows harder than SCATTER_FROM: SCATTER_RATE a second at full strength. */
+const SCATTER_FROM = 0.15;
+const SCATTER_RATE = 40;
+
+/** A pile the agents rake together: Litter.rake's pile, with its strokes. */
+interface Pile extends LitterPile {
+  live: boolean;
+  /** Leaves raked into it and not yet blown away: they set its size. */
+  leaves: number;
+  /** Strokes begun, of STROKES. */
+  strokes: number;
+  /** Seconds into the stroke under way; below 0 while none is. */
+  t: number;
+  /** Where the rake's head was at the end of the last frame (m). */
+  headX: number;
+  headZ: number;
+}
+
+const pileRadius = (pile: Pile): number =>
+  Math.min(PILE_MAX, PILE_RADIUS + PILE_GROW * Math.sqrt(pile.leaves));
+
 const at = (array: Float64Array | Float32Array | Uint8Array | Int8Array, index: number): number =>
   array[index] ?? 0;
 
@@ -270,6 +348,33 @@ class AutumnSim implements SceneSim {
   #markHold = 0;
   #markGoal = 0;
 
+  // The rake: the piles the agents rake together along the path, the knob as the shader reads it,
+  // how far out the strokes set off, the agents there last frame and the gust's lifts owed.
+  readonly #piles: Pile[] = Array.from({ length: PILES }, () => ({
+    x: 0,
+    z: 0,
+    under: 0,
+    live: false,
+    leaves: 0,
+    strokes: 0,
+    t: -1,
+    headX: 0,
+    headZ: 0,
+  }));
+  readonly #interest: ScenePoint[] = [];
+  readonly #points: { x: number; y: number }[] = Array.from({ length: PILES + 3 }, () => ({
+    x: 0,
+    y: 0,
+  }));
+  /** A ground point (x, z), m, written by #groundAt and #strokeHead. */
+  readonly #hit = new Float64Array(2);
+  /** The cells round a pile (#around): the first column and row, and how many of each. */
+  readonly #box = new Int32Array(3);
+  #raking = 0;
+  #reach = REACH_MIN;
+  #agents = 0;
+  #scatterDebt = 0;
+
   readonly #leafData = new Float32Array(SLOTS * 4 * 4);
   readonly #leafTexture: DataTexture;
   readonly #stateData = new Float32Array(2 * 4);
@@ -315,6 +420,7 @@ class AutumnSim implements SceneSim {
       this.#knobs.initial("season"),
       this.#knobs.initial("species"),
     );
+    this.#raking = this.#knobs.initial("rake");
   }
 
   frame(frame: SimFrame): readonly (WebGLTexture | undefined)[] {
@@ -352,6 +458,15 @@ class AutumnSim implements SceneSim {
 
     this.#leaves(dt, knobs.value(frame, "fall"), season);
 
+    // The agents' rake, on the motion clock; the gusts undo it at their own pace.
+    this.#raking = knobs.value(frame, "rake");
+    this.#reach = REACH_MIN + REACH_RANGE * this.#raking;
+    this.#agents = 0;
+    for (const hand of frame.principals) if (hand.kind === "agent") this.#agents++;
+    if (this.#raking > 0 && enter >= 1 && exit <= 0) this.#rakePresses(frame);
+    this.#rake(real * frame.motion);
+    this.#scatter(dt);
+
     if (season !== this.#season) this.#changeSeason(season);
     this.#markHold = Math.max(0, this.#markHold - real);
     this.#markGoal = knobs.value(frame, "mark") > 0 || this.#markHold > 0 ? 1 : 0;
@@ -381,6 +496,7 @@ class AutumnSim implements SceneSim {
     this.#state.fill(FREE);
     this.#lifted.fill(0);
     this.#carpet.clear();
+    for (const pile of this.#piles) pile.live = false;
     this.#markShown = 0;
     this.#season = season;
     this.#base = carpetBase(season);
@@ -828,6 +944,235 @@ class AutumnSim implements SceneSim {
     p.roll[slot] = 0;
     p.rollRate[slot] = 1.4 + 1.4 * rand();
     return true;
+  }
+
+  // ---- the rake ------------------------------------------------------------------------------------
+
+  /**
+   * Where the agents go to work, in screen uv: the piles under way, and a fresh station along the path
+   * for each agent beyond them (none while the M lies there), so each pile is finished before the
+   * next is begun. None while the rake is off.
+   */
+  interest(aspect: number): readonly ScenePoint[] {
+    const points = this.#interest;
+    points.length = 0;
+    if (!(this.#raking > 0)) return points;
+    for (const pile of this.#piles)
+      if (pile.live && pile.strokes < STROKES.length) this.#point(pile.x, pile.z, aspect);
+    if (this.#markShown > 0) return points;
+    let fresh = Math.max(1, this.#agents) - points.length;
+    for (let k = 0; k < PILE_STATIONS.length && fresh > 0; k++) {
+      const z = PILE_STATIONS[k] ?? 0;
+      const x = autumnPathX(z) + (k % 2 === 0 ? PILE_SIDE : -PILE_SIDE);
+      if (this.#pileNear(x, z) !== undefined) continue;
+      this.#point(x, z, aspect);
+      fresh--;
+    }
+    return points;
+  }
+
+  /** Ground point (x, z) (m) as the screen sees it at rest, onto the interest list. */
+  #point(x: number, z: number, aspect: number): void {
+    const point = this.#points[this.#interest.length];
+    if (point === undefined) return;
+    const { horizon, eye, focal } = AUTUMN_VIEW;
+    point.x = 0.5 + (x * focal) / (z * Math.max(aspect, WIDE));
+    point.y = horizon - (eye * focal) / z;
+    this.#interest.push(point);
+  }
+
+  /** Where screen point (u, v) meets the ground at rest, into #hit: false above the horizon or off the carpet. */
+  #groundAt(u: number, v: number, aspect: number): boolean {
+    const { horizon, eye, focal } = AUTUMN_VIEW;
+    const drop = horizon - v;
+    if (!(drop > 1e-3)) return false;
+    const z = (eye * focal) / drop;
+    const x = ((u - 0.5) * Math.max(aspect, WIDE) * z) / focal;
+    const A = AUTUMN_CARPET;
+    if (x < A.x0 || z < A.z0 || x >= A.x0 + COLS * A.cell || z >= A.z0 + ROWS * A.cell)
+      return false;
+    this.#hit[0] = x;
+    this.#hit[1] = z;
+    return true;
+  }
+
+  /** The live pile within PILE_MERGE of (x, z), if any. */
+  #pileNear(x: number, z: number): Pile | undefined {
+    for (const pile of this.#piles)
+      if (pile.live && Math.hypot(pile.x - x, pile.z - z) < PILE_MERGE) return pile;
+    return undefined;
+  }
+
+  /** The agents' presses on the ground by the path: each sets the next stroke of the pile there going, or starts a pile. */
+  #rakePresses(frame: SimFrame): void {
+    for (const hand of frame.principals) {
+      if (hand.kind !== "agent" || !hand.inside || !hand.pressed) continue;
+      if (!this.#groundAt(hand.x, hand.y, frame.aspect)) continue;
+      const x = this.#hit[0] ?? 0;
+      const z = this.#hit[1] ?? 0;
+      let pile = this.#pileNear(x, z);
+      if (pile === undefined) {
+        if (Math.abs(x - autumnPathX(z)) > AUTUMN_PATH.half + PILE_OFF_PATH) continue;
+        for (const free of this.#piles) if (!free.live && pile === undefined) pile = free;
+        if (pile === undefined) continue;
+        pile.live = true;
+        pile.x = x;
+        pile.z = z;
+        pile.under = 0;
+        pile.leaves = 0;
+        pile.strokes = 0;
+        pile.t = -1;
+      }
+      if (pile.t >= 0 || pile.strokes >= STROKES.length) continue;
+      pile.strokes++;
+      pile.t = 0;
+      this.#strokeHead(pile, 0);
+      pile.headX = this.#hit[0] ?? 0;
+      pile.headZ = this.#hit[1] ?? 0;
+    }
+  }
+
+  /**
+   * The head of `pile`'s stroke under way, `e` (0..1) of the way along its run, into #hit: from the
+   * stroke's reach up or down the path (and its offset across) in to the pile's edge, closing in on
+   * its middle.
+   */
+  #strokeHead(pile: Pile, e: number): void {
+    const [side, across] = STROKES[pile.strokes - 1] ?? [1, 0];
+    // The path's way at the pile, along (ax, az) and across (az, -ax).
+    const slope = autumnPathX(pile.z + 0.5) - autumnPathX(pile.z - 0.5);
+    const length = Math.hypot(slope, 1);
+    const ax = slope / length;
+    const az = 1 / length;
+    const along = side * lerp(this.#reach, pileRadius(pile), e);
+    const off = across * (1 - 0.6 * e);
+    this.#hit[0] = pile.x + ax * along + az * off;
+    this.#hit[1] = pile.z + az * along - ax * off;
+  }
+
+  /** The strokes under way, `dt` seconds on: each head moves on, raking the band it passes over into its pile. */
+  #rake(dt: number): void {
+    if (!(dt > 0)) return;
+    for (const pile of this.#piles) {
+      if (!pile.live || pile.t < 0) continue;
+      pile.t = Math.min(STROKE_SECONDS, pile.t + dt);
+      const u = pile.t / STROKE_SECONDS;
+      this.#strokeHead(pile, u * u * (3 - 2 * u));
+      const x = this.#hit[0] ?? 0;
+      const z = this.#hit[1] ?? 0;
+      const radius = pileRadius(pile);
+      const { headX, headZ } = pile;
+      pile.leaves += this.#carpet.rake(headX, headZ, x, z, STROKE_WIDTH, pile, radius, this.#rand);
+      pile.headX = x;
+      pile.headZ = z;
+      if (pile.t >= STROKE_SECONDS) pile.t = -1;
+    }
+  }
+
+  /**
+   * Nature's undoing, `dt` seconds of it: while a gust blows the piles' leaves are lifted, flung up as
+   * plates while slots are free and the rest blown down the wind onto the carpet; what lies under a
+   * pile rises in place of its top, and a pile blown flat is gone, its ground left to the carpet.
+   */
+  #scatter(dt: number): void {
+    const gust = gustPulse(this.#gustAge, GUST_RISE) * this.#gustPower;
+    if (gust > SCATTER_FROM && dt > 0) this.#scatterDebt += dt * SCATTER_RATE * gust;
+    else this.#scatterDebt = 0;
+    const lifts = Math.floor(this.#scatterDebt);
+    this.#scatterDebt -= lifts;
+    let flying = 0;
+    for (let i = 0; i < SLOTS; i++) if (this.#lifted[i] === 1 && this.#state[i] !== FREE) flying++;
+    const rand = this.#rand;
+    for (const pile of this.#piles) {
+      if (!pile.live) continue;
+      const radius = pileRadius(pile);
+      for (let n = 0; n < lifts; n++) {
+        const found = this.#liftFromPile(pile, radius);
+        if (found === undefined) break;
+        pile.leaves = Math.max(0, pile.leaves - 1);
+        if (flying < SWIRL_LEAVES && this.#launch(found)) {
+          flying++;
+          continue;
+        }
+        const blown = this.#gustSign * (0.6 + 2.4 * rand());
+        const z = found.z + (rand() - 0.5) * 1.4;
+        this.#carpet.deposit(found.x + blown, z, found.angle, found.hue, found.face, rand);
+      }
+      this.#carpet.heap(pile, radius, rand);
+      if (lifts > 0 && pile.t < 0 && this.#flat(pile, radius)) this.#drop(pile);
+    }
+  }
+
+  /** The cells round a pile, within about `radius` of its middle, into #box. */
+  #around(pile: Pile, radius: number): void {
+    const A = AUTUMN_CARPET;
+    const reach = Math.ceil(radius / A.cell) + 1;
+    this.#box[0] = Math.floor((pile.x - A.x0) / A.cell) - reach;
+    this.#box[1] = Math.floor((pile.z - A.z0) / A.cell) - reach;
+    this.#box[2] = 2 * reach + 1;
+  }
+
+  /** Lift a whole leaf off a pile, from a cell picked at random among its own; undefined when it has none. */
+  #liftFromPile(pile: Pile, radius: number): LitterItem | undefined {
+    this.#around(pile, radius);
+    const [i0 = 0, j0 = 0, side = 0] = this.#box;
+    const slots = 2 * side * side;
+    const start = Math.floor(this.#rand() * slots);
+    for (let k = 0; k < slots; k++) {
+      const n = (start + k) % slots;
+      const i = i0 + ((n >> 1) % side);
+      const j = j0 + Math.floor((n >> 1) / side);
+      if (i < 0 || j < 0 || i >= COLS || j >= ROWS) continue;
+      const cell = j * COLS + i;
+      if (this.#carpet.protect[cell] !== HEAPED) continue;
+      const found = this.#carpet.lift((n & 1) * CELLS + cell);
+      if (found !== undefined) return found;
+    }
+    return undefined;
+  }
+
+  /** Nothing left of a pile: none heaped under it and no leaf on its cells. */
+  #flat(pile: Pile, radius: number): boolean {
+    if (pile.under > 0) return false;
+    this.#around(pile, radius);
+    const [i0 = 0, j0 = 0, side = 0] = this.#box;
+    for (let j = Math.max(0, j0); j < Math.min(ROWS, j0 + side); j++)
+      for (let i = Math.max(0, i0); i < Math.min(COLS, i0 + side); i++) {
+        const cell = j * COLS + i;
+        if (this.#carpet.protect[cell] !== HEAPED) continue;
+        const goal = this.#carpet.goal;
+        if (at(goal, cell) > 0 || at(goal, CELLS + cell) > 0) return false;
+      }
+    return true;
+  }
+
+  /**
+   * A pile is gone: its cells and the ground its strokes kept bare go back to the carpet, but for the
+   * M's while it lies there and the cells of the piles still standing.
+   */
+  #drop(pile: Pile): void {
+    pile.live = false;
+    this.#around(pile, this.#reach + STROKE_WIDTH + 0.5);
+    const [i0 = 0, j0 = 0, side = 0] = this.#box;
+    const carpet = this.#carpet;
+    const A = AUTUMN_CARPET;
+    for (let j = Math.max(0, j0); j < Math.min(ROWS, j0 + side); j++)
+      for (let i = Math.max(0, i0); i < Math.min(COLS, i0 + side); i++) {
+        const cell = j * COLS + i;
+        const protect = carpet.protect[cell];
+        if (protect === CLEARED) {
+          const mark = this.#strokeCells.includes(cell) || this.#marginCells.includes(cell);
+          if (!(this.#markShown > 0 && mark)) carpet.protect[cell] = 0;
+        } else if (protect === HEAPED) {
+          const x = A.x0 + (i + 0.5) * A.cell;
+          const z = A.z0 + (j + 0.5) * A.cell;
+          let held = false;
+          for (const other of this.#piles)
+            if (other.live && Math.hypot(other.x - x, other.z - z) < pileRadius(other) + A.cell)
+              held = true;
+          if (!held) carpet.protect[cell] = 0;
+        }
+      }
   }
 
   // ---- the carpet --------------------------------------------------------------------------------

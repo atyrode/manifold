@@ -18,6 +18,13 @@
 // shoving what it gathers ahead in a berm and off the far side, and the funnel is refilled and
 // swung again with new frequencies.
 //
+// Rake (the agents' chore, knob `rake`, on the ball's table): an agent of the cast that presses on the
+// sand takes up a rake of a few tines and combs it along the way it then goes (HeightField.rake),
+// putting it down where it comes to rest; its sites (`interest`) lie on two arcs facing across the
+// table, so the strokes comb bands of parallel lines that run mostly the same way. The visitor combs
+// with it too, dragging from anywhere on the sand but the ball, which a press on it still takes. The
+// ball's drawings and erase spirals plough and groom over the combing in time.
+//
 // Throughout, the sand slumps to its angle of repose (HeightField.relax).
 //
 // Time: the ball and the funnel step on FixedSteps (sims/clock.ts) of BALL_SUBSTEP and
@@ -45,13 +52,19 @@
 //      fill 0..1; 0
 import { markVertex } from "../../mark.ts";
 import { KnobReader, type ParamDef } from "../../params.ts";
+import { MAX_PRINCIPALS } from "../../principals.ts";
 import { FixedStep } from "../../sims/clock.ts";
-import { domeProfile, HeightField, type GrooveOptions } from "../../sims/heightfield.ts";
+import {
+  domeProfile,
+  HeightField,
+  type GrooveOptions,
+  type RakeOptions,
+} from "../../sims/heightfield.ts";
 import { clamp, smoothstep } from "../../sims/math.ts";
 import { springStep, type Spring } from "../../sims/spring.ts";
 import { mulberry32 } from "../../sims/random.ts";
 import { DataTexture } from "../../sims/texture.ts";
-import type { SceneSim, SimFactory, SimFrame } from "../types.ts";
+import type { PrincipalState, ScenePoint, SceneSim, SimFactory, SimFrame } from "../types.ts";
 import {
   SANDTABLE_PASSAGE,
   sandtableFigures,
@@ -136,6 +149,7 @@ const SANDTABLE_KNOBS = [
   "drawings",
   "depth",
   "mark",
+  "rake",
 ] as const;
 type Knob = (typeof SANDTABLE_KNOBS)[number];
 
@@ -154,6 +168,8 @@ interface Settings {
   mark: number;
   /** Height of the M its "now" button draws. */
   markNow: number;
+  /** The rake's tines while it is out (the agents' chore); 0 while it is put away. */
+  rake: number;
 }
 
 const markSize = (amount: number): number => 0.8 + 0.5 * amount;
@@ -171,6 +187,7 @@ function readSettings(knobs: KnobReader<Knob>, frame: SimFrame, out: Settings): 
   out.depth = clamp(knobs.value(frame, "depth"), 0, 1);
   out.mark = mark > 0 ? markSize(mark) : 0;
   out.markNow = markSize(knobs.amount(frame, "mark"));
+  out.rake = Math.round(knobs.value(frame, "rake"));
 }
 
 /** The pointer on the table, in field units from its centre. */
@@ -1950,6 +1967,131 @@ class Pendulum {
   }
 }
 
+// ---- the rake ------------------------------------------------------------------------------------
+
+/** The rake's tines: their spacing and width (field units), and their depth as a share of the ball's. */
+const RAKE_SPACING = 0.014;
+const RAKE_WIDTH = 0.008;
+const RAKE_DEPTH = 0.6;
+/** Farthest from the middle (field units) the rake combs: inside the ball's reach. */
+const RAKE_REACH = SANDTABLE.track - 0.02;
+/** A press this near the ball (field units) takes it, not the rake. */
+const RAKE_GRAB = 0.06;
+/** An agent lays the rake down once it has combed this far (field units) and then stood this long (s). */
+const RAKE_RUN = 0.03;
+const RAKE_REST = 0.2;
+/**
+ * Where the agents take the rake up and lay it down: two arcs facing across the table, SITES points
+ * each, this far out and spread this far (radians) either side of across, so their strokes comb
+ * bands that run mostly the same way. None within this of the ball.
+ */
+const RAKE_SITES = 4;
+const RAKE_SITE_RADIUS = 0.3;
+const RAKE_SITE_SPREAD = 0.55;
+const RAKE_SITE_CLEAR = 0.12;
+/** No sites: the rake is put away. */
+const NO_SITES: readonly ScenePoint[] = [];
+
+/**
+ * The rake, the agents' chore (knob `rake`, the ball's table only): an agent that presses on the sand
+ * takes the rake up and combs it along the way it then goes, its tines square to the stroke
+ * (HeightField.rake), until it stands still at the end of its run; the visitor combs while the button
+ * is held, from a press anywhere on the sand but on the ball (which a press there takes, as before).
+ * The ball's drawings and its erase spirals plough and groom the sand over the combing: nature's
+ * undoing. Positions are field units from the table's middle.
+ */
+class SandRake {
+  readonly #field: HeightField;
+  readonly #tool: RakeOptions = { tines: 5, spacing: RAKE_SPACING, width: RAKE_WIDTH, depth: 0 };
+  /** Per principal: holds the rake; where its head was; how far it has combed since; seconds still. */
+  readonly #holding = new Uint8Array(MAX_PRINCIPALS);
+  readonly #x = new Float64Array(MAX_PRINCIPALS);
+  readonly #y = new Float64Array(MAX_PRINCIPALS);
+  readonly #run = new Float64Array(MAX_PRINCIPALS);
+  readonly #still = new Float64Array(MAX_PRINCIPALS);
+  readonly #interest: ScenePoint[] = [];
+  readonly #points = Array.from({ length: 2 * RAKE_SITES }, () => ({ x: 0, y: 0 }));
+
+  constructor(field: HeightField) {
+    this.#field = field;
+  }
+
+  /** Every hand lifts the rake (a passage, the pendulum's table, the knob off). */
+  lift(): void {
+    this.#holding.fill(0);
+  }
+
+  /**
+   * This frame's combing, `dt` seconds on: `tines` tines `depth` (the groove knob) deep, by every
+   * principal as `principals` and the frame of `aspect` place them; `grab`: the visitor's press this
+   * frame took the ball.
+   */
+  frame(
+    principals: readonly PrincipalState[],
+    aspect: number,
+    tines: number,
+    depth: number,
+    grab: boolean,
+    dt: number,
+  ): void {
+    const tool = this.#tool;
+    tool.tines = Math.max(1, Math.round(tines));
+    tool.depth = RAKE_DEPTH * depthOf(depth);
+    const scale = SANDTABLE.span * Math.min(1, aspect);
+    const n = Math.min(principals.length, MAX_PRINCIPALS);
+    for (let i = n; i < MAX_PRINCIPALS; i++) this.#holding[i] = 0;
+    for (let i = 0; i < n; i++) {
+      const hand = principals[i];
+      if (hand === undefined) continue;
+      const x = ((hand.x - 0.5) * aspect) / scale;
+      const y = (hand.y - 0.5) / scale;
+      const onSand = hand.inside && Math.hypot(x, y) <= RAKE_REACH;
+      const agent = hand.kind === "agent";
+      if (hand.pressed && onSand && !(i === 0 && grab)) {
+        this.#holding[i] = 1;
+        this.#run[i] = 0;
+        this.#still[i] = 0;
+        this.#x[i] = x;
+        this.#y[i] = y;
+      }
+      // The visitor combs while the button is held; an agent until it rests after a run.
+      if (!agent && !hand.down) this.#holding[i] = 0;
+      if (this.#holding[i] !== 1) continue;
+      const fromX = this.#x[i] ?? x;
+      const fromY = this.#y[i] ?? y;
+      const step = Math.hypot(x - fromX, y - fromY);
+      if (onSand && Math.hypot(fromX, fromY) <= RAKE_REACH && step > 0)
+        this.#field.rake(0.5 + fromX, 0.5 + fromY, 0.5 + x, 0.5 + y, tool);
+      this.#x[i] = x;
+      this.#y[i] = y;
+      const run = (this.#run[i] ?? 0) + step;
+      this.#run[i] = run;
+      const still = step > 1e-5 ? 0 : (this.#still[i] ?? 0) + dt;
+      this.#still[i] = still;
+      if (agent && run > RAKE_RUN && still > RAKE_REST) this.#holding[i] = 0;
+    }
+  }
+
+  /** The sites in screen uv for a frame of `aspect`, but those near the ball at (ballX, ballY). */
+  interest(aspect: number, ballX: number, ballY: number): readonly ScenePoint[] {
+    const points = this.#interest;
+    points.length = 0;
+    const scale = SANDTABLE.span * Math.min(1, aspect);
+    for (let k = 0; k < 2 * RAKE_SITES; k++) {
+      const side = k < RAKE_SITES ? 0 : Math.PI;
+      const angle = side + RAKE_SITE_SPREAD * (((k % RAKE_SITES) / (RAKE_SITES - 1)) * 2 - 1);
+      const x = RAKE_SITE_RADIUS * Math.cos(angle);
+      const y = RAKE_SITE_RADIUS * Math.sin(angle);
+      const point = this.#points[k];
+      if (point === undefined || Math.hypot(x - ballX, y - ballY) < RAKE_SITE_CLEAR) continue;
+      point.x = 0.5 + (x * scale) / aspect;
+      point.y = 0.5 + y * scale;
+      points.push(point);
+    }
+    return points;
+  }
+}
+
 // ---- the simulation ------------------------------------------------------------------------------
 
 /** Longest step simulated; a stalled tab must not fling the ball across the table. */
@@ -1978,6 +2120,9 @@ class SandtableSim implements SceneSim {
   readonly #textures: readonly WebGLTexture[];
   readonly #ball: Ball;
   readonly #pendulum: Pendulum;
+  readonly #rake: SandRake;
+  /** The rake was out last frame: where the agents go to work then. */
+  #raking = false;
   readonly #touch: Touch = { x: 0, y: 0, pressed: false, down: false };
   /** The knobs as settings, rewritten each frame. */
   readonly #settings: Settings = {
@@ -1990,6 +2135,7 @@ class SandtableSim implements SceneSim {
     depth: 0,
     mark: 0,
     markNow: 0,
+    rake: 0,
   };
   /** Trigger slots of the "next drawing" and "M track" knobs. */
   readonly #nextSlot: number;
@@ -2024,6 +2170,7 @@ class SandtableSim implements SceneSim {
     this.#textures = [this.#heights.texture, this.#state.texture];
     this.#ball = new Ball(this.#field);
     this.#pendulum = new Pendulum(this.#field);
+    this.#rake = new SandRake(this.#field);
   }
 
   frame(frame: SimFrame): readonly (WebGLTexture | undefined)[] {
@@ -2049,6 +2196,20 @@ class SandtableSim implements SceneSim {
       if (this.#arrived >= SANDTABLE_PASSAGE.enter) this.#arriving = false;
     }
     passage.arrive = this.#arriving ? this.#arrived : Infinity;
+
+    // The rake is out on the ball's table at rest: there a press on the ball takes it, anywhere else
+    // on the sand the rake (the ball as it was last drawn, the frame before).
+    const state = this.#stateData;
+    this.#raking =
+      settings.rake > 0 &&
+      settings.machine === "ball" &&
+      passage.arrive === Infinity &&
+      passage.leave === 0;
+    const grab =
+      touch.pressed &&
+      (!this.#raking ||
+        Math.hypot(touch.x - (state[0] ?? 0), touch.y - (state[1] ?? 0)) < RAKE_GRAB);
+    touch.pressed = grab;
 
     const machine = settings.machine;
     switch (machine) {
@@ -2080,13 +2241,15 @@ class SandtableSim implements SceneSim {
         throw new SandtableError(`sandtable: unknown machine ${String(unreachable)}`);
       }
     }
+    if (this.#raking)
+      this.#rake.frame(frame.principals, passage.aspect, settings.rake, settings.depth, grab, dt);
+    else this.#rake.lift();
     this.#field.relax(TALUS, RELAX_RATE, dt, RELAX_ROWS);
 
     const now = frame.now;
     // While the machines move in or out the sand is shown as it is, every frame; so it is while a
     // tool has run on past SYNC_LAG since the last upload.
     const moving = passage.arrive !== Infinity || passage.leave > 0;
-    const state = this.#stateData;
     const shown = this.#shown;
     const pouring = machine === "ball" || (state[3] ?? 0) > 0;
     const lead = Math.max(
@@ -2103,6 +2266,12 @@ class SandtableSim implements SceneSim {
     }
     this.#state.upload(this.#stateData);
     return this.#textures;
+  }
+
+  /** While the rake is out, its sites, but those by the ball: where the agents go to comb the sand. */
+  interest(aspect: number): readonly ScenePoint[] {
+    if (!this.#raking) return NO_SITES;
+    return this.#rake.interest(aspect, this.#stateData[0] ?? 0, this.#stateData[1] ?? 0);
   }
 
   dispose(): void {

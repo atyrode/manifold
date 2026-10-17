@@ -62,6 +62,7 @@
 
 import { worldGlsl } from "../../shaders/lib/world.ts";
 import { SHORE_LIGHTNING_TRIGGER, SHORE_METEOR_TRIGGER } from "./constants.ts";
+import { CAIRN_SITES, CAIRN_STONES } from "./cairns.ts";
 
 export const shoreGlsl = `
 ${worldGlsl}
@@ -432,6 +433,62 @@ float shoreFlash() {
   if (pout > 0.0) flash += 0.6 * smoothstep(0.0, 0.3, pout) * (1.0 - smoothstep(0.6, 1.0, pout));
   return flash;
 }
+
+#ifndef SHORE_CAIRNS
+#define SHORE_CAIRNS 0
+#endif
+#if SHORE_CAIRNS
+// The agents' cairns (cairns.ts, uSim1 while there are any): a row per site, its first texel (x, z,
+// stones, wet), then two a stone ((x from the site, height of its middle, turn, half width), (half
+// height, shade)); the last row the pebbles the principals carry, a texel each (half width, half
+// height, shade, 1). The nearest stone in front of what the ray meets at depth z, along the ray of
+// slope slopeX across and q down: its cover (x), how far it faces up (y), its shade (z) and how wet
+// it is (w); z becomes its depth. Stones are boxes with a pebble's round corners, upright to the view.
+vec4 shoreStone(float camX, float slopeX, float q, float focal, inout float z) {
+  vec4 hit = vec4(0.0);
+  for (int s = 0; s < ${CAIRN_SITES}; s++) {
+    vec4 site = texelFetch(uSim1, ivec2(0, s), 0);
+    if (site.z < 0.5 || site.y >= z) continue;
+    vec2 p = vec2(camX + slopeX * site.y - site.x, SHORE_EYE - q * site.y);
+    if (abs(p.x) > 1.6 || p.y > 0.9) continue;
+    float aa = site.y / (focal * uRes.y);
+    for (int j = 0; j < ${CAIRN_STONES}; j++) {
+      if (float(j) >= site.z) break;
+      vec4 a = texelFetch(uSim1, ivec2(1 + 2 * j, s), 0);
+      vec4 b = texelFetch(uSim1, ivec2(2 + 2 * j, s), 0);
+      vec2 d = rotate(p - a.xy, -a.z);
+      vec2 size = vec2(a.w, b.x);
+      float cover = hardFill(sdBox(d, size, 0.8 * b.x), aa);
+      if (cover <= 0.0) continue;
+      hit = vec4(cover, clamp(0.5 + 0.5 * d.y / b.x, 0.0, 1.0), b.y, site.w);
+      z = site.y;
+    }
+  }
+  return hit;
+}
+
+// The pebbles the agents carry, held under their cursors (main's ring, r cells): cover (x), shade (z).
+vec4 shoreHeld(vec2 cell) {
+  float r = max(4.0, 0.011 * uRes.y);
+  vec4 hit = vec4(0.0);
+  for (int i = 1; i < MAX_PRINCIPALS; i++) {
+    if (i >= uPrincipalCount) break;
+    vec4 held = texelFetch(uSim1, ivec2(i, ${CAIRN_SITES}), 0);
+    if (held.w < 0.5) continue;
+    vec2 size = held.xy * (1.4 * r / 0.1);
+    vec2 d = cell - uPrincipals[i].xy * uRes + vec2(0.0, 1.4 * r + size.y);
+    float cover = hardFill(sdBox(d, size, 0.8 * size.y), 0.9);
+    if (cover > 0.0) hit = vec4(cover, clamp(0.5 + 0.5 * d.y / size.y, 0.0, 1.0), held.z, 0.0);
+  }
+  return hit;
+}
+
+// A stone's colour under the beach's light: grey to sandy by its shade, darker wet, lit from above.
+vec3 shoreStoneColour(vec4 stone, vec3 ambient, vec3 light) {
+  vec3 albedo = mix(vec3(0.30, 0.29, 0.28), vec3(0.62, 0.57, 0.50), stone.z) * mix(1.0, 0.55, stone.w);
+  return albedo * (ambient * 1.3 + light * (0.3 + 0.7 * stone.y));
+}
+#endif
 
 Shade sceneShore(vec2 screenUv, vec2 cell, float t) {
   // The camera's tilt (the passage): everything of the world is built from uv; only the pointer's
@@ -1003,7 +1060,31 @@ Shade sceneShore(vec2 screenUv, vec2 cell, float t) {
       col = mix(col * (1.0 - 0.35 * groove), mirror * 0.8, groove * max(wet, uWeather.x) * 0.35);
       mark = groove * (water ? 1.0 : exp(-drained / 3.5)) * mix(0.55, 1.0, dark);
     }
+#if SHORE_CAIRNS
+    // The agents' cairns stand in front of the sand and the swash round them.
+    if (uSimOn.y > 0.5) {
+      float stoneZ = zHit;
+      vec4 stone = shoreStone(camX, slopeX, q, focal, stoneZ);
+      if (stone.x > 0.0) {
+        col = mix(col, shoreStoneColour(stone, sky.ambient, sunLight + moonLight), stone.x);
+        glow *= 1.0 - stone.x;
+        mark *= 1.0 - stone.x;
+        zHit = stoneZ;
+      }
+    }
+#endif
   }
+
+#if SHORE_CAIRNS
+  // The pebbles the agents carry, over the picture.
+  if (uSimOn.y > 0.5) {
+    vec4 held = shoreHeld(cell);
+    if (held.x > 0.0) {
+      col = mix(col, shoreStoneColour(held, sky.ambient, sunLight + moonLight), held.x);
+      glow *= 1.0 - held.x;
+    }
+  }
+#endif
 
   // The world in front of the beach, at the depth of what this pixel sees: its gulls, where one is
   // nearer than the sea or the sand (a gull skimming the water dips behind a breaker nearer than

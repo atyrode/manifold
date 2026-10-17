@@ -1,4 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
+import { Cast, Presence, principal } from "../../principals.ts";
 import { HeadlessSim } from "../../sims/headless.ts";
 import { loadScene } from "../index.ts";
 import { SANDTABLE } from "./sim.ts";
@@ -139,4 +140,93 @@ test("a fast wipe's edge and the funnel's stream never run ahead of the sand the
   expect(edgeWorst).toBeLessThan(0.25 * depth);
   expect(streamFrames).toBeGreaterThan(60);
   expect(streamWorst).toBeLessThan(0.5 * SANDTABLE.ball);
+});
+
+// The rake, the agents' chore: a point of the table (field units from its middle) in screen uv for
+// a 16:9 frame, and how far apart two tables' heights stand, summed over a box of the field.
+const ASPECT = 16 / 9;
+const onScreen = (x: number, y: number) => ({
+  x: 0.5 + (x * SANDTABLE.span) / ASPECT,
+  y: 0.5 + y * SANDTABLE.span,
+});
+function apart(
+  a: HeadlessSim,
+  b: HeadlessSim,
+  x0: number,
+  x1: number,
+  y0: number,
+  y1: number,
+): number {
+  const grid = SANDTABLE.grid;
+  const ha = a.upload(0).data;
+  const hb = b.upload(0).data;
+  let sum = 0;
+  for (let r = Math.floor((0.5 + y0) * grid); r < Math.ceil((0.5 + y1) * grid); r++)
+    for (let c = Math.floor((0.5 + x0) * grid); c < Math.ceil((0.5 + x1) * grid); c++)
+      sum += Math.abs((ha[r * grid + c] ?? 0) - (hb[r * grid + c] ?? 0));
+  return sum;
+}
+
+test("an agent combs the sand, the ball's erase spirals groom it away, the same every run", () => {
+  // Erase spirals only at the fastest pace: one winds out over the first 45 s, rests and winds back
+  // in over the band by 100 s.
+  const knobs = { speed: 4, pattern: 1 };
+  const run = () => {
+    const sim = new HeadlessSim(sandtableScene);
+    const twin = new HeadlessSim(sandtableScene);
+    const both = (
+      agents: readonly { x: number; y: number; down?: boolean; pressed?: boolean }[],
+    ) => {
+      sim.step({ knobs, agents });
+      twin.step({ knobs });
+    };
+    both([]);
+    // A press, then a run across the table and a stop, as an agent of the cast goes.
+    const from = onScreen(-0.25, 0.1);
+    const to = onScreen(0.25, 0.1);
+    for (let n = 0; n < 30; n++) both([{ ...from, down: n < 27, pressed: n === 0 }]);
+    for (let n = 0; n <= 240; n++) both([{ x: from.x + ((to.x - from.x) * n) / 240, y: from.y }]);
+    for (let n = 0; n < 60; n++) both([to]);
+    const combed = apart(sim, twin, -0.2, 0.2, 0.03, 0.17);
+    for (let n = 0; n < 100 * 60; n++) both([to]);
+    const groomed = apart(sim, twin, -0.2, 0.2, 0.03, 0.17);
+    const heights = Array.from(sim.upload(0).data);
+    for (const each of [sim, twin]) each.dispose();
+    return { combed, groomed, heights };
+  };
+  const first = run();
+  expect(first.combed).toBeGreaterThan(1);
+  expect(first.groomed).toBeLessThan(0.25 * first.combed);
+  expect(run()).toEqual(first);
+});
+
+test("the cast's agent combs the table; a drag rakes it and leaves the ball be", () => {
+  const sim = new HeadlessSim(sandtableScene);
+  const twin = new HeadlessSim(sandtableScene);
+  const cast = new Cast(0);
+  const presence = new Presence();
+  const visitor = principal({ inside: true });
+  for (let n = 0; n < 40 * 60; n++) {
+    presence.update(visitor, -1e4, cast.poses(sim.motionTime, ASPECT, 1, sim), 1 / 60, sim.time);
+    sim.step({ agents: presence.principals.slice(1) });
+    twin.step();
+  }
+  expect(apart(sim, twin, -0.45, 0.45, -0.45, 0.45)).toBeGreaterThan(2);
+  for (const each of [sim, twin]) each.dispose();
+
+  const dragged = new HeadlessSim(sandtableScene);
+  const still = new HeadlessSim(sandtableScene);
+  const from = onScreen(-0.2, -0.15);
+  const to = onScreen(0.2, -0.15);
+  for (let n = 0; n <= 120; n++) {
+    const at = { x: from.x + ((to.x - from.x) * n) / 120, y: from.y };
+    dragged.step({ pointer: { ...at, down: true, pressed: n === 0 } });
+    still.step({ pointer: at });
+  }
+  expect(apart(dragged, still, -0.25, 0.25, -0.22, -0.08)).toBeGreaterThan(1);
+  // The ball went its own way, untouched.
+  expect(Array.from(dragged.upload(1).data).slice(0, 2)).toEqual(
+    Array.from(still.upload(1).data).slice(0, 2),
+  );
+  for (const each of [dragged, still]) each.dispose();
 });

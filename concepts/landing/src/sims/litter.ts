@@ -22,6 +22,15 @@
 //   take(x, z)               lift the whole item lying on top at (x, z) (the lattice cell's) off the
 //                            ground, never a pinned cell's: where it lay, its heading, hue and face, or
 //                            undefined. What lies beneath stays.
+//   lift(slot)               the same for one slot of either layer
+//   rake(ax, az, bx, bz, width, pile, radius, rand)
+//                            drag a rake from (ax, az) to (bx, bz) (m), `width` either side: every item
+//                            in a cell whose middle it passes over (a free or cleared cell) is lifted
+//                            and laid in `pile`, in the free slot nearest its middle within `radius`,
+//                            or heaped under it once those are full; the raked cells are kept bare
+//                            (CLEARED) and the pile's HEAPED. Returns how many items it moved.
+//   heap(pile, radius, rand) raise one item heaped under `pile` into its free slot nearest the middle,
+//                            if it has one: a pile shows what lies under once its top is lifted
 //   tend(visits, add, remove, wants, rand)
 //                            visit the next `visits` cells in turn (unprotected ones only): where
 //                            wants(cell, layer) and nothing is there, a new item fades in with chance
@@ -29,7 +38,8 @@
 //                            `remove`. This is how a cover settles toward a density.
 //   fade()                   step every fading item one level toward its goal
 //   protect[cell]            0 free; PINNED: holds part of a figure (tend skips it, take leaves it,
-//                            deposits vanish there); CLEARED: kept bare (tend skips it)
+//                            deposits vanish there); CLEARED: kept bare (tend skips it); HEAPED: holds
+//                            part of a pile (tend skips it, take may lift from it)
 //   layers[0], layers[1]     rgba texels per cell for the two layers: (ox, oz, heading, w), w =
 //                            face * (level + 16 * mark + 0.98 * hue), 0 for none; `dirty` is set when
 //                            they change (clear it after uploading)
@@ -66,6 +76,15 @@ export interface LitterItem {
 export const PINNED = 1;
 /** protect[cell]: the cell is kept bare; the sweep leaves it alone (no new items fade in). */
 export const CLEARED = 2;
+/** protect[cell]: the cell holds part of a pile raked together (Litter.rake); the sweep leaves it alone. */
+export const HEAPED = 3;
+
+/** A pile of items raked together: its middle (m), and how many lie heaped under the ones on top. */
+export interface LitterPile {
+  x: number;
+  z: number;
+  under: number;
+}
 
 const TAU = Math.PI * 2;
 
@@ -196,25 +215,139 @@ export class Litter {
     const i = Math.floor((x - x0) / size);
     const j = Math.floor((z - z0) / size);
     if (i < 0 || j < 0 || i >= cols || j >= rows) return undefined;
-    const cell = j * cols + i;
+    return this.lift(j * cols + i);
+  }
+
+  lift(slot: number): LitterItem | undefined {
+    const layer = slot >= this.cells ? 1 : 0;
+    const cell = slot - layer * this.cells;
     if (
       this.protect[cell] === PINNED ||
-      (this.level[cell] ?? 0) < this.levels ||
-      (this.goal[cell] ?? 0) === 0
+      (this.level[slot] ?? 0) < this.levels ||
+      (this.goal[slot] ?? 0) === 0
     )
       return undefined;
+    const { cell: size, x0, z0, cols } = this.lattice;
+    const shift = 0.5 * layer;
     const item = {
-      x: x0 + (i + 0.5 + (this.ox[cell] ?? 0)) * size,
-      z: z0 + (j + 0.5 + (this.oz[cell] ?? 0)) * size,
-      angle: this.angle[cell] ?? 0,
-      hue: this.hue[cell] ?? 0,
-      face: this.face[cell] ?? 0,
+      x: x0 + ((cell % cols) + 0.5 + shift + (this.ox[slot] ?? 0)) * size,
+      z: z0 + (Math.floor(cell / cols) + 0.5 + shift + (this.oz[slot] ?? 0)) * size,
+      angle: this.angle[slot] ?? 0,
+      hue: this.hue[slot] ?? 0,
+      face: this.face[slot] ?? 0,
     };
-    this.goal[cell] = 0;
-    this.level[cell] = 0;
-    this.fading.delete(cell);
-    this.#sync(cell);
+    this.goal[slot] = 0;
+    this.level[slot] = 0;
+    this.fading.delete(slot);
+    this.#sync(slot);
     return item;
+  }
+
+  rake(
+    ax: number,
+    az: number,
+    bx: number,
+    bz: number,
+    width: number,
+    pile: LitterPile,
+    radius: number,
+    rand: () => number,
+  ): number {
+    const { cell: size, x0, z0, cols, rows } = this.lattice;
+    const i0 = Math.max(0, Math.floor((Math.min(ax, bx) - width - x0) / size));
+    const i1 = Math.min(cols - 1, Math.floor((Math.max(ax, bx) + width - x0) / size));
+    const j0 = Math.max(0, Math.floor((Math.min(az, bz) - width - z0) / size));
+    const j1 = Math.min(rows - 1, Math.floor((Math.max(az, bz) + width - z0) / size));
+    const dx = bx - ax;
+    const dz = bz - az;
+    const long = dx * dx + dz * dz;
+    let moved = 0;
+    for (let j = j0; j <= j1; j++) {
+      for (let i = i0; i <= i1; i++) {
+        const cell = j * cols + i;
+        const protect = this.protect[cell];
+        if (protect === PINNED || protect === HEAPED) continue;
+        const cx = x0 + (i + 0.5) * size;
+        const cz = z0 + (j + 0.5) * size;
+        if (Math.hypot(cx - pile.x, cz - pile.z) < radius) continue;
+        const h = long > 0 ? clamp(((cx - ax) * dx + (cz - az) * dz) / long, 0, 1) : 0;
+        if (Math.hypot(cx - ax - dx * h, cz - az - dz * h) > width) continue;
+        this.protect[cell] = CLEARED;
+        for (let layer = 0; layer < 2; layer++) {
+          const from = layer * this.cells + cell;
+          if ((this.goal[from] ?? 0) === 0) continue;
+          const to = this.#pileSlot(pile, radius);
+          const angle = this.angle[from] ?? 0;
+          if (to < 0) pile.under++;
+          else this.#lay(to, pile, angle, this.hue[from] ?? 0, this.face[from] ?? 1, rand);
+          this.release(from);
+          moved++;
+        }
+      }
+    }
+    return moved;
+  }
+
+  heap(pile: LitterPile, radius: number, rand: () => number): void {
+    if (pile.under <= 0) return;
+    const to = this.#pileSlot(pile, radius);
+    if (to < 0) return;
+    pile.under--;
+    this.#lay(to, pile, rand() * TAU, rand(), rand() < 0.82 ? 1 : -1, rand);
+  }
+
+  /** The free slot (either layer) nearest the pile's middle within `radius` of it, or -1. */
+  #pileSlot(pile: LitterPile, radius: number): number {
+    const { cell: size, x0, z0, cols, rows } = this.lattice;
+    const gx = (pile.x - x0) / size;
+    const gz = (pile.z - z0) / size;
+    const reach = Math.ceil(radius / size) + 1;
+    let best = -1;
+    let nearest = radius / size;
+    for (let layer = 0; layer < 2; layer++) {
+      const shift = 0.5 * layer;
+      const ci = Math.floor(gx - shift);
+      const cj = Math.floor(gz - shift);
+      for (let j = Math.max(0, cj - reach); j <= Math.min(rows - 1, cj + reach); j++) {
+        for (let i = Math.max(0, ci - reach); i <= Math.min(cols - 1, ci + reach); i++) {
+          const cell = j * cols + i;
+          if (this.protect[cell] === PINNED) continue;
+          const slot = layer * this.cells + cell;
+          if ((this.goal[slot] ?? 0) > 0) continue;
+          const d = Math.hypot(i + 0.5 + shift - gx, j + 0.5 + shift - gz);
+          if (d < nearest) {
+            nearest = d;
+            best = slot;
+          }
+        }
+      }
+    }
+    return best;
+  }
+
+  /** An item fading in at `slot` of a pile, lying as far toward the pile's middle as its cell lets it. */
+  #lay(
+    slot: number,
+    pile: LitterPile,
+    angle: number,
+    hue: number,
+    face: number,
+    rand: () => number,
+  ): void {
+    const layer = slot >= this.cells ? 1 : 0;
+    const cell = slot - layer * this.cells;
+    const { cell: size, x0, z0, cols } = this.lattice;
+    const shift = 0.5 * layer;
+    this.protect[cell] = HEAPED;
+    this.place(slot, 0.5, 0.5, 0, hue, false, 0, this.levels, rand);
+    const tx = (pile.x - x0) / size - ((cell % cols) + 0.5 + shift);
+    const tz = (pile.z - z0) / size - (Math.floor(cell / cols) + 0.5 + shift);
+    this.ox[slot] = clamp(tx, -0.5, 0.5) * (0.6 + 0.3 * rand());
+    this.oz[slot] = clamp(tz, -0.5, 0.5) * (0.6 + 0.3 * rand());
+    this.angle[slot] = angle;
+    this.hue[slot] = hue;
+    this.face[slot] = face;
+    this.#sync(slot);
   }
 
   tend(

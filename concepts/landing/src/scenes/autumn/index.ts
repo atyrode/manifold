@@ -56,6 +56,15 @@ const params: readonly ParamDef[] = [
     { trigger: 0 },
   ),
   feature(
+    "leaves",
+    "rake",
+    "leaf raking",
+    true,
+    "reach",
+    0.5,
+    "The agents' chore, while the lab has agents in the scene: they rake the fallen leaves along the path into neat piles, a stroke at a time from up and down the path, coming back to each pile until it is done. A gust scatters the piles again and leaves keep falling on the raked ground. Reach: how far along the path each stroke sets out.",
+  ),
+  feature(
     "park",
     "lamp",
     "lamp post",
@@ -100,7 +109,8 @@ export const autumnScene: SceneDef = {
     },
     leaves: {
       title: "Leaves",
-      blurb: "How the leaves let go and fall, and the gusts that carry them.",
+      blurb:
+        "How the leaves let go and fall, the gusts that carry them, and the agents who rake them up.",
     },
     park: { title: "Park", blurb: "The lamp post beside the path." },
     sky: {

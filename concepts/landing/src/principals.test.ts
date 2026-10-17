@@ -11,6 +11,7 @@ import {
   type Pose,
 } from "./principals.ts";
 import type { ScenePoint, SimFrame } from "./scenes/types.ts";
+import { shoreScene } from "./scenes/shore/index.ts";
 import { shoreSim } from "./scenes/shore/sim.ts";
 import { common } from "./shaders/common.ts";
 import { main } from "./shaders/main.ts";
@@ -137,7 +138,7 @@ describe("a frame's principals", () => {
 
   test("a sim reacts to every principal: an agent's hand stirs the shore as the visitor's does", () => {
     const headless = new HeadlessGl();
-    const sim = shoreSim(headless.gl);
+    const sim = shoreSim(shoreScene.params)(headless.gl);
     const visitor = principal({ inside: false });
     const agent = principal({ inside: true, kind: "agent", x: 0.25, y: 0.4 });
     const frame: SimFrame = {
@@ -171,7 +172,7 @@ describe("a frame's principals", () => {
     expect(at(0.4, 0.4)).toBeGreaterThan(0);
     expect(at(0.75, 0.75)).toBe(0);
     // The visitor alone, away: no wake at all.
-    const still = shoreSim(new HeadlessGl().gl);
+    const still = shoreSim(shoreScene.params)(new HeadlessGl().gl);
     const empty = still.frame({ ...frame, ...visitorAlone() })[0];
     expect(empty).toBeDefined();
     sim.dispose();

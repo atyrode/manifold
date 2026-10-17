@@ -3,7 +3,7 @@
 // has just risen over the sea, right of ahead, and lays its path across the breakers. By day it is
 // an ordinary turquoise seaside. The pointer's wake is tracked on the CPU (sim.ts) and read as uSim0.
 // The sky, the weather and the gulls are the shared world's (scenes/world.ts, shaders/lib/world.ts).
-import { feature, range, toggle, type ParamDef } from "../../params.ts";
+import { counts, feature, range, toggle, type ParamDef } from "../../params.ts";
 import { WATER_TIERS } from "../../shaders/lib/water.ts";
 import { skyTheme } from "../atmosphere.ts";
 import type { SceneDef } from "../types.ts";
@@ -25,6 +25,16 @@ const params: ParamDef[] = [
     8,
     "Seconds between waves: short for a busy surf, long for a slow, deep rhythm.",
     { min: 5, max: 14, step: 0.5 },
+  ),
+  feature(
+    "surf",
+    "cairns",
+    "cairns",
+    true,
+    "stones",
+    5,
+    "The agents' chore, while the lab has agents in the scene: they carry pebbles to the wet sand and balance them into small cairns, as far up the beach as only the bigger waves run. A big wave knocks a cairn down, and its stones lie round it for the agents to stack again. Stones: how tall a cairn is built.",
+    { options: counts(3, 4, 5, 6, 7) },
   ),
   feature(
     "glow",
@@ -91,7 +101,11 @@ export const shoreScene: SceneDef = {
   params,
   planets: { group: "sky", across: [-2, 18, 60], up: [0, 7, 14] },
   groups: {
-    surf: { title: "Surf", blurb: "The breakers: how big they stand and how often they come in." },
+    surf: {
+      title: "Surf",
+      blurb:
+        "The breakers: how big they stand and how often they come in, and the cairns the agents stack for them to topple.",
+    },
     glow: {
       title: "Bioluminescence",
       blurb: "Plankton that light up when the water is stirred: by the surf, by fish, by you.",
@@ -128,6 +142,9 @@ export const shoreScene: SceneDef = {
   // shifts, so a full moon's own program would not draw byte for byte as the all-features one does.
   features: { WATER_TIER: WATER_TIERS.mirror, SKY_MOON_PHASE: 1 },
   // The world's parts only while their knobs can show them (worldFeatures).
-  featuresFor: worldFeatures,
-  featuresAll: WORLD_ALL,
+  featuresFor: (values) => ({
+    ...worldFeatures(values),
+    SHORE_CAIRNS: (values.cairns ?? 0) > 0 ? 1 : 0,
+  }),
+  featuresAll: { ...WORLD_ALL, SHORE_CAIRNS: 1 },
 };
