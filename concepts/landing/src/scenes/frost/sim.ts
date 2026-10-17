@@ -37,11 +37,13 @@
 // measures itself against the branch through its nearest point.
 //
 // First frost. The pane opens at FROST_START on the growth clock, frosted along every edge and
-// heaviest along the bottom. The branches grow and a half-resolution field is filled in within
-// the first frame; the full field follows over the next frames, on a budget that grows with the
-// time between frames, so a slow machine, whose frames are far apart, refines it in seconds too.
-// The growth clock itself runs on real time between frames, so a slow machine frosts over at the
-// same pace.
+// heaviest along the bottom. The growth is a build (sims/build.ts) on the build worker: the branches
+// grow, a half-resolution field lands first, then the full field; the pane stays clear until the
+// first lands (the sim is not ready until then, so a passage waits for it). Where there is no
+// worker it grows here, the quick field within the first frame and the full field over the next
+// frames, on a budget that grows with the time between frames, so a slow machine, whose frames are
+// far apart, refines it in seconds too. The growth clock itself runs on real time between frames, so
+// a slow machine frosts over at the same pace.
 //
 // Resize. The branches grow on a texel grid fixed in frame heights, and every site frost nucleates
 // at (a frond on the frame, a scratch, a nucleus behind the front) is counted in from the nearer
@@ -49,15 +51,15 @@
 // too. So a wider or narrower pane grows the same frost: each half keeps its branches where they
 // were from its own edge, and only down the middle, where the halves meet, do a few branches run
 // into different neighbours. A new frame shape waits until it has rested RESHAPE_MS, as a dragged
-// window edge comes to rest, and the field on show stays up, stretched, until the regrown one is
-// finished.
+// window edge comes to rest, and the field on show stays up, stretched, until the regrown one has
+// landed; a newer shape or pattern supersedes a growth still in progress.
 //
 // Melt. A TrailField records the pointer's warmth. Where it is warm enough the frost melts; once
 // it cools, the meltwater refreezes from the cleared patch's edges inward (only texels next to
 // frozen glass refreeze quickly), and the new frost there starts thin and thickens back. While no
 // warmth is left and nothing is melted or regrowing, the melt grid is not stepped at all.
 import { KnobReader, type ParamDef } from "../../params.ts";
-import { runBudgeted } from "../../sims/clock.ts";
+import { type BuildKind, BuildSlot } from "../../sims/build.ts";
 import { smoothstep } from "../../sims/math.ts";
 import { Random } from "../../sims/random.ts";
 import { DataTexture } from "../../sims/texture.ts";
@@ -122,11 +124,12 @@ const GROWTH_ROWS = 288;
 /** The quick first field has this fraction of the full field's resolution, across and up. */
 const COARSE_DIVISOR = 2;
 /**
- * How the growth is spread over frames, counted in slices of work (a lockstep round of the branches,
- * or a few rows of the field), never in time, so the field on show after n frames does not depend on
- * the machine: until a pattern's first field is up, as many slices as that takes; after that
- * REFINE_SLICES a frame. The caps in milliseconds only bound how long one frame may block (raised to
- * the frame's budget, SimFrame.budget, where that is more).
+ * How the growth is spread over frames where it grows on the page (no build worker, or a frame with
+ * an Infinity budget), counted in slices of work (a lockstep round of the branches, or a few rows of
+ * the field), never in time, so the field on show after n frames does not depend on the machine:
+ * until a pattern's first field is up, as many slices as that takes; after that REFINE_SLICES a
+ * frame. The caps in milliseconds only bound how long one frame may block (raised to the frame's
+ * budget, SimFrame.budget, where that is more).
  */
 const REFINE_SLICES = 8;
 const FIRST_CAP_MS = 250;
@@ -260,7 +263,7 @@ function noise(x: number, y: number, salt: number): number {
   return a + (b - a) * ux + (c - a) * uy + (a - b - c + d) * ux * uy;
 }
 
-interface Size {
+export interface Size {
   width: number;
   height: number;
 }
@@ -362,7 +365,7 @@ class Skeleton {
   }
 }
 
-interface GrowthField {
+export interface GrowthField {
   width: number;
   height: number;
   /** rgba16f texels for uSim0 and rgba8 texels for uSim3, rows bottom to top (see the header). */
@@ -961,6 +964,21 @@ function* growFrost(
   return yield* rasterize(skeleton, size.width, size.height);
 }
 
+/** A growth asked for: the pattern, the field's texel size, and whether a quick field comes first. */
+export interface FrostRequest {
+  readonly pattern: number;
+  readonly size: Readonly<Size>;
+  readonly quick: boolean;
+}
+
+/** The growth as a build (sims/build.ts): growFrost, its quick field landing as an early result. */
+export const frostGrowth: BuildKind<FrostRequest, GrowthField> = {
+  name: "frost",
+  builder: () => ({
+    build: ({ pattern, size, quick }) => growFrost(pattern, size, quick),
+  }),
+};
+
 /**
  * Fade a trail of warmth, unless it is known to hold nothing. `empty` is the trail's version
  * (TrailField.version, which every stroke bumps) when it was last found empty, else -1; returns the
@@ -1120,9 +1138,10 @@ export function frostSim(params: readonly ParamDef[]): SimFactory {
     const detailTexture = new DataTexture(gl, { width: 1, height: 1, format: "rgba8" });
     const clockData = new Float32Array(1);
     let field: GrowthField | undefined;
-    let job: Generator<GrowthField | undefined, GrowthField, undefined> | undefined;
+    const growth = new BuildSlot(frostGrowth);
     /** The pattern and texel size the pane grows (or grew) for, as `${pattern}|${width}x${height}`. */
     let jobKey = "";
+    let jobPattern: number | undefined;
     let jobSize: Size | undefined;
     /** The pattern of the field on show: until it is the job's, the job races to its first field. */
     let shownPattern: number | undefined;
@@ -1318,29 +1337,22 @@ export function frostSim(params: readonly ParamDef[]): SimFactory {
         }
         if (grow) {
           jobKey = key;
+          jobPattern = seed;
           jobSize = size;
-          job = growFrost(seed, size, shownPattern !== seed);
+          growth.request(key, { pattern: seed, size, quick: shownPattern !== seed });
           pendingKey = "";
         }
-        if (job) {
-          // Race to this pattern's first field, then refine a few slices a frame (REFINE_SLICES).
-          // Regrown for a new shape, the same pattern grows no quick field: the old one stays up
-          // until the new one is finished.
-          const steps = job;
-          const race = shownPattern !== seed;
-          runBudgeted(
-            () => {
-              const step = steps.next();
-              if (step.value) {
-                show(step.value);
-                shownPattern = seed;
-              }
-              if (step.done) job = undefined;
-              return step.done === true || (race && step.value !== undefined);
-            },
-            Math.max(race ? FIRST_CAP_MS : SLICE_CAP_MS, frame.budget),
-            race ? Number.POSITIVE_INFINITY : REFINE_SLICES,
-          );
+        // On the build worker; on the page, race to this pattern's first field, then refine a few
+        // slices a frame (REFINE_SLICES). Regrown for a new shape, the same pattern grows no quick
+        // field: the old one stays up until the new one is finished.
+        const race = shownPattern !== seed;
+        const landed = growth.advance(
+          Math.max(race ? FIRST_CAP_MS : SLICE_CAP_MS, frame.budget),
+          race ? Number.POSITIVE_INFINITY : REFINE_SLICES,
+        );
+        if (landed) {
+          show(landed.result);
+          shownPattern = jobPattern;
         }
 
         // The growth clock: real time between frames while the scene runs (see MAX_FRAME_SECONDS),
@@ -1385,12 +1397,14 @@ export function frostSim(params: readonly ParamDef[]): SimFactory {
           field ? detailTexture.texture : undefined,
         ];
       },
+      // The pane is ready once its first field is up.
+      ready: () => field !== undefined,
       dispose() {
         growthTexture.dispose();
         meltTexture.dispose();
         clockTexture.dispose();
         detailTexture.dispose();
-        job = undefined;
+        growth.dispose();
       },
     };
   };

@@ -9,7 +9,7 @@
 // proportions (past that it reads squatter). It is the records' eye that sees it, not the camera,
 // so the M stays cut in the ground while the camera moves on its passage.
 //
-// Its site (chalkSite, once per terrain the first time the knob is on): candidates on a grid inside
+// Its site (chalkSite, once per terrain, in its build: build.ts): candidates on a grid inside
 // the default framing (within CHALK.bearing of the heading, CHALK.near..CHALK.far ahead) are weighed
 // on the plane through their footprint: steep enough (CHALK.gentlest..CHALK.steepest) and turned to
 // the eye (CHALK.facing), so the M stands as tall as it should; central and not too far; and lit at

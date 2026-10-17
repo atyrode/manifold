@@ -275,7 +275,11 @@ replay at their pinned commits).
 - **Terrain** (`src/sims/terrain.ts`, `TerrainBuilder`): a 3.2 km map at 512² texels (erosion at
   256²), deterministic per seed (its distances by `hypot2`/`hypot3`, V8's `Math.hypot` bit for bit
   in any engine: each engine rounds its own `Math.hypot` differently, which moved seed 0's river
-  and farms in Safari) and built in units a frame's budget spreads (a share of the time between
+  and farms in Safari) and built on the page's build worker (`src/sims/build.ts`), packed and its
+  land model weighed there too, its arrays handed back by transfer, so a knob change never stalls
+  the page: the last map stays up until the new one lands, a newer change drops a build in progress,
+  and the result is byte for byte the page's own (`build-worker.test.ts`, seeds 0-3). Without a
+  worker it builds on the page in units a frame's budget spreads (a share of the time between
   frames, so a software renderer builds in as few frames as a GPU). Relief: a valley axis
   laid across the view, long rolling slopes below the vantage, hills beyond, fractal and ridged
   value noise; implicit stream-power erosion over a priority-flood drainage, thermal slumping. The
@@ -301,9 +305,11 @@ replay at their pinned commits).
   grazing, hay, ploughed, rapeseed) by their ground; pastures their herd (`cattle share`: cattle on
   the low, flat, wet ground first, a change swapping only as many herds as it must); woods their
   species (`pine mix`: pine on high, steep, north-facing ground, each wood keeping its species as
-  the woods grow). A change of the uses re-runs only the allocation and re-packs the parcel records,
-  the woods' canopy and their species (a few milliseconds on SwiftShader's host, `countryTerrain`),
-  no rebuild.
+  the woods grow). A change of the uses re-runs only the allocation and re-packs the records,
+  canopy and species of the parcels it moves (`repackLand`, byte for byte the whole land's
+  packing), uploading only the rows they span, and of the parcel map only the rows whose species
+  flag changed: none for a change that moves no wood (`countryTerrain`; `country/sim.test.ts`), no
+  rebuild.
   Stable under edits (issue #1082 S1, P1): each parcel is weighed and ranked by its cell on the bare
   land (`TerrainBare`: the ground as the river and streams left it, each site at its own heading as
   though no road turned it) and by every candidate settlement site (`Terrain.candidates`, built or
@@ -442,8 +448,8 @@ replay at their pinned commits).
   overflow, ties and map distances JavaScriptCore's rounds otherwise); `countryTerrain` (the
   all-features program over the real sim: land, sky and river, deterministic per landscape; at 9216
   map points the shader finds each parcel with the land model's use and the woods only on woodland,
-  for four settings; a use change one sim frame, timed, rewriting neither the ground nor the
-  parcels; the river dry and full again);
+  for five settings; a use change one sim frame, timed, rewriting no ground, and no parcels where
+  it keeps every wood and its species (the herds alone); the river dry and full again);
   `countryBehind` (every ray that passes between the crowns, over the whole view, ends where it
   first meets the land, within 5 cm along it or 0.2% of the distance, all but one in 200; the
   single flat step it replaced lands under a third of them);

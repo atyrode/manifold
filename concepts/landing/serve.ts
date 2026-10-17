@@ -136,9 +136,10 @@ async function committed(request: Request): Promise<Response> {
     if (url.pathname === "/") return await serveFile(await built(sha), "", false);
     if (url.pathname === "/bench.html")
       return await serveFile(await built(sha), "bench.html", false);
-    // The head page is served from the root, so its worker and thumbnails load from there.
-    if (url.pathname === "/sheet-worker.js")
-      return await serveFile(await built(sha), "sheet-worker.js", false);
+    // The head page is served from the root, so its worker and thumbnails load from there (the
+    // build worker; a head before it loads the sheet worker).
+    if (url.pathname === "/build-worker.js" || url.pathname === "/sheet-worker.js")
+      return await serveFile(await built(sha), url.pathname.slice(1), false);
     if (/^\/thumbs\/[a-z]+\.webp$/.test(url.pathname))
       return await serveFile(await built(sha), url.pathname.slice(1), false);
     return new Response("not found", { status: 404 });
@@ -156,9 +157,9 @@ const server = args.includes("--dev")
       routes: {
         "/": index,
         "/bench.html": bench,
-        "/sheet-worker.js": async () => {
+        "/build-worker.js": async () => {
           const result = await Bun.build({
-            entrypoints: [new URL("./src/sheet-worker.ts", import.meta.url).pathname],
+            entrypoints: [new URL("./src/build-worker.ts", import.meta.url).pathname],
           });
           const [output] = result.outputs;
           if (!result.success || !output)

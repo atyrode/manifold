@@ -69,6 +69,7 @@
 //          strokes), G salt, B feeding (1 in a flake's pool, 0.5 at its rim, a fringe beyond),
 //          A light (the lit sea, and everything past the dish's glass wall).
 import { KnobReader, type ParamDef } from "../../params.ts";
+import { type BuildKind, BuildSlot } from "../../sims/build.ts";
 import { FixedStep, runBudgeted } from "../../sims/clock.ts";
 import {
   GpuCompute,
@@ -83,7 +84,6 @@ import { DataTexture } from "../../sims/texture.ts";
 import type { PointerState, SceneSim, SimFactory, SimFrame } from "../types.ts";
 import { Film, picture, seedAgents, stampDistance, stampSketch } from "./draw.ts";
 import {
-  type CityMap,
   cityMap,
   FEED_SCALE,
   FoodBook,
@@ -93,8 +93,16 @@ import {
   seaAt,
   seaCover,
 } from "./food.ts";
-import { AGENT_UNIT, Grid, LIFE, PHYSARUM_MAX_FOOD, REFERENCE_AGENTS, TAU } from "./grid.ts";
-import { FlowNetwork } from "./network.ts";
+import {
+  AGENT_UNIT,
+  Grid,
+  LIFE,
+  PHYSARUM_MAX_FOOD,
+  PhysarumError,
+  REFERENCE_AGENTS,
+  TAU,
+} from "./grid.ts";
+import { FlowNetwork, type FlowNetworkState } from "./network.ts";
 import {
   DEPOSIT,
   DIFFUSE,
@@ -318,6 +326,73 @@ function settledNetwork(
   return network;
 }
 
+/** A dish to lay: its layout and seed, the frame aspect, the M laid at once, the specks' count. */
+export interface PhysarumDishRequest {
+  readonly layout: Layout;
+  readonly seed: number;
+  readonly aspect: number;
+  readonly mark: number | undefined;
+  /** The specks to seed over the network (the live mould); undefined for the still sketch. */
+  readonly agents: number | undefined;
+}
+
+/** A fresh dish's CPU work, for the dish's own grid (new Grid(aspect)). */
+export interface PhysarumDish {
+  /** The lit sea at half resolution (seaCover). */
+  readonly cover: Float32Array;
+  /** The flow network settled under the dish's food. */
+  readonly network: FlowNetworkState;
+  /** The network and the flakes drawn as the sketch (stampSketch), and the veins' distances. */
+  readonly sketch: Float32Array;
+  readonly dist: Float32Array;
+  /** The specks seeded along it and the trail level they keep up (the live mould only). */
+  readonly specks: { readonly data: Float32Array; readonly level: number } | undefined;
+  /** The film and the lace under it (Film.adopt), the live mould only. */
+  readonly film: { readonly data: Float32Array; readonly lace: Float32Array } | undefined;
+}
+
+/**
+ * Laying a fresh dish as a build (sims/build.ts): the food, the settled network, the sketch, the
+ * distances, and for the live mould the specks and the film. The page lays the same food again
+ * (FoodBook.reset is cheap and the same for the same dish) and takes the rest.
+ */
+export const physarumDish: BuildKind<PhysarumDishRequest, PhysarumDish> = {
+  name: "physarum",
+  builder: () => ({
+    *build({ layout, seed, aspect, mark, agents }) {
+      const grid = new Grid(aspect);
+      const map = layout === "cities" ? cityMap(aspect) : undefined;
+      const cover = seaCover(map, grid);
+      const sea: SeaSampler = (u, v) => seaAt(cover, grid, u, v);
+      const food = new FoodBook();
+      food.reset(layout, seed, aspect, map, sea, mark);
+      const seeds = dishSeeds(seed);
+      yield undefined;
+      const network = settledNetwork(food, aspect, sea, mark === undefined, seeds.network);
+      yield undefined;
+      const flakes = food.sketchNodes(grid);
+      const pic = picture(network, grid);
+      const sketch = stampSketch(pic, flakes, grid);
+      const dist = stampDistance(pic, flakes, grid);
+      if (agents === undefined)
+        return { cover, network: network.state, sketch, dist, specks: undefined, film: undefined };
+      yield undefined;
+      const specks = seedAgents(agentShape(agents), pic, flakes, grid, seeds.rand);
+      yield undefined;
+      const field = new Film();
+      const data = field.draw(pic, grid);
+      return {
+        cover,
+        network: network.state,
+        sketch,
+        dist,
+        specks,
+        film: { data, lace: field.lace },
+      };
+    },
+  }),
+};
+
 // ---- clocks -----------------------------------------------------------------------------------
 
 /**
@@ -412,12 +487,16 @@ class PhysarumSim implements SceneSim {
   readonly #sums: RenderTarget;
   readonly #level: PingPong;
   #seaCover: Float32Array;
-  /** The flow network (laid out at the first frame's reset), and the film drawn from it. */
+  /** The flow network (laid out once the first dish has landed), and the film drawn from it. */
   #network: FlowNetwork | undefined = undefined;
   readonly #filmField = new Film();
   /** Sim seconds until the film is next redrawn. */
   #filmDue = 0;
+  /** Laying a fresh dish, on the build worker (sims/build.ts), and what it was asked for. */
+  readonly #dish = new BuildSlot(physarumDish);
+  #asked: PhysarumDishRequest | undefined;
 
+  /** The layout and seed of the dish asked for last (on show once it has landed). */
   #layout: Layout | undefined = undefined;
   #seed = 0;
   #layoutAspect = 1;
@@ -518,9 +597,11 @@ class PhysarumSim implements SceneSim {
     if (fired[this.#markSlot] === true) this.#markUntil = frame.time + MARK_HOLD;
     const mark = settings.mark ?? (frame.time < this.#markUntil ? settings.markNow : undefined);
 
-    if (settings.layout !== this.#layout || settings.seed !== this.#seed) {
-      this.#reset(settings, grid, frame.aspect, mark);
-    } else {
+    // A new layout or seed asks for a fresh dish at once, a resize that changed the frame's shape
+    // once it has rested RELAYOUT_FRAMES; the dish on show goes on until the fresh one lands.
+    const fresh = settings.layout !== this.#layout || settings.seed !== this.#seed;
+    if (fresh) this.#ask(settings, frame.aspect, mark);
+    else {
       if (!grid.same(this.#grid)) {
         this.#stretch(grid);
         if (Math.abs(frame.aspect / this.#layoutAspect - 1) > RELAYOUT)
@@ -528,11 +609,16 @@ class PhysarumSim implements SceneSim {
       }
       if (this.#resetIn > 0) {
         this.#resetIn -= 1;
-        if (this.#resetIn === 0) this.#reset(settings, grid, frame.aspect, mark);
+        if (this.#resetIn === 0) this.#ask(settings, frame.aspect, mark);
       }
+    }
+    const landed = this.#dish.advance(frame.budget);
+    if (landed && this.#asked) this.#reset(landed.result, this.#asked, settings);
+    else if (!fresh) {
       if (settings.agents !== this.#agentCount) this.#reseedAgents(settings.agents);
       this.#holdMark(mark);
     }
+    if (this.#network === undefined) return this.#textures(this.#growth.advance(frame, false));
     if (fired[this.#feedSlot] === true) this.#food.constellation();
     this.#touch(frame.pointer, frame.aspect, settings.salt);
     if (this.#warmed < PREWARM_STEPS) {
@@ -581,43 +667,60 @@ class PhysarumSim implements SceneSim {
   }
 
   dispose(): void {
+    this.#dish.dispose();
     this.#gpu.dispose();
     this.#foodTexture.dispose();
   }
 
-  /** A fresh dish: lay the food, settle its network, draw it as trail and seed the specks along it. */
-  #reset(settings: Settings, grid: Grid, aspect: number, mark: number | undefined): void {
+  /** The sim shows its first dish once it has landed (the build worker lays it). */
+  ready(): boolean {
+    return this.#network !== undefined;
+  }
+
+  /** Ask for a fresh dish for these settings (physarumDish); a newer ask supersedes it. */
+  #ask(settings: Settings, aspect: number, mark: number | undefined): void {
     this.#layout = settings.layout;
     this.#seed = settings.seed;
     this.#layoutAspect = aspect;
     this.#resetIn = 0;
+    const asked = {
+      layout: settings.layout,
+      seed: settings.seed,
+      aspect,
+      mark,
+      agents: settings.agents,
+    };
+    this.#asked = asked;
+    this.#dish.request(JSON.stringify(asked), asked);
+  }
+
+  /** A fresh dish landed: lay its food, take its network, its trail and specks, its film and distances. */
+  #reset(dish: PhysarumDish, asked: PhysarumDishRequest, settings: Settings): void {
+    const { layout, seed, aspect, mark } = asked;
+    const grid = new Grid(aspect);
+    this.#layoutAspect = aspect;
+    this.#resetIn = 0;
     this.#resize(grid, false);
-    const map = settings.layout === "cities" ? cityMap(aspect) : undefined;
-    this.#rasteriseSea(map);
-    this.#food.reset(settings.layout, settings.seed, aspect, map, this.#seaAt, mark);
+    this.#seedSea(dish.cover);
+    const map = layout === "cities" ? cityMap(aspect) : undefined;
+    this.#food.reset(layout, seed, aspect, map, this.#seaAt, mark);
     this.#markLast = mark;
     this.#markHeld = 0;
-    this.#replaceAgents(settings.agents);
+    const { specks, film } = dish;
+    if (asked.agents === undefined || !specks || !film)
+      throw new PhysarumError("physarum: a live dish came without its specks");
+    this.#replaceAgents(asked.agents);
 
-    const seeds = dishSeeds(settings.seed);
-    const network = settledNetwork(
-      this.#food,
-      aspect,
-      this.#seaAt,
-      mark === undefined,
-      seeds.network,
-    );
+    const network = new FlowNetwork(dish.network, (u, v) => this.#seaAt(u, v) > SEA_SHUT);
     this.#network = network;
-    const flakes = this.#food.sketchNodes(grid);
-    const pic = picture(network, grid);
-    const trail = stampSketch(pic, flakes, grid);
-    const agents = seedAgents(this.#agents, pic, flakes, grid, seeds.rand);
-    this.#agents.seed(agents.data);
-    for (let i = 0; i < trail.length; i++) trail[i] = (trail[i] ?? 0) * agents.level;
+    this.#agents.seed(specks.data);
+    const trail = dish.sketch;
+    for (let i = 0; i < trail.length; i++) trail[i] = (trail[i] ?? 0) * specks.level;
     this.#trail.seed(trail);
-    this.#film.seed(this.#filmField.draw(pic, grid));
+    this.#filmField.adopt(network, film.lace, film.data);
+    this.#film.seed(film.data);
     this.#filmDue = FILM_EVERY;
-    this.#dist.seed(stampDistance(pic, flakes, grid));
+    this.#dist.seed(dish.dist);
     this.#salt.clear(0);
     this.#saltLeft = 0;
     this.#steps.reset();
@@ -681,12 +784,12 @@ class PhysarumSim implements SceneSim {
   /** A resize: every field stretched over the new grid (specks, flakes and the network keep their places). */
   #stretch(grid: Grid): void {
     this.#resize(grid, true);
-    this.#rasteriseSea(this.#food.map);
+    this.#seedSea(seaCover(this.#food.map, this.#grid));
     this.#drawFilm();
   }
 
-  #rasteriseSea(map: CityMap | undefined): void {
-    const cover = seaCover(map, this.#grid);
+  /** The lit sea over the grid (seaCover) as the sim's own and as the shader's texture. */
+  #seedSea(cover: Float32Array): void {
     this.#seaCover = cover;
     const bytes = new Uint8Array(cover.length);
     for (let i = 0; i < cover.length; i++) bytes[i] = Math.round(clamp(cover[i] ?? 0, 0, 1) * 255);
@@ -897,7 +1000,8 @@ class PhysarumSim implements SceneSim {
 
 /**
  * Without float render targets: the settled network drawn as the sketch, still, with its
- * streaming. Knob changes (layout, dish, the M, the frame) lay it out afresh.
+ * streaming. Knob changes (layout, dish, the M, the frame) lay it out afresh (physarumDish, on the
+ * build worker; the dish on show stays up until the fresh one lands).
  */
 class PhysarumStill implements SceneSim {
   readonly #knobs: KnobReader<PhysarumKnob>;
@@ -909,6 +1013,9 @@ class PhysarumStill implements SceneSim {
   readonly #view: DataTexture;
   readonly #dist: DataTexture;
   readonly #env: DataTexture;
+  readonly #dish = new BuildSlot(physarumDish);
+  #asked: PhysarumDishRequest | undefined;
+  #shown = false;
   #frameAspect = 0;
   #grid = new Grid(16 / 9);
   #layout: Layout | undefined = undefined;
@@ -944,41 +1051,48 @@ class PhysarumStill implements SceneSim {
       grid.width !== this.#width ||
       grid.height !== this.#height
     ) {
-      this.#build(settings, grid, frame.aspect);
+      this.#layout = settings.layout;
+      this.#seed = settings.seed;
+      this.#mark = settings.mark;
+      this.#width = grid.width;
+      this.#height = grid.height;
+      const asked = {
+        layout: settings.layout,
+        seed: settings.seed,
+        aspect: frame.aspect,
+        mark: settings.mark,
+        agents: undefined,
+      };
+      this.#asked = asked;
+      this.#dish.request(JSON.stringify(asked), asked);
     }
+    const landed = this.#dish.advance(frame.budget);
+    if (landed && this.#asked) this.#lay(landed.result, this.#asked);
     this.#pulse.advance(Math.max(0, frame.dt) * clamp(frame.motion, 0, 1) * settings.tempo);
     this.#food.writeTexture(this.#foodData, this.#pulse.phase, this.#growth.advance(frame, true));
     this.#foodTexture.upload(this.#foodData);
     return [this.#view.texture, this.#dist.texture, this.#foodTexture.texture, this.#env.texture];
   }
 
+  /** The sketch shows once the first dish has landed. */
+  ready(): boolean {
+    return this.#shown;
+  }
+
   dispose(): void {
+    this.#dish.dispose();
     this.#foodTexture.dispose();
     this.#view.dispose();
     this.#dist.dispose();
     this.#env.dispose();
   }
 
-  #build(settings: Settings, grid: Grid, aspect: number): void {
-    this.#layout = settings.layout;
-    this.#seed = settings.seed;
-    this.#mark = settings.mark;
-    this.#width = grid.width;
-    this.#height = grid.height;
-    const map = settings.layout === "cities" ? cityMap(aspect) : undefined;
-    const cover = seaCover(map, grid);
-    const sea: SeaSampler = (u, v) => seaAt(cover, grid, u, v);
-    this.#food.reset(settings.layout, settings.seed, aspect, map, sea, settings.mark);
-    const network = settledNetwork(
-      this.#food,
-      aspect,
-      sea,
-      settings.mark === undefined,
-      dishSeeds(settings.seed).network,
-    );
-    const flakes = this.#food.sketchNodes(grid);
-    const pic = picture(network, grid);
-    const sketch = stampSketch(pic, flakes, grid);
+  /** A landed dish as the sketch: its food laid, its sketch toned, its sea and distances uploaded. */
+  #lay(dish: PhysarumDish, { layout, seed, aspect, mark }: PhysarumDishRequest): void {
+    const grid = new Grid(aspect);
+    const { cover, sketch } = dish;
+    const map = layout === "cities" ? cityMap(aspect) : undefined;
+    this.#food.reset(layout, seed, aspect, map, (u, v) => seaAt(cover, grid, u, v), mark);
     const measured = sketchLevel(sketch);
     const view = new Float32Array(sketch.length * 2);
     const bare = tone(0, measured.share);
@@ -989,16 +1103,17 @@ class PhysarumStill implements SceneSim {
       view[2 * i + 1] = v;
     }
     // Under an M the lights over the sea are out, as in the live dish.
-    const light = settings.mark === undefined ? 255 : 0;
+    const light = mark === undefined ? 255 : 0;
     const env = new Uint8Array(cover.length * 4);
     for (let i = 0; i < cover.length; i++)
       env[4 * i + 3] = Math.round(clamp(cover[i] ?? 0, 0, 1) * light);
     this.#view.resize(grid.width, grid.height);
     this.#view.upload(view);
     this.#dist.resize(grid.envWidth, grid.envHeight);
-    this.#dist.upload(stampDistance(pic, flakes, grid));
+    this.#dist.upload(dish.dist);
     this.#env.resize(grid.envWidth, grid.envHeight);
     this.#env.upload(env);
+    this.#shown = true;
   }
 }
 

@@ -20,7 +20,7 @@
 // step. One Jacobi-preconditioned conjugate-gradient solve a step; a few dozen big steps settle the
 // opening network from the mesh, as the live mould would over a minute or two.
 import { hash31, smoothstep } from "../../sims/math.ts";
-import { mulberry32 } from "../../sims/random.ts";
+import { Random } from "../../sims/random.ts";
 import { dishRadius, item, PhysarumError, TAU } from "./grid.ts";
 
 /** Junction spacing in open agar (heights), the share of it by the dish's wall, and the longest tube (heights). */
@@ -208,6 +208,38 @@ export interface NetworkFood {
 export type Lit = (u: number, v: number) => boolean;
 
 /**
+ * A flow network's whole state between steps (FlowNetwork.state), plain values and typed arrays:
+ * what the build worker hands the page (sims/build.ts).
+ */
+export interface FlowNetworkState {
+  readonly aspect: number;
+  readonly xs: Float64Array;
+  readonly ys: Float64Array;
+  readonly meshNodes: number;
+  readonly ea: Int32Array;
+  readonly eb: Int32Array;
+  readonly length: Float64Array;
+  readonly conductivity: Float64Array;
+  readonly flow: Float64Array;
+  readonly lace: Float32Array;
+  readonly meshTubes: number;
+  readonly lit: Uint8Array;
+  readonly lightOn: boolean;
+  readonly slotId: Int32Array;
+  readonly weight: Float64Array;
+  readonly heartSlot: number;
+  readonly cells: number[][];
+  readonly cols: number;
+  readonly rows: number;
+  readonly component: Int32Array;
+  readonly topologyDirty: boolean;
+  /** The flow's random draws, where they stand (Random.state). */
+  readonly rand: number;
+  readonly stepDebt: number;
+  readonly pressure: Float64Array;
+}
+
+/**
  * The tube network over the dish of one frame aspect. Junctions and tubes keep fixed indices: the
  * mesh's first, then each food slot's junction and its FOOD_SPOKES spokes (an unused spoke has no
  * length and carries nothing).
@@ -237,8 +269,8 @@ export class FlowNetwork {
   readonly #lit: Uint8Array;
   #lightOn = true;
   /** Per food slot: the food's id (-1 free) and its presence. */
-  readonly #slotId = new Int32Array(FOOD_SLOTS).fill(-1);
-  readonly #weight = new Float64Array(FOOD_SLOTS);
+  readonly #slotId: Int32Array = new Int32Array(FOOD_SLOTS).fill(-1);
+  readonly #weight: Float64Array = new Float64Array(FOOD_SLOTS);
   #heartSlot = -1;
   /** Mesh junctions by place (cells SPOKE_REACH heights wide), for a food source's spokes. */
   readonly #cells: number[][];
@@ -247,7 +279,7 @@ export class FlowNetwork {
   /** Per junction: its component over the open tubes (the component's first junction, its ground). */
   readonly #component: Int32Array;
   #topologyDirty = true;
-  readonly #rand: () => number;
+  readonly #rand: Random;
   #stepDebt = 0;
   /** The solver's pressures (the next solve's start), tube conductances D / L (0 while shut), junction diagonal, CG vectors. */
   readonly #pressure: Float64Array;
@@ -262,12 +294,52 @@ export class FlowNetwork {
   /**
    * A fresh mesh over the dish of a frame of this aspect: junctions dart-thrown at least a spacing
    * apart (WEB_FINE of it toward the wall, where the mould's fans advance), joined by Delaunay; the
-   * tubes over the lit sea marked. `seed` fixes the mesh, the lace and the flow's random draws.
+   * tubes over the lit sea marked. `seed` fixes the mesh, the lace and the flow's random draws. Or
+   * a network as it stood (`state`, on its own arrays), going on exactly as it would have.
    */
-  constructor(aspect: number, lit: Lit, seed: number) {
-    this.aspect = aspect;
+  constructor(aspect: number, lit: Lit, seed: number);
+  constructor(state: FlowNetworkState, lit: Lit);
+  constructor(from: number | FlowNetworkState, lit: Lit, seed = 0) {
     this.#sea = lit;
-    const rand = mulberry32(seed);
+    if (typeof from !== "number") {
+      this.aspect = from.aspect;
+      this.xs = from.xs;
+      this.ys = from.ys;
+      this.meshNodes = from.meshNodes;
+      this.nodes = from.meshNodes + FOOD_SLOTS;
+      this.ea = from.ea;
+      this.eb = from.eb;
+      this.length = from.length;
+      this.conductivity = from.conductivity;
+      this.flow = from.flow;
+      this.lace = from.lace;
+      this.meshTubes = from.meshTubes;
+      this.tubes = from.meshTubes + FOOD_SLOTS * FOOD_SPOKES;
+      this.#lit = from.lit;
+      this.#lightOn = from.lightOn;
+      this.#slotId = from.slotId;
+      this.#weight = from.weight;
+      this.#heartSlot = from.heartSlot;
+      this.#cells = from.cells;
+      this.#cols = from.cols;
+      this.#rows = from.rows;
+      this.#component = from.component;
+      this.#topologyDirty = from.topologyDirty;
+      this.#rand = new Random(from.rand);
+      this.#stepDebt = from.stepDebt;
+      this.#pressure = from.pressure;
+      this.#c = new Float64Array(this.tubes);
+      this.#diag = new Float64Array(this.nodes);
+      this.#rhs = new Float64Array(this.nodes);
+      this.#r = new Float64Array(this.nodes);
+      this.#z = new Float64Array(this.nodes);
+      this.#p = new Float64Array(this.nodes);
+      this.#ap = new Float64Array(this.nodes);
+      return;
+    }
+    const aspect = from;
+    this.aspect = aspect;
+    const rand = new Random(seed);
     this.#rand = rand;
     // The scatter, in heights.
     const dish = dishRadius(aspect) - 0.008;
@@ -278,8 +350,8 @@ export class FlowNetwork {
     const hx: number[] = [];
     const hy: number[] = [];
     for (let dart = 0; dart < WEB_DARTS; dart++) {
-      const a = rand() * TAU;
-      const r = dish * Math.sqrt(rand());
+      const a = rand.next() * TAU;
+      const r = dish * Math.sqrt(rand.next());
       const x = cx + Math.cos(a) * r;
       const y = 0.5 + Math.sin(a) * r;
       if (x < 0 || x > aspect || y < 0 || y > 1) continue;
@@ -348,8 +420,8 @@ export class FlowNetwork {
       const patch =
         patchNoise(mx, my, 0.3, noiseSeed) * 0.6 + patchNoise(mx, my, 0.11, noiseSeed + 5) * 0.4;
       const keep = LACE_KEEP + 0.35 * smoothstep(0.3, 0.7, patch);
-      const level = LACE_LEVEL * (0.75 + 0.5 * rand()) * (0.6 + 0.6 * patch);
-      if (rand() <= keep) this.lace[e] = Math.min(LACE_MAX, level);
+      const level = LACE_LEVEL * (0.75 + 0.5 * rand.next()) * (0.6 + 0.6 * patch);
+      if (rand.next() <= keep) this.lace[e] = Math.min(LACE_MAX, level);
     }
     for (let s = 0; s < FOOD_SLOTS; s++) {
       for (let k = 0; k < FOOD_SPOKES; k++) {
@@ -375,6 +447,36 @@ export class FlowNetwork {
     this.#z = new Float64Array(this.nodes);
     this.#p = new Float64Array(this.nodes);
     this.#ap = new Float64Array(this.nodes);
+  }
+
+  /** The network between steps, as its own arrays (not copies): `new FlowNetwork(state, lit)` goes on from it. */
+  get state(): FlowNetworkState {
+    return {
+      aspect: this.aspect,
+      xs: this.xs,
+      ys: this.ys,
+      meshNodes: this.meshNodes,
+      ea: this.ea,
+      eb: this.eb,
+      length: this.length,
+      conductivity: this.conductivity,
+      flow: this.flow,
+      lace: this.lace,
+      meshTubes: this.meshTubes,
+      lit: this.#lit,
+      lightOn: this.#lightOn,
+      slotId: this.#slotId,
+      weight: this.#weight,
+      heartSlot: this.#heartSlot,
+      cells: this.#cells,
+      cols: this.#cols,
+      rows: this.#rows,
+      component: this.#component,
+      topologyDirty: this.#topologyDirty,
+      rand: this.#rand.state,
+      stepDebt: this.#stepDebt,
+      pressure: this.#pressure,
+    };
   }
 
   /** Distance between two junctions in heights. */
@@ -524,7 +626,7 @@ export class FlowNetwork {
   grow(): void {
     for (let e = 0; e < this.tubes; e++) {
       if ((this.length[e] ?? 0) <= 0) continue;
-      this.conductivity[e] = 0.5 + 0.5 * this.#rand();
+      this.conductivity[e] = 0.5 + 0.5 * this.#rand.next();
       this.flow[e] = 0;
     }
     for (let i = 0; i < GROW_STEPS; i++) this.#step(GROW_RATE);
@@ -550,7 +652,7 @@ export class FlowNetwork {
     const live: number[] = [];
     for (let s = 0; s < FOOD_SLOTS; s++) if ((this.#weight[s] ?? 0) > 0) live.push(s);
     for (let i = live.length - 1; i > 0; i--) {
-      const j = Math.floor(this.#rand() * (i + 1));
+      const j = Math.floor(this.#rand.next() * (i + 1));
       const swap = live[i] ?? 0;
       live[i] = live[j] ?? 0;
       live[j] = swap;

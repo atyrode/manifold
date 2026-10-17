@@ -51,8 +51,9 @@
 // may take is under the pine mix, so the woods' species stand fast as the woods grow.
 //
 // Cost (size 512, ~800 parcels; a laptop's V8): the model ~45 ms once per terrain; allocate ~0.05
-// ms; packLand a few ms (the woods' canopy texel by texel). Deterministic for the terrain, the seed
-// and the options.
+// ms; packLand a few ms (the woods' canopy texel by texel), repackLand only the parcels a new
+// allocation moves (landTexels, once per terrain, lists each parcel's texels). Deterministic for the
+// terrain, the seed and the options; LandModel's arrays hand over to the page as `data` (a worker).
 import type { Terrain, TerrainPacked } from "./terrain.ts";
 import { TERRAIN_RECORDS } from "./terrain.ts";
 import { clamp, hash31, hypot2, smoothstep } from "./math.ts";
@@ -141,6 +142,19 @@ function gumbel(rank: number): number {
   return -Math.log(-Math.log(clamp(rank, 1e-6, 1 - 1e-6)));
 }
 
+/**
+ * A land model's state as plain arrays: what the build worker hands the page (sims/build.ts) and
+ * `new LandModel(data)` takes back.
+ */
+export interface LandModelData {
+  readonly count: number;
+  readonly area: Float32Array;
+  readonly score: Float32Array;
+  readonly crop: Uint8Array;
+  readonly cattle: Float32Array;
+  readonly pine: Float32Array;
+}
+
 /** The land model of one terrain: each parcel's suitability for each use, ready to allocate. */
 export class LandModel {
   /** Parcels (TerrainParcels.count). */
@@ -155,18 +169,42 @@ export class LandModel {
   /** Per parcel: its pine rank among the parcels woodland may take, 0 the most pine-like. */
   readonly #pine: Float32Array;
 
-  constructor(terrain: Terrain, seed: number) {
+  /** Weigh every parcel of a terrain (see the header), or take a model weighed already (`data`). */
+  constructor(terrain: Terrain, seed: number);
+  constructor(data: LandModelData);
+  constructor(source: Terrain | LandModelData, seed = 0) {
+    const data = "parcels" in source ? LandModel.#weigh(source, seed) : source;
+    this.count = data.count;
+    this.area = data.area;
+    this.#score = data.score;
+    this.#crop = data.crop;
+    this.#cattle = data.cattle;
+    this.#pine = data.pine;
+  }
+
+  /** The model's own arrays (not copies), as `new LandModel(data)` takes them. */
+  get data(): LandModelData {
+    return {
+      count: this.count,
+      area: this.area,
+      score: this.#score,
+      crop: this.#crop,
+      cattle: this.#cattle,
+      pine: this.#pine,
+    };
+  }
+
+  static #weigh(terrain: Terrain, seed: number): LandModelData {
     const t = terrain;
     const p = t.parcels;
     const count = p.count;
     const m = t.size;
     const cell2 = t.cell * t.cell;
-    this.count = count;
-    this.area = new Float32Array(count);
-    this.#score = new Float32Array(count * USES);
-    this.#crop = new Uint8Array(count);
-    this.#cattle = new Float32Array(count);
-    this.#pine = new Float32Array(count);
+    const area = new Float32Array(count);
+    const score = new Float32Array(count * USES);
+    const crop = new Uint8Array(count);
+    const cattle = new Float32Array(count);
+    const pine = new Float32Array(count);
     // Per parcel over its cell on the bare land (TerrainBare), dry there: slope, height, the slope
     // toward the sun, the nearest stream, and how far the roads as laid are. Its clear ground as
     // drawn (its own texels, dry, off the roads and yards) is only what its use's area counts.
@@ -226,7 +264,7 @@ export class LandModel {
     const access = new Float64Array(count);
     const eligible = new Uint8Array(count * USES);
     for (let s = 0; s < count; s++) {
-      this.area[s] = (clear[s] ?? 0) * cell2;
+      area[s] = (clear[s] ?? 0) * cell2;
       const n = texels[s] ?? 0;
       if (n === 0) continue;
       const x = p.x[s] ?? 0;
@@ -293,10 +331,10 @@ export class LandModel {
                   : roll < 0.9
                     ? 4
                     : 5;
-      this.#crop[s] = kind;
-      this.#cattle[s] =
+      crop[s] = kind;
+      cattle[s] =
         0.4 * riverside + 0.3 * flat + 0.3 * (1 - height) + 0.3 * hash31(ix, iz, seed * 7919 + 29);
-      this.#pine[s] =
+      pine[s] =
         0.35 * height +
         0.25 * smoothstep(0.1, 0.4, grade) +
         0.2 * (1 - sunny) +
@@ -337,16 +375,16 @@ export class LandModel {
         const f = k1 > k0 ? (weight - k0) / (k1 - k0) : 0;
         return (ranks[lo] ?? 0) + f * ((ranks[hi] ?? 0) - (ranks[lo] ?? 0));
       };
-      for (let s = 0; s < count; s++) this.#score[s * USES + u] = -Infinity;
+      for (let s = 0; s < count; s++) score[s * USES + u] = -Infinity;
       taken.forEach((s, k) => {
         const lean = (ROAD_LEAN[u] ?? 0) * (access[s] ?? 0);
         const rank = lean === 0 ? (ranks[k] ?? 0) : rankAt((knots[k] ?? 0) + lean);
-        this.#score[s * USES + u] = gumbel(rank);
+        score[s * USES + u] = gumbel(rank);
       });
     }
     // Pine ranks over the parcels woodland may take.
-    const woods = order.filter((s) => Number.isFinite(this.#score[s * USES + WOODLAND - 1] ?? 0));
-    woods.sort((a, b) => (this.#pine[b] ?? 0) - (this.#pine[a] ?? 0) || a - b);
+    const woods = order.filter((s) => Number.isFinite(score[s * USES + WOODLAND - 1] ?? 0));
+    woods.sort((a, b) => (pine[b] ?? 0) - (pine[a] ?? 0) || a - b);
     let wholeWood = 0;
     for (const s of woods) wholeWood += texels[s] ?? 0;
     let pineBelow = 0;
@@ -355,7 +393,8 @@ export class LandModel {
       pineRank[s] = (pineBelow + 0.5 * (texels[s] ?? 0)) / Math.max(wholeWood, 1);
       pineBelow += texels[s] ?? 0;
     }
-    this.#pine.set(pineRank);
+    pine.set(pineRank);
+    return { count, area, score, crop, cattle, pine };
   }
 
   /** Every parcel's use and attribute for these options (see the header). */
@@ -412,26 +451,27 @@ function enclosed(use: number): boolean {
 }
 
 /**
- * Write a land allocation into a packed terrain (terrain.ts packTerrain): each parcel site's use and
- * attribute (TERRAIN_RECORDS sites), and texel by texel the woods' canopy (cover z: 0..1 inside
- * woodland parcels, pulled in from their edges on poor ground by up to some 18 m, so a wood's edge
- * is as ragged as its suitability, clear of water, streams, roads and yards), the woods' species
- * (LAND_PINE_FLAG in the parcels' map where the wood the texel's canopy belongs to is pine: its own
- * parcel's, else the next parcel's, the wood a texel just outside it is filtered from) and which
- * lone trees stand (cover w -1: a hedgerow tree only where its hedge stands, between two parcels of
- * which at least one is farmed, and outside the woods; none while woodland has no share). Rewrites
- * only those; packing the terrain again is not needed. The species stays out of the canopy, which
- * the shader samples filtered: a signed canopy fell through 0 between a pine wood and a broadleaf
- * one, leaving a treeless strip along their border.
+ * The parcel across a lone tree's hedge from texel q of parcel `id`: the next texel's to the right,
+ * else the one above's, where it differs; else `id` itself.
  */
-export function packLand(packed: TerrainPacked, t: Terrain, land: LandAllocation): void {
+function hedgeAcross(ids: Uint16Array, m: number, q: number, id: number): number {
+  const right = ids[2 * (q + 1)] ?? 0;
+  if ((q % m) + 1 < m && right !== id) return right;
+  const above = ids[2 * (q + m)] ?? 0;
+  return q + m < m * m && above !== id ? above : id;
+}
+
+/**
+ * packLand's writes for one terrain and allocation: a site's record; a texel's canopy, tree and
+ * species, returning whether its species (the parcels' map's LAND_PINE_FLAG) changed.
+ */
+function landWriter(
+  packed: TerrainPacked,
+  t: Terrain,
+  land: LandAllocation,
+): { site(s: number): void; texel(q: number): boolean } {
   const p = t.parcels;
   const L = TERRAIN_RECORDS;
-  for (let s = 0; s < p.count; s++) {
-    const o = 4 * ((L.sites + Math.floor(s / 32)) * L.width + 2 * (s % 32)) + 4;
-    packed.records[o + 2] = land.use[s] ?? 0;
-    packed.records[o + 3] = land.attr[s] ?? 0;
-  }
   const m = t.size;
   const cos = p.angle.map(Math.cos);
   const sin = p.angle.map(Math.sin);
@@ -443,9 +483,15 @@ export function packLand(packed: TerrainPacked, t: Terrain, land: LandAllocation
     const n = sin[s] ?? 0;
     return hypot2((dx * c + dz * n) / (p.elongation[s] ?? 1), -dx * n + dz * c);
   };
-  for (let j = 0; j < m; j++) {
-    for (let i = 0; i < m; i++) {
-      const q = j * m + i;
+  return {
+    site(s) {
+      const o = 4 * ((L.sites + Math.floor(s / 32)) * L.width + 2 * (s % 32)) + 4;
+      packed.records[o + 2] = land.use[s] ?? 0;
+      packed.records[o + 3] = land.attr[s] ?? 0;
+    },
+    texel(q) {
+      const i = q % m;
+      const j = (q - i) / m;
       const o = 4 * q;
       const id = p.ids[2 * q] ?? 0;
       const other = p.ids[2 * q + 1] ?? 0;
@@ -470,23 +516,136 @@ export function packLand(packed: TerrainPacked, t: Terrain, land: LandAllocation
       packed.cover[o + 2] = canopy;
       const wood =
         use === WOODLAND ? id : other > 0 && land.use[other - 1] === WOODLAND ? other : 0;
-      const high = (packed.parcels[o + 1] ?? 0) & ~LAND_PINE_FLAG;
+      const was = packed.parcels[o + 1] ?? 0;
+      const high = was & ~LAND_PINE_FLAG;
       const pine = wood > 0 && land.attr[wood - 1] === 1;
-      packed.parcels[o + 1] = pine ? high | LAND_PINE_FLAG : high;
+      const flagged = pine ? high | LAND_PINE_FLAG : high;
+      packed.parcels[o + 1] = flagged;
       const yard = t.yard[q] ?? 0;
-      if (yard >= 0) continue;
+      if (yard >= 0) return flagged !== was;
       // A lone tree: on a hedge (its texel's parcel differs from the next one's) only while the
       // hedge stands; on the river's banks while woodland has a share.
       let stands = land.wooded && canopy < 0.5;
-      const across =
-        i + 1 < m && (p.ids[2 * (q + 1)] ?? 0) !== id
-          ? (p.ids[2 * (q + 1)] ?? 0)
-          : j + 1 < m && (p.ids[2 * (q + m)] ?? 0) !== id
-            ? (p.ids[2 * (q + m)] ?? 0)
-            : id;
+      const across = hedgeAcross(p.ids, m, q, id);
       if (across !== id)
         stands &&= enclosed(use) || (across > 0 && enclosed(land.use[across - 1] ?? 0));
       packed.cover[o + 3] = stands ? -1 : 0;
+      return flagged !== was;
+    },
+  };
+}
+
+/**
+ * Write a land allocation into a packed terrain (terrain.ts packTerrain): each parcel site's use and
+ * attribute (TERRAIN_RECORDS sites), and texel by texel the woods' canopy (cover z: 0..1 inside
+ * woodland parcels, pulled in from their edges on poor ground by up to some 18 m, so a wood's edge
+ * is as ragged as its suitability, clear of water, streams, roads and yards), the woods' species
+ * (LAND_PINE_FLAG in the parcels' map where the wood the texel's canopy belongs to is pine: its own
+ * parcel's, else the next parcel's, the wood a texel just outside it is filtered from) and which
+ * lone trees stand (cover w -1: a hedgerow tree only where its hedge stands, between two parcels of
+ * which at least one is farmed, and outside the woods; none while woodland has no share). Rewrites
+ * only those; packing the terrain again is not needed, and a later allocation of the same terrain
+ * need not rewrite it all (repackLand). The species stays out of the canopy, which the shader
+ * samples filtered: a signed canopy fell through 0 between a pine wood and a broadleaf one, leaving
+ * a treeless strip along their border.
+ */
+export function packLand(packed: TerrainPacked, t: Terrain, land: LandAllocation): void {
+  const write = landWriter(packed, t, land);
+  for (let s = 0; s < t.parcels.count; s++) write.site(s);
+  for (let q = 0; q < t.size * t.size; q++) write.texel(q);
+}
+
+/**
+ * Per parcel (index id - 1), the texels whose canopy or lone tree packLand reads its use for: those
+ * it is the nearest or second-nearest site of, and the lone trees whose hedge it lies across. Parcel
+ * s's are texels[start[s] .. start[s + 1]).
+ */
+export interface LandTexels {
+  readonly start: Int32Array;
+  readonly texels: Int32Array;
+}
+
+/** A terrain's LandTexels, once per terrain (a few milliseconds at size 512). */
+export function landTexels(t: Terrain): LandTexels {
+  const ids = t.parcels.ids;
+  const m = t.size;
+  const start = new Int32Array(t.parcels.count + 1);
+  const texels = new Int32Array(3 * m * m);
+  // Counted first, then filled from each parcel's start: `visit` per parcel a texel depends on.
+  const each = (visit: (s: number, q: number) => void): void => {
+    for (let q = 0; q < m * m; q++) {
+      const id = ids[2 * q] ?? 0;
+      const other = ids[2 * q + 1] ?? 0;
+      if (id > 0) visit(id - 1, q);
+      if (other > 0 && other !== id) visit(other - 1, q);
+      if ((t.yard[q] ?? 0) >= 0) continue;
+      const across = hedgeAcross(ids, m, q, id);
+      if (across > 0 && across !== id && across !== other) visit(across - 1, q);
+    }
+  };
+  each((s) => {
+    start[s + 1] = (start[s + 1] ?? 0) + 1;
+  });
+  for (let s = 0; s < t.parcels.count; s++) start[s + 1] = (start[s + 1] ?? 0) + (start[s] ?? 0);
+  const fill = start.slice(0, t.parcels.count);
+  each((s, q) => {
+    const at = fill[s] ?? 0;
+    texels[at] = q;
+    fill[s] = at + 1;
+  });
+  return { start, texels: texels.slice(0, start[t.parcels.count] ?? 0) };
+}
+
+/** The texel rows repackLand rewrote, first and last, per texture; undefined where none. */
+export interface LandRows {
+  /** The cover's (canopy and lone trees, TerrainPacked.cover). */
+  readonly cover: readonly [number, number] | undefined;
+  /** The parcels' map's, only where a texel's species flag (LAND_PINE_FLAG) changed. */
+  readonly parcels: readonly [number, number] | undefined;
+}
+
+/**
+ * Rewrite a packed terrain holding allocation `before` (packLand) for `land`, another allocation of
+ * the same terrain, where it differs: the records of the sites whose use or attribute changed and
+ * the texels their uses decide (`texels`, landTexels); the whole land where woodland gains or loses
+ * its share (every lone tree stands by it). The bytes are packLand's. Returns the rows rewritten:
+ * every rewritten texel's of the cover, and of the parcels' map only those whose species changed,
+ * so a change that leaves every texel's wood and its species as they were leaves the map alone.
+ */
+export function repackLand(
+  packed: TerrainPacked,
+  t: Terrain,
+  land: LandAllocation,
+  before: LandAllocation,
+  texels: LandTexels,
+): LandRows {
+  const m = t.size;
+  const write = landWriter(packed, t, land);
+  let first = m;
+  let last = -1;
+  let firstFlag = m;
+  let lastFlag = -1;
+  const texel = (q: number): void => {
+    const row = Math.floor(q / m);
+    first = Math.min(first, row);
+    last = Math.max(last, row);
+    if (!write.texel(q)) return;
+    firstFlag = Math.min(firstFlag, row);
+    lastFlag = Math.max(lastFlag, row);
+  };
+  if (land.wooded !== before.wooded) {
+    for (let s = 0; s < t.parcels.count; s++) write.site(s);
+    for (let q = 0; q < m * m; q++) texel(q);
+  } else {
+    for (let s = 0; s < t.parcels.count; s++) {
+      if (land.use[s] === before.use[s] && land.attr[s] === before.attr[s]) continue;
+      write.site(s);
+      for (let k = texels.start[s] ?? 0; k < (texels.start[s + 1] ?? 0); k++)
+        texel(texels.texels[k] ?? 0);
     }
   }
+  return {
+    cover: last < 0 ? undefined : [first, last],
+    parcels: lastFlag < 0 ? undefined : [firstFlag, lastFlag],
+  };
 }

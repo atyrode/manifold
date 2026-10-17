@@ -4,13 +4,14 @@
 // frame draws bit for bit the same twice, and another landscape draws another picture. The land is
 // drawn from the records: at sample points over the map, the parcel the shader finds carries the
 // use the land model (built again here on the CPU) gave it, and the woods stand only on woodland
-// parcels; a change of the land's uses rebuilds nothing (one sim frame, timed, writes neither the
-// ground nor the parcels' textures) and redraws the land, and the river switched off leaves its bed
+// parcels; a change of the land's uses rebuilds nothing (one sim frame, timed, writes no ground,
+// and no parcels where it keeps every wood and its species, the one thing of the parcels' texture
+// it can move: their pine flag) and redraws the land, and the river switched off leaves its bed
 // dry (writing no parcels either). Sizes are small: software WebGL runs every line of the march.
 // The helpers (a program, the real sim's textures, a frame drawn with them) serve the
 // countryside's other checks too (life.verify.ts).
 import { fragmentSourceFor, sceneFeaturesAll, vertexSource } from "../../shaders/index.ts";
-import { LandModel, LAND_USES } from "../../sims/landuse.ts";
+import { type LandAllocation, LandModel, LAND_USES } from "../../sims/landuse.ts";
 import { generateTerrain } from "../../sims/terrain.ts";
 import { defaultsFor, paramDefaults, renderSettings } from "../../state.ts";
 import type { SceneSim, SimFrame } from "../types.ts";
@@ -305,26 +306,14 @@ export function verifyCountryTerrain(gl: WebGL2RenderingContext): Record<string,
         wooded: WOODED,
         felled: { woodland: 0 },
         mixed: MIXED,
+        // The herds alone: no wood and no wood's species moves.
+        herds: { ...MIXED, cows: 0.9 },
       };
-      const result: Record<string, unknown> = { buildFrames: first.frames, sky, land, water };
-      const pictures = new Map<string, string>();
-      for (const [name, knobs] of Object.entries(settings)) {
-        // One sim frame, timed. A rebuild would write the ground (uSim0); the parcels (uSim2) carry
-        // the pine woods' flag, so a change of uses may rewrite them along with uSim1 and uSim3.
-        let ms = 0;
-        const written = writtenDuring(gl, built.textures, () => {
-          ms = built.step(knobs);
-        });
-        check(
-          !written.includes(0),
-          `${name}: a change of the land's uses rebuilt the land (it wrote uSim${written.join(", uSim")})`,
-        );
-        const picture = countryDraw(gl, program, built, knobs);
-        pictures.set(name, fnv(picture));
+      const allocationFor = (knobs: Record<string, number>): LandAllocation => {
         const values = { ...paramDefaults("country"), ...knobs };
         const share = (key: string) =>
           (values[key] ?? 0) > 0.5 ? (values[`${key}-amount`] ?? 0) : 0;
-        const allocation = model.allocate({
+        return model.allocate({
           shares: {
             crops: share("crops"),
             wildflowers: share("wildflowers"),
@@ -336,6 +325,41 @@ export function verifyCountryTerrain(gl: WebGL2RenderingContext): Record<string,
           pines: share("woodland") > 0 ? (values.pines ?? 0) : 0,
           cows: values.cows ?? 0,
         });
+      };
+      // Per parcel its wood: 0 none, 1 broadleaf, 2 pine. The parcels' species flags (uSim2) read
+      // nothing else of the land's uses.
+      const woodland = LAND_USES.indexOf("woodland");
+      const woodsOf = (allocation: LandAllocation): Uint8Array =>
+        allocation.use.map((use, s) => (use === woodland ? 1 + (allocation.attr[s] ?? 0) : 0));
+      let woods = woodsOf(allocationFor({}));
+      const kept: string[] = [];
+      const result: Record<string, unknown> = { buildFrames: first.frames, sky, land, water };
+      const pictures = new Map<string, string>();
+      for (const [name, knobs] of Object.entries(settings)) {
+        const allocation = allocationFor(knobs);
+        const next = woodsOf(allocation);
+        const same = next.every((wood, s) => wood === woods[s]);
+        woods = next;
+        // One sim frame, timed. A rebuild would write the ground (uSim0). The parcels (uSim2) carry
+        // the pine woods' flag: a change that moves a wood or its species may rewrite their rows
+        // along with uSim1 and uSim3, one that keeps every wood and its species never does.
+        let ms = 0;
+        const written = writtenDuring(gl, built.textures, () => {
+          ms = built.step(knobs);
+        });
+        check(
+          !written.includes(0),
+          `${name}: a change of the land's uses rebuilt the land (it wrote uSim${written.join(", uSim")})`,
+        );
+        if (same) {
+          kept.push(name);
+          check(
+            !written.includes(2),
+            `${name}: a change that kept every wood and its species rewrote the parcels (uSim2)`,
+          );
+        }
+        const picture = countryDraw(gl, program, built, knobs);
+        pictures.set(name, fnv(picture));
         const bytes = countryDraw(gl, probe, built, knobs, { width: PROBE, height: PROBE });
         let points = 0;
         let agreed = 0;
@@ -367,8 +391,16 @@ export function verifyCountryTerrain(gl: WebGL2RenderingContext): Record<string,
         if (name === "felled")
           check(wooded === 0, `${name}: ${wooded} wooded points with woodland off`);
         else check(wooded > 0.02 * points, `${name}: only ${wooded} of ${points} points wooded`);
-        result[name] = { ms: Number(ms.toFixed(2)), written, points, agreed, wooded };
+        result[name] = {
+          ms: Number(ms.toFixed(2)),
+          written,
+          woodsKept: same,
+          points,
+          agreed,
+          wooded,
+        };
       }
+      check(kept.includes("herds"), "the herds alone moved a wood or its species");
       check(
         new Set(pictures.values()).size === pictures.size,
         "two land settings drew the same picture",
