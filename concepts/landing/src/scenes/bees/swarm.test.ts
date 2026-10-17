@@ -1,7 +1,9 @@
 import { describe, expect, test } from "bun:test";
 import { HeadlessSim, type HeadlessUpload } from "../../sims/headless.ts";
-import { beesScene } from "./index.ts";
+import { loadScene } from "../index.ts";
 import { BEES_CODE, BEES_TREES, beesStage } from "./layout.ts";
+
+const beesScene = await loadScene("bees");
 
 const QUIET = {
   bees: 0,

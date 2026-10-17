@@ -1,7 +1,9 @@
 import { expect, test } from "bun:test";
 import { effective } from "../params.ts";
 import { skyComponentKnobs, skyKnobs } from "./atmosphere.ts";
-import { sceneDefs } from "./index.ts";
+import { loadScenes, sceneDefs } from "./index.ts";
+
+const scenes = await loadScenes();
 
 test("constellations: off by default, in the stars' group, a night part", () => {
   const knobs = skyComponentKnobs({ stars: 0.5, constellations: true, group: "night" });
@@ -51,7 +53,7 @@ test("every scene whose stars skyStars draws has the constellations, and no othe
   // A scene's stars come from skyStars when its own GLSL, or a shared library function it calls,
   // reads it: skyStarLight, the canopy's gap sky and the world's sky do.
   const drawers = ["skyStars(", "skyStarLight(", "canopyGapSky(", "worldSky("];
-  for (const [id, scene] of Object.entries(sceneDefs)) {
+  for (const { id, ...scene } of scenes) {
     const stars = drawers.some((call) => scene.glsl.includes(call));
     const figures = scene.params.some(
       (def) => def.widget?.kind === "night" && def.widget.part === "constellations",
@@ -61,7 +63,7 @@ test("every scene whose stars skyStars draws has the constellations, and no othe
 });
 
 test("every scene that hangs planets in its sky takes them, keeps no giant's knobs and composes no planet of its own", () => {
-  for (const [id, scene] of Object.entries(sceneDefs)) {
+  for (const { id, ...scene } of scenes) {
     // skyGiant: the scene's own call, or the world's sky's (worldGlsl is in the scene's GLSL).
     const draws = scene.glsl.includes("skyGiant(");
     expect({ id, takes: scene.planets !== undefined }).toEqual({ id, takes: draws });

@@ -32,7 +32,8 @@ import {
   type LandRows,
   repackLand,
 } from "../../sims/landuse.ts";
-import { packWater, TERRAIN_BASES } from "../../sims/terrain.ts";
+import { TERRAIN_BASES } from "../../sims/terrain-limits.ts";
+import { packWater } from "../../sims/terrain.ts";
 import { DataTexture, DirtyRegion } from "../../sims/texture.ts";
 import { type SkyState, skyState } from "../../world-clock.ts";
 import type { SceneSim, SimFactory, SimFrame } from "../types.ts";

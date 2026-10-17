@@ -101,6 +101,8 @@ import {
   type Unused,
 } from "./src/scenes/island/water.verify.ts";
 import { walkCheck } from "./src/scenes/lake/walk.verify.ts";
+import { loadedCheck } from "./src/scenes/shore/loaded.verify.ts";
+import { everyCheck } from "./src/scenes/pond/every.verify.ts";
 function inline(): void {}
 export const checks: readonly Check[] = [
   ["inline", inline],
@@ -109,6 +111,8 @@ export const checks: readonly Check[] = [
   ["borrowed", borrowedCheck],
   ["named", namedCheck(0, 2)],
   ["walk", walkCheck],
+  ["loaded", loadedCheck],
+  ["every", everyCheck],
 ];`;
   const files: Readonly<Record<string, string>> = {
     "src/features.verify.ts": `export function sharedCheck() {}`,
@@ -122,6 +126,12 @@ export function ownCheck() {}`,
     "src/state.ts": `const named = "pond";`,
     "src/scenes/island/water.verify.ts": `export const adopters = [sceneDefs.shore, "pond"];`,
     "src/scenes/lake/walk.verify.ts": `for (const scene of Object.values(sceneDefs)) {}`,
+    "src/scenes/shore/loaded.verify.ts": `import { loadScene } from "../index.ts";
+const island = await loadScene("island");`,
+    "src/scenes/island/index.ts": `export const islandScene = { code: () => import("./code.ts") };`,
+    "src/scenes/island/code.ts": `export { islandGlsl as glsl } from "./shader.ts";`,
+    "src/scenes/island/shader.ts": `import { boids } from "../flock/boids.ts";`,
+    "src/scenes/pond/every.verify.ts": `for (const scene of await loadScenes()) {}`,
   };
   const ids = ["pond", "lake", "meadow", "island", "shore", "flock"];
   const covered = checkScenes(registry, (path) => files[path], ids);
@@ -147,6 +157,15 @@ export function ownCheck() {}`,
   test("a scene's check that walks every scene covers them all", () => {
     expect(covered.has("walk")).toBe(true);
     expect(scenes("walk")).toBeUndefined();
+  });
+
+  test("a scene's check covers the scenes it loads and the scene files their code reaches", () => {
+    expect(scenes("loaded")).toEqual(["flock", "island", "shore"]);
+  });
+
+  test("a scene's check that loads every scene covers them all", () => {
+    expect(covered.has("every")).toBe(true);
+    expect(scenes("every")).toBeUndefined();
   });
 });
 

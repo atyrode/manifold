@@ -280,8 +280,6 @@ const MAX_STEP = 0.1;
 
 // ---- passage -------------------------------------------------------------------------------------
 
-/** Seconds of the scene's entrance and exit (SceneDef.passage). */
-export const PRISM_PASSAGE = { enter: 2.8, exit: 1.6 } as const;
 /**
  * Entrance: the sunbeam starts turned this far above its rest direction, pivoting about the M's
  * hole, so it skims over the glass and lands on the wall; it swings down onto the prism, the

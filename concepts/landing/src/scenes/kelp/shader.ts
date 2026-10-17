@@ -32,6 +32,7 @@
 // K_understory, K_marineSnow, K_jellies, K_plankton, K_mark, K_time, K_cycle.
 import { fishGlsl } from "../../sims/fish.ts";
 import { glslFloat } from "../../shaders/glsl.ts";
+import { KELP_PASSAGE } from "./constants.ts";
 import {
   KELP_CAMERA,
   KELP_FISH,
@@ -39,7 +40,6 @@ import {
   KELP_LAYERS,
   KELP_MARK,
   KELP_ORIGIN,
-  KELP_PASSAGE,
   KELP_POINT_ROW,
   KELP_POINTS,
   KELP_ROW,

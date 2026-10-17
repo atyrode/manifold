@@ -69,7 +69,7 @@
 //          strokes), G salt, B feeding (1 in a flake's pool, 0.5 at its rim, a fringe beyond),
 //          A light (the lit sea, and everything past the dish's glass wall).
 import { KnobReader, type ParamDef } from "../../params.ts";
-import { type BuildKind, BuildSlot } from "../../sims/build.ts";
+import { BuildSlot } from "../../sims/build.ts";
 import { FixedStep, runBudgeted } from "../../sims/clock.ts";
 import {
   GpuCompute,
@@ -82,7 +82,14 @@ import { clamp, easeFactor } from "../../sims/math.ts";
 import { mulberry32 } from "../../sims/random.ts";
 import { DataTexture } from "../../sims/texture.ts";
 import type { PrincipalState, SceneSim, SimFactory, SimFrame } from "../types.ts";
-import { Film, picture, seedAgents, stampDistance, stampSketch } from "./draw.ts";
+import {
+  agentShape,
+  type PhysarumDish,
+  physarumDish,
+  type PhysarumDishRequest,
+  SEA_SHUT,
+} from "./build.ts";
+import { Film, picture, seedAgents } from "./draw.ts";
 import {
   cityMap,
   FEED_SCALE,
@@ -93,16 +100,9 @@ import {
   seaAt,
   seaCover,
 } from "./food.ts";
-import {
-  AGENT_UNIT,
-  Grid,
-  LIFE,
-  PHYSARUM_MAX_FOOD,
-  PhysarumError,
-  REFERENCE_AGENTS,
-  TAU,
-} from "./grid.ts";
-import { FlowNetwork, type FlowNetworkState } from "./network.ts";
+import { PHYSARUM_PASSAGE, physarumAgentCounts, REFERENCE_AGENTS } from "./constants.ts";
+import { AGENT_UNIT, Grid, LIFE, PHYSARUM_MAX_FOOD, PhysarumError, TAU } from "./grid.ts";
+import { FlowNetwork } from "./network.ts";
 import {
   DEPOSIT,
   DIFFUSE,
@@ -118,16 +118,6 @@ import {
   TURN_MIN,
   VIEW,
 } from "./passes.ts";
-
-/**
- * The `specks` knob's choices, by index (the knob's value; URL `specks=0..2`). State textures are
- * 256 wide. In the dish on a 16:9 frame (~270k texels) they occupy ~7.5%, ~15% and ~23% of it:
- * Jones's model knits a reticulated network at a few to ~15% occupancy and condenses into a few
- * thick bands and loops well above it.
- */
-export const physarumAgentCounts = [20_480, REFERENCE_AGENTS, 61_440] as const;
-/** The `specks` knob's default index. */
-export const PHYSARUM_AGENTS_DEFAULT = 1;
 
 // ---- the mould --------------------------------------------------------------------------------
 
@@ -151,8 +141,6 @@ const TUBE_SLOW = 30;
 const TUBE_FAST = 4;
 /** Sim seconds between redraws of the film as the network adapts. */
 const FILM_EVERY = 1;
-/** Sea cover above which the light shuts the network's tubes out. */
-const SEA_SHUT = 0.15;
 
 // ---- the view ---------------------------------------------------------------------------------
 
@@ -197,13 +185,6 @@ const PREWARM_STEPS =
   PREWARM_FIRST + PREWARM_CHUNK * Math.ceil((320 - PREWARM_FIRST) / PREWARM_CHUNK);
 
 // ---- the scene --------------------------------------------------------------------------------
-
-/**
- * Seconds the scene's entrance and exit take (SceneDef.passage; the shader reads the entrance's).
- * Entrance: oat flakes land on the dish, then the mould grows out of the heart along its veins, the
- * fine lace following. Exit: the strands thin and draw back into the flakes, leaving a slime track.
- */
-export const PHYSARUM_PASSAGE: { enter: number; exit: number } = { enter: 3.2, exit: 1.6 };
 
 /** Feeding: sim seconds between flakes eaten, at pace 0 and 1 (log-spaced between). */
 const FEED_SLOW = 70;
@@ -299,100 +280,6 @@ function readSettings(knobs: KnobReader<PhysarumKnob>, frame: SimFrame): Setting
   };
 }
 
-/**
- * The random numbers for a dish with this seed: one number fixing the flow network (its mesh, lace
- * and flow), a stream for the specks.
- */
-function dishSeeds(seed: number): { network: number; rand: () => number } {
-  const network = (Math.imul(seed + 7, 0x85ebca6b) ^ 0x6a09e667) >>> 0;
-  return { network, rand: mulberry32(network ^ 0x5bd1e995) };
-}
-
-/**
- * The flow network for a fresh dish, settled under its food: the lit sea shut to it unless an M
- * has put the lights out.
- */
-function settledNetwork(
-  food: FoodBook,
-  aspect: number,
-  sea: SeaSampler,
-  lit: boolean,
-  seed: number,
-): FlowNetwork {
-  const network = new FlowNetwork(aspect, (u, v) => sea(u, v) > SEA_SHUT, seed);
-  network.setLight(lit);
-  network.setFood(food.nodes, food.heartId);
-  network.grow();
-  return network;
-}
-
-/** A dish to lay: its layout and seed, the frame aspect, the M laid at once, the specks' count. */
-export interface PhysarumDishRequest {
-  readonly layout: Layout;
-  readonly seed: number;
-  readonly aspect: number;
-  readonly mark: number | undefined;
-  /** The specks to seed over the network (the live mould); undefined for the still sketch. */
-  readonly agents: number | undefined;
-}
-
-/** A fresh dish's CPU work, for the dish's own grid (new Grid(aspect)). */
-export interface PhysarumDish {
-  /** The lit sea at half resolution (seaCover). */
-  readonly cover: Float32Array;
-  /** The flow network settled under the dish's food. */
-  readonly network: FlowNetworkState;
-  /** The network and the flakes drawn as the sketch (stampSketch), and the veins' distances. */
-  readonly sketch: Float32Array;
-  readonly dist: Float32Array;
-  /** The specks seeded along it and the trail level they keep up (the live mould only). */
-  readonly specks: { readonly data: Float32Array; readonly level: number } | undefined;
-  /** The film and the lace under it (Film.adopt), the live mould only. */
-  readonly film: { readonly data: Float32Array; readonly lace: Float32Array } | undefined;
-}
-
-/**
- * Laying a fresh dish as a build (sims/build.ts): the food, the settled network, the sketch, the
- * distances, and for the live mould the specks and the film. The page lays the same food again
- * (FoodBook.reset is cheap and the same for the same dish) and takes the rest.
- */
-export const physarumDish: BuildKind<PhysarumDishRequest, PhysarumDish> = {
-  name: "physarum",
-  builder: () => ({
-    *build({ layout, seed, aspect, mark, agents }) {
-      const grid = new Grid(aspect);
-      const map = layout === "cities" ? cityMap(aspect) : undefined;
-      const cover = seaCover(map, grid);
-      const sea: SeaSampler = (u, v) => seaAt(cover, grid, u, v);
-      const food = new FoodBook();
-      food.reset(layout, seed, aspect, map, sea, mark);
-      const seeds = dishSeeds(seed);
-      yield undefined;
-      const network = settledNetwork(food, aspect, sea, mark === undefined, seeds.network);
-      yield undefined;
-      const flakes = food.sketchNodes(grid);
-      const pic = picture(network, grid);
-      const sketch = stampSketch(pic, flakes, grid);
-      const dist = stampDistance(pic, flakes, grid);
-      if (agents === undefined)
-        return { cover, network: network.state, sketch, dist, specks: undefined, film: undefined };
-      yield undefined;
-      const specks = seedAgents(agentShape(agents), pic, flakes, grid, seeds.rand);
-      yield undefined;
-      const field = new Film();
-      const data = field.draw(pic, grid);
-      return {
-        cover,
-        network: network.state,
-        sketch,
-        dist,
-        specks,
-        film: { data, lace: field.lace },
-      };
-    },
-  }),
-};
-
 // ---- clocks -----------------------------------------------------------------------------------
 
 /**
@@ -429,11 +316,6 @@ class PulseClock {
     const flow = s / Math.sqrt(s * s + SHUTTLE_SOFT);
     this.phase = (((this.phase + (dt * PULSE_SPEED * flow) / PHYSARUM_WAVE) % 1) + 1) % 1;
   }
-}
-
-function agentShape(count: number): { width: number; height: number } {
-  const width = 2 ** Math.ceil(Math.log2(count) / 2);
-  return { width, height: Math.ceil(count / width) };
 }
 
 /** Block sums of the trail: one texel per 16 × 16. */

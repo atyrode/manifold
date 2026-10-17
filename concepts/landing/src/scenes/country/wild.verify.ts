@@ -19,8 +19,8 @@ import { visitorAlone } from "../../principals.ts";
 import { glslFloat } from "../../shaders/glsl.ts";
 import { fragmentSourceFor, sceneFeaturesAll } from "../../shaders/index.ts";
 import { paramDefaults } from "../../state.ts";
+import { loadScene } from "../index.ts";
 import type { SimFrame } from "../types.ts";
-import { countryScene } from "./index.ts";
 import {
   type CountryBuilt,
   countryDraw,
@@ -29,6 +29,8 @@ import {
   differing,
 } from "./terrain.verify.ts";
 import { COUNTRY_VERGE } from "./verges.ts";
+
+const countryScene = await loadScene("country");
 
 const WIDTH = 192;
 const HEIGHT = 108;

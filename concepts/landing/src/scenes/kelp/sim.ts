@@ -67,6 +67,7 @@ import {
   type VerletStepOptions,
 } from "../../sims/verlet.ts";
 import type { SceneSim, SimFactory, SimFrame } from "../types.ts";
+import { KELP_PASSAGE, kelpSpecies } from "./constants.ts";
 
 const TAU = Math.PI * 2;
 
@@ -118,7 +119,6 @@ const BULL_STIPE_LIFT = 0.15;
 const BULL_BULB_LIFT = 6;
 const BULL_BULB_DRAG = 2;
 const BULL_SHARE = 0.45;
-export const kelpSpecies = ["giant", "bull", "mixed"] as const;
 
 export interface KelpLayer {
   /** Perspective scale: 1 at the nearest layer, smaller farther off. */
@@ -167,8 +167,6 @@ export const KELP_VISITOR = { scale: 0.5, length: 0.095 } as const;
  */
 export const KELP_MARK = { scale: 0.62, x: 0.52, low: 0.15, high: 0.32, halfWidth: 0.6 } as const;
 
-/** Seconds of the scene's entrance and exit (SceneDef.passage). */
-export const KELP_PASSAGE = { enter: 3, exit: 1.8 } as const;
 /**
  * The camera's passage, in world units of height above its resting place (the shader works out the
  * parallax): the entrance starts it `drop` up, just under the surface, already sinking, and brakes

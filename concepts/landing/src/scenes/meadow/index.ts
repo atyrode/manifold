@@ -7,9 +7,14 @@
 import { counts, feature, range, seed, type ParamDef } from "../../params.ts";
 import type { SceneDef } from "../types.ts";
 import { WORLD_ALL, worldFeatures, worldGroups, worldKnobs } from "../world.ts";
-import { MEADOW_LIGHTNING_TRIGGER, MEADOW_METEOR_TRIGGER, meadowGlsl } from "./shader.ts";
-import { GUST_TRIGGER, MARK_TRIGGER, MAX_CLOCKS, MEADOW_PASSAGE, meadowSim } from "./sim.ts";
-import { meadowFlowersSim } from "./wildflowers.ts";
+import {
+  GUST_TRIGGER,
+  MARK_TRIGGER,
+  MAX_CLOCKS,
+  MEADOW_LIGHTNING_TRIGGER,
+  MEADOW_METEOR_TRIGGER,
+  MEADOW_PASSAGE,
+} from "./constants.ts";
 
 const params: readonly ParamDef[] = [
   range(
@@ -130,11 +135,9 @@ export const meadowScene: SceneDef = {
     birds: worldGroups.birds,
     manifold: { title: "Manifold mark", blurb: "The M mown into a far hillside." },
   },
-  glsl: meadowGlsl,
+  code: () => import("./code.ts"),
   // Arriving, the camera lowers into the grass and a first gust lifts the seeds; leaving, a strong gust carries a burst of them and the camera rises over the grass.
   passage: MEADOW_PASSAGE,
-  entry: "sceneMeadow",
-  sim: meadowFlowersSim(meadowSim(params), params),
   // The world's parts only while their knobs can show them (worldFeatures), the wildflowers' code
   // only while they are on (wildflowers.ts).
   featuresFor: (values) => ({

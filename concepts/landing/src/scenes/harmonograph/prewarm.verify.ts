@@ -4,9 +4,11 @@
 // sheet, and an exit that begins mid warm-up slides off the finished sheet.
 import { visitorAlone } from "../../principals.ts";
 import { defaultsFor, paramDefaults, renderSettings } from "../../state.ts";
+import { loadScene } from "../index.ts";
 import type { SimFrame } from "../types.ts";
-import { harmonographScene } from "./index.ts";
 import { HARMONOGRAPH } from "./sim.ts";
+
+const harmonographScene = await loadScene("harmonograph");
 
 /** FNV-1a over the bytes: equal sheets hash equal. */
 function fnv(bytes: Uint8Array): string {

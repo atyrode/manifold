@@ -1,6 +1,8 @@
 import { expect, test } from "bun:test";
 import { HeadlessSim } from "../../sims/headless.ts";
-import { firefliesScene } from "./index.ts";
+import { loadScene } from "../index.ts";
+
+const firefliesScene = await loadScene("fireflies");
 
 const POINTER = { inside: false };
 

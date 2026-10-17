@@ -7,16 +7,18 @@
 // image (`uploadImage`) keeps its size, not its pixels; the pixel-store flags for images (flip,
 // premultiplied alpha) are taken and ignored. It draws nothing: any other member (GpuCompute's, a
 // program's) throws HeadlessError naming it. `HeadlessSim` drives a registered scene's real sim
-// frame by frame, on a HeadlessGl or on a real context, each frame built the way the renderer
-// builds it. On a HeadlessGl, where the runtime has no OffscreenCanvas (bun), it stands in a
-// `HeadlessCanvas` for a sim that paints with Canvas 2D (marble's ink): it keeps its size and takes
-// the paths, fills and transforms drawn on it, drawing nothing.
+// frame by frame, its code loaded first (src/scenes/index.ts `loadScene`), on a HeadlessGl or on a
+// real context, each frame built the way the renderer builds it. On a HeadlessGl, where the runtime
+// has no OffscreenCanvas (bun), it stands in a `HeadlessCanvas` for a sim that paints with Canvas
+// 2D (marble's ink): it keeps its size and takes the paths, fills and transforms drawn on it,
+// drawing nothing.
 //
 //   new HeadlessGl()              `.gl`, the context to build a sim on
 //     upload(texture)             { width, height, data }: the texture's size and a copy of its data
 //                                 as uploaded, the same array until the next upload; throws
 //                                 HeadlessError for no texture, or one never uploaded from data
-//   new HeadlessSim(scene, gl?)   the scene's sim on a fresh HeadlessGl, unless a real context is given
+//   new HeadlessSim(scene, gl?)   the loaded scene's sim on a fresh HeadlessGl, unless a real context
+//                                 is given
 //     frame(frame?)               one frame: the textures the sim returns, in slot order (uSim0..uSim3)
 //     step(frame?)                the same frame, on the HeadlessGl; returns the HeadlessSim
 //     upload(slot)                that slot's texture after the latest frame, as `HeadlessGl.upload`
@@ -42,7 +44,7 @@
 // fired; a sim's first frame, as in the renderer, reports no presses.
 //
 // Usage (a drag held still while the screen turns portrait must not move the plane):
-//   const sim = new HeadlessSim(hyperbolicScene);
+//   const sim = new HeadlessSim(await loadScene("hyperbolic"));
 //   const at = { x: 0.6, y: 0.55, inside: true, down: true };
 //   sim.step({ pointer: { ...at, pressed: true } });
 //   const before = sim.step({ pointer: at }).upload(0).data;
@@ -53,7 +55,12 @@ import { effective, knobDef, MAX_TRIGGERS } from "../params.ts";
 import { principal } from "../principals.ts";
 import { RatePhases } from "../rate-phase.ts";
 import { sceneIds } from "../scenes/index.ts";
-import type { PrincipalState, ScenePassageProgress, SceneDef, SceneSim } from "../scenes/types.ts";
+import type {
+  LoadedScene,
+  PrincipalState,
+  ScenePassageProgress,
+  SceneSim,
+} from "../scenes/types.ts";
 import { paramDefaults } from "../state.ts";
 import { halfValue } from "./half.ts";
 
@@ -297,7 +304,7 @@ export interface HeadlessFrame {
 const NEVER = -1e4;
 
 export class HeadlessSim {
-  readonly #scene: SceneDef;
+  readonly #scene: LoadedScene;
   readonly #defaults: Readonly<Record<string, number>>;
   readonly #headless: HeadlessGl | undefined;
   readonly #sim: SceneSim;
@@ -313,7 +320,7 @@ export class HeadlessSim {
   /** The previous frame's principals, for their velocities. */
   #principals: readonly PrincipalState[] = [];
 
-  constructor(scene: SceneDef, gl?: WebGL2RenderingContext) {
+  constructor(scene: LoadedScene, gl?: WebGL2RenderingContext) {
     const id = sceneIds.find((candidate) => candidate === scene.id);
     if (id === undefined)
       throw new HeadlessError(`headless: '${scene.id}' is not a registered scene`);

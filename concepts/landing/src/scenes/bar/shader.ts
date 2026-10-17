@@ -47,6 +47,7 @@
 // call). Last call (barMisc.w, seconds since it was called): the bartender's bell (ACT.bell), the
 // lamps blinking twice, then closing time: the lamps, the shelf glow and OPEN as at CLOSING_NIGHT.
 import { glslFloat } from "../../shaders/glsl.ts";
+import { PASSAGE } from "./constants.ts";
 import {
   ACT,
   BARTENDER_Z,
@@ -70,7 +71,6 @@ import {
   HORIZON,
   PAN_FROM,
   PAN_RATE,
-  PASSAGE,
   POUR_FLOW,
   POUR_REACH,
   POUR_SET,

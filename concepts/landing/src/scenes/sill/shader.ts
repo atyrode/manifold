@@ -11,18 +11,7 @@
 
 import { glslFloat } from "../../shaders/glsl.ts";
 import { worldGlsl } from "../../shaders/lib/world.ts";
-
-/**
- * Seconds the entrance and the exit take (SceneDef.passage; the shader reads the same). In: the cat
- * hops up onto the sill and settles, its tail curling round. Out: it stretches and hops down out of
- * frame. At rest the cat is exactly as it always was.
- */
-export const SILL_PASSAGE = { enter: 2.8, exit: 1.6 } as const;
-
-/** Trigger slot of the shooting stars' "now" button (0 is the cat's, 1 lightning's, 2 the neon's). */
-export const SILL_METEOR_TRIGGER = 3;
-/** Trigger slot of the lightning's "now" button. */
-export const SILL_LIGHTNING_TRIGGER = 1;
+import { SILL_LIGHTNING_TRIGGER, SILL_METEOR_TRIGGER, SILL_PASSAGE } from "./constants.ts";
 
 export const sillGlsl = `
 ${worldGlsl}

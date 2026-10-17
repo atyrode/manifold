@@ -5,8 +5,7 @@
 import { choice, counts, feature, range, type ParamDef } from "../../params.ts";
 import { atmosphereGroups, skyKnobs, weatherKnobs } from "../atmosphere.ts";
 import type { SceneDef } from "../types.ts";
-import { flockGlsl } from "./shader.ts";
-import { FLOCK_PASSAGE, FLOCK_SIZES, flockSim } from "./sim.ts";
+import { FLOCK_PASSAGE, FLOCK_SIZES } from "./constants.ts";
 
 const params: readonly ParamDef[] = [
   choice(
@@ -114,8 +113,6 @@ export const flockScene: SceneDef = {
     },
     manifold: { title: "Manifold mark", blurb: "The flock itself draws the M, then lets it go." },
   },
-  glsl: flockGlsl,
-  entry: "sceneFlock",
-  sim: flockSim(params),
+  code: () => import("./code.ts"),
   passage: FLOCK_PASSAGE,
 };

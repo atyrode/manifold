@@ -16,7 +16,7 @@
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { availableParallelism, tmpdir } from "node:os";
 import { join } from "node:path";
-import { sceneDefs, sceneIds, type SceneId } from "../src/scenes/index.ts";
+import { loadScene, sceneIds, type SceneId } from "../src/scenes/index.ts";
 import {
   fragmentSourceFor,
   sceneFeatures,
@@ -86,8 +86,10 @@ interface Program {
   source: string;
 }
 
-const programs: Program[] = (asked.length > 0 ? (asked as SceneId[]) : sceneIds).flatMap((id) => {
-  const scene = sceneDefs[id];
+const ids = asked.length > 0 ? (asked as SceneId[]) : sceneIds;
+const programs: Program[] = (
+  await Promise.all(ids.map(async (id) => ({ id, scene: await loadScene(id) })))
+).flatMap(({ id, scene }) => {
   const all = sceneFeaturesAll(scene);
   return [
     { id, kind: "default" as const, source: fragmentSourceFor(scene, sceneFeatures(scene)) },

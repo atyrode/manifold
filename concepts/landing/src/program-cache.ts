@@ -1,13 +1,16 @@
 // The renderer's scene programs (src/renderer.ts): each scene's fragment program for each
 // compile-time feature set it draws with, built in the background and never waited for, and kept
 // least recently drawn first (PROGRAMS_PER_SCENE a scene, PROGRAMS_KEPT in all), or why it failed
-// to build. The renderer asks for the program to enter a scene with (`entryProgram`) and for the
-// one to draw a knob change with (`programSoon`): each answers with the program, the failure, or
-// undefined while it builds; once a frame `settle` keeps the builds the driver has finished.
+// to build. A scene's program builds once its code has loaded (src/scenes/index.ts `loadScene`),
+// which the first ask for it starts. The renderer asks for the program to enter a scene with
+// (`entryProgram`) and for the one to draw a knob change with (`programSoon`): each answers with
+// the program, the failure, or undefined while the code loads or the program builds; once a frame
+// `settle` keeps the builds the driver has finished.
 import { constellationUniforms } from "./constellations.ts";
 import { MAX_TRIGGERS } from "./params.ts";
 import type { RenderSettings, SceneFailure } from "./renderer.ts";
-import { sceneDefs, type SceneId } from "./scenes/index.ts";
+import { loadedScene, loadScene, sceneDefs, type SceneId } from "./scenes/index.ts";
+import type { LoadedScene } from "./scenes/types.ts";
 import {
   featureKey,
   fragmentSourceFor,
@@ -210,6 +213,10 @@ export class ScenePrograms {
   #linkAsked = false;
   /** The feature set each settings object asks for, or why it cannot be had (see `want`). */
   #wanted = new WeakMap<RenderSettings, Wanted | SceneFailure>();
+  /** Scenes whose code loads for a build (see `#code`). */
+  readonly #loading = new Set<SceneId>();
+  /** Scenes whose code could not be loaded, and the failure that stops them, until `retry`. */
+  readonly #unloaded = new Map<SceneId, SceneFailure>();
 
   /**
    * `gpu`: what the context holds to build programs with, as it is now. `drawing`: whether the
@@ -227,21 +234,29 @@ export class ScenePrograms {
   }
 
   /**
-   * Whether a program builds in the background or one just built waits to draw its first frame
-   * (`takeWarm`).
+   * Whether a scene's code loads, a program builds in the background or one just built waits to
+   * draw its first frame (`takeWarm`).
    */
   get busy(): boolean {
-    return this.#building !== undefined || this.#ahead !== undefined || this.#warm !== undefined;
+    return (
+      this.#loading.size > 0 ||
+      this.#building !== undefined ||
+      this.#ahead !== undefined ||
+      this.#warm !== undefined
+    );
   }
 
   /**
    * After a failure, work out every feature set again (features that could not be worked out are
-   * tried again) and, if `failed` is a scene whose program failed to build, build it again.
+   * tried again) and, if `failed` is a scene whose program failed to build or whose code failed to
+   * load, build or load it again.
    */
   retry(failed: SceneId | undefined): void {
-    if (failed !== undefined)
+    if (failed !== undefined) {
+      this.#unloaded.delete(failed);
       for (const [name, kept] of this.#programs)
         if (kept.id === failed && "stage" in kept.built) this.#programs.delete(name);
+    }
     this.#wanted = new WeakMap();
   }
 
@@ -282,16 +297,34 @@ export class ScenePrograms {
   }
 
   /**
-   * Start building `id`'s program with a feature set in the background: compile and link, without
-   * waiting for either, with a fence after the link where the browser lacks
+   * Scene `id` with its code; undefined while the code loads, the load started here (the renderer
+   * keeps drawing frames while it does: `busy`); or why it could not be loaded, until `retry`.
+   */
+  #code(id: SceneId): LoadedScene | SceneFailure | undefined {
+    const scene = loadedScene(id) ?? this.#unloaded.get(id);
+    if (scene !== undefined || this.#loading.has(id)) return scene;
+    this.#loading.add(id);
+    loadScene(id).then(
+      () => this.#loading.delete(id),
+      (error: unknown) => {
+        this.#loading.delete(id);
+        this.#unloaded.set(id, this.#failed(id, undefined, error));
+      },
+    );
+    return undefined;
+  }
+
+  /**
+   * Start building `scene`'s program with a feature set in the background: compile and link,
+   * without waiting for either, with a fence after the link where the browser lacks
    * KHR_parallel_shader_compile (see `#settled`). A source that does not assemble fails at once.
    */
-  #build(id: SceneId, set: FeatureSet): Building | SceneFailure {
+  #build(id: SceneId, scene: LoadedScene, set: FeatureSet): Building | SceneFailure {
     const gl = this.#gl;
     const gpu = this.#gpu();
     let source: string;
     try {
-      source = fragmentSourceFor(sceneDefs[id], set.features);
+      source = fragmentSourceFor(scene, set.features);
     } catch (error: unknown) {
       return this.#failed(id, set.key, error);
     }
@@ -567,7 +600,8 @@ export class ScenePrograms {
 
   /**
    * Start building `id`'s all-features program `all` beside any build under way (`#ahead`), for
-   * changes to come: unless a build is aside already, `all` builds already, or it is kept.
+   * changes to come: unless a build is aside already, `all` builds already, it is kept, or the
+   * scene's code has not loaded.
    */
   buildAside(id: SceneId, all: FeatureSet): void {
     if (
@@ -576,14 +610,21 @@ export class ScenePrograms {
       this.#programs.has(keptName(id, all.key))
     )
       return;
-    const started = this.#build(id, all);
+    const scene = this.#code(id);
+    if (scene === undefined || "stage" in scene) return;
+    const started = this.#build(id, scene, all);
     if (!("stage" in started)) this.#ahead = started;
   }
 
-  /** Start building `id`'s program for `set` in the background unless a build is under way. */
+  /**
+   * Start building `id`'s program for `set` in the background once the scene's code has loaded
+   * (see `#code`; its load starts at once), unless a build is under way.
+   */
   #buildAhead(id: SceneId, set: FeatureSet): SceneFailure | undefined {
+    const scene = this.#code(id);
+    if (scene === undefined || "stage" in scene) return scene;
     if (this.#building !== undefined) return undefined;
-    const started = this.#build(id, set);
+    const started = this.#build(id, scene, set);
     if ("stage" in started) return started;
     this.#building = started;
     return undefined;

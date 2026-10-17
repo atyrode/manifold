@@ -9,10 +9,22 @@ builders, `KnobReader`), `src/sims/` (simulation helpers, CPU and GPU), `src/mar
 Manifold M) and `src/shaders/glsl.ts` (GLSL literals from TS).
 
 ```
-src/scenes/<id>/index.ts    SceneDef: title, blurb, accent, look, params, groups, glsl, entry, sim
-src/scenes/<id>/shader.ts   export const <id>Glsl = `...` defining Shade scene<Id>(vec2 uv, vec2 cell, float t)
-src/scenes/<id>/sim.ts      optional SimFactory (CPU or GPU simulation feeding textures)
+src/scenes/<id>/index.ts      SceneDef: id, title, blurb, accent, look, params, groups, passage,
+                              theme, features, planets, and code: () => import("./code.ts")
+src/scenes/<id>/code.ts       SceneCode, loaded on demand: glsl, entry, sim
+src/scenes/<id>/constants.ts  triggers, passages, choice lists index.ts shares with shader.ts/sim.ts
+src/scenes/<id>/shader.ts     export const <id>Glsl = `...` defining Shade scene<Id>(vec2 uv, vec2 cell, float t)
+src/scenes/<id>/sim.ts        optional SimFactory (CPU or GPU simulation feeding textures)
+src/scenes/<id>/build.ts      optional BuildKind the build worker runs for the sim (src/sims/build.ts)
 ```
+
+The page loads the registry's `SceneDef`s at once and a scene's code (its `code.ts`, a chunk of its
+own) only once the scene is needed: `loadScene(id)` in `src/scenes/index.ts`, which the renderer's
+program cache calls before it builds a scene's program (a passage's incoming scene too), the page
+for the scene it opens on and, at idle, for the scenes `[` and `]` step to, and the tour for its
+next step. So `index.ts` never imports `shader.ts` or `sim.ts`: what both halves need lives in
+`constants.ts`. Tools, tests and checks that need a scene's GLSL or sim await `loadScene(id)` (or
+`loadScenes()`), e.g. `new HeadlessSim(await loadScene("pond"))`.
 
 ## The shader
 
@@ -2034,12 +2046,15 @@ Helpers in `src/sims/` (each file's header has the full API and a usage example)
   lists every kind) with their typed arrays handed back by transfer: the countryside's terrain and
   land, frost's crystal field, dew's web (the first, and for a new seed or shape), the bonsai's tree
   drawn into its maps, the dry garden's layout, the forest's warm-up, the slime mould's fresh dish,
-  the pond's sheets. One slot per sim, asked every frame: the newest request wins (a superseded
-  build is dropped on the worker and never lands), the scene draws what it last adopted meanwhile,
-  and a result is byte for byte the page's (the same code; `build-worker.test.ts`). Without a
-  worker, and for a frame of Infinity budget (HeadlessSim, checks), the build runs on the page in
-  slices. A kind's result must own its arrays (copy what its builder keeps for reuse); state
-  classes hand themselves over as plain arrays (`VerletSystem.state`/`from`, `LandModel.data`,
+  the pond's sheets. A scene's kind and the code it runs live in the scene's own `build.ts` (the
+  pond's in `sheet.ts`), which never imports its `sim.ts`, so the worker carries no scene's sim; the
+  sim imports the kind and whatever of the build it shares (dew's `DewWeb`, the forest's
+  `ForestLife`). One slot per sim, asked every frame: the newest request wins (a superseded build is
+  dropped on the worker and never lands), the scene draws what it last adopted meanwhile, and a
+  result is byte for byte the page's (the same code; `build-worker.test.ts`). Without a worker, and
+  for a frame of Infinity budget (HeadlessSim, checks), the build runs on the page in slices. A
+  kind's result must own its arrays (copy what its builder keeps for reuse); state classes hand
+  themselves over as plain arrays (`VerletSystem.state`/`from`, `LandModel.data`,
   `FlowNetwork.state`, `Random.state`, `TreeMaps.state`, the forest's `ForestLife.state`).
 - `mulberry32` and `Random` (`random.ts`): the seeded generator, bit-exact with the scenes' copies
   so a seed keeps its arrangement; `Random` adds `range`, `int`, `pick`, `wait` (the gap to a
@@ -2157,7 +2172,7 @@ its canopy sheet, on the build worker (`sheet.ts`).
 Keep simulations cheap (a few ms per frame at most) and scale step counts with `dt * motion`.
 Sims must be deterministic for a given seed knob and survive `dt = 0` (paused) and resizes. A layout
 a resize must rebuild waits for the new shape to rest first (garden's re-layout, frost's regrowth,
-dew's respin) and builds it off the page where it can (`build.ts`), and keeps what it can: frost
+dew's respin) and builds it off the page where it can (its `build.ts`), and keeps what it can: frost
 seeds each site's draws by where it stands, counted in from its own side of the pane, so a resize
 keeps its pattern.
 

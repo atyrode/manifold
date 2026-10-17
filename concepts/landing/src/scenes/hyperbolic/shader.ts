@@ -5,12 +5,11 @@
 //   uSim0  one row of state texels, laid out in HYPERBOLIC_TEXELS (sim.ts)
 // Knobs read here: K_tiling, K_model, K_palette, K_breath.
 import { glslFloat, glslPick, glslVec3 } from "../../shaders/glsl.ts";
+import { HYPERBOLIC_PALETTES, HYPERBOLIC_TILINGS } from "./constants.ts";
 import {
   HYPERBOLIC_DETAIL,
-  HYPERBOLIC_PALETTES,
   HYPERBOLIC_SHADE,
   HYPERBOLIC_TEXELS,
-  HYPERBOLIC_TILINGS,
   HYPERBOLIC_VIEW,
   hyperbolicFallback,
   tilingOf,

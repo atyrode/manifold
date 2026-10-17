@@ -4,7 +4,9 @@
 import { visitorAlone } from "../../principals.ts";
 import { defaultsFor, paramDefaults, renderSettings } from "../../state.ts";
 import type { SimFrame } from "../types.ts";
-import { sceneDefs } from "../index.ts";
+import { loadScene } from "../index.ts";
+
+const filmScene = await loadScene("film");
 
 /** A square view, so the film is 320 × 320 texels. */
 const SIDE = 320;
@@ -53,10 +55,10 @@ function pieces(mask: Uint8Array, side: number): { piece: Int32Array; sizes: num
 
 /** Blow a thin spot low in the film, pop it, and follow the hole for the first 0.4 s. */
 export function verifyFilmRupture(gl: WebGL2RenderingContext): Record<string, unknown> {
-  const sim = sceneDefs.film.sim?.(gl);
+  const sim = filmScene.sim?.(gl);
   if (!sim) throw new Error("film: no simulation");
   const knobs = { ...paramDefaults("film"), "blow-amount": 1 };
-  const popSlot = sceneDefs.film.params.find((param) => param.key === "pop")?.trigger;
+  const popSlot = filmScene.params.find((param) => param.key === "pop")?.trigger;
   if (popSlot === undefined) throw new Error("film: the pop knob has no trigger");
   const frame: SimFrame = {
     // The film takes at most three 1/60 s steps a frame (sim.ts STEP, MAX_STEPS).

@@ -1,7 +1,9 @@
 import { expect, test } from "bun:test";
 import { HeadlessSim } from "../../sims/headless.ts";
-import { meadowScene } from "./index.ts";
+import { loadScene } from "../index.ts";
 import { MAX_SEEDS } from "./sim.ts";
+
+const meadowScene = await loadScene("meadow");
 
 /** Gusty, so the grass, the clocks and the seeds all move; the pointer away, so its breath stays out. */
 const KNOBS = { wind: 0.6, gusts: 1, "gusts-amount": 1, gustRate: 1 };

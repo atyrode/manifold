@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import { HeadlessSim, type HeadlessFrame, type HeadlessUpload } from "../../sims/headless.ts";
-import { gardenScene } from "./index.ts";
+import { loadScene } from "../index.ts";
 import {
   GARDEN_BORDER,
   GARDEN_BORDER_FORM,
@@ -8,6 +8,8 @@ import {
   GARDEN_RECORD_ROW,
   GARDEN_WOODS,
 } from "./sim.ts";
+
+const gardenScene = await loadScene("garden");
 
 // The garden's drying clock goes to the shader in uSim1 (the texel after the islands): fresh gravel's
 // damp fades with `clock - when raked`. These run the sim on the headless stand-in and read it there;

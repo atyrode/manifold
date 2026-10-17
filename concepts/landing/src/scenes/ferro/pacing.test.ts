@@ -1,7 +1,9 @@
 import { expect, test } from "bun:test";
 import { HeadlessSim } from "../../sims/headless.ts";
-import { ferroScene } from "./index.ts";
+import { loadScene } from "../index.ts";
 import { FERRO_BLOBS, FERRO_STATE_HEAD } from "./sim.ts";
+
+const ferroScene = await loadScene("ferro");
 
 const KNOBS = { follow: 1, breath: 0, drift: 0 };
 

@@ -72,6 +72,17 @@ test("the tour wraps round, skips both ways, and a lone scene never moves on", (
   expect(lone.elapsed).toBe(10);
 });
 
+test("the scene a tour moves on to, fetched ahead, is the next step's, wrapping round", () => {
+  const player = new TourPlayer(tour("tour=pond.forest.lake"), true);
+  const upcoming = [player.upcoming];
+  for (let step = 0; step < 3; step++) {
+    player.skip(1);
+    upcoming.push(player.upcoming);
+  }
+  expect(upcoming).toEqual(["forest", "lake", "pond", "forest"]);
+  expect(new TourPlayer(tour("tour=pond"), true).upcoming).toBe("pond");
+});
+
 test("the page's scene steers the tour: a step restarts there, any other scene holds it", () => {
   const player = new TourPlayer(tour("tour=pond.forest.lake"), true);
   player.tick(0.1, false);

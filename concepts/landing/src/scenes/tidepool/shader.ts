@@ -29,9 +29,7 @@ import {
   TIDEPOOL_LIFE_WIDTH,
 } from "./life.ts";
 import { TIDEPOOL_ROWS } from "./sim.ts";
-
-/** Seconds of the scene's entrance and exit (SceneDef.passage). */
-export const TIDEPOOL_PASSAGE = { enter: 3, exit: 1.6 } as const;
+import { TIDEPOOL_PASSAGE } from "./constants.ts";
 
 export const tidepoolGlsl = `${plantsGlsl}${fishGlsl}
 // ---- tide pool ----

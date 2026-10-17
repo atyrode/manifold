@@ -11,9 +11,11 @@
 //   crops or settlements), autumn's broadleaf woods draw many orange cells, near crowns and far
 //   canopy alike, and its pine woods next to none, nor does the harvest.
 import { featureKey, fragmentSourceFor, sceneFeatures, shaderValues } from "../../shaders/index.ts";
-import { countryScene } from "./index.ts";
-import { COUNTRY_SEASONS } from "./season.ts";
+import { loadScene } from "../index.ts";
+import { COUNTRY_SEASONS } from "./constants.ts";
 import { countryBuild, type CountryBuilt, countryDraw, countryProgram } from "./terrain.verify.ts";
+
+const countryScene = await loadScene("country");
 
 const WIDTH = 240;
 const HEIGHT = 135;

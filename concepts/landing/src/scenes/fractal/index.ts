@@ -5,8 +5,7 @@
 import { choice, feature, range, type ParamDef } from "../../params.ts";
 import { paletteTheme } from "../atmosphere.ts";
 import type { SceneDef } from "../types.ts";
-import { fractalGlsl, fractalPalettes } from "./shader.ts";
-import { FRACTAL_PASSAGE, fractalModes, fractalSim } from "./sim.ts";
+import { FRACTAL_PASSAGE, fractalModes, fractalPalettes } from "./constants.ts";
 
 const params: readonly ParamDef[] = [
   choice(
@@ -143,9 +142,7 @@ export const fractalScene: SceneDef = {
     },
     manifold: { title: "Manifold mark", blurb: "The M as an orbit trap, woven into the fractal." },
   },
-  glsl: fractalGlsl,
-  entry: "sceneFractal",
-  sim: fractalSim(params),
+  code: () => import("./code.ts"),
   // Sumi and porcelain are light grounds: the page copy goes dark on them.
   theme: paletteTheme(params, "palette", (palette) => fractalPalettes[palette]?.paper === true),
 };

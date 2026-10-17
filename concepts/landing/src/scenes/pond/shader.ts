@@ -12,9 +12,7 @@ import { plantSheetGlsl } from "../../sims/plantsheet.ts";
 import { glslFloat } from "../../shaders/glsl.ts";
 import { plantsGlsl } from "../../shaders/lib/plants.ts";
 import { CANOPY_MARGIN } from "./atlas.ts";
-
-/** Seconds of the pond's entrance and exit (SceneDef.passage). */
-export const POND_PASSAGE = { enter: 3.2, exit: 1.8 } as const;
+import { POND_PASSAGE } from "./constants.ts";
 
 /** The most lily pads, koi and petals the pond draws (the layout's rows run to the widest). */
 export const POND_LAYOUT = { pads: 9, koi: 8, petals: 18 } as const;

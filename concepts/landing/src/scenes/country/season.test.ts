@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { climateCold, seasonKnob, yearAt } from "../../climate.ts";
 import { sceneFeatures, sceneFeaturesAll, shaderValues } from "../../shaders/index.ts";
 import { COUNTRY_ALL, countryScene } from "./index.ts";
-import { COUNTRY_BALES, COUNTRY_SEASONS } from "./season.ts";
+import { COUNTRY_BALES, COUNTRY_SEASONS } from "./constants.ts";
 
 /** The countryside's compile-time features for raw knobs over its defaults. */
 const features = (knobs: Record<string, number>) =>

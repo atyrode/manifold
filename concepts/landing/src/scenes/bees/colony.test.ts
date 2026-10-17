@@ -1,9 +1,11 @@
 import { describe, expect, test } from "bun:test";
 import { HeadlessSim } from "../../sims/headless.ts";
+import { loadScene } from "../index.ts";
 import { Colony, pollenDrunk } from "./colony.ts";
 import { Garden, STEP } from "./garden.ts";
-import { beesScene } from "./index.ts";
 import { beesStage } from "./layout.ts";
+
+const beesScene = await loadScene("bees");
 
 /** The median of a home leg's flown path over the straight line from its start to where it lands, over `seconds` of a colony of 96 at `silly`. */
 function homeCurl(silly: number, seconds: number): number {

@@ -8,8 +8,12 @@ import { WATER_TIERS } from "../../shaders/lib/water.ts";
 import { atmosphereGroups, skyKnobs, skyTheme, weatherKnobs } from "../atmosphere.ts";
 import type { SceneDef } from "../types.ts";
 import { worldGates } from "../world.ts";
-import { LANTERNS_METEOR_TRIGGER, lanternsGlsl } from "./shader.ts";
-import { LANTERN_COUNTS, PASSAGE_ENTER, PASSAGE_EXIT, lanternsSim } from "./sim.ts";
+import {
+  LANTERN_COUNTS,
+  LANTERNS_METEOR_TRIGGER,
+  PASSAGE_ENTER,
+  PASSAGE_EXIT,
+} from "./constants.ts";
 
 const params: readonly ParamDef[] = [
   choice(
@@ -121,13 +125,11 @@ export const lanternsScene: SceneDef = {
         "A landmark of its own: one lantern among the others, its indigo paper cut with the M.",
     },
   },
-  glsl: lanternsGlsl,
-  entry: "sceneLanterns",
+  code: () => import("./code.ts"),
   // Arriving: the river opens at deep dusk and unlit, the dusk settles, the candles catch in a wave
   // from upstream and new lanterns come round the bend lit as they come in. Leaving: the flames
   // gutter out one by one and the river darkens.
   passage: { enter: PASSAGE_ENTER, exit: PASSAGE_EXIT },
-  sim: lanternsSim(params),
   // A sunlit river is bright water and sky: the copy needs dark ink on it, from the time the sun is
   // about 12 degrees up until it sinks back there. With the day cycle running the light keeps
   // changing, so the page stays on the night theme. The shader follows the page (inkOf).

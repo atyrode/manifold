@@ -11,8 +11,10 @@ import {
   vertexSource,
 } from "../../shaders/index.ts";
 import { defaultsFor, paramDefaults, renderSettings, type Params } from "../../state.ts";
-import { sceneDefs } from "../index.ts";
+import { loadScene } from "../index.ts";
 import type { SceneSim, SimFrame } from "../types.ts";
+
+const meadow = await loadScene("meadow");
 
 const W = 256;
 const H = 160;
@@ -53,7 +55,6 @@ function changed(a: Uint8Array, b: Uint8Array): number {
 }
 
 export function verifyMeadowWildflowers(gl: WebGL2RenderingContext): Record<string, unknown> {
-  const meadow = sceneDefs.meadow;
   const calm: Params = { ...paramDefaults("meadow"), gusts: 0, wind: 0 };
   const grown: Params = { ...calm, wildflowers: 1, "wildflowers-amount": 1 };
   const off = sceneFeatures(meadow, shaderValues(meadow, calm));

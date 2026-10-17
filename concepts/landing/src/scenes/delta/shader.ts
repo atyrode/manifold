@@ -16,9 +16,6 @@
 // rest (passageIn() 1, passageOut() 0) every one of them returns its input untouched.
 import { glslFloat } from "../../shaders/glsl.ts";
 
-/** Seconds the entrance and the exit take (SceneDef.passage). */
-export const DELTA_PASSAGE: { enter: number; exit: number } = { enter: 2.8, exit: 1.5 };
-
 /**
  * The camera's passage. zoomIn / zoomOut: how much farther (as a share of the resting view) the
  * ground looks at the start of the entrance and the end of the exit; drift: how far (grid uv) the

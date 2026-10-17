@@ -4,8 +4,7 @@
 import { choice, feature, range, seed, type ParamDef } from "../../params.ts";
 import { paletteTheme } from "../atmosphere.ts";
 import type { SceneDef } from "../types.ts";
-import { pearlGlsl, pearlPalettes } from "./shader.ts";
-import { PEARL_ENTER, PEARL_EXIT, pearlForcings, pearlSim } from "./sim.ts";
+import { PEARL_ENTER, PEARL_EXIT, pearlForcings, pearlPalettes } from "./constants.ts";
 
 const params: readonly ParamDef[] = [
   choice(
@@ -125,9 +124,7 @@ export const pearlScene: SceneDef = {
     },
     manifold: { title: "Manifold M", blurb: "An M written through the fluid with a glass rod." },
   },
-  glsl: pearlGlsl,
-  entry: "scenePearl",
-  sim: pearlSim(params),
+  code: () => import("./code.ts"),
   // Entrance: a glass rod is drawn in from the left edge across the calm, uniform tank and stirs it, and the satin currents unfold behind it. Exit: a strong swirl sweeps everything round.
   passage: { enter: PEARL_ENTER, exit: PEARL_EXIT },
   // Pearl is a light fluid: the page copy goes dark on it (the shader's `pagePaper()` follows this).

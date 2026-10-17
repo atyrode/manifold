@@ -22,9 +22,11 @@ import { type LandAllocation, landCanopy, LandModel, LAND_USES } from "../../sim
 import { RatePhases } from "../../rate-phase.ts";
 import { generateTerrain } from "../../sims/terrain.ts";
 import { defaultsFor, paramDefaults, renderSettings } from "../../state.ts";
+import { loadScene } from "../index.ts";
 import type { SceneSim, SimFrame } from "../types.ts";
-import { countryScene } from "./index.ts";
 import { COUNTRY_MAP } from "./sim.ts";
+
+const countryScene = await loadScene("country");
 
 const WIDTH = 192;
 const HEIGHT = 108;

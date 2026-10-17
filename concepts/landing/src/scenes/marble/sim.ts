@@ -30,61 +30,17 @@ import { clamp, smoothstep } from "../../sims/math.ts";
 import { mulberry32 } from "../../sims/random.ts";
 import { DataTexture } from "../../sims/texture.ts";
 import type { PrincipalState, SceneSim, SimFactory, SimFrame } from "../types.ts";
+import {
+  EBRU,
+  MARBLE_PASSAGE,
+  type MarblePalette,
+  marblePalettes,
+  marblePatterns,
+  type MarblePractice,
+  marblePractices,
+} from "./constants.ts";
 
-export const marblePatterns = ["stone", "gel-git", "nonpareil", "bouquet", "chevron"] as const;
 export type MarblePattern = (typeof marblePatterns)[number];
-
-/**
- * How the ink is laid and moved. Ebru: a ground colour spread over the size, then colours flicked
- * from a brush into packed stones, which the pattern's stylus and combs then work. Suminagashi: two
- * brushes touched to the water in turn, one with ink and one with clear water, so every drop pushes
- * the last out into a ring; left uncombed (the stone pattern), breath and a fan turn the rings.
- */
-export const marblePractices = ["ebru", "suminagashi"] as const;
-export type MarblePractice = (typeof marblePractices)[number];
-/** The `practice` knob, in order: the inks' own practice, then each practice by name. */
-export const marblePracticeChoices = ["by inks", ...marblePractices] as const;
-
-export interface MarblePalette {
-  label: string;
-  /** CSS colours the routines draw from. */
-  inks: readonly string[];
-  /** The ink painted in the lab's accent colour by the two-tone palette. */
-  accent: string;
-  /** The practice these inks belong to: what the `practice` knob's "by inks" follows. */
-  practice: MarblePractice;
-  /** Dark inks: floated on clear water over a pale tray (and the page goes light), not on dark size. */
-  basin: boolean;
-}
-
-// Ebru's pigments, kept clear and saturated so the dither keeps them rich: deep indigo, ochre gold,
-// madder rust, cream and lamp black.
-const EBRU: MarblePalette = {
-  label: "ebru",
-  inks: ["#1f3a96", "#dca12c", "#b5401f", "#f2e4c2", "#151419"],
-  accent: "#1f3a96",
-  practice: "ebru",
-  basin: false,
-};
-// Sumi and indigo, each pushed out into a ring by a drop of clear water.
-const SUMINAGASHI: MarblePalette = {
-  label: "suminagashi",
-  inks: ["#1d1c21", "#2c3a6e"],
-  accent: "#2c3a6e",
-  practice: "suminagashi",
-  basin: true,
-};
-// Risograph spot inks: fluorescent pink, teal, sunflower, medium blue, midnight.
-const RISO: MarblePalette = {
-  label: "riso",
-  inks: ["#ff5c98", "#00a29a", "#ffd03d", "#3e52d0", "#1e1b3b"],
-  accent: "#3e52d0",
-  practice: "ebru",
-  basin: false,
-};
-
-/** In `palette` knob order. */
-export const marblePalettes: readonly MarblePalette[] = [EBRU, SUMINAGASHI, RISO];
 
 /** The practice the `practice` knob's value picks for these inks: 0 follows them, 1.. names one. */
 export function marblePractice(choice: number, palette: MarblePalette): MarblePractice {
@@ -135,12 +91,6 @@ const PREROLL_STEP = 0.2;
 const PREROLL_BUDGET_MS = 12;
 /** A prerolled sheet fades up from the bare tray over this many seconds. */
 const ARRIVE_SECONDS = 0.8;
-/**
- * Seconds the scene's entrance and exit take (SceneDef.passage; the shader reads the exit's share).
- * Entrance: the first sheet's drops land and spread on a clean bath, then the combs go to work.
- * Exit: a sheet of paper is laid on the tray and lifted off, taking the ink and leaving a clean bath.
- */
-export const MARBLE_PASSAGE: { enter: number; exit: number } = { enter: 3.2, exit: 1.6 };
 /**
  * An entered scene plays the first sheet's sprinkling live instead of prerolling it out of sight and
  * fading it up. From the first moment it spreads the ground drop alone over SPRINKLE_LEAD_SECONDS

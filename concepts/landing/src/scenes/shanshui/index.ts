@@ -7,8 +7,7 @@
 // riding in behind the roller, and wound up again on the way out.
 import { choice, feature, range, seed, toggle, type ParamDef } from "../../params.ts";
 import type { SceneDef } from "../types.ts";
-import { SHANSHUI_PASSAGE, shanshuiGlsl } from "./shader.ts";
-import { shanshuiSim } from "./sim.ts";
+import { SHANSHUI_PASSAGE } from "./constants.ts";
 
 const params: readonly ParamDef[] = [
   range(
@@ -188,9 +187,7 @@ export const shanshuiScene: SceneDef = {
         "Red seals with the M in seal script: the painter's in the sky, collectors' on the joins of the paper. Click to press one.",
     },
   },
-  glsl: shanshuiGlsl,
-  entry: "sceneShanshui",
-  sim: shanshuiSim(params),
+  code: () => import("./code.ts"),
   theme: () => "paper",
   passage: SHANSHUI_PASSAGE,
 };

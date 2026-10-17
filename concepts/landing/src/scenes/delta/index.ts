@@ -6,8 +6,7 @@
 import { choice, feature, range, seed, type ParamDef } from "../../params.ts";
 import { paletteTheme } from "../atmosphere.ts";
 import type { SceneDef } from "../types.ts";
-import { DELTA_PASSAGE, deltaGlsl } from "./shader.ts";
-import { deltaSim } from "./sim.ts";
+import { DELTA_PASSAGE } from "./constants.ts";
 
 /** In `palette` knob order: the shader's K_palette. */
 const PALETTES = ["satellite", "infrared", "chart"] as const;
@@ -174,9 +173,7 @@ export const deltaScene: SceneDef = {
       blurb: "A landmark of its own: an M of hard rock that the river has to go around.",
     },
   },
-  glsl: deltaGlsl,
-  entry: "sceneDelta",
-  sim: deltaSim(params),
+  code: () => import("./code.ts"),
   passage: DELTA_PASSAGE,
   // The chart is printed on paper: the page copy goes dark on it.
   theme: paletteTheme(params, "palette", (palette) => palette === CHART),

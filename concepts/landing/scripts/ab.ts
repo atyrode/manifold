@@ -155,7 +155,8 @@ interface ShaderModule {
   sceneFeaturesAll?(scene: unknown): unknown;
 }
 interface SceneModule {
-  readonly sceneDefs: Readonly<Record<string, unknown>>;
+  readonly sceneIds: readonly string[];
+  loadScene(id: string): Promise<unknown>;
 }
 
 /** Each scene's default and all-features fragment sources as `tree` generates them. */
@@ -165,11 +166,12 @@ async function glslOf(tree: Tree): Promise<ReadonlyMap<string, string>> {
     // The base tree is extracted to a temporary directory, so its modules are named at run time.
     const shaders = (await import(join(tree.root, "src/shaders/index.ts"))) as ShaderModule;
     const scenes = (await import(join(tree.root, "src/scenes/index.ts"))) as SceneModule;
-    for (const [id, def] of Object.entries(scenes.sceneDefs)) {
+    for (const id of scenes.sceneIds) {
       try {
-        const all = shaders.sceneFeaturesAll?.(def);
-        const allSource = all === undefined ? "" : shaders.fragmentSourceFor(def, all);
-        sources.set(id, `${shaders.fragmentSourceFor(def)}\0${allSource}`);
+        const scene = await scenes.loadScene(id);
+        const all = shaders.sceneFeaturesAll?.(scene);
+        const allSource = all === undefined ? "" : shaders.fragmentSourceFor(scene, all);
+        sources.set(id, `${shaders.fragmentSourceFor(scene)}\0${allSource}`);
       } catch {
         // Left out: a scene whose source does not generate is rendered, not taken as unchanged.
       }

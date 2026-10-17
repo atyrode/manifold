@@ -51,6 +51,11 @@ import {
   GUST_TRIGGER,
   MARK_TRIGGER,
   MAX_CLOCKS,
+  MEADOW_LIGHTNING_TRIGGER,
+  MEADOW_METEOR_TRIGGER,
+  MEADOW_PASSAGE,
+} from "./constants.ts";
+import {
   MEADOW_AWAY_MAX,
   MEADOW_BEND_SHAPE,
   MEADOW_BOW,
@@ -65,7 +70,6 @@ import {
   MEADOW_LEAN_MAX,
   MEADOW_MARGIN,
   MEADOW_MOVE,
-  MEADOW_PASSAGE,
   MEADOW_REACH,
   MEADOW_TREES_Z,
   SECTORS,
@@ -91,10 +95,6 @@ const LAYERS = MEADOW_LAYERS.length;
 /** Rows of the sea of grass: this far apart in log depth, from this depth out to the tree line. */
 const ROW = 0.1;
 const FIELD_NEAR = 3;
-
-/** Trigger slots of the shooting stars' and the lightning's "now" buttons (after the gusts' and the mown M's). */
-export const MEADOW_METEOR_TRIGGER = 2;
-export const MEADOW_LIGHTNING_TRIGGER = 3;
 
 export const meadowGlsl = `
 ${worldGlsl}
@@ -151,7 +151,7 @@ const float MEADOW_NOW_WOB = ${glslFloat(G.nowWob)};
 const float MEADOW_NOW_WOB_K = ${glslFloat(G.nowWobK)};
 const float MEADOW_NOW_WOB_P = ${glslFloat(G.nowWobP)};
 
-// ---- the passage (sim.ts: MEADOW_PASSAGE, MEADOW_MOVE) ----
+// ---- the passage (constants.ts: MEADOW_PASSAGE; sim.ts: MEADOW_MOVE) ----
 const float MEADOW_ENTER = ${glslFloat(MEADOW_PASSAGE.enter)};
 const float MEADOW_EXIT = ${glslFloat(MEADOW_PASSAGE.exit)};
 const float MEADOW_DROP_IN = ${glslFloat(MEADOW_MOVE.dropIn)};

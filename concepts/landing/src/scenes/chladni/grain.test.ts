@@ -1,7 +1,9 @@
 import { expect, test } from "bun:test";
 import { HeadlessSim, type HeadlessFrame } from "../../sims/headless.ts";
-import { chladniScene } from "./index.ts";
+import { loadScene } from "../index.ts";
 import { CHLADNI_SAND_TEXELS, chladniPowderShare } from "./sim.ts";
+
+const chladniScene = await loadScene("chladni");
 
 /** Grains for a plate of the finest grain holding the default plate's sand (the rest is powder). */
 const FINE_GRAINS = Math.round(25000 / (1 - chladniPowderShare(0)));

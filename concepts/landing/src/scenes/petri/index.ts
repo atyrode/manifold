@@ -7,15 +7,13 @@ import { choice, feature, knobValue, range, seed, toggle, type ParamDef } from "
 import { grayScottRegimes } from "../../sims/grayscott.ts";
 import { paletteTheme } from "../atmosphere.ts";
 import type { SceneDef } from "../types.ts";
-import { petriGlsl } from "./shader.ts";
 import {
   PETRI_FEED_KILL_UNIT,
   PETRI_PASSAGE,
   petriChemistries,
   petriPalettes,
   petriRegimes,
-  petriSim,
-} from "./sim.ts";
+} from "./constants.ts";
 
 const [loopStart] = grayScottRegimes;
 if (!loopStart) throw new Error("petri: no Gray–Scott regimes");
@@ -161,9 +159,7 @@ export const petriScene: SceneDef = {
       blurb: "Gray–Scott's two rates by hand, for exploring Pearson's map (Turing).",
     },
   },
-  glsl: petriGlsl,
-  entry: "scenePetri",
-  sim: petriSim(params),
+  code: () => import("./code.ts"),
   // On the light box the page goes light, with dark copy; the UV transilluminator stays dark.
   theme: paletteTheme(
     params,

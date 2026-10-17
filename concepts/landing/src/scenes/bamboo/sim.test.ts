@@ -1,7 +1,9 @@
 import { expect, test } from "bun:test";
 import { HeadlessSim } from "../../sims/headless.ts";
-import { bambooScene } from "./index.ts";
+import { loadScene } from "../index.ts";
 import { BAMBOO_DEVICE_DEPTH, BAMBOO_MAX_LEAVES } from "./sim.ts";
+
+const bambooScene = await loadScene("bamboo");
 
 const STEP = 1 / 60;
 

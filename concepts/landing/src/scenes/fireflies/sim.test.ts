@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import { HeadlessSim, type HeadlessFrame } from "../../sims/headless.ts";
-import { firefliesScene } from "./index.ts";
+import { loadScene } from "../index.ts";
 import {
   FIREFLIES_CELL,
   FIREFLIES_PROFILE_RES,
@@ -8,6 +8,8 @@ import {
   FIREFLIES_STATE_BANK,
   FIREFLIES_WATER,
 } from "./sim.ts";
+
+const firefliesScene = await loadScene("fireflies");
 
 /** A frame at these knobs: a thirtieth of a second at motion 0.6, the pointer away. */
 const frameAt = (knobs: Record<string, number>): HeadlessFrame => ({

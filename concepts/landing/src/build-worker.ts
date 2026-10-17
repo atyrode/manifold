@@ -3,13 +3,13 @@
 // time, and the worker turns to its messages every SLICE_MS, so a superseded build stops at its next
 // slice. Each result goes back with its typed arrays transferred.
 
-import { bonsaiGrowth } from "./scenes/bonsai/sim.ts";
+import { bonsaiGrowth } from "./scenes/bonsai/build.ts";
 import { countryBuild } from "./scenes/country/build.ts";
-import { dewSpin } from "./scenes/dew/sim.ts";
-import { forestWarmup } from "./scenes/forest/sim.ts";
-import { frostGrowth } from "./scenes/frost/sim.ts";
-import { gardenLayout } from "./scenes/garden/sim.ts";
-import { physarumDish } from "./scenes/physarum/sim.ts";
+import { dewSpin } from "./scenes/dew/build.ts";
+import { forestWarmup } from "./scenes/forest/build.ts";
+import { frostGrowth } from "./scenes/frost/build.ts";
+import { gardenLayout } from "./scenes/garden/build.ts";
+import { physarumDish } from "./scenes/physarum/build.ts";
 import { sheetPaint } from "./scenes/pond/sheet.ts";
 import {
   type Build,

@@ -16,16 +16,8 @@
 // so the network redraws the same as it adapts.
 import { clamp, smoothstep } from "../../sims/math.ts";
 import type { SketchNode } from "./food.ts";
-import {
-  AGENT_UNIT,
-  type Grid,
-  item,
-  LIFE,
-  PHYSARUM_FAR,
-  PhysarumError,
-  REFERENCE_AGENTS,
-  TAU,
-} from "./grid.ts";
+import { REFERENCE_AGENTS } from "./constants.ts";
+import { AGENT_UNIT, type Grid, item, LIFE, PHYSARUM_FAR, PhysarumError, TAU } from "./grid.ts";
 import type { FlowNetwork } from "./network.ts";
 
 /** Conductivities over which a tube becomes a vein (log-spaced): thinner ones are mesh, or withering. */

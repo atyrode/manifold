@@ -10,8 +10,7 @@ import { YEAR_CYCLE_RATE } from "../../climate.ts";
 import { choice, feature, range, seed, toggle, type ParamDef } from "../../params.ts";
 import { atmosphereGroups, skyKnobs } from "../atmosphere.ts";
 import type { SceneDef } from "../types.ts";
-import { bonsaiGlsl } from "./shader.ts";
-import { BONSAI_PASSAGE, bonsaiSim } from "./sim.ts";
+import { BONSAI_PASSAGE } from "./constants.ts";
 
 // The day passes slowly by default, so the shadow creeps over the wall: afternoon to dusk to the
 // lamp in about ten minutes.
@@ -180,8 +179,6 @@ export const bonsaiScene: SceneDef = {
     },
     manifold: { title: "Manifold mark", blurb: "A gold M mended into the stone on the moss." },
   },
-  glsl: bonsaiGlsl,
-  entry: "sceneBonsai",
-  sim: bonsaiSim(params),
+  code: () => import("./code.ts"),
   passage: BONSAI_PASSAGE,
 };

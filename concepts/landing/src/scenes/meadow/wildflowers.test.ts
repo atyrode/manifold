@@ -1,8 +1,10 @@
 import { expect, test } from "bun:test";
 import { sceneFeatures, shaderValues } from "../../shaders/index.ts";
 import { HeadlessSim, type HeadlessFrame } from "../../sims/headless.ts";
-import { meadowScene } from "./index.ts";
+import { loadScene } from "../index.ts";
 import { MEADOW_FLOWERS } from "./wildflowers.ts";
+
+const meadowScene = await loadScene("meadow");
 
 const at = (knobs: Record<string, number>): HeadlessFrame => ({
   knobs,

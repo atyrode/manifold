@@ -6,7 +6,9 @@
 // reach (Campfire's fire-lit ground) as it was.
 import { defaultsFor, paramDefaults, renderSettings } from "../../state.ts";
 import { fragmentSourceFor, packParams, vertexSource } from "../../shaders/index.ts";
-import { sceneDefs } from "../index.ts";
+import { loadScene } from "../index.ts";
+
+const campfireScene = await loadScene("campfire");
 
 function check(ok: boolean, message: string): void {
   if (!ok) throw new Error(`milky way: ${message}`);
@@ -119,9 +121,9 @@ function light(pixels: Float32Array, width: number, from: number, to: number): n
   return sum;
 }
 
-export function verifyMilkyWay(gl: WebGL2RenderingContext): Record<string, unknown> {
+export async function verifyMilkyWay(gl: WebGL2RenderingContext): Promise<Record<string, unknown>> {
   check(gl.getExtension("EXT_color_buffer_float") !== null, "float render targets unavailable");
-  const campfire = sceneDefs.campfire;
+  const campfire = campfireScene;
 
   // The band over the dome: none below the horizon or more than 0.35 off the plane, up to ~1.3 along
   // it, over a fair share of the sky; the stars it crowds are 0.7x the density off it, up to 1.5x
@@ -171,7 +173,7 @@ export function verifyMilkyWay(gl: WebGL2RenderingContext): Record<string, unkno
     ["campfire", { time: 0 }],
     ["lake", { hour: 1, moon: 0 }],
   ] as const) {
-    const scene = program(gl, fragmentSourceFor(sceneDefs[id]));
+    const scene = program(gl, fragmentSourceFor(await loadScene(id)));
     check(
       paramDefaults(id)["milkyWay"] === 1 && paramDefaults(id)["milkyWay-amount"] === 1,
       `${id}'s Milky Way is not on at its own brightness by default`,

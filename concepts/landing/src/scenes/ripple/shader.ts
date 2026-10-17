@@ -71,7 +71,6 @@ const LIGHTS: readonly (readonly (readonly [number, readonly [number, number, nu
     [1, [3, 3, 3]],
   ],
 ];
-export const rippleLights = ["sea", "lamp", "safelight", "moon"] as const;
 
 const STOPS = LIGHTS.flat();
 const STOP_AT = `const float RIPPLE_AT[${STOPS.length}] = float[${STOPS.length}](${STOPS.map(([at]) => glsl(at)).join(", ")});`;

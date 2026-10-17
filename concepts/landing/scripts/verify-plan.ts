@@ -102,7 +102,10 @@ export function parseScenes(
 
 const SCENE_FILE = /^src\/scenes\/([a-z][a-z0-9]*)\//;
 /** A module that may reach any scene, so its checks cover them all. */
-const EVERY_SCENE = /\bsceneIds\b|Object\.(?:keys|values|entries)\(\s*sceneDefs\s*\)/;
+const EVERY_SCENE =
+  /\bsceneIds\b|Object\.(?:keys|values|entries)\(\s*sceneDefs\s*\)|\bloadScenes\(\s*\)/;
+/** A scene a module loads by id, its code with it (`loadScene("<id>")`): followed as an import. */
+const LOADS = /\bloadScene\(\s*(["'`])([a-z][a-z0-9]*)\1\s*\)/g;
 /** A registry import of check functions, and a registry entry: `["name", check`. */
 const IMPORT = /import\s*\{([^}]*)\}\s*from\s*"(\.\/[^"]+)"/g;
 const ENTRY = /\[\s*"([^"]+)"\s*,\s*([A-Za-z_$][\w$]*)/g;
@@ -122,11 +125,12 @@ export function registeredChecks(registry: string): string[] {
 /**
  * The scenes each check registered in `registry` (verify-browser.ts's source) covers, by name;
  * undefined for every scene. A check whose function comes from a module under src/scenes/<id>/
- * covers <id>, the scene directories of the scene files that module imports (directly or through
- * one another), and every scene those files name (`sceneDefs.<id>`, or the id as a whole string
- * literal); one of them that walks every scene covers them all. Any other check (defined in the
- * registry, or imported from a module outside a scene directory) covers every scene. `read` reads a
- * file by its path from the lab's root, undefined when there is none.
+ * covers <id>, the scene directories of the scene files that module imports or loads (directly or
+ * through one another; `loadScene("<id>")` loads src/scenes/<id>/index.ts, whose `code` imports
+ * the scene's code), and every scene those files name (`sceneDefs.<id>`, or the id as a whole
+ * string literal); one of them that walks every scene covers them all. Any other check (defined in
+ * the registry, or imported from a module outside a scene directory) covers every scene. `read`
+ * reads a file by its path from the lab's root, undefined when there is none.
  */
 export function checkScenes(
   registry: string,
@@ -165,6 +169,7 @@ export function checkScenes(
       for (const id of scenes) {
         if (new RegExp(`sceneDefs\\.${id}\\b|(["'\`])${id}\\1`).test(source)) ids.add(id);
       }
+      for (const [, , id = ""] of source.matchAll(LOADS)) queue.push(`src/scenes/${id}/index.ts`);
       for (const { path: spec } of transpiler.scanImports(source)) {
         const target = spec.startsWith(".") ? join(dirname(path), spec) : undefined;
         if (target !== undefined && SCENE_FILE.test(target)) queue.push(target);

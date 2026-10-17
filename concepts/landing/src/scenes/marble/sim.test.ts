@@ -1,14 +1,12 @@
 import { expect, test } from "bun:test";
 import { mulberry32 } from "../../sims/random.ts";
 import {
-  buildRoutine,
   marblePalettes,
   marblePatterns,
-  marblePractice,
   marblePractices,
-  type MarblePattern,
   type MarblePractice,
-} from "./sim.ts";
+} from "./constants.ts";
+import { buildRoutine, marblePractice, type MarblePattern } from "./sim.ts";
 
 const ASPECT = 16 / 9;
 

@@ -8,8 +8,10 @@
 import { fragmentSourceFor, packParams, vertexSource } from "../../shaders/index.ts";
 import { visitorAlone } from "../../principals.ts";
 import { defaultsFor, paramDefaults, renderSettings, type Params } from "../../state.ts";
+import { loadScene } from "../index.ts";
 import type { SimFrame } from "../types.ts";
-import { gardenScene } from "./index.ts";
+
+const gardenScene = await loadScene("garden");
 
 const WIDTH = 240;
 const HEIGHT = 135;

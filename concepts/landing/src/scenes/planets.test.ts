@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { SKY_PLANET_CAP, SKY_PLANET_FLAGS, SKY_PLANET_ROWS } from "../shaders/lib/sky.ts";
-import { sceneDefs } from "./index.ts";
+import { loadScenes } from "./index.ts";
 import {
   decodePlanets,
   encodePlanets,
@@ -243,8 +243,8 @@ describe("the planets as the shader takes them", () => {
   });
 });
 
-test("every scene that takes planets hangs them in a group it has, starting in view", () => {
-  for (const scene of Object.values(sceneDefs)) {
+test("every scene that takes planets hangs them in a group it has, starting in view", async () => {
+  for (const scene of await loadScenes()) {
     const planets = scene.planets;
     if (planets === undefined) continue;
     expect({

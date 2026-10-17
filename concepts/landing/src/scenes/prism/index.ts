@@ -4,8 +4,7 @@
 // continuous colour and draws the glass, the dust and Newton's shutter.
 import { choice, feature, range, type ParamDef } from "../../params.ts";
 import type { SceneDef } from "../types.ts";
-import { prismGlsl } from "./shader.ts";
-import { PRISM_PASSAGE, prismSim } from "./sim.ts";
+import { PRISM_PASSAGE } from "./constants.ts";
 
 const params: readonly ParamDef[] = [
   choice(
@@ -131,9 +130,7 @@ export const prismScene: SceneDef = {
       blurb: "The M cut in Newton's window shutter, where the sunlight comes in.",
     },
   },
-  glsl: prismGlsl,
-  entry: "scenePrism",
-  sim: prismSim(params),
+  code: () => import("./code.ts"),
   // Entrance: the sunbeam swings down onto the glass and the spectrum sweeps down the wall into place. Exit: the glass turns and the spectrum is thrown up the wall and off it.
   passage: { enter: PRISM_PASSAGE.enter, exit: PRISM_PASSAGE.exit },
 };

@@ -57,6 +57,7 @@ import { clamp, smoothstep } from "../../sims/math.ts";
 import { Random } from "../../sims/random.ts";
 import { DataTexture } from "../../sims/texture.ts";
 import type { SceneSim, SimFactory, SimFrame } from "../types.ts";
+import { PASSAGE_ENTER } from "./constants.ts";
 
 // ---- The view and the river, shared with the shader ----
 
@@ -93,9 +94,6 @@ export const ROCKS: readonly Rock[] = [
 ];
 
 export const TEXTURE_WIDTH = 2 * MAX_LANTERNS + ROCKS.length;
-
-/** The lantern counts on offer (the `lanterns` knob). */
-export const LANTERN_COUNTS = [6, 12, 18, 24, 30] as const;
 
 // ---- The river (sim only) ----
 
@@ -249,9 +247,6 @@ const SEED_BASE = 0x70a0a6;
 
 // ---- Passage (entrance and exit) ----
 
-/** Seconds the entrance and the exit take (the scene's `passage`). */
-export const PASSAGE_ENTER = 4.5;
-export const PASSAGE_EXIT = 2.2;
 /** The river opens unlit. The candles then catch in a wave that sweeps from the right edge to the
  *  left over these seconds of the entrance (after the old scene's dissolve has cleared), each a
  *  little ahead or behind by up to KINDLE_JITTER of the view's half-width. A lantern still beyond

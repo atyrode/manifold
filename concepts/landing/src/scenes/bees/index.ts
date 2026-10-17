@@ -13,9 +13,8 @@ import { counts, feature, range, seed, toggle, type ParamDef } from "../../param
 import { skyTheme } from "../atmosphere.ts";
 import type { SceneDef } from "../types.ts";
 import { WORLD_ALL, worldFeatures, worldGroups, worldKnobs } from "../world.ts";
+import { BEES_LIGHTNING_TRIGGER, BEES_METEOR_TRIGGER, BEES_SWARM_TRIGGER } from "./constants.ts";
 import { BEES_PASSAGE, BEES_LUSH_FROM } from "./layout.ts";
-import { BEES_LIGHTNING_TRIGGER, BEES_METEOR_TRIGGER, beesGlsl } from "./shader.ts";
-import { BEES_SWARM_TRIGGER, beesSim } from "./sim.ts";
 
 const params: readonly ParamDef[] = [
   feature(
@@ -196,9 +195,7 @@ export const beesScene: SceneDef = {
     birds: worldGroups.birds,
     manifold: { title: "Manifold mark", blurb: "The M, painted on a hive." },
   },
-  glsl: beesGlsl,
-  entry: "sceneBees",
-  sim: beesSim(params),
+  code: () => import("./code.ts"),
   // The cumulus drift into place, the bees pour out of the hives and fan out to the flowers, butterflies
   // flutter in from the edges and the near stalks and grass spring up; leaving, the bees stream home and
   // the butterflies flutter off.

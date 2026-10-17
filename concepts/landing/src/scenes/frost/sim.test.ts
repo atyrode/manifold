@@ -1,6 +1,8 @@
 import { expect, test } from "bun:test";
 import { HeadlessSim, type HeadlessUpload } from "../../sims/headless.ts";
-import { frostScene } from "./index.ts";
+import { loadScene } from "../index.ts";
+
+const frostScene = await loadScene("frost");
 
 // uSim0 (sim.ts) is the crystal field over the glass, `height` texels to the frame height, rows
 // bottom to top; a texel's g is its signed distance across the nearest branch, in frame heights.

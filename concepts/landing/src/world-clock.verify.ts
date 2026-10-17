@@ -8,12 +8,15 @@
 // - staged: the garden's and the countryside's programs at their defaults draw byte for byte what
 //   the same programs draw undated (SKY_DATE_ANCHOR left out), and at another date they do not.
 import { climateChill, climateCold, climateLying, fallingSnow } from "./climate.ts";
-import { sceneDefs } from "./scenes/index.ts";
+import { loadScene } from "./scenes/index.ts";
 import { assembleFragment, fragmentSourceFor, packParams, sceneFeatures } from "./shaders/index.ts";
 import { shakeGlsl } from "./shaders/shake.ts";
 import { defaultsFor, paramDefaults, renderSettings } from "./state.ts";
 import { check, drawFloats, link, readBytes } from "./verify/kit.ts";
 import { dateShift, skyState, starFrame, starTurn, timeOfDay } from "./world-clock.ts";
+
+const gardenScene = await loadScene("garden");
+const countryScene = await loadScene("country");
 
 /** How far a GPU value may stand from the model's. */
 const MIRROR = 5e-4;
@@ -104,7 +107,7 @@ function drawScene(
   dated: boolean,
   over: Record<string, number>,
 ): Uint8Array {
-  const scene = sceneDefs[id];
+  const scene = id === "garden" ? gardenScene : countryScene;
   // Assembled whole, so the date anchor can be left out before the program is shaken.
   const source = assembleFragment(scene, sceneFeatures(scene));
   const fragment = dated ? source : source.replace(/#define SKY_DATE_ANCHOR [^\n]*\n/, "");
@@ -136,7 +139,7 @@ const differing = (a: Uint8Array, b: Uint8Array): number =>
 
 export function verifyWorldClock(gl: WebGL2RenderingContext): Record<string, unknown> {
   check(gl.getExtension("EXT_color_buffer_float") !== null, "float render targets unavailable");
-  const garden = sceneDefs.garden;
+  const garden = gardenScene;
   const probe = link(
     gl,
     fragmentSourceFor(

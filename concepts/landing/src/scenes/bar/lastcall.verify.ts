@@ -4,8 +4,10 @@
 import { fragmentSourceFor, packParams, vertexSource } from "../../shaders/index.ts";
 import { visitorAlone } from "../../principals.ts";
 import { defaultsFor, paramDefaults, renderSettings } from "../../state.ts";
+import { loadScene } from "../index.ts";
 import type { SimFrame } from "../types.ts";
-import { barScene } from "./index.ts";
+
+const barScene = await loadScene("bar");
 
 const W = 320;
 const H = 180;

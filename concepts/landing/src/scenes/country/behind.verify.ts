@@ -8,8 +8,10 @@
 // ground taken flat under the bound's hit (what it was) is counted beside: under a third land, the
 // rest metres off, which drew the land seen between the trees displaced, in a halo round each tree.
 import { fragmentSourceFor, sceneFeaturesAll } from "../../shaders/index.ts";
-import { countryScene } from "./index.ts";
+import { loadScene } from "../index.ts";
 import { countryBuild, countryDraw, countryProgram } from "./terrain.verify.ts";
+
+const countryScene = await loadScene("country");
 
 const WIDTH = 320;
 const HEIGHT = 180;

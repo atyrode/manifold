@@ -6,8 +6,7 @@ import { choice, counts, feature, range, seed, toggle, type ParamDef } from "../
 import { WATER_TIERS } from "../../shaders/lib/water.ts";
 import { plantKnobs } from "../plants.ts";
 import type { SceneDef } from "../types.ts";
-import { POND_PASSAGE, pondGlsl } from "./shader.ts";
-import { pondSim } from "./sim.ts";
+import { POND_PASSAGE } from "./constants.ts";
 
 // Knobs, in uParams order; the sim reads them by key (KnobReader).
 const params: readonly ParamDef[] = [
@@ -430,13 +429,11 @@ export const pondScene: SceneDef = {
       blurb: "A landmark of its own: a carved stone M standing in the water.",
     },
   },
-  glsl: pondGlsl,
-  entry: "scenePond",
+  code: () => import("./code.ts"),
   // The border plants and canopy move in from beyond the frame edges as the koi swim in; on leaving
   // they part outward again, the koi glide off and a breeze crosses the water.
   passage: POND_PASSAGE,
   // The floor's caustics: the shared water's cellular net (causticCells), carried by the current
   // (waterDrift); the sun's glint on the rings (waterGlint).
   features: { WATER_TIER: WATER_TIERS.caustics },
-  sim: (gl) => pondSim(gl, params),
 };

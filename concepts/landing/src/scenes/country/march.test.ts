@@ -1,13 +1,8 @@
 import { expect, test } from "bun:test";
 import { toHalf } from "../../sims/half.ts";
 import { clamp, glslHash12, smoothstep } from "../../sims/math.ts";
-import {
-  generateTerrain,
-  packTerrain,
-  sampleGrid,
-  type TerrainBase,
-  TERRAIN_RECORDS,
-} from "../../sims/terrain.ts";
+import { type TerrainBase } from "../../sims/terrain-limits.ts";
+import { generateTerrain, packTerrain, sampleGrid, TERRAIN_RECORDS } from "../../sims/terrain.ts";
 import { COUNTRY_CAMERA } from "./camera.ts";
 import { COUNTRY_MARCH, COUNTRY_RING } from "./shader.ts";
 import { COUNTRY_MAP } from "./sim.ts";

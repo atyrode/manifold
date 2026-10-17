@@ -1,7 +1,9 @@
 import { expect, test } from "bun:test";
 import { HeadlessGl, HeadlessSim } from "../../sims/headless.ts";
-import { harmonographScene } from "./index.ts";
+import { loadScene } from "../index.ts";
 import { HARMONOGRAPH } from "./sim.ts";
+
+const harmonographScene = await loadScene("harmonograph");
 
 /** One texSubImage2D: the texture bound, its rectangle, and the array it was read from. */
 interface Upload {

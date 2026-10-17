@@ -61,10 +61,7 @@
 // own clock.
 
 import { worldGlsl } from "../../shaders/lib/world.ts";
-
-/** Trigger slots of the lightning's and the shooting stars' "now" buttons (after the fish's, 0). */
-export const SHORE_LIGHTNING_TRIGGER = 1;
-export const SHORE_METEOR_TRIGGER = 2;
+import { SHORE_LIGHTNING_TRIGGER, SHORE_METEOR_TRIGGER } from "./constants.ts";
 
 export const shoreGlsl = `
 ${worldGlsl}

@@ -4,8 +4,7 @@
 // table integrated over the visible spectrum and draws the wire, the burst and the new film.
 import { choice, feature, range, seed, type ParamDef } from "../../params.ts";
 import type { SceneDef } from "../types.ts";
-import { filmBackdrops, filmGlsl } from "./shader.ts";
-import { FILM_PASSAGE, filmShapes, filmSim } from "./sim.ts";
+import { FILM_PASSAGE, filmBackdrops, filmShapes } from "./constants.ts";
 
 const params: readonly ParamDef[] = [
   choice(
@@ -110,8 +109,6 @@ export const filmScene: SceneDef = {
       blurb: "A wire M standing in the film, its colours hugging the wire.",
     },
   },
-  glsl: filmGlsl,
-  entry: "sceneFilm",
-  sim: filmSim(params),
+  code: () => import("./code.ts"),
   passage: FILM_PASSAGE,
 };

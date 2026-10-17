@@ -73,9 +73,8 @@ import { approach, clamp, easeFactor, lerp, smoothstep } from "../../sims/math.t
 import { Random } from "../../sims/random.ts";
 import { DataTexture, DirtyRegion } from "../../sims/texture.ts";
 import type { SceneSim, SimFactory, SimFrame } from "../types.ts";
+import { FLOCK_SIZES } from "./constants.ts";
 
-/** The flock sizes on offer (the `birds` choice). */
-export const FLOCK_SIZES = [1500, 3000, 5000] as const;
 const MAX_BIRDS = Math.max(...FLOCK_SIZES);
 /** Fixed seed: the flock is the same every time it is grown with the same size. */
 const SEED = 0x5ca1ab1e;
@@ -252,14 +251,6 @@ const BOIDS_RELAY = 0.035;
 const BOIDS_STARTLED = 0.4;
 const BOIDS_REFRACTORY = 1.6;
 
-/**
- * Seconds the scene's entrance and exit take (SceneDef.passage). Entrance: the flock streams in
- * from beyond the nearer side edge, head first, in a loose file that folds into its sheet as the
- * birds slow. Exit: it pours down head first, funnelling together, to roost below the horizon, where
- * the skyline hides it. Both are worked out when the density is splatted, so they follow the frame
- * clock smoothly; at rest (enter 1, exit 0) the birds are exactly where the flight puts them.
- */
-export const FLOCK_PASSAGE: { enter: number; exit: number } = { enter: 2.8, exit: 1.5 };
 /**
  * Entrance, as shares of its progress: every bird is on its way from the first moment, at its
  * fastest, and takes FLIGHT plus STAGGER × how far back it flies in the sheet plus up to SCATTER of

@@ -4,9 +4,8 @@
 // Doppler rings, standing waves in a box. shader.ts lights the screen or the surface.
 import { choice, feature, range, type ParamDef } from "../../params.ts";
 import type { SceneDef } from "../types.ts";
+import { RIPPLE_ENTER, RIPPLE_EXIT, rippleLights } from "./constants.ts";
 import { rippleExperimentLabels } from "./layout.ts";
-import { rippleGlsl, rippleLights } from "./shader.ts";
-import { RIPPLE_ENTER, RIPPLE_EXIT, rippleSim } from "./sim.ts";
 
 const params: readonly ParamDef[] = [
   choice(
@@ -125,7 +124,5 @@ export const rippleScene: SceneDef = {
   },
   // Entrance: still water, then the dippers start and the first wavefronts spread across the tank. Exit: the dippers stop and the last waves run out.
   passage: { enter: RIPPLE_ENTER, exit: RIPPLE_EXIT },
-  glsl: rippleGlsl,
-  entry: "sceneRipple",
-  sim: rippleSim(params),
+  code: () => import("./code.ts"),
 };

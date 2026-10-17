@@ -11,8 +11,10 @@ import {
   vertexSource,
 } from "../../shaders/index.ts";
 import { defaultsFor, paramDefaults, renderSettings } from "../../state.ts";
-import { orbitScene } from "./index.ts";
+import { loadScene } from "../index.ts";
 import { ORBIT_CAPTURE } from "./shader.ts";
+
+const orbitScene = await loadScene("orbit");
 
 const WIDTH = 480;
 const HEIGHT = 270;

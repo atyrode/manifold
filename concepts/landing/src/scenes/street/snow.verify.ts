@@ -5,7 +5,9 @@
 // flake straight down the frame.
 import { defaultsFor, paramDefaults, renderSettings } from "../../state.ts";
 import { fragmentSourceFor, packParams, vertexSource } from "../../shaders/index.ts";
-import { streetScene } from "./index.ts";
+import { loadScene } from "../index.ts";
+
+const streetScene = await loadScene("street");
 
 const WIDTH = 320;
 const HEIGHT = 180;

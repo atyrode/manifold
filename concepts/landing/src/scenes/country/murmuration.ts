@@ -16,11 +16,10 @@
 // records, columns 64.. and rows 1..height (rg birds and their roll), read through the atlas's
 // linear filter with its edges clamped as the flock's own texture clamps them. Compiled in only
 // while the knob is on (COUNTRY_HAS_MURMURATION, index.ts); while it is off the flock idles.
-import { counts, feature } from "../../params.ts";
 import { glslFloat } from "../../shaders/glsl.ts";
 import { TERRAIN_RECORDS } from "../../sims/terrain.ts";
 import { flockInkGlsl } from "../flock/shader.ts";
-import { FLOCK_SIZES, type Flock, type FlockSetup } from "../flock/sim.ts";
+import { type Flock, type FlockSetup } from "../flock/sim.ts";
 
 /** Where the flock flies: its camera depth (metres) and its band of sky (screen heights). */
 export const COUNTRY_MURMURATION = { depth: 2400, sky: { low: 0.55, high: 0.9 } } as const;
@@ -44,17 +43,6 @@ export const countryMurmuration: FlockSetup = {
   },
   sky: COUNTRY_MURMURATION.sky,
 };
-
-export const countryMurmurationKnob = feature(
-  "birds",
-  "murmuration",
-  "murmuration",
-  false,
-  "starlings",
-  3000,
-  "A starling murmuration wheeling over the far fields, from late afternoon until it goes down to roost at dusk (set the time of day near sunset to see it): the valley's sides hide it where it dips below them, the wind carries it, and steady rain keeps it away, as does the nesting season from mid-spring to early summer. The amount is how many starlings: more make a darker cloud.",
-  { options: counts(...FLOCK_SIZES) },
-);
 
 /** Writes the flock's header and density field into the atlas's rgba texels, `width` a row. */
 export function writeCountryFlock(flock: Flock, data: Float32Array, width: number): void {

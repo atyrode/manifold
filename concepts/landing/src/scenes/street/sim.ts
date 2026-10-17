@@ -114,6 +114,7 @@ import { Errand } from "../../sims/errand.ts";
 import { clamp, fract, smoothstep } from "../../sims/math.ts";
 import { Random } from "../../sims/random.ts";
 import type { PrincipalState, SceneSim, SimFactory, SimFrame } from "../types.ts";
+import { STREET_PASSAGE } from "./constants.ts";
 
 // ---- The view and the street, shared with the shader ----
 
@@ -781,9 +782,6 @@ const angleDiff = (a: number, b: number): number => {
 
 // ---- The passage ----
 
-/** Seconds the entrance and the exit take (SceneDef.passage). The shader eases the same tilt from
- *  passageIn() and passageOut() with the constants below: keep passageTilt and its GLSL twin in step. */
-export const STREET_PASSAGE = { enter: 2.8, exit: 1.5 } as const;
 /** How far the window's pitch is raised (rad, 31.5°) when the entrance starts, with the skyline in
  *  view and the crossing below the frame, and where the exit ends. */
 export const TILT_IN = 0.55;

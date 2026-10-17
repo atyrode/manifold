@@ -1,6 +1,8 @@
 import { expect, test } from "bun:test";
 import { HeadlessSim } from "../../sims/headless.ts";
-import { prismScene } from "./index.ts";
+import { loadScene } from "../index.ts";
+
+const prismScene = await loadScene("prism");
 
 const STEP = 1 / 30;
 

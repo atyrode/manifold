@@ -66,6 +66,7 @@ import {
   ROCK_DOWNSTREAM,
   ROCKS,
 } from "./sim.ts";
+import { LANTERNS_METEOR_TRIGGER } from "./constants.ts";
 
 const rocks = ROCKS.map(
   (rock) =>
@@ -74,9 +75,6 @@ const rocks = ROCKS.map(
 const downstream = ROCK_DOWNSTREAM.map((d) => `vec2(${glslFloat(d.x)}, ${glslFloat(d.z)})`).join(
   ", ",
 );
-
-/** Trigger slot of the shooting stars' "now" button (0 is the flotillas', 1 the M lantern's). */
-export const LANTERNS_METEOR_TRIGGER = 2;
 
 export const lanternsGlsl = `
 ${birdsGlsl}

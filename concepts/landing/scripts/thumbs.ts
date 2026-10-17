@@ -69,7 +69,9 @@ try {
     await browser.goto(`${String(server.url)}?scene=${id}&transitions=off`);
     const started = performance.now();
     // While the program builds the page answers nothing (a screenshot then times out): wait for two
-    // prompt screenshots in a row. A page that is gone never will.
+    // prompt screenshots in a row. A page that is gone never will. The scene's code loads first
+    // (src/scenes/index.ts `loadScene`), the page answering meanwhile, so the scene must also have
+    // been shown: the poster that stands in for it until then is gone (main.ts).
     const prompt = async () => {
       const asked = performance.now();
       const ok = await screenshot("png").then(
@@ -81,7 +83,14 @@ try {
       );
       return ok && performance.now() - asked < RESPONSIVE;
     };
-    while (!((await prompt()) && (await Bun.sleep(1000), await prompt()))) {
+    const shown = () =>
+      browser
+        .evaluate<boolean>('!document.body.classList.contains("poster")')
+        .catch((error: unknown) => {
+          if (error instanceof PageLostError) throw error;
+          return false;
+        });
+    while (!((await prompt()) && (await shown()) && (await Bun.sleep(1000), await prompt()))) {
       if (performance.now() - started > BUILD * 1000)
         throw new Error(`${id} did not start drawing within ${BUILD} s`);
     }

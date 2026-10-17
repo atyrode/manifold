@@ -1,9 +1,11 @@
 import { expect, test } from "bun:test";
 import { visitorAlone } from "../../principals.ts";
 import { HeadlessSim } from "../../sims/headless.ts";
+import { loadScene } from "../index.ts";
 import type { SimFrame } from "../types.ts";
-import { dunesScene } from "./index.ts";
 import { DUNES_CAMERA, DUNES_MARK, DUNES_SAND, DUNES_SLAB, dunesPointerCell } from "./sim.ts";
+
+const dunesScene = await loadScene("dunes");
 
 const ASPECT = 16 / 9;
 const FOCAL = 0.5 / Math.tan(DUNES_CAMERA.fov * 0.5);

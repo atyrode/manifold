@@ -53,7 +53,7 @@ import { Views } from "./lab/views.ts";
 import { carryPlanets, carryWorld } from "./lab/world-model.ts";
 import type { ParamDef } from "./params.ts";
 import type { DitherRenderer, SceneFailure } from "./renderer.ts";
-import { sceneDefs, type SceneId } from "./scenes/index.ts";
+import { prefetchScene, sceneDefs, type SceneId } from "./scenes/index.ts";
 import { encodePlanets, PLANETS_KEY, type SkyPlanet } from "./scenes/planets.ts";
 import {
   carryLook,
@@ -1231,12 +1231,16 @@ export class Lab {
     this.#host.apply(new URLSearchParams(here));
   }
 
-  /** Show the tour's scene (the current step unless the page already shows one) and play or hold it. */
+  /**
+   * Show the tour's scene (the current step unless the page already shows one) and play or hold
+   * it, fetching the next step's code ahead (as every step that starts does).
+   */
   #beginTour(play: boolean): void {
     const tour = this.#tour;
     if (!tour) return;
     if (!tour.follow(this.#current().state.scene)) this.#setScene(tour.step.scene, "tour");
     tour.playing = play;
+    prefetchScene(tour.upcoming);
     this.#runTour();
     this.sync();
   }
@@ -1246,6 +1250,7 @@ export class Lab {
     const tour = this.#tour;
     if (!tour) return;
     this.#setScene(tour.skip(by), "tour");
+    prefetchScene(tour.upcoming);
     this.sync();
   }
 
@@ -1273,7 +1278,10 @@ export class Lab {
     const seconds = this.#tourLast === undefined ? 0 : (now - this.#tourLast) / 1000;
     this.#tourLast = now;
     const next = tour.tick(seconds, this.#host.renderer()?.paused ?? false);
-    if (next !== undefined) this.#setScene(next, "advance");
+    if (next !== undefined) {
+      this.#setScene(next, "advance");
+      prefetchScene(tour.upcoming);
+    }
     this.#syncTourClock();
     this.#tourFrame = requestAnimationFrame(this.#tourTick);
   };

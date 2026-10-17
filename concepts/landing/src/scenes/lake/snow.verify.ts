@@ -4,8 +4,10 @@
 import { fragmentSourceFor, packParams, vertexSource } from "../../shaders/index.ts";
 import { visitorAlone } from "../../principals.ts";
 import { defaultsFor, paramDefaults, renderSettings } from "../../state.ts";
+import { loadScene } from "../index.ts";
 import type { SimFrame } from "../types.ts";
-import { lakeScene } from "./index.ts";
+
+const lakeScene = await loadScene("lake");
 
 const WIDTH = 320;
 const HEIGHT = 200;

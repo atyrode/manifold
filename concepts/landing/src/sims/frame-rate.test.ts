@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
-import { sceneDefs, sceneIds, type SceneId } from "../scenes/index.ts";
+import { loadScene, sceneIds, type SceneId } from "../scenes/index.ts";
+import type { LoadedScene } from "../scenes/types.ts";
 import { HeadlessError, HeadlessSim } from "./headless.ts";
 
 // The frame-rate contract (src/scenes/README.md, "Time and motion"): a seed plays the same at 60
@@ -73,9 +74,9 @@ const EXEMPT: Partial<
 type Uploads = readonly (Float32Array | Uint8Array | undefined)[];
 
 /** What `id`'s sim hands the shader at each of MOMENTS, slot by slot, run at `rate` frames a second. */
-function run(id: SceneId, rate: number): Uploads[] {
+function run(id: SceneId, scene: LoadedScene, rate: number): Uploads[] {
   const knobs = KNOBS[id] ?? {};
-  const sim = new HeadlessSim(sceneDefs[id]);
+  const sim = new HeadlessSim(scene);
   try {
     sim.step({ dt: FIRST, knobs });
     const moments: Uploads[] = [];
@@ -110,12 +111,14 @@ function drift(a: ArrayLike<number>, b: ArrayLike<number>): number {
   return range === 0 ? worst : worst / range;
 }
 
+const loaded = await Promise.all(sceneIds.map(async (id) => ({ id, scene: await loadScene(id) })));
+
 describe("a seed plays the same at 60 and 144 frames a second", () => {
-  for (const id of sceneIds) {
-    if (sceneDefs[id].sim === undefined) continue;
+  for (const { id, scene } of loaded) {
+    if (scene.sim === undefined) continue;
     if (ON_THE_GPU.includes(id)) {
       test(`${id} steps on the GPU, so it runs only in the browser`, () => {
-        expect(() => run(id, RATES[0])).toThrow(HeadlessError);
+        expect(() => run(id, scene, RATES[0])).toThrow(HeadlessError);
       });
       continue;
     }
@@ -128,7 +131,7 @@ describe("a seed plays the same at 60 and 144 frames a second", () => {
     test(
       id,
       () => {
-        const [slow = [], fast = []] = RATES.map((rate) => run(id, rate));
+        const [slow = [], fast = []] = RATES.map((rate) => run(id, scene, rate));
         const exempt = exemption?.slots ?? [];
         const compared: string[] = [];
         MOMENTS.forEach((seconds, moment) => {

@@ -15,7 +15,8 @@
 // (COUNTRY_HAS_LIGHTS); smoke curling from the cottages' chimney stacks and leaning with the wind,
 // thicker as the light goes, `smoke` its density (COUNTRY_HAS_SMOKE).
 import { glslFloat } from "../../shaders/glsl.ts";
-import { TERRAIN_HOUSE, TERRAIN_MAX_COTTAGES, TERRAIN_MAX_PLACES } from "../../sims/terrain.ts";
+import { TERRAIN_MAX_COTTAGES } from "../../sims/terrain-limits.ts";
+import { TERRAIN_HOUSE, TERRAIN_MAX_PLACES } from "../../sims/terrain.ts";
 import { COUNTRY_CASTLE_REACH, countryCastleGlsl } from "./castle.ts";
 
 /** A building is modelled once its gable spans this many dither cells; smaller, it is a sprite. */

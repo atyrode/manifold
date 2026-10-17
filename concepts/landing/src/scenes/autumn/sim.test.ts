@@ -1,6 +1,8 @@
 import { expect, test } from "bun:test";
 import { HeadlessSim } from "../../sims/headless.ts";
-import { autumnScene } from "./index.ts";
+import { loadScene } from "../index.ts";
+
+const autumnScene = await loadScene("autumn");
 
 // A "now" gust as the park's shader reads it from uSim3's first texel (x: the gust's signed strength),
 // sampled every frame for six seconds after the press: the shared gust pulse (sims/wind.ts) at the

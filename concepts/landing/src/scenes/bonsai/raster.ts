@@ -1,5 +1,5 @@
 // Drawing the grown tree into the maps the shader reads, on the CPU, once per tree (on the build
-// worker, with the tree: sim.ts bonsaiGrowth) and again on the page after a cut or when cut twigs
+// worker, with the tree: build.ts bonsaiGrowth) and again on the page after a cut or when cut twigs
 // regrow, in display units projected the way the camera sees them.
 //   wood (uSim0, rgba16f): signed distance to the bark (units, negative inside), the branch radius
 //     there, the depth of its front surface, and deadness (jin). Branches meeting at a fork are

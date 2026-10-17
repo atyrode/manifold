@@ -12,6 +12,7 @@
 // canopy's gaps), K_rain, K_wind, K_mark (trigger 2 summons the M).
 import { glslFloat } from "../../shaders/glsl.ts";
 import { canopyGroveGlsl } from "../../shaders/lib/canopy.ts";
+import { BAMBOO_PASSAGE } from "./constants.ts";
 import {
   BAMBOO_BASIN,
   BAMBOO_CELLS,
@@ -23,7 +24,6 @@ import {
   BAMBOO_LAYERS,
   BAMBOO_LIP,
   BAMBOO_MAX_LEAVES,
-  BAMBOO_PASSAGE,
   BAMBOO_POST_X,
   BAMBOO_POUR,
   BAMBOO_RIPPLES,

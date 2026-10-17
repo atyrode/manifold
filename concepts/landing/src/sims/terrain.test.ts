@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { runBudgeted } from "./clock.ts";
+import { TERRAIN_BASES } from "./terrain-limits.ts";
 import {
   generateTerrain,
   packTerrain,
@@ -7,7 +8,6 @@ import {
   type Terrain,
   type TerrainOptions,
   TERRAIN_ROAD_MAX_SLOPE,
-  TERRAIN_BASES,
   TERRAIN_VILLAGE_STREETS,
   TerrainBuilder,
   terrainWays,

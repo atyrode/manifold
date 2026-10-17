@@ -12,8 +12,6 @@ import { feature, range, toggle, type ParamDef } from "../../params.ts";
 import { atmosphereGroups, skyKnobs, skyTheme, weatherKnobs } from "../atmosphere.ts";
 import { giantKnobs } from "../planet.ts";
 import type { SceneDef } from "../types.ts";
-import { campfireGlsl } from "./shader.ts";
-import { campfireSim } from "./sim.ts";
 
 const params: readonly ParamDef[] = [
   range(
@@ -160,9 +158,7 @@ export const campfireScene: SceneDef = {
       blurb: "An M carved in the log bench, glowing in the firelight.",
     },
   },
-  glsl: campfireGlsl,
-  entry: "sceneCampfire",
-  sim: campfireSim(params),
+  code: () => import("./code.ts"),
   theme: skyTheme(params),
   // Entrance: embers in a dark night, a flame catches and grows, the firelight spreads, sparks start.
   // Exit: the fire dies down to embers and a last curl of smoke, the firelight withdraws.

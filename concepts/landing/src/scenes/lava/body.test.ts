@@ -1,7 +1,9 @@
 import { expect, test } from "bun:test";
 import { HeadlessSim, type HeadlessFrame } from "../../sims/headless.ts";
-import { lavaScene } from "./index.ts";
+import { loadScene } from "../index.ts";
 import { LAVA_MAX } from "./sim.ts";
+
+const lavaScene = await loadScene("lava");
 
 interface Flow {
   /** Separate blobs in the lamp (parcels within 1.4 radii of each other are one blob), per frame. */

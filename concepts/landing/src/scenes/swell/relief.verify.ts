@@ -4,7 +4,9 @@
 // low camera over its rolling wave. It runs the scene's own GLSL; registered in verify-browser.ts.
 import { fragmentSourceFor, packParams, vertexSource } from "../../shaders/index.ts";
 import { defaultsFor, paramDefaults, renderSettings } from "../../state.ts";
-import { swellScene } from "./index.ts";
+import { loadScene } from "../index.ts";
+
+const swellScene = await loadScene("swell");
 
 const WIDTH = 240;
 const HEIGHT = 60;

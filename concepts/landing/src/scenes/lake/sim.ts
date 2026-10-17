@@ -148,12 +148,6 @@ const SONG_FIRST = 9;
 /** Seconds after the M is switched on before it sings in. */
 const MARK_DELAY = 1.5;
 
-/**
- * Seconds the scene's entrance and exit take (SceneDef.passage; the shader reads both). Entrance:
- * the camera tilts down from the aurora onto the ice, and a crack sings across it. Exit: a gust of
- * snow streams across the ice while the camera tilts back up to the sky.
- */
-export const LAKE_PASSAGE: { enter: number; exit: number } = { enter: 2.8, exit: 1.5 };
 /** How far into the entrance (0..1) a crack starts to sing, and how fast its front runs (screen heights per second). */
 const ENTRANCE_SING_AT = 0.4;
 const ENTRANCE_ZIP_SPEED = 2;

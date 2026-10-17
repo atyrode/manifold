@@ -112,9 +112,6 @@ import { Swarm } from "./swarm.ts";
 /** The codes of uSim0's red channel, which this sim writes. */
 export { BEES_CODE } from "./layout.ts";
 
-/** Trigger slot of the swarm's "now" button (the shooting stars have slot 0, lightning 1). */
-export const BEES_SWARM_TRIGGER = 2;
-
 const MAX_STEPS = 6;
 /** Steps pre-run so the page opens with the colony at work (30 s), at least WARM_MS of a frame on them, WARM_CHUNK between two looks at the clock. */
 const WARM_STEPS = 30 * 60;

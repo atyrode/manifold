@@ -4,15 +4,15 @@
 // mystical layer, strongest at dusk and night: small pale forest spirits (kodama) appearing on the
 // roots, stones and branches, rattling their heads round and fading, glowing mushrooms, drifting
 // spores, and now and then a great stag crossing far off between the trunks. The spirits, the stag,
-// the spores and the mist's banks live in sim.ts; shader.ts paints the forest around them.
+// the spores and the mist's banks live in build.ts (sim.ts uploads them); shader.ts paints the
+// forest around them.
 // Passage: the camera glides in between the trunks, braking, and settles, then the spirits pop up
 // one by one on their perches; on the way out they turn their heads and vanish one by one while the
-// camera drifts back into the mist, gathering speed (FOREST_PASSAGE in sim.ts).
+// camera drifts back into the mist, gathering speed (FOREST_PASSAGE in constants.ts).
 import { feature, range, seed, type ParamDef } from "../../params.ts";
 import { atmosphereGroups, skyKnobs, weatherKnobs } from "../atmosphere.ts";
 import type { SceneDef } from "../types.ts";
-import { forestGlsl } from "./shader.ts";
-import { FOREST_PASSAGE, forestSim } from "./sim.ts";
+import { FOREST_PASSAGE } from "./constants.ts";
 
 const params: readonly ParamDef[] = [
   feature(
@@ -137,10 +137,8 @@ export const forestScene: SceneDef = {
       blurb: "An M of roots on the near boulder, glowing with the spirits' light.",
     },
   },
-  glsl: forestGlsl,
+  code: () => import("./code.ts"),
   passage: FOREST_PASSAGE,
-  entry: "sceneForest",
-  sim: forestSim(params),
   // The moon takes a phase (K_moon) in the shared sky: in the gaps, and in its shafts at night.
   features: { SKY_MOON_PHASE: 1 },
 };

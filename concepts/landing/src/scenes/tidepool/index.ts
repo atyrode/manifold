@@ -9,8 +9,7 @@ import { WATER_TIERS } from "../../shaders/lib/water.ts";
 import { atmosphereGroups, skyKnobs, weatherKnobs } from "../atmosphere.ts";
 import { plantKnobs } from "../plants.ts";
 import type { SceneDef } from "../types.ts";
-import { TIDEPOOL_PASSAGE, tidepoolGlsl } from "./shader.ts";
-import { tidepoolSim } from "./sim.ts";
+import { TIDEPOOL_PASSAGE } from "./constants.ts";
 
 const params: readonly ParamDef[] = [
   range(
@@ -274,13 +273,11 @@ export const tidepoolScene: SceneDef = {
       blurb: "A landmark of its own: an M laid in white pebbles.",
     },
   },
-  glsl: tidepoolGlsl,
-  entry: "sceneTidepool",
+  code: () => import("./code.ts"),
   // Entering: the last of a wave's white water drains back to the sea up the frame and the anemones
   // unfurl; leaving: a wave breaks in from the sea and sweeps down over everything, the anemones
   // snapping shut ahead of it.
   passage: TIDEPOOL_PASSAGE,
-  sim: tidepoolSim(params),
   // The water: the sim's surface (sims/shallow.ts) with the breeze's ripples and their caustics on
   // the bed (causticRipples, waterCaustic). Seen from straight above, it mirrors the sky its own way.
   features: { WATER_TIER: WATER_TIERS.caustics },

@@ -5,8 +5,7 @@
 import { feature, range, seed, toggle, type ParamDef } from "../../params.ts";
 import { atmosphereGroups, skyKnobs, skyTheme, weatherKnobs } from "../atmosphere.ts";
 import type { SceneDef } from "../types.ts";
-import { streetGlsl } from "./shader.ts";
-import { STREET_PASSAGE, streetSim } from "./sim.ts";
+import { STREET_PASSAGE } from "./constants.ts";
 
 const params: readonly ParamDef[] = [
   range(
@@ -106,9 +105,7 @@ export const streetScene: SceneDef = {
     },
     manifold: { title: "Manifold mark", blurb: "A landmark of its own: the crossing's paint." },
   },
-  glsl: streetGlsl,
-  entry: "sceneStreet",
-  sim: streetSim(params),
+  code: () => import("./code.ts"),
   // Entrance: the camera comes down from the skyline onto the crossing as the crowd walks in along its
   // sidewalks to gather. Exit: the camera tilts up to the skyline again (the rain follows the pitch).
   passage: STREET_PASSAGE,

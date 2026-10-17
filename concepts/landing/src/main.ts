@@ -2,7 +2,9 @@
 // and hands the lab a host interface. Every change is a URL query applied here, read as a link is
 // (state.ts `readSetup`: this build's keys, an unknown scene reported).
 import { Lab } from "./lab.ts";
+import { sceneStep } from "./lab/families.ts";
 import { DitherRenderer } from "./renderer.ts";
+import { loadScene, prefetchScene, type SceneId } from "./scenes/index.ts";
 import type { SkyPlanet } from "./scenes/planets.ts";
 import {
   accentOf,
@@ -42,8 +44,38 @@ try {
     reducedMotion.matches,
   );
   renderer.start();
+  // The code of the scene the page opens on (a chunk of its own: src/scenes/index.ts `loadScene`)
+  // is fetched now, while the lab is built, rather than on the renderer's first frame.
+  prefetchScene(state.scene);
 } catch (error: unknown) {
   console.error("evt=landing.renderer.unavailable", error);
+}
+
+/** Milliseconds to wait for a quiet moment where the browser cannot say when it is idle. */
+const IDLE_FALLBACK_MS = 1000;
+/** The scene whose neighbours' code was last fetched ahead (see `prefetchAround`). */
+let aroundScene: SceneId | undefined;
+
+/**
+ * Once the scene on screen has its code, fetch the code of the scenes `[` and `]` step to from it
+ * (the Scenes view's order) while the page is idle, so a step there builds at once. Without
+ * WebGL2 nothing is drawn, so nothing is fetched.
+ */
+function prefetchAround(): void {
+  const scene = state.scene;
+  if (renderer === undefined || scene === aroundScene) return;
+  aroundScene = scene;
+  loadScene(scene).then(
+    () => {
+      const ahead = () => {
+        prefetchScene(sceneStep(scene, -1));
+        prefetchScene(sceneStep(scene, 1));
+      };
+      if ("requestIdleCallback" in window) requestIdleCallback(ahead);
+      else setTimeout(ahead, IDLE_FALLBACK_MS);
+    },
+    () => undefined,
+  );
 }
 
 // Reduced motion follows the system's setting as it changes, not only as the page opened.
@@ -105,6 +137,7 @@ function apply(
   renderer?.update(options.cut ? { ...settings, passage: false } : settings, {
     keepClocks: options.keepClocks === true,
   });
+  prefetchAround();
 
   document.body.dataset.scene = state.scene;
   document.body.dataset.mode = state.mode;

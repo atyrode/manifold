@@ -34,6 +34,7 @@
 // over the timetable while it plays; all of it is exactly off at rest.
 import { glslFloat } from "../../shaders/glsl.ts";
 import { birdsGlsl } from "../../shaders/lib/birds.ts";
+import { TRAIN_LINES, TRAIN_PASSAGE } from "./constants.ts";
 import {
   TRAIN_BLOCK,
   TRAIN_BLOCKS,
@@ -42,8 +43,6 @@ import {
   TRAIN_CROSSING,
   TRAIN_EVENT_SLOTS,
   TRAIN_FOCAL,
-  TRAIN_LINES,
-  TRAIN_PASSAGE,
   TRAIN_ROAD_Z,
   TRAIN_STATION,
   TRAIN_TUNNEL,

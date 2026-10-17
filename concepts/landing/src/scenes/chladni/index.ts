@@ -3,8 +3,14 @@
 // lights the metal, the heaped sand and the hub the plate is driven through.
 import { choice, counts, feature, range, seed, type ParamDef } from "../../params.ts";
 import type { SceneDef } from "../types.ts";
-import { chladniGlsl, chladniLamps, chladniMetals, chladniSands } from "./shader.ts";
-import { CHLADNI_ENTER, CHLADNI_EXIT, CHLADNI_GRAINS, chladniSim } from "./sim.ts";
+import {
+  CHLADNI_ENTER,
+  CHLADNI_EXIT,
+  CHLADNI_GRAINS,
+  chladniLamps,
+  chladniMetals,
+  chladniSands,
+} from "./constants.ts";
 
 const params: readonly ParamDef[] = [
   choice(
@@ -125,9 +131,7 @@ export const chladniScene: SceneDef = {
     light: { title: "Light", blurb: "The lamp over the plate, and the metal's reflection of it." },
     manifold: { title: "Manifold mark", blurb: "A figure in the shape of the M." },
   },
-  glsl: chladniGlsl,
-  entry: "sceneChladni",
+  code: () => import("./code.ts"),
   // Entrance: sand strewn over the still plate, then the plate sings it into its lines. Exit: the plate tilts and the sand slides off.
   passage: { enter: CHLADNI_ENTER, exit: CHLADNI_EXIT },
-  sim: chladniSim(params),
 };

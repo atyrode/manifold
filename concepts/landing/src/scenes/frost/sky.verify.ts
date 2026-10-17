@@ -4,7 +4,9 @@
 // target; the full Frost program checks the coupling at the rendered picture.
 import { defaultsFor, paramDefaults, renderSettings } from "../../state.ts";
 import { fragmentSourceFor, packParams, vertexSource } from "../../shaders/index.ts";
-import { sceneDefs } from "../index.ts";
+import { loadScene } from "../index.ts";
+
+const frostScene = await loadScene("frost");
 
 function check(ok: boolean, message: string): void {
   if (!ok) throw new Error(`frost sky: ${message}`);
@@ -180,7 +182,7 @@ function frostParams(over: Record<string, number>): readonly number[] {
 export function verifyFrostSky(gl: WebGL2RenderingContext): Record<string, unknown> {
   check(gl.getExtension("EXT_color_buffer_float") !== null, "float render targets unavailable");
   const result: Record<string, unknown> = {};
-  const frost = sceneDefs.frost;
+  const frost = frostScene;
   const probeDef = { ...frost, entry: "toolboxProbe", glsl: PROBE };
   const probe = program(gl, fragmentSourceFor(probeDef));
   const plain = program(gl, fragmentSourceFor({ ...probeDef, features: {} }));

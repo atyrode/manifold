@@ -4,7 +4,7 @@ import { birdKnobs, birdsGroup } from "../../shaders/lib/birds.ts";
 import { WATER_TIERS } from "../../shaders/lib/water.ts";
 import { atmosphereGroups, skyComponentKnobs } from "../atmosphere.ts";
 import type { SceneDef } from "../types.ts";
-import { SWELL_METEOR_TRIGGER, swellGlsl } from "./shader.ts";
+import { SWELL_METEOR_TRIGGER } from "./constants.ts";
 
 export const swellScene: SceneDef = {
   id: "swell",
@@ -59,8 +59,7 @@ export const swellScene: SceneDef = {
     birds: birdsGroup,
     manifold: { title: "Manifold mark", blurb: "Ways the M can live in this night." },
   },
-  glsl: swellGlsl,
-  entry: "sceneSwell",
+  code: () => import("./code.ts"),
   // Enter: the camera rises from just above the water to its height while one long swell rolls in from
   // the far sea. Exit: it sinks toward the waves and tips down into them.
   passage: { enter: 2.8, exit: 1.5 },

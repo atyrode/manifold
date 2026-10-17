@@ -56,6 +56,7 @@ import { approach, clamp, smoothstep } from "../../sims/math.ts";
 import { Random } from "../../sims/random.ts";
 import { DataTexture } from "../../sims/texture.ts";
 import type { SceneSim, SimFactory, SimFrame } from "../types.ts";
+import { PASSAGE } from "./constants.ts";
 
 // ---- The room, shared with the shader ----
 
@@ -96,8 +97,6 @@ export const CANDLE_Z = 0.72;
 /** The ceiling fan's pace at either end of its knob (turns per second): lazy; even the fastest leaves a second between blades. */
 export const FAN_SLOW = 0.04;
 export const FAN_FAST = 0.25;
-/** Seconds the scene's entrance and exit take (SceneDef.passage), shared with the shader. */
-export const PASSAGE = { enter: 2.8, exit: 1.7 } as const;
 /** The fan stands still as you sit down and spins up between these seconds of the entrance. */
 const FAN_SPIN_FROM = 0.6;
 const FAN_SPIN_TO = 2.7;

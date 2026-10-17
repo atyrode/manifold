@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import { HeadlessSim } from "../../sims/headless.ts";
-import { trainScene } from "./index.ts";
+import { loadScene } from "../index.ts";
 import {
   TRAIN_BLOCK,
   TRAIN_BRIDGE,
@@ -9,6 +9,8 @@ import {
   TRAIN_STATION,
   TRAIN_TUNNEL,
 } from "./sim.ts";
+
+const trainScene = await loadScene("train");
 
 /** An event as the shader is handed it: kind code, odometer reading (m) where it starts, length, seed 0..255. */
 type Seen = [kind: number, start: number, length: number, seed: number];

@@ -60,13 +60,7 @@ import { clamp, lerp, smoothstep } from "../../sims/math.ts";
 import { mulberry32 } from "../../sims/random.ts";
 import { DataTexture } from "../../sims/texture.ts";
 import type { SceneSim, SimFactory, SimFrame } from "../types.ts";
-
-export const petriChemistries = ["Turing", "BZ"] as const;
-export const petriPalettes = ["stain", "ink", "UV"] as const;
-/** The `regime` knob, in order: wandering along the loop, then each of grayScottRegimes. */
-export const petriRegimes = ["wander", ...grayScottRegimes.map((regime) => regime.label)] as const;
-/** The Advanced feed and kill knobs are in thousandths (37 = 0.037). */
-export const PETRI_FEED_KILL_UNIT = 1000;
+import { PETRI_FEED_KILL_UNIT, PETRI_PASSAGE } from "./constants.ts";
 
 /** Inner radius of the dish in frame heights at the middle of the size knob... */
 export const PETRI_RADIUS = 0.43;
@@ -81,20 +75,6 @@ export const PETRI_RIPPLES = 4;
 export const PETRI_RIDGE_TEXEL = 7;
 /** The texel of the events texture's row 0 that holds the entrance's spread. */
 export const PETRI_ARRIVAL_TEXEL = 6;
-/**
- * Seconds the scene's entrance and exit take (SceneDef.passage; the shader reads them all).
- * Entrance: the dish slides in from the right across the bench, under the lamp, and settles with a
- * touch of overshoot (`slide`); once it is nearly home the pattern spreads from a seed point over
- * the dish (`spreadStart` seconds in, over `spread` seconds of the sim's own clock, which starts
- * after the prewarm). Exit: the dish slides off to the left, gathering speed.
- */
-export const PETRI_PASSAGE = {
-  enter: 2.8,
-  exit: 1.4,
-  slide: 1.5,
-  spreadStart: 0.6,
-  spread: 1.8,
-} as const;
 /**
  * A drop's ripples: ring speed in dish diameters per second, width of the wave packet and how far
  * it bends the view of the bottom (dish diameters), seconds until it has died away.

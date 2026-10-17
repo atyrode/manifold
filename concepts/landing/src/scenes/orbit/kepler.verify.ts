@@ -5,8 +5,10 @@
 // writes one number per cell, each over three bytes.
 import { fragmentSourceFor, packParams, vertexSource } from "../../shaders/index.ts";
 import { defaultsFor, paramDefaults, renderSettings } from "../../state.ts";
-import { orbitScene } from "./index.ts";
+import { loadScene } from "../index.ts";
 import { ORBIT_CAPTURE } from "./shader.ts";
+
+const orbitScene = await loadScene("orbit");
 
 /** Numbers are written as value / SPAN, 0..1. */
 const SPAN = 4;

@@ -67,6 +67,7 @@ import { Random } from "../../sims/random.ts";
 import { springStep, type Spring } from "../../sims/spring.ts";
 import { DataTexture } from "../../sims/texture.ts";
 import type { PrincipalState, SceneSim, SimFactory, SimFrame } from "../types.ts";
+import { GUST_TRIGGER, MAX_CLOCKS, MEADOW_PASSAGE } from "./constants.ts";
 
 const TAU = Math.PI * 2;
 /** TAU as the shader spells it, so the gust phases match the GLSL. */
@@ -82,10 +83,6 @@ export const MEADOW_FOCAL = 1.18;
 export const MEADOW_GROUND = 2;
 /** Depth of the tree line at the far edge of the meadow. */
 export const MEADOW_TREES_Z = 110;
-
-/** Trigger slots: a big gust now, and the mown M caught by the light. */
-export const GUST_TRIGGER = 0;
-export const MARK_TRIGGER = 1;
 
 // ---- the gust field (shared with shader.ts) -----------------------------------------------------
 
@@ -144,9 +141,6 @@ export const MEADOW_GUST = {
   nowWobK: 0.07,
   nowWobP: 1.3,
 } as const;
-
-/** Seconds the entrance and the exit take (SceneDef.passage; the shader reads them too). */
-export const MEADOW_PASSAGE = { enter: 3, exit: 1.6 } as const;
 
 /**
  * The passage's choreography (shared with shader.ts), in seconds into the entrance or the exit.
@@ -424,7 +418,6 @@ export const MEADOW_MARGIN =
 
 // ---- clocks and seeds (shared with shader.ts) ---------------------------------------------------
 
-export const MAX_CLOCKS = 5;
 export const SECTORS = 16;
 export const MAX_SEEDS = 32;
 export const SEED_GROUP = 8;

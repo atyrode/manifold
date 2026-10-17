@@ -5,8 +5,7 @@
 import { choice, feature, range, toggle, type ParamDef } from "../../params.ts";
 import { paletteTheme } from "../atmosphere.ts";
 import type { SceneDef } from "../types.ts";
-import { incenseGlsl } from "./shader.ts";
-import { INCENSE_PASSAGE, incenseKinds, incenseSim } from "./sim.ts";
+import { INCENSE_PASSAGE, incenseKinds } from "./constants.ts";
 
 const params: readonly ParamDef[] = [
   choice(
@@ -167,9 +166,7 @@ export const incenseScene: SceneDef = {
       blurb: "An M of lamplight through a carved transom, drawn by the smoke drifting through it.",
     },
   },
-  glsl: incenseGlsl,
-  entry: "sceneIncense",
-  sim: incenseSim(params),
+  code: () => import("./code.ts"),
   // Washi walls are pale: the page copy goes dark on them (the shader's `pagePaper()` follows this).
   theme: paletteTheme(params, "room", (room) => room > 2.5),
 };

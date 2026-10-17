@@ -5,9 +5,6 @@ import { glslFloat, glslVec3 } from "../../shaders/glsl.ts";
 import type { Vec3 } from "../../sims/verlet.ts";
 import { SOLAR_SUN_RADIUS } from "./solar.ts";
 
-/** Seconds of the entrance (lowered from above, the Sun lighting up) and the exit (the motor winding down, the Sun cooling, hoisted away). */
-export const MOBILE_PASSAGE = { enter: 2.8, exit: 1.5 } as const;
-
 /** The wall's plane (z) and the ceiling's height (y). */
 export const MOBILE_WALL = -1.4;
 export const MOBILE_CEILING = 3.6;

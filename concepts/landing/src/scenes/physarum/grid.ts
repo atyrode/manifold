@@ -23,8 +23,6 @@ export const PHYSARUM_DISH = 0.9;
 export const PHYSARUM_FAR = 8;
 /** Steps a speck lives without reaching food (a minute at 40 steps a second): it roams the whole dish. */
 export const LIFE = 2400;
-/** Deposits are scaled so the trail's total is the same at any population. */
-export const REFERENCE_AGENTS = 40_960;
 /** Trail one speck per texel keeps up at the reference population. */
 export const AGENT_UNIT = 0.1;
 

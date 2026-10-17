@@ -1,7 +1,9 @@
 import { afterEach, expect, test } from "bun:test";
 import { HeadlessSim } from "../../sims/headless.ts";
-import { sandtableScene } from "./index.ts";
+import { loadScene } from "../index.ts";
 import { SANDTABLE } from "./sim.ts";
+
+const sandtableScene = await loadScene("sandtable");
 
 // The sim sends its machines' state every frame and the heights at most every 1000/30 ms. These
 // checks drive it at 60 Hz with a little jitter on a fake clock, on the headless stand-in, which

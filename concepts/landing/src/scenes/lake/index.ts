@@ -17,8 +17,7 @@ import { birdKnobs, birdsGroup } from "../../shaders/lib/birds.ts";
 import { WATER_TIERS } from "../../shaders/lib/water.ts";
 import { atmosphereGroups, skyComponentKnobs, weatherKnobs } from "../atmosphere.ts";
 import type { SceneDef } from "../types.ts";
-import { LAKE_CORONA_TRIGGER, LAKE_METEOR_TRIGGER, lakeGlsl } from "./shader.ts";
-import { LAKE_PASSAGE, lakeSim } from "./sim.ts";
+import { LAKE_CORONA_TRIGGER, LAKE_METEOR_TRIGGER, LAKE_PASSAGE } from "./constants.ts";
 
 const params: readonly ParamDef[] = [
   choice(
@@ -297,9 +296,7 @@ export const lakeScene: SceneDef = {
         "A landmark of its own: an M cracked into the near ice, or folded into a curtain of the aurora over the fjord.",
     },
   },
-  glsl: lakeGlsl,
-  entry: "sceneLake",
-  sim: lakeSim(params),
+  code: () => import("./code.ts"),
   // The moon's and the window's paths down the ice and over the fjord: the water's glint
   // (waterGlint, its mirror tier); the ice's own mirror, bubbles and cracks are the scene's. The
   // fjord's open water: the breeze's cat's-paws breaking up its screen-space mirror and widening the

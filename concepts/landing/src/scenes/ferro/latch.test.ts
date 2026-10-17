@@ -1,6 +1,8 @@
 import { expect, test } from "bun:test";
 import { HeadlessSim } from "../../sims/headless.ts";
-import { ferroScene } from "./index.ts";
+import { loadScene } from "../index.ts";
+
+const ferroScene = await loadScene("ferro");
 
 /** A spike stands where its height (uSim0 r) is past this: well above a settled spring's ringing. */
 const STANDING = 0.01;

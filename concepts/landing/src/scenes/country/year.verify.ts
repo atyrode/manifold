@@ -18,8 +18,8 @@
 //   of a few days, no step changes more than a small share of the land's cells, while each stretch
 //   changes many.
 import { featureKey, fragmentSourceFor, sceneFeatures, shaderValues } from "../../shaders/index.ts";
-import { countryScene } from "./index.ts";
-import { COUNTRY_SEASONS } from "./season.ts";
+import { loadScene } from "../index.ts";
+import { COUNTRY_SEASONS } from "./constants.ts";
 import {
   countryBuild,
   type CountryBuilt,
@@ -27,6 +27,8 @@ import {
   countryProgram,
   differing,
 } from "./terrain.verify.ts";
+
+const countryScene = await loadScene("country");
 
 const WIDTH = 240;
 const HEIGHT = 135;

@@ -4,7 +4,7 @@
 import { feature, range, toggle } from "../../params.ts";
 import { planetGroups, planetKnobs } from "../planet.ts";
 import type { SceneDef } from "../types.ts";
-import { ORBIT_PASSAGE, orbitGlsl } from "./shader.ts";
+import { ORBIT_PASSAGE } from "./constants.ts";
 
 /**
  * What the knobs compile in (SceneDef.featuresFor): each part whose knob starts off only while it
@@ -154,8 +154,7 @@ export const orbitScene: SceneDef = {
     ...planetGroups,
     manifold: { title: "Manifold mark", blurb: "Ways the M can live in this sky." },
   },
-  glsl: orbitGlsl,
-  entry: "sceneOrbit",
+  code: () => import("./code.ts"),
   // The camera swings round and the planet slides in from the right and settles while the moons
   // catch up along their orbits; leaving, the camera pulls back and the planet slides off left.
   passage: ORBIT_PASSAGE,

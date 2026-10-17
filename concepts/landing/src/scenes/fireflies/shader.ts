@@ -33,9 +33,7 @@ import {
 } from "./sim.ts";
 import { glslFloat } from "../../shaders/glsl.ts";
 import { plantsGlsl } from "../../shaders/lib/plants.ts";
-
-/** The "now" slot of the shared shooting stars (K_meteors): the breeze has 0 and the M 1. */
-export const FIREFLIES_METEOR_TRIGGER = 2;
+import { FIREFLIES_METEOR_TRIGGER } from "./constants.ts";
 
 export const firefliesGlsl = `
 ${plantsGlsl}

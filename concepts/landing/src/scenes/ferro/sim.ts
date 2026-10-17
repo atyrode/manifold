@@ -37,6 +37,7 @@ import { approach, clamp, lerp, smoothstep } from "../../sims/math.ts";
 import { springStep, type Spring } from "../../sims/spring.ts";
 import { DataTexture } from "../../sims/texture.ts";
 import type { SceneSim, SimFactory, SimFrame } from "../types.ts";
+import { FERRO_PASSAGE } from "./constants.ts";
 
 /** Spike-field texels per side, and the half-width of dish it covers. */
 export const FERRO_GRID = 96;
@@ -78,9 +79,6 @@ export const FERRO_SHAPE = {
   radius: 0.6,
   spikeFade: 0.35,
 } as const;
-
-/** Seconds the entrance and the exit take (SceneDef.passage; the shader reads the exit's for its ripple). */
-export const FERRO_PASSAGE = { enter: 3, exit: 1.7 } as const;
 
 /**
  * The ripple that crosses the pool as the spikes slump on the way out (shader.ts): a ring packet

@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { turned } from "../knob-turns.ts";
 import { effective, type ParamDef } from "../params.ts";
-import { sceneDefs } from "../scenes/index.ts";
+import { loadScenes } from "../scenes/index.ts";
 import {
   assembleFragment,
   LIBRARY_GATES,
@@ -12,6 +12,8 @@ import {
   settingKeyed,
   shaderValues,
 } from "./index.ts";
+
+const scenes = await loadScenes();
 
 /** Each scene's library gates: the knob that opens each, by gate. */
 function gatesOf(params: readonly ParamDef[]): Record<string, string> {
@@ -26,7 +28,7 @@ function gatesOf(params: readonly ParamDef[]): Record<string, string> {
 describe("library gates", () => {
   test("compile the planets in only while a scene that takes them holds any", () => {
     let takers = 0;
-    for (const scene of Object.values(sceneDefs)) {
+    for (const scene of scenes) {
       if (scene.planets === undefined) {
         expect(sceneFeatures(scene, undefined, 3)[PLANETS_GATE]).toBeUndefined();
         continue;
@@ -48,7 +50,7 @@ describe("library gates", () => {
 
   test("make every scene holding one knob-keyed, off at its defaults, on in its all-features set", () => {
     let gated = 0;
-    for (const scene of Object.values(sceneDefs)) {
+    for (const scene of scenes) {
       const gates = gatesOf(scene.params);
       const keyed = Object.keys(gates).length > 0;
       if (!keyed) {
@@ -92,7 +94,7 @@ describe("library gates", () => {
   test("leave each knob-keyed scene's all-features set covering every knob's turn", () => {
     // The same defines, each at least as high (a gate on, a tier at or above): the program the
     // renderer switches to for any change draws it, so the GPU checks need only sample the scenes.
-    for (const scene of Object.values(sceneDefs)) {
+    for (const scene of scenes) {
       const most = sceneFeaturesAll(scene);
       if (most === undefined) continue;
       for (const knob of scene.params) {
@@ -111,7 +113,7 @@ describe("library gates", () => {
 
 describe("knob uniforms", () => {
   test("read each knob from the component of uParams that packParams fills with it", () => {
-    for (const scene of Object.values(sceneDefs)) {
+    for (const scene of scenes) {
       const source = assembleFragment(scene);
       const packed = packParams(scene.params.map((_, index) => index + 1));
       scene.params.forEach((def, index) => {

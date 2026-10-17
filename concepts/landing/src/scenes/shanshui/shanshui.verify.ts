@@ -6,8 +6,10 @@
 import { defaultsFor, paramDefaults, renderSettings } from "../../state.ts";
 import { fragmentSourceFor, packParams, vertexSource } from "../../shaders/index.ts";
 import { HeadlessSim } from "../../sims/headless.ts";
+import { loadScene } from "../index.ts";
 import { SHANSHUI_SECTION } from "./shader.ts";
-import { shanshuiScene } from "./index.ts";
+
+const shanshuiScene = await loadScene("shanshui");
 
 const WIDTH = 320;
 const HEIGHT = 180;

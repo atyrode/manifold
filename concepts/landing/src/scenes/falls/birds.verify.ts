@@ -3,7 +3,9 @@
 // formation knob reaches the sky, and the birds follow the motion clock alone.
 import { fragmentSourceFor, packParams, vertexSource } from "../../shaders/index.ts";
 import { defaultsFor, paramDefaults, renderSettings, type Params } from "../../state.ts";
-import { sceneDefs } from "../index.ts";
+import { loadScene } from "../index.ts";
+
+const fallsScene = await loadScene("falls");
 
 const WIDTH = 192;
 const HEIGHT = 108;
@@ -59,9 +61,9 @@ export function verifyFallsBirds(gl: WebGL2RenderingContext): Record<string, unk
   const scene = program(
     gl,
     fragmentSourceFor({
-      ...sceneDefs.falls,
+      ...fallsScene,
       entry: "regressionFallsBirds",
-      glsl: sceneDefs.falls.glsl + wrapper,
+      glsl: fallsScene.glsl + wrapper,
     }),
   );
   gl.canvas.width = WIDTH;

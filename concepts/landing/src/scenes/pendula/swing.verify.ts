@@ -9,8 +9,10 @@ import {
 } from "../../shaders/index.ts";
 import { pendulumAngle, pendulumFadingSwings, pendulumStretch } from "../../sims/pendulum.ts";
 import { defaultsFor, paramDefaults, renderSettings } from "../../state.ts";
-import { sceneDefs } from "../index.ts";
+import { loadScene } from "../index.ts";
 import { PENDULA_SWING } from "./shader.ts";
+
+const pendulaScene = await loadScene("pendula");
 
 /** Angles are written as 0.5 + angle / SPAN, split over two bytes. */
 const SPAN = 2.4;
@@ -40,15 +42,15 @@ function linked(gl: WebGL2RenderingContext, fragment: string): WebGLProgram {
 
 /** Each pendulum's angle, read back from the scene's own swing (pendulaSwing, pendulaBobAt). */
 export function verifyPendulaSwing(gl: WebGL2RenderingContext): Record<string, unknown> {
-  const features = sceneFeaturesAll(sceneDefs.pendula);
+  const features = sceneFeaturesAll(pendulaScene);
   if (!features) throw new Error("pendula: no all-features program");
   const program = linked(
     gl,
     fragmentSourceFor(
       {
-        ...sceneDefs.pendula,
+        ...pendulaScene,
         entry: "regressionPendulaSwing",
-        glsl: `${sceneDefs.pendula.glsl}
+        glsl: `${pendulaScene.glsl}
         Shade regressionPendulaSwing(vec2 uv, vec2 cell, float t) {
           float n0 = 2.0 * (K_count - 1.0);
           float k = n0 + floor(cell.x);

@@ -7,8 +7,10 @@
 // The M is measured against the open grass it is cut through, not the crops the land model would
 // grow there with the knob off: those may be as pale as a ripe field.
 import { fragmentSourceFor, sceneFeatures, shaderValues } from "../../shaders/index.ts";
-import { countryScene } from "./index.ts";
+import { loadScene } from "../index.ts";
 import { countryBuild, countryDraw, countryProgram } from "./terrain.verify.ts";
+
+const countryScene = await loadScene("country");
 
 const WIDTH = 320;
 const HEIGHT = 180;

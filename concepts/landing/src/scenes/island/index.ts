@@ -9,7 +9,7 @@ import { feature, range, seed, toggle, type ParamDef } from "../../params.ts";
 import { WATER_TIERS } from "../../shaders/lib/water.ts";
 import { atmosphereGroups, skyKnobs, skyTheme, weatherKnobs } from "../atmosphere.ts";
 import type { SceneDef } from "../types.ts";
-import { ISLAND_PASSAGE, islandGlsl } from "./shader.ts";
+import { ISLAND_PASSAGE } from "./constants.ts";
 
 const params: readonly ParamDef[] = [
   range(
@@ -104,8 +104,7 @@ export const islandScene: SceneDef = {
       blurb: "A landmark of its own: the M as a flowerbed on the lawn.",
     },
   },
-  glsl: islandGlsl,
-  entry: "sceneIsland",
+  code: () => import("./code.ts"),
   // A bright island by day is a light page: dark copy from morning to evening on a still clock, unless steady rain greys it.
   theme: skyTheme(params, { from: 0.31, to: 0.69, rainBelow: 0.3 }),
   // Entrance: the camera swoops down from higher and farther and settles into the framing while the gull

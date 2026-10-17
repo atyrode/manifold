@@ -9,8 +9,7 @@ import { atmosphereGroups, skyKnobs, weatherKnobs } from "../atmosphere.ts";
 import { plantKnobs } from "../plants.ts";
 import type { SceneDef } from "../types.ts";
 import { worldGates } from "../world.ts";
-import { FALLS_METEOR_TRIGGER, FALLS_PASSAGE, fallsGlsl } from "./shader.ts";
-import { fallsSim } from "./sim.ts";
+import { FALLS_METEOR_TRIGGER, FALLS_PASSAGE } from "./constants.ts";
 
 // The sky's and the weather's knobs over the gorge: the world's sky draws every part they can show.
 const skyAndWeather = [
@@ -132,8 +131,7 @@ export const fallsScene: SceneDef = {
       blurb: "A landmark of its own: an M carved into the rock behind the water.",
     },
   },
-  glsl: fallsGlsl,
-  entry: "sceneFalls",
+  code: () => import("./code.ts"),
   // The camera starts up at the lip and tilts down the fall to the pool as the ferns spring up on
   // the bank and the spray rises, the rainbow forming in it; on the way out it tilts back up the
   // fall into a surge of spray.
@@ -142,5 +140,4 @@ export const fallsScene: SceneDef = {
   // (K_moon), the cloud deck, the stars, the aurora and shooting stars, the rain. The birds are the
   // gorge's own.
   features: worldGates(skyAndWeather),
-  sim: (gl) => fallsSim(gl, fallsScene.params),
 };

@@ -8,9 +8,11 @@
 // picture twice, stands still at motion 0 and differs from the scene without it.
 import { fragmentSourceFor, sceneFeaturesAll } from "../../shaders/index.ts";
 import { generateTerrain } from "../../sims/terrain.ts";
-import { countryScene } from "./index.ts";
+import { loadScene } from "../index.ts";
 import { COUNTRY_MAP } from "./sim.ts";
 import { countryBuild, countryDraw, countryProgram, differing, fnv } from "./terrain.verify.ts";
+
+const countryScene = await loadScene("country");
 
 // Probe columns and rows: parties then carts by motion time; parcels by id, each pasture's animals
 // by motion time.

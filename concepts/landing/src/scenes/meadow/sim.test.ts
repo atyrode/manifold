@@ -1,7 +1,9 @@
 import { expect, test } from "bun:test";
 import { HeadlessSim, type HeadlessFrame } from "../../sims/headless.ts";
-import { meadowScene } from "./index.ts";
+import { loadScene } from "../index.ts";
 import { MAX_SEEDS, MEADOW_FOCAL, MEADOW_GUST } from "./sim.ts";
+
+const meadowScene = await loadScene("meadow");
 
 const ASPECT = 16 / 9;
 const ROWS = 540;

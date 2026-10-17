@@ -15,8 +15,7 @@ import { birdKnobs, birdsGroup } from "../../shaders/lib/birds.ts";
 import { CLOUD_TIERS } from "../../shaders/lib/clouds.ts";
 import { atmosphereGroups, skyKnobs, weatherKnobs } from "../atmosphere.ts";
 import type { SceneDef } from "../types.ts";
-import { trainGlsl } from "./shader.ts";
-import { TRAIN_LINES, TRAIN_PASSAGE, trainSim } from "./sim.ts";
+import { TRAIN_LINES, TRAIN_PASSAGE } from "./constants.ts";
 
 const params: readonly ParamDef[] = [
   range(
@@ -244,9 +243,7 @@ export const trainScene: SceneDef = {
         "A landmark of its own: the M as a constellation over the country, and on the stations' boards.",
     },
   },
-  glsl: trainGlsl,
-  entry: "sceneTrain",
-  sim: trainSim(params),
+  code: () => import("./code.ts"),
   // Entrance: out of a tunnel into the night country, the tea settling from the jolt. Exit: into a tunnel.
   passage: TRAIN_PASSAGE,
   // The shared moon in its phase (K_moon); the shared clouds' calm deck (its own cover and light).

@@ -4,14 +4,12 @@
 import { choice, feature, knobValue, range, seed, type ParamDef } from "../../params.ts";
 import { paletteTheme } from "../atmosphere.ts";
 import type { SceneDef } from "../types.ts";
-import { marbleGlsl } from "./shader.ts";
 import {
   MARBLE_PASSAGE,
   marblePalettes,
   marblePatterns,
   marblePracticeChoices,
-  marbleSim,
-} from "./sim.ts";
+} from "./constants.ts";
 
 const params: readonly ParamDef[] = [
   choice(
@@ -135,9 +133,7 @@ export const marbleScene: SceneDef = {
     },
     manifold: { title: "Manifold mark", blurb: "The M written into the ink with a stylus." },
   },
-  glsl: marbleGlsl,
-  entry: "sceneMarble",
-  sim: marbleSim(params),
+  code: () => import("./code.ts"),
   passage: MARBLE_PASSAGE,
   // Paper, and the pale basin under suminagashi's dark inks, are light: the page copy goes dark on
   // them (the shader's `pagePaper()` follows this).

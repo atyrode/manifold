@@ -11,8 +11,10 @@ import {
 } from "../../shaders/index.ts";
 import { defaultsFor, renderSettings } from "../../state.ts";
 import { LAKE_FJORD } from "../../verify/kit.ts";
-import { lakeScene } from "./index.ts";
+import { loadScene } from "../index.ts";
 import { FJORD_HORIZON } from "./shader.ts";
+
+const lakeScene = await loadScene("lake");
 
 const WIDTH = 240;
 const HEIGHT = 135;

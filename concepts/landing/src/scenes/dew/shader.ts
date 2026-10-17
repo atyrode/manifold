@@ -16,19 +16,16 @@
 // levels, or nothing, decided against the cell's own dither threshold (a feature fainter than the
 // first level becomes a sparse, still stipple). A slowly moving edge then flips each cell once, and
 // no thread or bead breaks into multicoloured dots. Depth of field only widens and thins them.
+import { DEW_CODE, DEW_KIND_FRAME, DEW_KIND_SPIRAL, DEW_KIND_STEM } from "./build.ts";
+import { DEW_PASSAGE } from "./constants.ts";
 import {
   DEW_BEAD_HANG,
   DEW_BEAD_R,
   DEW_BEAD_SCALE,
   DEW_BLUR_MAX,
-  DEW_CODE,
   DEW_DOF,
   DEW_FRAME_HALF,
   DEW_GLINT_SWELL,
-  DEW_KIND_FRAME,
-  DEW_KIND_SPIRAL,
-  DEW_KIND_STEM,
-  DEW_PASSAGE,
   DEW_PIECE_AWN,
   DEW_PIECE_HEAD,
   DEW_PIECE_LEAF,

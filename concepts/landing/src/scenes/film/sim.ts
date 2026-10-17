@@ -73,9 +73,8 @@ import { clamp } from "../../sims/math.ts";
 import { mulberry32 } from "../../sims/random.ts";
 import { DataTexture } from "../../sims/texture.ts";
 import type { SceneSim, SimFactory, SimFrame } from "../types.ts";
+import { FILM_PASSAGE, filmShapes } from "./constants.ts";
 
-/** What holds the film, in `shape` knob order. */
-export const filmShapes = ["frame", "loop", "bubble"] as const;
 type FilmShape = (typeof filmShapes)[number];
 
 // ---- the outline (mirrored in GLSL by filmOutline) -----------------------------------------------
@@ -143,11 +142,6 @@ const BREAK_INSET = 0.022;
 /** Seconds the frame stands empty after a burst, and a new film takes to draw. */
 const EMPTY_SECONDS = 1.4;
 const DRAW_SECONDS = 4.5;
-/**
- * The scene's passage, seconds: the entrance draws a fresh film up from the bottom wire (a bubble is
- * blown) in as long, and the exit pops the film.
- */
-export const FILM_PASSAGE = { enter: 3, exit: 1.6 } as const;
 /**
  * The exit paces a burst it begins: the rim's clock stands at exit^EXIT_RIM_POWER of the time the
  * rim takes to reach the film's farthest point (filmFarPoint), so the hole opens slowly and the rim

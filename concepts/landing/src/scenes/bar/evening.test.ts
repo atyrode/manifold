@@ -1,6 +1,8 @@
 import { expect, test } from "bun:test";
 import { HeadlessSim } from "../../sims/headless.ts";
-import { barScene } from "./index.ts";
+import { loadScene } from "../index.ts";
+
+const barScene = await loadScene("bar");
 
 /** The room as the shader sees it: the bartender, every stool and every glass (texels 0..17; 18 holds the candle and the fan, which carry on). */
 function room(sim: HeadlessSim): number[] {

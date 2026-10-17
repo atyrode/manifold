@@ -1,7 +1,9 @@
 import { expect, test } from "bun:test";
 import { HeadlessSim } from "../../sims/headless.ts";
+import { loadScene } from "../index.ts";
 import { BONSAI_FIELD } from "./geometry.ts";
-import { bonsaiScene } from "./index.ts";
+
+const bonsaiScene = await loadScene("bonsai");
 
 const KNOBS = { breeze: 1 };
 

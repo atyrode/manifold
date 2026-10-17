@@ -1,8 +1,11 @@
 import { expect, test } from "bun:test";
 import { BIN_PAGE } from "../../sims/bins.ts";
 import { HeadlessSim, type HeadlessUpload } from "../../sims/headless.ts";
-import { dewScene } from "./index.ts";
-import { DEW_CODE, DEW_KIND_SPOKE, DEW_SEG_ROW, DEW_SEG_TEXELS } from "./sim.ts";
+import { loadScene } from "../index.ts";
+import { DEW_CODE, DEW_KIND_SPOKE } from "./build.ts";
+import { DEW_SEG_ROW, DEW_SEG_TEXELS } from "./sim.ts";
+
+const dewScene = await loadScene("dew");
 
 /** The dew sim's textures after it has run a second at this frame size and web seed. */
 function run(

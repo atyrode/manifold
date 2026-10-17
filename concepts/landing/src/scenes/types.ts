@@ -1,5 +1,8 @@
 // The contract every scene module implements. A scene is one self-contained module under
-// src/scenes/<id>/ exporting a SceneDef; the registry (src/scenes/index.ts) lists them in lab order.
+// src/scenes/<id>/ in two halves: its `index.ts` exports a SceneDef, what the registry
+// (src/scenes/index.ts) lists in lab order and the page reads at once (title, knobs, groups,
+// passage, features); its `code.ts` exports its SceneCode (GLSL, entry, sim), which the page loads
+// only once the scene is needed (`SceneDef.code`, the registry's `loadScene`).
 //
 // Shader: each scene compiles to its own WebGL2 program:
 //   common preamble (uniforms, noise, dithering helpers, Shade)   — src/shaders/common.ts
@@ -181,6 +184,24 @@ export interface SceneSim {
 
 export type SimFactory = (gl: WebGL2RenderingContext) => SceneSim;
 
+/**
+ * A scene's code: its `code.ts`, loaded the first time the scene is needed (shown, the next step of
+ * a tour, a passage's incoming scene, or fetched ahead at idle) through `SceneDef.code`.
+ */
+export interface SceneCode {
+  /** GLSL defining the entry function (and any helpers, prefixed with the scene id). */
+  glsl: string;
+  /** Name of `Shade <entry>(vec2 uv, vec2 cell, float t)`. */
+  entry: string;
+  /**
+   * A composed scene's GLSL for one feature set (its layer set): replaces `glsl` when present
+   * (src/composer/compose.ts).
+   */
+  glslFor?: (features: Readonly<Record<string, number>>) => string;
+  sim?: SimFactory;
+}
+
+/** What the registry knows of a scene before its code is loaded; see the header. */
 export interface SceneDef {
   /** URL and registry id: lowercase letters only. */
   id: string;
@@ -194,11 +215,8 @@ export interface SceneDef {
   params: readonly ParamDef[];
   /** Lab section headings, keyed by ParamDef.group. */
   groups: Readonly<Record<string, Blurb>>;
-  /** GLSL defining the entry function (and any helpers, prefixed with the scene id). */
-  glsl: string;
-  /** Name of `Shade <entry>(vec2 uv, vec2 cell, float t)`. */
-  entry: string;
-  sim?: SimFactory;
+  /** The scene's code, loaded on first need: `() => import("./code.ts")`. */
+  code: () => Promise<SceneCode>;
   /** Page theme behind the copy; night unless the scene says otherwise. */
   theme?: SceneTheme;
   /**
@@ -241,6 +259,9 @@ export interface SceneDef {
    */
   planets?: SkyPlanets;
 }
+
+/** A scene with its code loaded (the registry's `loadScene`): what its program and sim are built from. */
+export type LoadedScene = SceneDef & SceneCode;
 
 export type PageTheme = "night" | "paper";
 

@@ -20,9 +20,7 @@
 // are cut per cell with hardEdge / hardFill, and every noise is faded out where a cell outgrows it.
 
 import { glslFloat } from "../../shaders/glsl.ts";
-
-/** Seconds of the island's entrance (the camera swoops down, the gull glides in) and exit (the camera lifts away) (SceneDef.passage). */
-export const ISLAND_PASSAGE = { enter: 2.8, exit: 1.5 } as const;
+import { ISLAND_PASSAGE } from "./constants.ts";
 
 export const islandGlsl = /* glsl */ `
 const float ISL_SINP = 0.34202;

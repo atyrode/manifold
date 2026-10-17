@@ -26,9 +26,6 @@ import { mobileGlsl } from "../../sims/mobile.ts";
 import { MOBILE_SUN_CENTRE, MOBILE_TEX_ORIGIN, mobileLayoutGlsl } from "./layout.ts";
 import { SOLAR_LOOKS, SOLAR_RINGS, solarGlsl } from "./solar.ts";
 
-/** The Sun's gold: the accent. */
-export const MOBILE_SUN = "#f2a52c";
-
 /** Saturn's axis: tipped SOLAR_RINGS.tilt from upright, mostly toward the eye, so its rings open to the room. */
 const SATURN_AXIS = [
   0.3 * Math.sin(SOLAR_RINGS.tilt),

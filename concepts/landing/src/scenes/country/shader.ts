@@ -46,9 +46,6 @@ import { countryTreesGlsl, countryWoodsGlsl } from "./trees.ts";
 import { countryVergesGlsl } from "./verges.ts";
 import { countryTroddenGlsl } from "./trodden.ts";
 
-/** Seconds of the entrance (the camera comes down out of the sky and settles) and exit. */
-export const COUNTRY_PASSAGE = { enter: 2.8, exit: 1.4 } as const;
-
 /**
  * The ray march's numbers: the height it starts from (and the shadows' ceiling), metres a rising ray
  * climbs over the map's highest ground and trees before it is let go (the records' half floats

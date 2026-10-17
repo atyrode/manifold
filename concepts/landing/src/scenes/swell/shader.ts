@@ -9,9 +9,7 @@
 // shooting stars (K_meteors, off by default; src/scenes/README.md "Composing components"), glinting
 // in the waves below them. Lengths are in camera heights, some 15 m.
 import { birdsGlsl } from "../../shaders/lib/birds.ts";
-
-/** Trigger slot of the shooting stars' "now" button. */
-export const SWELL_METEOR_TRIGGER = 0;
+import { SWELL_METEOR_TRIGGER } from "./constants.ts";
 
 export const swellGlsl = `
 ${birdsGlsl}

@@ -6,10 +6,12 @@
 // only its mean where they do not, and the mirror, the glint and the caustic light behave. Then the
 // tiers: each tier's functions exist from its tier up and not below, and each
 // adopting scene compiles at the tier it selects and not one lower.
-import { sceneDefs } from "../../scenes/index.ts";
-import type { SceneDef } from "../../scenes/types.ts";
+import { loadScene, type SceneId } from "../../scenes/index.ts";
+import type { LoadedScene } from "../../scenes/types.ts";
 import { fragmentSourceFor, vertexSource } from "../index.ts";
 import { WATER_TIERS } from "./water.ts";
+
+const islandScene = await loadScene("island");
 
 function check(ok: boolean, message: string): void {
   if (!ok) throw new Error(`water: ${message}`);
@@ -207,7 +209,7 @@ const unit = (v: Vec3): Vec3 => {
 };
 
 /** A scene whose entry only calls `call`, compiled with `features`. */
-function gate(base: SceneDef, call: string, features: Readonly<Record<string, number>>): string {
+function gate(base: LoadedScene, call: string, features: Readonly<Record<string, number>>): string {
   return fragmentSourceFor({
     ...base,
     features,
@@ -216,9 +218,11 @@ function gate(base: SceneDef, call: string, features: Readonly<Record<string, nu
   });
 }
 
-export function verifyWaterTiers(gl: WebGL2RenderingContext): Record<string, unknown> {
+export async function verifyWaterTiers(
+  gl: WebGL2RenderingContext,
+): Promise<Record<string, unknown>> {
   check(gl.getExtension("EXT_color_buffer_float") !== null, "float render targets unavailable");
-  const island = sceneDefs.island;
+  const island = islandScene;
   const probe = program(
     gl,
     fragmentSourceFor({
@@ -536,7 +540,7 @@ export function verifyWaterTiers(gl: WebGL2RenderingContext): Record<string, unk
   check(compiles(gl, gate(island, spectrum, {})), "rippleSpectrum missing without WATER_TIER");
 
   // The adopters: each compiles at the tier it selects, and needs it (one tier lower fails).
-  const adopters: readonly [keyof typeof sceneDefs, keyof typeof WATER_TIERS][] = [
+  const adopters: readonly [SceneId, keyof typeof WATER_TIERS][] = [
     ["island", "mirror"],
     ["shore", "mirror"],
     ["swell", "mirror"],
@@ -546,7 +550,7 @@ export function verifyWaterTiers(gl: WebGL2RenderingContext): Record<string, unk
     ["pond", "caustics"],
   ];
   for (const [id, tier] of adopters) {
-    const def = sceneDefs[id];
+    const def = await loadScene(id);
     check(
       def.features?.["WATER_TIER"] === WATER_TIERS[tier],
       `${id} does not select the ${tier} tier`,

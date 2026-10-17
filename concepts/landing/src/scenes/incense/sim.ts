@@ -58,9 +58,8 @@ import { clamp, lerp, smoothstep } from "../../sims/math.ts";
 import { mulberry32 } from "../../sims/random.ts";
 import { DataTexture } from "../../sims/texture.ts";
 import type { SceneSim, SimFactory, SimFrame } from "../types.ts";
+import { INCENSE_PASSAGE, incenseKinds } from "./constants.ts";
 
-/** What burns, in `stick` knob order. */
-export const incenseKinds = ["stick", "cone", "coil", "waterfall"] as const;
 export type IncenseKind = (typeof incenseKinds)[number];
 
 /** An impossible burner state. */
@@ -286,15 +285,6 @@ const PREWARM_STEPS = 48;
 const PREWARM_MS = 150;
 
 // ---- the passage -------------------------------------------------------------------------------
-
-/**
- * Seconds the scene's entrance and exit take (SceneDef.passage), both played by the simulation.
- * Entrance: the room starts empty, the ember takes light, and the smoke thread climbs out of it
- * (Plume.#rise draws its head up, the fluid carries it on) until it frays into the veils under the
- * ceiling. Exit: a draught sweeps through the room from the left (Plume.#blow), shears the thread
- * through above the ember and carries the veils off to the right.
- */
-export const INCENSE_PASSAGE: { enter: number; exit: number } = { enter: 3, exit: 1.5 };
 
 /** Shares of the entrance: the ember takes light from the first to the second; the thread's head climbs between the next two. */
 const KINDLE_FROM = 0.06;

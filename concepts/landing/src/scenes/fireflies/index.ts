@@ -5,8 +5,7 @@
 import { choice, counts, feature, range, seed, toggle, type ParamDef } from "../../params.ts";
 import { atmosphereGroups, skyComponentKnobs } from "../atmosphere.ts";
 import type { SceneDef } from "../types.ts";
-import { FIREFLIES_METEOR_TRIGGER, firefliesGlsl } from "./shader.ts";
-import { FIREFLIES_PASSAGE, firefliesSim } from "./sim.ts";
+import { FIREFLIES_METEOR_TRIGGER, FIREFLIES_PASSAGE } from "./constants.ts";
 
 const params: readonly ParamDef[] = [
   range(
@@ -137,9 +136,7 @@ export const firefliesScene: SceneDef = {
       blurb: "The fireflies themselves draw the M, flashing out of step with the forest.",
     },
   },
-  glsl: firefliesGlsl,
-  entry: "sceneFireflies",
-  sim: firefliesSim(params),
+  code: () => import("./code.ts"),
   // Entrance: the bank is dark, a few fireflies blink out of step in the first trees, more join tree
   // by tree, the clusters begin to fall into step, and the camera drifts along the river into place.
   // Exit: the beat is lost, the crowns go dark tree by tree, the camera drifts on.

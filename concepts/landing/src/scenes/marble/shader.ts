@@ -5,7 +5,7 @@
 //          texel 1: tool direction (unit), tine spacing across it in uv heights (0 = one stylus)
 // Knobs read here: K_medium (0 tray, 1 print), K_palette, K_ripples, K_sheen, K_fibre, K_edges.
 import { glslPick, glslVec3 } from "../../shaders/glsl.ts";
-import { marblePalettes } from "./sim.ts";
+import { marblePalettes } from "./constants.ts";
 
 const accentInks = glslPick(
   "palette",

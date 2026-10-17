@@ -4,7 +4,9 @@
 // shapes the tops; this draws the real GLSL over a grid of deck points and fails if an early-out ever
 // drops relief that is still meant to show, or if the faded surface stops being the bare macro field.
 import { fragmentSourceFor, vertexSource } from "../../shaders/index.ts";
-import { cloudsScene } from "./index.ts";
+import { loadScene } from "../index.ts";
+
+const cloudsScene = await loadScene("clouds");
 
 const SIZE = 64;
 

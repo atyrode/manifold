@@ -52,6 +52,12 @@ import { springStep, type Spring } from "../../sims/spring.ts";
 import { mulberry32 } from "../../sims/random.ts";
 import { DataTexture } from "../../sims/texture.ts";
 import type { SceneSim, SimFactory, SimFrame } from "../types.ts";
+import {
+  SANDTABLE_PASSAGE,
+  sandtableFigures,
+  sandtableMachines,
+  sandtablePatterns,
+} from "./constants.ts";
 
 export class SandtableError extends Error {}
 
@@ -88,17 +94,6 @@ export const SANDTABLE = {
   depthRange: 0.005,
 } as const;
 
-export const sandtableMachines = ["ball", "pendulum"] as const;
-export const sandtablePatterns = [
-  "cycle",
-  "spiral",
-  "clover",
-  "rose",
-  "star",
-  "waves",
-  "loops",
-] as const;
-export const sandtableFigures = ["cycle", "1:1", "1:2", "2:3", "3:4"] as const;
 type Machine = (typeof sandtableMachines)[number];
 type Pattern = (typeof sandtablePatterns)[number];
 type Drawing = Exclude<Pattern, "cycle">;
@@ -641,12 +636,6 @@ function drawingTrack(drawing: Drawing, rand: Rand, fromX: number, fromY: number
 }
 
 // ---- entrances and exits -------------------------------------------------------------------------
-
-/**
- * Seconds the scene's entrance and exit take (SceneDef.passage). The sim runs the entrance on its
- * own clock, which starts once the opening table is laid, so a slow first frame cannot use it up.
- */
-export const SANDTABLE_PASSAGE: { enter: number; exit: number } = { enter: 2.6, exit: 1.6 };
 
 /** What the sim tells a machine of the scene's passage each frame. */
 interface Passage {

@@ -7,7 +7,7 @@ import { feature, range, seed, toggle, type ParamDef } from "../../params.ts";
 import { atmosphereGroups, skyKnobs, skyTheme, weatherKnobs } from "../atmosphere.ts";
 import type { SceneDef } from "../types.ts";
 import { worldGates } from "../world.ts";
-import { SKYWARD_METEOR_TRIGGER, SKYWARD_PASSAGE, skywardGlsl } from "./shader.ts";
+import { SKYWARD_METEOR_TRIGGER, SKYWARD_PASSAGE } from "./constants.ts";
 
 const params: readonly ParamDef[] = [
   range(
@@ -108,8 +108,7 @@ export const skywardScene: SceneDef = {
       blurb: "A landmark of its own: the banner over the crossroads.",
     },
   },
-  glsl: skywardGlsl,
-  entry: "sceneSkyward",
+  code: () => import("./code.ts"),
   // A sunlit sky puts the page in its paper theme (ink dark on light); pagePaper() follows it.
   theme: skyTheme(params, { from: 0.33, to: 0.67, rainBelow: 0.2 }),
   // Lying down, the view tips back from street level up to the zenith and the facades swing into

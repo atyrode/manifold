@@ -9,12 +9,7 @@ import { birdsGlsl } from "../../shaders/lib/birds.ts";
 import { plantsGlsl } from "../../shaders/lib/plants.ts";
 import { worldGlsl } from "../../shaders/lib/world.ts";
 import { FALLS_CLUMPS, FALLS_FRONDS } from "./sim.ts";
-
-/** Seconds of the waterfall's entrance (the camera tilts down the fall to the pool) and exit (it tilts back up into the spray); SceneDef.passage. */
-export const FALLS_PASSAGE = { enter: 2.8, exit: 1.4 } as const;
-
-/** Trigger slot of the shooting stars' "now" button. */
-export const FALLS_METEOR_TRIGGER = 0;
+import { FALLS_METEOR_TRIGGER } from "./constants.ts";
 
 export const fallsGlsl = `${plantsGlsl}
 ${birdsGlsl}

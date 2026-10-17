@@ -11,8 +11,10 @@
 //   - by midday the same knob changes the land less than at dawn (the bank burns off).
 // A pixel's change is how far its colour moves from the fog-off picture's (RGB distance, 0..441).
 import { fragmentSourceFor, sceneFeatures, shaderValues } from "../../shaders/index.ts";
-import { countryScene } from "./index.ts";
+import { loadScene } from "../index.ts";
 import { countryBuild, countryDraw, countryProgram, differing } from "./terrain.verify.ts";
+
+const countryScene = await loadScene("country");
 
 const WIDTH = 192;
 const HEIGHT = 108;

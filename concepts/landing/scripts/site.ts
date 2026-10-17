@@ -9,13 +9,23 @@ export class SiteBuildError extends Error {}
 /** The site's pages: the lab, and the GPU timing page (bench.html) once a tree has it. */
 export const PAGES = ["index.html", "bench.html"] as const;
 
-/** Builds the lab tree at `source` (a concepts/landing directory) into `outdir`, for `publicPath`. */
+/**
+ * Builds the lab tree at `source` (a concepts/landing directory) into `outdir`, for `publicPath`.
+ * The pages share their chunks, and each scene's code is a chunk of its own, loaded once the scene
+ * is needed (src/scenes/index.ts `loadScene`).
+ */
 export async function buildSite(source: string, outdir: string, publicPath: string): Promise<void> {
   const pages: string[] = [];
   for (const page of PAGES) {
     if (await Bun.file(join(source, page)).exists()) pages.push(join(source, page));
   }
-  const result = await Bun.build({ entrypoints: pages, outdir, publicPath, minify: true });
+  const result = await Bun.build({
+    entrypoints: pages,
+    outdir,
+    publicPath,
+    minify: true,
+    splitting: true,
+  });
   if (!result.success) throw new SiteBuildError(result.logs.map(String).join("\n"));
   // The build worker, at the site's root beside the pages: where the page loads it from, under
   // serve.ts at the commit's pinned path even for the head (`/@<sha>/build-worker.js`,

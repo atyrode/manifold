@@ -1,11 +1,13 @@
 import { expect, test } from "bun:test";
 import { effective } from "../params.ts";
-import { barScene } from "../scenes/bar/index.ts";
-import { marbleScene } from "../scenes/marble/index.ts";
-import type { SceneDef, SimFrame } from "../scenes/types.ts";
+import { loadScene } from "../scenes/index.ts";
+import type { LoadedScene, SimFrame } from "../scenes/types.ts";
 import { paramDefaults } from "../state.ts";
 import { HeadlessError, HeadlessGl, HeadlessSim } from "./headless.ts";
 import { DataTexture } from "./texture.ts";
+
+const barScene = await loadScene("bar");
+const marbleScene = await loadScene("marble");
 
 test("the stand-in keeps each texture's size and a copy of its last whole upload, and nothing else", () => {
   const headless = new HeadlessGl();
@@ -29,7 +31,7 @@ test("the stand-in keeps each texture's size and a copy of its last whole upload
 
 test("frames carry the knobs over the scene's defaults, and a 'now' fires on one frame and keeps its stamp", () => {
   const frames: SimFrame[] = [];
-  const scene: SceneDef = {
+  const scene: LoadedScene = {
     ...barScene,
     sim: (gl) => {
       const texture = new DataTexture(gl, { width: 1, height: 1, format: "r8" });

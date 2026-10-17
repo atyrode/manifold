@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import { HeadlessSim } from "../../sims/headless.ts";
-import { streetScene } from "./index.ts";
+import { loadScene } from "../index.ts";
 import {
   CAM_H,
   CAM_X,
@@ -14,6 +14,8 @@ import {
   SHAPES,
   Z_REF,
 } from "./sim.ts";
+
+const streetScene = await loadScene("street");
 
 /** Frames of 0.2 s: six of the sim's steps each, the most it takes in one frame. */
 const FRAME = 0.2;

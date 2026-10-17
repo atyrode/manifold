@@ -343,8 +343,6 @@ const NEAR_COUPLING = 0.8;
 // settles in the shader. Leaving, the beat is lost (every firefly detunes, the coupling lets go) and
 // the crowns go dark tree by tree. At rest every gate is exactly open and none of this runs.
 
-/** Seconds the scene's entrance and exit take (its `passage`). */
-export const FIREFLIES_PASSAGE = { enter: 2.8, exit: 1.5 };
 /**
  * A crown's firefly opens between these shares of the entrance: ENTER_START plus ENTER_SPAN times
  * its tree's turn (0 first, 1 last), plus up to ENTER_LATE for the firefly itself; the opening is

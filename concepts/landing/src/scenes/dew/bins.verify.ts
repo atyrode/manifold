@@ -5,7 +5,9 @@
 import { fragmentSourceFor, vertexSource } from "../../shaders/index.ts";
 import { BIN_PAGE } from "../../sims/bins.ts";
 import { HeadlessSim, type HeadlessFrame } from "../../sims/headless.ts";
-import { dewScene } from "./index.ts";
+import { loadScene } from "../index.ts";
+
+const dewScene = await loadScene("dew");
 
 function linked(gl: WebGL2RenderingContext, fragment: string): WebGLProgram {
   const program = gl.createProgram();

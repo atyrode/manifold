@@ -6,8 +6,7 @@
 // lights it as a black mirror in a studio of softboxes (shader.ts).
 import { choice, feature, range, seed, toggle, type ParamDef } from "../../params.ts";
 import type { SceneDef } from "../types.ts";
-import { ferroGels, ferroGlsl } from "./shader.ts";
-import { FERRO_PASSAGE, ferroSim } from "./sim.ts";
+import { FERRO_PASSAGE, ferroGels } from "./constants.ts";
 
 const params: readonly ParamDef[] = [
   range(
@@ -125,9 +124,7 @@ export const ferroScene: SceneDef = {
       blurb: "Magnets in an M under the dish, standing the spikes up along its strokes.",
     },
   },
-  glsl: ferroGlsl,
-  entry: "sceneFerro",
-  sim: ferroSim(params),
+  code: () => import("./code.ts"),
   // The pool lies flat as a mirror, then the field comes on and the crown of spikes rises out of it,
   // middle first; on the way out the field fades and the spikes slump back, rim first, into a pool
   // that a ripple crosses (sim.ts gates the field, shader.ts ripples the surface).

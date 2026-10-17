@@ -22,9 +22,12 @@ import {
 } from "../../shaders/index.ts";
 import { DataTexture } from "../../sims/texture.ts";
 import { walk, type SceneWalk } from "../../verify/kit.ts";
-import type { SceneDef } from "../types.ts";
-import { sceneDefs, type SceneId } from "../index.ts";
+import type { LoadedScene } from "../types.ts";
+import { loadScene, sceneIds, type SceneId } from "../index.ts";
 import { TRAIN_CROSSING, TRAIN_STATION, TRAIN_TEXELS } from "./sim.ts";
+
+const streetScene = await loadScene("street");
+const trainScene = await loadScene("train");
 
 export interface Clocks {
   /** uTime, the scene clock. */
@@ -78,7 +81,7 @@ function link(gl: WebGL2RenderingContext, label: string, fragment: string): WebG
 
 export function compile(
   gl: WebGL2RenderingContext,
-  scene: SceneDef,
+  scene: LoadedScene,
   entry: string,
   glsl: string,
 ): WebGLProgram {
@@ -174,7 +177,7 @@ function dayCycle(id: "street" | "train", time: number): readonly number[] {
 function streetCheck(gl: WebGL2RenderingContext): number {
   const linked = compile(
     gl,
-    sceneDefs.street,
+    streetScene,
     "regressionStreetHour",
     `
     Shade regressionStreetHour(vec2 uv, vec2 cell, float t) {
@@ -200,7 +203,7 @@ function streetCheck(gl: WebGL2RenderingContext): number {
 function trainCheck(gl: WebGL2RenderingContext): Record<string, number> {
   const linked = compile(
     gl,
-    sceneDefs.train,
+    trainScene,
     "regressionTrain",
     `
     uniform int regressionPart;
@@ -272,11 +275,11 @@ export function verifyMotionClocks(gl: WebGL2RenderingContext): Record<string, u
  * scenes in scope alone (`walk`). Returns each scene's pixels that hour changed.
  */
 export function motionClocksAll(part: number, parts: number): SceneWalk {
-  const scenes = (Object.keys(sceneDefs) as SceneId[]).filter((_, i) => i % parts === part);
-  return walk(scenes, (gl, ids) => {
+  const scenes = sceneIds.filter((_, i) => i % parts === part);
+  return walk(scenes, async (gl, ids) => {
     const result: Record<string, number> = {};
     for (const id of ids) {
-      const scene: SceneDef = sceneDefs[id];
+      const scene = await loadScene(id);
       const knobs = paramDefaults(id);
       const linked = link(
         gl,

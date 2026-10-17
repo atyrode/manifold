@@ -8,7 +8,9 @@
 // straight down the frame.
 import { defaultsFor, paramDefaults, renderSettings } from "../../state.ts";
 import { fragmentSourceFor, packParams, vertexSource } from "../../shaders/index.ts";
-import { islandScene } from "./index.ts";
+import { loadScene } from "../index.ts";
+
+const islandScene = await loadScene("island");
 
 /** A wide frame (2.4:1): the lean grows toward the sides. */
 const WIDTH = 384;

@@ -3,7 +3,7 @@ import { feature, knobValue, range, toggle, type ParamDef } from "../../params.t
 import { CLOUD_TIERS } from "../../shaders/lib/clouds.ts";
 import { atmosphereGroups, skyKnobs, skyTheme, weatherKnobs } from "../atmosphere.ts";
 import type { SceneDef } from "../types.ts";
-import { CLOUDS_PASSAGE, cloudsGlsl } from "./shader.ts";
+import { CLOUDS_PASSAGE } from "./constants.ts";
 
 const params: ParamDef[] = [
   ...skyKnobs({
@@ -102,8 +102,7 @@ export const cloudsScene: SceneDef = {
     weather: atmosphereGroups.weather,
     manifold: { title: "Manifold livery", blurb: "A landmark of its own: the M on the winglet." },
   },
-  glsl: cloudsGlsl,
-  entry: "sceneClouds",
+  code: () => import("./code.ts"),
   // Daylight fills the screen only without the dark cabin around it, and only on a still clock.
   theme: skyTheme(params, {
     from: 0.3,

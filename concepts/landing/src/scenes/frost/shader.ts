@@ -1,5 +1,5 @@
 // The frost scene: a window pane on a winter night, frosting over. In front, the glass: feathery
-// fern frost (branches grown by sim.ts, barbs drawn here), the fur frost between the fronds, thick
+// fern frost (branches grown by build.ts, barbs drawn here), the fur frost between the fronds, thick
 // rime along the frame, condensation, cleared lines where a warm fingertip passed, and the window
 // frame. Behind it, out of focus and blurred further wherever the frost is thick: a snowy street
 // with lit windows and lamps, or a cabin among spruces. Snow falls through that world in depth (the
@@ -10,22 +10,18 @@
 // front, and lighting the snow, the air and the frost.
 import { glslFloat } from "../../shaders/glsl.ts";
 import { worldGlsl } from "../../shaders/lib/world.ts";
+import { FROST_FRAME, FUR_SCALE, WIDTH_SCALE } from "./build.ts";
 import {
   FROST_EMERGE_FROM,
   FROST_EMERGE_TO,
-  FROST_FRAME,
   FROST_START,
   FUR_RIPEN,
-  FUR_SCALE,
   FUR_SLOW_FERN,
   FUR_SLOW_FUR,
   MELT_CLEAR,
   RIME_GROWN,
-  WIDTH_SCALE,
 } from "./sim.ts";
-
-/** Trigger slot of the shooting stars' "now" button (slot 0 is the traced M's). */
-export const FROST_METEOR_TRIGGER = 1;
+import { FROST_METEOR_TRIGGER } from "./constants.ts";
 
 export const frostGlsl = `
 ${worldGlsl}

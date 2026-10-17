@@ -3,8 +3,11 @@ import { Boids, type BoidRules } from "../../sims/boids.ts";
 import { HeadlessSim } from "../../sims/headless.ts";
 import type { Random } from "../../sims/random.ts";
 import { DataTexture } from "../../sims/texture.ts";
-import { flockScene } from "./index.ts";
-import { boidNear, FLOCK_FEAR_RADIUS, FLOCK_SIZES } from "./sim.ts";
+import { loadScene } from "../index.ts";
+import { FLOCK_SIZES } from "./constants.ts";
+import { boidNear, FLOCK_FEAR_RADIUS } from "./sim.ts";
+
+const flockScene = await loadScene("flock");
 
 const EMERGENT = { emergent: 1, "emergent-amount": 7 };
 

@@ -3,7 +3,7 @@
 // along its foot), the leaves in the air and on the ground (uSim2) and when each spot was last raked
 // (uSim3), seen from the temple veranda across to the earthen wall, or from straight above.
 //
-// Everything is worked in garden space (sim.ts GARDEN): X right, Y away from the veranda, Z up, in
+// Everything is worked in garden space (build.ts GARDEN): X right, Y away from the veranda, Z up, in
 // garden depths. That is the sky library's frame with y and z swapped, so its sun and moon light the
 // garden directly. The veranda camera is viewRay's shifted-lens pinhole (verticals stay vertical);
 // the stones are marched as height fields inside their islands' bounding cylinders, the gravel is
@@ -20,17 +20,15 @@
 import { glslFloat } from "../../shaders/glsl.ts";
 import { plantsGlsl } from "../../shaders/lib/plants.ts";
 import { gustPulseGlsl } from "../../sims/wind.ts";
+import { GARDEN, GARDEN_GROOVE, GARDEN_MARK } from "./build.ts";
 import {
-  GARDEN,
   GARDEN_BORDER,
   GARDEN_BORDER_FORM,
   GARDEN_CANOPY,
-  GARDEN_GROOVE,
   GARDEN_GUST_RISE,
   GARDEN_ISLANDS,
   GARDEN_LEAF_KIND,
   GARDEN_LEAF_SLOTS,
-  GARDEN_MARK,
   GARDEN_MOSS,
   GARDEN_RECORD_ROW,
   GARDEN_STONES,

@@ -1,7 +1,9 @@
 import { expect, test } from "bun:test";
 import { HeadlessSim, type HeadlessFrame } from "../../sims/headless.ts";
-import { barScene } from "./index.ts";
+import { loadScene } from "../index.ts";
 import { ACT, SEATS } from "./sim.ts";
+
+const barScene = await loadScene("bar");
 
 /** The bar's sim on the headless stand-in, driven a frame at a time, the pointer away. */
 class Evening {

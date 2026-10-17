@@ -14,7 +14,7 @@
 import { seasonKnob, yearCycleKnob, yearNowGlsl } from "../climate.ts";
 import { effective, MAX_PARAMS, type Widget } from "../params.ts";
 import { phaseDefines } from "../rate-phase.ts";
-import type { SceneDef } from "../scenes/types.ts";
+import type { LoadedScene, SceneDef } from "../scenes/types.ts";
 import { skyAnchor } from "../world-clock.ts";
 import { common } from "./common.ts";
 import { glslFloat } from "./glsl.ts";
@@ -226,7 +226,7 @@ function featureDefines(scene: SceneDef, features: Readonly<Record<string, numbe
  * shaken (`fragmentSourceFor`).
  */
 export function assembleFragment(
-  scene: SceneDef,
+  scene: LoadedScene,
   features: Readonly<Record<string, number>> = sceneFeatures(scene),
 ): string {
   // Knob defines come ahead of the libraries so that a library may test for an opt-in shared knob
@@ -238,7 +238,7 @@ export function assembleFragment(
     phaseDefines(scene) +
     yearDefine(scene) +
     libs +
-    scene.glsl +
+    (scene.glslFor?.(features) ?? scene.glsl) +
     main(scene.entry)
   );
 }
@@ -249,7 +249,7 @@ export function assembleFragment(
  * holds what line n of the assembled program holds, or nothing.
  */
 export function fragmentSourceFor(
-  scene: SceneDef,
+  scene: LoadedScene,
   features: Readonly<Record<string, number>> = sceneFeatures(scene),
 ): string {
   return shakeGlsl(assembleFragment(scene, features));

@@ -7,9 +7,12 @@
 // under software WebGL. A scene enters once its program is built in the background (`arrive`).
 import { Lab } from "./lab.ts";
 import { DitherRenderer } from "./renderer.ts";
-import { sceneDefs } from "./scenes/index.ts";
+import { loadScene } from "./scenes/index.ts";
 import { defaultsFor, paramDefaults } from "./state.ts";
 import { check, holdFrames, labSettings, pause, stage } from "./verify/kit.ts";
+
+const dunesScene = await loadScene("dunes");
+const lakeScene = await loadScene("lake");
 
 export async function verifyRuntime(_gl: WebGL2RenderingContext): Promise<Record<string, unknown>> {
   const result: Record<string, unknown> = {};
@@ -60,9 +63,9 @@ export async function verifyRuntime(_gl: WebGL2RenderingContext): Promise<Record
 
   // Dunes with a stand-in sim: it supplies no texture (the shader draws flat sand, so only its
   // response to the press shows), records what it is given, and throws on demand.
-  const dunes = sceneDefs.dunes;
+  const dunes = dunesScene;
   const dunesSim = dunes.sim;
-  const lake = sceneDefs.lake;
+  const lake = lakeScene;
   const lakeGlsl = lake.glsl;
   const errorLog = console.error;
   const seen = { time: Number.NaN, trigger: Number.NaN, fired: false };

@@ -6,7 +6,6 @@
 import { choice, feature, range, type ParamDef } from "../../params.ts";
 import { paletteTheme } from "../atmosphere.ts";
 import type { SceneDef } from "../types.ts";
-import { hyperbolicGlsl } from "./shader.ts";
 import {
   HYPERBOLIC_DEFAULTS,
   HYPERBOLIC_FLOWS,
@@ -15,8 +14,7 @@ import {
   HYPERBOLIC_PALETTES,
   HYPERBOLIC_PASSAGE,
   HYPERBOLIC_TILINGS,
-  hyperbolicSim,
-} from "./sim.ts";
+} from "./constants.ts";
 
 const options = (labels: readonly string[]) => labels.map((label, value) => ({ label, value }));
 
@@ -139,8 +137,6 @@ export const hyperbolicScene: SceneDef = {
       blurb: "A landmark of its own: one tile carrying the M through the plane.",
     },
   },
-  glsl: hyperbolicGlsl,
-  entry: "sceneHyperbolic",
-  sim: hyperbolicSim(params),
+  code: () => import("./code.ts"),
   theme: paletteTheme(params, "palette", (palette) => HYPERBOLIC_PALETTES[palette]?.paper === true),
 };

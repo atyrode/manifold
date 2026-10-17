@@ -17,9 +17,11 @@ import {
   shaderValues,
 } from "../../shaders/index.ts";
 import { defaultsFor, paramDefaults, renderSettings } from "../../state.ts";
-import { countryScene } from "./index.ts";
-import { COUNTRY_SEASONS } from "./season.ts";
+import { loadScene } from "../index.ts";
+import { COUNTRY_SEASONS } from "./constants.ts";
 import { countryBuild, countryDraw, countryProgram, differing } from "./terrain.verify.ts";
+
+const countryScene = await loadScene("country");
 
 interface Setting {
   knobs: Record<string, number>;

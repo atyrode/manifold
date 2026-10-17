@@ -24,16 +24,13 @@ import {
 } from "../../sims/mobile.ts";
 import { DataTexture } from "../../sims/texture.ts";
 import type { Vec3 } from "../../sims/verlet.ts";
-import { mobileScene } from "./index.ts";
-import {
-  MOBILE_SUN_CENTRE,
-  MOBILE_EYE,
-  MOBILE_PASSAGE,
-  MOBILE_TEX_ORIGIN,
-  mobileCamera,
-} from "./layout.ts";
+import { loadScene } from "../index.ts";
+import { MOBILE_PASSAGE } from "./constants.ts";
+import { MOBILE_SUN_CENTRE, MOBILE_EYE, MOBILE_TEX_ORIGIN, mobileCamera } from "./layout.ts";
 import { mobileYear } from "./sim.ts";
 import { SOLAR_BODIES, SOLAR_LOOKS, SOLAR_MOON, SOLAR_SUN_RADIUS, solarMobile } from "./solar.ts";
+
+const mobileScene = await loadScene("mobile");
 
 const ORIGIN: Vec3 = [0, 1.8, 0];
 const WIDTH = 120;

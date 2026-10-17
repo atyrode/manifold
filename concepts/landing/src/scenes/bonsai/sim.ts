@@ -6,7 +6,7 @@
 // through the season; and pruning: a click snips the twig under it, which falls and lies with them.
 // Everything steps STEP at a time on a FixedStep (sims/clock.ts), so the bonsai sways the same at 60
 // and at 144 Hz; the pads' sway, the falling leaves and the cut twigs are drawn between their last
-// two steps by the clock's alpha. A tree is grown and drawn on the build worker (bonsaiGrowth): until
+// two steps by the clock's alpha. A tree is grown and drawn on the build worker (build.ts): until
 // the first is up the sim is not ready, nothing runs and the stand stands bare where the entrance
 // has it; a new species or seed keeps the tree on show until its own lands.
 //
@@ -24,12 +24,13 @@
 //          then the shoot grid (up to four shoot indices + 1 per cell).
 import { climateCold, climateLying } from "../../climate.ts";
 import type { ParamDef } from "../../params.ts";
-import { type BuildKind, BuildSlot } from "../../sims/build.ts";
+import { BuildSlot } from "../../sims/build.ts";
 import { FixedStep } from "../../sims/clock.ts";
 import { easeFactor, smoothstep } from "../../sims/math.ts";
 import { mulberry32 } from "../../sims/random.ts";
 import { DataTexture } from "../../sims/texture.ts";
 import type { PrincipalState, SceneSim, SimFactory, SimFrame } from "../types.ts";
+import { type BonsaiGrowth, bonsaiGrowth } from "./build.ts";
 import {
   BONSAI_ATLAS,
   BONSAI_FIELD,
@@ -41,7 +42,6 @@ import {
   BONSAI_MAPLE,
   BONSAI_MAX_MOTES,
   BONSAI_MAX_SHOOTS,
-  BONSAI_MAX_TUFTS,
   BONSAI_PER_UNIT,
   BONSAI_PINE,
   BONSAI_REGION,
@@ -57,7 +57,6 @@ import {
   BARE_WOOD,
   type LitterMark,
   TreeMaps,
-  type TreeMapsState,
   drawSprite,
   eraseLitter,
   stampLitter,
@@ -69,7 +68,8 @@ import {
   bonsaiPetalFall,
   bonsaiShedding,
 } from "./season.ts";
-import { type Tree, growTree, subtree } from "./tree.ts";
+import { type Tree, subtree } from "./tree.ts";
+import { BONSAI_PASSAGE } from "./constants.ts";
 
 const TAU = Math.PI * 2;
 const FW = BONSAI_FIELD.width;
@@ -124,9 +124,6 @@ const TWIG_DRAG = 2.2;
 const SHOOTS_PER_YEAR = 30;
 const TRIM_SPAN = 0.022;
 
-// ---- passage ----
-/** Seconds the scene's entrance and exit take (SceneDef.passage). Entrance: the stand glides in from the right along the veranda and comes to rest, the pads leaning on its slowing and springing back; exit: the stand is pushed off to the right, the pads lagging, a gust and a few leaves left behind in the air. */
-export const BONSAI_PASSAGE = { enter: 2.6, exit: 1.5 } as const;
 /** How far right (display units) the stand stands off the frame: it slides in from there and out to there. */
 const SLIDE = 1.25;
 /** The pads' lag behind the stand's acceleration: the share of it felt as a push on a pad. */
@@ -241,37 +238,6 @@ function litterShape(kind: number): (lx: number, ly: number) => number {
       return (lx, ly) => 1 - Math.hypot(lx, ly);
   }
 }
-
-/** A tree to grow: its species and seed. */
-export interface BonsaiGrowthRequest {
-  readonly species: number;
-  readonly seed: number;
-}
-
-/** A tree grown, and drawn into its maps: what the build worker hands the page. */
-export interface BonsaiGrowth {
-  readonly species: number;
-  readonly seed: number;
-  readonly tree: Tree;
-  readonly maps: TreeMapsState;
-}
-
-/**
- * Growing a tree for its species and seed (tree.ts) and drawing it into the maps (raster.ts), as a
- * build (sims/build.ts): a new tree's slow part, off the page's thread. The page's sim does the rest.
- */
-export const bonsaiGrowth: BuildKind<BonsaiGrowthRequest, BonsaiGrowth> = {
-  name: "bonsai",
-  builder: () => ({
-    *build({ species, seed }) {
-      const tree = growTree(species, seed, BONSAI_MAX_TUFTS);
-      yield undefined;
-      const maps = new TreeMaps();
-      maps.draw(tree);
-      return { species, seed, tree, maps: maps.state };
-    },
-  }),
-};
 
 class BonsaiSim implements SceneSim {
   readonly #woodTexture: DataTexture;

@@ -29,15 +29,12 @@ import { clamp, easeFactor, smoothstep } from "../../sims/math.ts";
 import { ElasticPan } from "../../sims/pan.ts";
 import type {
   PrincipalState,
-  SceneDef,
   ScenePassageProgress,
   SceneSim,
   SimFactory,
   SimFrame,
 } from "../types.ts";
-
-/** The `mode` knob's values, in order. */
-export const fractalModes = ["julia", "dive", "gasket", "garden"] as const;
+import { FRACTAL_PASSAGE, fractalModes } from "./constants.ts";
 
 /** State row: these global texels, then one block per layer (incoming first); see the top. */
 export const FRACTAL_GLOBAL_TEXELS = 3;
@@ -60,13 +57,6 @@ const SWAP_SECONDS = 4.5;
 const SWAP_SOFT = 0.45;
 const LOOP_SOFT = 0.35;
 
-// The passage: the entrance and exit happen in the world, as a camera. Entering, it rises from a
-// point deep in the fractal and settles into the usual framing while the iteration count climbs,
-// so the fine detail grows in; leaving, it falls into a point, accelerating. Julia, gasket and
-// garden scale their view about a focus (shader.ts, texel 2); the dive spends its own zoom: its
-// loop phase runs deeper than usual and back (the self-similarity keeps the framing exact at rest).
-/** Seconds the entrance and exit take (SceneDef.passage). */
-export const FRACTAL_PASSAGE: NonNullable<SceneDef["passage"]> = { enter: 2.8, exit: 1.4 };
 /**
  * The camera's depth is a power of the time left (entrance) or gone (exit): it rises at its fastest
  * and settles softly, or sets off softly and falls ever faster.

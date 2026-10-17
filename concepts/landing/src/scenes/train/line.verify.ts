@@ -10,9 +10,11 @@
 // Small entries draw those parts on their own, from a uSim0 timetable laid out as sim.ts documents.
 import { defaultsFor, paramDefaults, renderSettings } from "../../state.ts";
 import { DataTexture } from "../../sims/texture.ts";
-import { sceneDefs } from "../index.ts";
+import { loadScene } from "../index.ts";
 import { BASE, compile, draw, WIDTH } from "./motion-clock.verify.ts";
 import { TRAIN_BLOCK, TRAIN_BRIDGE, TRAIN_TEXELS, TRAIN_TUNNEL } from "./sim.ts";
+
+const trainScene = await loadScene("train");
 
 function fail(message: string): never {
   throw new Error(`train line: ${message}`);
@@ -68,7 +70,7 @@ const along = (x: number): number => ((x + 0.5) / WIDTH - 0.5) * 2400;
 export function verifyTrainLine(gl: WebGL2RenderingContext): Record<string, unknown> {
   const linked = compile(
     gl,
-    sceneDefs.train,
+    trainScene,
     "regressionTrainLine",
     `
     uniform int regressionPart;

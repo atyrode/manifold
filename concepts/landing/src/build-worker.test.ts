@@ -1,13 +1,13 @@
 import { afterAll, expect, test } from "bun:test";
 import { BONSAI_MAPLE, BONSAI_PINE } from "./scenes/bonsai/geometry.ts";
-import { type BonsaiGrowthRequest, bonsaiGrowth } from "./scenes/bonsai/sim.ts";
+import { type BonsaiGrowthRequest, bonsaiGrowth } from "./scenes/bonsai/build.ts";
 import { type CountryRequest, countryBuild } from "./scenes/country/build.ts";
 import { COUNTRY_MAP } from "./scenes/country/sim.ts";
-import { type DewSpinRequest, dewSpin } from "./scenes/dew/sim.ts";
-import { type ForestWarmRequest, forestWarmup } from "./scenes/forest/sim.ts";
-import { type FrostRequest, frostGrowth } from "./scenes/frost/sim.ts";
-import { type GardenLayoutRequest, gardenLayout } from "./scenes/garden/sim.ts";
-import { type PhysarumDishRequest, physarumDish } from "./scenes/physarum/sim.ts";
+import { type DewSpinRequest, dewSpin } from "./scenes/dew/build.ts";
+import { type ForestWarmRequest, forestWarmup } from "./scenes/forest/build.ts";
+import { type FrostRequest, frostGrowth } from "./scenes/frost/build.ts";
+import { type GardenLayoutRequest, gardenLayout } from "./scenes/garden/build.ts";
+import { type PhysarumDishRequest, physarumDish } from "./scenes/physarum/build.ts";
 import {
   type BuildKind,
   type BuildMessage,

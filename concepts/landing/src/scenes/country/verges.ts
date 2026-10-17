@@ -43,7 +43,7 @@
 // Compiled in only while the knob is on (COUNTRY_HAS_VERGES, index.ts); while it is off the sim
 // places and grows nothing and the atlas carries none of it.
 import { seasonKnob, type SeasonKnob, yearAt, yearCycleKnob, yearNow } from "../../climate.ts";
-import { effective, feature, KnobReader, type ParamDef } from "../../params.ts";
+import { effective, KnobReader, type ParamDef } from "../../params.ts";
 import { glslFloat } from "../../shaders/glsl.ts";
 import { plantsGlsl } from "../../shaders/lib/plants.ts";
 import { splitHalf, toHalf } from "../../sims/half.ts";
@@ -65,7 +65,7 @@ import {
 } from "../../sims/terrain.ts";
 import type { SimFrame } from "../types.ts";
 import { COUNTRY_CAMERA } from "./camera.ts";
-import { COUNTRY_SEASONS } from "./season.ts";
+import { COUNTRY_SEASONS } from "./constants.ts";
 
 /** The verges' layout and reach (shared with the shader). */
 export const COUNTRY_VERGE = {
@@ -134,17 +134,6 @@ export function countryVergeYear(date: number): number {
   }
   return date;
 }
-
-export const countryVergesKnob = feature(
-  "land",
-  "verges",
-  "verges",
-  false,
-  "fullness",
-  0.6,
-  "Clumps of cow parsley, red campion and tussock grass at the foot of the hedges on the fields nearest the hill. They sway in the wind and bow as its gusts roll across the fields, follow the farming year (new leaves in spring, the parsley's white umbels in early summer, gone to seed at harvest with the campion still in flower, everything browning in autumn, dead stems through winter) and carry the snow; they keep off the roads, the streams and the river, the yards, the woods and the grazed pastures. Fullness: how many clumps, from one here and there to a row along every hedge.",
-  { icon: "flower" },
-);
 
 /** Texels a bin takes: its head, then its clumps four a texel. */
 const BIN = 1 + COUNTRY_VERGE.perBin / 4;

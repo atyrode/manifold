@@ -6,13 +6,7 @@
 import { choice, feature, range, seed, type ParamDef } from "../../params.ts";
 import type { SceneDef } from "../types.ts";
 import { WORLD_ALL, worldFeatures, worldGroups, worldKnobs } from "../world.ts";
-import {
-  DUNES_LIGHTNING_TRIGGER,
-  DUNES_METEOR_TRIGGER,
-  DUNES_PASSAGE,
-  dunesGlsl,
-} from "./shader.ts";
-import { dunesSim } from "./sim.ts";
+import { DUNES_LIGHTNING_TRIGGER, DUNES_METEOR_TRIGGER, DUNES_PASSAGE } from "./constants.ts";
 
 const params: readonly ParamDef[] = [
   range(
@@ -114,9 +108,7 @@ export const dunesScene: SceneDef = {
       blurb: "A landmark of its own: a weathered sandstone M out in the dunes.",
     },
   },
-  glsl: dunesGlsl,
-  entry: "sceneDunes",
-  sim: dunesSim(params),
+  code: () => import("./code.ts"),
   passage: DUNES_PASSAGE,
   // The world's parts only while their knobs can show them (worldFeatures).
   featuresFor: worldFeatures,

@@ -1,5 +1,8 @@
 // The scene registry, in lab order (cards, `[` / `]` cycling). A scene is one folder under
-// src/scenes/ (see README.md); adding one is an import and an entry here, keyed by its id.
+// src/scenes/ (see README.md); adding one is an import and an entry here, keyed by its id. The
+// registry holds every scene's SceneDef, which loads with the page; a scene's code (its GLSL and
+// sim, `SceneDef.code`) loads apart, the first time the scene is needed (`loadScene`), so the
+// page's first load carries the code of the scene it opens on alone.
 import { autumnScene } from "./autumn/index.ts";
 import { bambooScene } from "./bamboo/index.ts";
 import { barScene } from "./bar/index.ts";
@@ -49,7 +52,7 @@ import { streetScene } from "./street/index.ts";
 import { swellScene } from "./swell/index.ts";
 import { tidepoolScene } from "./tidepool/index.ts";
 import { trainScene } from "./train/index.ts";
-import type { SceneDef } from "./types.ts";
+import type { LoadedScene, SceneDef } from "./types.ts";
 
 export const sceneDefs = {
   orbit: orbitScene,
@@ -105,3 +108,53 @@ export const sceneDefs = {
 
 export type SceneId = keyof typeof sceneDefs;
 export const sceneIds = Object.keys(sceneDefs) as SceneId[];
+
+/** A scene whose code could not be loaded (the page offline, a build without the chunk). */
+export class SceneLoadError extends Error {}
+
+const loading = new Map<SceneId, Promise<LoadedScene>>();
+const loaded = new Map<SceneId, LoadedScene>();
+
+/**
+ * Scene `id` with its code, loaded the first time it is asked for. Every later call shares that load
+ * and its one LoadedScene, so a check that patches a scene's `glsl` or `sim` patches what the
+ * renderer builds. A load that fails is forgotten: the next call tries again.
+ */
+export function loadScene(id: SceneId): Promise<LoadedScene> {
+  let load = loading.get(id);
+  if (load === undefined) {
+    const def: SceneDef = sceneDefs[id];
+    load = def.code().then(
+      (code) => {
+        const scene: LoadedScene = { ...def, ...code };
+        loaded.set(id, scene);
+        return scene;
+      },
+      (error: unknown) => {
+        loading.delete(id);
+        throw new SceneLoadError(`scene ${id}: its code could not be loaded`, { cause: error });
+      },
+    );
+    loading.set(id, load);
+  }
+  return load;
+}
+
+/** Scene `id` with its code once that has loaded (`loadScene`), else undefined. */
+export function loadedScene(id: SceneId): LoadedScene | undefined {
+  return loaded.get(id);
+}
+
+/** Every scene in `ids` (by default all, in lab order) with its code: `loadScene` for each. */
+export function loadScenes(ids: readonly SceneId[] = sceneIds): Promise<LoadedScene[]> {
+  return Promise.all(ids.map((id) => loadScene(id)));
+}
+
+/**
+ * Start loading scene `id`'s code ahead of need (the scene the page opens on, the tour's next step,
+ * the scenes `[` and `]` step to): a load that fails is left to the one that needs the scene (the
+ * renderer's, through `loadScene`), which tries again and reports it.
+ */
+export function prefetchScene(id: SceneId): void {
+  loadScene(id).catch(() => undefined);
+}

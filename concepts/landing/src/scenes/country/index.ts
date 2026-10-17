@@ -31,14 +31,20 @@ import { counts, choice, feature, range, seed, toggle } from "../../params.ts";
 import { birdKnobs, birdsGroup } from "../../shaders/lib/birds.ts";
 import { CLOUD_TIERS } from "../../shaders/lib/clouds.ts";
 import { WATER_TIERS } from "../../shaders/lib/water.ts";
-import { TERRAIN_BASES, TERRAIN_MAX_COTTAGES, TERRAIN_MAX_FARMS } from "../../sims/terrain.ts";
+import {
+  TERRAIN_BASES,
+  TERRAIN_MAX_COTTAGES,
+  TERRAIN_MAX_FARMS,
+} from "../../sims/terrain-limits.ts";
 import { atmosphereGroups, skyKnobs, weatherKnobs } from "../atmosphere.ts";
 import type { SceneDef } from "../types.ts";
-import { countryMurmurationKnob } from "./murmuration.ts";
-import { COUNTRY_BALES, COUNTRY_SEASONS } from "./season.ts";
-import { COUNTRY_PASSAGE, countryGlsl } from "./shader.ts";
-import { countrySim } from "./sim.ts";
-import { countryVergesKnob } from "./verges.ts";
+import {
+  COUNTRY_BALES,
+  COUNTRY_PASSAGE,
+  COUNTRY_SEASONS,
+  countryMurmurationKnob,
+  countryVergesKnob,
+} from "./constants.ts";
 
 /** One part of the land's uses: a relative share (the lab's "land use" bar), switched on or off. */
 const landUse = (
@@ -440,9 +446,7 @@ export const countryScene: SceneDef = {
       blurb: "A chalk figure of the M, cut into the turf of a hillside.",
     },
   },
-  glsl: countryGlsl,
-  entry: "sceneCountry",
-  sim: countrySim(params),
+  code: () => import("./code.ts"),
   // Enter: the camera comes down out of the sky and settles over the valley as the haze thins.
   // Exit: it rises back toward the clouds.
   passage: COUNTRY_PASSAGE,

@@ -1,7 +1,9 @@
 import { expect, test } from "bun:test";
 import { HeadlessGl, HeadlessSim } from "../../sims/headless.ts";
-import { countryScene } from "./index.ts";
+import { loadScene } from "../index.ts";
 import { COUNTRY_MAP } from "./sim.ts";
+
+const countryScene = await loadScene("country");
 
 // The countryside's stages keyed by what they read: a land-use change re-allocates and repacks only
 // the parcels it moves, on the terrain already built. On the headless stand-in, which also counts

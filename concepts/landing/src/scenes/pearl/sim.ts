@@ -82,8 +82,8 @@ import { clamp, easeFactor, hash31, lerp, smoothstep } from "../../sims/math.ts"
 import { valueNoise } from "../../sims/noise.ts";
 import { mulberry32 } from "../../sims/random.ts";
 import type { SceneSim, SimFactory, SimFrame } from "../types.ts";
+import { PEARL_ENTER, pearlForcings } from "./constants.ts";
 
-export const pearlForcings = ["turntable", "convection", "rods"] as const;
 type PearlForcing = (typeof pearlForcings)[number];
 
 /** The sim reached a state its knobs cannot produce. */
@@ -184,10 +184,6 @@ const SWIRL_JITTER = 20;
 const SWIRL_RESUME = 4;
 
 // ---- the passage ----------------------------------------------------------------------------------
-
-/** Seconds the scene's entrance and exit take (SceneDef.passage in index.ts). */
-export const PEARL_ENTER = 3;
-export const PEARL_EXIT = 1.5;
 
 /**
  * Entrance, on the arrival clock (seconds since the pour was ready). The stirring rod: radius, how

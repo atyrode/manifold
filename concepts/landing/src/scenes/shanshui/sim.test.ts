@@ -1,8 +1,10 @@
 import { expect, test } from "bun:test";
 import { HeadlessSim } from "../../sims/headless.ts";
 import { toHalf } from "../../sims/half.ts";
+import { loadScene } from "../index.ts";
 import { SHANSHUI_SECTION, SHANSHUI_SECTIONS } from "./shader.ts";
-import { shanshuiScene } from "./index.ts";
+
+const shanshuiScene = await loadScene("shanshui");
 
 // Texel 0: the scroll within its section as k * 32 + (hi + lo) / 64; texel 1's alpha: the section.
 const scrollAsUploaded = (state: ArrayLike<number>): number =>

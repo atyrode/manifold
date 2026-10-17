@@ -29,7 +29,7 @@ import {
   type ProgramContext,
   type SceneProgram,
 } from "./program-cache.ts";
-import { sceneDefs, type SceneId } from "./scenes/index.ts";
+import { loadedScene, sceneDefs, SceneLoadError, type SceneId } from "./scenes/index.ts";
 import type { PlanetUniforms } from "./scenes/planets.ts";
 import type { PrincipalState, SceneSim } from "./scenes/types.ts";
 import { vertexSource } from "./shaders/index.ts";
@@ -769,7 +769,8 @@ export class DitherRenderer {
    * A scene for `s` with `built`, the program for its features (or why it failed to build), and a
    * fresh simulation, its clocks counting from now, or from where those of the scene on screen
    * count when it takes them over (see `update`). A program that failed to build or a simulation
-   * that throws while starting leaves it failed (see `failure`).
+   * that throws while starting leaves it failed (see `failure`). A built program means the scene's
+   * code has loaded (ScenePrograms builds from it alone), sim and all.
    */
   #create(s: RenderSettings, built: SceneProgram | SceneFailure): ActiveScene {
     const id = s.scene;
@@ -799,7 +800,10 @@ export class DitherRenderer {
     };
     if (scene.program !== undefined) {
       try {
-        scene.sim = sceneDefs[id].sim?.(this.#gl);
+        const code = loadedScene(id);
+        if (code === undefined)
+          throw new SceneLoadError(`scene ${id}: built before its code loaded`);
+        scene.sim = code.sim?.(this.#gl);
       } catch (error: unknown) {
         this.#fail(scene, "start", error);
       }

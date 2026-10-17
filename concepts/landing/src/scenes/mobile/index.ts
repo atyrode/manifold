@@ -9,9 +9,7 @@
 import { choice, feature, range, type ParamDef } from "../../params.ts";
 import { paletteTheme } from "../atmosphere.ts";
 import type { SceneDef } from "../types.ts";
-import { MOBILE_PASSAGE } from "./layout.ts";
-import { MOBILE_SUN, mobileSceneGlsl } from "./shader.ts";
-import { mobileSim } from "./sim.ts";
+import { MOBILE_PASSAGE, MOBILE_SUN } from "./constants.ts";
 import { SOLAR_SETS } from "./solar.ts";
 
 const params: readonly ParamDef[] = [
@@ -138,9 +136,7 @@ export const mobileScene: SceneDef = {
       blurb: "An M of glow-in-the-dark stars on the wall.",
     },
   },
-  glsl: mobileSceneGlsl,
-  entry: "sceneMobile",
-  sim: mobileSim(params),
+  code: () => import("./code.ts"),
   // The white room by day is pale: the page copy goes dark on it.
   theme: paletteTheme(params, "room", (index) => index === 1),
   // Entrance: lowered from above on the Sun's cord as the Sun lights up. Exit: the motors wind down,

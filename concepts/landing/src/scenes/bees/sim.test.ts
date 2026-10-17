@@ -2,9 +2,11 @@ import { describe, expect, test } from "bun:test";
 import type { ParamDef } from "../../params.ts";
 import { HeadlessSim, type HeadlessUpload } from "../../sims/headless.ts";
 import { weatherKnobs } from "../atmosphere.ts";
-import type { SceneDef } from "../types.ts";
-import { beesScene } from "./index.ts";
+import { loadScene } from "../index.ts";
+import type { LoadedScene } from "../types.ts";
 import { BEES_CODE, beesSim } from "./sim.ts";
+
+const beesScene = await loadScene("bees");
 
 /** Everything off but what a test is about. */
 const QUIET = {
@@ -46,7 +48,7 @@ function cells(
 }
 
 /** The scene with a rain knob, whether or not it has one of its own yet. */
-function rainy(): SceneDef {
+function rainy(): LoadedScene {
   if (beesScene.params.some((def) => def.key === "rain")) return beesScene;
   const params: readonly ParamDef[] = [...beesScene.params, ...weatherKnobs({ rain: true })];
   return { ...beesScene, params, sim: beesSim(params) };

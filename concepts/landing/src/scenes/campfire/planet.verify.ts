@@ -13,7 +13,9 @@
 //      behind the planet is hidden; the same moon in front of it is drawn over the disc.
 import { fragmentSourceFor, packParams, vertexSource } from "../../shaders/index.ts";
 import { defaultsFor, paramDefaults, renderSettings } from "../../state.ts";
-import { campfireScene } from "./index.ts";
+import { loadScene } from "../index.ts";
+
+const campfireScene = await loadScene("campfire");
 
 function check(ok: boolean, message: string): void {
   if (!ok) throw new Error(message);

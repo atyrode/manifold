@@ -5,7 +5,7 @@
 // each step by more than 0.02% of the whole frame's light, far more than the wet sand's glints alone.
 import { defaultsFor, paramDefaults, renderSettings } from "../../state.ts";
 import { fragmentSourceFor, packParams, vertexSource } from "../../shaders/index.ts";
-import { sceneDefs } from "../index.ts";
+import { loadScene } from "../index.ts";
 
 function check(ok: boolean, message: string): void {
   if (!ok) throw new Error(`stars knob: ${message}`);
@@ -80,7 +80,9 @@ function light(
   return sum;
 }
 
-export function verifyStarsKnob(gl: WebGL2RenderingContext): Record<string, unknown> {
+export async function verifyStarsKnob(
+  gl: WebGL2RenderingContext,
+): Promise<Record<string, unknown>> {
   check(gl.getExtension("EXT_color_buffer_float") !== null, "float render targets unavailable");
   const result: Record<string, number[]> = {};
   // The density each drew before the knob, and a clear night with the most sky in view.
@@ -93,7 +95,7 @@ export function verifyStarsKnob(gl: WebGL2RenderingContext): Record<string, unkn
       paramDefaults(id)["stars"] === before,
       `${id} does not start at its former density ${before}`,
     );
-    const linked = program(gl, fragmentSourceFor(sceneDefs[id]));
+    const linked = program(gl, fragmentSourceFor(await loadScene(id)));
     const sums = [0, before, 1].map((stars) =>
       light(
         gl,

@@ -5,8 +5,10 @@
 import { effective } from "../../params.ts";
 import { visitorAlone } from "../../principals.ts";
 import { GpuCompute } from "../../sims/gpu.ts";
+import { loadScene } from "../index.ts";
 import type { SimFrame } from "../types.ts";
-import { rippleScene } from "./index.ts";
+
+const rippleScene = await loadScene("ripple");
 
 /** The view sampled on a COLUMNS × ROWS grid of texel centres over the frame. */
 const COLUMNS = 64;

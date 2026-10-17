@@ -1,7 +1,7 @@
 import { visitorAlone } from "./src/principals.ts";
 import { DitherRenderer } from "./src/renderer.ts";
 import { defaultsFor, paramDefaults, renderSettings } from "./src/state.ts";
-import { sceneDefs } from "./src/scenes/index.ts";
+import { loadScene, loadScenes } from "./src/scenes/index.ts";
 import { incenseVentVerify } from "./src/scenes/incense/vent.verify.ts";
 import { rippleEdgesVerify } from "./src/scenes/ripple/edges.verify.ts";
 import { verifyHarmonographPrewarm } from "./src/scenes/harmonograph/prewarm.verify.ts";
@@ -72,6 +72,10 @@ import {
   type SceneWalk,
 } from "./src/verify/kit.ts";
 
+const forestScene = await loadScene("forest");
+const frostScene = await loadScene("frost");
+const countryScene = await loadScene("country");
+
 function context(): WebGL2RenderingContext {
   const gl = document.createElement("canvas").getContext("webgl2");
   if (!gl) throw new Error("WebGL2 unavailable");
@@ -83,10 +87,10 @@ function forestClock(gl: WebGL2RenderingContext): number[] {
   const clock = link(
     gl,
     fragmentSourceFor({
-      ...sceneDefs.forest,
+      ...forestScene,
       entry: "regressionClock",
       glsl:
-        sceneDefs.forest.glsl +
+        forestScene.glsl +
         `
     Shade regressionClock(vec2 uv, vec2 cell, float t) {
       sceneForest(uv, cell, t);
@@ -177,7 +181,7 @@ function gpuBlend(gl: WebGL2RenderingContext): Record<string, unknown> {
 // Frost's real melt sim: a press warms the pane; after a traced mark, reseeding while paused clears
 // every trace of warmth and resuming brings none of it back.
 function frostWarmth(gl: WebGL2RenderingContext): Record<string, boolean> {
-  const frost = sceneDefs.frost.sim?.(gl);
+  const frost = frostScene.sim?.(gl);
   if (!frost) throw new Error("Frost simulation unavailable");
   const knobs = paramDefaults("frost");
   const frame: SimFrame = {
@@ -235,7 +239,7 @@ function frostWarmth(gl: WebGL2RenderingContext): Record<string, boolean> {
     warm.some((value, index) => value !== pristine[index]),
     "Frost interaction did not heat the pane",
   );
-  const traceSlot = sceneDefs.frost.params.find((param) => param.key === "mark")?.trigger;
+  const traceSlot = frostScene.params.find((param) => param.key === "mark")?.trigger;
   if (traceSlot === undefined) throw new Error("Frost trace trigger unavailable");
   frame.fired = Array.from({ length: 8 }, (_, slot) => slot === traceSlot);
   mask();
@@ -347,7 +351,7 @@ async function rendererPassage(_gl: WebGL2RenderingContext): Promise<Record<stri
       await pause(20);
       draw((at += 1));
     }
-    const exit = sceneDefs.country.passage?.exit ?? 0;
+    const exit = countryScene.passage?.exit ?? 0;
     check(exit > 0, "Countryside needs an exit for this check");
     renderer.replayPassage();
     // The first frame only makes the incoming program ready: the scene idles, nothing blends.
@@ -561,12 +565,14 @@ export const checks: readonly Check[] = [
 /**
  * Runs the named check on a fresh WebGL2 context with a vertex array bound, and hands `report` its
  * outcome as JSON, `{ result }` or `{ error }`. verify.ts passes a page binding as `report`, so the
- * check may outlast any one protocol call.
+ * check may outlast any one protocol call. Every scene's code is loaded first (`loadScenes`), so a
+ * renderer a check drives builds a scene's program on the frame it asks, as checks count frames.
  */
 export async function run(name: string, report: (outcome: string) => void): Promise<void> {
   try {
     const entry = checks.find(([key]) => key === name);
     if (!entry) throw new Error(`No check named ${name}`);
+    await loadScenes();
     const gl = context();
     gl.bindVertexArray(gl.createVertexArray());
     report(JSON.stringify({ result: await entry[1](gl) }));

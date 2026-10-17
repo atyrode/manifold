@@ -1,7 +1,9 @@
 import { expect, test } from "bun:test";
 import { HeadlessSim } from "../../sims/headless.ts";
+import { loadScene } from "../index.ts";
 import { BONSAI_FIELD } from "./geometry.ts";
-import { bonsaiScene } from "./index.ts";
+
+const bonsaiScene = await loadScene("bonsai");
 
 /** The largest pad deflection the sim hands the shader over `seconds` at 60 fps (after the first
  *  second), with the knobs `params` (raw, as in the URL) and an optional "now" gust at `gustAt`. */

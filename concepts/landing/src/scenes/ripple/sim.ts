@@ -73,6 +73,7 @@ import {
   type Point,
   type TankFrame,
 } from "./layout.ts";
+import { RIPPLE_ENTER } from "./constants.ts";
 
 /** Texels of a layout row (uSim2). */
 export const RIPPLE_TEXELS = {
@@ -144,16 +145,6 @@ const HOLD = [150, 40] as const;
 /** Most steps a frame takes for the shown tank and for one being prepared. */
 const MAX_STEPS = 4;
 const MAX_PREP_STEPS = 10;
-/**
- * The scene's passage (index.ts `passage`): seconds the entrance and the exit take. Both play the
- * tank in time-lapse, since its waves crawl at 0.028 short sides a second: the entrance starts from
- * still water, the dippers swell up over PASSAGE_SWELL beats and the first wavefronts rush out,
- * slowing to the tank's own pace as the entrance ends; the exit stops the dippers over
- * PASSAGE_STOP of a beat and the last waves run out ever faster to the sponges. The water is the
- * same simulation throughout; only how many steps a frame takes (and the dippers' strength) differs.
- */
-export const RIPPLE_ENTER = 3;
-export const RIPPLE_EXIT = 1.4;
 /** The time-lapse's top rate (× real time) and the most steps a frame takes during a passage. */
 const PASSAGE_RATE = 22;
 const PASSAGE_STEPS = 24;

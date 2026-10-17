@@ -6,8 +6,7 @@
 import { choice, feature, range, seed, toggle, type ParamDef } from "../../params.ts";
 import { atmosphereGroups, paletteTheme, skyKnobs } from "../atmosphere.ts";
 import type { SceneDef } from "../types.ts";
-import { dewGlsl } from "./shader.ts";
-import { DEW_PASSAGE, dewSim } from "./sim.ts";
+import { DEW_PASSAGE } from "./constants.ts";
 
 const params: readonly ParamDef[] = [
   range(
@@ -89,9 +88,7 @@ export const dewScene: SceneDef = {
     },
     manifold: { title: "Manifold mark", blurb: "The spider's own landmark, woven into the hub." },
   },
-  glsl: dewGlsl,
-  entry: "sceneDew",
-  sim: dewSim(params),
+  code: () => import("./code.ts"),
   // Entrance: the web swings in on its anchor threads as a gust settles, the dew swinging with it, and
   // the spider walks down to the hub. Exit: a gust swings the web aside and out of frame.
   passage: DEW_PASSAGE,

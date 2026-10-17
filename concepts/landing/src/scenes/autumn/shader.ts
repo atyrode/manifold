@@ -25,9 +25,7 @@
 // world's deck's (CLOUD_SHADOWS, skyCloudShadow), cast from the park's own cloud base.
 import { worldGlsl } from "../../shaders/lib/world.ts";
 import { autumnLayoutGlsl } from "./layout.ts";
-
-/** Trigger slot of the shooting stars' "now" button (0 is the gusts', 1 the leaf M's). */
-export const AUTUMN_METEOR_TRIGGER = 2;
+import { AUTUMN_METEOR_TRIGGER } from "./constants.ts";
 
 export const autumnGlsl = `
 ${worldGlsl}

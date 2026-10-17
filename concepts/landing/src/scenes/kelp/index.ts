@@ -7,8 +7,7 @@
 import { choice, counts, feature, range, seed, type ParamDef } from "../../params.ts";
 import { atmosphereGroups, skyKnobs } from "../atmosphere.ts";
 import type { SceneDef } from "../types.ts";
-import { kelpGlsl } from "./shader.ts";
-import { KELP_PASSAGE, kelpSim, kelpSpecies } from "./sim.ts";
+import { KELP_PASSAGE, kelpSpecies } from "./constants.ts";
 
 const params: readonly ParamDef[] = [
   range(
@@ -190,11 +189,9 @@ export const kelpScene: SceneDef = {
     night: { title: "Night", blurb: "What glows in the dark water." },
     manifold: { title: "Manifold mark", blurb: "An M of stone standing on the sea floor." },
   },
-  glsl: kelpGlsl,
-  entry: "sceneKelp",
+  code: () => import("./code.ts"),
   // Entrance: the camera sinks from just under the surface into the forest, a surge bends the fronds
   // over and they swing into place, and the school streams in from the side and forms up. Exit: the
   // school turns and leaves the frame, a surge sweeps the fronds and the camera rises toward the light.
   passage: KELP_PASSAGE,
-  sim: kelpSim(params),
 };

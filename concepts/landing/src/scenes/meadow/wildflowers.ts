@@ -34,8 +34,8 @@ import {
   type PlantSpecies,
 } from "../../sims/plants.ts";
 import type { SceneSim, SimFactory, SimFrame } from "../types.ts";
+import { GUST_TRIGGER } from "./constants.ts";
 import {
-  GUST_TRIGGER,
   MEADOW_FOCAL,
   meadowGust,
   meadowPassageGust,

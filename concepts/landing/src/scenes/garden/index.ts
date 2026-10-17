@@ -8,8 +8,7 @@ import { choice, effective, feature, knobDef, range, seed, type ParamDef } from 
 import { atmosphereGroups, skyKnobs, skyTheme, weatherKnobs } from "../atmosphere.ts";
 import { plantKnobs } from "../plants.ts";
 import type { SceneDef } from "../types.ts";
-import { gardenGlsl } from "./shader.ts";
-import { GARDEN_PAPER, GARDEN_PASSAGE, gardenPatterns, gardenSeasons, gardenSim } from "./sim.ts";
+import { GARDEN_PAPER, GARDEN_PASSAGE, gardenPatterns, gardenSeasons } from "./constants.ts";
 
 const params: readonly ParamDef[] = [
   choice(
@@ -154,9 +153,7 @@ export const gardenScene: SceneDef = {
       blurb: "A landmark of its own: a slate M among the stones, the gravel raked round it.",
     },
   },
-  glsl: gardenGlsl,
-  entry: "sceneGarden",
-  sim: gardenSim(params),
+  code: () => import("./code.ts"),
   passage: GARDEN_PASSAGE,
   // White gravel in daylight is a light page, golden hour included: the copy goes dark on it from
   // just after sunrise to just before sunset, on a still clock, unless steady rain greys it (rain

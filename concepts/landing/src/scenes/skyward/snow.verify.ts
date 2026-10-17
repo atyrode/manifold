@@ -4,7 +4,9 @@
 // switched off, the snow keeps the level camera's look and comes straight down the frame everywhere.
 import { defaultsFor, paramDefaults, renderSettings } from "../../state.ts";
 import { fragmentSourceFor, packParams, vertexSource } from "../../shaders/index.ts";
-import { skywardScene } from "./index.ts";
+import { loadScene } from "../index.ts";
+
+const skywardScene = await loadScene("skyward");
 
 const WIDTH = 320;
 const HEIGHT = 180;

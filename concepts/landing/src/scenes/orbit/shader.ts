@@ -7,9 +7,6 @@
 import { glslFloat } from "../../shaders/glsl.ts";
 import { planetGlsl } from "../../shaders/lib/planet.ts";
 
-/** Seconds of the orbit's entrance and exit (SceneDef.passage). */
-export const ORBIT_PASSAGE = { enter: 2.8, exit: 1.5 } as const;
-
 /**
  * A captured meteor's fall: it comes in at `from` planet radii and burns up at `to`, `turns` times
  * round in `seconds`. Its orbit decays as Kepler's third law has it (see orbitCapturePath): the

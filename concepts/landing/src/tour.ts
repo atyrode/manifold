@@ -106,6 +106,12 @@ export class TourPlayer {
     return this.step.dwell ?? this.#tour.dwell;
   }
 
+  /** The scene the tour moves on to from this step (its own, when it is the only step). */
+  get upcoming(): SceneId {
+    const steps = this.#tour.steps;
+    return steps[(this.#index + 1) % steps.length]?.scene ?? this.step.scene;
+  }
+
   get elapsed(): number {
     return this.#elapsed;
   }

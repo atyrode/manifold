@@ -7,8 +7,7 @@
 import { feature, range, seed, type ParamDef } from "../../params.ts";
 import { atmosphereGroups, skyKnobs, weatherKnobs } from "../atmosphere.ts";
 import type { SceneDef } from "../types.ts";
-import { bambooGlsl } from "./shader.ts";
-import { BAMBOO_PASSAGE, bambooSim } from "./sim.ts";
+import { BAMBOO_PASSAGE } from "./constants.ts";
 
 const params: readonly ParamDef[] = [
   feature(
@@ -131,12 +130,10 @@ export const bambooScene: SceneDef = {
     },
     manifold: { title: "Manifold mark", blurb: "The M glowing in the stone lantern's window." },
   },
-  glsl: bambooGlsl,
-  entry: "sceneBamboo",
+  code: () => import("./code.ts"),
   // The culms sway in from the frame edges and the spout starts to run; on leaving, the tube brims,
   // tips and clacks while a gust bows the grove.
   passage: BAMBOO_PASSAGE,
-  sim: bambooSim(params),
   // The moon takes a phase (K_moon) in the shared sky: in the gaps, and in its rays at night.
   features: { SKY_MOON_PHASE: 1 },
 };

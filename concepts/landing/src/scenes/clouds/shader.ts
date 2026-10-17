@@ -12,9 +12,6 @@
 // (cloud sea); K_window, K_wing, K_contrail (window seat, trigger slot 1); K_wind, K_lightning
 // (trigger slot 0), K_aurora (weather); K_livery (manifold).
 
-/** Seconds of the climb out of the deck and of the sinking back in (SceneDef.passage). */
-export const CLOUDS_PASSAGE = { enter: 3.0, exit: 1.5 } as const;
-
 export const cloudsGlsl = `
 const float cloudsHorizon = 0.08; // horizon line above the screen centre, in screen heights (~58% up)
 const float cloudsFocal = 1.2;    // lens: about 45 degrees of vertical field of view

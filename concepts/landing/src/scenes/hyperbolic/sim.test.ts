@@ -1,7 +1,9 @@
 import { expect, test } from "bun:test";
 import { HeadlessSim } from "../../sims/headless.ts";
-import { HYPERBOLIC_MODELS } from "./sim.ts";
-import { hyperbolicScene } from "./index.ts";
+import { loadScene } from "../index.ts";
+import { HYPERBOLIC_MODELS } from "./constants.ts";
+
+const hyperbolicScene = await loadScene("hyperbolic");
 
 // The state row's first two texels: screen disk → plane (coarse, then fine).
 const motionOf = (sim: HeadlessSim): number[] => Array.from(sim.upload(0).data.subarray(0, 8));

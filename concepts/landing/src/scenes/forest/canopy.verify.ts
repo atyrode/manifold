@@ -2,7 +2,9 @@
 // concepts/landing/verify-browser.ts on real WebGL output. A probe entry compiled with Forest's knobs
 // evaluates the library functions into a small float target, one case per pixel.
 import { fragmentSourceFor, vertexSource } from "../../shaders/index.ts";
-import { sceneDefs } from "../index.ts";
+import { loadScene } from "../index.ts";
+
+const forestScene = await loadScene("forest");
 
 function check(ok: boolean, message: string): void {
   if (!ok) throw new Error(`canopy: ${message}`);
@@ -148,7 +150,7 @@ export function verifyCanopy(gl: WebGL2RenderingContext): Record<string, unknown
   check(gl.getExtension("EXT_color_buffer_float") !== null, "float render targets unavailable");
   const probe = program(
     gl,
-    fragmentSourceFor({ ...sceneDefs.forest, entry: "canopyProbe", glsl: PROBE }),
+    fragmentSourceFor({ ...forestScene, entry: "canopyProbe", glsl: PROBE }),
   );
   const weather = (tod: number, rain: number): Weather => {
     const out = draw(gl, probe, 10, 1, { uProbe: [0], uProbeA: [tod, rain, 0, 0] });

@@ -55,6 +55,7 @@
 import { glslFloat, glslPick } from "../../shaders/glsl.ts";
 import { birdsGlsl } from "../../shaders/lib/birds.ts";
 import { milkyWayGlsl } from "../../shaders/lib/milkyway.ts";
+import { LAKE_CORONA_TRIGGER, LAKE_METEOR_TRIGGER, LAKE_PASSAGE } from "./constants.ts";
 import {
   ABOVE_RANGE,
   DIST_RANGE,
@@ -68,7 +69,6 @@ import {
   HORIZON,
   ICE_DEPTH,
   ICE_INDEX,
-  LAKE_PASSAGE,
   MARK_ID,
   SNOW_MAX,
   SURGE_GAIN,
@@ -116,11 +116,6 @@ const DRAPE_GAIN = [1.0, 1.0, 1.2, 1.2, 1.0] as const;
 /** The fjord's camera: its horizon (screen height, at rest) and vertical field of view (rad). */
 export const FJORD_HORIZON = 0.32;
 const FJORD_FOV = 1.3;
-
-/** Trigger slot of the shooting stars' "now" button (0 substorms, 1 singing ice, 2 the M). */
-export const LAKE_METEOR_TRIGGER = 3;
-/** Trigger slot of the drapes' corona's "now" button. */
-export const LAKE_CORONA_TRIGGER = 4;
 
 export const lakeGlsl = `
 ${birdsGlsl}

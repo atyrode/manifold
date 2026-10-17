@@ -5,14 +5,12 @@
 // the sand's relief with the raking lamp, every groove a bright side and a shadowed one.
 import { choice, feature, range, seed, type ParamDef } from "../../params.ts";
 import type { SceneDef } from "../types.ts";
-import { sandtableGlsl } from "./shader.ts";
 import {
   SANDTABLE_PASSAGE,
   sandtableFigures,
   sandtableMachines,
   sandtablePatterns,
-  sandtableSim,
-} from "./sim.ts";
+} from "./constants.ts";
 
 const params: readonly ParamDef[] = [
   choice(
@@ -151,8 +149,6 @@ export const sandtableScene: SceneDef = {
       blurb: "A landmark of its own: the M drawn into the sand by the ball.",
     },
   },
-  glsl: sandtableGlsl,
-  entry: "sceneSandtable",
-  sim: sandtableSim(params),
+  code: () => import("./code.ts"),
   passage: SANDTABLE_PASSAGE,
 };

@@ -81,11 +81,10 @@ import { clamp, hash31, smoothstep } from "../../sims/math.ts";
 import { Random } from "../../sims/random.ts";
 import { DataTexture, DirtyRegion } from "../../sims/texture.ts";
 import type { PrincipalState, SceneSim, SimFactory, SimFrame } from "../types.ts";
+import { CHLADNI_ENTER, CHLADNI_EXIT, CHLADNI_GRAINS } from "./constants.ts";
 
 const TAU = Math.PI * 2;
 
-/** The `grains` choice. */
-export const CHLADNI_GRAINS = [15000, 25000, 40000] as const;
 const MAX_GRAINS = Math.max(...CHLADNI_GRAINS);
 
 /**
@@ -212,10 +211,6 @@ const POUR_PER_UNIT = 5000;
 const POUR_PER_SECOND = 700;
 const POUR_RADIUS = 0.03;
 
-// The scene's passage (index.ts `passage`).
-/** Seconds the entrance and the exit take. */
-export const CHLADNI_ENTER = 3;
-export const CHLADNI_EXIT = 1.6;
 /**
  * The entrance, in seconds: sand is poured over the still plate from the first moment, in a front
  * sweeping down the slope that sets off fast and slows toward the foot (POUR_FRONT of a grain's

@@ -1,8 +1,10 @@
 import { expect, test } from "bun:test";
 import { HeadlessSim, type HeadlessFrame } from "../../sims/headless.ts";
+import { loadScene } from "../index.ts";
 import type { PrincipalState } from "../types.ts";
-import { lanternsScene } from "./index.ts";
 import { EYE, FOCAL, HORIZON, LANTERN_HALF, MAX_LANTERNS, ROCKS } from "./sim.ts";
+
+const lanternsScene = await loadScene("lanterns");
 
 interface Seen {
   x: number;

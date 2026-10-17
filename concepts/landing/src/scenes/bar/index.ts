@@ -7,8 +7,7 @@
 import { choice, counts, feature, range, toggle, type ParamDef } from "../../params.ts";
 import { atmosphereGroups, weatherKnobs } from "../atmosphere.ts";
 import type { SceneDef } from "../types.ts";
-import { barGlsl } from "./shader.ts";
-import { barSim, PASSAGE } from "./sim.ts";
+import { PASSAGE } from "./constants.ts";
 
 const params: readonly ParamDef[] = [
   range(
@@ -172,11 +171,9 @@ export const barScene: SceneDef = {
       blurb: "A landmark of its own: the M on the back bar's mirror.",
     },
   },
-  glsl: barGlsl,
+  code: () => import("./code.ts"),
   // You sit down in the booth: the view lowers and turns to rest, the bartender looks up from his
   // glass and nods, the fan starts turning, the lamps warm up a little. Leaving, you stand: the view
   // rises and turns to the door as he gives a small wave.
   passage: PASSAGE,
-  entry: "sceneBar",
-  sim: barSim(params),
 };

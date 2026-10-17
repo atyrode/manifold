@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { YEAR_CYCLE_RATE } from "./climate.ts";
 import { feature, range, type ParamDef } from "./params.ts";
 import { MAX_PHASES, phaseDefines, RatePhases, ratedKnobs, rateOf } from "./rate-phase.ts";
-import { sceneDefs } from "./scenes/index.ts";
+import { loadScenes, sceneDefs } from "./scenes/index.ts";
 import { DAY_CYCLE_RATE } from "./world-clock.ts";
 
 const STEP = 1 / 60;
@@ -100,9 +100,9 @@ describe("every scene's rate knobs", () => {
     expect(wrong).toEqual([]);
   });
 
-  test("are what the scenes' shaders read as phases", () => {
+  test("are what the scenes' shaders read as phases", async () => {
     const missing: string[] = [];
-    for (const scene of Object.values(sceneDefs)) {
+    for (const scene of await loadScenes()) {
       const defined = phaseDefines(scene);
       for (const [, key] of scene.glsl.matchAll(/\bPHASE_([A-Za-z0-9]+)/g))
         if (!defined.includes(`#define PHASE_${key} `)) missing.push(`${scene.id} PHASE_${key}`);

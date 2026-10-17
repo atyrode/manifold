@@ -1,8 +1,8 @@
 import { describe, expect, test } from "bun:test";
 import { effective } from "../../params.ts";
 import { visitorAlone } from "../../principals.ts";
+import { loadScene } from "../index.ts";
 import type { SimFrame } from "../types.ts";
-import { kelpScene } from "./index.ts";
 import {
   KELP_LAYERS,
   KELP_ORIGIN,
@@ -14,6 +14,8 @@ import {
   KELP_STIPES,
   KELP_VIEW,
 } from "./sim.ts";
+
+const kelpScene = await loadScene("kelp");
 
 /** What the kelp sim last uploaded: its point texture (positions) and its state rows. */
 interface Uploads {

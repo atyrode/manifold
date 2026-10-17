@@ -57,6 +57,7 @@ import { materialAt } from "../../sims/material.ts";
 import { approach, clamp, easeFactor, smoothstep } from "../../sims/math.ts";
 import { DataTexture } from "../../sims/texture.ts";
 import type { PrincipalState, SceneSim, SimFactory, SimFrame } from "../types.ts";
+import { LAVA_PASSAGE } from "./constants.ts";
 
 // ---- the lamp's shape and the room's layout, shared with the shader -----------------------------
 
@@ -292,9 +293,6 @@ const GRID_KAPPA = 7;
 
 // ---- the passage -------------------------------------------------------------------------------
 
-/** Seconds the entrance and the exit take (SceneDef.passage). Both play in the simulation: the
- * shader draws whatever the wax does. */
-export const LAVA_PASSAGE = { enter: 3, exit: 1.8 } as const;
 /** Entrance: the pooled wax starts cool and solid at this temperature (plus a little spread); the
  * lamp is lit and its liquid clear. It then warms (every parcel toward the liquid's temperature,
  * pull 1/s, between these seconds, easing out again later) while the coil's heating is multiplied

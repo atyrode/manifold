@@ -38,12 +38,7 @@
 // the ground it reached. A software renderer runs every line of a program, so the bales' cells are
 // walked first and only the one bale a pixel finds is looked up.
 import { glslFloat } from "../../shaders/glsl.ts";
-
-/** The farming year's keys (year positions): the land exactly as the old season choice showed it. */
-export const COUNTRY_SEASONS = { summer: 0.375, harvest: 0.47, autumn: 0.6 } as const;
-
-/** The year from the first round bale dropped on a cut barley field to the last one carted away. */
-export const COUNTRY_BALES = [0.418, 0.497] as const;
+import { COUNTRY_SEASONS, COUNTRY_BALES } from "./constants.ts";
 
 const S = glslFloat(COUNTRY_SEASONS.summer);
 const H = glslFloat(COUNTRY_SEASONS.harvest);

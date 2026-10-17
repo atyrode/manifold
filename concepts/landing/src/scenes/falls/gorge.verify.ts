@@ -5,7 +5,9 @@
 // in on both sides of the frame; the default basalt cliff stands open.
 import { defaultsFor, paramDefaults, renderSettings } from "../../state.ts";
 import { fragmentSourceFor, packParams, vertexSource } from "../../shaders/index.ts";
-import { fallsScene } from "./index.ts";
+import { loadScene } from "../index.ts";
+
+const fallsScene = await loadScene("falls");
 
 const HEIGHT = 180;
 

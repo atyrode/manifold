@@ -7,13 +7,7 @@
 import { choice, feature, range, seed, type ParamDef } from "../../params.ts";
 import { paletteTheme } from "../atmosphere.ts";
 import type { SceneDef } from "../types.ts";
-import { physarumGlsl } from "./shader.ts";
-import {
-  PHYSARUM_AGENTS_DEFAULT,
-  PHYSARUM_PASSAGE,
-  physarumAgentCounts,
-  physarumSim,
-} from "./sim.ts";
+import { PHYSARUM_AGENTS_DEFAULT, PHYSARUM_PASSAGE, physarumAgentCounts } from "./constants.ts";
 
 /** In `palette` knob order: the shader's K_palette. */
 const PALETTES = ["agar", "ink", "rail"] as const;
@@ -164,9 +158,7 @@ export const physarumScene: SceneDef = {
       blurb: "A landmark of its own: the mould growing the M between five oat flakes.",
     },
   },
-  glsl: physarumGlsl,
-  entry: "scenePhysarum",
-  sim: physarumSim(params),
+  code: () => import("./code.ts"),
   // Ink is drawn on paper: the page copy goes dark on it.
   theme: paletteTheme(params, "palette", (palette) => palette === INK),
 };

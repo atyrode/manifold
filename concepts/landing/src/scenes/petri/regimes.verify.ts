@@ -5,9 +5,11 @@
 import { effective } from "../../params.ts";
 import { visitorAlone } from "../../principals.ts";
 import { grayScottRegimes } from "../../sims/grayscott.ts";
+import { loadScene } from "../index.ts";
 import type { SimFrame } from "../types.ts";
-import { petriScene } from "./index.ts";
 import { gridFor, petriRadius } from "./sim.ts";
+
+const petriScene = await loadScene("petri");
 
 /** Frames of 10 Gray–Scott steps each (dt 0.1 s at tempo 1 asks for 16), after the sim's prewarm. */
 const FRAMES = 160;

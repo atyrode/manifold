@@ -12,7 +12,7 @@ import {
 } from "../../sims/terrain.ts";
 import type { SimFrame } from "../types.ts";
 import { countryScene } from "./index.ts";
-import { COUNTRY_SEASONS } from "./season.ts";
+import { COUNTRY_SEASONS } from "./constants.ts";
 import { COUNTRY_MAP } from "./sim.ts";
 import {
   COUNTRY_VERGE,

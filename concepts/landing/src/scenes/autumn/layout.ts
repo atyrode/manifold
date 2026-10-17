@@ -20,9 +20,7 @@
 //            up across the frame as the camera tilts up into the canopy
 import { glslFloat } from "../../shaders/glsl.ts";
 import { clamp, smoothstep } from "../../sims/math.ts";
-
-/** Seconds the entrance and the exit take (SceneDef.passage). */
-export const AUTUMN_PASSAGE = { enter: 2.8, exit: 1.5 } as const;
+import { AUTUMN_PASSAGE } from "./constants.ts";
 
 /**
  * The entrance's gust, as a strength 0..1 by seconds into the entrance: it rises from the first frame,

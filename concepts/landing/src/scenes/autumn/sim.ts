@@ -42,10 +42,10 @@ import { mulberry32 } from "../../sims/random.ts";
 import { DataTexture } from "../../sims/texture.ts";
 import { gustPulse, gustWait, windSign } from "../../sims/wind.ts";
 import type { SceneSim, SimFactory, SimFrame } from "../types.ts";
+import { AUTUMN_PASSAGE } from "./constants.ts";
 import {
   AUTUMN_CARPET,
   AUTUMN_MARK,
-  AUTUMN_PASSAGE,
   AUTUMN_PATH,
   AUTUMN_SLOTS,
   AUTUMN_TREE,

@@ -11,9 +11,6 @@
 // Knobs read here: K_shape, K_colour, K_backdrop, K_mark, K_filmSeed.
 import { filmCommonGlsl } from "./sim.ts";
 
-/** What the film is seen against, in `backdrop` knob order. */
-export const filmBackdrops = ["black", "midnight", "plum"] as const;
-
 export const filmGlsl = `
 ${filmCommonGlsl}
 

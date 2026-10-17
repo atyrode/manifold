@@ -22,12 +22,6 @@
 import { glslFloat } from "../../shaders/glsl.ts";
 
 /**
- * Seconds of the scroll's entrance (it is drawn open from its roll, the painting riding in behind
- * its roller) and exit (it is wound up again) (SceneDef.passage).
- */
-export const SHANSHUI_PASSAGE = { enter: 3, exit: 1.4 } as const;
-
-/**
  * Screen heights of one section of the scroll (at the default speed about six days of unrolling,
  * at the fastest a day and a half), and how many sections the seed rows cycle through. Texel 1's
  * alpha is the section number modulo SHANSHUI_SECTIONS, plus SHANSHUI_SECTIONS once there is an

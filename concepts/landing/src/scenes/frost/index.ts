@@ -1,4 +1,4 @@
-// A window pane on a winter night, frosting over: fern frost grown on the CPU (sim.ts: the
+// A window pane on a winter night, frosting over: fern frost grown on the CPU (build.ts: the
 // branches and their fur in uSim0 and uSim3; the shader adds their feathery barbs, the rime along
 // the frame and the glints), melted by a warm fingertip and refreezing (uSim1), on a growth clock
 // (uSim2) that opens on a pane already frosted along its bottom. Behind the glass, out of focus:
@@ -10,8 +10,7 @@ import { choice, feature, range, seed, type ParamDef } from "../../params.ts";
 import { atmosphereGroups, skyKnobs, weatherKnobs } from "../atmosphere.ts";
 import type { SceneDef } from "../types.ts";
 import { worldGates } from "../world.ts";
-import { FROST_METEOR_TRIGGER, frostGlsl } from "./shader.ts";
-import { FROST_PASSAGE, frostSim } from "./sim.ts";
+import { FROST_METEOR_TRIGGER, FROST_PASSAGE } from "./constants.ts";
 
 const params: readonly ParamDef[] = [
   range(
@@ -122,10 +121,8 @@ export const frostScene: SceneDef = {
       blurb: "A landmark of its own: an M traced in the frost with a fingertip.",
     },
   },
-  glsl: frostGlsl,
-  entry: "sceneFrost",
+  code: () => import("./code.ts"),
   passage: FROST_PASSAGE,
-  sim: frostSim(params),
   // The world's sky, every part its knobs can show compiled in: the moon's phase (K_moon), the snow
   // cloud, the stars, the aurora and shooting stars.
   features: worldGates(params),

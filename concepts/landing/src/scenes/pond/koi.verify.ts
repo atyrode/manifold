@@ -7,8 +7,10 @@
 import { paramDefaults, defaultsFor, renderSettings } from "../../state.ts";
 import { fragmentSourceFor, packParams, vertexSource } from "../../shaders/index.ts";
 import { FishGroup, FishTexture, KOI } from "../../sims/fish.ts";
-import { sceneDefs } from "../index.ts";
+import { loadScene } from "../index.ts";
 import { koiLoop, koiLoops, KOI_MAX } from "./koi.ts";
+
+const pondScene = await loadScene("pond");
 
 const W = 160;
 const H = 90;
@@ -84,9 +86,9 @@ export function verifyPondKoi(gl: WebGL2RenderingContext): Record<string, unknow
   const mirror = program(
     gl,
     fragmentSourceFor({
-      ...sceneDefs.pond,
+      ...pondScene,
       entry: "regressionKoiLoop",
-      glsl: `${sceneDefs.pond.glsl}
+      glsl: `${pondScene.glsl}
 uniform vec2 regressionLoop[${KOI_MAX * times.length}];
 uniform float regressionTime[${times.length}];
 Shade regressionKoiLoop(vec2 uv, vec2 cell, float t) {
@@ -123,7 +125,7 @@ Shade regressionKoiLoop(vec2 uv, vec2 cell, float t) {
   gl.deleteProgram(mirror);
 
   // 2. The blend: koi 0 steered to the middle of the pond, the others on their loops.
-  const pond = program(gl, fragmentSourceFor(sceneDefs.pond));
+  const pond = program(gl, fragmentSourceFor(pondScene));
   const knobs = {
     "koi-amount": 3,
     follow: 1,

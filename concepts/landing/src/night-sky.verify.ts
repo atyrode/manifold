@@ -23,11 +23,13 @@ import {
   packParams,
 } from "./shaders/index.ts";
 import { skyFigurePoint, skyFigures } from "./shaders/lib/sky.ts";
-import { sceneDefs, type SceneId } from "./scenes/index.ts";
+import { loadScene, type SceneId } from "./scenes/index.ts";
 import { planetUniforms, readPlanet, type SkyPlanet } from "./scenes/planets.ts";
-import type { SceneDef } from "./scenes/types.ts";
+import type { LoadedScene } from "./scenes/types.ts";
 import { paramDefaults } from "./state.ts";
 import { check, drawFloats, LAKE_FJORD, link, VerifyError, walk } from "./verify/kit.ts";
+
+const frostScene = await loadScene("frost");
 
 /** The shared night knobs with library gates (skyComponentKnobs' constellations). */
 const nightPart = (def: ParamDef): boolean =>
@@ -115,10 +117,10 @@ Shade nightProbe(vec2 uv, vec2 cell, float t) {
 
 export function verifyNightSky(gl: WebGL2RenderingContext): Record<string, unknown> {
   check(gl.getExtension("EXT_color_buffer_float") !== null, "float render targets unavailable");
-  const frost = sceneDefs.frost;
+  const frost = frostScene;
   check(frost.params.filter(nightPart).length === 1, "frost lacks the constellations");
-  const probeDef: SceneDef = { ...frost, entry: "nightProbe", glsl: PROBE };
-  const plainDef: SceneDef = {
+  const probeDef: LoadedScene = { ...frost, entry: "nightProbe", glsl: PROBE };
+  const plainDef: LoadedScene = {
     ...probeDef,
     params: probeDef.params.filter((def) => !nightPart(def)),
   };
@@ -150,7 +152,7 @@ export function verifyNightSky(gl: WebGL2RenderingContext): Record<string, unkno
   const frostKnobs = paramDefaults("frost");
   const sky = (
     linked: WebGLProgram,
-    def: SceneDef,
+    def: LoadedScene,
     over: Record<string, number>,
     night: readonly [time: number, density: number, foot: number],
   ): Float32Array =>
@@ -260,10 +262,10 @@ export const verifyNightPlanets = walk(
   nightPlanets,
 );
 
-function nightPlanets(
+async function nightPlanets(
   gl: WebGL2RenderingContext,
   scenes: readonly SceneId[],
-): Record<string, unknown> {
+): Promise<Record<string, unknown>> {
   check(gl.getExtension("EXT_color_buffer_float") !== null, "float render targets unavailable");
   const width = 160;
   const height = 100;
@@ -271,7 +273,7 @@ function nightPlanets(
   for (const [id, knobsOf] of NIGHTS) {
     if (!scenes.includes(id)) continue;
     const knobs = knobsOf();
-    const scene = sceneDefs[id];
+    const scene = await loadScene(id);
     const spec = scene.planets;
     if (spec === undefined) throw new VerifyError(`${id} takes no planets`);
     const params = scene.params.map((knob) => effective(knob, knobs));

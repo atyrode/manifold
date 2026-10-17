@@ -19,13 +19,6 @@ const PASS = 0.33;
 /** Light per second while the button is held, moving or not: poking the water. */
 const HELD = 7.2;
 
-/**
- * Seconds the scene's entrance and exit take (SceneDef.passage). Both are played by the shader alone
- * (shader.ts: the surf runs in from out at sea on a decelerating curve under a camera that settles,
- * and is drawn back out to sea on the way out), so this sim has nothing to do for them.
- */
-export const SHORE_PASSAGE = { enter: 3, exit: 1.7 } as const;
-
 export const shoreSim: SimFactory = (gl) => {
   let field: TrailField | undefined;
   let texture: DataTexture | undefined;

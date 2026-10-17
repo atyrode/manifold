@@ -101,6 +101,7 @@ import { atan2, clamp, hash31, hypot2, hypot3, lerp, smoothstep } from "./math.t
 import { fbm, valueNoise } from "./noise.ts";
 import { Random } from "./random.ts";
 import { LevelHeap, stillWater } from "./shallow.ts";
+import { TERRAIN_MAX_COTTAGES, TERRAIN_MAX_FARMS, type TerrainBase } from "./terrain-limits.ts";
 
 /** The steepest grade any stretch of road may have (rise over run). */
 export const TERRAIN_ROAD_MAX_SLOPE = 0.12;
@@ -108,10 +109,6 @@ export const TERRAIN_ROAD_MAX_SLOPE = 0.12;
 export const TERRAIN_EROSION_STEPS = 20;
 /** Most hamlets a build places beyond the village. */
 export const TERRAIN_MAX_HAMLETS = 3;
-/** Most farms a build places among the fields. */
-export const TERRAIN_MAX_FARMS = 8;
-/** Most cottages the village holds round its church. */
-export const TERRAIN_MAX_COTTAGES = 30;
 /**
  * Metres across a cottage's gable as a consumer draws it (half again life size, so a house far off
  * still covers a few dither cells); buildings are spaced, set back and terraced by it.
@@ -136,13 +133,6 @@ export const TERRAIN_CLEARANCE_SLOPE = 0.008;
 export const TERRAIN_BUILDING_KINDS = ["cottage", "church", "barn", "castle"] as const;
 export type TerrainBuildingKind = (typeof TERRAIN_BUILDING_KINDS)[number];
 export type TerrainSettlementKind = "village" | "hamlet" | "farm" | "castle";
-/**
- * The relief the map starts from, the river's axis across the vantage's view in each: a valley
- * between hills; a coast, the valley opening downstream into a bay of the sea (water level 0); a
- * plateau, a high table the river has cut a steep-sided gorge into; rolling hills all round.
- */
-export const TERRAIN_BASES = ["valley", "coast", "plateau", "hills"] as const;
-export type TerrainBase = (typeof TERRAIN_BASES)[number];
 
 /** Where the landscape is seen from: the valley is laid across this view. */
 export interface TerrainVantage {

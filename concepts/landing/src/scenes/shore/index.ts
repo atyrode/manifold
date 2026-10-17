@@ -8,8 +8,7 @@ import { WATER_TIERS } from "../../shaders/lib/water.ts";
 import { skyTheme } from "../atmosphere.ts";
 import type { SceneDef } from "../types.ts";
 import { WORLD_ALL, worldFeatures, worldGroups, worldKnobs } from "../world.ts";
-import { SHORE_LIGHTNING_TRIGGER, SHORE_METEOR_TRIGGER, shoreGlsl } from "./shader.ts";
-import { SHORE_PASSAGE, shoreSim } from "./sim.ts";
+import { SHORE_LIGHTNING_TRIGGER, SHORE_METEOR_TRIGGER, SHORE_PASSAGE } from "./constants.ts";
 
 const params: ParamDef[] = [
   range(
@@ -113,9 +112,7 @@ export const shoreScene: SceneDef = {
       blurb: "A landmark of its own: an M drawn in the sand where the waves reach it.",
     },
   },
-  glsl: shoreGlsl,
-  entry: "sceneShore",
-  sim: shoreSim,
+  code: () => import("./code.ts"),
   // Entrance: the camera settles from the sand up to the horizon as the surf, stood out to sea, runs
   // in and up the beach, the plankton flashing blue as it comes. Exit: the surf draws back out to sea.
   passage: SHORE_PASSAGE,

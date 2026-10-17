@@ -9,7 +9,7 @@
 //   bench.html?scenes=a,b&cells=960x540&frames=120&warmup=30&budget=off&auto=1
 import { CELL_BUDGET, stageCells } from "./display.ts";
 import { DitherRenderer, type RenderSettings } from "./renderer.ts";
-import { sceneDefs, sceneIds, type SceneId } from "./scenes/index.ts";
+import { loadScene, sceneIds, type SceneId } from "./scenes/index.ts";
 import { fragmentSourceFor, vertexSource } from "./shaders/index.ts";
 import { defaults, defaultsFor, paramDefaults, renderSettings } from "./state.ts";
 
@@ -252,13 +252,14 @@ class Bench {
     id: SceneId,
   ): Promise<Pick<SceneReport, "compileMs" | "linkMs" | "uniformVectors" | "samplers">> {
     const { gl, parallel } = this;
+    const scene = await loadScene(id);
     const program = gl.createProgram();
     const shaders: WebGLShader[] = [];
     try {
       const compiling = performance.now();
       for (const [kind, source] of [
         [gl.VERTEX_SHADER, vertexSource],
-        [gl.FRAGMENT_SHADER, fragmentSourceFor(sceneDefs[id])],
+        [gl.FRAGMENT_SHADER, fragmentSourceFor(scene)],
       ] as const) {
         const shader = gl.createShader(kind);
         if (!shader) throw new BenchError("shader allocation failed");

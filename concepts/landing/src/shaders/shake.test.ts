@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { sceneDefs, sceneIds, type SceneId } from "../scenes/index.ts";
+import { loadScene, sceneIds, type SceneId } from "../scenes/index.ts";
 import { assembleFragment, fragmentSourceFor, sceneFeatures, sceneFeaturesAll } from "./index.ts";
 import { GlslShakeError, shakeGlsl } from "./shake.ts";
 
@@ -215,9 +215,10 @@ const BUDGET = {
   train: [154000, 199000],
 } as const satisfies Record<SceneId, readonly [number, number?]>;
 
+const loaded = await Promise.all(sceneIds.map(async (id) => ({ id, scene: await loadScene(id) })));
+
 describe("scene programs", () => {
-  const programs = sceneIds.flatMap((id) => {
-    const scene = sceneDefs[id];
+  const programs = loaded.flatMap(({ id, scene }) => {
     const all = sceneFeaturesAll(scene);
     return [
       { id, scene, kind: "default", features: sceneFeatures(scene) },

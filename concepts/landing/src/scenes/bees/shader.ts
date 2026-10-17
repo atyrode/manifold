@@ -55,6 +55,7 @@
 // only while its knobs can show it (worldFeatures).
 import { glslFloat } from "../../shaders/glsl.ts";
 import { worldGlsl } from "../../shaders/lib/world.ts";
+import { BEES_LIGHTNING_TRIGGER, BEES_METEOR_TRIGGER } from "./constants.ts";
 import {
   BEES_ALONG_WALL,
   BEES_BLOOMS as BLOOMS,
@@ -118,10 +119,6 @@ const SPECK_DAY = [0.896, 0.825, 0.736] as const;
  * reaches right of its post (m).
  */
 const LANTERN = { f: 0.05, y: 0.25, hang: 1.08, reach: 0.2 } as const;
-
-/** Trigger slots of the shooting stars' and the lightning's "now" buttons. */
-export const BEES_METEOR_TRIGGER = 0;
-export const BEES_LIGHTNING_TRIGGER = 1;
 
 export const beesGlsl = `
 ${worldGlsl}

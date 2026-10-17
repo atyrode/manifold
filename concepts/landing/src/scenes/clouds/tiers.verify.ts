@@ -8,8 +8,11 @@
 import { defaultsFor, paramDefaults, renderSettings } from "../../state.ts";
 import { fragmentSourceFor, packParams, vertexSource } from "../../shaders/index.ts";
 import { CLOUD_TIERS } from "../../shaders/lib/clouds.ts";
-import { sceneDefs } from "../index.ts";
-import type { SceneDef } from "../types.ts";
+import { loadScene, type SceneId } from "../index.ts";
+import type { LoadedScene } from "../types.ts";
+
+const autumnScene = await loadScene("autumn");
+const trainScene = await loadScene("train");
 
 function check(ok: boolean, message: string): void {
   if (!ok) throw new Error(`cloud tiers: ${message}`);
@@ -49,7 +52,7 @@ function compiles(gl: WebGL2RenderingContext, fragment: string): boolean {
 }
 
 /** A scene whose entry only calls `call`, compiled with `features`. */
-function gate(base: SceneDef, call: string, features: Readonly<Record<string, number>>): string {
+function gate(base: LoadedScene, call: string, features: Readonly<Record<string, number>>): string {
   return fragmentSourceFor({
     ...base,
     features,
@@ -136,9 +139,11 @@ const luma = (pixels: Float32Array, i: number): number =>
   0.7152 * (pixels[i * 4 + 1] ?? 0) +
   0.0722 * (pixels[i * 4 + 2] ?? 0);
 
-export function verifyCloudTiers(gl: WebGL2RenderingContext): Record<string, unknown> {
+export async function verifyCloudTiers(
+  gl: WebGL2RenderingContext,
+): Promise<Record<string, unknown>> {
   check(gl.getExtension("EXT_color_buffer_float") !== null, "float render targets unavailable");
-  const autumn = sceneDefs.autumn;
+  const autumn = autumnScene;
 
   // The tiers: the flat deck in every program, the lit deck from its tier up and in a program that
   // selects none, the shadows and the sea of tops only from their own.
@@ -176,12 +181,12 @@ export function verifyCloudTiers(gl: WebGL2RenderingContext): Record<string, unk
   }
 
   // The adopters: each compiles at the tier it selects, and needs it (one tier lower fails).
-  const adopters: readonly [keyof typeof sceneDefs, Exclude<keyof typeof CLOUD_TIERS, "flat">][] = [
+  const adopters: readonly [SceneId, Exclude<keyof typeof CLOUD_TIERS, "flat">][] = [
     ["autumn", "shadows"],
     ["clouds", "volume"],
   ];
   for (const [id, tier] of adopters) {
-    const def = sceneDefs[id];
+    const def = await loadScene(id);
     check(
       def.features?.["CLOUD_TIER"] === CLOUD_TIERS[tier],
       `${id} does not select the ${tier} tier`,
@@ -200,8 +205,8 @@ export function verifyCloudTiers(gl: WebGL2RenderingContext): Record<string, unk
   }
   // The night train draws the calm deck alone: the lit deck is not in its program.
   check(
-    sceneDefs.train.features?.["CLOUD_TIER"] === CLOUD_TIERS.flat &&
-      compiles(gl, fragmentSourceFor(sceneDefs.train)),
+    trainScene.features?.["CLOUD_TIER"] === CLOUD_TIERS.flat &&
+      compiles(gl, fragmentSourceFor(trainScene)),
     "the train does not draw at the flat tier",
   );
 

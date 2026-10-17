@@ -5,7 +5,7 @@
 // beam, bobs, threads, shadows and trails per pixel.
 import { choice, counts, feature, range, toggle, type ParamDef } from "../../params.ts";
 import type { SceneDef } from "../types.ts";
-import { PENDULA_PASSAGE, pendulaBeams, pendulaCameras, pendulaGlsl } from "./shader.ts";
+import { PENDULA_PASSAGE, pendulaBeams, pendulaCameras } from "./constants.ts";
 
 const params: readonly ParamDef[] = [
   choice(
@@ -141,9 +141,8 @@ export const pendulaScene: SceneDef = {
     light: { title: "Light", blurb: "The lamp over the table." },
     manifold: { title: "Manifold mark", blurb: "The M, in light on the floor." },
   },
-  glsl: pendulaGlsl,
+  code: () => import("./code.ts"),
   passage: PENDULA_PASSAGE,
-  entry: "scenePendula",
   featuresFor: pendulaFeatures,
   featuresAll: PENDULA_ALL,
 };

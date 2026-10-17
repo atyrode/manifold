@@ -1,6 +1,8 @@
 import { expect, test } from "bun:test";
 import { HeadlessSim, type HeadlessUpload } from "../../sims/headless.ts";
-import { forestScene } from "./index.ts";
+import { loadScene } from "../index.ts";
+
+const forestScene = await loadScene("forest");
 
 const KNOBS = { spores: 1, wind: 0.8 };
 

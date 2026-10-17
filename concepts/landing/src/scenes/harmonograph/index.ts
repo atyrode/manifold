@@ -5,13 +5,7 @@
 // shader.ts paints the desk, the paper and the pen.
 import { choice, feature, range, seed, type ParamDef } from "../../params.ts";
 import type { SceneDef } from "../types.ts";
-import {
-  harmonographFigures,
-  harmonographInks,
-  harmonographPapers,
-  harmonographSim,
-} from "./sim.ts";
-import { harmonographGlsl } from "./shader.ts";
+import { harmonographFigures, harmonographInks, harmonographPapers } from "./constants.ts";
 
 const params: readonly ParamDef[] = [
   choice(
@@ -123,7 +117,5 @@ export const harmonographScene: SceneDef = {
       blurb: "A landmark of its own: the M, signed on the drawing by the pen.",
     },
   },
-  glsl: harmonographGlsl,
-  entry: "sceneHarmonograph",
-  sim: harmonographSim(params),
+  code: () => import("./code.ts"),
 };

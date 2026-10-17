@@ -17,13 +17,14 @@
 // speed. Every layer is placed at its own depth by forestAt (nearer things slide further, the
 // pointer's parallax too), the floor and the mist by the camera's true distance. All of it is
 // exactly off at rest (forestCamD == 0).
-// The sim (sim.ts) moves the spirits, the stag, the motes and the mist field; its textures are
-// described there. Knobs read here: K_spirits (via the sim), K_mushrooms, K_spores, K_stream, K_mist,
-// K_shafts, K_forestSeed, K_time, K_cycle, K_stars and K_moon (the shared stars and the moon in its
-// phase, SKY_MOON_PHASE, in the canopy's gaps and its shafts), K_rain, K_wind, K_mark; triggers 2
-// (the M) and 3 (spores).
+// The life (build.ts) moves the spirits, the stag, the motes and the mist field, and the sim
+// (sim.ts) uploads it; its textures are described there. Knobs read here: K_spirits (via the sim),
+// K_mushrooms, K_spores, K_stream, K_mist, K_shafts, K_forestSeed, K_time, K_cycle, K_stars and
+// K_moon (the shared stars and the moon in its phase, SKY_MOON_PHASE, in the canopy's gaps and its
+// shafts), K_rain, K_wind, K_mark; triggers 2 (the M) and 3 (spores).
 import { glslFloat } from "../../shaders/glsl.ts";
 import { canopyGroveGlsl } from "../../shaders/lib/canopy.ts";
+import { FOREST_PASSAGE } from "./constants.ts";
 import {
   FOREST_BEARD_SPACING,
   FOREST_BRANCH,
@@ -37,7 +38,6 @@ import {
   FOREST_MARK,
   FOREST_MIN_ASPECT,
   FOREST_MOTE_ROWS,
-  FOREST_PASSAGE,
   FOREST_ROCK_LEFT,
   FOREST_ROCK_RIGHT,
   FOREST_SPIRITS,
@@ -45,7 +45,7 @@ import {
   FOREST_STONES,
   FOREST_STREAM,
   FOREST_TORII,
-} from "./sim.ts";
+} from "./build.ts";
 
 /** A number as a GLSL float literal. */
 const f = (value: number): string => value.toFixed(4);
@@ -58,11 +58,11 @@ export const forestGlsl = `
 const float FOREST_HORIZON = ${f(FOREST_HORIZON)};
 const float FOREST_EYE = ${f(FOREST_EYE)};
 const float FOREST_MIN_ASPECT = ${f(FOREST_MIN_ASPECT)};
-// The passage (sim.ts FOREST_PASSAGE, FOREST_DOLLY): seconds the entrance takes (the exit needs only its
+// The passage (constants.ts FOREST_PASSAGE, build.ts FOREST_DOLLY): seconds the entrance takes (the exit needs only its
 // progress); metres the camera starts back, seconds its dolly takes, metres it drifts back on the way out.
 const float FOREST_ENTER = ${glslFloat(FOREST_PASSAGE.enter)};
 const vec3 FOREST_DOLLY = vec3(${glslFloat(FOREST_DOLLY.back)}, ${glslFloat(FOREST_DOLLY.settle)}, ${glslFloat(FOREST_DOLLY.drift)});
-// The stream: centre - swing sin((z - from) rate), half-width half + widen z (see sim.ts).
+// The stream: centre - swing sin((z - from) rate), half-width half + widen z (see build.ts).
 const vec4 FOREST_STREAM = vec4(${f(FOREST_STREAM.centre)}, ${f(FOREST_STREAM.swing)}, ${f(FOREST_STREAM.rate)}, ${f(FOREST_STREAM.from)});
 const vec2 FOREST_STREAM_W = vec2(${f(FOREST_STREAM.half)}, ${f(FOREST_STREAM.widen)});
 // The named trees: (radius, flare, flare height, lean).
@@ -675,7 +675,7 @@ vec2 forestToriiFrame(vec2 q) {
   return pivot + rotate(w - pivot, -FOREST_TORII_LEAN);
 }
 
-// The bottom of the top beam (kasagi) at x, sweeping up toward its ends (as forestKasagiTop in sim.ts).
+// The bottom of the top beam (kasagi) at x, sweeping up toward its ends (as forestKasagiTop in build.ts).
 float forestKasagiBottom(float x) {
   float k = abs(x) / (FOREST_TORII_SPAN + FOREST_TORII_OVER);
   return FOREST_TORII_H + 0.12 * k * k * k * k;
@@ -872,7 +872,7 @@ vec4 forestSpiritShape(vec2 l, float tilt, float yaw, float variant, float cells
 }
 
 // Where a hoof is (m, from below the body's centre) at phase phi of its stride: planted and sliding
-// back under the body for 65% of the cycle, as fast as the stag walks (sim.ts STAG_CYCLE = 1.4 m:
+// back under the body for 65% of the cycle, as fast as the stag walks (build.ts STAG_CYCLE = 1.4 m:
 // 2 x 0.455 / 0.65), so it stays put on the ground; then lifted and swung forward.
 vec2 forestHoof(float phi, float hipX) {
   float duty = 0.65;
@@ -940,7 +940,7 @@ float forestStagDist(vec2 l, float gait, float look, float headUp, float stand, 
   return d;
 }
 
-// The spores and motes (sim.ts): discs a cell or two across (bigger near), binned on the sim's grid
+// The spores and motes (build.ts): discs a cell or two across (bigger near), binned on the sim's grid
 // (two slots per bin; the four bins round this point hold every mote that can reach it), each hidden
 // behind whatever stands nearer (hitZ) and shrinking away as it fades. At night they glow pale green;
 // by day they are dust, seen only where a shaft lights them. Returns the colour and how much of it
@@ -1159,7 +1159,7 @@ Shade sceneForest(vec2 uv, vec2 cell, float t) {
   vec2 rockRC = vec2(0.5 * forestLA - FOREST_ROCKR.x, FOREST_HORIZON + (FOREST_ROCKR_C - FOREST_EYE) / FOREST_ROCKR.y);
   vec2 rockRR = FOREST_ROCKR.zw / FOREST_ROCKR.y;
 
-  // The mushrooms (as forestShroomSites in sim.ts), breathing slowly; a "now" on the spores makes them
+  // The mushrooms (as forestShroomSites in build.ts), breathing slowly; a "now" on the spores makes them
   // flare as they puff.
   float logTop = FOREST_HORIZON + (2.0 * FOREST_LOG.w - 0.03 - FOREST_EYE) / FOREST_LOG.z;
   vec2 gate = vec2(FOREST_TORII_SPAN, 0.0) + rotate(FOREST_GATE_SHROOMS - vec2(FOREST_TORII_SPAN, 0.0), FOREST_TORII_LEAN);

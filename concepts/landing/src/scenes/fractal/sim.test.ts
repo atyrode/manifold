@@ -1,7 +1,9 @@
 import { expect, test } from "bun:test";
 import { HeadlessSim, type HeadlessFrame } from "../../sims/headless.ts";
+import { loadScene } from "../index.ts";
 import { FRACTAL_GLOBAL_TEXELS } from "./sim.ts";
-import { fractalScene } from "./index.ts";
+
+const fractalScene = await loadScene("fractal");
 
 // The state row (sim.ts): texel 1 the pan, texel 2 the passage's focus, the incoming layer's +1 c.
 const row = (sim: HeadlessSim): ArrayLike<number> => sim.upload(0).data;

@@ -1,7 +1,9 @@
 import { expect, test } from "bun:test";
 import { HeadlessSim } from "../../sims/headless.ts";
-import { forestScene } from "./index.ts";
-import { FOREST_SPIRITS } from "./sim.ts";
+import { loadScene } from "../index.ts";
+import { FOREST_SPIRITS } from "./build.ts";
+
+const forestScene = await loadScene("forest");
 
 interface SpiritRow {
   x: number;
