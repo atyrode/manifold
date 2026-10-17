@@ -500,8 +500,8 @@ export function stampSketch(pic: Picture, flakes: readonly SketchNode[], grid: G
  * grid and light, the veins and fans laid over a copy of it each time.
  */
 export class Film {
-  #data = new Float32Array(0);
-  #lace = new Float32Array(0);
+  #data: Float32Array = new Float32Array(0);
+  #lace: Float32Array = new Float32Array(0);
   #laceNet: FlowNetwork | undefined = undefined;
   #laceLight = true;
 
@@ -520,6 +520,22 @@ export class Film {
     stampTubes(pic, grid, this.#data, "veins");
     clipToDish(this.#data, grid);
     return this.#data;
+  }
+
+  /** The lace `draw` drew last (its own array, handed over with the field: `adopt`). */
+  get lace(): Float32Array {
+    return this.#lace;
+  }
+
+  /**
+   * Go on from a film drawn elsewhere (the build worker) for `net` as it stands, its lace and field
+   * as `draw` left them, so the next draw reuses that lace as though drawn here.
+   */
+  adopt(net: FlowNetwork, lace: Float32Array, data: Float32Array): void {
+    this.#lace = lace;
+    this.#data = data;
+    this.#laceNet = net;
+    this.#laceLight = net.lightOn;
   }
 }
 

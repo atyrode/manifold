@@ -17,15 +17,18 @@ export async function buildSite(source: string, outdir: string, publicPath: stri
   }
   const result = await Bun.build({ entrypoints: pages, outdir, publicPath, minify: true });
   if (!result.success) throw new SiteBuildError(result.logs.map(String).join("\n"));
-  const worker = join(source, "src", "sheet-worker.ts");
-  if (!(await Bun.file(worker).exists())) return;
-  const built = await Bun.build({
-    entrypoints: [worker],
-    outdir,
-    naming: "sheet-worker.js",
-    minify: true,
-  });
-  if (!built.success) throw new SiteBuildError(built.logs.map(String).join("\n"));
+  // The page's worker, next to it: the build worker, or in trees before it the sheet worker.
+  for (const name of ["build-worker", "sheet-worker"]) {
+    const worker = join(source, "src", `${name}.ts`);
+    if (!(await Bun.file(worker).exists())) continue;
+    const built = await Bun.build({
+      entrypoints: [worker],
+      outdir,
+      naming: `${name}.js`,
+      minify: true,
+    });
+    if (!built.success) throw new SiteBuildError(built.logs.map(String).join("\n"));
+  }
 }
 
 /** Extracts commit `sha`'s concepts/landing from the repository `repo` under `root`; returns it. */

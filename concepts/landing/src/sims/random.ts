@@ -3,6 +3,8 @@
 //   mulberry32(seed)     a generator: each call returns the next number in [0, 1)
 //   new Random(seed = 0) the same generator as an object that re-seeds in place (no closure per seed)
 //     seed(seed)         restart the sequence at `seed`
+//     state              where the sequence stands: new Random(state) goes on from there (how a
+//                        build worker hands a generator over)
 //     next()             the next number in [0, 1)
 //     range(lo, hi)      lo + (hi - lo) · next()
 //     int(n)             a whole number in [0, n): floor(next() · n)
@@ -50,6 +52,11 @@ export class Random {
   /** Restart the sequence at the low 32 bits of `seed`. */
   seed(seed: number): void {
     this.#state = seed >>> 0;
+  }
+
+  /** Where the sequence stands: `new Random(state)` goes on with the same numbers from here. */
+  get state(): number {
+    return this.#state;
   }
 
   /** The next number in [0, 1). */

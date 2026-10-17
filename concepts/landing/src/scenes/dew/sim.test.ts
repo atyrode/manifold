@@ -39,12 +39,30 @@ function drops(sim: HeadlessSim): { x: number; y: number; r: number }[] {
   return out;
 }
 
+/** Where the hub is drawn (uSim3's header), frame heights from the frame's left edge. */
+function hubX(sim: HeadlessSim): number {
+  const head = sim.upload(3).data;
+  return (head[0] ?? 0) + (head[2] ?? 0);
+}
+
+/** Hub moves past this between two frames are a respin (the breeze sways it far less). */
+const RESPUN = 0.01;
+
 test("a window resized by 2 % keeps the web's drops where they hang on it, as large as they were", () => {
   const sim = new HeadlessSim(dewScene);
   const still = { pointer: { inside: false } };
   for (let f = 0; f < 600; f++) sim.step({ ...still, aspect: 16 / 9 });
-  const before = drops(sim);
-  sim.step({ ...still, aspect: (16 / 9) * 1.02 });
+  // The web is respun once the new shape has rested: compare the frame before with the frame after.
+  let before = drops(sim);
+  let frames = 0;
+  for (let hub = hubX(sim); Math.abs(hubX(sim) - hub) < RESPUN && frames < 60; frames++) {
+    hub = hubX(sim);
+    before = drops(sim);
+    sim.step({ ...still, aspect: (16 / 9) * 1.02 });
+  }
+  // Left as it was while the shape rested (220 ms: 14 frames at 60 Hz), then respun.
+  expect(frames).toBeGreaterThanOrEqual(14);
+  expect(frames).toBeLessThan(60);
   const after = drops(sim);
   expect(before.length).toBeGreaterThan(3);
   // Each drop still on its thread, at its place along it: within a cell or two of where it hung
@@ -57,6 +75,27 @@ test("a window resized by 2 % keeps the web's drops where they hang on it, as la
     ),
   );
   expect(kept.length).toBeGreaterThanOrEqual(0.8 * before.length);
+});
+
+test("a window edge being dragged leaves the web as it is until the drag rests, then respins it once", () => {
+  const sim = new HeadlessSim(dewScene);
+  const still = { pointer: { inside: false } };
+  for (let f = 0; f < 30; f++) sim.step({ ...still, aspect: 16 / 9 });
+  const jumps = (aspect: (f: number) => number, count: number): number => {
+    let respun = 0;
+    for (let f = 0; f < count; f++) {
+      const hub = hubX(sim);
+      sim.step({ ...still, aspect: aspect(f) });
+      if (Math.abs(hubX(sim) - hub) >= RESPUN) respun++;
+    }
+    return respun;
+  };
+  // A drag: a new shape every frame (a sixtieth of a second apart), never resting.
+  expect(jumps((f) => 16 / 9 + 0.01 * (f + 1), 30)).toBe(0);
+  // At rest: respun once, within the rest (220 ms, 14 frames) and a frame, then left alone.
+  const rested = 16 / 9 + 0.3;
+  expect(jumps(() => rested, 30)).toBe(1);
+  expect(hubX(sim)).toBeCloseTo(rested * 0.58, 1);
 });
 
 /** Whether the segment a–b crosses the square [x0, x0 + size] × [y0, y0 + size] (Liang–Barsky). */

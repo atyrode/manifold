@@ -387,6 +387,9 @@ export class FoodBook {
     mark: number | undefined,
   ): void {
     this.nodes = [];
+    // A fresh dish numbers its flakes from 1 (ids only tell flakes apart): the same dish laid on the
+    // build worker carries the same ids as the page's (physarumDish).
+    this.#nextId = 1;
     this.#pending = [];
     this.#saved = [];
     this.#savedHeart = -1;

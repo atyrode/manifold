@@ -33,6 +33,10 @@
 // Drag toward a current (kelp in the surge): damping c plus a force c · u(x, t) on a unit mass gives
 // dv/dt = c (u - v). The force callback reads `system.time` for the substep's clock.
 //
+// Handover: `state` is the whole system as its own arrays, and `VerletSystem.from(state)` the same
+// system again on them, so a build worker can spin and settle one and pass it to the page by
+// transfer (sims/build.ts, the dew's web).
+//
 // Cost: per substep O(points + iterations × constraints), no allocation. A 24-spoke, 18-turn web
 // (about 460 points, 900 constraints) at one pass and 1/240 s is about 0.2 M projections a second.
 //
@@ -227,6 +231,27 @@ function jitter(seed: number, n: number): number {
   return ((x >>> 0) / 4294967296) * 2 - 1;
 }
 
+/** A VerletSystem's whole state (VerletSystem.state), plain values and typed arrays. */
+export interface VerletState {
+  readonly substep: number;
+  readonly count: number;
+  readonly constraintCount: number;
+  readonly pos: Float32Array;
+  readonly prev: Float32Array;
+  readonly target: Float32Array;
+  readonly invMass: Float32Array;
+  readonly freeMass: Float32Array;
+  readonly moving: Uint8Array;
+  readonly a: Uint32Array;
+  readonly b: Uint32Array;
+  readonly rest: Float32Array;
+  readonly compliance: Float32Array;
+  readonly lambda: Float64Array;
+  readonly push: Float32Array;
+  readonly time: number;
+  readonly version: number;
+}
+
 export class VerletSystem {
   readonly #substep: number;
   #count = 0;
@@ -270,6 +295,54 @@ export class VerletSystem {
     this.#compliance = new Float32Array(constraints);
     this.#lambda = new Float64Array(constraints);
     this.#push = new Float32Array(constraints * 3);
+  }
+
+  /**
+   * Everything the system holds, as its own arrays (not copies): what a build worker hands the page
+   * (sims/build.ts), and `VerletSystem.from` takes back.
+   */
+  get state(): VerletState {
+    return {
+      substep: this.#substep,
+      count: this.#count,
+      constraintCount: this.#constraintCount,
+      pos: this.#pos,
+      prev: this.#prev,
+      target: this.#target,
+      invMass: this.#invMass,
+      freeMass: this.#freeMass,
+      moving: this.#moving,
+      a: this.#a,
+      b: this.#b,
+      rest: this.#rest,
+      compliance: this.#compliance,
+      lambda: this.#lambda,
+      push: this.#push,
+      time: this.#time,
+      version: this.version,
+    };
+  }
+
+  /** The system a `state` describes, on that state's arrays: it steps on exactly as it would have. */
+  static from(state: VerletState): VerletSystem {
+    const system = new VerletSystem({ substep: state.substep });
+    system.#count = state.count;
+    system.#constraintCount = state.constraintCount;
+    system.#pos = state.pos;
+    system.#prev = state.prev;
+    system.#target = state.target;
+    system.#invMass = state.invMass;
+    system.#freeMass = state.freeMass;
+    system.#moving = state.moving;
+    system.#a = state.a;
+    system.#b = state.b;
+    system.#rest = state.rest;
+    system.#compliance = state.compliance;
+    system.#lambda = state.lambda;
+    system.#push = state.push;
+    system.#time = state.time;
+    system.version = state.version;
+    return system;
   }
 
   get count(): number {

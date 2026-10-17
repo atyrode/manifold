@@ -6,7 +6,9 @@ import {
   LAND_USES,
   LandModel,
   type LandOptions,
+  landTexels,
   packLand,
+  repackLand,
   type SharedUse,
 } from "./landuse.ts";
 import {
@@ -246,6 +248,45 @@ describe("land use", () => {
     // Open grassland and woods only: no hedge stands, so only the banks keep lone trees.
     const unhedged = check({ woodland: 30 });
     expect(unhedged.trees).toBeLessThan(wooded.trees);
+  });
+
+  test("repacking only the changed parcels writes exactly what packing the whole land does", () => {
+    const { terrain, model } = land(1);
+    const texels = landTexels(terrain);
+    const steps: LandOptions[] = [
+      { shares: { crops: 60, woodland: 30 }, pines: 0.25, cows: 0.5 },
+      { shares: { crops: 61, woodland: 30 }, pines: 0.25, cows: 0.5 },
+      { shares: { crops: 61, woodland: 45, pasture: 25 }, pines: 0.25, cows: 0.5 },
+      { shares: { crops: 61, woodland: 45, pasture: 25 }, pines: 0.6, cows: 0.1 },
+      // Woodland off and on again: every lone tree falls and stands again.
+      { shares: { crops: 61, pasture: 25 }, pines: 0.6, cows: 0.1 },
+      { shares: { woodland: 30, lavender: 20, sunflowers: 20 }, pines: 0.6, cows: 0.1 },
+      { shares: { woodland: 30, lavender: 20, sunflowers: 20 }, pines: 0.6, cows: 0.1 },
+    ];
+    const [first, ...rest] = steps;
+    if (!first) throw new Error("no settings");
+    const repacked = packTerrain(terrain);
+    let before = model.allocate(first);
+    packLand(repacked, terrain, before);
+    const bands: number[] = [];
+    for (const step of rest) {
+      const allocation = model.allocate(step);
+      const rows = repackLand(repacked, terrain, allocation, before, texels);
+      before = allocation;
+      bands.push(rows ? rows[1] - rows[0] + 1 : 0);
+      const packed = packTerrain(terrain);
+      packLand(packed, terrain, allocation);
+      expect(Buffer.from(repacked.cover.buffer).equals(Buffer.from(packed.cover.buffer))).toBe(true);
+      expect(Buffer.from(repacked.parcels.buffer).equals(Buffer.from(packed.parcels.buffer))).toBe(
+        true,
+      );
+      expect(Buffer.from(repacked.records.buffer).equals(Buffer.from(packed.records.buffer))).toBe(
+        true,
+      );
+    }
+    // A one-point share step rewrites a band of rows, not the map; the same settings again, none.
+    expect(bands[0]).toBeLessThan(terrain.size);
+    expect(bands.at(-1)).toBe(0);
   });
 });
 

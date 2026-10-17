@@ -121,7 +121,7 @@ draws while something is on its way (an entrance, a passage, a program building,
 easing to the pointer, a sim whose `ready()` is false) and for a while after each change or input
 (`SETTLE_SECONDS`, 5 s; after a press, its release or a "now" trigger while the interaction clock
 runs, `RESPONSE_SECONDS`, 20 s: `src/governor.ts`), then stops until the next. Bound a response to
-that, and a sim that works on over frames at `dt` 0 (a budgeted rebuild, a sheet painted on a
+that, and a sim that works on over frames at `dt` 0 (a budgeted rebuild, a build on the build
 worker) reports `ready()` false until it is done, or its picture can stop half-way.
 
 ### Entrances and exits
@@ -131,8 +131,9 @@ idles on while the incoming scene gets ready: its program builds in the backgrou
 once off to the side (many drivers finish compiling a program at its first draw and hold the GPU
 up while they do), then the incoming scene itself is created and runs ahead off screen, its sim
 stepping with `dt` 0 and `enter` 0 and drawing one cell, until the sim reports `ready()` (a sim
-that builds its world over several frames or on a worker: the countryside's land, the pond's plant
-sheets; at most 3 s). Any pause therefore comes right at the switch, before anything moves, never
+that builds its world over several frames or on the build worker: the countryside's land, frost's
+first field, the slime mould's first dish, the pond's plant sheets; at most 3 s). Any pause
+therefore comes right at the switch, before anything moves, never
 in the middle of the passage, and the scene enters with its world in place. Then the outgoing
 scene plays its exit, drawn with its own settings. Part-way through that exit (the lab's overlap,
 half by default) the incoming scene, the one run ahead, starts its entrance and takes the screen
@@ -1767,6 +1768,16 @@ Helpers in `src/sims/` (each file's header has the full API and a usage example)
   organs (pond).
 - `GpuReadback` (`readback.ts`): a small float target copied back to the CPU behind a fence and
   picked up a frame or two later, without stalling (the tide pool's flow for its plants and fish).
+- `BuildSlot`, `BuildKind` (`build.ts`): pure CPU builds on one module worker (`src/build-worker.ts`
+  lists every kind) with their typed arrays handed back by transfer: the countryside's terrain and
+  land, frost's crystal field, the dew web respun for a new shape, the slime mould's fresh dish, the
+  pond's sheets. One slot per sim, asked every frame: the newest request wins (a superseded build
+  is dropped on the worker and never lands), the scene draws what it last adopted meanwhile, and a
+  result is byte for byte the page's (the same code; `build-worker.test.ts`). Without a worker, and
+  for a frame of Infinity budget (HeadlessSim, checks), the build runs on the page in slices. A
+  kind's result must own its arrays (copy what its builder keeps for reuse); state classes hand
+  themselves over as plain arrays (`VerletSystem.state`/`from`, `LandModel.data`,
+  `FlowNetwork.state`, `Random.state`).
 - `mulberry32` and `Random` (`random.ts`): the seeded generator, bit-exact with the scenes' copies
   so a seed keeps its arrangement; `Random` adds `range`, `int`, `pick`, `wait` (the gap to a
   Poisson process's next event: street's arrivals) and `gauss` (roughly normal from three draws:
@@ -1860,14 +1871,15 @@ a drawn M cannot drift; `src/shaders/glsl.ts` writes GLSL from TS: `glslFloat` (
 tiny constants included), `glslVec3` (from `"#rrggbb"` or a triple) and `glslPick(knob, cases,
 fallback)` (a palette table of `if (K_<knob> < i.5) return ...;` lines). The rest serve one scene
 each: `src/botany.ts` and `src/decor.ts` paint the pond's plant atlas (the sprites `PlantSheet`
-cuts out) and its canopy sheet, on a worker (`src/sheet.ts`), and `src/constellations.ts` sends
+cuts out) and its canopy sheet, on the build worker (`src/sheet.ts`), and `src/constellations.ts` sends
 the constellation figures as `common`'s `uCon*` uniforms (orbit's, and the night sky's
 constellations that `skyStars` draws).
 
 Keep simulations cheap (a few ms per frame at most) and scale step counts with `dt * motion`.
 Sims must be deterministic for a given seed knob and survive `dt = 0` (paused) and resizes. A layout
-a resize must rebuild waits for the new shape to rest first (garden's re-layout, frost's regrowth)
-and keeps what it can: frost seeds each site's draws by where it stands, counted in from its own
+a resize must rebuild waits for the new shape to rest first (garden's re-layout, frost's regrowth,
+dew's respin) and builds it off the page where it can (`build.ts`), and keeps what it can: frost
+seeds each site's draws by where it stands, counted in from its own
 side of the pane, so a resize keeps its pattern.
 
 Knob keys share the URL with the lab's own settings, so a knob may not be called `accent`,
