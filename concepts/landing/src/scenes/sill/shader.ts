@@ -1,15 +1,16 @@
 // The window-sill scene: a lo-fi evening seen from inside a dark room. A sash window raised onto a
 // city at dusk; a cat on the sill watching it, a steaming mug, a plant, books, a stirring curtain;
 // three rows of skyline with windows switching on and off, and across the street a neon Manifold M.
-// Knobs arrive as K_<key> defines (see ./index.ts); the sky, weather and lightning come from the
-// shared libraries (src/shaders/lib/); the scene's own motion runs on uMotionTime. In the window the
-// shared sky components (src/scenes/README.md, "Composing components"): stars (K_stars), the moon in
-// its phase (K_moon, SKY_MOON_PHASE), the aurora (K_aurora) and shooting stars (K_meteors).
+// Knobs arrive as K_<key> defines (see ./index.ts); the scene's own motion runs on uMotionTime. In
+// the window the world's sky (worldSky, src/scenes/README.md "World layers"): the cloud deck, stars
+// (K_stars), the moon in its phase (K_moon, SKY_MOON_PHASE), the aurora (K_aurora), shooting stars
+// (K_meteors) and lightning (K_lightning), under the city's own tint.
 // Rain and snow fall only outside the window, through the depth of the city, and the city answers
 // them: an overcast sky, wet roofs and brick, drips and splashes, snow settling (uWeather).
 // The cat's gaze is eased on the CPU (./index.ts) and read from uSim0.
 
 import { glslFloat } from "../../shaders/glsl.ts";
+import { worldGlsl } from "../../shaders/lib/world.ts";
 
 /**
  * Seconds the entrance and the exit take (SceneDef.passage; the shader reads the same). In: the cat
@@ -20,12 +21,19 @@ export const SILL_PASSAGE = { enter: 2.8, exit: 1.6 } as const;
 
 /** Trigger slot of the shooting stars' "now" button (0 is the cat's, 1 lightning's, 2 the neon's). */
 export const SILL_METEOR_TRIGGER = 3;
+/** Trigger slot of the lightning's "now" button. */
+export const SILL_LIGHTNING_TRIGGER = 1;
 
 export const sillGlsl = `
+${worldGlsl}
 // Where shooting stars set out: skyAngles of the view over the city (bearing, elevation, radians),
-// high in the window.
+// high in the window; the lightning's trigger.
 const int SILL_METEOR_SLOT = ${SILL_METEOR_TRIGGER};
 const vec4 SILL_METEOR_FIELD = vec4(-0.5, 0.3, 1.0, 0.12);
+const int SILL_LIGHTNING_SLOT = ${SILL_LIGHTNING_TRIGGER};
+// The view of the city: a level camera one radian high, the eye at an upstairs window ~10 m up.
+const float SILL_FOCAL = ${glslFloat(0.5 / Math.tan(0.5))};
+const float SILL_EYE = 10.0;
 // Layout in screen heights from the centre, y up. The sill's top runs from the window (SILL_BACK)
 // to its front edge (SILL_FRONT), then the nosing; things on it stand at SILL_SEAT. The lower sash
 // is raised: its bottom rail spans SILL_RAIL..SILL_RAIL_TOP, open air below, glass above.
@@ -159,13 +167,6 @@ vec4 sillNeon(float tm, float power) {
 
 // ---- Weather
 
-// How heavy the weather overhead is. x: overcast 0..1 (any rain or snow closes the sky, a drizzle
-// already greys it over); y: the fall's weight 0..1 (a downpour or a blizzard darkens and lowers it).
-vec2 sillOvercast() {
-  float storm = clamp(max(K_rain, 0.85 * K_snow), 0.0, 1.0);
-  return vec2(clamp(storm * 10.0, 0.0, 1.0) * (0.65 + 0.35 * storm), storm);
-}
-
 // Rain shafts hanging under distant clouds, sp in sky coordinates: soft grey columns from the
 // cloud base down past the horizon, leaning with the wind and drifting along with it, a faint
 // grain of fall-streaks inside. 0..1.
@@ -243,9 +244,13 @@ float sillRow(vec2 p, float w, float lo, float hi, float salt, float soft, out v
 // (uWeather.x): brick darkens, roofs shine and pool water that mirrors the sign, edges drip, the
 // ledge splashes; snow settles on every face turned to the sky (uWeather.y). Returns colour, and
 // the neon's accent coverage in .a.
-vec4 sillCity(vec2 p, float aspect, float tf, float tm, float px, float soft, Sky sky, vec3 haze, float dark, vec2 signAt, vec2 opening, vec4 neon, float boltAge, float boltSeed, float flash) {
+vec4 sillCity(vec2 p, float aspect, float tf, float tm, float px, float soft, World world, vec3 haze, float dark, vec2 signAt, vec2 opening, vec4 neon) {
   float density = K_lights;
-  vec2 ov = sillOvercast();
+  Sky sky = world.sky;
+  // The weather overhead: how far rain or snow has closed the sky (x, the world's overcast) and the
+  // fall's weight (y: a downpour or a blizzard darkens and lowers the deck); the lightning's flash.
+  vec2 ov = vec2(world.overcast, world.storm);
+  float flash = world.flash;
   float wet = uWeather.x;
   float lying = uWeather.y;
   // Edges drip while it rains, on as the world dries, and from melting snow once a fall is over;
@@ -257,38 +262,20 @@ vec4 sillCity(vec2 p, float aspect, float tf, float tm, float px, float soft, Sk
   float neonMean = dot(neon, vec4(0.25));
   float depth = 1.0;
 
-  // Sky: gradient, moon, stars and cloud deck from the shared library, lightning behind it all,
-  // and the city's own glow low down. Rain or snow closes it over: a grey deck, darker and lower
-  // the heavier the fall (its features loom larger and it reaches nearer the horizon), lit orange
-  // from below by the streets at night, more with snow on the ground to throw their light back up.
+  // Sky: the world's (worldSky: the dome, the aurora over the city, the cloud deck, the stars and the
+  // giant planet in its gaps, shooting stars, the lightning), softened with the rest: its footprint
+  // widens with 'soft'. Rain or snow closes it over: the deck, lower the heavier the fall (its
+  // features loom larger and it reaches nearer the horizon), a grey sheet over what it leaves open,
+  // darker the heavier the fall, both lit orange from below by the streets at night, more with
+  // snow on the ground to throw their light back up. The city's own glow low down.
   vec2 sp = p + uPointer * vec2(0.03, 0.012);
-  vec3 dir = viewRay(sp / vec2(aspect, 1.0) + 0.5, aspect, 0.5 + SILL_HORIZON, 1.0);
-  vec3 col = skyColor(sky, dir);
-  col += vec3(0.85, 0.88, 1.0) * skyStars(sky, dir, K_stars) * (1.0 - 0.7 * smoothstep(0.001, 0.006, soft)) * (1.0 - ov.x);
-  // The giant planet among the stars; the aurora over the city, and shooting stars in the gaps of
-  // the deck, softened with the rest.
-  float foot = max(2.0 * tan(0.5) / uRes.y, soft);
-  col = skyGiant(sky, col, dir, foot, 1.0);
-  col += auroraM(dir, tm, K_aurora, foot) * auroraSeen(sky, ov.x);
+  WorldView view = worldView(sp / vec2(aspect, 1.0) + 0.5, 0.5 + SILL_HORIZON, SILL_FOCAL, SILL_EYE, 0.0, 1.0);
+  view.foot = max(view.foot, soft);
+  world.low = 1.0 + WORLD_DECK_LOW * ov.y;
+  WorldSky heaven = worldSky(world, view, SILL_METEOR_FIELD);
   vec3 deck = haze * (0.85 - 0.3 * ov.y) + vec3(0.3, 0.15, 0.1) * dark * (0.3 * ov.x + 0.25 * lying);
-  col = mix(col, deck, 0.85 * ov.x);
-  float clouds = max(K_clouds, ov.x);
-  float cloudCover = 0.0;
-  if (clouds > 0.0) {
-    vec4 cloud = skyClouds(sky, normalize(vec3(dir.x, dir.y * (1.0 + 1.5 * ov.y), dir.z)), tm, clouds, K_wind);
-    col = mix(col, (cloud.rgb + vec3(0.22, 0.11, 0.07) * dark * 0.5) * (1.0 - 0.4 * ov.y), cloud.a);
-    cloudCover = cloud.a;
-  }
-  float meteorSeed;
-  float meteorAt = meteorAge(tm, K_meteors, SILL_METEOR_SLOT, meteorSeed);
-  float meteor = meteorStreak(skyAngles(dir), SILL_METEOR_FIELD, meteorAt, meteorSeed, foot);
-  col += METEOR_TINT * hardEdge(meteor * auroraSeen(sky, max(cloudCover, ov.x)) * (1.0 - 0.7 * smoothstep(0.001, 0.006, soft)));
-  if (boltAge < 1.5) {
-    vec2 top = vec2((hash12(vec2(boltSeed, 1.3)) - 0.5) * aspect * 0.8, 0.6);
-    vec2 ground = vec2(top.x + (hash12(vec2(boltSeed, 2.7)) - 0.5) * 0.35, -0.05);
-    col += vec3(0.75, 0.8, 1.0) * lightningBolt(sp, top, ground, boltSeed, boltAge);
-  }
-  col += vec3(0.4, 0.45, 0.6) * flash * 0.45;
+  vec3 col = mix(heaven.col, deck, 0.85 * ov.x * (1.0 - heaven.cloud));
+  col = mix(col, (col + vec3(0.22, 0.11, 0.07) * dark * 0.5) * (1.0 - 0.4 * ov.y), heaven.cloud) + heaven.strike;
   col += vec3(0.6, 0.3, 0.2) * exp(-max(sp.y - SILL_HORIZON + 0.1, 0.0) * 6.0) * dark * 0.25;
   col = mix(col, haze, fogAmount(K_fog, 1.0, clamp((sp.y - SILL_BACK) * 1.5, 0.0, 1.0)));
 
@@ -940,14 +927,13 @@ Shade sceneSill(vec2 uv, vec2 cell, float t) {
   float plantX = -0.33 * aspect;
 
   // Time of day and the light it brings: 'haze' is the air over the city, 'cool' the light that
-  // comes in through the window. Rain or snow closes the sky over (sillOvercast): sun and moon fade
-  // behind the deck, the daylight flattens to grey and dims as the fall gets heavier, and the
-  // city's lamps and the sign come into their own early in the gloom.
-  Sky sky = skyMoonPhase(skyAt(timeOfDayM(K_time, K_cycle, tm)), K_moon);
-  vec2 ov = sillOvercast();
-  sky.sunColor *= 1.0 - 0.8 * ov.x;
-  sky.moonColor *= 1.0 - 0.7 * ov.x;
-  sky.ambient = greyed(sky.ambient, vec3(1.0), 0.5 * ov.x) * (1.0 - 0.35 * ov.y);
+  // comes in through the window. Rain or snow closes the sky over (the world's overcast): sun and
+  // moon fade behind the deck, the daylight flattens to grey and dims as the fall gets heavier, and
+  // the city's lamps and the sign come into their own early in the gloom.
+  World world = worldAt(SILL_METEOR_SLOT, SILL_LIGHTNING_SLOT);
+  vec2 ov = vec2(world.overcast, world.storm);
+  world.sky.moonColor *= 1.0 - 0.7 * ov.x;
+  Sky sky = world.sky;
   float dark = clamp(1.0 - sky.day * (1.0 - 0.45 * ov.y), 0.0, 1.0);
   vec3 haze = (vec3(0.62, 0.68, 0.78) * sky.day + vec3(0.5, 0.33, 0.34) * sky.twilight + vec3(0.11, 0.1, 0.16) * sky.night) / max(sky.day + sky.twilight + sky.night, 1e-3);
   haze += vec3(0.5, 0.26, 0.16) * dark * 0.25;
@@ -955,10 +941,8 @@ Shade sceneSill(vec2 uv, vec2 cell, float t) {
   vec3 cool = mix(vec3(0.26, 0.31, 0.52), vec3(0.85, 0.88, 0.95), sky.day) + vec3(0.06, 0.03, 0.02) * dark;
   cool = greyed(cool, vec3(1.0), 0.4 * ov.x) * (1.0 - 0.3 * ov.y);
   // On a clear night the aurora's green comes in through the window too.
-  cool += auroraGlow(tm, K_aurora) * auroraSeen(sky, ov.x);
-  float boltSeed = 0.0;
-  float boltAge = lightningAge(tm, K_lightning, 1, boltSeed);
-  float flash = lightningFlash(boltAge);
+  cool += world.glow;
+  float flash = world.flash;
   // How wet the world is and how much snow lies, integrated by the renderer from the knobs.
   float wet = uWeather.x;
   float lying = uWeather.y;
@@ -998,7 +982,7 @@ Shade sceneSill(vec2 uv, vec2 cell, float t) {
         }
       }
     }
-    vec4 city = sillCity(at, aspect, uFallTime, tm, px, soft, sky, haze, dark, signAt, vec2(xw0 + reveal, xw1 - reveal), neon, boltAge, boltSeed, flash);
+    vec4 city = sillCity(at, aspect, uFallTime, tm, px, soft, world, haze, dark, signAt, vec2(xw0 + reveal, xw1 - reveal), neon);
     col = city.rgb;
     accent = city.a;
     if (inGlass) {

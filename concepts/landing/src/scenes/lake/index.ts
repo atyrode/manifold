@@ -11,6 +11,7 @@ import { birdKnobs, birdsGroup } from "../../shaders/lib/birds.ts";
 import { WATER_TIERS } from "../../shaders/lib/water.ts";
 import { atmosphereGroups, skyComponentKnobs, weatherKnobs } from "../atmosphere.ts";
 import type { SceneDef } from "../types.ts";
+import { worldGates } from "../world.ts";
 import { LAKE_METEOR_TRIGGER, lakeGlsl } from "./shader.ts";
 import { LAKE_PASSAGE, lakeSim } from "./sim.ts";
 
@@ -115,7 +116,7 @@ const params: readonly ParamDef[] = [
     true,
     "phase",
     0.3,
-    "A moon low over the mountains on the right, from a thin crescent to full: it lights the snow, draws a path of glints down the ice and drowns the faintest stars.",
+    "The moon in its phase, where the sky puts it: a crescent trails the last light, high on the left above the view; toward full it swings round to rise low over the mountains on the right as the night deepens, drawing a path of glints down the ice. It lights the snow and drowns the faintest stars.",
   ),
   range(
     "sky",
@@ -196,6 +197,13 @@ export const lakeScene: SceneDef = {
   entry: "sceneLake",
   sim: lakeSim(params),
   // The moon's and the window's paths down the ice: the water's glitter (waterGlitter, its mirror
-  // tier); the ice's own mirror, bubbles and cracks are the scene's.
-  features: { WATER_TIER: WATER_TIERS.mirror },
+  // tier); the ice's own mirror, bubbles and cracks are the scene's. The world's sky, every part its
+  // knobs can show compiled in: the moon's phase, the stars and the Milky Way, the snow cloud,
+  // shooting stars; the aurora and the birds are the lake's own.
+  features: {
+    WATER_TIER: WATER_TIERS.mirror,
+    ...worldGates(params),
+    WORLD_AURORA: 0,
+    WORLD_BIRDS: 0,
+  },
 };

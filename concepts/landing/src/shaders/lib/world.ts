@@ -9,6 +9,7 @@
 // (milkyway.ts) itself, so such a scene does not put birdsGlsl or milkyWayGlsl in its GLSL again.
 //
 //   World worldAt(int meteorSlot, int lightningSlot);   // the world now, once per pixel
+//   World worldAtTime(float time, int meteorSlot, int lightningSlot); // at a time of day of the scene's own
 //   WorldView worldView(vec2 uv, float horizon, float focal, float eye, float yaw, float unit);
 //   WorldView worldViewOf(vec3 ray, vec2 uv, float horizon, float focal, float eye, float yaw, float unit);
 //   WorldSky worldSky(World w, WorldView v, vec4 meteorField);   // behind the scene
@@ -53,11 +54,13 @@ const MilkyWayBand WORLD_GALAXY = MILKY_WAY_BAND(normalize(vec3(0.13, -0.86, 0.5
 
 // Under the deck rain or snow closes over the sky (overcast, weatherOvercast) the sun's light fades
 // by this share, the sky's light greys by this share and darkens with the storm's amount, and the
-// twilight's colours give way.
+// twilight's colours give way. A scene that shows its deck coming down as the fall grows heavier
+// sets World.low to 1 + WORLD_DECK_LOW x storm.
 const float WORLD_DECK_SUN = 0.88;
 const float WORLD_DECK_GREY = 0.6;
 const float WORLD_DECK_DARK = 0.3;
 const float WORLD_DECK_TWILIGHT = 0.7;
+const float WORLD_DECK_LOW = 1.5;
 // Lightning: its light on the land at full flash (in World.sky.ambient), the sky's glow low down,
 // the cloud base its bolts drop from (the slope over the horizon, ~12 degrees up) and how wide a
 // share of the view they strike in, about the middle.
@@ -102,7 +105,14 @@ struct World {
   float storm;      // the heavier of rain and snow (snow counted 0.85x), 0..1
   float overcast;   // 0..1 how far rain or snow has closed the sky (weatherOvercast)
   float heavy;      // 0..1 heavy rain or snow
-  float cover;      // the cloud deck's cover: fair weather (K_clouds) thickened by the overcast
+  float cover;      // the cloud deck's cover: fair weather (K_clouds) thickened by the overcast; a scene
+                    // with no clouds knob, whose deck is always out, sets its own (max(fair, cover))
+  float low;        // how near the deck stands: the view ray's height is scaled by it where it meets
+                    // the deck (worldDeckRay), the sky's deck and its shadows alike. 1 as the world has
+                    // it; a scene whose rain brings the deck down sets it above 1 (seen larger, being
+                    // nearer), one that fits more of the deck into a narrow strip of sky below 1
+  float stars;      // the stars' density: K_stars (0 without WORLD_STARS); a scene may scale it for its
+                    // own sky (fewer over a lit town, more over dark woods)
   vec3 glow;        // the aurora's light on the land (already in sky.ambient)
   float flash;      // the lightning's sky-wide flash 0..1 (its light already in sky.ambient)
   float boltAge;    // seconds since the latest strike (1e4: none), and its seed
@@ -111,13 +121,16 @@ struct World {
   float meteorSeed;
 };
 
-// The world now, from the world's knobs and the clocks; meteorSlot and lightningSlot: the scene's
-// trigger slots for their "now" buttons. Once per pixel, before anything is drawn.
-World worldAt(int meteorSlot, int lightningSlot) {
+// The world at the time of day time (0..1, as timeOfDayM gives it), from the world's knobs and the
+// clocks; meteorSlot and lightningSlot: the scene's trigger slots for their "now" buttons. Once per
+// pixel, before anything is drawn. A scene with an hour of its own (lake's) calls it; worldAt reads
+// K_time and K_cycle. Rain or snow can close the deck over a scene with no clouds knob: K_clouds is
+// tested with #ifdef, and the cover is then the overcast's alone.
+World worldAtTime(float time, int meteorSlot, int lightningSlot) {
   World w;
   w.tm = uMotionTime;
   w.tf = uFallTime;
-  w.time = timeOfDayM(K_time, K_cycle, uMotionTime);
+  w.time = time;
   Sky sky = skyAt(w.time);
 #ifdef SKY_MOON_PHASE
   sky = skyMoonPhase(sky, K_moon);
@@ -142,9 +155,19 @@ World worldAt(int meteorSlot, int lightningSlot) {
   w.overcast = weatherOvercast(w.rain, w.snow);
   w.heavy = smoothstep(0.35, 0.9, w.storm);
 #if WORLD_CLOUDS
+#ifdef K_clouds
   w.cover = max(K_clouds, w.overcast);
 #else
+  w.cover = w.overcast;
+#endif
+#else
   w.cover = 0.0;
+#endif
+  w.low = 1.0;
+#if WORLD_STARS
+  w.stars = K_stars;
+#else
+  w.stars = 0.0;
 #endif
   w.glow = vec3(0.0);
 #if WORLD_AURORA
@@ -169,6 +192,18 @@ World worldAt(int meteorSlot, int lightningSlot) {
   return w;
 }
 
+#ifdef K_time
+// The world now: worldAtTime at the scene's clock (K_time, K_cycle on the motion clock).
+World worldAt(int meteorSlot, int lightningSlot) {
+  return worldAtTime(timeOfDayM(K_time, K_cycle, uMotionTime), meteorSlot, lightningSlot);
+}
+#endif
+
+// A view ray (the sky's frame) as the deck sees it: its height scaled by w.low, exactly dir at 1.
+vec3 worldDeckRay(World w, vec3 dir) {
+  return w.low == 1.0 ? dir : normalize(vec3(dir.x, dir.y * w.low, dir.z));
+}
+
 // ---- the view ----
 // One pinhole camera, level, with a shifted lens (viewRay's): what the world needs of the scene's
 // camera for this pixel. Distances the world is handed (z) and gives back are in the scene's units;
@@ -184,6 +219,8 @@ struct WorldView {
   float focal;    // screen heights per unit of x / z: the image plane's distance
   float eye;      // the eye's height over the ground, scene units
   float unit;     // scene units per metre
+  float auroraLift; // how much higher the aurora's arc stands: each ray's slope is looked up this much
+                    // lower (0 as the world hangs it; a sky seen only high over a rim lifts it into view)
 };
 
 // The view of a level pinhole camera at screen point uv: horizon at uv.y = horizon, focal (screen
@@ -201,6 +238,7 @@ WorldView worldView(vec2 uv, float horizon, float focal, float eye, float yaw, f
   v.focal = focal;
   v.eye = eye;
   v.unit = unit;
+  v.auroraLift = 0.0;
   return v;
 }
 
@@ -230,23 +268,24 @@ WorldSky worldSky(World w, WorldView v, vec4 meteorField) {
   vec3 col = skyColor(w.sky, v.dir);
 #if WORLD_AURORA
   // The curtains hang ahead of the camera, behind the clouds.
-  col += auroraM(v.ray, w.tm, K_aurora, v.foot) * auroraSeen(w.sky, w.overcast);
+  vec3 curtains = v.auroraLift == 0.0 ? v.ray : normalize(vec3(v.ray.x, v.ray.y - v.auroraLift * length(v.ray.xz), v.ray.z));
+  col += auroraM(curtains, w.tm, K_aurora, v.foot) * auroraSeen(w.sky, w.overcast);
 #endif
   float cloud = 0.0;
 #if WORLD_CLOUDS
-  vec4 deck = skyClouds(w.sky, v.dir, w.tm, w.cover, w.wind);
+  vec4 deck = skyClouds(w.sky, worldDeckRay(w, v.dir), w.tm, w.cover, w.wind);
   col = mix(col, deck.rgb, deck.a);
   cloud = deck.a;
 #endif
 #if WORLD_STARS
-  float density = K_stars;
+  float density = w.stars;
 #if WORLD_MILKYWAY
-  // On dark nights: moonlight washes it out. K_stars stays the density away from the band (with the
-  // band off the stars are exactly K_stars'); in it they crowd as milkyWayStars has them.
+  // On dark nights: moonlight washes it out. The stars' density stays w.stars away from the band
+  // (with the band off the stars are exactly that); in it they crowd as milkyWayStars has them.
   float moonlit = clamp(dot(w.sky.moonColor, LUMA) / WORLD_GALAXY_MOONLIT, 0.0, 1.0);
-  float band = milkyWay(skyStarFrame(w.sky, v.dir), WORLD_GALAXY) * K_milkyWay * K_stars * w.sky.night * (1.0 - WORLD_GALAXY_MOON * moonlit);
+  float band = milkyWay(skyStarFrame(w.sky, v.dir), WORLD_GALAXY) * K_milkyWay * w.stars * w.sky.night * (1.0 - WORLD_GALAXY_MOON * moonlit);
   col += WORLD_GALAXY_TINT * band * (1.0 - cloud);
-  if (band > 0.0) density = K_stars * milkyWayStars(1.0, band) / milkyWayStars(1.0, 0.0);
+  if (band > 0.0) density = w.stars * milkyWayStars(1.0, band) / milkyWayStars(1.0, 0.0);
 #endif
   col += SKY_STAR_TINT * skyStars(w.sky, v.dir, density, v.foot) * (1.0 - cloud);
 #endif
@@ -278,11 +317,12 @@ WorldSky worldSky(World w, WorldView v, vec4 meteorField) {
 // How much of the sun's light reaches a point at (scene units from the eye, in the camera's frame,
 // y up: the ground under a pixel is y = -eye): 1 in the open, down to 1 - K_shadows in the shadow
 // the cloud deck casts where the sun's ray from it meets the deck (skyCloudShadow, the deck
-// WORLD_CLOUD_BASE metres up). Exactly 1 while the shadows are off. Multiply the sun's light by it.
+// WORLD_CLOUD_BASE / w.low metres up, as the sky shows it). Exactly 1 while the shadows are off.
+// Multiply the sun's light by it.
 float worldSunlit(World w, WorldView v, vec3 at) {
 #if WORLD_SHADOWS
   if (K_shadows > 0.0 && w.cover > 0.0) {
-    return 1.0 - K_shadows * skyCloudShadow(w.sky, skyFacing(at / v.unit, v.yaw), WORLD_CLOUD_BASE, w.tm, w.cover, w.wind);
+    return 1.0 - K_shadows * skyCloudShadow(w.sky, skyFacing(at / v.unit, v.yaw), WORLD_CLOUD_BASE, w.low, w.tm, w.cover, w.wind);
   }
 #endif
   return 1.0;
@@ -453,21 +493,22 @@ WorldSky worldMirrorSky(World w, WorldView m, vec4 meteorField) {
   float cell = 1.0 / (m.focal * uRes.y);
   float sharp = min(cell / m.foot, 1.0);
 #if WORLD_AURORA
-  col += auroraM(m.ray, w.tm, K_aurora, m.foot) * auroraSeen(w.sky, w.overcast);
+  vec3 curtains = m.auroraLift == 0.0 ? m.ray : normalize(vec3(m.ray.x, m.ray.y - m.auroraLift * length(m.ray.xz), m.ray.z));
+  col += auroraM(curtains, w.tm, K_aurora, m.foot) * auroraSeen(w.sky, w.overcast);
 #endif
   float cloud = 0.0;
 #if WORLD_CLOUDS
-  vec4 deck = skyClouds(w.sky, m.dir, w.tm, w.cover, w.wind);
+  vec4 deck = skyClouds(w.sky, worldDeckRay(w, m.dir), w.tm, w.cover, w.wind);
   col = mix(col, deck.rgb, deck.a);
   cloud = deck.a;
 #endif
 #if WORLD_STARS
-  float density = K_stars;
+  float density = w.stars;
 #if WORLD_MILKYWAY
   float moonlit = clamp(dot(w.sky.moonColor, LUMA) / WORLD_GALAXY_MOONLIT, 0.0, 1.0);
-  float band = milkyWay(skyStarFrame(w.sky, m.dir), WORLD_GALAXY) * K_milkyWay * K_stars * w.sky.night * (1.0 - WORLD_GALAXY_MOON * moonlit);
+  float band = milkyWay(skyStarFrame(w.sky, m.dir), WORLD_GALAXY) * K_milkyWay * w.stars * w.sky.night * (1.0 - WORLD_GALAXY_MOON * moonlit);
   col += WORLD_GALAXY_TINT * band * (1.0 - cloud);
-  if (band > 0.0) density = K_stars * milkyWayStars(1.0, band) / milkyWayStars(1.0, 0.0);
+  if (band > 0.0) density = w.stars * milkyWayStars(1.0, band) / milkyWayStars(1.0, 0.0);
 #endif
   col += SKY_STAR_TINT * skyStars(w.sky, m.dir, density, m.foot) * (1.0 - cloud);
 #endif

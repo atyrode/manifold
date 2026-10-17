@@ -4,7 +4,9 @@
 // forest, low hills and snowy mountains behind; a point reaches out from the left with a log
 // cabin on it, its window lit and smoke rising until it flattens under the cold air above. The
 // aurora hangs over the north (the shared library, recoloured, paced by the sim's substorms and
-// spreading overhead in a surge), with stars, the shared Milky Way and our own moon with its phase.
+// spreading overhead in a surge), under the world's sky at the lake's hour (worldAtTime, worldSky:
+// src/scenes/README.md "World layers"): its stars and Milky Way, the moon in its phase, the snow
+// cloud, shooting stars.
 //
 // The ice is clear and black where the wind has swept it: a mirror of everything above (tipped a
 // little by the frozen undulations of the surface and softened, as rough ice does, by a second tap
@@ -28,7 +30,7 @@
 // cut per cell. At rest none of it is drawn and uv is the screen's.
 import { glslFloat, glslPick } from "../../shaders/glsl.ts";
 import { birdsGlsl } from "../../shaders/lib/birds.ts";
-import { milkyWayGlsl } from "../../shaders/lib/milkyway.ts";
+import { worldGlsl } from "../../shaders/lib/world.ts";
 import {
   ABOVE_RANGE,
   DIST_RANGE,
@@ -66,7 +68,7 @@ export const LAKE_METEOR_TRIGGER = 3;
 
 export const lakeGlsl = `
 ${birdsGlsl}
-${milkyWayGlsl}
+${worldGlsl}
 const float LAKE_HORIZON = ${glslFloat(HORIZON)};
 const float LAKE_FOCAL = ${glslFloat(FOCAL)};
 const float LAKE_EYE = ${glslFloat(EYE)};
@@ -95,20 +97,16 @@ const vec3 LAKE_WINDOW = vec3(1.0, 0.58, 0.24);
 const vec3 LAKE_SNOW = vec3(0.86, 0.9, 1.0);
 const vec3 LAKE_FLASH = vec3(0.78, 0.93, 1.0);
 const vec3 LAKE_WATER = vec3(0.003, 0.009, 0.012);
-// The Milky Way's band: it rises from low on the right to high over the middle.
-const MilkyWayBand LAKE_GALAXY = MILKY_WAY_BAND(vec3(-0.2984, -0.7957, 0.5272));
 // Depths (m) of the layers of frozen bubbles, and the spacing of the seeps on the lake bed (m).
 const float LAKE_LAYER[5] = float[5](0.04, 0.13, 0.26, 0.42, 0.62);
 const float LAKE_SEEP = 1.1;
 
 // Set once per pixel by lakeSetup.
 float lakeTm;          // the motion clock
-Sky lakeSky;           // the sky, with the library's own moon put away: the lake draws its own
-vec3 lakeMoon;         // our moon's direction, its bearing and elevation (rad)
-float lakeMoonAz;
-float lakeMoonEl;
-float lakePhase;       // 0 no moon .. 1 full
-vec3 lakeMoonLight;    // its light on the land
+World lakeWorld;       // the world at the lake's hour: the moon in its phase, the snow cloud
+WorldView lakeView;    // the camera at this pixel (set by sceneLake)
+Sky lakeSky;           // the world's sky: its light, its haze
+vec3 lakeMoonLight;    // the moon's light on the land, dimmed by the snow cloud
 vec3 lakeAmb;          // light from the whole sky, the aurora's included
 vec3 lakeAurLow;       // the aurora's colours
 vec3 lakeAurHigh;
@@ -121,8 +119,6 @@ float lakeOver;        // overcast 0..1
 float lakeCabinAz;     // the cabin's bearing (rad)
 float lakePar;         // the backdrop's parallax turn (rad)
 float lakeAccent;      // aurora light gathered by lakeSkyAt
-float lakeMeteorAt;    // seconds since the latest shooting star, and its id (meteorAge)
-float lakeMeteorSeed;
 
 vec3 lakeAuroraLowColour() {
 ${glslPick("hue", AURORA_LOW, AURORA_LOW[0])}
@@ -149,61 +145,21 @@ vec3 lakeAurora(vec3 d, float soft) {
   return (low * lakeAurLow + fringe * lakeAurHigh) * lakeAurVis;
 }
 
-// Our moon: a disc in its phase (the lit limb toward the sun, down to the left), its dark part
-// faint with earthshine, and a halo. Returns light for the sky; cover how much of the disc hides
-// the stars behind it.
-vec3 lakeMoonAt(vec3 d, out float cover) {
-  cover = 0.0;
-  if (lakePhase <= 0.0) return vec3(0.0);
-  vec3 mv = d - lakeMoon;
-  float am = 0.5 * dot(mv, mv);
-  vec3 halo = vec3(0.32, 0.38, 0.52) * (0.16 * exp(-am * 2600.0) + 0.05 * exp(-am * 160.0)) * lakePhase * (1.0 - lakeOver);
-  const float radius = 0.026;
-  if (length(mv) > radius * 1.2) return halo;
-  vec3 right = normalize(cross(vec3(0.0, 1.0, 0.0), lakeMoon));
-  vec3 up = cross(lakeMoon, right);
-  vec2 q = rotate(vec2(dot(mv, right), dot(mv, up)) / radius, 2.36);
-  float l = length(q);
-  float disc = 1.0 - smoothstep(0.88, 1.0, l);
-  float terminator = (1.0 - 2.0 * lakePhase) * sqrt(max(1.0 - q.y * q.y, 0.0));
-  float lit = smoothstep(terminator - 0.08, terminator + 0.08, q.x) * disc;
-  float maria = vnoise(q * 2.3 + 4.7) * 0.6 + vnoise(q * 5.1 + 1.3) * 0.4;
-  vec3 face = vec3(0.98, 0.95, 0.88) * (1.0 - 0.28 * smoothstep(0.45, 0.68, maria));
-  cover = disc * (1.0 - lakeOver);
-  return halo + (face * lit * 1.1 + vec3(0.04, 0.05, 0.07) * (disc - lit)) * (1.0 - lakeOver);
-}
-
-// The night sky for a ray: the dome, moonlight in the air and the aurora's glow low in the north,
-// the Milky Way and stars (fainter in the mirror), the giant planet, our moon, a shooting star, the
-// aurora, and cloud while it snows. Adds the aurora's light that shows to lakeAccent.
+// The night sky along d (the sky's frame, turned by the backdrop's parallax): the world's (worldSky,
+// or in the ice worldMirrorSky softened by soft: the dome with the moon in its phase, the snow
+// cloud, the Milky Way and the stars, the giant planet, shooting stars), then the aurora's glow low
+// in the north and the aurora itself (the lake's own), both hidden by the snow cloud. Adds the
+// aurora's light that shows to lakeAccent.
 vec3 lakeSkyAt(vec3 d, bool mirror, float soft) {
-  vec3 col = skyColor(lakeSky, d);
-  float hh = max(d.y, 0.0);
-  col += vec3(0.02, 0.03, 0.062) * lakePhase * lakeSky.night * (0.5 + 0.5 * exp(-hh * 3.0)) * (1.0 - lakeOver);
-  col += lakeAurLight * 0.6 * exp(-hh * 8.0);
-  Sky starry = lakeSky;
-  starry.moon = lakePhase > 0.0 ? lakeMoon : vec3(0.0, -1.0, 0.0);
-  float mw = milkyWay(d, LAKE_GALAXY) * K_milkyWay * K_stars * lakeSky.night * (1.0 - 0.75 * lakePhase);
-  col += vec3(0.045, 0.048, 0.064) * mw;
-  float density = milkyWayStars(K_stars, mw) * (1.0 - 0.6 * lakePhase);
-  col += skyStarLight(starry, d, mirror ? 0.5 * density : density) * (mirror ? 0.6 : 1.0);
-  float foot = max(1.0 / (LAKE_FOCAL * uRes.y), soft);
-  col = skyGiant(starry, col, d, foot, 1.0);
-  float disc;
-  vec3 moon = lakeMoonAt(d, disc);
-  col = col * (1.0 - 0.9 * disc) + moon;
-  float meteor = meteorStreak(skyAngles(d), LAKE_METEOR_FIELD, lakeMeteorAt, lakeMeteorSeed, foot);
-  col += METEOR_TINT * hardEdge(meteor * lakeSky.night * (1.0 - disc)) * (mirror ? 0.6 : 1.0);
-  vec3 aur = lakeAurora(d, soft);
-  col += aur;
-  float seen = dot(aur, LUMA);
-  if (lakeOver > 0.0) {
-    vec4 deck = skyClouds(lakeSky, d, lakeTm, lakeOver, K_wind);
-    col = mix(col, deck.rgb, deck.a);
-    seen *= 1.0 - deck.a;
-  }
-  lakeAccent += seen;
-  return col;
+  WorldView view = lakeView;
+  view.ray = d;
+  view.dir = d;
+  WorldSky heaven = mirror ? worldMirrorSky(lakeWorld, worldMirrorView(lakeView, d, soft), LAKE_METEOR_FIELD)
+                           : worldSky(lakeWorld, view, LAKE_METEOR_FIELD);
+  float open = 1.0 - heaven.cloud;
+  vec3 aur = lakeAurora(d, soft) * open;
+  lakeAccent += dot(aur, LUMA);
+  return heaven.col + heaven.strike + (lakeAurLight * 0.6 * exp(-max(d.y, 0.0) * 8.0) + aur) * open;
 }
 
 // The far shore's waterline (m) by bearing, and the point the cabin stands on reaching out from the left.
@@ -351,10 +307,10 @@ vec3 lakeBeyond(vec3 o, vec3 d, bool mirror, float soft) {
       col = mix(vec3(0.014, 0.022, 0.026), snow, clamp(0.5 * clearing + 0.3 * uWeather.y, 0.0, 1.0));
       hazy = 0.35;
     } else if (slope < 0.08 && slope < lakePeaks(az)) {
-      // Snowy mountains, the faces turned toward the moon (on the right) brighter, rock showing
-      // through on the steeps, gullies streaking down.
+      // Snowy mountains, the faces turned toward the moon brighter, rock showing through on the
+      // steeps, gullies streaking down.
       float face = (lakePeaks(az + 0.004) - lakePeaks(az - 0.004)) / 0.008;
-      float toMoon = clamp(0.5 - face * 4.0, 0.0, 1.0);
+      float toMoon = clamp(0.5 - face * 4.0 * sign(lakeSky.moon.x), 0.0, 1.0);
       float gully = vnoise(vec2(az * 140.0, slope * 260.0));
       vec3 snow = LAKE_SNOW * (lakeAmb * 1.4 + lakeMoonLight * (0.3 + toMoon) + lakeAurLight * 1.6) * (0.75 + 0.25 * gully);
       float rock = smoothstep(0.62, 0.8, vnoise(vec2(az * 60.0, slope * 900.0))) * 0.6;
@@ -527,8 +483,8 @@ vec3 lakeClearIce(Ground g, float fu, float fv, float range, vec3 dir, vec3 snow
   // path), with single facets glinting in the moon's.
   vec3 view = -dir;
   float facets = (5.0 * rough + 0.012) * (5.0 * rough + 0.012);
-  if (lakePhase > 0.0) {
-    float path = waterGlitter(n, view, lakeMoon, facets);
+  if (lakeSky.moon.y > 0.0) {
+    float path = waterGlitter(n, view, skyFacing(lakeSky.moon, lakePar), facets);
     float facet = hash12(floor(P * vec2(16.0, 5.0)) + 0.37);
     col += lakeMoonLight * (0.6 * path + 1.6 * hardEdge(path * smoothstep(0.82, 0.97, facet))) * (1.0 - lakeOver);
   }
@@ -701,36 +657,28 @@ float lakeGust(vec2 uv, float aspect, float gp) {
   return clamp(streak + 0.16, 0.0, 1.0) * cover * low;
 }
 
-// The night: twilight to deep night by K_hour, our moon, the aurora's colours and the sim's surge,
-// the light on the land, overcast while it snows, the cabin's and the moon's bearings for the frame.
+// The night: twilight to deep night by K_hour, the world at that hour (the moon in its phase, the
+// snow cloud while it snows), the aurora's colours and the sim's surge, the light on the land, the
+// cabin's bearing for the frame.
 void lakeSetup(float aspect) {
   lakeTm = uMotionTime;
   float hour = clamp(K_hour, 0.0, 1.0);
-  Sky sky = skyAt(0.78 + 0.075 * hour * hour);
+  lakeWorld = worldAtTime(0.78 + 0.075 * hour * hour, LAKE_METEOR_SLOT, -1);
+  lakeSky = lakeWorld.sky;
   float halfAz = atan(0.5 * aspect, LAKE_FOCAL);
   lakeCabinAz = -min(0.36, 0.72 * halfAz);
-  lakeMoonAz = min(0.52, 0.75 * halfAz);
-  lakeMoonEl = 0.15;
-  lakeMoon = vec3(sin(lakeMoonAz) * cos(lakeMoonEl), sin(lakeMoonEl), cos(lakeMoonAz) * cos(lakeMoonEl));
-  lakePhase = K_moon;
-  lakeOver = K_snow > 0.0 ? weatherOvercast(0.0, K_snow) : 0.0;
-  lakeMoonLight = vec3(0.40, 0.44, 0.54) * pow(lakePhase, 1.3) * 0.6 * (1.0 - 0.85 * lakeOver);
-  // The library's moon rides elsewhere: take its light out and put ours in.
-  vec3 amb = sky.ambient - sky.moonColor * 0.3;
-  sky.moon = vec3(0.0, -1.0, 0.0);
-  sky.moonColor = lakeMoonLight;
-  lakeSky = sky;
-  lakeMeteorAt = meteorAge(lakeTm, K_meteors, LAKE_METEOR_SLOT, lakeMeteorSeed);
+  lakeOver = lakeWorld.overcast;
+  lakeMoonLight = lakeSky.moonColor * (1.0 - 0.85 * lakeOver);
 
   vec4 au = uSimOn.z > 0.5 ? texelFetch(uSim2, ivec2(0, 1), 0) : vec4(1.0, uMotionTime, 0.0, 0.0);
   lakeSurge = au.w;
   lakeAurGain = K_aurora * au.x;
   lakeAurClock = au.y + au.z;
-  lakeAurVis = mix(0.45, 1.0, sky.night) * (1.0 - 0.9 * lakeOver);
+  lakeAurVis = mix(0.45, 1.0, lakeSky.night) * (1.0 - 0.9 * lakeOver);
   lakeAurLow = lakeAuroraLowColour();
   lakeAurHigh = lakeAuroraHighColour();
   lakeAurLight = lakeAurLow * lakeAurGain * 0.05 * lakeAurVis;
-  lakeAmb = greyed(amb, vec3(0.92, 0.95, 1.0), 0.6 * lakeOver) + lakeAurLight + lakeMoonLight * 0.25;
+  lakeAmb = lakeSky.ambient + lakeAurLight;
   lakePar = uPointer.x * 0.012;
 }
 
@@ -745,6 +693,7 @@ Shade sceneLake(vec2 screenUv, vec2 cell, float t) {
   lakeSetup(aspect);
   vec2 sp = vec2((uv.x - 0.5) * aspect, uv.y - LAKE_HORIZON);
   vec3 dir = normalize(vec3(sp, LAKE_FOCAL));
+  lakeView = worldView(uv, LAKE_HORIZON, LAKE_FOCAL, LAKE_EYE, 0.0, 1.0);
   float az = atan(sp.x, LAKE_FOCAL) + lakePar;
   // How far the eye ray runs across the ice before it meets the shore (or the sky: far).
   float range = 1e4;

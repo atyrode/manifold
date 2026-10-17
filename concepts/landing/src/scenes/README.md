@@ -813,14 +813,14 @@ have **open** cells: an open night sky where the component could be composed.
 | `dunes`            | over the dune sea (the world's sky; none overhead)               | knob 1 + the world's Milky Way (knob, on)        | knob (phase; keys the sand's light)                        | knob, behind the clouds and the dust                               | knob, trigger 0, behind the clouds and the dust                                      |
 | `falls`            | above the cliff                                                  | knob 0.45                                        | knob (phase)                                               | knob, its arc lifted over the rim                                  | knob, trigger 0, falling behind the rim                                              |
 | `garden`           | the haze over the wall (the horizon is the frame's top edge)     | —                                                | knob (phase; keys the night light)                         | —                                                                  | —                                                                                    |
-| `lanterns`         | over the river, mirrored                                         | knob 0.55 (+ own sparse stars, thinned below it) | own young crescent, fixed in the frame                     | knob, mirrored                                                     | knob, trigger 2, mirrored                                                            |
+| `lanterns`         | over the river, mirrored (the world's sky)                       | knob 0.55, mirrored                              | full (the world's; rises out of frame on the right)        | knob, mirrored                                                     | knob, trigger 2, mirrored                                                            |
 | `meadow`           | over the meadow (the world's sky, "World layers")                | knob 0.6 + the world's Milky Way (knob, on)      | knob (phase)                                               | knob, behind the clouds                                            | knob, trigger 2                                                                      |
 | `shore`            | over the sea and mirrored in it and the wet sand (the world's)   | knob 0.6 + the world's Milky Way (knob, on)      | knob (phase, compiled in at every setting; moonrise)       | knob, behind the clouds, mirrored                                  | knob, trigger 2, mirrored                                                            |
 | `sill`             | over the city                                                    | knob 0.5                                         | knob (phase)                                               | knob, light through the window                                     | knob, trigger 3                                                                      |
 | `skyward`          | a strip between roofs                                            | knob 0.3                                         | knob (phase)                                               | — (looking up: the curtains hang toward the horizon, out of view)  | knob, trigger 0, camera frame                                                        |
 | `bamboo`, `forest` | canopy gaps                                                      | knob 0.5                                         | knob (phase; the gaps and the night rays)                  | —                                                                  | —                                                                                    |
 | `street`           | in reflections only                                              | knob 0.55 (window glass)                         | knob (phase; the windows and wet street)                   | —                                                                  | —                                                                                    |
-| `lake`             | over the ice, mirrored                                           | own `K_stars` + shared Milky Way (knob)          | own phase, fixed bearing                                   | knob (`auroraCurtains` on the sim's substorm clock, rough-ice tap) | knob, trigger 3, mirrored                                                            |
+| `lake`             | over the ice, mirrored (the world's sky at its own hour)         | own `K_stars` + the world's Milky Way (knob)     | knob (phase; the world's moon, its glitter down the ice)   | knob (`auroraCurtains` on the sim's substorm clock, rough-ice tap) | knob, trigger 3, mirrored                                                            |
 | `aurora`           | the subject, mirrored in the fjord                               | own `K_stars` on a fixed night                   | own crescent                                               | own curtains                                                       | knob, trigger 1, mirrored                                                            |
 | `swell`            | over the sea                                                     | own (`starfield`, `K_stars`)                     | own disc (`K_moon` sizes it), its `waterGlitter` path      | —                                                                  | knob, trigger 0, screen frame, glints in the waves                                   |
 | `clouds` †         | above the cloud sea                                              | knob 0.75                                        | own bearing, drawn by `skyColor`                           | knob (`auroraCurtains`, full detail)                               | open                                                                                 |
@@ -835,8 +835,8 @@ have **open** cells: an open night sky where the component could be composed.
 | `orbit`            | its own sky                                                      | own                                              | own                                                        | —                                                                  | own (captured meteors)                                                               |
 | `fireflies`        | its own moonless sky over the mangroves                          | own                                              | — (moonless)                                               | —                                                                  | knob (`skyComponentKnobs`), trigger 2, over the hills behind the trees, not mirrored |
 
-`aurora` and `lake` keep a night of their own: their own `K_stars` knob sets the shared stars
-(`skyStarLight`) on it.
+`aurora` keeps a night of its own: its own `K_stars` knob sets the shared stars (`skyStarLight`)
+on it. `lake`'s `K_stars` is the world's star density on the lake's own hour.
 
 The constellations come with `skyStars`, so every scene whose stars it draws, directly, through
 `skyStarLight` or through the canopy's (`canopyGapSky`) or the world's sky, has the knob: every
@@ -1207,7 +1207,7 @@ bit the full-detail picture.
 | `shore`                                               | shadows while its `shadows` knob is on (`worldFeatures`), lit while off | the world's deck (`worldSky`) under its rain sky, mirrored (`worldMirrorSky`) in the sea and wet sand; its shadows (`worldSunlit`) on the sand and sea, dimming the sun and its glitter  |
 | `dunes`                                               | shadows while its `shadows` knob is on (`worldFeatures`), lit while off | the world's deck (`worldSky`, greyed by `dunesOvercast`; none overhead); its shadows (`worldSunlit`) on the sand and the M, cast from the deck over the eye at rest, aerial or overhead  |
 | `train`                                               | flat                                                                    | `cloudDeckPoint` with the train's run under the deck, `cloudFlatField` lit as the night line's own deck                                                                                  |
-| `falls`, `frost`, `island`, `lake`, `sill`, `skyward` | lit (none selected)                                                     | `skyClouds` over their own sky, greyed and lowered under rain each its own way                                                                                                           |
+| `falls`, `frost`, `lake`, `sill`, `skyward`           | lit (none selected)                                                     | the world's deck (`worldSky`), its cover and nearness (`World.cover`, `World.low`) staged per scene, tinted over `WorldSky.cloud`; `island` `skyClouds` over its own sky              |
 
 Not unified, on purpose:
 
@@ -1215,12 +1215,12 @@ Not unified, on purpose:
   picture-book style rather than a deck; `island`'s far cumulus are toon billboards on the horizon,
   its ground shadows a lattice of puffs cut per cell to match them (its dome's deck is the lit tier).
 - `delta` is seen from orbit: its puffs and their offset shadows are one top-down field.
-- Rain overcasts drawn as a tint or a flat grey sheet over the scene's own sky (`lanterns`,
-  `meadow`, `shore`, `sill`, `garden`) have no cloud field to share; the canopy's deck is the canopy
-  component's (`canopy.ts`), the giant planet's cloud bands the planet's (`planetClouds`).
+- Rain tints over the world's deck (`lanterns`, `meadow`, `shore`, `sill`) and `garden`'s flat
+  grey sheet are each scene's tint, not a deck; the canopy's deck is the canopy component's
+  (`canopy.ts`), the giant planet's cloud bands the planet's (`planetClouds`).
 - The clouds scene's thunderheads, wisps and contrails are authored towers and passage vapour, not a
-  deck. Scenes that lower the lit deck under rain (`falls`, `sill`, `country`) squash the ray
-  before `skyClouds` each by their own amount; a shared helper would only rename a `normalize`.
+  deck. Scenes whose deck comes down under rain set `World.low` (`falls`, `sill`: 1 +
+  `WORLD_DECK_LOW` × storm); `country` squashes its own ray before `skyClouds`.
 
 ### Weather in the world
 
@@ -1373,24 +1373,26 @@ hour, the daylight or the night reads `skyNow` (forest's spirits, the garden's d
 - **Overcast reaches the horizon.** `skyClouds` fades its deck toward the horizon against crawl;
   past broken cloud (cover 0.6) that fade gives way, and an overcast (1) closes right down to it.
 
-**Stage 2: one sky composer.** Eight outdoor scenes still compose the sky stack `worldSky` owns by
-hand, each in its own order: autumn, frost, sill, bees, lanterns, falls, lake and skyward. The plan
-is to move them onto the shared world sky one at a time, each with a bit-diff review of its picture:
+**Stage 2: one sky composer.** Every outdoor scene with a sky of its own composes it through the
+world: autumn, frost, sill, bees, lanterns, falls, lake and skyward draw `worldSky` (lake and
+lanterns `worldMirrorSky` in their ice and river too) from `worldAt` (lake: `worldAtTime` at its
+own hour), light their land with `World.sky` and close their sky by `weatherOvercast` and the
+`WORLD_DECK_*` shares; none keeps a dome, overcast curve, moon, star field or meteor schedule of its
+own. They keep their own knobs (skyKnobs, weatherKnobs) and compile in, at every setting, each part
+those knobs can show (`worldGates`). What stays theirs is staging and tint: the view (yaw, focal,
+footprint; a blurred or mirrored one), the deck's fair cover where they have no clouds knob
+(`World.cover`), its nearness (`World.low`: 1 + `WORLD_DECK_LOW` × storm in sill and falls,
+1/1.9 in skyward's narrow strip), the stars' density (`World.stars`: ×1.7 over frost's woods),
+falls' aurora lifted over its rim (`WorldView.auroraLift`), and each one's tint over `WorldSky.col`
+where `WorldSky.cloud` says the deck is. Lake keeps its own aurora (hue, substorms) and the birds of
+lake, lanterns, falls and skyward stay theirs; bees' cumulus are its own clouds. The moon is the
+world's in its phase everywhere: lanterns' sky has no moon knob and shows the staged full moon,
+which rises out of its narrow frame on the right; a crescent stands 18 degrees or more above the
+dusk, over the top of it. Lake's default phase (0.3) puts its moon high on the left above the view;
+toward full it rises low over the mountains on the right as the night deepens.
 
-1. Frost and sill first: their stacks (dome, stars, aurora, deck, meteors) are closest to
-   `worldSky`. Each adopts `worldAt` and `worldSky` (or `worldMirrorSky`), keeping the components
-   the table in "Composing components" marks as its own, and drops its `*_METEOR_TRIGGER` wiring
-   and private overcast curve for `weatherOvercast` and the `WORLD_DECK_*` shares.
-2. Then autumn, bees, falls and skyward, whose differences are a yaw, a cover curve and a deck
-   squash; `worldView`'s yaw and unit carry the first, the rest become World fields where two
-   scenes need them.
-3. Lake and lanterns last, after their private moons and star fields go (the shared moon now
-   stands where a crescent reads, beside the dusk): they adopt `skyMoonPhase` and `skyStars`.
-
-The sky state stays the world clock's throughout, so adopting the composer changes only the order
-and occlusion of the layers; each scene's default picture changes and is reviewed as it moves. A
-later step may upload the clock's per-frame values as uniforms once its GPU mirror has shown the
-float32 results agree cell for cell.
+The sky state stays the world clock's throughout. A later step may upload the clock's per-frame
+values as uniforms once its GPU mirror has shown the float32 results agree cell for cell.
 
 ### World layers
 
@@ -1400,24 +1402,28 @@ what they put in the world. A setting means the same thing everywhere: rain 0.4 
 far, dims the sun as much and falls at the same depths in every scene that adopts it. The GLSL is
 `worldGlsl` (`src/shaders/lib/world.ts`, opt-in; it composes `birdsGlsl` and `milkyWayGlsl` itself,
 so an adopter does not include them again), the knobs and gates `src/scenes/world.ts`. The adopters
-are meadow (the first), shore and dunes.
+are meadow (the first), shore and dunes with `worldKnobs`, and with knobs of their own (`worldGates`)
+autumn, bees, falls, frost, lake, lanterns, sill and skyward.
 
 ```glsl
 struct World {        // the world now: worldAt, once per pixel, before anything is drawn
   Sky sky;            // clock, sun, moon in its phase; light under the deck (+ aurora glow, lightning flash)
   float time, tm, tf; // time of day 0..1, the motion clock, the fall clock
   float rain, snow, fog, wind;           // the knobs (0 while off or gated out)
-  float storm, overcast, heavy, cover;   // max(rain, 0.85 snow); weatherOvercast; heavy rain/snow; K_clouds thickened
+  float storm, overcast, heavy, cover;   // max(rain, 0.85 snow); weatherOvercast; heavy rain/snow; K_clouds thickened (the overcast's alone without K_clouds)
+  float low, stars;   // the deck's nearness (1; the scene may set it), the stars' density (K_stars; the scene may scale it)
   vec3 glow;          // the aurora's light on the land (in sky.ambient)
   float flash, boltAge, boltSeed, meteorAge, meteorSeed;
 };
-World worldAt(int meteorSlot, int lightningSlot);
+World worldAt(int meteorSlot, int lightningSlot);                   // at K_time, K_cycle
+World worldAtTime(float time, int meteorSlot, int lightningSlot);   // at a time of day the scene gives (lake's hour)
 struct WorldView {    // the scene's camera at this pixel: a level pinhole with a shifted lens, or its own ray on it
   vec3 ray, dir;      // viewRay's frame (x right, y up, z ahead); the sky's frame, skyFacing(ray, yaw)
   float yaw;          // camera frame -> sky frame
   vec2 uv;            // the screen point, after any lens shift the scene gives its world
   float aspect, foot; // uRes.x / uRes.y; radians a dither cell spans, 1 / (focal * uRes.y)
   float horizon, focal, eye, unit; // the pinhole (eye in scene units) and scene units per metre
+  float auroraLift;   // 0; how much higher the aurora's arc stands (falls' rim)
 };
 WorldView worldView(vec2 uv, float horizon, float focal, float eye, float yaw, float unit);
 WorldView worldViewOf(vec3 ray, vec2 uv, float horizon, float focal, float eye, float yaw, float unit); // the scene's own ray

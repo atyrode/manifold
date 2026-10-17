@@ -8,6 +8,7 @@
 import { counts, feature, seed, type ParamDef } from "../../params.ts";
 import { atmosphereGroups, skyKnobs, skyTheme, weatherKnobs } from "../atmosphere.ts";
 import type { SceneDef } from "../types.ts";
+import { worldGates } from "../world.ts";
 import { BEES_METEOR_TRIGGER, beesGlsl } from "./shader.ts";
 import { BEES_PASSAGE, beesSim } from "./sim.ts";
 
@@ -94,6 +95,7 @@ export const beesScene: SceneDef = {
   passage: BEES_PASSAGE,
   // A bright afternoon is a light page: dark copy from morning to evening on a still clock.
   theme: skyTheme(params, { from: 0.31, to: 0.74 }),
-  // The moon takes a phase (K_moon) in the shared sky.
-  features: { SKY_MOON_PHASE: 1 },
+  // The world's sky, every part its knobs can show compiled in: the moon's phase (K_moon), the stars,
+  // the aurora and shooting stars. The clouds are the scene's own cumulus, not the world's deck.
+  features: { ...worldGates(params), WORLD_CLOUDS: 0 },
 };
