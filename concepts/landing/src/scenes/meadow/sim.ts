@@ -34,9 +34,12 @@
 // closes in on the horizon, and it fades into the haze.
 //
 // Time runs in fixed steps of STEP on the shader's clock (the motion clock, uMotionTime), so the
-// simulation and the picture always evaluate the gusts at the same moment. The first frame pre-runs
-// PREWARM seconds (a fixed count of steps, spread over frames only when one frame cannot hold them
-// all), so the page opens with seeds already in the air.
+// simulation and the picture always evaluate the gusts at the same moment. What is drawn (the blades,
+// the clocks, the seeds) is blended between the last two steps by the clock's alpha, a step behind
+// the newest, as the wildflowers' springs are (sims/plants.ts): a seed let go in the last step fades
+// in over it and one lost in it fades out, so the meadow moves the same at 60 and at 144 Hz. The
+// first frame pre-runs PREWARM seconds (a fixed count of steps, spread over frames only when one
+// frame cannot hold them all), so the page opens with seeds already in the air.
 //
 // Passage (entrance and exit): the camera is lowered into the grass on arrival and rises above it on
 // leaving, a real change of the eye's height over the same scene (MEADOW_MOVE: `meadowDrop` is how
@@ -59,7 +62,7 @@
 import { KnobReader, type ParamDef } from "../../params.ts";
 import { LevelCamera } from "../../sims/camera.ts";
 import { FixedStep, runBudgeted } from "../../sims/clock.ts";
-import { clamp, smoothstep } from "../../sims/math.ts";
+import { clamp, lerp, smoothstep } from "../../sims/math.ts";
 import { Random } from "../../sims/random.ts";
 import { springStep, type Spring } from "../../sims/spring.ts";
 import { DataTexture } from "../../sims/texture.ts";
@@ -630,6 +633,9 @@ interface Blade {
   bow: Spring;
   omega: number;
   phase: number;
+  /** Lean and bow when the last step began: drawn blended from there by the clock's alpha. */
+  leanWas: number;
+  bowWas: number;
 }
 
 type ClockPhase = "gone" | "opening" | "ripe" | "bare" | "wilting";
@@ -657,6 +663,12 @@ interface Clock {
   headY: number;
   headVX: number;
   headVY: number;
+  /** Lean, bow, presence, opening and shown fill when the last step began (drawn blended from there). */
+  leanWas: number;
+  bowWas: number;
+  presenceWas: number;
+  openWas: number;
+  shownWas: number[];
 }
 
 interface Seed {
@@ -680,12 +692,46 @@ interface Seed {
   /** Phase of its own eddies. */
   drift: number;
   tilt: number;
+  /**
+   * Whether it was in the air when the last step began, and where, how old, turned and tilted: drawn
+   * blended from there by the clock's alpha, fading in over the step it was let go in (not live
+   * then) and out over the one it was lost in (not live now).
+   */
+  liveWas: boolean;
+  xWas: number;
+  yWas: number;
+  zWas: number;
+  ageWas: number;
+  tumbleWas: number;
+  tiltWas: number;
 }
 
 function remaining(clock: Clock): number {
   let n = 0;
   for (const count of clock.counts) n += count;
   return n;
+}
+
+/** A clock drawn from where it stands now, as if it had stood there a step ago too. */
+function settleClock(clock: Clock): void {
+  clock.leanWas = clock.lean.x;
+  clock.bowWas = clock.bow.x;
+  clock.presenceWas = clock.presence;
+  clock.openWas = clock.open;
+  clock.shown.forEach((fill, k) => {
+    clock.shownWas[k] = fill;
+  });
+}
+
+/** A seed drawn from where it is now, as if it had been there a step ago too. */
+function settleSeed(seed: Seed): void {
+  seed.liveWas = seed.live;
+  seed.xWas = seed.x;
+  seed.yWas = seed.y;
+  seed.zWas = seed.z;
+  seed.ageWas = seed.age;
+  seed.tumbleWas = seed.tumble;
+  seed.tiltWas = seed.tilt;
 }
 
 const byX = (a: Seed, b: Seed): number => a.sx - b.sx;
@@ -739,6 +785,11 @@ class MeadowSim implements SceneSim {
     headY: 0,
     headVX: 0,
     headVY: 0,
+    leanWas: 0,
+    bowWas: 0,
+    presenceWas: 0,
+    openWas: 0,
+    shownWas: new Array<number>(SECTORS).fill(0),
   }));
   readonly #seeds: Seed[] = Array.from({ length: MAX_SEEDS }, (): Seed => ({
     live: false,
@@ -756,8 +807,17 @@ class MeadowSim implements SceneSim {
     tumbleRate: 0,
     drift: 0,
     tilt: 0,
+    liveWas: false,
+    xWas: 0,
+    yWas: 0,
+    zWas: 1,
+    ageWas: 0,
+    tumbleWas: 0,
+    tiltWas: 0,
   }));
   readonly #sorted: Seed[] = [];
+  /** Scratch: a clock's head as drawn (#pack). */
+  readonly #drawnHead = { headX: 0, headY: 0 };
 
   // Knobs, as of this frame.
   #windKnob = 0;
@@ -777,6 +837,8 @@ class MeadowSim implements SceneSim {
   #dirty = true;
   /** How closed the heads are against the rain, 0..1. */
   #closed = 0;
+  /** As it was when the last step began (drawn blended from there). */
+  #closedWas = 0;
 
   // The breath: where, how strong, and what feeds it.
   #breath = 0;
@@ -861,7 +923,12 @@ class MeadowSim implements SceneSim {
       if (this.#warmFrom < PREWARM_STEPS) return this.#textures;
       this.#warm = true;
       // Arriving, the sky starts clear of the pre-run's seeds: the first gust lifts the first ones.
-      if (enter < 1) for (const seed of this.#seeds) seed.live = false;
+      if (enter < 1) {
+        for (const seed of this.#seeds) {
+          seed.live = false;
+          seed.liveWas = false;
+        }
+      }
     }
 
     this.#choreograph(enter, exit);
@@ -876,7 +943,7 @@ class MeadowSim implements SceneSim {
     }
 
     if (advance > 0 || this.#dirty) {
-      this.#pack();
+      this.#pack(this.#clock.alpha);
       this.#seedTexture.upload(this.#seedData);
       this.#bladeTexture.upload(this.#bladeData);
       this.#clockTexture.upload(this.#clockData);
@@ -909,6 +976,8 @@ class MeadowSim implements SceneSim {
           bow: { x: 0, v: 0 },
           omega,
           phase: TAU * hash01(column, l + 17),
+          leanWas: 0,
+          bowWas: 0,
         });
       }
       this.#dirty = true;
@@ -1006,12 +1075,26 @@ class MeadowSim implements SceneSim {
     blades: boolean,
     pass: Readonly<PassageGust>,
   ): void {
+    this.#settle();
     const wind = meadowWind(this.#wind, this.#windKnob, this.#gusts, this.#gustRate, nowAge, pass);
     const closing = this.#rain > 0 ? Math.min(1, CLOSE_DRIZZLE + CLOSE_PER_RAIN * this.#rain) : 0;
     this.#closed += (closing - this.#closed) * (1 - Math.exp(-STEP / CLOSE_TIME));
     if (blades) this.#stepBlades(tm, wind);
     this.#stepClocks(tm, wind, detachBoost);
     this.#stepSeeds(tm, wind);
+  }
+
+  /** Keep what is drawn as it stands, for the step about to run to be blended from (#pack). */
+  #settle(): void {
+    for (const blades of this.#blades) {
+      for (const blade of blades) {
+        blade.leanWas = blade.lean.x;
+        blade.bowWas = blade.bow.x;
+      }
+    }
+    for (const clock of this.#clocks) settleClock(clock);
+    for (const seed of this.#seeds) settleSeed(seed);
+    this.#closedWas = this.#closed;
   }
 
   #stepBlades(tm: number, wind: MeadowWind): void {
@@ -1096,7 +1179,7 @@ class MeadowSim implements SceneSim {
       );
       const x0 = clock.headX;
       const y0 = clock.headY;
-      this.#placeHead(clock);
+      this.#placeHead(clock, clock.lean.x, clock.bow.x, clock);
       clock.headVX = (clock.headX - x0) / STEP;
       clock.headVY = (clock.headY - y0) / STEP;
 
@@ -1191,9 +1274,10 @@ class MeadowSim implements SceneSim {
     clock.bow.x = 0;
     clock.bow.v = 0;
     clock.phaseOffset = random.next() * TAU;
-    this.#placeHead(clock);
+    this.#placeHead(clock, clock.lean.x, clock.bow.x, clock);
     clock.headVX = 0;
     clock.headVY = 0;
+    settleClock(clock);
   }
 
   #vanish(clock: Clock): void {
@@ -1202,13 +1286,16 @@ class MeadowSim implements SceneSim {
     clock.presence = 0;
   }
 
-  /** The head sits on the bent stalk's tip; the shader draws the stalk to it with the same curve. */
-  #placeHead(clock: Clock): void {
+  /**
+   * Where the head sits on the tip of the stalk leaning by `lean` and bowed by `bow` (screen heights),
+   * into `out`; the shader draws the stalk to it with the same curve.
+   */
+  #placeHead(clock: Clock, lean: number, bow: number, out: { headX: number; headY: number }): void {
     const tall = clock.head - CLOCK_ROOT;
-    const lean = clamp(clock.lean.x, -MEADOW_LEAN_MAX, MEADOW_LEAN_MAX);
-    const bow = clamp(clock.bow.x, -0.2, MEADOW_AWAY_MAX);
-    clock.headX = clock.share * this.#aspect + MEADOW_BEND_SHAPE * lean * tall;
-    clock.headY = CLOCK_ROOT + tall * (1 - MEADOW_BOW * bow);
+    out.headX =
+      clock.share * this.#aspect +
+      MEADOW_BEND_SHAPE * clamp(lean, -MEADOW_LEAN_MAX, MEADOW_LEAN_MAX) * tall;
+    out.headY = CLOCK_ROOT + tall * (1 - MEADOW_BOW * clamp(bow, -0.2, MEADOW_AWAY_MAX));
   }
 
   /** A sector with seeds left, favouring those facing `toward` (radians) and the fuller ones; -1 if bare. */
@@ -1259,6 +1346,9 @@ class MeadowSim implements SceneSim {
     seed.tumbleRate = (0.3 + 0.5 * random.next()) * (random.next() < 0.5 ? -1 : 1);
     seed.drift = random.next() * TAU;
     seed.tilt = 0;
+    // Let go now: drawn from here, fading in over the step.
+    settleSeed(seed);
+    seed.liveWas = false;
     return true;
   }
 
@@ -1399,7 +1489,8 @@ class MeadowSim implements SceneSim {
     this.#dirty = true;
   }
 
-  #pack(): void {
+  /** Everything as drawn: `alpha` of the way from the start of the last step to its end (see the header). */
+  #pack(alpha: number): void {
     const aspect = this.#aspect;
     const drop = this.#drop;
     const seeds = this.#seedData;
@@ -1407,8 +1498,8 @@ class MeadowSim implements SceneSim {
     const sorted = this.#sorted;
     sorted.length = 0;
     for (const seed of this.#seeds) {
-      if (!seed.live) continue;
-      seed.sx = CAMERA.screenX(seed.x, seed.z);
+      if (!seed.live && !seed.liveWas) continue;
+      seed.sx = CAMERA.screenX(lerp(seed.xWas, seed.x, alpha), lerp(seed.zWas, seed.z, alpha));
       sorted.push(seed);
     }
     sorted.sort(byX);
@@ -1422,21 +1513,26 @@ class MeadowSim implements SceneSim {
       seeds[o + 3] = -1;
     }
     sorted.forEach((seed, n) => {
-      const y = CAMERA.screenY(seed.y - drop, seed.z);
-      const radius = Math.max((seed.size * MEADOW_FOCAL) / seed.z, minRadius);
-      const alpha =
-        (1 - smoothstep(seed.life - SEED_FADE, seed.life, seed.age)) *
-        (1 - smoothstep(SEED_DEPTH_FADE_FROM, SEED_DEPTH_FADE_TO, seed.z));
+      const z = lerp(seed.zWas, seed.z, alpha);
+      const age = lerp(seed.ageWas, seed.age, alpha);
+      const y = CAMERA.screenY(lerp(seed.yWas, seed.y, alpha) - drop, z);
+      const radius = Math.max((seed.size * MEADOW_FOCAL) / z, minRadius);
+      // Let go in the last step it fades in over the step; lost in it, it fades out.
+      const born = seed.live ? (seed.liveWas ? 1 : alpha) : 1 - alpha;
+      const opacity =
+        born *
+        (1 - smoothstep(seed.life - SEED_FADE, seed.life, age)) *
+        (1 - smoothstep(SEED_DEPTH_FADE_FROM, SEED_DEPTH_FADE_TO, z));
       const u = seed.sx / aspect + 0.5;
       const o0 = n * 4;
       seeds[o0] = u;
       seeds[o0 + 1] = y;
       seeds[o0 + 2] = radius;
-      seeds[o0 + 3] = alpha;
+      seeds[o0 + 3] = opacity;
       const o1 = (MAX_SEEDS + n) * 4;
-      seeds[o1] = seed.tilt;
-      seeds[o1 + 1] = seed.z;
-      seeds[o1 + 2] = 0.55 + 0.45 * Math.abs(Math.cos(seed.tumble));
+      seeds[o1] = lerp(seed.tiltWas, seed.tilt, alpha);
+      seeds[o1 + 1] = z;
+      seeds[o1 + 2] = 0.55 + 0.45 * Math.abs(Math.cos(lerp(seed.tumbleWas, seed.tumble, alpha)));
       // The group's box, in uv, wide enough for the seed's halo and hanging stalk.
       const reach = 3 * radius;
       const o = groupRow + Math.floor(n / SEED_GROUP) * 4;
@@ -1456,33 +1552,42 @@ class MeadowSim implements SceneSim {
     this.#blades.forEach((layer, l) => {
       layer.forEach((blade, j) => {
         const o = (l * width + j) * 2;
-        blades[o] = blade.lean.x;
-        blades[o + 1] = blade.bow.x;
+        blades[o] = lerp(blade.leanWas, blade.lean.x, alpha);
+        blades[o + 1] = lerp(blade.bowWas, blade.bow.x, alpha);
       });
     });
 
     const clocks = this.#clockData;
     clocks.fill(0);
+    const closed = lerp(this.#closedWas, this.#closed, alpha);
+    const drawn = this.#drawnHead;
     this.#clocks.forEach((clock, c) => {
       // Placed again here so a resize moves the clocks even while the scene stands still.
-      this.#placeHead(clock);
+      this.#placeHead(clock, clock.lean.x, clock.bow.x, clock);
+      this.#placeHead(
+        clock,
+        lerp(clock.leanWas, clock.lean.x, alpha),
+        lerp(clock.bowWas, clock.bow.x, alpha),
+        drawn,
+      );
       const o = c * CLOCK_TEXELS * 4;
       // The camera's height over rest lowers a clock in the frame, by its own depth.
       const rise = (MEADOW_FOCAL * drop) / clock.z;
       clocks[o] = clock.share;
       clocks[o + 1] = CLOCK_ROOT - rise;
-      clocks[o + 2] = clock.headX / aspect;
-      clocks[o + 3] = clock.headY - rise;
+      clocks[o + 2] = drawn.headX / aspect;
+      clocks[o + 3] = drawn.headY - rise;
       let fullness = 0;
       clock.shown.forEach((fill, k) => {
-        clocks[o + (2 + k) * 4] = fill;
-        fullness += fill;
+        const shown = lerp(clock.shownWas[k] ?? fill, fill, alpha);
+        clocks[o + (2 + k) * 4] = shown;
+        fullness += shown;
       });
       clocks[o + 2 * 4 + 1] = clock.z;
-      clocks[o + 2 * 4 + 2] = this.#closed;
-      clocks[o + 4] = clock.radius * (1 - CLOSE_SHARE * this.#closed);
-      clocks[o + 5] = clock.presence;
-      clocks[o + 6] = clamp(clock.open, 0, 1);
+      clocks[o + 2 * 4 + 2] = closed;
+      clocks[o + 4] = clock.radius * (1 - CLOSE_SHARE * closed);
+      clocks[o + 5] = lerp(clock.presenceWas, clock.presence, alpha);
+      clocks[o + 6] = clamp(lerp(clock.openWas, clock.open, alpha), 0, 1);
       clocks[o + 7] = fullness / SECTORS;
     });
   }

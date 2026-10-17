@@ -21,6 +21,12 @@
 // through from the left, cuts the ember's smoke off and carries the thread and veils off (Plume.#blow).
 // Without a passage the scene opens on the seeded, prewarmed plume as ever (INCENSE_PASSAGE).
 //
+// Time: the burner, the doors, the smoke and the dust step STEP at a time on one FixedStep
+// (sims/clock.ts), so the incense burns and its smoke curls the same at 60 and at 144 Hz. What is
+// drawn is a step behind the newest, blended between the last two steps by the clock's alpha: the
+// dye and the velocity through a StepBlend (sims/stepblend.ts), the motes from where the last step
+// found them, the burner's texels from where it stood (Burner.write).
+//
 // Textures for the shader (shader.ts):
 //   uSim0  the dye, rgba16f over the frame: r smoke, g heat (negative: the backflow's cold smoke),
 //          b fresh smoke (faded faster than r, so b / r says how young the smoke is), a unused
@@ -34,7 +40,7 @@
 import { KnobReader, type ParamDef } from "../../params.ts";
 import { gpuCommonGlsl } from "../../shaders/common.ts";
 import { glslFloat } from "../../shaders/glsl.ts";
-import { runBudgeted } from "../../sims/clock.ts";
+import { FixedStep, runBudgeted } from "../../sims/clock.ts";
 import { FluidSim, type FluidStep, type SplatImpulse } from "../../sims/fluid.ts";
 import {
   GpuCompute,
@@ -47,6 +53,7 @@ import {
 } from "../../sims/gpu.ts";
 import { clamp, lerp, smoothstep } from "../../sims/math.ts";
 import { mulberry32 } from "../../sims/random.ts";
+import { StepBlend } from "../../sims/stepblend.ts";
 import { DataTexture } from "../../sims/texture.ts";
 import type { SceneSim, SimFactory, SimFrame } from "../types.ts";
 
@@ -190,9 +197,13 @@ float incenseCandleBody(vec2 q) {
 /** Velocity and dye texels on the frame's short side. */
 const VELOCITY_RES = 112;
 const DYE_RES = 320;
-/** Longest simulated step and most steps per frame (a slow frame steps twice, then slows the clock). */
-const MAX_STEP = 0.05;
-const MAX_STEPS = 2;
+/**
+ * Seconds per step, and the most steps one frame catches up (the renderer's longest frame, 0.1 s):
+ * the burner, the doors, the smoke and the dust step STEP at a time on one FixedStep whatever the
+ * frame rate, and are drawn between their last two steps (StepBlend for the fluid's fields).
+ */
+const STEP = 1 / 60;
+const MAX_STEPS = 6;
 
 /** Smoke and heat laid per second at the ember (the smoke knob scales the smoke), and the splat's radius. */
 const EMIT_SMOKE = 3;
@@ -264,8 +275,9 @@ const DOOR_FIRST = 45;
 
 /**
  * First-frame prewarm: this many steps of this length (short, so the thread is laid smooth, not
- * beaded), run within a CPU-time budget per frame. A slow machine takes more frames to get through
- * them, never fewer steps, and the scene holds still until they are done.
+ * beaded), run within a CPU-time budget per frame (at least; the frame's own budget raises it, to
+ * all of it under test). A slow machine takes more frames to get through them, never fewer steps,
+ * and the scene holds still until they are done.
  */
 const PREWARM_DT = 0.05;
 const PREWARM_STEPS = 48;
@@ -420,10 +432,15 @@ void main() {
 
 const MOTE_DEPOSIT_GLSL = `
 uniform sampler2D uMotes;
+uniform sampler2D uWas;    // the motes before the last step
+uniform float uAlpha;      // how far past it they are drawn, 0..1 of a step
 uniform float uTime;
 bool particle(int id, out vec2 uv, out vec4 value) {
-  vec4 m = texelFetch(uMotes, particleTexel(id, textureSize(uMotes, 0)), 0);
-  uv = m.xy;
+  ivec2 texel = particleTexel(id, textureSize(uMotes, 0));
+  vec4 m = texelFetch(uMotes, texel, 0);
+  vec2 was = texelFetch(uWas, texel, 0).xy;
+  // Between the last two steps; one that wrapped round the frame in that step is drawn where it is.
+  uv = any(greaterThan(abs(m.xy - was), vec2(0.5))) ? m.xy : mix(was, m.xy, uAlpha);
   // A flake turning over catches the light now and then: a slow glint.
   float glint = 0.5 + 0.5 * sin(uTime * (0.35 + 0.5 * m.w) + m.z * 6.2831853);
   value = vec4((0.35 + 0.65 * m.w) * (0.25 + 0.75 * glint * glint), 0.0, 0.0, 0.0);
@@ -562,6 +579,11 @@ class Burner {
   falling: FallingAsh | undefined;
   fallen = 0;
   readonly #rand = mulberry32(0x1ce5e);
+  /** The shader's view as it stood before the last step, and as it stands (scratch), for write. */
+  readonly #was = new Float32Array(12);
+  readonly #now = new Float32Array(12);
+  /** Whether #was has been kept since this incense was set down (else it is drawn as it stands). */
+  #held = false;
 
   constructor(kind: IncenseKind) {
     this.kind = kind;
@@ -577,6 +599,7 @@ class Burner {
   replace(kind: IncenseKind): void {
     this.kind = kind;
     this.#restart();
+    this.#held = false;
   }
 
   /** "Now": take the burning one away and light a fresh one. */
@@ -687,13 +710,37 @@ class Burner {
     }
   }
 
+  /** Keep the shader's view as it stands: call it just before a frame's last step. */
+  hold(): void {
+    this.#view(this.#was);
+    this.#held = true;
+  }
+
   /**
-   * The shader's view, three rgba texels:
+   * The shader's view, three rgba texels, `alpha` of the way from where the last step found it to
+   * where it left it (FixedStep.alpha; the pieces in the dish as they lie now):
    *   0  ember from the anchor (x, y), glow 0..1, presence 0..1 (fading in and out)
    *   1  progress 0..1, ash length, ash curl (radians), ash pieces lying in the dish
    *   2  falling ash: seconds falling (-1: none), where it broke off from the anchor (x, y), length
    */
-  write(out: Float32Array): void {
+  write(out: Float32Array, alpha: number): void {
+    if (!this.#held) this.hold();
+    const was = this.#was;
+    const now = this.#now;
+    this.#view(now);
+    for (let k = 0; k < 7; k++) out[k] = lerp(was[k] ?? 0, now[k] ?? 0, alpha);
+    out[7] = now[7] ?? 0;
+    // A piece broken off in the last step falls from where it broke.
+    const age = now[8] ?? -1;
+    const from = was[8] ?? -1;
+    out[8] = age < 0 ? -1 : lerp(from >= 0 && from <= age ? from : 0, age, alpha);
+    out[9] = now[9] ?? 0;
+    out[10] = now[10] ?? 0;
+    out[11] = now[11] ?? 0;
+  }
+
+  /** The shader's view as it stands (see write). */
+  #view(out: Float32Array): void {
     const ember = this.ember();
     out[0] = ember.x;
     out[1] = ember.y;
@@ -804,13 +851,18 @@ class Doors {
 
 // ---- dust motes --------------------------------------------------------------------------------
 
+/**
+ * Dust motes: GPU particles the air carries, moved a step at a time and drawn between their last
+ * two steps, which the state's ping-pong keeps: its write side holds the step before (only the move
+ * runs into it).
+ */
 class Motes {
   readonly #state: PingPong;
   readonly field: RenderTarget;
   readonly #move: Pass;
   readonly #deposit: Scatter;
   readonly #moveUniforms = { uDt: 0, uTime: 0, uAspect: 1 };
-  readonly #depositUniforms = { uTime: 0 };
+  readonly #depositUniforms = { uTime: 0, uAlpha: 0 };
   readonly #depositRun = {
     count: MOTES_X * MOTES_Y,
     pointSize: MOTE_SIZE,
@@ -834,7 +886,9 @@ class Motes {
       start[i * 4 + 2] = rand();
       start[i * 4 + 3] = rand();
     }
+    // Both sides: the step before the first is where they start.
     this.#state.seed(start);
+    this.#state.write.seed(start);
     this.field = gpu.target({ ...gridSize(aspect, DYE_RES), format: "r16f" });
     this.#move = gpu
       .pass(MOTE_MOVE_GLSL, "incense motes move")
@@ -845,22 +899,26 @@ class Motes {
     this.#move.set({ uLow: MOTE_LOW });
   }
 
-  frame(dt: number, time: number, aspect: number): void {
+  /** One step of `dt` seconds through the air, at the plume's clock `time`. */
+  move(dt: number, time: number, aspect: number): void {
+    const uniforms = this.#moveUniforms;
+    uniforms.uDt = dt;
+    uniforms.uTime = time;
+    uniforms.uAspect = aspect;
+    this.#move.set(uniforms).run(this.#state);
+  }
+
+  /** Lay the motes into `field`, `alpha` of the way through their last step, glinting at `time`. */
+  draw(alpha: number, time: number, aspect: number): void {
     if (aspect !== this.#aspect) {
       this.#aspect = aspect;
       const size = gridSize(aspect, DYE_RES);
       this.field.resize(size.width, size.height);
     }
-    if (dt > 0) {
-      const uniforms = this.#moveUniforms;
-      uniforms.uDt = dt;
-      uniforms.uTime = time;
-      uniforms.uAspect = aspect;
-      this.#move.set(uniforms).run(this.#state);
-    }
     this.field.clear(0);
     this.#depositUniforms.uTime = time;
-    this.#deposit.run(this.field, this.#depositRun);
+    this.#depositUniforms.uAlpha = alpha;
+    this.#deposit.bind({ uWas: this.#state.write }).run(this.field, this.#depositRun);
   }
 }
 
@@ -1000,6 +1058,8 @@ class Arrival {
 class Plume {
   readonly fluid: FluidSim;
   readonly motes: Motes;
+  /** The dye and the velocity as drawn: between their last two steps. */
+  readonly blend: StepBlend;
   #clock = 0;
   #seeded = false;
   /** Prewarm steps done so far. */
@@ -1056,16 +1116,18 @@ class Plume {
       obstacle: OBSTACLE_GLSL,
     });
     this.motes = new Motes(gpu, this.fluid.aspect, this.fluid.velocity);
+    this.blend = new StepBlend(gpu, [this.fluid.dye, this.fluid.velocity], "incense smoke");
   }
 
-  /** The opening plume is still being warmed up: hold the burner and the live stepping. */
-  get warming(): boolean {
-    return this.#seeded && this.#warmed < PREWARM_STEPS;
-  }
-
-  frame(frame: SimFrame, burner: Burner, doors: Doors, settings: Settings, arrival: Arrival): void {
+  /**
+   * Fit the fluid to the frame; on the first frame lay in the opening plume, then warm it up, its
+   * PREWARM_STEPS spread over frames by the budget. True once warm: until then the burner, the clock
+   * and the live steps hold still, and the smoke is shown as it stands.
+   */
+  warm(frame: SimFrame, burner: Burner, doors: Doors, settings: Settings, arrival: Arrival): boolean {
     const fluid = this.fluid;
     fluid.resize(frame.width, frame.height);
+    if (this.#warmed >= PREWARM_STEPS) return true;
     const aspect = fluid.aspect;
     if (!this.#seeded) {
       this.#seeded = true;
@@ -1083,21 +1145,35 @@ class Plume {
       // A count of steps, the same on every machine: the budget only spreads them over frames.
       this.#warmed = runBudgeted(
         () => this.#step(PREWARM_DT, burner, doors, settings, aspect),
-        PREWARM_MS,
+        Math.max(PREWARM_MS, frame.budget),
         PREWARM_STEPS,
         this.#warmed,
       );
-      if (this.#warmed < PREWARM_STEPS) return;
     }
+    this.blend.hold();
+    return this.#warmed >= PREWARM_STEPS;
+  }
 
-    const dt = frame.dt * frame.motion;
-    this.#touch(frame, dt, aspect, settings.hand);
+  /** This frame's own touches on the air, landing with the next step: a hand, the passage's air. */
+  air(frame: SimFrame, burner: Burner, settings: Settings, arrival: Arrival): void {
+    const aspect = this.fluid.aspect;
+    this.#touch(frame, frame.dt * frame.motion, aspect, settings.hand);
     this.#leave = frame.passage.exit;
     if (this.#leave > 0) this.#blow(aspect);
     else if (arrival.active) this.#rise(arrival.progress, burner, settings, aspect);
-    const steps = dt > 0 ? Math.min(MAX_STEPS, Math.ceil(dt / MAX_STEP - 1e-6)) : 0;
-    for (let i = 0; i < steps; i++) this.#step(dt / steps, burner, doors, settings, aspect);
-    if (settings.dust) this.motes.frame(dt, this.#clock, aspect);
+  }
+
+  /** One live step of STEP: the smoke, then the dust it carries. */
+  step(burner: Burner, doors: Doors, settings: Settings): void {
+    const aspect = this.fluid.aspect;
+    this.#step(STEP, burner, doors, settings, aspect);
+    if (settings.dust) this.motes.move(STEP, this.#clock, aspect);
+  }
+
+  /** The smoke (and the dust) as drawn, `alpha` of the way through the last step. */
+  show(alpha: number, dust: boolean): void {
+    this.blend.show(alpha);
+    if (dust) this.motes.draw(alpha, this.#clock - (1 - alpha) * STEP, this.fluid.aspect);
   }
 
   /**
@@ -1351,6 +1427,7 @@ export function incenseSim(params: readonly ParamDef[]): SimFactory {
       dust: false,
     };
     const textures: (WebGLTexture | undefined)[] = [undefined, undefined, undefined, undefined];
+    const clock = new FixedStep(STEP, MAX_STEPS);
     let burner: Burner | undefined;
 
     const gpu = GpuCompute.create(gl);
@@ -1370,25 +1447,39 @@ export function incenseSim(params: readonly ParamDef[]): SimFactory {
       frame(frame) {
         readSettings(settings, frame, knobs);
         arrival.advance(frame);
-        // While the opening plume warms up over several frames, the burner holds still with it.
-        const dt = plume?.warming ? 0 : frame.dt * frame.motion;
         if (!burner) burner = new Burner(settings.kind);
         else if (burner.kind !== settings.kind) burner.replace(settings.kind);
-
         if (frame.fired[renewSlot] === true) burner.renew();
-        burner.step(dt, settings.renew);
         // Entering, the ember takes light first: the stick stands in the dish, unlit.
-        if (arrival.active) burner.glow = Math.min(burner.glow, kindle(arrival.progress));
-
+        const light = arrival.active ? kindle(arrival.progress) : 1;
+        burner.glow = Math.min(burner.glow, light);
         if (frame.fired[doorSlot] === true) doors.open();
-        plume?.frame(frame, burner, doors, settings, arrival);
 
-        burner.write(stateData);
+        // While the opening plume warms up over several frames, the burner and the clock hold still
+        // with it.
+        if (plume?.warm(frame, burner, doors, settings, arrival) !== false) {
+          plume?.air(frame, burner, settings, arrival);
+          const steps = clock.advance(Math.max(0, frame.dt) * frame.motion);
+          for (let i = 0; i < steps; i++) {
+            if (i === steps - 1) {
+              burner.hold();
+              plume?.blend.hold();
+            }
+            burner.step(STEP, settings.renew);
+            burner.glow = Math.min(burner.glow, light);
+            plume?.step(burner, doors, settings);
+          }
+        }
+
+        burner.write(stateData, clock.alpha);
         state.upload(stateData);
-        textures[0] = plume?.fluid.dye.texture;
-        textures[1] = plume?.fluid.velocity.texture;
         textures[2] = state.texture;
-        textures[3] = plume && settings.dust ? plume.motes.field.texture : undefined;
+        if (plume) {
+          plume.show(clock.alpha, settings.dust);
+          textures[0] = plume.blend.texture(plume.fluid.dye);
+          textures[1] = plume.blend.texture(plume.fluid.velocity);
+          textures[3] = settings.dust ? plume.motes.field.texture : undefined;
+        }
         return textures;
       },
       dispose() {
