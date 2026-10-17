@@ -171,9 +171,10 @@ Every scene makes the passage its own, in the world rather than by fading:
     1 (`1 - (1 - pin)²`, or `passageSettle(pin, s)` from `common`: a settle overshooting by as much
     as s sets, about 5% at 1.2; never a start from rest or a hold before the motion begins); light
     and fade accents may still be staged.
-  - `bun concepts/landing/verify.ts passageSpeeds` measures it on the real renderer at motion 0:
-    the picture change over the last steps of the exit and the first steps of the entrance as a
-    share of the passage's fastest step (`LANDING_PASSAGE_SCENES=a,b` limits it to some scenes).
+  - `bun concepts/landing/verify.ts passageSpeeds1 passageSpeeds2 passageSpeeds3 passageSpeeds4`
+    (a quarter of the scenes each) measures it on the real renderer at motion 0: the picture
+    change over the last steps of the exit and the first steps of the entrance as a share of the
+    passage's fastest step (`LANDING_SCENES=a,b` limits it to some scenes).
     It fails a scene below 0.35 on either side unless that side is exempt in
     `src/passage-speed.verify.ts` with its reason (an object leaving the frame at full speed, a
     passage that is a process or a light change, or one that only plays with motion).
@@ -1832,7 +1833,11 @@ a seed plays the same at 60 and 144 Hz. Draw the sim's chance on those steps too
 frame (a draw a frame, or a chance of `dt`, plays differently at each frame rate): what is drawn
 a frame or an event at a time takes a stream of its own (bamboo's leaves, apart from its gusts),
 and a layer stepped on a clock of its own steps in time with what it rides on (dew's drops, each
-step between the web's substeps at its own moment).
+step between the web's substeps at its own moment). `src/sims/frame-rate.test.ts` holds every sim
+that runs headless to it: run from the same first frame at 60 and at 144 Hz, each texture it hands
+the shader agrees within 1 % of its range after 1 s and 2 s. Its table lists the sims on the GPU
+(browser only) and the textures exempt, each with its reason (what is stepped or uploaded once a
+frame); fix the sim rather than add an exemption.
 A sim with more to hand over than four slots packs it into one texture read with `texelFetch`
 (which no filter touches), a linear filter left for the one field read with `texture`: bonsai's
 field rows under its tables, the countryside's records atlas (`country/atlas.ts`: the terrain's
@@ -1861,7 +1866,9 @@ Helpers in `src/sims/` (each file's header has the full API and a usage example)
   since the last upload, one rectangle or one per tile (bands of rows, small squares), marked as
   the sim writes and sent by `flush`: the harmonograph's ink, the Chladni plate's sand (in bands),
   the flock's density, the bees' specks (in 8 × 8 squares), the countryside's cover.
-- `TrailField` (`trail.ts`): where the pointer has been, fading; for stirring and melting.
+- `TrailField` (`trail.ts`): where the pointer has been, fading; for stirring and melting. A
+  `stroke` lays ink per unit of path (a pass leaves its `strength` along its middle, at any speed
+  and frame rate), a `hold` a rate's worth of it at one point (a pointer held still).
 - `VerletSystem` and `PointTexture` (`verlet.ts`): 3D XPBD chains, nets and orb webs (compliance
   in physical units, so a thread is as stiff at any substep; a slow swing keeps its energy at a
   short substep, while faster modes and compliant ringing lose about ω²h/2 a second of the solver's
@@ -1869,7 +1876,9 @@ Helpers in `src/sims/` (each file's header has the full API and a usage example)
   caller's FixedStep and packed into a texture for `texelFetch` (kelp, dew, the mobile).
 - `springStep` (`spring.ts`): the damped spring every sim eases a swinging value with (plants,
   meadow, bamboo, the fireflies' lantern, ferro's pool and spikes, the prism let go, the sand
-  table's ball), one step on a fixed h.
+  table's ball), the exact step on a fixed h: stable at any ω h, ringing and dying at the tuned
+  rates; springs each with an ω of their own (the plants' organs) keep `springCoefficients` and
+  step by `springStepBy`.
 - `HeightField` (`heightfield.ts`): stamps, grooves and rakes with side ridges, angle-of-repose
   slumping, smoothing, upload to r16f (garden, sand table).
 - `marchHeight` and `sampleRepeat` (`heightray.ts`): a ray against a height field on the CPU with a
@@ -2050,10 +2059,10 @@ Helpers in `src/sims/` (each file's header has the full API and a usage example)
   in steps and crumble to embers, a coal bed fed by them, and someone who tends it or lets it go
   out; stepped on the motion clock, it says how big the flames are, how the coals glow, how much it
   smokes and when sparks burst (campfire).
-- `Mobile`, `designMobile`, `MobileTexture`, `mobileGlsl` (`mobile.ts`): a balanced hanging mobile on
-  `VerletSystem` with plates and balls, arms hung from a parent's end or loop, drag, contacts and
-  motors that hold an arm's rate (`drive`), and GLSL tracing its plates, balls, wires and links and
-  the shadows they throw from a round lamp (mobile's solar system).
+- `Mobile`, `MobileTexture`, `mobileGlsl` (`mobile.ts`): a balanced hanging mobile on
+  `VerletSystem` with balls, arms hung from a parent's end or loop, drag, contacts and motors that
+  hold an arm's rate (`drive`), its constraint passes growing with its arms, and GLSL tracing its
+  balls, wires and links and the shadows they throw from a round lamp (mobile's solar system).
 - `Boids` and `boidRules` (`boids.ts`): topological boids in 3D for flocks and schools of a few
   thousand: separation, cohesion and alignment with each boid's K nearest, found through a spatial
   hash with a bounded search (refreshed by turns), plus cruise, level flight, a home to wheel over,
@@ -2113,22 +2122,29 @@ it inherits nothing from the others, and has a deadline of its own: three times 
 took (`scripts/verify-timings.ts`), never under 180 s, or `LANDING_CHECK_SECONDS` for every check
 when that is set (it is started in the page and reports back when done, so no browser protocol
 call waits on it). A check whose renderer crashes or is killed (earlyoom picks renderers first)
-fails at once with `renderer crashed`, not at the deadline. The run prints
-`PASS  <name> (<seconds> s)` per check, then the results as JSON keyed by check name, and stops at
-the first failure (a throw, the deadline or a crash) with `FAIL  <name>` and a non-zero exit.
+fails at once with `renderer crashed`, not at the deadline. The run prints the browser's version,
+`PASS  <name> (<seconds> s)` or `FAIL  <name>` per check as it ends, then the results as JSON keyed
+by check name. A failure (a throw, the deadline or a crash) does not stop the run: every check runs,
+the failures are listed again at the end and the exit is non-zero. A lost page, and a check past its
+deadline (its page may still be running it), fail that check and relaunch the browser for the
+checks after it; no check is run again. Under GitHub Actions the run adds a table of each check's
+seconds, deadline and outcome, with the browser's version, to the job summary.
 
 - `--shard i/n` runs the `i`th of `n` disjoint shares of the checks, balanced by their recorded
   seconds: longest first, each to the share with the least so far, so the shares differ by at most
   the longest check; a check without a record weighs the median one.
-- `LANDING_SCENES=a,b` keeps only the checks that cover those scenes, and runs the passage speed
-  check on them alone (unset or `*`: all). A check imported from `src/scenes/<id>/` covers `<id>`,
-  the scene directories its scene files import, and every scene those files name
-  (`sceneDefs.<id>` or `"<id>"`); one that walks every scene (`sceneIds`,
-  `Object.values(sceneDefs)`), or any check from outside a scene's directory, covers them all
-  (`scripts/verify-plan.ts`).
+- `LANDING_SCENES=a,b` keeps only the checks that cover those scenes (unset or `*`: all). A check
+  imported from `src/scenes/<id>/` covers `<id>`, the scene directories its scene files import, and
+  every scene those files name (`sceneDefs.<id>` or `"<id>"`); one that walks every scene
+  (`sceneIds`, `Object.values(sceneDefs)`), or any check from outside a scene's directory, covers
+  them all (`scripts/verify-plan.ts`). The checks that walk the scenes one by one (`walk` in
+  `src/verify/kit.ts`: `passageSpeeds1`..`4`, `motionClocksAll1`..`4`, `featureToggles`,
+  `worldFeaturesAll`, `sceneFeatures`, `nightPlanets`) walk only those in scope, and the shards
+  weigh each by its record times the share of its scenes in scope.
 - `--record` rewrites `scripts/verify-timings.ts` with the seconds of the checks that passed (and
   drops checks no longer registered); run it, without a scene scope, after adding or speeding up a
-  check and commit the file.
+  check and commit the file. `scripts/verify-plan.test.ts` fails while a registered check has no
+  record, or a record no check.
 
 Chromium ends with the run, however it ends, and takes its profile with it. The isolated browser
 exercises actual WebGL output: Forest's sky phase across motion changes, inherited GPU blending
@@ -2219,13 +2235,19 @@ The shared components have checks of their own:
   for byte the empty list's.
 
 CI runs these checks (gate group `landing-webgl`, four jobs `landing-webgl (1/4)` to `(4/4)`, one
-`--shard` each) and the lab's TypeScript and unit tests (`landing-concept`) for every pull request
-that changes `concepts/landing/` or a source the lab imports, other than its documentation and
-thumbnails, and on every full run (each push to `main`, each manual dispatch). A pull request that
-changes only scene directories (and documentation) runs only the checks covering those scenes and
-the scenes whose files import theirs (the planner's `landingScenes`); full runs cover every scene.
+`--shard` each, on a shallow checkout with Bun alone and a pinned Chrome for Testing,
+`.github/actions/landing-chromium`) and the lab's TypeScript, unit tests and GLSL check
+(`landing-concept`: `scripts/glsl-check.ts` through glslang, with node for the countryside's V8
+build) for every pull request that changes `concepts/landing/` or a source the lab imports, other
+than its documentation and thumbnails, and on every full run (each push to `main`, each manual
+dispatch). A pull request that changes only scene directories (and documentation) runs only the
+checks covering those scenes and the scenes whose files import theirs (the planner's
+`landingScenes`), the checks that walk the scenes on those alone; full runs cover every scene.
 `bun scripts/gate.ts --only landing-webgl [--shard i/4]` or `--only landing-concept` runs the same
-slice locally.
+slice locally. A pull request that changes the lab also gets an advisory, never required, A/B
+render of a canary set of scenes and their knob turns against its merge base
+(`.github/workflows/landing-ab.yml`, `scripts/ab.ts --turns`), its report and the pictures that
+differ uploaded for review.
 
 To add a check, write `<topic>.verify.ts` in the scene's folder exporting a function that takes a
 `WebGL2RenderingContext`, throws on a regression and returns what it measured as plain JSON data,
@@ -2234,9 +2256,13 @@ then register it in `concepts/landing/verify-browser.ts` with one import and one
 array bound, the canvas at its default size): size the canvas for what it reads back, and restore
 in a `finally` any global or shared definition it patches (`window.requestAnimationFrame`, a
 scene's `glsl` or `sim`). Name each scene the check draws as `sceneDefs.<id>` (or import from its
-directory), so a run scoped to that scene keeps the check. Keep each check well under the deadline
-in software WebGL on a busy machine (split a slower one into several entries) and record its
-seconds with `--record`.
+directory), so a run scoped to that scene keeps the check; a check that walks scenes one by one
+wraps itself in `walk(scenes, check)` so a scoped run walks those in scope alone.
+`src/verify/kit.ts` holds what checks share: `check`, `link` (a program from a fragment source),
+`readBytes`, `drawFloats` (a float target's read-back), `stage` (a canvas for a renderer of its
+own), `holdFrames` (rAF held for frames run by hand), `pause`, `until`, `labSettings` and `walk`.
+Keep each check well under the deadline in software WebGL on a busy machine (split a slower one
+into several entries) and record its seconds with `--record`.
 
 ### Pixel identity (`scripts/ab.ts`)
 
@@ -2247,7 +2273,8 @@ branch), each tree built as `serve.ts` builds a commit, both in one software-Web
 the clocks frozen as a reduced-motion visitor sees the page, until the picture has held still for
 1.5 s with no sheet still painting; then the two pictures are compared cell for cell. A setting is a
 page query (`"scene=country&time=0.3"`) or a bare scene id; by default every scene at its defaults,
-dithered and `view=source`, and `--presets` adds the committed presets. A scene whose generated GLSL
+dithered and `view=source`, `--presets` adds the committed presets, and `--turns` adds, dithered,
+each gated knob turn (`src/knob-turns.ts`) of every knob-keyed scene among the settings. A scene whose generated GLSL
 (default and all-features programs) and every file its page loads (index.html and its imports,
 short of other scenes' directories) are byte for byte the same in both trees is skipped (`--all`
 draws it anyway), so a change confined to one scene draws that scene only. It prints `SAME`,

@@ -1,10 +1,9 @@
 // Browser check of the solar-system mobile (verify-browser.ts, `mobile`):
 // - parts: the shared mobile's GLSL (sims/mobile.ts) agrees with the CPU twin that drives the
 //   physics, or the bodies drawn and the shadows on the wall would part from where the simulated
-//   ones are. A still fixture of an arm with plates (spun, twisted, off-centre outlines: a drop and a
-//   crescent) and an arm of balls hung from its loop: the sharp shadow `mobileShadow` throws on a
-//   wall and what `mobileTrace` sees from an eye, each against the same picture worked out on the CPU
-//   from `Mobile.plateFrame`, `mobilePlateDistance` and the balls' centres and radii.
+//   ones are. A still fixture of an arm of two balls and an arm of balls hung from its loop: the
+//   sharp shadow `mobileShadow` throws on a wall and what `mobileTrace` sees from an eye, each
+//   against the same picture worked out on the CPU from the balls' centres and radii.
 // - kepler: the scene's own sim, motor at full speed, turns each planet's arm once in au^1.5 years of
 //   `mobileYear` seconds (Kepler's third law) and the Moon's once a sidereal month: Mars against the
 //   Earth 1.881.
@@ -21,9 +20,7 @@ import {
   MOBILE_TEXELS,
   MobileTexture,
   mobileGlsl,
-  mobilePlateDistance,
   type MobileDesign,
-  type MobilePlateDesign,
 } from "../../sims/mobile.ts";
 import { DataTexture } from "../../sims/texture.ts";
 import type { Vec3 } from "../../sims/verlet.ts";
@@ -49,10 +46,6 @@ const LAMP: Vec3 = [-1.2, 2.4, 2];
 const EYE: Vec3 = [0.1, 1.8, 3];
 const VIEW = [0.32, 0.22] as const;
 
-const plates: [MobilePlateDesign, MobilePlateDesign] = [
-  { shape: 2, size: 0.16, spin: 0.5, twist: 0.4, tone: 0, markable: false },
-  { shape: 3, size: 0.13, spin: -0.3, twist: -0.5, tone: 0, markable: false },
-];
 const design: MobileDesign = {
   anchor: [0, 2.3, 0],
   arms: [
@@ -64,7 +57,10 @@ const design: MobileDesign = {
       reach: [0.35, 0.25],
       loop: 0.03,
       heading: 0.6,
-      plates,
+      balls: [
+        { radius: 0.12, mass: 0.1, look: 1 },
+        { radius: 0.1, mass: 0.12, look: 2 },
+      ],
     },
     {
       parent: 0,
@@ -74,7 +70,6 @@ const design: MobileDesign = {
       reach: [0.3, 0.42],
       loop: 0.03,
       heading: 2.2,
-      plates: [undefined, undefined],
       balls: [
         { radius: 0.08, mass: 0.05, look: 3 },
         { radius: 0.05, mass: 0.036, look: 4 },
@@ -104,30 +99,8 @@ function compile(gl: WebGL2RenderingContext, fragment: string): WebGLProgram {
   return program;
 }
 
-/** Whether the segment from `from` along `dir` (t in (0, limit)) meets any plate or ball, by the CPU twin. */
+/** Whether the segment from `from` along `dir` (t in (0, limit)) meets any ball, by the CPU twin. */
 function hitsBody(mobile: Mobile, from: Vec3, dir: Vec3, limit: number): boolean {
-  const f = new Float64Array(12);
-  for (let i = 0; i < mobile.plates; i++) {
-    mobile.plateFrame(i, f);
-    const plate = plates[i];
-    if (plate === undefined) continue;
-    const dn = dir[0] * (f[9] ?? 0) + dir[1] * (f[10] ?? 0) + dir[2] * (f[11] ?? 0);
-    if (Math.abs(dn) < 1e-9) continue;
-    const t =
-      (((f[0] ?? 0) - from[0]) * (f[9] ?? 0) +
-        ((f[1] ?? 0) - from[1]) * (f[10] ?? 0) +
-        ((f[2] ?? 0) - from[2]) * (f[11] ?? 0)) /
-      dn;
-    if (!(t > 0 && t < limit)) continue;
-    const x = [0, 1, 2].map((c) => (from[c] ?? 0) + (dir[c] ?? 0) * t - (f[c] ?? 0));
-    const qx =
-      ((x[0] ?? 0) * (f[3] ?? 0) + (x[1] ?? 0) * (f[4] ?? 0) + (x[2] ?? 0) * (f[5] ?? 0)) /
-      plate.size;
-    const qy =
-      ((x[0] ?? 0) * (f[6] ?? 0) + (x[1] ?? 0) * (f[7] ?? 0) + (x[2] ?? 0) * (f[8] ?? 0)) /
-      plate.size;
-    if (mobilePlateDistance(plate.shape, qx, qy) < 0) return true;
-  }
   const pos = mobile.system.positions;
   const dd = dir[0] ** 2 + dir[1] ** 2 + dir[2] ** 2;
   for (let i = 0; i < mobile.balls; i++) {
@@ -161,8 +134,7 @@ Shade regressionMobile(vec2 uv, vec2 cell, float t) {
     k = mobileShadow(P, vec3(${LAMP.map((v) => v.toFixed(3)).join(", ")}), 1.0e-4, -1, -1) > 0.5 ? 1.0 : 0.0;
   } else {
     vec3 rd = normalize(vec3(mix(-${VIEW[0].toFixed(3)}, ${VIEW[0].toFixed(3)}, uv.x), mix(-${VIEW[1].toFixed(3)}, ${VIEW[1].toFixed(3)}, uv.y), -1.0));
-    int kind = mobileTrace(vec3(${EYE.map((v) => v.toFixed(3)).join(", ")}), rd, 1.0e-5, 100.0, 0.0, 0.0).kind;
-    k = kind == MOBILE_PLATE || kind == MOBILE_BALL ? 1.0 : 0.0;
+    k = mobileTrace(vec3(${EYE.map((v) => v.toFixed(3)).join(", ")}), rd, 1.0e-5, 100.0, 0.0, 0.0).kind == MOBILE_BALL ? 1.0 : 0.0;
   }
   return shadeOf(vec3(k), k, 0.0);
 }`,

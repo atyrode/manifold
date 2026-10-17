@@ -12,6 +12,7 @@ import { PLANT_ATLAS_SIZE } from "./scenes/pond/atlas.ts";
 import { POINTER_SECONDS, SETTLE_SECONDS } from "./governor.ts";
 import { DitherRenderer, type RenderSettings } from "./renderer.ts";
 import { defaultsFor, paramDefaults, readSetup, renderSettings } from "./state.ts";
+import { check, holdFrames, stage, until as poll } from "./verify/kit.ts";
 
 const WIDTH = 64;
 const HEIGHT = 40;
@@ -21,10 +22,6 @@ const BUILD_SECONDS = 120;
 const EVENT_SECONDS = 20;
 /** rAF milliseconds between the frames of a 120 Hz display. */
 const HZ_120 = 1000 / 120;
-
-function check(ok: boolean, message: string): void {
-  if (!ok) throw new Error(message);
-}
 
 /** The lake as Aurora over a fjord drew it (an old `scene=aurora` link): a moving night. */
 function settings(motion = 1): RenderSettings {
@@ -74,12 +71,8 @@ interface Page {
 }
 
 function page(paced: boolean, initial: RenderSettings): Page {
-  const canvas = document.createElement("canvas");
-  canvas.style.cssText = `position:fixed;left:0;top:0;width:${WIDTH}px;height:${HEIGHT}px`;
-  document.body.append(canvas);
   // The renderer asks for this same context.
-  const gl = canvas.getContext("webgl2", { antialias: false, alpha: false });
-  if (!gl) throw new Error("Display context unavailable");
+  const { canvas, gl } = stage(WIDTH, HEIGHT);
   let issued = 0;
   const drawArrays = gl.drawArrays.bind(gl);
   gl.drawArrays = (mode, first, count) => {
@@ -118,19 +111,11 @@ function page(paced: boolean, initial: RenderSettings): Page {
     texImage2D(...args);
   }) as typeof gl.texImage2D;
   const renderer = new DitherRenderer(canvas, initial, false);
-  const native = window.requestAnimationFrame;
-  let requested: FrameRequestCallback | undefined;
-  window.requestAnimationFrame = (callback) => {
-    requested = callback;
-    return 1;
-  };
+  const frames = holdFrames();
   renderer.start({ paced });
   const frame = (now: number): number => {
-    const tick = requested;
-    if (!tick) throw new Error("No frame scheduled");
-    requested = undefined;
     const before = issued;
-    tick(now);
+    frames.run(now);
     return issued - before;
   };
   const until = async (
@@ -139,26 +124,23 @@ function page(paced: boolean, initial: RenderSettings): Page {
     done: () => boolean,
     what: string,
   ): Promise<number> => {
-    const started = performance.now();
-    let at = now;
-    frame(at);
-    while (!done()) {
-      check(
-        performance.now() - started < BUILD_SECONDS * 1000,
-        `${what} within ${BUILD_SECONDS} s`,
-      );
-      const pause = Promise.withResolvers<void>();
-      setTimeout(pause.resolve, 20);
-      await pause.promise;
-      frame((at += step));
-    }
+    // The first frame at `now`, then one every `step` ms.
+    let at = now - step;
+    await poll(
+      () => {
+        frame((at += step));
+        return done();
+      },
+      BUILD_SECONDS,
+      what,
+    );
     return at;
   };
   return {
     renderer,
     gl,
     frame,
-    scheduled: () => requested !== undefined,
+    scheduled: frames.pending,
     drawn: () => {
       const bytes = new Uint8Array(WIDTH * HEIGHT * 4);
       gl.readPixels(0, 0, WIDTH, HEIGHT, gl.RGBA, gl.UNSIGNED_BYTE, bytes);
@@ -182,7 +164,7 @@ function page(paced: boolean, initial: RenderSettings): Page {
       return promise;
     },
     dispose() {
-      window.requestAnimationFrame = native;
+      frames.restore();
       gl.getExtension("WEBGL_lose_context")?.loseContext();
       canvas.remove();
     },

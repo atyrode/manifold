@@ -1,5 +1,7 @@
 import { expect, test } from "bun:test";
+import { HeadlessSim } from "../../sims/headless.ts";
 import type { SimFrame } from "../types.ts";
+import { dunesScene } from "./index.ts";
 import { DUNES_CAMERA, DUNES_MARK, DUNES_SAND, DUNES_SLAB, dunesPointerCell } from "./sim.ts";
 
 const ASPECT = 16 / 9;
@@ -84,4 +86,26 @@ test("a click on the sandstone M lands at the M, not on the sand far behind it",
   // With the M off the same ray runs on to the sand behind it.
   expect(dunesPointerCell(frameAt(x, y), 0, 0, 0, () => 0, out)).toBe(true);
   expect(Math.hypot(out.x - leg.x, out.y - leg.z)).toBeGreaterThan(height);
+});
+
+test("the sand goes up as often as the wind moves it: a few times a second in a breeze, 20 in a gale", () => {
+  const uploadsPerSecond = (wind: number): number => {
+    const sim = new HeadlessSim(dunesScene);
+    const frame = { knobs: { wind }, pointer: { inside: false } };
+    // The warm-up ends in the first frame on the headless budget; then 5 s at 60 Hz.
+    for (let f = 0; f < 60; f++) sim.step(frame);
+    let last = sim.upload(0).data;
+    let uploads = 0;
+    for (let f = 0; f < 300; f++) {
+      const data = sim.step(frame).upload(0).data;
+      if (data !== last) uploads++;
+      last = data;
+    }
+    sim.dispose();
+    return uploads / 5;
+  };
+  const breeze = uploadsPerSecond(0.2);
+  expect(breeze).toBeGreaterThan(1);
+  expect(breeze).toBeLessThan(6);
+  expect(uploadsPerSecond(1)).toBeGreaterThan(15);
 });

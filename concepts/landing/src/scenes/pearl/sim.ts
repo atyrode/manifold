@@ -119,6 +119,15 @@ const VISCOSITY = 2;
 /** Fade per second of the dye's channels: pigment, temperature (slow enough that a plume still
  * carries warmth to the lid), the M's trace. */
 const DYE_FADE: readonly number[] = [0.015, 0.06, 0.03, 0];
+/**
+ * The least share of a dye channel one fade takes off. The dye is rgba16f, 10 bits of fraction: a
+ * step's 1 − exp(−rate · h) under about 2⁻¹¹ rounds back to the value it came from wherever the fluid
+ * stands still (the pigment's 0.015 at 1/60 s is 2.5e-4: it never faded there), and one of a few ulps
+ * rounds off unevenly (the M's trace faded 9% too fast). So a channel's fade builds up as time owed
+ * until it takes 2⁻⁸ off, 2 to 4 ulps, and is applied at once: every 16 steps for the pigment, 8 for
+ * the trace, 4 for the temperature, each within 0.6% of its exponential.
+ */
+const FADE_BATCH = 2 ** -8;
 
 /**
  * Jeffery's shape factor. 1 is the infinitely thin flake, whose angle in steady shear is only
@@ -782,12 +791,15 @@ class PearlTank implements SceneSim {
     uStroke: this.#stroke,
     uTrace: new Float32Array(2),
   };
+  /** Fade seconds each dye channel owes (FADE_BATCH), and the rates this step hands the fluid. */
+  readonly #fadeOwed = new Float64Array(DYE_FADE.length);
+  readonly #dyeFade = new Float64Array(DYE_FADE.length);
   readonly #step: FluidStep = {
     dt: 0,
     time: 0,
     vorticity: 0,
     velocityDissipation: BOTTOM_FRICTION,
-    dyeDissipation: DYE_FADE,
+    dyeDissipation: this.#dyeFade,
     uniforms: this.#force,
   };
   readonly #impulse = { velocity: new Float32Array(2) };
@@ -944,6 +956,7 @@ class PearlTank implements SceneSim {
     this.#mark = undefined;
     this.#nextMark = undefined;
     this.#ease(1);
+    this.#fadeOwed.fill(0);
     this.#fluid.clear();
     this.#flakes.clear();
     this.#pourInto(pour);
@@ -1305,12 +1318,25 @@ class PearlTank implements SceneSim {
     step.dt = h;
     step.time = t1;
     step.vorticity = this.#vorticity;
+    this.#fade(h);
     fluid.step(step);
 
     this.#flakeUniforms.uDt = h;
     this.#comb.set(this.#flakeUniforms).run(this.#flakes);
     fluid.advect(this.#flakes);
     this.#clock = t1;
+  }
+
+  /** This step's dye fade: a channel's whole fade owed once it takes FADE_BATCH off, else none. */
+  #fade(h: number): void {
+    const owed = this.#fadeOwed;
+    for (let c = 0; c < DYE_FADE.length; c++) {
+      const rate = DYE_FADE[c] ?? 0;
+      const due = (owed[c] ?? 0) + h;
+      const now = rate * due >= FADE_BATCH;
+      this.#dyeFade[c] = now ? (rate * due) / h : 0;
+      owed[c] = now ? 0 : due;
+    }
   }
 
   /**

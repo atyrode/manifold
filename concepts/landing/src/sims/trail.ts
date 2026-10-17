@@ -1,5 +1,22 @@
 // A fading field of where the pointer has been: stir water, melt frost, wake the plankton.
 // Values 0..1 in an r8 grid (row 0 = uv.y 0), deposited along the pointer's path and decaying.
+//
+// Ink is laid per unit of path. `stroke` splats every half radius along the segment from the last
+// point, each its share of the segment's ink, so one pass leaves `strength` along its middle (before
+// the cap of 1) however fast it went and however many frames it took: the same mark at 60 and at
+// 144 Hz. A pointer held still lays nothing by a stroke; `hold` lays an amount at one point, which
+// the caller makes a rate times the frame's seconds, so that too is the same at any frame rate.
+//
+// Usage (a frame of a pointer that leaves a wake, and glows where it is held):
+//   if (!pointer.inside) trail.lift();
+//   else {
+//     trail.stroke(pointer.x, pointer.y, 0.035, 0.3, aspect);
+//     if (pointer.down) trail.hold(pointer.x, pointer.y, 0.05, 7 * dt, aspect);
+//   }
+//   trail.decay(dt, 1.4);
+
+/** A splat's falloff (1 − d²)² summed along a straight pass through its middle, in radii: ∫ over −1..1. */
+const PASS = 16 / 15;
 
 export class TrailField {
   readonly width: number;
@@ -7,7 +24,10 @@ export class TrailField {
   /** r8 texels, rows bottom to top. */
   readonly data: Uint8Array;
   readonly #value: Float32Array;
-  #last: { x: number; y: number } | undefined;
+  /** Where the current stroke last reached, if one is under way. */
+  #stroking = false;
+  #lastX = 0;
+  #lastY = 0;
   /** Bumped whenever `data` changes, so uploads can be skipped when nothing moved. */
   version = 0;
 
@@ -19,31 +39,40 @@ export class TrailField {
   }
 
   /**
-   * Deposit along the segment from the previous point to (x, y), in uv (0..1, y up). `radius` is in
-   * uv heights; `strength` 0..1 is added per deposit, capped at 1.
+   * Carry the stroke on to (x, y), in uv (0..1, y up), inking the path from where it last reached
+   * (a stroke's first point only marks where it starts). `radius` is in uv heights; `strength` is
+   * what one pass leaves along its middle, added to what is there and capped at 1.
    */
   stroke(x: number, y: number, radius: number, strength: number, aspect: number): void {
-    const from = this.#last ?? { x, y };
-    this.#last = { x, y };
-    const dx = (x - from.x) * aspect;
-    const dy = y - from.y;
-    const steps = Math.max(1, Math.ceil(Math.hypot(dx, dy) / Math.max(radius * 0.5, 1e-4)));
+    const fromX = this.#lastX;
+    const fromY = this.#lastY;
+    const started = this.#stroking;
+    this.#stroking = true;
+    this.#lastX = x;
+    this.#lastY = y;
+    if (!started || !(strength > 0)) return;
+    const length = Math.hypot((x - fromX) * aspect, y - fromY);
+    if (!(length > 0)) return;
+    const r = Math.max(radius, 2e-4);
+    const steps = Math.ceil(length / (0.5 * r));
+    const each = (strength * length) / (steps * r * PASS);
     for (let i = 1; i <= steps; i++) {
       const t = i / steps;
-      this.#splat(
-        from.x + (x - from.x) * t,
-        from.y + (y - from.y) * t,
-        radius,
-        strength / Math.sqrt(steps),
-        aspect,
-      );
+      this.#splat(fromX + (x - fromX) * t, fromY + (y - fromY) * t, radius, each, aspect);
     }
+    this.version++;
+  }
+
+  /** Lay `amount` (0..1, at the middle, capped at 1) in one splat at (x, y), apart from any stroke. */
+  hold(x: number, y: number, radius: number, amount: number, aspect: number): void {
+    if (!(amount > 0)) return;
+    this.#splat(x, y, radius, amount, aspect);
     this.version++;
   }
 
   /** End the current stroke: the next one starts fresh instead of joining it. */
   lift(): void {
-    this.#last = undefined;
+    this.#stroking = false;
   }
 
   /** Fade everything with the given half-life in seconds. */

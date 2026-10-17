@@ -31,10 +31,11 @@
 // in the air the breeze plus eddies plus the gust a front crossing the scene brings to the plant, plus
 // any air the scene moves itself (`wind`: a breeze front of its own); under water |u| u for the
 // current u (quadratic drag). An upright organ leans by the same law along both axes of the push.
-// Small organs (detail tier below full) follow θ_eq at once. The springs (sims/spring.ts) step on a
-// FixedStep of STEP (1/60 s), sampling the wind at each step's own moment, so a seed sways the same
-// at 60 and 144 Hz; `theta` and `lean` are what is drawn, blended between the last two steps by the
-// clock's alpha (a step behind the newest, smoothly).
+// Small organs (detail tier below full) follow θ_eq at once. The springs (sims/spring.ts, the exact
+// step, its coefficients worked out once per organ) step on a FixedStep of STEP (1/60 s), sampling the
+// wind at each step's own moment, so a seed sways the same at 60 and 144 Hz; `theta` and `lean` are
+// what is drawn, blended between the last two steps by the clock's alpha (a step behind the newest,
+// smoothly).
 //
 // The year: `season` 0..1 from the start of spring (summer 0.25..0.5, autumn 0.5..0.75, winter
 // 0.75..1); PLANT_SUMMER (0.35) is high summer, every organ out and green, the picture a scene shows
@@ -71,7 +72,7 @@ import { FixedStep } from "./clock.ts";
 import { splitHalf } from "./half.ts";
 import { clamp, fract, hash31, smoothstep } from "./math.ts";
 import { mulberry32 } from "./random.ts";
-import { springStep, type Spring } from "./spring.ts";
+import { SPRING_COEFFICIENTS, springCoefficients, springStepBy, type Spring } from "./spring.ts";
 import { DataTexture } from "./texture.ts";
 import { GustTrain, windNoise } from "./wind.ts";
 
@@ -293,7 +294,8 @@ export class RootedPlants {
   readonly offsetX: Float64Array;
   readonly offsetY: Float64Array;
   readonly #give: Float32Array;
-  readonly #omega0: Float32Array;
+  /** Each organ's spring step (springCoefficients, SPRING_COEFFICIENTS numbers an organ). */
+  readonly #sway: Float64Array;
   readonly #salt: Float32Array;
   // Drawn: the deflection (an upright organ's lean toward x) and an upright organ's lean toward y,
   // blended between the springs' last two steps.
@@ -362,7 +364,7 @@ export class RootedPlants {
     this.offsetX = new Float64Array(n);
     this.offsetY = new Float64Array(n);
     this.#give = new Float32Array(n);
-    this.#omega0 = new Float32Array(n);
+    this.#sway = new Float64Array(n * SPRING_COEFFICIENTS);
     this.#salt = new Float32Array(n);
     this.theta = new Float32Array(n);
     this.lean = new Float32Array(n);
@@ -488,7 +490,15 @@ export class RootedPlants {
     this.offsetX[i] = parent < 0 ? (spec.offset?.[0] ?? 0) : 0;
     this.offsetY[i] = parent < 0 ? (spec.offset?.[1] ?? 0) : 0;
     this.#give[i] = species.sway.give * (spec.give ?? 1) * (role === PlantRole.root ? 0.1 : 1);
-    this.#omega0[i] = Math.min(TAU * species.sway.hz * Math.sqrt(0.1 / length), 40);
+    // At most 40 rad/s (6.4 Hz): the exact step needs no bound, but a tiny organ's swing should
+    // still flutter rather than buzz between steps 1/60 s apart.
+    springCoefficients(
+      Math.min(TAU * species.sway.hz * Math.sqrt(0.1 / length), 40),
+      species.sway.damping,
+      STEP,
+      this.#sway,
+      i * SPRING_COEFFICIENTS,
+    );
     // Salts come from the indices, not from the build's randomness: a species' build owns its
     // sequence, so a scene porting an old layout keeps it draw for draw.
     this.#salt[i] = hash31(i, p, 0x4f52);
@@ -602,19 +612,18 @@ export class RootedPlants {
           this.#hold(i, target, push[1] ?? 0);
           continue;
         }
-        const w0 = this.#omega0[i] ?? 1;
-        const zeta = this.#species[this.plantOf[i] ?? 0]?.sway.damping ?? 1;
+        const springAt = i * SPRING_COEFFICIENTS;
         this.#thetaWas[i] = thetaAt[i] ?? 0;
         spring.x = thetaAt[i] ?? 0;
         spring.v = this.#omega[i] ?? 0;
-        springStep(spring, target, w0, zeta, STEP);
+        springStepBy(spring, target, this.#sway, springAt);
         thetaAt[i] = spring.x;
         this.#omega[i] = spring.v;
         if (this.habit[i] === PlantHabit.upright) {
           this.#leanWas[i] = leanAt[i] ?? 0;
           spring.x = leanAt[i] ?? 0;
           spring.v = this.#leanRate[i] ?? 0;
-          springStep(spring, push[1] ?? 0, w0, zeta, STEP);
+          springStepBy(spring, push[1] ?? 0, this.#sway, springAt);
           leanAt[i] = spring.x;
           this.#leanRate[i] = spring.v;
         }

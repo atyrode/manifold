@@ -512,11 +512,14 @@ A solar system hanging in a quiet room under a glowing Sun, the room's lamp (iss
   Jupiter and Saturn are clearly the biggest, Mercury and the Moon still a few cells across. The
   eye looks down on the planets' plane at about 26°, so every orbit is an ellipse round the Sun and
   planets pass in front of it and behind it.
-- The shared part gained balls (globes and weights: drag along the relative air, contacts with
-  other arms' balls, plates, wires and links), arms hung from a parent's loop, and a motor
-  (`Mobile.drive`): a couple across an arm's ends that makes up for the damping, brings the turn to
-  the set rate and winds up any turn lost (up to a full turn, then it slips like a clutch), so an
-  arm keeps its rate exactly over time while gusts and knocks still set it back for a while.
+- The shared part carries balls (globes and weights: drag along the relative air, contacts with
+  other arms' balls, wires and links; the Calder plates it was first built with are gone), arms
+  hung from a parent's loop, and a motor (`Mobile.drive`): a couple across an arm's ends that makes
+  up for the damping, brings the turn to the set rate and winds up any turn lost (up to a full
+  turn, then it slips like a clutch), so an arm keeps its rate exactly over time while gusts and
+  knocks still set it back for a while. Its solver runs 24 passes a substep and 3 more per arm, so
+  at the default clearance the most loaded link stretches under 1% in a breeze for every planets
+  choice (0.45%, 0.77% and 0.83% for 5, 9 and 11 arms, against 0.75%, 1.45% and 1.85% at a flat 24).
 - Motor (`motor`, on): each arm turns once in its planet's period, au^1.5 years (Kepler's third
   law), the Moon's once a sidereal month; the speed sets the Earth's year from 72 to 18 seconds of
   the motion clock (36 at the middle, about a minute at the default motion). The arms start spread
@@ -542,10 +545,10 @@ A solar system hanging in a quiet room under a glowing Sun, the room's lamp (iss
   packed and the motors only slow on the way out, so the simulation at rest is untouched.
 - Cost: about `pendula`'s per frame (software WebGL, 480×270, a loaded machine: medians 193–199 ms
   against 157–183 ms in the same runs; 70–160 ms for the inner set); the physics is about 50 µs a
-  substep for the eight planets (75 µs with the dwarfs) at 240 substeps a second.
-- Check: `mobile` (`mobile/mobile.verify.ts`): the shared GLSL against its CPU twin for plates and
-  balls, the motors' periods (Mars against the Earth 1.881), planets lit on the Sun's side, and the
-  picture at rest after an entrance bit for bit the one without.
+  substep for the eight planets (75 µs with the dwarfs) at 240 substeps a second (Bun).
+- Check: `mobile` (`mobile/mobile.verify.ts`): the shared GLSL against its CPU twin for balls, the
+  motors' periods (Mars against the Earth 1.881), planets lit on the Sun's side, and the picture at
+  rest after an entrance bit for bit the one without.
 
 ## Murmuration
 
@@ -792,7 +795,9 @@ How the page puts the scenes on screen (`src/renderer.ts`, `src/program-cache.ts
   drawing must stay over what the last step laid down, as the harmonograph's pen over its ink,
   ahead of it by the time left over), and draws its chance on those steps, what is drawn a frame or
   an event at a time on a stream of its own (bamboo's leaves, apart from its gusts): a seed plays
-  the same at any frame rate. Damped springs step by `springStep` (`src/sims/spring.ts`).
+  the same at any frame rate. Damped springs take the exact step (`springStep`,
+  `src/sims/spring.ts`); the pointer's trails lay their ink per distance travelled, and a pointer
+  held still at a rate per second (`TrailField`, `src/sims/trail.ts`).
 - **Sims build off the page.** A sim's heavy build (the countryside's land, frost's field, dew's
   web, the bonsai's tree and its maps, the dry garden's layout, the forest's warm-up, the slime
   mould's dish, the pond's sheets) runs on the build worker (`src/sims/build.ts`), byte for byte

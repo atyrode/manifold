@@ -12,12 +12,10 @@ const HALF_LIFE = 1.4;
 /** Radius of the stirred patch, in uv heights; a held button stirs a wider patch. */
 const RADIUS = 0.035;
 const HELD_RADIUS = 0.05;
-/** Light per uv height of pointer travel, so a quick sweep glows brighter than a slow drift. */
-const PER_TRAVEL = 9;
-/** Light added each frame while the button is held, moving or not: poking the water. */
-const HELD = 0.12;
-/** Cap on one frame's deposit, so a jump of the pointer cannot flood the trail. */
-const MAX_STROKE = 0.7;
+/** Light one pass of the pointer leaves along its middle, however fast it goes. */
+const PASS = 0.33;
+/** Light per second while the button is held, moving or not: poking the water. */
+const HELD = 7.2;
 
 /**
  * Seconds the scene's entrance and exit take (SceneDef.passage). Both are played by the shader alone
@@ -30,9 +28,6 @@ export const shoreSim: SimFactory = (gl) => {
   let field: TrailField | undefined;
   let texture: DataTexture | undefined;
   let uploaded = -1;
-  let hasLast = false;
-  let lastX = 0;
-  let lastY = 0;
 
   const sim: SceneSim = {
     frame(frame: SimFrame) {
@@ -41,7 +36,6 @@ export const shoreSim: SimFactory = (gl) => {
         // A new aspect starts a fresh trail: the old one would land in the wrong place.
         field = new TrailField(columns, ROWS);
         uploaded = -1;
-        hasLast = false;
       }
       if (texture === undefined)
         texture = new DataTexture(gl, { width: columns, height: ROWS, format: "r8" });
@@ -49,25 +43,10 @@ export const shoreSim: SimFactory = (gl) => {
 
       const pointer = frame.pointer;
       if (pointer.inside) {
-        const travel = hasLast
-          ? Math.hypot((pointer.x - lastX) * frame.aspect, pointer.y - lastY)
-          : 0;
-        const strength = Math.min(MAX_STROKE, travel * PER_TRAVEL + (pointer.down ? HELD : 0));
-        if (strength > 0.001)
-          field.stroke(
-            pointer.x,
-            pointer.y,
-            pointer.down ? HELD_RADIUS : RADIUS,
-            strength,
-            frame.aspect,
-          );
-        lastX = pointer.x;
-        lastY = pointer.y;
-        hasLast = true;
-      } else {
-        field.lift();
-        hasLast = false;
-      }
+        const radius = pointer.down ? HELD_RADIUS : RADIUS;
+        field.stroke(pointer.x, pointer.y, radius, PASS, frame.aspect);
+        if (pointer.down) field.hold(pointer.x, pointer.y, radius, HELD * frame.dt, frame.aspect);
+      } else field.lift();
       // The glow fades on the scene's own clock, so a paused or frozen scene keeps its swirls.
       field.decay(frame.dt * frame.motion, HALF_LIFE);
 

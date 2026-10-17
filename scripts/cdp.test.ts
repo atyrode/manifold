@@ -201,3 +201,36 @@ try {
   expect(stdout).toContain("waiting PageLostError: cdp Runtime.evaluate: renderer crashed");
   expect(stdout).toContain("later PageLostError: cdp Runtime.evaluate: renderer crashed");
 }, 40_000);
+
+test("a browser relaunched after its page was lost drives a page of its own", async () => {
+  const cdp = pathToFileURL(join(import.meta.dir, "cdp.ts")).href;
+  const child = Bun.spawn(
+    [
+      process.execPath,
+      "-e",
+      `import { Browser, PageLostError } from ${JSON.stringify(cdp)};
+const browser = new Browser();
+try {
+  await browser.launch();
+  await browser.goto("data:text/html,first");
+  const info = await browser.send("SystemInfo.getProcessInfo", {}, false);
+  for (const entry of info.result.processInfo) if (entry.type === "renderer") process.kill(entry.id, "SIGTERM");
+  console.log("lost " + (await browser.lost.then(() => "resolved", (error) => error instanceof PageLostError)));
+  await browser.relaunch();
+  await browser.goto("data:text/html,second");
+  console.log("page " + (await browser.evaluate("document.body.textContent")));
+  console.log("product " + browser.product);
+} finally { await browser.close(); }`,
+    ],
+    { stdout: "pipe", stderr: "pipe", timeout: 50_000, killSignal: "SIGKILL" },
+  );
+  const [exitCode, stdout, stderr] = await Promise.all([
+    child.exited,
+    new Response(child.stdout).text(),
+    new Response(child.stderr).text(),
+  ]);
+  expect(exitCode, stderr).toBe(0);
+  expect(stdout).toContain("lost true");
+  expect(stdout).toContain("page second");
+  expect(stdout).toMatch(/product \S+\/\d+\./);
+}, 60_000);

@@ -1,13 +1,14 @@
 // bun concepts/landing/scripts/ab.ts [--base <rev>] [--out <dir>] [--size WxH] [--seconds N]
-//                                   [--presets] [--all] [setting...]
+//                                   [--presets] [--turns] [--all] [setting...]
 //
 // Whether the lab still draws what it drew: each setting renders from this working tree (head) and
 // from the base revision (default HEAD: the uncommitted edits), each tree built as serve.ts builds
 // a commit, in one software-WebGL Chromium, with the clocks frozen (prefers-reduced-motion, as a
 // reduced-motion visitor sees the page) until the picture holds still; then the two pictures'
 // pixels are compared. A setting is a page query (`scene=country&time=0.3`) or a bare scene id; by
-// default every scene at its defaults, dithered and `view=source`, and --presets adds every
-// committed preset.
+// default every scene at its defaults, dithered and `view=source`, --presets adds every committed
+// preset, and --turns adds, dithered, each gated knob turn (src/knob-turns.ts) of every knob-keyed
+// scene (SceneDef.featuresFor) among the settings: the turns that change a program.
 //
 // A scene whose generated GLSL (its default and all-features programs) and every file its page
 // loads (index.html and its imports, short of other scenes' directories) are byte for byte the same
@@ -21,7 +22,9 @@ import { tmpdir } from "node:os";
 import { dirname, join, normalize } from "node:path";
 import { deflateSync } from "node:zlib";
 import { Browser } from "../../../scripts/cdp.ts";
+import { gatedTurns } from "../src/knob-turns.ts";
 import { presets } from "../src/presets.ts";
+import { sceneDefs, sceneIds } from "../src/scenes/index.ts";
 import { buildSite, extractTree } from "./site.ts";
 
 class AbError extends Error {}
@@ -41,7 +44,7 @@ const SCENE_DIR = /^src\/scenes\/([a-z][a-z0-9]*)\//;
 function usage(message: string): never {
   console.error(
     `ab: ${message}\nusage: bun concepts/landing/scripts/ab.ts [--base <rev>] [--out <dir>] ` +
-      "[--size WxH] [--seconds N] [--presets] [--all] [setting...]",
+      "[--size WxH] [--seconds N] [--presets] [--turns] [--all] [setting...]",
   );
   process.exit(2);
 }
@@ -52,6 +55,7 @@ let out = "/tmp/landing-ab";
 let size = "384x240";
 let seconds = 120;
 let withPresets = false;
+let withTurns = false;
 let everything = false;
 const asked: string[] = [];
 for (let index = 0; index < args.length; index += 1) {
@@ -67,6 +71,7 @@ for (let index = 0; index < args.length; index += 1) {
   else if (arg === "--size") size = value();
   else if (arg === "--seconds") seconds = Number(value());
   else if (arg === "--presets") withPresets = true;
+  else if (arg === "--turns") withTurns = true;
   else if (arg === "--all") everything = true;
   else if (arg.startsWith("--")) usage(`unknown option ${arg}`);
   else asked.push(arg.includes("=") ? arg : `scene=${arg}`);
@@ -499,6 +504,21 @@ try {
           `scene=${id}&view=source`,
         ]);
   if (withPresets) settings.push(...presets.map((preset) => preset.query));
+  if (withTurns) {
+    // The head's knob turns, as page queries (knob keys are URL keys).
+    const scenesAsked = new Set(
+      settings.map((setting) => new URLSearchParams(setting).get("scene")),
+    );
+    for (const id of sceneIds) {
+      const scene = sceneDefs[id];
+      if (!scenesAsked.has(id) || scene.featuresFor === undefined) continue;
+      for (const turn of gatedTurns(scene)) {
+        const query = new URLSearchParams({ scene: id });
+        for (const [key, value] of Object.entries(turn)) query.set(key, String(value));
+        settings.push(query.toString());
+      }
+    }
+  }
   const glsl = { base: await glslOf(trees.base), head: await glslOf(trees.head) };
 
   const renders: Render[] = [];
@@ -606,7 +626,7 @@ try {
   );
   if (count("differs") + count("failed") > 0) process.exitCode = 1;
 } catch (error: unknown) {
-  // A renderer killed under memory pressure ends the run: Browser cannot reopen its page.
+  // A renderer killed under memory pressure ends the run.
   console.error(`ab: ${error instanceof Error ? error.message : String(error)}`);
   process.exitCode = 1;
 } finally {

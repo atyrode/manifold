@@ -4,7 +4,7 @@ import { sceneDefs } from "./src/scenes/index.ts";
 import { incenseVentVerify } from "./src/scenes/incense/vent.verify.ts";
 import { rippleEdgesVerify } from "./src/scenes/ripple/edges.verify.ts";
 import { verifyHarmonographPrewarm } from "./src/scenes/harmonograph/prewarm.verify.ts";
-import { fragmentSourceFor, vertexSource } from "./src/shaders/index.ts";
+import { fragmentSourceFor } from "./src/shaders/index.ts";
 import { verifyFrostSky } from "./src/scenes/frost/sky.verify.ts";
 import { GpuCompute } from "./src/sims/gpu.ts";
 import { verifyOrbitRingDepth } from "./src/scenes/orbit/ring-depth.verify.ts";
@@ -61,47 +61,25 @@ import { verifyContextRestore, verifyFrameGovernor } from "./src/display.verify.
 import { verifyShallowWater } from "./src/sims/shallow.verify.ts";
 import { verifyWorldClock } from "./src/world-clock.verify.ts";
 import { verifyFluidPressure } from "./src/sims/fluid.verify.ts";
+import {
+  check,
+  holdFrames,
+  link,
+  pause,
+  readBytes,
+  stage,
+  type SceneWalk,
+} from "./src/verify/kit.ts";
 
-function check(ok: boolean, message: string): void {
-  if (!ok) throw new Error(message);
-}
 function context(): WebGL2RenderingContext {
   const gl = document.createElement("canvas").getContext("webgl2");
   if (!gl) throw new Error("WebGL2 unavailable");
   return gl;
 }
-function program(gl: WebGL2RenderingContext, fragment: string): WebGLProgram {
-  const shaders = [vertexSource, fragment].map((source, index) => {
-    const shader = gl.createShader(index === 0 ? gl.VERTEX_SHADER : gl.FRAGMENT_SHADER);
-    if (!shader) throw new Error("Shader allocation failed");
-    gl.shaderSource(shader, source);
-    gl.compileShader(shader);
-    check(
-      Boolean(gl.getShaderParameter(shader, gl.COMPILE_STATUS)),
-      gl.getShaderInfoLog(shader) ?? "compile failed",
-    );
-    return shader;
-  });
-  const linked = gl.createProgram();
-  for (const shader of shaders) gl.attachShader(linked, shader);
-  gl.linkProgram(linked);
-  check(
-    Boolean(gl.getProgramParameter(linked, gl.LINK_STATUS)),
-    gl.getProgramInfoLog(linked) ?? "link failed",
-  );
-  for (const shader of shaders) gl.deleteShader(shader);
-  return linked;
-}
-function pixels(gl: WebGL2RenderingContext, width: number, height: number): Uint8Array {
-  const bytes = new Uint8Array(width * height * 4);
-  gl.readPixels(0, 0, width, height, gl.RGBA, gl.UNSIGNED_BYTE, bytes);
-  check(gl.getError() === gl.NO_ERROR, "readPixels GL error");
-  return bytes;
-}
 
 // Observe Forest's actual scene entry sky state, so a legacy caller regression fails this check.
 function forestClock(gl: WebGL2RenderingContext): number[] {
-  const clock = program(
+  const clock = link(
     gl,
     fragmentSourceFor({
       ...sceneDefs.forest,
@@ -130,7 +108,7 @@ function forestClock(gl: WebGL2RenderingContext): number[] {
   for (const motion of [0.25, 1, 0]) {
     gl.uniform1f(gl.getUniformLocation(clock, "uMotion"), motion);
     gl.drawArrays(gl.TRIANGLES, 0, 3);
-    clockValues.push(pixels(gl, 1, 1)[0] ?? -1);
+    clockValues.push(readBytes(gl, 1, 1)[0] ?? -1);
   }
   check(
     clockValues[0] !== undefined &&
@@ -224,7 +202,7 @@ function frostWarmth(gl: WebGL2RenderingContext): Record<string, boolean> {
     const texture = frost?.frame(frame)[1];
     if (!texture) throw new Error("Missing frost mask");
     // Sample the complete mask through a fullscreen draw onto a fixed-size readable canvas.
-    const sampler = program(
+    const sampler = link(
       gl,
       `#version 300 es
       precision highp float; uniform sampler2D mask; out vec4 outColor;
@@ -239,7 +217,7 @@ function frostWarmth(gl: WebGL2RenderingContext): Record<string, boolean> {
     gl.uniform1i(gl.getUniformLocation(sampler, "mask"), 0);
     gl.viewport(0, 0, 320, 200);
     gl.drawArrays(gl.TRIANGLES, 0, 3);
-    const bytes = pixels(gl, 320, 200);
+    const bytes = readBytes(gl, 320, 200);
     gl.deleteProgram(sampler);
     return bytes;
   }
@@ -290,9 +268,7 @@ function frostWarmth(gl: WebGL2RenderingContext): Record<string, boolean> {
 // larger, smaller, aspect-changed and unchanged sizes, with the incoming scene at a coarser cell
 // size than the leaving one.
 async function rendererPassage(_gl: WebGL2RenderingContext): Promise<Record<string, unknown>> {
-  const canvas = document.createElement("canvas");
-  canvas.style.cssText = "width:320px;height:200px";
-  document.body.append(canvas);
+  const { canvas, gl: rendererGl } = stage(320, 200);
   const state = {
     ...defaultsFor("country"),
     pixel: 1,
@@ -302,8 +278,6 @@ async function rendererPassage(_gl: WebGL2RenderingContext): Promise<Record<stri
     overlap: 0.5,
     weave: 4,
   };
-  const rendererGl = canvas.getContext("webgl2", { antialias: false, alpha: false });
-  if (!rendererGl) throw new Error("Renderer context unavailable");
   const locations = new WeakSet<WebGLUniformLocation>();
   const passageLocations = new WeakSet<WebGLUniformLocation>();
   const getLocation = rendererGl.getUniformLocation.bind(rendererGl);
@@ -339,21 +313,14 @@ async function rendererPassage(_gl: WebGL2RenderingContext): Promise<Record<stri
   };
   const params = paramDefaults("country");
   const renderer = new DitherRenderer(canvas, renderSettings(state, params), false);
-  const nativeRaf = window.requestAnimationFrame;
-  let tick: FrameRequestCallback | undefined;
-  window.requestAnimationFrame = (callback) => {
-    tick = callback;
-    return 1;
-  };
+  const frames = holdFrames();
   function draw(now: number): void {
-    if (!tick) throw new Error("RAF missing");
     sent.length = 0;
-    tick(now);
+    frames.run(now);
   }
   /** The leaving scene's frame as last drawn: the texture on the uLeaving unit. */
   function leavingFrame(): { bytes: Uint8Array; width: number; height: number } {
     const gl = rendererGl;
-    if (!gl) throw new Error("Renderer context unavailable");
     gl.activeTexture(gl.TEXTURE0 + 4);
     const texture = gl.getParameter(gl.TEXTURE_BINDING_2D) as WebGLTexture;
     const fb = gl.createFramebuffer();
@@ -361,7 +328,7 @@ async function rendererPassage(_gl: WebGL2RenderingContext): Promise<Record<stri
     gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, texture, 0);
     const width = canvas.clientWidth;
     const height = canvas.clientHeight;
-    const bytes = pixels(gl, width, height);
+    const bytes = readBytes(gl, width, height);
     gl.bindFramebuffer(gl.FRAMEBUFFER, null);
     gl.deleteFramebuffer(fb);
     return { bytes, width, height };
@@ -376,9 +343,7 @@ async function rendererPassage(_gl: WebGL2RenderingContext): Promise<Record<stri
     // between tasks), until the scene is on screen.
     let at = 2000;
     while (renderer.waiting) {
-      const pause = Promise.withResolvers<void>();
-      setTimeout(pause.resolve, 20);
-      await pause.promise;
+      await pause(20);
       draw((at += 1));
     }
     const exit = sceneDefs.country.passage?.exit ?? 0;
@@ -444,15 +409,13 @@ async function rendererPassage(_gl: WebGL2RenderingContext): Promise<Record<stri
       canvas.style.width = `${cssWidth}px`;
       canvas.style.height = `${cssHeight}px`;
       // The canvas takes its new size from its observer, which reports at a rendering update.
-      const resized = Promise.withResolvers<void>();
-      nativeRaf(() => setTimeout(resized.resolve, 0));
-      await resized.promise;
+      await frames.rendered();
       t += 10;
       draw(t);
       // Read the screen first: reading the leaving frame binds another framebuffer.
       const width = cssWidth / 2;
       const height = cssHeight / 2;
-      const output = pixels(rendererGl, width, height);
+      const output = readBytes(rendererGl, width, height);
       const source = leavingFrame();
       const sw = source.width;
       const sh = source.height;
@@ -505,13 +468,16 @@ async function rendererPassage(_gl: WebGL2RenderingContext): Promise<Record<stri
     );
     return { fps, movedTexels: moved, blendSizes: resizeResults, lateExit };
   } finally {
-    window.requestAnimationFrame = nativeRaf;
+    frames.restore();
     canvas.remove();
   }
 }
 
-/** A regression on real WebGL output: throws on failure, returns what it measured (as JSON). */
-type Check = readonly [name: string, check: (gl: WebGL2RenderingContext) => unknown];
+/**
+ * A regression on real WebGL output: throws on failure, returns what it measured (as JSON). One that
+ * walks scenes (`walk`, src/verify/kit.ts) carries them, and a run scoped to some walks those alone.
+ */
+type Check = readonly [name: string, check: ((gl: WebGL2RenderingContext) => unknown) | SceneWalk];
 
 /**
  * Every check, by name: real WebGL outputs under controlled timing/state, not mocked helper calls.
@@ -523,7 +489,10 @@ export const checks: readonly Check[] = [
   ["gpuBlend", gpuBlend],
   ["frostWarmth", frostWarmth],
   ["rendererPassage", rendererPassage],
-  ["passageSpeeds", passageSpeeds],
+  ["passageSpeeds1", passageSpeeds(0, 4)],
+  ["passageSpeeds2", passageSpeeds(1, 4)],
+  ["passageSpeeds3", passageSpeeds(2, 4)],
+  ["passageSpeeds4", passageSpeeds(3, 4)],
   // Registered checks: one import above and one line here each, appended at the end.
   ["mobile", mobileVerify],
   ["orbitRingDepth", verifyOrbitRingDepth],

@@ -43,9 +43,9 @@ const GEESE_OFTEN = 35;
 const TRAIL_ROWS = 48;
 /** Seconds for the pointer's breath to fade to half. */
 const TRAIL_HALF_LIFE = 2.2;
-/** Radius of the breath, in uv heights, and its strength per uv height of travel. */
+/** Radius of the breath, in uv heights, and how much one pass of it thins the mist along its middle. */
 const TRAIL_RADIUS = 0.09;
-const TRAIL_PER_TRAVEL = 4;
+const TRAIL_PASS = 0.38;
 /** Seconds of seal age after which the shader no longer animates it (it is left there as is). */
 const SEAL_SETTLED = 30;
 
@@ -81,8 +81,6 @@ class ShanshuiSim implements SceneSim {
   #trail: TrailField | undefined;
   #trailTexture: DataTexture | undefined;
   #uploaded = -1;
-  #lastX = Number.NaN;
-  #lastY = 0;
 
   #seed = Number.NaN;
   #rate = Number.NaN;
@@ -273,22 +271,11 @@ class ShanshuiSim implements SceneSim {
       this.#trail = new TrailField(columns, TRAIL_ROWS);
       this.#trailTexture?.resize(columns, TRAIL_ROWS);
       this.#uploaded = -1;
-      this.#lastX = Number.NaN;
     }
     const trail = this.#trail;
     const pointer = frame.pointer;
-    if (pointer.inside) {
-      const travel = Number.isNaN(this.#lastX)
-        ? 0
-        : Math.hypot((pointer.x - this.#lastX) * aspect, pointer.y - this.#lastY);
-      const strength = Math.min(0.6, travel * TRAIL_PER_TRAVEL);
-      if (strength > 0.002) trail.stroke(pointer.x, pointer.y, TRAIL_RADIUS, strength, aspect);
-      this.#lastX = pointer.x;
-      this.#lastY = pointer.y;
-    } else {
-      trail.lift();
-      this.#lastX = Number.NaN;
-    }
+    if (pointer.inside) trail.stroke(pointer.x, pointer.y, TRAIL_RADIUS, TRAIL_PASS, aspect);
+    else trail.lift();
     trail.decay(frame.dt * frame.motion, TRAIL_HALF_LIFE);
     if (trail.version !== this.#uploaded) {
       this.#trailTexture?.upload(trail.data);

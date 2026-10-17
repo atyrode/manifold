@@ -20,6 +20,7 @@ import {
   vertexSource,
 } from "../../shaders/index.ts";
 import { DataTexture } from "../../sims/texture.ts";
+import { walk, type SceneWalk } from "../../verify/kit.ts";
 import type { SceneDef } from "../types.ts";
 import { sceneDefs, type SceneId } from "../index.ts";
 import { TRAIN_CROSSING, TRAIN_STATION, TRAIN_TEXELS } from "./sim.ts";
@@ -266,17 +267,15 @@ export function verifyMotionClocks(gl: WebGL2RenderingContext): Record<string, u
  * scene from the `part`-th (0-based), each its own program at its defaults. At the same motion and
  * fall clocks its source frame must not change with the scene clock (uTime 600 or 2400 at motion
  * 0.6), nor with the motion (1 or 0.6 at uTime 600; not for MOTION_AMPLITUDE), and must change an
- * hour of motion clock later where the scene shows anything moving. Returns each scene's pixels that
- * hour changed.
+ * hour of motion clock later where the scene shows anything moving. Under a scene scope it draws the
+ * scenes in scope alone (`walk`). Returns each scene's pixels that hour changed.
  */
-export function motionClocksAll(
-  part: number,
-  parts: number,
-): (gl: WebGL2RenderingContext) => Record<string, number> {
-  return (gl) => {
+export function motionClocksAll(part: number, parts: number): SceneWalk {
+  const scenes = (Object.keys(sceneDefs) as SceneId[]).filter((_, i) => i % parts === part);
+  return walk(scenes, (gl, ids) => {
     const result: Record<string, number> = {};
-    const scenes = Object.entries(sceneDefs) as [SceneId, SceneDef][];
-    for (const [id, scene] of scenes.filter((_, i) => i % parts === part)) {
+    for (const id of ids) {
+      const scene: SceneDef = sceneDefs[id];
       const knobs = paramDefaults(id);
       const linked = link(
         gl,
@@ -305,5 +304,5 @@ export function motionClocksAll(
       }
     }
     return result;
-  };
+  });
 }

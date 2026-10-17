@@ -8,18 +8,25 @@
 //   --shard i/n          runs the ith of n disjoint shares of the checks, balanced by those
 //                        recorded seconds (CI runs four);
 //   LANDING_SCENES=a,b   keeps only the checks that cover those scenes (scripts/verify-plan.ts),
-//                        and runs the passage speed check on them alone; unset or * keeps all;
+//                        and the checks that walk scenes (`walk`, src/verify/kit.ts) walk those
+//                        alone, weighed in the shards by that share of their seconds; unset or *
+//                        keeps all;
 //   --record             rewrites scripts/verify-timings.ts with the seconds of the checks that
-//                        pass (of whole checks: not with LANDING_SCENES or LANDING_PASSAGE_SCENES).
-// A line per check goes to stderr, the merged results to stdout as JSON; the run stops at the
-// first failure and exits non-zero, naming it.
-import { readFileSync } from "node:fs";
-import { Browser } from "../../scripts/cdp.ts";
+//                        pass (of whole checks: not with LANDING_SCENES).
+// A line per check goes to stderr, the merged results to stdout as JSON. A failing check does not
+// stop the run: every check runs and the failures are listed at the end, with a non-zero exit. A
+// page lost meanwhile (its renderer killed or crashed) fails the check it was running, and so does a
+// check past its deadline (its page may still run it); either way the browser is relaunched for the
+// checks after it. No check is run again. Under GitHub Actions (GITHUB_STEP_SUMMARY) the run adds a
+// table of every check's seconds, deadline and outcome, and the browser's version, to the summary.
+import { appendFileSync, readFileSync } from "node:fs";
+import { Browser, PageLostError } from "../../scripts/cdp.ts";
 import {
   checkScenes,
   deadlineSeconds,
   parseScenes,
   parseShard,
+  scopedWeights,
   shardChecks,
   timingsModule,
   type Shard,
@@ -48,10 +55,8 @@ if (fixedSeconds !== undefined && !(Number.isFinite(fixedSeconds) && fixedSecond
   throw new Error(`LANDING_CHECK_SECONDS must be a positive number of seconds, not ${everyCheck}`);
 }
 const scenes = parseScenes(process.env.LANDING_SCENES, sceneIds);
-// LANDING_PASSAGE_SCENES=a,b limits the passage speed check to those scenes while tuning them.
-const passageScenes = process.env.LANDING_PASSAGE_SCENES ?? scenes?.join(",") ?? "";
-if (record && passageScenes !== "") {
-  throw new Error("--record times whole checks: unset LANDING_SCENES and LANDING_PASSAGE_SCENES");
+if (record && scenes !== undefined) {
+  throw new Error("--record times whole checks: unset LANDING_SCENES");
 }
 
 /** What verify-browser.ts `run` reports through the binding. */
@@ -60,10 +65,21 @@ interface Outcome {
   readonly error?: string;
 }
 
+/** A check that ran past its deadline: its page may be running it still. */
+class CheckOverrun extends Error {}
+
+/** One check's line in the run's summary. */
+interface Row {
+  readonly name: string;
+  readonly seconds: number;
+  readonly deadline: number;
+  readonly outcome: "PASS" | "FAIL" | "LOST" | "OVERRAN";
+}
+
 const build = await Bun.build({
   entrypoints: [`${here}verify-browser.ts`],
   target: "browser",
-  define: { LANDING_PASSAGE_SCENES: JSON.stringify(passageScenes) },
+  define: { LANDING_SCENES: JSON.stringify(scenes?.join(",") ?? "") },
 });
 if (!build.success || !build.outputs[0]) throw new Error(build.logs.map(String).join("\n"));
 const bundle = await build.outputs[0].text();
@@ -80,6 +96,14 @@ const server = Bun.serve({
 });
 const browser = new Browser();
 
+/** Opens the checks' page in a browser just launched, with the binding checks report through. */
+async function openChecks(): Promise<void> {
+  // Bindings added without a context reach every page loaded afterwards, reloads included.
+  const bound = await browser.send("Runtime.addBinding", { name: BINDING });
+  if (bound.error !== undefined) throw new Error(`cdp Runtime.addBinding: ${bound.error.message}`);
+  await browser.goto(String(server.url));
+}
+
 /** Starts the named check on the current page and waits for its report, up to `seconds`. */
 async function runCheck(name: string, seconds: number): Promise<Outcome> {
   const reported = Promise.withResolvers<string>();
@@ -87,7 +111,7 @@ async function runCheck(name: string, seconds: number): Promise<Outcome> {
     if (params["name"] === BINDING) reported.resolve(String(params["payload"]));
   });
   const timer = setTimeout(() => {
-    reported.reject(new Error(`check ${name} did not finish within ${seconds} s`));
+    reported.reject(new CheckOverrun(`check ${name} did not finish within ${seconds} s`));
   }, seconds * 1000);
   try {
     // Not browser.evaluate, and started in a later task: the page answers no protocol call while a
@@ -110,15 +134,36 @@ async function runCheck(name: string, seconds: number): Promise<Outcome> {
   }
 }
 
+/** The run's checks as a markdown table, with the browser and the scope they ran in. */
+function summary(rows: readonly Row[], scope: string): string {
+  const failed = rows.filter((row) => row.outcome !== "PASS").length;
+  const lines = rows.map(
+    (row) => `| ${row.name} | ${row.seconds.toFixed(1)} | ${row.deadline} | ${row.outcome} |`,
+  );
+  return [
+    `### Landing WebGL checks${scope === "" ? "" : ` (${scope})`}`,
+    "",
+    `${browser.product}: ${rows.length} checks, ${failed} failed`,
+    "",
+    "| Check | Seconds | Deadline | Outcome |",
+    "| --- | ---: | ---: | --- |",
+    ...lines,
+    "",
+    "",
+  ].join("\n");
+}
+
+const rows: Row[] = [];
+let scope = "";
 try {
   await browser.launch({ softwareWebgl: true });
-  // Bindings added without a context reach every page loaded afterwards, reloads included.
-  const bound = await browser.send("Runtime.addBinding", { name: BINDING });
-  if (bound.error !== undefined) throw new Error(`cdp Runtime.addBinding: ${bound.error.message}`);
-  await browser.goto(String(server.url));
-  const registered = await browser.evaluate<string[]>(
-    'import("/checks.js").then(module => module.checks.map(([name]) => name))',
+  await openChecks();
+  console.error(`verify: ${browser.product}`);
+  // Each check's name and, for one that walks scenes, the scenes it walks in a run of every scene.
+  const registry = await browser.evaluate<[string, string[] | null][]>(
+    'import("/checks.js").then(module => module.checks.map(([name, check]) => [name, check.scenes ?? null]))',
   );
+  const registered = registry.map(([name]) => name);
   const twice = registered.filter((name, index) => registered.indexOf(name) !== index);
   if (twice.length > 0) throw new Error(`Checks registered twice: ${twice.join(", ")}`);
   const unknown = requested.filter((name) => !registered.includes(name));
@@ -143,36 +188,57 @@ try {
       return covers === undefined || scenes.some((id) => covers.has(id));
     });
   }
-  if (shard !== undefined) names = shardChecks(names, recordedSeconds, shard);
-  if (scenes !== undefined || shard !== undefined) {
-    const scope = [
-      ...(scenes === undefined ? [] : [`covering ${scenes.join(",")}`]),
-      ...(shard === undefined ? [] : [`shard ${shard.index}/${shard.count}`]),
-    ];
-    console.error(`verify: ${names.length} of ${registered.length} checks (${scope.join(", ")})`);
+  if (shard !== undefined) {
+    const walks = Object.fromEntries(
+      registry.flatMap(([name, walked]) => (walked === null ? [] : [[name, walked] as const])),
+    );
+    const weights = scenes === undefined ? {} : scopedWeights(walks, recordedSeconds, scenes);
+    names = shardChecks(names, recordedSeconds, shard, weights);
   }
+  scope = [
+    ...(scenes === undefined ? [] : [`covering ${scenes.join(",")}`]),
+    ...(shard === undefined ? [] : [`shard ${shard.index}/${shard.count}`]),
+  ].join(", ");
+  if (scope !== "")
+    console.error(`verify: ${names.length} of ${registered.length} checks (${scope})`);
   const results: Record<string, unknown> = {};
   const passed: Record<string, number> = {};
-  let failure: string | undefined;
+  const failures: string[] = [];
   for (const name of names) {
-    await browser.reload();
-    browser.drainMessages();
+    const deadline = fixedSeconds ?? deadlineSeconds(name, recordedSeconds);
     const started = performance.now();
-    const took = (): string => `${((performance.now() - started) / 1000).toFixed(1)} s`;
     let outcome: Outcome;
+    let gone: Row["outcome"] | undefined;
     try {
-      outcome = await runCheck(name, fixedSeconds ?? deadlineSeconds(name, recordedSeconds));
+      await browser.reload();
+      browser.drainMessages();
+      outcome = await runCheck(name, deadline);
     } catch (error) {
+      if (error instanceof PageLostError) gone = "LOST";
+      else if (error instanceof CheckOverrun) gone = "OVERRAN";
       outcome = { error: error instanceof Error ? error.message : String(error) };
     }
-    if (outcome.error !== undefined) {
-      const said = browser.drainMessages().map(({ level, text }) => `\n  page ${level}: ${text}`);
-      failure = `${name} (${took()}): ${outcome.error}${said.join("")}`;
-      break;
+    const seconds = (performance.now() - started) / 1000;
+    const took = `${seconds.toFixed(1)} s`;
+    if (outcome.error === undefined) {
+      results[name] = outcome.result;
+      passed[name] = seconds;
+      rows.push({ name, seconds, deadline, outcome: "PASS" });
+      console.error(`PASS  ${name} (${took})`);
+      continue;
     }
-    results[name] = outcome.result;
-    passed[name] = (performance.now() - started) / 1000;
-    console.error(`PASS  ${name} (${took()})`);
+    const said = browser.drainMessages().map(({ level, text }) => `\n  page ${level}: ${text}`);
+    const failure = `${name} (${took}): ${outcome.error}${said.join("")}`;
+    failures.push(failure);
+    rows.push({ name, seconds, deadline, outcome: gone ?? "FAIL" });
+    console.error(`FAIL  ${failure}`);
+    if (gone !== undefined) {
+      // A page that is gone, or may still be running the check, takes the browser with it; the
+      // check is not run again.
+      console.error(`verify: relaunching the browser for the checks after ${name}`);
+      await browser.relaunch();
+      await openChecks();
+    }
   }
   console.log(JSON.stringify(results, null, 2));
   if (record) {
@@ -183,11 +249,17 @@ try {
     );
     console.error(`verify: recorded ${Object.keys(passed).length} checks' seconds`);
   }
-  if (failure !== undefined) {
-    console.error(`FAIL  ${failure}`);
+  if (failures.length > 0) {
+    console.error(
+      `verify: ${failures.length} of ${names.length} checks failed\n` +
+        failures.map((failure) => `FAIL  ${failure}`).join("\n"),
+    );
     process.exitCode = 1;
   }
 } finally {
+  const summaryFile = process.env.GITHUB_STEP_SUMMARY;
+  if (summaryFile !== undefined && summaryFile !== "" && rows.length > 0)
+    appendFileSync(summaryFile, summary(rows, scope));
   await browser.close();
   await server.stop(true);
 }

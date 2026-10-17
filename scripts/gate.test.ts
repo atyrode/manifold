@@ -188,7 +188,7 @@ describe("gate CLI", () => {
     ]);
   });
 
-  test("landing slices type, test and render the whole concept lab", async () => {
+  test("landing slices type, test, check the GLSL of and render the whole concept lab", async () => {
     const concept = await runSelectedTasks("landing-concept");
     const webgl = await runSelectedTasks("landing-webgl");
     for (const { result } of [concept, webgl]) {
@@ -196,6 +196,7 @@ describe("gate CLI", () => {
       expect(result.stderr).toBe("");
     }
     expect(concept.invocations.map((invocation) => invocation.args.join(" ")).sort()).toEqual([
+      "concepts/landing/scripts/glsl-check.ts",
       "test concepts/landing",
       "tsc -p concepts/landing",
     ]);

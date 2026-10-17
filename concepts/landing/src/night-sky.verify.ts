@@ -11,7 +11,8 @@
 //   midnight), two planets of different kinds each change the night sky where their placements put
 //   them (the one placed further left, further left on screen), together as each alone does round
 //   itself; an orbiting planet drifts left with the motion clock and, half a circuit on, has set: the
-//   sky is then the empty list's again, byte for byte.
+//   sky is then the empty list's again, byte for byte. A run scoped to some scenes draws only the
+//   skies among them.
 import { constellationUniforms } from "./constellations.ts";
 import { effective, type ParamDef } from "./params.ts";
 import {
@@ -19,40 +20,13 @@ import {
   sceneFeatures,
   sceneFeaturesAll,
   shaderValues,
-  vertexSource,
 } from "./shaders/index.ts";
 import { skyFigurePoint, skyFigures } from "./shaders/lib/sky.ts";
 import { sceneDefs, type SceneId } from "./scenes/index.ts";
 import { planetUniforms, readPlanet, type SkyPlanet } from "./scenes/planets.ts";
 import type { SceneDef } from "./scenes/types.ts";
 import { paramDefaults, readSetup } from "./state.ts";
-
-function check(ok: boolean, message: string): void {
-  if (!ok) throw new Error(`night sky: ${message}`);
-}
-
-function program(gl: WebGL2RenderingContext, fragment: string): WebGLProgram {
-  const shaders = [vertexSource, fragment].map((source, index) => {
-    const shader = gl.createShader(index === 0 ? gl.VERTEX_SHADER : gl.FRAGMENT_SHADER);
-    if (!shader) throw new Error("Shader allocation failed");
-    gl.shaderSource(shader, source);
-    gl.compileShader(shader);
-    check(
-      Boolean(gl.getShaderParameter(shader, gl.COMPILE_STATUS)),
-      gl.getShaderInfoLog(shader) ?? "compile failed",
-    );
-    return shader;
-  });
-  const linked = gl.createProgram();
-  for (const shader of shaders) gl.attachShader(linked, shader);
-  gl.linkProgram(linked);
-  check(
-    Boolean(gl.getProgramParameter(linked, gl.LINK_STATUS)),
-    gl.getProgramInfoLog(linked) ?? "link failed",
-  );
-  for (const shader of shaders) gl.deleteShader(shader);
-  return linked;
-}
+import { check, drawFloats, link, VerifyError, walk } from "./verify/kit.ts";
 
 /** The shared night knobs with library gates (skyComponentKnobs' constellations). */
 const nightPart = (def: ParamDef): boolean =>
@@ -72,66 +46,53 @@ interface Draw {
 /** Draws `linked` into a float target, the clock frozen, and returns RGBA floats, rows bottom up. */
 function draw(gl: WebGL2RenderingContext, linked: WebGLProgram, frame: Draw): Float32Array {
   const { width, height } = frame;
-  const target = gl.createTexture();
-  gl.bindTexture(gl.TEXTURE_2D, target);
-  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA32F, width, height, 0, gl.RGBA, gl.FLOAT, null);
-  const framebuffer = gl.createFramebuffer();
-  gl.bindFramebuffer(gl.FRAMEBUFFER, framebuffer);
-  gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, target, 0);
-  check(
-    gl.checkFramebufferStatus(gl.FRAMEBUFFER) === gl.FRAMEBUFFER_COMPLETE,
-    "float target incomplete",
-  );
-  // Unit 0 holds the row, or nothing, so no uSim sampler reads the target it renders into.
   const row = frame.row ? gl.createTexture() : null;
-  gl.bindTexture(gl.TEXTURE_2D, row);
-  if (frame.row) {
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
-    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA32F, width, 1, 0, gl.RGBA, gl.FLOAT, frame.row);
+  try {
+    return drawFloats(gl, width, height, () => {
+      // Unit 0 holds the row, or nothing, so no uSim sampler reads the target it renders into.
+      gl.bindTexture(gl.TEXTURE_2D, row);
+      if (frame.row) {
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+        gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA32F, width, 1, 0, gl.RGBA, gl.FLOAT, frame.row);
+      }
+      gl.useProgram(linked);
+      const figures = constellationUniforms;
+      const at = (name: string) => gl.getUniformLocation(linked, name);
+      gl.uniform4fv(at("uConStars"), figures.stars);
+      gl.uniform1fv(at("uConBright"), figures.brightness);
+      gl.uniform2fv(at("uConLines"), figures.lines);
+      gl.uniform1i(at("uConStarCount"), figures.starCount);
+      gl.uniform1i(at("uConLineCount"), figures.lineCount);
+      gl.uniform1i(at("uConMarkStar"), figures.markStar);
+      gl.uniform1i(at("uConMarkLine"), figures.markLine);
+      gl.uniform1i(at("uView"), 1);
+      gl.uniform1fv(at("uParams"), Float32Array.from(frame.params));
+      gl.uniform1fv(at("uTriggers"), new Float32Array(8).fill(-1e4));
+      const uniforms: Record<string, readonly number[]> = {
+        uRes: [width, height],
+        uTime: [40],
+        uMotion: [0.6],
+        uMotionTime: [24],
+        uPassage: [1, 0],
+        uMouse: [-1, -1, 0, -1e4],
+        uBg: [0.03, 0.03, 0.05],
+        ...frame.uniforms,
+      };
+      for (const [name, value] of Object.entries(uniforms)) {
+        const location = at(name);
+        if (value.length === 1) gl.uniform1f(location, value[0] ?? 0);
+        else if (value.length === 2) gl.uniform2fv(location, value);
+        else if (value.length === 3) gl.uniform3fv(location, value);
+        else gl.uniform4fv(location, value);
+      }
+      for (const [name, value] of Object.entries(frame.ints ?? {})) gl.uniform1i(at(name), value);
+      gl.drawArrays(gl.TRIANGLES, 0, 3);
+    });
+  } finally {
+    gl.bindTexture(gl.TEXTURE_2D, null);
+    gl.deleteTexture(row);
   }
-  gl.useProgram(linked);
-  gl.viewport(0, 0, width, height);
-  const figures = constellationUniforms;
-  const at = (name: string) => gl.getUniformLocation(linked, name);
-  gl.uniform4fv(at("uConStars"), figures.stars);
-  gl.uniform1fv(at("uConBright"), figures.brightness);
-  gl.uniform2fv(at("uConLines"), figures.lines);
-  gl.uniform1i(at("uConStarCount"), figures.starCount);
-  gl.uniform1i(at("uConLineCount"), figures.lineCount);
-  gl.uniform1i(at("uConMarkStar"), figures.markStar);
-  gl.uniform1i(at("uConMarkLine"), figures.markLine);
-  gl.uniform1i(at("uView"), 1);
-  gl.uniform1fv(at("uParams"), Float32Array.from(frame.params));
-  gl.uniform1fv(at("uTriggers"), new Float32Array(8).fill(-1e4));
-  const uniforms: Record<string, readonly number[]> = {
-    uRes: [width, height],
-    uTime: [40],
-    uMotion: [0.6],
-    uMotionTime: [24],
-    uPassage: [1, 0],
-    uMouse: [-1, -1, 0, -1e4],
-    uBg: [0.03, 0.03, 0.05],
-    ...frame.uniforms,
-  };
-  for (const [name, value] of Object.entries(uniforms)) {
-    const location = at(name);
-    if (value.length === 1) gl.uniform1f(location, value[0] ?? 0);
-    else if (value.length === 2) gl.uniform2fv(location, value);
-    else if (value.length === 3) gl.uniform3fv(location, value);
-    else gl.uniform4fv(location, value);
-  }
-  for (const [name, value] of Object.entries(frame.ints ?? {})) gl.uniform1i(at(name), value);
-  gl.drawArrays(gl.TRIANGLES, 0, 3);
-  const out = new Float32Array(width * height * 4);
-  gl.readPixels(0, 0, width, height, gl.RGBA, gl.FLOAT, out);
-  check(gl.getError() === gl.NO_ERROR, "float readPixels GL error");
-  gl.bindFramebuffer(gl.FRAMEBUFFER, null);
-  gl.bindTexture(gl.TEXTURE_2D, null);
-  gl.deleteFramebuffer(framebuffer);
-  gl.deleteTexture(target);
-  gl.deleteTexture(row);
-  return out;
 }
 
 const same = (a: Float32Array, b: Float32Array): boolean => a.every((value, i) => value === b[i]);
@@ -160,8 +121,8 @@ export function verifyNightSky(gl: WebGL2RenderingContext): Record<string, unkno
     ...probeDef,
     params: probeDef.params.filter((def) => !nightPart(def)),
   };
-  const probe = program(gl, fragmentSourceFor(probeDef, sceneFeaturesAll(probeDef)));
-  const plain = program(gl, fragmentSourceFor(plainDef));
+  const probe = link(gl, fragmentSourceFor(probeDef, sceneFeaturesAll(probeDef)));
+  const plain = link(gl, fragmentSourceFor(plainDef));
 
   // The samples: each figure's stars, then the middle of each of its lines.
   const offset = (star: number): [number, number] => [
@@ -283,30 +244,42 @@ function difference(a: Float32Array, b: Float32Array, width: number): { count: n
   return { count, x: count > 0 ? sum / count : Number.NaN };
 }
 
-export function verifyNightPlanets(gl: WebGL2RenderingContext): Record<string, unknown> {
+/**
+ * The nights nightPlanets draws, each with its knobs: the lake's fjord as an old Aurora link opens
+ * it, and the island at midnight.
+ */
+const NIGHTS: readonly (readonly [SceneId, () => Record<string, number>])[] = [
+  ["lake", () => readSetup(new URLSearchParams("scene=aurora")).params],
+  ["island", () => ({ ...paramDefaults("island"), time: 0 })],
+];
+
+/** nightPlanets (see the header), in the nights of the run's scope. */
+export const verifyNightPlanets = walk(
+  NIGHTS.map(([id]) => id),
+  nightPlanets,
+);
+
+function nightPlanets(
+  gl: WebGL2RenderingContext,
+  scenes: readonly SceneId[],
+): Record<string, unknown> {
   check(gl.getExtension("EXT_color_buffer_float") !== null, "float render targets unavailable");
   const width = 160;
   const height = 100;
   const result: Record<string, unknown> = {};
-  const nights: readonly (readonly [SceneId, Record<string, number>])[] = [
-    ["lake", readSetup(new URLSearchParams("scene=aurora")).params],
-    ["island", { ...paramDefaults("island"), time: 0 }],
-  ];
-  for (const [id, knobs] of nights) {
+  for (const [id, knobsOf] of NIGHTS) {
+    if (!scenes.includes(id)) continue;
+    const knobs = knobsOf();
     const scene = sceneDefs[id];
     const spec = scene.planets;
-    check(spec !== undefined, `${id} takes no planets`);
-    if (spec === undefined) continue;
+    if (spec === undefined) throw new VerifyError(`${id} takes no planets`);
     const params = scene.params.map((knob) => effective(knob, knobs));
     const programs = new Map<number, WebGLProgram>();
     const frame = (planets: readonly SkyPlanet[], motionTime = 24): Float32Array => {
       const gate = planets.length > 0 ? 1 : 0;
       const linked =
         programs.get(gate) ??
-        program(
-          gl,
-          fragmentSourceFor(scene, sceneFeatures(scene, shaderValues(scene, knobs), gate)),
-        );
+        link(gl, fragmentSourceFor(scene, sceneFeatures(scene, shaderValues(scene, knobs), gate)));
       programs.set(gate, linked);
       const { count, data } = planetUniforms(planets);
       return draw(gl, linked, {

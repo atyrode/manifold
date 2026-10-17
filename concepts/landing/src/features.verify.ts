@@ -33,35 +33,21 @@
 // clocks, so the sims share their history (the meadow's clocks close in the rain) and only the
 // program differs. The countryside's own check of that (`countryFeaturesAll`) draws over its land
 // directly, without the renderer (src/scenes/country/features.verify.ts).
+//
+// A run scoped to some scenes (LANDING_SCENES) walks those of them alone, and sceneFeatures runs only
+// with the countryside among them.
 import { gatedTurns } from "./knob-turns.ts";
-import { DitherRenderer, type RenderSettings, type ViewId } from "./renderer.ts";
+import { DitherRenderer, type ViewId } from "./renderer.ts";
 import { sceneDefs, sceneIds, type SceneId } from "./scenes/index.ts";
 import { featureKey, sceneFeatures, sceneFeaturesAll, shaderValues } from "./shaders/index.ts";
-import { defaultsFor, paramDefaults, renderSettings, type Params } from "./state.ts";
+import { paramDefaults, type Params } from "./state.ts";
+import { check, holdFrames, labSettings, pause, stage, until, walk } from "./verify/kit.ts";
 
 const WIDTH = 160;
 const HEIGHT = 100;
 /** Real seconds a background build may take under software WebGL on a busy machine. */
 const BUILD_SECONDS = 60;
 const COMPLETION_STATUS_KHR = 0x91b1;
-
-function check(ok: boolean, message: string): void {
-  if (!ok) throw new Error(message);
-}
-
-function settings(scene: SceneId, knobs: Params, view: ViewId = "source"): RenderSettings {
-  return renderSettings(
-    {
-      ...defaultsFor(scene),
-      pixel: 1,
-      motion: 1,
-      view,
-      mouse: "still",
-      transitions: "off",
-    },
-    { ...paramDefaults(scene), ...knobs },
-  );
-}
 
 /**
  * Every scene with `featuresFor`, in lab order. A scene keyed by its library gates alone draws with
@@ -78,29 +64,20 @@ function frameClock(): {
   start: (renderer: DitherRenderer) => () => void;
   restore: () => void;
 } {
-  const native = window.requestAnimationFrame;
-  let requested: FrameRequestCallback | undefined;
-  window.requestAnimationFrame = (callback) => {
-    requested = callback;
-    return 1;
-  };
+  const frames = holdFrames();
   let now = 1000;
   return {
     start(renderer) {
       renderer.start({ paced: false });
-      let tick = requested;
-      requested = undefined;
+      let tick = frames.take();
       return () => {
         if (!tick) throw new Error("No frame scheduled");
         const run = tick;
         run((now += 16));
-        tick = requested;
-        requested = undefined;
+        tick = frames.take();
       };
     },
-    restore() {
-      window.requestAnimationFrame = native;
-    },
+    restore: frames.restore,
   };
 }
 
@@ -130,12 +107,8 @@ interface Watched {
  * while it waits. A software one keeps the browser's own (SwiftShader has none: fences).
  */
 function watched(gpu: "hardware" | "software"): Watched {
-  const canvas = document.createElement("canvas");
-  canvas.style.cssText = `position:fixed;left:0;top:0;width:${WIDTH}px;height:${HEIGHT}px`;
-  document.body.append(canvas);
   // The renderer asks for this same context.
-  const gl = canvas.getContext("webgl2", { antialias: false, alpha: false });
-  if (!gl) throw new Error("Features context unavailable");
+  const { canvas, gl } = stage(WIDTH, HEIGHT);
   const UNMASKED_RENDERER_WEBGL = 0x9246;
   const named = gpu === "hardware" ? "ANGLE (stand-in hardware GPU)" : "ANGLE (SwiftShader)";
   const parameter = gl.getParameter.bind(gl);
@@ -275,24 +248,23 @@ async function switchFrom(
   from: WebGLProgram | null,
   held: Uint8Array,
 ): Promise<number> {
-  const start = performance.now();
   let heldFrames = 0;
-  for (;;) {
-    frame();
-    if (context.drawing() !== from) return heldFrames;
-    check(
-      changed(context.image(), held).count === 0,
-      "The frame changed while the new program was still building",
-    );
-    heldFrames++;
-    check(
-      performance.now() - start < BUILD_SECONDS * 1000,
-      `No program switch within ${BUILD_SECONDS} s`,
-    );
-    const pause = Promise.withResolvers<void>();
-    setTimeout(pause.resolve, 50);
-    await pause.promise;
-  }
+  await until(
+    () => {
+      frame();
+      if (context.drawing() !== from) return true;
+      check(
+        changed(context.image(), held).count === 0,
+        "The frame changed while the new program was still building",
+      );
+      heldFrames++;
+      return false;
+    },
+    BUILD_SECONDS,
+    "No program switch",
+    50,
+  );
+  return heldFrames;
 }
 
 /**
@@ -301,18 +273,14 @@ async function switchFrom(
  * background (the bare page showing meanwhile).
  */
 async function arrive(frame: () => void, renderer: DitherRenderer): Promise<void> {
-  const start = performance.now();
-  frame();
-  while (renderer.waiting) {
-    check(
-      performance.now() - start < BUILD_SECONDS * 1000,
-      `No scene on screen within ${BUILD_SECONDS} s`,
-    );
-    const pause = Promise.withResolvers<void>();
-    setTimeout(pause.resolve, 20);
-    await pause.promise;
-    frame();
-  }
+  await until(
+    () => {
+      frame();
+      return !renderer.waiting;
+    },
+    BUILD_SECONDS,
+    "No scene on screen",
+  );
 }
 
 /** Scenes whose sim builds their picture over frames before it shows (the countryside's terrain). */
@@ -325,25 +293,23 @@ const BUILT_OVER_FRAMES: Partial<Record<SceneId, true>> = { country: true };
  */
 async function landed(scene: SceneId, frame: () => void, context: Watched): Promise<void> {
   if (BUILT_OVER_FRAMES[scene] !== true) return;
-  const start = performance.now();
   frame();
   const first = context.image();
   let last = first;
   let moved = false;
-  for (;;) {
-    frame();
-    const image = context.image();
-    if (moved && changed(image, last).count === 0) return;
-    moved ||= changed(image, first).count > 0;
-    last = image;
-    check(
-      performance.now() - start < BUILD_SECONDS * 1000,
-      `${scene}: its land did not show within ${BUILD_SECONDS} s`,
-    );
-    const pause = Promise.withResolvers<void>();
-    setTimeout(pause.resolve, 10);
-    await pause.promise;
-  }
+  await until(
+    () => {
+      frame();
+      const image = context.image();
+      if (moved && changed(image, last).count === 0) return true;
+      moved ||= changed(image, first).count > 0;
+      last = image;
+      return false;
+    },
+    BUILD_SECONDS,
+    `${scene}: its land did not show`,
+    10,
+  );
 }
 
 /** Frames a page draws at its starting setting before any change (see `settle`). */
@@ -367,9 +333,14 @@ function settle(frame: () => void, context: Watched): void {
   }
 }
 
-export async function verifySceneFeatures(
+/** sceneFeatures (see the header), on the countryside: none of it in a run scoped to other scenes. */
+export const verifySceneFeatures = walk<SceneId>(["country"], countryPrograms);
+
+async function countryPrograms(
   _gl: WebGL2RenderingContext,
+  scenes: readonly SceneId[],
 ): Promise<Record<string, unknown>> {
+  if (!scenes.includes("country")) return {};
   const country = sceneDefs.country;
   const defaults = paramDefaults("country");
   // The default setting compiles in none of the parts whose knobs are off, the all-features program
@@ -404,7 +375,7 @@ export async function verifySceneFeatures(
   const context = watched("software");
   try {
     // Reduced motion: the clocks stand still, so frames compare exactly.
-    const renderer = new DitherRenderer(context.canvas, settings("country", defaults), true);
+    const renderer = new DitherRenderer(context.canvas, labSettings("country", defaults), true);
     const frame = clock.start(renderer);
     await arrive(frame, renderer);
     await landed("country", frame, context);
@@ -418,7 +389,7 @@ export async function verifySceneFeatures(
 
     // Pasture on: its own program (the fences and herds) is built in the background and takes over,
     // the land model turning some parcels to pasture; until then the old frame holds.
-    renderer.update(settings("country", { pasture: 1 }));
+    renderer.update(labSettings("country", { pasture: 1 }));
     const heldFrames = await switchFrom(frame, context, plain, before);
     check(
       heldFrames >= 1,
@@ -433,7 +404,7 @@ export async function verifySceneFeatures(
     check(pasture.count >= 20, `The pasture drew ${pasture.count} changed cells`);
 
     // Off again: the default program is still kept, and draws the same frame at once.
-    renderer.update(settings("country", {}));
+    renderer.update(labSettings("country", {}));
     frame();
     check(
       context.drawing() === plain &&
@@ -443,7 +414,7 @@ export async function verifySceneFeatures(
     );
 
     // A setup turning three gated parts on at once builds one program, which draws them all.
-    renderer.update(settings("country", { pasture: 1, fog: 0.6, snow: 0.6 }));
+    renderer.update(labSettings("country", { pasture: 1, fog: 0.6, snow: 0.6 }));
     await switchFrom(frame, context, plain, before);
     check(
       renderer.failure === undefined && context.links === 3,
@@ -458,15 +429,15 @@ export async function verifySceneFeatures(
 
     // Past PROGRAMS_PER_SCENE (4) sets the least recently drawn program is freed, never the one
     // drawing; no change waited on a build.
-    renderer.update(settings("country", { fog: 0.6 }));
+    renderer.update(labSettings("country", { fog: 0.6 }));
     await switchFrom(frame, context, context.drawing(), context.image());
-    renderer.update(settings("country", { snow: 0.6 }));
+    renderer.update(labSettings("country", { snow: 0.6 }));
     await switchFrom(frame, context, context.drawing(), context.image());
     check(
       context.links === 5 && context.frees === 1,
       `Five sets built ${context.links} programs and freed ${context.frees}`,
     );
-    renderer.update(settings("country", {}));
+    renderer.update(labSettings("country", {}));
     frame();
     check(
       context.drawing() === plain && context.links === 5,
@@ -539,7 +510,7 @@ function drawTurns(
   for (const view of VIEWS)
     for (const [index, knobs] of turns.entries()) {
       const links = context.links;
-      renderer.update(settings(scene, knobs, view));
+      renderer.update(labSettings(scene, knobs, { view }));
       frame();
       check(
         context.links === links,
@@ -554,14 +525,18 @@ function drawTurns(
   return drawn;
 }
 
-export async function verifyFeatureToggles(
+/** featureToggles (see the header), for every scene with `featuresFor` in the run's scope. */
+export const verifyFeatureToggles = walk(KNOB_KEYED, featureToggles);
+
+async function featureToggles(
   _gl: WebGL2RenderingContext,
+  scenes: readonly SceneId[],
 ): Promise<Record<string, unknown>> {
   const clock = frameClock();
   const pool = contextPool();
   const result: Record<string, unknown> = {};
   try {
-    for (const scene of KNOB_KEYED) {
+    for (const scene of scenes) {
       const started = performance.now();
       const turns = gatedTurns(sceneDefs[scene]);
       const [first = {}] = turns;
@@ -570,7 +545,7 @@ export async function verifyFeatureToggles(
       // settles first (the dunes' sand warms up over frames), so a frame that changes from here on
       // is a program's doing.
       const page = pool.open();
-      const renderer = new DitherRenderer(page.canvas, settings(scene, {}), true);
+      const renderer = new DitherRenderer(page.canvas, labSettings(scene, {}), true);
       const frame = clock.start(renderer);
       await arrive(frame, renderer);
       for (let i = 0; i < 3; i++) frame();
@@ -587,7 +562,7 @@ export async function verifyFeatureToggles(
       // holding), waiting on no build; every gated setting after it, in two views, draws at once
       // with that program and builds nothing; the default setting returns to the page's own.
       page.armed = true;
-      renderer.update(settings(scene, first));
+      renderer.update(labSettings(scene, first));
       const heldFrames = await switchFrom(frame, page, plain, lean);
       const full = page.drawing();
       check(
@@ -595,7 +570,7 @@ export async function verifyFeatureToggles(
         `${scene}: the first gated change built ${page.links - 1} programs and waited on builds: ${page.waits.join(", ")}`,
       );
       const drawn = drawTurns(scene, turns, renderer, frame, page, full);
-      renderer.update(settings(scene, {}));
+      renderer.update(labSettings(scene, {}));
       frame();
       check(
         page.drawing() === plain && changed(lean, page.image()).count === 0,
@@ -612,7 +587,7 @@ export async function verifyFeatureToggles(
       // the program the scene entered with takes over again, and the first gated change then
       // draws at once with the all-features program.
       const ahead = pool.open();
-      const expecting = new DitherRenderer(ahead.canvas, settings(scene, {}), true);
+      const expecting = new DitherRenderer(ahead.canvas, labSettings(scene, {}), true);
       const aheadFrame = clock.start(expecting);
       await arrive(aheadFrame, expecting);
       await landed(scene, aheadFrame, ahead);
@@ -633,16 +608,14 @@ export async function verifyFeatureToggles(
           performance.now() - waitStart < BUILD_SECONDS * 1000,
           `${scene}: the all-features program was not built ahead within ${BUILD_SECONDS} s`,
         );
-        const pause = Promise.withResolvers<void>();
-        setTimeout(pause.resolve, 50);
-        await pause.promise;
+        await pause(50);
       }
       aheadFrame();
       check(
         ahead.drawing() === entered && changed(lean, ahead.image()).count === 0,
         `${scene}: after drawing the all-features program once the page did not return to its own`,
       );
-      expecting.update(settings(scene, first));
+      expecting.update(labSettings(scene, first));
       aheadFrame();
       check(
         ahead.drawing() === built &&
@@ -668,17 +641,23 @@ export async function verifyFeatureToggles(
 
 /**
  * worldFeaturesAll: for each scene with `featuresFor` but the countryside (whose own check draws
- * over its land directly), the all-features program draws every gated setting as its own program
- * does (see the header).
+ * over its land directly) in the run's scope, the all-features program draws every gated setting
+ * as its own program does (see the header).
  */
-export async function verifyWorldFeaturesAll(
+export const verifyWorldFeaturesAll = walk(
+  KNOB_KEYED.filter((id) => id !== "country"),
+  worldFeaturesAll,
+);
+
+async function worldFeaturesAll(
   _gl: WebGL2RenderingContext,
+  scenes: readonly SceneId[],
 ): Promise<Record<string, unknown>> {
   const clock = frameClock();
   const pool = contextPool();
   const result: Record<string, unknown> = {};
   try {
-    for (const scene of KNOB_KEYED.filter((id) => id !== "country")) {
+    for (const scene of scenes) {
       const started = performance.now();
       const def = sceneDefs[scene];
       const turns = gatedTurns(def);
@@ -687,13 +666,13 @@ export async function verifyWorldFeaturesAll(
       // Every gated setting, in two views, drawn with the all-features program, after the page has
       // settled at the starting setting.
       const page = pool.open();
-      const renderer = new DitherRenderer(page.canvas, settings(scene, {}), true);
+      const renderer = new DitherRenderer(page.canvas, labSettings(scene, {}), true);
       const frame = clock.start(renderer);
       await arrive(frame, renderer);
       await landed(scene, frame, page);
       settle(frame, page);
       const plain = page.drawing();
-      renderer.update(settings(scene, first));
+      renderer.update(labSettings(scene, first));
       await switchFrom(frame, page, plain, page.image());
       const drawn = drawTurns(scene, turns, renderer, frame, page, page.drawing());
       pool.close(page);
@@ -710,7 +689,7 @@ export async function verifyWorldFeaturesAll(
       });
       const mismatches: string[] = [];
       const reference = pool.open("software");
-      const own = new DitherRenderer(reference.canvas, settings(scene, {}), true);
+      const own = new DitherRenderer(reference.canvas, labSettings(scene, {}), true);
       const ownFrame = clock.start(own);
       await arrive(ownFrame, own);
       await landed(scene, ownFrame, reference);
@@ -718,7 +697,7 @@ export async function verifyWorldFeaturesAll(
       let current = featureKey(sceneFeatures(def));
       let builds = 1;
       for (const [key, indices] of byKey) {
-        own.update(settings(scene, turns[indices[0] ?? 0] ?? {}));
+        own.update(labSettings(scene, turns[indices[0] ?? 0] ?? {}));
         if (key !== current) {
           await switchFrom(ownFrame, reference, reference.drawing(), reference.image());
           current = key;
@@ -727,7 +706,7 @@ export async function verifyWorldFeaturesAll(
         for (const view of VIEWS)
           for (const index of indices) {
             const knobs = turns[index] ?? {};
-            own.update(settings(scene, knobs, view));
+            own.update(labSettings(scene, knobs, { view }));
             ownFrame();
             const difference = changed(
               drawn.get(`${view} ${index}`) ?? new Uint8Array(),

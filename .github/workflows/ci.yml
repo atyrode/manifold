@@ -443,6 +443,15 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
       - uses: ./.github/actions/bun-workspace
+      # Node 22.6 or later runs the countryside's build in V8 (country/engines.test.ts); glslang
+      # checks the GLSL of every program the scenes build (concepts/landing/scripts/glsl-check.ts).
+      - name: Install Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "24"
+      - name: Install glslang
+        shell: bash
+        run: sudo apt-get update && sudo apt-get install --yes --no-install-recommends glslang-tools
       - uses: ./.github/actions/gate-slice
         with:
           task: landing-concept
@@ -454,7 +463,10 @@ jobs:
     runs-on: ubuntu-latest
     # Lab regressions render one after another in software WebGL, four disjoint shares balanced by
     # their recorded seconds, each check within its own deadline. A pull request confined to some
-    # scenes' directories runs only the checks that cover those scenes.
+    # scenes' directories runs only the checks that cover those scenes, and the checks that walk
+    # every scene walk those alone. The lab and its driver import no package and read no history:
+    # a shallow checkout and Bun alone, with the pinned Chromium. Each shard's per-check seconds go
+    # to the job summary.
     timeout-minutes: 20
     strategy:
       fail-fast: false
@@ -464,9 +476,11 @@ jobs:
       - name: Check out
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
-          fetch-depth: 0
           persist-credentials: false
       - uses: ./.github/actions/bun-workspace
+        with:
+          dependencies: "false"
+      - uses: ./.github/actions/landing-chromium
       - name: Verify landing WebGL shard
         env:
           LANDING_SCENES: ${{ needs.plan.outputs.landingScenes }}

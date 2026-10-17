@@ -1,11 +1,13 @@
 // Passages carry their speed (src/scenes/README.md, "Entrances and exits"): how fast each scene's
 // picture changes across its exit and its entrance, on the real renderer and a hand-driven clock at
 // motion 0, so the scene's own motion stands still while the passage (which plays in real time
-// whatever the motion, its sim stepping on) runs. A side below FLOOR fails unless exempt.
+// whatever the motion, its sim stepping on) runs. A side below FLOOR fails unless exempt. Registered
+// as `passageSpeeds1`..`4`, a quarter of the scenes each.
 import { DitherRenderer } from "./renderer.ts";
 import { sceneDefs } from "./scenes/index.ts";
 import type { SceneId } from "./scenes/index.ts";
 import { defaultsFor, paramDefaults, renderSettings } from "./state.ts";
+import { holdFrames, pause, stage, walk, type SceneWalk } from "./verify/kit.ts";
 
 const STEPS = 20;
 const WIDTH = 160;
@@ -57,18 +59,31 @@ function ends(speeds: number[], from: "start" | "end"): number {
   return edge.reduce((a, b) => a + b, 0) / edge.length / peak;
 }
 
-/** Set by verify.ts from LANDING_PASSAGE_SCENES: a comma list, or "" for every scene. */
-declare const LANDING_PASSAGE_SCENES: string;
+/** Every scene with a passage, in lab order. */
+const PASSING = (Object.keys(sceneDefs) as SceneId[]).filter(
+  (id) => sceneDefs[id].passage !== undefined,
+);
 
-export async function passageSpeeds(_gl: WebGL2RenderingContext): Promise<Record<string, unknown>> {
-  const only = LANDING_PASSAGE_SCENES === "" ? undefined : LANDING_PASSAGE_SCENES.split(",");
-  const canvas = document.createElement("canvas");
-  canvas.style.cssText = `width:${WIDTH}px;height:${HEIGHT}px;position:fixed;left:0;top:0`;
-  document.body.append(canvas);
-  const gl = canvas.getContext("webgl2", { antialias: false, alpha: false });
-  if (!gl) throw new Error("Renderer context unavailable");
-  /** Let the page's tasks run: sheets painted on a worker arrive between frames. */
-  const yieldPage = () => new Promise((resolve) => setTimeout(resolve, 5));
+/**
+ * `passageSpeeds`, split `parts` ways (verify-browser.ts registers four) so that no one entry holds
+ * a shard up: every `parts`-th scene with a passage from the `part`-th (0-based), of those in the
+ * run's scope. Returns each scene's speeds.
+ */
+export function passageSpeeds(part: number, parts: number): SceneWalk {
+  return walk(
+    PASSING.filter((_, index) => index % parts === part),
+    measure,
+  );
+}
+
+async function measure(
+  _gl: WebGL2RenderingContext,
+  ids: readonly SceneId[],
+): Promise<Record<string, unknown>> {
+  const rows: Record<string, string> = {};
+  const [first] = ids;
+  if (first === undefined) return rows;
+  const { canvas, gl } = stage(WIDTH, HEIGHT);
   const settingsFor = (id: SceneId) =>
     renderSettings(
       {
@@ -82,23 +97,12 @@ export async function passageSpeeds(_gl: WebGL2RenderingContext): Promise<Record
       },
       paramDefaults(id),
     );
-  const ids = (Object.keys(sceneDefs) as SceneId[]).filter(
-    (id) => sceneDefs[id].passage !== undefined && (only === undefined || only.includes(id)),
-  );
-  const first = ids[0];
-  if (first === undefined) throw new Error("No scene with a passage");
   const renderer = new DitherRenderer(canvas, settingsFor(first), false);
-  const nativeRaf = window.requestAnimationFrame;
-  let tick: FrameRequestCallback | undefined;
-  window.requestAnimationFrame = (callback) => {
-    tick = callback;
-    return 1;
-  };
+  const frames = holdFrames();
   let now = 1000;
   const draw = (at: number): Uint8Array => {
-    if (!tick) throw new Error("RAF missing");
     now = at;
-    tick(at);
+    frames.run(at);
     const bytes = new Uint8Array(WIDTH * HEIGHT * 4);
     gl.readPixels(0, 0, WIDTH, HEIGHT, gl.RGBA, gl.UNSIGNED_BYTE, bytes);
     return bytes;
@@ -108,7 +112,6 @@ export async function passageSpeeds(_gl: WebGL2RenderingContext): Promise<Record
     while (at - now > 40) draw(now + 40);
     return draw(at);
   };
-  const rows: Record<string, string> = {};
   const failures: string[] = [];
   try {
     renderer.start({ paced: false });
@@ -119,14 +122,15 @@ export async function passageSpeeds(_gl: WebGL2RenderingContext): Promise<Record
       // The scene enters (a cut) once its program is built in the background; then at least 3 s
       // of frames, and until the picture holds still: some sims build their world over many
       // frames, showing nothing of it until done (the countryside's land, on a time budget), so a
-      // still picture alone does not mean it is ready.
+      // still picture alone does not mean it is ready. Between frames the page's tasks run: sheets
+      // painted on a worker arrive then.
       let shown = draw(now + 100);
       while (renderer.waiting) {
-        await yieldPage();
+        await pause(5);
         shown = draw(now + 50);
       }
       for (let frame = 0, still = 0; frame < 200 && (frame < 60 || still < 3); frame++) {
-        await yieldPage();
+        await pause(5);
         const next = draw(now + 50);
         still = meanChange(shown, next) < 0.02 ? still + 1 : 0;
         shown = next;
@@ -136,7 +140,7 @@ export async function passageSpeeds(_gl: WebGL2RenderingContext): Promise<Record
       renderer.replayPassage();
       let last = draw(now + 10);
       for (let frame = 0; frame < 400 && renderer.passagePhase === "preparing"; frame++) {
-        await yieldPage();
+        await pause(5);
         last = draw(now + 20);
       }
       if (renderer.passagePhase !== "exiting") throw new Error(`${id}: its exit never started`);
@@ -176,7 +180,7 @@ export async function passageSpeeds(_gl: WebGL2RenderingContext): Promise<Record
       throw new Error(`Passages that lose their speed at the seam: ${failures.join("; ")}`);
     return rows;
   } finally {
-    window.requestAnimationFrame = nativeRaf;
+    frames.restore();
     canvas.remove();
   }
 }

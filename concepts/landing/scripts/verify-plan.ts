@@ -1,7 +1,7 @@
 // Which of the lab's browser checks a verify.ts run takes on, and how long each may run: its share
 // of the registry under `--shard i/n`, packed by the seconds each check last took
-// (verify-timings.ts); the checks a run scoped to some scenes keeps (LANDING_SCENES); and each
-// check's deadline.
+// (verify-timings.ts), a check that walks scenes by its scoped share of them; the checks a run
+// scoped to some scenes keeps (LANDING_SCENES); and each check's deadline.
 import { dirname, join, normalize } from "node:path";
 
 /** A plan input that cannot be honoured: a malformed shard or an unknown scene. */
@@ -33,18 +33,20 @@ export function deadlineSeconds(name: string, recorded: Readonly<Record<string, 
 
 /**
  * The checks of `names` that `shard` runs, in their given order. Longest first, each check joins
- * the share with the fewest recorded seconds so far (ties to the lower share), so every check runs
- * in exactly one share and the shares' totals differ by at most the longest check. A check without
- * a record weighs the median record.
+ * the share with the fewest seconds so far (ties to the lower share), so every check runs in exactly
+ * one share and the shares' totals differ by at most the longest check. A check weighs its
+ * `weights` entry if it has one (a scoped run's share of a check that walks scenes,
+ * `scopedWeights`), else its record, else the median record.
  */
 export function shardChecks(
   names: readonly string[],
   recorded: Readonly<Record<string, number>>,
   shard: Shard,
+  weights: Readonly<Record<string, number>> = {},
 ): string[] {
   const records = Object.values(recorded).sort((a, b) => a - b);
   const typical = records[Math.floor(records.length / 2)] ?? 1;
-  const weight = (name: string): number => recorded[name] ?? typical;
+  const weight = (name: string): number => weights[name] ?? recorded[name] ?? typical;
   const longestFirst = [...new Set(names)].sort(
     (a, b) => weight(b) - weight(a) || (a < b ? -1 : a > b ? 1 : 0),
   );
@@ -59,6 +61,26 @@ export function shardChecks(
     share.set(name, least);
   }
   return names.filter((name) => share.get(name) === shard.index - 1);
+}
+
+/**
+ * The seconds each recorded check that walks scenes (`walks`: the scenes each walks in a run of
+ * every scene) takes in a run scoped to `scenes`, which walks those of them alone: its record times
+ * the share of its scenes in scope.
+ */
+export function scopedWeights(
+  walks: Readonly<Record<string, readonly string[]>>,
+  recorded: Readonly<Record<string, number>>,
+  scenes: readonly string[],
+): Record<string, number> {
+  const weights: Record<string, number> = {};
+  for (const [name, walked] of Object.entries(walks)) {
+    const seconds = recorded[name];
+    if (seconds === undefined) continue;
+    const kept = walked.filter((id) => scenes.includes(id)).length;
+    weights[name] = walked.length === 0 ? 0 : (seconds * kept) / walked.length;
+  }
+  return weights;
 }
 
 /**
@@ -85,6 +107,18 @@ const EVERY_SCENE = /\bsceneIds\b|Object\.(?:keys|values|entries)\(\s*sceneDefs\
 const IMPORT = /import\s*\{([^}]*)\}\s*from\s*"(\.\/[^"]+)"/g;
 const ENTRY = /\[\s*"([^"]+)"\s*,\s*([A-Za-z_$][\w$]*)/g;
 
+/** The `[name, check]` pairs of the `checks` list in `registry` (verify-browser.ts's source). */
+function registryEntries(registry: string): (readonly [name: string, check: string])[] {
+  const start = registry.indexOf("export const checks");
+  const list = start === -1 ? "" : registry.slice(start, registry.indexOf("\n];", start));
+  return [...list.matchAll(ENTRY)].map(([, name = "", check = ""]) => [name, check] as const);
+}
+
+/** The names of the checks `registry` (verify-browser.ts's source) registers, in its order. */
+export function registeredChecks(registry: string): string[] {
+  return registryEntries(registry).map(([name]) => name);
+}
+
 /**
  * The scenes each check registered in `registry` (verify-browser.ts's source) covers, by name;
  * undefined for every scene. A check whose function comes from a module under src/scenes/<id>/
@@ -107,11 +141,9 @@ export function checkScenes(
       if (local !== undefined) from.set(local, normalize(path));
     }
   }
-  const start = registry.indexOf("export const checks");
-  const list = start === -1 ? "" : registry.slice(start, registry.indexOf("\n];", start));
   const transpiler = new Bun.Transpiler({ loader: "ts" });
   const covered = new Map<string, ReadonlySet<string> | undefined>();
-  for (const [, name = "", check = ""] of list.matchAll(ENTRY)) {
+  for (const [name, check] of registryEntries(registry)) {
     const file = from.get(check);
     const home = file === undefined ? undefined : SCENE_FILE.exec(file)?.[1];
     if (file === undefined || home === undefined) {

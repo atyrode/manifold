@@ -6,48 +6,17 @@
 // after `apply`, which reads it). One renderer, two scenes: every program compiled costs seconds
 // under software WebGL. A scene enters once its program is built in the background (`arrive`).
 import { Lab } from "./lab.ts";
-import { DitherRenderer, type RenderSettings } from "./renderer.ts";
-import { sceneDefs, type SceneId } from "./scenes/index.ts";
-import { defaultsFor, paramDefaults, renderSettings, type LabState, type Params } from "./state.ts";
-
-function check(ok: boolean, message: string): void {
-  if (!ok) throw new Error(message);
-}
-
-function settings(
-  scene: SceneId,
-  knobs: Params = paramDefaults(scene),
-  look: Partial<LabState> = {},
-): RenderSettings {
-  return renderSettings(
-    {
-      ...defaultsFor(scene),
-      pixel: 1,
-      motion: 1,
-      view: "source",
-      mouse: "still",
-      transitions: "off",
-      ...look,
-    },
-    knobs,
-  );
-}
+import { DitherRenderer } from "./renderer.ts";
+import { sceneDefs } from "./scenes/index.ts";
+import { defaultsFor, paramDefaults } from "./state.ts";
+import { check, holdFrames, labSettings, pause, stage } from "./verify/kit.ts";
 
 export async function verifyRuntime(_gl: WebGL2RenderingContext): Promise<Record<string, unknown>> {
   const result: Record<string, unknown> = {};
-  const nativeRaf = window.requestAnimationFrame;
-  let scheduled: FrameRequestCallback | undefined;
-  window.requestAnimationFrame = (callback) => {
-    scheduled = callback;
-    return 1;
-  };
-  const canvas = document.createElement("canvas");
-  canvas.style.cssText = "position:fixed;left:0;top:0;width:320px;height:200px";
-  document.body.append(canvas);
+  const frames = holdFrames();
   // The renderer asks for this same context. Count what is sent to each uniform a program reads
   // (one it does not read has no location), from before the first program is built.
-  const gl = canvas.getContext("webgl2", { antialias: false, alpha: false });
-  if (!gl) throw new Error("Runtime context unavailable");
+  const { canvas, gl } = stage(320, 200);
   const sends: Record<string, number> = {};
   const names = new WeakMap<WebGLUniformLocation, string>();
   const locate = gl.getUniformLocation.bind(gl);
@@ -73,13 +42,7 @@ export async function verifyRuntime(_gl: WebGL2RenderingContext): Promise<Record
       send(location, ...args);
     };
   }
-  const frame = (now: number): boolean => {
-    const tick = scheduled;
-    if (!tick) throw new Error("No frame scheduled");
-    scheduled = undefined;
-    tick(now);
-    return scheduled !== undefined;
-  };
+  const frame = frames.run;
   const uniform = (name: string): unknown => {
     const program = gl.getParameter(gl.CURRENT_PROGRAM) as WebGLProgram;
     const location = gl.getUniformLocation(program, name);
@@ -122,7 +85,7 @@ export async function verifyRuntime(_gl: WebGL2RenderingContext): Promise<Record
   };
   dunes.sim = standIn;
   try {
-    const renderer = new DitherRenderer(canvas, settings("dunes"), true);
+    const renderer = new DitherRenderer(canvas, labSettings("dunes"), true);
     renderer.start({ paced: false });
     let now = 1000;
     /**
@@ -133,9 +96,7 @@ export async function verifyRuntime(_gl: WebGL2RenderingContext): Promise<Record
       const started = performance.now();
       while (renderer.waiting) {
         check(performance.now() - started < 120_000, "No scene on screen within 120 s");
-        const pause = Promise.withResolvers<void>();
-        setTimeout(pause.resolve, 20);
-        await pause.promise;
+        await pause(20);
         frame((now += 16));
       }
     };
@@ -214,15 +175,13 @@ export async function verifyRuntime(_gl: WebGL2RenderingContext): Promise<Record
     // once the canvas's observer has reported its new size (a rendering update).
     canvas.style.width = "64px";
     canvas.style.height = "40px";
-    const resized = Promise.withResolvers<void>();
-    nativeRaf(() => setTimeout(resized.resolve, 0));
-    await resized.promise;
+    await frames.rendered();
     const image = () => pixels(0, 0, 64, 40);
     const drawn = () => {
       const bytes = image();
       return bytes.some((value, index) => index % 4 !== 3 && value !== bytes[index % 4]);
     };
-    const n = Number.parseInt(settings("dunes").bg.slice(1), 16);
+    const n = Number.parseInt(labSettings("dunes").bg.slice(1), 16);
     const background = [(n >> 16) & 255, (n >> 8) & 255, n & 255];
     const blank = () =>
       image().every(
@@ -267,7 +226,7 @@ export async function verifyRuntime(_gl: WebGL2RenderingContext): Promise<Record
     // A shader that does not build is reported too (its program built in the background meanwhile,
     // the scene on screen going on), and retry builds it again once it is fixed.
     lake.glsl = `${lakeGlsl}\n#error injected build fault\n`;
-    renderer.update(settings("lake"));
+    renderer.update(labSettings("lake"));
     check(frame((now += 16)), "No next frame was scheduled after a shader failed to build");
     await arrive();
     check(
@@ -280,12 +239,12 @@ export async function verifyRuntime(_gl: WebGL2RenderingContext): Promise<Record
     await arrive();
     check(renderer.failure === undefined && drawn(), "Retry did not rebuild a fixed shader");
     // Another scene recovers from a failure too.
-    renderer.update(settings("dunes"));
+    renderer.update(labSettings("dunes"));
     fault = new Error("injected sim fault");
     frame((now += 16));
     check(renderer.failure?.stage === "frame", "The second fault was not reported");
     fault = undefined;
-    renderer.update(settings("lake"));
+    renderer.update(labSettings("lake"));
     frame((now += 16));
     check(
       renderer.failure === undefined && drawn(),
@@ -295,7 +254,7 @@ export async function verifyRuntime(_gl: WebGL2RenderingContext): Promise<Record
     dunes.sim = () => {
       throw new Error("injected start fault");
     };
-    renderer.update(settings("dunes"));
+    renderer.update(labSettings("dunes"));
     check(frame((now += 16)), "No next frame was scheduled after a simulation failed to start");
     check(
       renderer.failure?.stage === "start",
@@ -309,7 +268,7 @@ export async function verifyRuntime(_gl: WebGL2RenderingContext): Promise<Record
     result.recovery = { events: logged.length, built };
 
     // S8: per-program uniforms are sent when they change and only then.
-    renderer.update(settings("lake"));
+    renderer.update(labSettings("lake"));
     frame((now += 16));
     const base = { ...sends };
     for (let i = 0; i < 4; i++) frame((now += 16));
@@ -328,9 +287,9 @@ export async function verifyRuntime(_gl: WebGL2RenderingContext): Promise<Record
     const index = lake.params.findIndex((def) => def.kind === "range");
     const knob = lake.params[index];
     if (!knob) throw new Error("The lake has no range knob");
-    const original = settings("lake", knobs).params[index];
+    const original = labSettings("lake", knobs).params[index];
     knobs[knob.key] = (knobs[knob.key] ?? 0) + 0.125;
-    const changed = settings("lake", knobs);
+    const changed = labSettings("lake", knobs);
     check(changed.params[index] !== original, "The knob change was a no-op");
     renderer.update(changed);
     frame((now += 16));
@@ -340,9 +299,9 @@ export async function verifyRuntime(_gl: WebGL2RenderingContext): Promise<Record
       "A changed knob did not reach the shader",
     );
     // A look change made while another program draws reaches this one when it draws again.
-    renderer.update(settings("dunes", paramDefaults("dunes"), { levels: 5 }));
+    renderer.update(labSettings("dunes", paramDefaults("dunes"), { levels: 5 }));
     frame((now += 16));
-    renderer.update(settings("lake", knobs, { levels: 5 }));
+    renderer.update(labSettings("lake", knobs, { levels: 5 }));
     frame((now += 16));
     check(
       uniform("uLevels") === 5,
@@ -375,7 +334,7 @@ export async function verifyRuntime(_gl: WebGL2RenderingContext): Promise<Record
     console.error = errorLog;
     if (dunesSim !== undefined) dunes.sim = dunesSim;
     lake.glsl = lakeGlsl;
-    window.requestAnimationFrame = nativeRaf;
+    frames.restore();
     canvas.remove();
   }
   return result;

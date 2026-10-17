@@ -221,6 +221,15 @@ const REGROW_SECONDS = 90;
 const HEAT_HALF_LIFE = 0.9;
 /** Touch radius in frame heights at the low and high end of the warmth knob. */
 const TOUCH_RADIUS = [0.035, 0.085] as const;
+/**
+ * Warmth at full warmth: what a held fingertip (or the exit's breath) lays where it rests, per
+ * second and at most 1 a frame, and what a held drag leaves along its middle; what a passing hand
+ * leaves along its path at any speed, under MELT_ONSET, so passing over the glass never melts it
+ * however slowly the pointer goes, while rubbing back and forth does.
+ */
+const WARM_RATE = 40;
+const HELD_PASS = 0.4;
+const HOVER_PASS = 0.29;
 
 /** The Manifold M, as the shader's markDistance draws it (mark units), traced in this order. */
 const MARK_PATH: readonly (readonly [number, number])[] = [
@@ -231,11 +240,13 @@ const MARK_PATH: readonly (readonly [number, number])[] = [
   [0.47, -0.5],
 ];
 /**
- * Mark units per second the fingertip traces, its pause at each corner, the wait between tracings
- * while the M is on, and the growth clock before the first, so there is frost to write in.
+ * Mark units per second the fingertip traces, its pause at each corner, what its pass leaves along
+ * its middle (well past MELT_ONSET: the M melts clear), the wait between tracings while the M is
+ * on, and the growth clock before the first, so there is frost to write in.
  */
 const MARK_SPEED = 1.5;
 const MARK_PAUSE = 0.15;
+const MARK_PASS = 3;
 const MARK_REPEAT = 80;
 const MARK_FIRST = FROST_START + 25;
 
@@ -1153,9 +1164,6 @@ export function frostSim(params: readonly ParamDef[]): SimFactory {
     let clock = FROST_START;
     let uploadedClock = Number.NaN;
     let melt: MeltField | undefined;
-    let hasLast = false;
-    let lastX = 0;
-    let lastY = 0;
     let traceStart: number | undefined;
     let traceSize = 0.4;
     let nextTrace: number | undefined;
@@ -1179,34 +1187,15 @@ export function frostSim(params: readonly ParamDef[]): SimFactory {
       const { pointer, aspect, dt } = frame;
       if (warmth <= 0 || !pointer.inside || dt <= 0) {
         glass.heat.lift();
-        hasLast = false;
         return;
       }
       const radius = TOUCH_RADIUS[0] + (TOUCH_RADIUS[1] - TOUCH_RADIUS[0]) * warmth;
-      const moved = hasLast ? Math.hypot((pointer.x - lastX) * aspect, pointer.y - lastY) : 0;
       if (pointer.pressed) glass.heat.lift();
       if (pointer.down) {
-        glass.heat.stroke(
-          pointer.x,
-          pointer.y,
-          radius,
-          Math.min(1, dt * 40) * (0.55 + 0.45 * warmth),
-          aspect,
-        );
-      } else if (moved > 1e-3) {
-        // Warmth in proportion to the distance moved, so passing over the glass leaves it below
-        // the melting point however slowly the pointer goes; rubbing back and forth does melt it.
-        glass.heat.stroke(
-          pointer.x,
-          pointer.y,
-          radius * 1.25,
-          0.22 * Math.min(1, moved / radius),
-          aspect,
-        );
-      }
-      lastX = pointer.x;
-      lastY = pointer.y;
-      hasLast = true;
+        const heat = 0.55 + 0.45 * warmth;
+        glass.heat.stroke(pointer.x, pointer.y, radius, HELD_PASS * heat, aspect);
+        glass.heat.hold(pointer.x, pointer.y, radius, Math.min(1, dt * WARM_RATE) * heat, aspect);
+      } else glass.heat.stroke(pointer.x, pointer.y, radius * 1.25, HOVER_PASS, aspect);
     };
 
     /** The Manifold M: a fingertip writes it in the frost on "now", and now and then while on. */
@@ -1242,7 +1231,7 @@ export function frostSim(params: readonly ParamDef[]): SimFactory {
         }
         const x = 0.5 + (point[0] * traceSize) / frame.aspect;
         const y = 0.52 + point[1] * traceSize;
-        glass.finger.stroke(x, y, traceSize * 0.085, 0.85, frame.aspect);
+        glass.finger.stroke(x, y, traceSize * 0.085, MARK_PASS, frame.aspect);
       }
     };
 
@@ -1285,9 +1274,7 @@ export function frostSim(params: readonly ParamDef[]): SimFactory {
       );
       const spread = Math.min(1, exit);
       const radius = BREATH_START + (BREATH_REACH * far - BREATH_START) * spread * spread;
-      glass.heat.lift();
-      glass.heat.stroke(breath.x, breath.y, radius, Math.min(1, frame.dt * 40) * 0.9, aspect);
-      glass.heat.lift();
+      glass.heat.hold(breath.x, breath.y, radius, Math.min(1, frame.dt * WARM_RATE) * 0.9, aspect);
     };
 
     return {
@@ -1314,9 +1301,6 @@ export function frostSim(params: readonly ParamDef[]): SimFactory {
           // Recreate both trails too: clearing only their bytes would leave hidden warmth and
           // stroke endpoints behind. The new field is uploaded below even when dt is zero.
           melt = undefined;
-          hasLast = false;
-          lastX = 0;
-          lastY = 0;
           traceStart = undefined;
           traceSize = 0.4;
           nextTrace = undefined;
@@ -1383,7 +1367,6 @@ export function frostSim(params: readonly ParamDef[]): SimFactory {
           melt = new MeltField(meltWidth, meltHeight);
           meltTexture.resize(meltWidth, meltHeight);
           meltTexture.upload(melt.bytes);
-          hasLast = false;
         }
         touch(frame, melt);
         breathe(frame, melt);

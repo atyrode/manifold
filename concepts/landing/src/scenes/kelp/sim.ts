@@ -302,11 +302,15 @@ const HAND_SMOOTH = 0.06;
 const HAND_MAX_SPEED = 1.5;
 /** Seconds the wake takes to settle once the button is let go. */
 const HAND_RELEASE = 0.25;
-/** The plankton trail: grid, brush radius (uv heights), strength per stroke, half-life (s). */
+/**
+ * The plankton trail: grid, brush radius (uv heights), what one pass of the hand leaves along its
+ * middle, what a hand held still lays per second, half-life (s).
+ */
 const TRAIL_W = 128;
 const TRAIL_H = 72;
 const TRAIL_RADIUS = 0.035;
-const TRAIL_STRENGTH = 0.5;
+const TRAIL_PASS = 0.4;
+const TRAIL_HELD = 30;
 const TRAIL_HALF_LIFE = 1.4;
 
 // ---- events ---------------------------------------------------------------------------------------
@@ -1179,7 +1183,8 @@ class KelpSim implements SceneSim {
       hand.x = x;
       hand.y = y;
       hand.on = 1;
-      this.#trail.stroke(pointer.x, pointer.y, TRAIL_RADIUS, TRAIL_STRENGTH, this.#aspect);
+      this.#trail.stroke(pointer.x, pointer.y, TRAIL_RADIUS, TRAIL_PASS, this.#aspect);
+      this.#trail.hold(pointer.x, pointer.y, TRAIL_RADIUS, TRAIL_HELD * dt, this.#aspect);
     } else {
       if (this.#handHeld) this.#trail.lift();
       hand.on = dt > 0 ? Math.max(0, hand.on - dt / HAND_RELEASE) : hand.on;

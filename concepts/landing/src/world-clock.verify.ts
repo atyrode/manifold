@@ -9,8 +9,9 @@
 //   the same programs draw undated (SKY_DATE_ANCHOR left out), and at another date they do not.
 import { climateChill, climateCold, climateLying, fallingSnow } from "./climate.ts";
 import { sceneDefs } from "./scenes/index.ts";
-import { fragmentSourceFor, sceneFeatures, vertexSource } from "./shaders/index.ts";
+import { fragmentSourceFor, sceneFeatures } from "./shaders/index.ts";
 import { defaultsFor, paramDefaults, renderSettings } from "./state.ts";
+import { check, drawFloats, link, readBytes } from "./verify/kit.ts";
 import { dateShift, skyState, starFrame, starTurn, timeOfDay } from "./world-clock.ts";
 
 /** How far a GPU value may stand from the model's. */
@@ -27,36 +28,6 @@ const PROBE_NORM = Math.hypot(0.3, 0.5, 0.8);
 const PROBE_DIR = [0.3 / PROBE_NORM, 0.5 / PROBE_NORM, 0.8 / PROBE_NORM] as const;
 /** The [texel, channel] the probe writes angles to: the stars' turn, the worldStarTurn. */
 const ANGLES: Readonly<Record<string, true>> = { "6.1": true, "9.2": true };
-
-function check(ok: boolean, message: string): void {
-  if (!ok) throw new Error(`world clock: ${message}`);
-}
-
-function program(gl: WebGL2RenderingContext, fragment: string): WebGLProgram {
-  const linked = gl.createProgram();
-  for (const [type, source] of [
-    [gl.VERTEX_SHADER, vertexSource],
-    [gl.FRAGMENT_SHADER, fragment],
-  ] as const) {
-    const shader = gl.createShader(type);
-    check(shader !== null, "shader allocation failed");
-    if (!shader) continue;
-    gl.shaderSource(shader, source);
-    gl.compileShader(shader);
-    check(
-      Boolean(gl.getShaderParameter(shader, gl.COMPILE_STATUS)),
-      gl.getShaderInfoLog(shader) ?? "",
-    );
-    gl.attachShader(linked, shader);
-    gl.deleteShader(shader);
-  }
-  gl.linkProgram(linked);
-  check(
-    Boolean(gl.getProgramParameter(linked, gl.LINK_STATUS)),
-    gl.getProgramInfoLog(linked) ?? "",
-  );
-  return linked;
-}
 
 // Case y (hour, shift, turn and phase from its index) writes texel x: 0 sun, 1 moon, 2 sunColor,
 // 3 ambient, 4 moonColor, 5 (day, twilight, night), 6 (moonPhase, starTurn, timeOfDayM), 7 the probe
@@ -94,35 +65,6 @@ Shade worldClockProbe(vec2 uv, vec2 cell, float t) {
 }
 `;
 
-/** Draws `linked` over `width` x `height` into a float target; RGBA floats, rows bottom up. */
-function drawFloat(
-  gl: WebGL2RenderingContext,
-  linked: WebGLProgram,
-  width: number,
-  height: number,
-  uniforms: (location: (name: string) => WebGLUniformLocation | null) => void,
-): Float32Array {
-  const texture = gl.createTexture();
-  gl.bindTexture(gl.TEXTURE_2D, texture);
-  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA32F, width, height, 0, gl.RGBA, gl.FLOAT, null);
-  const target = gl.createFramebuffer();
-  gl.bindFramebuffer(gl.FRAMEBUFFER, target);
-  gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, texture, 0);
-  gl.viewport(0, 0, width, height);
-  gl.useProgram(linked);
-  const location = (name: string) => gl.getUniformLocation(linked, name);
-  gl.uniform2f(location("uRes"), width, height);
-  gl.uniform1i(location("uView"), 1);
-  uniforms(location);
-  gl.drawArrays(gl.TRIANGLES, 0, 3);
-  const out = new Float32Array(width * height * 4);
-  gl.readPixels(0, 0, width, height, gl.RGBA, gl.FLOAT, out);
-  gl.bindFramebuffer(gl.FRAMEBUFFER, null);
-  gl.deleteFramebuffer(target);
-  gl.deleteTexture(texture);
-  return out;
-}
-
 /** The model's values for case `i`, texel by texel, as the probe writes them. */
 function expected(i: number): readonly (readonly number[])[] {
   const tod = (i % HOURS) / HOURS;
@@ -157,7 +99,7 @@ function drawScene(
   const source = fragmentSourceFor(scene, sceneFeatures(scene));
   const fragment = dated ? source : source.replace(/#define SKY_DATE_ANCHOR [^\n]*\n/, "");
   check(dated || fragment !== source, `${id} has no staged date to leave out`);
-  const linked = program(gl, fragment);
+  const linked = link(gl, fragment);
   const width = 160;
   const height = 90;
   gl.viewport(0, 0, width, height);
@@ -174,8 +116,7 @@ function drawScene(
     Float32Array.from(renderSettings(defaultsFor(id), { ...paramDefaults(id), ...over }).params),
   );
   gl.drawArrays(gl.TRIANGLES, 0, 3);
-  const bytes = new Uint8Array(width * height * 4);
-  gl.readPixels(0, 0, width, height, gl.RGBA, gl.UNSIGNED_BYTE, bytes);
+  const bytes = readBytes(gl, width, height);
   gl.deleteProgram(linked);
   return bytes;
 }
@@ -186,7 +127,7 @@ const differing = (a: Uint8Array, b: Uint8Array): number =>
 export function verifyWorldClock(gl: WebGL2RenderingContext): Record<string, unknown> {
   check(gl.getExtension("EXT_color_buffer_float") !== null, "float render targets unavailable");
   const garden = sceneDefs.garden;
-  const probe = program(
+  const probe = link(
     gl,
     fragmentSourceFor(
       { ...garden, entry: "worldClockProbe", glsl: PROBE },
@@ -194,11 +135,16 @@ export function verifyWorldClock(gl: WebGL2RenderingContext): Record<string, unk
     ),
   );
   const cases = HOURS * 3 * PHASES.length;
-  const out = drawFloat(gl, probe, FIELDS, cases, (location) => {
+  const out = drawFloats(gl, FIELDS, cases, () => {
+    gl.useProgram(probe);
+    const location = (name: string) => gl.getUniformLocation(probe, name);
+    gl.uniform2f(location("uRes"), FIELDS, cases);
+    gl.uniform1i(location("uView"), 1);
     gl.uniform3fv(location("uShifts"), Float32Array.from(SHIFTS));
     gl.uniform3fv(location("uTurns"), Float32Array.from(TURNS));
     gl.uniform4fv(location("uPhases"), Float32Array.from(PHASES));
     gl.uniform3fv(location("uProbeDir"), Float32Array.from(PROBE_DIR));
+    gl.drawArrays(gl.TRIANGLES, 0, 3);
   });
   gl.deleteProgram(probe);
   let worst = 0;

@@ -263,7 +263,6 @@ export function solarMobile(set: number, clearance: number, sun: Vec3): SolarMob
       reach: [reach, weightReach],
       loop,
       heading: headingFor(body.start),
-      plates: [undefined, undefined],
       balls: [
         earth ? undefined : { radius, mass: shellMass(radius), look: body.look },
         { radius: weightRadius, mass: weightMass, look: SOLAR_LOOKS.weight },
@@ -280,7 +279,6 @@ export function solarMobile(set: number, clearance: number, sun: Vec3): SolarMob
         loop: MOON_LOOP,
         // The Moon rides end 1.
         heading: headingFor(SOLAR_MOON.start + 180),
-        plates: [undefined, undefined],
         balls: [
           { radius, mass: earthMass, look: body.look },
           { radius: moonRadius, mass: moonMass, look: SOLAR_LOOKS.moon },

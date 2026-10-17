@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -8,6 +8,8 @@ import {
   deadlineSeconds,
   parseScenes,
   parseShard,
+  registeredChecks,
+  scopedWeights,
   shardChecks,
   timingsModule,
   VerifyPlanError,
@@ -36,6 +38,24 @@ describe("shards", () => {
     expect(share).toEqual(names.filter((name) => share.includes(name)));
   });
 
+  test("a scoped run packs a check that walks scenes by its share of them in scope", () => {
+    const recorded = { walker: 100, a: 30, b: 30, c: 30, idle: 5 };
+    const weights = scopedWeights(
+      { walker: ["pond", "lake", "meadow", "island"], idle: [], unrecorded: ["pond"] },
+      recorded,
+      ["pond"],
+    );
+    expect(weights).toEqual({ walker: 25, idle: 0 });
+    const scoped = Object.keys(recorded);
+    // Whole, the walker holds a shard to itself; by its share in scope it takes its turn.
+    expect(shardChecks(scoped, recorded, { index: 1, count: 2 })).toEqual(["walker"]);
+    expect(shardChecks(scoped, recorded, { index: 2, count: 2 }, weights)).toEqual([
+      "walker",
+      "b",
+      "idle",
+    ]);
+  });
+
   test("only i/n with 1 <= i <= n names a shard", () => {
     expect(parseShard("3/4")).toEqual({ index: 3, count: 4 });
     for (const value of ["0/4", "5/4", "1/0", "4", "a/b", "-1/4"])
@@ -49,6 +69,21 @@ test("a check may outrun its record, and never gets less than the default deadli
     expect(deadlineSeconds(name, recordedSeconds)).toBeGreaterThan(seconds * 2);
   }
   expect(deadlineSeconds("unrecordedOne", recordedSeconds)).toBe(DEADLINE_SECONDS);
+});
+
+test("every registered check has recorded seconds, and every record names a registered check", () => {
+  const registry = readFileSync(new URL("../verify-browser.ts", import.meta.url), "utf8");
+  const registered = registeredChecks(registry);
+  const recorded = Object.keys(recordedSeconds);
+  expect(registered.length).toBeGreaterThan(0);
+  expect(
+    registered.filter((name) => !recorded.includes(name)),
+    "registered without a record (bun concepts/landing/verify.ts --record <name>)",
+  ).toEqual([]);
+  expect(
+    recorded.filter((name) => !registered.includes(name)),
+    "recorded but no longer registered",
+  ).toEqual([]);
 });
 
 describe("scene scope", () => {

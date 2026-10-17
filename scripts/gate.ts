@@ -265,6 +265,14 @@ const tasks: readonly GateTask[] = [
     command: fixed("bun", "test", "concepts/landing"),
   },
   {
+    // Every program the lab's scenes build, through glslang: it compiles, links and keeps within
+    // WebGL2's guaranteed fragment uniforms (glslangValidator on the PATH; CI installs it).
+    name: "glsl:check concepts/landing",
+    group: "landing-concept",
+    phase: "static",
+    command: fixed("bun", "concepts/landing/scripts/glsl-check.ts"),
+  },
+  {
     // Every real-WebGL regression on a fresh page, each within its own deadline. Under --shard it
     // runs that share of the checks, balanced by their recorded seconds (verify.ts --shard).
     name: "verify:landing-webgl",

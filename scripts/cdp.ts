@@ -113,6 +113,14 @@ function describeRemoteObject(value: unknown): string {
   return object.description ?? object.unserializableValue ?? object.type ?? "?";
 }
 
+/** How {@link Browser.launch} starts Chromium. */
+export interface LaunchOptions {
+  /** Pages in an off-the-record browser context. */
+  readonly incognito?: boolean;
+  /** WebGL rendered in software (SwiftShader) rather than no GPU at all. */
+  readonly softwareWebgl?: boolean;
+}
+
 /** Just enough CDP to navigate, evaluate, click, type, and drive real pointer gestures. */
 export class Browser {
   /** The driver's ends of Chromium's DevTools pipe: commands to its fd 3, frames from its fd 4. */
@@ -125,6 +133,12 @@ export class Browser {
   private profile: string | null = null;
   /** Set by {@link close}: the pipe closing then is no loss. */
   private closing = false;
+  /** Counts launches, so a closing pipe of an earlier launch never loses a later one's page. */
+  private launches = 0;
+  /** What the last launch was given, for {@link relaunch}. */
+  private launchOptions: LaunchOptions = {};
+  /** `Browser.getVersion`'s product of the running browser ("HeadlessChrome/148.0.…"). */
+  private launchedProduct = "";
   /** Why the page is gone, once it is (see {@link lost}). */
   private lostReason: string | null = null;
   private lostSignal = lossSignal();
@@ -177,6 +191,11 @@ export class Browser {
    */
   get lost(): Promise<never> {
     return this.lostSignal.promise;
+  }
+
+  /** The running browser's product and version, as `Browser.getVersion` names them. */
+  get product(): string {
+    return this.launchedProduct;
   }
 
   static detect(): string {
@@ -255,9 +274,9 @@ export class Browser {
    * readiness (#835). Chromium quits when the driver's end of the pipe closes, so it cannot
    * outlive the driver, and its supervisor ({@link SUPERVISOR}) then removes the profile.
    */
-  async launch(
-    options: { readonly incognito?: boolean; readonly softwareWebgl?: boolean } = {},
-  ): Promise<void> {
+  async launch(options: LaunchOptions = {}): Promise<void> {
+    this.launchOptions = options;
+    const generation = ++this.launches;
     const binary = Browser.detect();
     const stamp = launchStamp();
     const busAddress = await this.startPrivateBus(stamp);
@@ -349,13 +368,16 @@ export class Browser {
     fromBrowser.once("close", () => {
       if (this.closing) return;
       void Promise.race([Promise.all([proc.exited, stderrDrained]), sleep(2_000)]).then(() => {
+        // A browser relaunched meanwhile is not this one.
+        if (generation !== this.launches) return;
         const code = proc.exitCode === null ? "" : ` with code ${String(proc.exitCode)}`;
         this.lose(`chromium exited${code}: ${diagnostics()}`);
       });
     });
 
     try {
-      await this.command("Browser.getVersion", {}, false, LAUNCH_MS);
+      const version = await this.command("Browser.getVersion", {}, false, LAUNCH_MS);
+      this.launchedProduct = String(version.result?.["product"] ?? "");
     } catch (error) {
       // A timeout says nothing on its own; an exit (stderr included) or close() says why.
       if (this.lostReason !== null || this.closing) throw error;
@@ -799,6 +821,17 @@ export class Browser {
   /** Emulates tab lifecycle (e.g. "frozen" ≈ hidden/suspended tab, "active" to resume). */
   async setLifecycle(state: "frozen" | "active"): Promise<void> {
     await this.send("Page.setWebLifecycleState", { state });
+  }
+
+  /**
+   * Closes this browser, whatever became of its page, and launches a fresh one as the last
+   * {@link launch} did: a driver goes on after a {@link PageLostError} with a new page. What was
+   * added through the old page's session (bindings, scripts, emulation) went with it; {@link on}
+   * subscriptions and the page messages not yet drained stay.
+   */
+  async relaunch(): Promise<void> {
+    await this.close();
+    await this.launch(this.launchOptions);
   }
 
   async close(): Promise<void> {

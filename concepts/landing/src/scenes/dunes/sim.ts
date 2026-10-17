@@ -78,8 +78,15 @@ const WARM_SLICE_MS = 18;
 const PICKS_PER_SECOND = 500_000;
 /** Most updates spent in one frame however long it was, so a stalled tab does not lock up. */
 const MAX_FRAME_PICKS = 60_000;
-/** Seconds between uploads while the sand moves (it creeps; no need to re-upload every frame). */
+/**
+ * Uploads while the sand creeps (it is no use re-sending 1.3 MB of floats every frame): once
+ * UPLOAD_SLABS slabs have moved since the last, and never sooner than UPLOAD_EVERY after it. The
+ * slabs' flux follows the wind's strength^1.5, so the creep goes up 3 times a second at wind 0.2
+ * (the default), 11 at 0.5 and every UPLOAD_EVERY at 1 (20 a second at 60 Hz); a pour, the M or a
+ * fresh field at the next UPLOAD_EVERY.
+ */
 const UPLOAD_EVERY = 1 / 24;
+const UPLOAD_SLABS = 4000;
 /** Slabs dropped at a press, and per second while held. */
 const HEAP_SLABS = 450;
 const POUR_PER_SECOND = 900;
@@ -319,6 +326,8 @@ class DuneField {
   #dir = 1;
   /** Bumped whenever the sand changes, so uploads can be skipped while it rests. */
   version = 0;
+  /** Slabs the model has lifted and carried since it was built: the creep, for the upload cadence. */
+  moved = 0;
 
   /** Blow toward +x (positive) or -x (negative). */
   setWind(wind: number): void {
@@ -386,6 +395,7 @@ class DuneField {
     const stone = this.stone;
     const shadow = this.#shadow;
     const dir = this.#dir;
+    let moved = 0;
     for (let k = 0; k < picks; k++) {
       const i = this.#next() >>> CELL_BITS;
       const hi = h[i] ?? 0;
@@ -393,6 +403,7 @@ class DuneField {
       const x = i & MASK;
       const y = i >>> SHIFT;
       this.#set(x, y, hi - 1);
+      moved++;
       this.#fill(x, y);
       const row = y << SHIFT;
       let at = x;
@@ -415,7 +426,8 @@ class DuneField {
       this.#set(at, y, (h[row | at] ?? 0) + 1);
       while (this.#slide(at, y));
     }
-    if (picks > 0) this.version++;
+    this.moved += moved;
+    if (moved > 0) this.version++;
   }
 
   /**
@@ -809,6 +821,9 @@ export function dunesSim(params: readonly ParamDef[]): SimFactory {
     let owed = 0;
     let uploaded = -1;
     let lastUpload = -Infinity;
+    // The slabs moved as of the last upload, and whether anything but the creep has changed since.
+    let movedAtUpload = 0;
+    let edited = true;
 
     return {
       frame(frame: SimFrame): readonly (WebGLTexture | undefined)[] {
@@ -823,6 +838,7 @@ export function dunesSim(params: readonly ParamDef[]): SimFactory {
         if (markSize !== stoneSize) {
           field.setStone(markSize > 0 ? markSize : undefined);
           stoneSize = markSize;
+          edited = true;
         }
 
         // A new supply or arrangement lays the field out afresh once the knob rests, then warms up.
@@ -841,6 +857,7 @@ export function dunesSim(params: readonly ParamDef[]): SimFactory {
           laidSand = sand;
           laidArrangement = arrangement;
           warmed = 0;
+          edited = true;
         }
 
         const warming = warmed < WARM_STEPS;
@@ -848,6 +865,7 @@ export function dunesSim(params: readonly ParamDef[]): SimFactory {
           // Time-sliced so frames keep coming; the laid-out dunes sharpen meanwhile. Where frames come
           // slowly (a software renderer) it takes a share of the time between them instead, so it
           // still ends within a few.
+          edited = true;
           warmed = runBudgeted(
             () => field.step(WARM_CHUNK),
             Math.max(WARM_SLICE_MS, frame.budget),
@@ -871,15 +889,19 @@ export function dunesSim(params: readonly ParamDef[]): SimFactory {
           if (
             slabs > 0 &&
             dunesPointerCell(frame, knobs.value(frame, "camera"), sand, markSize, ground, cell)
-          )
+          ) {
             field.pour(cell.x, cell.y, slabs);
+            edited = true;
+          }
         }
 
-        // While the sand creeps an upload every UPLOAD_EVERY is plenty; the finished warm-up shows at once.
+        // The creep goes up as UPLOAD_SLABS of it gather, anything else at the next UPLOAD_EVERY;
+        // the finished warm-up shows at once.
         const due =
           uploaded < 0 ||
           (warming && warmed === WARM_STEPS) ||
-          now - lastUpload >= UPLOAD_EVERY * 1000;
+          (now - lastUpload >= UPLOAD_EVERY * 1000 &&
+            (edited || field.moved - movedAtUpload >= UPLOAD_SLABS));
         if (field.version !== uploaded && due) {
           surface.update(field);
           if (warmed < WARM_STEPS) {
@@ -889,6 +911,8 @@ export function dunesSim(params: readonly ParamDef[]): SimFactory {
           shape.upload(surface.shape);
           uploaded = field.version;
           lastUpload = now;
+          movedAtUpload = field.moved;
+          edited = false;
         }
         return textures;
       },
