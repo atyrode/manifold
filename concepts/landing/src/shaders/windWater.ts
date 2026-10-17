@@ -21,7 +21,7 @@
 //     The vertical spread (screen heights, one standard deviation) the unresolved ripples smear a
 //     reflection over: jitter the lookup by it per cell (the dither averages the samples) or blur.
 //
-// Usage (aurora's fjord):
+// Usage (the lake's fjord):
 //   Ground g = planeAt(uv, aspect, horizon, eye, focal);
 //   vec4 rip = windRipples(g, uMotionTime, K_wind, K_ripples);
 //   vec2 shift = windMirror(rip, horizon - uv.y, focal);

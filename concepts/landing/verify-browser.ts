@@ -9,7 +9,7 @@ import { verifyFrostSky } from "./src/scenes/frost/sky.verify.ts";
 import { GpuCompute } from "./src/sims/gpu.ts";
 import { verifyOrbitRingDepth } from "./src/scenes/orbit/ring-depth.verify.ts";
 import { verifySwellRelief } from "./src/scenes/swell/relief.verify.ts";
-import { verifyAuroraRipples } from "./src/scenes/aurora/ripples.verify.ts";
+import { verifyLakeRipples } from "./src/scenes/lake/ripples.verify.ts";
 import { verifyBarLastCall } from "./src/scenes/bar/lastcall.verify.ts";
 import { verifyDewBins } from "./src/scenes/dew/bins.verify.ts";
 import { verifyTidepoolExchange } from "./src/scenes/tidepool/exchange.verify.ts";
@@ -528,7 +528,7 @@ export const checks: readonly Check[] = [
   ["mobile", mobileVerify],
   ["orbitRingDepth", verifyOrbitRingDepth],
   ["swellRelief", verifySwellRelief],
-  ["auroraRipples", verifyAuroraRipples],
+  ["lakeRipples", verifyLakeRipples],
   ["barLastCall", verifyBarLastCall],
   ["dewBins", verifyDewBins],
   ["tidepoolExchange", verifyTidepoolExchange],

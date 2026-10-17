@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { parsePresets, presets } from "./presets.ts";
 import { sceneDefs } from "./scenes/index.ts";
-import { encodePlanets, planetDefaults, readPlanet } from "./scenes/planets.ts";
+import { encodePlanets, planetDefaults, readPlanet, type SkyPlanets } from "./scenes/planets.ts";
 import {
   checkMigrations,
   defaults,
@@ -222,6 +222,78 @@ describe("the URL schema", () => {
     expect(readSetup(q("levels=3.5")).state.levels).toBe(4);
     expect(reread("levels=3.4")).toBe("levels=3");
     expect(reread("pixel=1.5")).toBe("pixel=1.5");
+  });
+});
+
+describe("Aurora over a fjord, merged into the lake", () => {
+  /** Its planets' pad while it was a scene. */
+  const aurora: SkyPlanets = { group: "sky", across: [-62, -24, 62], up: [8, 30, 45] };
+  const lake = sceneDefs.lake.planets;
+  if (lake === undefined) throw new Error("the lake takes no planets");
+
+  test("its links open the lake's fjord under the slow drapes, set as it drew them", () => {
+    const read = readSetup(q("scene=aurora&motion=0.4"));
+    expect(read.state).toMatchObject({ scene: "lake", motion: 0.4 });
+    expect(read.unknownScene).toBeUndefined();
+    expect(read.params).toMatchObject({
+      setting: 1,
+      drapes: 1,
+      aurora: 1,
+      "aurora-amount": 0.7,
+      hue: 0,
+      activity: 0.5,
+      corona: 1,
+      "corona-amount": 0.35,
+      substorm: 0,
+      hour: 1,
+      moon: 1,
+      "moon-amount": 0.25,
+      milkyWay: 0,
+      ice: 0,
+      ripples: 0,
+    });
+    expect(resolveScene("aurora")).toBe("lake");
+    // A link of this schema never named it: no alias runs, so the scene is unknown.
+    expect(readSetup(q(`v=${URL_VERSION}&scene=aurora`)).unknownScene).toBe("aurora");
+  });
+
+  test("its keys move onto the lake's knobs", () => {
+    const read = readSetup(
+      q(
+        "scene=aurora&glow=0.4&activity=0.9&hue=2&corona=0&ice=0.6&ripples=0.35&wind=0.45&moon-amount=0.8&mark=1",
+      ),
+    );
+    expect(read.params).toMatchObject({
+      "aurora-amount": 0.4,
+      activity: 0.9,
+      hue: 2,
+      corona: 0,
+      ice: 0.6,
+      ripples: 0.35,
+      wind: 0.45,
+      "moon-amount": 0.8,
+      mark: 1,
+    });
+    // Dark, its aurora is off; green alone and green under violet are the lake's green and its default.
+    expect(readSetup(q("scene=aurora&glow=0")).params["aurora"]).toBe(0);
+    expect(readSetup(q("scene=aurora&hue=0")).params["hue"]).toBe(4);
+    expect(readSetup(q("scene=aurora&hue=1")).params["hue"]).toBe(0);
+    // Rewritten, it is a lake link that needs no version.
+    const written = reread("scene=aurora&ripples=0.35&wind=0.45");
+    expect(written.startsWith("scene=lake&setting=1&ripples=0.35&")).toBe(true);
+    expect(withVersion(q(written)).toString()).toBe(written);
+    expect(reread(written)).toBe(written);
+  });
+
+  test("its planets, a list or the old giant, move from its pad onto the lake's", () => {
+    const far = readPlanet(aurora, { kind: 3, ring: 0, across: 60, up: 12 });
+    const list = encodePlanets(aurora, [far]);
+    expect(readSetup(q(`scene=aurora&planets=${list}`)).planets).toEqual([
+      readPlanet(lake, { kind: 3, ring: 0, across: lake.across[2], up: 12 }),
+    ]);
+    expect(readSetup(q("scene=aurora&planet=1&planetX=-10&planetY=44")).planets).toEqual([
+      readPlanet(lake, { across: -10, up: lake.up[2] }),
+    ]);
   });
 });
 

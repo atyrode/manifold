@@ -219,6 +219,8 @@ const SURGE_EASE = 1.2;
 const GAIN_QUIET = 0.9;
 const GAIN_SURGE = 1.6;
 const PACE_SURGE = 1.4;
+/** A surge's brightening as a share of the quiet brightness: the slow drapes, quiet at 1, take it. */
+export const SURGE_GAIN = GAIN_SURGE / GAIN_QUIET;
 
 // ---- Time ----
 

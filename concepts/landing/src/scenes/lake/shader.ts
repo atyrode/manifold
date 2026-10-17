@@ -1,4 +1,5 @@
-// The frozen lake, drawn (sim.ts grows its cracks, drifts its snow and paces its aurora).
+// The northern night, drawn (sim.ts grows the lake's cracks, drifts its snow and paces the aurora):
+// the frozen lake, or the fjord (K_setting 1, below), under one sky.
 //
 // The camera stands on the ice, EYE metres up, facing north across a lake ringed with spruce
 // forest, low hills and snowy mountains behind; a point reaches out from the left with a log
@@ -26,6 +27,31 @@
 // sings across the ice (the sim); on the way out a gust of blown snow streams across, carrying low
 // streamers over the ice and the far shore, in rows of the screen and faster the nearer the ice,
 // cut per cell. At rest none of it is drawn and uv is the screen's.
+//
+// The slow drapes (K_drapes; compiled in by LAKE_DRAPES): instead of the shared curtains, up to
+// three ribbons hang along arcs at growing distances, laid out in the sky as the fjord's camera at
+// rest sees it (lakeDrapePoint), so they hang alike over the lake and the fjord and in either's
+// mirror. A ribbon's sheet folds in and out along its length (where it turns edge-on it glows
+// more); its light is a sharp bright hem, then fine vertical rays (spaced by angle, brightening and
+// fading slowly along their height), a pulse of brightness travelling along the arc, lit stretches
+// and dark gaps; green low, the colour's fringe toward the top. A corona (rays streaming from a
+// point high in the sky) gathers now and then. They run on the substorm's clock: a surge brightens
+// them, livens them (as activity) and quickens them. Coming in they unfurl from faint high arcs,
+// ray by ray; going out they roll back up.
+//
+// The fjord (K_setting 1; compiled in by LAKE_FJORD): a still fjord under snowy mountains going
+// straight into the water, a small red cabin on the far shore with its window lit and a thread of
+// smoke climbing from the chimney, birches beside it and on the near bank. A side-on pinhole camera
+// of its own (horizon LAKE_FJ_HZ, focal LAKE_FJ_F) draws it: the sky (the lake's, lakeSkyAt, with
+// the moon low on the left and the M folded into a curtain high up), the mountains, the far shore
+// and the cabin are one function, lakeFjFar, of a screen point above the horizon. The water below
+// it is that same function looked up at the mirrored point, shifted by slow ripple noise (still
+// water), by a breeze's ripples (K_ripples, shaders/windWater.ts) or by frozen undulations (K_ice),
+// then dimmed by a Fresnel-like share; the cabin's window and the moon draw their light paths down
+// it. Reflected edges move a fraction of a cell at a time; every crisp edge (window, trunk, smoke)
+// is cut per cell against the dither threshold, so each cell flips once as it passes. Its passage:
+// the camera comes down from the stars already moving and settles on the fjord (a touch of
+// overshoot) as the chimney's smoke climbs, and lifts to the stars again, ever faster, going out.
 import { glslFloat, glslPick } from "../../shaders/glsl.ts";
 import { birdsGlsl } from "../../shaders/lib/birds.ts";
 import { milkyWayGlsl } from "../../shaders/lib/milkyway.ts";
@@ -45,24 +71,56 @@ import {
   LAKE_PASSAGE,
   MARK_ID,
   SNOW_MAX,
+  SURGE_GAIN,
 } from "./sim.ts";
 
-/** The aurora's colours by the `hue` knob (green, teal, storm, crimson): its low light and its high fringe. */
+/** The aurora's colours by the `hue` knob (green + violet, teal, storm, crimson, green): its low light and its high fringe. */
 const AURORA_LOW = [
   "vec3(0.25, 1.0, 0.55)",
   "vec3(0.2, 0.95, 0.88)",
   "vec3(0.38, 1.0, 0.48)",
   "vec3(1.0, 0.3, 0.38)",
+  "vec3(0.25, 1.0, 0.55)",
 ] as const;
 const AURORA_HIGH = [
   "vec3(0.78, 0.2, 0.58)",
   "vec3(0.38, 0.32, 1.0)",
   "vec3(1.0, 0.14, 0.26)",
   "vec3(0.72, 0.06, 0.24)",
+  "vec3(0.12, 0.85, 0.72)",
 ] as const;
+
+/**
+ * The slow drapes' colours by the `hue` knob, as AURORA_LOW and AURORA_HIGH: low and high, how far
+ * up a curtain (0 its hem, 1 its top) the change begins and ends, and the gain (a red fringe reads
+ * dimmer). The sky's M over the fjord takes them too.
+ */
+const DRAPE_LOW = [
+  "vec3(0.28, 1.0, 0.50)",
+  "vec3(0.2, 0.95, 0.88)",
+  "vec3(0.45, 1.0, 0.32)",
+  "vec3(1.0, 0.3, 0.38)",
+  "vec3(0.28, 1.0, 0.50)",
+] as const;
+const DRAPE_HIGH = [
+  "vec3(0.66, 0.22, 0.92)",
+  "vec3(0.38, 0.32, 1.0)",
+  "vec3(1.0, 0.10, 0.22)",
+  "vec3(0.72, 0.06, 0.24)",
+  "vec3(0.12, 0.85, 0.72)",
+] as const;
+const DRAPE_FROM = [0.3, 0.3, 0.08, 0.2, 0.35] as const;
+const DRAPE_TO = [0.85, 0.85, 0.65, 0.8, 1.0] as const;
+const DRAPE_GAIN = [1.0, 1.0, 1.2, 1.2, 1.0] as const;
+
+/** The fjord's camera: its horizon (screen height, at rest) and vertical field of view (rad). */
+export const FJORD_HORIZON = 0.32;
+const FJORD_FOV = 1.3;
 
 /** Trigger slot of the shooting stars' "now" button (0 substorms, 1 singing ice, 2 the M). */
 export const LAKE_METEOR_TRIGGER = 3;
+/** Trigger slot of the drapes' corona's "now" button. */
+export const LAKE_CORONA_TRIGGER = 4;
 
 export const lakeGlsl = `
 ${birdsGlsl}
@@ -149,6 +207,227 @@ vec3 lakeAurora(vec3 d, float soft) {
   return (low * lakeAurLow + fringe * lakeAurHigh) * lakeAurVis;
 }
 
+#if LAKE_FJORD || LAKE_DRAPES
+// The fjord's camera at rest: its horizon on the screen and its focal length (screen heights). The
+// fjord is drawn through it; the slow drapes and the sky's M hang in the sky where it sees them.
+const float LAKE_FJ_HZ = ${glslFloat(FJORD_HORIZON)};
+const float LAKE_FJ_F = ${glslFloat(0.5 / Math.tan(FJORD_FOV / 2))};
+
+// Set once per pixel by lakeSetup.
+float lakeFocal;       // the focal length of the camera drawing (screen heights)
+vec3 lakeDrLow;        // the drapes' colours (DRAPE_*), the sky M's too
+vec3 lakeDrHigh;
+float lakeDrFrom;
+float lakeDrTo;
+float lakeDrGain;
+
+vec3 lakeDrapeLowColour() {
+${glslPick("hue", DRAPE_LOW, DRAPE_LOW[0])}
+}
+
+vec3 lakeDrapeHighColour() {
+${glslPick("hue", DRAPE_HIGH, DRAPE_HIGH[0])}
+}
+
+float lakeDrapeFrom() {
+${glslPick("hue", DRAPE_FROM.map(glslFloat), glslFloat(DRAPE_FROM[0]))}
+}
+
+float lakeDrapeTo() {
+${glslPick("hue", DRAPE_TO.map(glslFloat), glslFloat(DRAPE_TO[0]))}
+}
+
+float lakeDrapeGain() {
+${glslPick("hue", DRAPE_GAIN.map(glslFloat), glslFloat(DRAPE_GAIN[0]))}
+}
+
+// Where the sky in direction d (d.z > 0) stands in the fjord's frame at rest: screen heights across
+// from its middle and up from its foot.
+vec2 lakeDrapePoint(vec3 d) {
+  return vec2(d.x, d.y) * (LAKE_FJ_F / d.z) + vec2(0.0, LAKE_FJ_HZ);
+}
+#endif
+
+#if LAKE_DRAPES
+const int LAKE_CORONA_SLOT = ${LAKE_CORONA_TRIGGER};
+const float LAKE_SURGE_GAIN = ${glslFloat(SURGE_GAIN)};
+
+// Set once per pixel by lakeSetup.
+float lakeDrStrength;  // how bright: K_aurora, brightened by a substorm's surge
+float lakeDrAct;       // how lively: K_activity, livelier through a surge
+float lakeDrHW;        // half the frame's width where the drapes hang (the fjord's frame, screen heights)
+float lakeUnfurl[3];   // passage: how far each curtain has come down (1 at rest)
+float lakeCorona;      // the corona's envelope 0..1
+
+// The drapes' passage: coming in, the three unfurl one after another, each sweeping along its arc
+// from a faint high arc to its full drape as the rays drop ray by ray; going out they roll back up
+// into faint arcs (the far end first) until the exit ends. Returns the land's share of their light
+// while they are furled; at rest everything stands at 1.
+float lakeDrapesPassage() {
+  lakeUnfurl[0] = 1.0;
+  lakeUnfurl[1] = 1.0;
+  lakeUnfurl[2] = 1.0;
+  float pin = passageIn();
+  float pout = passageOut();
+  if (pin >= 1.0 && pout <= 0.0) return 1.0;
+  float glow = 0.0;
+  for (int i = 0; i < 3; i++) {
+    float fi = float(i);
+    float inU = clamp((pin - 0.10 - 0.08 * fi) / 0.62, 0.0, 1.0);
+    float outU = 1.0 - clamp((pout - 0.06 * fi) / (1.0 - 0.06 * fi), 0.0, 1.0);
+    lakeUnfurl[i] = min(inU, outU);
+    glow += lakeUnfurl[i] / 3.0;
+  }
+  return 0.7 + 0.3 * glow;
+}
+
+// The corona's envelope: a burst every minute or two (more often with the knob), a few tens of
+// seconds long, or at once from the "now" button. Smooth in time, zero between.
+float lakeCoronaEnv() {
+  if (K_corona <= 0.0) return 0.0;
+  float period = mix(240.0, 80.0, clamp(K_corona, 0.0, 1.0));
+  float cyc = fract(uMotionTime / period + 0.55);
+  float b = sin(3.14159265 * clamp(cyc / 0.28, 0.0, 1.0));
+  float env = b * b;
+  float since = sinceTrigger(LAKE_CORONA_SLOT);
+  if (since >= 0.0 && since < 40.0) {
+    float s = sin(3.14159265 * since / 40.0);
+    env = max(env, s * s);
+  }
+  return env;
+}
+
+// One ribbon of the drapes, a curtain seen from the ground, at sky point q (lakeDrapePoint): its
+// lower hem follows a curve in the sky that slowly evolves into long S-bends (y0: where it hangs, L:
+// how far its light reaches up, both in screen heights of the fjord's frame). Above the hem the light
+// fades upward as a fan of fine, dense, vertical rays, each brightening and fading slowly along its
+// height. The curtain is folded along its length: where its ray coordinate s bunches up (ds/dx
+// small) the sheet turns edge-on and glows brighter. A pulse of brightness travels along it; lit
+// stretches alternate with dark gaps. A faint veil lies under the hem. Returns the light (x) and
+// how far up the sheet (y, 0..1).
+vec2 lakeRibbon(vec2 q, float y0, float L, float salt, float T, float unf) {
+  float act = lakeDrAct;
+  float x = q.x;
+  float amp = 0.03 + 0.05 * act;
+  float hem = y0 + amp * (sin(x * 1.9 + T * 0.014 + salt) + 0.55 * sin(x * 3.7 - T * 0.021 + salt * 2.1) + 0.2 * sin(x * 7.3 + T * 0.030 + salt * 3.3));
+  // unf < 1: the curtain is unfurling or rolling up. A wave sweeps along the arc (ux: how far this
+  // stretch has come down), the hem hanging higher the less unfurled it is.
+  float ux = 1.0;
+  if (unf < 1.0) {
+    float xw = clamp(0.5 + 0.5 * x / lakeDrHW, 0.0, 1.0);
+    if (salt > 3.0 && salt < 5.0) xw = 1.0 - xw;
+    ux = smoothstep(0.0, 1.0, clamp(unf * 1.5 - 0.5 * xw, 0.0, 1.0));
+    hem += 0.10 * (1.0 - ux);
+  }
+  float fa = 0.10 + 0.08 * act;
+  float s = x + fa * sin(x * 3.3 - T * 0.017 + salt * 1.7) + 0.5 * fa * sin(x * 7.1 + T * 0.026 + salt);
+  float ds = 1.0 + fa * 3.3 * cos(x * 3.3 - T * 0.017 + salt * 1.7) + 0.5 * fa * 7.1 * cos(x * 7.1 + T * 0.026 + salt);
+  float hh0 = q.y - hem;
+  if (hh0 < -0.12 || hh0 > 2.4 * L + 0.02) return vec2(0.0);
+  float sx = s + 0.10 * hh0;
+  // Each ray drops at its own moment (static along the arc), so the drape comes down ragged and
+  // settles: Le is how far the light reaches up here.
+  float Le = L;
+  if (unf < 1.0) {
+    float rp = vnoise(vec2(sx * 31.0 + salt * 7.0, salt + 2.0));
+    Le = L * mix(0.14, 1.0, clamp(ux * 1.4 - 0.4 * rp, 0.0, 1.0));
+  }
+  float fine = vnoise(vec2(sx * 75.0 - T * 0.012 + salt * 9.0, salt + hh0 * 2.0 - T * 0.015));
+  float mid = vnoise(vec2(sx * 28.0 + T * 0.008, salt * 3.0 + hh0 * 0.8));
+  float rays = smoothstep(0.25, 0.85, 0.6 * fine + 0.4 * mid);
+  float hh = hh0 + 0.014 * (0.5 - fine);
+  float edge = smoothstep(-0.004, 0.006, hh);
+  float up = max(hh, 0.0) / Le;
+  float body = exp(-up * 3.2) * (0.55 + 0.45 * rays) + 0.5 * rays * exp(-up * 1.1);
+  float stretch = smoothstep(0.2, 0.65, vnoise(vec2(x * 1.1 + T * 0.008, salt + 7.0)));
+  float w = 0.5 + 0.5 * sin(x * 3.0 - T * 0.13 + salt * 1.7);
+  float pulse = mix(1.0, 0.35 + 0.65 * w * w, 0.25 + 0.6 * act);
+  float fold = clamp(1.0 / max(ds, 0.35), 0.7, 2.0);
+  float lum = edge * body * (1.0 - smoothstep(1.2, 2.4, up)) * pulse * mix(0.2, 1.0, stretch) * fold
+            + (1.0 - edge) * 0.10 * exp(min(hh, 0.0) / 0.04) * stretch;
+  // The colour follows the full-height curtain, so a furled arc stays the low green.
+  return vec2(lum, clamp(max(hh, 0.0) / L / 1.4, 0.0, 1.0));
+}
+
+// The ribbons at sky point q: the main one hanging mid-sky with its rays reaching high, a dimmer
+// one low behind the mountains, and (in a livelier sky) a third high up; breathing slowly.
+vec3 lakeDrapeCurtains(vec2 q, float T) {
+  vec3 c = vec3(0.0);
+  for (int i = 0; i < 3; i++) {
+    float gain = i == 0 ? 1.0 : (i == 1 ? 0.7 : 0.5 * smoothstep(0.1, 0.5, lakeDrAct));
+    if (gain > 0.0) {
+      float y0 = i == 0 ? 0.57 : (i == 1 ? 0.45 : 0.74);
+      float len = i == 0 ? 0.17 : (i == 1 ? 0.11 : 0.14);
+      float unf = lakeUnfurl[i];
+      // A curtain still furled is a faint arc: a little dimmer, mostly just short.
+      if (unf < 1.0) gain *= 0.6 + 0.4 * unf;
+      vec2 cu = lakeRibbon(q, y0, len, float(i) * 2.7 + 1.3, T, unf);
+      c += mix(lakeDrLow, lakeDrHigh, smoothstep(lakeDrFrom, lakeDrTo, cu.y)) * cu.x * gain;
+    }
+  }
+  return c * 0.6 * (0.92 + 0.08 * sin(T * 0.13));
+}
+
+// The corona: rays streaming from a point high in the north, brightest near the point, fading to
+// the high colour with distance. Integer ray counts around the point keep it seamless.
+vec3 lakeCoronaLight(vec3 d, float T) {
+  if (lakeCorona <= 0.0 || d.y <= 0.0) return vec3(0.0);
+  vec3 c = normalize(vec3(-0.1, 0.82, 0.58));
+  float ca = dot(d, c);
+  if (ca < 0.55) return vec3(0.0);
+  vec3 ex = normalize(cross(vec3(0.0, 1.0, 0.0), c));
+  vec3 ey = cross(c, ex);
+  float a = acos(min(ca, 1.0));
+  float phi = atan(dot(d, ey), dot(d, ex));
+  float r = 0.5 + 0.25 * (sin(phi * 14.0 + T * 0.03 + a * 1.5) + sin(phi * 23.0 - T * 0.021 + a * 2.5 + 1.3));
+  float rays = smoothstep(0.35, 0.85, r);
+  float lum = lakeCorona * exp(-a * a / 0.22) * smoothstep(0.03, 0.22, a) * (0.2 + 0.8 * rays);
+  vec3 tint = mix(lakeDrLow * vec3(1.0, 1.0, 1.15), lakeDrHigh, smoothstep(0.12, 0.65, a));
+  return tint * lum * 0.85;
+}
+
+// The drapes for a ray, to add to the night sky in place of lakeAurora: the ribbons, the corona and
+// a faint glow of the curtains over the sky, as bright as their strength and what twilight and cloud
+// let through. soft as for lakeAurora.
+vec3 lakeDrapes(vec3 d, float soft) {
+  if (lakeDrStrength <= 0.0 || d.y <= 0.0) return vec3(0.0);
+  vec3 a = lakeCoronaLight(d, lakeAurClock) * lakeDrGain;
+  if (d.z > 0.05) {
+    vec2 q = lakeDrapePoint(d);
+    vec3 c = lakeDrapeCurtains(q, lakeAurClock);
+    if (soft > 0.0) c = 0.5 * (c + lakeDrapeCurtains(lakeDrapePoint(normalize(d + vec3(0.0, soft, 0.0))), lakeAurClock));
+    a += c * lakeDrGain + lakeDrLow * 0.035 * exp(-abs(q.y - 0.6) / 0.25);
+  }
+  return a * lakeDrStrength * lakeAurVis;
+}
+#endif
+
+#if LAKE_FJORD
+// Where the fjord's moon stands in its frame at rest: across as a share of the half width, and up.
+const vec2 LAKE_FJ_MOON = vec2(-0.42, 0.545);
+float lakeFjHW;        // half the fjord's frame's width (screen heights), set by lakeFjord
+
+// The M over the fjord: a curtain of the aurora that has folded itself into the letter high in the
+// sky, with the same vertical rays, breathing slowly, its sheet rippling a little. Adds its light to
+// lakeAccent.
+vec3 lakeSkyMark(vec3 d, float T) {
+  if (K_mark < 0.5 || K_setting < 0.5 || d.z <= 0.05) return vec3(0.0);
+  vec2 q = lakeDrapePoint(d);
+  float size = 0.30;
+  vec2 m = (q - vec2(0.10 * lakeFjHW, 0.69)) / size;
+  m.x += 0.014 * sin(m.y * 5.0 + T * 0.30);
+  if (abs(m.x) > 0.7 || abs(m.y) > 0.75) return vec3(0.0);
+  float dm = markDistance(m);
+  float core = 1.0 - smoothstep(0.035, 0.085, dm);
+  float halo = exp(-dm * dm / 0.006) * 0.35;
+  float rays = 0.65 + 0.35 * vnoise(vec2(q.x * 80.0 - T * 0.04, q.y * 2.0 + T * 0.02));
+  float breathe = 0.82 + 0.18 * sin(T * 0.45);
+  float lum = (core + halo) * rays * breathe * (0.8 + 0.2 * smoothstep(-0.5, 0.5, -m.y));
+  lakeAccent += lum * 1.2;
+  return mix(lakeDrLow, lakeDrHigh, smoothstep(-0.2, 0.9, m.y) * 0.8) * lum * 1.1 * lakeDrGain * lakeAurVis;
+}
+#endif
+
 // Our moon: a disc in its phase (the lit limb toward the sun, down to the left), its dark part
 // faint with earthshine, and a halo. Returns light for the sky; cover how much of the disc hides
 // the stars behind it.
@@ -175,7 +454,8 @@ vec3 lakeMoonAt(vec3 d, out float cover) {
 
 // The night sky for a ray: the dome, moonlight in the air and the aurora's glow low in the north,
 // the Milky Way and stars (fainter in the mirror), the giant planet, our moon, a shooting star, the
-// aurora, and cloud while it snows. Adds the aurora's light that shows to lakeAccent.
+// aurora (the shared curtains or the slow drapes) and over the fjord the M, and cloud while it
+// snows. Adds the aurora's light that shows to lakeAccent.
 vec3 lakeSkyAt(vec3 d, bool mirror, float soft) {
   vec3 col = skyColor(lakeSky, d);
   float hh = max(d.y, 0.0);
@@ -187,14 +467,25 @@ vec3 lakeSkyAt(vec3 d, bool mirror, float soft) {
   col += vec3(0.045, 0.048, 0.064) * mw;
   float density = milkyWayStars(K_stars, mw) * (1.0 - 0.6 * lakePhase);
   col += skyStarLight(starry, d, mirror ? 0.5 * density : density) * (mirror ? 0.6 : 1.0);
+#if LAKE_FJORD
+  float foot = max(1.0 / (lakeFocal * uRes.y), soft);
+#else
   float foot = max(1.0 / (LAKE_FOCAL * uRes.y), soft);
+#endif
   col = skyGiant(starry, col, d, foot, 1.0);
   float disc;
   vec3 moon = lakeMoonAt(d, disc);
   col = col * (1.0 - 0.9 * disc) + moon;
   float meteor = meteorStreak(skyAngles(d), LAKE_METEOR_FIELD, lakeMeteorAt, lakeMeteorSeed, foot);
   col += METEOR_TINT * hardEdge(meteor * lakeSky.night * (1.0 - disc)) * (mirror ? 0.6 : 1.0);
+#if LAKE_DRAPES
+  vec3 aur = K_drapes > 0.5 ? lakeDrapes(d, soft) : lakeAurora(d, soft);
+#else
   vec3 aur = lakeAurora(d, soft);
+#endif
+#if LAKE_FJORD
+  aur += lakeSkyMark(d, lakeTm);
+#endif
   col += aur;
   float seen = dot(aur, LUMA);
   if (lakeOver > 0.0) {
@@ -702,7 +993,8 @@ float lakeGust(vec2 uv, float aspect, float gp) {
 }
 
 // The night: twilight to deep night by K_hour, our moon, the aurora's colours and the sim's surge,
-// the light on the land, overcast while it snows, the cabin's and the moon's bearings for the frame.
+// the light on the land, overcast while it snows, the cabin's and the moon's bearings for the frame;
+// over the fjord its camera and its moon; the drapes' strength, colours, corona and light.
 void lakeSetup(float aspect) {
   lakeTm = uMotionTime;
   float hour = clamp(K_hour, 0.0, 1.0);
@@ -712,6 +1004,15 @@ void lakeSetup(float aspect) {
   lakeMoonAz = min(0.52, 0.75 * halfAz);
   lakeMoonEl = 0.15;
   lakeMoon = vec3(sin(lakeMoonAz) * cos(lakeMoonEl), sin(lakeMoonEl), cos(lakeMoonAz) * cos(lakeMoonEl));
+#if LAKE_FJORD || LAKE_DRAPES
+  lakeFocal = LAKE_FOCAL;
+#endif
+#if LAKE_FJORD
+  if (K_setting > 0.5) {
+    lakeFocal = LAKE_FJ_F;
+    lakeMoon = normalize(vec3(LAKE_FJ_MOON.x * 0.5 * aspect, LAKE_FJ_MOON.y - LAKE_FJ_HZ, LAKE_FJ_F));
+  }
+#endif
   lakePhase = K_moon;
   lakeOver = K_snow > 0.0 ? weatherOvercast(0.0, K_snow) : 0.0;
   lakeMoonLight = vec3(0.40, 0.44, 0.54) * pow(lakePhase, 1.3) * 0.6 * (1.0 - 0.85 * lakeOver);
@@ -730,12 +1031,486 @@ void lakeSetup(float aspect) {
   lakeAurLow = lakeAuroraLowColour();
   lakeAurHigh = lakeAuroraHighColour();
   lakeAurLight = lakeAurLow * lakeAurGain * 0.05 * lakeAurVis;
+#if LAKE_FJORD || LAKE_DRAPES
+  lakeDrLow = lakeDrapeLowColour();
+  lakeDrHigh = lakeDrapeHighColour();
+  lakeDrFrom = lakeDrapeFrom();
+  lakeDrTo = lakeDrapeTo();
+  lakeDrGain = lakeDrapeGain();
+#endif
+#if LAKE_DRAPES
+  lakeDrStrength = 0.0;
+  if (K_drapes > 0.5) {
+    lakeDrStrength = K_aurora * (1.0 + LAKE_SURGE_GAIN * lakeSurge);
+    lakeDrAct = mix(K_activity, 1.0, lakeSurge);
+    lakeDrHW = 0.5 * aspect * LAKE_FJ_F / lakeFocal;
+    lakeCorona = lakeCoronaEnv();
+    // Their light on the land, breathing with them; a share of it while they are furled.
+    float furled = lakeDrapesPassage();
+    lakeAurLight = lakeDrLow * lakeDrStrength * 0.075 * lakeAurVis * (0.92 + 0.08 * sin(lakeAurClock * 0.11)) * furled;
+  }
+#endif
   lakeAmb = greyed(amb, vec3(0.92, 0.95, 1.0), 0.6 * lakeOver) + lakeAurLight + lakeMoonLight * 0.25;
   lakePar = uPointer.x * 0.012;
 }
 
+#if LAKE_FJORD
+// ---- The fjord (K_setting 1) ----
+
+const float LAKE_FJ_EYE = 1.7; // metres above the water
+const vec3 LAKE_FJ_WALL = vec3(0.80, 0.12, 0.08);
+const float LAKE_FJ_CS = 2.0;     // the cabin's size: its own units times this
+const float LAKE_FJ_FOOT = 0.014; // its foot above the waterline, on a small knoll of snow
+
+// Set once per pixel by lakeFjord.
+float lakeFjPx;          // one dither cell, in screen heights
+float lakeFjSx;          // 1 on a wide frame, less on a narrow one: the near bank and trees shrink with it
+float lakeFjCabinX;      // the cabin's place along the far shore
+vec2 lakeFjMoonAt;       // the moon's screen point at rest
+vec3 lakeFjHaze;         // the air above the far shore
+float lakeFjTilt;        // passage: the camera's tilt up from rest, in screen heights (0 at rest)
+float lakeFjSmokeFront;  // passage: how far up the chimney smoke has climbed (1 at rest)
+
+// Far snowy mountains and the nearer wooded hills, as heights above the horizon (screen heights).
+float lakeFjPeaks(float x) {
+  float xs = x * 1.35 + 3.0;
+  float r = 1.0 - abs(2.0 * vnoise(vec2(xs * 1.5, 1.0)) - 1.0);
+  float r2 = 1.0 - abs(2.0 * vnoise(vec2(xs * 4.2 + 2.0, 3.0)) - 1.0);
+  return 0.03 + 0.17 * (0.7 * r * sqrt(r) + 0.3 * r2 * r);
+}
+
+float lakeFjHills(float x) {
+  float lower = 1.0 - 0.8 * K_cabin * bell((x - lakeFjCabinX) / 0.3);
+  float n = 0.6 * vnoise(vec2(x * 3.2 + 9.0, 4.0)) + 0.4 * vnoise(vec2(x * 8.5 + 1.0, 6.0));
+  return (0.012 + 0.05 * n) * lower;
+}
+
+// A mountain face y above the horizon: snow lit by the moon on the faces that turn toward it (left),
+// by the aurora everywhere, rock showing on the steeps, gullies streaking down, haze at its foot.
+vec3 lakeFjPeakColour(vec2 q, float y) {
+  float slope = (lakeFjPeaks(q.x + 0.006) - lakeFjPeaks(q.x - 0.006)) / 0.012;
+  float toMoon = clamp(0.5 + 1.1 * slope, 0.0, 1.0);
+  float gully = vnoise(vec2(q.x * 85.0, y * 28.0));
+  vec3 light = lakeAmb * 2.6 + lakeMoonLight * (0.25 + 1.1 * toMoon) + lakeAurLight * 1.8;
+  vec3 snow = LAKE_SNOW * light * (0.70 + 0.30 * gully);
+  float steep = clamp(abs(slope) * 1.2, 0.0, 1.0);
+  float rock = smoothstep(0.64, 0.82, vnoise(vec2(q.x * 46.0, y * 70.0))) * 0.7 * steep;
+  vec3 col = mix(snow, vec3(0.025, 0.03, 0.04) + lakeAmb * 0.15, rock);
+  return mix(col, lakeFjHaze, 0.1 + 0.45 * (1.0 - smoothstep(0.0, 0.09, y)));
+}
+
+vec3 lakeFjHillColour(vec2 q, float y) {
+  float clearing = smoothstep(0.55, 0.75, vnoise(vec2(q.x * 50.0, y * 120.0)));
+  vec3 light = lakeAmb * 1.5 + lakeMoonLight * 0.6 + lakeAurLight * 1.2;
+  vec3 snow = LAKE_SNOW * light * 0.7;
+  vec3 wood = vec3(0.010, 0.018, 0.022) + lakeAmb * 0.10;
+  return mix(mix(wood, snow, clamp(0.40 * clearing + 0.35 * uWeather.y, 0.0, 1.0)), lakeFjHaze, 0.30);
+}
+
+// A row of spruces along the far shore, snow on every tier, left bare around the cabin.
+bool lakeFjTreeline(vec2 q, out vec3 col) {
+  col = vec3(0.0);
+  float y = q.y - LAKE_FJ_HZ;
+  if (y > 0.036) return false;
+  float cell = 0.013;
+  float k0 = floor(q.x / cell);
+  for (int i = -1; i <= 1; i++) {
+    float k = k0 + float(i);
+    float h = hash12(vec2(k, 4.0));
+    float h2 = hash12(vec2(k, 9.0));
+    float cx = (k + 0.5 + 0.7 * (h2 - 0.5)) * cell;
+    float clear = 1.0 - K_cabin * (1.0 - smoothstep(0.08, 0.14, abs(cx - lakeFjCabinX)));
+    float ht = (0.009 + 0.026 * h * h) * clear;
+    if (ht < 0.004) continue;
+    float v = y / ht;
+    if (v < 0.0 || v > 1.0) continue;
+    float tier = fract(v * 4.0 + h * 3.0);
+    float hw = 0.2 * ht * (1.0 - v) * (0.8 + 0.2 * tier) + 0.0012;
+    if (abs(q.x - cx) < hw) {
+      vec3 needles = vec3(0.010, 0.020, 0.022) + lakeAmb * 0.10;
+      vec3 lit = LAKE_SNOW * (lakeAmb * 1.6 + lakeMoonLight * 0.6 + lakeAurLight * 1.4) * 0.8;
+      float snowy = smoothstep(0.6, 0.95, tier);
+      col = mix(mix(needles, lit, clamp(0.7 * snowy + 0.5 * uWeather.y, 0.0, 1.0)), lakeFjHaze, 0.15);
+      return true;
+    }
+  }
+  return false;
+}
+
+// The snowbank along the far waterline, swelling into a knoll under the cabin.
+float lakeFjShoreTop(float x) {
+  return 0.0045 + 0.003 * vnoise(vec2(x * 90.0, 1.0)) + 0.012 * K_cabin * bell((x - lakeFjCabinX) / 0.26);
+}
+
+// Four small birches beside the cabin: a pale trunk and a bare crown of twigs.
+bool lakeFjFarBirches(vec2 q, out vec3 col) {
+  col = vec3(0.0);
+  float y = q.y - LAKE_FJ_HZ;
+  if (y < 0.0 || y > 0.14) return false;
+  for (int i = 0; i < 4; i++) {
+    float fi = float(i);
+    float bx = lakeFjCabinX + (fi < 1.5 ? (fi < 0.5 ? -0.15 : -0.19) : (fi < 2.5 ? 0.14 : 0.18));
+    float ht = 0.070 + 0.025 * hash12(vec2(fi, 8.1));
+    float dx = q.x - bx;
+    if (abs(dx) < 0.0034 && y < ht) {
+      col = mix(LAKE_SNOW * (lakeAmb * 2.8 + lakeMoonLight + lakeAurLight * 2.0) * 0.9, lakeFjHaze, 0.1);
+      return true;
+    }
+    vec2 e = vec2(dx / 0.028, (y - ht * 0.78) / 0.036);
+    float rr = length(e);
+    if (rr < 1.0) {
+      float n = vnoise(vec2(q.x * 320.0 + fi * 9.0, q.y * 220.0));
+      if (n * (0.35 + 0.9 * (1.0 - rr)) > 0.58) {
+        col = mix(vec3(0.05, 0.03, 0.04) + lakeAmb * 0.2, lakeFjHaze, 0.2);
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+// The red cabin: plank walls, a snow-laden gable roof with dark eaves, a stone chimney, a door and
+// one window lit by the fire. p: screen heights across from its middle and up from its foot.
+bool lakeFjCabin(vec2 p, out vec3 col) {
+  col = vec3(0.0);
+  float ax = abs(p.x);
+  float roofTop = 0.029 + 0.027 * (1.0 - ax / 0.039);
+  bool wall = ax < 0.031 && p.y > 0.0 && p.y < 0.029;
+  bool roof = ax < 0.039 && p.y >= 0.027 && p.y < roofTop;
+  bool chimney = abs(p.x - 0.0165) < 0.0042 && p.y > 0.03 && p.y < 0.058;
+  if (!(wall || roof || chimney)) return false;
+  vec3 lit = lakeAmb * 1.4 + lakeMoonLight * 0.5 + lakeAurLight * 1.2;
+  vec3 snowLit = LAKE_SNOW * (lakeAmb * 2.8 + lakeMoonLight * 0.9 + lakeAurLight * 2.0);
+  if (chimney) {
+    col = vec3(0.10, 0.09, 0.09) * (lit * 2.0 + 0.02);
+    if (p.y > 0.0545) col = snowLit * 0.9;
+  } else if (roof) {
+    col = snowLit * (0.9 + 0.1 * vnoise(vec2(p.x * 300.0, p.y * 200.0)));
+    if (p.y < 0.0305 || roofTop - p.y < 0.0018) col = vec3(0.05, 0.04, 0.04) * (lit * 2.0 + 0.02);
+  } else {
+    float board = fract(p.y / 0.006);
+    col = LAKE_FJ_WALL * (lit * 2.6 + vec3(0.09, 0.05, 0.05)) * (board > 0.8 ? 0.65 : 1.0);
+    vec2 wq = p - vec2(-0.011, 0.0155);
+    float glow = exp(-length(wq) / 0.012);
+    if (abs(wq.x) < 0.0068 && abs(wq.y) < 0.0075) {
+      float fire = 0.95 + 0.03 * sin(lakeTm * 0.9) + 0.02 * sin(lakeTm * 2.3 + 1.0);
+      col = LAKE_WINDOW * 1.5 * fire;
+      if (abs(wq.x) < 0.0006 || abs(wq.y) < 0.0006) col = vec3(0.30, 0.10, 0.05);
+    } else if (abs(wq.x) < 0.0082 && abs(wq.y) < 0.0092) {
+      col = snowLit * 0.55;
+    } else {
+      col += LAKE_WINDOW * 0.10 * glow;
+    }
+    if (abs(p.x - 0.017) < 0.0045 && p.y < 0.0115) col = vec3(0.10, 0.04, 0.03) * (lit * 2.0 + 0.04);
+    if (p.y < 0.003 + 0.005 * uWeather.y) col = snowLit * 0.9;
+  }
+  return true;
+}
+
+// Smoke from the chimney: a thread climbing slowly, leaning with the wind and swaying, widening and
+// thinning as it goes. Thickness 0..1.
+float lakeFjSmoke(vec2 q) {
+  float s = q.y - (LAKE_FJ_HZ + LAKE_FJ_FOOT + 0.058 * LAKE_FJ_CS);
+  if (s < -0.003 || s > 0.36) return 0.0;
+  float lean = (0.04 + 0.45 * K_wind) * s;
+  float sway = (0.008 * sin(s * 21.0 - lakeTm * 0.30) + 0.004 * sin(s * 47.0 - lakeTm * 0.45 + 1.0)) * smoothstep(0.0, 0.12, s);
+  float xc = lakeFjCabinX + 0.0165 * LAKE_FJ_CS + lean + sway;
+  float w = 0.005 + 0.09 * max(s, 0.0);
+  float r = (q.x - xc) / w;
+  if (abs(r) > 2.5) return 0.0;
+  float puffs = 0.45 + 0.55 * vnoise(vec2(s * 20.0 - lakeTm * 0.20, r * 0.8 + 3.0));
+  float sm = exp(-r * r) * puffs * (1.0 - smoothstep(0.12, 0.36, s)) * smoothstep(-0.003, 0.012, s);
+  // On the way in the thread climbs from the chimney: a front rising through it, cut per cell.
+  if (lakeFjSmokeFront < 1.0) sm *= 1.0 - smoothstep(0.40 * lakeFjSmokeFront - 0.04, 0.40 * lakeFjSmokeFront, s);
+  return sm;
+}
+
+// Everything beyond the water, at screen point q at or above the horizon (mirror: reflected): the
+// cabin, its birches, the far treeline and snowbank, the hills and the mountains, else the lake's
+// sky along the camera's ray; the smoke over them; and the birds in front of it (the shared birds;
+// off by default): geese by default, a skein migrating across the night, dark against the aurora and
+// grey against the dark sky where the snow below lights their undersides, mirrored in the water as
+// the camera reflected under it sees them; few fly in snow.
+vec3 lakeFjFar(vec2 q, bool mirror) {
+  float y = q.y - LAKE_FJ_HZ;
+  vec3 col = vec3(0.0);
+  vec3 c2;
+  if (K_cabin > 0.5 && abs(q.x - lakeFjCabinX) < 0.04 * LAKE_FJ_CS && y < 0.07 * LAKE_FJ_CS + LAKE_FJ_FOOT && lakeFjCabin((q - vec2(lakeFjCabinX, LAKE_FJ_HZ + LAKE_FJ_FOOT)) / LAKE_FJ_CS, c2)) {
+    col = c2;
+  } else if (lakeFjFarBirches(q, c2)) {
+    col = c2;
+  } else if (lakeFjTreeline(q, c2)) {
+    col = c2;
+  } else if (y < lakeFjShoreTop(q.x)) {
+    // The snowbank at the waterline, warm in the light of the window.
+    float dxw = q.x - (lakeFjCabinX - 0.011 * LAKE_FJ_CS);
+    col = LAKE_SNOW * (lakeAmb * 2.8 + lakeMoonLight * 0.9 + lakeAurLight * 2.0) * 0.85 + LAKE_WINDOW * 0.55 * K_cabin * exp(-dxw * dxw / 0.004);
+    col = mix(col, lakeFjHaze, 0.2);
+  } else if (y < lakeFjHills(q.x)) {
+    col = lakeFjHillColour(q, y);
+  } else if (y < lakeFjPeaks(q.x)) {
+    col = lakeFjPeakColour(q, y);
+  } else {
+    col = lakeSkyAt(normalize(vec3(q.x, y, LAKE_FJ_F)), mirror, 0.0);
+  }
+  if (K_cabin > 0.5) {
+    float sm = lakeFjSmoke(q);
+    if (sm > 0.0) {
+      vec3 sc = LAKE_SNOW * (lakeAmb * 3.2 + lakeMoonLight + lakeAurLight * 2.0)
+              + LAKE_WINDOW * 0.18 * exp(-max(q.y - (LAKE_FJ_HZ + LAKE_FJ_FOOT + 0.058 * LAKE_FJ_CS), 0.0) / 0.05);
+      col = mix(col, sc, 0.8 * hardEdge(sm));
+    }
+  }
+  if (K_birds > 0.0) {
+    BirdCamera cam = BirdCamera(LAKE_FJ_HZ, LAKE_FJ_F, LAKE_FJ_EYE, 1.0, 3.0);
+    BirdSky flights = birdSky(K_birds * smoothfall(0.7, 0.3, K_snow), K_birdKind, K_birdFormation - 1.0, vec2(60.0, 420.0), vec2(LAKE_FJ_HZ + 0.06, 0.95), vec2(2.9, 4.3));
+    BirdHit bird = birdFlightsSeen(q, flights, cam, lakeTm, lakeFjPx, mirror);
+    if (bird.cover > 0.5) {
+      vec3 under = LAKE_SNOW * (lakeAmb * 2.4 + lakeMoonLight * 0.9 + lakeAurLight * 1.8) * 0.3;
+      col = mix(bird.albedo * (lakeAmb * 1.5 + lakeMoonLight * 0.6) + under, lakeFjHaze, 1.0 - exp(-bird.depth / 1500.0));
+      lakeAccent = 0.0;
+    }
+  }
+  return col;
+}
+
+// The water at screen point p below the horizon: the far world mirrored (the ray's reach grows as
+// 1 / h below the horizon, so ripples are laid out in that depth and fade out where they would be
+// finer than a cell), dimmer the nearer it lies; with the ripples knob, cat's-paws of wind ripples
+// streaking it; the window's light and the moon's drawn down it; and, as the ice knob rises, plates
+// of ice in it: static, dimmer mirrors, hairline cracks and patches of snow. range: metres to the
+// water here.
+vec3 lakeFjWater(vec2 p, out float range) {
+  float h = max(LAKE_FJ_HZ - p.y, 0.002);
+  range = LAKE_FJ_EYE * LAKE_FJ_F / h;
+  vec2 g = vec2(p.x * 1.6 / (0.25 + 2.0 * h), log(0.04 + h) * 3.0);
+  float iceMask = 0.0;
+  if (K_ice > 0.0) {
+    float nIce = fbm3(g * vec2(0.8, 1.0) + vec2(3.1, 7.7));
+    iceMask = hardEdge(smoothstep(0.46, 0.54, nIce + (K_ice - 0.5) * 1.4));
+  }
+  vec2 P = vec2(p.x, 1.0) * (0.5 / h);
+  float tm = lakeTm * (1.0 - iceMask);
+  float fade1 = smoothstep(0.03, 0.12, h);
+  float fade2 = smoothstep(0.08, 0.20, h);
+  float w1 = vnoise(vec2(P.x * 0.7, P.y * 1.3 - tm * 0.05)) - 0.5;
+  float w2 = vnoise(vec2(P.x * 2.1 + 4.0, P.y * 3.9 - tm * 0.08 + 6.0)) - 0.5;
+  float amp = mix(0.05, 0.10, iceMask);
+  float dy = amp * h * (w1 * fade1 + 0.5 * w2 * fade2);
+  float dx = 0.02 * h * w2 * fade2;
+  vec2 q = vec2(p.x + dx, max(LAKE_FJ_HZ + h + dy, LAKE_FJ_HZ + 0.0006));
+  // A breeze on open water (the ripples knob, blowing with the wind): its ripples tip the mirror and
+  // stretch what it shows into vertical streaks; the ripples too fine to draw smear it, each cell
+  // looking a little up or down for the dither to average.
+  if (K_ripples > 0.0 && iceMask < 0.5) {
+    vec4 rip = windRipples(planeAt(vec2(p.x / (2.0 * lakeFjHW) + 0.5, p.y), 2.0 * lakeFjHW, LAKE_FJ_HZ, LAKE_FJ_EYE, LAKE_FJ_F), lakeTm, K_wind, K_ripples);
+    vec2 shift = windMirror(rip, h, LAKE_FJ_F) + vec2(0.0, (cellTh - 0.5) * 2.0 * windMirrorSpread(rip, LAKE_FJ_F));
+    q = vec2(q.x + shift.x, max(q.y + shift.y, LAKE_FJ_HZ + 0.0006));
+  }
+
+  float low = exp(-h * 9.0);
+  float fres = mix(0.55 + 0.35 * low, 0.22 + 0.22 * low, iceMask);
+  lakeAccent = 0.0;
+  vec3 refl = lakeFjFar(q, true);
+  float reflAccent = lakeAccent;
+  vec3 deep = vec3(0.003, 0.010, 0.017) + lakeAmb * 0.10;
+  // Ice is pale blue-grey, lit by the whole sky and never black; the sky shows in it dimly.
+  vec3 icePale = LAKE_SNOW * (lakeAmb * 3.4 + lakeMoonLight * 1.2 + lakeAurLight * 2.2) * 0.85 + vec3(0.05, 0.07, 0.10);
+  vec3 col = mix(mix(deep, icePale, iceMask), refl * vec3(0.92, 0.96, 1.0) * 1.1, fres);
+  col += lakeAurLight * 0.4 * (1.0 - iceMask);
+  lakeAccent = reflAccent * fres;
+
+  // The window's light and the moon's, drawn down the water toward us in slowly drifting bands.
+  float bands = 0.35 + 0.65 * smoothstep(0.3, 0.75, vnoise(vec2(p.x * 24.0, P.y * 2.2 - tm * 0.07)));
+  vec3 path = vec3(0.0);
+  if (K_cabin > 0.5) {
+    float wx = (p.x - (lakeFjCabinX - 0.011 * LAKE_FJ_CS)) / (0.008 + 0.05 * h);
+    path += LAKE_WINDOW * exp(-wx * wx) * exp(-h * 6.0) * smoothstep(0.004, 0.03, h) * bands * 0.7;
+  }
+  if (lakePhase > 0.0) {
+    float mx = (p.x - lakeFjMoonAt.x) / (0.012 + 0.07 * h);
+    float mh = (h - (lakeFjMoonAt.y - LAKE_FJ_HZ)) / 0.14;
+    path += vec3(0.80, 0.85, 0.95) * exp(-mx * mx) * (0.2 + 0.8 * exp(-mh * mh)) * smoothstep(0.004, 0.03, h) * bands * 0.25 * lakePhase * (1.0 - 0.7 * lakeOver);
+  }
+  col += path * mix(1.0, 0.35, iceMask);
+
+  if (iceMask > 0.5) {
+    // Soft drifts: a wide, stippled transition between bare ice and snow.
+    float sn = fbm3(g * vec2(0.9, 1.5) + vec2(11.0, 2.0));
+    float th = 0.62 - 0.25 * uWeather.y - 0.05 * K_ice;
+    float snow = hardEdge(smoothstep(th - 0.2, th + 0.2, sn));
+    float crackN = vnoise(g * vec2(1.7, 2.3) + 4.0);
+    float crack = hardEdge(1.0 - smoothstep(0.0, 0.03, abs(crackN - 0.5))) * smoothstep(0.04, 0.10, h);
+    col = mix(col, icePale * 0.5, crack * 0.7);
+    vec3 snowCol = mix(icePale * 1.25 * (0.9 + 0.1 * vnoise(g * 9.0)), lakeFjHaze, 0.4 * (1.0 - smoothstep(0.0, 0.1, h)));
+    col = mix(col, snowCol, snow * 0.9);
+    lakeAccent *= 1.0 - 0.7 * snow;
+  }
+  return col;
+}
+
+// The ground the camera stands on: a snowbank in each lower corner.
+float lakeFjBankTop(float x) {
+  float ul = (x + lakeFjHW) / (0.62 * lakeFjSx);
+  float ur = (x - lakeFjHW) / (0.5 * lakeFjSx);
+  float n = 1.0 + 0.3 * (vnoise(vec2(x * 6.0 + 3.0, 2.0)) - 0.5);
+  return (0.13 * exp(-ul * ul) + 0.07 * exp(-ur * ur)) * n - 0.012;
+}
+
+// A near birch rooted at (bx, by): a pale trunk, tapering, leaning a little and swaying in its line,
+// with dark lenticels; five bare branches that end in a drooping crown of fine twigs (vertical
+// strands cut from static noise, so nothing about them moves). w0: the trunk's half width at its foot.
+bool lakeFjBirch(vec2 p, float bx, float by, float w0, float sd, out vec3 col) {
+  col = vec3(0.0);
+  float yy = p.y - by;
+  if (yy < 0.0 || abs(p.x - bx) > 0.36) return false;
+  float lean = (fract(sd * 3.7) - 0.5) * 0.10;
+  float ht = 1.05 - by;
+  vec3 bark = LAKE_SNOW * (lakeAmb * 3.0 + lakeMoonLight * 1.2 + lakeAurLight * 2.2);
+  float xc = bx + lean * yy + 0.010 * sin(yy * 3.4 + sd * 7.0);
+  float w = w0 * mix(1.0, 0.45, clamp(yy / ht, 0.0, 1.0));
+  float dx = p.x - xc;
+  if (abs(dx) < w + lakeFjPx && hardFill(abs(dx) - w, lakeFjPx * 0.8) > 0.5) {
+    float row = floor(yy * 45.0);
+    float hh = hash12(vec2(row, sd));
+    float mx = hash12(vec2(row, sd + 3.0)) * 1.6 - 0.8;
+    float mark = step(0.55, hh) * step(abs(fract(yy * 45.0) - 0.5), 0.16) * step(abs(dx / w - mx), 0.5);
+    float shade = 0.55 + 0.45 * clamp(0.5 - 0.5 * dx / w, 0.0, 1.0);
+    col = mix(bark * shade, vec3(0.03, 0.025, 0.03) + lakeAmb * 0.2, mark);
+    return true;
+  }
+  for (int j = 0; j < 5; j++) {
+    float fj = float(j);
+    float h1 = hash12(vec2(fj * 3.7 + sd * 11.0, 1.3));
+    float h2 = hash12(vec2(fj * 5.1 + sd * 7.0, 2.9));
+    float yb = 0.20 + 0.13 * fj + 0.03 * h1;
+    float side = mod(fj + floor(sd), 2.0) < 0.5 ? 1.0 : -1.0;
+    float ang = 0.45 + 0.4 * h2;
+    float len = 0.05 + 0.05 * h1;
+    float xb = bx + lean * yb + 0.010 * sin(yb * 3.4 + sd * 7.0);
+    vec2 a = vec2(xb, by + yb);
+    vec2 b = a + len * vec2(side * sin(ang), cos(ang));
+    // A short branch angled up from the trunk...
+    float dB = sdTaperCapsule(p, a, b, w0 * 0.28, 0.0012);
+    if (hardFill(dB, lakeFjPx * 0.8) > 0.5) {
+      col = vec3(0.05, 0.035, 0.04) + lakeAmb * 0.3;
+      return true;
+    }
+    // ...and from its tip a drooping mass of fine twigs, soft dark lace: vertical strands and
+    // finer breakup cut from static noise, densest in the middle and thinning to the edge.
+    vec2 cc = b + vec2(side * 0.012, -0.045);
+    float rr = length((p - cc) / vec2(0.07, 0.115));
+    if (rr < 1.0) {
+      float strands = vnoise(vec2(p.x * 170.0 + fj * 9.0 + sd * 31.0, p.y * 38.0 + fj));
+      float lace = vnoise(vec2(p.x * 80.0 + sd * 5.0, p.y * 90.0 + fj * 3.0));
+      float dens = (0.6 * strands + 0.4 * lace) * (0.35 + 1.3 * (1.0 - rr));
+      if (dens > 0.58) {
+        vec3 twig = vec3(0.06, 0.035, 0.045) + lakeAmb * 0.3;
+        col = mix(twig, bark * 0.45, 0.35 * smoothstep(0.7, 0.9, dens) + 0.5 * uWeather.y * step(0.5, fract(lace * 37.0)));
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+// The near bank and its birches, over everything: rgb and cover; depth: for the snow in the air.
+vec4 lakeFjForeground(vec2 p, out float depth) {
+  depth = weatherDepth(3.5);
+  float top = lakeFjBankTop(p.x);
+  if (p.y < top) {
+    float below = clamp((top - p.y) / 0.12, 0.0, 1.0);
+    float grain = vnoise(vec2(p.x * 24.0, p.y * 80.0));
+    vec3 col = LAKE_SNOW * (lakeAmb * 3.2 + lakeMoonLight * 1.2 + lakeAurLight * 2.4) * (0.78 + 0.18 * grain - 0.2 * below);
+    return vec4(col, 1.0);
+  }
+  float ax = -lakeFjHW + 0.09 * lakeFjSx;
+  float bx = -lakeFjHW + 0.30 * lakeFjSx;
+  float cx = lakeFjHW - 0.05;
+  vec3 bc;
+  if (lakeFjBirch(p, ax, lakeFjBankTop(ax) - 0.025, 0.022, 1.0, bc)
+   || lakeFjBirch(p, bx, lakeFjBankTop(bx) - 0.025, 0.0145, 2.0, bc)
+   || lakeFjBirch(p, cx, lakeFjBankTop(cx) - 0.025, 0.016, 3.0, bc)) {
+    return vec4(bc, 1.0);
+  }
+  return vec4(0.0);
+}
+
+// The fjord's passage: on the way in the camera comes down from the stars already moving and
+// settles on the fjord (a touch of overshoot), and the cabin's smoke then climbs; on the way out it
+// lifts to the stars, ever faster. Both rest at their rest values (tilt 0, smoke 1).
+void lakeFjPassage() {
+  lakeFjTilt = 0.0;
+  lakeFjSmokeFront = 1.0;
+  float pin = passageIn();
+  float pout = passageOut();
+  if (pin >= 1.0 && pout <= 0.0) return;
+  float settle = passageSettle(pin / 0.82, 1.1);
+  lakeFjTilt = 0.22 * (1.0 - settle) + 0.26 * pout * pout;
+  float sf = clamp((pin - 0.35) / 0.65, 0.0, 1.0);
+  lakeFjSmokeFront = 1.0 - (1.0 - sf) * (1.0 - sf);
+}
+
+// The fjord for a screen point, under the night lakeSetup has set: the near bank and its birches,
+// the water, or what lies beyond it; then the mist lying on the fjord and the falling snow.
+Shade lakeFjord(vec2 screenUv, float aspect) {
+  lakeSetup(aspect);
+  lakeFjPassage();
+  lakeFjPx = 1.0 / uRes.y;
+  lakeFjHW = 0.5 * aspect;
+  lakeFjSx = clamp(aspect / 1.78, 0.45, 1.0);
+  lakeFjCabinX = 0.40 * lakeFjHW;
+  lakeFjMoonAt = vec2(LAKE_FJ_MOON.x * lakeFjHW, LAKE_FJ_MOON.y);
+  lakeFjHaze = horizonHaze(lakeSky, vec3(0.0, 0.0, 1.0), 0.03) + lakeAurLight * 1.1 + lakeMoonLight * 0.2;
+  // The camera's tilt (zero at rest, where uv == screenUv). The snow is weather in front of the
+  // lens and stays in screen space.
+  vec2 uv = screenUv + vec2(0.0, lakeFjTilt);
+  vec2 p = vec2((uv.x - 0.5) * aspect, uv.y);
+  lakeAccent = 0.0;
+  float depth = 1.0;
+  float fogDist = 1.0;
+  float fogHeight = max(p.y - LAKE_FJ_HZ, 0.0) * 6.0;
+  vec3 col;
+  float fgDepth;
+  vec4 fg = lakeFjForeground(p, fgDepth);
+  if (fg.a > 0.5) {
+    col = fg.rgb;
+    depth = fgDepth;
+    fogDist = 0.05;
+    fogHeight = 0.0;
+  } else if (p.y < LAKE_FJ_HZ) {
+    float range;
+    col = lakeFjWater(p, range);
+    depth = weatherDepth(range);
+    fogDist = 1.0 - exp(-range / 160.0);
+    fogHeight = 0.0;
+  } else {
+    col = lakeFjFar(p, false);
+  }
+
+  // Mist lying on the fjord: the far shore fades first, and it lies low.
+  if (K_fog > 0.0) {
+    vec3 mist = LAKE_SNOW * (lakeAmb * 1.6 + lakeAurLight * 1.2 + lakeMoonLight * 0.5) * 0.8 + lakeFjHaze * 0.5;
+    float f = fogAmount(K_fog, fogDist, fogHeight);
+    col = mix(col, mist, f);
+    lakeAccent *= 1.0 - f;
+  }
+  // Falling snow, in depth to the first thing the eye meets.
+  if (K_snow > 0.0) {
+    Precip pr = snowFall(screenUv, aspect, lakeTm, K_snow, K_wind, depth);
+    vec3 air = LAKE_SNOW * (lakeAmb * 2.4 + lakeMoonLight * 0.6 + lakeAurLight * 1.5);
+    col = precipOver(col, air, max(air * 1.3, vec3(0.08)), pr);
+    lakeAccent *= 1.0 - pr.veil;
+  }
+  return shadeOf(col, inkOf(col, 1.4, 0.8), clamp(lakeAccent * 1.6, 0.0, 1.0));
+}
+#endif
+
 Shade sceneLake(vec2 screenUv, vec2 cell, float t) {
   float aspect = uRes.x / uRes.y;
+#if LAKE_FJORD
+  if (K_setting > 0.5) return lakeFjord(screenUv, aspect);
+#endif
   // The camera's tilt, a lens shift of uv (exactly nothing at rest).
   vec2 uv = screenUv;
   float pin = passageIn();

@@ -29,6 +29,7 @@ import {
   planetUniforms,
   readPlanet,
   type SkyPlanet,
+  type SkyPlanets,
 } from "./scenes/planets.ts";
 
 export const modeIds = ["landing", "loading", "instance", "bare"] as const;
@@ -314,13 +315,23 @@ export function renameKey(
 }
 
 /**
+ * The planets' pads of the skies since retired, as they were while those were scenes: the steps that
+ * read a scene's planets (giantToPlanets, an alias moving a list) read them here once the scene is
+ * gone.
+ */
+const RETIRED_PLANETS: Readonly<Record<string, SkyPlanets>> = {
+  aurora: { group: "sky", across: [-62, -24, 62], up: [8, 30, 45] },
+};
+
+/**
  * The night sky's one giant planet (GIANT_SWITCH and GIANT_KEYS, the knobs the sky scenes had
- * before their list), in a scene that takes planets: a link without a list whose giant is on gets
- * that giant as its one planet, its old keys read into the planet's; the old keys go either way.
+ * before their list), in a scene that takes planets (or took them, RETIRED_PLANETS): a link without a
+ * list whose giant is on gets that giant as its one planet, its old keys read into the planet's; the
+ * old keys go either way.
  */
 function giantToPlanets(q: URLSearchParams, scene: string): void {
   const id = sceneIds.find((candidate) => candidate === scene);
-  const spec = id === undefined ? undefined : sceneDefs[id].planets;
+  const spec = id === undefined ? RETIRED_PLANETS[scene] : sceneDefs[id].planets;
   if (spec === undefined) return;
   if (!q.has(PLANETS_KEY) && Math.round(readNumber(q.get(GIANT_SWITCH), 0, 1, 0)) === 1) {
     const values: Record<string, number> = {};
@@ -333,6 +344,43 @@ function giantToPlanets(q: URLSearchParams, scene: string): void {
   }
   q.delete(GIANT_SWITCH);
   for (const old of Object.keys(GIANT_KEYS)) q.delete(old);
+}
+
+/**
+ * What the lake shows where its knobs stand as Aurora over a fjord drew them: the fjord under the
+ * slow drapes, quiet (no substorms), no Milky Way, its crescent and its deep night.
+ */
+const AURORA_FJORD: Readonly<Record<string, number>> = {
+  setting: 1,
+  drapes: 1,
+  substorm: 0,
+  hour: 1,
+  "moon-amount": 0.25,
+  milkyWay: 0,
+};
+
+/**
+ * Aurora over a fjord, merged into the lake: its brightness becomes the lake's aurora strength (off
+ * where it was dark), its colours the lake's (green alone, green under violet, the red storm), its
+ * planets move from its pad onto the lake's (clamped to the sky the lake shows), and the lake is set
+ * to what it showed (AURORA_FJORD) where the link leaves that to the default. Its other keys are the
+ * lake's own.
+ */
+function auroraToLake(q: URLSearchParams): void {
+  const glow = readNumber(q.get("glow"), 0, 1, 0.7);
+  q.delete("glow");
+  if (glow > 0) q.set("aurora-amount", String(glow));
+  else q.set("aurora", "0");
+  renameKey(q, "hue", "hue", { 0: 4, 2: 2 });
+  const list = q.get(PLANETS_KEY);
+  const lake = sceneDefs.lake.planets;
+  const aurora = RETIRED_PLANETS["aurora"];
+  if (list !== null && lake !== undefined && aurora !== undefined) {
+    const planets = decodePlanets(aurora, list).map((planet) => readPlanet(lake, planet));
+    q.set(PLANETS_KEY, encodePlanets(lake, planets));
+  }
+  for (const [key, value] of Object.entries(AURORA_FJORD))
+    if (!q.has(key)) q.set(key, String(value));
 }
 
 /**
@@ -372,6 +420,8 @@ export const MIGRATIONS: readonly Migration[] = [
         q.set("cumulus-amount", raw);
     },
   },
+  // Aurora over a fjord became the lake's fjord under its slow drapes.
+  { kind: "alias", since: 3, from: "aurora", to: "lake", keys: auroraToLake },
 ];
 
 export class UrlSchemaError extends Error {}

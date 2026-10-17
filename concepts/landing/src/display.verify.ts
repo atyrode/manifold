@@ -7,7 +7,7 @@
 // once the change has played out (SETTLE_SECONDS); input wakes it.
 import { SETTLE_SECONDS } from "./governor.ts";
 import { DitherRenderer, type RenderSettings } from "./renderer.ts";
-import { defaultsFor, paramDefaults, renderSettings } from "./state.ts";
+import { defaultsFor, readSetup, renderSettings } from "./state.ts";
 
 const WIDTH = 64;
 const HEIGHT = 40;
@@ -22,10 +22,11 @@ function check(ok: boolean, message: string): void {
   if (!ok) throw new Error(message);
 }
 
+/** The lake as Aurora over a fjord drew it (an old `scene=aurora` link): a moving night. */
 function settings(motion = 1): RenderSettings {
   return renderSettings(
-    { ...defaultsFor("aurora"), pixel: 1, motion, view: "source", transitions: "off" },
-    paramDefaults("aurora"),
+    { ...defaultsFor("lake"), pixel: 1, motion, view: "source", transitions: "off" },
+    readSetup(new URLSearchParams("scene=aurora")).params,
   );
 }
 

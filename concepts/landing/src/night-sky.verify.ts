@@ -7,10 +7,11 @@
 //   figures add light there while on (the lines as strong as their amount), and the knobs off draw
 //   exactly what a program without them draws; by day, and with no stars, nothing; at a coarse
 //   footprint the points still show.
-// - `nightPlanets`: in two scenes, two planets of different kinds each change the midnight sky where
-//   their placements put them (the one placed further left, further left on screen), together as
-//   each alone does round itself; an orbiting planet drifts left with the motion clock and, half a
-//   circuit on, has set: the sky is then the empty list's again, byte for byte.
+// - `nightPlanets`: in two skies (the lake's fjord as an old Aurora link opens it, and the island at
+//   midnight), two planets of different kinds each change the night sky where their placements put
+//   them (the one placed further left, further left on screen), together as each alone does round
+//   itself; an orbiting planet drifts left with the motion clock and, half a circuit on, has set: the
+//   sky is then the empty list's again, byte for byte.
 import { constellationUniforms } from "./constellations.ts";
 import { effective, type ParamDef } from "./params.ts";
 import {
@@ -24,7 +25,7 @@ import { skyFigurePoint, skyFigures } from "./shaders/lib/sky.ts";
 import { sceneDefs, type SceneId } from "./scenes/index.ts";
 import { planetUniforms, readPlanet, type SkyPlanet } from "./scenes/planets.ts";
 import type { SceneDef } from "./scenes/types.ts";
-import { paramDefaults } from "./state.ts";
+import { paramDefaults, readSetup } from "./state.ts";
 
 function check(ok: boolean, message: string): void {
   if (!ok) throw new Error(`night sky: ${message}`);
@@ -287,12 +288,15 @@ export function verifyNightPlanets(gl: WebGL2RenderingContext): Record<string, u
   const width = 160;
   const height = 100;
   const result: Record<string, unknown> = {};
-  for (const id of ["aurora", "island"] as const satisfies readonly SceneId[]) {
+  const nights: readonly (readonly [SceneId, Record<string, number>])[] = [
+    ["lake", readSetup(new URLSearchParams("scene=aurora")).params],
+    ["island", { ...paramDefaults("island"), time: 0 }],
+  ];
+  for (const [id, knobs] of nights) {
     const scene = sceneDefs[id];
     const spec = scene.planets;
     check(spec !== undefined, `${id} takes no planets`);
     if (spec === undefined) continue;
-    const knobs = { ...paramDefaults(id), time: 0 };
     const params = scene.params.map((knob) => effective(knob, knobs));
     const programs = new Map<number, WebGLProgram>();
     const frame = (planets: readonly SkyPlanet[], motionTime = 24): Float32Array => {

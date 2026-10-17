@@ -98,8 +98,8 @@ export async function verifyRuntime(_gl: WebGL2RenderingContext): Promise<Record
   // response to the press shows), records what it is given, and throws on demand.
   const dunes = sceneDefs.dunes;
   const dunesSim = dunes.sim;
-  const aurora = sceneDefs.aurora;
-  const auroraGlsl = aurora.glsl;
+  const lake = sceneDefs.lake;
+  const lakeGlsl = lake.glsl;
   const errorLog = console.error;
   const seen = { time: Number.NaN, trigger: Number.NaN, fired: false };
   let fault: Error | undefined;
@@ -266,15 +266,15 @@ export async function verifyRuntime(_gl: WebGL2RenderingContext): Promise<Record
     );
     // A shader that does not build is reported too (its program built in the background meanwhile,
     // the scene on screen going on), and retry builds it again once it is fixed.
-    aurora.glsl = `${auroraGlsl}\n#error injected build fault\n`;
-    renderer.update(settings("aurora"));
+    lake.glsl = `${lakeGlsl}\n#error injected build fault\n`;
+    renderer.update(settings("lake"));
     check(frame((now += 16)), "No next frame was scheduled after a shader failed to build");
     await arrive();
     check(
       renderer.failure?.stage === "build",
       `Build fault not reported: ${JSON.stringify(renderer.failure)}`,
     );
-    aurora.glsl = auroraGlsl;
+    lake.glsl = lakeGlsl;
     renderer.retry();
     frame((now += 16));
     await arrive();
@@ -285,7 +285,7 @@ export async function verifyRuntime(_gl: WebGL2RenderingContext): Promise<Record
     frame((now += 16));
     check(renderer.failure?.stage === "frame", "The second fault was not reported");
     fault = undefined;
-    renderer.update(settings("aurora"));
+    renderer.update(settings("lake"));
     frame((now += 16));
     check(
       renderer.failure === undefined && drawn(),
@@ -309,7 +309,7 @@ export async function verifyRuntime(_gl: WebGL2RenderingContext): Promise<Record
     result.recovery = { events: logged.length, built };
 
     // S8: per-program uniforms are sent when they change and only then.
-    renderer.update(settings("aurora"));
+    renderer.update(settings("lake"));
     frame((now += 16));
     const base = { ...sends };
     for (let i = 0; i < 4; i++) frame((now += 16));
@@ -324,13 +324,13 @@ export async function verifyRuntime(_gl: WebGL2RenderingContext): Promise<Record
         steady.uTriggers === 0,
       `Unchanged state was sent again: ${JSON.stringify(steady)}`,
     );
-    const knobs = paramDefaults("aurora");
-    const index = aurora.params.findIndex((def) => def.kind === "range");
-    const knob = aurora.params[index];
-    if (!knob) throw new Error("Aurora has no range knob");
-    const original = settings("aurora", knobs).params[index];
+    const knobs = paramDefaults("lake");
+    const index = lake.params.findIndex((def) => def.kind === "range");
+    const knob = lake.params[index];
+    if (!knob) throw new Error("The lake has no range knob");
+    const original = settings("lake", knobs).params[index];
     knobs[knob.key] = (knobs[knob.key] ?? 0) + 0.125;
-    const changed = settings("aurora", knobs);
+    const changed = settings("lake", knobs);
     check(changed.params[index] !== original, "The knob change was a no-op");
     renderer.update(changed);
     frame((now += 16));
@@ -342,13 +342,13 @@ export async function verifyRuntime(_gl: WebGL2RenderingContext): Promise<Record
     // A look change made while another program draws reaches this one when it draws again.
     renderer.update(settings("dunes", paramDefaults("dunes"), { levels: 5 }));
     frame((now += 16));
-    renderer.update(settings("aurora", knobs, { levels: 5 }));
+    renderer.update(settings("lake", knobs, { levels: 5 }));
     frame((now += 16));
     check(
       uniform("uLevels") === 5,
       "A look change made on another scene left this scene's program stale",
     );
-    // A trigger's stamp reaches the shader as it moves (aurora reads slot 0 through sinceTrigger).
+    // A trigger's stamp reaches the shader as it moves (the lake reads its slots through sinceTrigger).
     renderer.trigger(0);
     for (let i = 0; i < 3; i++) frame((now += 100));
     const sinceTrigger = (uniform("uTime") as number) - (uniform("uTriggers[0]") as number);
@@ -374,7 +374,7 @@ export async function verifyRuntime(_gl: WebGL2RenderingContext): Promise<Record
   } finally {
     console.error = errorLog;
     if (dunesSim !== undefined) dunes.sim = dunesSim;
-    aurora.glsl = auroraGlsl;
+    lake.glsl = lakeGlsl;
     window.requestAnimationFrame = nativeRaf;
     canvas.remove();
   }

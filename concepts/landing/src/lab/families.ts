@@ -18,7 +18,6 @@ export const sceneFamily = {
   orbit: "sky",
   clouds: "sky",
   flock: "sky",
-  aurora: "sky",
   skyward: "sky",
   swell: "water",
   pond: "water",

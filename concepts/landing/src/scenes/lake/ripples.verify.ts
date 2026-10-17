@@ -1,14 +1,17 @@
-// GPU regression for the fjord's wind ripples (#1082 R45), on the real scene entry: they ruffle the
-// open water and nothing else (the sky, mountains and shore above the horizon stay as they were, and
-// ice stays still), and even at the strongest wind they stay calm under the dither. Registered in
+// GPU regression for the fjord's wind ripples (#1082 R45), on the lake's real entry with the fjord
+// as Aurora over a fjord drew it (its link, through the URL schema's alias): they ruffle the open
+// water and nothing else (the sky, mountains and shore above the horizon stay as they were, and ice
+// stays still), and even at the strongest wind they stay calm under the dither. Registered in
 // verify-browser.ts.
-import { fragmentSourceFor, vertexSource } from "../../shaders/index.ts";
-import { defaultsFor, paramDefaults, renderSettings } from "../../state.ts";
-import { auroraScene } from "./index.ts";
-import { AURORA_HORIZON } from "./shader.ts";
+import { fragmentSourceFor, sceneFeatures, shaderValues, vertexSource } from "../../shaders/index.ts";
+import { defaultsFor, readSetup, renderSettings } from "../../state.ts";
+import { lakeScene } from "./index.ts";
+import { FJORD_HORIZON } from "./shader.ts";
 
 const WIDTH = 240;
 const HEIGHT = 135;
+/** The lake's knobs for the fjord under the slow drapes: an old `scene=aurora` link's. */
+const FJORD = readSetup(new URLSearchParams("scene=aurora")).params;
 
 function check(ok: boolean, message: string): void {
   if (!ok) throw new Error(message);
@@ -37,8 +40,9 @@ function program(gl: WebGL2RenderingContext, fragment: string): WebGLProgram {
   return linked;
 }
 
-export function verifyAuroraRipples(gl: WebGL2RenderingContext): Record<string, unknown> {
-  const linked = program(gl, fragmentSourceFor(auroraScene));
+export function verifyLakeRipples(gl: WebGL2RenderingContext): Record<string, unknown> {
+  const features = sceneFeatures(lakeScene, shaderValues(lakeScene, FJORD));
+  const linked = program(gl, fragmentSourceFor(lakeScene, features));
   gl.canvas.width = WIDTH;
   gl.canvas.height = HEIGHT;
   gl.viewport(0, 0, WIDTH, HEIGHT);
@@ -60,9 +64,7 @@ export function verifyAuroraRipples(gl: WebGL2RenderingContext): Record<string, 
     gl.uniform1f(at("uMotionTime"), time);
     gl.uniform1fv(
       at("uParams"),
-      Float32Array.from(
-        renderSettings(defaultsFor("aurora"), { ...paramDefaults("aurora"), ...knobs }).params,
-      ),
+      Float32Array.from(renderSettings(defaultsFor("lake"), { ...FJORD, ...knobs }).params),
     );
     gl.drawArrays(gl.TRIANGLES, 0, 3);
     const bytes = new Uint8Array(WIDTH * HEIGHT * 4);
@@ -75,8 +77,8 @@ export function verifyAuroraRipples(gl: WebGL2RenderingContext): Record<string, 
     a[pixel * 4 + 1] !== b[pixel * 4 + 1] ||
     a[pixel * 4 + 2] !== b[pixel * 4 + 2];
   // Rows of cells wholly above the waterline (at rest) and wholly below it; rows run bottom to top.
-  const waterRows = Math.floor(AURORA_HORIZON * HEIGHT);
-  const skyFrom = Math.ceil(AURORA_HORIZON * HEIGHT);
+  const waterRows = Math.floor(FJORD_HORIZON * HEIGHT);
+  const skyFrom = Math.ceil(FJORD_HORIZON * HEIGHT);
 
   const still = draw({}, 30, 1);
   const ruffled = draw({ ripples: 1 }, 30, 1);

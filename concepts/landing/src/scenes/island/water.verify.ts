@@ -497,7 +497,6 @@ export function verifyWaterTiers(gl: WebGL2RenderingContext): Record<string, unk
 
   // The adopters: each compiles at the tier it selects, and needs it (one tier lower fails).
   const adopters: readonly [keyof typeof sceneDefs, keyof typeof WATER_TIERS][] = [
-    ["aurora", "ripples"],
     ["island", "mirror"],
     ["shore", "mirror"],
     ["swell", "mirror"],

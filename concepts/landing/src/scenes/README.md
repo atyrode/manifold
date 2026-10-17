@@ -278,12 +278,12 @@ comparison (under its `a.` or `b.` prefix) are that one form, and all of them en
 **Versions.** A query's keys belong to a schema, numbered from 1, and `v=<n>` names it only where
 the query needs it: the lab writes `v` when a reader taking the query for schema 1, as it takes
 every link without `v`, would read it otherwise (`withVersion`). Every link from before versions is
-schema 1. Schema 2 only rewrote keys that no build writes any more, so no link needs `v` yet. When
-a range becomes a feature, say, the step that turns an old `<key>=30` into `<key>=1&<key>-amount=30`
-would misread a new `<key>=1`, so every link that sets that knob from then on carries `v`, and only
-those. Writing `v` always would lengthen every link and, at each new version, unlight every
-committed preset until it was rewritten. A link of a later schema than the build knows (a newer
-build's, opened on an older one) is read as it stands.
+schema 1. Schemas 2 and 3 only rewrote keys and a scene that no build writes any more, so no link
+needs `v` yet. When a range becomes a feature, say, the step that turns an old `<key>=30` into
+`<key>=1&<key>-amount=30` would misread a new `<key>=1`, so every link that sets that knob from then
+on carries `v`, and only those. Writing `v` always would lengthen every link and, at each new
+version, unlight every committed preset until it was rewritten. A link of a later schema than the
+build knows (a newer build's, opened on an older one) is read as it stands.
 
 **Migrations.** `MIGRATIONS` is the schema's history, in order. Each step makes the version
 `since`; a query of an earlier version runs every step past its own, in order, so a schema 1 link
@@ -296,7 +296,12 @@ runs them all and each step rewrites the query as the steps before it left it. T
 - `alias`: a retired scene id (renamed, merged into another scene or removed) whose links open its
   successor, `to`, which a later alias may retire in turn. Its `keys` move the retired scene's keys
   onto the successor's: rename them, and set the successor's knobs whose defaults differ from what
-  the retired scene showed, since a link leaves defaults out.
+  the retired scene showed, since a link leaves defaults out. Schema 3 holds one: `aurora` (Aurora
+  over a fjord) merged into `lake`, whose links open the lake's fjord (`setting` 1) under the slow
+  drapes (`drapes` 1) without substorms, at the deep of the night (`hour` 1), its crescent
+  (`moon-amount` 0.25) and no Milky Way; its `glow` becomes the lake's `aurora-amount` (0: the
+  aurora off), its `hue` the lake's (green 4, green + violet 0, red storm 2), its planets move from
+  its pad onto the lake's, and its other keys are the lake's own.
 
 To change what a key means, append a step of the next version (`since: URL_VERSION + 1`) that
 rewrites older queries into the new keys; to retire a scene, append an alias of the next version
@@ -304,9 +309,11 @@ and take the scene out of the registry. Never edit, move or drop a step that has
 on it. A step that calls live code (`COUNTRY_SEASONS`, `encodePlanets`, a scene's `planets`) must
 keep writing its own version's keys, so freeze what it uses before that code changes meaning, and
 retiring a scene that an earlier step reads (a sky that takes planets) means handing that step the
-part it read. The chain reads a query that names no scene as today's default scene's: changing the
-default scene needs each version's default kept first. `checkMigrations` runs at load: steps in
-version order, and each alias retires, once, an id no scene has, for a successor that leads to one.
+part it read (`RETIRED_PLANETS` keeps the retired skies' pads, for the giant's step and for the alias
+that moves their lists). The chain reads a query that names no scene as today's default scene's:
+changing the default scene needs each version's default kept first. `checkMigrations` runs at load:
+steps in version order, and each alias retires, once, an id no scene has, for a successor that leads
+to one.
 
 A setup naming a scene this build lacks, once its aliases have run, opens the default scene with
 its lab settings, and the lab says so in one line over the scene until another scene is on screen.
@@ -701,20 +708,20 @@ aurora, meteors and the canopy weather (see "Shared libraries"). A component few
 a GLSL string of its own that each consumer interpolates into its `glsl`, at the top or at least
 before the functions that call it, so no other program pays for it:
 
-| String            | File                           | Composed by                                                                | See                                  |
-| ----------------- | ------------------------------ | -------------------------------------------------------------------------- | ------------------------------------ |
-| `worldGlsl`       | `src/shaders/lib/world.ts`     | meadow, shore, dunes, bees (it composes `birdsGlsl` and `milkyWayGlsl`)    | "World layers"                       |
-| `birdsGlsl`       | `src/shaders/lib/birds.ts`     | aurora, country, falls, lake, lanterns, skyward, swell, train; the world's | "Birds"                              |
-| `milkyWayGlsl`    | `src/shaders/lib/milkyway.ts`  | campfire, lake; the world's                                                | the Milky Way row below              |
-| `canopyGroveGlsl` | `src/shaders/lib/canopy.ts`    | bamboo, forest                                                             | "Shared libraries" (the canopy)      |
-| `plantsGlsl`      | `src/shaders/lib/plants.ts`    | falls, fireflies, garden, pond, tidepool                                   | "Rooted plants"                      |
-| `planetGlsl`      | `src/shaders/lib/planet.ts`    | orbit, campfire, mobile; `skyGiant` behind its gate (`SKY_GIANT`)          | "The giant planet"                   |
-| `figuresGlsl`     | `src/shaders/lib/figures.ts`   | country                                                                    | "Figures, livestock and buildings"   |
-| `livestockGlsl`   | `src/shaders/lib/livestock.ts` | country                                                                    | "Figures, livestock and buildings"   |
-| `buildingsGlsl`   | `src/shaders/buildings.ts`     | country                                                                    | "Figures, livestock and buildings"   |
-| `terrainGlsl`     | `src/shaders/lib/terrain.ts`   | country                                                                    | `TerrainBuilder` under "Simulations" |
-| `fieldsGlsl`      | `src/shaders/lib/fields.ts`    | country                                                                    | the fields row below                 |
-| `treesGlsl`       | `src/shaders/lib/trees.ts`     | country                                                                    | the trees row below                  |
+| String            | File                           | Composed by                                                             | See                                  |
+| ----------------- | ------------------------------ | ----------------------------------------------------------------------- | ------------------------------------ |
+| `worldGlsl`       | `src/shaders/lib/world.ts`     | meadow, shore, dunes, bees (it composes `birdsGlsl` and `milkyWayGlsl`) | "World layers"                       |
+| `birdsGlsl`       | `src/shaders/lib/birds.ts`     | country, falls, lake, lanterns, skyward, swell, train; the world's      | "Birds"                              |
+| `milkyWayGlsl`    | `src/shaders/lib/milkyway.ts`  | campfire, lake; the world's                                             | the Milky Way row below              |
+| `canopyGroveGlsl` | `src/shaders/lib/canopy.ts`    | bamboo, forest                                                          | "Shared libraries" (the canopy)      |
+| `plantsGlsl`      | `src/shaders/lib/plants.ts`    | falls, fireflies, garden, pond, tidepool                                | "Rooted plants"                      |
+| `planetGlsl`      | `src/shaders/lib/planet.ts`    | orbit, campfire, mobile; `skyGiant` behind its gate (`SKY_GIANT`)       | "The giant planet"                   |
+| `figuresGlsl`     | `src/shaders/lib/figures.ts`   | country                                                                 | "Figures, livestock and buildings"   |
+| `livestockGlsl`   | `src/shaders/lib/livestock.ts` | country                                                                 | "Figures, livestock and buildings"   |
+| `buildingsGlsl`   | `src/shaders/buildings.ts`     | country                                                                 | "Figures, livestock and buildings"   |
+| `terrainGlsl`     | `src/shaders/lib/terrain.ts`   | country                                                                 | `TerrainBuilder` under "Simulations" |
+| `fieldsGlsl`      | `src/shaders/lib/fields.ts`    | country                                                                 | the fields row below                 |
+| `treesGlsl`       | `src/shaders/lib/trees.ts`     | country                                                                 | the trees row below                  |
 
 - **Fields** (`fieldsGlsl`): `fieldHold` and `fieldRows` (row profiles that settle to their mean
   where the dither cannot hold them) and `fieldFlowerMaterial` (meadow, lavender and sunflower
@@ -759,10 +766,11 @@ its rain and snow as the climate makes them of the knobs at the date, `climatePr
 of `climateCold`, and the bales while the date lies in their stretch of the year, both at any date
 while the year passes; `countryFeaturesAll` checks each gated setting), `meadow` (its wildflowers,
 and the world's gates, `worldFeatures` and `WORLD_ALL`: see "World layers"), `shore` and `dunes`
-(the world's gates alone), and `orbit` (`orbitFeatures` and `ORBIT_ALL`: the
+(the world's gates alone), `orbit` (`orbitFeatures` and `ORBIT_ALL`: the
 figures in its stars, the planet's aurora and city lights, the M's lights, the moons and the ring
 system, all off at its defaults; its storms, shooting stars and captured meteors stay in, as a
-"now" shows them, and so do the cloud decks the storms flash in).
+"now" shows them, and so do the cloud decks the storms flash in), and `lake` (`lakeFeatures`: the
+fjord, `LAKE_FJORD`, while it is the place, and the slow drapes, `LAKE_DRAPES`, while they are on).
 
 Library gates are setting-keyed features the shared libraries own: code a library compiles in only
 while it shows (`src/shaders/index.ts`): the constellations, `SKY_FIGURES`, while their night
@@ -899,53 +907,57 @@ the shared component at a fixed value. **full**: the ordinary full moon of `skyC
 **own**: a scene-specific version kept on purpose. **—**: not applicable, no knob. Rows marked † still
 have **open** cells: an open night sky where the component could be composed.
 
-| Scene              | Sky seen                                                         | Stars                                            | Moon                                                       | Aurora                                                             | Meteors                                                                              |
-| ------------------ | ---------------------------------------------------------------- | ------------------------------------------------ | ---------------------------------------------------------- | ------------------------------------------------------------------ | ------------------------------------------------------------------------------------ |
-| `train`            | through the window                                               | knob 0.75                                        | knob (phase) + night glow                                  | knob (`auroraCurtains`, full detail)                               | own: `K_meteors`, trigger 5, window and tunnel                                       |
-| `frost`            | through the window                                               | knob 0.5 (cabin ×1.7)                            | knob (phase)                                               | knob                                                               | knob, trigger 1                                                                      |
-| `autumn`           | over the park, under the canopy                                  | knob 0.5                                         | knob (phase; keys the night light)                         | knob, behind the clouds                                            | knob, trigger 2                                                                      |
-| `bees`             | over the valley (the world's sky, "World layers")                | knob 0.6 + the world's Milky Way (knob, on)      | knob (phase at every setting; keys the night light)        | knob, behind the clouds and the cumulus                            | knob, trigger 0                                                                      |
-| `dunes`            | over the dune sea (the world's sky; none overhead)               | knob 1 + the world's Milky Way (knob, on)        | knob (phase; keys the sand's light)                        | knob, behind the clouds and the dust                               | knob, trigger 0, behind the clouds and the dust                                      |
-| `falls`            | above the cliff                                                  | knob 0.45                                        | knob (phase)                                               | knob, its arc lifted over the rim                                  | knob, trigger 0, falling behind the rim                                              |
-| `garden`           | the haze over the wall (the horizon is the frame's top edge)     | —                                                | knob (phase; keys the night light)                         | —                                                                  | —                                                                                    |
-| `lanterns`         | over the river, mirrored                                         | knob 0.55 (+ own sparse stars, thinned below it) | own young crescent, fixed in the frame                     | knob, mirrored                                                     | knob, trigger 2, mirrored                                                            |
-| `meadow`           | over the meadow (the world's sky, "World layers")                | knob 0.6 + the world's Milky Way (knob, on)      | knob (phase)                                               | knob, behind the clouds                                            | knob, trigger 2                                                                      |
-| `shore`            | over the sea and mirrored in it and the wet sand (the world's)   | knob 0.6 + the world's Milky Way (knob, on)      | knob (phase, compiled in at every setting; moonrise)       | knob, behind the clouds, mirrored                                  | knob, trigger 2, mirrored                                                            |
-| `sill`             | over the city                                                    | knob 0.5                                         | knob (phase)                                               | knob, light through the window                                     | knob, trigger 3                                                                      |
-| `skyward`          | a strip between roofs                                            | knob 0.3                                         | knob (phase)                                               | — (looking up: the curtains hang toward the horizon, out of view)  | knob, trigger 0, camera frame                                                        |
-| `bamboo`, `forest` | canopy gaps                                                      | knob 0.5                                         | knob (phase; the gaps and the night rays)                  | —                                                                  | —                                                                                    |
-| `street`           | in reflections only                                              | knob 0.55 (window glass)                         | knob (phase; the windows and wet street)                   | —                                                                  | —                                                                                    |
-| `lake`             | over the ice, mirrored                                           | own `K_stars` + shared Milky Way (knob)          | own phase, fixed bearing                                   | knob (`auroraCurtains` on the sim's substorm clock, rough-ice tap) | knob, trigger 3, mirrored                                                            |
-| `aurora`           | the subject, mirrored in the fjord                               | own `K_stars` on a fixed night                   | own crescent                                               | own curtains                                                       | knob, trigger 1, mirrored                                                            |
-| `swell`            | over the sea                                                     | own (`starfield`, `K_stars`)                     | own disc (`K_moon` sizes it), its `waterGlitter` path      | —                                                                  | knob, trigger 0, screen frame, glints in the waves                                   |
-| `clouds` †         | above the cloud sea                                              | knob 0.75                                        | own bearing, drawn by `skyColor`                           | knob (`auroraCurtains`, full detail)                               | open                                                                                 |
-| `country`          | over the valley                                                  | knob 0.5                                         | knob (phase; `SKY_MOON_PHASE` compiled in only below full) | open                                                               | open                                                                                 |
-| `flock` †          | the subject over a skyline (only the dome mirrored in its water) | knob 0.45                                        | full                                                       | open                                                               | open                                                                                 |
-| `island` †         | round the island                                                 | knob 0.6                                         | full                                                       | open                                                               | open                                                                                 |
-| `campfire` †       | above the pines                                                  | knob 0.8 + shared Milky Way (knob)               | — (the giant planet replaces it)                           | open                                                               | own: `K_shooting`, trigger 0, under the planet                                       |
-| `kelp`             | Snell's window                                                   | —                                                | full, refracted                                            | —                                                                  | —                                                                                    |
-| `tidepool`         | the sky in the pools' mirror                                     | —                                                | full, mirrored                                             | —                                                                  | —                                                                                    |
-| `dew`              | out-of-focus dawn backdrop                                       | —                                                | —                                                          | —                                                                  | —                                                                                    |
-| `bonsai`           | none (its light only)                                            | —                                                | —                                                          | —                                                                  | —                                                                                    |
-| `orbit`            | its own sky                                                      | own                                              | own                                                        | —                                                                  | own (captured meteors)                                                               |
-| `fireflies`        | its own moonless sky over the mangroves                          | own                                              | — (moonless)                                               | —                                                                  | knob (`skyComponentKnobs`), trigger 2, over the hills behind the trees, not mirrored |
+| Scene              | Sky seen                                                         | Stars                                            | Moon                                                       | Aurora                                                            | Meteors                                                                              |
+| ------------------ | ---------------------------------------------------------------- | ------------------------------------------------ | ---------------------------------------------------------- | ----------------------------------------------------------------- | ------------------------------------------------------------------------------------ |
+| `train`            | through the window                                               | knob 0.75                                        | knob (phase) + night glow                                  | knob (`auroraCurtains`, full detail)                              | own: `K_meteors`, trigger 5, window and tunnel                                       |
+| `frost`            | through the window                                               | knob 0.5 (cabin ×1.7)                            | knob (phase)                                               | knob                                                              | knob, trigger 1                                                                      |
+| `autumn`           | over the park, under the canopy                                  | knob 0.5                                         | knob (phase; keys the night light)                         | knob, behind the clouds                                           | knob, trigger 2                                                                      |
+| `bees`             | over the valley (the world's sky, "World layers")                | knob 0.6 + the world's Milky Way (knob, on)      | knob (phase at every setting; keys the night light)        | knob, behind the clouds and the cumulus                           | knob, trigger 0                                                                      |
+| `dunes`            | over the dune sea (the world's sky; none overhead)               | knob 1 + the world's Milky Way (knob, on)        | knob (phase; keys the sand's light)                        | knob, behind the clouds and the dust                              | knob, trigger 0, behind the clouds and the dust                                      |
+| `falls`            | above the cliff                                                  | knob 0.45                                        | knob (phase)                                               | knob, its arc lifted over the rim                                 | knob, trigger 0, falling behind the rim                                              |
+| `garden`           | the haze over the wall (the horizon is the frame's top edge)     | —                                                | knob (phase; keys the night light)                         | —                                                                 | —                                                                                    |
+| `lanterns`         | over the river, mirrored                                         | knob 0.55 (+ own sparse stars, thinned below it) | own young crescent, fixed in the frame                     | knob, mirrored                                                    | knob, trigger 2, mirrored                                                            |
+| `meadow`           | over the meadow (the world's sky, "World layers")                | knob 0.6 + the world's Milky Way (knob, on)      | knob (phase)                                               | knob, behind the clouds                                           | knob, trigger 2                                                                      |
+| `shore`            | over the sea and mirrored in it and the wet sand (the world's)   | knob 0.6 + the world's Milky Way (knob, on)      | knob (phase, compiled in at every setting; moonrise)       | knob, behind the clouds, mirrored                                 | knob, trigger 2, mirrored                                                            |
+| `sill`             | over the city                                                    | knob 0.5                                         | knob (phase)                                               | knob, light through the window                                    | knob, trigger 3                                                                      |
+| `skyward`          | a strip between roofs                                            | knob 0.3                                         | knob (phase)                                               | — (looking up: the curtains hang toward the horizon, out of view) | knob, trigger 0, camera frame                                                        |
+| `bamboo`, `forest` | canopy gaps                                                      | knob 0.5                                         | knob (phase; the gaps and the night rays)                  | —                                                                 | —                                                                                    |
+| `street`           | in reflections only                                              | knob 0.55 (window glass)                         | knob (phase; the windows and wet street)                   | —                                                                 | —                                                                                    |
+| `lake`             | over the ice or the fjord, mirrored                              | own `K_stars` + shared Milky Way (knob)          | own phase, fixed bearing (right; over the fjord left)      | knob (`auroraCurtains`, substorm clock) or own `drapes`           | knob, trigger 3, mirrored                                                            |
+| `swell`            | over the sea                                                     | own (`starfield`, `K_stars`)                     | own disc (`K_moon` sizes it), its `waterGlitter` path      | —                                                                 | knob, trigger 0, screen frame, glints in the waves                                   |
+| `clouds` †         | above the cloud sea                                              | knob 0.75                                        | own bearing, drawn by `skyColor`                           | knob (`auroraCurtains`, full detail)                              | open                                                                                 |
+| `country`          | over the valley                                                  | knob 0.5                                         | knob (phase; `SKY_MOON_PHASE` compiled in only below full) | open                                                              | open                                                                                 |
+| `flock` †          | the subject over a skyline (only the dome mirrored in its water) | knob 0.45                                        | full                                                       | open                                                              | open                                                                                 |
+| `island` †         | round the island                                                 | knob 0.6                                         | full                                                       | open                                                              | open                                                                                 |
+| `campfire` †       | above the pines                                                  | knob 0.8 + shared Milky Way (knob)               | — (the giant planet replaces it)                           | open                                                              | own: `K_shooting`, trigger 0, under the planet                                       |
+| `kelp`             | Snell's window                                                   | —                                                | full, refracted                                            | —                                                                 | —                                                                                    |
+| `tidepool`         | the sky in the pools' mirror                                     | —                                                | full, mirrored                                             | —                                                                 | —                                                                                    |
+| `dew`              | out-of-focus dawn backdrop                                       | —                                                | —                                                          | —                                                                 | —                                                                                    |
+| `bonsai`           | none (its light only)                                            | —                                                | —                                                          | —                                                                 | —                                                                                    |
+| `orbit`            | its own sky                                                      | own                                              | own                                                        | —                                                                 | own (captured meteors)                                                               |
+| `fireflies`        | its own moonless sky over the mangroves                          | own                                              | — (moonless)                                               | —                                                                 | knob (`skyComponentKnobs`), trigger 2, over the hills behind the trees, not mirrored |
 
-`aurora` and `lake` keep a night of their own: their own `K_stars` knob sets the shared stars
-(`skyStarLight`) on it.
+`lake` keeps a night of its own over both its places (the frozen lake and, `setting` 1, the fjord
+that was the `aurora` scene): its own `K_stars` knob sets the shared stars (`skyStarLight`) on it,
+its `hour` knob the night itself. Its aurora is the shared curtains on the sim's substorm clock
+(over the ice with a second, higher tap that rough ice smears), or with `drapes` its own slow drapes
+(the fjord's: ribbons laid out by direction as the fjord's camera sees them, with `activity` and a
+`corona` on its own trigger, 4), which the substorms brighten and quicken too; over the fjord the
+moon stands low on the left and the M is a curtain folded high in the sky.
 
 The constellations come with `skyStars`, so every scene whose stars it draws, directly, through
 `skyStarLight` or through the canopy's (`canopyGapSky`) or the world's sky, has the knob: every
-**knob** in the Stars column above, and `aurora` and `lake` for the shared stars on their own
-nights. How much of them shows is the view's: `aurora` sees every figure; `lake`, `frost`,
-`campfire` and `sill` three or four; `country` (a strip of sky some 15 degrees deep) little;
-`street` only its window glass. `swell`, `orbit` and `fireflies` draw stars of their own and have
-none (orbit keeps a `constellations` toggle of its own).
+**knob** in the Stars column above, and `lake` for the shared stars on its own night. How much of
+them shows is the view's: `lake` (on the ice), `frost`, `campfire` and `sill` three or four;
+`country` (a strip of sky some 15 degrees deep) little; `street` only its window glass. `swell`,
+`orbit` and `fireflies` draw stars of their own and have none (orbit keeps a `constellations`
+toggle of its own).
 
-Planets can hang in every such sky that has room for them: `aurora`, `autumn`, `bees`, `clouds`,
-`country`, `dunes`, `flock`, `frost`, `island`, `lake`, `lanterns`, `meadow`, `shore`, `sill`,
-`skyward` and `train` (see "The sky's planets"). `campfire` keeps its own giant; `falls` sees only a
-strip of sky over its cliff under the cloud deck, `bamboo` and `forest` only gaps in the canopy, and
-`street` only reflections, so none of them takes them.
+Planets can hang in every such sky that has room for them: `autumn`, `bees`, `clouds`, `country`,
+`dunes`, `flock`, `frost`, `island`, `lake` (over both its places), `lanterns`, `meadow`, `shore`,
+`sill`, `skyward` and `train` (see "The sky's planets"). `campfire` keeps its own giant; `falls`
+sees only a strip of sky over its cliff under the cloud deck, `bamboo` and `forest` only gaps in the
+canopy, and `street` only reflections, so none of them takes them.
 
 The rest have no sky: `bar`, `chladni`, `delta`, `ferro`, `film`, `fractal`, `harmonograph`,
 `hyperbolic`, `incense`, `lava`, `marble`, `mobile`, `pearl`, `pendula`, `petri`, `physarum`,
@@ -977,8 +989,7 @@ flight is a few clear marks rather than flicker.
 | `bees`     | the world's (`worldBirds`, `worldKnobs`); a bird hides the insects behind it                                    | on 0.35 by day, swallows | the orchard, the wall, the hives and the near flowers by depth    | —                 |
 | `falls`    | `birdFlights` (`fallsBirds`), `birdKnobs`                                                                       | off, swifts              | cliff, rim trees and slot walls by depth; spray and the near bank | —                 |
 | `swell`    | `birdFlights`, `birdKnobs`                                                                                      | off, gulls               | the sea by depth (crests, with relief)                            | —                 |
-| `aurora`   | `birdFlights` in `aurFar`, `birdKnobs`                                                                          | off, geese               | the near bank and birches                                         | the fjord         |
-| `lake`     | `birdFlights` in `lakeBeyond`, `birdKnobs`                                                                      | off, geese               | the cabin and the point's grove                                   | the black ice     |
+| `lake`     | `birdFlights` in `lakeBeyond` and over the fjord in `lakeFjFar`, `birdKnobs`                                    | off, geese               | the cabin and the grove; the fjord's near bank                    | ice or fjord      |
 | `lanterns` | `birdFlights`, `birdKnobs`                                                                                      | off, geese               | (nearer than the far bank)                                        | the rippled river |
 | `train`    | `birdFlights`, `birdKnobs` (the `line` choice sets the mix)                                                     | off, mixed               | the line's land and structures (the scene's)                      | —                 |
 
@@ -1198,10 +1209,11 @@ straight ahead and up from the horizon, each `[least, start, most]`. The list st
   program; only the first planet and the last one's going change the program (the gate). A cheap
   bound finds the planets that reach a pixel, and only those are drawn, in a loop whose turns are
   those planets, so eight planets cost little more than one. Under SwiftShader (320 x 200 cells,
-  midnight) aurora's frame takes some 57 ms without planets, 225 ms with one and 258 ms with eight,
-  its program 1.9 s to build without the gate and 4.8 s with it; country's 108, 187 and 323 ms,
-  4.0 and 6.1 s. A sky without planets compiles none of it. The palettes are a chain of branches,
-  not a const table: SwiftShader builds a dynamically indexed const array afresh in every pixel.
+  midnight) the aurora scene's frame (measured before it became the lake's fjord) took some 57 ms
+  without planets, 225 ms with one and 258 ms with eight, its program 1.9 s to build without the
+  gate and 4.8 s with it; country's 108, 187 and 323 ms, 4.0 and 6.1 s. A sky without planets
+  compiles none of it. The palettes are a chain of branches, not a const table: SwiftShader builds
+  a dynamically indexed const array afresh in every pixel.
 
 The library maps each planet onto the scene's sky directions: `dir` is the direction the scene
 gives `skyStars` (so a fixed planet stands among the stars as they do, and moves with them under a
@@ -1257,12 +1269,11 @@ above `caustics`.
 
 | Scene      | Tier               | Uses                                                                                                                                             |
 | ---------- | ------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `aurora`   | ripples            | `windRipples`, `windMirror` on the fjord (`K_ripples`, `K_wind`)                                                                                 |
 | `country`  | ripples, else flat | `windRipples` on the river while `K_ripples` is up (`K_wind`): the cat's-paws tilt its reflected ray, their finer ripples jitter it cell by cell |
 | `island`   | mirror             | `rippleSpectrum` (a `RippleTable`: four hand-placed trains), `waterMirror`, `waterGlitter` for the sun, the moon and the lantern                 |
 | `shore`    | mirror             | `rippleSpectrum` (a `RippleFan`: four trains by the golden angle, scaled by the wind), `waterMirror`, `waterGlitter`                             |
 | `swell`    | mirror             | three Gerstner swells of its own and `rippleSpectrum` (a `RippleFan` of chop), `waterMirror`, `waterGlitter` for the moon                        |
-| `lake`     | mirror             | `waterGlitter` for the moon's and the cabin window's paths down the black ice; the ice's mirror, bubbles and cracks are its own                  |
+| `lake`     | mirror             | `waterGlitter`: the moon's and window's paths down the black ice; the fjord's `windRipples`, `windMirror` (`K_ripples`, `K_wind`)                |
 | `lanterns` | flow               | `rippleSpectrum` (a `RippleFan`: five trains rocking about the current), `waterDrift` downstream, `waterMirror`                                  |
 | `tidepool` | caustics           | `causticRipples`, `waterCaustic` with `ShallowWater`'s focus; seen from above, it mirrors the sky its own way                                    |
 | `pond`     | caustics           | two layers of `causticCells` on the floor, carried by the current (`waterDrift`); `waterGlitter` for the sun; its drop rings are its own         |
@@ -2052,12 +2063,12 @@ log, uniform location or use of a program before its completion or fence was see
 `sceneFeatures`, software: nothing is built ahead; a gated knob builds its own program in the
 background and switches to it once built, the old frame holding until then; several gated knobs at
 once build once; past four sets the least recently drawn program is freed. `featureToggles`, GPU,
-for every scene with `featuresFor` (country, meadow, shore, dunes, bees, orbit): the plain page
+for every scene with `featuresFor` (country, meadow, shore, dunes, bees, orbit, lake): the plain page
 builds only its own program; after the first gated change, which builds the all-features program in
 the background, no change builds a program; with changes expected that program is built ahead at
 rest, draws one frame without changing it, and the first change switches to it at once.
 `worldFeaturesAll` (every scene with `featuresFor` but the countryside: meadow, shore, dunes, bees,
-orbit), GPU: the all-features program draws every gated setting, dithered and as source, byte for
+orbit, lake), GPU: the all-features program draws every gated setting, dithered and as source, byte for
 byte as the setting's own (drawn on a renderer taken for a software rasteriser's that enters at the
 same starting setting, settles and switches the same way, so the sims share their history).
 `countryFeaturesAll` (`src/scenes/country/features.verify.ts`) checks the same of the countryside
@@ -2102,10 +2113,11 @@ The shared components have checks of their own:
   lines as strong as their amount, the stars not fading with them); they still show at a coarse
   footprint; by day and with no stars nothing; and the knobs off, in a program with every gate on,
   draw exactly what a program without them draws (`src/shaders/index.test.ts` holds every scene's
-  knob to off at its defaults, its gate out of the default program). `nightPlanets`: in aurora and
-  island, two planets of different kinds show where their placements put them (the left one further
-  left), together as each alone does; an orbiting planet drifts left with the motion clock and,
-  half a circuit on, has set, the sky byte for byte the empty list's.
+  knob to off at its defaults, its gate out of the default program). `nightPlanets`: over the
+  lake's fjord (an old `scene=aurora` link) and the island, two planets of different kinds show
+  where their placements put them (the left one further left), together as each alone does; an
+  orbiting planet drifts left with the motion clock and, half a circuit on, has set, the sky byte
+  for byte the empty list's.
 
 CI runs these checks (gate group `landing-webgl`, four jobs `landing-webgl (1/4)` to `(4/4)`, one
 `--shard` each) and the lab's TypeScript and unit tests (`landing-concept`) for every pull request

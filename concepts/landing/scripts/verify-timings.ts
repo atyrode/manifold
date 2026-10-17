@@ -3,7 +3,6 @@
 // (never under 180 s); a check without a record weighs the median one and keeps 180 s.
 // Written by `bun concepts/landing/verify.ts --record` from the checks that pass.
 export const recordedSeconds: Readonly<Record<string, number>> = {
-  auroraRipples: 2.7,
   barLastCall: 4.8,
   canopy: 0.3,
   cloudTiers: 4.4,
@@ -32,6 +31,7 @@ export const recordedSeconds: Readonly<Record<string, number>> = {
   incenseVent: 21.2,
   islandSnow: 1.6,
   lakeFreshSnow: 0.5,
+  lakeRipples: 2.7,
   meadowWildflowers: 3,
   milkyWay: 4.3,
   mobile: 6.2,

@@ -313,10 +313,11 @@ export const presets: readonly Preset[] = [
     savedAt: "2026-10-15",
   },
   {
-    name: "Northern lights · breezy fjord",
-    commit: "f1ca6557",
-    query: "scene=aurora&ripples=0.35&wind=0.45",
-    savedAt: "2026-10-15",
+    name: "Frozen lake · breezy fjord",
+    commit: "54e534c8",
+    query:
+      "scene=lake&setting=1&ripples=0.35&aurora-amount=0.7&drapes=1&substorm=0&hour=1&moon-amount=0.25&milkyWay=0&wind=0.45",
+    savedAt: "2026-10-17",
   },
   {
     name: "Tide pool · sets",
