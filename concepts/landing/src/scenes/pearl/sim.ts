@@ -51,15 +51,23 @@
 // sweeps the fluid and the flakes round. Neither touches the pour or its random draws; at rest every
 // passage term is exactly neutral (no grip, no sweep, the whole tank shown).
 //
-// Textures: uSim0 the flakes (rg16f q), uSim1 the dye (rgba16f), uSim2 the props (rgba32f, 7×1):
-// texels 0–2 the braid rods and 3 the Manifold rod (x, y in frame heights, shown 0..1, radius),
-// texel 4 the pigment nozzle (x, y, shown) with the share of convection in w, texel 5 the entrance's
-// stirring rod (as the rods), texel 6 the entrance's front: x its radius about (PEARL_REVEAL_X,
-// PEARL_REVEAL_Y), w 1 while the tank is arriving (0 at rest).
+// Time: the tank steps STEP of its own seconds at a time on a FixedStep (sims/clock.ts), the pace
+// (the speed knob, the passage's) scaling how many a frame owes, so a pour plays the same at any
+// frame rate. The flakes and the dye are shown between their last two steps by the clock's alpha
+// (FieldBetween, sims/between.ts), the braid and the Manifold rod with them; the entrance's rod and
+// its front stand where the arrival clock has them.
+//
+// Textures: uSim0 the flakes (rg16f q), uSim1 the dye (rgba16f), both between their last two steps,
+// uSim2 the props (rgba32f, 7×1): texels 0–2 the braid rods and 3 the Manifold rod (x, y in frame
+// heights, shown 0..1, radius), texel 4 the pigment nozzle (x, y, shown) with the share of
+// convection in w, texel 5 the entrance's stirring rod (as the rods), texel 6 the entrance's front:
+// x its radius about (PEARL_REVEAL_X, PEARL_REVEAL_Y), w 1 while the tank is arriving (0 at rest).
 // Without float render targets the scene returns no textures and the shader draws still eddies.
 import { KnobReader, type ParamDef } from "../../params.ts";
 import { markVertex } from "../../mark.ts";
 import { glslFloat } from "../../shaders/glsl.ts";
+import { FieldBetween } from "../../sims/between.ts";
+import { FixedStep } from "../../sims/clock.ts";
 import { FluidSim, type FluidStep } from "../../sims/fluid.ts";
 import {
   GpuCompute,
@@ -89,9 +97,13 @@ const VELOCITY_RESOLUTION = 128;
 const DYE_RESOLUTION = 160;
 const FLAKE_RESOLUTION = 320;
 
-/** Longest step and most steps per frame (the renderer's dt is at most 0.1 s, speed at most 2). */
-const MAX_STEP = 0.1;
-const MAX_STEPS = 2;
+/**
+ * The tank's seconds per step, and the most steps one frame takes: the renderer's dt is at most
+ * 0.1 s and the pace at most 2, so a frame may owe twelve; past MAX_STEPS the tank slows rather
+ * than a slow frame piling up steps.
+ */
+const STEP = 1 / 60;
+const MAX_STEPS = 4;
 /** A fresh pour runs this many long steps before it is shown, so it is already moving. */
 const PREWARM_STEPS = 3;
 const PREWARM_STEP = 0.2;
@@ -799,8 +811,9 @@ class PearlTank implements SceneSim {
 
   /** The pour on show; undefined until the first frame pours one. */
   #pour: number | undefined;
-  /** The tank's own clock: seconds simulated since the pour. */
+  /** The tank's own clock: seconds simulated since the pour; the steps owed on it. */
   #clock = 0;
+  readonly #steps = new FixedStep(STEP, MAX_STEPS);
   /** Easing shares of each forcing, the braid rods and the nozzle, 0..1. */
   #turnShare = 0;
   #convectShare = 0;
@@ -819,6 +832,9 @@ class PearlTank implements SceneSim {
   readonly #swirlSlot: number;
   readonly #markSlot: number;
   readonly #textures: (WebGLTexture | undefined)[] = [undefined, undefined, undefined];
+  /** The flakes and the dye as the shader sees them: between their last two steps. */
+  readonly #flakesShown: FieldBetween;
+  readonly #dyeShown: FieldBetween;
   #stirring = false;
   #lastX = 0;
   #lastY = 0;
@@ -847,6 +863,8 @@ class PearlTank implements SceneSim {
       .pass(FLAKES, "pearl flakes")
       .bind({ uDirector: this.#flakes, uVelocity: fluid.velocity });
     this.#source = gpu.pass(SOURCES, "pearl sources").bind({ uDye: fluid.dye });
+    this.#flakesShown = new FieldBetween(gpu, this.#flakes, "pearl flakes");
+    this.#dyeShown = new FieldBetween(gpu, fluid.dye, "pearl dye");
   }
 
   frame(frame: SimFrame): readonly (WebGLTexture | undefined)[] {
@@ -861,22 +879,26 @@ class PearlTank implements SceneSim {
     this.#exit = clamp(frame.passage.exit, 0, 1);
     const h = Math.max(0, frame.dt) * frame.motion * this.#pace();
     this.#stir(frame, h);
-    if (h > 0) {
-      const steps = Math.min(MAX_STEPS, Math.ceil(h / MAX_STEP));
-      for (let i = 0; i < steps; i++) {
-        if (arrival.playing)
-          this.#advance(
-            h / steps,
-            lerp(arrival.from, arrival.to, i / steps),
-            lerp(arrival.from, arrival.to, (i + 1) / steps),
-          );
-        else this.#advance(h / steps);
+    const clock = this.#steps;
+    const steps = clock.advance(h);
+    for (let i = 0; i < steps; i++) {
+      if (i === steps - 1) {
+        this.#flakesShown.keep();
+        this.#dyeShown.keep();
       }
+      if (arrival.playing) {
+        // The arrival seconds a step spans, on this frame's pace (the frame's `h` of the tank's
+        // seconds spanned from..to of them), and where the step ends: lag(i) before the frame's end.
+        const span = (STEP * (arrival.to - arrival.from)) / h;
+        const end = arrival.to - (clock.lag(i) / STEP) * span;
+        this.#advance(STEP, Math.max(0, end - span), end);
+      } else this.#advance(STEP);
     }
-    this.#writeProps();
+    const alpha = clock.alpha;
+    this.#writeProps(this.#clock - (1 - alpha) * STEP);
     const textures = this.#textures;
-    textures[0] = this.#flakes.texture;
-    textures[1] = this.#fluid.dye.texture;
+    textures[0] = this.#flakesShown.show(alpha);
+    textures[1] = this.#dyeShown.show(alpha);
     textures[2] = this.#props.texture;
     return textures;
   }
@@ -926,6 +948,10 @@ class PearlTank implements SceneSim {
     this.#flakes.clear();
     this.#pourInto(pour);
     for (let i = 0; i < PREWARM_STEPS; i++) this.#advance(PREWARM_STEP);
+    // Shown as poured and prewarmed until the first step: nothing to show it between.
+    this.#steps.reset();
+    this.#flakesShown.settle();
+    this.#dyeShown.settle();
   }
 
   /**
@@ -1287,16 +1313,20 @@ class PearlTank implements SceneSim {
     this.#clock = t1;
   }
 
-  /** The props texture: where the rods and the nozzle stand now. */
-  #writeProps(): void {
+  /**
+   * The props texture: the braid and the Manifold rod at the tank's `time` (where the flakes are
+   * shown, between the last two steps), the nozzle as it stands, the entrance's rod and front where
+   * the arrival clock has them.
+   */
+  #writeProps(time: number): void {
     const aspect = this.#fluid.aspect;
-    braidRods(this.#clock, aspect, this.#rodA, this.#rodB, this.#rodC);
+    braidRods(time, aspect, this.#rodA, this.#rodB, this.#rodC);
     this.#prop(0, this.#rodA, this.#rodShare, ROD_RADIUS);
     this.#prop(1, this.#rodB, this.#rodShare, ROD_RADIUS);
     this.#prop(2, this.#rodC, this.#rodShare, ROD_RADIUS);
     const run = this.#mark;
     const m = this.#rodM;
-    if (run) markRod(this.#clock - run.start, run.size, aspect, m);
+    if (run) markRod(time - run.start, run.size, aspect, m);
     else m.shown = 0;
     this.#prop(3, m, m.shown, MARK_ROD_RADIUS);
     const arriving = this.#arrival.active;

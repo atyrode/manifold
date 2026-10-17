@@ -1673,7 +1673,8 @@ the milliseconds budgeted work (a warm-up, a build, a paint) may block this fram
 `runBudgeted` (a scene may raise it for a first build); HeadlessSim gives its own clock and an
 Infinity budget, so a test's warm-up ends in its first frame. Step motion on a `FixedStep`
 (`clock.ts`) at a fixed h, with each step sampling its clock at its own moment, and draw between
-the last two steps by its `alpha`, so a seed plays the same at 60 and 144 Hz.
+the last two steps by its `alpha` (a GPU solver's fields through `FieldBetween`, `between.ts`), so
+a seed plays the same at 60 and 144 Hz.
 A sim with more to hand over than four slots packs it into one texture read with `texelFetch`
 (which no filter touches), a linear filter left for the one field read with `texture`: bonsai's
 field rows under its tables, the countryside's records atlas (`country/atlas.ts`: the terrain's
@@ -1725,6 +1726,10 @@ Helpers in `src/sims/` (each file's header has the full API and a usage example)
 - `FluidSim` (`fluid.ts`): 2D stable fluids on `GpuCompute`, incompressible at every scale (a
   warm-started multigrid pressure solve), with MacCormack dye, vorticity, walls, a GLSL force
   snippet, an obstacle SDF, splats and `advect` for extra fields (incense, film, pearl).
+- `FieldBetween` (`between.ts`): a GPU solver's field drawn between its last two steps, as a CPU
+  sim draws by `FixedStep.alpha`: `keep` copies the field before a frame's last step and `show`
+  mixes the copy and the field by `alpha` into a texture for the shader (incense's smoke and its
+  velocity, pearl's flakes and dye).
 - `ArrivalField` (`front.ts`): when a front spreading from one point through a field of speeds
   reaches each texel, on the GPU (least time along rays from the source, then a few relaxing
   sweeps), so `T <= t` is where it has been: film's burst rim racing through thin film and crawling
