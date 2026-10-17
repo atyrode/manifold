@@ -10,9 +10,11 @@ import {
   seasonKnob,
   yearAt,
   yearNow,
+  YEAR_CYCLE_RATE,
 } from "./climate.ts";
 import { yearOf } from "./lab/almanac-model.ts";
 import { effective } from "./params.ts";
+import { rateOf } from "./rate-phase.ts";
 import { sceneDefs } from "./scenes/index.ts";
 
 describe("a scene's year position", () => {
@@ -42,11 +44,15 @@ describe("a scene's year position", () => {
     }
   });
 
-  test("goes round the whole year at the cycle's minutes per season, and stands while it is off", () => {
-    expect(yearNow(0.5, 1, 60)).toBeCloseTo(0.75, 9);
-    expect(yearNow(0.5, 2, 240)).toBeCloseTo(0, 9);
-    expect(yearNow(0.5, 0, 999)).toBe(0.5);
-    expect(yearNow(-1, 1, 60)).toBe(-1);
+  test("goes round the whole year by the years its cycle has run, and stands while it is off", () => {
+    expect(yearNow(0.5, 0.25)).toBeCloseTo(0.75, 9);
+    expect(yearNow(0.5, 0.5)).toBeCloseTo(0, 9);
+    expect(yearNow(0.5, 0)).toBe(0.5);
+    expect(yearNow(-1, 0.25)).toBe(-1);
+    // The cycle's phase runs a season a minute at one minute per season, two at half a minute.
+    const motionSecond = 60;
+    expect(rateOf(YEAR_CYCLE_RATE, 1) * motionSecond).toBeCloseTo(0.25, 12);
+    expect(rateOf(YEAR_CYCLE_RATE, 0.5) * motionSecond).toBeCloseTo(0.5, 12);
   });
 });
 

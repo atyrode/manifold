@@ -4,7 +4,7 @@
 // it drew before, and on a clear night no stars, its own and a dark-site sky light it more and more:
 // each step by more than 0.02% of the whole frame's light, far more than the wet sand's glints alone.
 import { defaultsFor, paramDefaults, renderSettings } from "../../state.ts";
-import { fragmentSourceFor, vertexSource } from "../../shaders/index.ts";
+import { fragmentSourceFor, packParams, vertexSource } from "../../shaders/index.ts";
 import { sceneDefs } from "../index.ts";
 
 function check(ok: boolean, message: string): void {
@@ -65,7 +65,7 @@ function light(
   gl.uniform1fv(at("uTriggers"), new Float32Array(8).fill(-1e4));
   gl.uniform4f(at("uMouse"), -1, -1, 0, -1e4);
   gl.uniform3f(at("uBg"), 0.03, 0.03, 0.05);
-  gl.uniform1fv(at("uParams"), Float32Array.from(params));
+  gl.uniform4fv(at("uParams"), packParams(params));
   gl.drawArrays(gl.TRIANGLES, 0, 3);
   const out = new Float32Array(WIDTH * HEIGHT * 4);
   gl.readPixels(0, 0, WIDTH, HEIGHT, gl.RGBA, gl.FLOAT, out);

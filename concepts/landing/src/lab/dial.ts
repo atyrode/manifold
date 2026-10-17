@@ -18,7 +18,13 @@
 // glyph and name (seasonWheel).
 import { climateCold, climateLying } from "../climate.ts";
 import type { Params } from "../state.ts";
-import { moonElongation, moonStaging, skyNow } from "../world-clock.ts";
+import {
+  moonElongation,
+  moonLit as litShare,
+  moonStaging,
+  moonWaning,
+  skyNow,
+} from "../world-clock.ts";
 import {
   namedYear,
   seasonPatch,
@@ -526,15 +532,20 @@ export function skyDial(
     face,
   );
 
-  const lit = () => (moon ? knobs.value(`${moon.key}-amount`) : 1);
+  const phase = () => (moon ? knobs.value(`${moon.key}-amount`) : 1);
+  const lit = () => litShare(phase());
   const moonShown = () => moon === undefined || knobs.on(moon.key);
   /**
-   * How far round the dial the moon trails the sun: its elongation in its phase, moved onto the
-   * staged full moon's half a day as it nears full, as the sky moves it (moonStaging).
+   * How far round the dial the moon trails the sun: its elongation in its phase (a waning moon
+   * leads it, so the rest of the turn), moved onto the staged full moon's half a day as it nears
+   * full, as the sky moves it (moonStaging).
    */
   const lag = () => {
     const staging = moonStaging(lit());
-    return moonElongation(lit()) * (1 - staging) + Math.PI * staging;
+    const elongation = moonElongation(lit());
+    return (
+      (moonWaning(phase()) ? TAU - elongation : elongation) * (1 - staging) + Math.PI * staging
+    );
   };
   const timeAt = (value: number) => ({
     [time.key]: snap(((value % 1) + 1) % 1, time.min, time.max, time.step),
@@ -599,9 +610,8 @@ export function skyDial(
       // The scene's sky at the knob's hour: its moon in its phase and, where it is dated, its date.
       const sky = skyNow({
         time: value,
-        cycle: 0,
-        motionTime: 0,
-        phase: moonShown() ? lit() : 0,
+        days: 0,
+        phase: moonShown() ? phase() : 0,
         year:
           season && anchor !== undefined ? (yearOf(season, seasonParams(knobs, season)) ?? -1) : -1,
         anchor: anchor ?? -1,

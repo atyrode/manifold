@@ -74,7 +74,7 @@ vec2 countryHerdAnimal(CountryHerd herd, float k, float tm, out LivestockSlot sl
   vec2 a1 = countryHerdAnchor(herd, k, slot.n + 1.0, slot.start + herd.span);
   // The slot's mood comes from the hour it began, so a turning day never flips it halfway; the
   // weather is what falls (countryFall: a winter's rain comes down as snow).
-  vec2 mood = livestockMood(timeOfDayM(K_time, K_cycle, slot.start), K_clouds, countryFall.x, countryFall.y);
+  vec2 mood = livestockMood(timeOfDayM(K_time, skyDaysAt(K_cycle, slot.start)), K_clouds, countryFall.x, countryFall.y);
   act = livestockAct(mood, hash12(vec2(slot.n * 0.71 + k * 13.3, herd.seed * 41.0 + 3.0)));
   way = a1 - a0;
   return mix(a0, a1, livestockPace(act, slot.u));

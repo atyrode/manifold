@@ -1955,7 +1955,7 @@ Precip streetSnow(vec2 uv, float aspect, float tm, float depth, float cp, float 
 // globals above for everything the cell then draws.
 void streetHour() {
   streetTm = uMotionTime;
-  streetSky = skyMoonPhase(skyAt(timeOfDayM(K_time, K_cycle, uMotionTime)), K_moon);
+  streetSky = skyMoonPhase(skyAt(timeOfDayM(K_time, skyDays())), K_moon);
   streetStorm = clamp(max(K_rain, 0.85 * K_snow), 0.0, 1.0);
   streetOver = clamp(streetStorm * 8.0, 0.0, 1.0) * (0.65 + 0.35 * streetStorm);
   streetSky.sunColor *= 1.0 - 0.85 * streetOver;

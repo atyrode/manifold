@@ -1,6 +1,6 @@
 // Knob builders for scene modules (see scenes/README.md). A scene's `params` order is the index into
-// the shader's `uParams` array: new scenes read knobs through the generated `K_<key>` defines, the
-// first five index `uParams` by hand, so their lists only ever grow at the end.
+// the shader's `uParams` (packed four a row), which scenes read through the generated `K_<key>`
+// defines.
 //
 // Kinds:
 //   range    a slider
@@ -38,6 +38,25 @@ interface Base {
   widget?: Widget;
   /** The lab icon for its chip or heading; default: the first word of its key or label naming one. */
   icon?: IconName;
+  /**
+   * A rate knob (a pace, a speed, a period): the renderer integrates it on the motion clock into a
+   * phase the shader reads as `PHASE_<key>` and a sim as `SimFrame.phases[key]` (src/rate-phase.ts),
+   * so moving it changes the pace from then on and never jumps the picture. Read the phase, never
+   * `K_<key> × uMotionTime`.
+   */
+  rate?: Rate;
+}
+
+/**
+ * How a rate knob's phase runs (Base.rate): `per` phase units a second of the motion clock at a value
+ * of 1 as the shader reads it, or with `inverse` per / value a second (the knob is a period); it
+ * wraps at `period` (exactly, in double precision), so give a period of everything the shader does
+ * with the phase, or none to let it run. A feature's phase stands at 0 while it is off.
+ */
+export interface Rate {
+  readonly per: number;
+  readonly inverse?: boolean;
+  readonly period?: number;
 }
 
 /**
@@ -125,6 +144,7 @@ interface Extra {
   steady?: boolean;
   widget?: Widget;
   icon?: IconName;
+  rate?: Rate;
 }
 const extra = (options: Extra) => ({
   ...(options.when === undefined ? {} : { when: options.when }),
@@ -132,6 +152,7 @@ const extra = (options: Extra) => ({
   ...(options.steady === undefined ? {} : { steady: options.steady }),
   ...(options.widget === undefined ? {} : { widget: options.widget }),
   ...(options.icon === undefined ? {} : { icon: options.icon }),
+  ...(options.rate === undefined ? {} : { rate: options.rate }),
 });
 
 export const range = (

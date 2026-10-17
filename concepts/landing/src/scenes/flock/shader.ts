@@ -245,7 +245,7 @@ Shade sceneFlock(vec2 uv, vec2 cell, float t) {
   float tm = uMotionTime;
   float aa = 1.0 / uRes.y;
 
-  Sky sky = skyAt(timeOfDayM(K_time, K_cycle, tm));
+  Sky sky = skyAt(timeOfDayM(K_time, skyDays()));
   vec3 dir = flockRay(uv, aspect);
   vec3 col = skyColor(sky, dir);
   col += vec3(0.86, 0.88, 1.0) * skyStars(sky, dir, K_stars);

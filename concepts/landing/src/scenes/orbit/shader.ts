@@ -32,7 +32,7 @@ vec2 orbitConstellations(vec2 sky, float aspect, float px, bool figures, bool li
     if (!(i < uConMarkStar ? figures : mark)) continue;
     vec4 s = uConStars[i];
     vec2 q = (sky - (vec2(s.x * aspect * 0.5, s.y) + s.zw)) / px;
-    float b = uConBright[i];
+    float b = conBright(i);
     float core = smoothfall(1.3 + b, 0.4 + b, length(q));
     float glint = step(min(abs(q.x), abs(q.y)), 0.5) * smoothfall(2.0 + 4.0 * b, 0.0, max(abs(q.x), abs(q.y))) * b;
     star = max(star, max(core, glint * 0.8) * (0.85 + 0.15 * sin(tm * 0.9 + float(i) * 2.3)));
@@ -40,8 +40,8 @@ vec2 orbitConstellations(vec2 sky, float aspect, float px, bool figures, bool li
   for (int i = 0; i < MAX_CON_LINES; i++) {
     if (i >= uConLineCount) break;
     if (!(i < uConMarkLine ? figures && lines : mark)) continue;
-    vec4 sa = uConStars[int(uConLines[i].x)];
-    vec4 sb = uConStars[int(uConLines[i].y)];
+    vec4 sa = uConStars[conLine(i).x];
+    vec4 sb = uConStars[conLine(i).y];
     vec2 a = vec2(sa.x * aspect * 0.5, sa.y) + sa.zw;
     vec2 b = vec2(sb.x * aspect * 0.5, sb.y) + sb.zw;
     vec2 ba = b - a;
@@ -247,10 +247,12 @@ Shade sceneOrbit(vec2 uv, vec2 cell, float t) {
 
   Shade o = blankShade();
   // The stars are far off: they follow the swing only a little.
-  vec2 sky = p - cam * 0.15 + vec2(tm * 0.006 * K_drift, 0.0);
+  // The drift so far, the drift knob's phase (its speed integrated on the motion clock).
+  float drift = PHASE_drift;
+  vec2 sky = p - cam * 0.15 + vec2(drift * 0.006, 0.0);
   o.ink = starfield(floor(sky * uRes.y), 0.001 + 0.009 * K_stars, K_twinkle, K_scatter);
-  o.ink += 0.16 * K_nebula * smoothstep(0.5, 0.95, fbm(p * 1.8 + vec2(tm * 0.012 * K_drift, 3.0)));
-  o.accent = 0.08 * K_nebula * smoothstep(0.55, 0.95, fbm(p * 2.4 + vec2(9.0, -tm * 0.008 * K_drift)));
+  o.ink += 0.16 * K_nebula * smoothstep(0.5, 0.95, fbm(p * 1.8 + vec2(drift * 0.012, 3.0)));
+  o.accent = 0.08 * K_nebula * smoothstep(0.55, 0.95, fbm(p * 2.4 + vec2(9.0, -drift * 0.008)));
 #if ORBIT_FIGURES
   if (K_constellations > 0.5 || K_mark > 0.5) {
     vec2 figures = orbitConstellations(sky, aspect, px, K_constellations > 0.5, K_lines > 0.5, K_mark > 0.5, tm);
@@ -265,8 +267,9 @@ Shade sceneOrbit(vec2 uv, vec2 cell, float t) {
   vec2 q = s.q;
   float d = s.d;
   float foot = px * zoom / r;
-  // The sun can circle the planet (day cycle), sweeping the terminator across it.
-  vec3 L = planetSun(normalize(vec3(-0.55, 0.75, 0.38)), tm * K_daycycle * 0.25);
+  // The sun can circle the planet (day cycle), sweeping the terminator across it: the day cycle's
+  // phase, its sweep so far.
+  vec3 L = planetSun(normalize(vec3(-0.55, 0.75, 0.38)), PHASE_daycycle);
   float sunSide = smoothstep(-0.3, 0.7, planetSunward(q, L));
 
   // Ring sample along this pixel's line of sight, with the planet's shadow across it.

@@ -1,7 +1,7 @@
 // GPU check (verify-browser.ts): fresh snow changes the look of the lake's lying snow, never how much
 // of the ice it covers. The real sim lays the night's snow; the scene's own lakeSnowAt / lakeSnowShade
 // say, per pixel of the near and middle ice, whether snow covers it and how it is lit.
-import { fragmentSourceFor, vertexSource } from "../../shaders/index.ts";
+import { fragmentSourceFor, packParams, vertexSource } from "../../shaders/index.ts";
 import { defaultsFor, paramDefaults, renderSettings } from "../../state.ts";
 import type { SimFrame } from "../types.ts";
 import { lakeScene } from "./index.ts";
@@ -98,9 +98,9 @@ export function verifyLakeFreshSnow(gl: WebGL2RenderingContext): Record<string, 
   gl.uniform4f(uniform("uSimOn"), 1, 1, 1, 1);
 
   const draw = (fresh: number): SnowStats => {
-    gl.uniform1fv(
+    gl.uniform4fv(
       uniform("uParams"),
-      Float32Array.from(renderSettings(defaultsFor("lake"), { ...knobs, fresh }).params),
+      packParams(renderSettings(defaultsFor("lake"), { ...knobs, fresh }).params),
     );
     gl.drawArrays(gl.TRIANGLES, 0, 3);
     const bytes = new Uint8Array(WIDTH * HEIGHT * 4);

@@ -20,6 +20,7 @@ import {
   type ParamDef,
   type Recipe,
 } from "../params.ts";
+import { DAY_CYCLE_RATE } from "../world-clock.ts";
 import type { SceneTheme } from "./types.ts";
 
 export interface SkyComponentOptions {
@@ -34,9 +35,10 @@ export interface SkyComponentOptions {
    */
   milkyWay?: { on?: boolean; value?: number };
   /**
-   * Adds K_moon, the shared moon's phase for `skyMoonPhase` (lit share 0.05..1 while on, 0 off: no
-   * moon), starting on at this phase: 1 is the full moon every scene draws. Needs the SKY_MOON_PHASE
-   * feature. Omit to leave the knob out.
+   * Adds K_moon, the shared moon's phase for `skyMoonPhase` through a lunation while on (0.05 a thin
+   * waxing crescent, its lit share up to 1 full, then waning to 1.95 a thin waning crescent: its lit
+   * share 2 - K_moon; 0 off: no moon), starting on at this phase: 1 is the full moon every scene
+   * draws. Needs the SKY_MOON_PHASE feature. Omit to leave the knob out.
    */
   moon?: number;
   /**
@@ -101,8 +103,8 @@ export function skyComponentKnobs(options: SkyComponentOptions = {}): ParamDef[]
         true,
         "phase",
         options.moon,
-        "The moon, from a thin crescent to full, standing where its phase puts it, its lit side toward the sun: a crescent trails the sun and hangs over the sunset, a half moon stands a quarter of the sky from it, a fuller moon rises toward dusk. A slimmer moon lights the land, the clouds and the sky round it less and lets stars come out closer to it. Off: a moonless night.",
-        { min: 0.05, max: 1, widget: { kind: "night", part: "moon" } },
+        "The moon through its month, waxing from a thin crescent to full at the middle, then waning: it stands where its phase puts it, its lit side toward the sun. A waxing crescent trails the sun and hangs over the sunset, a first quarter stands a quarter of the sky east of it and a gibbous moon rises toward dusk; past full it rises later each night, the last quarter at midnight, and a waning crescent comes up just before the sun. A slimmer moon lights the land, the clouds and the sky round it far less and lets stars come out closer to it. Off: a moonless night.",
+        { min: 0.05, max: 1.95, widget: { kind: "night", part: "moon" } },
       ),
     );
   }
@@ -139,10 +141,10 @@ export function skyComponentKnobs(options: SkyComponentOptions = {}): ParamDef[]
 
 /**
  * K_time: time of day 0..1 (0 midnight, 0.25 sunrise, 0.5 noon, 0.75 sunset).
- * K_cycle: day-cycle speed (0 = the clock stands at K_time); pass both with uMotionTime to `timeOfDayM`.
+ * K_cycle: day-cycle speed (0 = the clock stands at K_time), a rate knob: `timeOfDayM(K_time, skyDays())`.
  * K_stars (only with `stars`): star density for `skyStars`.
  * K_milkyWay (only with `milkyWay`): the Milky Way's brightness for `milkyWay`.
- * K_moon (only with `moon`): the moon's phase for `skyMoonPhase`.
+ * K_moon (only with `moon`): the moon's phase for `skyMoonPhase` (below 1 waxing, 1 full, above waning).
  * K_meteors (only with `meteors`): shooting-star frequency for `meteorAge`, trigger slot `meteors.trigger`.
  * K_constellations (only with `constellations`): drawn by `skyStars` itself.
  */
@@ -165,7 +167,7 @@ export function skyKnobs(options: SkyOptions = {}): ParamDef[] {
       "speed",
       0.3,
       "The sun and moon keep moving and the stars turn: days pass at this pace.",
-      { widget: { kind: "sky", part: "cycle" } },
+      { widget: { kind: "sky", part: "cycle" }, rate: DAY_CYCLE_RATE },
     ),
     ...skyComponentKnobs({ ...options, group }),
   ];

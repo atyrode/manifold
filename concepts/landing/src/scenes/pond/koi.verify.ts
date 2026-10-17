@@ -5,7 +5,7 @@
 //   - a koi texture at tag 0 leaves the picture exactly as without it (the default render), and at
 //     tag 1 the koi is drawn where the sim has it, not on its loop.
 import { paramDefaults, defaultsFor, renderSettings } from "../../state.ts";
-import { fragmentSourceFor, vertexSource } from "../../shaders/index.ts";
+import { fragmentSourceFor, packParams, vertexSource } from "../../shaders/index.ts";
 import { FishGroup, FishTexture, KOI } from "../../sims/fish.ts";
 import { sceneDefs } from "../index.ts";
 import { koiLoop, koiLoops, KOI_MAX } from "./koi.ts";
@@ -58,11 +58,9 @@ function draw(
   gl.uniform1f(at("uMotion"), 0.6);
   gl.uniform2f(at("uPassage"), 1, 0);
   gl.uniform1fv(at("uTriggers"), new Float32Array(8).fill(-1e4));
-  gl.uniform1fv(
+  gl.uniform4fv(
     at("uParams"),
-    Float32Array.from(
-      renderSettings(defaultsFor("pond"), { ...paramDefaults("pond"), ...knobs }).params,
-    ),
+    packParams(renderSettings(defaultsFor("pond"), { ...paramDefaults("pond"), ...knobs }).params),
   );
   gl.uniform1i(at("uSim2"), 2);
   gl.activeTexture(gl.TEXTURE2);

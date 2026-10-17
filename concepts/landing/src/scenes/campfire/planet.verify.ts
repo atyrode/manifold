@@ -11,7 +11,7 @@
 //   3. Campfire composes moons, aurora, city lights and the circling sun: each one shows, and only
 //      where the planet itself shows (inside its glow, behind the pines and the ground). A moon
 //      behind the planet is hidden; the same moon in front of it is drawn over the disc.
-import { fragmentSourceFor, vertexSource } from "../../shaders/index.ts";
+import { fragmentSourceFor, packParams, vertexSource } from "../../shaders/index.ts";
 import { defaultsFor, paramDefaults, renderSettings } from "../../state.ts";
 import { campfireScene } from "./index.ts";
 
@@ -231,9 +231,9 @@ export function verifyPlanet(gl: WebGL2RenderingContext): Record<string, unknown
   const render = (knobs: Record<string, number>, time: number): Uint8Array => {
     gl.uniform1f(where("uTime"), time);
     gl.uniform1f(where("uMotionTime"), time);
-    gl.uniform1fv(
+    gl.uniform4fv(
       where("uParams"),
-      Float32Array.from(
+      packParams(
         renderSettings(defaultsFor("campfire"), { ...paramDefaults("campfire"), ...knobs }).params,
       ),
     );

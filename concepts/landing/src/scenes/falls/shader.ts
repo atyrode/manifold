@@ -986,15 +986,14 @@ Shade sceneFalls(vec2 screenUv, vec2 cell, float t) {
       // The world's sky, seen half-turned away from the sun (its frame exactly fallsWorld's): the
       // dome; the aurora ahead of the camera, its arc lifted over the rim; the deck, broken cloud in
       // fair weather and closing from there with the rain's overcast, sinking as it grows heavier
-      // (seen larger, being nearer), greyed and darker the heavier the rain; the stars and shooting
-      // stars in its gaps. The world's wind blows the deck along the sky's x, which this half-turned
-      // view sees reversed: it is turned back, so the deck drifts the way the rain slants.
+      // (seen larger, being nearer), greyed and darker the heavier the rain, what it leaves open greyed
+      // by the world; the stars and shooting stars in its gaps. The world turns its wind by the view's
+      // half turn (worldDeckDrift), so the deck drifts the way the rain slants.
       WorldView view = worldViewOf(rayCam, uv, FALLS_EYE, FALLS_FOCAL, FALLS_CAM, 0.5 * TAU, 1.0);
       view.dir = ray;
       view.auroraLift = FALLS_AURORA_LIFT;
       world.cover = mix(FALLS_COVER, 1.0, world.cover);
       world.low = 1.0 + WORLD_DECK_LOW * world.storm;
-      world.wind = -world.wind;
       WorldSky heaven = worldSky(world, view, FALLS_METEOR_FIELD);
       col = mix(heaven.col, greyed(heaven.col, vec3(1.0), 0.6 * overcast) * (1.0 - 0.55 * world.storm), heaven.cloud);
       if (rain > 0.0) {

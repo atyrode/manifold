@@ -156,15 +156,13 @@ vec3 frostOutside(vec2 uv, float aspect, float blur, World world, out vec3 glow)
   world.cover = mix(FROST_COVER, 1.0, world.cover);
   if (!street) world.stars *= FROST_WOODS_STARS;
   WorldSky heaven = worldSky(world, view, FROST_METEOR_FIELD);
-  // What the snow cloud leaves open still lies behind the snow: it greys and darkens as the world's
-  // light does under the cloud (worldAt's shares), and takes the cloud's light by the overcast's
-  // share (shut), so a gap reads as thinner cloud, not clear blue over a snowy day. The cloud
-  // darkens toward a blizzard, glows over the town with the streets' light and, as it snows, pink
-  // round sunset and sunrise (FROST_DUSK). In clear weather it is all the world's sky as it is.
-  float open = 1.0 - heaven.cloud;
-  float shut = heaven.cloud + overcast * open;
-  vec3 col = greyed(heaven.col, vec3(1.0), WORLD_DECK_GREY * overcast * open) * (1.0 - WORLD_DECK_DARK * world.storm * open);
-  col = col * (1.0 - 0.4 * world.heavy * shut) + (town + FROST_DUSK * sky.twilight * overcast) * shut;
+  // What the snow cloud leaves open still lies behind the snow: the world greys and darkens it as its
+  // light is under the cloud (worldGrey), and it takes the cloud's light by the overcast's share
+  // (shut), so a gap reads as thinner cloud, not clear blue over a snowy day. The cloud darkens toward
+  // a blizzard, glows over the town with the streets' light and, as it snows, pink round sunset and
+  // sunrise (FROST_DUSK). In clear weather it is all the world's sky as it is.
+  float shut = heaven.cloud + overcast * (1.0 - heaven.cloud);
+  vec3 col = heaven.col * (1.0 - 0.4 * world.heavy * shut) + (town + FROST_DUSK * sky.twilight * overcast) * shut;
   if (street) {
     // The town's light, caught low in the snowy air.
     col += vec3(0.55, 0.32, 0.16) * 0.12 * lights * exp(-max(uv.y - FROST_HORIZON, 0.0) * 5.0) * (0.5 + 0.5 * heaven.cloud);

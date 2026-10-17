@@ -13,10 +13,12 @@
 // grows cold, rain falls as snow, and in deep winter snow lies without any falling. The snow switch
 // stays an explicit override that falls whatever the season. The renderer (src/renderer.ts) applies
 // it to how much snow lies; the shared weather library mirrors it in GLSL (climateChill, climateCold,
-// climatePrecip, climateLying in src/shaders/lib/weather.ts) for what falls, and every scene's
-// program gets its year position as SKY_YEAR (src/shaders/index.ts). `worldClock`
-// (src/world-clock.verify.ts) checks the GLSL against the functions here.
-import type { ParamDef, SeasonYear } from "./params.ts";
+// climatePrecip, climateLying in src/shaders/lib/weather.ts) for what falls, the world (worldAt in
+// src/shaders/lib/world.ts) for its rain and snow, and every scene's program gets its year position
+// as SKY_YEAR (src/shaders/index.ts). The year's cycle is a rate knob (YEAR_CYCLE_RATE): the renderer
+// integrates it into the years it has carried the date on, so moving it never jumps the date.
+// `worldClock` (src/world-clock.verify.ts) checks the GLSL against the functions here.
+import type { ParamDef, Rate, SeasonYear } from "./params.ts";
 
 /** Midwinter's year position. */
 export const MIDWINTER = 0.875;
@@ -56,12 +58,18 @@ export function yearCycleKnob(params: readonly ParamDef[]): YearCycleKnob | unde
 const SEASON_SECONDS = 60;
 
 /**
- * The year position now: `year` carried round the whole year by the cycle's `minutes` per season
- * (its value as the shader has it, 0 while off) on the motion clock; -1 stays -1.
+ * The year's cycle as a rate knob (its ParamDef.rate): its phase is the years it has carried the
+ * date on, a year every 4 seasons of its minutes per season, wrapped at a whole year.
  */
-export function yearNow(year: number, minutes: number, motionTime: number): number {
-  if (year < 0 || minutes <= 0) return year;
-  return wrap(year + motionTime / (4 * SEASON_SECONDS * minutes));
+export const YEAR_CYCLE_RATE: Rate = { per: 1 / (4 * SEASON_SECONDS), inverse: true, period: 1 };
+
+/**
+ * The year position now: `year` carried on by the `years` the year's cycle has run (its phase:
+ * SimFrame.phases[key], 0 without a cycle or while it is off); -1 stays -1.
+ */
+export function yearNow(year: number, years: number): number {
+  if (year < 0 || years === 0) return year;
+  return wrap(year + years);
 }
 
 /** Whether the season sets the climate: the scene keeps a season and can snow. */
@@ -112,12 +120,11 @@ export function yearGlsl(def: SeasonKnob, k: string): string {
   return def.kind === "feature" ? `(${k} <= 0.0 ? ${glslFloat(year.off ?? -1)} : ${on})` : on;
 }
 
-/** `yearNow` of `yearGlsl`, as GLSL: the year position SKY_YEAR holds. */
+/** `yearNow` of `yearGlsl`, as GLSL: the year position SKY_YEAR holds (the cycle's phase PHASE_<key>). */
 export function yearNowGlsl(season: SeasonKnob, cycle: YearCycleKnob | undefined): string {
   const at = yearGlsl(season, `K_${season.key}`);
   if (!cycle) return at;
-  const k = `K_${cycle.key}`;
-  return `(${k} > 0.0 && ${at} >= 0.0 ? fract(${at} + uMotionTime / (${4 * SEASON_SECONDS}.0 * ${k})) : ${at})`;
+  return `(K_${cycle.key} > 0.0 && ${at} >= 0.0 ? fract(${at} + PHASE_${cycle.key}) : ${at})`;
 }
 
 const smoothstep = (a: number, b: number, x: number) => {

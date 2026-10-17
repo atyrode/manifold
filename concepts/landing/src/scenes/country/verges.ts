@@ -762,7 +762,7 @@ type VergeKnob = "verges" | "wind";
 export class CountryVerges {
   readonly #knobs: KnobReader<VergeKnob>;
   /** The scene's season knob and its year's cycle, by slot (else the verges keep the harvest). */
-  readonly #season: { def: SeasonKnob; at: number; cycle: number } | undefined;
+  readonly #season: { def: SeasonKnob; at: number; cycle: string | undefined } | undefined;
   readonly #climate = plantClimate();
   #terrain: Terrain | undefined;
   /** The frame's aspect the slots were found for, and the view they were found through. */
@@ -791,7 +791,7 @@ export class CountryVerges {
     this.#season = season && {
       def: season,
       at: params.indexOf(season),
-      cycle: cycle ? params.indexOf(cycle) : -1,
+      cycle: cycle?.key,
     };
     this.#knobs = new KnobReader<VergeKnob>("country verges", params, ["verges", "wind"]);
     this.#climate.wind = (_x, _y, out, plant) => {
@@ -838,8 +838,7 @@ export class CountryVerges {
     const date = season
       ? yearNow(
           yearAt(season.def, frame.values[season.at] ?? effective(season.def, {})),
-          frame.values[season.cycle] ?? 0,
-          frame.motionTime,
+          season.cycle === undefined ? 0 : (frame.phases?.[season.cycle] ?? 0),
         )
       : COUNTRY_SEASONS.harvest;
     const year = countryVergeYear(date);

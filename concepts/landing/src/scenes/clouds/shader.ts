@@ -700,7 +700,7 @@ Shade sceneClouds(vec2 uv, vec2 cell, float t) {
   // Leaning toward the pointer: the near frame slides against the view, the wing a little.
   vec2 head = uPointer * m;
 
-  float tod = timeOfDayM(K_time, K_cycle, tm);
+  float tod = timeOfDayM(K_time, skyDays());
   Sky sky = cloudsMoon(skyAt(tod), tod);
   CloudsLight li = cloudsLighting(sky);
   // Under an aurora the tops, and the window frame, pick up a faint green.

@@ -9,7 +9,23 @@
 // Keys: unprefixed where the planet is the subject (orbit: K_clouds, K_moons, K_ring...); a sky that
 // shows one passes a prefix so the keys never meet its own (campfire's "planet": K_planetMoons,
 // K_planetAurora...). Each knob's key is the prefix plus the name below, capitalised after a prefix.
-import { choice, counts, feature, range, toggle, type Blurb, type ParamDef } from "../params.ts";
+import {
+  choice,
+  counts,
+  feature,
+  range,
+  toggle,
+  type Blurb,
+  type ParamDef,
+  type Rate,
+} from "../params.ts";
+
+/**
+ * The planet's day cycle as a rate knob (`daycycle`): its phase (PHASE_<key>) is the sweep the sun has
+ * made round the planet so far, a quarter radian a second of the motion clock at speed 1, wrapped at
+ * a turn, for planetSun.
+ */
+export const PLANET_DAY_RATE: Rate = { per: 0.25, period: 2 * Math.PI };
 
 export interface PlanetKnobOptions {
   /** Prepended to every key (camelCase): none for orbit's `moons`, "planet" for campfire's `planetMoons`. */
@@ -126,7 +142,7 @@ export function planetKnobs(options: PlanetKnobOptions): ParamDef[] {
         "speed",
         0.3,
         "The sun circles slowly: sunrise, day and night sweep across the planet.",
-        top,
+        { ...top, rate: PLANET_DAY_RATE },
       ),
     );
   }

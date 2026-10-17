@@ -1062,7 +1062,6 @@ type GardenKnob =
   | "leaves"
   | "camera"
   | "time"
-  | "cycle"
   | "rain"
   | "snow"
   | "wind"
@@ -1080,7 +1079,6 @@ const KNOBS: readonly GardenKnob[] = [
   "leaves",
   "camera",
   "time",
-  "cycle",
   "rain",
   "snow",
   "wind",
@@ -1108,11 +1106,11 @@ interface Settings {
   leaves: number;
   overhead: boolean;
   /**
-   * The sky clock's knobs, the date (SKY_YEAR; -1 none) and the rain as it falls (snow in winter),
-   * for the drying pace.
+   * The sky clock: the hour knob and the days the day cycle has run (its phase), the date (SKY_YEAR;
+   * -1 none) and the rain as it falls (snow in winter), for the drying pace.
    */
   time: number;
-  cycle: number;
+  days: number;
   year: number;
   rain: number;
   wind: number;
@@ -1143,7 +1141,7 @@ class GardenSim implements SceneSim {
     leaves: 0,
     overhead: false,
     time: 0,
-    cycle: 0,
+    days: 0,
     year: -1,
     rain: 0,
     wind: 0,
@@ -1367,7 +1365,7 @@ class GardenSim implements SceneSim {
     this.#watchGust(frame.fired, settings);
     this.#passage(frame, settings);
     const step = dt * frame.motion;
-    this.#fresh.advance(settings.drying > 0 ? step * this.#dryingRate(frame, settings) : step);
+    this.#fresh.advance(settings.drying > 0 ? step * this.#dryingRate(settings) : step);
 
     this.#tend(step, settings);
     this.#handRake(frame.pointer, settings);
@@ -1421,7 +1419,7 @@ class GardenSim implements SceneSim {
     s.leaves = clamp(this.#knob(frame, "leaves"), 0, 1);
     s.overhead = this.#knob(frame, "camera") > 0.5;
     s.time = this.#knob(frame, "time");
-    s.cycle = this.#knob(frame, "cycle");
+    s.days = frame?.phases?.["cycle"] ?? 0;
     const season = this.#seasonDef;
     s.year = season ? yearAt(season, this.#knob(frame, "season")) : -1;
     const cold = climateCold(s.year);
@@ -1449,8 +1447,8 @@ class GardenSim implements SceneSim {
    * one knob ages a mark's relief and its damp alike. The sky is worked out again only as its hour or
    * date moves.
    */
-  #dryingRate(frame: SimFrame, settings: Settings): number {
-    const tod = timeOfDay(settings.time, settings.cycle, frame.motionTime);
+  #dryingRate(settings: Settings): number {
+    const tod = timeOfDay(settings.time, settings.days);
     if (this.#sky === undefined || tod !== this.#skyTod || settings.year !== this.#skyYear) {
       this.#sky = skyState(tod, { shift: dateShift(settings.year, this.#anchor) });
       this.#skyTod = tod;

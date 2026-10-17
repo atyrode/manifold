@@ -83,7 +83,7 @@ float campfireLight(vec2 p, float lift) {
 
 void campfireSetup(float aspect) {
   campfireTm = uMotionTime;
-  Sky sky = skyAt(timeOfDayM(K_time, K_cycle, uMotionTime));
+  Sky sky = skyAt(timeOfDayM(K_time, skyDays()));
   vec3 amb = sky.ambient - sky.moonColor * 0.3;
   // No moon: the giant planet is the sky's other light.
   sky.moon = vec3(0.0, -1.0, 0.0);
@@ -137,7 +137,7 @@ void campfireSetup(float aspect) {
 vec3 campfireSkyAt(vec3 d) {
   Sky sky = campfireSkyState;
   vec3 col = skyColor(sky, d);
-  float mw = milkyWay(skyStarFrame(sky, d), CAMPFIRE_GALAXY) * K_milkyWay * K_stars * sky.night;
+  float mw = milkyWay(skyStarFrame(sky, d), d.y, CAMPFIRE_GALAXY) * K_milkyWay * K_stars * sky.night;
   col += vec3(0.085, 0.080, 0.110) * mw;
   col += skyStarLight(sky, d, milkyWayStars(K_stars, mw));
   // A faint skyglow along the horizon, so the pines keep a backdrop even in the deepest night.
@@ -153,7 +153,7 @@ vec3 campfireSkyAt(vec3 d) {
 vec3 campfirePlanetOver(vec3 col, vec2 p, float px) {
   if (K_planet <= 0.0) return col;
   vec3 light = normalize(vec3(-0.62, 0.42, 0.66));
-  if (K_planetDaycycle > 0.0) light = planetSun(light, campfireTm * K_planetDaycycle * 0.25);
+  if (K_planetDaycycle > 0.0) light = planetSun(light, PHASE_planetDaycycle);
   PlanetLook look = planetGiant(vec2(0.58 * campfireHalf, 0.57), 0.07 + 0.13 * K_planet, light);
   look.visible = 1.0 - 0.85 * campfireSkyState.day;
   look.night = campfireSkyState.night;

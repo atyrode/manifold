@@ -86,7 +86,7 @@ import { clamp, glslHash22, lerp, smoothstep } from "../../sims/math.ts";
 import { Random } from "../../sims/random.ts";
 import { followCell, SpeckMap } from "../../sims/specks.ts";
 import { DataTexture } from "../../sims/texture.ts";
-import { skyState, timeOfDay } from "../../world-clock.ts";
+import { daysAgo, skyState, timeOfDay } from "../../world-clock.ts";
 import type { SceneSim, SimFactory, SimFrame } from "../types.ts";
 
 const TAU = Math.PI * 2;
@@ -886,9 +886,13 @@ class BeesSim implements SceneSim {
   /** Speed multipliers (bees on their way out and home, butterflies): 1 at rest, more while the scene arrives or leaves. */
   #rush = 1;
   #flit = 1;
-  /** K_time and K_cycle; the motion clock at the step being taken (the shader's uMotionTime then). */
+  /**
+   * K_time, K_cycle and the days the day cycle has run (its phase) at the frame; the motion clock at
+   * the step being taken (the shader's uMotionTime then).
+   */
   #time = 0;
   #cycle = 0;
+  #days = 0;
   #tm = 0;
   /** The time of day last read, and its daylight and darkness (skyState's `day` and `night`). */
   #tod = Number.NaN;
@@ -938,6 +942,7 @@ class BeesSim implements SceneSim {
     this.#swarmOn = knobs.value(frame, "swarm") > 0.5;
     this.#time = knobs.value(frame, "time");
     this.#cycle = knobs.value(frame, "cycle");
+    this.#days = frame.phases?.["cycle"] ?? 0;
     this.#wet = Math.max(this.#weatherKnob(frame, "rain"), this.#weatherKnob(frame, "snow"));
     this.#wind = this.#weatherKnob(frame, "wind");
     const width = Math.max(1, Math.round(frame.width));
@@ -968,7 +973,7 @@ class BeesSim implements SceneSim {
     if (!this.#warm) {
       // The world as the page opens: the hives shut and the butterflies roosting from the start.
       this.#tm = frame.motionTime;
-      this.#skyAt(frame.motionTime);
+      this.#skyAt(0);
       this.#open = this.#wet <= 0 && this.#day >= 0.5 * (HIVES_SHUT + HIVES_OPEN);
       this.#roost = this.#wet > 0 || this.#day < 0.5 * (ROOST_FROM + ROOST_UNTIL);
     }
@@ -989,7 +994,7 @@ class BeesSim implements SceneSim {
     const steps = this.#clock.advance(advance);
     for (let i = 0; i < steps; i++) {
       this.#tm = frame.motionTime - this.#clock.lag(i);
-      this.#skyAt(this.#tm);
+      this.#skyAt(this.#clock.lag(i));
       this.#step(STEP, true);
     }
     // Drawn between the last two steps, so every frame that moves the clock repaints.
@@ -1277,9 +1282,9 @@ class BeesSim implements SceneSim {
 
   // ---- the world's hours and weather ----------------------------------------------------------------
 
-  /** The world clock at motion time tm: the daylight and the darkness, and so whether the hives are open and the day fliers about. */
-  #skyAt(tm: number): void {
-    const tod = timeOfDay(this.#time, this.#cycle, tm);
+  /** The world clock `ago` motion seconds before the frame: the daylight and the darkness, and so whether the hives are open and the day fliers about. */
+  #skyAt(ago: number): void {
+    const tod = timeOfDay(this.#time, daysAgo(this.#days, this.#cycle, ago));
     if (tod !== this.#tod) {
       const sky = skyState(tod);
       this.#tod = tod;

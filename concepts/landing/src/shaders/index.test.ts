@@ -3,8 +3,9 @@ import { turned } from "../knob-turns.ts";
 import { effective, type ParamDef } from "../params.ts";
 import { sceneDefs } from "../scenes/index.ts";
 import {
-  fragmentSourceFor,
+  assembleFragment,
   LIBRARY_GATES,
+  packParams,
   PLANETS_GATE,
   sceneFeatures,
   sceneFeaturesAll,
@@ -79,7 +80,7 @@ describe("library gates", () => {
         expect({ id: scene.id, gate, on: on[gate] }).toEqual({ id: scene.id, gate, on: 1 });
       }
       // The defines reach the program ahead of the libraries that test them.
-      const source = fragmentSourceFor(scene, all);
+      const source = assembleFragment(scene, all);
       for (const gate of Object.keys(gates))
         expect(source.indexOf(`#define ${gate} 1\n`)).toBeLessThan(
           source.indexOf("// ---- sky ----"),
@@ -104,6 +105,26 @@ describe("library gates", () => {
             covered: (most[name] ?? -Infinity) >= value,
           }).toEqual({ id: scene.id, knob: knob.key, name, covered: true });
       }
+    }
+  });
+});
+
+describe("knob uniforms", () => {
+  test("read each knob from the component of uParams that packParams fills with it", () => {
+    for (const scene of Object.values(sceneDefs)) {
+      const source = assembleFragment(scene);
+      const packed = packParams(scene.params.map((_, index) => index + 1));
+      scene.params.forEach((def, index) => {
+        const define = new RegExp(`#define K_${def.key} uParams\\[(\\d+)\\]\\.([xyzw])\\n`).exec(
+          source,
+        );
+        const slot = define === null ? -1 : Number(define[1]) * 4 + "xyzw".indexOf(define[2] ?? "");
+        expect({ id: scene.id, key: def.key, value: packed[slot] }).toEqual({
+          id: scene.id,
+          key: def.key,
+          value: index + 1,
+        });
+      });
     }
   });
 });

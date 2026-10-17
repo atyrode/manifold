@@ -23,6 +23,8 @@
 //     uploaded(slot)              whether it holds data yet (a sim warming up may hand over textures
 //                                 it has not filled)
 //     time, motionTime            the scene and motion clocks, summed as the renderer sums them
+//     phases                      the rate knobs' phases (SimFrame.phases), integrated as the renderer
+//                                 integrates them
 //     now                         the wall clock handed over as SimFrame.now, milliseconds
 //     dispose()                   the sim's
 //
@@ -46,6 +48,7 @@
 //
 // Rows run bottom to top, as DataTexture uploads them.
 import { effective, knobDef, MAX_TRIGGERS } from "../params.ts";
+import { RatePhases } from "../rate-phase.ts";
 import { sceneIds } from "../scenes/index.ts";
 import type { PointerState, ScenePassageProgress, SceneDef, SceneSim } from "../scenes/types.ts";
 import { paramDefaults } from "../state.ts";
@@ -301,6 +304,7 @@ export class HeadlessSim {
   #time = 0;
   #motionTime = 0;
   #now = 0;
+  readonly #phases: RatePhases;
 
   constructor(scene: SceneDef, gl?: WebGL2RenderingContext) {
     const id = sceneIds.find((candidate) => candidate === scene.id);
@@ -309,6 +313,7 @@ export class HeadlessSim {
     if (scene.sim === undefined) throw new HeadlessError(`headless: '${scene.id}' has no sim`);
     this.#scene = scene;
     this.#defaults = paramDefaults(id);
+    this.#phases = new RatePhases(scene.params);
     if (gl === undefined) {
       // bun has no OffscreenCanvas; a sim that paints with Canvas 2D (marble) gets the stand-in.
       if (typeof OffscreenCanvas === "undefined")
@@ -334,6 +339,10 @@ export class HeadlessSim {
     return this.#now;
   }
 
+  get phases(): Readonly<Record<string, number>> {
+    return this.#phases.byKey;
+  }
+
   frame(options: HeadlessFrame = {}): readonly (WebGLTexture | undefined)[] {
     const dt = options.dt ?? 1 / 60;
     const motion = options.motion ?? 1;
@@ -345,8 +354,10 @@ export class HeadlessSim {
       if (slot === undefined) throw new HeadlessError(`headless: the '${key}' knob has no "now"`);
       this.#triggers[slot] = this.#time;
     }
+    const values = this.#scene.params.map((def) => effective(def, params));
     this.#time += dt;
     this.#motionTime += dt * motion;
+    this.#phases.step(values, dt * motion);
     this.#now += options.elapsed ?? (dt > 0 ? dt * 1000 : 1000 / 60);
     for (let slot = 0; slot < MAX_TRIGGERS; slot++) {
       const stamp = this.#triggers[slot] ?? NEVER;
@@ -364,8 +375,9 @@ export class HeadlessSim {
       width: Math.round(height * aspect),
       height,
       aspect,
-      values: this.#scene.params.map((def) => effective(def, params)),
+      values,
       params,
+      phases: this.#phases.byKey,
       triggers: this.#triggers,
       fired: this.#fired,
       pointer: {

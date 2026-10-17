@@ -6,7 +6,7 @@
 // default): they only ever darken the park, they fall on part of it and move with the deck, and
 // they are gone at night.
 import { defaultsFor, paramDefaults, renderSettings } from "../../state.ts";
-import { fragmentSourceFor, vertexSource } from "../../shaders/index.ts";
+import { fragmentSourceFor, packParams, vertexSource } from "../../shaders/index.ts";
 import { CLOUD_TIERS } from "../../shaders/lib/clouds.ts";
 import { sceneDefs } from "../index.ts";
 import type { SceneDef } from "../types.ts";
@@ -114,8 +114,8 @@ function draw(
     const at = gl.getUniformLocation(linked, name);
     if (at === null) continue;
     if (name === "uView") gl.uniform1i(at, value[0] ?? 0);
-    else if (name === "uParams" || name === "uTriggers")
-      gl.uniform1fv(at, Float32Array.from(value));
+    else if (name === "uParams") gl.uniform4fv(at, packParams(value));
+    else if (name === "uTriggers") gl.uniform1fv(at, Float32Array.from(value));
     else if (value.length === 1) gl.uniform1f(at, value[0] ?? 0);
     else if (value.length === 2) gl.uniform2fv(at, value);
     else if (value.length === 3) gl.uniform3fv(at, value);

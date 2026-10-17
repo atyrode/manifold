@@ -363,7 +363,7 @@ BirdHit birdFlightsSeen(vec2 p, BirdSky sky, BirdCamera cam, float tm, float pxl
     float start;
     float v = birdSchedule(float(j), tm, sky.seed, key, start);
     if (v <= 0.0 || v >= 1.0) continue;
-    if (hash12(key) >= sky.often * birdHours(sky.hours, timeOfDayM(sky.clock.x, sky.clock.y, start))) continue;
+    if (hash12(key) >= sky.often * birdHours(sky.hours, timeOfDayM(sky.clock.x, skyDaysAt(sky.clock.y, start)))) continue;
     float kind = sky.kind < 0.0 ? birdMixed(sky.mixA, sky.mixB, hash12(key + 1.7)) : sky.kind;
     vec4 lane = birdLane(kind, sky.depths, sky.band);
     BirdFlight f = birdCrossing(key, v, kind, sky.formation, lane.xy, lane.zw, cam, aspect);

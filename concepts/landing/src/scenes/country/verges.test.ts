@@ -1,3 +1,4 @@
+import { RatePhases } from "../../rate-phase.ts";
 import { expect, test } from "bun:test";
 import { effective, type ParamDef } from "../../params.ts";
 import { LAND_USES, LandModel, type LandOptions, packLand } from "../../sims/landuse.ts";
@@ -43,6 +44,10 @@ function frame(
   motionTime = 0,
   own: readonly ParamDef[] = params,
 ): SimFrame {
+  const values = own.map((def) => effective(def, knobs));
+  // The rate knobs' phases as the renderer would have integrated them over motionTime at these knobs.
+  const phases = new RatePhases(own);
+  phases.step(values, motionTime);
   return {
     dt: 1 / 60,
     time: motionTime,
@@ -53,8 +58,9 @@ function frame(
     width: 960,
     height: 540,
     aspect: 16 / 9,
-    values: own.map((def) => effective(def, knobs)),
+    values,
     params: knobs,
+    phases: phases.byKey,
     triggers: new Array<number>(8).fill(-1e4),
     fired: new Array<boolean>(8).fill(false),
     pointer: { x: 0.5, y: 0.5, inside: false, down: false, pressed: false, released: false },

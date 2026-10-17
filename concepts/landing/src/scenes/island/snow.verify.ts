@@ -7,7 +7,7 @@
 // sums the shifts. The level camera's snowFall, drawn the same way as the control, brings every flake
 // straight down the frame.
 import { defaultsFor, paramDefaults, renderSettings } from "../../state.ts";
-import { fragmentSourceFor, vertexSource } from "../../shaders/index.ts";
+import { fragmentSourceFor, packParams, vertexSource } from "../../shaders/index.ts";
 import { islandScene } from "./index.ts";
 
 /** A wide frame (2.4:1): the lean grows toward the sides. */
@@ -117,9 +117,9 @@ function follow(gl: WebGL2RenderingContext, snow: string): Record<Band, Moved> {
     gl.uniform2f(gl.getUniformLocation(linked, "uPassage"), 1, 0);
     gl.uniform1fv(gl.getUniformLocation(linked, "uTriggers"), new Float32Array(8).fill(-1e4));
     const knobs = { ...paramDefaults("island"), snow: 1, "snow-amount": 1, wind: 0 };
-    gl.uniform1fv(
+    gl.uniform4fv(
       gl.getUniformLocation(linked, "uParams"),
-      Float32Array.from(renderSettings(defaultsFor("island"), knobs).params),
+      packParams(renderSettings(defaultsFor("island"), knobs).params),
     );
     const frame = (time: number): Uint8Array => {
       gl.uniform1f(gl.getUniformLocation(linked, "uTime"), time);

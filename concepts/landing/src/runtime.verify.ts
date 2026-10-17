@@ -33,6 +33,7 @@ export async function verifyRuntime(_gl: WebGL2RenderingContext): Promise<Record
     "uniform3f",
     "uniform4f",
     "uniform1fv",
+    "uniform4fv",
   ]) {
     const send = methods[method]?.bind(gl);
     if (!send) throw new Error(`Missing ${method}`);
@@ -293,9 +294,11 @@ export async function verifyRuntime(_gl: WebGL2RenderingContext): Promise<Record
     check(changed.params[index] !== original, "The knob change was a no-op");
     renderer.update(changed);
     frame((now += 16));
+    // uParams packs four knobs a row (shaders/index.ts packParams).
+    const row = uniform(`uParams[${index >> 2}]`) as Float32Array;
     check(
       sends.uParams === (base.uParams ?? 0) + 1 &&
-        uniform(`uParams[${index}]`) === Math.fround(changed.params[index] ?? Number.NaN),
+        row[index & 3] === Math.fround(changed.params[index] ?? Number.NaN),
       "A changed knob did not reach the shader",
     );
     // A look change made while another program draws reaches this one when it draws again.

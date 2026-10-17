@@ -3,18 +3,23 @@
 //
 // Every scene compiles to its own fragment shader (see scenes/types.ts): the common preamble, the
 // scene's compile-time features (fixed, and keyed by its setting: one program per distinct set, the
-// library gates of its night parts and of its planets among them), one `#define K_<key> uParams[i]`
-// per knob, SKY_YEAR (and a dated sky's SKY_DATE_ANCHOR), the shared libraries, the scene's GLSL,
-// then `main`, which calls the scene's entry and dithers the Shade it returns into the palette.
+// library gates of its night parts and of its planets among them), one `#define K_<key>` per knob
+// (its component of the packed `uParams`), one `#define PHASE_<key>` per rate knob, SKY_YEAR (and a
+// dated sky's SKY_DATE_ANCHOR), the shared libraries, the scene's GLSL, then `main`, which calls the
+// scene's entry and dithers the Shade it returns into the palette (`assembleFragment`). The driver
+// gets that program shaken (shaders/shake.ts): its conditionals resolved with its features, its
+// comments gone and only what `main` reaches, line for line (`fragmentSourceFor`).
 
 import { seasonKnob, yearCycleKnob, yearNowGlsl } from "../climate.ts";
 import { effective, MAX_PARAMS, type Widget } from "../params.ts";
+import { phaseDefines } from "../rate-phase.ts";
 import type { SceneDef } from "../scenes/types.ts";
 import { skyAnchor } from "../world-clock.ts";
 import { common } from "./common.ts";
 import { glslFloat } from "./glsl.ts";
 import { libs } from "./lib/index.ts";
 import { main } from "./main.ts";
+import { shakeGlsl } from "./shake.ts";
 
 export const vertexSource = `#version 300 es
 void main() {
@@ -29,7 +34,11 @@ export class SceneShaderError extends Error {}
 /** Knob keys double as URL keys and GLSL identifiers (`K_<key>`). */
 const KNOB_KEY = /^[a-z][A-Za-z0-9]*$/;
 
-/** `K_<key>` reads knob `key`: its index in `scene.params` is its slot in `uParams`. */
+/**
+ * `K_<key>` reads knob `key`: its index i in `scene.params` is its slot in `uParams`, which packs
+ * four knobs a row (`uniform vec4 uParams[MAX_PARAMS / 4]`), so knob i is component i % 4 of row
+ * i / 4, a constant swizzle (knob 13 is `uParams[3].y`).
+ */
 function knobDefines(scene: SceneDef): string {
   if (scene.params.length > MAX_PARAMS) {
     throw new SceneShaderError(
@@ -46,9 +55,19 @@ function knobDefines(scene: SceneDef): string {
       if (seen.has(def.key))
         throw new SceneShaderError(`scene ${scene.id}: knob key "${def.key}" is declared twice`);
       seen.add(def.key);
-      return `#define K_${def.key} uParams[${index}]\n`;
+      return `#define K_${def.key} uParams[${index >> 2}].${"xyzw".charAt(index & 3)}\n`;
     })
     .join("");
+}
+
+/**
+ * Knob values in `params` order as `uParams` takes them (`uniform4fv`): MAX_PARAMS floats, knob i
+ * at float i (row i / 4, component i % 4), zeros past the last knob.
+ */
+export function packParams(values: ArrayLike<number>): Float32Array {
+  const packed = new Float32Array(MAX_PARAMS);
+  packed.set(values);
+  return packed;
 }
 
 /**
@@ -180,8 +199,12 @@ function featureDefines(scene: SceneDef, features: Readonly<Record<string, numbe
     .join("");
 }
 
-/** The scene's fragment shader with these compile-time features (default: its features at its default knobs). */
-export function fragmentSourceFor(
+/**
+ * The scene's whole fragment program with these compile-time features (default: its features at
+ * its default knobs), as written: every library, comments and conditionals. The driver gets it
+ * shaken (`fragmentSourceFor`).
+ */
+export function assembleFragment(
   scene: SceneDef,
   features: Readonly<Record<string, number>> = sceneFeatures(scene),
 ): string {
@@ -191,9 +214,22 @@ export function fragmentSourceFor(
     common +
     featureDefines(scene, features) +
     knobDefines(scene) +
+    phaseDefines(scene) +
     yearDefine(scene) +
     libs +
     scene.glsl +
     main(scene.entry)
   );
+}
+
+/**
+ * The scene's fragment shader with these compile-time features (default: its features at its
+ * default knobs), as the driver gets it: `assembleFragment` shaken (shaders/shake.ts), so line n
+ * holds what line n of the assembled program holds, or nothing.
+ */
+export function fragmentSourceFor(
+  scene: SceneDef,
+  features: Readonly<Record<string, number>> = sceneFeatures(scene),
+): string {
+  return shakeGlsl(assembleFragment(scene, features));
 }

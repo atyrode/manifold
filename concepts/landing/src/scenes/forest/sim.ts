@@ -512,7 +512,7 @@ interface Stir {
   age: number;
 }
 
-type KnobKey = "spirits" | "shy" | "stag" | "spores" | "wind" | "time" | "cycle" | "forestSeed";
+type KnobKey = "spirits" | "shy" | "stag" | "spores" | "wind" | "time" | "forestSeed";
 
 /** The knobs the forest's life follows, as a frame has them, and the sky's dark at their hour (0 by day, 1 at night). */
 export interface ForestKnobs {
@@ -1635,7 +1635,6 @@ class ForestSim implements SceneSim {
     seed: 0,
   };
   #time = 0.82;
-  #cycle = 0;
   /** Warming the life up on the build worker (sims/build.ts); the life once it has landed. */
   readonly #warming = new BuildSlot(forestWarmup);
   #life: ForestLife | undefined;
@@ -1653,7 +1652,6 @@ class ForestSim implements SceneSim {
       spores: index("spores"),
       wind: index("wind"),
       time: index("time"),
-      cycle: index("cycle"),
       forestSeed: index("forestSeed"),
     };
     this.#beingTexture = new DataTexture(gl, {
@@ -1730,10 +1728,8 @@ class ForestSim implements SceneSim {
     knobs.spores = values[index.spores] ?? knobs.spores;
     knobs.wind = values[index.wind] ?? knobs.wind;
     this.#time = values[index.time] ?? this.#time;
-    this.#cycle = values[index.cycle] ?? this.#cycle;
     // The dark of the shader's sky (src/world-clock.ts): none once the sun is ~12 degrees up.
-    knobs.dark =
-      1 - skyNow({ time: this.#time, cycle: this.#cycle, motionTime: frame.motionTime }).day;
+    knobs.dark = 1 - skyNow({ time: this.#time, days: frame.phases?.["cycle"] ?? 0 }).day;
     knobs.seed = Math.round(values[index.forestSeed] ?? 0);
     return knobs;
   }

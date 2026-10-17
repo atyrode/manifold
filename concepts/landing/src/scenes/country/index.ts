@@ -18,7 +18,14 @@
 // starling murmuration at dusk (murmuration.ts) are compiled in only while on too; the sim grows
 // their plants and flies their flock then, packed beside the terrain's records (atlas.ts). Old links'
 // `season` (summer, harvest, autumn) opens at its date (state.ts MIGRATIONS).
-import { climateCold, fallingRain, fallingSnow, seasonKnob, yearAt } from "../../climate.ts";
+import {
+  climateCold,
+  fallingRain,
+  fallingSnow,
+  seasonKnob,
+  yearAt,
+  YEAR_CYCLE_RATE,
+} from "../../climate.ts";
 import type { IconName } from "../../lab/icons.ts";
 import { counts, choice, feature, range, seed, toggle } from "../../params.ts";
 import { birdKnobs, birdsGroup } from "../../shaders/lib/birds.ts";
@@ -272,7 +279,7 @@ const params = [
     "minutes per season",
     2,
     "The farming year turns on from the time of year at this pace, round and round: the land greens, ripens, is harvested, ploughed and drilled, turns and goes bare, field by field, and the climate follows (winter's snow lies and its rain falls as snow).",
-    { min: 0.5, max: 10, step: 0.5, widget: { kind: "sky", part: "year" } },
+    { min: 0.5, max: 10, step: 0.5, widget: { kind: "sky", part: "year" }, rate: YEAR_CYCLE_RATE },
   ),
   range(
     "water",
@@ -359,7 +366,7 @@ export function countryFeatures(values: Readonly<Record<string, number>>): Recor
     // The chalk M on its hillside (chalk.ts).
     COUNTRY_HAS_CHALK: on("chalk"),
     CLOUD_TIER: on("shadows") ? CLOUD_TIERS.shadows : CLOUD_TIERS.lit,
-    ...((values.moon ?? 1) < 1 ? { SKY_MOON_PHASE: 1 } : {}),
+    ...((values.moon ?? 1) !== 1 ? { SKY_MOON_PHASE: 1 } : {}),
   };
 }
 

@@ -1,7 +1,7 @@
 // GPU check of last call through the bar's real sim (sim.ts) and shader: early in the evening the
 // OPEN sign in the window is lit, and once last call has been called it is closing time, the sign
 // dark, whatever the time-of-night knob says.
-import { fragmentSourceFor, vertexSource } from "../../shaders/index.ts";
+import { fragmentSourceFor, packParams, vertexSource } from "../../shaders/index.ts";
 import { defaultsFor, paramDefaults, renderSettings } from "../../state.ts";
 import type { SimFrame } from "../types.ts";
 import { barScene } from "./index.ts";
@@ -47,7 +47,7 @@ export function verifyBarLastCall(gl: WebGL2RenderingContext): Record<string, un
     gl.uniform1f(u("uTime"), time);
     gl.uniform1f(u("uMotionTime"), time);
     gl.uniform1f(u("uMotion"), 1);
-    gl.uniform1fv(u("uParams"), Float32Array.from(params));
+    gl.uniform4fv(u("uParams"), packParams(params));
     gl.uniform1fv(u("uTriggers"), new Float32Array(8).fill(-1e4));
     gl.uniform2f(u("uPassage"), 1, 0);
     gl.uniform4f(u("uSimOn"), 1, 0, 0, 0);

@@ -213,10 +213,11 @@ uniform vec4 uMouse;     // raw pointer: xy in uv (y up), z 1 while pressed, w u
 uniform vec3 uBg;
 uniform vec3 uInk;
 uniform vec3 uAccent;
-uniform float uParams[MAX_PARAMS];
+uniform vec4 uParams[MAX_PARAMS / 4]; // the knobs, four a row: read knob <key> as K_<key> (shaders/index.ts)
+uniform vec4 uPhases;    // the rate knobs' phases (src/rate-phase.ts), one a component: read one as PHASE_<key>
 uniform vec4 uConStars[MAX_CON_STARS]; // anchor (half-width fraction, y), offset
-uniform float uConBright[MAX_CON_STARS];
-uniform vec2 uConLines[MAX_CON_LINES];
+uniform vec4 uConBright[MAX_CON_STARS / 4]; // four stars' brightness a row: read it with conBright
+uniform vec4 uConLines[MAX_CON_LINES / 2];  // two lines' star indices a row: read them with conLine
 uniform int uConStarCount;
 uniform int uConLineCount;
 uniform int uConMarkStar;  // first star / line of the Manifold asterism
@@ -230,8 +231,8 @@ uniform sampler2D uSim3;
 uniform vec4 uSimOn;      // 1 in each component whose uSim texture the simulation supplied
 uniform vec2 uWeather;    // x: how wet the world is 0..1 (rises while it rains, dries after); y: how much snow lies 0..1 (settles while it snows, melts after)
 uniform vec2 uPassage;    // x: how far the scene has come in 0..1 (1 once arrived, and with passages off); y: how far it has gone out 0..1 (0 unless leaving)
-uniform vec3 uDissolve;   // x: share of the outgoing picture still showing 1..0; y: 1 when that is the leaving scene (uLeaving), 0 for the bare page (uBg); z: blend (renderer's blendIds)
-uniform sampler2D uLeaving; // the leaving scene, drawn this frame at its own cell size
+uniform vec3 uDissolve;   // x: share of the outgoing picture still showing 1..0; y: 1 when it dissolves out of uLeaving (the leaving scene, or the poster of a scene entering from nothing), 0 for the bare page (uBg); z: blend (renderer's blendIds)
+uniform sampler2D uLeaving; // the leaving scene drawn this frame at its own cell size, or the entering scene's poster
 
 out vec4 outColor;
 
@@ -322,6 +323,17 @@ float starfield(vec2 cell, float density, float twinkle, float scatter) {
   float wave = 0.5 + 0.5 * sin(uMotionTime * rate + h3 * TAU * (1.0 + 9.0 * scatter));
   float dip = pow(wave, mix(1.0, 9.0, scatter)) * step(0.001, twinkle);
   return on * (1.0 - 0.75 * dip * uMotion) * (0.4 + 0.6 * fract(h * 97.0));
+}
+
+// Constellation star i's brightness 0..1 (constellations.ts; uConBright holds four stars a row).
+float conBright(int i) {
+  return uConBright[i >> 2][i & 3];
+}
+
+// Constellation line i: the indices in uConStars of its two stars (uConLines holds two lines a row).
+ivec2 conLine(int i) {
+  vec4 pair = uConLines[i >> 1];
+  return ivec2((i & 1) == 0 ? pair.xy : pair.zw);
 }
 
 // Seconds since a "now" button fired (negative or huge when idle).

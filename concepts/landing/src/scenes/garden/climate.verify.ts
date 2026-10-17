@@ -5,7 +5,7 @@
 // the season's. Below the maple (the only other thing the season changes in the shader) winter with
 // no snow lying draws the garden exactly as autumn does. The garden's sky is dated (world-clock.ts):
 // autumn's sun and winter's, either side of midwinter, stand alike, so those two seasons compare.
-import { fragmentSourceFor, vertexSource } from "../../shaders/index.ts";
+import { fragmentSourceFor, packParams, vertexSource } from "../../shaders/index.ts";
 import { defaultsFor, paramDefaults, renderSettings, type Params } from "../../state.ts";
 import type { SimFrame } from "../types.ts";
 import { gardenScene } from "./index.ts";
@@ -102,9 +102,9 @@ export function gardenClimateCheck(gl: WebGL2RenderingContext): Record<string, u
 
   // The same garden (the sim's textures stay as laid out) at noon, under other knobs and weather.
   const draw = (knobs: Params, lying: number): Uint8Array => {
-    gl.uniform1fv(
+    gl.uniform4fv(
       uniform("uParams"),
-      Float32Array.from(
+      packParams(
         renderSettings(defaultsFor("garden"), { ...defaults, time: 0.5, ...knobs }).params,
       ),
     );

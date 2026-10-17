@@ -12,7 +12,7 @@
 // - rest: an entrance changes what is drawn while it plays, and leaves the sim, and so the picture
 //   at rest, bit for bit what a scene that never had one draws.
 import { defaultsFor, paramDefaults, renderSettings } from "../../state.ts";
-import { fragmentSourceFor, vertexSource } from "../../shaders/index.ts";
+import { fragmentSourceFor, packParams, vertexSource } from "../../shaders/index.ts";
 import { HeadlessSim } from "../../sims/headless.ts";
 import {
   Mobile,
@@ -291,9 +291,9 @@ function sceneProgram(gl: WebGL2RenderingContext): {
   gl.uniform1f(at("uLevels"), 4);
   gl.uniform3f(at("uBg"), 0.03, 0.03, 0.04);
   gl.uniform1fv(at("uTriggers"), new Float32Array(8).fill(-1e4));
-  gl.uniform1fv(
+  gl.uniform4fv(
     at("uParams"),
-    Float32Array.from(renderSettings(defaultsFor("mobile"), paramDefaults("mobile")).params),
+    packParams(renderSettings(defaultsFor("mobile"), paramDefaults("mobile")).params),
   );
   gl.uniform1i(at("uSim0"), 0);
   gl.uniform4f(at("uSimOn"), 1, 0, 0, 0);

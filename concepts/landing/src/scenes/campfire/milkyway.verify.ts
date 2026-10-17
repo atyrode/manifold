@@ -5,7 +5,7 @@
 // off, on and twice as bright light the night sky more and more, and leave what the band does not
 // reach (Campfire's fire-lit ground) as it was.
 import { defaultsFor, paramDefaults, renderSettings } from "../../state.ts";
-import { fragmentSourceFor, vertexSource } from "../../shaders/index.ts";
+import { fragmentSourceFor, packParams, vertexSource } from "../../shaders/index.ts";
 import { sceneDefs } from "../index.ts";
 
 function check(ok: boolean, message: string): void {
@@ -44,7 +44,7 @@ Shade milkyWayProbe(vec2 uv, vec2 cell, float t) {
   float az = uProbe.x + floor(cell.x) * uProbe.y;
   float el = uProbe.z + floor(cell.y) * uProbe.y;
   vec3 dir = vec3(sin(az) * cos(el), sin(el), cos(az) * cos(el));
-  float band = milkyWay(dir, CAMPFIRE_GALAXY);
+  float band = milkyWay(dir, dir.y, CAMPFIRE_GALAXY);
   Shade o = blankShade();
   o.source = vec3(band, dot(dir, CAMPFIRE_GALAXY.pole), milkyWayStars(0.5, band));
   return o;
@@ -90,8 +90,8 @@ function draw(
     const at = gl.getUniformLocation(linked, name);
     if (at === null) continue;
     if (name === "uView") gl.uniform1i(at, value[0] ?? 0);
-    else if (name === "uParams" || name === "uTriggers")
-      gl.uniform1fv(at, Float32Array.from(value));
+    else if (name === "uParams") gl.uniform4fv(at, packParams(value));
+    else if (name === "uTriggers") gl.uniform1fv(at, Float32Array.from(value));
     else if (value.length === 1) gl.uniform1f(at, value[0] ?? 0);
     else if (value.length === 2) gl.uniform2fv(at, value);
     else if (value.length === 3) gl.uniform3fv(at, value);

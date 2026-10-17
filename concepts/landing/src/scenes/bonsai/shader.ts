@@ -85,6 +85,10 @@ const vec3 BONSAI_LAMP_AT = vec3(-1.05, -0.02, -0.5);
 const vec3 BONSAI_LAMP = vec3(1.0, 0.6, 0.28);
 // The window: where its patch of sun falls on the wall with the sun straight in front (display units).
 const vec4 BONSAI_WINDOW = vec4(-0.95, -0.4, 1.45, 0.82);
+// The share of the sky's sun's height its light through the window keeps, so it rakes the stand. The
+// sky itself is dated by the season (its sun lower toward winter, higher toward summer, as Earth's
+// declination moves it from the default date); this is the room's staging, the same all year.
+const float BONSAI_SUN_RISE = 0.8378;
 
 const vec3 BONSAI_SNOW = vec3(0.90, 0.93, 0.98);
 const vec3 BONSAI_ROSEWOOD = vec3(0.25, 0.115, 0.06);
@@ -100,7 +104,7 @@ float bonsaiSpecies;   // 0 pine, 1 maple, 2 cherry
 float bonsaiLying;     // snow lying 0..1
 float bonsaiFalling;   // snow falling 0..1
 float bonsaiLeafy;     // how much foliage the tree carries, 0..1
-float bonsaiCold;      // 1 deep in winter .. 0 high summer
+float bonsaiCold;      // 1 deep in winter .. 0 high summer: the light's tint
 vec3 bonsaiL;          // toward the sun (x right, y up, z away from the viewer: negative, it lights the front)
 vec3 bonsaiSun;        // direct sun
 vec3 bonsaiAmb;        // soft light from the sky over the veranda
@@ -812,14 +816,15 @@ Shade sceneBonsai(vec2 uv, vec2 cell, float t) {
   bonsaiFalling = state.z;
   bonsaiLeafy = state.w;
   bonsaiShift = bonsaiTable(BONSAI_ROW_STATE, 2).y;
-  // Midsummer warm and high, midwinter cold and low: the year's chill (src/climate.ts).
+  // Midsummer warm, midwinter cold: the year's chill (src/climate.ts) tints the light.
   bonsaiCold = climateChill(bonsaiYear);
 
-  // The light: the sky's sun, turned so it comes in from the front at the knob's angle and
-  // sweeping across with the hours; lower and colder in winter. Its sky dims under snow cloud.
-  Sky sky = skyAt(timeOfDayM(K_time, K_cycle, uMotionTime));
+  // The light: the sky's sun, dated by the season (lower in winter, higher in summer), turned so it
+  // comes in from the front at the knob's angle and sweeping across with the hours, colder in
+  // winter. Its sky dims under snow cloud.
+  Sky sky = skyAt(timeOfDayM(K_time, skyDays()));
   float az = clamp(K_light * 1.0 + sky.sun.x * 0.5, -1.3, 1.3);
-  float elev = asin(clamp(sky.sun.y, -1.0, 1.0)) * mix(1.0, 0.55, bonsaiCold);
+  float elev = asin(clamp(sky.sun.y, -1.0, 1.0)) * BONSAI_SUN_RISE;
   float ce = cos(max(elev, 0.03));
   bonsaiL = normalize(vec3(sin(az) * ce, sin(max(elev, 0.03)), -cos(az) * ce));
   float overcast = smoothstep(0.0, 0.5, bonsaiFalling);

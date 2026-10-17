@@ -12,38 +12,12 @@ const float METEOR_FLIGHT = 0.9;
 const vec3 METEOR_TINT = vec3(0.9, 0.95, 1.0);
 
 // Seconds since the latest shooting star, the random one's or the trigger's (slot; -1 for none),
-// whichever is more recent; 1e4 when there is none. The motion clock tm (uMotionTime) is cut into
-// windows of 60 s (rate near 0) down to 5 s (rate 1), each holding one meteor at a hashed moment in 80%
-// of them; the age runs in real seconds (the motion seconds since over the current motion), so each
-// flies at its own pace whatever the motion; only moving the slider soon after one rescales its age.
-// Random meteors stop when motion is off (no flashes for reduced-motion visitors); the trigger still
-// fires.
+// whichever is more recent; 1e4 when there is none: the sky's event scheduler (skyEventAge) with the
+// motion clock tm (uMotionTime) cut into windows of 60 s (rate near 0) down to 5 s (rate 1), each
+// holding one meteor in 80% of them, the age in real seconds; none at random while rate is 0.
 // seed: a stable id for the meteor, for meteorStreak.
 float meteorAge(float tm, float rate, int slot, out float seed) {
-  float age = 1e4;
-  seed = 0.0;
-  if (rate > 0.0 && uMotion > 0.01) {
-    float window = mix(60.0, 5.0, clamp(rate, 0.0, 1.0));
-    float k = floor(tm / window);
-    for (int i = 0; i < 2; i++) {
-      float w = k - float(i);
-      if (w < 0.0) break;
-      float at = (w + 0.05 + 0.9 * hash12(vec2(w, 13.1))) * window;
-      if (hash12(vec2(w, 57.3)) < 0.8 && at <= tm) {
-        age = (tm - at) / uMotion;
-        seed = hash12(vec2(w, 91.7));
-        break;
-      }
-    }
-  }
-  if (slot >= 0) {
-    float since = sinceTrigger(slot);
-    if (since >= 0.0 && since < age) {
-      age = since;
-      seed = hash12(vec2(uTriggers[slot], 6.1));
-    }
-  }
-  return age;
+  return skyEventAge(tm, mix(60.0, 5.0, clamp(rate, 0.0, 1.0)), rate > 0.0 ? 0.8 : 0.0, 2, vec4(13.1, 57.3, 91.7, 6.1), slot, seed);
 }
 
 // A shooting star age seconds into its flight, at q in a flat sky frame the scene chooses (its

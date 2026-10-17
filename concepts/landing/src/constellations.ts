@@ -166,15 +166,19 @@ const mark: Figure = {
   ],
 };
 
-/** Must match `MAX_CON_STARS` / `MAX_CON_LINES` in the fragment shader. */
+/**
+ * Must match `MAX_CON_STARS` / `MAX_CON_LINES` in the fragment shader, which takes brightness four
+ * stars and lines two to a vec4 (common.ts `conBright`, `conLine`): multiples of 4 and of 2.
+ */
 export const MAX_CON_STARS = 48;
 export const MAX_CON_LINES = 48;
 
 export interface ConstellationUniforms {
   /** Per star: anchor x (half-width fraction), anchor y, offset x, offset y. */
   stars: Float32Array;
+  /** Per star: brightness 0..1 (`uConBright`, four stars a vec4). */
   brightness: Float32Array;
-  /** Per line: two star indices. */
+  /** Per line: two star indices (`uConLines`, two lines a vec4). */
   lines: Float32Array;
   starCount: number;
   lineCount: number;

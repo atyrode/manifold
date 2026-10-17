@@ -3,7 +3,13 @@
 // water and nothing else (the sky, mountains and shore above the horizon stay as they were, and ice
 // stays still), and even at the strongest wind they stay calm under the dither. Registered in
 // verify-browser.ts.
-import { fragmentSourceFor, sceneFeatures, shaderValues, vertexSource } from "../../shaders/index.ts";
+import {
+  fragmentSourceFor,
+  packParams,
+  sceneFeatures,
+  shaderValues,
+  vertexSource,
+} from "../../shaders/index.ts";
 import { defaultsFor, readSetup, renderSettings } from "../../state.ts";
 import { lakeScene } from "./index.ts";
 import { FJORD_HORIZON } from "./shader.ts";
@@ -62,9 +68,9 @@ export function verifyLakeRipples(gl: WebGL2RenderingContext): Record<string, un
     gl.uniform1i(at("uView"), view);
     gl.uniform1f(at("uTime"), time);
     gl.uniform1f(at("uMotionTime"), time);
-    gl.uniform1fv(
+    gl.uniform4fv(
       at("uParams"),
-      Float32Array.from(renderSettings(defaultsFor("lake"), { ...FJORD, ...knobs }).params),
+      packParams(renderSettings(defaultsFor("lake"), { ...FJORD, ...knobs }).params),
     );
     gl.drawArrays(gl.TRIANGLES, 0, 3);
     const bytes = new Uint8Array(WIDTH * HEIGHT * 4);

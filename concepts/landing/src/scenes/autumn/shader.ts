@@ -389,9 +389,10 @@ vec4 autumnFarRow(vec2 p, float k) {
 
 vec3 autumnBackdrop(vec2 uv, vec2 p, WorldView view, out float depthZ) {
   // The world's sky: the dome, the aurora over the far crowns behind the clouds, the deck, the stars
-  // and the giant planet in its gaps, shooting stars; the rain greys it all.
+  // and the giant planet in its gaps, shooting stars; the rain greys what the deck leaves open (the
+  // world's grey day) and the park greys the deck itself.
   WorldSky heaven = worldSky(autumnWorld, view, AUTUMN_METEOR_FIELD);
-  vec3 sk = greyed(heaven.col, vec3(0.94, 0.96, 1.0), 0.55 * autumnWorld.overcast);
+  vec3 sk = mix(heaven.col, greyed(heaven.col, vec3(0.94, 0.96, 1.0), 0.55 * autumnWorld.overcast), heaven.cloud);
   vec3 dir = view.ray;
   depthZ = 1e4;
   if (K_rain > 0.0) {

@@ -11,6 +11,9 @@
 //   World worldAt(int meteorSlot, int lightningSlot);   // the world now, once per pixel
 //   WorldView worldView(vec2 uv, float horizon, float focal, float eye, float yaw, float unit);
 //   WorldView worldViewOf(vec3 ray, vec2 uv, float horizon, float focal, float eye, float yaw, float unit);
+//   vec2 worldDeckDrift(World w, WorldView v);                    // the wind on the deck, in the sky's frame
+//   vec3 worldGrey(World w, vec3 col, float open);                // the grey day under rain or snow
+//   float worldFogAt(World w, float metres, float height);        // the fog over a distance, in metres
 //   WorldSky worldSky(World w, WorldView v, vec4 meteorField);   // behind the scene
 //   float worldSunlit(World w, WorldView v, vec3 at);             // the cloud deck's and the cumulus' shadows
 //   void worldBirds(World w, WorldView v, WorldFlyway f, vec3 haze, float thick, inout vec3 col, inout float z, inout float accent);
@@ -82,9 +85,9 @@ const MilkyWayBand WORLD_GALAXY = MILKY_WAY_BAND(normalize(vec3(0.13, -0.86, 0.5
 #endif
 
 // Under the deck rain or snow closes over the sky (overcast, weatherOvercast) the sun's light fades
-// by this share, the sky's light greys by this share and darkens with the storm's amount, and the
-// twilight's colours give way. A scene that shows its deck coming down as the fall grows heavier
-// sets World.low to 1 + WORLD_DECK_LOW x storm.
+// by this share, the sky's light and the sky the deck leaves open (worldGrey) grey by this share and
+// darken with the storm's amount, and the twilight's colours give way. A scene that shows its deck
+// coming down as the fall grows heavier sets World.low to 1 + WORLD_DECK_LOW x storm.
 const float WORLD_DECK_SUN = 0.88;
 const float WORLD_DECK_GREY = 0.6;
 const float WORLD_DECK_DARK = 0.3;
@@ -162,10 +165,17 @@ struct World {
   float time;       // the time of day 0..1 (0 midnight, .25 sunrise, .5 noon, .75 sunset)
   float tm;         // the motion clock (uMotionTime): the sky, the cloud deck, snow, gusts, the storm
   float tf;         // the fall clock (uFallTime): falling rain
-  float rain;       // K_rain, K_snow, K_fog: 0 while off; K_wind -1..1
-  float snow;
-  float fog;
-  float wind;
+  float year;       // the date: the season's year position (SKY_YEAR), -1 for a scene without a season
+  float chill;      // how far the year has turned toward winter (climateChill), 0 without a season
+  float cold;       // how near midwinter's freeze it is (climateCold), 0 without a season
+  float rain;       // what falls (0 while off): K_rain and K_snow, where the season sets the climate (a
+  float snow;       // season and a snow knob) the cold's share of the rain falling as snow
+                    // (climatePrecip), so a winter's rain snows
+  float wet;        // how wet the ground is (uWeather.x) and how much snow lies on it (uWeather.y),
+  float lying;      // 0..1 each, on the scene clock: they dry and melt after the fall stops
+  float fog;        // K_fog, 0 while off (worldFogAt: the fog over a distance)
+  float wind;       // K_wind -1..1, left to right in the camera's frame: it slants the rain and the
+                    // snow and drifts the cumulus there, and the deck the same way (worldDeckDrift)
   float storm;      // the heavier of rain and snow (snow counted 0.85x), 0..1
   float overcast;   // 0..1 how far rain or snow has closed the sky (weatherOvercast)
   float heavy;      // 0..1 heavy rain or snow
@@ -187,29 +197,44 @@ struct World {
                     // 0 from worldAt; a scene that re-seeds its view sets it before drawing
 };
 
-// The world now, from the world's knobs and the clocks; meteorSlot and lightningSlot: the scene's
-// trigger slots for their "now" buttons. Once per pixel, before anything is drawn. Rain or snow can
-// close the deck over a scene with no clouds knob: K_clouds is tested with #ifdef, and the cover is
-// then the overcast's alone.
+// The world now, from the world's knobs, the clocks and the date; meteorSlot and lightningSlot: the
+// scene's trigger slots for their "now" buttons. Once per pixel, before anything is drawn. Rain or
+// snow can close the deck over a scene with no clouds knob: K_clouds is tested with #ifdef, and the
+// cover is then the overcast's alone. Where the season sets the climate (the scene has a snow knob,
+// tested with #ifdef, and a season: SKY_YEAR), the cold turns rain to snow; elsewhere the cold is
+// still the season's to read, and the rain and snow are the knobs'.
 World worldAt(int meteorSlot, int lightningSlot) {
   World w;
   w.tm = uMotionTime;
   w.tf = uFallTime;
-  w.time = timeOfDayM(K_time, K_cycle, uMotionTime);
+  w.time = timeOfDayM(K_time, skyDays());
   Sky sky = skyAt(w.time);
 #ifdef SKY_MOON_PHASE
   sky = skyMoonPhase(sky, K_moon);
 #endif
+  w.year = SKY_YEAR;
+  w.chill = climateChill(w.year);
+  w.cold = climateCold(w.year);
 #if WORLD_RAIN
-  w.rain = K_rain;
+  float rain = K_rain;
 #else
-  w.rain = 0.0;
+  float rain = 0.0;
 #endif
 #if WORLD_SNOW
-  w.snow = K_snow;
+  float snow = K_snow;
 #else
-  w.snow = 0.0;
+  float snow = 0.0;
 #endif
+#ifdef K_snow
+  vec2 falling = climatePrecip(rain, snow, w.cold);
+  w.rain = falling.x;
+  w.snow = falling.y;
+#else
+  w.rain = rain;
+  w.snow = snow;
+#endif
+  w.wet = clamp(uWeather.x, 0.0, 1.0);
+  w.lying = clamp(uWeather.y, 0.0, 1.0);
 #if WORLD_FOG
   w.fog = K_fog;
 #else
@@ -307,6 +332,34 @@ WorldView worldViewOf(vec3 ray, vec2 uv, float horizon, float focal, float eye, 
   return v;
 }
 
+// ---- one wind, one grey day, one fog ----
+// The wind on the cloud deck, in the sky's frame where the deck is drawn: the camera's wind
+// (cloudDeckDrift of w.wind, sideways along the view and creeping toward the eye) turned by the
+// view's yaw, so the deck drifts the way the rain slants and the cumulus drift, whichever way the
+// scene faces.
+vec2 worldDeckDrift(World w, WorldView v) {
+  vec2 drift = cloudDeckDrift(w.wind);
+  return v.yaw == 0.0 ? drift : rotate(drift, v.yaw);
+}
+
+// The grey day: what the rain or snow falling (w.rain, w.snow: their overcast, weatherOvercast, and
+// their storm) does to a colour of the sky behind it, open its share not hidden by cloud (1 the open
+// dome, 0 behind the deck): greyed and darkened as the world's light is under the deck (worldAt's
+// shares), so the deck's gaps read as thinner cloud, not clear blue. It follows what falls, not a
+// scene's own closing of w.overcast over its sky (dunes' sandstorm). worldSky and worldMirrorSky give
+// it what their deck leaves open; give it, with open 1, a haze taken off the dome (horizonHaze); a
+// scene that greys its deck as well gives it that deck's alpha. Exactly col in dry weather.
+vec3 worldGrey(World w, vec3 col, float open) {
+  return greyed(col, vec3(1.0), WORLD_DECK_GREY * weatherOvercast(w.rain, w.snow) * open) * (1.0 - WORLD_DECK_DARK * w.storm * open);
+}
+
+// The world's fog (K_fog) over a distance, in metres, to a point height metres over the ground:
+// fogAmount of 1 - exp(-metres / WORLD_FOG_REACH), thinning up through the WORLD_FOG_TOP metres of
+// its layer. 0 without fog.
+float worldFogAt(World w, float metres, float height) {
+  return fogAmount(w.fog, 1.0 - exp(-metres / WORLD_FOG_REACH), clamp(height / WORLD_FOG_TOP, 0.0, 1.0));
+}
+
 #if WORLD_CUMULUS
 // ---- the painted cumulus (K_cumulus) ----
 // How far the towers have still to drift in as the scene arrives (1 down to exactly 0 once it has: an
@@ -344,7 +397,7 @@ WorldCumulusLight worldCumulusLight(World w, WorldView v) {
   li.sun = w.sky.sunColor * WORLD_CUMULUS_SUN;
   li.moon = w.sky.moonColor * WORLD_CUMULUS_MOON;
   li.sky = w.sky.ambient * WORLD_CUMULUS_SKY + WORLD_CUMULUS_FLOOR;
-  vec3 zen = skyColor(w.sky, normalize(vec3(0.0, 0.85, 0.5)));
+  vec3 zen = skyDome(w.sky, normalize(vec3(0.0, 0.85, 0.5)));
   li.shade = mix(vec3(dot(zen, LUMA)), zen, 0.5) * 1.5 + vec3(0.12, 0.13, 0.17);
   vec3 sun = skyFacing(w.sky.sun, -v.yaw);
   vec3 moon = skyFacing(w.sky.moon, -v.yaw);
@@ -463,10 +516,12 @@ struct WorldSky {
 };
 
 // The sky behind everything along the view's ray, in order: the dome (sun and moon discs), the
-// aurora behind the clouds (lifted by v.auroraLift), the cloud deck (as near as w.low), the painted
-// cumulus in front of it, the stars (at w.stars), the Milky Way and the giant planet in their gaps,
-// shooting stars (starting in meteorField, skyAngles of the camera's ray: xy its lower left corner,
-// zw its size), then the lightning (strike). Draw the scene's land, distance and near things over it.
+// aurora behind the clouds (lifted by v.auroraLift), the cloud deck (as near as w.low, drifting with
+// the wind: worldDeckDrift), the painted cumulus in front of it, the stars (at w.stars), the Milky Way
+// and the sky's planets in their gaps, shooting stars (starting in meteorField, skyAngles of the
+// camera's ray: xy its lower left corner, zw its size), all of what the cloud leaves open greyed under
+// rain or snow (worldGrey), then the lightning (strike). Draw the scene's land, distance and near
+// things over it.
 WorldSky worldSky(World w, WorldView v, vec4 meteorField) {
   vec3 col = skyColor(w.sky, v.dir);
 #if WORLD_AURORA
@@ -476,7 +531,7 @@ WorldSky worldSky(World w, WorldView v, vec4 meteorField) {
 #endif
   float cloud = 0.0;
 #if WORLD_CLOUDS
-  vec4 deck = skyClouds(w.sky, w.low == 1.0 ? v.dir : normalize(vec3(v.dir.x, v.dir.y * w.low, v.dir.z)), w.tm, w.cover, w.wind);
+  vec4 deck = skyClouds(w.sky, w.low == 1.0 ? v.dir : normalize(vec3(v.dir.x, v.dir.y * w.low, v.dir.z)), w.tm, w.cover, worldDeckDrift(w, v));
   col = mix(col, deck.rgb, deck.a);
   cloud = deck.a;
 #endif
@@ -489,7 +544,7 @@ WorldSky worldSky(World w, WorldView v, vec4 meteorField) {
   // On dark nights: moonlight washes it out. w.stars stays the density away from the band (with the
   // band off the stars are exactly w.stars'); in it they crowd as milkyWayStars has them.
   float moonlit = clamp(dot(w.sky.moonColor, LUMA) / WORLD_GALAXY_MOONLIT, 0.0, 1.0);
-  float band = milkyWay(skyStarFrame(w.sky, v.dir), WORLD_GALAXY) * K_milkyWay * w.stars * w.sky.night * (1.0 - WORLD_GALAXY_MOON * moonlit);
+  float band = milkyWay(skyStarFrame(w.sky, v.dir), v.dir.y, WORLD_GALAXY) * K_milkyWay * w.stars * w.sky.night * (1.0 - WORLD_GALAXY_MOON * moonlit);
   col += WORLD_GALAXY_TINT * band * (1.0 - cloud);
   if (band > 0.0) density = w.stars * milkyWayStars(1.0, band) / milkyWayStars(1.0, 0.0);
 #endif
@@ -500,6 +555,7 @@ WorldSky worldSky(World w, WorldView v, vec4 meteorField) {
   float streak = meteorStreak(skyAngles(v.ray), meteorField, w.meteorAge, w.meteorSeed, v.foot);
   col += METEOR_TINT * hardEdge(streak * auroraSeen(w.sky, max(cloud, w.overcast)));
 #endif
+  col = worldGrey(w, col, 1.0 - cloud);
   vec3 strike = vec3(0.0);
 #if WORLD_LIGHTNING
   if (w.boltAge < 1.5) {
@@ -523,14 +579,14 @@ WorldSky worldSky(World w, WorldView v, vec4 meteorField) {
 // How much of the sun's light reaches a point at (scene units from the eye, in the camera's frame,
 // y up: the ground under a pixel is y = -eye): 1 in the open, down to 1 - K_shadows in the shadow
 // the cloud deck casts where the sun's ray from it meets the deck (skyCloudShadow, the deck
-// WORLD_CLOUD_BASE / w.low metres up, as the sky shows it), and times 1 - WORLD_CUMULUS_SHADOW in the
-// painted cumulus' shadows (worldCumulusShadow), which come with the towers. Exactly 1 while both are
-// off. Multiply the sun's light by it.
+// WORLD_CLOUD_BASE / w.low metres up, as the sky shows it, drifting as it does), and times
+// 1 - WORLD_CUMULUS_SHADOW in the painted cumulus' shadows (worldCumulusShadow), which come with the
+// towers. Exactly 1 while both are off. Multiply the sun's light by it.
 float worldSunlit(World w, WorldView v, vec3 at) {
   float lit = 1.0;
 #if WORLD_SHADOWS
   if (K_shadows > 0.0 && w.cover > 0.0) {
-    lit = 1.0 - K_shadows * skyCloudShadow(w.sky, skyFacing(at / v.unit, v.yaw), WORLD_CLOUD_BASE, w.low, w.tm, w.cover, w.wind);
+    lit = 1.0 - K_shadows * skyCloudShadow(w.sky, skyFacing(at / v.unit, v.yaw), WORLD_CLOUD_BASE, w.low, w.tm, w.cover, worldDeckDrift(w, v));
   }
 #endif
 #if WORLD_CUMULUS
@@ -571,15 +627,14 @@ void worldBirds(World w, WorldView v, WorldFlyway f, vec3 haze, float thick, ino
 #endif
 }
 
-// Fog (K_fog) between the eye and z (scene units; WORLD_FAR for open sky): fogAmount by the
-// distance in metres and the height of the point seen over the ground (open sky reckoned
-// WORLD_FOG_SKY metres out, so the fog hugs the horizon), mixing toward fogCol, the scene's mist.
+// Fog (K_fog) between the eye and z (scene units; WORLD_FAR for open sky): worldFogAt the distance
+// in metres and the height of the point seen over the ground (open sky reckoned WORLD_FOG_SKY metres
+// out, so the fog hugs the horizon), mixing toward fogCol, the scene's mist.
 void worldFog(World w, WorldView v, vec3 fogCol, float z, inout vec3 col, inout float accent) {
 #if WORLD_FOG
   if (w.fog > 0.0) {
     float metres = z / v.unit;
-    float height = (v.eye / v.unit + min(metres, WORLD_FOG_SKY) * v.ray.y / max(v.ray.z, 1e-3)) / WORLD_FOG_TOP;
-    float f = fogAmount(w.fog, 1.0 - exp(-metres / WORLD_FOG_REACH), clamp(height, 0.0, 1.0));
+    float f = worldFogAt(w, metres, v.eye / v.unit + min(metres, WORLD_FOG_SKY) * v.ray.y / max(v.ray.z, 1e-3));
     col = mix(col, fogCol, f);
     accent *= 1.0 - f;
   }
@@ -694,11 +749,12 @@ WorldView worldMirrorView(WorldView v, vec3 ray, float blur) {
 // the moon swung round behind the viewer (skyMirror: no reflection shows a broken sliver of its
 // disc, so draw the moon's path on the water as glitter), the aurora, the cloud deck (lit by the
 // true moon, so its silver lining shows under it) and the painted cumulus in front of it, the Milky
-// Way, the stars and the giant planet in their gaps (faded in the true moon's glare as the sky's
-// are) and shooting stars, all at m's footprint: a rough mirror fades the stars to their glow,
-// softens the giant and dims a streak to the share of its blur one cell is. In strike the
-// lightning's bolt mirrored at m's screen point, as dim, and the flash's glow. A scene that drops its
-// bolts out of its own storm draws their image itself and leaves strike's out.
+// Way and the stars in their gaps (faded in the true moon's glare as the sky's are), the sky's
+// planets (hidden by no moon, the mirror drawing none) and shooting stars, all at m's footprint: a
+// rough mirror fades the stars to their glow, softens the planets and dims a streak to the share of
+// its blur one cell is; what the cloud leaves open greyed under rain or snow, as the sky is. In
+// strike the lightning's bolt mirrored at m's screen point, as dim, and the flash's glow. A scene
+// that drops its bolts out of its own storm draws their image itself and leaves strike's out.
 WorldSky worldMirrorSky(World w, WorldView m, vec4 meteorField) {
   vec3 col = skyColor(skyMirror(w.sky), m.dir);
   float cell = 1.0 / (m.focal * uRes.y);
@@ -709,7 +765,7 @@ WorldSky worldMirrorSky(World w, WorldView m, vec4 meteorField) {
 #endif
   float cloud = 0.0;
 #if WORLD_CLOUDS
-  vec4 deck = skyClouds(w.sky, w.low == 1.0 ? m.dir : normalize(vec3(m.dir.x, m.dir.y * w.low, m.dir.z)), w.tm, w.cover, w.wind);
+  vec4 deck = skyClouds(w.sky, w.low == 1.0 ? m.dir : normalize(vec3(m.dir.x, m.dir.y * w.low, m.dir.z)), w.tm, w.cover, worldDeckDrift(w, m));
   col = mix(col, deck.rgb, deck.a);
   cloud = deck.a;
 #endif
@@ -720,17 +776,18 @@ WorldSky worldMirrorSky(World w, WorldView m, vec4 meteorField) {
   float density = w.stars;
 #if WORLD_MILKYWAY
   float moonlit = clamp(dot(w.sky.moonColor, LUMA) / WORLD_GALAXY_MOONLIT, 0.0, 1.0);
-  float band = milkyWay(skyStarFrame(w.sky, m.dir), WORLD_GALAXY) * K_milkyWay * w.stars * w.sky.night * (1.0 - WORLD_GALAXY_MOON * moonlit);
+  float band = milkyWay(skyStarFrame(w.sky, m.dir), m.dir.y, WORLD_GALAXY) * K_milkyWay * w.stars * w.sky.night * (1.0 - WORLD_GALAXY_MOON * moonlit);
   col += WORLD_GALAXY_TINT * band * (1.0 - cloud);
   if (band > 0.0) density = w.stars * milkyWayStars(1.0, band) / milkyWayStars(1.0, 0.0);
 #endif
   col += SKY_STAR_TINT * skyStars(w.sky, m.dir, density, m.foot) * (1.0 - cloud);
 #endif
-  col = skyGiant(w.sky, col, m.dir, m.foot, 1.0 - cloud);
+  col = skyGiant(skyMirror(w.sky), col, m.dir, m.foot, 1.0 - cloud);
 #if WORLD_METEORS
   float streak = meteorStreak(skyAngles(m.ray), meteorField, w.meteorAge, w.meteorSeed, cell);
   col += METEOR_TINT * hardEdge(streak * auroraSeen(w.sky, max(cloud, w.overcast))) * sharp;
 #endif
+  col = worldGrey(w, col, 1.0 - cloud);
   vec3 strike = vec3(0.0);
 #if WORLD_LIGHTNING
   if (w.boltAge < 1.5) {

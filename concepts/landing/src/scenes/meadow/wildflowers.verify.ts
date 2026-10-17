@@ -4,6 +4,7 @@
 // the air is still they stand exactly as clumps grown in it.
 import {
   fragmentSourceFor,
+  packParams,
   sceneFeatures,
   shaderValues,
   vertexSource,
@@ -76,10 +77,7 @@ export function verifyMeadowWildflowers(gl: WebGL2RenderingContext): Record<stri
     gl.uniform2f(u("uPointer"), 0, 0);
     gl.uniform1fv(u("uTriggers"), new Float32Array(8).fill(-1e4));
     gl.uniform1i(u("uSim3"), 3);
-    gl.uniform1fv(
-      u("uParams"),
-      Float32Array.from(renderSettings(defaultsFor("meadow"), knobs).params),
-    );
+    gl.uniform4fv(u("uParams"), packParams(renderSettings(defaultsFor("meadow"), knobs).params));
     gl.activeTexture(gl.TEXTURE3);
     gl.bindTexture(gl.TEXTURE_2D, flowers ?? null);
     gl.uniform4f(u("uSimOn"), 0, 0, 0, flowers ? 1 : 0);

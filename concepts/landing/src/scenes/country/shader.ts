@@ -388,7 +388,7 @@ Shade sceneCountry(vec2 screenUv, vec2 cell, float t) {
   float wet = uWeather.x;
   float lying = uWeather.y;
 
-  float tod = timeOfDayM(K_time, K_cycle, tm);
+  float tod = timeOfDayM(K_time, skyDays());
 #ifdef SKY_MOON_PHASE
   Sky sky = skyMoonPhase(skyAt(tod), K_moon);
 #else

@@ -103,6 +103,8 @@ export const orbitScene: SceneDef = {
       "speed",
       0.5,
       "The starfield slides slowly sideways.",
+      // The slide so far (PHASE_drift): a new speed carries on from where the stars stand.
+      { rate: { per: 1 } },
     ),
     range(
       "camera",

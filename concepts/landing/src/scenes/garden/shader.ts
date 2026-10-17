@@ -589,7 +589,7 @@ Shade sceneGarden(vec2 uv, vec2 cell, float t) {
   // Light. The key is the sun, or the moon once the sun is down. A low sun is weak on the flat but
   // strong on the flanks turned to it: expose it up as it sinks, as dunes does.
   // The moon takes a phase (K_moon, SKY_MOON_PHASE): a slimmer one lights the gravel less at night.
-  Sky sky = skyMoonPhase(skyAt(timeOfDayM(K_time, K_cycle, tm)), K_moon);
+  Sky sky = skyMoonPhase(skyAt(timeOfDayM(K_time, skyDays())), K_moon);
   bool moonlit = sky.sun.y < -0.03;
   vec3 key = moonlit ? sky.moon : sky.sun;
   vec3 L = normalize(vec3(key.x, key.z, max(key.y, 0.004)));

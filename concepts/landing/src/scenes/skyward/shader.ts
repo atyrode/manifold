@@ -1060,12 +1060,10 @@ Shade sceneSkyward(vec2 uv, vec2 cell, float t) {
 
   // The hour, and the weather over it: the world's (rain and snow close the sky, flatten and dim the
   // light; the moon is hidden by the deck as the sun is), its deck seen farther off
-  // (SKYWARD_DECK_LOW). The world's wind blows the deck along the sky's x, which the street, turned
-  // half round from the sky, sees reversed: it is turned back, so the wind drifts the deck along the
-  // street's x as it does the rain and the snow.
+  // (SKYWARD_DECK_LOW). The world turns its wind by the view's yaw (worldDeckDrift), so the wind
+  // drifts the deck along the street's x as it does the rain and the snow.
   skywardWorld = worldAt(SKYWARD_METEOR_SLOT, -1);
   skywardWorld.low = SKYWARD_DECK_LOW;
-  skywardWorld.wind = -skywardWorld.wind;
   skywardWorld.sky.moonColor *= 1.0 - WORLD_DECK_SUN * skywardWorld.overcast;
   skywardSky = skyFacing(skywardWorld.sky, SKYWARD_SKY_YAW);
   skywardStorm = skywardWorld.storm;

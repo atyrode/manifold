@@ -1104,7 +1104,7 @@ Shade sceneForest(vec2 uv, vec2 cell, float t) {
   vec2 p = vec2((uv.x - 0.5) * aspect, uv.y);
   float tm = uMotionTime;
   forestCamD = forestCamera();
-  Sky sky = skyMoonPhase(skyAt(timeOfDayM(K_time, K_cycle, uMotionTime)), K_moon);
+  Sky sky = skyMoonPhase(skyAt(timeOfDayM(K_time, skyDays())), K_moon);
   // The rain's cloud closes over the sky as the rain sets in (the shared canopy weather): a drizzle
   // still lets some sun through, from about a quarter of the knob up the sun and moon are gone,
   // shafts and all. The deck is lit from above, so the light turns soft and grey but stays, dimming

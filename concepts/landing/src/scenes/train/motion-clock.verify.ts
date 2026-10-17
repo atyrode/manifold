@@ -15,6 +15,7 @@ import { defaultsFor, paramDefaults, renderSettings } from "../../state.ts";
 import { effective } from "../../params.ts";
 import {
   fragmentSourceFor,
+  packParams,
   sceneFeatures,
   shaderValues,
   vertexSource,
@@ -104,7 +105,7 @@ export function draw(
   gl.uniform1f(at("uMotion"), clocks.motion);
   gl.uniform1i(at("uView"), 1);
   gl.uniform4f(at("uMouse"), 0.5, 0.5, 0, -1e4);
-  gl.uniform1fv(at("uParams"), Float32Array.from(values));
+  gl.uniform4fv(at("uParams"), packParams(values));
   gl.uniform1fv(at("uTriggers"), new Float32Array(8).fill(-1e4));
   gl.uniform1fv(at("uMotionTriggers"), new Float32Array(8).fill(-1e4));
   gl.uniform2f(at("uPassage"), 1, 0);

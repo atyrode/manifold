@@ -1,7 +1,12 @@
 // The pendulum wave's swing on the GPU (verify-browser.ts): the ideal row still lines up exactly,
 // and the real one swings as the shared pendulum maths says (sims/pendulum.ts, its TS twin). Drawn
 // with the scene's all-features program, which compiles the real swing in (PENDULA_REAL).
-import { fragmentSourceFor, sceneFeaturesAll, vertexSource } from "../../shaders/index.ts";
+import {
+  fragmentSourceFor,
+  packParams,
+  sceneFeaturesAll,
+  vertexSource,
+} from "../../shaders/index.ts";
 import { pendulumAngle, pendulumFadingSwings, pendulumStretch } from "../../sims/pendulum.ts";
 import { defaultsFor, paramDefaults, renderSettings } from "../../state.ts";
 import { sceneDefs } from "../index.ts";
@@ -68,9 +73,9 @@ export function verifyPendulaSwing(gl: WebGL2RenderingContext): Record<string, u
   gl.uniform2f(gl.getUniformLocation(program, "uPassage"), 1, 0);
   const angles = (knobs: Record<string, number>, cycles: number): number[] => {
     gl.uniform1f(gl.getUniformLocation(program, "uMotionTime"), cycles * CYCLE);
-    gl.uniform1fv(
+    gl.uniform4fv(
       gl.getUniformLocation(program, "uParams"),
-      Float32Array.from(
+      packParams(
         renderSettings(defaultsFor("pendula"), {
           ...paramDefaults("pendula"),
           count: COUNT,

@@ -3,7 +3,7 @@
 // law, period² ∝ distance³, and a captured meteor's decaying orbit (orbitCapturePath) speeds up as
 // it falls, its rate rising as distance^-1.5 the way a real decaying orbit's does. A probe entry
 // writes one number per cell, each over three bytes.
-import { fragmentSourceFor, vertexSource } from "../../shaders/index.ts";
+import { fragmentSourceFor, packParams, vertexSource } from "../../shaders/index.ts";
 import { defaultsFor, paramDefaults, renderSettings } from "../../state.ts";
 import { orbitScene } from "./index.ts";
 import { ORBIT_CAPTURE } from "./shader.ts";
@@ -90,9 +90,9 @@ export function verifyOrbitKepler(gl: WebGL2RenderingContext): Record<string, un
   gl.uniform1i(at("uView"), 1);
   gl.uniform2f(at("uPassage"), 1, 0);
   gl.uniform1f(at("uMotion"), 1);
-  gl.uniform1fv(
+  gl.uniform4fv(
     at("uParams"),
-    Float32Array.from(renderSettings(defaultsFor("orbit"), paramDefaults("orbit")).params),
+    packParams(renderSettings(defaultsFor("orbit"), paramDefaults("orbit")).params),
   );
   const read = (time: number): number[] => {
     gl.uniform1f(at("uTime"), time);

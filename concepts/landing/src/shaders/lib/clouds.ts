@@ -6,7 +6,7 @@
 // program after sky.ts; the contract and the tier each scene draws are in src/scenes/README.md
 // ("Clouds").
 //
-//   flat     CLOUD_FLAT 0     the deck's plane and drift (cloudDeckPoint) and a calm deck of two broad
+//   flat     CLOUD_FLAT 0     the deck's plane and drift (cloudDeckDrift, cloudDeckPoint) and a calm deck of two broad
 //                             octaves (cloudFlatField, cloudFlatFine) the scene thresholds and lights
 //   lit      CLOUD_LIT 1      the deck lit by the sky, seen from below: skyClouds (rgb and cover)
 //   shadows  CLOUD_SHADOWS 2  the lit deck's shadow on the scene's ground: skyCloudShadow
@@ -33,12 +33,25 @@ ${tierDefines}
 #define CLOUD_TIER CLOUD_LIT
 #endif
 
+// How the deck drifts at wind -1..1, in cloud-base heights a second along the frame it is drawn in
+// (x right, z ahead): sideways with the wind (0.09 a second at wind 1) and creeping toward the eye
+// (0.01 a second). A view turned from the sky's frame by yaw sees the wind of its own frame as
+// rotate(cloudDeckDrift(wind), yaw) in the sky's (worldDeckDrift), so the deck drifts the way the rain
+// slants.
+vec2 cloudDeckDrift(float wind) {
+  return vec2(0.09 * wind, -0.01);
+}
+
 // Where a view ray from the eye meets the deck, a plane one cloud-base height up (the eye at the
-// origin), in cloud-base heights, drifted to it on the deck's clock tm: sideways with the wind (0.09
-// a second at wind 1) and creeping toward the eye (0.01 a second). travel: how far the eye has moved
-// under the deck (a train running beneath it), in cloud-base heights. dir.y must be above 0.
+// origin), in cloud-base heights, drifted to it on the deck's clock tm by drift (cloudDeckDrift, a
+// second). travel: how far the eye has moved under the deck (a train running beneath it), in
+// cloud-base heights. dir.y must be above 0.
+vec2 cloudDeckPoint(vec3 dir, vec2 travel, float tm, vec2 drift) {
+  return dir.xz / dir.y + travel - drift * tm;
+}
+// The same drifting with the wind in the sky's own frame.
 vec2 cloudDeckPoint(vec3 dir, vec2 travel, float tm, float wind) {
-  return dir.xz / dir.y + travel - vec2(0.09 * wind, -0.01) * tm;
+  return cloudDeckPoint(dir, travel, tm, cloudDeckDrift(wind));
 }
 
 // The calm deck: two broad octaves at deck point p, 0..1, the finer kept by fine (0..1; its mean
@@ -80,14 +93,14 @@ float skyCloudField(vec2 p, float foot, float tm) {
 }
 
 // The lit deck seen from below: the ray meets the deck (cloudDeckPoint) on the motion clock tm
-// (uMotionTime). cover 0..1: 0 clear, ~.35 fair-weather cumulus, .6 broken, 1 overcast. wind -1..1
-// drifts it sideways; it always evolves and creeps closer a little. Lit by the sun on the flanks that
-// face it, silver-lined where the sun or moon is behind thin cloud, gold and then pink underneath
-// around sunset, moonlit at night. Returns straight (not premultiplied) rgb and alpha, which fades
-// out toward the horizon: col = mix(col, c.rgb, c.a).
-vec4 skyClouds(Sky sky, vec3 dir, float tm, float cover, float wind) {
+// (uMotionTime). cover 0..1: 0 clear, ~.35 fair-weather cumulus, .6 broken, 1 overcast. drift
+// (cloudDeckDrift, in the sky's frame) carries it with the wind; it always evolves. Lit by the sun on
+// the flanks that face it, silver-lined where the sun or moon is behind thin cloud, gold and then
+// pink underneath around sunset, moonlit at night. Returns straight (not premultiplied) rgb and
+// alpha, which fades out toward the horizon: col = mix(col, c.rgb, c.a).
+vec4 skyClouds(Sky sky, vec3 dir, float tm, float cover, vec2 drift) {
   if (cover <= 0.0 || dir.y <= (cover > 0.6 ? 0.001 : 0.015)) return vec4(0.0);
-  vec2 p = cloudDeckPoint(dir, vec2(0.0), tm, wind);
+  vec2 p = cloudDeckPoint(dir, vec2(0.0), tm, drift);
   // Deck units per pixel, taking a screen height as ~1 radian of view.
   float foot = 1.0 / (uRes.y * dir.y * dir.y);
   float n = skyCloudField(p, foot, tm);
@@ -97,9 +110,9 @@ vec4 skyClouds(Sky sky, vec3 dir, float tm, float cover, float wind) {
   float thick = smoothstep(th, th + 0.42, n);
   float thin = 1.0 - smoothstep(0.0, 0.55, thick);
 
-  // Light across the deck from the sun (by day and dusk) or the moon: brighter where the cloud thins
-  // toward the light, from a second, coarse density tap a step toward it.
-  vec3 light = sky.sun.y > -0.1 ? sky.sun : sky.moon;
+  // Light across the deck from whichever of the sun and the moon lights it more: brighter where the
+  // cloud thins toward the light, from a second, coarse density tap a step toward it.
+  vec3 light = dot(sky.sunColor, LUMA) >= dot(sky.moonColor, LUMA) ? sky.sun : sky.moon;
   vec2 lxz = dot(light.xz, light.xz) > 1e-8 ? normalize(light.xz) : vec2(1.0, 0.0); // x for a body overhead
   float n2 = skyCloudField(p + lxz * 0.22, max(foot, 0.12), tm);
   float side = clamp(0.5 + (n - n2) * 3.5, 0.0, 1.0);
@@ -132,6 +145,10 @@ vec4 skyClouds(Sky sky, vec3 dir, float tm, float cover, float wind) {
   if (cover > 0.6) horizon = mix(horizon, 1.0, smoothstep(0.6, 1.0, cover));
   return vec4(col, alpha * horizon);
 }
+// The same drifting with wind -1..1 in the sky's own frame (cloudDeckDrift).
+vec4 skyClouds(Sky sky, vec3 dir, float tm, float cover, float wind) {
+  return skyClouds(sky, dir, tm, cover, cloudDeckDrift(wind));
+}
 #endif
 
 #if CLOUD_TIER >= CLOUD_SHADOWS
@@ -141,14 +158,17 @@ vec4 skyClouds(Sky sky, vec3 dir, float tm, float cover, float wind) {
 // overhead toward the sun is a sunlit patch. The sun is taken at least ~7 degrees up: a low sun's
 // shadows stay near instead of reaching for the horizon's thin deck. low (1 and up) brings the deck
 // down to base / low, as rain does: the same clouds, nearer, for a scene that shows its sky's deck so
-// by squashing the view ray's height by low (the countryside's rain). tm: the motion clock, as for
+// by squashing the view ray's height by low (the countryside's rain). tm and drift (or wind): as for
 // skyClouds.
-float skyCloudShadow(Sky sky, vec3 ground, float base, float low, float tm, float cover, float wind) {
+float skyCloudShadow(Sky sky, vec3 ground, float base, float low, float tm, float cover, vec2 drift) {
   vec3 deck = ground + sky.sun * ((base / low - ground.y) / max(sky.sun.y, 0.12));
-  return skyClouds(sky, normalize(vec3(deck.x, deck.y * low, deck.z)), tm, cover, wind).a;
+  return skyClouds(sky, normalize(vec3(deck.x, deck.y * low, deck.z)), tm, cover, drift).a;
+}
+float skyCloudShadow(Sky sky, vec3 ground, float base, float low, float tm, float cover, float wind) {
+  return skyCloudShadow(sky, ground, base, low, tm, cover, cloudDeckDrift(wind));
 }
 float skyCloudShadow(Sky sky, vec3 ground, float base, float tm, float cover, float wind) {
-  return skyCloudShadow(sky, ground, base, 1.0, tm, cover, wind);
+  return skyCloudShadow(sky, ground, base, 1.0, tm, cover, cloudDeckDrift(wind));
 }
 #endif
 

@@ -49,6 +49,7 @@ const uniformNames = [
   "uInk",
   "uAccent",
   "uParams",
+  "uPhases",
   "uView",
   "uConStars",
   "uConBright",
@@ -331,11 +332,12 @@ export class ScenePrograms {
     ) as Record<UniformName, WebGLUniformLocation | null>;
     // Constant for the program's lifetime: the constellation figures (orbit's sky, and the shared
     // sky's constellations where a scene has that knob; the other programs drop the uniforms) and
-    // the texture unit of every sampler.
+    // the texture unit of every sampler. Brightness and lines go up packed, four stars and two
+    // lines a vec4 (common.ts `conBright`, `conLine`).
     const figures = constellationUniforms;
     gl.uniform4fv(uniforms.uConStars, figures.stars);
-    gl.uniform1fv(uniforms.uConBright, figures.brightness);
-    gl.uniform2fv(uniforms.uConLines, figures.lines);
+    gl.uniform4fv(uniforms.uConBright, figures.brightness);
+    gl.uniform4fv(uniforms.uConLines, figures.lines);
     gl.uniform1i(uniforms.uConStarCount, figures.starCount);
     gl.uniform1i(uniforms.uConLineCount, figures.lineCount);
     gl.uniform1i(uniforms.uConMarkStar, figures.markStar);

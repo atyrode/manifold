@@ -4,7 +4,7 @@ import { sceneDefs } from "./src/scenes/index.ts";
 import { incenseVentVerify } from "./src/scenes/incense/vent.verify.ts";
 import { rippleEdgesVerify } from "./src/scenes/ripple/edges.verify.ts";
 import { verifyHarmonographPrewarm } from "./src/scenes/harmonograph/prewarm.verify.ts";
-import { fragmentSourceFor } from "./src/shaders/index.ts";
+import { fragmentSourceFor, packParams } from "./src/shaders/index.ts";
 import { verifyFrostSky } from "./src/scenes/frost/sky.verify.ts";
 import { GpuCompute } from "./src/sims/gpu.ts";
 import { verifyOrbitRingDepth } from "./src/scenes/orbit/ring-depth.verify.ts";
@@ -100,9 +100,9 @@ function forestClock(gl: WebGL2RenderingContext): number[] {
   gl.uniform1f(gl.getUniformLocation(clock, "uTime"), 96);
   gl.uniform1f(gl.getUniformLocation(clock, "uMotionTime"), 24);
   const clockKnobs = { ...paramDefaults("forest"), time: 0.2, cycle: 1, "cycle-amount": 1 };
-  gl.uniform1fv(
+  gl.uniform4fv(
     gl.getUniformLocation(clock, "uParams"),
-    Float32Array.from(renderSettings(defaultsFor("forest"), clockKnobs).params),
+    packParams(renderSettings(defaultsFor("forest"), clockKnobs).params),
   );
   const clockValues: number[] = [];
   for (const motion of [0.25, 1, 0]) {

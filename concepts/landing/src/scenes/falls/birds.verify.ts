@@ -1,7 +1,7 @@
 // Regressions for the shared birds (shaders/lib/birds.ts) as the waterfall flies them (fallsBirds),
 // on the actual scene shader: a bird is never drawn where the cliff in front of it covers it, the
 // formation knob reaches the sky, and the birds follow the motion clock alone.
-import { fragmentSourceFor, vertexSource } from "../../shaders/index.ts";
+import { fragmentSourceFor, packParams, vertexSource } from "../../shaders/index.ts";
 import { defaultsFor, paramDefaults, renderSettings, type Params } from "../../state.ts";
 import { sceneDefs } from "../index.ts";
 
@@ -89,10 +89,7 @@ export function verifyFallsBirds(gl: WebGL2RenderingContext): Record<string, unk
     gl.uniform1f(at("uTime"), clock);
     gl.uniform1f(at("uMotionTime"), motionTime);
     gl.uniform1f(at("uMotion"), motion);
-    gl.uniform1fv(
-      at("uParams"),
-      Float32Array.from(renderSettings(defaultsFor("falls"), knobs).params),
-    );
+    gl.uniform4fv(at("uParams"), packParams(renderSettings(defaultsFor("falls"), knobs).params));
     gl.drawArrays(gl.TRIANGLES, 0, 3);
     const bytes = new Uint8Array(WIDTH * HEIGHT * 4);
     gl.readPixels(0, 0, WIDTH, HEIGHT, gl.RGBA, gl.UNSIGNED_BYTE, bytes);

@@ -587,7 +587,7 @@ Shade sceneDew(vec2 uv, vec2 cell, float t) {
   int mode = int(K_backdrop + 0.5);
 
   // The low sun, kept off the frame's right edge by the camera, wandering a few degrees.
-  Sky sky = skyAt(timeOfDayM(K_time, K_cycle, uMotionTime));
+  Sky sky = skyAt(timeOfDayM(K_time, skyDays()));
   float bearing = atan(DEW_SUN_X * aspect * 2.0 * tan(0.5 * DEW_FOV)) + DEW_SUN_WANDER * sin(tm * TAU / DEW_DRIFT);
   float yaw = atan(sky.sun.x, sky.sun.z) - bearing;
   Sky view = skyFacing(sky, yaw);

@@ -238,13 +238,6 @@ float dunesMarch(vec3 ro, vec3 rd, float t, out vec4 skim) {
   return 0.5 * (lo + hi);
 }
 
-// The dunes' sky under the world's deck: its colour greys and darkens as the world's light does
-// under rain or snow (worldAt's shares), down to the horizon the far sand fades into; the dome's
-// clear strip below the deck's edge would otherwise stay blue over a grey day.
-vec3 dunesOvercast(vec3 col, World w) {
-  return greyed(col, vec3(1.0), WORLD_DECK_GREY * w.overcast) * (1.0 - WORLD_DECK_DARK * w.storm);
-}
-
 Shade sceneDunes(vec2 uv, vec2 cell, float t) {
   Shade o = blankShade();
   float aspect = uRes.x / uRes.y;
@@ -361,8 +354,8 @@ Shade sceneDunes(vec2 uv, vec2 cell, float t) {
 
   // Dust haze, the world's fog out here. The desert air is never quite clear; fog thickens it, and
   // with a hard wind on top it becomes a sandstorm closing in to a few dune lengths: ochre, and
-  // dimming the sun. Under the world's deck the horizon it fades into greys as the light does.
-  vec3 horizon = dunesOvercast(horizonHaze(sky, camera.dir, 0.0), world);
+  // dimming the sun. Under the world's deck the horizon it fades into greys as the sky does (worldGrey).
+  vec3 horizon = worldGrey(world, horizonHaze(sky, camera.dir, 0.0), 1.0);
   vec3 dustTint = vec3(0.82, 0.58, 0.38) * (sky.sunColor * 0.55 + ambient * 1.1);
   vec3 dust = mix(horizon, dustTint, 0.3 + 0.6 * sandstorm);
   float hazeDensity = 0.3 + 0.7 * world.fog + 2.0 * sandstorm;
@@ -488,13 +481,14 @@ Shade sceneDunes(vec2 uv, vec2 cell, float t) {
     // The world's sky (worldSky): the dome, the aurora ahead behind the clouds, the cloud deck, the
     // Milky Way and the stars in its gaps, shooting stars over the dune sea, then the lightning. A
     // sandstorm closes the night sky as the deck does (its overcast): the aurora and shooting stars
-    // fade behind the dust. Greyed under the deck rain or snow closes, then swallowed low down by
-    // the dust and whole by a sandstorm, the bolts too.
+    // fade behind the dust. Under rain or snow the world greys what its deck leaves open (worldGrey)
+    // and the dunes grey the deck itself as well, then the dust swallows it low down and a sandstorm
+    // whole, the bolts too.
     World through = world;
     through.overcast = max(world.overcast, sandstorm);
     WorldSky heaven = worldSky(through, camera, DUNES_METEOR_FIELD);
     float low = exp(-max(view.y, 0.0) * mix(16.0, 3.0, world.fog));
-    col = mix(dunesOvercast(heaven.col, world) + heaven.strike, dust, max((0.18 + 0.72 * world.fog) * low, 0.9 * sandstorm));
+    col = mix(worldGrey(world, heaven.col, heaven.cloud) + heaven.strike, dust, max((0.18 + 0.72 * world.fog) * low, 0.9 * sandstorm));
   }
 
   // Mirage: under a high sun the far sand gives way to pools of shimmering sky along the horizon,

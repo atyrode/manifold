@@ -20,6 +20,7 @@ import {
   sceneFeatures,
   sceneFeaturesAll,
   shaderValues,
+  packParams,
 } from "./shaders/index.ts";
 import { skyFigurePoint, skyFigures } from "./shaders/lib/sky.ts";
 import { sceneDefs, type SceneId } from "./scenes/index.ts";
@@ -60,14 +61,14 @@ function draw(gl: WebGL2RenderingContext, linked: WebGLProgram, frame: Draw): Fl
       const figures = constellationUniforms;
       const at = (name: string) => gl.getUniformLocation(linked, name);
       gl.uniform4fv(at("uConStars"), figures.stars);
-      gl.uniform1fv(at("uConBright"), figures.brightness);
-      gl.uniform2fv(at("uConLines"), figures.lines);
+      gl.uniform4fv(at("uConBright"), figures.brightness);
+      gl.uniform4fv(at("uConLines"), figures.lines);
       gl.uniform1i(at("uConStarCount"), figures.starCount);
       gl.uniform1i(at("uConLineCount"), figures.lineCount);
       gl.uniform1i(at("uConMarkStar"), figures.markStar);
       gl.uniform1i(at("uConMarkLine"), figures.markLine);
       gl.uniform1i(at("uView"), 1);
-      gl.uniform1fv(at("uParams"), Float32Array.from(frame.params));
+      gl.uniform4fv(at("uParams"), packParams(frame.params));
       gl.uniform1fv(at("uTriggers"), new Float32Array(8).fill(-1e4));
       const uniforms: Record<string, readonly number[]> = {
         uRes: [width, height],

@@ -212,6 +212,43 @@ vec2 skyAngles(vec3 dir) {
   return vec2(atan(dir.x, dir.z), asin(clamp(dir.y, -1.0, 1.0)));
 }
 
+// The sky's random events, one scheduler for all (shooting stars: meteorAge; lightning:
+// lightningAge): seconds since the latest, the random schedule's or the trigger's (slot; -1 for
+// none), whichever is more recent; 1e4 when there is none. The motion clock tm (uMotionTime) is cut
+// into windows of window seconds, each holding one event at a hashed moment with probability chance
+// (0: none at random), and the latest lookback (at most 4) are searched. The age runs in real seconds
+// (the motion seconds since over the current motion), so each event plays at its own pace whatever
+// the motion; only moving the slider soon after one rescales its age (upward, it can replay one that
+// just ended). Random events stop when motion is off (no flashes for reduced-motion visitors); the
+// trigger still fires. salt: the hashes' salts for an event's moment (x), whether its window holds
+// one (y), its seed (z) and a trigger's seed (w). seed: a stable id for the event, to shape it.
+float skyEventAge(float tm, float window, float chance, int lookback, vec4 salt, int slot, out float seed) {
+  float age = 1e4;
+  seed = 0.0;
+  if (chance > 0.0 && uMotion > 0.01) {
+    float k = floor(tm / window);
+    for (int i = 0; i < 4; i++) {
+      if (i >= lookback) break;
+      float w = k - float(i);
+      if (w < 0.0) break;
+      float at = (w + 0.05 + 0.9 * hash12(vec2(w, salt.x))) * window;
+      if (hash12(vec2(w, salt.y)) < chance && at <= tm) {
+        age = (tm - at) / uMotion;
+        seed = hash12(vec2(w, salt.z));
+        break;
+      }
+    }
+  }
+  if (slot >= 0) {
+    float since = sinceTrigger(slot);
+    if (since >= 0.0 && since < age) {
+      age = since;
+      seed = hash12(vec2(uTriggers[slot], salt.w));
+    }
+  }
+  return age;
+}
+
 #ifdef SKY_MOON_PHASE
 // A partial moon's disc at q (disc radii along right and up, skyColor's frame): its lit share on the
 // side toward the sun, over an unlit part that shows the sky in front of it (behind) lifted faintly by
@@ -430,7 +467,7 @@ float skyFigures(vec3 dir, float perCell, float lines) {
     vec2 q = vec2(dot(dir, SKY_FIGURE_RIGHT[f]), dot(dir, SKY_FIGURE_UP[f])) / dot(dir, cone.xyz);
     ivec4 span = SKY_FIGURE_SPAN[f];
     for (int i = span.x; i < span.y; i++) {
-      float b = uConBright[i];
+      float b = conBright(i);
       vec2 d = abs(q - uConStars[i].zw) * perCell;
       float r = 0.4 + b;
       float glint = step(min(d.x, d.y), 0.5) * smoothfall(1.5 + 3.0 * b, 0.0, max(d.x, d.y)) * b;
@@ -438,8 +475,8 @@ float skyFigures(vec3 dir, float perCell, float lines) {
       lit = max(lit, max(smoothfall(r + 0.5, r - 0.5, length(d)), 0.7 * glint) * (1.0 - 0.1 * wave));
     }
     for (int i = span.z; i < span.w; i++) {
-      vec2 a = uConStars[int(uConLines[i].x)].zw;
-      vec2 ab = uConStars[int(uConLines[i].y)].zw - a;
+      vec2 a = uConStars[conLine(i).x].zw;
+      vec2 ab = uConStars[conLine(i).y].zw - a;
       float h = clamp(dot(q - a, ab) / dot(ab, ab), 0.0, 1.0);
       float across = length(q - a - ab * h) * perCell;
       float fromEnds = min(h, 1.0 - h) * length(ab) * perCell;
@@ -530,18 +567,24 @@ ${planetBodyGlsl}
 //   3: day cycle (0 none), spin, the city lights' twinkle, the ring's facing
 //   4: the ring's roll, moon size, aurora (0 none), aurora oval
 // Its centre at the motion clock tm is D + A cos(w tm) + B sin(w tm): a circle round the sky for a
-// planet that orbits, A its direction (w 0, B and D nothing) for one fixed among the stars.
+// planet that orbits, A its direction (w 0, B and D nothing) for one fixed among the stars, which
+// turns with them.
 #define SKY_PLANET_CAP ${SKY_PLANET_CAP}
 #define SKY_PLANET_ROWS ${SKY_PLANET_ROWS}
 uniform vec4 uPlanets[SKY_PLANET_CAP * SKY_PLANET_ROWS];
 uniform int uPlanetCount;
 
-// Planet i's centre at the motion clock: a unit direction in the stars' frame.
-vec3 skyPlanetCentre(int i, float tm) {
+// Planet i's centre at the motion clock, a unit direction in the sky's frame: one that orbits on its
+// circle; one fixed among the stars where their turn has carried it (turn: the cosine and sine of
+// sky.starTurn, (1, 0) while they stand as staged), skyStarFrame turned back, so it rises and sets
+// with the constellations round it.
+vec3 skyPlanetCentre(int i, float tm, vec2 turn) {
   vec4 a = uPlanets[i * SKY_PLANET_ROWS];
   vec4 b = uPlanets[i * SKY_PLANET_ROWS + 1];
   float h = a.w * tm;
-  return uPlanets[i * SKY_PLANET_ROWS + 2].xyz + a.xyz * cos(h) + b.xyz * sin(h);
+  vec3 centre = uPlanets[i * SKY_PLANET_ROWS + 2].xyz + a.xyz * cos(h) + b.xyz * sin(h);
+  if (a.w != 0.0 || turn == vec2(1.0, 0.0)) return centre;
+  return centre * turn.x - cross(SKY_POLE, centre) * turn.y + SKY_POLE * (dot(SKY_POLE, centre) * (1.0 - turn.x));
 }
 
 // Planet i over col along dir (vis: how much of a planet shows there, skyGiant's), seen square-on
@@ -549,13 +592,13 @@ vec3 skyPlanetCentre(int i, float tm) {
 // (planetBodyOver) as its kind in its palette, lit from the upper left as campfire's giant is (its day
 // cycle sweeping that light round it) or, with real phases, from the scene's sun, so it waxes and
 // wanes as the sun moves round the sky; its surface turns, and its moons go round, on its own clock.
-vec3 skyPlanetOver(Sky sky, vec3 col, vec3 dir, float foot, float vis, int i, float tm) {
+vec3 skyPlanetOver(Sky sky, vec3 col, vec3 dir, float foot, float vis, int i, float tm, vec2 turn) {
   int at = i * SKY_PLANET_ROWS;
   vec4 shape = uPlanets[at + 1];
   vec4 pack = uPlanets[at + 2];
   vec4 dress = uPlanets[at + 3];
   vec4 more = uPlanets[at + 4];
-  vec3 centre = skyPlanetCentre(i, tm);
+  vec3 centre = skyPlanetCentre(i, tm, turn);
   vec3 right = dot(centre.xz, centre.xz) > 1e-8 ? normalize(vec3(centre.z, 0.0, -centre.x)) : vec3(1.0, 0.0, 0.0);
   vec3 up = cross(centre, right);
   vec2 p = vec2(dot(dir, right), dot(dir, up)) / dot(dir, centre);
@@ -583,11 +626,12 @@ vec3 skyPlanetOver(Sky sky, vec3 col, vec3 dir, float foot, float vis, int i, fl
 }
 
 // The sky's planets (src/scenes/planets.ts: the scene's list) over 'col', the sky along dir so far:
-// the dome, the Milky Way and the stars, which they stand in front of. dir is the direction the
-// scene's stars are fixed to (what it gives skyStars), foot the radians a dither cell spans there,
-// clear how much of the sky the scene's cloud leaves open there (1 none, 0 behind a solid deck). Each
-// planet stands where its placement puts it among the stars or rides its orbit round our world,
-// rising, crossing the sky and setting on its own period; a bigger one stands in front of a smaller.
+// the dome, the Milky Way and the stars, which they stand in front of. dir is the view ray the scene
+// gives skyStars (the sky's frame), foot the radians a dither cell spans there, clear how much of the
+// sky the scene's cloud leaves open there (1 none, 0 behind a solid deck). Each planet stands where
+// its placement puts it among the stars, turning with them as the night passes (staged where its
+// placement says while they stand as staged), or rides its orbit round our world, rising, crossing
+// the sky and setting on its own period; a bigger one stands in front of a smaller.
 // They fade to pale ghosts by day as campfire's giant does, and hide behind the moon's disc and under
 // the horizon. A cheap bound finds the planets that reach this pixel and only those are drawn, in a
 // loop whose turns are those planets: a software rasteriser runs no turn that none of its pixels
@@ -597,12 +641,13 @@ vec3 skyGiant(Sky sky, vec3 col, vec3 dir, float foot, float clear) {
   float vis = (1.0 - 0.85 * sky.day) * clear * (1.0 - skyMoonCover(sky, dir)) * smoothstep(-0.004, 0.004, dir.y);
   if (vis <= 0.0) return col;
   float tm = uMotionTime;
+  vec2 turn = sky.starTurn == 0.0 ? vec2(1.0, 0.0) : vec2(cos(sky.starTurn), sin(sky.starTurn));
   int reach = 0;
   int hits = 0;
   for (int i = 0; i < SKY_PLANET_CAP; i++) {
     if (i >= uPlanetCount) break;
     // Within the drawn square's corners, 2.3 radii out along each axis, as a tangent.
-    float ahead = dot(dir, skyPlanetCentre(i, tm));
+    float ahead = dot(dir, skyPlanetCentre(i, tm, turn));
     float k = 3.26 * uPlanets[i * SKY_PLANET_ROWS + 1].w;
     if (ahead > 0.0 && ahead * ahead * (1.0 + k * k) >= 1.0) {
       reach |= 1 << i;
@@ -613,7 +658,7 @@ vec3 skyGiant(Sky sky, vec3 col, vec3 dir, float foot, float clear) {
     int i = 0;
     while ((reach >> i & 1) == 0) i++;
     reach &= ~(1 << i);
-    col = skyPlanetOver(sky, col, dir, foot, vis, i, tm);
+    col = skyPlanetOver(sky, col, dir, foot, vis, i, tm, turn);
   }
   return col;
 }

@@ -472,7 +472,7 @@ Shade sceneTidepool(vec2 uv, vec2 cell, float t) {
   if (uSimOn.z < 0.5) return shadeOf(vec3(0.02, 0.06, 0.07), 0.05, 0.0);
 
   // Light: the shared sky, turned to look straight down (the frame's up is the sky's "ahead").
-  tpSky = skyAt(timeOfDayM(K_time, K_cycle, uMotionTime));
+  tpSky = skyAt(timeOfDayM(K_time, skyDays()));
   float rain = K_rain;
   float storm = weatherOvercast(rain, 0.0);
   bool moonlit = tpSky.sun.y < -0.04;

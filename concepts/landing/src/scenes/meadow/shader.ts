@@ -291,9 +291,8 @@ const float MEADOW_HAZE_GAIN = 0.011;
 // then visibility falling with the square of the amount.
 const float MEADOW_DRIZZLE_MIST = 0.004;
 const float MEADOW_RAIN_MIST = 0.016;
-// The meadow's own overcast under the world's deck: how dark the sky gets low down and more
-// overhead (x the storm's amount).
-const float MEADOW_OVERCAST_LOW = 0.3;
+// The meadow's own overcast over the world's grey sky (worldGrey): how much darker it gets overhead
+// (x the storm's amount).
 const float MEADOW_OVERCAST_DARK = 0.35;
 // The bright sky the rain refracts and the wet grass mirrors: sampled this high (screen heights above
 // the horizon) toward this cell's bearing. Drops shine at MEADOW_DROP_SKY x it plus the sun's light,
@@ -1122,11 +1121,12 @@ void meadowSeeds(vec2 uv, vec2 p, float aspect, vec3 amb, vec3 sun, float behind
   }
 }
 
-// The meadow's own overcast under the world's deck: greyer, and lower and darker the harder it rains
-// or snows (storm), darkest overhead. above: height above the horizon (screen heights).
+// The meadow's own overcast over the world's grey sky (col, worldGrey'd: the deck's gaps by the world,
+// the deck by the meadow), what it adds beyond it: its grey a little cooler and lifted, and darker
+// overhead the harder it rains or snows (storm). above: height above the horizon (screen heights).
 vec3 meadowDeck(vec3 col, float above, float overcast, float storm) {
-  col = mix(col, vec3(dot(col, LUMA)) * vec3(0.92, 0.95, 1.0) + 0.02, 0.6 * overcast);
-  return col * (1.0 - storm * (MEADOW_OVERCAST_LOW + MEADOW_OVERCAST_DARK * smoothstep(0.0, 0.45, above)));
+  col += WORLD_DECK_GREY * overcast * (dot(col, LUMA) * (vec3(0.92, 0.95, 1.0) - 1.0) + 0.02);
+  return col * (1.0 - storm * MEADOW_OVERCAST_DARK * smoothstep(0.0, 0.45, above));
 }
 
 // Knobs read here: see the top of shader.ts.
@@ -1180,7 +1180,7 @@ Shade sceneMeadow(vec2 uv, vec2 cell, float t) {
   float far = 1.0 - exp(-rainExt * MEADOW_TREES_Z);
   // The bright sky (or overcast deck) above this bearing: what the rain refracts and the wet grass
   // mirrors. Only looked up while there is rain, snow or water about.
-  vec3 deck = world.storm > 0.0 || wet > 0.0 ? meadowDeck(horizonHaze(sky, dir, MEADOW_DECK_ABOVE / MEADOW_FOCAL * length(dir.xz)), MEADOW_DECK_ABOVE, overcast, world.storm) : vec3(0.0);
+  vec3 deck = world.storm > 0.0 || wet > 0.0 ? meadowDeck(worldGrey(world, horizonHaze(sky, dir, MEADOW_DECK_ABOVE / MEADOW_FOCAL * length(dir.xz)), 1.0), MEADOW_DECK_ABOVE, overcast, world.storm) : vec3(0.0);
   // The cloud deck's shadows (worldSunlit; off by default) on the land this cell sees: where its ray
   // meets the field (or, above it, the tree line), on the hills beyond, and at the eye's feet for the
   // near grass. The field and the trees are a small part of a cloud's shadow, the hills a broad one.
@@ -1202,10 +1202,11 @@ Shade sceneMeadow(vec2 uv, vec2 cell, float t) {
   if (uv.y >= MEADOW_HORIZON - eye * MEADOW_FOCAL / MEADOW_TREES_Z) {
     float above = uv.y - MEADOW_HORIZON;
     // The world's sky: the dome, the aurora ahead behind the clouds, the deck, the stars and the
-    // Milky Way in its gaps, shooting stars high over the hills; the meadow's own overcast over it,
-    // and the lightning over that, its bolts dropping behind the hills.
+    // Milky Way in its gaps, shooting stars high over the hills, greyed in rain or snow where the
+    // deck leaves it open; the deck greyed as well and the meadow's own overcast over it, and the
+    // lightning over that, its bolts dropping behind the hills.
     WorldSky heaven = worldSky(world, view, MEADOW_METEOR_FIELD);
-    col = meadowDeck(heaven.col, above, overcast, world.storm) + heaven.strike;
+    col = meadowDeck(worldGrey(world, heaven.col, heaven.cloud), above, overcast, world.storm) + heaven.strike;
     accent = (1.0 - smoothstep(0.016, 0.021, length(dir - sky.sun))) * up * (1.0 - heaven.cloud) * (1.0 - overcast);
 #if WORLD_RAIN
     float shaft = rain > 0.0 ? meadowShafts(cx, above, tm, rain) : 0.0;

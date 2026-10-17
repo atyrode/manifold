@@ -2,7 +2,7 @@
 // first meets the lifted sea (no crest stepped over, the hit on the surface) and must keep the
 // waves below the camera, at the default sea, the tallest swell with the most chop, and the entrance's
 // low camera over its rolling wave. It runs the scene's own GLSL; registered in verify-browser.ts.
-import { fragmentSourceFor, vertexSource } from "../../shaders/index.ts";
+import { fragmentSourceFor, packParams, vertexSource } from "../../shaders/index.ts";
 import { defaultsFor, paramDefaults, renderSettings } from "../../state.ts";
 import { swellScene } from "./index.ts";
 
@@ -99,9 +99,9 @@ export function verifySwellRelief(gl: WebGL2RenderingContext): Record<string, un
   ] as const;
   const result: Record<string, unknown> = {};
   for (const { name, knobs, camera, atRest } of cases) {
-    gl.uniform1fv(
+    gl.uniform4fv(
       at("uParams"),
-      Float32Array.from(
+      packParams(
         renderSettings(defaultsFor("swell"), { ...paramDefaults("swell"), ...knobs }).params,
       ),
     );

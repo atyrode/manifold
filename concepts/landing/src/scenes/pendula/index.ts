@@ -22,7 +22,9 @@ const params: readonly ParamDef[] = [
     "cycle",
     100,
     "Seconds for the whole pattern to run its course and the row to line up again. Short: the waves rush past. Long: a slow, unhurried unfolding.",
-    { min: 40, max: 240, step: 5 },
+    // A period: the renderer counts the cycles run at each moment's length (PHASE_cycle), so a new
+    // length changes the pace from there on and the row never jumps.
+    { min: 40, max: 240, step: 5, rate: { per: 1, inverse: true } },
   ),
   range(
     "wave",

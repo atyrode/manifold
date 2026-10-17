@@ -3,7 +3,7 @@
 // above the frame's centre, in still air): at the sides of the frame they move outward, below it down;
 // switched off, the snow keeps the level camera's look and comes straight down the frame everywhere.
 import { defaultsFor, paramDefaults, renderSettings } from "../../state.ts";
-import { fragmentSourceFor, vertexSource } from "../../shaders/index.ts";
+import { fragmentSourceFor, packParams, vertexSource } from "../../shaders/index.ts";
 import { skywardScene } from "./index.ts";
 
 const WIDTH = 320;
@@ -102,9 +102,9 @@ export function skywardSnowCheck(gl: WebGL2RenderingContext): Record<string, unk
       wind: 0,
       snowOverhead: overhead ? 1 : 0,
     };
-    gl.uniform1fv(
+    gl.uniform4fv(
       gl.getUniformLocation(linked, "uParams"),
-      Float32Array.from(renderSettings(defaultsFor("skyward"), knobs).params),
+      packParams(renderSettings(defaultsFor("skyward"), knobs).params),
     );
     gl.uniform1f(gl.getUniformLocation(linked, "uTime"), time);
     gl.drawArrays(gl.TRIANGLES, 0, 3);

@@ -4,11 +4,14 @@
 // Shader: each scene compiles to its own WebGL2 program:
 //   common preamble (uniforms, noise, dithering helpers, Shade)   — src/shaders/common.ts
 //   + one `#define <NAME> <n>` per compile-time feature, from `features` and `featuresFor(knobs)`
-//   + one `#define K_<key> uParams[i]` per knob, generated from `params`, and `SKY_YEAR`, the
-//     scene's year position for the climate (src/climate.ts; -1.0 without a season)
-//   + shared libraries (sky, weather, surface, water, lightning, aurora, meteors) — src/shaders/lib/
+//   + one `#define K_<key> uParams[i / 4].<xyzw>` per knob (uParams packs four knobs a row),
+//     generated from `params`, and `SKY_YEAR`, the scene's year position for the climate
+//     (src/climate.ts; -1.0 without a season)
+//   + shared libraries (sky, clouds, weather, surface, water, lightning, aurora, meteors, canopy)
+//     — src/shaders/lib/
 //   + the scene's `glsl`, which defines `Shade <entry>(vec2 uv, vec2 cell, float t)`
-//   + the dithering `main`, which calls the entry.
+//   + the dithering `main`, which calls the entry;
+//   shaken (src/shaders/shake.ts) to what `main` reaches before it reaches the driver.
 // `uv` is 0..1 with y up, `cell` is the dither cell (gl_FragCoord.xy), `t` the scene clock.
 import type { Blurb, ParamDef } from "../params.ts";
 import type { SkyPlanets } from "./planets.ts";
@@ -76,6 +79,13 @@ export interface SimFrame {
   values: readonly number[];
   /** The scene's raw knobs, keyed as in the URL (features also carry `<key>-amount`). */
   params: Readonly<Record<string, number>>;
+  /**
+   * The phases of the scene's rate knobs (ParamDef.rate, src/rate-phase.ts) by knob key, as the
+   * shader's `PHASE_<key>`: `phases.cycle` the days its day cycle has run, say. Drive a rate knob's
+   * motion with its phase, never with `value × motionTime`. The renderer rewrites it in place each
+   * frame: read it, don't keep it. Absent (hand-built frames in tests) means every phase is 0.
+   */
+  phases?: Readonly<Record<string, number>>;
   /** Scene-clock time each trigger slot last fired; -1e4 while idle. */
   triggers: readonly number[];
   /**

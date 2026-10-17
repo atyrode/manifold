@@ -510,7 +510,9 @@ Shade scenePendula(vec2 uv, vec2 cell, float t) {
   float n0 = 2.0 * (cnt - 1.0);
   float sp = PENDULA_SPAN / cnt;
   float br = 0.44 * sp;
-  float c = uMotionTime / K_cycle;
+  // The cycles the pattern has run: the cycle knob's phase, each second of the motion clock adding one
+  // over its length as it stood then. Unwrapped: a real row's swings are no whole number a cycle.
+  float c = PHASE_cycle;
   float fc = fract(c);
   float env = 1.0;
   if (K_release > 0.5) env = pendulaEnvelope(fract(c / PENDULA_RELEASE) * PENDULA_RELEASE);

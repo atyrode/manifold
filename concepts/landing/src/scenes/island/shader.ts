@@ -1156,7 +1156,7 @@ Shade sceneIsland(vec2 uv, vec2 cell, float t) {
   islSetup();
 
   // The sky, turned so the sun climbs over the left shoulder; rain closes it as in the other scenes.
-  float tod = timeOfDayM(K_time, K_cycle, uMotionTime);
+  float tod = timeOfDayM(K_time, skyDays());
   islSky = skyFacing(skyAt(tod), ISL_YAW);
   float rain = K_rain;
   float snow = K_snow;

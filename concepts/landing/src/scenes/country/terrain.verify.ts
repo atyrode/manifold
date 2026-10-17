@@ -10,8 +10,14 @@
 // dry (writing no parcels either). Sizes are small: software WebGL runs every line of the march.
 // The helpers (a program, the real sim's textures, a frame drawn with them) serve the
 // countryside's other checks too (life.verify.ts).
-import { fragmentSourceFor, sceneFeaturesAll, vertexSource } from "../../shaders/index.ts";
+import {
+  fragmentSourceFor,
+  packParams,
+  sceneFeaturesAll,
+  vertexSource,
+} from "../../shaders/index.ts";
 import { type LandAllocation, LandModel, LAND_USES } from "../../sims/landuse.ts";
+import { RatePhases } from "../../rate-phase.ts";
 import { generateTerrain } from "../../sims/terrain.ts";
 import { defaultsFor, paramDefaults, renderSettings } from "../../state.ts";
 import type { SceneSim, SimFrame } from "../types.ts";
@@ -156,7 +162,12 @@ export function countryDraw(
   gl.uniform2f(u("uPassage"), 1, 0);
   gl.uniform2f(u("uWeather"), options.weather?.[0] ?? 0, options.weather?.[1] ?? 0);
   gl.uniform1fv(u("uTriggers"), new Float32Array(8).fill(-1e4));
-  gl.uniform1fv(u("uParams"), Float32Array.from(countryValues(knobs)));
+  const values = countryValues(knobs);
+  gl.uniform4fv(u("uParams"), packParams(values));
+  // The rate knobs' phases as the renderer integrates them over the motion clock at these knobs.
+  const phases = new RatePhases(countryScene.params);
+  phases.step(values, options.motionTime ?? 30);
+  gl.uniform4fv(u("uPhases"), phases.upload);
   gl.uniform4f(u("uSimOn"), 1, 1, 1, 1);
   try {
     built.textures.forEach((texture, slot) => {

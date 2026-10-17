@@ -2,12 +2,14 @@
 // The functions here are the model; worldClockGlsl is their GLSL mirror, which the sky library
 // (shaders/lib/sky.ts) compiles into every program and `worldClock` (world-clock.verify.ts) checks
 // against them on the GPU. Sims and the lab read the sky through skyNow, never a curve of their own.
-// Its inputs are a scene's knobs and the motion clock: the time of day (K_time), the day cycle
-// (K_cycle), the moon's phase (K_moon) and, in a dated sky, the date (SKY_YEAR); its output is the
-// Sky the scenes light and draw with (SkyState here).
+// Its inputs are a scene's knobs: the time of day (K_time), the days the day cycle has run (K_cycle,
+// a rate knob: its phase PHASE_cycle, src/rate-phase.ts), the moon's phase (K_moon) and, in a dated
+// sky, the date (SKY_YEAR); its output is the Sky the scenes light and draw with (SkyState here).
 //
-// - The clock: 0 midnight, .25 sunrise, .5 noon, .75 sunset, the K_time contract; at day cycle 1 a
-//   day passes in DAY_SECONDS of the motion clock (timeOfDay, GLSL timeOfDayM).
+// - The clock: 0 midnight, .25 sunrise, .5 noon, .75 sunset, the K_time contract, carried on by the
+//   days the day cycle has run: at day cycle 1 a day passes in DAY_SECONDS of the motion clock. The
+//   renderer integrates the cycle's pace frame by frame into those days (DAY_CYCLE_RATE), so moving
+//   the knob changes the pace, never the hour (timeOfDay, GLSL timeOfDayM).
 // - The staged sky: a low-latitude sky (15 degrees) seen facing the equator, the celestial pole low
 //   behind the viewer (SKY_POLE). The sun rides a winter sun's daily circle (declination -28
 //   degrees): it rises ~61 degrees right of straight ahead, culminates 47 degrees up dead ahead and
@@ -15,29 +17,38 @@
 //   is warped onto its sunrise hour angle, so the sun crosses the horizon exactly at .25 and .75, and
 //   eased so it lingers round sunrise and sunset (half speed there, 1.5x at noon and midnight):
 //   golden hour and twilight get the stretch of the slider they would have at higher latitudes.
-// - The date: a scene whose season sets its climate (climate.ts hasClimate) has a dated sky, staged
-//   at its default date (skyAnchor; SKY_DATE_ANCHOR in its program). On that date its sun stands as
-//   staged; as the date moves, the sun's declination moves as Earth's does (sunDeclination, 23.44
-//   degrees either side of the equinoxes' over the year: higher and longer by summer, lower by
-//   winter), the warp following its sunrise hour angle so sunrise stays at .25, and the staged full
-//   moon swings the other way, as a full moon does (dateShift). Every other sky is undated: the
-//   staged sky on any date.
-// - The moon: the full moon (phase 1) is the staged one, on a lower arc (declination -45 degrees),
-//   rising on the right just after sunset and standing 30 degrees up straight ahead at midnight. A
-//   lesser phase p stands where the sun lights that share of its disc: E = acos(1 - 2p) from the sun
-//   (moonElongation), along the great circle that leaves the sun eastward along its daily circle
-//   (moonAt). A crescent trails the sun and hangs over the sunset, a half moon stands a quarter of
-//   the sky east of it on the celestial equator, a gibbous moon nears the point opposite the sun and
-//   rises round sunset. Its lit share is its elongation's up to MOON_STAGED_FROM; the staged full
-//   moon, ~105 degrees from the sun, is kept for every picture tuned to it, so a fuller moon moves
-//   off its elongation onto it (moonStaging) and the moon's place never jumps with its phase.
+// - The date: a scene that keeps a season (climate.ts seasonKnob) has a dated sky, staged at its own
+//   default date (skyAnchor; SKY_DATE_ANCHOR in its program). On that date its sun stands as staged;
+//   as the date moves, the sun's declination moves by Earth's change since that date
+//   (sunDeclination, 23.44 degrees either side of the equinoxes' over the year: a higher, longer arc
+//   in the same twelve hours by summer, a lower, shorter one by winter), the warp following its
+//   sunrise hour angle so sunrise stays at .25, and the staged full moon swings the other way, as a
+//   full moon does (dateShift), no lower than a soft floor (fullMoonDeclination), so it still rises.
+//   So one date stands each dated scene's sun where that scene's own staging puts it. Every other sky
+//   is undated: the staged sky on any date.
+// - The moon: K_moon runs through a lunation, 0 new, 1 full (the staged one), 2 new again: below 1
+//   it waxes, above it wanes, its lit share p the knob's way from new (moonLit). The full moon is
+//   the staged one, on a lower arc (declination -45 degrees), rising on the right just after sunset
+//   and standing 30 degrees up straight ahead at midnight. A lesser phase stands where the sun lights
+//   that share of its disc: E = acos(1 - 2p) from the sun (moonElongation), along the great circle
+//   that leaves the sun along its daily circle (moonAt), eastward while it waxes and westward while
+//   it wanes. A waxing crescent trails the sun and hangs over the sunset, a first quarter stands a
+//   quarter of the sky east of it on the celestial equator and a waxing gibbous moon rises round
+//   sunset; a waning gibbous moon rises late in the evening, the last quarter at midnight, and a
+//   waning crescent leads the sun up before sunrise, in the morning sky. Its lit share is its
+//   elongation's up to MOON_STAGED_FROM either side of full; the staged full moon, ~105 degrees from
+//   the sun, is kept for every picture tuned to it, so a fuller moon moves off its elongation onto it
+//   (moonStaging) and the moon's place never jumps with its phase. Its light on the land and on the
+//   sky round it follows the measured lunar phase curve (moonPhaseLight): a half moon gives an
+//   eleventh of the full moon's light, though its disc is drawn half lit.
 // - The stars: fixed in a frame of their own that turns about the pole (starFrame): a sidereal
 //   day's turn (SIDEREAL_TURNS) for every day the day cycle carries the clock on, and in a dated sky
 //   a turn a year as the date moves from its staged date (starTurn). With the cycle off and the
-//   date as staged they stand as staged, so the constellations keep their layout.
+//   date as staged they stand as staged, so the constellations keep their layout. The sky's planets
+//   fixed among them turn with them (skyGiant).
 // - The cold: one model of the year's cold, in climate.ts (climateChill, and climateCold made of it).
-import { hasClimate, seasonKnob, yearAt } from "./climate.ts";
-import { effective, type ParamDef } from "./params.ts";
+import { seasonKnob, yearAt } from "./climate.ts";
+import { effective, type ParamDef, type Rate } from "./params.ts";
 import { glslFloat } from "./shaders/glsl.ts";
 import { clamp, fract, smoothstep } from "./sims/math.ts";
 
@@ -58,13 +69,34 @@ export const SUNRISE = 0.25;
 export const SUNSET = 0.75;
 /** Seconds of the motion clock a whole day takes at day cycle 1. */
 export const DAY_SECONDS = 240;
+/** Days in the staged world's year; the stars come round once more than the sun in it. */
+export const YEAR_DAYS = 365;
+/** The stars' turns about the pole a solar day: one sidereal day is 1 / SIDEREAL_TURNS of a day. */
+export const SIDEREAL_TURNS = 1 + 1 / YEAR_DAYS;
+
+/**
+ * The day cycle as a rate knob (K_cycle's ParamDef.rate): its phase is the days it has carried the
+ * clock on, a day every DAY_SECONDS of the motion clock at pace 1, wrapped at a year of YEAR_DAYS
+ * days, whole days for the hour and whole turns for the stars (SIDEREAL_TURNS days a year), so
+ * neither moves at the wrap.
+ */
+export const DAY_CYCLE_RATE: Rate = { per: 1 / DAY_SECONDS, period: YEAR_DAYS };
 
 /**
  * The time of day 0..1 (0 midnight, .25 sunrise, .5 noon, .75 sunset): `time` (K_time) carried on by
- * the day cycle `cycle` (K_cycle as the shader reads it, 0 while off) on the motion clock.
+ * the `days` the day cycle has run (its phase: SimFrame.phases.cycle, 0 without a cycle or while it
+ * is off).
  */
-export function timeOfDay(time: number, cycle: number, motionTime: number): number {
-  return fract(time + (cycle * motionTime) / DAY_SECONDS);
+export function timeOfDay(time: number, days: number): number {
+  return fract(time + days);
+}
+
+/**
+ * The days the day cycle had run `ago` seconds of the motion clock before now, when it has run `days`
+ * now at pace `cycle` (K_cycle as the shader reads it): taken back at the pace now (GLSL skyDaysAt).
+ */
+export function daysAgo(days: number, cycle: number, ago: number): number {
+  return days - (cycle * ago) / DAY_SECONDS;
 }
 
 // ---- the staged sky ----
@@ -83,6 +115,12 @@ const MOON_COS_DEC = 0.707107;
 const MOON_SIN_DEC = -0.707107;
 const SUN_DEC = Math.atan2(SUN_SIN_DEC, SUN_COS_DEC);
 const MOON_DEC = Math.atan2(MOON_SIN_DEC, MOON_COS_DEC);
+/**
+ * The dated sky's full moon's soft floor (fullMoonDeclination): its knee, -64.17 degrees (just below
+ * the countryside's lowest), and how far below the knee it eases toward, 3.8 degrees.
+ */
+const MOON_FLOOR = (-64.17 * Math.PI) / 180;
+const MOON_FLOOR_SOFT = (3.8 * Math.PI) / 180;
 
 /** A body on its daily circle at hour angle h (0 culmination, negative rising on the right). */
 function body(h: number, cosDec: number, sinDec: number): Vec3 {
@@ -107,8 +145,8 @@ function sunHour(tod: number, h0: number): number {
 export const OBLIQUITY = (23.44 * Math.PI) / 180;
 
 /**
- * Earth's sun's declination at a year position (0 the March equinox, .25 midsummer, .5 the
- * September equinox, .75 midwinter): asin(sin OBLIQUITY sin 2 pi year).
+ * Earth's sun's declination at a year position (0 the March equinox, .25 the June solstice, .5 the
+ * September equinox, .75 the December solstice): asin(sin OBLIQUITY sin 2 pi year).
  */
 export function sunDeclination(year: number): number {
   return Math.asin(Math.sin(OBLIQUITY) * Math.sin(TAU * year));
@@ -141,76 +179,98 @@ export function dateShift(year: number, anchor: number): number {
 }
 
 /**
- * A dated sky's staged date: where the season knob of a scene whose season sets its climate
- * (hasClimate) puts the year at its default. Undefined for an undated sky.
+ * A dated sky's staged date: where the scene's season knob (seasonKnob) puts the year at its
+ * default. Undefined for an undated sky: a scene without a season knob, or one whose default is no
+ * time of year.
  */
 export function skyAnchor(params: readonly ParamDef[]): number | undefined {
   const season = seasonKnob(params);
-  if (season === undefined || !hasClimate(params)) return undefined;
+  if (season === undefined) return undefined;
   const year = yearAt(season, effective(season, {}));
   return year >= 0 ? year : undefined;
 }
 
+/**
+ * The staged full moon's declination in a dated sky whose sun the date shifts by `shift` (dateShift):
+ * swung the other way, but eased onto a soft floor below MOON_FLOOR, so that however far a scene's
+ * staging and its date carry it south it still clears the horizon at midnight, low and golden (at
+ * least MOON_FLOOR - MOON_FLOOR_SOFT, ~7 degrees up). The knee is the countryside's lowest full
+ * moon, so its dates stand as they did.
+ */
+export function fullMoonDeclination(shift: number): number {
+  const dec = MOON_DEC - shift;
+  if (dec >= MOON_FLOOR) return dec;
+  return MOON_FLOOR - MOON_FLOOR_SOFT * (1 - Math.exp((dec - MOON_FLOOR) / MOON_FLOOR_SOFT));
+}
+
 // ---- the moon ----
 
-/**
- * How far from the sun a moon in phase `phase` stands (radians): the elongation at which the sun
- * lights that share of its disc, acos(1 - 2 phase); pi for the full moon.
- */
-export function moonElongation(phase: number): number {
-  return Math.acos(1 - 2 * clamp(phase, 0, 1));
+/** The lit share of the moon's disc at K_moon `phase` (0 new, 1 full, 2 new again): 0..1. */
+export function moonLit(phase: number): number {
+  return phase > 1 ? Math.max(2 - phase, 0) : Math.max(phase, 0);
+}
+
+/** Whether a moon at K_moon `phase` wanes: past full, standing west of the sun. */
+export function moonWaning(phase: number): boolean {
+  return phase > 1;
 }
 
 /**
- * Where a moon in phase p (0 < p < 1) stands for the sun at `sun`: moonElongation(p) from it along the
- * great circle that leaves it eastward along its daily circle.
+ * How far from the sun a moon of lit share `lit` stands (radians): the elongation at which the sun
+ * lights that share of its disc, acos(1 - 2 lit); pi for the full moon.
  */
-export function moonAt(sun: Vec3, p: number): Vec3 {
+export function moonElongation(lit: number): number {
+  return Math.acos(1 - 2 * clamp(lit, 0, 1));
+}
+
+/**
+ * Where a moon of lit share p (0 < p < 1) stands for the sun at `sun`: moonElongation(p) from it along
+ * the great circle that leaves it along its daily circle, eastward while it waxes, westward while it
+ * wanes (`waning`).
+ */
+export function moonAt(sun: Vec3, p: number, waning = false): Vec3 {
   const east = cross(SKY_POLE, sun);
-  const size = Math.hypot(...east);
+  const size = Math.hypot(...east) * (waning ? -1 : 1);
   return add(scale(sun, 1 - 2 * p), scale(east, (2 * Math.sqrt(p * (1 - p))) / size));
 }
 
 /**
- * The phase from which the moon moves off where its elongation puts it onto the staged full moon,
- * reaching it at full (moonStaging): the last tenth of the phases.
+ * The lit share from which the moon moves off where its elongation puts it onto the staged full
+ * moon, reaching it at full (moonStaging): the last tenth of the shares, waxing or waning.
  */
 export const MOON_STAGED_FROM = 0.9;
 
 /**
- * How far a moon in phase `phase` has moved from its elongation's place (moonAt) onto the staged
+ * How far a moon of lit share `lit` has moved from its elongation's place (moonAt) onto the staged
  * full moon: 0 up to MOON_STAGED_FROM, easing to 1 at full. The staged full moon stands ~105 degrees
  * from the sun, not opposite it, so a moon in this stretch stands nearer the sun than its lit share
  * needs, and the moon's place runs on with its phase into the full moon every picture shows.
  */
-export function moonStaging(phase: number): number {
-  return smoothstep(MOON_STAGED_FROM, 1, phase);
+export function moonStaging(lit: number): number {
+  return smoothstep(MOON_STAGED_FROM, 1, lit);
 }
 
 /**
- * The moon's light at a phase relative to full: a Lambert sphere seen at the phase angle, where the
- * lit share is (1 + cos a) / 2. Half lit gives 0.32, a quarter 0.11, a tenth 0.03.
+ * The moon's light at a lit share relative to full: the measured lunar phase curve (Allen's
+ * magnitudes, 0.026 |a| + 4e-9 a^4 at phase angle a degrees, where the lit share is (1 + cos a) / 2).
+ * The opposition surge makes the full moon far brighter than any lesser phase: 0.9 lit gives 0.41,
+ * half lit 0.09, a quarter 0.026.
  */
-export function moonPhaseLight(phase: number): number {
-  const a = Math.acos(clamp(2 * phase - 1, -1, 1));
-  return (Math.sin(a) + (Math.PI - a) * Math.cos(a)) / Math.PI;
+export function moonPhaseLight(lit: number): number {
+  const a = (Math.acos(clamp(2 * lit - 1, -1, 1)) * 180) / Math.PI;
+  return 10 ** (-0.4 * (0.026 * a + 4e-9 * a ** 4));
 }
 
 // ---- the stars ----
 
-/** Solar days in a year; the stars come round once more than the sun in it. */
-export const YEAR_DAYS = 365.2422;
-/** The stars' turns about the pole a solar day: one sidereal day is 1 / SIDEREAL_TURNS of a day. */
-export const SIDEREAL_TURNS = 1 + 1 / YEAR_DAYS;
-
 /**
- * How far the stars have turned about the pole (radians, 0..TAU): SIDEREAL_TURNS for every day the
- * day cycle `cycle` (as the shader reads it) has carried the clock on over `motionTime`, and in a
- * dated sky a turn for every year its date `year` stands from its staged date `anchor`, both read
- * in the sky's date steps. 0 with the cycle off and the date as staged.
+ * How far the stars have turned about the pole (radians, 0..TAU): SIDEREAL_TURNS for every one of the
+ * `days` the day cycle has carried the clock on (its phase), and in a dated sky a turn for every year
+ * its date `year` stands from its staged date `anchor`, both read in the sky's date steps. 0 with the
+ * cycle off and the date as staged.
  */
-export function starTurn(cycle: number, motionTime: number, year = -1, anchor = -1): number {
-  let turns = (SIDEREAL_TURNS * cycle * motionTime) / DAY_SECONDS;
+export function starTurn(days: number, year = -1, anchor = -1): number {
+  let turns = SIDEREAL_TURNS * days;
   if (year >= 0 && anchor >= 0) turns += skyDate(year) - skyDate(anchor);
   return TAU * fract(turns);
 }
@@ -273,7 +333,7 @@ export interface SkyWorld {
   readonly shift?: number;
   /** starTurn; default 0. */
   readonly turn?: number;
-  /** The moon's phase (K_moon): 1 full (the default), 0 no moon. */
+  /** The moon's phase (K_moon): 0 new, below 1 waxing, 1 full (the default), above 1 waning, 2 new. */
   readonly phase?: number;
 }
 
@@ -288,7 +348,8 @@ export function skyState(tod: number, { shift = 0, turn = 0, phase = 1 }: SkyWor
     const dec = SUN_DEC + shift;
     const h0 = Math.acos(clamp(-Math.tan(dec) * (SIN_LAT / COS_LAT), -1, 1));
     sun = body(sunHour(tod, h0), Math.cos(dec), Math.sin(dec));
-    moon = body(tod * TAU, Math.cos(MOON_DEC - shift), Math.sin(MOON_DEC - shift));
+    const moonDec = fullMoonDeclination(shift);
+    moon = body(tod * TAU, Math.cos(moonDec), Math.sin(moonDec));
   }
   const e = sun[1];
   const day = smoothstep(-0.02, 0.22, e);
@@ -307,13 +368,16 @@ export function skyState(tod: number, { shift = 0, turn = 0, phase = 1 }: SkyWor
     scale(moonColor, 0.3),
   );
   let moonPhase = 1;
-  if (phase < 1) {
-    const p = Math.max(phase, 0);
+  if (phase !== 1) {
+    const p = moonLit(phase);
     let light: Vec3 = [0, 0, 0];
     if (p > 0) {
       // Its elongation's place, moved onto the staged full moon (`moon` so far) as it nears full.
       const staging = moonStaging(p);
-      const placed = add(scale(moonAt(sun, p), 1 - staging), scale(moon, staging));
+      const placed = add(
+        scale(moonAt(sun, p, moonWaning(phase)), 1 - staging),
+        scale(moon, staging),
+      );
       moon = scale(placed, 1 / Math.hypot(...placed));
       light = scale(moonLight(moon, day), moonPhaseLight(p));
     } else moon = scale([moon[0], -2, moon[2]], 1 / Math.hypot(moon[0], -2, moon[2]));
@@ -339,11 +403,12 @@ export function skyState(tod: number, { shift = 0, turn = 0, phase = 1 }: SkyWor
 export interface SkyClock {
   /** K_time. */
   readonly time: number;
-  /** K_cycle as the shader reads it: the day cycle's pace while on, 0 while off. */
-  readonly cycle: number;
-  /** The motion clock (uMotionTime, SimFrame.motionTime). */
-  readonly motionTime: number;
-  /** K_moon as the shader reads it: 1 full (the default), 0 no moon. */
+  /**
+   * The days the day cycle has carried the clock on: its rate phase (PHASE_cycle, SimFrame.phases
+   * .cycle), 0 without a cycle or while it is off.
+   */
+  readonly days: number;
+  /** K_moon as the shader reads it: 1 full (the default), 0 or 2 no moon, above 1 waning. */
   readonly phase?: number;
   /** The date (SKY_YEAR: yearNow of the season knob); default none (-1). */
   readonly year?: number;
@@ -352,17 +417,10 @@ export interface SkyClock {
 }
 
 /** The scene's sky now: skyState at its time of day, its date, its stars' turn and its moon. */
-export function skyNow({
-  time,
-  cycle,
-  motionTime,
-  phase = 1,
-  year = -1,
-  anchor = -1,
-}: SkyClock): SkyState {
-  return skyState(timeOfDay(time, cycle, motionTime), {
+export function skyNow({ time, days, phase = 1, year = -1, anchor = -1 }: SkyClock): SkyState {
+  return skyState(timeOfDay(time, days), {
     shift: dateShift(year, anchor),
-    turn: starTurn(cycle, motionTime, year, anchor),
+    turn: starTurn(days, year, anchor),
     phase,
   });
 }
@@ -376,11 +434,28 @@ export function skyNow({
 export const worldClockGlsl = `
 // ---- the world clock (src/world-clock.ts) ----
 
-// The clock: K_time and K_cycle -> 0..1 (0 midnight, .25 sunrise, .5 noon, .75 sunset). At cycle 1 a
-// whole day passes in four minutes. motionTime = uMotionTime is the scene clock integrated with
-// uMotion, so the motion slider changes how fast the day passes without jumping the time of day.
-float timeOfDayM(float time, float cycle, float motionTime) {
-  return fract(time + cycle * motionTime / ${glslFloat(DAY_SECONDS)});
+// The clock: K_time carried on by the days the day cycle has run -> 0..1 (0 midnight, .25 sunrise,
+// .5 noon, .75 sunset): timeOfDayM(K_time, skyDays()). At cycle 1 a whole day passes in four minutes
+// of the motion clock. The renderer integrates the cycle's pace into those days frame by frame (its
+// rate phase, PHASE_cycle), so neither the motion slider nor the cycle's own pace jumps the hour.
+float timeOfDayM(float time, float days) {
+  return fract(time + days);
+}
+
+// The days the day cycle (K_cycle) has carried the clock on: its phase, 0 without a cycle or while it
+// is off.
+float skyDays() {
+#ifdef PHASE_cycle
+  return PHASE_cycle;
+#else
+  return 0.0;
+#endif
+}
+
+// skyDays as they stood at the earlier motion clock at (a flight's or a herd's start), taken back at
+// the day cycle's pace now, cycle (K_cycle; 0 for a scene without one).
+float skyDaysAt(float cycle, float at) {
+  return skyDays() - cycle * (uMotionTime - at) / ${glslFloat(DAY_SECONDS)};
 }
 
 struct Sky {
@@ -416,10 +491,13 @@ const float SKY_MOON_SIN_DEC = ${glslFloat(MOON_SIN_DEC)};
 // around sunrise and sunset (half speed there, 1.5x at noon and midnight): golden hour and twilight
 // get a wider stretch of the time slider, as they would at higher latitudes.
 const float SKY_SUN_H0 = ${glslFloat(SUN_H0)};
-// The date: the staged declinations (radians), the tangent of the latitude, the sine of Earth's tilt
-// (sunDeclination), and the stars' turns a solar day (a sidereal day's).
+// The date: the staged declinations (radians), the full moon's soft floor (its knee and its depth),
+// the tangent of the latitude, the sine of Earth's tilt (sunDeclination), and the stars' turns a
+// solar day (a sidereal day's).
 const float WORLD_SUN_DEC = ${glslFloat(SUN_DEC)};
 const float WORLD_MOON_DEC = ${glslFloat(MOON_DEC)};
+const float WORLD_MOON_FLOOR = ${glslFloat(MOON_FLOOR)};
+const float WORLD_MOON_FLOOR_SOFT = ${glslFloat(MOON_FLOOR_SOFT)};
 const float WORLD_TAN_LAT = ${glslFloat(SIN_LAT / COS_LAT)};
 const float WORLD_SIN_TILT = ${glslFloat(Math.sin(OBLIQUITY))};
 const float WORLD_SIDEREAL = ${glslFloat(SIDEREAL_TURNS)};
@@ -460,11 +538,19 @@ float worldDateShift(float year, float anchor) {
   return abs(shift) < ${glslFloat(SHIFT_SNAP)} ? 0.0 : shift;
 }
 
-// How far the stars have turned about the pole (radians, 0..TAU): a sidereal day's turn for every day
-// the day cycle has carried the clock on, and in a dated sky a turn a year as the date moves from its
-// staged date. 0 with the cycle off and the date as staged.
-float worldStarTurn(float cycle, float motionTime, float year, float anchor) {
-  float turns = WORLD_SIDEREAL * cycle * motionTime / ${glslFloat(DAY_SECONDS)};
+// The staged full moon's declination in a dated sky whose sun the date shifts by shift: swung the other
+// way, eased onto a soft floor below WORLD_MOON_FLOOR so it still rises, low and golden.
+float worldFullMoonDec(float shift) {
+  float dec = WORLD_MOON_DEC - shift;
+  if (dec >= WORLD_MOON_FLOOR) return dec;
+  return WORLD_MOON_FLOOR - WORLD_MOON_FLOOR_SOFT * (1.0 - exp((dec - WORLD_MOON_FLOOR) / WORLD_MOON_FLOOR_SOFT));
+}
+
+// How far the stars have turned about the pole (radians, 0..TAU): a sidereal day's turn for every one
+// of the days the day cycle has carried the clock on (skyDays), and in a dated sky a turn a year as
+// the date moves from its staged date. 0 with the cycle off and the date as staged.
+float worldStarTurn(float days, float year, float anchor) {
+  float turns = WORLD_SIDEREAL * days;
   if (year >= 0.0 && anchor >= 0.0) turns += worldSkyDate(year) - worldSkyDate(anchor);
   return TAU * fract(turns);
 }
@@ -489,7 +575,7 @@ Sky skyAtWorld(float tod, float shift, float turn) {
     float h0 = acos(clamp(-sinSun / cosSun * WORLD_TAN_LAT, -1.0, 1.0));
     float h = d < 0.5 ? mix(-h0, h0, u) : mix(h0, TAU - h0, u);
     s.sun = skyBody(h, cosSun, sinSun);
-    float moon = WORLD_MOON_DEC - shift;
+    float moon = worldFullMoonDec(shift);
     s.moon = skyBody(tod * TAU, cos(moon), sin(moon));
   }
   float e = s.sun.y;
@@ -511,8 +597,8 @@ Sky skyAtWorld(float tod, float shift, float turn) {
 }
 
 // The scene's sky at the time of day tod (timeOfDayM): dated by SKY_YEAR in a dated sky (a program
-// with SKY_DATE_ANCHOR, its staged date), its stars turned by the day cycle (K_cycle) on the motion
-// clock. The full moon; skyMoonPhase gives it a phase.
+// with SKY_DATE_ANCHOR, its staged date), its stars turned by the days the day cycle has run
+// (skyDays). The full moon; skyMoonPhase gives it a phase.
 Sky skyAt(float tod) {
 #ifdef SKY_DATE_ANCHOR
   float year = SKY_YEAR;
@@ -521,12 +607,7 @@ Sky skyAt(float tod) {
   float year = -1.0;
   float anchor = -1.0;
 #endif
-#ifdef K_cycle
-  float cycle = K_cycle;
-#else
-  float cycle = 0.0;
-#endif
-  return skyAtWorld(tod, worldDateShift(year, anchor), worldStarTurn(cycle, uMotionTime, year, anchor));
+  return skyAtWorld(tod, worldDateShift(year, anchor), worldStarTurn(skyDays(), year, anchor));
 }
 
 // A sky direction in the stars' frame: dir turned back about the pole by the turn the stars have
@@ -540,35 +621,40 @@ vec3 skyStarFrame(Sky sky, vec3 dir) {
 }
 
 #ifdef SKY_MOON_PHASE
-// The moon's light at a phase (its lit share, 0..1) relative to full: a Lambert sphere seen at phase
-// angle a, where the lit share is (1 + cos a) / 2. Half lit gives 0.32, a quarter 0.11, a tenth 0.03.
+// The moon's light at a lit share (0..1) relative to full: the measured lunar phase curve (Allen's
+// magnitudes 0.026 |a| + 4e-9 a^4 at phase angle a degrees, where the lit share is (1 + cos a) / 2),
+// the opposition surge making the full moon far brighter than any lesser phase. 0.9 lit gives 0.41,
+// half lit 0.09, a quarter 0.026.
 float skyMoonPhaseLight(float phase) {
-  float a = acos(clamp(2.0 * phase - 1.0, -1.0, 1.0));
-  return (sin(a) + (3.14159265 - a) * cos(a)) / 3.14159265;
+  float a = degrees(acos(clamp(2.0 * phase - 1.0, -1.0, 1.0)));
+  float a2 = a * a;
+  return exp2(-0.4 * ${glslFloat(Math.log2(10))} * (0.026 * a + 4e-9 * a2 * a2));
 }
 
-// Where a moon in phase p (0 < p < 1) stands for the sun at sun: acos(1 - 2p) from it, the elongation
-// at which the sun lights that share of its disc, along the great circle that leaves the sun eastward
-// along its daily circle. A crescent trails the sun, a half moon stands a quarter of the sky east of
-// it on the celestial equator, a gibbous moon nears the point opposite.
-vec3 skyMoonAt(vec3 sun, float p) {
-  vec3 east = normalize(cross(SKY_POLE, sun));
+// Where a moon of lit share p (0 < p < 1) stands for the sun at sun: acos(1 - 2p) from it, the
+// elongation at which the sun lights that share of its disc, along the great circle that leaves the
+// sun along its daily circle, eastward while it waxes and westward while it wanes (waning). A waxing
+// crescent trails the sun, a first quarter stands a quarter of the sky east of it on the celestial
+// equator, a gibbous moon nears the point opposite; a waning crescent leads the sun up at dawn.
+vec3 skyMoonAt(vec3 sun, float p, bool waning) {
+  vec3 east = normalize(cross(SKY_POLE, sun)) * (waning ? -1.0 : 1.0);
   return (1.0 - 2.0 * p) * sun + 2.0 * sqrt(p * (1.0 - p)) * east;
 }
 
-// The sky with its moon in a phase: 1 full (the sky unchanged: the staged full moon), down to a thin
-// crescent, 0 no moon (put away well below the horizon on its own bearing, so a scene keying its
-// light off sky.moon still gets a direction with a heading). A partial moon stands where its phase
-// puts it (skyMoonAt), moved onto the staged full moon from phase MOON_STAGED_FROM up (moonStaging),
-// so it never jumps as the phase reaches full; its light on the land (moonColor, its share of
+// The sky with its moon in a phase (K_moon): 1 full (the sky unchanged: the staged full moon); below 1
+// waxing, its lit share the phase, down to a thin crescent; above 1 waning, its lit share 2 - phase;
+// 0 or 2 no moon (put away well below the horizon on its own bearing, so a scene keying its light off
+// sky.moon still gets a direction with a heading). A partial moon stands where its phase puts it
+// (skyMoonAt), moved onto the staged full moon from a lit share of MOON_STAGED_FROM up (moonStaging),
+// so it never jumps as the phase passes full; its light on the land (moonColor, its share of
 // ambient), the moonlit blue round it and its halo scale with skyMoonPhaseLight; skyColor draws the
 // lit share of the disc on the side toward the sun, skyStars lets stars nearer a dim moon.
 Sky skyMoonPhase(Sky sky, float phase) {
-  if (phase >= 1.0) return sky;
-  float p = max(phase, 0.0);
+  if (phase == 1.0) return sky;
+  float p = phase > 1.0 ? max(2.0 - phase, 0.0) : max(phase, 0.0);
   vec3 light = vec3(0.0);
   if (p > 0.0) {
-    sky.moon = normalize(mix(skyMoonAt(sky.sun, p), sky.moon, smoothstep(${glslFloat(MOON_STAGED_FROM)}, 1.0, p)));
+    sky.moon = normalize(mix(skyMoonAt(sky.sun, p, phase > 1.0), sky.moon, smoothstep(${glslFloat(MOON_STAGED_FROM)}, 1.0, p)));
     light = skyMoonLight(sky.moon, sky.day) * skyMoonPhaseLight(p);
   }
   sky.ambient += (light - sky.moonColor) * 0.3;

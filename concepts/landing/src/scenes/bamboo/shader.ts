@@ -1003,7 +1003,7 @@ Shade sceneBamboo(vec2 uv, vec2 cell, float t) {
   bambooExitT = passOut * BAMBOO_EXIT;
   vec2 p = vec2((uv.x - 0.5) * aspect, uv.y);
   float tm = uMotionTime;
-  Sky sky = skyMoonPhase(skyAt(timeOfDayM(K_time, K_cycle, uMotionTime)), K_moon);
+  Sky sky = skyMoonPhase(skyAt(timeOfDayM(K_time, skyDays())), K_moon);
   // The rain's cloud closes over the sky as the rain sets in (the shared canopy weather): a drizzle
   // still lets some sun through, and from about a quarter of the rain knob up the sun and moon are
   // gone, rays and all. The cloud deck is lit from above, so the grove's light turns soft and grey but

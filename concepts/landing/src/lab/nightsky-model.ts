@@ -5,7 +5,7 @@
 // switches (a feature): on or off, with an amount it keeps while off. The section's planets are
 // planets-model.ts's.
 import { formatValue, type ParamDef } from "../params.ts";
-import { skyState } from "../world-clock.ts";
+import { moonLit, moonWaning, skyState } from "../world-clock.ts";
 import { snap } from "./dom.ts";
 import type { FeatureDef, RangeDef } from "./knobs.ts";
 
@@ -82,17 +82,27 @@ export const MOON_PHASES = [
   { name: "full", lit: 1, below: Infinity },
 ] as const;
 
-/** The phase (an index into MOON_PHASES) a lit share reads as. */
-export function phaseIndex(lit: number): number {
-  const index = MOON_PHASES.findIndex((phase) => lit < phase.below);
+/**
+ * The phase (an index into MOON_PHASES) the moon's knob reads as: by its lit share, waxing (below 1)
+ * or waning (above 1, its lit share 2 - the knob).
+ */
+export function phaseIndex(phase: number): number {
+  const lit = moonLit(phase);
+  const index = MOON_PHASES.findIndex((each) => lit < each.below);
   return index < 0 ? MOON_PHASES.length - 1 : index;
 }
 
-/** The moon's look at a lit share: "thin crescent", "crescent", "quarter moon", "gibbous", "full moon". */
-export function phaseOf(lit: number): string {
-  if (lit < 0.15) return "thin crescent";
-  const { name } = MOON_PHASES[phaseIndex(lit)] ?? MOON_PHASES[0];
-  return name === "quarter" || name === "full" ? `${name} moon` : name;
+/**
+ * The moon's look at its knob's phase: "thin crescent", "crescent", "quarter moon", "gibbous", "full
+ * moon"; past full "waning gibbous", "last quarter moon", "waning crescent", "thin waning crescent".
+ */
+export function phaseOf(phase: number): string {
+  const waning = moonWaning(phase) && moonLit(phase) < MOON_PHASES[2].below;
+  if (moonLit(phase) < 0.15) return waning ? "thin waning crescent" : "thin crescent";
+  const { name } = MOON_PHASES[phaseIndex(phase)] ?? MOON_PHASES[0];
+  if (name === "quarter") return waning ? "last quarter moon" : "quarter moon";
+  if (name === "full") return "full moon";
+  return waning ? `waning ${name}` : name;
 }
 
 /**
@@ -105,11 +115,19 @@ export function moonPatch(def: FeatureDef, phase: number | undefined): Patch {
   return { [def.key]: 1, [`${def.key}-amount`]: snap(chosen.lit, def.min, def.max, def.step) };
 }
 
-/** A disc of radius r centred on 0, lit over `lit` of it from the right, the terminator an ellipse. */
-export function moonPath(r: number, lit: number): string {
+/**
+ * A disc of radius r centred on 0 at the moon knob's `phase`: lit over its lit share from the right
+ * while it waxes (a lit share, up to 1), from the left while it wanes (above 1), the terminator an
+ * ellipse.
+ */
+export function moonPath(r: number, phase: number): string {
+  const lit = moonLit(phase);
   if (lit >= 0.995) return `M0 ${-r}A${r} ${r} 0 1 1 0 ${r}A${r} ${r} 0 1 1 0 ${-r}Z`;
-  const rx = Math.abs(1 - 2 * Math.max(0, lit)) * r;
-  return `M0 ${-r}A${r} ${r} 0 0 1 0 ${r}A${rx} ${r} 0 0 ${lit > 0.5 ? 1 : 0} 0 ${-r}Z`;
+  const rx = Math.abs(1 - 2 * lit) * r;
+  const waxing = !moonWaning(phase);
+  const limb = waxing ? 1 : 0;
+  const bulge = lit > 0.5 === waxing ? 1 : 0;
+  return `M0 ${-r}A${r} ${r} 0 0 ${limb} 0 ${r}A${rx} ${r} 0 0 ${bulge} 0 ${-r}Z`;
 }
 
 // ---- what the drawing shows -------------------------------------------------------------------

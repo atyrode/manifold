@@ -468,7 +468,7 @@ vec3 lakeSkyAt(vec3 d, bool mirror, float soft) {
   col += lakeAurLight * 0.6 * exp(-hh * 8.0);
   Sky starry = lakeSky;
   starry.moon = lakePhase > 0.0 ? lakeMoon : vec3(0.0, -1.0, 0.0);
-  float mw = milkyWay(d, LAKE_GALAXY) * K_milkyWay * K_stars * lakeSky.night * (1.0 - 0.75 * lakePhase);
+  float mw = milkyWay(d, d.y, LAKE_GALAXY) * K_milkyWay * K_stars * lakeSky.night * (1.0 - 0.75 * lakePhase);
   col += vec3(0.045, 0.048, 0.064) * mw;
   float density = milkyWayStars(K_stars, mw) * (1.0 - 0.6 * lakePhase);
   col += skyStarLight(starry, d, mirror ? 0.5 * density : density) * (mirror ? 0.6 : 1.0);

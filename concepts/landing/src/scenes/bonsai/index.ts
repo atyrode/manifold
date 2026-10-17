@@ -6,6 +6,7 @@
 // Hover to stir the pads; click to snip a twig. The picture is painted in shader.ts. It comes in as
 // the stand glides in from the side along the veranda, the pads leaning on its braking and springing
 // back, and leaves as the stand is pushed off to the side with a gust and a few leaves shaken loose.
+import { YEAR_CYCLE_RATE } from "../../climate.ts";
 import { choice, feature, range, seed, toggle, type ParamDef } from "../../params.ts";
 import { atmosphereGroups, skyKnobs } from "../atmosphere.ts";
 import type { SceneDef } from "../types.ts";
@@ -91,7 +92,7 @@ const params: readonly ParamDef[] = [
     "minutes per season",
     3,
     "The year turns at this pace: buds and new leaves, full summer pads, autumn colour and leaf fall, bare branches and snow.",
-    { min: 0.5, max: 10, step: 0.5, widget: { kind: "sky", part: "year" } },
+    { min: 0.5, max: 10, step: 0.5, widget: { kind: "sky", part: "year" }, rate: YEAR_CYCLE_RATE },
   ),
   feature(
     "seasons",

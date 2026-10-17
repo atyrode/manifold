@@ -243,7 +243,7 @@ struct KelpEnv {
 
 KelpEnv kelpEnvironment(float tm) {
   KelpEnv e;
-  e.sky = skyAt(timeOfDayM(K_time, K_cycle, tm));
+  e.sky = skyAt(timeOfDayM(K_time, skyDays()));
   float sunUp = smoothstep(-0.02, 0.5, e.sky.sun.y);
   float moonUp = smoothstep(0.0, 0.4, e.sky.moon.y);
   // A low sun glances off the surface but still sends long golden shafts down; the moon gives a

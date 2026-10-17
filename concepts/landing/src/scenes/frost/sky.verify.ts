@@ -3,7 +3,7 @@
 // compiled with Frost's knobs evaluates the library functions over grids of directions into a float
 // target; the full Frost program checks the coupling at the rendered picture.
 import { defaultsFor, paramDefaults, renderSettings } from "../../state.ts";
-import { fragmentSourceFor, vertexSource } from "../../shaders/index.ts";
+import { fragmentSourceFor, packParams, vertexSource } from "../../shaders/index.ts";
 import { sceneDefs } from "../index.ts";
 
 function check(ok: boolean, message: string): void {
@@ -135,8 +135,8 @@ function draw(
     const at = gl.getUniformLocation(linked, name);
     if (at === null) return;
     if (name === "uProbe" || name === "uView") gl.uniform1i(at, value[0] ?? 0);
-    else if (name === "uParams" || name === "uTriggers")
-      gl.uniform1fv(at, Float32Array.from(value));
+    else if (name === "uParams") gl.uniform4fv(at, packParams(value));
+    else if (name === "uTriggers") gl.uniform1fv(at, Float32Array.from(value));
     else if (value.length === 1) gl.uniform1f(at, value[0] ?? 0);
     else if (value.length === 2) gl.uniform2fv(at, value);
     else if (value.length === 3) gl.uniform3fv(at, value);
@@ -301,13 +301,14 @@ export function verifyFrostSky(gl: WebGL2RenderingContext): Record<string, unkno
     channel(moonGrid(probe, 2, 0), 0).every((value) => value === 0),
     "a moonless sky still covers stars",
   );
-  // Its light: Lambert-sphere fall-off (0.318 at half: at 0.95 the half moon, a quarter of the sky
-  // east of the sun, stands as high as the full moon), none without a moon; ambient follows.
+  // Its light: the Moon's measured phase curve (moonPhaseLight: 0.091 at half, against a Lambert
+  // sphere's 0.318; at 0.95 the half moon, a quarter of the sky east of the sun, stands as high as the
+  // full moon), none without a moon; ambient follows.
   const light = (phase: number): Float32Array =>
     draw(gl, probe, 3, 1, { uProbe: [3], uParams: params, uProbeB: [0.95, phase, 0, 0] });
   const moonLum = (phase: number): number => luma(light(phase), 0);
   const ratio = moonLum(0.5) / moonLum(1);
-  check(Math.abs(ratio - 0.3183) < 0.01, `half moon light ratio ${ratio}`);
+  check(Math.abs(ratio - 0.091) < 0.01, `half moon light ratio ${ratio}`);
   check(moonLum(0) === 0 && luma(light(0), 1) < luma(light(1), 1), "no moon still lights the land");
   // A slim moon lets stars come closer: the fade 0.035 rad from it (just outside the disc), in the
   // evening (0.85), while a moon in that phase still stands with the full moon above the horizon.

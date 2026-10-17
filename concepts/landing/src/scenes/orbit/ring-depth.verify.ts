@@ -4,7 +4,12 @@
 // (every ORBIT_* gate compiled in, the knobs deciding); the captured meteor is drawn at a moment read
 // off its own path (orbitCapturePath) by a probe entry. Registered in verify-browser.ts.
 import { glslFloat } from "../../shaders/glsl.ts";
-import { fragmentSourceFor, sceneFeaturesAll, vertexSource } from "../../shaders/index.ts";
+import {
+  fragmentSourceFor,
+  packParams,
+  sceneFeaturesAll,
+  vertexSource,
+} from "../../shaders/index.ts";
 import { defaultsFor, paramDefaults, renderSettings } from "../../state.ts";
 import { orbitScene } from "./index.ts";
 import { ORBIT_CAPTURE } from "./shader.ts";
@@ -84,7 +89,7 @@ Shade probeCaptureBehindRing(vec2 uv, vec2 cell, float t) {
   gl.useProgram(probe);
   gl.uniform2f(gl.getUniformLocation(probe, "uRes"), WIDTH, HEIGHT);
   gl.uniform1i(gl.getUniformLocation(probe, "uView"), 1);
-  gl.uniform1fv(gl.getUniformLocation(probe, "uParams"), params);
+  gl.uniform4fv(gl.getUniformLocation(probe, "uParams"), packParams(params));
   gl.drawArrays(gl.TRIANGLES, 0, 3);
   const bytes = new Uint8Array(MOMENTS * 4);
   gl.readPixels(0, 0, MOMENTS, 1, gl.RGBA, gl.UNSIGNED_BYTE, bytes);
@@ -137,9 +142,9 @@ export function verifyOrbitRingDepth(gl: WebGL2RenderingContext): Record<string,
     gl.uniform1fv(at("uTriggers"), triggers);
     gl.uniform1f(at("uTime"), time);
     gl.uniform1f(at("uMotionTime"), time);
-    gl.uniform1fv(
+    gl.uniform4fv(
       at("uParams"),
-      Float32Array.from(renderSettings(defaultsFor("orbit"), { ...scene, ...knobs }).params),
+      packParams(renderSettings(defaultsFor("orbit"), { ...scene, ...knobs }).params),
     );
     gl.drawArrays(gl.TRIANGLES, 0, 3);
     const bytes = new Uint8Array(WIDTH * HEIGHT * 4);

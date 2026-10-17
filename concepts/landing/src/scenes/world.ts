@@ -3,6 +3,7 @@
 // scene (the shared builders' own: skyKnobs, weatherKnobs, birdKnobs), its defaults a sensible
 // ambient world, and its parts compiled in only while their knobs can show them. The contract and
 // how a scene adopts it: src/scenes/README.md ("World layers").
+import { hasClimate } from "../climate.ts";
 import { feature, type Blurb, type ParamDef } from "../params.ts";
 import { birdKnobs, birdsGroup, type BirdOptions } from "../shaders/lib/birds.ts";
 import { CLOUD_TIERS } from "../shaders/lib/clouds.ts";
@@ -141,10 +142,15 @@ export const worldGroups: Readonly<Record<"sky" | "weather" | "birds", Blurb>> =
  * fair-weather cloud, rain or snow, WORLD_SHADOWS (with CLOUD_TIER at the shadows tier) while they
  * are on too; WORLD_CUMULUS, WORLD_RAIN, WORLD_SNOW, WORLD_FOG while on. Shooting stars and
  * lightning have a "now" button that shows one while their knob is off, so their gates hold
- * whenever one could show: the meteors' whenever night can fall, lightning's always.
- * SKY_MOON_PHASE while the moon is off or short of full (a full moon is the sky library's own).
+ * whenever one could show: the meteors' whenever night can fall, lightning's always. Where the season
+ * sets the scene's climate (`climate`: climate.ts hasClimate, a season and a snow knob), its rain may
+ * fall as snow (worldAt), so WORLD_SNOW holds with the rain too. SKY_MOON_PHASE while the moon is off
+ * or short of full or past it (a full moon is the sky library's own).
  */
-export function worldFeatures(values: Readonly<Record<string, number>>): Record<string, number> {
+export function worldFeatures(
+  values: Readonly<Record<string, number>>,
+  climate = false,
+): Record<string, number> {
   const on = (key: string) => ((values[key] ?? 0) > 0 ? 1 : 0);
   const time = values["time"] ?? 0;
   const cycle = on("cycle") === 1;
@@ -163,10 +169,10 @@ export function worldFeatures(values: Readonly<Record<string, number>>): Record<
     WORLD_BIRDS: day * on("birds"),
     WORLD_CUMULUS: on("cumulus"),
     WORLD_RAIN: on("rain"),
-    WORLD_SNOW: on("snow"),
+    WORLD_SNOW: climate ? Math.max(on("snow"), on("rain")) : on("snow"),
     WORLD_FOG: on("fog"),
     WORLD_LIGHTNING: 1,
-    ...((values["moon"] ?? 1) < 1 ? { SKY_MOON_PHASE: 1 } : {}),
+    ...((values["moon"] ?? 1) !== 1 ? { SKY_MOON_PHASE: 1 } : {}),
   };
 }
 
@@ -218,7 +224,7 @@ export function worldGates(params: readonly ParamDef[]): Record<string, number> 
   const keys = new Set(params.map((def) => def.key));
   const on = Object.fromEntries(WORLD_GATED.filter((key) => keys.has(key)).map((key) => [key, 1]));
   return {
-    ...worldFeatures({ ...on, cycle: 1, moon: keys.has("moon") ? 0 : 1 }),
+    ...worldFeatures({ ...on, cycle: 1, moon: keys.has("moon") ? 0 : 1 }, hasClimate(params)),
     WORLD_LIGHTNING: keys.has("lightning") ? 1 : 0,
   };
 }

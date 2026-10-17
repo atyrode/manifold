@@ -19,6 +19,7 @@ import {
   type Picture,
 } from "./governor.ts";
 import { MAX_PARAMS, MAX_TRIGGERS } from "./params.ts";
+import { RatePhases } from "./rate-phase.ts";
 import {
   annotate,
   LEAVING_UNIT,
@@ -118,10 +119,11 @@ export interface SceneFailure {
  * A scene being drawn: the program it draws with (undefined when it failed to build; while the
  * all-features program for changed knobs builds, still the one on screen), its simulation, what
  * stopped it (see `DitherRenderer.failure`), where its `rain` and `snow` knobs sit in `params`
- * (-1 when it has none, which reads as 0), its season knob and where it sits when the season sets
- * its climate (src/climate.ts: it keeps a season and can snow), its `uWeather` (how wet its world is
- * and how much snow lies, 0..1 each, on the scene clock), its `SimFrame.passage` and `uPassage`,
- * rewritten in place each frame, and where its clocks count from.
+ * (-1 when it has none, which reads as 0), its season knob, where it sits and its year cycle's key
+ * when the season sets its climate (src/climate.ts: it keeps a season and can snow), its rate knobs'
+ * phases (`uPhases`, `SimFrame.phases`: src/rate-phase.ts, all 0 as it enters), its `uWeather` (how
+ * wet its world is and how much snow lies, 0..1 each, on the scene clock), its `SimFrame.passage`
+ * and `uPassage`, rewritten in place each frame, and where its clocks count from.
  */
 interface ActiveScene {
   id: SceneId;
@@ -130,7 +132,8 @@ interface ActiveScene {
   failure: SceneFailure | undefined;
   rain: number;
   snow: number;
-  season: { def: SeasonKnob; at: number; cycle: number } | undefined;
+  season: { def: SeasonKnob; at: number; cycle: string | undefined } | undefined;
+  readonly phases: RatePhases;
   readonly weather: { wet: number; lying: number };
   readonly passage: { enter: number; exit: number };
   /**
@@ -773,10 +776,9 @@ export class DitherRenderer {
       season: (() => {
         const def = hasClimate(params) ? seasonKnob(params) : undefined;
         const cycle = yearCycleKnob(params);
-        return def
-          ? { def, at: params.indexOf(def), cycle: cycle ? params.indexOf(cycle) : -1 }
-          : undefined;
+        return def ? { def, at: params.indexOf(def), cycle: cycle?.key } : undefined;
       })(),
+      phases: new RatePhases(params),
       weather: { wet: 0, lying: 0 },
       passage: { enter: 1, exit: 0 },
       origin: from?.origin ?? {
@@ -1337,6 +1339,8 @@ export class DitherRenderer {
     const time = this.#clock - scene.origin.clock;
     const motionTime = this.#motionClock - scene.origin.motion;
     const fallTime = this.#fallClock - scene.origin.fall;
+    // The rate knobs' phases run on with this step of the motion clock, each at its knob's pace now.
+    scene.phases.step(s.params, step * motion);
     // The world follows the scene's own rain and snow on the scene clock: where they lead (soaked in
     // steady rain, damp in drizzle; snow lying deeper the harder it snows, less in rain), approached
     // exponentially. Wetting takes 1.2 / rain s per e-fold (~9 s to soak in steady rain), drying 25 s
@@ -1350,8 +1354,7 @@ export class DitherRenderer {
       ? climateCold(
           yearNow(
             yearAt(season.def, s.params[season.at] ?? 0),
-            s.params[season.cycle] ?? 0,
-            motionTime,
+            season.cycle === undefined ? 0 : (scene.phases.byKey[season.cycle] ?? 0),
           ),
         )
       : 0;
@@ -1391,6 +1394,7 @@ export class DitherRenderer {
         aspect: width / height,
         values: s.params,
         params: s.knobs,
+        phases: scene.phases.byKey,
         triggers: draw.triggers,
         motionTriggers: draw.motionTriggers,
         fired: draw.fired,
@@ -1417,6 +1421,7 @@ export class DitherRenderer {
     gl.uniform1f(u.uTime, time);
     gl.uniform1f(u.uMotionTime, motionTime);
     gl.uniform1f(u.uFallTime, fallTime);
+    gl.uniform4fv(u.uPhases, scene.phases.upload);
     gl.uniform2f(u.uPointer, this.#pointer.x, this.#pointer.y);
     gl.uniform4f(u.uMouse, pointer.x, pointer.y, pointer.down ? 1 : 0, draw.pressedAt);
     gl.uniform2f(u.uWeather, weather.wet, weather.lying);
@@ -1439,7 +1444,7 @@ export class DitherRenderer {
       gl.uniform3f(u.uBg, ...rgb(s.bg));
       gl.uniform3f(u.uInk, ...rgb(s.ink));
       gl.uniform3f(u.uAccent, ...rgb(s.accent));
-      gl.uniform1fv(u.uParams, params);
+      gl.uniform4fv(u.uParams, params);
       gl.uniform4fv(u.uPlanets, s.planets.data);
       gl.uniform1i(u.uPlanetCount, s.planets.count);
       gl.uniform1i(u.uView, viewIds.indexOf(s.view));

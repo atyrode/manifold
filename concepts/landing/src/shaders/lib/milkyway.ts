@@ -21,10 +21,11 @@ struct MilkyWayBand { vec3 pole; vec3 across; };
 #define MILKY_WAY_BAND(pole) MilkyWayBand(pole, normalize(cross(pole, vec3(0.0, 0.0, 1.0))))
 
 // The band's brightness for a view ray, 0..~1.3: 0 below the horizon and more than ~20 degrees off the
-// galactic plane.
-float milkyWay(vec3 dir, MilkyWayBand way) {
+// galactic plane. dir: the ray where the band is fixed (skyStarFrame of it, so the band turns with
+// the stars); height: the view ray's own elevation sine, for the horizon it fades into.
+float milkyWay(vec3 dir, float height, MilkyWayBand way) {
   float b = dot(dir, way.pole);
-  if (dir.y <= 0.0 || abs(b) > 0.35) return 0.0;
+  if (height <= 0.0 || abs(b) > 0.35) return 0.0;
   vec3 e1 = way.across;
   vec3 e2 = cross(way.pole, e1);
   float l = atan(dot(dir, e2), dot(dir, e1));
@@ -32,7 +33,7 @@ float milkyWay(vec3 dir, MilkyWayBand way) {
   float clouds = 0.55 * vnoise(vec2(l * 8.0, b * 26.0)) + 0.45 * vnoise(vec2(l * 21.0 + 3.0, b * 60.0));
   float lane = (b - 0.02 - 0.015 * sin(l * 5.0)) / 0.016;
   float dust = 1.0 - 0.75 * exp(-lane * lane) * smoothstep(0.25, 0.6, vnoise(vec2(l * 4.0, 7.0)));
-  return band * (0.35 + 0.9 * clouds) * dust * smoothstep(0.0, 0.15, dir.y);
+  return band * (0.35 + 0.9 * clouds) * dust * smoothstep(0.0, 0.15, height);
 }
 
 // The star density to hand skyStars where the band shows 'band' (milkyWay times the scene's gain):

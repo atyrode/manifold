@@ -1487,7 +1487,7 @@ vec3 trainStationScene(vec2 o, float t, vec3 col, inout float hitZ, inout float 
       float aaC = trainAA(zv);
       if (trainSolid(min(face - 0.42, max(abs(xv) - 0.03, max(0.38 - yv, yv - 0.9))), aaC) > 0.5) {
         hitZ = zv;
-        float hours = 24.0 * timeOfDayM(K_time, K_cycle, uMotionTime);
+        float hours = 24.0 * timeOfDayM(K_time, skyDays());
         vec2 hd = vec2(sin(TAU * hours / 12.0), cos(TAU * hours / 12.0));
         vec2 md = vec2(sin(TAU * fract(hours)), cos(TAU * fract(hours)));
         float hands = min(segmentDistance(cq, vec2(0.0), hd * 0.2), segmentDistance(cq, vec2(0.0), md * 0.3));
@@ -2243,7 +2243,7 @@ void trainSetup(float t) {
 
   // The sky and the light it gives. Rain or snow closes it over: the moon fades behind the deck,
   // the light flattens, the lamps count for more.
-  trainSky = skyMoonPhase(skyAt(timeOfDayM(K_time, K_cycle, uMotionTime)), K_moon);
+  trainSky = skyMoonPhase(skyAt(timeOfDayM(K_time, skyDays())), K_moon);
   trainStorm = clamp(max(K_rain, 0.85 * K_snow), 0.0, 1.0);
   trainOver = clamp(trainStorm * 10.0, 0.0, 1.0) * (0.65 + 0.35 * trainStorm);
   trainWet = uWeather.x;
