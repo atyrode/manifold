@@ -22,6 +22,7 @@
 // Texel 2 alpha is the skein's number (1, 2, ...; 0 while the sky is empty), so each skein can
 // fly in its own loose line.
 import { KnobReader, type ParamDef } from "../../params.ts";
+import { approach } from "../../sims/math.ts";
 import { Random } from "../../sims/random.ts";
 import { DataTexture } from "../../sims/texture.ts";
 import { TrailField } from "../../sims/trail.ts";
@@ -131,7 +132,7 @@ class ShanshuiSim implements SceneSim {
     // The scroll and the mist move on the scene clock, scaled by the lab's motion.
     const dt = Math.max(0, frame.dt);
     const step = dt * frame.motion;
-    this.#rate += (speed * SPEED_MAX - this.#rate) * (1 - Math.exp(-dt / SPEED_EASE));
+    this.#rate = approach(this.#rate, speed * SPEED_MAX, dt, SPEED_EASE);
     this.#scroll += step * this.#rate;
     this.#drift += step * drift * DRIFT_MAX;
     this.#morph = (this.#morph + step * (0.15 + drift)) % 256;

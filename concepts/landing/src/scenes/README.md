@@ -2041,6 +2041,9 @@ Helpers in `src/sims/` (each file's header has the full API and a usage example)
   lake's crack walks) and re-seeds in place.
   Import it rather than carrying a copy (ferro's xorshift is deliberate: its pours depend on it).
 - `clamp`, `lerp`, `smoothstep`, `fract`, `hash31` (`math.ts`): import them rather than a local copy;
+  `approach(x, to, dt, tau)` and `easeFactor(dt, tau)`: the exponential ease `x + (to - x) · (1 - exp(-dt / tau))`
+  (a lag, a smoothing, a fade) and its factor for a loop that eases many values at once, so no sim
+  writes the `1 - Math.exp(-dt / tau)` out again;
   `glslHash12` and `glslHash22`: common.ts's hashes in float32 steps, for a sim that must place
   things where its shader hashes them (pond's koi loops, falls' ferns, the tide pool's holdfasts);
   `hypot2`, `hypot3` and `atan2`: V8's `Math.hypot` and `Math.atan2` (Chrome's) bit for bit in any
@@ -2060,6 +2063,9 @@ Helpers in `src/sims/` (each file's header has the full API and a usage example)
 - `ElasticPan` and `rubberBand` (`pan.ts`): a picture the pointer drags about, tethered to its home:
   it follows the hand within an envelope, meets a rubber band's resistance past it, and drifts home
   when let go (fractal).
+- `Settle` (`clock.ts`): the relayout debounce for a sim whose layout comes from knobs: `due(want, frame.now)` is true
+  at the first frame and then once a changed key has rested `ms` (delta, dunes, garden, tidepool); `lay(key)` records
+  the layout made, `laid` is the one on show.
 - `FixedStep` and `runBudgeted` (`clock.ts`): a fixed-step accumulator (`advance` returns the steps
   due, each falling due 5 % of a step early, so a 60 Hz display's jittered frames run exactly one
   1/60 step each; `alpha`, `lag(i)`), and warm-ups counted in steps, which a time budget only

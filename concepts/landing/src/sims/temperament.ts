@@ -28,6 +28,8 @@
 //   stepShrink(spirit.shrink, h, startled);
 //   sink = Math.max(sink, DUCK * spirit.shrink.amount);
 
+import { approach } from "./math.ts";
+
 /** How quickly a shy creature shrinks away and how warily it comes back out (seconds). */
 export interface ShyTiming {
   /** Time constant of shrinking away once startled: quick. */
@@ -74,9 +76,9 @@ export function stepShrink(
   if (!(h > 0)) return;
   if (startled) {
     state.calm = 0;
-    state.amount += (1 - state.amount) * (1 - Math.exp(-h / timing.hide));
+    state.amount = approach(state.amount, 1, h, timing.hide);
     return;
   }
   state.calm += h;
-  if (state.calm >= timing.wait) state.amount -= state.amount * (1 - Math.exp(-h / timing.recover));
+  if (state.calm >= timing.wait) state.amount = approach(state.amount, 0, h, timing.recover);
 }

@@ -78,7 +78,7 @@ import {
   type RenderTarget,
   type Scatter,
 } from "../../sims/gpu.ts";
-import { clamp } from "../../sims/math.ts";
+import { clamp, easeFactor } from "../../sims/math.ts";
 import { mulberry32 } from "../../sims/random.ts";
 import { DataTexture } from "../../sims/texture.ts";
 import type { PointerState, SceneSim, SimFactory, SimFrame } from "../types.ts";
@@ -642,17 +642,17 @@ class PhysarumSim implements SceneSim {
     for (let i = 0; i < steps; i++) this.#step();
     this.#grown += steps;
     if (dt > 0) {
-      this.#measure(1 - Math.exp(-dt / REF_SECONDS));
+      this.#measure(easeFactor(dt, REF_SECONDS));
       this.#memoryDebt += simDt;
       let remember = 0;
       if (this.#memoryDebt >= MEMORY_EVERY) {
-        remember = 1 - Math.exp(-this.#memoryDebt / MEMORY_SECONDS);
+        remember = easeFactor(this.#memoryDebt, MEMORY_SECONDS);
         this.#memoryDebt = 0;
       }
       // Smoothed heavily while the view is still crossing over from the sketch, then lightly.
       const settled = Math.min(1, this.#grown / SETTLE_STEPS);
       const smoothing = SETTLE_SECONDS + (VIEW_SECONDS - SETTLE_SECONDS) * settled;
-      this.#show(1 - Math.exp(-dt / smoothing), remember);
+      this.#show(easeFactor(dt, smoothing), remember);
       this.#trace(DIST_PASSES);
     }
 

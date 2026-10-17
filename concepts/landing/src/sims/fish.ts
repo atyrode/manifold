@@ -60,6 +60,7 @@
 //   vec2 rel = p - f.at;
 //   float shape = fishTop(vec2(dot(rel, f.dir), dot(rel, vec2(-f.dir.y, f.dir.x))), f.len, swim, FISH_KOI);
 import { splitHalf } from "./half.ts";
+import { easeFactor } from "./math.ts";
 import { DataTexture } from "./texture.ts";
 
 const TAU = Math.PI * 2;
@@ -339,7 +340,7 @@ export class FishGroup {
     const hi = sp.maxSpeed * p;
     const turnMax = sp.turnRate * p * h;
     const dv = sp.accel * p * h;
-    const ease = 1 - Math.exp(-h / 0.2);
+    const ease = easeFactor(h, 0.2);
     for (let i = 0; i < count; i++) {
       const wx = this.#wx[i] ?? 0;
       const wy = this.#wy[i] ?? 0;

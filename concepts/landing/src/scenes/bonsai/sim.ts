@@ -26,7 +26,7 @@ import { climateCold, climateLying } from "../../climate.ts";
 import type { ParamDef } from "../../params.ts";
 import { type BuildKind, BuildSlot } from "../../sims/build.ts";
 import { FixedStep } from "../../sims/clock.ts";
-import { smoothstep } from "../../sims/math.ts";
+import { easeFactor, smoothstep } from "../../sims/math.ts";
 import { mulberry32 } from "../../sims/random.ts";
 import { DataTexture } from "../../sims/texture.ts";
 import type { PointerState, SceneSim, SimFactory, SimFrame } from "../types.ts";
@@ -608,7 +608,7 @@ class BonsaiSim implements SceneSim {
     const x = ((pointer.x - 0.5) * aspect - place.x) / place.scale - this.#shift;
     const y = (pointer.y - place.y) / place.scale;
     if (this.#pointerX !== undefined && dt > 0) {
-      const k = 1 - Math.exp(-dt / 0.1);
+      const k = easeFactor(dt, 0.1);
       this.#pointerVX +=
         (Math.max(-3, Math.min(3, (x - this.#pointerX) / dt)) - this.#pointerVX) * k;
       this.#pointerVY +=

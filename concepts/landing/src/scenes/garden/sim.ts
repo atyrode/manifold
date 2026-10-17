@@ -48,6 +48,7 @@ import { markVertex } from "../../mark.ts";
 import { KnobReader, type ParamDef } from "../../params.ts";
 import { AgeField, dryingPace } from "../../sims/agefield.ts";
 import { type BuildKind, BuildSlot } from "../../sims/build.ts";
+import { Settle } from "../../sims/clock.ts";
 import { FlutterPlates } from "../../sims/flutter.ts";
 import { HeightField, type RakeOptions } from "../../sims/heightfield.ts";
 import { clamp, fract, hash31, lerp, smoothstep } from "../../sims/math.ts";
@@ -1189,9 +1190,7 @@ class GardenSim implements SceneSim {
   /** Laying out a garden on the build worker (sims/build.ts), and whether one has been laid yet. */
   readonly #laying = new BuildSlot(gardenLayout);
   #laid = false;
-  #signature = "";
-  #pending = "";
-  #pendingSince = 0;
+  readonly #settle = new Settle<string>(RELAYOUT_MS);
   #plan: Stroke[] = [];
   #stroke = 0;
   #along = 0;
@@ -1334,16 +1333,10 @@ class GardenSim implements SceneSim {
     // The garden for the pattern, the arrangement and the M, laid out on the build worker: the first
     // at once, a change once its knob has rested RELAYOUT_MS, the garden on show staying meanwhile.
     const signature = settings.signature;
-    if (signature === this.#signature) this.#laying.cancel();
-    else {
-      if (signature !== this.#pending) {
-        this.#pending = signature;
-        this.#pendingSince = now;
-      }
-      if (!this.#laid || now - this.#pendingSince >= RELAYOUT_MS) {
-        const { pattern, seed, mark } = settings;
-        this.#laying.request(signature, { pattern, seed, mark });
-      }
+    if (this.#settle.stands(signature)) this.#laying.cancel();
+    else if (this.#settle.due(signature, now)) {
+      const { pattern, seed, mark } = settings;
+      this.#laying.request(signature, { pattern, seed, mark });
     }
     const laid = this.#laying.advance(frame.budget);
     if (laid) {
@@ -1465,8 +1458,7 @@ class GardenSim implements SceneSim {
    * laid from it and rounded off, the rake set down to begin.
    */
   #relay(signature: string, { layout, plan, heights }: GardenLaid): void {
-    this.#signature = signature;
-    this.#pending = signature;
+    this.#settle.lay(signature);
     this.#layout = layout;
     this.#plan = plan;
     const field = this.#field;

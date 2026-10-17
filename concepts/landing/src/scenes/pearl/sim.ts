@@ -77,7 +77,7 @@ import {
   type PingPong,
   type RenderTarget,
 } from "../../sims/gpu.ts";
-import { clamp, hash31, lerp, smoothstep } from "../../sims/math.ts";
+import { clamp, easeFactor, hash31, lerp, smoothstep } from "../../sims/math.ts";
 import { valueNoise } from "../../sims/noise.ts";
 import { mulberry32 } from "../../sims/random.ts";
 import type { SceneSim, SimFactory, SimFrame } from "../types.ts";
@@ -1263,7 +1263,7 @@ class PearlTank implements SceneSim {
     const t0 = this.#clock;
     const t1 = t0 + h;
     const mid = t0 + 0.5 * h;
-    this.#ease(1 - Math.exp(-h / BLEND_SECONDS));
+    this.#ease(easeFactor(h, BLEND_SECONDS));
 
     const force = this.#force;
     force.uPearlEuler = this.#turnShare * turntableAcceleration(mid, this.#pour ?? 0);

@@ -56,7 +56,7 @@
 //   uSim2  r8 the hand's fading trail (TrailField), linear, uv.
 import { KnobReader, type ParamDef } from "../../params.ts";
 import { FixedStep } from "../../sims/clock.ts";
-import { clamp, hash31, smoothstep } from "../../sims/math.ts";
+import { clamp, easeFactor, hash31, smoothstep } from "../../sims/math.ts";
 import { Random } from "../../sims/random.ts";
 import { DataTexture } from "../../sims/texture.ts";
 import { TrailField } from "../../sims/trail.ts";
@@ -657,8 +657,8 @@ class School {
     }
 
     const top = FISH_MAX + FISH_FRIGHT_SPEED * fright;
-    const ease = 1 - Math.exp(-h / 0.2);
-    const flashEase = 1 - Math.exp(-h / 0.15);
+    const ease = easeFactor(h, 0.2);
+    const flashEase = easeFactor(h, 0.15);
     const fade = h / FISH_FADE;
     for (let i = 0; i < n; i++) {
       let u = (vx[i] ?? 0) + (ax[i] ?? 0) * h;
@@ -1105,7 +1105,7 @@ class KelpSim implements SceneSim {
     const pos = sys.positions;
     const prev = sys.previous;
     const rate = 1 / sys.substep;
-    const ease = 1 - Math.exp(-dt / BLADE_EASE);
+    const ease = easeFactor(dt, BLADE_EASE);
     for (let stipe = 0; stipe < KELP_STIPES; stipe++) {
       const first = stipe * KELP_POINTS;
       for (let j = 0; j < KELP_POINTS; j++) {
@@ -1166,7 +1166,7 @@ class KelpSim implements SceneSim {
     const held = pointer.down && pointer.inside;
     if (held) {
       if (this.#handHeld && dt > 0) {
-        const k = 1 - Math.exp(-dt / HAND_SMOOTH);
+        const k = easeFactor(dt, HAND_SMOOTH);
         let vx = (x - this.#handPrevX) / dt;
         let vy = (y - this.#handPrevY) / dt;
         const speed = Math.hypot(vx, vy);

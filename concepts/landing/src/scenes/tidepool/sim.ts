@@ -30,7 +30,7 @@
 // Heights are in cells, exaggerated TIDEPOOL_RELIEF times against the frame (layout.ts); the grid is
 // TIDEPOOL_ROWS rows over the frame's height at every aspect, so the physics is the same on a phone.
 import { KnobReader, type ParamDef } from "../../params.ts";
-import { FixedStep, runBudgeted } from "../../sims/clock.ts";
+import { FixedStep, runBudgeted, Settle } from "../../sims/clock.ts";
 import { GpuCompute, type RenderTarget } from "../../sims/gpu.ts";
 import { hash31, lerp } from "../../sims/math.ts";
 import { PLANT_SUMMER } from "../../sims/plants.ts";
@@ -315,9 +315,7 @@ export function tidepoolSim(params: readonly ParamDef[]): SimFactory {
 
     let water: ShallowWater | undefined;
     let layoutTexture: DataTexture | undefined;
-    let key: LayoutKey | undefined;
-    let pending: LayoutKey | undefined;
-    let pendingSince = 0;
+    const settle = new Settle<LayoutKey>(RELAYOUT_MS, { same: sameKey });
     let warmed = PREWARM_STEPS;
     /** Sim seconds since the layout (the wave maker's clock); "now" set's start. */
     let time = 0;
@@ -342,7 +340,9 @@ export function tidepoolSim(params: readonly ParamDef[]): SimFactory {
       // The sets that come by themselves, and the one "now" started.
       const age = (at - setStart) / SET_LENGTH;
       const set = Math.max(
-        sets > 0 ? tidepoolSet(at, lerp(SET_EVERY[0], SET_EVERY[1], sets), key?.seed ?? 0) : 0,
+        sets > 0
+          ? tidepoolSet(at, lerp(SET_EVERY[0], SET_EVERY[1], sets), settle.laid?.seed ?? 0)
+          : 0,
         age > 0 && age < 1 ? Math.sin(Math.PI * age) ** 2 : 0,
       );
       const height = SWELL * knobs.value(frame, "swell") * (1 + SET_GAIN * set);
@@ -384,7 +384,7 @@ export function tidepoolSim(params: readonly ParamDef[]): SimFactory {
       water.setBed(layout.bed);
       water.reset(layout.rest);
       layoutTexture?.upload(layout.texture);
-      key = { ...want };
+      settle.lay(want);
       life.relay(layout, want.seed);
       // The coarse flow the life reads back, on its grid.
       if (flow === undefined || flow.height !== life.flowRows) {
@@ -434,14 +434,7 @@ export function tidepoolSim(params: readonly ParamDef[]): SimFactory {
           seed: knobs.value(frame, "rock"),
           size: knobs.value(frame, "poolSize"),
         };
-        if (pending === undefined || !sameKey(pending, want)) {
-          pending = want;
-          pendingSince = now;
-        }
-        let sim = water;
-        if (sim === undefined || key === undefined) sim = relayout(frame, want);
-        else if (!sameKey(key, want) && now - pendingSince >= RELAYOUT_MS)
-          sim = relayout(frame, want);
+        const sim = settle.due(want, now) || water === undefined ? relayout(frame, want) : water;
         carry.uFoam = knobs.value(frame, "foam");
 
         // The warm-up: a fixed count of steps from sim second 0, over as many frames as it takes. The

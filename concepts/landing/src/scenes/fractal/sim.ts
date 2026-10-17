@@ -25,7 +25,7 @@
 //     +11     M trap: centre (z), size, rotation
 // Content units: half the screen height, origin at the centre, after the pan.
 import { KnobReader, type ParamDef } from "../../params.ts";
-import { clamp, smoothstep } from "../../sims/math.ts";
+import { clamp, easeFactor, smoothstep } from "../../sims/math.ts";
 import { ElasticPan } from "../../sims/pan.ts";
 import type {
   PointerState,
@@ -427,9 +427,6 @@ class StateRow {
   }
 }
 
-/** Exponential follow: the share of the way to close in `dt` seconds with time constant `ease`. */
-const follow = (dt: number, ease: number): number => 1 - Math.exp(-dt / ease);
-
 /**
  * Smoothed rate of change of a value, by backward difference over frames. It only sets how much
  * moving detail is softened, so a frame that cannot be differenced (paused, or the value jumped by
@@ -447,7 +444,7 @@ class Rate {
   track(now: readonly number[], dt: number): void {
     const previous = this.#previous;
     if (previous && dt > 0) {
-      const k = follow(dt, VELOCITY_EASE);
+      const k = easeFactor(dt, VELOCITY_EASE);
       for (let i = 0; i < now.length; i++) {
         const rate = ((now[i] ?? 0) - (previous[i] ?? 0)) / dt;
         this.value[i] = (this.value[i] ?? 0) + (rate - (this.value[i] ?? 0)) * k;
@@ -623,7 +620,7 @@ class FractalSim implements SceneSim {
     const most = Math.hypot(aspect, 1);
     if (reach > most) target = scale(target, most / reach);
     if (dt > 0)
-      this.#nudge = add(this.#nudge, scale(sub(target, this.#nudge), follow(dt, NUDGE_EASE)));
+      this.#nudge = add(this.#nudge, scale(sub(target, this.#nudge), easeFactor(dt, NUDGE_EASE)));
   }
 
   /** Bloom from the current picture into a mode's own (a running wipe snaps to its incoming side). */
@@ -882,9 +879,9 @@ class FractalSim implements SceneSim {
         this.#pebble =
           this.#pebbleWeight < 0.02
             ? at
-            : add(this.#pebble, scale(sub(at, this.#pebble), follow(real, GARDEN_PEBBLE_EASE)));
+            : add(this.#pebble, scale(sub(at, this.#pebble), easeFactor(real, GARDEN_PEBBLE_EASE)));
       this.#pebbleWeight +=
-        ((hovering ? GARDEN_PEBBLE : 0) - this.#pebbleWeight) * follow(real, NUDGE_EASE);
+        ((hovering ? GARDEN_PEBBLE : 0) - this.#pebbleWeight) * easeFactor(real, NUDGE_EASE);
     }
     const stones = this.#gardenStones();
     const tracked = [...stones.slice(0, GARDEN_STONES * 2), ...this.#gardenRelax()];

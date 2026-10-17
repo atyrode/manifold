@@ -68,7 +68,7 @@ import { markVertex } from "../../mark.ts";
 import { KnobReader, type ParamDef } from "../../params.ts";
 import { LevelCamera } from "../../sims/camera.ts";
 import { FixedStep, runBudgeted } from "../../sims/clock.ts";
-import { clamp, glslHash12, smoothstep } from "../../sims/math.ts";
+import { approach, clamp, easeFactor, glslHash12, smoothstep } from "../../sims/math.ts";
 import {
   PlantHabit,
   PlantRole,
@@ -1508,7 +1508,7 @@ class FirefliesSim implements SceneSim {
     const span = knobs.period / Math.min(FLASH_SECONDS, FLASH_SHARE * knobs.period);
     const mark = this.#mark ? this.#markStrength : 0;
     const passing = this.#arrive < 1 || this.#leave > 0;
-    const ease = 1 - Math.exp(-h / (passing ? PASSAGE_EASE : PRESENCE_EASE));
+    const ease = easeFactor(h, passing ? PASSAGE_EASE : PRESENCE_EASE);
     const phase = this.#phase;
     const present = this.#present;
     const glowIn = this.#glowIn;
@@ -1782,8 +1782,7 @@ class FirefliesSim implements SceneSim {
         springStep(this.#lanternX, x, LANTERN_SPRING, LANTERN_DAMPING, LANTERN_STEP);
         springStep(this.#lanternY, y, LANTERN_SPRING, LANTERN_DAMPING, LANTERN_STEP);
       }
-      this.#lanternShown +=
-        ((on ? 1 : 0) - this.#lanternShown) * (1 - Math.exp(-dt / LANTERN_FADE));
+      this.#lanternShown = approach(this.#lanternShown, on ? 1 : 0, dt, LANTERN_FADE);
       this.#flare *= Math.exp(-dt / FLARE_FADE);
     }
     if (on && pointer.pressed) {

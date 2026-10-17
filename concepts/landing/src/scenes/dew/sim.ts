@@ -46,6 +46,7 @@ import { KnobReader, type ParamDef } from "../../params.ts";
 import { BinLists } from "../../sims/bins.ts";
 import { type BuildKind, BuildSlot } from "../../sims/build.ts";
 import { FixedStep } from "../../sims/clock.ts";
+import { approach } from "../../sims/math.ts";
 import { mulberry32 } from "../../sims/random.ts";
 import { DataTexture } from "../../sims/texture.ts";
 import {
@@ -1165,7 +1166,7 @@ class DewSim implements SceneSim {
     if (dt > 0) {
       // Focus follows the hub (an autofocus on the spider), lagging a little.
       const hubZ = web.sys.positions[web.layout.hub * 3 + 2] ?? 0;
-      this.#focus += (hubZ * 0.8 - this.#focus) * (1 - Math.exp(-dt / 1.5));
+      this.#focus = approach(this.#focus, hubZ * 0.8, dt, 1.5);
     }
   }
 
@@ -1290,7 +1291,7 @@ class DewSim implements SceneSim {
       const k = r / R_SLIDE;
       const drive = Math.abs(slope) * k * k;
       const target = drive > PIN ? SLIDE_SPEED * (drive - PIN) * Math.sign(slope) : 0;
-      let v = (this.#v[d] ?? 0) + (target - (this.#v[d] ?? 0)) * (1 - Math.exp(-dt / SLIDE_EASE));
+      let v = approach(this.#v[d] ?? 0, target, dt, SLIDE_EASE);
       let t = (this.#t[d] ?? 0) + (v * dt) / len;
       const kind = web.kind[c] ?? DEW_KIND_SPIRAL;
       volume += Math.abs(v * dt) * this.#sweep(kind, web.wet[c] ?? 0);

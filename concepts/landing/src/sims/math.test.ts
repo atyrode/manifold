@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { atan2, hypot2, hypot3 } from "./math.ts";
+import { approach, atan2, easeFactor, hypot2, hypot3 } from "./math.ts";
 
 // Each row: the arguments, then what V8's own Math.hypot or Math.atan2 gave for them (node 24.19,
 // V8 13.6: the engine Chrome runs the page in). The ports must give those bits in whatever engine
@@ -133,4 +133,32 @@ test("hypot3 gives V8's Math.hypot bits in any engine, compensated in argument o
 
 test("atan2 gives V8's Math.atan2 bits in any engine: zeros, infinities, NaN, reductions", () => {
   expect(ATAN2.filter(([y, x, v8]) => !Object.is(atan2(y, x), v8))).toEqual([]);
+});
+
+test("easeFactor and approach are the hand-written exponential ease, bit for bit", () => {
+  for (const dt of [0, 1 / 240, 1 / 60, 0.1, 2.5]) {
+    for (const tau of [0.15, 0.6, 1.5, 25]) {
+      expect(easeFactor(dt, tau)).toBe(1 - Math.exp(-dt / tau));
+      for (const [x, to] of [
+        [0, 1],
+        [0.3, -4],
+        [7.25, 7.25],
+        [-2, 0],
+        [1e-3, 1],
+      ] as const) {
+        expect(approach(x, to, dt, tau)).toBe(x + (to - x) * (1 - Math.exp(-dt / tau)));
+      }
+    }
+  }
+});
+
+test("approach stays put at dt 0, reaches 1 - 1/e of the gap in tau and splits into equal halves", () => {
+  expect(approach(3, 9, 0, 2)).toBe(3);
+  expect(approach(0, 1, 2, 2)).toBeCloseTo(1 - Math.exp(-1), 12);
+  expect(approach(5, 5, 0.3, 1)).toBe(5);
+  // Frame-rate independence: two steps of dt equal one of 2 dt.
+  expect(approach(approach(0, 1, 0.1, 0.7), 1, 0.1, 0.7)).toBeCloseTo(approach(0, 1, 0.2, 0.7), 12);
+  // Easing to 0 as `x - x * k` computes the same bits as approach(x, 0, ...).
+  const x = 0.8123;
+  expect(approach(x, 0, 0.05, 0.4)).toBe(x - x * (1 - Math.exp(-0.05 / 0.4)));
 });

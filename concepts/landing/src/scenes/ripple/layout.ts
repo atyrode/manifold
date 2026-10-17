@@ -44,15 +44,6 @@ export const rippleExperimentLabels = [
   "standing",
 ] as const;
 
-/** The Manifold M in mark units (common's markDistance): x in [-0.47, 0.47], y in [-0.5, 0.5]. */
-export const RIPPLE_M: readonly (readonly [number, number])[] = [
-  [-0.47, -0.5],
-  [-0.47, 0.5],
-  [0, -0.08],
-  [0.47, 0.5],
-  [0.47, -0.5],
-];
-
 export interface TankFrame {
   /** Frame size in short sides. */
   width: number;

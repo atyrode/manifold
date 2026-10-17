@@ -40,7 +40,7 @@ import { markDistance } from "../../mark.ts";
 import { KnobReader, type ParamDef } from "../../params.ts";
 import { gpuCommonGlsl } from "../../shaders/common.ts";
 import { glslFloat } from "../../shaders/glsl.ts";
-import { FixedStep, runBudgeted } from "../../sims/clock.ts";
+import { FixedStep, runBudgeted, Settle } from "../../sims/clock.ts";
 import {
   GpuCompute,
   gridSize,
@@ -1492,9 +1492,7 @@ export function deltaSim(params: readonly ParamDef[]): SimFactory {
     const floodSlot = knobs.trigger("floods");
 
     let field: DeltaField | undefined;
-    let key: LayoutKey | undefined;
-    let pending: LayoutKey | undefined;
-    let pendingSince = 0;
+    const settle = new Settle<LayoutKey>(RELAYOUT_MS, { same: sameKey, copy: (k) => ({ ...k }) });
     /** Time-lapse seconds so far, and the steps they owe. */
     let clock = 0;
     const steps = new FixedStep(1 / STEPS_PER_SECOND, MAX_FRAME_STEPS);
@@ -1527,7 +1525,7 @@ export function deltaSim(params: readonly ParamDef[]): SimFactory {
       );
       if (field === undefined) field = new DeltaField(gpu, layout);
       else field.reset(layout);
-      key = { ...want };
+      settle.lay(want);
       markShown = -1;
       warmed = 0;
       field.setEnvironment(environment(frame, knobs, clock, 0));
@@ -1537,15 +1535,9 @@ export function deltaSim(params: readonly ParamDef[]): SimFactory {
     return {
       frame(frame: SimFrame): readonly (WebGLTexture | undefined)[] {
         const now = frame.now;
-        gridFor(frame, key, want);
+        gridFor(frame, settle.laid, want);
         want.seed = knobs.value(frame, "landscape");
-        if (pending === undefined || !sameKey(pending, want)) {
-          pending = { ...want };
-          pendingSince = now;
-        }
-        let sim = field;
-        if (sim === undefined || key === undefined) sim = relayout(frame);
-        else if (!sameKey(key, want) && now - pendingSince >= RELAYOUT_MS) sim = relayout(frame);
+        const sim = settle.due(want, now) || field === undefined ? relayout(frame) : field;
         const layout = sim.layout;
 
         // The warm-up: a fixed count of steps, over as many frames as the machine needs.

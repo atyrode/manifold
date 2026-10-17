@@ -44,7 +44,7 @@
 //     for (let i = 0; i < steps; i++) this.#bed.step(FUEL_STEP, minutes * 60, tend);
 //     // upload bed.logs[i].{mass, char, settle, placed} and bed.{heat, embers, smoke, burst}
 //   }
-import { clamp } from "./math.ts";
+import { approach, clamp } from "./math.ts";
 import { Random } from "./random.ts";
 
 /** A step that keeps the bed's integration accurate (s); larger steps still stay stable. */
@@ -224,13 +224,13 @@ export class FuelBed {
       if (log.lit < 0.5) catching = true;
       // Caught from the coals and the other logs' flames.
       const draw = Math.min(MAX_DRAW, embers + (fire - flames(log.mass, log.lit)) / STEADY_FLAME);
-      log.lit += (1 - log.lit) * (1 - Math.exp(-(draw * dt) / (CATCH * time)));
+      log.lit = approach(log.lit, 1, draw * dt, CATCH * time);
       const loss = Math.min(log.mass, (3 * log.lit * Math.pow(log.mass, 2 / 3) * dt) / time);
       log.mass -= loss;
       burnt += loss;
-      log.char += (1 - log.char) * (1 - Math.exp(-(log.lit * dt) / (CHAR * time)));
+      log.char = approach(log.char, 1, log.lit * dt, CHAR * time);
       this.#slump(log, false);
-      log.settle += (log.slumps / SLUMPS.length - log.settle) * (1 - Math.exp(-dt / SLUMP_SECONDS));
+      log.settle = approach(log.settle, log.slumps / SLUMPS.length, dt, SLUMP_SECONDS);
       if (log.mass < GONE) {
         burnt += log.mass;
         log.mass = 0;

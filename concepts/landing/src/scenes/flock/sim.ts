@@ -69,7 +69,7 @@ import { markVertex } from "../../mark.ts";
 import { KnobReader, type ParamDef } from "../../params.ts";
 import { Boids, boidRules } from "../../sims/boids.ts";
 import { FixedStep } from "../../sims/clock.ts";
-import { clamp, lerp, smoothstep } from "../../sims/math.ts";
+import { approach, clamp, easeFactor, lerp, smoothstep } from "../../sims/math.ts";
 import { Random } from "../../sims/random.ts";
 import { DataTexture, DirtyRegion } from "../../sims/texture.ts";
 import type { SceneSim, SimFactory, SimFrame } from "../types.ts";
@@ -775,7 +775,7 @@ export class Flock {
     this.#time += STEP;
     const t = this.#time;
     // The flock follows the knobs over a moment, so turning one reshapes it smoothly.
-    const ease = 1 - Math.exp(-STEP / KNOB_EASE);
+    const ease = easeFactor(STEP, KNOB_EASE);
     this.#chaos += (knob.chaos - this.#chaos) * ease;
     this.#cohesion += (knob.cohesion - this.#cohesion) * ease;
     this.#wind += (knob.wind - this.#wind) * ease;
@@ -1274,13 +1274,12 @@ export class Flock {
     let delta = goal - angle;
     delta -= Math.round(delta / (Math.PI * 2)) * Math.PI * 2;
     angle += Math.max(-rate * STEP, Math.min(rate * STEP, delta));
-    const v = speed + (cruise - speed) * (1 - Math.exp(-STEP / 0.6));
+    const v = approach(speed, cruise, STEP, 0.6);
     this.#falconVX = Math.cos(angle) * v;
     this.#falconVY = Math.sin(angle) * v;
     this.#falconX += this.#falconVX * STEP;
     this.#falconY += this.#falconVY * STEP;
-    this.#wingOpen +=
-      ((this.#falconStoop ? 0.1 : 1) - this.#wingOpen) * (1 - Math.exp(-STEP / 0.25));
+    this.#wingOpen = approach(this.#wingOpen, this.#falconStoop ? 0.1 : 1, STEP, 0.25);
     const out =
       this.#falconX < -0.15 ||
       this.#falconX > this.#aspect + 0.15 ||

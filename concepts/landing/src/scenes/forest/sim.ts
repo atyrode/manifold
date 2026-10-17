@@ -30,10 +30,11 @@
 //          bin: (x, y within the bin 0..1, depth m, glow 0..1); glow 0 marks an empty slot.
 //   uSim2  r16f, FOREST_FOG.width x FOREST_FOG.height over the screen's uv, linear: how thick the
 //          mist is here, about 1.
+import { markVertex } from "../../mark.ts";
 import type { ParamDef } from "../../params.ts";
 import { type BuildKind, BuildSlot } from "../../sims/build.ts";
 import { FixedStep } from "../../sims/clock.ts";
-import { clamp, hash31, smoothstep } from "../../sims/math.ts";
+import { approach, clamp, easeFactor, hash31, lerp, smoothstep } from "../../sims/math.ts";
 import { valueNoise } from "../../sims/noise.ts";
 import { mulberry32, Random } from "../../sims/random.ts";
 import { atEase, facing, isShy, stepShrink, type Shrink } from "../../sims/temperament.ts";
@@ -1074,7 +1075,7 @@ class ForestLife {
       }
     }
 
-    const ease = 1 - Math.exp(-h / 0.3);
+    const ease = easeFactor(h, 0.3);
     for (const spirit of this.#spirits) {
       if (spirit.state === "free" || spirit.popAt >= 0) continue;
       spirit.age += h;
@@ -1101,7 +1102,7 @@ class ForestLife {
           spirit.turnFrom + (spirit.turnTo - spirit.turnFrom) * rattleEase(x, spirit.ticks);
         if (x >= 1) spirit.turnAge = -1;
       }
-      spirit.rattle += ((spirit.turnAge >= 0 ? 1 : 0) - spirit.rattle) * (1 - Math.exp(-h / 0.15));
+      spirit.rattle = approach(spirit.rattle, spirit.turnAge >= 0 ? 1 : 0, h, 0.15);
       spirit.yawHold = Math.max(0, spirit.yawHold - h);
 
       // The pointer near its head: a curious spirit turns to look at it, a shy one ducks into the moss
@@ -1318,8 +1319,8 @@ class ForestLife {
     st.walked += v * h;
     st.gait = (st.gait + (v * h) / STAG_CYCLE) % 1;
     const looking = st.mode === "stop" && st.timer > 0.8 && st.timer < st.pauseFor - 0.6;
-    st.look += ((looking ? 1 : 0) - st.look) * (1 - Math.exp(-h / STAG_LOOK_TIME));
-    st.headUp += ((st.mode === "stop" ? 1 : 0.35) - st.headUp) * (1 - Math.exp(-h / 0.9));
+    st.look = approach(st.look, looking ? 1 : 0, h, STAG_LOOK_TIME);
+    st.headUp = approach(st.headUp, st.mode === "stop" ? 1 : 0.35, h, 0.9);
     if (st.dir * st.x > 0.5 * aspect * FOREST_STAG.z + 4) {
       st.active = false;
       st.alpha = 0;
@@ -1394,13 +1395,13 @@ class ForestLife {
     const mx = -0.5 * la + rock.edge;
     const my = forestScreenY(rock.centre, rock.z) + FOREST_MARK.lift * ry;
     const ms = FOREST_MARK.size * ry;
-    const vx = [-0.47, -0.47, 0, 0.47, 0.47];
-    const vy = [-0.5, 0.5, -0.08, 0.5, -0.5];
     for (let i = 0; i < 14; i++) {
       const k = Math.min(3, Math.floor(this.#random() * 4));
       const t = this.#random();
-      const x = (vx[k] ?? 0) + ((vx[k + 1] ?? 0) - (vx[k] ?? 0)) * t;
-      const y = (vy[k] ?? 0) + ((vy[k + 1] ?? 0) - (vy[k] ?? 0)) * t;
+      const from = markVertex(k);
+      const to = markVertex(k + 1);
+      const x = lerp(from[0], to[0], t);
+      const y = lerp(from[1], to[1], t);
       this.#puff(mx + x * ms, my + y * ms, rock.z - 0.1, 1, 0.01, 0.6);
     }
   }
@@ -1482,7 +1483,7 @@ class ForestLife {
     const w = FOREST_FOG.width;
     const rows = FOREST_FOG.height;
     this.#fogShift += (0.012 + 0.03 * Math.abs(this.#wind)) * Math.sign(this.#wind || 1) * h;
-    const relax = 1 - Math.exp(-h / FOG_RELAX);
+    const relax = easeFactor(h, FOG_RELAX);
     for (let j = 0; j < rows; j++) {
       const y = (j + 0.5) / rows;
       for (let i = 0; i < w; i++) {

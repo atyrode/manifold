@@ -25,7 +25,7 @@
 //          angle, length in disc units), (1, depth m, alpha, 2). Unused rows are 0.
 import { KnobReader, type ParamDef } from "../../params.ts";
 import { FixedStep } from "../../sims/clock.ts";
-import { hash31, smoothstep } from "../../sims/math.ts";
+import { approach, hash31, smoothstep } from "../../sims/math.ts";
 import { mulberry32 } from "../../sims/random.ts";
 import { springStep, type Spring } from "../../sims/spring.ts";
 import { DataTexture } from "../../sims/texture.ts";
@@ -652,7 +652,7 @@ class BambooSim implements SceneSim {
     const py = pointer.y;
     if (this.#pointerX !== undefined && dt > 0) {
       const speed = Math.min(BRUSH_MAX, Math.max(-BRUSH_MAX, (px - this.#pointerX) / dt));
-      this.#pointerSpeed += (speed - this.#pointerSpeed) * (1 - Math.exp(-dt / BRUSH_SMOOTH));
+      this.#pointerSpeed = approach(this.#pointerSpeed, speed, dt, BRUSH_SMOOTH);
     }
     this.#pointerX = px;
     for (const culm of this.#culms) {
@@ -860,7 +860,7 @@ class BambooSim implements SceneSim {
     const mass = WATER_MASS * this.#fill;
     const upright = smoothstep(-0.2, 0.25, this.#angle);
     const settle = waterDown(this.#fill) + (waterUp(this.#fill) - waterDown(this.#fill)) * upright;
-    this.#slosh += (settle - this.#slosh) * (1 - Math.exp(-h / SLOSH_TIME));
+    this.#slosh = approach(this.#slosh, settle, h, SLOSH_TIME);
     const inertia = TUBE_INERTIA + mass * this.#slosh * this.#slosh;
     let torque =
       -GRAVITY * Math.cos(this.#angle) * (TUBE_MOMENT + mass * this.#slosh) -

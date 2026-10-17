@@ -49,11 +49,12 @@
 //          warm-up 0..1 (cold liquid is cloudy) and the share of the glass the wax covers in the
 //          picture; texel 2, the wax's body for the shader: its metaball reach and teardrop stretch
 //          (× the classic wax's), 0, 0.
+import { MARK_VERTICES } from "../../mark.ts";
 import { KnobReader, type ParamDef } from "../../params.ts";
 import { glslFloat } from "../../shaders/glsl.ts";
 import { runBudgeted } from "../../sims/clock.ts";
 import { materialAt } from "../../sims/material.ts";
-import { clamp, smoothstep } from "../../sims/math.ts";
+import { approach, clamp, easeFactor, smoothstep } from "../../sims/math.ts";
 import { DataTexture } from "../../sims/texture.ts";
 import type { PointerState, SceneSim, SimFactory, SimFrame } from "../types.ts";
 
@@ -368,13 +369,7 @@ function liquidTemperature(gy: number, warm: number): number {
 
 /** The Manifold M as target points (glass units): its five corners and `count - 5` more along its strokes. */
 function markTargets(count: number): { x: number; y: number }[] {
-  const corners = [
-    [-0.47, -0.5],
-    [-0.47, 0.5],
-    [0, -0.08],
-    [0.47, 0.5],
-    [0.47, -0.5],
-  ] as const;
+  const corners = MARK_VERTICES;
   const strokes = corners.slice(0, 4).map((a, k) => {
     const b = corners[k + 1] ?? a;
     return { a, b, length: Math.hypot(b[0] - a[0], b[1] - a[1]) };
@@ -738,12 +733,12 @@ class Lamp {
     const wax = this.wax;
     const n = this.used;
     const quick = 0.75 + 0.5 * heat;
-    if (!settling) this.warm += (1 - this.warm) * (1 - Math.exp((-h * quick) / WARM_TAU));
+    if (!settling) this.warm = approach(this.warm, 1, h * quick, WARM_TAU);
     const warm = this.warm;
     // The coil heats with the bulb, well before the liquid around it has warmed.
     const coilT = (COIL_T0 + COIL_T1 * heat) * Math.min(1, 0.35 + 3 * warm) * this.bulb;
     const lift = BUOYANCY * (0.85 + 0.3 * heat);
-    const grow = 1 - Math.exp(-h / GROW_TAU);
+    const grow = easeFactor(h, GROW_TAU);
 
     for (let i = 0; i < n; i++) {
       const w = wax[i];
@@ -887,7 +882,7 @@ class Lamp {
   /** Ease each parcel's M glow toward the M's (its own parcels only). */
   glowStep(dt: number): void {
     const glow = this.markGlow();
-    const ease = 1 - Math.exp(-dt / 0.4);
+    const ease = easeFactor(dt, 0.4);
     for (const w of this.wax) w.glow += ((w.inMark ? glow : 0) - w.glow) * ease;
   }
 

@@ -3,6 +3,7 @@
 // neon Manifold M hums on a rooftop. The shader is ./shader.ts; the cat's gaze is eased here on the
 // CPU (uSim0).
 import { feature, range, toggle, type ParamDef } from "../../params.ts";
+import { easeFactor } from "../../sims/math.ts";
 import { DataTexture } from "../../sims/texture.ts";
 import { atmosphereGroups, skyKnobs, weatherKnobs } from "../atmosphere.ts";
 import type { SceneDef, SceneSim, SimFrame } from "../types.ts";
@@ -65,7 +66,7 @@ function sillGaze(gl: WebGL2RenderingContext): SceneSim {
           fixY = pointer.y;
           lastShift = time;
         }
-        const turn = 1 - Math.exp(-step / TURN_TIME);
+        const turn = easeFactor(step, TURN_TIME);
         gazeX += (fixX - gazeX) * turn;
         gazeY += (fixY - gazeY) * turn;
         // Interest comes quickly and fades slowly.

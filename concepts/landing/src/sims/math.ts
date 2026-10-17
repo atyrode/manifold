@@ -5,6 +5,11 @@
 //   lerp(a, b, t)            a + (b - a) · t (GLSL mix)
 //   smoothstep(e0, e1, x)    GLSL smoothstep; smoothstep(0, 1, x) is the clamped `smooth(x)` too
 //   fract(x)                 x - floor(x) (GLSL fract)
+//   easeFactor(dt, tau)      1 - exp(-dt / tau): the share an exponential ease covers in dt seconds
+//   approach(x, to, dt, tau) x + (to - x) · easeFactor(dt, tau): x eased toward `to` with time
+//                            constant tau, the same at any frame rate (a lag, a smoothing, a fade
+//                            toward 0 or 1). Pass dt = 0 for no move; tau = 0 is not a number of
+//                            seconds (0 / 0 is NaN at dt = 0)
 //   hash31(a, b, c)          a stable number in [0, 1) for three integers (a lattice hash)
 //   glslHash12(x, y)         common.ts `hash12(vec2(x, y))` in float32 steps, as the shader runs it:
 //                            for a sim that must agree with what its shader hashes (pond's koi
@@ -48,6 +53,20 @@ export function smoothstep(edge0: number, edge1: number, x: number): number {
 /** x - floor(x), as GLSL fract: in [0, 1), except that a tiny negative x rounds up to exactly 1. */
 export function fract(x: number): number {
   return x - Math.floor(x);
+}
+
+/** 1 - exp(-dt / tau): the share of the way to its target an exponential ease with time constant tau covers in dt seconds. */
+export function easeFactor(dt: number, tau: number): number {
+  return 1 - Math.exp(-dt / tau);
+}
+
+/**
+ * `current` eased toward `target` for dt seconds with time constant tau (seconds to cover 1 - 1/e of
+ * the gap), as `current + (target - current) * (1 - exp(-dt / tau))`: frame-rate independent, since two
+ * steps of dt cover what one of 2 dt does. For one factor across many values, use easeFactor.
+ */
+export function approach(current: number, target: number, dt: number, tau: number): number {
+  return current + (target - current) * easeFactor(dt, tau);
 }
 
 /**

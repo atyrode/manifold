@@ -33,7 +33,7 @@
 import { KnobReader, type ParamDef } from "../../params.ts";
 import { markDistance } from "../../mark.ts";
 import { FixedStep } from "../../sims/clock.ts";
-import { clamp, lerp, smoothstep } from "../../sims/math.ts";
+import { approach, clamp, lerp, smoothstep } from "../../sims/math.ts";
 import { springStep, type Spring } from "../../sims/spring.ts";
 import { DataTexture } from "../../sims/texture.ts";
 import type { SceneSim, SimFactory, SimFrame } from "../types.ts";
@@ -184,10 +184,6 @@ const SLUMP_DAMPING = 1;
 // ---- helpers ---------------------------------------------------------------------------------
 
 const TAU = Math.PI * 2;
-
-/** Move `value` toward `target` with time constant `tau` over `dt` seconds. */
-const approach = (value: number, target: number, dt: number, tau: number): number =>
-  value + (target - value) * (1 - Math.exp(-dt / tau));
 
 /**
  * The passage's gate on the magnet's field (exactly 1 at rest), for a field of `field` (1 at full

@@ -45,6 +45,7 @@
 // entrance ends. On the way out the dippers stop and the last waves run out in time-lapse to the
 // sponges (the Doppler dipper's carriage halts). It is the same water at the same step, only more
 // steps a frame and the dippers' strength differ, and at rest (no passage) neither is touched.
+import { MARK_VERTICES } from "../../mark.ts";
 import type { ParamDef } from "../../params.ts";
 import { FixedStep } from "../../sims/clock.ts";
 import {
@@ -62,7 +63,6 @@ import {
   RIPPLE_DIPPER,
   RIPPLE_EXPERIMENTS,
   RIPPLE_FREQUENCY,
-  RIPPLE_M,
   RIPPLE_SPEED,
   TWO,
   rippleLayout,
@@ -194,7 +194,7 @@ const glsl = (x: number): string => (Number.isInteger(x) ? x.toFixed(1) : String
 const TAU = Math.PI * 2;
 
 /** The M's vertices as GLSL constants. */
-const MARK_GLSL = RIPPLE_M.map(
+const MARK_GLSL = MARK_VERTICES.map(
   ([x, y], i) => `const vec2 RIPPLE_M${i} = vec2(${x.toFixed(2)}, ${y.toFixed(2)});`,
 ).join("\n");
 

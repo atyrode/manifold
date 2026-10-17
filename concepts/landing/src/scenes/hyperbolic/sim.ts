@@ -13,7 +13,7 @@
 // small and precise however long the plane glides.
 import { KnobReader, type ParamDef } from "../../params.ts";
 import { mulberry32 } from "../../sims/random.ts";
-import { clamp, smoothstep } from "../../sims/math.ts";
+import { approach, clamp, easeFactor, smoothstep } from "../../sims/math.ts";
 import { DataTexture } from "../../sims/texture.ts";
 import type {
   PointerState,
@@ -965,7 +965,7 @@ class HyperbolicSim implements SceneSim {
       const velocity = sum(faster(ambient, this.#steer), this.#coast);
       this.#motion = compose(this.#motion, after(velocity, -glide));
       this.#coast = faster(this.#coast, Math.exp(-glide / COAST));
-      this.#steer += (1 - this.#steer) * (1 - Math.exp(-glide / RESUME));
+      this.#steer = approach(this.#steer, 1, glide, RESUME);
     }
     this.#clock += glide;
     this.#settle();
@@ -1179,7 +1179,7 @@ class HyperbolicSim implements SceneSim {
         length > 1e-12 ? { turn: 0, push: scaled(m, Math.atanh(length) / length) } : REST;
       // The picture moved last → now: the inverse step, per second.
       const velocity = faster(seenFrom(toNow, log), -1 / dt);
-      const k = 1 - Math.exp(-dt / DRAG_SMOOTH);
+      const k = easeFactor(dt, DRAG_SMOOTH);
       this.#dragPace = sum(this.#dragPace, faster(sum(velocity, faster(this.#dragPace, -1)), k));
     }
     this.#grab = now;
@@ -1267,7 +1267,7 @@ class HyperbolicSim implements SceneSim {
       }
     }
     const target = this.#markTile !== undefined && (on || this.#markOnce) ? 1 : 0;
-    this.#markShown += (target - this.#markShown) * (1 - Math.exp(-dt / MARK_FADE));
+    this.#markShown = approach(this.#markShown, target, dt, MARK_FADE);
     if (target === 0 && this.#markShown < 0.002) {
       this.#markTile = undefined;
       this.#markShown = 0;

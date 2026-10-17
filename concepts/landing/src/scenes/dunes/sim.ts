@@ -16,7 +16,7 @@
 // and how far a cell sits below its surroundings (for ambient occlusion).
 import { markDistance } from "../../mark.ts";
 import { KnobReader, type ParamDef } from "../../params.ts";
-import { runBudgeted } from "../../sims/clock.ts";
+import { runBudgeted, Settle } from "../../sims/clock.ts";
 import { marchHeight, sampleRepeat, type HeightMarch, type RayHit } from "../../sims/heightray.ts";
 import { smoothstep } from "../../sims/math.ts";
 import { DataTexture } from "../../sims/texture.ts";
@@ -92,6 +92,12 @@ const HEAP_SLABS = 450;
 const POUR_PER_SECOND = 900;
 /** Wall-clock milliseconds the supply and arrangement knobs must rest before the field is laid out anew. */
 const RELAYOUT_MS = 250;
+
+/** The knobs a field is laid out from. */
+interface FieldKey {
+  sand: number;
+  arrangement: number;
+}
 
 /**
  * The aerial camera in grid space: where it stands, its eye `height` plus `rise` times the mean
@@ -808,13 +814,12 @@ export function dunesSim(params: readonly ParamDef[]): SimFactory {
     // The sand as the shader last saw it, for the pointer's ray.
     const ground = (x: number, z: number): number =>
       sampleRepeat(surface.heights, DUNES_GRID, DUNES_GRID, x, z);
-    // The knobs the laid-out field was made from, and the pair seen last frame (with when it first showed).
-    let laid = false;
-    let laidSand = 0;
-    let laidArrangement = 0;
-    let seenSand = Number.NaN;
-    let seenArrangement = Number.NaN;
-    let seenSince = 0;
+    // The knobs the laid-out field was made from, and the pair the frame wants.
+    const settle = new Settle<FieldKey>(RELAYOUT_MS, {
+      same: (a, b) => a.sand === b.sand && a.arrangement === b.arrangement,
+      copy: (k) => ({ ...k }),
+    });
+    const want: FieldKey = { sand: 0, arrangement: 0 };
     // The M's size as last stood in the field (0: none; -1: not yet set).
     let stoneSize = -1;
     let warmed = WARM_STEPS;
@@ -842,20 +847,12 @@ export function dunesSim(params: readonly ParamDef[]): SimFactory {
         }
 
         // A new supply or arrangement lays the field out afresh once the knob rests, then warms up.
-        const rested = sand === seenSand && arrangement === seenArrangement;
-        const changed = sand !== laidSand || arrangement !== laidArrangement;
-        const relayout = !laid || (rested && changed && now - seenSince >= RELAYOUT_MS);
-        if (!rested) {
-          seenSand = sand;
-          seenArrangement = arrangement;
-          seenSince = now;
-        }
-        if (relayout) {
+        want.sand = sand;
+        want.arrangement = arrangement;
+        if (settle.due(want, now)) {
           field.reset(sand, arrangement);
           start.update(field);
-          laid = true;
-          laidSand = sand;
-          laidArrangement = arrangement;
+          settle.lay(want);
           warmed = 0;
           edited = true;
         }

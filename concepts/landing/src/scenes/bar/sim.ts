@@ -52,7 +52,7 @@
 //   18           candle: draught x, y (-1..1); the ceiling fan's angle (rad, 0..2π); seconds since
 //                last call was called (-1: not called)
 import type { ParamDef } from "../../params.ts";
-import { clamp, smoothstep } from "../../sims/math.ts";
+import { approach, clamp, smoothstep } from "../../sims/math.ts";
 import { Random } from "../../sims/random.ts";
 import { DataTexture } from "../../sims/texture.ts";
 import type { SceneSim, SimFactory, SimFrame } from "../types.ts";
@@ -191,9 +191,6 @@ const YOUR_END = 0;
 const ONE_FOR_THE_ROAD = 0.5;
 
 export class BarSimError extends Error {}
-
-const ease = (value: number, to: number, dt: number, tau: number): number =>
-  value + (to - value) * (1 - Math.exp(-dt / tau));
 
 type PatronState = "empty" | "arriving" | "sitting" | "seated" | "rising" | "leaving";
 
@@ -569,13 +566,13 @@ class BarEvening implements SceneSim {
     this.#prevX = pointer.inside ? px : Number.NaN;
     this.#prevY = pointer.inside ? py : Number.NaN;
     if (dt > 0) {
-      this.#draftX = ease(
+      this.#draftX = approach(
         this.#draftX,
         pushX,
         dt,
         Math.abs(pushX) > Math.abs(this.#draftX) ? DRAUGHT_LEAN : DRAUGHT_SETTLE,
       );
-      this.#draftY = ease(
+      this.#draftY = approach(
         this.#draftY,
         pushY,
         dt,
@@ -733,10 +730,10 @@ class BarEvening implements SceneSim {
         throw new BarSimError(`bar: unknown patron state ${String(never)}`);
       }
     }
-    patron.facing = ease(patron.facing, patron.facingTo, STEP, FACE_TIME);
-    patron.turn = ease(patron.turn, patron.turnTo, STEP, TURN_TIME);
+    patron.facing = approach(patron.facing, patron.facingTo, STEP, FACE_TIME);
+    patron.turn = approach(patron.turn, patron.turnTo, STEP, TURN_TIME);
     patron.wet = Math.max(0, patron.wet - STEP / COAT_DRY);
-    if (patron.state !== "seated") patron.talk = ease(patron.talk, 0, STEP, TALK_TIME * 0.5);
+    if (patron.state !== "seated") patron.talk = approach(patron.talk, 0, STEP, TALK_TIME * 0.5);
     if (drink && patron.state === "rising" && drink.fill > -0.5) drink.abandoned = true;
   }
 
@@ -808,7 +805,7 @@ class BarEvening implements SceneSim {
         right.turnTo < -0.5 &&
         right.turnTo > -1.2;
       const talking = patron.state === "seated" && (withLeft || withRight);
-      patron.talk = ease(patron.talk, talking ? 1 : 0, STEP, TALK_TIME);
+      patron.talk = approach(patron.talk, talking ? 1 : 0, STEP, TALK_TIME);
     }
   }
 
@@ -839,8 +836,8 @@ class BarEvening implements SceneSim {
       bar.lookTo = r < 0.2 ? -1 : r < 0.55 ? (this.#rng.next() - 0.5) * 1.2 : 0;
       bar.nextLook = clock + this.#rng.range(4, 14);
     }
-    bar.look = ease(bar.look, bar.lookTo, STEP, TURN_TIME);
-    bar.attend = ease(bar.attend, bar.act === ACT.chat && bar.seat < 0 ? 1 : 0, STEP, 0.6);
+    bar.look = approach(bar.look, bar.lookTo, STEP, TURN_TIME);
+    bar.attend = approach(bar.attend, bar.act === ACT.chat && bar.seat < 0 ? 1 : 0, STEP, 0.6);
   }
 
   /** What happens at fixed moments inside an action: bottles taken and returned, glasses set down, filled and cleared. */

@@ -1,4 +1,5 @@
-// Time for sims: a fixed-step accumulator for the frame loop, and a step budget for warm-ups.
+// Time for sims: a fixed-step accumulator for the frame loop, a step budget for warm-ups and the
+// relayout debounce (Settle, below the budget).
 //
 // FixedStep: a sim steps a fixed h seconds at a time whatever the frame rate, so a seed plays out
 // the same at 30 Hz and at 144 Hz. advance() adds a frame's sim time, caps what is owed at maxSteps
@@ -157,4 +158,67 @@ export function runBudgeted(
     if (timed && performance.now() - started >= budgetMs) break;
   }
   return Math.min(i, maxSteps);
+}
+
+/** What a Settle compares and keeps of a key. */
+export interface SettleKeys<K> {
+  /** Whether two keys are the same layout; Object.is when omitted. */
+  same?: (a: K, b: K) => boolean;
+  /** A key to keep, for a caller that rewrites the key it passes in place; the key itself when omitted. */
+  copy?: (key: K) => K;
+}
+
+/**
+ * The relayout debounce: a sim whose layout depends on knobs lays it out at once the first time, then
+ * anew only once the key it wants has stood unchanged for `ms` wall-clock milliseconds (`frame.now`),
+ * so a dragged slider does not rebuild the field on every frame. The layout on show stays meanwhile.
+ *   new Settle(ms, { same, copy })
+ *   due(want, now)   call every frame with the key the frame wants; true when the layout is to be
+ *                    (re)built now: none yet, or one that differs from `want` while `want` has rested
+ *   lay(key)         the layout for `key` is made: later frames compare against it
+ *   stands(want)     whether the layout on show is the one for `want`
+ *   laid             the key of the layout on show, undefined before the first
+ * Usage:
+ *   if (settle.due(want, frame.now)) { build(want); settle.lay(want); }
+ */
+export class Settle<K> {
+  /** Wall-clock milliseconds a changed key must rest before it is laid out. */
+  readonly ms: number;
+  readonly #same: (a: K, b: K) => boolean;
+  readonly #copy: (key: K) => K;
+  #laid: K | undefined;
+  #pending: K | undefined;
+  #since = 0;
+
+  constructor(ms: number, keys: SettleKeys<K> = {}) {
+    if (!(ms >= 0)) throw new ClockError(`settle time ${ms} ms is not a number of ms from 0`);
+    this.ms = ms;
+    this.#same = keys.same ?? Object.is;
+    this.#copy = keys.copy ?? ((key) => key);
+  }
+
+  get laid(): K | undefined {
+    return this.#laid;
+  }
+
+  stands(want: K): boolean {
+    const laid = this.#laid;
+    return laid !== undefined && this.#same(laid, want);
+  }
+
+  due(want: K, now: number): boolean {
+    const pending = this.#pending;
+    if (pending === undefined || !this.#same(pending, want)) {
+      this.#pending = this.#copy(want);
+      this.#since = now;
+    }
+    const laid = this.#laid;
+    return laid === undefined || (!this.#same(laid, want) && now - this.#since >= this.ms);
+  }
+
+  lay(key: K): void {
+    const kept = this.#copy(key);
+    this.#laid = kept;
+    this.#pending = kept;
+  }
 }

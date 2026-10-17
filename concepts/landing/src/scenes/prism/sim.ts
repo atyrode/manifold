@@ -40,7 +40,7 @@
 // representable, so however the GPU converts the upload it cannot round them.
 import { KnobReader, type ParamDef } from "../../params.ts";
 import { FixedStep } from "../../sims/clock.ts";
-import { clamp, smoothstep } from "../../sims/math.ts";
+import { clamp, easeFactor, smoothstep } from "../../sims/math.ts";
 import { springStep, type Spring } from "../../sims/spring.ts";
 import { splitHalf } from "../../sims/half.ts";
 import { DataTexture } from "../../sims/texture.ts";
@@ -909,7 +909,7 @@ class PrismSim implements SceneSim {
       const restY = 2 * (ey + uy * half) - this.#centreY;
       // A change of set-up (gap, motion, screen) moves it over a moment rather than at once.
       const follow =
-        Number.isNaN(this.#restX) || this.#secondShown < 1 ? 1 : 1 - Math.exp(-dt / SETTLE);
+        Number.isNaN(this.#restX) || this.#secondShown < 1 ? 1 : easeFactor(dt, SETTLE);
       this.#restX = Number.isNaN(this.#restX)
         ? restX
         : this.#restX + (restX - this.#restX) * follow;

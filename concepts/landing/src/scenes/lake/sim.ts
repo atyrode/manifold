@@ -57,9 +57,10 @@
 // snow (20k texels, ~1 ms) and uploads it (80 KB) and the state row (8 KB); a zipping crack
 // stamps a few segments and uploads the few columns they touch. A change of seed, fractures or the
 // M re-stamps the whole field (~10 ms). Nothing is allocated per frame outside those events.
+import { markVertex } from "../../mark.ts";
 import type { ParamDef } from "../../params.ts";
 import { LevelCamera } from "../../sims/camera.ts";
-import { clamp, hash31, smoothstep } from "../../sims/math.ts";
+import { approach, clamp, hash31, smoothstep } from "../../sims/math.ts";
 import { valueNoise } from "../../sims/noise.ts";
 import { Random } from "../../sims/random.ts";
 import { DataTexture } from "../../sims/texture.ts";
@@ -851,7 +852,7 @@ class FrozenLake implements SceneSim {
     this.#zip(dt);
     this.#auroraStep(dt, mdt, substorm);
 
-    this.#wind += (wind - this.#wind) * (1 - Math.exp(-mdt / WIND_EASE));
+    this.#wind = approach(this.#wind, wind, mdt, WIND_EASE);
     this.#windOffset += this.#wind * SALTATION * mdt;
     this.#gustOffset += this.#wind * GUST_PACE * mdt;
     this.#snow.step(mdt, this.#wind, drift, snowfall, this.#gustOffset);
@@ -1244,14 +1245,16 @@ class FrozenLake implements SceneSim {
     const half = this.#aspect / 2;
     const size = Math.min(MARK_SIZE, 0.3 * half);
     const cu = Math.min(0.2, half - 0.6 * size - 0.03);
-    const corners = [-0.47, -0.5, -0.47, 0.5, 0, -0.08, 0.47, 0.5, 0.47, -0.5];
     const crack = new Crack(MARK_ID, 0.9);
-    crack.add(cu + size * (corners[0] ?? 0), MARK_DEPTH - size * (corners[1] ?? 0));
+    const start = markVertex(0);
+    crack.add(cu + size * start[0], MARK_DEPTH - size * start[1]);
     for (let c = 0; c < 4; c++) {
-      const u0 = cu + size * (corners[c * 2] ?? 0);
-      const v0 = MARK_DEPTH - size * (corners[c * 2 + 1] ?? 0);
-      const u1 = cu + size * (corners[c * 2 + 2] ?? 0);
-      const v1 = MARK_DEPTH - size * (corners[c * 2 + 3] ?? 0);
+      const from = markVertex(c);
+      const to = markVertex(c + 1);
+      const u0 = cu + size * from[0];
+      const v0 = MARK_DEPTH - size * from[1];
+      const u1 = cu + size * to[0];
+      const v1 = MARK_DEPTH - size * to[1];
       const len = Math.hypot(u1 - u0, v1 - v0);
       const steps = Math.max(2, Math.round(len / (STEP_SH * 0.75)));
       for (let s = 1; s <= steps; s++) {
@@ -1340,7 +1343,7 @@ class FrozenLake implements SceneSim {
       ? GROWTH_SHARE * smoothstep(GROWTH, 0, this.#nextStorm - this.#clock)
       : 0;
     const target = Math.max(breakup, growth);
-    this.#surge += (target - this.#surge) * (1 - Math.exp(-dt / SURGE_EASE));
+    this.#surge = approach(this.#surge, target, dt, SURGE_EASE);
     this.#auroraClock += mdt * (1 + PACE_SURGE * this.#surge);
   }
 

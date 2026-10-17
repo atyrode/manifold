@@ -25,7 +25,7 @@
 //           metres before the start the train slows over, 0, 0); kind 0 is an empty slot
 //   14, 15  cars on the road alongside: (metres ahead of the train, heading +1 / -1, 1 while there, 0)
 import { KnobReader, type ParamDef } from "../../params.ts";
-import { clamp, smoothstep } from "../../sims/math.ts";
+import { approach, clamp, smoothstep } from "../../sims/math.ts";
 import { mulberry32 } from "../../sims/random.ts";
 import { DataTexture } from "../../sims/texture.ts";
 import type { SceneSim, SimFactory, SimFrame } from "../types.ts";
@@ -282,10 +282,9 @@ class TrainJourney implements SceneSim {
       this.#clock += advance;
       const cruise = this.#cruise(frame);
       const before = this.#v;
-      this.#v += (cruise * this.#slowing() - this.#v) * (1 - Math.exp(-advance / SPEED_EASE));
+      this.#v = approach(this.#v, cruise * this.#slowing(), advance, SPEED_EASE);
       this.#s += 0.5 * (before + this.#v) * advance;
-      this.#accel +=
-        ((this.#v - before) / advance - this.#accel) * (1 - Math.exp(-advance / ACCEL_EASE));
+      this.#accel = approach(this.#accel, (this.#v - before) / advance, advance, ACCEL_EASE);
       this.#schedule(frame);
       this.#driveCars(frame, advance);
     }

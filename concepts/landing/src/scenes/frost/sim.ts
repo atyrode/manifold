@@ -58,6 +58,7 @@
 // it cools, the meltwater refreezes from the cleared patch's edges inward (only texels next to
 // frozen glass refreeze quickly), and the new frost there starts thin and thickens back. While no
 // warmth is left and nothing is melted or regrowing, the melt grid is not stepped at all.
+import { MARK_VERTICES } from "../../mark.ts";
 import { KnobReader, type ParamDef } from "../../params.ts";
 import { type BuildKind, BuildSlot } from "../../sims/build.ts";
 import { smoothstep } from "../../sims/math.ts";
@@ -231,14 +232,6 @@ const WARM_RATE = 40;
 const HELD_PASS = 0.4;
 const HOVER_PASS = 0.29;
 
-/** The Manifold M, as the shader's markDistance draws it (mark units), traced in this order. */
-const MARK_PATH: readonly (readonly [number, number])[] = [
-  [-0.47, -0.5],
-  [-0.47, 0.5],
-  [0, -0.08],
-  [0.47, 0.5],
-  [0.47, -0.5],
-];
 /**
  * Mark units per second the fingertip traces, its pause at each corner, what its pass leaves along
  * its middle (well past MELT_ONSET: the M melts clear), the wait between tracings while the M is
@@ -1112,9 +1105,9 @@ class MeltField {
 /** Where the fingertip is `elapsed` seconds into tracing the M, in mark units; undefined once done. */
 function markPoint(elapsed: number): readonly [number, number] | undefined {
   let left = elapsed;
-  for (let i = 0; i + 1 < MARK_PATH.length; i++) {
-    const a = MARK_PATH[i];
-    const b = MARK_PATH[i + 1];
+  for (let i = 0; i + 1 < MARK_VERTICES.length; i++) {
+    const a = MARK_VERTICES[i];
+    const b = MARK_VERTICES[i + 1];
     if (!a || !b) break;
     const span = Math.hypot(b[0] - a[0], b[1] - a[1]) / MARK_SPEED;
     if (left <= span) {
