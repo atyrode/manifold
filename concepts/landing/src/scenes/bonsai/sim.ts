@@ -1,9 +1,10 @@
 // The bonsai's life on the CPU: the tree grown for its species and seed (tree.ts) and drawn into the
 // maps (raster.ts); the year turning (leaves out, colour, leaf fall, snow lying and melting); each
 // spring's new shoots reaching out of the pads and the invisible gardener trimming them back; the
-// pads swaying on springs in the breeze, gusts and the pointer's passing; leaves, petals and needles
-// fluttering down and settling on the moss, the stand and the floor, where they rot away in patches
-// through the season; and pruning: a click snips the twig under it, which falls and lies with them.
+// pads swaying on springs in the breeze, gusts and every hand's passing (SimFrame.principals);
+// leaves, petals and needles fluttering down and settling on the moss, the stand and the floor,
+// where they rot away in patches through the season; and pruning: a press, anyone's, snips the
+// twig under it, which falls and lies with them.
 // Everything steps STEP at a time on a FixedStep (sims/clock.ts), so the bonsai sways the same at 60
 // and at 144 Hz; the pads' sway, the falling leaves and the cut twigs are drawn between their last
 // two steps by the clock's alpha. A tree is grown and drawn on the build worker (build.ts): until
@@ -25,11 +26,12 @@
 import { climateCold, climateLying } from "../../climate.ts";
 import type { ParamDef } from "../../params.ts";
 import { BuildSlot } from "../../sims/build.ts";
+import { MAX_PRINCIPALS } from "../../principals.ts";
 import { FixedStep } from "../../sims/clock.ts";
 import { easeFactor, smoothstep } from "../../sims/math.ts";
 import { mulberry32 } from "../../sims/random.ts";
 import { DataTexture } from "../../sims/texture.ts";
-import type { PrincipalState, SceneSim, SimFactory, SimFrame } from "../types.ts";
+import type { PrincipalState, SceneSim, SimFactory, SimFrame, ScenePoint } from "../types.ts";
 import { type BonsaiGrowth, bonsaiGrowth } from "./build.ts";
 import {
   BONSAI_ATLAS,
@@ -85,7 +87,7 @@ const BREEZE_SWAY = 0.016;
  *  shakes the pads in air that is otherwise still; the breeze's own waves scale with the knob and stop
  *  when it is off. */
 const GUST_FLOOR = 0.08;
-/** The pointer's push: force per unit of pointer speed (units/s), its reach (pad radii), and the cap. */
+/** A hand's push: force per unit of its speed (units/s), its reach (pad radii), and the cap. */
 const HOVER_GAIN = 0.3;
 const HOVER_REACH = 1.5;
 const SWAY_LIMIT = 0.03;
@@ -146,7 +148,7 @@ interface PadState {
   wx: number;
   wy: number;
   phase: number;
-  /** Screen centre and radii for the pointer. */
+  /** Screen centre and radii for the hands. */
   sx: number;
   sy: number;
   rx: number;
@@ -291,10 +293,13 @@ class BonsaiSim implements SceneSim {
   #cutsThisYear = 0;
   #nextSprite = 0;
 
-  #pointerX: number | undefined;
-  #pointerY = 0;
-  #pointerVX = 0;
-  #pointerVY = 0;
+  /** The hands, by place in SimFrame.principals: display point (x NaN while off the page) and smoothed velocity. */
+  readonly #handX = new Float64Array(MAX_PRINCIPALS).fill(Number.NaN);
+  readonly #handY = new Float64Array(MAX_PRINCIPALS);
+  readonly #handVX = new Float64Array(MAX_PRINCIPALS);
+  readonly #handVY = new Float64Array(MAX_PRINCIPALS);
+  /** The pads' centres in uv, as interest() hands them out (grown as the tree's pads need). */
+  readonly #interest: { x: number; y: number }[] = [];
 
   #primed = false;
   #seenGust = 0;
@@ -410,7 +415,7 @@ class BonsaiSim implements SceneSim {
     }
     this.#watchTriggers(frame.triggers);
     this.#stepPassage(frame, false);
-    this.#trackPointer(frame.pointer, frame.dt, aspect);
+    this.#trackHands(frame.principals, frame.dt, aspect);
     for (let s = 0, n = this.#steps.advance(advance); s < n; s++) {
       this.#keepDrawn();
       this.#advance(STEP);
@@ -438,6 +443,24 @@ class BonsaiSim implements SceneSim {
   /** The sim shows its tree once the first has been grown (on the build worker). */
   ready(): boolean {
     return this.#maps !== undefined;
+  }
+
+  /** The pads, where a press snips the shoot or twig it lands on: the gardener's rounds. */
+  interest(aspect: number): readonly ScenePoint[] {
+    const place = bonsaiPlacement(aspect);
+    const points = this.#interest;
+    points.length = this.#pads.length;
+    for (const [i, s] of this.#pads.entries()) {
+      const x = (s.sx * place.scale + place.x) / aspect + 0.5;
+      const y = s.sy * place.scale + place.y;
+      const point = points[i];
+      if (point === undefined) points[i] = { x, y };
+      else {
+        point.x = x;
+        point.y = y;
+      }
+    }
+    return points;
   }
 
   dispose(): void {
@@ -562,27 +585,32 @@ class BonsaiSim implements SceneSim {
     this.#seenSnow = snow;
   }
 
-  /** The pointer in display units; moving over a pad stirs it, a press prunes what is under it. */
-  #trackPointer(pointer: PrincipalState, dt: number, aspect: number): void {
-    if (!pointer.inside) {
-      this.#pointerX = undefined;
-      this.#pointerVX = 0;
-      this.#pointerVY = 0;
-      return;
-    }
+  /** Every hand in display units; moving over a pad stirs it, a press prunes what is under it. */
+  #trackHands(principals: readonly PrincipalState[], dt: number, aspect: number): void {
     const place = bonsaiPlacement(aspect);
-    const x = ((pointer.x - 0.5) * aspect - place.x) / place.scale - this.#shift;
-    const y = (pointer.y - place.y) / place.scale;
-    if (this.#pointerX !== undefined && dt > 0) {
-      const k = easeFactor(dt, 0.1);
-      this.#pointerVX +=
-        (Math.max(-3, Math.min(3, (x - this.#pointerX) / dt)) - this.#pointerVX) * k;
-      this.#pointerVY +=
-        (Math.max(-3, Math.min(3, (y - this.#pointerY) / dt)) - this.#pointerVY) * k;
+    for (let i = 0; i < MAX_PRINCIPALS; i++) {
+      const hand = principals[i];
+      if (hand === undefined || !hand.inside) {
+        this.#handX[i] = Number.NaN;
+        this.#handVX[i] = 0;
+        this.#handVY[i] = 0;
+        continue;
+      }
+      const x = ((hand.x - 0.5) * aspect - place.x) / place.scale - this.#shift;
+      const y = (hand.y - place.y) / place.scale;
+      const wasX = this.#handX[i] ?? Number.NaN;
+      if (!Number.isNaN(wasX) && dt > 0) {
+        const k = easeFactor(dt, 0.1);
+        const vx = this.#handVX[i] ?? 0;
+        const vy = this.#handVY[i] ?? 0;
+        this.#handVX[i] = vx + (Math.max(-3, Math.min(3, (x - wasX) / dt)) - vx) * k;
+        this.#handVY[i] =
+          vy + (Math.max(-3, Math.min(3, (y - (this.#handY[i] ?? 0)) / dt)) - vy) * k;
+      }
+      this.#handX[i] = x;
+      this.#handY[i] = y;
+      if (hand.pressed) this.#prune(x, y);
     }
-    this.#pointerX = x;
-    this.#pointerY = y;
-    if (pointer.pressed) this.#prune(x, y);
   }
 
   /** One fixed step of dt seconds: the year, the gusts, the pads, the snow, the shoots, everything falling. */
@@ -855,7 +883,7 @@ class BonsaiSim implements SceneSim {
     const amp = BREEZE_SWAY * Math.max(this.#breeze, GUST_FLOOR);
     // The breeze's share of that: all of it from GUST_FLOOR up, fading to none with the breeze off.
     const calm = Math.min(1, Math.max(0, this.#breeze) / GUST_FLOOR);
-    const px = this.#pointerX;
+    const hands = this.#handX;
     for (const [i, s] of this.#pads.entries()) {
       const pad = this.#tree.pads[i];
       if (!pad) continue;
@@ -870,14 +898,16 @@ class BonsaiSim implements SceneSim {
       let fx = s.omega * s.omega * amp * wind * (0.6 + 0.4 * Math.min(1, pad.long / 0.2));
       let fy = s.omega * s.omega * amp * 0.3 * calm * Math.sin(0.83 * lag + s.phase);
       if (push !== 0) fx -= push * (0.6 + 0.4 * Math.min(1, pad.long / 0.2));
-      if (px !== undefined) {
+      for (let k = 0; k < MAX_PRINCIPALS; k++) {
+        const px = hands[k] ?? Number.NaN;
+        if (Number.isNaN(px)) continue;
         const ex = (px - s.sx) / s.rx;
-        const ey = (this.#pointerY - s.sy) / s.ry;
+        const ey = ((this.#handY[k] ?? 0) - s.sy) / s.ry;
         const e = Math.hypot(ex, ey);
         if (e < HOVER_REACH) {
           const near = 1 - e / HOVER_REACH;
-          fx += HOVER_GAIN * this.#pointerVX * near;
-          fy += HOVER_GAIN * 0.5 * this.#pointerVY * near;
+          fx += HOVER_GAIN * (this.#handVX[k] ?? 0) * near;
+          fy += HOVER_GAIN * 0.5 * (this.#handVY[k] ?? 0) * near;
         }
       }
       const z = PAD_DAMPING;

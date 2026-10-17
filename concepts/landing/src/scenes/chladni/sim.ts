@@ -47,13 +47,13 @@
 // mound round the crest as wide as its own threshold; it keeps off the hub, the bolt the plate is
 // driven through.
 //
-// Clicking pours a pinch of sand at the pointer and dragging pours a trail; the grains are taken up
-// at random from the plate, so the amount of sand stays as set. The grains are splatted into a
-// density field (cloud-in-cell), and the shown field eases toward it over only the texels a splat
-// touched or that still ease out of one (`LiveTexels`), not the whole plate. Only the texels it
-// changed since the last frame are uploaded (a rectangle per band of rows, a `DirtyRegion`), as
-// half floats (`halfBits`): settled sand costs nothing, a few dancing grains cost their own corner
-// of the plate.
+// Every hand (SimFrame.principals) pours: a press, a pinch of sand where it lands; a drag, a trail.
+// The grains are taken up at random from the plate, so the amount of sand stays as set. They are
+// splatted into a density field (cloud-in-cell), and the shown field eases toward it over only the
+// texels a splat touched or that still ease out of one (`LiveTexels`), not the whole plate. Only
+// the texels it changed since the last frame are uploaded (a rectangle per band of rows, a
+// `DirtyRegion`), as half floats (`halfBits`): settled sand costs nothing, a few dancing grains
+// cost their own corner of the plate.
 //
 // The passage. A sim built while the scene comes in plays its entrance in place of settling the
 // opening figure: sand is poured evenly over the still plate (grains land in a front sweeping down
@@ -73,6 +73,7 @@
 //   uSim3  r16f CHLADNI_SAND_TEXELS² as uSim0: powder grains per texel, eased the same way; handed
 //          over only while the grain is fine enough to hold powder.
 import { KnobReader, type ParamDef } from "../../params.ts";
+import { MAX_PRINCIPALS } from "../../principals.ts";
 import { markVertex, segmentDistance } from "../../mark.ts";
 import { FixedStep, runBudgeted } from "../../sims/clock.ts";
 import { grainAt, SAND, type Grain } from "../../sims/granular.ts";
@@ -80,7 +81,7 @@ import { halfBits } from "../../sims/half.ts";
 import { clamp, hash31, smoothstep } from "../../sims/math.ts";
 import { Random } from "../../sims/random.ts";
 import { DataTexture, DirtyRegion } from "../../sims/texture.ts";
-import type { PrincipalState, SceneSim, SimFactory, SimFrame } from "../types.ts";
+import type { PrincipalState, SceneSim, SimFactory, SimFrame, ScenePoint } from "../types.ts";
 import { CHLADNI_ENTER, CHLADNI_EXIT, CHLADNI_GRAINS } from "./constants.ts";
 
 const TAU = Math.PI * 2;
@@ -204,9 +205,16 @@ const PREWARM_MS = 120;
 const PREWARM_DONE = 0.004;
 
 // Pouring.
-/** A click pours a pinch of PINCH grains this wide (plate units); a drag pours per plate unit travelled and per second held. */
+/** A press pours a pinch of PINCH grains this wide (plate units); a drag pours per plate unit travelled and per second held. */
 const PINCH = 420;
 const PINCH_RADIUS = 0.05;
+/** Where agents pour, plate units: the four quarters of the plate, clear of the hub. */
+const POUR_POINTS = [
+  [-0.52, 0.46],
+  [0.5, 0.52],
+  [0.48, -0.5],
+  [-0.5, -0.48],
+] as const;
 const POUR_PER_UNIT = 5000;
 const POUR_PER_SECOND = 700;
 const POUR_RADIUS = 0.03;
@@ -682,14 +690,17 @@ class ChladniSim implements SceneSim {
   readonly #hand = new Random();
   /** xorshift32 state for the dance. */
   #noise = 0x2545f491;
-  /** Whether a drag is pouring, and where it last poured. */
-  #pouring = false;
-  #pourX = 0;
-  #pourY = 0;
+  /** Per hand (by place in SimFrame.principals): whether its drag pours, and where it last poured. */
+  readonly #pouring = new Uint8Array(MAX_PRINCIPALS);
+  readonly #pourX = new Float64Array(MAX_PRINCIPALS);
+  readonly #pourY = new Float64Array(MAX_PRINCIPALS);
   /** Steps of settling the opening figure done so far (PREWARM_STEPS: finished). */
   #warmed = PREWARM_STEPS;
   readonly #steps = new FixedStep(STEP, MAX_STEPS);
-  #pourDebt = 0;
+  readonly #pourDebt = new Float64Array(MAX_PRINCIPALS);
+  /** Points of interest (SceneSim.interest) for #interestAspect. */
+  readonly #interest: { x: number; y: number }[] = POUR_POINTS.map(() => ({ x: 0, y: 0 }));
+  #interestAspect = Number.NaN;
   #shedDebt = 0;
   #sandDirty = true;
   /** The shown field has not caught up with the grains yet; `#snap` shows them as they are at once. */
@@ -833,7 +844,8 @@ class ChladniSim implements SceneSim {
       else if (frame.fired[this.#sweepTrigger] === true)
         this.#moveTo(this.#target(false, mark), true);
 
-      this.#pourAt(frame.pointer, dt, frame.aspect);
+      for (let i = 0; i < MAX_PRINCIPALS; i++)
+        this.#pourAt(i, frame.principals[i], dt, frame.aspect);
 
       // Motion scales the plate; a "now" plays out even while motion is 0, and so does the entrance.
       const span = dt * Math.max(frame.motion, this.#arriving || this.#urgent > 0 ? 1 : 0);
@@ -918,6 +930,22 @@ class ChladniSim implements SceneSim {
     this.#modeTexture.dispose();
     this.#stateTexture.dispose();
     this.#powderTexture.dispose();
+  }
+
+  /** The plate's four quarters, where a press pours a pinch of sand. */
+  interest(aspect: number): readonly ScenePoint[] {
+    if (aspect !== this.#interestAspect) {
+      this.#interestAspect = aspect;
+      const a = aspect > 0 ? aspect : 16 / 9;
+      const half = Math.min(CHLADNI_PLATE, (CHLADNI_PLATE_FIT * a) / 2);
+      for (const [i, [x, y]] of POUR_POINTS.entries()) {
+        const point = this.#interest[i];
+        if (point === undefined) continue;
+        point.x = (x * half) / a + 0.5;
+        point.y = y * half + 0.5;
+      }
+    }
+    return this.#interest;
   }
 
   /** A fresh plate for a new seed: sand strewn evenly, then settled into the sweep's first figure. */
@@ -1361,33 +1389,42 @@ class ChladniSim implements SceneSim {
     return stirred;
   }
 
-  /** Click: a pinch of sand where the pointer is. Drag: a trail of it, and a trickle while held still. */
-  #pourAt(pointer: PrincipalState, dt: number, aspect: number): void {
+  /**
+   * Hand `i` (undefined: not present). Press: a pinch of sand where it lands. Drag: a trail of it,
+   * and a trickle while held still.
+   */
+  #pourAt(i: number, hand: PrincipalState | undefined, dt: number, aspect: number): void {
+    if (hand === undefined) {
+      this.#pouring[i] = 0;
+      return;
+    }
     const a = aspect > 0 ? aspect : 16 / 9;
     const half = Math.min(CHLADNI_PLATE, (CHLADNI_PLATE_FIT * a) / 2);
-    const x = ((pointer.x - 0.5) * a) / half;
-    const y = (pointer.y - 0.5) / half;
+    const x = ((hand.x - 0.5) * a) / half;
+    const y = (hand.y - 0.5) / half;
     // A press (even one already released within the frame) pours a pinch.
-    if (pointer.pressed && pointer.inside) this.#strew(x, y, x, y, PINCH, PINCH_RADIUS);
-    if (!pointer.down || !pointer.inside) {
-      this.#pouring = false;
+    if (hand.pressed && hand.inside) this.#strew(x, y, x, y, PINCH, PINCH_RADIUS);
+    if (!hand.down || !hand.inside) {
+      this.#pouring[i] = 0;
       return;
     }
-    if (!this.#pouring || pointer.pressed) {
-      this.#pouring = true;
-      this.#pourX = x;
-      this.#pourY = y;
-      this.#pourDebt = 0;
+    if (this.#pouring[i] !== 1 || hand.pressed) {
+      this.#pouring[i] = 1;
+      this.#pourX[i] = x;
+      this.#pourY[i] = y;
+      this.#pourDebt[i] = 0;
       return;
     }
-    const lastX = this.#pourX;
-    const lastY = this.#pourY;
-    this.#pourDebt += Math.hypot(x - lastX, y - lastY) * POUR_PER_UNIT + dt * POUR_PER_SECOND;
-    const grains = Math.floor(this.#pourDebt);
-    this.#pourDebt -= grains;
+    const lastX = this.#pourX[i] ?? x;
+    const lastY = this.#pourY[i] ?? y;
+    const debt =
+      (this.#pourDebt[i] ?? 0) +
+      (Math.hypot(x - lastX, y - lastY) * POUR_PER_UNIT + dt * POUR_PER_SECOND);
+    const grains = Math.floor(debt);
+    this.#pourDebt[i] = debt - grains;
     this.#strew(lastX, lastY, x, y, grains, POUR_RADIUS);
-    this.#pourX = x;
-    this.#pourY = y;
+    this.#pourX[i] = x;
+    this.#pourY[i] = y;
   }
 
   #onPlate(x: number, y: number): boolean {

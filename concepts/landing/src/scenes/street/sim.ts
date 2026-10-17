@@ -47,9 +47,10 @@
 // fall starts (some at the first drops, some only when it is coming down properly) and closes it
 // a while after it stops; walkers arriving in the rain come with it open.
 //
-// The pointer: walkers within LOOK_RADIUS of the point on the street under it look up at the
-// window after a moment (tilting their umbrella back), and walk on a little slower; a click
-// changes the lights.
+// The hands (SimFrame.principals): walkers within LOOK_RADIUS of the point on the street under any
+// of them look up at the window after a moment (tilting their umbrella back), and walk on a little
+// slower. The visitor's click changes the lights: the crossing has one controller, and several
+// hands on it would cycle it faster than anyone could cross.
 //
 // The school outing (a feature with a "now" trigger): a teacher leads small children in yellow
 // hats two by two, each following the child ahead, an assistant at the end of the line; they wait
@@ -108,12 +109,13 @@
 //          side street's, texel 2 the walk signals (green man, red man, 0, 0), each eased over
 //          LAMP_FADE seconds; the green man blinks while the walk phase runs out.
 import type { ParamDef } from "../../params.ts";
+import { MAX_PRINCIPALS } from "../../principals.ts";
 import { FixedStep, runBudgeted } from "../../sims/clock.ts";
 import { DataTexture } from "../../sims/texture.ts";
 import { Errand } from "../../sims/errand.ts";
 import { clamp, fract, smoothstep } from "../../sims/math.ts";
 import { Random } from "../../sims/random.ts";
-import type { PrincipalState, SceneSim, SimFactory, SimFrame } from "../types.ts";
+import type { SceneSim, SimFactory, SimFrame } from "../types.ts";
 import { STREET_PASSAGE } from "./constants.ts";
 
 // ---- The view and the street, shared with the shader ----
@@ -607,7 +609,7 @@ const UMBRELLA_KEEN = 0.01;
 const UMBRELLA_STUBBORN = 0.3;
 const UMBRELLA_DELAY_MIN = 1;
 const UMBRELLA_DELAY_MAX = 9;
-/** Looking up at the window: within this of the point under the pointer (m), after a moment (s). */
+/** Looking up at the window: within this of the point under a hand (m), after a moment (s). */
 const LOOK_RADIUS = 3.4;
 const LOOK_DELAY_MIN = 0.15;
 const LOOK_DELAY_MAX = 0.9;
@@ -1272,9 +1274,10 @@ class StreetCrossing implements SceneSim {
   #seenOuting = 0;
   #seenDelivery = 0;
 
-  #hover = false;
-  #hoverX = 0;
-  #hoverZ = 0;
+  /** The point on the street under each hand (by place in SimFrame.principals), while over it. */
+  readonly #hover = new Uint8Array(MAX_PRINCIPALS);
+  readonly #hoverX = new Float64Array(MAX_PRINCIPALS);
+  readonly #hoverZ = new Float64Array(MAX_PRINCIPALS);
 
   constructor(gl: WebGL2RenderingContext, params: readonly ParamDef[]) {
     const index = (key: KnobKey): number => {
@@ -1355,7 +1358,7 @@ class StreetCrossing implements SceneSim {
       this.#nextDelivery = this.#clock + DELIVERY_FIRST;
 
     this.#watchTriggers(frame.triggers);
-    this.#follow(frame.pointer);
+    this.#follow(frame);
 
     const steps = this.#steps.advance(Math.max(0, frame.dt) * Math.max(0, frame.motion));
     for (let i = 0; i < steps; i++) this.#step(STEP);
@@ -1386,14 +1389,20 @@ class StreetCrossing implements SceneSim {
     this.#seenDelivery = delivery;
   }
 
-  /** The pointer: where on the street it points (walkers near it look up); a click changes the lights. */
-  #follow(pointer: PrincipalState): void {
-    this.#hover = pointer.inside && this.#toGround(pointer.x, pointer.y);
-    if (this.#hover) {
-      this.#hoverX = this.#point[0] ?? 0;
-      this.#hoverZ = this.#point[1] ?? 0;
+  /**
+   * The hands: where on the street each points (walkers near any look up); the visitor's click
+   * changes the lights (one controller, one hand on it: see the header).
+   */
+  #follow(frame: SimFrame): void {
+    for (let i = 0; i < MAX_PRINCIPALS; i++) {
+      const hand = frame.principals[i];
+      const over = hand !== undefined && hand.inside && this.#toGround(hand.x, hand.y);
+      this.#hover[i] = over ? 1 : 0;
+      if (!over) continue;
+      this.#hoverX[i] = this.#point[0] ?? 0;
+      this.#hoverZ[i] = this.#point[1] ?? 0;
     }
-    if (pointer.inside && pointer.pressed) this.#changeLights();
+    if (frame.pointer.inside && frame.pointer.pressed) this.#changeLights();
   }
 
   #changeLights(): void {
@@ -2713,7 +2722,7 @@ class StreetCrossing implements SceneSim {
     w.z = z;
   }
 
-  /** Umbrellas follow the rain or snow; heads turn up toward the pointer's window. */
+  /** Umbrellas follow the rain or snow; heads turn up toward the window where a hand points. */
   #weatherAndPointer(dt: number): void {
     const precip = this.#precip;
     for (const w of this.#walkers) {
@@ -2730,7 +2739,11 @@ class StreetCrossing implements SceneSim {
       }
       w.umbrella = clamp(w.umbrella + (w.umbrellaUp ? dt : -dt) / UMBRELLA_OPEN, 0, 1);
 
-      const near = this.#hover && Math.hypot(this.#hoverX - w.x, this.#hoverZ - w.z) < LOOK_RADIUS;
+      let near = false;
+      for (let i = 0; i < MAX_PRINCIPALS && !near; i++)
+        near =
+          this.#hover[i] === 1 &&
+          Math.hypot((this.#hoverX[i] ?? 0) - w.x, (this.#hoverZ[i] ?? 0) - w.z) < LOOK_RADIUS;
       w.interest = clamp(w.interest + (near ? dt : -0.7 * dt), 0, 2.5);
       if (!w.looking && w.interest > w.lookDelay) w.looking = true;
       if (w.looking && w.interest < 0.05) w.looking = false;

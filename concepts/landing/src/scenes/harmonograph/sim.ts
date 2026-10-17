@@ -9,6 +9,15 @@
 // motion (as pond's koi are), never behind it: the ink is laid at every step, and a pen drawn a
 // step late would trail its own line.
 //
+// The shared table: the sheet is one that everyone present (SimFrame.principals) draws on with the
+// pen's own ink and nib, every hand alike. A drag draws freehand. A tap (a press let go where it
+// went down, as the cast's agents press) lets a small pendulum plotter go at that point: its own
+// pendulums, their frequencies detuned by a hash of whose hand it was and when it pressed, draw a
+// small dying figure there and stop when their swing has died. While hands work the sheet
+// (SHARE_LINGER after the last of them), its ink slowly fades and a finished figure is swung again
+// on the same sheet instead of sliding it away: a calm table nobody ever finishes. With nobody's
+// hand on it, the sheet lives as before. The agents go to its open margins (interest).
+//
 // Units: "p units" are view heights on a landscape screen (on a portrait one, divided by its fit
 // scale, see harmonographScale): the sheet is 2 * HARMONOGRAPH.half = 0.8 across, centred at (cx, 0)
 // and tilted by `tilt`; the ink texture covers exactly the sheet.
@@ -23,12 +32,13 @@
 //          1  the sheet's centre x hi, lo; its tilt (radians); the pen's height above the paper
 import { markVertex } from "../../mark.ts";
 import { KnobReader, type ParamDef } from "../../params.ts";
+import { MAX_PRINCIPALS } from "../../principals.ts";
 import { FixedStep, runBudgeted } from "../../sims/clock.ts";
 import { splitHalf } from "../../sims/half.ts";
 import { clamp, lerp } from "../../sims/math.ts";
 import { Random } from "../../sims/random.ts";
 import { DataTexture, DirtyRegion } from "../../sims/texture.ts";
-import type { SceneSim, SimFactory, SimFrame } from "../types.ts";
+import type { ScenePoint, SceneSim, SimFactory, SimFrame } from "../types.ts";
 
 export class HarmonographError extends Error {}
 
@@ -288,15 +298,31 @@ const TEXELS = HARMONOGRAPH.grid / (2 * HARMONOGRAPH.half);
 /** Nib diameter in texels at "nib" 0 and 1: about one dither cell wide at the default. */
 const NIB_THIN = 1.8;
 const NIB_BOLD = 4.8;
+/**
+ * Rows of ink texels a dirty band spans: the pen's few texels and the fade's sweep (far apart on
+ * the sheet) go up as rectangles of their own, never as one spanning both.
+ */
+const INK_BAND = 32;
+/**
+ * The shared table's fading: the sheet is swept row by row, FADE_SWEEP seconds a pass, each pass
+ * keeping FADE_KEEP / 256 of every texel's ink (and at least one level less, so the faintest goes
+ * too): the ink falls to 1/e in about FADE_SECONDS.
+ */
+const FADE_SECONDS = 90;
+const FADE_SWEEP = 3;
+const FADE_KEEP = Math.round(256 * Math.exp(-FADE_SWEEP / FADE_SECONDS));
 
 /**
  * The ink the pen has laid on the sheet, two channels (figure, signature), and what of it changed
  * since it was last uploaded: a frame's strokes touch a few dozen texels of the sheet's million,
- * and only their rectangle goes to the GPU.
+ * and only their rectangles (one per band of INK_BAND rows) go to the GPU.
  */
 class InkSheet {
   readonly data = new Uint8Array(HARMONOGRAPH.grid * HARMONOGRAPH.grid * 2);
-  readonly #dirty = new DirtyRegion(HARMONOGRAPH.grid, HARMONOGRAPH.grid);
+  readonly #dirty = new DirtyRegion(HARMONOGRAPH.grid, HARMONOGRAPH.grid, Infinity, INK_BAND);
+  /** The row the fade's sweep comes to next, and the share of a row it owes. */
+  #fadeRow = 0;
+  #fadeOwed = 0;
 
   clear(): void {
     this.data.fill(0);
@@ -315,10 +341,38 @@ class InkSheet {
   }
 
   /**
+   * Fade all the ink, both channels, by `seconds` of the sweep (FADE_SWEEP): the rows it comes to
+   * keep FADE_KEEP / 256 of their ink, and only the span of each that held any is marked changed.
+   */
+  fade(seconds: number): void {
+    const size = HARMONOGRAPH.grid;
+    const data = this.data;
+    this.#fadeOwed += (size * seconds) / FADE_SWEEP;
+    while (this.#fadeOwed >= 1) {
+      this.#fadeOwed -= 1;
+      const row = this.#fadeRow;
+      this.#fadeRow = (row + 1) % size;
+      const start = row * size * 2;
+      let first = -1;
+      let last = -1;
+      for (let k = start; k < start + size * 2; k++) {
+        const v = data[k] ?? 0;
+        if (v === 0) continue;
+        data[k] = (v * FADE_KEEP) >> 8;
+        if (first < 0) first = k;
+        last = k;
+      }
+      if (first >= 0)
+        this.#dirty.touch((first - start) >> 1, row, ((last - start) >> 1) + 1, row + 1);
+    }
+  }
+
+  /**
    * Lay a stroke from (ax, ay) to (bx, by), sheet-frame p units, `radius` texels either side at
    * `alpha`. A flat stroke (the figure, a smooth curve of many tiny pieces) covers its own span
    * only and adds on top of what lies there, so crossings run deeper and joints do not bead; a
-   * round one (the signature, with corners) has round ends and keeps the stronger ink.
+   * round one (the signature, with corners; a hand's freehand line) has round ends and keeps the
+   * stronger ink.
    */
   stroke(
     channel: 0 | 1,
@@ -404,6 +458,69 @@ function markPoint(distance: number, size: number, out: Point): void {
   out.y = cy + size * end[1];
 }
 
+// ---- the shared table ----------------------------------------------------------------------------
+
+/** A press that moves less than this (view heights) before it is let go is a tap; more, a drag. */
+const TAP_REACH = 0.012;
+/** A freehand line's ink: a hand pressing the nib, firmer than the swinging pen's light touch. */
+const HAND_INK = 0.8;
+/**
+ * Seconds of the sheet's clock it stays shared (fading, a finished figure swung again on it) after a
+ * hand or a plotter last inked it.
+ */
+const SHARE_LINGER = 45;
+/**
+ * A plotter: its swing as a share of the sheet's pendulums' (the same plans, scaled down), how many
+ * times faster than theirs its swing dies, and the reach (p units) at which it stops.
+ */
+const PLOT_SCALE = 0.2;
+const PLOT_PACE = 10;
+const PLOT_END = 0.006;
+/** Plotters swinging at once; a tap beyond them takes over the one nearest its end. */
+const MAX_PLOTTERS = 12;
+/**
+ * The open paper the cast's agents go to, sheet p units: the margins, where the pendulums' figure
+ * passes only in its first wide loops. The lower right corner is the M's.
+ */
+const OPEN: readonly (readonly [number, number])[] = [
+  [-0.28, 0.28],
+  [0, 0.31],
+  [0.28, 0.28],
+  [-0.31, 0],
+  [0.31, 0],
+  [-0.28, -0.28],
+  [0, -0.31],
+];
+
+/** A small pendulum plotter a tap lets go: its own pendulums, hung over the sheet at (x, y). */
+class Plotter {
+  readonly swing = new Swing();
+  /** Its pendulums; undefined while it is not swinging. */
+  plan: Plan | undefined;
+  x = 0;
+  y = 0;
+  /** The rotary pendulum's radius (the plan's units), and seconds of swing so far. */
+  radius = 0;
+  t = 0;
+  /** Where it last inked, sheet frame. */
+  lastX = 0;
+  lastY = 0;
+}
+
+/**
+ * One principal's hand over the sheet: whether a press of it is held, whether it has moved off into
+ * a drag, where it went down (uv) and when (the motion clock), and where it last inked (sheet frame).
+ */
+interface TableHand {
+  held: boolean;
+  dragging: boolean;
+  pressX: number;
+  pressY: number;
+  pressTime: number;
+  lastX: number;
+  lastY: number;
+}
+
 // ---- the sheet's life ----------------------------------------------------------------------------
 
 /**
@@ -459,6 +576,24 @@ class HarmonographSim implements SceneSim {
   readonly #pos: Point = { x: 0, y: 0 };
   readonly #spot: Point = { x: 0, y: 0 };
   readonly #world: Point = { x: 0, y: 0 };
+  /** The shared table: each principal's hand, by place in SimFrame.principals, and the plotters. */
+  readonly #hands: TableHand[] = Array.from({ length: MAX_PRINCIPALS }, () => ({
+    held: false,
+    dragging: false,
+    pressX: 0,
+    pressY: 0,
+    pressTime: 0,
+    lastX: 0,
+    lastY: 0,
+  }));
+  readonly #plotters = Array.from({ length: MAX_PLOTTERS }, () => new Plotter());
+  readonly #handAt: Point = { x: 0, y: 0 };
+  readonly #plotAt: Point = { x: 0, y: 0 };
+  /** Seconds the sheet stays shared (SHARE_LINGER); 0 while nobody's hand works it. */
+  #sharedFor = 0;
+  /** OPEN in uv for #interestAspect (SceneSim.interest). */
+  readonly #interest: Point[] = OPEN.map(() => ({ x: 0, y: 0 }));
+  #interestAspect = Number.NaN;
 
   #plan: Plan = makePlan(0, 0, 0, undefined);
   #next: Plan | undefined;
@@ -598,6 +733,7 @@ class HarmonographSim implements SceneSim {
       if (this.#warmed < this.#warmSteps) return this.#textures;
     }
 
+    this.#handsOn(frame, st, aspect);
     const dt = Math.min(Math.max(Number.isFinite(frame.dt) ? frame.dt : 0, 0), MAX_FRAME);
     const steps = this.#clock.advance(dt * frame.motion);
     for (let i = 0; i < steps; i++) {
@@ -618,6 +754,156 @@ class HarmonographSim implements SceneSim {
   dispose(): void {
     this.#inkTexture.dispose();
     this.#stateTexture.dispose();
+  }
+
+  /** The sheet's open margins (OPEN), lying in place untilted: where a tap lets a plotter go. */
+  interest(aspect: number): readonly ScenePoint[] {
+    if (aspect !== this.#interestAspect) {
+      this.#interestAspect = aspect;
+      const k = harmonographScale(aspect);
+      for (const [i, [x, y]] of OPEN.entries()) {
+        const point = this.#interest[i];
+        if (point === undefined) continue;
+        point.x = (x * k) / aspect + 0.5;
+        point.y = y * k + 0.5;
+      }
+    }
+    return this.#interest;
+  }
+
+  // ---- the shared table --------------------------------------------------------------------------
+
+  /**
+   * The hands on the sheet, every principal's alike: a drag draws freehand in the pen's ink from
+   * where it went down; a tap lets a plotter go where it pressed (#letGo). They mark the paper only
+   * while the sheet lies in its place.
+   */
+  #handsOn(frame: SimFrame, st: Settings, aspect: number): void {
+    const settled = this.#u === 0;
+    const at = this.#handAt;
+    for (let i = 0; i < MAX_PRINCIPALS; i++) {
+      const hand = this.#hands[i];
+      const p = frame.principals[i];
+      if (hand === undefined) continue;
+      if (p === undefined) {
+        hand.held = false;
+        continue;
+      }
+      if (p.pressed && p.inside) {
+        hand.held = true;
+        hand.dragging = false;
+        hand.pressX = p.x;
+        hand.pressY = p.y;
+        hand.pressTime = frame.motionTime;
+        this.#sheetPoint(p.x, p.y, aspect, at);
+        hand.lastX = at.x;
+        hand.lastY = at.y;
+      }
+      if (!hand.held) continue;
+      if (p.down && p.inside) {
+        if (Math.hypot((p.x - hand.pressX) * aspect, p.y - hand.pressY) > TAP_REACH)
+          hand.dragging = true;
+        if (!hand.dragging) continue;
+        this.#sheetPoint(p.x, p.y, aspect, at);
+        if (settled && frame.dt > 0) {
+          const radius = 0.5 * lerp(NIB_THIN, NIB_BOLD, st.nib);
+          this.#ink.stroke(0, hand.lastX, hand.lastY, at.x, at.y, radius, HAND_INK, false);
+          this.#sharedFor = SHARE_LINGER;
+        }
+        hand.lastX = at.x;
+        hand.lastY = at.y;
+        continue;
+      }
+      hand.held = false;
+      if (!hand.dragging && p.inside && settled) this.#letGo(i, hand, st, aspect);
+    }
+  }
+
+  /** Screen uv (x, y) on the sheet as it lies now, into `out` (sheet frame, p units). */
+  #sheetPoint(x: number, y: number, aspect: number, out: Point): void {
+    const k = harmonographScale(aspect);
+    const px = ((x - 0.5) * aspect) / k - this.#u * this.#slide;
+    const py = (y - 0.5) / k;
+    const cos = Math.cos(this.#tilt);
+    const sin = Math.sin(this.#tilt);
+    out.x = cos * px + sin * py;
+    out.y = cos * py - sin * px;
+  }
+
+  /**
+   * A tap by hand `i` (its place in SimFrame.principals): a plotter is let go over the paper where
+   * it pressed, its pendulums planned from a hash of whose hand it was and the moment it pressed.
+   * A tap off the sheet does nothing; with every plotter swinging, the one nearest its end makes
+   * way.
+   */
+  #letGo(i: number, hand: TableHand, st: Settings, aspect: number): void {
+    const at = this.#handAt;
+    this.#sheetPoint(hand.pressX, hand.pressY, aspect, at);
+    if (Math.max(Math.abs(at.x), Math.abs(at.y)) > HARMONOGRAPH.half) return;
+    let chosen: Plotter | undefined;
+    let least = Infinity;
+    for (const plotter of this.#plotters) {
+      if (plotter.plan === undefined) {
+        chosen = plotter;
+        break;
+      }
+      const reach = plotter.swing.reach(plotter.plan, plotter.radius);
+      if (reach < least) {
+        least = reach;
+        chosen = plotter;
+      }
+    }
+    if (chosen === undefined) return;
+    const plan = makePlan(Math.round(hand.pressTime / STEP), i, st.figure, undefined);
+    chosen.plan = plan;
+    chosen.swing.reset(plan);
+    chosen.radius = ROTARY_RADIUS * st.rotary;
+    chosen.t = 0;
+    chosen.x = at.x;
+    chosen.y = at.y;
+    const start = this.#plotAt;
+    chosen.swing.position(plan, chosen.radius, start);
+    chosen.lastX = at.x + PLOT_SCALE * start.x;
+    chosen.lastY = at.y + PLOT_SCALE * start.y;
+    this.#sharedFor = SHARE_LINGER;
+  }
+
+  /** One step of every swinging plotter: its swing, its ink, and its end once its swing has died. */
+  #stepPlotters(h: number, st: Settings): void {
+    const time = h * st.swing;
+    const rate = this.#rate(st) * PLOT_PACE;
+    const at = this.#plotAt;
+    for (const plotter of this.#plotters) {
+      const plan = plotter.plan;
+      if (plan === undefined) continue;
+      plotter.swing.step(plan, time, rate);
+      plotter.t += time;
+      plotter.swing.position(plan, plotter.radius, at);
+      const x = plotter.x + PLOT_SCALE * at.x;
+      const y = plotter.y + PLOT_SCALE * at.y;
+      const fullness = plotter.swing.fullness(plan);
+      this.#lay(plotter.lastX, plotter.lastY, x, y, plotter.t, fullness, st.nib);
+      plotter.lastX = x;
+      plotter.lastY = y;
+      this.#sharedFor = SHARE_LINGER;
+      if (PLOT_SCALE * plotter.swing.reach(plan, plotter.radius) < PLOT_END)
+        plotter.plan = undefined;
+    }
+  }
+
+  /**
+   * The shared table's renewal: the finished figure is not slid away from under the hands working
+   * the sheet but swung again on it, the pen hovering over to a new plan's start as the old ink
+   * fades.
+   */
+  #swingAgain(st: Settings): void {
+    this.#sheet++;
+    this.#plan = makePlan(st.seed, this.#sheet, st.figure, this.#plan);
+    this.#swing.reset(this.#plan);
+    this.#signed = false;
+    this.#drawT = 0;
+    this.#figureStarted = false;
+    this.#startHover("start", st);
   }
 
   /** The scene's exit: the pen lifts and the finished sheet slides off, gathering speed, whatever it was doing. */
@@ -694,7 +980,10 @@ class HarmonographSim implements SceneSim {
     this.#keepDrawn();
   }
 
-  /** A blank sheet for the current plan, the pendulums at rest at their start (and drawn so, not slid to). */
+  /**
+   * A blank sheet for the current plan, the pendulums at rest at their start (and drawn so, not slid
+   * to); the plotters over the old one stop.
+   */
   #beginSheet(): void {
     this.#swing.reset(this.#plan);
     this.#tilt = this.#plan.tilt;
@@ -705,6 +994,7 @@ class HarmonographSim implements SceneSim {
     this.#signed = false;
     this.#drawT = 0;
     this.#lastDown = false;
+    for (const plotter of this.#plotters) plotter.plan = undefined;
   }
 
   /** The switch went off: the M goes from the sheet. */
@@ -728,6 +1018,12 @@ class HarmonographSim implements SceneSim {
     this.#lift += (this.#liftTarget - this.#lift) * (1 - Math.exp(-h * LIFT_RATE));
     if (this.#phase === "draw") this.#gain += (st.rotary - this.#gain) * (1 - Math.exp(-h * 1.2));
     else this.#gain = st.rotary;
+    // The shared table: the plotters swing, and while hands work the sheet its ink fades.
+    this.#stepPlotters(h, st);
+    if (this.#sharedFor > 0) {
+      this.#sharedFor = Math.max(0, this.#sharedFor - h);
+      this.#ink.fade(h);
+    }
 
     const phase = this.#phase;
     switch (phase) {
@@ -795,24 +1091,36 @@ class HarmonographSim implements SceneSim {
     this.#swing.position(plan, ROTARY_RADIUS * this.#gain, pos);
     const down = this.#lift < DOWN_LIFT;
     if (down && this.#lastDown) {
-      const t = this.#drawT;
-      // Pressure drifts slowly; ink pools and the line swells where the pen lingers; the pen runs dry.
-      const pressure = 0.92 + 0.1 * Math.sin(0.7 * t + 1.3) + 0.06 * Math.sin(1.9 * t + 0.4);
-      const slow = clamp(
-        1 - (Math.hypot(pos.x - this.#lastX, pos.y - this.#lastY) * TEXELS) / 4,
-        0,
-        1,
-      );
-      const radius = 0.5 * lerp(NIB_THIN, NIB_BOLD, st.nib) * pressure * (1 + 0.25 * slow);
-      // Light ink, so the many overlapping passes of a dense figure build tone.
-      const alpha = Math.min(1, (0.36 + 0.2 * this.#swing.fullness(plan)) * (1 + 0.15 * slow));
-      this.#ink.stroke(0, this.#lastX, this.#lastY, pos.x, pos.y, radius, alpha, true);
+      const fullness = this.#swing.fullness(plan);
+      this.#lay(this.#lastX, this.#lastY, pos.x, pos.y, this.#drawT, fullness, st.nib);
     }
     this.#lastX = pos.x;
     this.#lastY = pos.y;
     this.#lastDown = down;
     this.#liftTarget = 0;
     this.#penFromSheet(pos.x, pos.y);
+  }
+
+  /**
+   * A swinging pen's ink from (ax, ay) to (bx, by), sheet frame, `t` seconds into its swing with
+   * `fullness` of its ink left (Swing.fullness). Pressure drifts slowly; ink pools and the line
+   * swells where the pen lingers; the pen runs dry. Light ink, so the many overlapping passes of a
+   * dense figure build tone.
+   */
+  #lay(
+    ax: number,
+    ay: number,
+    bx: number,
+    by: number,
+    t: number,
+    fullness: number,
+    nib: number,
+  ): void {
+    const pressure = 0.92 + 0.1 * Math.sin(0.7 * t + 1.3) + 0.06 * Math.sin(1.9 * t + 0.4);
+    const slow = clamp(1 - (Math.hypot(bx - ax, by - ay) * TEXELS) / 4, 0, 1);
+    const radius = 0.5 * lerp(NIB_THIN, NIB_BOLD, nib) * pressure * (1 + 0.25 * slow);
+    const alpha = Math.min(1, (0.36 + 0.2 * fullness) * (1 + 0.15 * slow));
+    this.#ink.stroke(0, ax, ay, bx, by, radius, alpha, true);
   }
 
   #penFromSheet(lx: number, ly: number): void {
@@ -898,10 +1206,16 @@ class HarmonographSim implements SceneSim {
       return;
     }
     this.#markEvent = false;
-    if (this.#renewEvent || (st.pause !== undefined && this.#phaseT >= st.pause)) {
+    // "Now" changes the sheet, whoever works it.
+    if (this.#renewEvent) {
       this.#renewEvent = false;
       this.#startSlide(st);
+      return;
     }
+    if (st.pause === undefined || this.#phaseT < st.pause) return;
+    // Hands working the sheet keep it: the figure is swung again on it (the shared table).
+    if (this.#sharedFor > 0) this.#swingAgain(st);
+    else this.#startSlide(st);
   }
 
   #startSlide(st: Settings): void {

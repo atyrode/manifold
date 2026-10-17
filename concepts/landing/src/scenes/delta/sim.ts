@@ -38,6 +38,7 @@
 // uploaded once and stands still.
 import { markDistance } from "../../mark.ts";
 import { KnobReader, type ParamDef } from "../../params.ts";
+import { MAX_PRINCIPALS } from "../../principals.ts";
 import { gpuCommonGlsl } from "../../shaders/common.ts";
 import { glslFloat } from "../../shaders/glsl.ts";
 import { FixedStep, runBudgeted, Settle } from "../../sims/clock.ts";
@@ -1016,7 +1017,7 @@ void main() {
 }
 `;
 
-/** The hand: dig a ditch or throw up a bank along the pointer's path. */
+/** A hand: dig a ditch or throw up a bank along its path. */
 const BRUSH = `${HEAD}
 uniform vec2 uFrom;
 uniform vec2 uTo;
@@ -1129,7 +1130,7 @@ interface DeltaEnv {
   wilt: number;
 }
 
-/** Map pointer uv to grid uv, the way the shader cover-fits the grid to the frame. */
+/** Map a hand's uv to grid uv, the way the shader cover-fits the grid to the frame. */
 function gridUv(
   u: number,
   v: number,
@@ -1299,7 +1300,7 @@ class DeltaField {
     this.#morph.run(this.#terrain);
   }
 
-  /** Dig (or bank up) along a stretch of the pointer's path, in cells. */
+  /** Dig (or bank up) along a stretch of a hand's path, in cells. */
   brush(
     from: { x: number; y: number },
     to: { x: number; y: number },
@@ -1500,8 +1501,11 @@ export function deltaSim(params: readonly ParamDef[]): SimFactory {
     /** Warm-up steps taken since the last layout; the sim holds still until all PREWARM_STEPS are done. */
     let warmed = PREWARM_STEPS;
     let manualFlood = -Infinity;
-    let dragging = false;
-    // Scratch the frame rewrites: the grid the frame wants, where the pointer is, and where it was.
+    /** Per hand (by place in SimFrame.principals): whether it dragged last frame, and where (cells). */
+    const dragging = new Uint8Array(MAX_PRINCIPALS);
+    const lastX = new Float64Array(MAX_PRINCIPALS);
+    const lastY = new Float64Array(MAX_PRINCIPALS);
+    // Scratch the frame rewrites: the grid the frame wants, where a hand is, and where it was.
     const want: LayoutKey = { seed: 0, columns: 0, rows: 0 };
     const at = { x: 0, y: 0 };
     const cell = { x: 0, y: 0 };
@@ -1568,26 +1572,27 @@ export function deltaSim(params: readonly ParamDef[]): SimFactory {
           sim.step();
         }
 
-        // The hand digs a ditch, or throws up a bank, wherever it is dragged. Not while the passage's
-        // camera moves: the picture is not yet (or no longer) where the pointer maps it.
-        const pointer = frame.pointer;
-        if (frame.passage.enter >= 1 && frame.passage.exit <= 0 && pointer.inside && pointer.down) {
-          gridUv(pointer.x, pointer.y, frame.aspect, layout.columns / layout.rows, at);
+        // Every hand (SimFrame.principals) digs a ditch, or throws up a bank, wherever it is held
+        // down and dragged; a press held still digs a pit. Not while the passage's camera moves: the
+        // picture is not yet (or no longer) where a hand maps it.
+        const still = frame.passage.enter >= 1 && frame.passage.exit <= 0;
+        const amount = 1 - Math.exp(-BRUSH_RATE * Math.max(frame.dt, 1 / 120));
+        const dig = knobs.value(frame, "tool") < 0.5;
+        for (let i = 0; i < MAX_PRINCIPALS; i++) {
+          const hand = frame.principals[i];
+          if (!still || hand === undefined || !hand.inside || !hand.down) {
+            dragging[i] = 0;
+            continue;
+          }
+          gridUv(hand.x, hand.y, frame.aspect, layout.columns / layout.rows, at);
           cell.x = at.x * layout.columns;
           cell.y = at.y * layout.rows;
-          const amount = 1 - Math.exp(-BRUSH_RATE * Math.max(frame.dt, 1 / 120));
-          sim.brush(
-            dragging ? last : cell,
-            cell,
-            amount,
-            knobs.value(frame, "tool") < 0.5,
-            env.seaBase,
-          );
-          last.x = cell.x;
-          last.y = cell.y;
-          dragging = true;
-        } else {
-          dragging = false;
+          last.x = lastX[i] ?? cell.x;
+          last.y = lastY[i] ?? cell.y;
+          sim.brush(dragging[i] === 1 ? last : cell, cell, amount, dig, env.seaBase);
+          lastX[i] = cell.x;
+          lastY[i] = cell.y;
+          dragging[i] = 1;
         }
 
         // The view follows the time-lapse time that passed, and the frame clock while that stands still.

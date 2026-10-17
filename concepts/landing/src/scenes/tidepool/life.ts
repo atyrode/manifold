@@ -15,6 +15,7 @@
 //   then            plant records (PlantTexture, shaders/lib/plants.ts): TIDEPOOL_BLADES per frond
 //                   lattice cell (from cell -1, -1), then one per anemone lattice cell
 // Units: frame heights, x across 0..aspect and y up 0..1 (the shader's q).
+import { firstPress } from "../../principals.ts";
 import { FixedStep } from "../../sims/clock.ts";
 import { BLENNY, FishGroup, packFish } from "../../sims/fish.ts";
 import { fract, glslHash22 } from "../../sims/math.ts";
@@ -272,14 +273,15 @@ export class TidepoolLife {
   }
 
   /**
-   * One frame: the fish swim (dt seconds of motion, `time` the motion clock at its end), the plants
-   * stream in the flow (`flow` as last read back), then everything is packed and uploaded.
+   * One frame: the fish swim (dt seconds of motion, `time` the motion clock at its end; a press by
+   * any of `principals` startles them), the plants stream in the flow (`flow` as last read back),
+   * then everything is packed and uploaded.
    */
   step(
     dt: number,
     time: number,
     knobs: { response: number; fish: number; season: number; growth: number },
-    pointer: PrincipalState,
+    principals: readonly PrincipalState[],
   ): void {
     const records = this.#records;
     const layout = this.#layout;
@@ -293,7 +295,7 @@ export class TidepoolLife {
     // Still water still stirs a little with the swell beyond the rim.
     climate.air.calm = 0.08 * knobs.response;
     this.#plants.step(climate);
-    this.#swim(dt, time, Math.round(knobs.fish), pointer);
+    this.#swim(dt, time, Math.round(knobs.fish), principals);
     const data = records.data;
     packFish(this.#fish, Math.round(knobs.fish), this.#fishClock.pending, data);
     const header = TIDEPOOL_LIFE_HEADER * TIDEPOOL_LIFE_WIDTH * 4;
@@ -334,18 +336,22 @@ export class TidepoolLife {
 
   readonly #probe = new Float32Array(3);
 
-  /** The fish: idling over the basin's floor, keeping to its water, darting from a touch or a hard surge. */
-  #swim(dt: number, time: number, count: number, pointer: PrincipalState): void {
+  /**
+   * The fish: idling over the basin's floor, keeping to its water, darting from a touch (the first
+   * of `principals` to press this frame) or a hard surge.
+   */
+  #swim(dt: number, time: number, count: number, principals: readonly PrincipalState[]): void {
     const clock = this.#fishClock;
     const steps = clock.advance(dt);
     const layout = this.#layout;
     if (!layout || count <= 0) return;
     const fish = this.#fish;
     const pool = layout.pool;
-    if (pointer.inside && pointer.pressed) {
+    const touch = firstPress(principals);
+    if (touch !== undefined) {
       this.#startle = 1.5;
-      this.#startleX = pointer.x * this.#aspect;
-      this.#startleY = pointer.y;
+      this.#startleX = touch.x * this.#aspect;
+      this.#startleY = touch.y;
     }
     this.#startle = Math.max(0, this.#startle - Math.max(0, dt));
     const h = FISH_STEP;

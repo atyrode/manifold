@@ -45,6 +45,7 @@
 // GARDEN_LEAF_SLOTS); uSim3 r16f when each spot was last raked, on the drying clock (half resolution).
 import { climateCold, fallingRain, seasonKnob, yearAt, type SeasonKnob } from "../../climate.ts";
 import { KnobReader, type ParamDef } from "../../params.ts";
+import { MAX_PRINCIPALS } from "../../principals.ts";
 import { AgeField, dryingPace } from "../../sims/agefield.ts";
 import { BuildSlot } from "../../sims/build.ts";
 import { Settle } from "../../sims/clock.ts";
@@ -164,10 +165,10 @@ type LeafKind = (typeof GARDEN_LEAF_KIND)[keyof typeof GARDEN_LEAF_KIND];
 const LEVEL_HALF = 0.066;
 const LEVEL_SOFT = 0.008;
 const LEAD = 0.03;
-/** The hand rake the pointer draws with: three tines. */
+/** The hand rake every hand draws with: three tines. */
 const HAND: RakeOptions = { width: 0.011, depth: 0.0028, ridge: 0.011, tines: 3, spacing: 0.022 };
 const HAND_LEVEL_HALF = 0.04;
-/** Shortest pointer move that rakes, garden depths. */
+/** Shortest hand move that rakes, garden depths. */
 const HAND_STEP = 0.003;
 /** Between strokes the rake is lifted and carried: this much plan distance of rest. */
 const STROKE_PAUSE = 0.05;
@@ -653,13 +654,14 @@ class GardenSim implements SceneSim {
   readonly #grad = new Float64Array(2);
   readonly #segA = new Float64Array(2);
   readonly #segB = new Float64Array(2);
-  /** The garden point under the pointer (x, y), written by #groundUnder. */
+  /** The garden point under a hand (x, y), written by #groundUnder. */
   readonly #ground = new Float64Array(2);
 
-  // The pointer's hand rake.
-  #handOn = false;
-  #handX = 0;
-  #handY = 0;
+  // The hand rakes, one per hand (by place in SimFrame.principals): whether it is on the gravel, and
+  // where it last raked to.
+  readonly #handOn = new Uint8Array(MAX_PRINCIPALS);
+  readonly #handX = new Float64Array(MAX_PRINCIPALS);
+  readonly #handY = new Float64Array(MAX_PRINCIPALS);
 
   // Leaves.
   readonly #state = new Uint8Array(GARDEN_LEAF_SLOTS);
@@ -805,7 +807,7 @@ class GardenSim implements SceneSim {
     this.#fresh.advance(settings.drying > 0 ? step * this.#dryingRate(settings) : step);
 
     this.#tend(step, settings);
-    this.#handRake(frame.pointer, settings);
+    for (let i = 0; i < MAX_PRINCIPALS; i++) this.#handRake(i, frame.principals[i], settings);
     // A "now" gust plays even with motion off.
     const busy = this.#gustAge < GUST_BUSY;
     const air = dt * Math.max(frame.motion, busy ? 1 : 0);
@@ -1131,39 +1133,45 @@ class GardenSim implements SceneSim {
     field.touch();
   }
 
-  /** Drag on the gravel: rake your own lines with a hand rake. */
-  #handRake(pointer: PrincipalState, settings: Settings): void {
+  /**
+   * Hand `i` (undefined: not present) dragged on the gravel rakes its own lines with a hand rake.
+   * Every hand rakes alike; the cast's agents, who press without moving, set it down and lift it.
+   */
+  #handRake(i: number, hand: PrincipalState | undefined, settings: Settings): void {
     const at = this.#ground;
     if (
-      !(pointer.inside && pointer.down && this.#groundUnder(pointer.x, pointer.y, at)) ||
+      hand === undefined ||
+      !(hand.inside && hand.down && this.#groundUnder(hand.x, hand.y, at)) ||
       this.#onStone(at[0] ?? 0, at[1] ?? 0)
     ) {
-      this.#handOn = false;
+      this.#handOn[i] = 0;
       return;
     }
     const x = at[0] ?? 0;
     const y = at[1] ?? 0;
-    if (!this.#handOn || pointer.pressed) {
-      this.#handOn = true;
-      this.#handX = x;
-      this.#handY = y;
+    if (this.#handOn[i] !== 1 || hand.pressed) {
+      this.#handOn[i] = 1;
+      this.#handX[i] = x;
+      this.#handY[i] = y;
       return;
     }
-    const length = Math.hypot(x - this.#handX, y - this.#handY);
+    const fromX = this.#handX[i] ?? x;
+    const fromY = this.#handY[i] ?? y;
+    const length = Math.hypot(x - fromX, y - fromY);
     if (length < HAND_STEP) return;
-    this.#level(this.#handX, this.#handY, x, y, HAND_LEVEL_HALF);
-    this.#field.rake(this.#handX / GA, this.#handY, x / GA, y, HAND);
-    this.#fresh.stamp(this.#handX, this.#handY, x, y, HAND_LEVEL_HALF);
+    this.#level(fromX, fromY, x, y, HAND_LEVEL_HALF);
+    this.#field.rake(fromX / GA, fromY, x / GA, y, HAND);
+    this.#fresh.stamp(fromX, fromY, x, y, HAND_LEVEL_HALF);
     this.#sweep(
       x,
       y,
-      (x - this.#handX) / length,
-      (y - this.#handY) / length,
+      (x - fromX) / length,
+      (y - fromY) / length,
       HAND_LEVEL_HALF,
       Math.max(settings.speed, 0.05),
     );
-    this.#handX = x;
-    this.#handY = y;
+    this.#handX[i] = x;
+    this.#handY[i] = y;
   }
 
   /** Within an island's clear radius, where the rake is lifted. */

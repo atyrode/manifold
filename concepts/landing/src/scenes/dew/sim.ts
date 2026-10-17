@@ -43,6 +43,7 @@
 //
 // Units: frame heights, x from the frame's left edge, y up from its bottom, z toward the viewer.
 import { KnobReader, type ParamDef } from "../../params.ts";
+import { MAX_PRINCIPALS } from "../../principals.ts";
 import { BinLists } from "../../sims/bins.ts";
 import { BuildSlot } from "../../sims/build.ts";
 import { FixedStep } from "../../sims/clock.ts";
@@ -50,7 +51,7 @@ import { approach } from "../../sims/math.ts";
 import { mulberry32 } from "../../sims/random.ts";
 import { DataTexture } from "../../sims/texture.ts";
 import type { VerletForce, VerletStepOptions } from "../../sims/verlet.ts";
-import type { PrincipalState, SceneSim, SimFactory, SimFrame } from "../types.ts";
+import type { PrincipalState, SceneSim, SimFactory, SimFrame, ScenePoint } from "../types.ts";
 import {
   BEAD_SPACING,
   breezeAt,
@@ -219,9 +220,9 @@ const SHIVER_HZ = 1.2;
 const GUST_SHED_R = 0.005;
 const GUST_SHED = 0.25;
 
-// ---- the pointer ------------------------------------------------------------------------------------
+// ---- the hands --------------------------------------------------------------------------------------
 
-/** A pluck: reach and out-of-plane kick (frame heights/s); dragging strums every STRUM_STEP with STRUM_V. */
+/** A pluck: reach and out-of-plane kick (frame heights/s); a drag strums every STRUM_STEP with STRUM_V. */
 const PLUCK_RADIUS = 0.05;
 const PLUCK_V = 1.2;
 const PLUCK_PULL = 0.25;
@@ -229,6 +230,9 @@ const STRUM_STEP = 0.03;
 const STRUM_V = 0.5;
 /** Drops within this reach of a pluck shiver, and heavy ones may drop. */
 const PLUCK_SHAKE = 0.12;
+/** Where the cast's agents pluck: on the capture spiral, PLUCK_REACH of the radius out from the hub, at these angles (degrees). */
+const PLUCK_REACH = 0.55;
+const PLUCK_ANGLES = [40, 140, 220, 320] as const;
 
 // ---- bins -------------------------------------------------------------------------------------------
 
@@ -344,8 +348,11 @@ class DewSim implements SceneSim {
   #nextGust = 30;
   #gust = 0;
   #focus = 0;
-  #strumX = 0;
-  #strumY = 0;
+  /** Where each hand last plucked or strummed (frame heights), by place in SimFrame.principals. */
+  readonly #strumX = new Float64Array(MAX_PRINCIPALS);
+  readonly #strumY = new Float64Array(MAX_PRINCIPALS);
+  /** The points interest() hands out, rewritten each time. */
+  readonly #interest: { x: number; y: number }[] = PLUCK_ANGLES.map(() => ({ x: 0, y: 0 }));
   #prewarming = false;
 
   // The passage (see #swingWeb): the progress of the entrance and exit, whether either is playing, and
@@ -446,7 +453,7 @@ class DewSim implements SceneSim {
       this.#gustAmp = 1;
     }
     this.#advance(sdt);
-    if (!this.#passing) this.#play(frame.pointer, aspect);
+    if (!this.#passing) this.#play(frame.principals, aspect);
 
     this.#pack(frame.height);
     this.#textures[0] = this.#segTex.texture;
@@ -458,6 +465,20 @@ class DewSim implements SceneSim {
 
   ready(): boolean {
     return this.#fitted;
+  }
+
+  /** Around the hub on the capture spiral, where a press plucks the threads and shakes the dew. */
+  interest(): readonly ScenePoint[] {
+    const web = this.#web;
+    if (web === undefined) return [];
+    for (const [i, degrees] of PLUCK_ANGLES.entries()) {
+      const point = this.#interest[i];
+      if (point === undefined) continue;
+      const a = (degrees * Math.PI) / 180;
+      point.x = (web.hubX + PLUCK_REACH * web.radius * Math.cos(a)) / web.aspect;
+      point.y = web.hubY + PLUCK_REACH * web.radius * Math.sin(a);
+    }
+    return this.#interest;
   }
 
   dispose(): void {
@@ -692,21 +713,24 @@ class DewSim implements SceneSim {
       this.#shiver[d] = (this.#shiver[d] ?? 0) * Math.exp(-h / SHIVER_DECAY);
   }
 
-  // ---- the pointer --------------------------------------------------------------------------------
+  // ---- the hands ----------------------------------------------------------------------------------
 
-  /** Press: pluck the threads under the pointer. Drag: strum them. */
-  #play(pointer: PrincipalState, aspect: number): void {
-    if (!pointer.inside) return;
-    const x = pointer.x * aspect;
-    const y = pointer.y;
-    if (pointer.pressed) {
-      this.#pluck(x, y, PLUCK_V);
-      this.#strumX = x;
-      this.#strumY = y;
-    } else if (pointer.down && Math.hypot(x - this.#strumX, y - this.#strumY) > STRUM_STEP) {
-      this.#pluck(x, y, STRUM_V);
-      this.#strumX = x;
-      this.#strumY = y;
+  /** Every hand (SimFrame.principals): a press plucks the threads under it, a drag strums them. */
+  #play(principals: readonly PrincipalState[], aspect: number): void {
+    for (let i = 0; i < MAX_PRINCIPALS; i++) {
+      const hand = principals[i];
+      if (hand === undefined || !hand.inside) continue;
+      const x = hand.x * aspect;
+      const y = hand.y;
+      if (hand.pressed) this.#pluck(x, y, PLUCK_V);
+      else if (
+        hand.down &&
+        Math.hypot(x - (this.#strumX[i] ?? x), y - (this.#strumY[i] ?? y)) > STRUM_STEP
+      )
+        this.#pluck(x, y, STRUM_V);
+      else continue;
+      this.#strumX[i] = x;
+      this.#strumY[i] = y;
     }
   }
 

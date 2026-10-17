@@ -1942,7 +1942,7 @@ Helpers in `src/sims/` (each file's header has the full API and a usage example)
   (`uploadRegion(data, x, y, w, h)`, read in place from the whole array), or `uploadImage(canvas)`
   for an rgba8 texture drawn with Canvas 2D (top row = uv.y 1). `DirtyRegion` keeps what changed
   since the last upload, one rectangle or one per tile (bands of rows, small squares), marked as
-  the sim writes and sent by `flush`: the harmonograph's ink, the Chladni plate's sand (in bands),
+  the sim writes and sent by `flush`: the harmonograph's ink and the Chladni plate's sand (in bands),
   the flock's density, the bees' specks (in 8 × 8 squares), the countryside's cover.
 - `TrailField` (`trail.ts`): where the pointer has been, fading; for stirring and melting. A
   `stroke` lays ink per unit of path (a pass leaves its `strength` along its middle, at any speed
@@ -2594,6 +2594,18 @@ agents; on in every all-features set); humans and agents differ by motion alone 
 composers the composed sim will add each principal's point in the site through the rig and the
 claim and layer under it (`uPrincipalGround[4]`), and the composer draws every cursor last.
 
+A sim keeps per-hand state in arrays of `MAX_PRINCIPALS`, by a principal's place in the list (its
+press, its drag, its last point), so hands never steal each other's gesture. Where one tool can
+be held at a time (ripple's dipper, marbling's stylus, the slime mould's salt, the petri dish's
+brush), the visitor holds it and the others' taps do what a tap does there (a pebble, a drop of
+ink, an oat flake, a drop); where the scene has one controller or one view (the street's lights,
+fractal's and hyperbolic's drag, the prism, the ferrofluid's magnet, the lava lamp's hand), the
+visitor alone acts, and the sim says so where it reads `pointer`. `interest(aspect)` names where
+a press does something: the bamboo basin and grove, the bonsai's pads, the bar's counter, the
+Chladni plate's quarters, the web round dew's hub, the lake's open ice, the lantern river, the
+marbling tray, the mobile's balls, the petri dish, the slime mould's dish, the tide pool's basin
+and the harmonograph's open margins.
+
 A **chore** is a layer that `requires` its host and acts through affordances the host's sim
 exposes:
 
@@ -2603,7 +2615,11 @@ exposes:
 - **Star-joining**: the World's constellations, `join(a, b)`; dawn fades the figure.
 - **Sand raking**: the sand table or the gravel, `groove(path, tines)`; the ball and the weather
   erase it.
-- **The shared table**: the harmonograph's sheet, `pen(path)`.
+- **The shared table**: the harmonograph's sheet, `pen(path)`. Live in the scene today: every
+  principal's tap lets a small damped pendulum plotter go there (its frequencies detuned by a hash
+  of whose hand and when), a drag draws freehand in the same nib; while hands work the sheet
+  (`SHARE_LINGER` after the last ink) its ink fades and a finished figure is swung again on the
+  same sheet instead of sliding it away. Nobody's hand on it: the sheet lives as before.
 
 The host owns the state and nature's undo; the chore owns the plan and the tool. Chores are
 deterministic for the seed and stand still at motion 0. Principal 0 may do the same chore with the

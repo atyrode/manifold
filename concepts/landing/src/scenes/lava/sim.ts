@@ -1112,7 +1112,8 @@ class LavaSim implements SceneSim {
       this.#restarting = false;
     }
 
-    // The wax on fixed steps of lamp time.
+    // The wax on fixed steps of lamp time. A hand on the glass is the visitor's alone
+    // (SimFrame.pointer): the shader draws its warmth at uPrincipals[0].
     const pointer = frame.pointer;
     const pressing = settings.hand && pointer.inside && pointer.down;
     const handA = pressing ? handOn(pointer, frame.aspect, 0) : undefined;

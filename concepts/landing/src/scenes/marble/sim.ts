@@ -24,12 +24,13 @@
 //
 // Sheet units: height 1, origin at the centre of the view, y up; x spans ±aspect/2.
 import { KnobReader, type ParamDef } from "../../params.ts";
+import { MAX_PRINCIPALS } from "../../principals.ts";
 import { MARK_VERTICES, markVertex } from "../../mark.ts";
 import { runBudgeted } from "../../sims/clock.ts";
 import { clamp, smoothstep } from "../../sims/math.ts";
 import { mulberry32 } from "../../sims/random.ts";
 import { DataTexture } from "../../sims/texture.ts";
-import type { PrincipalState, SceneSim, SimFactory, SimFrame } from "../types.ts";
+import type { PrincipalState, SceneSim, SimFactory, SimFrame, ScenePoint } from "../types.ts";
 import {
   EBRU,
   MARBLE_PASSAGE,
@@ -124,6 +125,12 @@ const DRAG_START = 0.012;
 const DRAG_ALPHA = 0.07;
 const DRAG_LAMBDA = 0.01;
 const DRAG_RANGE = 0.2;
+/** Where the cast's agents drop ink, uv: round the middle of the tray. */
+const DROP_POINTS: readonly ScenePoint[] = [
+  { x: 0.32, y: 0.62 },
+  { x: 0.5, y: 0.4 },
+  { x: 0.68, y: 0.6 },
+];
 const CLICK_RADIUS = 0.06;
 
 // ---- geometry -----------------------------------------------------------------------------------
@@ -953,6 +960,15 @@ class MarbleSim implements SceneSim {
   readonly #pressAt = { x: 0, y: 0 };
   readonly #last = { x: 0, y: 0 };
   #dragging = false;
+  /**
+   * The other hands (SimFrame.principals after the visitor), by place: whether each is pressing,
+   * where its press began, and whether it has moved off into a drag.
+   */
+  readonly #otherPressing = new Uint8Array(MAX_PRINCIPALS);
+  readonly #otherDragging = new Uint8Array(MAX_PRINCIPALS);
+  readonly #otherX = new Float64Array(MAX_PRINCIPALS);
+  readonly #otherY = new Float64Array(MAX_PRINCIPALS);
+  readonly #otherAt = { x: 0, y: 0 };
   #dragTool: Tool | undefined;
   #nextInk = 0;
   readonly #jitter = mulberry32(0x6d61726c);
@@ -991,6 +1007,7 @@ class MarbleSim implements SceneSim {
       this.#events.add(markStrokes(settings.markNow, this.#events.clock + 0.3));
 
     let moved = this.#play(frame.pointer, settings);
+    this.#others(frame.principals, settings);
     this.#idle += dt;
     moved = this.#choreograph(dt, frame.motion, settings) || moved;
     moved = this.#events.advance(dt * settings.tempo, this.#apply) || moved;
@@ -1015,6 +1032,11 @@ class MarbleSim implements SceneSim {
   dispose(): void {
     this.#ink.dispose();
     this.#state.dispose();
+  }
+
+  /** Round the middle of the tray, where a press drops the next ink. */
+  interest(): readonly ScenePoint[] {
+    return DROP_POINTS;
   }
 
   #read(frame: SimFrame): Settings {
@@ -1121,6 +1143,45 @@ class MarbleSim implements SceneSim {
       this.#dragTool = undefined;
     }
     return moved;
+  }
+
+  /**
+   * The other hands: a tap drops the next ink where it lands, as the visitor's does. One stylus is
+   * drawn, the visitor's (#play), so their drags do not comb.
+   */
+  #others(principals: readonly PrincipalState[], settings: Settings): void {
+    for (let i = 1; i < MAX_PRINCIPALS; i++) {
+      const hand = principals[i];
+      if (hand === undefined) {
+        this.#otherPressing[i] = 0;
+        continue;
+      }
+      const x = (hand.x - 0.5) * this.#aspect;
+      const y = hand.y - 0.5;
+      if (hand.pressed && hand.inside) {
+        this.#otherPressing[i] = 1;
+        this.#otherDragging[i] = 0;
+        this.#otherX[i] = x;
+        this.#otherY[i] = y;
+        // Someone is playing with the tray: keep the sheet they are working on.
+        if (this.#phase === "lift" && !this.#liftNow) {
+          this.#phase = "rest";
+          this.#rested = 0;
+          this.#lift = 0;
+        }
+      }
+      if (this.#otherPressing[i] !== 1) continue;
+      this.#idle = 0;
+      const press = this.#otherAt;
+      press.x = this.#otherX[i] ?? x;
+      press.y = this.#otherY[i] ?? y;
+      if (hand.down && Math.hypot(x - press.x, y - press.y) > DRAG_START)
+        this.#otherDragging[i] = 1;
+      if (hand.released || !hand.down) {
+        if (this.#otherDragging[i] !== 1) this.#dropAt(press, settings);
+        this.#otherPressing[i] = 0;
+      }
+    }
   }
 
   #comb(from: { x: number; y: number }, to: { x: number; y: number }, scale: number): boolean {

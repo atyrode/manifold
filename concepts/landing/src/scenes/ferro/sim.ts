@@ -533,6 +533,7 @@ class FerroSim implements SceneSim {
     const markTarget = Math.max(this.#markBreath ? breath : 0, episodeShow(this.#episode)) * gate;
     this.#mark = this.#primed ? approach(this.#mark, markTarget, h, MARK_EASE) : markTarget;
     const mark = this.#mark;
+    // The visitor alone (SimFrame.pointer): one magnet under the dish, following one hand.
     const pointer = frame.pointer;
     const pressing = settings.follow && pointer.inside && pointer.down;
     this.#press = approach(this.#press, pressing ? 1 : 0, h, PRESS_EASE);

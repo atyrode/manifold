@@ -29,10 +29,11 @@
 // second string of big, close lanterns crossing the foreground. A steady population follows the
 // count knob: lanterns leave past the left edge and new ones come round the bend, now and then in
 // twos and threes, a few straying wide of their stream. Flotillas are pushed off from our bank,
-// just below the frame, and glide along the front; a click sets a lantern down on the water under
-// the pointer, its candle catching as rings spread from it; dragging the held pointer pushes the
-// water along. The M lantern (the landmark) has a slot of its own, keeps to the near water where
-// its M reads, keeps turning back to face the bank, and comes round again soon after it has gone.
+// just below the frame, and glide along the front; a press, anyone's (SimFrame.principals), sets a
+// lantern down on the water under it, its candle catching as rings spread from it; dragging a held
+// hand pushes the water along. The M lantern (the landmark) has a slot of its own, keeps to the
+// near water where its M reads, keeps turning back to face the bank, and comes round again soon
+// after it has gone.
 //
 // Time runs in fixed steps of STEP seconds of simulated time, so the river depends only on the
 // knobs, the seed and simulated time, not on the frame rate; positions are interpolated between
@@ -51,12 +52,13 @@
 //   texel 2 MAX + r    rock r: lantern light falling on its visible face, and from which side
 //                      (-1 left .. 1 right)
 import { KnobReader, type ParamDef } from "../../params.ts";
+import { MAX_PRINCIPALS } from "../../principals.ts";
 import { FixedStep } from "../../sims/clock.ts";
 import { separateDiscs } from "../../sims/discs.ts";
 import { clamp, smoothstep } from "../../sims/math.ts";
 import { Random } from "../../sims/random.ts";
 import { DataTexture } from "../../sims/texture.ts";
-import type { SceneSim, SimFactory, SimFrame } from "../types.ts";
+import type { SceneSim, SimFactory, SimFrame, PrincipalState, ScenePoint } from "../types.ts";
 import { PASSAGE_ENTER } from "./constants.ts";
 
 // ---- The view and the river, shared with the shader ----
@@ -223,10 +225,16 @@ const MARK_HOLD = 0.08;
 const MARK_PULL = 0.22;
 const MARK_MARGIN = 0.8;
 const MARK_SET_Z = 7.7;
-/** Clicks further out than this set the lantern down here (m). */
+/** Presses further out than this set the lantern down here (m). */
 const CLICK_FAR = 75;
+/** Where the cast's agents set lanterns down, uv: the near water, mid-river and further out. */
+const SET_DOWN_POINTS: readonly ScenePoint[] = [
+  { x: 0.3, y: 0.22 },
+  { x: 0.55, y: 0.3 },
+  { x: 0.75, y: 0.38 },
+];
 
-// ---- The pointer as a hand in the water ----
+// ---- Every hand in the water (SimFrame.principals) ----
 
 /** Radius of the water it pushes (m), how firmly (1/s), and the fastest push (m/s). */
 const HAND_RADIUS = 0.9;
@@ -399,12 +407,16 @@ class LanternRiver implements SceneSim {
   #wave = 0;
   #leave = 0;
 
-  #hand = false;
-  #handHeld = false;
-  #handX = 0;
-  #handZ = 0;
-  #handVX = 0;
-  #handVZ = 0;
+  /**
+   * The hands, by place in SimFrame.principals: whether each pushes the water this frame, whether
+   * it was held on the water last frame, where (m) and how fast (m/s).
+   */
+  readonly #hand = new Uint8Array(MAX_PRINCIPALS);
+  readonly #handHeld = new Uint8Array(MAX_PRINCIPALS);
+  readonly #handX = new Float64Array(MAX_PRINCIPALS);
+  readonly #handZ = new Float64Array(MAX_PRINCIPALS);
+  readonly #handVX = new Float64Array(MAX_PRINCIPALS);
+  readonly #handVZ = new Float64Array(MAX_PRINCIPALS);
 
   constructor(gl: WebGL2RenderingContext, params: readonly ParamDef[]) {
     this.#knobs = new KnobReader("lanterns", params, [
@@ -464,7 +476,7 @@ class LanternRiver implements SceneSim {
     // A "now" press releases a flotilla or sets the M lantern down again.
     if (frame.fired[this.#flotillaSlot]) this.#releaseFlotilla();
     if (frame.fired[this.#markSlot]) this.#releaseMark();
-    this.#follow(frame);
+    for (let i = 0; i < MAX_PRINCIPALS; i++) this.#follow(i, frame.principals[i], frame);
 
     const due = this.#stepper.advance(Math.max(0, frame.dt) * Math.max(0, frame.motion));
     for (let i = 0; i < due; i++) this.#step();
@@ -476,38 +488,45 @@ class LanternRiver implements SceneSim {
     this.#texture.dispose();
   }
 
-  /** The pointer: a press on the water sets a lantern down there; holding it pushes the water along. */
-  #follow(frame: SimFrame): void {
-    const pointer = frame.pointer;
-    this.#hand = false;
-    const onWater = pointer.inside && this.#toWater(pointer.x, pointer.y);
+  /** The water, near and far, where a press sets a lantern down. */
+  interest(): readonly ScenePoint[] {
+    return SET_DOWN_POINTS;
+  }
+
+  /**
+   * Hand `i` (every principal's alike; undefined: not present): a press on the water sets a lantern
+   * down there; holding it pushes the water along.
+   */
+  #follow(i: number, hand: PrincipalState | undefined, frame: SimFrame): void {
+    this.#hand[i] = 0;
+    const onWater = hand !== undefined && hand.inside && this.#toWater(hand.x, hand.y);
     if (!onWater) {
-      this.#handHeld = false;
+      this.#handHeld[i] = 0;
       return;
     }
     const x = this.#point[0] ?? 0;
     const z = this.#point[1] ?? 0;
-    if (pointer.pressed) this.#setDown(x, z);
-    if (!pointer.down) {
-      this.#handHeld = false;
+    if (hand.pressed) this.#setDown(x, z);
+    if (!hand.down) {
+      this.#handHeld[i] = 0;
       return;
     }
     const dt = Math.max(0, frame.dt) * Math.max(0, frame.motion);
-    if (this.#handHeld && dt > 0) {
-      let vx = (x - this.#handX) / dt;
-      let vz = (z - this.#handZ) / dt;
+    if (this.#handHeld[i] === 1 && dt > 0) {
+      let vx = (x - (this.#handX[i] ?? x)) / dt;
+      let vz = (z - (this.#handZ[i] ?? z)) / dt;
       const speed = Math.hypot(vx, vz);
       if (speed > HAND_MAX) {
         vx *= HAND_MAX / speed;
         vz *= HAND_MAX / speed;
       }
-      this.#handVX = vx;
-      this.#handVZ = vz;
-      this.#hand = true;
+      this.#handVX[i] = vx;
+      this.#handVZ[i] = vz;
+      this.#hand[i] = 1;
     }
-    this.#handX = x;
-    this.#handZ = z;
-    this.#handHeld = true;
+    this.#handX[i] = x;
+    this.#handZ[i] = z;
+    this.#handHeld[i] = 1;
   }
 
   /** The point on the water under screen point (px, py) into #point; false above the far waterline. */
@@ -547,8 +566,8 @@ class LanternRiver implements SceneSim {
     this.#nextSpawn = 0;
     this.#nextFlotilla = Number.POSITIVE_INFINITY;
     this.#nextMark = Number.POSITIVE_INFINITY;
-    this.#hand = false;
-    this.#handHeld = false;
+    this.#hand.fill(0);
+    this.#handHeld.fill(0);
 
     // The evening is already under way: the procession all across the view, settled into the
     // current. The M lantern floats in the near water right of centre, drifting into the middle.
@@ -958,12 +977,13 @@ class LanternRiver implements SceneSim {
       // The M lantern keeps to the near water, where its M reads.
       if (lantern.mark)
         lantern.az += clamp((MARK_Z - lantern.z) * MARK_HOLD, -MARK_PULL, MARK_PULL);
-      if (this.#hand) {
-        const d = Math.hypot(lantern.x - this.#handX, lantern.z - this.#handZ);
+      for (let h = 0; h < MAX_PRINCIPALS; h++) {
+        if (this.#hand[h] !== 1) continue;
+        const d = Math.hypot(lantern.x - (this.#handX[h] ?? 0), lantern.z - (this.#handZ[h] ?? 0));
         if (d < HAND_RADIUS) {
           const grip = HAND_GRIP * (1 - d / HAND_RADIUS) * (1 - d / HAND_RADIUS);
-          lantern.ax += (this.#handVX - lantern.vx) * grip;
-          lantern.az += (this.#handVZ - lantern.vz) * grip;
+          lantern.ax += ((this.#handVX[h] ?? 0) - lantern.vx) * grip;
+          lantern.az += ((this.#handVZ[h] ?? 0) - lantern.vz) * grip;
         }
       }
     }

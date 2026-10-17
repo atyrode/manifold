@@ -844,6 +844,7 @@ class HyperbolicSim implements SceneSim {
     const dt = Math.max(0, frame.dt);
     const glide = dt * clamp(frame.motion, 0, 1);
 
+    // The visitor alone (SimFrame.pointer): one hand drags the plane; two would tear it apart.
     this.#drag(frame.pointer, dt, aspect, knobs.model);
     const ambient = this.#ambient(knobs);
     if (this.#grab === undefined) {

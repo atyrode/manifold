@@ -1,6 +1,7 @@
 // The mobile's simulation: the solar system (solar.ts) hung on the shared mobile (sims/mobile.ts)
 // under the Sun, its arms turned by motors at the planets' real periods, swung and rocked by the
-// room's slow air, a draft from the window and its gusts (sims/wind.ts), and blown on by the pointer.
+// room's slow air, a draft from the window and its gusts (sims/wind.ts), and blown on by every hand
+// (SimFrame.principals): a press puffs at the planet under it.
 //
 // The motor (K_motor): each arm's motor turns it once per orbital period of its planet, au^1.5 years
 // (Kepler's third law), the Moon's once a sidereal month; its amount sets how many seconds of the
@@ -31,13 +32,14 @@ import {
 } from "../../sims/mobile.ts";
 import { Random } from "../../sims/random.ts";
 import { GustTrain, windNoise } from "../../sims/wind.ts";
-import type { SceneSim, SimFactory, SimFrame } from "../types.ts";
+import type { ScenePoint, SceneSim, SimFactory, SimFrame } from "../types.ts";
 import {
   MOBILE_SUN_CENTRE,
   MOBILE_EYE,
   MOBILE_HOIST,
   MOBILE_LOWER,
   MOBILE_TEX_ORIGIN,
+  mobileCamera,
   mobileRay,
 } from "./layout.ts";
 import { solarMobile, type SolarMobile } from "./solar.ts";
@@ -99,6 +101,8 @@ class MobileSim implements SceneSim {
   #drift = 0;
   /** Seconds a "now" or a puff keeps the mobile moving at motion 0. */
   #busy = 0;
+  /** The points interest() hands out, rewritten each time. */
+  readonly #interest: { x: number; y: number }[] = [];
 
   /** The air at a ball now (see the header); reads the mobile's own clock, so it is the same at every frame rate. */
   readonly #air: MobileAir = (x, y, z, out) => {
@@ -138,7 +142,9 @@ class MobileSim implements SceneSim {
       this.#startGust(power, mean);
       this.#busy = BUSY;
     }
-    if (!passing && frame.pointer.pressed && frame.pointer.inside) this.#puff(mobile, frame);
+    if (!passing)
+      for (const hand of frame.principals)
+        if (hand.pressed && hand.inside) this.#puff(mobile, hand.x, hand.y, frame.aspect);
 
     // At motion 0 a "now" or a puff still plays, in real time, easing to a stop.
     this.#busy = Math.max(0, this.#busy - frame.dt);
@@ -154,6 +160,36 @@ class MobileSim implements SceneSim {
 
   dispose(): void {
     this.#texture.dispose();
+  }
+
+  /** The balls where they hang now, seen from the eye: where a press blows on a planet. */
+  interest(aspect: number): readonly ScenePoint[] {
+    const points = this.#interest;
+    const mobile = this.#mobile;
+    let n = 0;
+    if (mobile !== undefined) {
+      const { fwd, right, up, focal } = mobileCamera(aspect);
+      const pos = mobile.system.positions;
+      for (let i = 0; i < mobile.balls; i++) {
+        const p = mobile.ball(i).point * 3;
+        const dx = (pos[p] ?? 0) - MOBILE_EYE[0];
+        const dy = (pos[p + 1] ?? 0) - MOBILE_EYE[1];
+        const dz = (pos[p + 2] ?? 0) - MOBILE_EYE[2];
+        const depth = dx * fwd[0] + dy * fwd[1] + dz * fwd[2];
+        if (depth <= 0) continue;
+        const x = (focal * (dx * right[0] + dy * right[1] + dz * right[2])) / depth / aspect + 0.5;
+        const y = (focal * (dx * up[0] + dy * up[1] + dz * up[2])) / depth + 0.5;
+        const point = points[n];
+        if (point === undefined) points.push({ x, y });
+        else {
+          point.x = x;
+          point.y = y;
+        }
+        n++;
+      }
+    }
+    points.length = n;
+    return points;
   }
 
   /** The mobile for the knobs: rebuilt (and its air and gusts started afresh) when its layout changes. */
@@ -195,13 +231,9 @@ class MobileSim implements SceneSim {
     this.#gustZ = (this.#random.next() - 0.5) * 0.8;
   }
 
-  /** A click blows on the planet under the pointer, along the view. */
-  #puff(mobile: Mobile, frame: SimFrame): void {
-    const rd = mobileRay(
-      (frame.pointer.x - 0.5) * frame.aspect,
-      frame.pointer.y - 0.5,
-      frame.aspect,
-    );
+  /** A press at (x, y), uv, blows on the planet under it, along the view. */
+  #puff(mobile: Mobile, x: number, y: number, aspect: number): void {
+    const rd = mobileRay((x - 0.5) * aspect, y - 0.5, aspect);
     const body = mobile.pick(MOBILE_EYE, rd, PUFF_SLACK);
     if (body < 0) return;
     mobile.kick(body, rd[0] * PUFF, rd[1] * PUFF, rd[2] * PUFF);

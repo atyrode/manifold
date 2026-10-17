@@ -12,8 +12,8 @@
 //              bores, the surge over the rim, swash), carried along and fading, slower on standing water
 //   agitation  what the anemones feel: a hard surge or a touch closes them; they reopen over seconds
 //   wetness    rock the water has run over, drying again over half a minute
-// The pointer dips a finger: a tap drops a ring of ripples and startles the anemones around it,
-// a drag trails ripples behind it.
+// Every hand (SimFrame.principals) dips a finger: a tap drops a ring of ripples and startles the
+// anemones around it (the first finger down's), a drag trails ripples behind it.
 //
 // The life in the pool (life.ts) answers the water from the CPU: each frame the flow is averaged
 // onto a coarse grid on the GPU and read back without stalling (sims/readback.ts), a frame or two
@@ -30,6 +30,7 @@
 // Heights are in cells, exaggerated TIDEPOOL_RELIEF times against the frame (layout.ts); the grid is
 // TIDEPOOL_ROWS rows over the frame's height at every aspect, so the physics is the same on a phone.
 import { KnobReader, type ParamDef } from "../../params.ts";
+import { MAX_PRINCIPALS } from "../../principals.ts";
 import { FixedStep, runBudgeted, Settle } from "../../sims/clock.ts";
 import { GpuCompute, type RenderTarget } from "../../sims/gpu.ts";
 import { hash31, lerp } from "../../sims/math.ts";
@@ -37,13 +38,14 @@ import { PLANT_SUMMER } from "../../sims/plants.ts";
 import { GpuReadback } from "../../sims/readback.ts";
 import { ShallowWater } from "../../sims/shallow.ts";
 import { DataTexture } from "../../sims/texture.ts";
-import type { SceneSim, SimFactory, SimFrame } from "../types.ts";
+import type { ScenePoint, SceneSim, SimFactory, SimFrame } from "../types.ts";
 import {
   layTidepool,
   TIDEPOOL_HEIGHTS,
   TIDEPOOL_RELIEF,
   TIDEPOOL_SEA_BAND,
   type TidepoolLayout,
+  type TidepoolPool,
 } from "./layout.ts";
 import { TIDEPOOL_LIFE_WIDTH, TidepoolLife } from "./life.ts";
 
@@ -282,7 +284,7 @@ function stillSim(gl: WebGL2RenderingContext, knobs: KnobReader<Knob>): SceneSim
         life.relay(layout, want.seed);
       }
       readLifeKnobs(knobs, frame, lifeFrame);
-      life.step(frame.dt * frame.motion, frame.motionTime, lifeFrame, frame.pointer);
+      life.step(frame.dt * frame.motion, frame.motionTime, lifeFrame, frame.principals);
       textures.length = 0;
       for (const texture of made) textures.push(texture.texture);
       textures.push(life.texture);
@@ -320,9 +322,20 @@ export function tidepoolSim(params: readonly ParamDef[]): SimFactory {
     /** Sim seconds since the layout (the wave maker's clock); "now" set's start. */
     let time = 0;
     let setStart = -Infinity;
-    let lastX = 0;
-    let lastY = 0;
-    let dragging = false;
+    /**
+     * Per finger (by place in SimFrame.principals): whether it was in the water last frame, and
+     * where it last rippled (cells).
+     */
+    const dragging = new Uint8Array(MAX_PRINCIPALS);
+    const lastX = new Float64Array(MAX_PRINCIPALS);
+    const lastY = new Float64Array(MAX_PRINCIPALS);
+    /** The basin's water as laid out (frame heights), for interest(); and its points. */
+    let pool: TidepoolPool | undefined;
+    const points = [
+      { x: 0, y: 0 },
+      { x: 0, y: 0 },
+      { x: 0, y: 0 },
+    ];
 
     /** The sea level, swell height, wavelength and heading for this frame's knobs at sim second `at`. */
     const writeSwell = (frame: SimFrame, at: number): void => {
@@ -386,6 +399,7 @@ export function tidepoolSim(params: readonly ParamDef[]): SimFactory {
       layoutTexture?.upload(layout.texture);
       settle.lay(want);
       life.relay(layout, want.seed);
+      pool = layout.pool;
       // The coarse flow the life reads back, on its grid.
       if (flow === undefined || flow.height !== life.flowRows) {
         flow?.dispose();
@@ -417,7 +431,7 @@ export function tidepoolSim(params: readonly ParamDef[]): SimFactory {
         readback.request(flow.framebuffer);
       }
       readLifeKnobs(knobs, frame, lifeFrame);
-      life.step(seconds, frame.motionTime, lifeFrame, frame.pointer);
+      life.step(seconds, frame.motionTime, lifeFrame, frame.principals);
       textures[0] = sim.surface.texture;
       textures[1] = sim.carried?.texture;
       textures[2] = layoutTexture?.texture;
@@ -466,33 +480,40 @@ export function tidepoolSim(params: readonly ParamDef[]): SimFactory {
 
         if (frame.fired[setSlot] === true) setStart = time;
 
-        // The finger: a tap rings the water and startles the anemones round it; a drag trails ripples.
-        const pointer = frame.pointer;
+        // Every finger (SimFrame.principals): a tap rings the water and startles the anemones round
+        // it; a drag trails ripples. The anemones answer one finger, the first one down.
         const poke = carry.uPoke;
         poke[3] = 0;
-        if (pointer.inside && pointer.down) {
-          const x = pointer.x * sim.width;
-          const y = pointer.y * sim.height;
-          if (pointer.pressed || !dragging) {
+        for (let i = 0; i < MAX_PRINCIPALS; i++) {
+          const hand = frame.principals[i];
+          if (hand === undefined || !hand.inside || !hand.down) {
+            dragging[i] = 0;
+            continue;
+          }
+          const x = hand.x * sim.width;
+          const y = hand.y * sim.height;
+          if (hand.pressed || dragging[i] !== 1) {
             sim.splat(x, y, TAP.radius, TAP.height);
-            lastX = x;
-            lastY = y;
+            lastX[i] = x;
+            lastY[i] = y;
           } else {
-            const gap = Math.hypot(x - lastX, y - lastY);
+            const fromX = lastX[i] ?? x;
+            const fromY = lastY[i] ?? y;
+            const gap = Math.hypot(x - fromX, y - fromY);
             for (let s = DRAG.spacing; s <= gap; s += DRAG.spacing)
-              sim.splat(lerp(lastX, x, s / gap), lerp(lastY, y, s / gap), DRAG.radius, DRAG.height);
+              sim.splat(lerp(fromX, x, s / gap), lerp(fromY, y, s / gap), DRAG.radius, DRAG.height);
             if (gap >= DRAG.spacing) {
-              lastX = x;
-              lastY = y;
+              lastX[i] = x;
+              lastY[i] = y;
             }
           }
-          poke[0] = x;
-          poke[1] = y;
-          poke[2] = TAP.reach;
-          poke[3] = 1;
-          dragging = true;
-        } else {
-          dragging = false;
+          if (poke[3] === 0) {
+            poke[0] = x;
+            poke[1] = y;
+            poke[2] = TAP.reach;
+            poke[3] = 1;
+          }
+          dragging[i] = 1;
         }
 
         const seconds = Math.max(0, frame.dt) * frame.motion * knobs.value(frame, "pace");
@@ -507,6 +528,19 @@ export function tidepoolSim(params: readonly ParamDef[]): SimFactory {
         if (ran > 0) sim.carry(ran, time, carry);
         sim.view();
         return show(sim, frame, Math.max(0, frame.dt) * frame.motion);
+      },
+      /** The basin's middle and either side of it, where a fingertip rings the water. */
+      interest(aspect: number): readonly ScenePoint[] {
+        if (pool === undefined) return [];
+        const [middle, left, right] = points;
+        if (middle === undefined || left === undefined || right === undefined) return points;
+        middle.x = pool.x / aspect;
+        middle.y = pool.y;
+        left.x = (pool.x - 0.5 * pool.rx) / aspect;
+        left.y = pool.y + 0.2 * pool.ry;
+        right.x = (pool.x + 0.5 * pool.rx) / aspect;
+        right.y = pool.y - 0.2 * pool.ry;
+        return points;
       },
       dispose() {
         water?.dispose();

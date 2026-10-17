@@ -70,6 +70,7 @@
 //          A light (the lit sea, and everything past the dish's glass wall).
 import { KnobReader, type ParamDef } from "../../params.ts";
 import { BuildSlot } from "../../sims/build.ts";
+import { MAX_PRINCIPALS } from "../../principals.ts";
 import { FixedStep, runBudgeted } from "../../sims/clock.ts";
 import {
   GpuCompute,
@@ -81,7 +82,7 @@ import {
 import { clamp, easeFactor } from "../../sims/math.ts";
 import { mulberry32 } from "../../sims/random.ts";
 import { DataTexture } from "../../sims/texture.ts";
-import type { PrincipalState, SceneSim, SimFactory, SimFrame } from "../types.ts";
+import type { PrincipalState, SceneSim, SimFactory, SimFrame, ScenePoint } from "../types.ts";
 import {
   agentShape,
   type PhysarumDish,
@@ -200,6 +201,12 @@ const MARK_SETTLE = 20;
 
 /** A press that moves farther than this (heights) is a drag. */
 const DRAG_START = 0.012;
+/** Where the cast's agents lay oat flakes, uv: round the middle of the dish. */
+const FLAKE_POINTS: readonly ScenePoint[] = [
+  { x: 0.4, y: 0.62 },
+  { x: 0.62, y: 0.58 },
+  { x: 0.5, y: 0.36 },
+];
 /** Half-width of a line of salt (heights). */
 const SALT_RADIUS = 0.011;
 /** Salt lasts (sim seconds) at "lasts" 0 and 1; it is cleared away for good after SALT_TAIL × that. */
@@ -392,6 +399,14 @@ class PhysarumSim implements SceneSim {
   #saltX = 0;
   #saltY = 0;
   #paint = false;
+  /**
+   * The other hands (SimFrame.principals after the visitor), by place: whether each is pressing,
+   * where its press began (uv), and whether it has moved off into a drag.
+   */
+  readonly #otherPressing = new Uint8Array(MAX_PRINCIPALS);
+  readonly #otherDragging = new Uint8Array(MAX_PRINCIPALS);
+  readonly #otherX = new Float64Array(MAX_PRINCIPALS);
+  readonly #otherY = new Float64Array(MAX_PRINCIPALS);
   #saltLeft = 0;
   #envDirty = true;
   readonly #steps = new FixedStep(1 / STEPS_PER_SECOND, MAX_STEPS);
@@ -503,6 +518,7 @@ class PhysarumSim implements SceneSim {
     if (this.#network === undefined) return this.#textures(this.#growth.advance(frame, false));
     if (fired[this.#feedSlot] === true) this.#food.constellation();
     this.#touch(frame.pointer, frame.aspect, settings.salt);
+    this.#others(frame.principals, frame.aspect);
     if (this.#warmed < PREWARM_STEPS) {
       this.#warm(Math.max(PREWARM_MS, frame.budget));
       if (this.#warmed < PREWARM_STEPS) return this.#textures(this.#growth.advance(frame, false));
@@ -552,6 +568,11 @@ class PhysarumSim implements SceneSim {
     this.#dish.dispose();
     this.#gpu.dispose();
     this.#foodTexture.dispose();
+  }
+
+  /** Round the middle of the dish, where a press lays an oat flake. */
+  interest(): readonly ScenePoint[] {
+    return FLAKE_POINTS;
   }
 
   /** The sim shows its first dish once it has landed (the build worker lays it). */
@@ -781,6 +802,34 @@ class PhysarumSim implements SceneSim {
     if (pointer.released || !pointer.down) {
       if (!press.dragging && pointer.inside) this.#food.drop(press.x, press.y);
       this.#press = undefined;
+    }
+  }
+
+  /**
+   * The other hands: a tap lays an oat flake where it landed, as the visitor's does. One line of
+   * salt is laid at a time, the visitor's (#touch), so their drags lay none.
+   */
+  #others(principals: readonly PrincipalState[], aspect: number): void {
+    for (let i = 1; i < MAX_PRINCIPALS; i++) {
+      const hand = principals[i];
+      if (hand === undefined) {
+        this.#otherPressing[i] = 0;
+        continue;
+      }
+      if (hand.pressed && hand.inside) {
+        this.#otherPressing[i] = 1;
+        this.#otherDragging[i] = 0;
+        this.#otherX[i] = hand.x;
+        this.#otherY[i] = hand.y;
+      }
+      if (this.#otherPressing[i] !== 1) continue;
+      const x = this.#otherX[i] ?? hand.x;
+      const y = this.#otherY[i] ?? hand.y;
+      if (Math.hypot((hand.x - x) * aspect, hand.y - y) > DRAG_START) this.#otherDragging[i] = 1;
+      if (hand.released || !hand.down) {
+        if (this.#otherDragging[i] !== 1 && hand.inside) this.#food.drop(x, y);
+        this.#otherPressing[i] = 0;
+      }
     }
   }
 

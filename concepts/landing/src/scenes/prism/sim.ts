@@ -530,6 +530,7 @@ class PrismSim implements SceneSim {
     this.#layout(frame);
     this.#fire(frame.fired);
     const dt = clamp(frame.dt, 0, MAX_STEP);
+    // The visitor alone (SimFrame.pointer): one hand turns the prism; two would fight over it.
     this.#advance(dt, clamp(frame.motion, 0, 1), frame.pointer);
     this.#place(dt);
     this.#trace();

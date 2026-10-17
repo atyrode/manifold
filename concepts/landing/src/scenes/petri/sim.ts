@@ -59,7 +59,7 @@ import { grayScottAlong, grayScottGlsl, grayScottRegimes } from "../../sims/gray
 import { clamp, lerp, smoothstep } from "../../sims/math.ts";
 import { mulberry32 } from "../../sims/random.ts";
 import { DataTexture } from "../../sims/texture.ts";
-import type { SceneSim, SimFactory, SimFrame } from "../types.ts";
+import type { SceneSim, SimFactory, SimFrame, ScenePoint } from "../types.ts";
 import { PETRI_FEED_KILL_UNIT, PETRI_PASSAGE } from "./constants.ts";
 
 /** Inner radius of the dish in frame heights at the middle of the size knob... */
@@ -215,6 +215,12 @@ const DROP_INTERVAL = [170, 35] as const;
 const DROP_FIRST = 40;
 /** Drops, sparks and spreading discs the touch pass applies in one frame. */
 const MAX_TOUCHES = 6;
+/** Where the cast's agents let drops fall, dish uv (0.5 the middle): three places round the middle. */
+const DROP_POINTS = [
+  [0.69, 0.61],
+  [0.31, 0.61],
+  [0.5, 0.28],
+] as const;
 /** Width of the events texture (row 0 bubbles, row 1 ripples). */
 const EVENT_WIDTH = 8;
 
@@ -739,6 +745,11 @@ class PetriLab implements SceneSim {
   #lastX = 0;
   #lastY = 0;
   #held = false;
+  /** The size knob as last read, for interest(); and its points, rewritten each time. */
+  #size = 0;
+  readonly #interest: { x: number; y: number }[] = DROP_POINTS.map(() => ({ x: 0, y: 0 }));
+  /** Where another hand's drop falls, dish uv: scratch for #others. */
+  readonly #at = { x: 0, y: 0 };
   /** The view needs redrawing even without a step (reseeded, resized). */
   #dirty = true;
   /** The entrance's spread of the pattern (see ArrivalClock). */
@@ -771,7 +782,8 @@ class PetriLab implements SceneSim {
     const chemistry: Chemistry = this.#knobs.value(frame, "chemistry") > 0.5 ? BZ : TURING;
     const hold = this.#holdFor(frame);
     const pattern = Math.round(this.#knobs.value(frame, "pattern"));
-    const radius = petriRadius(aspect, this.#knobs.value(frame, "size"));
+    this.#size = this.#knobs.value(frame, "size");
+    const radius = petriRadius(aspect, this.#size);
     const n = gridFor(2 * radius * frame.height, this.#knobs.value(frame, "scale"));
     // A dish settled in one regime can die outright when switched to another (holes to anything
     // sparser, mazes to coral), so a new regime, or wandering again, starts a fresh dish; the
@@ -816,6 +828,7 @@ class PetriLab implements SceneSim {
     this.#touchMark[0] = 0;
     this.#events(frame, turing, seconds, n);
     const stroke = this.#pointer(frame, aspect, radius);
+    this.#others(frame, turing, n, aspect, radius);
     const touched = stroke || this.#touchCount > 0 || (this.#touchMark[0] ?? 0) > 0;
     if (touched) {
       this.#touch.run(this.#state, {
@@ -855,6 +868,18 @@ class PetriLab implements SceneSim {
   dispose(): void {
     this.#gpu.dispose();
     this.#eventTexture.dispose();
+  }
+
+  /** Round the middle of the dish, where a press lets a drop fall. */
+  interest(aspect: number): readonly ScenePoint[] {
+    const radius = petriRadius(aspect, this.#size);
+    for (const [i, [x, y]] of DROP_POINTS.entries()) {
+      const point = this.#interest[i];
+      if (point === undefined) continue;
+      point.x = ((x - 0.5) * 2 * radius) / aspect + 0.5;
+      point.y = (y - 0.5) * 2 * radius + 0.5;
+    }
+    return this.#interest;
   }
 
   /**
@@ -967,9 +992,9 @@ class PetriLab implements SceneSim {
     return { x: 0.5 + Math.cos(angle) * reach, y: 0.5 + Math.sin(angle) * reach };
   }
 
-  /** A drop lands: Turing, fresh gel spreading from it; BZ, a spark and a new pacemaker. */
-  #drop(turing: boolean, n: number): void {
-    const { x, y } = this.#somewhere();
+  /** A drop lands at `at` (dish uv): Turing, fresh gel spreading from it; BZ, a spark and a new pacemaker. */
+  #drop(turing: boolean, n: number, at: { x: number; y: number }): void {
+    const { x, y } = at;
     this.#ripple(x, y, 1);
     if (turing) {
       this.#spreads.push({
@@ -1014,11 +1039,11 @@ class PetriLab implements SceneSim {
     const markNow = frame.fired[this.#markSlot] === true;
 
     const rate = this.#knobs.value(frame, "drops");
-    if (dropNow) this.#drop(turing, n);
+    if (dropNow) this.#drop(turing, n, this.#somewhere());
     if (rate > 0) {
       this.#untilDrop -= seconds;
       if (this.#untilDrop <= 0) {
-        this.#drop(turing, n);
+        this.#drop(turing, n, this.#somewhere());
         this.#untilDrop =
           lerp(DROP_INTERVAL[0], DROP_INTERVAL[1], clamp(rate, 0, 1)) *
           (0.7 + 0.6 * this.#random());
@@ -1110,6 +1135,22 @@ class PetriLab implements SceneSim {
     this.#lastX = x;
     this.#lastY = y;
     return true;
+  }
+
+  /**
+   * The other hands (SimFrame.principals after the visitor): a press in the dish lets a drop fall
+   * there, as the scheduled drops do. One brush paints, the visitor's (#pointer): theirs do not.
+   */
+  #others(frame: SimFrame, turing: boolean, n: number, aspect: number, radius: number): void {
+    if (frame.dt <= 0) return;
+    for (let i = 1; i < frame.principals.length; i++) {
+      const hand = frame.principals[i];
+      if (hand === undefined || !hand.inside || !hand.pressed) continue;
+      const at = this.#at;
+      at.x = ((hand.x - 0.5) * aspect) / (2 * radius) + 0.5;
+      at.y = (hand.y - 0.5) / (2 * radius) + 0.5;
+      if (Math.hypot(at.x - 0.5, at.y - 0.5) < 0.48) this.#drop(turing, n, at);
+    }
   }
 
   #ageRipples(dt: number): void {

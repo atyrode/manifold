@@ -20,8 +20,9 @@
 // lower shelf stands empty while he has it), pours into a glass he sets on the counter and puts
 // the bottle back, or shakes a cocktail and strains it into a coupe. Glasses left behind are
 // cleared and the spot wiped. Between orders he polishes glasses, wipes the counter (more as last
-// call nears), stands and looks out at the rain, or leans over to chat. A click on the bar brings
-// him over to you; the "now" buttons send in a new patron or have him shake a cocktail.
+// call nears), stands and looks out at the rain, or leans over to chat. A press on the bar, anyone's
+// (SimFrame.principals), brings him over to it; the "now" buttons send in a new patron or have him
+// shake a cocktail.
 //
 // Last call (the `night` knob's "now"). It is called when the bartender rings it: as soon as his
 // hands are free he lifts a brass hand bell and rings it (ACT.bell), and the house lights blink twice
@@ -32,7 +33,7 @@
 // new comes in, the room empties one by one (a regular last), the lamps go down and the OPEN sign
 // goes dark. Moving the `night` knob ends it; the evening follows the knob again.
 //
-// The candle on your table bends with the air a pointer sweeping past it pushes, then rights itself.
+// The candle on your table bends with the air the hands sweeping past it push, then rights itself.
 //
 // Time runs in fixed steps of STEP seconds of simulated time (scene seconds times the lab's
 // motion), so the evening depends only on the knobs and the clock, not on the frame rate. The first
@@ -52,10 +53,11 @@
 //   18           candle: draught x, y (-1..1); the ceiling fan's angle (rad, 0..2π); seconds since
 //                last call was called (-1: not called)
 import type { ParamDef } from "../../params.ts";
+import { MAX_PRINCIPALS } from "../../principals.ts";
 import { approach, clamp, smoothstep } from "../../sims/math.ts";
 import { Random } from "../../sims/random.ts";
 import { DataTexture } from "../../sims/texture.ts";
-import type { SceneSim, SimFactory, SimFrame } from "../types.ts";
+import type { SceneSim, SimFactory, SimFrame, ScenePoint } from "../types.ts";
 import { PASSAGE } from "./constants.ts";
 
 // ---- The room, shared with the shader ----
@@ -170,7 +172,7 @@ const FACE_TIME = 0.35;
 const TALK_TIME = 1.5;
 /** A wet coat dries over this many seconds indoors. */
 const COAT_DRY = 90;
-/** The candle's lean: how hard pointer speed (screen heights/s) pushes it, how near it must pass, and how fast it leans and recovers (s). */
+/** The candle's lean: how hard a hand's speed (screen heights/s) pushes it, how near it must pass, and how fast it leans and recovers (s). */
 const DRAUGHT_GAIN = 0.6;
 const DRAUGHT_REACH = 0.12;
 const DRAUGHT_LEAN = 0.12;
@@ -347,8 +349,12 @@ class BarEvening implements SceneSim {
 
   #draftX = 0;
   #draftY = 0;
-  #prevX = Number.NaN;
-  #prevY = Number.NaN;
+  /** Each hand's point last frame (NaN while off the page), by place in SimFrame.principals. */
+  readonly #prevX = new Float64Array(MAX_PRINCIPALS).fill(Number.NaN);
+  readonly #prevY = new Float64Array(MAX_PRINCIPALS).fill(Number.NaN);
+  /** Points of interest along the counter for #interestAspect (SceneSim.interest). */
+  readonly #interest: ScenePoint[] = [];
+  #interestAspect = Number.NaN;
 
   constructor(gl: WebGL2RenderingContext, params: readonly ParamDef[]) {
     const find = (key: KnobKey): number => {
@@ -410,6 +416,20 @@ class BarEvening implements SceneSim {
 
   dispose(): void {
     this.#texture.dispose();
+  }
+
+  /** Along the counter, where a press calls the bartender over: three places he works, those in frame. */
+  interest(aspect: number): readonly ScenePoint[] {
+    if (aspect !== this.#interestAspect) {
+      this.#interestAspect = aspect;
+      const pan = -Math.max(0, PAN_FROM - aspect) * PAN_RATE;
+      this.#interest.length = 0;
+      for (const metres of [0, 1.2, 2.4]) {
+        const x = ((metres * FOCAL) / BARTENDER_Z - pan) / aspect + 0.5;
+        if (x > 0.08 && x < 0.92) this.#interest.push({ x, y: 0.5 + HORIZON });
+      }
+    }
+    return this.#interest;
   }
 
   /** The time of night the evening keeps: the knob's, or closing time once last call has been called. */
@@ -533,37 +553,43 @@ class BarEvening implements SceneSim {
     this.#callNight = Number.NaN;
   }
 
-  /** The pointer: a click on the bar calls the bartender over; moving near the candle bends its flame. */
+  /**
+   * The hands (every principal's): a press on the bar calls the bartender over; moving near the
+   * candle bends its flame, the draughts of several hands adding.
+   */
   #follow(frame: SimFrame): void {
-    const pointer = frame.pointer;
     const pan = -Math.max(0, PAN_FROM - this.#aspect) * PAN_RATE;
-    const px = (pointer.x - 0.5) * this.#aspect + pan;
-    const py = pointer.y - 0.5 - HORIZON;
-    // The bar: from the counter top up to the shelves' bottles, right of the counter's end.
-    if (
-      pointer.inside &&
-      pointer.pressed &&
-      this.#serving &&
-      py > -0.12 &&
-      py < 0.12 &&
-      px > -0.34
-    ) {
-      this.#visitX = clamp((px * BARTENDER_Z) / FOCAL, BARTENDER_MIN, BARTENDER_MAX);
-      this.#interrupt();
-    }
     const dt = Math.max(0, frame.dt) * Math.max(0, frame.motion);
+    const cx = (FOCAL * CANDLE_X) / CANDLE_Z;
+    const cy = (FOCAL * (CANDLE_Y - TABLE_EYE)) / CANDLE_Z;
     let pushX = 0;
     let pushY = 0;
-    if (pointer.inside && dt > 0 && Number.isFinite(this.#prevX)) {
-      const cx = (FOCAL * CANDLE_X) / CANDLE_Z;
-      const cy = (FOCAL * (CANDLE_Y - TABLE_EYE)) / CANDLE_Z;
-      const d2 = (px - cx) ** 2 + (py - cy) ** 2;
-      const near = Math.exp(-d2 / (2 * DRAUGHT_REACH * DRAUGHT_REACH));
-      pushX = clamp(((px - this.#prevX) / dt) * DRAUGHT_GAIN * near, -1, 1);
-      pushY = clamp(((py - this.#prevY) / dt) * DRAUGHT_GAIN * 0.6 * near, -1, 1);
+    for (let i = 0; i < MAX_PRINCIPALS; i++) {
+      const hand = frame.principals[i];
+      if (hand === undefined || !hand.inside) {
+        this.#prevX[i] = Number.NaN;
+        this.#prevY[i] = Number.NaN;
+        continue;
+      }
+      const px = (hand.x - 0.5) * this.#aspect + pan;
+      const py = hand.y - 0.5 - HORIZON;
+      // The bar: from the counter top up to the shelves' bottles, right of the counter's end.
+      if (hand.pressed && this.#serving && py > -0.12 && py < 0.12 && px > -0.34) {
+        this.#visitX = clamp((px * BARTENDER_Z) / FOCAL, BARTENDER_MIN, BARTENDER_MAX);
+        this.#interrupt();
+      }
+      const prevX = this.#prevX[i] ?? Number.NaN;
+      if (dt > 0 && Number.isFinite(prevX)) {
+        const d2 = (px - cx) ** 2 + (py - cy) ** 2;
+        const near = Math.exp(-d2 / (2 * DRAUGHT_REACH * DRAUGHT_REACH));
+        pushX += clamp(((px - prevX) / dt) * DRAUGHT_GAIN * near, -1, 1);
+        pushY += clamp(((py - (this.#prevY[i] ?? py)) / dt) * DRAUGHT_GAIN * 0.6 * near, -1, 1);
+      }
+      this.#prevX[i] = px;
+      this.#prevY[i] = py;
     }
-    this.#prevX = pointer.inside ? px : Number.NaN;
-    this.#prevY = pointer.inside ? py : Number.NaN;
+    pushX = clamp(pushX, -1, 1);
+    pushY = clamp(pushY, -1, 1);
     if (dt > 0) {
       this.#draftX = approach(
         this.#draftX,

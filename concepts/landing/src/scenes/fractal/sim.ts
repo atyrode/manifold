@@ -565,6 +565,8 @@ class FractalSim implements SceneSim {
 
     if (frame.fired[this.#markTrigger] === true) this.#summonedUntil = this.#time + MARK_SUMMON;
     const next = frame.fired[this.#nextTrigger] === true;
+    // The visitor alone (SimFrame.pointer): the hand that drags and nudges the one view, and the
+    // garden's one pebble. Other principals would pull the picture from under it.
     this.#steer(frame.pointer, real);
     if (!this.#started) this.#incoming.mode = knobs.mode;
     this.#started = true;

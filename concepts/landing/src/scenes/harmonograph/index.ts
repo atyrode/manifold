@@ -1,7 +1,9 @@
 // A harmonograph seen from above on a dark wooden desk under a warm lamp: two damped pendulums swing
 // a pen across a sheet of cream paper, slowly drawing a Lissajous figure that dies away to a point.
 // Then the sheet slides off, a fresh one slides in, and the pendulums are set swinging again with new
-// frequency ratios near small integers. sim.ts integrates the pendulums and rasterises the ink;
+// frequency ratios near small integers. It is a shared table: everyone present draws on the sheet
+// too (a drag freehand; a tap lets a small plotter swing there), and while they do its ink slowly
+// fades and the figures are swung again on it. sim.ts integrates the pendulums and rasterises the ink;
 // shader.ts paints the desk, the paper and the pen.
 import { choice, feature, range, seed, type ParamDef } from "../../params.ts";
 import type { SceneDef } from "../types.ts";
@@ -49,7 +51,7 @@ const params: readonly ParamDef[] = [
     true,
     "pause",
     0.3,
-    "When the swing has died, rest a while (up to 40 seconds), then slide the sheet off, slide a fresh one in and swing the pendulums again. Off: the finished drawing stays. Now: change the sheet at once.",
+    "When the swing has died, rest a while (up to 40 seconds), then slide the sheet off, slide a fresh one in and swing the pendulums again. While hands are drawing on the sheet, it stays and the pendulums swing again on it as its ink fades. Off: the finished drawing stays. Now: change the sheet at once.",
     { trigger: 0 },
   ),
   seed(
@@ -97,7 +99,8 @@ const params: readonly ParamDef[] = [
 export const harmonographScene: SceneDef = {
   id: "harmonograph",
   title: "Harmonograph",
-  blurb: "Two swinging pendulums draw a slowly dying figure in ink on paper.",
+  blurb:
+    "Two swinging pendulums draw a slowly dying figure in ink on paper: a table anyone present may draw on.",
   accent: "#e2553a",
   look: { color: "full", levels: 4 },
   passage: { enter: 5, exit: 2.4 },

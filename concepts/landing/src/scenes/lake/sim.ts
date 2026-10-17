@@ -16,18 +16,19 @@
 // on screen) and may sprout a branch at any step. The network grows once per seed and fractures
 // setting, before the first frame, so the lake opens already cracked. Then the ice sings: now and
 // then a crack zips across it (a branch out of an old crack, or a long crack from beyond the
-// frame), two run out from where a click knocked on the ice, and once the night has used its share
+// frame), two run out from where a press knocked on the ice, and once the night has used its share
 // of new cracks the ice sings along old ones instead. A zipping crack is stamped into the field as
 // its front passes and glows behind the front. The M (the landmark) is a crack of its own that
 // zips in stroke by stroke a moment after it is switched on.
 //
 // Drifting snow, on a coarser grid over the same field. Packed snow lies in wind-shaped patches
-// that only the pointer's broom moves. Loose snow on and around them is lifted where gusts push the
+// that only the hands' brooms move. Loose snow on and around them is lifted where gusts push the
 // wind over a threshold, carried downwind as drifting snow (streamers trailing off every patch,
 // each row at its own on-screen pace), and settles again where it is more than the wind can carry
 // and as the wind drops, mostly on snow (on bare black ice it slides on). Air from beyond the frame
 // brings its own share, and falling snow adds to both.
-// Dragging on the ice sweeps it clear and heaps the snow either side of the stroke.
+// Dragging on the ice sweeps it clear and heaps the snow either side of the stroke. Every hand
+// (SimFrame.principals) knocks and sweeps alike.
 //
 // The aurora. A quiet arc brightens slowly for most of a minute, then breaks up: the light surges,
 // curtains spread overhead and ripple faster, and over a couple of minutes the display recovers.
@@ -36,7 +37,7 @@
 //
 // Time: schedules, the snow and the aurora's clock run on dt * motion; a zipping crack, its glow
 // and a substorm's surge play on dt, so a "now" still plays at motion 0. Everything depends only on
-// the seed, the knobs and the clocks, except what the pointer does.
+// the seed, the knobs and the clocks, except what the hands do.
 //
 // Textures:
 //   uSim0  rgba8 FIELD_W × FIELD_H, linear: R the distance to the nearest crack (DIST_RANGE = 1);
@@ -59,12 +60,13 @@
 // M re-stamps the whole field (~10 ms). Nothing is allocated per frame outside those events.
 import { markVertex } from "../../mark.ts";
 import type { ParamDef } from "../../params.ts";
+import { MAX_PRINCIPALS } from "../../principals.ts";
 import { LevelCamera } from "../../sims/camera.ts";
 import { approach, clamp, hash31, smoothstep } from "../../sims/math.ts";
 import { valueNoise } from "../../sims/noise.ts";
 import { Random } from "../../sims/random.ts";
 import { DataTexture } from "../../sims/texture.ts";
-import type { SceneSim, SimFactory, SimFrame } from "../types.ts";
+import type { PrincipalState, ScenePoint, SceneSim, SimFactory, SimFrame } from "../types.ts";
 
 // ---- The view and the fields, shared with the shader ----
 
@@ -158,8 +160,14 @@ const MARK_DEPTH = 0.215;
 const MARK_JAG = 0.0005;
 /** A press that moves less than this (screen heights) before it lifts knocks on the ice. */
 const KNOCK_MOVE = 0.012;
-/** The pointer reaches the ice from this far below the horizon (screen heights; ~45 m out). */
+/** A hand reaches the ice from this far below the horizon (screen heights; ~45 m out). */
 const POINTER_FAR = 0.03;
+/** Where the cast's agents knock, uv: out on the open ice, near and far. */
+const KNOCK_POINTS: readonly ScenePoint[] = [
+  { x: 0.24, y: 0.2 },
+  { x: 0.52, y: 0.12 },
+  { x: 0.76, y: 0.26 },
+];
 
 // ---- Drifting snow ----
 
@@ -726,13 +734,16 @@ class FrozenLake implements SceneSim {
   #windOffset = 0;
   #gustOffset = 0;
 
-  /** The pointer: a press on the ice, how far it has moved, and where it was last frame (field). */
-  #pressing = false;
-  #pressU = 0;
-  #pressV = 0;
-  #moved = 0;
-  #lastU = 0;
-  #lastV = 0;
+  /**
+   * The hands, by place in SimFrame.principals: whether each is pressing on the ice, where the press
+   * went down, how far it has moved since, and where it was last frame (field).
+   */
+  readonly #pressing = new Uint8Array(MAX_PRINCIPALS);
+  readonly #pressU = new Float64Array(MAX_PRINCIPALS);
+  readonly #pressV = new Float64Array(MAX_PRINCIPALS);
+  readonly #moved = new Float64Array(MAX_PRINCIPALS);
+  readonly #lastU = new Float64Array(MAX_PRINCIPALS);
+  readonly #lastV = new Float64Array(MAX_PRINCIPALS);
 
   constructor(gl: WebGL2RenderingContext, params: readonly ParamDef[]) {
     const index = (key: KnobKey): number => {
@@ -830,7 +841,8 @@ class FrozenLake implements SceneSim {
     }
 
     // The camera is tilting while the scene comes in or goes out: the screen is not the ice's view then.
-    if (frame.passage.enter >= 1 && frame.passage.exit <= 0) this.#follow(frame);
+    if (frame.passage.enter >= 1 && frame.passage.exit <= 0)
+      for (let i = 0; i < MAX_PRINCIPALS; i++) this.#follow(i, frame.principals[i]);
     this.#clock += mdt;
 
     // The ice sings on its own schedule.
@@ -858,6 +870,11 @@ class FrozenLake implements SceneSim {
       this.#stateTexture.texture,
       this.#snowTexture.texture,
     ];
+  }
+
+  /** The open ice, where a knock sends cracks running. */
+  interest(): readonly ScenePoint[] {
+    return KNOCK_POINTS;
   }
 
   dispose(): void {
@@ -1280,37 +1297,49 @@ class FrozenLake implements SceneSim {
     this.#restamp();
   }
 
-  // ---- The pointer ----
+  // ---- The hands ----
 
-  /** A press on the ice that lifts where it went down knocks; one that moves sweeps the snow. */
-  #follow(frame: SimFrame): void {
-    const pointer = frame.pointer;
-    const u = (pointer.x - 0.5) * this.#aspect;
-    const v = CAMERA.horizon - pointer.y;
-    const onIce = pointer.inside && v > POINTER_FAR && v < FIELD_FV;
-    if (pointer.pressed && onIce) {
-      this.#pressing = true;
-      this.#pressU = u;
-      this.#pressV = v;
-      this.#lastU = u;
-      this.#lastV = v;
-      this.#moved = 0;
+  /**
+   * Hand `i` (every principal's alike; undefined: not present): a press on the ice that lifts where
+   * it went down knocks; one that moves sweeps the snow.
+   */
+  #follow(i: number, hand: PrincipalState | undefined): void {
+    if (hand === undefined) {
+      this.#pressing[i] = 0;
+      return;
     }
-    if (this.#pressing && pointer.down && onIce) {
-      this.#moved = Math.max(this.#moved, Math.hypot(u - this.#pressU, v - this.#pressV));
-      if (this.#moved > KNOCK_MOVE) {
-        const z0 = CAMERA.groundDepth(this.#lastV);
+    const u = (hand.x - 0.5) * this.#aspect;
+    const v = CAMERA.horizon - hand.y;
+    const onIce = hand.inside && v > POINTER_FAR && v < FIELD_FV;
+    if (hand.pressed && onIce) {
+      this.#pressing[i] = 1;
+      this.#pressU[i] = u;
+      this.#pressV[i] = v;
+      this.#lastU[i] = u;
+      this.#lastV[i] = v;
+      this.#moved[i] = 0;
+    }
+    if (this.#pressing[i] !== 1) return;
+    const pressU = this.#pressU[i] ?? u;
+    const pressV = this.#pressV[i] ?? v;
+    if (hand.down && onIce) {
+      const moved = Math.max(this.#moved[i] ?? 0, Math.hypot(u - pressU, v - pressV));
+      this.#moved[i] = moved;
+      if (moved > KNOCK_MOVE) {
+        const lastU = this.#lastU[i] ?? u;
+        const lastV = this.#lastV[i] ?? v;
+        const z0 = CAMERA.groundDepth(lastV);
         const z1 = CAMERA.groundDepth(v);
-        this.#snow.sweep(CAMERA.worldX(this.#lastU, z0), z0, CAMERA.worldX(u, z1), z1);
+        this.#snow.sweep(CAMERA.worldX(lastU, z0), z0, CAMERA.worldX(u, z1), z1);
       }
-      this.#lastU = u;
-      this.#lastV = v;
+      this.#lastU[i] = u;
+      this.#lastV[i] = v;
     }
-    if (this.#pressing && (pointer.released || !pointer.down)) {
-      this.#pressing = false;
-      if (this.#moved <= KNOCK_MOVE) {
-        const z = CAMERA.groundDepth(this.#pressV);
-        this.#knock(CAMERA.worldX(this.#pressU, z), z);
+    if (hand.released || !hand.down) {
+      this.#pressing[i] = 0;
+      if ((this.#moved[i] ?? 0) <= KNOCK_MOVE) {
+        const z = CAMERA.groundDepth(pressV);
+        this.#knock(CAMERA.worldX(pressU, z), z);
       }
     }
   }

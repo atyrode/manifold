@@ -8,7 +8,7 @@
 //   basin, swings back and clacks on the stone with a small bounce; or, the knock knob turned down,
 //   eases onto a pad of moss on the stone with a soft knock, too soft to bounce or startle a leaf.
 // - Leaves letting go of the canopy and gliding down; some land on the basin and float.
-// - Rings on the basin's water: the pour, the clack, a leaf landing, a click.
+// - Rings on the basin's water: the pour, the clack, a leaf landing, a press (any principal's).
 // - The passage (BAMBOO_PASSAGE): entering, the tube starts empty and fills to where the warm-up left
 //   it as the spout's first water arrives; leaving, the spout rushes so the tube brims, tips and
 //   clacks, a fast gust front crosses the grove and a couple of leaves let go. The culms' lean in and
@@ -24,12 +24,13 @@
 //          angle, length in screen heights), (width 0..1, depth m, alpha, 1). Floating: (disc u, v,
 //          angle, length in disc units), (1, depth m, alpha, 2). Unused rows are 0.
 import { KnobReader, type ParamDef } from "../../params.ts";
+import { MAX_PRINCIPALS } from "../../principals.ts";
 import { FixedStep } from "../../sims/clock.ts";
 import { approach, hash31, smoothstep } from "../../sims/math.ts";
 import { mulberry32 } from "../../sims/random.ts";
 import { springStep, type Spring } from "../../sims/spring.ts";
 import { DataTexture } from "../../sims/texture.ts";
-import type { PrincipalState, SceneSim, SimFactory, SimFrame } from "../types.ts";
+import type { PrincipalState, SceneSim, SimFactory, SimFrame, ScenePoint } from "../types.ts";
 import { BAMBOO_PASSAGE } from "./constants.ts";
 
 /** Seconds into the entrance at which the spout's first water leaves its lip (the shader's stream starts here). */
@@ -195,15 +196,20 @@ function pulsePeak(tail: number): number {
   return (1 - Math.exp(-xi / GUST_RISE)) * Math.exp(-xi / tail);
 }
 
-// ---- the pointer ----
+// ---- the hands (every principal's, SimFrame.principals) ----
 
-/** How far either side of the pointer (screen heights) stems are brushed. */
+/** How far either side of a hand (screen heights) stems are brushed. */
 const BRUSH_REACH = 0.08;
-/** Deflection (m) per screen height per second of pointer speed. */
+/** Deflection (m) per screen height per second of a hand's speed. */
 const BRUSH_GAIN = 0.3;
 const BRUSH_MAX = 2.5;
-/** Smoothing of the pointer's speed (s). */
+/** Smoothing of a hand's speed (s). */
 const BRUSH_SMOOTH = 0.12;
+/** Where a press breathes a gust into the grove, uv: upwind of the middle, among the stems. */
+const GROVE_POINTS: readonly ScenePoint[] = [
+  { x: 0.24, y: 0.56 },
+  { x: 0.46, y: 0.64 },
+];
 
 // ---- the tube (SI units: metres, kilograms, seconds) ----
 
@@ -327,7 +333,7 @@ interface Culm {
   swayWas: number;
   /** The gust on it now, 0..1. */
   gust: number;
-  /** Extra deflection from the pointer brushing past. */
+  /** Extra deflection from the hands brushing past. */
   push: number;
 }
 
@@ -335,7 +341,7 @@ interface Gust {
   readonly born: number;
   /** Front position along its heading when it set off (m). */
   readonly from: number;
-  /** Only culms at or past this position feel it (a gust sent from the pointer starts there). */
+  /** Only culms at or past this position feel it (a gust sent from a hand starts there). */
   readonly origin: number;
   /** +1 blowing toward +x, -1 toward -x. */
   readonly heading: number;
@@ -441,9 +447,13 @@ class BambooSim implements SceneSim {
   #leaving = false;
   readonly #entrance = new EntranceClock();
 
-  // The pointer.
-  #pointerX: number | undefined;
-  #pointerSpeed = 0;
+  // The hands, by place in SimFrame.principals: x (display units; undefined while off the page)
+  // and smoothed speed.
+  readonly #handX: (number | undefined)[] = new Array<number | undefined>(MAX_PRINCIPALS);
+  readonly #handSpeed = new Float64Array(MAX_PRINCIPALS);
+  /** Points of interest (SceneSim.interest) for #interestAspect: the basin, then GROVE_POINTS. */
+  readonly #interest: { x: number; y: number }[] = [{ x: 0, y: 0 }, ...GROVE_POINTS];
+  #interestAspect = Number.NaN;
 
   constructor(gl: WebGL2RenderingContext, params: readonly ParamDef[]) {
     this.#knobs = new KnobReader("bamboo", params, [
@@ -527,7 +537,7 @@ class BambooSim implements SceneSim {
       this.#slosh = waterUp(0);
     }
     this.#watchTriggers(frame.fired, aspect);
-    this.#trackPointer(frame.pointer, frame.dt, aspect);
+    this.#trackHands(frame.principals, frame.dt, aspect);
     if (frame.passage.exit > 0 && !this.#leaving) {
       this.#leaving = true;
       this.#leave(aspect);
@@ -560,6 +570,20 @@ class BambooSim implements SceneSim {
     this.#groveTexture.dispose();
     this.#deviceTexture.dispose();
     this.#leafTexture.dispose();
+  }
+
+  /** The basin (a press rings it) and the grove upwind (a press sends a breath of wind). */
+  interest(aspect: number): readonly ScenePoint[] {
+    if (aspect !== this.#interestAspect) {
+      this.#interestAspect = aspect;
+      const k = bambooDeviceScale(aspect);
+      const basin = this.#interest[0];
+      if (basin !== undefined) {
+        basin.x = 1 + (k * BAMBOO_BASIN.x) / aspect;
+        basin.y = k * BAMBOO_BASIN.y;
+      }
+    }
+    return this.#interest;
   }
 
   #readKnobs(frame: SimFrame): void {
@@ -635,28 +659,35 @@ class BambooSim implements SceneSim {
     }
   }
 
-  /** Moving the pointer through the stems brushes them aside; a click sends a gust or rings the basin. */
-  #trackPointer(pointer: PrincipalState, dt: number, aspect: number): void {
-    if (!pointer.inside) {
-      this.#pointerX = undefined;
-      this.#pointerSpeed = 0;
-      for (const culm of this.#culms) culm.push = 0;
-      return;
+  /**
+   * Every hand moving through the stems brushes them aside (their pushes add); a press sends a gust
+   * or rings the basin.
+   */
+  #trackHands(principals: readonly PrincipalState[], dt: number, aspect: number): void {
+    for (const culm of this.#culms) culm.push = 0;
+    for (let i = 0; i < MAX_PRINCIPALS; i++) {
+      const hand = principals[i];
+      if (hand === undefined || !hand.inside) {
+        this.#handX[i] = undefined;
+        this.#handSpeed[i] = 0;
+        continue;
+      }
+      const px = (hand.x - 0.5) * aspect;
+      const py = hand.y;
+      const was = this.#handX[i];
+      if (was !== undefined && dt > 0) {
+        const speed = Math.min(BRUSH_MAX, Math.max(-BRUSH_MAX, (px - was) / dt));
+        this.#handSpeed[i] = approach(this.#handSpeed[i] ?? 0, speed, dt, BRUSH_SMOOTH);
+      }
+      this.#handX[i] = px;
+      const speed = this.#handSpeed[i] ?? 0;
+      for (const culm of this.#culms) {
+        const base = BAMBOO_HORIZON - BAMBOO_EYE / culm.depth;
+        const off = (culm.x / culm.depth - px) / BRUSH_REACH;
+        if (py > base && off * off < 9) culm.push += BRUSH_GAIN * speed * Math.exp(-off * off);
+      }
+      if (hand.pressed) this.#press(px, py, aspect);
     }
-    const px = (pointer.x - 0.5) * aspect;
-    const py = pointer.y;
-    if (this.#pointerX !== undefined && dt > 0) {
-      const speed = Math.min(BRUSH_MAX, Math.max(-BRUSH_MAX, (px - this.#pointerX) / dt));
-      this.#pointerSpeed = approach(this.#pointerSpeed, speed, dt, BRUSH_SMOOTH);
-    }
-    this.#pointerX = px;
-    for (const culm of this.#culms) {
-      const base = BAMBOO_HORIZON - BAMBOO_EYE / culm.depth;
-      const off = (culm.x / culm.depth - px) / BRUSH_REACH;
-      culm.push =
-        py > base && off * off < 9 ? BRUSH_GAIN * this.#pointerSpeed * Math.exp(-off * off) : 0;
-    }
-    if (pointer.pressed) this.#press(px, py, aspect);
   }
 
   #press(px: number, py: number, aspect: number): void {
@@ -667,7 +698,7 @@ class BambooSim implements SceneSim {
       this.#addRipple(u, Math.min(0.9, Math.max(-0.9, v)), 0.8);
       return;
     }
-    // A breath of wind from where the click landed, downwind only.
+    // A breath of wind from where the press landed, downwind only.
     const heading = this.#wind < 0 ? -1 : 1;
     const z = BAMBOO_LAYERS[2]?.depth ?? 6.4;
     const at = heading * px * z * SKEW_COS + z * SKEW_SIN;
