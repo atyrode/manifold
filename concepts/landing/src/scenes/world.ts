@@ -3,7 +3,7 @@
 // scene (the shared builders' own: skyKnobs, weatherKnobs, birdKnobs), its defaults a sensible
 // ambient world, and its parts compiled in only while their knobs can show them. The contract and
 // how a scene adopts it: src/scenes/README.md ("World layers").
-import type { Blurb, ParamDef } from "../params.ts";
+import { feature, type Blurb, type ParamDef } from "../params.ts";
 import { birdKnobs, birdsGroup, type BirdOptions } from "../shaders/lib/birds.ts";
 import { CLOUD_TIERS } from "../shaders/lib/clouds.ts";
 import { WORLD_BIRD_HOURS } from "../shaders/lib/world.ts";
@@ -26,6 +26,8 @@ export const WORLD_DEFAULTS = {
   clouds: 0.25,
   /** K_birds: how often a flight passes, by day. */
   birds: 0.35,
+  /** K_cumulus: the painted cumulus towers, off; their size once switched on. */
+  cumulus: { on: false, value: 0.55 },
 } as const;
 
 export interface WorldOptions {
@@ -41,6 +43,8 @@ export interface WorldOptions {
   meteors: { trigger: number; on?: boolean; value?: number };
   /** K_clouds' fair-weather cover; default WORLD_DEFAULTS.clouds. */
   clouds?: number;
+  /** K_cumulus: the painted cumulus towers, on if `on`, at `value`; default WORLD_DEFAULTS.cumulus. */
+  cumulus?: { on?: boolean; value?: number };
   /** K_lightning's "now" trigger slot. */
   lightning: number;
   /** Which of the cloud shadows, rain, snow, lightning and aurora start on; all off by default. */
@@ -56,12 +60,13 @@ export interface WorldOptions {
 
 /**
  * The whole atmosphere as knobs, in the shared builders' keys: K_time, K_cycle, K_stars,
- * K_milkyWay, K_moon, K_meteors and K_constellations (skyKnobs); K_clouds,
- * K_shadows, K_rain, K_snow, K_fog, K_lightning, K_aurora, then K_wind (weatherKnobs); K_birds,
+ * K_milkyWay, K_moon, K_meteors and K_constellations (skyKnobs); K_clouds, K_cumulus (the world's
+ * own), K_shadows, K_rain, K_snow, K_fog, K_lightning, K_aurora, then K_wind (weatherKnobs); K_birds,
  * K_birdKind, K_birdFormation (birdKnobs). Defaults: an ambient world, with fair-weather cloud, the
- * stars, the moon and the Milky Way at night and birds by day on; shooting stars, the
- * constellations, cloud shadows, rain, snow, fog, lightning and the aurora off; wind 0.2. The scene
- * gives its hour, its trigger slots and its birds (and its planets' stretch of sky, SceneDef.planets).
+ * stars, the moon and the Milky Way at night and birds by day on; the painted cumulus, shooting
+ * stars, the constellations, cloud shadows, rain, snow, fog, lightning and the aurora off; wind 0.2.
+ * The scene gives its hour, its trigger slots and its birds (and its planets' stretch of sky,
+ * SceneDef.planets).
  */
 export function worldKnobs(options: WorldOptions): ParamDef[] {
   const groups = options.groups ?? {};
@@ -77,10 +82,19 @@ export function worldKnobs(options: WorldOptions): ParamDef[] {
       meteors: options.meteors,
       constellations: true,
     }),
+    ...weatherKnobs({ group: weather, clouds: options.clouds ?? WORLD_DEFAULTS.clouds }),
+    feature(
+      weather,
+      "cumulus",
+      "cumulus towers",
+      options.cumulus?.on ?? WORLD_DEFAULTS.cumulus.on,
+      "size",
+      options.cumulus?.value ?? WORLD_DEFAULTS.cumulus.value,
+      "Tall summer cumulus standing on the horizon in front of the cloud deck, painted: their sunlit crowns cream with a glowing rim, their shaded sides and flat bases blue-grey. They drift slowly with the wind and their shadows sweep over the land; as rain or snow closes the sky they grey, flatten and sink into the deck. Size: small and fewer to the left, big towers to the right.",
+    ),
     ...weatherKnobs({
       group: weather,
       auroraGroup: sky,
-      clouds: options.clouds ?? WORLD_DEFAULTS.clouds,
       shadows: true,
       rain: true,
       snow: true,
@@ -112,7 +126,7 @@ export const worldGroups: Readonly<Record<"sky" | "weather" | "birds", Blurb>> =
     title: "Weather",
     shelf: "world",
     blurb:
-      "Cloud and its shadows, rain, snow, fog, wind and lightning: one weather, shared by every outdoor scene.",
+      "Cloud and its shadows, the cumulus towers on the horizon, rain, snow, fog, wind and lightning: one weather, shared by every outdoor scene.",
     recipes: weatherRecipes,
   },
   birds: birdsGroup,
@@ -125,10 +139,10 @@ export const worldGroups: Readonly<Record<"sky" | "weather" | "birds", Blurb>> =
  * cycle on, or the hour outside the world clock's SUNRISE..SUNSET, between which the sky's night is
  * exactly 0 on any date), WORLD_BIRDS only within WORLD_BIRD_HOURS; WORLD_CLOUDS while there is
  * fair-weather cloud, rain or snow, WORLD_SHADOWS (with CLOUD_TIER at the shadows tier) while they
- * are on too; WORLD_RAIN, WORLD_SNOW, WORLD_FOG while on. Shooting stars and lightning have a "now"
- * button that shows one while their knob is off, so their gates hold whenever one could show: the
- * meteors' whenever night can fall, lightning's always. SKY_MOON_PHASE while the moon is off or
- * short of full (a full moon is the sky library's own).
+ * are on too; WORLD_CUMULUS, WORLD_RAIN, WORLD_SNOW, WORLD_FOG while on. Shooting stars and
+ * lightning have a "now" button that shows one while their knob is off, so their gates hold
+ * whenever one could show: the meteors' whenever night can fall, lightning's always.
+ * SKY_MOON_PHASE while the moon is off or short of full (a full moon is the sky library's own).
  */
 export function worldFeatures(values: Readonly<Record<string, number>>): Record<string, number> {
   const on = (key: string) => ((values[key] ?? 0) > 0 ? 1 : 0);
@@ -147,6 +161,7 @@ export function worldFeatures(values: Readonly<Record<string, number>>): Record<
     WORLD_SHADOWS: shadows,
     CLOUD_TIER: shadows ? CLOUD_TIERS.shadows : CLOUD_TIERS.lit,
     WORLD_BIRDS: day * on("birds"),
+    WORLD_CUMULUS: on("cumulus"),
     WORLD_RAIN: on("rain"),
     WORLD_SNOW: on("snow"),
     WORLD_FOG: on("fog"),
@@ -169,6 +184,7 @@ export const WORLD_ALL = worldFeatures({
   clouds: 1,
   shadows: 1,
   birds: 1,
+  cumulus: 1,
   rain: 1,
   snow: 1,
   fog: 1,

@@ -1,6 +1,6 @@
-// A summer hillside, painted: separate towering cumulus over a deep blue sky, rolling layered hills
-// (patchwork fields, hedgerows, tree clumps, a farmhouse, a windmill on a crest), an old orchard behind a
-// dry-stone wall, a path and three pastel box hives in a garden of flower drifts (lavender bushes in
+// A summer hillside, painted: rolling layered hills (patchwork fields, hedgerows, tree clumps, a
+// farmhouse, a windmill on a crest) under towering cumulus in a deep blue sky, an old orchard behind
+// a dry-stone wall, a path and three pastel box hives in a garden of flower drifts (lavender bushes in
 // rows, poppies, daisies, wild flowers, cosmos, foxgloves), seen from eye level in the low light of a
 // warm afternoon. The bees and butterflies are specks: the simulation (sim.ts) draws them into a map of
 // dither cells and the shader reads it back one texel per cell.
@@ -11,19 +11,34 @@
 // depth with their positions jittered, thinned toward the edge of a drift and clumped by noise;
 // lavender is rounded bushes in perspective rows. The sun stands behind the scene to the left, so trees
 // and hives throw long soft shadows across the grass toward the viewer (`beesGroundShadow`), dappled
-// under the crowns, and clouds throw theirs over the land (`beesCut`). All of them are switched per cell
+// under the crowns, and clouds throw theirs over the land (`beesLit`). All of them are switched per cell
 // against the dither, so a passing edge flips each cell once. Wind runs through the grass as slow
 // travelling swells of paler light (`beesGust`).
 //
-// Passage (BEES_PASSAGE): the cumulus (and their shadows) drift in from the sides and settle, then the
-// near foxgloves, poppies, daisies and blades of grass at the bottom edge spring up into the frame, each
-// after its own delay, with a small overshoot; the bees and butterflies are the simulation's. On the
-// way out the clouds drift on a little, gathering speed. At rest every term is exactly 0.
+// The sky, the weather and the birds are the shared world's (shaders/lib/world.ts; src/scenes/README.md,
+// "World layers"), through the valley's camera: the sky behind everything with the world's painted
+// cumulus towers (on here) in front of its deck, their shadows and the deck's on the land (worldSunlit),
+// the light, warmed for the valley (the moon is the key once the sun has set, so a moonlit night reads
+// on the land), swallows by day, and fog, rain and snow at the depth of what each cell shows. Rain
+// wets the garden (uWeather.x, which lingers after it: darker, richer, glistening); snow settles
+// (uWeather.y, which melts after it) on the grass and the path, the hills, the lavender, the wall's
+// top, the hives' roofs and the crowns.
 //
-// Knobs read here: K_time, K_cycle, K_clouds, K_wind, K_scenerySeed, K_mark (the M painted on the
-// middle hive's front), and the shared sky components over the valley (src/scenes/README.md, "Composing
-// components"): K_stars, K_moon (SKY_MOON_PHASE), K_aurora and K_meteors, behind the cumulus.
+// Passage (BEES_PASSAGE): the world's cumulus (and their shadows) drift in from the sides and settle,
+// then the near foxgloves, poppies, daisies and blades of grass at the bottom edge spring up into the
+// frame, each after its own delay, with a small overshoot; the bees and butterflies are the
+// simulation's. On the way out the clouds drift on a little, gathering speed. At rest every term is
+// exactly 0.
+//
+// Knobs read here: K_scenerySeed (the hills, the world's cumulus and their shadows, the flowers),
+// K_wind, K_mark (the M painted on the middle hive's front); uWeather.x for how wet the garden is,
+// uWeather.y how much snow lies on it. The world's knobs (scenes/world.ts, read through
+// shaders/lib/world.ts): K_time, K_cycle, K_stars, K_milkyWay, K_moon, K_meteors (and its "now"),
+// K_clouds, K_cumulus, K_shadows, K_rain, K_snow, K_fog, K_wind, K_lightning (and its "now"), K_aurora,
+// K_birds, K_birdKind, K_birdFormation, each part compiled in only while its knobs can show it
+// (worldFeatures).
 import { glslFloat } from "../../shaders/glsl.ts";
+import { worldGlsl } from "../../shaders/lib/world.ts";
 import {
   BEES_BOARD_HALF,
   BEES_CAM,
@@ -81,28 +96,20 @@ const TREES: readonly (readonly [number, number, number, number])[] = [
   [0.2, 0.383, 0.85, 12.3],
 ];
 
-/** The cumulus, small ones first: x (fraction of the stage), the y of the flat base, width scale, height factor, seed. */
-const CLOUDS: readonly (readonly [number, number, number, number, number])[] = [
-  [0.05, 0.69, 0.07, 0.6, 4.1],
-  [-0.85, 0.6, 0.06, 0.55, 9.3],
-  [0.68, 0.73, 0.055, 0.6, 14.9],
-  [-0.38, 0.66, 0.26, 0.85, 21.7],
-  [0.95, 0.63, 0.2, 0.8, 30.2],
-  [0.42, 0.64, 0.3, 0.85, 41.3],
-];
-const CLOUD_PUFFS = 3;
-
-/** Trigger slot of the shooting stars' "now" button. */
+/** Trigger slots of the shooting stars' and the lightning's "now" buttons. */
 export const BEES_METEOR_TRIGGER = 0;
+export const BEES_LIGHTNING_TRIGGER = 1;
 
 export const beesGlsl = `
-// Where shooting stars set out, in screen heights (p): the sky over the hills, among the cumulus.
+${worldGlsl}
+// Where shooting stars set out: skyAngles of the camera's ray (bearing, elevation, radians), the sky
+// over the hills among the cumulus.
 const int BEES_METEOR_SLOT = ${BEES_METEOR_TRIGGER};
-const vec4 BEES_METEOR_FIELD = vec4(-0.55, 0.8, 1.1, 0.12);
+const vec4 BEES_METEOR_FIELD = vec4(-0.5, 0.32, 1.0, 0.1);
+const int BEES_LIGHTNING_SLOT = ${BEES_LIGHTNING_TRIGGER};
 const float BEES_YH = ${glslFloat(BEES_YH)};
 const float BEES_CAM = ${glslFloat(BEES_CAM)};
 const float BEES_STAGE_MIN = ${glslFloat(BEES_STAGE_MIN)};
-const float BEES_FOV = ${glslFloat(2 * Math.atan(0.5))};
 // The view turns this far left of the sky library's 'ahead' so the afternoon sun stands upper left.
 const float BEES_TURN = 0.3;
 const float BEES_ROW = 0.14;
@@ -142,13 +149,6 @@ const float BEES_TREE_F[${TREES.length}] = ${floats(TREES.map((t) => t[0]))};
 const float BEES_TREE_Y[${TREES.length}] = ${floats(TREES.map((t) => t[1]))};
 const float BEES_TREE_S[${TREES.length}] = ${floats(TREES.map((t) => t[2]))};
 const float BEES_TREE_SEED[${TREES.length}] = ${floats(TREES.map((t) => t[3]))};
-const int BEES_CLOUD_N = ${CLOUDS.length};
-const int BEES_CLOUD_PUFFS = ${CLOUD_PUFFS};
-const float BEES_CLOUD_F[${CLOUDS.length}] = ${floats(CLOUDS.map((c) => c[0]))};
-const float BEES_CLOUD_Y[${CLOUDS.length}] = ${floats(CLOUDS.map((c) => c[1]))};
-const float BEES_CLOUD_S[${CLOUDS.length}] = ${floats(CLOUDS.map((c) => c[2]))};
-const float BEES_CLOUD_T[${CLOUDS.length}] = ${floats(CLOUDS.map((c) => c[3]))};
-const float BEES_CLOUD_SEED[${CLOUDS.length}] = ${floats(CLOUDS.map((c) => c[4]))};
 const int BEES_C_BEE = ${BEES_CODE.bee};
 const int BEES_C_WING = ${BEES_CODE.beeWing};
 const int BEES_C_LOADED = ${BEES_CODE.beeLoaded};
@@ -167,48 +167,55 @@ const float BEES_ENTER = ${glslFloat(BEES_PASSAGE.enter)};
 // The crown of an old apple tree: lobes (x, y, radius) in metres from the foot of the trunk, spreading
 // wide; each tree jitters, stretches and resizes them by its seed.
 const vec3 BEES_CROWN[9] = vec3[9](vec3(-2.7, 2.7, 1.15), vec3(-1.5, 3.1, 1.3), vec3(-0.2, 3.5, 1.45), vec3(1.2, 3.2, 1.3), vec3(2.6, 2.8, 1.1), vec3(-1.1, 3.9, 1.0), vec3(0.5, 4.0, 1.05), vec3(-2.0, 2.2, 0.8), vec3(2.0, 2.3, 0.85));
-// A cumulus: ellipse lobes (x, y, half width, half height) in the cloud's own units, a flat base at y = 0:
-// three wide flat lobes at the foot, a few big billows above them, then many small ones along the edges
-// and the crown, so the outline is lumpy at every scale.
-const vec4 BEES_CLOUDLOBE[17] = vec4[17](vec4(-0.55, 0.10, 0.34, 0.13), vec4(0.0, 0.11, 0.42, 0.14), vec4(0.55, 0.09, 0.32, 0.12), vec4(-0.25, 0.42, 0.30, 0.26), vec4(0.20, 0.50, 0.34, 0.30), vec4(0.62, 0.30, 0.20, 0.17), vec4(-0.70, 0.28, 0.18, 0.15), vec4(-0.05, 0.86, 0.26, 0.22), vec4(0.30, 0.82, 0.20, 0.17), vec4(0.05, 1.10, 0.13, 0.10), vec4(-0.88, 0.15, 0.10, 0.09), vec4(0.88, 0.14, 0.10, 0.09), vec4(-0.52, 0.58, 0.11, 0.10), vec4(0.60, 0.62, 0.12, 0.10), vec4(-0.30, 1.00, 0.10, 0.09), vec4(0.45, 1.02, 0.10, 0.08), vec4(0.72, 0.50, 0.10, 0.09));
+// The valley's distances (m) for the weather and the clouds' shadows: the near, middle and far hills.
+const vec3 BEES_HILL_Z = vec3(500.0, 1200.0, 2500.0);
+// The valley's warm light: the sun's and the sky's tints, the sky's floor; the moon's light as the key
+// once the sun has set.
+const vec3 BEES_SUN_TINT = vec3(1.15, 1.05, 0.88);
+const vec3 BEES_SKY_TINT = vec3(1.05, 0.98, 0.88);
+const float BEES_SKY_FLOOR = 0.04;
+const float BEES_MOONLIGHT = 0.5;
+// Wet (uWeather.x): how porous the garden's surfaces are taken to be (wetten), how upward the lawn and
+// the path, and the things standing in the garden, face (wetGloss), and how much of the low sky their
+// sheen holds.
+const float BEES_POROUS = 0.5;
+const float BEES_WET_UP_GROUND = 0.85;
+const float BEES_WET_UP_THINGS = 0.3;
+const float BEES_WET_SHEEN = 0.35;
+// Lying snow (uWeather.y): its white, and how much of it the hills' fields and the crowns hold.
+const vec3 BEES_SNOW = vec3(0.92, 0.94, 0.98);
+const float BEES_SNOW_HILLS = 0.85;
+const float BEES_SNOW_CROWN = 0.8;
 // The wall's foot (uv) and the gate in it, as fractions of the stage.
 const float BEES_WALL_Y = 0.372;
 const float BEES_GATE_0 = 0.27;
 const float BEES_GATE_1 = 0.4;
 
-// Light and view, set once per cell by sceneBees.
+// Light and view, set once per cell by sceneBees: the sky's light and the key's (the sun's, or the
+// moon's once the sun has set) in the valley's warm tint, the key's bearing in the camera's frame and
+// its height, and how much of it the clouds let through here (worldSunlit).
 vec3 beesAmb = vec3(0.5);
 vec3 beesSun = vec3(1.0, 0.9, 0.7);
-vec3 beesCloudShade = vec3(0.5, 0.58, 0.8);
-vec2 beesSunDir = vec2(-0.6, 0.8);
 vec2 beesSunGround = vec2(-0.6, 0.8);
 float beesSunTan = 0.4;
 float beesSunUp = 1.0;
 float beesSunX = -0.5;
+float beesLit = 1.0;
 float beesW = 0.9;
 float beesAa = 0.002;
 float beesAspect = 1.78;
 float beesSeed = 0.0;
 float beesCut = 0.0;
+// How wet the garden is and how much snow lies on it (uWeather), and the snow on the ground at this cell.
+float beesWet = 0.0;
+float beesLying = 0.0;
+float beesSnowGround = 0.0;
 // The depth (m) of the nearest thing drawn at this cell that can hide a bee behind it: the wall, a tree, a
-// hive, the foreground flowers. 1e4 for the sky, the hills and the ground (a bee is always in front of that).
+// hive, the foreground flowers, a bird. 1e4 for the sky, the hills and the ground (a bee is always in front of that).
 float beesZ = 1e4;
 
 float beesS(float y) {
   return max(BEES_YH - y, 0.012) / BEES_CAM;
-}
-
-// 1 - ease-out cubic of the entrance: how far the cumulus still have to drift in, 1 down to 0 (exactly 0 once arrived).
-float beesDriftIn() {
-  float u = 1.0 - clamp(passageIn(), 0.0, 1.0);
-  return u * u * u;
-}
-
-// Ease-in square of the exit: how far the cumulus have drifted on, 0 at rest up to 1, still gathering
-// speed as the scene goes.
-float beesDriftOut() {
-  float u = passageOut();
-  return u * u;
 }
 
 // How far a plant of the foreground is still below the frame, as a share of its travel: 1 while it waits,
@@ -222,17 +229,20 @@ float beesRise(float key) {
   return -(2.2 * u * u * u + 1.2 * u * u);
 }
 
-// An albedo in the afternoon light: the sky's ambient plus the warm sun, more of it on a surface turned
-// toward the sun (nx: the surface's sideways normal, -1 left .. 1 right); shade (a cloud's, a tree's)
-// takes most of the direct sun.
+// An albedo in the valley's light, wet as the garden is (wetten): the sky's ambient plus the warm key,
+// more of it on a surface turned toward the key (nx: the surface's sideways normal, -1 left .. 1
+// right); shade (a tree's, a hive's: beesCut) takes most of the key, and so do the clouds' shadows
+// (beesLit), the darker of the two where both fall.
 vec3 beesShade(vec3 albedo, float nx) {
   float f = clamp(nx * beesSunX * 1.4, -1.0, 1.0);
-  return albedo * (beesAmb * 0.55 + beesSun * (0.5 + 0.35 * f) * (1.0 - 0.72 * beesCut));
+  vec3 a = beesWet > 0.0 ? wetten(albedo, beesWet, BEES_POROUS) : albedo;
+  return a * (beesAmb * 0.55 + beesSun * (0.5 + 0.35 * f) * min(beesLit, 1.0 - 0.72 * beesCut));
 }
 
-// Light that passes through a thin leaf or petal toward the eye, the sun being behind the scene.
+// Light that passes through a thin leaf or petal toward the eye, the key being behind the scene.
 vec3 beesGlow(vec3 albedo, float amount) {
-  return albedo * beesSun * amount * (1.0 - 0.72 * beesCut);
+  vec3 a = beesWet > 0.0 ? wetten(albedo, beesWet, BEES_POROUS) : albedo;
+  return a * beesSun * amount * min(beesLit, 1.0 - 0.72 * beesCut);
 }
 
 // ---- the skyline ---------------------------------------------------------------------------------------
@@ -252,83 +262,6 @@ vec4 beesSkyline(float x) {
   float y2 = max(beesRidge(x, 0.525, 0.075, 0.9, 21.0, 0.009), y1 + 0.012);
   float y3 = max(beesRidge(x, 0.59, 0.06, 0.7, 33.0, 0.005), y2 + 0.012);
   return vec4(g, y1, y2, y3);
-}
-
-// ---- the sky -------------------------------------------------------------------------------------------
-
-// The signed distance (in the cloud's own units, roughly) to a cumulus: a union of its ellipse lobes
-// (BEES_CLOUDLOBE jittered by the cloud's seed, see beesCloudAt), cut flat at the base.
-float beesCloudSdf(vec2 q, vec4 lobes[17]) {
-  float d = 1e3;
-  for (int k = 0; k < 17; k++) {
-    vec4 c = lobes[k];
-    d = min(d, (length((q - c.xy) / c.zw) - 1.0) * min(c.z, c.w));
-  }
-  return max(d, -q.y);
-}
-
-// One cumulus at p: rgb and coverage (0 or 1). The light comes from the outline's normal (taken over a
-// wide step, so the billows blend into one mass) mixed with the cloud's overall facing: the sunward side
-// and the crown are bright cream, the shaded side and the flat base blue-grey, the sunward rim glows.
-// The lobes are jittered once, then shared by the outline and the four samples of its normal.
-vec4 beesCloudAt(vec2 p, float cx, float by, float s, float tall, float seed) {
-  vec2 q = vec2((p.x - cx) / s, (p.y - by) / (s * tall));
-  if (q.x < -1.15 || q.x > 1.2 || q.y < -0.05 || q.y > 1.5) return vec4(0.0);
-  float sd = seed + beesSeed;
-  vec4 lobes[17];
-  for (int k = 0; k < 17; k++) {
-    vec4 c = BEES_CLOUDLOBE[k];
-    c.xy += (hash22(vec2(float(k), sd)) - 0.5) * 0.06;
-    c.zw *= 0.88 + 0.28 * hash12(vec2(float(k) + 7.0, sd));
-    lobes[k] = c;
-  }
-  float d = beesCloudSdf(q, lobes);
-  d += 0.045 * (vnoise(q * 9.0 + seed) - 0.5) + 0.02 * (vnoise(q * 23.0 + seed) - 0.5);
-  if (hardFill(d * s, beesAa) < 0.5) return vec4(0.0);
-  float e = 0.12;
-  vec2 grad = vec2(beesCloudSdf(q + vec2(e, 0.0), lobes) - beesCloudSdf(q - vec2(e, 0.0), lobes), beesCloudSdf(q + vec2(0.0, e), lobes) - beesCloudSdf(q - vec2(0.0, e), lobes));
-  vec2 n = grad / max(length(grad), 1e-3);
-  vec2 toSun = normalize(vec2(beesSunDir.x, beesSunDir.y / tall));
-  float facing = dot(n, toSun);
-  float wide = dot(normalize(q - vec2(0.0, 0.5) + 1e-3), toSun);
-  float lit = smoothstep(-1.0, 0.9, 0.55 * facing + 0.45 * wide);
-  lit *= 0.5 + 0.5 * smoothstep(0.0, 0.5, q.y);
-  vec3 litC = beesSun * 0.7 + beesAmb * 0.55 + vec3(0.14, 0.13, 0.12);
-  vec3 c = mix(beesCloudShade, litC, lit);
-  float rim = 1.0 - smoothstep(0.0, 0.07, -d);
-  c += beesSun * 0.4 * rim * max(facing, 0.0) * smoothstep(0.1, 0.5, q.y);
-  c = mix(c, beesCloudShade * 0.85, (1.0 - smoothstep(0.0, 0.2, q.y)) * 0.6);
-  return vec4(c, 1.0);
-}
-
-vec3 beesSky(vec2 p, vec3 dir, Sky sky, float tm) {
-  // The aurora and shooting stars first, so the cumulus pass in front of them.
-  vec3 col = skyColor(sky, dir) + auroraM(dir, tm, K_aurora, beesAa) * auroraSeen(sky, 0.0);
-  float meteorSeed;
-  float meteorAt = meteorAge(tm, K_meteors, BEES_METEOR_SLOT, meteorSeed);
-  col += METEOR_TINT * hardEdge(meteorStreak(p, BEES_METEOR_FIELD, meteorAt, meteorSeed, beesAa) * sky.night);
-  float span = 2.0 * beesW + 1.7;
-  float cover = clamp(K_clouds, 0.0, 1.0);
-  float open = 1.0;
-  for (int i = 0; i < BEES_CLOUD_N; i++) {
-    bool puff = i < BEES_CLOUD_PUFFS;
-    if (!puff && i == BEES_CLOUD_N - 2 && cover < 0.2) continue;
-    float s = BEES_CLOUD_S[i] * (puff ? 1.0 : mix(0.65, 1.08, cover));
-    float lead = (0.22 + 0.04 * float(i)) * beesDriftIn() + 0.1 * beesDriftOut();
-    float x = mod(BEES_CLOUD_F[i] * beesW + tm * 0.0035 + 0.5 * span, span) - 0.5 * span + sign(BEES_CLOUD_F[i]) * lead;
-    vec4 cl = beesCloudAt(p, x, BEES_CLOUD_Y[i], s, BEES_CLOUD_T[i], BEES_CLOUD_SEED[i]);
-    col = mix(col, cl.rgb, cl.a);
-    open *= 1.0 - cl.a;
-  }
-  // The giant planet over the stars, behind the cumulus: shown where they leave the sky open.
-  return skyGiant(sky, col + skyStarLight(sky, dir, K_stars), dir, BEES_FOV / uRes.y, open);
-}
-
-// The shadow of the clouds on the land, drifting slowly: 1 in shadow, per cell.
-float beesCloudShadow(vec2 p, float tm) {
-  vec2 q = vec2(p.x * 0.75 - tm * 0.011 + 0.2 * (beesDriftIn() + 0.5 * beesDriftOut()), p.y * 2.4);
-  float n = 0.65 * vnoise(q + vec2(5.0 + beesSeed, 1.0)) + 0.35 * vnoise(q * 2.3 + vec2(9.0, 3.0));
-  return hardEdge(smoothstep(0.54, 0.7, n));
 }
 
 // ---- the hills ---------------------------------------------------------------------------------------
@@ -355,6 +288,8 @@ vec3 beesHill(vec2 p, float ridge, float k, vec3 haze, float hazeAmt) {
   c = mix(c, vec3(0.06, 0.18, 0.07) * (0.8 + 0.7 * smoothstep(0.7, 0.2, fract(tc).y)), tree);
   c *= mix(1.12, 0.88, smoothstep(0.0, 0.1, deep));
   if (k < 1.5) c *= vec3(1.1, 1.05, 0.86);
+  // Lying snow whitens the fields; the hedgerows and the tree clumps stay dark over it.
+  c = mix(c, BEES_SNOW, BEES_SNOW_HILLS * beesLying * (1.0 - max(max(rowEdge, colEdge) * 0.9, tree)));
   c = beesShade(c, 0.0);
   c += beesSun * vec3(0.6, 0.45, 0.15) * 0.2 * (1.0 - smoothstep(0.0, 0.012, deep));
   c = mix(vec3(dot(c, LUMA)), c, 1.4 - 0.2 * k);
@@ -438,8 +373,8 @@ float beesGroundShadow(vec2 w) {
 }
 
 // The grass: patches of yellower and bluer green, a mottle, flecks, clover and its flowers, windfalls
-// where a tree shades it, and the pale sheen of the wind. The light and shade come from beesShade (the
-// caller has put the shade in beesCut).
+// where a tree shades it, and the pale sheen of the wind, under any snow lying on it (beesSnowGround).
+// The light and shade come from beesShade (the caller has put the shade in beesCut).
 vec3 beesGround(vec2 p, vec2 w, vec2 foot, float gust, float gs) {
   float y = p.y;
   float ft = max(foot.x, foot.y);
@@ -466,7 +401,8 @@ vec3 beesGround(vec2 p, vec2 w, vec2 foot, float gust, float gs) {
   }
   c = mix(c, c * vec3(1.45, 1.32, 0.78) + 0.04, 0.6 * gust);
   c = mix(c, vec3(0.62, 0.62, 0.36), 0.35 * smoothstep(0.22, 0.4, y));
-  return beesShade(c, 0.0) + beesGlow(c, 0.25 * gust);
+  c = mix(c, BEES_SNOW, beesSnowGround);
+  return beesShade(c, 0.0) + beesGlow(c, 0.25 * gust * (1.0 - beesSnowGround));
 }
 
 void beesPath(vec2 p, vec2 w, inout vec3 col) {
@@ -479,7 +415,7 @@ void beesPath(vec2 p, vec2 w, inout vec3 col) {
   float speck = hash12(floor(w * 12.0));
   vec3 c = vec3(0.74, 0.62, 0.42) * (0.85 + 0.3 * speck);
   c = mix(c, vec3(0.50, 0.46, 0.30), smoothstep(-0.1 * S, 0.0, d) * 0.6);
-  col = beesShade(c, 0.0);
+  col = beesShade(mix(c, BEES_SNOW, beesSnowGround), 0.0);
 }
 
 // ---- flower drifts -------------------------------------------------------------------------------------
@@ -537,6 +473,8 @@ void beesLavender(vec2 p, float gust, inout vec3 col) {
     float tex = (hash12(floor(vec2(q.x * 6.0, q.y * 4.0 + Z * 5.0) + fi * 13.0)) - 0.5) * 0.6 * fineOk * smoothstep(-0.2, 0.3, q.y);
     vec3 c3 = mix(vec3(0.26, 0.16, 0.48), vec3(0.72, 0.54, 0.95), clamp(lit * 0.9 + 0.2 * gust + tex, 0.0, 1.0));
     c3 = mix(c3, vec3(0.34, 0.40, 0.30), smoothfall(-0.15, -0.6, q.y) * 0.8);
+    // Lying snow on the bush's top (q in its radii: about 0.24 m across, 0.17 m up).
+    c3 = mix(c3, BEES_SNOW, snowCover(vec3(0.0, smoothstep(-0.2, 0.6, q.y), 0.0), q * vec2(0.24, 0.17) + vec2(fi * 3.1, Z), beesLying));
     col = beesShade(c3, q.x * 0.7) + beesGlow(c3, 0.5 * smoothstep(0.6, 1.0, e) * max(lit, 0.3));
   }
 }
@@ -616,7 +554,8 @@ void beesPatch(int i, vec2 p, float gust, float tm, inout vec3 col) {
   if (cov <= 0.0) return;
   float seed = float(i) * 13.7 + beesSeed;
   float clump = smoothstep(0.3, 0.65, vnoise(p * vec2(11.0, 38.0) + seed));
-  vec3 lush = beesShade(vec3(0.18, 0.42, 0.08) * (1.0 + 0.2 * gust), 0.0);
+  // Under lying snow the drift's leaves whiten with the lawn, its colour half showing through.
+  vec3 lush = beesShade(mix(vec3(0.18, 0.42, 0.08) * (1.0 + 0.2 * gust), BEES_SNOW, beesSnowGround), 0.0);
   col = mix(col, lush, hardEdge(cov * 0.7) * 0.6);
   // A faint mass of the drift's colour under the blooms (none under poppies, which stay red on green),
   // broken by the clumps; far away the blooms are less than a cell and the drift is then only this tint.
@@ -625,7 +564,7 @@ void beesPatch(int i, vec2 p, float gust, float tm, inout vec3 col) {
   float far = 1.0 - smoothstep(1.0, 2.5, rcFar);
   vec3 tintCol = kind == BEES_POPPY ? vec3(0.9, 0.18, 0.1) : kind == BEES_DAISY ? vec3(0.9, 0.88, 0.72) : kind == BEES_COSMOS ? vec3(0.9, 0.5, 0.68) : vec3(0.85, 0.75, 0.45);
   float mass = hardEdge(cov * (0.2 + 0.8 * clump)) * ((kind == BEES_POPPY ? 0.0 : 0.1) + 0.4 * far);
-  col = mix(col, beesShade(tintCol, 0.0), mass);
+  col = mix(col, beesShade(mix(tintCol, BEES_SNOW, 0.5 * beesSnowGround), 0.0), mass);
   beesBlooms(i, kind, p, gust, tm, col);
 }
 
@@ -684,6 +623,8 @@ void beesTree(int t, vec2 p, inout vec3 col) {
   c += beesGlow(leaf, 1.6 * rim * (0.5 + 0.5 * clamp(q.y / 4.0, 0.0, 1.0)));
   float spot = smoothstep(0.78, 0.9, vnoise(q * 6.1 + seed));
   c = mix(c, beesGlow(leaf, 1.8) + c * 0.6, spot * 0.5 * smoothstep(0.1, 0.5, inner));
+  // Lying snow on the upper leaves (l: high and outer in the crown), lit but not shining through.
+  c = mix(c, beesShade(BEES_SNOW, nxl), BEES_SNOW_CROWN * snowCover(vec3(0.0, smoothstep(0.35, 0.85, l), 0.0), q, beesLying));
   vec2 ap = q * 2.3;
   vec2 ah = hash22(floor(ap) + seed);
   if (ah.x > 0.975) {
@@ -723,6 +664,8 @@ void beesWall(vec2 p, inout vec3 col) {
     stone *= 0.85 + 0.3 * hash12(vec2(id, row + 9.0));
     stone = mix(vec3(0.2, 0.18, 0.15), stone, line);
     stone = mix(stone, vec3(0.30, 0.42, 0.16), smoothstep(0.7, 0.9, q.y / top) * smoothstep(0.35, 0.6, vnoise(vec2(q.x * 3.0, q.y * 2.0))));
+    // Lying snow along the top (q in metres).
+    stone = mix(stone, BEES_SNOW, snowCover(vec3(0.0, smoothstep(0.7, 0.95, q.y / top), 0.0), q, beesLying));
     col = beesShade(stone, 0.0);
   } else if (p.x > g1) {
     float spacing = 1.15 * S;
@@ -779,7 +722,8 @@ void beesHive(int i, vec2 p, inout vec3 col, inout float accent) {
   col = mix(col, vec3(0.16, 0.11, 0.07), slot);
   float roof = hardFill(sdBox(a - vec2(0.0, BEES_STAND + 2.0 * BEES_BOX + 0.5 * BEES_ROOF), vec2(hw + 0.06, 0.5 * BEES_ROOF), 0.01) * S, beesAa);
   float roofTop = smoothstep(0.55, 1.0, (q.y - (BEES_STAND + 2.0 * BEES_BOX)) / BEES_ROOF);
-  vec3 tin = vec3(0.55, 0.58, 0.60);
+  // Lying snow on the roof's top.
+  vec3 tin = mix(vec3(0.55, 0.58, 0.60), BEES_SNOW, snowCover(vec3(0.0, roofTop, 0.0), q * 4.0, beesLying));
   col = mix(col, beesShade(tin, 0.0) + beesGlow(tin, 0.35 * roofTop) + vec3(0.1, 0.12, 0.16) * roofTop, roof);
 }
 
@@ -910,65 +854,106 @@ Shade sceneBees(vec2 uv, vec2 cell, float t) {
   beesW = max(0.5 * beesAspect, BEES_STAGE_MIN);
   beesAa = 1.0 / uRes.y;
   beesSeed = K_scenerySeed * 0.37;
+  beesWet = uWeather.x;
+  beesLying = uWeather.y;
   float tm = uMotionTime;
   vec2 p = vec2((uv.x - 0.5) * beesAspect, uv.y);
   float y = p.y;
 
-  Sky sky = skyMoonPhase(skyAt(timeOfDayM(K_time, K_cycle, tm)), K_moon);
-  beesSun = sky.sunColor * vec3(1.15, 1.05, 0.88);
-  beesAmb = sky.ambient * vec3(1.05, 0.98, 0.88) + vec3(0.04) + auroraGlow(tm, K_aurora) * auroraSeen(sky, 0.0);
-  vec3 cam = viewRay(uv, beesAspect, BEES_YH, BEES_FOV);
-  vec3 dir = skyFacing(cam, BEES_TURN);
-  vec3 sunCam = skyFacing(sky.sun, -BEES_TURN);
-  float sunLen = max(length(sunCam.xz), 1e-3);
-  beesSunX = sunCam.x / sunLen;
-  beesSunGround = sunCam.xz / sunLen;
-  beesSunTan = max(sunCam.y, 0.04) / sunLen;
-  beesSunUp = smoothstep(-0.02, 0.12, sky.sun.y);
-  beesSunDir = normalize(vec2(sunCam.x, 0.45 + 1.2 * max(sunCam.y, 0.0)) + 1e-4);
-  vec3 zen = skyColor(sky, normalize(vec3(0.0, 0.85, 0.5)));
-  beesCloudShade = mix(vec3(dot(zen, LUMA)), zen, 0.5) * 1.5 + vec3(0.12, 0.13, 0.17);
-  float cloudCut = beesCloudShadow(p, tm);
-  beesCut = cloudCut;
+  // The shared world (shaders/lib/world.ts) through the valley's camera, turned so the afternoon sun
+  // stands upper left (metres): the sky now and its light, dimmed and greyed under the deck rain or
+  // snow closes over, with the aurora's glow and the lightning's flash; its cumulus re-seeded with
+  // the landscape.
+  World world = worldAt(BEES_METEOR_SLOT, BEES_LIGHTNING_SLOT);
+  world.seed = beesSeed;
+  WorldView view = worldView(uv, BEES_YH, 1.0, BEES_CAM, BEES_TURN, 1.0);
+  Sky sky = world.sky;
+  vec3 dir = view.dir;
+  // The key light in the valley's warm tint: the sun, or once it has set the moon, so that moonlight
+  // reads on the land and the orchard throws its shadows by it.
+  bool moonKey = sky.sun.y < -0.02;
+  vec3 key = skyFacing(moonKey ? sky.moon : sky.sun, -BEES_TURN);
+  beesSun = moonKey ? sky.moonColor * BEES_MOONLIGHT : sky.sunColor * BEES_SUN_TINT;
+  beesAmb = sky.ambient * BEES_SKY_TINT + BEES_SKY_FLOOR;
+  float keyLen = max(length(key.xz), 1e-3);
+  beesSunX = key.x / keyLen;
+  beesSunGround = key.xz / keyLen;
+  beesSunTan = max(key.y, 0.04) / keyLen;
+  beesSunUp = smoothstep(-0.02, 0.12, key.y);
+  // How much of the sun the clouds let through (worldSunlit: the cumulus' shadows, and the deck's
+  // with its shadows on), by day: on the garden where this cell's ray meets the ground (above the
+  // horizon, in the air as far out over the orchard), and on the hills.
+  float dy = max(BEES_YH - y, 0.03);
+  float Z = BEES_CAM / dy;
+  vec3 ray = vec3(p.x, y - BEES_YH, 1.0);
+  float litNear = moonKey ? 1.0 : worldSunlit(world, view, ray * Z);
+  float litFar = moonKey ? 1.0 : worldSunlit(world, view, ray * BEES_HILL_Z.y);
 
   vec4 sk = beesSkyline(p.x);
   float g = sk.x;
   float y1 = sk.y;
   float y2 = sk.z;
   float y3 = sk.w;
-  vec3 haze = y < 0.75 ? horizonHaze(sky, dir, 0.04) : vec3(0.0);
+  // The haze toward this bearing and the sky high up, greyed under the deck; the air full of rain or
+  // snow, greyer and darker the heavier it falls (the fog's and the rain's colour).
+  vec3 haze = horizonHaze(sky, dir, 0.04);
+  vec3 zen = skyColor(sky, normalize(vec3(0.0, 0.85, 0.5)));
+  haze = mix(haze, vec3(dot(haze, LUMA)) * 0.85 + 0.03, 0.55 * world.overcast);
+  zen = mix(zen, vec3(dot(zen, LUMA)) * 0.85 + 0.03, 0.55 * world.overcast);
   vec3 hazeB = mix(haze, zen, 0.45);
+  vec3 air = greyed(haze, vec3(0.94, 0.97, 1.02), 0.5 * world.overcast) * (1.0 - 0.25 * world.heavy);
   vec3 col = vec3(0.0);
   float accent = 0.0;
+  // The distance (m) to what this cell shows, for the fog, the rain and the snow.
+  float zHit = WORLD_FAR;
 
   // Sky and hills, far to near, then the ground of the garden.
-  if (y >= y3) col = beesSky(p, dir, sky, tm);
-  else if (y >= y2) col = beesHill(p, y3, 3.0, hazeB, 0.55);
-  else if (y >= y1) col = beesHill(p, y2, 2.0, hazeB, 0.3);
-  else if (y >= g) col = beesHill(p, y1, 1.0, haze, 0.08);
-  if (y > 0.4 && y < 0.72) beesFar(p, tm, haze, hazeB, col);
+  beesLit = litFar;
+  if (y >= y3) {
+    // The world's sky: the dome, the aurora, the deck with the painted cumulus in front of it, the
+    // stars and the Milky Way in their gaps, shooting stars over the hills, the lightning.
+    WorldSky heaven = worldSky(world, view, BEES_METEOR_FIELD);
+    col = heaven.col + heaven.strike;
+  } else if (y >= y2) {
+    col = beesHill(p, y3, 3.0, hazeB, 0.55);
+    zHit = BEES_HILL_Z.z;
+  } else if (y >= y1) {
+    col = beesHill(p, y2, 2.0, hazeB, 0.3);
+    zHit = BEES_HILL_Z.y;
+  } else if (y >= g) {
+    col = beesHill(p, y1, 1.0, haze, 0.08);
+    zHit = BEES_HILL_Z.x;
+  }
+  if (y > 0.4 && y < 0.72) {
+    vec3 bare = col;
+    beesFar(p, tm, haze, hazeB, col);
+    if (col != bare) zHit = min(zHit, BEES_HILL_Z.z);
+  }
 
-  float dy = max(BEES_YH - y, 0.03);
-  float Z = BEES_CAM / dy;
   vec2 w = vec2(p.x * Z, Z);
   vec2 foot = vec2(Z / uRes.y, Z / (dy * uRes.y));
   float gust = beesGust(w, tm);
   float gs = 0.0;
+  beesLit = litNear;
   if (y < g) {
+    zHit = Z;
+    beesSnowGround = snowCover(vec3(0.0, 1.0, 0.0), w, beesLying);
     gs = beesGroundShadow(w);
-    beesCut = max(cloudCut, hardEdge(gs));
+    beesCut = hardEdge(gs);
     col = beesGround(p, w, foot, gust, gs);
     if (y > g - 0.03 + 0.01 * (vnoise(vec2(p.x * 30.0, beesSeed)) - 0.5)) {
-      // The hedge along the far edge of the garden: dark leaves, a golden rim on top.
+      // The hedge along the far edge of the garden: dark leaves, a golden rim on top, dusted by any
+      // lying snow.
       float n = fbm3(p * vec2(18.0, 40.0));
       vec3 hedge = mix(vec3(0.07, 0.17, 0.06), vec3(0.28, 0.44, 0.12), n);
+      hedge = mix(hedge, BEES_SNOW, 0.6 * beesLying * smoothstep(g - 0.02, g, y));
       col = beesShade(hedge, 0.0) + beesGlow(hedge, 0.8 * smoothstep(g - 0.012, g, y));
     }
     beesPath(p, w, col);
     for (int i = 0; i < BEES_PATCH_N; i++) {
       if (i != 3) beesPatch(i, p, gust, tm, col);
     }
-    beesCut = cloudCut;
+    beesCut = 0.0;
   }
 
   // What can hide a bee: each thing drawn that changes the cell notes its depth in beesZ.
@@ -982,9 +967,9 @@ Shade sceneBees(vec2 uv, vec2 cell, float t) {
   beesWall(p, col);
   if (col != before) beesZ = BEES_CAM / (BEES_YH - BEES_WALL_Y);
   if (y < g) {
-    beesCut = max(cloudCut, hardEdge(gs));
+    beesCut = hardEdge(gs);
     beesPatch(3, p, gust, tm, col);
-    beesCut = cloudCut;
+    beesCut = 0.0;
   }
   for (int k = 0; k < BEES_HIVE_N; k++) {
     int hi = BEES_HIVE_ORDER[k];
@@ -1005,9 +990,30 @@ Shade sceneBees(vec2 uv, vec2 cell, float t) {
   before = col;
   beesBlades(p, tm, col);
   if (col != before) beesZ = 3.0;
+  if (beesZ < 1e4) zHit = beesZ;
 
-  // The golden haze the low sun scatters toward the eye, and a soft darkening toward the corners.
-  col += beesSun * 0.07 * exp(-5.0 * length(dir - sky.sun)) * (1.0 + 0.4 * (1.0 - smoothstep(0.4, 0.7, y)));
+  // Wet, the lawn and the path glisten with the low sky, and the things standing in the garden take
+  // a sheen.
+  if (beesWet > 0.0 && (beesZ < 1e4 || y < g)) col += wetGloss(beesWet, beesZ < 1e4 ? BEES_WET_UP_THINGS : BEES_WET_UP_GROUND) * haze * BEES_WET_SHEEN;
+
+  // The world's swallows by day, where one is nearer than what the cell shows (in front of the hills,
+  // behind a nearer tree, hive or flower), swooping down to skim the flowers at 1.2 m; one hides the
+  // insects behind it.
+  float zBird = zHit;
+  worldBirds(world, view, WorldFlyway(vec2(8.0, 150.0), vec2(BEES_YH + 0.03, 0.92), vec2(beesSeed, 3.7), 1.2, 1.5), haze, 0.002, col, zBird, accent);
+  if (zBird < zHit) {
+    zHit = zBird;
+    beesZ = zBird;
+  }
+
+  // The golden haze the low sun scatters toward the eye.
+  col += sky.sunColor * BEES_SUN_TINT * 0.07 * exp(-5.0 * length(dir - sky.sun)) * (1.0 + 0.4 * (1.0 - smoothstep(0.4, 0.7, y)));
+  // The world's fog, then its rain and snow, at the depth of what this cell shows: the drops hide
+  // behind the hives, the trees and the near flowers, and are seen by the sky they refract and the
+  // sun.
+  worldFog(world, view, air, zHit, col, accent);
+  worldPrecip(world, view, air, max(hazeB * 1.2 + sky.sunColor * 0.3, vec3(0.08)), zHit, col, accent);
+  // A soft darkening toward the corners.
   col *= 1.0 - 0.22 * smoothstep(0.7, 1.4, length((uv - 0.5) * vec2(1.0, 0.9)) * 1.5);
   col = clamp(col * 1.1, 0.0, 1.0);
 

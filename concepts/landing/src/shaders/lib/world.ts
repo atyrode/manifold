@@ -12,7 +12,7 @@
 //   WorldView worldView(vec2 uv, float horizon, float focal, float eye, float yaw, float unit);
 //   WorldView worldViewOf(vec3 ray, vec2 uv, float horizon, float focal, float eye, float yaw, float unit);
 //   WorldSky worldSky(World w, WorldView v, vec4 meteorField);   // behind the scene
-//   float worldSunlit(World w, WorldView v, vec3 at);             // the cloud deck's shadow
+//   float worldSunlit(World w, WorldView v, vec3 at);             // the cloud deck's and the cumulus' shadows
 //   void worldBirds(World w, WorldView v, WorldFlyway f, vec3 haze, float thick, inout vec3 col, inout float z, inout float accent);
 //   void worldFog(World w, WorldView v, vec3 fogCol, float z, inout vec3 col, inout float accent);
 //   void worldPrecip(World w, WorldView v, vec3 air, vec3 dropLight, float z, inout vec3 col, inout float accent);
@@ -24,12 +24,42 @@
 //   void worldBirdsMirrored(World w, WorldView m, WorldFlyway f, vec3 haze, float thick, float still, inout vec3 col);
 //
 // Each part behind a knob is compiled in only while its gate is on (WORLD_STARS, WORLD_MILKYWAY,
-// WORLD_METEORS, WORLD_AURORA, WORLD_CLOUDS, WORLD_SHADOWS, WORLD_BIRDS, WORLD_RAIN, WORLD_SNOW,
-// WORLD_FOG, WORLD_LIGHTNING, each 0 or 1: worldFeatures), and keeps its runtime test of the knob
-// inside, so with the knob off (gate on or not) it gives its neutral value exactly.
+// WORLD_METEORS, WORLD_AURORA, WORLD_CLOUDS, WORLD_SHADOWS, WORLD_CUMULUS, WORLD_BIRDS, WORLD_RAIN,
+// WORLD_SNOW, WORLD_FOG, WORLD_LIGHTNING, each 0 or 1: worldFeatures), and keeps its runtime test
+// of the knob inside, so with the knob off (gate on or not) it gives its neutral value exactly.
 import { glslFloat } from "../glsl.ts";
 import { birdsGlsl } from "./birds.ts";
 import { milkyWayGlsl } from "./milkyway.ts";
+
+/**
+ * A painted cumulus tower (K_cumulus, WORLD_CUMULUS): across (a share of the view's half-width at the
+ * horizon), the height of its flat base over the horizon and its width (both in tangent units, the
+ * camera ray's y / z and x / z: screen heights at a focal of one), its height as a share of its
+ * width, the seed of its lobes.
+ */
+type CumulusTower = readonly [
+  across: number,
+  base: number,
+  width: number,
+  tall: number,
+  seed: number,
+];
+
+/** The towers, small ones first: the first CUMULUS_PUFFS keep their size. */
+const CUMULUS: readonly CumulusTower[] = [
+  [0.05, 0.22, 0.07, 0.6, 4.1],
+  [-0.85, 0.13, 0.06, 0.55, 9.3],
+  [0.68, 0.26, 0.055, 0.6, 14.9],
+  [-0.38, 0.19, 0.26, 0.85, 21.7],
+  [0.95, 0.16, 0.2, 0.8, 30.2],
+  [0.42, 0.17, 0.3, 0.85, 41.3],
+];
+const CUMULUS_PUFFS = 3;
+
+/** One property of every tower, as a const float array initialiser. */
+function cumulusFloats(pick: (tower: CumulusTower) => number): string {
+  return `float[${CUMULUS.length}](${CUMULUS.map((tower) => glslFloat(pick(tower))).join(", ")})`;
+}
 
 /**
  * When the world's birds set out, as BirdSky.hours on the time of day: they start coming from x to y
@@ -87,6 +117,41 @@ const vec3 WORLD_FLAKE = vec3(0.92, 0.94, 0.98);
 // The distance (scene units) of open sky: nothing stands there.
 const float WORLD_FAR = 1e4;
 
+#if WORLD_CUMULUS
+// The painted cumulus (K_cumulus): towers laid out across the view, each its across share of the
+// view's half-width at the horizon (in tangent units, at least WORLD_CUMULUS_STAGE), its flat base and
+// width in tangent units, its height a share of its width (CUMULUS); the puffs keep their size, the
+// rest grow with K_cumulus, and below 0.2 the second last stays away.
+const int WORLD_CUMULUS_N = ${CUMULUS.length};
+const int WORLD_CUMULUS_PUFFS = ${CUMULUS_PUFFS};
+const float WORLD_CUMULUS_ACROSS[${CUMULUS.length}] = ${cumulusFloats((tower) => tower[0])};
+const float WORLD_CUMULUS_BASE[${CUMULUS.length}] = ${cumulusFloats((tower) => tower[1])};
+const float WORLD_CUMULUS_WIDTH[${CUMULUS.length}] = ${cumulusFloats((tower) => tower[2])};
+const float WORLD_CUMULUS_TALL[${CUMULUS.length}] = ${cumulusFloats((tower) => tower[3])};
+const float WORLD_CUMULUS_SEED[${CUMULUS.length}] = ${cumulusFloats((tower) => tower[4])};
+const float WORLD_CUMULUS_STAGE = 0.62;
+// A tower: ellipse lobes (x, y, half width, half height) in its own units, a flat base at y = 0: three
+// wide flat lobes at the foot, a few big billows above them, then many small ones along the edges
+// and the crown, so the outline is lumpy at every scale.
+const vec4 WORLD_CUMULUS_LOBE[17] = vec4[17](vec4(-0.55, 0.10, 0.34, 0.13), vec4(0.0, 0.11, 0.42, 0.14), vec4(0.55, 0.09, 0.32, 0.12), vec4(-0.25, 0.42, 0.30, 0.26), vec4(0.20, 0.50, 0.34, 0.30), vec4(0.62, 0.30, 0.20, 0.17), vec4(-0.70, 0.28, 0.18, 0.15), vec4(-0.05, 0.86, 0.26, 0.22), vec4(0.30, 0.82, 0.20, 0.17), vec4(0.05, 1.10, 0.13, 0.10), vec4(-0.88, 0.15, 0.10, 0.09), vec4(0.88, 0.14, 0.10, 0.09), vec4(-0.52, 0.58, 0.11, 0.10), vec4(0.60, 0.62, 0.12, 0.10), vec4(-0.30, 1.00, 0.10, 0.09), vec4(0.45, 1.02, 0.10, 0.08), vec4(0.72, 0.50, 0.10, 0.09));
+// They drift with the wind (tangent units a second at wind 1), round a span this much wider than
+// the view; their shadows' field drifts this fast (its own units a second at wind 1) and takes this
+// share of the sun.
+const float WORLD_CUMULUS_DRIFT = 0.0175;
+const float WORLD_CUMULUS_WRAP = 1.7;
+const float WORLD_CUMULUS_SHADOW_DRIFT = 0.055;
+const float WORLD_CUMULUS_SHADOW = 0.72;
+// Their light: the sun's warmed to cream, the sky's warmed a little over a floor, the moon's.
+const vec3 WORLD_CUMULUS_SUN = vec3(1.15, 1.05, 0.88);
+const vec3 WORLD_CUMULUS_SKY = vec3(1.05, 0.98, 0.88);
+const float WORLD_CUMULUS_FLOOR = 0.04;
+const float WORLD_CUMULUS_MOON = 0.5;
+// As rain or snow closes the sky (w.overcast) they flatten to 1 - this share of their height and
+// sink this share of the way to the horizon, greying into the deck behind them.
+const float WORLD_CUMULUS_FLAT = 0.6;
+const float WORLD_CUMULUS_SINK = 0.5;
+#endif
+
 // ---- the world now ----
 struct World {
   Sky sky;          // the sky now: the clock, the sun and the moon in its phase; its light (sunColor,
@@ -109,6 +174,8 @@ struct World {
   float boltSeed;
   float meteorAge;  // seconds since the latest shooting star (1e4: none), and its seed
   float meteorSeed;
+  float seed;       // the scene's seed for the world's own scenery (the cumulus' lobes and shadows):
+                    // 0 from worldAt; a scene that re-seeds its view sets it before drawing
 };
 
 // The world now, from the world's knobs and the clocks; meteorSlot and lightningSlot: the scene's
@@ -162,6 +229,7 @@ World worldAt(int meteorSlot, int lightningSlot) {
 #if WORLD_METEORS
   w.meteorAge = meteorAge(w.tm, K_meteors, meteorSlot, w.meteorSeed);
 #endif
+  w.seed = 0.0;
   sky.sunColor *= 1.0 - WORLD_DECK_SUN * w.overcast;
   sky.ambient = greyed(sky.ambient, vec3(1.0), WORLD_DECK_GREY * w.overcast) * (1.0 - WORLD_DECK_DARK * w.storm) + w.glow + WORLD_FLASH_LIGHT * w.flash;
   sky.twilight *= 1.0 - WORLD_DECK_TWILIGHT * w.overcast;
@@ -215,17 +283,166 @@ WorldView worldViewOf(vec3 ray, vec2 uv, float horizon, float focal, float eye, 
   return v;
 }
 
+#if WORLD_CUMULUS
+// ---- the painted cumulus (K_cumulus) ----
+// How far the towers have still to drift in as the scene arrives (1 down to exactly 0 once it has: an
+// ease-out cubic), and how far they have drifted on as it leaves (0 at rest, still gathering speed).
+float worldCumulusArriving() {
+  float u = 1.0 - clamp(passageIn(), 0.0, 1.0);
+  return u * u * u;
+}
+
+float worldCumulusLeaving() {
+  float u = passageOut();
+  return u * u;
+}
+
+// How far the towers have greyed and sunk into the deck rain or snow closes over (w.overcast): 0 in
+// fair weather, 1 once it has closed, with none of them left.
+float worldCumulusMerged(World w) {
+  return smoothstep(0.2, 1.0, w.overcast);
+}
+
+// The light on the towers: the sun's (warmed to cream) and the moon's, each with its direction in the
+// towers' plane (across, and up lifted so that a low light still reaches the crowns), the sky's, and
+// the blue-grey of their shade, off the sky high up.
+struct WorldCumulusLight {
+  vec3 sun;
+  vec3 moon;
+  vec3 sky;
+  vec3 shade;
+  vec2 toSun;
+  vec2 toMoon;
+};
+
+WorldCumulusLight worldCumulusLight(World w, WorldView v) {
+  WorldCumulusLight li;
+  li.sun = w.sky.sunColor * WORLD_CUMULUS_SUN;
+  li.moon = w.sky.moonColor * WORLD_CUMULUS_MOON;
+  li.sky = w.sky.ambient * WORLD_CUMULUS_SKY + WORLD_CUMULUS_FLOOR;
+  vec3 zen = skyColor(w.sky, normalize(vec3(0.0, 0.85, 0.5)));
+  li.shade = mix(vec3(dot(zen, LUMA)), zen, 0.5) * 1.5 + vec3(0.12, 0.13, 0.17);
+  vec3 sun = skyFacing(w.sky.sun, -v.yaw);
+  vec3 moon = skyFacing(w.sky.moon, -v.yaw);
+  li.toSun = normalize(vec2(sun.x, 0.45 + 1.2 * max(sun.y, 0.0)) + 1e-4);
+  li.toMoon = normalize(vec2(moon.x, 0.45 + 1.2 * max(moon.y, 0.0)) + 1e-4);
+  return li;
+}
+
+// The signed distance (in the tower's own units, roughly) to a tower of these lobes, cut flat at the
+// base.
+float worldCumulusSdf(vec2 q, vec4 lobes[17]) {
+  float d = 1e3;
+  for (int k = 0; k < 17; k++) {
+    vec4 c = lobes[k];
+    d = min(d, (length((q - c.xy) / c.zw) - 1.0) * min(c.z, c.w));
+  }
+  return max(d, -q.y);
+}
+
+// One tower at q, in its own units (across its width, up its height from the flat base), its width
+// s and height factor tall, its own seed and the scene's (jitter), and a cell's footprint aa (tangent
+// units): rgb and coverage, 0 or 1 per cell. Its lobes are jittered once, then shared by the outline
+// and the four samples of its normal. The light comes from the outline's normal (taken over a wide
+// step, so the billows blend into one mass) mixed with the tower's overall facing: the sunward side
+// and the crown cream, the shaded side and the flat base blue-grey, the sunward rim glowing, the side
+// toward the moon silvered.
+vec4 worldCumulusTower(WorldCumulusLight li, vec2 q, float s, float tall, float seed, float jitter, float aa) {
+  float sd = seed + jitter;
+  vec4 lobes[17];
+  for (int k = 0; k < 17; k++) {
+    vec4 c = WORLD_CUMULUS_LOBE[k];
+    c.xy += (hash22(vec2(float(k), sd)) - 0.5) * 0.06;
+    c.zw *= 0.88 + 0.28 * hash12(vec2(float(k) + 7.0, sd));
+    lobes[k] = c;
+  }
+  float d = worldCumulusSdf(q, lobes);
+  d += 0.045 * (vnoise(q * 9.0 + seed) - 0.5) + 0.02 * (vnoise(q * 23.0 + seed) - 0.5);
+  if (hardFill(d * s, aa) < 0.5) return vec4(0.0);
+  float e = 0.12;
+  vec2 grad = vec2(worldCumulusSdf(q + vec2(e, 0.0), lobes) - worldCumulusSdf(q - vec2(e, 0.0), lobes), worldCumulusSdf(q + vec2(0.0, e), lobes) - worldCumulusSdf(q - vec2(0.0, e), lobes));
+  vec2 n = grad / max(length(grad), 1e-3);
+  vec2 mass = normalize(q - vec2(0.0, 0.5) + 1e-3);
+  float crown = 0.5 + 0.5 * smoothstep(0.0, 0.5, q.y);
+  vec2 toSun = normalize(vec2(li.toSun.x, li.toSun.y / tall));
+  float facing = dot(n, toSun);
+  float lit = smoothstep(-1.0, 0.9, 0.55 * facing + 0.45 * dot(mass, toSun)) * crown;
+  vec3 c = mix(li.shade, li.sun * 0.7 + li.sky * 0.55 + vec3(0.14, 0.13, 0.12), lit);
+  float rim = 1.0 - smoothstep(0.0, 0.07, -d);
+  c += li.sun * 0.4 * rim * max(facing, 0.0) * smoothstep(0.1, 0.5, q.y);
+  vec2 toMoon = normalize(vec2(li.toMoon.x, li.toMoon.y / tall));
+  c += li.moon * smoothstep(-1.0, 0.9, 0.55 * dot(n, toMoon) + 0.45 * dot(mass, toMoon)) * crown;
+  c = mix(c, li.shade * 0.85, (1.0 - smoothstep(0.0, 0.2, q.y)) * 0.6);
+  return vec4(c, 1.0);
+}
+
+// The towers along the view's ray over col (the sky behind them), the small ones first: each laid
+// out across the view in the camera's frame (so in the sky's, turned by the view's yaw), drifting with
+// the wind round a span a little wider than the view, in from the sides as the scene arrives and on
+// as it leaves. Rain or snow flattens them, sinks them toward the horizon and greys them into the
+// deck. Returns their coverage, 0 or 1.
+float worldCumulusOver(World w, WorldView v, inout vec3 col) {
+  float merged = worldCumulusMerged(w);
+  if (merged >= 1.0 || v.ray.z < 0.05) return 0.0;
+  vec2 t = v.ray.xy / v.ray.z;
+  float size = clamp(K_cumulus, 0.0, 1.0);
+  float spread = max(0.5 * v.aspect / v.focal, WORLD_CUMULUS_STAGE);
+  float span = 2.0 * spread + WORLD_CUMULUS_WRAP;
+  float drift = w.tm * WORLD_CUMULUS_DRIFT * w.wind;
+  float arriving = worldCumulusArriving();
+  float leaving = worldCumulusLeaving();
+  float squash = 1.0 - WORLD_CUMULUS_FLAT * w.overcast;
+  float sink = 1.0 - WORLD_CUMULUS_SINK * w.overcast;
+  vec3 behind = col;
+  float cover = 0.0;
+  bool lit = false;
+  WorldCumulusLight li;
+  for (int i = 0; i < WORLD_CUMULUS_N; i++) {
+    bool puff = i < WORLD_CUMULUS_PUFFS;
+    if (!puff && i == WORLD_CUMULUS_N - 2 && size < 0.2) continue;
+    float s = WORLD_CUMULUS_WIDTH[i] * (puff ? 1.0 : mix(0.65, 1.08, size));
+    float tall = WORLD_CUMULUS_TALL[i] * squash;
+    float lead = (0.22 + 0.04 * float(i)) * arriving + 0.1 * leaving;
+    float x = mod(WORLD_CUMULUS_ACROSS[i] * spread + drift + 0.5 * span, span) - 0.5 * span + sign(WORLD_CUMULUS_ACROSS[i]) * lead;
+    vec2 q = vec2((t.x - x) / s, (t.y - WORLD_CUMULUS_BASE[i] * sink) / (s * tall));
+    if (q.x < -1.15 || q.x > 1.2 || q.y < -0.05 || q.y > 1.5) continue;
+    if (!lit) {
+      li = worldCumulusLight(w, v);
+      lit = true;
+    }
+    vec4 tower = worldCumulusTower(li, q, s, tall, WORLD_CUMULUS_SEED[i], w.seed, v.foot);
+    col = mix(col, tower.rgb, tower.a);
+    cover = max(cover, tower.a);
+  }
+  if (cover > 0.0 && w.overcast > 0.0) col = mix(greyed(col, vec3(1.0), w.overcast), behind, merged);
+  return cover;
+}
+
+// The towers' shadows on the land at a point at (as for worldSunlit: scene units from the eye, in the
+// camera's frame), the share of the sun they take, 0 or WORLD_CUMULUS_SHADOW per cell: a field
+// painted over the land as the eye sees it, as the towers are (at's x and y over its distance ahead,
+// taken no steeper than 45 degrees down), drifting with the wind and in from the side as the scene
+// arrives, fading as the towers sink into the deck.
+float worldCumulusShadow(World w, vec3 at) {
+  vec2 t = at.xy / max(max(at.z, abs(at.y)), 1e-6);
+  vec2 q = vec2(t.x * 0.75 - w.tm * WORLD_CUMULUS_SHADOW_DRIFT * w.wind + 0.2 * (worldCumulusArriving() + 0.5 * worldCumulusLeaving()), t.y * 2.4);
+  float n = 0.65 * vnoise(q + vec2(5.0 + w.seed, 2.128)) + 0.35 * vnoise(q * 2.3 + vec2(9.0, 5.5944));
+  return WORLD_CUMULUS_SHADOW * hardEdge(smoothstep(0.54, 0.7, n)) * (1.0 - worldCumulusMerged(w));
+}
+#endif
+
 // ---- behind the scene ----
 struct WorldSky {
   vec3 col;     // the sky along the ray up to the shooting stars: draw it first; tint it as the scene's own deck does
   vec3 strike;  // the lightning over it, the bolt and the flash's glow: add it after any tint of the scene's
-  float cloud;  // the cloud deck's alpha along the ray (0 clear): hide what lies behind cloud (a sun disc's accent)
+  float cloud;  // the cloud's alpha along the ray, the deck's and the cumulus' (0 clear): hide what lies behind cloud (a sun disc's accent)
 };
 
 // The sky behind everything along the view's ray, in order: the dome (sun and moon discs), the
-// aurora behind the clouds, the cloud deck, the stars, the Milky Way and the giant planet in its gaps,
-// shooting stars (starting in meteorField, skyAngles of the camera's ray: xy its lower left corner,
-// zw its size), then the lightning (strike). Draw the scene's land, distance and near things over it.
+// aurora behind the clouds, the cloud deck, the painted cumulus in front of it, the stars, the Milky
+// Way and the giant planet in their gaps, shooting stars (starting in meteorField, skyAngles of the
+// camera's ray: xy its lower left corner, zw its size), then the lightning (strike). Draw the scene's
+// land, distance and near things over it.
 WorldSky worldSky(World w, WorldView v, vec4 meteorField) {
   vec3 col = skyColor(w.sky, v.dir);
 #if WORLD_AURORA
@@ -237,6 +454,9 @@ WorldSky worldSky(World w, WorldView v, vec4 meteorField) {
   vec4 deck = skyClouds(w.sky, v.dir, w.tm, w.cover, w.wind);
   col = mix(col, deck.rgb, deck.a);
   cloud = deck.a;
+#endif
+#if WORLD_CUMULUS
+  if (K_cumulus > 0.0) cloud = max(cloud, worldCumulusOver(w, v, col));
 #endif
 #if WORLD_STARS
   float density = K_stars;
@@ -278,14 +498,20 @@ WorldSky worldSky(World w, WorldView v, vec4 meteorField) {
 // How much of the sun's light reaches a point at (scene units from the eye, in the camera's frame,
 // y up: the ground under a pixel is y = -eye): 1 in the open, down to 1 - K_shadows in the shadow
 // the cloud deck casts where the sun's ray from it meets the deck (skyCloudShadow, the deck
-// WORLD_CLOUD_BASE metres up). Exactly 1 while the shadows are off. Multiply the sun's light by it.
+// WORLD_CLOUD_BASE metres up), and times 1 - WORLD_CUMULUS_SHADOW in the painted cumulus' shadows
+// (worldCumulusShadow), which come with the towers. Exactly 1 while both are off. Multiply the sun's
+// light by it.
 float worldSunlit(World w, WorldView v, vec3 at) {
+  float lit = 1.0;
 #if WORLD_SHADOWS
   if (K_shadows > 0.0 && w.cover > 0.0) {
-    return 1.0 - K_shadows * skyCloudShadow(w.sky, skyFacing(at / v.unit, v.yaw), WORLD_CLOUD_BASE, w.tm, w.cover, w.wind);
+    lit = 1.0 - K_shadows * skyCloudShadow(w.sky, skyFacing(at / v.unit, v.yaw), WORLD_CLOUD_BASE, w.tm, w.cover, w.wind);
   }
 #endif
-  return 1.0;
+#if WORLD_CUMULUS
+  if (K_cumulus > 0.0) lit *= 1.0 - worldCumulusShadow(w, at);
+#endif
+  return lit;
 }
 
 // ---- in front, by distance ----
@@ -442,12 +668,12 @@ WorldView worldMirrorView(WorldView v, vec3 ray, float blur) {
 // The sky a level mirror shows along m's ray (worldMirrorView), in worldSky's order: the dome with
 // the moon swung round behind the viewer (skyMirror: no reflection shows a broken sliver of its
 // disc, so draw the moon's path on the water as glitter), the aurora, the cloud deck (lit by the
-// true moon, so its silver lining shows under it), the Milky Way, the stars and the giant planet in
-// its gaps (faded in the true moon's glare as the sky's are) and shooting stars, all at m's
-// footprint: a rough mirror fades the stars to their glow, softens the giant and dims a streak to
-// the share of its blur one cell is. In strike the lightning's bolt mirrored at m's screen point, as
-// dim, and the flash's glow. A scene that drops its bolts out of its own storm draws their image
-// itself and leaves strike's out.
+// true moon, so its silver lining shows under it) and the painted cumulus in front of it, the Milky
+// Way, the stars and the giant planet in their gaps (faded in the true moon's glare as the sky's
+// are) and shooting stars, all at m's footprint: a rough mirror fades the stars to their glow,
+// softens the giant and dims a streak to the share of its blur one cell is. In strike the
+// lightning's bolt mirrored at m's screen point, as dim, and the flash's glow. A scene that drops its
+// bolts out of its own storm draws their image itself and leaves strike's out.
 WorldSky worldMirrorSky(World w, WorldView m, vec4 meteorField) {
   vec3 col = skyColor(skyMirror(w.sky), m.dir);
   float cell = 1.0 / (m.focal * uRes.y);
@@ -460,6 +686,9 @@ WorldSky worldMirrorSky(World w, WorldView m, vec4 meteorField) {
   vec4 deck = skyClouds(w.sky, m.dir, w.tm, w.cover, w.wind);
   col = mix(col, deck.rgb, deck.a);
   cloud = deck.a;
+#endif
+#if WORLD_CUMULUS
+  if (K_cumulus > 0.0) cloud = max(cloud, worldCumulusOver(w, m, col));
 #endif
 #if WORLD_STARS
   float density = K_stars;

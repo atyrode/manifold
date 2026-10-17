@@ -357,6 +357,21 @@ export const MIGRATIONS: readonly Migration[] = [
   },
   // The night skies' one giant planet became the first of their planets.
   { kind: "keys", since: 2, migrate: giantToPlanets },
+  {
+    kind: "keys",
+    since: 3,
+    // Bees' cloud cover only sized its own painted cumulus towers; they became the world's cumulus,
+    // their size its amount (read into 0.05..1), and `clouds` the world's deck over them, left at its
+    // fair-weather default.
+    migrate: (q, scene) => {
+      if (scene !== "bees") return;
+      const raw = q.get("clouds");
+      if (raw === null) return;
+      q.delete("clouds");
+      if (raw !== "" && Number.isFinite(Number(raw)) && !q.has("cumulus-amount"))
+        q.set("cumulus-amount", raw);
+    },
+  },
 ];
 
 export class UrlSchemaError extends Error {}

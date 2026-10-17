@@ -1,8 +1,8 @@
 // GPU regressions for knob-keyed compile-time features (SceneDef.featuresFor, featuresAll), through
 // the actual renderer. The countryside compiles its optional parts in only while their knobs are on
 // (countryFeatures), the meadow its wildflowers and the shared world's parts (worldFeatures), the
-// shore and the dunes the world's parts. The renderer is made to take its context for a hardware
-// GPU's or a software rasteriser's (`watched`), whatever renders the check. Registered in
+// shore, the dunes and the bees the world's parts. The renderer is made to take its context for a
+// hardware GPU's or a software rasteriser's (`watched`), whatever renders the check. Registered in
 // verify-browser.ts.
 //
 // sceneFeatures: the default countryside compiles in none of the parts whose knobs are off (flower
