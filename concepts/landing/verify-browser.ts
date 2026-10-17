@@ -1,4 +1,5 @@
 import { visitorAlone } from "./src/principals.ts";
+import { LEAVING_UNIT } from "./src/program-cache.ts";
 import { DitherRenderer } from "./src/renderer.ts";
 import { defaultsFor, paramDefaults, renderSettings } from "./src/state.ts";
 import { loadScene, loadScenes } from "./src/scenes/index.ts";
@@ -326,7 +327,7 @@ async function rendererPassage(_gl: WebGL2RenderingContext): Promise<Record<stri
   /** The leaving scene's frame as last drawn: the texture on the uLeaving unit. */
   function leavingFrame(): { bytes: Uint8Array; width: number; height: number } {
     const gl = rendererGl;
-    gl.activeTexture(gl.TEXTURE0 + 4);
+    gl.activeTexture(gl.TEXTURE0 + LEAVING_UNIT);
     const texture = gl.getParameter(gl.TEXTURE_BINDING_2D) as WebGLTexture;
     const fb = gl.createFramebuffer();
     gl.bindFramebuffer(gl.FRAMEBUFFER, fb);

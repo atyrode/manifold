@@ -1,10 +1,7 @@
 import { describe, expect, test } from "bun:test";
-import type { ParamDef } from "../../params.ts";
 import { HeadlessSim, type HeadlessUpload } from "../../sims/headless.ts";
-import { weatherKnobs } from "../atmosphere.ts";
 import { loadScene } from "../index.ts";
-import type { LoadedScene } from "../types.ts";
-import { BEES_CODE, beesSim } from "./sim.ts";
+import { BEES_CODE } from "./sim.ts";
 
 const beesScene = await loadScene("bees");
 
@@ -45,13 +42,6 @@ function cells(
     top = Math.max(top, y);
   }
   return { count, width: right - left + 1, height: top - bottom + 1 };
-}
-
-/** The scene with a rain knob, whether or not it has one of its own yet. */
-function rainy(): LoadedScene {
-  if (beesScene.params.some((def) => def.key === "rain")) return beesScene;
-  const params: readonly ParamDef[] = [...beesScene.params, ...weatherKnobs({ rain: true })];
-  return { ...beesScene, params, sim: beesSim(params) };
 }
 
 describe("the swarm", () => {
@@ -162,7 +152,7 @@ describe("the world's hours and weather", () => {
   });
 
   test("the bees come home in the rain, stay in while it lasts, and come out after it", () => {
-    const sim = new HeadlessSim(rainy());
+    const sim = new HeadlessSim(beesScene);
     const dry = { ...QUIET, bees: 1 };
     const wet = { ...dry, rain: 1, "rain-amount": 0.4 };
     expect(most(sim, dry, 2, BEE_CODES)).toBeGreaterThan(20);

@@ -2195,11 +2195,19 @@ and `dwell` (`state.ts` refuses to load such a scene).
 
 ## Composers
 
-**Status: design only.** This section comes from ADR 0062
-(`docs/decisions/0062-world-composers.md`, proposed), for #1082 item U1. Nothing in it exists yet:
-it is the contract the phases build, and it turns into a description of the code as each phase
-lands. The ADR keeps the reasoning, the measurements, the phases, the per-scene risks and the
-decisions still open (D1–D12).
+**Status: Phase 1 landed.** This section comes from ADR 0062
+(`docs/decisions/0062-world-composers.md`, accepted), for #1082 item U1. Phase 1 is in the tree
+(`src/composer/`): the `outdoor` composer, with meadow and bees as its presets and their eight
+layers (`downs`, `hillside`, `lawn`, `apiary`, `grass`, `wildflowers`, `dandelions`, `insects`),
+the placer, the claims, the composed sim and program, the one gust field (D4: bees' lawn and blooms
+move in it too), the Layers section and the compact bar's layer chips, the composer's unit tests
+(`src/composer/*.test.ts`) and the committed mix "Bees · overgrown meadow". Not built yet, so
+still the contract: the per-program knob layout (a composed scene keeps the renderer's 64 knobs
+and 8 trigger slots, `src/composer/caps.ts`), the layer costs (`scripts/layer-costs.ts`), the
+stack meter and the role's "+" listing, the composer's browser checks (`composerDepth`,
+`composerClaims`, `composerWeather`, `layerToggles`), the principals' ground points, and Phases
+2–5. The ADR keeps the reasoning, the measurements, the phases, the per-scene risks and the
+decisions (D1–D12, ratified).
 
 Most outdoor scenes show the same thing: a camera on the ground at eye level, something in front
 of it, a landscape behind, the sky above. A **composer** makes that shared: one camera rig, one
@@ -2255,7 +2263,7 @@ interface LayerDef {
 
 A layer's cost (shaken KB, uniform vectors, sim textures, SwiftShader milliseconds, each a margin
 over the composer's base) is never written by hand. `scripts/layer-costs.ts` writes it to
-`src/compose/costs.json`, and a check fails while that file is stale.
+`src/composer/costs.json`, and a check fails while that file is stale.
 
 | Role     | How many                                           | Examples                                                            |
 | -------- | -------------------------------------------------- | ------------------------------------------------------------------- |
@@ -2336,7 +2344,7 @@ one takes a step of the URL schema, as a knob that changes meaning does.
 ### Compositing
 
 The composer generates the entry function. Layers contribute passes, using the composer's GLSL
-(`src/shaders/lib/compose.ts`):
+(`src/composer/glsl.ts`):
 
 ```glsl
 struct Cell { vec3 col; float z; float accent; };  // z: metres to what the cell shows (WORLD_FAR: open sky)
@@ -2573,22 +2581,29 @@ chance drawn on steps. GPU solvers keep their own passes and hand their output t
 
 ### Layers in the lab
 
-- **The Layers section.** Each switch carries `{ kind: "layer", role }` (`Widget`). The switches
-  gather into one Layers section after the World shelf, as the `night` parts make the Night sky
-  section:
-  - a row per role, with a chip per offered layer: on, off, refused (dimmed, with its reason) or
-    over budget (dimmed, with the meter);
-  - a "+" listing the role's offered layers, with their thumbnails and costs.
-- **Layer sections.** A layer's groups carry `Blurb.layer`. They stand under their layer's heading
-  after the Layers section, in role order, and show while it is on. A change left dormant on an
-  off layer still counts under the lens and comes back with the layer.
+- **The Layers section** (`src/lab/layers.ts`, rules in `layers-model.ts`). Each switch carries
+  `{ kind: "layer", role }` (`Widget`). The switches gather into one Layers section, the first of
+  the scene's own groups after the World shelf, as the `night` parts make the Night sky section,
+  laid out from `SceneDef.layers`:
+  - a row per role, in role order, with a chip per offered layer: on, off, or refused (switched on
+    and not drawn: muted on a dashed edge, the placer's reason in its title and under the row);
+  - a backdrop's chip swaps for the backdrop on, which stays on (a stack has exactly one); a
+    ground's swaps for the ground on; switching a layer on switches off what it excludes or what
+    excludes it; a layer whose host is off stays refused ("needs Apiary");
+  - not built yet: over budget (dimmed, with the stack meter) and a "+" listing the role's offered
+    layers with their thumbnails and costs.
+- **Layer sections.** A layer's groups carry `Blurb.layer`. They stand after the Layers section
+  (the groups of no layer, such as the shared Manifold mark, first), in role order, and show while
+  the layer is switched on. A change left dormant on an off layer still counts under the lens, which
+  shows it, and comes back with the layer.
 - **Starting points.** The Scenes view's cards are the scene presets. "Reset what changed"
   returns to the preset, layers included.
 - **Shuffle and undo.** Shuffle never turns a layer (switches are steady). Undo and redo take layer
   turns like any knob.
-- **The compact bar,** in order: the World chips; a Layers chip, lit while the set differs from
-  the preset's; one chip per on layer (its icon, and a popover with all its sections); then
-  Global. Fitting is as before.
+- **The compact bar,** in order: the World chips; the Layers chip, lit while its section differs
+  from the preset's (the layer set or the arrangement); one chip per on layer (its icon and title,
+  and a popover lending all its sections: `Inspector.lend` takes several), shown while it is
+  switched on; then Global. Fitting is as before.
 
 ### Principals and chores
 

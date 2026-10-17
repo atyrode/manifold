@@ -45,6 +45,10 @@ const EXEMPT: Partial<
     reason:
       "its leaves let go by a chance drawn once a frame and fall over each frame's whole time, on a stream of their own so the gusts keep the seed",
   },
+  swell: {
+    reason:
+      "it hands the shader no texture: its sim only names the boats and the lamp as points of interest for the cast, so there is no state to compare",
+  },
   dew: {
     slots: [1],
     reason:

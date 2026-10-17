@@ -1,8 +1,7 @@
-// Meadow's code, loaded the first time the scene is needed (SceneDef.code).
-import { meadowScene } from "./index.ts";
-import { meadowSim } from "./sim.ts";
-import { meadowFlowersSim } from "./wildflowers.ts";
+// Meadow's code, loaded the first time the scene is needed (SceneDef.code): assembled from the code
+// of every layer its rig offers (composer/code.ts).
+import { composedCode } from "../../composer/code.ts";
+import { OUTDOOR_CODE } from "../../composer/outdoor-code.ts";
+import { meadowComposed } from "./index.ts";
 
-export { meadowGlsl as glsl } from "./shader.ts";
-export const entry = "sceneMeadow";
-export const sim = meadowFlowersSim(meadowSim(meadowScene.params), meadowScene.params);
+export const { glsl, entry, glslFor, sim } = composedCode(meadowComposed, OUTDOOR_CODE);

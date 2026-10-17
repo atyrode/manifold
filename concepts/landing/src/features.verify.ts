@@ -538,7 +538,7 @@ async function featureToggles(
   try {
     for (const scene of scenes) {
       const started = performance.now();
-      const turns = gatedTurns(sceneDefs[scene]);
+      const turns = gatedTurns(sceneDefs[scene], true);
       const [first = {}] = turns;
 
       // The default page: entered with the program for its setting, it builds nothing more. It
@@ -660,7 +660,7 @@ async function worldFeaturesAll(
     for (const scene of scenes) {
       const started = performance.now();
       const def = sceneDefs[scene];
-      const turns = gatedTurns(def);
+      const turns = gatedTurns(def, true);
       const [first = {}] = turns;
 
       // Every gated setting, in two views, drawn with the all-features program, after the page has

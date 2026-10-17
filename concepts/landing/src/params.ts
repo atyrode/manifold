@@ -15,6 +15,7 @@
 //
 // Reading knobs back in TS: a sim uses a KnobReader (slots resolved once, by key), a page theme or
 // other one-off reader uses knobValue; both read what the shader reads (see `effective`).
+import type { Role } from "./composer/types.ts";
 import type { IconName } from "./lab/icons.ts";
 import type { SimFrame } from "./scenes/types.ts";
 
@@ -89,6 +90,9 @@ export interface Rate {
  *              SceneDef.planets names that group
  *   gusts      gusts that ride a `direction` knob (a feature, its "now" one gust): the group's
  *              direction pad takes them as its gust lane; without one, a plain chip
+ *   layer      a composed scene's layer switch (src/composer): its chip stands in the Layers
+ *              section's row for its `role` (src/lab/layers.ts), and its own groups (Blurb.layer)
+ *              show while it is on
  */
 export type Widget =
   | { kind: "mix"; mix: string; part: string; swatch: string }
@@ -99,7 +103,8 @@ export type Widget =
   | { kind: "position"; y: string; screen?: readonly [number, number] }
   | { kind: "flyway"; part: "birds" | "kind" | "formation" }
   | { kind: "night"; part: "stars" | "moon" | "milkyWay" | "meteors" | "aurora" | "constellations" }
-  | { kind: "gusts" };
+  | { kind: "gusts" }
+  | { kind: "layer"; role: Role };
 
 /**
  * Where a season knob puts the year, as a year position 0..1 (wrapping): 0 the start of spring,
@@ -330,6 +335,8 @@ export interface Blurb {
    * weather and birds) that a scene picked with "keep the world" on carries over by knob key.
    */
   shelf?: "world";
+  /** A composed scene's layer this group belongs to: it stands under the layer and shows while it is on. */
+  layer?: string;
   blurb: string;
   /** The heading's lab icon; default: the first word of the group's key or title naming one. */
   icon?: IconName;

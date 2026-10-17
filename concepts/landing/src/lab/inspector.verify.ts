@@ -16,7 +16,11 @@
 //   shows the whole view, the keyboard in its search, and gives it back as it closes; a change
 //   lights its chip and a sync that changes nothing writes nothing; country's chips drop their
 //   titles, then scroll, as the room shrinks; another scene closes its sections' popovers, not
-//   Global's.
+//   Global's;
+// - `layers`: a composed scene's (bees') Layers section has a row per role with a chip per offered
+//   layer; a backdrop's chip swaps for the one on, and the one on stays on; a layer whose host goes
+//   off shows refused with its reason; a layer's sections show while it is on, and in the compact
+//   bar they stand under one chip of the layer's, shown while it is on, lending all of them.
 import labCss from "../lab.css" with { type: "text" };
 import { sceneDefs } from "../scenes/index.ts";
 import { encodePlanets, PLANETS_KEY, type SkyPlanet } from "../scenes/planets.ts";
@@ -561,6 +565,70 @@ async function compact(): Promise<Record<string, unknown>> {
   }
 }
 
+/**
+ * Bees' Layers section and its layers' chips (see the header): laid out from the scene's metadata,
+ * the backdrop swapped and kept, the insects refused without their apiary.
+ */
+function layers(): Record<string, unknown> {
+  const bees = compactBar(setup("scene=bees"), { "bees:layers": true });
+  try {
+    const { inspector, bar } = bees;
+    const rows = [...inspector.el.querySelectorAll<HTMLElement>(".layer-row")].map(
+      (row) => row.dataset.role,
+    );
+    check(
+      rows.join() === "backdrop,ground,dressing,cover,life",
+      `bees' layer rows are ${rows.join()}, not backdrop, ground, dressing, cover, life`,
+    );
+    const chip = (key: string) =>
+      element<HTMLButtonElement>(inspector.el, `.layer-row .chip-cell[data-keys~="${key}"] .chip`);
+    const on = (key: string) => chip(key).getAttribute("aria-checked") === "true";
+    // A section lent to a popover stands in the popover's layer, outside the panel.
+    const section = (id: string) =>
+      element<HTMLElement>(document.body, `section.group[data-id="${id}"]`);
+    check(on("hillside") && !on("downs"), "the hillside is not bees' backdrop");
+    chip("hillside").click();
+    check(on("hillside"), "the backdrop on goes off");
+    chip("downs").click();
+    check(on("downs") && !on("hillside"), "the downs do not swap for the hillside");
+    check(bees.changes.at(-1)?.["hillside"] === 0, "the swap is not one change");
+    check(!section("bees:downs").hidden, "the downs' section hides with the downs on");
+    chip("hillside").click();
+    check(section("bees:downs").hidden, "the downs' section shows with the downs off");
+
+    // The apiary's sections stand under its own chip in the bar, shown while it is on.
+    bar.sync();
+    const apiary = element<HTMLButtonElement>(bar.el, '.menu-chip[data-id="bees:layer:apiary"]');
+    check(!apiary.hidden && !section("bees:garden").hidden, "the apiary's chip or garden hides");
+    check(
+      bar.el.querySelector('.menu-chip[data-id="bees:garden"]') === null,
+      "the garden has a chip of its own beside the apiary's",
+    );
+    apiary.click();
+    check(
+      section("bees:garden").closest(".popover:not([hidden])") !== null,
+      "the apiary's chip does not lend its garden",
+    );
+    Popover.closeAll();
+
+    // Without the apiary the insects are refused, and say why; its sections and chip go.
+    chip("apiary").click();
+    bar.sync();
+    const insects = chip("insects").closest<HTMLElement>(".chip-cell");
+    check(insects?.classList.contains("refused") === true, "the insects are not refused");
+    const note = element<HTMLElement>(inspector.el, '.layer-row[data-role="life"] .layer-refusals');
+    check(
+      !note.hidden && note.textContent === "Insects: needs Apiary",
+      `the insects' refusal reads "${note.textContent ?? ""}"`,
+    );
+    check(section("bees:garden").hidden, "the garden shows with the apiary off");
+    check(apiary.hidden, "the apiary's chip shows with the apiary off");
+    return { rows: rows.length, chips: bar.el.querySelectorAll(".menu-chip:not([hidden])").length };
+  } finally {
+    bees.remove();
+  }
+}
+
 /** Every Controls view regression above, under the lab's own stylesheet. */
 export async function verifyInspector(
   _gl: WebGL2RenderingContext,
@@ -576,6 +644,7 @@ export async function verifyInspector(
       writes: await writes(),
       night: await night(),
       compact: await compact(),
+      layers: layers(),
     };
   } finally {
     style.remove();

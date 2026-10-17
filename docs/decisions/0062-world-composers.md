@@ -1,7 +1,7 @@
 # 0062 — One world, three composers: the landing scenes become presets of stacked layers
 
 Date: 2026-10-17
-Status: accepted
+Status: accepted; Phase 1 landed (see "Phase 1 as landed")
 Ratified: D1–D12 resolved as recommended below (2026-10-17, #1082 item U1).
 
 ## Problem and boundary
@@ -557,7 +557,7 @@ compiled ahead; the renderer builds what is visited:
   - `composerWeather`: with wetness and lying snow at 1, every on layer's cells change;
   - `layerToggles`: a layer turn never waits for a build;
   - `passageSpeeds` per preset (split in four by A2's in-flight tests work).
-- **Generated:** `scripts/layer-costs.ts` writes `src/compose/costs.json`, and a check fails when
+- **Generated:** `scripts/layer-costs.ts` writes `src/composer/costs.json`, and a check fails when
   the file is stale, as the decisions index does.
 - **Timing records:** every new browser check gets a record in `scripts/verify-timings.ts`, which
   A2's in-flight tests work makes `verify-plan.test.ts` require.
@@ -679,8 +679,9 @@ Each phase is one coherent change under #1082, with its acceptance below and the
 
 **Builds:**
 
-- `src/compose/`: types, `composeScene`, the placement solver, the composed sim, the site.
-- `src/shaders/lib/compose.ts`: `Cell`, the rig, claims, lights, the gust field and the entry
+- `src/composer/`: types, `composeScene`, the placement solver, the claims, the composed sim, the
+  site.
+- `src/composer/glsl.ts`: `Cell`, the rig, claims, lights, the gust field and the entry
   generator.
 - The `outdoor` composer.
 - The `SceneDef` additions: `glslFor`, `featuresAllFor`, `structural`.
@@ -742,6 +743,32 @@ Each phase is one coherent change under #1082, with its acceptance below and the
 | ------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | meadow | Camera constants baked into the grass (`MEADOW_LAYER_Z`, the root and pitch arrays), the eye's drop on entry (`meadowDrop`), the golden haze and `meadowDeck`, its own gust field, `meadowSeed`                                                | Rig parameters with the same values; the drop as the rig's passage; the air and sky staging owned by `downs`; its gust field becomes the composer's; `seed` with the same value draws the same                                                               |
 | bees   | Its camera (0.47, 1.0, 1.6 m) and its stage of at least 0.62 half widths; the 1.5× hives; shadows of trees and hives on the lawn; `beesGust`; the moon as key after sunset; `SKY_MOON_PHASE` compiled in always; specks tested against `beesZ` | A rig with `minAspect` 1.24; a declared display scale; caster claims on bees' own shadow model; the shared gust field (the attributed sway difference); the grade's moon key; a preset feature; the composed depth, which equals `beesZ` while bees is alone |
+
+#### Phase 1 as landed
+
+- **Code.** `src/composer/` (types, `composeScene`, the placer, the claims, the composed sim, the
+  program and its entry in `glsl.ts`, the gust field, the caps, the `outdoor` registry); the eight
+  layers in `scenes/meadow/` and `scenes/bees/`; the Layers section and the compact bar's layer
+  chips (`src/lab/layers.ts`, `layers-model.ts`); unit tests for the placer, the claims, the
+  allocation and the budgets (`src/composer/*.test.ts`).
+- **Pixels** (`ab.ts --base f58c3424`, with `--turns`). Meadow is `SAME` at its defaults, in
+  `view=source` and under every World knob turn. Bees differs on its lawn only: under D4 the lawn's
+  swells of paler light, the drifts' leaves, the lavender and the blooms move in the shared gust
+  field (13 % of cells dithered, 27 % in `view=source`, all below the land line). The operator
+  accepted that difference with D4.
+- **The mix.** "Bees · overgrown meadow" sets the grass knee-high and thinner, the drifts lusher
+  and every wildflower clump. The meadow's grass took a response to a higher sun than golden
+  hour's (lit from above, green through its blades, its depths lighter), which is exactly 0 at
+  meadow's own light.
+- **Cost.** Shaken defaults: meadow 96,158 characters (+8.8 % over the pre-port 88,367), bees
+  103,817 (+12.2 % over 92,552); all-features 166,939 and 173,630 (+2.4 %, +7.0 %); the mix's
+  all-features 207,738. The 5 % criterion on the defaults is missed by the composer's prelude
+  (placement, local lights, the plain floor); the mix's 230 KB holds. Every program is at most 175
+  uniform vectors.
+- **Not built yet:** the per-program knob layout (a composed scene keeps the renderer's 64 knobs
+  and 8 trigger slots), `layer-costs.ts`, the stack meter and the "+" listing, the principals'
+  ground points, and the checks `composerDepth`, `composerClaims`, `composerWeather` and
+  `layerToggles`.
 
 ### Phase 2: the rest of the outdoor composer
 

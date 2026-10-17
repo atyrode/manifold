@@ -27,10 +27,16 @@ export function turned(def: ParamDef): Record<string, number> {
   }
 }
 
-/** Each single knob turn of `scene` that changes its program's features, and all of them at once. */
-export function gatedTurns(scene: SceneDef): Record<string, number>[] {
+/**
+ * Each single knob turn of `scene` that changes its program's features, and all of them at once;
+ * `within` its layer set only, leaving out a composed scene's layer switches (`structural`): a
+ * layer turn builds another layer set's own program, which its all-features one does not stand in
+ * for (README "Programs and cost").
+ */
+export function gatedTurns(scene: SceneDef, within = false): Record<string, number>[] {
   const plain = featureKey(sceneFeatures(scene));
   const turns = scene.params
+    .filter((def) => !within || scene.structural?.includes(def.key) !== true)
     .map(turned)
     .filter((knobs) => featureKey(sceneFeatures(scene, shaderValues(scene, knobs))) !== plain);
   return [...turns, Object.assign({}, ...turns) as Record<string, number>];

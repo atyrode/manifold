@@ -232,7 +232,12 @@ uniform sampler2D uSim0;  // the scene simulation's textures (see scenes/types.t
 uniform sampler2D uSim1;
 uniform sampler2D uSim2;
 uniform sampler2D uSim3;
-uniform vec4 uSimOn;      // 1 in each component whose uSim texture the simulation supplied
+uniform sampler2D uSim4;  // slots 4..7: a composed scene's fields (composer/sim.ts)
+uniform sampler2D uSim5;
+uniform sampler2D uSim6;
+uniform sampler2D uSim7;
+uniform vec4 uSimOn;      // 1 in each component whose uSim texture the simulation supplied (0..3)
+uniform vec4 uSimOn2;     // the same for uSim4..uSim7
 uniform vec2 uWeather;    // x: how wet the world is 0..1 (rises while it rains, dries after); y: how much snow lies 0..1 (settles while it snows, melts after)
 uniform vec2 uPassage;    // x: how far the scene has come in 0..1 (1 once arrived, and with passages off); y: how far it has gone out 0..1 (0 unless leaving)
 uniform vec3 uDissolve;   // x: share of the outgoing picture still showing 1..0; y: 1 when it dissolves out of uLeaving (the leaving scene), 0 for the bare page (uBg: a scene entering from nothing); z: blend (renderer's blendIds)

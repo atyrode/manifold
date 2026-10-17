@@ -1,6 +1,9 @@
 import { expect, test } from "bun:test";
+import { ATLAS_WIDTH } from "../../composer/caps.ts";
+import { allocate, ATLAS_SLOT } from "../../composer/sim.ts";
 import { HeadlessSim } from "../../sims/headless.ts";
 import { loadScene } from "../index.ts";
+import { meadowComposed } from "./index.ts";
 import { MAX_SEEDS } from "./sim.ts";
 
 const meadowScene = await loadScene("meadow");
@@ -9,15 +12,23 @@ const meadowScene = await loadScene("meadow");
 const KNOBS = { wind: 0.6, gusts: 1, "gusts-amount": 1, gustRate: 1 };
 const POINTER = { inside: false };
 
+/** Where the meadow's own layers keep their data: the dandelions' rows, the grass's field. */
+const ALLOCATION = allocate(
+  meadowComposed.place(new Set(meadowComposed.preset.layers)).layers.map((p) => p.layer),
+);
+const SEED_ROW = ALLOCATION.rows["dandelions"]?.base ?? 0;
+const FIELD_SLOT = ALLOCATION.fields["grass"]?.[0] ?? 0;
+
 /** A meadow stepped in frames of 1/rate s, the first running its pre-run (HeadlessSim's budget is Infinity). */
 function meadow(rate: number): { sim: HeadlessSim; frame: () => Float32Array[] } {
   const sim = new HeadlessSim(meadowScene);
   return {
     sim,
-    // uSim0..uSim2 after one more frame: the seeds, the grass, the clocks.
+    // The records atlas (the breath, the seeds and the clocks) and the grass's field (the near blades)
+    // after one more frame.
     frame: () => {
       sim.step({ dt: 1 / rate, knobs: KNOBS, pointer: POINTER });
-      return [0, 1, 2].map((slot) => Float32Array.from(sim.upload(slot).data));
+      return [ATLAS_SLOT, FIELD_SLOT].map((slot) => Float32Array.from(sim.upload(slot).data));
     },
   };
 }
@@ -29,10 +40,11 @@ function furthest(a: Float32Array, b: Float32Array): number {
   return most;
 }
 
-/** Seeds in the air: those drawn with a pappus (uSim0 row 0, radius in b). */
-function airborne(seeds: Float32Array): number {
+/** Seeds in the air: those drawn with a pappus (the dandelions' row 0, radius in b). */
+function airborne(atlas: Float32Array): number {
   let n = 0;
-  for (let i = 0; i < MAX_SEEDS; i++) if ((seeds[i * 4 + 2] ?? 0) > 0) n++;
+  for (let i = 0; i < MAX_SEEDS; i++)
+    if ((atlas[(SEED_ROW * ATLAS_WIDTH + i) * 4 + 2] ?? 0) > 0) n++;
   return n;
 }
 
@@ -46,18 +58,18 @@ test("the meadow stands the same after three seconds at 60 and at 144 frames a s
   });
   const [slow, fast] = drawn;
   if (!slow || !fast) throw new Error("no frames");
-  const [seeds, blades] = slow;
-  if (!seeds || !blades) throw new Error("no textures");
+  const [atlas, blades] = slow;
+  if (!atlas || !blades) throw new Error("no textures");
   // Something to compare: seeds in the air and grass bent by the gusts.
-  expect(airborne(seeds)).toBeGreaterThan(3);
+  expect(airborne(atlas)).toBeGreaterThan(3);
   expect(Math.max(...blades.map(Math.abs))).toBeGreaterThan(0.01);
   // The pre-run ends where the first frame began whatever its length, and the steps fall on the
-  // same moments of the motion clock: the seeds, the grass and the clocks agree to rounding.
-  for (const slot of [0, 1, 2]) {
-    const a = slow[slot];
-    const b = fast[slot];
-    if (!a || !b) throw new Error(`no uSim${slot}`);
-    expect({ slot, apart: furthest(a, b) < 1e-5 }).toEqual({ slot, apart: true });
+  // same moments of the motion clock: the seeds, the clocks and the grass agree to rounding.
+  for (const at of [0, 1]) {
+    const a = slow[at];
+    const b = fast[at];
+    if (!a || !b) throw new Error(`no texture ${at}`);
+    expect({ at, apart: furthest(a, b) < 1e-5 }).toEqual({ at, apart: true });
   }
 });
 
@@ -73,7 +85,7 @@ test("a 144 Hz frame draws the grass between the 60 Hz steps around it", () => {
   let worst = 0;
   for (let f = 1; f <= 144; f++) {
     const blades = fast.frame()[1];
-    if (!blades) throw new Error("no uSim1");
+    if (!blades) throw new Error("no grass field");
     const n = Math.floor((5 * f) / 12);
     if (n < 1) continue;
     const share = ((5 * f) % 12) / 12;

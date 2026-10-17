@@ -19,8 +19,11 @@ import {
   settingKeyed,
 } from "./shaders/index.ts";
 
-/** Texture units: `uSim0..uSim3`, one per sim slot, then `uLeaving`. */
-export const SIM_SLOTS = 4;
+/**
+ * Texture units: `uSim0..uSim7`, one per sim slot (a composed scene's speck map, records atlas and
+ * fields, src/composer/sim.ts; a scene's own sim uses the first four), then `uLeaving`.
+ */
+export const SIM_SLOTS = 8;
 export const LEAVING_UNIT = SIM_SLOTS;
 /**
  * Programs kept per scene: those it entered with, one per compile-time feature set
@@ -72,7 +75,12 @@ const uniformNames = [
   "uSim1",
   "uSim2",
   "uSim3",
+  "uSim4",
+  "uSim5",
+  "uSim6",
+  "uSim7",
   "uSimOn",
+  "uSimOn2",
   "uWeather",
   "uPassage",
   "uDissolve",
@@ -217,6 +225,8 @@ export class ScenePrograms {
   readonly #loading = new Set<SceneId>();
   /** Scenes whose code could not be loaded, and the failure that stops them, until `retry`. */
   readonly #unloaded = new Map<SceneId, SceneFailure>();
+  /** The keys (`keptName`) of the all-features sets worked out so far: a composed scene has one per layer set. */
+  readonly #allKeys = new Set<string>();
 
   /**
    * `gpu`: what the context holds to build programs with, as it is now. `drawing`: whether the
@@ -282,11 +292,14 @@ export class ScenePrograms {
           ? Object.fromEntries(def.params.map((knob, index) => [knob.key, s.params[index] ?? 0]))
           : undefined;
         const features = sceneFeatures(def, values, s.planets.count, s.agents > 0);
-        const all = sceneFeaturesAll(def);
+        const all = sceneFeaturesAll(def, values);
+        const allKey = all === undefined ? undefined : featureKey(all);
+        if (allKey !== undefined) this.#allKeys.add(keptName(s.scene, allKey));
         wanted = {
           features,
           key: featureKey(features),
-          all: all === undefined ? undefined : { features: all, key: featureKey(all) },
+          all:
+            all === undefined || allKey === undefined ? undefined : { features: all, key: allKey },
         };
       } catch (error: unknown) {
         wanted = this.#failed(s.scene, undefined, error);
@@ -378,9 +391,16 @@ export class ScenePrograms {
     gl.uniform1i(uniforms.uConLineCount, figures.lineCount);
     gl.uniform1i(uniforms.uConMarkStar, figures.markStar);
     gl.uniform1i(uniforms.uConMarkLine, figures.markLine);
-    [uniforms.uSim0, uniforms.uSim1, uniforms.uSim2, uniforms.uSim3].forEach((location, slot) =>
-      gl.uniform1i(location, slot),
-    );
+    [
+      uniforms.uSim0,
+      uniforms.uSim1,
+      uniforms.uSim2,
+      uniforms.uSim3,
+      uniforms.uSim4,
+      uniforms.uSim5,
+      uniforms.uSim6,
+      uniforms.uSim7,
+    ].forEach((location, slot) => gl.uniform1i(location, slot));
     gl.uniform1i(uniforms.uLeaving, LEAVING_UNIT);
     // Nothing sent yet: NaN and -1 differ from every value the first frame sends.
     const triggers = Array.from({ length: MAX_TRIGGERS }, () => Number.NaN);
@@ -503,8 +523,7 @@ export class ScenePrograms {
     const asked = performance.now();
     const built = this.#finish(building);
     if (parallel === null) this.#learnLink(building, asked);
-    const all = sceneFeaturesAll(sceneDefs[building.id]);
-    if ("program" in built && all !== undefined && featureKey(all) === building.key)
+    if ("program" in built && this.#allKeys.has(keptName(building.id, building.key)))
       this.#warm = { id: building.id, program: built };
     return true;
   }

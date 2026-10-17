@@ -1,8 +1,9 @@
-// Drawing the insects into the cell map (SpeckMap, sims/specks.ts), shared by every kind: where a
-// flier is drawn (`project`: between its last two steps by the clock's alpha, in the cell its
-// projection falls in, changing cell only once it has clearly left it), the depth byte the shader
-// compares with the scenery's, and lines of cells.
-import { followCell, type SpeckMap } from "../../sims/specks.ts";
+// Drawing the insects into the speck map (the composer's shared one, LayerFrame.specks; a SpeckMap,
+// sims/specks.ts, in a test), shared by every kind: where a flier is drawn (`project`: between its
+// last two steps by the clock's alpha, in the cell its projection falls in, changing cell only once
+// it has clearly left it), the depth byte the shader compares with the scenery's, and lines of cells.
+import type { SpeckWriter } from "../../composer/types.ts";
+import { followCell } from "../../sims/specks.ts";
 import { CAMERA, type Flier } from "./garden.ts";
 import { BEES_DEPTH_STEP } from "./layout.ts";
 
@@ -12,11 +13,12 @@ export function depthByte(z: number): number {
 }
 
 export class Painter {
-  readonly specks: SpeckMap;
+  /** The map painted into this frame. */
+  specks: SpeckWriter;
   /** Where the last thing projected is drawn from (m), `alpha` of the way through its step. */
   readonly at = { x: 0, z: 0, h: 0 };
 
-  constructor(specks: SpeckMap) {
+  constructor(specks: SpeckWriter) {
     this.specks = specks;
   }
 

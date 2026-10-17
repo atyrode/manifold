@@ -4,6 +4,7 @@ import { effective, type ParamDef } from "../params.ts";
 import { loadScenes } from "../scenes/index.ts";
 import {
   assembleFragment,
+  featureKey,
   LIBRARY_GATES,
   packParams,
   PLANETS_GATE,
@@ -94,17 +95,28 @@ describe("library gates", () => {
   test("leave each knob-keyed scene's all-features set covering every knob's turn", () => {
     // The same defines, each at least as high (a gate on, a tier at or above): the program the
     // renderer switches to for any change draws it, so the GPU checks need only sample the scenes.
+    // A composed scene's layer switch (`structural`) is another layer set, so another program: the
+    // turned set's own all-features set covers it. Any other knob keeps the defaults' layer set.
     for (const scene of scenes) {
       const most = sceneFeaturesAll(scene);
       if (most === undefined) continue;
       for (const knob of scene.params) {
-        const set = sceneFeatures(scene, shaderValues(scene, turned(knob)));
+        const values = shaderValues(scene, turned(knob));
+        const set = sceneFeatures(scene, values);
+        const structural = scene.structural?.includes(knob.key) === true;
+        const cover = sceneFeaturesAll(scene, values) ?? {};
+        if (!structural)
+          expect({ id: scene.id, knob: knob.key, same: featureKey(cover) }).toEqual({
+            id: scene.id,
+            knob: knob.key,
+            same: featureKey(most),
+          });
         for (const [name, value] of Object.entries(set))
           expect({
             id: scene.id,
             knob: knob.key,
             name,
-            covered: (most[name] ?? -Infinity) >= value,
+            covered: (cover[name] ?? -Infinity) >= value,
           }).toEqual({ id: scene.id, knob: knob.key, name, covered: true });
       }
     }

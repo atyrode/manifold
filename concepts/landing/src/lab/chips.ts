@@ -6,7 +6,10 @@
 // under the same icon, while it is on. A chip with a trigger carries its "now". A chip that hangs on
 // another switch (`when`, to any depth) is a gate: the Controls view shows it while that one is on
 // (availability-model.ts). Where the season sets the climate, the rain's and the snow's chips carry
-// its marks (climate-hint-model.ts), a readout over their top edge that changes nothing.
+// its marks (climate-hint-model.ts), a readout over their top edge that changes nothing. A grid's
+// owner may decide what switching a chip changes besides its own switch (a composed scene's layers
+// swap and exclude each other, layers.ts) and mark a chip switched on that draws nothing as refused,
+// dimmed, with the reason in its title.
 import { formatValue, type Option, type ParamDef } from "../params.ts";
 import { chipKey, pace, pressMove, type Press } from "./chips-model.ts";
 import type { ClimateMark, ClimateMarks } from "./climate-hint-model.ts";
@@ -22,6 +25,7 @@ import {
   setText,
   snap,
   type Built,
+  type Patch,
 } from "./dom.ts";
 import { icon } from "./icons.ts";
 import {
@@ -60,20 +64,26 @@ export interface Fader {
   sync(note?: string): void;
 }
 
+/** What switching `def` on or off changes: by default its own switch alone. */
+export type Turn = (def: SwitchDef, on: boolean) => Patch;
+
+const ownTurn: Turn = (def, on) => ({ [def.key]: on ? 1 : 0 });
+
 /** Faders built so far: each names its own description. */
 let faders = 0;
 
 /**
  * Make `chip` the fader of `def`: a feature's amount on its switch's chip (a button whose owner
- * sets aria-checked; a drag or a key switches it on, `status` speaks what a key sets, a description
- * reads the amount), or a range itself on a chip that is its slider. Double-clicking the amount
- * resets it.
+ * sets aria-checked; a drag or a key switches it on, as `turn` has it, `status` speaks what a key
+ * sets, a description reads the amount), or a range itself on a chip that is its slider.
+ * Double-clicking the amount resets it.
  */
 export function fader(
   knobs: Knobs,
   def: FeatureDef | RangeDef,
   chip: HTMLElement,
   status: HTMLElement | undefined,
+  turn: Turn = ownTurn,
 ): Fader {
   const switched = def.kind === "feature";
   const key = switched ? `${def.key}-amount` : def.key;
@@ -97,7 +107,10 @@ export function fader(
   const reading = (value: number) =>
     `${switched ? def.amountLabel : def.label} ${formatValue(def, value)}`;
   const set = (value: number, commit: boolean) =>
-    knobs.set(switched ? { [def.key]: 1, [key]: value } : { [key]: value }, commit);
+    knobs.set(
+      def.kind === "feature" ? { ...turn(def, true), [key]: value } : { [key]: value },
+      commit,
+    );
 
   // The drag captures the pointer, so the click and double-click that follow a press land on the
   // chip whatever was under it: the press records whether a mouse began it on the amount (a touch
@@ -199,8 +212,22 @@ function markBadge(chip: HTMLButtonElement): {
   };
 }
 
-/** The grid of `defs`' chips; `marks`, where the season sets the climate, marks the rain and snow. */
-export function chipGrid(knobs: Knobs, defs: readonly SwitchDef[], marks?: ClimateMarks): Chips {
+/** What a grid's owner decides of its chips. */
+export interface ChipOptions {
+  /** Where the season sets the climate: the marks on the rain's and the snow's chips. */
+  marks?: ClimateMarks | undefined;
+  /** What switching a chip changes (a click, a fader's drag or key switching it on). */
+  turn?: Turn;
+  /** Why `def`, switched on, draws nothing: its chip shows refused, dimmed, the reason in its title. */
+  refusal?: (def: SwitchDef) => string | undefined;
+}
+
+/** The grid of `defs`' chips, as `options` has them. */
+export function chipGrid(
+  knobs: Knobs,
+  defs: readonly SwitchDef[],
+  { marks, turn = ownTurn, refusal }: ChipOptions = {},
+): Chips {
   const syncs: (() => void)[] = [];
   const amountSyncs: (() => void)[] = [];
   const amountRows: HTMLElement[] = [];
@@ -211,11 +238,12 @@ export function chipGrid(knobs: Knobs, defs: readonly SwitchDef[], marks?: Clima
     const name = knobIcon(def);
     const chip = chipButton(def);
     const faded =
-      def.kind === "feature" && !def.options ? fader(knobs, def, chip, status) : undefined;
+      def.kind === "feature" && !def.options ? fader(knobs, def, chip, status, turn) : undefined;
     const badge = marks ? markBadge(chip) : undefined;
     chip.addEventListener("click", (event) => {
       if (faded?.keeps(event)) return;
-      knobs.set({ [def.key]: knobs.value(def.key) > 0.5 ? 0 : 1 }, true);
+      const patch = turn(def, knobs.value(def.key) <= 0.5);
+      if (Object.keys(patch).length > 0) knobs.set(patch, true);
     });
     const dot = resetDot(def.label, () => knobs.reset(knobKeys(def)));
     const slot = def.trigger;
@@ -241,12 +269,15 @@ export function chipGrid(knobs: Knobs, defs: readonly SwitchDef[], marks?: Clima
       setAttr(chip, "aria-checked", String(on));
       cell.classList.toggle("on", on);
       setHidden(dot, !knobs.modified(knobKeys(def)));
-      // A fader's title words its amount, a plain chip's is its help; a climate mark follows.
+      // A fader's title words its amount, a plain chip's is its help; a climate mark or why it
+      // draws nothing follows.
       const mark = badge ? marked[def.key] : undefined;
       badge?.show(mark);
-      const note = mark ? ` ${mark.help}` : "";
+      const refused = on ? refusal?.(def) : undefined;
+      cell.classList.toggle("refused", refused !== undefined);
+      const note = mark ? ` ${mark.help}` : refused ? ` Not drawn: ${refused}.` : "";
       if (faded) faded.sync(note);
-      else if (badge) setAttr(chip, "title", `${def.help}${note}`);
+      else if (badge || refusal) setAttr(chip, "title", `${def.help}${note}`);
     });
 
     if (def.kind === "feature" && def.options) {

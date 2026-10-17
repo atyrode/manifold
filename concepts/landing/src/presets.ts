@@ -354,6 +354,13 @@ export const presets: readonly Preset[] = [
     query: "scene=mobile&planets=2&room=1&sun=0.7&softness=0.6",
     savedAt: "2026-10-15",
   },
+  {
+    name: "Bees · overgrown meadow",
+    commit: "PENDING",
+    query:
+      "scene=bees&grass=1&wildflowers=1&wildflowers-amount=1&flowers=1.6&grassHeight=0.3&grassDensity=0.45&overgrowth=0.15",
+    savedAt: "2026-10-17",
+  },
 ];
 
 const LOCAL_PRESETS = "landing.presets";

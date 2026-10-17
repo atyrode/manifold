@@ -1717,6 +1717,43 @@ body.lab-open .lab-opener {
   color: var(--lab-accent);
 }
 
+/* the Layers section: a composed scene's layer switches, a row per role under its eyebrow; a chip
+   switched on that draws nothing (refused) stays muted on a dashed edge, its reason under its row */
+.layer-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.layer-row {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+/* a row the search or the lens leaves empty takes no room */
+.layer-row:not(:has(> .chips > .chip-cell:not(.no-match))) {
+  display: none;
+}
+.layer-role {
+  font: 500 var(--lab-text-xs) / 1 var(--lab-mono);
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--lab-faint);
+}
+.chip-cell.refused .chip,
+.chip-cell.refused .chip .chip-icon {
+  color: var(--lab-muted);
+}
+.chip-cell.refused .chip {
+  background: var(--lab-raise);
+  border-style: dashed;
+  border-color: var(--lab-line-strong);
+}
+.layer-refusals {
+  margin: 0;
+  font: var(--lab-text-s) / 1.4 var(--lab-sans);
+  color: var(--lab-muted);
+}
+
 /* recipes: a group's one-tap setups, a glyph each */
 .recipes {
   display: flex;

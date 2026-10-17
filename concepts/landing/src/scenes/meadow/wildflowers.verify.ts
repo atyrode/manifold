@@ -1,7 +1,8 @@
-// Real-WebGL regression for the meadow's wildflowers (wildflowers.ts; run by verify-browser.ts) on
-// the actual scene shader and simulation: switched off they add nothing, compiled in or not and
-// whatever texture is bound; switched on, they stand out of the grass; the gusts bow them, and once
-// the air is still they stand exactly as clumps grown in it.
+// Real-WebGL regression for the meadow's wildflowers layer (wildflowers.ts; run by verify-browser.ts)
+// on the actual composed program and sim: switched off they are not compiled in (their layer gate
+// is 0); switched on, they stand on the ground; the gusts bow them, and once the air is still they
+// stand exactly as clumps grown in it. The grass and the dandelions are off, so the wildflowers
+// are the only layer whose data moves.
 import { visitorAlone } from "../../principals.ts";
 import {
   fragmentSourceFor,
@@ -19,6 +20,8 @@ const meadow = await loadScene("meadow");
 const W = 256;
 const H = 160;
 const AT = 20;
+/** The sim slots a composed program binds (program-cache.ts SIM_SLOTS). */
+const SLOTS = 8;
 
 function check(ok: boolean, message: string): void {
   if (!ok) throw new Error(`meadow wildflowers: ${message}`);
@@ -55,17 +58,29 @@ function changed(a: Uint8Array, b: Uint8Array): number {
 }
 
 export function verifyMeadowWildflowers(gl: WebGL2RenderingContext): Record<string, unknown> {
-  const calm: Params = { ...paramDefaults("meadow"), gusts: 0, wind: 0 };
+  const calm: Params = {
+    ...paramDefaults("meadow"),
+    grass: 0,
+    dandelions: 0,
+    gusts: 0,
+    wind: 0,
+  };
   const grown: Params = { ...calm, wildflowers: 1, "wildflowers-amount": 1 };
   const off = sceneFeatures(meadow, shaderValues(meadow, calm));
   const on = sceneFeatures(meadow, shaderValues(meadow, grown));
-  check(off.MEADOW_HAS_WILDFLOWERS === 0, "the wildflowers are compiled in while they are off");
+  check(off.LAYER_WILDFLOWERS === 0, "the wildflowers are compiled in while they are off");
+  check(on.LAYER_WILDFLOWERS === 1, "the wildflowers are not compiled in while they are on");
   const plain = program(gl, fragmentSourceFor(meadow, off));
   const gated = program(gl, fragmentSourceFor(meadow, on));
   gl.canvas.width = W;
   gl.canvas.height = H;
   gl.viewport(0, 0, W, H);
-  const draw = (linked: WebGLProgram, knobs: Params, flowers?: WebGLTexture): Uint8Array => {
+  /** A frame of `linked` with the sim's `textures` bound in their slots (uSim0..uSim7). */
+  const draw = (
+    linked: WebGLProgram,
+    knobs: Params,
+    textures: readonly (WebGLTexture | undefined)[],
+  ): Uint8Array => {
     gl.useProgram(linked);
     const u = (name: string) => gl.getUniformLocation(linked, name);
     gl.uniform2f(u("uRes"), W, H);
@@ -78,11 +93,16 @@ export function verifyMeadowWildflowers(gl: WebGL2RenderingContext): Record<stri
     gl.uniform2f(u("uWeather"), 0, 0);
     gl.uniform2f(u("uPointer"), 0, 0);
     gl.uniform1fv(u("uTriggers"), new Float32Array(8).fill(-1e4));
-    gl.uniform1i(u("uSim3"), 3);
+    gl.uniform1fv(u("uMotionTriggers"), new Float32Array(8).fill(-1e4));
     gl.uniform4fv(u("uParams"), packParams(renderSettings(defaultsFor("meadow"), knobs).params));
-    gl.activeTexture(gl.TEXTURE3);
-    gl.bindTexture(gl.TEXTURE_2D, flowers ?? null);
-    gl.uniform4f(u("uSimOn"), 0, 0, 0, flowers ? 1 : 0);
+    const bound = Array.from({ length: SLOTS }, (_, slot) => (textures[slot] ? 1 : 0));
+    for (let slot = 0; slot < SLOTS; slot++) {
+      gl.activeTexture(gl.TEXTURE0 + slot);
+      gl.bindTexture(gl.TEXTURE_2D, textures[slot] ?? null);
+      gl.uniform1i(u(`uSim${slot}`), slot);
+    }
+    gl.uniform4fv(u("uSimOn"), bound.slice(0, 4));
+    gl.uniform4fv(u("uSimOn2"), bound.slice(4, 8));
     gl.drawArrays(gl.TRIANGLES, 0, 3);
     const bytes = new Uint8Array(W * H * 4);
     gl.readPixels(0, 0, W, H, gl.RGBA, gl.UNSIGNED_BYTE, bytes);
@@ -106,26 +126,23 @@ export function verifyMeadowWildflowers(gl: WebGL2RenderingContext): Record<stri
     passage: { enter: 1, exit: 0 },
     ...visitorAlone(),
   });
+  /** Run `sim` over `seconds` from `from`; the textures of its last frame. */
   const run = (sim: SceneSim, knobs: Params, from: number, seconds: number) => {
-    let flowers: WebGLTexture | undefined;
+    let textures: readonly (WebGLTexture | undefined)[] = [];
     for (let n = 0; n <= Math.round(seconds * 60); n++)
-      flowers = sim.frame(frame(knobs, from + n / 60))[3];
-    return flowers;
+      textures = [...sim.frame(frame(knobs, from + n / 60))];
+    return textures;
   };
+  // Each sim starts with its own layer set: a layer turned on mid-scene would play its entrance.
+  const bareSim = meadow.sim?.(gl);
   const still = meadow.sim?.(gl);
   const windy = meadow.sim?.(gl);
-  if (!still || !windy) throw new Error("Meadow simulation unavailable");
+  if (!bareSim || !still || !windy) throw new Error("Meadow simulation unavailable");
   const result: Record<string, unknown> = {};
   try {
-    check(
-      run(still, calm, 0, 0) === undefined,
-      "switched off, the sim still handed over a texture",
-    );
-    const rest = run(still, grown, 0, 0);
-    check(rest !== undefined, "switched on, the sim handed over no texture");
-    const bare = draw(plain, calm);
-    check(changed(draw(gated, calm, rest), bare) === 0, "switched off, they changed the frame");
-    const shown = changed(draw(gated, grown, rest), bare);
+    const bare = draw(plain, calm, run(bareSim, calm, 0, 0));
+    const rest = draw(gated, grown, run(still, grown, 0, 0));
+    const shown = changed(rest, bare);
     check(shown >= 60, `they barely showed: ${shown} pixels`);
     result.wildflowersShown = shown;
     const gusty = { ...grown, gusts: 1, "gusts-amount": 1, gustRate: 1, wind: 0.6 };
@@ -134,16 +151,16 @@ export function verifyMeadowWildflowers(gl: WebGL2RenderingContext): Record<stri
     const swayed = changed(first, later);
     check(swayed >= 10, `the gusts barely moved them: ${swayed} pixels`);
     result.wildflowersSwayed = swayed;
-    const settled = run(windy, grown, 9, 8);
-    check(
-      changed(draw(gated, grown, settled), draw(gated, grown, rest)) === 0,
-      "they did not come back to rest once the air was still",
-    );
+    const settled = draw(gated, grown, run(windy, grown, 9, 8));
+    check(changed(settled, rest) === 0, "they did not come back to rest once the air was still");
   } finally {
+    bareSim.dispose();
     still.dispose();
     windy.dispose();
-    gl.activeTexture(gl.TEXTURE3);
-    gl.bindTexture(gl.TEXTURE_2D, null);
+    for (let slot = 0; slot < SLOTS; slot++) {
+      gl.activeTexture(gl.TEXTURE0 + slot);
+      gl.bindTexture(gl.TEXTURE_2D, null);
+    }
     gl.activeTexture(gl.TEXTURE0);
     gl.deleteProgram(plain);
     gl.deleteProgram(gated);

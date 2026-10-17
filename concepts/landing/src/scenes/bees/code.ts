@@ -1,7 +1,7 @@
-// The Bees scene's code, loaded the first time the scene is needed (SceneDef.code).
-import { beesScene } from "./index.ts";
-import { beesSim } from "./sim.ts";
+// The Bees scene's code, loaded the first time the scene is needed (SceneDef.code): assembled from the
+// code of every layer its rig offers (composer/code.ts).
+import { composedCode } from "../../composer/code.ts";
+import { OUTDOOR_CODE } from "../../composer/outdoor-code.ts";
+import { beesComposed } from "./index.ts";
 
-export { beesGlsl as glsl } from "./shader.ts";
-export const entry = "sceneBees";
-export const sim = beesSim(beesScene.params);
+export const { glsl, entry, glslFor, sim } = composedCode(beesComposed, OUTDOOR_CODE);

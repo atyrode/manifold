@@ -1044,12 +1044,14 @@ export class DitherRenderer {
     // old frame, moving on); one that fails to build, or features that cannot be worked out, stop
     // the scene as entering it would. With changes expected (`expectChanges`) the all-features
     // program is built ahead (`ScenePrograms.buildAside`), once the scene has arrived.
+    // A composed scene's layer switched off plays its exit in the program that holds it (its sim
+    // says so: SceneSim.holds), drawing the new setting, before the program without it is asked for.
     if (scene.program !== undefined && scene.failure === undefined) {
       const wanted = this.#programs.want(s);
       const next =
         "stage" in wanted
           ? wanted
-          : scene.program.key === wanted.key
+          : scene.program.key === wanted.key || scene.sim?.holds?.() === true
             ? scene.program
             : this.#programs.programSoon(scene.id, wanted);
       if (next === undefined) {
@@ -1400,6 +1402,7 @@ export class DitherRenderer {
         principals: presence.frame.principals,
         parallax: this.#pointer,
         passage,
+        features: program.key,
       }) ?? [];
 
     gl.bindFramebuffer(gl.FRAMEBUFFER, target);
@@ -1470,14 +1473,18 @@ export class DitherRenderer {
     }
     if (triggersChanged) gl.uniform1fv(u.uTriggers, draw.triggers);
     if (motionTriggersChanged) gl.uniform1fv(u.uMotionTriggers, draw.motionTriggers);
-    const simOn =
-      (simTextures[0] ? 1 : 0) |
-      (simTextures[1] ? 2 : 0) |
-      (simTextures[2] ? 4 : 0) |
-      (simTextures[3] ? 8 : 0);
+    let simOn = 0;
+    for (let slot = 0; slot < SIM_SLOTS; slot++) if (simTextures[slot]) simOn |= 1 << slot;
     if (sent.simOn !== simOn) {
       sent.simOn = simOn;
       gl.uniform4f(u.uSimOn, simOn & 1, (simOn >> 1) & 1, (simOn >> 2) & 1, (simOn >> 3) & 1);
+      gl.uniform4f(
+        u.uSimOn2,
+        (simOn >> 4) & 1,
+        (simOn >> 5) & 1,
+        (simOn >> 6) & 1,
+        (simOn >> 7) & 1,
+      );
     }
     gl.drawArrays(gl.TRIANGLES, 0, 3);
     gl.bindFramebuffer(gl.FRAMEBUFFER, null);

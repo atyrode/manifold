@@ -16,6 +16,7 @@
 //   + the dithering `main`, which calls the entry;
 //   shaken (src/shaders/shake.ts) to what `main` reaches before it reaches the driver.
 // `uv` is 0..1 with y up, `cell` is the dither cell (gl_FragCoord.xy), `t` the scene clock.
+import type { SceneLayers } from "../composer/compose.ts";
 import type { Blurb, ParamDef } from "../params.ts";
 import type { SkyPlanets } from "./planets.ts";
 
@@ -152,6 +153,11 @@ export interface SimFrame {
    * `time` or wall time should start once `enter` is above 0.
    */
   passage: Readonly<ScenePassageProgress>;
+  /**
+   * The feature key (shaders/index.ts featureKey) of the program this frame draws with: a composed
+   * scene's sim serves that program's layer set (src/composer/sim.ts). Absent outside the renderer.
+   */
+  features?: string;
 }
 
 export interface ScenePassageProgress {
@@ -160,8 +166,9 @@ export interface ScenePassageProgress {
 }
 
 /**
- * A CPU-side simulation or data source feeding the scene's shader through up to four textures,
- * bound as `uSim0`..`uSim3` (with `uSimOn.x`..`.w` set to 1 for each texture returned).
+ * A CPU-side simulation or data source feeding the scene's shader through up to SIM_SLOTS textures
+ * (program-cache.ts), bound as `uSim0`..`uSim7` (with `uSimOn.x`..`.w` and `uSimOn2.x`..`.w` set to
+ * 1 for each texture returned). A scene's own sim uses the first four; a composed scene's the eight.
  */
 export interface SceneSim {
   /** Advance and (re)upload; return the textures to bind this frame, in slot order. */
@@ -178,6 +185,11 @@ export interface SceneSim {
    * empty: they wander the middle of the frame and act wherever they stop.
    */
   interest?(aspect: number): readonly ScenePoint[];
+  /**
+   * True while the program on screen must go on drawing the new setting: a composed scene's layer,
+   * switched off, still playing its exit there (src/composer/sim.ts). Absent: never.
+   */
+  holds?(): boolean;
   /** Release GL resources; called when the lab leaves the scene. */
   dispose(): void;
 }
@@ -246,11 +258,22 @@ export interface SceneDef {
    */
   featuresFor?: (values: Readonly<Record<string, number>>) => Readonly<Record<string, number>>;
   /**
-   * Required with `featuresFor` (merged over `features`): every gate it can turn on, on, and each
-   * tier at the highest it can select. Its program must draw every setting byte for byte as that
-   * setting's own program does: the shader's runtime tests of the knobs inside the gates decide.
+   * Required with `featuresFor` unless `featuresAllFor` stands in for it (merged over `features`):
+   * every gate it can turn on, on, and each tier at the highest it can select. Its program must draw
+   * every setting byte for byte as that setting's own program does: the shader's runtime tests of
+   * the knobs inside the gates decide.
    */
   featuresAll?: Readonly<Record<string, number>>;
+  /**
+   * A composed scene's all-features set for the layer set these values (as the shader reads them)
+   * switch on (src/composer/compose.ts): every gate of those layers on. Its program draws every
+   * setting of the same layers as that setting's own does; another layer set is another program.
+   */
+  featuresAllFor?: (values: Readonly<Record<string, number>>) => Readonly<Record<string, number>>;
+  /** A composed scene's layer switches: turning one changes the layer set, so the program. */
+  structural?: readonly string[];
+  /** A composed scene's layers, for the lab's Layers section (src/composer/compose.ts). */
+  layers?: SceneLayers;
   /**
    * The planets its night sky can hang among its stars (src/scenes/planets.ts, drawn by the sky's
    * skyGiant, which the scene calls): an open list, empty to start, under one URL key, edited in the

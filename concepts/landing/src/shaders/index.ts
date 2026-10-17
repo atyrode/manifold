@@ -178,19 +178,28 @@ function keyedFeatures(
 /**
  * The compile-time features of `scene`'s all-features program: `features`, every library gate and
  * CURSORS_GATE on and `featuresAll` over them, a program that draws every setting of its knobs and
- * planets, with or without cursors, as that setting's own (`sceneFeatures`) program does.
- * Undefined for a scene whose program does not depend on its setting (`settingKeyed`); throws for
- * one with `featuresFor` but no `featuresAll`.
+ * planets, with or without cursors, as that setting's own (`sceneFeatures`) program does. A
+ * composed scene's (`featuresAllFor`) is its layer set's, for knob values as its shader reads them
+ * (default: its defaults): every setting of the same layers. Undefined for a scene whose program
+ * does not depend on its setting (`settingKeyed`); throws for one with `featuresFor` but neither
+ * `featuresAll` nor `featuresAllFor`.
  */
-export function sceneFeaturesAll(scene: SceneDef): Readonly<Record<string, number>> | undefined {
+export function sceneFeaturesAll(
+  scene: SceneDef,
+  values?: Readonly<Record<string, number>>,
+): Readonly<Record<string, number>> | undefined {
   if (!settingKeyed(scene)) return undefined;
-  if (scene.featuresFor !== undefined && scene.featuresAll === undefined)
+  if (
+    scene.featuresFor !== undefined &&
+    scene.featuresAll === undefined &&
+    scene.featuresAllFor === undefined
+  )
     throw new SceneShaderError(`scene ${scene.id}: featuresFor needs featuresAll`);
   return {
     ...scene.features,
     ...Object.fromEntries(libraryGates(scene).map(([, gate]) => [gate, 1])),
     ...(scene.planets === undefined ? {} : { [PLANETS_GATE]: 1 }),
-    ...scene.featuresAll,
+    ...(scene.featuresAllFor?.(values ?? shaderValues(scene)) ?? scene.featuresAll),
     [CURSORS_GATE]: 1,
   };
 }

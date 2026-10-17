@@ -1,8 +1,10 @@
-// The hillside's living specks: up to two hundred bees working three hives, now and then a swarm, a
+// The insects layer's sim (ADR 0062; the composer's LayerSim, src/composer/types.ts): the hillside's
+// living specks, up to two hundred bees working the apiary's three hives, now and then a swarm, a
 // handful of butterflies, bumblebees, hoverflies and dragonflies, and glow-worms in the grass after
-// dusk (fireflies too, where asked for), flying in the garden's own three-dimensional space and drawn
-// at the size and place that space projects to. This is the orchestrator: it reads the knobs and the
-// world's clock into the garden, steps every kind on one fixed step and paints them into one map.
+// dusk (fireflies too, where asked for), flying in the garden's own three-dimensional space and
+// drawn at the size and place that space projects to. This is the orchestrator: it reads the knobs
+// and the world's clock into the garden, steps every kind on one fixed step and paints them into the
+// composer's shared speck map (LayerFrame.specks, its codes BEES_CODE).
 //
 // The world (garden.ts). The garden is a ground plane seen through CAMERA (a LevelCamera,
 // sims/camera.ts): the eye BEES_CAM metres above it, its horizon at uv height BEES_YH and a focal
@@ -80,15 +82,13 @@
 // butterflies and the other insects bolt for the nearest edge. At rest none of it applies and the random
 // draws are unchanged.
 //
-// Texture:
-//   uSim0  rg8, one texel per dither cell (rows bottom to top, the shader's `cell`): R a BEES_CODE value
-//          (0 nothing), G the depth of what is drawn there in BEES_DEPTH_STEP-ths of a metre.
+// Specks: the shared speck map (LayerFrame.specks), one texel per dither cell, each code a BEES_CODE
+// value and its depth in SPECK_DEPTH_STEP-ths of a metre (BEES_DEPTH_STEP, the same quarter metre).
+// The map is cleared every frame, so every insect is painted every frame once the warm-up is done.
+import type { LayerFrame, LayerSim } from "../../composer/types.ts";
 import { KnobReader, type ParamDef } from "../../params.ts";
 import { FixedStep, runBudgeted } from "../../sims/clock.ts";
 import { clamp, smoothstep } from "../../sims/math.ts";
-import { SpeckMap } from "../../sims/specks.ts";
-import { DataTexture } from "../../sims/texture.ts";
-import type { SceneSim, SimFactory, SimFrame } from "../types.ts";
 import { BEES_MAX_BUMBLEBEES, Bumblebees } from "./bumblebees.ts";
 import { BEES_MAX_BUTTERFLIES, Butterflies } from "./butterflies.ts";
 import { BEES_MAX_BEES, Colony } from "./colony.ts";
@@ -109,7 +109,7 @@ import { beesStage } from "./layout.ts";
 import { Painter } from "./paint.ts";
 import { Swarm } from "./swarm.ts";
 
-/** The codes of uSim0's red channel, which this sim writes. */
+/** The codes of the speck map this sim writes. */
 export { BEES_CODE } from "./layout.ts";
 
 const MAX_STEPS = 6;
@@ -135,16 +135,13 @@ type BeesKnob =
   | "cycle"
   | WeatherKnob;
 
-class BeesSim implements SceneSim {
+class InsectsSim implements LayerSim {
   readonly #knobs: KnobReader<BeesKnob>;
   /** The weather knobs the scene has (the rest read 0). */
   readonly #weather: readonly WeatherKnob[];
   readonly #swarmSlot: number;
-  readonly #texture: DataTexture;
-  readonly #textures: readonly (WebGLTexture | undefined)[];
   readonly #clock = new FixedStep(STEP, MAX_STEPS);
-  readonly #specks = new SpeckMap();
-  readonly #painter = new Painter(this.#specks);
+  #painter: Painter | undefined;
   readonly #garden = new Garden();
   readonly #colony = new Colony(this.#garden);
   readonly #butterflies = new Butterflies(this.#garden);
@@ -170,12 +167,14 @@ class BeesSim implements SceneSim {
   #warmed = 0;
   /** The opening frame has been taken: the world read as the page opens, every kind seeded. */
   #seeded = false;
-  #dirty = true;
   #born = false;
+  /** The frame's size in cells the fliers were placed for. */
+  #width = 0;
+  #height = 0;
 
-  constructor(gl: WebGL2RenderingContext, params: readonly ParamDef[]) {
+  constructor(params: readonly ParamDef[]) {
     this.#weather = WEATHER_KNOBS.filter((key) => params.some((def) => def.key === key));
-    this.#knobs = new KnobReader<BeesKnob>("bees", params, [
+    this.#knobs = new KnobReader<BeesKnob>("insects", params, [
       "bees",
       "silly",
       "butterflies",
@@ -191,12 +190,9 @@ class BeesSim implements SceneSim {
       ...this.#weather,
     ]);
     this.#swarmSlot = this.#knobs.trigger("swarm");
-    this.#texture = new DataTexture(gl, { width: 1, height: 1, format: "rg8", filter: "nearest" });
-    this.#specks.resize(1, 1);
-    this.#textures = [this.#texture.texture];
   }
 
-  frame(frame: SimFrame): readonly (WebGLTexture | undefined)[] {
+  frame(frame: LayerFrame): void {
     const knobs = this.#knobs;
     const garden = this.#garden;
     const count = (key: BeesKnob, most: number): number =>
@@ -218,15 +214,14 @@ class BeesSim implements SceneSim {
     garden.setFlowers(Math.max(0, knobs.value(frame, "flowers")));
     const width = Math.max(1, Math.round(frame.width));
     const height = Math.max(1, Math.round(frame.height));
-    if (width !== this.#specks.width || height !== this.#specks.height) {
-      this.#specks.resize(width, height);
-      this.#texture.resize(width, height);
+    if (width !== this.#width || height !== this.#height) {
+      this.#width = width;
+      this.#height = height;
       for (const list of this.#fliers)
         for (const thing of list) {
           thing.cx = Number.NaN;
           thing.cy = Number.NaN;
         }
-      this.#dirty = true;
     }
     garden.aspect = frame.aspect > 0 ? frame.aspect : width / height;
     this.#setStage(beesStage(garden.aspect));
@@ -261,15 +256,8 @@ class BeesSim implements SceneSim {
         this.#warmed,
         WARM_CHUNK,
       );
-      if (this.#warmed < WARM_STEPS) {
-        // Nothing drawn until the garden is at work: the map stays empty.
-        if (this.#dirty) {
-          this.#specks.upload(this.#texture);
-          this.#dirty = false;
-        }
-        return this.#textures;
-      }
-      this.#dirty = true;
+      // Nothing drawn until the garden is at work.
+      if (this.#warmed < WARM_STEPS) return;
     }
     const steps = this.#clock.advance(advance);
     for (let i = 0; i < steps; i++) {
@@ -277,21 +265,15 @@ class BeesSim implements SceneSim {
       garden.skyAt(this.#clock.lag(i));
       this.#step(STEP, true);
     }
-    // Drawn between the last two steps, so every frame that moves the clock repaints.
-    if (advance > 0 || this.#dirty) {
-      this.#paint(this.#clock.alpha);
-      // Only the tiles whose cells changed go up (the whole map after a resize): a few KB a frame.
-      this.#specks.upload(this.#texture);
-      this.#dirty = false;
-    }
-    return this.#textures;
+    // Drawn between the last two steps, every frame: the composer clears the map before each.
+    const painter = (this.#painter ??= new Painter(frame.specks));
+    painter.specks = frame.specks;
+    this.#paint(painter, this.#clock.alpha);
   }
 
-  dispose(): void {
-    this.#texture.dispose();
-  }
+  dispose(): void {}
 
-  #weatherKnob(frame: SimFrame, key: WeatherKnob): number {
+  #weatherKnob(frame: LayerFrame, key: WeatherKnob): number {
     return this.#weather.includes(key) ? this.#knobs.value(frame, key) : 0;
   }
 
@@ -331,7 +313,7 @@ class BeesSim implements SceneSim {
   }
 
   /** Where the scene stands in its entrance and exit: how hurried the traffic is, and the moment the exit begins. */
-  #passage(frame: SimFrame): void {
+  #passage(frame: LayerFrame): void {
     const garden = this.#garden;
     const enter = clamp(frame.passage.enter, 0, 1);
     const leave = clamp(frame.passage.exit, 0, 1);
@@ -372,10 +354,8 @@ class BeesSim implements SceneSim {
     if (live) this.#swarm.tend(dt);
   }
 
-  /** Every insect into the cell map, `alpha` of the way from where it was a step ago to where it is. */
-  #paint(alpha: number): void {
-    const p = this.#painter;
-    this.#specks.clear();
+  /** Every insect into the speck map, `alpha` of the way from where it was a step ago to where it is. */
+  #paint(p: Painter, alpha: number): void {
     this.#colony.paint(p, alpha);
     this.#butterflies.paint(p, alpha);
     this.#bumblebees.paint(p, alpha);
@@ -387,7 +367,7 @@ class BeesSim implements SceneSim {
   }
 }
 
-/** The colony's simulation, for a scene whose `params` carry the knobs BeesKnob names (rain, snow and wind where it has them). */
-export function beesSim(params: readonly ParamDef[]): SimFactory {
-  return (gl) => new BeesSim(gl, params);
+/** The insects' sim, for a composition whose `params` carry the knobs BeesKnob names (rain, snow and wind where it has them). */
+export function insectsSim(_gl: WebGL2RenderingContext, params: readonly ParamDef[]): LayerSim {
+  return new InsectsSim(params);
 }

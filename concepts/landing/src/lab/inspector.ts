@@ -6,16 +6,19 @@
 // or opens them all. A group's knobs are laid out by their metadata: the sky dial, mix bars and
 // pads where a knob names one (`ParamDef.widget`), its switches as icon chips, everything else as
 // rows; a scene's planets (SceneDef.planets) stand in their group's Night sky section, and the lens,
-// a group's reset and its dice take the list as one more of that group's knobs. A control that hangs
-// on a switch (`when`, to any depth; a global setting's on another setting) is a gate (dom.ts): after
-// every sync this view alone decides which controls and groups show, from one availability model
+// a group's reset and its dice take the list as one more of that group's knobs. A composed scene's
+// layer switches make its Layers section (layers.ts), and each layer's groups (Blurb.layer) stand
+// after it in role order, shown while the layer is switched on. A control that hangs on a switch
+// (`when`, to any depth; a global setting's on another setting) is a gate (dom.ts): after every
+// sync this view alone decides which controls and groups show, from one availability model
 // (availability-model.ts) that the lens, the search, the folds and the summaries share. A change the
 // lens counts behind a switch that is off shows dormant, dimmed beside that switch, never folded
 // away; folded groups and closed controls leave the tab order (inert). The compact bar (menu.ts)
 // shows the same view and sections: its Find chip borrows the whole view (search, lens and rail,
-// narrowing as in the panel), and a section's chip one section at a time (`lend`), which shows open
-// and whole, nothing narrowing it, until given back; so both presentations share these controls and
-// their syncs. Under a search, "Reset what changed" restores only the changes the search shows.
+// narrowing as in the panel), and a section's chip its section (a layer's chip all of its layer's
+// sections: `lend`), which shows open and whole, nothing narrowing it, until given back; so both
+// presentations share these controls and their syncs. Under a search, "Reset what changed"
+// restores only the changes the search shows.
 import { formatValue, MAX_SEED, type Option, type ParamDef } from "../params.ts";
 import { colorIds, ditherIds, viewIds } from "../renderer.ts";
 import { sceneDefs, type SceneId } from "../scenes/index.ts";
@@ -70,6 +73,8 @@ import {
   type SwitchDef,
 } from "./knobs.ts";
 import { changedCounts, changedKnobs, changedSettings, type LensGroup } from "./lens-model.ts";
+import { layersSection } from "./layers.ts";
+import { layerGroupOrder } from "./layers-model.ts";
 import { mixBar } from "./mix.ts";
 import type { MixPart } from "./mix-model.ts";
 import { compassPad, directionPad, positionPad, type Strength } from "./pads.ts";
@@ -163,6 +168,19 @@ const options = (list: readonly Option[]) =>
 /** Where a section stands in the Controls order: on the World shelf, the scene's own, or Global. */
 export type Shelf = "world" | "scene" | "global";
 
+/**
+ * The layer of a composed scene a section belongs to (Blurb.layer): the panel shows its sections
+ * while it is switched on, and the compact bar gives them one chip, its own.
+ */
+export interface MenuLayer {
+  id: string;
+  /** Its chip's id: unique among the sections'. */
+  key: string;
+  title: string;
+  icon: IconName;
+  on(): boolean;
+}
+
 /** A section as the compact bar shows it: a chip, which opens the section itself (`lend`). */
 export interface MenuSection {
   id: string;
@@ -171,6 +189,7 @@ export interface MenuSection {
   shelf: Shelf;
   /** Its master switch, on or off; undefined without one. */
   on(): boolean | undefined;
+  layer?: MenuLayer;
 }
 
 interface Section extends MenuSection {
@@ -227,8 +246,8 @@ export class Inspector {
   #counts: ReadonlyMap<string, number> = new Map();
   /** Every section in the Controls order; a new list each time the scene's are built. */
   #menu: readonly Section[] = [];
-  /** The section the compact bar has borrowed, and how to put it back where it stood. */
-  #lent: { section: Section; back: () => void } | undefined;
+  /** The sections the compact bar has borrowed, and how to put each back where it stood. */
+  #lent: { sections: readonly Section[]; back: readonly (() => void)[] } | undefined;
   /** A sync left the controls as they were (off screen): they catch up as they come back. */
   #stale = false;
 
@@ -338,27 +357,27 @@ export class Inspector {
   }
 
   /**
-   * Lend section `id` to the compact bar's popover (menu.ts), giving back any other first: its own
-   * element, taken from where it stands, open whatever its fold, its toggle a plain heading, until
-   * `giveBack`; it catches up on the syncs the controls missed off screen. Undefined for no such
-   * section.
+   * Lend sections `ids` to the compact bar's popover (menu.ts), giving back any others first: their
+   * own elements, in order, taken from where they stand, open whatever their fold, their toggles
+   * plain headings, until `giveBack`; they catch up on the syncs the controls missed off screen.
+   * Empty for no such sections.
    */
-  lend(id: string): HTMLElement | undefined {
+  lend(ids: readonly string[]): HTMLElement[] {
     this.giveBack();
-    const section = this.#menu.find((candidate) => candidate.id === id);
-    if (!section) return undefined;
-    this.#lent = { section, back: borrow(section.el) };
+    const sections = ids.flatMap((id) => this.#menu.filter((candidate) => candidate.id === id));
+    if (sections.length === 0) return [];
+    this.#lent = { sections, back: sections.map((section) => borrow(section.el)) };
     if (this.#stale) this.sync();
     else this.#narrow();
-    return section.el;
+    return sections.map((section) => section.el);
   }
 
-  /** Put the lent section back where it stood, folded or open as before. */
+  /** Put the lent sections back where they stood, folded or open as before. */
   giveBack(): void {
     const lent = this.#lent;
     if (!lent) return;
     this.#lent = undefined;
-    lent.back();
+    for (const back of lent.back) back();
     this.#narrow();
   }
 
@@ -448,6 +467,7 @@ export class Inspector {
     reset?: () => void;
     /** Shuffle the group's knobs: a dice beside the reset. */
     roll?: () => void;
+    layer?: MenuLayer;
   }): Section {
     const isOpen = () => this.#prefs.sections[spec.id] ?? spec.open;
     const bodyId = `group-${spec.id.replace(/[^a-z0-9]+/gi, "-")}`;
@@ -521,6 +541,7 @@ export class Inspector {
       icon: spec.icon,
       shelf: spec.shelf,
       on: () => spec.masterOn?.(),
+      ...(spec.layer === undefined ? {} : { layer: spec.layer }),
       el,
       toggle,
       open: () => {
@@ -530,7 +551,7 @@ export class Inspector {
       sync: (searching) => {
         // Lent to the compact bar, it shows open, its toggle a plain heading that folds nothing;
         // the popover's own heading (popover.ts) names it to assistive technology instead.
-        const lent = this.#lent?.section.id === spec.id;
+        const lent = this.#lent?.sections.some((section) => section.id === spec.id) === true;
         const open = isOpen() || searching || lent;
         // Folded, the body leaves the tab order; the focus it held goes to the header.
         setOpen(body, open, toggle);
@@ -609,7 +630,9 @@ export class Inspector {
       const narrowed = narrow(narrowItems, lensGates, titleHit, query);
       items.forEach((item, at) => item.classList.toggle("no-match", narrowed.found[at] !== true));
       gates.forEach((gate, at) => showGate(gate, narrowed.gates[at] ?? "closed", section.toggle));
-      const visible = groupShows(narrowed.shown, titleHit, query);
+      // A layer's sections show while it is switched on, unless the search or the lens finds them.
+      const visible =
+        groupShows(narrowed.shown, titleHit, query) && (filtering || section.layer?.on() !== false);
       setHidden(el, !visible);
       el.classList.toggle("searching", filtering && visible);
       section.sync(filtering && visible);
@@ -676,7 +699,26 @@ export class Inspector {
       })),
       ...SETTING_GROUPS,
     ];
-    const { world, own } = shelves(sceneDefs[scene]);
+    const { world, own: sceneOwn } = shelves(sceneDefs[scene]);
+    // A composed scene's layers: their sections after the scene's other groups, in role order.
+    const layers = sceneDefs[scene].layers;
+    const layerOf = (group: string) => sceneDefs[scene].groups[group]?.layer;
+    const own = layers ? layerGroupOrder(sceneOwn, layerOf, layers) : sceneOwn;
+    const menuLayers = new Map(
+      (layers?.offered ?? []).map((layer): [string, MenuLayer] => {
+        const def = knobs.def(layer.id);
+        return [
+          layer.id,
+          {
+            id: layer.id,
+            key: `${scene}:layer:${layer.id}`,
+            title: layer.title,
+            icon: def ? knobIcon(def) : "layers",
+            on: () => knobs.on(layer.id),
+          },
+        ];
+      }),
+    );
     const section = (shelf: Shelf) => (group: string) =>
       this.#sceneGroup(
         scene,
@@ -685,13 +727,15 @@ export class Inspector {
         groups.get(group) ?? [],
         group === defs[0]?.group,
         shelf,
+        menuLayers.get(layerOf(group) ?? ""),
       );
     const worldSections = world.filter((group) => groups.has(group)).map(section("world"));
     const ownSections = own.filter((group) => groups.has(group)).map(section("scene"));
     this.#sceneSections = [...worldSections, ...ownSections];
     this.#menu = [...this.#sceneSections, ...this.#globalSections];
     // A lent section of the scene left is gone with it: the bar closes its popover (menu.ts).
-    if (this.#lent && !this.#globalSections.includes(this.#lent.section)) this.#lent = undefined;
+    if (this.#lent?.sections.some((lent) => !this.#globalSections.includes(lent)) === true)
+      this.#lent = undefined;
     this.#worldDivider.el.hidden = worldSections.length === 0;
     this.#worldSlot.replaceChildren(...worldSections.map((section) => section.el));
     this.#sceneDivider.replaceChildren(h("span", {}, sceneDefs[scene].title));
@@ -719,6 +763,7 @@ export class Inspector {
     defs: readonly ParamDef[],
     open: boolean,
     shelf: Shelf,
+    layer: MenuLayer | undefined,
   ): Section {
     const info = sceneDefs[scene].groups[group] ?? { title: group, blurb: "" };
     const master = this.#masterOf(defs);
@@ -790,6 +835,18 @@ export class Inspector {
         }),
       );
       for (const part of night) used.add(part.def);
+    }
+
+    // The Layers section, at its first switch: a composed scene's layer switches, by role.
+    const layers = sceneDefs[scene].layers;
+    const layerSwitches = defs.filter(
+      (def): def is SwitchDef =>
+        (def.kind === "toggle" || def.kind === "feature") && def.widget?.kind === "layer",
+    );
+    const firstLayer = layerSwitches[0];
+    if (layers && firstLayer) {
+      place(firstLayer, holding(layersSection(knobs, layers, layerSwitches), layerSwitches));
+      for (const def of layerSwitches) used.add(def);
     }
 
     // Pads: a compass's heading and strength, a position's two coordinates, a signed direction.
@@ -872,7 +929,7 @@ export class Inspector {
     );
     // Where the season sets the climate, its marks on the rain's and snow's chips and the recipes.
     const marks = climateMarks(sceneDefs[scene].params);
-    const chips = switches.length > 0 ? chipGrid(knobs, switches, marks) : undefined;
+    const chips = switches.length > 0 ? chipGrid(knobs, switches, { marks }) : undefined;
     for (const def of defs)
       if (!used.has(def) && def.kind !== "toggle" && def.kind !== "feature")
         place(def, this.#knobRow(knobs, def));
@@ -976,6 +1033,7 @@ export class Inspector {
               ),
           }
         : {}),
+      ...(layer === undefined ? {} : { layer }),
     });
   }
 

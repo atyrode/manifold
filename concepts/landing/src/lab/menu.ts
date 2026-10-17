@@ -1,10 +1,12 @@
 // The lab's compact presentation (lab.ts): its whole menu laid flat along a bar. The Find chip
 // opens the Controls view itself (its search, lens and rail, narrowing as in the panel), the scene's
 // chip the Scenes view and the Presets chip the presets; then a chip per Controls section, in the
-// Controls order (the World shelf, the scene's groups, Global), opens that section. Each opens in a
-// popover holding the panel's own element, lent while it is open (dom.ts `borrow`, inspector.ts
-// `lend`), so both presentations share one set of controls and one set of syncs. A section's chip
-// is lit while the section differs from its defaults, as the lens counts it, and shows its master
+// Controls order (the World shelf, the scene's groups, Global), opens that section. A composed
+// scene's layer gathers its sections (MenuSection.layer) under one chip of its own, its icon and
+// title, shown while it is switched on, after its Layers section's chip. Each opens in a popover
+// holding the panel's own elements, lent while it is open (dom.ts `borrow`, inspector.ts `lend`),
+// so both presentations share one set of controls and one set of syncs. A chip is lit while its
+// sections differ from their defaults, as the lens counts them, and a section's shows its master
 // switch on or off (menu-model.ts). The chips keep their titles while they all fit, go icon-only
 // together when they do not, and then scroll: every section stays one press away, in one order,
 // never folded behind another popover. The chips are one tab stop (the arrow keys, Home and End
@@ -12,7 +14,7 @@
 import { iconButton } from "./controls.ts";
 import { borrow, h, setAttr, setStyle, setText, type Child } from "./dom.ts";
 import { icon, type IconName } from "./icons.ts";
-import type { Inspector, MenuSection, Shelf } from "./inspector.ts";
+import type { Inspector, MenuLayer, MenuSection, Shelf } from "./inspector.ts";
 import { chipState, chipStep, fitChips, stripRoom } from "./menu-model.ts";
 import { Popover } from "./popover.ts";
 
@@ -28,8 +30,13 @@ export interface MenuView {
   focus?: () => void;
 }
 
+/** A chip of the strip: a section's, or a layer's, which lends all its sections. */
 interface Entry {
-  section: MenuSection;
+  title: string;
+  /** The sections its popover lends, in order. */
+  parts: readonly MenuSection[];
+  /** The layer it stands for, shown while switched on. */
+  layer: MenuLayer | undefined;
   chip: HTMLButtonElement;
   popover: Popover;
 }
@@ -177,19 +184,30 @@ export class MenuBar {
 
   /**
    * Reflect the setup into the chips (the sections' again once the scene's are rebuilt): a sync
-   * that changes nothing writes nothing.
+   * that changes nothing writes nothing. A layer's chip shows while it is switched on; switched
+   * off, its popover closes, and the chips fit again.
    */
   sync(): void {
     const menu = this.#inspector.menu;
     if (menu !== this.#menu) this.#rebuild(menu);
-    for (const { section, chip } of this.#entries.values()) {
-      const state = chipState(section.title, this.#inspector.changes(section.id), section.on());
+    let shown = false;
+    for (const { title, parts, layer, chip, popover } of this.#entries.values()) {
+      const changed = parts.reduce((sum, part) => sum + this.#inspector.changes(part.id), 0);
+      const state = chipState(title, changed, layer ? undefined : parts[0]?.on());
       chip.classList.toggle("lit", state.lit);
       if (state.switched) setAttr(chip, "data-switch", state.switched);
       else if (chip.hasAttribute("data-switch")) chip.removeAttribute("data-switch");
       setAttr(chip, "title", state.label);
       setAttr(chip, "aria-label", state.label);
+      if (layer === undefined || chip.hidden !== layer.on()) continue;
+      chip.hidden = !layer.on();
+      if (chip.hidden && popover.open) popover.toggle(false);
+      shown = true;
     }
+    if (!shown) return;
+    if (!this.#chipList().some((chip) => chip.tabIndex === 0)) this.#rove(this.#scene);
+    this.#widths = undefined;
+    this.#askFit();
   }
 
   /** Whether view `id` is on screen, lent to its popover. */
@@ -226,37 +244,46 @@ export class MenuBar {
     return popover;
   }
 
-  /** A section's chip, which opens the section itself, lent by the inspector while it is open. */
-  #entry(section: MenuSection): Entry {
+  /**
+   * A chip for `parts`, which opens them, lent by the inspector while it is open: a section's, or
+   * a layer's (its title and icon, its sections).
+   */
+  #entry(id: string, parts: readonly MenuSection[], layer: MenuLayer | undefined): Entry {
+    const head = layer ?? parts[0];
+    const title = head?.title ?? id;
+    const name = head?.icon ?? "sliders";
     const chip = chipButton(
-      section.icon,
-      section.title,
+      name,
+      title,
       h("span", { class: "menu-switch", "aria-hidden": "true" }),
     );
-    chip.dataset.id = section.id;
+    chip.dataset.id = id;
+    if (layer) chip.hidden = !layer.on();
     const popover: Popover = new Popover(this.#layer, {
-      id: `menu-${section.id}`,
-      title: section.title,
-      icon: section.icon,
+      id: `menu-${id}`,
+      title,
+      icon: name,
       button: chip,
       bare: true,
+      // The sections as the latest rebuild has them.
       open: () => {
-        const el = this.#inspector.lend(section.id);
-        if (el) popover.el.append(el);
+        const lent = (this.#entries.get(id)?.parts ?? parts).map((part) => part.id);
+        popover.el.append(...this.#inspector.lend(lent));
       },
       close: () => this.#inspector.giveBack(),
       focus: () => popover.el.focus(),
     });
-    return { section, chip, popover };
+    return { title, parts, layer, chip, popover };
   }
 
   /**
-   * Chips for the sections of `menu`: the scene left's go (their popover closed), the new scene's
-   * come, Global's stay where they are (an open one stays open). Then they fit again.
+   * Chips for the sections of `menu`, a layer's sections under one chip: the scene left's go
+   * (their popover closed), the new scene's come, Global's stay where they are (an open one stays
+   * open). Then they fit again.
    */
   #rebuild(menu: readonly MenuSection[]): void {
     this.#menu = menu;
-    const ids = new Set(menu.map((section) => section.id));
+    const ids = new Set(menu.map((section) => section.layer?.key ?? section.id));
     let held = false;
     for (const [id, entry] of this.#entries) {
       if (ids.has(id)) continue;
@@ -266,13 +293,15 @@ export class MenuBar {
       this.#entries.delete(id);
     }
     const chips = (shelf: Shelf) =>
-      menu
-        .filter((section) => section.shelf === shelf)
-        .map((section) => {
-          const entry = this.#entries.get(section.id) ?? this.#entry(section);
-          this.#entries.set(section.id, entry);
-          return entry.chip;
-        });
+      [...ids].flatMap((id) => {
+        const parts = menu.filter((section) => (section.layer?.key ?? section.id) === id);
+        const first = parts[0];
+        if (first?.shelf !== shelf) return [];
+        const entry = this.#entries.get(id) ?? this.#entry(id, parts, first.layer);
+        entry.parts = parts;
+        this.#entries.set(id, entry);
+        return [entry.chip];
+      });
     const world = chips("world");
     const own = chips("scene");
     this.#sections.replaceChildren(
@@ -290,13 +319,15 @@ export class MenuBar {
     this.#askFit();
   }
 
+  /** The chips on show, in order. */
   #chipList(): HTMLButtonElement[] {
-    return [...this.#chips.querySelectorAll<HTMLButtonElement>(".menu-chip")];
+    return [...this.#chips.querySelectorAll<HTMLButtonElement>(".menu-chip:not([hidden])")];
   }
 
   /** Put chip `to` alone in the tab order. */
   #rove(to: HTMLButtonElement): void {
-    for (const chip of this.#chipList()) setAttr(chip, "tabindex", chip === to ? "0" : "-1");
+    for (const chip of this.#chips.querySelectorAll<HTMLButtonElement>(".menu-chip"))
+      setAttr(chip, "tabindex", chip === to ? "0" : "-1");
   }
 
   #askFit(): void {

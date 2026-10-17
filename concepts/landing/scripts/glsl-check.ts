@@ -1,14 +1,17 @@
 // bun concepts/landing/scripts/glsl-check.ts [scene...]
 //
 // Whether every scene's fragment program compiles, links and fits WebGL 2's uniform minimum: its
-// default program and, for a setting-keyed scene, its all-features program, each as the renderer
-// builds it (shaders/index.ts fragmentSourceFor: shaken), compiled and linked with the shared vertex
-// shader by Khronos's reference compiler, glslangValidator, as GLSL ES 3.00. Its fragment uniform
-// vectors are counted from glslang's reflection of the uniforms the program uses: an element of up
-// to four components takes a row, a matrix a row per column, and samplers take texture units, not
-// rows. WebGL 2 guarantees MAX_FRAGMENT_UNIFORM_VECTORS of 224 and no more, and a driver may give
-// every element a row of its own, so a program counted over 224 fails here. A line per program goes
-// to stdout; the run exits 1 when a program fails to build or is over, 2 on a bad argument.
+// default program and, for a setting-keyed scene, its all-features program; for a composed scene
+// also the all-features program of each of its layers turned, and for every scene its committed
+// presets' programs (README "Programs and cost": every preset and committed mix, every layer over
+// its preset's own); each as the renderer builds it (shaders/index.ts fragmentSourceFor: shaken),
+// compiled and linked with the shared vertex shader by Khronos's reference compiler,
+// glslangValidator, as GLSL ES 3.00. Its fragment uniform vectors are counted from glslang's
+// reflection of the uniforms the program uses: an element of up to four components takes a row, a
+// matrix a row per column, and samplers take texture units, not rows. WebGL 2 guarantees
+// MAX_FRAGMENT_UNIFORM_VECTORS of 224 and no more, and a driver may give every element a row of its
+// own, so a program counted over 224 fails here. A line per program goes to stdout; the run exits 1
+// when a program fails to build or is over, 2 on a bad argument.
 //
 // glslangValidator is the system's: nixpkgs `glslang` on a dev box, apt `glslang-tools` in CI, or
 // the binary GLSLANG_VALIDATOR names. Without one the check is skipped (exit 0), except under CI
@@ -16,11 +19,14 @@
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { availableParallelism, tmpdir } from "node:os";
 import { join } from "node:path";
+import { readKnobs } from "../src/params.ts";
+import { presets } from "../src/presets.ts";
 import { loadScene, sceneIds, type SceneId } from "../src/scenes/index.ts";
 import {
   fragmentSourceFor,
   sceneFeatures,
   sceneFeaturesAll,
+  shaderValues,
   vertexSource,
 } from "../src/shaders/index.ts";
 
@@ -79,10 +85,15 @@ if (validator === null) {
   process.exit(0);
 }
 
-/** A program to check: a scene's default or all-features fragment program. */
+/**
+ * A program to check: a scene's default or all-features fragment program; for a composed scene
+ * (SceneDef.layers) also the all-features program of each layer turned (switched on, or off where
+ * it is one of the preset's own; a backdrop or ground swapped for the one of its role), and the
+ * default and all-features programs of each committed preset of the scene (src/presets.ts).
+ */
 interface Program {
   id: SceneId;
-  kind: "default" | "all-features";
+  kind: string;
   source: string;
 }
 
@@ -90,13 +101,49 @@ const ids = asked.length > 0 ? (asked as SceneId[]) : sceneIds;
 const programs: Program[] = (
   await Promise.all(ids.map(async (id) => ({ id, scene: await loadScene(id) })))
 ).flatMap(({ id, scene }) => {
-  const all = sceneFeaturesAll(scene);
-  return [
-    { id, kind: "default" as const, source: fragmentSourceFor(scene, sceneFeatures(scene)) },
-    ...(all === undefined
-      ? []
-      : [{ id, kind: "all-features" as const, source: fragmentSourceFor(scene, all) }]),
+  const out: Program[] = [
+    { id, kind: "default", source: fragmentSourceFor(scene, sceneFeatures(scene)) },
   ];
+  const all = sceneFeaturesAll(scene);
+  if (all !== undefined)
+    out.push({ id, kind: "all-features", source: fragmentSourceFor(scene, all) });
+  const layers = scene.layers;
+  if (layers !== undefined)
+    for (const layer of layers.offered) {
+      const home = layers.home.includes(layer.id);
+      const knobs: Record<string, number> = { [layer.id]: home ? 0 : 1 };
+      if (!home && (layer.role === "backdrop" || layer.role === "ground"))
+        for (const other of layers.offered)
+          if (other.role === layer.role && other.id !== layer.id) knobs[other.id] = 0;
+      const features = sceneFeaturesAll(scene, shaderValues(scene, knobs));
+      if (features !== undefined)
+        out.push({
+          id,
+          kind: `all-features, ${layer.id} ${home ? "off" : "on"}`,
+          source: fragmentSourceFor(scene, features),
+        });
+    }
+  for (const preset of presets) {
+    const query = new URLSearchParams(preset.query);
+    if (query.get("scene") !== id) continue;
+    const values = shaderValues(
+      scene,
+      readKnobs(scene.params, (key) => query.get(key)),
+    );
+    out.push({
+      id,
+      kind: `"${preset.name}"`,
+      source: fragmentSourceFor(scene, sceneFeatures(scene, values)),
+    });
+    const allOf = sceneFeaturesAll(scene, values);
+    if (allOf !== undefined)
+      out.push({
+        id,
+        kind: `"${preset.name}" all-features`,
+        source: fragmentSourceFor(scene, allOf),
+      });
+  }
+  return out;
 });
 
 /**
@@ -140,7 +187,7 @@ try {
   await writeFile(vertex, vertexSource);
   const check = async (program: Program): Promise<string> => {
     const name = `${program.id} ${program.kind}`;
-    const fragment = join(dir, `${program.id}.${program.kind}.frag`);
+    const fragment = join(dir, `${program.id}.${programs.indexOf(program)}.frag`);
     await writeFile(fragment, program.source);
     const run = Bun.spawn([validator, "-l", "-q", fragment, vertex], {
       stdout: "pipe",
