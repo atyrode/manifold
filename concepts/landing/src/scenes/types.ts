@@ -147,8 +147,6 @@ export interface SceneDef {
   blurb: string;
   /** Lab dot and the default accent colour for the 'accent' palette. */
   accent: string;
-  /** Attribution shown on the page, if the scene is after an existing work. */
-  credit?: string;
   look?: SceneLook;
   /** Knobs, in uParams order. At most MAX_PARAMS. */
   params: readonly ParamDef[];

@@ -352,35 +352,58 @@ header: Scenes (every scene's thumbnail, shelved by family), Presets (saved setu
 scene's groups, then Look, Motion and Page); a rail beside each view jumps between its families,
 preset groups or control groups. The scene's name in the header opens the Scenes view, and the
 header's last icons minimise the lab to the bar and hide it. The Scenes and Presets views follow the
-setup only while on screen, and the Controls view only while the open lab shows it or lends one of
-its sections to the bar (below); otherwise it keeps only the lens's counts, which light the bar's
-chips, and catches up as it comes back.
+setup only while on screen, and the Controls view only while the open lab shows it (in the panel
+or the bar's Find popover) or lends one of its sections to the bar (below); otherwise it keeps only
+the lens's counts, which light the bar's chips, and catches up as it comes back.
 
-The compact bar (`src/lab/menu.ts`, rules in `menu-model.ts`) is the same menu laid flat: the scene's
-chip (its dot and name) opens the Scenes view, a Presets chip the presets, then one chip per
-Controls section in the Controls order (the World shelf, the scene's groups, Global), its icon and
-title as the rail and the headings pick them. A chip is lit while its section differs from its
-defaults, as the lens counts it, and a section with a master switch shows it on or off. A chip
-opens a popover (`src/lab/popover.ts`) holding the panel's own element, lent while it is open
-(`Inspector.lend`, `borrow` in `src/lab/dom.ts`), never a copy: one set of controls, one set of
-syncs. A section shows open and whole there, under its own heading with its recipes and dice (the
-search and the lens wait while the lab is compact), in a popover as wide as the inspector, at most
-most of the screen tall and scrolling; on a narrow screen a popover is a sheet the full width of the
-screen, standing on the bar. While the chips do not all fit with their titles they go icon-only
-together, the title their tooltip and name, and then the strip scrolls (a wheel over it too): every
-section stays one press away, in one order, where a "more" chip would hide the rest behind a
-popover of popovers. The fit is measured, never decided by scene. The chips are one tab stop (the
-arrow keys, Home and End move along them); Escape closes a popover and hands the keyboard back to
-its chip, and a popover's controls are in the tab order only while it is open, after the bar or
-panel its button stands on. The bar docks top or bottom or floats like any panel, and "expand"
-takes the lab back to the panel.
+The Global groups are the one home of the page-wide settings. Look holds everything that decides
+how the picture reaches the screen: the view, the dither pattern, the colour, the accent (its value
+the readout), the tones, the cell size (in halves of a CSS pixel: the display draws a cell in whole
+device pixels, so a half tells on a high-density screen) and the dim and blur behind the page (in
+hundredths). Motion holds the amount of motion (in hundredths), following the mouse and the scene
+transitions with their replay and tuning. Page holds the page on top and the private instance's
+name. Pausing the clock is the tools' play button (`p`) alone.
+
+The compact bar (`src/lab/menu.ts`, rules in `menu-model.ts`) is the same menu laid flat: the Find
+chip (a magnifier at its head) opens the whole Controls view, its search, lens and rail, in a
+popover with the keyboard in its search; the scene's chip (its dot and name) opens the Scenes view,
+a Presets chip the presets, then one chip per Controls section in the Controls order (the World
+shelf, the scene's groups, Global), its icon and title as the rail and the headings pick them. A
+chip is lit while its section differs from its defaults, as the lens counts it, and a section with
+a master switch shows it on or off. A chip opens a popover (`src/lab/popover.ts`) holding the
+panel's own element, lent while it is open (`Inspector.lend`, `borrow` in `src/lab/dom.ts`), never
+a copy: one set of controls, one set of syncs. A section shows open and whole there, under its own
+heading with its recipes and dice (the search and the lens wait while a section is lent; the
+popover carries the section's name as a heading for assistive technology), in a popover as wide as
+the inspector, at most most of the screen tall and scrolling; on a narrow screen a popover is a
+sheet the full width of the screen, standing on the bar. While the chips do not all fit with their
+titles they go icon-only together, the title their tooltip and name, and then the strip scrolls (a
+wheel over it too): every section stays one press away, in one order, where a "more" chip would
+hide the rest behind a popover of popovers. The fit is measured, never decided by scene. The chips
+are one tab stop (the arrow keys, Home and End move along them); Escape closes a popover and hands
+the keyboard back to its chip, and a popover's controls are in the tab order only while it is
+open, after the bar or panel its button stands on. The bar docks top or bottom or floats like any
+panel, and "expand" takes the lab back to the panel.
 
 Both presentations carry one row of tools, in the panel's foot or on the bar: play or pause, undo,
 redo and shuffle; A and B while a comparison runs; the tour's place while it plays; and "⋯", a
-popover with the motion, the transitions and their replay, every "now" of the scene, the A/B
-comparison, the tour, reset, the link, the explanations, the shortcuts and the build's status,
-which hands the keyboard to the motion's slider as it opens. `l` hides the whole lab, and `/`
-opens the panel at the control search.
+popover with the setup's and the session's tools: reset, the link and the explanations, then every
+"now" of the scene, the A/B comparison, the tour, the shortcuts and the build's status. Undo and
+redo name the step they take ("Undo: crops, dither"). A step is what a person did
+(`src/lab/history-model.ts`): a commit to the same URL keys as the step before it, within a second
+of that step's last commit, grows that step (a held arrow key, a run of clicks on one control), and
+a playing tour's own advances are one step, so one undo goes back to where it began. `[` and `]`
+step through the scenes in the Scenes view's order (`sceneOrder` in `src/lab/families.ts`), as the
+tour's picker and its "All" do. `l` hides the whole lab, and `/` opens the panel at the control
+search: from the bar for this session only (the bar stays the preference), until Escape in the
+search or the lab closes.
+
+The lab's look (`src/lab.css`): one dark palette with an amber accent that marks only what is on,
+picked or changed; labels in the page's sans, numbers, keys and eyebrows in its mono; three radii
+(panels and popovers, chips and fields, buttons and segments), sunk wells for fields and segment
+rows, and two speeds of motion (quick for colour, calm for what moves or opens, all of it off under
+reduced motion). A choice of a few is a row of segments, a radio group (`segments` in
+`src/lab/controls.ts`). Text stays at 4.5:1 or more against the panel.
 
 Controls lay a group out from its knobs' metadata, never from scene ids: a switch (toggle or
 feature) is an icon chip (a feature's amount on its chip, or under the chips while it is on when it
@@ -486,9 +509,10 @@ scene's subject (lake's aurora) in a group of its own.
 - The lens beside the Controls search ("n changed") narrows every group to the controls that differ
   from their defaults (Global settings against the scene's own), with the search's words if any;
   the rail dots each group with changes and "Reset what changed" restores them all in one undoable
-  change (rules in `src/lab/lens-model.ts`). A control holds the knobs its element, or the widget
-  round it, lists in `data-keys`: the inspector's `place` tags a widget with its knob's keys, so tag
-  one that holds several knobs with all of theirs.
+  change, or under a search only the changes the search shows ("Reset these"; rules in
+  `src/lab/lens-model.ts` and `shownChanges` in `src/lab/availability-model.ts`). A control holds
+  the knobs its element, or the widget round it, lists in `data-keys`: the inspector's `place` tags
+  a widget with its knob's keys, so tag one that holds several knobs with all of theirs.
 - A knob with `when` hangs on that switch and on whatever the switch hangs on, to any depth: it
   takes effect, and its control shows, while every one of them is on (`switchChain` in
   `src/lab/availability-model.ts`; a `when` names a toggle or feature of the same scene, without a

@@ -14,6 +14,7 @@ import {
   type Built,
   type Patch,
 } from "./dom.ts";
+import { tileStep } from "./flyway-model.ts";
 import { icon, type IconName } from "./icons.ts";
 
 export function iconButton(
@@ -99,6 +100,10 @@ export function slider(
   return { el, sync };
 }
 
+/**
+ * A choice as one row of segments, a radio group: a click or the arrow keys choose (Home and End
+ * the ends), and the chosen one alone is in the tab order.
+ */
 export function segments(
   label: string,
   options: readonly { label: string; value: string }[],
@@ -106,19 +111,38 @@ export function segments(
   set: (value: string) => void,
 ): Built {
   const buttons = options.map((option) => {
-    const button = h("button", { type: "button", "data-value": option.value }, option.label);
+    const button = h(
+      "button",
+      { type: "button", role: "radio", "data-value": option.value },
+      option.label,
+    );
     button.addEventListener("click", () => set(option.value));
     return button;
   });
-  const el = h("div", { class: "segments", role: "group", "aria-label": label }, ...buttons);
+  const el = h("div", { class: "segments", role: "radiogroup", "aria-label": label }, ...buttons);
+  el.addEventListener("keydown", (event) => {
+    const focused = buttons.findIndex((button) => button === document.activeElement);
+    const next = tileStep(event.key, focused, buttons.length);
+    const target = next === undefined ? undefined : buttons[next];
+    if (!target) return;
+    event.preventDefault();
+    target.focus();
+    set(target.dataset.value ?? "");
+  });
   // Long choices wrap into rows instead of truncating their names.
   const width = options.reduce((longest, option) => Math.max(longest, option.label.length), 0) + 2;
   el.style.setProperty("--option-width", `${width}ch`);
   return {
     el,
     sync: () => {
-      for (const button of buttons)
-        setAttr(button, "aria-pressed", String(button.dataset.value === get()));
+      const value = get();
+      const chosen = buttons.some((button) => button.dataset.value === value);
+      for (const [at, button] of buttons.entries()) {
+        const on = button.dataset.value === value;
+        setAttr(button, "aria-checked", String(on));
+        // Nothing chosen (a value no option offers): the first stands in the tab order.
+        setAttr(button, "tabindex", on || (!chosen && at === 0) ? "0" : "-1");
+      }
     },
   };
 }

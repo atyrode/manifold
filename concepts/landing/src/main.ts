@@ -4,7 +4,6 @@
 import { Lab } from "./lab.ts";
 import { thumbUrl } from "./lab/thumbs.ts";
 import { DitherRenderer } from "./renderer.ts";
-import { sceneDefs } from "./scenes/index.ts";
 import type { SkyPlanet } from "./scenes/planets.ts";
 import {
   accentOf,
@@ -28,7 +27,6 @@ function element<T extends Element>(selector: string, type: new () => T): T {
 /** The commit this page was built from; empty when served straight from a working tree. */
 const build = document.querySelector<HTMLMetaElement>('meta[name="landing-build"]')?.content ?? "";
 const reducedMotion = matchMedia("(prefers-reduced-motion: reduce)");
-const credit = element("#credit", HTMLElement);
 const bar = element("#bar", HTMLElement);
 const status = element("#status", HTMLElement);
 const instanceName = element("#instance-name", HTMLElement);
@@ -121,7 +119,6 @@ function apply(query: URLSearchParams, options: { cut?: boolean } = {}): void {
   for (const node of document.querySelectorAll<HTMLElement>("[data-show]")) {
     node.hidden = !(node.dataset.show ?? "").split(" ").includes(state.mode);
   }
-  credit.textContent = sceneDefs[state.scene].credit ?? "";
   // Backdrop focus aids: blur and dim the scene behind the page.
   stage.style.filter =
     state.dim > 0 || state.blur > 0

@@ -3,11 +3,12 @@
 // (lab/views.ts) are the scene picker (lab/gallery.ts), the presets (lab/presets.ts) and the
 // controls (lab/inspector.ts); and compact, a bar of chips that open the same views and sections in
 // popovers (lab/menu.ts). Both carry one row of tools: play, undo, redo, shuffle, and "⋯", a
-// popover (lab/popover.ts) with the motion, transitions, every "now", the A/B comparison
-// (compare.ts), the scene tour (tour.ts), reset, links, explanations and the shortcuts. Every
+// popover (lab/popover.ts) with the setup's and the session's tools: reset, the link,
+// explanations, every "now", the A/B comparison (compare.ts), the scene tour (tour.ts) and the
+// shortcuts (the motion and the transitions live in the Controls' Motion section alone). Every
 // change goes through the host as a URL query (a scene's planets under their one key among its
-// knobs), so links, presets and undo all share one representation; the session tools sit beside
-// the setup in the URL (`sessionQuery`) and never inside it.
+// knobs), so links, presets and undo (lab/history-model.ts) all share one representation; the
+// session tools sit beside the setup in the URL (`sessionQuery`) and never inside it.
 import {
   otherSlot,
   readComparison,
@@ -18,16 +19,9 @@ import {
   type Comparison,
   type Slot,
 } from "./compare.ts";
+import { sceneOrder, sceneStep } from "./lab/families.ts";
 import { SceneGallery } from "./lab/gallery.ts";
-import {
-  flash,
-  iconButton,
-  nowButton,
-  row,
-  slider,
-  switchControl,
-  textButton,
-} from "./lab/controls.ts";
+import { flash, iconButton, nowButton, row, slider, textButton } from "./lab/controls.ts";
 import {
   h,
   setAttr,
@@ -37,6 +31,14 @@ import {
   type LabContext,
   type Patch,
 } from "./lab/dom.ts";
+import {
+  historyAt,
+  record,
+  redoStep,
+  undoStep,
+  type CommitBy,
+  type History,
+} from "./lab/history-model.ts";
 import { icon } from "./lab/icons.ts";
 import { Inspector } from "./lab/inspector.ts";
 import { knobIcon } from "./lab/knobs.ts";
@@ -51,11 +53,10 @@ import { Views } from "./lab/views.ts";
 import { carryPlanets, carryWorld } from "./lab/world-model.ts";
 import type { ParamDef } from "./params.ts";
 import type { DitherRenderer, SceneFailure } from "./renderer.ts";
-import { sceneDefs, sceneIds, type SceneId } from "./scenes/index.ts";
+import { sceneDefs, type SceneId } from "./scenes/index.ts";
 import { encodePlanets, PLANETS_KEY, type SkyPlanet } from "./scenes/planets.ts";
 import {
   carryLook,
-  defaultsFor,
   paramDefaults,
   readState,
   serialise,
@@ -89,7 +90,7 @@ const SETTING_LABEL: Record<keyof LabState, string> = {
   mode: "page on top",
   dither: "dither",
   color: "colour",
-  pixel: "dot size",
+  pixel: "cell size",
   levels: "tones",
   motion: "motion",
   accent: "accent",
@@ -106,9 +107,9 @@ const SETTING_LABEL: Record<keyof LabState, string> = {
 };
 
 const SHORTCUTS: readonly (readonly [string, string])[] = [
-  ["[  ]", "previous / next scene (tour step while a tour plays)"],
+  ["[  ]", "previous / next scene, in the Scenes view's order (tour step while a tour plays)"],
   ["l", "show or hide the lab"],
-  ["/", "find a control"],
+  ["/", "find a control (from the bar, in the panel until Esc)"],
   ["h", "hide the page on top"],
   ["p", "pause or play"],
   ["b", "flip between A and B; hold to peek"],
@@ -116,23 +117,6 @@ const SHORTCUTS: readonly (readonly [string, string])[] = [
   ["Ctrl Z", "undo"],
   ["Ctrl ⇧ Z", "redo"],
 ];
-
-/** One slot's undo history: setups (minimal queries) before and after the committed one. */
-interface History {
-  undo: string[];
-  redo: string[];
-  committed: string;
-}
-
-/** Make `query` the history's committed setup, the old one an undo step; false when unchanged. */
-function record(history: History, query: string): boolean {
-  if (query === history.committed) return false;
-  history.undo.push(history.committed);
-  if (history.undo.length > 100) history.undo.shift();
-  history.redo.length = 0;
-  history.committed = query;
-  return true;
-}
 
 export class Lab {
   readonly #root: HTMLElement;
@@ -154,8 +138,15 @@ export class Lab {
   /** The way from the inspector to the bar (the bar's own leads back, MenuBar.expand). */
   readonly #minimise: HTMLButtonElement;
   readonly #syncers: (() => void)[] = [];
+  /**
+   * The presentation on screen: the preference, except while `/` from the bar has the panel up
+   * for this session (focusSearch), until Escape in the search or the lab closes.
+   */
+  #presentation: Presentation = this.#prefs.presentation;
   /** The undo history of the setup on screen (with a comparison, the live slot's). */
   #history: History;
+  /** The steps the undo and redo buttons last named (#syncHistory). */
+  #historyShown = "";
   /** An A/B comparison, and the hidden slot's own undo history once it has been on screen. */
   #comparison: Comparison | undefined;
   #hiddenHistory: History | undefined;
@@ -185,6 +176,8 @@ export class Lab {
   readonly #redoButton: HTMLButtonElement;
   /** The build, the frame rate and the GPU, at the foot of the tools' popover. */
   readonly #status = h("p", { class: "tools-status" });
+  /** Polls the status and a failed scene while the lab is open (setOpen). */
+  #statusTimer: number | undefined;
   readonly #failure: { el: HTMLElement; sync: () => void };
   /** One line over the scene: the link just applied named a scene this build does not have. */
   readonly #noticeText = h("span", { class: "lab-notice-text" });
@@ -208,7 +201,7 @@ export class Lab {
       renderer: () => host.renderer(),
       reducedMotion: this.#reducedMotion,
     };
-    this.#history = { undo: [], redo: [], committed: this.#query() };
+    this.#history = historyAt(this.#query());
     // The page's query as opened (main.ts applies it after building the lab): a shared comparison
     // or tour comes back with it.
     const opened = new URLSearchParams(location.search);
@@ -237,16 +230,20 @@ export class Lab {
       build: host.build,
     });
     const prefs = this.#prefs;
-    this.#inspector = new Inspector(this.#ctx, {
-      sections: prefs.sections,
-      get keepWorld() {
-        return prefs.keepWorld;
+    this.#inspector = new Inspector(
+      this.#ctx,
+      {
+        sections: prefs.sections,
+        get keepWorld() {
+          return prefs.keepWorld;
+        },
+        set keepWorld(keep: boolean) {
+          prefs.keepWorld = keep;
+        },
+        save,
       },
-      set keepWorld(keep: boolean) {
-        prefs.keepWorld = keep;
-      },
-      save,
-    });
+      () => this.#leaveSearch(),
+    );
     this.#minimise = iconButton("minimise", "Minimise the lab to a bar", () =>
       this.#present("compact", true),
     );
@@ -359,7 +356,7 @@ export class Lab {
         h: 44,
       }),
     });
-    this.#layOut(this.#prefs.presentation);
+    this.#layOut(this.#presentation);
 
     this.#failure = this.#failureAlert();
     root.append(h("div", { class: "lab-alerts" }, this.#notice, this.#failure.el));
@@ -373,7 +370,6 @@ export class Lab {
       true,
     );
     window.addEventListener("resize", () => Popover.placeOpen());
-    setInterval(() => this.#syncStatus(), 500);
     this.setOpen(this.#prefs.open);
   }
 
@@ -390,19 +386,40 @@ export class Lab {
     if (open) {
       this.#workspace.arrange();
       // The controls skipped their syncs while the lab was closed: on screen again, they catch up.
-      if (this.#prefs.presentation === "expanded" && this.#views.current === "controls")
+      if (this.#presentation === "expanded" && this.#views.current === "controls")
         this.#inspector.shown();
-    } else Popover.closeAll();
+      // The build's status and a failed scene's alert show only in the open lab: polled while open.
+      this.#statusTimer ??= window.setInterval(() => this.#syncStatus(), 500);
+      this.#syncStatus();
+    } else {
+      Popover.closeAll();
+      window.clearInterval(this.#statusTimer);
+      this.#statusTimer = undefined;
+      // A session's panel (`/` from the bar) closes back to the bar.
+      if (this.#presentation !== this.#prefs.presentation) this.#present(this.#prefs.presentation);
+    }
     // Knob changes are likely while the lab is open: on a GPU, scenes with knob-keyed features get
     // their all-features program built ahead (DitherRenderer.expectChanges).
     this.#host.renderer()?.expectChanges(open);
   }
 
+  /**
+   * `/`: the keyboard to the control search, in the panel. From the bar the panel comes up for
+   * this session only (the bar stays the preference, its Find chip the search in a popover): Escape
+   * in the search, or closing the lab, brings the bar back.
+   */
   focusSearch(): void {
     this.setOpen(true);
-    if (this.#prefs.presentation === "compact") this.#present("expanded");
+    if (this.#presentation === "compact") this.#present("expanded", false, false);
     this.#views.show("controls");
     this.#inspector.focusSearch();
+  }
+
+  /** Escape left the search: a session's panel goes back to the bar, the keyboard to Find. */
+  #leaveSearch(): void {
+    if (this.#presentation === this.#prefs.presentation) return;
+    this.#present(this.#prefs.presentation);
+    this.#bar.find.focus();
   }
 
   /**
@@ -411,7 +428,7 @@ export class Lab {
    */
   sync(): void {
     const { state } = this.#current();
-    const compact = this.#prefs.presentation === "compact";
+    const compact = this.#presentation === "compact";
     // The notice explains the scene it went up over: once another scene is on screen, it goes.
     if (this.#noticeScene !== undefined && state.scene !== this.#noticeScene) this.#dismissNotice();
     // A step of the tour (its own switch or the user's) becomes the current one; another scene holds it.
@@ -421,9 +438,12 @@ export class Lab {
       this.#gallery.sync();
     if (compact ? this.#bar.showing("presets") : this.#views.current === "presets")
       this.#presets.sync();
-    // The controls follow in full only while on screen (the open lab on the Controls view, or a
-    // section lent to the bar); off it only their counts, which the bar's chips read.
-    this.#inspector.sync(this.open && !compact && this.#views.current === "controls");
+    // The controls follow in full only while on screen (the open lab on the Controls view, in the
+    // panel or the bar's Find popover, or a section lent to the bar); off it only their counts,
+    // which the bar's chips read.
+    this.#inspector.sync(
+      this.open && (compact ? this.#bar.showing("controls") : this.#views.current === "controls"),
+    );
     if (compact) this.#bar.sync();
     for (const sync of this.#syncers) sync();
     const scene = sceneDefs[state.scene];
@@ -433,13 +453,16 @@ export class Lab {
   }
 
   /**
-   * Show the lab as `presentation` from now on (a preference): the popovers close, the tools move
-   * there, and the keyboard, if `focus`, goes to the way back.
+   * Show the lab as `presentation`, from now on unless `save` is false (a session's panel): the
+   * popovers close, the tools move there, and the keyboard, if `focus`, goes to the way back.
    */
-  #present(presentation: Presentation, focus = false): void {
+  #present(presentation: Presentation, focus = false, save = true): void {
     Popover.closeAll();
-    this.#prefs.presentation = presentation;
-    this.#savePrefs();
+    this.#presentation = presentation;
+    if (save) {
+      this.#prefs.presentation = presentation;
+      this.#savePrefs();
+    }
     this.#layOut(presentation);
     if (this.open) this.#workspace.arrange();
     this.sync();
@@ -451,7 +474,6 @@ export class Lab {
   #layOut(presentation: Presentation): void {
     const compact = presentation === "compact";
     (compact ? this.#bar.tools : this.#foot).append(this.#tools);
-    this.#inspector.compact = compact;
     this.#workspace.setShown("inspector", !compact);
     this.#workspace.setShown("bar", compact);
   }
@@ -481,27 +503,26 @@ export class Lab {
     this.#gallery.focusCurrent();
   }
 
-  /** Record the current setup as one undo step (sliders commit on release). */
+  /**
+   * Record the current setup as an undo step (sliders commit on release): a commit to the same
+   * keys as the step before it, within a second of it, grows that step (lab/history-model.ts).
+   */
   commit(): void {
-    if (record(this.#history, this.#query())) this.#syncHistory();
+    this.#commit("hand");
+  }
+
+  #commit(by: CommitBy): void {
+    if (record(this.#history, this.#query(), performance.now(), by)) this.#syncHistory();
   }
 
   undo(): void {
-    const history = this.#history;
-    const previous = history.undo.pop();
-    if (previous === undefined) return;
-    history.redo.push(history.committed);
-    history.committed = previous;
-    this.#host.apply(new URLSearchParams(previous));
+    const previous = undoStep(this.#history);
+    if (previous !== undefined) this.#host.apply(new URLSearchParams(previous));
   }
 
   redo(): void {
-    const history = this.#history;
-    const next = history.redo.pop();
-    if (next === undefined) return;
-    history.undo.push(history.committed);
-    history.committed = next;
-    this.#host.apply(new URLSearchParams(next));
+    const next = redoStep(this.#history);
+    if (next !== undefined) this.#host.apply(new URLSearchParams(next));
   }
 
   /** The session tools' URL keys (comparison, tour), for the host to write beside the setup. */
@@ -545,11 +566,12 @@ export class Lab {
     return true;
   }
 
-  /** Go to the previous (-1) or next (1) scene of the catalogue, as a scene picked by hand. */
+  /**
+   * Go to the previous (-1) or next (1) scene in the Scenes view's order (lab/families.ts), as a
+   * scene picked by hand.
+   */
   stepScene(by: -1 | 1): void {
-    const { scene } = this.#current().state;
-    const next = sceneIds[(sceneIds.indexOf(scene) + by + sceneIds.length) % sceneIds.length];
-    this.#setScene(next ?? scene, "hand");
+    this.#setScene(sceneStep(this.#current().state.scene, by), "hand");
   }
 
   // ---- state plumbing -------------------------------------------------------------------------
@@ -578,10 +600,33 @@ export class Lab {
     localStorage.setItem(PREFS_KEY, JSON.stringify(this.#prefs));
   }
 
+  /** The undo and redo buttons: off with nothing to step to, else named by what the step changes. */
   #syncHistory(): void {
-    const [undo, redo] = [this.#history.undo.length === 0, this.#history.redo.length === 0];
-    if (this.#undoButton.disabled !== undo) this.#undoButton.disabled = undo;
-    if (this.#redoButton.disabled !== redo) this.#redoButton.disabled = redo;
+    const { undo, redo, committed } = this.#history;
+    const [back, ahead] = [undo.at(-1), redo.at(-1)];
+    const shown = `${back ?? ""}\n${committed}\n${ahead ?? ""}`;
+    if (shown === this.#historyShown) return;
+    this.#historyShown = shown;
+    for (const [button, verb, keys, to] of [
+      [this.#undoButton, "Undo", "Ctrl Z", back],
+      [this.#redoButton, "Redo", "Ctrl ⇧ Z", ahead],
+    ] as const) {
+      if (button.disabled !== (to === undefined)) button.disabled = to === undefined;
+      const words = to === undefined ? "" : this.#stepWords(committed, to);
+      const label = words === "" ? verb : `${verb}: ${words}`;
+      setAttr(button, "title", `${label} (${keys})`);
+      setAttr(button, "aria-label", label);
+    }
+  }
+
+  /** A step from setup `from` to `to` in a few words: the scene it goes to, or what it sets. */
+  #stepWords(from: string, to: string): string {
+    const scene = readState(new URLSearchParams(to)).scene;
+    if (readState(new URLSearchParams(from)).scene !== scene) return sceneDefs[scene].title;
+    const names = [
+      ...new Set(setupDifferences(from, to).map((key) => this.#settingLabel(key, [scene]))),
+    ];
+    return names.length > 3 ? `${names.slice(0, 3).join(", ")}…` : names.join(", ");
   }
 
   #syncStatus(): void {
@@ -660,16 +705,13 @@ export class Lab {
       ...flips.map(({ button }) => button),
     );
     this.#tourMark.append(icon("tour"), this.#tourStep, this.#tourBar);
-    const tools = this.#toolsContent();
+    // The keyboard goes to its first control on screen, Reset.
     const more = new Popover(this.#root, {
       id: "tools",
       title: "Tools",
       icon: "more",
-      label: "More tools: motion, transitions, every now, A/B, tour, reset, link and shortcuts",
-      content: tools.content,
-      // The keyboard goes to the motion's slider, the first thing to set: past the row's help and
-      // its reset dot, which shows only while the motion differs.
-      focus: () => tools.motion.focus(),
+      label: "More tools: reset, link, explanations, every now, A/B, tour and shortcuts",
+      content: this.#toolsContent(),
     });
     this.#syncers.push(() => {
       const paused = this.#host.renderer()?.paused ?? false;
@@ -701,50 +743,12 @@ export class Lab {
   }
 
   /**
-   * The tools' popover: the motion and the transitions, the setup's own actions (reset, link,
-   * explanations), then a fold each for every "now", the A/B comparison, the tour and the
-   * shortcuts, and the build's status at the foot; and the motion's slider, which takes the keyboard.
+   * The tools' popover: the setup's own actions (reset, link, explanations), then a fold each for
+   * every "now", the A/B comparison, the tour and the shortcuts, and the build's status at the foot.
+   * The motion and the transitions are the Controls' Motion section's alone.
    */
-  #toolsContent(): { content: HTMLElement[]; motion: HTMLElement } {
+  #toolsContent(): HTMLElement[] {
     const state = () => this.#current().state;
-    const base = () => defaultsFor(state().scene);
-    const amount = (value: number) => (value === 0 ? "still" : `${Math.round(value * 100)}%`);
-    const motion = slider(
-      "Motion",
-      0,
-      1,
-      0.05,
-      () => state().motion,
-      (value, commit) => this.#change({ motion: value }, commit),
-      amount,
-    );
-    const motionRow = row({
-      label: "Motion",
-      help: "How much things move. 0 is a still frame; triggered events still play.",
-      icon: "motion",
-      block: motion.el,
-      readout: () => amount(state().motion),
-      modified: () => state().motion !== base().motion,
-      reset: () => this.#change({ motion: base().motion }, true),
-    });
-    const transitions = switchControl(
-      "Scene transitions",
-      () => state().transitions === "on",
-      (on) => this.#change({ transitions: on ? "on" : "off" }, true),
-    );
-    const transitionsRow = row({
-      label: "Transitions",
-      help: "Scenes come and go through their own exits and entrances; off, a straight cut. Now plays this scene's exit, then its entrance.",
-      icon: "transition",
-      inline: [
-        nowButton("this scene's exit, then its entrance", () =>
-          this.#host.renderer()?.replayPassage(),
-        ),
-        transitions.el,
-      ],
-      modified: () => state().transitions !== base().transitions,
-      reset: () => this.#change({ transitions: base().transitions }, true),
-    });
     const explain = textButton("info", "Explain", "Explain every control", () => {
       this.#prefs.explain = !this.#prefs.explain;
       this.#root.classList.toggle("explain", this.#prefs.explain);
@@ -806,7 +810,7 @@ export class Lab {
       ],
     });
 
-    this.#syncers.push(motion.sync, motionRow.sync, transitions.sync, transitionsRow.sync, () => {
+    this.#syncers.push(() => {
       setAttr(explain, "aria-pressed", String(this.#prefs.explain));
       const scene = state().scene;
       if (nowScene !== scene) {
@@ -843,19 +847,7 @@ export class Lab {
           : "",
       );
     });
-    return {
-      content: [
-        motionRow.el,
-        transitionsRow.el,
-        actions,
-        now.el,
-        compare.el,
-        tour.el,
-        keys.el,
-        this.#status,
-      ],
-      motion: motion.el,
-    };
+    return [actions, now.el, compare.el, tour.el, keys.el, this.#status];
   }
 
   // ---- session tools: A/B comparison and tour -------------------------------------------------
@@ -967,18 +959,18 @@ export class Lab {
     const picker = h("select", { class: "tour-picker", "aria-label": "Scene to add" });
     let offered = "";
     const add = textButton("plus", "Add", "Add the chosen scene at the end of the tour", () => {
-      const scene = sceneIds.find((id) => id === picker.value);
+      const scene = sceneOrder.find((id) => id === picker.value);
       if (scene) this.#editTour([...(this.#tour?.tour.steps ?? []), { scene }]);
     });
     const addAll = textButton(
       "plus",
       "All",
-      "Add every scene not on the tour yet, in the lab's order",
+      "Add every scene not on the tour yet, in the Scenes view's order",
       () => {
         const on = this.#tour?.tour.steps ?? [];
         this.#editTour([
           ...on,
-          ...sceneIds
+          ...sceneOrder
             .filter((id) => !on.some((step) => step.scene === id))
             .map((scene) => ({ scene })),
         ]);
@@ -1069,7 +1061,7 @@ export class Lab {
         if (index === tour?.index) setAttr(item, "aria-current", "step");
         else item.removeAttribute("aria-current");
       }
-      const available = sceneIds.filter((id) => !list.some((step) => step.scene === id));
+      const available = sceneOrder.filter((id) => !list.some((step) => step.scene === id));
       const { scene } = this.#current().state;
       if (available.join() !== offered) {
         offered = available.join();
@@ -1204,7 +1196,7 @@ export class Lab {
     this.commit();
     const here = this.#query();
     this.#comparison = { live: "b", other: here };
-    this.#hiddenHistory = { undo: [], redo: [], committed: here };
+    this.#hiddenHistory = historyAt(here);
     this.#host.apply(new URLSearchParams(here));
   }
 
@@ -1220,7 +1212,7 @@ export class Lab {
     if (!comparison || comparison.live === slot) return;
     this.commit();
     const leaving = this.#history;
-    this.#history = this.#hiddenHistory ?? { undo: [], redo: [], committed: comparison.other };
+    this.#history = this.#hiddenHistory ?? historyAt(comparison.other);
     this.#hiddenHistory = leaving;
     this.#comparison = { live: slot, other: leaving.committed };
     this.#host.apply(new URLSearchParams(comparison.other), { cut: true });
@@ -1232,8 +1224,8 @@ export class Lab {
     if (!comparison) return;
     this.commit();
     const here = this.#query();
-    const hidden = this.#hiddenHistory ?? { undo: [], redo: [], committed: comparison.other };
-    record(hidden, here);
+    const hidden = this.#hiddenHistory ?? historyAt(comparison.other);
+    record(hidden, here, performance.now());
     this.#hiddenHistory = hidden;
     this.#comparison = { live: comparison.live, other: here };
     this.#host.apply(new URLSearchParams(here));
@@ -1281,7 +1273,7 @@ export class Lab {
     const seconds = this.#tourLast === undefined ? 0 : (now - this.#tourLast) / 1000;
     this.#tourLast = now;
     const next = tour.tick(seconds, this.#host.renderer()?.paused ?? false);
-    if (next !== undefined) this.#setScene(next, "tour");
+    if (next !== undefined) this.#setScene(next, "advance");
     this.#syncTourClock();
     this.#tourFrame = requestAnimationFrame(this.#tourTick);
   };
@@ -1291,9 +1283,10 @@ export class Lab {
   /**
    * Show `scene` at its own defaults; picked by hand (the Scenes view, [ and ], Next scene) while
    * "keep the world" is on, under the world of the scene left (world-model.ts `carryWorld`, and its
-   * planets, `carryPlanets`).
+   * planets, `carryPlanets`). A playing tour's own `advance` joins the undo step of the advance
+   * before it, so one undo goes back to where the tour began (lab/history-model.ts).
    */
-  #setScene(scene: SceneId, by: "hand" | "tour"): void {
+  #setScene(scene: SceneId, by: "hand" | "tour" | "advance"): void {
     const { state, params, planets } = this.#current();
     if (scene === state.scene) return;
     const defaults = paramDefaults(scene);
@@ -1304,7 +1297,7 @@ export class Lab {
     this.#host.apply(
       serialise(carryLook(state, scene), next, keep ? carryPlanets(from, planets, to) : []),
     );
-    this.commit();
+    this.#commit(by === "advance" ? "advance" : "hand");
   }
 
   /** Every knob of the scene rolled (but its steady ones), and its planets with them. */

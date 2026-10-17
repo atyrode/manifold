@@ -12,8 +12,10 @@
 // (availability-model.ts) that the lens, the search, the folds and the summaries share. A change the
 // lens counts behind a switch that is off shows dormant, dimmed beside that switch, never folded
 // away; folded groups and closed controls leave the tab order (inert). The compact bar (menu.ts)
-// shows the same sections: it borrows one at a time (`lend`), which shows open and whole, nothing
-// narrowing it, until given back, so both presentations share these controls and their syncs.
+// shows the same view and sections: its Find chip borrows the whole view (search, lens and rail,
+// narrowing as in the panel), and a section's chip one section at a time (`lend`), which shows open
+// and whole, nothing narrowing it, until given back; so both presentations share these controls and
+// their syncs. Under a search, "Reset what changed" restores only the changes the search shows.
 import { formatValue, MAX_SEED, type Option, type ParamDef } from "../params.ts";
 import { colorIds, ditherIds, viewIds } from "../renderer.ts";
 import { sceneDefs, type SceneId } from "../scenes/index.ts";
@@ -32,6 +34,7 @@ import {
   groupShows,
   narrow,
   narrowing,
+  shownChanges,
   titleHolds,
   type LensGate,
   type LensQuery,
@@ -39,16 +42,7 @@ import {
 } from "./availability-model.ts";
 import { chipGrid } from "./chips.ts";
 import { climateMarks } from "./climate-hint-model.ts";
-import {
-  dice,
-  iconButton,
-  nowButton,
-  row,
-  segments,
-  slider,
-  switchControl,
-  textButton,
-} from "./controls.ts";
+import { dice, iconButton, nowButton, row, segments, slider, switchControl } from "./controls.ts";
 import { seasonWheel, skyDial, type SkyParts } from "./dial.ts";
 import {
   borrow,
@@ -118,9 +112,9 @@ const SWATCHES = ["#4c6ef5", "#ff004e", "#ff7a2f", "#f2c94c", "#2bd9a8", "#e8e6d
  * scene's defaults (`defaultsFor`).
  */
 const SETTINGS = {
-  look: ["view", "dither", "color", "accent", "levels", "pixel"],
+  look: ["view", "dither", "color", "accent", "levels", "pixel", "dim", "blur"],
   motion: ["motion", "mouse", "transitions", "overlap", "weave", "blend", "slowmo"],
-  page: ["mode", "instance", "dim", "blur"],
+  page: ["mode", "instance"],
 } as const satisfies Record<string, readonly (keyof LabState)[]>;
 const SETTING_KEYS = [...SETTINGS.look, ...SETTINGS.motion, ...SETTINGS.page];
 /** The global groups as the lens counts them (by section id): each setting a knob of its own. */
@@ -210,8 +204,13 @@ export class Inspector {
   readonly #lensCount = h("span", { class: "lens-count" });
   /** Over the groups while the lens is on and something changed: its "reset what changed". */
   readonly #lensHead: HTMLElement;
+  readonly #lensCaption = h("span", { class: "lens-caption" });
+  readonly #lensReset: HTMLButtonElement;
+  readonly #lensResetLabel = h("span");
   /** The URL keys that differ from their defaults: the scene's knobs and the global settings. */
   #changed: ReadonlySet<string> = new Set();
+  /** Of those, the ones the controls on show hold (set by #narrow): a search's reset takes these. */
+  #shownChanged: ReadonlySet<string> = new Set();
   /** The scene's knob defaults, and every group as the lens counts it (the global ones last). */
   #defaults: Params = {};
   #lensGroups: LensGroup[] = [];
@@ -221,12 +220,11 @@ export class Inspector {
   #menu: readonly Section[] = [];
   /** The section the compact bar has borrowed, and how to put it back where it stood. */
   #lent: { section: Section; back: () => void } | undefined;
-  /** While the lab is compact nothing narrows: the bar shows a section whole. */
-  #compact = false;
   /** A sync left the controls as they were (off screen): they catch up as they come back. */
   #stale = false;
 
-  constructor(ctx: LabContext, prefs: SectionPrefs) {
+  /** `leaveSearch`: Escape left the search, cleared (the lab may hand the keyboard elsewhere). */
+  constructor(ctx: LabContext, prefs: SectionPrefs, leaveSearch: () => void) {
     this.#ctx = ctx;
     this.#prefs = prefs;
     this.#search = h("input", {
@@ -241,6 +239,7 @@ export class Inspector {
       this.#search.value = "";
       this.#narrow();
       this.#search.blur();
+      leaveSearch();
     });
     this.#worldDivider = worldDivider(prefs);
     this.#syncers.push(this.#worldDivider.sync);
@@ -277,19 +276,21 @@ export class Inspector {
       this.#body.scrollTop = 0;
       this.sync();
     });
+    this.#lensReset = h(
+      "button",
+      { type: "button", class: "text-button" },
+      icon("reset"),
+      this.#lensResetLabel,
+    );
+    this.#lensReset.addEventListener("click", () => {
+      this.#resetChanged();
+      this.#lensToggle.focus();
+    });
     this.#lensHead = h(
       "div",
       { class: "lens-head", hidden: true },
-      h("span", { class: "lens-caption" }, "Changed from defaults"),
-      textButton(
-        "reset",
-        "Reset what changed",
-        "Every control here back to its default, in one step (undo brings them back)",
-        () => {
-          this.#resetChanged();
-          this.#lensToggle.focus();
-        },
-      ),
+      this.#lensCaption,
+      this.#lensReset,
     );
     this.el = h(
       "div",
@@ -325,11 +326,6 @@ export class Inspector {
   /** How many knobs of section `id` differ from their defaults, as the lens counts them. */
   changes(id: string): number {
     return this.#counts.get(id) ?? 0;
-  }
-
-  /** Whether the lab is compact: then nothing narrows, and a lent section shows whole. */
-  set compact(compact: boolean) {
-    this.#compact = compact;
   }
 
   /**
@@ -402,20 +398,20 @@ export class Inspector {
     );
     setAttr(this.#lensToggle, "aria-label", label);
     setAttr(this.#lensToggle, "aria-pressed", String(this.#lens));
-    setHidden(this.#lensHead, !this.#lens || total === 0);
   }
 
   /**
    * Every knob of the scene and global setting that differs from its default back to it, and its
-   * planets gone, in one undoable change: the tools' reset, kept to what changed.
+   * planets gone, in one undoable change; under a search, only the changes it shows (#narrow).
    */
   #resetChanged(): void {
+    const keys = this.#search.value.trim() === "" ? this.#changed : this.#shownChanged;
     const base = this.#base();
     const patch: Patch = {};
     for (const [key, value] of Object.entries(this.#defaults))
-      if (this.#changed.has(key)) patch[key] = value;
-    for (const key of SETTING_KEYS) if (this.#changed.has(key)) patch[key] = base[key];
-    if (this.#ctx.current().planets.length > 0) patch[PLANETS_KEY] = "";
+      if (keys.has(key)) patch[key] = value;
+    for (const key of SETTING_KEYS) if (keys.has(key)) patch[key] = base[key];
+    if (keys.has(PLANETS_KEY)) patch[PLANETS_KEY] = "";
     this.#ctx.change(patch, true);
   }
 
@@ -523,7 +519,8 @@ export class Inspector {
         this.#prefs.save();
       },
       sync: (searching) => {
-        // Lent to the compact bar, it shows open, its toggle a heading that folds nothing.
+        // Lent to the compact bar, it shows open, its toggle a plain heading that folds nothing;
+        // the popover's own heading (popover.ts) names it to assistive technology instead.
         const lent = this.#lent?.section.id === spec.id;
         const open = isOpen() || searching || lent;
         // Folded, the body leaves the tab order; the focus it held goes to the header.
@@ -531,6 +528,8 @@ export class Inspector {
         el.classList.toggle("is-open", isOpen());
         el.classList.toggle("lent", lent);
         if (toggle.disabled !== lent) toggle.disabled = lent;
+        if (lent) setAttr(toggle, "aria-hidden", "true");
+        else if (toggle.hasAttribute("aria-hidden")) toggle.removeAttribute("aria-hidden");
         setAttr(toggle, "aria-expanded", String(open));
         const on = spec.masterOn?.() ?? true;
         el.classList.toggle("off", !on);
@@ -561,19 +560,19 @@ export class Inspector {
    * Decide what shows, from one availability model (availability-model.ts narrow): in each group,
    * the controls the search and, while it is on, the lens find (with the switches a dormant one
    * waits on), each gate open, dormant or closed, and the group shown or not, open or folded; then
-   * the note for nothing found and the fold button. The rail marks again when a group shows, hides,
-   * opens or folds. While the lab is compact the search and the lens wait: nothing narrows.
+   * the lens's head, the note for nothing found and the fold button. The rail marks again when a
+   * group shows, hides, opens or folds. While a section is lent to the compact bar the search and
+   * the lens wait: it shows whole.
    */
   #narrow(): void {
-    const query: LensQuery = {
-      text: this.#compact ? "" : this.#search.value.trim().toLowerCase(),
-      lens: this.#lens && !this.#compact,
-      changed: this.#changed,
-    };
+    const whole = this.#lent !== undefined;
+    const text = whole ? "" : this.#search.value.trim().toLowerCase();
+    const query: LensQuery = { text, lens: this.#lens && !whole, changed: this.#changed };
     const filtering = narrowing(query);
     this.el.classList.toggle("searching", filtering);
     let any = false;
     let layout = "";
+    const shown = new Set<string>();
     for (const section of [...this.#sceneSections, ...this.#globalSections]) {
       const { el } = section;
       const titleHit = titleHolds(section.title.toLowerCase(), query);
@@ -605,9 +604,25 @@ export class Inspector {
       setHidden(el, !visible);
       el.classList.toggle("searching", filtering && visible);
       section.sync(filtering && visible);
-      if (visible) any = true;
+      if (visible) {
+        any = true;
+        for (const key of shownChanges(narrowItems, narrowed, this.#changed)) shown.add(key);
+      }
       layout += `${visible ? 1 : 0}${el.classList.contains("is-open") ? 1 : 0}`;
     }
+    this.#shownChanged = shown;
+    // Under the lens with something to reset: all of it, or under a search only what it shows.
+    const searching = query.text !== "";
+    setHidden(this.#lensHead, !query.lens || (searching ? shown : this.#changed).size === 0);
+    setText(this.#lensCaption, searching ? "Changed, and found" : "Changed from defaults");
+    setText(this.#lensResetLabel, searching ? "Reset these" : "Reset what changed");
+    setAttr(
+      this.#lensReset,
+      "title",
+      searching
+        ? "The changed controls this search shows back to their defaults, in one step (undo brings them back); what it hides stays as it is"
+        : "Every changed control back to its default, in one step (undo brings them back)",
+    );
     setHidden(this.#empty, any);
     setText(
       this.#empty,
@@ -625,7 +640,7 @@ export class Inspector {
       setAttr(this.#fold, "title", label);
       setAttr(this.#fold, "aria-label", label);
     }
-    if (!this.#compact && `${filtering}${layout}` !== this.#layout) {
+    if (`${filtering}${layout}` !== this.#layout) {
       this.#layout = `${filtering}${layout}`;
       this.#rail.spy();
     }
@@ -1117,9 +1132,14 @@ export class Inspector {
     return this.#ctx.current().state;
   }
 
+  /**
+   * The Look: everything that decides how the picture reaches the screen, in one place: the view,
+   * the dither, its colours and tones, the cell size, and the dim and blur behind the page.
+   */
   #lookGroup(): Section {
     const change = (patch: Record<string, string | number>, commit = true) =>
       this.#ctx.change(patch, commit);
+    const percent = (value: number) => `${Math.round(value * 100)}%`;
     const view = segments(
       "View",
       viewIds.map((id) => ({ label: VIEW_LABEL[id], value: id })),
@@ -1145,14 +1165,37 @@ export class Inspector {
       1,
       () => this.#state().levels,
       (value, commit) => change({ levels: value }, commit),
+      (value) => `${value} tones`,
     );
+    // In halves of a CSS pixel: the display rounds a cell to whole device pixels (display.ts
+    // stageCells), so on a high-density screen a half is a size of its own.
     const pixel = slider(
-      "Dot size",
+      "Cell size",
       1,
       8,
-      1,
+      0.5,
       () => this.#state().pixel,
       (value, commit) => change({ pixel: value }, commit),
+      (value) => `${value} pixels`,
+    );
+    const dim = slider(
+      "Dim",
+      0,
+      1,
+      0.01,
+      () => this.#state().dim,
+      (value, commit) => change({ dim: value }, commit),
+      percent,
+    );
+    const blurText = (value: number) => `${(value * 12).toFixed(1)} px`;
+    const blur = slider(
+      "Blur",
+      0,
+      1,
+      0.01,
+      () => this.#state().blur,
+      (value, commit) => change({ blur: value }, commit),
+      blurText,
     );
     const swatches = [
       { value: "", label: "Scene default" },
@@ -1202,9 +1245,10 @@ export class Inspector {
       }),
       row({
         label: "Accent",
-        help: "The single accent colour. The first swatch follows the scene's own default.",
+        help: "The single accent colour. The first swatch follows the scene's own default; the last picks any colour.",
         icon: "drop",
         block: h("div", { class: "swatches" }, ...swatches, custom),
+        readout: () => this.#state().accent || "scene's",
         modified: () => this.#state().accent !== "",
         reset: () => change({ accent: "" }),
       }),
@@ -1218,13 +1262,31 @@ export class Inspector {
         reset: () => change({ levels: this.#base().levels }),
       }),
       row({
-        label: "Dot size",
-        help: "Size of one dot in screen pixels. Larger is chunkier and cheaper to draw.",
+        label: "Cell size",
+        help: "Size of one dither cell in screen pixels, in halves: the screen draws a cell in whole device pixels, so halves tell on a high-density screen. Larger is chunkier and cheaper to draw.",
         icon: "grid",
         block: pixel.el,
-        readout: () => `${this.#state().pixel}px`,
+        readout: () => `${this.#state().pixel} px`,
         modified: () => this.#state().pixel !== this.#base().pixel,
         reset: () => change({ pixel: this.#base().pixel }),
+      }),
+      row({
+        label: "Dim",
+        help: "Darken the picture behind the page, to judge whether the copy needs help to stand out.",
+        icon: "tones",
+        block: dim.el,
+        readout: () => percent(this.#state().dim),
+        modified: () => this.#state().dim !== this.#base().dim,
+        reset: () => change({ dim: this.#base().dim }),
+      }),
+      row({
+        label: "Blur",
+        help: "Soften the picture behind the page, so the copy is the only sharp thing on screen.",
+        icon: "fog",
+        block: blur.el,
+        readout: () => blurText(this.#state().blur),
+        modified: () => this.#state().blur !== this.#base().blur,
+        reset: () => change({ blur: this.#base().blur }),
       }),
     ];
     this.#syncers.push(
@@ -1233,6 +1295,8 @@ export class Inspector {
       colour.sync,
       levels.sync,
       pixel.sync,
+      dim.sync,
+      blur.sync,
       ...rows.map((built) => built.sync),
       () => {
         const state = this.#state();
@@ -1249,7 +1313,8 @@ export class Inspector {
     return this.#section({
       id: "look",
       title: "Look",
-      blurb: "How the picture becomes dots: pattern, palette and resolution.",
+      blurb:
+        "How the picture becomes dots: view, pattern, palette, tones and cell size, and how it sits behind the page.",
       icon: "dither",
       shelf: "global",
       open: false,
@@ -1259,8 +1324,10 @@ export class Inspector {
         return [
           DITHER_LABEL[state.dither],
           COLOR_LABEL[state.color],
-          `${state.pixel}px`,
+          `${state.pixel} px`,
           state.view !== "dithered" ? VIEW_LABEL[state.view] : "",
+          state.dim > 0 ? `dim ${percent(state.dim)}` : "",
+          state.blur > 0 ? "blurred" : "",
         ].filter(Boolean);
       },
       modified: () => keys.some((key) => this.#state()[key] !== this.#base()[key]),
@@ -1268,16 +1335,22 @@ export class Inspector {
     });
   }
 
+  /**
+   * Motion: how much things move, whether the scene follows the pointer, and how scenes come and
+   * go; its only home (pausing the clock is the tools' play button, `p`).
+   */
   #motionGroup(): Section {
     const change = (patch: Record<string, string | number>, commit = true) =>
       this.#ctx.change(patch, commit);
+    const amount = (value: number) => (value === 0 ? "still" : `${Math.round(value * 100)}%`);
     const motion = slider(
       "Motion",
       0,
       1,
-      0.05,
+      0.01,
       () => this.#state().motion,
       (value, commit) => change({ motion: value }, commit),
+      amount,
     );
     const follow = switchControl(
       "Follow mouse",
@@ -1330,20 +1403,13 @@ export class Inspector {
       () => String(this.#state().slowmo),
       (value) => change({ slowmo: Number(value) }),
     );
-    const play = h("button", { type: "button", class: "text-button wide" });
-    play.addEventListener("click", () => {
-      const renderer = this.#ctx.renderer();
-      renderer?.setPaused(!renderer.paused);
-      this.sync();
-    });
     const rows = [
       row({
         label: "Amount",
-        help: "Overall animation. 0 is a still frame; triggered events still play.",
+        help: "How much things move. 0 is a still frame; triggered events still play. To freeze a frame in its current pose, pause (p).",
         icon: "motion",
         block: motion.el,
-        readout: () =>
-          this.#state().motion === 0 ? "still" : `${Math.round(this.#state().motion * 100)}%`,
+        readout: () => amount(this.#state().motion),
         modified: () => this.#state().motion !== this.#base().motion,
         reset: () => change({ motion: this.#base().motion }),
       }),
@@ -1357,7 +1423,7 @@ export class Inspector {
       }),
       row({
         label: "Transitions",
-        help: "Scenes come in and leave gracefully: many play their own entrance and exit (a camera settling, a fire catching, lanterns arriving), and the next scene takes over part-way through the leaving one's exit, dot by dot, while both still move. Off: a straight cut. Skipped at motion 0 and under reduced motion; now plays it anyway.",
+        help: "Scenes come in and leave gracefully: many play their own entrance and exit (a camera settling, a fire catching, lanterns arriving), and the next scene takes over part-way through the leaving one's exit, dot by dot, while both still move. Off: a straight cut. Skipped at motion 0 and under reduced motion; now plays this scene's exit, then its entrance, anyway.",
         icon: "transition",
         inline: [replay, transitions.el],
         modified: () => this.#state().transitions !== this.#base().transitions,
@@ -1397,22 +1463,12 @@ export class Inspector {
         modified: () => this.#state().slowmo !== this.#base().slowmo,
         reset: () => change({ slowmo: this.#base().slowmo }),
       }),
-      row({
-        label: "Clock",
-        help: "Freeze time to study a frame (p). Unlike motion 0, a paused frame keeps its current pose.",
-        icon: "clock",
-        block: play,
-      }),
     ];
     // Overlap, blend length, pattern and speed tune transitions: gates on the Transitions setting.
-    const tuning = new Set(rows.slice(3, 7));
+    const tuning = new Set(rows.slice(3));
     const passing = () => this.#state().transitions === "on";
     const keys = SETTINGS.motion;
     tagSettings(rows, keys);
-    const playIcon = icon("play");
-    const pauseIcon = icon("pause");
-    const playLabel = h("span");
-    play.append(playIcon, pauseIcon, playLabel);
     this.#syncers.push(
       motion.sync,
       follow.sync,
@@ -1422,12 +1478,6 @@ export class Inspector {
       blend.sync,
       slowmo.sync,
       ...rows.map((built) => built.sync),
-      () => {
-        const paused = this.#ctx.renderer()?.paused ?? false;
-        setStyle(playIcon, "display", paused ? "" : "none");
-        setStyle(pauseIcon, "display", paused ? "none" : "");
-        setText(playLabel, paused ? "Play" : "Pause");
-      },
     );
     return this.#section({
       id: "motion",
@@ -1442,11 +1492,7 @@ export class Inspector {
       summary: () => {
         const state = this.#state();
         return [
-          this.#ctx.renderer()?.paused
-            ? "paused"
-            : state.motion === 0
-              ? "still"
-              : `${Math.round(state.motion * 100)}%`,
+          this.#ctx.renderer()?.paused ? "paused" : amount(state.motion),
           state.mouse === "follow" ? "follows mouse" : "fixed camera",
           state.transitions === "on" ? "" : "cuts",
         ].filter(Boolean);
@@ -1456,6 +1502,7 @@ export class Inspector {
     });
   }
 
+  /** The Page: what sits on top of the picture (and the name a private instance's card shows). */
   #pageGroup(): Section {
     const change = (patch: Record<string, string | number>, commit = true) =>
       this.#ctx.change(patch, commit);
@@ -1479,52 +1526,18 @@ export class Inspector {
       modified: () => this.#state().instance !== this.#base().instance,
       reset: () => change({ instance: this.#base().instance }),
     });
-    const dim = slider(
-      "Dim background",
-      0,
-      1,
-      0.05,
-      () => this.#state().dim,
-      (value, commit) => change({ dim: value }, commit),
-    );
-    const blur = slider(
-      "Blur background",
-      0,
-      1,
-      0.05,
-      () => this.#state().blur,
-      (value, commit) => change({ blur: value }, commit),
-    );
     const rows = [
       row({
         label: "Page on top",
-        help: "Landing: the public introduction. Loading: what shows while the app boots. Sign-in: the face of a private instance. None: the scene alone (h toggles this).",
+        help: "Landing: the public introduction. Loading: what shows while the app boots. Sign-in: the face of a private instance. None: the scene alone (h toggles this). Dim and blur under Look help the copy stand out.",
         icon: "page",
         block: page.el,
         modified: () => this.#state().mode !== this.#base().mode,
         reset: () => change({ mode: this.#base().mode }),
       }),
       nameRow,
-      row({
-        label: "Dim background",
-        help: "Darken the scene behind the page, to judge whether the copy needs help to stand out.",
-        icon: "tones",
-        block: dim.el,
-        readout: () => `${Math.round(this.#state().dim * 100)}%`,
-        modified: () => this.#state().dim !== 0,
-        reset: () => change({ dim: 0 }),
-      }),
-      row({
-        label: "Blur background",
-        help: "Soften the scene behind the page so the copy is the only sharp thing on screen.",
-        icon: "fog",
-        block: blur.el,
-        readout: () => `${Math.round(this.#state().blur * 12)}px`,
-        modified: () => this.#state().blur !== 0,
-        reset: () => change({ blur: 0 }),
-      }),
     ];
-    this.#syncers.push(page.sync, dim.sync, blur.sync, ...rows.map((built) => built.sync), () => {
+    this.#syncers.push(page.sync, ...rows.map((built) => built.sync), () => {
       const { instance } = this.#state();
       if (document.activeElement !== nameInput && nameInput.value !== instance)
         nameInput.value = instance;
@@ -1536,21 +1549,15 @@ export class Inspector {
     return this.#section({
       id: "page",
       title: "Page",
-      blurb: "What sits on top of the picture, and how the picture sits behind it.",
+      blurb:
+        "What sits on top of the picture: the landing page, the loading screen, a private instance's sign-in, or nothing.",
       icon: "page",
       shelf: "global",
       open: false,
       content: rows.map((built) =>
         built === nameRow ? dependent(built.el, ["mode"], named) : built.el,
       ),
-      summary: () => {
-        const state = this.#state();
-        return [
-          MODE_LABEL[state.mode],
-          state.dim > 0 ? `dim ${Math.round(state.dim * 100)}%` : "",
-          state.blur > 0 ? "blurred" : "",
-        ].filter(Boolean);
-      },
+      summary: () => [MODE_LABEL[this.#state().mode]],
       modified: () => keys.some((key) => this.#state()[key] !== this.#base()[key]),
       reset: () => change(Object.fromEntries(keys.map((key) => [key, this.#base()[key]]))),
     });

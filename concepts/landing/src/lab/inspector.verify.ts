@@ -12,9 +12,11 @@
 //   it, and one on the aurora, or on the Milky Way under the drawings over it, switches that part;
 // - `compact`: the compact bar (menu.ts) has a chip per section in the Controls order, each opening
 //   the section's own element, open and whole, in the tab order only while open; Escape gives it
-//   back where it stood and the keyboard to its chip; the arrows walk the chips; a change lights
-//   its chip and a sync that changes nothing writes nothing; country's chips drop their titles,
-//   then scroll, as the room shrinks; another scene closes its sections' popovers, not Global's.
+//   back where it stood and the keyboard to its chip; the arrows walk the chips; the Find chip
+//   shows the whole view, the keyboard in its search, and gives it back as it closes; a change
+//   lights its chip and a sync that changes nothing writes nothing; country's chips drop their
+//   titles, then scroll, as the room shrinks; another scene closes its sections' popovers, not
+//   Global's.
 import labCss from "../lab.css" with { type: "text" };
 import { sceneDefs } from "../scenes/index.ts";
 import { encodePlanets, PLANETS_KEY, type SkyPlanet } from "../scenes/planets.ts";
@@ -65,7 +67,7 @@ function view(query: URLSearchParams, sections: Record<string, boolean> = {}): V
     renderer: () => undefined,
     reducedMotion: true,
   };
-  const inspector = new Inspector(ctx, { sections, keepWorld: false, save: () => {} });
+  const inspector = new Inspector(ctx, { sections, keepWorld: false, save: () => {} }, () => {});
   const box = document.createElement("div");
   box.style.cssText =
     "position: fixed; inset: 0 auto 0 0; width: 380px; display: flex; flex-direction: column; overflow: auto; background: #0b0c10";
@@ -391,7 +393,6 @@ function compactBar(query: URLSearchParams, sections: Record<string, boolean>) {
   box.append(bar.el);
   layer.append(box);
   document.body.append(layer);
-  controls.inspector.compact = true;
   controls.inspector.sync();
   bar.sync();
   return {
@@ -476,15 +477,30 @@ async function compact(): Promise<Record<string, unknown>> {
       "the given-back sky's section stays open though folded",
     );
 
-    // The arrows walk the chips, one tab stop.
+    // The arrows walk the chips, one tab stop: Find, the scene's, then the strip.
     const all = [...bar.el.querySelectorAll<HTMLButtonElement>(".menu-chip")];
-    const [scene, presets] = all;
+    const [find, scene, presets] = all;
     scene?.focus();
     scene?.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true }));
     check(document.activeElement === presets, "ArrowRight does not move to the next chip");
     presets?.dispatchEvent(new KeyboardEvent("keydown", { key: "End", bubbles: true }));
     check(document.activeElement === all.at(-1), "End does not move to the last chip");
     check(all.filter((each) => each.tabIndex === 0).length === 1, "the chips are not one tab stop");
+
+    // Find shows the whole Controls view, the keyboard in its search; closed, it goes back.
+    const home = inspector.el.parentElement;
+    find?.click();
+    const finding = inspector.el.closest<HTMLElement>(".popover");
+    check(finding !== null && !finding.hidden, "the Find chip does not show the Controls view");
+    check(
+      document.activeElement === inspector.el.querySelector('input[type="search"]'),
+      "the Find chip does not hand the keyboard to the search",
+    );
+    find?.click();
+    check(
+      inspector.el.parentElement === home && finding.hidden,
+      "the Controls view does not come back from the closed Find popover",
+    );
 
     // A change lights its section's chip; a sync that changes nothing writes nothing.
     const weather = element<HTMLButtonElement>(bar.el, '.menu-chip[data-id="country:weather"]');

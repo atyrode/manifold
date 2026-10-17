@@ -2,6 +2,7 @@
 // scene's (baseline and saved here), then the ones saved in this browser with export and import,
 // then the baseline shelved by scene family. A click loads one here; its arrow opens it on the
 // exact build it was tuned on. The setup on screen is saved from the bar on top.
+import { canonicalSetup } from "../compare.ts";
 import {
   loadLocalPresets,
   parsePresets,
@@ -297,7 +298,11 @@ export class PresetsView {
             this.sync();
           });
     const el = h("li", { class: "preset" }, main, original, remove);
-    this.#rows.push({ el, query: preset.query });
+    // A setup saved here before a URL schema step reads as this build's own (committed presets are
+    // canonical already, presets.test.ts): it lights while it is the one on screen.
+    const query =
+      local === undefined ? preset.query : canonicalSetup(new URLSearchParams(preset.query));
+    this.#rows.push({ el, query });
     return el;
   }
 }

@@ -1,5 +1,6 @@
-// The lab's compact presentation (lab.ts): its whole menu laid flat along a bar. The scene's chip
-// opens the Scenes view and the Presets chip the presets; then a chip per Controls section, in the
+// The lab's compact presentation (lab.ts): its whole menu laid flat along a bar. The Find chip
+// opens the Controls view itself (its search, lens and rail, narrowing as in the panel), the scene's
+// chip the Scenes view and the Presets chip the presets; then a chip per Controls section, in the
 // Controls order (the World shelf, the scene's groups, Global), opens that section. Each opens in a
 // popover holding the panel's own element, lent while it is open (dom.ts `borrow`, inspector.ts
 // `lend`), so both presentations share one set of controls and one set of syncs. A section's chip
@@ -15,10 +16,10 @@ import type { Inspector, MenuSection, Shelf } from "./inspector.ts";
 import { chipState, chipStep, fitChips, stripRoom } from "./menu-model.ts";
 import { Popover } from "./popover.ts";
 
-/** The panel's views the bar opens besides the sections. */
-export type MenuViewId = "scenes" | "presets";
+/** The panel's views the bar opens besides the sections: the Controls view is its Find chip's. */
+export type MenuViewId = "controls" | "scenes" | "presets";
 
-/** A view of the panel the bar opens (Scenes, Presets): its element, lent while it is open. */
+/** A view of the panel the bar opens (Controls, Scenes, Presets): its element, lent while open. */
 export interface MenuView {
   el: HTMLElement;
   /** It came on screen in its popover. */
@@ -52,6 +53,18 @@ export class MenuBar {
   readonly tools = h("div", { class: "menu-tools" });
   /** The way back to the inspector panel. */
   readonly expand: HTMLButtonElement;
+  /** The Find chip, at the head of the bar (an icon alone): the Controls view, its search in hand. */
+  readonly find = h(
+    "button",
+    {
+      type: "button",
+      class: "menu-chip menu-find",
+      title: "Find a control: the search, the changed lens and every group",
+      "aria-label": "Find a control",
+      tabIndex: -1,
+    },
+    icon("search"),
+  );
   readonly #layer: HTMLElement;
   readonly #inspector: Inspector;
   /** The chips, one tab stop: the scene's, then the strip of the rest. */
@@ -73,7 +86,7 @@ export class MenuBar {
   constructor(
     layer: HTMLElement,
     inspector: Inspector,
-    views: Record<MenuViewId, MenuView>,
+    views: Record<Exclude<MenuViewId, "controls">, MenuView>,
     expand: () => void,
   ) {
     this.#layer = layer;
@@ -86,7 +99,13 @@ export class MenuBar {
       this.#sceneName,
     );
     const presets = chipButton("bookmark", "Presets");
+    // The Controls view moves into the popover whole, its search taking the keyboard.
     this.#views = {
+      controls: this.#view("controls", "Find a control", "search", this.find, {
+        el: inspector.el,
+        shown: () => inspector.shown(),
+        focus: () => inspector.focusSearch(),
+      }),
       scenes: this.#view("scenes", "Scenes", "grid", this.#scene, views.scenes),
       presets: this.#view("presets", "Presets", "bookmark", presets, views.presets),
     };
@@ -95,6 +114,7 @@ export class MenuBar {
     this.#chips = h(
       "div",
       { class: "menu-chips", role: "toolbar", "aria-label": "Lab menu" },
+      this.find,
       this.#scene,
       this.#strip,
     );

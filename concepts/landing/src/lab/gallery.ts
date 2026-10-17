@@ -1,9 +1,9 @@
 // The lab panel's Scenes view: every scene as a thumbnail card, shelved by family with a rail of the
 // families, searchable, the one on screen marked. Arrow keys move between cards (one card in the tab
 // order), Enter or Space shows the scene. The lab syncs it while it shows, and as it comes on screen.
-import { sceneDefs, sceneIds, type SceneId } from "../scenes/index.ts";
+import { sceneDefs, type SceneId } from "../scenes/index.ts";
 import { h, setAttr, type LabContext } from "./dom.ts";
-import { families, sceneFamily } from "./families.ts";
+import { families, sceneFamily, sceneOrder } from "./families.ts";
 import { icon } from "./icons.ts";
 import { Rail } from "./rail.ts";
 import { standIn, thumbUrl } from "./thumbs.ts";
@@ -41,7 +41,7 @@ export class SceneGallery {
     this.#body = h("div", { class: "view-body gallery", role: "group", "aria-label": "Scenes" });
     this.#rail = new Rail(this.#body, "Scene families", ctx.reducedMotion);
     const entries = families.map((family) => {
-      const scenes = sceneIds.filter((id) => sceneFamily[id] === family.id);
+      const scenes = sceneOrder.filter((id) => sceneFamily[id] === family.id);
       const cards = scenes.map((id) => this.#card(id, setScene));
       const el = h(
         "section",

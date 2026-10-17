@@ -1,0 +1,6 @@
+---
+section: Changed
+issue: 1082
+---
+
+The landing concept lab has one home per setting and a refreshed look. Look now holds every picture setting (view, dither, colour, accent, tones, a cell size in half pixels, and the dim and blur behind the page, in hundredths), Motion holds the motion and the transitions, and Page holds the page on top; "⋯" keeps only the setup's and the session's tools, and play or pause lives in the tools alone. The compact bar gains a Find chip that opens the control search, the changed lens and the rail in a popover, and `/` from the bar opens the panel for that session only. Under a search, "Reset what changed" resets only what the search shows. Undo now means the last thing done: commits to the same controls within a second, such as a held arrow key, are one step, a playing tour's advances are one step, and the undo and redo buttons name what they undo. `[` and `]` follow the Scenes view's order, as does the tour's picker. Choices are radio groups, the faint text meets 4.5:1, touch targets for A and B grew, saved presets from older links light again, and the unused scene credit footer is gone. The panel and bar share one type scale (labels in the sans, numbers in the mono), three radii, sunk fields and segment rows, solid accent switches, thicker sliders, and popovers that rise into place.

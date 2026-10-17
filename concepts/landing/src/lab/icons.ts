@@ -9,7 +9,6 @@ const PATHS = {
   minus: "M3.5 8h9",
   undo: "M5.5 6H10a3 3 0 0 1 0 6H6M5.5 6 8 3.5M5.5 6 8 8.5",
   redo: "M10.5 6H6a3 3 0 0 0 0 6h4M10.5 6 8 3.5M10.5 6 8 8.5",
-  help: "M8 14.5a6.5 6.5 0 1 0 0-13 6.5 6.5 0 0 0 0 13zM6.2 6.3a1.9 1.9 0 1 1 2.6 1.8c-.5.2-.8.6-.8 1.1v.4M8 11.3h.01",
   info: "M8 14.5a6.5 6.5 0 1 0 0-13 6.5 6.5 0 0 0 0 13zM8 7.5v4M8 4.9h.01",
   search: "M7 11.5a4.5 4.5 0 1 0 0-9 4.5 4.5 0 0 0 0 9zM10.3 10.3 14 14",
   shuffle:
@@ -33,7 +32,6 @@ const PATHS = {
     "M2.5 4.5h11a1 1 0 0 1 1 1v5a1 1 0 0 1-1 1h-11a1 1 0 0 1-1-1v-5a1 1 0 0 1 1-1zM4.5 7h.01M6.8 7h.01M9.2 7h.01M11.5 7h.01M5.5 9.3h5",
   tour: "M3.5 14a1.5 1.5 0 1 0 0-3 1.5 1.5 0 0 0 0 3zM12.5 5a1.5 1.5 0 1 0 0-3 1.5 1.5 0 0 0 0 3zM5 12.5h4.5a2.25 2.25 0 0 0 0-4.5h-3a2.25 2.25 0 0 1 0-4.5H11",
   transition: "M2.5 2.5h7v7h-7zM6.5 6.5h7v7h-7zM8.5 8.5h.01M11.5 8.5h.01M8.5 11.5h.01M10 10h.01",
-  replay: "M13 8a5 5 0 1 1-1.5-3.5M13 2.5V5h-2.5M7 6.25v3.5L10 8z",
   fold: "M4 2.5l4 4 4-4M4 13.5l4-4 4 4",
   unfold: "M4 6l4-4 4 4M4 10l4 4 4-4",
   more: "M3.5 8.7a.7.7 0 1 0 0-1.4.7.7 0 0 0 0 1.4zM8 8.7a.7.7 0 1 0 0-1.4.7.7 0 0 0 0 1.4zM12.5 8.7a.7.7 0 1 0 0-1.4.7.7 0 0 0 0 1.4z",
@@ -496,8 +494,6 @@ export function iconFromWords(...texts: string[]): IconName | undefined {
   }
   return undefined;
 }
-
-export const iconNames = Object.keys(PATHS) as IconName[];
 
 /** An inline line icon, hidden from assistive technology (its control carries the name). */
 export function icon(name: IconName): SVGSVGElement {

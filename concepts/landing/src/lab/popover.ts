@@ -20,7 +20,10 @@ export interface PopoverSpec {
   label?: string;
   /** What it always holds. */
   content?: HTMLElement[];
-  /** No heading: what it shows brings its own (a section's). */
+  /**
+   * No heading on screen: what it shows brings its own (a section's), and its title is a heading
+   * for assistive technology alone.
+   */
   bare?: boolean;
   /** A view (Scenes, Presets): a fixed height its own body scrolls in. */
   view?: boolean;
@@ -66,7 +69,7 @@ export class Popover {
         hidden: true,
       },
       spec.bare
-        ? null
+        ? h("h2", { class: "sr-only" }, spec.title)
         : h("header", { class: "popover-head" }, icon(spec.icon), h("h2", {}, spec.title)),
       ...(spec.content ?? []),
     );

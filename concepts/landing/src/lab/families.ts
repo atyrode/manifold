@@ -1,7 +1,8 @@
 // The scene families: every scene in exactly one, so the Scenes view reads as a handful of shelves
 // instead of fifty cards (and the Presets view shelves the baseline the same way). `satisfies` makes
-// a new scene without a family a type error.
-import type { SceneId } from "../scenes/index.ts";
+// a new scene without a family a type error. `sceneOrder` is the Scenes view's order, shelf by
+// shelf: `[` and `]` and the tour's picker follow it too.
+import { sceneIds, type SceneId } from "../scenes/index.ts";
 import type { IconName } from "./icons.ts";
 
 export const families = [
@@ -65,3 +66,14 @@ export const sceneFamily = {
   bees: "life",
   mobile: "life",
 } as const satisfies Record<SceneId, FamilyId>;
+
+/** Every scene in the Scenes view's order: family by family, each in the catalogue's order. */
+export const sceneOrder: readonly SceneId[] = families.flatMap((family) =>
+  sceneIds.filter((id) => sceneFamily[id] === family.id),
+);
+
+/** The scene `by` places from `scene` in the Scenes view's order, round from the last to the first. */
+export function sceneStep(scene: SceneId, by: number): SceneId {
+  const count = sceneOrder.length;
+  return sceneOrder[(((sceneOrder.indexOf(scene) + by) % count) + count) % count] ?? scene;
+}

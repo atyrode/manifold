@@ -7,6 +7,7 @@ import {
   groupShows,
   itemShows,
   narrow,
+  shownChanges,
   switchChain,
   titleHolds,
   whenProblems,
@@ -233,5 +234,28 @@ describe("narrow", () => {
     const narrowed = narrow(items, gates, false, lens);
     expect(narrowed.gates).toEqual(["dormant", "closed"]);
     expect(narrowed.found).toEqual([true, true, false]);
+  });
+
+  test("under a search, what changed and shows is all its reset takes", () => {
+    // Motion and overlap changed; the search "blend" shows blend length (unchanged) alone.
+    const items: NarrowItem[] = [
+      { search: "amount motion", keys: ["motion"], held: false, gates: [] },
+      { search: "transitions", keys: ["transitions"], held: false, gates: [] },
+      { search: "overlap blend", keys: ["overlap"], held: false, gates: [0] },
+      { search: "blend length", keys: ["weave"], held: false, gates: [1] },
+    ];
+    const gates: LensGate[] = [
+      { chain: ["transitions"], live: false },
+      { chain: ["transitions"], live: true },
+    ];
+    const changed = new Set(["motion", "overlap", "transitions"]);
+    const search = (text: string) =>
+      shownChanges(items, narrow(items, gates, false, { text, lens: true, changed }), changed);
+    // Overlap shows dormant with the switch it waits on, which changed too; motion stays hidden.
+    expect(search("overlap")).toEqual(["transitions", "overlap"]);
+    expect(search("amount")).toEqual(["motion"]);
+    expect(search("length")).toEqual([]);
+    // The lens alone shows every change.
+    expect(search("")).toEqual(["motion", "transitions", "overlap"]);
   });
 });

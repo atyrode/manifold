@@ -759,8 +759,9 @@ setups and "copy link" carries both:
   lasts from the switch to it to the next switch, counted on the scene clock's pace (nothing while
   paused, at most 0.1 s per frame), so a slow machine still gives a growing scene its time. `t`
   plays or pauses, `[` and `]` step along it while it plays, and choosing a scene off the tour
-  pauses it. A tour link plays as it opens, except under reduced motion, where it waits for play
-  and cuts. Example: `?mode=bare&tour=physarum-60.petri-45.delta-60.frost-45`.
+  pauses it. Its own advances are one undo step, so one undo goes back to where it began. A tour
+  link plays as it opens, except under reduced motion, where it waits for play and cuts. Example:
+  `?mode=bare&tour=physarum-60.petri-45.delta-60.frost-45`.
 
 Links keep working from build to build. A setup carries the version of the URL schema it is written
 in (`v=`) where it needs one, and an older link is brought up to the current keys as it opens

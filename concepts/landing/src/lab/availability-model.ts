@@ -165,3 +165,19 @@ export function narrow(
   ).length;
   return { found, gates: states, shown };
 }
+
+/**
+ * The keys among `changed` held by the controls a narrowed group shows (found, and standing in no
+ * closed gate): under a search, "Reset what changed" restores these and nothing it hides.
+ */
+export function shownChanges(
+  items: readonly NarrowItem[],
+  narrowed: Narrowed,
+  changed: ReadonlySet<string>,
+): string[] {
+  return items.flatMap((item, at) =>
+    narrowed.found[at] === true && item.gates.every((gate) => narrowed.gates[gate] !== "closed")
+      ? item.keys.filter((key) => changed.has(key))
+      : [],
+  );
+}
