@@ -5,8 +5,10 @@
 //   season, 62.4 s of the motion clock reach autumn's key and 194.4 s midwinter, each drawn byte for
 //   byte as that date is.
 // - The climate: at midwinter the rain falls as snow, the frame with rain byte for byte the one with
-//   as much snow, while in summer rain is rain. The snow lying there is uWeather.y's alone: without it
-//   midwinter's land shows next to no snow white, under it most of the land is white.
+//   as much snow, while in summer rain is rain. The snow lying there is uWeather.y's alone: over
+//   the land with its woods off, without it midwinter's land shows next to no snow white, under it
+//   most of the land is white (a wood's crowns catch their own snow, white only in part, and the
+//   woods may fill the near ground).
 // - Winter bares the broadleaf trees and keeps the pines: over woods alone at midwinter (no snow
 //   lying), the broadleaf woods keep a small share of summer's green cells, the pine woods most.
 // - Spring over the fields: late in spring the rapeseed is in yellow flower (many more yellow cells
@@ -137,7 +139,7 @@ export function verifyCountryYear(gl: WebGL2RenderingContext): Record<string, un
     }
 
     // At midwinter the rain falls as snow; in summer it is rain. Midwinter's lying snow is
-    // uWeather.y's alone.
+    // uWeather.y's alone, over the land with its woods off (the near ground may be wooded).
     const rain = { rain: 1, "rain-amount": 0.8 };
     const snow = { snow: 1, "snow-amount": 0.8 };
     const winterRain = draw(valley, { ...rain, date: MIDWINTER }, { weather: lying });
@@ -149,7 +151,7 @@ export function verifyCountryYear(gl: WebGL2RenderingContext): Record<string, un
     result.summerRainVsSnow = differing(summerRain, summerSnow);
     check((result.summerRainVsSnow as number) > 500, "summer's rain draws as its snow");
     const landCells = Math.floor(LAND_ROWS * HEIGHT) * WIDTH;
-    const noon = { date: MIDWINTER, time: 0.5 };
+    const noon = { date: MIDWINTER, time: 0.5, woodland: 0 };
     const bareWhite = count(draw(valley, noon, { weather: [0, 0] }), WIDTH, white);
     const snowWhite = count(draw(valley, noon, { weather: lying }), WIDTH, white);
     result.midwinterWhite = { bare: bareWhite, lying: snowWhite, land: landCells };

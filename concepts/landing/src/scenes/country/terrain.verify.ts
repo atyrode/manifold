@@ -3,8 +3,9 @@
 // every optional part compiled in) draws them: the land, the river and the sky all show, the same
 // frame draws bit for bit the same twice, and another landscape draws another picture. The land is
 // drawn from the records: at sample points over the map, the parcel the shader finds carries the
-// use the land model (built again here on the CPU) gave it, and the woods stand only on woodland
-// parcels; a change of the land's uses rebuilds nothing (one sim frame, timed, writes no ground,
+// use the land model (built again here on the CPU) gave it, and the woods stand only where the
+// clearance lies above the woods' line (Terrain.clearance, landuse.ts landCanopy); a change of the
+// land's uses rebuilds nothing (one sim frame, timed, writes no ground,
 // and no parcels where it keeps every wood and its species, the one thing of the parcels' texture
 // it can move: their pine flag) and redraws the land, and the river switched off leaves its bed
 // dry (writing no parcels either). Sizes are small: software WebGL runs every line of the march.
@@ -16,7 +17,7 @@ import {
   sceneFeaturesAll,
   vertexSource,
 } from "../../shaders/index.ts";
-import { type LandAllocation, LandModel, LAND_USES } from "../../sims/landuse.ts";
+import { type LandAllocation, landCanopy, LandModel, LAND_USES } from "../../sims/landuse.ts";
 import { RatePhases } from "../../rate-phase.ts";
 import { generateTerrain } from "../../sims/terrain.ts";
 import { defaultsFor, paramDefaults, renderSettings } from "../../state.ts";
@@ -234,6 +235,7 @@ Shade probeLand(vec2 uv, vec2 cell, float t) {
   vec2 p = (floor(cell) * stride + floor(0.5 * stride) + 0.5) * texel;
   TerrainParcel parcel = terrainParcel(uSim2, uSim3, p, COUNTRY_EXTENT);
   vec4 cover = terrainCover(uSim1, p, COUNTRY_EXTENT);
+  countryWoodsSet();
   float woods = countryWoods(cover, terrainWater(terrainGround(uSim0, p, COUNTRY_EXTENT)), false) > 0.5 ? 8.0 : 0.0;
   float high = floor(parcel.id / 256.0);
   return shadeOf(vec3(high, parcel.id - 256.0 * high, floor(parcel.use + 0.5) * 16.0 + woods) / 255.0, 0.0, 0.0);
@@ -337,11 +339,10 @@ export function verifyCountryTerrain(gl: WebGL2RenderingContext): Record<string,
           cows: values.cows ?? 0,
         });
       };
-      // Per parcel its wood: 0 none, 1 broadleaf, 2 pine. The parcels' species flags (uSim2) read
-      // nothing else of the land's uses.
-      const woodland = LAND_USES.indexOf("woodland");
+      // Per parcel its woods' species: 0 none (woodland off), 1 broadleaf, 2 pine. The parcels'
+      // species flags (uSim2) read nothing else of the land's uses.
       const woodsOf = (allocation: LandAllocation): Uint8Array =>
-        allocation.use.map((use, s) => (use === woodland ? 1 + (allocation.attr[s] ?? 0) : 0));
+        allocation.pine.map((pine) => (allocation.wooded ? 1 + pine : 0));
       let woods = woodsOf(allocationFor({}));
       const kept: string[] = [];
       const result: Record<string, unknown> = { buildFrames: first.frames, sky, land, water };
@@ -392,9 +393,10 @@ export function verifyCountryTerrain(gl: WebGL2RenderingContext): Record<string,
           );
           if ((coded & 8) !== 0) {
             wooded++;
+            const q = j * m + i;
             check(
-              LAND_USES[use] === "woodland",
-              `${name}: woods stand on parcel ${id}, which is ${LAND_USES[use] ?? use}`,
+              landCanopy(terrain.clearance[q] ?? 0, allocation.line) > 0,
+              `${name}: woods stand at texel ${q}, below the woods' line (${allocation.line})`,
             );
           }
         }

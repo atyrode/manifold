@@ -9,7 +9,8 @@
 // over a few frames (the last one stays on screen meanwhile); the river's size the river and what
 // stands near it; the settlements and roads only those and the parcels; the land's uses, the pine
 // mix, the cattle share and the chalk M (which keeps the woods and fields off its hillside) only the
-// allocation, packed and uploaded within the frame; the river switched off only dries its bed.
+// allocation, packed and uploaded within the frame (the woodland share the woods' line, and the few
+// parcels it turns into woods or back); the river switched off only dries its bed.
 // Herds' size, walkers, carts, birds, the time of year (the date, carried round while the year
 // passes: the crops, grass, hedges and trees through the farming year, the harvest's bales, and the
 // climate that turns a winter's rain to snow; season.ts), the river's wind ripples, the lit windows
@@ -104,7 +105,7 @@ const params = [
     true,
     60,
     "#c8a05a",
-    "Arable and hay fields, hedged: wheat, barley, rapeseed, hay meadows, grazing and the plough, each field's crop chosen by its ground (hay and grazing on the floodplain and the steep slopes). Shares are relative: crops 60 and woodland 30 give crops two parcels of land for each wooded one. The flattest, lowest ground near the roads and settlements is the crops' first.",
+    "Arable and hay fields, hedged: wheat, barley, rapeseed, hay meadows, grazing and the plough, each field's crop chosen by its ground (hay and grazing on the floodplain and the steep slopes). Shares are relative: crops 60 and woodland 30 give crops twice the land the woods take. The flattest, lowest ground near the roads and settlements is the crops' first.",
     "fields",
   ),
   landUse(
@@ -112,7 +113,7 @@ const params = [
     true,
     30,
     "#4a7a3a",
-    "Woods on the steep, high and poor ground first, growing outward from it as the share rises and giving way at their edges as it falls, whole parcels at a time; nothing else moves. Woods keep off the river, the roads and the yards, and leave the slopes under the vantage open. Off, it also fells the lone trees in the hedges and on the river's banks.",
+    "Woods as a layer of their own, the wildwood the fields were cleared from: on the steep, high ground far from the settlements first, with shaws along the streams and copses between, growing outward as the share rises and giving way at their edges as it falls. A field they reach into keeps its use and loses that corner; one they all but cover becomes a wood. Woods keep off the river, the streams, the roads and the yards, wherever the hill looks. Off, it also fells the lone trees in the hedges and on the river's banks.",
   ),
   landUse(
     "pasture",
@@ -157,8 +158,8 @@ const params = [
     "land",
     "cows",
     "cattle share",
-    0.5,
-    "The share of the pastures grazed by cattle (Friesians, Herefords or Angus) rather than sheep, cattle on the low, flat, wet ground first. Each enclosure keeps one kind; a change swaps only as many herds as it must.",
+    0.3,
+    "The share of the grazing land given to cattle (Friesians, Herefords or Angus) rather than sheep, cattle on the low, flat, wet ground first. Each enclosure keeps its kind whatever the other shares do; raising this turns only sheep to cattle, lowering it only cattle to sheep.",
     { step: 0.05, when: "pasture" },
   ),
   range(

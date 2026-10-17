@@ -3,11 +3,13 @@
 // Herds (COUNTRY_HAS_HERDS; the shared livestock, shaders/lib/livestock.ts). A pasture parcel (the
 // land model's, sims/landuse.ts, read from its record with its herd's kind: cattle or sheep) keeps a
 // herd in its clear core (terrainCore: the widest disc of the parcel clear of its border, water,
-// roads, streams, yards and lone trees, sims/terrain.ts). The herd's size follows the herd knob and
-// the core's room. Its centre wanders and its animals stray only as far as leaves every one inside
-// the core less the fence's set and a body's reach, so no animal ever leaves its field; the shared
-// schedule walks each between anchors there. A post-and-rail fence stands COUNTRY_FENCE_SET inside
-// each pasture's border.
+// roads, streams, yards, lone trees and the wilder half of its ground, sims/terrain.ts), while the
+// woods reach no part of it (the core's highest clearance under the woods' line); a field the woods
+// have reached into that far keeps no herd. The herd's size follows the herd knob and the core's
+// room. Its centre wanders and its animals stray only as far as leaves every one inside the core
+// less the fence's set and a body's reach, so no animal ever leaves its field; the shared schedule
+// walks each between anchors there. A post-and-rail fence stands COUNTRY_FENCE_SET inside each
+// pasture's border, but under the woods.
 //
 // Walkers and carts (COUNTRY_HAS_AGENTS; the shared figures, shaders/lib/figures.ts) keep to the
 // roads: each takes a road of the network (terrainWays, resampled evenly) and goes out along it and
@@ -37,10 +39,10 @@ struct CountryHerd {
   vec2 middle;    // the core's centre
 };
 
-// The herd of pasture parcel id with clear core (centre xy, radius z), cattle (1) or sheep (0): as
-// many as fit the core less the fence's set and a body's reach, its centre wandering no farther than
-// keeps every one in.
-CountryHerd countryHerd(float id, vec3 core, float cattle) {
+// The herd of pasture parcel id with clear core (centre xy, radius z, its highest clearance w),
+// cattle (1) or sheep (0): as many as fit the core less the fence's set and a body's reach, its
+// centre wandering no farther than keeps every one in; none where the woods reach into the core.
+CountryHerd countryHerd(float id, vec4 core, float cattle) {
   CountryHerd herd;
   herd.seed = hash12(vec2(id * 0.137, 4.13));
   herd.cattle = cattle;
@@ -52,7 +54,8 @@ CountryHerd countryHerd(float id, vec3 core, float cattle) {
   herd.middle = core.xy;
   float room = core.z - COUNTRY_FENCE_SET - 1.6 * herd.size;
   float want = floor(K_herd * (herd.cattle > 0.5 ? 10.0 : 14.0) * (0.65 + 0.7 * hash12(vec2(id, 7.37))) + 0.5);
-  herd.count = room > 0.0 ? min(min(want, livestockFit(room / herd.spacing)), float(COUNTRY_HERD_MAX)) : 0.0;
+  bool clear = core.w <= countryWoodLine - COUNTRY_WOOD_EDGE;
+  herd.count = room > 0.0 && clear ? min(min(want, livestockFit(room / herd.spacing)), float(COUNTRY_HERD_MAX)) : 0.0;
   // The drift reaches sqrt(2) of the roam at a corner.
   herd.roam = max(room - livestockReach(herd.count) * herd.spacing, 0.0) * 0.7071;
   return herd;
@@ -93,7 +96,7 @@ struct CountryStock {
 // The animal of pasture id's herd (core: its clear core; cattle 1 or sheep 0) covering pinhole point
 // q nearer than the ground the pixel shows (camera depth zGround), and the shadows at the herd's
 // feet.
-CountryStock countryHerdAt(vec3 eye, vec2 q, float cellAngle, float zGround, float id, vec3 core, float cattle) {
+CountryStock countryHerdAt(vec3 eye, vec2 q, float cellAngle, float zGround, float id, vec4 core, float cattle) {
   CountryStock st;
   st.cover = 0.0;
   st.albedo = vec3(0.0);
@@ -155,7 +158,8 @@ CountryStock countryHerdAt(vec3 eye, vec2 q, float cellAngle, float zGround, flo
 // The post-and-rail fence a pasture keeps COUNTRY_FENCE_SET inside its border, where the ray (eye,
 // rd) crosses it in front of the ground it met at tHit (point p, ground g there, its field parcel;
 // here, there: whether p's field and the one across its border are pastures). Rails and posts keep
-// at least half a cell; a gap where a road passes. rgb its timber, a its cover; zFence its depth.
+// at least half a cell; a gap where a road passes, and where the woods stand. rgb its timber, a its
+// cover; zFence its depth.
 vec4 countryFence(vec3 eye, vec3 rd, float tHit, vec3 p, vec4 g, TerrainParcel parcel, bool here, bool there, float cellAngle, out float zFence) {
   zFence = 1e9;
   vec4 best = vec4(0.0);
@@ -176,7 +180,9 @@ vec4 countryFence(vec3 eye, vec3 rd, float tHit, vec3 p, vec4 g, TerrainParcel p
     float post = step(abs(run - which) * COUNTRY_FENCE_SPAN, max(0.11, 0.5 * cell));
     float rails = max(step(abs(rise - 0.48 * COUNTRY_FENCE_HIGH), max(0.07, 0.5 * cell)), step(abs(rise - 0.9 * COUNTRY_FENCE_HIGH), max(0.07, 0.5 * cell)));
     float cover = max(post * step(rise, COUNTRY_FENCE_HIGH + 0.5 * cell), rails);
-    if (cover < 0.5 || terrainCover(uSim1, x.xz, COUNTRY_EXTENT).x < 2.0) continue;
+    if (cover < 0.5) continue;
+    vec4 under = terrainCover(uSim1, x.xz, COUNTRY_EXTENT);
+    if (under.x < 2.0 || countryWoods(under, -2.0, false) > 0.5) continue;
     zFence = t;
     vec3 timber = mix(vec3(0.42, 0.35, 0.27), vec3(0.6, 0.53, 0.42), rails) * (0.88 + 0.24 * hash12(vec2(which, parcel.id)));
     best = vec4(timber, 1.0);

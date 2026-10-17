@@ -47,7 +47,7 @@ import { effective, feature, KnobReader, type ParamDef } from "../../params.ts";
 import { glslFloat } from "../../shaders/glsl.ts";
 import { plantsGlsl } from "../../shaders/lib/plants.ts";
 import { splitHalf, toHalf } from "../../sims/half.ts";
-import { LAND_USES, type LandUse } from "../../sims/landuse.ts";
+import { landCanopy, LAND_USES, type LandUse, landWoodLine } from "../../sims/landuse.ts";
 import { clamp, fract, glslHash12, hash31, hypot2, lerp } from "../../sims/math.ts";
 import {
   PlantHabit,
@@ -534,6 +534,7 @@ export function vergeSlots(t: Terrain, packed: TerrainPacked, view: VergeView): 
   const parcels = new VergeParcels(t);
   const use = (s: number): number =>
     packed.records[4 * ((L.sites + Math.floor(s / 32)) * L.width + 2 * (s % 32)) + 6] ?? 0;
+  const woodLine = landWoodLine(packed);
   const m = t.size;
   const cell = t.cell;
   const ids = t.parcels.ids;
@@ -637,7 +638,7 @@ export function vergeSlots(t: Terrain, packed: TerrainPacked, view: VergeView): 
     const ground = sampleGrid(t.ground, m, W, rx, rz);
     if (sampleGrid(t.level, m, W, rx, rz) > ground - 0.3) return;
     if (sampleGrid(t.yard, m, W, rx, rz) > 0.05) return;
-    if (Math.abs(sampleCover(packed.cover, m, W, rx, rz, 2)) > 0.2) return;
+    if (landCanopy(sampleCover(packed.cover, m, W, rx, rz, 2), woodLine) > 0.2) return;
     slots.push({
       x: rx,
       y: ground,

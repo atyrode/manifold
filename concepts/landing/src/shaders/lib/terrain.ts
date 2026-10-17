@@ -7,9 +7,10 @@
 //   vec4 terrainGround(sampler2D ground, vec2 p, float extent)   ground, water level, d/dx, d/dz
 //   vec4 terrainCover(sampler2D cover, vec2 p, float extent)     road and stream signed distance
 //                                                                (metres, negative on it), the
-//                                                                woods' canopy (landuse.ts packLand:
-//                                                                0..1), yard 0..1 (-1 a lone
-//                                                                tree's texel)
+//                                                                woods' clearance (Terrain.clearance:
+//                                                                the woods stand above
+//                                                                terrainWoodLine), yard 0..1 (-1 a
+//                                                                lone tree's texel)
 //   float terrainSurface(vec4 ground)                            what a ray meets: max(ground, water)
 //   float terrainWater(vec4 ground)                              water depth (≤ 0 dry)
 //   vec3 terrainNormal(vec4 ground)                              the ground's normal, smooth between
@@ -22,9 +23,10 @@
 //       among the eight the four texels around p list, so borders are exact lines between texels,
 //       not texel steps; `normal` the unit direction across the border (toward the neighbour),
 //       `other` the neighbour's id and `otherUse` its use
-//   vec3 terrainCore(sampler2D records, float id)                parcel id's clear core (a herd's
+//   vec4 terrainCore(sampler2D records, float id)                parcel id's clear core (a herd's
 //                                                                ground): centre xy, radius z
-//                                                                (metres; 0 none)
+//                                                                (metres; 0 none), w the highest
+//                                                                clearance in it
 //   vec4 terrainRecord(sampler2D records, int row, int column)   one record texel (TERRAIN_*_ROW)
 //   vec2 terrainSplit(vec4 v)                                    a position written as two half pairs
 //   TerrainBuilding terrainBuilding(sampler2D records, int i)    position, base, heading, kind, span, hash
@@ -35,6 +37,8 @@
 //   float terrainTop(sampler2D records)                          the highest ground or water on the
 //                                                                map (metres, the river full): no
 //                                                                ray above it rising meets the land
+//   float terrainWoodLine(sampler2D records)                     the woods' line: the clearance the
+//                                                                woods stand above (landuse.ts)
 //   int terrainWayCount(sampler2D records)                       roads resampled (terrainWays)
 //   TerrainWay terrainWay(sampler2D records, int i)              road i: points, spacing, kind
 //   vec3 terrainWayAt(sampler2D records, TerrainWay way, float s, out vec2 heading)
@@ -178,11 +182,11 @@ TerrainParcel terrainParcel(sampler2D ids, sampler2D records, vec2 p, float exte
   return parcel;
 }
 
-vec3 terrainCore(sampler2D records, float id) {
+vec4 terrainCore(sampler2D records, float id) {
   int s = int(id) - 1;
   vec2 site = terrainSplit(terrainRecord(records, TERRAIN_SITES_ROW + s / 32, 2 * (s - (s / 32) * 32)));
   vec4 core = terrainRecord(records, TERRAIN_CORES_ROW + s / 64, s - (s / 64) * 64);
-  return vec3(site + core.xy, core.z);
+  return vec4(site + core.xy, core.zw);
 }
 
 // span: the long wall's length over the gable's width (TerrainBuilding.length in sims/terrain.ts:
@@ -248,6 +252,10 @@ int terrainWayCount(sampler2D records) {
 
 float terrainTop(sampler2D records) {
   return terrainRecord(records, TERRAIN_MISC_ROW, 5).y;
+}
+
+float terrainWoodLine(sampler2D records) {
+  return terrainRecord(records, TERRAIN_MISC_ROW, 5).z;
 }
 
 struct TerrainWay { int first; int count; float spacing; float kind; };

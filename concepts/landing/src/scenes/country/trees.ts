@@ -1,10 +1,12 @@
 // The countryside's trees: the woods and the lone trees in the hedges and on the banks, drawn as
 // whole crowns with the shared shapes (shaders/lib/trees.ts: a broadleaf's dome, a pine's tiered
-// boughs). Where the woods stand, and which are pine, is the land model's (sims/landuse.ts
-// packLand: the cover's canopy channel, and LAND_PINE_FLAG in the parcels' map under pine woods,
-// kept out of the canopy, which is filtered: a signed one fell through 0 where a pine wood met a
-// broadleaf one, leaving a treeless strip); which lone trees stand too (the yard channel's -1, only
-// on a standing hedge or a bank, and only while woodland has a share).
+// boughs). Where the woods stand is the clearance (the cover's z: sims/terrain.ts's clearance
+// field, felled under the chalk M) above the woods' line the land model writes into the records
+// (sims/landuse.ts packLand; read once a pixel, countryWoodsSet), so the woodland share moves one
+// value and the woods' edge is the line's contour through a smooth field, smooth at any distance.
+// Which woods are pine is LAND_PINE_FLAG in the parcels' map, kept out of the clearance, which is
+// filtered; which lone trees stand is the yard channel's -1 (only on a standing hedge or a bank,
+// only while woodland has a share, and never inside the woods, which take them in).
 //
 // The march meets bounds, never the crowns themselves: the woods' envelope (their canopy's height
 // over a band a little wider than the woods) and each lone tree's tent (its yard texel of -1
@@ -18,7 +20,45 @@
 // broadleaf's twigs (season.ts's countryLeafYear: they open as its leaves fall and close as they come
 // back). Farther off the bound is shaded as the canopy.
 import { glslFloat } from "../../shaders/glsl.ts";
-import { LAND_PINE_FLAG } from "../../sims/landuse.ts";
+import { LAND_PINE_FLAG, LAND_WOOD_EDGE } from "../../sims/landuse.ts";
+import { TERRAIN_CLEARANCE_SLOPE } from "../../sims/terrain.ts";
+
+/** Metres a wood's crown reaches past its root at most (its radius: countryWoodTree). */
+const CROWN_REACH = 3.2;
+
+/**
+ * Where the woods stand (see the header): their line, read once a pixel, and countryWoods. Ahead of
+ * season.ts's GLSL in the scene's program, which keeps its bales out of the woods; the trees
+ * (countryTreesGlsl) come after it.
+ */
+export const countryWoodsGlsl = /* glsl */ `
+// Half the clearance a wood's edge ramps over (landuse.ts LAND_WOOD_EDGE), and the most the
+// clearance falls over a crown's reach, filtered between texels (sqrt(2) TERRAIN_CLEARANCE_SLOPE a
+// metre).
+const float COUNTRY_WOOD_EDGE = ${glslFloat(LAND_WOOD_EDGE)};
+const float COUNTRY_WOOD_REACH = ${glslFloat(Math.SQRT2 * TERRAIN_CLEARANCE_SLOPE * CROWN_REACH)};
+
+// The woods' line: the clearance the woods stand above (landuse.ts packLand). Set once a pixel by
+// countryWoodsSet, before anything reads the woods; until then above every clearance.
+float countryWoodLine = 64.0;
+
+void countryWoodsSet() {
+  countryWoodLine = terrainWoodLine(uSim3);
+}
+
+// How much of the woods stands here, 0..1: the clearance (cover z) over the woods' line, cleared
+// from the roads, streams and yards (cover x, y, w) and the water under it. loose: the band every
+// crown of the woods lies within (their envelope): the same edge with the line lowered by as much
+// as the clearance can fall over a crown's reach, so a tree rooted where the woods stand over half
+// never reaches past it, and a few metres wider than the woods where the clearance falls fastest.
+float countryWoods(vec4 cover, float water, bool loose) {
+  float line = countryWoodLine - (loose ? COUNTRY_WOOD_REACH : 0.0);
+  float wood = smoothstep(line - COUNTRY_WOOD_EDGE, line + COUNTRY_WOOD_EDGE, cover.z);
+  float canopy = wood * smoothstep(1.5, 5.0, cover.x) * smoothstep(0.5, 3.5, cover.y) * (1.0 - smoothstep(0.1, 0.4, cover.w));
+  float on = loose ? smoothstep(0.0, 0.2, canopy) : smoothstep(0.55, 0.85, canopy);
+  return on * smoothstep(-0.3, -1.5, water);
+}
+`;
 
 export const countryTreesGlsl = /* glsl */ `
 const float COUNTRY_CROWN_CELL = 7.0;   // the woods: one tree a cell, its crown inside it, metres
@@ -34,25 +74,21 @@ bool countryPine(float h) {
 #endif
 }
 
-// How much of the woods stands here, 0..1, from the canopy (packLand: 1 inside a woodland parcel,
-// pulled in at its edges, cleared from water, streams, roads and yards) and the water under it.
-// loose: the band, a few metres wider, that every crown of the woods lies within (their envelope):
-// trees root only where the canopy is over half (a texel or so in from where it ends), so a crown
-// never reaches past the band.
-float countryWoods(vec4 cover, float water, bool loose) {
-  float on = loose ? smoothstep(0.0, 0.2, cover.z) : smoothstep(0.55, 0.85, cover.z);
-  return on * smoothstep(-0.3, -1.5, water);
+// Whether the yard texel at 'at' holds a lone tree that stands: one the woods have not taken in.
+bool countryLoneStands(ivec2 at) {
+  vec4 cover = texelFetch(uSim1, at, 0);
+  return cover.w < -0.5 && countryWoods(cover, -2.0, false) < 0.5;
 }
 
 #if COUNTRY_HAS_PINES
-// 1 where the wood over texel 'at' of the parcels' map is a pine wood (packLand's LAND_PINE_FLAG in
-// the nearest parcel id's high byte), else 0.
+// 1 where the parcel of texel 'at' has pine woods (packLand's LAND_PINE_FLAG in the nearest parcel
+// id's high byte), else 0.
 float countryPineTexel(ivec2 at) {
   return step(${glslFloat(LAND_PINE_FLAG - 0.5)}, texelFetch(uSim2, at, 0).y * 255.0);
 }
 
 // How much of the woods' canopy at p is pine woods', 0..1: the flags of the four texels round p
-// blended as the canopy itself is, so a pine wood's colour meets a broadleaf one's where they meet.
+// blended as the clearance itself is, so a pine wood's colour meets a broadleaf one's where they meet.
 float countryPines(vec2 p) {
   ivec2 size = textureSize(uSim2, 0);
   vec2 f = p / COUNTRY_EXTENT * vec2(size) - 0.5;
@@ -191,7 +227,7 @@ CountryTree countryLoneTree(ivec2 at) {
 bool countryLonePine(vec2 p) {
   ivec2 size = textureSize(uSim1, 0);
   ivec2 at = clamp(ivec2(floor(p / COUNTRY_EXTENT * vec2(size))), ivec2(0), size - 1);
-  return texelFetch(uSim1, at, 0).w < -0.5 && countryPine(countryLoneHash(at));
+  return countryLoneStands(at) && countryPine(countryLoneHash(at));
 }
 
 // The woods' tree of crown cell \`cell\`: it stands (radius > 0) where the woods at its root outgrow
@@ -248,7 +284,7 @@ float countryCrowns(vec3 ro, vec3 rd, float tHit, vec3 p, vec4 g, out CountryTre
   ivec2 base = ivec2(floor(p.xz / COUNTRY_EXTENT * vec2(size) - 0.5));
   for (int k = 0; k < 4; k++) {
     ivec2 at = clamp(base + ivec2(k - (k / 2) * 2, k / 2), ivec2(0), size - 1);
-    if (texelFetch(uSim1, at, 0).w > -0.5) continue;
+    if (!countryLoneStands(at)) continue;
     CountryTree lone = countryLoneTree(at);
     float t = countryTreeBound(ro, rd, lone);
     if (t > 0.0 && t < best) {

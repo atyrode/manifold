@@ -22,6 +22,7 @@ import {
   type LandOptions,
   landTexels,
   type LandTexels,
+  openLand,
   packLand,
 } from "../../sims/landuse.ts";
 import {
@@ -33,7 +34,7 @@ import {
   type TerrainPacked,
 } from "../../sims/terrain.ts";
 import type { SkyState } from "../../world-clock.ts";
-import { type ChalkSite, chalkSite, keepChalkOpen, packChalk } from "./chalk.ts";
+import { type ChalkSite, chalkSite, packChalk } from "./chalk.ts";
 import { packCountryFog } from "./fog.ts";
 
 /** What a build is for: the terrain's options, and the land's uses and river as they stand. */
@@ -61,7 +62,7 @@ export interface CountryBuilt {
   readonly allocation: LandAllocation;
 }
 
-/** The allocation for `uses`, the chalk M's parcels kept open while it is on. */
+/** The allocation for `uses`, the chalk M's parcels opened and their woods felled while it is on. */
 export function countryAllocation(
   model: LandModel,
   uses: LandOptions,
@@ -69,7 +70,7 @@ export function countryAllocation(
   site: ChalkSite | null,
 ): LandAllocation {
   const allocation = model.allocate(uses);
-  if (chalk) keepChalkOpen(allocation, model, site);
+  if (chalk) openLand(allocation, model, site?.parcels ?? []);
   return allocation;
 }
 

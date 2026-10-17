@@ -54,8 +54,11 @@
 //               and barns at the tracks' ends, the castle; each on a levelled terrace. Each draws
 //               from hashes of its own place, never a shared sequence, so no settlement's size
 //               moves another's buildings.
-//   woods       how well woodland suits each texel (steep, high, poor ground), 0..1: the land model
-//               (landuse.ts) weighs parcels for woodland by it and roughs the woods' edges with it.
+//   woods       the woods' clearance field: how late farming would clear each texel's wildwood, on
+//               the land as the river left it (steep, high, remote ground last; shaws along the
+//               streams, copses and lobes from the patches), never steeper than
+//               TERRAIN_CLEARANCE_SLOPE. The woods stand where it lies above the line the woodland
+//               share sets (landuse.ts), wherever the vantage stands or looks: no rule of the view's.
 //   parcels     land units: sites spread over the land, those in the water dropped (so the river's
 //               size drops or keeps only sites in the water between two sizes, and moves no other),
 //               smaller round every candidate settlement, each cell stretched along the contour
@@ -66,12 +69,12 @@
 //               (landuse.ts), not the build's.
 //
 // Outputs (Terrain): ground and water level per texel; signed distance to the nearest road and
-// stream edge (metres, negative on it); woodland suitability; yards (0..1 around buildings); the
+// stream edge (metres, negative on it); the woods' clearance; yards (0..1 around buildings); the
 // river's bed (where its own level is the water: `riverbed`); the river's centreline with its level
-// and width; settlements and every candidate site, buildings, roads with their profiles, the
-// bridge; parcel sites and the nearest two per texel. `packTerrain` lays them into the four
-// textures `terrainGlsl` (shaders/lib/terrain.ts) reads; `packWater` dries the river's bed in them
-// or fills it again.
+// and width; settlements and every candidate site, buildings, roads with their profiles and every
+// route as planned, the bridge; parcel sites and the nearest two per texel. `packTerrain` lays them
+// into the four textures `terrainGlsl` (shaders/lib/terrain.ts) reads; `packWater` dries the river's
+// bed in them or fills it again.
 //
 // Cost (size 512, a laptop's V8; the build reports its own per stage in `timings`): relief ~15 ms,
 // each of 20 erosion steps ~10 ms, detail ~20 ms, river ~40 ms, settlements ~30 ms, each road
@@ -80,7 +83,7 @@
 // A build given an earlier one reuses what its options leave as they were: the eroded relief when
 // only the river or the settlements change; the carved river and streams too when only the
 // settlements and roads do (the same riverKey), and with them what the later stages make of that
-// land and river alone: the settlements' sites, the woods' patches, the parcel sites and the
+// land and river alone: the settlements' sites, the woods' clearance, the parcel sites and the
 // parcels by the bare metric, so such a build searches the parcels again only where roads turn them.
 //
 // Usage (a sim building it over a few frames, keeping the last map on screen meanwhile):
@@ -122,6 +125,13 @@ export const TERRAIN_MAX_BUILDINGS = 128;
 export const TERRAIN_MAX_PLACES = 16;
 /** Points of the roads resampled for walkers and carts the records hold (terrainWays). */
 export const TERRAIN_MAX_WAY_POINTS = 4096;
+/**
+ * The steepest the woods' clearance field (Terrain.clearance) rises or falls between neighbouring
+ * texels, per metre along a row or column (√2 that along a diagonal): so a wood's edge ramps over a
+ * few metres at least, and the woods' bound a fixed step of clearance past their edge reaches
+ * every crown that roots inside it (trees.ts).
+ */
+export const TERRAIN_CLEARANCE_SLOPE = 0.008;
 /** Kinds of building, by `TerrainBuilding.kind` (its index is the packed kind). */
 export const TERRAIN_BUILDING_KINDS = ["cottage", "church", "barn", "castle"] as const;
 export type TerrainBuildingKind = (typeof TERRAIN_BUILDING_KINDS)[number];
@@ -264,17 +274,22 @@ export interface TerrainParcels {
   elongation: Float32Array;
   /** 1 where the site lies on the river's floodplain. */
   floodplain: Uint8Array;
-  /** Mean woodland suitability over the parcel's cell on the bare land (TerrainBare), 0..1. */
-  wood: Float32Array;
   /** Per texel the nearest and second-nearest site, id = index + 1 (0 none): [2·k], [2·k + 1]. */
   ids: Uint16Array;
   /**
    * Per site its clear core: the widest disc inside the parcel that keeps clear of its border,
-   * water, roads, streams, yards and lone trees (a herd's ground). Centre, metres; radius 0: none.
+   * water, roads, streams, yards, lone trees and the wilder half of its ground (its clear ground
+   * whose clearance is above the parcel's mean, which the woods take first): a herd's ground.
+   * Centre, metres; radius 0: none.
    */
   coreX: Float32Array;
   coreZ: Float32Array;
   coreRadius: Float32Array;
+  /**
+   * Per site the highest clearance (Terrain.clearance) inside its core: the woods reach into the
+   * core only while their line lies below it.
+   */
+  coreWoods: Float32Array;
 }
 
 /**
@@ -302,8 +317,11 @@ export interface Terrain {
   readonly road: Float32Array;
   /** The same for streams. */
   readonly stream: Float32Array;
-  /** Woodland suitability 0..1. */
-  readonly wood: Float32Array;
+  /**
+   * The woods' clearance field (see the header's woods stage): the woods stand where it lies above
+   * the line the woodland share sets (landuse.ts). The land and river's, as the bare land is.
+   */
+  readonly clearance: Float32Array;
   /** 0..1 around buildings (gardens, yards); -1 a lone tree (hedgerows, river banks), a texel each. */
   readonly yard: Float32Array;
   /** 1 where the river's own level is the water (its channel and banks; not the sea), else 0. */
@@ -318,6 +336,11 @@ export interface Terrain {
   readonly candidates: readonly TerrainSite[];
   readonly buildings: readonly TerrainBuilding[];
   readonly roads: readonly TerrainRoad[];
+  /**
+   * Every route as the network planned it, whole, whatever `roads` and `tracks` lay (`roads` holds
+   * those laid, and the village's own streets of those switched off).
+   */
+  readonly planned: readonly TerrainRoad[];
   readonly bridge: TerrainBridge | undefined;
   readonly parcels: TerrainParcels;
   readonly bare: TerrainBare;
@@ -567,6 +590,51 @@ function nearestOnLine(
       }
     }
   }
+}
+
+/**
+ * The signed distance (metres, negative on it) from every texel of `t` to the nearest edge of
+ * `roads`, out to `reach` metres from their edges; FAR beyond.
+ */
+export function wayDistance(
+  t: Terrain,
+  roads: readonly TerrainRoad[],
+  reach: number,
+): Float32Array {
+  const dist = new Float32Array(t.size * t.size).fill(FAR);
+  for (const road of roads)
+    nearestOnLine(
+      road.x,
+      road.z,
+      road.x.length,
+      () => road.halfWidth + reach,
+      road.halfWidth,
+      t.size,
+      t.cell,
+      dist,
+      undefined,
+    );
+  return dist;
+}
+
+/**
+ * Blur an n × n grid in place by a box `radius` cells either way, along the rows and then the
+ * columns (held at the edges); `scratch` is another n × n.
+ */
+function boxBlur(grid: Float64Array, scratch: Float64Array, n: number, radius: number): void {
+  const taps = 2 * radius + 1;
+  for (let j = 0; j < n; j++)
+    for (let i = 0; i < n; i++) {
+      let sum = 0;
+      for (let k = -radius; k <= radius; k++) sum += grid[j * n + clamp(i + k, 0, n - 1)] ?? 0;
+      scratch[j * n + i] = sum / taps;
+    }
+  for (let j = 0; j < n; j++)
+    for (let i = 0; i < n; i++) {
+      let sum = 0;
+      for (let k = -radius; k <= radius; k++) sum += scratch[clamp(j + k, 0, n - 1) * n + i] ?? 0;
+      grid[j * n + i] = sum / taps;
+    }
 }
 
 /**
@@ -854,8 +922,8 @@ interface Course {
  * The fine grid as the river and streams left it, which a later build keeping them starts from;
  * and what the later stages make of that land and river alone, kept as the first build to run them
  * makes them, so a build changing only the settlements and roads skips that work: the settlements'
- * sites (#settle), the woods' terms (#woods), the parcel sites (#parcelSites), and the parcels by the
- * bare metric (#parcelIds). A build hands on copies of these, never the kept arrays.
+ * sites (#settle), the woods' clearance (#woods), the parcel sites (#parcelSites), and the parcels by
+ * the bare metric (#parcelIds). A build hands on copies of these, never the kept arrays.
  */
 interface Carved {
   ground: Float32Array;
@@ -873,11 +941,11 @@ interface Carved {
   reach: (along: number) => number;
   /** Every settlement's site chosen, built or not, at its nominal radius. */
   sites?: readonly TerrainSettlement[];
-  /** Per texel woodland's suitability but for the land's slope and height (#woods' `rest`). */
-  rest?: Float64Array;
+  /** The woods' clearance field (Terrain.clearance). */
+  clearance?: Float32Array;
   darts?: CarvedSites;
-  /** Per texel its nearest two sites by the bare metric (as TerrainParcels.ids); per site its wood. */
-  bare?: { readonly ids: Uint16Array; readonly wood: Float32Array };
+  /** Per texel its nearest two sites by the bare metric (as TerrainParcels.ids). */
+  bare?: Uint16Array;
 }
 
 /** The parcel sites on the land as the river left it, each at its bare heading (#parcelSites). */
@@ -943,9 +1011,6 @@ export class TerrainBuilder {
   readonly #stream: Float32Array;
   readonly #road: Float32Array;
   readonly #roadAngle: Float32Array;
-  readonly #wood: Float32Array;
-  /** Woodland suitability on the bare land (no road cut, no yard). */
-  readonly #bareWood: Float32Array;
   readonly #yard: Float32Array;
   readonly #ids: Uint16Array;
   /** Per texel its nearest site by the bare metric (TerrainBare.ids). */
@@ -962,6 +1027,8 @@ export class TerrainBuilder {
   readonly #candidates: TerrainSite[] = [];
   readonly #routes: PlannedRoute[] = [];
   readonly #roads: TerrainRoad[] = [];
+  /** Every route as planned, laid or not (Terrain.planned). */
+  readonly #planned: TerrainRoad[] = [];
   #bridge: TerrainBridge | undefined;
   readonly #buildings: TerrainBuilding[] = [];
   #parcels: TerrainParcels | undefined;
@@ -1026,8 +1093,6 @@ export class TerrainBuilder {
     this.#stream = new Float32Array(cells);
     this.#road = new Float32Array(cells);
     this.#roadAngle = new Float32Array(cells);
-    this.#wood = new Float32Array(cells);
-    this.#bareWood = new Float32Array(cells);
     this.#yard = new Float32Array(cells);
     this.#ids = new Uint16Array(cells * 2);
     this.#bareIds = new Uint16Array(cells);
@@ -1061,7 +1126,9 @@ export class TerrainBuilder {
     for (let r = 0; r < MAX_ROUTES; r++) stages.push(["roads", () => this.#route(r)]);
     stages.push(["roadbeds", () => this.#roadbeds()]);
     stages.push(["buildings", () => this.#build()]);
-    stages.push(["woods", () => this.#woods()]);
+    stages.push(["woods", () => this.#woods(0, size >> 1)]);
+    stages.push(["woods", () => this.#woods(size >> 1, size)]);
+    stages.push(["woods", () => this.#woodsSmoothed()]);
     stages.push(["parcels", () => this.#parcelSites()]);
     stages.push(["parcels", () => this.#parcelIds(0, size >> 1)]);
     stages.push(["parcels", () => this.#parcelIds(size >> 1, size)]);
@@ -2598,6 +2665,7 @@ export class TerrainBuilder {
       bridgeStart,
       bridgeEnd,
     };
+    this.#planned.push(road);
     const laid = route.kind === "road" ? this.options.roads : this.options.tracks;
     const way = laid ? road : this.#street(road);
     if (way) this.#roads.push(way);
@@ -2897,81 +2965,115 @@ export class TerrainBuilder {
 
   // ---- woods and parcels ----------------------------------------------------------------------
 
-  #woods(): void {
-    const m = this.#m;
-    const g = this.#ground;
+  /**
+   * Rows j0 .. j1 - 1 of the woods' clearance field on the bare land (Terrain.clearance), once per
+   * land and river (Carved.clearance), before #woodsSmoothed smooths it: how late farming would clear
+   * each texel's wildwood. Steep and high ground last, as the woods stood there before; far from
+   * every candidate settlement, built or not (the land was cleared outward from them, and no switch
+   * moves a wood); a gully's sides along a stream (a shaw); a wood's lobes and copses from two scales
+   * of patches. No term is the view's: the vantage's slopes are wooded as any others would be.
+   */
+  #woods(j0: number, j1: number): void {
     const carved = this.#carved;
     if (!carved) throw new TerrainError("terrain: a stage was skipped");
-    const bare = carved.ground;
+    if (carved.clearance) return;
+    const m = this.#m;
     const cellF = this.#cellF;
-    const terms = (carved.rest ??= this.#woodTerms());
-    // Heights run from the land's own lowest to its highest, before any terrace or road is cut.
+    const seed = this.options.seed;
+    const g = carved.ground;
     let top = -Infinity;
     let bottom = Infinity;
     for (let q = 0; q < m * m; q++) {
-      top = Math.max(top, bare[q] ?? 0);
-      bottom = Math.min(bottom, bare[q] ?? 0);
+      top = Math.max(top, g[q] ?? 0);
+      bottom = Math.min(bottom, g[q] ?? 0);
     }
     const span = Math.max(1, top - bottom);
-    // How well woodland suits texel q of relief h (e, w, n, s: the texels beside it), given the
-    // rest of its terms (its patch and the vantage's open ground).
-    const suit = (
-      h: Float32Array,
-      q: number,
-      e: number,
-      w: number,
-      n: number,
-      s: number,
-      rest: number,
-    ): number => {
-      const slope = hypot2((h[e] ?? 0) - (h[w] ?? 0), (h[n] ?? 0) - (h[s] ?? 0)) / (2 * cellF);
-      const high = ((h[q] ?? 0) - bottom) / span;
-      return 0.55 * smoothstep(0.08, 0.38, slope) + 0.3 * smoothstep(0.35, 0.85, high) + rest;
-    };
-    for (let j = 0; j < m; j++) {
+    const homes = this.#candidates.filter((p) => p.kind !== "castle");
+    const field = (this.#wild ??= new Float64Array(m * m));
+    for (let j = j0; j < j1; j++) {
+      const z = (j + 0.5) * cellF;
       for (let i = 0; i < m; i++) {
         const q = j * m + i;
-        const e = j * m + Math.min(m - 1, i + 1);
-        const w = j * m + Math.max(0, i - 1);
-        const n = Math.min(m - 1, j + 1) * m + i;
-        const s = Math.max(0, j - 1) * m + i;
-        const rest = terms[q] ?? 0;
-        // On the bare land, without the roads' cuts and the yards: what the land model weighs each
-        // parcel for woodland by (TerrainParcels.wood).
-        const natural = suit(bare, q, e, w, n, s, rest);
-        this.#bareWood[q] = clamp(natural, 0, 1);
-        // As built: the same where no road's bed or terrace has touched the ground about it.
-        const cut =
-          g[q] !== bare[q] ||
-          g[e] !== bare[e] ||
-          g[w] !== bare[w] ||
-          g[n] !== bare[n] ||
-          g[s] !== bare[s];
-        const built = cut ? suit(g, q, e, w, n, s, rest) : natural;
-        this.#wood[q] = clamp(built - 0.9 * (this.#yard[q] ?? 0), 0, 1);
+        const x = (i + 0.5) * cellF;
+        const slope =
+          hypot2(
+            (g[j * m + Math.min(m - 1, i + 1)] ?? 0) - (g[j * m + Math.max(0, i - 1)] ?? 0),
+            (g[Math.min(m - 1, j + 1) * m + i] ?? 0) - (g[Math.max(0, j - 1) * m + i] ?? 0),
+          ) /
+          (2 * cellF);
+        const X = (i + 0.5) / m;
+        const Z = (j + 0.5) / m;
+        let home = Infinity;
+        for (const p of homes) {
+          const dx = p.x - x;
+          const dz = p.z - z;
+          home = Math.min(home, dx * dx + dz * dz);
+        }
+        const shaw =
+          (1 - smoothstep(6, 30, carved.stream[q] ?? FAR)) * smoothstep(0.02, 0.12, slope);
+        field[q] =
+          0.55 * smoothstep(0.08, 0.38, slope) +
+          0.3 * smoothstep(0.35, 0.85, ((g[q] ?? 0) - bottom) / span) +
+          0.55 * (2 * fbm(X * 9, Z * 9, seed + 11, 4) - 1) +
+          0.2 * (2 * fbm(X * 30, Z * 30, seed + 13, 2) - 1) +
+          0.2 * smoothstep(150, 900, Math.sqrt(home)) +
+          0.3 * shaw;
       }
     }
   }
 
-  /** Per texel woodland's suitability but for the slope and height: its patch, less open ground. */
-  #woodTerms(): Float64Array {
+  /** The woods' clearance field before it is smoothed, rows as #woods weighs them. */
+  #wild: Float64Array | undefined;
+
+  /**
+   * The woods' clearance field (#woods) blurred over some 25 m, then held under
+   * TERRAIN_CLEARANCE_SLOPE (the lower envelope of cones that steep from every texel), so a wood's
+   * edge ramps over a few metres at least however the ground breaks: Carved.clearance.
+   */
+  #woodsSmoothed(): void {
+    const carved = this.#carved;
+    if (!carved) throw new TerrainError("terrain: a stage was skipped");
+    if (carved.clearance) return;
+    const field = this.#wild;
+    if (!field) throw new TerrainError("terrain: a stage was skipped");
     const m = this.#m;
     const cellF = this.#cellF;
-    const seed = this.options.seed;
-    const v = this.options.vantage;
-    const terms = new Float64Array(m * m);
+    const scratch = new Float64Array(m * m);
+    boxBlur(field, scratch, m, 2);
+    boxBlur(field, scratch, m, 2);
+    // The lower envelope of cones TERRAIN_CLEARANCE_SLOPE steep: a sweep forward through the rows
+    // and one back, each texel lowered to its swept neighbours' values plus the rise allowed from
+    // them (exact for the 3 × 3 chamfer metric, so every pair of neighbours ends within it).
+    const side = TERRAIN_CLEARANCE_SLOPE * cellF;
+    const diagonal = side * SQRT2;
     for (let j = 0; j < m; j++) {
       for (let i = 0; i < m; i++) {
-        const X = (i + 0.5) / m;
-        const Z = (j + 0.5) / m;
-        const patch = 2 * fbm(X * 9, Z * 9, seed + 11, 4) - 1;
-        // The vantage stands on open ground: the near slopes below it are farmland, not a wood's top.
-        const open =
-          1 - smoothstep(250, 550, hypot2((i + 0.5) * cellF - v.x, (j + 0.5) * cellF - v.z));
-        terms[j * m + i] = 0.55 * patch + 0.3 - 0.9 * open;
+        const q = j * m + i;
+        let v = field[q] ?? 0;
+        if (i > 0) v = Math.min(v, (field[q - 1] ?? 0) + side);
+        if (j > 0) {
+          v = Math.min(v, (field[q - m] ?? 0) + side);
+          if (i > 0) v = Math.min(v, (field[q - m - 1] ?? 0) + diagonal);
+          if (i < m - 1) v = Math.min(v, (field[q - m + 1] ?? 0) + diagonal);
+        }
+        field[q] = v;
       }
     }
-    return terms;
+    for (let j = m - 1; j >= 0; j--) {
+      for (let i = m - 1; i >= 0; i--) {
+        const q = j * m + i;
+        let v = field[q] ?? 0;
+        if (i < m - 1) v = Math.min(v, (field[q + 1] ?? 0) + side);
+        if (j < m - 1) {
+          v = Math.min(v, (field[q + m] ?? 0) + side);
+          if (i < m - 1) v = Math.min(v, (field[q + m + 1] ?? 0) + diagonal);
+          if (i > 0) v = Math.min(v, (field[q + m - 1] ?? 0) + diagonal);
+        }
+        field[q] = v;
+      }
+    }
+    carved.clearance = Float32Array.from(field);
+    this.#wild = undefined;
   }
 
   /** The parcel sites (the land and river's: Carved.darts), each turned along a road beside it. */
@@ -2995,11 +3097,11 @@ export class TerrainBuilder {
       angle,
       elongation: darts.elongation.slice(),
       floodplain: darts.floodplain.slice(),
-      wood: new Float32Array(count),
       ids: this.#ids,
       coreX: new Float32Array(count),
       coreZ: new Float32Array(count),
       coreRadius: new Float32Array(count),
+      coreWoods: new Float32Array(count),
     };
   }
 
@@ -3116,9 +3218,9 @@ export class TerrainBuilder {
   /**
    * The nearest two sites per texel for rows j0 .. j1 - 1, by each site's stretched metric; and the
    * nearest two by the bare metric (each site at its bare heading: TerrainBare.ids the nearest),
-   * which differ only beside the sites a road turns. Those by the bare metric, and each site's wood
-   * over its bare cell, are the land and river's (Carved.bare): the first build of them finds them
-   * everywhere, and a later one searches only where its own turned sites reach.
+   * which differ only beside the sites a road turns. Those by the bare metric are the land and
+   * river's (Carved.bare): the first build of them finds them everywhere, and a later one searches
+   * only where its own turned sites reach.
    */
   #parcelIds(j0: number, j1: number): void {
     const parcels = this.#parcels;
@@ -3148,9 +3250,7 @@ export class TerrainBuilder {
           reached[b * nb + a] = 1;
     }
     // The bare pairs: read where kept, else written for the next build.
-    const pairs = kept?.ids ?? (this.#barePairs ??= new Uint16Array(2 * m * m));
-    const woodSum = new Float64Array(parcels.count);
-    const woodCount = new Int32Array(parcels.count);
+    const pairs = kept ?? (this.#barePairs ??= new Uint16Array(2 * m * m));
     const limit = 2.6 * PARCEL_SPACING;
     for (let j = j0; j < j1; j++) {
       const pz = (j + 0.5) * cellF;
@@ -3233,38 +3333,16 @@ export class TerrainBuilder {
         this.#bareIds[q] = bareS + 1;
         pairs[2 * q] = bareS + 1;
         pairs[2 * q + 1] = bareS2 + 1;
-        if (bareS >= 0) {
-          woodSum[bareS] = (woodSum[bareS] ?? 0) + (this.#bareWood[q] ?? 0);
-          woodCount[bareS] = (woodCount[bareS] ?? 0) + 1;
-        }
       }
     }
-    if (kept) {
-      if (j1 === m) parcels.wood.set(kept.wood);
-      return;
-    }
-    for (let s = 0; s < parcels.count; s++) {
-      const c = woodCount[s] ?? 0;
-      if (c === 0) continue;
-      // The two halves of the rows add up: keep a running mean weighted by texels.
-      const before = this.#woodTexels[s] ?? 0;
-      const mean = parcels.wood[s] ?? 0;
-      parcels.wood[s] = (mean * before + (woodSum[s] ?? 0)) / (before + c);
-      this.#woodTexels[s] = before + c;
-    }
-    if (j1 === m) carved.bare = { ids: pairs, wood: parcels.wood.slice() };
+    if (!kept && j1 === m) carved.bare = pairs;
   }
 
-  #woodTexels = new Int32Array(TERRAIN_MAX_PARCELS);
   /** The bare pairs this build finds, for Carved.bare (where no build of its land kept them). */
   #barePairs: Uint16Array | undefined;
 
   #trees(): void {
     const m = this.#m;
-    // No tree stands in the water.
-    for (let q = 0; q < m * m; q++) {
-      if ((this.#level[q] ?? 0) > (this.#ground[q] ?? 0) - 0.3) this.#wood[q] = 0;
-    }
     // Lone trees: along the hedges (some hedges lined with them, some bare) and the river's banks,
     // a texel each, written into the yard channel as -1 (see Terrain.yard).
     const seed = this.options.seed;
@@ -3293,8 +3371,9 @@ export class TerrainBuilder {
   /**
    * Each parcel's clear core (TerrainParcels.coreX..): its texel farthest from every texel that is
    * not clear ground of its own (beside another parcel's texel or the map's edge, water, a road or
-   * stream with its verge, a yard, a lone tree), at that distance less 1.5 texels, the most the
-   * parcels' exact border (terrainParcel) strays from its texel outline.
+   * stream with its verge, a yard, a lone tree, the wilder half of the parcel), at that distance
+   * less 1.5 texels, the most the parcels' exact border (terrainParcel) strays from its texel
+   * outline; and the highest clearance within a texel of it (TerrainParcels.coreWoods).
    */
   #cores(): void {
     const parcels = this.#parcels;
@@ -3325,6 +3404,22 @@ export class TerrainBuilder {
         blocked[q] = edge || taken ? 1 : 0;
       }
     }
+    // The wilder half: clear ground above its parcel's mean clearance, where the woods come first.
+    const clearance = this.#carved?.clearance;
+    if (!clearance) throw new TerrainError("terrain: a stage was skipped");
+    const sum = new Float64Array(parcels.count);
+    const count = new Int32Array(parcels.count);
+    for (let q = 0; q < m * m; q++) {
+      if (blocked[q] === 1) continue;
+      const s = (ids[2 * q] ?? 0) - 1;
+      sum[s] = (sum[s] ?? 0) + (clearance[q] ?? 0);
+      count[s] = (count[s] ?? 0) + 1;
+    }
+    for (let q = 0; q < m * m; q++) {
+      if (blocked[q] === 1) continue;
+      const s = (ids[2 * q] ?? 0) - 1;
+      if ((clearance[q] ?? 0) * (count[s] ?? 1) > (sum[s] ?? 0)) blocked[q] = 1;
+    }
     const clear = distanceField(blocked, m);
     const best = new Float32Array(parcels.count);
     for (let q = 0; q < m * m; q++) {
@@ -3336,15 +3431,32 @@ export class TerrainBuilder {
       parcels.coreX[s] = ((q % m) + 0.5) * cellF;
       parcels.coreZ[s] = (Math.floor(q / m) + 0.5) * cellF;
     }
-    for (let s = 0; s < parcels.count; s++)
-      parcels.coreRadius[s] = Math.max(0, ((best[s] ?? 0) - 1.5) * cellF);
+    for (let s = 0; s < parcels.count; s++) {
+      const radius = Math.max(0, ((best[s] ?? 0) - 1.5) * cellF);
+      parcels.coreRadius[s] = radius;
+      if (radius <= 0) continue;
+      const reach = radius + cellF;
+      const x = parcels.coreX[s] ?? 0;
+      const z = parcels.coreZ[s] ?? 0;
+      const i0 = Math.max(0, Math.floor((x - reach) / cellF));
+      const i1 = Math.min(m - 1, Math.floor((x + reach) / cellF));
+      const j1 = Math.min(m - 1, Math.floor((z + reach) / cellF));
+      let woods = -Infinity;
+      for (let j = Math.max(0, Math.floor((z - reach) / cellF)); j <= j1; j++)
+        for (let i = i0; i <= i1; i++)
+          if (hypot2((i + 0.5) * cellF - x, (j + 0.5) * cellF - z) <= reach)
+            woods = Math.max(woods, clearance[j * m + i] ?? 0);
+      parcels.coreWoods[s] = woods;
+    }
   }
 
   #finish(): void {
     const parcels = this.#parcels;
     const river = this.#river;
     const carved = this.#carved;
-    if (!parcels || !river || !carved) throw new TerrainError("terrain: a stage was skipped");
+    const clearance = carved?.clearance;
+    if (!parcels || !river || !carved || !clearance)
+      throw new TerrainError("terrain: a stage was skipped");
     const eye = this.#eye();
     this.#terrain = {
       size: this.#m,
@@ -3354,7 +3466,7 @@ export class TerrainBuilder {
       level: this.#level,
       road: this.#road,
       stream: this.#stream,
-      wood: this.#wood,
+      clearance: clearance.slice(),
       yard: this.#yard,
       riverbed: this.#riverbed,
       river,
@@ -3362,6 +3474,7 @@ export class TerrainBuilder {
       candidates: this.#candidates,
       buildings: this.#buildings,
       roads: this.#roads,
+      planned: this.#planned,
       bridge: this.#bridge,
       parcels,
       bare: { ground: carved.ground, level: carved.level, ids: this.#bareIds },
@@ -3463,9 +3576,10 @@ export function terrainWays(t: Terrain): TerrainWays {
  *   places     2 texels a settlement: (x hi, x lo, z hi, z lo), (y, radius, first building, count)
  *   misc       the bridge (x0, z0 split), (x1, z1 split), (deck0, deck1, half width, water level);
  *              the eye (x, z split), (y, settlements, bridge 1/0, buildings); (ways, the highest
- *              ground or water on the map with the river full, 0, 0)
+ *              ground or water on the map with the river full, the woods' line: the clearance the
+ *              woods stand above, the land model's (landuse.ts packLand; 0 until it writes it), 0)
  *   cores      a texel a parcel site, 64 a row: its clear core's centre less the site (dx, dz),
- *              radius (0 none), 0
+ *              radius (0 none), the highest clearance in it (TerrainParcels.coreWoods)
  *   ways       a texel a road (terrainWays): (first point / 64, first point % 64, count, spacing;
  *              negative for a track)
  *   points     2 texels a way point, 32 a row: (x hi, x lo, z hi, z lo), (y, 0, 0, 0)
@@ -3488,8 +3602,8 @@ export interface TerrainPacked {
   ground: Float32Array;
   /**
    * rgba16f, linear: road and stream signed distances (metres; a dry watercourse too, see
-   * packWater), the woods' canopy (the land model's, landuse.ts packLand; 0 until it writes it),
-   * yard (-1 a lone tree).
+   * packWater), the woods' clearance (Terrain.clearance; the land model's packLand fells it, -1,
+   * where it keeps the woods off: landuse.ts LAND_FELLED), yard (-1 a lone tree).
    */
   cover: Float32Array;
   /**
@@ -3504,7 +3618,8 @@ export interface TerrainPacked {
 
 /**
  * Lay a terrain out for upload (see TerrainPacked and TERRAIN_RECORDS), its river full. The land's
- * uses, the woods and which lone trees stand are the land model's to write (landuse.ts packLand).
+ * uses, the woods' line, their species and which lone trees stand are the land model's to write
+ * (landuse.ts packLand).
  */
 export function packTerrain(t: Terrain): TerrainPacked {
   const m = t.size;
@@ -3527,7 +3642,7 @@ export function packTerrain(t: Terrain): TerrainPacked {
         ((g[Math.min(m - 1, j + 1) * m + i] ?? 0) - (g[Math.max(0, j - 1) * m + i] ?? 0)) / span;
       cover[o] = clamp(t.road[q] ?? FAR, -FAR, FAR);
       cover[o + 1] = clamp(t.stream[q] ?? FAR, -FAR, FAR);
-      cover[o + 2] = 0;
+      cover[o + 2] = t.clearance[q] ?? 0;
       cover[o + 3] = t.yard[q] ?? 0;
       const a = t.parcels.ids[2 * q] ?? 0;
       const b = t.parcels.ids[2 * q + 1] ?? 0;
@@ -3554,6 +3669,7 @@ export function packTerrain(t: Terrain): TerrainPacked {
     records[c] = (p.coreX[s] ?? 0) - (p.x[s] ?? 0);
     records[c + 1] = (p.coreZ[s] ?? 0) - (p.z[s] ?? 0);
     records[c + 2] = p.coreRadius[s] ?? 0;
+    records[c + 3] = p.coreWoods[s] ?? 0;
   }
   t.buildings.forEach((b, index) => {
     const o = texel(L.buildings + Math.floor(index / 16), 4 * (index % 16));

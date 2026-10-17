@@ -11,7 +11,10 @@
 // `countryVerges`: every clump the sim grew, looked up by the shader at its root as it packed it into
 // the records atlas (terrainParcel over the GPU's textures, not the sim's CPU port of it), stands in
 // a parcel a clump may grow into (not a pasture or a wood), at a hedge (one side farmed) the inset
-// from its line, on its ground and clear of roads and streams; and the scene draws them.
+// from its line, on its ground, clear of roads and streams and out of the woods (which reach into
+// fields): on the default land and on it with its woods off. And the scene draws them, on the land
+// with its woods off: the woods may fill the near ground the verges keep to, leaving few hedges in
+// view there.
 import { glslFloat } from "../../shaders/glsl.ts";
 import { fragmentSourceFor, sceneFeaturesAll } from "../../shaders/index.ts";
 import { paramDefaults } from "../../state.ts";
@@ -64,7 +67,9 @@ Shade probeCountryWild(vec2 uv, vec2 cell, float t) {
   bool ground = abs(root.y - terrainSurface(terrainGround(uSim0, root.xz, COUNTRY_EXTENT))) < 0.3;
   vec4 cover = terrainCover(uSim1, root.xz, COUNTRY_EXTENT);
   bool clear = cover.x > ${glslFloat(COUNTRY_VERGE.road - 0.25)} && cover.y > ${glslFloat(COUNTRY_VERGE.stream - 0.25)};
-  return shadeOf(vec3(1.0, hedged && grows && foot && ground && clear ? 1.0 : 0.5, clamp(parcel.border / 10.0, 0.0, 1.0)), 0.0, 0.0);
+  countryWoodsSet();
+  bool open = countryWoods(cover, terrainWater(terrainGround(uSim0, root.xz, COUNTRY_EXTENT)), false) <= 0.0;
+  return shadeOf(vec3(1.0, hedged && grows && foot && ground && clear && open ? 1.0 : 0.5, clamp(parcel.border / 10.0, 0.0, 1.0)), 0.0, 0.0);
 }
 `;
 
@@ -209,29 +214,36 @@ export function verifyCountryMurmuration(gl: WebGL2RenderingContext): Record<str
 export function verifyCountryVerges(gl: WebGL2RenderingContext): Record<string, unknown> {
   const { scene, probe } = programs(gl);
   const knobs = { verges: 1, "verges-amount": 1, time: 0.5, wind: 0.6, clouds: 0, shadows: 0 };
+  const open = { ...knobs, woodland: 0 };
   const sim = running(gl, knobs);
   try {
-    sim.run(knobs, 30);
-    gl.useProgram(probe);
-    gl.uniform1i(gl.getUniformLocation(probe, "probeMode"), 2);
-    const roots = countryDraw(gl, probe, sim.built, knobs, CLUMPS);
-    let clumps = 0;
-    for (let c = 0; c < CLUMPS.width * CLUMPS.height; c++) {
-      if ((roots[4 * c] ?? 0) < 200) continue;
-      clumps++;
-      check(
-        (roots[4 * c + 1] ?? 0) > 200,
-        `clump ${c} does not stand at a hedge's foot as the shader finds it (border code ${roots[4 * c + 2] ?? 0})`,
-      );
-    }
-    check(clumps >= 100, `only ${clumps} clumps to check`);
+    // Every clump the sim grew for these knobs, each checked at its root as the shader finds it.
+    const probed = (settings: Record<string, number>): number => {
+      sim.run(settings, 30);
+      gl.useProgram(probe);
+      gl.uniform1i(gl.getUniformLocation(probe, "probeMode"), 2);
+      const roots = countryDraw(gl, probe, sim.built, settings, CLUMPS);
+      let clumps = 0;
+      for (let c = 0; c < CLUMPS.width * CLUMPS.height; c++) {
+        if ((roots[4 * c] ?? 0) < 200) continue;
+        clumps++;
+        check(
+          (roots[4 * c + 1] ?? 0) > 200,
+          `clump ${c} does not stand at a hedge's foot out of the woods as the shader finds it (border code ${roots[4 * c + 2] ?? 0})`,
+        );
+      }
+      check(clumps >= 100, `only ${clumps} clumps to check`);
+      return clumps;
+    };
+    const clumps = { wooded: probed(knobs), open: probed(open) };
     gl.useProgram(scene);
     const options = { width: WIDTH, height: HEIGHT, time: 30, motionTime: 30 };
     const drawn = differing(
-      countryDraw(gl, scene, sim.built, knobs, options),
-      countryDraw(gl, scene, sim.built, { ...knobs, verges: 0 }, options),
+      countryDraw(gl, scene, sim.built, open, options),
+      countryDraw(gl, scene, sim.built, { ...open, verges: 0 }, options),
     );
-    check(drawn >= 30, `the verges drew ${drawn} pixels`);
+    // Measured: 512 pixels for 435 clumps (each a pixel or so at its depth in this frame).
+    check(drawn >= 0.5 * clumps.open, `the verges drew ${drawn} pixels for ${clumps.open} clumps`);
     return { clumps, drawn };
   } finally {
     sim.built.dispose();

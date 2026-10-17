@@ -39,24 +39,14 @@ test("a land-use change reuses the terrain and repacks only the parcels it moves
   const { sim, headless, rows } = counted();
   const [ground, cover, parcels, records] = sim.frame();
   if (!ground || !cover || !parcels || !records) throw new Error("the countryside built nothing");
-  // A one-point share step, pasture switched on, then the herds alone, which move no wood.
+  // A one-point share step, pasture switched on, then the herds alone, which move no texel.
   const steps: { knobs: Record<string, number>; narrow?: true; herds?: true }[] = [
     { knobs: { "crops-amount": 59 }, narrow: true },
     { knobs: { "crops-amount": 59, pasture: 1 } },
     { knobs: { "crops-amount": 59, pasture: 1, cows: 0.9 }, herds: true },
   ];
-  for (const { knobs, narrow, herds } of steps) {
-    const was = headless.upload(parcels).data;
-    rows.clear();
-    sim.frame({ knobs });
-    // No terrain stage ran: the ground is not sent again.
-    expect(rows.get(ground)).toBeUndefined();
-    // The cover goes as the band of rows the moved parcels span; a share step's is not the map.
-    expect(rows.get(cover)).toBeGreaterThan(0);
-    if (narrow) expect(rows.get(cover)).toBeLessThan(COUNTRY_MAP.size);
-    // The parcels' map goes only as the band of rows whose species flags changed, if any: none
-    // for the herds.
-    const now = headless.upload(parcels).data;
+  // The band of rows, first to last, whose bytes differ between two uploads; 0 where none.
+  const band = (was: Uint8Array | Float32Array, now: Uint8Array | Float32Array): number => {
     let first: number = COUNTRY_MAP.size;
     let last = -1;
     for (let k = 0; k < now.length; k++) {
@@ -64,8 +54,26 @@ test("a land-use change reuses the terrain and repacks only the parcels it moves
       first = Math.min(first, Math.floor(k / (4 * COUNTRY_MAP.size)));
       last = Math.max(last, Math.floor(k / (4 * COUNTRY_MAP.size)));
     }
-    expect(rows.get(parcels)).toBe(last < 0 ? undefined : last - first + 1);
-    if (herds) expect(rows.get(parcels)).toBeUndefined();
+    return last < 0 ? 0 : last - first + 1;
+  };
+  for (const { knobs, narrow, herds } of steps) {
+    const was = { cover: headless.upload(cover).data, parcels: headless.upload(parcels).data };
+    rows.clear();
+    sim.frame({ knobs });
+    // No terrain stage ran: the ground is not sent again.
+    expect(rows.get(ground)).toBeUndefined();
+    // The cover (the clearance, felled or not, and the lone trees) and the parcels' map (the
+    // species flags) go only as the band of rows whose bytes changed, if any: a share step's band
+    // of lone trees whose hedges came or went is not the map, and the herds change neither.
+    const now = headless.upload(parcels).data;
+    const covered = band(was.cover, headless.upload(cover).data);
+    expect(rows.get(cover) ?? 0).toBe(covered);
+    expect(rows.get(parcels) ?? 0).toBe(band(was.parcels, now));
+    if (narrow) {
+      expect(covered).toBeGreaterThan(0);
+      expect(covered).toBeLessThan(COUNTRY_MAP.size);
+    }
+    if (herds) expect([rows.get(cover), rows.get(parcels)]).toEqual([undefined, undefined]);
     // And it is byte for byte the land a build made with these knobs from the start packs.
     const fresh = new HeadlessSim(countryScene).step({ knobs });
     expect(same(headless.upload(cover).data, fresh.upload(1).data)).toBe(true);

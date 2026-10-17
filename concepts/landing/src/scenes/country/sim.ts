@@ -2,8 +2,8 @@
 // build worker (build.ts, sims/build.ts), each parcel given its use by the land model
 // (sims/landuse.ts), packed into the four textures the shader reads through terrainGlsl:
 //   uSim0  rgba16f linear   ground, water level, the ground's slope (d/dx, d/dz)
-//   uSim1  rgba16f linear   road and stream signed distance, the woods' canopy, yard (-1 a
-//                           standing lone tree)
+//   uSim1  rgba16f linear   road and stream signed distance, the woods' clearance (the woods stand
+//                           above the records' woods' line), yard (-1 a standing lone tree)
 //   uSim2  rgba8 nearest    the nearest two parcels per texel, the first flagged in pine woods
 //   uSim3  rgba16f linear   records: parcel sites with their use and attribute, buildings,
 //                           settlements, the bridge, the eye, the roads' way points, the chalk M's
@@ -19,7 +19,7 @@
 //   the land's uses (the shares, the pine mix, the cattle share, the chalk M keeping its parcels
 //     open, its site looked for once per terrain): the allocation (LandModel.allocate) within the
 //     frame, repacking only the parcels whose use changed (repackLand) and uploading only the rows of
-//     uSim1 they span, of uSim2 only those where a wood's species flag changed, and uSim3;
+//     uSim1 and uSim2 whose bytes changed, and uSim3 (where the woodland share moves the woods' line);
 //   the river switched on or off: packWater within the frame, uploading uSim0 and uSim1.
 // Nothing is drawn before the first build: the shader shows the sky meanwhile, which the entrance
 // looks into. Where there is no worker the build runs here a few units a frame, as before.

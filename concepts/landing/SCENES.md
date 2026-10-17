@@ -296,26 +296,35 @@ replay at their pinned commits).
   floodplain, its meanders' widest sway included), so the river's size moves none of them;
   roads (A\* over slope, curvature, floodplain and fords, water impassable) over a spanning tree
   with a shortcut and a way out, farm tracks to the farms and down the near field, one bridge at the
-  narrowest crossing, cut and fill no steeper than one in eight; buildings on terraces; woodland
-  suitability; land parcels aligned to the contours and roads; lone trees on hedges and banks.
+  narrowest crossing, cut and fill no steeper than one in eight; buildings on terraces; the woods'
+  clearance field; land parcels aligned to the contours and roads; lone trees on hedges and banks.
   Base relief (`land shape`): valley, coast, plateau or rolling hills.
-- **Land use** (`src/sims/landuse.ts`): every parcel is one land unit with one use. Each use weighs
-  every parcel by its ground (slope, height, wetness, aspect to the sun, woodland suitability, how
-  near the settlements and roads lie, a seeded jitter) and each parcel takes the use bidding most
-  for it, its score plus the price `ln(share)`. A use's price is its own share's alone, so raising
-  one share converts only that use's marginal parcels (the best suited next) and moves nothing
-  between other uses; woods grow outward from their best ground; the same seed and settings give
-  the same land. Area shares meet the normalised shares within a few points (correlated ground
-  biases them; `landuse.test.ts` bounds it). Shares all off leave open grassland; woodland alone
-  takes every parcel but the near slopes under the vantage. Crops pick their kind (wheat, barley,
-  grazing, hay, ploughed, rapeseed) by their ground; pastures their herd (`cattle share`: cattle on
-  the low, flat, wet ground first, a change swapping only as many herds as it must); woods their
-  species (`pine mix`: pine on high, steep, north-facing ground, each wood keeping its species as
-  the woods grow). A change of the uses re-runs only the allocation and re-packs the records,
-  canopy and species of the parcels it moves (`repackLand`, byte for byte the whole land's
-  packing), uploading only the rows they span, and of the parcel map only the rows whose species
-  flag changed: none for a change that moves no wood (`countryTerrain`; `country/sim.test.ts`), no
-  rebuild.
+- **Land use** (`src/sims/landuse.ts`): the woods are a layer of their own, the wildwood the fields
+  were cleared from: they stand wherever the clearance field (`Terrain.clearance`, on the bare land:
+  steep, high, remote ground last, shaws along streams, copses and lobes, never steeper than
+  `TERRAIN_CLEARANCE_SLOPE`) lies above the woods' line, the clearance at the area quantile
+  `woodland / Σ shares` takes; a parcel whose cell on the bare land they cover 70% of is a wood
+  (so no road or yard that reshapes it turns it), and a field they reach into keeps its use (an
+  assart). The shader thresholds the field itself (`countryWoods`), so a woodland drag writes one
+  value and the few parcels crossing 70%, and a wood's edge is smooth at any distance; raising the
+  share only lets the woods grow outward; no rule of the view's keeps them off the vantage's
+  slopes. Every other parcel is one land unit with one field use. Each use weighs every parcel by
+  its ground (slope, height, wetness, aspect to the sun, how near the settlements and roads lie, a
+  seeded jitter) and each parcel takes the use bidding most for it, its score plus the price
+  `ln(share)`. A use's price is its own share's alone, so raising one share converts only that
+  use's marginal parcels (the best suited next) and moves nothing between other uses (it may only
+  push the woods back); the same seed and settings give the same land. Area shares meet the
+  normalised shares within a few points, the woods' within one (correlated ground biases the
+  fields', the woods taking the ground lavender and the wildflowers like; `landuse.test.ts` bounds
+  it). Shares all off leave open grassland; woodland alone takes all the land. Crops pick their
+  kind (wheat, barley, grazing, hay, ploughed, rapeseed) by their ground; pastures their herd
+  (`cattle share`, a share of the grazing land: cattle where a pasture's fixed cattle rank, low,
+  flat, wet ground first, lies under it, so no share step flips a pasture that stays one); woods
+  their species (`pine mix`: pine on high, steep, north-facing ground, each parcel's woods keeping
+  their species as the woods grow). A change of the uses re-runs only the allocation and re-packs
+  the records, and of the cover and parcel map only the parcels it moves (`repackLand`, byte for
+  byte the whole land's packing), uploading only the rows whose bytes changed (`countryTerrain`;
+  `country/sim.test.ts`), no rebuild.
   Stable under edits (issue #1082 S1, P1): each parcel is weighed and ranked by its cell on the bare
   land (`TerrainBare`: the ground as the river and streams left it, each site at its own heading as
   though no road turned it) and by every candidate settlement site (`Terrain.candidates`, built or
@@ -326,8 +335,9 @@ replay at their pinned commits).
   (up to 2.4 km on seeds 0-3), which P8's stable network takes on. A new `river` size moves no
   settlement and drops or keeps only the parcel sites in the water between the two sizes, and each
   parcel's seeded draws (jitter, crop, herd, species, its shape) are hashes of its place, not its
-  index: a nudge from 0.5 to 0.55 changes 1.6-3.1% of the land on seeds 0-3, at most 0.28% of it
-  beyond 400 m of the river (a few parcels whose bids were all but tied, nudged by the ranks they
+  index: a nudge from 0.5 to 0.55 changes 1.6-3.1% of the land on seeds 0-3, at most 0.45% of it
+  beyond 400 m of the river (seeds 0-1 with the woods' layer: a few parcels whose bids were all but
+  tied, and wood edges the woods' line moves by its riverside quantiles, nudged by the ranks they
   share with the riverside ones; 23-29% and 14-19% while the settlements were weighed against the
   carved river and the draws keyed by index), and the ways re-route within some 900 m of it.
 - **Rendering** (`src/shaders/lib/terrain.ts`, `country/shader.ts`): a height-field march (ground,
@@ -342,16 +352,18 @@ replay at their pinned commits).
   wood's floor, open grassland) with exact borders between texels, hedges (half a cell at least)
   only where a farmed parcel meets another; roads likewise; the river mirroring the sky and its
   deck, a stone bridge, far ridges in the sky, the shared sky, clouds (and their shadows), rain,
-  snow, wetness, lying snow and the valley fog (below). Entrance: the camera comes down out of the
-  sky.
-- **Trees** (`country/trees.ts`, the shared `treesGlsl`): the woods stand where the land model's
-  canopy says (woodland parcels, their edges pulled in on poor ground so they are ragged), pine
-  where its flag in the parcels' map says, kept out of the filtered canopy so a pine wood meets a
-  broadleaf one with no gap; the march meets bounds (the woods' envelope, each lone tree's
-  steepened tent); near enough for a crown to span a cell, the crowns are found exactly at the
-  hit, each a dome or a pine's tiered cone with a trunk; a ray between crowns goes on to the
-  ground. Hedgerow trees stand only on standing hedges, riverbank trees on the banks, all felled
-  while woodland is off.
+  snow, wetness, lying snow and the valley fog (below). Past the map's edge, out to the farthest
+  look, a ring of hills (`countryRing`: the edge carried out into rolling noise, never above the
+  map's highest ground, its sea carried on), so a view turned off the diagonal meets land, not sky.
+  Entrance: the camera comes down out of the sky.
+- **Trees** (`country/trees.ts`, the shared `treesGlsl`): the woods stand where the clearance lies
+  over the woods' line (cleared off roads, streams, yards and water), and no crop, hedge, fence,
+  herd or bale stands under them; pine where its parcel's flag in the parcels' map says, kept out of
+  the filtered clearance; the march meets bounds (the woods' envelope, the line lowered by as much
+  clearance as a crown's reach can span, and each lone tree's steepened tent); near enough for a
+  crown to span a cell, the crowns are found exactly at the hit, each a dome or a pine's tiered cone
+  with a trunk; a ray between crowns goes on to the ground. Hedgerow trees stand only on standing
+  hedges, riverbank trees on the banks, none inside the woods, all felled while woodland is off.
 - **Buildings** (`country/buildings.ts`): a cottage, barn or church whose gable spans over 6 cells
   is a solid met in its own frame (block, roof, chimney, the church's tower and spire), with the
   sprites' windows; smaller ones are the shared sprites. Only the two nearest buildings whose bounds

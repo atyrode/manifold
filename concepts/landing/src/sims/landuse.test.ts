@@ -1,12 +1,15 @@
 import { describe, expect, test } from "bun:test";
 import {
-  LAND_OPEN_NEAR,
+  LAND_FELLED,
   LAND_PINE_FLAG,
   LAND_SHARED,
   LAND_USES,
+  landCanopy,
   LandModel,
   type LandOptions,
   landTexels,
+  landWoodLine,
+  openLand,
   packLand,
   repackLand,
   type SharedUse,
@@ -35,18 +38,23 @@ const WOODLAND = LAND_USES.indexOf("woodland");
 const PASTURE = LAND_USES.indexOf("pasture");
 const options = (shares: LandOptions["shares"]): LandOptions => ({ shares, pines: 0.3, cows: 0.5 });
 
-/** The largest gap between a use's area share and its normalised share. */
-function worstShare(model: LandModel, shares: LandOptions["shares"]): number {
+/** The largest gap between a use's area share and its normalised share, and the woods' gap. */
+function shareGaps(
+  model: LandModel,
+  shares: LandOptions["shares"],
+): { worst: number; woods: number } {
   const allocation = model.allocate(options(shares));
   const whole = Object.values(shares).reduce((sum, share) => sum + (share ?? 0), 0);
   let worst = 0;
+  let woods = 0;
   LAND_SHARED.forEach((use, u) => {
     const share = shares[use] ?? 0;
     if (share <= 0) return;
-    const got = (allocation.area[u + 1] ?? 0) / allocation.total;
-    worst = Math.max(worst, Math.abs(got - share / whole));
+    const gap = Math.abs((allocation.area[u + 1] ?? 0) / allocation.total - share / whole);
+    worst = Math.max(worst, gap);
+    if (use === "woodland") woods = gap;
   });
-  return worst;
+  return { worst, woods };
 }
 
 /** Seeded share settings: each use on half the time, at 1..100. */
@@ -63,7 +71,7 @@ function settings(count: number, seed: number): LandOptions["shares"][] {
 }
 
 describe("land use", () => {
-  test("each use's area meets its normalised share within a few points", () => {
+  test("each use's area meets its normalised share within a few points, the woods' within one", () => {
     const presets: LandOptions["shares"][] = [
       { crops: 60, woodland: 30 },
       { crops: 60, woodland: 30, pasture: 25 },
@@ -71,87 +79,96 @@ describe("land use", () => {
       { crops: 50, sunflowers: 50 },
       { woodland: 40, pasture: 60 },
     ];
-    // Measured (seeds 0, 3, 7, 12): settings like these within 0.04-0.085, random ones a median of
-    // 0.025-0.035 and at most 0.08-0.095 (see landuse.ts on why the shares are not met exactly).
+    // Measured (seeds 0, 3, 7, 12): the woods within 0.009 of their share in every setting;
+    // settings like these within 0.04-0.06, random ones a median of 0.027-0.029 and at most
+    // 0.09-0.12 (see landuse.ts on why the shares are not met exactly). The woods take the ground
+    // cleared last, the steep, high and far ground lavender and the wildflowers like too, and leave
+    // the flat, low ground crops like best: the bias the woods shared while woodland bid in the
+    // race beside the fields (at most 0.08-0.095 then) falls on the fields alone.
     for (const seed of [0, 3]) {
       const { model } = land(seed);
-      for (const shares of presets) expect(worstShare(model, shares)).toBeLessThan(0.08);
-      const gaps = settings(150, 11 + seed).map((shares) => worstShare(model, shares));
-      gaps.sort((a, b) => a - b);
+      for (const shares of presets) expect(shareGaps(model, shares).worst).toBeLessThan(0.07);
+      const random = settings(150, 11 + seed).map((shares) => shareGaps(model, shares));
+      for (const { woods } of random) expect(woods).toBeLessThan(0.012);
+      const gaps = random.map(({ worst }) => worst).sort((a, b) => a - b);
       expect(gaps[Math.floor(gaps.length / 2)] ?? 1).toBeLessThan(0.04);
-      expect(gaps[gaps.length - 1] ?? 1).toBeLessThan(0.1);
+      expect(gaps[gaps.length - 1] ?? 1).toBeLessThan(0.13);
     }
   });
 
-  test("raising one share turns parcels only to that use; lowering it, only from it", () => {
+  test("raising one share turns parcels only to that use, or out of the woods it shrinks; lowering it, only from it, or into them", () => {
     const { model } = land(0);
     for (const base of settings(40, 5)) {
       const before = model.allocate(options(base));
       for (const use of LAND_SHARED) {
         const index = LAND_USES.indexOf(use);
-        // Up from where it is (from nothing too: switching a use on), and down to nothing.
+        // Up from where it is (from nothing too: switching a use on), and down to nothing. Another
+        // share's rise lowers woodland's share of the whole: its woods only recede.
         for (const share of [(base[use] ?? 0) + 30, (base[use] ?? 0) * 3 + 1]) {
           const after = model.allocate(options({ ...base, [use]: share }));
           for (let s = 0; s < model.count; s++) {
-            if (after.use[s] !== before.use[s]) expect(after.use[s]).toBe(index);
+            if (after.use[s] === before.use[s]) continue;
+            if (use === "woodland") expect(after.use[s]).toBe(WOODLAND);
+            else if (after.use[s] !== index) expect(before.use[s]).toBe(WOODLAND);
           }
+          if (use === "woodland") expect(after.line).toBeLessThanOrEqual(before.line);
+          else expect(after.line).toBeGreaterThanOrEqual(before.line);
         }
         const off = model.allocate(options({ ...base, [use]: 0 }));
         for (let s = 0; s < model.count; s++) {
-          if (off.use[s] !== before.use[s]) expect(before.use[s]).toBe(index);
+          if (off.use[s] === before.use[s]) continue;
+          if (before.use[s] !== index) expect(off.use[s]).toBe(WOODLAND);
         }
       }
     }
   });
 
-  test("woods take the most suitable ground first and grow outward from it", () => {
+  test("the woods grow outward as their share rises, never by whole parcels, and cover their share", () => {
     const { terrain, model } = land(0);
-    const small = model.allocate(options({ crops: 90, woodland: 10 }));
-    let woods = 0;
-    let woodsN = 0;
-    let rest = 0;
-    let restN = 0;
-    for (let s = 0; s < model.count; s++) {
-      if ((model.area[s] ?? 0) <= 0) continue;
-      const suit = terrain.parcels.wood[s] ?? 0;
-      if (small.use[s] === WOODLAND) {
-        woods += suit;
-        woodsN++;
-      } else {
-        rest += suit;
-        restN++;
-      }
-    }
-    expect(woodsN).toBeGreaterThan(0);
-    expect(woods / woodsN).toBeGreaterThan(rest / restN + 0.15);
-    // Every wood of a smaller share stands in a larger one.
-    let previous = small;
+    const m = terrain.size;
+    let previous = model.allocate(options({ crops: 90, woodland: 10 }));
     for (const share of [20, 40, 80, 160]) {
       const next = model.allocate(options({ crops: 90, woodland: share }));
+      // A lower line: every texel the woods stood on they still stand on.
+      expect(next.line).toBeLessThan(previous.line);
       for (let s = 0; s < model.count; s++)
         if (previous.use[s] === WOODLAND) expect(next.use[s]).toBe(WOODLAND);
       previous = next;
     }
+    // Woodland's share of the clear ground, texel by texel, meets woodland / Σ shares closely.
+    for (const shares of [
+      { crops: 60, woodland: 30 },
+      { crops: 30, woodland: 60, pasture: 30 },
+    ]) {
+      const { line } = model.allocate(options(shares));
+      let clear = 0;
+      let woods = 0;
+      for (let q = 0; q < m * m; q++) {
+        if ((terrain.level[q] ?? 0) > (terrain.ground[q] ?? 0) - 0.3) continue;
+        if ((terrain.road[q] ?? 64) < 0 || (terrain.yard[q] ?? 0) > 0.3) continue;
+        clear++;
+        woods += landCanopy(terrain.clearance[q] ?? 0, line);
+      }
+      const whole = Object.values(shares).reduce((sum, share) => sum + share, 0);
+      expect(Math.abs(woods / clear - shares.woodland / whole)).toBeLessThan(0.03);
+    }
+    // Woods reach into fields: some field parcels hold a wooded corner.
+    const mixed = model.allocate(options({ crops: 60, woodland: 30 }));
+    let assarts = 0;
+    for (let s = 0; s < model.count; s++)
+      if (mixed.use[s] !== WOODLAND && (mixed.canopy[s] ?? 0) > 0.1) assarts++;
+    expect(assarts).toBeGreaterThan(10);
   });
 
-  test("no share leaves open grassland; woodland alone takes every parcel it may", () => {
-    const { terrain, model } = land(0);
+  test("no share leaves open grassland; woodland alone takes all the land, the vantage's slopes too", () => {
+    const { model } = land(0);
     const none = model.allocate(options({}));
     expect(none.use.every((use) => use === 0)).toBe(true);
     expect(none.total).toBe(0);
     expect(none.wooded).toBe(false);
     const wooded = model.allocate(options({ woodland: 100 }));
-    const v = terrain.vantage;
-    let open = 0;
-    for (let s = 0; s < model.count; s++) {
-      if ((model.area[s] ?? 0) <= 0) continue;
-      const near =
-        Math.hypot((terrain.parcels.x[s] ?? 0) - v.x, (terrain.parcels.z[s] ?? 0) - v.z) <
-        LAND_OPEN_NEAR;
-      expect(wooded.use[s]).toBe(near ? 0 : WOODLAND);
-      if (near) open++;
-    }
-    expect(open).toBeGreaterThan(0);
+    for (let s = 0; s < model.count; s++)
+      if ((model.area[s] ?? 0) > 0) expect(wooded.use[s]).toBe(WOODLAND);
   });
 
   test("the same terrain, seed and settings give the same land; another seed another", () => {
@@ -160,29 +177,40 @@ describe("land use", () => {
     const b = new LandModel(generateTerrain({ seed: 4, size: 256 }), 4).allocate(options(shares));
     expect(b.use).toEqual(a.use);
     expect(b.attr).toEqual(a.attr);
+    expect(b.line).toBe(a.line);
     expect(land(0).model.allocate(options(shares)).use).not.toEqual(a.use);
   });
 
-  test("the cattle share swaps only as many herds as it must, and nothing else", () => {
+  test("the cattle share turns only sheep to cattle as it rises, and nothing else", () => {
     const { model } = land(3);
     const shares = { crops: 60, woodland: 30, pasture: 50 };
     let previous = model.allocate({ shares, pines: 0.3, cows: 0 });
-    const pastures = previous.use.filter((use) => use === PASTURE).length;
-    expect(pastures).toBeGreaterThan(20);
+    expect(previous.use.filter((use) => use === PASTURE).length).toBeGreaterThan(20);
     for (let step = 1; step <= 20; step++) {
-      const cows = step / 20;
-      const next = model.allocate({ shares, pines: 0.3, cows });
-      let flips = 0;
-      let cattle = 0;
+      const next = model.allocate({ shares, pines: 0.3, cows: step / 20 });
       for (let s = 0; s < model.count; s++) {
         expect(next.use[s]).toBe(previous.use[s] ?? 0);
-        if (next.use[s] !== PASTURE) continue;
-        if (next.attr[s] !== previous.attr[s]) flips++;
-        cattle += next.attr[s] ?? 0;
+        if (next.use[s] === PASTURE && next.attr[s] !== previous.attr[s])
+          expect(next.attr[s]).toBe(1);
       }
-      expect(cattle).toBe(Math.round(cows * pastures));
-      expect(flips).toBe(Math.round(cows * pastures) - Math.round(((step - 1) / 20) * pastures));
       previous = next;
+    }
+    expect(previous.attr.every((attr, s) => previous.use[s] !== PASTURE || attr === 1)).toBe(true);
+  });
+
+  test("a share step keeps every pasture that stays a pasture grazed by the same kind", () => {
+    // The cattle share is a share of the grazing land, by a fixed rank: a pasture's herd does not
+    // hang on how many pastures there are (round(cows · pastures) flipped 1-7 far ones a step).
+    for (const seed of [0, 3]) {
+      const { model } = land(seed);
+      const base = { crops: 60, woodland: 30, pasture: 25 };
+      const before = model.allocate({ shares: base, pines: 0.25, cows: 0.3 });
+      for (const step of [{ pasture: 30 }, { woodland: 40 }, { crops: 50 }]) {
+        const after = model.allocate({ shares: { ...base, ...step }, pines: 0.25, cows: 0.3 });
+        for (let s = 0; s < model.count; s++)
+          if (before.use[s] === PASTURE && after.use[s] === PASTURE)
+            expect(after.attr[s]).toBe(before.attr[s] ?? 0);
+      }
     }
   });
 
@@ -190,6 +218,7 @@ describe("land use", () => {
     const { model } = land(0);
     const before = model.allocate({ shares: { crops: 60, woodland: 20 }, pines: 0.4, cows: 0.5 });
     const after = model.allocate({ shares: { crops: 60, woodland: 60 }, pines: 0.4, cows: 0.5 });
+    expect(after.pine).toEqual(before.pine);
     let pines = 0;
     for (let s = 0; s < model.count; s++) {
       if (before.use[s] !== WOODLAND) continue;
@@ -199,55 +228,42 @@ describe("land use", () => {
     expect(pines).toBeGreaterThan(0);
   });
 
-  test("the woods' canopy stands on woodland parcels only, whole where a pine wood meets a broadleaf one; hedge trees on hedges", () => {
+  test("packing writes the clearance, felled on opened parcels, each parcel's species and the hedge trees", () => {
     const { terrain, model } = land(0);
     const packed = packTerrain(terrain);
     const m = terrain.size;
     const ids = terrain.parcels.ids;
-    const check = (shares: LandOptions["shares"]) => {
+    const check = (shares: LandOptions["shares"], opened: readonly number[] = []) => {
       const allocation = model.allocate({ shares, pines: 0.5, cows: 0.5 });
+      openLand(allocation, model, opened);
       packLand(packed, terrain, allocation);
-      let canopy = 0;
+      expect(landWoodLine(packed)).toBe(allocation.line);
       let trees = 0;
       let pines = 0;
-      // Texels whose id, canopy or species is not their parcel's; pine wood beside broadleaf, and
-      // of those where the canopy filtered between the two texels is not whole.
+      // Texels whose id, clearance or species is not their parcel's.
       let wrong = 0;
-      let borders = 0;
-      let gaps = 0;
       for (let q = 0; q < m * m; q++) {
         const id = ids[2 * q] ?? 0;
-        const value = packed.cover[4 * q + 2] ?? 0;
         const high = packed.parcels[4 * q + 1] ?? 0;
         const pine = (high & LAND_PINE_FLAG) !== 0;
         if (pine) pines++;
         if ((packed.parcels[4 * q] ?? 0) + 256 * (high & ~LAND_PINE_FLAG) !== id) wrong++;
-        if (value !== 0) {
-          canopy++;
-          const wood = allocation.use[id - 1] === WOODLAND && value > 0;
-          if (!wood || pine !== (allocation.attr[id - 1] === 1)) wrong++;
-        }
-        const east = q + 1;
-        const next = packed.cover[4 * east + 2] ?? 0;
-        const nextPine = ((packed.parcels[4 * east + 1] ?? 0) & LAND_PINE_FLAG) !== 0;
-        if ((q % m) + 1 < m && value >= 0.85 && next >= 0.85 && pine !== nextPine) {
-          borders++;
-          if (0.5 * (value + next) < 0.85) gaps++;
-        }
+        const felled = id > 0 && opened.includes(id - 1);
+        const clearance = felled ? LAND_FELLED : (terrain.clearance[q] ?? 0);
+        if (packed.cover[4 * q + 2] !== clearance) wrong++;
+        if (id > 0 && pine !== (allocation.pine[id - 1] === 1)) wrong++;
         if ((packed.cover[4 * q + 3] ?? 0) === -1) trees++;
       }
-      expect({ wrong, gaps }).toEqual({ wrong: 0, gaps: 0 });
-      return { canopy, trees, borders, pines };
+      expect(wrong).toBe(0);
+      return { trees, pines };
     };
-    const wooded = check({ crops: 60, woodland: 30 });
-    expect(wooded.canopy).toBeGreaterThan(0);
+    const wooded = check({ crops: 60, woodland: 30 }, [0, 1, 2]);
     expect(wooded.trees).toBeGreaterThan(0);
-    expect(wooded.borders).toBeGreaterThan(0);
-    // Woodland off: no woods, no pines and every lone tree felled.
-    expect(check({ crops: 60 })).toEqual({ canopy: 0, trees: 0, borders: 0, pines: 0 });
+    expect(wooded.pines).toBeGreaterThan(0);
+    // Woodland off: no species and every lone tree felled.
+    expect(check({ crops: 60 })).toEqual({ trees: 0, pines: 0 });
     // Open grassland and woods only: no hedge stands, so only the banks keep lone trees.
-    const unhedged = check({ woodland: 30 });
-    expect(unhedged.trees).toBeLessThan(wooded.trees);
+    expect(check({ woodland: 30 }).trees).toBeLessThan(wooded.trees);
   });
 
   test("repacking only the changed parcels writes exactly what packing the whole land does", () => {
@@ -258,7 +274,7 @@ describe("land use", () => {
       { shares: { crops: 60, woodland: 30 }, pines: 0.25, cows: 0.5 },
       { shares: { crops: 61, woodland: 30 }, pines: 0.25, cows: 0.5 },
       { shares: { crops: 61, woodland: 45, pasture: 25 }, pines: 0.25, cows: 0.5 },
-      // The herds alone: no wood or species moves, so the parcels' map is left alone.
+      // The herds alone: no clearance, lone tree or species moves.
       { shares: { crops: 61, woodland: 45, pasture: 25 }, pines: 0.25, cows: 0.1 },
       { shares: { crops: 61, woodland: 45, pasture: 25 }, pines: 0.6, cows: 0.1 },
       // Woodland off and on again: every lone tree falls and stands again.
@@ -271,14 +287,14 @@ describe("land use", () => {
     const repacked = packTerrain(terrain);
     let before = model.allocate(first);
     packLand(repacked, terrain, before);
-    const bands: number[] = [];
+    const covered: (readonly [number, number] | undefined)[] = [];
     const flagged: (readonly [number, number] | undefined)[] = [];
     for (const step of rest) {
       const allocation = model.allocate(step);
-      const was = repacked.parcels.slice();
+      const was = { cover: repacked.cover.slice(), parcels: repacked.parcels.slice() };
       const rows = repackLand(repacked, terrain, allocation, before, texels);
       before = allocation;
-      bands.push(rows.cover ? rows.cover[1] - rows.cover[0] + 1 : 0);
+      covered.push(rows.cover);
       flagged.push(rows.parcels);
       const packed = packTerrain(terrain);
       packLand(packed, terrain, allocation);
@@ -291,22 +307,27 @@ describe("land use", () => {
       expect(Buffer.from(repacked.parcels.buffer).equals(Buffer.from(packed.parcels.buffer))).toBe(
         true,
       );
-      // The parcels' rows reported are exactly those whose bytes (a species flag) changed.
-      let low = m;
-      let high = -1;
-      for (let k = 0; k < was.length; k++) {
-        if (was[k] === repacked.parcels[k]) continue;
-        low = Math.min(low, Math.floor(k / (4 * m)));
-        high = Math.max(high, Math.floor(k / (4 * m)));
-      }
-      expect(rows.parcels).toEqual(high < 0 ? undefined : [low, high]);
+      // The rows reported, per texture, are exactly those whose bytes changed.
+      const changed = (
+        a: ArrayLike<number>,
+        b: ArrayLike<number>,
+      ): readonly [number, number] | undefined => {
+        let low = m;
+        let high = -1;
+        for (let k = 0; k < a.length; k++) {
+          if (a[k] === b[k]) continue;
+          low = Math.min(low, Math.floor(k / (4 * m)));
+          high = Math.max(high, Math.floor(k / (4 * m)));
+        }
+        return high < 0 ? undefined : [low, high];
+      };
+      expect(rows.cover).toEqual(changed(was.cover, repacked.cover));
+      expect(rows.parcels).toEqual(changed(was.parcels, repacked.parcels));
     }
-    // A one-point share step rewrites a band of rows, not the map; the same settings again, none.
-    expect(bands[0]).toBeLessThan(terrain.size);
-    expect(bands.at(-1)).toBe(0);
-    // The herds alone rewrite the cover's rows by the pastures they swap, and no species flag;
-    // the pine mix and woodland off and on again flip flags.
-    expect(bands[2]).toBeGreaterThan(0);
+    // The same settings again, and the herds alone, change no texel; the pine mix and woodland off
+    // and on again flip species.
+    expect(covered.at(-1)).toBeUndefined();
+    expect(covered[2]).toBeUndefined();
     expect(flagged[2]).toBeUndefined();
     expect(flagged[3]).toBeDefined();
     expect(flagged[4]).toBeDefined();
@@ -332,14 +353,15 @@ function variant(seed: number, change: Partial<TerrainOptions> = {}): Terrain {
   return built.terrain;
 }
 
-/** Each texel's use (its parcel's) under the land model at STABLE. */
+/** Each texel's use under the land model at STABLE: woodland where the woods stand, else its parcel's. */
 function texelUses(t: Terrain, seed: number): Uint8Array {
-  const use = new LandModel(t, seed).allocate(STABLE).use;
+  const { use, line } = new LandModel(t, seed).allocate(STABLE);
   const m = t.size;
   const out = new Uint8Array(m * m);
   for (let q = 0; q < m * m; q++) {
     const id = t.parcels.ids[2 * q] ?? 0;
-    out[q] = id > 0 ? (use[id - 1] ?? 0) : 0;
+    if (landCanopy(t.clearance[q] ?? 0, line) > 0.5) out[q] = WOODLAND;
+    else out[q] = id > 0 ? (use[id - 1] ?? 0) : 0;
   }
   return out;
 }
@@ -371,6 +393,30 @@ function nearest(points: readonly number[], x: number, z: number): number {
   return d;
 }
 
+/**
+ * Whether texel q's parcel, in build a or b, is one a way only one of them lays (`moved`:
+ * wayPoints(a, b, true)) passes within 64 m of: the reach the roads re-weigh, so it may turn whole.
+ */
+function reachedBy(a: Terrain, b: Terrain, moved: readonly number[]): (q: number) => boolean {
+  const m = a.size;
+  const beside = new Map<string, boolean>();
+  const reached = (built: Terrain, id: number): boolean => {
+    const key = `${built === a ? "a" : "b"}${id}`;
+    let near = beside.get(key);
+    if (near === undefined) {
+      near = false;
+      for (let q = 0; q < m * m && !near; q++)
+        if ((built.parcels.ids[2 * q] ?? 0) === id)
+          near =
+            nearest(moved, ((q % m) + 0.5) * built.cell, (Math.floor(q / m) + 0.5) * built.cell) <=
+            64;
+      beside.set(key, near);
+    }
+    return near;
+  };
+  return (q) => reached(a, a.parcels.ids[2 * q] ?? 0) || reached(b, b.parcels.ids[2 * q] ?? 0);
+}
+
 describe("land use, stable under edits", () => {
   test("a settlement switched, added or grown changes no land far from it but beside the ways it moves", () => {
     for (const seed of SEEDS) {
@@ -389,24 +435,7 @@ describe("land use, stable under edits", () => {
         const after = texelUses(t, seed);
         const moved = wayPoints(base, t, true);
         // A parcel a moved way passes within 64 m of (the reach the roads re-weigh) may turn whole.
-        const beside = new Map<string, boolean>();
-        const reached = (built: Terrain, id: number): boolean => {
-          const key = `${built === base ? "a" : "b"}${id}`;
-          let near = beside.get(key);
-          if (near === undefined) {
-            near = false;
-            for (let q = 0; q < m * m && !near; q++)
-              if ((built.parcels.ids[2 * q] ?? 0) === id)
-                near =
-                  nearest(
-                    moved,
-                    ((q % m) + 0.5) * built.cell,
-                    (Math.floor(q / m) + 0.5) * built.cell,
-                  ) <= 64;
-            beside.set(key, near);
-          }
-          return near;
-        };
+        const reached = reachedBy(base, t, moved);
         let changed = 0;
         let stray = 0;
         for (let q = 0; q < m * m; q++) {
@@ -416,8 +445,7 @@ describe("land use, stable under edits", () => {
           const z = (Math.floor(q / m) + 0.5) * base.cell;
           if (Math.hypot(x - at.x, z - at.z) <= 500) continue;
           if (nearest(moved, x, z) <= 150) continue;
-          if (reached(base, base.parcels.ids[2 * q] ?? 0) || reached(t, t.parcels.ids[2 * q] ?? 0))
-            continue;
+          if (reached(q)) continue;
           stray++;
         }
         // The village grows by cottages and yards alone: nothing beyond 500 m of it changes.
@@ -430,7 +458,7 @@ describe("land use, stable under edits", () => {
     }
   }, 120_000);
 
-  test("switching the roads or the tracks changes no land beyond 150 m of every way", () => {
+  test("switching the roads or the tracks changes no land beyond 150 m of every way but in the parcels the ways it moves reach", () => {
     for (const seed of SEEDS) {
       const base = variant(seed);
       const uses = texelUses(base, seed);
@@ -439,12 +467,15 @@ describe("land use, stable under edits", () => {
         const t = variant(seed, change);
         const after = texelUses(t, seed);
         const ways = wayPoints(base, t, false);
+        // A parcel a moved way passes within 64 m of may turn whole (the roads' lean on crops and
+        // wildflowers), out past 150 m of every way where it is large.
+        const reached = reachedBy(base, t, wayPoints(base, t, true));
         let stray = 0;
         for (let q = 0; q < m * m; q++) {
           if (uses[q] === after[q]) continue;
           const x = ((q % m) + 0.5) * base.cell;
           const z = (Math.floor(q / m) + 0.5) * base.cell;
-          if (nearest(ways, x, z) > 150) stray++;
+          if (nearest(ways, x, z) > 150 && !reached(q)) stray++;
         }
         expect({ seed, change, stray }).toEqual({ seed, change, stray: 0 });
       }
@@ -476,8 +507,9 @@ describe("land use, stable under edits", () => {
         const z = (Math.floor(q / m) + 0.5) * base.cell;
         if (nearest(river, x, z) > 400) far++;
       }
-      // Measured: 0-0.28% of the dry land beyond 400 m of the river changes, a few parcels whose
-      // bids were all but tied, nudged by the ranks the riverside parcels share with them (14-19%
+      // Measured: 0.02-0.45% of the dry land beyond 400 m of the river changes (seeds 0-1), a few
+      // parcels whose bids were all but tied and wood edges the woods' line moves, nudged by the
+      // ranks and quantiles the riverside land shares with them (14-19%
       // while the settlements were weighed against the carved river and every parcel's draws were
       // keyed by its index).
       expect({ seed, far: far < 0.005 * dry }).toEqual({ seed, far: true });

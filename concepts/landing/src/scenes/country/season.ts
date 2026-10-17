@@ -25,14 +25,16 @@
 // through the gaps of which the land behind shows (trees.ts), and leaf out fresh in spring (the near
 // crowns, trees.ts's countryLeaves, and the far canopy crown by crown, settling to the woods' mean
 // where crowns grow too small), while the pines stay evergreen. Lying snow is the climate's
-// (uWeather.y), never the date's. This GLSL goes ahead of trees.ts's in the scene's program;
-// sceneCountry sets the year (countryYearSet) before anything reads it.
+// (uWeather.y), never the date's. This GLSL goes ahead of trees.ts's trees in the scene's program,
+// after its woods (countryWoodsGlsl); sceneCountry sets the year (countryYearSet) before anything
+// reads it.
 //
 // Round bales (COUNTRY_HAS_BALES: while the date lies in COUNTRY_BALES or the year passes, with crops
 // on) lie on the barley's stubble from a little after its field is cut until they are carted away,
 // each on its own dates; at most one to a cell of a grid along the field's rows, inside the field's
-// clear core (terrainCore) or, looked up there, on its own ground well inside its border and clear
-// of roads, streams, yards and trees; each a cylinder on its side met exactly by the ray in front of
+// clear core (terrainCore, while the woods reach no part of it) or, looked up there, on its own
+// ground well inside its border and clear of roads, streams, yards, trees and the woods' crowns;
+// each a cylinder on its side met exactly by the ray in front of
 // the ground it reached. A software renderer runs every line of a program, so the bales' cells are
 // walked first and only the one bale a pixel finds is looked up.
 import { glslFloat } from "../../shaders/glsl.ts";
@@ -361,13 +363,14 @@ float countryBaleHit(vec3 ro, vec3 rd, vec3 base, vec2 axis, out vec3 n, out flo
   return best;
 }
 
-// Whether a bale may lie at site in parcel id (core: its clear core): inside the core, or else (the
-// parcel looked up there) on its own ground well inside its border, clear of the roads, streams,
-// yards, trees and woods. Decided by the site alone, so a bale is whole or not there at all.
-bool countryBaleClear(vec2 site, float id, vec3 core) {
-  if (length(site - core.xy) < core.z - 2.0) return true;
+// Whether a bale may lie at site in parcel id (core: its clear core, and the highest clearance in
+// it): inside the core while the woods reach no part of it, or else (the parcel looked up there) on
+// its own ground well inside its border, clear of the roads, streams, yards, trees and the woods'
+// crowns. Decided by the site alone, so a bale is whole or not there at all.
+bool countryBaleClear(vec2 site, float id, vec4 core) {
+  if (length(site - core.xy) < core.z - 2.0 && core.w <= countryWoodLine - COUNTRY_WOOD_EDGE) return true;
   vec4 c = terrainCover(uSim1, site, COUNTRY_EXTENT);
-  if (c.x < 5.0 || c.y < 4.0 || abs(c.z) > 0.01 || abs(c.w) > 0.02) return false;
+  if (c.x < 5.0 || c.y < 4.0 || abs(c.w) > 0.02 || countryWoods(c, -2.0, true) > 0.0) return false;
   TerrainParcel here = terrainParcel(uSim2, uSim3, site, COUNTRY_EXTENT);
   return here.id == id && here.border > 6.0;
 }
@@ -386,7 +389,7 @@ void countryBales(vec3 eye, vec3 rd, float tHit, vec3 p, vec4 g, TerrainParcel p
   float cut = 0.418 + 0.025 * fract(fract(parcel.id * 0.618034) * 7.31);
   float fall = dot(g.zw, rd.xz) - rd.y;
   if (COUNTRY_BALE_RADIUS < 0.6 * tHit * cellAngle || fall < 1e-3) return;
-  vec3 core = terrainCore(uSim3, parcel.id);
+  vec4 core = terrainCore(uSim3, parcel.id);
   vec2 along = parcel.axis;
   vec2 across = vec2(-along.y, along.x);
   // The ray's way over the field from where it comes down to a bale's height (two cells at most) to

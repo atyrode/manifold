@@ -42,7 +42,7 @@ import { countryMurmurationGlsl } from "./murmuration.ts";
 import { countryRipplesGlsl } from "./ripples.ts";
 import { countrySeasonGlsl } from "./season.ts";
 import { COUNTRY_MAP } from "./sim.ts";
-import { countryTreesGlsl } from "./trees.ts";
+import { countryTreesGlsl, countryWoodsGlsl } from "./trees.ts";
 import { countryVergesGlsl } from "./verges.ts";
 import { countryTroddenGlsl } from "./trodden.ts";
 
@@ -58,8 +58,8 @@ export const COUNTRY_PASSAGE = { enter: 2.8, exit: 1.4 } as const;
  * far hills under the skyline may take more than `late` steps; the growing floor then carries any
  * ray past `far` within `steps` whatever the land under it, so none runs out of steps (to be drawn
  * where it stopped, in the air), and a ray that meets the land sooner marches as it always did.
- * march.test.ts holds a CPU mirror of countryMarch to a dense march over the bare land, and that
- * bound.
+ * march.test.ts holds a CPU mirror of countryMarch to a dense march over the bare land and its ring
+ * (COUNTRY_RING), and that bound.
  */
 export const COUNTRY_MARCH = {
   top: 520,
@@ -73,6 +73,14 @@ export const COUNTRY_MARCH = {
   steps: 224,
   refine: 2,
 } as const;
+
+/**
+ * The ring of hills beyond the map (countryRing), out to COUNTRY_MARCH.far: metres past the edge it
+ * rises over, the noise's scale (metres), and how far it rolls either way, over the edge's height
+ * under the map's highest ground. So a view turned off the map's diagonal (or a vantage moved) meets
+ * land, not the sky, past its edge: every heading has land out to the farthest look.
+ */
+export const COUNTRY_RING = { rise: 600, scale: 1400, relief: 0.6 } as const;
 
 export const countryGlsl = /* glsl */ `
 ${terrainGlsl}
@@ -117,12 +125,37 @@ vec3 countryToCamera(vec3 d) {
   return vec3(dot(d, countryRight), d.y, dot(d, countryFwd));
 }
 
+${countryWoodsGlsl}
 ${countrySeasonGlsl}
 ${countryTreesGlsl}
 
+// The land beyond the map, out to COUNTRY_FAR (COUNTRY_RING): metres past the map's edge (0 on it).
+float countryBeyond(vec2 p) {
+  return length(max(max(-p, p - COUNTRY_EXTENT), 0.0));
+}
+
+// The land beyond the map at p: (ground, water level). The map's edge carried straight out, rolling
+// into hills over the first COUNTRY_RING.rise metres (three octaves of noise COUNTRY_RING.scale
+// across, as far either way as COUNTRY_RING.relief of the edge's height under the map's highest
+// ground, and never above that, which the march's ceiling holds), the edge's water carried out at
+// its level where the land lies under it: the sea on, a river up its valley. Unbuilt and unworn:
+// one fetch at the edge and the noise.
+vec2 countryRing(vec2 p) {
+  vec4 edge = terrainGround(uSim0, clamp(p, vec2(0.0), vec2(COUNTRY_EXTENT)), COUNTRY_EXTENT);
+  float top = terrainTop(uSim3);
+  float rise = smoothstep(0.0, ${glslFloat(COUNTRY_RING.rise)}, countryBeyond(p));
+  float hills = (fbm3(p / ${glslFloat(COUNTRY_RING.scale)}) - 0.5) * ${glslFloat(COUNTRY_RING.relief)} * max(top - edge.x, 0.0);
+  float ground = min(edge.x + rise * hills, top);
+  return vec2(ground, edge.y > edge.x ? edge.y : ground - 1.0);
+}
+
 // The land and what stands on it (metres): the trees' bounds for the march, their rounded tents for
-// the sun's shadows (countryCanopy).
+// the sun's shadows (countryCanopy); beyond the map, its ring of hills.
 float countryHeight(vec2 p, bool bound) {
+  if (countryBeyond(p) > 0.0) {
+    vec2 ring = countryRing(p);
+    return max(ring.x, ring.y);
+  }
   vec4 g = terrainGround(uSim0, p, COUNTRY_EXTENT);
   vec4 c = terrainCover(uSim1, p, COUNTRY_EXTENT);
   return terrainSurface(g) + countryCanopy(p, c, terrainWater(g), bound);
@@ -132,9 +165,9 @@ float countryHeight(vec2 p, bool bound) {
 // growing share once the march runs late: COUNTRY_MARCH), then refine the crossing step by regula
 // falsi on the gaps either side of it, keeping the stretch that holds the crossing (a point on the
 // land counts as above it, so the gap below never reaches 0). A rising ray is let go once above all
-// on the map: its highest ground or water (terrainTop) and the trees' bounds over it, with
-// COUNTRY_MARCH.headroom; never higher than it starts from, COUNTRY_TOP.
-// -1: sky, or off the map.
+// on the map and its ring: the map's highest ground or water (terrainTop) and the trees' bounds
+// over it, with COUNTRY_MARCH.headroom; never higher than it starts from, COUNTRY_TOP.
+// -1: sky.
 float countryMarch(vec3 ro, vec3 rd) {
   float t = 0.0;
   if (ro.y > COUNTRY_TOP) {
@@ -149,7 +182,6 @@ float countryMarch(vec3 ro, vec3 rd) {
   bool hit = false;
   for (int i = 0; i < ${COUNTRY_MARCH.steps}; i++) {
     vec3 p = ro + rd * t;
-    if (p.x < -40.0 || p.z < -40.0 || p.x > COUNTRY_EXTENT + 40.0 || p.z > COUNTRY_EXTENT + 40.0) return -1.0;
     float gap = p.y - countryHeight(p.xz, true);
     if (gap < 0.0) {
       below = gap;
@@ -413,6 +445,7 @@ Shade sceneCountry(vec2 screenUv, vec2 cell, float t) {
   bool mapped = uSimOn.x > 0.5 && uSimOn.w > 0.5;
   vec3 eye = mapped ? terrainEye(uSim3) : vec3(200.0, 300.0, 200.0);
   eye.y += 220.0 * lift;
+  if (mapped) countryWoodsSet();
 
   // The horizon in this heading: the colour the land fades into.
   vec3 haze = countrySkyDome(sky, normalize(vec3(dirCam.x, 0.015, 1.0)), rain) + sky.night * vec3(0.03, 0.04, 0.07);
@@ -434,7 +467,7 @@ Shade sceneCountry(vec2 screenUv, vec2 cell, float t) {
     vec3 p = eye + rd * tHit;
     vec4 g = terrainGround(uSim0, p.xz, COUNTRY_EXTENT);
     float ground = terrainSurface(g);
-    if (p.y > ground + 0.3) {
+    if (countryBeyond(p.xz) <= 0.0 && p.y > ground + 0.3) {
       float fall = dot(g.zw, rd.xz) - rd.y;
       if (3.0 / (tHit * cellAngle) < 1.2 || fall < 0.02) {
         canopy = true;
@@ -575,7 +608,19 @@ Shade sceneCountry(vec2 screenUv, vec2 cell, float t) {
       vec4 c = terrainCover(uSim1, p.xz, COUNTRY_EXTENT);
       float foot = tHit * cellAngle;
       waterDepth = terrainWater(g);
-      if (canopy) {
+      if (countryBeyond(p.xz) > 0.0) {
+        // The ring beyond the map (countryRing): grass rolling off into the haze, darker where
+        // woods lie, its water (the sea, a river's) mirroring the sky.
+        vec2 ring = countryRing(p.xz);
+        waterDepth = ring.y - ring.x;
+        water = waterDepth > 0.02;
+        float e = max(4.0, foot);
+        vec2 slope = vec2(countryRing(p.xz + vec2(e, 0.0)).x - countryRing(p.xz - vec2(e, 0.0)).x, countryRing(p.xz + vec2(0.0, e)).x - countryRing(p.xz - vec2(0.0, e)).x) / (2.0 * e);
+        n = water ? vec3(0.0, 1.0, 0.0) : normalize(vec3(-slope.x, 1.0, -slope.y));
+        vec3 sward = countrySward(mix(vec3(0.33, 0.47, 0.18), vec3(0.4, 0.52, 0.2), vnoise(p.xz / 90.0)));
+        albedo = water ? vec3(0.06, 0.1, 0.1) : mix(sward, vec3(0.17, 0.3, 0.11), smoothstep(0.55, 0.62, vnoise(p.xz / 260.0)));
+        shade = countryShadow(p + n, sun);
+      } else if (canopy) {
         // The woods or a lone tree far off, whole: the canopy lit on its sunward sides, darker in
         // between (its own slope over a cell or more), pine woods darker (packLand's pine flags).
         float e = max(1.6, foot);
@@ -610,8 +655,10 @@ Shade sceneCountry(vec2 screenUv, vec2 cell, float t) {
         albedo = grass;
         if (parcel.id > 0.5) {
           // The parcel as the land model uses it (its record): open grassland and the woods' floor
-          // are the grass, the rest farmed.
-          float use = floor(parcel.use + 0.5);
+          // are the grass, the rest farmed; where the woods stand (an assart's wooded corner too)
+          // their floor, with no crop, hedge, fence, herd or bale under the trees.
+          float wooded = countryWoods(c, waterDepth, false);
+          float use = wooded > 0.5 ? LAND_WOODLAND : floor(parcel.use + 0.5);
           vec2 r = vec2(dot(p.xz - parcel.site, parcel.axis), dot(p.xz - parcel.site, vec2(-parcel.axis.y, parcel.axis.x)));
           vec2 nb = vec2(dot(parcel.normal, countryRight.xz), dot(parcel.normal, countryFwd.xz));
           float footAcross = foot * length(vec2(nb.x, nb.y / max(abs(rd.y), 0.08)));
@@ -632,7 +679,7 @@ Shade sceneCountry(vec2 screenUv, vec2 cell, float t) {
           // grassland), never thinner than half a cell across so the patchwork holds far off,
           // fading out once fields shrink to a few cells; a greener verge either side.
           float otherUse = floor(parcel.otherUse + 0.5);
-          bool hedged = (use >= LAND_CROPS && use <= LAND_PASTURE) || (otherUse >= LAND_CROPS && otherUse <= LAND_PASTURE);
+          bool hedged = wooded <= 0.5 && ((use >= LAND_CROPS && use <= LAND_PASTURE) || (otherUse >= LAND_CROPS && otherUse <= LAND_PASTURE));
           float hedgeHalf = max(1.3, 0.45 * footAcross);
           float hedge = hedged ? hardFill(parcel.border - hedgeHalf, 0.5 * footAcross) * (1.0 - smoothstep(18.0, 40.0, footAcross)) : 0.0;
           float verge = hedged ? 1.0 - smoothstep(hedgeHalf, hedgeHalf + 2.5, parcel.border) : 0.0;
@@ -641,7 +688,7 @@ Shade sceneCountry(vec2 screenUv, vec2 cell, float t) {
           porous = use == LAND_CROPS ? fieldPorous : 0.5;
 #if COUNTRY_HAS_HERDS
           // A pasture's fence and its herd standing in front of the ground (life.ts).
-          if (K_pasture > 0.0) {
+          if (K_pasture > 0.0 && wooded <= 0.5) {
             bool pen = use == LAND_PASTURE;
             bool beyond = otherUse == LAND_PASTURE;
             float zFence = 1e9;
@@ -676,8 +723,12 @@ Shade sceneCountry(vec2 screenUv, vec2 cell, float t) {
         // Under the trees, between their crowns, the floor lies dark in their shade; under bare
         // broadleaves in winter it lies open, brown with their fallen leaves (not in a pine wood).
         float under = max(countryWoods(c, waterDepth, false), smoothstep(0.1, 0.6, -c.w));
-        bool pinewood = floor(parcel.use + 0.5) == LAND_WOODLAND && parcel.attr > 0.5;
-        float litter = pinewood && COUNTRY_HAS_PINES == 1 ? 0.0 : countryKeys(0.0, 0.0, 0.0, 1.0, 0.0);
+#if COUNTRY_HAS_PINES
+        bool pinewood = countryPines(p.xz) > 0.5;
+#else
+        bool pinewood = false;
+#endif
+        float litter = pinewood ? 0.0 : countryKeys(0.0, 0.0, 0.0, 1.0, 0.0);
         albedo = countryBlend(mix(albedo, vec3(0.1, 0.12, 0.07), 0.6 * under), mix(albedo, vec3(0.3, 0.23, 0.16), 0.45 * under), litter);
         // Streams: a ribbon of water mirroring the sky; with the river off, they and the river's
         // bed (packWater marks it so) lie dry, pale stones and silt.

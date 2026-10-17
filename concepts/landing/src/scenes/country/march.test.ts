@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test";
 import { toHalf } from "../../sims/half.ts";
+import { clamp, glslHash12, smoothstep } from "../../sims/math.ts";
 import {
   generateTerrain,
   packTerrain,
@@ -8,14 +9,36 @@ import {
   TERRAIN_RECORDS,
 } from "../../sims/terrain.ts";
 import { COUNTRY_CAMERA } from "./camera.ts";
-import { COUNTRY_MARCH } from "./shader.ts";
+import { COUNTRY_MARCH, COUNTRY_RING } from "./shader.ts";
 import { COUNTRY_MAP } from "./sim.ts";
 
+/** common.ts vnoise and fbm3, on the CPU (to the march, any smooth noise of their shape will do). */
+function vnoise(x: number, z: number): number {
+  const i = Math.floor(x);
+  const j = Math.floor(z);
+  const u = (x - i) * (x - i) * (3 - 2 * (x - i));
+  const v = (z - j) * (z - j) * (3 - 2 * (z - j));
+  const a = glslHash12(i, j);
+  const b = glslHash12(i + 1, j);
+  const c = glslHash12(i, j + 1);
+  const d = glslHash12(i + 1, j + 1);
+  return (a + (b - a) * u) * (1 - v) + (c + (d - c) * u) * v;
+}
+function fbm3(x: number, z: number): number {
+  return (
+    (0.5 * vnoise(x, z) +
+      0.25 * vnoise(x * 2.03 + 17.1, z * 2.03 + 9.2) +
+      0.125 * vnoise(x * 4.11 + 4.3, z * 4.11 + 31.7)) /
+    0.875
+  );
+}
+
 // countryMarch (shader.ts) on the CPU over the bare land (the ground and the water as the GPU holds
-// them, in half floats; no trees), every cell of a 640 × 360 frame of the default view, against a
-// march that never steps over the land (no step longer than the steepest texel allows, finer floors)
-// bisected to the crossing. Every shape of land: its default landscape or the ones whose grazing
-// rays take the most steps under the far skyline (the hills' run past COUNTRY_MARCH.late).
+// them, in half floats; no trees) and the ring of hills beyond it (countryRing), every cell of a
+// 640 × 360 frame of the default view, against a march that never steps over the land (no step
+// longer than the steepest texel or the ring allows, finer floors) bisected to the crossing. Every
+// shape of land: its default landscape or the ones whose grazing rays take the most steps under the
+// far skyline (the hills' run past COUNTRY_MARCH.late).
 const WIDTH = 640;
 const HEIGHT = 360;
 const LANDSCAPES: readonly (readonly [TerrainBase, readonly number[]])[] = [
@@ -26,7 +49,7 @@ const LANDSCAPES: readonly (readonly [TerrainBase, readonly number[]])[] = [
 ];
 
 interface Ray {
-  /** Distance to the land (-1: none: sky, or off the map). */
+  /** Distance to the land or its ring (-1: none: sky). */
   t: number;
   /** The march ran out of steps still above the land (drawn there, in the air). */
   spent: boolean;
@@ -55,11 +78,20 @@ for (const [base, seeds] of LANDSCAPES) {
       const E = t.extent;
       const ground = Float32Array.from(t.ground, toHalf);
       const level = Float32Array.from(t.level, toHalf);
-      const surface = (x: number, z: number): number =>
-        Math.max(sampleGrid(ground, m, E, x, z), sampleGrid(level, m, E, x, z));
       // terrainTop as the records hold it, in half floats.
       const records = packTerrain(t).records;
       const top = toHalf(records[4 * TERRAIN_RECORDS.misc * TERRAIN_RECORDS.width + 21] ?? 0);
+      const R = COUNTRY_RING;
+      // The bare land, and beyond it its ring (shader.ts countryRing).
+      const surface = (x: number, z: number): number => {
+        const past = Math.hypot(Math.max(-x, x - E, 0), Math.max(-z, z - E, 0));
+        const g = sampleGrid(ground, m, E, clamp(x, 0, E), clamp(z, 0, E));
+        const l = sampleGrid(level, m, E, clamp(x, 0, E), clamp(z, 0, E));
+        if (past <= 0) return Math.max(g, l);
+        const hills = (fbm3(x / R.scale, z / R.scale) - 0.5) * R.relief * Math.max(top - g, 0);
+        const land = Math.min(g + smoothstep(0, R.rise, past) * hills, top);
+        return Math.max(land, l > g ? l : land - 1);
+      };
       // No trees here, so no trees' bound over it.
       const ceiling = Math.min(M.top, top + M.headroom);
       // The steepest the bilinear surface rises: its gradient's parts are bounded by the largest
@@ -75,7 +107,8 @@ for (const [base, seeds] of LANDSCAPES) {
           if (i + 1 < m) across = Math.max(across, Math.abs(east - a));
           if (j + 1 < m) up = Math.max(up, Math.abs(north - a));
         }
-      const steepest = Math.hypot(across, up) / t.cell;
+      // The ring rises no steeper than this (its noise and its rise from the edge together).
+      const steepest = Math.max(Math.hypot(across, up) / t.cell, 1);
       const v = t.vantage;
       const eye = { x: v.x, y: toHalf(v.y), z: v.z };
       // The shader's march: shader.ts countryMarch, line for line, over the bare land.
@@ -90,7 +123,6 @@ for (const [base, seeds] of LANDSCAPES) {
           const x = eye.x + dx * at;
           const y = eye.y + dy * at;
           const z = eye.z + dz * at;
-          if (x < -40 || z < -40 || x > E + 40 || z > E + 40) return { t: -1, spent: false };
           const gap = y - surface(x, z);
           if (gap < 0) {
             below = gap;
@@ -131,7 +163,6 @@ for (const [base, seeds] of LANDSCAPES) {
           const x = eye.x + dx * at;
           const y = eye.y + dy * at;
           const z = eye.z + dz * at;
-          if (x < -40 || z < -40 || x > E + 40 || z > E + 40) return -1;
           const gap = y - surface(x, z);
           if (gap < 0) break;
           if (dy >= 0 && y > M.top) return -1;

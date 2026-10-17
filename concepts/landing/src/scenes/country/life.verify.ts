@@ -4,8 +4,8 @@
 // its centreline, the bridge's span included: checked against the same terrain built on the CPU),
 // and every animal of every pasture's herd (the land model's pastures, read from their records)
 // stands inside its own parcel, its fence's set and a body's length clear of the parcel's edge, off
-// the roads, streams and water; the scene with all its life drawn is the same picture twice, stands
-// still at motion 0 and differs from the scene without it.
+// the roads, streams and water and out of the woods; the scene with all its life drawn is the same
+// picture twice, stands still at motion 0 and differs from the scene without it.
 import { fragmentSourceFor, sceneFeaturesAll } from "../../shaders/index.ts";
 import { generateTerrain } from "../../sims/terrain.ts";
 import { countryScene } from "./index.ts";
@@ -36,8 +36,9 @@ Shade probeCountry(vec2 uv, vec2 cell, float t) {
     return shadeOf(vec3(1.0, high / 255.0, (n - 256.0 * high) / 255.0), 0.0, 0.0);
   }
   float id = float(x + 1);
+  countryWoodsSet();
   vec4 data = terrainRecord(uSim3, TERRAIN_SITES_ROW + x / 32, 2 * (x - (x / 32) * 32) + 1);
-  vec3 core = terrainCore(uSim3, id);
+  vec4 core = terrainCore(uSim3, id);
   if (floor(data.z + 0.5) != LAND_PASTURE || core.z <= 0.0) return shadeOf(vec3(0.0), 0.0, 0.0);
   CountryHerd herd = countryHerd(id, core, data.w);
   int k = y - (y / ${HERD}) * ${HERD};
@@ -49,7 +50,8 @@ Shade probeCountry(vec2 uv, vec2 cell, float t) {
   TerrainParcel parcel = terrainParcel(uSim2, uSim3, at, COUNTRY_EXTENT);
   vec4 cover = terrainCover(uSim1, at, COUNTRY_EXTENT);
   bool inside = parcel.id == id && parcel.border >= COUNTRY_FENCE_SET + herd.size;
-  bool clear = cover.x > 2.0 && cover.y > 0.0 && cover.w > -0.01 && terrainWater(terrainGround(uSim0, at, COUNTRY_EXTENT)) < 0.0;
+  float water = terrainWater(terrainGround(uSim0, at, COUNTRY_EXTENT));
+  bool clear = cover.x > 2.0 && cover.y > 0.0 && cover.w > -0.01 && water < 0.0 && countryWoods(cover, water, false) < 0.5;
   return shadeOf(vec3(1.0, inside && clear ? 1.0 : 0.5, clamp(parcel.border / 100.0, 0.0, 1.0)), 0.0, 0.0);
 }
 `;
@@ -137,7 +139,7 @@ export function verifyCountryLife(gl: WebGL2RenderingContext): Record<string, un
     check(figures >= AGENTS * AGENT_TIMES * 0.9, `country: only ${figures} figures out to check`);
     result.figures = figures;
     result.roadMargin = -farthest;
-    // Every animal stays in its own parcel, clear of the fence, roads, streams and water.
+    // Every animal stays in its own parcel, clear of the fence, roads, streams, water and woods.
     const herds = probeDraw(2, FIELDS, HERD * HERD_TIMES);
     let animals = 0;
     for (let i = 0; i < FIELDS * HERD * HERD_TIMES; i++) {

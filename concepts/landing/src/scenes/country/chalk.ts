@@ -9,31 +9,34 @@
 // proportions (past that it reads squatter). It is the records' eye that sees it, not the camera,
 // so the M stays cut in the ground while the camera moves on its passage.
 //
-// Its site (chalkSite, once per terrain, in its build: build.ts): candidates on a grid inside
-// the default framing (within CHALK.bearing of the heading, CHALK.near..CHALK.far ahead) are weighed
-// on the plane through their footprint: steep enough (CHALK.gentlest..CHALK.steepest) and turned to
-// the eye (CHALK.facing), so the M stands as tall as it should; central and not too far; and lit at
-// the default hour (the sky at the scene's default time of day, from the sim): the sun on that
-// plane, none from behind it, and the sky, squared as its squat is. Chalk the sun has turned from
-// lies in the sky's blue light alone and reads grey, not white. Every point of the footprint with a
-// margin round it must be dry ground off the roads, streams and yards, turned to the eye. The best
-// are then marched from the eye, nine points of each (the ground away from the figure and the
-// vantage's open slopes raised by a wood's height, so no wood the land model may grow hides it;
-// where none of the best is in sight so, over the bare land), and kept off the river's banks (where
-// its lone trees stand): the first in sight is the site. None passes, no figure.
+// Its site (chalkSite, once per terrain, in its build: build.ts) is weighed on the land as the river
+// left it (Terrain.bare: no road's cut, no terrace), against every way the network planned, laid or
+// not (Terrain.planned), and every candidate settlement's ground, built or not: so no settlement,
+// road or track switched moves it. Candidates on a grid inside the default framing (within
+// CHALK.bearing of the heading, CHALK.near..CHALK.far ahead) are weighed on the plane through their
+// footprint: steep enough (CHALK.gentlest..CHALK.steepest) and turned to the eye (CHALK.facing), so
+// the M stands as tall as it should; central and not too far; and lit at the default hour (the sky
+// at the scene's default time of day, from the sim): the sun on that plane, none from behind it, and
+// the sky, squared as its squat is. Chalk the sun has turned from lies in the sky's blue light alone
+// and reads grey, not white. Every point of the footprint with a margin round it must be dry ground
+// off the planned ways, the streams and the settlements' grounds, turned to the eye. The best are
+// then marched from the eye, nine points of each (the ground away from the figure raised by a wood's
+// height, so no wood the woods' line may let grow hides it; where none of the best is in sight so,
+// over the bare land), and kept off the river's banks (where its lone trees stand): the first in
+// sight is the site. None passes, no figure.
 //
-// The parcels it lies on, and those just below its foot whose woods would hide it, are kept open
-// grassland while it shows (keepChalkOpen, after the land model's allocation), so no wood, field,
-// hedge or herd covers it. packChalk writes the site into two texels of the records' misc row past
-// the terrain's own (TERRAIN_RECORDS: it uses 0..5), which countryChalk reads in the ground branch,
-// cut per cell.
-import type { LandAllocation, LandModel } from "../../sims/landuse.ts";
-import { atan2, hypot2, hypot3, smoothstep } from "../../sims/math.ts";
+// The parcels it lies on, and those just below its foot whose woods would hide it, are opened while
+// it shows (landuse.ts openLand, after the land model's allocation: build.ts countryAllocation):
+// open grassland, their woods felled, so no wood, field, hedge or herd covers it. packChalk writes
+// the site into two texels of the records' misc row past the terrain's own (TERRAIN_RECORDS: it
+// uses 0..5), which countryChalk reads in the ground branch, cut per cell.
+import { atan2, clamp, hypot2, hypot3, smoothstep } from "../../sims/math.ts";
 import {
   sampleGrid,
   TERRAIN_RECORDS,
   type Terrain,
   type TerrainPacked,
+  wayDistance,
 } from "../../sims/terrain.ts";
 import type { SkyState } from "../../world-clock.ts";
 
@@ -101,8 +104,11 @@ interface Candidate {
 export function chalkSite(t: Terrain, sky: SkyState): ChalkSite | null {
   const { size: m, extent: W } = t;
   const v = t.vantage;
-  const ground = (x: number, z: number) => sampleGrid(t.ground, m, W, x, z);
-  const surface = (x: number, z: number) => Math.max(ground(x, z), sampleGrid(t.level, m, W, x, z));
+  const ground = (x: number, z: number) => sampleGrid(t.bare.ground, m, W, x, z);
+  const surface = (x: number, z: number) =>
+    Math.max(ground(x, z), sampleGrid(t.bare.level, m, W, x, z));
+  // Every way the network planned, laid or not: the footprint keeps CHALK.road off each.
+  const ways = wayDistance(t, t.planned, CHALK.road);
   // The camera's level frame: forward and right on the map.
   const fx = v.dx;
   const fz = v.dz;
@@ -159,7 +165,7 @@ export function chalkSite(t: Terrain, sky: SkyState): ChalkSite | null {
         alongY: [-a1 / det, a0 / det],
         score: 0,
       };
-      const wood = footprint(t, candidate);
+      const wood = footprint(t, candidate, ways);
       if (wood < 0) continue;
       // The light on its chalk, over full sun's: the sun on the slope's plane and the sky.
       const sunward = (sun[1] - gx * sun[0] - gz * sun[2]) / hypot3(gx, 1, gz);
@@ -221,11 +227,14 @@ function onPlane(c: Candidate, mx: number, my: number): [number, number] {
 }
 
 /**
- * Whether the candidate's footprint with its margin is clear and turned to the eye, at 5 × 5 points:
- * its mean woodland suitability (0..1), or -1.
+ * Whether the candidate's footprint with its margin is clear and turned to the eye, at 5 × 5 points,
+ * on the bare land, off the planned ways (`ways`: their signed distance, wayDistance), the streams
+ * and every candidate settlement's ground: how wooded it would grow (its mean clearance, 0..1), or
+ * -1.
  */
-function footprint(t: Terrain, c: Candidate): number {
+function footprint(t: Terrain, c: Candidate, ways: Float32Array): number {
   const { size: m, extent: W } = t;
+  const { ground, level } = t.bare;
   const v = t.vantage;
   let wood = 0;
   for (let k = 0; k < 25; k++) {
@@ -235,29 +244,26 @@ function footprint(t: Terrain, c: Candidate): number {
       0.5 * (Math.floor(k / 5) - 2) * (0.5 + CHALK.margin),
     );
     if (x < 20 || z < 20 || x > W - 20 || z > W - 20) return -1;
-    const g = sampleGrid(t.ground, m, W, x, z);
-    if (sampleGrid(t.level, m, W, x, z) > g - 0.3) return -1;
-    if (sampleGrid(t.road, m, W, x, z) < CHALK.road) return -1;
+    const g = sampleGrid(ground, m, W, x, z);
+    if (sampleGrid(level, m, W, x, z) > g - 0.3) return -1;
+    if (sampleGrid(ways, m, W, x, z) < CHALK.road) return -1;
     if (sampleGrid(t.stream, m, W, x, z) < CHALK.stream) return -1;
-    const q = Math.floor((z / W) * m) * m + Math.floor((x / W) * m);
-    if ((t.yard[q] ?? 0) > 0.02) return -1;
+    if (t.candidates.some((site) => hypot2(site.x - x, site.z - z) < site.radius)) return -1;
     const e = 2 * t.cell;
-    const gx =
-      (sampleGrid(t.ground, m, W, x + e, z) - sampleGrid(t.ground, m, W, x - e, z)) / (2 * e);
-    const gz =
-      (sampleGrid(t.ground, m, W, x, z + e) - sampleGrid(t.ground, m, W, x, z - e)) / (2 * e);
+    const gx = (sampleGrid(ground, m, W, x + e, z) - sampleGrid(ground, m, W, x - e, z)) / (2 * e);
+    const gz = (sampleGrid(ground, m, W, x, z + e) - sampleGrid(ground, m, W, x, z - e)) / (2 * e);
     const ex = v.x - x;
     const ey = v.y - g;
     const ez = v.z - z;
     if ((-gx * ex + ey - gz * ez) / hypot3(gx, 1, gz) / hypot3(ex, ey, ez) < 0.06) return -1;
-    wood += (t.wood[q] ?? 0) / 25;
+    wood += clamp(sampleGrid(t.clearance, m, W, x, z), 0, 1) / 25;
   }
   return wood;
 }
 
 /**
  * Whether the eye sees (x, y, z) over the land: the water and the ground, raised by `wood` metres
- * (a wood that may grow there) but on the vantage's open slopes and the ground the figure keeps open.
+ * (a wood that may grow there) but on the ground the figure keeps open.
  */
 function inSight(
   eye: { x: number; y: number; z: number },
@@ -273,7 +279,7 @@ function inSight(
     const f = d / length;
     const px = eye.x + (x - eye.x) * f;
     const pz = eye.z + (z - eye.z) * f;
-    const wooded = wood > 0 && !opened(c, px, pz) && hypot2(px - eye.x, pz - eye.z) > 300;
+    const wooded = wood > 0 && !opened(c, px, pz);
     if (eye.y + (y - eye.y) * f < surface(px, pz) + (wooded ? wood : 0)) return false;
   }
   return true;
@@ -336,22 +342,6 @@ export function packChalk(packed: TerrainPacked, site: ChalkSite | null): void {
   const o = 4 * (TERRAIN_RECORDS.misc * TERRAIN_RECORDS.width + CHALK.column);
   packed.records.fill(0, o, o + 8);
   if (site) packed.records.set([...site.screen, ...site.size, site.depth, site.reach], o);
-}
-
-/** Keep the parcels under the figure open grassland in a land allocation (moving their area to it). */
-export function keepChalkOpen(
-  land: LandAllocation,
-  model: LandModel,
-  site: ChalkSite | null,
-): void {
-  for (const s of site?.parcels ?? []) {
-    const use = land.use[s] ?? 0;
-    const area = model.area[s] ?? 0;
-    land.area[use] = (land.area[use] ?? 0) - area;
-    land.area[0] = (land.area[0] ?? 0) + area;
-    land.use[s] = 0;
-    land.attr[s] = 0;
-  }
 }
 
 export const countryChalkGlsl = /* glsl */ `
