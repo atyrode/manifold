@@ -1565,7 +1565,7 @@ One model of where the sky stands, `src/world-clock.ts`: TypeScript for the sims
 by the sky library (`skyAt`, `skyAtWorld`, `skyMoonPhase`, `skyStarFrame`), checked against each
 other on the GPU by `worldClock` (`src/world-clock.verify.ts`). A sim or a lab part that needs the
 hour, the daylight or the night reads `skyNow` (forest's spirits, the garden's drying, the bees'
-hives shutting at dusk and their fireflies after it, the lab's "See it at night" and its sky dial);
+hives shutting at dusk and their glow-worms lighting after it, the lab's "See it at night" and its sky dial);
 never write a day curve of your own.
 
 - **Staged by default.** The sky is a low-latitude one (15 degrees) facing the equator, the pole
@@ -1917,10 +1917,13 @@ the weather (`uWeather` on its surfaces).
   hills (greyed under the deck) and the hills' distances (500, 1200 and 2500 m) for the weather; the
   points it asks `worldSunlit` for (where each cell's ray meets the garden, and the hills 1200 m
   off), the darker of that and an orchard tree's or a hive's shadow taking the sun; its wet garden
-  (`wetten` on every albedo, the lawn's and the things' sheen of the low sky by `wetGloss`) and the
-  snow lying on the lawn and the path, the hills' fields, the lavender, the wall's top, the hives'
-  roofs and the crowns, read from `uWeather` and compiled in always; its swallows' lanes (8–150 m
-  out, over the hills, swooping to 1.2 m), which hide the insects behind them; and the moon's phase
+  (`wetten` on every albedo, as one matrix set once per cell, the lawn's and the things' sheen of the
+  low sky by `wetGloss`) and the snow lying on the lawn and the path, the hills' fields, the
+  lavender, the wall's top, the hives' roofs and the crowns, read from `uWeather` and compiled in
+  always; its swallows' lanes (8–150 m out, over the hills, swooping to 1.2 m), which hide the
+  insects behind them; its insects, lit by the world's light where they are drawn (their colours as
+  seen in its default afternoon, `BEES_SPECK_DAY`; the glow-worms' and fireflies' lights their own)
+  and drawn before the haze, the fog and the rain and snow, at their own depth; and the moon's phase
   compiled in at every setting (`features: { SKY_MOON_PHASE: 1 }`), since the moon keys its night
   light and shadows, as shore's glitter does. Its seed (`K_scenerySeed`) re-seeds the world's
   cumulus (`w.seed`).

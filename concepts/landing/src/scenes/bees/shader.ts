@@ -2,10 +2,14 @@
 // farmhouse, a windmill on a crest) under towering cumulus in a deep blue sky, an old orchard behind
 // a dry-stone wall, a path and three pastel box hives in a garden of flower drifts (lavender bushes in
 // rows, poppies, daisies, wild flowers, cosmos, foxgloves), seen from eye level in the low light of a
-// warm afternoon. The bees and butterflies are specks: the simulation (sim.ts) draws them into a map of
-// dither cells and the shader reads it back one texel per cell.
+// warm afternoon. The insects are specks: the simulation (sim.ts) draws them into a map of dither
+// cells, each with its depth, and the shader reads it back one texel per cell, in front of whatever
+// nearer thing hides it (beesZ). A speck is lit by the valley's light where it is drawn, as an albedo
+// through beesShade is (its colour as seen in the default afternoon, BEES_SPECK_DAY; the glow-worms'
+// and fireflies' lights shine on their own), then sits in the same air as the garden: the haze, the
+// fog and the rain and snow at its own depth. The layout both read is layout.ts.
 //
-// The garden is a ground plane in perspective (sim.ts: horizon BEES_YH, eye BEES_CAM above it): a metre
+// The garden is a ground plane in perspective (layout.ts: horizon BEES_YH, eye BEES_CAM above it): a metre
 // at row y is beesS(y) screen heights, and a point of the picture has ground coordinates w = (X, Z) in
 // metres. Flower drifts are irregular scatters of blooms of every size, set in rows a step apart in log
 // depth with their positions jittered, thinned toward the edge of a drift and clumped by noise;
@@ -52,26 +56,31 @@
 import { glslFloat } from "../../shaders/glsl.ts";
 import { worldGlsl } from "../../shaders/lib/world.ts";
 import {
+  BEES_ALONG_WALL,
+  BEES_BLOOMS as BLOOMS,
+  BEES_BLOOMS_ALL as BLOOM_ALL,
   BEES_BOARD_HALF,
   BEES_CAM,
   BEES_CODE,
   BEES_COSMOS,
   BEES_DAISY,
+  BEES_DEPTH_STEP,
   BEES_FOXGLOVES as FOXGLOVES,
+  BEES_FOXGLOVES_ALL as FOX_ALL,
   BEES_GROUND_PATCHES,
   BEES_HIVE,
   BEES_HIVE_SCALE,
   BEES_HIVES,
   BEES_LAVENDER,
-  BEES_PATCHES,
+  BEES_LUSH_FROM,
   BEES_PASSAGE,
+  BEES_PATCHES,
   BEES_POPPY,
   BEES_STAGE_MIN,
-  BEES_WILD,
   BEES_TREES as TREES,
-  BEES_DEPTH_STEP,
+  BEES_WILD,
   BEES_YH,
-} from "./sim.ts";
+} from "./layout.ts";
 
 function floats(values: readonly number[]): string {
   return `float[${values.length}](${values.map(glslFloat).join(", ")})`;
@@ -86,45 +95,21 @@ const HIVE_ORDER = BEES_HIVES.map((hive, i) => ({ hive, i }))
   .sort((a, b) => b.hive.y - a.hive.y)
   .map((entry) => entry.i);
 
-/**
- * More foxgloves for a lush garden, each from its own `flowers` value past 1, clear of the path and
- * drawn after those above.
- */
-const FOXGLOVES_LUSH: readonly (readonly [number, number, number, number])[] = [
-  [-0.68, 0.06, 1.05, 1.5],
-  [0.72, 0.075, 1.1, 1.75],
-  [-0.99, 0.14, 0.9, 2.0],
-  [0.6, 0.27, 0.95, 2.25],
-  [0.56, 0.31, 0.85, 2.5],
+/** The slot in DRIFT_ORDER where the orchard and the wall are drawn. */
+const ORCHARD_SLOT = -1;
+/** The drifts in the order they are drawn, the orchard and the wall in their slot: all but the wild flowers along the wall's foot behind them, those in front. */
+const DRIFT_ORDER = [
+  ...BEES_PATCHES.map((_, i) => i).filter((i) => i !== BEES_ALONG_WALL),
+  ORCHARD_SLOT,
+  BEES_ALONG_WALL,
 ];
 
 /**
- * Foreground blooms with their petals drawn: x, the y of the head, kind (0 poppy, 1 daisy), and the
- * `flowers` value they stand from, as the foxgloves.
+ * The afternoon's light on a speck (time 0.64, the default, in a clear sky: beesShade's light with
+ * the scene's final 1.1), which its colour in beesSpeck was picked under: a speck is lit by the light
+ * at its cell over this.
  */
-const BLOOMS: readonly (readonly [number, number, number, number])[] = [
-  [-0.5, 0.11, 0, 0.3],
-  [-0.33, 0.06, 1, 0.55],
-  [0.55, 0.07, 0, 0.4],
-];
-
-/** More near blooms for a lush garden, as FOXGLOVES_LUSH. */
-const BLOOMS_LUSH: readonly (readonly [number, number, number, number])[] = [
-  [0.42, 0.05, 1, 1.5],
-  [-0.58, 0.09, 0, 1.6],
-  [0.75, 0.12, 1, 1.8],
-  [-0.22, 0.035, 0, 2.0],
-  [0.88, 0.06, 0, 2.25],
-  [-0.88, 0.05, 1, 2.5],
-];
-
-/** The `flowers` value from which the first of the lush near blooms and foxgloves stands (BEES_LUSH). */
-export const BEES_LUSH_FROM = Math.min(
-  ...[...FOXGLOVES_LUSH, ...BLOOMS_LUSH].map((plant) => plant[3]),
-);
-
-const FOX_ALL = [...FOXGLOVES, ...FOXGLOVES_LUSH];
-const BLOOM_ALL = [...BLOOMS, ...BLOOMS_LUSH];
+const SPECK_DAY = [0.896, 0.825, 0.736] as const;
 
 /**
  * The garden lantern (the `lantern` knob), hanging from an iron crook a little in front of the hives,
@@ -174,6 +159,11 @@ const int BEES_POPPY = ${BEES_POPPY};
 const int BEES_DAISY = ${BEES_DAISY};
 const int BEES_WILD = ${BEES_WILD};
 const int BEES_COSMOS = ${BEES_COSMOS};
+// The wild flowers along the wall's foot (a patch), and the drifts in the order they are drawn, the
+// orchard and the wall in the slot BEES_ORCHARD_SLOT.
+const int BEES_ALONG_WALL = ${BEES_ALONG_WALL};
+const int BEES_ORCHARD_SLOT = ${ORCHARD_SLOT};
+const int BEES_DRIFT_ORDER[${DRIFT_ORDER.length}] = ${ints(DRIFT_ORDER)};
 // The near foxgloves and blooms: those standing at flowers 1, and with BEES_LUSH the lush garden's
 // more after them; BEES_FOX_SHOW and BEES_BLOOM_SHOW the flowers value each stands from.
 #if BEES_LUSH
@@ -219,7 +209,11 @@ const int BEES_C_DRAGON = ${BEES_CODE.dragonfly};
 const int BEES_C_DRAGON_WING = ${BEES_CODE.dragonflyWing};
 const int BEES_C_FIREFLY = ${BEES_CODE.firefly};
 const int BEES_C_GLOW = ${BEES_CODE.fireflyGlow};
+const int BEES_C_WORM = ${BEES_CODE.glowworm};
+const int BEES_C_WORM_GLOW = ${BEES_CODE.glowwormGlow};
 const float BEES_DEPTH_STEP = ${glslFloat(BEES_DEPTH_STEP)};
+// The afternoon light a speck's colour (beesSpeck) is as seen in (SPECK_DAY).
+const vec3 BEES_SPECK_DAY = vec3(${SPECK_DAY.map(glslFloat).join(", ")});
 // Seconds of the entrance and the exit (BEES_PASSAGE).
 const float BEES_ENTER = ${glslFloat(BEES_PASSAGE.enter)};
 // The crown of an old apple tree: lobes (x, y, radius) in metres from the foot of the trunk, spreading
@@ -282,6 +276,10 @@ float beesCut = 0.0;
 float beesWet = 0.0;
 float beesLying = 0.0;
 float beesSnowGround = 0.0;
+// wetten (weather.ts) at this wet, BEES_POROUS, as one matrix and a dimming, set once by sceneBees:
+// a wet albedo is max(beesWetM * albedo, 0.0) * beesWetDim, the same function inlined once.
+mat3 beesWetM = mat3(1.0);
+float beesWetDim = 1.0;
 // The depth (m) of the nearest thing drawn at this cell that can hide a bee behind it: the wall, a tree, a
 // hive, the foreground flowers, a bird. 1e4 for the sky, the hills and the ground (a bee is always in front of that).
 float beesZ = 1e4;
@@ -319,13 +317,13 @@ float beesRise(float key) {
   return -(2.2 * u * u * u + 1.2 * u * u);
 }
 
-// An albedo in the valley's light, wet as the garden is (wetten): the sky's ambient plus the warm key,
+// An albedo in the valley's light, wet as the garden is (beesWetM): the sky's ambient plus the warm key,
 // more of it on a surface turned toward the key (nx: the surface's sideways normal, -1 left .. 1
 // right); shade (a tree's, a hive's: beesCut) takes most of the key, and so do the clouds' shadows
 // (beesLit), the darker of the two where both fall. The garden's lights add theirs (beesLamp).
 vec3 beesShade(vec3 albedo, float nx) {
   float f = clamp(nx * beesSunX * 1.4, -1.0, 1.0);
-  vec3 a = beesWet > 0.0 ? wetten(albedo, beesWet, BEES_POROUS) : albedo;
+  vec3 a = beesWet > 0.0 ? max(beesWetM * albedo, 0.0) * beesWetDim : albedo;
   vec3 c = a * (beesAmb * 0.55 + beesSun * (0.5 + 0.35 * f) * min(beesLit, 1.0 - 0.72 * beesCut));
 #if BEES_LANTERN || BEES_FAIRY
   c += a * beesLamp;
@@ -335,7 +333,7 @@ vec3 beesShade(vec3 albedo, float nx) {
 
 // Light that passes through a thin leaf or petal toward the eye, the key being behind the scene.
 vec3 beesGlow(vec3 albedo, float amount) {
-  vec3 a = beesWet > 0.0 ? wetten(albedo, beesWet, BEES_POROUS) : albedo;
+  vec3 a = beesWet > 0.0 ? max(beesWetM * albedo, 0.0) * beesWetDim : albedo;
   return a * beesSun * amount * min(beesLit, 1.0 - 0.72 * beesCut);
 }
 
@@ -562,12 +560,13 @@ void beesPath(vec2 p, vec2 w, inout vec3 col) {
 #if BEES_FLOWERS
 // Drift i's ellipse at p, in its radii (0 at its middle, 1 at its edge): as laid out at flowers 1,
 // wider above it and, from 2 on, each drift on the garden's ground (but the wild flowers along the
-// wall, 3) running its near side on down the slope to the lens, widening as it comes (beesReach).
+// wall, BEES_ALONG_WALL) running its near side on down the slope to the lens, widening as it comes
+// (beesReach). The sim reads the same ellipses (garden.ts patchPoint).
 vec2 beesDriftQ(int i, vec2 p) {
   vec2 c = vec2(BEES_PATCH_F[i] * beesW, BEES_PATCH_Y[i]);
   vec2 r = vec2(BEES_PATCH_RX[i] * beesW, BEES_PATCH_RY[i]) * (1.0 + 0.5 * beesLush);
   vec2 q = (p - c) / r;
-  if (q.y < 0.0 && i < BEES_GROUND_PATCHES && i != 3) {
+  if (q.y < 0.0 && i < BEES_GROUND_PATCHES && i != BEES_ALONG_WALL) {
     q.y = (p.y - c.y) / mix(r.y, c.y / 0.55, beesReach);
     q.x = (p.x - c.x) / (r.x * (1.0 + 0.5 * beesReach * min(-q.y, 1.0)));
   }
@@ -1189,32 +1188,36 @@ void beesBlades(vec2 p, float tm, inout vec3 col) {
 
 // ---- the specks --------------------------------------------------------------------------------------------
 
-// What the simulation's cell map holds: a bee (near-black, a golden back cell with pollen), the pale
-// glint of its wing, the dotted line it leaves in the air, a butterfly's wings and body; the honey-brown
-// mass of a swarm's cluster, a bumblebee's black fur and yellow band, an amber hoverfly, a blue
-// dragonfly and the glint of its wings, a firefly's yellow-green flash and its glow, which lights what
+// What the simulation's cell map holds, each as seen in the afternoon light (BEES_SPECK_DAY) and lit
+// by 'light' (the light here over that one): a bee (near-black, a golden back cell with pollen), the
+// pale glint of its wing, a butterfly's wings and body; the honey-brown mass of a swarm's cluster, a
+// bumblebee's black fur and yellow band, an amber hoverfly, a blue dragonfly and the glint of its
+// wings; a far bee and a wing part speck, part what is under them. The lights are their own: a
+// firefly's yellow-green flash, a glow-worm's steady green, and the glow of either, which lights what
 // is under it.
-vec3 beesSpeck(int code, vec3 under) {
-  if (code == BEES_C_BEE) return vec3(0.05, 0.03, 0.02);
-  if (code == BEES_C_DIM) return mix(under, vec3(0.05, 0.03, 0.02), 0.6);
-  if (code == BEES_C_FAINT) return mix(under, vec3(0.05, 0.03, 0.02), 0.4);
-  if (code == BEES_C_LOADED) return vec3(1.0, 0.75, 0.10);
-  if (code == BEES_C_WING) return mix(under, vec3(1.0, 1.0, 0.94), 0.95);
-  if (code == BEES_C_BODY) return vec3(0.12, 0.08, 0.06);
-  if (code == BEES_C_ORANGE) return vec3(1.0, 0.55, 0.05);
-  if (code == BEES_C_WHITE) return vec3(1.0, 1.0, 0.97);
-  if (code == BEES_C_BLUE) return vec3(0.30, 0.55, 1.0);
-  if (code == BEES_C_ORANGE_DIM) return vec3(0.62, 0.30, 0.08);
-  if (code == BEES_C_WHITE_DIM) return vec3(0.78, 0.76, 0.66);
-  if (code == BEES_C_SWARM) return vec3(0.55, 0.32, 0.06);
-  if (code == BEES_C_BUMBLE) return vec3(0.06, 0.05, 0.04);
-  if (code == BEES_C_BAND) return vec3(1.0, 0.80, 0.22);
-  if (code == BEES_C_HOVER) return vec3(0.70, 0.50, 0.08);
-  if (code == BEES_C_DRAGON) return vec3(0.10, 0.45, 0.70);
-  if (code == BEES_C_DRAGON_WING) return mix(under, vec3(0.92, 0.97, 1.0), 0.8);
+vec3 beesSpeck(int code, vec3 under, vec3 light) {
+  if (code == BEES_C_BEE) return vec3(0.05, 0.03, 0.02) * light;
+  if (code == BEES_C_DIM) return mix(under, vec3(0.05, 0.03, 0.02) * light, 0.6);
+  if (code == BEES_C_FAINT) return mix(under, vec3(0.05, 0.03, 0.02) * light, 0.4);
+  if (code == BEES_C_LOADED) return vec3(1.0, 0.75, 0.10) * light;
+  if (code == BEES_C_WING) return mix(under, vec3(1.0, 1.0, 0.94) * light, 0.95);
+  if (code == BEES_C_BODY) return vec3(0.12, 0.08, 0.06) * light;
+  if (code == BEES_C_ORANGE) return vec3(1.0, 0.55, 0.05) * light;
+  if (code == BEES_C_WHITE) return vec3(1.0, 1.0, 0.97) * light;
+  if (code == BEES_C_BLUE) return vec3(0.30, 0.55, 1.0) * light;
+  if (code == BEES_C_ORANGE_DIM) return vec3(0.62, 0.30, 0.08) * light;
+  if (code == BEES_C_WHITE_DIM) return vec3(0.78, 0.76, 0.66) * light;
+  if (code == BEES_C_SWARM) return vec3(0.55, 0.32, 0.06) * light;
+  if (code == BEES_C_BUMBLE) return vec3(0.06, 0.05, 0.04) * light;
+  if (code == BEES_C_BAND) return vec3(1.0, 0.80, 0.22) * light;
+  if (code == BEES_C_HOVER) return vec3(0.70, 0.50, 0.08) * light;
+  if (code == BEES_C_DRAGON) return vec3(0.10, 0.45, 0.70) * light;
+  if (code == BEES_C_DRAGON_WING) return mix(under, vec3(0.92, 0.97, 1.0) * light, 0.8);
   if (code == BEES_C_FIREFLY) return vec3(0.85, 1.0, 0.35);
   if (code == BEES_C_GLOW) return min(under + vec3(0.30, 0.40, 0.08), vec3(1.0));
-  return vec3(0.22, 0.34, 0.66);
+  if (code == BEES_C_WORM) return vec3(0.55, 1.0, 0.42);
+  if (code == BEES_C_WORM_GLOW) return min(under + vec3(0.12, 0.34, 0.12), vec3(1.0));
+  return vec3(0.22, 0.34, 0.66) * light;
 }
 
 Shade sceneBees(vec2 uv, vec2 cell, float t) {
@@ -1224,6 +1227,11 @@ Shade sceneBees(vec2 uv, vec2 cell, float t) {
   beesSeed = K_scenerySeed * 0.37;
   beesWet = uWeather.x;
   beesLying = uWeather.y;
+  // wetten's colour change at this wet, once (beesWetM): the colour deepened, the albedo dimmed.
+  float wetW = clamp(beesWet, 0.0, 1.0);
+  float wetRich = 1.0 + wetW * mix(0.2, 0.45, BEES_POROUS);
+  beesWetM = mat3(wetRich) + outerProduct(vec3(1.0 - wetRich), LUMA);
+  beesWetDim = 1.0 - wetW * mix(0.22, 0.55, BEES_POROUS);
   float tm = uMotionTime;
   vec2 p = vec2((uv.x - 0.5) * beesAspect, uv.y);
   float y = p.y;
@@ -1345,36 +1353,41 @@ Shade sceneBees(vec2 uv, vec2 cell, float t) {
       col = beesShade(hedge, 0.0) + beesGlow(hedge, 0.8 * smoothstep(g - 0.012, g, y));
     }
     beesPath(p, w, col);
-    for (int i = 0; i < BEES_PATCH_N; i++) {
-      if (i != 3) beesPatch(i, p, gust, tm, col);
-    }
     beesCut = 0.0;
   }
 
-  // What can hide a bee: each thing drawn that changes the cell notes its depth in beesZ.
+  // The drifts in their order, the orchard and the wall in their slot (BEES_DRIFT_ORDER): behind them
+  // the drifts of the garden, in front the wild flowers along the wall's foot. What can hide a bee:
+  // each thing drawn that changes the cell notes its depth in beesZ.
   vec3 before = col;
+  for (int k = 0; k < BEES_DRIFT_ORDER.length(); k++) {
+    int i = BEES_DRIFT_ORDER[k];
+    if (i != BEES_ORCHARD_SLOT) {
+      if (y < g) {
+        beesCut = hardEdge(gs);
+        beesPatch(i, p, gust, tm, col);
+        beesCut = 0.0;
+      }
+      continue;
+    }
 #if BEES_LANTERN || BEES_FAIRY
-  // The orchard stands beyond the reach of the garden's lights.
-  beesLamp = vec3(0.0);
+    // The orchard stands beyond the reach of the garden's lights.
+    beesLamp = vec3(0.0);
 #endif
-  for (int k = 0; k < BEES_TREE_N; k++) {
+    for (int tree = 0; tree < BEES_TREE_N; tree++) {
+      before = col;
+      beesTree(tree, p, col);
+      if (col != before) beesZ = BEES_CAM / (BEES_YH - BEES_TREE_Y[tree]);
+    }
     before = col;
-    beesTree(k, p, col);
-    if (col != before) beesZ = BEES_CAM / (BEES_YH - BEES_TREE_Y[k]);
-  }
-  before = col;
-  beesWall(p, col);
-  if (col != before) beesZ = BEES_CAM / (BEES_YH - BEES_WALL_Y);
+    beesWall(p, col);
+    if (col != before) beesZ = BEES_CAM / (BEES_YH - BEES_WALL_Y);
 #if BEES_FAIRY
-  if (beesFairy(p, col, accent) > 0.0) beesZ = BEES_CAM / (BEES_YH - BEES_WALL_Y);
+    if (beesFairy(p, col, accent) > 0.0) beesZ = BEES_CAM / (BEES_YH - BEES_WALL_Y);
 #endif
 #if BEES_LANTERN || BEES_FAIRY
-  beesLamp = lampGround;
+    beesLamp = lampGround;
 #endif
-  if (y < g) {
-    beesCut = hardEdge(gs);
-    beesPatch(3, p, gust, tm, col);
-    beesCut = 0.0;
   }
   for (int k = 0; k < BEES_HIVE_N; k++) {
     int hi = BEES_HIVE_ORDER[k];
@@ -1423,6 +1436,23 @@ Shade sceneBees(vec2 uv, vec2 cell, float t) {
     beesZ = zBird;
   }
 
+  // The insects, from the simulation's map of cells, where one is nearer than what the cell shows: lit
+  // by the light here as the garden is (the lights in the grass shine on their own), and then in its
+  // air, the haze, the fog and the rain and snow at the insect's own depth.
+  bool speck = false;
+  ivec2 ic = ivec2(cell);
+  ivec2 size = textureSize(uSim0, 0);
+  if (uSimOn.x > 0.5 && ic.x < size.x && ic.y < size.y) {
+    vec2 tex = texelFetch(uSim0, ic, 0).rg;
+    int code = int(tex.r * 255.0 + 0.5);
+    float zSpeck = tex.g * 255.0 / BEES_DEPTH_STEP;
+    if (code > 0 && zSpeck < beesZ) {
+      col = beesSpeck(code, col, (beesAmb * 0.55 + beesSun * 0.5 * min(beesLit, 1.0)) / BEES_SPECK_DAY);
+      zHit = zSpeck;
+      speck = true;
+    }
+  }
+
   // The golden haze the low sun scatters toward the eye.
   col += sky.sunColor * BEES_SUN_TINT * 0.07 * exp(-5.0 * length(dir - sky.sun)) * (1.0 + 0.4 * (1.0 - smoothstep(0.4, 0.7, y)));
   // The world's fog, then its rain and snow, at the depth of what this cell shows: the drops hide
@@ -1464,14 +1494,8 @@ Shade sceneBees(vec2 uv, vec2 cell, float t) {
   col *= 1.0 - 0.22 * smoothstep(0.7, 1.4, length((uv - 0.5) * vec2(1.0, 0.9)) * 1.5);
   col = clamp(col * 1.1, 0.0, 1.0);
 
-  // Bees and butterflies, from the simulation's map of cells.
-  ivec2 ic = ivec2(cell);
-  ivec2 size = textureSize(uSim0, 0);
-  if (uSimOn.x > 0.5 && ic.x < size.x && ic.y < size.y) {
-    vec2 tex = texelFetch(uSim0, ic, 0).rg;
-    int code = int(tex.r * 255.0 + 0.5);
-    if (code > 0 && tex.g * 255.0 / BEES_DEPTH_STEP < beesZ) col = snapLevel(beesSpeck(code, col));
-  }
+  // A speck holds one palette level, so the dither never breaks it up.
+  if (speck) col = snapLevel(col);
   return shadeOf(col, inkOf(col, 1.25, 1.0), clamp(accent, 0.0, 1.0));
 }
 `;

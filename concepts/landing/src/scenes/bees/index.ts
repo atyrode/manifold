@@ -2,18 +2,20 @@
 // moving specks you know by their motion. Cumulus towers over hazy hills (a farmhouse, a windmill),
 // an old orchard behind a dry-stone wall, a path and three pastel hives in a garden of lavender
 // rows, poppies, daisies and foxgloves, the wind running through the grass and the shadows of clouds
-// drifting over it all. Up to two hundred bees work the hives (sim.ts): foragers beeline to a flower
-// drift, hop from flower to flower and fly home loaded with pollen; a crowd mills at each entrance and
-// young bees fly orientation loops before it; now and then a swarm pours out of a hive, mills over the
+// drifting over it all. Up to two hundred bees work the hives (sim.ts, colony.ts): foragers beeline
+// to a flower drift, hop from flower to flower and fly home loaded with pollen, a few of the heaviest
+// laden pollen-drunk, looping and bumping their way home; a crowd mills at each entrance and young
+// bees fly orientation loops before it; now and then a swarm pours out of a hive, mills over the
 // garden and hangs in an apple tree before it leaves. Butterflies, bumblebees, hoverflies and
-// dragonflies work the flowers by day, and fireflies rise from the grass after dusk; everyone keeps
-// the world's hours and shelters from its rain.
+// dragonflies work the flowers by day, and glow-worms light up in the grass after dusk; everyone
+// keeps the world's hours and shelters from its rain, lit by its light and seen through its air.
 import { counts, feature, range, seed, toggle, type ParamDef } from "../../params.ts";
 import { skyTheme } from "../atmosphere.ts";
 import type { SceneDef } from "../types.ts";
 import { WORLD_ALL, worldFeatures, worldGroups, worldKnobs } from "../world.ts";
-import { BEES_LIGHTNING_TRIGGER, BEES_LUSH_FROM, BEES_METEOR_TRIGGER, beesGlsl } from "./shader.ts";
-import { BEES_PASSAGE, BEES_SWARM_TRIGGER, beesSim } from "./sim.ts";
+import { BEES_PASSAGE, BEES_LUSH_FROM } from "./layout.ts";
+import { BEES_LIGHTNING_TRIGGER, BEES_METEOR_TRIGGER, beesGlsl } from "./shader.ts";
+import { BEES_SWARM_TRIGGER, beesSim } from "./sim.ts";
 
 const params: readonly ParamDef[] = [
   feature(
@@ -26,6 +28,14 @@ const params: readonly ParamDef[] = [
     "How many bees are about, each flying in the garden's space at its real size (a speck of a cell at the hives, a little bigger close to you): foragers leave the hives for the flowers in a nearly straight line, now and then passing close by, hop from flower to flower, and fly home loaded with pollen; some mill at the entrances, and young bees fly orientation loops in front of their hive. They go home at dusk and stay in through the night, and in rain or snow.",
     // 32 and 64 stay offered: links made when they were the colony's sizes keep their bees.
     { options: counts(16, 32, 48, 64, 96, 200) },
+  ),
+  range(
+    "life",
+    "silly",
+    "pollen-drunk",
+    0.2,
+    "How pollen-drunk the colony gets. At 0 every bee flies its own nearly straight line; a little, and a few of the most heavily loaded foragers reel home fat and bouncy, in big curvy wobbly loops, bumping off the flowers, the hives' fronts and each other before they manage to land; from the middle on, more and more of every flight; at 1 every bee, the crowds at the entrances bouncing too.",
+    { min: 0, max: 1, step: 0.05, icon: "bee" },
   ),
   toggle(
     "life",
@@ -52,7 +62,7 @@ const params: readonly ParamDef[] = [
     true,
     "how many",
     2,
-    "Big, slow bumblebees, low and heavy between the flowers: up and down the bells of the foxgloves, swaying with the spike, and over the lavender, now and then a poppy or the cosmos. By day, in dry weather.",
+    "Big, slow bumblebees, low and heavy between the flowers: up a foxglove's spike from its lowest bells to the top, swaying with it, then on to the next plant; the poppies and daisies close by, the lavender, now and then the poppies' drift or the cosmos; only what the flowers knob leaves standing, and the more it grows the more they work. By day, in dry weather.",
     { options: counts(1, 2, 4, 6), icon: "bee" },
   ),
   feature(
@@ -77,12 +87,22 @@ const params: readonly ParamDef[] = [
   ),
   feature(
     "life",
-    "fireflies",
-    "fireflies",
+    "glowworms",
+    "glow-worms",
     true,
     "how many",
+    10,
+    "After dusk glow-worms light up low in the grass all over the garden: each a steady green glow on a grass stem, the wingless females calling for a mate, each lighting at its own darkness and going out as the night lifts, and in rain or snow. None by day.",
+    { options: counts(5, 10, 20, 40) },
+  ),
+  feature(
+    "life",
+    "fireflies",
+    "fireflies",
+    false,
+    "how many",
     24,
-    "Once the sky is dark, fireflies rise from the grass all over the garden, drifting slowly and blinking a slow yellow-green, each in its own time, and sink back as the night lifts. None by day.",
+    "Fireflies as well, as on a summer night far from this garden: once the sky is dark they rise from the grass, drifting slowly and blinking a slow yellow-green, each in its own time, and sink back as the night lifts, and in rain or snow. None by day.",
     { options: counts(12, 24, 48) },
   ),
   seed(
@@ -156,7 +176,7 @@ export const beesScene: SceneDef = {
     life: {
       title: "Bees & insects",
       blurb:
-        "A colony working three hives, swarming now and then; butterflies, bumblebees, hoverflies and dragonflies by day, fireflies after dusk.",
+        "A colony working three hives, a few of its foragers pollen-drunk, swarming now and then; butterflies, bumblebees, hoverflies and dragonflies by day, glow-worms in the grass after dusk (fireflies too, if you like).",
     },
     scenery: { title: "Landscape", blurb: "Which valley you are looking over." },
     garden: {
