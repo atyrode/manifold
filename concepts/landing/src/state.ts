@@ -1,11 +1,9 @@
 // The lab's state and its URL encoding. Global settings live in `LabState`; the current scene's
 // knobs live in `Params` (a feature also stores `<key>-amount`), and a scene that takes planets
 // (SceneDef.planets) keeps its list of them beside its knobs, under one URL key (`PLANETS_KEY`).
-// URLs carry only non-defaults, and the version of the URL schema they are written in (`v`) only
-// where they need it. Every setup enters through readSetup (a link, the lab's history, a preset, a
-// comparison's other slot), which first brings an older link up to this build's schema
-// (MIGRATIONS: outgrown keys set on what replaced them, a retired scene's links opened on its
-// successor) and reports a scene the link names that this build does not have.
+// URLs carry only non-defaults. Every setup enters through readSetup (a link, the lab's history, a
+// preset, a comparison's other slot), which reads this build's keys, ignores any other and reports
+// a scene the link names that this build does not have.
 import { effective, readKnobs, readNumber } from "./params.ts";
 import {
   blendIds,
@@ -18,21 +16,16 @@ import {
   type RenderSettings,
   type ViewId,
 } from "./renderer.ts";
-import { COUNTRY_SEASONS } from "./scenes/country/season.ts";
 import { sceneDefs, sceneIds, type SceneId } from "./scenes/index.ts";
 import {
   decodePlanets,
   encodePlanets,
-  GIANT_KEYS,
-  GIANT_SWITCH,
   PLANETS_KEY,
   planetUniforms,
-  readPlanet,
   type SkyPlanet,
-  type SkyPlanets,
 } from "./scenes/planets.ts";
 
-export const modeIds = ["landing", "loading", "instance", "bare"] as const;
+export const modeIds = ["landing", "loading", "instance"] as const;
 export type ModeId = (typeof modeIds)[number];
 export const mouseIds = ["follow", "still"] as const;
 export type MouseId = (typeof mouseIds)[number];
@@ -100,13 +93,7 @@ export class KnobKeyError extends Error {}
  * keys with `a.` or `b.`) and a scene tour (`tour.ts`). The page's URL and "copy link" carry both.
  */
 export const sessionKeys = { compare: "compare", tour: "tour", dwell: "dwell" } as const;
-/** The URL key naming the schema a setup's keys are written in; a link without it is schema 1. */
-export const VERSION_KEY = "v";
-const reservedKeys: readonly string[] = [
-  ...Object.keys(defaults),
-  ...Object.values(sessionKeys),
-  VERSION_KEY,
-];
+const reservedKeys: readonly string[] = [...Object.keys(defaults), ...Object.values(sessionKeys)];
 
 // Scene knobs share the URL with the lab's own keys, so no knob may take one of their names; nor, in
 // a scene that takes planets, the planets' key.
@@ -180,7 +167,7 @@ function pick<T extends string>(allowed: readonly T[], value: string | null, fal
   return allowed.find((candidate) => candidate === value) ?? fallback;
 }
 
-/** The lab's settings from a query in this build's URL schema (a link goes through readSetup). */
+/** The lab's settings from a query. */
 export function readState(q: URLSearchParams): LabState {
   const accent = q.get("accent") ?? "";
   const scene = pick(sceneIds, q.get("scene"), defaults.scene);
@@ -210,14 +197,13 @@ export function readState(q: URLSearchParams): LabState {
   };
 }
 
-/** The scene's knobs from a query in this build's URL schema (a link goes through readSetup). */
+/** The scene's knobs from a query. */
 export function readParams(scene: SceneId, query: URLSearchParams): Params {
   return readKnobs(sceneDefs[scene].params, (key) => query.get(key));
 }
 
 /**
- * The scene's planets (none for a scene without SceneDef.planets), from its PLANETS_KEY in a query
- * in this build's URL schema (a link goes through readSetup).
+ * The scene's planets (none for a scene without SceneDef.planets), from its PLANETS_KEY in a query.
  */
 export function readPlanets(scene: SceneId, query: URLSearchParams): SkyPlanet[] {
   const spec = sceneDefs[scene].planets;
@@ -239,297 +225,30 @@ export interface Setup {
 /** A setup as a link holds it (readSetup). */
 export interface LinkSetup extends Setup {
   /**
-   * The scene the link names when this build has no scene of that id, nor one that took over its
-   * links: the setup is then the default scene's, and the lab says so.
+   * The scene the link names when this build has no scene of that id: the setup is then the
+   * default scene's, and the lab says so.
    */
   unknownScene: string | undefined;
 }
 
 /**
- * The setup a link holds (or a preset, a comparison's other slot, a step of the lab's history):
- * brought up to this build's URL schema from the one it names (`migrate`), then read.
+ * The setup a link holds (or a preset, a comparison's other slot, a step of the lab's history), in
+ * this build's keys: any other key is ignored, and a scene this build lacks opens the default one.
  */
-export function readSetup(
-  query: URLSearchParams,
-  chain: readonly Migration[] = MIGRATIONS,
-): LinkSetup {
-  const q = migrate(query, chain);
-  const state = readState(q);
-  const named = q.get("scene");
+export function readSetup(query: URLSearchParams): LinkSetup {
+  const state = readState(query);
+  const named = query.get("scene");
   return {
     state,
-    params: readParams(state.scene, q),
-    planets: readPlanets(state.scene, q),
+    params: readParams(state.scene, query),
+    planets: readPlanets(state.scene, query),
     unknownScene: named === null || named === "" || named === state.scene ? undefined : named,
   };
 }
 
-// ---- the URL schema ---------------------------------------------------------------------------
-
-/**
- * One change to the URL schema, as MIGRATIONS applies it to the links written before it. `since` is
- * the schema version the change made: a link of an earlier version needs the step, a link of that
- * one or a later one skips it. A step rewrites the link in place, as the steps before it left it.
- */
-export type Migration =
-  | {
-      kind: "keys";
-      since: number;
-      /**
-       * Rewrite outgrown keys; `scene` is the scene the link names at this point of the chain (the
-       * default scene when it names none).
-       */
-      migrate: (q: URLSearchParams, scene: string) => void;
-    }
-  | {
-      kind: "alias";
-      since: number;
-      /** A scene id this version retired: renamed, merged into another scene or removed. */
-      from: string;
-      /** The scene that opens its links: one of this build's, or one a later alias retired in turn. */
-      to: string;
-      /**
-       * Move the retired scene's keys onto its successor's, before the scene key changes: rename
-       * them, and set the successor's knobs whose defaults differ from what the retired scene
-       * showed (a link leaves defaults out). Keys it leaves alone carry over as they are.
-       */
-      keys?: (q: URLSearchParams) => void;
-    };
-
-/**
- * Rename the outgrown key `old` to `key`, mapping its values (old value to new): a value the map
- * lists sets `key` unless the query sets it already, and `old` goes either way (so a value the map
- * does not list leaves the new knob at its default).
- */
-export function renameKey(
-  q: URLSearchParams,
-  old: string,
-  key: string,
-  values: Readonly<Record<number, number>>,
-): void {
-  const raw = q.get(old);
-  if (raw === null) return;
-  q.delete(old);
-  const value = raw === "" ? undefined : values[Number(raw)];
-  if (value !== undefined && !q.has(key)) q.set(key, String(value));
-}
-
-/**
- * The planets' pads of the skies since retired, as they were while those were scenes: the steps that
- * read a scene's planets (giantToPlanets, an alias moving a list) read them here once the scene is
- * gone.
- */
-const RETIRED_PLANETS: Readonly<Record<string, SkyPlanets>> = {
-  aurora: { group: "sky", across: [-62, -24, 62], up: [8, 30, 45] },
-};
-
-/**
- * The night sky's one giant planet (GIANT_SWITCH and GIANT_KEYS, the knobs the sky scenes had
- * before their list), in a scene that takes planets (or took them, RETIRED_PLANETS): a link without a
- * list whose giant is on gets that giant as its one planet, its old keys read into the planet's; the
- * old keys go either way.
- */
-function giantToPlanets(q: URLSearchParams, scene: string): void {
-  const id = sceneIds.find((candidate) => candidate === scene);
-  const spec = id === undefined ? RETIRED_PLANETS[scene] : sceneDefs[id].planets;
-  if (spec === undefined) return;
-  if (!q.has(PLANETS_KEY) && Math.round(readNumber(q.get(GIANT_SWITCH), 0, 1, 0)) === 1) {
-    const values: Record<string, number> = {};
-    for (const [old, key] of Object.entries(GIANT_KEYS)) {
-      const raw = q.get(old);
-      const value = raw === null || raw === "" ? Number.NaN : Number(raw);
-      if (Number.isFinite(value)) values[key] = value;
-    }
-    q.set(PLANETS_KEY, encodePlanets(spec, [readPlanet(spec, values)]));
-  }
-  q.delete(GIANT_SWITCH);
-  for (const old of Object.keys(GIANT_KEYS)) q.delete(old);
-}
-
-/**
- * What the lake shows where its knobs stand as Aurora over a fjord drew them: the fjord under the
- * slow drapes, quiet (no substorms), no Milky Way, its crescent and its deep night.
- */
-const AURORA_FJORD: Readonly<Record<string, number>> = {
-  setting: 1,
-  drapes: 1,
-  substorm: 0,
-  hour: 1,
-  "moon-amount": 0.25,
-  milkyWay: 0,
-};
-
-/**
- * Aurora over a fjord, merged into the lake: its brightness becomes the lake's aurora strength (off
- * where it was dark), its colours the lake's (green alone, green under violet, the red storm), its
- * planets move from its pad onto the lake's (clamped to the sky the lake shows), and the lake is set
- * to what it showed (AURORA_FJORD) where the link leaves that to the default. Its other keys are the
- * lake's own.
- */
-function auroraToLake(q: URLSearchParams): void {
-  const glow = readNumber(q.get("glow"), 0, 1, 0.7);
-  q.delete("glow");
-  if (glow > 0) q.set("aurora-amount", String(glow));
-  else q.set("aurora", "0");
-  renameKey(q, "hue", "hue", { 0: 4, 2: 2 });
-  const list = q.get(PLANETS_KEY);
-  const lake = sceneDefs.lake.planets;
-  const aurora = RETIRED_PLANETS["aurora"];
-  if (list !== null && lake !== undefined && aurora !== undefined) {
-    const planets = decodePlanets(aurora, list).map((planet) => readPlanet(lake, planet));
-    q.set(PLANETS_KEY, encodePlanets(lake, planets));
-  }
-  for (const [key, value] of Object.entries(AURORA_FJORD))
-    if (!q.has(key)) q.set(key, String(value));
-}
-
-/**
- * The URL schema's history, in order. A link without a version is schema 1: every link written
- * before versions, which may still use what schema 2 renamed. A change that would misread a link
- * already out is appended as a step of the next version; a shipped step is never edited, moved or
- * dropped, since links rely on it. See "Links and the URL schema" in src/scenes/README.md.
- */
-export const MIGRATIONS: readonly Migration[] = [
-  {
-    kind: "keys",
-    since: 2,
-    // The countryside's season choice (0 summer, 1 harvest, 2 autumn) became the date of its year.
-    migrate: (q, scene) => {
-      if (scene !== "country") return;
-      renameKey(q, "season", "date", {
-        0: COUNTRY_SEASONS.summer,
-        1: COUNTRY_SEASONS.harvest,
-        2: COUNTRY_SEASONS.autumn,
-      });
-    },
-  },
-  // The night skies' one giant planet became the first of their planets.
-  { kind: "keys", since: 2, migrate: giantToPlanets },
-  {
-    kind: "keys",
-    since: 3,
-    // Bees' cloud cover only sized its own painted cumulus towers; they became the world's cumulus,
-    // their size its amount (read into 0.05..1), and `clouds` the world's deck over them, left at its
-    // fair-weather default.
-    migrate: (q, scene) => {
-      if (scene !== "bees") return;
-      const raw = q.get("clouds");
-      if (raw === null) return;
-      q.delete("clouds");
-      if (raw !== "" && Number.isFinite(Number(raw)) && !q.has("cumulus-amount"))
-        q.set("cumulus-amount", raw);
-    },
-  },
-  // Aurora over a fjord became the lake's fjord under its slow drapes.
-  { kind: "alias", since: 3, from: "aurora", to: "lake", keys: auroraToLake },
-];
-
-export class UrlSchemaError extends Error {}
-
-/**
- * The URL schema this build reads and writes: its last step's version (steps run in version order,
- * checkMigrations), 1 without steps.
- */
-export const URL_VERSION = MIGRATIONS.at(-1)?.since ?? 1;
-
-/** The schema a query names: its VERSION_KEY as a whole number from 1, and 1 without one. */
-function linkVersion(q: URLSearchParams): number {
-  const raw = q.get(VERSION_KEY);
-  const version = raw === null || raw === "" ? Number.NaN : Number(raw);
-  return Number.isInteger(version) && version >= 1 ? version : 1;
-}
-
-/**
- * A query brought up to the schema of `chain` from the one it names (its VERSION_KEY, dropped):
- * each step since that version, in order. A query of a later schema than the chain knows (a newer
- * build's link) passes as it is.
- */
-export function migrate(
-  query: URLSearchParams,
-  chain: readonly Migration[] = MIGRATIONS,
-): URLSearchParams {
-  const from = linkVersion(query);
-  const q = new URLSearchParams(query);
-  q.delete(VERSION_KEY);
-  for (const step of chain) {
-    if (step.since <= from) continue;
-    const scene = q.get("scene") ?? defaults.scene;
-    switch (step.kind) {
-      case "keys":
-        step.migrate(q, scene);
-        break;
-      case "alias":
-        if (scene !== step.from) break;
-        step.keys?.(q);
-        q.set("scene", step.to);
-        break;
-      default: {
-        const unreachable: never = step;
-        throw new UrlSchemaError(`landing: unknown URL migration ${String(unreachable)}`);
-      }
-    }
-  }
-  return q;
-}
-
-/**
- * The scene of this build that opens links naming `id`: that scene, or the one the aliases of
- * `chain` lead to from a retired id, whatever the link's schema (a retired id never names a scene
- * again). Undefined for an id that is neither.
- */
-export function resolveScene(
-  id: string,
-  chain: readonly Migration[] = MIGRATIONS,
-): SceneId | undefined {
-  let named = id;
-  for (const step of chain) if (step.kind === "alias" && step.from === named) named = step.to;
-  return sceneIds.find((scene) => scene === named);
-}
-
-/**
- * Throws UrlSchemaError unless `chain` runs in version order from 2 and each alias retires, once, an
- * id that names no scene of this build, for a successor that leads to one.
- */
-export function checkMigrations(chain: readonly Migration[]): void {
-  let since = 2;
-  for (const step of chain) {
-    if (!Number.isInteger(step.since) || step.since < since) {
-      throw new UrlSchemaError(
-        `landing: a URL migration of schema ${step.since} after ${since}: steps run in order from 2`,
-      );
-    }
-    since = step.since;
-    if (step.kind !== "alias") continue;
-    const { from, to } = step;
-    if (sceneIds.some((id) => id === from))
-      throw new UrlSchemaError(`landing: "${from}" names a scene, so no alias may retire it`);
-    if (chain.filter((other) => other.kind === "alias" && other.from === from).length > 1)
-      throw new UrlSchemaError(`landing: "${from}" is retired twice`);
-    if (resolveScene(to, chain) === undefined)
-      throw new UrlSchemaError(`landing: the alias retiring "${from}" leads to no scene ("${to}")`);
-  }
-}
-
-checkMigrations(MIGRATIONS);
-
-/**
- * A query in the schema of `chain` (without a version), with its version where it needs one: a
- * query that a reader taking it for schema 1, as it takes every link without a version, would
- * rewrite (`migrate`) leads with VERSION_KEY; any other goes without, so a link stays as it was
- * written before versions until a change of schema touches what it holds.
- */
-export function withVersion(
-  query: URLSearchParams,
-  chain: readonly Migration[] = MIGRATIONS,
-): URLSearchParams {
-  if (migrate(query, chain).toString() === query.toString()) return query;
-  return new URLSearchParams([[VERSION_KEY, String(chain.at(-1)?.since ?? 1)], ...query]);
-}
-
 /**
  * Minimal query: only values that differ from their defaults, the scene's planets (when it has any)
- * last, packed under PLANETS_KEY, and the schema's version first where the setup needs it
- * (withVersion).
+ * last, packed under PLANETS_KEY.
  */
 export function serialise(
   state: LabState,
@@ -549,7 +268,7 @@ export function serialise(
   }
   const spec = sceneDefs[state.scene].planets;
   if (spec !== undefined && planets.length > 0) q.set(PLANETS_KEY, encodePlanets(spec, planets));
-  return withVersion(q);
+  return q;
 }
 
 /** What the renderer draws for a setup; a sky without planets unless `planets` names some. */

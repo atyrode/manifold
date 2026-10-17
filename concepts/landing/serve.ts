@@ -139,12 +139,8 @@ async function committed(request: Request): Promise<Response> {
     if (url.pathname === "/") return await serveFile(await built(sha), "", "none");
     if (url.pathname === "/bench.html")
       return await serveFile(await built(sha), "bench.html", "none");
-    // The head page is served from the root, so its thumbnails load from there. Its worker loads
-    // from the head's pinned path, built with it (src/sims/build.ts); a head built before that
-    // loads it from the root (the build worker, or before it the sheet worker), which is therefore
-    // never cached: a cached one could pair the page with an older commit's worker.
-    if (url.pathname === "/build-worker.js" || url.pathname === "/sheet-worker.js")
-      return await serveFile(await built(sha), url.pathname.slice(1), "none");
+    // The head page is served from the root, so its thumbnails load from there; its worker loads
+    // from the head's pinned path, built with it (src/sims/build.ts).
     if (/^\/thumbs\/[a-z]+\.webp$/.test(url.pathname))
       return await serveFile(await built(sha), url.pathname.slice(1), "hour");
     return new Response("not found", { status: 404 });

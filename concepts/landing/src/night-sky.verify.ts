@@ -7,7 +7,7 @@
 //   figures add light there while on (the lines as strong as their amount), and the knobs off draw
 //   exactly what a program without them draws; by day, and with no stars, nothing; at a coarse
 //   footprint the points still show.
-// - `nightPlanets`: in two skies (the lake's fjord as an old Aurora link opens it, and the island at
+// - `nightPlanets`: in two skies (the lake's fjord under its slow drapes, and the island at
 //   midnight), two planets of different kinds each change the night sky where their placements put
 //   them (the one placed further left, further left on screen), together as each alone does round
 //   itself; an orbiting planet drifts left with the motion clock and, half a circuit on, has set: the
@@ -26,8 +26,8 @@ import { skyFigurePoint, skyFigures } from "./shaders/lib/sky.ts";
 import { sceneDefs, type SceneId } from "./scenes/index.ts";
 import { planetUniforms, readPlanet, type SkyPlanet } from "./scenes/planets.ts";
 import type { SceneDef } from "./scenes/types.ts";
-import { paramDefaults, readSetup } from "./state.ts";
-import { check, drawFloats, link, VerifyError, walk } from "./verify/kit.ts";
+import { paramDefaults } from "./state.ts";
+import { check, drawFloats, LAKE_FJORD, link, VerifyError, walk } from "./verify/kit.ts";
 
 /** The shared night knobs with library gates (skyComponentKnobs' constellations). */
 const nightPart = (def: ParamDef): boolean =>
@@ -246,11 +246,11 @@ function difference(a: Float32Array, b: Float32Array, width: number): { count: n
 }
 
 /**
- * The nights nightPlanets draws, each with its knobs: the lake's fjord as an old Aurora link opens
- * it, and the island at midnight.
+ * The nights nightPlanets draws, each with its knobs: the lake's fjord under its slow drapes, and
+ * the island at midnight.
  */
 const NIGHTS: readonly (readonly [SceneId, () => Record<string, number>])[] = [
-  ["lake", () => readSetup(new URLSearchParams("scene=aurora")).params],
+  ["lake", () => LAKE_FJORD],
   ["island", () => ({ ...paramDefaults("island"), time: 0 })],
 ];
 

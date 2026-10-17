@@ -55,9 +55,18 @@ try {
     mobile: false,
   });
   if (metrics.error !== undefined) throw new Error(metrics.error.message);
+  // The scene alone: the page's copy and the lab's opener are hidden on every document it opens.
+  const chrome = await browser.send("Page.addScriptToEvaluateOnNewDocument", {
+    source: `document.addEventListener("DOMContentLoaded", () => {
+      const style = document.createElement("style");
+      style.textContent = ".overlay, .lab, .lab-opener, .ab-badge { display: none !important; }";
+      document.head.append(style);
+    });`,
+  });
+  if (chrome.error !== undefined) throw new Error(chrome.error.message);
   let total = 0;
   for (const id of scenes) {
-    await browser.goto(`${String(server.url)}?scene=${id}&mode=bare&transitions=off`);
+    await browser.goto(`${String(server.url)}?scene=${id}&transitions=off`);
     const started = performance.now();
     // While the program builds the page answers nothing (a screenshot then times out): wait for two
     // prompt screenshots in a row. A page that is gone never will.

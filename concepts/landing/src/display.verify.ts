@@ -15,8 +15,8 @@ import { stageCells } from "./display.ts";
 import { PLANT_ATLAS_SIZE } from "./scenes/pond/atlas.ts";
 import { POINTER_SECONDS, SETTLE_SECONDS } from "./governor.ts";
 import { DitherRenderer, type RenderSettings } from "./renderer.ts";
-import { defaultsFor, paramDefaults, readSetup, renderSettings } from "./state.ts";
-import { check, holdFrames, stage, until as poll } from "./verify/kit.ts";
+import { defaultsFor, paramDefaults, renderSettings } from "./state.ts";
+import { check, holdFrames, LAKE_FJORD, stage, until as poll } from "./verify/kit.ts";
 
 const WIDTH = 64;
 const HEIGHT = 40;
@@ -27,11 +27,11 @@ const EVENT_SECONDS = 20;
 /** rAF milliseconds between the frames of a 120 Hz display. */
 const HZ_120 = 1000 / 120;
 
-/** The lake as Aurora over a fjord drew it (an old `scene=aurora` link): a moving night. */
+/** The lake's fjord under the slow drapes: a moving night. */
 function settings(motion = 1): RenderSettings {
   return renderSettings(
     { ...defaultsFor("lake"), pixel: 1, motion, view: "source", transitions: "off" },
-    readSetup(new URLSearchParams("scene=aurora")).params,
+    LAKE_FJORD,
   );
 }
 

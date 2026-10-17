@@ -1,6 +1,6 @@
 // Page controller: owns the current setup (from the URL), drives the renderer and the page on top,
 // and hands the lab a host interface. Every change is a URL query applied here, read as a link is
-// (state.ts `readSetup`: brought up to this build's URL schema, an unknown scene reported).
+// (state.ts `readSetup`: this build's keys, an unknown scene reported).
 import { Lab } from "./lab.ts";
 import { thumbUrl } from "./lab/thumbs.ts";
 import { DitherRenderer } from "./renderer.ts";
@@ -12,10 +12,7 @@ import {
   readSetup,
   renderSettings,
   serialise,
-  URL_VERSION,
-  VERSION_KEY,
   type LabState,
-  type ModeId,
   type Params,
 } from "./state.ts";
 
@@ -145,7 +142,6 @@ function apply(
 
   document.body.dataset.scene = state.scene;
   document.body.dataset.mode = state.mode;
-  document.body.classList.toggle("ui-hidden", state.mode === "bare");
   const colours = palette(state, params);
   const root = document.documentElement.style;
   root.setProperty("--accent", accentOf(state));
@@ -185,7 +181,6 @@ const lab = new Lab(element("#lab", HTMLElement), element("#lab-open", HTMLButto
   build,
 });
 
-let modeBeforeHide: ModeId = state.mode === "bare" ? "landing" : state.mode;
 window.addEventListener("keydown", (event) => {
   const target = event.target;
   if (
@@ -206,14 +201,6 @@ window.addEventListener("keydown", (event) => {
     const by = event.key === "]" ? 1 : -1;
     // While a tour plays, the keys step along it instead of the whole catalogue.
     if (!lab?.skipTour(by)) lab?.stepScene(by);
-  } else if (event.key === "h") {
-    if (state.mode !== "bare") modeBeforeHide = state.mode;
-    const query = serialise(state, params, planets);
-    query.set("mode", state.mode === "bare" ? modeBeforeHide : "bare");
-    // In this build's keys: read as this schema, never as an older link.
-    query.set(VERSION_KEY, String(URL_VERSION));
-    apply(query);
-    lab?.commit();
   } else if (event.key === "l") {
     lab?.setOpen(!lab.open);
   } else if (event.key === "p") {

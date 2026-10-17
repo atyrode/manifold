@@ -16,7 +16,7 @@ test("no stored preferences read as the defaults", () => {
   expect(readPrefs("{}")).toEqual(defaults);
 });
 
-test("an older layout keeps everything but the panels it no longer has", () => {
+test("stored preferences keep everything but the panels and fields the lab does not have", () => {
   const inspector = { dock: "right", ax: "right", x: 0, ay: "top", y: 0, w: 380, h: 700 };
   const transport = { dock: "bottom", ax: "center", x: 0, ay: "bottom", y: 16, w: 640, h: 44 };
   const stored = JSON.stringify({

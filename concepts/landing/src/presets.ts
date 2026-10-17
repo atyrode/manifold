@@ -1,12 +1,11 @@
 // Saved lab setups. `query` is the setup as the lab writes it (`canonicalSetup`: minimal, in its
-// knobs' order, with the URL schema's version where it needs one), so it loads as saved and the
-// Presets view lights it once loaded. A setup saved on an older build (in this browser, or pasted
-// from an export) loads through the schema's migrations (state.ts MIGRATIONS) as its link does.
-// `commit` is the build the setup was made on: `/@<commit>/?<query>` replays it exactly even after
-// shader logic changes, where that build reads the query's keys as this one does. A knob that
-// changes kind or goes away must have the committed presets that set it rewritten in the knobs
-// that replace it, their commit moved to a build that has those (presets.test.ts holds every
-// preset to loading as itself). Add entries from the lab's "export" output.
+// knobs' order), so it loads as saved and the Presets view lights it once loaded. A setup saved in
+// this browser or pasted from an export is read in this build's keys, as a link is. `commit` is the
+// build the setup was made on: `/@<commit>/?<query>` replays it exactly, on that build's keys and
+// shader logic. A knob that changes kind or goes away must have the committed presets that set it
+// rewritten in the knobs that replace it, their commit moved to a build that has those
+// (presets.test.ts holds every preset to loading as itself). Add entries from the lab's "export"
+// output.
 
 export interface Preset {
   name: string;

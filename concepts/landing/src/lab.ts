@@ -60,8 +60,6 @@ import {
   paramDefaults,
   readState,
   serialise,
-  URL_VERSION,
-  VERSION_KEY,
   type LabState,
   type Params,
 } from "./state.ts";
@@ -111,7 +109,6 @@ const SHORTCUTS: readonly (readonly [string, string])[] = [
   ["[  ]", "previous / next scene, in the Scenes view's order (tour step while a tour plays)"],
   ["l", "show or hide the lab"],
   ["/", "find a control (from the bar, in the panel until Esc)"],
-  ["h", "hide the page on top"],
   ["p", "pause or play"],
   ["b", "flip between A and B; hold to peek"],
   ["t", "play or pause the tour"],
@@ -591,8 +588,6 @@ export class Lab {
     const { state, params, planets } = this.#current();
     const q = replace ? new URLSearchParams() : serialise(state, params, planets);
     for (const [key, value] of Object.entries(patch)) q.set(key, String(value));
-    // The patch is in this build's keys: it is read as this schema, never as an older link.
-    q.set(VERSION_KEY, String(URL_VERSION));
     this.#host.apply(q);
     if (commit) this.commit();
   }

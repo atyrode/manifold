@@ -250,27 +250,14 @@ and 0 while off). `uParams` packs the knobs four a row (`vec4 uParams[MAX_PARAMS
 is the constant swizzle `uParams[i / 4].xyzw[i % 4]` and goes up with `uniform4fv` (a GPU check
 builds the array with `packParams`); never index `uParams` by hand. Keys are camelCase letters.
 
-URL keys and values keep their meaning: links, presets and the lab's history carry them. A knob
-that outgrows its key (a choice that becomes a range, say) or changes kind (a share of 0..100 that
-became a feature would read 30 as its switch: on, at the default share) takes a step of the URL
-schema that rewrites older links into the knobs that now say it (`MIGRATIONS` in `src/state.ts`; see
-"Links and the URL schema" below). Rewrite the committed presets (`src/presets.ts`) in those knobs
-as well (the share on its `-amount`), their `commit` moved to a build that has them.
-`src/presets.test.ts` holds every committed preset to loading as itself: only its scene's keys and
-the lab's, each value as its knob reads it, and the whole query as the lab writes it
-(`canonicalSetup`), which is how the Presets view lights the preset just loaded.
-
-`src/url-keys.json` lists every URL key the lab has published: its own settings, and each scene's
-keys (its knobs, the `-amount` of each feature, its planets, and the outgrown keys its migrations
-map), each with the meaning it was published with: its knob's kind (`range`, `toggle`, `feature`,
-`seed`, or `choice` with its option values, `choice 0 1 2`; a feature's `-amount` is a `range` or
-its choice), or `planets`. The list only grows: add a new knob's keys to it, and never take one out
-or change one. `src/url-keys.test.ts` fails while a key the lab reads is missing from it (it lists
-the entries to add), while a key in it reaches nothing: no knob of its scene, nor its planets, nor
-a step of the migration chain (`MIGRATIONS` in `src/state.ts`) that maps it onto one of them or
-drops it on purpose; and while a key the chain leaves alone has changed kind, or its choice has lost
-an option value. So a renamed or removed key needs its migration, and so does a key that changes
-meaning.
+URL keys are this build's: a link, a preset and the lab's history are read in the keys of the build
+that opens them, and a key it does not know is ignored (see "Links and the URL schema" below). A
+knob that changes its key or kind (a share of 0..100 that became a feature would read 30 as its
+switch: on, at the default share) needs the committed presets (`src/presets.ts`) that set it
+rewritten in the knobs that now say it (the share on its `-amount`), their `commit` moved to a
+build that has them. `src/presets.test.ts` holds every committed preset to loading as itself: only
+its scene's keys and the lab's, each value as its knob reads it, and the whole query as the lab
+writes it (`canonicalSetup`), which is how the Presets view lights the preset just loaded.
 
 Shared knobs come from `src/scenes/atmosphere.ts`: `skyKnobs({ time })` gives `K_time`, `K_cycle`;
 `weatherKnobs({...})` gives `K_rain`, `K_snow`, `K_fog`, `K_wind`, `K_lightning`, `K_aurora`
@@ -312,68 +299,28 @@ slot you give `weatherKnobs`. The lab's tools list every "now" of the scene as w
 A setup is a URL query: the lab's settings, the scene's knobs and its lists, each only where it
 differs from its default, `scene` first. Links, presets, the lab's history and each slot of an A/B
 comparison (under its `a.` or `b.` prefix) are that one form, and all of them enter through
-`readSetup` (`src/state.ts`), which brings an older query up to this build's schema, then reads it.
+`readSetup` (`src/state.ts`), which reads them in this build's keys: the lab's settings
+(`defaults`), the scene's knobs (a feature's amount under `<key>-amount`) and its lists. Each value
+is read as its knob reads it (clamped, a switch rounded, a choice it lacks at its default), and a
+key the build does not know is ignored and never written back.
 
-**Versions.** A query's keys belong to a schema, numbered from 1, and `v=<n>` names it only where
-the query needs it: the lab writes `v` when a reader taking the query for schema 1, as it takes
-every link without `v`, would read it otherwise (`withVersion`). Every link from before versions is
-schema 1. Schema 2 only rewrote keys and a scene that no build writes any more. Schema 3 gave bees'
-`clouds` a new meaning (the world's deck; the old towers' size is now `cumulus-amount`), so a bees
-link that sets `clouds` carries `v=3`, and only those. Likewise, when a range becomes a feature, the
-step that turns an old `<key>=30` into `<key>=1&<key>-amount=30` would misread a new `<key>=1`, so
-every link that sets that knob from then on carries `v`. Writing `v` always would lengthen every link and, at each new
-version, unlight every committed preset until it was rewritten. A link of a later schema than the
-build knows (a newer build's, opened on an older one) is read as it stands.
+The schema is this build's alone: it carries no version, and the lab keeps no migrations or scene
+aliases (no backward compatibility, operator decision 2026-10-17). A key renamed or a scene removed
+leaves a link that names it reading as the current keys say. A setup made on an older build replays
+exactly on that build, `/@<sha>/?<query>`, as the Presets view's arrow does for each preset.
 
-**Migrations.** `MIGRATIONS` is the schema's history, in order. Each step makes the version
-`since`; a query of an earlier version runs every step past its own, in order, so a schema 1 link
-runs them all and each step rewrites the query as the steps before it left it. Two kinds:
-
-- `keys`: outgrown keys of the scene the query names at that point (`renameKey` renames one with a
-  map of its values). Schema 2 holds two: the countryside's `season` (0 summer, 1 harvest, 2
-  autumn) opens at its `date` (0.375, 0.47, 0.6), and the night skies' one giant planet becomes the
-  first of their planets. Schema 3 holds bees' `clouds`, which becomes `cumulus-amount`.
-- `alias`: a retired scene id (renamed, merged into another scene or removed) whose links open its
-  successor, `to`, which a later alias may retire in turn. Its `keys` move the retired scene's keys
-  onto the successor's: rename them, and set the successor's knobs whose defaults differ from what
-  the retired scene showed, since a link leaves defaults out. Schema 3 holds one: `aurora` (Aurora
-  over a fjord) merged into `lake`, whose links open the lake's fjord (`setting` 1) under the slow
-  drapes (`drapes` 1) without substorms, at the deep of the night (`hour` 1), its crescent
-  (`moon-amount` 0.25) and no Milky Way; its `glow` becomes the lake's `aurora-amount` (0: the
-  aurora off), its `hue` the lake's (green 4, green + violet 0, red storm 2), its planets move from
-  its pad onto the lake's, and its other keys are the lake's own.
-
-To change what a key means, append a step of the next version (`since: URL_VERSION + 1`) that
-rewrites older queries into the new keys; to retire a scene, append an alias of the next version
-and take the scene out of the registry. Never edit, move or drop a step that has shipped: links rely
-on it. A step that calls live code (`COUNTRY_SEASONS`, `encodePlanets`, a scene's `planets`) must
-keep writing its own version's keys, so freeze what it uses before that code changes meaning, and
-retiring a scene that an earlier step reads (a sky that takes planets) means handing that step the
-part it read (`RETIRED_PLANETS` keeps the retired skies' pads, for the giant's step and for the alias
-that moves their lists). The chain reads a query that names no scene as today's default scene's:
-changing the default scene needs each version's default kept first. `checkMigrations` runs at load:
-steps in version order, and each alias retires, once, an id no scene has, for a successor that leads
-to one.
-
-A setup naming a scene this build lacks, once its aliases have run, opens the default scene with
-its lab settings, and the lab says so in one line over the scene until another scene is on screen.
-A tour names scenes only, so it needs no version of its own: each step resolves through the
-aliases (`resolveScene`) whatever the link's version, since a retired id never names a scene
-again, and a step naming no scene is dropped.
+A setup naming a scene this build lacks opens the default scene with its lab settings, and the lab
+says so in one line over the scene until another scene is on screen. A tour names scenes only; a
+step naming no scene of this build is dropped.
 
 **Lists.** A list of items, each a set of knob-like values (the night sky's planets,
 `src/scenes/planets.ts`), lives beside the knobs as one key per list (`planets=`): packed
-(`encodePlanets`, base64url varints), last in the query and absent while the list is empty. Its
-value has its own format version, its first varint, apart from the URL schema's. The schema says
-which key holds the list and what it replaced (the giant's keys, a schema 2 step); the packing says
-how the value's bytes read, and grows by appending field ids, which needs no new version of either.
-A packing that reorders or reinterprets fields takes a new packing version, whose decoder reads the
-old one too, or a schema step that re-encodes old values. As one key a list goes wherever keys go:
-minimal links, undo steps, presets, the `a.`/`b.` prefix and `setupDifferences` (the list is one
-difference). The lab edits the list decoded (`readPlanets`) and writes it back whole
-(`encodePlanets`), and the shader takes it as uniforms beside `uParams` (`planetUniforms`), so items
-cost no knob slots. A new list follows the same pattern under a key of its own that no knob of its
-scenes may take (`state.ts` checks `planets`).
+(`encodePlanets`, base64url varints), last in the query and absent while the list is empty. As one
+key a list goes wherever keys go: minimal links, undo steps, presets, the `a.`/`b.` prefix and
+`setupDifferences` (the list is one difference). The lab edits the list decoded (`readPlanets`) and
+writes it back whole (`encodePlanets`), and the shader takes it as uniforms beside `uParams`
+(`planetUniforms`), so items cost no knob slots. A new list follows the same pattern under a key of
+its own that no knob of its scenes may take (`state.ts` checks `planets`).
 
 ### Lab widgets
 
@@ -1276,17 +1223,13 @@ straight ahead and up from the horizon, each `[least, start, most]`. The list st
   Each kind's surface is a loop of at most one turn, so a software rasteriser runs only the kinds
   on screen.
 - **In the URL** the list is one key, `planets` (`PLANETS_KEY`): base64url of unsigned varints,
-  the version (1), the count, then per planet how many of its values differ from their defaults
-  and each as a field id and its value in whole quanta of that field (zigzag for a sign). The
-  fields and their quanta are frozen as published (`PLANET_FIELDS`, append only), apart from the
-  knobs' steps, so retuning a slider never rescales a link. Values sit on their steps' grid, a
-  whole number of quanta each, so a list round-trips exactly; a malformed value (another
-  version, bad base64url, cut short, trailing bytes) is no planets, an out-of-range value is
-  clamped, past the cap the first eight stay; nothing throws. A link from before the list whose
-  one giant planet was on (`planet=1` with `planetX`, `planetY`, `planetPalette`, `planetRing` and
-  the `planet...` features) opens with that giant as its first planet (a step of the URL schema,
-  state.ts `MIGRATIONS`, by `GIANT_KEYS`), and the page writes the list in their place. How a list
-  lives beside the knobs: "Links and the URL schema".
+  a format mark (1), the count, then per planet how many of its values differ from their defaults
+  and each as a field id (its place among the planet's values, in `planetDefs` order, a feature's
+  amount after its switch) and its value in whole steps of its knob (zigzag for a sign). Values
+  sit on their steps' grid, so a list round-trips exactly; a malformed value (another mark, bad
+  base64url, cut short, trailing bytes) is no planets, an out-of-range value is clamped, past the
+  cap the first eight stay; nothing throws. How a list lives beside the knobs: "Links and the URL
+  schema".
 - **In the shader** the list is uniforms beside `uParams` (`planetUniforms`): `uPlanets`, five
   vec4 rows per planet (its path's circle, so a fixed planet is its direction and an orbiting one
   moves with `uMotionTime` alone; its radius; its switches packed, `SKY_PLANET_FLAGS`; its dress)
@@ -2453,39 +2396,34 @@ meadow": `scene=bees&grass=1&wildflowers=1` plus its values.
 
 **Keys** are unique per composer, checked both ways:
 
-- every key a link, preset or migration names resolves;
+- every key a committed preset names resolves;
 - every knob is reachable.
 
 A port keeps its scene's keys wherever they are unique in the composer. A key that collides with
 one already taken is qualified as `<layerId><Key>` (country's `wildflowers` becomes
 `valleyWildflowers`). A layer's switch is its id. Keys that move to the composer (the seeds onto
-`seed`; `gusts` onto the shared field) are migrated too. The pilot:
+`seed`; `gusts` onto the shared field) are renamed too. The pilot:
 
-| Scene  | Keys                                                                                                          | Layer                                        | Becomes                                                  |
-| ------ | ------------------------------------------------------------------------------------------------------------- | -------------------------------------------- | -------------------------------------------------------- |
-| meadow | `grassHeight`, `grassDensity`                                                                                 | `grass`                                      | unchanged                                                |
-| meadow | `dandelions` (and `-amount`), `wildflowers` (and `-amount`)                                                   | `dandelions`, `wildflowers` (their switches) | unchanged                                                |
-| meadow | `haze`, `mown` (and `-amount`)                                                                                | `downs`                                      | unchanged                                                |
-| meadow | `gusts` (and `-amount`), `gustRate`                                                                           | the composer                                 | unchanged                                                |
-| meadow | `meadowSeed`                                                                                                  | the composer                                 | `seed`                                                   |
-| bees   | `bees`, `swarm`, `butterflies`, `bumblebees`, `hoverflies`, `dragonflies`, `fireflies` (and their `-amount`s) | `insects`                                    | unchanged                                                |
-| bees   | `flowers`, `lantern` (and `-amount`), `fairyLights`, `mark` (and `-amount`)                                   | `apiary`                                     | unchanged                                                |
-| bees   | `scenerySeed`                                                                                                 | the composer                                 | `seed`                                                   |
-| both   | the World's keys                                                                                              | the World                                    | unchanged; bees' schema 3 `clouds` step still runs first |
+| Scene  | Keys                                                                                                          | Layer                                        | Becomes   |
+| ------ | ------------------------------------------------------------------------------------------------------------- | -------------------------------------------- | --------- |
+| meadow | `grassHeight`, `grassDensity`                                                                                 | `grass`                                      | unchanged |
+| meadow | `dandelions` (and `-amount`), `wildflowers` (and `-amount`)                                                   | `dandelions`, `wildflowers` (their switches) | unchanged |
+| meadow | `haze`, `mown` (and `-amount`)                                                                                | `downs`                                      | unchanged |
+| meadow | `gusts` (and `-amount`), `gustRate`                                                                           | the composer                                 | unchanged |
+| meadow | `meadowSeed`                                                                                                  | the composer                                 | `seed`    |
+| bees   | `bees`, `swarm`, `butterflies`, `bumblebees`, `hoverflies`, `dragonflies`, `fireflies` (and their `-amount`s) | `insects`                                    | unchanged |
+| bees   | `flowers`, `lantern` (and `-amount`), `fairyLights`, `mark` (and `-amount`)                                   | `apiary`                                     | unchanged |
+| bees   | `scenerySeed`                                                                                                 | the composer                                 | `seed`    |
+| both   | the World's keys                                                                                              | the World                                    | unchanged |
 
 New keys: the switches `downs`, `grass`, `hillside`, `lawn`, `apiary` and `insects`; `seed`; and
 `grass`'s `overgrowth`.
 
-**Migrations:**
-
-- Each phase appends one `keys` step (`since: URL_VERSION + 1`) holding its scenes' renames.
-- `alias` only for an id that is retired.
-- A new `split` step for a scene whose `camera` choice now belongs to another composer:
-  `scene=garden&camera=1` opens `gardenabove`, and dunes' likewise. `checkMigrations` learns the
-  kind: `from` and `to` both name scenes.
-- `url-keys.json` lists a composer's keys once for all its presets, and still only grows.
-- Committed presets that set a renamed key are rewritten, their `commit` moved to the porting
-  build.
+**Old links** are not carried over (no backward compatibility, operator decision 2026-10-17): a
+port adds no URL steps or aliases, and a setup made before it replays on its own build
+(`/@<sha>/`). Garden's and dunes' `camera=1` views become scene ids of their own, `gardenabove` and
+`dunesabove`. Committed presets that set a renamed key are rewritten, their `commit` moved to the
+porting build.
 
 **The A/B plan of every port:**
 
@@ -2648,8 +2586,8 @@ pointer.
    this changes for the A/B.
 5. Route sim textures into the records atlas, the speck map or field slots, and the GLSL's reads
    through the generated accessors.
-6. Keep each key that is still unique. Qualify the colliding ones, and add the phase's `keys` step,
-   `url-keys.json` entries and `state.test.ts` cases. Rewrite the committed presets.
+6. Keep each key that is still unique. Qualify the colliding ones, and rewrite the committed
+   presets that set them.
 7. Run the A/B plan, regenerate the layer costs, and check the budgets.
 8. Add at least one committed mix with a layer of another scene, checked by `composerClaims` and
    `composerWeather`.
@@ -2798,7 +2736,7 @@ The shared components have checks of their own:
   footprint; by day and with no stars nothing; and the knobs off, in a program with every gate on,
   draw exactly what a program without them draws (`src/shaders/index.test.ts` holds every scene's
   knob to off at its defaults, its gate out of the default program). `nightPlanets`: over the
-  lake's fjord (an old `scene=aurora` link) and the island, two planets of different kinds show
+  lake's fjord (`LAKE_FJORD`) and the island, two planets of different kinds show
   where their placements put them (the left one further left), together as each alone does; an
   orbiting planet drifts left with the motion clock and, half a circuit on, has set, the sky byte
   for byte the empty list's.
@@ -2829,7 +2767,8 @@ directory), so a run scoped to that scene keeps the check; a check that walks sc
 wraps itself in `walk(scenes, check)` so a scoped run walks those in scope alone.
 `src/verify/kit.ts` holds what checks share: `check`, `link` (a program from a fragment source),
 `readBytes`, `drawFloats` (a float target's read-back), `stage` (a canvas for a renderer of its
-own), `holdFrames` (rAF held for frames run by hand), `pause`, `until`, `labSettings` and `walk`.
+own), `holdFrames` (rAF held for frames run by hand), `pause`, `until`, `labSettings`, `walk` and
+`LAKE_FJORD` (the lake's knobs for its fjord under the slow drapes).
 Keep each check well under the deadline in software WebGL on a busy machine (split a slower one
 into several entries) and record its seconds with `--record`.
 

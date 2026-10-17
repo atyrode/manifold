@@ -2,7 +2,6 @@
 // scene's (baseline and saved here), then the ones saved in this browser with export and import,
 // then the baseline shelved by scene family. A click loads one here; its arrow opens it on the
 // exact build it was tuned on. The setup on screen is saved from the bar on top.
-import { canonicalSetup } from "../compare.ts";
 import {
   loadLocalPresets,
   parsePresets,
@@ -11,7 +10,7 @@ import {
   type Preset,
 } from "../presets.ts";
 import { sceneDefs, sceneIds, type SceneId } from "../scenes/index.ts";
-import { defaults, resolveScene } from "../state.ts";
+import { defaults } from "../state.ts";
 import { flash, iconButton, textButton } from "./controls.ts";
 import { h, reveal, type LabContext } from "./dom.ts";
 import { families, sceneFamily } from "./families.ts";
@@ -39,12 +38,6 @@ interface Group {
   list: HTMLUListElement;
   count: HTMLElement;
 }
-
-/** The scene a preset opens: the one it names, or its successor where that scene was retired. */
-const sceneOf = (query: string) => {
-  const named = new URLSearchParams(query).get("scene") ?? defaults.scene;
-  return resolveScene(named) ?? named;
-};
 
 export class PresetsView {
   readonly el: HTMLElement;
@@ -145,7 +138,7 @@ export class PresetsView {
     const baseline = presets.map((preset) => ({
       preset,
       local: undefined,
-      scene: sceneOf(preset.query),
+      scene: new URLSearchParams(preset.query).get("scene") ?? defaults.scene,
     }));
     this.#families = families.flatMap((family) => {
       const entries = baseline.filter((entry) => {
@@ -228,7 +221,7 @@ export class PresetsView {
     const saved = local.map((preset, index) => ({
       preset,
       local: index,
-      scene: sceneOf(preset.query),
+      scene: new URLSearchParams(preset.query).get("scene") ?? defaults.scene,
     }));
     const baseline = this.#families.flatMap((family) => family.entries);
     const here = [...baseline, ...saved].filter((entry) => entry.scene === scene);
@@ -298,11 +291,7 @@ export class PresetsView {
             this.sync();
           });
     const el = h("li", { class: "preset" }, main, original, remove);
-    // A setup saved here before a URL schema step reads as this build's own (committed presets are
-    // canonical already, presets.test.ts): it lights while it is the one on screen.
-    const query =
-      local === undefined ? preset.query : canonicalSetup(new URLSearchParams(preset.query));
-    this.#rows.push({ el, query });
+    this.#rows.push({ el, query: preset.query });
     return el;
   }
 }

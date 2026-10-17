@@ -16,8 +16,7 @@
 // and the chimney smoke are the shader's alone, but for the verges' year. Each optional part is
 // compiled in only while on (countryFeatures). The verges at the hedges' foot (verges.ts) and the
 // starling murmuration at dusk (murmuration.ts) are compiled in only while on too; the sim grows
-// their plants and flies their flock then, packed beside the terrain's records (atlas.ts). Old links'
-// `season` (summer, harvest, autumn) opens at its date (state.ts MIGRATIONS).
+// their plants and flies their flock then, packed beside the terrain's records (atlas.ts).
 import {
   climateCold,
   fallingRain,

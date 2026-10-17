@@ -63,9 +63,8 @@ const GROUP = "planet";
 
 /**
  * A planet's knobs, in the lab's order, for a scene's planets and the planet's kind (its palettes'
- * names). Steps are a grid every value sits on (readPlanet), each a whole number of its URL field's
- * quantum (PLANET_FIELDS), so the URL packs whole numbers. A `when` of "!<key>" shows a knob only
- * while that switch is off.
+ * names). Steps are a grid every value sits on (readPlanet), so the URL packs each value as a whole
+ * number of its step. A `when` of "!<key>" shows a knob only while that switch is off.
  */
 export function planetDefs(spec: SkyPlanets, kind = 0): ParamDef[] {
   const palettes = PLANET_KINDS[kind]?.palettes ?? PLANET_KINDS[0]?.palettes ?? [];
@@ -250,6 +249,21 @@ function quantum(def: ParamDef, amount: boolean): number {
   return 1;
 }
 
+/**
+ * Every value of a planet with `defs`, keyed as readPlanet keys it (a feature's amount after its
+ * switch), in the defs' order, and the grid it sits on. Its index is its id in the packed form.
+ */
+function planetFields(defs: readonly ParamDef[]): (readonly [key: string, quantum: number])[] {
+  return defs.flatMap((def): (readonly [string, number])[] =>
+    def.kind === "feature"
+      ? [
+          [def.key, quantum(def, false)],
+          [`${def.key}-amount`, quantum(def, true)],
+        ]
+      : [[def.key, quantum(def, false)]],
+  );
+}
+
 /** `value` on the grid of `quantum`, without float dust. */
 function onGrid(value: number, step: number): number {
   const places = Math.max(0, -Math.floor(Math.log10(step)) + 1);
@@ -270,13 +284,7 @@ export function readPlanet(spec: SkyPlanets, values: Readonly<Record<string, num
   const defs = planetDefs(spec, kinded["kind"]);
   const read = readKnobs(defs, raw);
   const out: Record<string, number> = {};
-  for (const def of defs) {
-    for (const amount of def.kind === "feature" ? [false, true] : [false]) {
-      const key = amount ? `${def.key}-amount` : def.key;
-      const value = read[key] ?? 0;
-      out[key] = onGrid(value, quantum(def, amount));
-    }
-  }
+  for (const [key, step] of planetFields(defs)) out[key] = onGrid(read[key] ?? 0, step);
   return out;
 }
 
@@ -287,42 +295,8 @@ export function planetDefaults(spec: SkyPlanets): SkyPlanet {
 
 // ---- the URL ------------------------------------------------------------------------------------
 
-/** The packed form's version: the first number of every list. */
-const VERSION = 1;
-
-/**
- * Every URL value of a planet, by its id in the packed form (its index), and the quantum its packed
- * whole number counts (1 for a switch or a choice), frozen as published: a slider's step may change,
- * a link's values do not. Append only; never reorder, reuse or requantise a field, so an old link
- * keeps its meaning (planets.test.ts pins them).
- */
-export const PLANET_FIELDS: readonly (readonly [key: string, quantum: number])[] = [
-  ["kind", 1],
-  ["size", 0.01],
-  ["palette", 1],
-  ["across", 1],
-  ["up", 1],
-  ["orbit", 1],
-  ["orbit-amount", 0.5],
-  ["incline", 1],
-  ["phase", 0.01],
-  ["phases", 1],
-  ["daycycle", 1],
-  ["daycycle-amount", 0.05],
-  ["spin", 0.05],
-  ["ring", 1],
-  ["ringTilt", 0.01],
-  ["ringRoll", 0.01],
-  ["moons", 1],
-  ["moons-amount", 1],
-  ["moonSize", 0.1],
-  ["eclipses", 1],
-  ["aurora", 1],
-  ["aurora-amount", 0.05],
-  ["auroraSize", 0.05],
-  ["lights", 1],
-  ["twinkle", 0.05],
-];
+/** The packed form's mark: the first number of every list. */
+const FORMAT = 1;
 
 const zigzag = (n: number) => (n >= 0 ? 2 * n : -2 * n - 1);
 const unzigzag = (n: number) => (n % 2 === 0 ? n / 2 : -(n + 1) / 2);
@@ -337,18 +311,19 @@ function pushVarint(bytes: number[], n: number): void {
 }
 
 /**
- * The list as its URL value: base64url of a byte stream of unsigned varints, the version, the count,
- * then per planet how many of its values differ from their defaults and each of those as its field's
- * id and its value in its field's quantum (zigzag for a sign). Empty for no planets.
+ * The list as its URL value: base64url of a byte stream of unsigned varints, the format mark, the
+ * count, then per planet how many of its values differ from their defaults and each of those as its
+ * field's id (planetFields) and its value in whole steps (zigzag for a sign). Empty for no planets.
  */
 export function encodePlanets(spec: SkyPlanets, planets: readonly SkyPlanet[]): string {
   if (planets.length === 0) return "";
   const defaults = planetDefaults(spec);
+  const fields = planetFields(planetDefs(spec));
   const bytes: number[] = [];
-  pushVarint(bytes, VERSION);
+  pushVarint(bytes, FORMAT);
   pushVarint(bytes, planets.length);
   for (const planet of planets) {
-    const set = PLANET_FIELDS.flatMap(([key, unit], id) => {
+    const set = fields.flatMap(([key, unit], id) => {
       const value = planet[key];
       return value === undefined || value === defaults[key]
         ? []
@@ -393,9 +368,9 @@ class Reader {
 
 /**
  * The list a URL value holds (encodePlanets'), each planet read by readPlanet: values out of range
- * clamped, a choice it lacks at its default, a field this version does not know left out, past
- * PLANET_CAP planets dropped. A value that is not such a list at all (another version, bad
- * base64url, cut short, trailing bytes) gives no planets. Never throws.
+ * clamped, a choice it lacks at its default, a field id past the planet's left out, past PLANET_CAP
+ * planets dropped. A value that is not such a list at all (another mark, bad base64url, cut short,
+ * trailing bytes) gives no planets. Never throws.
  */
 export function decodePlanets(spec: SkyPlanets, text: string): SkyPlanet[] {
   if (text === "" || !/^[A-Za-z0-9_-]+$/.test(text)) return [];
@@ -406,20 +381,21 @@ export function decodePlanets(spec: SkyPlanets, text: string): SkyPlanet[] {
     return [];
   }
   const reader = new Reader(Uint8Array.from(binary, (char) => char.charCodeAt(0)));
-  if (reader.next() !== VERSION) return [];
+  if (reader.next() !== FORMAT) return [];
+  const fields = planetFields(planetDefs(spec));
   // Each planet takes a byte at least, so a count past the bytes left runs out instead of reading on.
   const count = reader.next();
   if (count === undefined) return [];
   const planets: SkyPlanet[] = [];
   for (let n = 0; n < count; n++) {
-    const fields = reader.next();
-    if (fields === undefined) return [];
+    const set = reader.next();
+    if (set === undefined) return [];
     const values: Record<string, number> = {};
-    for (let f = 0; f < fields; f++) {
+    for (let f = 0; f < set; f++) {
       const id = reader.next();
       const raw = reader.next();
       if (id === undefined || raw === undefined) return [];
-      const field = PLANET_FIELDS[id];
+      const field = fields[id];
       if (field !== undefined) values[field[0]] = unzigzag(raw) * field[1];
     }
     planets.push(readPlanet(spec, values));
@@ -427,30 +403,6 @@ export function decodePlanets(spec: SkyPlanets, text: string): SkyPlanet[] {
   if (!reader.done) return [];
   return planets.slice(0, PLANET_CAP);
 }
-
-/**
- * The night sky's one giant (the knobs `giantKnobs` gave the sky scenes before the list), by the
- * planet value each became: a link with its switch, GIANT_SWITCH, on opens with that giant as its
- * one planet (a step of the URL schema: state.ts MIGRATIONS).
- */
-export const GIANT_SWITCH = "planet";
-export const GIANT_KEYS: Readonly<Record<string, string>> = {
-  "planet-amount": "size",
-  planetX: "across",
-  planetY: "up",
-  planetPalette: "palette",
-  planetRing: "ring",
-  planetMoons: "moons",
-  "planetMoons-amount": "moons-amount",
-  planetEclipses: "eclipses",
-  planetAurora: "aurora",
-  "planetAurora-amount": "aurora-amount",
-  planetAuroraSize: "auroraSize",
-  planetLights: "lights",
-  planetLightsTwinkle: "twinkle",
-  planetDaycycle: "daycycle",
-  "planetDaycycle-amount": "daycycle-amount",
-};
 
 // ---- the shader ---------------------------------------------------------------------------------
 

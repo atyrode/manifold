@@ -6,9 +6,7 @@
 //
 // shows slot B (forest in rain) and keeps slot A (pond at motion 0.2) under the "a." prefix. With
 // both slots at defaults the prefix keys are simply absent: `?compare=b` compares pond with pond.
-// Each slot is a setup with its own schema version where it needs one (`a.v`), so a slot written
-// by an older build is brought up to this one's on its own.
-import { readSetup, serialise, sessionKeys, VERSION_KEY } from "./state.ts";
+import { readSetup, serialise, sessionKeys } from "./state.ts";
 
 export const slots = ["a", "b"] as const;
 export type Slot = (typeof slots)[number];
@@ -24,10 +22,7 @@ export function otherSlot(slot: Slot): Slot {
   return slot === "a" ? "b" : "a";
 }
 
-/**
- * A setup query as the page writes it: in this build's URL schema (its version where it needs one),
- * normalised and minimal.
- */
+/** A setup query as the page writes it: normalised and minimal. */
 export function canonicalSetup(query: URLSearchParams): string {
   const { state, params, planets } = readSetup(query);
   return serialise(state, params, planets).toString();
@@ -55,13 +50,12 @@ export function writeComparison(comparison: Comparison, query: URLSearchParams):
 /**
  * The URL keys whose values differ between two minimal setup queries, `scene` first and then in
  * the order they appear. A knob of one scene and a same-named knob of another count as one key.
- * Both are in this build's schema, so the version one of them carries is no difference.
  */
 export function setupDifferences(a: string, b: string): string[] {
   const left = new URLSearchParams(a);
   const right = new URLSearchParams(b);
   const keys = [...new Set(["scene", ...left.keys(), ...right.keys()])];
-  return keys.filter((key) => key !== VERSION_KEY && left.get(key) !== right.get(key));
+  return keys.filter((key) => left.get(key) !== right.get(key));
 }
 
 /** Milliseconds a press must last to count as a hold. */

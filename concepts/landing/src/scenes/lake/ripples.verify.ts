@@ -1,8 +1,7 @@
 // GPU regression for the fjord's wind ripples (#1082 R45), on the lake's real entry with the fjord
-// as Aurora over a fjord drew it (its link, through the URL schema's alias): they ruffle the open
-// water and nothing else (the sky, mountains and shore above the horizon stay as they were, and ice
-// stays still), and even at the strongest wind they stay calm under the dither. Registered in
-// verify-browser.ts.
+// under its slow drapes (LAKE_FJORD): they ruffle the open water and nothing else (the sky,
+// mountains and shore above the horizon stay as they were, and ice stays still), and even at the
+// strongest wind they stay calm under the dither. Registered in verify-browser.ts.
 import {
   fragmentSourceFor,
   packParams,
@@ -10,14 +9,13 @@ import {
   shaderValues,
   vertexSource,
 } from "../../shaders/index.ts";
-import { defaultsFor, readSetup, renderSettings } from "../../state.ts";
+import { defaultsFor, renderSettings } from "../../state.ts";
+import { LAKE_FJORD } from "../../verify/kit.ts";
 import { lakeScene } from "./index.ts";
 import { FJORD_HORIZON } from "./shader.ts";
 
 const WIDTH = 240;
 const HEIGHT = 135;
-/** The lake's knobs for the fjord under the slow drapes: an old `scene=aurora` link's. */
-const FJORD = readSetup(new URLSearchParams("scene=aurora")).params;
 
 function check(ok: boolean, message: string): void {
   if (!ok) throw new Error(message);
@@ -47,7 +45,7 @@ function program(gl: WebGL2RenderingContext, fragment: string): WebGLProgram {
 }
 
 export function verifyLakeRipples(gl: WebGL2RenderingContext): Record<string, unknown> {
-  const features = sceneFeatures(lakeScene, shaderValues(lakeScene, FJORD));
+  const features = sceneFeatures(lakeScene, shaderValues(lakeScene, LAKE_FJORD));
   const linked = program(gl, fragmentSourceFor(lakeScene, features));
   gl.canvas.width = WIDTH;
   gl.canvas.height = HEIGHT;
@@ -70,7 +68,7 @@ export function verifyLakeRipples(gl: WebGL2RenderingContext): Record<string, un
     gl.uniform1f(at("uMotionTime"), time);
     gl.uniform4fv(
       at("uParams"),
-      packParams(renderSettings(defaultsFor("lake"), { ...FJORD, ...knobs }).params),
+      packParams(renderSettings(defaultsFor("lake"), { ...LAKE_FJORD, ...knobs }).params),
     );
     gl.drawArrays(gl.TRIANGLES, 0, 3);
     const bytes = new Uint8Array(WIDTH * HEIGHT * 4);

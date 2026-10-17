@@ -4,9 +4,7 @@ import { sceneDefs } from "./index.ts";
 import {
   decodePlanets,
   encodePlanets,
-  GIANT_KEYS,
   PLANET_CAP,
-  PLANET_FIELDS,
   PLANET_KINDS,
   planetDefaults,
   planetDefs,
@@ -82,12 +80,10 @@ describe("a planet's knobs", () => {
     }
   });
 
-  test("start as the night sky's one giant did: the banded teal giant with its thin ring where the pad starts", () => {
+  test("start as the banded teal giant with its thin ring where the pad starts", () => {
     const planet = planetDefaults(spec);
     expect(planet).toMatchObject({ kind: 0, size: 0.55, palette: 0, ring: 1, across: -10, up: 20 });
     expect(planet).toMatchObject({ orbit: 0, phases: 0, spin: 1, moons: 0, eclipses: 1 });
-    // Every old key of the giant names one of the planet's.
-    for (const key of Object.values(GIANT_KEYS)) expect(Object.keys(planet)).toContain(key);
   });
 
   test("palettes are the kind's own, four each, the banded giant's the night sky giant's", () => {
@@ -116,7 +112,7 @@ describe("the planets' URL value", () => {
   test("is empty for none, and holds only what differs from the defaults", () => {
     expect(encodePlanets(spec, [])).toBe("");
     expect(decodePlanets(spec, "")).toEqual([]);
-    // Version 1, one planet, no values of its own.
+    // The format mark, one planet, no values of its own.
     expect(encodePlanets(spec, [planetDefaults(spec)])).toBe(packed(1, 1, 0));
     // One value: field 1 (size) at 80 hundredths, zigzagged to 160, a varint of two bytes.
     expect(encodePlanets(spec, [readPlanet(spec, { size: 0.8 })])).toBe(packed(1, 1, 1, 1, 160, 1));
@@ -152,7 +148,7 @@ describe("the planets' URL value", () => {
       expect({ text, planets: decodePlanets(spec, text) }).toEqual({ text, planets: [] });
     // A count far past what the bytes hold runs out.
     expect(decodePlanets(spec, packed(1, 0xff, 0xff, 0xff, 0xff, 0x0f, 0))).toEqual([]);
-    // A field this version does not know is left out; a value out of range is clamped.
+    // A field id past the planet's is left out; a value out of range is clamped.
     expect(decodePlanets(spec, packed(1, 1, 2, 120, 4, 1, 200, 3))).toEqual([
       readPlanet(spec, { size: 1 }),
     ]);
@@ -161,111 +157,6 @@ describe("the planets' URL value", () => {
     // Past the cap, the first PLANET_CAP.
     const many = packed(1, PLANET_CAP + 3, ...Array<number>(PLANET_CAP + 3).fill(0));
     expect(decodePlanets(spec, many)).toHaveLength(PLANET_CAP);
-  });
-
-  test("keeps every published field: its id, its key and the quantum its whole number counts", () => {
-    // As published, append only: a field moved, renamed or requantised rescales every link holding it.
-    const published: readonly (readonly [string, number])[] = [
-      ["kind", 1],
-      ["size", 0.01],
-      ["palette", 1],
-      ["across", 1],
-      ["up", 1],
-      ["orbit", 1],
-      ["orbit-amount", 0.5],
-      ["incline", 1],
-      ["phase", 0.01],
-      ["phases", 1],
-      ["daycycle", 1],
-      ["daycycle-amount", 0.05],
-      ["spin", 0.05],
-      ["ring", 1],
-      ["ringTilt", 0.01],
-      ["ringRoll", 0.01],
-      ["moons", 1],
-      ["moons-amount", 1],
-      ["moonSize", 0.1],
-      ["eclipses", 1],
-      ["aurora", 1],
-      ["aurora-amount", 0.05],
-      ["auroraSize", 0.05],
-      ["lights", 1],
-      ["twinkle", 0.05],
-    ];
-    expect(PLANET_FIELDS.slice(0, published.length)).toEqual([...published]);
-    // Each names a knob of every kind, whose grid is whole quanta: a link carries its value exactly.
-    for (const kind of PLANET_KINDS) {
-      const defs = planetDefs(spec, kind.value);
-      for (const [key, unit] of PLANET_FIELDS) {
-        const amount = key.endsWith("-amount");
-        const name = amount ? key.slice(0, -"-amount".length) : key;
-        const def = defs.find((each) => each.key === name);
-        const grid =
-          def?.kind === "range" || (amount && def?.kind === "feature" && !def.options)
-            ? def.step
-            : 1;
-        const quanta = grid / unit;
-        const whole = Math.abs(quanta - Math.round(quanta)) < 1e-9;
-        expect({ key, knob: def !== undefined, whole }).toEqual({ key, knob: true, whole: true });
-      }
-    }
-  });
-
-  test("reads the links already shared as it always has", () => {
-    const shared: readonly (readonly [string, readonly Record<string, number>[]])[] = [
-      ["AQEBAaAB", [{ size: 0.8 }]],
-      [
-        "AQENAAYBNgIEAzIEUAxeDQQOWg9jEAIRBhJKEwA",
-        [
-          {
-            kind: 3,
-            size: 0.27,
-            palette: 2,
-            across: 25,
-            up: 40,
-            spin: 2.35,
-            ring: 2,
-            ringTilt: 0.45,
-            ringRoll: -0.5,
-            moons: 1,
-            "moons-amount": 3,
-            moonSize: 3.7,
-            eclipses: 0,
-          },
-        ],
-      ],
-      [
-        "AQIHA0sEBgUCBgoHOwgyCQIJAAgBCgoCCwYUAhUOFhoXAhgQ",
-        [
-          {
-            across: -38,
-            up: 3,
-            orbit: 1,
-            "orbit-amount": 2.5,
-            incline: -30,
-            phase: 0.25,
-            phases: 1,
-          },
-          {
-            kind: 4,
-            size: 0.05,
-            daycycle: 1,
-            "daycycle-amount": 0.15,
-            aurora: 1,
-            "aurora-amount": 0.35,
-            auroraSize: 0.65,
-            lights: 1,
-            twinkle: 0.4,
-          },
-        ],
-      ],
-    ];
-    for (const [text, values] of shared) {
-      const planets = decodePlanets(spec, text);
-      expect(planets).toHaveLength(values.length);
-      values.forEach((set, n) => expect(planets[n]).toMatchObject(set));
-      expect(encodePlanets(spec, planets)).toBe(text);
-    }
   });
 });
 

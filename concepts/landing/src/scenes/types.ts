@@ -149,11 +149,7 @@ export interface SceneSim {
 export type SimFactory = (gl: WebGL2RenderingContext) => SceneSim;
 
 export interface SceneDef {
-  /**
-   * URL and registry id: lowercase letters only. Links keep it: renaming or removing a scene retires
-   * the id with an alias to its successor, and a knob key that changes goes through a step of the
-   * URL schema (both in state.ts MIGRATIONS).
-   */
+  /** URL and registry id: lowercase letters only. */
   id: string;
   /** Lab card. */
   title: string;
@@ -208,9 +204,7 @@ export interface SceneDef {
    * The planets its night sky can hang among its stars (src/scenes/planets.ts, drawn by the sky's
    * skyGiant, which the scene calls): an open list, empty to start, under one URL key, edited in the
    * Night sky section of this group, placed on a pad over this stretch of its sky. The list is
-   * compiled in only while it holds a planet (the library gate SKY_PLANETS). A link from before the
-   * list whose one giant planet is on opens with that giant as its first planet (state.ts
-   * MIGRATIONS).
+   * compiled in only while it holds a planet (the library gate SKY_PLANETS).
    */
   planets?: SkyPlanets;
 }

@@ -1,5 +1,4 @@
 import { expect, test } from "bun:test";
-import type { Migration } from "./state.ts";
 import { readTour, TOUR_DWELL, TOUR_FRAME_CAP, TourPlayer, writeTour, type Tour } from "./tour.ts";
 
 const tour = (query: string): Tour => {
@@ -35,21 +34,6 @@ test("unknown and repeated scenes are dropped and dwells kept within bounds", ()
   expect(tour("tour=pond&dwell=3").dwell).toBe(TOUR_DWELL.min);
   expect(readTour(new URLSearchParams("tour=nowhere.."))).toBeUndefined();
   expect(readTour(new URLSearchParams("scene=pond"))).toBeUndefined();
-});
-
-test("a retired scene plays as its successor, whatever the link's version", () => {
-  // A made-up history: "fjord" merged into "tarn", which became "lake".
-  const history: readonly Migration[] = [
-    { kind: "alias", since: 2, from: "fjord", to: "tarn" },
-    { kind: "alias", since: 3, from: "tarn", to: "lake" },
-  ];
-  for (const version of ["", "v=1&", "v=3&"]) {
-    const read = readTour(new URLSearchParams(`${version}tour=fjord-40.pond.tarn.lake`), history);
-    // The successor once: its first step and dwell.
-    expect(read).toEqual({ steps: [{ scene: "lake", dwell: 40 }, { scene: "pond" }], dwell: 30 });
-  }
-  // This build retires no such scene: the step names nothing and is dropped.
-  expect(tour("tour=fjord.pond").steps).toEqual([{ scene: "pond" }]);
 });
 
 test("dwell runs on the scene clock's capped pace, so slow frames still give a scene its time", () => {

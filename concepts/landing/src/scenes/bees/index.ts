@@ -26,8 +26,7 @@ const params: readonly ParamDef[] = [
     "colony",
     48,
     "How many bees are about, each flying in the garden's space at its real size (a speck of a cell at the hives, a little bigger close to you): foragers leave the hives for the flowers in a nearly straight line, now and then passing close by, hop from flower to flower, and fly home loaded with pollen; some mill at the entrances, and young bees fly orientation loops in front of their hive. They go home at dusk and stay in through the night, and in rain or snow.",
-    // 32 and 64 stay offered: links made when they were the colony's sizes keep their bees.
-    { options: counts(16, 32, 48, 64, 96, 200) },
+    { options: counts(16, 48, 96, 200) },
   ),
   range(
     "life",

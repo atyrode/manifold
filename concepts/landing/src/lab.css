@@ -60,16 +60,6 @@ body.resizing {
   cursor: nwse-resize;
   user-select: none;
 }
-body.ui-hidden .lab,
-body.ui-hidden .lab-opener,
-body.ui-hidden .ab-badge {
-  display: none;
-}
-body.ui-hidden #stage {
-  inset: 0;
-  width: 100vw;
-  height: 100vh;
-}
 
 .lab-opener {
   position: fixed;

@@ -1,10 +1,7 @@
 // The lab's preferences in this browser: whether it is open, and in which presentation,
 // explanations on, a picked scene keeping the world, each group folded or open, each panel's place
 // and the narrow-screen sheet raised or not. Read defensively: anything missing or malformed falls
-// back, and what older layouts kept that this one has no use for is dropped (the Scenes panel's
-// place, `panels.browser`, from before it became a view of the one panel; the transport bar's,
-// `panels.transport`, from before the compact bar took its place; the sheet's tab, `sheet.tab`,
-// from when the sheet had a tab per panel).
+// back, and anything this layout has no use for (a panel it does not have) is dropped.
 import { panelIds, type SheetState } from "./panels.ts";
 
 export const PREFS_KEY = "landing.lab.v3";

@@ -1,13 +1,15 @@
 // What the lab's browser checks share (verify-browser.ts and the checks it registers): an assertion,
 // a program from a fragment source, read-backs into bytes and floats, a canvas for a renderer of its
 // own, the page's animation frames held for frames run by hand, real-time waits, a renderer's
-// settings as a check draws them, and the scene scope a run hands the checks that walk the scenes.
+// settings as a check draws them, the lake's fjord night several checks draw, and the scene scope a
+// run hands the checks that walk the scenes.
 import type { RenderSettings } from "../renderer.ts";
 import type { SceneId } from "../scenes/index.ts";
 import { vertexSource } from "../shaders/index.ts";
 import {
   defaultsFor,
   paramDefaults,
+  readParams,
   renderSettings,
   type LabState,
   type Params,
@@ -203,6 +205,17 @@ export function labSettings(
     { ...paramDefaults(scene), ...knobs },
   );
 }
+
+/**
+ * The lake's knobs for its fjord under the slow drapes: quiet (no substorms), at the deep of the
+ * night under its crescent, no Milky Way.
+ */
+export const LAKE_FJORD: Params = readParams(
+  "lake",
+  new URLSearchParams(
+    "setting=1&aurora-amount=0.7&drapes=1&substorm=0&hour=1&moon-amount=0.25&milkyWay=0",
+  ),
+);
 
 /** Set by verify.ts from LANDING_SCENES: the comma list of scenes a run is scoped to, or "" for all. */
 declare const LANDING_SCENES: string;

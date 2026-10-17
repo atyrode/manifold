@@ -136,8 +136,7 @@ class Tree {
   /** Every file the page loads to draw `scene`: the scene list leads only into its directory. */
   inputs(scene: string): ReadonlySet<string> {
     const seen = new Set<string>();
-    // The build worker's entry; trees before it had the sheet worker's.
-    const queue = ["index.html", "src/build-worker.ts", "src/sheet-worker.ts"];
+    const queue = ["index.html", "src/build-worker.ts"];
     for (let path = queue.shift(); path !== undefined; path = queue.shift()) {
       if (seen.has(path)) continue;
       seen.add(path);

@@ -74,9 +74,6 @@ body.poster #stage {
 [hidden] {
   display: none !important;
 }
-body.ui-hidden .overlay {
-  display: none;
-}
 
 /* nav */
 .nav {

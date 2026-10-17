@@ -87,7 +87,6 @@ export const MODE_LABEL: Record<(typeof modeIds)[number], string> = {
   landing: "Landing",
   loading: "Loading",
   instance: "Sign-in",
-  bare: "None",
 };
 const VIEW_LABEL: Record<(typeof viewIds)[number], string> = {
   dithered: "Dithered",

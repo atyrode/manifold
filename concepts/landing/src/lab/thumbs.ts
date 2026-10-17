@@ -1,6 +1,6 @@
 // The Scenes view's thumbnails: each scene at its defaults, rendered once by scripts/thumbs.ts and
-// committed under concepts/landing/thumbs/ (served beside the page). A scene without one (a build
-// from before them, a new scene) shows a stand-in: a small ordered-dither glow in its accent.
+// committed under concepts/landing/thumbs/ (served beside the page). A scene without one (a new
+// scene) shows a stand-in: a small ordered-dither glow in its accent.
 import type { SceneId } from "../scenes/index.ts";
 import type { FamilyId } from "./families.ts";
 
