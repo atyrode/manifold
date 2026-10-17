@@ -9,6 +9,9 @@
 // swing takes longer than the small one its thread was cut for: the row drifts off its schedule.
 // Knobs read here: K_count, K_cycle, K_swing, K_release, K_physics, K_camera, K_trail, K_material,
 // K_beam, K_lamp, K_mark.
+// Compile-time features (pendulaFeatures in index.ts): PENDULA_REAL compiles in real pendulums
+// (pendulumGlsl and its callers), PENDULA_TRAIL the trails and PENDULA_MARK the M; each keeps its
+// runtime test of its knob inside the gate.
 // Passage (PENDULA_PASSAGE): entrance, the bobs hang gathered under the beam, drop together on their
 // threads (a gentle stretch at the end) and the swing builds up in its wave; exit, the row is hoisted
 // back up to the beam in a ripple while the swing dies away. At rest it all reduces to nothing.
@@ -114,7 +117,9 @@ const cameraFit = glslPick(
 );
 
 export const pendulaGlsl = `
+#if PENDULA_REAL
 ${pendulumGlsl}
+#endif
 const float PENDULA_PIVOT = 1.7;       // height of the pivot line: the beam's underside
 const float PENDULA_SPAN = 2.6;        // the row's length
 const float PENDULA_LMAX = 1.42;       // the longest pendulum
@@ -220,6 +225,7 @@ float pendulaEnvelope(float f) {
   return mix(exp(-PENDULA_DECAY * f), 1.0, smoothstep(PENDULA_RELEASE - PENDULA_PUSH, PENDULA_RELEASE, f));
 }
 
+#if PENDULA_REAL
 // Real pendulums: the swings (in cycles of small swings) a bob released at a radians has made f
 // cycles into a release, its swing running down as the release does: the run-down in closed form,
 // the push by Simpson's rule.
@@ -230,6 +236,7 @@ float pendulaRealSwings(float a, float f) {
   return pendulumFadingSwings(a, PENDULA_DECAY, push) + (f - push) / 6.0 * (
     1.0 / pendulumStretch(a * pendulaEnvelope(push)) + 4.0 / pendulumStretch(a * pendulaEnvelope(m)) + 1.0 / pendulumStretch(a * pendulaEnvelope(f)));
 }
+#endif
 
 // Pendulum k (thread L) c cycles in (fc: the fraction), the longest one swinging to amp and the
 // release leaving env of it: x the angle it swings to, y its phase (swings since the row was let
@@ -238,26 +245,36 @@ float pendulaRealSwings(float a, float f) {
 // back as far as the longest, so the shorter ones swing wider, and each takes pendulumStretch longer
 // per swing than the small swing its thread was cut for.
 vec3 pendulaSwing(float k, float L, float c, float fc, float amp, float env) {
-  if (K_physics < 0.5) return vec3(amp * env, k * fc, k);
-  float a = asin(min(PENDULA_LMAX / L * sin(amp), 1.0));
-  if (K_release < 0.5) {
-    float stretch = pendulumStretch(a);
-    return vec3(a, k * c / stretch, k / stretch);
+#if PENDULA_REAL
+  if (K_physics >= 0.5) {
+    float a = asin(min(PENDULA_LMAX / L * sin(amp), 1.0));
+    if (K_release < 0.5) {
+      float stretch = pendulumStretch(a);
+      return vec3(a, k * c / stretch, k / stretch);
+    }
+    float r = c / PENDULA_RELEASE;
+    float swings = floor(r) * pendulaRealSwings(a, PENDULA_RELEASE) + pendulaRealSwings(a, fract(r) * PENDULA_RELEASE);
+    return vec3(a * env, k * swings, k / pendulumStretch(a * env));
   }
-  float r = c / PENDULA_RELEASE;
-  float swings = floor(r) * pendulaRealSwings(a, PENDULA_RELEASE) + pendulaRealSwings(a, fract(r) * PENDULA_RELEASE);
-  return vec3(a * env, k * swings, k / pendulumStretch(a * env));
+#endif
+  return vec3(amp * env, k * fc, k);
 }
 
+#if PENDULA_TRAIL
 // The phase of swing sw (pendulaSwing of pendulum k at fc) dc cycles earlier.
 float pendulaPhaseAgo(vec3 sw, float k, float fc, float dc) {
   return K_physics < 0.5 ? k * (fc - dc) : sw.y - sw.z * dc;
 }
+#endif
 
 // The bob of a pendulum hung from piv by a thread of length L, swinging to amp, at a phase (swings
 // since release; only the fraction counts): as a small swing (ideal) or a real pendulum swings.
 vec3 pendulaBobAt(vec3 piv, float L, float amp, float phase) {
+#if PENDULA_REAL
   float th = K_physics < 0.5 ? amp * cos(TAU * fract(phase)) : pendulumAngle(amp, phase);
+#else
+  float th = amp * cos(TAU * fract(phase));
+#endif
   return piv + vec3(0.0, -cos(th), sin(th)) * L;
 }
 
@@ -468,6 +485,7 @@ float pendulaRaySeg(vec3 ro, vec3 rd, vec3 a, vec3 b, out float rayT, out float 
   return length(q - rd * rayT);
 }
 
+#if PENDULA_TRAIL
 // A faint trail segment a..b, fading from fa at a to fb at b, cut per cell.
 float pendulaTrailSeg(vec3 ro, vec3 rd, vec3 a, vec3 b, float cellW, float depth, float fa, float fb) {
   float rt;
@@ -476,6 +494,7 @@ float pendulaTrailSeg(vec3 ro, vec3 rd, vec3 a, vec3 b, float cellW, float depth
   if (rt <= 0.0 || rt >= depth) return 0.0;
   return mix(fa, fb, s) * softFill(d / (rt * cellW) - 0.55, 0.8);
 }
+#endif
 
 Shade scenePendula(vec2 uv, vec2 cell, float t) {
   float aspect = uRes.x / uRes.y;
@@ -513,6 +532,7 @@ Shade scenePendula(vec2 uv, vec2 cell, float t) {
 
   // The Manifold M: a lamp projects it on the studio floor; it brightens as the row lines up.
   float accent = 0.0;
+#if PENDULA_MARK
   if (K_mark > 0.0) {
     float size = 0.1 + 0.2 * K_mark;
     vec2 mc = vec2(0.36 * aspect, 0.29);
@@ -524,6 +544,7 @@ Shade scenePendula(vec2 uv, vec2 cell, float t) {
     col = mix(col, col * 0.35 + PENDULA_GOLD * glow, cov) + PENDULA_GOLD * (0.05 * exp(-max(edge, 0.0) / 9.0));
     accent = cov * glow;
   }
+#endif
 
   // The frame.
   vec3 inv = 1.0 / (max(abs(rd), vec3(1.0e-5)) * vec3(rd.x < 0.0 ? -1.0 : 1.0, rd.y < 0.0 ? -1.0 : 1.0, rd.z < 0.0 ? -1.0 : 1.0));
@@ -565,6 +586,7 @@ Shade scenePendula(vec2 uv, vec2 cell, float t) {
     vec3 tint = pendulaBobTint(fi / max(cnt - 1.0, 1.0));
 
     // Where the bob has just been: three straight pieces along its arc.
+#if PENDULA_TRAIL
     if (K_trail > 0.0) {
       float dc = (0.12 + 0.5 * K_trail) / k / 3.0;
       vec3 q1 = pendulaBobAt(piv, Lp, ampP, pendulaPhaseAgo(sw, k, fc, dc));
@@ -581,6 +603,7 @@ Shade scenePendula(vec2 uv, vec2 cell, float t) {
         col = mix(col, tint * 0.85, hardEdge(tc));
       }
     }
+#endif
 
     // The V of thread: two strings from the beam to the bob's eye, so it swings in one plane.
     vec3 mid = 0.5 * (piv + eye);

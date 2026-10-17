@@ -15,12 +15,19 @@
 // fast ringing reads as shimmer.
 //
 // Energy: the projection pushes along each constraint as it stood at the start of the substep (as
-// SHAKE does, Ryckaert, Ciccotti, Berendsen 1977) rather than as the pass left it, which keeps the
-// scheme time-reversible: an undamped chain swings on with its energy instead of losing a share to
-// every projection, and `damping` is the damping you get. Prefer more substeps to more passes
-// ("small steps", Macklin, Storey, Lu et al. 2019): one pass at a short substep converges better
-// than several at a long one, for the same work. A compliant constraint still loses some of its
-// own ringing (XPBD's step is implicit in its spring), the more the faster it rings.
+// SHAKE does, Ryckaert, Ciccotti, Berendsen 1977) rather than as the pass left it, which makes it
+// time-reversible once the substep resolves the motion (at 1/3840 s a chain released level keeps
+// all its energy). At the scenes' substeps the scheme does not conserve energy: a chain's slowest
+// (pendulum) modes keep theirs at a short substep, but its faster modes and a compliant
+// constraint's ringing lose about ω²h/2 per second at substep h (XPBD is implicit Euler in each
+// spring), on top of `damping`, and halving the substep halves that loss.
+// Undamped, a ten-link chain pushed 15° keeps 69 % of its energy at 1/240 s and one pass, 93 % at
+// 1/480, 99 % at 1/240 and 24 passes, all lost in the first seconds as the faster modes die out;
+// dew's spiral (13.5 Hz at 1/480) rings out at some 8/s of the solver's own, against a `damping` of
+// 2.4. Many passes at a substep too long to resolve a fast swing can gain energy instead (a whip
+// released level at 1/240 and 100 passes). Prefer more substeps to more passes ("small steps",
+// Macklin, Storey, Lu et al. 2019): one pass at a short substep converges better than several at a
+// long one, for the same work.
 //
 // Time: `step(options, substeps)` runs whole substeps of the system's fixed `substep`; the caller
 // keeps time with a FixedStep (clock.ts) of that step, so the motion is the same at 60 and 144 Hz,
@@ -81,7 +88,8 @@ export interface VerletStepOptions {
   gravity: Vec3;
   /**
    * Share of velocity lost per second, as a rate: c makes speed fall to 1/e in 1/c seconds. The
-   * solver loses next to nothing of its own, so this is the damping a swing gets.
+   * solver adds its own: little on a slow swing at a short substep, about ω²h/2 per second on
+   * ringing at ω rad/s (see the header), so fast ringing dies out faster than this alone gives.
    */
   damping: number;
   /**
@@ -795,8 +803,8 @@ export class VerletSystem {
   /**
    * XPBD over every constraint, `iterations` passes. Each pushes along the constraint as it stood at
    * the substep's start (the previous positions, SHAKE's choice), which keeps the step
-   * time-reversible: a swing keeps its energy. A link turned more than 60° within one substep pushes
-   * along where it is now instead.
+   * time-reversible where the substep resolves the motion (see the header for the energy it still
+   * loses). A link turned more than 60° within one substep pushes along where it is now instead.
    */
   #solve(iterations: number, h: number): void {
     const pos = this.#pos;

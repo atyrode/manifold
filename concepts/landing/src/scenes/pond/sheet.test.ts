@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
-import type { CanopyConfig } from "./decor.ts";
+import { type BuildMessage, type BuildReply, BuildWorker } from "../../sims/build.ts";
+import type { CanopyConfig } from "./atlas.ts";
 import { SheetPainter, type SheetJob, type SheetRequest } from "./sheet.ts";
-import { type BuildMessage, type BuildReply, BuildWorker } from "./sims/build.ts";
 
 // The real SheetPainter on the real build slot, against a stand-in worker and GL context: what is
 // posted to the worker is the painting done, and what reaches texImage2D is the sheet the pond

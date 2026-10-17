@@ -6,9 +6,9 @@
 // and the gusts live in sim.ts; shader.ts paints the park around them, and layout.ts holds the
 // geometry the two share.
 import { choice, feature, range, seed, type ParamDef } from "../../params.ts";
-import { CLOUD_TIERS } from "../../shaders/lib/clouds.ts";
 import { atmosphereGroups, skyKnobs, skyTheme, weatherKnobs } from "../atmosphere.ts";
 import type { SceneDef } from "../types.ts";
+import { worldGates } from "../world.ts";
 import { AUTUMN_PASSAGE } from "./layout.ts";
 import { AUTUMN_METEOR_TRIGGER, autumnGlsl } from "./shader.ts";
 import { autumnSim } from "./sim.ts";
@@ -125,6 +125,7 @@ export const autumnScene: SceneDef = {
   // the swaying boughs. Exit: a stronger gust whirls the leaves up across the frame as the camera tilts
   // up into the canopy.
   passage: AUTUMN_PASSAGE,
-  // The moon takes a phase (K_moon) in the shared sky; the clouds' shadows are the shared deck's.
-  features: { SKY_MOON_PHASE: 1, CLOUD_TIER: CLOUD_TIERS.shadows },
+  // The world's sky, every part its knobs can show compiled in: the moon's phase (K_moon), the cloud
+  // deck and its shadows (CLOUD_TIER at shadows), the stars, the aurora and shooting stars, the rain.
+  features: worldGates(params),
 };

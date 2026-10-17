@@ -8,8 +8,21 @@ import { birdKnobs, birdsGroup } from "../../shaders/lib/birds.ts";
 import { atmosphereGroups, skyKnobs, weatherKnobs } from "../atmosphere.ts";
 import { plantKnobs } from "../plants.ts";
 import type { SceneDef } from "../types.ts";
+import { worldGates } from "../world.ts";
 import { FALLS_METEOR_TRIGGER, FALLS_PASSAGE, fallsGlsl } from "./shader.ts";
 import { fallsSim } from "./sim.ts";
+
+// The sky's and the weather's knobs over the gorge: the world's sky draws every part they can show.
+const skyAndWeather = [
+  ...skyKnobs({
+    time: 0.55,
+    stars: 0.45,
+    moon: 1,
+    meteors: { trigger: FALLS_METEOR_TRIGGER },
+    constellations: true,
+  }),
+  ...weatherKnobs({ rain: true, fog: true, wind: true, aurora: true }),
+];
 
 export const fallsScene: SceneDef = {
   id: "falls",
@@ -74,14 +87,7 @@ export const fallsScene: SceneDef = {
       kind: "swifts",
       help: "Birds crossing the gorge by day, swifts by default, sailing past the cliff and now and then swooping low over the pool; the rock, the trees on the rim and the spray hide them, and few fly in the rain.",
     }),
-    ...skyKnobs({
-      time: 0.55,
-      stars: 0.45,
-      moon: 1,
-      meteors: { trigger: FALLS_METEOR_TRIGGER },
-      constellations: true,
-    }),
-    ...weatherKnobs({ rain: true, fog: true, wind: true, aurora: true }),
+    ...skyAndWeather,
     feature(
       "manifold",
       "mark",
@@ -100,6 +106,10 @@ export const fallsScene: SceneDef = {
       gusts: { trigger: 1, group: "weather" },
     }),
   ],
+  // In the sky's frame, which the view faces half turned from (fallsWorld: straight ahead is
+  // 180): the strip over the rim, 40 degrees to either side, from the treetops (about 21 degrees up
+  // at the frame's sides, 27 in its middle) to the frame's top (32).
+  planets: { group: "sky", across: [140, 166, 220], up: [20, 29, 33] },
   groups: {
     falls: {
       title: "Waterfall",
@@ -128,7 +138,9 @@ export const fallsScene: SceneDef = {
   // the bank and the spray rises, the rainbow forming in it; on the way out it tilts back up the
   // fall into a surge of spray.
   passage: FALLS_PASSAGE,
-  // The moon takes a phase (K_moon) in the shared sky.
-  features: { SKY_MOON_PHASE: 1 },
+  // The world's sky, every part its sky and weather knobs can show compiled in: the moon's phase
+  // (K_moon), the cloud deck, the stars, the aurora and shooting stars, the rain. The birds are the
+  // gorge's own.
+  features: worldGates(skyAndWeather),
   sim: (gl) => fallsSim(gl, fallsScene.params),
 };

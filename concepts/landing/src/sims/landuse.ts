@@ -50,10 +50,12 @@
 // pine where its pine rank (high, steep, north-facing ground, jittered) over every parcel woodland
 // may take is under the pine mix, so the woods' species stand fast as the woods grow.
 //
-// Cost (size 512, ~800 parcels; a laptop's V8): the model ~45 ms once per terrain; allocate ~0.05
-// ms; packLand a few ms (the woods' canopy texel by texel), repackLand only the parcels a new
-// allocation moves (landTexels, once per terrain, lists each parcel's texels). Deterministic for the
-// terrain, the seed and the options; LandModel's arrays hand over to the page as `data` (a worker).
+// Cost (size 512, ~800 parcels; a laptop's V8): the model ~45 ms once per terrain, most of it its
+// ground (landGround: the weights and ranks), which the next terrain of the same land and river
+// keeps (TerrainBuilder.riverKey); allocate ~0.05 ms; packLand a few ms (the woods' canopy texel by
+// texel), repackLand only the parcels a new allocation moves (landTexels, once per terrain, lists
+// each parcel's texels). Deterministic for the terrain, the seed and the options; LandModel's
+// arrays hand over to the page as `data` (a worker).
 import type { Terrain, TerrainPacked } from "./terrain.ts";
 import { TERRAIN_RECORDS } from "./terrain.ts";
 import { clamp, hash31, hypot2, smoothstep } from "./math.ts";
@@ -155,6 +157,192 @@ export interface LandModelData {
   readonly pine: Float32Array;
 }
 
+/** One use's ranking (LandGround): the parcels it may take by weight, lightest first. */
+interface LandRanking {
+  readonly taken: readonly number[];
+  /** Each one's weight but for its lean toward the roads, and its rank by ground there. */
+  readonly knots: Float64Array;
+  readonly ranks: Float64Array;
+}
+
+/**
+ * A terrain's parcels weighed on their ground alone, for a seed: the half of the land model no
+ * settlement, road or track switched moves (see the header). The same for every terrain of one
+ * TerrainBuilder.riverKey, so a build keeping its land and river (sims/terrain.ts) may keep this.
+ */
+export interface LandGround {
+  readonly count: number;
+  /** Per parcel: its dry texels on the bare land. */
+  readonly texels: Int32Array;
+  /** Per use (LAND_SHARED order). */
+  readonly ranked: readonly LandRanking[];
+  readonly crop: Uint8Array;
+  readonly cattle: Float32Array;
+  /** Per parcel: its pine rank among the parcels woodland may take (1 none). */
+  readonly pine: Float32Array;
+}
+
+/** Weigh a terrain's parcels on their ground for `seed` (LandGround). */
+export function landGround(terrain: Terrain, seed: number): LandGround {
+  const t = terrain;
+  const p = t.parcels;
+  const count = p.count;
+  const m = t.size;
+  const crop = new Uint8Array(count);
+  const cattle = new Float32Array(count);
+  const pine = new Float32Array(count);
+  // Per parcel over its cell on the bare land (TerrainBare), dry there: slope, height, the slope
+  // toward the sun and the nearest stream.
+  const bare = t.bare;
+  let bottom = Infinity;
+  let top = -Infinity;
+  for (let q = 0; q < m * m; q++) {
+    bottom = Math.min(bottom, bare.ground[q] ?? 0);
+    top = Math.max(top, bare.ground[q] ?? 0);
+  }
+  const span = Math.max(1, top - bottom);
+  const slope = new Float64Array(count);
+  const high = new Float64Array(count);
+  const north = new Float64Array(count);
+  const stream = new Float64Array(count).fill(64);
+  const texels = new Int32Array(count);
+  for (let j = 0; j < m; j++) {
+    for (let i = 0; i < m; i++) {
+      const q = j * m + i;
+      const cell = bare.ids[q] ?? 0;
+      if (cell === 0) continue;
+      const s = cell - 1;
+      const g = bare.ground[q] ?? 0;
+      if ((bare.level[q] ?? 0) > g - 0.3) continue;
+      const gx =
+        ((bare.ground[j * m + Math.min(m - 1, i + 1)] ?? 0) -
+          (bare.ground[j * m + Math.max(0, i - 1)] ?? 0)) /
+        (2 * t.cell);
+      const gz =
+        ((bare.ground[Math.min(m - 1, j + 1) * m + i] ?? 0) -
+          (bare.ground[Math.max(0, j - 1) * m + i] ?? 0)) /
+        (2 * t.cell);
+      texels[s] = (texels[s] ?? 0) + 1;
+      slope[s] = (slope[s] ?? 0) + hypot2(gx, gz);
+      high[s] = (high[s] ?? 0) + (g - bottom) / span;
+      // Rising to the north: the slope faces south, toward the sun.
+      north[s] = (north[s] ?? 0) + gz;
+      stream[s] = Math.min(stream[s] ?? 64, t.stream[q] ?? 64);
+    }
+  }
+  const river = t.river;
+  const homes = t.candidates.filter((place) => place.kind !== "castle");
+  const v = t.vantage;
+  // Each use's weight but for its lean toward the roads (ROAD_LEAN · access).
+  const weights = new Float64Array(count * USES);
+  const eligible = new Uint8Array(count * USES);
+  for (let s = 0; s < count; s++) {
+    const n = texels[s] ?? 0;
+    if (n === 0) continue;
+    const x = p.x[s] ?? 0;
+    const z = p.z[s] ?? 0;
+    const grade = (slope[s] ?? 0) / n;
+    const height = (high[s] ?? 0) / n;
+    const sunny = 0.5 + 0.5 * clamp((north[s] ?? 0) / n / 0.12, -1, 1);
+    const wet = 1 - smoothstep(0, 40, stream[s] ?? 64);
+    const plain = p.floodplain[s] ?? 0;
+    let toRiver = Infinity;
+    for (let k = 0; k < river.x.length; k += 4)
+      toRiver = Math.min(toRiver, hypot2((river.x[k] ?? 0) - x, (river.z[k] ?? 0) - z));
+    const riverside = 1 - smoothstep(60, 500, toRiver);
+    let toHome = Infinity;
+    for (const place of homes) toHome = Math.min(toHome, hypot2(place.x - x, place.z - z));
+    const near = 1 - smoothstep(150, 900, toHome);
+    const flat = 1 - smoothstep(0.04, 0.22, grade);
+    const gentle = 1 - smoothstep(0.15, 0.4, grade);
+    const wood = p.wood[s] ?? 0;
+    const w = s * USES;
+    // crops: flat, low, near the roads (ROAD_LEAN) and settlements, off the floodplain
+    weights[w] = 0.45 * flat + 0.2 * (1 - height) + 0.2 * near - 0.25 * plain;
+    // wildflowers: moderate slopes, wet hollows, away from the roads (ROAD_LEAN), up the hills
+    weights[w + 1] = 0.3 * smoothstep(0.06, 0.2, grade) * gentle + 0.3 * wet + 0.25 + 0.15 * height;
+    // lavender: sunny, dry, well-drained slopes
+    weights[w + 2] = 0.45 * sunny + 0.25 * (1 - riverside) + 0.3 * smoothstep(0.04, 0.15, grade);
+    // sunflowers: flat, sunny, low
+    weights[w + 3] = 0.4 * flat + 0.4 * sunny + 0.2 * (1 - height);
+    // pasture: by the river and the streams, on ground too wet or rolling to plough
+    weights[w + 4] = 0.35 * riverside + 0.25 * wet + 0.2 * gentle + 0.2 * plain;
+    // woodland: steep, high, poor ground (terrain.ts's woods), away from the settlements
+    weights[w + 5] = 0.8 * wood + 0.2 * (1 - near);
+    // Its draws come from hashes of its site's place, never its index among the sites, so no
+    // site added or dropped elsewhere (the river's size drops those in its water) re-rolls it.
+    const ix = Math.round(x * 8);
+    const iz = Math.round(z * 8);
+    for (let u = 0; u < USES; u++) {
+      const jitter = hash31(ix, iz, seed * 7919 + 17 + u);
+      weights[w + u] = (weights[w + u] ?? 0) + (JITTER[u] ?? 0) * jitter;
+      eligible[w + u] = 1;
+    }
+    if (hypot2(x - v.x, z - v.z) < LAND_OPEN_NEAR) eligible[w + WOODLAND - 1] = 0;
+    // The crops' kind: hay and grazing on the floodplain and the steep ground, the arable
+    // rotation elsewhere.
+    const roll = hash31(ix, iz, seed * 7919 + 23);
+    const kind = plain
+      ? roll < 0.6
+        ? 3
+        : 2
+      : grade > 0.3
+        ? roll < 0.75
+          ? 2
+          : 3
+        : roll < 0.3
+          ? 0
+          : roll < 0.45
+            ? 1
+            : roll < 0.67
+              ? 2
+              : roll < 0.78
+                ? 3
+                : roll < 0.9
+                  ? 4
+                  : 5;
+    crop[s] = kind;
+    cattle[s] =
+      0.4 * riverside + 0.3 * flat + 0.3 * (1 - height) + 0.3 * hash31(ix, iz, seed * 7919 + 29);
+    pine[s] =
+      0.35 * height +
+      0.25 * smoothstep(0.1, 0.4, grade) +
+      0.2 * (1 - sunny) +
+      0.4 * hash31(ix, iz, seed * 7919 + 31);
+  }
+  // Each use's weights ranked among the parcels it may take, each weighted by its dry ground on the
+  // bare land.
+  const order = Array.from({ length: count }, (_, s) => s);
+  const ranked = LAND_SHARED.map((_, u): LandRanking => {
+    const taken = order.filter((s) => eligible[s * USES + u] === 1);
+    taken.sort((a, b) => (weights[a * USES + u] ?? 0) - (weights[b * USES + u] ?? 0) || a - b);
+    let whole = 0;
+    for (const s of taken) whole += texels[s] ?? 0;
+    const knots = new Float64Array(taken.length);
+    const ranks = new Float64Array(taken.length);
+    let below = 0;
+    taken.forEach((s, k) => {
+      const a = texels[s] ?? 0;
+      knots[k] = weights[s * USES + u] ?? 0;
+      ranks[k] = (below + 0.5 * a) / whole;
+      below += a;
+    });
+    return { taken, knots, ranks };
+  });
+  // Pine ranks over the parcels woodland may take.
+  const woods = order.filter((s) => eligible[s * USES + WOODLAND - 1] === 1);
+  woods.sort((a, b) => (pine[b] ?? 0) - (pine[a] ?? 0) || a - b);
+  let wholeWood = 0;
+  for (const s of woods) wholeWood += texels[s] ?? 0;
+  let pineBelow = 0;
+  const pineRank = new Float32Array(count).fill(1);
+  for (const s of woods) {
+    pineRank[s] = (pineBelow + 0.5 * (texels[s] ?? 0)) / Math.max(wholeWood, 1);
+    pineBelow += texels[s] ?? 0;
+  }
+  return { count, texels, ranked, crop, cattle, pine: pineRank };
+}
+
 /** The land model of one terrain: each parcel's suitability for each use, ready to allocate. */
 export class LandModel {
   /** Parcels (TerrainParcels.count). */
@@ -169,11 +357,17 @@ export class LandModel {
   /** Per parcel: its pine rank among the parcels woodland may take, 0 the most pine-like. */
   readonly #pine: Float32Array;
 
-  /** Weigh every parcel of a terrain (see the header), or take a model weighed already (`data`). */
-  constructor(terrain: Terrain, seed: number);
+  /**
+   * Weigh every parcel of a terrain (see the header), its ground weighed afresh for a seed or as
+   * weighed already for its land and river (landGround); or take a model weighed already (`data`).
+   */
+  constructor(terrain: Terrain, ground: number | LandGround);
   constructor(data: LandModelData);
-  constructor(source: Terrain | LandModelData, seed = 0) {
-    const data = "parcels" in source ? LandModel.#weigh(source, seed) : source;
+  constructor(source: Terrain | LandModelData, ground: number | LandGround = 0) {
+    const data =
+      "parcels" in source
+        ? LandModel.#weigh(source, typeof ground === "number" ? landGround(source, ground) : ground)
+        : source;
     this.count = data.count;
     this.area = data.area;
     this.#score = data.score;
@@ -194,171 +388,44 @@ export class LandModel {
     };
   }
 
-  static #weigh(terrain: Terrain, seed: number): LandModelData {
+  /** The terrain's parcels on their ground and on what its build laid (clear ground, roads). */
+  static #weigh(terrain: Terrain, ground: LandGround): LandModelData {
     const t = terrain;
     const p = t.parcels;
-    const count = p.count;
+    const count = ground.count;
     const m = t.size;
     const cell2 = t.cell * t.cell;
     const area = new Float32Array(count);
     const score = new Float32Array(count * USES);
-    const crop = new Uint8Array(count);
-    const cattle = new Float32Array(count);
-    const pine = new Float32Array(count);
-    // Per parcel over its cell on the bare land (TerrainBare), dry there: slope, height, the slope
-    // toward the sun, the nearest stream, and how far the roads as laid are. Its clear ground as
-    // drawn (its own texels, dry, off the roads and yards) is only what its use's area counts.
+    // Its clear ground as drawn (its own texels, dry, off the roads and yards), all its use's area
+    // counts; and how far the roads as laid are over its dry cell on the bare land (its access),
+    // all its weights lean by.
     const bare = t.bare;
-    let bottom = Infinity;
-    let top = -Infinity;
-    for (let q = 0; q < m * m; q++) {
-      bottom = Math.min(bottom, bare.ground[q] ?? 0);
-      top = Math.max(top, bare.ground[q] ?? 0);
-    }
-    const span = Math.max(1, top - bottom);
-    const slope = new Float64Array(count);
-    const high = new Float64Array(count);
-    const north = new Float64Array(count);
     const road = new Float64Array(count);
-    const stream = new Float64Array(count).fill(64);
-    const texels = new Int32Array(count);
     const clear = new Int32Array(count);
-    for (let j = 0; j < m; j++) {
-      for (let i = 0; i < m; i++) {
-        const q = j * m + i;
-        const id = p.ids[2 * q] ?? 0;
-        if (
-          id > 0 &&
-          (t.level[q] ?? 0) <= (t.ground[q] ?? 0) - 0.3 &&
-          (t.road[q] ?? 64) >= 0 &&
-          (t.yard[q] ?? 0) <= 0.3
-        )
-          clear[id - 1] = (clear[id - 1] ?? 0) + 1;
-        const cell = bare.ids[q] ?? 0;
-        if (cell === 0) continue;
-        const s = cell - 1;
-        const g = bare.ground[q] ?? 0;
-        if ((bare.level[q] ?? 0) > g - 0.3) continue;
-        const gx =
-          ((bare.ground[j * m + Math.min(m - 1, i + 1)] ?? 0) -
-            (bare.ground[j * m + Math.max(0, i - 1)] ?? 0)) /
-          (2 * t.cell);
-        const gz =
-          ((bare.ground[Math.min(m - 1, j + 1) * m + i] ?? 0) -
-            (bare.ground[Math.max(0, j - 1) * m + i] ?? 0)) /
-          (2 * t.cell);
-        texels[s] = (texels[s] ?? 0) + 1;
-        slope[s] = (slope[s] ?? 0) + hypot2(gx, gz);
-        high[s] = (high[s] ?? 0) + (g - bottom) / span;
-        // Rising to the north: the slope faces south, toward the sun.
-        north[s] = (north[s] ?? 0) + gz;
-        road[s] = (road[s] ?? 0) + clamp(t.road[q] ?? 64, 0, 64);
-        stream[s] = Math.min(stream[s] ?? 64, t.stream[q] ?? 64);
-      }
+    for (let q = 0; q < m * m; q++) {
+      const id = p.ids[2 * q] ?? 0;
+      if (
+        id > 0 &&
+        (t.level[q] ?? 0) <= (t.ground[q] ?? 0) - 0.3 &&
+        (t.road[q] ?? 64) >= 0 &&
+        (t.yard[q] ?? 0) <= 0.3
+      )
+        clear[id - 1] = (clear[id - 1] ?? 0) + 1;
+      const cell = bare.ids[q] ?? 0;
+      if (cell === 0 || (bare.level[q] ?? 0) > (bare.ground[q] ?? 0) - 0.3) continue;
+      road[cell - 1] = (road[cell - 1] ?? 0) + clamp(t.road[q] ?? 64, 0, 64);
     }
-    const river = t.river;
-    const homes = t.candidates.filter((place) => place.kind !== "castle");
-    const v = t.vantage;
-    // Each use's weight but for its lean toward the roads (ROAD_LEAN · access), and that access.
-    const weights = new Float64Array(count * USES);
     const access = new Float64Array(count);
-    const eligible = new Uint8Array(count * USES);
     for (let s = 0; s < count; s++) {
       area[s] = (clear[s] ?? 0) * cell2;
-      const n = texels[s] ?? 0;
-      if (n === 0) continue;
-      const x = p.x[s] ?? 0;
-      const z = p.z[s] ?? 0;
-      const grade = (slope[s] ?? 0) / n;
-      const height = (high[s] ?? 0) / n;
-      const sunny = 0.5 + 0.5 * clamp((north[s] ?? 0) / n / 0.12, -1, 1);
-      access[s] = 1 - (road[s] ?? 0) / n / 64;
-      const wet = 1 - smoothstep(0, 40, stream[s] ?? 64);
-      const plain = p.floodplain[s] ?? 0;
-      let toRiver = Infinity;
-      for (let k = 0; k < river.x.length; k += 4)
-        toRiver = Math.min(toRiver, hypot2((river.x[k] ?? 0) - x, (river.z[k] ?? 0) - z));
-      const riverside = 1 - smoothstep(60, 500, toRiver);
-      let toHome = Infinity;
-      for (const place of homes) toHome = Math.min(toHome, hypot2(place.x - x, place.z - z));
-      const near = 1 - smoothstep(150, 900, toHome);
-      const flat = 1 - smoothstep(0.04, 0.22, grade);
-      const gentle = 1 - smoothstep(0.15, 0.4, grade);
-      const wood = p.wood[s] ?? 0;
-      const w = s * USES;
-      // crops: flat, low, near the roads (ROAD_LEAN) and settlements, off the floodplain
-      weights[w] = 0.45 * flat + 0.2 * (1 - height) + 0.2 * near - 0.25 * plain;
-      // wildflowers: moderate slopes, wet hollows, away from the roads (ROAD_LEAN), up the hills
-      weights[w + 1] =
-        0.3 * smoothstep(0.06, 0.2, grade) * gentle + 0.3 * wet + 0.25 + 0.15 * height;
-      // lavender: sunny, dry, well-drained slopes
-      weights[w + 2] = 0.45 * sunny + 0.25 * (1 - riverside) + 0.3 * smoothstep(0.04, 0.15, grade);
-      // sunflowers: flat, sunny, low
-      weights[w + 3] = 0.4 * flat + 0.4 * sunny + 0.2 * (1 - height);
-      // pasture: by the river and the streams, on ground too wet or rolling to plough
-      weights[w + 4] = 0.35 * riverside + 0.25 * wet + 0.2 * gentle + 0.2 * plain;
-      // woodland: steep, high, poor ground (terrain.ts's woods), away from the settlements
-      weights[w + 5] = 0.8 * wood + 0.2 * (1 - near);
-      // Its draws come from hashes of its site's place, never its index among the sites, so no
-      // site added or dropped elsewhere (the river's size drops those in its water) re-rolls it.
-      const ix = Math.round(x * 8);
-      const iz = Math.round(z * 8);
-      for (let u = 0; u < USES; u++) {
-        const jitter = hash31(ix, iz, seed * 7919 + 17 + u);
-        weights[w + u] = (weights[w + u] ?? 0) + (JITTER[u] ?? 0) * jitter;
-        eligible[w + u] = 1;
-      }
-      if (hypot2(x - v.x, z - v.z) < LAND_OPEN_NEAR) eligible[w + WOODLAND - 1] = 0;
-      // The crops' kind: hay and grazing on the floodplain and the steep ground, the arable
-      // rotation elsewhere.
-      const roll = hash31(ix, iz, seed * 7919 + 23);
-      const kind = plain
-        ? roll < 0.6
-          ? 3
-          : 2
-        : grade > 0.3
-          ? roll < 0.75
-            ? 2
-            : 3
-          : roll < 0.3
-            ? 0
-            : roll < 0.45
-              ? 1
-              : roll < 0.67
-                ? 2
-                : roll < 0.78
-                  ? 3
-                  : roll < 0.9
-                    ? 4
-                    : 5;
-      crop[s] = kind;
-      cattle[s] =
-        0.4 * riverside + 0.3 * flat + 0.3 * (1 - height) + 0.3 * hash31(ix, iz, seed * 7919 + 29);
-      pine[s] =
-        0.35 * height +
-        0.25 * smoothstep(0.1, 0.4, grade) +
-        0.2 * (1 - sunny) +
-        0.4 * hash31(ix, iz, seed * 7919 + 31);
+      const n = ground.texels[s] ?? 0;
+      if (n > 0) access[s] = 1 - (road[s] ?? 0) / n / 64;
     }
-    // Each use's weights into scores by rank among the parcels it may take, each weighted by its
-    // dry ground on the bare land, through the Gumbel quantile. A parcel the roads reach leans off
-    // its own rank by ROAD_LEAN · access, read off the same ranking between the two weights about
-    // it, so the ranking itself never moves with the roads.
-    const order = Array.from({ length: count }, (_, s) => s);
-    for (let u = 0; u < USES; u++) {
-      const taken = order.filter((s) => eligible[s * USES + u] === 1);
-      taken.sort((a, b) => (weights[a * USES + u] ?? 0) - (weights[b * USES + u] ?? 0) || a - b);
-      let whole = 0;
-      for (const s of taken) whole += texels[s] ?? 0;
-      const knots = new Float64Array(taken.length);
-      const ranks = new Float64Array(taken.length);
-      let below = 0;
-      taken.forEach((s, k) => {
-        const a = texels[s] ?? 0;
-        knots[k] = weights[s * USES + u] ?? 0;
-        ranks[k] = (below + 0.5 * a) / whole;
-        below += a;
-      });
+    // Each use's weights into scores by rank, through the Gumbel quantile. A parcel the roads reach
+    // leans off its own rank by ROAD_LEAN · access, read off the same ranking between the two
+    // weights about it, so the ranking itself never moves with the roads.
+    ground.ranked.forEach(({ taken, knots, ranks }, u) => {
       // The rank a weight would take: interpolated between the knots about it, held at the ends.
       const rankAt = (weight: number): number => {
         let lo = 0;
@@ -381,20 +448,16 @@ export class LandModel {
         const rank = lean === 0 ? (ranks[k] ?? 0) : rankAt((knots[k] ?? 0) + lean);
         score[s * USES + u] = gumbel(rank);
       });
-    }
-    // Pine ranks over the parcels woodland may take.
-    const woods = order.filter((s) => Number.isFinite(score[s * USES + WOODLAND - 1] ?? 0));
-    woods.sort((a, b) => (pine[b] ?? 0) - (pine[a] ?? 0) || a - b);
-    let wholeWood = 0;
-    for (const s of woods) wholeWood += texels[s] ?? 0;
-    let pineBelow = 0;
-    const pineRank = new Float32Array(count).fill(1);
-    for (const s of woods) {
-      pineRank[s] = (pineBelow + 0.5 * (texels[s] ?? 0)) / Math.max(wholeWood, 1);
-      pineBelow += texels[s] ?? 0;
-    }
-    pine.set(pineRank);
-    return { count, area, score, crop, cattle, pine };
+    });
+    // Copies: the ground is kept for the next build, the model's arrays go to the page.
+    return {
+      count,
+      area,
+      score,
+      crop: ground.crop.slice(),
+      cattle: ground.cattle.slice(),
+      pine: ground.pine.slice(),
+    };
   }
 
   /** Every parcel's use and attribute for these options (see the header). */

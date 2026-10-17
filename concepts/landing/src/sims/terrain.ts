@@ -78,8 +78,10 @@
 // ~5–25 ms (every route planned, whatever is laid), parcels ~150 ms in three units (the bare cells
 // with them), pack ~15 ms; ~1 s in all. Nothing allocates per texel.
 // A build given an earlier one reuses what its options leave as they were: the eroded relief when
-// only the river or the settlements change, the carved river and streams too when only the
-// settlements and roads do.
+// only the river or the settlements change; the carved river and streams too when only the
+// settlements and roads do (the same riverKey), and with them what the later stages make of that
+// land and river alone: the settlements' sites, the woods' patches, the parcel sites and the
+// parcels by the bare metric, so such a build searches the parcels again only where roads turn them.
 //
 // Usage (a sim building it over a few frames, keeping the last map on screen meanwhile):
 //   const builder = new TerrainBuilder({ seed, relief, erosion, river, village }, previous);
@@ -92,7 +94,7 @@
 import { type HeightMarch, marchHeight, type RayHit } from "./heightray.ts";
 import { HeightField } from "./heightfield.ts";
 import { splitHalf } from "./half.ts";
-import { clamp, hash31, hypot2, hypot3, lerp, smoothstep } from "./math.ts";
+import { atan2, clamp, hash31, hypot2, hypot3, lerp, smoothstep } from "./math.ts";
 import { fbm, valueNoise } from "./noise.ts";
 import { Random } from "./random.ts";
 import { LevelHeap, stillWater } from "./shallow.ts";
@@ -848,7 +850,13 @@ interface Course {
   widest: Float32Array;
 }
 
-/** The fine grid as the river and streams left it, which a later build keeping them starts from. */
+/**
+ * The fine grid as the river and streams left it, which a later build keeping them starts from;
+ * and what the later stages make of that land and river alone, kept as the first build to run them
+ * makes them, so a build changing only the settlements and roads skips that work: the settlements'
+ * sites (#settle), the woods' terms (#woods), the parcel sites (#parcelSites), and the parcels by the
+ * bare metric (#parcelIds). A build hands on copies of these, never the kept arrays.
+ */
 interface Carved {
   ground: Float32Array;
   level: Float32Array;
@@ -863,14 +871,42 @@ interface Carved {
   course: Course;
   width: (along: number) => number;
   reach: (along: number) => number;
+  /** Every settlement's site chosen, built or not, at its nominal radius. */
+  sites?: readonly TerrainSettlement[];
+  /** Per texel woodland's suitability but for the land's slope and height (#woods' `rest`). */
+  rest?: Float64Array;
+  darts?: CarvedSites;
+  /** Per texel its nearest two sites by the bare metric (as TerrainParcels.ids); per site its wood. */
+  bare?: { readonly ids: Uint16Array; readonly wood: Float32Array };
+}
+
+/** The parcel sites on the land as the river left it, each at its bare heading (#parcelSites). */
+interface CarvedSites {
+  readonly count: number;
+  readonly x: Float32Array;
+  readonly z: Float32Array;
+  /** Its texel. */
+  readonly texel: Int32Array;
+  readonly bareAngle: Float32Array;
+  readonly elongation: Float32Array;
+  readonly floodplain: Uint8Array;
+  readonly grid: SiteGrid;
+}
+
+/** Parcel sites by bucket, `bucket` metres a side, nb a row: each bucket's first, then the next. */
+interface SiteGrid {
+  readonly grid: Int32Array;
+  readonly nb: number;
+  readonly bucket: number;
+  readonly next: Int32Array;
 }
 
 /**
  * A terrain built in units (see the header): call unit(0) .. unit(units - 1) in order, a few a
  * frame (runBudgeted), then read `terrain`. A builder given an earlier one with the same seed, size,
  * extent, relief, erosion and vantage reuses its eroded relief and skips those units; with the same
- * river size too, it reuses the carved river and streams, and only lays out the settlements, roads
- * and parcels again.
+ * river size too (the same riverKey), it reuses the carved river and streams and what the later
+ * stages make of them alone (Carved), and only lays out the settlements, roads and parcels again.
  */
 export class TerrainBuilder {
   readonly units: number;
@@ -1009,7 +1045,7 @@ export class TerrainBuilder {
       this.#detailed.set(reuse.#detailed);
       this.#reused = true;
       const carved = reuse.#carved;
-      if (carved && reuse.#riverKey() === this.#riverKey()) {
+      if (carved && reuse.riverKey === this.riverKey) {
         this.#carved = carved;
         this.#watered = true;
       }
@@ -1069,8 +1105,14 @@ export class TerrainBuilder {
     return [o.seed, o.size, o.extent, o.relief, o.erosion, o.base, v.x, v.z, v.dx, v.dz].join(",");
   }
 
-  #riverKey(): string {
-    return `${this.#reliefKey()},${this.options.river}`;
+  /**
+   * The options the land and river are built from (the relief's, the eye's height and the river's
+   * size): builders of one key build the same bare land (Terrain.bare), river, settlements' sites
+   * (Terrain.candidates) and parcel sites whatever their settlements and roads, so what is weighed on
+   * those alone (landuse.ts landGround) holds for every build of the key.
+   */
+  get riverKey(): string {
+    return `${this.#reliefKey()},${this.options.vantage.eye},${this.options.river}`;
   }
 
   #mix(salt: number): number {
@@ -1743,7 +1785,37 @@ export class TerrainBuilder {
 
   // ---- settlements ----------------------------------------------------------------------------
 
+  /**
+   * The settlements as built from every site chosen (the land and river's: Carved.sites), each
+   * kind's first so many; and every site as a candidate.
+   */
   #settle(): void {
+    const carved = this.#carved;
+    if (!carved) throw new TerrainError("terrain: a stage was skipped");
+    const sites = (carved.sites ??= this.#sites());
+    const o = this.options;
+    let hamlets = 0;
+    let farms = 0;
+    this.#places.length = 0;
+    this.#candidates.length = 0;
+    for (const site of sites) {
+      const { kind, x, z, y, radius, bank } = site;
+      const built =
+        kind === "village"
+          ? o.village > 0
+          : kind === "castle"
+            ? o.castle
+            : kind === "hamlet"
+              ? hamlets++ < o.hamlets
+              : farms++ < o.farms;
+      // Copies: a built settlement's radius grows to its buildings, its site's stays nominal.
+      if (built) this.#places.push({ ...site });
+      this.#candidates.push({ kind, x, z, y, radius, bank });
+    }
+  }
+
+  /** Every settlement's site, chosen in a fixed order whether or not it is built (see the header). */
+  #sites(): TerrainSettlement[] {
     const o = this.options;
     const m = this.#m;
     const W = o.extent;
@@ -1866,7 +1938,7 @@ export class TerrainBuilder {
           flat: 1 - smoothstep(0.02, 0.12, slope),
           water: (toWater[j * k + i] ?? Infinity) * step * cellF,
           dist: hypot2(ax, az),
-          angle: Math.atan2(Math.abs(across), depth),
+          angle: atan2(Math.abs(across), depth),
           prominence: y - mean(fi, fj, reach),
           bank: this.#bank[Math.floor(fj / 2) * n + Math.floor(fi / 2)] ?? -1,
         });
@@ -1972,20 +2044,7 @@ export class TerrainBuilder {
         false,
       );
     }
-    let hamlets = 0;
-    let farms = 0;
-    const built = sites.filter((site) => {
-      if (site.kind === "village") return o.village > 0;
-      if (site.kind === "castle") return o.castle;
-      if (site.kind === "hamlet") return hamlets++ < o.hamlets;
-      return farms++ < o.farms;
-    });
-    this.#places.length = 0;
-    this.#places.push(...built);
-    // Copies: a built settlement's radius grows to its buildings, its site's stays nominal.
-    this.#candidates.length = 0;
-    for (const { kind, x, z, y, radius, bank } of sites)
-      this.#candidates.push({ kind, x, z, y, radius, bank });
+    return sites;
   }
 
   /** The eye: above the vantage's ground (as it stands now). */
@@ -2029,7 +2088,7 @@ export class TerrainBuilder {
       ] as const) {
         const depth = (x - v.x) * v.dx + (z - v.z) * v.dz;
         const across = (x - v.x) * v.dz - (z - v.z) * v.dx;
-        if (Math.abs(Math.atan2(across, depth)) > 0.5) continue;
+        if (Math.abs(atan2(across, depth)) > 0.5) continue;
         let near = false;
         for (let c = 0; c < course.x.length && !near; c++) {
           const dx = (course.x[c] ?? 0) - x;
@@ -2613,7 +2672,7 @@ export class TerrainBuilder {
         const sd = d - half;
         if (sd < (this.#road[q] ?? FAR)) {
           this.#road[q] = sd;
-          this.#roadAngle[q] = Math.atan2(
+          this.#roadAngle[q] = atan2(
             (road.z[k + 1] ?? 0) - (road.z[k] ?? 0),
             (road.x[k + 1] ?? 0) - (road.x[k] ?? 0),
           );
@@ -2689,7 +2748,7 @@ export class TerrainBuilder {
       const end = road.from === index ? 0 : road.x.length - 1;
       const next =
         road.from === index ? Math.min(ahead, road.x.length - 1) : Math.max(0, end - ahead);
-      return Math.atan2(
+      return atan2(
         (road.z[next] ?? 0) - (road.z[end] ?? 0),
         (road.x[next] ?? 0) - (road.x[end] ?? 0),
       );
@@ -2760,7 +2819,7 @@ export class TerrainBuilder {
               continue;
             const ahead = clamp(at + 1, 0, count - 1);
             const behind = clamp(at - 1, 0, count - 1);
-            const heading = Math.atan2(
+            const heading = atan2(
               (road.z[ahead] ?? 0) - (road.z[behind] ?? 0),
               (road.x[ahead] ?? 0) - (road.x[behind] ?? 0),
             );
@@ -2845,8 +2904,7 @@ export class TerrainBuilder {
     if (!carved) throw new TerrainError("terrain: a stage was skipped");
     const bare = carved.ground;
     const cellF = this.#cellF;
-    const seed = this.options.seed;
-    const v = this.options.vantage;
+    const terms = (carved.rest ??= this.#woodTerms());
     // Heights run from the land's own lowest to its highest, before any terrace or road is cut.
     let top = -Infinity;
     let bottom = Infinity;
@@ -2877,13 +2935,7 @@ export class TerrainBuilder {
         const w = j * m + Math.max(0, i - 1);
         const n = Math.min(m - 1, j + 1) * m + i;
         const s = Math.max(0, j - 1) * m + i;
-        const X = (i + 0.5) / m;
-        const Z = (j + 0.5) / m;
-        const patch = 2 * fbm(X * 9, Z * 9, seed + 11, 4) - 1;
-        // The vantage stands on open ground: the near slopes below it are farmland, not a wood's top.
-        const open =
-          1 - smoothstep(250, 550, hypot2((i + 0.5) * cellF - v.x, (j + 0.5) * cellF - v.z));
-        const rest = 0.55 * patch + 0.3 - 0.9 * open;
+        const rest = terms[q] ?? 0;
         // On the bare land, without the roads' cuts and the yards: what the land model weighs each
         // parcel for woodland by (TerrainParcels.wood).
         const natural = suit(bare, q, e, w, n, s, rest);
@@ -2901,13 +2953,63 @@ export class TerrainBuilder {
     }
   }
 
-  #parcelSites(): void {
+  /** Per texel woodland's suitability but for the slope and height: its patch, less open ground. */
+  #woodTerms(): Float64Array {
     const m = this.#m;
-    const W = this.options.extent;
-    // The land as the river and streams left it: no road or building the settings switch moves a
-    // site, turns it to the slope or drowns it.
+    const cellF = this.#cellF;
+    const seed = this.options.seed;
+    const v = this.options.vantage;
+    const terms = new Float64Array(m * m);
+    for (let j = 0; j < m; j++) {
+      for (let i = 0; i < m; i++) {
+        const X = (i + 0.5) / m;
+        const Z = (j + 0.5) / m;
+        const patch = 2 * fbm(X * 9, Z * 9, seed + 11, 4) - 1;
+        // The vantage stands on open ground: the near slopes below it are farmland, not a wood's top.
+        const open =
+          1 - smoothstep(250, 550, hypot2((i + 0.5) * cellF - v.x, (j + 0.5) * cellF - v.z));
+        terms[j * m + i] = 0.55 * patch + 0.3 - 0.9 * open;
+      }
+    }
+    return terms;
+  }
+
+  /** The parcel sites (the land and river's: Carved.darts), each turned along a road beside it. */
+  #parcelSites(): void {
     const carved = this.#carved;
     if (!carved) throw new TerrainError("terrain: a stage was skipped");
+    const darts = (carved.darts ??= this.#darts(carved));
+    const { count, texel, bareAngle } = darts;
+    const angle = new Float32Array(count);
+    for (let s = 0; s < count; s++) {
+      const q = texel[s] ?? 0;
+      const road = this.#roadAngle[q] ?? Number.NaN;
+      // Along a road beside it, else at its heading on the bare land.
+      const along = Number.isFinite(road) && (this.#road[q] ?? FAR) < ROAD_ALIGN - 10;
+      angle[s] = along ? road : (bareAngle[s] ?? 0);
+    }
+    this.#parcels = {
+      count,
+      x: darts.x.slice(),
+      z: darts.z.slice(),
+      angle,
+      elongation: darts.elongation.slice(),
+      floodplain: darts.floodplain.slice(),
+      wood: new Float32Array(count),
+      ids: this.#ids,
+      coreX: new Float32Array(count),
+      coreZ: new Float32Array(count),
+      coreRadius: new Float32Array(count),
+    };
+  }
+
+  /**
+   * The parcel sites on the land as the river and streams left it: no road or building the settings
+   * switch moves a site, drowns it or tilts the slope its bare heading follows.
+   */
+  #darts(carved: Carved): CarvedSites {
+    const m = this.#m;
+    const W = this.options.extent;
     const g = carved.ground;
     const r = this.#random;
     r.seed(this.#mix(5));
@@ -2971,7 +3073,7 @@ export class TerrainBuilder {
       zs.push(z);
     });
     const count = xs.length;
-    const angle = new Float32Array(count);
+    const texel = new Int32Array(count);
     const bareAngle = new Float32Array(count);
     const elongation = new Float32Array(count);
     const floodplain = new Uint8Array(count);
@@ -2986,67 +3088,55 @@ export class TerrainBuilder {
       const q =
         clamp(Math.floor(z / this.#cellF), 0, m - 1) * m +
         clamp(Math.floor(x / this.#cellF), 0, m - 1);
-      const road = this.#roadAngle[q] ?? Number.NaN;
+      texel[s] = q;
       // Its own draws come from hashes of its place, never a shared sequence, so no site the water
-      // drops or keeps re-rolls another. Along a road beside one, else along the contour on a
-      // slope, else as it falls (its own roll). Without the road, its heading on the bare land
-      // (TerrainBare).
+      // drops or keeps re-rolls another. Along the contour on a slope, else as it falls (its own
+      // roll): its heading on the bare land (TerrainBare), which a road beside it overrides.
       const ix = Math.round(x * 8);
       const iz = Math.round(z * 8);
-      const bare = slope > 0.02 ? Math.atan2(gx, -gz) : Math.PI * hash31(ix, iz, seed * 131 + 501);
-      bareAngle[s] = bare;
-      angle[s] = Number.isFinite(road) && (this.#road[q] ?? FAR) < ROAD_ALIGN - 10 ? road : bare;
+      bareAngle[s] = slope > 0.02 ? atan2(gx, -gz) : Math.PI * hash31(ix, iz, seed * 131 + 501);
       elongation[s] = 1.2 + 0.8 * hash31(ix, iz, seed * 131 + 502);
       const rd = this.#riverDist[q] ?? Infinity;
       floodplain[s] =
         Number.isFinite(rd) && rd < this.#riverReach(this.#riverAlong[q] ?? 0) ? 1 : 0;
     }
-    this.#parcels = {
+    return {
       count,
       x: Float32Array.from(xs),
       z: Float32Array.from(zs),
-      angle,
+      texel,
+      bareAngle,
       elongation,
       floodplain,
-      wood: new Float32Array(count),
-      ids: this.#ids,
-      coreX: new Float32Array(count),
-      coreZ: new Float32Array(count),
-      coreRadius: new Float32Array(count),
+      // The sampling's buckets serve the lookup.
+      grid: { grid: heads, nb, bucket, next: Int32Array.from(links) },
     };
-    // The sampling's buckets serve the lookup.
-    this.#siteGrid = { grid: heads, nb, bucket, next: Int32Array.from(links) };
-    this.#bareAngle = bareAngle;
   }
-
-  #siteGrid: { grid: Int32Array; nb: number; bucket: number; next: Int32Array } = {
-    grid: new Int32Array(0),
-    nb: 0,
-    bucket: 1,
-    next: new Int32Array(0),
-  };
-  /** Each site's heading on the bare land, without the road beside it (#parcelIds). */
-  #bareAngle = new Float32Array(0);
 
   /**
    * The nearest two sites per texel for rows j0 .. j1 - 1, by each site's stretched metric; and the
-   * nearest by the bare metric (each site at its bare heading, TerrainBare.ids), which differs
-   * only beside the sites a road turns.
+   * nearest two by the bare metric (each site at its bare heading: TerrainBare.ids the nearest),
+   * which differ only beside the sites a road turns. Those by the bare metric, and each site's wood
+   * over its bare cell, are the land and river's (Carved.bare): the first build of them finds them
+   * everywhere, and a later one searches only where its own turned sites reach.
    */
   #parcelIds(j0: number, j1: number): void {
     const parcels = this.#parcels;
-    if (!parcels) return;
+    const carved = this.#carved;
+    const darts = carved?.darts;
+    if (!parcels || !carved || !darts) throw new TerrainError("terrain: a stage was skipped");
+    const kept = carved.bare;
     const m = this.#m;
     const cellF = this.#cellF;
-    const { grid, nb, bucket, next } = this.#siteGrid;
+    const { grid, nb, bucket, next } = darts.grid;
     const cos = parcels.angle.map(Math.cos);
     const sin = parcels.angle.map(Math.sin);
-    const bareCos = this.#bareAngle.map(Math.cos);
-    const bareSin = this.#bareAngle.map(Math.sin);
-    const turned = Uint8Array.from(this.#bareAngle, (bare, s) =>
+    const bareCos = darts.bareAngle.map(Math.cos);
+    const bareSin = darts.bareAngle.map(Math.sin);
+    const turned = Uint8Array.from(darts.bareAngle, (bare, s) =>
       bare === parcels.angle[s] ? 0 : 1,
     );
-    // Buckets whose search (three either way) meets a turned site: elsewhere the bare nearest is
+    // Buckets whose search (three either way) meets a turned site: elsewhere the bare nearest are
     // the nearest.
     const reached = new Uint8Array(nb * nb);
     for (let s = 0; s < parcels.count; s++) {
@@ -3057,6 +3147,8 @@ export class TerrainBuilder {
         for (let a = Math.max(0, si - 3); a <= Math.min(nb - 1, si + 3); a++)
           reached[b * nb + a] = 1;
     }
+    // The bare pairs: read where kept, else written for the next build.
+    const pairs = kept?.ids ?? (this.#barePairs ??= new Uint16Array(2 * m * m));
     const woodSum = new Float64Array(parcels.count);
     const woodCount = new Int32Array(parcels.count);
     const limit = 2.6 * PARCEL_SPACING;
@@ -3066,13 +3158,23 @@ export class TerrainBuilder {
       for (let i = 0; i < m; i++) {
         const px = (i + 0.5) * cellF;
         const bi = Math.floor(px / bucket);
+        const q = j * m + i;
+        const near = reached[bj * nb + bi] === 1;
+        if (kept && !near) {
+          this.#ids[2 * q] = pairs[2 * q] ?? 0;
+          this.#ids[2 * q + 1] = pairs[2 * q + 1] ?? 0;
+          this.#bareIds[q] = pairs[2 * q] ?? 0;
+          continue;
+        }
+        const track = near && !kept;
         let d1 = limit;
         let d2 = limit;
         let s1 = -1;
         let s2 = -1;
         let bare1 = limit;
+        let bare2 = limit;
         let bareS = -1;
-        const track = reached[bj * nb + bi] === 1;
+        let bareS2 = -1;
         for (let b = -3; b <= 3; b++) {
           const nj = bj + b;
           if (nj < 0 || nj >= nb) continue;
@@ -3107,22 +3209,39 @@ export class TerrainBuilder {
                 bare = Math.sqrt(ub * ub + wb * wb);
               }
               if (bare < bare1) {
+                bare2 = bare1;
+                bareS2 = bareS;
                 bare1 = bare;
                 bareS = s;
+              } else if (bare < bare2) {
+                bare2 = bare;
+                bareS2 = s;
               }
             }
           }
         }
-        const q = j * m + i;
-        if (!track) bareS = s1;
         this.#ids[2 * q] = s1 + 1;
         this.#ids[2 * q + 1] = s2 + 1;
+        if (kept) {
+          this.#bareIds[q] = pairs[2 * q] ?? 0;
+          continue;
+        }
+        if (!track) {
+          bareS = s1;
+          bareS2 = s2;
+        }
         this.#bareIds[q] = bareS + 1;
+        pairs[2 * q] = bareS + 1;
+        pairs[2 * q + 1] = bareS2 + 1;
         if (bareS >= 0) {
           woodSum[bareS] = (woodSum[bareS] ?? 0) + (this.#bareWood[q] ?? 0);
           woodCount[bareS] = (woodCount[bareS] ?? 0) + 1;
         }
       }
+    }
+    if (kept) {
+      if (j1 === m) parcels.wood.set(kept.wood);
+      return;
     }
     for (let s = 0; s < parcels.count; s++) {
       const c = woodCount[s] ?? 0;
@@ -3133,9 +3252,12 @@ export class TerrainBuilder {
       parcels.wood[s] = (mean * before + (woodSum[s] ?? 0)) / (before + c);
       this.#woodTexels[s] = before + c;
     }
+    if (j1 === m) carved.bare = { ids: pairs, wood: parcels.wood.slice() };
   }
 
   #woodTexels = new Int32Array(TERRAIN_MAX_PARCELS);
+  /** The bare pairs this build finds, for Carved.bare (where no build of its land kept them). */
+  #barePairs: Uint16Array | undefined;
 
   #trees(): void {
     const m = this.#m;
@@ -3340,7 +3462,8 @@ export function terrainWays(t: Terrain): TerrainWays {
  *              (hash, settlement, 0, 0), unused
  *   places     2 texels a settlement: (x hi, x lo, z hi, z lo), (y, radius, first building, count)
  *   misc       the bridge (x0, z0 split), (x1, z1 split), (deck0, deck1, half width, water level);
- *              the eye (x, z split), (y, settlements, bridge 1/0, buildings); (ways, 0, 0, 0)
+ *              the eye (x, z split), (y, settlements, bridge 1/0, buildings); (ways, the highest
+ *              ground or water on the map with the river full, 0, 0)
  *   cores      a texel a parcel site, 64 a row: its clear core's centre less the site (dx, dz),
  *              radius (0 none), 0
  *   ways       a texel a road (terrainWays): (first point / 64, first point % 64, count, spacing;
@@ -3389,6 +3512,7 @@ export function packTerrain(t: Terrain): TerrainPacked {
   const cover = new Float32Array(m * m * 4);
   const parcels = new Uint8Array(m * m * 4);
   const g = t.ground;
+  let top = -Infinity;
   const span = 2 * t.cell;
   for (let j = 0; j < m; j++) {
     for (let i = 0; i < m; i++) {
@@ -3396,6 +3520,7 @@ export function packTerrain(t: Terrain): TerrainPacked {
       const o = 4 * q;
       ground[o] = g[q] ?? 0;
       ground[o + 1] = t.level[q] ?? 0;
+      top = Math.max(top, ground[o] ?? 0, ground[o + 1] ?? 0);
       ground[o + 2] =
         ((g[j * m + Math.min(m - 1, i + 1)] ?? 0) - (g[j * m + Math.max(0, i - 1)] ?? 0)) / span;
       ground[o + 3] =
@@ -3470,6 +3595,7 @@ export function packTerrain(t: Terrain): TerrainPacked {
   records[misc + 19] = t.buildings.length;
   const { ways, points } = terrainWays(t);
   records[misc + 20] = ways.length;
+  records[misc + 21] = top;
   ways.forEach((way, index) => {
     const o = texel(L.ways, index);
     // Half floats hold integers exactly only up to 2048: the first point as 64s and the rest.

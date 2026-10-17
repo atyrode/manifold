@@ -6,9 +6,9 @@
 // pagoda, a quay with stone lanterns, a vermilion arched bridge hung with lamps whose half-ring
 // closes into a full circle with its reflection, an old pine), a warm glow in the haze over the
 // temple grounds, the wooded hills beyond, falling away toward the sunset on the left, and the
-// dusk sky with a few stars and a thin young moon low over the pine. Below it lies the water: a
-// mirror of the sky's afterglow, the moon and the bank, bent by ripples into broad horizontal
-// bands, darkening toward our bank; around two stones a cushion of water, a glassy lee and a wake.
+// world's dusk sky over them. Below it lies the water: a mirror of the sky's afterglow and the bank,
+// bent by ripples into broad horizontal bands, darkening toward our bank; around two stones a
+// cushion of water, a glassy lee and a wake.
 //
 // The lanterns come from the simulation (sim.ts), one texel each in uSim0. Each is a small box
 // traced along the eye ray: wooden tray, paper walls glowing brightest level with the candle, the
@@ -21,12 +21,12 @@
 // lantern its halo in the air (wider in mist), a pool of light on the water, and rings spreading
 // where one has just been set down. The M lantern is indigo paper with the M cut through.
 //
-// Rain (K_rain, slanted by K_wind) belongs to the evening rather than lying over it. A deck of
-// cloud draws over the dusk (pale over the afterglow in a drizzle, low and dark down to the hills
-// in a downpour, glowing faintly warm grey with the temple and town lights after dark, with shafts
-// of rain hanging under it), the light dims and flattens, the mist greys. The drops fall in depth
-// (the shared rainFall, hidden behind whatever the eye ray meets first) and shine with the cloud
-// base they refract, faint grey lines against the dark bank and water, and amber where they fall
+// Rain (K_rain, slanted by K_wind) belongs to the evening rather than lying over it. The world's
+// deck of cloud draws over the dusk in the river's warm grey (lanternsCloudBase: darker the heavier
+// it rains, glowing faintly with the temple and town lights after dark, shafts of rain hanging
+// under it), the light dims and flattens, the mist greys. The drops fall in depth (the shared
+// rainFall, hidden behind whatever the eye ray meets first) and shine with the cloud base they
+// refract, faint grey lines against the dark bank and water, and amber where they fall
 // through the lanterns' halos; their veil swallows the far bank as it pours. The river rings in
 // front of us, the rings catching the lantern light and the cloud base, and beyond, where the
 // rings are too small to draw, it is a dimpled sheet of grey sheen mirroring the overcast and
@@ -45,11 +45,13 @@
 //
 // Knobs: K_ripple, K_reflection, K_mist (water), K_current (ripples drift with the stream; the
 // lanterns themselves are the sim's), K_time, K_cycle, K_stars, K_meteors (sky), K_rain, K_wind,
-// K_aurora (weather), the birds'. The shared sky components (src/scenes/README.md, "Composing
-// components"): the stars, the aurora and shooting stars, in the sky and (but the stars) in the
-// river's mirror.
+// K_aurora (weather), the birds'. The sky is the world's (worldSky, src/scenes/README.md "World
+// layers"): the dome with the staged full moon (it rises out of the frame on the right), the rain's
+// deck, the stars, the aurora and shooting stars, in the sky and in the river's mirror
+// (worldMirrorSky).
 import { glslFloat } from "../../shaders/glsl.ts";
 import { birdsGlsl } from "../../shaders/lib/birds.ts";
+import { worldGlsl } from "../../shaders/lib/world.ts";
 import {
   CURRENT_FAST,
   CURRENT_SLOW,
@@ -73,18 +75,16 @@ const downstream = ROCK_DOWNSTREAM.map((d) => `vec2(${glslFloat(d.x)}, ${glslFlo
   ", ",
 );
 
-/** The shared stars' default density (K_stars); the scene's own sparse stars thin out below it. */
-export const LANTERNS_STARS = 0.55;
 /** Trigger slot of the shooting stars' "now" button (0 is the flotillas', 1 the M lantern's). */
 export const LANTERNS_METEOR_TRIGGER = 2;
 
 export const lanternsGlsl = `
 ${birdsGlsl}
-const float LANTERNS_STARS = ${glslFloat(LANTERNS_STARS)};
-// Where shooting stars set out, in the frame of the young moon and the scene's own stars (screen
-// heights from the middle of the horizon): high over the far bank.
+${worldGlsl}
+// Where shooting stars set out: skyAngles of the camera's ray (bearing, elevation, radians), high
+// over the far bank.
 const int LANTERNS_METEOR_SLOT = ${LANTERNS_METEOR_TRIGGER};
-const vec4 LANTERNS_METEOR_FIELD = vec4(-0.6, 0.3, 1.2, 0.08);
+const vec4 LANTERNS_METEOR_FIELD = vec4(-0.3, 0.15, 0.6, 0.04);
 const float LANTERNS_HORIZON = ${glslFloat(HORIZON)};
 const float LANTERNS_FOV = ${glslFloat(FOV)};
 const float LANTERNS_FOCAL = ${glslFloat(FOCAL)};
@@ -100,8 +100,9 @@ const vec4 LANTERNS_ROCK[${ROCKS.length}] = vec4[${ROCKS.length}](${rocks}); // 
 const vec2 LANTERNS_DOWN[${ROCKS.length}] = vec2[${ROCKS.length}](${downstream}); // downstream from each (unit x, z)
 // How far around a lantern (m, at its distance) its light can reach on screen: halo, rings, wobble.
 const float LANTERNS_REACH = 2.2;
-// The view faces 20 degrees left of the sky library's, toward the sunset: the afterglow stands in
-// the left of the frame, and the lanterns drift toward it.
+// The view faces 20 degrees left of the sky's own ahead, toward the sunset: the afterglow stands in
+// the left of the frame, and the lanterns drift toward it. (A sky direction turned by it is the
+// camera's: skyFacing(sky, LANTERNS_FACING); the world's view turns the other way.)
 const float LANTERNS_FACING = -0.35;
 
 // The far bank, metres along it from straight ahead.
@@ -320,103 +321,38 @@ float lanternsBank(vec2 b, float foot, float blur, out vec4 alb, out vec2 lamp, 
   return cover;
 }
 
-// The young moon, a thin crescent low over the old pine at dusk: lit on the side toward the set
-// sun (down and to the left), the rest of its disc faintly grey with earthshine, in a soft halo.
-// Fixed in the frame: e in screen heights right of the centre and above the horizon. soft widens
-// its edges (in the rippled mirror). Returns x: the lit crescent, y: the whole disc, z: the halo.
-const vec2 LANTERNS_MOON = vec2(-0.66, 0.205);
-const float LANTERNS_MOON_R = 0.021;
-vec3 lanternsMoon(vec2 e, float soft) {
-  vec2 d = e - LANTERNS_MOON;
-  float r = LANTERNS_MOON_R;
-  float aa = soft + 1.2 / uRes.y;
-  float disc = 1.0 - smoothstep(r - aa, r + aa, length(d));
-  // The dark limb: the disc again, shifted up and to the right, leaving a crescent ~4 cells thick.
-  float lit = disc * smoothstep(r - aa, r + aa, length(d - r * 0.32 * vec2(0.55, 0.835)));
-  return vec3(lit, disc, exp(-dot(d, d) / (9.0 * r * r)));
-}
-
-// A sparse scatter of stars over the dusk sky, fixed in the frame (e as for the moon): a few
-// bright, more faint, each a soft dot two to four cells across that breathes very slowly.
-float lanternsStars(vec2 e) {
-  vec2 g = e * 24.0;
-  vec2 id = floor(g);
-  float h = hash12(id + vec2(17.3, 4.1));
-  if (h > 0.1) return 0.0;
-  float m = h / 0.1;
-  m *= m; // magnitudes: mostly faint
-  vec2 c = 0.25 + 0.5 * vec2(hash12(id + 3.1), hash12(id.yx + 8.9));
-  float r = (1.0 + 1.1 * m) * 24.0 / uRes.y; // radius 1..2 cells, in grid units
-  float star = 1.0 - smoothstep(0.35 * r, r, length(g - id - c));
-  float breathe = 0.85 + 0.15 * sin(uMotionTime * (0.2 + 0.3 * fract(h * 37.0)) + h * 91.0);
-  return star * (0.4 + 0.6 * m) * breathe;
-}
-
 // The rain cloud's underside, unmottled, from haze (the sky's colour low over the bank): a grey
 // that darkens as the rain grows heavy. At dusk and after dark the cloud still glows faintly with
 // the temple's lamps and the town beyond, a warm grey it never falls below, so the river has a
-// sheen to mirror and the drops something to refract.
+// sheen to mirror and the drops something to refract. The world's deck takes it where it covers
+// the sky, its gaps and ragged edges mottling it.
 const vec3 LANTERNS_CLOUD_GLOW = vec3(0.17, 0.155, 0.14);
 vec3 lanternsCloudBase(vec3 haze) {
   vec3 grey = mix(vec3(dot(haze, LUMA)), haze, 0.35);
   return max(grey, LANTERNS_CLOUD_GLOW) * mix(0.95, 0.65, smoothstep(0.35, 1.0, K_rain));
 }
 
-// The rain's sky. As it rains a deck of cloud draws over the dusk: thin and pale in a drizzle,
-// the afterglow still showing in a band under it; lower, darker and down to the hills in a
-// downpour; its underside mottled by broad, slow swells drifting with the wind. Under it, from
-// steady rain on, grey shafts of rain hang down behind the hills, drifting too. e in screen
-// heights (right of the centre, above the horizon), haze the sky's colour low over the bank.
-// Returns the deck's colour and, in w, how much of the sky it hides; shaft returns how strongly a
-// shaft of rain stands here (0..1).
-vec4 lanternsOvercast(vec2 e, vec3 haze, float tm, out float shaft) {
-  shaft = 0.0;
-  if (K_rain <= 0.0) return vec4(0.0);
-  float heavy = smoothstep(0.35, 1.0, K_rain);
-  float drift = K_wind * tm * 0.01;
-  float swell = 0.65 * vnoise(vec2(e.x * 2.2 - drift, e.y * 7.0 + 1.3)) + 0.35 * vnoise(vec2(e.x * 5.5 - drift * 1.7, e.y * 16.0 + 6.1));
-  vec3 deck = lanternsCloudBase(haze) * (0.8 + 0.4 * swell);
-  float base = mix(0.11, -0.02, heavy); // the deck's lower edge, above the horizon
-  float cover = sqrt(K_rain) * smoothstep(base, base + 0.05 + 0.05 * swell, e.y);
-  shaft = smoothstep(0.55, 0.85, vnoise(vec2(e.x * 3.2 - drift * 2.0, 4.7))) * smoothstep(0.25, 0.7, K_rain);
-  return vec4(deck, cover);
-}
-
-// What a ray sees beyond the water: the sky (with a few stars when seen directly), the aurora and
-// shooting stars, and the young moon, or the rain's deck of cloud and its shafts, the hills, a warm
-// glow in the haze over the temple grounds, the far bank where the ray crosses its plane (its tiles,
-// lacquer and stone glossy in the wet), and mist lying along the bank's foot. o is where the ray
-// leaves (the eye, or a point on the water); lift tips the sky lookup up a little for a rough mirror
-// (and softens the moon, the aurora and a meteor); foot is a cell's size at the bank (m), blur how
-// far the water draws its lamps out.
+// What a ray sees beyond the water: the sky, the hills, a warm glow in the haze over the temple
+// grounds, the far bank where the ray crosses its plane (its tiles, lacquer and stone glossy in the
+// wet), and mist lying along the bank's foot. o is where the ray leaves (the eye, or a point on the
+// water) and r its direction; view the world's view along it (direct: the camera's; else a
+// mirror's, worldMirrorView, its ray tipped up and its footprint widened by the ripples); foot is a
+// cell's size at the bank (m), blur how far the water draws its lamps out.
 // Returns the colour without the bank's lamps; lamp returns their light (x as seen, y drawn out),
 // faded in with the dusk and veiled by the mist, for the caller to lay on.
-vec3 lanternsBeyond(vec3 o, vec3 r, float lift, Sky sky, vec3 lit, vec3 haze, float dark, float tm, float foot, float blur, bool direct, out vec2 lamp) {
-  vec3 col = skyColor(sky, normalize(r + vec3(0.0, lift, 0.0)));
+vec3 lanternsBeyond(vec3 o, vec3 r, World world, WorldView view, bool direct, vec3 lit, vec3 haze, float dark, float tm, float foot, float blur, out vec2 lamp) {
+  // The world's sky (worldSky; in the river worldMirrorSky, the moon swung behind the viewer): the
+  // dome, the aurora, the rain's deck in the river's warm grey, the stars and the giant planet in
+  // its gaps, shooting stars. Under the deck, from steady rain on, grey shafts of rain hang down
+  // behind the hills, drifting with the wind.
+  WorldSky heaven;
+  if (direct) heaven = worldSky(world, view, LANTERNS_METEOR_FIELD);
+  else heaven = worldMirrorSky(world, view, LANTERNS_METEOR_FIELD);
+  vec4 deck = vec4(lanternsCloudBase(haze), heaven.cloud);
+  vec3 col = mix(heaven.col, deck.rgb, deck.w);
   float ex = r.x / r.z * LANTERNS_FOCAL;
   float ey = r.y / r.z * LANTERNS_FOCAL;
-  float shaft;
-  vec4 deck = lanternsOvercast(vec2(ex, ey), haze, tm, shaft);
-  // The aurora and shooting stars, mirrored too, softened by a rough mirror's lift; the deck drawn
-  // over them below hides them.
-  col += auroraM(r, tm, K_aurora, max(1.0 / (LANTERNS_FOCAL * uRes.y), lift)) * auroraSeen(sky, 0.0);
-  float meteorSeed;
-  float meteorAt = meteorAge(tm, K_meteors, LANTERNS_METEOR_SLOT, meteorSeed);
-  col += METEOR_TINT * hardEdge(meteorStreak(vec2(ex, ey), LANTERNS_METEOR_FIELD, meteorAt, meteorSeed, max(1.0 / uRes.y, lift)) * sky.night);
-  if (direct) {
-    col += skyStarLight(sky, r, K_stars) * (1.0 - deck.w);
-    float shown = (1.0 - sky.day) * clamp(0.35 + sky.night, 0.0, 1.0) * smoothstep(0.03, 0.09, ey) * (1.0 - deck.w);
-    shown *= 1.0 - smoothstep(0.1, 0.3, dot(col, LUMA)); // lost in the afterglow
-    shown *= K_stars < LANTERNS_STARS ? K_stars / LANTERNS_STARS : 1.0; // fewer stars, fainter
-    col += vec3(0.82, 0.87, 1.0) * 0.75 * lanternsStars(vec2(ex, ey)) * shown;
-  }
-  // The giant planet over the stars, mirrored too, softened by a rough mirror's lift; the young moon
-  // and the deck drawn over it.
-  col = skyGiant(sky, col, r, max(1.0 / (LANTERNS_FOCAL * uRes.y), lift), 1.0);
-  vec3 moon = lanternsMoon(vec2(ex, ey), 0.5 * lift);
-  float evening = (1.0 - smoothstep(-0.06, 0.02, sky.sun.y)) * (1.0 - 0.9 * deck.w); // dim through thin cloud
-  col += (vec3(0.056, 0.063, 0.084) * moon.y + vec3(1.0, 0.9, 0.72) * 1.3 * moon.x + vec3(0.5, 0.45, 0.4) * 0.1 * moon.z) * evening;
-  col = mix(col, deck.rgb, deck.w);
+  float shaft = K_rain > 0.0 ? smoothstep(0.55, 0.85, vnoise(vec2(ex * 3.2 - K_wind * tm * 0.02, 4.7))) * smoothstep(0.25, 0.7, K_rain) : 0.0;
 
   // Two ranges of hills, the further paler (aerial perspective), as in an ink-wash painting. They
   // fall away toward the sunset on the left, so the afterglow lies low over the bank there, and
@@ -657,19 +593,21 @@ Shade sceneLanterns(vec2 uv, vec2 cell, float t) {
   vec2 sp = vec2((uv.x - 0.5) * aspect, uv.y); // screen heights, x from the centre
   vec3 dir = viewRay(uv, aspect, LANTERNS_HORIZON, LANTERNS_FOV);
 
-  Sky sky = skyFacing(skyAt(timeOfDayM(K_time, K_cycle, tm)), LANTERNS_FACING);
-  // For the mirror: the moon swung round behind the viewer, so no reflection shows a sliver of its
-  // disc broken by the ripples.
+  // The world now, and its view from the bank; its sky turned into the camera's frame lights the
+  // scene. Rain comes under the world's overcast: the light dimmer and flatter (the world's, the
+  // moon hidden by the deck as the sun is), the haze grey, the mist thicker. For the haze: the moon
+  // swung round behind the viewer, as the river mirrors it.
+  World world = worldAt(LANTERNS_METEOR_SLOT, -1);
+  float overcast = world.overcast;
+  world.sky.moonColor *= 1.0 - WORLD_DECK_SUN * overcast;
+  WorldView view = worldViewOf(dir, uv, LANTERNS_HORIZON, LANTERNS_FOCAL, LANTERNS_EYE, -LANTERNS_FACING, 1.0);
+  Sky sky = skyFacing(world.sky, LANTERNS_FACING);
   Sky skyM = skyMirror(sky);
   float dark = 1.0 - smoothstep(0.05, 0.5, sky.day);
   vec3 moonLight = sky.moonColor * (0.3 + 0.6 * sqrt(max(sky.moon.y, 0.0)));
   vec3 lit = sky.ambient + sky.sunColor * max(sky.sun.y, 0.0) + moonLight;
   // The sky low over the far bank in this direction: the colour of haze and mist.
   vec3 haze = horizonHaze(skyM, dir, 0.04);
-  // Rain comes under cloud: the light dimmer and flatter, the haze grey, the mist thicker.
-  float overcast = sqrt(max(K_rain, 0.0));
-  lit *= 1.0 - 0.35 * overcast;
-  lit += auroraGlow(tm, K_aurora) * auroraSeen(sky, overcast);
   haze = greyed(haze, vec3(0.9), 0.55 * overcast);
   // Entering, the dusk light settles in from a deeper blue hour; leaving, it sinks again with the
   // flames. Exactly 1 once arrived and while staying.
@@ -715,7 +653,7 @@ Shade sceneLanterns(vec2 uv, vec2 cell, float t) {
 
   if (!water) {
     vec2 bankLamp;
-    col = lanternsBeyond(vec3(0.0, LANTERNS_EYE, 0.0), dir, 0.0, sky, lit, haze, dark, tm, bankFoot, 0.0, true, bankLamp);
+    col = lanternsBeyond(vec3(0.0, LANTERNS_EYE, 0.0), dir, world, view, true, lit, haze, dark, tm, bankFoot, 0.0, bankLamp);
     col += LANTERNS_LAMP * bankLamp.x;
     lamp = bankLamp.x;
     col *= dusk;
@@ -793,8 +731,11 @@ Shade sceneLanterns(vec2 uv, vec2 cell, float t) {
     bands = vec3(bands.x, max(bands.y, 0.002), max(bands.z, 0.05));
     float behind = LANTERNS_BANK - zp;
     vec2 bankLamp;
-    mirror = lanternsBeyond(vec3(xp, 0.0, zp), bands, spread * 0.7, skyM, lit, haze, dark, tm,
-                            bankFoot + spread * behind * 0.3, min(0.8 * sigma * behind, 6.0), false, bankLamp);
+    // The mirror's view: the ray the ripples reflect, tipped up a little and its footprint widened
+    // by how rough they make the mirror.
+    WorldView mirrored = worldMirrorView(view, normalize(bands + vec3(0.0, spread * 0.7, 0.0)), spread * 0.7);
+    mirror = lanternsBeyond(vec3(xp, 0.0, zp), bands, world, mirrored, false, lit, haze, dark, tm,
+                            bankFoot + spread * behind * 0.3, min(0.8 * sigma * behind, 6.0), bankLamp);
     BirdHit image = birdFlightsSeen(bands.xy / bands.z * LANTERNS_FOCAL + vec2(0.0, LANTERNS_HORIZON), flights, birdCam, tm, 1.0 / uRes.y, true);
     if (image.cover > 0.5) {
       mirror = mix(image.albedo * lit, haze, 1.0 - exp(-image.depth * birdHaze));

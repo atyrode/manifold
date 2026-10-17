@@ -6,14 +6,17 @@
 // units, then one a stage), so on the page, where there is no worker, a build spreads over frames as
 // it always did.
 //
-// A builder keeps its last finished TerrainBuilder: the next build reuses its eroded relief, and its
-// carved river and streams, where the change leaves them alone (terrain.ts). The terrain a build
-// hands back owns its arrays: what the kept builder shares with it (the bare land, the river's
-// centreline) is copied, so the rest moves to the page by transfer and the builder keeps all it
-// reuses.
+// A builder keeps its last finished TerrainBuilder, whose eroded relief, and carved river and
+// streams with what is made of them alone, the next build reuses where its change leaves them be
+// (terrain.ts); and the land model's ground (landGround) of the land and river it weighed last, so
+// a change of the settlements or roads re-weighs only what they lay. The terrain a build hands back
+// owns its arrays: what the kept builder shares with it (the bare land, the river's centreline) is
+// copied, so the rest moves to the page by transfer and the builder keeps all it reuses.
 import type { BuildKind } from "../../sims/build.ts";
 import {
   type LandAllocation,
+  type LandGround,
+  landGround,
   LandModel,
   type LandModelData,
   type LandOptions,
@@ -90,6 +93,8 @@ export const countryBuild: BuildKind<CountryRequest, CountryBuilt> = {
   name: "country",
   builder() {
     let previous: TerrainBuilder | undefined;
+    /** The land model's ground of the last terrain weighed, by its TerrainBuilder.riverKey. */
+    let weighed: { key: string; ground: LandGround } | undefined;
     return {
       *build({ options, uses, chalk, water, sky }) {
         const builder = new TerrainBuilder(options, previous);
@@ -102,7 +107,10 @@ export const countryBuild: BuildKind<CountryRequest, CountryBuilt> = {
         const packed = packTerrain(terrain);
         packCountryFog(packed, terrain);
         yield undefined;
-        const model = new LandModel(terrain, options.seed);
+        const key = builder.riverKey;
+        const ground = weighed?.key === key ? weighed.ground : landGround(terrain, options.seed);
+        weighed = { key, ground };
+        const model = new LandModel(terrain, ground);
         yield undefined;
         const texels = landTexels(terrain);
         const site = chalkSite(terrain, sky);

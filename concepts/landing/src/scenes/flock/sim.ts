@@ -60,7 +60,7 @@
 //   uSim0  rg16f, about FIELD_PER_CELL texels per cell (at most FIELD_ROWS rows): R birds per texel
 //          (a short exponential trail smooths their motion), G the same weighted by how hard the
 //          birds roll. (Flock.field, fieldWidth × fieldHeight.) Each paint uploads only the box it
-//          changed as a half float holds it (Flock.fieldChange): the flock's last second or so.
+//          changed as a half float holds it (Flock.fieldChanged): the flock's last second or so.
 //   uSim1  rgba16f 3×1, nearest: texel 0 falcon (uv xy, heading cos, sin); texel 1 falcon (shown,
 //          wings open 0..1, wingbeat sin) and, in w, the birds per texel of a sheet at
 //          REFERENCE_DENSITY; texel 2 Manifold M (strength 0..1, centre uv xy, height in screen
@@ -71,7 +71,7 @@ import { Boids, boidRules } from "../../sims/boids.ts";
 import { FixedStep } from "../../sims/clock.ts";
 import { clamp, lerp, smoothstep } from "../../sims/math.ts";
 import { Random } from "../../sims/random.ts";
-import { DataTexture } from "../../sims/texture.ts";
+import { DataTexture, DirtyRegion } from "../../sims/texture.ts";
 import type { SceneSim, SimFactory, SimFrame } from "../types.ts";
 
 /** The flock sizes on offer (the `birds` choice). */
@@ -299,7 +299,7 @@ const TRAIL = 0.03;
 /**
  * Half the smallest half float: a density below it is held as 0 by the field's rg16f texture,
  * rounded to the nearest (ties either way) or toward zero. A texel this faint now and at the previous
- * paint reads 0 on the GPU either way, so the upload skips it (Flock.fieldChange).
+ * paint reads 0 on the GPU either way, so the upload skips it (Flock.fieldChanged).
  */
 const FIELD_FAINT = 2 ** -25;
 
@@ -434,9 +434,8 @@ export class Flock {
   #fieldH = 0;
   /** The box (texels, inclusive; empty: infinite x0, y0) of the latest paint's texels at FIELD_FAINT or more. */
   readonly #lit = { x0: Infinity, x1: -Infinity, y0: Infinity, y1: -Infinity };
-  /** What the latest paint changed as the GPU holds it (fieldChange); a new field is all of it. */
-  readonly #change = { x: 0, y: 0, width: 0, height: 0 };
-  #fieldNew = true;
+  /** What the paints changed as the GPU holds it since it was last uploaded (fieldChanged). */
+  readonly #fieldChanged = new DirtyRegion(0, 0);
 
   #aspect = 16 / 9;
   #time = 0;
@@ -530,13 +529,13 @@ export class Flock {
   }
 
   /**
-   * The texels (a rectangle, rows bottom to top) the latest paint changed as the field's rg16f texture
-   * holds them: outside it every texel was under FIELD_FAINT at the previous paint and still is,
-   * which a half float holds as 0 either way. A texture holding the previous paint needs only this; a
-   * new field (a new size) is all of it. Empty (width 0) when nothing is lit.
+   * The texels (a rectangle, rows bottom to top) the paints changed as the field's rg16f texture
+   * holds them, since its last upload (`flush` it into that texture): outside it every texel was
+   * under FIELD_FAINT at the previous paint and still is, which a half float holds as 0 either way.
+   * A new field (a new size) is all of it.
    */
-  get fieldChange(): Readonly<{ x: number; y: number; width: number; height: number }> {
-    return this.#change;
+  get fieldChanged(): DirtyRegion {
+    return this.#fieldChanged;
   }
 
   /** The state texels: falcon, falcon and reference density, M (3 × rgba). */
@@ -616,7 +615,7 @@ export class Flock {
     this.#fieldW = w;
     this.#fieldH = h;
     this.#field = new Float32Array(w * h * 2);
-    this.#fieldNew = true;
+    this.#fieldChanged.resize(w, h);
     this.#dirty = true;
   }
 
@@ -1332,7 +1331,7 @@ export class Flock {
    * among the four nearest texels; Hockney & Eastwood, "Computer Simulation Using Particles"),
    * blended over the last frame's field as a short trail. `keep` is how much of the old field
    * survives; `between` how far the clock is from the previous step to the latest one. On the way
-   * it boxes the texels at FIELD_FAINT or more, for the upload (fieldChange).
+   * it boxes the texels at FIELD_FAINT or more, for the upload (fieldChanged).
    */
   #paint(keep: number, between: number): void {
     const field = this.#field;
@@ -1454,23 +1453,14 @@ export class Flock {
       }
     }
     // What the upload must send: the lit box with the previous paint's, whose texels may have faded
-    // to nothing since; a new field all of it.
+    // to nothing since.
     const lit = this.#lit;
-    const change = this.#change;
-    const left = this.#fieldNew ? 0 : Math.min(x0, lit.x0);
-    const right = this.#fieldNew ? w - 1 : Math.max(x1, lit.x1);
-    const bottom = this.#fieldNew ? 0 : Math.min(y0, lit.y0);
-    const top = this.#fieldNew ? h - 1 : Math.max(y1, lit.y1);
-    const some = right >= left;
-    change.x = some ? left : 0;
-    change.y = some ? bottom : 0;
-    change.width = some ? right - left + 1 : 0;
-    change.height = some ? top - bottom + 1 : 0;
+    this.#fieldChanged.touch(x0, y0, x1 + 1, y1 + 1);
+    this.#fieldChanged.touch(lit.x0, lit.y0, lit.x1 + 1, lit.y1 + 1);
     lit.x0 = x0;
     lit.x1 = x1;
     lit.y0 = y0;
     lit.y1 = y1;
-    this.#fieldNew = false;
 
     const d = this.#stateData;
     const a = this.#aspect;
@@ -1518,7 +1508,7 @@ function markTrackAt(u: number, out: Float32Array): void {
   out[3] = (by - ay) / length;
 }
 
-/** A Flock with its two textures (uSim0, uSim1), uploaded whenever it repaints them: of the density, only what the paint changed (fieldChange). */
+/** A Flock with its two textures (uSim0, uSim1), uploaded whenever it repaints them: of the density, only what the paints changed (fieldChanged). */
 class FlockSim implements SceneSim {
   readonly #flock: Flock;
   readonly #density: DataTexture;
@@ -1540,8 +1530,7 @@ class FlockSim implements SceneSim {
     if (!flock.frame(frame)) return IDLE;
     if (flock.painted) {
       this.#density.resize(flock.fieldWidth, flock.fieldHeight);
-      const change = flock.fieldChange;
-      this.#density.uploadRegion(flock.field, change.x, change.y, change.width, change.height);
+      flock.fieldChanged.flush(this.#density, flock.field);
       this.#state.upload(flock.state);
     }
     return [this.#density.texture, this.#state.texture];

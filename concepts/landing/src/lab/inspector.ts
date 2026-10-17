@@ -223,6 +223,8 @@ export class Inspector {
   #lent: { section: Section; back: () => void } | undefined;
   /** While the lab is compact nothing narrows: the bar shows a section whole. */
   #compact = false;
+  /** A sync left the controls as they were (off screen): they catch up as they come back. */
+  #stale = false;
 
   constructor(ctx: LabContext, prefs: SectionPrefs) {
     this.#ctx = ctx;
@@ -309,8 +311,9 @@ export class Inspector {
     this.#search.select();
   }
 
-  /** The view came on screen. */
+  /** The view came on screen: it catches up on the syncs it missed while away. */
   shown(): void {
+    if (this.#stale) this.sync();
     this.#rail.spy();
   }
 
@@ -332,14 +335,16 @@ export class Inspector {
   /**
    * Lend section `id` to the compact bar's popover (menu.ts), giving back any other first: its own
    * element, taken from where it stands, open whatever its fold, its toggle a plain heading, until
-   * `giveBack`. Undefined for no such section.
+   * `giveBack`; it catches up on the syncs the controls missed off screen. Undefined for no such
+   * section.
    */
   lend(id: string): HTMLElement | undefined {
     this.giveBack();
     const section = this.#menu.find((candidate) => candidate.id === id);
     if (!section) return undefined;
     this.#lent = { section, back: borrow(section.el) };
-    this.#narrow();
+    if (this.#stale) this.sync();
+    else this.#narrow();
     return section.el;
   }
 
@@ -354,11 +359,18 @@ export class Inspector {
 
   /**
    * Reflect the setup into every control, then decide once what shows (#narrow): a sync that
-   * changes nothing writes nothing.
+   * changes nothing writes nothing. Off screen (`onScreen` false, the Controls view not showing,
+   * and no section lent to the bar) only the lens counts, which the bar's chips read; the controls
+   * wait to catch up as they come back (`shown`, `lend`).
    */
-  sync(): void {
+  sync(onScreen = true): void {
     const { scene } = this.#ctx.current().state;
     if (this.#built !== scene) this.#build(scene);
+    this.#stale = !onScreen && this.#lent === undefined;
+    if (this.#stale) {
+      this.#syncLens();
+      return;
+    }
     for (const sync of this.#syncers) sync();
     for (const sync of this.#sceneSyncers) sync();
     this.#syncLens();

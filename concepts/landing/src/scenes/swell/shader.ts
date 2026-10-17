@@ -158,8 +158,7 @@ Shade sceneSwell(vec2 uv, vec2 cell, float t) {
   // overshoot) while its pitch settles; leaving, it sinks toward the waves and tips down (leave 0 -> 1).
   // Both terms are exactly 0 at rest. The pitch shifts the view by whole cells so the stars keep to the
   // dither grid instead of crawling, and it moves the horizon, moon and stars together.
-  float ax = passageIn() - 1.0;
-  float arrive = -(2.2 * ax * ax * ax + 1.2 * ax * ax);
+  float arrive = 1.0 - passageSettle(passageIn(), 1.2);
   float leave = passageOut() * passageOut();
   float camH = 1.0 - 0.65 * arrive - 0.6 * leave;
   float tilt = -(0.07 * arrive + 0.08 * leave);

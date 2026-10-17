@@ -146,14 +146,17 @@ export const BEES_HIVES: readonly BeesHive[] = [
   { f: 0.14, y: 0.33 },
 ];
 
-/** Foxgloves in the foreground: x (fraction of the stage), the y of their feet, height (m). */
-export const BEES_FOXGLOVES: readonly (readonly [number, number, number])[] = [
-  [-0.92, 0.035, 1.2],
-  [-0.8, 0.075, 1.0],
-  [0.83, 0.04, 1.15],
-  [0.93, 0.09, 1.0],
-  [0.5, 0.28, 1.0],
-  [0.45, 0.3, 0.9],
+/**
+ * Foxgloves in the foreground: x (fraction of the stage), the y of their feet, height (m), and the
+ * `flowers` value they stand from (all at 1; thinned away below it, by 0 every one gone).
+ */
+export const BEES_FOXGLOVES: readonly (readonly [number, number, number, number])[] = [
+  [-0.92, 0.035, 1.2, 0.35],
+  [-0.8, 0.075, 1.0, 0.6],
+  [0.83, 0.04, 1.15, 0.45],
+  [0.93, 0.09, 1.0, 0.75],
+  [0.5, 0.28, 1.0, 0.25],
+  [0.45, 0.3, 0.9, 0.5],
 ];
 
 /** The orchard, far to near: x (fraction of the stage), the y of the trunk's foot, size, seed. */

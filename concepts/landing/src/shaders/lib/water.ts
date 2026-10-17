@@ -10,8 +10,7 @@
 //                               breeze's cat's-paws with their screen-space mirror (windWater.ts)
 //   mirror    WATER_MIRROR 2    reflections: the rippled normal, the reflected ray and Fresnel
 //                               (waterMirror), and the sun's or moon's glitter on it (waterGlitter)
-//   flow      WATER_FLOW 3      currents: patterns carried by a steady current (waterDrift) or by one
-//                               that changes from place to place (waterFlow)
+//   flow      WATER_FLOW 3      currents: a pattern carried by a steady current (waterDrift)
 //   caustics  WATER_CAUSTICS 4  the bed lit through the surface: causticRipples' net (caustics.ts) times
 //                               a simulated surface's focus (ShallowWater.surface, sims/shallow.ts);
 //                               or the stylised cellular net (causticCells) for water with no spectrum
@@ -81,19 +80,6 @@ float waterGlitter(vec3 n, vec3 view, vec3 light, float s2) {
 // (the water's velocity, the pattern's units per second of tm) has carried it there by tm.
 vec2 waterDrift(vec2 p, vec2 current, float tm) {
   return p - current * tm;
-}
-
-// The same for a current that changes from place to place (a river's bends, an eddy, a sim's flow),
-// where one steady drift would shear the pattern without end: flow-map advection (Vlachos 2010). Two
-// copies of the pattern ride the local current, each carried for period seconds of tm and then put
-// back, half a period apart; evaluate the pattern at xy and at zw and mix(first, second, weight),
-// which hides each copy while it is put back. A pattern too fine for the cells (rippleSpectrum's z
-// only) is the same at both: evaluate it once.
-vec4 waterFlow(vec2 p, vec2 current, float tm, float period, out float weight) {
-  float a = fract(tm / period);
-  float b = fract(tm / period + 0.5);
-  weight = abs(1.0 - 2.0 * a);
-  return vec4(p - current * (a * period), p - current * (b * period));
 }
 #endif
 

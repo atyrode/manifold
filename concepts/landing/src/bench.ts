@@ -1,15 +1,17 @@
 // The lab's GPU timing page (bench.html), opened by hand on a real GPU. Each scene at its defaults is
-// drawn by the page's own renderer on a canvas of a fixed number of cells, and the page measures how
-// long the scene's program takes to compile and to link, how long its frames take on the GPU
-// (EXT_disjoint_timer_query_webgl2, when the browser has it) and from one frame to the next
-// (requestAnimationFrame), next to the context's renderer and limits. The report is JSON to copy or
-// save; nothing leaves the page.
+// drawn by the page's own renderer, unpaced (every frame the display gives it), on a canvas of a
+// fixed number of cells, one per device pixel, and the page measures how long the scene's program
+// takes to compile and to link, how long its frames take on the GPU
+// (EXT_disjoint_timer_query_webgl2, when the browser has it) and from one drawn frame to the next
+// (requestAnimationFrame), next to the context's renderer and limits. The report is JSON to copy
+// or save; nothing leaves the page.
 //
-//   bench.html?scenes=a,b&cells=960x540&frames=120&warmup=30&auto=1
+//   bench.html?scenes=a,b&cells=960x540&frames=120&warmup=30&budget=off&auto=1
+import { CELL_BUDGET, stageCells } from "./display.ts";
 import { DitherRenderer, type RenderSettings } from "./renderer.ts";
 import { sceneDefs, sceneIds, type SceneId } from "./scenes/index.ts";
 import { fragmentSourceFor, vertexSource } from "./shaders/index.ts";
-import { defaultsFor, paramDefaults, renderSettings } from "./state.ts";
+import { defaults, defaultsFor, paramDefaults, renderSettings } from "./state.ts";
 
 /** The budget the README sets: one full-screen pass at ~960×540 cells holds 60 fps. */
 const BUDGET_CELLS = "960x540";
@@ -39,6 +41,11 @@ scenesInput.value = query.get("scenes") ?? "";
 cellsInput.value = query.get("cells") ?? BUDGET_CELLS;
 framesInput.value = query.get("frames") ?? "120";
 const warmup = Math.max(1, Number(query.get("warmup") ?? 30) || 30);
+/**
+ * Whether the renderer holds the canvas to the landing's cell budget (CELL_BUDGET), coarsening a
+ * larger grid as the landing does; `budget=off` draws the cells asked for, to time grids past it.
+ */
+const budgeted = query.get("budget") !== "off";
 
 /** The middle and the 95th percentile of some frame measurements, in ms. */
 interface Spread {
@@ -73,7 +80,7 @@ interface SceneReport {
   readonly frames: number;
   /** GPU time per frame (a timer query around each frame); null without the extension. */
   readonly gpuMs: Spread | null;
-  /** Time from one frame to the next: what the display got, capped by its refresh. */
+  /** Time from one drawn frame to the next: what the display got, capped by its refresh rate. */
   readonly intervalMs: Spread | null;
   /** Main-thread time of each frame: the scene's simulation and the renderer's calls. */
   readonly cpuMs: Spread | null;
@@ -134,6 +141,7 @@ interface Frame {
   /** The program that drew to the screen this frame, or null when nothing did. */
   readonly shown: WebGLProgram | null;
   readonly cpuMs: number;
+  /** Time since the last frame that drew to the screen. */
   readonly intervalMs: number;
   /** The frame's timer query until the GPU answers it. */
   query: WebGLQuery | null;
@@ -142,10 +150,11 @@ interface Frame {
 
 /**
  * The renderer and the meters around it: one context for the whole run, each scene entered by a
- * cut. Every tick of the renderer's loop (it asks requestAnimationFrame for each) is timed on the
- * main thread and, with the extension and while a scene is measured, on the GPU. The context's
- * draws to the screen say which program a frame showed, so frames that still show the previous
- * scene, or nothing, are not counted.
+ * cut. The renderer draws unpaced, every tick of its loop (it asks requestAnimationFrame for each),
+ * so frames come as fast as the display takes them rather than at the landing's 60 a second; each
+ * is timed on the main thread and, with the extension and while a scene is measured, on the GPU.
+ * The context's draws to the screen say which program a frame showed, so frames that still show
+ * the previous scene, or nothing, are not counted.
  */
 class Bench {
   readonly renderer: DitherRenderer;
@@ -156,12 +165,15 @@ class Bench {
   #frames: Frame[] | undefined;
   /** Frames whose timer query the GPU has not answered yet. */
   #pending: Frame[] = [];
-  #lastNow = Number.NaN;
+  /** rAF time of the last frame that drew to the screen. */
+  #lastDrawn = Number.NaN;
   /** The program the last measured scene showed. */
   #lastShown: WebGLProgram | null = null;
 
   constructor(settings: RenderSettings) {
-    this.renderer = new DitherRenderer(canvas, settings, false);
+    this.renderer = new DitherRenderer(canvas, settings, false, {
+      cellBudget: budgeted ? CELL_BUDGET : Number.POSITIVE_INFINITY,
+    });
     const gl = canvas.getContext("webgl2");
     if (!gl) throw new BenchError("WebGL2 unavailable");
     this.gl = gl;
@@ -203,16 +215,16 @@ class Bench {
           const frame: Frame = {
             shown,
             cpuMs: performance.now() - started,
-            intervalMs: now - this.#lastNow,
+            intervalMs: now - this.#lastDrawn,
             query,
             gpuMs: null,
           };
-          this.#lastNow = now;
+          if (shown !== null) this.#lastDrawn = now;
           this.#frames?.push(frame);
           if (query !== null) this.#pending.push(frame);
         }
       });
-    this.renderer.start();
+    this.renderer.start({ paced: false });
   }
 
   /** Reads the timer queries the GPU has answered; a disjoint event voids every one in flight. */
@@ -328,9 +340,10 @@ class Bench {
   }
 }
 
+/** `id` at its defaults, one cell per device pixel. */
 function settingsFor(id: SceneId): RenderSettings {
   return renderSettings(
-    { ...defaultsFor(id), pixel: 1, transitions: "off", mouse: "still" },
+    { ...defaultsFor(id), pixel: 1 / devicePixelRatio, transitions: "off", mouse: "still" },
     paramDefaults(id),
   );
 }
@@ -401,15 +414,23 @@ async function run(): Promise<void> {
   const first = scenes[0];
   if (first === undefined) throw new BenchError("no scene to time");
 
-  // One cell per CSS pixel (settingsFor), so the canvas's CSS size is its cells.
-  canvas.style.width = `${width}px`;
-  canvas.style.height = `${height}px`;
+  // One cell per device pixel (settingsFor), so the canvas's CSS size is its cells over the ratio.
+  canvas.style.width = `${width / devicePixelRatio}px`;
+  canvas.style.height = `${height / devicePixelRatio}px`;
   bench ??= new Bench(settingsFor(first));
   rows.replaceChildren();
   const results: SceneReport[] = [];
+  // The cells the landing itself draws in this window (its stage fills it), at the default pixel
+  // size and within the cell budget, as src/display.ts lays them out.
+  const landing = stageCells(
+    innerWidth * devicePixelRatio,
+    innerHeight * devicePixelRatio,
+    devicePixelRatio,
+    defaults.pixel,
+  );
   const report = {
     page: "manifold-landing-gpu-timing",
-    version: 1,
+    version: 2,
     build:
       document.querySelector<HTMLMetaElement>('meta[name="landing-build"]')?.content ||
       "working tree",
@@ -418,10 +439,14 @@ async function run(): Promise<void> {
     devicePixelRatio,
     screen: `${screen.width}x${screen.height}`,
     window: `${innerWidth}x${innerHeight}`,
-    // The cells the landing itself draws in this window, at its default pixel size (2).
-    landingCells: `${Math.ceil(innerWidth / 2)}x${Math.ceil(innerHeight / 2)}`,
+    landingCells: `${landing.width}x${landing.height}`,
     context: contextReport(bench),
-    settings: { cells: `${width}x${height}`, frames, warmup },
+    settings: {
+      cells: `${width}x${height}`,
+      frames,
+      warmup,
+      cellBudget: budgeted ? CELL_BUDGET : null,
+    },
     scenes: results,
   };
   const show = (): void => {

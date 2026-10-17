@@ -1,9 +1,10 @@
 import { expect, test } from "bun:test";
-import { hypot2, hypot3 } from "./math.ts";
+import { atan2, hypot2, hypot3 } from "./math.ts";
 
-// Each row: the arguments, then what V8's own Math.hypot gave for them (node 24.19, V8 13.6: the
-// engine Chrome runs the page in). The ports must give those bits in whatever engine runs the test;
-// bun's is JavaScriptCore, whose own Math.hypot rounds 11 of these rows otherwise.
+// Each row: the arguments, then what V8's own Math.hypot or Math.atan2 gave for them (node 24.19,
+// V8 13.6: the engine Chrome runs the page in). The ports must give those bits in whatever engine
+// runs the test; bun's is JavaScriptCore, whose own Math.hypot rounds 11 of these rows otherwise,
+// and its Math.atan2 the six road headings.
 
 const HYPOT2: readonly (readonly [number, number, number])[] = [
   // Signs and zeros: +0 for zeros.
@@ -73,10 +74,63 @@ const HYPOT3: readonly (readonly [number, number, number, number])[] = [
   [-3.060031920671463, 182755.86499023438, 0, 182755.8650158527],
 ];
 
+const ATAN2: readonly (readonly [number, number, number])[] = [
+  // Zeros: the signs pick the half-turn.
+  [0, 0, 0],
+  [-0, 0, -0],
+  [0, -0, Math.PI],
+  [-0, -0, -Math.PI],
+  [0, -3, Math.PI],
+  [-0, -3, -Math.PI],
+  [2, 0, Math.PI / 2],
+  [-2, -0, -Math.PI / 2],
+  // Infinities.
+  [Infinity, Infinity, 0.7853981633974483],
+  [-Infinity, Infinity, -0.7853981633974483],
+  [Infinity, -Infinity, 2.356194490192345],
+  [-Infinity, -Infinity, -2.356194490192345],
+  [1, Infinity, 0],
+  [-1, Infinity, -0],
+  [1, -Infinity, Math.PI],
+  [-1, -Infinity, -Math.PI],
+  [Infinity, 5, Math.PI / 2],
+  [-Infinity, 5, -Math.PI / 2],
+  [Number.NaN, 1, Number.NaN],
+  [1, Number.NaN, Number.NaN],
+  // x = 1 (atan itself); more than 2^60 apart either way; subnormals.
+  [0.5, 1, 0.4636476090008061],
+  [-1e300, 1, -1.5707963267948966],
+  [1e30, 1e-30, 1.5707963267948966],
+  [-1e30, -1e-30, -1.5707963267948966],
+  [1e-30, -1e30, Math.PI],
+  [-1e-30, -1e30, -Math.PI],
+  [1e-30, 1e30, 1.0000000000000001e-60],
+  [-3, 1e20, -3e-20],
+  [5e-324, -5e-324, 2.356194490192345],
+  [1e-9, 1, 1e-9],
+  // Each reduction's edge: 7/16, 11/16, 19/16, 39/16, and 1.5.
+  [7, 16, 0.4124104415973873],
+  [11, 16, 0.6022873461349642],
+  [19, 16, 0.870903457075653],
+  [39, 16, 1.1814796049617557],
+  [3, 2, 0.982793723247329],
+  // Road headings (4 m steps across the map) that JavaScriptCore's Math.atan2 rounds otherwise.
+  [1.8122033681376024, 3.5659387196796786, 0.47018457853783097],
+  [-0.5872754413014718, 3.956653580494958, -0.1473515092104118],
+  [3.9475484831880294, -0.645647715770906, 1.7329175022840324],
+  [2.672065450443597, 2.976586338164225, 0.7315399331516598],
+  [3.6441364790425723, -1.6493238984846812, 1.9958075150168286],
+  [-1.1251726983477965, -3.838487514489543, -2.856451222384635],
+];
+
 test("hypot2 gives V8's Math.hypot bits in any engine: zeros, NaN, subnormals, overflow, ties", () => {
   expect(HYPOT2.filter(([x, y, v8]) => !Object.is(hypot2(x, y), v8))).toEqual([]);
 });
 
 test("hypot3 gives V8's Math.hypot bits in any engine, compensated in argument order", () => {
   expect(HYPOT3.filter(([x, y, z, v8]) => !Object.is(hypot3(x, y, z), v8))).toEqual([]);
+});
+
+test("atan2 gives V8's Math.atan2 bits in any engine: zeros, infinities, NaN, reductions", () => {
+  expect(ATAN2.filter(([y, x, v8]) => !Object.is(atan2(y, x), v8))).toEqual([]);
 });

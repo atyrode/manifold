@@ -2,13 +2,14 @@
 // branches and their fur in uSim0 and uSim3; the shader adds their feathery barbs, the rime along
 // the frame and the glints), melted by a warm fingertip and refreezing (uSim1), on a growth clock
 // (uSim2) that opens on a pane already frosted along its bottom. Behind the glass, out of focus:
-// a snowy street or a cabin in the woods, under the shared sky (its stars, the moon in a phase,
-// shooting stars and the aurora composed as shared components) and snowfall. Entering, the glass
-// starts clear and the frost grows in from the frame; leaving, a warm breath clears a patch that
-// spreads over the pane (FROST_PASSAGE).
+// a snowy street or a cabin in the woods, under the world's sky (its snow cloud, stars, the moon in
+// a phase, shooting stars and the aurora, worldSky) and snowfall. Entering, the glass starts clear
+// and the frost grows in from the frame; leaving, a warm breath clears a patch that spreads over the
+// pane (FROST_PASSAGE).
 import { choice, feature, range, seed, type ParamDef } from "../../params.ts";
 import { atmosphereGroups, skyKnobs, weatherKnobs } from "../atmosphere.ts";
 import type { SceneDef } from "../types.ts";
+import { worldGates } from "../world.ts";
 import { FROST_METEOR_TRIGGER, frostGlsl } from "./shader.ts";
 import { FROST_PASSAGE, frostSim } from "./sim.ts";
 
@@ -125,6 +126,7 @@ export const frostScene: SceneDef = {
   entry: "sceneFrost",
   passage: FROST_PASSAGE,
   sim: frostSim(params),
-  // The moon takes a phase (K_moon) in the shared sky.
-  features: { SKY_MOON_PHASE: 1 },
+  // The world's sky, every part its knobs can show compiled in: the moon's phase (K_moon), the snow
+  // cloud, the stars, the aurora and shooting stars.
+  features: worldGates(params),
 };

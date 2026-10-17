@@ -1,5 +1,6 @@
-// Drawing the grown tree into the maps the shader reads, on the CPU, once per tree (and again after
-// a cut or when cut twigs regrow), in display units projected the way the camera sees them.
+// Drawing the grown tree into the maps the shader reads, on the CPU, once per tree (on the build
+// worker, with the tree: sim.ts bonsaiGrowth) and again on the page after a cut or when cut twigs
+// regrow, in display units projected the way the camera sees them.
 //   wood (uSim0, rgba16f): signed distance to the bark (units, negative inside), the branch radius
 //     there, the depth of its front surface, and deadness (jin). Branches meeting at a fork are
 //     joined with a smooth minimum (fillets like real crotches); where one passes in front of
@@ -49,31 +50,80 @@ export function noise2(x: number, y: number): number {
   return a + (b - a) * uy;
 }
 
+/** A map texel with nothing drawn on it: wood (FAR from any bark, its front at depth 1), foliage (no tuft). */
+export const BARE_WOOD = [FAR, 0, 1, 0] as const;
+export const BARE_LEAF = [-1, 0, 0, 0] as const;
+
+/** The maps as drawn (TreeMaps.state): what a bonsai build hands the page, as `new TreeMaps(state)` takes them. */
+export interface TreeMapsState {
+  readonly wood: Float32Array;
+  readonly leaf: Float32Array;
+  readonly woodSil: Float32Array;
+  readonly leafSil: Float32Array;
+  readonly flex: Float32Array;
+  readonly padA: Int16Array;
+  readonly padB: Int16Array;
+  readonly weightA: Float32Array;
+}
+
 export class TreeMaps {
-  readonly wood = new Float32Array(W * H * 4);
-  readonly leaf = new Float32Array(W * H * 4);
-  readonly woodSil = new Float32Array(FW * FH);
-  readonly leafSil = new Float32Array(FW * FH);
-  readonly flex = new Float32Array(FW * FH);
-  readonly padA = new Int16Array(FW * FH);
-  readonly padB = new Int16Array(FW * FH);
-  readonly weightA = new Float32Array(FW * FH);
-  readonly #score = new Float32Array(W * H);
-  readonly #woodFlex = new Float32Array(W * H);
+  readonly wood: Float32Array;
+  readonly leaf: Float32Array;
+  readonly woodSil: Float32Array;
+  readonly leafSil: Float32Array;
+  readonly flex: Float32Array;
+  readonly padA: Int16Array;
+  readonly padB: Int16Array;
+  readonly weightA: Float32Array;
+  /** A draw's scratch, per map texel: the visible tuft's score, the wood's flex (the first draw makes them). */
+  #score = new Float32Array(0);
+  #woodFlex = new Float32Array(0);
+
+  /** Blank maps to draw into, or maps drawn already (`state`, on its own arrays). */
+  constructor(state?: TreeMapsState) {
+    this.wood = state?.wood ?? new Float32Array(W * H * 4);
+    this.leaf = state?.leaf ?? new Float32Array(W * H * 4);
+    this.woodSil = state?.woodSil ?? new Float32Array(FW * FH);
+    this.leafSil = state?.leafSil ?? new Float32Array(FW * FH);
+    this.flex = state?.flex ?? new Float32Array(FW * FH);
+    this.padA = state?.padA ?? new Int16Array(FW * FH);
+    this.padB = state?.padB ?? new Int16Array(FW * FH);
+    this.weightA = state?.weightA ?? new Float32Array(FW * FH);
+  }
+
+  /** The maps as their own arrays (not copies), as `new TreeMaps(state)` takes them. */
+  get state(): TreeMapsState {
+    return {
+      wood: this.wood,
+      leaf: this.leaf,
+      woodSil: this.woodSil,
+      leafSil: this.leafSil,
+      flex: this.flex,
+      padA: this.padA,
+      padB: this.padB,
+      weightA: this.weightA,
+    };
+  }
 
   /** Draw every part of the tree that has not been cut. */
   draw(tree: Tree): void {
     const wood = this.wood;
     const leaf = this.leaf;
+    if (this.#score.length === 0) {
+      this.#score = new Float32Array(W * H);
+      this.#woodFlex = new Float32Array(W * H);
+    }
+    const [w0, w1, w2, w3] = BARE_WOOD;
+    const [l0, l1, l2, l3] = BARE_LEAF;
     for (let i = 0; i < W * H; i++) {
-      wood[i * 4] = FAR;
-      wood[i * 4 + 1] = 0;
-      wood[i * 4 + 2] = 1;
-      wood[i * 4 + 3] = 0;
-      leaf[i * 4] = -1;
-      leaf[i * 4 + 1] = 0;
-      leaf[i * 4 + 2] = 0;
-      leaf[i * 4 + 3] = 0;
+      wood[i * 4] = w0;
+      wood[i * 4 + 1] = w1;
+      wood[i * 4 + 2] = w2;
+      wood[i * 4 + 3] = w3;
+      leaf[i * 4] = l0;
+      leaf[i * 4 + 1] = l1;
+      leaf[i * 4 + 2] = l2;
+      leaf[i * 4 + 3] = l3;
       this.#score[i] = -1e9;
       this.#woodFlex[i] = 0;
     }

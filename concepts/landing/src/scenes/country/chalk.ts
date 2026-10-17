@@ -28,7 +28,7 @@
 // the terrain's own (TERRAIN_RECORDS: it uses 0..5), which countryChalk reads in the ground branch,
 // cut per cell.
 import type { LandAllocation, LandModel } from "../../sims/landuse.ts";
-import { hypot2, hypot3, smoothstep } from "../../sims/math.ts";
+import { atan2, hypot2, hypot3, smoothstep } from "../../sims/math.ts";
 import {
   sampleGrid,
   TERRAIN_RECORDS,
@@ -126,7 +126,7 @@ export function chalkSite(t: Terrain, sky: SkyState): ChalkSite | null {
       const cz = z - v.z;
       const depth = cx * fx + cz * fz;
       const side = cx * rx + cz * rz;
-      const bearing = Math.abs(Math.atan2(side, depth));
+      const bearing = Math.abs(atan2(side, depth));
       if (depth < CHALK.near || depth > CHALK.far || bearing > CHALK.bearing) continue;
       const distance = hypot3(cx, cy, cz);
       // The plane through its footprint, over about its half breadth.

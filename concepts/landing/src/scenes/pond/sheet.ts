@@ -1,13 +1,13 @@
 // Data textures painted on the CPU: the pond's plant atlas (the sprites its simulated border plants
-// are drawn from, see decor.ts and sims/plantsheet.ts) and its canopy sheet. Painting is a build
+// are drawn from, see atlas.ts and sims/plantsheet.ts) and its canopy sheet. Painting is a build
 // (sims/build.ts): on the build worker, so it never competes with the frame loop, or on the page in
 // small steps between frames where there is none. The last finished sheet stays bound meanwhile,
-// and outlives its painter for a while, so a scene entered again shows its sheets at once. A newer
-// request (a slider dragged through many values) supersedes the sheet in progress: only the newest
-// is painted to the end and shown.
+// and outlives its painter for a while on its context (until that is lost), so a scene entered
+// again shows its sheets at once. A newer request (a slider dragged through many values)
+// supersedes the sheet in progress: only the newest is painted to the end and shown.
 
-import { paintAtlas, paintCanopy, type CanopyConfig } from "./decor.ts";
-import { BuildSlot, type BuildKind, type BuildWorker } from "./sims/build.ts";
+import { BuildSlot, type BuildKind, type BuildWorker } from "../../sims/build.ts";
+import { paintAtlas, paintCanopy, type CanopyConfig } from "./atlas.ts";
 
 /** What to paint: the plant atlas, or the canopy sheet spanning `span` frames. */
 export type SheetJob = { kind: "atlas" } | { kind: "canopy"; config: CanopyConfig; span: number };
@@ -64,12 +64,20 @@ export const sheetPaint: BuildKind<SheetRequest, SheetResult> = {
 };
 
 /**
- * Finished sheets of disposed painters by key, oldest first, so a scene entered afresh (a replayed
- * entrance, a quick return) adopts them instead of repainting while it comes in. Bounded: the
- * oldest beyond KEPT_SHEETS is freed.
+ * Finished sheets of disposed painters, per context by key, oldest first, so a scene entered afresh
+ * (a replayed entrance, a quick return) adopts them instead of repainting while it comes in.
+ * Bounded: the oldest beyond KEPT_SHEETS is freed. A lost context's go with it (`forgetSheets`).
  */
-const kept = new Map<string, WebGLTexture>();
+const kept = new WeakMap<WebGL2RenderingContext, Map<string, WebGLTexture>>();
 const KEPT_SHEETS = 2;
+
+/**
+ * The context `gl` is lost: forget the sheets kept on it. Its textures are dead once it is
+ * restored, so a scene entered then paints its sheets again rather than adopting them.
+ */
+export function forgetSheets(gl: WebGL2RenderingContext): void {
+  kept.delete(gl);
+}
 
 export class SheetPainter {
   readonly #gl: WebGL2RenderingContext;
@@ -94,9 +102,10 @@ export class SheetPainter {
   request(key: string, width: number, height: number, job: SheetJob): void {
     if (key === this.#key) return;
     this.#key = key;
-    const ready = kept.get(key);
-    if (ready !== undefined) {
-      kept.delete(key);
+    const sheets = kept.get(this.#gl);
+    const ready = sheets?.get(key);
+    if (sheets !== undefined && ready !== undefined) {
+      sheets.delete(key);
       this.#paint.cancel();
       if (this.#texture !== undefined) this.#gl.deleteTexture(this.#texture);
       this.#texture = ready;
@@ -127,14 +136,19 @@ export class SheetPainter {
     const texture = this.#texture;
     this.#texture = undefined;
     if (texture === undefined) return;
-    const previous = kept.get(this.#textureKey);
+    let sheets = kept.get(this.#gl);
+    if (sheets === undefined) {
+      sheets = new Map();
+      kept.set(this.#gl, sheets);
+    }
+    const previous = sheets.get(this.#textureKey);
     if (previous !== undefined) this.#gl.deleteTexture(previous);
-    kept.delete(this.#textureKey);
-    kept.set(this.#textureKey, texture);
-    for (const [key, old] of kept) {
-      if (kept.size <= KEPT_SHEETS) break;
+    sheets.delete(this.#textureKey);
+    sheets.set(this.#textureKey, texture);
+    for (const [key, old] of sheets) {
+      if (sheets.size <= KEPT_SHEETS) break;
       this.#gl.deleteTexture(old);
-      kept.delete(key);
+      sheets.delete(key);
     }
   }
 
@@ -142,8 +156,10 @@ export class SheetPainter {
     const gl = this.#gl;
     const texture = this.#texture ?? gl.createTexture();
     gl.bindTexture(gl.TEXTURE_2D, texture);
+    // Rows come top row first; the pixel store goes back to what every other upload expects.
     gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);
     gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, width, height, 0, gl.RGBA, gl.UNSIGNED_BYTE, pixels);
+    gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
     gl.generateMipmap(gl.TEXTURE_2D);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);

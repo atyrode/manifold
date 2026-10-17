@@ -1,5 +1,5 @@
 // The pond's border plants, grown with the shared plant component (sims/plants.ts) and drawn into its
-// plant sheet on the GPU (sims/plantsheet.ts) from the botany atlas (decor.ts). The layout is the
+// plant sheet on the GPU (sims/plantsheet.ts) from the botany atlas (atlas.ts). The layout is the
 // one the pond always had: clumps in the corners and along each edge as lush as that edge, monstera
 // climbing on stalked leaves, ferns and bananas fanning from crowns, an understory of young leaves,
 // grass at the waterline and pothos trailing in, every random draw in its old order, so a seed lays
@@ -9,8 +9,6 @@
 //
 // Units: frame heights, x right and y down from the frame's top-left corner (a canvas's), as the
 // sheet is drawn: the frame is aspect wide and 1 high; plants root just beyond its edges.
-import { Material, type MaterialId } from "../../botany.ts";
-import { MONSTERA_MATURE, pondRandom } from "../../decor.ts";
 import {
   type PlantBuilder,
   PlantHabit,
@@ -19,6 +17,8 @@ import {
   type PlantSpecies,
   type RootedPlants,
 } from "../../sims/plants.ts";
+import { MONSTERA_MATURE, pondRandom } from "./atlas.ts";
+import { Material, type MaterialId } from "./botany.ts";
 
 /** Plants that grow in clumps along the edges. */
 export const clumpSpecies = ["monstera", "fern", "banana"] as const;
@@ -75,7 +75,7 @@ function species(
   };
 }
 
-/** The angle a curl of quadratic Bézier stalk turns through, from node to knee (decor's stalks). */
+/** The angle a curl of quadratic Bézier stalk turns through, node to knee (atlas.ts's stalks). */
 function stalkTurn(spread: number): number {
   const a = Math.atan2(0.15 * Math.sin(spread), 0.6 + 0.15 * Math.cos(spread));
   const b = Math.atan2(0.15 * Math.sin(spread), 0.4 - 0.15 * Math.cos(spread));

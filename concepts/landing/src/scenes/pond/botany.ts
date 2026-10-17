@@ -1,4 +1,4 @@
-// Plant morphology for the pond's foliage, drawn with Canvas 2D into the plant atlas (decor.ts): the
+// Plant morphology for the pond's foliage, drawn with Canvas 2D into the plant atlas (atlas.ts): the
 // sprites its simulated border plants are cut from. Their stems and roots are drawn on the GPU.
 //
 // Leaf outlines follow the leaf-shape model of Coussement et al. (2018), "A flexible geometric

@@ -7,7 +7,8 @@ import { birdKnobs, birdsGroup } from "../../shaders/lib/birds.ts";
 import { WATER_TIERS } from "../../shaders/lib/water.ts";
 import { atmosphereGroups, skyKnobs, skyTheme, weatherKnobs } from "../atmosphere.ts";
 import type { SceneDef } from "../types.ts";
-import { LANTERNS_METEOR_TRIGGER, LANTERNS_STARS, lanternsGlsl } from "./shader.ts";
+import { worldGates } from "../world.ts";
+import { LANTERNS_METEOR_TRIGGER, lanternsGlsl } from "./shader.ts";
 import { LANTERN_COUNTS, PASSAGE_ENTER, PASSAGE_EXIT, lanternsSim } from "./sim.ts";
 
 const params: readonly ParamDef[] = [
@@ -65,7 +66,7 @@ const params: readonly ParamDef[] = [
   ),
   ...skyKnobs({
     time: 0.79,
-    stars: LANTERNS_STARS,
+    stars: 0.55,
     meteors: { trigger: LANTERNS_METEOR_TRIGGER },
     constellations: true,
   }),
@@ -91,7 +92,8 @@ export const lanternsScene: SceneDef = {
   accent: "#ffa040",
   look: { color: "full", levels: 4 },
   params,
-  planets: { group: "sky", across: [-23, 12, 23], up: [2, 8, 13] },
+  // In the sky's frame, which the view faces 20 degrees left of: the stretch over the far bank.
+  planets: { group: "sky", across: [-43, -8, 3], up: [2, 8, 13] },
   groups: {
     river: {
       title: "River",
@@ -131,6 +133,7 @@ export const lanternsScene: SceneDef = {
   // changing, so the page stays on the night theme. The shader follows the page (inkOf).
   theme: skyTheme(params),
   // The river: wind ripples carried by the current, tilting a mirror (rippleSpectrum, waterDrift,
-  // waterMirror).
-  features: { WATER_TIER: WATER_TIERS.flow },
+  // waterMirror). The world's sky, every part its knobs can show compiled in: the rain's deck, the
+  // stars, the aurora and shooting stars; the birds are the river's own.
+  features: { WATER_TIER: WATER_TIERS.flow, ...worldGates(params), WORLD_BIRDS: 0 },
 };

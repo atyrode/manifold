@@ -515,11 +515,14 @@ vec3 cloudsView(vec2 p, vec2 head, vec2 frame, float px, float tm, Sky sky, Clou
       float g = lightningBolt(hv, a, b, lseed, lage);
       col += mix(vec3(0.6, 0.5, 1.0) * g, vec3(1.0), smoothstep(0.6, 0.9, g));
     }
-    // Farthest first; the outer two only show on wide frames.
-    col = cloudsTowerOver(col, hv, vec2(-1.25 * frame.x, 0.2 * tall), 0.31, lean, px, sky, li, rd, moonHaze, storm * 0.6, flash * 0.06, strikeAt);
-    col = cloudsTowerOver(col, hv, vec2(1.7 * frame.x, 0.15 * tall), 0.67, lean, px, sky, li, rd, moonHaze, storm * 0.6, flash * 0.06, strikeAt);
-    col = cloudsTowerOver(col, hv, tower1, 0.53, lean, px, sky, li, rd, moonHaze, storm, flash * (hitFirst ? 0.12 : 1.0), strikeAt);
-    col = cloudsTowerOver(col, hv, tower0, 0.19, lean, px, sky, li, rd, moonHaze, storm, flash * (hitFirst ? 1.0 : 0.12), strikeAt);
+    // Farthest first; the outer two only show on wide frames. One loop over the four, so the
+    // thunderhead is compiled once, not once a tower.
+    vec2 towers[4] = vec2[4](vec2(-1.25 * frame.x, 0.2 * tall), vec2(1.7 * frame.x, 0.15 * tall), tower1, tower0);
+    float seeds[4] = float[4](0.31, 0.67, 0.53, 0.19);
+    float storms[4] = float[4](storm * 0.6, storm * 0.6, storm, storm);
+    float flashes[4] = float[4](flash * 0.06, flash * 0.06, flash * (hitFirst ? 0.12 : 1.0), flash * (hitFirst ? 1.0 : 0.12));
+    for (int k = 0; k < 4; k++)
+      col = cloudsTowerOver(col, hv, towers[k], seeds[k], lean, px, sky, li, rd, moonHaze, storms[k], flashes[k], strikeAt);
     // Otherwise the bolt falls out of the struck tower's dark base, through the rain, to the deck.
     if (!between && lage < 1.0) {
       vec2 a = vec2(struck.x + sx * struck.y, 0.42 * struck.y);

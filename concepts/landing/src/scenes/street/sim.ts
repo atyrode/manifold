@@ -60,7 +60,9 @@
 // then climbs in and the van pulls out into the traffic again (sims/errand.ts runs the episode's
 // steps). The driver walks with the crowd's social force, so walkers step round the loaded trolley
 // and it waits for them; cars pass the parked van close by, cyclists in the kerb lane swing out
-// round it (waiting behind it while a car is coming), and the cars behind make room.
+// round it (waiting behind it while a car is coming). As it eases in, it and they keep in one file,
+// neither passing the other; it pulls out once its lane and theirs are clear behind it, and the
+// cars and cyclists that come up behind it keep behind it.
 //
 // Vehicles follow paths (straight lanes and turning arcs, sampled every PATH_STEP metres), their
 // speed set by the intelligent driver model (M. Treiber, A. Hennecke, D. Helbing, "Congested
@@ -73,12 +75,13 @@
 // bicycles in the kerb lane). Cars, taxis, kei cars, vans and bicycles come in from the three ends
 // at random (the `traffic` knob) and queue at the red.
 //
-// Time runs in fixed steps of STEP seconds of simulated time (motion-scaled), so the street depends
-// only on the knobs, the seed and simulated time, not on the frame rate; positions are
-// interpolated between the last two steps for drawing. The first frame lays the street out a few
-// seconds before the scramble (crowds waiting at the kerbs, the avenue's traffic queued at its red
-// light) and runs it for PREWARM seconds, the walkers on the opening's own paths (#layingOut).
-// Nothing is allocated per frame.
+// Time runs in fixed steps of STEP seconds of simulated time (motion-scaled, sims/clock.ts), so the
+// street depends only on the knobs, the seed and simulated time, not on the frame rate; positions
+// are interpolated between the last two steps for drawing. A seed lays the street out a few seconds
+// before the scramble (crowds waiting at the kerbs, the avenue's traffic queued at its red light)
+// and runs it for PREWARM seconds, the walkers on the opening's own paths (#layingOut): a count of
+// steps, spread over as many frames as the frame's budget needs, while the clock holds and the
+// textures keep what they show (on a reseed, the old street). Nothing is allocated per frame.
 //
 // The scene's passage (SceneDef.passage, STREET_PASSAGE): the camera comes down from the skyline onto
 // the crossing as the crowd walks in along its sidewalks to where it gathers, and on the way out it
@@ -103,6 +106,7 @@
 //          side street's, texel 2 the walk signals (green man, red man, 0, 0), each eased over
 //          LAMP_FADE seconds; the green man blinks while the walk phase runs out.
 import type { ParamDef } from "../../params.ts";
+import { FixedStep, runBudgeted } from "../../sims/clock.ts";
 import { DataTexture } from "../../sims/texture.ts";
 import { Errand } from "../../sims/errand.ts";
 import { clamp, fract, smoothstep } from "../../sims/math.ts";
@@ -141,7 +145,7 @@ export const LANE_WB_OUT = 24.85;
 export const LANE_WB_BIKE = 23.25;
 /** The side street's lanes (x): coming down to the junction, its bicycles, and going up. */
 export const LANE_SB = 3;
-export const LANE_SB_BIKE = 4.9;
+const LANE_SB_BIKE = 4.9;
 export const LANE_NB = -3;
 /** Stop lines: where the eastbound and westbound fronts stop (x), and the southbound (z). */
 export const STOP_EB = -12.4;
@@ -160,7 +164,7 @@ export const DIAG_FAR_Z = 40.6;
 export const MARK_APEX_Z = 29.6;
 
 /** A pole on the sidewalk: base (m), height (m); walkers step round it. */
-export interface Pole {
+interface Pole {
   readonly x: number;
   readonly z: number;
   readonly height: number;
@@ -207,16 +211,16 @@ export const VENDING: readonly (readonly [number, number, number, number])[] = [
 ];
 
 /** Doors walkers use: the café on the far left block, the konbini on the far right corner. */
-export const CAFE_DOOR = -17.5;
-export const KONBINI_DOOR = 14.0;
+const CAFE_DOOR = -17.5;
+const KONBINI_DOOR = 14.0;
 
 // ---- Agents ----
 
 /** Kinds in uSim0 row 0 .w. */
-export const KIND_ADULT = 1;
+const KIND_ADULT = 1;
 export const KIND_CHILD = 2;
 export const KIND_BIKE = 3;
-export const KIND_SEDAN = 4;
+const KIND_SEDAN = 4;
 export const KIND_TAXI = 5;
 export const KIND_KEI = 6;
 export const KIND_VAN = 7;
@@ -226,7 +230,7 @@ export const KIND_PORTER = 8;
 /** A vehicle's box seen from above: length, width (m), the top of its body and of its cabin (m),
  *  and where its cabin runs along it (m from its centre, rear and front). Bicycles: the rider's
  *  head height as `top`. Indexed by kind. */
-export interface VehicleShape {
+interface VehicleShape {
   readonly length: number;
   readonly width: number;
   readonly body: number;
@@ -249,7 +253,7 @@ export const SHAPES: readonly VehicleShape[] = [
 
 /** Walker and vehicle slots: walkers first. */
 export const MAX_WALKERS = 160;
-export const MAX_VEHICLES = 40;
+const MAX_VEHICLES = 40;
 export const MAX_AGENTS = MAX_WALKERS + MAX_VEHICLES;
 
 /** The tile grid over the street (m): origin, size, count; slots per tile. */
@@ -715,7 +719,8 @@ const DELIVERY_FIRST = 25;
 const DELIVERY_SIGNAL = 6;
 const PULL_IN = 6;
 const PULL_OUT = 12;
-/** It pulls out once its lane is clear this far behind it and ahead of it (m). */
+/** It pulls out once its lane and the kerb lane it stands over are clear this far behind it and
+ *  ahead of it (m), so nobody comes up behind it as it eases out. */
 const CLEAR_BEHIND = 32;
 const CLEAR_AHEAD = 6;
 /** A cyclist in the kerb lane swings out round the parked van by this much (m), easing out and back
@@ -724,12 +729,29 @@ const CLEAR_AHEAD = 6;
 const BIKE_SWERVE = 1.7;
 const SWERVE_RAMP = 4;
 const SWERVE_WAIT = 10;
+/** The van and the cyclists in the kerb lane. Within DELIVERY_APPROACH metres of its stop, until it
+ *  stands in at the kerb, they keep in one file: it does not pass a cyclist it would ease in over,
+ *  nor a cyclist it. It stands in once VAN_IN metres off its lane toward the kerb, so near straight
+ *  that a cyclist swinging out passes its tail clear. Pulling out, it is over their lane until it
+ *  is back within VAN_OVER metres of its own (turned, its tail leaves their lane about there):
+ *  they keep behind it, swinging out as they come up to it. */
+const DELIVERY_APPROACH = 14;
+const VAN_IN = 1.8;
+const VAN_OVER = 0.1;
 
 // ---- Time ----
 
 const STEP = 1 / 30;
 const MAX_STEPS = 6;
 const PREWARM = 12;
+const PREWARM_STEPS = Math.round(PREWARM / STEP);
+/** Wall time the first street's warm-up may take a frame at least (ms; more when the frame's budget
+ *  allows), so a typical machine lays it out in one frame. A reseed, with the old street still on
+ *  screen, takes the frame's budget alone. The warm-up is a count of steps either way: a slow
+ *  machine shows the same street, a few frames later. */
+const PREWARM_BUDGET_MS = 90;
+/** Warm-up steps between two looks at the clock (about 2 ms of them). */
+const PREWARM_CHUNK = 8;
 /** Seconds of the side street's green left once the street has been laid out. */
 const OPENING = 3;
 const SEED_BASE = 0x5717ee7;
@@ -739,7 +761,7 @@ type KnobKey =
   "crowd" | "signal" | "outing" | "traffic" | "delivery" | "rain" | "snow" | "streetSeed";
 
 /** The simulation was set up wrong: a knob it reads is missing, or a phase is unknown. */
-export class StreetSimError extends Error {}
+class StreetSimError extends Error {}
 
 /** Angle a − b wrapped to −π..π. */
 const angleDiff = (a: number, b: number): number => {
@@ -1159,6 +1181,8 @@ class StreetCrossing implements SceneSim {
   readonly #agents: DataTexture;
   readonly #tiles: DataTexture;
   readonly #state: DataTexture;
+  /** The textures handed to the renderer every frame. */
+  readonly #textures: readonly (WebGLTexture | undefined)[];
   readonly #agentData = new Float32Array(MAX_AGENTS * 2 * 4);
   readonly #tileData = new Uint8Array(TILES_X * TILE_TEXELS * TILES_Z * 4);
   readonly #stateData = new Float32Array(3 * 4);
@@ -1208,7 +1232,13 @@ class StreetCrossing implements SceneSim {
   readonly #arrived = new Float64Array(4);
 
   #clock = 0;
-  #pending = 0;
+  readonly #steps = new FixedStep(STEP, MAX_STEPS);
+  /** Steps of the warm-up (#reset's PREWARM) taken so far; the street is live once all are. */
+  #warmed = 0;
+  /** Whether a street has been uploaded: a reseed's warm-up then takes the frame's budget alone. */
+  #shown = false;
+  /** One warm-up step, as runBudgeted calls it. */
+  readonly #warmStep = (): void => this.#step(STEP);
   #nextWalker = 0;
   readonly #nextVehicle = new Float64Array(3);
   #nextOuting = Number.POSITIVE_INFINITY;
@@ -1223,7 +1253,7 @@ class StreetCrossing implements SceneSim {
   #porter: Walker | undefined;
   /** A delivery is due to set out as soon as the avenue's way in is clear. */
   #deliveryDue = false;
-  /** The street is being laid out (#reset's prewarm). Walkers then keep to the opening's paths as
+  /** The street is being laid out (#reset's warm-up). Walkers then keep to the opening's paths as
    *  composed: the slide round obstacles, the steering in from the kerb and round the inside corners
    *  and the watchdog take over once it is on screen, so the first frame keeps the same people where
    *  they always were (any of them changes who reaches a kerb when, and with it every later draw). */
@@ -1272,6 +1302,7 @@ class StreetCrossing implements SceneSim {
       format: "rgba16f",
       filter: "nearest",
     });
+    this.#textures = [this.#agents.texture, this.#tiles.texture, this.#state.texture];
   }
 
   frame(frame: SimFrame): readonly (WebGLTexture | undefined)[] {
@@ -1294,6 +1325,18 @@ class StreetCrossing implements SceneSim {
 
     const seed = Math.round(values[index.streetSeed] ?? 0);
     if (seed !== this.#seed) this.#reset(seed);
+    if (this.#warmed < PREWARM_STEPS) {
+      this.#warmed = runBudgeted(
+        this.#warmStep,
+        this.#shown ? frame.budget : Math.max(PREWARM_BUDGET_MS, frame.budget),
+        PREWARM_STEPS,
+        this.#warmed,
+        PREWARM_CHUNK,
+      );
+      // Until the street is laid out its clock holds and the textures keep what they show.
+      if (this.#warmed < PREWARM_STEPS) return this.#textures;
+      this.#laidOut();
+    }
 
     // Outings on their own: a fresh wait whenever the feature comes on, none while it is off.
     if (this.#outing <= 0) this.#nextOuting = Number.POSITIVE_INFINITY;
@@ -1306,14 +1349,11 @@ class StreetCrossing implements SceneSim {
     this.#watchTriggers(frame.triggers);
     this.#follow(frame.pointer);
 
-    const advance = Math.max(0, frame.dt) * Math.max(0, frame.motion);
-    this.#pending = Math.min(this.#pending + advance, MAX_STEPS * STEP);
-    while (this.#pending >= STEP) {
-      this.#step(STEP);
-      this.#pending -= STEP;
-    }
-    this.#upload(this.#pending / STEP);
-    return [this.#agents.texture, this.#tiles.texture, this.#state.texture];
+    const steps = this.#steps.advance(Math.max(0, frame.dt) * Math.max(0, frame.motion));
+    for (let i = 0; i < steps; i++) this.#step(STEP);
+    this.#upload(this.#steps.alpha);
+    this.#shown = true;
+    return this.#textures;
   }
 
   dispose(): void {
@@ -1367,7 +1407,8 @@ class StreetCrossing implements SceneSim {
   }
 
   /** Lay a fresh street out for this seed: a few seconds before the scramble, people waiting at the
-   *  kerbs and walking along the sidewalks, the avenue's traffic queued at its red light. */
+   *  kerbs and walking along the sidewalks, the avenue's traffic queued at its red light. frame()
+   *  then runs it PREWARM_STEPS steps on (the warm-up) before it goes live (#laidOut). */
   #reset(seed: number): void {
     const random = this.#random;
     random.seed(SEED_BASE ^ Math.imul(seed + 1, 0x9e3779b1));
@@ -1375,7 +1416,8 @@ class StreetCrossing implements SceneSim {
     for (const walker of this.#walkers) walker.alive = false;
     for (const vehicle of this.#vehicles) vehicle.alive = false;
     this.#clock = 0;
-    this.#pending = 0;
+    this.#steps.reset();
+    this.#warmed = 0;
     this.#errand.stop();
     this.#van = undefined;
     this.#porter = undefined;
@@ -1423,7 +1465,10 @@ class StreetCrossing implements SceneSim {
     this.#nextDelivery = this.#delivery > 0 ? DELIVERY_FIRST : Number.POSITIVE_INFINITY;
 
     this.#layingOut = true;
-    for (let s = 0; s < PREWARM / STEP; s++) this.#step(STEP);
+  }
+
+  /** The warm-up is done: the street goes live, drawn from where it stands. */
+  #laidOut(): void {
     this.#layingOut = false;
     for (const walker of this.#walkers) {
       walker.lastX = walker.x;
@@ -2689,10 +2734,23 @@ class StreetCrossing implements SceneSim {
   #stepVehicles(dt: number): void {
     const vehicles = this.#vehicles;
     const signals = this.#signals;
-    // The delivery van while it stands over the kerb lane, for the cyclists coming up behind it.
-    const van = this.#van;
+    // The delivery van and the cyclists in the kerb lane. Nearing its stop, easing in, it and they
+    // keep in one file (neither passes the other), so it never eases in over one. Standing in at
+    // the kerb, and pulling out, it is over their lane (kerbVan) and they swing out round it;
+    // pulling out it is in their way too, and they keep behind it.
+    const delivery = this.#van;
+    const van =
+      delivery !== undefined && delivery.alive && delivery.delivery ? delivery : undefined;
+    const nearing =
+      van !== undefined &&
+      Number.isNaN(van.pullOut) &&
+      van.offset < VAN_IN &&
+      van.laneC > DELIVERY_X + AVENUE_END - DELIVERY_APPROACH;
+    const pullingOut = van !== undefined && !Number.isNaN(van.pullOut) && van.offset > VAN_OVER;
     const kerbVan =
-      van !== undefined && van.alive && van.delivery && van.lane === L_KERB ? van : undefined;
+      van !== undefined && (pullingOut || (Number.isNaN(van.pullOut) && van.offset >= VAN_IN))
+        ? van
+        : undefined;
     for (const me of vehicles) {
       if (!me.alive) continue;
       // The delivery van stands at the kerb while its driver is out, then until it can pull out.
@@ -2790,6 +2848,12 @@ class StreetCrossing implements SceneSim {
         // Round the parked delivery van a cyclist rides in the outer lane for a while.
         if (Number.isNaN(at) && other.swerve > 0.35) at = path.locate(L_EB_OUT, other.laneC);
         if (Number.isNaN(at) && me.swerve > 0.35 && other.lane === L_EB_OUT)
+          at = me.s + other.laneC - me.laneC;
+        // The delivery van nearing its stop or pulling out: a cyclist in the kerb lane keeps behind
+        // it, and nearing it the van keeps behind the cyclists in that lane.
+        if (Number.isNaN(at) && other === van && (nearing || pullingOut) && me.lane === L_EB_BIKE)
+          at = me.s + other.laneC - me.laneC;
+        if (Number.isNaN(at) && me === van && nearing && other.lane === L_EB_BIKE)
           at = me.s + other.laneC - me.laneC;
         const onArc = other.lane >= L_ARC_EBL && other.lane <= L_ARC_SBB;
         if (Number.isNaN(at) && onArc) {
@@ -2951,7 +3015,8 @@ class StreetCrossing implements SceneSim {
   }
 
   /** Whether the delivery van stands at the kerb this step: while its driver is out, and afterwards,
-   *  blinker on, until its lane is clear behind and ahead (then it notes where it set off). */
+   *  blinker on, until its lane and the kerb lane it stands over are clear behind and ahead (then
+   *  it notes where it set off). */
   #vanHolds(van: Vehicle): boolean {
     const stage = this.#errand.stage;
     if (stage === "arriving") return false;
@@ -2960,7 +3025,7 @@ class StreetCrossing implements SceneSim {
     for (const other of this.#vehicles) {
       if (other === van || !other.alive) continue;
       if (
-        other.lane === L_EB_OUT &&
+        (other.lane === L_EB_OUT || other.lane === L_EB_BIKE) &&
         other.laneC > van.laneC - CLEAR_BEHIND &&
         other.laneC < van.laneC + CLEAR_AHEAD
       )
@@ -2991,16 +3056,20 @@ class StreetCrossing implements SceneSim {
     if (Number.isNaN(van.pullOut) && van.offset > 1.0) van.lane = L_KERB;
   }
 
-  /** A cyclist in the kerb lane swings out (to its right) round the delivery van parked over it, and
-   *  eases back in once past; if the van leaves first it eases back where it is. */
+  /** A cyclist in the kerb lane swings out (to its right) round the delivery van over it, and eases
+   *  back in once past; if the van leaves first it eases back where it is. Past the van's middle it
+   *  only eases back in: it never swings out ahead of a van coming in behind it. */
   #swerve(bike: Vehicle, kerbVan: Vehicle | undefined, dt: number): void {
     const round = bike.lane === L_EB_BIKE ? kerbVan : undefined;
-    const target = round ? swerveRound(round, bike.laneC) : 0;
+    const past = round !== undefined && bike.laneC > round.laneC;
+    let target = round ? swerveRound(round, bike.laneC) : 0;
+    if (past) target = Math.min(target, bike.swerve);
     bike.swerve = target >= bike.swerve ? target : Math.max(target, bike.swerve - dt);
     if (bike.swerve <= 0) return;
     const next = round ? swerveRound(round, bike.laneC + 0.5) : target;
+    const turn = past ? Math.min(next - target, 0) : next - target;
     bike.z -= BIKE_SWERVE * bike.swerve;
-    bike.heading -= Math.atan((BIKE_SWERVE * (next - target)) / 0.5);
+    bike.heading -= Math.atan((BIKE_SWERVE * turn) / 0.5);
   }
 
   // ---- The crowd's walk-in ----

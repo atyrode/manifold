@@ -49,9 +49,11 @@
 //
 // Clicking pours a pinch of sand at the pointer and dragging pours a trail; the grains are taken up
 // at random from the plate, so the amount of sand stays as set. The grains are splatted into a
-// density field (cloud-in-cell), and only the texels it changed since the last frame are uploaded
-// (a rectangle per band of rows, `ChangedBands`): settled sand costs nothing, a few dancing grains
-// cost their own corner of the plate.
+// density field (cloud-in-cell), and the shown field eases toward it over only the texels a splat
+// touched or that still ease out of one (`LiveTexels`), not the whole plate. Only the texels it
+// changed since the last frame are uploaded (a rectangle per band of rows, a `DirtyRegion`), as
+// half floats (`halfBits`): settled sand costs nothing, a few dancing grains cost their own corner
+// of the plate.
 //
 // The passage. A sim built while the scene comes in plays its entrance in place of settling the
 // opening figure: sand is poured evenly over the still plate (grains land in a front sweeping down
@@ -74,9 +76,10 @@ import { KnobReader, type ParamDef } from "../../params.ts";
 import { markVertex, segmentDistance } from "../../mark.ts";
 import { FixedStep, runBudgeted } from "../../sims/clock.ts";
 import { grainAt, SAND, type Grain } from "../../sims/granular.ts";
+import { halfBits } from "../../sims/half.ts";
 import { clamp, hash31, smoothstep } from "../../sims/math.ts";
 import { Random } from "../../sims/random.ts";
-import { DataTexture } from "../../sims/texture.ts";
+import { DataTexture, DirtyRegion } from "../../sims/texture.ts";
 import type { PointerState, SceneSim, SimFactory, SimFrame } from "../types.ts";
 
 const TAU = Math.PI * 2;
@@ -517,70 +520,68 @@ function fillCrests(
 }
 
 /**
- * The texels of a sand-sized field (CHLADNI_SAND_TEXELS square) that changed since it was last
- * uploaded: per band of BAND_ROWS rows, the rectangle they span, so a few grains dancing in one
- * corner never send the rest of the plate. Every texel at first: a texture never uploaded holds
- * nothing yet.
+ * The texels of a sand-sized field (CHLADNI_SAND_TEXELS square) that may hold any sand, shown or
+ * aimed at: those the splats since have touched, kept until the shown field and the grains' are
+ * both 0 there again. Everywhere else both are 0, so `ease` walks these alone, the sand's lines
+ * and what still fades from them, rather than the whole plate.
  */
-class ChangedBands {
-  readonly #x0 = new Int32Array(CHLADNI_SAND_TEXELS / BAND_ROWS);
-  readonly #x1 = new Int32Array(CHLADNI_SAND_TEXELS / BAND_ROWS).fill(CHLADNI_SAND_TEXELS - 1);
-  readonly #y0 = Int32Array.from(this.#x0, (_, band) => band * BAND_ROWS);
-  readonly #y1 = Int32Array.from(this.#x0, (_, band) => (band + 1) * BAND_ROWS - 1);
+class LiveTexels {
+  /** The texels, each once: the first `count` of `list`, flagged in `held`. */
+  readonly list = new Int32Array(CHLADNI_SAND_TEXELS * CHLADNI_SAND_TEXELS);
+  readonly held = new Uint8Array(CHLADNI_SAND_TEXELS * CHLADNI_SAND_TEXELS);
+  count = 0;
 
-  /** Texel (x, y) changed. */
-  mark(x: number, y: number): void {
-    const band = (y / BAND_ROWS) | 0;
-    if (x < (this.#x0[band] ?? 0)) this.#x0[band] = x;
-    if (x > (this.#x1[band] ?? 0)) this.#x1[band] = x;
-    if (y < (this.#y0[band] ?? 0)) this.#y0[band] = y;
-    if (y > (this.#y1[band] ?? 0)) this.#y1[band] = y;
-  }
-
-  /** Send each band's changed rectangle of `data` (the whole field) to `texture`, and forget them. */
-  upload(texture: DataTexture, data: Float32Array): void {
-    for (let band = 0; band < this.#x0.length; band++) {
-      const x0 = this.#x0[band] ?? 0;
-      const x1 = this.#x1[band] ?? -1;
-      const y0 = this.#y0[band] ?? 0;
-      const y1 = this.#y1[band] ?? -1;
-      if (x1 < x0) continue;
-      texture.uploadRegion(data, x0, y0, x1 - x0 + 1, y1 - y0 + 1);
-      this.#x0[band] = CHLADNI_SAND_TEXELS;
-      this.#x1[band] = -1;
-      this.#y0[band] = CHLADNI_SAND_TEXELS;
-      this.#y1[band] = -1;
-    }
+  /** Texel `texel` (row-major) may hold sand. */
+  add(texel: number): void {
+    if (this.held[texel] === 1) return;
+    this.held[texel] = 1;
+    this.list[this.count++] = texel;
   }
 }
 
 /**
- * Ease the shown field toward the grains' (`channels` a texel), keeping `keep` of each gap, and
- * done once within a hair of them; marks the texels it changed. Whether any still eases.
+ * Ease the shown field toward the grains' (`channels` a texel) over the live texels, keeping `keep`
+ * of each gap, and done once within a hair of them. A texel it changes is marked and its half-float
+ * bits rewritten in `half`; one where both fields are 0 again leaves `live`. Whether any still eases.
  */
 function ease(
   shown: Float32Array,
+  half: Uint16Array,
   target: Float32Array,
   channels: number,
   keep: number,
-  changed: ChangedBands,
+  live: LiveTexels,
+  changed: DirtyRegion,
 ): boolean {
   let easing = false;
-  for (let k = 0; k < shown.length; k++) {
-    const was = shown[k] ?? 0;
-    const goal = target[k] ?? 0;
-    const gap = (was - goal) * keep;
-    if (gap > 0.01 || gap < -0.01) {
-      shown[k] = goal + gap;
-      easing = true;
-    } else {
-      shown[k] = goal;
+  const list = live.list;
+  let kept = 0;
+  for (let n = 0; n < live.count; n++) {
+    const texel = list[n] ?? 0;
+    let moved = false;
+    let held = false;
+    for (let k = texel * channels, end = k + channels; k < end; k++) {
+      const was = shown[k] ?? 0;
+      const goal = target[k] ?? 0;
+      const gap = (was - goal) * keep;
+      if (gap > 0.01 || gap < -0.01) {
+        shown[k] = goal + gap;
+        easing = true;
+      } else {
+        shown[k] = goal;
+      }
+      const now = shown[k] ?? 0;
+      if (now !== was) {
+        half[k] = halfBits(now);
+        moved = true;
+      }
+      if (now !== 0 || goal !== 0) held = true;
     }
-    if (shown[k] !== was) {
-      const texel = (k / channels) | 0;
-      changed.mark(texel % CHLADNI_SAND_TEXELS, (texel / CHLADNI_SAND_TEXELS) | 0);
-    }
+    if (moved) changed.mark(texel % CHLADNI_SAND_TEXELS, (texel / CHLADNI_SAND_TEXELS) | 0);
+    if (held) list[kept++] = texel;
+    else live.held[texel] = 0;
   }
+  live.count = kept;
   return easing;
 }
 
@@ -602,12 +603,28 @@ class ChladniSim implements SceneSim {
   /** Where the grains are (rg per texel, see the header), and the field as shown, easing toward it. */
   readonly #sand = new Float32Array(CHLADNI_SAND_TEXELS * CHLADNI_SAND_TEXELS * 2);
   readonly #shown = new Float32Array(CHLADNI_SAND_TEXELS * CHLADNI_SAND_TEXELS * 2);
+  /** The shown field's half-float bits, as uploaded. */
+  readonly #shownHalf = new Uint16Array(CHLADNI_SAND_TEXELS * CHLADNI_SAND_TEXELS * 2);
   /** The same for the powder (one channel). */
   readonly #powder = new Float32Array(CHLADNI_SAND_TEXELS * CHLADNI_SAND_TEXELS);
   readonly #shownPowder = new Float32Array(CHLADNI_SAND_TEXELS * CHLADNI_SAND_TEXELS);
-  /** The shown fields' texels changed since they were last uploaded. */
-  readonly #shownChanged = new ChangedBands();
-  readonly #powderChanged = new ChangedBands();
+  readonly #shownPowderHalf = new Uint16Array(CHLADNI_SAND_TEXELS * CHLADNI_SAND_TEXELS);
+  /** The texels each field may hold sand at (shown or the grains'), for `ease` to walk. */
+  readonly #sandLive = new LiveTexels();
+  readonly #powderLive = new LiveTexels();
+  /** The shown fields' texels changed since they were last uploaded, by bands of BAND_ROWS rows. */
+  readonly #shownChanged = new DirtyRegion(
+    CHLADNI_SAND_TEXELS,
+    CHLADNI_SAND_TEXELS,
+    Infinity,
+    BAND_ROWS,
+  );
+  readonly #powderChanged = new DirtyRegion(
+    CHLADNI_SAND_TEXELS,
+    CHLADNI_SAND_TEXELS,
+    Infinity,
+    BAND_ROWS,
+  );
   readonly #modes = new Float32Array(MODE_SIZE * 2);
   /** Texel 0: crossfade, norm, swing, M share. Texel 1: the strewn veil, the plate's tilt, the veil's gain, the grain's relief. */
   readonly #state = new Float32Array(8);
@@ -842,13 +859,29 @@ class ChladniSim implements SceneSim {
       const memory = this.#arriving || this.#sliding ? PASSAGE_MEMORY : SHOWN_MEMORY;
       const keep = this.#snap || dt <= 0 ? 0 : Math.exp(-dt / memory);
       this.#snap = false;
-      this.#easing = ease(this.#shown, this.#sand, 2, keep, this.#shownChanged);
-      this.#shownChanged.upload(this.#sandTexture, this.#shown);
+      this.#easing = ease(
+        this.#shown,
+        this.#shownHalf,
+        this.#sand,
+        2,
+        keep,
+        this.#sandLive,
+        this.#shownChanged,
+      );
+      this.#shownChanged.flush(this.#sandTexture, this.#shownHalf);
       // The powder's field, while it holds any or still eases out.
       if (this.#powderShare > 0 || this.#powderEasing) {
-        this.#powderEasing = ease(this.#shownPowder, this.#powder, 1, keep, this.#powderChanged);
+        this.#powderEasing = ease(
+          this.#shownPowder,
+          this.#shownPowderHalf,
+          this.#powder,
+          1,
+          keep,
+          this.#powderLive,
+          this.#powderChanged,
+        );
         this.#easing ||= this.#powderEasing;
-        this.#powderChanged.upload(this.#powderTexture, this.#shownPowder);
+        this.#powderChanged.flush(this.#powderTexture, this.#shownPowderHalf);
       }
     }
     if (this.#modesDirty) {
@@ -1390,7 +1423,8 @@ class ChladniSim implements SceneSim {
 
   /**
    * Cloud-in-cell: each grain shares itself bilinearly among the four nearest texels, sand at rest
-   * and on the move apart, powder (resting or not) in a field of its own.
+   * and on the move apart, powder (resting or not) in a field of its own. The texels it touches are
+   * live for `ease` (LiveTexels).
    */
   #splat(): void {
     const field = this.#sand;
@@ -1412,6 +1446,8 @@ class ChladniSim implements SceneSim {
     const clock = this.#clock;
     const land = this.#land;
     const sliding = this.#sliding;
+    const sandLive = this.#sandLive;
+    const powderLive = this.#powderLive;
     for (let i = 0; i < this.#count; i++) {
       // Grains still to be poured are not on the plate; those slid off its edge are gone.
       if (landing && (land[i] ?? 0) > clock) continue;
@@ -1432,6 +1468,10 @@ class ChladniSim implements SceneSim {
         powder[p + 1] = (powder[p + 1] ?? 0) + w10;
         powder[p + size] = (powder[p + size] ?? 0) + w01;
         powder[p + size + 1] = (powder[p + size + 1] ?? 0) + w11;
+        powderLive.add(p);
+        powderLive.add(p + 1);
+        powderLive.add(p + size);
+        powderLive.add(p + size + 1);
         continue;
       }
       const flying = airborne[i] ?? 0;
@@ -1446,6 +1486,11 @@ class ChladniSim implements SceneSim {
       field[k + up + 1] = (field[k + up + 1] ?? 0) + w01 * flying;
       field[k + up + 2] = (field[k + up + 2] ?? 0) + w11 * resting;
       field[k + up + 3] = (field[k + up + 3] ?? 0) + w11 * flying;
+      const texel = j0 * size + i0;
+      sandLive.add(texel);
+      sandLive.add(texel + 1);
+      sandLive.add(texel + size);
+      sandLive.add(texel + size + 1);
     }
   }
 }

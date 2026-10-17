@@ -387,8 +387,12 @@ export class Lab {
     this.#opener.setAttribute("aria-expanded", String(open));
     this.#prefs.open = open;
     this.#savePrefs();
-    if (open) this.#workspace.arrange();
-    else Popover.closeAll();
+    if (open) {
+      this.#workspace.arrange();
+      // The controls skipped their syncs while the lab was closed: on screen again, they catch up.
+      if (this.#prefs.presentation === "expanded" && this.#views.current === "controls")
+        this.#inspector.shown();
+    } else Popover.closeAll();
     // Knob changes are likely while the lab is open: on a GPU, scenes with knob-keyed features get
     // their all-features program built ahead (DitherRenderer.expectChanges).
     this.#host.renderer()?.expectChanges(open);
@@ -401,7 +405,10 @@ export class Lab {
     this.#inspector.focusSearch();
   }
 
-  /** Reflect the host's current state into every control. */
+  /**
+   * Reflect the host's current state into the lab's controls: the Controls view's in full only while
+   * on screen, catching up as it comes back.
+   */
   sync(): void {
     const { state } = this.#current();
     const compact = this.#prefs.presentation === "compact";
@@ -414,7 +421,9 @@ export class Lab {
       this.#gallery.sync();
     if (compact ? this.#bar.showing("presets") : this.#views.current === "presets")
       this.#presets.sync();
-    this.#inspector.sync();
+    // The controls follow in full only while on screen (the open lab on the Controls view, or a
+    // section lent to the bar); off it only their counts, which the bar's chips read.
+    this.#inspector.sync(this.open && !compact && this.#views.current === "controls");
     if (compact) this.#bar.sync();
     for (const sync of this.#syncers) sync();
     const scene = sceneDefs[state.scene];
@@ -651,12 +660,16 @@ export class Lab {
       ...flips.map(({ button }) => button),
     );
     this.#tourMark.append(icon("tour"), this.#tourStep, this.#tourBar);
+    const tools = this.#toolsContent();
     const more = new Popover(this.#root, {
       id: "tools",
       title: "Tools",
       icon: "more",
       label: "More tools: motion, transitions, every now, A/B, tour, reset, link and shortcuts",
-      content: this.#toolsContent(),
+      content: tools.content,
+      // The keyboard goes to the motion's slider, the first thing to set: past the row's help and
+      // its reset dot, which shows only while the motion differs.
+      focus: () => tools.motion.focus(),
     });
     this.#syncers.push(() => {
       const paused = this.#host.renderer()?.paused ?? false;
@@ -690,9 +703,9 @@ export class Lab {
   /**
    * The tools' popover: the motion and the transitions, the setup's own actions (reset, link,
    * explanations), then a fold each for every "now", the A/B comparison, the tour and the
-   * shortcuts, and the build's status at the foot.
+   * shortcuts, and the build's status at the foot; and the motion's slider, which takes the keyboard.
    */
-  #toolsContent(): HTMLElement[] {
+  #toolsContent(): { content: HTMLElement[]; motion: HTMLElement } {
     const state = () => this.#current().state;
     const base = () => defaultsFor(state().scene);
     const amount = (value: number) => (value === 0 ? "still" : `${Math.round(value * 100)}%`);
@@ -830,16 +843,19 @@ export class Lab {
           : "",
       );
     });
-    return [
-      motionRow.el,
-      transitionsRow.el,
-      actions,
-      now.el,
-      compare.el,
-      tour.el,
-      keys.el,
-      this.#status,
-    ];
+    return {
+      content: [
+        motionRow.el,
+        transitionsRow.el,
+        actions,
+        now.el,
+        compare.el,
+        tour.el,
+        keys.el,
+        this.#status,
+      ],
+      motion: motion.el,
+    };
   }
 
   // ---- session tools: A/B comparison and tour -------------------------------------------------

@@ -24,6 +24,18 @@
 // (uWeather.y, which melts after it) on the grass and the path, the hills, the lavender, the wall's
 // top, the hives' roofs and the crowns.
 //
+// The garden's own parts, each compiled in only while its knob can show it (index.ts featuresFor):
+// the flowers knob thins the drifts (beesThin) down to bare grass at 0, or past 1 grows them lusher
+// (beesLush: wider, more of their blooms open and from BEES_LUSH_FROM a second set between them, the
+// lavender's rows longer and plumper) and from 2 runs their near sides down the slope to the lens
+// (beesReach, beesDriftQ), keeping them off the path; each near foxglove and bloom stands from a
+// value of its own, the lush garden's more from BEES_LUSH_FROM (BEES_LUSH). The
+// lantern (BEES_LANTERN) hangs among the hives and the fairy lights (BEES_FAIRY) along the wall; after
+// dusk (beesDusk, the sun's height) they light what is near them through beesShade (beesLamp, set by
+// whoever draws: the lantern's light falling off with the distance in metres, the hives keeping it
+// from the grass behind them, beesLampShadow) and the air round them (the fog's and the rain's veil,
+// the drops).
+//
 // Passage (BEES_PASSAGE): the world's cumulus (and their shadows) drift in from the sides and settle,
 // then the near foxgloves, poppies, daisies and blades of grass at the bottom edge spring up into the
 // frame, each after its own delay, with a small overshoot; the bees and butterflies are the
@@ -31,12 +43,12 @@
 // exactly 0.
 //
 // Knobs read here: K_scenerySeed (the hills, the world's cumulus and their shadows, the flowers),
-// K_wind, K_mark (the M painted on the middle hive's front); uWeather.x for how wet the garden is,
-// uWeather.y how much snow lies on it. The world's knobs (scenes/world.ts, read through
-// shaders/lib/world.ts): K_time, K_cycle, K_stars, K_milkyWay, K_moon, K_meteors (and its "now"),
-// K_clouds, K_cumulus, K_shadows, K_rain, K_snow, K_fog, K_wind, K_lightning (and its "now"), K_aurora,
-// K_birds, K_birdKind, K_birdFormation, each part compiled in only while its knobs can show it
-// (worldFeatures).
+// K_wind, K_flowers, K_lantern, K_fairyLights, K_mark (the M painted on the middle hive's front);
+// uWeather.x for how wet the garden is, uWeather.y how much snow lies on it. The world's knobs
+// (scenes/world.ts, read through shaders/lib/world.ts): K_time, K_cycle, K_stars, K_milkyWay, K_moon,
+// K_meteors (and its "now"), K_clouds, K_cumulus, K_shadows, K_rain, K_snow, K_fog, K_wind,
+// K_lightning (and its "now"), K_aurora, K_birds, K_birdKind, K_birdFormation, each part compiled in
+// only while its knobs can show it (worldFeatures).
 import { glslFloat } from "../../shaders/glsl.ts";
 import { worldGlsl } from "../../shaders/lib/world.ts";
 import {
@@ -46,6 +58,7 @@ import {
   BEES_COSMOS,
   BEES_DAISY,
   BEES_FOXGLOVES as FOXGLOVES,
+  BEES_GROUND_PATCHES,
   BEES_HIVE,
   BEES_HIVE_SCALE,
   BEES_HIVES,
@@ -73,12 +86,53 @@ const HIVE_ORDER = BEES_HIVES.map((hive, i) => ({ hive, i }))
   .sort((a, b) => b.hive.y - a.hive.y)
   .map((entry) => entry.i);
 
-/** Foreground blooms with their petals drawn: x, the y of the head, kind (0 poppy, 1 daisy). */
-const BLOOMS: readonly (readonly [number, number, number])[] = [
-  [-0.5, 0.11, 0],
-  [-0.33, 0.06, 1],
-  [0.55, 0.07, 0],
+/**
+ * More foxgloves for a lush garden, each from its own `flowers` value past 1, clear of the path and
+ * drawn after those above.
+ */
+const FOXGLOVES_LUSH: readonly (readonly [number, number, number, number])[] = [
+  [-0.68, 0.06, 1.05, 1.5],
+  [0.72, 0.075, 1.1, 1.75],
+  [-0.99, 0.14, 0.9, 2.0],
+  [0.6, 0.27, 0.95, 2.25],
+  [0.56, 0.31, 0.85, 2.5],
 ];
+
+/**
+ * Foreground blooms with their petals drawn: x, the y of the head, kind (0 poppy, 1 daisy), and the
+ * `flowers` value they stand from, as the foxgloves.
+ */
+const BLOOMS: readonly (readonly [number, number, number, number])[] = [
+  [-0.5, 0.11, 0, 0.3],
+  [-0.33, 0.06, 1, 0.55],
+  [0.55, 0.07, 0, 0.4],
+];
+
+/** More near blooms for a lush garden, as FOXGLOVES_LUSH. */
+const BLOOMS_LUSH: readonly (readonly [number, number, number, number])[] = [
+  [0.42, 0.05, 1, 1.5],
+  [-0.58, 0.09, 0, 1.6],
+  [0.75, 0.12, 1, 1.8],
+  [-0.22, 0.035, 0, 2.0],
+  [0.88, 0.06, 0, 2.25],
+  [-0.88, 0.05, 1, 2.5],
+];
+
+/** The `flowers` value from which the first of the lush near blooms and foxgloves stands (BEES_LUSH). */
+export const BEES_LUSH_FROM = Math.min(
+  ...[...FOXGLOVES_LUSH, ...BLOOMS_LUSH].map((plant) => plant[3]),
+);
+
+const FOX_ALL = [...FOXGLOVES, ...FOXGLOVES_LUSH];
+const BLOOM_ALL = [...BLOOMS, ...BLOOMS_LUSH];
+
+/**
+ * The garden lantern (the `lantern` knob), hanging from an iron crook a little in front of the hives,
+ * between the middle one and the right, so that its light reaches all three: x (fraction of the
+ * stage) and the y of the ground under the flame, the flame's height and how far the crook's hook
+ * reaches right of its post (m).
+ */
+const LANTERN = { f: 0.05, y: 0.25, hang: 1.08, reach: 0.2 } as const;
 
 /** Trigger slots of the shooting stars' and the lightning's "now" buttons. */
 export const BEES_METEOR_TRIGGER = 0;
@@ -120,14 +174,26 @@ const int BEES_POPPY = ${BEES_POPPY};
 const int BEES_DAISY = ${BEES_DAISY};
 const int BEES_WILD = ${BEES_WILD};
 const int BEES_COSMOS = ${BEES_COSMOS};
+// The near foxgloves and blooms: those standing at flowers 1, and with BEES_LUSH the lush garden's
+// more after them; BEES_FOX_SHOW and BEES_BLOOM_SHOW the flowers value each stands from.
+#if BEES_LUSH
+const int BEES_FOX_N = ${FOX_ALL.length};
+const int BEES_BLOOM_N = ${BLOOM_ALL.length};
+#else
 const int BEES_FOX_N = ${FOXGLOVES.length};
-const float BEES_FOX_F[${FOXGLOVES.length}] = ${floats(FOXGLOVES.map((f) => f[0]))};
-const float BEES_FOX_Y[${FOXGLOVES.length}] = ${floats(FOXGLOVES.map((f) => f[1]))};
-const float BEES_FOX_H[${FOXGLOVES.length}] = ${floats(FOXGLOVES.map((f) => f[2]))};
 const int BEES_BLOOM_N = ${BLOOMS.length};
-const float BEES_BLOOM_F[${BLOOMS.length}] = ${floats(BLOOMS.map((b) => b[0]))};
-const float BEES_BLOOM_Y[${BLOOMS.length}] = ${floats(BLOOMS.map((b) => b[1]))};
-const float BEES_BLOOM_K[${BLOOMS.length}] = ${floats(BLOOMS.map((b) => b[2]))};
+#endif
+const float BEES_FOX_F[${FOX_ALL.length}] = ${floats(FOX_ALL.map((f) => f[0]))};
+const float BEES_FOX_Y[${FOX_ALL.length}] = ${floats(FOX_ALL.map((f) => f[1]))};
+const float BEES_FOX_H[${FOX_ALL.length}] = ${floats(FOX_ALL.map((f) => f[2]))};
+const float BEES_FOX_SHOW[${FOX_ALL.length}] = ${floats(FOX_ALL.map((f) => f[3]))};
+const float BEES_BLOOM_F[${BLOOM_ALL.length}] = ${floats(BLOOM_ALL.map((b) => b[0]))};
+const float BEES_BLOOM_Y[${BLOOM_ALL.length}] = ${floats(BLOOM_ALL.map((b) => b[1]))};
+const float BEES_BLOOM_K[${BLOOM_ALL.length}] = ${floats(BLOOM_ALL.map((b) => b[2]))};
+const float BEES_BLOOM_SHOW[${BLOOM_ALL.length}] = ${floats(BLOOM_ALL.map((b) => b[3]))};
+const int BEES_GROUND_PATCHES = ${BEES_GROUND_PATCHES};
+// The flowers value the lush garden (BEES_LUSH) starts at.
+const float BEES_LUSH_FROM = ${glslFloat(BEES_LUSH_FROM)};
 const int BEES_TREE_N = ${TREES.length};
 const float BEES_TREE_F[${TREES.length}] = ${floats(TREES.map((t) => t[0]))};
 const float BEES_TREE_Y[${TREES.length}] = ${floats(TREES.map((t) => t[1]))};
@@ -182,6 +248,20 @@ const float BEES_SNOW_CROWN = 0.8;
 const float BEES_WALL_Y = 0.372;
 const float BEES_GATE_0 = 0.27;
 const float BEES_GATE_1 = 0.4;
+// The garden's lights. The lantern (BEES_LANTERN_AT): the ground under its flame (x a fraction of the
+// stage, the y of the ground there), the flame's height and the crook's reach (m); the flame's colour,
+// its brightness at the knob's 1, the distance (m) its light halves at and the one it is gone by.
+// The fairy lights (BEES_FAIRY): pins on the wall's top this far apart (m), the wire's sag between
+// them, a bulb this often along it; their warm light.
+const vec4 BEES_LANTERN_AT = vec4(${glslFloat(LANTERN.f)}, ${glslFloat(LANTERN.y)}, ${glslFloat(LANTERN.hang)}, ${glslFloat(LANTERN.reach)});
+const vec3 BEES_FLAME = vec3(1.0, 0.74, 0.46);
+const float BEES_LAMP_GAIN = 1.15;
+const float BEES_LAMP_NEAR = 1.8;
+const float BEES_LAMP_FAR = 10.0;
+const float BEES_FAIRY_PIN = 1.7;
+const float BEES_FAIRY_SAG = 0.2;
+const float BEES_FAIRY_STEP = 0.34;
+const vec3 BEES_FAIRY_WARM = vec3(1.0, 0.74, 0.42);
 
 // Light and view, set once per cell by sceneBees: the sky's light and the key's (the sun's, or the
 // moon's once the sun has set) in the valley's warm tint, the key's bearing in the camera's frame and
@@ -205,6 +285,24 @@ float beesSnowGround = 0.0;
 // The depth (m) of the nearest thing drawn at this cell that can hide a bee behind it: the wall, a tree, a
 // hive, the foreground flowers, a bird. 1e4 for the sky, the hills and the ground (a bee is always in front of that).
 float beesZ = 1e4;
+#if BEES_LANTERN || BEES_FAIRY
+// The garden's lights now (sceneBees): how far past dusk it is (0 by day, 1 once the sun is down), the
+// lantern's flame (metres: X right, H up, Z ahead) and its light there, the fairy lights' brightness;
+// and the lights' light on the surface being drawn, set by whoever draws it (beesShade adds it).
+float beesDusk = 0.0;
+vec3 beesLampPos = vec3(0.0, 1.0, 8.0);
+vec3 beesLampColor = vec3(0.0);
+float beesFairyOn = 0.0;
+vec3 beesLamp = vec3(0.0);
+#endif
+#if BEES_FLOWERS
+// The drifts as the flowers knob grows them (sceneBees): how much of them is left below 1 (1 from
+// there up), how far they have grown lusher above it (0 up to 1, 1 by 3: wider), and from 2 on how
+// far their near sides reach down the slope.
+float beesThin = 1.0;
+float beesLush = 0.0;
+float beesReach = 0.0;
+#endif
 
 float beesS(float y) {
   return max(BEES_YH - y, 0.012) / BEES_CAM;
@@ -224,11 +322,15 @@ float beesRise(float key) {
 // An albedo in the valley's light, wet as the garden is (wetten): the sky's ambient plus the warm key,
 // more of it on a surface turned toward the key (nx: the surface's sideways normal, -1 left .. 1
 // right); shade (a tree's, a hive's: beesCut) takes most of the key, and so do the clouds' shadows
-// (beesLit), the darker of the two where both fall.
+// (beesLit), the darker of the two where both fall. The garden's lights add theirs (beesLamp).
 vec3 beesShade(vec3 albedo, float nx) {
   float f = clamp(nx * beesSunX * 1.4, -1.0, 1.0);
   vec3 a = beesWet > 0.0 ? wetten(albedo, beesWet, BEES_POROUS) : albedo;
-  return a * (beesAmb * 0.55 + beesSun * (0.5 + 0.35 * f) * min(beesLit, 1.0 - 0.72 * beesCut));
+  vec3 c = a * (beesAmb * 0.55 + beesSun * (0.5 + 0.35 * f) * min(beesLit, 1.0 - 0.72 * beesCut));
+#if BEES_LANTERN || BEES_FAIRY
+  c += a * beesLamp;
+#endif
+  return c;
 }
 
 // Light that passes through a thin leaf or petal toward the eye, the key being behind the scene.
@@ -236,6 +338,20 @@ vec3 beesGlow(vec3 albedo, float amount) {
   vec3 a = beesWet > 0.0 ? wetten(albedo, beesWet, BEES_POROUS) : albedo;
   return a * beesSun * amount * min(beesLit, 1.0 - 0.72 * beesCut);
 }
+
+#if BEES_LANTERN
+// The lantern's light reaching a surface at 'at' (metres: X right, H up, Z ahead) whose normal is n,
+// or lit all round for n = 0 (a bell, a bloom): the flame's falling off with the square of the
+// distance past BEES_LAMP_NEAR, gone by BEES_LAMP_FAR, and soft-wrapped round the surface so that a
+// face turned away still takes a little.
+vec3 beesLampLight(vec3 at, vec3 n) {
+  vec3 v = beesLampPos - at;
+  float d2 = dot(v, v);
+  float facing = dot(n, n) > 0.0 ? 0.3 + 0.7 * max(dot(n, v), 0.0) * inversesqrt(d2) : 0.75;
+  float far = 1.0 - smoothstep(0.4, 1.0, d2 / (BEES_LAMP_FAR * BEES_LAMP_FAR));
+  return beesLampColor * facing * far / (1.0 + d2 / (BEES_LAMP_NEAR * BEES_LAMP_NEAR));
+}
+#endif
 
 // ---- the skyline ---------------------------------------------------------------------------------------
 
@@ -364,6 +480,30 @@ float beesGroundShadow(vec2 w) {
   return s * beesSunUp;
 }
 
+#if BEES_LANTERN
+// How much of the lantern's light the hives keep from the grass at ground point w (metres): each,
+// standing taller than the flame, throws a shadow from its foot away from the lantern without end,
+// widening with the distance and soft at its sides. 0 lit .. 1 shaded.
+float beesLampShadow(vec2 w) {
+  vec2 l = beesLampPos.xz;
+  vec2 r = w - l;
+  float s = 0.0;
+  for (int i = 0; i < BEES_HIVE_N; i++) {
+    float Zh = BEES_CAM / (BEES_YH - BEES_HIVE_Y[i]);
+    vec2 a = vec2(BEES_HIVE_F[i] * beesW * Zh, Zh) - l;
+    float la = length(a);
+    vec2 u = a / la;
+    float along = dot(r, u);
+    float across = abs(r.x * u.y - r.y * u.x);
+    // The hive's half width (as it is drawn: BEES_HIVE_SCALE) seen from the flame, spread with the distance.
+    float spread = 0.5 * BEES_HIVE_W * BEES_HIVE_SCALE * max(along, 0.1) / la;
+    float side = 1.0 - smoothstep(0.75 * spread, 1.25 * spread + 0.12 * max(along - la, 0.0), across);
+    s = max(s, smoothstep(la - 0.15, la + 0.3, along) * side);
+  }
+  return 0.9 * s;
+}
+#endif
+
 // The grass: patches of yellower and bluer green, a mottle, flecks, clover and its flowers, windfalls
 // where a tree shades it, and the pale sheen of the wind, under any snow lying on it (beesSnowGround).
 // The light and shade come from beesShade (the caller has put the shade in beesCut).
@@ -397,12 +537,19 @@ vec3 beesGround(vec2 p, vec2 w, vec2 foot, float gust, float gs) {
   return beesShade(c, 0.0) + beesGlow(c, 0.25 * gust * (1.0 - beesSnowGround));
 }
 
+// How far p lies outside the path's edge (screen units; negative on the path, which ends at the
+// gate, y 0.4): it winds up from the lens to the gate, 1.2 m wide.
+float beesPathEdge(vec2 p) {
+  float y = p.y;
+  float xp = beesW * (0.05 + 0.3 * smoothstep(0.0, 0.38, y)) + 0.05 * beesW * sin(y * 8.0 + 1.0) * smoothstep(0.02, 0.2, y);
+  return abs(p.x - xp) - 0.6 * beesS(y) * (0.9 + 0.25 * (vnoise(vec2(y * 40.0, beesSeed)) - 0.5));
+}
+
 void beesPath(vec2 p, vec2 w, inout vec3 col) {
   float y = p.y;
   if (y > 0.4) return;
   float S = beesS(y);
-  float xp = beesW * (0.05 + 0.3 * smoothstep(0.0, 0.38, y)) + 0.05 * beesW * sin(y * 8.0 + 1.0) * smoothstep(0.02, 0.2, y);
-  float d = abs(p.x - xp) - 0.6 * S * (0.9 + 0.25 * (vnoise(vec2(y * 40.0, beesSeed)) - 0.5));
+  float d = beesPathEdge(p);
   if (hardFill(d, beesAa) < 0.5) return;
   float speck = hash12(floor(w * 12.0));
   vec3 c = vec3(0.74, 0.62, 0.42) * (0.85 + 0.3 * speck);
@@ -412,11 +559,31 @@ void beesPath(vec2 p, vec2 w, inout vec3 col) {
 
 // ---- flower drifts -------------------------------------------------------------------------------------
 
+#if BEES_FLOWERS
+// Drift i's ellipse at p, in its radii (0 at its middle, 1 at its edge): as laid out at flowers 1,
+// wider above it and, from 2 on, each drift on the garden's ground (but the wild flowers along the
+// wall, 3) running its near side on down the slope to the lens, widening as it comes (beesReach).
+vec2 beesDriftQ(int i, vec2 p) {
+  vec2 c = vec2(BEES_PATCH_F[i] * beesW, BEES_PATCH_Y[i]);
+  vec2 r = vec2(BEES_PATCH_RX[i] * beesW, BEES_PATCH_RY[i]) * (1.0 + 0.5 * beesLush);
+  vec2 q = (p - c) / r;
+  if (q.y < 0.0 && i < BEES_GROUND_PATCHES && i != 3) {
+    q.y = (p.y - c.y) / mix(r.y, c.y / 0.55, beesReach);
+    q.x = (p.x - c.x) / (r.x * (1.0 + 0.5 * beesReach * min(-q.y, 1.0)));
+  }
+  return q;
+}
+#endif
+
 // How much of drift i covers p (0..1), its edge ragged with noise.
 float beesPatchCover(int i, vec2 p) {
+#if BEES_FLOWERS
+  vec2 q = beesDriftQ(i, p);
+#else
   vec2 c = vec2(BEES_PATCH_F[i] * beesW, BEES_PATCH_Y[i]);
   vec2 r = vec2(BEES_PATCH_RX[i] * beesW, BEES_PATCH_RY[i]);
   vec2 q = (p - c) / r;
+#endif
   if (abs(q.x) > 1.25 || abs(q.y) > 1.25) return 0.0;
   float e = length(q) + 0.3 * (vnoise(p * vec2(7.0, 24.0) + float(i) * 5.3 + beesSeed) - 0.5) + 0.15 * (vnoise(p * vec2(19.0, 60.0) + float(i) * 2.0) - 0.5);
   return 1.0 - smoothstep(0.7, 1.0, e);
@@ -424,7 +591,11 @@ float beesPatchCover(int i, vec2 p) {
 
 // The same without the fine noise, for the density of blooms at a point.
 float beesPatchDensity(int i, vec2 p) {
+#if BEES_FLOWERS
+  vec2 q = beesDriftQ(i, p);
+#else
   vec2 q = (p - vec2(BEES_PATCH_F[i] * beesW, BEES_PATCH_Y[i])) / vec2(BEES_PATCH_RX[i] * beesW, BEES_PATCH_RY[i]);
+#endif
   return 1.0 - smoothstep(0.5, 1.0, length(q) + 0.3 * (vnoise(p * vec2(7.0, 24.0) + float(i) * 5.3 + beesSeed) - 0.5));
 }
 
@@ -442,7 +613,11 @@ void beesLavender(vec2 p, float gust, inout vec3 col) {
   float Xp = p.x * Zp;
   float lane = step(x0 - 0.5 * pitch, Xp) * step(Xp, x0 + 5.5 * pitch) * step(Zp, 9.2);
   vec3 soil = beesShade(vec3(0.58, 0.46, 0.28) * (0.85 + 0.3 * hash12(floor(vec2(Xp, Zp) * 7.0))), 0.0);
+#if BEES_FLOWERS
+  col = mix(col, soil, 0.55 * lane * beesThin);
+#else
   col = mix(col, soil, 0.55 * lane);
+#endif
   float jTop = floor(Zp / 0.3);
   for (int m = 0; m < 8; m++) {
     float j = jTop - float(m);
@@ -452,8 +627,19 @@ void beesLavender(vec2 p, float gust, inout vec3 col) {
     float yb = BEES_YH - BEES_CAM / Z;
     float fi = floor((p.x * Z - x0) / pitch + 0.5);
     if (fi < 0.0 || fi > 5.0) continue;
+#if BEES_FLOWERS
+    // Lusher, the rows run on toward the hives; thinner, each breaks into bushes a metre or so long,
+    // fewer the thinner.
+    if (Z > mix(7.2 + 1.8 * hash12(vec2(fi, 3.0 + beesSeed)), 9.0, beesLush)) continue;
+    if (hash12(vec2(floor(j / 3.0), fi + 11.0 + beesSeed)) > K_flowers) continue;
+#else
     if (Z > 7.2 + 1.8 * hash12(vec2(fi, 3.0 + beesSeed))) continue;
+#endif
     float lump = 0.8 + 0.4 * vnoise1(Z * 1.4 + fi * 9.0 + beesSeed, 7.0).x;
+#if BEES_FLOWERS
+    // And plumper.
+    lump *= 1.0 + 0.15 * beesLush;
+#endif
     vec2 r = vec2(0.24, 0.17) * S * lump;
     vec2 c = vec2((x0 + fi * pitch) * S, yb + 0.07 * S * lump);
     vec2 q = (p - c) / r;
@@ -464,7 +650,11 @@ void beesLavender(vec2 p, float gust, inout vec3 col) {
     float fineOk = smoothstep(5.0, 12.0, r.x / beesAa);
     float tex = (hash12(floor(vec2(q.x * 6.0, q.y * 4.0 + Z * 5.0) + fi * 13.0)) - 0.5) * 0.6 * fineOk * smoothstep(-0.2, 0.3, q.y);
     vec3 c3 = mix(vec3(0.26, 0.16, 0.48), vec3(0.72, 0.54, 0.95), clamp(lit * 0.9 + 0.2 * gust + tex, 0.0, 1.0));
+#if BEES_FLOWERS
+    c3 = mix(c3, vec3(0.34, 0.40, 0.30), smoothfall(-0.15, -0.6, q.y) * 0.8 * (1.0 - 0.35 * beesLush));
+#else
     c3 = mix(c3, vec3(0.34, 0.40, 0.30), smoothfall(-0.15, -0.6, q.y) * 0.8);
+#endif
     // Lying snow on the bush's top (q in its radii: about 0.24 m across, 0.17 m up).
     c3 = mix(c3, BEES_SNOW, snowCover(vec3(0.0, smoothstep(-0.2, 0.6, q.y), 0.0), q * vec2(0.24, 0.17) + vec2(fi * 3.1, Z), beesLying));
     col = beesShade(c3, q.x * 0.7) + beesGlow(c3, 0.5 * smoothstep(0.6, 1.0, e) * max(lit, 0.3));
@@ -474,7 +664,10 @@ void beesLavender(vec2 p, float gust, inout vec3 col) {
 // The blooms of a drift at p. They stand in rows a fixed step apart in log depth (so their size follows
 // the perspective) but are jittered in both directions, vary about fivefold in size, come in clumps
 // (noise) and thin toward the drift's edge; a few in each drift are another kind. Each pixel looks at
-// its own row and the nearer of its neighbours, the farther row first.
+// its own row and the nearer of its neighbours, the farther row first. The flowers knob (BEES_FLOWERS)
+// scales how many of them open, each where it stood, and once the drifts have grown past their beds
+// keeps them off the path; the lush garden (BEES_LUSH) opens a second set in each row, half a place
+// along from the first, from BEES_LUSH_FROM to all of them by 3.
 void beesBlooms(int pi, int kind, vec2 p, float gust, float tm, inout vec3 col) {
   float dy = max(BEES_YH - p.y, 0.02);
   float u = log(BEES_CAM / dy) / BEES_ROW;
@@ -482,6 +675,9 @@ void beesBlooms(int pi, int kind, vec2 p, float gust, float tm, inout vec3 col) 
   float k1 = k0 + (u > k0 ? 1.0 : -1.0);
   float sizeK = kind == BEES_POPPY ? 0.12 : kind == BEES_COSMOS ? 0.1 : 0.085;
   float seed = float(pi) * 13.7 + beesSeed;
+#if BEES_LUSH
+  float second = clamp((K_flowers - BEES_LUSH_FROM) / (3.0 - BEES_LUSH_FROM), 0.0, 1.0);
+#endif
   for (int r = 0; r < 2; r++) {
     float k = r == 0 ? max(k0, k1) : min(k0, k1);
     float dk = BEES_CAM * exp(-k * BEES_ROW);
@@ -489,21 +685,41 @@ void beesBlooms(int pi, int kind, vec2 p, float gust, float tm, inout vec3 col) 
     float sig = sizeK * dk;
     float off = hash12(vec2(k, seed));
     float c0 = floor(p.x / sig + off + 0.5);
+    // Each bloom's place in its row (at), and what it is hashed by (id): the second set's own.
+#if BEES_LUSH
+    float c0b = floor(p.x / sig + off);
+    for (int cn = 0; cn < 6; cn++) {
+      bool late = cn >= 3;
+      float ci = (late ? c0b : c0) + float(late ? cn - 4 : cn - 1);
+      float at = late ? ci + 0.5 : ci;
+      float id = late ? ci + 1000.0 : ci;
+#else
     for (int cj = -1; cj <= 1; cj++) {
       float ci = c0 + float(cj);
-      vec2 h = hash22(vec2(ci, k * 1.7 + seed));
-      vec2 h2 = hash22(vec2(ci + 17.0, k * 2.3 + seed));
-      vec2 ctr = vec2((ci - off + 0.9 * (h.x - 0.5)) * sig, yk + (h2.y - 0.5) * dk * BEES_ROW);
+      float at = ci;
+      float id = ci;
+#endif
+      vec2 h = hash22(vec2(id, k * 1.7 + seed));
+      vec2 h2 = hash22(vec2(id + 17.0, k * 2.3 + seed));
+      vec2 ctr = vec2((at - off + 0.9 * (h.x - 0.5)) * sig, yk + (h2.y - 0.5) * dk * BEES_ROW);
       float rr = 0.3 * sig * (0.3 + 1.3 * h.y * h.y);
-      float ph = hash12(vec2(ci, k) + 31.0) * 6.2831853;
+      float ph = hash12(vec2(id, k) + 31.0) * 6.2831853;
       float sway = rr * 0.5 * (gust - 0.3) * (0.7 + 0.5 * sin(tm * 0.8 + ph));
       vec2 d = p - ctr - vec2(sway, 0.0);
       float dist = length(d);
       if (dist > rr * 1.15) continue;
       float dens = beesPatchDensity(pi, ctr) * (0.1 + 0.9 * smoothstep(0.35, 0.7, vnoise(ctr * vec2(11.0, 38.0) + seed)));
+#if BEES_LUSH
+      dens *= late ? second : K_flowers;
+#elif BEES_FLOWERS
+      dens *= K_flowers;
+#endif
       if (h2.x > dens) continue;
+#if BEES_FLOWERS
+      if (ctr.y < 0.4 && hash12(vec2(id, k) + 77.0) < 2.0 * (K_flowers - 1.0) && beesPathEdge(ctr) < 0.0) continue;
+#endif
       int ke = kind;
-      float hm = hash12(vec2(ci, k) + 51.0);
+      float hm = hash12(vec2(id, k) + 51.0);
       if ((kind == BEES_POPPY && hm < 0.2) || (kind == BEES_DAISY && hm < 0.15) || (kind == BEES_COSMOS && hm < 0.1)) ke = BEES_WILD;
       float th = atan(d.y, d.x);
       float edge = 1.0;
@@ -543,6 +759,12 @@ void beesPatch(int i, vec2 p, float gust, float tm, inout vec3 col) {
     return;
   }
   float cov = beesPatchCover(i, p);
+#if BEES_FLOWERS
+  // Thinned, the drift's leaves and its mass of colour go with its blooms; grown past its bed, it
+  // keeps off the path as its blooms do.
+  cov *= beesThin;
+  if (p.y < 0.4) cov *= 1.0 - hardFill(beesPathEdge(p), beesAa) * clamp(2.0 * (K_flowers - 1.0), 0.0, 1.0);
+#endif
   if (cov <= 0.0) return;
   float seed = float(i) * 13.7 + beesSeed;
   float clump = smoothstep(0.3, 0.65, vnoise(p * vec2(11.0, 38.0) + seed));
@@ -635,15 +857,85 @@ void beesTree(int t, vec2 p, inout vec3 col) {
   col = c;
 }
 
-// The dry-stone wall behind the garden, a gate for the path, and the wooden fence beyond it.
+// The top of the dry-stone wall x metres along it, in metres above its foot.
+float beesWallTop(float x) {
+  return 0.85 + 0.12 * (vnoise1(x * 0.8 + 2.0, 2.0).x - 0.5) + 0.04 * (vnoise1(x * 4.1 + beesSeed, 7.0).x - 0.5);
+}
+
+#if BEES_FAIRY
+// The fairy lights (the fairyLights knob) run along the stone wall, from beyond the frame's left edge
+// to the last pin before the gate; this many metres along the wall.
+float beesFairyEnd() {
+  return floor((BEES_GATE_0 * beesW / beesS(BEES_WALL_Y) - 0.3) / BEES_FAIRY_PIN) * BEES_FAIRY_PIN;
+}
+
+// Their wire x metres along the wall, in metres above its foot: pinned to the wall's top every
+// BEES_FAIRY_PIN metres and sagging between the pins, each span by its own amount.
+float beesFairyWire(float x) {
+  float k = floor(x / BEES_FAIRY_PIN);
+  float t = x / BEES_FAIRY_PIN - k;
+  float sag = BEES_FAIRY_SAG * (0.75 + 0.5 * hash12(vec2(k, 5.3)));
+  return mix(beesWallTop(k * BEES_FAIRY_PIN), beesWallTop((k + 1.0) * BEES_FAIRY_PIN), t) - 0.02 - 4.0 * sag * t * (1.0 - t);
+}
+
+// Their warm light on the stones at q (metres along the wall and up from its foot): strongest just
+// under the wire and round each bulb, fading down the wall's face and faster over the wire.
+vec3 beesFairyStones(vec2 q) {
+  if (beesFairyOn <= 0.0 || q.x > beesFairyEnd()) return vec3(0.0);
+  float below = beesFairyWire(q.x) - q.y;
+  float along = (fract(q.x / BEES_FAIRY_STEP) - 0.5) * BEES_FAIRY_STEP;
+  return BEES_FAIRY_WARM * beesFairyOn * 0.8 * exp(-max(below, -3.0 * below) / 0.18) * (0.5 + 0.5 * exp(-along * along / 0.01));
+}
+
+// The fairy lights over col at p: the wire and the bulbs hanging from it, by day a dark thread of
+// pale beads; after dusk each bulb glows in a warm hue of its own, with a little glow in the air round
+// it (the accent). The two bulbs either side of p are drawn. Returns how much of the wire or a bulb
+// covers p, which hides the insects behind.
+float beesFairy(vec2 p, inout vec3 col, inout float accent) {
+  if (K_fairyLights <= 0.0) return 0.0;
+  float S = beesS(BEES_WALL_Y);
+  if (p.x > BEES_GATE_0 * beesW || p.y < BEES_WALL_Y + 0.45 * S || p.y > BEES_WALL_Y + 1.05 * S) return 0.0;
+  vec2 q = vec2(p.x, p.y - BEES_WALL_Y) / S;
+  float end = beesFairyEnd();
+  if (q.x > end + 0.3) return 0.0;
+  // A cell, in metres at the wall.
+  float aa = beesAa / S;
+  float wire = step(q.x, end) * hardFill((abs(q.y - beesFairyWire(q.x)) - max(0.006, 0.35 * aa)) * S, beesAa);
+  col = mix(col, beesShade(vec3(0.10, 0.11, 0.09), 0.0), wire);
+  float cover = wire;
+  float rb = max(0.03, 0.6 * aa);
+  float j0 = floor(q.x / BEES_FAIRY_STEP - 0.5);
+  for (int k = 0; k < 2; k++) {
+    float j = j0 + float(k);
+    float bx = (j + 0.5) * BEES_FAIRY_STEP;
+    if (bx > end) continue;
+    vec2 d = q - vec2(bx, beesFairyWire(bx) - 0.035);
+    float hue = hash12(vec2(j, 2.9));
+    vec3 tint = hue < 0.4 ? vec3(1.0, 0.84, 0.56) : hue < 0.65 ? vec3(1.0, 0.62, 0.26) : hue < 0.85 ? vec3(1.0, 0.52, 0.44) : vec3(0.96, 0.9, 0.64);
+    col += tint * beesFairyOn * 0.45 * exp(-dot(d, d) / (4.8 * rb * rb));
+    if (hardFill((length(d * vec2(1.0, 0.8)) - rb) * S, beesAa) > 0.5) {
+      col = mix(beesShade(vec3(0.86, 0.86, 0.8), 0.0), tint * 1.25, beesFairyOn);
+      accent = max(accent, beesFairyOn);
+      cover = 1.0;
+    }
+  }
+  return cover;
+}
+#endif
+
+// The dry-stone wall behind the garden, a gate for the path, and the wooden fence beyond it, lit by
+// the lantern, and by the fairy lights along the stones.
 void beesWall(vec2 p, inout vec3 col) {
   float S = beesS(BEES_WALL_Y);
   if (p.y < BEES_WALL_Y - 0.002 || p.y > BEES_WALL_Y + 1.1 * S) return;
   vec2 q = vec2(p.x, p.y - BEES_WALL_Y) / S;
+#if BEES_LANTERN
+  beesLamp = beesLampLight(vec3(q.x, q.y, 1.0 / S), vec3(0.0, 0.0, -1.0));
+#endif
   float g0 = BEES_GATE_0 * beesW;
   float g1 = BEES_GATE_1 * beesW;
   if (p.x < g0) {
-    float top = 0.85 + 0.12 * (vnoise1(q.x * 0.8 + 2.0, 2.0).x - 0.5) + 0.04 * (vnoise1(q.x * 4.1 + beesSeed, 7.0).x - 0.5);
+    float top = beesWallTop(q.x);
     if (hardEdge(softFill((q.y - top) * S, beesAa)) < 0.5 || q.y < -0.01) return;
     float course = q.y / 0.19;
     float row = floor(course);
@@ -658,6 +950,9 @@ void beesWall(vec2 p, inout vec3 col) {
     stone = mix(stone, vec3(0.30, 0.42, 0.16), smoothstep(0.7, 0.9, q.y / top) * smoothstep(0.35, 0.6, vnoise(vec2(q.x * 3.0, q.y * 2.0))));
     // Lying snow along the top (q in metres).
     stone = mix(stone, BEES_SNOW, snowCover(vec3(0.0, smoothstep(0.7, 0.95, q.y / top), 0.0), q, beesLying));
+#if BEES_FAIRY
+    beesLamp += beesFairyStones(q);
+#endif
     col = beesShade(stone, 0.0);
   } else if (p.x > g1) {
     float spacing = 1.15 * S;
@@ -675,7 +970,8 @@ vec3 beesHivePaint(int i) {
 
 // A box hive in front view, 1.5 times life size so the entrance reads: legs, a plank and the landing
 // board under the entrance slot, two boxes (the middle hive's front painted with the Manifold M), a
-// pitched roof. The ground shadow is cast in beesGroundShadow.
+// pitched roof, its front lit by the lantern in front of it. The ground shadow is cast in
+// beesGroundShadow (the lantern's in beesLampShadow).
 void beesHive(int i, vec2 p, inout vec3 col, inout float accent) {
   float by = BEES_HIVE_Y[i];
   float S = beesS(by) * BEES_HIVE_SCALE;
@@ -684,6 +980,10 @@ void beesHive(int i, vec2 p, inout vec3 col, inout float accent) {
   float contact = hardFill(sdEllipse(q - vec2(0.0, -0.01), vec2(0.5, 0.07)) * S, beesAa * 2.0);
   col = mix(col, col * 0.6, contact * 0.7);
   if (q.y < 0.0) return;
+#if BEES_LANTERN
+  float Zh = 1.0 / beesS(by);
+  beesLamp = beesLampLight(vec3(p.x * Zh, q.y * BEES_HIVE_SCALE, Zh), vec3(0.0, 0.0, -1.0));
+#endif
   vec2 a = vec2(abs(q.x), q.y);
   float hw = 0.5 * BEES_HIVE_W;
   float legs = hardFill(sdBox(a - vec2(0.2, 0.5 * BEES_STAND), vec2(0.035, 0.5 * BEES_STAND), 0.0) * S, beesAa);
@@ -719,10 +1019,59 @@ void beesHive(int i, vec2 p, inout vec3 col, inout float accent) {
   col = mix(col, beesShade(tin, 0.0) + beesGlow(tin, 0.35 * roofTop) + vec3(0.1, 0.12, 0.16) * roofTop, roof);
 }
 
+#if BEES_LANTERN
+// The lantern (the lantern knob) over col at p: a small square lantern hanging from an iron crook
+// planted in the grass, its glass in a dark frame under a little pyramid cap and a ring. By day the
+// glass holds the pale sky with the candle inside; after dusk the flame fills it with warm light (the
+// accent), brightest round the wick, and the iron by it catches a little.
+void beesLantern(vec2 p, float tm, vec3 haze, inout vec3 col, inout float accent) {
+  if (K_lantern <= 0.0) return;
+  float Z = beesLampPos.z;
+  float reach = BEES_LANTERN_AT.w;
+  // Metres from the crook's foot: x right, y up.
+  vec2 q = vec2(p.x * Z - (beesLampPos.x - reach), (p.y - BEES_YH) * Z + BEES_CAM);
+  float hang = BEES_LANTERN_AT.z;
+  float bend = hang + 0.257;
+  if (q.x < -0.1 || q.x > reach + 0.15 || q.y < -0.02 || q.y > bend + 0.5 * reach + 0.06) return;
+  // It stands still, so its shapes are cut at each cell's middle, crisp rather than dithered, the
+  // iron never under a cell wide.
+  float rod = max(0.016, 0.5 * beesAa * Z);
+  // The post, the crook bending over its top to the hook, and the ring on the hook.
+  float dIron = sdBox(q - vec2(0.0, 0.5 * bend), vec2(rod, 0.5 * bend), 0.0);
+  vec2 qa = q - vec2(0.5 * reach, bend);
+  dIron = min(dIron, qa.y > 0.0 ? abs(length(qa) - 0.5 * reach) - rod : length(vec2(abs(qa.x) - 0.5 * reach, qa.y)) - rod);
+  vec2 qb = q - vec2(reach, hang);
+  dIron = min(dIron, abs(length(qb - vec2(0.0, 0.223)) - 0.026) - 0.7 * rod);
+  // The lantern: the cap tapering from its eaves to the ring, the frame round the glass, its base.
+  float capT = clamp((qb.y - 0.115) / 0.08, 0.0, 1.0);
+  float dLamp = max(abs(qb.x) - mix(0.11, 0.025, capT), abs(qb.y - 0.155) - 0.04);
+  dLamp = min(dLamp, sdBox(qb, vec2(0.085, 0.115), 0.006));
+  dLamp = min(dLamp, sdBox(qb + vec2(0.0, 0.127), vec2(0.1, 0.014), 0.004));
+  if (min(dIron, dLamp) > 0.0) return;
+  // The flame's light on the iron, fading down the post.
+  beesLamp = beesLampColor * 1.6 * exp(-2.2 * length(qb));
+  col = beesShade(vec3(0.16, 0.15, 0.13), clamp(qb.x / 0.1, -1.0, 1.0));
+  // The glass inside the frame (too thin to show from afar, where the lantern is then one glow): by
+  // day the sky's pale light in it and the candle behind; lit, the flame.
+  if (sdBox(qb, vec2(0.067, 0.097), 0.0) > 0.0) return;
+  vec3 day = mix(haze, vec3(0.78, 0.82, 0.86), 0.4) * (0.62 + 0.2 * smoothstep(-0.1, 0.1, qb.y));
+  if (sdBox(qb - vec2(0.0, -0.065), vec2(0.018, 0.035), 0.004) < 0.0) day = beesShade(vec3(0.92, 0.88, 0.76), 0.0);
+  float flicker = 1.0 + 0.04 * sin(tm * 2.3 + 1.7 * sin(tm * 0.9));
+  vec2 fq = (qb - vec2(0.0, -0.01)) / vec2(0.06, 0.09);
+  vec3 lit = mix(vec3(1.0, 0.56, 0.2), vec3(1.0, 0.92, 0.66), exp(-dot(fq, fq))) * (0.75 + 0.45 * K_lantern) * flicker;
+  col = mix(day, lit, beesDusk);
+  accent = max(accent, beesDusk);
+}
+#endif
+
 // ---- the foreground ------------------------------------------------------------------------------------
 
-// A foxglove: a spike of nodding bells tapering to buds on a leaning stem, its leaves at the foot.
+// A foxglove: a spike of nodding bells tapering to buds on a leaning stem, its leaves at the foot;
+// standing only from its own flowers value (BEES_FOX_SHOW), lit by the lantern as a whole.
 void beesFoxglove(int i, vec2 p, float tm, inout vec3 col) {
+#if BEES_FLOWERS
+  if (K_flowers < BEES_FOX_SHOW[i]) return;
+#endif
   float y0 = BEES_FOX_Y[i];
   float S = beesS(y0);
   float hgt = BEES_FOX_H[i] * S;
@@ -731,6 +1080,9 @@ void beesFoxglove(int i, vec2 p, float tm, inout vec3 col) {
   if (y0 < 0.15) p.y += (y0 + 1.1 * hgt) * beesRise(float(i));
   float t = (p.y - y0) / hgt;
   if (t < -0.05 || t > 1.08 || abs(p.x - x0) > 0.45 * hgt) return;
+#if BEES_LANTERN
+  beesLamp = beesLampLight(vec3(x0 / S, 0.7 * BEES_FOX_H[i], 1.0 / S), vec3(0.0));
+#endif
   float fi = float(i);
   float bend = (0.4 + 0.8 * abs(K_wind)) * 0.05 * hgt * sin(tm * 0.55 + fi * 2.1) + 0.04 * hgt * sin(fi * 1.9);
   float xc = x0 + bend * t * t;
@@ -757,8 +1109,12 @@ void beesFoxglove(int i, vec2 p, float tm, inout vec3 col) {
   }
 }
 
-// A poppy or a daisy close to the lens, petals and all, on its stem with two leaves.
+// A poppy or a daisy close to the lens, petals and all, on its stem with two leaves; standing only
+// from its own flowers value (BEES_BLOOM_SHOW), lit by the lantern as a whole.
 void beesBloomNear(int i, vec2 p, float tm, inout vec3 col) {
+#if BEES_FLOWERS
+  if (K_flowers < BEES_BLOOM_SHOW[i]) return;
+#endif
   float yh = BEES_BLOOM_Y[i];
   float S = beesS(yh);
   float R = 0.13 * S;
@@ -766,8 +1122,17 @@ void beesBloomNear(int i, vec2 p, float tm, inout vec3 col) {
   p.y += (yh + 0.03 + 1.5 * R) * beesRise(fi + 10.0);
   vec2 head = vec2(BEES_BLOOM_F[i] * beesW + 0.004 * (0.5 + abs(K_wind)) * sin(tm * 0.5 + fi * 2.3), yh);
   if (abs(p.x - head.x) > 3.0 * R || p.y > yh + 1.4 * R || p.y < -0.03) return;
+#if BEES_LANTERN
+  beesLamp = beesLampLight(vec3(BEES_BLOOM_F[i] * beesW / S, 0.4, 1.0 / S), vec3(0.0));
+#endif
+#if BEES_LUSH
+  // The lush garden's more lean as the first three do, in turn.
+  float lean = mod(fi, 3.0) - 1.0;
+#else
+  float lean = fi - 1.0;
+#endif
   float tt = clamp((p.y + 0.03) / (yh + 0.03), 0.0, 1.0);
-  float sx = head.x - 0.18 * (1.0 - tt) * (1.0 - tt) * R * (fi - 1.0);
+  float sx = head.x - 0.18 * (1.0 - tt) * (1.0 - tt) * R * lean;
   vec3 green = vec3(0.20, 0.38, 0.10);
   if (p.y < yh && hardFill(abs(p.x - sx) - max(0.016 * S, 0.6 * beesAa), beesAa) > 0.5) col = beesShade(green, 0.0);
   for (int k = 0; k < 2; k++) {
@@ -883,6 +1248,23 @@ Shade sceneBees(vec2 uv, vec2 cell, float t) {
   beesSunGround = key.xz / keyLen;
   beesSunTan = max(key.y, 0.04) / keyLen;
   beesSunUp = smoothstep(-0.02, 0.12, key.y);
+#if BEES_LANTERN || BEES_FAIRY
+  // The garden's lights come on as the sun goes down to the horizon and burn through the night.
+  beesDusk = 1.0 - smoothstep(-0.04, 0.1, sky.sun.y);
+#endif
+#if BEES_LANTERN
+  float zLamp = BEES_CAM / (BEES_YH - BEES_LANTERN_AT.y);
+  beesLampPos = vec3(BEES_LANTERN_AT.x * beesW * zLamp, BEES_LANTERN_AT.z, zLamp);
+  beesLampColor = BEES_FLAME * BEES_LAMP_GAIN * K_lantern * beesDusk;
+#endif
+#if BEES_FAIRY
+  beesFairyOn = K_fairyLights * beesDusk;
+#endif
+#if BEES_FLOWERS
+  beesThin = min(K_flowers, 1.0);
+  beesLush = clamp(0.5 * (K_flowers - 1.0), 0.0, 1.0);
+  beesReach = smoothstep(2.0, 3.0, K_flowers);
+#endif
   // How much of the sun the clouds let through (worldSunlit: the cumulus' shadows, and the deck's
   // with its shadows on), by day: on the garden where this cell's ray meets the ground (above the
   // horizon, in the air as far out over the orchard), and on the hills.
@@ -938,11 +1320,21 @@ Shade sceneBees(vec2 uv, vec2 cell, float t) {
   float gust = beesGust(w, tm);
   float gs = 0.0;
   beesLit = litNear;
+#if BEES_LANTERN || BEES_FAIRY
+  // The lantern's light on the ground at this cell, the hives' shadows taken out.
+  vec3 lampGround = vec3(0.0);
+#endif
   if (y < g) {
     zHit = Z;
     beesSnowGround = snowCover(vec3(0.0, 1.0, 0.0), w, beesLying);
     gs = beesGroundShadow(w);
     beesCut = hardEdge(gs);
+#if BEES_LANTERN
+    lampGround = beesLampLight(vec3(w.x, 0.0, w.y), vec3(0.0, 1.0, 0.0)) * (1.0 - beesLampShadow(w));
+#endif
+#if BEES_LANTERN || BEES_FAIRY
+    beesLamp = lampGround;
+#endif
     col = beesGround(p, w, foot, gust, gs);
     if (y > g - 0.03 + 0.01 * (vnoise(vec2(p.x * 30.0, beesSeed)) - 0.5)) {
       // The hedge along the far edge of the garden: dark leaves, a golden rim on top, dusted by any
@@ -961,6 +1353,10 @@ Shade sceneBees(vec2 uv, vec2 cell, float t) {
 
   // What can hide a bee: each thing drawn that changes the cell notes its depth in beesZ.
   vec3 before = col;
+#if BEES_LANTERN || BEES_FAIRY
+  // The orchard stands beyond the reach of the garden's lights.
+  beesLamp = vec3(0.0);
+#endif
   for (int k = 0; k < BEES_TREE_N; k++) {
     before = col;
     beesTree(k, p, col);
@@ -969,6 +1365,12 @@ Shade sceneBees(vec2 uv, vec2 cell, float t) {
   before = col;
   beesWall(p, col);
   if (col != before) beesZ = BEES_CAM / (BEES_YH - BEES_WALL_Y);
+#if BEES_FAIRY
+  if (beesFairy(p, col, accent) > 0.0) beesZ = BEES_CAM / (BEES_YH - BEES_WALL_Y);
+#endif
+#if BEES_LANTERN || BEES_FAIRY
+  beesLamp = lampGround;
+#endif
   if (y < g) {
     beesCut = hardEdge(gs);
     beesPatch(3, p, gust, tm, col);
@@ -980,6 +1382,11 @@ Shade sceneBees(vec2 uv, vec2 cell, float t) {
     beesHive(hi, p, col, accent);
     if (col != before) beesZ = BEES_CAM / (BEES_YH - BEES_HIVE_Y[hi]);
   }
+#if BEES_LANTERN
+  before = col;
+  beesLantern(p, tm, haze, col, accent);
+  if (col != before) beesZ = beesLampPos.z;
+#endif
   for (int i = 0; i < BEES_FOX_N; i++) {
     before = col;
     beesFoxglove(i, p, tm, col);
@@ -991,6 +1398,9 @@ Shade sceneBees(vec2 uv, vec2 cell, float t) {
     if (col != before) beesZ = BEES_CAM / (BEES_YH - BEES_BLOOM_Y[i]);
   }
   before = col;
+#if BEES_LANTERN
+  beesLamp = lampGround;
+#endif
   beesBlades(p, tm, col);
   if (col != before) beesZ = 3.0;
   if (beesZ < 1e4) zHit = beesZ;
@@ -998,6 +1408,10 @@ Shade sceneBees(vec2 uv, vec2 cell, float t) {
   // Wet, the lawn and the path glisten with the low sky, and the things standing in the garden take
   // a sheen.
   if (beesWet > 0.0 && (beesZ < 1e4 || y < g)) col += wetGloss(beesWet, beesZ < 1e4 ? BEES_WET_UP_THINGS : BEES_WET_UP_GROUND) * haze * BEES_WET_SHEEN;
+#if BEES_LANTERN
+  // And the lantern's light glints in the wet lawn and path round it.
+  if (beesWet > 0.0 && beesZ >= 1e4 && y < g) col += wetGloss(beesWet, BEES_WET_UP_GROUND) * lampGround * 0.35;
+#endif
 
   // The world's swallows by day, where one is nearer than what the cell shows (in front of the hills,
   // behind a nearer tree, hive or flower), swooping down to skim the flowers at 1.2 m; one hides the
@@ -1014,8 +1428,38 @@ Shade sceneBees(vec2 uv, vec2 cell, float t) {
   // The world's fog, then its rain and snow, at the depth of what this cell shows: the drops hide
   // behind the hives, the trees and the near flowers, and are seen by the sky they refract and the
   // sun.
-  worldFog(world, view, air, zHit, col, accent);
-  worldPrecip(world, view, air, max(hazeB * 1.2 + sky.sunColor * 0.3, vec3(0.08)), zHit, col, accent);
+  vec3 fogAir = air;
+  vec3 dropLight = max(hazeB * 1.2 + sky.sunColor * 0.3, vec3(0.08));
+#if BEES_LANTERN || BEES_FAIRY
+  // The garden's lights in the air (Weather in the world): the fog, the rain's veil and its drops
+  // round them lit, the more widely the thicker the air, where this cell's ray passes them rather
+  // than stopping short.
+  float thick = world.fog + 0.8 * world.rain + 0.6 * world.snow;
+#endif
+#if BEES_LANTERN
+  if (K_lantern > 0.0) {
+    // Metres from the flame, at its depth; and a little glow round it in clear air too.
+    vec2 hv = (p - vec2(0.0, BEES_YH)) * beesLampPos.z - vec2(beesLampPos.x, beesLampPos.y - BEES_CAM);
+    float r2 = dot(hv, hv);
+    vec3 glow = beesLampColor * smoothstep(beesLampPos.z - 1.0, beesLampPos.z + 0.5, zHit);
+    col += glow * 0.1 * exp(-r2 / 0.05);
+    fogAir += glow * exp(-r2 / (0.15 + 0.8 * thick));
+    dropLight += glow * 2.5 * exp(-r2 / 1.5);
+  }
+#endif
+#if BEES_FAIRY
+  if (beesFairyOn > 0.0) {
+    // Metres along the wall and from the string's height, as far along as it runs.
+    float sw = beesS(BEES_WALL_Y);
+    float hy = (p.y - BEES_WALL_Y) / sw - 0.72;
+    float run = 1.0 - smoothstep(-0.3, 0.3, p.x / sw - beesFairyEnd());
+    vec3 glow = BEES_FAIRY_WARM * beesFairyOn * run * smoothstep(1.0 / sw - 1.0, 1.0 / sw + 0.5, zHit) * exp(-hy * hy / (0.1 + 0.5 * thick));
+    fogAir += glow * 0.5;
+    dropLight += glow;
+  }
+#endif
+  worldFog(world, view, fogAir, zHit, col, accent);
+  worldPrecip(world, view, fogAir, dropLight, zHit, col, accent);
   // A soft darkening toward the corners.
   col *= 1.0 - 0.22 * smoothstep(0.7, 1.4, length((uv - 0.5) * vec2(1.0, 0.9)) * 1.5);
   col = clamp(col * 1.1, 0.0, 1.0);

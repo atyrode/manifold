@@ -63,8 +63,9 @@ const GROUP = "planet";
 
 /**
  * A planet's knobs, in the lab's order, for a scene's planets and the planet's kind (its palettes'
- * names). Steps are a grid every value sits on (readPlanet), so the URL packs whole numbers. A `when`
- * of "!<key>" shows a knob only while that switch is off.
+ * names). Steps are a grid every value sits on (readPlanet), each a whole number of its URL field's
+ * quantum (PLANET_FIELDS), so the URL packs whole numbers. A `when` of "!<key>" shows a knob only
+ * while that switch is off.
  */
 export function planetDefs(spec: SkyPlanets, kind = 0): ParamDef[] {
   const palettes = PLANET_KINDS[kind]?.palettes ?? PLANET_KINDS[0]?.palettes ?? [];
@@ -242,7 +243,7 @@ export function planetDefs(spec: SkyPlanets, kind = 0): ParamDef[] {
   ];
 }
 
-/** The quantum a URL value of `def` comes in: its step, or 1 for a switch or a choice. */
+/** The grid a value of `def` sits on: its step, or 1 for a switch or a choice. */
 function quantum(def: ParamDef, amount: boolean): number {
   if (def.kind === "range") return def.step;
   if (def.kind === "feature" && amount && def.options === undefined) return def.step;
@@ -290,47 +291,38 @@ export function planetDefaults(spec: SkyPlanets): SkyPlanet {
 const VERSION = 1;
 
 /**
- * Every URL value of a planet, by its id in the packed form (its index): append only, never
- * reorder or reuse, so an old link keeps its meaning.
+ * Every URL value of a planet, by its id in the packed form (its index), and the quantum its packed
+ * whole number counts (1 for a switch or a choice), frozen as published: a slider's step may change,
+ * a link's values do not. Append only; never reorder, reuse or requantise a field, so an old link
+ * keeps its meaning (planets.test.ts pins them).
  */
-const FIELDS: readonly string[] = [
-  "kind",
-  "size",
-  "palette",
-  "across",
-  "up",
-  "orbit",
-  "orbit-amount",
-  "incline",
-  "phase",
-  "phases",
-  "daycycle",
-  "daycycle-amount",
-  "spin",
-  "ring",
-  "ringTilt",
-  "ringRoll",
-  "moons",
-  "moons-amount",
-  "moonSize",
-  "eclipses",
-  "aurora",
-  "aurora-amount",
-  "auroraSize",
-  "lights",
-  "twinkle",
+export const PLANET_FIELDS: readonly (readonly [key: string, quantum: number])[] = [
+  ["kind", 1],
+  ["size", 0.01],
+  ["palette", 1],
+  ["across", 1],
+  ["up", 1],
+  ["orbit", 1],
+  ["orbit-amount", 0.5],
+  ["incline", 1],
+  ["phase", 0.01],
+  ["phases", 1],
+  ["daycycle", 1],
+  ["daycycle-amount", 0.05],
+  ["spin", 0.05],
+  ["ring", 1],
+  ["ringTilt", 0.01],
+  ["ringRoll", 0.01],
+  ["moons", 1],
+  ["moons-amount", 1],
+  ["moonSize", 0.1],
+  ["eclipses", 1],
+  ["aurora", 1],
+  ["aurora-amount", 0.05],
+  ["auroraSize", 0.05],
+  ["lights", 1],
+  ["twinkle", 0.05],
 ];
-
-/** Each field's quantum (`quantum`), from the defs, by field id. */
-function quanta(defs: readonly ParamDef[]): number[] {
-  return FIELDS.map((key) => {
-    const amount = key.endsWith("-amount");
-    const name = amount ? key.slice(0, -"-amount".length) : key;
-    const def = defs.find((each) => each.key === name);
-    if (def === undefined) throw new Error(`planets: field "${key}" has no knob`);
-    return quantum(def, amount);
-  });
-}
 
 const zigzag = (n: number) => (n >= 0 ? 2 * n : -2 * n - 1);
 const unzigzag = (n: number) => (n % 2 === 0 ? n / 2 : -(n + 1) / 2);
@@ -352,19 +344,20 @@ function pushVarint(bytes: number[], n: number): void {
 export function encodePlanets(spec: SkyPlanets, planets: readonly SkyPlanet[]): string {
   if (planets.length === 0) return "";
   const defaults = planetDefaults(spec);
-  const steps = quanta(planetDefs(spec));
   const bytes: number[] = [];
   pushVarint(bytes, VERSION);
   pushVarint(bytes, planets.length);
   for (const planet of planets) {
-    const set = FIELDS.flatMap((key, id) => {
+    const set = PLANET_FIELDS.flatMap(([key, unit], id) => {
       const value = planet[key];
-      return value === undefined || value === defaults[key] ? [] : [[id, value] as const];
+      return value === undefined || value === defaults[key]
+        ? []
+        : [[id, Math.round(value / unit)] as const];
     });
     pushVarint(bytes, set.length);
-    for (const [id, value] of set) {
+    for (const [id, count] of set) {
       pushVarint(bytes, id);
-      pushVarint(bytes, zigzag(Math.round(value / (steps[id] ?? 1))));
+      pushVarint(bytes, zigzag(count));
     }
   }
   return btoa(String.fromCharCode(...bytes))
@@ -413,7 +406,6 @@ export function decodePlanets(spec: SkyPlanets, text: string): SkyPlanet[] {
     return [];
   }
   const reader = new Reader(Uint8Array.from(binary, (char) => char.charCodeAt(0)));
-  const steps = quanta(planetDefs(spec));
   if (reader.next() !== VERSION) return [];
   // Each planet takes a byte at least, so a count past the bytes left runs out instead of reading on.
   const count = reader.next();
@@ -427,8 +419,8 @@ export function decodePlanets(spec: SkyPlanets, text: string): SkyPlanet[] {
       const id = reader.next();
       const raw = reader.next();
       if (id === undefined || raw === undefined) return [];
-      const key = FIELDS[id];
-      if (key !== undefined) values[key] = unzigzag(raw) * (steps[id] ?? 1);
+      const field = PLANET_FIELDS[id];
+      if (field !== undefined) values[field[0]] = unzigzag(raw) * field[1];
     }
     planets.push(readPlanet(spec, values));
   }

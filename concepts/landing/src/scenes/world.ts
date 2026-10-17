@@ -190,3 +190,35 @@ export const WORLD_ALL = worldFeatures({
   fog: 1,
   moon: 0.5,
 });
+
+/** The world's knobs whose parts compile in behind a gate of their own (worldFeatures). */
+const WORLD_GATED = [
+  "stars",
+  "milkyWay",
+  "aurora",
+  "clouds",
+  "shadows",
+  "birds",
+  "cumulus",
+  "rain",
+  "snow",
+  "fog",
+] as const;
+
+/**
+ * The world's gates for a scene that draws through the world with sky and weather knobs of its own
+ * (skyKnobs, weatherKnobs rather than worldKnobs) and compiles in, at every setting, each part its
+ * knobs can show (SceneDef.features, no featuresFor): worldFeatures with every gated knob it has on
+ * and the day cycle on, so the night's parts are in; lightning only with a lightning knob, the moon's
+ * phase only with a moon knob. A part whose knob is off draws its neutral value by its runtime test;
+ * one whose knob the scene lacks stays out. Set a part the scene draws its own way to 0 over it (its
+ * own birds: WORLD_BIRDS).
+ */
+export function worldGates(params: readonly ParamDef[]): Record<string, number> {
+  const keys = new Set(params.map((def) => def.key));
+  const on = Object.fromEntries(WORLD_GATED.filter((key) => keys.has(key)).map((key) => [key, 1]));
+  return {
+    ...worldFeatures({ ...on, cycle: 1, moon: keys.has("moon") ? 0 : 1 }),
+    WORLD_LIGHTNING: keys.has("lightning") ? 1 : 0,
+  };
+}

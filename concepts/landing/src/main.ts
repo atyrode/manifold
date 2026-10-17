@@ -27,7 +27,7 @@ function element<T extends Element>(selector: string, type: new () => T): T {
 
 /** The commit this page was built from; empty when served straight from a working tree. */
 const build = document.querySelector<HTMLMetaElement>('meta[name="landing-build"]')?.content ?? "";
-const reducedMotion = matchMedia("(prefers-reduced-motion: reduce)").matches;
+const reducedMotion = matchMedia("(prefers-reduced-motion: reduce)");
 const credit = element("#credit", HTMLElement);
 const bar = element("#bar", HTMLElement);
 const status = element("#status", HTMLElement);
@@ -42,7 +42,11 @@ let planets: SkyPlanet[] = opened.planets;
 
 let renderer: DitherRenderer | undefined;
 try {
-  renderer = new DitherRenderer(stage, renderSettings(state, params, planets), reducedMotion);
+  renderer = new DitherRenderer(
+    stage,
+    renderSettings(state, params, planets),
+    reducedMotion.matches,
+  );
   renderer.start();
 } catch (error: unknown) {
   console.error("evt=landing.renderer.unavailable", error);
@@ -52,6 +56,9 @@ try {
 document.body.classList.toggle("poster", renderer === undefined);
 stage.addEventListener("webglcontextlost", () => document.body.classList.add("poster"));
 stage.addEventListener("webglcontextrestored", () => document.body.classList.remove("poster"));
+
+// Reduced motion follows the system's setting as it changes, not only as the page opened.
+reducedMotion.addEventListener("change", (event) => renderer?.setFrozen(event.matches));
 
 /**
  * The address bar follows the setup, written at most once per URL_EVERY ms: a slider drag applies a
@@ -128,7 +135,6 @@ function apply(query: URLSearchParams, options: { cut?: boolean } = {}): void {
       ? `translate(-${edge}%, -${edge}%) scale(${(1 + state.blur * 0.05).toFixed(3)})`
       : "";
   instanceName.textContent = state.instance;
-  if (state.mode !== "loading") renderer?.setProgress(-1);
   // A link (or a preset) naming a scene this build lacks opened the default scene: the lab says so.
   if (setup.unknownScene !== undefined) lab?.noteUnknownScene(setup.unknownScene);
   lab?.sync();
@@ -204,12 +210,11 @@ const phases = [
 let step = 0;
 setInterval(() => {
   if (state.mode !== "loading") return;
-  step = reducedMotion ? 20 : (step + 1) % 44;
+  step = reducedMotion.matches ? 20 : (step + 1) % 44;
   const filled = Math.min(step, cells.length);
   cells.forEach((cell, index) => {
     cell.className = index < filled - 1 ? "on" : index === filled - 1 ? "head" : "";
   });
-  renderer?.setProgress(filled / cells.length);
   status.textContent =
     phases[
       Math.min(phases.length - 1, Math.floor((filled / cells.length) * (phases.length - 1)))

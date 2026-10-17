@@ -3,7 +3,7 @@
 // under the shop signs. sim.ts walks the crowd, drives the traffic and runs the lights; shader.ts
 // draws the street, the city round it and everyone in it.
 import { feature, range, seed, toggle, type ParamDef } from "../../params.ts";
-import { atmosphereGroups, skyKnobs, weatherKnobs } from "../atmosphere.ts";
+import { atmosphereGroups, skyKnobs, skyTheme, weatherKnobs } from "../atmosphere.ts";
 import type { SceneDef } from "../types.ts";
 import { streetGlsl } from "./shader.ts";
 import { STREET_PASSAGE, streetSim } from "./sim.ts";
@@ -116,11 +116,6 @@ export const streetScene: SceneDef = {
   features: { SKY_MOON_PHASE: 1 },
   // A sunlit street is bright paving and paint: the copy needs dark ink on it, from the time the
   // sun is about 12 degrees up until it sinks back there. With the day cycle running the light keeps
-  // changing, so the page stays on the night theme. The shader repeats this test to turn its ink
-  // dark on the paper theme: keep the two in step.
-  theme: (values) => {
-    const time = values.time ?? 0.81;
-    const cycling = (values.cycle ?? 0) > 0.5;
-    return !cycling && time > 0.33 && time < 0.67 ? "paper" : "night";
-  },
+  // changing, so the page stays on the night theme. The shader follows the page (inkOf).
+  theme: skyTheme(params),
 };

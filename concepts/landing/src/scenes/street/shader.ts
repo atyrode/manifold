@@ -2263,14 +2263,7 @@ Shade sceneStreet(vec2 uv, vec2 cell, float t) {
   }
 
   // Ink is the picture's light; the green of the signals (and the M, when painted) is the accent. A
-  // sunlit street puts the page in its paper theme (index.ts), where ink is dark on light.
-  float lum = dot(col, LUMA);
-  bool paperTheme = K_cycle <= 0.0 && K_time > 0.33 && K_time < 0.67;
-  Shade o = blankShade();
-  o.ink = paperTheme ? clamp((0.9 - lum) / 0.8, 0.0, 1.0) : clamp(pow(max(lum, 0.0), 0.8) * 1.3, 0.0, 1.0);
-  o.accent = clamp(accent, 0.0, 1.0);
-  o.rgb = col;
-  o.source = col;
-  return o;
+  // sunlit street puts the page in its paper theme (index.ts), where inkOf makes ink dark on light.
+  return shadeOf(col, inkOf(col, 1.3, 0.8), clamp(accent, 0.0, 1.0));
 }
 `;

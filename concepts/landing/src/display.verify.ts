@@ -1,17 +1,21 @@
 // The renderer's display in real WebGL (src/display.ts, src/governor.ts), each check on a renderer
 // of its own, its frames run by hand at chosen rAF times. Registered in verify-browser.ts.
 //
-// contextRestore: a lost context draws nothing (the frame loop goes on) and, once restored, the
-// scene enters again and draws. frameGovernor: a moving scene on a 120 Hz display draws at most 60
-// frames a second; paused, and then at motion 0, the picture stands still and stops issuing draws
-// once the change has played out (SETTLE_SECONDS); input wakes it.
-import { SETTLE_SECONDS } from "./governor.ts";
+// contextRestore: on the pond, the default scene, a lost context draws nothing (the frame loop goes
+// on) and, once restored, the scene enters again and draws, its plant atlas painted again: nothing
+// binds a texture made before the loss (the sheets a painter keeps, src/sheet.ts, go with their
+// context). frameGovernor: a moving scene on a 120 Hz display draws at most 60 frames a second;
+// paused, and then at motion 0, the picture stands still and stops issuing draws once the change
+// has played out (SETTLE_SECONDS); input wakes it, a pointer that only moves for a moment
+// (POINTER_SECONDS).
+import { PLANT_ATLAS_SIZE } from "./scenes/pond/atlas.ts";
+import { POINTER_SECONDS, SETTLE_SECONDS } from "./governor.ts";
 import { DitherRenderer, type RenderSettings } from "./renderer.ts";
-import { defaultsFor, readSetup, renderSettings } from "./state.ts";
+import { defaultsFor, paramDefaults, readSetup, renderSettings } from "./state.ts";
 
 const WIDTH = 64;
 const HEIGHT = 40;
-/** Real seconds a program may take to build under software WebGL on a busy machine. */
+/** Real seconds a program may take to build, or a sheet to paint, under software WebGL. */
 const BUILD_SECONDS = 120;
 /** Real seconds the browser may take to lose or restore a context. */
 const EVENT_SECONDS = 20;
@@ -30,6 +34,14 @@ function settings(motion = 1): RenderSettings {
   );
 }
 
+/** The pond at its defaults: the default scene, its border plants drawn from a painted atlas. */
+function pond(): RenderSettings {
+  return renderSettings(
+    { ...defaultsFor("pond"), pixel: 1, view: "source", transitions: "off" },
+    paramDefaults("pond"),
+  );
+}
+
 /** A renderer on a canvas of its own, its frames run by hand. */
 interface Page {
   renderer: DitherRenderer;
@@ -41,10 +53,16 @@ interface Page {
   /** The canvas shows a picture, not one colour. */
   drawn: () => boolean;
   /**
-   * Frames from `now`, `step` ms apart and a little real time apart, until the scene is on
-   * screen; the last frame's time.
+   * Frames from `now`, `step` ms apart and a little real time apart, until `done` (asked after
+   * each) within BUILD_SECONDS, else an error saying `what` did not happen; the last frame's time.
    */
+  until: (now: number, step: number, done: () => boolean, what: string) => Promise<number>;
+  /** Frames as `until` runs them, until the scene is on screen. */
   arrive: (now: number, step: number) => Promise<number>;
+  /** Uploads so far of the pond's plant atlas (a sheet PLANT_ATLAS_SIZE square, src/sheet.ts). */
+  atlases: () => number;
+  /** Binds, since the context was last lost, of a texture made before that: one the loss killed. */
+  staleBinds: () => number;
   /**
    * The next `name` event on the canvas, in a task after its dispatch, within EVENT_SECONDS. The
    * browser reads whether a listener prevented a lost context's default (the renderer does, so it
@@ -55,7 +73,7 @@ interface Page {
   dispose: () => void;
 }
 
-function page(paced: boolean): Page {
+function page(paced: boolean, initial: RenderSettings): Page {
   const canvas = document.createElement("canvas");
   canvas.style.cssText = `position:fixed;left:0;top:0;width:${WIDTH}px;height:${HEIGHT}px`;
   document.body.append(canvas);
@@ -73,7 +91,33 @@ function page(paced: boolean): Page {
     issued++;
     clear(mask);
   };
-  const renderer = new DitherRenderer(canvas, settings(), false);
+  // Textures made while the context lives; a loss kills them all, and a bind of one after it is
+  // stale.
+  let living = new Set<WebGLTexture>();
+  let dead = new Set<WebGLTexture>();
+  let stale = 0;
+  const createTexture = gl.createTexture.bind(gl);
+  gl.createTexture = () => {
+    const texture = createTexture();
+    living.add(texture);
+    return texture;
+  };
+  const bindTexture = gl.bindTexture.bind(gl);
+  gl.bindTexture = (target, texture) => {
+    if (texture !== null && dead.has(texture)) stale++;
+    bindTexture(target, texture);
+  };
+  canvas.addEventListener("webglcontextlost", () => {
+    dead = living;
+    living = new Set();
+  });
+  let atlases = 0;
+  const texImage2D = gl.texImage2D.bind(gl) as (...args: unknown[]) => void;
+  gl.texImage2D = ((...args: unknown[]) => {
+    if (args[3] === PLANT_ATLAS_SIZE && args[4] === PLANT_ATLAS_SIZE) atlases++;
+    texImage2D(...args);
+  }) as typeof gl.texImage2D;
+  const renderer = new DitherRenderer(canvas, initial, false);
   const native = window.requestAnimationFrame;
   let requested: FrameRequestCallback | undefined;
   window.requestAnimationFrame = (callback) => {
@@ -89,6 +133,27 @@ function page(paced: boolean): Page {
     tick(now);
     return issued - before;
   };
+  const until = async (
+    now: number,
+    step: number,
+    done: () => boolean,
+    what: string,
+  ): Promise<number> => {
+    const started = performance.now();
+    let at = now;
+    frame(at);
+    while (!done()) {
+      check(
+        performance.now() - started < BUILD_SECONDS * 1000,
+        `${what} within ${BUILD_SECONDS} s`,
+      );
+      const pause = Promise.withResolvers<void>();
+      setTimeout(pause.resolve, 20);
+      await pause.promise;
+      frame((at += step));
+    }
+    return at;
+  };
   return {
     renderer,
     gl,
@@ -99,22 +164,10 @@ function page(paced: boolean): Page {
       gl.readPixels(0, 0, WIDTH, HEIGHT, gl.RGBA, gl.UNSIGNED_BYTE, bytes);
       return bytes.some((value, index) => index % 4 !== 3 && value !== bytes[index % 4]);
     },
-    async arrive(now, step) {
-      const started = performance.now();
-      let at = now;
-      frame(at);
-      while (renderer.waiting) {
-        check(
-          performance.now() - started < BUILD_SECONDS * 1000,
-          `No scene on screen within ${BUILD_SECONDS} s`,
-        );
-        const pause = Promise.withResolvers<void>();
-        setTimeout(pause.resolve, 20);
-        await pause.promise;
-        frame((at += step));
-      }
-      return at;
-    },
+    until,
+    arrive: (now, step) => until(now, step, () => !renderer.waiting, "No scene on screen"),
+    atlases: () => atlases,
+    staleBinds: () => stale,
     next(name) {
       const { promise, resolve, reject } = Promise.withResolvers<void>();
       const timeout = setTimeout(() => {
@@ -139,9 +192,25 @@ function page(paced: boolean): Page {
 export async function verifyContextRestore(
   _gl: WebGL2RenderingContext,
 ): Promise<Record<string, unknown>> {
-  const { renderer, gl, frame, scheduled, drawn, arrive, next, dispose } = page(false);
+  const {
+    renderer,
+    gl,
+    frame,
+    scheduled,
+    drawn,
+    until,
+    arrive,
+    atlases,
+    staleBinds,
+    next,
+    dispose,
+  } = page(false, pond());
   try {
     let now = await arrive(1000, 17);
+    // The pond paints its plant atlas over its first frames (here on the page: the check's server
+    // has no build worker), and keeps it once disposed, for its next visit.
+    now = await until(now + 17, 17, () => atlases() > 0, "The pond's plant atlas was not painted");
+    const painted = atlases();
     check(frame((now += 17)) > 0 && drawn(), "The scene did not draw before the context was lost");
     const lose = gl.getExtension("WEBGL_lose_context");
     if (!lose) throw new Error("WEBGL_lose_context unavailable");
@@ -156,12 +225,27 @@ export async function verifyContextRestore(
     lose.restoreContext();
     await restored;
     now = await arrive(now + 17, 17);
+    // Entered again, the pond paints its atlas anew: the one kept from before the loss is dead, and
+    // no frame binds it (nor any other texture made before the loss).
+    now = await until(
+      now + 17,
+      17,
+      () => {
+        check(
+          staleBinds() === 0,
+          `After the restore, ${staleBinds()} binds took textures made before the loss`,
+        );
+        return atlases() > painted;
+      },
+      "The pond's plant atlas was not painted again after the restore",
+    );
     const after = frame((now += 17));
     check(
-      renderer.failure === undefined && after > 0 && drawn(),
-      `The restored context did not draw the scene again: ${JSON.stringify(renderer.failure)}`,
+      renderer.failure === undefined && after > 0 && drawn() && staleBinds() === 0,
+      `The restored context did not draw the scene again: ${JSON.stringify(renderer.failure)}, ` +
+        `${staleBinds()} stale texture binds`,
     );
-    return { whileLost, drawsAfterRestore: after };
+    return { whileLost, drawsAfterRestore: after, atlasesPainted: atlases() };
   } finally {
     dispose();
   }
@@ -170,7 +254,7 @@ export async function verifyContextRestore(
 export async function verifyFrameGovernor(
   _gl: WebGL2RenderingContext,
 ): Promise<Record<string, unknown>> {
-  const { renderer, frame, arrive, dispose } = page(true);
+  const { renderer, frame, arrive, dispose } = page(true, settings());
   /** A 120 Hz display's frames for `seconds` after `from`: how many drew, and in the last second. */
   const run = (from: number, seconds: number): { at: number; drew: number; last: number } => {
     let at = from;
@@ -201,9 +285,22 @@ export async function verifyFrameGovernor(
     );
     now = paused.at;
     // Input wakes it.
-    window.dispatchEvent(new PointerEvent("pointermove", { clientX: WIDTH / 2, clientY: 8 }));
+    const pointer = { clientX: WIDTH / 2, clientY: 8 };
+    window.dispatchEvent(new PointerEvent("pointermove", pointer));
     const woken = frame((now += HZ_120));
     check(woken > 0, "A pointer move did not wake a still picture");
+    // The parallax eases toward the pointer (some 3 s), and the picture stands still again.
+    const eased = run(now, 5);
+    check(eased.last === 0, `After a pointer move, ${eased.last} frames drew in the fifth second`);
+    now = eased.at;
+    // A pointer that moves nothing (the parallax is there already) wakes it for a moment only.
+    window.dispatchEvent(new PointerEvent("pointermove", pointer));
+    const hover = run(now, 1);
+    check(
+      hover.drew > 0 && hover.drew <= POINTER_SECONDS * 60 + 2,
+      `A pointer move kept a still picture drawing for ${hover.drew} frames`,
+    );
+    now = hover.at;
     // At motion 0 the same.
     renderer.setPaused(false);
     renderer.update(settings(0));
@@ -212,7 +309,12 @@ export async function verifyFrameGovernor(
       still.drew > 0 && still.last === 0,
       `At motion 0, ${still.drew} frames drew, ${still.last} of them in the last second`,
     );
-    return { movingAt120Hz: moving.drew, paused: paused.drew, motion0: still.drew };
+    return {
+      movingAt120Hz: moving.drew,
+      paused: paused.drew,
+      pointerMove: hover.drew,
+      motion0: still.drew,
+    };
   } finally {
     dispose();
   }

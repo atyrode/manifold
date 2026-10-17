@@ -10,21 +10,22 @@ import {
   yearNow,
 } from "./climate.ts";
 import type { SeasonKnob } from "./climate.ts";
-import { constellationUniforms } from "./constellations.ts";
 import { StageBox, type Cells } from "./display.ts";
-import { FrameGovernor, RESPONSE_SECONDS, SETTLE_SECONDS } from "./governor.ts";
+import { FrameGovernor, POINTER_SECONDS, RESPONSE_SECONDS, SETTLE_SECONDS } from "./governor.ts";
 import { MAX_PARAMS, MAX_TRIGGERS } from "./params.ts";
+import {
+  annotate,
+  LEAVING_UNIT,
+  ScenePrograms,
+  SIM_SLOTS,
+  type ProgramContext,
+  type SceneProgram,
+} from "./program-cache.ts";
 import { sceneDefs, type SceneId } from "./scenes/index.ts";
 import type { PlanetUniforms } from "./scenes/planets.ts";
 import type { PointerState, SceneSim } from "./scenes/types.ts";
-import {
-  featureKey,
-  fragmentSourceFor,
-  sceneFeatures,
-  sceneFeaturesAll,
-  settingKeyed,
-  vertexSource,
-} from "./shaders/index.ts";
+import { vertexSource } from "./shaders/index.ts";
+import { forgetSheets } from "./scenes/pond/sheet.ts";
 import type { Params } from "./state.ts";
 
 export const ditherIds = ["bayer8", "bayer4", "ign", "none"] as const;
@@ -78,9 +79,6 @@ export interface RenderSettings {
   slowmo: number;
 }
 
-/** Texture units: `uSim0..uSim3`, one per sim slot, then `uLeaving`. */
-const SIM_SLOTS = 4;
-const LEAVING_UNIT = SIM_SLOTS;
 /** Passage-clock seconds a passage waits at most for the incoming sim to be ready (SceneSim.ready). */
 const READY_WAIT = 3;
 /** Scene-clock time of a trigger or press that has not happened. */
@@ -92,129 +90,12 @@ const NEVER = -1e4;
  * keeps a slow one responsive.
  */
 const SIM_BUDGET = { share: 0.25, least: 8, most: 120 } as const;
-/**
- * Programs kept per scene: those it entered with, one per compile-time feature set
- * (`SceneDef.featuresFor`, the library gates and its planets, `settingKeyed`), and its all-features
- * program (`sceneFeaturesAll`); past this many the least recently drawn one is freed.
- */
-const PROGRAMS_PER_SCENE = 4;
-/**
- * Programs kept across scenes: past this many the least recently drawn one of any scene is freed
- * (never one on screen, leaving, run ahead or primed), so a tour of the scenes does not keep one of
- * each in driver memory.
- */
-const PROGRAMS_KEPT = 8;
-/** Milliseconds a link status query may take without waiting on the link (see `#learnLink`). */
-const LINK_WAITED_MS = 4;
 /** Parallax (-1..1 over the window) left to ease toward the pointer that still moves a frame. */
 const EASED = 1e-3;
 /** Presses on these belong to the lab or the page's own controls, not to the scene. */
 const CONTROLS = "#lab, #lab-open, a, button, input, select, textarea, label, [role=switch]";
 /** Renderer strings of software rasterisers: SwiftShader, Mesa's llvmpipe and softpipe, WARP. */
 const SOFTWARE_RENDERER = /SwiftShader|llvmpipe|softpipe|Basic Render Driver|software/i;
-
-const uniformNames = [
-  "uRes",
-  "uTime",
-  "uMotionTime",
-  "uFallTime",
-  "uDither",
-  "uColor",
-  "uLevels",
-  "uMotion",
-  "uPointer",
-  "uMouse",
-  "uBg",
-  "uInk",
-  "uAccent",
-  "uParams",
-  "uView",
-  "uConStars",
-  "uConBright",
-  "uConLines",
-  "uConStarCount",
-  "uConLineCount",
-  "uConMarkStar",
-  "uConMarkLine",
-  "uPlanets",
-  "uPlanetCount",
-  "uProgress",
-  "uTriggers",
-  "uMotionTriggers",
-  "uSim0",
-  "uSim1",
-  "uSim2",
-  "uSim3",
-  "uSimOn",
-  "uWeather",
-  "uPassage",
-  "uDissolve",
-  "uLeaving",
-] as const;
-type UniformName = (typeof uniformNames)[number];
-
-/**
- * One scene's linked program for one feature set (`key`, see `featureKey`), where its uniforms live,
- * and what they hold. Uniforms keep their values per program, so a frame sends again only what
- * changed since this program last drew: `settings` is the settings object its look and knobs were
- * sent from (`update` installs a new object for every change, so identity is the version), then the
- * loading progress, the trigger stamps as the shader reads them, and which sim slots are bound (bit
- * per slot).
- */
-interface SceneProgram {
-  key: string;
-  program: WebGLProgram;
-  uniforms: Record<UniformName, WebGLUniformLocation | null>;
-  sent: {
-    settings: RenderSettings | undefined;
-    progress: number;
-    triggers: number[];
-    motionTriggers: number[];
-    simOn: number;
-  };
-}
-
-/** A compile-time feature set and its key (`featureKey`). */
-interface FeatureSet {
-  features: Readonly<Record<string, number>>;
-  key: string;
-}
-
-/**
- * A program compiling and linking in the background, never waited for: it is done once the driver
- * says so (KHR_parallel_shader_compile) or, without that extension, once `fence`, set after the
- * link, has signalled and a link of its length has had time to finish (see `#linkedByNow`); until
- * then nothing may ask about it, which would wait for the driver. `started`: performance.now() at
- * the link.
- */
-interface Building {
-  id: SceneId;
-  key: string;
-  program: WebGLProgram;
-  fragment: WebGLShader;
-  source: string;
-  fence: WebGLSync | null;
-  started: number;
-}
-
-/** A kept build (see `#programs`): a scene's program for a feature set, or why it failed. */
-interface Kept {
-  id: SceneId;
-  built: SceneProgram | SceneFailure;
-}
-
-/** Where `#programs` keeps `id`'s build for the feature set `key` (see `featureKey`). */
-function keptName(id: SceneId, key: string): string {
-  return `${id} ${key}`;
-}
-
-/**
- * The feature set a settings object asks of its scene's program, and the scene's all-features set
- * (undefined for a scene without knob-keyed features).
- */
-interface Wanted extends FeatureSet {
-  all: FeatureSet | undefined;
-}
 
 /** Why the scene on screen is not drawing: the background shows instead and the frame loop goes on. */
 export interface SceneFailure {
@@ -295,23 +176,6 @@ interface SceneDraw {
 
 export class RendererError extends Error {}
 
-/**
- * The info log with the offending source line under each `ERROR: 0:<line>:`, since the scene's
- * fragment source is generated and otherwise never seen.
- */
-function annotate(log: string, source: string): string {
-  const lines = source.split("\n");
-  return log
-    .split("\n")
-    .map((entry) => {
-      const line = /^ERROR: \d+:(\d+):/.exec(entry)?.[1];
-      return line === undefined
-        ? entry
-        : `${entry}\n    > ${(lines[Number(line) - 1] ?? "").trim()}`;
-    })
-    .join("\n");
-}
-
 function compile(
   gl: WebGL2RenderingContext,
   type: number,
@@ -337,25 +201,18 @@ function rgb(hex: string): [number, number, number] {
 
 /**
  * What the context holds for every scene's program, made at start and again once a lost context
- * is restored: the vertex shader they share, the vertex array every draw uses (bound again after a
- * failed frame, see `#fail`), a black texel for unbound sim slots, the frame the leaving scene
- * draws into while the incoming one dissolves out of it and its framebuffer (sized in `#draw`),
- * KHR_parallel_shader_compile when the browser has it (programs then build off the main thread),
- * and the WebGL version and renderer, for diagnosing remote reports.
+ * is restored: what programs are built with (`ProgramContext`: the vertex shader they share,
+ * KHR_parallel_shader_compile when the browser has it, whether the context renders in software),
+ * the vertex array every draw uses (bound again after a failed frame, see `#fail`), a black texel
+ * for unbound sim slots, the frame the leaving scene draws into while the incoming one dissolves
+ * out of it and its framebuffer (sized in `#draw`), and the WebGL version and renderer, for
+ * diagnosing remote reports.
  */
-interface GlResources {
-  vertex: WebGLShader;
+interface GlResources extends ProgramContext {
   vertexArray: WebGLVertexArrayObject;
   blank: WebGLTexture;
   leavingFrame: WebGLTexture;
   leavingTarget: WebGLFramebuffer;
-  parallel: { readonly COMPLETION_STATUS_KHR: number } | null;
-  /**
-   * The context renders in software: it runs every line of a program whatever branch a pixel
-   * takes, and compiling the countryside's all-features program takes it some 20 s (its own
-   * programs 2-5 s), so a knob change builds the setting's own program instead (`#programSoon`).
-   */
-  software: boolean;
   info: string;
 }
 
@@ -424,35 +281,12 @@ export class DitherRenderer {
   /** What the context holds for every program: made again once a lost context is restored. */
   #gpu: GlResources;
   /**
-   * Each scene's programs by feature key (`keptName`, `featureKey`), built on first use, or why one
-   * failed to build (logged); least recently drawn first, at most PROGRAMS_PER_SCENE a scene and
-   * PROGRAMS_KEPT in all.
+   * Each scene's programs, built in the background on first use and kept (src/program-cache.ts),
+   * never one that draws or is about to (`#draws`).
    */
-  readonly #programs = new Map<string, Kept>();
-  /** The program building in the background for what is wanted now (a change, the next scene), if any. */
-  #building: Building | undefined;
-  /**
-   * A program building beside `#building` that nothing waits for: a scene's all-features program
-   * built ahead of any change (`expectChanges`), or one for a scene passed over (`#pass`). The next
-   * scene's program never waits for it, nor a change it does not serve.
-   */
-  #ahead: Building | undefined;
-  /**
-   * A scene's all-features program just built in the background that the scene does not draw with
-   * yet: the next frame of that scene draws with it once (see `#draw`).
-   */
-  #warm: { id: SceneId; program: SceneProgram } | undefined;
+  readonly #programs: ScenePrograms;
   /** Knob changes are likely (see `expectChanges`). */
   #expecting = false;
-  /**
-   * Milliseconds of link per character of fragment source, as links have taken on this context
-   * without KHR_parallel_shader_compile (see `#linkedByNow`).
-   */
-  #linkRate = 0;
-  /** A link was asked about this frame: one a frame at most (see `#linkedByNow`). */
-  #linkAsked = false;
-  /** The feature set each settings object asks for, or why it cannot be had (see `#want`). */
-  #wanted = new WeakMap<RenderSettings, Wanted | SceneFailure>();
   /** The settings the scene on screen last drew with: what it leaves with when the setup moves on. */
   #drawn: RenderSettings | undefined;
   #scene: ActiveScene | undefined;
@@ -520,7 +354,7 @@ export class DitherRenderer {
   /** Smoothed frames per second, for the lab footer. */
   fps = 0;
   /** Reduced motion: see `#interactionClock`. */
-  readonly #frozen: boolean;
+  #frozen: boolean;
   readonly #params = new Float32Array(MAX_PARAMS);
   /** Interaction-clock time each trigger slot last fired; far in the past when idle. */
   readonly #triggers: number[] = Array.from({ length: MAX_TRIGGERS }, () => NEVER);
@@ -534,8 +368,6 @@ export class DitherRenderer {
   readonly #fired: boolean[] = Array.from({ length: MAX_TRIGGERS }, () => false);
   /** The scene the triggers and the last press belong to: both reset when it changes. */
   #triggerScene = "";
-  /** Loading-page progress 0..1, or -1 off the loading page. */
-  #progress = -1;
   /**
    * Scene passage, on the passage clock: real seconds (`requestAnimationFrame` time, so it plays
    * whatever the motion) slowed by `slowmo`. A scene leaves (`#leaving`, see `Leaving`) playing its
@@ -555,7 +387,16 @@ export class DitherRenderer {
   readonly #quietFired: readonly boolean[] = Array.from({ length: MAX_TRIGGERS }, () => false);
   readonly #reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)");
 
-  constructor(canvas: HTMLCanvasElement, settings: RenderSettings, frozen: boolean) {
+  /**
+   * `frozen`: reduced motion (see `#interactionClock`). `options.cellBudget`: the most cells a frame
+   * draws (default CELL_BUDGET, src/display.ts; the GPU timing page lifts it to time larger grids).
+   */
+  constructor(
+    canvas: HTMLCanvasElement,
+    settings: RenderSettings,
+    frozen: boolean,
+    options: { cellBudget?: number } = {},
+  ) {
     const gl = canvas.getContext("webgl2", {
       antialias: false,
       alpha: false,
@@ -566,7 +407,16 @@ export class DitherRenderer {
     this.#settings = settings;
     this.#frozen = frozen;
     this.#gpu = glResources(gl);
-    this.#stage = new StageBox(canvas, () => this.#governor.wake(SETTLE_SECONDS));
+    this.#programs = new ScenePrograms(
+      gl,
+      () => this.#gpu,
+      (program) => this.#draws(program),
+    );
+    this.#stage = new StageBox(
+      canvas,
+      () => this.#governor.wake(SETTLE_SECONDS),
+      options.cellBudget,
+    );
     // A lost context (a GPU reset, a driver update, the browser reclaiming it) comes back only to a
     // page that asks for it (preventDefault). Until then nothing draws (see `start`); once it is
     // back, what it held is made again and the scene enters afresh, as on the page's first frame.
@@ -588,13 +438,15 @@ export class DitherRenderer {
       mouse.released = true;
       this.#governor.wake(this.#response());
     };
-    // Input wakes a still picture (see `start`); a press or its release sets off a response that
+    // Input wakes a still picture (see `start`): the pointer passing over it for a moment, long
+    // enough to draw it where it is now (the parallax then eases on toward it while it moves, see
+    // `#still`); a drag, a press and its release for longer, a press setting off a response that
     // plays out in real time.
     window.addEventListener("pointermove", (event) => {
       this.#pointer.tx = (event.clientX / window.innerWidth) * 2 - 1;
       this.#pointer.ty = 1 - (event.clientY / window.innerHeight) * 2;
       track(event);
-      this.#governor.wake(SETTLE_SECONDS);
+      this.#governor.wake(mouse.down ? SETTLE_SECONDS : POINTER_SECONDS);
     });
     window.addEventListener("pointerdown", (event) => {
       track(event);
@@ -615,7 +467,7 @@ export class DitherRenderer {
     // Leaving the window (no related target) leaves the page too.
     window.addEventListener("pointerout", (event) => {
       if (event.relatedTarget === null) mouse.inside = false;
-      this.#governor.wake(SETTLE_SECONDS);
+      this.#governor.wake(mouse.down ? SETTLE_SECONDS : POINTER_SECONDS);
     });
   }
 
@@ -636,16 +488,20 @@ export class DitherRenderer {
     this.#governor.wake(SETTLE_SECONDS);
   }
 
-  setProgress(progress: number): void {
-    if (progress !== this.#progress) this.#governor.wake(SETTLE_SECONDS);
-    this.#progress = progress;
+  /**
+   * Reduced motion on or off, as the system's setting changes (see `#interactionClock`): the scene
+   * and motion clocks stop or go on from where they stood, and stamps keep their real-time ages.
+   */
+  setFrozen(frozen: boolean): void {
+    this.#frozen = frozen;
+    this.#governor.wake(SETTLE_SECONDS);
   }
 
   /**
    * Whether knob changes are likely (the lab is open). A scene with knob-keyed features then builds
    * its all-features program in the background once it has arrived, so the first change that needs
    * it switches at once instead of waiting for a build; the plain page never builds it, and nor does
-   * a software rasteriser (`GlResources.software`).
+   * a software rasteriser (`ProgramContext.software`).
    */
   expectChanges(expect: boolean): void {
     if (expect !== this.#expecting) this.#governor.wake(SETTLE_SECONDS);
@@ -682,7 +538,8 @@ export class DitherRenderer {
    * Draw on requestAnimationFrame. Paced (the default), at most 60 frames a second whatever the
    * display's refresh rate, and while the picture stands still (`#still`) none at all once the last
    * change or input has played out (see FrameGovernor); `paced: false` draws every frame asked for,
-   * for checks that drive frames by hand. Nothing draws while the context is lost.
+   * for checks that drive frames by hand and the GPU timing page (src/bench.ts), which times every
+   * frame the display gives it. Nothing draws while the context is lost.
    */
   start(options: { paced?: boolean } = {}): void {
     const paced = options.paced ?? true;
@@ -722,9 +579,7 @@ export class DitherRenderer {
       !this.#reenter &&
       this.#scene !== undefined &&
       this.#leaving === undefined &&
-      this.#building === undefined &&
-      this.#ahead === undefined &&
-      this.#warm === undefined
+      !this.#programs.busy
     );
   }
 
@@ -767,318 +622,22 @@ export class DitherRenderer {
   retry(): void {
     const failure = this.#scene?.failure;
     if (failure === undefined) return;
-    if (failure.stage === "build")
-      for (const [name, kept] of this.#programs)
-        if (kept.id === failure.scene && "stage" in kept.built) this.#programs.delete(name);
-    this.#wanted = new WeakMap();
+    this.#programs.retry(failure.stage === "build" ? failure.scene : undefined);
     this.#rebuild = true;
   }
 
   /**
-   * The compile-time features `s` asks of its scene's program (see `sceneFeatures`) and the scene's
-   * all-features set (`sceneFeaturesAll`), worked out once per settings object; or, if the scene's
-   * features cannot be worked out (SceneShaderError), the failure that stops it as a build would.
+   * Whether `program` draws or is about to, so the program cache never frees it: the scene on
+   * screen's, the leaving scene's, or the incoming one's (run ahead or primed for a passage).
    */
-  #want(s: RenderSettings): Wanted | SceneFailure {
-    let wanted = this.#wanted.get(s);
-    if (wanted === undefined) {
-      const def = sceneDefs[s.scene];
-      try {
-        const values = settingKeyed(def)
-          ? Object.fromEntries(def.params.map((knob, index) => [knob.key, s.params[index] ?? 0]))
-          : undefined;
-        const features = sceneFeatures(def, values, s.planets.count);
-        const all = sceneFeaturesAll(def);
-        wanted = {
-          features,
-          key: featureKey(features),
-          all: all === undefined ? undefined : { features: all, key: featureKey(all) },
-        };
-      } catch (error: unknown) {
-        wanted = this.#failed(s.scene, undefined, error);
-      }
-      this.#wanted.set(s, wanted);
-    }
-    return wanted;
-  }
-
-  /**
-   * Start building `id`'s program with a feature set in the background: compile and link, without
-   * waiting for either, with a fence after the link where the browser lacks
-   * KHR_parallel_shader_compile (see `#settled`). A source that does not assemble fails at once.
-   */
-  #build(id: SceneId, set: FeatureSet): Building | SceneFailure {
-    const gl = this.#gl;
-    let source: string;
-    try {
-      source = fragmentSourceFor(sceneDefs[id], set.features);
-    } catch (error: unknown) {
-      return this.#failed(id, set.key, error);
-    }
-    const fragment = gl.createShader(gl.FRAGMENT_SHADER);
-    if (!fragment)
-      return this.#failed(id, set.key, new RendererError(`scene ${id}: could not allocate shader`));
-    gl.shaderSource(fragment, source);
-    gl.compileShader(fragment);
-    const program = gl.createProgram();
-    gl.attachShader(program, this.#gpu.vertex);
-    gl.attachShader(program, fragment);
-    gl.linkProgram(program);
-    const fence =
-      this.#gpu.parallel === null ? gl.fenceSync(gl.SYNC_GPU_COMMANDS_COMPLETE, 0) : null;
-    gl.flush();
-    return { id, key: set.key, program, fragment, source, fence, started: performance.now() };
-  }
-
-  /**
-   * A built program, its constant uniforms set (waits for the driver unless the build is done);
-   * throws RendererError (with the info log) on failure.
-   */
-  #link(building: Building): SceneProgram {
-    const gl = this.#gl;
-    const { id, program, fragment } = building;
-    if (!gl.getProgramParameter(program, gl.LINK_STATUS)) {
-      const compiled = gl.getShaderParameter(fragment, gl.COMPILE_STATUS) === true;
-      const log = (compiled ? gl.getProgramInfoLog(program) : gl.getShaderInfoLog(fragment)) ?? "";
-      gl.deleteShader(fragment);
-      gl.deleteProgram(program);
-      throw new RendererError(
-        compiled
-          ? `scene ${id}: program link failed\n${log}`
-          : `scene ${id}: shader compile failed\n${annotate(log, building.source)}`,
-      );
-    }
-    // Only flagged while attached: freed together with the program.
-    gl.deleteShader(fragment);
-    gl.useProgram(program);
-    const uniforms = Object.fromEntries(
-      uniformNames.map((name) => [name, gl.getUniformLocation(program, name)]),
-    ) as Record<UniformName, WebGLUniformLocation | null>;
-    // Constant for the program's lifetime: the constellation figures (orbit's sky, and the shared
-    // sky's constellations where a scene has that knob; the other programs drop the uniforms) and
-    // the texture unit of every sampler.
-    const figures = constellationUniforms;
-    gl.uniform4fv(uniforms.uConStars, figures.stars);
-    gl.uniform1fv(uniforms.uConBright, figures.brightness);
-    gl.uniform2fv(uniforms.uConLines, figures.lines);
-    gl.uniform1i(uniforms.uConStarCount, figures.starCount);
-    gl.uniform1i(uniforms.uConLineCount, figures.lineCount);
-    gl.uniform1i(uniforms.uConMarkStar, figures.markStar);
-    gl.uniform1i(uniforms.uConMarkLine, figures.markLine);
-    [uniforms.uSim0, uniforms.uSim1, uniforms.uSim2, uniforms.uSim3].forEach((location, slot) =>
-      gl.uniform1i(location, slot),
-    );
-    gl.uniform1i(uniforms.uLeaving, LEAVING_UNIT);
-    // Nothing sent yet: NaN and -1 differ from every value the first frame sends.
-    const triggers = Array.from({ length: MAX_TRIGGERS }, () => Number.NaN);
-    return {
-      key: building.key,
-      program,
-      uniforms,
-      sent: {
-        settings: undefined,
-        progress: Number.NaN,
-        triggers,
-        motionTriggers: [...triggers],
-        simOn: -1,
-      },
-    };
-  }
-
-  /** Finish a build and keep what came of it: the program, or why it failed to build. */
-  #finish(building: Building | SceneFailure): SceneProgram | SceneFailure {
-    if ("stage" in building) return building;
-    if (building.fence !== null) this.#gl.deleteSync(building.fence);
-    try {
-      const built = this.#link(building);
-      this.#keep(building.id, building.key, built);
-      return built;
-    } catch (error: unknown) {
-      return this.#failed(building.id, building.key, error);
-    }
-  }
-
-  /** Log why a scene's program failed to build; keep it under its feature `key` if it has one. */
-  #failed(id: SceneId, key: string | undefined, error: unknown): SceneFailure {
-    console.error(`evt=landing.renderer.scene_failed scene=${id} stage=build`, error);
-    const failure: SceneFailure = {
-      scene: id,
-      stage: "build",
-      message: error instanceof Error ? error.message : String(error),
-    };
-    if (key !== undefined) this.#keep(id, key, failure);
-    return failure;
-  }
-
-  /**
-   * Keep a scene's program (or failure) under its feature key as the most recently drawn, freeing the
-   * least recently drawn of the scene's past PROGRAMS_PER_SCENE and of all past PROGRAMS_KEPT
-   * (never the one just kept, nor one that draws or is about to: `#held`).
-   */
-  #keep(id: SceneId, key: string, built: SceneProgram | SceneFailure): void {
-    const programs = this.#programs;
-    const name = keptName(id, key);
-    programs.delete(name);
-    programs.set(name, { id, built });
-    let total = programs.size;
-    let own = 0;
-    for (const kept of programs.values()) if (kept.id === id) own++;
-    for (const [old, kept] of programs) {
-      if (total <= PROGRAMS_KEPT && own <= PROGRAMS_PER_SCENE) break;
-      const mine = kept.id === id;
-      if (old === name || (!mine && total <= PROGRAMS_KEPT) || this.#held(kept.built)) continue;
-      programs.delete(old);
-      total--;
-      if (mine) own--;
-      if ("program" in kept.built) this.#gl.deleteProgram(kept.built.program);
-    }
-  }
-
-  /**
-   * Whether a kept program draws or is about to: the scene on screen's, the leaving scene's, the
-   * incoming one's (run ahead or primed for a passage), or one warming (`#warm`).
-   */
-  #held(built: SceneProgram | SceneFailure): boolean {
+  #draws(program: SceneProgram): boolean {
     const leaving = this.#leaving;
     return (
-      built === this.#scene?.program ||
-      built === leaving?.woven?.scene.program ||
-      built === leaving?.next?.program ||
-      built === leaving?.primed ||
-      built === this.#warm?.program
+      program === this.#scene?.program ||
+      program === leaving?.woven?.scene.program ||
+      program === leaving?.next?.program ||
+      program === leaving?.primed
     );
-  }
-
-  /** A kept program (or failure) for `id` under `key`, marked as the most recently drawn. */
-  #kept(id: SceneId, key: string): SceneProgram | SceneFailure | undefined {
-    const kept = this.#programs.get(keptName(id, key));
-    if (kept !== undefined) this.#keep(id, key, kept.built);
-    return kept?.built;
-  }
-
-  /** A kept program (or failure) that draws `wanted`: its own set's, else the all-features one. */
-  #keptFor(id: SceneId, wanted: Wanted): SceneProgram | SceneFailure | undefined {
-    return (
-      this.#kept(id, wanted.key) ??
-      (wanted.all === undefined ? undefined : this.#kept(id, wanted.all.key))
-    );
-  }
-
-  /** Keep each background build once the driver has finished it (`#settled`). */
-  #settle(): void {
-    this.#linkAsked = false;
-    if (this.#building !== undefined && this.#settled(this.#building)) this.#building = undefined;
-    if (this.#ahead !== undefined && this.#settled(this.#ahead)) this.#ahead = undefined;
-  }
-
-  /**
-   * Keep a background build if the driver has finished it, asked without waiting (the completion
-   * status, else `#linkedByNow`), and say whether it had. A scene's all-features program then draws
-   * one frame of it at once (`#warm`).
-   */
-  #settled(building: Building): boolean {
-    const parallel = this.#gpu.parallel;
-    const done =
-      parallel !== null
-        ? this.#gl.getProgramParameter(building.program, parallel.COMPLETION_STATUS_KHR) === true
-        : this.#linkedByNow(building);
-    if (!done) return false;
-    const asked = performance.now();
-    const built = this.#finish(building);
-    if (parallel === null) this.#learnLink(building, asked);
-    const all = sceneFeaturesAll(sceneDefs[building.id]);
-    if ("program" in built && all !== undefined && featureKey(all) === building.key)
-      this.#warm = { id: building.id, program: built };
-    this.#governor.wake(SETTLE_SECONDS);
-    return true;
-  }
-
-  /**
-   * Without KHR_parallel_shader_compile nothing tells without waiting when a link is done. The
-   * fence set after it signals once the GPU has run what came before, but ANGLE links on worker
-   * threads of its own past that, so asking then can still wait out the whole link (seconds under
-   * SwiftShader). A build is asked about once its fence has signalled, no sooner than links have
-   * taken on this context for a source of its length (`#linkRate`), and one a frame at most.
-   */
-  #linkedByNow(building: Building): boolean {
-    const gl = this.#gl;
-    if (this.#linkAsked) return false;
-    if (
-      building.fence !== null &&
-      gl.getSyncParameter(building.fence, gl.SYNC_STATUS) !== gl.SIGNALED
-    )
-      return false;
-    if (performance.now() - building.started < this.#linkRate * building.source.length)
-      return false;
-    this.#linkAsked = true;
-    return true;
-  }
-
-  /**
-   * Learn how long links take on this context from one just asked about (`asked`: when). If asking
-   * waited (LINK_WAITED_MS or more), the link took as long as the build had run; if it did not, the
-   * link may have been done well before, and the estimate shrinks.
-   */
-  #learnLink(building: Building, asked: number): void {
-    const now = performance.now();
-    this.#linkRate =
-      now - asked >= LINK_WAITED_MS
-        ? (now - building.started) / Math.max(1, building.source.length)
-        : this.#linkRate * 0.75;
-  }
-
-  /**
-   * `id`'s program (or failure) for the wanted features, to enter the scene with: the set's own or
-   * the all-features one if kept; else undefined while one of them builds in the background,
-   * started here (the set's own) if need be. A build under way for another scene or set is moved
-   * aside (`#ahead`), as one for a scene passed over, rather than holding this one up.
-   */
-  #programFor(id: SceneId, wanted: Wanted): SceneProgram | SceneFailure | undefined {
-    const kept = this.#keptFor(id, wanted);
-    if (kept !== undefined) return kept;
-    for (const building of [this.#building, this.#ahead])
-      if (
-        building !== undefined &&
-        building.id === id &&
-        (building.key === wanted.key || building.key === wanted.all?.key)
-      )
-        return undefined;
-    const stale = this.#building;
-    if (stale !== undefined && this.#ahead === undefined) {
-      this.#ahead = stale;
-      this.#building = undefined;
-    }
-    return this.#buildAhead(id, wanted);
-  }
-
-  /** The program (or failure) to enter the scene `s` sets with: see `#programFor`. */
-  #entryProgram(s: RenderSettings): SceneProgram | SceneFailure | undefined {
-    const wanted = this.#want(s);
-    return "stage" in wanted ? wanted : this.#programFor(s.scene, wanted);
-  }
-
-  /**
-   * The same for a knob change, never waiting: undefined while a program for it builds in the
-   * background, started here if need be. That is the scene's all-features program, so a change
-   * never builds one for its own set, except on a software rasteriser (`GlResources.software`),
-   * where it is the set's own. One build at a time: one started for another set or scene finishes
-   * first (the all-features program building ahead counts only for the changes it serves).
-   */
-  #programSoon(id: SceneId, wanted: Wanted): SceneProgram | SceneFailure | undefined {
-    const kept = this.#keptFor(id, wanted);
-    if (kept !== undefined) return kept;
-    const set = this.#gpu.software ? wanted : (wanted.all ?? wanted);
-    if (this.#ahead?.id === id && this.#ahead.key === set.key) return undefined;
-    return this.#buildAhead(id, set);
-  }
-
-  /** Start building `id`'s program for `set` in the background unless a build is under way. */
-  #buildAhead(id: SceneId, set: FeatureSet): SceneFailure | undefined {
-    if (this.#building !== undefined) return undefined;
-    const started = this.#build(id, set);
-    if ("stage" in started) return started;
-    this.#building = started;
-    return undefined;
   }
 
   /**
@@ -1119,7 +678,8 @@ export class DitherRenderer {
   /**
    * Enter the scene `s` sets in place of `current`, disposing that unless it is leaving: the scene
    * run ahead for it during the exit (`Leaving.next`), else a new one once its program is built.
-   * Undefined while that builds in the background (see `#programFor`): `current` goes on meanwhile.
+   * Undefined while that builds in the background (see `ScenePrograms.entryProgram`): `current`
+   * goes on meanwhile.
    */
   #replace(current: ActiveScene | undefined, s: RenderSettings): ActiveScene | undefined {
     const leaving = this.#leaving;
@@ -1127,7 +687,7 @@ export class DitherRenderer {
     let scene = next !== undefined && next.id === s.scene ? next : undefined;
     let built: SceneProgram | SceneFailure | undefined;
     if (scene === undefined) {
-      built = this.#entryProgram(s);
+      built = this.#programs.entryProgram(s);
       if (built === undefined) return undefined;
     }
     if (current !== leaving?.woven?.scene) this.#release(current);
@@ -1140,7 +700,11 @@ export class DitherRenderer {
     return scene;
   }
 
-  /** The context is lost: let go of every scene and program, which went with it. */
+  /**
+   * The context is lost: let go of every scene and program, which went with it, and of the sheets
+   * the scenes' painters kept on it (src/sheet.ts), which a scene entered after the restore would
+   * otherwise adopt dead.
+   */
   #lose(): void {
     const leaving = this.#leaving;
     this.#release(this.#scene);
@@ -1152,10 +716,8 @@ export class DitherRenderer {
     this.#reenter = false;
     this.#rebuild = false;
     this.#waiting = false;
-    this.#programs.clear();
-    this.#building = undefined;
-    this.#ahead = undefined;
-    this.#warm = undefined;
+    this.#programs.lose();
+    forgetSheets(this.#gl);
   }
 
   /** The context is back: make what it held again. The scene then enters as on the first frame. */
@@ -1239,7 +801,7 @@ export class DitherRenderer {
     const step = this.#frozen ? 0 : live;
     this.#passageClock += elapsed / Math.max(1, this.#settings.slowmo);
     const seconds = this.#passageClock;
-    this.#settle();
+    if (this.#programs.settle()) this.#governor.wake(SETTLE_SECONDS);
     const leaving = this.#pass(seconds);
     const woven = leaving?.woven;
     // On screen: a leaving scene as it was set when it began to leave, until the next one enters;
@@ -1271,9 +833,11 @@ export class DitherRenderer {
     this.#stage.present(cells);
     const { width, height } = cells;
 
+    // The parallax follows the pointer, unless frozen (reduced motion): then it eases back to rest.
     const p = this.#pointer;
-    const tx = s.followPointer ? p.tx : 0;
-    const ty = s.followPointer ? p.ty : 0;
+    const follow = s.followPointer && !this.#frozen;
+    const tx = follow ? p.tx : 0;
+    const ty = follow ? p.ty : 0;
     p.x += (tx - p.x) * 0.04;
     p.y += (ty - p.y) * 0.04;
     const pointer = this.#pointerState(cells);
@@ -1315,19 +879,19 @@ export class DitherRenderer {
     // gates, the planets coming or going: `settingKeyed`): the scene draws the new setting with a
     // program it entered with for exactly that set, else with its all-features program
     // (`sceneFeaturesAll`), built once in the background and never waited for; a change never
-    // builds a program of its own (but on a software rasteriser, see `GlResources.software`). Until
-    // the program is built the one on screen goes on drawing the settings it drew last (the old
-    // frame, moving on); one that fails to build, or features that cannot be worked out, stop the
-    // scene as entering it would. With changes expected (`expectChanges`) the all-features program
-    // is built ahead (`#ahead`), once the scene has arrived.
+    // builds a program of its own (but on a software rasteriser, see `ProgramContext.software`).
+    // Until the program is built the one on screen goes on drawing the settings it drew last (the
+    // old frame, moving on); one that fails to build, or features that cannot be worked out, stop
+    // the scene as entering it would. With changes expected (`expectChanges`) the all-features
+    // program is built ahead (`ScenePrograms.buildAside`), once the scene has arrived.
     if (scene.program !== undefined && scene.failure === undefined) {
-      const wanted = this.#want(s);
+      const wanted = this.#programs.want(s);
       const next =
         "stage" in wanted
           ? wanted
           : scene.program.key === wanted.key
             ? scene.program
-            : this.#programSoon(scene.id, wanted);
+            : this.#programs.programSoon(scene.id, wanted);
       if (next === undefined) {
         s = scene.program.sent.settings ?? s;
       } else if ("stage" in next) {
@@ -1342,14 +906,9 @@ export class DitherRenderer {
           !this.#waiting &&
           all !== undefined &&
           leaving === undefined &&
-          passage.enter >= 1 &&
-          this.#ahead === undefined &&
-          !(this.#building?.id === scene.id && this.#building.key === all.key) &&
-          !this.#programs.has(keptName(scene.id, all.key))
-        ) {
-          const started = this.#build(scene.id, all);
-          if (!("stage" in started)) this.#ahead = started;
-        }
+          passage.enter >= 1
+        )
+          this.#programs.buildAside(scene.id, all);
       }
     }
     this.#drawn = s;
@@ -1405,8 +964,7 @@ export class DitherRenderer {
     // A program just built in the background draws this one frame in the chosen one's place (the
     // same picture), so a driver that compiles a program at its first draw does it now rather than
     // when a change needs it.
-    const warm = this.#warm;
-    this.#warm = undefined;
+    const warm = this.#programs.takeWarm();
     const program =
       warm !== undefined && warm.id === scene.id && scene.program !== undefined
         ? warm.program
@@ -1476,7 +1034,7 @@ export class DitherRenderer {
     const exit = sceneDefs[scene.id].passage?.exit ?? 0;
     // The incoming program, built in the background (a build for a scene passed over, or for a
     // change of the one leaving, finishing aside rather than holding it up).
-    const built = this.#entryProgram(into);
+    const built = this.#programs.entryProgram(into);
     if (built === undefined) return leaving;
     if (scene.program !== undefined && scene.failure === undefined) {
       // The incoming program drawn once; then its scene, run ahead off screen until its sim has
@@ -1693,7 +1251,6 @@ export class DitherRenderer {
       gl.uniform1i(u.uDither, ditherIds.indexOf(s.dither));
       gl.uniform1i(u.uColor, colorIds.indexOf(s.color));
       gl.uniform1f(u.uLevels, s.levels);
-      gl.uniform1f(u.uMotion, motion);
       gl.uniform3f(u.uBg, ...rgb(s.bg));
       gl.uniform3f(u.uInk, ...rgb(s.ink));
       gl.uniform3f(u.uAccent, ...rgb(s.accent));
@@ -1702,9 +1259,9 @@ export class DitherRenderer {
       gl.uniform1i(u.uPlanetCount, s.planets.count);
       gl.uniform1i(u.uView, viewIds.indexOf(s.view));
     }
-    if (sent.progress !== this.#progress) {
-      sent.progress = this.#progress;
-      gl.uniform1f(u.uProgress, this.#progress);
+    if (sent.motion !== motion) {
+      sent.motion = motion;
+      gl.uniform1f(u.uMotion, motion);
     }
     let triggersChanged = false;
     let motionTriggersChanged = false;

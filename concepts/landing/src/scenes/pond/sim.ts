@@ -1,24 +1,23 @@
 // The pond's sim: the border plants (uSim0), grown and swayed by the shared plant component
 // (plants.ts, sims/plants.ts) and drawn every frame on the GPU into the plant sheet
-// (sims/plantsheet.ts) from the botany atlas, painted once on the worker (sheet.ts, decor.ts); the
+// (sims/plantsheet.ts) from the botany atlas, painted once on the worker (sheet.ts, atlas.ts); the
 // overhead canopy (uSim1), a sheet painted on the worker whenever its knobs or the frame's shape
 // change; the koi while they are drawn to the pointer (uSim2, koi.ts); and this frame's layout of
 // the pads, the koi on their loops and the petals, worked out once on the GPU (uSim3, layout.ts).
 // The last finished canopy stays bound while a new one paints; the plants show as soon as the atlas
 // is ready.
+import { KnobReader, type ParamDef } from "../../params.ts";
+import { PlantSheet } from "../../sims/plantsheet.ts";
+import { PLANT_SUMMER, plantClimate, RootedPlants } from "../../sims/plants.ts";
+import { windNoise } from "../../sims/wind.ts";
+import type { SceneSim } from "../types.ts";
 import {
   canopyKey,
   CANOPY_MARGIN,
   PLANT_ATLAS_SIZE,
   plantAtlasFamilies,
   type CanopyConfig,
-} from "../../decor.ts";
-import { KnobReader, type ParamDef } from "../../params.ts";
-import { SheetPainter } from "../../sheet.ts";
-import { PlantSheet } from "../../sims/plantsheet.ts";
-import { PLANT_SUMMER, plantClimate, RootedPlants } from "../../sims/plants.ts";
-import { windNoise } from "../../sims/wind.ts";
-import type { SceneSim } from "../types.ts";
+} from "./atlas.ts";
 import { PondKoi } from "./koi.ts";
 import { PondLayout } from "./layout.ts";
 import {
@@ -28,6 +27,7 @@ import {
   type ClumpSpecies,
   type PondPlantConfig,
 } from "./plants.ts";
+import { SheetPainter } from "./sheet.ts";
 
 /** Milliseconds per frame a sheet may spend painting on the page: more while nothing is shown yet. */
 const SHEET_BUDGET_MS = 6;

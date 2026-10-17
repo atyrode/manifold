@@ -411,6 +411,13 @@ class BambooSim implements SceneSim {
   #leafAmount = 0.4;
   #wind = 0.2;
   #seed = -1;
+  /**
+   * Two streams, so the gust train is the same at any frame rate: the natural gusts (their waits,
+   * strengths and tails) draw only from #gustRandom, on the grove's fixed steps; everything drawn a
+   * frame or an event at a time (leaves letting go, ripples, the clack, gusts sent by a press or the
+   * exit, the tube's opening fill) from #random.
+   */
+  #gustRandom = mulberry32(1);
   #random = mulberry32(1);
 
   /** The sim's own clock: scene seconds scaled by motion, advanced a grove step at a time. */
@@ -570,7 +577,8 @@ class BambooSim implements SceneSim {
     const seed = Math.round(knobs.value(frame, "groveSeed"));
     if (seed !== this.#seed) {
       this.#seed = seed;
-      this.#random = mulberry32(0x6b616b65 ^ Math.imul(seed + 1, 0x9e3779b1));
+      this.#gustRandom = mulberry32(0x6b616b65 ^ Math.imul(seed + 1, 0x9e3779b1));
+      this.#random = mulberry32(0x6c656166 ^ Math.imul(seed + 1, 0x85ebca6b));
       for (const [i, culm] of this.#culms.entries()) {
         const cell = i % BAMBOO_CELLS;
         // Thick near stems a little slower; each its own pace, so they drift out of step.
@@ -598,6 +606,7 @@ class BambooSim implements SceneSim {
       crossing - windSpeed(this.#wind) * PREWARM_SECONDS,
       Number.NEGATIVE_INFINITY,
       0.9,
+      this.#gustRandom,
     );
     const steps = Math.round(PREWARM_SECONDS / GROVE_STEP);
     for (let s = 0; s < steps; s++) {
@@ -621,6 +630,7 @@ class BambooSim implements SceneSim {
         this.#gustStart(aspect),
         Number.NEGATIVE_INFINITY,
         Math.max(1, 0.55 / windSway(this.#wind)),
+        this.#random,
       );
     }
     if (fired[knobs.trigger("leaves")] === true) {
@@ -666,7 +676,7 @@ class BambooSim implements SceneSim {
     const heading = this.#wind < 0 ? -1 : 1;
     const z = BAMBOO_LAYERS[2]?.depth ?? 6.4;
     const at = heading * px * z * SKEW_COS + z * SKEW_SIN;
-    this.#launchGust(at, at, Math.max(0.9, 0.5 / windSway(this.#wind)));
+    this.#launchGust(at, at, Math.max(0.9, 0.5 / windSway(this.#wind)), this.#random);
   }
 
   /** Front position just upwind of everything in view. */
@@ -675,13 +685,15 @@ class BambooSim implements SceneSim {
     return far * (SKEW_SIN - (aspect / 2 + 0.3) * SKEW_COS) - 2;
   }
 
+  /** A gust front from `from`, its tail drawn from `random` (#gustRandom for the natural train). */
   #launchGust(
     from: number,
     origin: number,
     strength: number,
+    random: () => number,
     speed: number = windSpeed(this.#wind),
   ): void {
-    const tail = 4 + 3 * this.#random();
+    const tail = 4 + 3 * random();
     this.#gusts.push({
       born: this.#clock,
       from,
@@ -707,6 +719,7 @@ class BambooSim implements SceneSim {
         this.#gustStart(aspect),
         Number.NEGATIVE_INFINITY,
         Math.max(1, EXIT_GUST_SWAY / windSway(this.#wind)),
+        this.#random,
         EXIT_GUST_SPEED,
       );
     }
@@ -728,7 +741,8 @@ class BambooSim implements SceneSim {
         this.#launchGust(
           this.#gustStart(aspect),
           Number.NEGATIVE_INFINITY,
-          0.7 + 0.3 * this.#random(),
+          0.7 + 0.3 * this.#gustRandom(),
+          this.#gustRandom,
         );
         this.#nextGust = this.#clock + this.#wait(mean);
       }
@@ -745,7 +759,7 @@ class BambooSim implements SceneSim {
 
   /** The wait until the next gust: exponential about `mean` seconds, kept between 0.35x and 2.5x. */
   #wait(mean: number): number {
-    return mean * Math.min(2.5, Math.max(0.35, -Math.log(1 - this.#random())));
+    return mean * Math.min(2.5, Math.max(0.35, -Math.log(1 - this.#gustRandom())));
   }
 
   /** The gusts' push at (x, z) in the grove: signed toward +x. */

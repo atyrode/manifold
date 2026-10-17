@@ -1,11 +1,13 @@
 // The waterfall scene: a cliff across the frame, a fall pouring from a notch in its lip into a
-// plunge pool, seen level from the pool's edge. Sky, weather and fog come from src/shaders/lib; over
-// the rim, the shared sky components (src/scenes/README.md, "Composing components"): stars, the moon
-// in its phase, the aurora and shooting stars. The ferns are the plant component's fronds
-// (shaders/lib/plants.ts), the near bank's grown by sim.ts; the birds (K_birds, K_birdKind,
+// plunge pool, seen level from the pool's edge. Over the rim the world's sky (worldSky,
+// src/scenes/README.md "World layers"): the cloud deck, the stars, the moon in its phase, the aurora
+// and shooting stars; the light under it is the world's too. The ferns are the plant component's
+// fronds (shaders/lib/plants.ts), the near bank's grown by sim.ts; the birds (K_birds, K_birdKind,
 // K_birdFormation; off by default) come from shaders/lib/birds.ts.
+import { glslFloat } from "../../shaders/glsl.ts";
 import { birdsGlsl } from "../../shaders/lib/birds.ts";
 import { plantsGlsl } from "../../shaders/lib/plants.ts";
+import { worldGlsl } from "../../shaders/lib/world.ts";
 import { FALLS_CLUMPS, FALLS_FRONDS } from "./sim.ts";
 
 /** Seconds of the waterfall's entrance (the camera tilts down the fall to the pool) and exit (it tilts back up into the spray); SceneDef.passage. */
@@ -16,6 +18,7 @@ export const FALLS_METEOR_TRIGGER = 0;
 
 export const fallsGlsl = `${plantsGlsl}
 ${birdsGlsl}
+${worldGlsl}
 // ---- falls ----
 // Frame: q = ((uv.x - 0.5) * aspect, uv.y): x in screen heights from the centre, y the screen
 // height. The cliff stands at the back of the pool; the camera stands level at the pool's edge,
@@ -25,14 +28,18 @@ ${birdsGlsl}
 // band of sky over the rim; they fall behind it.
 const int FALLS_METEOR_SLOT = ${FALLS_METEOR_TRIGGER};
 const vec4 FALLS_METEOR_FIELD = vec4(-0.6, 0.5, 1.2, 0.05);
-// The aurora's arc stands higher than the library hangs it (each ray's slope looked up this much
-// lower), so its bright lower edge shows just over the rim rather than behind the cliff.
+// The aurora's arc stands higher than the world hangs it (each ray's slope looked up this much
+// lower: WorldView.auroraLift), so its bright lower edge shows just over the rim rather than behind
+// the cliff.
 const float FALLS_AURORA_LIFT = 0.3;
+// The cloud deck's cover in fair weather: broken cloud over the gorge, closed by the rain's overcast.
+const float FALLS_COVER = 0.3;
 
 const float FALLS_LIP = 0.79;   // where the water pours over: the floor of the notch in the lip
 const float FALLS_POOL = 0.27;  // the waterline at the foot of the cliff
 const float FALLS_EYE = 0.34;   // eye level: the camera's horizon line
 const float FALLS_FOV = 0.9;    // vertical field of view, radians
+const float FALLS_FOCAL = ${glslFloat(0.5 / Math.tan(0.45))};
 const float FALLS_G = 0.34;     // gravity in screen heights / s^2: a big fall seen from afar is unhurried
 const float FALLS_DEG = 57.29578;
 const float FALLS_BEDS = 9.0;   // couplets of beds (a hard lava flow and the soft bed on it) per screen height
@@ -862,20 +869,20 @@ Shade sceneFalls(vec2 screenUv, vec2 cell, float t) {
   float footX = fallsCentre(drop, fx, flow, wind);
   float footW = fallsHalfWidth(drop, flow);
 
-  // Light, from the shared sky seen facing away from the sun (fallsWorld). Rain falls from an
-  // overcast that hides the sun and moon and spreads their light into a flat grey one from the
-  // whole sky: pale and bright for a drizzle, darker the heavier the rain.
-  Sky sky = skyMoonPhase(skyAt(timeOfDayM(K_time, K_cycle, tm)), K_moon);
+  // Light, from the world's sky seen facing away from the sun (fallsWorld). Rain falls from the
+  // world's overcast, which hides the sun and the moon alike and spreads their light into a flat grey
+  // one from the whole sky: pale and bright for a drizzle, darker the heavier the rain.
+  World world = worldAt(FALLS_METEOR_SLOT, -1);
+  Sky sky = world.sky;
   vec3 rayCam = viewRay(uv, aspect, FALLS_EYE, FALLS_FOV);
   vec3 ray = fallsWorld(rayCam);
-  float overcast = smoothstep(0.0, 0.08, rain) * min(0.6 + 0.37 * rain, 0.97);
+  float overcast = world.overcast;
   FallsLight L;
   L.sun = fallsWorld(sky.sun);
   L.moon = fallsWorld(sky.moon);
-  L.sunCol = sky.sunColor * (1.0 - overcast);
-  L.moonCol = sky.moonColor * (1.0 - overcast);
-  vec3 amb = sky.ambient + (0.25 * sky.sunColor + 0.3 * sky.moonColor) * overcast + auroraGlow(tm, K_aurora) * auroraSeen(sky, overcast);
-  L.amb = greyed(amb, vec3(1.0), 0.5 * overcast);
+  L.sunCol = sky.sunColor;
+  L.moonCol = sky.moonColor * (1.0 - WORLD_DECK_SUN * overcast);
+  L.amb = sky.ambient + (0.25 * sky.sunColor + 0.3 * L.moonCol) * overcast;
   // Night vision: as the light fails the eye adapts, so the scene below the sky is shaded with
   // the light scaled back up toward a readable level (the sky itself is left as the library paints
   // it) and its blue cast softened. dark (0 by day .. 1 at night) brings in what shows only after
@@ -976,23 +983,20 @@ Shade sceneFalls(vec2 screenUv, vec2 cell, float t) {
       fogDist = 0.85;
       zm = 90.0;
     } else {
-      col = skyColor(sky, ray) + skyStarLight(sky, ray, K_stars) * (1.0 - overcast);
-      // The aurora hangs ahead of the camera, its arc lifted over the rim; it and shooting stars show
-      // between the clouds.
-      float foot = 2.0 * tan(0.5 * FALLS_FOV) / uRes.y;
-      vec3 auroraRay = normalize(vec3(rayCam.x, rayCam.y - FALLS_AURORA_LIFT * length(rayCam.xz), rayCam.z));
-      col += auroraM(auroraRay, tm, K_aurora, foot) * auroraSeen(sky, overcast);
-      // The deck thickens and sinks with the rain: broken cloud in fair weather, a pale overcast
-      // for a drizzle, a low dark one in a downpour (seen larger, being nearer). The library's
-      // wind blows along its own x, which this half-turned view sees reversed.
-      vec3 deck = normalize(vec3(ray.x, ray.y * (1.0 + 1.5 * rain), ray.z));
-      vec4 cloud = skyClouds(sky, deck, tm, 0.3 + 0.7 * smoothstep(0.0, 0.12, rain), -wind);
-      cloud.rgb = greyed(cloud.rgb, vec3(1.0), 0.6 * overcast) * (1.0 - 0.55 * rain);
-      col = mix(col, cloud.rgb, cloud.a);
-      float meteorSeed;
-      float meteorAt = meteorAge(tm, K_meteors, FALLS_METEOR_SLOT, meteorSeed);
-      float meteor = meteorStreak(skyAngles(rayCam), FALLS_METEOR_FIELD, meteorAt, meteorSeed, foot);
-      col += METEOR_TINT * hardEdge(meteor * auroraSeen(sky, max(cloud.a, overcast)));
+      // The world's sky, seen half-turned away from the sun (its frame exactly fallsWorld's): the
+      // dome; the aurora ahead of the camera, its arc lifted over the rim; the deck, broken cloud in
+      // fair weather and closing from there with the rain's overcast, sinking as it grows heavier
+      // (seen larger, being nearer), greyed and darker the heavier the rain; the stars and shooting
+      // stars in its gaps. The world's wind blows the deck along the sky's x, which this half-turned
+      // view sees reversed: it is turned back, so the deck drifts the way the rain slants.
+      WorldView view = worldViewOf(rayCam, uv, FALLS_EYE, FALLS_FOCAL, FALLS_CAM, 0.5 * TAU, 1.0);
+      view.dir = ray;
+      view.auroraLift = FALLS_AURORA_LIFT;
+      world.cover = mix(FALLS_COVER, 1.0, world.cover);
+      world.low = 1.0 + WORLD_DECK_LOW * world.storm;
+      world.wind = -world.wind;
+      WorldSky heaven = worldSky(world, view, FALLS_METEOR_FIELD);
+      col = mix(heaven.col, greyed(heaven.col, vec3(1.0), 0.6 * overcast) * (1.0 - 0.55 * world.storm), heaven.cloud);
       if (rain > 0.0) {
         // Rain hangs from the deck in grey shafts behind the cliff, slanting downwind and sweeping
         // slowly across, thickest over the skyline and fading up into the cloud.

@@ -501,7 +501,8 @@ export function tidepoolSim(params: readonly ParamDef[]): SimFactory {
           step.time = time;
           sim.step(step);
         }
-        if (seconds > 0) sim.carry(seconds, time, carry);
+        const ran = steps * STEP;
+        if (ran > 0) sim.carry(ran, time, carry);
         sim.view();
         return show(sim, frame, Math.max(0, frame.dt) * frame.motion);
       },

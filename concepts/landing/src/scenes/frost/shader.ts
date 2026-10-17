@@ -5,10 +5,11 @@
 // with lit windows and lamps, or a cabin among spruces. Snow falls through that world in depth (the
 // shared snowFall, hidden behind whatever is nearer), lit by the lamps and windows, and lies on its
 // roofs, boughs, rails, sills, lamp cap and the outside sill as deep as uWeather.y says. Over it, the
-// shared sky components (src/scenes/README.md, "Composing components"): stars, the moon in its phase
-// (SKY_MOON_PHASE), the aurora and shooting stars, each hidden by the cloud deck and whatever stands
-// in front, softened by the blur, and lighting the snow, the air and the frost.
+// world's sky (worldSky, src/scenes/README.md "World layers"): the snow cloud, the stars, the moon
+// in its phase, the aurora and shooting stars, softened by the blur, hidden by whatever stands in
+// front, and lighting the snow, the air and the frost.
 import { glslFloat } from "../../shaders/glsl.ts";
+import { worldGlsl } from "../../shaders/lib/world.ts";
 import {
   FROST_EMERGE_FROM,
   FROST_EMERGE_TO,
@@ -27,6 +28,7 @@ import {
 export const FROST_METEOR_TRIGGER = 1;
 
 export const frostGlsl = `
+${worldGlsl}
 // Knobs: K_speed, K_pattern, K_warmth and K_mark drive the simulation (sim.ts); the shader reads
 // K_style, K_sparkle, K_condensation, K_outside, the sky (K_time, K_cycle, K_stars, K_moon,
 // K_meteors) and weather (K_snow, K_wind, K_aurora, and uWeather.y for the snow lying outside).
@@ -53,6 +55,17 @@ const float FROST_BARB_LAG = 160.0;
 // uv height of the far kerb (street) or the clearing's far edge (cabin).
 const float FROST_HORIZON = 0.3;
 const vec3 FROST_LAMP = vec3(1.0, 0.68, 0.36);
+// The camera beyond the glass: a level view one radian high, the eye ~1.8 m over the ground.
+const float FROST_FOCAL = ${glslFloat(0.5 / Math.tan(0.5))};
+const float FROST_EYE = 1.8;
+// The snow cloud's cover in fair weather, the world's overcast closing the rest of it as it snows,
+// and how many more stars the dark woods show than the town.
+const float FROST_COVER = 0.3;
+const float FROST_WOODS_STARS = 1.7;
+// The snow cloud's glow round sunset and sunrise as it snows: lit pink from below by the twilight,
+// which the world's deck dims (WORLD_DECK_TWILIGHT); added where the cloud is by the twilight and
+// the overcast.
+const vec3 FROST_DUSK = vec3(0.62, 0.17, 0.12);
 // The shooting stars' trigger, and where they set out: bearing -0.6..0.6 rad and 0.42..0.6 rad up
 // (skyAngles), the sky over the roofs and treetops in any aspect from 4:3 to 16:9.
 const int FROST_METEOR_SLOT = ${FROST_METEOR_TRIGGER};
@@ -105,23 +118,23 @@ float frostSpruce(vec2 q, float height, float halfWidth, float laden, out float 
 // sources' wide halos: the frost and the condensation scatter it. Snow lies on the roofs, sills,
 // boughs, rails and lamp cap as deep as uWeather.y says, and falls through the air between the pane
 // and whatever each pixel sees, the farthest of it a veil of lit air.
-vec3 frostOutside(vec2 uv, float aspect, float blur, Sky sky, out vec3 glow) {
+vec3 frostOutside(vec2 uv, float aspect, float blur, World world, out vec3 glow) {
   glow = vec3(0.0);
-  float tm = uMotionTime;
+  Sky sky = world.sky;
+  float tm = world.tm;
   vec2 p = vec2((uv.x - 0.5) * aspect, uv.y);
   bool street = K_outside < 0.5;
   float lying = clamp(uWeather.y, 0.0, 1.0);
-  // The snow cloud: overcast once it snows steadily, lower and heavier toward a blizzard.
-  float overcast = smoothstep(0.0, 0.5, K_snow);
-  float heavy = smoothstep(0.4, 1.0, K_snow);
+  // The snow cloud: the world's overcast, closing over as it snows, heavier toward a blizzard.
+  float overcast = world.overcast;
   // Lit windows and lamps fade out as the day comes up.
   float lights = 1.0 - 0.85 * smoothstep(0.2, 0.8, sky.day);
-  // Light on the land: the sky, the moon (diffused by the snow cloud), light bouncing between
-  // lying snow and a low cloud, over the town the streets' own light thrown back down by it, and
-  // the aurora's green, which the snow cloud shuts out as it closes.
+  // Light on the land: the world's sky light (greyed under the snow cloud, the aurora's green in it
+  // while the cloud leaves the sky open), the moon (diffused by the snow cloud), light bouncing
+  // between lying snow and a low cloud, and over the town the streets' own light thrown back down
+  // by it.
   vec3 town = street ? vec3(0.06, 0.04, 0.025) * lights * overcast : vec3(0.0);
-  vec3 lit = sky.ambient * 1.7 + sky.moonColor * 0.5 * (1.0 - 0.4 * overcast) + 0.015 + town + vec3(0.02, 0.022, 0.03) * overcast * lying
-           + auroraGlow(tm, K_aurora) * auroraSeen(sky, overcast);
+  vec3 lit = sky.ambient * 1.7 + sky.moonColor * 0.5 * (1.0 - 0.4 * overcast) + 0.015 + town + vec3(0.02, 0.022, 0.03) * overcast * lying;
   vec3 snowLit = vec3(0.82, 0.88, 1.0) * lit;
   vec2 key = frostKeyLight(aspect);
   // Snow on flat tops (roofs, sills, rails, the lamp cap), 0..1 of its full depth: a patchy dusting
@@ -132,31 +145,29 @@ vec3 frostOutside(vec2 uv, float aspect, float blur, Sky sky, out vec3 glow) {
   // Lamp light hanging in the air under the lamps, caught by the flakes and the veil.
   vec3 beam = vec3(0.0);
 
-  // Sky: the snow cloud closes in with the snowfall and darkens toward a blizzard (over the town
-  // it glows with the streets' light); stars only in its gaps and through clear glass, fewer over
-  // the town than over the woods, and the giant planet among them (behind the deck, softened with
-  // the rest). The aurora and shooting stars show where the deck leaves the sky open; houses,
-  // trees and lamps drawn after hide them. foot is one dither cell in radians (the view spans one
-  // radian of height): the components' level of detail, coarsened by the blur behind the frost so
-  // the aurora's rays and a meteor's streak go soft with everything else.
-  vec3 dir = viewRay(uv, aspect, FROST_HORIZON, 1.0);
-  float foot = 1.0 / uRes.y;
-  vec3 col = skyColor(sky, dir);
-  vec4 cloud = skyClouds(sky, dir, tm, 0.3 + 0.7 * overcast, K_wind);
-  col = mix(col, cloud.rgb * (1.0 - 0.4 * heavy) + town, cloud.a);
-  float sharp = 1.0 - smoothstep(0.01, 0.03, blur);
-  float stars = skyStars(sky, dir, street ? K_stars : K_stars * 1.7, foot) * (1.0 - cloud.a) * sharp;
-  col += SKY_STAR_TINT * stars;
-  col = skyGiant(sky, col, dir, max(foot, blur), 1.0 - cloud.a);
-  float open = auroraSeen(sky, cloud.a);
-  col += auroraM(dir, tm, K_aurora, max(foot, blur)) * open;
-  float meteorSeed;
-  float meteorAt = meteorAge(tm, K_meteors, FROST_METEOR_SLOT, meteorSeed);
-  float meteor = meteorStreak(skyAngles(dir), FROST_METEOR_FIELD, meteorAt, meteorSeed, max(foot, 0.5 * blur));
-  col += METEOR_TINT * hardEdge(meteor * open * sharp);
+  // Sky: the world's (worldSky): the dome, the aurora, the snow cloud (out in fair weather too,
+  // FROST_COVER, and closing from there with the world's overcast), the stars and the giant planet
+  // in its gaps (more over the dark woods than over the town), shooting stars. Houses, trees and
+  // lamps drawn after hide the sky. Its footprint is a dither cell or the blur behind the frost,
+  // whichever is wider, so there the stars fade to their glow and the aurora's rays and a meteor's
+  // streak go soft with everything else.
+  WorldView view = worldView(uv, FROST_HORIZON, FROST_FOCAL, FROST_EYE, 0.0, 1.0);
+  view.foot = max(view.foot, blur);
+  world.cover = mix(FROST_COVER, 1.0, world.cover);
+  if (!street) world.stars *= FROST_WOODS_STARS;
+  WorldSky heaven = worldSky(world, view, FROST_METEOR_FIELD);
+  // What the snow cloud leaves open still lies behind the snow: it greys and darkens as the world's
+  // light does under the cloud (worldAt's shares), and takes the cloud's light by the overcast's
+  // share (shut), so a gap reads as thinner cloud, not clear blue over a snowy day. The cloud
+  // darkens toward a blizzard, glows over the town with the streets' light and, as it snows, pink
+  // round sunset and sunrise (FROST_DUSK). In clear weather it is all the world's sky as it is.
+  float open = 1.0 - heaven.cloud;
+  float shut = heaven.cloud + overcast * open;
+  vec3 col = greyed(heaven.col, vec3(1.0), WORLD_DECK_GREY * overcast * open) * (1.0 - WORLD_DECK_DARK * world.storm * open);
+  col = col * (1.0 - 0.4 * world.heavy * shut) + (town + FROST_DUSK * sky.twilight * overcast) * shut;
   if (street) {
     // The town's light, caught low in the snowy air.
-    col += vec3(0.55, 0.32, 0.16) * 0.12 * lights * exp(-max(uv.y - FROST_HORIZON, 0.0) * 5.0) * (0.5 + 0.5 * cloud.a);
+    col += vec3(0.55, 0.32, 0.16) * 0.12 * lights * exp(-max(uv.y - FROST_HORIZON, 0.0) * 5.0) * (0.5 + 0.5 * heaven.cloud);
   }
 
   if (street) {
@@ -441,8 +452,10 @@ Shade sceneFrost(vec2 uv, vec2 cell, float t) {
   vec2 p = vec2((uv.x - 0.5) * aspect, uv.y);
   // One dither cell, in frame heights: the finest line worth drawing.
   float px = 1.0 / uRes.y;
-  // The moon in its phase: its disc, halo and light on the land, the clouds and the room follow.
-  Sky sky = skyMoonPhase(skyAt(timeOfDayM(K_time, K_cycle, uMotionTime)), K_moon);
+  // The world now: the moon in its phase (its disc, halo and light on the land), the snow cloud's
+  // overcast and the light under it; the street, the clouds and the room follow.
+  World world = worldAt(FROST_METEOR_SLOT, -1);
+  Sky sky = world.sky;
   float clock = uSimOn.z > 0.5 ? texture(uSim2, vec2(0.5)).r : FROST_START;
   // 0 on the glass as the entrance opens, forming fast at first and settling; exactly 1 for every
   // clock at rest.
@@ -540,7 +553,7 @@ Shade sceneFrost(vec2 uv, vec2 cell, float t) {
   vec2 film = (vec2(vnoise(p * 26.0 + 3.0), vnoise(p * 26.0 + 9.0)) - 0.5) * 0.006 * clear;
   vec2 view = uv + vec2(right - left, up - down) * 0.025 + film + uPointer * vec2(0.006, 0.004);
   vec3 glow;
-  vec3 outside = frostOutside(view, aspect, 0.007 + dens * 0.05 + haze * 0.025, sky, glow);
+  vec3 outside = frostOutside(view, aspect, 0.007 + dens * 0.05 + haze * 0.025, world, glow);
   vec3 col = mix(outside, vec3(0.1, 0.12, 0.15) + glow * 0.35 + outside * 0.3, clamp(haze, 0.0, 1.0) * 0.55);
 
   // Light in the ice: the room's dim light on this side, and the night behind the pane scattered

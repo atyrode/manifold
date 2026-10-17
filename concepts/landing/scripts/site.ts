@@ -17,7 +17,9 @@ export async function buildSite(source: string, outdir: string, publicPath: stri
   }
   const result = await Bun.build({ entrypoints: pages, outdir, publicPath, minify: true });
   if (!result.success) throw new SiteBuildError(result.logs.map(String).join("\n"));
-  // The page's worker, next to it: the build worker, or in trees before it the sheet worker.
+  // The page's worker, at the site's root beside it: where the page loads it from, under serve.ts
+  // at the commit's pinned path even for the head (`/@<sha>/build-worker.js`, src/sims/build.ts).
+  // The build worker, or in trees before it the sheet worker.
   for (const name of ["build-worker", "sheet-worker"]) {
     const worker = join(source, "src", `${name}.ts`);
     if (!(await Bun.file(worker).exists())) continue;

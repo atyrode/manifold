@@ -1,7 +1,8 @@
 // The lab's popovers: a panel that opens from a button (a chip of the compact bar, menu.ts, or the
 // tools' "⋯", lab.ts), above or below it as there is room, one at a time, as wide as the inspector
 // and never taller than most of the screen. On a narrow screen it is a sheet the full width of the
-// screen, standing on the bar or panel foot it opens from. Escape or a press elsewhere closes it,
+// screen, standing on the bar or panel foot it opens from. Open, it stands in the tab order after
+// what its button stands in (the panels' zone, or the sheet). Escape or a press elsewhere closes it,
 // and the keyboard comes back to its button; closed, nothing in it takes the focus. A popover may
 // show what the inspector panel holds (a Controls section, the Scenes or Presets view): its `open`
 // takes the element in, its `close` gives it back, so both presentations share one set of controls.
@@ -27,7 +28,7 @@ export interface PopoverSpec {
   open?: () => void;
   /** It went: give back what it held. */
   close?: () => void;
-  /** Hand the keyboard in as it opens; by default to its first control. */
+  /** Hand the keyboard in as it opens; by default to its first control on screen. */
   focus?: () => void;
 }
 
@@ -87,6 +88,7 @@ export class Popover {
     if (open) {
       Popover.#open?.toggle(false);
       Popover.#open = this;
+      this.#follow();
     } else if (Popover.#open === this) Popover.#open = undefined;
     this.el.hidden = !open;
     this.button.setAttribute("aria-expanded", String(open));
@@ -98,13 +100,31 @@ export class Popover {
     this.#spec.open?.();
     this.place();
     if (!focus) return;
-    if (this.#spec.focus) this.#spec.focus();
-    else
-      this.el
-        .querySelector<HTMLElement>(
-          "button:not(:disabled), input, select, textarea, [tabindex='0']",
-        )
-        ?.focus();
+    if (this.#spec.focus) {
+      this.#spec.focus();
+      return;
+    }
+    // Its first control that can take the keyboard: rendered (not hidden), not folded away (inert).
+    for (const control of this.el.querySelectorAll<HTMLElement>(
+      "button:not(:disabled), input, select, textarea, [tabindex='0']",
+    )) {
+      if (control.getClientRects().length === 0 || control.closest("[inert]")) continue;
+      control.focus();
+      return;
+    }
+  }
+
+  /**
+   * Stand in the layer straight after what its button stands in (the panels' zone, or the sheet):
+   * next in the tab order after its button's panel, wherever the layer had it.
+   */
+  #follow(): void {
+    const layer = this.el.parentElement;
+    let stands: Element = this.button;
+    while (stands.parentElement !== null && stands.parentElement !== layer)
+      stands = stands.parentElement;
+    if (stands.parentElement === layer && stands.nextElementSibling !== this.el)
+      stands.after(this.el);
   }
 
   /** Close it for good and take it off the page (its button went: a scene's section chip). */

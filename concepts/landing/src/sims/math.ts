@@ -13,8 +13,10 @@
 //                            pool's holdfasts)
 //   hypot2(x, y)             √(x² + y²) and √(x² + y² + z²) with the bits of V8's Math.hypot (the
 //   hypot3(x, y, z)          page's in Chrome) in every engine: for a seeded layout that must come
-//                            out the same in every browser (country's terrain, land use, chalk M
-//                            and verges)
+//                            out the same in every browser (country's terrain, land use, chalk M,
+//                            verges and fog floor)
+//   atan2(y, x)              the angle of (x, y) with the bits of V8's Math.atan2 in every engine
+//                            (country's building headings)
 //
 // Usage:
 //   const fade = smoothstep(0.2, 0.6, age / life);
@@ -133,4 +135,127 @@ export function hypot3(x: number, y: number, z: number): number {
   // What rounding lost from the first two squares' sum, taken back from the third.
   const lost = pp + qq - pp - qq;
   return Math.sqrt(pp + qq + (r * r - lost)) * max;
+}
+
+// Math.atan2 is a library call, each engine its own: V8 runs fdlibm (src/base/ieee754.cc), while
+// JavaScriptCore calls the system's libm, which rounds some of the country's building headings up
+// to 8 ulps otherwise. atan2 is fdlibm's (e_atan2.c, s_atan.c) in IEEE 754 arithmetic alone, which
+// every engine rounds alike, so V8's bits in any engine.
+
+/** atan(odd and even parts): fdlibm's coefficients of its polynomial on the reduced argument. */
+const ATAN_T = [
+  3.33333333333329318027e-1, -1.99999999998764832476e-1, 1.42857142725034663711e-1,
+  -1.1111110405462355788e-1, 9.09088713343650656196e-2, -7.69187620504482999495e-2,
+  6.66107313738753120669e-2, -5.83357013379057348645e-2, 4.97687799461593236017e-2,
+  -3.6531572744216915527e-2, 1.62858201153657823623e-2,
+] as const;
+/** atan(0.5), atan(1), atan(1.5) and atan(∞) as high and low parts. */
+const ATAN_HI = [
+  4.63647609000806093515e-1, 7.85398163397448278999e-1, 9.82793723247329054082e-1,
+  1.570796326794896558,
+] as const;
+const ATAN_LO = [
+  2.26987774529616870924e-17, 3.06161699786838301793e-17, 1.39033110312309984516e-17,
+  6.12323399573676603587e-17,
+] as const;
+const PI_LO = 1.2246467991473532e-16;
+/** A double's high 32 bits (sign, exponent, top of the significand). */
+const words = new DataView(new ArrayBuffer(8));
+function high(x: number): number {
+  words.setFloat64(0, x);
+  return words.getInt32(0);
+}
+
+/** x · (s1 + s2): what atan(x) ≈ x falls short by, for a reduced |x| < 7/16 (s_atan.c's poly). */
+function atanTail(x: number): number {
+  const z = x * x;
+  const w = z * z;
+  const [t0, t1, t2, t3, t4, t5, t6, t7, t8, t9, t10] = ATAN_T;
+  const s1 = z * (t0 + w * (t2 + w * (t4 + w * (t6 + w * (t8 + w * t10)))));
+  const s2 = w * (t1 + w * (t3 + w * (t5 + w * (t7 + w * t9))));
+  return x * (s1 + s2);
+}
+
+/** fdlibm's atan(x) (s_atan.c): reduced to |x| < 7/16 about 0, 0.5, 1, 1.5 or ∞, then a polynomial. */
+function atan(x: number): number {
+  const hx = high(x);
+  const ix = hx & 0x7fffffff;
+  if (ix >= 0x44100000) {
+    // |x| ≥ 2^66, or NaN.
+    if (Number.isNaN(x)) return x + x;
+    return hx > 0 ? ATAN_HI[3] + ATAN_LO[3] : -ATAN_HI[3] - ATAN_LO[3];
+  }
+  if (ix < 0x3fdc0000) {
+    // |x| < 7/16; below 2^-27 atan(x) rounds to x.
+    return ix < 0x3e400000 ? x : x - atanTail(x);
+  }
+  const a = Math.abs(x);
+  let id: 0 | 1 | 2 | 3;
+  let t: number;
+  if (ix < 0x3fe60000) {
+    // 7/16 ≤ |x| < 11/16.
+    id = 0;
+    t = (2 * a - 1) / (2 + a);
+  } else if (ix < 0x3ff30000) {
+    // 11/16 ≤ |x| < 19/16.
+    id = 1;
+    t = (a - 1) / (a + 1);
+  } else if (ix < 0x40038000) {
+    // 19/16 ≤ |x| < 39/16.
+    id = 2;
+    t = (a - 1.5) / (1 + 1.5 * a);
+  } else {
+    // 39/16 ≤ |x| < 2^66.
+    id = 3;
+    t = -1 / a;
+  }
+  const r = ATAN_HI[id] - (atanTail(t) - ATAN_LO[id] - t);
+  return hx < 0 ? -r : r;
+}
+
+/** The angle of (x, y) from +x, in [-π, π]: the bits of V8's `Math.atan2(y, x)`, in any engine. */
+export function atan2(y: number, x: number): number {
+  if (Number.isNaN(x) || Number.isNaN(y)) return x + y;
+  if (x === 1) return atan(y);
+  const hx = high(x);
+  const hy = high(y);
+  const ix = hx & 0x7fffffff;
+  const iy = hy & 0x7fffffff;
+  // Bit 0 the sign of y, bit 1 the sign of x (a zero's too).
+  const m = ((hy >>> 31) & 1) | ((hx >>> 30) & 2);
+  if (y === 0) {
+    if (m < 2) return y;
+    return m === 2 ? Math.PI : -Math.PI;
+  }
+  if (x === 0 || iy === 0x7ff00000) {
+    if (ix === 0x7ff00000) {
+      // Both infinite.
+      const a = m < 2 ? Math.PI / 4 : 3 * (Math.PI / 4);
+      return m & 1 ? -a : a;
+    }
+    return hy < 0 ? -Math.PI / 2 : Math.PI / 2;
+  }
+  if (ix === 0x7ff00000) {
+    const a = m < 2 ? 0 : Math.PI;
+    return m & 1 ? -a : a;
+  }
+  // y/x's binary orders apart.
+  const k = (iy - ix) >> 20;
+  let z: number;
+  let quadrant = m;
+  if (k > 60) {
+    z = Math.PI / 2 + 0.5 * PI_LO;
+    quadrant &= 1;
+  } else if (hx < 0 && k < -60) z = 0;
+  else z = atan(Math.abs(y / x));
+  switch (quadrant) {
+    case 0:
+      return z;
+    case 1:
+      return -z;
+    case 2:
+      return Math.PI - (z - PI_LO);
+    default:
+      return z - PI_LO - Math.PI;
+  }
 }

@@ -45,10 +45,15 @@
 //
 // Clocks. "Chemistry seconds" are scene seconds × motion × tempo as actually simulated: steps per
 // frame are capped, so a slow machine's dish runs slow rather than its events running ahead of it.
-// Drops, drift and pacemakers all run on that clock (and the model time it stands for).
+// Drops, drift and pacemakers all run on that clock (and the model time it stands for). Turing
+// splits each frame's model time into equal steps of at most TURING_STEP. BZ steps a fixed
+// BZ_STEP of model time (a FixedStep, sims/clock.ts), so a seed plays the same at any refresh rate
+// and a high-refresh screen runs no more steps; it is drawn as of its last step, a front moving a
+// quarter of a texel a step.
 import { MARK_VERTICES, markDistance } from "../../mark.ts";
 import { KnobReader, type ParamDef } from "../../params.ts";
 import { glslFloat } from "../../shaders/glsl.ts";
+import { FixedStep } from "../../sims/clock.ts";
 import { GpuCompute, type Pass, type PingPong, type RenderTarget } from "../../sims/gpu.ts";
 import { grayScottAlong, grayScottGlsl, grayScottRegimes } from "../../sims/grayscott.ts";
 import { clamp, lerp, smoothstep } from "../../sims/math.ts";
@@ -178,16 +183,21 @@ const BZ_A = 0.75;
 const BZ_B = 0.06;
 const BZ_EPS = 0.02;
 const BZ_H = 0.4;
-/** Model time per chemistry second, the longest step and the most steps in a frame. */
-const BZ_RATE = 0.4;
+/**
+ * Model time per chemistry second, the step and the most steps in a frame. Fronts run 15% faster
+ * per model unit at the 0.0067 step a 60 Hz frame used to take (the semi-implicit step's error), so
+ * the rate is that much above the 0.4 they ran at there: they cross the dish as fast as they did.
+ */
+const BZ_RATE = 0.462;
 const BZ_STEP = 0.03;
 const BZ_STEPS = 4;
 const BZ_PREWARM = 40;
 /**
  * For the seeded start: wave speed in texels per model time unit, a spiral's period, and how long a
- * point stays excited (until v reaches a - b, rising as 1 - e^-t). Measured on this grid: a lone
- * front runs 7.3 texels per unit; a spiral turns in 4.5 units; a spark (BZ_FIRE) launches a ring
- * every time only at periods above about 4.
+ * point stays excited (until v reaches a - b, rising as 1 - e^-t). Measured on this grid at BZ_STEP:
+ * a lone front runs 7.6 texels per unit, a train fired every 4.7 to 5.6 units (the pacemakers')
+ * 7.2 to 7.35; a spiral turns in 4.5 units; a spark (BZ_FIRE) launches a ring every time only at
+ * periods above about 4.
  */
 const BZ_SPEED = 7.3;
 const BZ_SPIRAL_PERIOD = 4.5;
@@ -728,6 +738,8 @@ class PetriLab implements SceneSim {
   /** Chemistry seconds and model time simulated since the dish was seeded. */
   #clock = 0;
   #model = 0;
+  /** BZ's fixed steps: BZ_STEP of model time each, BZ_STEP / BZ_RATE chemistry seconds. */
+  readonly #bzClock = new FixedStep(BZ_STEP / BZ_RATE, BZ_STEPS);
   /** Turing: position along the loop through grayScottRegimes; BZ: phase of the excitability field. */
   #drift = 0;
   /** Turing: the point the whole dish is held at (a regime, or the Advanced knobs); undefined while it wanders. */
@@ -799,19 +811,23 @@ class PetriLab implements SceneSim {
     }
     const turing = chemistry === TURING;
 
-    // This frame's chemistry: model time in equal steps, capped, so a slow machine's dish runs slow.
+    // This frame's chemistry, capped, so a slow machine's dish runs slow. Turing: the frame's model
+    // time in equal steps; BZ: the fixed steps due.
     const rate = turing ? TURING_RATE : BZ_RATE;
-    const longest = turing ? TURING_STEP : BZ_STEP;
-    const wanted =
+    const elapsed =
       Math.max(0, frame.dt) *
       Math.max(0, frame.motion) *
-      Math.max(0, this.#knobs.value(frame, "tempo")) *
-      rate;
-    const steps =
-      wanted > 0
-        ? Math.min(turing ? TURING_STEPS : BZ_STEPS, Math.ceil(wanted / longest - 1e-6))
-        : 0;
-    const model = steps > 0 ? Math.min(wanted, steps * longest) : 0;
+      Math.max(0, this.#knobs.value(frame, "tempo"));
+    let steps: number;
+    let model: number;
+    if (turing) {
+      const wanted = elapsed * rate;
+      steps = wanted > 0 ? Math.min(TURING_STEPS, Math.ceil(wanted / TURING_STEP - 1e-6)) : 0;
+      model = steps > 0 ? Math.min(wanted, steps * TURING_STEP) : 0;
+    } else {
+      steps = this.#bzClock.advance(elapsed);
+      model = steps * BZ_STEP;
+    }
     const seconds = model / rate;
     this.#clock += seconds;
     this.#model += model;
@@ -836,14 +852,13 @@ class PetriLab implements SceneSim {
 
     if (steps > 0) {
       const drift = Math.max(0, this.#knobs.value(frame, "drift"));
-      const dt = model / steps;
       if (turing) {
         if (this.#hold === undefined) this.#drift += seconds * drift * TURING_DRIFT;
-        this.#setTuring(dt, this.#hold);
+        this.#setTuring(model / steps, this.#hold);
         for (let i = 0; i < steps; i++) this.#turing.run(this.#state);
       } else {
         this.#drift += model * drift * BZ_DRIFT;
-        this.#setBz(dt);
+        this.#setBz(BZ_STEP);
         for (let i = 0; i < steps; i++) this.#bz.run(this.#state);
       }
     }
@@ -885,6 +900,7 @@ class PetriLab implements SceneSim {
     this.#state.seed(data);
     this.#clock = 0;
     this.#model = 0;
+    this.#bzClock.reset();
     this.#drift = 0;
     this.#heading = this.#random() * TAU;
     this.#untilDrop = DROP_FIRST;

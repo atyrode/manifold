@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 import { effective } from "../params.ts";
 import { barScene } from "../scenes/bar/index.ts";
+import { marbleScene } from "../scenes/marble/index.ts";
 import type { SceneDef, SimFrame } from "../scenes/types.ts";
 import { paramDefaults } from "../state.ts";
 import { HeadlessError, HeadlessGl, HeadlessSim } from "./headless.ts";
@@ -68,4 +69,36 @@ test("frames carry the knobs over the scene's defaults, and a 'now' fires on one
   expect(sim.uploaded(0)).toBe(true);
   expect(() => sim.upload(1)).toThrow(HeadlessError);
   expect(() => new HeadlessSim(scene, new HeadlessGl().gl).step()).toThrow(HeadlessError);
+});
+
+test("marble runs headless: its ink canvas is stood in for, and goes up as a premultiplied image", () => {
+  // bun has no OffscreenCanvas (HeadlessSim stands HeadlessCanvas in for it), and marble sets
+  // UNPACK_PREMULTIPLY_ALPHA_WEBGL around each upload of its canvas.
+  const sim = new HeadlessSim(marbleScene);
+  for (let f = 0; f < 360; f++) {
+    // Six seconds of the tray, with a drag across it in the middle second.
+    const down = f >= 150 && f < 210;
+    const x = 0.3 + Math.max(0, Math.min(60, f - 150)) / 150;
+    sim.step({ pointer: { x, y: 0.5, down, pressed: f === 150, released: f === 210 } });
+  }
+  const state = sim.upload(1);
+  expect([state.width, state.height]).toEqual([2, 1]);
+  expect([...state.data].every(Number.isFinite)).toBe(true);
+  sim.dispose();
+});
+
+test("half-float bits go up as HALF_FLOAT and are kept as the floats they hold", () => {
+  const headless = new HeadlessGl();
+  const texture = new DataTexture(headless.gl, { width: 2, height: 2, format: "r16f" });
+  // 1, -2, 0.5 and the smallest subnormal, 2^-24.
+  texture.upload(new Uint16Array([0x3c00, 0xc000, 0x3800, 0x0001]));
+  expect(headless.upload(texture.texture).data).toEqual(new Float32Array([1, -2, 0.5, 2 ** -24]));
+  texture.uploadRegion(new Uint16Array([0, 0, 0, 0x4400]), 1, 1, 1, 1);
+  expect(headless.upload(texture.texture).data).toEqual(new Float32Array([1, -2, 0.5, 4]));
+  // Float32 values still go up as FLOAT; bytes or half bits do not fit an 8-bit or a float texture.
+  texture.upload(new Float32Array([0.25, 0, 0, 0]));
+  expect(headless.upload(texture.texture).data[0]).toBe(0.25);
+  const bytes = new DataTexture(headless.gl, { width: 1, height: 1, format: "r8" });
+  expect(() => bytes.upload(new Uint16Array(1))).toThrow("does not match its format");
+  expect(() => texture.upload(new Uint8Array(4))).toThrow("does not match its format");
 });

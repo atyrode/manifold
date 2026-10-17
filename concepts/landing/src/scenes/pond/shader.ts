@@ -7,11 +7,11 @@
 // far as the water is deep, and the sun glints on them with the shared glitter (waterGlitter). Where
 // the pads, the koi on their loops and the petals are comes from the layout pass (uSim3, layout.ts).
 
-import { CANOPY_MARGIN } from "../../decor.ts";
 import { fishGlsl } from "../../sims/fish.ts";
 import { plantSheetGlsl } from "../../sims/plantsheet.ts";
 import { glslFloat } from "../../shaders/glsl.ts";
 import { plantsGlsl } from "../../shaders/lib/plants.ts";
+import { CANOPY_MARGIN } from "./atlas.ts";
 
 /** Seconds of the pond's entrance and exit (SceneDef.passage). */
 export const POND_PASSAGE = { enter: 3.2, exit: 1.8 } as const;

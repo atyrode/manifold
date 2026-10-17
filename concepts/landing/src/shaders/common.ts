@@ -210,7 +210,6 @@ uniform float uMotionTime; // the scene clock integrated with motion (seconds of
 uniform float uFallTime;   // the scene clock integrated with min(1, 2.5 uMotion): gravity's clock, real time once motion is above 0.4
 uniform vec2 uPointer;   // -1..1, smoothed
 uniform vec4 uMouse;     // raw pointer: xy in uv (y up), z 1 while pressed, w uTime of the last press (-1e4: none)
-uniform float uProgress; // loading page progress 0..1, -1 elsewhere
 uniform vec3 uBg;
 uniform vec3 uInk;
 uniform vec3 uAccent;

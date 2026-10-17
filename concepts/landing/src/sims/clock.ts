@@ -6,12 +6,19 @@
 //   new FixedStep(step, maxSteps)
 //   advance(seconds)   add sim time (negative counts as 0); returns the steps due now, 0..maxSteps
 //   lag(i)             seconds still owed after step i of the last advance(): step i happened lag(i)
-//                      before now (for steps that sample a clock, e.g. tm - lag(i))
-//   alpha              share of a step left over (pending / step), to interpolate the drawn state
-//   pending            seconds left over
+//                      before now (for steps that sample a clock, e.g. tm - lag(i)); 0 for a step
+//                      that fell due early
+//   alpha              share of a step left over (pending / step), 0..1, to interpolate the drawing
+//   pending            seconds left over, 0 ≤ pending < step
 //   reset()            forget what is owed
 // The arithmetic is the loop the scenes carried (`pending = min(pending + dt, max * h)`, subtract h
-// while pending ≥ h), so a sim switching to it steps at exactly the same moments.
+// while one is due), except that a step falls due a hair early: once pending reaches
+// (1 − STEP_EARLY) h, not h. A display whose frame is h (60 Hz on a 1/60 step) then runs exactly
+// one step a frame: its timestamps' rounding and jitter would otherwise leave pending on the step
+// boundary and split a third of its frames into none and two steps (twice the work in one frame).
+// The time a step ran early is owed back: the next step falls due that much later, so the sim
+// keeps real time. Fed frames of whole steps (HeadlessSim's 1/60 to a step of 1/60, 1/120, 1/240
+// or 1/480), pending is back to 0 after every frame: those runs step as with a due point of h.
 //
 // runBudgeted(step, budgetMs, maxSteps, from = 0, chunk = 1) runs step(from), step(from + 1), ...
 // until maxSteps, until step returns true (settled), or until budgetMs of wall time has passed
@@ -51,6 +58,13 @@
 /** A fixed step or chunk that is not a positive (whole) number. */
 export class ClockError extends Error {}
 
+/**
+ * The share of a step by which one may fall due early: wider than a 60 Hz frame's timing jitter
+ * on a 1/60 step (±0.5 ms of 16.7 ms is 3 %; 1 % still splits frames), and narrower than the gap a
+ * 144 Hz frame leaves below a 1/60 step (pending tops out at 11/12 of one between whole steps).
+ */
+export const STEP_EARLY = 0.05;
+
 /** Fixed-step time keeping for a sim's frame loop (see the header). */
 export class FixedStep {
   /** Seconds per step. */
@@ -58,8 +72,11 @@ export class FixedStep {
   /** Most steps one advance() returns; time owed beyond them is dropped. */
   readonly maxSteps: number;
   readonly #cap: number;
-  /** pending after each step of the last advance(). */
+  /** pending at which a step falls due: (1 − STEP_EARLY) steps. */
+  readonly #due: number;
+  /** pending after each step of the last advance(), at least 0. */
   readonly #lags: Float64Array;
+  /** Seconds owed; down to −STEP_EARLY steps after a step that fell due early. */
   #pending = 0;
   #count = 0;
 
@@ -71,17 +88,18 @@ export class FixedStep {
     this.step = step;
     this.maxSteps = maxSteps;
     this.#cap = maxSteps * step;
+    this.#due = step * (1 - STEP_EARLY);
     this.#lags = new Float64Array(maxSteps);
   }
 
-  /** Seconds left over after the last advance(), less than one step. */
+  /** Seconds left over after the last advance(), 0 ≤ pending < step (0 after an early step). */
   get pending(): number {
-    return this.#pending;
+    return Math.max(0, this.#pending);
   }
 
   /** Share of a step left over, 0..1: pending / step. */
   get alpha(): number {
-    return this.#pending / this.step;
+    return Math.max(0, this.#pending) / this.step;
   }
 
   /** Add `seconds` of sim time; returns how many steps are due now. */
@@ -89,16 +107,16 @@ export class FixedStep {
     const step = this.step;
     this.#pending = Math.min(this.#pending + Math.max(0, seconds), this.#cap);
     let count = 0;
-    while (count < this.maxSteps && this.#pending >= step) {
+    while (count < this.maxSteps && this.#pending >= this.#due) {
       this.#pending -= step;
-      this.#lags[count] = this.#pending;
+      this.#lags[count] = Math.max(0, this.#pending);
       count++;
     }
     this.#count = count;
     return count;
   }
 
-  /** Seconds still owed after step i (0 ≤ i < the last advance()'s count). */
+  /** Seconds still owed after step i (0 ≤ i < the last advance()'s count); 0 for an early step. */
   lag(i: number): number {
     const lag = Number.isInteger(i) && i < this.#count ? this.#lags[i] : undefined;
     if (lag === undefined)

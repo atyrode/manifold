@@ -8,10 +8,23 @@
     <title>manifold</title>
     <link
       rel="icon"
-      href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' fill='%2307080b'/%3E%3Cpath d='M9 23V9l7 8 7-8v14' fill='none' stroke='%23e8e6df' stroke-width='3' stroke-linecap='square'/%3E%3C/svg%3E"
+      href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' fill='%2307080b'/%3E%3Cpath d='M9.4 23V9l6.6 8.15 6.6-8.15v14' fill='none' stroke='%23e8e6df' stroke-width='3' stroke-linecap='square'/%3E%3C/svg%3E"
     />
     <link rel="stylesheet" href="./src/styles.css" />
     <link rel="stylesheet" href="./src/lab.css" />
+    <!-- Without JavaScript: the landing over the default scene's committed thumbnail, still, as a
+         scene's stands in for the canvas without WebGL2 (body.poster, src/styles.css). -->
+    <noscript>
+      <style>
+        body::before {
+          content: "";
+          position: fixed;
+          inset: 0;
+          background: url("thumbs/pond.webp") center / cover no-repeat;
+          image-rendering: pixelated;
+        }
+      </style>
+    </noscript>
   </head>
   <body data-mode="landing" data-scene="pond">
     <canvas id="stage" aria-hidden="true"></canvas>
@@ -19,7 +32,10 @@
     <div class="overlay" id="overlay">
       <header class="nav" data-show="landing">
         <a class="wordmark" href="#" aria-label="manifold">
-          <svg viewBox="0 0 32 32" aria-hidden="true"><path d="M7 25V7l9 10 9-10v18" /></svg>
+          <!-- The app icon's M (src/mark.ts), 18 tall in the 32 box; the favicon's is 14. -->
+          <svg viewBox="0 0 32 32" aria-hidden="true">
+            <path d="M7.5 25V7l8.5 10.5 8.5-10.5v18" />
+          </svg>
           <span>manifold</span>
         </a>
         <nav>
@@ -46,15 +62,15 @@
         </div>
       </main>
 
-      <section class="loading" data-show="loading" aria-live="polite">
+      <section class="loading" data-show="loading" aria-live="polite" hidden>
         <svg class="mark" viewBox="0 0 32 32" aria-hidden="true">
-          <path d="M7 25V7l9 10 9-10v18" />
+          <path d="M7.5 25V7l8.5 10.5 8.5-10.5v18" />
         </svg>
         <div class="bar" id="bar" role="progressbar" aria-label="Loading manifold"></div>
         <p class="status" id="status">resolving hub</p>
       </section>
 
-      <section class="instance" data-show="instance">
+      <section class="instance" data-show="instance" hidden>
         <div class="card">
           <p class="eyebrow">private instance</p>
           <h2 id="instance-name">tyrode</h2>

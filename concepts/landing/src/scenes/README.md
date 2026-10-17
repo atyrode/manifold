@@ -106,8 +106,9 @@ huge while idle; a sim: `frame.motionTime - frame.motionTriggers[slot]`). It sta
 motion clock, so under reduced motion such a response holds its first frame.
 `main` already stills `shimmer` with the motion: don't multiply it by `uMotion` again.
 
-Under reduced motion the scene holds still but interactions still end. The scene clock and the
-motion clock stand still, sims get `dt` 0, weather sits where it leads and there are no passages.
+Under reduced motion (the system's setting, followed as it changes) the scene holds still but
+interactions still end. The scene clock and the motion clock stand still, sims get `dt` 0, weather
+sits where it leads, the parallax rests (`uPointer` eases back to 0) and there are no passages.
 A press over the page or a "now" trigger is stamped on a clock that keeps real time, and reaches
 the shader (`uMouse.w`, `uTriggers`) and sims (`frame.triggers`) moved back by as much, so
 `t - uMouse.w`, `sinceTrigger(slot)` and `frame.time - frame.triggers[slot]` count real seconds
@@ -119,10 +120,11 @@ edges and `fired`, but no time, so their response is one still step. Paused, eve
 A picture that stands still is not redrawn. Paused, under reduced motion or at motion 0, the page
 draws while something is on its way (an entrance, a passage, a program building, the parallax
 easing to the pointer, a sim whose `ready()` is false) and for a while after each change or input
-(`SETTLE_SECONDS`, 5 s; after a press, its release or a "now" trigger while the interaction clock
-runs, `RESPONSE_SECONDS`, 20 s: `src/governor.ts`), then stops until the next. Bound a response to
-that, and a sim that works on over frames at `dt` 0 (a budgeted rebuild, a build on the build
-worker) reports `ready()` false until it is done, or its picture can stop half-way.
+(`SETTLE_SECONDS`, 5 s; after the pointer merely moves or leaves, `POINTER_SECONDS`, 0.25 s, enough
+to draw it where it now is; after a press, its release or a "now" trigger while the interaction
+clock runs, `RESPONSE_SECONDS`, 20 s: `src/governor.ts`), then stops until the next. Bound a
+response to that, and a sim that works on over frames at `dt` 0 (a budgeted rebuild, a build on
+the build worker) reports `ready()` false until it is done, or its picture can stop half-way.
 
 ### Entrances and exits
 
@@ -132,7 +134,8 @@ once off to the side (many drivers finish compiling a program at its first draw 
 up while they do), then the incoming scene itself is created and runs ahead off screen, its sim
 stepping with `dt` 0 and `enter` 0 and drawing one cell, until the sim reports `ready()` (a sim
 that builds its world over several frames or on the build worker: the countryside's land, frost's
-first field, the slime mould's first dish, the pond's plant sheets; at most 3 s). Any pause
+first field, dew's first web, the bonsai's tree, the dry garden's layout, the forest's warm-up, the
+slime mould's first dish, the pond's plant sheets; at most 3 s). Any pause
 therefore comes right at the switch, before anything moves, never in the middle of the passage,
 and the scene enters with its world in place. Then the outgoing
 scene plays its exit, drawn with its own settings. Part-way through that exit (the lab's overlap,
@@ -227,11 +230,15 @@ the lab's, each value as its knob reads it, and the whole query as the lab write
 
 `src/url-keys.json` lists every URL key the lab has published: its own settings, and each scene's
 keys (its knobs, the `-amount` of each feature, its planets, and the outgrown keys its migrations
-map). The list only grows: add a new knob's keys to it, and never take one out.
-`src/url-keys.test.ts` fails while a key the lab reads is missing from it, and while a key in it
-reaches nothing: no knob of its scene, nor its planets, nor a step of the migration chain
-(`MIGRATIONS` in `src/state.ts`) that maps it onto one of them or drops it on purpose, so a renamed
-or removed key needs its migration.
+map), each with the meaning it was published with: its knob's kind (`range`, `toggle`, `feature`,
+`seed`, or `choice` with its option values, `choice 0 1 2`; a feature's `-amount` is a `range` or
+its choice), or `planets`. The list only grows: add a new knob's keys to it, and never take one out
+or change one. `src/url-keys.test.ts` fails while a key the lab reads is missing from it (it lists
+the entries to add), while a key in it reaches nothing: no knob of its scene, nor its planets, nor
+a step of the migration chain (`MIGRATIONS` in `src/state.ts`) that maps it onto one of them or
+drops it on purpose; and while a key the chain leaves alone has changed kind, or its choice has lost
+an option value. So a renamed or removed key needs its migration, and so does a key that changes
+meaning.
 
 Shared knobs come from `src/scenes/atmosphere.ts`: `skyKnobs({ time })` gives `K_time`, `K_cycle`;
 `weatherKnobs({...})` gives `K_rain`, `K_snow`, `K_fog`, `K_wind`, `K_lightning`, `K_aurora`
@@ -344,7 +351,10 @@ compact, a bar along the bottom edge. The inspector has three views, picked by t
 header: Scenes (every scene's thumbnail, shelved by family), Presets (saved setups) and Controls (the
 scene's groups, then Look, Motion and Page); a rail beside each view jumps between its families,
 preset groups or control groups. The scene's name in the header opens the Scenes view, and the
-header's last icons minimise the lab to the bar and hide it.
+header's last icons minimise the lab to the bar and hide it. The Scenes and Presets views follow the
+setup only while on screen, and the Controls view only while the open lab shows it or lends one of
+its sections to the bar (below); otherwise it keeps only the lens's counts, which light the bar's
+chips, and catches up as it comes back.
 
 The compact bar (`src/lab/menu.ts`, rules in `menu-model.ts`) is the same menu laid flat: the scene's
 chip (its dot and name) opens the Scenes view, a Presets chip the presets, then one chip per
@@ -361,14 +371,16 @@ together, the title their tooltip and name, and then the strip scrolls (a wheel 
 section stays one press away, in one order, where a "more" chip would hide the rest behind a
 popover of popovers. The fit is measured, never decided by scene. The chips are one tab stop (the
 arrow keys, Home and End move along them); Escape closes a popover and hands the keyboard back to
-its chip, and a popover's controls are in the tab order only while it is open. The bar docks top or
-bottom or floats like any panel, and "expand" takes the lab back to the panel.
+its chip, and a popover's controls are in the tab order only while it is open, after the bar or
+panel its button stands on. The bar docks top or bottom or floats like any panel, and "expand"
+takes the lab back to the panel.
 
 Both presentations carry one row of tools, in the panel's foot or on the bar: play or pause, undo,
 redo and shuffle; A and B while a comparison runs; the tour's place while it plays; and "⋯", a
 popover with the motion, the transitions and their replay, every "now" of the scene, the A/B
-comparison, the tour, reset, the link, the explanations, the shortcuts and the build's status. `l`
-hides the whole lab, and `/` opens the panel at the control search.
+comparison, the tour, reset, the link, the explanations, the shortcuts and the build's status,
+which hands the keyboard to the motion's slider as it opens. `l` hides the whole lab, and `/`
+opens the panel at the control search.
 
 Controls lay a group out from its knobs' metadata, never from scene ids: a switch (toggle or
 feature) is an icon chip (a feature's amount on its chip, or under the chips while it is on when it
@@ -625,7 +637,6 @@ WaterMirror waterMirror(vec3 dir, vec2 slope, float minCos); // a view ray on ri
 float waterGlitter(vec3 n, vec3 view, vec3 light, float s2); // the sun's or moon's glitter 0..1: Beckmann lobe, variance s2, 1 at its heart
 // WATER_FLOW
 vec2 waterDrift(vec2 p, vec2 current, float tm);          // where to evaluate a pattern a steady current (velocity) has carried to p
-vec4 waterFlow(vec2 p, vec2 current, float tm, float period, out float weight); // a current that varies: mix(at xy, at zw, weight)
 // WATER_CAUSTICS (caustics.ts)
 vec2 causticRipples(vec2 p, float tm, vec2 wind, float scale, float steep, float pace, float foot, out vec3 hessian); // five trains with curvature
 float causticJacobian(vec3 hessian, float d);             // det(I + d H): d = 0.25 x depth for water
@@ -770,8 +781,11 @@ and the world's gates, `worldFeatures` and `WORLD_ALL`: see "World layers"), `sh
 (the world's gates alone), `orbit` (`orbitFeatures` and `ORBIT_ALL`: the
 figures in its stars, the planet's aurora and city lights, the M's lights, the moons and the ring
 system, all off at its defaults; its storms, shooting stars and captured meteors stay in, as a
-"now" shows them, and so do the cloud decks the storms flash in), and `lake` (`lakeFeatures`: the
-fjord, `LAKE_FJORD`, while it is the place, and the slow drapes, `LAKE_DRAPES`, while they are on).
+"now" shows them, and so do the cloud decks the storms flash in), `lake` (`lakeFeatures`: the
+fjord, `LAKE_FJORD`, while it is the place, and the slow drapes, `LAKE_DRAPES`, while they are on)
+and `pendula` (`pendulaFeatures` and `PENDULA_ALL`: real pendulums, `PENDULA_REAL`, with
+`pendulumGlsl`; the trails, `PENDULA_TRAIL`; the M, `PENDULA_MARK`; all off at its defaults, so
+its default program swings every bob as a small swing).
 
 Library gates are setting-keyed features the shared libraries own: code a library compiles in only
 while it shows (`src/shaders/index.ts`): the constellations, `SKY_FIGURES`, while their night
@@ -856,7 +870,7 @@ The components and their three parts:
 | Moon           | `skyKnobs({ moon })`: `K_moon`                                                                                       | `SKY_MOON_PHASE`                                    | `skyMoonPhase(sky, K_moon)`: the disc and halo in `skyColor`, the light in `sky.moonColor` and `sky.ambient`, the glare in `skyStars`; `skyMoonCover(sky, dir)` coverage                                                                                                             |
 | Aurora         | `weatherKnobs({ aurora })`: `K_aurora`                                                                               | `AURORA_CURTAINS` (3)                               | `auroraM(dir, tm, strength, foot)` radiance, `auroraGlow(tm, strength)` light, `auroraSeen(sky, cloud)` visibility                                                                                                                                                                   |
 | Canopy weather | `weatherKnobs({ rain, wind })`: `K_rain`, `K_wind`; the scene's seed knob                                            |                                                     | `canopyWeather(sky, K_rain)` light (the sky under the rain's cloud, the deck's brightness, the key's side and slant); `canopyRaySources`, `canopyGap(p, wind, seed, raySrc)` coverage (where the rain pours in); `canopyGapSky(w, washed, dir, stars, p, wind, seed, deck)` radiance |
-| Water          | the scene's own (`K_wind` and its water knobs)                                                                       | `WATER_TIER` (tiers, see "Water")                   | slope and unresolved variance (`rippleSpectrum`, `windRipples`), mirror ray and Fresnel (`waterMirror`), drifted points (`waterDrift`, `waterFlow`), light on the bed (`waterCaustic`, the cellular net `causticCells`)                                                              |
+| Water          | the scene's own (`K_wind` and its water knobs)                                                                       | `WATER_TIER` (tiers, see "Water")                   | slope and unresolved variance (`rippleSpectrum`, `windRipples`), mirror ray and Fresnel (`waterMirror`), drifted points (`waterDrift`), light on the bed (`waterCaustic`, the cellular net `causticCells`)                                                                           |
 | Clouds         | `weatherKnobs({ clouds, shadows })`: `K_clouds`, `K_shadows`; the scene's own (the cloud sea's cover, height, drift) | `CLOUD_TIER` (tiers, see "Clouds")                  | the deck's plane and calm field (`cloudDeckPoint`, `cloudFlatField`), the lit deck (`skyClouds`) rgb and coverage, its shadow (`skyCloudShadow`) light on materials, the sea of tops (`cloudSeaMarch`, `cloudSeaTop`, `cloudSeaShadow`) distance, normal and light                   |
 | Meteors        | `skyKnobs({ meteors: { trigger } })` (`skyComponentKnobs` without the clock): `K_meteors`                            |                                                     | `meteorAge(tm, rate, slot, seed)` schedule, `meteorStreak(q, field, age, seed, foot)` coverage in the scene's frame (`skyAngles(dir)` on a dome, screen heights for a flat backdrop), `METEOR_TINT`                                                                                  |
 | Constellations | `skyKnobs({ constellations: true })` (`skyComponentKnobs` without the clock): `K_constellations`, off at 0.4         | the library gate `SKY_FIGURES`                      | inside `skyStars`' coverage, no call of its own: the figures of `constellations.ts` (its `uCon*` uniforms, all but the Manifold mark) fixed on the dome, their stars brighter than the field's, the lines at `K_constellations`; faded as the stars (`skyStarFade`)                  |
@@ -908,35 +922,35 @@ the shared component at a fixed value. **full**: the ordinary full moon of `skyC
 **own**: a scene-specific version kept on purpose. **—**: not applicable, no knob. Rows marked † still
 have **open** cells: an open night sky where the component could be composed.
 
-| Scene              | Sky seen                                                         | Stars                                            | Moon                                                       | Aurora                                                            | Meteors                                                                              |
-| ------------------ | ---------------------------------------------------------------- | ------------------------------------------------ | ---------------------------------------------------------- | ----------------------------------------------------------------- | ------------------------------------------------------------------------------------ |
-| `train`            | through the window                                               | knob 0.75                                        | knob (phase) + night glow                                  | knob (`auroraCurtains`, full detail)                              | own: `K_meteors`, trigger 5, window and tunnel                                       |
-| `frost`            | through the window                                               | knob 0.5 (cabin ×1.7)                            | knob (phase)                                               | knob                                                              | knob, trigger 1                                                                      |
-| `autumn`           | over the park, under the canopy                                  | knob 0.5                                         | knob (phase; keys the night light)                         | knob, behind the clouds                                           | knob, trigger 2                                                                      |
-| `bees`             | over the valley (the world's sky, "World layers")                | knob 0.6 + the world's Milky Way (knob, on)      | knob (phase at every setting; keys the night light)        | knob, behind the clouds and the cumulus                           | knob, trigger 0                                                                      |
-| `dunes`            | over the dune sea (the world's sky; none overhead)               | knob 1 + the world's Milky Way (knob, on)        | knob (phase; keys the sand's light)                        | knob, behind the clouds and the dust                              | knob, trigger 0, behind the clouds and the dust                                      |
-| `falls`            | above the cliff                                                  | knob 0.45                                        | knob (phase)                                               | knob, its arc lifted over the rim                                 | knob, trigger 0, falling behind the rim                                              |
-| `garden`           | the haze over the wall (the horizon is the frame's top edge)     | —                                                | knob (phase; keys the night light)                         | —                                                                 | —                                                                                    |
-| `lanterns`         | over the river, mirrored                                         | knob 0.55 (+ own sparse stars, thinned below it) | own young crescent, fixed in the frame                     | knob, mirrored                                                    | knob, trigger 2, mirrored                                                            |
-| `meadow`           | over the meadow (the world's sky, "World layers")                | knob 0.6 + the world's Milky Way (knob, on)      | knob (phase)                                               | knob, behind the clouds                                           | knob, trigger 2                                                                      |
-| `shore`            | over the sea and mirrored in it and the wet sand (the world's)   | knob 0.6 + the world's Milky Way (knob, on)      | knob (phase, compiled in at every setting; moonrise)       | knob, behind the clouds, mirrored                                 | knob, trigger 2, mirrored                                                            |
-| `sill`             | over the city                                                    | knob 0.5                                         | knob (phase)                                               | knob, light through the window                                    | knob, trigger 3                                                                      |
-| `skyward`          | a strip between roofs                                            | knob 0.3                                         | knob (phase)                                               | — (looking up: the curtains hang toward the horizon, out of view) | knob, trigger 0, camera frame                                                        |
-| `bamboo`, `forest` | canopy gaps                                                      | knob 0.5                                         | knob (phase; the gaps and the night rays)                  | —                                                                 | —                                                                                    |
-| `street`           | in reflections only                                              | knob 0.55 (window glass)                         | knob (phase; the windows and wet street)                   | —                                                                 | —                                                                                    |
-| `lake`             | over the ice or the fjord, mirrored                              | own `K_stars` + shared Milky Way (knob)          | own phase, fixed bearing (right; over the fjord left)      | knob (`auroraCurtains`, substorm clock) or own `drapes`           | knob, trigger 3, mirrored                                                            |
-| `swell`            | over the sea                                                     | own (`starfield`, `K_stars`)                     | own disc (`K_moon` sizes it), its `waterGlitter` path      | —                                                                 | knob, trigger 0, screen frame, glints in the waves                                   |
-| `clouds` †         | above the cloud sea                                              | knob 0.75                                        | own bearing, drawn by `skyColor`                           | knob (`auroraCurtains`, full detail)                              | open                                                                                 |
-| `country`          | over the valley                                                  | knob 0.5                                         | knob (phase; `SKY_MOON_PHASE` compiled in only below full) | open                                                              | open                                                                                 |
-| `flock` †          | the subject over a skyline (only the dome mirrored in its water) | knob 0.45                                        | full                                                       | open                                                              | open                                                                                 |
-| `island` †         | round the island                                                 | knob 0.6                                         | full                                                       | open                                                              | open                                                                                 |
-| `campfire` †       | above the pines                                                  | knob 0.8 + shared Milky Way (knob)               | — (the giant planet replaces it)                           | open                                                              | own: `K_shooting`, trigger 0, under the planet                                       |
-| `kelp`             | Snell's window                                                   | —                                                | full, refracted                                            | —                                                                 | —                                                                                    |
-| `tidepool`         | the sky in the pools' mirror                                     | —                                                | full, mirrored                                             | —                                                                 | —                                                                                    |
-| `dew`              | out-of-focus dawn backdrop                                       | —                                                | —                                                          | —                                                                 | —                                                                                    |
-| `bonsai`           | none (its light only)                                            | —                                                | —                                                          | —                                                                 | —                                                                                    |
-| `orbit`            | its own sky                                                      | own                                              | own                                                        | —                                                                 | own (captured meteors)                                                               |
-| `fireflies`        | its own moonless sky over the mangroves                          | own                                              | — (moonless)                                               | —                                                                 | knob (`skyComponentKnobs`), trigger 2, over the hills behind the trees, not mirrored |
+| Scene              | Sky seen                                                         | Stars                                       | Moon                                                       | Aurora                                                            | Meteors                                                                              |
+| ------------------ | ---------------------------------------------------------------- | ------------------------------------------- | ---------------------------------------------------------- | ----------------------------------------------------------------- | ------------------------------------------------------------------------------------ |
+| `train`            | through the window                                               | knob 0.75                                   | knob (phase) + night glow                                  | knob (`auroraCurtains`, full detail)                              | own: `K_meteors`, trigger 5, window and tunnel                                       |
+| `frost`            | through the window (the world's sky, softened by the frost)      | knob 0.5 (cabin ×1.7, `World.stars`)        | knob (phase)                                               | knob, behind the snow cloud                                       | knob, trigger 1                                                                      |
+| `autumn`           | over the park, under the canopy (the world's sky)                | knob 0.5                                    | knob (phase; keys the night light)                         | knob, behind the clouds                                           | knob, trigger 2                                                                      |
+| `bees`             | over the valley (the world's sky, "World layers")                | knob 0.6 + the world's Milky Way (knob, on) | knob (phase at every setting; keys the night light)        | knob, behind the clouds and the cumulus                           | knob, trigger 0                                                                      |
+| `dunes`            | over the dune sea (the world's sky; none overhead)               | knob 1 + the world's Milky Way (knob, on)   | knob (phase; keys the sand's light)                        | knob, behind the clouds and the dust                              | knob, trigger 0, behind the clouds and the dust                                      |
+| `falls`            | above the cliff (the world's sky, half turned)                   | knob 0.45                                   | knob (phase)                                               | knob, its arc lifted over the rim (`auroraLift`)                  | knob, trigger 0, falling behind the rim                                              |
+| `garden`           | the haze over the wall (the horizon is the frame's top edge)     | —                                           | knob (phase; keys the night light)                         | —                                                                 | —                                                                                    |
+| `lanterns`         | over the river, mirrored (the world's sky)                       | knob 0.55, mirrored (its low sky shows few) | full (the world's; rises out of frame on the right)        | knob, mirrored                                                    | knob, trigger 2, mirrored                                                            |
+| `meadow`           | over the meadow (the world's sky, "World layers")                | knob 0.6 + the world's Milky Way (knob, on) | knob (phase)                                               | knob, behind the clouds                                           | knob, trigger 2                                                                      |
+| `shore`            | over the sea and mirrored in it and the wet sand (the world's)   | knob 0.6 + the world's Milky Way (knob, on) | knob (phase, compiled in at every setting; moonrise)       | knob, behind the clouds, mirrored                                 | knob, trigger 2, mirrored                                                            |
+| `sill`             | over the city (the world's sky, softened by the glass)           | knob 0.5                                    | knob (phase)                                               | knob, light through the window                                    | knob, trigger 3, behind the clouds                                                   |
+| `skyward`          | a strip between roofs (the world's sky, looking up)              | knob 0.3                                    | knob (phase)                                               | — (looking up: the curtains hang toward the horizon, out of view) | knob, trigger 0, camera frame                                                        |
+| `bamboo`, `forest` | canopy gaps                                                      | knob 0.5                                    | knob (phase; the gaps and the night rays)                  | —                                                                 | —                                                                                    |
+| `street`           | in reflections only                                              | knob 0.55 (window glass)                    | knob (phase; the windows and wet street)                   | —                                                                 | —                                                                                    |
+| `lake`             | over the ice or the fjord, mirrored                              | own `K_stars` + shared Milky Way (knob)     | own phase, fixed bearing (right; over the fjord left)      | knob (`auroraCurtains`, substorm clock) or own `drapes`           | knob, trigger 3, mirrored                                                            |
+| `swell`            | over the sea                                                     | own (`starfield`, `K_stars`)                | own disc (`K_moon` sizes it), its `waterGlitter` path      | —                                                                 | knob, trigger 0, screen frame, glints in the waves                                   |
+| `clouds` †         | above the cloud sea                                              | knob 0.75                                   | own bearing, drawn by `skyColor`                           | knob (`auroraCurtains`, full detail)                              | open                                                                                 |
+| `country`          | over the valley                                                  | knob 0.5                                    | knob (phase; `SKY_MOON_PHASE` compiled in only below full) | open                                                              | open                                                                                 |
+| `flock` †          | the subject over a skyline (only the dome mirrored in its water) | knob 0.45                                   | full                                                       | open                                                              | open                                                                                 |
+| `island` †         | round the island                                                 | knob 0.6                                    | full                                                       | open                                                              | open                                                                                 |
+| `campfire` †       | above the pines                                                  | knob 0.8 + shared Milky Way (knob)          | — (the giant planet replaces it)                           | open                                                              | own: `K_shooting`, trigger 0, under the planet                                       |
+| `kelp`             | Snell's window                                                   | —                                           | full, refracted                                            | —                                                                 | —                                                                                    |
+| `tidepool`         | the sky in the pools' mirror                                     | —                                           | full, mirrored                                             | —                                                                 | —                                                                                    |
+| `dew`              | out-of-focus dawn backdrop                                       | —                                           | —                                                          | —                                                                 | —                                                                                    |
+| `bonsai`           | none (its light only)                                            | —                                           | —                                                          | —                                                                 | —                                                                                    |
+| `orbit`            | its own sky                                                      | own                                         | own                                                        | —                                                                 | own (captured meteors)                                                               |
+| `fireflies`        | its own moonless sky over the mangroves                          | own                                         | — (moonless)                                               | —                                                                 | knob (`skyComponentKnobs`), trigger 2, over the hills behind the trees, not mirrored |
 
 `lake` keeps a night of its own over both its places (the frozen lake and, `setting` 1, the fjord
 that was the `aurora` scene): its own `K_stars` knob sets the shared stars (`skyStarLight`) on it,
@@ -955,10 +969,10 @@ them shows is the view's: `lake` (on the ice), `frost`, `campfire` and `sill` th
 toggle of its own).
 
 Planets can hang in every such sky that has room for them: `autumn`, `bees`, `clouds`, `country`,
-`dunes`, `flock`, `frost`, `island`, `lake` (over both its places), `lanterns`, `meadow`, `shore`,
-`sill`, `skyward` and `train` (see "The sky's planets"). `campfire` keeps its own giant; `falls`
-sees only a strip of sky over its cliff under the cloud deck, `bamboo` and `forest` only gaps in the
-canopy, and `street` only reflections, so none of them takes them.
+`dunes`, `falls` (in its strip of sky over the cliff, behind the cloud deck), `flock`, `frost`,
+`island`, `lake` (over both its places), `lanterns`, `meadow`, `shore`, `sill`, `skyward` and
+`train` (see "The sky's planets"). `campfire` keeps its own giant; `bamboo` and `forest` see only
+gaps in the canopy and `street` only reflections, so none of them takes them.
 
 The rest have no sky: `bar`, `chladni`, `delta`, `ferro`, `film`, `fractal`, `harmonograph`,
 `hyperbolic`, `incense`, `lava`, `marble`, `mobile`, `pearl`, `pendula`, `petri`, `physarum`,
@@ -1194,8 +1208,10 @@ straight ahead and up from the horizon, each `[least, start, most]`. The list st
   on screen.
 - **In the URL** the list is one key, `planets` (`PLANETS_KEY`): base64url of unsigned varints,
   the version (1), the count, then per planet how many of its values differ from their defaults
-  and each as a field id (`FIELDS`, append only) and its value in its step's quantum (zigzag for a
-  sign). Values sit on their steps' grid, so a list round-trips exactly; a malformed value (another
+  and each as a field id and its value in whole quanta of that field (zigzag for a sign). The
+  fields and their quanta are frozen as published (`PLANET_FIELDS`, append only), apart from the
+  knobs' steps, so retuning a slider never rescales a link. Values sit on their steps' grid, a
+  whole number of quanta each, so a list round-trips exactly; a malformed value (another
   version, bad base64url, cut short, trailing bytes) is no planets, an out-of-range value is
   clamped, past the cap the first eight stay; nothing throws. A link from before the list whose
   one giant planet was on (`planet=1` with `planetX`, `planetY`, `planetPalette`, `planetRing` and
@@ -1247,7 +1263,7 @@ repeating them:
 | `flat`     | `WATER_FLAT` 0     | nothing shared: its own tint, its sky mirrored flat if it likes                                                                                                                                                                                                                                                                           |
 | `ripples`  | `WATER_RIPPLES` 1  | wind ripples: `rippleSpectrum` over its own trains (surface.ts, in every program), or the breeze's cat's-paws, `windRipples`, with the screen-space mirror shift `windMirror` (`shaders/windWater.ts`)                                                                                                                                    |
 | `mirror`   | `WATER_MIRROR` 2   | reflections: `waterMirror`, the rippled normal, reflected ray and Fresnel; the scene looks its own sky and scenery up along the ray. The sun's or moon's glitter, `waterGlitter`: a Beckmann lobe (Cox & Munk) on the variance the cells do not draw, 1 at its heart                                                                      |
-| `flow`     | `WATER_FLOW` 3     | currents: `waterDrift` carries a pattern on a steady current, `waterFlow` on one that varies from place to place (two copies, evaluated twice)                                                                                                                                                                                            |
+| `flow`     | `WATER_FLOW` 3     | currents: `waterDrift` carries a pattern on a steady current                                                                                                                                                                                                                                                                              |
 | `caustics` | `WATER_CAUSTICS` 4 | the bed lit through the surface: `causticRipples`' net (`shaders/caustics.ts`) and `waterCaustic`, which multiplies it by a simulated surface's own focus (`ShallowWater.surface`, `sims/shallow.ts`); or, for water with no spectrum of its own, the stylised cellular net `causticCells` (seams where a wandering lattice's cells meet) |
 
 The shared parts own the physics: ripple trains with deep-water dispersion and their LEAN split
@@ -1307,17 +1323,18 @@ deck drops its finer octave toward the horizon, and the sea's relief fades with 
 footprint and is then not worked out at all: far cloud costs little, and resolved cloud is bit for
 bit the full-detail picture.
 
-| Scene                                                 | Tier                                                                    | Uses                                                                                                                                                                                     |
-| ----------------------------------------------------- | ----------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `clouds`                                              | volume                                                                  | the sea below the window (`CloudSea`: its drift, `K_cover`, the boil, `K_altitude`'s drop, amplitude 0.45); its thunderheads take `cloudBillow` and `cloudPhase`                         |
-| `autumn`                                              | shadows                                                                 | `skyCloudShadow` from its sky's deck, 300 m up, where each pixel's sight line meets the park (`K_shadows`, off by default)                                                               |
-| `country`                                             | shadows while its `shadows` knob is on (`featuresFor`), lit while off   | `skyClouds` by day, by night the calm deck (`cloudDeckPoint`, `cloudFlatFine`, `cloudFlatField`) lit by the moon; `skyCloudShadow` with its rain's `low` on every point of the land      |
-| `meadow`                                              | shadows while its `shadows` knob is on (`worldFeatures`), lit while off | the world's deck (`worldSky`) under its own overcast tint; its shadows (`worldSunlit`) on the field and the tree line where each ray meets them, the hills 1500 m off and the near grass |
-| `shore`                                               | shadows while its `shadows` knob is on (`worldFeatures`), lit while off | the world's deck (`worldSky`) under its rain sky, mirrored (`worldMirrorSky`) in the sea and wet sand; its shadows (`worldSunlit`) on the sand and sea, dimming the sun and its glitter  |
-| `dunes`                                               | shadows while its `shadows` knob is on (`worldFeatures`), lit while off | the world's deck (`worldSky`, greyed by `dunesOvercast`; none overhead); its shadows (`worldSunlit`) on the sand and the M, cast from the deck over the eye at rest, aerial or overhead  |
-| `bees`                                                | shadows while its `shadows` knob is on (`worldFeatures`), lit while off | the world's deck (`worldSky`) behind the world's painted cumulus; both their shadows (`worldSunlit`) by day on the garden where each ray meets it and on the hills 1200 m off            |
-| `train`                                               | flat                                                                    | `cloudDeckPoint` with the train's run under the deck, `cloudFlatField` lit as the night line's own deck                                                                                  |
-| `falls`, `frost`, `island`, `lake`, `sill`, `skyward` | lit (none selected)                                                     | `skyClouds` over their own sky, greyed and lowered under rain each its own way                                                                                                           |
+| Scene                                           | Tier                                                                    | Uses                                                                                                                                                                                     |
+| ----------------------------------------------- | ----------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `clouds`                                        | volume                                                                  | the sea below the window (`CloudSea`: its drift, `K_cover`, the boil, `K_altitude`'s drop, amplitude 0.45); its thunderheads take `cloudBillow` and `cloudPhase`                         |
+| `autumn`                                        | shadows (`worldGates`)                                                  | the world's deck (`worldSky`), greyed by the rain; `skyCloudShadow` from it, 300 m up, where each pixel's sight line meets the park (`K_shadows`, off by default)                        |
+| `country`                                       | shadows while its `shadows` knob is on (`featuresFor`), lit while off   | `skyClouds` by day, by night the calm deck (`cloudDeckPoint`, `cloudFlatFine`, `cloudFlatField`) lit by the moon; `skyCloudShadow` with its rain's `low` on every point of the land      |
+| `meadow`                                        | shadows while its `shadows` knob is on (`worldFeatures`), lit while off | the world's deck (`worldSky`) under its own overcast tint; its shadows (`worldSunlit`) on the field and the tree line where each ray meets them, the hills 1500 m off and the near grass |
+| `shore`                                         | shadows while its `shadows` knob is on (`worldFeatures`), lit while off | the world's deck (`worldSky`) under its rain sky, mirrored (`worldMirrorSky`) in the sea and wet sand; its shadows (`worldSunlit`) on the sand and sea, dimming the sun and its glitter  |
+| `dunes`                                         | shadows while its `shadows` knob is on (`worldFeatures`), lit while off | the world's deck (`worldSky`, greyed by `dunesOvercast`; none overhead); its shadows (`worldSunlit`) on the sand and the M, cast from the deck over the eye at rest, aerial or overhead  |
+| `bees`                                          | shadows while its `shadows` knob is on (`worldFeatures`), lit while off | the world's deck (`worldSky`) behind the world's painted cumulus; both their shadows (`worldSunlit`) by day on the garden where each ray meets it and on the hills 1200 m off            |
+| `train`                                         | flat                                                                    | `cloudDeckPoint` with the train's run under the deck, `cloudFlatField` lit as the night line's own deck                                                                                  |
+| `falls`, `frost`, `lanterns`, `sill`, `skyward` | lit (`worldGates`)                                                      | the world's deck (`worldSky`; `worldMirrorSky` in lanterns' river), its fair cover (`World.cover`) and nearness (`World.low`) staged, tinted over `WorldSky.cloud`                       |
+| `island`, `lake`                                | lit (none selected)                                                     | `skyClouds` over their own sky, greyed and lowered under rain each its own way                                                                                                           |
 
 **Painted cumulus** (the world's, `WORLD_CUMULUS`, "World layers"): bees' authored lobed towers and
 their drifting ground shadows, a picture-book style rather than a deck, are an opt-in part of the
@@ -1330,12 +1347,12 @@ Not unified, on purpose:
 - `island`'s far cumulus are toon billboards on the horizon, its ground shadows a lattice of puffs
   cut per cell to match them (its dome's deck is the lit tier).
 - `delta` is seen from orbit: its puffs and their offset shadows are one top-down field.
-- Rain overcasts drawn as a tint or a flat grey sheet over the scene's own sky (`lanterns`,
-  `meadow`, `shore`, `sill`, `garden`) have no cloud field to share; the canopy's deck is the canopy
-  component's (`canopy.ts`), the giant planet's cloud bands the planet's (`planetClouds`).
+- Rain tints over the world's deck (`lanterns`, `meadow`, `shore`, `sill`) and `garden`'s flat
+  grey sheet are each scene's tint, not a deck; the canopy's deck is the canopy component's
+  (`canopy.ts`), the giant planet's cloud bands the planet's (`planetClouds`).
 - The clouds scene's thunderheads, wisps and contrails are authored towers and passage vapour, not a
-  deck. Scenes that lower the lit deck under rain (`falls`, `sill`, `country`) squash the ray
-  before `skyClouds` each by their own amount; a shared helper would only rename a `normalize`.
+  deck. Scenes whose deck comes down under rain set `World.low` (`falls`, `sill`: 1 +
+  `WORLD_DECK_LOW` × storm); `country` squashes its own ray before `skyClouds`.
 
 ### Weather in the world
 
@@ -1489,25 +1506,42 @@ never write a day curve of your own.
 - **Overcast reaches the horizon.** `skyClouds` fades its deck toward the horizon against crawl;
   past broken cloud (cover 0.6) that fade gives way, and an overcast (1) closes right down to it.
 
-**Stage 2: one sky composer.** Seven outdoor scenes still compose the sky stack `worldSky` owns by
-hand, each in its own order: autumn, frost, sill, lanterns, falls, lake and skyward (bees has moved
-onto the world, its painted cumulus becoming the world's). The plan is to move them onto the shared
-world sky one at a time, each with a bit-diff review of its picture:
+**Stage 2: one sky composer.** The outdoor scenes with sky and weather knobs of their own compose
+their sky through the world too: autumn, frost, sill, falls, skyward and lanterns draw `worldSky`
+(lanterns `worldMirrorSky` in its river as well) from `worldAt`, light their land with `World.sky`
+and close their sky by `weatherOvercast` and the `WORLD_DECK_*` shares; none keeps a dome, an
+overcast curve, a moon, a star field or a meteor schedule of its own. They keep their knobs
+(`skyKnobs`, `weatherKnobs`) and compile in, at every setting, each part those knobs can show
+(`worldGates`; their own birds stay theirs, `WORLD_BIRDS` 0). What stays theirs is staging and
+tint, each through a parameter of the world's:
 
-1. Frost and sill first: their stacks (dome, stars, aurora, deck, meteors) are closest to
-   `worldSky`. Each adopts `worldAt` and `worldSky` (or `worldMirrorSky`), keeping the components
-   the table in "Composing components" marks as its own, and drops its `*_METEOR_TRIGGER` wiring
-   and private overcast curve for `weatherOvercast` and the `WORLD_DECK_*` shares.
-2. Then autumn, falls and skyward, whose differences are a yaw, a cover curve and a deck squash;
-   `worldView`'s yaw and unit carry the first, the rest become World fields where two scenes need
-   them.
-3. Lake and lanterns last, after their private moons and star fields go (the shared moon now
-   stands where a crescent reads, beside the dusk): they adopt `skyMoonPhase` and `skyStars`.
+- the view: its yaw (falls half turned from the sun, lanterns 20 degrees toward the sunset,
+  skyward's street half round from the sky), its own ray where the camera is not the level pinhole
+  (autumn's widened frame, skyward looking up), a footprint widened by what blurs it
+  (frost's frost, sill's wet glass) or by a rough mirror (lanterns' river);
+- the deck's fair cover where the scene has no clouds knob (`World.cover`: frost and falls 0.3,
+  closing from there with the overcast) and how near it stands (`World.low`: sill and falls
+  1 + `WORLD_DECK_LOW` × storm, skyward 1/1.9 so a few cloud bodies fit its strip of sky); the
+  world's wind turned back where the view is turned half round (falls, skyward);
+- the stars' density (`World.stars`: ×1.7 over frost's woods) and falls' aurora, lifted over its rim
+  (`WorldView.auroraLift`);
+- each one's tint over `WorldSky.col` where `WorldSky.cloud` says the deck is (frost's town glow
+  and, as it snows, its snow cloud's pink round sunset, `FROST_DUSK`; sill's and skyward's city
+  glow, falls' grey, lanterns' warm river grey), what the overcast makes of the deck's gaps (frost
+  greys and darkens them by the `WORLD_DECK_*` shares and lights them with its cloud by the
+  overcast's share; sill and skyward fill them with their own deck), and of its light: the moon
+  hidden by the deck as the sun is (`WORLD_DECK_SUN`) where the scene keys its light by it.
 
-The sky state stays the world clock's throughout, so adopting the composer changes only the order
-and occlusion of the layers; each scene's default picture changes and is reviewed as it moves. A
-later step may upload the clock's per-frame values as uniforms once its GPU mirror has shown the
-float32 results agree cell for cell.
+The moon is the world's in its phase everywhere. Lanterns, with no moon knob, has the staged full
+moon, which rises out of its narrow dusk frame on the right (no shared crescent can stand in that
+frame at dusk: a young moon stands 18 degrees or more over the sunset, above it); its own crescent
+fixed in the frame and its sparse screen stars are gone, the world's stars drawing its sky and its
+river, though in a strip of sky no higher than 13 degrees their fade toward the horizon leaves few.
+The planets stand in the sky's frame, so lanterns' and skyward's placement pads turn with their
+views. Lake moves together with aurora, its moon and stars with it.
+
+The sky state stays the world clock's throughout. A later step may upload the clock's per-frame
+values as uniforms once its GPU mirror has shown the float32 results agree cell for cell.
 
 ### World layers
 
@@ -1517,14 +1551,17 @@ what they put in the world. A setting means the same thing everywhere: rain 0.4 
 far, dims the sun as much and falls at the same depths in every scene that adopts it. The GLSL is
 `worldGlsl` (`src/shaders/lib/world.ts`, opt-in; it composes `birdsGlsl` and `milkyWayGlsl` itself,
 so an adopter does not include them again), the knobs and gates `src/scenes/world.ts`. The adopters
-are meadow (the first), shore, dunes and bees.
+are meadow (the first), shore, dunes and bees with the world's knobs (`worldKnobs`), and with sky and
+weather knobs of their own (`worldGates`, "Stage 2" under "The world clock") autumn, falls, frost,
+lanterns, sill and skyward.
 
 ```glsl
 struct World {        // the world now: worldAt, once per pixel, before anything is drawn
   Sky sky;            // clock, sun, moon in its phase; light under the deck (+ aurora glow, lightning flash)
   float time, tm, tf; // time of day 0..1, the motion clock, the fall clock
   float rain, snow, fog, wind;           // the knobs (0 while off or gated out)
-  float storm, overcast, heavy, cover;   // max(rain, 0.85 snow); weatherOvercast; heavy rain/snow; K_clouds thickened
+  float storm, overcast, heavy, cover;   // max(rain, 0.85 snow); weatherOvercast; heavy rain/snow; K_clouds thickened (the overcast's alone without K_clouds)
+  float low, stars;   // the deck's nearness (1; the scene may set it); the stars' density (K_stars; the scene may scale it)
   vec3 glow;          // the aurora's light on the land (in sky.ambient)
   float flash, boltAge, boltSeed, meteorAge, meteorSeed;
   float seed;         // the scene's seed for the world's own scenery (the cumulus): 0 from worldAt
@@ -1536,6 +1573,7 @@ struct WorldView {    // the scene's camera at this pixel: a level pinhole with 
   vec2 uv;            // the screen point, after any lens shift the scene gives its world
   float aspect, foot; // uRes.x / uRes.y; radians a dither cell spans, 1 / (focal * uRes.y)
   float horizon, focal, eye, unit; // the pinhole (eye in scene units) and scene units per metre
+  float auroraLift;   // 0; how much higher the aurora's arc stands (falls' rim)
 };
 WorldView worldView(vec2 uv, float horizon, float focal, float eye, float yaw, float unit);
 WorldView worldViewOf(vec3 ray, vec2 uv, float horizon, float focal, float eye, float yaw, float unit); // the scene's own ray
@@ -1557,17 +1595,23 @@ const float WORLD_FAR;  // 1e4: the distance of open sky
 
 - **The world** (`worldAt`). The clock is `timeOfDayM(K_time, K_cycle, uMotionTime)`, the moon takes
   `K_moon` (under `SKY_MOON_PHASE`). Rain and snow close the sky by `weatherOvercast`; the deck's
-  cover is `max(K_clouds, overcast)`; `heavy` is `smoothstep(0.35, 0.9, storm)`. Under the deck the
-  sun's light fades by 0.88 × overcast, the ambient greys by 0.6 × overcast and darkens by
-  0.3 × storm, the twilight fades by 0.7 × overcast; the aurora's glow (behind the deck) and the
-  lightning's flash light are added to the ambient. With no weather, `w.sky` is the clear sky
-  exactly. Light the scene with `w.sky`; dim or tint it further as the scene needs.
+  cover is `max(K_clouds, overcast)` (the overcast alone in a scene with no clouds knob, which sets
+  its own fair cover); `heavy` is `smoothstep(0.35, 0.9, storm)`. Under the deck the sun's light
+  fades by 0.88 × overcast, the ambient greys by 0.6 × overcast and darkens by 0.3 × storm, the
+  twilight fades by 0.7 × overcast; the aurora's glow (behind the deck) and the lightning's flash
+  light are added to the ambient. With no weather, `w.sky` is the clear sky exactly. Light the
+  scene with `w.sky`; dim or tint it further as the scene needs. Its staging is the scene's to set
+  before `worldSky`: `low` (1; above 1 brings the deck nearer, so it looms larger and reaches nearer
+  the horizon, for its shadows too: 1 + `WORLD_DECK_LOW` × storm where rain brings it down; below 1
+  fits more of it into a narrow strip of sky), `stars` (`K_stars`, scaled for the scene's own sky)
+  and `cover`.
 - **The view** (`worldView`, or fill the struct). `ray` is the camera's ray in the shared side-on
   frame, `dir` the same ray in the sky's frame (`yaw`: the turn that takes one to the other), `foot`
   the level of detail for the stars, the aurora and shooting stars. Distances handed to the world
   (`z`) are in the scene's units, `WORLD_FAR` for open sky; `unit` turns metres into them, as
   `BirdCamera.unit` does: rain and snow fall at `weatherDepth(z / unit)`, fog reckons in metres,
-  and the deck's shadows are cast from 1000 m up.
+  and the deck's shadows are cast from 1000 m up. `auroraLift` (0) raises the aurora's arc for a
+  view that sees the sky only high over a rim: each ray's slope is looked up that much lower.
 - **The order.** `worldSky` first, behind everything: the dome (sun and moon discs), the aurora
   ahead of the camera behind the clouds, the cloud deck, the painted cumulus in front of it, the
   Milky Way and the stars in their gaps, shooting stars (from `meteorField`, `skyAngles` of the
@@ -1628,7 +1672,11 @@ const float WORLD_FAR;  // 1e4: the distance of open sky
   value exactly, compiled in or not (`featuresAll` draws every setting byte for byte as its own
   program). The night's parts compile in only where night can fall (the day cycle on, or the hour
   before sunrise or after sunset: between them the sky's `night` is exactly 0), the birds only
-  within their hours.
+  within their hours. A scene with sky and weather knobs of its own (`skyKnobs`, `weatherKnobs`)
+  takes `worldGates(params)` as its `features` instead: every part its knobs can show compiled in
+  at every setting (lightning only with a lightning knob, the moon's phase only with a moon knob),
+  each still neutral while its knob is off; it sets a part it draws its own way to 0 over them (its
+  own birds: `WORLD_BIRDS`).
 
   | Gate              | On while                                                           | Off: the part gives                  |
   | ----------------- | ------------------------------------------------------------------ | ------------------------------------ |
@@ -1756,7 +1804,11 @@ the milliseconds budgeted work (a warm-up, a build, a paint) may block this fram
 Infinity budget, so a test's warm-up ends in its first frame. Step motion on a `FixedStep`
 (`clock.ts`) at a fixed h, with each step sampling its clock at its own moment, and draw between
 the last two steps by its `alpha` (a GPU solver's fields through `FieldBetween`, `between.ts`), so
-a seed plays the same at 60 and 144 Hz.
+a seed plays the same at 60 and 144 Hz. Draw the sim's chance on those steps too, never once a
+frame (a draw a frame, or a chance of `dt`, plays differently at each frame rate): what is drawn
+a frame or an event at a time takes a stream of its own (bamboo's leaves, apart from its gusts),
+and a layer stepped on a clock of its own steps in time with what it rides on (dew's drops, each
+step between the web's substeps at its own moment).
 A sim with more to hand over than four slots packs it into one texture read with `texelFetch`
 (which no filter touches), a linear filter left for the one field read with `texture`: bonsai's
 field rows under its tables, the countryside's records atlas (`country/atlas.ts`: the terrain's
@@ -1778,14 +1830,19 @@ a scene builds a fresh sim that never replays an old press. Sims keep no copy of
 Helpers in `src/sims/` (each file's header has the full API and a usage example):
 
 - `DataTexture` (`texture.ts`): r8/rg8/rgba8/r16f/rg16f/rgba16f from typed arrays (rows bottom to
-  top), whole (`upload`) or only the rectangle that changed (`uploadRegion(data, x, y, w, h)`, read
-  in place from the whole array: the harmonograph's ink, the Chladni plate's sand), or
-  `uploadImage(canvas)` for an rgba8 texture drawn with Canvas 2D (top row = uv.y 1).
+  top; a 16f texture from float32 values or from the half floats' own bits, `halfBits`, which go up
+  as HALF_FLOAT at half the bytes), whole (`upload`) or only the rectangle that changed
+  (`uploadRegion(data, x, y, w, h)`, read in place from the whole array), or `uploadImage(canvas)`
+  for an rgba8 texture drawn with Canvas 2D (top row = uv.y 1). `DirtyRegion` keeps what changed
+  since the last upload, one rectangle or one per tile (bands of rows, small squares), marked as
+  the sim writes and sent by `flush`: the harmonograph's ink, the Chladni plate's sand (in bands),
+  the flock's density, the bees' specks (in 8 × 8 squares), the countryside's cover.
 - `TrailField` (`trail.ts`): where the pointer has been, fading; for stirring and melting.
 - `VerletSystem` and `PointTexture` (`verlet.ts`): 3D XPBD chains, nets and orb webs (compliance
-  in physical units, so a thread is as stiff at any substep; an undamped swing keeps its energy),
-  with impulses and nearest-point queries, stepped by the caller's FixedStep and packed into a
-  texture for `texelFetch` (kelp, dew, the mobile).
+  in physical units, so a thread is as stiff at any substep; a slow swing keeps its energy at a
+  short substep, while faster modes and compliant ringing lose about ω²h/2 a second of the solver's
+  own, halved by halving the substep), with impulses and nearest-point queries, stepped by the
+  caller's FixedStep and packed into a texture for `texelFetch` (kelp, dew, the mobile).
 - `springStep` (`spring.ts`): the damped spring every sim eases a swinging value with (plants,
   meadow, bamboo, the fireflies' lantern, ferro's pool and spikes, the prism let go, the sand
   table's ball), one step on a fixed h.
@@ -1811,7 +1868,7 @@ Helpers in `src/sims/` (each file's header has the full API and a usage example)
 - `FieldBetween` (`between.ts`): a GPU solver's field drawn between its last two steps, as a CPU
   sim draws by `FixedStep.alpha`: `keep` copies the field before a frame's last step and `show`
   mixes the copy and the field by `alpha` into a texture for the shader (incense's smoke and its
-  velocity, pearl's flakes and dye).
+  velocity, pearl's flakes and dye, the soap film's thickness and cover).
 - `ArrivalField` (`front.ts`): when a front spreading from one point through a field of speeds
   reaches each texel, on the GPU (least time along rays from the source, then a few relaxing
   sweeps), so `T <= t` is where it has been: film's burst rim racing through thin film and crawling
@@ -1843,14 +1900,19 @@ Helpers in `src/sims/` (each file's header has the full API and a usage example)
   evenly for walkers and carts (`terrainWays`). `packTerrain` lays it into four textures (ground
   and water level with slopes; road and stream signed distances, woodland, yards; the nearest two
   parcels, the first's high byte keeping a bit for the land model's pine flag; records of sites,
-  buildings, settlements, the bridge, the eye, cores, ways and way points), which `terrainGlsl`
-  reads: `terrainGround`, `terrainCover`, `terrainParcel` (exact field borders between texels, and
-  the neighbour's id), `terrainCore`, `terrainBuilding`, `terrainPlace`, `terrainBridge`,
-  `terrainEye`, `terrainWay` and `terrainWayAt` (a point by arc length along a road, always on it)
+  buildings, settlements, the bridge, the eye, the map's highest ground or water, cores, ways and
+  way points), which `terrainGlsl` reads: `terrainGround`, `terrainCover`, `terrainParcel` (exact
+  field borders between texels, and the neighbour's id), `terrainCore`, `terrainBuilding`,
+  `terrainPlace`, `terrainBridge`, `terrainEye`, `terrainTop` (no rising ray above it meets the
+  land), `terrainWay` and `terrainWayAt` (a point by arc length along a road, always on it)
   (country); `LandModel` and `packLand` (`landuse.ts`): every parcel's one use from relative
   shares, priced so that a share's change converts only that use's marginal parcels, written into
   the records, the woods' canopy and their species (`LAND_PINE_FLAG`); `repackLand` rewrites only
-  what a new allocation moves and reports the rows of each texture it changed (country).
+  what a new allocation moves and reports the rows of each texture it changed (country). A builder
+  given an earlier one of the same land and river (`TerrainBuilder.riverKey`) keeps the carved
+  river and what is made of it alone (the settlements' sites, the woods' patches, the parcel sites
+  and their cells by the bare metric), as `landGround` keeps the land model's weights and ranks: a
+  settlement or road switched rebuilds in about a quarter of a fresh build's time.
 - `grayScottRegimes`, `grayScottAlong` and `grayScottGlsl` (`grayscott.ts`): Gray–Scott
   reaction–diffusion's curated Pearson classes (feed, kill, what grows), an eased loop through them,
   and the reaction step for a `GpuCompute` pass (petri). Seed a dish at the first regime's levels
@@ -1870,14 +1932,15 @@ Helpers in `src/sims/` (each file's header has the full API and a usage example)
   picked up a frame or two later, without stalling (the tide pool's flow for its plants and fish).
 - `BuildSlot`, `BuildKind` (`build.ts`): pure CPU builds on one module worker (`src/build-worker.ts`
   lists every kind) with their typed arrays handed back by transfer: the countryside's terrain and
-  land, frost's crystal field, the dew web respun for a new shape, the slime mould's fresh dish, the
-  pond's sheets. One slot per sim, asked every frame: the newest request wins (a superseded build
-  is dropped on the worker and never lands), the scene draws what it last adopted meanwhile, and a
-  result is byte for byte the page's (the same code; `build-worker.test.ts`). Without a worker, and
-  for a frame of Infinity budget (HeadlessSim, checks), the build runs on the page in slices. A
-  kind's result must own its arrays (copy what its builder keeps for reuse); state classes hand
-  themselves over as plain arrays (`VerletSystem.state`/`from`, `LandModel.data`,
-  `FlowNetwork.state`, `Random.state`).
+  land, frost's crystal field, dew's web (the first, and for a new seed or shape), the bonsai's tree
+  drawn into its maps, the dry garden's layout, the forest's warm-up, the slime mould's fresh dish,
+  the pond's sheets. One slot per sim, asked every frame: the newest request wins (a superseded
+  build is dropped on the worker and never lands), the scene draws what it last adopted meanwhile,
+  and a result is byte for byte the page's (the same code; `build-worker.test.ts`). Without a
+  worker, and for a frame of Infinity budget (HeadlessSim, checks), the build runs on the page in
+  slices. A kind's result must own its arrays (copy what its builder keeps for reuse); state
+  classes hand themselves over as plain arrays (`VerletSystem.state`/`from`, `LandModel.data`,
+  `FlowNetwork.state`, `Random.state`, `TreeMaps.state`, the forest's `ForestLife.state`).
 - `mulberry32` and `Random` (`random.ts`): the seeded generator, bit-exact with the scenes' copies
   so a seed keeps its arrangement; `Random` adds `range`, `int`, `pick`, `wait` (the gap to a
   Poisson process's next event: street's arrivals) and `gauss` (roughly normal from three draws:
@@ -1886,9 +1949,11 @@ Helpers in `src/sims/` (each file's header has the full API and a usage example)
 - `clamp`, `lerp`, `smoothstep`, `fract`, `hash31` (`math.ts`): import them rather than a local copy;
   `glslHash12` and `glslHash22`: common.ts's hashes in float32 steps, for a sim that must place
   things where its shader hashes them (pond's koi loops, falls' ferns, the tide pool's holdfasts);
-  `hypot2` and `hypot3`: V8's `Math.hypot` (Chrome's) bit for bit in any engine, for a seeded
-  layout that must come out the same in every browser (each engine rounds `Math.hypot` its own
-  way): country's terrain, land use, chalk M and verges.
+  `hypot2`, `hypot3` and `atan2`: V8's `Math.hypot` and `Math.atan2` (Chrome's) bit for bit in any
+  engine, for a seeded layout that must come out the same in every browser (each engine rounds
+  them its own way): country's terrain, land use, chalk M, verges and fog floor.
+  `country/engines.test.ts` builds three landscapes in JavaScriptCore (bun) and V8 (node, skipped
+  without one) and compares every part, so another `Math` call that rounds apart there shows.
 - `valueNoise` and `fbm` (`noise.ts`): seeded value noise on the CPU for laying out terrain, coasts
   and beds before a sim starts (tidepool, delta, the forest's mist, lake's snow, pearl's pour); not
   the shader's noise. Import them rather than a local copy: a copy that hashed `hash31(i, j, salt)`
@@ -1902,26 +1967,30 @@ Helpers in `src/sims/` (each file's header has the full API and a usage example)
   it follows the hand within an envelope, meets a rubber band's resistance past it, and drifts home
   when let go (fractal).
 - `FixedStep` and `runBudgeted` (`clock.ts`): a fixed-step accumulator (`advance` returns the steps
-  due; `alpha`, `lag(i)`), and warm-ups counted in steps, which a time budget only spreads over
-  frames, so the opening picture never depends on the machine's speed. Sims step on one and draw
-  between their last two steps by `alpha`; a few draw ahead of the last step by
-  `pending` instead, along its motion (fish, the forest's motes and stag, the harmonograph's pen,
+  due, each falling due 5 % of a step early, so a 60 Hz display's jittered frames run exactly one
+  1/60 step each; `alpha`, `lag(i)`), and warm-ups counted in steps, which a time budget only
+  spreads over frames, so the opening picture never depends on the machine's speed. Sims step on one
+  and draw between their last two steps by `alpha`; a few draw ahead of the last step by
+  `pending` instead, along its motion (fish, the forest's motes and stag, dew's drops, the harmonograph's pen,
   which must stay over the ink its step laid). A solver whose step follows a knob counts in steps
   (`new FixedStep(1, max)` advanced by seconds / step: ripple's tanks).
 - `pendulumStretch`, `pendulumAngle`, `pendulumFadingSwings` and `pendulumGlsl` (`pendulum.ts`): a
   pendulum swinging beyond the small-angle approximation, the same maths in TS and GLSL (pendula's
   real pendulums).
 - `toHalf` and `splitHalf` (`half.ts`): a number as two half floats (hi + lo) for a 16f texture,
-  decoded in GLSL by `unsplitHalfGlsl`.
+  decoded in GLSL by `unsplitHalfGlsl`. `halfBits` and `halfValue`: a number as the binary16 bit
+  pattern GL makes of a float32 upload (ties to even), and back, for a field kept as halves beside
+  its float32 copy and uploaded as half floats, at half the bytes (chladni's sand).
 - `BinLists` (`bins.ts`): per-bin lists of the segments and points that reach each square bin of
   the frame, for a shader that walks only its cell's list (dew); a list grows by pages of
   `BIN_PAGE` entries, so a dense patch never drops one. Read in GLSL with `binListsGlsl`.
 - `SpeckMap` and `followCell` (`specks.ts`): creatures a cell or a few across drawn into an rg8 map,
   one per dither cell with its depth, the nearest winning the cell whatever the plotting order, so
   the shader hides each behind only what stands in front of it; `upload(texture)` sends only the
-  8 × 8-cell tiles whose cells were plotted or cleared since the last one (the bees' default garden,
-  some 80 specks: ~46 rectangles and ~7 KB a frame at 640 × 360 cells; 200 bees and a swarm of 360:
-  ~120 rectangles and ~28 KB, not the 450 KB map); `followCell` keeps a hovering speck from flickering
+  cells whose bytes differ from those it last sent, by 8 × 8-cell tiles (a `DirtyRegion`), so a
+  speck cleared and plotted again where it was sends nothing (the bees at 960 × 540 cells: about 20
+  rectangles and 3 KB a frame for the default garden, 50 to 70 and 7 to 24 KB for 200 bees and a
+  swarm, not the 1 MB map); `followCell` keeps a hovering speck from flickering
   between two cells (bees). Not for a fixed slot per lattice cell (fireflies), a list the shader
   walks (lanterns), or per-tile lists sorted nearest first (street).
 - `isShy`, `facing`, `atEase` and `stepShrink` (`temperament.ts`): how a creature takes the pointer
@@ -1932,10 +2001,12 @@ Helpers in `src/sims/` (each file's header has the full API and a usage example)
   ones included; for soft-contact crowds (lanterns).
 - `HeadlessSim` and `HeadlessGl` (`headless.ts`): the one harness for sim regressions. `HeadlessGl`
   is a stand-in context that takes a sim's `DataTexture` calls and keeps each texture's size and its
-  data as uploaded, sub-rectangles included (anything else throws, naming the call); `HeadlessSim`
-  drives a scene's real sim on it (or on a real context) with frames built as the renderer builds
-  them: knobs over their defaults, "now" presses by knob, pointer, passage.
-  `step(frame).upload(slot)` is what the shader would sample.
+  data as uploaded, sub-rectangles and half-float bits included (anything else throws, naming the
+  call); `HeadlessSim` drives a scene's real sim on it (or on a real context) with frames built as
+  the renderer builds them: knobs over their defaults, "now" presses by knob, pointer, passage.
+  `step(frame).upload(slot)` is what the shader would sample. Where the runtime has no
+  OffscreenCanvas (bun) it stands in `HeadlessCanvas`, which keeps its size and draws nothing, for a
+  sim that paints with Canvas 2D (marble).
   Tests use it rather than a stand-in context of their own (dew, fractal, sand table, prism...).
 - `Errand` (`errand.ts`): a kerbside errand's choreography (a vehicle pulls in, hazards on, a porter
   carries loads to a door in trips, climbs back in, the vehicle leaves); the scene drives and walks
@@ -1970,11 +2041,11 @@ Outside `src/sims/`: `src/mark.ts` is the Manifold M for TS (`MARK_VERTICES`, `m
 `segmentDistance`, `markDistance`) and the source of the GLSL one (`markGlsl`), so a stamped M and
 a drawn M cannot drift; `src/shaders/glsl.ts` writes GLSL from TS: `glslFloat` (an exact literal,
 tiny constants included), `glslVec3` (from `"#rrggbb"` or a triple) and `glslPick(knob, cases,
-fallback)` (a palette table of `if (K_<knob> < i.5) return ...;` lines). The rest serve one scene
-each: `src/botany.ts` and `src/decor.ts` paint the pond's plant atlas (the sprites `PlantSheet`
-cuts out) and its canopy sheet, on the build worker (`src/sheet.ts`), and `src/constellations.ts`
+fallback)` (a palette table of `if (K_<knob> < i.5) return ...;` lines); `src/constellations.ts`
 sends the constellation figures as `common`'s `uCon*` uniforms (orbit's, and the night sky's
-constellations that `skyStars` draws).
+constellations that `skyStars` draws). A module only one scene uses lives in that scene's directory:
+the pond's `botany.ts` and `atlas.ts` paint its plant atlas (the sprites `PlantSheet` cuts out) and
+its canopy sheet, on the build worker (`sheet.ts`).
 
 Keep simulations cheap (a few ms per frame at most) and scale step counts with `dt * motion`.
 Sims must be deterministic for a given seed knob and survive `dt = 0` (paused) and resizes. A layout
@@ -2050,10 +2121,12 @@ program built in the background, the scene on screen going on meanwhile), keep t
 scheduled, report the failure and recover by retry or by another scene; uniforms are sent only
 when they change, including a look change made while another scene drew; and the Lab never
 applies a setup while it is being built. `src/display.verify.ts` adds the display:
-`contextRestore`, a lost context draws nothing while the frame loop goes on, and once the browser
-restores it the scene enters again and draws; `frameGovernor`, a moving scene on a 120 Hz display
-draws at most 60 frames a second, and paused or at motion 0 the picture stops issuing draws once
-the change has played out, until input wakes it (`src/display.test.ts` and `src/governor.test.ts`
+`contextRestore`, on the pond, a lost context draws nothing while the frame loop goes on, and once
+the browser restores it the scene enters again and draws, its plant atlas painted anew (no frame
+binds a texture made before the loss, as the sheet the pond kept from its last visit would be);
+`frameGovernor`, a moving scene on a 120 Hz display draws at most 60 frames a second, and paused or
+at motion 0 the picture stops issuing draws once the change has played out, until input wakes it,
+a pointer that moves nothing for a moment only (`src/display.test.ts` and `src/governor.test.ts`
 check the cells on whole device pixels at 125 %, the budget and the pacing without a browser).
 Checks that drive frames by hand start the renderer unpaced (`start({ paced: false })`) and run
 frames, a little real time apart, until it is no longer `waiting` for a scene's program.
@@ -2064,14 +2137,15 @@ log, uniform location or use of a program before its completion or fence was see
 `sceneFeatures`, software: nothing is built ahead; a gated knob builds its own program in the
 background and switches to it once built, the old frame holding until then; several gated knobs at
 once build once; past four sets the least recently drawn program is freed. `featureToggles`, GPU,
-for every scene with `featuresFor` (country, meadow, shore, dunes, bees, orbit, lake): the plain page
-builds only its own program; after the first gated change, which builds the all-features program in
-the background, no change builds a program; with changes expected that program is built ahead at
-rest, draws one frame without changing it, and the first change switches to it at once.
-`worldFeaturesAll` (every scene with `featuresFor` but the countryside: meadow, shore, dunes, bees,
-orbit, lake), GPU: the all-features program draws every gated setting, dithered and as source, byte for
-byte as the setting's own (drawn on a renderer taken for a software rasteriser's that enters at the
-same starting setting, settles and switches the same way, so the sims share their history).
+for every scene with `featuresFor` (country, meadow, shore, dunes, bees, orbit, lake, pendula): the
+plain page builds only its own program; after the first gated change, which builds the
+all-features program in the background, no change builds a program; with changes expected that
+program is built ahead at rest, draws one frame without changing it, and the first change switches
+to it at once. `worldFeaturesAll` (every scene with `featuresFor` but the countryside: meadow,
+shore, dunes, bees, orbit, lake, pendula), GPU: the all-features program draws every gated
+setting, dithered and as source, byte for byte as the setting's own (drawn on a renderer taken for
+a software rasteriser's that enters at the same starting setting, settles and switches the same
+way, so the sims share their history).
 `countryFeaturesAll` (`src/scenes/country/features.verify.ts`) checks the same of the countryside
 over its land directly, each distinct program compiled once.
 
@@ -2094,10 +2168,10 @@ The shared components have checks of their own:
   moons' rates keep Kepler's third law (rate² × distance³ one constant across them), and Orbit's
   captured meteor falls on a decaying orbit whose rate rises as distance^-1.5 all the way down, its
   speed with it.
-- The water's tiers (`island/water.verify.ts`, `waterTiers`): detail too fine to draw is skipped
+- The water's tiers (`shaders/lib/water.verify.ts`, `waterTiers`): detail too fine to draw is skipped
   without changing a value (each wave train and the caustic net against its unskipped form), the
   cellular net draws its seams where they span a cell and only its mean where they do not, the
-  mirror, the glitter, the flow and the caustic light behave, and each tier's functions exist from
+  mirror, the glitter and the caustic light behave, and each tier's functions exist from
   that tier up while each adopter compiles at the tier it selects and not one lower.
 - The clouds' tiers (`clouds/tiers.verify.ts`, `cloudTiers`): each tier's functions exist from that
   tier up (the lit deck also without `CLOUD_TIER`), each adopter needs its tier, the deck's shadow
@@ -2168,11 +2242,13 @@ The verify suite runs in software, so it says nothing of a real GPU. `bench.html
 (`http://127.0.0.1:7920/bench.html` from `serve.ts`, committed or `--dev`; `/@<sha>/bench.html`
 for a commit; the same paths on the public origin) times each scene at its defaults on the device
 that opens it: its program's compile and link, then, once it is on screen and warm, its frames on
-a canvas of `cells` (default 960x540, the budget above): GPU time per frame from
-`EXT_disjoint_timer_query_webgl2` when the browser has it, else the time between animation frames,
-and the main-thread time of each, with medians, 95th percentiles and ms per million cells. Beside
-them it reports the renderer string, the context's uniform and texture limits, its fragment
-precisions and extensions, and per program the uniform vectors it uses (each scalar, vector and
-matrix row counted as one). Query keys: `scenes=a,b` (default all), `cells=WxH`, `frames` (120),
-`warmup` (30) and `auto=1` to start at once. The report is JSON to copy or download; the page
-sends nothing anywhere.
+a canvas of `cells` (default 960x540, the budget above), one cell per device pixel at any device
+pixel ratio, drawn unpaced (as fast as the display takes them): GPU time per frame from
+`EXT_disjoint_timer_query_webgl2` when the browser has it, else the time between drawn frames,
+and the main-thread time of each, with medians, 95th percentiles and ms per million cells. A grid
+past the budget is coarsened to it, as on the landing, unless `budget=off`. Beside them it reports
+the renderer string, the context's uniform and texture limits, its fragment precisions and
+extensions, per program the uniform vectors it uses (each scalar, vector and matrix row counted as
+one), and the cells the landing itself draws in that window. Query keys: `scenes=a,b` (default
+all), `cells=WxH`, `frames` (120), `warmup` (30), `budget=off` and `auto=1` to start at once. The
+report is JSON to copy or download; the page sends nothing anywhere.

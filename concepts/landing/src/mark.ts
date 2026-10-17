@@ -47,7 +47,11 @@ export function segmentDistance(
   const ey = by - ay;
   const len2 = ex * ex + ey * ey;
   const t = len2 > 0 ? Math.min(1, Math.max(0, ((px - ax) * ex + (py - ay) * ey) / len2)) : 0;
-  return Math.hypot(px - ax - ex * t, py - ay - ey * t);
+  // Not Math.hypot: this runs for every bin a segment may reach (sims/bins.ts), and hypot's guard
+  // against overflow costs several times the sum; these lengths are nowhere near it.
+  const dx = px - ax - ex * t;
+  const dy = py - ay - ey * t;
+  return Math.sqrt(dx * dx + dy * dy);
 }
 
 /** Distance from (x, y) to the M, both in mark units. */

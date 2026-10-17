@@ -27,7 +27,7 @@ import { FixedStep, runBudgeted } from "../../sims/clock.ts";
 import { splitHalf } from "../../sims/half.ts";
 import { clamp, lerp } from "../../sims/math.ts";
 import { Random } from "../../sims/random.ts";
-import { DataTexture } from "../../sims/texture.ts";
+import { DataTexture, DirtyRegion } from "../../sims/texture.ts";
 import type { SceneSim, SimFactory, SimFrame } from "../types.ts";
 
 export class HarmonographError extends Error {}
@@ -294,44 +294,28 @@ const NIB_THIN = 1.8;
 const NIB_BOLD = 4.8;
 
 /**
- * The ink the pen has laid on the sheet, two channels (figure, signature), and the rectangle of
- * texels changed since it was last uploaded: a frame's strokes touch a few dozen texels of the
- * sheet's million, and only those go to the GPU.
+ * The ink the pen has laid on the sheet, two channels (figure, signature), and what of it changed
+ * since it was last uploaded: a frame's strokes touch a few dozen texels of the sheet's million,
+ * and only their rectangle goes to the GPU.
  */
 class InkSheet {
   readonly data = new Uint8Array(HARMONOGRAPH.grid * HARMONOGRAPH.grid * 2);
-  /** Changed texels: columns x0..x1 by rows y0..y1, ends excluded (none while x1 <= x0); all at first. */
-  #x0 = 0;
-  #y0 = 0;
-  #x1: number = HARMONOGRAPH.grid;
-  #y1: number = HARMONOGRAPH.grid;
+  readonly #dirty = new DirtyRegion(HARMONOGRAPH.grid, HARMONOGRAPH.grid);
 
   clear(): void {
     this.data.fill(0);
-    this.#touch(0, 0, HARMONOGRAPH.grid, HARMONOGRAPH.grid);
+    this.#dirty.all();
   }
 
   /** Wipe the signature channel only. */
   clearSignature(): void {
     for (let i = 1; i < this.data.length; i += 2) this.data[i] = 0;
-    this.#touch(0, 0, HARMONOGRAPH.grid, HARMONOGRAPH.grid);
+    this.#dirty.all();
   }
 
   /** Send the texels changed since the last call (if any) to `texture`, the sheet's own. */
   upload(texture: DataTexture): void {
-    if (this.#x1 <= this.#x0) return;
-    texture.uploadRegion(this.data, this.#x0, this.#y0, this.#x1 - this.#x0, this.#y1 - this.#y0);
-    this.#x0 = HARMONOGRAPH.grid;
-    this.#y0 = HARMONOGRAPH.grid;
-    this.#x1 = 0;
-    this.#y1 = 0;
-  }
-
-  #touch(x0: number, y0: number, x1: number, y1: number): void {
-    this.#x0 = Math.min(this.#x0, x0);
-    this.#y0 = Math.min(this.#y0, y0);
-    this.#x1 = Math.max(this.#x1, x1);
-    this.#y1 = Math.max(this.#y1, y1);
+    this.#dirty.flush(texture, this.data);
   }
 
   /**
@@ -388,7 +372,7 @@ class InkSheet {
         data[at] = Math.round(flat ? v + c * (255 - v) : Math.max(v, c * 255));
       }
     }
-    if (minX <= maxX && minY <= maxY) this.#touch(minX, minY, maxX + 1, maxY + 1);
+    if (minX <= maxX && minY <= maxY) this.#dirty.touch(minX, minY, maxX + 1, maxY + 1);
   }
 }
 

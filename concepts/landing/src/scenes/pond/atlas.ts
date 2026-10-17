@@ -1,8 +1,8 @@
 // The pond's foliage rasters, painted with the botany models (botany.ts has the encoding): the plant
 // atlas, one cell per variant of every leaf, frond, tuft and flower the border plants draw from
-// (sims/plantsheet.ts cuts them out as sprites, scenes/pond/plants.ts grows the plants), and the
-// overhead canopy, whose dappled shade is all that is ever seen of it. Each sprite is painted alone on
-// a black scratch cell so its cuts and holes cannot erase anything, then made crisp (one material per
+// (sims/plantsheet.ts cuts them out as sprites, plants.ts grows the plants), and the overhead
+// canopy, whose dappled shade is all that is ever seen of it. Each sprite is painted alone on a
+// black scratch cell so its cuts and holes cannot erase anything, then made crisp (one material per
 // texel) and copied into its cell.
 
 import {
@@ -19,8 +19,8 @@ import {
   type MaterialId,
   type Rand,
 } from "./botany.ts";
-import { PLANT_ATLAS_SHADE, type PlantSheetFamily } from "./sims/plantsheet.ts";
-import { mulberry32 } from "./sims/random.ts";
+import { PLANT_ATLAS_SHADE, type PlantSheetFamily } from "../../sims/plantsheet.ts";
+import { mulberry32 } from "../../sims/random.ts";
 
 export interface CanopyConfig {
   /** 0..1: how much of the sky above the camera is leaves. */
@@ -42,8 +42,8 @@ export function canopyKey(config: CanopyConfig): string {
 
 /**
  * The pond foliage's seeded generator, for the atlas, the canopy and the border's layout
- * (scenes/pond/plants.ts): the shared mulberry32 on the seed mixed as the pond always mixed it
- * (times 2654435761, never 0), so every arrangement stays as it was.
+ * (plants.ts): the shared mulberry32 on the seed mixed as the pond always mixed it (times
+ * 2654435761, never 0), so every arrangement stays as it was.
  */
 export function pondRandom(seed: number): Rand {
   return mulberry32((seed * 2654435761) >>> 0 || 1);

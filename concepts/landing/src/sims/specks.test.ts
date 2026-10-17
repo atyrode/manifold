@@ -106,3 +106,33 @@ test("each upload leaves the texture holding the map, sending only the tiles tha
     if (frame > 0) expect(sent).toBeLessThan(0.1 * width * height);
   }
 });
+
+test("a speck plotted again where it was sends nothing; one that moves sends the cells it changed", () => {
+  // The bees' crowd: a bee resting on a flower is cleared and replotted on the same bytes each
+  // frame, and the texture already holds them.
+  const width = 64;
+  const height = 32;
+  const headless = new HeadlessGl();
+  const texture = new DataTexture(headless.gl, { width, height, format: "rg8", filter: "nearest" });
+  const map = new SpeckMap();
+  map.resize(width, height);
+  map.plot(5, 5, 1, 40);
+  map.plot(40, 20, 2, 60);
+  map.upload(texture);
+  const region = spyOn(texture, "uploadRegion");
+  const whole = spyOn(texture, "upload");
+  map.clear();
+  map.plot(5, 5, 1, 40);
+  map.plot(40, 20, 2, 60);
+  map.upload(texture);
+  expect(region).not.toHaveBeenCalled();
+  expect(whole).not.toHaveBeenCalled();
+  // The first moves a cell to the right, within its tile: only the two cells go up.
+  map.clear();
+  map.plot(6, 5, 1, 40);
+  map.plot(40, 20, 2, 60);
+  map.upload(texture);
+  expect(region.mock.calls.map((call) => call.slice(1))).toEqual([[5, 5, 2, 1]]);
+  expect(whole).not.toHaveBeenCalled();
+  expect(headless.upload(texture.texture).data).toEqual(map.data);
+});

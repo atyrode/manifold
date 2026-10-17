@@ -4,7 +4,8 @@
 // colour, black where the film is far thinner than a wavelength. Its flow is a 2D fluid on the GPU
 // (sims/fluid.ts) and its thickness that fluid's dye.
 //
-// uSim0  the film, rg16f, DYE_RESOLUTION texels on the short side (569×320 at 16:9):
+// uSim0  the film between its last two steps (see Time), rg16f, DYE_RESOLUTION texels on the short
+//        side (569×320 at 16:9):
 //          r  thickness in µm: BLACK for black film, ~1 low down, ~1.3 freshly drawn
 //          g  share of the texel holding film, 0..1 (0 where it has burst)
 // uSim1  the interference colours, rgba16f LUT_SIZE×1: linear sRGB reflected by a film
@@ -50,11 +51,20 @@
 // as the exit ends (EXIT_RIM_POWER), and no new film is drawn. Both run whatever the motion amount
 // (the entrance on frame time). Without a passage nothing changes.
 //
+// Time: the life, the fluid and the physics step STEP at a time on one FixedStep (sims/clock.ts),
+// fed frame time while the scene enters or leaves, so a film plays the same at any frame rate and a
+// high-refresh screen runs no more fluid. The film is shown between its last two steps by the
+// clock's alpha (FieldBetween, sims/between.ts), the line drawing a film with it. The burst's rim is
+// drawn as of now, ahead of the last step: it races through black film several cells a step, and
+// all the film a step has cut must lie inside the hole the shader draws.
+//
 // Without float render targets the shader draws an analytic film (filmAnalytic) that still lives
 // the life above, which runs here on the CPU either way.
 import { KnobReader, type ParamDef } from "../../params.ts";
 import { gpuCommonGlsl } from "../../shaders/common.ts";
 import { glslFloat } from "../../shaders/glsl.ts";
+import { FieldBetween } from "../../sims/between.ts";
+import { FixedStep } from "../../sims/clock.ts";
 import { FluidSim, type FluidStep } from "../../sims/fluid.ts";
 import { ArrivalField } from "../../sims/front.ts";
 import { GpuCompute, GpuError, type Pass, type RunOptions } from "../../sims/gpu.ts";
@@ -170,6 +180,12 @@ const SPOTS = 8;
 /** Prewarm: steps of this many seconds when a film is (re)made, so the first frame has settled. */
 const PREWARM_STEPS = 5;
 const PREWARM_DT = 0.2;
+/**
+ * Seconds per step of the life, the fluid and the physics (one FixedStep), and the most steps one
+ * frame takes: below 20 frames a second the film slows rather than a slow frame piling up steps.
+ */
+const STEP = 1 / 60;
+const MAX_STEPS = 3;
 
 // ---- the pointer's breath -----------------------------------------------------------------------
 
@@ -724,8 +740,6 @@ class FilmLife {
   reach = 0;
   /** Bursts so far: each new one needs its rim's arrival field. */
   bursts = 0;
-  /** The drawing line's height where it meets the wire, or the bubble's radius. */
-  front = 0;
   /** Whether the scene is being entered: the film on show is drawn at the entrance's pace. */
   entering = false;
   /** Whether the scene is being left: the film pops and stays gone. */
@@ -840,7 +854,6 @@ class FilmLife {
         throw new FilmError(`film: unknown phase ${String(unreachable)}`);
       }
     }
-    if (this.phase === "draw") this.front = this.#frontAt(tuning.outline);
     this.#advancePlumes(dt, tuning);
     return cleared;
   }
@@ -862,15 +875,20 @@ class FilmLife {
     return count;
   }
 
-  /** The life as uSim2 holds it (see the file header). */
-  packState(target: Float32Array): void {
+  /**
+   * The life as uSim2 holds it (see the file header) for outline `o`: as of the last step for the
+   * physics pass (0, 0); drawn between steps, the burst's rim clock `ahead` seconds past the last
+   * step and the drawing line `behind` seconds before it (see the file header's Time).
+   */
+  packState(target: Float32Array, o: Outline, ahead: number, behind: number): void {
     const bursting = this.phase === "burst";
     const drawing = this.phase === "draw";
+    const rim = this.since + (this.leaving ? ahead * EXIT_PACE : ahead);
     target[0] = this.breakX;
     target[1] = this.breakY;
-    target[2] = bursting ? (this.#paced ? this.exit ** EXIT_RIM_POWER : this.since) : 0;
+    target[2] = bursting ? (this.#paced ? this.exit ** EXIT_RIM_POWER : rim) : 0;
     target[3] = bursting ? (this.#paced ? 2 : 1) : 0;
-    target[4] = drawing ? this.front : 0;
+    target[4] = drawing ? this.#frontAt(o, Math.max(0, this.since - behind)) : 0;
     target[5] = drawing ? 1 : 0;
     target[6] = 0;
     target[7] = this.phase === "empty" ? 0 : 1;
@@ -887,11 +905,12 @@ class FilmLife {
   }
 
   /**
-   * The drawing line rises from below the bottom wire to above the top one (eased in and out; while
-   * the scene enters, fastest at first and slowing to the top); a bubble grows from its middle.
+   * The drawing line `since` seconds into the drawing: it rises from below the bottom wire to above
+   * the top one (eased in and out; while the scene enters, fastest at first and slowing to the
+   * top); a bubble grows from its middle.
    */
-  #frontAt(o: Outline): number {
-    const p = Math.min(this.since / (this.entering ? FILM_PASSAGE.enter : DRAW_SECONDS), 1);
+  #frontAt(o: Outline, since: number): number {
+    const p = Math.min(since / (this.entering ? FILM_PASSAGE.enter : DRAW_SECONDS), 1);
     if (o.shape === "bubble") return o.hw * (1 - (1 - p) ** 3);
     const from = o.y - o.hh - 0.02;
     const to = o.y + o.hh + SAG + 0.02;
@@ -984,6 +1003,8 @@ class FilmFlow {
   readonly fluid: FluidSim;
   /** When the rim of the latest burst reaches each texel (uSim3). */
   readonly rim: ArrivalField;
+  /** The film as the shader sees it (uSim0): between its last two steps. */
+  readonly shown: FieldBetween;
   readonly #physics: Pass;
   readonly #seeder: Pass;
   readonly #domain = new Float32Array(2);
@@ -1030,6 +1051,7 @@ class FilmFlow {
     this.rim = new ArrivalField(gpu, { speed: RIM_GLSL, name: "film rim" });
     this.#rimInputs = { textures: { uFilmDye: this.fluid.dye } };
     this.#physics.bind({ uFilmDye: this.fluid.dye, uFilmArrival: this.rim.source });
+    this.shown = new FieldBetween(gpu, this.fluid.dye, "film");
   }
 
   /** The film breaks at q (frame heights from the view's centre): when its rim will reach every texel, `reach` the farthest point. */
@@ -1165,6 +1187,7 @@ export function filmSim(params: readonly ParamDef[]): SimFactory {
     const breath = { x: 0, y: 0, radius: BLOW_SPOT_RADIUS, rate: 0 };
     const impulse = { velocity: new Float32Array(2) };
     const textures: (WebGLTexture | undefined)[] = [undefined, undefined, undefined, undefined];
+    const clock = new FixedStep(STEP, MAX_STEPS);
     let time = 0;
     let shownShape: FilmShape | undefined;
     let shownSeed: number | undefined;
@@ -1177,19 +1200,24 @@ export function filmSim(params: readonly ParamDef[]): SimFactory {
     /** The burst the rim's arrival field was made for. */
     let rimFor = life.bursts;
 
-    const advance = (dt: number, breathing: boolean): void => {
+    /** A new burst: when its rim reaches every point, through the film as it stands at the break. */
+    const breakRim = (): void => {
+      if (life.bursts === rimFor) return;
+      rimFor = life.bursts;
+      flow?.breakAt(life.breakX, life.breakY, life.reach);
+    };
+
+    /** One step of the life and the flow; `last`, the frame's last, keeps the film it starts from (FieldBetween). */
+    const advance = (dt: number, breathing: boolean, last: boolean): void => {
       if (life.advance(dt, tuning)) flow?.fluid.clear();
-      // A new burst: when its rim reaches every point, through the film as it stands at the break.
-      if (life.bursts !== rimFor) {
-        rimFor = life.bursts;
-        flow?.breakAt(life.breakX, life.breakY, life.reach);
-      }
-      life.packState(stateData);
+      breakRim();
+      life.packState(stateData, tuning.outline, 0, 0);
       time += dt;
       if (!flow) return;
       flowStep.dt = dt;
       flowStep.time = time;
       flowStep.spotCount = life.packSpots(spots, breathing ? breath : undefined);
+      if (last) flow.shown.keep();
       flow.step(flowStep);
     };
 
@@ -1198,6 +1226,9 @@ export function filmSim(params: readonly ParamDef[]): SimFactory {
       shownShape = tuning.shape;
       shownSeed = tuning.seed;
       blowing = false;
+      // A new or changed film owes no steps and is shown as it stands until it next steps.
+      clock.reset();
+      flow?.shown.settle();
       // Leaving, the film that is bursting or gone stays so, a resize notwithstanding.
       if (life.leaving) {
         flow?.fluid.clear();
@@ -1211,7 +1242,7 @@ export function filmSim(params: readonly ParamDef[]): SimFactory {
         return;
       }
       flow.reseed(tuning.shape, tuning.seed);
-      for (let i = 0; i < PREWARM_STEPS; i++) advance(PREWARM_DT, false);
+      for (let i = 0; i < PREWARM_STEPS; i++) advance(PREWARM_DT, false, false);
     };
 
     return {
@@ -1226,8 +1257,10 @@ export function filmSim(params: readonly ParamDef[]): SimFactory {
         life.exit = clamp(frame.passage.exit, 0, 1);
         if (frame.passage.exit > 0 && !life.leaving) life.leave(tuning.outline);
 
-        // "now": burst the film at once (a film still being drawn too).
+        // "now": burst the film at once (a film still being drawn too). A burst begun here has its
+        // rim's arrival field at once, though the frame may take no step.
         if (frame.fired[popSlot] === true) life.burst(tuning.outline);
+        breakRim();
 
         // The pointer blows on the film: a push along its motion, and a thin spot under it.
         const dt = frame.dt * frame.motion;
@@ -1258,11 +1291,14 @@ export function filmSim(params: readonly ParamDef[]): SimFactory {
           breathing = true;
         }
 
-        // The entrance and the exit run on frame time, whatever the motion amount.
-        advance(life.entering || life.leaving ? frame.dt : dt, breathing);
+        // The entrance and the exit run on frame time, whatever the motion amount, through the
+        // same fixed steps; the film is shown between the last two, the rim as of now.
+        const steps = clock.advance(life.entering || life.leaving ? frame.dt : dt);
+        for (let i = 0; i < steps; i++) advance(STEP, breathing, i === steps - 1);
         if (!life.entering) arriving = false;
+        life.packState(stateData, tuning.outline, clock.pending, STEP - clock.pending);
         state.upload(stateData);
-        textures[0] = flow?.fluid.dye.texture;
+        textures[0] = flow?.shown.show(clock.alpha);
         textures[1] = colours.texture;
         textures[2] = state.texture;
         textures[3] = flow?.rim.texture;

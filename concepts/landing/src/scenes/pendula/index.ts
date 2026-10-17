@@ -104,6 +104,23 @@ const params: readonly ParamDef[] = [
   ),
 ];
 
+/**
+ * What the knobs compile in (SceneDef.featuresFor): real pendulums (PENDULA_REAL), the trails
+ * (PENDULA_TRAIL) and the M (PENDULA_MARK) only while they are on, so the default row's program
+ * swings every bob as a small swing, with no trail and no M.
+ */
+export function pendulaFeatures(values: Readonly<Record<string, number>>): Record<string, number> {
+  const on = (key: string): number => ((values[key] ?? 0) > 0 ? 1 : 0);
+  return {
+    PENDULA_REAL: on("physics"),
+    PENDULA_TRAIL: on("trail"),
+    PENDULA_MARK: on("mark"),
+  };
+}
+
+/** Every part compiled in (SceneDef.featuresAll): the shader's runtime tests of the knobs decide. */
+export const PENDULA_ALL = pendulaFeatures({ physics: 1, trail: 1, mark: 1 });
+
 export const pendulaScene: SceneDef = {
   id: "pendula",
   title: "Pendulum wave",
@@ -125,4 +142,6 @@ export const pendulaScene: SceneDef = {
   glsl: pendulaGlsl,
   passage: PENDULA_PASSAGE,
   entry: "scenePendula",
+  featuresFor: pendulaFeatures,
+  featuresAll: PENDULA_ALL,
 };

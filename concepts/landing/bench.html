@@ -86,10 +86,12 @@
       <h1>GPU timing</h1>
       <p>
         Each scene at its defaults, drawn by the landing's renderer on this device on a canvas of
-        the given cells (960×540 is the budget a scene must hold at 60 fps on an integrated GPU).
-        The page times each scene's program compile and link, then its frames: on the GPU when the
-        browser offers EXT_disjoint_timer_query_webgl2, else from one animation frame to the next.
-        Nothing is sent anywhere: copy or download the report.
+        the given cells, one per device pixel (960×540 is the budget a scene must hold at 60 fps on
+        an integrated GPU; a larger grid is coarsened to it as on the landing, unless the page is
+        opened with <code>?budget=off</code>). The page times each scene's program compile and link,
+        then its frames, drawn as fast as the display takes them: on the GPU when the browser offers
+        EXT_disjoint_timer_query_webgl2, else from one drawn frame to the next. Nothing is sent
+        anywhere: copy or download the report.
       </p>
       <form id="setup">
         <label>scenes <input id="scenes" placeholder="all, or a,b" size="32" /></label>

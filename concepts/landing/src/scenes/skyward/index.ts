@@ -6,6 +6,7 @@
 import { feature, range, seed, toggle, type ParamDef } from "../../params.ts";
 import { atmosphereGroups, skyKnobs, skyTheme, weatherKnobs } from "../atmosphere.ts";
 import type { SceneDef } from "../types.ts";
+import { worldGates } from "../world.ts";
 import { SKYWARD_METEOR_TRIGGER, SKYWARD_PASSAGE, skywardGlsl } from "./shader.ts";
 
 const params: readonly ParamDef[] = [
@@ -87,7 +88,8 @@ export const skywardScene: SceneDef = {
   accent: "#ff8a4a",
   look: { color: "full", levels: 4 },
   params,
-  planets: { group: "sky", across: [-180, 0, 180], up: [50, 82, 90] },
+  // In the sky's frame, turned half round from the street's (SKYWARD_SKY_YAW): high over the avenue.
+  planets: { group: "sky", across: [-180, 177, 180], up: [50, 82, 90] },
   groups: {
     city: {
       title: "City",
@@ -113,6 +115,7 @@ export const skywardScene: SceneDef = {
   // Lying down, the view tips back from street level up to the zenith and the facades swing into
   // their lean; leaving, you sit back up and it tips down toward the street.
   passage: SKYWARD_PASSAGE,
-  // The moon takes a phase (K_moon) in the shared sky.
-  features: { SKY_MOON_PHASE: 1 },
+  // The world's sky, every part its knobs can show compiled in: the moon's phase (K_moon), the cloud
+  // deck, the stars and shooting stars, the rain and snow. The birds are the street's own.
+  features: { ...worldGates(params), WORLD_BIRDS: 0 },
 };

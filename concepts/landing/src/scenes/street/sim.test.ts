@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 import { HeadlessSim } from "../../sims/headless.ts";
 import { streetScene } from "./index.ts";
-import { MAX_AGENTS, MAX_WALKERS, SHAPES, Z_REF } from "./sim.ts";
+import { KIND_BIKE, KIND_VAN, MAX_AGENTS, MAX_WALKERS, SHAPES, Z_REF } from "./sim.ts";
 
 /** Frames of 0.2 s: six of the sim's steps each, the most it takes in one frame. */
 const FRAME = 0.2;
@@ -149,5 +149,37 @@ test("with the school outing out often and traffic at its top, no vehicle stands
     // A red light holds a vehicle for most of a cycle; three cycles still is a jam that never clears.
     expect(still, `seed ${seed}: a vehicle stood still (s)`).toBeLessThanOrEqual(3 * cycle);
     expect(deepest, `seed ${seed}: two vehicles overlapped (m)`).toBeLessThanOrEqual(0.05);
+  }
+}, 150_000);
+
+test("with the late delivery out often and everything at its top, no cyclist rides through a van", () => {
+  const knobs = { crowd: 1, traffic: 1, "outing-amount": 1, delivery: 1, "delivery-amount": 1 };
+  for (const seed of [0, 1, 2, 3]) {
+    let parked = 0;
+    let deepest = 0;
+    run({ ...knobs, streetSeed: seed }, 600, 1, (data) => {
+      const bikes: Box[] = [];
+      const vans: Box[] = [];
+      for (let i = MAX_WALKERS; i < MAX_AGENTS; i++) {
+        const o = i * 4;
+        const kind = data[o + 3] ?? 0;
+        const shape = SHAPES[kind];
+        if (!shape || (kind !== KIND_BIKE && kind !== KIND_VAN)) continue;
+        // The delivery van's hazards (blinker 2) blink while it stands at the kerb.
+        if (data[MAX_AGENTS * 4 + o + 1] === 2) parked++;
+        (kind === KIND_BIKE ? bikes : vans).push({
+          x: data[o] ?? 0,
+          z: (data[o + 1] ?? 0) + Z_REF,
+          h: data[o + 2] ?? 0,
+          length: shape.length,
+          width: shape.width,
+        });
+      }
+      for (const bike of bikes)
+        for (const van of vans) deepest = Math.max(deepest, overlap(bike, van));
+    });
+    // Deliveries came and went, so the cyclists met the van easing in, at the kerb and pulling out.
+    expect(parked, `seed ${seed}: the delivery van never stood at the kerb`).toBeGreaterThan(0);
+    expect(deepest, `seed ${seed}: a cyclist overlapped a van (m)`).toBe(0);
   }
 }, 150_000);

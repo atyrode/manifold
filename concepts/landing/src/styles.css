@@ -38,7 +38,8 @@ a {
   image-rendering: pixelated;
 }
 
-/* Without WebGL2, or while the context is lost: the scene's committed thumbnail, still (main.ts). */
+/* Without WebGL2, or while the context is lost: the scene's committed thumbnail, still (main.ts).
+   Without JavaScript, index.html's <noscript> shows the default scene's the same way. */
 body.poster::before {
   content: "";
   position: fixed;

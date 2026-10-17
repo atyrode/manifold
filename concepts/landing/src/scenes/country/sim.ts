@@ -14,7 +14,8 @@
 //   the terrain (land shape, landscape, relief, erosion, the river's size, the settlements and
 //     roads): a new build on the worker (build.ts), reusing what the change leaves alone
 //     (terrain.ts), packed and weighed there with the land as it stood when asked for; the last map
-//     stays on screen until it lands, and a newer terrain supersedes a build in progress;
+//     stays on screen until it lands, a newer terrain supersedes a build in progress, and the
+//     terrain on screen asked for again drops it (BuildSlot) and builds nothing;
 //   the land's uses (the shares, the pine mix, the cattle share, the chalk M keeping its parcels
 //     open, its site looked for once per terrain): the allocation (LandModel.allocate) within the
 //     frame, repacking only the parcels whose use changed (repackLand) and uploading only the rows of
@@ -32,7 +33,7 @@ import {
   repackLand,
 } from "../../sims/landuse.ts";
 import { packWater, TERRAIN_BASES } from "../../sims/terrain.ts";
-import { DataTexture } from "../../sims/texture.ts";
+import { DataTexture, DirtyRegion } from "../../sims/texture.ts";
 import { type SkyState, skyState } from "../../world-clock.ts";
 import type { SceneSim, SimFactory, SimFrame } from "../types.ts";
 import { CountryAtlas } from "./atlas.ts";
@@ -96,6 +97,9 @@ class CountrySim implements SceneSim {
   readonly #ground: DataTexture;
   readonly #cover: DataTexture;
   readonly #parcels: DataTexture;
+  /** The rows of the cover and of the parcels' map changed since each was last uploaded. */
+  readonly #coverChanged = new DirtyRegion(COUNTRY_MAP.size, COUNTRY_MAP.size);
+  readonly #parcelsChanged = new DirtyRegion(COUNTRY_MAP.size, COUNTRY_MAP.size);
   readonly #atlas: CountryAtlas;
   readonly #build = new BuildSlot(countryBuild);
   /**
@@ -175,16 +179,14 @@ class CountrySim implements SceneSim {
     }
     if (fresh || flow) {
       this.#ground.upload(land.packed.ground);
-      this.#cover.upload(land.packed.cover);
-    } else if (rows?.cover) {
-      const [first, last] = rows.cover;
-      this.#cover.uploadRegion(land.packed.cover, 0, first, COUNTRY_MAP.size, last - first + 1);
+      this.#coverChanged.all();
     }
-    if (fresh) this.#parcels.upload(land.packed.parcels);
-    else if (rows?.parcels) {
-      const [first, last] = rows.parcels;
-      this.#parcels.uploadRegion(land.packed.parcels, 0, first, COUNTRY_MAP.size, last - first + 1);
-    }
+    if (fresh) this.#parcelsChanged.all();
+    const { size } = COUNTRY_MAP;
+    if (rows?.cover) this.#coverChanged.touch(0, rows.cover[0], size, rows.cover[1] + 1);
+    if (rows?.parcels) this.#parcelsChanged.touch(0, rows.parcels[0], size, rows.parcels[1] + 1);
+    this.#coverChanged.flush(this.#cover, land.packed.cover);
+    this.#parcelsChanged.flush(this.#parcels, land.packed.parcels);
     const records = this.#atlas.frame(frame, land.terrain, land.packed, fresh || allocate);
     return [this.#ground.texture, this.#cover.texture, this.#parcels.texture, records];
   }

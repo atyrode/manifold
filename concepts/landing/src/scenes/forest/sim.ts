@@ -14,7 +14,9 @@
 // Time: everything steps STEP at a time on a FixedStep (sims/clock.ts; the mist every FOG_STEP of
 // it), so the forest plays the same at 60 and at 144 Hz. What moves is drawn ahead of the last step
 // by the time left over (FixedStep.pending), as pond's koi are: the motes along their drift, the stag
-// along its walk, the spirits' breathing and rising and dissolving on their own clocks.
+// along its walk, the spirits' breathing and rising and dissolving on their own clocks. The life
+// (ForestLife, no GL) is warmed up on the build worker (forestWarmup): until it lands the sim is not
+// ready and nothing of it shows.
 // The shader (shader.ts) reads three textures (rows bottom to top):
 //   uSim0  rgba16f, 3 x (FOREST_SPIRITS + 1), nearest: one row per spirit, (screen x, screen y of its
 //          feet, depth m, alpha 0..1), (head tilt rad + = its top to the left, yaw -1..1 + = its face
@@ -29,10 +31,11 @@
 //   uSim2  r16f, FOREST_FOG.width x FOREST_FOG.height over the screen's uv, linear: how thick the
 //          mist is here, about 1.
 import type { ParamDef } from "../../params.ts";
+import { type BuildKind, BuildSlot } from "../../sims/build.ts";
 import { FixedStep } from "../../sims/clock.ts";
 import { clamp, hash31, smoothstep } from "../../sims/math.ts";
 import { valueNoise } from "../../sims/noise.ts";
-import { mulberry32 } from "../../sims/random.ts";
+import { mulberry32, Random } from "../../sims/random.ts";
 import { atEase, facing, isShy, stepShrink, type Shrink } from "../../sims/temperament.ts";
 import { DataTexture } from "../../sims/texture.ts";
 import { skyNow } from "../../world-clock.ts";
@@ -511,15 +514,49 @@ interface Stir {
 
 type KnobKey = "spirits" | "shy" | "stag" | "spores" | "wind" | "time" | "cycle" | "forestSeed";
 
-class ForestSim implements SceneSim {
-  readonly #beingTexture: DataTexture;
-  readonly #moteTexture: DataTexture;
-  readonly #fogTexture: DataTexture;
+/** The knobs the forest's life follows, as a frame has them, and the sky's dark at their hour (0 by day, 1 at night). */
+export interface ForestKnobs {
+  spirits: number;
+  shy: number;
+  stag: number;
+  spores: number;
+  wind: number;
+  dark: number;
+  seed: number;
+}
+
+/** Where a forest's life stands (ForestLife.state): what the build worker hands the page. */
+interface ForestState {
+  readonly seed: number;
+  /** Where its chance stands (Random.state). */
+  readonly random: number;
+  readonly waves: Wave[];
+  readonly aspect: number;
+  readonly clock: number;
+  readonly fogDue: number;
+  readonly fogShift: number;
+  readonly chorusAt: number;
+  readonly spirits: Spirit[];
+  readonly pending: Pending[];
+  readonly motes: Mote[];
+  readonly stirs: Stir[];
+  readonly stag: Stag;
+  readonly fog: Float32Array;
+}
+
+/** Steps of the warm-up between looks at the build worker's messages. */
+const WARM_SLICE = 15;
+
+/**
+ * What lives in the forest, without a GL context (so a build worker can warm it up): the spirits,
+ * the stag, the motes and the mist on their wind, stepped on the life's own clock and packed for the
+ * shader (ForestSim uploads them).
+ */
+class ForestLife {
   readonly #beingData = new Float32Array(3 * (FOREST_SPIRITS + 1) * 4);
   #moteData = new Float32Array(4);
-  #fog = new Float32Array(FOREST_FOG.width * FOREST_FOG.height);
-  #fogNext = new Float32Array(FOREST_FOG.width * FOREST_FOG.height);
-  readonly #knobIndex: Readonly<Record<KnobKey, number>>;
+  #fog: Float32Array = new Float32Array(FOREST_FOG.width * FOREST_FOG.height);
+  #fogNext: Float32Array = new Float32Array(FOREST_FOG.width * FOREST_FOG.height);
 
   readonly #spirits: Spirit[] = [];
   readonly #pending: Pending[] = [];
@@ -550,19 +587,19 @@ class ForestSim implements SceneSim {
   #aspect = 0;
   #moteCols = 0;
 
-  // Knobs, as the sim follows them.
+  // Knobs, as the life follows them.
   #spiritRate = 0.5;
   #shyness = 0;
   #stagRate = 0.3;
   #spores = 0.5;
   #wind = 0.2;
-  #time = 0.82;
-  #cycle = 0;
   #seed = -1;
-  #random = mulberry32(1);
   #dark = 1;
+  /** Its chance, reseeded with its seed: a Random, so a warm-up hands over where it stands. */
+  readonly #chance = new Random(1);
+  readonly #random = (): number => this.#chance.next();
 
-  /** The sim's own clock: scene seconds scaled by motion, stepped by #steps. */
+  /** The life's own clock: scene seconds scaled by motion, stepped by #steps. */
   #clock = 0;
   readonly #steps = new FixedStep(STEP, MAX_STEPS);
   #fogDue = 0;
@@ -572,7 +609,6 @@ class ForestSim implements SceneSim {
   #arriving = false;
   #leaving = false;
   #quiet = false;
-  #warm = false;
   #dirty = true;
 
   // The wind at the last point asked (#flow).
@@ -588,39 +624,25 @@ class ForestSim implements SceneSim {
   #primed = false;
   #seen = [0, 0, 0, 0];
 
-  constructor(gl: WebGL2RenderingContext, params: readonly ParamDef[]) {
-    const index = (key: KnobKey): number => {
-      const at = params.findIndex((def) => def.key === key);
-      if (at < 0) throw new ForestSimError(`forest: the scene has no '${key}' knob`);
-      return at;
-    };
-    this.#knobIndex = {
-      spirits: index("spirits"),
-      shy: index("shy"),
-      stag: index("stag"),
-      spores: index("spores"),
-      wind: index("wind"),
-      time: index("time"),
-      cycle: index("cycle"),
-      forestSeed: index("forestSeed"),
-    };
-    this.#beingTexture = new DataTexture(gl, {
-      width: 3,
-      height: FOREST_SPIRITS + 1,
-      format: "rgba16f",
-      filter: "nearest",
-    });
-    this.#moteTexture = new DataTexture(gl, {
-      width: 1,
-      height: 1,
-      format: "rgba16f",
-      filter: "nearest",
-    });
-    this.#fogTexture = new DataTexture(gl, {
-      width: FOREST_FOG.width,
-      height: FOREST_FOG.height,
-      format: "r16f",
-    });
+  /** A life not yet seeded (follow its knobs, lay it out, warm it), or one warmed up (`state`, on its own arrays). */
+  constructor(state?: ForestState) {
+    if (state !== undefined) {
+      this.#seed = state.seed;
+      this.#chance.seed(state.random);
+      this.#waves = state.waves;
+      this.#clock = state.clock;
+      this.#fogDue = state.fogDue;
+      this.#fogShift = state.fogShift;
+      this.#chorusAt = state.chorusAt;
+      this.#spirits = state.spirits;
+      this.#pending = state.pending;
+      this.#motes = state.motes;
+      this.#stirs = state.stirs;
+      this.#stag = state.stag;
+      this.#fog = state.fog;
+      this.resize(state.aspect);
+      return;
+    }
     for (let i = 0; i < FOREST_SPIRITS; i++) {
       this.#spirits.push({
         state: "free",
@@ -669,56 +691,61 @@ class ForestSim implements SceneSim {
     for (let i = 0; i < WAVES; i++) this.#waves.push({ kx: 0, ky: 0, omega: 0, phase: 0, amp: 0 });
   }
 
-  frame(frame: SimFrame): readonly (WebGLTexture | undefined)[] {
-    const aspect = frame.aspect > 0 ? frame.aspect : 16 / 9;
-    this.#readKnobs(frame);
-    if (aspect !== this.#aspect) this.#resize(aspect);
-    if (!this.#warm) {
-      this.#prewarm(aspect);
-      this.#warm = true;
-      // Only a sim built while the scene comes in plays the entrance (the prewarm and its draws are unchanged).
-      this.#arriving = frame.passage.enter < 1;
-      if (this.#arriving) this.#stageEntrance();
-    }
-    this.#playPassage(frame.passage.enter, frame.passage.exit);
-    this.#watchTriggers(frame.triggers, aspect);
-    this.#trackPointer(frame.pointer, frame.dt, aspect);
-
-    const advance = Math.max(0, frame.dt) * Math.max(0, frame.motion);
-    for (let s = 0, n = this.#steps.advance(advance); s < n; s++) this.#step(STEP, aspect);
-    if (advance > 0 || this.#dirty) {
-      this.#pack(aspect, this.#steps.pending);
-      this.#beingTexture.upload(this.#beingData);
-      this.#moteTexture.upload(this.#moteData);
-      this.#fogTexture.upload(this.#fog);
-      this.#dirty = false;
-    }
-    return [this.#beingTexture.texture, this.#moteTexture.texture, this.#fogTexture.texture];
+  /** The life as its own arrays and objects (not copies), as `new ForestLife(state)` takes it. */
+  get state(): ForestState {
+    return {
+      seed: this.#seed,
+      random: this.#chance.state,
+      waves: this.#waves,
+      aspect: this.#aspect,
+      clock: this.#clock,
+      fogDue: this.#fogDue,
+      fogShift: this.#fogShift,
+      chorusAt: this.#chorusAt,
+      spirits: this.#spirits,
+      pending: this.#pending,
+      motes: this.#motes,
+      stirs: this.#stirs,
+      stag: this.#stag,
+      fog: this.#fog,
+    };
   }
 
-  dispose(): void {
-    this.#beingTexture.dispose();
-    this.#moteTexture.dispose();
-    this.#fogTexture.dispose();
+  /** The frame aspect the life is laid out for. */
+  get aspect(): number {
+    return this.#aspect;
   }
 
-  #readKnobs(frame: SimFrame): void {
-    const values = frame.values;
-    const index = this.#knobIndex;
-    this.#spiritRate = values[index.spirits] ?? this.#spiritRate;
-    this.#shyness = values[index.shy] ?? this.#shyness;
-    this.#stagRate = values[index.stag] ?? this.#stagRate;
-    this.#spores = values[index.spores] ?? this.#spores;
-    this.#wind = values[index.wind] ?? this.#wind;
-    this.#time = values[index.time] ?? this.#time;
-    this.#cycle = values[index.cycle] ?? this.#cycle;
-    // The dark of the shader's sky (src/world-clock.ts): none once the sun is ~12 degrees up.
-    this.#dark =
-      1 - skyNow({ time: this.#time, cycle: this.#cycle, motionTime: frame.motionTime }).day;
-    const seed = Math.round(values[index.forestSeed] ?? 0);
-    if (seed !== this.#seed) {
+  /** Mote bins across the frame (uSim1 is twice as many texels wide). */
+  get moteCols(): number {
+    return this.#moteCols;
+  }
+
+  /** What the last frame packed for uSim0 (spirits and stag) and uSim1 (motes), and the mist for uSim2. */
+  get beingData(): Float32Array {
+    return this.#beingData;
+  }
+
+  get moteData(): Float32Array {
+    return this.#moteData;
+  }
+
+  get fogData(): Float32Array {
+    return this.#fog;
+  }
+
+  /** Follow the knobs: a new seed reseeds the life's chance and its wind. */
+  follow(knobs: ForestKnobs): void {
+    this.#spiritRate = knobs.spirits;
+    this.#shyness = knobs.shy;
+    this.#stagRate = knobs.stag;
+    this.#spores = knobs.spores;
+    this.#wind = knobs.wind;
+    this.#dark = knobs.dark;
+    if (knobs.seed !== this.#seed) {
+      const seed = knobs.seed;
       this.#seed = seed;
-      this.#random = mulberry32(0x6b6f6461 ^ Math.imul(seed + 1, 0x9e3779b1));
+      this.#chance.seed(0x6b6f6461 ^ Math.imul(seed + 1, 0x9e3779b1));
       const random = mulberry32(0x77696e64 ^ Math.imul(seed + 7, 0x85ebca6b));
       for (const wave of this.#waves) {
         const angle = random() * TAU;
@@ -733,22 +760,22 @@ class ForestSim implements SceneSim {
     }
   }
 
-  #resize(aspect: number): void {
+  /** Lay the perches, the mushrooms and the mote bins out for a frame of this aspect. */
+  resize(aspect: number): void {
     this.#aspect = aspect;
     this.#perches = forestPerches(aspect);
     this.#shroomSites = forestShroomSites(aspect);
     this.#moteCols = Math.ceil(FOREST_MOTE_ROWS * aspect) + 1;
-    this.#moteTexture.resize(2 * this.#moteCols, FOREST_MOTE_ROWS);
     this.#moteData = new Float32Array(2 * this.#moteCols * FOREST_MOTE_ROWS * 4);
     this.#dirty = true;
   }
 
   /**
-   * Before the first frame: the mist lies in its banks, the motes are already drifting at every age,
-   * the spirits that would be about at this hour are sitting on their perches, and the stag's first
-   * crossing is due within the first minute.
+   * The warm-up, in slices: the mist lies in its banks, the motes are already drifting at every age,
+   * the spirits that would be about at this hour are sitting on their perches, the stag's first
+   * crossing is due within the first minute, and then PREWARM_SECONDS of it all run.
    */
-  #prewarm(aspect: number): void {
+  *warm(aspect: number): Generator<undefined, void, undefined> {
     const w = FOREST_FOG.width;
     const h = FOREST_FOG.height;
     for (let j = 0; j < h; j++) {
@@ -772,7 +799,29 @@ class ForestSim implements SceneSim {
       this.#stag.next =
         this.#clock + STAG_FIRST_MIN + (STAG_FIRST_MAX - STAG_FIRST_MIN) * this.#random();
     const steps = Math.round(PREWARM_SECONDS / STEP);
-    for (let s = 0; s < steps; s++) this.#step(STEP, aspect);
+    for (let s = 0; s < steps; s++) {
+      if (s % WARM_SLICE === 0) yield undefined;
+      this.#step(STEP, aspect);
+    }
+  }
+
+  /** Only a life that starts while the scene comes in plays the entrance (its warm-up and draws unchanged). */
+  arrive(enter: number): void {
+    this.#arriving = enter < 1;
+    if (this.#arriving) this.#stageEntrance();
+  }
+
+  /** One frame: the passage, the "now"s, the pointer, the steps due; true when there is something new to upload. */
+  frame(frame: SimFrame, aspect: number): boolean {
+    this.#playPassage(frame.passage.enter, frame.passage.exit);
+    this.#watchTriggers(frame.triggers, aspect);
+    this.#trackPointer(frame.pointer, frame.dt, aspect);
+    const advance = Math.max(0, frame.dt) * Math.max(0, frame.motion);
+    for (let s = 0, n = this.#steps.advance(advance); s < n; s++) this.#step(STEP, aspect);
+    if (!(advance > 0 || this.#dirty)) return false;
+    this.#pack(aspect, this.#steps.pending);
+    this.#dirty = false;
+    return true;
   }
 
   #watchTriggers(triggers: readonly number[], aspect: number): void {
@@ -1540,6 +1589,153 @@ class ForestSim implements SceneSim {
       motes[at + 2] = mote.z;
       motes[at + 3] = glow;
     }
+  }
+}
+
+/** A forest to warm up: for a frame of this aspect, its knobs as they stood. */
+export interface ForestWarmRequest {
+  readonly aspect: number;
+  readonly knobs: ForestKnobs;
+}
+
+/**
+ * The forest's warm-up as a build (sims/build.ts): its life seeded for the knobs and laid out for
+ * the frame, then PREWARM_SECONDS of it run (ForestLife.warm). ForestSim carries on from there.
+ */
+export const forestWarmup: BuildKind<ForestWarmRequest, ForestState> = {
+  name: "forest",
+  builder: () => ({
+    *build({ aspect, knobs }) {
+      const life = new ForestLife();
+      life.follow(knobs);
+      life.resize(aspect);
+      yield* life.warm(aspect);
+      return life.state;
+    },
+  }),
+};
+
+/** What the sim hands the renderer before its life is up: nothing (no spirits, motes or mist field). */
+const NO_TEXTURES: readonly (WebGLTexture | undefined)[] = [undefined, undefined, undefined];
+
+class ForestSim implements SceneSim {
+  readonly #beingTexture: DataTexture;
+  readonly #moteTexture: DataTexture;
+  readonly #fogTexture: DataTexture;
+  readonly #textures: readonly (WebGLTexture | undefined)[];
+  readonly #knobIndex: Readonly<Record<KnobKey, number>>;
+  /** The knobs as the life follows them, rewritten in place each frame; the hour they set. */
+  readonly #knobs: ForestKnobs = {
+    spirits: 0.5,
+    shy: 0,
+    stag: 0.3,
+    spores: 0.5,
+    wind: 0.2,
+    dark: 1,
+    seed: 0,
+  };
+  #time = 0.82;
+  #cycle = 0;
+  /** Warming the life up on the build worker (sims/build.ts); the life once it has landed. */
+  readonly #warming = new BuildSlot(forestWarmup);
+  #life: ForestLife | undefined;
+
+  constructor(gl: WebGL2RenderingContext, params: readonly ParamDef[]) {
+    const index = (key: KnobKey): number => {
+      const at = params.findIndex((def) => def.key === key);
+      if (at < 0) throw new ForestSimError(`forest: the scene has no '${key}' knob`);
+      return at;
+    };
+    this.#knobIndex = {
+      spirits: index("spirits"),
+      shy: index("shy"),
+      stag: index("stag"),
+      spores: index("spores"),
+      wind: index("wind"),
+      time: index("time"),
+      cycle: index("cycle"),
+      forestSeed: index("forestSeed"),
+    };
+    this.#beingTexture = new DataTexture(gl, {
+      width: 3,
+      height: FOREST_SPIRITS + 1,
+      format: "rgba16f",
+      filter: "nearest",
+    });
+    // Sized to the life's mote bins before each upload.
+    this.#moteTexture = new DataTexture(gl, {
+      width: 1,
+      height: 1,
+      format: "rgba16f",
+      filter: "nearest",
+    });
+    this.#fogTexture = new DataTexture(gl, {
+      width: FOREST_FOG.width,
+      height: FOREST_FOG.height,
+      format: "r16f",
+    });
+    this.#textures = [
+      this.#beingTexture.texture,
+      this.#moteTexture.texture,
+      this.#fogTexture.texture,
+    ];
+  }
+
+  frame(frame: SimFrame): readonly (WebGLTexture | undefined)[] {
+    const aspect = frame.aspect > 0 ? frame.aspect : 16 / 9;
+    const knobs = this.#read(frame);
+    let life = this.#life;
+    const landing = life === undefined;
+    if (life === undefined) {
+      // Warmed up on the build worker; nothing of the life shows until it lands.
+      this.#warming.request(String(knobs.seed), { aspect, knobs: { ...knobs } });
+      const landed = this.#warming.advance(frame.budget);
+      if (landed === undefined) return NO_TEXTURES;
+      life = new ForestLife(landed.result);
+      this.#life = life;
+    }
+    life.follow(knobs);
+    if (aspect !== life.aspect) life.resize(aspect);
+    if (landing) life.arrive(frame.passage.enter);
+    if (life.frame(frame, aspect)) {
+      const cols = 2 * life.moteCols;
+      if (this.#moteTexture.width !== cols) this.#moteTexture.resize(cols, FOREST_MOTE_ROWS);
+      this.#beingTexture.upload(life.beingData);
+      this.#moteTexture.upload(life.moteData);
+      this.#fogTexture.upload(life.fogData);
+    }
+    return this.#textures;
+  }
+
+  /** Ready once the life has been warmed up (on the build worker). */
+  ready(): boolean {
+    return this.#life !== undefined;
+  }
+
+  dispose(): void {
+    this.#warming.dispose();
+    this.#beingTexture.dispose();
+    this.#moteTexture.dispose();
+    this.#fogTexture.dispose();
+  }
+
+  /** The knobs as the frame has them (written in place), with the dark of the sky at their hour. */
+  #read(frame: SimFrame): ForestKnobs {
+    const values = frame.values;
+    const index = this.#knobIndex;
+    const knobs = this.#knobs;
+    knobs.spirits = values[index.spirits] ?? knobs.spirits;
+    knobs.shy = values[index.shy] ?? knobs.shy;
+    knobs.stag = values[index.stag] ?? knobs.stag;
+    knobs.spores = values[index.spores] ?? knobs.spores;
+    knobs.wind = values[index.wind] ?? knobs.wind;
+    this.#time = values[index.time] ?? this.#time;
+    this.#cycle = values[index.cycle] ?? this.#cycle;
+    // The dark of the shader's sky (src/world-clock.ts): none once the sun is ~12 degrees up.
+    knobs.dark =
+      1 - skyNow({ time: this.#time, cycle: this.#cycle, motionTime: frame.motionTime }).day;
+    knobs.seed = Math.round(values[index.forestSeed] ?? 0);
+    return knobs;
   }
 }
 

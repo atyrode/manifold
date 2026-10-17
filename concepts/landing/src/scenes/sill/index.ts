@@ -6,7 +6,8 @@ import { feature, range, toggle, type ParamDef } from "../../params.ts";
 import { DataTexture } from "../../sims/texture.ts";
 import { atmosphereGroups, skyKnobs, weatherKnobs } from "../atmosphere.ts";
 import type { SceneDef, SceneSim, SimFrame } from "../types.ts";
-import { SILL_METEOR_TRIGGER, SILL_PASSAGE, sillGlsl } from "./shader.ts";
+import { worldGates } from "../world.ts";
+import { SILL_LIGHTNING_TRIGGER, SILL_METEOR_TRIGGER, SILL_PASSAGE, sillGlsl } from "./shader.ts";
 
 /** How far (in screen heights) the pointer must stray from where the cat is looking before it turns. */
 const GAZE_SLACK = 0.05;
@@ -153,7 +154,14 @@ const params: readonly ParamDef[] = [
     0.35,
     "A cloud deck over the city, lit from below by its glow at night. Rain or snow closes it over whatever the cover, lower and darker the heavier they fall.",
   ),
-  ...weatherKnobs({ rain: true, snow: true, fog: true, wind: true, lightning: 1, aurora: true }),
+  ...weatherKnobs({
+    rain: true,
+    snow: true,
+    fog: true,
+    wind: true,
+    lightning: SILL_LIGHTNING_TRIGGER,
+    aurora: true,
+  }),
   toggle(
     "weather",
     "drops",
@@ -211,6 +219,7 @@ export const sillScene: SceneDef = {
   sim: sillGaze,
   // Entrance: the cat hops up onto the sill and settles, its tail curling round. Exit: it stretches and hops down out of frame.
   passage: SILL_PASSAGE,
-  // The moon takes a phase (K_moon) in the shared sky.
-  features: { SKY_MOON_PHASE: 1 },
+  // The world's sky, every part its knobs can show compiled in: the moon's phase (K_moon), the cloud
+  // deck, the stars, the aurora, shooting stars and lightning.
+  features: worldGates(params),
 };

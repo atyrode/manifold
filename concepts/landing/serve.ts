@@ -105,16 +105,19 @@ async function buildCommit(sha: string): Promise<string> {
   }
 }
 
-async function serveFile(dist: string, path: string, immutable: boolean): Promise<Response> {
+/** How long a browser may keep a file: for good, for an hour, or not at all (it asks again). */
+type Keep = "immutable" | "hour" | "none";
+
+async function serveFile(dist: string, path: string, keep: Keep): Promise<Response> {
   if (path.split("/").some((segment) => segment === ".." || segment.startsWith("."))) {
     return new Response("not found", { status: 404 });
   }
   const file = Bun.file(join(dist, path || "index.html"));
   if (!(await file.exists())) return new Response("not found", { status: 404 });
   const cache =
-    path === "" || path.endsWith(".html")
+    keep === "none" || path === "" || path.endsWith(".html")
       ? "no-cache"
-      : immutable
+      : keep === "immutable"
         ? "public, max-age=31536000, immutable"
         : "public, max-age=3600";
   return new Response(file, { headers: { "cache-control": cache } });
@@ -129,19 +132,21 @@ async function committed(request: Request): Promise<Response> {
       if (rest === undefined) return Response.redirect(`/@${ref}/${url.search}`, 308);
       const sha = await resolve(ref);
       if (!sha) return new Response("unknown build", { status: 404 });
-      return await serveFile(await built(sha), rest.slice(1), true);
+      return await serveFile(await built(sha), rest.slice(1), "immutable");
     }
     const sha = await head();
     if (!sha) return new Response(`no committed lab on ${branch}`, { status: 503 });
-    if (url.pathname === "/") return await serveFile(await built(sha), "", false);
+    if (url.pathname === "/") return await serveFile(await built(sha), "", "none");
     if (url.pathname === "/bench.html")
-      return await serveFile(await built(sha), "bench.html", false);
-    // The head page is served from the root, so its worker and thumbnails load from there (the
-    // build worker; a head before it loads the sheet worker).
+      return await serveFile(await built(sha), "bench.html", "none");
+    // The head page is served from the root, so its thumbnails load from there. Its worker loads
+    // from the head's pinned path, built with it (src/sims/build.ts); a head built before that
+    // loads it from the root (the build worker, or before it the sheet worker), which is therefore
+    // never cached: a cached one could pair the page with an older commit's worker.
     if (url.pathname === "/build-worker.js" || url.pathname === "/sheet-worker.js")
-      return await serveFile(await built(sha), url.pathname.slice(1), false);
+      return await serveFile(await built(sha), url.pathname.slice(1), "none");
     if (/^\/thumbs\/[a-z]+\.webp$/.test(url.pathname))
-      return await serveFile(await built(sha), url.pathname.slice(1), false);
+      return await serveFile(await built(sha), url.pathname.slice(1), "hour");
     return new Response("not found", { status: 404 });
   } catch (error: unknown) {
     console.error("evt=landing.build_failed", error);
@@ -170,7 +175,7 @@ const server = args.includes("--dev")
         },
         "/thumbs/:file": (request) =>
           /^[a-z]+\.webp$/.test(request.params.file)
-            ? serveFile(new URL("./thumbs", import.meta.url).pathname, request.params.file, false)
+            ? serveFile(new URL("./thumbs", import.meta.url).pathname, request.params.file, "hour")
             : new Response("not found", { status: 404 }),
       },
       fetch: () => new Response("not found", { status: 404 }),

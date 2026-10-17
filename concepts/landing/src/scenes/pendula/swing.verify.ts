@@ -1,6 +1,7 @@
 // The pendulum wave's swing on the GPU (verify-browser.ts): the ideal row still lines up exactly,
-// and the real one swings as the shared pendulum maths says (sims/pendulum.ts, its TS twin).
-import { fragmentSourceFor, vertexSource } from "../../shaders/index.ts";
+// and the real one swings as the shared pendulum maths says (sims/pendulum.ts, its TS twin). Drawn
+// with the scene's all-features program, which compiles the real swing in (PENDULA_REAL).
+import { fragmentSourceFor, sceneFeaturesAll, vertexSource } from "../../shaders/index.ts";
 import { pendulumAngle, pendulumFadingSwings, pendulumStretch } from "../../sims/pendulum.ts";
 import { defaultsFor, paramDefaults, renderSettings } from "../../state.ts";
 import { sceneDefs } from "../index.ts";
@@ -34,24 +35,29 @@ function linked(gl: WebGL2RenderingContext, fragment: string): WebGLProgram {
 
 /** Each pendulum's angle, read back from the scene's own swing (pendulaSwing, pendulaBobAt). */
 export function verifyPendulaSwing(gl: WebGL2RenderingContext): Record<string, unknown> {
+  const features = sceneFeaturesAll(sceneDefs.pendula);
+  if (!features) throw new Error("pendula: no all-features program");
   const program = linked(
     gl,
-    fragmentSourceFor({
-      ...sceneDefs.pendula,
-      entry: "regressionPendulaSwing",
-      glsl: `${sceneDefs.pendula.glsl}
-      Shade regressionPendulaSwing(vec2 uv, vec2 cell, float t) {
-        float n0 = 2.0 * (K_count - 1.0);
-        float k = n0 + floor(cell.x);
-        float L = PENDULA_LMAX * (n0 / k) * (n0 / k);
-        float c = uMotionTime / K_cycle;
-        float env = K_release > 0.5 ? pendulaEnvelope(fract(c / PENDULA_RELEASE) * PENDULA_RELEASE) : 1.0;
-        vec3 sw = pendulaSwing(k, L, c, fract(c), mix(PENDULA_LEAST, PENDULA_MOST, K_swing), env);
-        vec3 bob = pendulaBobAt(vec3(0.0, PENDULA_PIVOT, 0.0), L, sw.x, sw.y);
-        float v = clamp(0.5 + atan(bob.z, PENDULA_PIVOT - bob.y) / ${SPAN.toFixed(1)}, 0.0, 1.0) * 255.0;
-        return shadeOf(vec3(floor(v) / 255.0, fract(v), 0.0), 0.0, 0.0);
-      }`,
-    }),
+    fragmentSourceFor(
+      {
+        ...sceneDefs.pendula,
+        entry: "regressionPendulaSwing",
+        glsl: `${sceneDefs.pendula.glsl}
+        Shade regressionPendulaSwing(vec2 uv, vec2 cell, float t) {
+          float n0 = 2.0 * (K_count - 1.0);
+          float k = n0 + floor(cell.x);
+          float L = PENDULA_LMAX * (n0 / k) * (n0 / k);
+          float c = uMotionTime / K_cycle;
+          float env = K_release > 0.5 ? pendulaEnvelope(fract(c / PENDULA_RELEASE) * PENDULA_RELEASE) : 1.0;
+          vec3 sw = pendulaSwing(k, L, c, fract(c), mix(PENDULA_LEAST, PENDULA_MOST, K_swing), env);
+          vec3 bob = pendulaBobAt(vec3(0.0, PENDULA_PIVOT, 0.0), L, sw.x, sw.y);
+          float v = clamp(0.5 + atan(bob.z, PENDULA_PIVOT - bob.y) / ${SPAN.toFixed(1)}, 0.0, 1.0) * 255.0;
+          return shadeOf(vec3(floor(v) / 255.0, fract(v), 0.0), 0.0, 0.0);
+        }`,
+      },
+      features,
+    ),
   );
   gl.canvas.width = COUNT;
   gl.canvas.height = 1;

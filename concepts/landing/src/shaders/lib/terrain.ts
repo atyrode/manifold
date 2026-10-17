@@ -27,11 +27,14 @@
 //                                                                (metres; 0 none)
 //   vec4 terrainRecord(sampler2D records, int row, int column)   one record texel (TERRAIN_*_ROW)
 //   vec2 terrainSplit(vec4 v)                                    a position written as two half pairs
-//   TerrainBuilding terrainBuilding(sampler2D records, int i)    position, base, heading, kind, length, hash
+//   TerrainBuilding terrainBuilding(sampler2D records, int i)    position, base, heading, kind, span, hash
 //   TerrainPlace terrainPlace(sampler2D records, int i)          settlement i: centre, radius, buildings
 //   TerrainBridge terrainBridge(sampler2D records)               the bridge (on 0: none)
 //   vec3 terrainEye(sampler2D records)                           the vantage's eye (metres)
 //   ivec2 terrainCounts(sampler2D records)                       settlements, buildings
+//   float terrainTop(sampler2D records)                          the highest ground or water on the
+//                                                                map (metres, the river full): no
+//                                                                ray above it rising meets the land
 //   int terrainWayCount(sampler2D records)                       roads resampled (terrainWays)
 //   TerrainWay terrainWay(sampler2D records, int i)              road i: points, spacing, kind
 //   vec3 terrainWayAt(sampler2D records, TerrainWay way, float s, out vec2 heading)
@@ -134,7 +137,8 @@ TerrainParcel terrainParcel(sampler2D ids, sampler2D records, vec2 p, float exte
     float high = mod(floor(t.y + 0.5), ${glslFloat(LAND_PINE_FLAG)});
     for (int c = 0; c < 2; c++) {
       float id = floor((c == 0 ? t.x + 256.0 * high : t.z + 256.0 * t.w) + 0.5);
-      if (id < 0.5 || id == bestId) continue;
+      // The second site again would reproduce next bit for bit, so neither branch could fire: skip it too.
+      if (id < 0.5 || id == bestId || id == nextId) continue;
       vec4 data;
       vec2 site;
       vec3 d = terrainSiteDistance(records, id, p, data, site);
@@ -181,7 +185,9 @@ vec3 terrainCore(sampler2D records, float id) {
   return vec3(site + core.xy, core.z);
 }
 
-struct TerrainBuilding { vec3 at; float facing; float kind; float length; float hash; };
+// span: the long wall's length over the gable's width (TerrainBuilding.length in sims/terrain.ts:
+// glslang reads a member named length as the length() method, and rejects the program).
+struct TerrainBuilding { vec3 at; float facing; float kind; float span; float hash; };
 
 TerrainBuilding terrainBuilding(sampler2D records, int i) {
   int row = TERRAIN_BUILDINGS_ROW + i / 16;
@@ -193,7 +199,7 @@ TerrainBuilding terrainBuilding(sampler2D records, int i) {
   building.at = vec3(xz.x, a.x, xz.y);
   building.facing = a.y;
   building.kind = a.z;
-  building.length = a.w;
+  building.span = a.w;
   building.hash = b.x;
   return building;
 }
@@ -238,6 +244,10 @@ ivec2 terrainCounts(sampler2D records) {
 
 int terrainWayCount(sampler2D records) {
   return int(terrainRecord(records, TERRAIN_MISC_ROW, 5).x + 0.5);
+}
+
+float terrainTop(sampler2D records) {
+  return terrainRecord(records, TERRAIN_MISC_ROW, 5).y;
 }
 
 struct TerrainWay { int first; int count; float spacing; float kind; };

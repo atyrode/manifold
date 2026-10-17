@@ -3,13 +3,13 @@
 // on Island's program (so it reads Island's own spectrum table) evaluates the library over grids into
 // a float target: the trains and caustic waves too fine to draw are skipped without changing a value
 // (each against its unskipped form), the cellular net's seams draw where they span a cell and leave
-// only its mean where they do not, and the mirror, the glitter, the flow and the caustic light
+// only its mean where they do not, and the mirror, the glitter and the caustic light
 // behave. Then the tiers: each tier's functions exist from its tier up and not below, and each
 // adopting scene compiles at the tier it selects and not one lower.
-import { fragmentSourceFor, vertexSource } from "../../shaders/index.ts";
-import { WATER_TIERS } from "../../shaders/lib/water.ts";
-import { sceneDefs } from "../index.ts";
-import type { SceneDef } from "../types.ts";
+import { sceneDefs } from "../../scenes/index.ts";
+import type { SceneDef } from "../../scenes/types.ts";
+import { fragmentSourceFor, vertexSource } from "../index.ts";
+import { WATER_TIERS } from "./water.ts";
 
 function check(ok: boolean, message: string): void {
   if (!ok) throw new Error(`water: ${message}`);
@@ -49,8 +49,8 @@ function compiles(gl: WebGL2RenderingContext, fragment: string): boolean {
 }
 
 // uProbeA: mode 0-2 the grid's origin (m, xy), metres a cell, tm; uProbeB: mode 0-2 the depthwise
-// stretch of the footprint, the knob-like gain, the current (m/s). A row's footprint grows from 2^-9
-// m at the bottom to 2^4 m at the top, so every train goes from drawn to too fine to draw.
+// stretch of the footprint, the knob-like gain. A row's footprint grows from 2^-9 m at the bottom to
+// 2^4 m at the top, so every train goes from drawn to too fine to draw.
 const PROBE = `
 uniform int uProbe;
 uniform vec4 uProbeA;
@@ -84,10 +84,6 @@ vec2 probeCaustic(vec2 p, float tm, vec2 wind, float scale, float steep, float p
   return slope;
 }
 
-float probePattern(vec2 q) {
-  return sin(3.0 * q.x + 2.0 * q.y);
-}
-
 Shade waterProbe(vec2 uv, vec2 cell, float t) {
   vec3 v = vec3(0.0);
   vec2 p = uProbeA.xy + floor(cell) * uProbeA.z;
@@ -116,13 +112,6 @@ Shade waterProbe(vec2 uv, vec2 cell, float t) {
     vec3 dir = normalize(uProbeB.xyz);
     WaterMirror m = waterMirror(dir, (floor(cell) - floor(0.5 * uRes)) * uProbeA.z, 0.0);
     v = vec3(m.ray.y, m.fresnel, m.normal.z);
-  } else if (uProbe == 4) {
-    // A pattern carried by waterFlow: x is time (uProbeA.x + x * uProbeA.y), y the start along x.
-    float time = uProbeA.x + floor(cell.x) * uProbeA.y;
-    vec2 at = vec2(floor(cell.y) * 0.1, 0.3);
-    float weight;
-    vec4 q = waterFlow(at, uProbeB.xy, time, uProbeB.z, weight);
-    v = vec3(mix(probePattern(q.xy), probePattern(q.zw), weight), weight, max(length(q.xy - at), length(q.zw - at)));
   } else if (uProbe == 6) {
     // The cellular net, p in net cells, tm its wander: a row's footprint (2^-9 .. 2^4 net cells up
     // the rows), or uProbeB.y throughout.
@@ -371,37 +360,6 @@ export function verifyWaterTiers(gl: WebGL2RenderingContext): Record<string, unk
     glitter.push({ s2, area: Number(area.toFixed(6)), spread: Number(spread.toFixed(6)) });
   }
 
-  // The flow: no current carries nothing; on a current the mix is continuous through every reset
-  // (a single copy jumps by the current times the period), and the copy being put back is hidden.
-  const T = 256;
-  const step = 4 / T;
-  const still = draw(gl, probe, T, 8, {
-    uProbe: [4],
-    uProbeA: [0.5, step, 0, 0],
-    uProbeB: [0, 0, 2, 0],
-  });
-  for (let i = 0; i < T * 8; i++)
-    check(still[i * 4 + 2] === 0, "waterFlow moved a pattern on still water");
-  const flow = draw(gl, probe, T, 8, {
-    uProbe: [4],
-    uProbeA: [0, step, 0, 0],
-    uProbeB: [0.6, 0.2, 2, 0],
-  });
-  let largest = 0;
-  for (let y = 0; y < 8; y++) {
-    for (let x = 1; x < T; x++)
-      largest = Math.max(largest, Math.abs(at(flow, T, x, y, 0) - at(flow, T, x - 1, y, 0)));
-    for (let x = 0; x < T; x++) {
-      const time = x * step;
-      if (Number.isInteger(time / 2))
-        check(
-          at(flow, T, x, y, 1) === 1,
-          `the copy being put back at ${time} s still shows (weight ${at(flow, T, x, y, 1)})`,
-        );
-    }
-  }
-  check(largest < 0.1, `the carried pattern jumps by ${largest} between samples ${step} s apart`);
-
   // The caustic light: still water is 1, a sim focusing nothing is capped at 1 / soft, and the two
   // Jacobians multiply.
   const light = draw(gl, probe, 4, 1, { uProbe: [5] });
@@ -468,7 +426,7 @@ export function verifyWaterTiers(gl: WebGL2RenderingContext): Record<string, unk
   const calls: readonly [keyof typeof WATER_TIERS, string][] = [
     ["ripples", "vec4 r = windRipples(planeAt(uv, 1.0, 0.6, 1.7, 1.2), t, 0.5, 1.0)"],
     ["mirror", "WaterMirror m = waterMirror(vec3(0.0, -0.3, 1.0), vec2(0.0), 0.0)"],
-    ["flow", "float w; vec4 f = waterFlow(uv, vec2(1.0, 0.0), t, 2.0, w)"],
+    ["flow", "vec2 f = waterDrift(uv, vec2(1.0, 0.0), t)"],
     [
       "caustics",
       "vec3 h; vec2 s = causticRipples(uv, t, vec2(1.0, 0.0), 0.1, 0.05, 0.3, 0.001, h)",
@@ -528,7 +486,6 @@ export function verifyWaterTiers(gl: WebGL2RenderingContext): Record<string, unk
     nearCausticCells: curved,
     netSeamCells: seams,
     netAverage: Number(netAverage.toFixed(4)),
-    flowLargestStep: Number(largest.toFixed(4)),
     glitter,
   };
 }

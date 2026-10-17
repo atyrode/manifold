@@ -2,10 +2,15 @@
 // stand-in WebGL2 context for `bun test` (or a browser check that wants a sim's data rather than its
 // picture): it takes the texture calls a sim makes through DataTexture (texture.ts), or the same
 // calls by hand, and keeps each texture's size and its data as uploaded (a whole upload replaces
-// it, a sub-rectangle, `uploadRegion`, lands in it), so a test reads back exactly what the shader
-// would sample. It draws nothing: any other member (GpuCompute's, a program's)
-// throws HeadlessError naming it. `HeadlessSim` drives a registered scene's real sim frame by frame,
-// on a HeadlessGl or on a real context, each frame built the way the renderer builds it.
+// it, a sub-rectangle, `uploadRegion`, lands in it; half-float bits are kept as the floats they
+// stand for), so a test reads back exactly what the shader would sample. A canvas uploaded as an
+// image (`uploadImage`) keeps its size, not its pixels; the pixel-store flags for images (flip,
+// premultiplied alpha) are taken and ignored. It draws nothing: any other member (GpuCompute's, a
+// program's) throws HeadlessError naming it. `HeadlessSim` drives a registered scene's real sim
+// frame by frame, on a HeadlessGl or on a real context, each frame built the way the renderer
+// builds it. On a HeadlessGl, where the runtime has no OffscreenCanvas (bun), it stands in a
+// `HeadlessCanvas` for a sim that paints with Canvas 2D (marble's ink): it keeps its size and takes
+// the paths, fills and transforms drawn on it, drawing nothing.
 //
 //   new HeadlessGl()              `.gl`, the context to build a sim on
 //     upload(texture)             { width, height, data }: the texture's size and a copy of its data
@@ -44,6 +49,7 @@ import { effective, knobDef, MAX_TRIGGERS } from "../params.ts";
 import { sceneIds } from "../scenes/index.ts";
 import type { PointerState, ScenePassageProgress, SceneDef, SceneSim } from "../scenes/types.ts";
 import { paramDefaults } from "../state.ts";
+import { halfValue } from "./half.ts";
 
 export class HeadlessError extends Error {}
 
@@ -82,8 +88,10 @@ export class HeadlessGl {
       UNPACK_ALIGNMENT: 0x0cf5,
       UNPACK_ROW_LENGTH: 0x0cf2,
       UNPACK_FLIP_Y_WEBGL: 0x9240,
+      UNPACK_PREMULTIPLY_ALPHA_WEBGL: 0x9241,
       UNSIGNED_BYTE: 0x1401,
       FLOAT: 0x1406,
+      HALF_FLOAT: 0x140b,
       RED: 0x1903,
       RG: 0x8227,
       RGBA: 0x1908,
@@ -122,6 +130,7 @@ export class HeadlessGl {
       // replaces the kept copy; a sub-rectangle lands in it (on zeros if the texture had none, as
       // texImage2D(null) leaves it), its rows read from srcOffset UNPACK_ROW_LENGTH texels apart. A
       // copy already handed out stays as it was: the first sub-rectangle after that writes a new one.
+      // Half-float bits (a Uint16Array, sent as HALF_FLOAT) are kept as the floats they hold.
       texSubImage2D: (
         _target: number,
         _level: number,
@@ -130,11 +139,14 @@ export class HeadlessGl {
         width: number,
         height: number,
         format: number,
-        _type: number,
-        data: Float32Array | Uint8Array,
+        type: number,
+        data: Float32Array | Uint8Array | Uint16Array,
         srcOffset = 0,
       ): void => {
         const texture = this.#texture();
+        const half = data instanceof Uint16Array;
+        if (half !== (type === 0x140b))
+          throw new HeadlessError("headless: half-float bits go up as HALF_FLOAT, and only they");
         const channels = format === 0x1903 ? 1 : format === 0x8227 ? 2 : 4;
         const stride = (this.#rowLength > 0 ? this.#rowLength : width) * channels;
         if (
@@ -149,15 +161,16 @@ export class HeadlessGl {
         const shared = texture.shared;
         texture.shared = false;
         if (whole && srcOffset === 0 && stride === width * channels) {
-          texture.data = data.slice();
+          texture.data =
+            data instanceof Uint16Array ? Float32Array.from(data, halfValue) : data.slice();
           return;
         }
         const size = texture.width * texture.height * channels;
         const kept =
           texture.data === undefined
-            ? data instanceof Float32Array
-              ? new Float32Array(size)
-              : new Uint8Array(size)
+            ? data instanceof Uint8Array
+              ? new Uint8Array(size)
+              : new Float32Array(size)
             : shared
               ? texture.data.slice()
               : texture.data;
@@ -165,10 +178,11 @@ export class HeadlessGl {
           throw new HeadlessError("headless: a sub-rectangle in another format than the texture's");
         for (let row = 0; row < height; row++) {
           const from = srcOffset + row * stride;
-          kept.set(
-            data.subarray(from, from + width * channels),
-            ((y + row) * texture.width + x) * channels,
-          );
+          const to = ((y + row) * texture.width + x) * channels;
+          const source = data.subarray(from, from + width * channels);
+          if (source instanceof Uint16Array)
+            for (let i = 0; i < source.length; i++) kept[to + i] = halfValue(source[i] ?? 0);
+          else kept.set(source, to);
         }
         texture.data = kept;
       },
@@ -194,6 +208,53 @@ export class HeadlessGl {
   #texture(): HeadlessTexture {
     if (!this.#bound) throw new HeadlessError("headless: no texture bound");
     return this.#bound;
+  }
+}
+
+/**
+ * A stand-in OffscreenCanvas for a sim that paints with Canvas 2D (marble's ink): it keeps its size,
+ * and its "2d" context takes the paths, fills, clears and transforms such a sim draws and draws
+ * nothing. Any other member throws HeadlessError naming it, as HeadlessGl's do.
+ */
+export class HeadlessCanvas {
+  width: number;
+  height: number;
+  readonly #context: OffscreenCanvasRenderingContext2D;
+
+  constructor(width: number, height: number) {
+    this.width = width;
+    this.height = height;
+    const ignore = (): void => undefined;
+    const context: Record<string, unknown> = {
+      globalCompositeOperation: "source-over",
+      fillStyle: "#000000",
+      setTransform: ignore,
+      clearRect: ignore,
+      beginPath: ignore,
+      moveTo: ignore,
+      lineTo: ignore,
+      closePath: ignore,
+      fill: ignore,
+    };
+    this.#context = new Proxy(context, {
+      get(target, name) {
+        if (typeof name !== "string") return undefined;
+        if (Object.hasOwn(target, name)) return target[name];
+        throw new HeadlessError(`headless: canvas context.${name} is not stood in for`);
+      },
+      set(target, name, value: unknown) {
+        if (typeof name !== "string" || !Object.hasOwn(target, name))
+          throw new HeadlessError(`headless: canvas context.${String(name)} is not stood in for`);
+        target[name] = value;
+        return true;
+      },
+    }) as unknown as OffscreenCanvasRenderingContext2D;
+  }
+
+  getContext(kind: string): OffscreenCanvasRenderingContext2D {
+    if (kind !== "2d")
+      throw new HeadlessError(`headless: a canvas's "${kind}" context is not stood in for`);
+    return this.#context;
   }
 }
 
@@ -249,6 +310,9 @@ export class HeadlessSim {
     this.#scene = scene;
     this.#defaults = paramDefaults(id);
     if (gl === undefined) {
+      // bun has no OffscreenCanvas; a sim that paints with Canvas 2D (marble) gets the stand-in.
+      if (typeof OffscreenCanvas === "undefined")
+        Object.assign(globalThis, { OffscreenCanvas: HeadlessCanvas });
       const headless = new HeadlessGl();
       this.#headless = headless;
       this.#sim = scene.sim(headless.gl);

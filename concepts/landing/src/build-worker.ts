@@ -3,11 +3,14 @@
 // time, and the worker turns to its messages every SLICE_MS, so a superseded build stops at its next
 // slice. Each result goes back with its typed arrays transferred.
 
+import { bonsaiGrowth } from "./scenes/bonsai/sim.ts";
 import { countryBuild } from "./scenes/country/build.ts";
 import { dewSpin } from "./scenes/dew/sim.ts";
+import { forestWarmup } from "./scenes/forest/sim.ts";
 import { frostGrowth } from "./scenes/frost/sim.ts";
+import { gardenLayout } from "./scenes/garden/sim.ts";
 import { physarumDish } from "./scenes/physarum/sim.ts";
-import { sheetPaint } from "./sheet.ts";
+import { sheetPaint } from "./scenes/pond/sheet.ts";
 import {
   type Build,
   type Builder,
@@ -22,7 +25,16 @@ import {
  * here, at the boundary, requests and results are unknown.
  */
 const KINDS: Readonly<Record<string, BuildKind<unknown, unknown>>> = Object.fromEntries(
-  [sheetPaint, countryBuild, frostGrowth, dewSpin, physarumDish].map((kind) => [kind.name, kind]),
+  [
+    sheetPaint,
+    countryBuild,
+    frostGrowth,
+    dewSpin,
+    physarumDish,
+    bonsaiGrowth,
+    gardenLayout,
+    forestWarmup,
+  ].map((kind) => [kind.name, kind]),
 );
 
 /** Milliseconds of building between looks at the messages. */

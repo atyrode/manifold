@@ -8,7 +8,7 @@
 // lookups; the same trace answers the sun's shadow and what a glass panel reflects.
 //
 // The camera lies at the crossing looking steeply up (SKYWARD_PITCH off the zenith toward the feet),
-// turned SKYWARD_YAW about the vertical so the streets run diagonally across the frame. The shared
+// turned SKYWARD_YAW about the vertical so the streets run diagonally across the frame. The world's
 // sky lives in the same world, turned SKYWARD_SKY_YAW so the sun's noon path runs down the avenue.
 //
 // Overhead, nearest to farthest: a signal gantry and two street lamps, the tram wires and the spans
@@ -18,9 +18,12 @@
 //
 // Knobs (index.ts): K_towers, K_windows, K_greenery, K_traffic, K_citySeed (city); K_time, K_cycle,
 // K_stars, K_moon, K_meteors (sky); K_birds, K_planes (air); K_clouds, K_rain, K_snow, K_fog, K_wind,
-// K_snowOverhead (weather); K_mark. The shared sky components (src/scenes/README.md, "Composing
-// components"): the stars, the moon in its phase (SKY_MOON_PHASE) and shooting stars.
+// K_snowOverhead (weather); K_mark. The sky is the world's (worldSky, src/scenes/README.md "World
+// layers"): the cloud deck, the stars, the moon in its phase (SKY_MOON_PHASE) and shooting stars,
+// under the city's tint.
+import { glslFloat } from "../../shaders/glsl.ts";
 import { birdsGlsl } from "../../shaders/lib/birds.ts";
+import { worldGlsl } from "../../shaders/lib/world.ts";
 
 /** Seconds of the entrance (the view tips back from street level to the zenith) and the exit (it tips down toward the street again) (SceneDef.passage). */
 export const SKYWARD_PASSAGE = { enter: 2.8, exit: 1.5 } as const;
@@ -30,6 +33,7 @@ export const SKYWARD_METEOR_TRIGGER = 0;
 
 export const skywardGlsl = `
 ${birdsGlsl}
+${worldGlsl}
 // ---- The frame ----
 const float SKYWARD_A = 11.0;        // the avenue's walls stand at x = +-A
 const float SKYWARD_B = 9.0;         // the cross street's at z = +-B
@@ -41,10 +45,12 @@ const float SKYWARD_STREET = 1.05;   // the pitch the entrance starts at and the
 const float SKYWARD_WALK = 3.0;      // the sidewalks' width along the facades, m
 const float SKYWARD_SKY_YAW = -3.19;
 const float SKYWARD_LOT = 26.0;
-// Where shooting stars set out, in the camera's frame (screen heights from the middle of the view):
-// the upper half of the strip of sky.
+// Where shooting stars set out: skyAngles of the camera's ray (bearing, elevation, radians), the
+// upper half of the strip of sky.
 const int SKYWARD_METEOR_SLOT = ${SKYWARD_METEOR_TRIGGER};
-const vec4 SKYWARD_METEOR_FIELD = vec4(-0.6, 0.1, 1.2, 0.3);
+const vec4 SKYWARD_METEOR_FIELD = vec4(-0.84, 0.18, 1.68, 0.46);
+// The world's deck seen farther off (World.low), so a few cloud bodies fit the strip of sky.
+const float SKYWARD_DECK_LOW = ${glslFloat(1 / 1.9)};
 const float SKYWARD_FAR = 100000.0;
 const float SKYWARD_HP = 10500.0;    // airliners' altitude, m
 const float SKYWARD_PLANE_V = 140.0; // m/s
@@ -53,7 +59,9 @@ const float SKYWARD_RAIL = 5.2;      // the tram tracks at x = +-RAIL
 const float SKYWARD_SAIL_Y = 17.0;
 const vec4 SKYWARD_TREE[3] = vec4[3](vec4(9.0, 10.8, -17.0, 5.4), vec4(7.2, 9.6, -21.5, 4.4), vec4(9.8, 12.6, -20.0, 3.8));
 
-Sky skywardSky;
+World skywardWorld;     // the world now: its sky in the sky's own frame, the weather
+WorldView skywardView;  // the camera at this pixel, for the world's sky along any ray (skywardSkyAlong)
+Sky skywardSky;         // the world's sky turned into the street's frame: where the light comes from
 vec3 skywardR;
 vec3 skywardU;
 vec3 skywardF;
@@ -64,7 +72,6 @@ float skywardThB;      // two more cell thresholds, decorrelated from cellTh
 float skywardThC;
 float skywardStorm;
 float skywardOver;
-float skywardCover;
 float skywardDark;
 float skywardWet;
 float skywardLying;
@@ -73,25 +80,6 @@ vec3 skywardSunLight;
 vec3 skywardDeck;
 
 // ---- The sky ----
-
-// Sky colour with the city's glow on the air, the stars and the giant planet, before the clouds.
-vec3 skywardSkyBase(vec3 dir) {
-  vec3 c = skyColor(skywardSky, dir);
-  c = mix(c, skywardDeck, skywardOver * 0.9);
-  float glow = skywardSky.night * (0.35 + 0.65 * (1.0 - clamp(dir.y, 0.0, 1.0)));
-  c += mix(vec3(0.3, 0.14, 0.07), vec3(0.15, 0.07, 0.19), clamp(dir.y, 0.0, 1.0)) * glow * 0.6 * (1.0 + 1.5 * skywardOver);
-  c += skyStarLight(skywardSky, dir, K_stars) * (1.0 - skywardOver);
-  return skyGiant(skywardSky, c, dir, skywardPx, 1.0 - skywardOver);
-}
-
-// The cloud deck over c. The deck is scaled up so a few cloud bodies fit the strip of sky.
-vec3 skywardCloudsOver(vec3 dir, vec3 c) {
-  if (skywardCover <= 0.0) return c;
-  vec3 cd = normalize(vec3(dir.x * 1.9, dir.y, dir.z * 1.9));
-  vec4 cl = skyClouds(skywardSky, cd, skywardTm, skywardCover, K_wind);
-  vec3 rgb = cl.rgb + vec3(0.16, 0.08, 0.04) * skywardSky.night * 0.45;
-  return mix(c, rgb, cl.a);
-}
 
 // Airliners far overhead on the plane of their cruising altitude, and the trails they leave: three
 // flight slots, each a pass across the sky over SKYWARD_PLANE_T seconds, the previous flight's
@@ -151,23 +139,24 @@ vec3 skywardPlanes(vec3 rd, vec3 col) {
   return col;
 }
 
-// The sky for a direction: base, planes, clouds. Reflections use skywardSkyLight (no planes).
-vec3 skywardSkyLight(vec3 dir) {
-  return skywardCloudsOver(dir, skywardSkyBase(dir));
-}
-
-// Seen directly (or in the wet road's mirror), shooting stars cross the sky beyond the planes and the
-// clouds, in the camera's own frame (rd's point on the image plane; none behind it).
-vec3 skywardSkyDirect(vec3 rd) {
-  vec3 c = skywardSkyBase(rd);
-  float ahead = dot(rd, skywardF);
-  if (ahead > 0.05) {
-    float meteorSeed;
-    float meteorAt = meteorAge(uMotionTime, K_meteors, SKYWARD_METEOR_SLOT, meteorSeed);
-    vec2 q = vec2(dot(rd, skywardR), dot(rd, skywardU)) * (SKYWARD_FOCAL / ahead);
-    c += METEOR_TINT * hardEdge(meteorStreak(q, SKYWARD_METEOR_FIELD, meteorAt, meteorSeed, 1.0 / uRes.y) * skywardSky.night * (1.0 - skywardOver));
-  }
-  return skywardCloudsOver(rd, skywardPlanes(rd, c));
+// The world's sky along rd (the street's frame), seen by the camera at this pixel: worldSky (the
+// dome, the deck, the stars and the giant planet in its gaps, in the sky's frame; shooting stars in
+// the camera's own), under the city's tint: under rain or snow a grey sheet over what the deck
+// leaves open, the city's orange-violet glow on the air there after dark and on the deck's
+// underside. With planes, the airliners and their trails cross it beyond the deck (seen directly
+// or in the wet road's mirror; the glass mirrors none).
+vec3 skywardSkyAlong(vec3 rd, bool planes) {
+  WorldView view = skywardView;
+  view.ray = vec3(dot(rd, skywardR), dot(rd, skywardU), dot(rd, skywardF));
+  view.dir = skyFacing(rd, -SKYWARD_SKY_YAW);
+  WorldSky heaven = worldSky(skywardWorld, view, SKYWARD_METEOR_FIELD);
+  float open = 1.0 - heaven.cloud;
+  vec3 c = mix(heaven.col, skywardDeck, skywardOver * 0.9 * open);
+  float glow = skywardSky.night * (0.35 + 0.65 * (1.0 - clamp(rd.y, 0.0, 1.0)));
+  c += mix(vec3(0.3, 0.14, 0.07), vec3(0.15, 0.07, 0.19), clamp(rd.y, 0.0, 1.0)) * glow * 0.6 * (1.0 + 1.5 * skywardOver) * open;
+  c += vec3(0.16, 0.08, 0.04) * skywardSky.night * 0.45 * heaven.cloud;
+  if (planes) c = mix(skywardPlanes(rd, c), c, heaven.cloud);
+  return c;
 }
 
 // ---- Lots ----
@@ -511,7 +500,7 @@ vec3 skywardGlassTower(SkywardHit h, vec3 rd, vec2 fp, vec3 E) {
   if (rh.hit) {
     seen = skywardCheap(rh);
   } else {
-    seen = skywardSkyLight(refl);
+    seen = skywardSkyAlong(refl, false);
     vec3 dv = refl - skywardSky.sun;
     seen += skywardSky.sunColor * exp(-0.5 * dot(dv, dv) * 55.0) * 1.6;
   }
@@ -982,7 +971,7 @@ vec3 skywardGround(vec3 rd, float tg, SkywardHit h) {
   if (gloss > 0.01) {
     vec3 mr = vec3(rd.x, -rd.y, rd.z);
     SkywardHit rh = skywardTrace(gh.p, mr);
-    vec3 seen = rh.hit ? skywardCheap(rh) : skywardSkyDirect(mr);
+    vec3 seen = rh.hit ? skywardCheap(rh) : skywardSkyAlong(mr, true);
     float fres = 0.05 + 0.95 * pow(1.0 - clamp(-rd.y, 0.0, 1.0), 5.0);
     col = mix(col, seen, gloss * clamp(0.15 + 0.7 * fres, 0.0, 1.0));
   }
@@ -1016,14 +1005,18 @@ Shade sceneSkyward(vec2 uv, vec2 cell, float t) {
   skywardThB = edgeThreshold(cell, vec2(3.0, 7.0));
   skywardThC = edgeThreshold(cell, vec2(11.0, 5.0));
 
-  // The hour, and the weather over it: rain and snow close the sky, flatten and dim the light.
-  skywardSky = skyFacing(skyMoonPhase(skyAt(timeOfDayM(K_time, K_cycle, uMotionTime)), K_moon), SKYWARD_SKY_YAW);
-  skywardStorm = clamp(max(K_rain, 0.85 * K_snow), 0.0, 1.0);
-  skywardOver = weatherOvercast(K_rain, K_snow);
-  skywardCover = clamp(max(K_clouds, skywardOver), 0.0, 1.0);
-  skywardSky.sunColor *= 1.0 - 0.85 * skywardOver;
-  skywardSky.moonColor *= 1.0 - 0.75 * skywardOver;
-  skywardSky.ambient = greyed(skywardSky.ambient, vec3(1.0), 0.5 * skywardOver) * (1.0 - 0.35 * skywardStorm);
+  // The hour, and the weather over it: the world's (rain and snow close the sky, flatten and dim the
+  // light; the moon is hidden by the deck as the sun is), its deck seen farther off
+  // (SKYWARD_DECK_LOW). The world's wind blows the deck along the sky's x, which the street, turned
+  // half round from the sky, sees reversed: it is turned back, so the wind drifts the deck along the
+  // street's x as it does the rain and the snow.
+  skywardWorld = worldAt(SKYWARD_METEOR_SLOT, -1);
+  skywardWorld.low = SKYWARD_DECK_LOW;
+  skywardWorld.wind = -skywardWorld.wind;
+  skywardWorld.sky.moonColor *= 1.0 - WORLD_DECK_SUN * skywardWorld.overcast;
+  skywardSky = skyFacing(skywardWorld.sky, SKYWARD_SKY_YAW);
+  skywardStorm = skywardWorld.storm;
+  skywardOver = skywardWorld.overcast;
   skywardDark = clamp(1.0 - skywardSky.day * (1.0 - 0.5 * skywardOver), 0.0, 1.0);
   // The city's own glow, orange-violet, lifts the light on everything after dark.
   skywardAmbient = skywardSky.ambient * 1.25 + vec3(0.07, 0.04, 0.06) * skywardSky.night * (1.0 + skywardOver);
@@ -1053,13 +1046,16 @@ Shade sceneSkyward(vec2 uv, vec2 cell, float t) {
   skywardR = cross(skywardU, skywardF);
   vec2 s = vec2((uv.x - 0.5) * aspect, uv.y - 0.5);
   vec3 rd = normalize(skywardR * s.x + skywardU * s.y + skywardF * SKYWARD_FOCAL);
+  // The world's view at this pixel: the screen's middle on the camera's axis (no horizon in a view
+  // looking up), the eye lying on the road; skywardSkyAlong gives it each ray.
+  skywardView = worldView(uv, 0.5, SKYWARD_FOCAL, SKYWARD_RO.y, -SKYWARD_SKY_YAW, 1.0);
 
   SkywardHit hit = skywardTrace(SKYWARD_RO, rd);
   // Tipped toward the street, a ray looking down reaches the road before any wall.
   float tg = (passing && rd.y < -1e-3) ? SKYWARD_RO.y / -rd.y : SKYWARD_FAR;
   bool ground = tg < (hit.hit ? hit.t : SKYWARD_FAR);
   float tw = ground ? tg : (hit.hit ? hit.t : SKYWARD_FAR);
-  vec3 col = ground ? skywardGround(rd, tg, hit) : hit.hit ? skywardFacade(hit, rd) : skywardSkyDirect(rd);
+  vec3 col = ground ? skywardGround(rd, tg, hit) : hit.hit ? skywardFacade(hit, rd) : skywardSkyAlong(rd, true);
 
   // Overhead, far to near.
   col = skywardBirds(rd, tw, col);
@@ -1092,7 +1088,7 @@ Shade sceneSkyward(vec2 uv, vec2 cell, float t) {
     col = mix(col, air, ps.veil);
     col = mix(col, max(vec3(0.8, 0.83, 0.9) * (skywardDeck * 1.6 + skywardAmbient * 0.4), vec3(0.1)), ps.cover);
   }
-  if (!hit.hit && !ground) stars = skyStars(skywardSky, rd, K_stars) * (1.0 - skywardOver);
+  if (!hit.hit && !ground) stars = skyStars(skywardWorld.sky, skyFacing(rd, -SKYWARD_SKY_YAW), skywardWorld.stars) * (1.0 - skywardOver);
 
   Shade o = shadeOf(col, inkOf(col, 1.15, 0.85), clamp(accent, 0.0, 1.0));
   o.shimmer = stars * 0.4; // main scales it by the motion

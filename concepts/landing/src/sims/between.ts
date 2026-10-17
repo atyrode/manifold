@@ -1,9 +1,10 @@
 // A GPU field drawn between its last two steps, as a CPU sim draws between them by FixedStep.alpha
 // (sims/clock.ts), for a solver whose state lives in a PingPong (the incense's smoke, the pearl
-// tank's flakes and dye). Before a frame's last step `keep` copies the field as it stands; `show`
-// mixes that copy and the field after the step, `alpha` of the way, into a target of its own and
-// hands over its texture. Stepped at a fixed h, the field then moves as smoothly at 144 Hz, or on a
-// 60 Hz display whose frames come a little early or late, as when every frame stepped its own dt.
+// tank's flakes and dye, the soap film). Before a frame's last step `keep` copies the field as it
+// stands; `show` mixes that copy and the field after the step, `alpha` of the way, into a target of
+// its own and hands over its texture. Stepped at a fixed h, the field then moves as smoothly at
+// 144 Hz, or on a 60 Hz display whose frames come a little early or late, as when every frame
+// stepped its own dt.
 // Until the first `keep`, after `settle` (a fresh pour, a field reseeded) and for the frame the
 // field is resized, the field is shown as it stands.
 //

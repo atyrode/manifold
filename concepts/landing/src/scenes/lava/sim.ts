@@ -21,7 +21,8 @@
 // So the heap on the coil warms, swells and sends up blobs one at a time; each cools against the
 // cap and sinks, merges with the heap and warms again. The Manifold M draws a dozen parcels onto its
 // strokes for a few seconds while the rest flows round it. Lamps run on fixed steps (deterministic
-// for a seed).
+// for a seed); a warm pour is prewarmed a count of steps within each frame's budget, a new pour
+// holding the old picture until it is done.
 //
 // The scene's passage (LAVA_PASSAGE; the shader needs no change, it draws whatever the wax does). A sim
 // built while the scene comes in skips the prewarm: the wax lies in a cool, solid heap at the bottom
@@ -49,7 +50,10 @@
 //          picture; texel 2, the wax's body for the shader: its metaball reach and teardrop stretch
 //          (× the classic wax's), 0, 0.
 import { KnobReader, type ParamDef } from "../../params.ts";
+import { glslFloat } from "../../shaders/glsl.ts";
+import { runBudgeted } from "../../sims/clock.ts";
 import { materialAt } from "../../sims/material.ts";
+import { clamp, smoothstep } from "../../sims/math.ts";
 import { DataTexture } from "../../sims/texture.ts";
 import type { PointerState, SceneSim, SimFactory, SimFrame } from "../types.ts";
 
@@ -100,11 +104,6 @@ const MARK_X = 0;
 const MARK_Y = 0.43;
 const MARK_SIZE = 0.3;
 
-const glslFloat = (value: number): string => {
-  const text = value.toFixed(5);
-  return text.includes(".") ? text : `${text}.0`;
-};
-
 /** The shape and layout as GLSL, for the scene's shader. */
 export const lavaLayoutGlsl = `
 #define LAVA_MAX ${LAVA_MAX}
@@ -147,13 +146,20 @@ float lavaGlassR(float s) {
 
 // ---- tuning ------------------------------------------------------------------------------------
 
-/** Fixed simulation step (s), the most steps one frame may take, and the prewarm: seconds of lamp
- * time run before the first frame so the flow has forgotten how it started, in coarser steps (the
- * forces are soft enough for them) to keep both lamps' prewarm near 50 ms. */
+/**
+ * Fixed simulation step (s), the most steps one frame may take, and the prewarm: 75 s of lamp time
+ * run before a warm pour is first shown so the flow has forgotten how it started, in coarser steps
+ * (the forces are soft enough for them; 2251 steps, as the loop summing 1/30 s to 75 s counted
+ * them). The prewarm is a step count run within each frame's budget, the first pour's at least
+ * PREWARM_MS (a typical machine finishes it in one frame, about 50 ms for both lamps), PREWARM_CHUNK
+ * steps between two looks at the clock.
+ */
 const STEP = 1 / 60;
 const MAX_STEPS = 8;
-const PREWARM = 75;
 const PREWARM_STEP = 1 / 30;
+const PREWARM_STEPS = 2251;
+const PREWARM_MS = 150;
+const PREWARM_CHUNK = 64;
 /** Settling a fresh cold heap before the first frame (s). */
 const SETTLE = 4;
 /** A parcel's mean radius (glass units) and the spread of sizes either side (share). */
@@ -317,12 +323,6 @@ const EXIT_FALL_POOL = [0.02, 0.4] as const;
 const EXIT_PACE = 0.4;
 
 // ---- helpers -----------------------------------------------------------------------------------
-
-const clamp = (x: number, lo: number, hi: number): number => Math.min(hi, Math.max(lo, x));
-const smoothstep = (a: number, b: number, x: number): number => {
-  const t = clamp((x - a) / (b - a), 0, 1);
-  return t * t * (3 - 2 * t);
-};
 
 /** Xorshift32 stream in [0, 1). */
 function lavaRandom(seed: number): () => number {
@@ -522,8 +522,11 @@ class Lamp {
     this.#index = index;
   }
 
-  /** A fresh pour: sizes from the seed; warm and running (prewarmed), or a cold heap. */
-  reset(seed: number, count: number, cold: boolean, heat: number, arrive = false): void {
+  /**
+   * A fresh pour: sizes from the seed; a cold heap, or warm, to be run PREWARM_STEPS steps of
+   * PREWARM_STEP (LavaSim's prewarm) before it is shown.
+   */
+  reset(seed: number, count: number, cold: boolean, arrive = false): void {
     this.#random = lavaRandom(seed * 7919 + this.#index * 104729);
     const random = this.#random;
     this.markAge = -1;
@@ -549,11 +552,11 @@ class Lamp {
       for (const w of this.wax) w.T = ENTER_T0 + ENTER_T_SPREAD * random();
       return;
     }
-    // A warm lamp: the heap at its liquid's temperature, run until the coil has sent up a stream of
-    // blobs one by one (starting them scattered would send them all round the lamp in step).
+    // A warm lamp: the heap at its liquid's temperature, then prewarmed until the coil has sent up
+    // a stream of blobs one by one (starting them scattered would send them all round the lamp in
+    // step).
     this.warm = 1;
     for (const w of this.wax) w.T = liquidTemperature(w.y, 1) + 0.04 * random();
-    for (let t = 0; t < PREWARM; t += PREWARM_STEP) this.step(PREWARM_STEP, heat, undefined, 0);
   }
 
   /** Cold wax packed on the bottom of the glass, settled under its own weight. */
@@ -977,6 +980,9 @@ function handOn(pointer: PointerState, aspect: number, index: number): Hand | un
 
 class LavaSim implements SceneSim {
   readonly #knobs: KnobReader<LavaKnob>;
+  /** Trigger slots of the cold start's "now" (off and back on) and the M's. */
+  readonly #coldSlot: number;
+  readonly #markSlot: number;
   readonly #lamps = [new Lamp(0), new Lamp(1)] as const;
   readonly #parcels: DataTexture;
   readonly #grid: DataTexture;
@@ -1000,11 +1006,22 @@ class LavaSim implements SceneSim {
   #carry = 0;
   /** A cold restart in progress: the bulbs are fading out. */
   #restarting = false;
-  #triggers: number[] | undefined;
   #signature = "";
+  /** Prewarm steps run of a warm pour, lamp A's then B's (2 PREWARM_STEPS: done), and its heat. */
+  #warmed = 2 * PREWARM_STEPS;
+  #warmHeat = 0;
+  /** Whether the textures hold a picture yet. */
+  #shown = false;
+  /** One prewarm step, as runBudgeted calls it. */
+  readonly #warmStep = (i: number): void => {
+    const lamp = i < PREWARM_STEPS ? this.#lamps[0] : this.#lamps[1];
+    lamp.step(PREWARM_STEP, this.#warmHeat, undefined, 0);
+  };
 
   constructor(gl: WebGL2RenderingContext, knobs: KnobReader<LavaKnob>) {
     this.#knobs = knobs;
+    this.#coldSlot = knobs.trigger("cold");
+    this.#markSlot = knobs.trigger("mark");
     this.#parcels = new DataTexture(gl, {
       width: LAVA_MAX,
       height: 4,
@@ -1032,7 +1049,8 @@ class LavaSim implements SceneSim {
     const exit = clamp(frame.passage.exit, 0, 1);
     // Only a sim built while the scene comes in, warm, plays the entrance.
     if (!this.#primed) this.#arriving = enter < 1 && !settings.cold;
-    const fired = this.#fired(frame.triggers);
+    const coldNow = frame.fired[this.#coldSlot] === true;
+    const markNow = frame.fired[this.#markSlot] === true;
     const [a, b] = this.#lamps;
     const textures = [this.#parcels.texture, this.#grid.texture, this.#state.texture] as const;
 
@@ -1045,14 +1063,31 @@ class LavaSim implements SceneSim {
       // A new pour mid-scene is a plain prewarmed lamp: only the first build comes in from the pool.
       const arrive = this.#arriving && !this.#primed;
       this.#arriving = arrive;
-      a.reset(settings.seed, settings.count, settings.cold, settings.heat, arrive);
-      b.reset(settings.seed, twinCount(settings.count), settings.cold, settings.heat, arrive);
+      a.reset(settings.seed, settings.count, settings.cold, arrive);
+      b.reset(settings.seed, twinCount(settings.count), settings.cold, arrive);
       this.#carry = 0;
+      // A warm pour is prewarmed below, at the heat it was poured at.
+      this.#warmed = settings.cold || arrive ? 2 * PREWARM_STEPS : 0;
+      this.#warmHeat = settings.heat;
+      this.#primed = true;
+    }
+    // The prewarm, a count of steps: a slow machine takes more frames, not another picture. The
+    // first pour may take PREWARM_MS; a new one takes the frame's budget, the old picture holding
+    // until it is done.
+    if (this.#warmed < 2 * PREWARM_STEPS) {
+      this.#warmed = runBudgeted(
+        this.#warmStep,
+        this.#shown ? frame.budget : Math.max(PREWARM_MS, frame.budget),
+        2 * PREWARM_STEPS,
+        this.#warmed,
+        PREWARM_CHUNK,
+      );
+      if (this.#warmed < 2 * PREWARM_STEPS) return textures;
     }
     // "Now", or cold start switched on: off, and back on from cold.
     const coldOn = settings.cold && !this.#cold;
     this.#cold = settings.cold;
-    if (this.#primed && (fired[0] === true || coldOn)) {
+    if (coldNow || coldOn) {
       this.#restarting = true;
       this.#arriving = false;
       // Off: the bulbs fade; once dark, the restart below swaps in the cold heaps.
@@ -1064,7 +1099,7 @@ class LavaSim implements SceneSim {
       a.setCount(settings.count);
       b.setCount(twinCount(settings.count));
     }
-    if (fired[1] === true && a.markAge < 0) a.startMark();
+    if (markNow && a.markAge < 0) a.startMark();
     if (exit > 0 && !this.#leaving) {
       this.#leaving = true;
       a.dropMark();
@@ -1072,8 +1107,7 @@ class LavaSim implements SceneSim {
 
     const dt = Math.max(frame.dt, 0);
     const signature = `${frame.values.join(",")}|${frame.aspect}`;
-    if (this.#primed && dt === 0 && !fired.some(Boolean) && signature === this.#signature)
-      return textures;
+    if (dt === 0 && !coldNow && !markNow && signature === this.#signature) return textures;
     this.#signature = signature;
 
     // The bulbs on the scene clock; once dark, the restart swaps in the cold heaps.
@@ -1107,7 +1141,6 @@ class LavaSim implements SceneSim {
     }
     if (steps === MAX_STEPS) this.#carry = Math.min(this.#carry, STEP);
     a.glowStep(steps * STEP);
-    this.#primed = true;
 
     a.writeParcels(this.#parcelData, 0);
     b.writeParcels(this.#parcelData, 2);
@@ -1132,6 +1165,7 @@ class LavaSim implements SceneSim {
     this.#parcels.upload(this.#parcelData);
     this.#grid.upload(this.#gridData);
     this.#state.upload(state);
+    this.#shown = true;
     return textures;
   }
 
@@ -1158,13 +1192,6 @@ class LavaSim implements SceneSim {
         mark > 0 ? MARK_EVERY_RARE + (MARK_EVERY_OFTEN - MARK_EVERY_RARE) * clamp(mark, 0, 1) : 0,
       viscosity: clamp(knobs.value(frame, "viscosity"), 0, 1),
     };
-  }
-
-  /** Trigger slots stamped since the previous frame. */
-  #fired(triggers: readonly number[]): boolean[] {
-    const previous = this.#triggers;
-    this.#triggers = [...triggers];
-    return triggers.map((at, slot) => previous !== undefined && at !== previous[slot] && at > -1e3);
   }
 
   /** The passage's bend of the physics now (seconds into the entrance or the exit), or none at rest. */

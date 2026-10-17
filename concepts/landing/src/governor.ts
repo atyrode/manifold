@@ -13,6 +13,12 @@ const EARLY_MS = 4;
  */
 export const SETTLE_SECONDS = 5;
 /**
+ * Seconds still frames go on drawing after the pointer merely moves or leaves: enough for a frame
+ * to show it where it now is (the parallax eases on toward it while it moves; a drag holds as long
+ * as a change, SETTLE_SECONDS). Hovering sets nothing off over time on a still picture.
+ */
+export const POINTER_SECONDS = 0.25;
+/**
  * Seconds still frames go on drawing after a press or a "now" trigger while the interaction clock
  * runs (under reduced motion, or at motion 0): its bounded response plays out in real time.
  */

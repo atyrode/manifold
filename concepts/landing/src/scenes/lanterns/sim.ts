@@ -386,6 +386,10 @@ class LanternRiver implements SceneSim {
   #seed = Number.NaN;
 
   #clock = 0;
+  /** How far the eddies had ridden the stream (m) when the current last changed, at #driftFrom on
+   *  the clock: they ride on from there at the new pace, so moving the knob never makes them jump. */
+  #drifted = 0;
+  #driftFrom = 0;
   #nextSpawn = 0;
   #nextFlotilla = Number.POSITIVE_INFINITY;
   #nextMark = Number.POSITIVE_INFINITY;
@@ -431,8 +435,13 @@ class LanternRiver implements SceneSim {
   frame(frame: SimFrame): readonly (WebGLTexture | undefined)[] {
     const knobs = this.#knobs;
     this.#target = clamp(Math.round(knobs.value(frame, "lanterns")), 0, MAX_LANTERNS - 1);
-    this.#current =
+    const current =
       CURRENT_SLOW + (CURRENT_FAST - CURRENT_SLOW) * clamp(knobs.value(frame, "current"), 0, 1);
+    if (current !== this.#current) {
+      this.#drifted += EDDY_DRIFT * this.#current * (this.#clock - this.#driftFrom);
+      this.#driftFrom = this.#clock;
+      this.#current = current;
+    }
     this.#wind = clamp(knobs.value(frame, "wind"), -1, 1);
     this.#flotilla = clamp(knobs.value(frame, "flotilla"), 0, 1);
     this.#markOn = knobs.value(frame, "mark") > 0.5;
@@ -537,6 +546,8 @@ class LanternRiver implements SceneSim {
       eddy.amp = EDDY_SPEED / k;
     }
     this.#clock = 0;
+    this.#drifted = 0;
+    this.#driftFrom = 0;
     this.#stepper.reset();
     this.#nextSpawn = 0;
     this.#nextFlotilla = Number.POSITIVE_INFINITY;
@@ -869,7 +880,9 @@ class LanternRiver implements SceneSim {
     const e = EDDY_FLOOR + near;
     const de = -near / EDDY_REACH;
     const dde = near / (EDDY_REACH * EDDY_REACH);
-    const drift = EDDY_DRIFT * stream * t;
+    // The eddies ride the stream: EDDY_DRIFT of the current, summed over the time it ran at each
+    // setting (#drifted), so moving the knob changes their pace, never where they are.
+    const drift = this.#drifted + EDDY_DRIFT * stream * (t - this.#driftFrom);
     let psi = 0;
     let psiX = 0;
     let psiZ = 0;

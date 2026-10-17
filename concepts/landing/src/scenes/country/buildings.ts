@@ -101,7 +101,7 @@ CountryFind countryBuilding(TerrainBuilding b, vec3 eye, vec3 rd, vec2 q, float 
   bool cottage = b.kind < 0.5;
   bool stack = cottage && fract(b.hash * 7.7) < 0.6;
   float unit = countryUnit(b);
-  float len = church ? 2.5 : b.length;
+  float len = church ? 2.5 : b.span;
   float wall = church ? 1.0 : 0.75;
   float rise = church ? 0.62 : 0.55;
   vec2 l = vec2(cos(b.facing), sin(b.facing));
@@ -163,8 +163,8 @@ CountryFind countryBuilding(TerrainBuilding b, vec3 eye, vec3 rd, vec2 q, float 
   if (dot(l, countryFwd.xz) < 0.0) l = -l;
   float lr = dot(l, countryRight.xz);
   float flip = lr < 0.0 ? -1.0 : 1.0;
-  float lenS = b.length * clamp(abs(lr), 0.35, 1.0);
-  vec3 dc = db - vec3(l.x, 0.0, l.y) * 0.5 * b.length * unit;
+  float lenS = b.span * clamp(abs(lr), 0.35, 1.0);
+  vec3 dc = db - vec3(l.x, 0.0, l.y) * 0.5 * b.span * unit;
   float zb = dot(dc, countryFwd);
   if (zb < 20.0 || zb > zLimit) return f;
   float scale = zb / unit;
@@ -251,16 +251,16 @@ CountryFind countryBuildings(vec3 eye, vec3 rd, vec2 q, float pxl, float zLimit,
 #if COUNTRY_HAS_SMOKE
         // A lit hearth smokes from a cottage's stack, thicker as the light goes.
         if (K_smoke > 0.0 && b.kind < 0.5 && fract(b.hash * 7.7) < 0.6) {
-          vec3 top = db + vec3(l.x, 0.0, l.y) * 0.15 * b.length * unit + vec3(0.0, 1.6 * unit, 0.0);
+          vec3 top = db + vec3(l.x, 0.0, l.y) * 0.15 * b.span * unit + vec3(0.0, 1.6 * unit, 0.0);
           float zt = dot(top, countryFwd);
           smoke = max(smoke, buildingSmoke(q, vec2(dot(top, countryRight), top.y) / zt, 9.0 * unit / zt, b.hash, uMotionTime, wind) * (0.4 + 0.6 * dark) * (0.35 + 0.85 * K_smoke));
         }
 #endif
         // Its bounds on screen: its length as it runs across the view and a gable either side, its
         // roof or tower above (the church's length is the nave's).
-        float run = 0.5 * (b.kind > 0.5 && b.kind < 1.5 ? 2.5 : b.length) * max(abs(dot(l, countryRight.xz)), 0.35) + 1.2;
-        float tall = (b.kind > 0.5 && b.kind < 1.5 ? 4.5 : 2.0) + 0.5 * b.length;
-        float low = 0.3 + 0.25 * b.length;
+        float run = 0.5 * (b.kind > 0.5 && b.kind < 1.5 ? 2.5 : b.span) * max(abs(dot(l, countryRight.xz)), 0.35) + 1.2;
+        float tall = (b.kind > 0.5 && b.kind < 1.5 ? 4.5 : 2.0) + 0.5 * b.span;
+        float low = 0.3 + 0.25 * b.span;
         if (zm - run * unit > zLimit || abs(q.x - at.x) > run * unit / zm || q.y < at.y - low * unit / zm || q.y > at.y + tall * unit / zm) continue;
       }
       int index = place.first + k;

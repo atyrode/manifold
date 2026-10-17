@@ -64,6 +64,8 @@ export function cellScale(cells: Cells, deviceWidth: number, deviceHeight: numbe
 export class StageBox {
   readonly #canvas: HTMLCanvasElement;
   readonly #resized: () => void;
+  /** The most cells a frame draws (see `stageCells`). */
+  readonly #budget: number;
   /** The content box in device pixels, and in CSS pixels from the viewport's top left. */
   #deviceWidth = 1;
   #deviceHeight = 1;
@@ -81,10 +83,14 @@ export class StageBox {
   /** The `scale` last written on the canvas. */
   #scale = "";
 
-  /** `resized`: called whenever the box changes, after it is measured. */
-  constructor(canvas: HTMLCanvasElement, resized: () => void) {
+  /**
+   * `resized`: called whenever the box changes, after it is measured. `budget`: the most cells a
+   * frame draws (see `stageCells`).
+   */
+  constructor(canvas: HTMLCanvasElement, resized: () => void, budget: number = CELL_BUDGET) {
     this.#canvas = canvas;
     this.#resized = resized;
+    this.#budget = budget;
     canvas.style.transformOrigin = "0 0";
     this.#measure();
     const observer = new ResizeObserver((entries) => this.#observed(entries));
@@ -105,7 +111,7 @@ export class StageBox {
   cells(pixel: number): Cells {
     let cells = this.#cells.get(pixel);
     if (cells === undefined) {
-      cells = stageCells(this.#deviceWidth, this.#deviceHeight, this.#dpr, pixel);
+      cells = stageCells(this.#deviceWidth, this.#deviceHeight, this.#dpr, pixel, this.#budget);
       this.#cells.set(pixel, cells);
     }
     return cells;

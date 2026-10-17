@@ -1,8 +1,12 @@
 import { afterAll, expect, test } from "bun:test";
+import { BONSAI_MAPLE, BONSAI_PINE } from "./scenes/bonsai/geometry.ts";
+import { type BonsaiGrowthRequest, bonsaiGrowth } from "./scenes/bonsai/sim.ts";
 import { type CountryRequest, countryBuild } from "./scenes/country/build.ts";
 import { COUNTRY_MAP } from "./scenes/country/sim.ts";
 import { type DewSpinRequest, dewSpin } from "./scenes/dew/sim.ts";
+import { type ForestWarmRequest, forestWarmup } from "./scenes/forest/sim.ts";
 import { type FrostRequest, frostGrowth } from "./scenes/frost/sim.ts";
+import { type GardenLayoutRequest, gardenLayout } from "./scenes/garden/sim.ts";
 import { type PhysarumDishRequest, physarumDish } from "./scenes/physarum/sim.ts";
 import {
   type BuildKind,
@@ -133,6 +137,33 @@ test("a slime mould dish laid on the worker is byte for byte the dish laid here"
     { layout: "grid", seed: 2, aspect: 16 / 9, mark: undefined, agents: undefined },
   ] satisfies PhysarumDishRequest[])
     expect(await bothWays(physarumDish, request)).toEqual([]);
+}, 60_000);
+
+test("a bonsai grown and drawn on the worker is byte for byte the one grown here", async () => {
+  for (const request of [
+    { species: BONSAI_MAPLE, seed: 0 },
+    { species: BONSAI_PINE, seed: 3 },
+  ] satisfies BonsaiGrowthRequest[])
+    expect(await bothWays(bonsaiGrowth, request)).toEqual([]);
+}, 60_000);
+
+test("a dry garden laid out on the worker is byte for byte the one laid out here", async () => {
+  for (const request of [
+    { pattern: "waves", seed: 0, mark: 0 },
+    { pattern: "circles", seed: 4, mark: 0.2 },
+    { pattern: "straight", seed: 1, mark: 0.12 },
+  ] satisfies GardenLayoutRequest[])
+    expect(await bothWays(gardenLayout, request)).toEqual([]);
+}, 60_000);
+
+test("a forest warmed up on the worker is byte for byte the one warmed up here", async () => {
+  const knobs = { spirits: 0.5, shy: 0.3, stag: 0.3, spores: 0.5, wind: 0.2, dark: 1, seed: 0 };
+  const busy = { spirits: 1, shy: 1, stag: 1, spores: 1, wind: -0.7, dark: 0.2, seed: 5 };
+  for (const request of [
+    { aspect: 16 / 9, knobs },
+    { aspect: 0.6, knobs: busy },
+  ] satisfies ForestWarmRequest[])
+    expect(await bothWays(forestWarmup, request)).toEqual([]);
 }, 60_000);
 
 test("a build superseded on the worker never lands; the newest does", async () => {

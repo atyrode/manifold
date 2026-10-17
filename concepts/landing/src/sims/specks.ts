@@ -15,9 +15,11 @@
 //   plot(cx, cy, code, depth)      draw code (1..255) at depth (0..255) in a cell; off-map cells are ignored
 //   block(cx, cy, w, h, code, depth) the same over a w × h block from (cx, cy) up and to the right
 //   upload(texture)                bring the map's rg8 DataTexture up to date: the whole map after a
-//                                  resize, else only the SPECK_TILE-square tiles holding a cell plotted
-//                                  or cleared since the last upload, a run of them along a row as one
-//                                  rectangle (a frame of some 80 specks sends a few KB, not the map)
+//                                  resize, else only the cells whose bytes differ from those it last
+//                                  sent, by SPECK_TILE-square tiles (a DirtyRegion: a run of them
+//                                  along a row as one rectangle round their changed cells); a speck
+//                                  cleared and plotted again where it was sends nothing (a frame of
+//                                  some 80 specks sends a few KB, not the map)
 //   data                           the rg8 bytes, width * height * 2
 //
 // followCell(drawn, v): the cell a speck at float cell coordinate v is drawn in, given the cell it was
@@ -38,7 +40,7 @@
 //   }
 // and in GLSL: `vec2 s = texelFetch(uSim0, ivec2(cell), 0).rg; int code = int(s.r * 255.0 + 0.5);`,
 // drawn where `code > 0 && s.g * 255.0 / DEPTH_STEP < sceneryDepth`.
-import type { DataTexture } from "./texture.ts";
+import { DirtyRegion, type DataTexture } from "./texture.ts";
 
 /** Cells along a side of the square tiles SpeckMap.upload sends: few calls, few bytes for scattered specks. */
 const SPECK_TILE = 8;
@@ -47,13 +49,14 @@ export class SpeckMap {
   #width = 0;
   #height = 0;
   #data = new Uint8Array(0);
+  /** The bytes as last uploaded, the texture's: a cell is sent only where `data` differs from them. */
+  #sent = new Uint8Array(0);
   /** Byte offsets of the cells plotted since the last clear (a cell plotted twice is listed twice). */
   readonly #written: number[] = [];
-  /** Tiles across the map, and per tile (rows bottom to top) 1 where a cell changed since the last upload. */
-  #tilesAcross = 0;
-  #changed = new Uint8Array(0);
-  /** Resized since the last upload: the texture holds nothing of the map yet. */
-  #whole = true;
+  /** Byte offsets of the cells cleared since the last upload (as #written). */
+  readonly #cleared: number[] = [];
+  /** The cells changed since the last upload, by tiles; the whole map at first and after a resize. */
+  readonly #changed = new DirtyRegion(0, 0, SPECK_TILE, SPECK_TILE);
 
   get width(): number {
     return this.#width;
@@ -72,23 +75,18 @@ export class SpeckMap {
     this.#width = Math.max(0, Math.floor(width));
     this.#height = Math.max(0, Math.floor(height));
     this.#data = new Uint8Array(this.#width * this.#height * 2);
+    this.#sent = new Uint8Array(this.#data.length);
     this.#written.length = 0;
-    this.#tilesAcross = Math.ceil(this.#width / SPECK_TILE);
-    this.#changed = new Uint8Array(this.#tilesAcross * Math.ceil(this.#height / SPECK_TILE));
-    this.#whole = true;
+    this.#cleared.length = 0;
+    this.#changed.resize(this.#width, this.#height);
   }
 
   clear(): void {
     const data = this.#data;
-    const width = this.#width;
     for (const at of this.#written) {
       data[at] = 0;
       data[at + 1] = 0;
-      const cell = at / 2;
-      const cy = Math.floor(cell / width);
-      const cx = cell - cy * width;
-      this.#changed[Math.floor(cy / SPECK_TILE) * this.#tilesAcross + Math.floor(cx / SPECK_TILE)] =
-        1;
+      this.#cleared.push(at);
     }
     this.#written.length = 0;
   }
@@ -101,8 +99,6 @@ export class SpeckMap {
     data[at] = code;
     data[at + 1] = depth;
     this.#written.push(at);
-    this.#changed[Math.floor(cy / SPECK_TILE) * this.#tilesAcross + Math.floor(cx / SPECK_TILE)] =
-      1;
   }
 
   block(cx: number, cy: number, w: number, h: number, code: number, depth: number): void {
@@ -111,26 +107,26 @@ export class SpeckMap {
 
   /** Bring `texture` (rg8, the map's size) up to date with the cells changed since the last upload. */
   upload(texture: DataTexture): void {
-    const changed = this.#changed;
-    if (this.#whole) {
-      texture.upload(this.#data);
-      changed.fill(0);
-      this.#whole = false;
-      return;
-    }
-    const across = this.#tilesAcross;
-    for (let k = 0; k < changed.length; k++) {
-      if (changed[k] === 0) continue;
-      const row = Math.floor(k / across);
-      const rowEnd = (row + 1) * across;
-      let end = k + 1;
-      while (end < rowEnd && changed[end] === 1) end++;
-      changed.fill(0, k, end);
-      const x = (k - row * across) * SPECK_TILE;
-      const y = row * SPECK_TILE;
-      const right = Math.min(this.#width, (end - row * across) * SPECK_TILE);
-      texture.uploadRegion(this.#data, x, y, right - x, Math.min(this.#height, y + SPECK_TILE) - y);
-      k = end - 1;
+    this.#compare(this.#cleared);
+    this.#compare(this.#written);
+    this.#cleared.length = 0;
+    this.#changed.flush(texture, this.#data);
+  }
+
+  /** Mark the cells at byte `offsets` whose bytes differ from those last sent; they are sent now. */
+  #compare(offsets: readonly number[]): void {
+    const data = this.#data;
+    const sent = this.#sent;
+    const width = this.#width;
+    for (const at of offsets) {
+      const code = data[at] ?? 0;
+      const depth = data[at + 1] ?? 0;
+      if (code === sent[at] && depth === sent[at + 1]) continue;
+      sent[at] = code;
+      sent[at + 1] = depth;
+      const cell = at / 2;
+      const cy = Math.floor(cell / width);
+      this.#changed.mark(cell - cy * width, cy);
     }
   }
 }

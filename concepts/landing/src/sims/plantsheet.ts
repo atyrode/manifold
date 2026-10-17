@@ -2,9 +2,9 @@
 // with hundreds of organs where walking them per fragment would cost too much (the pond's border).
 // Each frame the organs are drawn in the scene's order (back to front) as instanced quads: a rigid
 // organ is a sprite cut from an atlas the scene paints once (botany's leaves and flowers, see
-// decor.ts), a flexible one a tapering stroke along its arc in a few segments; upright organs are
-// not drawn. Later organs cover earlier ones, as a painter's would, and the sheet is mipmapped so a
-// scene can blur it for shadows. Plain RGBA8 targets: no float extension is needed.
+// scenes/pond/atlas.ts), a flexible one a tapering stroke along its arc in a few segments; upright
+// organs are not drawn. Later organs cover earlier ones, as a painter's would, and the sheet is
+// mipmapped so a scene can blur it for shadows. Plain RGBA8 targets: no float extension is needed.
 //
 // Sheet texel (rows bottom to top; the sheet's top row is uv.y = 1, as a canvas uploaded flipped):
 //   r  1 where an organ covers it, else 0 (its mipmaps: coverage, blurred)

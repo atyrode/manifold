@@ -95,6 +95,8 @@ Shade toolboxProbe(vec2 uv, vec2 cell, float t) {
     float seed;
     float age = meteorAge((floor(cell.x) + floor(cell.y) * uRes.x) * uProbeC.x, uProbeC.y, int(uProbeC.z), seed);
     v = vec3(age, seed, 0.0);
+  } else if (uProbe == 9) {
+    v = vec3(weatherOvercast(0.0, K_snow), 0.0, 0.0);
   } else {
     vec2 q = (cell - 0.5 * uRes) / uRes.y;
     v = vec3(meteorStreak(q, uProbeA, uProbeC.x, uProbeC.y, uProbeC.z), 0.0, 0.0);
@@ -430,6 +432,10 @@ export function verifyFrostSky(gl: WebGL2RenderingContext): Record<string, unkno
     "meteor streak in and out of flight",
   );
   result.meteors = { inFlight: [often, seldom], streakCells: covered(streak(0.45)) };
+  // The world's overcast at Frost's default snow (weatherOvercast): how far its snow cloud closes
+  // the sky, so the share of the aurora's light on the land it keeps out.
+  const overcast = draw(gl, probe, 1, 1, { uProbe: [9], uParams: params })[0] ?? 0;
+  check(overcast > 0 && overcast < 1, `the world's overcast at the default snow: ${overcast}`);
   gl.deleteProgram(probe);
   gl.deleteProgram(plain);
 
@@ -450,46 +456,64 @@ export function verifyFrostSky(gl: WebGL2RenderingContext): Record<string, unkno
     at.reduce((sum, i) => sum + luma(pixels, i), 0) / at.length;
   const meanG = (pixels: Float32Array, at: number[]): number =>
     at.reduce((sum, i) => sum + (pixels[i * 4 + 1] ?? 0), 0) / at.length;
-  // Aurora light on the snow while the sky is open; the snow cloud shuts it out.
+  // Aurora light on the snow while the sky is open; under the snow cloud only the share the world's
+  // overcast leaves open (worldAt's glow), so the glow on the ground falls by the overcast's share:
+  // a cloud that passed all of it fails, and so does one that shut out more than the overcast does.
   const openOff = render({ snow: 0, aurora: 0 });
   const openOn = render({ snow: 0, aurora: 1, "aurora-amount": 0.8 });
+  const openGain = meanG(openOn, ground) - meanG(openOff, ground);
   check(
-    meanG(openOn, ground) > meanG(openOff, ground) * 1.02,
+    openGain > meanG(openOff, ground) * 0.02,
     "aurora does not light the snow under an open sky",
   );
   const cloudOff = render({ aurora: 0 });
   const cloudOn = render({ aurora: 1, "aurora-amount": 0.8 });
+  const passed = (meanG(cloudOn, ground) - meanG(cloudOff, ground)) / openGain;
   check(
-    ground.every((i) => [0, 1, 2].every((c) => cloudOn[i * 4 + c] === cloudOff[i * 4 + c])),
-    "aurora light leaks through the snow cloud",
+    Math.abs(passed / (1 - overcast) - 1) < 0.15,
+    `aurora light through the snow cloud: ${passed.toFixed(3)} of the open sky's on the snow, where the world's overcast (${overcast.toFixed(3)}) leaves ${(1 - overcast).toFixed(3)}`,
   );
   // The moon's phase lights the land.
   check(
     meanLuma(render({ snow: 0, "moon-amount": 0.25 }), ground) < meanLuma(openOff, ground),
     "a crescent lights the street as much as a full moon",
   );
-  // A triggered meteor shows only in the sky above the roofs, and behind the snow cloud at most
-  // through its thin gaps.
+  // A triggered meteor shows only in the sky above the roofs. A cell counts as changed by more than
+  // float rounding (beside the streak a colour can move by an ulp or so), far less than any shade
+  // the picture shows.
   const meteorTrigger = Array.from({ length: 8 }, (_, slot) => (slot === 1 ? 40 - 0.4 : -1e4));
   const changed = (a: Float32Array, b: Float32Array): number[] => {
     const out: number[] = [];
     for (let i = 0; i < FW * FH; i++)
-      if ([0, 1, 2].some((c) => a[i * 4 + c] !== b[i * 4 + c])) out.push(i);
+      if ([0, 1, 2].some((c) => Math.abs((a[i * 4 + c] ?? 0) - (b[i * 4 + c] ?? 0)) > 1e-5))
+        out.push(i);
     return out;
   };
-  const meteorCells = changed(render({ snow: 0 }, meteorTrigger), openOff);
+  const openMeteor = render({ snow: 0 }, meteorTrigger);
+  const meteorCells = changed(openMeteor, openOff);
   check(
     meteorCells.length > 3 && meteorCells.every((i) => Math.floor(i / FW) > FH * 0.45),
     `meteor cells ${meteorCells.length}, lowest row ${Math.min(...meteorCells.map((i) => Math.floor(i / FW)))}`,
   );
-  const clouded = changed(render({}, meteorTrigger), cloudOff).length;
+  // Behind the snow cloud it shows at most through the gaps the world's overcast leaves (worldSky:
+  // auroraSeen of the deck or the overcast, whichever closes more), so of its light no more than the
+  // overcast's open share reaches the picture: a cloud that hid none of it fails.
+  const cloudMeteor = render({}, meteorTrigger);
+  const meteorLight = (on: Float32Array, off: Float32Array): number =>
+    Array.from({ length: FW * FH }, (_, i) => Math.abs(luma(on, i) - luma(off, i))).reduce(
+      (sum, each) => sum + each,
+      0,
+    );
+  const through = meteorLight(cloudMeteor, cloudOff) / meteorLight(openMeteor, openOff);
   check(
-    clouded < 0.25 * meteorCells.length,
-    `a meteor shows through the snow cloud: ${clouded} of ${meteorCells.length} cells`,
+    through < 1 - overcast,
+    `a meteor shows through the snow cloud: ${through.toFixed(3)} of its light under an open sky, where the world's overcast leaves ${(1 - overcast).toFixed(3)}`,
   );
   result.frost = {
     auroraGroundGreen: [meanG(openOff, ground), meanG(openOn, ground)],
-    meteorCells: [meteorCells.length, clouded],
+    auroraThroughCloud: [passed, 1 - overcast],
+    meteorCells: [meteorCells.length, changed(cloudMeteor, cloudOff).length],
+    meteorThroughCloud: [through, 1 - overcast],
   };
   gl.deleteProgram(scene);
   return result;

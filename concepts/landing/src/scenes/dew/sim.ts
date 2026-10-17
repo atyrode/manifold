@@ -159,9 +159,22 @@ const MAX_SUBSTEPS = 48;
 /** Prewarm: whole 0.1 s steps a spun web runs (dewSpin) so the tension has settled (it does in ~2 s). */
 const PREWARM_STEPS = 20;
 const PREWARM_SUBSTEPS = Math.round(0.1 / SUBSTEP);
-/** Seconds of drop life fast-forwarded at construction, and the step. */
+/**
+ * The drops' own fixed step (s), and the most a frame catches up: its 0.1 s and the step left over,
+ * so no time is ever dropped and the drops' clock keeps pace with the breeze's. Every draw of their
+ * chance (a drop letting go, a new one gathering, a natural gust) is made a step at a time, at the
+ * step's own time, so a seed plays out the same at any frame rate; at 60 Hz a step is a frame.
+ */
+const DROP_STEP = 1 / 60;
+const MAX_DROP_STEPS = 7;
+/** Seconds of drop life a new web fast-forwards (#adopt), and the step. */
 const PREWARM_DROPS = 50;
 const PREWARM_DROP_STEP = 0.25;
+/**
+ * The frame shape the opening web (the scene's own seed) is spun for and gathers its dew on, before
+ * it is spun again for the frame's own shape keeping that dew (DewSim #respin).
+ */
+const OPENING_ASPECT = 16 / 9;
 /**
  * Milliseconds a new frame shape must rest before the web respins for it (a dragged window edge),
  * as the garden waits before it re-lays; the web on show stays up meanwhile.
@@ -681,15 +694,20 @@ export interface DewSpinRequest {
   readonly air: DewAir;
 }
 
+/** A gust's strength 0..1 at `clock`: it set off at `gustAt`, swells and dies over GUST_SECONDS. */
+function gustLevel(clock: number, gustAt: number, gustAmp: number): number {
+  const since = clock - gustAt;
+  const g = since >= 0 && since < GUST_SECONDS ? Math.sin((Math.PI * since) / GUST_SECONDS) : 0;
+  return g * g * gustAmp;
+}
+
 /** The breeze on the web at its clock: the gust 0..1, and its push sideways and out of plane. */
 function breezeAt({ clock, breeze, gustAt, gustAmp }: DewAir): {
   gust: number;
   fx: number;
   fz: number;
 } {
-  const since = clock - gustAt;
-  const g = since >= 0 && since < GUST_SECONDS ? Math.sin((Math.PI * since) / GUST_SECONDS) : 0;
-  const gust = g * g * gustAmp;
+  const gust = gustLevel(clock, gustAt, gustAmp);
   const swell =
     0.6 +
     0.25 * Math.sin((clock / SWELL_FAST) * TAU) +
@@ -782,6 +800,13 @@ type DewKnob = "breeze" | "dew" | "dof" | "webSeed";
 
 const RIDING = 1;
 const FALLING = 2;
+/** What the sim hands the renderer before its first web is up: nothing (the shader draws no web). */
+const NO_TEXTURES: readonly (WebGLTexture | undefined)[] = [
+  undefined,
+  undefined,
+  undefined,
+  undefined,
+];
 
 class DewSim implements SceneSim {
   readonly #knobs: KnobReader<DewKnob>;
@@ -798,21 +823,33 @@ class DewSim implements SceneSim {
   readonly #headData = new Float32Array(3 * 4);
   readonly #textures: (WebGLTexture | undefined)[] = [undefined, undefined, undefined, undefined];
 
-  #web: DewWeb;
-  /** Spinning a web for a new frame shape, on the build worker (sims/build.ts). */
+  /** The web on show; undefined until the first one lands. */
+  #web: DewWeb | undefined;
+  /** Spinning webs on the build worker (sims/build.ts): the opening one, a new seed's, a new shape's. */
   readonly #spinning = new BuildSlot(dewSpin);
+  /** The scene's own seed: its web opens the scene (#respin). */
+  readonly #openingSeed: number;
   /** A new frame shape (its aspect) waiting to rest RESPIN_MS before the web respins for it, since when (ms). */
   #pendingAspect = 0;
   #pendingSince = 0;
-  /** Whether a frame has run: the first frame's shape is spun at once. */
-  #framed = false;
-  /** The drops' chance, reseeded with every web so a seed always plays out the same. */
+  /** Whether a web has been on show for the frame's shape: until then the sim is not ready. */
+  #fitted = false;
+  /**
+   * The drops' chance, reseeded with every web and drawn only on the drops' fixed steps (and by
+   * plucks), so a seed always plays out the same, at any frame rate.
+   */
   #rand = mulberry32(0);
   /** Extra force per point this frame: the weight of the drops (y). */
   #load = new Float32Array(1);
   readonly #opts: VerletStepOptions;
   /** The web's clock: whole substeps of SUBSTEP, the drawn web blended by its alpha. */
   readonly #steps = new FixedStep(SUBSTEP, MAX_SUBSTEPS);
+  /** The drops' steps: whole steps of DROP_STEP, the drops drawn ahead of the last by its pending. */
+  readonly #dropSteps = new FixedStep(DROP_STEP, MAX_DROP_STEPS);
+  /** The moment of the drops' last step: their steps taken, in seconds of the breeze's clock. */
+  #dropClock = 0;
+  /** The web's blend (its clock's alpha) as a drop lets go: at its drop step, or the frame's end. */
+  #recoilBlend = 0;
   #fz = 0;
   #fx = 0;
 
@@ -884,18 +921,13 @@ class DewSim implements SceneSim {
       format: "rgba16f",
       filter: "nearest",
     });
-    const seed = Math.round(knobs.initial("webSeed"));
-    this.#breeze = knobs.initial("breeze");
-    this.#dew = knobs.initial("dew");
-    this.#dof = knobs.initial("dof");
+    this.#openingSeed = Math.round(knobs.initial("webSeed"));
     this.#opts = {
       gravity: [0, GRAVITY, 0],
       damping: DAMPING,
       iterations: ITERATIONS,
       force: this.#force,
     };
-    // Spun for the usual landscape frame; a different aspect respins it on the first frame.
-    this.#web = this.#spinNow(16 / 9, seed);
   }
 
   frame(frame: SimFrame): readonly (WebGLTexture | undefined)[] {
@@ -906,7 +938,8 @@ class DewSim implements SceneSim {
     const aspect = Number.isFinite(frame.aspect) && frame.aspect > 0 ? frame.aspect : 16 / 9;
     const seed = Math.round(knobs.value(frame, "webSeed"));
     this.#respin(frame.now, frame.budget, aspect, seed);
-    this.#framed = true;
+    // Nothing shows, and no clock runs, until a web for the frame's shape is up.
+    if (!this.#fitted) return NO_TEXTURES;
     this.#fitBins(frame.height, aspect);
 
     // The passage: the web swings in on its anchor threads as a gust settles, and out again on another.
@@ -942,6 +975,10 @@ class DewSim implements SceneSim {
     return this.#textures;
   }
 
+  ready(): boolean {
+    return this.#fitted;
+  }
+
   dispose(): void {
     this.#spinning.dispose();
     this.#segTex.dispose();
@@ -963,38 +1000,58 @@ class DewSim implements SceneSim {
   }
 
   /**
-   * A web for the frame's shape and the seed. A new seed, and the first frame's shape, are spun at
-   * once: the web on show cannot stand for them. A new shape after that waits until it has rested
-   * RESPIN_MS (a dragged window edge), then spins on the build worker while the web on show stays
-   * up; a newer shape supersedes it, and the shape coming back to the web's own drops it.
+   * The web for the frame's shape and the seed, spun on the build worker while the web on show (if
+   * any) stays up. The opening web, the scene's own seed, is spun for the usual landscape frame
+   * (OPENING_ASPECT) and its dew gathered there (#adopt); then, as for every web until one fits the
+   * frame, the frame's own shape is spun at once, keeping the dew. Another seed is spun for the
+   * frame's shape at once. A new shape after that waits until it has rested RESPIN_MS (a dragged
+   * window edge); a newer shape supersedes it, and the shape coming back to the web's own drops it.
+   * Twice at most a frame: the opening web, landing at once (no worker, or an Infinity budget), is
+   * spun for the frame's shape in the same frame.
    */
   #respin(now: number, budget: number, aspect: number, seed: number): void {
-    const web = this.#web;
-    const reshaped = Math.abs(aspect - web.aspect) > 1e-3;
-    if (seed !== web.seed || (reshaped && !this.#framed)) {
-      this.#web = this.#spinNow(aspect, seed, web);
-      return;
+    for (let pass = 0; pass < 2; pass++) {
+      this.#ask(now, aspect, seed);
+      const landed = this.#spinning.advance(budget);
+      if (landed === undefined) return;
+      const web = this.#adopt(landed.result, this.#web);
+      if (Math.abs(aspect - web.aspect) <= 1e-3) {
+        this.#fitted = true;
+        return;
+      }
     }
-    if (!reshaped) this.#spinning.cancel();
-    else {
+  }
+
+  /** Ask the spinning slot for the web this frame wants next, if any (see #respin). */
+  #ask(now: number, aspect: number, seed: number): void {
+    const web = this.#web;
+    if (web === undefined || seed !== web.seed) {
+      const opening = web === undefined && seed === this.#openingSeed;
+      this.#spin(opening ? OPENING_ASPECT : aspect, seed);
+    } else if (Math.abs(aspect - web.aspect) <= 1e-3) {
+      this.#spinning.cancel();
+      this.#fitted = true;
+    } else if (!this.#fitted) {
+      this.#spin(aspect, seed);
+    } else {
       if (aspect !== this.#pendingAspect) {
         this.#pendingAspect = aspect;
         this.#pendingSince = now;
       }
-      if (now - this.#pendingSince >= RESPIN_MS)
-        this.#spinning.request(`${aspect}|${seed}`, { aspect, seed, air: this.#air() });
+      if (now - this.#pendingSince >= RESPIN_MS) this.#spin(aspect, seed);
     }
-    const landed = this.#spinning.advance(budget);
-    if (landed) this.#web = this.#adopt(landed.result, web);
   }
 
-  /** Spin a web here and now (see #adopt). */
-  #spinNow(aspect: number, seed: number, from?: DewWeb): DewWeb {
-    this.#spinning.cancel();
+  /** Spin a web for this shape and seed (the one asked for already, or landed last, goes on). */
+  #spin(aspect: number, seed: number): void {
     this.#spinning.request(`${aspect}|${seed}`, { aspect, seed, air: this.#air() });
-    const landed = this.#spinning.advance(Infinity);
-    if (!landed) throw new DewError("dew: a web spun here did not land");
-    return this.#adopt(landed.result, from);
+  }
+
+  /** The web on show; only asked for while one is (the sim does nothing before the first lands). */
+  get #shown(): DewWeb {
+    const web = this.#web;
+    if (web === undefined) throw new DewError("dew: no web is on show yet");
+    return web;
   }
 
   /**
@@ -1015,7 +1072,7 @@ class DewSim implements SceneSim {
     this.#web = web;
     this.#load = new Float32Array(web.sys.count);
     this.#prewarming = true;
-    // The breeze as the spin left it (#weather's, at dt 0): the drops' fast-forward reads its gust.
+    // The breeze as the spin left it (as #weather leaves it): the drops' fast-forward reads its gust.
     const air = breezeAt(this.#air());
     this.#gust = air.gust;
     this.#fx = air.fx;
@@ -1036,7 +1093,7 @@ class DewSim implements SceneSim {
       this.#spawnIn = 0;
       for (let i = 0; i < 6; i++) this.#spawn(0.4 + 0.6 * this.#rand());
       for (let time = 0; time < PREWARM_DROPS; time += PREWARM_DROP_STEP)
-        this.#drops(PREWARM_DROP_STEP);
+        this.#drops(PREWARM_DROP_STEP, this.#gust);
       for (let d = 0; d < DEW_DROPS; d++) if (this.#state[d] === FALLING) this.#state[d] = 0;
     }
     this.#prewarming = false;
@@ -1054,32 +1111,66 @@ class DewSim implements SceneSim {
   // ---- the breeze ---------------------------------------------------------------------------------
 
   /** Breeze, gusts and the stems' nodding for the clock as it stands; moves the moorings. */
-  #weather(dt: number): void {
-    const clock = this.#clock;
-    const breeze = this.#breeze;
-    // Natural gusts come now and then, the more often the stronger the breeze.
-    if (dt > 0 && breeze > 0.02 && clock >= this.#nextGust) {
-      this.#gustAt = clock;
-      this.#gustAmp = 0.35 + 0.35 * this.#rand();
-      this.#nextGust =
-        clock + (GUST_RARE + (GUST_OFTEN - GUST_RARE) * breeze) * (0.6 + 0.8 * this.#rand());
-    }
+  #weather(): void {
     const air = breezeAt(this.#air());
     this.#gust = air.gust;
     this.#fz = air.fz;
     this.#fx = air.fx;
-    swayStems(this.#web, clock, breeze, this.#gust, this.#at);
+    swayStems(this.#shown, this.#clock, this.#breeze, this.#gust, this.#at);
   }
 
   /** Breeze pressure (out of plane, a ripple running across) and the drops' weight. */
   readonly #force: VerletForce = (i, x, y, _z, out) =>
-    breezePush(out, x, y, this.#web.sys.time, this.#fx, this.#load[i] ?? 0, this.#fz);
+    breezePush(out, x, y, this.#shown.sys.time, this.#fx, this.#load[i] ?? 0, this.#fz);
 
+  /**
+   * `dt` seconds of the breeze's clock. The web runs its substeps up to each of the drop layer's
+   * fixed steps due (in the breeze and under the drops' weight as they stand then), the drops step
+   * there, and the web runs on to the frame's end: at any frame rate the drops see the web as it
+   * was at their step's moment, so a seed plays out the same. At 60 Hz that is one stretch and one
+   * step, as a frame always was.
+   */
   #advance(dt: number): void {
-    this.#clock += dt;
-    this.#weather(dt);
-    const web = this.#web;
-    // The drops hang their weight on their threads' two points.
+    const end = this.#clock + dt;
+    const web = this.#shown;
+    const webSteps = this.#steps;
+    const substeps = webSteps.advance(dt);
+    const dropSteps = this.#dropSteps;
+    const n = dropSteps.advance(dt);
+    let ran = 0;
+    for (let s = 0; s <= n; s++) {
+      // After the last drop step, only the substeps left (or, with none due at all, the frame's).
+      if (s === n && n > 0 && ran === substeps) break;
+      const lag = s < n ? dropSteps.lag(s) : 0;
+      let due = ran;
+      while (due < substeps && webSteps.lag(due) >= lag - SUBSTEP / 2) due++;
+      this.#clock = end - lag;
+      this.#weather();
+      this.#weigh(web);
+      web.sys.step(this.#opts, due - ran);
+      ran = due;
+      if (s === n) break;
+      // The web's blend at this moment, as a pluck has the frame's: a drop letting go kicks its
+      // thread around it (#fall).
+      let before = webSteps.pending;
+      if (due > 0) before = webSteps.lag(due - 1);
+      else if (substeps > 0) before = webSteps.lag(0) + SUBSTEP;
+      this.#recoilBlend = Math.min(1, Math.max(0, (before - lag) / SUBSTEP));
+      // The drops' clock counts whole steps, so their moments are the same at every frame rate.
+      this.#dropClock += DROP_STEP;
+      this.#dropStep(this.#dropClock);
+    }
+    this.#clock = end;
+    this.#recoilBlend = webSteps.alpha;
+    if (dt > 0) {
+      // Focus follows the hub (an autofocus on the spider), lagging a little.
+      const hubZ = web.sys.positions[web.layout.hub * 3 + 2] ?? 0;
+      this.#focus += (hubZ * 0.8 - this.#focus) * (1 - Math.exp(-dt / 1.5));
+    }
+  }
+
+  /** The riding drops hang their weight on their threads' two points (#load, read by #force). */
+  #weigh(web: DewWeb): void {
     const load = this.#load;
     load.fill(0);
     const ca = web.sys.constraintA;
@@ -1095,18 +1186,29 @@ class DewSim implements SceneSim {
       load[a] = (load[a] ?? 0) - w * (1 - t);
       load[b] = (load[b] ?? 0) - w * t;
     }
-    web.sys.step(this.#opts, this.#steps.advance(dt));
-    if (dt > 0) {
-      this.#drops(dt);
-      const regrow = (WET_REGROW + WET_REGROW_DEW * this.#dew) * dt;
-      const wet = web.wet;
-      for (let c = 0; c < web.threads; c++) wet[c] = Math.min(1, (wet[c] ?? 0) + regrow);
-      // Focus follows the hub (an autofocus on the spider), lagging a little.
-      const hubZ = web.sys.positions[web.layout.hub * 3 + 2] ?? 0;
-      this.#focus += (hubZ * 0.8 - this.#focus) * (1 - Math.exp(-dt / 1.5));
+  }
+
+  /**
+   * One step of the drop layer at `time` on the breeze's clock: a natural gust now and then (the more
+   * often the stronger the breeze), the drops riding, letting go and gathering in the gust as it
+   * stands then, the beads growing back, and the drops' wobble dying away.
+   */
+  #dropStep(time: number): void {
+    const h = DROP_STEP;
+    const breeze = this.#breeze;
+    if (breeze > 0.02 && time >= this.#nextGust) {
+      this.#gustAt = time;
+      this.#gustAmp = 0.35 + 0.35 * this.#rand();
+      this.#nextGust =
+        time + (GUST_RARE + (GUST_OFTEN - GUST_RARE) * breeze) * (0.6 + 0.8 * this.#rand());
     }
+    this.#drops(h, gustLevel(time, this.#gustAt, this.#gustAmp));
+    const web = this.#shown;
+    const regrow = (WET_REGROW + WET_REGROW_DEW * this.#dew) * h;
+    const wet = web.wet;
+    for (let c = 0; c < web.threads; c++) wet[c] = Math.min(1, (wet[c] ?? 0) + regrow);
     for (let d = 0; d < DEW_DROPS; d++)
-      this.#shiver[d] = (this.#shiver[d] ?? 0) * Math.exp(-dt / SHIVER_DECAY);
+      this.#shiver[d] = (this.#shiver[d] ?? 0) * Math.exp(-h / SHIVER_DECAY);
   }
 
   // ---- the pointer --------------------------------------------------------------------------------
@@ -1128,7 +1230,7 @@ class DewSim implements SceneSim {
   }
 
   #pluck(x: number, y: number, v: number): void {
-    const sys = this.#web.sys;
+    const sys = this.#shown.sys;
     if (sys.nearestXY(x, y, PLUCK_RADIUS * 1.5, true) < 0) return;
     sys.impulseXY(x, y, PLUCK_RADIUS, 0, -PLUCK_PULL * v, v, this.#steps.alpha);
     for (let d = 0; d < DEW_DROPS; d++) {
@@ -1147,8 +1249,9 @@ class DewSim implements SceneSim {
 
   // ---- the drops ----------------------------------------------------------------------------------
 
-  #drops(dt: number): void {
-    const web = this.#web;
+  /** The drops over `dt` seconds, in a gust of `gust` 0..1 (it shakes the heavy ones off). */
+  #drops(dt: number, gust: number): void {
+    const web = this.#shown;
     const sys = web.sys;
     const pos = sys.positions;
     const ca = sys.constraintA;
@@ -1251,7 +1354,7 @@ class DewSim implements SceneSim {
         r >= R_FALL ||
         (v === 0 && r > R_HANG && this.#rand() < dt / HANG_SECONDS) ||
         shake * heavy * heavy > SHAKE_FALL ||
-        (r > GUST_SHED_R && this.#rand() < dt * GUST_SHED * this.#gust * heavy * heavy * heavy)
+        (r > GUST_SHED_R && this.#rand() < dt * GUST_SHED * gust * heavy * heavy * heavy)
       ) {
         this.#fall(d);
         riding--;
@@ -1281,7 +1384,7 @@ class DewSim implements SceneSim {
   #spawn(grown: number): void {
     const d = this.#state.indexOf(0);
     if (d < 0) return;
-    const web = this.#web;
+    const web = this.#shown;
     let c = -1;
     for (let tries = 0; tries < 10 && c < 0; tries++) {
       const pick = Math.floor(this.#rand() * web.threads);
@@ -1313,7 +1416,7 @@ class DewSim implements SceneSim {
 
   /** A riding drop's centre: on its thread, hanging below it. */
   #place(d: number): void {
-    const sys = this.#web.sys;
+    const sys = this.#shown.sys;
     const pos = sys.positions;
     const c = this.#seg[d] ?? 0;
     const a = (sys.constraintA[c] ?? 0) * 3;
@@ -1331,7 +1434,7 @@ class DewSim implements SceneSim {
     if (this.#state[d] !== RIDING) return;
     // Nothing is shaken loose while the web swings: it is drawn displaced from where the sim holds it.
     if (this.#passing) return;
-    const sys = this.#web.sys;
+    const sys = this.#shown.sys;
     const c = this.#seg[d] ?? 0;
     const t = this.#t[d] ?? 0;
     sys.velocity(sys.constraintA[c] ?? 0, this.#vel);
@@ -1352,7 +1455,7 @@ class DewSim implements SceneSim {
       0,
       RECOIL * k * k * k,
       0.3 * RECOIL * k * k * k,
-      this.#steps.alpha,
+      this.#recoilBlend,
     );
   }
 
@@ -1443,7 +1546,7 @@ class DewSim implements SceneSim {
    * the stalk they grow from.
    */
   #packStems(seg: Float32Array, cx: number, cell: number, dew: number): void {
-    const web = this.#web;
+    const web = this.#shown;
     const at = this.#at;
     let id = web.threads;
     for (const stem of web.stems) {
@@ -1594,7 +1697,7 @@ class DewSim implements SceneSim {
    * flexes instead of turning as a board. The sim's own points are not touched.
    */
   #swingWeb(drawn: Float32Array): void {
-    const web = this.#web;
+    const web = this.#shown;
     const sys = web.sys;
     const reach = web.radius * (CORNER_REACH + CORNER_REACH_JITTER) + SWING_MARGIN;
     const theta0 = Math.asin(Math.min(0.95, (web.aspect - web.hubX + reach) / SWING_LENGTH));
@@ -1629,7 +1732,7 @@ class DewSim implements SceneSim {
   // ---- packing ------------------------------------------------------------------------------------
 
   #pack(heightCells: number): void {
-    const web = this.#web;
+    const web = this.#shown;
     const sys = web.sys;
     const aspect = web.aspect;
     const cell = 1 / Math.max(1, heightCells);
@@ -1676,6 +1779,9 @@ class DewSim implements SceneSim {
     const drop = this.#dropData;
     drop.fill(0);
     const clock = this.#clock;
+    // The drops are drawn at the frame's own time: carried on from their last step by the time left
+    // over (DROP_STEP's pending, none at 60 Hz), along their thread or their fall, as that step would.
+    const ahead = this.#dropSteps.pending;
     for (let d = 0; d < DEW_DROPS; d++) {
       const state = this.#state[d];
       if (state !== RIDING && state !== FALLING) continue;
@@ -1687,15 +1793,20 @@ class DewSim implements SceneSim {
       let stretch = 1.08;
       if (state === FALLING) {
         const grow = 1 + z / CAMERA_DISTANCE;
+        x += (this.#vx[d] ?? 0) * Math.exp(-ahead) * ahead;
+        y += ((this.#vy[d] ?? 0) - FALL_GRAVITY * ahead) * ahead;
         x = cx + (x - cx) * grow;
         y = 0.5 + (y - 0.5) * grow;
         stretch = 1 + Math.min(2.5, (Math.abs(this.#vy[d] ?? 0) * 0.012) / Math.max(r, 1e-4));
       } else {
         // Riding drops follow their thread as drawn.
         const c = this.#seg[d] ?? 0;
-        const a = (sys.constraintA[c] ?? 0) * 3;
-        const b = (sys.constraintB[c] ?? 0) * 3;
-        const t = this.#t[d] ?? 0;
+        const pa = sys.constraintA[c] ?? 0;
+        const pb = sys.constraintB[c] ?? 0;
+        const a = pa * 3;
+        const b = pb * 3;
+        const along = ((this.#v[d] ?? 0) * ahead) / Math.max(1e-6, sys.distance(pa, pb));
+        const t = Math.min(1, Math.max(0, (this.#t[d] ?? 0) + along));
         x = (drawn[a] ?? 0) + ((drawn[b] ?? 0) - (drawn[a] ?? 0)) * t;
         y =
           (drawn[a + 1] ?? 0) + ((drawn[b + 1] ?? 0) - (drawn[a + 1] ?? 0)) * t - r * DEW_DROP_HANG;

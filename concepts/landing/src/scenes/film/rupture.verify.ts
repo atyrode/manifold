@@ -58,7 +58,8 @@ export function verifyFilmRupture(gl: WebGL2RenderingContext): Record<string, un
   const popSlot = sceneDefs.film.params.find((param) => param.key === "pop")?.trigger;
   if (popSlot === undefined) throw new Error("film: the pop knob has no trigger");
   const frame: SimFrame = {
-    dt: 0.15,
+    // The film takes at most three 1/60 s steps a frame (sim.ts STEP, MAX_STEPS).
+    dt: 0.05,
     time: 0,
     motionTime: 0,
     motion: 1,
@@ -77,7 +78,7 @@ export function verifyFilmRupture(gl: WebGL2RenderingContext): Record<string, un
   };
   try {
     let textures = sim.frame(frame);
-    for (let i = 0; i < 8; i++) {
+    for (let i = 0; i < 24; i++) {
       frame.time += frame.dt;
       frame.motionTime += frame.dt;
       frame.pointer.pressed = false;

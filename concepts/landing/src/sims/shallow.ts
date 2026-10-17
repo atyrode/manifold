@@ -539,8 +539,9 @@ export class ShallowWater {
   }
 
   /**
-   * Advance the carried field `dt` seconds along the current flow (usually once a frame with the
-   * frame's sim time). Needs a carry snippet; its own uniforms persist.
+   * Advance the carried field `dt` seconds along the current flow: the seconds the steps since the
+   * last carry covered, so the field runs on the water's own clock. Needs a carry snippet; its own
+   * uniforms persist.
    */
   carry(dt: number, time = 0, uniforms?: Readonly<Record<string, UniformValue>>): void {
     this.#check();

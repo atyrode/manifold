@@ -16,10 +16,12 @@
 // with the weathering knob, in sun and wind, slower at dusk and night, not at all in rain (rain as
 // it falls: in winter it comes down as snow, src/climate.ts).
 //
-// Raking the whole garden through the tool would cost a few hundred milliseconds, so a layout (at
-// construction, and when the pattern, the stones or the M change) is laid straight from the same
-// plan: each texel takes the groove phase the plan leaves there, with a weathered profile, rounded
-// by one smoothing pass. The rake then starts left of centre and re-cuts it for real, crisp.
+// Raking the whole garden through the tool would cost a few hundred milliseconds, so a layout (the
+// first, and when the pattern, the stones or the M change) is laid straight from the same plan, on
+// the build worker (gardenLayout): each texel takes the groove phase the plan leaves there, with a
+// weathered profile, then rounded here by one smoothing pass. The garden on show stays until a new
+// layout lands; until the first has, the sim is not ready and nothing runs. The rake then starts
+// left of centre and re-cuts it for real, crisp.
 //
 // Leaves fall as flat plates (the shared fluttering-plate model, sims/flutter.ts, as autumn's leaves
 // fall), each in its own vertical plane that slowly turns, carried by the wind and the gusts (the
@@ -45,6 +47,7 @@ import { climateCold, fallingRain, seasonKnob, yearAt, type SeasonKnob } from ".
 import { markVertex } from "../../mark.ts";
 import { KnobReader, type ParamDef } from "../../params.ts";
 import { AgeField, dryingPace } from "../../sims/agefield.ts";
+import { type BuildKind, BuildSlot } from "../../sims/build.ts";
 import { FlutterPlates } from "../../sims/flutter.ts";
 import { HeightField, type RakeOptions } from "../../sims/heightfield.ts";
 import { clamp, fract, hash31, lerp, smoothstep } from "../../sims/math.ts";
@@ -999,6 +1002,51 @@ function grooveProfile(phase: number): number {
   return (Math.PI / 3) * Math.sin((Math.PI * (u - 0.25)) / 0.5);
 }
 
+/** A garden to lay out: its pattern, the arrangement of its stones (seed) and the M's height (0: off). */
+export interface GardenLayoutRequest {
+  readonly pattern: GardenPattern;
+  readonly seed: number;
+  readonly mark: number;
+}
+
+/** A garden laid out: its islands, the rake's plan, and the gravel laid from it (not yet smoothed). */
+interface GardenLaid {
+  readonly layout: Layout;
+  readonly plan: Stroke[];
+  readonly heights: Float32Array;
+}
+
+/** Rows of gravel a layout lays between looks at the build worker's messages. */
+const LAY_ROWS = 40;
+
+/**
+ * Laying a garden out as a build (sims/build.ts): its islands, the rake's plan, and every texel of
+ * the gravel at the groove phase the plan leaves there, with a weathered profile. The page smooths
+ * it once and sets the rake down (GardenSim #relay).
+ */
+export const gardenLayout: BuildKind<GardenLayoutRequest, GardenLaid> = {
+  name: "garden",
+  builder: () => ({
+    *build({ pattern, seed, mark }) {
+      const layout: Layout = { pattern, islands: layIslands(seed), mark };
+      const plan = buildPlan(layout);
+      const w = GARDEN.cols;
+      const h = GARDEN.rows;
+      const heights = new Float32Array(w * h);
+      const grad = new Float64Array(2);
+      for (let j = 0; j < h; j++) {
+        if (j % LAY_ROWS === 0) yield undefined;
+        const y = (j + 0.5) / h;
+        for (let i = 0; i < w; i++) {
+          const phase = phaseAt(layout, ((i + 0.5) / w) * GA, y, grad);
+          heights[j * w + i] = Number.isNaN(phase) ? 0 : LAID_AMPLITUDE * grooveProfile(phase);
+        }
+      }
+      return { layout, plan, heights };
+    },
+  }),
+};
+
 // ---- the simulation ------------------------------------------------------------------------------
 
 type GardenKnob =
@@ -1140,8 +1188,9 @@ class GardenSim implements SceneSim {
 
   // The plan and the rake on it.
   #layout: Layout = { pattern: "waves", islands: [], mark: 0 };
-  /** The arrangement the islands were laid for (-1: none yet). */
-  #layoutSeed = -1;
+  /** Laying out a garden on the build worker (sims/build.ts), and whether one has been laid yet. */
+  readonly #laying = new BuildSlot(gardenLayout);
+  #laid = false;
   #signature = "";
   #pending = "";
   #pendingSince = 0;
@@ -1266,8 +1315,7 @@ class GardenSim implements SceneSim {
     this.#borderAir.wind = (x, _y, out) => {
       out[0] = (out[0] ?? 0) + this.#gustFront(x);
     };
-    // Lay out the default garden now, so the first frame already shows it raked, with leaves, and
-    // its plants standing in the air.
+    // The plants standing in the air; the garden itself is laid out on the build worker (#relay).
     const settings = this.#settings(undefined);
     this.#season = settings.season;
     growWoods(this.#woods);
@@ -1276,8 +1324,6 @@ class GardenSim implements SceneSim {
     growBorder(this.#border, settings.border);
     this.#woods.settle(this.#woodsAir);
     this.#border.settle(this.#borderAir);
-    this.#relay(settings);
-    this.#prewarmLeaves(settings);
   }
 
   frame(frame: SimFrame): readonly (WebGLTexture | undefined)[] {
@@ -1287,13 +1333,34 @@ class GardenSim implements SceneSim {
     const dt = Math.min(Math.max(frame.dt, 0), 0.1);
     const now = frame.now;
 
-    // Pattern, arrangement or the M changed: lay the garden out afresh once the knob rests.
-    if (settings.signature !== this.#signature) {
-      if (settings.signature !== this.#pending) {
-        this.#pending = settings.signature;
+    // The garden for the pattern, the arrangement and the M, laid out on the build worker: the first
+    // at once, a change once its knob has rested RELAYOUT_MS, the garden on show staying meanwhile.
+    const signature = settings.signature;
+    if (signature === this.#signature) this.#laying.cancel();
+    else {
+      if (signature !== this.#pending) {
+        this.#pending = signature;
         this.#pendingSince = now;
       }
-      if (now - this.#pendingSince >= RELAYOUT_MS) this.#relay(settings);
+      if (!this.#laid || now - this.#pendingSince >= RELAYOUT_MS) {
+        const { pattern, seed, mark } = settings;
+        this.#laying.request(signature, { pattern, seed, mark });
+      }
+    }
+    const laid = this.#laying.advance(frame.budget);
+    if (laid) {
+      this.#relay(laid.key, laid.result);
+      if (!this.#laid) {
+        // The first garden shows leaves already lying about, and a few on their way down.
+        this.#laid = true;
+        this.#season = settings.season;
+        this.#prewarmLeaves(settings);
+      }
+    }
+    if (!this.#laid) {
+      // Nothing runs until the first garden is laid: the gravel lies flat and bare meanwhile.
+      this.#packIslandsAndPlants();
+      return this.#textures;
     }
     if (settings.season !== this.#season) this.#reskin(settings.season);
 
@@ -1320,7 +1387,13 @@ class GardenSim implements SceneSim {
     return this.#textures;
   }
 
+  /** Ready once the first garden is laid out (on the build worker). */
+  ready(): boolean {
+    return this.#laid;
+  }
+
   dispose(): void {
+    this.#laying.dispose();
     this.#heights.dispose();
     this.#freshTexture.dispose();
     this.#records.dispose();
@@ -1389,16 +1462,20 @@ class GardenSim implements SceneSim {
 
   // ---- laying out ----------------------------------------------------------------------------------
 
-  /** A fresh garden: islands, the plan, the gravel laid from it, the rake set down to begin. */
-  #relay(settings: Settings): void {
-    this.#signature = settings.signature;
-    this.#pending = settings.signature;
-    const islands =
-      settings.seed === this.#layoutSeed ? this.#layout.islands : layIslands(settings.seed);
-    this.#layoutSeed = settings.seed;
-    this.#layout = { pattern: settings.pattern, islands, mark: settings.mark };
-    this.#plan = buildPlan(this.#layout);
-    this.#lay();
+  /**
+   * A garden laid out (gardenLayout, under `signature`) set down: its islands and plan, the gravel
+   * laid from it and rounded off, the rake set down to begin.
+   */
+  #relay(signature: string, { layout, plan, heights }: GardenLaid): void {
+    this.#signature = signature;
+    this.#pending = signature;
+    this.#layout = layout;
+    this.#plan = plan;
+    const field = this.#field;
+    field.data.set(heights);
+    field.touch();
+    // Round the profile off, as weather would.
+    field.smooth(0.6);
     this.#fresh.reset();
     this.#smoothDue = SMOOTH_EVERY;
     this.#rakeOn = false;
@@ -1422,26 +1499,6 @@ class GardenSim implements SceneSim {
       offset += stroke.length + STROKE_PAUSE;
     }
     this.#seek(start);
-  }
-
-  /** Lay the gravel straight from the plan: every texel at its groove phase, weathered. */
-  #lay(): void {
-    const field = this.#field;
-    const data = field.data;
-    const w = field.width;
-    const h = field.height;
-    const grad = this.#grad;
-    for (let j = 0; j < h; j++) {
-      const y = (j + 0.5) / h;
-      for (let i = 0; i < w; i++) {
-        const x = ((i + 0.5) / w) * GA;
-        const phase = phaseAt(this.#layout, x, y, grad);
-        data[j * w + i] = Number.isNaN(phase) ? 0 : LAID_AMPLITUDE * grooveProfile(phase);
-      }
-    }
-    field.touch();
-    // Round the profile off, as weather would.
-    field.smooth(0.6);
   }
 
   /** Set the rake down at plan distance `at` (pauses count STROKE_PAUSE each). */

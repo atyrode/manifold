@@ -8,11 +8,11 @@
 // garden and hangs in an apple tree before it leaves. Butterflies, bumblebees, hoverflies and
 // dragonflies work the flowers by day, and fireflies rise from the grass after dusk; everyone keeps
 // the world's hours and shelters from its rain.
-import { counts, feature, seed, toggle, type ParamDef } from "../../params.ts";
+import { counts, feature, range, seed, toggle, type ParamDef } from "../../params.ts";
 import { skyTheme } from "../atmosphere.ts";
 import type { SceneDef } from "../types.ts";
 import { WORLD_ALL, worldFeatures, worldGroups, worldKnobs } from "../world.ts";
-import { BEES_LIGHTNING_TRIGGER, BEES_METEOR_TRIGGER, beesGlsl } from "./shader.ts";
+import { BEES_LIGHTNING_TRIGGER, BEES_LUSH_FROM, BEES_METEOR_TRIGGER, beesGlsl } from "./shader.ts";
 import { BEES_PASSAGE, BEES_SWARM_TRIGGER, beesSim } from "./sim.ts";
 
 const params: readonly ParamDef[] = [
@@ -103,6 +103,33 @@ const params: readonly ParamDef[] = [
       help: "Swallows hawking over the valley by day, now and then swooping down to skim the flowers; the orchard, the wall, the hives and the near flowers hide any that pass behind them, and few fly in rain or snow.",
     },
   }),
+  // The garden: how thickly its drifts bloom, a lantern among the hives and fairy lights along the
+  // wall, both lit after dusk.
+  range(
+    "garden",
+    "flowers",
+    "flowers",
+    1,
+    "How thickly the flower drifts bloom: thinner below 1, down to bare grass at 0; above 1 denser and wider drifts with more poppies, daisies and foxgloves close by, and near 3 the drifts run down the slope to your feet.",
+    { min: 0, max: 3, step: 0.05, icon: "flower" },
+  ),
+  feature(
+    "garden",
+    "lantern",
+    "lantern",
+    false,
+    "brightness",
+    0.7,
+    "An iron lantern hanging from a crook among the hives, unlit by day. After dusk it glows warm: it lights the hives, the path, the nearby flowers and the grass, fading over a few metres, the hives throwing soft shadows away from it, and it hangs a halo in fog and rain.",
+  ),
+  toggle(
+    "garden",
+    "fairyLights",
+    "fairy lights",
+    false,
+    "A string of small garden lights sagging along the top of the dry-stone wall: after dusk each bulb glows warm on the stones, haloed in fog and rain.",
+    { icon: "bulb" },
+  ),
   feature(
     "manifold",
     "mark",
@@ -132,6 +159,11 @@ export const beesScene: SceneDef = {
         "A colony working three hives, swarming now and then; butterflies, bumblebees, hoverflies and dragonflies by day, fireflies after dusk.",
     },
     scenery: { title: "Landscape", blurb: "Which valley you are looking over." },
+    garden: {
+      title: "Garden",
+      blurb:
+        "How thickly the flowers bloom, and the lights for the evening: a lantern among the hives and fairy lights along the wall.",
+    },
     sky: {
       ...worldGroups.sky,
       blurb:
@@ -158,8 +190,16 @@ export const beesScene: SceneDef = {
   // The moon keys the night's light and the orchard's shadows by its direction: its phase code is
   // compiled in at every setting, a full moon's too (where the world leaves it out), so a full moon's
   // own program draws byte for byte as the all-features one does. The world's parts only while their
-  // knobs can show them (worldFeatures).
+  // knobs can show them (worldFeatures), and the garden's: the lantern and the fairy lights while on,
+  // the drifts' density while the flowers are other than 1, the extra near blooms and foxgloves once
+  // they can stand (BEES_LUSH_FROM).
   features: { SKY_MOON_PHASE: 1 },
-  featuresFor: worldFeatures,
-  featuresAll: WORLD_ALL,
+  featuresFor: (values) => ({
+    ...worldFeatures(values),
+    BEES_LANTERN: (values.lantern ?? 0) > 0 ? 1 : 0,
+    BEES_FAIRY: (values.fairyLights ?? 0) > 0 ? 1 : 0,
+    BEES_FLOWERS: (values.flowers ?? 1) !== 1 ? 1 : 0,
+    BEES_LUSH: (values.flowers ?? 1) >= BEES_LUSH_FROM ? 1 : 0,
+  }),
+  featuresAll: { ...WORLD_ALL, BEES_LANTERN: 1, BEES_FAIRY: 1, BEES_FLOWERS: 1, BEES_LUSH: 1 },
 };

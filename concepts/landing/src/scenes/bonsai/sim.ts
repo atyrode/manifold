@@ -6,7 +6,9 @@
 // through the season; and pruning: a click snips the twig under it, which falls and lies with them.
 // Everything steps STEP at a time on a FixedStep (sims/clock.ts), so the bonsai sways the same at 60
 // and at 144 Hz; the pads' sway, the falling leaves and the cut twigs are drawn between their last
-// two steps by the clock's alpha.
+// two steps by the clock's alpha. A tree is grown and drawn on the build worker (bonsaiGrowth): until
+// the first is up the sim is not ready, nothing runs and the stand stands bare where the entrance
+// has it; a new species or seed keeps the tree on show until its own lands.
 //
 // Textures (layout in geometry.ts):
 //   uSim0  rgba16f map, linear: wood (distance, radius, front depth, deadness).
@@ -22,6 +24,7 @@
 //          then the shoot grid (up to four shoot indices + 1 per cell).
 import { climateCold, climateLying } from "../../climate.ts";
 import type { ParamDef } from "../../params.ts";
+import { type BuildKind, BuildSlot } from "../../sims/build.ts";
 import { FixedStep } from "../../sims/clock.ts";
 import { smoothstep } from "../../sims/math.ts";
 import { mulberry32 } from "../../sims/random.ts";
@@ -49,7 +52,16 @@ import {
   bonsaiPlacement,
   bonsaiSurface,
 } from "./geometry.ts";
-import { type LitterMark, TreeMaps, drawSprite, eraseLitter, stampLitter } from "./raster.ts";
+import {
+  BARE_LEAF,
+  BARE_WOOD,
+  type LitterMark,
+  TreeMaps,
+  type TreeMapsState,
+  drawSprite,
+  eraseLitter,
+  stampLitter,
+} from "./raster.ts";
 import {
   bonsaiBlossom,
   bonsaiHue,
@@ -230,14 +242,50 @@ function litterShape(kind: number): (lx: number, ly: number) => number {
   }
 }
 
+/** A tree to grow: its species and seed. */
+export interface BonsaiGrowthRequest {
+  readonly species: number;
+  readonly seed: number;
+}
+
+/** A tree grown, and drawn into its maps: what the build worker hands the page. */
+export interface BonsaiGrowth {
+  readonly species: number;
+  readonly seed: number;
+  readonly tree: Tree;
+  readonly maps: TreeMapsState;
+}
+
+/**
+ * Growing a tree for its species and seed (tree.ts) and drawing it into the maps (raster.ts), as a
+ * build (sims/build.ts): a new tree's slow part, off the page's thread. The page's sim does the rest.
+ */
+export const bonsaiGrowth: BuildKind<BonsaiGrowthRequest, BonsaiGrowth> = {
+  name: "bonsai",
+  builder: () => ({
+    *build({ species, seed }) {
+      const tree = growTree(species, seed, BONSAI_MAX_TUFTS);
+      yield undefined;
+      const maps = new TreeMaps();
+      maps.draw(tree);
+      return { species, seed, tree, maps: maps.state };
+    },
+  }),
+};
+
 class BonsaiSim implements SceneSim {
   readonly #woodTexture: DataTexture;
   readonly #leafTexture: DataTexture;
   readonly #atlasTexture: DataTexture;
   readonly #dataTexture: DataTexture;
+  /** The textures handed to the renderer every frame, in slot order. */
+  readonly #textures: readonly (WebGLTexture | undefined)[];
   readonly #atlas = new Float32Array(BONSAI_ATLAS.width * BONSAI_ATLAS.height * 4);
   readonly #data = new Float32Array(FW * BONSAI_ROWS.total * 4);
-  readonly #maps = new TreeMaps();
+  /** The tree on show's maps; undefined until the first tree is up. */
+  #maps: TreeMaps | undefined;
+  /** Growing a tree for a new species or seed, on the build worker (sims/build.ts). */
+  readonly #growing = new BuildSlot(bonsaiGrowth);
   readonly #knob: Readonly<Record<KnobKey, number>>;
 
   #tree: Tree = { nodes: [], pads: [], tufts: [], tip: 0.002 };
@@ -316,16 +364,11 @@ class BonsaiSim implements SceneSim {
       leaves: index("leaves"),
       snowfall: index("snowfall"),
     };
-    this.#woodTexture = new DataTexture(gl, {
-      width: BONSAI_MAP.width,
-      height: BONSAI_MAP.height,
-      format: "rgba16f",
-    });
-    this.#leafTexture = new DataTexture(gl, {
-      width: BONSAI_MAP.width,
-      height: BONSAI_MAP.height,
-      format: "rgba16f",
-    });
+    // Bare (one texel of nothing drawn) until the first tree's maps are uploaded.
+    this.#woodTexture = new DataTexture(gl, { width: 1, height: 1, format: "rgba16f" });
+    this.#woodTexture.upload(Float32Array.from(BARE_WOOD));
+    this.#leafTexture = new DataTexture(gl, { width: 1, height: 1, format: "rgba16f" });
+    this.#leafTexture.upload(Float32Array.from(BARE_LEAF));
     this.#atlasTexture = new DataTexture(gl, {
       width: BONSAI_ATLAS.width,
       height: BONSAI_ATLAS.height,
@@ -337,6 +380,12 @@ class BonsaiSim implements SceneSim {
       height: BONSAI_ROWS.total,
       format: "rgba16f",
     });
+    this.#textures = [
+      this.#woodTexture.texture,
+      this.#leafTexture.texture,
+      this.#atlasTexture.texture,
+      this.#dataTexture.texture,
+    ];
     for (let i = 0; i < BONSAI_MAX_MOTES; i++) {
       this.#motes.push({
         live: false,
@@ -384,9 +433,17 @@ class BonsaiSim implements SceneSim {
   frame(frame: SimFrame): readonly (WebGLTexture | undefined)[] {
     const aspect = frame.aspect > 0 ? frame.aspect : 16 / 9;
     const advance = Math.max(0, frame.dt) * Math.max(0, frame.motion);
-    this.#readKnobs(frame.values);
+    this.#readKnobs(frame.values, frame.budget);
+    const maps = this.#maps;
+    if (maps === undefined) {
+      // No tree yet: nothing runs, and the stand stands bare where the entrance has it.
+      this.#stepPassage(frame, true);
+      this.#pack(0);
+      this.#dataTexture.upload(this.#data);
+      return this.#textures;
+    }
     this.#watchTriggers(frame.triggers);
-    this.#stepPassage(frame);
+    this.#stepPassage(frame, false);
     this.#trackPointer(frame.pointer, frame.dt, aspect);
     for (let s = 0, n = this.#steps.advance(advance); s < n; s++) {
       this.#keepDrawn();
@@ -394,8 +451,12 @@ class BonsaiSim implements SceneSim {
     }
     this.#pack(this.#steps.alpha);
     if (this.#mapsDirty) {
-      this.#woodTexture.upload(this.#maps.wood);
-      this.#leafTexture.upload(this.#maps.leaf);
+      if (this.#woodTexture.width !== BONSAI_MAP.width) {
+        this.#woodTexture.resize(BONSAI_MAP.width, BONSAI_MAP.height);
+        this.#leafTexture.resize(BONSAI_MAP.width, BONSAI_MAP.height);
+      }
+      this.#woodTexture.upload(maps.wood);
+      this.#leafTexture.upload(maps.leaf);
       this.#mapsDirty = false;
     }
     this.#atlasWait -= frame.dt;
@@ -405,15 +466,16 @@ class BonsaiSim implements SceneSim {
       this.#atlasWait = 0.25;
     }
     this.#dataTexture.upload(this.#data);
-    return [
-      this.#woodTexture.texture,
-      this.#leafTexture.texture,
-      this.#atlasTexture.texture,
-      this.#dataTexture.texture,
-    ];
+    return this.#textures;
+  }
+
+  /** The sim shows its tree once the first has been grown (on the build worker). */
+  ready(): boolean {
+    return this.#maps !== undefined;
   }
 
   dispose(): void {
+    this.#growing.dispose();
     this.#woodTexture.dispose();
     this.#leafTexture.dispose();
     this.#atlasTexture.dispose();
@@ -430,7 +492,7 @@ class BonsaiSim implements SceneSim {
     return this.#minutes > 0 ? this.#minutes * 240 : NOMINAL_YEAR;
   }
 
-  #readKnobs(values: readonly number[]): void {
+  #readKnobs(values: readonly number[], budget: number): void {
     const k = this.#knob;
     const species = Math.round(values[k.species] ?? BONSAI_MAPLE);
     const seed = Math.round(values[k.treeSeed] ?? 0);
@@ -440,39 +502,50 @@ class BonsaiSim implements SceneSim {
     this.#leafAmount = values[k.leaves] ?? this.#leafAmount;
     this.#snowAmount = values[k.snowfall] ?? this.#snowAmount;
     const season = values[k.season] ?? 0.62;
-    const regrow = species !== this.#species || seed !== this.#seed;
-    if (regrow) {
-      this.#species = species;
-      this.#seed = seed;
-      this.#random = mulberry32(0x73656173 ^ Math.imul(seed + 3, 0x9e3779b1));
-      this.#tree = growTree(species, seed, BONSAI_MAX_TUFTS);
-      this.#pads = this.#tree.pads.map((pad, i) => {
-        const size = Math.min(1, pad.long / 0.25);
-        return {
-          omega: TAU * (PAD_HZ[1] + (PAD_HZ[0] - PAD_HZ[1]) * size) * (0.9 + 0.2 * this.#random()),
-          x: 0,
-          vx: 0,
-          y: 0,
-          vy: 0,
-          wx: 0,
-          wy: 0,
-          phase: i * 1.7 + this.#random() * TAU,
-          sx: pad.x,
-          sy: pad.y + BONSAI_TILT * pad.z,
-          rx: Math.max(pad.long, pad.side),
-          ry: pad.tall * 1.6 + 0.02,
-        };
-      });
-      this.#redraw();
-      this.#writeTufts();
+    // The tree for the species and seed, grown on the build worker while the one on show stays up.
+    if (species === this.#species && seed === this.#seed) this.#growing.cancel();
+    else this.#growing.request(`${species}|${seed}`, { species, seed });
+    const landed = this.#growing.advance(budget);
+    if (landed) this.#plant(landed.result);
+    if (this.#maps === undefined) {
+      this.#seasonKnob = season;
+      return;
     }
-    if (regrow || season !== this.#seasonKnob) {
+    if (landed || season !== this.#seasonKnob) {
       // A new tree or a jump through the year: start the moment over as if it had been running.
       this.#seasonKnob = season;
       this.#elapsed = 0;
       this.#yearIndex = Number.NaN;
       this.#settle();
     }
+  }
+
+  /** A grown tree (bonsaiGrowth) on show: its pads set swaying, its maps and tufts uploaded. */
+  #plant({ species, seed, tree, maps }: BonsaiGrowth): void {
+    this.#species = species;
+    this.#seed = seed;
+    this.#random = mulberry32(0x73656173 ^ Math.imul(seed + 3, 0x9e3779b1));
+    this.#tree = tree;
+    this.#pads = tree.pads.map((pad, i) => {
+      const size = Math.min(1, pad.long / 0.25);
+      return {
+        omega: TAU * (PAD_HZ[1] + (PAD_HZ[0] - PAD_HZ[1]) * size) * (0.9 + 0.2 * this.#random()),
+        x: 0,
+        vx: 0,
+        y: 0,
+        vy: 0,
+        wx: 0,
+        wy: 0,
+        phase: i * 1.7 + this.#random() * TAU,
+        sx: pad.x,
+        sy: pad.y + BONSAI_TILT * pad.z,
+        rx: Math.max(pad.long, pad.side),
+        ry: pad.tall * 1.6 + 0.02,
+      };
+    });
+    this.#maps = new TreeMaps(maps);
+    this.#mapsDirty = true;
+    this.#writeTufts();
   }
 
   /** Bring everything to where the year stands: shoots, snow, litter, a few leaves in the air, swaying. */
@@ -599,13 +672,13 @@ class BonsaiSim implements SceneSim {
    * leaving it accelerates back out to SLIDE (cubic, from rest and fastest as the exit ends); zero
    * exactly once arrived and not leaving. Leaves in the air stay where they are in the room as the
    * stand goes, so they are moved the other way in the stand's own frame; leaves still in the air as
-   * it arrives ride in with it.
+   * it arrives ride in with it. `held`: the entrance waits (no tree is up yet).
    */
-  #stepPassage(frame: SimFrame): void {
+  #stepPassage(frame: SimFrame, held: boolean): void {
     const enter = BONSAI_PASSAGE.enter;
     const exit = BONSAI_PASSAGE.exit;
     if (this.#arriving === undefined) this.#arriving = frame.passage.enter < 1;
-    else if (this.#arriving) this.#arrived += Math.max(0, frame.dt);
+    else if (this.#arriving && !held) this.#arrived += Math.max(0, frame.dt);
     if (this.#arrived >= enter) this.#arriving = false;
     const rest = this.#arriving ? 1 - this.#arrived / enter : 0;
     const q = Math.min(1, Math.max(0, frame.passage.exit));
@@ -633,8 +706,11 @@ class BonsaiSim implements SceneSim {
 
   // ---- the tree ----
 
+  /** Draw the tree on show into its maps again (after a cut, or cut twigs growing back). */
   #redraw(): void {
-    this.#maps.draw(this.#tree);
+    const maps = this.#maps;
+    if (maps === undefined) throw new BonsaiSimError("bonsai: no tree is up to draw");
+    maps.draw(this.#tree);
     this.#mapsDirty = true;
   }
 
@@ -1436,17 +1512,19 @@ class BonsaiSim implements SceneSim {
       sway[2 * i] = pad.wx + (pad.x - pad.wx) * alpha;
       sway[2 * i + 1] = pad.wy + (pad.y - pad.wy) * alpha;
     }
-    // The field: sway per texel from its two pads, and the silhouettes.
-    for (let f = 0; f < FW * FH; f++) {
-      const flex = maps.flex[f] ?? 0;
-      const a = maps.padA[f] ?? -1;
-      const b = maps.padB[f] ?? -1;
-      const wa = maps.weightA[f] ?? 1;
-      const o = f * 4;
-      data[o] = flex * ((sway[2 * a] ?? 0) * wa + (sway[2 * b] ?? 0) * (1 - wa));
-      data[o + 1] = flex * ((sway[2 * a + 1] ?? 0) * wa + (sway[2 * b + 1] ?? 0) * (1 - wa));
-      data[o + 2] = maps.woodSil[f] ?? 0;
-      data[o + 3] = maps.leafSil[f] ?? 0;
+    // The field: sway per texel from its two pads, and the silhouettes (none before a tree is up).
+    if (maps !== undefined) {
+      for (let f = 0; f < FW * FH; f++) {
+        const flex = maps.flex[f] ?? 0;
+        const a = maps.padA[f] ?? -1;
+        const b = maps.padB[f] ?? -1;
+        const wa = maps.weightA[f] ?? 1;
+        const o = f * 4;
+        data[o] = flex * ((sway[2 * a] ?? 0) * wa + (sway[2 * b] ?? 0) * (1 - wa));
+        data[o + 1] = flex * ((sway[2 * a + 1] ?? 0) * wa + (sway[2 * b + 1] ?? 0) * (1 - wa));
+        data[o + 2] = maps.woodSil[f] ?? 0;
+        data[o + 3] = maps.leafSil[f] ?? 0;
+      }
     }
     // Shoots.
     const shootRow = BONSAI_ROWS.shoots * FW * 4;

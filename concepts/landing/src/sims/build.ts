@@ -1,8 +1,9 @@
 // Pure CPU builds off the page's thread: a country's terrain, frost's crystal field, dew's web spun
-// for a new frame, a slime mould's dish, the pond's painted sheets. One module worker (src/build-
-// worker.ts, which lists every kind) runs them all, a slice at a time, and hands each result back by
-// transfer: its typed arrays move to the page, never copied. A build is the same code on either
-// side, so a result is the same bytes wherever it ran.
+// for a frame, a bonsai's tree drawn into its maps, the dry garden's layout, the forest's warm-up, a
+// slime mould's dish, the pond's painted sheets. One module worker (src/build-worker.ts, which lists
+// every kind) runs them all, a slice at a time, and hands each result back by transfer: its typed
+// arrays move to the page, never copied. A build is the same code on either side, so a result is
+// the same bytes wherever it ran.
 //
 //   BuildKind<Request, Result>   { name, builder() }: builder() makes one slot's Builder, whose
 //                                build(request) is a generator that yields undefined between slices
@@ -12,12 +13,14 @@
 //                                shares a buffer with it (the result is transferred).
 //   new BuildSlot(kind, worker?) one consumer's builds of one kind, the newest request winning
 //     request(key, request)      build this under `key`; a new key supersedes the build in progress
-//                                (dropped on the worker at its next slice, and never landing), the
-//                                key in progress or last landed again does nothing
+//                                (dropped on the worker at its next slice, and never landing); the
+//                                key in progress again does nothing, nor the key whose finished
+//                                result last landed (the build in progress is dropped: no rebuild)
 //     advance(budget, slices?)   once a frame: send the build to the worker, or run it here for up
 //                                to `budget` ms and `slices` slices (stopping at an early result);
 //                                returns the newest result landed since, else undefined
-//     cancel()                   drop the build in progress; nothing more lands until a request
+//     cancel()                   drop the build in progress; nothing more lands until a request,
+//                                which builds afresh (even the key last landed)
 //     dispose()                  cancel, and drop what the worker keeps for this slot
 //   new BuildWorker(worker)      the page's side of a worker running build-worker.ts (tests pass
 //                                their own; a slot otherwise takes the page's, buildWorker())
@@ -118,7 +121,9 @@ export class BuildWorker {
       event.preventDefault();
       console.error("evt=landing.build_worker.failed", event.message);
       this.#failed = true;
-      // Every slot runs its build in progress on the page from its next frame.
+      // Stopped, so the builds already sent to it go no further: every slot runs its build in
+      // progress on the page from its next frame.
+      worker.terminate();
       for (const listener of this.#slots.values()) listener(undefined);
       this.#slots.clear();
     };
@@ -151,17 +156,21 @@ let shared: BuildWorker | undefined;
 let unavailable = false;
 
 /**
- * The page's build worker, started on first use and served next to the page (a pinned build gets
- * its own); undefined without a page (headless tests), where none can start, or once it failed.
+ * The page's build worker, started on first use; undefined without a page (headless tests), where
+ * none can start, or once it failed. A committed build's page (serve.ts, which names the commit in
+ * the page's `landing-build` meta) loads the worker built with it, from the commit's own pinned
+ * path even at the root, so a page never runs against another commit's worker; a page served from
+ * a working tree loads the one beside it.
  */
 export function buildWorker(): BuildWorker | undefined {
   if (unavailable || typeof document === "undefined" || typeof Worker === "undefined")
     return undefined;
   if (!shared) {
+    const build =
+      document.querySelector<HTMLMetaElement>('meta[name="landing-build"]')?.content ?? "";
+    const url = new URL(build ? `/@${build}/build-worker.js` : "build-worker.js", document.baseURI);
     try {
-      shared = new BuildWorker(
-        new Worker(new URL("build-worker.js", document.baseURI), { type: "module" }),
-      );
+      shared = new BuildWorker(new Worker(url, { type: "module" }));
     } catch (error: unknown) {
       console.error("evt=landing.build_worker.unavailable", error);
       unavailable = true;
@@ -189,6 +198,11 @@ export class BuildSlot<Request, Result> {
   #builder: Builder<Request, Result> | undefined;
   #local: Build<Result> | undefined;
   #landed: Landed<Result> | undefined;
+  /**
+   * The key of the finished result advance last handed over, unless a draft followed it: what the
+   * consumer shows, so asking for it again builds nothing.
+   */
+  #shown = "";
   #error: BuildError | undefined;
 
   constructor(kind: BuildKind<Request, Result>, worker?: BuildWorker) {
@@ -203,7 +217,8 @@ export class BuildSlot<Request, Result> {
     this.#key = key;
     this.#request = request;
     this.#id++;
-    this.#status = "asked";
+    // Back to the result on show: the build in progress is dropped and nothing lands.
+    this.#status = key === this.#shown ? "done" : "asked";
     this.#local = undefined;
     this.#landed = undefined;
   }
@@ -230,10 +245,11 @@ export class BuildSlot<Request, Result> {
     }
     const landed = this.#landed;
     this.#landed = undefined;
+    if (landed) this.#shown = landed.done ? landed.key : "";
     return landed;
   }
 
-  /** Drop the build in progress: nothing lands until the next request. */
+  /** Drop the build in progress: nothing lands until the next request, which builds afresh. */
   cancel(): void {
     if (this.#status === "sent") this.#cancelSent();
     this.#key = "";
@@ -242,6 +258,7 @@ export class BuildSlot<Request, Result> {
     this.#status = "idle";
     this.#local = undefined;
     this.#landed = undefined;
+    this.#shown = "";
   }
 
   /** Cancel, and let the worker drop what this slot's builder keeps (an earlier build to reuse). */

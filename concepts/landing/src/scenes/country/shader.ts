@@ -50,19 +50,27 @@ import { countryTroddenGlsl } from "./trodden.ts";
 export const COUNTRY_PASSAGE = { enter: 2.8, exit: 1.4 } as const;
 
 /**
- * The ray march's numbers: highest ground, farthest look, slope bound, shortest steps (minStep +
- * relStep · distance), most steps, and regula-falsi steps refining the one that crossed the land.
- * Enough steps for a ray grazing the land to reach the far hills under the skyline: one out of
- * steps is drawn where it stopped, in the air (march.test.ts holds a CPU mirror of countryMarch
- * to a dense march over the bare land).
+ * The ray march's numbers: the height it starts from (and the shadows' ceiling), metres a rising ray
+ * climbs over the map's highest ground and trees before it is let go (the records' half floats
+ * round terrainTop within a quarter metre), farthest look, slope bound, shortest steps (minStep +
+ * relStep · distance), the step after which the shortest step grows by `growth` a step, most steps,
+ * and regula-falsi steps refining the one that crossed the land. A ray grazing the land toward the
+ * far hills under the skyline may take more than `late` steps; the growing floor then carries any
+ * ray past `far` within `steps` whatever the land under it, so none runs out of steps (to be drawn
+ * where it stopped, in the air), and a ray that meets the land sooner marches as it always did.
+ * march.test.ts holds a CPU mirror of countryMarch to a dense march over the bare land, and that
+ * bound.
  */
 export const COUNTRY_MARCH = {
   top: 520,
+  headroom: 2,
   far: 7000,
   slope: 0.85,
   minStep: 1.5,
   relStep: 0.006,
-  steps: 144,
+  late: 176,
+  growth: 1.1,
+  steps: 224,
   refine: 2,
 } as const;
 
@@ -120,9 +128,12 @@ float countryHeight(vec2 p, bool bound) {
   return terrainSurface(g) + countryCanopy(p, c, terrainWater(g), bound);
 }
 
-// March the land from the eye (slope-bound steps, never shorter than a share of the distance), then
-// refine the crossing step by regula falsi on the gaps either side of it, keeping the stretch that
-// holds the crossing (a point on the land counts as above it, so the gap below never reaches 0).
+// March the land from the eye (slope-bound steps, never shorter than a share of the distance, a
+// growing share once the march runs late: COUNTRY_MARCH), then refine the crossing step by regula
+// falsi on the gaps either side of it, keeping the stretch that holds the crossing (a point on the
+// land counts as above it, so the gap below never reaches 0). A rising ray is let go once above all
+// on the map: its highest ground or water (terrainTop) and the trees' bounds over it, with
+// COUNTRY_MARCH.headroom; never higher than it starts from, COUNTRY_TOP.
 // -1: sky, or off the map.
 float countryMarch(vec3 ro, vec3 rd) {
   float t = 0.0;
@@ -130,9 +141,11 @@ float countryMarch(vec3 ro, vec3 rd) {
     if (rd.y >= 0.0) return -1.0;
     t = (ro.y - COUNTRY_TOP) / -rd.y;
   }
+  float ceiling = min(COUNTRY_TOP, terrainTop(uSim3) + max(COUNTRY_WOOD_TOP, COUNTRY_LONE_TOP) + ${glslFloat(COUNTRY_MARCH.headroom)});
   float last = t;
   float above = 0.0;
   float below = 0.0;
+  float grow = 1.0;
   bool hit = false;
   for (int i = 0; i < ${COUNTRY_MARCH.steps}; i++) {
     vec3 p = ro + rd * t;
@@ -143,10 +156,15 @@ float countryMarch(vec3 ro, vec3 rd) {
       hit = true;
       break;
     }
-    if (rd.y >= 0.0 && p.y > COUNTRY_TOP) return -1.0;
+    if (rd.y >= 0.0 && p.y > ceiling) return -1.0;
     last = t;
     above = gap;
-    t += max(gap / (${glslFloat(COUNTRY_MARCH.slope)} + abs(rd.y)), ${glslFloat(COUNTRY_MARCH.relStep)} * t + ${glslFloat(COUNTRY_MARCH.minStep)});
+    float least = ${glslFloat(COUNTRY_MARCH.relStep)} * t + ${glslFloat(COUNTRY_MARCH.minStep)};
+    if (i >= ${COUNTRY_MARCH.late}) {
+      grow *= ${glslFloat(COUNTRY_MARCH.growth)};
+      least *= grow;
+    }
+    t += max(gap / (${glslFloat(COUNTRY_MARCH.slope)} + abs(rd.y)), least);
     if (t > COUNTRY_FAR) return -1.0;
   }
   if (!hit) return t;

@@ -31,6 +31,7 @@
 // fog round them glows with the light it scatters (their halo, buildings.ts).
 //
 // Compiled in only while the knob is on (COUNTRY_HAS_FOG, index.ts).
+import { hypot2 } from "../../sims/math.ts";
 import { TERRAIN_RECORDS, type Terrain, type TerrainPacked } from "../../sims/terrain.ts";
 
 /**
@@ -54,7 +55,7 @@ export function packCountryFog(packed: TerrainPacked, terrain: Terrain): void {
   const centre = 0.5 * terrain.extent;
   const dx = (x[count - 1] ?? 0) - (x[0] ?? 0);
   const dz = (z[count - 1] ?? 0) - (z[0] ?? 0);
-  const length = Math.hypot(dx, dz);
+  const length = hypot2(dx, dz);
   const ax = length > 1 ? dx / length : 1;
   const az = length > 1 ? dz / length : 0;
   const along = new Float32Array(count);
