@@ -19,6 +19,8 @@ const requiredGroups = [
   "budgets",
   "pwa",
   "axioms",
+  "landing-concept",
+  "landing-webgl",
   "nix",
 ] as const;
 
@@ -30,7 +32,7 @@ interface GateRunResult {
 
 interface GateInvocation {
   readonly args: readonly string[];
-  readonly dist: string;
+  readonly dist?: string;
 }
 
 interface SelectedTaskRun {
@@ -186,13 +188,44 @@ describe("gate CLI", () => {
     ]);
   });
 
+  test("landing slices type, test, check the GLSL of and render the whole concept lab", async () => {
+    const concept = await runSelectedTasks("landing-concept");
+    const webgl = await runSelectedTasks("landing-webgl");
+    for (const { result } of [concept, webgl]) {
+      expect(result.exitCode).toBe(0);
+      expect(result.stderr).toBe("");
+    }
+    expect(concept.invocations.map((invocation) => invocation.args.join(" ")).sort()).toEqual([
+      "concepts/landing/scripts/glsl-check.ts",
+      "test concepts/landing",
+      "tsc -p concepts/landing",
+    ]);
+    // Named checks would narrow the run; without any, the runner renders every registered check.
+    expect(webgl.invocations).toEqual([{ args: ["concepts/landing/verify.ts"] }]);
+  });
+
+  test("each landing WebGL shard hands its share to the runner, which packs the checks", async () => {
+    const shards = await Promise.all(
+      ([1, 2, 3, 4] as const).map((shard) =>
+        runSelectedTasks("landing-webgl", ["--shard", `${shard}/4`]),
+      ),
+    );
+    shards.forEach(({ result, invocations }, index) => {
+      expect(result.exitCode).toBe(0);
+      expect(result.stdout).toContain(`PASS  verify:landing-webgl (shard ${index + 1}/4)`);
+      expect(invocations).toEqual([
+        { args: ["concepts/landing/verify.ts", "--shard", `${index + 1}/4`] },
+      ]);
+    });
+  });
+
   test.each([
     [["--only"], "--only requires a value"],
     [["--list", "--list"], "--list may be specified only once"],
     [["--only", "types", "--only", "style"], "--only may be specified only once"],
     [["--list", "--only", "types"], "--list and --only cannot be combined"],
-    [["--shard", "1/4"], "--shard requires --only types"],
-    [["--only", "style", "--shard", "1/4"], "--shard requires --only types"],
+    [["--shard", "1/4"], "--shard requires --only"],
+    [["--only", "style", "--shard", "1/4"], "--shard requires --only types or a task that shards"],
     [["--only", "types", "--shard", "0/4"], "--shard requires one of"],
     [["--only", "types", "--shard", "1/3"], "--shard requires one of"],
     [["--unknown"], 'unknown argument "--unknown"'],

@@ -1,0 +1,54 @@
+# Advisory, never required: whether a pull request changes what the landing lab draws.
+# concepts/landing/scripts/ab.ts draws a canary set of scenes that spans the shared libraries, at
+# their defaults and at each gated knob turn (--turns), from the pull request's head and from its
+# merge base, in one pinned software-WebGL Chromium, and uploads report.json with the pictures that
+# differ. A difference may be intended: the reviewer reads the report. It lives outside ci.yml,
+# whose gate requires every job it holds and whose full proofs the preview deployment counts.
+name: Landing A/B
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - "concepts/landing/**"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: landing-ab-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  ab:
+    name: landing A/B (advisory)
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - name: Check out the head
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: ./.github/actions/bun-workspace
+        with:
+          dependencies: "false"
+      - uses: ./.github/actions/landing-chromium
+      - name: Compare the canary scenes with the merge base
+        shell: bash
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          base=$(git merge-base "$BASE_SHA" "$HEAD_SHA")
+          bun concepts/landing/scripts/ab.ts --base "$base" --out "$RUNNER_TEMP/landing-ab" --turns \
+            country meadow lake bees frost orbit island street
+      - name: Upload the report and the pictures that differ
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: landing-ab-${{ github.event.pull_request.head.sha }}
+          path: ${{ runner.temp }}/landing-ab
+          if-no-files-found: ignore
+          retention-days: 7

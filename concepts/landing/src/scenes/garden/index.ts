@@ -1,0 +1,169 @@
+// A dry stone garden (karesansui): white gravel raked into lines and rings around islands of
+// weathered stones and moss, always being re-raked by an unseen hand, under a maple letting go of
+// its leaves, the temple woods swaying over its wall. The gravel, the rake, the falling leaves and
+// the plants (the woods' trees, an optional border along the wall's foot) are simulated in sim.ts;
+// shader.ts lights it all from the veranda or from straight above.
+import { climateCold, fallingRain, seasonKnob, yearAt } from "../../climate.ts";
+import { choice, effective, feature, knobDef, range, seed, type ParamDef } from "../../params.ts";
+import { atmosphereGroups, skyKnobs, skyTheme, weatherKnobs } from "../atmosphere.ts";
+import { plantKnobs } from "../plants.ts";
+import type { SceneDef } from "../types.ts";
+import { GARDEN_PAPER, GARDEN_PASSAGE, gardenPatterns, gardenSeasons } from "./constants.ts";
+
+const params: readonly ParamDef[] = [
+  choice(
+    "garden",
+    "pattern",
+    "raked pattern",
+    gardenPatterns.map((label, value) => ({ label, value })),
+    0,
+    "Waves: parallel lines meandering across the garden like a slow current, five rings round each island. Straight: the still-water lines of the classic gardens, rings round the islands. Circles: rings spreading out from every stone until they meet the next stone's. The garden is laid out afresh; the rake then keeps it.",
+  ),
+  range(
+    "garden",
+    "speed",
+    "raking",
+    0.4,
+    "How fast the unseen rake works its way round the garden: a board levels the old pattern just ahead of five tines cutting the new, pass after pass, then lap after lap round the stones. Fresh gravel is a little darker until it dries. At 0 the rake rests.",
+  ),
+  range(
+    "garden",
+    "soften",
+    "weathering",
+    0.4,
+    "How quickly grooves slump and soften once raked: crisp just behind the rake, gentler the longer since it passed. Drying with the weather, fresh gravel dries faster or slower with it too.",
+  ),
+  feature(
+    "garden",
+    "drying",
+    "drying with weather",
+    false,
+    "dampness",
+    0.5,
+    "Freshly turned gravel dries with the weather instead of over a fixed minute or two: its damp lingers in the groove bottoms while the crests pale first, faster with more weathering, in sun and wind, slower toward dusk and at night, and not at all in the rain. Dampness: how dark the fresh gravel shows. Off: it is evenly a little darker and dries back over a minute or two.",
+  ),
+  range(
+    "garden",
+    "moss",
+    "moss",
+    0.6,
+    "Moss cushions round the stones: none leaves bare stones in smooth gravel; full gives deep green collars, creeping up the stones' feet.",
+  ),
+  feature(
+    "garden",
+    "border",
+    "border planting",
+    false,
+    "fullness",
+    0.6,
+    "Ferns and tufts of mondo grass planted along the foot of the wall, in the gutter of dark pebbles: they sway in the wind, bow one after another as a gust crosses, and follow the season (pale young fronds in spring, ferns turning gold in autumn and half of them gone in winter, the evergreen grass dulling). Fullness: how much of the gutter is planted, from a clump here and there to an unbroken border.",
+  ),
+  // The border's growth (scenes/plants.ts), off; it follows the maple's season choice.
+  ...plantKnobs({ group: "garden", growth: 0.4, when: "border" }),
+  seed(
+    "garden",
+    "stones",
+    "stones",
+    "Another arrangement of the stone islands; the garden is raked afresh round them.",
+  ),
+  choice(
+    "maple",
+    "season",
+    "season",
+    gardenSeasons.map((label, value) => ({ label, value })),
+    2,
+    "Spring: cherry blossom, its petals drifting down. Summer: a deep green maple, a leaf now and then, dappled shade. Autumn: the maple turns red and lets go of its leaves. Winter: bare branches, and snow lying on the stones, the moss and the wall with none falling; rain (Weather) comes down as snow then, while snow (Weather) falls in any season. The border planting (Garden) follows the season.",
+    { widget: { kind: "sky", part: "season", year: { at: [0.125, 0.375, 0.625, 0.875] } } },
+  ),
+  range(
+    "maple",
+    "leaves",
+    "leaf fall",
+    0.5,
+    "How often a leaf lets go. Light ones flutter, swinging from side to side and gliding up at the end of each swing; heavier ones tumble end over end. They lie on the gravel a while, then fade or are raked away. Now: a gust shakes a shower loose, blows lying leaves along the gravel and crosses the woods over the wall, bowing the trees one after another.",
+    { trigger: 0 },
+  ),
+  range(
+    "maple",
+    "dapple",
+    "dappled shade",
+    0.6,
+    "The maple's shadow on the gravel, pierced by round flecks of sun; it shows when the sun stands high enough to throw it into the garden.",
+  ),
+  choice(
+    "view",
+    "camera",
+    "view",
+    [
+      { label: "veranda", value: 0 },
+      { label: "above", value: 1 },
+    ],
+    0,
+    "Sit on the temple veranda looking across the garden to its earthen wall, or look straight down on it like a plan. Drag on the gravel to rake your own lines.",
+    { steady: true },
+  ),
+  // 0.735: golden hour, the sun low on the left behind the wall, raking across the grooves.
+  ...skyKnobs({ time: 0.735, moon: 1 }),
+  ...weatherKnobs({ rain: true, snow: true, wind: true }),
+  feature(
+    "manifold",
+    "mark",
+    "M stone",
+    false,
+    "size",
+    0.5,
+    "A low slab of grey-blue slate in the shape of the Manifold M, set nearly flush in the gravel: worn pale at its edges, lichen on it, a fringe of moss round it, and rings raked round it in its own shape, as round the other stones. The garden is laid out afresh round it.",
+  ),
+];
+
+const seasonDef = seasonKnob(params);
+const rainDef = knobDef("garden", params, "rain");
+
+/** The rain that falls as rain, as the shader has it (climatePrecip): winter's comes down as snow. */
+function rainAsRain(values: Readonly<Record<string, number>>): number {
+  const cold = seasonDef ? climateCold(yearAt(seasonDef, effective(seasonDef, values))) : 0;
+  return fallingRain(effective(rainDef, values), cold);
+}
+
+export const gardenScene: SceneDef = {
+  id: "garden",
+  title: "Stone garden",
+  blurb:
+    "Raked gravel, stones and moss, always being tended, under a maple letting go of its leaves. Drag to rake.",
+  accent: "#c8321e",
+  look: { color: "full", levels: 4 },
+  params,
+  groups: {
+    garden: {
+      title: "Garden",
+      blurb:
+        "The raked pattern, the unseen rake's pace, the stones and their moss, and a border planting along the wall. Drag on the gravel to rake your own lines.",
+    },
+    maple: { title: "Maple", blurb: "The season, and the leaves it lets fall on the gravel." },
+    view: { title: "View", blurb: "From the veranda, or from above." },
+    sky: atmosphereGroups.sky,
+    // The shared heading, with what the weather does here.
+    weather: {
+      ...atmosphereGroups.weather,
+      blurb:
+        "Rain greys the sky and soaks the garden: wet gravel darkens, stones and tiles shine, water stands in the grooves and the eaves and maple drip; drizzle is a soft grey mist, a downpour closes the garden in. In winter the rain comes down as snow. Snow settles, crests and stone tops first. Wind sways the maple and the woods over the wall and carries the leaves.",
+    },
+    manifold: {
+      title: "Manifold M",
+      blurb: "A landmark of its own: a slate M among the stones, the gravel raked round it.",
+    },
+  },
+  code: () => import("./code.ts"),
+  passage: GARDEN_PASSAGE,
+  // White gravel in daylight is a light page, golden hour included: the copy goes dark on it from
+  // just after sunrise to just before sunset, on a still clock, unless steady rain greys it (rain
+  // that falls as rain: winter's snow leaves it white). The shader follows the page (pagePaper in
+  // inkOf).
+  theme: skyTheme(params, {
+    from: GARDEN_PAPER.from,
+    to: GARDEN_PAPER.to,
+    when: (values) => rainAsRain(values) < GARDEN_PAPER.rain,
+  }),
+  // The moon takes a phase (K_moon) in the shared sky: it keys the garden's light at night.
+  features: { SKY_MOON_PHASE: 1 },
+};

@@ -65,8 +65,8 @@ export function checkInto(failures: string[]): (name: string, ok: boolean, detai
 const reservedPorts = new Set<number>();
 
 /**
- * A loopback port the kernel just confirmed free, for a server or a Chromium debug endpoint
- * the gate is about to bind there.
+ * A loopback port the kernel just confirmed free, for a server the gate is about to bind
+ * there.
  *
  * Asked for, not guessed: the gate listens on `127.0.0.1:0`, reads the port the kernel
  * assigned, and closes the listener. That is a RESERVATION with a small race window — another
@@ -80,8 +80,7 @@ const reservedPorts = new Set<number>();
  * `Failed to start server. Is port 44966 in use?` — Bun's own refusal to bind.
  *
  * Distinct within a process by construction: a repeat of a port already handed out here is
- * asked again, so a gate that reserves for its server and then for its browsers never gets
- * the same number twice.
+ * asked again, so a gate that reserves for several servers never gets the same number twice.
  */
 export function reserveLoopbackPort(): number {
   for (;;) {

@@ -16,6 +16,8 @@ export const EXTRA_CHECKS = [
   "budgets",
   "pwa",
   "axioms",
+  "landing-concept",
+  "landing-webgl",
   "runtime-jobs",
   "runtime-browser",
   "preview-environment",
@@ -33,6 +35,11 @@ export interface CiPlan {
   readonly reasons: readonly string[];
   readonly checks: readonly CheckId[];
   readonly unitPaths: readonly string[];
+  /**
+   * The landing lab scenes whose browser checks the change needs (landing-webgl's LANDING_SCENES):
+   * `*` for all of them, or the scenes of the changed scene directories and of those importing them.
+   */
+  readonly landingScenes: "*" | readonly string[];
 }
 
 export interface Change {
@@ -59,10 +66,16 @@ const TEST = /\.(?:test|spec)\.[cm]?[jt]sx?$/;
 const FULL_PATH =
   /^(?:\.github\/|scripts\/|patches\/)|(?:^|\/)(?:package\.json|bun\.lockb?|tsconfig(?:\.[^/]*)?\.json|[^/]+\.config\.[cm]?[jt]s)$/;
 const NORMATIVE = /^(?:AGENTS\.md|AXIOMS\.md|REGISTRY\.md|docs\/CONTRACTS\.md)$/;
-const DOC_STYLE = /\.(?:md|txt|png|jpe?g|svg|ico)$/i;
+const DOC_STYLE = /\.(?:md|txt|png|jpe?g|webp|svg|ico)$/i;
 const CSS = /\.(?:css|scss)$/i;
 const KNOWN_SOURCE_ROOT =
-  /^packages\/(?:(?:protocol|ui|plugin|plugin-kit|scene|sdk|server|agent|testkit|web)\/|plugins\/(?:shell|plugin-manager|terminals|presence|machines|index|notes|uri|access|events|debug|brand|keys|canvas|compositions|arrange|commands|github)\/)/;
+  /^(?:concepts\/landing\/|packages\/(?:(?:protocol|ui|plugin|plugin-kit|scene|sdk|server|agent|testkit|web)\/|plugins\/(?:shell|plugin-manager|terminals|presence|machines|index|notes|uri|access|events|debug|brand|keys|canvas|compositions|arrange|commands|github)\/))/;
+/** The landing concept lab: its own TypeScript project, unit tests and real-WebGL regressions. */
+const LANDING_CONCEPT = /^concepts\/landing\//;
+/** The lab's page shell, served beside its sources. */
+const LANDING_CONCEPT_PAGE = /^concepts\/landing\/[^/]+\.html$/;
+/** A file in one landing scene's own directory, which names the scene. */
+const LANDING_SCENE_FILE = /^concepts\/landing\/src\/scenes\/([a-z][a-z0-9]*)\//;
 const DEPLOYMENT_ROOT =
   /^scripts\/(?:ci-|gate|release|promote|install-runtime-ci|verify-runtime|verify-preview-environment)/;
 
@@ -597,9 +610,11 @@ export async function buildDependencyGraph(): Promise<DependencyGraph> {
   }
   return { importers, directImporters, provenanceImporters, holes: [...holes].sort() };
 }
+/** What `changedFiles` reach through their importers, following only importers `within` admits. */
 function impactedPaths(
   changedFiles: readonly string[],
   graph: DependencyGraph,
+  within: RegExp = /(?:)/,
 ): {
   readonly paths: ReadonlySet<string>;
   readonly via: ReadonlyMap<string, string>;
@@ -617,7 +632,7 @@ function impactedPaths(
       ...(initial.has(dependency) ? (graph.provenanceImporters?.get(dependency) ?? []) : []),
     ];
     for (const importer of importers) {
-      if (paths.has(importer)) continue;
+      if (paths.has(importer) || !within.test(importer)) continue;
       paths.add(importer);
       via.set(importer, dependency);
       queue.push(importer);
@@ -668,7 +683,26 @@ function fullPlan(
     reasons: [reason],
     checks: [...ALL_CHECKS],
     unitPaths: ["packages/protocol/test"],
+    landingScenes: "*",
   };
+}
+
+/**
+ * The landing scenes whose browser checks a change needs: `*` unless every changed path that is not
+ * documentation lies in a scene's own directory, else those scenes and every scene whose files
+ * import theirs (through scene files only: the roster and shared modules import every scene).
+ */
+function landingScenes(
+  changedFiles: readonly string[],
+  graph: DependencyGraph,
+): CiPlan["landingScenes"] {
+  const changed = changedFiles.filter((path) => !DOC_STYLE.test(path));
+  if (changed.length === 0 || !changed.every((path) => LANDING_SCENE_FILE.test(path))) return "*";
+  const reached = impactedPaths(changed, graph, LANDING_SCENE_FILE).paths;
+  const scenes = [...changed, ...reached].flatMap(
+    (path) => LANDING_SCENE_FILE.exec(path)?.[1] ?? [],
+  );
+  return [...new Set(scenes)].sort();
 }
 
 export function planFromEvidence(input: {
@@ -701,7 +735,11 @@ export function planFromEvidence(input: {
     );
   }
   const unknown = changedFiles.find(
-    (path) => !SOURCE.test(path) && !CSS.test(path) && !DOC_STYLE.test(path),
+    (path) =>
+      !SOURCE.test(path) &&
+      !CSS.test(path) &&
+      !DOC_STYLE.test(path) &&
+      !LANDING_CONCEPT_PAGE.test(path),
   );
   if (unknown !== undefined) {
     return fullPlan(input.base, input.head, changedFiles, `unknown path ${unknown}`, "unknown");
@@ -781,6 +819,19 @@ export function planFromEvidence(input: {
     selected.add("budgets");
     reasons.push("web delivery boundary changed");
   }
+  // The lab's documentation and thumbnails feed none of its proofs.
+  const landingConcept =
+    changedFiles.find((path) => LANDING_CONCEPT.test(path) && !DOC_STYLE.test(path)) ??
+    [...impact.paths].sort().find((path) => LANDING_CONCEPT.test(path));
+  const scenes = landingScenes(changedFiles, input.graph);
+  if (landingConcept !== undefined) {
+    selected.add("landing-concept");
+    selected.add("landing-webgl");
+    reasons.push(
+      `landing concept lab: ${dependencyReason(landingConcept, changedSet, impact.via)}`,
+    );
+    if (scenes !== "*") reasons.push(`landing browser checks of scenes: ${scenes.join(", ")}`);
+  }
   if (risk === "standard") {
     reasons.push(
       changedFiles.length === 0
@@ -791,11 +842,14 @@ export function planFromEvidence(input: {
     );
   }
 
+  // The lab's tests run whole under landing-concept; the targeted runner admits only package and
+  // script tests.
   const unitPaths = new Set<string>();
   for (const path of [...impact.paths].sort()) {
-    if (TEST.test(path)) unitPaths.add(path);
+    if (TEST.test(path) && !LANDING_CONCEPT.test(path)) unitPaths.add(path);
   }
   for (const path of changedFiles) {
+    if (LANDING_CONCEPT.test(path)) continue;
     if (TEST.test(path)) {
       unitPaths.add(path);
       continue;
@@ -815,6 +869,7 @@ export function planFromEvidence(input: {
     reasons: [...new Set(reasons)].sort(),
     checks: orderedChecks(selected),
     unitPaths: [...unitPaths].sort(),
+    landingScenes: scenes,
   };
 }
 
@@ -838,7 +893,13 @@ export async function createPlan(options: PlannerOptions): Promise<CiPlan> {
   const graphIndependent =
     changes.some((change) => change.status.startsWith("D") || change.status.startsWith("R")) ||
     changedFiles.some((path) => FULL_PATH.test(path) || NORMATIVE.test(path)) ||
-    changedFiles.some((path) => !SOURCE.test(path) && !CSS.test(path) && !DOC_STYLE.test(path)) ||
+    changedFiles.some(
+      (path) =>
+        !SOURCE.test(path) &&
+        !CSS.test(path) &&
+        !DOC_STYLE.test(path) &&
+        !LANDING_CONCEPT_PAGE.test(path),
+    ) ||
     changedFiles.some((path) => SOURCE.test(path) && !KNOWN_SOURCE_ROOT.test(path)) ||
     changedFiles.some((path) => SOURCE.test(path) && !existsSync(resolve(repoRoot, path))) ||
     changedFiles.every((path) => !SOURCE.test(path));
@@ -1038,9 +1099,11 @@ async function main(): Promise<void> {
     const stepSummary = process.env["GITHUB_STEP_SUMMARY"];
     if (output === undefined || stepSummary === undefined)
       fail("--github-output requires GITHUB_OUTPUT and GITHUB_STEP_SUMMARY");
+    // landing-webgl's LANDING_SCENES: `*`, or the comma list of scenes.
+    const scenes = plan.landingScenes === "*" ? "*" : plan.landingScenes.join(",");
     appendFileSync(
       output,
-      `checks=${JSON.stringify(plan.checks)}\nrisk=${plan.risk}\nunitPaths=${JSON.stringify(plan.unitPaths)}\n`,
+      `checks=${JSON.stringify(plan.checks)}\nrisk=${plan.risk}\nunitPaths=${JSON.stringify(plan.unitPaths)}\nlandingScenes=${scenes}\n`,
     );
     appendFileSync(stepSummary, `## CI impact plan\n\n${summary(plan).replaceAll("\n", "  \n")}\n`);
     return;

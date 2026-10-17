@@ -6,6 +6,10 @@ inputs:
     description: Generate the gitignored web changelog imported by web TypeScript.
     required: false
     default: "false"
+  dependencies:
+    description: Install the frozen workspace dependencies (a job that imports no package skips them).
+    required: false
+    default: "true"
 
 runs:
   using: composite
@@ -16,6 +20,7 @@ runs:
         bun-version: "1.4.2"
 
     - name: Cache Bun download store
+      if: inputs.dependencies == 'true'
       uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
       with:
         path: ~/.bun/install/cache
@@ -23,6 +28,7 @@ runs:
         restore-keys: bun-${{ runner.os }}-
 
     - name: Install dependencies
+      if: inputs.dependencies == 'true'
       shell: bash
       run: bun install --frozen-lockfile
 
