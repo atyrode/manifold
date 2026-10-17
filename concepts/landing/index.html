@@ -12,36 +12,8 @@
     />
     <link rel="stylesheet" href="./src/styles.css" />
     <link rel="stylesheet" href="./src/lab.css" />
-    <!-- Without JavaScript: the landing over the default scene's committed thumbnail, still, as a
-         scene's stands in for the canvas without WebGL2 (body.poster, src/styles.css). -->
-    <noscript>
-      <style>
-        body::before {
-          content: "";
-          position: fixed;
-          inset: 0;
-          background: url("thumbs/pond.webp") center / cover no-repeat;
-          image-rendering: pixelated;
-        }
-      </style>
-    </noscript>
   </head>
   <body data-mode="landing" data-scene="pond">
-    <!-- The scene's committed thumbnail stands in for the canvas from the first paint, before the
-         page's script has loaded: the scene the link names, else the default (body.poster,
-         src/styles.css; src/main.ts takes it over and down once the scene draws). -->
-    <script>
-      {
-        const scene =
-          new URLSearchParams(location.search).get("scene") ?? document.body.dataset.scene ?? "";
-        if (/^[a-z0-9-]+$/.test(scene))
-          document.documentElement.style.setProperty(
-            "--poster",
-            `url("${new URL(`thumbs/${scene}.webp`, location.href).href}")`,
-          );
-        document.body.classList.add("poster");
-      }
-    </script>
     <canvas id="stage" aria-hidden="true"></canvas>
 
     <div class="overlay" id="overlay">

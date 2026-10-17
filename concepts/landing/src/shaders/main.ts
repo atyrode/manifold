@@ -32,9 +32,9 @@ void main() {
     col = a > 0.0 ? mix(uBg, uAccent, a) : mix(uBg, uInk, quantize(s.ink, th2));
   }
   if (uView == 2 && abs(cell.x - floor(uRes.x * 0.5)) < 0.5) col = uAccent;
-  // An entrance takes over from the leaving scene, still moving (or from its poster, or the bare
-  // page) cell by cell in ordered-dither order: the middle first, an even fade, a sweep from the
-  // left or coarse grain.
+  // An entrance takes over from the leaving scene, still moving (or, entering from nothing, from
+  // the bare page) cell by cell in ordered-dither order: the middle first, an even fade, a sweep
+  // from the left or coarse grain.
   if (uDissolve.x > 0.0) {
     float dots = bayer8(cell);
     int blend = int(uDissolve.z + 0.5);

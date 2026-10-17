@@ -2,9 +2,7 @@
 // and hands the lab a host interface. Every change is a URL query applied here, read as a link is
 // (state.ts `readSetup`: this build's keys, an unknown scene reported).
 import { Lab } from "./lab.ts";
-import { thumbUrl } from "./lab/thumbs.ts";
 import { DitherRenderer } from "./renderer.ts";
-import type { SceneId } from "./scenes/index.ts";
 import type { SkyPlanet } from "./scenes/planets.ts";
 import {
   accentOf,
@@ -42,42 +40,11 @@ try {
     stage,
     renderSettings(state, params, planets),
     reducedMotion.matches,
-    { shown: () => document.body.classList.remove("poster") },
   );
   renderer.start();
 } catch (error: unknown) {
   console.error("evt=landing.renderer.unavailable", error);
 }
-
-/**
- * The scene's committed thumbnail stands in for the canvas (`body.poster`, styles.css): index.html
- * puts it up as the page opens, and it stays until the renderer shows the scene, which dissolves
- * out of it (`DitherRenderer.setPoster`, handed over by `handPoster` for the scene the setup
- * shows); again from a lost context until the restored scene draws; for good without WebGL2.
- * `posterScene`: the scene whose poster was last handed over while it stood in.
- */
-let posterScene: SceneId | undefined;
-function handPoster(): void {
-  if (renderer === undefined || !document.body.classList.contains("poster")) return;
-  if (posterScene === state.scene) return;
-  const scene = state.scene;
-  posterScene = scene;
-  const image = new Image();
-  image.src = thumbUrl(scene);
-  // A scene without a thumbnail (a new one) enters out of the bare page instead; one the setup has
-  // since left is not handed over.
-  image.decode().then(
-    () => {
-      if (posterScene === scene) renderer?.setPoster(scene, image);
-    },
-    () => undefined,
-  );
-}
-stage.addEventListener("webglcontextlost", () => {
-  document.body.classList.add("poster");
-  posterScene = undefined;
-  handPoster();
-});
 
 // Reduced motion follows the system's setting as it changes, not only as the page opened.
 reducedMotion.addEventListener("change", (event) => renderer?.setFrozen(event.matches));
@@ -138,7 +105,6 @@ function apply(
   renderer?.update(options.cut ? { ...settings, passage: false } : settings, {
     keepClocks: options.keepClocks === true,
   });
-  handPoster();
 
   document.body.dataset.scene = state.scene;
   document.body.dataset.mode = state.mode;
@@ -149,7 +115,6 @@ function apply(
   root.setProperty("--ink", colours.ink);
   root.setProperty("--muted", colours.muted);
   root.setProperty("--line", colours.line);
-  root.setProperty("--poster", `url("${new URL(thumbUrl(state.scene), location.href).href}")`);
   for (const node of document.querySelectorAll<HTMLElement>("[data-show]")) {
     node.hidden = !(node.dataset.show ?? "").split(" ").includes(state.mode);
   }

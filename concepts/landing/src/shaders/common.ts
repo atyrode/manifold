@@ -231,8 +231,8 @@ uniform sampler2D uSim3;
 uniform vec4 uSimOn;      // 1 in each component whose uSim texture the simulation supplied
 uniform vec2 uWeather;    // x: how wet the world is 0..1 (rises while it rains, dries after); y: how much snow lies 0..1 (settles while it snows, melts after)
 uniform vec2 uPassage;    // x: how far the scene has come in 0..1 (1 once arrived, and with passages off); y: how far it has gone out 0..1 (0 unless leaving)
-uniform vec3 uDissolve;   // x: share of the outgoing picture still showing 1..0; y: 1 when it dissolves out of uLeaving (the leaving scene, or the poster of a scene entering from nothing), 0 for the bare page (uBg); z: blend (renderer's blendIds)
-uniform sampler2D uLeaving; // the leaving scene drawn this frame at its own cell size, or the entering scene's poster
+uniform vec3 uDissolve;   // x: share of the outgoing picture still showing 1..0; y: 1 when it dissolves out of uLeaving (the leaving scene), 0 for the bare page (uBg: a scene entering from nothing); z: blend (renderer's blendIds)
+uniform sampler2D uLeaving; // the leaving scene drawn this frame at its own cell size
 
 out vec4 outColor;
 

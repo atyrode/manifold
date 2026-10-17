@@ -1,12 +1,5 @@
 import { expect, test } from "bun:test";
-import {
-  BUDGET_SLACK,
-  CELL_BUDGET,
-  cellScale,
-  coverCells,
-  stageCells,
-  type Cells,
-} from "./display.ts";
+import { BUDGET_SLACK, CELL_BUDGET, cellScale, stageCells, type Cells } from "./display.ts";
 
 /** The most cells a stage draws before they coarsen. */
 const MOST = CELL_BUDGET * BUDGET_SLACK;
@@ -94,23 +87,4 @@ test("a stage a little past the budget keeps its cells: no cliff at one CSS row 
   expect(stageCells(1920, 1200, 1, 2).cell).toBe(2);
   // ... and a windowed 1440p one, at 1.6 times the budget, still gets 3.
   expect(stageCells(2560, 1305, 1, 2)).toEqual({ cell: 3, width: 854, height: 435 });
-});
-
-test("an image laid over the stage as CSS covers it lands where the page shows it", () => {
-  // A 240 x 150 thumbnail over a 1920 x 1080 box in 2 px cells: 8 px a texel, the width exactly,
-  // and 60 px over the top and the bottom.
-  expect(coverCells(stageCells(1920, 1080, 1, 2), 1920, 1080, 240, 150)).toEqual({
-    x: 0,
-    y: -30,
-    width: 960,
-    height: 600,
-  });
-  // A tall box: the height exactly, centred across. The cells run past the box (3 px cells over
-  // 1000 px), and the image sits on the box, not on them.
-  expect(coverCells(stageCells(1000, 2000, 1, 3), 1000, 2000, 240, 150)).toEqual({
-    x: (1000 - 3200) / 2 / 3,
-    y: 0,
-    width: 3200 / 3,
-    height: 2000 / 3,
-  });
 });

@@ -172,14 +172,17 @@ off screen at its own cell size, into the frame the incoming one dissolves out o
 of the dissolve move. An exit that would end before the blend does is drawn out to end with it,
 so the outgoing scene never stands still under the incoming one. A switch made during the blend
 leaves for the newest scene once the blend is done. The entrance's clock starts on its second
-frame. Every scene gets the blend for free. On first load the scene's committed thumbnail
-(`thumbs/<id>.webp`, the scene the link names) stands in from the first paint while the program
-builds, and the scene dissolves in out of it, laid over the stage as the page laid it; a scene
-without one dissolves in out of the bare page. With passages off, under reduced motion or at
-motion 0 a switch is a cut, and so is a retry: the scene on screen goes on as it last drew until
-the next one's program is built in the background, and then the next one is there. A context the
-browser restores after losing it starts over as on first load, its thumbnail standing in
-meanwhile. Nothing ever waits for a build.
+frame. Every scene gets the blend for free. On first load the bare page (its background colour)
+shows while the program builds and then while the scene's sim builds what it shows (until
+`ready()`, at most 3 s, as a passage runs the incoming scene ahead), and the scene then appears
+out of it cell by cell, its world in place, each cell at its own Bayer threshold (the `fade`
+pattern), over 0.8 s whatever the blend's length and pattern (`REVEAL`, `src/renderer.ts`): every
+cell crisp at full resolution from the first, never a picture scaled up. With passages off, under
+reduced motion or at motion 0 the first scene is simply there once its program is built, a switch
+is a cut, and so is a retry: the scene on screen goes on as it last drew until the next one's
+program is built in the background, and then the next one is there. A context the browser
+restores after losing it starts over as on first load: the bare page while it is lost and while
+the scene builds again, then the same reveal. Nothing ever waits for a build.
 The outgoing frame is sampled in normalized stage coordinates with nearest filtering, so a different
 viewport or pixel size stretches the whole image rather than fetching outside it.
 
@@ -2670,17 +2673,20 @@ program built in the background, the scene on screen going on meanwhile), keep t
 scheduled, report the failure and recover by retry or by another scene; uniforms are sent only
 when they change, including a look change made while another scene drew; and the Lab never
 applies a setup while it is being built. `src/display.verify.ts` adds the display:
-`contextRestore`, on the pond, its poster stands in until it draws: its first frame is the poster
-exactly as the page lays it (`center / cover`), its clock at 0, and only then is the page told it
-shows; a lost context draws nothing while the frame loop goes on, and once the browser restores
-it the scene enters again the same way and draws, its plant atlas painted anew (no frame binds a
-texture made before the loss, as the sheet the pond kept from its last visit would be);
+`contextRestore`, on the pond, nothing but the page's background shows until the scene's first
+frame, which shows nothing else either, its clock at 0, nor until its plant atlas is painted; the
+scene then appears out of the bare page cell by cell, on every frame the cells the reveal holds
+back exactly the background and the rest the pond, out of nothing but the blank texel on the
+uLeaving unit, none held back within the reveal's 0.8 s; a lost context draws nothing while the
+frame loop goes on, and once the browser restores it the scene appears again the same way and
+draws, its plant atlas painted anew (no frame binds a texture made before the loss, as the sheet
+the pond kept from its last visit would be);
 `frameGovernor`, a moving scene on a 120 Hz display draws 30 frames a second at rest and 60 from
 the first frame after input until it has played out, and paused or at motion 0 the picture stops
 issuing draws once the change has played out, until input wakes it, a pointer that moves nothing
 for a moment only (`src/display.test.ts` and `src/governor.test.ts` check the cells on whole device
-pixels at 125 %, the budget and its slack, the poster's placement, the frame divisors, the pacing
-through jitter and dropped frames and the rest rate without a browser).
+pixels at 125 %, the budget and its slack, the frame divisors, the pacing through jitter and
+dropped frames and the rest rate without a browser).
 Checks that drive frames by hand start the renderer unpaced (`start({ paced: false })`) and run
 frames, a little real time apart, until it is no longer `waiting` for a scene's program.
 

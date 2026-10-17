@@ -1,10 +1,13 @@
 // The renderer's display in real WebGL (src/display.ts, src/governor.ts), each check on a renderer
 // of its own, its frames run by hand at chosen rAF times. Registered in verify-browser.ts.
 //
-// contextRestore: on the pond, the default scene, its poster (the page's loading state) stands in
-// until the scene draws: its first frame is the poster exactly as the page lays it, which the
-// scene then dissolves out of, its clock starting at 0, and only then is the page told it shows. A
-// lost context draws nothing (the frame loop goes on) and, once restored, the scene enters again
+// contextRestore: on the pond, the default scene, passages on, the canvas shows nothing but the
+// page's background until the scene's first frame, which shows nothing else either, its clock at
+// 0, nor until the pond's world is in place (its plant atlas painted); the scene then appears out
+// of the bare page cell by cell (`REVEAL`): on every frame the cells whose ordered-dither threshold
+// the reveal has not reached are the background exactly and the rest are the scene, out of nothing
+// but the blank texel on the uLeaving unit, until within the reveal's seconds none is held back. A
+// lost context draws nothing (the frame loop goes on) and, once restored, the scene appears again
 // the same way and draws, its plant atlas painted again: nothing binds a texture made before the
 // loss (the sheets a painter keeps, src/sheet.ts, go with their context). frameGovernor: a moving
 // scene on a 120 Hz display draws 30 frames a second at rest and 60 from the first frame after
@@ -12,9 +15,10 @@
 // change has played out (SETTLE_SECONDS); input wakes it, a pointer that only moves for a moment
 // (POINTER_SECONDS).
 import { stageCells } from "./display.ts";
+import { LEAVING_UNIT } from "./program-cache.ts";
 import { PLANT_ATLAS_SIZE } from "./scenes/pond/atlas.ts";
 import { POINTER_SECONDS, SETTLE_SECONDS } from "./governor.ts";
-import { DitherRenderer, type RenderSettings } from "./renderer.ts";
+import { DitherRenderer, REVEAL, type RenderSettings } from "./renderer.ts";
 import { defaultsFor, paramDefaults, renderSettings } from "./state.ts";
 import { check, holdFrames, LAKE_FJORD, stage, until as poll } from "./verify/kit.ts";
 
@@ -37,7 +41,8 @@ function settings(motion = 1): RenderSettings {
 
 /**
  * The pond at its defaults, passages on: the default scene, its border plants drawn from a painted
- * atlas, entering out of its poster.
+ * atlas, appearing out of the bare page. In the source view its picture has no cell of the page's
+ * background colour, so on screen the background shows exactly where the reveal holds cells back.
  */
 function pond(): RenderSettings {
   return renderSettings(
@@ -46,59 +51,13 @@ function pond(): RenderSettings {
   );
 }
 
-/** The test poster's side in px: square, so the page's 16:10 box crops it top and bottom. */
-const POSTER = 20;
-
-/** The colour of the test poster's pixel `u`, `v` (from its top left): each one its own. */
-function posterColour(u: number, v: number): readonly [number, number, number] {
-  return [u * 12, v * 12, (u + v) % 2 === 0 ? 40 : 220];
-}
-
-/** The test poster as a decoded image, as the page hands a scene's thumbnail over. */
-async function posterImage(): Promise<HTMLImageElement> {
-  const canvas = document.createElement("canvas");
-  canvas.width = POSTER;
-  canvas.height = POSTER;
-  const context = canvas.getContext("2d");
-  if (!context) throw new Error("Poster canvas unavailable");
-  const pixels = context.createImageData(POSTER, POSTER);
-  for (let v = 0; v < POSTER; v++)
-    for (let u = 0; u < POSTER; u++)
-      pixels.data.set([...posterColour(u, v), 255], (v * POSTER + u) * 4);
-  context.putImageData(pixels, 0, 0);
-  const image = new Image();
-  image.src = canvas.toDataURL("image/png");
-  await image.decode();
-  return image;
-}
-
 /**
- * Cells on the canvas that differ from the test poster as the page lays it over the canvas's box
- * (styles.css, `background: center / cover`): scaled to the least size that covers the box, centred,
- * each cell showing the poster pixel under its centre. Only cells wholly inside the box count.
+ * The shader's `bayer8` at cell `x`, `y` (rows bottom up, as gl_FragCoord counts them): the
+ * threshold at which the reveal shows the cell, the "fade" blend's order (`REVEAL.blend`).
  */
-function posterMisses(gl: WebGL2RenderingContext): number {
-  const dpr = window.devicePixelRatio;
-  const boxWidth = Math.round(WIDTH * dpr);
-  const boxHeight = Math.round(HEIGHT * dpr);
-  const { cell, width, height } = stageCells(boxWidth, boxHeight, dpr, 1);
-  const scale = Math.max(boxWidth / POSTER, boxHeight / POSTER);
-  const left = (boxWidth - POSTER * scale) / 2;
-  const top = (boxHeight - POSTER * scale) / 2;
-  const bytes = new Uint8Array(width * height * 4);
-  gl.readPixels(0, 0, width, height, gl.RGBA, gl.UNSIGNED_BYTE, bytes);
-  let misses = 0;
-  for (let y = 0; y < Math.floor(boxHeight / cell); y++)
-    for (let x = 0; x < Math.floor(boxWidth / cell); x++) {
-      const colour = posterColour(
-        Math.floor(((x + 0.5) * cell - left) / scale),
-        Math.floor(((y + 0.5) * cell - top) / scale),
-      );
-      // readPixels rows run bottom up.
-      const at = ((height - 1 - y) * width + x) * 4;
-      if (colour.some((value, channel) => bytes[at + channel] !== value)) misses++;
-    }
-  return misses;
+function bayer8(x: number, y: number): number {
+  const bayer2 = (u: number, v: number) => ((u % 2) * 0.5 + (v % 2) * 0.75) % 1;
+  return (bayer2(x >> 2, y >> 2) * 0.25 + bayer2(x >> 1, y >> 1)) * 0.25 + bayer2(x, y);
 }
 
 /** A renderer on a canvas of its own, its frames run by hand. */
@@ -122,8 +81,11 @@ interface Page {
   atlases: () => number;
   /** Binds, since the context was last lost, of a texture made before that: one the loss killed. */
   staleBinds: () => number;
-  /** How often the renderer has told the page a scene shows (`shown`: the poster goes then). */
-  shown: () => number;
+  /**
+   * The last draw on the canvas: the `uDissolve` it was sent, and the size of the texture on the
+   * uLeaving unit it drew with ("1x1" the blank texel; "image" uploaded from a picture).
+   */
+  screen: () => { dissolve: readonly number[]; leaving: string };
   /** The scene clock (`uTime`) the last draw sent. */
   sceneTime: () => number;
   /**
@@ -140,9 +102,20 @@ function page(paced: boolean, initial: RenderSettings): Page {
   // The renderer asks for this same context.
   const { canvas, gl } = stage(WIDTH, HEIGHT);
   let issued = 0;
+  // The size each texture was last given (see `screen`), and that of the one on the uLeaving unit
+  // when the canvas was last drawn on.
+  const sizes = new WeakMap<WebGLTexture, string>();
+  let leaving = "";
   const drawArrays = gl.drawArrays.bind(gl);
   gl.drawArrays = (mode, first, count) => {
     issued++;
+    if (gl.getParameter(gl.FRAMEBUFFER_BINDING) === null) {
+      const unit = gl.getParameter(gl.ACTIVE_TEXTURE) as number;
+      gl.activeTexture(gl.TEXTURE0 + LEAVING_UNIT);
+      const texture = gl.getParameter(gl.TEXTURE_BINDING_2D) as WebGLTexture | null;
+      gl.activeTexture(unit);
+      leaving = texture === null ? "none" : (sizes.get(texture) ?? "unsized");
+    }
     drawArrays(mode, first, count);
   };
   const clear = gl.clear.bind(gl);
@@ -174,14 +147,21 @@ function page(paced: boolean, initial: RenderSettings): Page {
   const texImage2D = gl.texImage2D.bind(gl) as (...args: unknown[]) => void;
   gl.texImage2D = ((...args: unknown[]) => {
     if (args[3] === PLANT_ATLAS_SIZE && args[4] === PLANT_ATLAS_SIZE) atlases++;
+    // Nine arguments give the size; six, a picture to take it from.
+    const texture = gl.getParameter(gl.TEXTURE_BINDING_2D) as WebGLTexture | null;
+    if (texture !== null)
+      sizes.set(texture, args.length > 6 ? `${String(args[3])}x${String(args[4])}` : "image");
     texImage2D(...args);
   }) as typeof gl.texImage2D;
-  // The scene clock each draw sends: `uTime` at the locations programs look up for it.
+  // The scene clock each draw sends (`uTime`) and the dissolve each draw on the canvas is sent
+  // (`uDissolve`), at the locations programs look up for them.
   const timeLocations = new Set<WebGLUniformLocation>();
+  const dissolveLocations = new Set<WebGLUniformLocation>();
   const getUniformLocation = gl.getUniformLocation.bind(gl);
   gl.getUniformLocation = (program, name) => {
     const location = getUniformLocation(program, name);
     if (name === "uTime" && location !== null) timeLocations.add(location);
+    if (name === "uDissolve" && location !== null) dissolveLocations.add(location);
     return location;
   };
   let sceneTime = Number.NaN;
@@ -190,12 +170,18 @@ function page(paced: boolean, initial: RenderSettings): Page {
     if (location !== null && timeLocations.has(location)) sceneTime = x;
     uniform1f(location, x);
   };
-  let shown = 0;
-  const renderer = new DitherRenderer(canvas, initial, false, {
-    shown: () => {
-      shown++;
-    },
-  });
+  let dissolve: readonly number[] = [];
+  const uniform3f = gl.uniform3f.bind(gl);
+  gl.uniform3f = (location, x, y, z) => {
+    if (
+      location !== null &&
+      dissolveLocations.has(location) &&
+      gl.getParameter(gl.FRAMEBUFFER_BINDING) === null
+    )
+      dissolve = [x, y, z];
+    uniform3f(location, x, y, z);
+  };
+  const renderer = new DitherRenderer(canvas, initial, false);
   const frames = holdFrames();
   renderer.start({ paced });
   const frame = (now: number): number => {
@@ -235,7 +221,7 @@ function page(paced: boolean, initial: RenderSettings): Page {
     arrive: (now, step) => until(now, step, () => !renderer.waiting, "No scene on screen"),
     atlases: () => atlases,
     staleBinds: () => stale,
-    shown: () => shown,
+    screen: () => ({ dissolve, leaving }),
     sceneTime: () => sceneTime,
     next(name) {
       const { promise, resolve, reject } = Promise.withResolvers<void>();
@@ -261,7 +247,7 @@ function page(paced: boolean, initial: RenderSettings): Page {
 export async function verifyContextRestore(
   _gl: WebGL2RenderingContext,
 ): Promise<Record<string, unknown>> {
-  const poster = await posterImage();
+  const settings = pond();
   const {
     renderer,
     gl,
@@ -271,41 +257,106 @@ export async function verifyContextRestore(
     until,
     atlases,
     staleBinds,
-    shown,
+    screen,
     sceneTime,
     next,
     dispose,
-  } = page(false, pond());
+  } = page(false, settings);
+  const dpr = window.devicePixelRatio;
+  const { width, height } = stageCells(Math.round(WIDTH * dpr), Math.round(HEIGHT * dpr), dpr, 1);
+  const bg = Number.parseInt(settings.bg.slice(1), 16);
+  const pixels = new Uint8Array(width * height * 4);
+  /** Whether each cell on the canvas shows the page's background exactly, rows bottom up. */
+  const background = (): boolean[] => {
+    gl.readPixels(0, 0, width, height, gl.RGBA, gl.UNSIGNED_BYTE, pixels);
+    return Array.from(
+      { length: width * height },
+      (_, cell) =>
+        pixels[cell * 4] === bg >> 16 &&
+        pixels[cell * 4 + 1] === ((bg >> 8) & 255) &&
+        pixels[cell * 4 + 2] === (bg & 255),
+    );
+  };
   /**
-   * Frames until the pond enters out of its poster: the page is not told it shows while it waits,
-   * and is told once it has drawn, its frame then the poster exactly as the page lays it and its
-   * clock at 0 (the page's own has run on through every frame).
+   * Frames from `from`, 17 ms apart and a little real time apart (the pond paints its plant atlas
+   * meanwhile), until the pond has appeared: nothing but the background until it is on screen,
+   * then from its first frame (its clock at 0) on the reveal. On every frame it dissolves out of the
+   * bare page (`uDissolve.y` 0, the blank texel on the uLeaving unit), the cells it holds back
+   * (`bayer8` under its share) are the background and the others the pond, and it holds back no
+   * more cells than on the frame before. It begins (holds back fewer than all) only once the
+   * pond's world is in place, its plant atlas painted since `painted` uploads, and within
+   * REVEAL.seconds of that holds back none. The last frame's time, and how many frames it took.
    */
-  const enter = async (from: number, told: number): Promise<number> => {
-    const at = await until(
+  const appear = async (from: number, painted: number): Promise<{ at: number; frames: number }> => {
+    let at = await until(
       from,
       17,
       () => {
-        check(
-          shown() === (renderer.waiting ? told : told + 1),
-          `The page was told the scene shows ${shown() - told} times while it was ` +
-            `${renderer.waiting ? "" : "not "}waiting`,
-        );
+        const shown = background().filter((cell) => !cell).length;
+        check(shown === 0, `Before the scene was on screen ${shown} cells showed something else`);
         return !renderer.waiting;
       },
       "No scene on screen",
     );
-    const misses = posterMisses(gl);
-    check(misses === 0, `The scene's first frame was not its poster: ${misses} cells differ`);
     check(sceneTime() === 0, `The scene's clock started at ${sceneTime()} s, not at 0`);
-    return at;
+    /** The frame at which the reveal's clock started: the last one it held every cell back. */
+    let start = Number.NaN;
+    let held = width * height;
+    let frames = 0;
+    /** The frame at `at` as the reveal has it; whether it holds no cell back any more. */
+    const shows = (): boolean => {
+      frames++;
+      const { dissolve, leaving } = screen();
+      check(
+        dissolve[1] === 0 && leaving === "1x1",
+        `The scene appeared out of a frame (uDissolve ${dissolve.join(", ")}, ${leaving} on ` +
+          "uLeaving), not out of the bare page",
+      );
+      const share = Math.fround(dissolve[0] ?? Number.NaN);
+      const cells = background();
+      let holds = 0;
+      let wrong = 0;
+      for (let y = 0; y < height; y++)
+        for (let x = 0; x < width; x++) {
+          const hold = bayer8(x, y) < share;
+          if (hold) holds++;
+          if (cells[y * width + x] !== hold) wrong++;
+        }
+      if (Number.isNaN(start) && holds < width * height) {
+        start = at - 17;
+        check(atlases() > painted, "The reveal began before the pond's plant atlas was painted");
+      }
+      const when = Number.isNaN(start) ? "Before the reveal began" : `${at - start} ms into it`;
+      check(
+        wrong === 0,
+        `${when}, ${wrong} cells were not as the reveal had them (the background where it held ` +
+          "them back, else the pond)",
+      );
+      check(holds <= held, `${when}, the reveal held back ${holds} cells, after ${held}`);
+      held = holds;
+      check(
+        held === 0 || Number.isNaN(start) || at - start < REVEAL.seconds * 1000,
+        `${when}, the reveal still held back ${held} cells`,
+      );
+      return held === 0;
+    };
+    if (!shows())
+      await until(
+        at + 17,
+        17,
+        () => {
+          at += 17;
+          return shows();
+        },
+        "The pond did not appear",
+      );
+    return { at, frames };
   };
   try {
-    renderer.setPoster("pond", poster);
-    let now = await enter(1000, 0);
-    // The pond paints its plant atlas over its first frames (here on the page: the check's server
+    const opened = await appear(1000, 0);
+    let now = opened.at;
+    // The pond painted its plant atlas before it appeared (here on the page: the check's server
     // has no build worker), and keeps it once disposed, for its next visit.
-    now = await until(now + 17, 17, () => atlases() > 0, "The pond's plant atlas was not painted");
     const painted = atlases();
     check(frame((now += 17)) > 0 && drawn(), "The scene did not draw before the context was lost");
     const ranFor = sceneTime();
@@ -319,27 +370,13 @@ export async function verifyContextRestore(
     for (let i = 0; i < 3; i++) whileLost += frame((now += 17));
     check(whileLost === 0, `A lost context issued ${whileLost} draws`);
     check(scheduled(), "No frame was asked for while the context was lost");
-    check(shown() === 1, "The page was told a scene shows while the context was lost");
-    // The page hands the poster over again as the context goes (main.ts).
-    renderer.setPoster("pond", poster);
     const restored = next("webglcontextrestored");
     lose.restoreContext();
     await restored;
-    now = await enter(now + 17, 1);
-    // Entered again, the pond paints its atlas anew: the one kept from before the loss is dead, and
-    // no frame binds it (nor any other texture made before the loss).
-    now = await until(
-      now + 17,
-      17,
-      () => {
-        check(
-          staleBinds() === 0,
-          `After the restore, ${staleBinds()} binds took textures made before the loss`,
-        );
-        return atlases() > painted;
-      },
-      "The pond's plant atlas was not painted again after the restore",
-    );
+    const reopened = await appear(now + 17, painted);
+    now = reopened.at;
+    // Appeared again, the pond painted its atlas anew (`appear`): the one kept from before the
+    // loss is dead, and no frame since the restore bound it (nor any other texture made before it).
     const after = frame((now += 17));
     check(
       renderer.failure === undefined && after > 0 && drawn() && staleBinds() === 0,
@@ -347,10 +384,11 @@ export async function verifyContextRestore(
         `${staleBinds()} stale texture binds`,
     );
     return {
+      revealFrames: opened.frames,
+      revealFramesAfterRestore: reopened.frames,
       whileLost,
       drawsAfterRestore: after,
       atlasesPainted: atlases(),
-      toldShown: shown(),
     };
   } finally {
     dispose();

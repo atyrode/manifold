@@ -62,38 +62,6 @@ export function cellScale(cells: Cells, deviceWidth: number, deviceHeight: numbe
   return x === 1 && y === 1 ? "" : `${x} ${y}`;
 }
 
-/** A rectangle in cells, from the cells' top left. */
-export interface CellRect {
-  readonly x: number;
-  readonly y: number;
-  readonly width: number;
-  readonly height: number;
-}
-
-/**
- * Where an image of `width` × `height` px lands in `cells` laid over a box of `deviceWidth` ×
- * `deviceHeight` device pixels (from its top left, as `cellScale` lays them) when CSS lays it over
- * that box with `background: center / cover`: scaled to the least size that covers the box, and
- * centred on it.
- */
-export function coverCells(
-  cells: Cells,
-  deviceWidth: number,
-  deviceHeight: number,
-  width: number,
-  height: number,
-): CellRect {
-  const boxWidth = Math.max(1, Math.round(deviceWidth));
-  const boxHeight = Math.max(1, Math.round(deviceHeight));
-  const scale = Math.max(boxWidth / width, boxHeight / height);
-  return {
-    x: (boxWidth - width * scale) / 2 / cells.cell,
-    y: (boxHeight - height * scale) / 2 / cells.cell,
-    width: (width * scale) / cells.cell,
-    height: (height * scale) / cells.cell,
-  };
-}
-
 /**
  * A canvas's box in device pixels, kept by a ResizeObserver (its device-pixel content box; where
  * the browser lacks that, Safari, its CSS box times devicePixelRatio), and where it sits on the
@@ -156,14 +124,6 @@ export class StageBox {
       this.#cells.set(pixel, cells);
     }
     return cells;
-  }
-
-  /**
-   * Where an image of `width` × `height` px lands in `cells` as the page lays it over the box with
-   * `background: center / cover` (`coverCells`).
-   */
-  cover(cells: Cells, width: number, height: number): CellRect {
-    return coverCells(cells, this.#deviceWidth, this.#deviceHeight, width, height);
   }
 
   /** Size the canvas to `cells`, stretched so each lands on whole device pixels (`cellScale`). */

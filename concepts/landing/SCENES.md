@@ -814,15 +814,18 @@ How the page puts the scenes on screen (`src/renderer.ts`, `src/program-cache.ts
 - **Sims build off the page.** A sim's heavy build (the countryside's land, frost's field, dew's
   web, the bonsai's tree and its maps, the dry garden's layout, the forest's warm-up, the slime
   mould's dish, the pond's sheets) runs on the build worker (`src/sims/build.ts`), byte for byte
-  the page's; the sim is not ready until its first lands, so a passage enters with it in place.
-- **Builds never block.** Every program builds in the background, the first one too: the scene's
-  thumbnail shows until it is built, a cut or a retry keeps the old picture moving meanwhile.
-- **Failures.** A lost WebGL context is asked back and, once restored, the scene starts over; while
-  it is lost, and on a browser without WebGL2, the scene's thumbnail stands in, still. It also
-  stands in from the page's first paint (the scene the link names) until the scene draws, which
-  dissolves out of it. Without JavaScript the page shows the landing copy over the default scene's
-  thumbnail. A scene whose shader source does not assemble shows the failure screen. At most eight
-  programs are kept across scenes.
+  the page's; the sim is not ready until its first lands, so a passage enters with it in place,
+  and the page's first scene appears with it in place.
+- **Builds never block.** Every program builds in the background, the first one too: the bare page
+  shows until it is built and its sim is ready (at most 3 s), and the scene then appears out of it
+  cell by cell, each cell at its own Bayer threshold, over 0.8 s, every cell crisp from the first
+  (simply there once built with transitions off, at motion 0 or under reduced motion); a cut or a
+  retry keeps the old picture moving meanwhile.
+- **Failures.** A lost WebGL context is asked back and, once restored, the scene starts over as on
+  the first load: the bare page while it is lost and while it builds again, then the same reveal.
+  Without WebGL2, or without JavaScript, the page shows its copy over its bare background. A scene
+  whose shader source does not assemble shows the failure screen. At most eight programs are kept
+  across scenes.
 
 ## GPU cost on real hardware
 

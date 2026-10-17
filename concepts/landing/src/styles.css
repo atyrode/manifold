@@ -38,23 +38,6 @@ a {
   image-rendering: pixelated;
 }
 
-/* The scene's committed thumbnail in the canvas's place: from the first paint until the scene
-   draws, which dissolves out of it; while a lost context comes back; for good without WebGL2
-   (index.html, main.ts). It covers the stage's own box, as the renderer lays it in the dissolve.
-   Without JavaScript, index.html's <noscript> shows the default scene's the same way. */
-body.poster::before {
-  content: "";
-  position: fixed;
-  inset: 0;
-  width: 100vw;
-  height: 100vh;
-  background: var(--poster) center / cover no-repeat;
-  image-rendering: pixelated;
-}
-body.poster #stage {
-  visibility: hidden;
-}
-
 .overlay {
   position: fixed;
   inset: 0;

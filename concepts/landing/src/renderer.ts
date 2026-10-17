@@ -86,8 +86,20 @@ export interface RenderSettings {
   slowmo: number;
 }
 
-/** Passage-clock seconds a passage waits at most for the incoming sim to be ready (SceneSim.ready). */
+/**
+ * Passage-clock seconds a passage, or a scene entering from nothing, waits at most for the incoming
+ * sim to be ready (SceneSim.ready).
+ */
 const READY_WAIT = 3;
+/**
+ * How a scene entering from nothing (the page's first frame, a restored context) appears out of the
+ * bare page: cell by cell at full resolution, each cell at its own ordered-dither threshold (the
+ * "fade" blend's order), over this many passage-clock seconds.
+ */
+export const REVEAL = { blend: "fade", seconds: 0.8 } as const satisfies {
+  blend: BlendId;
+  seconds: number;
+};
 /** Scene-clock time of a trigger or press that has not happened. */
 const NEVER = -1e4;
 /**
@@ -190,8 +202,8 @@ interface SceneDraw {
   /** `uDissolve.x`: share of the outgoing frame still showing. */
   dissolve: number;
   /**
-   * The outgoing frame it dissolves out of (`uLeaving`, `uDissolve.y` 1): the leaving scene's, or
-   * the poster's (`DitherRenderer.setPoster`); undefined for the bare page (`uBg`).
+   * The outgoing frame it dissolves out of (`uLeaving`, `uDissolve.y` 1): the leaving scene's;
+   * undefined for the bare page (`uBg`).
    */
   from: WebGLTexture | undefined;
   blend: BlendId;
@@ -220,20 +232,6 @@ function compile(
 function rgb(hex: string): [number, number, number] {
   const n = Number.parseInt(hex.replace("#", ""), 16);
   return [((n >> 16) & 255) / 255, ((n >> 8) & 255) / 255, (n & 255) / 255];
-}
-
-/**
- * A texture for a whole frame, made and bound on the active unit: a texel a cell, nearest, clamped
- * (the leaving scene's frame, the poster).
- */
-function frameTexture(gl: WebGL2RenderingContext): WebGLTexture {
-  const texture = gl.createTexture();
-  gl.bindTexture(gl.TEXTURE_2D, texture);
-  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
-  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
-  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
-  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
-  return texture;
 }
 
 /**
@@ -276,7 +274,12 @@ function glResources(gl: WebGL2RenderingContext): GlResources {
     gl.UNSIGNED_BYTE,
     new Uint8Array([0, 0, 0, 255]),
   );
-  const leavingFrame = frameTexture(gl);
+  const leavingFrame = gl.createTexture();
+  gl.bindTexture(gl.TEXTURE_2D, leavingFrame);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
   gl.texImage2D(
     gl.TEXTURE_2D,
     0,
@@ -423,24 +426,18 @@ export class DitherRenderer {
    * dissolves out of the outgoing scene, which goes on drawing into the leaving frame
    * (`GlResources.leavingFrame`) until the dissolve is done. `#arrival.start`: NaN on an
    * entrance's first frame (see `#draw`), -Infinity when arrived without one (a cut);
-   * `#arrival.from`: the frame it dissolves out of (`SceneDraw.from`).
+   * `#arrival.entered`: when it entered; `#arrival.from`: the frame it dissolves out of
+   * (`SceneDraw.from`); `#arrival.reveal`: it entered from nothing and appears out of the bare page
+   * (`REVEAL`).
    */
   #passageClock = 0;
   #leaving: Leaving | undefined;
-  readonly #arrival: { start: number; from: WebGLTexture | undefined } = {
-    start: -Infinity,
-    from: undefined,
-  };
-  /**
-   * The thumbnail a scene entering from nothing dissolves out of (see `setPoster`), until one
-   * enters, and the texture it was painted into while that scene dissolves out of it.
-   */
-  #poster: { scene: SceneId; image: HTMLImageElement } | undefined;
-  #posterFrame: WebGLTexture | undefined;
-  /** Called once a scene shows after the page opened or a lost context was restored (`shown`). */
-  readonly #shown: (() => void) | undefined;
-  /** This frame entered a scene from nothing: `#shown` is due once it is drawn. */
-  #unveil = false;
+  readonly #arrival: {
+    start: number;
+    entered: number;
+    from: WebGLTexture | undefined;
+    reveal: boolean;
+  } = { start: -Infinity, entered: 0, from: undefined, reveal: false };
   #reenter = false;
   readonly #leavingSize = { width: 0, height: 0 };
   /** What the leaving scene's sim and shader see of the triggers: none fire. */
@@ -451,15 +448,13 @@ export class DitherRenderer {
   /**
    * `frozen`: reduced motion (see `#interactionClock`). `options.cellBudget`: the cells a frame is
    * budgeted (default CELL_BUDGET, src/display.ts; the GPU timing page lifts it to time larger
-   * grids). `options.shown`: called once a scene shows, on the frame it first draws (or enters
-   * failed) after the page opened or a lost context was restored: the page's poster then goes
-   * (main.ts).
+   * grids).
    */
   constructor(
     canvas: HTMLCanvasElement,
     settings: RenderSettings,
     frozen: boolean,
-    options: { cellBudget?: number; shown?: () => void } = {},
+    options: { cellBudget?: number } = {},
   ) {
     const gl = canvas.getContext("webgl2", {
       antialias: false,
@@ -470,7 +465,6 @@ export class DitherRenderer {
     this.#gl = gl;
     this.#settings = settings;
     this.#frozen = frozen;
-    this.#shown = options.shown;
     this.#gpu = glResources(gl);
     this.#programs = new ScenePrograms(
       gl,
@@ -586,17 +580,6 @@ export class DitherRenderer {
     this.#expecting = expect;
   }
 
-  /**
-   * The committed thumbnail of `scene` (thumbs/<id>.webp, dithered as the page draws it), which the
-   * page shows in the canvas's place until a scene draws (main.ts). `scene` entering from nothing
-   * (the page's first frame, a restored context) with passages on dissolves out of it, laid over
-   * the stage as the page lays it (`background: center / cover`), instead of out of the bare page.
-   * Taken by the next scene to enter from nothing, and shown only if that is `scene`.
-   */
-  setPoster(scene: SceneId, image: HTMLImageElement): void {
-    this.#poster = { scene, image };
-  }
-
   /** Play the current scene's exit, then its entrance with a fresh simulation, even with passages off. */
   replayPassage(): void {
     if (this.#scene === undefined || this.#leaving !== undefined || this.#frozen) return;
@@ -651,10 +634,6 @@ export class DitherRenderer {
         if (scene !== undefined && scene.failure === undefined) this.#fail(scene, "frame", error);
         else console.error("evt=landing.renderer.frame_failed", error);
       }
-      if (this.#unveil) {
-        this.#unveil = false;
-        this.#shown?.();
-      }
     };
     requestAnimationFrame(tick);
   }
@@ -705,10 +684,9 @@ export class DitherRenderer {
 
   /**
    * Whether the scene the setup asks for is not on screen yet for want of its program, which builds
-   * in the background meanwhile: on the page's first frames (the bare page shows, under the page's
-   * poster), after a cut or a retry (the scene on screen goes on as it last drew) and after a
-   * restored context. A program that fails to build ends it too, the scene entering failed
-   * (`failure`).
+   * in the background meanwhile: on the page's first frames (the bare page shows), after a cut or
+   * a retry (the scene on screen goes on as it last drew) and after a restored context. A program
+   * that fails to build ends it too, the scene entering failed (`failure`).
    */
   get waiting(): boolean {
     return this.#waiting;
@@ -840,9 +818,6 @@ export class DitherRenderer {
     this.#rebuild = false;
     this.#waiting = false;
     this.#entering = false;
-    // The poster's texture went with the context too (the page hands the poster over again).
-    this.#posterFrame = undefined;
-    this.#arrival.from = undefined;
     this.#programs.lose();
     forgetSheets(this.#gl);
   }
@@ -982,26 +957,27 @@ export class DitherRenderer {
     const arrival = this.#arrival;
     if (entered) {
       // After a passage it dissolves out of the leaving scene; entering from nothing (the page's
-      // first frame, a restored context) out of its poster where the page handed that over (see
-      // `setPoster`), else out of the bare page; after a cut it is simply there. A passing
-      // entrance's clock starts on its second frame: the first one compiles the program on the GPU
-      // (drivers do it at the first draw), which can take longer than the whole dissolve, so it is
-      // shown as the dissolve's start.
+      // first frame, a restored context) it appears out of the bare page (`REVEAL`); after a cut
+      // it is simply there. A passing entrance's clock starts on its second frame: the first one
+      // compiles the program on the GPU (drivers do it at the first draw), which can take longer
+      // than the whole dissolve, so it is shown as the dissolve's start. A scene entering from
+      // nothing starts it only once its sim has what it shows (`SceneSim.ready`, at most READY_WAIT
+      // seconds), as a passage runs the incoming scene ahead until then: the bare page shows
+      // meanwhile, so the reveal assembles the scene's whole world.
       const passed = this.#reenter;
-      const passing = passed || (current === undefined && this.#passing(s));
-      arrival.start = passing ? Number.NaN : -Infinity;
+      arrival.reveal = !passed && current === undefined && this.#passing(s);
+      arrival.start = passed || arrival.reveal ? Number.NaN : -Infinity;
+      arrival.entered = seconds;
       arrival.from = passed ? this.#gpu.leavingFrame : undefined;
-      if (current === undefined) {
-        if (passing) arrival.from = this.#paintPoster(scene.id, cells);
-        this.#poster = undefined;
-        this.#unveil = true;
-      }
       this.#reenter = false;
       this.#rebuild = false;
-    } else if (Number.isNaN(arrival.start)) {
+    } else if (
+      Number.isNaN(arrival.start) &&
+      !(arrival.reveal && scene.sim?.ready?.() === false && seconds - arrival.entered < READY_WAIT)
+    ) {
       arrival.start = seconds;
     }
-    const weave = Math.max(s.weave, 1e-3);
+    const weave = arrival.reveal ? REVEAL.seconds : Math.max(s.weave, 1e-3);
     const since = Number.isNaN(arrival.start) ? 0 : Math.max(0, seconds - arrival.start);
     const passage = scene.passage;
     const choreography = sceneDefs[scene.id].passage;
@@ -1134,19 +1110,12 @@ export class DitherRenderer {
       pressedAt: this.#mouse.pressedAt > NEVER ? this.#mouse.pressedAt - lag : NEVER,
       dissolve,
       from: arrival.from,
-      blend: s.blend,
+      blend: arrival.reveal ? REVEAL.blend : s.blend,
     });
     // The blend is done once the incoming scene shows alone (at once if it cannot draw).
     if (leaving !== undefined && woven !== undefined && (!drew || dissolve <= 0)) {
       this.#release(woven.scene);
       this.#leaving = undefined;
-    }
-    // The poster's texture goes once nothing dissolves out of it any more.
-    const posterFrame = this.#posterFrame;
-    if (posterFrame !== undefined && (arrival.from !== posterFrame || dissolve <= 0)) {
-      this.#gl.deleteTexture(posterFrame);
-      this.#posterFrame = undefined;
-      if (arrival.from === posterFrame) arrival.from = undefined;
     }
     // Whether this frame moved anything still on its way (see `#still`), and played an entrance.
     this.#entering = dissolve > 0 || passage.enter < 1;
@@ -1279,35 +1248,6 @@ export class DitherRenderer {
     gl.activeTexture(gl.TEXTURE0 + LEAVING_UNIT);
     gl.bindTexture(gl.TEXTURE_2D, this.#gpu.leavingFrame);
     gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, width, height, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
-  }
-
-  /**
-   * The poster handed over for `scene` (see `setPoster`) painted over `cells` where the page lays
-   * it, a texel a cell, into a texture of its own (`#posterFrame`) for the scene to dissolve out
-   * of; undefined without one for `scene`.
-   */
-  #paintPoster(scene: SceneId, cells: Cells): WebGLTexture | undefined {
-    const poster = this.#poster;
-    if (poster?.scene !== scene) return undefined;
-    const { image } = poster;
-    const canvas = new OffscreenCanvas(cells.width, cells.height);
-    const context = canvas.getContext("2d");
-    if (context === null || image.naturalWidth === 0 || image.naturalHeight === 0) return undefined;
-    // Nearest, as the page's `image-rendering: pixelated` shows it.
-    context.imageSmoothingEnabled = false;
-    const at = this.#stage.cover(cells, image.naturalWidth, image.naturalHeight);
-    context.drawImage(image, at.x, at.y, at.width, at.height);
-    const gl = this.#gl;
-    if (this.#posterFrame !== undefined) gl.deleteTexture(this.#posterFrame);
-    gl.activeTexture(gl.TEXTURE0 + LEAVING_UNIT);
-    const texture = frameTexture(gl);
-    // The canvas's rows run top down, a texture's up from uv.y 0; every other upload expects the
-    // flip off (src/sims/gpu.ts).
-    gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);
-    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, canvas);
-    gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
-    this.#posterFrame = texture;
-    return texture;
   }
 
   /**
