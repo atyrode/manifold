@@ -1,7 +1,9 @@
 import { expect, test } from "bun:test";
 import { constellationUniforms } from "../../constellations.ts";
-import { planetBodyGlsl, planetGlsl } from "./planet.ts";
-import { skyFigurePoint, skyFigures, skyGlsl } from "./sky.ts";
+import { glslActive, glslDefinitions, glslIdentifiers } from "../glsl.ts";
+import { modulesFor } from "./index.ts";
+import { planetBodyModule, planetModule } from "./planet.ts";
+import { skyFigurePoint, skyFigures, skyModule } from "./sky.ts";
 
 type Vec3 = readonly [number, number, number];
 
@@ -86,36 +88,35 @@ test("the figures stand in the forward sky side-on views frame, clear of the mid
 });
 
 test("the GLSL tables are the placed figures, compiled in only behind their gate", () => {
-  const spans = [...skyGlsl.matchAll(/ivec4\((\d+), (\d+), (\d+), (\d+)\)/g)].map((m) =>
+  const spans = [...skyModule.source.matchAll(/ivec4\((\d+), (\d+), (\d+), (\d+)\)/g)].map((m) =>
     m.slice(1, 5).map(Number),
   );
   expect(spans).toEqual(skyFigures.map((figure) => [...figure.stars, ...figure.lines]));
-  expect(skyGlsl).toContain(`const int SKY_FIGURE_COUNT = ${skyFigures.length};`);
-  // SKY_FIGURES is 0 unless a scene defines it: the tables and skyFigures sit behind `#if`.
-  const fallback = skyGlsl.indexOf("#ifndef SKY_FIGURES\n#define SKY_FIGURES 0\n#endif");
-  const gate = skyGlsl.indexOf("#if SKY_FIGURES\n");
-  expect(fallback).toBeGreaterThan(0);
-  expect(gate).toBeGreaterThan(fallback);
-  expect(skyGlsl.indexOf("const int SKY_FIGURE_COUNT")).toBeGreaterThan(gate);
-  expect(skyGlsl.indexOf("float skyFigures(")).toBeGreaterThan(gate);
-  expect(skyGlsl).not.toContain("K_planets");
-  expect(skyGlsl).not.toContain("#ifdef K_constellations");
+  const shown = (features: Record<string, number>): Set<string> =>
+    glslDefinitions(glslActive(skyModule.source, features, true));
+  // A scene without the constellations' knob leaves SKY_FIGURES undefined: none of it compiles.
+  for (const off of [{}, { SKY_FIGURES: 0 }]) {
+    expect(shown(off).has("SKY_FIGURE_COUNT")).toBe(false);
+    expect(shown(off).has("skyStars")).toBe(true);
+  }
+  expect(shown({ SKY_FIGURES: 1 }).has("SKY_FIGURE_COUNT")).toBe(true);
 });
 
 test("the planets compile in only behind their gate, the shared planet and its body tier with them", () => {
-  const fallback = skyGlsl.indexOf("#ifndef SKY_PLANETS\n#define SKY_PLANETS 0\n#endif");
-  const gate = skyGlsl.indexOf("#if SKY_PLANETS\n");
-  const otherwise = skyGlsl.indexOf("#else", gate);
-  expect(fallback).toBeGreaterThan(0);
-  expect(gate).toBeGreaterThan(fallback);
-  // The whole of planetGlsl, the body tier, the list's uniforms and skyGiant, then a stand-in that
-  // leaves the sky as it is.
-  expect(skyGlsl.indexOf(planetGlsl)).toBeGreaterThan(gate);
-  expect(skyGlsl.indexOf(planetBodyGlsl)).toBeGreaterThan(skyGlsl.indexOf(planetGlsl));
-  expect(skyGlsl.indexOf("uniform vec4 uPlanets[")).toBeGreaterThan(gate);
-  expect(skyGlsl.indexOf("vec3 skyGiant(")).toBeGreaterThan(skyGlsl.indexOf(planetBodyGlsl));
-  expect(otherwise).toBeGreaterThan(skyGlsl.indexOf("vec3 skyGiant("));
-  expect(skyGlsl.slice(otherwise)).toMatch(
-    /^#else\nvec3 skyGiant\(Sky sky, vec3 col, vec3 dir, float foot, float clear\) \{\n {2}return col;\n\}\n#endif/,
+  const caller = "vec3 sceneSky(Sky s, vec3 c, vec3 d) { return skyGiant(s, c, d, 0.001, 1.0); }";
+  const without = modulesFor(caller, {});
+  expect(without).toContain(skyModule);
+  expect(without).not.toContain(planetModule);
+  expect(without).not.toContain(planetBodyModule);
+  // The stand-in skyGiant leaves the sky as it is, reading no planet uniform.
+  const off = glslActive(skyModule.source, { SKY_PLANETS: 0 }, true);
+  expect(glslDefinitions(off).has("skyGiant")).toBe(true);
+  expect(glslIdentifiers(off).has("uPlanets")).toBe(false);
+  const held = modulesFor(caller, { SKY_PLANETS: 1 });
+  expect(held.indexOf(planetModule)).toBeGreaterThan(-1);
+  expect(held.indexOf(planetBodyModule)).toBeGreaterThan(held.indexOf(planetModule));
+  expect(held.indexOf(skyModule)).toBeGreaterThan(held.indexOf(planetBodyModule));
+  expect(glslIdentifiers(glslActive(skyModule.source, { SKY_PLANETS: 1 }, true)).has("uPlanets")).toBe(
+    true,
   );
 });

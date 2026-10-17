@@ -45,8 +45,7 @@
 // (and its "now"), K_clouds, K_shadows, K_rain, K_snow, K_fog, K_wind, K_lightning (and its "now"),
 // K_aurora, K_birds, K_birdKind, K_birdFormation, each part compiled in only while its knobs can
 // show it (worldFeatures); the meadow's own rain (its shafts, curtains and mist) with the world's.
-import { glslFloat } from "../../shaders/glsl.ts";
-import { worldGlsl } from "../../shaders/lib/world.ts";
+import { glsl, glslFloat } from "../../shaders/glsl.ts";
 import {
   GUST_TRIGGER,
   MARK_TRIGGER,
@@ -96,8 +95,7 @@ const FIELD_NEAR = 3;
 export const MEADOW_METEOR_TRIGGER = 2;
 export const MEADOW_LIGHTNING_TRIGGER = 3;
 
-export const meadowGlsl = `
-${worldGlsl}
+export const meadowGlsl = glsl`
 // ---- the view, the gust field and the near grass: constants shared with sim.ts ----
 const float MEADOW_HORIZON = ${glslFloat(MEADOW_HORIZON)};
 const float MEADOW_FOCAL = ${glslFloat(MEADOW_FOCAL)};

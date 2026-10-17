@@ -49,7 +49,9 @@
 //   float a = causticCells(q * 4.2 + vec2(tm * 0.03, 0.0), tm * 0.7, 4.2 / uRes.y);
 //   float b = causticCells(q * 5.6 + vec2(4.0, -tm * 0.025), tm * 0.9 + 2.0, 5.6 / uRes.y);
 //   float light = a * 0.3 + b * 0.2 + a * b * 0.9;
-export const causticsGlsl = `
+import { glsl } from "./glsl.ts";
+
+export const causticsGlsl = glsl`
 // ---- caustics (shaders/caustics.ts) ----
 
 vec2 causticRipples(vec2 p, float tm, vec2 wind, float scale, float steep, float pace, float foot, out vec3 hessian) {

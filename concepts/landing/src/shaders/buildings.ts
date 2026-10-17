@@ -1,7 +1,7 @@
 // Buildings seen across a landscape: a cottage, a church, chimney smoke and windows lighting up at
-// dusk. Opt-in shared GLSL: a scene concatenates `buildingsGlsl` into its own GLSL ahead of the code
-// that uses it (the countryside does, src/scenes/country/buildings.ts, for its far houses; it
-// models its near ones and its castle itself); it is not part of the libs every scene compiles.
+// dusk. buildingsModule is a shared module (glsl.ts) with no requirements, in the program of a scene
+// that calls it (the countryside does, src/scenes/country/buildings.ts, for its far houses; it
+// models its near ones and its castle itself).
 //
 // The shapes only sort a point into faces, in the shape's own units on the screen plane (y up); the
 // scene gives the faces its colours, light, wetness and snow. Each takes:
@@ -13,7 +13,11 @@
 //           point of light far off).
 // Windows and smoke are timed by the scene's clocks: buildingWindow by the time of day (0..1 from
 // midnight) and how dark it is for the people inside, buildingSmoke by the motion clock.
-export const buildingsGlsl = /* glsl */ `
+import { glsl, glslModule } from "./glsl.ts";
+
+export const buildingsModule = glslModule(
+  "buildings",
+  glsl`
 // Whether a window is lit (0/1). h: the window's hash. Windows come on one by one as the light
 // fails (or on a dark stormy day), most go dark between half past ten and two, and a few early
 // risers light up again before dawn; only \`share\` of them ever light.
@@ -125,4 +129,5 @@ float buildingSmoke(vec2 q, vec2 top, float tall, float seed, float t, float win
   float puffs = vnoise(vec2(x * 9.0 + seed * 17.0, h * 6.0 - t * 0.7));
   return body * (0.45 + 0.75 * puffs) * smoothstep(0.0, 0.04, h) * (1.0 - smoothstep(0.35, 1.0, h));
 }
-`;
+`,
+);

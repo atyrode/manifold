@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { BIRD_FORMATIONS, BIRD_KIND, birdsGlsl, type BirdKind } from "../shaders/lib/birds.ts";
+import { BIRD_FORMATIONS, BIRD_KIND, birdsModule, type BirdKind } from "../shaders/lib/birds.ts";
 import {
   aloft,
   flightOf,
@@ -16,14 +16,14 @@ const formation = (label: (typeof BIRD_FORMATIONS)[number]["label"]) =>
 
 test("each species flies as birdSpecies has it: its own formation and flock", () => {
   const constants = new Map(
-    [...birdsGlsl.matchAll(/^const float BIRD_(\w+) = (-?[\d.]+);/gm)].map((m) => [
+    [...birdsModule.source.matchAll(/^const float BIRD_(\w+) = (-?[\d.]+);/gm)].map((m) => [
       m[1] ?? "",
       Number(m[2]),
     ]),
   );
   // birdSpecies' table holds one BirdSpecies per kind, in kind order: ..., formation, flock (vec2), ...
   const rows = [
-    ...birdsGlsl.matchAll(/^\s*BirdSpecies\(.*?BIRD_(\w+), vec2\(([\d.]+), ([\d.]+)\)/gm),
+    ...birdsModule.source.matchAll(/^\s*BirdSpecies\(.*?BIRD_(\w+), vec2\(([\d.]+), ([\d.]+)\)/gm),
   ];
   const species = (Object.keys(BIRD_KIND) as BirdKind[]).sort((a, b) => kind(a) - kind(b));
   expect(rows.length).toBe(species.length);

@@ -1,8 +1,8 @@
-// The terrain toolbox's GLSL side (opt-in: put `terrainGlsl` in the scene's GLSL, once, ahead of the
-// code that calls it): reading the four textures `packTerrain` (sims/terrain.ts) lays out, which a
-// scene's sim binds to sampler slots of its choosing. Points are map metres (x east, z north), the
-// map `extent` metres a side. The scene draws: its camera, its march (with whatever it stands on the
-// ground, woods for one), its palette and light.
+// The terrain toolbox's GLSL side (terrainModule, a shared module with no requirements, in the
+// program of a scene that calls it): reading the four textures `packTerrain` (sims/terrain.ts) lays
+// out, which a scene's sim binds to sampler slots of its choosing. Points are map metres (x east,
+// z north), the map `extent` metres a side. The scene draws: its camera, its march (with whatever it
+// stands on the ground, woods for one), its palette and light.
 //
 //   vec4 terrainGround(sampler2D ground, vec2 p, float extent)   ground, water level, d/dx, d/dz
 //   vec4 terrainCover(sampler2D cover, vec2 p, float extent)     road and stream signed distance
@@ -39,13 +39,16 @@
 //       on the map: between two of its evenly spaced points, so always on the road
 import { LAND_CROPS, LAND_USES } from "../../sims/landuse.ts";
 import { TERRAIN_BUILDING_KINDS, TERRAIN_RECORDS } from "../../sims/terrain.ts";
+import { glsl, glslModule } from "../glsl.ts";
 
 const kinds = (names: readonly string[], prefix: string): string =>
   names
     .map((name, index) => `const float ${prefix}_${name.toUpperCase()} = ${index}.0;`)
     .join("\n");
 
-export const terrainGlsl = /* glsl */ `
+export const terrainModule = glslModule(
+  "terrain",
+  glsl`
 // ---- terrain (shaders/lib/terrain.ts over sims/terrain.ts) ----
 const int TERRAIN_SITES_ROW = ${TERRAIN_RECORDS.sites};
 const int TERRAIN_BUILDINGS_ROW = ${TERRAIN_RECORDS.buildings};
@@ -260,4 +263,5 @@ vec3 terrainWayAt(sampler2D records, TerrainWay way, float s, out vec2 heading) 
   heading = length(run) > 1e-4 ? normalize(run) : vec2(1.0, 0.0);
   return mix(a, b, f - float(k));
 }
-`;
+`,
+);

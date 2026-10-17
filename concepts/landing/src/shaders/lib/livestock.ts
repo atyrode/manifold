@@ -1,7 +1,7 @@
 // Grazing livestock, shared: cattle and sheep seen side-on, and the analytic schedule that keeps a
-// herd alive without a simulation. Not compiled into every program: a scene that keeps animals
-// concatenates `livestockGlsl` into its own GLSL (the countryside does, for its pasture
-// enclosures) and supplies the rest itself: where each animal's anchors lie (which belong to the
+// herd alive without a simulation. livestockModule is a shared module (shaders/glsl.ts) with no
+// requirements, in the program of a scene that keeps animals (the countryside, for its pasture
+// enclosures); the scene supplies the rest itself: where each animal's anchors lie (which belong to the
 // scene's ground, walls and projection) and the shading.
 //
 // Body frame: p in body half-lengths, x right on screen, y up from the feet (ground contact at the
@@ -28,7 +28,11 @@
 //                       out vec3 albedo, out vec3 normal, out float top); // signed distance to the outline
 //   vec4 livestockSpeck(vec2 p, LivestockBeast b, LivestockPose pose, float aa); // mean colour, cover
 //   float livestockShadow(vec2 p, LivestockPose pose);              // 0..1 contact shadow on the ground
-export const livestockGlsl = /* glsl */ `
+import { glsl, glslModule } from "../glsl.ts";
+
+export const livestockModule = glslModule(
+  "livestock",
+  glsl`
 // ---- livestock ----
 
 const float LIVESTOCK_GRAZE = 0.0;
@@ -276,4 +280,5 @@ float livestockShadow(vec2 p, LivestockPose pose) {
   vec2 under = vec2(p.x / 1.12, (p.y + 0.02) / mix(0.2, 0.26, pose.lie));
   return softFill(length(under) - 1.0, 0.25);
 }
-`;
+`,
+);

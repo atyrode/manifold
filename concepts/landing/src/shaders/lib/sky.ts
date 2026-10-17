@@ -1,18 +1,20 @@
-// Shared sky: the world clock's sky state (src/world-clock.ts: the clock, the sun and the moon in its
-// phase, the date, the stars' turn), a side-on camera ray, an analytic sky dome with sun and moon
-// discs, and stars; helpers to turn the sky to a scene's facing, mirror it for reflections, sample the
-// horizon haze and tint the stars, and the moon's coverage. With the SKY_MOON_PHASE feature
-// (SceneDef.features) the moon also takes a phase (skyMoonPhase). Two parts of the night compile in
-// only while they are out, behind library gates (src/shaders/index.ts): the constellations, which
-// skyStars draws from the tables built below (SKY_FIGURES, while their knob is on), and the planets
-// skyGiant hangs among the stars (SKY_PLANETS, while the scene's list holds any: the shared planet's
-// planetGlsl and planetBodyGlsl with them). The cloud deck is clouds.ts, compiled right after it.
-// Compiled into every scene program right after the common preamble; the contract and conventions
-// are in src/scenes/README.md.
+// Shared sky: a side-on camera ray, an analytic sky dome with sun and moon discs, and stars; helpers
+// to turn the sky to a scene's facing, mirror it for reflections, sample the horizon haze and tint the
+// stars, and the moon's coverage. With the SKY_MOON_PHASE feature (SceneDef.features) the moon also
+// takes a phase (skyMoonPhase). Two parts of the night compile in only while they are out, behind
+// library gates (src/shaders/index.ts): the constellations, which skyStars draws from the tables
+// built below (SKY_FIGURES, while their knob is on), and the planets skyGiant hangs among the stars
+// (SKY_PLANETS, while the scene's list holds any).
+//
+// skyModule, a shared module (shaders/glsl.ts), provides viewRay, skyColor, skyStars and the rest of
+// the dome. It requires the world clock's sky state (worldClockModule in src/world-clock.ts: the
+// clock, the sun and the moon in its phase, the date, the stars' turn) always, and the shared planet
+// (planetModule and planetBodyModule, shaders/lib/planet.ts) only in a program with SKY_PLANETS 1.
+// The contract and conventions are in src/scenes/README.md.
 import { constellationUniforms, type ConstellationUniforms } from "../../constellations.ts";
-import { worldClockGlsl } from "../../world-clock.ts";
-import { glslFloat } from "../glsl.ts";
-import { planetBodyGlsl, planetGlsl } from "./planet.ts";
+import { worldClockModule } from "../../world-clock.ts";
+import { glsl, glslFloat, glslModule, whenFeature } from "../glsl.ts";
+import { planetBodyModule, planetModule } from "./planet.ts";
 
 type Vec3 = readonly [number, number, number];
 
@@ -158,7 +160,9 @@ const figureTables = [
   figureTable("vec3", "SKY_FIGURE_UP", (f) => `vec3(${floats(f.up)})`),
 ].join("\n");
 
-export const skyGlsl = `
+export const skyModule = glslModule(
+  "sky",
+  glsl`
 // ---- sky ----
 
 // The library gates (src/shaders/index.ts): 1 compiles in the constellations (SKY_FIGURES, defined 0
@@ -171,7 +175,6 @@ export const skyGlsl = `
 #define SKY_PLANETS 0
 #endif
 
-${worldClockGlsl}
 // Angular radii in radians, ~4x true size so the discs survive a 2-4 px dither.
 const float SKY_SUN_RADIUS = 0.02;
 const float SKY_MOON_RADIUS = 0.024;
@@ -512,14 +515,7 @@ vec3 skyStarLight(Sky sky, vec3 dir, float density) {
 // ---- the sky's planets ----
 
 #if SKY_PLANETS
-${planetGlsl}
-
-// The climate (src/climate.ts), compiled with the weather library after the sky: the home-like
-// world's year (planetHome).
-float climateCold(float year);
-float climateLying(float cold);
-
-${planetBodyGlsl}
+// The planets (planetModule, planetBodyModule) are ahead of the sky in a program with SKY_PLANETS 1.
 
 // The planets (planetUniforms in src/scenes/planets.ts), uPlanetCount of them in drawing order, the
 // smaller first (a smaller planet is a farther one, behind the bigger), SKY_PLANET_ROWS rows each:
@@ -622,4 +618,10 @@ vec3 skyGiant(Sky sky, vec3 col, vec3 dir, float foot, float clear) {
   return col;
 }
 #endif
-`;
+`,
+  [
+    worldClockModule,
+    { module: planetModule, when: whenFeature("SKY_PLANETS") },
+    { module: planetBodyModule, when: whenFeature("SKY_PLANETS") },
+  ],
+);

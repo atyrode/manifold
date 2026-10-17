@@ -10,8 +10,7 @@
 import { CANOPY_MARGIN } from "../../decor.ts";
 import { fishGlsl } from "../../sims/fish.ts";
 import { plantSheetGlsl } from "../../sims/plantsheet.ts";
-import { glslFloat } from "../../shaders/glsl.ts";
-import { plantsGlsl } from "../../shaders/lib/plants.ts";
+import { glsl, glslFloat } from "../../shaders/glsl.ts";
 
 /** Seconds of the pond's entrance and exit (SceneDef.passage). */
 export const POND_PASSAGE = { enter: 3.2, exit: 1.8 } as const;
@@ -25,7 +24,7 @@ export const POND_LAYOUT = { pads: 9, koi: 8, petals: 18 } as const;
  * works it out per pixel with these same functions only where float targets are missing (uSimOn.w
  * 0), so both draw byte for byte alike. Reads passageIn(), passageOut(), hash12, vnoise and TAU.
  */
-export const pondLayoutGlsl = `
+export const pondLayoutGlsl = glsl`
 // Passage, in seconds (POND_PASSAGE).
 const float POND_ENTER = ${glslFloat(POND_PASSAGE.enter)};
 const float POND_EXIT = ${glslFloat(POND_PASSAGE.exit)};
@@ -123,7 +122,7 @@ vec3 pondPetal(float fi, vec2 span, vec2 flow, float tm, float turbulence) {
 }
 `;
 
-export const pondGlsl = `${fishGlsl}${plantsGlsl}${plantSheetGlsl}${pondLayoutGlsl}
+export const pondGlsl = glsl`${fishGlsl}${plantSheetGlsl}${pondLayoutGlsl}
 // The water, in screen heights (the frame some 3 m from top to bottom, a koi half a metre long):
 // its depth, 0.15 plus 0.3 per unit of K_depth; the steepest slope of a fresh drop's ring; how high
 // the eye stands over it (a view 45 degrees tall); and the slope variance of a calm surface,

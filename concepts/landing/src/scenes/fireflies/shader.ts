@@ -31,14 +31,12 @@ import {
   FIREFLIES_STATE_LANTERN,
   FIREFLIES_WATER,
 } from "./sim.ts";
-import { glslFloat } from "../../shaders/glsl.ts";
-import { plantsGlsl } from "../../shaders/lib/plants.ts";
+import { glsl, glslFloat } from "../../shaders/glsl.ts";
 
 /** The "now" slot of the shared shooting stars (K_meteors): the breeze has 0 and the M 1. */
 export const FIREFLIES_METEOR_TRIGGER = 2;
 
-export const firefliesGlsl = `
-${plantsGlsl}
+export const firefliesGlsl = glsl`
 const float FIREFLIES_CELL = ${glslFloat(FIREFLIES_CELL)};
 const float FIREFLIES_WATER = ${glslFloat(FIREFLIES_WATER)};
 const int FIREFLIES_ROWS = ${FIREFLIES_ROWS};

@@ -1,7 +1,7 @@
 // Farmland, shared: the row profile that settles to its mean where the dither cannot hold it, and
-// the flower fields' materials through the year. Opt-in (not in `libs`): a scene with fields
-// interpolates `fieldsGlsl` into its GLSL ahead of the code that calls it (the countryside does, for
-// its wildflower, lavender and sunflower parcels). The scene decides what each field grows (the
+// the flower fields' materials through the year. fieldsModule is a shared module (shaders/glsl.ts)
+// with no requirements, in the program of a scene that calls it (the countryside, for its
+// wildflower, lavender and sunflower parcels). The scene decides what each field grows (the
 // countryside's land model, sims/landuse.ts), where its fields lie, their hashes, row space and
 // lighting, and the time of year.
 //
@@ -15,7 +15,11 @@
 //   vec3 fieldFlowerYear(float year);                         // gone over, dormant, budding (0..1 each)
 //   vec3 fieldFlowerMaterial(float kind, float h, float year, vec2 w, vec2 r, vec2 px,
 //                            float wind, float sway, float tm, out float relief, out float sheen);
-export const fieldsGlsl = /* glsl */ `
+import { glsl, glslModule } from "../glsl.ts";
+
+export const fieldsModule = glslModule(
+  "fields",
+  glsl`
 // ---- fields ----
 const float FIELD_WILDFLOWERS = 1.0;
 const float FIELD_LAVENDER = 2.0;
@@ -94,4 +98,5 @@ vec3 fieldFlowerMaterial(float kind, float h, float year, vec2 w, vec2 r, vec2 p
   vec3 c = mix(green * (0.8 + 0.25 * row + wave), heads, (0.22 + 0.09 * rich) * (1.0 - bud));
   return mix(c, vec3(0.43, 0.35, 0.25) * (0.9 + 0.2 * row), dormant);
 }
-`;
+`,
+);

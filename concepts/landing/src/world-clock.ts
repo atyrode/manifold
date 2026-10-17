@@ -1,7 +1,8 @@
 // The world clock: the one model of where a scene's sky stands, for the shaders and the CPU alike.
-// The functions here are the model; worldClockGlsl is their GLSL mirror, which the sky library
-// (shaders/lib/sky.ts) compiles into every program and `worldClock` (world-clock.verify.ts) checks
-// against them on the GPU. Sims and the lab read the sky through skyNow, never a curve of their own.
+// The functions here are the model; worldClockModule is their GLSL mirror, a shared module
+// (shaders/glsl.ts) that the sky library and every part lit by the Sky require, and `worldClock`
+// (world-clock.verify.ts) checks against them on the GPU. Sims and the lab read the sky through
+// skyNow, never a curve of their own.
 // Its inputs are a scene's knobs and the motion clock: the time of day (K_time), the day cycle
 // (K_cycle), the moon's phase (K_moon) and, in a dated sky, the date (SKY_YEAR); its output is the
 // Sky the scenes light and draw with (SkyState here).
@@ -38,7 +39,7 @@
 // - The cold: one model of the year's cold, in climate.ts (climateChill, and climateCold made of it).
 import { hasClimate, seasonKnob, yearAt } from "./climate.ts";
 import { effective, type ParamDef } from "./params.ts";
-import { glslFloat } from "./shaders/glsl.ts";
+import { glsl, glslFloat, glslModule } from "./shaders/glsl.ts";
 import { clamp, fract, smoothstep } from "./sims/math.ts";
 
 type Vec3 = readonly [number, number, number];
@@ -231,7 +232,7 @@ export function starFrame(dir: Vec3, turn: number): Vec3 {
 
 // ---- the sky now ----
 
-/** The sky at a moment: the GLSL Sky (worldClockGlsl) field for field. */
+/** The sky at a moment: the GLSL Sky (worldClockModule) field for field. */
 export interface SkyState {
   /** Unit directions in the sky's frame (x right, y up, z ahead). */
   readonly sun: Vec3;
@@ -370,10 +371,13 @@ export function skyNow({
 // ---- the GLSL mirror ----
 
 /**
- * The model above in GLSL, in the sky library (shaders/lib/sky.ts) of every program: the clock, the
- * Sky struct, skyAt and its parts, the moon's phase (with SKY_MOON_PHASE) and the stars' frame.
+ * The model above in GLSL, a shared module with no requirements: the clock, the Sky struct, skyAt
+ * and its parts, the moon's phase (with SKY_MOON_PHASE) and the stars' frame. The sky library
+ * requires it, as does every other module that takes a Sky.
  */
-export const worldClockGlsl = `
+export const worldClockModule = glslModule(
+  "worldClock",
+  glsl`
 // ---- the world clock (src/world-clock.ts) ----
 
 // The clock: K_time and K_cycle -> 0..1 (0 midnight, .25 sunrise, .5 noon, .75 sunset). At cycle 1 a
@@ -578,4 +582,5 @@ Sky skyMoonPhase(Sky sky, float phase) {
   return sky;
 }
 #endif
-`;
+`,
+);

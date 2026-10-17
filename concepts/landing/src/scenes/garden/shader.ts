@@ -17,8 +17,7 @@
 // included: wet gravel and clay darken, stone, slate and tiles turn glossy, water stands in the
 // grooves, drops burst on hard faces and drip from the eaves and the maple; snow settles on whatever
 // faces up, the gravel's crests first.
-import { glslFloat } from "../../shaders/glsl.ts";
-import { plantsGlsl } from "../../shaders/lib/plants.ts";
+import { glsl, glslFloat } from "../../shaders/glsl.ts";
 import { gustPulseGlsl } from "../../sims/wind.ts";
 import {
   GARDEN,
@@ -93,8 +92,7 @@ function mapleLow(above: boolean): number {
   return low - 0.04;
 }
 
-export const gardenGlsl = `
-${plantsGlsl}
+export const gardenGlsl = glsl`
 const float GARDEN_ASPECT = ${glslFloat(GARDEN.aspect)};
 const vec2 GARDEN_CENTRE = vec2(${glslFloat(GARDEN.aspect / 2)}, 0.5);
 const vec2 GARDEN_TEXEL = vec2(${(1 / GARDEN.cols).toFixed(6)}, ${(1 / GARDEN.rows).toFixed(6)});

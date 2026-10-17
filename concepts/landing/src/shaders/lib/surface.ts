@@ -1,10 +1,14 @@
 // Shared surfaces for the side-on camera (viewRay): where an eye ray meets level ground or water and
 // how much of it one dither cell covers there (for antialiasing and level of detail), Schlick's
 // Fresnel term, and LEAN-filtered trains of wind ripples on water, alone or summed as a spectrum.
-// Compiled into every scene program after the weather library; the contract and conventions are in
-// src/scenes/README.md. The tiers of a whole water surface that compose these are in water.ts.
+// surfaceModule is a shared module (shaders/glsl.ts) with no requirements; the contract and
+// conventions are in src/scenes/README.md. The tiers of a whole water surface that compose these are
+// in water.ts.
+import { glsl, glslModule } from "../glsl.ts";
 
-export const surfaceGlsl = `
+export const surfaceModule = glslModule(
+  "surface",
+  glsl`
 // ---- surface ----
 
 // A point on a level plane eye units below the eye. p: where the ray meets it, x right and y ahead
@@ -116,4 +120,5 @@ vec3 rippleSpectrum(vec2 p, float tm, vec2 foot, float gain, RippleTable s) {
   }
   return sum;
 }
-`;
+`,
+);

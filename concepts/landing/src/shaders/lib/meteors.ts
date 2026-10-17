@@ -1,8 +1,12 @@
 // Shared shooting stars: when one flies (randomly at a rate, or on the scene's "now" trigger) and its
-// streak in a flat sky frame the scene projects into. Compiled into every scene program after the
-// aurora library; the contract and conventions are in src/scenes/README.md ("Composing components").
+// streak in a flat sky frame the scene projects into. meteorsModule is a shared module
+// (shaders/glsl.ts) with no requirements; the contract and conventions are in src/scenes/README.md
+// ("Composing components").
+import { glsl, glslModule } from "../glsl.ts";
 
-export const meteorsGlsl = `
+export const meteorsModule = glslModule(
+  "meteors",
+  glsl`
 // ---- meteors ----
 
 // Seconds a shooting star takes to cross, head to fade.
@@ -68,4 +72,5 @@ float meteorStreak(vec2 q, vec4 field, float age, float seed, float foot) {
   float life = smoothstep(0.0, 0.08, age) * (1.0 - smoothstep(0.55, METEOR_FLIGHT, age));
   return (1.0 - smoothstep(0.6 * foot, 1.4 * foot, d)) * (0.25 + 0.75 * along) * life;
 }
-`;
+`,
+);

@@ -23,7 +23,6 @@
 // phase, SKY_MOON_PHASE, in the canopy's gaps and its shafts), K_rain, K_wind, K_mark; triggers 2
 // (the M) and 3 (spores).
 import { glslFloat } from "../../shaders/glsl.ts";
-import { canopyGroveGlsl } from "../../shaders/lib/canopy.ts";
 import {
   FOREST_BEARD_SPACING,
   FOREST_BRANCH,
@@ -276,7 +275,6 @@ float forestTransmit(float z, float height) {
 // The grove under the canopy (shaders/lib/canopy.ts), in the forest's shapes: a ragged ceiling of
 // dark cedar foliage, its underside about 0.84 up the frame; drips in columns 14 cm wide, a fifth of
 // them dripping at amount 1, from tips 0.8 to 1.02 up the frame.
-${canopyGroveGlsl}
 const CanopyCrowns FOREST_CROWNS = CanopyCrowns(vec3(0.84, 0.08, 2.1), vec2(6.0, 9.0), vec2(17.0, 21.0), vec3(0.08, 0.1, 0.2), vec3(0.62, 0.8, 0.9), vec4(0.06, 0.9, 0.82, 0.97));
 const CanopyDrips FOREST_DRIPS = CanopyDrips(FOREST_HORIZON, FOREST_EYE, 0.14, 0.2, vec2(0.8, 0.22));
 

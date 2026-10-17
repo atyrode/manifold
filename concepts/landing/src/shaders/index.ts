@@ -4,8 +4,9 @@
 // Every scene compiles to its own fragment shader (see scenes/types.ts): the common preamble, the
 // scene's compile-time features (fixed, and keyed by its setting: one program per distinct set, the
 // library gates of its night parts and of its planets among them), one `#define K_<key> uParams[i]`
-// per knob, SKY_YEAR (and a dated sky's SKY_DATE_ANCHOR), the shared libraries, the scene's GLSL,
-// then `main`, which calls the scene's entry and dithers the Shade it returns into the palette.
+// per knob, SKY_YEAR (and a dated sky's SKY_DATE_ANCHOR), the shared modules its GLSL names
+// (shaders/lib/index.ts `modulesFor`), the scene's GLSL, then `main`, which calls the scene's entry
+// and dithers the Shade it returns into the palette.
 
 import { seasonKnob, yearCycleKnob, yearNowGlsl } from "../climate.ts";
 import { effective, MAX_PARAMS, type Widget } from "../params.ts";
@@ -13,7 +14,7 @@ import type { SceneDef } from "../scenes/types.ts";
 import { skyAnchor } from "../world-clock.ts";
 import { common } from "./common.ts";
 import { glslFloat } from "./glsl.ts";
-import { libs } from "./lib/index.ts";
+import { modulesFor } from "./lib/index.ts";
 import { main } from "./main.ts";
 
 export const vertexSource = `#version 300 es
@@ -185,14 +186,16 @@ export function fragmentSourceFor(
   scene: SceneDef,
   features: Readonly<Record<string, number>> = sceneFeatures(scene),
 ): string {
-  // Knob defines come ahead of the libraries so that a library may test for an opt-in shared knob
-  // with `#ifdef K_<key>`; the libraries read no other knob.
+  // Knob defines come ahead of the modules so that a module may test for an opt-in shared knob with
+  // `#ifdef K_<key>`; the modules read no other knob.
   return (
     common +
     featureDefines(scene, features) +
     knobDefines(scene) +
     yearDefine(scene) +
-    libs +
+    modulesFor(scene.glsl, features)
+      .map((module) => module.source)
+      .join("") +
     scene.glsl +
     main(scene.entry)
   );

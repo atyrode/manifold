@@ -1,10 +1,10 @@
 import { expect, test } from "bun:test";
 import { effective } from "../../params.ts";
-import { BIRD_FORMATIONS, BIRD_KIND, BIRD_KINDS, birdKnobs, birdsGlsl } from "./birds.ts";
+import { BIRD_FORMATIONS, BIRD_KIND, BIRD_KINDS, birdKnobs, birdsModule } from "./birds.ts";
 
-/** The GLSL constants `const float BIRD_<NAME> = <value>;` in birdsGlsl. */
+/** The GLSL constants `const float BIRD_<NAME> = <value>;` in birdsModule. */
 const constants = new Map(
-  [...birdsGlsl.matchAll(/^const float BIRD_(\w+) = (-?[\d.]+);/gm)].map((m) => [
+  [...birdsModule.source.matchAll(/^const float BIRD_(\w+) = (-?[\d.]+);/gm)].map((m) => [
     m[1] ?? "",
     Number(m[2]),
   ]),
@@ -24,7 +24,7 @@ test("the which-birds choice is valued as the GLSL species, one table entry per 
     expect(constants.get(glslName[label as keyof typeof glslName])).toBe(value);
   expect(BIRD_KINDS.map((option) => option.value)).toEqual([0, 1, 2, 3, 4, 5, 6]);
   // birdSpecies' table holds one row per kind, in kind order.
-  expect(birdsGlsl.match(/^\s*BirdSpecies\(/gm)?.length).toBe(BIRD_KINDS.length);
+  expect(birdsModule.source.match(/^\s*BirdSpecies\(/gm)?.length).toBe(BIRD_KINDS.length);
 });
 
 test("the formation choice is the GLSL formation plus one, 0 the species' own", () => {

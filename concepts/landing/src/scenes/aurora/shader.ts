@@ -27,8 +27,7 @@
 // Passage (aurPassage): the camera tilts between the stars and the fjord (a shift of uv, so every
 // layer, the mirrored water and the horizon move as one), the curtains unfurl from faint high arcs
 // or roll back up into them, and on the way in the chimney's smoke climbs. All gated to nothing at rest.
-import { glslFloat, glslPick } from "../../shaders/glsl.ts";
-import { birdsGlsl } from "../../shaders/lib/birds.ts";
+import { glsl, glslFloat, glslPick } from "../../shaders/glsl.ts";
 
 /** The aurora's low (oxygen green) and high (violet, red) colours by the `hue` knob, where the change begins and ends, and its gain. */
 const AURORA_LOW = [
@@ -51,8 +50,7 @@ const FOV = 1.3;
 /** Trigger slot of the shooting stars' "now" button (slot 0 is the corona's). */
 export const AURORA_METEOR_TRIGGER = 1;
 
-export const auroraGlsl = `
-${birdsGlsl}
+export const auroraGlsl = glsl`
 const float AUR_HZ = ${glslFloat(AURORA_HORIZON)};
 const float AUR_F = ${glslFloat(0.5 / Math.tan(FOV / 2))};
 const float AUR_EYE = 1.7; // metres above the water

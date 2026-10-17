@@ -1,8 +1,13 @@
 // Shared aurora: curtains of light over the night sky for a ground view, their light on the land and
-// how much of them shows. Compiled into every scene program after the lightning library; the contract
-// and conventions are in src/scenes/README.md ("Composing components").
+// how much of them shows. auroraModule is a shared module (shaders/glsl.ts) requiring the world
+// clock's Sky (worldClockModule); the contract and conventions are in src/scenes/README.md
+// ("Composing components").
+import { worldClockModule } from "../../world-clock.ts";
+import { glsl, glslModule } from "../glsl.ts";
 
-export const auroraGlsl = `
+export const auroraModule = glslModule(
+  "aurora",
+  glsl`
 // ---- aurora ----
 
 // Curtains hung one behind another (auroraCurtains, auroraM): 3 unless the scene selects fewer (or
@@ -92,4 +97,6 @@ vec3 auroraGlow(float tm, float strength) {
 float auroraSeen(Sky sky, float cloud) {
   return sky.night * (1.0 - clamp(cloud, 0.0, 1.0));
 }
-`;
+`,
+  [worldClockModule],
+);

@@ -12,11 +12,12 @@
 // a season and can snow (it has a season knob and a `snow` knob), the season sets the climate: as it
 // grows cold, rain falls as snow, and in deep winter snow lies without any falling. The snow switch
 // stays an explicit override that falls whatever the season. The renderer (src/renderer.ts) applies
-// it to how much snow lies; the shared weather library mirrors it in GLSL (climateChill, climateCold,
-// climatePrecip, climateLying in src/shaders/lib/weather.ts) for what falls, and every scene's
-// program gets its year position as SKY_YEAR (src/shaders/index.ts). `worldClock`
-// (src/world-clock.verify.ts) checks the GLSL against the functions here.
+// it to how much snow lies; climateModule mirrors it in GLSL (climateChill, climateCold,
+// climatePrecip, climateLying), a shared module a program holds when its scene or a library calls
+// them, and every scene's program gets its year position as SKY_YEAR (src/shaders/index.ts).
+// `worldClock` (src/world-clock.verify.ts) checks the GLSL against the functions here.
 import type { ParamDef, SeasonYear } from "./params.ts";
+import { glsl, glslModule } from "./shaders/glsl.ts";
 
 /** Midwinter's year position. */
 export const MIDWINTER = 0.875;
@@ -164,8 +165,10 @@ export function climateLying(cold: number): number {
   return WINTER_COVER * smoothstep(WINTER_LYING[0], WINTER_LYING[1], cold);
 }
 
-/** The GLSL mirror of the functions above, for the shared weather library. */
-export const climateGlsl = /* glsl */ `
+/** The GLSL mirror of the functions above: a shared module with no requirements. */
+export const climateModule = glslModule(
+  "climate",
+  glsl`
 // ---- climate (src/climate.ts) ----
 // How far a year position (SKY_YEAR; -1 none) has turned toward winter: 0 at midsummer .. 1 at
 // midwinter, a cosine round the year; 0 for no time of year.
@@ -188,4 +191,5 @@ vec2 climatePrecip(float rain, float snow, float cold) {
 float climateLying(float cold) {
   return ${WINTER_COVER} * smoothstep(${WINTER_LYING[0]}, ${WINTER_LYING[1]}, cold);
 }
-`;
+`,
+);

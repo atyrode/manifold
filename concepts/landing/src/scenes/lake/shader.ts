@@ -26,9 +26,7 @@
 // sings across the ice (the sim); on the way out a gust of blown snow streams across, carrying low
 // streamers over the ice and the far shore, in rows of the screen and faster the nearer the ice,
 // cut per cell. At rest none of it is drawn and uv is the screen's.
-import { glslFloat, glslPick } from "../../shaders/glsl.ts";
-import { birdsGlsl } from "../../shaders/lib/birds.ts";
-import { milkyWayGlsl } from "../../shaders/lib/milkyway.ts";
+import { glsl, glslFloat, glslPick } from "../../shaders/glsl.ts";
 import {
   ABOVE_RANGE,
   DIST_RANGE,
@@ -64,9 +62,7 @@ const AURORA_HIGH = [
 /** Trigger slot of the shooting stars' "now" button (0 substorms, 1 singing ice, 2 the M). */
 export const LAKE_METEOR_TRIGGER = 3;
 
-export const lakeGlsl = `
-${birdsGlsl}
-${milkyWayGlsl}
+export const lakeGlsl = glsl`
 const float LAKE_HORIZON = ${glslFloat(HORIZON)};
 const float LAKE_FOCAL = ${glslFloat(FOCAL)};
 const float LAKE_EYE = ${glslFloat(EYE)};

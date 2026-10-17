@@ -32,8 +32,7 @@
 // country, the tea sloshing and settling from the jolt) and, leaving, runs into one (the cutting
 // rises, the mouth sweeps in, the window turns to a mirror). trainPassage lays a tunnel of its own
 // over the timetable while it plays; all of it is exactly off at rest.
-import { glslFloat } from "../../shaders/glsl.ts";
-import { birdsGlsl } from "../../shaders/lib/birds.ts";
+import { glsl, glslFloat } from "../../shaders/glsl.ts";
 import {
   TRAIN_BLOCK,
   TRAIN_BLOCKS,
@@ -49,8 +48,7 @@ import {
   TRAIN_TUNNEL,
 } from "./sim.ts";
 
-export const trainGlsl = `
-${birdsGlsl}
+export const trainGlsl = glsl`
 // ---- The view ----
 const float TRAIN_F = ${glslFloat(TRAIN_FOCAL)};
 const float TRAIN_HORIZON = 0.05;     // the horizon's height on screen (centre 0)

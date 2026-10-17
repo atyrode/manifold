@@ -11,7 +11,6 @@
 // K_cycle, K_stars and K_moon (the shared stars and the moon in its phase, SKY_MOON_PHASE, in the
 // canopy's gaps), K_rain, K_wind, K_mark (trigger 2 summons the M).
 import { glslFloat } from "../../shaders/glsl.ts";
-import { canopyGroveGlsl } from "../../shaders/lib/canopy.ts";
 import {
   BAMBOO_BASIN,
   BAMBOO_CELLS,
@@ -164,7 +163,6 @@ float bambooTransmit(float z, float height) {
 // The grove under the canopy (shaders/lib/canopy.ts), in the grove's shapes: the far canopy's ragged
 // underside about 0.8 up the frame, finer-leaved than the forest's; leaf tips dripping in columns
 // 12 cm wide, 22% of them at amount 1, from 0.66 to 0.92 up the frame.
-${canopyGroveGlsl}
 const CanopyCrowns BAMBOO_CROWNS = CanopyCrowns(vec3(0.8, 0.09, 2.3), vec2(9.0, 12.0), vec2(23.0, 27.0), vec3(0.1, 0.12, 0.16), vec3(0.6, 0.78, 0.86), vec4(0.07, 0.85, 0.8, 0.96));
 const CanopyDrips BAMBOO_DRIPS = CanopyDrips(BAMBOO_HORIZON, BAMBOO_EYE, 0.12, 0.22, vec2(0.66, 0.26));
 

@@ -3,14 +3,18 @@
 // or an end, and the clocks that move them (a walk with rests, a shuttle out and back with pauses at
 // both ends), all analytic in the motion clock so they stand still with the motion.
 //
-// Not in `libs` (so other scenes' programs are unchanged): a scene that uses it concatenates
-// `figuresGlsl` into its own GLSL (country does, in scenes/country/routes.ts). Figures are drawn in
-// the caller's screen units (uv heights, y up) around a point the caller projects from its world:
+// figuresModule is a shared module (shaders/glsl.ts) with no requirements, in the program of a scene
+// that calls it (country, in scenes/country/routes.ts). Figures are drawn in the caller's screen
+// units (uv heights, y up) around a point the caller projects from its world:
 // the feet of a walker, the middle of a vehicle's footprint. `cells` is dither cells per screen unit
 // (uRes.y). Shapes are cut per cell (no soft edges to crawl as they move) and keep at least a cell
 // across, so a figure a few cells tall still reads; below about 1.6 cells a figure is one faint cell
 // (`faint`) for the caller to lay over its ground, and a scene fades it out with distance.
-export const figuresGlsl = /* glsl */ `
+import { glsl, glslModule } from "../glsl.ts";
+
+export const figuresModule = glslModule(
+  "figures",
+  glsl`
 // ---- figures ----
 
 struct Figure {
@@ -242,4 +246,5 @@ vec3 figureShuttle(float clock, float there, float back, float restFar, float re
   if (c < back) return vec3(c, -1.0, 1.0);
   return vec3(0.0, 0.0, 0.0);
 }
-`;
+`,
+);

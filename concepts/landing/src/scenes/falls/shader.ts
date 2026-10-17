@@ -4,8 +4,7 @@
 // in its phase, the aurora and shooting stars. The ferns are the plant component's fronds
 // (shaders/lib/plants.ts), the near bank's grown by sim.ts; the birds (K_birds, K_birdKind,
 // K_birdFormation; off by default) come from shaders/lib/birds.ts.
-import { birdsGlsl } from "../../shaders/lib/birds.ts";
-import { plantsGlsl } from "../../shaders/lib/plants.ts";
+import { glsl } from "../../shaders/glsl.ts";
 import { FALLS_CLUMPS, FALLS_FRONDS } from "./sim.ts";
 
 /** Seconds of the waterfall's entrance (the camera tilts down the fall to the pool) and exit (it tilts back up into the spray); SceneDef.passage. */
@@ -14,8 +13,7 @@ export const FALLS_PASSAGE = { enter: 2.8, exit: 1.4 } as const;
 /** Trigger slot of the shooting stars' "now" button. */
 export const FALLS_METEOR_TRIGGER = 0;
 
-export const fallsGlsl = `${plantsGlsl}
-${birdsGlsl}
+export const fallsGlsl = glsl`
 // ---- falls ----
 // Frame: q = ((uv.x - 0.5) * aspect, uv.y): x in screen heights from the centre, y the screen
 // height. The cliff stands at the back of the pool; the camera stands level at the pool's edge,

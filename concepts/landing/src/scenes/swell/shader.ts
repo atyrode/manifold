@@ -8,13 +8,12 @@
 // shared birds (shaders/lib/birds.ts; K_birds, K_birdKind, K_birdFormation, off by default) and
 // shooting stars (K_meteors, off by default; src/scenes/README.md "Composing components"), glinting
 // in the waves below them. Lengths are in camera heights, some 15 m.
-import { birdsGlsl } from "../../shaders/lib/birds.ts";
+import { glsl } from "../../shaders/glsl.ts";
 
 /** Trigger slot of the shooting stars' "now" button. */
 export const SWELL_METEOR_TRIGGER = 0;
 
-export const swellGlsl = `
-${birdsGlsl}
+export const swellGlsl = glsl`
 // Where shooting stars set out, in the screen frame of the moon and the stars (screen heights from
 // the middle, the horizon at SWELL_HORIZON): high over the sea, most fading before the horizon.
 const int SWELL_METEOR_SLOT = ${SWELL_METEOR_TRIGGER};

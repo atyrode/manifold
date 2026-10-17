@@ -15,8 +15,7 @@
 // cell sees. The world's fog is the desert's dust: the haze the far dunes fade into, which a hard
 // wind turns into a sandstorm swallowing the sky and the sun. Seen from overhead: the light, the
 // deck's shadows, the dust and the sandstorm, and the rain and snow falling away from the eye.
-import { glslFloat } from "../../shaders/glsl.ts";
-import { worldGlsl } from "../../shaders/lib/world.ts";
+import { glsl, glslFloat } from "../../shaders/glsl.ts";
 import {
   DUNES_CAMERA,
   DUNES_GRID,
@@ -38,8 +37,7 @@ export const DUNES_PASSAGE = { enter: 2.6, exit: 1.5 } as const;
 export const DUNES_METEOR_TRIGGER = 0;
 export const DUNES_LIGHTNING_TRIGGER = 1;
 
-export const dunesGlsl = `
-${worldGlsl}
+export const dunesGlsl = glsl`
 // ---- the dunes ----
 // Where shooting stars set out: skyAngles of the camera's view (bearing, elevation, radians), the
 // strip of sky over the dune sea.

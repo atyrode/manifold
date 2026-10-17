@@ -3,10 +3,13 @@
 // it are the same world in every scene and the scenes differ only by their camera and what they put
 // in it. The contract, the order and how a scene adopts it: src/scenes/README.md ("World layers").
 //
-// Opt-in: a scene that composes the world puts `worldGlsl` in its own GLSL (at the top), merges
+// worldModule is a shared module (shaders/glsl.ts): a scene that composes the world calls it, merges
 // worldFeatures(values) into its featuresFor and WORLD_ALL into its featuresAll (scenes/world.ts),
-// and takes its knobs from worldKnobs. It composes the birds (birds.ts) and the Milky Way
-// (milkyway.ts) itself, so such a scene does not put birdsGlsl or milkyWayGlsl in its GLSL again.
+// and takes its knobs from worldKnobs. It requires the world clock, the sky, the weather and the
+// meteors always, and the rest only under the gates that reach them: the clouds (WORLD_CLOUDS or
+// WORLD_SHADOWS), the lightning (WORLD_LIGHTNING), the aurora (WORLD_AURORA, or WORLD_METEORS, whose
+// streaks show where its auroraSeen does), the birds (birds.ts, WORLD_BIRDS) and the Milky Way
+// (milkyway.ts, WORLD_MILKYWAY).
 //
 //   World worldAt(int meteorSlot, int lightningSlot);   // the world now, once per pixel
 //   WorldView worldView(vec2 uv, float horizon, float focal, float eye, float yaw, float unit);
@@ -27,9 +30,16 @@
 // WORLD_METEORS, WORLD_AURORA, WORLD_CLOUDS, WORLD_SHADOWS, WORLD_BIRDS, WORLD_RAIN, WORLD_SNOW,
 // WORLD_FOG, WORLD_LIGHTNING, each 0 or 1: worldFeatures), and keeps its runtime test of the knob
 // inside, so with the knob off (gate on or not) it gives its neutral value exactly.
-import { glslFloat } from "../glsl.ts";
-import { birdsGlsl } from "./birds.ts";
-import { milkyWayGlsl } from "./milkyway.ts";
+import { worldClockModule } from "../../world-clock.ts";
+import { glsl, glslFloat, glslModule, whenFeature } from "../glsl.ts";
+import { auroraModule } from "./aurora.ts";
+import { birdsModule } from "./birds.ts";
+import { cloudsModule } from "./clouds.ts";
+import { lightningModule } from "./lightning.ts";
+import { meteorsModule } from "./meteors.ts";
+import { milkyWayModule } from "./milkyway.ts";
+import { skyModule } from "./sky.ts";
+import { weatherModule } from "./weather.ts";
 
 /**
  * When the world's birds set out, as BirdSky.hours on the time of day: they start coming from x to y
@@ -37,13 +47,11 @@ import { milkyWayGlsl } from "./milkyway.ts";
  */
 export const WORLD_BIRD_HOURS = [0.22, 0.26, 0.8, 0.84] as const;
 
-export const worldGlsl = `
+export const worldModule = glslModule(
+  "world",
+  glsl`
 // ---- the world (shaders/lib/world.ts) ----
-#if WORLD_BIRDS
-${birdsGlsl}
-#endif
 #if WORLD_MILKYWAY
-${milkyWayGlsl}
 // The galaxy's plane, fixed in the stars' frame (skyStarFrame: so every scene's yaw shows its own
 // stretch of it, and it turns with the stars as the night passes): staged as an arc leaning out of
 // the horizon on the sunset side of the sky's ahead and climbing ~60 degrees over it toward the
@@ -510,4 +518,16 @@ void worldBirdsMirrored(World w, WorldView m, WorldFlyway f, vec3 haze, float th
   }
 #endif
 }
-`;
+`,
+  [
+    worldClockModule,
+    skyModule,
+    weatherModule,
+    meteorsModule,
+    { module: cloudsModule, when: whenFeature("WORLD_CLOUDS", "WORLD_SHADOWS") },
+    { module: lightningModule, when: whenFeature("WORLD_LIGHTNING") },
+    { module: auroraModule, when: whenFeature("WORLD_AURORA", "WORLD_METEORS") },
+    { module: birdsModule, when: whenFeature("WORLD_BIRDS") },
+    { module: milkyWayModule, when: whenFeature("WORLD_MILKYWAY") },
+  ],
+);

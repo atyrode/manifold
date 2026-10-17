@@ -20,8 +20,7 @@
 // Knobs read here: K_planets (which arm Saturn is on), K_room, K_sun, K_softness, K_fill, K_mark (the
 // others drive the simulation). Textures: uSim0, the MobileTexture.
 import { MARK_VERTICES } from "../../mark.ts";
-import { glslFloat, glslVec3 } from "../../shaders/glsl.ts";
-import { planetGlsl } from "../../shaders/lib/planet.ts";
+import { glsl, glslFloat, glslVec3 } from "../../shaders/glsl.ts";
 import { mobileGlsl } from "../../sims/mobile.ts";
 import { MOBILE_SUN_CENTRE, MOBILE_TEX_ORIGIN, mobileLayoutGlsl } from "./layout.ts";
 import { SOLAR_LOOKS, SOLAR_RINGS, solarGlsl } from "./solar.ts";
@@ -47,8 +46,7 @@ const looks = Object.entries(SOLAR_LOOKS)
   .map(([name, look]) => `const int MOBILE_${name.toUpperCase()} = ${look};`)
   .join("\n");
 
-export const mobileSceneGlsl = `
-${planetGlsl}
+export const mobileSceneGlsl = glsl`
 ${mobileGlsl("uSim0", MOBILE_TEX_ORIGIN)}
 ${mobileLayoutGlsl}
 ${solarGlsl(MOBILE_SUN_CENTRE)}

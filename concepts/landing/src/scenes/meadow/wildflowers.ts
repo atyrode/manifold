@@ -22,8 +22,7 @@
 // compiled in only while the knob is on (MEADOW_HAS_WILDFLOWERS, index.ts); while it is off the sim
 // grows nothing and hands the shader no texture.
 import { KnobReader, type ParamDef } from "../../params.ts";
-import { glslFloat } from "../../shaders/glsl.ts";
-import { plantsGlsl } from "../../shaders/lib/plants.ts";
+import { glsl, glslFloat } from "../../shaders/glsl.ts";
 import { hash31 } from "../../sims/math.ts";
 import {
   PlantHabit,
@@ -325,9 +324,8 @@ export function meadowFlowersSim(meadow: SimFactory, params: readonly ParamDef[]
 
 const F = MEADOW_FLOWER_FORM;
 
-export const meadowWildflowersGlsl = /* glsl */ `
+export const meadowWildflowersGlsl = glsl`
 #if MEADOW_HAS_WILDFLOWERS
-${plantsGlsl}
 // ---- the wildflowers (wildflowers.ts) ----
 const int MEADOW_FLOWER_SLOTS = ${MEADOW_FLOWERS.slots};
 const int MEADOW_FLOWER_ORGANS = ${MEADOW_FLOWERS.organs};

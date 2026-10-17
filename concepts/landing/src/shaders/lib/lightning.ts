@@ -1,8 +1,11 @@
 // Shared lightning: when strikes happen (randomly or on the scene's "now" trigger), a forked bolt and
-// the sky-wide flash. Compiled into every scene program after the weather library; the contract and
-// conventions are in src/scenes/README.md.
+// the sky-wide flash. lightningModule is a shared module (shaders/glsl.ts) with no requirements; the
+// contract and conventions are in src/scenes/README.md.
+import { glsl, glslModule } from "../glsl.ts";
 
-export const lightningGlsl = `
+export const lightningModule = glslModule(
+  "lightning",
+  glsl`
 // ---- lightning ----
 
 // Seconds since the latest strike: the random storm's or the trigger's, whichever is more recent;
@@ -124,4 +127,5 @@ float lightningBolt(vec2 p, vec2 top, vec2 ground, float seed, float age) {
   float fork = ((1.0 - smoothstep(0.6 * w, 1.3 * w, db)) * 0.8 + exp(-db * 45.0) * 0.4) * first;
   return max(trunk, fork);
 }
-`;
+`,
+);

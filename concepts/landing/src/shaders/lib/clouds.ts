@@ -2,9 +2,9 @@
 // A scene selects the highest tier it draws (`features: { CLOUD_TIER: CLOUD_TIERS.volume }` in its
 // SceneDef) and its program gets that tier and every one below it; a tier it did not select is not in
 // its program, so calling one of its functions fails to compile, never silently. A scene that selects
-// none gets the lit deck (CLOUD_LIT), as every sky had before the tiers. Compiled into every scene
-// program after sky.ts; the contract and the tier each scene draws are in src/scenes/README.md
-// ("Clouds").
+// none gets the lit deck (CLOUD_LIT). cloudsModule, a shared module (shaders/glsl.ts), requires the
+// world clock's Sky (worldClockModule); a program holds it when its scene or a library calls into it.
+// The contract and the tier each scene draws are in src/scenes/README.md ("Clouds").
 //
 //   flat     CLOUD_FLAT 0     the deck's plane and drift (cloudDeckPoint) and a calm deck of two broad
 //                             octaves (cloudFlatField, cloudFlatFine) the scene thresholds and lights
@@ -18,6 +18,8 @@
 // the calm deck drops its finer octave toward the horizon (cloudFlatFine), and the sea's relief fades
 // with the cell's footprint and is then not worked out at all (cloudSeaSurface): far or small cloud
 // costs little, and resolved cloud is bit for bit the full-detail picture.
+import { worldClockModule } from "../../world-clock.ts";
+import { glsl, glslModule } from "../glsl.ts";
 
 /** The cloud tiers, cheapest first; a tier includes every one below it (SceneDef.features CLOUD_TIER). */
 export const CLOUD_TIERS = { flat: 0, lit: 1, shadows: 2, volume: 3 } as const;
@@ -26,7 +28,9 @@ const tierDefines = Object.entries(CLOUD_TIERS)
   .map(([name, value]) => `#define CLOUD_${name.toUpperCase()} ${value}`)
   .join("\n");
 
-export const cloudDeckGlsl = `
+export const cloudsModule = glslModule(
+  "clouds",
+  glsl`
 // ---- clouds (shaders/lib/clouds.ts) ----
 ${tierDefines}
 #ifndef CLOUD_TIER
@@ -266,4 +270,6 @@ float cloudSeaShadow(vec3 at, vec3 L, CloudSea sea) {
   return exp(-depth * 9.0);
 }
 #endif
-`;
+`,
+  [worldClockModule],
+);

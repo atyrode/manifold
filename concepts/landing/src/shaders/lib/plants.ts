@@ -1,9 +1,9 @@
 // The plant component's GLSL (sims/plants.ts simulates the plants): reading the organ records a
-// PlantTexture packs, the organs' shared shapes and the year's colour. Opt-in: a scene that draws
-// plants per fragment puts `${plantsGlsl}` in its own GLSL, before the functions that call it. The
-// scene decides where its plants stand in the picture (its projection, what hides them), their
-// palette and light; the component decides where every organ is, how it bends and what the year and
-// its age have done to it.
+// PlantTexture packs, the organs' shared shapes and the year's colour. plantsModule is a shared
+// module (shaders/glsl.ts) with no requirements, in the program of a scene that draws plants per
+// fragment. The scene decides where its plants stand in the picture (its projection, what hides
+// them), their palette and light; the component decides where every organ is, how it bends and what
+// the year and its age have done to it.
 //
 //   PLANT_DETAIL                   compile-time tier (SceneDef.features), default 2: 2 draws the shapes'
 //                                  fine detail (a frond's leaflets), fading it below two cells of
@@ -37,7 +37,11 @@
 //   vec3 plantPhenology(vec3 green, float pheno)
 //                                  a leaf's colour for its phenology: young pale, green, gold, brown;
 //                                  green itself, untouched, at pheno 0
-export const plantsGlsl = /* glsl */ `
+import { glsl, glslModule } from "../glsl.ts";
+
+export const plantsModule = glslModule(
+  "plants",
+  glsl`
 // ---- plants (sims/plants.ts, shaders/lib/plants.ts) ----
 #ifndef PLANT_DETAIL
 #define PLANT_DETAIL 2
@@ -127,4 +131,5 @@ vec3 plantPhenology(vec3 green, float pheno) {
   vec3 brown = vec3(0.42, 0.25, 0.11) * (0.5 + 1.1 * l);
   return pheno < 0.6 ? mix(green, gold, pheno / 0.6) : mix(gold, brown, (pheno - 0.6) / 0.4);
 }
-`;
+`,
+);

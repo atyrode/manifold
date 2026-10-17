@@ -27,7 +27,9 @@
 //   vec2 shift = windMirror(rip, horizon - uv.y, focal);
 //   vec2 q = mirrored + shift + vec2(0.0, (cellTh - 0.5) * 2.0 * windMirrorSpread(rip, focal));
 
-export const windWaterGlsl = `
+import { glsl } from "./glsl.ts";
+
+export const windWaterGlsl = glsl`
 // ---- wind on water (shaders/windWater.ts) ----
 
 vec4 windRipples(Ground g, float tm, float wind, float amount) {

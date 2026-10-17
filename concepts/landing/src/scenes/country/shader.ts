@@ -24,14 +24,7 @@
 // renderer's uWeather.y, which deep winter lays by itself. The fog lies in the valley along the
 // river's level and is seen through along each ray, to the land, the far ridges and the sky
 // (fog.ts).
-import { buildingsGlsl } from "../../shaders/buildings.ts";
-import { glslFloat } from "../../shaders/glsl.ts";
-import { birdsGlsl } from "../../shaders/lib/birds.ts";
-import { fieldsGlsl } from "../../shaders/lib/fields.ts";
-import { figuresGlsl } from "../../shaders/lib/figures.ts";
-import { livestockGlsl } from "../../shaders/lib/livestock.ts";
-import { terrainGlsl } from "../../shaders/lib/terrain.ts";
-import { treesGlsl } from "../../shaders/lib/trees.ts";
+import { glsl, glslFloat } from "../../shaders/glsl.ts";
 import { countryBuildingsGlsl } from "./buildings.ts";
 import { countryChalkGlsl } from "./chalk.ts";
 import { countryFogGlsl } from "./fog.ts";
@@ -58,22 +51,7 @@ export const COUNTRY_MARCH = {
   refine: 5,
 } as const;
 
-export const countryGlsl = /* glsl */ `
-${terrainGlsl}
-${buildingsGlsl}
-${treesGlsl}
-#if COUNTRY_HAS_FIELDS
-${fieldsGlsl}
-#endif
-#if COUNTRY_HAS_HERDS
-${livestockGlsl}
-#endif
-#if COUNTRY_HAS_AGENTS
-${figuresGlsl}
-#endif
-#if COUNTRY_HAS_BIRDS
-${birdsGlsl}
-#endif
+export const countryGlsl = glsl`
 const float COUNTRY_EXTENT = ${glslFloat(COUNTRY_MAP.extent)};
 const float COUNTRY_HORIZON = 0.63;
 const float COUNTRY_FOV = 0.78;          // a little long, so the middle distance reads at the dither

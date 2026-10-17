@@ -44,8 +44,7 @@
 // places and grows nothing and the atlas carries none of it.
 import { seasonKnob, type SeasonKnob, yearAt, yearCycleKnob, yearNow } from "../../climate.ts";
 import { effective, feature, KnobReader, type ParamDef } from "../../params.ts";
-import { glslFloat } from "../../shaders/glsl.ts";
-import { plantsGlsl } from "../../shaders/lib/plants.ts";
+import { glsl, glslFloat } from "../../shaders/glsl.ts";
 import { splitHalf, toHalf } from "../../sims/half.ts";
 import { LAND_USES, type LandUse } from "../../sims/landuse.ts";
 import { clamp, fract, glslHash12, hash31, hypot2, lerp } from "../../sims/math.ts";
@@ -1020,9 +1019,8 @@ export class CountryVerges {
 
 const F = COUNTRY_VERGE_FORM;
 
-export const countryVergesGlsl = /* glsl */ `
+export const countryVergesGlsl = glsl`
 #if COUNTRY_HAS_VERGES
-${plantsGlsl}
 // ---- the verges (verges.ts) ----
 const int COUNTRY_VERGE_HEAD = ${COUNTRY_VERGE_HEAD};
 const int COUNTRY_VERGE_ORGANS = ${COUNTRY_VERGE.organs};

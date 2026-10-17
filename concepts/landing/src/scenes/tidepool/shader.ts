@@ -15,8 +15,7 @@
 // fronds and anemones are the shared plant component's (life.ts), streaming and leaning in the
 // flow on the CPU; the anemones close at a surge or a touch (agitation) and when the water leaves
 // them; the fish (sims/fish.ts) are drawn here from their poses.
-import { glslFloat } from "../../shaders/glsl.ts";
-import { plantsGlsl } from "../../shaders/lib/plants.ts";
+import { glsl, glslFloat } from "../../shaders/glsl.ts";
 import { fishGlsl } from "../../sims/fish.ts";
 import { TIDEPOOL_RELIEF } from "./layout.ts";
 import {
@@ -33,7 +32,7 @@ import { TIDEPOOL_ROWS } from "./sim.ts";
 /** Seconds of the scene's entrance and exit (SceneDef.passage). */
 export const TIDEPOOL_PASSAGE = { enter: 3, exit: 1.6 } as const;
 
-export const tidepoolGlsl = `${plantsGlsl}${fishGlsl}
+export const tidepoolGlsl = glsl`${fishGlsl}
 // ---- tide pool ----
 
 const float TP_RELIEF = ${glslFloat(TIDEPOOL_RELIEF)};

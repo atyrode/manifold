@@ -48,8 +48,7 @@
 // K_aurora (weather), the birds'. The shared sky components (src/scenes/README.md, "Composing
 // components"): the stars, the aurora and shooting stars, in the sky and (but the stars) in the
 // river's mirror.
-import { glslFloat } from "../../shaders/glsl.ts";
-import { birdsGlsl } from "../../shaders/lib/birds.ts";
+import { glsl, glslFloat } from "../../shaders/glsl.ts";
 import {
   CURRENT_FAST,
   CURRENT_SLOW,
@@ -78,8 +77,7 @@ export const LANTERNS_STARS = 0.55;
 /** Trigger slot of the shooting stars' "now" button (0 is the flotillas', 1 the M lantern's). */
 export const LANTERNS_METEOR_TRIGGER = 2;
 
-export const lanternsGlsl = `
-${birdsGlsl}
+export const lanternsGlsl = glsl`
 const float LANTERNS_STARS = ${glslFloat(LANTERNS_STARS)};
 // Where shooting stars set out, in the frame of the young moon and the scene's own stars (screen
 // heights from the middle of the horizon): high over the far bank.

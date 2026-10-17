@@ -2,17 +2,20 @@
 // shows it (campfire over the pines, lake over the ice). The contract and conventions are in
 // src/scenes/README.md ("Composing components").
 //
-// Opt-in, unlike the libraries in `libs`: a scene that shows the band puts `milkyWayGlsl` in its own
-// GLSL (at its top, before the functions that call it), so no other scene's program compiles it. It
-// reads no knob defines: the scene passes its band and multiplies by its own K_milkyWay
+// milkyWayModule is a shared module (shaders/glsl.ts) with no requirements, in a program whose scene
+// draws the band (campfire, lake) or whose world shows it (world.ts, under WORLD_MILKYWAY). It reads
+// no knob defines: the scene passes its band and multiplies by its own K_milkyWay
 // (skyComponentKnobs({ milkyWay })), K_stars and night.
 //
 // What is shared: the band's shape (a soft gaussian across it, mottled star clouds along it, a dark
 // lane of dust down it, fading into the horizon haze) and how much it crowds the stars (milkyWayStars).
 // What is the scene's: where the band runs (its pole), its glow's tint, what dims it (night, the moon,
 // cloud) and what stands in front.
+import { glsl, glslModule } from "../glsl.ts";
 
-export const milkyWayGlsl = `
+export const milkyWayModule = glslModule(
+  "milkyWay",
+  glsl`
 // ---- Milky Way ----
 // Where a band runs: the galactic plane's unit normal in the scene's sky frame (a band across the
 // frame has its pole well off the view axis) and one axis in the plane. Declare it once, as a
@@ -40,4 +43,5 @@ float milkyWay(vec3 dir, MilkyWayBand way) {
 float milkyWayStars(float density, float band) {
   return density * (0.7 + 0.8 * band);
 }
-`;
+`,
+);

@@ -1,16 +1,22 @@
 // Shared weather under a closed canopy (bamboo, forest): the rain's cloud closing over the sky and the
 // light it leaves, where the key light (sun or moon) comes from and how its shafts slant, where the
 // shafts leave the canopy, where the canopy is open overhead, and the sky seen through those gaps.
-// Compiled into every scene program after the sky and weather libraries; the contract and conventions
-// are in src/scenes/README.md.
+// canopyModule is a shared module (shaders/glsl.ts) requiring the world clock's Sky
+// (worldClockModule) and the sky library (skyModule); the contract and conventions are in
+// src/scenes/README.md.
 //
-// The grove under it (canopyGroveGlsl, opt-in: the scene interpolates it into its own GLSL): the
-// shafts falling from the gaps, the canopy's ragged underside and the drips running off it, each
-// shaped by the scene's own constants. The scene keeps its own look: the leaves' tint on the light
-// and the sky, the fill and the shelter (how much rain gets through under the leaves), its mist, and
-// what stands in front.
+// The grove under it (canopyGroveModule, a shared module with no requirements): the shafts falling
+// from the gaps, the canopy's ragged underside and the drips running off it, each shaped by the
+// scene's own constants. The scene keeps its own look: the leaves' tint on the light and the sky,
+// the fill and the shelter (how much rain gets through under the leaves), its mist, and what stands
+// in front.
+import { worldClockModule } from "../../world-clock.ts";
+import { glsl, glslModule } from "../glsl.ts";
+import { skyModule } from "./sky.ts";
 
-export const canopyGlsl = `
+export const canopyModule = glslModule(
+  "canopy",
+  glsl`
 // ---- canopy ----
 
 // The weather as the grove sees it. sky: the clock's sky under the rain's cloud, the sun and the moon
@@ -78,13 +84,17 @@ vec3 canopyGapSky(CanopyWeather w, vec3 washed, vec3 dir, float stars, vec2 p, f
   vec3 grey = vec3(0.94, 0.97, 1.0) * w.cloud * deck * (1.0 - 0.2 * shafts * w.rain);
   return mix(col, grey, 0.9 * w.overcast);
 }
-`;
+`,
+  [worldClockModule, skyModule],
+);
 
 /**
  * The grove under a closed canopy (bamboo, forest): its shafts, crowns and drips, each shaped by the
- * scene's constants. Opt-in: interpolate it into the scene's GLSL. Reads `uRes`.
+ * scene's constants. Reads `uRes`.
  */
-export const canopyGroveGlsl = `
+export const canopyGroveModule = glslModule(
+  "canopyGrove",
+  glsl`
 // ---- the grove under the canopy ----
 
 // The shafts: three beams falling from gaps in the canopy (raySrc: screen x where each leaves the top
@@ -184,4 +194,5 @@ float canopyDrip(vec2 q, float tm, float amount, float z, float salt, CanopyDrip
   }
   return 1.0 - smoothstep(r - 0.6 * aa, r + 0.6 * aa, segmentDistance(w, a, b));
 }
-`;
+`,
+);

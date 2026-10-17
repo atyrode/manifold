@@ -3,9 +3,10 @@
 // candidates per pixel. Two views: side-on, for a level pinhole camera (BirdCamera; most scenes),
 // and from below, for a camera looking up at birds overhead (Skyward).
 //
-// Opt-in, unlike the libraries in `libs`: a scene that flies birds puts `birdsGlsl` in its own GLSL
-// (after the common preamble, before the functions that call it) and its knobs from `birdKnobs`
-// (below). The scene supplies everything the birds cannot know: its camera, where its sky's lanes
+// birdsModule is a shared module (shaders/glsl.ts) requiring the world clock (worldClockModule): a
+// program holds it when its scene calls a bird function, or when its world flies birds (world.ts,
+// under WORLD_BIRDS). The scene takes its knobs from `birdKnobs` (below) and supplies everything the
+// birds cannot know: its camera, where its sky's lanes
 // lie and when flights come (BirdSky: how often, the hours, the weather folded into `often`), how
 // low a swooping party may come down over its ground, the occlusion test (BirdHit.depth against
 // the depth of its own first surface) and the lighting (BirdHit.albedo under its sky light, hazed
@@ -55,8 +56,12 @@
 //   BirdHit birdBelowHit(vec3 ro, vec3 rd, vec3 pos, vec3 vel, float kind, float semi, vec3 own, float tm, float px);
 //   float birdBelowShape(vec2 q, float open, float flap, BirdSpecies s);
 import { choice, feature, type Blurb, type Option, type ParamDef } from "../../params.ts";
+import { worldClockModule } from "../../world-clock.ts";
+import { glsl, glslModule } from "../glsl.ts";
 
-export const birdsGlsl = /* glsl */ `
+export const birdsModule = glslModule(
+  "birds",
+  glsl`
 // Species.
 const float BIRD_CROW = 0.0;     // rooks, crows, jackdaws: rowing steadily with short glides
 const float BIRD_SWALLOW = 1.0;  // swallows, martins: small and dark, flickering bursts and glides
@@ -407,7 +412,9 @@ BirdHit birdBelowHit(vec3 ro, vec3 rd, vec3 pos, vec3 vel, float kind, float sem
   float cover = hardFill(birdBelowShape(q, open, flap, s), aa);
   return BirdHit(cover, db, mix(s.albedo, s.underwing.rgb, smoothstep(0.2, 0.45, abs(q.y)) * s.underwing.a));
 }
-`;
+`,
+  [worldClockModule],
+);
 
 /** The species a scene can fly, by the `birdKind` label: the GLSL kinds (BIRD_CROW = 0...). */
 export const BIRD_KIND = {

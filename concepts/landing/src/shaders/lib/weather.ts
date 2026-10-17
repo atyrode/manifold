@@ -2,13 +2,15 @@
 // into a veil with distance) and laid over the picture, what they do to the world (splashes,
 // puddles, wet albedo and gloss, drips from edges, lying snow), rain on a window pane, ripples on
 // water, fog, and the sky's answer (how overcast it is, greyed light, rain shafts under distant
-// cloud). Compiled into every scene program after the sky library; the contract and conventions are
-// in src/scenes/README.md. How wet the world is and how much snow lies come from the renderer as
-// uWeather (src/renderer.ts).
+// cloud). weatherModule is a shared module (shaders/glsl.ts) with no requirements; the climate's
+// mirror (how cold the year is, what falls as snow) is its own, climateModule in src/climate.ts. The
+// contract and conventions are in src/scenes/README.md. How wet the world is and how much snow lies
+// come from the renderer as uWeather (src/renderer.ts).
+import { glsl, glslModule } from "../glsl.ts";
 
-import { climateGlsl } from "../../climate.ts";
-
-export const weatherGlsl = `
+export const weatherModule = glslModule(
+  "weather",
+  glsl`
 // ---- weather ----
 
 // Rain or snow seen through the air between the eye and the first opaque surface. cover: 0..1 of
@@ -594,4 +596,5 @@ float rainShafts(vec2 p, float tm, float amount, float wind) {
   float streak = 0.75 + 0.25 * vnoise(vec2(x * 9.0, p.y * 4.0 + tm * 0.5));
   return curtain * hang * streak * smoothstep(0.15, 0.5, a) * (0.25 + 0.75 * a * a);
 }
-${climateGlsl}`;
+`,
+);

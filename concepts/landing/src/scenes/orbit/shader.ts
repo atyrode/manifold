@@ -4,8 +4,7 @@
 // meteors and the M city lights. The parts behind knobs that start off compile in only while their
 // knob is on (ORBIT_* gates, orbitFeatures in index.ts); storms, shooting stars and captured meteors
 // always do, as a "now" shows them with their knob off.
-import { glslFloat } from "../../shaders/glsl.ts";
-import { planetGlsl } from "../../shaders/lib/planet.ts";
+import { glsl, glslFloat } from "../../shaders/glsl.ts";
 
 /** Seconds of the orbit's entrance and exit (SceneDef.passage). */
 export const ORBIT_PASSAGE = { enter: 2.8, exit: 1.5 } as const;
@@ -21,8 +20,7 @@ export const ORBIT_CAPTURE = { from: 3.4, to: 1.02, turns: 1.4, seconds: 8 } as 
 const captureFall = 1 - (ORBIT_CAPTURE.to / ORBIT_CAPTURE.from) ** 1.5;
 const captureSweep = (2 * Math.PI * ORBIT_CAPTURE.turns) / Math.log(1 - captureFall);
 
-export const orbitGlsl = `
-${planetGlsl}
+export const orbitGlsl = glsl`
 // Real constellations, plus the optional Manifold asterism, drifting with the sky.
 vec2 orbitConstellations(vec2 sky, float aspect, float px, bool figures, bool lines, bool mark, float tm) {
   float star = 0.0;

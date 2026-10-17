@@ -3,9 +3,9 @@
 // sky, behind its pines). The contract and conventions are in src/scenes/README.md ("The giant
 // planet").
 //
-// Opt-in, unlike the libraries in `libs`: a scene that composes the planet puts `planetGlsl` in its
-// own GLSL (at its top, before the functions that call it), so no other scene's program compiles it.
-// It reads no knob defines: the scene passes every value.
+// Two shared modules (shaders/glsl.ts): planetModule provides the planet, with no requirements, to
+// any program whose scene calls it (orbit, campfire, mobile) or whose sky hangs planets (the sky
+// library requires it under SKY_PLANETS). It reads no knob defines: the scene passes every value.
 //
 // What is shared: the sphere and its phase lighting (the sun circling it), the surface (turbulent
 // belts or storm-swirled bands, a cloud deck, night-side storms), the atmosphere (a sunward limb halo
@@ -21,14 +21,17 @@
 // the same planet is a hero filling the frame or a far decoration a few dozen cells across. Where the
 // detail spans a cell or more the output is the full-detail one bit for bit.
 //
-// The body tier (`planetBodyGlsl`, after `planetGlsl`) is the decoration tier for the sky's planets
-// (skyGiant in sky.ts): one planet of any of PLANET_BODY_KINDS (the banded giant as planetOver
-// draws it, a belted giant, a rocky, an ocean, a home-like, a lava, a crystal, an eye and a bubble
-// world), in its kind's palettes, with a thin or a wide banded ring, on its own clock.
-import { WINTER_COVER } from "../../climate.ts";
-import { glslFloat, glslVec3 } from "../glsl.ts";
+// The body tier (planetBodyModule, which requires planetModule and the climate's climateModule) is
+// the decoration tier for the sky's planets (skyGiant in sky.ts): one planet of any of
+// PLANET_BODY_KINDS (the banded giant as planetOver draws it, a belted giant, a rocky, an ocean, a
+// home-like, a lava, a crystal, an eye and a bubble world), in its kind's palettes, with a thin or a
+// wide banded ring, on its own clock.
+import { climateModule, WINTER_COVER } from "../../climate.ts";
+import { glsl, glslFloat, glslModule, glslVec3 } from "../glsl.ts";
 
-export const planetGlsl = `
+export const planetModule = glslModule(
+  "planet",
+  glsl`
 // ---- planet ----
 
 // A pixel on the planet: q its offset from the centre in radii, d = |q|, and the sphere's unit normal
@@ -440,7 +443,8 @@ vec3 planetOver(vec3 col, vec2 p, float px, PlanetLook look, float tm, float t) 
   }
   return col;
 }
-`;
+`,
+);
 
 type Vec3 = readonly [number, number, number];
 
@@ -1103,7 +1107,9 @@ const colourCases = PLANET_BODY_KINDS.flatMap((kind) => kind.palettes)
   })
   .join("\n");
 
-export const planetBodyGlsl = `
+export const planetBodyModule = glslModule(
+  "planetBody",
+  glsl`
 // ---- the body tier: the sky's planets ----
 
 // The kinds (PLANET_BODY_KINDS in shaders/lib/planet.ts); each kind's four palettes are
@@ -1443,4 +1449,6 @@ vec3 planetBodyOver(vec3 col, vec2 p, float px, PlanetBody b, float t) {
   }
   return col;
 }
-`;
+`,
+  [planetModule, climateModule],
+);

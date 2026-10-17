@@ -60,14 +60,13 @@
 // the sea). All of it is exactly 0 at rest, where uv == screenUv, and none of it touches the waves'
 // own clock.
 
-import { worldGlsl } from "../../shaders/lib/world.ts";
+import { glsl } from "../../shaders/glsl.ts";
 
 /** Trigger slots of the lightning's and the shooting stars' "now" buttons (after the fish's, 0). */
 export const SHORE_LIGHTNING_TRIGGER = 1;
 export const SHORE_METEOR_TRIGGER = 2;
 
-export const shoreGlsl = `
-${worldGlsl}
+export const shoreGlsl = glsl`
 const float SHORE_HORIZON = 0.6;  // screen height of the horizon
 const float SHORE_FOV = 0.7;      // vertical field of view (rad): a long lens stacks up the surf
 const float SHORE_EYE = 1.8;      // eye height above still water

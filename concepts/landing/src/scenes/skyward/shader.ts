@@ -20,7 +20,7 @@
 // K_stars, K_moon, K_meteors (sky); K_birds, K_planes (air); K_clouds, K_rain, K_snow, K_fog, K_wind,
 // K_snowOverhead (weather); K_mark. The shared sky components (src/scenes/README.md, "Composing
 // components"): the stars, the moon in its phase (SKY_MOON_PHASE) and shooting stars.
-import { birdsGlsl } from "../../shaders/lib/birds.ts";
+import { glsl } from "../../shaders/glsl.ts";
 
 /** Seconds of the entrance (the view tips back from street level to the zenith) and the exit (it tips down toward the street again) (SceneDef.passage). */
 export const SKYWARD_PASSAGE = { enter: 2.8, exit: 1.5 } as const;
@@ -28,8 +28,7 @@ export const SKYWARD_PASSAGE = { enter: 2.8, exit: 1.5 } as const;
 /** Trigger slot of the shooting stars' "now" button. */
 export const SKYWARD_METEOR_TRIGGER = 0;
 
-export const skywardGlsl = `
-${birdsGlsl}
+export const skywardGlsl = glsl`
 // ---- The frame ----
 const float SKYWARD_A = 11.0;        // the avenue's walls stand at x = +-A
 const float SKYWARD_B = 9.0;         // the cross street's at z = +-B

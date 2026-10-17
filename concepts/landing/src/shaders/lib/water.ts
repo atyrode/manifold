@@ -1,9 +1,11 @@
 // A water surface in tiers, cheapest first, composed from the shared water parts rather than written
 // again: a scene selects the highest tier it draws (`features: { WATER_TIER: WATER_TIERS.mirror }`
 // in its SceneDef), and its program gets that tier and every one below it. A tier it did not select
-// is not in its program, so calling one of its functions fails to compile, never silently. Compiled
-// into every scene program after surface.ts; nothing here exists without WATER_TIER. The contract
-// and the tier each scene selects are in src/scenes/README.md ("Water").
+// is not in its program, so calling one of its functions fails to compile, never silently.
+// waterModule is a shared module (shaders/glsl.ts) requiring surfaceModule; the ripples tier's
+// wind on water (windWater.ts) and the caustics tier's net (caustics.ts) are parts of it, inside
+// their tiers. Nothing here exists without WATER_TIER. The contract and the tier each scene selects
+// are in src/scenes/README.md ("Water").
 //
 //   flat      WATER_FLAT 0      the scene's own tint (and, if it likes, its sky mirrored flat): no surface
 //   ripples   WATER_RIPPLES 1   wind ripples: rippleSpectrum (surface.ts, a scene's own trains) and the
@@ -21,7 +23,9 @@
 // or small water costs little more than the flat tier whatever tier the scene selects, and resolved
 // water is bit for bit the full-detail picture.
 import { causticsGlsl } from "../caustics.ts";
+import { glsl, glslModule } from "../glsl.ts";
 import { windWaterGlsl } from "../windWater.ts";
+import { surfaceModule } from "./surface.ts";
 
 /** The water tiers, cheapest first; a tier includes every one below it (SceneDef.features WATER_TIER). */
 export const WATER_TIERS = { flat: 0, ripples: 1, mirror: 2, flow: 3, caustics: 4 } as const;
@@ -30,7 +34,9 @@ const tierDefines = Object.entries(WATER_TIERS)
   .map(([name, value]) => `#define WATER_${name.toUpperCase()} ${value}`)
   .join("\n");
 
-export const waterGlsl = `
+export const waterModule = glslModule(
+  "water",
+  glsl`
 // ---- water (shaders/lib/water.ts) ----
 #ifdef WATER_TIER
 ${tierDefines}
@@ -107,4 +113,6 @@ float waterCaustic(vec3 hessian, float depth, float focus, float soft) {
 }
 #endif
 #endif
-`;
+`,
+  [surfaceModule],
+);
