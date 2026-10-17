@@ -210,7 +210,7 @@ const BUDGET = {
   sill: [114000, 159000],
   skyward: [91500, 136000],
   street: [123500, 127500],
-  swell: [44500],
+  swell: [68000, 154000],
   tidepool: [53000],
   train: [154000, 199000],
 } as const satisfies Record<SceneId, readonly [number, number?]>;

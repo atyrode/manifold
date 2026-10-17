@@ -512,6 +512,7 @@ export async function verifyWaterTiers(
       "mirror",
       "float g = waterGlint(vec3(0.0, 1.0, 0.0), vec3(0.0, 0.3, -1.0), vec3(0.0, 0.3, 1.0), 0.01, 1.0)",
     ],
+    ["mirror", "float f = waterFacets(uv * 40.0, t)"],
     ["flow", "vec2 f = waterDrift(uv, vec2(1.0, 0.0), t)"],
     [
       "caustics",

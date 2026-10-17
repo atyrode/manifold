@@ -9,7 +9,8 @@
 //   ripples   WATER_RIPPLES 1   wind ripples: rippleSpectrum (surface.ts, a scene's own trains) and the
 //                               breeze's cat's-paws with their screen-space mirror (windWater.ts)
 //   mirror    WATER_MIRROR 2    reflections: the rippled normal, the reflected ray and Fresnel
-//                               (waterMirror), and the glitter of a light on it (waterGlint)
+//                               (waterMirror), the glitter of a light on it (waterGlint) and the
+//                               single facets that flash in it (waterFacets)
 //   flow      WATER_FLOW 3      currents: a pattern carried by a steady current (waterDrift)
 //   caustics  WATER_CAUSTICS 4  the bed lit through the surface: causticRipples' net (caustics.ts) times
 //                               a simulated surface's focus (ShallowWater.surface, sims/shallow.ts);
@@ -91,6 +92,25 @@ float waterGlint(vec3 n, vec3 view, vec3 light, float s2, float exposure) {
   float shown = waterMasking(nv, s2) * waterMasking(nl, s2);
   float radiance = fresnelSchlick(dot(view, h), 0.02, 0.0) * density * shown / (4.0 * nv * c2 * c2);
   return 1.0 - exp(-exposure * radiance);
+}
+
+// Glints in the glitter: single wave facets catching the light for a moment, to multiply a path's
+// exposure by (1 + flicker x this). They live on a grid fixed to the water, gp = (x / z, eye / z)
+// scaled to cells, so each grid cell is 9 x 4 dither cells wherever it lies and a glint is never
+// thinner than two; each one swells and fades over a second or two, never from one frame to the
+// next. tm: the motion clock (uMotionTime). Returns 0..1.
+float waterFacets(vec2 gp, float tm) {
+  vec2 g = gp / vec2(9.0, 4.0);
+  vec2 id = floor(g);
+  float h = hash12(id + 0.37);
+  float age = tm / (0.9 + 0.9 * h) + fract(h * 7.31);
+  float turn = floor(age);
+  vec2 seed = id + turn * vec2(0.73, 1.37); // a fresh place and chance for each glint
+  if (hash12(seed + 5.3) > 0.55) return 0.0;
+  vec2 at = 0.3 + 0.4 * vec2(hash12(seed + 1.1), hash12(seed + 2.9));
+  vec2 r = (fract(g) - at) * vec2(9.0 / 2.6, 4.0 / 1.2); // in glint radii: 2.6 x 1.2 cells
+  float swell = sin(3.14159265 * (age - turn));
+  return swell * swell * (1.0 - smoothstep(0.35, 1.0, dot(r, r)));
 }
 #endif
 

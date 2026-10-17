@@ -43,10 +43,9 @@ export interface Clocks {
 /**
  * Scenes whose defaults scale an amplitude by uMotion (allowed: `uMotion` alone is for amplitudes),
  * so only the scene clock is varied for them, each with what it scales: pond bends its surface and
- * turns its koi by it; swell's stars (`starfield`) dip deeper as they twinkle the more motion there
- * is, still at motion 0.
+ * turns its koi by it.
  */
-const MOTION_AMPLITUDE: Partial<Record<SceneId, true>> = { pond: true, swell: true };
+const MOTION_AMPLITUDE: Partial<Record<SceneId, true>> = { pond: true };
 
 export const WIDTH = 64;
 export const HEIGHT = 36;

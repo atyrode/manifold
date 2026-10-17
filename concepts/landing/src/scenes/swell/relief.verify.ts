@@ -1,8 +1,9 @@
 // GPU regression for Swell's wave relief (#1082 R02): the bounded march must find where each ray
 // first meets the lifted sea (no crest stepped over, the hit on the surface) and must keep the
-// waves below the camera, at the default sea, the tallest swell with the most chop, and the entrance's
-// low camera over its rolling wave. It runs the scene's own GLSL; registered in verify-browser.ts.
-import { fragmentSourceFor, packParams, vertexSource } from "../../shaders/index.ts";
+// waves below the camera, at the default sea, the tallest swell in the hardest wind, and the
+// entrance's low camera over its rolling wave. It runs the scene's own GLSL, with the relief's code
+// compiled in (SWELL_RELIEF); registered in verify-browser.ts.
+import { fragmentSourceFor, packParams, sceneFeatures, vertexSource } from "../../shaders/index.ts";
 import { defaultsFor, paramDefaults, renderSettings } from "../../state.ts";
 import { loadScene } from "../index.ts";
 
@@ -44,30 +45,34 @@ export function verifySwellRelief(gl: WebGL2RenderingContext): Record<string, un
   // heights) or more under the sea, sampled densely, blue: the waves stay below the camera.
   const linked = program(
     gl,
-    fragmentSourceFor({
-      ...swellScene,
-      entry: "regressionSwellRelief",
-      glsl:
-        swellScene.glsl +
-        `
+    fragmentSourceFor(
+      {
+        ...swellScene,
+        entry: "regressionSwellRelief",
+        glsl:
+          swellScene.glsl +
+          `
       uniform vec3 regressionCamera;
       Shade regressionSwellRelief(vec2 uv, vec2 cell, float t) {
         vec3 rd = normalize(vec3((uv.x - 0.5) * 1.8, mix(-0.44, -0.002, uv.y), 1.6));
         float camH = regressionCamera.x;
         float amp = regressionCamera.y;
         float front = regressionCamera.z;
-        float height = K_height * 2.0;
-        float chop = K_chop * 2.0;
-        vec3 relief = swellRelief(K_relief, camH, chop, height, amp);
-        float s = swellMarch(camH, rd, relief, t, chop, height, front, amp);
-        float onSea = abs(swellGap(s, camH, rd, relief.x, t, chop, height, front, amp)) < 0.002 ? 1.0 : 0.0;
+        float gain = SWELL_BREEZE.x + SWELL_BREEZE.y * abs(K_wind);
+        float heading = 0.5 * TAU - SWELL_VEER * clamp(SWELL_VEER_GAIN * K_wind, -1.0, 1.0);
+        SwellSea sea = swellSea(K_height * 2.0, gain, heading);
+        vec3 relief = swellRelief(K_relief, camH, sea, amp);
+        float s = swellMarch(camH, rd, relief, t, sea, front, amp);
+        float onSea = abs(swellGap(s, camH, rd, relief.x, t, sea, front, amp)) < 0.002 ? 1.0 : 0.0;
         float first = 1.0;
         for (int k = 1; k < 256; k++) {
-          if (swellGap(s * float(k) / 256.0, camH, rd, relief.x, t, chop, height, front, amp) < -0.01) first = 0.0;
+          if (swellGap(s * float(k) / 256.0, camH, rd, relief.x, t, sea, front, amp) < -0.01) first = 0.0;
         }
         return shadeOf(vec3(onSea, first, relief.y < camH ? 1.0 : 0.0), 0.0, 0.0);
       }`,
-    }),
+      },
+      { ...sceneFeatures(swellScene), SWELL_RELIEF: 1 },
+    ),
   );
   gl.canvas.width = WIDTH;
   gl.canvas.height = HEIGHT;
@@ -84,17 +89,17 @@ export function verifySwellRelief(gl: WebGL2RenderingContext): Record<string, un
   // must stay under the camera.
   const cases = [
     { name: "default", knobs: { relief: 1 }, camera: [1, 0, 0], atRest: true },
-    { name: "tallest", knobs: { relief: 1, height: 1, chop: 1 }, camera: [1, 0, 0], atRest: true },
+    { name: "tallest", knobs: { relief: 1, height: 1, wind: 1 }, camera: [1, 0, 0], atRest: true },
     {
       name: "entranceTallest",
-      knobs: { relief: 1, height: 1, chop: 1 },
+      knobs: { relief: 1, height: 1, wind: 1 },
       camera: [0.35, 0.18, 4.5],
       atRest: false,
     },
     // A calm sea, so the rolling wave alone sets how high the relief may go below the low camera.
     {
       name: "entranceCalm",
-      knobs: { relief: 1, height: 0.05 },
+      knobs: { relief: 1, height: 0.05, wind: 0 },
       camera: [0.35, 0.18, 4.5],
       atRest: false,
     },

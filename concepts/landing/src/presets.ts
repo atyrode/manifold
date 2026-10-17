@@ -109,7 +109,7 @@ export const presets: readonly Preset[] = [
   {
     name: "Swell · heavy swell",
     commit: "f1ca6557",
-    query: "scene=swell&height=0.8&chop=0.6&relief=0.6",
+    query: "scene=swell&height=0.8&relief=0.6&wind=0.6",
     savedAt: "2026-10-15",
   },
   {

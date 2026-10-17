@@ -95,7 +95,7 @@ const float SHORE_SAND_BLUR = 0.05;
 // the sun 8 degrees up lay the paths they always did; the share of the facets in the sea's broad
 // tail (the swell's and the breeze's slopes the drawn surface leaves out, variance 0.03), which
 // lays a wide sheen round the moon's path; and how much more a cell is exposed where a single
-// facet catches the moon or the sun (shoreGlints).
+// facet catches the moon or the sun (waterFacets).
 const float SHORE_MOON_GLINT = 0.049;
 const float SHORE_SUN_GLINT = 0.012;
 const float SHORE_TAIL = 0.66;
@@ -206,24 +206,6 @@ float shoreDrained(ShoreWave w, float runup, float e) {
   float rise = 0.38 * dur;
   float at = rise + sqrt(1.0 - e / runup) * (dur - rise);
   return w.swash >= at ? w.swash - at : 1e4;
-}
-
-// Glints in the glitter: single wave facets catching the light for a moment. They live on a grid
-// fixed to the water, gp = (x / z, eye / z) scaled to cells, so each grid cell is 9 x 4 dither cells
-// wherever it lies and a glint is never thinner than two; each one swells and fades over a second
-// or two, never from one frame to the next. Returns 0..1.
-float shoreGlints(vec2 gp, float tm) {
-  vec2 g = gp / vec2(9.0, 4.0);
-  vec2 id = floor(g);
-  float h = hash12(id + 0.37);
-  float age = tm / (0.9 + 0.9 * h) + fract(h * 7.31);
-  float turn = floor(age);
-  vec2 seed = id + turn * vec2(0.73, 1.37); // a fresh place and chance for each glint
-  if (hash12(seed + 5.3) > 0.55) return 0.0;
-  vec2 at = 0.3 + 0.4 * vec2(hash12(seed + 1.1), hash12(seed + 2.9));
-  vec2 r = (fract(g) - at) * vec2(9.0 / 2.6, 4.0 / 1.2); // in glint radii: 2.6 x 1.2 cells
-  float swell = sin(3.14159265 * (age - turn));
-  return swell * swell * (1.0 - smoothstep(0.35, 1.0, dot(r, r)));
 }
 
 // How much of the surface a foam texture covers for a given amount of foam (0..1): patches with
@@ -784,7 +766,7 @@ Shade sceneShore(vec2 screenUv, vec2 cell, float t) {
       // well out to either side and leaves the faces turned to the viewer dark, so every row reads.
       // A low moon lays a long blazing path, a high one a short faint one.
       vec2 gp = vec2(hx, SHORE_EYE) / hz * focal * uRes.y; // dither cells, fixed to the water
-      vec2 flicker = 1.0 + SHORE_FLICKER * shoreGlints(gp, tm);
+      vec2 flicker = 1.0 + SHORE_FLICKER * waterFacets(gp, tm);
       float moonPath = waterGlint(n, view, sky.moon, rough, SHORE_MOON_GLINT * moonShine * (1.0 - SHORE_TAIL) * flicker.x);
       float sheen = waterGlint(n, view, sky.moon, 0.03, SHORE_MOON_GLINT * moonShine * SHORE_TAIL);
       float sunPath = waterGlint(n, view, sky.sun, rough, SHORE_SUN_GLINT * sunShine * flicker.y);
