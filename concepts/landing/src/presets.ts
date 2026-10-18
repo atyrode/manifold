@@ -376,7 +376,7 @@ export const presets: readonly Preset[] = [
   },
   {
     name: "Ripple tank · koi in the tank",
-    commit: "PENDING",
+    commit: "161889d0",
     query: "scene=ripple&koi=1",
     savedAt: "2026-10-18",
   },
