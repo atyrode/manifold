@@ -28,6 +28,11 @@ is `infra/previews/environment-image.txt` in the stable tooling checkout; it mus
 be an immutable, anonymously pullable OCI digest. Updating it is a reviewed code
 change, not a startup installation or a registry login on the preview host.
 
+The pinned environment substitutes only from the official Nix cache and
+builds missing paths locally. Changing this reference does not recreate
+existing numbered previews; replacement still uses the normal drain-gated
+deployment flow.
+
 The environment provides the configured zsh, OMP and the portable profile's other
 tools. It does not provide provider credentials or a model service. Code is a native
 Manifold plugin, not a required preview executable; install it explicitly through
