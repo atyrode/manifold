@@ -116,6 +116,9 @@ export interface LayerLight {
  *   shade       void <fn>(Ctx x, Cell c, inout Shade o): after the grade's shadeOf, in canonical
  *               order: an accent or a colour of its own over the picture's (shore's plankton light,
  *               snapped per cell, at c.accent of the World's veil over it)
+ * and, in the `interior` composer (room.ts), a backdrop's
+ *   daylight    vec3 <fn>(Ctx x, vec2 p): the light it lets into the room onto a surface at frame
+ *               point p, which the room's light (roomLight) adds for every layer (the window's)
  */
 export interface LayerPasses {
   readonly begin?: string;
@@ -132,6 +135,7 @@ export interface LayerPasses {
   readonly glow?: string;
   readonly speck?: string;
   readonly shade?: string;
+  readonly daylight?: string;
 }
 
 /** What a layer's sim asks of the composed sim's shared resources (README "Sims in a composition"). */
@@ -240,6 +244,11 @@ export interface LayerDef {
     readonly air?: string;
     readonly seen?: string;
   };
+  /**
+   * An `interior` backdrop that looks out (a window): the World crosses its glass, and an interior
+   * preset lists the World's knobs only while it offers one (README "The interior composer").
+   */
+  readonly window?: true;
 }
 
 /**
@@ -358,6 +367,43 @@ export interface ScenePreset {
   readonly features?: Readonly<Record<string, number>>;
   /** Its own lab headings, over the composer's and its layers' (the World's sections' text). */
   readonly groups?: Readonly<Record<string, Blurb>>;
+  /** The `interior` composer's room (README "The interior composer"); required there, unused outdoors. */
+  readonly room?: Room;
+}
+
+/**
+ * An `interior` preset's room (README "The interior composer"). Its rig (`ScenePreset.rig`) is a
+ * level pinhole `eye` metres over the ledge across the front of the view (a sill, a sideboard), the
+ * ledge's top the rig's floor; `distance` is how far the eye stands from the line things on the
+ * ledge stand on (the seat), so the seat lies at `RIG_HORIZON - RIG_FOCAL · eye / distance` and the
+ * ledge is drawn at `RIG_FOCAL / distance` screen heights a metre (room.ts `roomFrame`). The room is
+ * laid out on the frame: across, as a share of the frame's width (anchors' x); up, in screen heights.
+ */
+export interface Room {
+  /** From the eye to the seat line (m). */
+  readonly distance: number;
+  /** The back wall's albedo, where no backdrop covers it. */
+  readonly wall: readonly [number, number, number];
+  /** The room's light all round, beside its lamp, the window's daylight and the layers' lights. */
+  readonly ambient: readonly [number, number, number];
+  /**
+   * The room's own lamp, out of frame, where it has one (the sill's reading lamp): its colour times
+   * `gain` times `1 / (1 + 6 |d|²)`, d the frame point's offset from the lamp (`at`: x past the
+   * frame's right edge, y up from its centre, screen heights) squashed `squash` times in height.
+   */
+  readonly lamp?: {
+    readonly at: readonly [number, number];
+    readonly squash: number;
+    readonly color: readonly [number, number, number];
+    readonly gain: number;
+  };
+}
+
+/** Where the room's seat line stands on the frame (screen heights up from its centre) and its scale. */
+export interface RoomFrame {
+  readonly seat: number;
+  /** Screen heights a metre at the seat line. */
+  readonly scale: number;
 }
 
 export const FLOOR_KINDS = [
@@ -430,6 +476,8 @@ export interface LayerFrame extends SimFrame {
    * narrows it to the host's type (`instanceof`).
    */
   host(layer: string): object | undefined;
+  /** The room's seat line and scale on the frame, in an `interior` preset (undefined outdoors). */
+  readonly room?: RoomFrame;
 }
 
 export interface LayerSim {

@@ -200,7 +200,7 @@ ${snowed}
 }
 
 /** Each layer's data accessors (README "Sims in a composition"): never uSimN in a layer's own GLSL. */
-function accessorsGlsl(layers: readonly OnLayer[], alloc: Allocation): string {
+export function accessorsGlsl(layers: readonly OnLayer[], alloc: Allocation): string {
   return layers
     .map(({ def }) => {
       const id = def.id;
@@ -225,7 +225,7 @@ function accessorsGlsl(layers: readonly OnLayer[], alloc: Allocation): string {
 }
 
 /** The on layers' lights summed (README "Light"): every layer lights its materials with it. */
-function lightsGlsl(layers: readonly OnLayer[]): string {
+export function lightsGlsl(layers: readonly OnLayer[]): string {
   const lights = layers.flatMap(({ def }) => def.lights ?? []);
   const terms = lights.map((light) =>
     light.gate === undefined
@@ -275,7 +275,7 @@ ${view}
  * that runs only where a branch is taken costs it far more than the pass (dew's backdrop: a tenth of
  * the program more), a result dropped after it next to nothing.
  */
-function passCalls(
+export function passCalls(
   layers: readonly OnLayer[],
   turns: boolean,
   kind: keyof LayerPasses,
@@ -299,7 +299,7 @@ function passCalls(
  * Each cell's begins, in canonical order: before a layer's own, the begin of every shared chunk it
  * holds that has not run yet (so the backdrop's runs before a later layer's chunk reads its air).
  */
-function begins(layers: readonly OnLayer[]): string {
+export function begins(layers: readonly OnLayer[]): string {
   const ran = new Set<string>();
   return layers
     .flatMap(({ def, code }) => [
@@ -311,6 +311,51 @@ function begins(layers: readonly OnLayer[]): string {
       ...(def.passes.begin === undefined ? [] : [`  ${def.passes.begin}(x);`]),
     ])
     .join("\n");
+}
+
+/**
+ * The layers' own entrances and exits (`layerIn`, `layerOut`, `layerShown`, `layerShows`): read from
+ * the atlas's row 0 in a program that draws turns, the scene's passage in every cell in a steady one.
+ */
+export function turnsGlsl(turns: boolean): string {
+  return turns
+    ? `// The layers' own entrances and exits (sim.ts, the atlas's row 0, texel k for the k-th layer on):
+// -1 while the layer follows the scene's passage.
+vec2 layerTurn(int k) {
+  return ${simOn(ATLAS_SLOT)} > 0.5 ? texelFetch(uSim${ATLAS_SLOT}, ivec2(k, 0), 0).xy : vec2(-1.0);
+}
+float layerIn(int k) {
+  float own = layerTurn(k).x;
+  return own < 0.0 ? passageIn() : own;
+}
+float layerOut(int k) {
+  float own = layerTurn(k).y;
+  return own < 0.0 ? passageOut() : own;
+}
+// The share of cells showing layer k: 1 at rest and through the scene's passage.
+float layerShown(int k) {
+  vec2 own = layerTurn(k);
+  return own.x < 0.0 ? 1.0 : own.x * (1.0 - max(own.y, 0.0));
+}
+// Whether this cell shows layer k: its share of the cells, cut per cell.
+bool layerShows(int k, vec2 cell) {
+  float shown = layerShown(k);
+  return shown >= 1.0 || edgeThreshold(cell, vec2(13.0 + 7.0 * float(k), 29.0)) < shown;
+}`
+    : `// A steady program (compose.ts TURNS_GATE): no layer plays its own entrance or exit in it, so every
+// layer follows the scene's passage and shows in every cell.
+float layerIn(int k) {
+  return passageIn();
+}
+float layerOut(int k) {
+  return passageOut();
+}
+float layerShown(int k) {
+  return 1.0;
+}
+bool layerShows(int k, vec2 cell) {
+  return true;
+}`;
 }
 
 /** The whole composed program's own GLSL: the World, the prelude, the shared and the layers' GLSL, the entry. */
@@ -430,46 +475,7 @@ ${passage}${gustGlsl(a.gust.slot, a.gust.shape)}${STRUCTS}${lightGlsl(grade, rig
     stretched,
     layers.flatMap(({ def }) => def.casters ?? []),
   )}
-${
-  turns
-    ? `// The layers' own entrances and exits (sim.ts, the atlas's row 0, texel k for the k-th layer on):
-// -1 while the layer follows the scene's passage.
-vec2 layerTurn(int k) {
-  return ${simOn(ATLAS_SLOT)} > 0.5 ? texelFetch(uSim${ATLAS_SLOT}, ivec2(k, 0), 0).xy : vec2(-1.0);
-}
-float layerIn(int k) {
-  float own = layerTurn(k).x;
-  return own < 0.0 ? passageIn() : own;
-}
-float layerOut(int k) {
-  float own = layerTurn(k).y;
-  return own < 0.0 ? passageOut() : own;
-}
-// The share of cells showing layer k: 1 at rest and through the scene's passage.
-float layerShown(int k) {
-  vec2 own = layerTurn(k);
-  return own.x < 0.0 ? 1.0 : own.x * (1.0 - max(own.y, 0.0));
-}
-// Whether this cell shows layer k: its share of the cells, cut per cell.
-bool layerShows(int k, vec2 cell) {
-  float shown = layerShown(k);
-  return shown >= 1.0 || edgeThreshold(cell, vec2(13.0 + 7.0 * float(k), 29.0)) < shown;
-}`
-    : `// A steady program (compose.ts TURNS_GATE): no layer plays its own entrance or exit in it, so every
-// layer follows the scene's passage and shows in every cell.
-float layerIn(int k) {
-  return passageIn();
-}
-float layerOut(int k) {
-  return passageOut();
-}
-float layerShown(int k) {
-  return 1.0;
-}
-bool layerShows(int k, vec2 cell) {
-  return true;
-}`
-}
+${turnsGlsl(turns)}
 ${accessorsGlsl(layers, allocation)}
 Ctx composerCtx(vec2 uv, vec2 cell) {
   Ctx x;

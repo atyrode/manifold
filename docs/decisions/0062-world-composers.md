@@ -20,7 +20,8 @@ Scene ids stay as presets; no aliases and no link migrations (no backward compat
 decision 2026-10-17).
 
 This record is the decision as it stands after Phase 2, when the `outdoor` composer runs all
-nineteen eye-level scenes. It keeps the reasoning, the evidence and the phases ahead. The lab is
+nineteen eye-level scenes, and the Phase 3 pilot, when the `interior` composer runs sill and lava.
+It keeps the reasoning, the evidence and the phases ahead. The lab is
 not product code, so no axiom, `REGISTRY.md` row or `docs/CONTRACTS.md` section changes; the
 contract's normative form is the "Composers" section of `concepts/landing/src/scenes/README.md`,
 the lab's own spec.
@@ -34,16 +35,20 @@ are the ports' own, taken under #1082 on the shared dev host.
   placer in `place.ts`, the claims in `claims.ts`, the program in `glsl.ts`, the gust field in
   `gust.ts`, the composed sim in `sim.ts`, the code assembly in `code.ts`, the caps in `caps.ts`)
   and the `outdoor` composer: 79 layers in canonical order (`outdoor.ts`: 19 backdrops, 15 grounds,
-  22 dressings, 7 covers, 12 life, 4 chores), their code by id in `outdoor-code.ts`.
+  22 dressings, 7 covers, 12 life, 4 chores), their code by id in `outdoor-code.ts`. The `interior`
+  composer's pilot (Phase 3): 8 layers (`interior.ts`: 2 backdrops, 2 grounds, 4 dressings), their
+  code in `interior-code.ts`, the room's program in `room.ts`.
 - **Presets:** meadow and bees (Phase 1); shore, dunes, autumn, lanterns and falls (2a); campfire,
   fireflies, forest, bamboo, garden and lake (2b); country, street, skyward, flock, swell and dew
-  (2c). `src/composer/budget.test.ts` holds that list.
+  (2c); sill and lava (the Phase 3 pilot). `src/composer/budget.test.ts` holds that list.
 - **Committed mixes:** "Bees · overgrown meadow" (the meadow's grass and wildflowers in the bees'
-  garden) and "Bees · in the valley" (the countryside's `valley` in place of the bees' hillside).
+  garden), "Bees · in the valley" (the countryside's `valley` in place of the bees' hillside) and
+  "Sill · lava lamp on the sill" (the lava lamp standing on the sill, lighting the room).
   The other mixes the waves planned ("Autumn maple by the lantern river", "Campfire in the meadow",
   "Fireflies over the apiary", "A campfire on the valley's hill") were not made: their layers are
   drawn through their own rigs alone (see "Rigs, locking and offering").
-- **Not built:** the `interior` and `overhead` composers (Phases 3 and 4); the per-program knob
+- **Not built:** the rest of the interiors (bar, train, bonsai, mobile, incense, frost, clouds,
+  harmonograph) and the `overhead` composer (Phases 3 and 4); the per-program knob
   layout and packed trigger slots; `scripts/layer-costs.ts`, the stack meter and the role's "+"
   listing; the browser checks `composerDepth`, `composerClaims`, `composerWeather` and
   `layerToggles`; a check of the SwiftShader instruction budget; the principals' points in the
@@ -54,7 +59,8 @@ are the ports' own, taken under #1082 on the shared dev host.
 1. **Three composers share one layer contract.** `outdoor` is a pinhole over a floor, level or
    pitched; `interior` a room with a ledge and a window; `overhead` a patch of ground seen from
    above. A composer is a camera rig, a site and an order of composition, and the World is in all
-   three. `outdoor` is built; the other two are Phases 3 and 4.
+   three (in a room, through its window). `outdoor` is built, `interior` is piloted with sill and
+   lava; `overhead` is Phase 4.
 2. **A layer is a module.** Its manifest (`LayerDef`: role, bands, claims, the rigs it can be drawn
    through, its switch, knobs, passes and data) loads without its code (`LayerCode`: its GLSL built
    for the preset's rig, the chunks it shares with its scene's other layers, its sim). One steady
@@ -333,6 +339,8 @@ they were:
 | The World's settled gates: `WORLD_METEOR_RATE`, `WORLD_LIGHTNING_RATE`, `WORLD_MOON`, `WORLD_DAYLIGHT`             | each part a setting cannot show compiled out, drawing what the runtime path draws there                               | every composed preset                                                                   |
 | Planet gates: `SKY_PLANETS_<KIND>`, `SKY_PLANETS_WIDE_RING`, `_MOONS`, `_AURORA`, `_LIGHTS`, `SKY_PLANETS_SEVERAL` | only the kinds, palettes and dress a planet list holds, a lone planet drawn straight                                  | every scene with planets                                                                |
 | A preset's own gates over the composer's (`index.ts`)                                                              | the lake's night (`lakeNight`), skyward's `WORLD_BIRDS` 0, dunes' and garden's overhead programs                      | lake, skyward, dunes, garden                                                            |
+| `ScenePreset.room`, `LayerFrame.room`, `<id>Anchor` (interior)                                                     | the room: the eye's distance to the seat line, the wall, its ambient and lamp; the seat and scale for sims; anchors   | sill, lava; the lava lamp's sim and GLSL                                                |
+| `daylight` pass, `LayerDef.window` (interior)                                                                      | a window's light into the room (`roomLight`); a backdrop the World crosses, which lists the World's knobs             | cityWindow                                                                              |
 
 ### Rigs, locking and offering
 
@@ -595,21 +603,52 @@ itself, and dew joined the composer (D7).
 
 ### Phase 3: the interior composer
 
-**Builds:** the `interior` rig and site (a room box, one ledge across the front, a window on the
-back wall) and its presets: sill, lava (with the mix "Lava lamp on the sill"), then bar, train,
-bonsai, mobile, incense, frost, clouds and harmonograph.
+**The pilot, built:** the `interior` composer (`src/composer/interior.ts`, `room.ts`,
+`interior-code.ts`; README "The interior composer") with sill and lava as presets, and the mix
+"Sill · lava lamp on the sill".
 
-What Phase 2 changes for it:
+- **The room rig** is the outdoor `Rig` read as a level eye over a ledge (`eye` over its top), and
+  `ScenePreset.room`: the eye's `distance` to the ledge's seat line, the back wall's albedo, the
+  room's ambient and its lamp out of frame. The seat's height on the frame and the scale there
+  (`roomFrame`: `ROOM_SEAT`, `ROOM_SCALE`, `LayerFrame.room`) follow from the rig. The room is laid
+  out on the frame, as the scenes were painted: across in shares of the frame's width (anchors' and
+  claims' x), up in screen heights. Sill: eye 0.35 m, 1.14 m from the seat, 0.8 screen heights a
+  metre; lava: eye 0.248 m, 1.28 m, 1.9 a metre.
+- **The site:** the composer draws the back wall, lit by the room's light (`roomLight`: its lamp,
+  its ambient, the backdrop's `daylight` through its window, the layers' declared lights). The
+  ledge is the ground layer (the sill, the sideboard).
+- **The window is a backdrop drawn through its own rig (D11):** the sill's `cityWindow`, its city
+  seen by the room's horizon and focal 10 m over the street. The World crosses its glass, sky and
+  weather, in its cells only. A room lists the World only while it offers a window (`LayerDef.window`),
+  never its birds (none fly a window yet), and no gusts or seed; its layers' trigger slots follow the
+  World's two. The lava lamp's room shows no window and lists no World.
+- **The order** is the canonical order, painter's: the begins, the wall, the backdrop's `far`, the
+  ground's `ground`, every `middle`, `front` and `frontVeil`, the grade. A room keeps no depth and
+  casts no shadow from one layer onto another (stated limits).
+- **The lamp's light is a declared light.** The lava lamp (`lavaLamp`) is drawn from the rig, 0.4 m
+  tall on any room's seat line at its anchor, so it is offered to every interior preset; on the sill
+  it takes its second anchor, the cat holding the first. Its `lavaLampLight` reaches the sill's wall,
+  frame, sill, props, curtain and cat through `roomLight` and `localLight`. The sill's five layers and
+  the lava room's papered wall and sideboard stay locked to their rigs.
+
+| Preset | At its defaults (dithered)                                             | Differences, attributed                                                                                    |
+| ------ | ---------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------- |
+| sill   | `SAME`                                                                 | none; the World's knobs replace the sill's sky and weather (Milky Way, cumulus, cloud shadows new and off) |
+| lava   | `SAME`                                                                 | none                                                                                                       |
+| mix    | 1,434 of 23,040 cells against the sill (6.2 %): the lamp and its light | the lamp on the sill, its warm light on the wall, the frame, the sill, the props and the cat               |
+
+**Still to build:** bar, train, bonsai, mobile, incense, frost, clouds and harmonograph as presets;
+the World's birds through a window; depth and shadows across a room's layers, once two layers that
+overlap need them. What Phase 2 changes for them:
 
 - **The window's view is drawn for the window (D11).** Outdoor backdrops are locked to their own
-  rigs (the street's `city` to a window 28 m up and pitched down), so a window shows a backdrop
-  drawn through the room's window rig: the sill's city stays the sill's. What crosses the glass is
-  the World, its sky and weather at the composed depth, in window cells only.
-- **The lamp's light is a declared light.** `localLight` already carries the campfire's and the
-  lanterns' light onto every layer; the lava lamp lighting the cat and the books is the same.
-- **The caps.** The bar has six triggers of its own, which with the composer's three pass eight,
-  and the train and the bonsai have five each, which fill them; the packed trigger slots come
-  before the bar's port, and before any guest with a "now" is offered to the train or the bonsai.
+  rigs (the street's `city` to a window 28 m up and pitched down), so a room's window draws a view of
+  its own through its rig, as the sill's city is.
+- **The caps.** A room's layers number their trigger slots from 2, after the World's two. The bar has
+  six of its own, which fill the eight; the train and the bonsai have five each, which leave one; the
+  packed trigger slots come before a guest with a "now" is offered to the bar, the train or the
+  bonsai. The lava lamp brings two (its cold start and its M) and is offered to every room today, so
+  those ports lock it out or wait for the packed slots.
 
 ### Phase 4: the overhead composer
 

@@ -157,9 +157,9 @@ export const presets: readonly Preset[] = [
   },
   {
     name: "Sill · quiet shelter",
-    commit: "f1ca6557",
+    commit: "PENDING",
     query:
-      "scene=sill&restless=0.1&steam-amount=0.8&curtain-amount=0.25&rain=1&rain-amount=0.4&wind=0.05",
+      "scene=sill&rain=1&rain-amount=0.4&wind=0.05&curtain-amount=0.25&steam-amount=0.8&restless=0.1",
     savedAt: "2026-10-15",
   },
   {
@@ -366,6 +366,12 @@ export const presets: readonly Preset[] = [
     name: "Bees · in the valley",
     commit: "838e5bc0",
     query: "scene=bees&hillside=0&valley=1",
+    savedAt: "2026-10-18",
+  },
+  {
+    name: "Sill · lava lamp on the sill",
+    commit: "PENDING",
+    query: "scene=sill&lavaLamp=1",
     savedAt: "2026-10-18",
   },
 ];

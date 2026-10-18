@@ -39,16 +39,17 @@
 //
 // Units: glass units (the liquid is 1 tall), seconds of scene time × motion.
 //
-// Textures:
-//   uSim0  rgba16f, LAVA_MAX × 4, nearest. Row 0: lamp A's parcels (x, y, radius, temperature);
+// Textures, the lava lamp layer's three fields (lavaLampSim):
+//   field 0  rgba16f, LAVA_MAX × 4, nearest. Row 0: lamp A's parcels (x, y, radius, temperature);
 //          row 1: (vx, vy, M glow 0..1, 0). Rows 2 and 3: lamp B (the twin), the same.
-//   uSim1  rg16f, LAVA_GRID_X × 2·LAVA_GRID_Y, linear: a coarse picture of the wax over the glass
+//   field 1  rg16f, LAVA_GRID_X × 2·LAVA_GRID_Y, linear: a coarse picture of the wax over the glass
 //          (gx in ±LAVA_GRID_HALF, gy 0..1), lamp A below lamp B: r how much wax (soft), g how much
 //          of the bulb's light still gets up through the wax below.
-//   uSim2  rgba16f, 3 × 1, nearest: per lamp (texels 0, 1), the parcels in use, the bulb 0..1, the
+//   field 2  rgba16f, 3 × 1, nearest: per lamp (texels 0, 1), the parcels in use, the bulb 0..1, the
 //          warm-up 0..1 (cold liquid is cloudy) and the share of the glass the wax covers in the
 //          picture; texel 2, the wax's body for the shader: its metaball reach and teardrop stretch
 //          (× the classic wax's), 0, 0.
+import type { LayerFrame, LayerSim } from "../../composer/types.ts";
 import { MARK_VERTICES } from "../../mark.ts";
 import { KnobReader, type ParamDef } from "../../params.ts";
 import { glslFloat } from "../../shaders/glsl.ts";
@@ -56,7 +57,7 @@ import { runBudgeted } from "../../sims/clock.ts";
 import { materialAt } from "../../sims/material.ts";
 import { approach, clamp, easeFactor, smoothstep } from "../../sims/math.ts";
 import { DataTexture } from "../../sims/texture.ts";
-import type { PrincipalState, SceneSim, SimFactory, SimFrame } from "../types.ts";
+import type { PrincipalState, SceneSim, SimFrame } from "../types.ts";
 import { LAVA_PASSAGE } from "./constants.ts";
 
 // ---- the lamp's shape and the room's layout, shared with the shader -----------------------------
@@ -82,11 +83,26 @@ const SHAPE = {
   capTop: 0.034,
 } as const;
 
-/** Where each lamp stands: share of the frame's width, foot height and lamp height (frame heights). */
-const LAMPS = [
-  { x: 0.655, foot: 0.118, size: 0.76 },
-  { x: 0.85, foot: 0.162, size: 0.54 },
-] as const;
+/** The lamp's height (m): the room draws it at its scale on the ledge it stands on (composer/room.ts). */
+export const LAVA_HEIGHT = 0.4;
+
+/** Where a lamp stands: share of the frame's width from its left edge, foot height and lamp height (frame heights). */
+interface Stand {
+  readonly x: number;
+  readonly foot: number;
+  readonly size: number;
+}
+
+/**
+ * The twin beside lamp A, further back on the sideboard: this much further right (share of the
+ * frame's width), its foot higher and its height smaller, in lamp A's heights.
+ */
+const TWIN = { x: 0.195, foot: 0.044 / 0.76, size: 0.54 / 0.76 } as const;
+
+/** Lamp A at its stand, and its twin beside it. */
+function stands(a: Stand): readonly [Stand, Stand] {
+  return [a, { x: a.x + TWIN.x, foot: a.foot + TWIN.foot * a.size, size: TWIN.size * a.size }];
+}
 
 /** Parcels per lamp at most, and the coarse wax picture's texels. */
 export const LAVA_MAX = 28;
@@ -128,12 +144,10 @@ export const lavaLayoutGlsl = `
 #define LAVA_WALL ${glslFloat(SHAPE.wall)}
 #define LAVA_CAP_BOTTOM ${glslFloat(SHAPE.capBottom)}
 #define LAVA_CAP_TOP ${glslFloat(SHAPE.capTop)}
-#define LAVA_A_X ${glslFloat(LAMPS[0].x)}
-#define LAVA_A_FOOT ${glslFloat(LAMPS[0].foot)}
-#define LAVA_A_SIZE ${glslFloat(LAMPS[0].size)}
-#define LAVA_B_X ${glslFloat(LAMPS[1].x)}
-#define LAVA_B_FOOT ${glslFloat(LAMPS[1].foot)}
-#define LAVA_B_SIZE ${glslFloat(LAMPS[1].size)}
+#define LAVA_HEIGHT ${glslFloat(LAVA_HEIGHT)}
+#define LAVA_TWIN_X ${glslFloat(TWIN.x)}
+#define LAVA_TWIN_FOOT ${glslFloat(TWIN.foot)}
+#define LAVA_TWIN_SIZE ${glslFloat(TWIN.size)}
 
 // The glass's outer radius (lamp units) at s, 0 at the collar .. 1 under the cap: a rounded
 // shoulder low down, then a long straight taper.
@@ -958,9 +972,8 @@ class Lamp {
 
 // ---- the simulation ----------------------------------------------------------------------------
 
-/** Where the pointer rests on lamp `index`'s glass (glass units), if it does. */
-function handOn(pointer: PrincipalState, aspect: number, index: number): Hand | undefined {
-  const lamp = LAMPS[index === 0 ? 0 : 1];
+/** Where the pointer rests on the glass of the lamp standing at `lamp` (glass units), if it does. */
+function handOn(pointer: PrincipalState, aspect: number, lamp: Stand): Hand | undefined {
   const lx = (pointer.x * aspect - lamp.x * aspect) / lamp.size;
   const gy = ((pointer.y - lamp.foot) / lamp.size - SHAPE.base) / SHAPE.glass;
   if (gy < -0.03 || gy > 1.03) return undefined;
@@ -976,6 +989,8 @@ class LavaSim implements SceneSim {
   /** Trigger slots of the cold start's "now" (off and back on) and the M's. */
   readonly #coldSlot: number;
   readonly #markSlot: number;
+  /** Where lamps A and B stand on the frame (`stand`): lamp A where the room put it. */
+  #stands: readonly [Stand, Stand] = stands({ x: 0.655, foot: 0.118, size: 0.76 });
   readonly #lamps = [new Lamp(0), new Lamp(1)] as const;
   readonly #parcels: DataTexture;
   readonly #grid: DataTexture;
@@ -1116,8 +1131,9 @@ class LavaSim implements SceneSim {
     // (SimFrame.pointer): the shader draws its warmth at uPrincipals[0].
     const pointer = frame.pointer;
     const pressing = settings.hand && pointer.inside && pointer.down;
-    const handA = pressing ? handOn(pointer, frame.aspect, 0) : undefined;
-    const handB = pressing && settings.twin ? handOn(pointer, frame.aspect, 1) : undefined;
+    const handA = pressing ? handOn(pointer, frame.aspect, this.#stands[0]) : undefined;
+    const handB =
+      pressing && settings.twin ? handOn(pointer, frame.aspect, this.#stands[1]) : undefined;
     const stage = this.#stage(enter, exit);
     // A passage plays in real time whatever the motion, and the lamp hurries through it.
     this.#carry +=
@@ -1161,6 +1177,12 @@ class LavaSim implements SceneSim {
     this.#state.upload(state);
     this.#shown = true;
     return textures;
+  }
+
+  /** Lamp A stands at `a` (its twin beside it): where the room put it this frame. */
+  stand(a: Stand): void {
+    const [was] = this.#stands;
+    if (was.x !== a.x || was.foot !== a.foot || was.size !== a.size) this.#stands = stands(a);
   }
 
   dispose(): void {
@@ -1226,8 +1248,29 @@ function twinCount(count: number): number {
   return Math.max(COUNT_MIN - 2, Math.round(count * TWIN_SHARE));
 }
 
-/** The lava lamps, for a scene whose `params` carry the knobs `LavaKnob` names. */
-export function lavaSim(params: readonly ParamDef[]): SimFactory {
-  const knobs = new KnobReader<LavaKnob>("lava", params, LAVA_KNOBS);
-  return (gl) => new LavaSim(gl, knobs);
+/**
+ * The lava lamp's layer sim (README "The interior composer"): lamp A stands at its anchor on the
+ * room's ledge, at the lamp's height in metres times the room's scale there; the parcels, the coarse
+ * wax picture and the lamps' state go to its three fields (lavaLampField0..2).
+ */
+export function lavaLampSim(gl: WebGL2RenderingContext, params: readonly ParamDef[]): LayerSim {
+  const sim = new LavaSim(gl, new KnobReader<LavaKnob>("lavaLamp", params, LAVA_KNOBS));
+  return {
+    frame(frame: LayerFrame) {
+      const room = frame.room;
+      if (room !== undefined)
+        sim.stand({
+          x: 0.5 + frame.ground.anchor[0],
+          foot: 0.5 + room.seat,
+          size: LAVA_HEIGHT * room.scale,
+        });
+      const textures = sim.frame(frame);
+      frame.fields.forEach((field, k) => {
+        field.texture = textures[k];
+      });
+    },
+    dispose() {
+      sim.dispose();
+    },
+  };
 }

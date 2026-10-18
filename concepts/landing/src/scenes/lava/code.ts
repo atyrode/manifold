@@ -1,7 +1,7 @@
-// Lava lamp's code, loaded the first time the scene is needed (SceneDef.code).
-import { lavaScene } from "./index.ts";
-import { lavaSim } from "./sim.ts";
+// Lava lamp's code, loaded the first time the scene is needed (SceneDef.code): assembled from the
+// code of every layer its rig offers (composer/code.ts).
+import { composedCode } from "../../composer/code.ts";
+import { INTERIOR_CODE } from "../../composer/interior-code.ts";
+import { lavaComposed } from "./index.ts";
 
-export { lavaGlsl as glsl } from "./shader.ts";
-export const entry = "sceneLava";
-export const sim = lavaSim(lavaScene.params);
+export const { glsl, entry, glslFor, sim } = composedCode(lavaComposed, INTERIOR_CODE);

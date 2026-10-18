@@ -39,57 +39,57 @@ components"); run `bun concepts/landing/scripts/scene-docs.ts` after a change to
 
 <!-- gen:scenes -->
 
-| Scene          | Title            | Family            | Built as                               | Knobs | Presets | Blurb                                                                                                                           |
-| -------------- | ---------------- | ----------------- | -------------------------------------- | ----- | ------- | ------------------------------------------------------------------------------------------------------------------------------- |
-| `orbit`        | Orbit            | Sky & space       | its own program                        | 34    | 2       | A planet in space: rings, moons, aurora, meteors.                                                                               |
-| `clouds`       | Above the clouds | Sky & space       | its own program                        | 16    | 0       | A window seat at cruise altitude: a sea of cloud below, the day turning overhead.                                               |
-| `flock`        | Murmuration      | Sky & space       | `outdoor` preset, 2 layers             | 32    | 0       | Starlings at dusk, thousands of birds folding into one shape.                                                                   |
-| `skyward`      | Skyward          | Sky & space       | `outdoor` preset, 3 layers             | 33    | 0       | Lying on your back at a crossroads: the buildings lean in, wires cross a strip of sky, pigeons wheel and a plane draws a line.  |
-| `swell`        | Swell            | Water             | `outdoor` preset, 3 layers + 1 offered | 31    | 1       | A moonlit sea rolling toward the horizon, boats riding at anchor in the moon's path.                                            |
-| `pond`         | Pond             | Water             | its own program                        | 51    | 0       | A koi pond from above, light through clear water.                                                                               |
-| `falls`        | Waterfall        | Water             | `outdoor` preset, 5 layers + 5 offered | 51    | 3       | A waterfall pouring into its pool: spray, a rainbow, ferns on the wet rock.                                                     |
-| `shore`        | Shore            | Water             | `outdoor` preset, 3 layers + 6 offered | 49    | 0       | Surf on a night beach, flashing blue wherever the water breaks.                                                                 |
-| `lanterns`     | Lantern river    | Water             | `outdoor` preset, 3 layers + 4 offered | 41    | 0       | Paper lanterns drifting down a river at dusk, their light trembling on the water.                                               |
-| `kelp`         | Kelp forest      | Water             | its own program                        | 20    | 1       | Sunlight through a swaying kelp forest, a school of fish turning in the blue.                                                   |
-| `lake`         | Frozen lake      | Water             | `outdoor` preset, 2 layers + 4 offered | 52    | 2       | Black ice under the aurora: bubbles frozen deep, cracks that sing, snow drifting across; or an open fjord under slow drapes.    |
-| `island`       | Tiny island      | Water             | its own program                        | 17    | 0       | A small island in a gentle sea: a cottage on a grassy hill, a pier and lantern, a palm, a gull circling, a balloon drifting by. |
-| `tidepool`     | Tide pool        | Water             | its own program                        | 34    | 3       | A rock pool from above: waves pour over its rim, its anemones and kelp answer the surge, and the light dances on its floor.     |
-| `country`      | Countryside      | Land              | `outdoor` preset, 6 layers + 2 offered | 57    | 12      | A river valley carved by water: fields, woods and pastures, a village, a castle and roads over a bridge.                        |
-| `dunes`        | Dunes            | Land              | `outdoor` preset, 2 layers             | 31    | 0       | Wind over a sand sea: real dunes, slowly marching downwind. Click to drop a heap of sand.                                       |
-| `meadow`       | Meadow           | Land              | `outdoor` preset, 3 layers + 2 offered | 39    | 0       | Tall grass at golden hour, gusts running across it as waves of light, dandelion seeds adrift.                                   |
-| `shanshui`     | Shan shui        | Land              | its own program                        | 17    | 3       | An ink-wash handscroll of mountains and water, unrolling without end.                                                           |
-| `bamboo`       | Bamboo grove     | Land              | `outdoor` preset, 5 layers + 4 offered | 43    | 0       | A misty bamboo grove, and a water clock tipping into a stone basin.                                                             |
-| `garden`       | Stone garden     | Land              | `outdoor` preset, 5 layers + 1 offered | 39    | 0       | Raked gravel, stones and moss, always being tended, under a maple letting go of its leaves. Drag to rake.                       |
-| `delta`        | Delta            | Land              | its own program                        | 16    | 0       | A river building its delta into the sea, seen from orbit. Drag to dig a new channel.                                            |
-| `forest`       | Mystic forest    | Land              | `outdoor` preset, 5 layers + 4 offered | 46    | 1       | An ancient misty cedar forest, where small spirits appear on the mossy roots.                                                   |
-| `campfire`     | Campfire         | Land              | `outdoor` preset, 6 layers             | 36    | 2       | A small fire under a vast sky: sparks drifting up, a marshmallow toasting, a giant planet low over the pines.                   |
-| `autumn`       | Autumn park      | Land              | `outdoor` preset, 6 layers + 4 offered | 42    | 0       | A great tree letting go of its leaves over a park path, the low sun glowing through them.                                       |
-| `marble`       | Marbling         | Matter & patterns | its own program                        | 13    | 1       | Ink floating on water, dropped and combed: ebru and suminagashi.                                                                |
-| `frost`        | Frost            | Matter & patterns | its own program                        | 18    | 2       | A window on a winter night, slowly frosting over.                                                                               |
-| `prism`        | Prism            | Matter & patterns | its own program                        | 12    | 1       | A sunbeam through turning glass, fanned out into its spectrum.                                                                  |
-| `ferro`        | Ferrofluid       | Matter & patterns | its own program                        | 12    | 0       | Black magnetic fluid in a dish, breathing a crown of spikes in and out of a mirror.                                             |
-| `chladni`      | Chladni plate    | Matter & patterns | its own program                        | 12    | 1       | Sand on a singing plate, gathering where it stands still.                                                                       |
-| `hyperbolic`   | Hyperbolic weave | Matter & patterns | its own program                        | 11    | 0       | An endless plane, woven tile to tile, gliding through a circle.                                                                 |
-| `pearl`        | Pearl            | Matter & patterns | its own program                        | 12    | 1       | A tank of pearlescent fluid: every current shows as satin.                                                                      |
-| `fractal`      | Fractals         | Matter & patterns | its own program                        | 14    | 0       | A Julia set breathing, an endless Mandelbrot dive, Apollonian circles, a Newton garden.                                         |
-| `petri`        | Petri dish       | Matter & patterns | its own program                        | 15    | 3       | A reaction slowly living in a glass dish: Turing patterns and Belousov–Zhabotinsky spirals.                                     |
-| `physarum`     | Slime mould      | Matter & patterns | its own program                        | 14    | 4       | A golden network linking its food, thickening good paths and pruning the rest.                                                  |
-| `film`         | Soap film        | Matter & patterns | its own program                        | 10    | 0       | A soap film in a wire loop, draining into bands of colour.                                                                      |
-| `sandtable`    | Sand table       | Matter & patterns | its own program                        | 14    | 1       | A steel ball ploughing slow patterns through sand under a low lamp; or a pendulum pouring rosettes onto slate.                  |
-| `ripple`       | Ripple tank      | Matter & patterns | its own program                        | 11    | 1       | A physics-lab ripple tank throwing its waves as light on a screen: interference, slits, a lens, Doppler, standing waves.        |
-| `harmonograph` | Harmonograph     | Matter & patterns | its own program                        | 11    | 0       | Two swinging pendulums draw a slowly dying figure in ink on paper: a table anyone present may draw on.                          |
-| `pendula`      | Pendulum wave    | Matter & patterns | its own program                        | 11    | 1       | A row of pendulums drifting through waves and back into line.                                                                   |
-| `sill`         | Sill             | Rooms & life      | its own program                        | 22    | 1       | A cat on the window sill, watching the city lights.                                                                             |
-| `fireflies`    | Fireflies        | Rooms & life      | `outdoor` preset, 3 layers + 4 offered | 46    | 1       | A mangrove river at night: thousands of fireflies falling into step.                                                            |
-| `dew`          | Dew              | Rooms & life      | `outdoor` preset, 2 layers             | 31    | 0       | An orb web at dawn, strung with dew, glinting as it breathes in the breeze.                                                     |
-| `incense`      | Incense          | Rooms & life      | its own program                        | 15    | 0       | A thread of smoke rising through a shaft of light, curling into veils.                                                          |
-| `lava`         | Lava lamp        | Rooms & life      | its own program                        | 14    | 2       | Wax rising and falling in a glowing lamp on a sideboard, late at night.                                                         |
-| `bonsai`       | Bonsai           | Rooms & life      | its own program                        | 16    | 0       | A bonsai on its stand through the seasons, its shadow moving on the wall.                                                       |
-| `street`       | City crossing    | Rooms & life      | `outdoor` preset, 4 layers             | 35    | 1       | A scramble crossing at dusk from a high window: the crowd gathers, the lights turn, everyone crosses at once.                   |
-| `train`        | Night train      | Rooms & life      | its own program                        | 33    | 0       | The view from a slow night train: tea trembling with the rails, the country sliding by under the moon.                          |
-| `bar`          | Late bar         | Rooms & life      | its own program                        | 16    | 0       | A quiet bar late at night, seen from a corner booth while it rains outside.                                                     |
-| `bees`         | Bees             | Rooms & life      | `outdoor` preset, 5 layers + 6 offered | 63    | 2       | A summer hillside at an orchard's edge: bees and butterflies at work among the hives and flowers.                               |
-| `mobile`       | Mobile           | Rooms & life      | its own program                        | 11    | 3       | A solar system hung under a glowing Sun, each planet turning at its own pace, its shadow wheeling across the wall.              |
+| Scene          | Title            | Family            | Built as                                | Knobs | Presets | Blurb                                                                                                                           |
+| -------------- | ---------------- | ----------------- | --------------------------------------- | ----- | ------- | ------------------------------------------------------------------------------------------------------------------------------- |
+| `orbit`        | Orbit            | Sky & space       | its own program                         | 34    | 2       | A planet in space: rings, moons, aurora, meteors.                                                                               |
+| `clouds`       | Above the clouds | Sky & space       | its own program                         | 16    | 0       | A window seat at cruise altitude: a sea of cloud below, the day turning overhead.                                               |
+| `flock`        | Murmuration      | Sky & space       | `outdoor` preset, 2 layers              | 32    | 0       | Starlings at dusk, thousands of birds folding into one shape.                                                                   |
+| `skyward`      | Skyward          | Sky & space       | `outdoor` preset, 3 layers              | 33    | 0       | Lying on your back at a crossroads: the buildings lean in, wires cross a strip of sky, pigeons wheel and a plane draws a line.  |
+| `swell`        | Swell            | Water             | `outdoor` preset, 3 layers + 1 offered  | 31    | 1       | A moonlit sea rolling toward the horizon, boats riding at anchor in the moon's path.                                            |
+| `pond`         | Pond             | Water             | its own program                         | 51    | 0       | A koi pond from above, light through clear water.                                                                               |
+| `falls`        | Waterfall        | Water             | `outdoor` preset, 5 layers + 5 offered  | 51    | 3       | A waterfall pouring into its pool: spray, a rainbow, ferns on the wet rock.                                                     |
+| `shore`        | Shore            | Water             | `outdoor` preset, 3 layers + 6 offered  | 49    | 0       | Surf on a night beach, flashing blue wherever the water breaks.                                                                 |
+| `lanterns`     | Lantern river    | Water             | `outdoor` preset, 3 layers + 4 offered  | 41    | 0       | Paper lanterns drifting down a river at dusk, their light trembling on the water.                                               |
+| `kelp`         | Kelp forest      | Water             | its own program                         | 20    | 1       | Sunlight through a swaying kelp forest, a school of fish turning in the blue.                                                   |
+| `lake`         | Frozen lake      | Water             | `outdoor` preset, 2 layers + 4 offered  | 52    | 2       | Black ice under the aurora: bubbles frozen deep, cracks that sing, snow drifting across; or an open fjord under slow drapes.    |
+| `island`       | Tiny island      | Water             | its own program                         | 17    | 0       | A small island in a gentle sea: a cottage on a grassy hill, a pier and lantern, a palm, a gull circling, a balloon drifting by. |
+| `tidepool`     | Tide pool        | Water             | its own program                         | 34    | 3       | A rock pool from above: waves pour over its rim, its anemones and kelp answer the surge, and the light dances on its floor.     |
+| `country`      | Countryside      | Land              | `outdoor` preset, 6 layers + 2 offered  | 57    | 12      | A river valley carved by water: fields, woods and pastures, a village, a castle and roads over a bridge.                        |
+| `dunes`        | Dunes            | Land              | `outdoor` preset, 2 layers              | 31    | 0       | Wind over a sand sea: real dunes, slowly marching downwind. Click to drop a heap of sand.                                       |
+| `meadow`       | Meadow           | Land              | `outdoor` preset, 3 layers + 2 offered  | 39    | 0       | Tall grass at golden hour, gusts running across it as waves of light, dandelion seeds adrift.                                   |
+| `shanshui`     | Shan shui        | Land              | its own program                         | 17    | 3       | An ink-wash handscroll of mountains and water, unrolling without end.                                                           |
+| `bamboo`       | Bamboo grove     | Land              | `outdoor` preset, 5 layers + 4 offered  | 43    | 0       | A misty bamboo grove, and a water clock tipping into a stone basin.                                                             |
+| `garden`       | Stone garden     | Land              | `outdoor` preset, 5 layers + 1 offered  | 39    | 0       | Raked gravel, stones and moss, always being tended, under a maple letting go of its leaves. Drag to rake.                       |
+| `delta`        | Delta            | Land              | its own program                         | 16    | 0       | A river building its delta into the sea, seen from orbit. Drag to dig a new channel.                                            |
+| `forest`       | Mystic forest    | Land              | `outdoor` preset, 5 layers + 4 offered  | 46    | 1       | An ancient misty cedar forest, where small spirits appear on the mossy roots.                                                   |
+| `campfire`     | Campfire         | Land              | `outdoor` preset, 6 layers              | 36    | 2       | A small fire under a vast sky: sparks drifting up, a marshmallow toasting, a giant planet low over the pines.                   |
+| `autumn`       | Autumn park      | Land              | `outdoor` preset, 6 layers + 4 offered  | 42    | 0       | A great tree letting go of its leaves over a park path, the low sun glowing through them.                                       |
+| `marble`       | Marbling         | Matter & patterns | its own program                         | 13    | 1       | Ink floating on water, dropped and combed: ebru and suminagashi.                                                                |
+| `frost`        | Frost            | Matter & patterns | its own program                         | 18    | 2       | A window on a winter night, slowly frosting over.                                                                               |
+| `prism`        | Prism            | Matter & patterns | its own program                         | 12    | 1       | A sunbeam through turning glass, fanned out into its spectrum.                                                                  |
+| `ferro`        | Ferrofluid       | Matter & patterns | its own program                         | 12    | 0       | Black magnetic fluid in a dish, breathing a crown of spikes in and out of a mirror.                                             |
+| `chladni`      | Chladni plate    | Matter & patterns | its own program                         | 12    | 1       | Sand on a singing plate, gathering where it stands still.                                                                       |
+| `hyperbolic`   | Hyperbolic weave | Matter & patterns | its own program                         | 11    | 0       | An endless plane, woven tile to tile, gliding through a circle.                                                                 |
+| `pearl`        | Pearl            | Matter & patterns | its own program                         | 12    | 1       | A tank of pearlescent fluid: every current shows as satin.                                                                      |
+| `fractal`      | Fractals         | Matter & patterns | its own program                         | 14    | 0       | A Julia set breathing, an endless Mandelbrot dive, Apollonian circles, a Newton garden.                                         |
+| `petri`        | Petri dish       | Matter & patterns | its own program                         | 15    | 3       | A reaction slowly living in a glass dish: Turing patterns and Belousov–Zhabotinsky spirals.                                     |
+| `physarum`     | Slime mould      | Matter & patterns | its own program                         | 14    | 4       | A golden network linking its food, thickening good paths and pruning the rest.                                                  |
+| `film`         | Soap film        | Matter & patterns | its own program                         | 10    | 0       | A soap film in a wire loop, draining into bands of colour.                                                                      |
+| `sandtable`    | Sand table       | Matter & patterns | its own program                         | 14    | 1       | A steel ball ploughing slow patterns through sand under a low lamp; or a pendulum pouring rosettes onto slate.                  |
+| `ripple`       | Ripple tank      | Matter & patterns | its own program                         | 11    | 1       | A physics-lab ripple tank throwing its waves as light on a screen: interference, slits, a lens, Doppler, standing waves.        |
+| `harmonograph` | Harmonograph     | Matter & patterns | its own program                         | 11    | 0       | Two swinging pendulums draw a slowly dying figure in ink on paper: a table anyone present may draw on.                          |
+| `pendula`      | Pendulum wave    | Matter & patterns | its own program                         | 11    | 1       | A row of pendulums drifting through waves and back into line.                                                                   |
+| `sill`         | Sill             | Rooms & life      | `interior` preset, 5 layers + 1 offered | 40    | 2       | A cat on the window sill, watching the city lights.                                                                             |
+| `fireflies`    | Fireflies        | Rooms & life      | `outdoor` preset, 3 layers + 4 offered  | 46    | 1       | A mangrove river at night: thousands of fireflies falling into step.                                                            |
+| `dew`          | Dew              | Rooms & life      | `outdoor` preset, 2 layers              | 31    | 0       | An orb web at dawn, strung with dew, glinting as it breathes in the breeze.                                                     |
+| `incense`      | Incense          | Rooms & life      | its own program                         | 15    | 0       | A thread of smoke rising through a shaft of light, curling into veils.                                                          |
+| `lava`         | Lava lamp        | Rooms & life      | `interior` preset, 3 layers             | 17    | 2       | Wax rising and falling in a glowing lamp on a sideboard, late at night.                                                         |
+| `bonsai`       | Bonsai           | Rooms & life      | its own program                         | 16    | 0       | A bonsai on its stand through the seasons, its shadow moving on the wall.                                                       |
+| `street`       | City crossing    | Rooms & life      | `outdoor` preset, 4 layers              | 35    | 1       | A scramble crossing at dusk from a high window: the crowd gathers, the lights turn, everyone crosses at once.                   |
+| `train`        | Night train      | Rooms & life      | its own program                         | 33    | 0       | The view from a slow night train: tea trembling with the rails, the country sliding by under the moon.                          |
+| `bar`          | Late bar         | Rooms & life      | its own program                         | 16    | 0       | A quiet bar late at night, seen from a corner booth while it rains outside.                                                     |
+| `bees`         | Bees             | Rooms & life      | `outdoor` preset, 5 layers + 6 offered  | 63    | 2       | A summer hillside at an orchard's edge: bees and butterflies at work among the hives and flowers.                               |
+| `mobile`       | Mobile           | Rooms & life      | its own program                         | 11    | 3       | A solar system hung under a glowing Sun, each planet turning at its own pace, its shadow wheeling across the wall.              |
 
 <!-- /gen:scenes -->
 
@@ -827,20 +827,20 @@ component carried by another named through it:
 
 <!-- gen:composed-by -->
 
-| String            | File                           | Composed by                                                                      | See                                  |
-| ----------------- | ------------------------------ | -------------------------------------------------------------------------------- | ------------------------------------ |
-| `worldGlsl`       | `src/shaders/lib/world.ts`     | every composed scene, frost, sill                                                | "World layers"                       |
-| `birdsGlsl`       | `src/shaders/lib/birds.ts`     | train; through `worldGlsl`                                                       | "Birds"                              |
-| `milkyWayGlsl`    | `src/shaders/lib/milkyway.ts`  | through `worldGlsl`                                                              | the Milky Way row below              |
-| `canopyGroveGlsl` | `src/shaders/lib/canopy.ts`    | bamboo, forest                                                                   | "Shared libraries" (the canopy)      |
-| `plantsGlsl`      | `src/shaders/lib/plants.ts`    | pond, falls, tidepool, country, garden, fireflies                                | "Rooted plants"                      |
-| `planetGlsl`      | `src/shaders/lib/planet.ts`    | orbit, mobile; every sky's `skyGiant`, in `libs` behind its gate (`SKY_PLANETS`) | "The giant planet"                   |
-| `figuresGlsl`     | `src/shaders/lib/figures.ts`   | country                                                                          | "Figures, livestock and buildings"   |
-| `livestockGlsl`   | `src/shaders/lib/livestock.ts` | country                                                                          | "Figures, livestock and buildings"   |
-| `buildingsGlsl`   | `src/shaders/buildings.ts`     | country                                                                          | "Figures, livestock and buildings"   |
-| `terrainGlsl`     | `src/shaders/lib/terrain.ts`   | country                                                                          | `TerrainBuilder` under "Simulations" |
-| `fieldsGlsl`      | `src/shaders/lib/fields.ts`    | country                                                                          | the fields row below                 |
-| `treesGlsl`       | `src/shaders/lib/trees.ts`     | country                                                                          | the trees row below                  |
+| String            | File                           | Composed by                                                                                                                                                      | See                                  |
+| ----------------- | ------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------ |
+| `worldGlsl`       | `src/shaders/lib/world.ts`     | flock, skyward, swell, falls, shore, lanterns, lake, country, dunes, meadow, bamboo, garden, forest, campfire, autumn, frost, sill, fireflies, dew, street, bees | "World layers"                       |
+| `birdsGlsl`       | `src/shaders/lib/birds.ts`     | train; through `worldGlsl`                                                                                                                                       | "Birds"                              |
+| `milkyWayGlsl`    | `src/shaders/lib/milkyway.ts`  | through `worldGlsl`                                                                                                                                              | the Milky Way row below              |
+| `canopyGroveGlsl` | `src/shaders/lib/canopy.ts`    | bamboo, forest                                                                                                                                                   | "Shared libraries" (the canopy)      |
+| `plantsGlsl`      | `src/shaders/lib/plants.ts`    | pond, falls, tidepool, country, garden, fireflies                                                                                                                | "Rooted plants"                      |
+| `planetGlsl`      | `src/shaders/lib/planet.ts`    | orbit, mobile; every sky's `skyGiant`, in `libs` behind its gate (`SKY_PLANETS`)                                                                                 | "The giant planet"                   |
+| `figuresGlsl`     | `src/shaders/lib/figures.ts`   | country                                                                                                                                                          | "Figures, livestock and buildings"   |
+| `livestockGlsl`   | `src/shaders/lib/livestock.ts` | country                                                                                                                                                          | "Figures, livestock and buildings"   |
+| `buildingsGlsl`   | `src/shaders/buildings.ts`     | country                                                                                                                                                          | "Figures, livestock and buildings"   |
+| `terrainGlsl`     | `src/shaders/lib/terrain.ts`   | country                                                                                                                                                          | `TerrainBuilder` under "Simulations" |
+| `fieldsGlsl`      | `src/shaders/lib/fields.ts`    | country                                                                                                                                                          | the fields row below                 |
+| `treesGlsl`       | `src/shaders/lib/trees.ts`     | country                                                                                                                                                          | the trees row below                  |
 
 <!-- /gen:composed-by -->
 
@@ -1064,7 +1064,7 @@ planets (`SceneDef.planets`; "at first": the planets it opens with). Generated f
 | `campfire`  | 0.8   | 0.8   | 1         | off  | off     | 0.8, now 0 | off    | 0      | off  | off  | 0   | 0.2  | off, now 1 | off        | yes, 1 at first |
 | `autumn`    | 0.69  | 0.5   | off       | 1    | off     | off, now 0 | off    | 0.3    | off  | off  | 0   | 0.2  | off, now 1 | off        | yes             |
 | `frost`     | 0.9   | 0.5   | —         | 1    | off     | off, now 1 | off    | —      | —    | 0.5  | —   | 0.2  | —          | —          | yes             |
-| `sill`      | 0.8   | 0.5   | —         | 1    | off     | off, now 3 | off    | 0.35   | off  | off  | 0   | 0.2  | off, now 1 | —          | yes             |
+| `sill`      | 0.8   | 0.5   | off       | 1    | off     | off, now 0 | off    | 0.35   | off  | off  | 0   | 0.2  | off, now 1 | —          | yes             |
 | `fireflies` | 0.9   | 0.5   | off       | off  | off     | off, now 0 | off    | 0      | off  | off  | 0   | 0.2  | off, now 1 | off        | yes             |
 | `dew`       | 0.27  | 0.6   | 1         | 1    | off     | off, now 0 | off    | 0      | off  | off  | 0   | 0.2  | off, now 1 | off        | —               |
 | `lava`      | —     | —     | —         | 0.3  | —       | —          | —      | —      | —    | —    | —   | —    | —          | —          | —               |
@@ -2369,24 +2369,26 @@ and `dwell` (`state.ts` refuses to load such a scene).
 
 **Status.** The `outdoor` composer (`src/composer/`, ADR 0062
 `docs/decisions/0062-world-composers.md`, #1082 item U1) runs the nineteen eye-level scenes as
-presets of its 79 layers. The `interior` and `overhead` composers are the ADR's Phases 3 and 4. Not
-built yet, so still the contract: the per-program knob layout (a composed scene keeps the
-renderer's 64 knobs and 8 trigger slots, `src/composer/caps.ts`), the layer costs
-(`scripts/layer-costs.ts`) with the stack meter and the role's "+" listing, the browser checks
-`composerDepth`, `composerClaims`, `composerWeather` and `layerToggles`, a check of the SwiftShader
-instruction budget, the principals' points in the site, and shelving the Scenes view by composer.
-The ADR keeps the reasoning, the measurements, the decisions (D1–D12) and the phases ahead.
+presets of its 79 layers; the `interior` composer's pilot runs sill and lava as presets of its 8
+layers, with a lava lamp that stands on the sill ("The interior composer"). The rest of the
+interiors and the `overhead` composer are the ADR's Phases 3 and 4. Not built yet, so still the
+contract: the per-program knob layout (a composed scene keeps the renderer's 64 knobs and 8 trigger
+slots, `src/composer/caps.ts`), the layer costs (`scripts/layer-costs.ts`) with the stack meter
+and the role's "+" listing, the browser checks `composerDepth`, `composerClaims`,
+`composerWeather` and `layerToggles`, a check of the SwiftShader instruction budget, the principals'
+points in the site, and shelving the Scenes view by composer. The ADR keeps the reasoning, the
+measurements, the decisions (D1–D12) and the phases ahead.
 
 Most outdoor scenes show the same thing: a camera on the ground at eye level, something in front
 of it, a landscape behind, the sky above. A **composer** makes that shared: one camera rig, one
 site (the floor everything stands on), one light, one weather and one order of composition. On top
 of it stack **layers**, each a module from a scene. Three composers cover the roster:
 
-| Composer   | Rig                                                                                                                                                                         | Site                                                                                                                                                                                                | Scenes, by phase                                                                                                                                          |
-| ---------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `outdoor`  | A pinhole over the floor: eye height, horizon, focal, turn (the yaw to the sky's frame), pitch, `minAspect` (narrower frames are laid out this wide and cropped), a passage | The floor plane y = 0, in metres in the rig's frame (x right, z ahead), of one floor kind (earth, lawn, gravel, sand, rock, moss, ice, snowfield, water, asphalt) unless a ground layer replaces it | 1: meadow, bees. 2: shore, dunes, autumn, lanterns, falls, campfire, fireflies, forest, bamboo, garden, lake, country, street, skyward, flock, swell, dew |
-| `interior` | A pinhole in a room box, with a window on the back wall                                                                                                                     | Floor, walls and ceiling, with their kinds; one ledge across the front (sill, counter, table, sideboard, stand); the window's glass                                                                 | 3: sill, lava, bar, train, bonsai, mobile, incense, frost, clouds, harmonograph                                                                           |
-| `overhead` | A patch seen straight down, at so many metres per screen height; a `tilt` feature and an `orbit` range, both steady                                                         | A bed (a height field in metres), water over it from a layer's sim, and a material at each point                                                                                                    | 4: pond, ripple, sandtable, tidepool, delta, island, and garden and dunes from above                                                                      |
+| Composer   | Rig                                                                                                                                                                                  | Site                                                                                                                                                                                                    | Scenes, by phase                                                                                                                                          |
+| ---------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `outdoor`  | A pinhole over the floor: eye height, horizon, focal, turn (the yaw to the sky's frame), pitch, `minAspect` (narrower frames are laid out this wide and cropped), a passage          | The floor plane y = 0, in metres in the rig's frame (x right, z ahead), of one floor kind (earth, lawn, gravel, sand, rock, moss, ice, snowfield, water, asphalt) unless a ground layer replaces it     | 1: meadow, bees. 2: shore, dunes, autumn, lanterns, falls, campfire, fireflies, forest, bamboo, garden, lake, country, street, skyward, flock, swell, dew |
+| `interior` | A level pinhole in the room, its eye over a ledge across the front, and the room's `distance` to the ledge's seat line (its scale there); the window's view through a rig of its own | The back wall (an albedo) lit by the room's light (its lamp, its ambient, the window's daylight, the layers' lights); the ledge a ground layer (sill, sideboard); a window a backdrop the World crosses | 3 (pilot): sill, lava. Then bar, train, bonsai, mobile, incense, frost, clouds, harmonograph                                                              |
+| `overhead` | A patch seen straight down, at so many metres per screen height; a `tilt` feature and an `orbit` range, both steady                                                                  | A bed (a height field in metres), water over it from a layer's sim, and a material at each point                                                                                                        | 4: pond, ripple, sandtable, tidepool, delta, island, and garden and dunes from above                                                                      |
 
 Fractal, hyperbolic, orbit and shanshui stay scenes of their own. The matter shelf and kelp are
 open (ADR 0062, D7).
@@ -3020,6 +3022,52 @@ agents draws as before. Three chores are not layers:
 8. Offer a layer to another preset only where that preset's knobs and trigger slots hold it.
 9. Keep what the layer draws and what stays its scene's in a comment at the top of each layer's
    file, and add the preset's row to "Presets".
+
+### The interior composer
+
+The pilot of ADR 0062 Phase 3: `src/composer/interior.ts` (its eight layers in canonical order),
+`room.ts` (the program) and `interior-code.ts` (the layers' code). Its presets are sill and lava,
+and the committed mix "Sill · lava lamp on the sill" stands the lava lamp on the sill. Bar, train,
+bonsai, mobile, incense, frost, clouds and harmonograph are still scenes of their own.
+
+- **The rig** is a level pinhole in the room (`ScenePreset.rig`), its `eye` measured over the
+  ledge's top. The room (`ScenePreset.room`, `Room`) adds `distance`, from the eye to the line things
+  on the ledge stand on (the seat). The seat stands at `RIG_HORIZON - RIG_FOCAL · eye / distance`
+  and the ledge is drawn at `RIG_FOCAL / distance` screen heights a metre (`roomFrame`: `ROOM_SEAT`
+  and `ROOM_SCALE` in GLSL, `LayerFrame.room` for the sims). The room is laid out on the frame, as
+  the scenes were painted: across in shares of the frame's width, up in screen heights. An anchor's
+  and a claim's x is a share of the width (at the rig's `minAspect`, 1), their z metres back from
+  the seat line; each placed layer's anchor reaches its GLSL as `<id>Anchor`.
+- **The site** is the back wall (`Room.wall`, an albedo) lit by the room's light, and a ledge
+  across the front, which is the ground layer (the sill, the sideboard).
+- **The room's light** (`roomLight(x, p, n)`) is the room's lamp out of frame (`Room.lamp`, the
+  sill's reading lamp), its ambient, the backdrop's daylight through its window (a `daylight`
+  pass) and every on layer's declared lights (`localLight`, at the surface's point in metres on the
+  room's plane: x across, y up from the seat).
+- **The window** is a backdrop marked `window`, drawn through a rig of its own: the sill's city is
+  seen through a camera 10 m over the street with the room's horizon and focal. The World crosses its
+  glass (sky and weather, in its cells only). A room lists the World's knobs only while it offers a
+  window, and never its birds (none fly a window yet), the gusts or the arrangement seed; its
+  layers' trigger slots follow the World's two (from 2). The lava lamp's room shows no window, so it
+  lists no World; its moonlight stays the papered wall's own knob.
+- **The order** (`room.ts`): the begins, then the wall, the backdrop's `far` pass, the ground's
+  `ground` pass, and every `middle`, `front` and `frontVeil` pass in canonical order. Then the
+  grade: a vignette into the room's corners, the exposure, shadeOf with the grade's ink, the cell's
+  shimmer. Painter's order is the canonical order. Two limits are stated: a room keeps no depth, and
+  no layer casts a shadow onto another layer's surface. Turns play as they do outdoors (`turnsGlsl`,
+  `passCalls`).
+- **Locking and offering.** The sill's five layers, the papered wall and the sideboard are drawn on
+  their scene's frame and locked to its rig (`ON_THE_SILL`, `ON_THE_SIDEBOARD`). The lava lamp is
+  drawn from the rig: it stands at its anchor on any room's seat line, 0.4 m tall at the room's scale,
+  its rims dipping by the rig's eye over its distance. It is offered to every interior preset. On
+  the sill it takes its second anchor (left of the middle), because the cat holds the first. Its
+  light is a declared light (`lavaLampLight`), which the sill's wall, window frame, sill, props,
+  curtain and cat take through `roomLight` and `localLight`.
+
+| Preset | Layers                                                        | Rig                                                                     | Key renames                                                                                                                                                                   | A/B at defaults |
+| ------ | ------------------------------------------------------------- | ----------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------- |
+| `sill` | `cityWindow`, `sill`, `props`, `cat`, `curtain`; + `lavaLamp` | eye 0.35 m, horizon 0.47, focal 0.915 (one radian), 1.14 m: 0.8 a metre | none; its sky and weather knobs are the World's (Milky Way, cumulus and cloud shadows new, off), its trigger slots renumbered; "Sill · quiet shelter" rewritten (query order) | `SAME`          |
+| `lava` | `papered`, `sideboard`, `lavaLamp`                            | eye 0.248 m, horizon 0.589, focal 2.432, 1.28 m: 1.9 a metre            | none; `spill` and `twin` in the lamp's section                                                                                                                                | `SAME`          |
 
 ## Art direction
 

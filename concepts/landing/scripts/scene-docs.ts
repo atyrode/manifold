@@ -14,6 +14,7 @@
 import { fileURLToPath } from "node:url";
 import { format, resolveConfig } from "prettier";
 import type { Composer } from "../src/composer/compose.ts";
+import { interior } from "../src/composer/interior.ts";
 import { outdoor } from "../src/composer/outdoor.ts";
 import { families, sceneFamily, sceneOrder } from "../src/lab/families.ts";
 import type { ParamDef } from "../src/params.ts";
@@ -38,7 +39,7 @@ import { worldGlsl } from "../src/shaders/lib/world.ts";
 export const README_PATH = fileURLToPath(new URL("../src/scenes/README.md", import.meta.url));
 
 /** The composers whose presets the scenes table names, found by their home layers. */
-const COMPOSERS: readonly Composer[] = [outdoor];
+const COMPOSERS: readonly Composer[] = [outdoor, interior];
 
 /** The shared knobs the knobs table shows, as its columns: heading and knob key. */
 const SHARED_KNOBS: readonly (readonly [heading: string, key: string])[] = [

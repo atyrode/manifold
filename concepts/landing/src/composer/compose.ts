@@ -12,7 +12,9 @@
 //                     A key another knob holds already is qualified `<layerId><Key>` (D2). Trigger
 //                     slots: meteors 0, lightning 1, gusts 2, then the layers' in canonical order
 //                     (a layer listing its own id in `triggers` numbers its switch's "now" first).
-//                     The preset's values set the defaults.
+//                     The preset's values set the defaults. A room (the `interior` composer)
+//                     lists the World's knobs but its birds only while it offers a window, no
+//                     gusts, season or seed, and its layers' slots from 2.
 //   featuresFor       the World's gates (with the climate where the season sets it: a season knob
 //                     beside the World's snow), LAYER_<ID> for every offered layer (1 where
 //                     placed), each placed layer's own gates (a gate another placed layer
@@ -164,20 +166,33 @@ export function composeScene(composer: Composer, preset: ScenePreset): ComposedS
     if ((layer.featuresFor === undefined) !== (layer.featuresAll === undefined))
       throw new ComposeError(`layer ${layer.id}: featuresFor and featuresAll come together`);
   const home = new Set(preset.layers);
+  // A room lists the World only while a window looks out of it, and neither the gusts nor the
+  // arrangement: nothing in it sways in the gust field or stands where a seed puts it (README "The
+  // interior composer").
+  const indoors = composer.id === "interior";
+  if (indoors && preset.room === undefined)
+    throw new ComposeError(`preset ${preset.id}: an interior preset needs its room`);
 
-  // Trigger slots and keys.
-  const triggers: Record<string, number> = { ...WORLD_TRIGGERS };
-  let slot = WORLD_TRIGGERS.gusts + 1;
-  const world = worldKnobs({
-    ...preset.world,
-    meteors: { trigger: WORLD_TRIGGERS.meteors },
-    lightning: WORLD_TRIGGERS.lightning,
-    groups: { ...preset.world.groups, wind: "wind" },
-  });
+  // Trigger slots and keys: a room has no gusts, so its layers' slots follow the World's two.
+  const triggers: Record<string, number> = indoors
+    ? { meteors: WORLD_TRIGGERS.meteors, lightning: WORLD_TRIGGERS.lightning }
+    : { ...WORLD_TRIGGERS };
+  let slot = (indoors ? WORLD_TRIGGERS.lightning : WORLD_TRIGGERS.gusts) + 1;
+  // A room's window shows the World's sky and weather; its birds fly no window yet, so a room lists
+  // none of their knobs.
+  const world =
+    indoors && !offered.some((layer) => layer.window === true)
+      ? []
+      : worldKnobs({
+          ...preset.world,
+          meteors: { trigger: WORLD_TRIGGERS.meteors },
+          lightning: WORLD_TRIGGERS.lightning,
+          groups: { ...preset.world.groups, ...(indoors ? {} : { wind: "wind" }) },
+        }).filter((def) => !indoors || !["birds", "birdKind", "birdFormation"].includes(def.key));
   const season = offered.find((layer) => layer.season !== undefined)?.season;
   if (season !== undefined && season.key !== "season")
     throw new ComposeError(`preset ${preset.id}: a layer's season knob is keyed ${season.key}`);
-  const own = composerKnobs(season);
+  const own = indoors ? [] : composerKnobs(season);
   const taken = new Set([...world, ...own].map((def) => def.key));
   const keys: Record<string, Record<string, string>> = {};
   const switches: ParamDef[] = [];
@@ -276,21 +291,36 @@ export function composeScene(composer: Composer, preset: ScenePreset): ComposedS
   }
 
   const groups: Record<string, Blurb> = {
-    wind: {
-      title: "Wind",
-      shelf: "world",
-      blurb:
-        "Which way the wind blows, and the gusts it sends across the land: one wind for every layer.",
-    },
-    sky: worldGroups.sky,
-    weather: worldGroups.weather,
-    birds: worldGroups.birds,
-    layers: {
-      title: "Layers",
-      blurb:
-        "What stands in the view, by role: one backdrop, at most one ground, and dressings, covers and life over them; add or take away any, and re-seed the arrangement.",
-      icon: "layers",
-    },
+    ...(indoors
+      ? {}
+      : {
+          wind: {
+            title: "Wind",
+            shelf: "world",
+            blurb:
+              "Which way the wind blows, and the gusts it sends across the land: one wind for every layer.",
+          },
+        }),
+    ...(world.length === 0
+      ? {}
+      : {
+          sky: worldGroups.sky,
+          weather: worldGroups.weather,
+          ...(indoors ? {} : { birds: worldGroups.birds }),
+        }),
+    layers: indoors
+      ? {
+          title: "Layers",
+          blurb:
+            "What the room holds, by role: the back wall's backdrop (a window, a papered wall), the ledge in front, and what stands on it; add or take away any.",
+          icon: "layers",
+        }
+      : {
+          title: "Layers",
+          blurb:
+            "What stands in the view, by role: one backdrop, at most one ground, and dressings, covers and life over them; add or take away any, and re-seed the arrangement.",
+          icon: "layers",
+        },
     ...Object.fromEntries(
       // The Manifold M's group is every layer's (one M at a time): it stands under none of them.
       offered.flatMap((layer) =>

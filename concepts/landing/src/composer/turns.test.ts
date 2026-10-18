@@ -13,7 +13,8 @@ import { TURNS_GATE } from "./compose.ts";
 // The composed programs' two kinds (composer/glsl.ts): a steady one plays no layer's own entrance
 // or exit, so it carries none of the cut per cell and no plain floor under a ground layer, but
 // reads row 0's first texel all the same (`heldTurn`); the one a turn plays in (TURNS_GATE, as
-// every all-features program) carries both. A view of the scene's own (the dunes' and the garden's
+// every all-features program) carries both. A room (composer/room.ts) lays no plain floor in either:
+// its back wall stands under every layer. A view of the scene's own (the dunes' and the garden's
 // from above) draws no turns, so its composed sim names no program to play one in.
 
 const composed = (
@@ -37,6 +38,7 @@ describe("a composed scene's programs", () => {
       const ground = placed.findIndex(
         ({ layer }) => layer.role === "ground" && layer.passes.ground !== undefined,
       );
+      const room = steady.includes("Ctx roomCtx(");
       expect({
         id,
         steady: {
@@ -57,8 +59,8 @@ describe("a composed scene's programs", () => {
         },
       }).toEqual({
         id,
-        steady: { cut: false, turn: false, floor: ground < 0, held: true },
-        turning: { cut: true, turn: true, floor: true, held: false },
+        steady: { cut: false, turn: false, floor: !room && ground < 0, held: true },
+        turning: { cut: true, turn: true, floor: !room, held: false },
       });
     }
   });

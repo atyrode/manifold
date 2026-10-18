@@ -42,6 +42,7 @@ import type {
   PlacedClaim,
   RecordRows,
   Rig,
+  RoomFrame,
   SpeckWriter,
 } from "./types.ts";
 
@@ -157,6 +158,8 @@ export interface Composition {
    * in a composed program, never in a view of the scene's own (code.ts composedCode's `own`).
    */
   readonly drawsTurns: (features: Readonly<Record<string, number>>) => boolean;
+  /** The room's seat line and scale, in an `interior` preset: every layer's frame carries it. */
+  readonly room?: RoomFrame;
 }
 
 type Mutable<T> = { -readonly [K in keyof T]: T[K] };
@@ -248,7 +251,8 @@ class ComposedSim implements SceneSim {
   readonly #gl: WebGL2RenderingContext;
   readonly #c: Composition;
   readonly #rig: LevelCamera;
-  readonly #knobs: KnobReader<"wind" | "gusts" | "gustRate">;
+  /** The gust field's knobs; undefined where the preset lists none (a room: README "The interior composer"). */
+  readonly #knobs: KnobReader<"wind" | "gusts" | "gustRate"> | undefined;
   readonly #map = new SpeckMap();
   readonly #speckTexture: DataTexture;
   readonly #atlas: DataTexture;
@@ -284,7 +288,12 @@ class ComposedSim implements SceneSim {
     this.#c = composition;
     const rig = composition.rig;
     this.#rig = new LevelCamera({ horizon: rig.horizon, eye: rig.eye, focal: rig.focal });
-    this.#knobs = new KnobReader("composer", composition.params, ["wind", "gusts", "gustRate"]);
+    const gusty = ["wind", "gusts", "gustRate"].every((key) =>
+      composition.params.some((def) => def.key === key),
+    );
+    this.#knobs = gusty
+      ? new KnobReader("composer", composition.params, ["wind", "gusts", "gustRate"])
+      : undefined;
     this.#speckTexture = new DataTexture(gl, {
       width: 1,
       height: 1,
@@ -484,6 +493,7 @@ class ComposedSim implements SceneSim {
       specks,
       fields,
       host: this.#host,
+      ...(this.#c.room === undefined ? {} : { room: this.#c.room }),
     };
     const factory = this.#c.sims[layer.id];
     return {
@@ -512,6 +522,7 @@ class ComposedSim implements SceneSim {
   #gustField(frame: SimFrame): void {
     const g = this.#gusts;
     const knobs = this.#knobs;
+    if (knobs === undefined) return;
     g.wind = knobs.value(frame, "wind");
     g.gusts = knobs.value(frame, "gusts");
     g.rate = knobs.value(frame, "gustRate");

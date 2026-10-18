@@ -1,25 +1,26 @@
-// The window-sill scene: a lo-fi evening seen from inside a dark room. A sash window raised onto a
-// city at dusk; a cat on the sill watching it, a steaming mug, a plant, books, a stirring curtain;
-// three rows of skyline with windows switching on and off, and across the street a neon Manifold M.
-// Knobs arrive as K_<key> defines (see ./index.ts); the scene's own motion runs on uMotionTime. In
-// the window the world's sky (worldSky, src/scenes/README.md "World layers"): the cloud deck, stars
-// (K_stars), the moon in its phase (K_moon, SKY_MOON_PHASE), the aurora (K_aurora), shooting stars
-// (K_meteors) and lightning (K_lightning), under the city's own tint.
+// The window sill's layers (layers.ts) on the `interior` composer (composer/room.ts): a lo-fi
+// evening seen from inside a dark room. A sash window raised onto a city at dusk (cityWindow, the
+// backdrop); the sill (the ground, with the wall and the radiator under it); a steaming mug, a plant
+// and books on it (props); a cat on it (cat); a stirring curtain (curtain); three rows of skyline
+// with windows switching on and off, and across the street a neon Manifold M.
+// Knobs arrive as K_<key> defines; the scene's own motion runs on uMotionTime. Through the window
+// the World's sky (worldSky, src/scenes/README.md "World layers"), drawn through the window's own rig
+// (SILL_FOCAL, SILL_EYE: the room's eye level, 10 m over the street): the cloud deck, stars, the
+// moon in its phase, the aurora, shooting stars and lightning, under the city's own tint.
 // Rain and snow fall only outside the window, through the depth of the city, and the city answers
 // them: an overcast sky, wet roofs and brick, drips and splashes, snow settling (uWeather).
-// The cat's gaze is eased on the CPU (./index.ts) and read from uSim0.
+// The room's reading lamp out of frame is the preset's (Room.lamp: roomLamp); the window's light into
+// the room is the backdrop's daylight; every surface adds the layers' lights (localLight, the lava
+// lamp's when it stands on the sill). The cat's gaze is eased on the CPU (./sim.ts, catRecord).
 
+import type { SharedGlsl } from "../../composer/types.ts";
 import { glslFloat } from "../../shaders/glsl.ts";
-import { worldGlsl } from "../../shaders/lib/world.ts";
-import { SILL_LIGHTNING_TRIGGER, SILL_METEOR_TRIGGER, SILL_PASSAGE } from "./constants.ts";
+import { SILL_PASSAGE } from "./constants.ts";
 
-export const sillGlsl = `
-${worldGlsl}
+const sillShared = `
 // Where shooting stars set out: skyAngles of the view over the city (bearing, elevation, radians),
-// high in the window; the lightning's trigger.
-const int SILL_METEOR_SLOT = ${SILL_METEOR_TRIGGER};
+// high in the window.
 const vec4 SILL_METEOR_FIELD = vec4(-0.5, 0.3, 1.0, 0.12);
-const int SILL_LIGHTNING_SLOT = ${SILL_LIGHTNING_TRIGGER};
 // The view of the city: a level camera one radian high, the eye at an upstairs window ~10 m up.
 const float SILL_FOCAL = ${glslFloat(0.5 / Math.tan(0.5))};
 const float SILL_EYE = 10.0;
@@ -95,13 +96,6 @@ vec2 sillGlance(float t, float period, float salt, float move) {
 
 // ---- Light
 
-// The lamp, out of frame to the right a little above the sill: inverse-square-like falloff,
-// squashed vertically so its light spreads along the sill.
-float sillLamp(vec2 p, float aspect) {
-  vec2 d = (p - vec2(0.5 * aspect + 0.1, -0.2)) * vec2(1.0, 1.5);
-  return 1.0 / (1.0 + dot(d, d) * 6.0);
-}
-
 // The room mirrored in the window glass, faint against the bright day and plainer at night: the
 // lamp's drum shade glowing in the right-hand pane (centred at 'at'), its light spilling from the
 // hem, a soft bloom below it and the warm room behind. Nearer than the city, it slides against it
@@ -128,12 +122,12 @@ vec4 sillNeon(float tm, float power) {
   float age = sillEvent(tm, 26.0, 51.0, pick);
   float span = 0.5 + 1.1 * fract(pick * 7.3);
   float live = step(0.4, pick);
-  float since = sinceTrigger(2);
+  float since = sinceTrigger(TRIGGER_neon);
   if (since >= 0.0 && since < 1.8) {
     age = since;
     span = 1.4;
     live = 1.0;
-    pick = hash12(vec2(uTriggers[2], 5.0));
+    pick = hash12(vec2(uTriggers[TRIGGER_neon], 5.0));
   }
   float burst = live * step(0.0, age) * step(age, span);
   // Dropouts of uneven length: the stutter's clock runs at a wavering (never reversing) rate.
@@ -485,7 +479,7 @@ vec4 sillCity(vec2 p, float aspect, float tf, float tm, float px, float soft, Wo
   // drawn into streaks, the grey sky, the sign's pink right below the sign; water pools on it,
   // ringing and splashing where the rain lands. Snow heaps up on it, deepest in the corners
   // against the reveals.
-  float spill = sillLamp(p, aspect);
+  float spill = roomLamp(p);
   float ledge0 = SILL_BACK + 0.014;
   float heap = 0.0;
   if (lying > 0.0 && p.y < SILL_LEDGE + 0.02) {
@@ -894,32 +888,46 @@ float sillCatDist(vec2 q, SillCat c, float edge, out vec4 part) {
   return smin(d, tail, 0.025);
 }
 
-Shade sceneSill(vec2 uv, vec2 cell, float t) {
-  float tm = uMotionTime;
-  float aspect = uRes.x / uRes.y;
-  float px = 1.0 / uRes.y;
-  vec2 p = (uv - 0.5) * vec2(aspect, 1.0);
-  float shimmer = 0.0;
+// ---- The sill's state for this cell (sillBegin): where things are, the World through the window and
+// the light it lets in, the neon, the cat's size and its passage.
 
-  // Where things are. The window opening runs between its casings almost edge to edge; the cat
-  // sits right of centre, clear of the page's copy at the lower left.
-  float xw0 = -0.44 * aspect;
-  float xw1 = 0.455 * aspect;
-  float casing = 0.036;
-  float reveal = 0.024;
-  float xg0 = xw0 + reveal + 0.022;
-  float xg1 = xw1 - reveal - 0.022;
-  vec2 signAt = vec2(-0.03 * aspect, -0.08);
-  float catX = 0.26 * aspect;
-  float mugX = 0.085 * aspect;
-  float booksX = 0.405 * aspect;
-  float plantX = -0.33 * aspect;
+struct SillState {
+  // The window opening runs between its casings almost edge to edge; the cat sits right of centre,
+  // clear of the page's copy at the lower left.
+  float xw0; float xw1; float casing; float reveal; float xg0; float xg1; float xm1; float xm2;
+  vec2 signAt; float catX; float mugX; float booksX; float plantX;
+  // The view: the open lower half, and the glass above the raised sash's rail.
+  bool inOpen; bool inGlass;
+  // The World now, through the window: how far the weather has closed the sky (ov), how dark it is,
+  // 'haze' the air over the city, 'cool' the light that comes in through the window, the flash.
+  World world; vec2 ov; Sky sky; float dark; vec3 haze; vec3 cool; float flash;
+  // How wet the world is and how much snow lies, integrated by the renderer from the knobs.
+  float wet; float lying;
+  vec4 neon; float neonGlow;
+  // The cat's size, and its passage pose (identity at rest).
+  float S; SillHop hop;
+};
+SillState sill;
 
-  // Time of day and the light it brings: 'haze' is the air over the city, 'cool' the light that
-  // comes in through the window. Rain or snow closes the sky over (the world's overcast): sun and
-  // moon fade behind the deck, the daylight flattens to grey and dims as the fall gets heavier, and
-  // the city's lamps and the sign come into their own early in the gloom.
-  World world = worldAt(SILL_METEOR_SLOT, SILL_LIGHTNING_SLOT);
+void sillBegin(Ctx x) {
+  float aspect = x.aspect;
+  vec2 p = x.p;
+  sill.xw0 = -0.44 * aspect;
+  sill.xw1 = 0.455 * aspect;
+  sill.casing = 0.036;
+  sill.reveal = 0.024;
+  sill.xg0 = sill.xw0 + sill.reveal + 0.022;
+  sill.xg1 = sill.xw1 - sill.reveal - 0.022;
+  sill.signAt = vec2(-0.03 * aspect, -0.08);
+  sill.catX = 0.26 * aspect;
+  sill.mugX = 0.085 * aspect;
+  sill.booksX = 0.405 * aspect;
+  sill.plantX = -0.33 * aspect;
+
+  // Rain or snow closes the sky over (the world's overcast): sun and moon fade behind the deck, the
+  // daylight flattens to grey and dims as the fall gets heavier, and the city's lamps and the sign
+  // come into their own early in the gloom.
+  World world = worldAt(TRIGGER_meteors, TRIGGER_lightning);
   vec2 ov = vec2(world.overcast, world.storm);
   world.sky.moonColor *= 1.0 - 0.7 * ov.x;
   Sky sky = world.sky;
@@ -931,32 +939,80 @@ Shade sceneSill(vec2 uv, vec2 cell, float t) {
   cool = greyed(cool, vec3(1.0), 0.4 * ov.x) * (1.0 - 0.3 * ov.y);
   // On a clear night the aurora's green comes in through the window too.
   cool += world.glow;
-  float flash = world.flash;
-  // How wet the world is and how much snow lies, integrated by the renderer from the knobs.
-  float wet = uWeather.x;
-  float lying = uWeather.y;
-  vec4 neon = sillNeon(tm, K_neon);
-  float neonGlow = dot(neon, vec4(0.25)) * mix(0.35, 1.0, dark);
+  sill.world = world;
+  sill.ov = ov;
+  sill.sky = sky;
+  sill.dark = dark;
+  sill.haze = haze;
+  sill.cool = cool;
+  sill.flash = world.flash;
+  sill.wet = uWeather.x;
+  sill.lying = uWeather.y;
+  sill.neon = sillNeon(x.tm, K_neon);
+  sill.neonGlow = dot(sill.neon, vec4(0.25)) * mix(0.35, 1.0, dark);
 
   // The view: the open lower half, and the glass above the raised sash's rail (between its
   // stiles and glazing bars, three panes across and two up).
-  bool inOpen = p.y > SILL_BACK + 0.014 && p.y < SILL_RAIL && p.x > xw0 + reveal && p.x < xw1 - reveal;
-  float xm1 = mix(xg0, xg1, 1.0 / 3.0);
-  float xm2 = mix(xg0, xg1, 2.0 / 3.0);
-  bool muntin = abs(p.x - xm1) < 0.006 || abs(p.x - xm2) < 0.006 || abs(p.y - 0.405) < 0.006;
-  bool inGlass = p.y > SILL_RAIL_TOP && p.x > xg0 && p.x < xg1 && !muntin;
-  vec3 col = vec3(0.0);
-  float accent = 0.0;
-  if (inOpen || inGlass) {
+  sill.inOpen = p.y > SILL_BACK + 0.014 && p.y < SILL_RAIL && p.x > sill.xw0 + sill.reveal && p.x < sill.xw1 - sill.reveal;
+  sill.xm1 = mix(sill.xg0, sill.xg1, 1.0 / 3.0);
+  sill.xm2 = mix(sill.xg0, sill.xg1, 2.0 / 3.0);
+  bool muntin = abs(p.x - sill.xm1) < 0.006 || abs(p.x - sill.xm2) < 0.006 || abs(p.y - 0.405) < 0.006;
+  sill.inGlass = p.y > SILL_RAIL_TOP && p.x > sill.xg0 && p.x < sill.xg1 && !muntin;
+
+  // The cat's size, a little smaller on narrow screens so it leaves the props in view.
+  sill.S = 0.29 * mix(0.72, 1.28, K_cat) * clamp(0.3 + 0.6 * aspect, 0.72, 1.0);
+  // The passage: the cat hops up onto the sill and settles, or stretches and hops down out of frame.
+  // Identity at rest.
+  sill.hop = sillPassage((-0.5 - SILL_SEAT) / sill.S);
+}
+`;
+
+/** The sill's GLSL its layers share: its shapes, clocks, city, props, cat and per-cell state. */
+export const sillSharedGlsl: SharedGlsl = {
+  id: "sill",
+  glsl: () => sillShared,
+  begin: "sillBegin",
+};
+
+/** The window onto the city (the backdrop): the opening and the glass, the World and the city through them, the frame. */
+export const cityWindowGlsl = `
+// The light the window lets into the room at p: the city's cool light, more of it near the window
+// and by day, and the lightning's flash.
+vec3 cityWindowDaylight(Ctx x, vec2 p) {
+  float nearWindow = smoothfall(0.25, 0.0, max(max(sill.xw0 - p.x, p.x - sill.xw1), SILL_BACK - p.y));
+  return sill.cool * ((0.08 + 0.25 * nearWindow) * (1.0 + 2.0 * sill.sky.day) + 0.6 * sill.flash);
+}
+
+void cityWindowFar(Ctx x, inout Cell c) {
+  vec2 p = x.p;
+  float aspect = x.aspect;
+  float px = x.px;
+  float tm = x.tm;
+  float xw0 = sill.xw0;
+  float xw1 = sill.xw1;
+  float casing = sill.casing;
+  float reveal = sill.reveal;
+  float xg0 = sill.xg0;
+  float xg1 = sill.xg1;
+  float xm1 = sill.xm1;
+  float xm2 = sill.xm2;
+  vec2 ov = sill.ov;
+  float dark = sill.dark;
+  vec3 cool = sill.cool;
+  float wet = sill.wet;
+  float lying = sill.lying;
+  vec3 wood = vec3(0.42, 0.26, 0.15);
+  vec3 wall = vec3(0.27, 0.24, 0.29);
+  if (sill.inOpen || sill.inGlass) {
     vec2 at = p;
     float soft = 0.6 * px + 0.0015 * max(K_rain, K_snow);
     vec3 drop = vec3(0.0);
     vec2 fromCentre = vec2(0.0);
     float lens = 0.0;
-    if (inGlass) {
+    if (sill.inGlass) {
       soft += 0.0012 + 0.005 * K_rain;
       if (K_drops > 0.5 && K_rain > 0.0) {
-        drop = glassDrops(uv, aspect, tm, K_rain);
+        drop = glassDrops(x.uv, aspect, tm, K_rain);
         at += drop.xy * vec2(aspect, 1.0);
         if (drop.z > 0.0) {
           // Each drop is a little lens onto the lit city: a small inverted picture of the skyline
@@ -971,17 +1027,17 @@ Shade sceneSill(vec2 uv, vec2 cell, float t) {
         }
       }
     }
-    vec4 city = sillCity(at, aspect, uFallTime, tm, px, soft, world, haze, dark, signAt, vec2(xw0 + reveal, xw1 - reveal), neon);
-    col = city.rgb;
-    accent = city.a;
-    if (inGlass) {
+    vec4 city = sillCity(at, aspect, uFallTime, tm, px, soft, sill.world, sill.haze, dark, sill.signAt, vec2(xw0 + reveal, xw1 - reveal), sill.neon);
+    vec3 col = city.rgb;
+    float accent = city.a;
+    if (sill.inGlass) {
       // Snow banked on the outside of the panes, drifted deepest into the corners against the bars
       // and stiles, lit by the lamp through the glass and by the city behind.
       if (lying > 0.0) {
         float bar = min(min(abs(p.x - xm1), abs(p.x - xm2)) - 0.006, min(p.x - xg0, xg1 - p.x));
         float h = (0.003 + 0.016 * exp(-bar / 0.018)) * snowCover(vec3(0.0, 1.0, 0.0), vec2(p.x * 12.0, step(0.405, p.y) * 3.0), lying);
         float bank = smoothfall(0.6 * px, -0.6 * px, p.y - (p.y < 0.405 ? SILL_RAIL_TOP : 0.411) - h) * smoothstep(0.0, px, h);
-        col = mix(col, vec3(0.72, 0.75, 0.84) * (0.16 + 0.6 * sky.day * (1.0 - 0.3 * ov.y)) + SILL_LAMP * sillLamp(p, aspect) * 0.45 + vec3(0.14, 0.07, 0.05) * dark, bank);
+        col = mix(col, vec3(0.72, 0.75, 0.84) * (0.16 + 0.6 * sill.sky.day * (1.0 - 0.3 * ov.y)) + SILL_LAMP * roomLamp(p) * 0.45 + vec3(0.14, 0.07, 0.05) * dark, bank);
         accent *= 1.0 - bank;
       }
       // The pane: a little light lost, the room faintly mirrored in it. Drops gather the city's
@@ -992,116 +1048,168 @@ Shade sceneSill(vec2 uv, vec2 cell, float t) {
       float glint = ring * smoothstep(0.1, 0.8, dot(normalize(fromCentre + 1e-6), vec2(0.876, -0.482)));
       col = col * (1.0 - 0.35 * ring) + SILL_LAMP * glint * 0.45 + cool * drop.z * 0.05;
       accent *= 0.85;
-      shimmer = glint * 0.25;
+      c.shimmer = glint * 0.25;
     }
+    c.col = col;
+    c.accent = accent;
+    return;
   }
+  // Below the window's own sill the ledge stands (the sill layer); beside the casings, the room's wall.
+  if (p.y < SILL_BACK || p.x < xw0 - casing || p.x > xw1 + casing) return;
+  float lamp = roomLamp(p);
+  vec3 lit = roomLight(x, p, vec3(0.0, 0.0, -1.0));
+  if (p.y < SILL_BACK + 0.014 && p.x > xw0 && p.x < xw1) {
+    // The window frame's own sill, its top edge lit from outside; rain blowing in darkens it and
+    // gives it a sheen.
+    c.col = wetten(wood * 0.6, wet, 0.6) * lit + cool * (0.18 + 0.3 * wetGloss(wet, 1.0)) * smoothstep(SILL_BACK, SILL_BACK + 0.014, p.y);
+  } else if (p.x < xw0 || p.x > xw1) {
+    // The casing: a moulded wood surround, a groove and a bead along its inner edge.
+    float u = p.x < xw0 ? (p.x - xw0 + casing) / casing : (xw1 + casing - p.x) / casing;
+    float profile = 0.75 + 0.25 * smoothstep(0.0, 0.25, u) - 0.3 * smoothstep(0.55, 0.6, u) * smoothfall(0.72, 0.67, u) + 0.2 * smoothstep(0.85, 1.0, u);
+    c.col = wood * lit * profile + cool * 0.2 * smoothstep(0.8, 1.0, u);
+  } else if (p.x < xw0 + reveal || p.x > xw1 - reveal) {
+    // The reveal, the wall's depth: the left one faces the lamp, the right one turns away.
+    c.col = wall * lit * (p.x < 0.0 ? 1.0 : 0.45) + cool * 0.25;
+  } else {
+    // The raised sash: its bottom rail (underside lit by the lamp, a brass catch on top),
+    // stiles and glazing bars.
+    vec3 col = wood * 0.85 * lit + cool * 0.15;
+    if (p.y < SILL_RAIL_TOP) {
+      float v = (p.y - SILL_RAIL) / (SILL_RAIL_TOP - SILL_RAIL);
+      col = col * (0.8 + 0.3 * smoothstep(0.0, 0.2, v)) + SILL_LAMP * lamp * 0.5 * smoothfall(0.2, 0.0, v);
+      vec2 lq = (p - vec2(0.5 * (xw0 + xw1), SILL_RAIL_TOP - 0.004)) / vec2(0.024, 0.008);
+      if (dot(lq, lq) < 1.0) col = vec3(0.85, 0.64, 0.3) * (0.4 + lit * 1.5) * (0.8 + 0.2 * lq.y);
+    }
+    c.col = col;
+  }
+}
+`;
 
-  // The room's light at this point: the lamp, a little ambient, the window's light near it, and
-  // lightning flashes.
-  float lamp = sillLamp(p, aspect);
-  float nearWindow = smoothfall(0.25, 0.0, max(max(xw0 - p.x, p.x - xw1), SILL_BACK - p.y));
-  vec3 roomLight = SILL_LAMP * lamp * 1.35 + vec3(0.05, 0.045, 0.06) + cool * ((0.08 + 0.25 * nearWindow) * (1.0 + 2.0 * sky.day) + 0.6 * flash);
+/** The sill (the ground): its wooden top in the lamp's pool, the nosing, the wall and the radiator under it. */
+export const sillGroundGlsl = `
+void sillGround(Ctx x, inout Cell c) {
+  vec2 p = x.p;
+  float aspect = x.aspect;
+  if (p.y >= SILL_BACK) return;
+  float xw0 = sill.xw0;
+  float xw1 = sill.xw1;
+  float casing = sill.casing;
+  vec3 cool = sill.cool;
+  float S = sill.S;
+  float lamp = roomLamp(p);
   vec3 wood = vec3(0.42, 0.26, 0.15);
   vec3 wall = vec3(0.27, 0.24, 0.29);
-  // The cat's size, a little smaller on narrow screens so it leaves the props in view.
-  float S = 0.29 * mix(0.72, 1.28, K_cat) * clamp(0.3 + 0.6 * aspect, 0.72, 1.0);
-  // The passage: the cat hops up onto the sill and settles, or stretches and hops down out of frame.
-  // Identity at rest.
-  SillHop hop = sillPassage((-0.5 - SILL_SEAT) / S);
-
-  if (!(inOpen || inGlass)) {
-    if (p.y < SILL_BACK) {
-      float depth = clamp((p.y - SILL_FRONT) / (SILL_BACK - SILL_FRONT), 0.0, 1.0);
-      float reach = casing + 0.02 + 0.025 * (1.0 - depth);
-      if (p.y > SILL_FRONT && p.x > xw0 - reach && p.x < xw1 + reach) {
-        // The sill: warm wood in the lamp's pool, cooler toward the window, props' shadows cast
-        // away from the lamp.
-        float grain = 0.82 + 0.18 * vnoise(vec2(p.x * 2.5 + vnoise(vec2(p.x * 9.0, depth * 3.0)) * 1.5, depth * 14.0));
-        vec2 poolAt = vec2((p.x - 0.36 * aspect) / 0.32, (depth - 0.45) / 0.9);
-        float pool = exp(-dot(poolAt, poolAt));
-        col = wood * 1.1 * grain * (roomLight + SILL_LAMP * pool * 0.55 + cool * 0.4 * depth * depth);
-        col += SILL_LAMP * (lamp + pool * 0.3) * 0.25 * smoothfall(0.08, 0.0, depth);
-        float shadow = 0.5 * smoothfall(1.0, 0.3, length((p - vec2(mugX - 0.022, SILL_SEAT - 0.008)) / vec2(0.05, 0.012)));
-        shadow = max(shadow, 0.5 * smoothfall(1.0, 0.4, length((p - vec2(booksX - 0.03, SILL_SEAT - 0.006)) / vec2(0.1, 0.014))));
-        if (K_plant > 0.5) shadow = max(shadow, 0.5 * smoothfall(1.0, 0.3, length((p - vec2(plantX - 0.015, SILL_SEAT - 0.006)) / vec2(0.06, 0.012))));
-        if (K_cat > 0.0) {
-          shadow = max(shadow, 0.55 * hop.shade * smoothfall(1.0, 0.35, length((p - vec2(catX - 0.15 * S, SILL_SEAT - 0.006)) / vec2(0.5 * S, 0.03))));
-        }
-        col *= 1.0 - shadow;
-        // Rain blowing in wets the sill by the window: it catches the city and the neon.
-        float wetBand = wet * smoothstep(0.45, 1.0, depth) * (0.6 + 0.4 * vnoise(vec2(p.x * 60.0, depth * 3.0)));
-        float mirrored = neonGlow * wetBand * exp(-abs(p.x - signAt.x) * 9.0);
-        col += uAccent * mirrored * 0.35 + cool * wetBand * 0.15;
-        accent = max(accent, mirrored * 0.3);
-      } else if (p.y > SILL_NOSE && p.x > xw0 - casing - 0.045 && p.x < xw1 + casing + 0.045) {
-        // The nosing: the sill's front face, its rounded top edge catching the lamp.
-        float f = (p.y - SILL_NOSE) / (SILL_FRONT - SILL_NOSE);
-        col = wood * roomLight * 0.75 * (0.8 + 0.2 * f) + SILL_LAMP * lamp * 0.35 * smoothstep(0.75, 1.0, f);
-      } else {
-        // Below the sill: the wall in its shadow, and an old radiator whose pale fins the tail
-        // hangs in front of.
-        float under = mix(0.3, 0.85, smoothstep(0.0, 0.08, SILL_NOSE - p.y));
-        col = wall * roomLight * under;
-        float rx = (p.x - 0.03 * aspect) / 0.022;
-        if (p.y < SILL_NOSE - 0.02 && p.x > 0.03 * aspect - 0.01 && p.x < xw1 - 0.02) {
-          float fin = abs(fract(rx) - 0.5) * 2.0;
-          float ribs = smoothfall(0.75, 0.55, fin) * (0.75 + 0.25 * sqrt(max(1.0 - fin * fin, 0.0)));
-          vec3 paint = vec3(0.6, 0.56, 0.5) * roomLight * under;
-          col = mix(col * 0.6, paint, ribs * smoothfall(SILL_NOSE - 0.02, SILL_NOSE - 0.03, p.y));
-          col = mix(col, paint * 1.1, smoothfall(0.006, 0.0, abs(p.y - (SILL_NOSE - 0.027))));
-        }
-      }
-    } else if (p.y < SILL_BACK + 0.014 && p.x > xw0 && p.x < xw1) {
-      // The window frame's own sill, its top edge lit from outside; rain blowing in darkens it and
-      // gives it a sheen.
-      col = wetten(wood * 0.6, wet, 0.6) * roomLight + cool * (0.18 + 0.3 * wetGloss(wet, 1.0)) * smoothstep(SILL_BACK, SILL_BACK + 0.014, p.y);
-    } else if (p.x < xw0 - casing || p.x > xw1 + casing) {
-      col = wall * roomLight;
-    } else if (p.x < xw0 || p.x > xw1) {
-      // The casing: a moulded wood surround, a groove and a bead along its inner edge.
-      float u = p.x < xw0 ? (p.x - xw0 + casing) / casing : (xw1 + casing - p.x) / casing;
-      float profile = 0.75 + 0.25 * smoothstep(0.0, 0.25, u) - 0.3 * smoothstep(0.55, 0.6, u) * smoothfall(0.72, 0.67, u) + 0.2 * smoothstep(0.85, 1.0, u);
-      col = wood * roomLight * profile + cool * 0.2 * smoothstep(0.8, 1.0, u);
-    } else if (p.x < xw0 + reveal || p.x > xw1 - reveal) {
-      // The reveal, the wall's depth: the left one faces the lamp, the right one turns away.
-      col = wall * roomLight * (p.x < 0.0 ? 1.0 : 0.45) + cool * 0.25;
-    } else {
-      // The raised sash: its bottom rail (underside lit by the lamp, a brass catch on top),
-      // stiles and glazing bars.
-      col = wood * 0.85 * roomLight + cool * 0.15;
-      if (p.y < SILL_RAIL_TOP) {
-        float v = (p.y - SILL_RAIL) / (SILL_RAIL_TOP - SILL_RAIL);
-        col = col * (0.8 + 0.3 * smoothstep(0.0, 0.2, v)) + SILL_LAMP * lamp * 0.5 * smoothfall(0.2, 0.0, v);
-        vec2 lq = (p - vec2(0.5 * (xw0 + xw1), SILL_RAIL_TOP - 0.004)) / vec2(0.024, 0.008);
-        if (dot(lq, lq) < 1.0) col = vec3(0.85, 0.64, 0.3) * (0.4 + roomLight * 1.5) * (0.8 + 0.2 * lq.y);
-      }
+  float depth = clamp((p.y - SILL_FRONT) / (SILL_BACK - SILL_FRONT), 0.0, 1.0);
+  float reach = casing + 0.02 + 0.025 * (1.0 - depth);
+  if (p.y > SILL_FRONT && p.x > xw0 - reach && p.x < xw1 + reach) {
+    // The sill: warm wood in the lamp's pool, cooler toward the window, props' shadows cast
+    // away from the lamp.
+    vec3 lit = roomLight(x, p, vec3(0.0, 1.0, 0.0));
+    float grain = 0.82 + 0.18 * vnoise(vec2(p.x * 2.5 + vnoise(vec2(p.x * 9.0, depth * 3.0)) * 1.5, depth * 14.0));
+    vec2 poolAt = vec2((p.x - 0.36 * aspect) / 0.32, (depth - 0.45) / 0.9);
+    float pool = exp(-dot(poolAt, poolAt));
+    vec3 col = wood * 1.1 * grain * (lit + SILL_LAMP * pool * 0.55 + cool * 0.4 * depth * depth);
+    col += SILL_LAMP * (lamp + pool * 0.3) * 0.25 * smoothfall(0.08, 0.0, depth);
+    float shadow = 0.0;
+#if LAYER_PROPS
+    shadow = 0.5 * smoothfall(1.0, 0.3, length((p - vec2(sill.mugX - 0.022, SILL_SEAT - 0.008)) / vec2(0.05, 0.012)));
+    shadow = max(shadow, 0.5 * smoothfall(1.0, 0.4, length((p - vec2(sill.booksX - 0.03, SILL_SEAT - 0.006)) / vec2(0.1, 0.014))));
+    if (K_plant > 0.5) shadow = max(shadow, 0.5 * smoothfall(1.0, 0.3, length((p - vec2(sill.plantX - 0.015, SILL_SEAT - 0.006)) / vec2(0.06, 0.012))));
+#endif
+    if (K_cat > 0.0) {
+      shadow = max(shadow, 0.55 * sill.hop.shade * smoothfall(1.0, 0.35, length((p - vec2(sill.catX - 0.15 * S, SILL_SEAT - 0.006)) / vec2(0.5 * S, 0.03))));
     }
+    col *= 1.0 - shadow;
+    // Rain blowing in wets the sill by the window: it catches the city and the neon.
+    float wetBand = sill.wet * smoothstep(0.45, 1.0, depth) * (0.6 + 0.4 * vnoise(vec2(p.x * 60.0, depth * 3.0)));
+    float mirrored = sill.neonGlow * wetBand * exp(-abs(p.x - sill.signAt.x) * 9.0);
+    c.col = col + uAccent * mirrored * 0.35 + cool * wetBand * 0.15;
+    c.accent = max(c.accent, mirrored * 0.3);
+  } else if (p.y > SILL_NOSE && p.x > xw0 - casing - 0.045 && p.x < xw1 + casing + 0.045) {
+    // The nosing: the sill's front face, its rounded top edge catching the lamp.
+    float f = (p.y - SILL_NOSE) / (SILL_FRONT - SILL_NOSE);
+    c.col = wood * roomLight(x, p, vec3(0.0, 0.0, -1.0)) * 0.75 * (0.8 + 0.2 * f) + SILL_LAMP * lamp * 0.35 * smoothstep(0.75, 1.0, f);
+  } else {
+    // Below the sill: the wall in its shadow, and an old radiator whose pale fins the tail
+    // hangs in front of.
+    vec3 lit = roomLight(x, p, vec3(0.0, 0.0, -1.0));
+    float under = mix(0.3, 0.85, smoothstep(0.0, 0.08, SILL_NOSE - p.y));
+    vec3 col = wall * lit * under;
+    float rx = (p.x - 0.03 * aspect) / 0.022;
+    if (p.y < SILL_NOSE - 0.02 && p.x > 0.03 * aspect - 0.01 && p.x < xw1 - 0.02) {
+      float fin = abs(fract(rx) - 0.5) * 2.0;
+      float ribs = smoothfall(0.75, 0.55, fin) * (0.75 + 0.25 * sqrt(max(1.0 - fin * fin, 0.0)));
+      vec3 paint = vec3(0.6, 0.56, 0.5) * lit * under;
+      col = mix(col * 0.6, paint, ribs * smoothfall(SILL_NOSE - 0.02, SILL_NOSE - 0.03, p.y));
+      col = mix(col, paint * 1.1, smoothfall(0.006, 0.0, abs(p.y - (SILL_NOSE - 0.027))));
+    }
+    c.col = col;
   }
+}
+`;
 
-  // Things on the sill.
-  float lampSill = sillLamp(vec2(p.x, SILL_SEAT + 0.04), aspect);
-  vec3 propLight = SILL_LAMP * lampSill * 1.35 + vec3(0.05, 0.045, 0.06) + cool * (0.15 + 0.4 * sky.day + 0.6 * flash);
+/** The things on the sill (props): the plant, the mug and the books, and the steam off the mug. */
+export const propsGlsl = `
+// The props' light: the lamp at the sill's height, a little ambient, the window's, the layers'.
+vec3 propsLight(Ctx x) {
+  vec2 at = vec2(x.p.x, SILL_SEAT + 0.04);
+  return SILL_LAMP * roomLamp(at) * 1.35 + vec3(0.05, 0.045, 0.06) + sill.cool * (0.15 + 0.4 * sill.sky.day + 0.6 * sill.flash) + localLight(roomAt(at), vec3(0.0));
+}
+
+void propsMiddle(Ctx x, inout Cell c) {
+  vec2 p = x.p;
+  float px = x.px;
+  vec3 cool = sill.cool;
+  vec3 propLight = propsLight(x);
   if (K_plant > 0.5) {
     float breeze = 0.5 + 0.8 * abs(K_wind);
-    vec4 plant = sillPlant(p - vec2(plantX, SILL_SEAT), tm, breeze, propLight, cool, px);
-    col = mix(col, plant.rgb, plant.a);
-    accent *= 1.0 - plant.a;
+    vec4 plant = sillPlant(p - vec2(sill.plantX, SILL_SEAT), x.tm, breeze, propLight, cool, px);
+    c.col = mix(c.col, plant.rgb, plant.a);
+    c.accent *= 1.0 - plant.a;
   }
-  vec4 mug = sillMug(p - vec2(mugX, SILL_SEAT - 0.006), propLight, cool, px);
-  col = mix(col, mug.rgb, mug.a);
-  accent *= 1.0 - mug.a;
-  vec4 books = sillBooks(p - vec2(booksX, SILL_SEAT - 0.004), propLight, px);
-  col = mix(col, books.rgb, books.a);
-  accent *= 1.0 - books.a;
+  vec4 mug = sillMug(p - vec2(sill.mugX, SILL_SEAT - 0.006), propLight, cool, px);
+  c.col = mix(c.col, mug.rgb, mug.a);
+  c.accent *= 1.0 - mug.a;
+  vec4 books = sillBooks(p - vec2(sill.booksX, SILL_SEAT - 0.004), propLight, px);
+  c.col = mix(c.col, books.rgb, books.a);
+  c.accent *= 1.0 - books.a;
+}
 
-  // The cat.
+// Steam off the mug: it scatters the lamp's light (and a little of the window's and the sign's),
+// so it shows pale against the dark city behind.
+void propsFrontVeil(Ctx x, inout Cell c) {
+  if (K_steam > 0.0) {
+    float lampSill = roomLamp(vec2(x.p.x, SILL_SEAT + 0.04));
+    float steam = sillSteam(x.p, vec2(sill.mugX, SILL_SEAT - 0.006 + 0.064), x.tm, K_steam, K_wind);
+    c.col += (vec3(0.74, 0.71, 0.67) * (0.3 + 1.5 * lampSill) + sill.cool * 0.2 + uAccent * sill.neonGlow * 0.15) * steam * 0.8;
+  }
+}
+`;
+
+/** The cat on the sill. */
+export const catGlsl = `
+void catFront(Ctx x, inout Cell cell) {
+  vec2 p = x.p;
+  float aspect = x.aspect;
+  float px = x.px;
+  float tm = x.tm;
+  vec3 cool = sill.cool;
+  float flash = sill.flash;
+  float dark = sill.dark;
+  float neonGlow = sill.neonGlow;
+  vec2 signAt = sill.signAt;
+  float S = sill.S;
+  SillHop hop = sill.hop;
+  float catX = sill.catX;
+  vec3 col = cell.col;
+  float accent = cell.accent;
   if (K_cat > 0.0) {
     vec2 base = vec2(catX, SILL_SEAT);
     float restless = K_restless;
     // Where it is looking (the sim eases this toward the pointer): xy scene uv, z its interest
     // 0..1, w seconds since its gaze last jumped.
     vec4 gaze = vec4(0.5, 0.6, 0.0, 60.0);
-    if (uSimOn.x > 0.5) gaze = texelFetch(uSim0, ivec2(0, 0), 0);
+    if (catSimOn()) gaze = catRecord(0, 0);
     SillCat cat;
     cat.breath = 0.5 + 0.5 * sin(tm * TAU / 3.1);
     // Idle, it watches the city and now and then glances elsewhere with a quick turn of the head;
@@ -1111,7 +1219,7 @@ Shade sceneSill(vec2 uv, vec2 cell, float t) {
     float yaw = mix(glance.x * abs(glance.x) * 0.95, clamp(look.x * 3.2, -1.35, 1.35), gaze.z);
     float pitch = mix(glance.y * 0.3, clamp(look.y * 2.2, -0.6, 0.6), gaze.z);
     // Now: it looks back at you over its shoulder, blinks slowly, and turns back to the city.
-    float since = sinceTrigger(0);
+    float since = sinceTrigger(TRIGGER_cat);
     cat.turn = smoothstep(0.0, 0.8, since) * (1.0 - smoothstep(4.4, 5.6, since));
     cat.yaw = mix(yaw, 2.5, cat.turn);
     cat.pitch = mix(pitch, -0.1, cat.turn) + hop.look;
@@ -1125,7 +1233,7 @@ Shade sceneSill(vec2 uv, vec2 cell, float t) {
     float ageR = sillEvent(tm, earPeriod * 1.17, 23.0, pickR);
     float twitchL = step(0.3, pickL) * max(sillTwitch(ageL, 0.06, 0.08 + 0.3 * pickL, 0.35), step(0.8, pickL) * sillTwitch(ageL - 0.6, 0.05, 0.05, 0.3));
     float twitchR = step(0.3, pickR) * max(sillTwitch(ageR, 0.06, 0.08 + 0.3 * pickR, 0.35), step(0.8, pickR) * sillTwitch(ageR - 0.6, 0.05, 0.05, 0.3));
-    float press = sillTwitch(t - uPrincipals[0].w, 0.05, 0.12, 0.45);
+    float press = sillTwitch(uTime - uPrincipals[0].w, 0.05, 0.12, 0.45);
     float perk = sillTwitch(gaze.w, 0.1, 0.2, 0.6) * gaze.z;
     cat.ears = vec2(twitchL, twitchR) + press * 0.8 - perk * 0.35 - cat.turn * 0.25;
     // Tail: a slow swing, a lash running down it, and a tip that flicks.
@@ -1176,7 +1284,7 @@ Shade sceneSill(vec2 uv, vec2 cell, float t) {
       vec3 N = normalize(vec3(n * (1.0 - inner), 0.5 + inner));
       vec3 toLamp = normalize(vec3(0.75, 0.3, 0.6));
       float diffuse = max(dot(N, toLamp), 0.0);
-      float lampCat = sillLamp(base + vec2(0.0, 0.4 * S), aspect);
+      float lampCat = roomLamp(base + vec2(0.0, 0.4 * S));
       vec2 toSign = normalize(signAt - (base + vec2(0.0, 0.5 * S)));
       // The haunches: each thigh a bulge of its own, so the near one rounds out toward the lamp,
       // and a crease of shadow runs along its top where it tucks in under the flank.
@@ -1200,7 +1308,8 @@ Shade sceneSill(vec2 uv, vec2 cell, float t) {
         : max(smoothstep(0.35, 0.85, sin(q.y * 30.0 + abs(q.x) * 10.0 + sin(q.x * 9.0 + q.y * 4.0) * 1.6)) * smoothfall(0.98, 0.5, q.y),
               smoothfall(0.05, 0.0, abs(q.x - 0.012 * sin(q.y * 7.0))) * smoothstep(0.1, 0.3, q.y) * smoothfall(0.85, 0.7, q.y));
       vec3 fur = vec3(0.15, 0.135, 0.13) * (1.0 - 0.45 * stripes) * (1.0 - 0.5 * crease);
-      vec3 c = fur * (0.16 + diffuse * lampCat * SILL_LAMP * 1.3 + cool * 0.15 + cool * flash);
+      // The layers' lights on it too (the lava lamp's, standing on the sill), N turned into the room's frame.
+      vec3 c = fur * (0.16 + diffuse * lampCat * SILL_LAMP * 1.3 + cool * 0.15 + cool * flash + localLight(roomAt(p), vec3(N.xy, -N.z)));
       // Soft light round the form: warm toward the lamp, the city's cool light on the outline
       // facing it, a touch of neon from the sign.
       c += SILL_LAMP * pow(max(dot(n, vec2(0.93, 0.36)), 0.0), 2.0) * rim * lampCat;
@@ -1212,7 +1321,7 @@ Shade sceneSill(vec2 uv, vec2 cell, float t) {
       float warmSide = smoothstep(0.1, 0.8, dot(n, vec2(0.94, 0.34)));
       float coolSide = smoothstep(-0.1, 0.7, dot(n, vec2(-0.5, 0.866)));
       c += edgeLit * SILL_LAMP * lampCat * 1.8 * warmSide;
-      c += edgeLit * (cool * mix(0.75, 0.5, sky.day) + uAccent * neonGlow * 0.5 * max(dot(n, toSign), 0.0)) * coolSide * (part.x > 0.3 ? 0.4 : 1.0);
+      c += edgeLit * (cool * mix(0.75, 0.5, sill.sky.day) + uAccent * neonGlow * 0.5 * max(dot(n, toSign), 0.0)) * coolSide * (part.x > 0.3 ? 0.4 : 1.0);
       // Thin ears glow where the city shines through them; turned this way, their pink insides.
       float earSkin = smoothfall(0.0, -0.03, ear);
       float facing = smoothfall(-0.1, -0.5, cos(cat.yaw));
@@ -1238,25 +1347,18 @@ Shade sceneSill(vec2 uv, vec2 cell, float t) {
       accent *= 1.0 - cover;
     }
   }
+  cell.col = col;
+  cell.accent = accent;
+}
+`;
 
-  // Steam off the mug: it scatters the lamp's light (and a little of the window's and the sign's),
-  // so it shows pale against the dark city behind.
-  if (K_steam > 0.0) {
-    float steam = sillSteam(p, vec2(mugX, SILL_SEAT - 0.006 + 0.064), tm, K_steam, K_wind);
-    col += (vec3(0.74, 0.71, 0.67) * (0.3 + 1.5 * lampSill) + cool * 0.2 + uAccent * neonGlow * 0.15) * steam * 0.8;
-  }
-
+/** The curtain at the left of the window, stirring in the air coming in. */
+export const curtainGlsl = `
+void curtainFront(Ctx x, inout Cell c) {
   if (K_curtain > 0.0) {
-    vec4 curtain = sillCurtain(p, aspect, tm, K_curtain * (0.6 + 0.8 * abs(K_wind)), xw0, roomLight, cool, px);
-    col = mix(col, curtain.rgb, curtain.a);
-    accent *= 1.0 - curtain.a;
+    vec4 curtain = sillCurtain(x.p, x.aspect, x.tm, K_curtain * (0.6 + 0.8 * abs(K_wind)), sill.xw0, roomLight(x, x.p, vec3(0.0)), sill.cool, x.px);
+    c.col = mix(c.col, curtain.rgb, curtain.a);
+    c.accent *= 1.0 - curtain.a;
   }
-
-  // A soft vignette pulls the corners into the room's dark.
-  col *= 1.0 - 0.28 * smoothstep(0.45, 1.0, length((uv - 0.5) * vec2(1.2, 1.0)));
-
-  Shade o = shadeOf(col, inkOf(col, 1.15, 0.8), clamp(accent, 0.0, 1.0));
-  o.shimmer = shimmer;
-  return o;
 }
 `;

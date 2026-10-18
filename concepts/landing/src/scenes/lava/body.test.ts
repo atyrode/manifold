@@ -44,8 +44,10 @@ function flow(viscosity: number, seconds: number): Flow {
     };
     for (let t = 0; t < seconds; t += 0.1) {
       sim.step(frame);
-      const parcels = sim.upload(0).data;
-      const state = sim.upload(2).data;
+      // The lava lamp layer's fields, after the composed sim's speck map and records atlas (slots
+      // 0 and 1): its parcels at slot 2, its lamps' state at slot 4.
+      const parcels = sim.upload(2).data;
+      const state = sim.upload(4).data;
       blend = state[8] ?? Number.NaN;
       stretch = state[9] ?? Number.NaN;
       const wax: { x: number; y: number; r: number; t: number; vx: number; vy: number }[] = [];

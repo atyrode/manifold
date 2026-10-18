@@ -9,6 +9,7 @@ import { effective } from "../params.ts";
 import type { SceneCode } from "../scenes/types.ts";
 import { TURNS_GATE, WORLD_TRIGGERS, type ComposedScene } from "./compose.ts";
 import { COMPOSER_ENTRY, composedGlsl } from "./glsl.ts";
+import { roomFrame, roomGlsl, type RoomAssembly } from "./room.ts";
 import { allocate, composedSim } from "./sim.ts";
 import type { LayerCode } from "./types.ts";
 
@@ -32,6 +33,7 @@ export function composedCode(
   };
   for (const layer of scene.offered) codeOf(layer.id);
   const gust = { slot: WORLD_TRIGGERS.gusts, shape: preset.rig.passage?.gust };
+  const interior = preset.composer === "interior";
   const glslFor = (features: Readonly<Record<string, number>>): string => {
     const on = new Set<string>();
     for (const [name, value] of Object.entries(features)) {
@@ -40,16 +42,18 @@ export function composedCode(
     }
     const placement = scene.place(on);
     const layers = placement.layers.map((placed) => placed.layer);
-    return composedGlsl({
+    const assembly: RoomAssembly = {
       preset,
       layers: layers.map((def) => ({ def, code: codeOf(def.id) })),
       claims: placement.claims,
+      placed: placement.layers,
       allocation: allocate(layers),
       triggers: scene.triggers,
       gust,
       rewrite: scene.rewrite(layers),
       turns: features[TURNS_GATE] === 1,
-    });
+    };
+    return interior ? roomGlsl(assembly) : composedGlsl(assembly);
   };
   const params = scene.def.params;
   const defaults = Object.fromEntries(params.map((knob) => [knob.key, effective(knob, {})]));
@@ -68,6 +72,7 @@ export function composedCode(
       rigLift: preset.rig.passage?.lift ?? (() => 0),
       offered: scene.offered,
       drawsTurns: (features) => features[TURNS_GATE] === 1 && !own(features),
+      ...(interior ? { room: roomFrame(preset) } : {}),
     }),
   };
 }
