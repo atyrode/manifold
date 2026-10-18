@@ -120,7 +120,8 @@ export interface FeatureSet {
  * says so (KHR_parallel_shader_compile) or, without that extension, once `fence`, set after the
  * link, has signalled and a link of its length has had time to finish (see `#linkedByNow`); until
  * then nothing may ask about it, which would wait for the driver. `started`: performance.now() at
- * the link.
+ * the link. `warm`: built ahead of the changes it serves (`buildAside`), so it draws one frame as
+ * soon as it is built (`#warm`).
  */
 interface Building {
   id: SceneId;
@@ -130,6 +131,7 @@ interface Building {
   source: string;
   fence: WebGLSync | null;
   started: number;
+  warm: boolean;
 }
 
 /** A kept build (see `#programs`): a scene's program for a feature set, or why it failed. */
@@ -202,14 +204,14 @@ export class ScenePrograms {
   /** The program building in the background for what is wanted now (a change, the next scene), if any. */
   #building: Building | undefined;
   /**
-   * A program building beside `#building` that nothing waits for: a scene's all-features program
-   * built ahead of any change (`buildAside`), or one for a scene passed over (`#programFor`). The
-   * next scene's program never waits for it, nor a change it does not serve.
+   * A program building beside `#building` that nothing waits for: one built ahead of any change
+   * (`buildAside`), or one for a scene passed over (`#programFor`). The next scene's program never
+   * waits for it, nor a change it does not serve.
    */
   #ahead: Building | undefined;
   /**
-   * A scene's all-features program just built in the background that the scene does not draw with
-   * yet: the next frame of that scene draws with it once (see `takeWarm`).
+   * A program just built ahead (`buildAside`) that its scene does not draw with yet: the next
+   * frame of that scene may draw with it once (see `takeWarm`).
    */
   #warm: { id: SceneId; program: SceneProgram } | undefined;
   /**
@@ -225,8 +227,6 @@ export class ScenePrograms {
   readonly #loading = new Set<SceneId>();
   /** Scenes whose code could not be loaded, and the failure that stops them, until `retry`. */
   readonly #unloaded = new Map<SceneId, SceneFailure>();
-  /** The keys (`keptName`) of the all-features sets worked out so far: a composed scene has one per layer set. */
-  readonly #allKeys = new Set<string>();
 
   /**
    * `gpu`: what the context holds to build programs with, as it is now. `drawing`: whether the
@@ -294,7 +294,6 @@ export class ScenePrograms {
         const features = sceneFeatures(def, values, s.planets, s.agents > 0);
         const all = sceneFeaturesAll(def, values);
         const allKey = all === undefined ? undefined : featureKey(all);
-        if (allKey !== undefined) this.#allKeys.add(keptName(s.scene, allKey));
         wanted = {
           features,
           key: featureKey(features),
@@ -352,7 +351,16 @@ export class ScenePrograms {
     gl.linkProgram(program);
     const fence = gpu.parallel === null ? gl.fenceSync(gl.SYNC_GPU_COMMANDS_COMPLETE, 0) : null;
     gl.flush();
-    return { id, key: set.key, program, fragment, source, fence, started: performance.now() };
+    return {
+      id,
+      key: set.key,
+      program,
+      fragment,
+      source,
+      fence,
+      started: performance.now(),
+      warm: false,
+    };
   }
 
   /**
@@ -510,8 +518,8 @@ export class ScenePrograms {
 
   /**
    * Keep a background build if the driver has finished it, asked without waiting (the completion
-   * status, else `#linkedByNow`), and say whether it had. A scene's all-features program then draws
-   * one frame of it at once (`#warm`).
+   * status, else `#linkedByNow`), and say whether it had. One built ahead then draws one frame at
+   * once (`#warm`).
    */
   #settled(building: Building): boolean {
     const parallel = this.#gpu().parallel;
@@ -523,8 +531,7 @@ export class ScenePrograms {
     const asked = performance.now();
     const built = this.#finish(building);
     if (parallel === null) this.#learnLink(building, asked);
-    if ("program" in built && this.#allKeys.has(keptName(building.id, building.key)))
-      this.#warm = { id: building.id, program: built };
+    if ("program" in built && building.warm) this.#warm = { id: building.id, program: built };
     return true;
   }
 
@@ -563,8 +570,9 @@ export class ScenePrograms {
   }
 
   /**
-   * The all-features program just built in the background that its scene does not draw with yet,
-   * handed over once: the next frame of that scene draws with it in its own program's place.
+   * The program just built ahead (`buildAside`) that its scene does not draw with yet, handed over
+   * once: the next frame of that scene may draw with it in its own program's place, where it draws
+   * the same picture (the renderer's to judge).
    */
   takeWarm(): { id: SceneId; program: SceneProgram } | undefined {
     const warm = this.#warm;
@@ -618,21 +626,23 @@ export class ScenePrograms {
   }
 
   /**
-   * Start building `id`'s all-features program `all` beside any build under way (`#ahead`), for
-   * changes to come: unless a build is aside already, `all` builds already, it is kept, or the
-   * scene's code has not loaded.
+   * Start building `id`'s program for `set` beside any build under way (`#ahead`), for changes to
+   * come (its all-features program; a composed scene's program a layer switched off leaves
+   * through): unless a build is aside already, `set` builds already, it is kept, or the scene's
+   * code has not loaded. Once built it draws one frame at once (`#warm`), so a driver that compiles
+   * a program at its first draw does it then rather than when a change needs it.
    */
-  buildAside(id: SceneId, all: FeatureSet): void {
+  buildAside(id: SceneId, set: FeatureSet): void {
     if (
       this.#ahead !== undefined ||
-      (this.#building?.id === id && this.#building.key === all.key) ||
-      this.#programs.has(keptName(id, all.key))
+      (this.#building?.id === id && this.#building.key === set.key) ||
+      this.#programs.has(keptName(id, set.key))
     )
       return;
     const scene = this.#code(id);
     if (scene === undefined || "stage" in scene) return;
-    const started = this.#build(id, scene, all);
-    if (!("stage" in started)) this.#ahead = started;
+    const started = this.#build(id, scene, set);
+    if (!("stage" in started)) this.#ahead = { ...started, warm: true };
   }
 
   /**

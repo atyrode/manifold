@@ -843,7 +843,9 @@ the renderer asks KHR_parallel_shader_compile's completion status or, without th
 fence set after the link, and then asks about the link no sooner than links have taken so far for
 a source of its length, one a frame (the fence only says the GPU has run what came before it;
 ANGLE links on threads of its own past that, so asking at once could wait out the whole link).
-Once built it draws one frame, so a driver that compiles at the first draw does it then. While the
+Once built it draws one frame in place of the program on screen, so a driver that compiles at the
+first draw does it then: only where it is the all-features program of the setting drawn and no
+composed scene's layer turn is under way, so that the frame is the same picture. While the
 lab is open (`DitherRenderer.expectChanges`) it is built ahead once the scene has arrived, beside
 whatever else builds: the next scene's program never waits for it, and a build for a scene passed
 over finishes aside the same way; otherwise the first such change starts it, and the program on
@@ -2560,10 +2562,20 @@ order. Because each layer keeps its own internal order, a preset with only its h
 as its scene did.
 
 A layer turned on or off mid-scene plays its own entrance or exit (`LAYER_ENTER` 1.2 s,
-`LAYER_EXIT` 0.9 s, `src/composer/sim.ts`): row 0 of the records atlas holds each on layer's turn,
-and every one of its passes is shown in a growing or shrinking share of cells, cut per cell
-(`layerShown`). Each pass has one call site: a software rasteriser runs every line of a program,
-so a second call site would run the pass twice.
+`LAYER_EXIT` 0.9 s, `src/composer/sim.ts`) in a program that draws turns: row 0 of the records
+atlas holds each on layer's turn, and every one of its passes is shown in a growing or shrinking
+share of cells, cut per cell (`layerShows`). Each pass has one call site and is never under a
+branch: a software rasteriser runs every line of a program, so a second call site would run the
+pass twice, and a pass under a branch costs it more than the pass does (dew's backdrop: a tenth of
+the program); a cell that does not show the layer drops the pass's result instead.
+
+Programs come in two kinds (`COMPOSER_TURNS`). A steady one (0: every setting's own program)
+carries no cut and no plain floor under a ground layer, and draws whenever no turn plays; one that
+draws turns (1, as every all-features program) draws them, and at rest the same picture. Every
+program samples row 0 right after the begins and uses what it read until the grade: one that draws
+turns for its cut, a steady one its first texel, spent on a test no texel passes. Under SwiftShader
+that sample keeps the passes' code cheaper: without it skyward's steady program costs 18% more,
+bees' 16%.
 
 ### Light, scale and weather
 
@@ -2668,10 +2680,20 @@ the thumbnail only where the defaults differ.
 
 ### Programs and cost
 
-**A layer turn is structural.** A layer switch is a `LAYER_<ID>` gate in the feature key, so it
-builds the new layer set's own program in the background, on every renderer, while the old picture
-keeps drawing; the layer enters once the program is on screen. A layer switched off plays its exit
-in the program it is in.
+**A layer turn is structural.** A layer switch is a `LAYER_<ID>` gate in the feature key, so the new
+layer set draws with another program, built in the background while the old picture keeps drawing:
+on a GPU the set's all-features program, as for any knob turn ("Knob-keyed features"), on a
+software rasteriser the setting's own. A layer switched on enters in a program of the new set that
+draws turns: on a GPU that all-features program; on a software rasteriser the setting's own drawing
+turns, after which its steady program is built and takes over. A layer switched off plays its exit
+in a program of the set on screen that draws turns, which goes on drawing the new setting until the
+exit has played; only then is the new set's program asked for. While the lab is open that program
+is built ahead once the scene rests, so a switch-off starts its exit on the next frame: on a GPU it
+is the set's all-features program, built ahead anyway; on a software rasteriser it is the steady
+program's set drawing turns, built once nothing else builds, one for each steady program. The page
+itself, where no layer turns, builds nothing ahead. A view of a scene's own (the dunes' and the
+garden's from above: `composedCode`'s `own`) draws no turns, so a layer turned there swaps the
+program once the new set's is built.
 
 **A knob turn inside a set** follows "Knob-keyed features" with the set's all-features program.
 
@@ -2720,12 +2742,16 @@ through (a preset's list up to 512 knobs, one program's up to 128), and trigger 
 
 - **Static (glslang):** every preset's programs, each choice of a structural knob, the committed
   mixes (`scripts/glsl-check.ts`).
-- **Unit:** `src/composer/*.test.ts` (the placer, the claims, the allocation, the budgets).
+- **Unit:** `src/composer/*.test.ts` (the placer, the claims, the allocation, the budgets, the
+  two kinds of program).
+- **Browser:** `layerToggles` (`src/composer/turns.verify.ts`), software, the fireflies' creek: the
+  program a switch-off leaves through is built ahead at rest and takes over on the next frame,
+  playing the exit; the setting's steady program takes over after it; turned on again, the creek
+  enters in that same kept program and the kept steady program draws its last frame exactly.
 - **Browser, not built yet:**
   - `composerDepth`: with alpha rounded, reversed opaque order draws the same cells;
   - `composerClaims`: no cover in an exclusive or clearing core;
-  - `composerWeather`: wetness and lying snow change every on layer;
-  - `layerToggles`: a layer turn never waits for a build.
+  - `composerWeather`: wetness and lying snow change every on layer.
 
 ### Sims in a composition
 
@@ -2994,9 +3020,10 @@ frames, a little real time apart, until it is no longer `waiting` for a scene's 
 `src/features.verify.ts` covers knob-keyed features through the renderer, taking its context for a
 GPU's or a software rasteriser's whatever renders the check. No change waits on a build (no status,
 log, uniform location or use of a program before its completion or fence was seen).
-`sceneFeatures`, software: nothing is built ahead; a gated knob builds its own program in the
-background and switches to it once built, the old frame holding until then; several gated knobs at
-once build once; past four sets the least recently drawn program is freed. `featureToggles`, GPU,
+`sceneFeatures`, software: a gated knob builds its own program in the background and switches to
+it once built, the old frame holding until then; several gated knobs at once build once; past four
+sets the least recently drawn program is freed; nothing is built ahead with the lab closed, and with
+it open only the program a layer switched off would play its exit in, once. `featureToggles`, GPU,
 for every scene with `featuresFor` (country, meadow, shore, dunes, bees, orbit, lake, pendula): the
 plain page builds only its own program; after the first gated change, which builds the
 all-features program in the background, no change builds a program; with changes expected that

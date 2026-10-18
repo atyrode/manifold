@@ -1,5 +1,6 @@
 import { expect, spyOn, test } from "bun:test";
 import { ATLAS_WIDTH } from "../../composer/caps.ts";
+import { TURNS_GATE } from "../../composer/compose.ts";
 import { featureKey, sceneFeatures } from "../../shaders/index.ts";
 import { Boids, type BoidRules } from "../../sims/boids.ts";
 import { HeadlessSim } from "../../sims/headless.ts";
@@ -57,9 +58,10 @@ function heightOf(sim: HeadlessSim): { height: number; birds: number } {
 }
 
 test("switched off, the murmuration plays its own exit with its birds: they pour down to roost", () => {
-  // The renderer keeps drawing the program the flock is in through the layer's exit
-  // (SimFrame.features), so the composed sim plays it on the layer's own clock.
-  const drawn = featureKey(sceneFeatures(flockScene));
+  // A layer switched off plays its exit in the program the renderer builds ahead for it, the layer
+  // set on screen drawing turns (ComposedSim.leavesThrough): that program stays on screen through
+  // the exit (SimFrame.features), so the composed sim plays it on the layer's own clock.
+  const drawn = featureKey({ ...sceneFeatures(flockScene), [TURNS_GATE]: 1 });
   const factory = flockScene.sim;
   if (factory === undefined) throw new Error("the murmuration has a sim");
   const scene: LoadedScene = {

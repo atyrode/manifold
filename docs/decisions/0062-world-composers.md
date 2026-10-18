@@ -245,10 +245,21 @@ one trace keeps it as one shared chunk, whose parts its layers' passes put down:
 terrain (`COUNTRY`), the street's lit trace (`streetBegin`).
 
 A layer turned on or off mid-scene plays its own entrance or exit (D12, `LAYER_ENTER` 1.2 s,
-`LAYER_EXIT` 0.9 s): row 0 of the records atlas holds each on layer's turn, and every one of its
-passes is shown in a growing or shrinking share of cells, cut per cell (`layerShown`). At rest every
-pass runs as written. Each pass has one call site, because a software rasteriser runs every line: a
-second call site ran shore's passes twice (1.8× its scene before the port, 1.16× after).
+`LAYER_EXIT` 0.9 s) in a program that draws turns: row 0 of the records atlas holds each on layer's
+turn, and every one of its passes is shown in a growing or shrinking share of cells, cut per cell
+(`layerShows`). Each pass has one call site, because a software rasteriser runs every line: a
+second call site ran shore's passes twice (1.8× its scene before the port, 1.16× after). No pass
+sits under a branch either, which costs more than the pass (dew's backdrop: a tenth of its
+program): a cell that does not show the layer drops the pass's result.
+
+Programs come in two kinds (`COMPOSER_TURNS`). A steady one (every setting's own program) carries
+no cut and no plain floor under a ground layer; one that draws turns, as every all-features program
+does, is drawn while a turn plays or is on its way (`SceneSim.turning`), and on a GPU wherever the
+all-features program stands in for a setting's own. Every program samples row 0 right after the
+begins and uses the value until the grade: under SwiftShader that keeps the passes' code cheaper
+(skyward's steady program costs 18% more without it, bees' 16%), so a steady one reads the first
+texel and spends it on a test no texel passes. At their defaults the presets' steady programs cost
+1–11% fewer SwiftShader instructions than the programs before the split, which all drew turns.
 
 ### Light, air and weather
 
@@ -446,9 +457,15 @@ vectors than today's 64, which the largest program (180) has room for.
 ### Programs: how many and when
 
 - **A layer turn is structural.** A layer switch is a `LAYER_<ID>` gate in the feature key, so
-  turning it builds the new set's own program in the background on every renderer while the old
-  picture keeps drawing; the layer enters once the program is on screen. A layer switched off
-  plays its exit in the program it is in, which the renderer keeps drawing until then.
+  turning it builds another program in the background while the old picture keeps drawing: the
+  new set's all-features program on a GPU, its own on a software rasteriser. A layer switched on
+  enters in a program of the new set that draws turns (on a software rasteriser the setting's own
+  drawing turns, then its steady program). A layer switched off plays its exit in a program of the
+  set on screen that draws turns, which goes on drawing the new setting until then. While the lab
+  is open that program is built ahead at rest, so the exit starts on the next frame: the set's
+  all-features program on a GPU, the steady program's set drawing turns on a software rasteriser
+  (one build per steady program); the page itself builds nothing ahead. A scene's own view (the
+  dunes' and the garden's from above) draws no turns, so a layer turned there swaps programs.
 - **A knob turn inside a layer set** draws with that set's all-features program on a GPU, built once
   in the background, and a software rasteriser builds the setting's own program, as for any scene.
   A turn that flips a settled gate (the moon, the day cycle, a planet's kind or dress) is such a

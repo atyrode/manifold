@@ -8,14 +8,15 @@
 // sceneFeatures: the default countryside compiles in none of the parts whose knobs are off (flower
 // fields, herds, walkers and carts, the World's birds, rain and snow, fog) and the all-features
 // program of all its layers every one (src/shaders/index.test.ts checks that each scene's covers
-// every knob's turn). On a software rasteriser nothing is built ahead; a gated knob builds the
-// setting's own program in the background (the old frame holding meanwhile, nothing waiting on the
-// build) and switches to it; turning it back finds the old program kept; several gated knobs at
-// once build once; past four sets the least recently drawn program is freed. The countryside's sim
-// builds its land over a few frames first (its terrain), and dew's its web (on the build worker,
-// which fails to load on this page, so on the page from the first wait on, a frame's budget at a
-// time); every page here is run until it shows (`landed`), so a frame that changes is a program's
-// doing, not the build's.
+// every knob's turn). On a software rasteriser a gated knob builds the setting's own program in the
+// background (the old frame holding meanwhile, nothing waiting on the build) and switches to it;
+// turning it back finds the old program kept; several gated knobs at once build once; past four
+// sets the least recently drawn program is freed. Nothing is built ahead with the lab closed; with
+// it open, only the program a layer switched off would play its exit in (the layer set on screen
+// drawing turns), once. The countryside's sim builds its land over a few frames first (its
+// terrain), and dew's its web (on the build worker, which fails to load on this page, so on the
+// page from the first wait on, a frame's budget at a time); every page here is run until it shows
+// (`landed`), so a frame that changes is a program's doing, not the build's.
 //
 // featureToggles, on a GPU, for every scene with `featuresFor` (KNOB_KEYED; their library gates,
 // the night sky's constellations and giant planet, among their gated turns; the scenes keyed by
@@ -49,6 +50,8 @@ const WIDTH = 160;
 const HEIGHT = 100;
 /** Real seconds a background build may take under software WebGL on a busy machine. */
 const BUILD_SECONDS = 60;
+/** Frames, a little real time apart, that show nothing more is built while a scene rests. */
+const IDLE_FRAMES = 20;
 const COMPLETION_STATUS_KHR = 0x91b1;
 
 /**
@@ -85,14 +88,18 @@ function frameClock(): {
 
 /**
  * The renderer's own context, on a canvas of its own, with its program builds watched: how many it
- * linked and freed, and (once `armed`) every call that waits for a build the renderer has not yet
- * seen finish, by KHR_parallel_shader_compile's COMPLETION_STATUS_KHR or a fence after the link:
- * its compile or link status or log, a uniform location, or using it.
+ * linked (and which, in order, with each one's fragment source) and freed, those it has seen finish
+ * (it asks their link status then), and (once `armed`) every call that waits for a build the
+ * renderer has not yet seen finish, by KHR_parallel_shader_compile's COMPLETION_STATUS_KHR or a
+ * fence after the link: its compile or link status or log, a uniform location, or using it.
  */
 interface Watched {
   canvas: HTMLCanvasElement;
   gl: WebGL2RenderingContext;
   links: number;
+  linked: WebGLProgram[];
+  fragments: Map<WebGLProgram, string>;
+  finished: Set<WebGLProgram>;
   frees: number;
   armed: boolean;
   waits: string[];
@@ -135,6 +142,9 @@ function watched(gpu: "hardware" | "software"): Watched {
     canvas,
     gl,
     links: 0,
+    linked: [],
+    fragments: new Map(),
+    finished: new Set(),
     frees: 0,
     armed: false,
     waits: [],
@@ -161,6 +171,7 @@ function watched(gpu: "hardware" | "software"): Watched {
   const link = gl.linkProgram.bind(gl);
   gl.linkProgram = (program) => {
     state.links++;
+    state.linked.push(program);
     building.add(program);
     link(program);
   };
@@ -172,9 +183,18 @@ function watched(gpu: "hardware" | "software"): Watched {
     }
     free(program);
   };
+  const sources = new WeakMap<WebGLShader, string>();
+  const shaderSource = gl.shaderSource.bind(gl);
+  gl.shaderSource = (shader, source) => {
+    sources.set(shader, source);
+    shaderSource(shader, source);
+  };
   const attach = gl.attachShader.bind(gl);
   gl.attachShader = (program, shader) => {
     owner.set(shader, program);
+    const source = sources.get(shader);
+    if (source?.includes("void main") === true && source.includes("outColor"))
+      state.fragments.set(program, source);
     attach(program, shader);
   };
   const fence = gl.fenceSync.bind(gl);
@@ -196,6 +216,7 @@ function watched(gpu: "hardware" | "software"): Watched {
     if (name === COMPLETION_STATUS_KHR) {
       if (value === true) building.delete(program);
     } else wait(`getProgramParameter(0x${name.toString(16)})`, program);
+    if (name === gl.LINK_STATUS) state.finished.add(program);
     return value;
   };
   const shaderParameter = gl.getShaderParameter.bind(gl);
@@ -454,12 +475,60 @@ async function countryPrograms(
       "The default program was freed though it was drawn more recently than the pasture's",
     );
 
-    // Changes expected (the lab open): nothing is built ahead.
-    renderer.expectChanges(true);
-    for (let i = 0; i < 3; i++) frame();
+    const rest = context.image();
+
+    // The lab closed (the page itself, where no layer turns): nothing is built ahead.
+    for (let i = 0; i < IDLE_FRAMES; i++) {
+      await pause(50);
+      frame();
+    }
     check(
       context.links === 5 && context.drawing() === plain,
-      `A software rasteriser built ${context.links - 5} programs ahead of any change`,
+      `With the lab closed a software rasteriser built ${context.links - 5} programs ahead`,
+    );
+    // Changes expected (the lab open): the one program built ahead is the one a layer switched off
+    // would play its exit in (SceneSim.leavesThrough): the default layer set's passes, drawing
+    // turns. It builds in the background, the frame holding meanwhile, draws one frame (the same
+    // picture) once built, and nothing is built after it.
+    renderer.expectChanges(true);
+    let warmFrames = 0;
+    await until(
+      () => {
+        frame();
+        check(
+          changed(context.image(), rest).count === 0,
+          "The frame changed while a program was built ahead",
+        );
+        const ahead = context.linked[5];
+        if (ahead !== undefined && context.drawing() === ahead) warmFrames++;
+        else check(context.drawing() === plain, "Another program drew while one was built ahead");
+        return warmFrames > 0 && context.drawing() === plain;
+      },
+      BUILD_SECONDS,
+      "No program built ahead with the lab open",
+      50,
+    );
+    for (let i = 0; i < IDLE_FRAMES; i++) {
+      await pause(50);
+      frame();
+    }
+    /** The layers' passes a composed program's entry calls, and whether it cuts them per cell. */
+    const entry = (program: WebGLProgram | null | undefined) => {
+      const source = (program == null ? undefined : context.fragments.get(program)) ?? "";
+      const body = source.slice(source.indexOf("composerEntry("));
+      const calls = (body.match(/\w+(?=\(x, c\b)/g) ?? []).filter((n) => n !== "composerFloor");
+      return { passes: [...new Set(calls)].sort().join(" "), turns: body.includes("bool shows[") };
+    };
+    const ahead = entry(context.linked[5]);
+    const steady = entry(plain);
+    check(
+      context.links === 6 &&
+        warmFrames === 1 &&
+        context.drawing() === plain &&
+        ahead.turns &&
+        !steady.turns &&
+        ahead.passes === steady.passes,
+      `With the lab open a software rasteriser built ${context.links - 5} programs ahead, drawn ${warmFrames} frames, the last ${JSON.stringify(ahead)} against the default program's ${JSON.stringify(steady)}`,
     );
     check(
       context.waits.length === 0,

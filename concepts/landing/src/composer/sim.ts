@@ -4,24 +4,32 @@
 //           layer plots its own codes from its base (`Allocation.specks`), every speck it shows.
 //   slot 1  the records atlas: rgba16f, nearest, ATLAS_WIDTH wide. Row 0 is the composer's: texel k
 //           the k-th layer on screen's own entrance and exit (x, y; -1: it follows the scene's
-//           passage), read by `layerIn`, `layerOut` and `layerShown` (glsl.ts). Then each layer's
-//           rows, in canonical order.
+//           passage), read by `layerIn`, `layerOut` and `layerShown` (glsl.ts; a steady program
+//           reads texel 0 alone). Then each layer's rows, in canonical order.
 //   2–7     each layer's fields, in canonical order, a slot each.
 // Allocation is a pure function of the layer set on screen (`allocate`): the program the frame draws
 // with (SimFrame.features, its feature key: its LAYER_<ID> gates). A layer switched on but not yet on
-// screen runs ahead at dt 0, its rows kept aside, and is copied in the frame its program arrives. A
-// layer switched off while on screen plays its exit (LAYER_EXIT seconds of wall time): the renderer
-// keeps drawing the program it is in until then (`holds`). Every layer sim keeps its own rows, so a
-// change of allocation copies them where they now belong. The cast's points of interest are every
-// on-screen layer's (`interest`, canonical order), and a layer reaches another's affordances (a
-// chore its host's, README "Principals and chores") through `LayerFrame.host`.
+// screen runs ahead at dt 0, its rows kept aside, and is copied in the frame its program arrives.
+// A layer's own entrance and exit play only in a program that draws turns (compose.ts TURNS_GATE;
+// the steady ones carry none of that, and a view of the scene's own draws none: `drawsTurns`), which
+// the sim asks the renderer for while one plays or is on its way (`turning`). A layer switched on
+// enters (LAYER_ENTER seconds of wall time) once such a program of the setting's layer set is on
+// screen, and the setting's steady program is asked for once it has; one switched off plays its exit
+// (LAYER_EXIT seconds) in such a program of the layer set on screen, which the renderer builds ahead
+// while the lab is open (`leavesThrough`), and the setting's program is asked for once it has played.
+// Where no such program can draw the turn, the setting's own program takes over unturned. Every layer
+// sim keeps its own rows, so a change of allocation copies them where they now belong. The cast's
+// points of interest are every on-screen layer's (`interest`, canonical order), and a layer reaches
+// another's affordances (a chore its host's, README "Principals and chores") through
+// `LayerFrame.host`.
 import { KnobReader, type ParamDef } from "../params.ts";
-import type { ScenePoint, SceneSim, SimFrame } from "../scenes/types.ts";
+import type { ScenePoint, SceneSim, SceneTurn, SimFrame } from "../scenes/types.ts";
 import { LevelCamera } from "../sims/camera.ts";
 import { SpeckMap } from "../sims/specks.ts";
 import { DataTexture } from "../sims/texture.ts";
 import { ATLAS_WIDTH, COMPOSER_CAPS } from "./caps.ts";
 import { coverAt, moveShape } from "./claims.ts";
+import { TURNS_GATE } from "./compose.ts";
 import { NO_PASSAGE_GUST, passageGust, type GustField, type PassageGust } from "./gust.ts";
 import type { Placement } from "./place.ts";
 import type {
@@ -114,6 +122,16 @@ export function layersOfKey(key: string, gates: Readonly<Record<string, string>>
   return on;
 }
 
+/** The compile-time features a feature key (shaders/index.ts featureKey) was made from. */
+function featuresOfKey(key: string): Record<string, number> {
+  const features: Record<string, number> = {};
+  for (const define of key.split(" ")) {
+    const [name, value] = define.split("=");
+    if (name !== undefined && value !== undefined) features[name] = Number(value);
+  }
+  return features;
+}
+
 /** What compose.ts gives the composed sim. */
 export interface Composition {
   readonly params: readonly ParamDef[];
@@ -134,6 +152,11 @@ export interface Composition {
   readonly gust: { readonly slot: number; readonly shape: GustField["shape"] };
   readonly rigLift: (enter: number, exit: number) => number;
   readonly offered: readonly LayerDef[];
+  /**
+   * Whether a program of these features draws its layers' own entrances and exits: TURNS_GATE at 1
+   * in a composed program, never in a view of the scene's own (code.ts composedCode's `own`).
+   */
+  readonly drawsTurns: (features: Readonly<Record<string, number>>) => boolean;
 }
 
 type Mutable<T> = { -readonly [K in keyof T]: T[K] };
@@ -199,9 +222,26 @@ interface Live {
   readonly ground: Ground;
   readonly frame: Mutable<LayerFrame>;
   readonly passage: { enter: number; exit: number };
-  /** Wall time (ms) it came on screen mid-scene, and it started leaving; NaN: neither. */
+  /**
+   * Wall time (ms) its own entrance began, and its exit; NaN: neither plays (one switched off waits
+   * so for a program that draws turns).
+   */
   arrived: number;
   leaving: number;
+}
+
+/** What `turning` works out from the program on screen and the setting's features (see there). */
+interface TurnPlan {
+  readonly drawn: string;
+  readonly wanted: Readonly<Record<string, number>>;
+  /** The layers on screen that the setting switches off. */
+  readonly leaving: readonly string[];
+  /** Whether the setting switches on a layer not on screen. */
+  readonly coming: boolean;
+  /** The program on screen's layer set, drawing turns: what a layer switched off leaves through. */
+  readonly screen: SceneTurn | undefined;
+  /** The setting's, drawing turns: what a layer switched on enters in. */
+  readonly setting: SceneTurn | undefined;
 }
 
 class ComposedSim implements SceneSim {
@@ -228,6 +268,12 @@ class ComposedSim implements SceneSim {
   #stretch = Number.NaN;
   #claimsOf: Placement | undefined;
   #first = true;
+  /** Whether the program on screen draws turns (Composition.drawsTurns): a turn begins only in one. */
+  #turns = true;
+  /** What `turning` last worked out, kept until the program on screen or the setting changes. */
+  #turnPlan: TurnPlan | undefined;
+  /** What `#throughOf` last worked out, and the program on screen it was for. */
+  #through: { drawn: string; turn: SceneTurn | undefined } | undefined;
   /** The on-screen layers' points of interest, gathered afresh at each ask. */
   readonly #interest: ScenePoint[] = [];
   /** LayerFrame.host: another live layer's affordances. */
@@ -299,10 +345,63 @@ class ComposedSim implements SceneSim {
     return points;
   }
 
-  holds(): boolean {
-    for (const live of this.#live.values())
-      if (!Number.isNaN(live.leaving) && live.passage.exit < 1) return true;
-    return false;
+  /**
+   * The program a layer turn plays in (SceneSim.turning): while a layer the setting switches off
+   * has not played its exit yet, the layer set on screen, drawing turns; while one it switches on is
+   * not on screen yet or plays its entrance, the setting's, drawing turns; else none, as where that
+   * program would draw no turns (Composition.drawsTurns): the setting's own program then simply
+   * takes over once built.
+   */
+  turning(drawn: string, wanted: Readonly<Record<string, number>>): SceneTurn | undefined {
+    let plan = this.#turnPlan;
+    if (plan?.drawn !== drawn || plan.wanted !== wanted) {
+      const gates = this.#c.gates;
+      const screen = layersOfKey(drawn, gates);
+      const asked = new Set<string>();
+      for (const [gate, id] of Object.entries(gates)) if (wanted[gate] === 1) asked.add(id);
+      const setting = { ...wanted, [TURNS_GATE]: 1 };
+      plan = {
+        drawn,
+        wanted,
+        leaving: [...screen].filter((id) => !asked.has(id)),
+        coming: [...asked].some((id) => !screen.has(id)),
+        screen: this.#throughOf(drawn),
+        setting: this.#c.drawsTurns(setting) ? { features: setting, setting: true } : undefined,
+      };
+      this.#turnPlan = plan;
+    }
+    if (plan.screen !== undefined)
+      for (const id of plan.leaving) {
+        const live = this.#live.get(id);
+        if (live !== undefined && (Number.isNaN(live.leaving) || live.passage.exit < 1))
+          return plan.screen;
+      }
+    if (plan.setting === undefined) return undefined;
+    if (plan.coming) return plan.setting;
+    for (const live of this.#live.values()) if (!Number.isNaN(live.arrived)) return plan.setting;
+    return undefined;
+  }
+
+  /** The features of the program a layer switched off from `drawn` leaves through (see there). */
+  leavesThrough(drawn: string): Readonly<Record<string, number>> | undefined {
+    return this.#throughOf(drawn)?.features;
+  }
+
+  /**
+   * The program a layer switched off from the program on screen (`drawn`) plays its exit in: that
+   * program's layer set, drawing turns (itself, if it draws them); none if it would draw no turns.
+   */
+  #throughOf(drawn: string): SceneTurn | undefined {
+    let through = this.#through;
+    if (through?.drawn !== drawn) {
+      const features = { ...featuresOfKey(drawn), [TURNS_GATE]: 1 };
+      through = {
+        drawn,
+        turn: this.#c.drawsTurns(features) ? { features, setting: false } : undefined,
+      };
+      this.#through = through;
+    }
+    return through.turn;
   }
 
   dispose(): void {
@@ -325,7 +424,8 @@ class ComposedSim implements SceneSim {
 
   /**
    * The layer set on screen (the program's LAYER_ gates; without a program named, the setting's),
-   * its allocation, each layer's sim started or stopped, and their own entrances and exits.
+   * its allocation, each layer's sim started or stopped, and their own entrances and exits: begun
+   * only in a program that draws turns (without a program named, always).
    */
   #follow(frame: SimFrame, placement: Placement): void {
     const from = frame.features ?? `placement ${this.#placementKey}`;
@@ -335,12 +435,14 @@ class ComposedSim implements SceneSim {
         frame.features === undefined
           ? new Set(placement.layers.map((placed) => placed.layer.id))
           : layersOfKey(frame.features, this.#c.gates);
+      this.#turns =
+        frame.features === undefined || this.#c.drawsTurns(featuresOfKey(frame.features));
       const was = new Set(this.#screen.map((layer) => layer.id));
       this.#screen = this.#c.offered.filter((layer) => on.has(layer.id));
       this.#allocation = allocate(this.#screen);
       for (const live of this.#live.values()) {
         live.records.dirty = true;
-        if (on.has(live.layer.id) && !was.has(live.layer.id) && !this.#first)
+        if (on.has(live.layer.id) && !was.has(live.layer.id) && !this.#first && this.#turns)
           live.arrived = frame.now;
       }
     }
@@ -359,7 +461,7 @@ class ComposedSim implements SceneSim {
     for (const live of this.#live.values()) {
       const leaving = shown.has(live.layer.id) && !switched.has(live.layer.id);
       if (!leaving) live.leaving = Number.NaN;
-      else if (Number.isNaN(live.leaving)) live.leaving = frame.now;
+      else if (Number.isNaN(live.leaving) && this.#turns) live.leaving = frame.now;
     }
   }
 
@@ -393,7 +495,7 @@ class ComposedSim implements SceneSim {
       ground,
       frame: lf,
       passage,
-      arrived: !this.#first && shown ? frame.now : Number.NaN,
+      arrived: !this.#first && shown && this.#turns ? frame.now : Number.NaN,
       leaving: Number.NaN,
     };
   }

@@ -36,6 +36,7 @@ export const recordedSeconds: Readonly<Record<string, number>> = {
   labInspector: 3,
   lakeFreshSnow: 0.5,
   lakeRipples: 2.7,
+  layerToggles: 5.8,
   meadowWildflowers: 3,
   milkyWay: 4.3,
   mobile: 6.2,

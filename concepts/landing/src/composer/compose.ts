@@ -17,9 +17,10 @@
 //                     beside the World's snow), LAYER_<ID> for every offered layer (1 where
 //                     placed), each placed layer's own gates (a gate another placed layer
 //                     suppresses at 0), and every gate of an offered layer that is off at 0, so a
-//                     chunk shared by several layers may test any of them with `#if`.
-//   featuresAllFor    the same with every gate of the placed layers on: a layer set's all-features
-//                     program.
+//                     chunk shared by several layers may test any of them with `#if`; TURNS_GATE at
+//                     0: a steady program, which plays no layer's own entrance or exit.
+//   featuresAllFor    the same with every gate of the placed layers on, and TURNS_GATE: a layer
+//                     set's all-features program, which draws its layers' turns as well.
 //   structural        the layer switches: turning one builds another program.
 //   layers            what the lab's Layers section reads (SceneLayers).
 import { hasClimate } from "../climate.ts";
@@ -86,6 +87,13 @@ export const WORLD_TRIGGERS = { meteors: 0, lightning: 1, gusts: 2 } as const;
 export function layerGate(id: string): string {
   return `LAYER_${id.replace(/[A-Z]/g, (c) => `_${c}`).toUpperCase()}`;
 }
+
+/**
+ * The gate of a program that plays its layers' own entrances and exits (composer/glsl.ts): 1 in the
+ * program a layer turned on or off mid-scene plays its turn in (the composed sim asks the renderer
+ * for it: SceneSim.turning) and in every all-features program, 0 in a steady one.
+ */
+export const TURNS_GATE = "COMPOSER_TURNS";
 
 /** The group every layer's Manifold M knob stands in: one section, whose M the composer keeps to one. */
 export const MARK_GROUP = "manifold";
@@ -351,10 +359,12 @@ export function composeScene(composer: Composer, preset: ScenePreset): ComposedS
     featuresFor: (values) => ({
       ...worldFeatures(values, climate),
       ...gatesOf(values, (layer, v) => layer.featuresFor?.(v) ?? {}),
+      [TURNS_GATE]: 0,
     }),
     featuresAllFor: (values) => ({
       ...WORLD_ALL,
       ...gatesOf(values, (layer) => layer.featuresAll ?? {}),
+      [TURNS_GATE]: 1,
     }),
     structural: offered.map((layer) => layer.id),
     layers,

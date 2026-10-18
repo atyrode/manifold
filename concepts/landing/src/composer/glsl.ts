@@ -9,7 +9,8 @@
 //      layer's `begin` (the backdrop's sets the air and where the floor ends).
 //   2. The backdrop's `sky`; c.z starts at WORLD_FAR.
 //   3. The far band: every layer's `far`, then every `farVeil`, in canonical order.
-//   4. The ground layer's `ground`, or the composer's plain floor, below the backdrop's land line.
+//   4. The ground layer's `ground`, or the composer's plain floor, below the backdrop's land line
+//      (under a ground layer only while it plays its own entrance or exit, where it does not show).
 //   5. The middle band's opaque passes; the World's birds at c.z; the middle veils.
 //   6. The front band's opaque passes, then its veils.
 //   7. The shared speck map, against c.zs (what stands above the floor: specks hide behind it).
@@ -21,8 +22,11 @@
 //      and as the backdrop's `precip` says: its thinning, its rain's air).
 //  10. The grade's vignette and exposure, a speck's palette snap, and shadeOf with the grade's ink;
 //      then every layer's `shade` over it, in canonical order.
-// A pass of a layer playing its own entrance or exit (sim.ts, row 0 of the atlas) is shown in a
-// growing or shrinking share of cells, cut per cell; at rest every pass runs as written.
+// Two kinds of program (compose.ts TURNS_GATE). A steady one runs every pass as written, every
+// layer following the scene's passage: no layer can be mid-turn in it. One that draws turns, which
+// the renderer draws while a layer turned on or off mid-scene plays its own entrance or exit (sim.ts
+// SceneSim.turning; row 0 of the atlas), shows each layer's passes in a growing or shrinking share of
+// cells, cut per cell (`layerShows`); at rest it draws as the steady one does.
 import { glslFloat } from "../shaders/glsl.ts";
 import { worldGlsl } from "../shaders/lib/world.ts";
 import { SPECK_DEPTH_STEP } from "./caps.ts";
@@ -86,6 +90,8 @@ export interface Assembly {
   readonly gust: { readonly slot: number; readonly shape: PassageGustShape | undefined };
   /** Each layer's GLSL as this program takes it: its qualified keys and its M rewritten (compose.ts). */
   readonly rewrite: (layer: LayerDef, glsl: string) => string;
+  /** Whether it draws its layers' own entrances and exits (compose.ts TURNS_GATE): else steady. */
+  readonly turns: boolean;
 }
 
 /** The light (README "Light"): the World's sky times the preset's grade. */
@@ -261,13 +267,17 @@ ${view}
 }
 
 /**
- * The passes of `kind` of the on layers (those `only` keeps), in canonical order, each shown in its
- * share of cells while the layer plays its own entrance or exit (`held`: what a cell not yet showing
- * it keeps, the cell or the shade). Each pass has one call site: a software rasteriser runs every
- * line of a program whatever branch a cell takes, so a second would run the pass twice.
+ * The passes of `kind` of the on layers (those `only` keeps), in canonical order. In a program that
+ * draws turns (`turns`), a cell that does not show the pass's layer (`shows`, see `composedGlsl`)
+ * keeps what it had before the pass (`held`: the cell or the shade); a steady program runs each as
+ * written. A software rasteriser runs every line of a program whatever branch a cell takes, so each
+ * pass has one call site (a second would run the pass twice), and it is never under a branch: a pass
+ * that runs only where a branch is taken costs it far more than the pass (dew's backdrop: a tenth of
+ * the program more), a result dropped after it next to nothing.
  */
 function passCalls(
   layers: readonly OnLayer[],
+  turns: boolean,
   kind: keyof LayerPasses,
   args: string,
   only: (def: LayerDef) => boolean = () => true,
@@ -278,8 +288,9 @@ function passCalls(
     .map(({ def }, k) => {
       const fn = def.passes[kind];
       if (fn === undefined || !only(def)) return "";
-      return `  if (shown[${k}] > 0.0) { ${type} was = ${name}; ${fn}(${args}); if (shown[${k}] < 1.0 && edgeThreshold(cell, vec2(${13 + 7 * k}.0, 29.0)) >= shown[${k}]) ${name} = was; }
-`;
+      return turns
+        ? `  { ${type} was = ${name}; ${fn}(${args}); if (!shows[${k}]) ${name} = was; }\n`
+        : `  ${fn}(${args});\n`;
     })
     .join("");
 }
@@ -304,11 +315,13 @@ function begins(layers: readonly OnLayer[]): string {
 
 /** The whole composed program's own GLSL: the World, the prelude, the shared and the layers' GLSL, the entry. */
 export function composedGlsl(a: Assembly): string {
-  const { preset, layers, allocation } = a;
+  const { preset, layers, allocation, turns } = a;
   const rig = preset.rig;
   const grade = preset.grade;
   const fly = preset.flyway;
-  const ground = layers.some(({ def }) => def.role === "ground" && def.passes.ground !== undefined);
+  const ground = layers.findIndex(
+    ({ def }) => def.role === "ground" && def.passes.ground !== undefined,
+  );
   const specks = layers.filter(
     ({ def }) => allocation.specks[def.id] !== undefined && def.passes.speck !== undefined,
   );
@@ -347,7 +360,7 @@ ${specks
     const k = layers.findIndex((on) => on.def === def);
     const base = allocation.specks[def.id] ?? 0;
     const count = def.data?.specks ?? 0;
-    return `        if (code > ${base} && code <= ${base + count} && (shown[${k}] >= 1.0 || edgeThreshold(cell, vec2(${13 + 7 * k}.0, 29.0)) < shown[${k}])) {
+    return `        if (code > ${base} && code <= ${base + count}${turns ? ` && shows[${k}]` : ""}) {
           c.col = ${def.passes.speck}(code - ${base}, c.col, x);
           c.z = zSpeck;
           speck = true;
@@ -396,6 +409,11 @@ ${specks
       ? ""
       : `, vec2(${glslFloat(grade.ink.paper[0])}, ${glslFloat(grade.ink.paper[1])})`;
   const shade = `shadeOf(c.col, inkOf(c.col, ${glslFloat(grade.ink.gain)}, ${glslFloat(grade.ink.gamma)}${paper}), clamp(c.accent, 0.0, 1.0))`;
+  // Every program samples the composer's row 0 right after the begins and uses what it read to the
+  // end: one that draws turns for its cut per cell (`shows`), a steady one its first texel
+  // (`heldTurn`), spent at the grade on a test no texel passes (row 0 holds -1 or a share 0..1, and
+  // -1 without the atlas). Under SwiftShader a sample there whose value lives across the passes
+  // keeps their code cheaper: without it skyward's steady program costs 18% more, bees' 16%.
   return `
 ${worldGlsl}
 // ---- the composer (composer/glsl.ts): preset ${preset.id}, layers ${layers.map(({ def }) => def.id).join(", ")} ----
@@ -412,7 +430,9 @@ ${passage}${gustGlsl(a.gust.slot, a.gust.shape)}${STRUCTS}${lightGlsl(grade, rig
     stretched,
     layers.flatMap(({ def }) => def.casters ?? []),
   )}
-// The layers' own entrances and exits (sim.ts, the atlas's row 0, texel k for the k-th layer on):
+${
+  turns
+    ? `// The layers' own entrances and exits (sim.ts, the atlas's row 0, texel k for the k-th layer on):
 // -1 while the layer follows the scene's passage.
 vec2 layerTurn(int k) {
   return ${simOn(ATLAS_SLOT)} > 0.5 ? texelFetch(uSim${ATLAS_SLOT}, ivec2(k, 0), 0).xy : vec2(-1.0);
@@ -429,6 +449,26 @@ float layerOut(int k) {
 float layerShown(int k) {
   vec2 own = layerTurn(k);
   return own.x < 0.0 ? 1.0 : own.x * (1.0 - max(own.y, 0.0));
+}
+// Whether this cell shows layer k: its share of the cells, cut per cell.
+bool layerShows(int k, vec2 cell) {
+  float shown = layerShown(k);
+  return shown >= 1.0 || edgeThreshold(cell, vec2(13.0 + 7.0 * float(k), 29.0)) < shown;
+}`
+    : `// A steady program (compose.ts TURNS_GATE): no layer plays its own entrance or exit in it, so every
+// layer follows the scene's passage and shows in every cell.
+float layerIn(int k) {
+  return passageIn();
+}
+float layerOut(int k) {
+  return passageOut();
+}
+float layerShown(int k) {
+  return 1.0;
+}
+bool layerShows(int k, vec2 cell) {
+  return true;
+}`
 }
 ${accessorsGlsl(layers, allocation)}
 Ctx composerCtx(vec2 uv, vec2 cell) {
@@ -461,32 +501,37 @@ Shade ${COMPOSER_ENTRY}(vec2 uv, vec2 cell, float t) {
   // 1. The context, then each shared part's and each layer's own state for this cell.
   Ctx x = composerCtx(uv, cell);
 ${begins(layers)}
-  float shown[${n}];
-${layers.map((_, k) => `  shown[${k}] = layerShown(${k});`).join("\n")}
-  Cell c = Cell(vec3(0.0), WORLD_FAR, WORLD_FAR, 0.0);
+${
+  turns
+    ? `  // Which cells show each layer: every one at rest, its share while it enters or leaves.
+  bool shows[${n}];
+${layers.map((_, k) => `  shows[${k}] = layerShows(${k}, cell);`).join("\n")}\n`
+    : `  // Row 0's first texel, spent at the grade (see composedGlsl).
+  float heldTurn = ${simOn(ATLAS_SLOT)} > 0.5 ? texelFetch(uSim${ATLAS_SLOT}, ivec2(0, 0), 0).x : -1.0;\n`
+}  Cell c = Cell(vec3(0.0), WORLD_FAR, WORLD_FAR, 0.0);
   // 2. The sky.
-${passCalls(layers, "sky", "x, c", (def) => def.role === "backdrop")}
+${passCalls(layers, turns, "sky", "x, c", (def) => def.role === "backdrop")}
   // 3. The far band.
-${passCalls(layers, "far", "x, c")}${passCalls(layers, "farVeil", "x, c")}
+${passCalls(layers, turns, "far", "x, c")}${passCalls(layers, turns, "farVeil", "x, c")}
   // 4. The floor: the ground layer's, else the plain one.
-${ground ? `  if (shown[${layers.findIndex(({ def }) => def.role === "ground")}] < 1.0) composerFloor(x, c);\n${passCalls(layers, "ground", "x, c", (def) => def.role === "ground")}` : "  composerFloor(x, c);"}
+${ground < 0 ? "  composerFloor(x, c);\n" : `${turns ? `  if (!shows[${ground}]) composerFloor(x, c);\n` : ""}${passCalls(layers, turns, "ground", "x, c", (def) => def.role === "ground")}`}
   // 5. The middle band, the World's birds among it, its veils.
-${passCalls(layers, "middle", "x, c")}  float zBird = c.z;
+${passCalls(layers, turns, "middle", "x, c")}  float zBird = c.z;
   worldBirds(x.w, x.v, WorldFlyway(vec2(${glslFloat(fly.depth[0])}, ${glslFloat(fly.depth[1])}), vec2(RIG_HORIZON + ${glslFloat(fly.above)}, ${glslFloat(fly.top)}), vec2(K_seed * 0.37, ${glslFloat(fly.seed)}), ${glslFloat(fly.skim)}, ${glslFloat(fly.spread)}), x.air.haze, ${glslFloat(fly.ext)} + x.air.rain${fly.dust === undefined ? "" : ` + ${glslFloat(fly.dust)} * x.air.dust`}, c.col, zBird, c.accent);
   if (zBird < c.z) {
     c.z = zBird;
     c.zs = zBird;
   }
-${passCalls(layers, "middleVeil", "x, c")}
+${passCalls(layers, turns, "middleVeil", "x, c")}
   // 6. The front band.
-${passCalls(layers, "front", "x, c")}${passCalls(layers, "frontVeil", "x, c")}${speckDraw}
+${passCalls(layers, turns, "front", "x, c")}${passCalls(layers, turns, "frontVeil", "x, c")}${speckDraw}
   // 8. The air's own light.
-${passCalls(layers, "air", "x, c")}
+${passCalls(layers, turns, "air", "x, c")}
   // 9. The World's fog, then its rain and snow, at the depth of what the cell shows.
   worldFog(x.w, x.v, x.air.fog, c.z, c.col, c.accent);
-${passCalls(layers, "glow", "x, c")}${precip}
+${passCalls(layers, turns, "glow", "x, c")}${precip}
   // 10. The grade.
-${vignette}${exposure}${specks.length === 0 ? "" : "  if (speck) c.col = snapLevel(c.col);\n"}${shaded ? `  Shade o = ${shade};\n${passCalls(layers, "shade", "x, c, o", () => true, ["Shade", "o"])}  return o;` : `  return ${shade};`}
+${turns ? "" : "  if (heldTurn < -1.5) c.col = vec3(0.0);\n"}${vignette}${exposure}${specks.length === 0 ? "" : "  if (speck) c.col = snapLevel(c.col);\n"}${shaded ? `  Shade o = ${shade};\n${passCalls(layers, turns, "shade", "x, c, o", () => true, ["Shade", "o"])}  return o;` : `  return ${shade};`}
 }
 `;
 }

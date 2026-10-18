@@ -28,13 +28,15 @@ import {
   LEAVING_UNIT,
   ScenePrograms,
   SIM_SLOTS,
+  type FeatureSet,
   type ProgramContext,
   type SceneProgram,
+  type Wanted,
 } from "./program-cache.ts";
 import { loadedScene, sceneDefs, SceneLoadError, type SceneId } from "./scenes/index.ts";
 import type { PlanetUniforms } from "./scenes/planets.ts";
-import type { PrincipalState, SceneSim } from "./scenes/types.ts";
-import { vertexSource } from "./shaders/index.ts";
+import type { PrincipalState, SceneSim, SceneTurn } from "./scenes/types.ts";
+import { featureKey, vertexSource } from "./shaders/index.ts";
 import { forgetSheets } from "./scenes/pond/sheet.ts";
 import type { Params } from "./state.ts";
 
@@ -367,6 +369,13 @@ export class DitherRenderer {
   #waiting = false;
   /** The last frame moved something, or something was on its way (see `#still`). */
   #moving = false;
+  /** What `#turned` last made of a layer turn, and the setting it was for. */
+  #turn: { turn: SceneTurn; asked: Wanted; wanted: Wanted } | undefined;
+  /**
+   * What `#leavesThrough` last made of the program a layer switched off would leave through, and
+   * the sim and program on screen it was for.
+   */
+  #through: { sim: SceneSim; drawn: string; set: FeatureSet | undefined } | undefined;
   /** The last frame played an entrance: the scene on screen still coming in, or dissolving. */
   #entering = false;
   /** Smoothed parallax (-1..1 over the window), eased toward the target `tx`, `ty`. */
@@ -1044,14 +1053,26 @@ export class DitherRenderer {
     // old frame, moving on); one that fails to build, or features that cannot be worked out, stop
     // the scene as entering it would. With changes expected (`expectChanges`) the all-features
     // program is built ahead (`ScenePrograms.buildAside`), once the scene has arrived.
-    // A composed scene's layer switched off plays its exit in the program that holds it (its sim
-    // says so: SceneSim.holds), drawing the new setting, before the program without it is asked for.
+    // A composed scene's layer turned on or off plays its own entrance or exit in a program that
+    // draws it, which its steady programs leave out (its sim says which: `#turned`; the layer set's
+    // all-features program draws it too): one switched off leaves through the layer set on screen,
+    // which goes on drawing the new setting until the exit has played, and only then is the
+    // setting's own program asked for. With changes expected that program is built ahead as well,
+    // so that a switch-off starts its exit at once: on a GPU the all-features program above is it;
+    // on a software rasteriser it is the steady program's own layer set drawing turns, built once
+    // nothing else builds (`#leavesThrough`). The page itself, where no layer turns, builds nothing
+    // ahead.
+    // A program just built ahead draws one frame in the chosen one's place (below) only where it
+    // draws the setting at rest, no layer turn under way: the setting's all-features program, or the
+    // one a switch-off would leave through (at rest it draws the steady program's picture).
+    let warmable: string | undefined;
     if (scene.program !== undefined && scene.failure === undefined) {
-      const wanted = this.#programs.want(s);
+      const asked = this.#programs.want(s);
+      const wanted = "stage" in asked ? asked : this.#turned(scene.sim, scene.program, asked);
       const next =
         "stage" in wanted
           ? wanted
-          : scene.program.key === wanted.key || scene.sim?.holds?.() === true
+          : scene.program.key === wanted.key
             ? scene.program
             : this.#programs.programSoon(scene.id, wanted);
       if (next === undefined) {
@@ -1061,16 +1082,17 @@ export class DitherRenderer {
         this.#release(scene);
       } else {
         scene.program = next;
-        const all = "stage" in wanted ? undefined : wanted.all;
-        if (
-          this.#expecting &&
-          !this.#gpu.software &&
-          !this.#waiting &&
-          all !== undefined &&
-          leaving === undefined &&
-          passage.enter >= 1
-        )
-          this.#programs.buildAside(scene.id, all);
+        if (!("stage" in asked) && wanted === asked) {
+          const ahead =
+            !this.#expecting || this.#waiting || leaving !== undefined || passage.enter < 1
+              ? undefined
+              : this.#gpu.software
+                ? this.#leavesThrough(scene.sim, next.key)
+                : asked.all;
+          if (ahead !== undefined && !(this.#gpu.software && this.#programs.busy))
+            this.#programs.buildAside(scene.id, ahead);
+          warmable = ahead?.key ?? asked.all?.key;
+        }
       }
     }
     this.#drawn = s;
@@ -1123,12 +1145,13 @@ export class DitherRenderer {
       });
     }
 
-    // A program just built in the background draws this one frame in the chosen one's place (the
-    // same picture), so a driver that compiles a program at its first draw does it now rather than
-    // when a change needs it.
+    // A program just built in the background draws this one frame in the chosen one's place, so a
+    // driver that compiles a program at its first draw does it now rather than when a change needs
+    // it: where it draws the same picture (`warmable`), so never while a composed scene's layer turn
+    // is under way, whose sim would take it for the program it plays the turn in.
     const warm = this.#programs.takeWarm();
     const program =
-      warm !== undefined && warm.id === scene.id && scene.program !== undefined
+      warm !== undefined && warm.id === scene.id && warm.program.key === warmable
         ? warm.program
         : scene.program;
     // A slot fired when its stamp moved to a real press since the sim's previous frame. A scene just
@@ -1286,6 +1309,49 @@ export class DitherRenderer {
     return Number.isNaN(leaving.start)
       ? 0
       : Math.min(1, (seconds - leaving.start) / leaving.length);
+  }
+
+  /**
+   * What a scene draws the setting `asked` with, the program on screen being `drawn`: while a
+   * composed scene's layer turned on or off plays or is on its way, the program its sim says the
+   * turn plays in (SceneSim.turning), with the all-features program of its layer set, which draws
+   * turns too, standing in for it: the setting's for one switched on; for one switched off, that of
+   * the setting `drawn` last drew, its own layer set's while it is steady (once it draws turns it is
+   * the turn's program itself); else the setting's own.
+   */
+  #turned(sim: SceneSim | undefined, drawn: SceneProgram, asked: Wanted): Wanted {
+    const turn = sim?.turning?.(drawn.key, asked.features);
+    if (turn === undefined) return asked;
+    const last = this.#turn;
+    if (last?.turn === turn && last.asked === asked) return last.wanted;
+    const sent = drawn.sent.settings;
+    const was = turn.setting || sent === undefined ? undefined : this.#programs.want(sent);
+    const wanted: Wanted = {
+      features: turn.features,
+      key: featureKey(turn.features),
+      all: turn.setting ? asked.all : was === undefined || "stage" in was ? undefined : was.all,
+    };
+    this.#turn = { turn, asked, wanted };
+    return wanted;
+  }
+
+  /**
+   * The program a layer switched off from the program on screen (`drawn`, its key) would leave
+   * through (SceneSim.leavesThrough), worked out once for each program on screen.
+   */
+  #leavesThrough(sim: SceneSim | undefined, drawn: string): FeatureSet | undefined {
+    if (sim?.leavesThrough === undefined) return undefined;
+    let through = this.#through;
+    if (through?.sim !== sim || through.drawn !== drawn) {
+      const features = sim.leavesThrough(drawn);
+      through = {
+        sim,
+        drawn,
+        set: features === undefined ? undefined : { features, key: featureKey(features) },
+      };
+      this.#through = through;
+    }
+    return through.set;
   }
 
   /** Size the leaving scene's frame to its own cells. */

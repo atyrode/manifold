@@ -186,12 +186,34 @@ export interface SceneSim {
    */
   interest?(aspect: number): readonly ScenePoint[];
   /**
-   * True while the program on screen must go on drawing the new setting: a composed scene's layer,
-   * switched off, still playing its exit there (src/composer/sim.ts). Absent: never.
+   * A composed scene's layer turned on or off mid-scene plays its own entrance or exit in a program
+   * that draws it, which its steady programs leave out (src/composer/sim.ts, compose.ts TURNS_GATE):
+   * while one plays or is on its way, that program, given the program on screen (`drawn`, its
+   * feature key) and the features the setting asks for (`wanted`). Undefined while none does or
+   * none can (a view of the scene's own draws no turns), and absent for every other scene: the
+   * setting's own program.
    */
-  holds?(): boolean;
+  turning?(drawn: string, wanted: Readonly<Record<string, number>>): SceneTurn | undefined;
+  /**
+   * The features of the program a layer switched off from the program on screen (`drawn`) would
+   * play its exit in (`turning` names it then): built ahead while the lab is open, so that the exit
+   * starts at once. Undefined where no turn can play, and absent for every other scene.
+   */
+  leavesThrough?(drawn: string): Readonly<Record<string, number>> | undefined;
   /** Release GL resources; called when the lab leaves the scene. */
   dispose(): void;
+}
+
+/** The program a composed scene's layer turn plays in (SceneSim.turning). */
+export interface SceneTurn {
+  /** Its compile-time features. */
+  readonly features: Readonly<Record<string, number>>;
+  /**
+   * Whether they are the setting's (a layer switched on comes in), else the program on screen's (the
+   * layer set a layer switched off leaves through): either way that layer set's all-features program
+   * draws the turn too.
+   */
+  readonly setting: boolean;
 }
 
 export type SimFactory = (gl: WebGL2RenderingContext) => SceneSim;

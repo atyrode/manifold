@@ -64,6 +64,7 @@ import { verifyContextRestore, verifyFrameGovernor } from "./src/display.verify.
 import { verifyShallowWater } from "./src/sims/shallow.verify.ts";
 import { verifyWorldClock } from "./src/world-clock.verify.ts";
 import { verifyFluidPressure } from "./src/sims/fluid.verify.ts";
+import { verifyLayerToggles } from "./src/composer/turns.verify.ts";
 import {
   check,
   holdFrames,
@@ -571,6 +572,7 @@ export const checks: readonly Check[] = [
   ["shallowWater", verifyShallowWater],
   ["worldClock", verifyWorldClock],
   ["fluidPressure", verifyFluidPressure],
+  ["layerToggles", verifyLayerToggles],
 ];
 
 /**
