@@ -861,6 +861,18 @@ elements. Its default is an empty room at dusk with the sill's rest pose. Sill, 
 mobile, incense, frost, bar and train are its variants; the bar's `night` stays its evening's
 schedule (D22).
 
+### The World seen from every camera
+
+The World's hour, sky and weather are one state, and every camera shows it. A composer never drops
+the weather; it renders the weather in the way its camera would see it. Outdoors, this is built: the
+sky, cloud, rain, snow, fog, lightning and wind. Indoors, the weather is seen through the window: drops on the
+glass, the light under overcast, lightning's flash, and the snow's brighter light. From above, it is
+not built yet: rain rings on the water and wet darkening on the bed, cloud shadows crossing, fog as
+a veil, snow settling and the wind on the surface. That waits for the World over the patch.
+Underwater it would show as rain dimpling the surface, the light dimmed by overcast, lightning
+through the water, and the surge of the wind. Each camera a baseline adds, and each new kind of
+weather, is accepted only once it is rendered for every camera that can be in it.
+
 ### Order of work
 
 | Step | What                                                                                                                        | Accepted when                                                                                                                                                                              |
@@ -925,7 +937,7 @@ programs, the arriving variant's own layers entering as layer turns do (D12). It
 land, the live pose (D18) and the far level of detail.
 
 Also later, not planned: an **underwater** baseline (a camera below the surface, light absorbed with
-depth, the sky only through Snell's window), kelp its first variant and the pond's koi from the
+depth, the sky only through Snell's window, the World's weather seen from below), kelp its first variant and the pond's koi from the
 side, the lake under its ice or the swell under its boats candidates, built once a second variant is
 wanted; and **above the clouds** as an interior variant, a seat by an aircraft window whose view is
 the outdoor World at cruise altitude over a cloud deck, once a window can show another composer's
