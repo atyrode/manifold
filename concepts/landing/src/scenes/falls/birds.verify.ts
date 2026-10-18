@@ -1,11 +1,20 @@
-// Regressions for the shared birds (shaders/lib/birds.ts) as the waterfall flies them (fallsBirds),
-// on the actual scene shader: a bird is never drawn where the cliff in front of it covers it, the
-// formation knob reaches the sky, and the birds follow the motion clock alone.
-import { fragmentSourceFor, packParams, vertexSource } from "../../shaders/index.ts";
+// Regressions for the World's birds (shaders/lib/world.ts worldBirds) as the waterfall flies them
+// (its preset's flyway: swifts), on the actual composed program: a bird is never drawn where the
+// cliff in front of it covers it, the formation knob reaches the sky, and the birds follow the
+// motion clock alone.
+import { glslFloat } from "../../shaders/glsl.ts";
+import {
+  fragmentSourceFor,
+  packParams,
+  sceneFeatures,
+  shaderValues,
+  vertexSource,
+} from "../../shaders/index.ts";
 import { defaultsFor, paramDefaults, renderSettings, type Params } from "../../state.ts";
 import { loadScene } from "../index.ts";
+import { fallsComposed } from "./index.ts";
 
-const fallsScene = await loadScene("falls");
+const { glslFor, ...fallsScene } = await loadScene("falls");
 
 const WIDTH = 192;
 const HEIGHT = 108;
@@ -39,32 +48,45 @@ function program(gl: WebGL2RenderingContext, fragment: string): WebGLProgram {
   return linked;
 }
 
+const fly = fallsComposed.preset.flyway;
+/** The preset's flyway as the composer's entry hands it to worldBirds (composer/glsl.ts). */
+const FLYWAY = `WorldFlyway(vec2(${glslFloat(fly.depth[0])}, ${glslFloat(fly.depth[1])}), vec2(RIG_HORIZON + ${glslFloat(fly.above)}, ${glslFloat(fly.top)}), vec2(K_seed * 0.37, ${glslFloat(fly.seed)}), ${glslFloat(fly.skim)}, ${glslFloat(fly.spread)})`;
+
 /**
  * Mode 0 draws the actual scene. Mode 1 draws, at rest, r: where a bird covers the pixel before any
- * occlusion, g: where the cliff face (its rock and the water falling down it, 29 m off) covers the
- * pixel and lies nearer than that bird, so the bird may not show there.
+ * occlusion (the World's birds over nothing at all), g: where the cliff face (its rock and the water
+ * falling down it, 29 m off) covers the pixel and lies nearer than that bird, so the bird may not
+ * show there.
  */
 const wrapper = `
 uniform int regressionMode;
 Shade regressionFallsBirds(vec2 uv, vec2 cell, float t) {
-  Shade actual = sceneFalls(uv, cell, t);
+  Shade actual = composerEntry(uv, cell, t);
   if (regressionMode == 0) return actual;
   float aspect = uRes.x / uRes.y;
   vec2 q = vec2((uv.x - 0.5) * aspect, uv.y);
-  BirdHit bird = fallsBirds(q, uMotionTime);
-  float rim = fallsRim(q.x, fallsAt(aspect), K_mark);
-  float front = bird.depth > FALLS_CLIFF_Z && q.y > FALLS_POOL && q.y < rim ? 1.0 : 0.0;
-  return shadeOf(vec3(bird.cover, front, 0.0), 0.0, 0.0);
+  Ctx x = composerCtx(uv, cell);
+  vec3 col = vec3(-1.0);
+  float depth = 1e9;
+  float accent = 0.0;
+  worldBirds(x.w, x.v, ${FLYWAY}, vec3(0.0), 0.0, col, depth, accent);
+  float rim = fallsRim(q.x, fallsAt(aspect), K_cliffMark);
+  float front = depth > FALLS_CLIFF_Z && q.y > FALLS_POOL && q.y < rim ? 1.0 : 0.0;
+  return shadeOf(vec3(col.r >= 0.0 ? 1.0 : 0.0, front, 0.0), 0.0, 0.0);
 }`;
 
 export function verifyFallsBirds(gl: WebGL2RenderingContext): Record<string, unknown> {
+  if (glslFor === undefined) throw new Error("falls birds: the scene is not composed");
+  const calm: Params = { ...paramDefaults("falls"), time: 0.5, rain: 0, fog: 0 };
+  const swifts: Params = { ...calm, birds: 1, "birds-amount": 1 };
+  // The birds' own program: the World's birds compiled in (off at the preset's defaults).
+  const features = sceneFeatures(fallsScene, shaderValues(fallsScene, swifts));
   const scene = program(
     gl,
-    fragmentSourceFor({
-      ...fallsScene,
-      entry: "regressionFallsBirds",
-      glsl: fallsScene.glsl + wrapper,
-    }),
+    fragmentSourceFor(
+      { ...fallsScene, entry: "regressionFallsBirds", glsl: glslFor(features) + wrapper },
+      features,
+    ),
   );
   gl.canvas.width = WIDTH;
   gl.canvas.height = HEIGHT;
@@ -78,8 +100,6 @@ export function verifyFallsBirds(gl: WebGL2RenderingContext): Record<string, unk
   gl.uniform2f(at("uWeather"), 0, 0);
   gl.uniform2f(at("uPointer"), 0, 0);
   gl.uniform4f(at("uSimOn"), 0, 0, 0, 0);
-  const calm: Params = { ...paramDefaults("falls"), time: 0.5, rain: 0, fog: 0 };
-  const swifts: Params = { ...calm, birds: 1, "birds-amount": 1 };
   const draw = (
     knobs: Params,
     mode: number,

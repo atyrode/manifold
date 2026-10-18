@@ -11,16 +11,19 @@
 // warm-up then lets the model sharpen them into its own.
 //
 // Grid space, shared with the shader: x runs downwind (for a positive wind knob), z across it, y up,
-// all in cells. Uploads, both repeating so the shader can tile the sand sea: uSim0 r16f heights
-// (cells above the bed, smoothed); uSim1 rgba16f slope dh/dx, dh/dz, curvature (negative on crests)
-// and how far a cell sits below its surroundings (for ambient occlusion).
+// all in cells. The dune field layer's sim (LayerCode.sim): its two fields (composer field slots),
+// both repeating so the shader can tile the sand sea: r16f heights (cells above the bed, smoothed;
+// the shader's dunesField0) and rgba16f slope dh/dx, dh/dz, curvature (negative on crests) and how far
+// a cell sits below its surroundings, for ambient occlusion (dunesField1).
+import type { LayerFrame, LayerSim } from "../../composer/types.ts";
 import { markDistance } from "../../mark.ts";
 import { KnobReader, type ParamDef } from "../../params.ts";
 import { runBudgeted, Settle } from "../../sims/clock.ts";
 import { marchHeight, sampleRepeat, type HeightMarch, type RayHit } from "../../sims/heightray.ts";
 import { smoothstep } from "../../sims/math.ts";
 import { DataTexture } from "../../sims/texture.ts";
-import type { SceneSim, SimFactory, SimFrame } from "../types.ts";
+import type { SimFrame } from "../types.ts";
+import { DUNES_CAMERA } from "./constants.ts";
 
 /** Grid side in cells: a power of two, so wrapping around the torus is a bit mask. */
 export const DUNES_GRID = 256;
@@ -99,27 +102,6 @@ interface FieldKey {
   arrangement: number;
 }
 
-/**
- * The aerial camera in grid space: where it stands, its eye `height` plus `rise` times the mean
- * sand depth above the bed (more sand, taller dunes), viewRay's horizon and fov, and `turn`, how
- * far grid xz is turned from view xz (grid.xz = rotate(view.xz, turn)), so the wind blows left to
- * right and toward the viewer and the ridges run slantwise across the view, one behind the other
- * to the horizon. `look` turns the sky the same way (sky.xz = rotate(view.xz, look)): the camera
- * faces 29° left of the sky library's "ahead", so the setting sun stands in the picture and its
- * light rakes across the dunes rather than straight into the lens. `parallax` is how far (radians)
- * the view turns toward the pointer's side at full parallax (view.xz turned by -uPointer.x times it).
- */
-export const DUNES_CAMERA = {
-  x: 186,
-  z: 88,
-  height: 14,
-  rise: 1.6,
-  horizon: 0.66,
-  fov: 0.8,
-  turn: 0.7,
-  look: 0.5,
-  parallax: 0.035,
-} as const;
 /**
  * How the shader ray-marches the sand, and the pointer's ray with it (sims/heightray.ts): no sand
  * stands above `top` cells, rays give up `far` cells out (the dust has the horizon by then), no
@@ -791,143 +773,138 @@ export function dunesPointerCell(
   return true;
 }
 
-export function dunesSim(params: readonly ParamDef[]): SimFactory {
-  const knobs = new KnobReader("dunes", params, ["sand", "seed", "wind", "mark", "camera"]);
-  return (gl: WebGL2RenderingContext): SceneSim => {
-    const field = new DuneField();
-    const surface = new DuneSurface();
-    // The surface as first laid out, which the uploads morph away from while the field warms up.
-    const start = new DuneSurface();
-    const heights = new DataTexture(gl, {
-      width: DUNES_GRID,
-      height: DUNES_GRID,
-      format: "r16f",
-      wrap: "repeat",
-    });
-    const shape = new DataTexture(gl, {
-      width: DUNES_GRID,
-      height: DUNES_GRID,
-      format: "rgba16f",
-      wrap: "repeat",
-    });
-    const textures: readonly WebGLTexture[] = [heights.texture, shape.texture];
-    const cell = { x: 0, y: 0 };
-    // The sand as the shader last saw it, for the pointer's ray.
-    const ground = (x: number, z: number): number =>
-      sampleRepeat(surface.heights, DUNES_GRID, DUNES_GRID, x, z);
-    // The knobs the laid-out field was made from, and the pair the frame wants.
-    const settle = new Settle<FieldKey>(RELAYOUT_MS, {
-      same: (a, b) => a.sand === b.sand && a.arrangement === b.arrangement,
-      copy: (k) => ({ ...k }),
-    });
-    const want: FieldKey = { sand: 0, arrangement: 0 };
-    // The M's size as last stood in the field (0: none; -1: not yet set).
-    let stoneSize = -1;
-    let warmed = WARM_STEPS;
-    let owed = 0;
-    let uploaded = -1;
-    let lastUpload = -Infinity;
-    // The slabs moved as of the last upload, and whether anything but the creep has changed since.
-    let movedAtUpload = 0;
-    let edited = true;
+/**
+ * The dune field layer's sim (LayerCode.sim): the slab model stepped by the wind, poured on under
+ * every hand, its surface uploaded into the layer's two fields.
+ */
+export function dunesSim(gl: WebGL2RenderingContext, params: readonly ParamDef[]): LayerSim {
+  const knobs = new KnobReader("dunes", params, ["sand", "seed", "wind", "dunesMark", "camera"]);
+  const field = new DuneField();
+  const surface = new DuneSurface();
+  // The surface as first laid out, which the uploads morph away from while the field warms up.
+  const start = new DuneSurface();
+  const heights = new DataTexture(gl, {
+    width: DUNES_GRID,
+    height: DUNES_GRID,
+    format: "r16f",
+    wrap: "repeat",
+  });
+  const shape = new DataTexture(gl, {
+    width: DUNES_GRID,
+    height: DUNES_GRID,
+    format: "rgba16f",
+    wrap: "repeat",
+  });
+  const cell = { x: 0, y: 0 };
+  // The sand as the shader last saw it, for the pointer's ray.
+  const ground = (x: number, z: number): number =>
+    sampleRepeat(surface.heights, DUNES_GRID, DUNES_GRID, x, z);
+  // The knobs the laid-out field was made from, and the pair the frame wants.
+  const settle = new Settle<FieldKey>(RELAYOUT_MS, {
+    same: (a, b) => a.sand === b.sand && a.arrangement === b.arrangement,
+    copy: (k) => ({ ...k }),
+  });
+  const want: FieldKey = { sand: 0, arrangement: 0 };
+  // The M's size as last stood in the field (0: none; -1: not yet set).
+  let stoneSize = -1;
+  let warmed = WARM_STEPS;
+  let owed = 0;
+  let uploaded = -1;
+  let lastUpload = -Infinity;
+  // The slabs moved as of the last upload, and whether anything but the creep has changed since.
+  let movedAtUpload = 0;
+  let edited = true;
 
-    return {
-      frame(frame: SimFrame): readonly (WebGLTexture | undefined)[] {
-        const now = frame.now;
-        const sand = knobs.value(frame, "sand");
-        const arrangement = knobs.value(frame, "seed");
-        const wind = knobs.value(frame, "wind");
-        field.setWind(wind);
+  return {
+    frame(frame: LayerFrame): void {
+      const [heightField, shapeField] = frame.fields;
+      if (heightField) heightField.texture = heights.texture;
+      if (shapeField) shapeField.texture = shape.texture;
+      const now = frame.now;
+      const sand = knobs.value(frame, "sand");
+      const arrangement = knobs.value(frame, "seed");
+      const wind = knobs.value(frame, "wind");
+      field.setWind(wind);
 
-        // The sandstone M's size, 0 while the knob is off.
-        const markSize = knobs.value(frame, "mark");
-        if (markSize !== stoneSize) {
-          field.setStone(markSize > 0 ? markSize : undefined);
-          stoneSize = markSize;
+      // The sandstone M's size, 0 while the knob is off.
+      const markSize = knobs.value(frame, "dunesMark");
+      if (markSize !== stoneSize) {
+        field.setStone(markSize > 0 ? markSize : undefined);
+        stoneSize = markSize;
+        edited = true;
+      }
+
+      // A new supply or arrangement lays the field out afresh once the knob rests, then warms up.
+      want.sand = sand;
+      want.arrangement = arrangement;
+      if (settle.due(want, now)) {
+        field.reset(sand, arrangement);
+        start.update(field);
+        settle.lay(want);
+        warmed = 0;
+        edited = true;
+      }
+
+      const warming = warmed < WARM_STEPS;
+      if (warming) {
+        // Time-sliced so frames keep coming; the laid-out dunes sharpen meanwhile. Where frames come
+        // slowly (a software renderer) it takes a share of the time between them instead, so it
+        // still ends within a few.
+        edited = true;
+        warmed = runBudgeted(
+          () => field.step(WARM_CHUNK),
+          Math.max(WARM_SLICE_MS, frame.budget),
+          WARM_STEPS,
+          warmed,
+        );
+      } else if (frame.dt > 0) {
+        // Sand flux rises steeply with wind speed; wind 0 leaves the dunes standing.
+        const strength = Math.min(1, Math.abs(wind));
+        owed += PICKS_PER_SECOND * strength * Math.sqrt(strength) * frame.dt * frame.motion;
+        const picks = Math.min(MAX_FRAME_PICKS, Math.floor(owed));
+        owed = Math.min(owed - picks, MAX_FRAME_PICKS);
+        if (picks > 0) field.step(picks);
+      }
+
+      // Sand pours under every hand held down: a heap where it lands, then a trickle while held.
+      // While the camera glides in or the view settles a hand's ray is not the rest camera's, so
+      // no pouring.
+      const resting = frame.passage.enter >= 1 && frame.passage.exit <= 0;
+      for (const hand of frame.principals) {
+        if (!resting || !hand.inside || !(hand.pressed || hand.down)) continue;
+        const slabs = hand.pressed ? HEAP_SLABS : Math.round(POUR_PER_SECOND * frame.dt);
+        if (
+          slabs > 0 &&
+          dunesPointerCell(frame, knobs.value(frame, "camera"), sand, markSize, ground, cell, hand)
+        ) {
+          field.pour(cell.x, cell.y, slabs);
           edited = true;
         }
+      }
 
-        // A new supply or arrangement lays the field out afresh once the knob rests, then warms up.
-        want.sand = sand;
-        want.arrangement = arrangement;
-        if (settle.due(want, now)) {
-          field.reset(sand, arrangement);
-          start.update(field);
-          settle.lay(want);
-          warmed = 0;
-          edited = true;
+      // The creep goes up as UPLOAD_SLABS of it gather, anything else at the next UPLOAD_EVERY;
+      // the finished warm-up shows at once.
+      const due =
+        uploaded < 0 ||
+        (warming && warmed === WARM_STEPS) ||
+        (now - lastUpload >= UPLOAD_EVERY * 1000 &&
+          (edited || field.moved - movedAtUpload >= UPLOAD_SLABS));
+      if (field.version !== uploaded && due) {
+        surface.update(field);
+        if (warmed < WARM_STEPS) {
+          surface.easeFrom(start, smoothstep(0, 1, warmed / WARM_STEPS));
         }
-
-        const warming = warmed < WARM_STEPS;
-        if (warming) {
-          // Time-sliced so frames keep coming; the laid-out dunes sharpen meanwhile. Where frames come
-          // slowly (a software renderer) it takes a share of the time between them instead, so it
-          // still ends within a few.
-          edited = true;
-          warmed = runBudgeted(
-            () => field.step(WARM_CHUNK),
-            Math.max(WARM_SLICE_MS, frame.budget),
-            WARM_STEPS,
-            warmed,
-          );
-        } else if (frame.dt > 0) {
-          // Sand flux rises steeply with wind speed; wind 0 leaves the dunes standing.
-          const strength = Math.min(1, Math.abs(wind));
-          owed += PICKS_PER_SECOND * strength * Math.sqrt(strength) * frame.dt * frame.motion;
-          const picks = Math.min(MAX_FRAME_PICKS, Math.floor(owed));
-          owed = Math.min(owed - picks, MAX_FRAME_PICKS);
-          if (picks > 0) field.step(picks);
-        }
-
-        // Sand pours under every hand held down: a heap where it lands, then a trickle while held.
-        // While the camera glides in or the view settles a hand's ray is not the rest camera's, so
-        // no pouring.
-        const resting = frame.passage.enter >= 1 && frame.passage.exit <= 0;
-        for (const hand of frame.principals) {
-          if (!resting || !hand.inside || !(hand.pressed || hand.down)) continue;
-          const slabs = hand.pressed ? HEAP_SLABS : Math.round(POUR_PER_SECOND * frame.dt);
-          if (
-            slabs > 0 &&
-            dunesPointerCell(
-              frame,
-              knobs.value(frame, "camera"),
-              sand,
-              markSize,
-              ground,
-              cell,
-              hand,
-            )
-          ) {
-            field.pour(cell.x, cell.y, slabs);
-            edited = true;
-          }
-        }
-
-        // The creep goes up as UPLOAD_SLABS of it gather, anything else at the next UPLOAD_EVERY;
-        // the finished warm-up shows at once.
-        const due =
-          uploaded < 0 ||
-          (warming && warmed === WARM_STEPS) ||
-          (now - lastUpload >= UPLOAD_EVERY * 1000 &&
-            (edited || field.moved - movedAtUpload >= UPLOAD_SLABS));
-        if (field.version !== uploaded && due) {
-          surface.update(field);
-          if (warmed < WARM_STEPS) {
-            surface.easeFrom(start, smoothstep(0, 1, warmed / WARM_STEPS));
-          }
-          heights.upload(surface.heights);
-          shape.upload(surface.shape);
-          uploaded = field.version;
-          lastUpload = now;
-          movedAtUpload = field.moved;
-          edited = false;
-        }
-        return textures;
-      },
-      dispose(): void {
-        heights.dispose();
-        shape.dispose();
-      },
-    };
+        heights.upload(surface.heights);
+        shape.upload(surface.shape);
+        uploaded = field.version;
+        lastUpload = now;
+        movedAtUpload = field.moved;
+        edited = false;
+      }
+    },
+    dispose(): void {
+      heights.dispose();
+      shape.dispose();
+    },
   };
 }

@@ -270,7 +270,10 @@ export interface SceneDef {
    * setting of the same layers as that setting's own does; another layer set is another program.
    */
   featuresAllFor?: (values: Readonly<Record<string, number>>) => Readonly<Record<string, number>>;
-  /** A composed scene's layer switches: turning one changes the layer set, so the program. */
+  /**
+   * A composed scene's layer switches: turning one changes the layer set, so the program; and a
+   * preset's own steady mode that builds another program (the dunes' overhead `camera`).
+   */
   structural?: readonly string[];
   /** A composed scene's layers, for the lab's Layers section (src/composer/compose.ts). */
   layers?: SceneLayers;

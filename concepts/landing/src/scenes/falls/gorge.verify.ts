@@ -1,13 +1,13 @@
 // GPU check (verify-browser.ts): the limestone slot frames the waterfall without hiding it. Through
-// the scene's own functions (fallsSetGorge, fallsSlot, fallsSlotFit, fallsCurtain, fallsAt): the
-// falling sheet stays inside the slot's opening at every flow and wind on a 16:9 frame, and at the
-// default flow on a 4:3 one, with or without the carved M's horn parting it, while the walls close
-// in on both sides of the frame; the default basalt cliff stands open.
+// the gorge's own functions in its composed program (fallsSetGorge, fallsSlot, fallsSlotFit,
+// fallsCurtain, fallsAt): the falling sheet stays inside the slot's opening at every flow and wind on
+// a 16:9 frame, and at the default flow on a 4:3 one, with or without the carved M's horn parting it,
+// while the walls close in on both sides of the frame; the default basalt cliff stands open.
 import { defaultsFor, paramDefaults, renderSettings } from "../../state.ts";
-import { fragmentSourceFor, packParams, vertexSource } from "../../shaders/index.ts";
+import { fragmentSourceFor, packParams, sceneFeatures, vertexSource } from "../../shaders/index.ts";
 import { loadScene } from "../index.ts";
 
-const fallsScene = await loadScene("falls");
+const { glslFor, ...fallsScene } = await loadScene("falls");
 
 const HEIGHT = 180;
 
@@ -33,24 +33,29 @@ function compile(gl: WebGL2RenderingContext, fragment: string): WebGLProgram {
 }
 
 export function fallsGorgeCheck(gl: WebGL2RenderingContext): Record<string, unknown> {
+  if (glslFor === undefined) throw new Error("falls gorge: the scene is not composed");
+  const features = sceneFeatures(fallsScene);
   // Red: a slot wall (or the water in front of one, or the woods over it) is nearer than the back
   // wall here. Green: the falling sheet's coverage.
   const linked = compile(
     gl,
-    fragmentSourceFor({
-      ...fallsScene,
-      entry: "regressionFallsGorge",
-      glsl: `${fallsScene.glsl}
+    fragmentSourceFor(
+      {
+        ...fallsScene,
+        entry: "regressionFallsGorge",
+        glsl: `${glslFor(features)}
     Shade regressionFallsGorge(vec2 uv, vec2 cell, float t) {
       fallsSetGorge(K_gorge);
       float aspect = uRes.x / uRes.y;
       vec2 q = vec2((uv.x - 0.5) * aspect, uv.y);
       vec4 slot = fallsGeo.kind > 1.5 ? fallsSlot(q, fallsSlotFit(aspect)) : vec4(0.0);
       float sheen = 0.0;
-      float water = fallsCurtain(q, fallsAt(aspect), K_flow, K_mark, K_wind, uMotionTime, sheen).x;
+      float water = fallsCurtain(q, fallsAt(aspect), K_flow, K_cliffMark, K_wind, uMotionTime, sheen).x;
       return shadeOf(vec3(slot.x != 0.0 ? 1.0 : 0.0, water, 0.0), 0.0, 0.0);
     }`,
-    }),
+      },
+      features,
+    ),
   );
   gl.useProgram(linked);
   gl.uniform1i(gl.getUniformLocation(linked, "uView"), 1);
@@ -74,7 +79,7 @@ export function fallsGorgeCheck(gl: WebGL2RenderingContext): Record<string, unkn
       gorge: c.gorge,
       flow: c.flow,
       wind: c.wind,
-      mark: c.mark,
+      cliffMark: c.mark,
     };
     gl.uniform4fv(
       gl.getUniformLocation(linked, "uParams"),

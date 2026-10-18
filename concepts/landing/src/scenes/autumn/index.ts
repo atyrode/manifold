@@ -2,136 +2,80 @@
 // bench on the lawn and a cast-iron lamp, the low sun behind the canopy so that the leaves glow and the
 // shadows run long across the grass. The leaves let go and fall as the plates they are, fluttering,
 // gliding and tumbling and turning to show their paler undersides, and land to thicken the carpet on the
-// lawn and the path; now and then a gust lifts a swirl of them along the path. The leaves, the carpet
-// and the gusts live in sim.ts; shader.ts paints the park around them, and layout.ts holds the
-// geometry the two share.
-import { choice, feature, range, seed, type ParamDef } from "../../params.ts";
-import { atmosphereGroups, skyKnobs, skyTheme, weatherKnobs } from "../atmosphere.ts";
+// lawn and the path; a gust shakes a shower loose and often lifts a swirl of them along the path. A
+// preset of the `outdoor` composer (src/composer, README "Composers"): the parkland behind, the park
+// path, the lamp post, the maple with its bench and its leaves, the fallen leaves and the agents'
+// raking (layers.ts). The sky, the weather, the birds and the gusts are the World's and the composer's.
+import { composeScene } from "../../composer/compose.ts";
+import { outdoor } from "../../composer/outdoor.ts";
+import type { ScenePreset } from "../../composer/types.ts";
+import { skyTheme } from "../atmosphere.ts";
 import type { SceneDef } from "../types.ts";
-import { worldGates } from "../world.ts";
-import { AUTUMN_METEOR_TRIGGER, AUTUMN_PASSAGE } from "./constants.ts";
+import { worldGroups } from "../world.ts";
+import { AUTUMN_GRADE, AUTUMN_RIG } from "./constants.ts";
+import { AUTUMN_PASSAGE } from "./layout.ts";
 
-const params: readonly ParamDef[] = [
-  choice(
-    "tree",
-    "species",
-    "tree",
-    [
-      { label: "maple", value: 0 },
-      { label: "ginkgo", value: 1 },
-      { label: "oak", value: 2 },
-    ],
-    0,
-    "The great tree over the path. A maple: five-pointed leaves from crimson to gold, grey bark. A ginkgo: butter-yellow fans on pale furrowed bark, falling light and steady. An oak: russet and ochre lobes on dark ridged bark, heavier, tumbling more.",
-  ),
-  range(
-    "tree",
-    "season",
-    "season progress",
-    0.35,
-    "How far autumn has come. Early: leaves just turning, some still green, a thin carpet. Middle: a full golden canopy and a growing carpet. Late: browning, the canopy thinning to sky and boughs, the ground deep in leaves.",
-    { widget: { kind: "sky", part: "season", year: { span: [0.5, 0.75] } } },
-  ),
-  seed(
-    "tree",
-    "parkSeed",
-    "park",
-    "How the canopy hangs and where its gaps open, where the leaves lie thick on the lawn, what rests on the bench; re-seed for another corner of the park.",
-  ),
-  range(
-    "leaves",
-    "fall",
-    "leaf fall",
-    0.5,
-    "How often a leaf lets go. Light ones flutter, swinging from side to side and gliding up at the end of each swing; heavier ones tumble end over end, each turning to show its paler underside. They land and add to the carpet, and the oldest ones slowly rot away.",
-  ),
-  feature(
-    "leaves",
-    "gusts",
-    "gusts",
-    true,
-    "strength",
-    0.5,
-    "A gust now and then: the canopy sways, a shower of leaves is shaken loose, and often a swirl of the fallen leaves is lifted off the path and carried along it before it settles. Higher: stronger and more often. Now: a gust.",
-    { trigger: 0 },
-  ),
-  feature(
-    "leaves",
-    "rake",
-    "leaf raking",
-    true,
-    "reach",
-    0.5,
-    "The agents' chore, while the lab has agents in the scene: they rake the fallen leaves along the path into neat piles, a stroke at a time from up and down the path, coming back to each pile until it is done. A gust scatters the piles again and leaves keep falling on the raked ground. Reach: how far along the path each stroke sets out.",
-  ),
-  feature(
-    "park",
-    "lamp",
-    "lamp post",
-    true,
-    "glow",
-    0.7,
-    "The cast-iron lamp beside the path lights as the day fades or a storm darkens it, throwing a warm pool on the leaves.",
-  ),
-  ...skyKnobs({
-    time: 0.69,
-    stars: 0.5,
-    moon: 1,
-    meteors: { trigger: AUTUMN_METEOR_TRIGGER },
-    constellations: true,
-  }),
-  ...weatherKnobs({ clouds: 0.3, shadows: true, rain: true, fog: true, wind: true, aurora: true }),
-  feature(
-    "manifold",
-    "mark",
-    "leaf M",
-    false,
-    "amount",
-    0.8,
-    "The wind sweeps a Manifold M together out of the fallen leaves, gold ones laid out along the path like a road marking; the ground round it is cleared. It gathers over about ten seconds. Now: gather it (even while off), and it scatters again after a while.",
-    { trigger: 1 },
-  ),
-];
-
-export const autumnScene: SceneDef = {
+const preset: ScenePreset = {
   id: "autumn",
+  composer: "outdoor",
   title: "Autumn park",
-  blurb:
-    "A great tree letting go of its leaves over a park path, the low sun glowing through them.",
+  blurb: "A great tree letting go of its leaves over a park path, the low sun glowing through them.",
   accent: "#e8a23a",
   look: { color: "full", levels: 4 },
-  params,
+  // Entrance: the camera lowers from the canopy onto the path as a gust blows a flurry of leaves
+  // through the swaying boughs. Exit: a stronger gust whirls the leaves up across the frame as the
+  // camera tilts up into the canopy (AUTUMN_RIG's lens shift; the leaves are the maple's sim).
+  passage: AUTUMN_PASSAGE,
   planets: { group: "sky", across: [-30, 14, 40], up: [2, 14, 26] },
+  theme: (params) => skyTheme(params, { rainBelow: 0.4 }),
+  rig: AUTUMN_RIG,
+  grade: AUTUMN_GRADE,
+  // Late afternoon under a little fair-weather cloud; the stars over the park at night, the moon's
+  // phase keying its light, no Milky Way; birds to switch on.
+  world: {
+    time: 0.69,
+    stars: 0.5,
+    clouds: 0.3,
+    milkyWay: { on: false },
+    birds: {
+      kind: "rooks",
+      on: false,
+      help: "Birds crossing the sky over the park by day, rooks by default; the canopy, the trunk and the far crowns hide any that pass behind them, and few fly in rain or snow.",
+    },
+  },
+  // Shooting stars set out over the far crowns, under the canopy's edge in a 16:9 frame.
+  meteors: [-0.5, 0.3, 1.0, 0.14],
+  flyway: {
+    depth: [15, 120],
+    above: 0.08,
+    top: 0.95,
+    seed: 2.3,
+    skim: 2,
+    spread: 1.5,
+    ext: 0.016,
+  },
+  floor: "lawn",
+  layers: ["parkland", "parkPath", "lamp", "maple", "litter", "rake"],
+  // The park's own gusts were lighter than the composer's default.
+  values: { "gusts-amount": 0.5 },
+  // The moon's phase keys the night's light: compiled in at every setting, a full moon's too, as the
+  // park always drew it.
+  features: { SKY_MOON_PHASE: 1 },
   groups: {
-    tree: {
-      title: "Tree",
-      blurb: "Which tree, how far autumn has come, and how this corner of the park is arranged.",
-    },
-    leaves: {
-      title: "Leaves",
-      blurb:
-        "How the leaves let go and fall, the gusts that carry them, and the agents who rake them up.",
-    },
-    park: { title: "Park", blurb: "The lamp post beside the path." },
     sky: {
-      ...atmosphereGroups.skyNight,
+      ...worldGroups.sky,
       blurb:
-        "Time of day, whether the days pass, and the night sky over the park: its stars, the moon's phase, the odd shooting star, and on a clear night the aurora over the far trees.",
+        "Time of day, how far autumn has come, whether the days pass, and the night sky over the park: its stars, the moon's phase, the odd shooting star, and on a clear night the aurora over the far trees.",
     },
     weather: {
-      ...atmosphereGroups.weather,
+      ...worldGroups.weather,
       blurb:
-        "Clouds drift over, and if you like their shadows sweep across the park. Rain greys the light and darkens the canopy; the path and the leaves turn dark and glossy, pools gather on the gravel and rings spread in them. Fog fades the far trees. The wind leans the leaves as they fall and carries the gusts.",
+        "Clouds drift over, and if you like their shadows sweep across the park. Rain greys the light and darkens the canopy; the path and the leaves turn dark and glossy, pools gather on the gravel and rings spread in them. Fog fades the far trees. The wind leans the leaves as they fall.",
     },
-    manifold: { title: "Manifold mark", blurb: "An M of gold leaves swept together on the path." },
   },
-  code: () => import("./code.ts"),
-  theme: skyTheme(params, { rainBelow: 0.4 }),
-  // Entrance: the camera lowers from the canopy onto the path as a gust blows a flurry of leaves through
-  // the swaying boughs. Exit: a stronger gust whirls the leaves up across the frame as the camera tilts
-  // up into the canopy.
-  passage: AUTUMN_PASSAGE,
-  // The world's sky, every part its knobs can show compiled in: the moon's phase (K_moon), the cloud
-  // deck and its shadows (CLOUD_TIER at shadows), the stars, the aurora and shooting stars, the rain.
-  features: worldGates(params),
 };
+
+/** The park composed (composer/compose.ts): its definition, and what its code is assembled from. */
+export const autumnComposed = composeScene(outdoor, preset);
+
+export const autumnScene: SceneDef = { ...autumnComposed.def, code: () => import("./code.ts") };

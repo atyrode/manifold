@@ -1,5 +1,5 @@
 // The lantern river's simulation: paper lanterns floating on a river at dusk (tōrō nagashi), flown
-// on the CPU and handed to the shader (shader.ts) as one row of texels.
+// on the CPU and handed to the lanterns layer's GLSL (shader.ts) as its row of the records atlas.
 //
 // World units are metres: x along the river (right is upstream, the water runs to the left), z
 // across it, away from the viewer, who stands on the near bank EYE metres above the water. The
@@ -42,35 +42,32 @@
 //
 // Passage: arriving, the river opens with its lanterns unlit (the prewarm stops short by the
 // entrance's own seconds, so the last arrivals are still upstream), and their candles catch in a
-// wave from the right edge to the left; leaving, the flames gutter out one by one (see #flame).
+// wave from the right edge to the left; leaving, the flames gutter out one by one (see #flame). The
+// passage is the layer's (LayerFrame.passage): the scene's, or the layer's own when it is switched on
+// or off mid-scene, so lanterns switched on arrive unlit and catch as the scene's would.
 //
-// Texture (rgba16f, TEXTURE_WIDTH × 1, nearest):
+// The lanterns' row of the records atlas (rgba16f; 2 MAX_LANTERNS texels and one a stone):
 //   texel i            lantern slot i: x, z (m; z = 0 marks an empty slot), turn (rad, 0..2π),
 //                      candle 0..1
 //   texel MAX + i      its looks: seed 0..1, 1 for the M lantern, seconds since it was set down on
 //                      the water (60 at most), size (1 = LANTERN_HALF by LANTERN_TALL)
 //   texel 2 MAX + r    rock r: lantern light falling on its visible face, and from which side
-//                      (-1 left .. 1 right)
+//                      (-1 left .. 1 right): the river's stones take it (lanternsShine)
+//
+// Knobs read: the lanterns' own (the `lanterns` switch's count, `flotilla`, `lanternsMark`), the
+// river's `current` (they float on it), the composer's `seed` and the World's `wind`.
+import type { LayerFrame, LayerSim, RecordRows } from "../../composer/types.ts";
 import { KnobReader, type ParamDef } from "../../params.ts";
 import { MAX_PRINCIPALS } from "../../principals.ts";
 import { FixedStep } from "../../sims/clock.ts";
 import { separateDiscs } from "../../sims/discs.ts";
 import { clamp, smoothstep } from "../../sims/math.ts";
 import { Random } from "../../sims/random.ts";
-import { DataTexture } from "../../sims/texture.ts";
-import type { SceneSim, SimFactory, SimFrame, PrincipalState, ScenePoint } from "../types.ts";
-import { PASSAGE_ENTER } from "./constants.ts";
+import type { PrincipalState, ScenePoint } from "../types.ts";
+import { EYE, FAR_BANK, FOCAL, HORIZON, PASSAGE_ENTER } from "./constants.ts";
 
-// ---- The view and the river, shared with the shader ----
+// ---- The lanterns and the river, shared with the shader ----
 
-/** Screen height (uv) of the horizon. */
-export const HORIZON = 0.56;
-/** Vertical field of view (rad), and the focal length it gives (screen heights). */
-export const FOV = 0.5;
-export const FOCAL = 0.5 / Math.tan(FOV / 2);
-/** Eye height over the water, and the distance to the far bank's waterline (m). */
-export const EYE = 2;
-export const FAR_BANK = 130;
 /** Lantern slots; the last is the M lantern's. */
 export const MAX_LANTERNS = 32;
 /** A lantern's half-side and height at size 1 (m), and the M lantern's size. */
@@ -94,8 +91,6 @@ export const ROCKS: readonly Rock[] = [
   { x: -3, z: 19.7, radius: 0.75, height: 0.36 },
   { x: 3.5, z: 33, radius: 1.3, height: 0.7 },
 ];
-
-export const TEXTURE_WIDTH = 2 * MAX_LANTERNS + ROCKS.length;
 
 // ---- The river (sim only) ----
 
@@ -243,8 +238,8 @@ const HAND_MAX = 1.2;
 
 // ---- Lantern light on the rocks ----
 
-/** Distance (m) at which a lantern's light on a rock has fallen to half. */
-const ROCK_GLOW_REACH = 0.9;
+/** Distance (m) at which a lantern's light on a rock, or on anything (lanternsLight), has halved. */
+export const ROCK_GLOW_REACH = 0.9;
 
 // ---- Time ----
 
@@ -272,7 +267,7 @@ const GUTTER_FIRST = 0.04;
 const GUTTER_LAST = 0.58;
 const GUTTER_SPAN = 0.36;
 
-type KnobKey = "lanterns" | "current" | "flotilla" | "lanternSeed" | "wind" | "mark";
+type KnobKey = "lanterns" | "current" | "flotilla" | "seed" | "wind" | "lanternsMark";
 
 /** The simulation was set up wrong: a knob it reads is missing, or it ran out of lantern slots. */
 export class LanternsSimError extends Error {}
@@ -355,17 +350,13 @@ class Eddy {
   amp = 0;
 }
 
-class LanternRiver implements SceneSim {
-  readonly #texture: DataTexture;
-  readonly #data = new Float32Array(TEXTURE_WIDTH * 4);
+class LanternRiver implements LayerSim {
   readonly #knobs: KnobReader<KnobKey>;
   /** The trigger slots of the flotilla and M knobs: their "now" buttons. */
   readonly #flotillaSlot: number;
   readonly #markSlot: number;
   /** The fixed-step clock: STEP seconds of river per step, at most MAX_STEPS owed after a stall. */
   readonly #stepper = new FixedStep(STEP, MAX_STEPS);
-  /** The textures handed to the renderer every frame. */
-  readonly #textures: readonly (WebGLTexture | undefined)[];
   readonly #random = new Random();
   readonly #regular: readonly Lantern[] = Array.from(
     { length: MAX_LANTERNS - 1 },
@@ -418,28 +409,21 @@ class LanternRiver implements SceneSim {
   readonly #handVX = new Float64Array(MAX_PRINCIPALS);
   readonly #handVZ = new Float64Array(MAX_PRINCIPALS);
 
-  constructor(gl: WebGL2RenderingContext, params: readonly ParamDef[]) {
+  constructor(params: readonly ParamDef[]) {
     this.#knobs = new KnobReader("lanterns", params, [
       "lanterns",
       "current",
       "flotilla",
-      "lanternSeed",
+      "seed",
       "wind",
-      "mark",
+      "lanternsMark",
     ]);
     this.#flotillaSlot = this.#knobs.trigger("flotilla");
-    this.#markSlot = this.#knobs.trigger("mark");
+    this.#markSlot = this.#knobs.trigger("lanternsMark");
     this.#mark.mark = true;
-    this.#texture = new DataTexture(gl, {
-      width: TEXTURE_WIDTH,
-      height: 1,
-      format: "rgba16f",
-      filter: "nearest",
-    });
-    this.#textures = [this.#texture.texture];
   }
 
-  frame(frame: SimFrame): readonly (WebGLTexture | undefined)[] {
+  frame(frame: LayerFrame): void {
     const knobs = this.#knobs;
     this.#target = clamp(Math.round(knobs.value(frame, "lanterns")), 0, MAX_LANTERNS - 1);
     const current =
@@ -451,7 +435,7 @@ class LanternRiver implements SceneSim {
     }
     this.#wind = clamp(knobs.value(frame, "wind"), -1, 1);
     this.#flotilla = clamp(knobs.value(frame, "flotilla"), 0, 1);
-    this.#markOn = knobs.value(frame, "mark") > 0.5;
+    this.#markOn = knobs.value(frame, "lanternsMark") > 0.5;
     if (frame.aspect > 0) this.#aspect = frame.aspect;
     this.#leave = clamp(frame.passage.exit, 0, 1);
     this.#wave = clamp(
@@ -461,7 +445,7 @@ class LanternRiver implements SceneSim {
     );
 
     this.#refreshCrossing();
-    const seed = Math.round(knobs.value(frame, "lanternSeed"));
+    const seed = Math.round(knobs.value(frame, "seed"));
     if (seed !== this.#seed) this.#reset(seed, frame.passage.enter < 1, frame.motion);
     else if (this.#veil && frame.passage.enter >= 1) this.#endVeil();
 
@@ -480,16 +464,13 @@ class LanternRiver implements SceneSim {
 
     const due = this.#stepper.advance(Math.max(0, frame.dt) * Math.max(0, frame.motion));
     for (let i = 0; i < due; i++) this.#step();
-    this.#upload(this.#stepper.alpha);
-    return this.#textures;
+    this.#upload(this.#stepper.alpha, frame.records);
   }
 
-  dispose(): void {
-    this.#texture.dispose();
-  }
+  dispose(): void {}
 
   /** The water, near and far, where a press sets a lantern down. */
-  interest(): readonly ScenePoint[] {
+  interest(_aspect: number): readonly ScenePoint[] {
     return SET_DOWN_POINTS;
   }
 
@@ -497,7 +478,7 @@ class LanternRiver implements SceneSim {
    * Hand `i` (every principal's alike; undefined: not present): a press on the water sets a lantern
    * down there; holding it pushes the water along.
    */
-  #follow(i: number, hand: PrincipalState | undefined, frame: SimFrame): void {
+  #follow(i: number, hand: PrincipalState | undefined, frame: LayerFrame): void {
     this.#hand[i] = 0;
     const onWater = hand !== undefined && hand.inside && this.#toWater(hand.x, hand.y);
     if (!onWater) {
@@ -1132,8 +1113,9 @@ class LanternRiver implements SceneSim {
     this.#crossing = Math.max(time, 1);
   }
 
-  #upload(alpha: number): void {
-    const data = this.#data;
+  /** Every slot and the light on the stones, into the lanterns' row of the records atlas. */
+  #upload(alpha: number, records: RecordRows): void {
+    const data = records.data;
     const all = this.#all;
     for (let i = 0; i < all.length; i++) {
       const lantern = all[i];
@@ -1177,11 +1159,11 @@ class LanternRiver implements SceneSim {
       data[o + 2] = 0;
       data[o + 3] = 0;
     }
-    this.#texture.upload(data);
+    records.touch();
   }
 }
 
-/** The lantern river's simulation for a scene whose knobs are `params` (looked up by key). */
-export function lanternsSim(params: readonly ParamDef[]): SimFactory {
-  return (gl) => new LanternRiver(gl, params);
+/** The lanterns layer's sim (LayerCode.sim), for a composition whose `params` carry the knobs KnobKey names. */
+export function lanternsSim(_gl: WebGL2RenderingContext, params: readonly ParamDef[]): LayerSim {
+  return new LanternRiver(params);
 }

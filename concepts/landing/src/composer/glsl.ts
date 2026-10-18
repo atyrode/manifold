@@ -4,8 +4,9 @@
 // runs the on layers' passes in the composer's order. Layers never write the entry themselves.
 //
 // The entry's order:
-//   1. The context (`composerCtx`): the World now, the rig's ray, the light; then every shared
-//      chunk's and every layer's `begin` (the backdrop's sets the air and where the floor ends).
+//   1. The context (`composerCtx`): the World now, the rig's ray (through the passage's lens shift,
+//      `rigShift`, where the rig's passage has one), the light; then every shared chunk's and every
+//      layer's `begin` (the backdrop's sets the air and where the floor ends).
 //   2. The backdrop's `sky`; c.z starts at WORLD_FAR.
 //   3. The far band: every layer's `far`, then every `farVeil`, in canonical order.
 //   4. The ground layer's `ground`, or the composer's plain floor, below the backdrop's land line.
@@ -13,8 +14,10 @@
 //   6. The front band's opaque passes, then its veils.
 //   7. The shared speck map, against c.zs (what stands above the floor: specks hide behind it).
 //   8. Every layer's `air` (the backdrop's forward scatter, a lamp's halo in the fog's air).
-//   9. worldFog, then worldPrecip at c.z (thinned under shelter claims).
-//  10. The grade's vignette and exposure, a speck's palette snap, and shadeOf with the grade's ink.
+//   9. worldFog, then worldPrecip at c.z (thinned under shelter claims, and as the backdrop's
+//      `precip` says: its thinning, its rain's air).
+//  10. The grade's vignette and exposure, a speck's palette snap, and shadeOf with the grade's ink;
+//      then every layer's `shade` over it, in canonical order.
 // A pass of a layer playing its own entrance or exit (sim.ts, row 0 of the atlas) is shown in a
 // growing or shrinking share of cells, cut per cell; at rest every pass runs as written.
 import { glslFloat } from "../shaders/glsl.ts";
@@ -146,6 +149,11 @@ void cellVeil(inout Cell c, vec4 rgba, float z) {
 }
 
 vec3 localLight(vec3 p, vec3 n);
+
+// What a level mirror shows (composerMirror; a backdrop's mirror pass): its colour without the
+// lamps, the lamps' colour, and how bright they are as seen (x) and drawn out down the water (y).
+struct Mirrored { vec3 col; vec3 lampCol; vec2 lamp; };
+Mirrored composerMirror(Ctx x, vec3 at, vec3 ray, WorldView m, vec2 spread);
 `;
 
 /** The plain floor (README "The site") of the preset's kind, where no ground layer lies. */
@@ -211,21 +219,50 @@ ${terms.length === 0 ? "  return vec3(0.0);" : `  vec3 l = vec3(0.0);\n${terms.j
 }
 
 /**
+ * What a level mirror shows (README "Compositing"), for a ground that mirrors (the river): the
+ * backdrop's view in it where it has one (its `mirror` pass), else the World's sky; then the World's
+ * birds in it, along the preset's flyway as the entry's worldBirds flies them.
+ */
+function mirrorGlsl(layers: readonly OnLayer[], preset: ScenePreset): string {
+  const backdrop = layers.find(
+    ({ def }) => def.role === "backdrop" && def.passes.mirror !== undefined,
+  );
+  const fly = preset.flyway;
+  const view =
+    backdrop === undefined
+      ? `  WorldSky sky = worldMirrorSky(x.w, m, WORLD_METEOR_FIELD);
+  Mirrored r = Mirrored(sky.col + sky.strike, vec3(0.0), vec2(0.0));`
+      : `  Mirrored r = ${backdrop.def.passes.mirror}(x, at, ray, m, spread);`;
+  return `
+// What a level mirror at point at shows along the reflected ray (m: its view, worldMirrorView): the
+// backdrop's own view in it, or the World's sky; the World's birds in it.
+Mirrored composerMirror(Ctx x, vec3 at, vec3 ray, WorldView m, vec2 spread) {
+${view}
+  worldBirdsMirrored(x.w, m, WorldFlyway(vec2(${glslFloat(fly.depth[0])}, ${glslFloat(fly.depth[1])}), vec2(RIG_HORIZON + ${glslFloat(fly.above)}, ${glslFloat(fly.top)}), vec2(K_seed * 0.37, ${glslFloat(fly.seed)}), ${glslFloat(fly.skim)}, ${glslFloat(fly.spread)}), x.air.haze, ${glslFloat(fly.ext)} + x.air.rain, 1.0, r.col);
+  return r;
+}
+`;
+}
+
+/**
  * The passes of `kind` of the on layers (those `only` keeps), in canonical order, each shown in its
- * share of cells while the layer plays its own entrance or exit.
+ * share of cells while the layer plays its own entrance or exit (`held`: what a cell not yet showing
+ * it keeps, the cell or the shade). Each pass has one call site: a software rasteriser runs every
+ * line of a program whatever branch a cell takes, so a second would run the pass twice.
  */
 function passCalls(
   layers: readonly OnLayer[],
   kind: keyof LayerPasses,
   args: string,
   only: (def: LayerDef) => boolean = () => true,
+  held: readonly [type: string, name: string] = ["Cell", "c"],
 ): string {
+  const [type, name] = held;
   return layers
     .map(({ def }, k) => {
       const fn = def.passes[kind];
       if (fn === undefined || !only(def)) return "";
-      return `  if (shown[${k}] >= 1.0) ${fn}(${args});
-  else if (shown[${k}] > 0.0) { Cell was = c; ${fn}(${args}); if (edgeThreshold(cell, vec2(${13 + 7 * k}.0, 29.0)) >= shown[${k}]) c = was; }
+      return `  if (shown[${k}] > 0.0) { ${type} was = ${name}; ${fn}(${args}); if (shown[${k}] < 1.0 && edgeThreshold(cell, vec2(${13 + 7 * k}.0, 29.0)) >= shown[${k}]) ${name} = was; }
 `;
     })
     .join("");
@@ -313,10 +350,21 @@ ${specks
     grade.exposure === undefined
       ? ""
       : `  c.col = clamp(c.col * ${glslFloat(grade.exposure)}, 0.0, 1.0);\n`;
+  // The backdrop's say over the rain and snow: their thinning, and the air the far rain fuses into.
+  const backdrop = layers.find(({ def }) => def.role === "backdrop")?.def.precip;
+  const rainAir = backdrop?.air === undefined ? "x.air.fog" : `${backdrop.air}(x)`;
+  const thin =
+    backdrop?.thin === undefined
+      ? undefined
+      : `vec2(${glslFloat(backdrop.thin[0])}, ${glslFloat(backdrop.thin[1])})`;
   const precip = shelter
     ? `  vec2 under = vec2((uv.x - 0.5) * x.aspect * min(c.z, x.landZ) / RIG_FOCAL, min(c.z, x.landZ));
-  worldPrecipThinned(x.w, x.v, x.air.fog, x.air.drop, c.z, vec2(1.0 - shelterAt(under, x)), c.col, c.accent);`
-    : "  worldPrecip(x.w, x.v, x.air.fog, x.air.drop, c.z, c.col, c.accent);";
+  worldPrecipThinned(x.w, x.v, ${rainAir}, x.air.drop, c.z, ${thin === undefined ? "" : `${thin} * `}vec2(1.0 - shelterAt(under, x)), c.col, c.accent);`
+    : thin === undefined
+      ? `  worldPrecip(x.w, x.v, ${rainAir}, x.air.drop, c.z, c.col, c.accent);`
+      : `  worldPrecipThinned(x.w, x.v, ${rainAir}, x.air.drop, c.z, ${thin}, c.col, c.accent);`;
+  const shaded = layers.some(({ def }) => def.passes.shade !== undefined);
+  const shade = `shadeOf(c.col, inkOf(c.col, ${glslFloat(grade.ink.gain)}, ${glslFloat(grade.ink.gamma)}), clamp(c.accent, 0.0, 1.0))`;
   return `
 ${worldGlsl}
 // ---- the composer (composer/glsl.ts): preset ${preset.id}, layers ${layers.map(({ def }) => def.id).join(", ")} ----
@@ -354,7 +402,7 @@ float layerShown(int k) {
 ${accessorsGlsl(layers, allocation)}
 Ctx composerCtx(vec2 uv, vec2 cell) {
   Ctx x;
-  x.uv = uv;
+${rig.passage?.shift === true ? "  // The passage's tilt: the world read lower in uv (rigShift, 0 at rest).\n  uv.y += rigShift();\n" : ""}  x.uv = uv;
   x.cell = cell;
   x.aspect = uRes.x / uRes.y;
   x.aa = 1.0 / uRes.y;
@@ -377,7 +425,7 @@ Ctx composerCtx(vec2 uv, vec2 cell) {
 ${floorGlsl(preset.floor)}
 ${[...shared.values()].map((chunk) => chunk.glsl).join("\n")}
 ${layers.map(({ def, code }) => a.rewrite(def, code.glsl(rig))).join("\n")}
-${lightsGlsl(layers)}
+${lightsGlsl(layers)}${mirrorGlsl(layers, preset)}
 Shade ${COMPOSER_ENTRY}(vec2 uv, vec2 cell, float t) {
   // 1. The context, then each shared part's and each layer's own state for this cell.
   Ctx x = composerCtx(uv, cell);
@@ -393,7 +441,7 @@ ${passCalls(layers, "far", "x, c")}${passCalls(layers, "farVeil", "x, c")}
 ${ground ? `  if (shown[${layers.findIndex(({ def }) => def.role === "ground")}] < 1.0) composerFloor(x, c);\n${passCalls(layers, "ground", "x, c", (def) => def.role === "ground")}` : "  composerFloor(x, c);"}
   // 5. The middle band, the World's birds among it, its veils.
 ${passCalls(layers, "middle", "x, c")}  float zBird = c.z;
-  worldBirds(x.w, x.v, WorldFlyway(vec2(${glslFloat(fly.depth[0])}, ${glslFloat(fly.depth[1])}), vec2(RIG_HORIZON + ${glslFloat(fly.above)}, ${glslFloat(fly.top)}), vec2(K_seed * 0.37, ${glslFloat(fly.seed)}), ${glslFloat(fly.skim)}, ${glslFloat(fly.spread)}), x.air.haze, ${glslFloat(fly.ext)} + x.air.rain, c.col, zBird, c.accent);
+  worldBirds(x.w, x.v, WorldFlyway(vec2(${glslFloat(fly.depth[0])}, ${glslFloat(fly.depth[1])}), vec2(RIG_HORIZON + ${glslFloat(fly.above)}, ${glslFloat(fly.top)}), vec2(K_seed * 0.37, ${glslFloat(fly.seed)}), ${glslFloat(fly.skim)}, ${glslFloat(fly.spread)}), x.air.haze, ${glslFloat(fly.ext)} + x.air.rain${fly.dust === undefined ? "" : ` + ${glslFloat(fly.dust)} * x.air.dust`}, c.col, zBird, c.accent);
   if (zBird < c.z) {
     c.z = zBird;
     c.zs = zBird;
@@ -407,7 +455,7 @@ ${passCalls(layers, "air", "x, c")}
   worldFog(x.w, x.v, x.air.fog, c.z, c.col, c.accent);
 ${precip}
   // 10. The grade.
-${vignette}${exposure}${specks.length === 0 ? "" : "  if (speck) c.col = snapLevel(c.col);\n"}  return shadeOf(c.col, inkOf(c.col, ${glslFloat(grade.ink.gain)}, ${glslFloat(grade.ink.gamma)}), clamp(c.accent, 0.0, 1.0));
+${vignette}${exposure}${specks.length === 0 ? "" : "  if (speck) c.col = snapLevel(c.col);\n"}${shaded ? `  Shade o = ${shade};\n${passCalls(layers, "shade", "x, c, o", () => true, ["Shade", "o"])}  return o;` : `  return ${shade};`}
 }
 `;
 }

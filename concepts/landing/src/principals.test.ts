@@ -7,16 +7,14 @@ import {
   PRESS_SECONDS,
   Presence,
   principal,
-  visitorAlone,
   type Pose,
 } from "./principals.ts";
-import type { ScenePoint, SimFrame } from "./scenes/types.ts";
-import { shoreScene } from "./scenes/shore/index.ts";
-import { shoreSim } from "./scenes/shore/sim.ts";
+import { loadScene } from "./scenes/index.ts";
+import type { ScenePoint } from "./scenes/types.ts";
 import { common } from "./shaders/common.ts";
 import { main } from "./shaders/main.ts";
 import { shakeGlsl } from "./shaders/shake.ts";
-import { HeadlessGl } from "./sims/headless.ts";
+import { HeadlessSim } from "./sims/headless.ts";
 
 /** A sim's points of interest, as SceneSim.interest gives them. */
 const scene = (points: readonly ScenePoint[]) => ({ interest: () => points });
@@ -151,45 +149,22 @@ describe("a frame's principals", () => {
     expect(Array.from(presence.upload.slice(4, 6))).toEqual([Math.fround(0.62), Math.fround(0.5)]);
   });
 
-  test("a sim reacts to every principal: an agent's hand stirs the shore as the visitor's does", () => {
-    const headless = new HeadlessGl();
-    const sim = shoreSim(shoreScene.params)(headless.gl);
-    const visitor = principal({ inside: false });
-    const agent = principal({ inside: true, kind: "agent", x: 0.25, y: 0.4 });
-    const frame: SimFrame = {
-      dt: 1 / 60,
-      time: 0,
-      motionTime: 0,
-      motion: 1,
-      now: 0,
-      budget: Infinity,
-      width: 960,
-      height: 540,
-      aspect: 16 / 9,
-      values: [],
-      params: {},
-      triggers: [],
-      fired: [],
-      passage: { enter: 1, exit: 0 },
-      pointer: visitor,
-      principals: [visitor, agent],
-    };
-    let texture: WebGLTexture | undefined;
-    for (let f = 0; f < 30; f++) {
-      agent.x = 0.25 + 0.01 * f;
-      texture = sim.frame(frame)[0];
-    }
-    if (texture === undefined) throw new Error("shore: no trail");
-    const { width, height, data } = headless.upload(texture);
+  test("a sim reacts to every principal: an agent's hand stirs the shore as the visitor's does", async () => {
+    // The sea's wake: the shore's first field, its third sim slot (composer/sim.ts).
+    const WAKE = 2;
+    const shore = await loadScene("shore");
+    const sim = new HeadlessSim(shore);
+    for (let f = 0; f < 30; f++)
+      sim.step({ pointer: { inside: false }, agents: [{ x: 0.25 + 0.01 * f, y: 0.4 }] });
+    const { width, height, data } = sim.upload(WAKE);
     const at = (x: number, y: number): number =>
       data[Math.floor(y * height) * width + Math.floor(x * width)] ?? 0;
     // The agent's wake, and nothing where the visitor (off the page) or nobody went.
     expect(at(0.4, 0.4)).toBeGreaterThan(0);
     expect(at(0.75, 0.75)).toBe(0);
-    // The visitor alone, away: no wake at all.
-    const still = shoreSim(shoreScene.params)(new HeadlessGl().gl);
-    const empty = still.frame({ ...frame, ...visitorAlone() })[0];
-    expect(empty).toBeDefined();
+    // The visitor alone, away: no wake at all, its field handed over all the same.
+    const still = new HeadlessSim(shore);
+    expect(still.frame({ pointer: { inside: false } })[WAKE]).toBeDefined();
     sim.dispose();
     still.dispose();
   });

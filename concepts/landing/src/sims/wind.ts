@@ -7,14 +7,13 @@
 //
 //   gustPulse(age, rise)    a gust's strength `age` seconds after it began: a = age / rise,
 //                           a² e^(2 (1 - a)); 0 before it begins and from 12 rise on, peaking at 1 at
-//                           age = rise. The gusts of garden (garden/sim.ts, rise 1) and autumn
-//                           (autumn/sim.ts, rise 1.6).
+//                           age = rise. The gusts of garden (garden/sim.ts, rise 1).
 //   gustPulseGlsl           its GLSL twin, `float windGustPulse(float age, float rise)`: the garden
 //                           maple's sway (garden/shader.ts) follows the leaves' gust with it.
-//   windSign(wind)          -1 when the wind is set left beyond -0.05, else +1 (autumn's and garden's
-//                           gusts and autumn's passage).
+//   windSign(wind)          -1 when the wind is set left beyond -0.05, else +1 (garden's gusts and
+//                           autumn's passage).
 //   gustWait(mean, r)       seconds to the next gust for a uniform draw r: mean · (0.6 + 0.8 r), the
-//                           spread of autumn's and bonsai's gust scheduling (autumn's through it).
+//                           spread of bonsai's gust scheduling.
 //   GustTrain               a seeded train of gusts on that spread, with "now" (`start`), each blowing
 //                           with the wind at its own power; `strength(delay)` reads the pulse a
 //                           travelling front brings to a point `delay` seconds after it began.

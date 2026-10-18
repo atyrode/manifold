@@ -2,7 +2,8 @@
 //
 // Whether every scene's fragment program compiles, links and fits WebGL 2's uniform minimum: its
 // default program and, for a setting-keyed scene, its all-features program; for a composed scene
-// also the all-features program of each of its layers turned, and for every scene its committed
+// also the all-features program of each of its layers turned and the programs of each other choice
+// of a structural mode (the dunes' overhead `camera`), and for every scene its committed
 // presets' programs (README "Programs and cost": every preset and committed mix, every layer over
 // its preset's own); each as the renderer builds it (shaders/index.ts fragmentSourceFor: shaken),
 // compiled and linked with the shared vertex shader by Khronos's reference compiler,
@@ -88,8 +89,10 @@ if (validator === null) {
 /**
  * A program to check: a scene's default or all-features fragment program; for a composed scene
  * (SceneDef.layers) also the all-features program of each layer turned (switched on, or off where
- * it is one of the preset's own; a backdrop or ground swapped for the one of its role), and the
- * default and all-features programs of each committed preset of the scene (src/presets.ts).
+ * it is one of the preset's own; a backdrop or ground swapped for the one of its role), the own and
+ * all-features programs of each other choice of a structural knob that is not a layer switch (the
+ * dunes' overhead `camera`), and the default and all-features programs of each committed preset of
+ * the scene (src/presets.ts).
  */
 interface Program {
   id: SceneId;
@@ -123,6 +126,27 @@ const programs: Program[] = (
           source: fragmentSourceFor(scene, features),
         });
     }
+  for (const key of scene.structural ?? []) {
+    if (layers?.offered.some((layer) => layer.id === key) === true) continue;
+    const def = scene.params.find((knob) => knob.key === key);
+    if (def?.kind !== "choice") continue;
+    for (const option of def.options) {
+      if (option.value === def.value) continue;
+      const values = shaderValues(scene, { [key]: option.value });
+      out.push({
+        id,
+        kind: `${key} ${option.value}`,
+        source: fragmentSourceFor(scene, sceneFeatures(scene, values)),
+      });
+      const features = sceneFeaturesAll(scene, values);
+      if (features !== undefined)
+        out.push({
+          id,
+          kind: `all-features, ${key} ${option.value}`,
+          source: fragmentSourceFor(scene, features),
+        });
+    }
+  }
   for (const preset of presets) {
     const query = new URLSearchParams(preset.query);
     if (query.get("scene") !== id) continue;

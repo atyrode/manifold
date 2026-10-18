@@ -30,11 +30,12 @@ describe("the Layers section", () => {
       { role: "dressing", layers: ["apiary on", "dandelions off"] },
       { role: "cover", layers: ["grass off", "wildflowers off"] },
       { role: "life", layers: ["insects on"] },
+      { role: "chore", layers: ["gardening on"] },
     ]);
-    expect(states(bees, beesAt({ apiary: 0 })).at(-1)).toEqual({
-      role: "life",
-      layers: ["insects refused: needs Apiary"],
-    });
+    expect(states(bees, beesAt({ apiary: 0 })).slice(-2)).toEqual([
+      { role: "life", layers: ["insects refused: needs Apiary"] },
+      { role: "chore", layers: ["gardening refused: needs Apiary"] },
+    ]);
     expect(
       states(meadow, (key) => paramDefaults("meadow")[key] ?? 0).map((row) => row.role),
     ).toEqual(["backdrop", "dressing", "cover"]);

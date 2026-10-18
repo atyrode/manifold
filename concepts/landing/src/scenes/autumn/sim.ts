@@ -1,47 +1,64 @@
-// An autumn park: the leaves of the great tree let go, fall as the flat plates they are, and lie.
+// The Autumn park preset's sims (ADR 0062 Phase 2a): the leaves of the great tree let go, fall as the
+// flat plates they are, and lie; the agents rake them into piles. Three layer sims over one park:
+//   maple   the Park itself (its LayerSim, and its affordances): the leaves in the air, the carpet,
+//           the M, the piles and what the gusts do to them, on one random stream for the seed, so a
+//           seed lays out the carpet and the leaves already falling as it always did. Its record row
+//           (AUTUMN_DATA.maple) holds the leaves in the air.
+//   litter  the carpet's two layers as its fields, and the M's knob: it hands the Park the M's goal
+//           and lends the rake the Park (its affordances); it lies under the tree, so it needs the
+//           maple.
+//   rake    the chore: the plan and the tool. The agents' presses by the path set strokes going and
+//           each stroke drags the carpet into a pile through the Park (`rake`); the Park, the host,
+//           owns the piles and nature's undo.
 //
 // Falling leaves are rigid plates in a vertical plane (the shared fluttering-plate model,
 // sims/flutter.ts, as the garden's leaves fall). Light leaves flutter, swinging from side to side and
 // gliding up at the end of each swing; heavier ones tumble end over end. Each leaf's plane turns
 // slowly, the leaf rocks about its chord and spins in its own plane, and the wind, the gusts (the
-// shared gust pulse, sims/wind.ts) and the swirl of a gust carry it. A leaf that touches down eases
-// flat (face up or face down, whichever is nearer) and is then handed to the carpet.
+// composer's one gust field, composer/gust.ts, where the leaf is: ADR 0062 D4) and the swirl of a gust
+// carry it. A leaf that touches down eases flat (face up or face down, whichever is nearer) and is
+// then handed to the carpet.
+//
+// A gust is the field's: as one reaches the tree (its load at the canopy rises past GUST_ONSET) a
+// shower of leaves is shaken loose and often a swirl sets off up or down the path, lifting the
+// leaves lying on top (while the litter is on) and setting them flying; the composer's "now" sends
+// one that always swirls. Everything runs on the motion clock: at motion 0 the park stands still.
 //
 // The carpet is the accumulation (the shared ground-litter lattice, sims/litter.ts): 0.3 m cells over
 // the ground in two layers (the second shifted half a cell and lying beneath), each cell holding at
 // most one leaf: its offset inside the cell, its angle, its colour, which face is up, and a fade level.
 // Landed leaves are written there; a slow sweep over the lattice lets the carpet settle toward the
 // season's density (more leaves as the season runs on, more under the tree, fewer on the path) by
-// fading leaves in and out; a gust's swirl lifts the leaves lying on top off the path and sets them
-// flying again. The Manifold M is leaves swept together into a road-marking M along the path (the cells
-// under its strokes fill with gold leaves, the cells round them are cleared).
+// fading leaves in and out. The Manifold M is leaves swept together into a road-marking M along the
+// path (the cells under its strokes fill with gold leaves, the cells round them are cleared).
 //
-// The rake is the agents' chore (knob `rake`): an agent of the cast that presses on the ground by the
-// path draws one stroke of a rake along the path toward a pile there (Litter.rake): the leaves in the
-// band it passes over are lifted and laid in the pile, heaped under its top once its cells are full,
-// and the raked ground is kept bare. A pile takes six strokes, from up and down the path and either
-// side of its middle, so the agents come back to it (`interest`: the piles under way, and a fresh
-// station along the path for each agent beyond them). Nature undoes it: a gust lifts the piles' leaves
-// and flings them up or down the wind until a pile is blown flat and its ground left to the carpet
-// again, and the leaves go on falling on the raked ground. Without agents none of it runs.
+// The rake is the agents' chore (the `rake` layer): an agent of the cast that presses on the ground
+// by the path draws one stroke of a rake along the path toward a pile there (Litter.rake): the leaves
+// in the band it passes over are lifted and laid in the pile, heaped under its top once its cells are
+// full, and the raked ground is kept bare. A pile takes six strokes, from up and down the path and
+// either side of its middle, so the agents come back to it (`interest`: the piles under way, and a
+// fresh station along the path for each agent beyond them). Nature undoes it: a gust lifts the piles'
+// leaves and flings them up or down the wind until a pile is blown flat and its ground left to the
+// carpet again, and the leaves go on falling on the raked ground. Without agents none of it runs.
 //
 // The scene's passage (layout.ts AUTUMN_PASSAGE) is played here too: as it comes in a gust blows a flurry of
 // leaves in from beyond the windward edge of the frame, and as it leaves a stronger gust and a vortex lift
 // leaves off the carpet and whirl them up across the frame, with a shower from the canopy. At rest none of
 // it runs.
 //
-// Uploads (all rgba16f, nearest):
-//   uSim0  4 x AUTUMN_SLOTS  one row per leaf, four texels:
+// Data (rgba16f, nearest):
+//   the maple's row   AUTUMN_SLOTS leaves of four texels each, leaf i at texels 4i..4i+3:
 //          (x, y, radius, alpha)  screen position from the horizon's centre and radius, in screen heights;
 //          (tx, ty, sx, sy)       the plate's two in-plane axes projected on the screen (perspective kept),
 //                                 so screen offset = radius * (lx * s + ly * t) for leaf-local (lx, ly);
 //          (nx, ny, nz, z)        the upward plate normal in the world, and the depth in metres;
 //          (hue, seed, 0, 0)
-//   uSim1  carpet layer A, uSim2 carpet layer B: AUTUMN_CARPET.cols x rows, one cell per texel:
+//   the litter's fields 0 and 1   carpet layers A and B: AUTUMN_CARPET.cols x rows, one cell per texel:
 //          (ox, oz, angle, w): the leaf's offset in cell units, its tip's heading in the ground plane
 //          (atan2(dz, dx)), and w = face * (level + 16 * isMark + 0.98 * hue), face +1 top up, -1 top
 //          down, level 1..8 (alpha = level / 8), 0 for no leaf.
-//   uSim3  2 x 1: (gust, swirl x, swirl z, swirl strength), (M gathered 0..1, 0, 0, 0).
+import { gustAt, gustWind, newGustWind } from "../../composer/gust.ts";
+import type { LayerFrame, LayerSim } from "../../composer/types.ts";
 import { markDistance } from "../../mark.ts";
 import { KnobReader, type ParamDef } from "../../params.ts";
 import { FlutterPlates } from "../../sims/flutter.ts";
@@ -56,32 +73,25 @@ import {
 import { clamp, hash31, lerp, smoothstep } from "../../sims/math.ts";
 import { mulberry32 } from "../../sims/random.ts";
 import { DataTexture } from "../../sims/texture.ts";
-import { gustPulse, gustWait, windSign } from "../../sims/wind.ts";
-import type { SceneSim, ScenePoint, SimFactory, SimFrame } from "../types.ts";
-import { AUTUMN_PASSAGE } from "./constants.ts";
+import { windSign } from "../../sims/wind.ts";
+import type { ScenePoint } from "../types.ts";
 import {
   AUTUMN_CARPET,
+  AUTUMN_GUST,
   AUTUMN_MARK,
+  AUTUMN_PASSAGE,
   AUTUMN_PATH,
   AUTUMN_SLOTS,
   AUTUMN_TREE,
   AUTUMN_VIEW,
   AUTUMN_WHIRL,
+  AUTUMN_WIDE,
   autumnFlurry,
   autumnPathX,
 } from "./layout.ts";
 
-type Knob = "species" | "fall" | "gusts" | "season" | "wind" | "mark" | "rake" | "parkSeed";
-const KNOBS: readonly Knob[] = [
-  "species",
-  "fall",
-  "gusts",
-  "season",
-  "wind",
-  "mark",
-  "rake",
-  "parkSeed",
-];
+type ParkKnob = "species" | "fall" | "season" | "seed" | "gusts";
+const PARK_KNOBS: readonly ParkKnob[] = ["species", "fall", "season", "seed", "gusts"];
 
 const TAU = Math.PI * 2;
 const SLOTS = AUTUMN_SLOTS;
@@ -115,11 +125,14 @@ const ROLL = 0.3;
 
 // ---- the weather in the air ----------------------------------------------------------------------
 
-/** Wind drift (m/s) at wind = 1; a gust's added drift, its rise time, how long it stays busy. */
+/** Wind drift (m/s) at wind = 1; a gust's added drift at a load of 1 (the field's, times AUTUMN_GUST.gain). */
 const WIND_DRIFT = 1.2;
 const GUST_DRIFT = 2.2;
-const GUST_RISE = 1.6;
-const GUST_BUSY = 16;
+/** A gust begins as the load at the canopy rises past ONSET and is over once it falls below CALM. */
+const GUST_ONSET = 0.3;
+const GUST_CALM = 0.15;
+/** Seconds after a gust began past which nothing of it is left to time (its shower, its swirl). */
+const GUST_SPENT = 22;
 const GUST_SHOWER = 9;
 const GUST_SHAKE = 2.2;
 /** The swirl: how long it lives, how fast it crosses the path, its core radius, peak tangential speed, updraft, reach. */
@@ -192,8 +205,6 @@ const UPLOAD_EVERY_MS = 1000 / 24;
 
 // ---- the rake ------------------------------------------------------------------------------------
 
-/** The narrowest frame the park is laid out for (the shader's aspectE): a narrower one is squeezed. */
-const WIDE = 1.45;
 /** Piles at once; the stations along the path fresh ones are started at (depths, m), each this far from the path's middle, on alternate sides. */
 const PILES = 6;
 const PILE_STATIONS = [5.6, 7.2, 9.0, 11.0, 13.4, 16.2] as const;
@@ -222,22 +233,21 @@ const STROKE_SECONDS = 1.6;
 const STROKE_WIDTH = 0.26;
 const REACH_MIN = 1.0;
 const REACH_RANGE = 1.6;
-/** A gust lifts a pile's leaves while it blows harder than SCATTER_FROM: SCATTER_RATE a second at full strength. */
+/** A gust lifts a pile's leaves while it blows there harder than SCATTER_FROM: SCATTER_RATE a second at a load of 1. */
 const SCATTER_FROM = 0.15;
 const SCATTER_RATE = 40;
 
-/** A pile the agents rake together: Litter.rake's pile, with its strokes. */
-interface Pile extends LitterPile {
+/** A pile raked together on the carpet (Litter.rake's pile): the Park's, with what the rake marks on it. */
+export interface Pile extends LitterPile {
   live: boolean;
   /** Leaves raked into it and not yet blown away: they set its size. */
   leaves: number;
-  /** Strokes begun, of STROKES. */
-  strokes: number;
-  /** Seconds into the stroke under way; below 0 while none is. */
-  t: number;
-  /** Where the rake's head was at the end of the last frame (m). */
-  headX: number;
-  headZ: number;
+  /** A stroke is under way on it (the rake's): the gusts do not blow it flat meanwhile. */
+  raking: boolean;
+  /** How far out its strokes set off (m, the rake's reach): that much ground round it was raked bare. */
+  reach: number;
+  /** The gusts' lifts owed it, in leaves. */
+  debt: number;
 }
 
 const pileRadius = (pile: Pile): number =>
@@ -271,10 +281,12 @@ function carpetBase(season: number): number {
   return 0.2 + 0.9 * Math.pow(clamp(season, 0, 1), 0.7);
 }
 
-class AutumnSim implements SceneSim {
-  readonly #knobs: KnobReader<Knob>;
-  readonly #gustSlot: number;
-  readonly #markSlot: number;
+/**
+ * The park's leaves: the maple's sim, and the host the litter and the rake reach through
+ * `LayerFrame.host` (its affordances are itself).
+ */
+export class Park implements LayerSim {
+  readonly #knobs: KnobReader<ParkKnob>;
 
   // The falling leaves, one slot each.
   readonly #state = new Uint8Array(SLOTS);
@@ -304,7 +316,15 @@ class AutumnSim implements SceneSim {
   #species = 0;
   #seedKnob = -1;
 
-  // The weather.
+  // The weather: the composer's gust field as this frame has it, and whether it blows yet (not while
+  // the park is laid out: the leaves already falling fell in still air); the gust under way, set off
+  // as one reached the tree; the composer's last "now", and whether the next gust swirls for it.
+  readonly #gusts = newGustWind();
+  #fieldOn = false;
+  #tm = 0;
+  #gusting = false;
+  #nowAge = -1;
+  #nowSwirl = false;
   #gustAge = Infinity;
   #gustSign = 1;
   #gustPower = 0.7;
@@ -314,7 +334,6 @@ class AutumnSim implements SceneSim {
   #swirlX = 0;
   #swirlPickup = 0;
   #shower = 0;
-  #nextGust = 25;
   #wind = 0;
 
   // The passage: whether its first frame has passed, the gust's strength and the way it blows, the whirl's core.
@@ -328,12 +347,14 @@ class AutumnSim implements SceneSim {
   #exitShower = 0;
   #exitSeconds = 0;
 
-  // The carpet (sims/litter.ts): layer 0 the lattice on top, layer 1 the shifted one beneath.
+  // The carpet (sims/litter.ts): layer 0 the lattice on top, layer 1 the shifted one beneath; the
+  // litter's fields. While the litter is off nothing is lifted off it.
   readonly #carpet = new Litter(AUTUMN_CARPET, LEVELS);
   /** Per cell: the shape of the carpet's density. */
   readonly #shape = new Float32Array(CELLS);
-  readonly #carpetA: DataTexture;
-  readonly #carpetB: DataTexture;
+  readonly carpetA: DataTexture;
+  readonly carpetB: DataTexture;
+  #litterOn = false;
   #uploadedAt = -Infinity;
   #fadeClock = 0;
   #scanDebt = 0;
@@ -341,147 +362,88 @@ class AutumnSim implements SceneSim {
   #base = 0;
   #hurry = 0;
 
-  // The M.
+  // The M: the litter sets its goal (1 to gather it, 0 to scatter it).
   readonly #strokeCells: number[] = [];
   readonly #marginCells: number[] = [];
   #markShown = 0;
-  #markHold = 0;
-  #markGoal = 0;
+  markGoal = 0;
 
-  // The rake: the piles the agents rake together along the path, the knob as the shader reads it,
-  // how far out the strokes set off, the agents there last frame and the gust's lifts owed.
-  readonly #piles: Pile[] = Array.from({ length: PILES }, () => ({
+  /** The piles raked together along the path (the rake's work, the gusts' to undo). */
+  readonly piles: readonly Pile[] = Array.from({ length: PILES }, () => ({
     x: 0,
     z: 0,
     under: 0,
     live: false,
     leaves: 0,
-    strokes: 0,
-    t: -1,
-    headX: 0,
-    headZ: 0,
+    raking: false,
+    reach: REACH_MIN,
+    debt: 0,
   }));
-  readonly #interest: ScenePoint[] = [];
-  readonly #points: { x: number; y: number }[] = Array.from({ length: PILES + 3 }, () => ({
-    x: 0,
-    y: 0,
-  }));
-  /** A ground point (x, z), m, written by #groundAt and #strokeHead. */
-  readonly #hit = new Float64Array(2);
   /** The cells round a pile (#around): the first column and row, and how many of each. */
   readonly #box = new Int32Array(3);
-  #raking = 0;
-  #reach = REACH_MIN;
-  #agents = 0;
-  #scatterDebt = 0;
-
-  readonly #leafData = new Float32Array(SLOTS * 4 * 4);
-  readonly #leafTexture: DataTexture;
-  readonly #stateData = new Float32Array(2 * 4);
-  readonly #stateTexture: DataTexture;
-  readonly #textures: readonly (WebGLTexture | undefined)[];
 
   constructor(gl: WebGL2RenderingContext, params: readonly ParamDef[]) {
-    this.#knobs = new KnobReader("autumn", params, KNOBS);
-    this.#gustSlot = this.#knobs.trigger("gusts");
-    this.#markSlot = this.#knobs.trigger("mark");
-    this.#leafTexture = new DataTexture(gl, {
-      width: 4,
-      height: SLOTS,
-      format: "rgba16f",
-      filter: "nearest",
-    });
-    this.#carpetA = new DataTexture(gl, {
+    this.#knobs = new KnobReader("maple", params, PARK_KNOBS);
+    this.carpetA = new DataTexture(gl, {
       width: COLS,
       height: ROWS,
       format: "rgba16f",
       filter: "nearest",
     });
-    this.#carpetB = new DataTexture(gl, {
+    this.carpetB = new DataTexture(gl, {
       width: COLS,
       height: ROWS,
       format: "rgba16f",
       filter: "nearest",
     });
-    this.#stateTexture = new DataTexture(gl, {
-      width: 2,
-      height: 1,
-      format: "rgba16f",
-      filter: "nearest",
-    });
-    this.#textures = [
-      this.#leafTexture.texture,
-      this.#carpetA.texture,
-      this.#carpetB.texture,
-      this.#stateTexture.texture,
-    ];
     this.#layOut(
-      this.#knobs.initial("parkSeed"),
+      this.#knobs.initial("seed"),
       this.#knobs.initial("season"),
       this.#knobs.initial("species"),
     );
-    this.#raking = this.#knobs.initial("rake");
   }
 
-  frame(frame: SimFrame): readonly (WebGLTexture | undefined)[] {
+  get affordances(): Park {
+    return this;
+  }
+
+  /** The M lies on the path (gathered or gathering). */
+  get markShown(): boolean {
+    return this.#markShown > 0;
+  }
+
+  frame(frame: LayerFrame): void {
     const knobs = this.#knobs;
-    const seed = Math.round(knobs.value(frame, "parkSeed"));
+    const seed = Math.round(knobs.value(frame, "seed"));
     const season = clamp(knobs.value(frame, "season"), 0, 1);
     const species = Math.round(knobs.value(frame, "species"));
-    this.#wind = knobs.value(frame, "wind");
+    this.#wind = frame.gusts.wind;
     if (seed !== this.#seedKnob) this.#layOut(seed, season, species);
     this.#species = clamp(species, 0, SPECIES.length - 1);
+    this.#litterOn = frame.host("litter") !== undefined;
+    if (!this.#litterOn) this.markGoal = 0;
 
     const real = clamp(frame.dt, 0, 0.1);
     const enter = clamp(frame.passage.enter, 0, 1);
     const exit = clamp(frame.passage.exit, 0, 1);
     this.#passage(frame.aspect, enter, exit);
-    if (frame.fired[this.#gustSlot]) this.#startGust(true, knobs.amount(frame, "gusts"));
-    if (frame.fired[this.#markSlot]) this.#markHold = MARK_HOLD;
-    const busy = this.#gustAge < GUST_BUSY;
-    // A passage plays in real time whatever the motion, like a gust.
-    const dt = real * Math.max(frame.motion, busy || enter < 1 || exit > 0 ? 1 : 0);
+    // A passage plays in real time whatever the motion.
+    const dt = real * Math.max(frame.motion, enter < 1 || exit > 0 ? 1 : 0);
     this.#clock += dt;
-
-    // Gusts come now and then on their own while the feature is on: the busier, the oftener.
-    const gusts = knobs.value(frame, "gusts");
-    if (gusts > 0 && dt > 0) {
-      this.#nextGust -= dt;
-      if (this.#nextGust <= 0) this.#startGust(this.#rand() < 0.6, gusts);
-    }
-    if (this.#gustAge < GUST_BUSY + 6) this.#gustAge += dt;
-    this.#swirlOn = this.#swirlOn && this.#gustAge < SWIRL_LIFE;
-    if (this.#swirlOn) {
-      this.#swirlZ += this.#swirlSign * SWIRL_SPEED * dt;
-      this.#swirlX = autumnPathX(this.#swirlZ) + 0.6 * Math.sin(0.5 * this.#gustAge);
-    }
-
+    this.#weather(frame, dt);
     this.#leaves(dt, knobs.value(frame, "fall"), season);
-
-    // The agents' rake, on the motion clock; the gusts undo it at their own pace.
-    this.#raking = knobs.value(frame, "rake");
-    this.#reach = REACH_MIN + REACH_RANGE * this.#raking;
-    this.#agents = 0;
-    for (const hand of frame.principals) if (hand.kind === "agent") this.#agents++;
-    if (this.#raking > 0 && enter >= 1 && exit <= 0) this.#rakePresses(frame);
-    this.#rake(real * frame.motion);
     this.#scatter(dt);
 
     if (season !== this.#season) this.#changeSeason(season);
-    this.#markHold = Math.max(0, this.#markHold - real);
-    this.#markGoal = knobs.value(frame, "mark") > 0 || this.#markHold > 0 ? 1 : 0;
     this.#gather(real);
     this.#sweep(real);
     this.#fade(real);
-    this.#pack(frame.now);
-    return this.#textures;
+    this.#pack(frame);
   }
 
   dispose(): void {
-    this.#leafTexture.dispose();
-    this.#carpetA.dispose();
-    this.#carpetB.dispose();
-    this.#stateTexture.dispose();
+    this.carpetA.dispose();
+    this.carpetB.dispose();
   }
 
   // ---- the park ------------------------------------------------------------------------------------
@@ -496,7 +458,7 @@ class AutumnSim implements SceneSim {
     this.#state.fill(FREE);
     this.#lifted.fill(0);
     this.#carpet.clear();
-    for (const pile of this.#piles) pile.live = false;
+    for (const pile of this.piles) pile.live = false;
     this.#markShown = 0;
     this.#season = season;
     this.#base = carpetBase(season);
@@ -561,7 +523,9 @@ class AutumnSim implements SceneSim {
     }
     this.#uploadedAt = -Infinity;
 
-    // Leaves already on their way down, caught in their swing.
+    // Leaves already on their way down, caught in their swing, in still air.
+    const fieldOn = this.#fieldOn;
+    this.#fieldOn = false;
     for (let n = 0; n < PREWARM_FALLING; n++) {
       const i = this.#spawn(false);
       if (i < 0) break;
@@ -569,8 +533,8 @@ class AutumnSim implements SceneSim {
       const seconds = 1.5 + 3.5 * rand();
       for (let t = 0; t < seconds && this.#state[i] === FALLING; t += 0.05) this.#fall(i, 0.05);
     }
+    this.#fieldOn = fieldOn;
     this.#nextLeaf = 0.5 + 1.5 * rand();
-    this.#nextGust = 20 + 15 * rand();
   }
 
   /** Whether the carpet, in its sweep, wants a leaf in this layer's cell at the season's density. */
@@ -616,7 +580,7 @@ class AutumnSim implements SceneSim {
     const kind = SPECIES[this.#species] ?? SPECIES[0];
     if (kind === undefined) return;
     const { horizon, eye, focal } = AUTUMN_VIEW;
-    const half = 0.5 * Math.max(aspect, 1.45);
+    const half = 0.5 * Math.max(aspect, AUTUMN_WIDE);
     const rand = this.#rand;
     for (let n = 0; n < FLURRY_LEAVES; n++) {
       const i = this.#freeSlot();
@@ -635,14 +599,48 @@ class AutumnSim implements SceneSim {
 
   // ---- gusts -----------------------------------------------------------------------------------
 
-  /** A gust begins: a push along the wind, a shower from the tree and (often) a swirl up the path. */
+  /**
+   * The composer's gust field this frame, and the gust it brings the tree: one begins as the load at
+   * the canopy rises past GUST_ONSET (a "now" lets the next one swirl, and lets one begin at once if
+   * the tree is already in a gust); then the swirl's way up or down the path.
+   */
+  #weather(frame: LayerFrame, dt: number): void {
+    const g = frame.gusts;
+    gustWind(this.#gusts, g.wind, g.gusts, g.rate, g.nowAge, g.pass, g.shape);
+    this.#tm = frame.motionTime;
+    this.#fieldOn = true;
+    if (g.nowAge >= 0 && (this.#nowAge < 0 || g.nowAge < this.#nowAge)) {
+      this.#nowSwirl = true;
+      this.#gusting = false;
+    }
+    this.#nowAge = g.nowAge;
+    if (dt > 0) {
+      const tree =
+        AUTUMN_GUST.gain *
+        gustAt(this.#gusts, AUTUMN_TREE.canopyX, AUTUMN_TREE.canopyZ, this.#tm, 0);
+      if (!this.#gusting && tree > GUST_ONSET) {
+        this.#gusting = true;
+        this.#startGust(this.#nowSwirl || this.#rand() < 0.6, this.#knobs.amount(frame, "gusts"));
+        this.#nowSwirl = false;
+      } else if (this.#gusting && tree < GUST_CALM) {
+        this.#gusting = false;
+      }
+    }
+    if (this.#gustAge < GUST_SPENT) this.#gustAge += dt;
+    this.#swirlOn = this.#swirlOn && this.#gustAge < SWIRL_LIFE;
+    if (this.#swirlOn) {
+      this.#swirlZ += this.#swirlSign * SWIRL_SPEED * dt;
+      this.#swirlX = autumnPathX(this.#swirlZ) + 0.6 * Math.sin(0.5 * this.#gustAge);
+    }
+  }
+
+  /** A gust reaches the tree: a shower from it and (often) a swirl up the path, as strong as the gusts are set. */
   #startGust(swirl: boolean, amount: number): void {
     const rand = this.#rand;
     this.#gustAge = 0;
-    this.#gustSign = windSign(this.#wind);
+    this.#gustSign = this.#gusts.dirX < 0 ? -1 : 1;
     this.#gustPower = 0.55 + 0.45 * clamp(amount, 0, 1);
     this.#shower = GUST_SHOWER;
-    this.#nextGust = gustWait(45 / (0.4 + 1.2 * clamp(amount, 0, 1)), rand());
     this.#swirlOn = swirl;
     this.#swirlPickup = 0;
     if (swirl) {
@@ -652,10 +650,17 @@ class AutumnSim implements SceneSim {
     }
   }
 
-  /** The air at (x, y, z) for leaf i: the wind, a gust, slow eddies and the swirl, written to #air. */
+  /** The gust field's push at floor point (x, z), the way it blows: 0 in still air (while the park is laid out). */
+  #gustAt(x: number, z: number): number {
+    if (!this.#fieldOn) return 0;
+    const sign = this.#gusts.dirX < 0 ? -1 : 1;
+    return sign * AUTUMN_GUST.gain * gustAt(this.#gusts, x, z, this.#tm, 0);
+  }
+
+  /** The air at (x, y, z) for leaf i: the wind, the gust field, slow eddies and the swirl, written to #air. */
   #airAt(i: number, x: number, y: number, z: number): void {
     const phase = at(this.#phase, i);
-    const gust = gustPulse(this.#gustAge, GUST_RISE) * this.#gustPower * this.#gustSign;
+    const gust = this.#gustAt(x, z);
     let vx =
       this.#wind * WIND_DRIFT + gust * GUST_DRIFT + 0.3 * Math.sin(0.9 * this.#clock + phase);
     let vy = 0.12 * Math.sin(0.7 * this.#clock + 1.7 * phase);
@@ -749,14 +754,14 @@ class AutumnSim implements SceneSim {
         this.#gustAge < GUST_SHAKE ? Math.ceil(GUST_SHOWER * (1 - this.#gustAge / GUST_SHAKE)) : 0;
       while (this.#shower > due && this.#spawn(false) >= 0) this.#shower--;
     }
-    if (this.#swirlOn) this.#pickUp(dt);
+    if (this.#swirlOn && this.#litterOn) this.#pickUp(dt);
     if (this.#exitShower > 0 && inUse < AMBIENT_SLOTS) {
       const due = Math.ceil(
         EXIT_SHOWER * (1 - Math.min(1, this.#exitSeconds / EXIT_SHOWER_SECONDS)),
       );
       while (this.#exitShower > due && this.#spawn(false) >= 0) this.#exitShower--;
     }
-    if (this.#whirl > 0) this.#whirlUp(dt);
+    if (this.#whirl > 0 && this.#litterOn) this.#whirlUp(dt);
 
     for (let i = 0; i < SLOTS; i++) {
       const state = this.#state[i];
@@ -946,145 +951,52 @@ class AutumnSim implements SceneSim {
     return true;
   }
 
-  // ---- the rake ------------------------------------------------------------------------------------
-
-  /**
-   * Where the agents go to work, in screen uv: the piles under way, and a fresh station along the path
-   * for each agent beyond them (none while the M lies there), so each pile is finished before the
-   * next is begun. None while the rake is off.
-   */
-  interest(aspect: number): readonly ScenePoint[] {
-    const points = this.#interest;
-    points.length = 0;
-    if (!(this.#raking > 0)) return points;
-    for (const pile of this.#piles)
-      if (pile.live && pile.strokes < STROKES.length) this.#point(pile.x, pile.z, aspect);
-    if (this.#markShown > 0) return points;
-    let fresh = Math.max(1, this.#agents) - points.length;
-    for (let k = 0; k < PILE_STATIONS.length && fresh > 0; k++) {
-      const z = PILE_STATIONS[k] ?? 0;
-      const x = autumnPathX(z) + (k % 2 === 0 ? PILE_SIDE : -PILE_SIDE);
-      if (this.#pileNear(x, z) !== undefined) continue;
-      this.#point(x, z, aspect);
-      fresh--;
-    }
-    return points;
-  }
-
-  /** Ground point (x, z) (m) as the screen sees it at rest, onto the interest list. */
-  #point(x: number, z: number, aspect: number): void {
-    const point = this.#points[this.#interest.length];
-    if (point === undefined) return;
-    const { horizon, eye, focal } = AUTUMN_VIEW;
-    point.x = 0.5 + (x * focal) / (z * Math.max(aspect, WIDE));
-    point.y = horizon - (eye * focal) / z;
-    this.#interest.push(point);
-  }
-
-  /** Where screen point (u, v) meets the ground at rest, into #hit: false above the horizon or off the carpet. */
-  #groundAt(u: number, v: number, aspect: number): boolean {
-    const { horizon, eye, focal } = AUTUMN_VIEW;
-    const drop = horizon - v;
-    if (!(drop > 1e-3)) return false;
-    const z = (eye * focal) / drop;
-    const x = ((u - 0.5) * Math.max(aspect, WIDE) * z) / focal;
-    const A = AUTUMN_CARPET;
-    if (x < A.x0 || z < A.z0 || x >= A.x0 + COLS * A.cell || z >= A.z0 + ROWS * A.cell)
-      return false;
-    this.#hit[0] = x;
-    this.#hit[1] = z;
-    return true;
-  }
+  // ---- the piles (the rake's host) ----------------------------------------------------------------
 
   /** The live pile within PILE_MERGE of (x, z), if any. */
-  #pileNear(x: number, z: number): Pile | undefined {
-    for (const pile of this.#piles)
+  pileNear(x: number, z: number): Pile | undefined {
+    for (const pile of this.piles)
       if (pile.live && Math.hypot(pile.x - x, pile.z - z) < PILE_MERGE) return pile;
     return undefined;
   }
 
-  /** The agents' presses on the ground by the path: each sets the next stroke of the pile there going, or starts a pile. */
-  #rakePresses(frame: SimFrame): void {
-    for (const hand of frame.principals) {
-      if (hand.kind !== "agent" || !hand.inside || !hand.pressed) continue;
-      if (!this.#groundAt(hand.x, hand.y, frame.aspect)) continue;
-      const x = this.#hit[0] ?? 0;
-      const z = this.#hit[1] ?? 0;
-      let pile = this.#pileNear(x, z);
-      if (pile === undefined) {
-        if (Math.abs(x - autumnPathX(z)) > AUTUMN_PATH.half + PILE_OFF_PATH) continue;
-        for (const free of this.#piles) if (!free.live && pile === undefined) pile = free;
-        if (pile === undefined) continue;
-        pile.live = true;
-        pile.x = x;
-        pile.z = z;
-        pile.under = 0;
-        pile.leaves = 0;
-        pile.strokes = 0;
-        pile.t = -1;
-      }
-      if (pile.t >= 0 || pile.strokes >= STROKES.length) continue;
-      pile.strokes++;
-      pile.t = 0;
-      this.#strokeHead(pile, 0);
-      pile.headX = this.#hit[0] ?? 0;
-      pile.headZ = this.#hit[1] ?? 0;
-    }
+  /** A fresh pile at ground point (x, z) by the path, in a free slot; none off the path or with every slot in use. */
+  startPile(x: number, z: number): Pile | undefined {
+    if (Math.abs(x - autumnPathX(z)) > AUTUMN_PATH.half + PILE_OFF_PATH) return undefined;
+    const pile = this.piles.find((free) => !free.live);
+    if (pile === undefined) return undefined;
+    pile.live = true;
+    pile.x = x;
+    pile.z = z;
+    pile.under = 0;
+    pile.leaves = 0;
+    pile.raking = false;
+    pile.debt = 0;
+    return pile;
+  }
+
+  /** Drag the rake from (ax, az) to (bx, bz) (m): the band it passes over raked into `pile`. */
+  rake(pile: Pile, ax: number, az: number, bx: number, bz: number): void {
+    const radius = pileRadius(pile);
+    pile.leaves += this.#carpet.rake(ax, az, bx, bz, STROKE_WIDTH, pile, radius, this.#rand);
   }
 
   /**
-   * The head of `pile`'s stroke under way, `e` (0..1) of the way along its run, into #hit: from the
-   * stroke's reach up or down the path (and its offset across) in to the pile's edge, closing in on
-   * its middle.
-   */
-  #strokeHead(pile: Pile, e: number): void {
-    const [side, across] = STROKES[pile.strokes - 1] ?? [1, 0];
-    // The path's way at the pile, along (ax, az) and across (az, -ax).
-    const slope = autumnPathX(pile.z + 0.5) - autumnPathX(pile.z - 0.5);
-    const length = Math.hypot(slope, 1);
-    const ax = slope / length;
-    const az = 1 / length;
-    const along = side * lerp(this.#reach, pileRadius(pile), e);
-    const off = across * (1 - 0.6 * e);
-    this.#hit[0] = pile.x + ax * along + az * off;
-    this.#hit[1] = pile.z + az * along - ax * off;
-  }
-
-  /** The strokes under way, `dt` seconds on: each head moves on, raking the band it passes over into its pile. */
-  #rake(dt: number): void {
-    if (!(dt > 0)) return;
-    for (const pile of this.#piles) {
-      if (!pile.live || pile.t < 0) continue;
-      pile.t = Math.min(STROKE_SECONDS, pile.t + dt);
-      const u = pile.t / STROKE_SECONDS;
-      this.#strokeHead(pile, u * u * (3 - 2 * u));
-      const x = this.#hit[0] ?? 0;
-      const z = this.#hit[1] ?? 0;
-      const radius = pileRadius(pile);
-      const { headX, headZ } = pile;
-      pile.leaves += this.#carpet.rake(headX, headZ, x, z, STROKE_WIDTH, pile, radius, this.#rand);
-      pile.headX = x;
-      pile.headZ = z;
-      if (pile.t >= STROKE_SECONDS) pile.t = -1;
-    }
-  }
-
-  /**
-   * Nature's undoing, `dt` seconds of it: while a gust blows the piles' leaves are lifted, flung up as
-   * plates while slots are free and the rest blown down the wind onto the carpet; what lies under a
-   * pile rises in place of its top, and a pile blown flat is gone, its ground left to the carpet.
+   * Nature's undoing, `dt` seconds of it: where a gust blows over a pile its leaves are lifted, flung
+   * up as plates while slots are free and the rest blown down the wind onto the carpet; what lies under
+   * a pile rises in place of its top, and a pile blown flat is gone, its ground left to the carpet.
    */
   #scatter(dt: number): void {
-    const gust = gustPulse(this.#gustAge, GUST_RISE) * this.#gustPower;
-    if (gust > SCATTER_FROM && dt > 0) this.#scatterDebt += dt * SCATTER_RATE * gust;
-    else this.#scatterDebt = 0;
-    const lifts = Math.floor(this.#scatterDebt);
-    this.#scatterDebt -= lifts;
     let flying = 0;
     for (let i = 0; i < SLOTS; i++) if (this.#lifted[i] === 1 && this.#state[i] !== FREE) flying++;
     const rand = this.#rand;
-    for (const pile of this.#piles) {
+    for (const pile of this.piles) {
       if (!pile.live) continue;
+      const gust = Math.abs(this.#gustAt(pile.x, pile.z));
+      if (gust > SCATTER_FROM && dt > 0) pile.debt += dt * SCATTER_RATE * gust;
+      else pile.debt = 0;
+      const lifts = Math.floor(pile.debt);
+      pile.debt -= lifts;
       const radius = pileRadius(pile);
       for (let n = 0; n < lifts; n++) {
         const found = this.#liftFromPile(pile, radius);
@@ -1099,7 +1011,7 @@ class AutumnSim implements SceneSim {
         this.#carpet.deposit(found.x + blown, z, found.angle, found.hue, found.face, rand);
       }
       this.#carpet.heap(pile, radius, rand);
-      if (lifts > 0 && pile.t < 0 && this.#flat(pile, radius)) this.#drop(pile);
+      if (lifts > 0 && !pile.raking && this.#flat(pile, radius)) this.#drop(pile);
     }
   }
 
@@ -1152,7 +1064,7 @@ class AutumnSim implements SceneSim {
    */
   #drop(pile: Pile): void {
     pile.live = false;
-    this.#around(pile, this.#reach + STROKE_WIDTH + 0.5);
+    this.#around(pile, pile.reach + STROKE_WIDTH + 0.5);
     const [i0 = 0, j0 = 0, side = 0] = this.#box;
     const carpet = this.#carpet;
     const A = AUTUMN_CARPET;
@@ -1167,7 +1079,7 @@ class AutumnSim implements SceneSim {
           const x = A.x0 + (i + 0.5) * A.cell;
           const z = A.z0 + (j + 0.5) * A.cell;
           let held = false;
-          for (const other of this.#piles)
+          for (const other of this.piles)
             if (other.live && Math.hypot(other.x - x, other.z - z) < pileRadius(other) + A.cell)
               held = true;
           if (!held) carpet.protect[cell] = 0;
@@ -1199,7 +1111,7 @@ class AutumnSim implements SceneSim {
   /** The M: gold leaves swept together cell by cell under its strokes, the cells round it cleared; or scattered again. */
   #gather(real: number): void {
     const total = this.#strokeCells.length;
-    const target = this.#markGoal * total;
+    const target = this.markGoal * total;
     const step = (total / MARK_SECONDS) * real;
     const before = this.#markShown;
     this.#markShown =
@@ -1242,10 +1154,10 @@ class AutumnSim implements SceneSim {
 
   // ---- upload ------------------------------------------------------------------------------------
 
-  /** Pack and upload the leaves, the carpet and the state; `now` is the frame's wall clock (SimFrame.now), for the carpet's upload rate. */
-  #pack(now: number): void {
+  /** The leaves into the maple's row, and the carpet up (at most UPLOAD_EVERY_MS apart on the frame's wall clock). */
+  #pack(frame: LayerFrame): void {
     const { horizon, eye, focal } = AUTUMN_VIEW;
-    const data = this.#leafData;
+    const data = frame.records.data;
     for (let i = 0; i < SLOTS; i++) {
       const o = i * 16;
       if (this.#state[i] === FREE) {
@@ -1279,30 +1191,228 @@ class AutumnSim implements SceneSim {
       data[o + 14] = 0;
       data[o + 15] = 0;
     }
-    this.#leafTexture.upload(data);
+    frame.records.touch();
 
-    if (this.#carpet.dirty && now - this.#uploadedAt >= UPLOAD_EVERY_MS) {
-      this.#carpetA.upload(this.#carpet.layers[0]);
-      this.#carpetB.upload(this.#carpet.layers[1]);
+    if (this.#carpet.dirty && frame.now - this.#uploadedAt >= UPLOAD_EVERY_MS) {
+      this.carpetA.upload(this.#carpet.layers[0]);
+      this.carpetB.upload(this.#carpet.layers[1]);
       this.#carpet.dirty = false;
-      this.#uploadedAt = now;
+      this.#uploadedAt = frame.now;
     }
-
-    const state = this.#stateData;
-    state[0] = gustPulse(this.#gustAge, GUST_RISE) * this.#gustPower * this.#gustSign;
-    state[1] = this.#swirlX;
-    state[2] = this.#swirlZ;
-    state[3] = this.#swirlOn
-      ? smoothstep(0, 2, this.#gustAge) *
-        (1 - smoothstep(SWIRL_LIFE - 4, SWIRL_LIFE, this.#gustAge)) *
-        this.#gustPower
-      : 0;
-    state[4] = this.#strokeCells.length > 0 ? this.#markShown / this.#strokeCells.length : 0;
-    this.#stateTexture.upload(state);
   }
 }
 
-/** The park's leaves, for a scene whose `params` carry the knobs `Knob` names. */
-export function autumnSim(params: readonly ParamDef[]): SimFactory {
-  return (gl) => new AutumnSim(gl, params);
+/** The litter: the Park's carpet as its two fields, the M's goal handed to the Park, the Park lent to the rake. */
+class LitterSim implements LayerSim {
+  readonly #knobs: KnobReader<"litterMark">;
+  readonly #markSlot: number;
+  /** Seconds a "now" keeps the M gathered yet. */
+  #hold = 0;
+  /** The Park under it (the maple's), once seen: what the rake works through. */
+  affordances?: Park;
+
+  constructor(params: readonly ParamDef[]) {
+    this.#knobs = new KnobReader("litter", params, ["litterMark"]);
+    this.#markSlot = this.#knobs.trigger("litterMark");
+  }
+
+  frame(frame: LayerFrame): void {
+    const park = frame.host("maple");
+    if (!(park instanceof Park)) return;
+    this.affordances = park;
+    if (frame.fired[this.#markSlot]) this.#hold = MARK_HOLD;
+    this.#hold = Math.max(0, this.#hold - clamp(frame.dt, 0, 0.1));
+    park.markGoal = this.#knobs.value(frame, "litterMark") > 0 || this.#hold > 0 ? 1 : 0;
+    const [a, b] = frame.fields;
+    if (a !== undefined) a.texture = park.carpetA.texture;
+    if (b !== undefined) b.texture = park.carpetB.texture;
+  }
+
+  dispose(): void {}
+}
+
+/** The rake's plan for one of the Park's piles: strokes begun (of STROKES), and the one under way. */
+interface Plan {
+  strokes: number;
+  /** Seconds into the stroke under way; below 0 while none is. */
+  t: number;
+  /** Where the rake's head was at the end of the last frame (m). */
+  headX: number;
+  headZ: number;
+}
+
+/** The rake, the agents' chore: their presses by the path set strokes going, each raking into a pile. */
+class RakeSim implements LayerSim {
+  readonly #knobs: KnobReader<"rake">;
+  readonly #plans: readonly Plan[] = Array.from({ length: PILES }, () => ({
+    strokes: 0,
+    t: -1,
+    headX: 0,
+    headZ: 0,
+  }));
+  readonly #interest: ScenePoint[] = [];
+  readonly #points: { x: number; y: number }[] = Array.from({ length: PILES + 3 }, () => ({
+    x: 0,
+    y: 0,
+  }));
+  /** A ground point (x, z), m, written by #groundAt and #strokeHead. */
+  readonly #hit = new Float64Array(2);
+  #park: Park | undefined;
+  /** How far out the strokes set off (m), and the agents there last frame. */
+  #reach = REACH_MIN;
+  #agents = 0;
+
+  constructor(params: readonly ParamDef[]) {
+    this.#knobs = new KnobReader("rake", params, ["rake"]);
+  }
+
+  frame(frame: LayerFrame): void {
+    const park = frame.host("litter");
+    if (!(park instanceof Park)) return;
+    this.#park = park;
+    this.#reach = REACH_MIN + REACH_RANGE * this.#knobs.value(frame, "rake");
+    this.#agents = 0;
+    for (const hand of frame.principals) if (hand.kind === "agent") this.#agents++;
+    if (frame.passage.enter >= 1 && frame.passage.exit <= 0) this.#presses(frame, park);
+    this.#rake(clamp(frame.dt, 0, 0.1) * frame.motion, park);
+  }
+
+  /**
+   * Where the agents go to work, in screen uv: the piles under way, and a fresh station along the path
+   * for each agent beyond them (none while the M lies there), so each pile is finished before the
+   * next is begun.
+   */
+  interest(aspect: number): readonly ScenePoint[] {
+    const points = this.#interest;
+    points.length = 0;
+    const park = this.#park;
+    if (park === undefined) return points;
+    park.piles.forEach((pile, k) => {
+      if (pile.live && (this.#plans[k]?.strokes ?? 0) < STROKES.length)
+        this.#point(pile.x, pile.z, aspect);
+    });
+    if (park.markShown) return points;
+    let fresh = Math.max(1, this.#agents) - points.length;
+    for (let k = 0; k < PILE_STATIONS.length && fresh > 0; k++) {
+      const z = PILE_STATIONS[k] ?? 0;
+      const x = autumnPathX(z) + (k % 2 === 0 ? PILE_SIDE : -PILE_SIDE);
+      if (park.pileNear(x, z) !== undefined) continue;
+      this.#point(x, z, aspect);
+      fresh--;
+    }
+    return points;
+  }
+
+  /** Taken off, the rake leaves no stroke under way. */
+  dispose(): void {
+    for (const pile of this.#park?.piles ?? []) pile.raking = false;
+  }
+
+  /** Ground point (x, z) (m) as the screen sees it at rest, onto the interest list. */
+  #point(x: number, z: number, aspect: number): void {
+    const point = this.#points[this.#interest.length];
+    if (point === undefined) return;
+    const { horizon, eye, focal } = AUTUMN_VIEW;
+    point.x = 0.5 + (x * focal) / (z * Math.max(aspect, AUTUMN_WIDE));
+    point.y = horizon - (eye * focal) / z;
+    this.#interest.push(point);
+  }
+
+  /** Where screen point (u, v) meets the ground at rest, into #hit: false above the horizon or off the carpet. */
+  #groundAt(u: number, v: number, aspect: number): boolean {
+    const { horizon, eye, focal } = AUTUMN_VIEW;
+    const drop = horizon - v;
+    if (!(drop > 1e-3)) return false;
+    const z = (eye * focal) / drop;
+    const x = ((u - 0.5) * Math.max(aspect, AUTUMN_WIDE) * z) / focal;
+    const A = AUTUMN_CARPET;
+    if (x < A.x0 || z < A.z0 || x >= A.x0 + COLS * A.cell || z >= A.z0 + ROWS * A.cell)
+      return false;
+    this.#hit[0] = x;
+    this.#hit[1] = z;
+    return true;
+  }
+
+  /** The agents' presses on the ground by the path: each sets the next stroke of the pile there going, or starts a pile. */
+  #presses(frame: LayerFrame, park: Park): void {
+    for (const hand of frame.principals) {
+      if (hand.kind !== "agent" || !hand.inside || !hand.pressed) continue;
+      if (!this.#groundAt(hand.x, hand.y, frame.aspect)) continue;
+      const x = this.#hit[0] ?? 0;
+      const z = this.#hit[1] ?? 0;
+      let pile = park.pileNear(x, z);
+      if (pile === undefined) {
+        pile = park.startPile(x, z);
+        if (pile === undefined) continue;
+        const fresh = this.#plans[park.piles.indexOf(pile)];
+        if (fresh !== undefined) {
+          fresh.strokes = 0;
+          fresh.t = -1;
+        }
+      }
+      const plan = this.#plans[park.piles.indexOf(pile)];
+      if (plan === undefined || plan.t >= 0 || plan.strokes >= STROKES.length) continue;
+      plan.strokes++;
+      plan.t = 0;
+      pile.raking = true;
+      pile.reach = this.#reach;
+      this.#strokeHead(pile, plan, 0);
+      plan.headX = this.#hit[0] ?? 0;
+      plan.headZ = this.#hit[1] ?? 0;
+    }
+  }
+
+  /**
+   * The head of `pile`'s stroke under way, `e` (0..1) of the way along its run, into #hit: from the
+   * stroke's reach up or down the path (and its offset across) in to the pile's edge, closing in on
+   * its middle.
+   */
+  #strokeHead(pile: Pile, plan: Plan, e: number): void {
+    const [side, across] = STROKES[plan.strokes - 1] ?? [1, 0];
+    // The path's way at the pile, along (ax, az) and across (az, -ax).
+    const slope = autumnPathX(pile.z + 0.5) - autumnPathX(pile.z - 0.5);
+    const length = Math.hypot(slope, 1);
+    const ax = slope / length;
+    const az = 1 / length;
+    const along = side * lerp(pile.reach, pileRadius(pile), e);
+    const off = across * (1 - 0.6 * e);
+    this.#hit[0] = pile.x + ax * along + az * off;
+    this.#hit[1] = pile.z + az * along - ax * off;
+  }
+
+  /** The strokes under way, `dt` seconds on: each head moves on, raking the band it passes over into its pile. */
+  #rake(dt: number, park: Park): void {
+    if (!(dt > 0)) return;
+    park.piles.forEach((pile, k) => {
+      const plan = this.#plans[k];
+      if (!pile.live || plan === undefined || plan.t < 0) return;
+      plan.t = Math.min(STROKE_SECONDS, plan.t + dt);
+      const u = plan.t / STROKE_SECONDS;
+      this.#strokeHead(pile, plan, u * u * (3 - 2 * u));
+      const x = this.#hit[0] ?? 0;
+      const z = this.#hit[1] ?? 0;
+      park.rake(pile, plan.headX, plan.headZ, x, z);
+      plan.headX = x;
+      plan.headZ = z;
+      if (plan.t >= STROKE_SECONDS) {
+        plan.t = -1;
+        pile.raking = false;
+      }
+    });
+  }
+}
+
+/** The maple's sim: the Park. */
+export function mapleSim(gl: WebGL2RenderingContext, params: readonly ParamDef[]): LayerSim {
+  return new Park(gl, params);
+}
+
+/** The litter's sim. */
+export function litterSim(_gl: WebGL2RenderingContext, params: readonly ParamDef[]): LayerSim {
+  return new LitterSim(params);
+}
+
+/** The rake's sim. */
+export function rakeSim(_gl: WebGL2RenderingContext, params: readonly ParamDef[]): LayerSim {
+  return new RakeSim(params);
 }

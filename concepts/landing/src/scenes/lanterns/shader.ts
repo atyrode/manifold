@@ -1,72 +1,73 @@
-// The lantern river's picture: tōrō nagashi at dusk, seen from a low bank across a wide, slow river.
+// The lantern river's picture: tōrō nagashi at dusk, seen from a low bank across a wide, slow river,
+// in three layers of the `outdoor` composer (layers.ts) and the GLSL they share (lanternsSharedGlsl).
 //
-// World units are metres: x right (upstream; the river runs to the left), y up, z ahead, the eye
-// LANTERNS_EYE over the water, the far bank's waterline LANTERNS_BANK ahead. Above that waterline
-// the frame is the far bank (a silhouette in its own plane: tree crowns, a temple hall and a
-// pagoda, a quay with stone lanterns, a vermilion arched bridge hung with lamps whose half-ring
-// closes into a full circle with its reflection, an old pine), a warm glow in the haze over the
-// temple grounds, the wooded hills beyond, falling away toward the sunset on the left, and the
-// world's dusk sky over them. Below it lies the water: a mirror of the sky's afterglow and the bank,
-// bent by ripples into broad horizontal bands, darkening toward our bank; around two stones a
-// cushion of water, a glassy lee and a wake.
+// Units are metres in the rig's frame: x right (upstream; the river runs to the left), y up from the
+// water, z ahead, the eye RIG_EYE over the water, the far bank's waterline LANTERNS_BANK ahead.
 //
-// The lanterns come from the simulation (sim.ts), one texel each in uSim0. Each is a small box
-// traced along the eye ray: wooden tray, paper walls glowing brightest level with the candle, the
-// flame itself a soft drop of light seen through the paper, a column of writing on two walls of
-// the nearer ones, a dark frame, an open top showing the lit far walls. Its reflection is the same
-// box traced along the ray reflected off the rippled water: a wavering mirror image right under
-// it, and below that its glitter: rows of wave facets that tip its light to the eye now and then,
-// so the reflection runs down the water toward the viewer as stacked amber dashes that sway, thin
-// out and fade (how far: K_reflection). The bank's lamps are mirrored the same way. Around each
-// lantern its halo in the air (wider in mist), a pool of light on the water, and rings spreading
-// where one has just been set down. The M lantern is indigo paper with the M cut through.
+// temple (backdrop, templeGlsl). Above that waterline the frame is the far bank (a silhouette in its
+// own plane: tree crowns, a temple hall and a pagoda, a quay with stone lanterns, a vermilion arched
+// bridge hung with lamps whose half-ring closes into a full circle with its reflection, an old pine),
+// a warm glow in the haze over the temple grounds, the wooded hills beyond, falling away toward the
+// sunset on the left, and the World's dusk sky over them (worldSky: the dome with the staged full
+// moon rising out of the frame on the right, the stars, the aurora and shooting stars), its rain deck
+// in the river's warm grey (lanternsCloudBase: darker the heavier it rains, glowing faintly with the
+// temple and town lights after dark, shafts of rain hanging under it). Its view in a level mirror
+// (templeMirror, which the river asks through composerMirror) is the same, the moon swung behind the
+// viewer (worldMirrorSky), softened by the river's roughness, its lamps drawn out down the water. It
+// sets the river's air: the haze toward each bearing, the rain's grey veil, the drops' light (the
+// cloud base they refract); the land ends at the far bank's waterline.
 //
-// Rain (K_rain, slanted by K_wind) belongs to the evening rather than lying over it. The world's
-// deck of cloud draws over the dusk in the river's warm grey (lanternsCloudBase: darker the heavier
-// it rains, glowing faintly with the temple and town lights after dark, shafts of rain hanging
-// under it), the light dims and flattens, the mist greys. The drops fall in depth (the shared
-// rainFall, hidden behind whatever the eye ray meets first) and shine with the cloud base they
-// refract, faint grey lines against the dark bank and water, and amber where they fall
-// through the lanterns' halos; their veil swallows the far bank as it pours. The river rings in
-// front of us, the rings catching the lantern light and the cloud base, and beyond, where the
-// rings are too small to draw, it is a dimpled sheet of grey sheen mirroring the overcast and
-// smearing every reflection. As the world wets (uWeather.x) the bank's tiles, lacquer and stone and
-// the stones in the river darken and turn glossy. In heavy rain the candles gutter, and in a
-// downpour some drown.
+// river (ground, riverGlsl). Below the waterline lies the water: a mirror of the backdrop (the sky's
+// afterglow and the bank, bent by ripples into broad horizontal bands, darkening toward our bank),
+// the bank's lamps glittering down it in rows of wave facets (lanternsGlitter); around two stones a
+// cushion of water, a glassy lee and a wake, the stones themselves and their reflections, warm where
+// the lanterns floating near them light them (the lanterns' sim's light on each, lanternsShine).
+// Rain rings the water in front of us, the rings catching the lantern light and the cloud base, and
+// beyond, where the rings are too small to draw, dimples it into a sheet of grey sheen mirroring the
+// overcast and smearing every reflection. Mist lies on the water, thicker toward the far bank, in
+// long bands drifting downstream, lit by the lanterns in it.
+//
+// lanterns (life, lanternsGlsl). The lanterns come from the simulation (sim.ts), one texel each in
+// the lanterns' row of the records atlas. Each is a small box traced along the eye ray: wooden tray,
+// paper walls glowing brightest level with the candle, the flame itself a soft drop of light seen
+// through the paper, a column of writing on two walls of the nearer ones, a dark frame, an open top
+// showing the lit far walls. Its reflection is the same box traced along the ray reflected off the
+// rippled water: a wavering mirror image right under it, and below that its glitter: rows of wave
+// facets that tip its light to the eye now and then, so the reflection runs down the water toward
+// the viewer as stacked amber dashes that sway, thin out and fade (how far: K_reflection). Around
+// each lantern its halo in the air (wider in mist), a pool of light on the water, and rings
+// spreading where one has just been set down. The M lantern is indigo paper with the M cut through.
+// In heavy rain the candles gutter, and in a downpour some drown. Their light falls on other layers'
+// things (lanternsLight, through the composer's localLight), lights the World's rain veil and fog
+// and turns the drops amber where they fall through a halo (lanternsAir).
+//
+// The passes keep the order the river was painted in: the water, the lanterns' light on it, its
+// mist (riverMiddleVeil), then the nearest lantern over it in its own mist, then the halos; the
+// stones stand before all of that (riverMiddle). The rain, the fog and the birds are the World's, at
+// the composed depth. As the world wets (uWeather.x) the bank's tiles, lacquer and stone and the
+// stones in the river darken and turn glossy.
 //
 // Nothing changes by chance from one frame to the next: every motion is a slow function of time
 // (ripples and glitter rows under 0.2 Hz, flames breathing under 0.4 Hz, a guttering candle dipping
 // over a second), and drawn features stay a few cells wide or fade out before they get finer; only
 // the rain itself is made of falling drops. So the scene sets no shimmer.
 //
-// Birds (K_birds, K_birdKind, K_birdFormation; the shared birds, shaders/lib/birds.ts; off by
-// default): geese by default, a skein crossing the dusk above the far bank, nearer than it, and its
-// image in the water, looked up along the same rippled reflection as the bank's.
-//
-// Knobs: K_ripple, K_reflection, K_mist (water), K_current (ripples drift with the stream; the
-// lanterns themselves are the sim's), K_time, K_cycle, K_stars, K_meteors (sky), K_rain, K_wind,
-// K_aurora (weather), the birds'. The sky is the world's (worldSky, src/scenes/README.md "World
-// layers"): the dome with the staged full moon (it rises out of the frame on the right), the rain's
-// deck, the stars, the aurora and shooting stars, in the sky and in the river's mirror
-// (worldMirrorSky).
+// Knobs read here: the river's K_current (the ripples drift with the stream; the lanterns themselves
+// are the sim's), K_ripple, K_reflection and K_mist (the shared part's mist only while the river is
+// on: LAYER_RIVER); the World's K_rain and K_wind. Passages: arriving, the dusk light settles in from
+// a deeper blue hour; leaving, it sinks again with the flames (lanternsDusk).
 import { glslFloat } from "../../shaders/glsl.ts";
-import { birdsGlsl } from "../../shaders/lib/birds.ts";
-import { worldGlsl } from "../../shaders/lib/world.ts";
+import { FAR_BANK } from "./constants.ts";
 import {
   CURRENT_FAST,
   CURRENT_SLOW,
-  EYE,
-  FAR_BANK,
-  FOCAL,
-  FOV,
-  HORIZON,
   LANTERN_HALF,
   LANTERN_TALL,
   MAX_LANTERNS,
   ROCK_DOWNSTREAM,
+  ROCK_GLOW_REACH,
   ROCKS,
 } from "./sim.ts";
-import { LANTERNS_METEOR_TRIGGER } from "./constants.ts";
 
 const rocks = ROCKS.map(
   (rock) =>
@@ -76,33 +77,106 @@ const downstream = ROCK_DOWNSTREAM.map((d) => `vec2(${glslFloat(d.x)}, ${glslFlo
   ", ",
 );
 
-export const lanternsGlsl = `
-${birdsGlsl}
-${worldGlsl}
-// Where shooting stars set out: skyAngles of the camera's ray (bearing, elevation, radians), high
-// over the far bank.
-const int LANTERNS_METEOR_SLOT = ${LANTERNS_METEOR_TRIGGER};
-const vec4 LANTERNS_METEOR_FIELD = vec4(-0.3, 0.15, 0.6, 0.04);
-const float LANTERNS_HORIZON = ${glslFloat(HORIZON)};
-const float LANTERNS_FOV = ${glslFloat(FOV)};
-const float LANTERNS_FOCAL = ${glslFloat(FOCAL)};
-const float LANTERNS_EYE = ${glslFloat(EYE)};
+/**
+ * What the river's layers share (outdoor-code.ts, held by each): the far bank's distance, the stones,
+ * the lanterns' colour, the rain cloud's underside; per cell the light (lanternsBegin) and the water
+ * the river drew, which the lanterns light.
+ */
+export const lanternsSharedGlsl = `
+// ---- the lantern river's constants, light and water, shared by its layers (lanterns/shader.ts) ----
 const float LANTERNS_BANK = ${glslFloat(FAR_BANK)};
 const int LANTERNS_MAX = ${MAX_LANTERNS};
-const float LANTERNS_HALF = ${glslFloat(LANTERN_HALF)};
-const float LANTERNS_TALL = ${glslFloat(LANTERN_TALL)};
-const float LANTERNS_CURRENT_SLOW = ${glslFloat(CURRENT_SLOW)};
-const float LANTERNS_CURRENT_FAST = ${glslFloat(CURRENT_FAST)};
 const int LANTERNS_ROCKS = ${ROCKS.length};
 const vec4 LANTERNS_ROCK[${ROCKS.length}] = vec4[${ROCKS.length}](${rocks}); // x, z, radius, height (m)
 const vec2 LANTERNS_DOWN[${ROCKS.length}] = vec2[${ROCKS.length}](${downstream}); // downstream from each (unit x, z)
-// How far around a lantern (m, at its distance) its light can reach on screen: halo, rings, wobble.
-const float LANTERNS_REACH = 2.2;
-// The view faces 20 degrees left of the sky's own ahead, toward the sunset: the afterglow stands in
-// the left of the frame, and the lanterns drift toward it. (A sky direction turned by it is the
-// camera's: skyFacing(sky, LANTERNS_FACING); the world's view turns the other way.)
-const float LANTERNS_FACING = -0.35;
+const vec3 LANTERNS_AMBER = vec3(1.0, 0.6, 0.22);
 
+// The rain cloud's underside, unmottled, from haze (the sky's colour low over the bank): a grey
+// that darkens as the rain grows heavy. At dusk and after dark the cloud still glows faintly with
+// the temple's lamps and the town beyond, a warm grey it never falls below, so the river has a
+// sheen to mirror and the drops something to refract. The world's deck takes it where it covers
+// the sky, its gaps and ragged edges mottling it.
+const vec3 LANTERNS_CLOUD_GLOW = vec3(0.17, 0.155, 0.14);
+vec3 lanternsCloudBase(vec3 haze) {
+  vec3 grey = mix(vec3(dot(haze, LUMA)), haze, 0.35);
+  return max(grey, LANTERNS_CLOUD_GLOW) * mix(0.95, 0.65, smoothstep(0.35, 1.0, K_rain));
+}
+
+// The light the river's layers read in every cell (lanternsBegin): the World as the river draws its
+// sky (the moon dimmed under the deck as the sun is), how dark it has grown, the light on the
+// river's things and the haze low over the bank toward this bearing (both through the passage's
+// dusk), the mist lying on the water (lanternsMistKnob the river's knob alone, lanternsMist with the
+// rain's) and the rain cloud's underside.
+World lanternsWorld;
+float lanternsDark;
+float lanternsDusk;
+vec3 lanternsLit;
+vec3 lanternsHaze;
+float lanternsMistKnob;
+float lanternsMist;
+vec3 lanternsCloud;
+// The water this cell's ray meets, as the river drew it (riverGround), for the lanterns' light on
+// it: whether it did, where (x, z: m) and the cell's footprint there, its Fresnel, the reflected
+// ray, the slope of the facets that draw lights out down it and how far they reach, the backdrop
+// mirrored in it, the glitter rows, the rain's rings and how hard the ripples rock what floats.
+bool lanternsWater;
+vec2 lanternsAt;
+vec2 lanternsFoot;
+float lanternsFres;
+vec3 lanternsRefl;
+float lanternsSigma;
+float lanternsReach;
+vec3 lanternsMirror;
+vec3 lanternsGlint;
+vec3 lanternsDrops;
+float lanternsSwell;
+// The lanterns' light in the air here (lanternsMiddle), which the mist over the water takes.
+vec3 lanternsInAir;
+
+void lanternsBegin(Ctx x) {
+  // The World now, its sky turned into the rig's frame lighting the river. Rain comes under the
+  // World's overcast: the light dimmer and flatter (the World's, the moon hidden by the deck as the
+  // sun is), the haze grey, the mist thicker. For the haze: the moon swung round behind the viewer,
+  // as the river mirrors it.
+  lanternsWorld = x.w;
+  lanternsWorld.sky.moonColor *= 1.0 - WORLD_DECK_SUN * x.w.overcast;
+  Sky sky = skyFacing(lanternsWorld.sky, -RIG_TURN);
+  lanternsDark = 1.0 - smoothstep(0.05, 0.5, sky.day);
+  vec3 moonLight = sky.moonColor * (0.3 + 0.6 * sqrt(max(sky.moon.y, 0.0)));
+  vec3 lit = sky.ambient + sky.sunColor * max(sky.sun.y, 0.0) + moonLight;
+  vec3 haze = horizonHaze(skyMirror(sky), x.v.ray, 0.04);
+  haze = greyed(haze, vec3(0.9), 0.55 * x.w.overcast);
+  // Entering, the dusk light settles in from a deeper blue hour; leaving, it sinks again with the
+  // flames. Exactly 1 once arrived and while staying.
+  lanternsDusk = mix(0.42, 1.0, smoothstep(0.0, 0.55, passageIn())) * mix(1.0, 0.4, smoothstep(0.1, 1.0, passageOut()));
+  lanternsLit = lit * lanternsDusk;
+  lanternsHaze = haze * lanternsDusk;
+  // (Distance haze in the rain is the World's veil; here rain only thickens the mist a little.)
+#if LAYER_RIVER
+  lanternsMistKnob = K_mist;
+#else
+  lanternsMistKnob = 0.0;
+#endif
+  lanternsMist = clamp(lanternsMistKnob + 0.15 * K_rain, 0.0, 1.0);
+  lanternsCloud = lanternsCloudBase(lanternsHaze);
+  lanternsWater = false;
+  lanternsInAir = vec3(0.0);
+}
+
+// The lanterns' light on stone i (their sim's: how much, and from which side, -1 left .. 1 right),
+// none while they are not on.
+vec4 lanternsShine(int i) {
+#if LAYER_LANTERNS
+  return lanternsSimOn() ? lanternsRecord(2 * LANTERNS_MAX + i, 0) : vec4(0.0);
+#else
+  return vec4(0.0);
+#endif
+}
+`;
+
+/** The temple grounds' GLSL: the sky and the far bank over the river, its air, its view in the river. */
+export const templeGlsl = `
+// ---- the temple grounds ----
 // The far bank, metres along it from straight ahead.
 const float LANTERNS_TEMPLE = -23.0;
 const float LANTERNS_PAGODA = 22.0;
@@ -117,9 +191,6 @@ const vec4 LANTERNS_PADS[5] = vec4[5](
   vec4(-44.0, 7.2, 3.0, 0.85), vec4(-49.8, 8.6, 2.4, 0.75), vec4(-41.4, 5.5, 2.2, 0.65),
   vec4(-46.8, 10.3, 1.9, 0.7), vec4(-52.3, 6.4, 2.0, 0.65));
 
-const vec3 LANTERNS_AMBER = vec3(1.0, 0.6, 0.22);
-const vec3 LANTERNS_INDIGO = vec3(0.1, 0.13, 0.36);
-const vec3 LANTERNS_WOOD = vec3(0.17, 0.1, 0.06);
 const vec3 LANTERNS_LAMP = vec3(1.0, 0.66, 0.3);
 const vec3 LANTERNS_TREES = vec3(0.07, 0.1, 0.09);
 const vec3 LANTERNS_ROOF = vec3(0.14, 0.15, 0.18);
@@ -319,43 +390,28 @@ float lanternsBank(vec2 b, float foot, float blur, out vec4 alb, out vec2 lamp, 
   return cover;
 }
 
-// The rain cloud's underside, unmottled, from haze (the sky's colour low over the bank): a grey
-// that darkens as the rain grows heavy. At dusk and after dark the cloud still glows faintly with
-// the temple's lamps and the town beyond, a warm grey it never falls below, so the river has a
-// sheen to mirror and the drops something to refract. The world's deck takes it where it covers
-// the sky, its gaps and ragged edges mottling it.
-const vec3 LANTERNS_CLOUD_GLOW = vec3(0.17, 0.155, 0.14);
-vec3 lanternsCloudBase(vec3 haze) {
-  vec3 grey = mix(vec3(dot(haze, LUMA)), haze, 0.35);
-  return max(grey, LANTERNS_CLOUD_GLOW) * mix(0.95, 0.65, smoothstep(0.35, 1.0, K_rain));
-}
-
-// What a ray sees beyond the water: the sky, the hills, a warm glow in the haze over the temple
-// grounds, the far bank where the ray crosses its plane (its tiles, lacquer and stone glossy in the
-// wet), and mist lying along the bank's foot. o is where the ray leaves (the eye, or a point on the
-// water) and r its direction; view the world's view along it (direct: the camera's; else a
-// mirror's, worldMirrorView, its ray tipped up and its footprint widened by the ripples); foot is a
-// cell's size at the bank (m), blur how far the water draws its lamps out.
+// What a ray sees beyond the water, over the sky col (and the rain's deck in the river's warm grey,
+// its alpha in deck.w): the hills, a warm glow in the haze over the temple grounds, the far bank
+// where the ray crosses its plane (its tiles, lacquer and stone glossy in the wet), and mist lying
+// along the bank's foot. o is where the ray leaves (the eye, or a point on the water) and r its
+// direction (direct: the eye's; else a mirror's, its ray tipped up and its footprint widened by the
+// ripples); foot is a cell's size at the bank (m), blur how far the water draws its lamps out.
 // Returns the colour without the bank's lamps; lamp returns their light (x as seen, y drawn out),
 // faded in with the dusk and veiled by the mist, for the caller to lay on.
-vec3 lanternsBeyond(vec3 o, vec3 r, World world, WorldView view, bool direct, vec3 lit, vec3 haze, float dark, float tm, float foot, float blur, out vec2 lamp) {
-  // The world's sky (worldSky; in the river worldMirrorSky, the moon swung behind the viewer): the
-  // dome, the aurora, the rain's deck in the river's warm grey, the stars and the giant planet in
-  // its gaps, shooting stars. Under the deck, from steady rain on, grey shafts of rain hang down
-  // behind the hills, drifting with the wind.
-  WorldSky heaven;
-  if (direct) heaven = worldSky(world, view, LANTERNS_METEOR_FIELD);
-  else heaven = worldMirrorSky(world, view, LANTERNS_METEOR_FIELD);
-  vec4 deck = vec4(lanternsCloudBase(haze), heaven.cloud);
-  vec3 col = mix(heaven.col, deck.rgb, deck.w);
-  float ex = r.x / r.z * LANTERNS_FOCAL;
-  float ey = r.y / r.z * LANTERNS_FOCAL;
+vec3 templeLand(vec3 o, vec3 r, vec3 col, vec4 deck, bool direct, float tm, float foot, float blur, out vec2 lamp) {
+  vec3 lit = lanternsLit;
+  vec3 haze = lanternsHaze;
+  float dark = lanternsDark;
+  // Under the deck, from steady rain on, grey shafts of rain hang down behind the hills, drifting
+  // with the wind.
+  float ex = r.x / r.z * RIG_FOCAL;
+  float ey = r.y / r.z * RIG_FOCAL;
   float shaft = K_rain > 0.0 ? smoothstep(0.55, 0.85, vnoise(vec2(ex * 3.2 - K_wind * tm * 0.02, 4.7))) * smoothstep(0.25, 0.7, K_rain) : 0.0;
 
   // Two ranges of hills, the further paler (aerial perspective), as in an ink-wash painting. They
   // fall away toward the sunset on the left, so the afterglow lies low over the bank there, and
   // the river can mirror it.
-  float aa = max(1.2 / uRes.y, foot * LANTERNS_FOCAL / LANTERNS_BANK);
+  float aa = max(1.2 / uRes.y, foot * RIG_FOCAL / LANTERNS_BANK);
   float fall = mix(0.3, 1.0, smoothstep(-0.95, 0.2, ex));
   vec3 hills = LANTERNS_HILLS * lit;
   col = mix(col, mix(haze, hills, 0.35 + 0.2 * dark), smoothstep(-aa, aa, lanternsHill(ex, 0.075, 0.12, 2.0) * fall - ey));
@@ -368,7 +424,7 @@ vec3 lanternsBeyond(vec3 o, vec3 r, World world, WorldView view, bool direct, ve
   // Lanterns lit among the trees of the temple grounds warm the haze above the hall, so its roofs
   // stand dark against a soft amber glow (and the river mirrors it below); rain thickens the haze.
   vec2 grounds = (b - vec2(LANTERNS_TEMPLE, 9.5)) / vec2(17.0, 6.0);
-  col += vec3(1.0, 0.56, 0.24) * 0.1 * dark * (0.7 + 0.6 * K_mist + 0.5 * K_rain) * exp(-dot(grounds, grounds));
+  col += vec3(1.0, 0.56, 0.24) * 0.1 * dark * (0.7 + 0.6 * lanternsMistKnob + 0.5 * K_rain) * exp(-dot(grounds, grounds));
   vec4 alb;
   float gap;
   float cover = lanternsBank(b, foot, blur, alb, lamp, gap);
@@ -382,11 +438,11 @@ vec3 lanternsBeyond(vec3 o, vec3 r, World world, WorldView view, bool direct, ve
 
   // Mist lying along the foot of the bank, drifting downstream.
   float drift = vnoise(vec2(b.x * 0.05 + tm * 0.02, 4.0));
-  float veil = clamp(K_mist * exp(-max(b.y, 0.0) / 3.5) * (0.55 + 0.45 * drift), 0.0, 0.85);
+  float veil = clamp(lanternsMistKnob * exp(-max(b.y, 0.0) / 3.5) * (0.55 + 0.45 * drift), 0.0, 0.85);
   col = mix(col, haze, veil);
   lamp *= 1.0 - 0.6 * veil;
-  // The rain between the water and the bank softens its reflection as the eye's own rain veil
-  // softens the bank itself (the caller's rainFall).
+  // The rain between the water and the bank softens its reflection as the World's rain veil
+  // softens the bank itself.
   if (!direct) {
     float murk = 0.45 * smoothstep(0.2, 1.0, K_rain);
     col = mix(col, mix(haze, deck.rgb, deck.w), murk);
@@ -394,6 +450,63 @@ vec3 lanternsBeyond(vec3 o, vec3 r, World world, WorldView view, bool direct, ve
   }
   return col;
 }
+
+// ---- the temple grounds' passes ----
+// Per cell (templeBegin): the river's air, the backdrop's: the haze low over the bank toward this
+// bearing; the rain's veil, the haze greyed; the drops' light, the cloud base they refract (a floor
+// so some rain still reads in the dark); the cloud base wet things mirror; the river's aerial haze
+// per metre, thicker in mist. The land ends at the far bank's waterline.
+void templeBegin(inout Ctx x) {
+  x.air = Air(lanternsHaze, greyed(lanternsHaze, vec3(1.0), 0.5) * 0.85, max(lanternsCloud * 1.2, vec3(0.08)), lanternsCloud, 0.0, 0.002 + 0.012 * lanternsMist, 0.0);
+  x.groundTo = RIG_HORIZON - x.eye * RIG_FOCAL / LANTERNS_BANK;
+  x.landZ = LANTERNS_BANK;
+}
+
+// The sky over the far bank (templeSky) with the rain's deck in the river's warm grey, and its alpha:
+// what the land (templeFar) lays its shafts of rain and its wet sheen over.
+vec4 templeDeck;
+
+// Above the far bank's waterline the World's sky (worldSky): the dome, the aurora, the rain's deck in
+// the river's warm grey, the stars and the giant planet in its gaps, shooting stars high over the far
+// bank; the lightning, its bolts dropping behind the hills.
+void templeSky(Ctx x, inout Cell c) {
+  if (x.uv.y < x.groundTo) return;
+  WorldSky heaven = worldSky(lanternsWorld, x.v, WORLD_METEOR_FIELD);
+  templeDeck = vec4(lanternsCloud, heaven.cloud);
+  c.col = mix(heaven.col, templeDeck.rgb, templeDeck.w) + heaven.strike;
+}
+
+// The hills, the temple grounds and the mist at their foot, the bank's lamps lit after dusk (their
+// light the accent); all of it through the passage's dusk.
+void templeFar(Ctx x, inout Cell c) {
+  if (x.uv.y < x.groundTo) return;
+  vec2 lamp;
+  c.col = templeLand(vec3(0.0, x.eye, 0.0), x.v.ray, c.col, templeDeck, true, x.tm, LANTERNS_BANK / (RIG_FOCAL * uRes.y), 0.0, lamp);
+  c.col += LANTERNS_LAMP * lamp.x;
+  c.col *= lanternsDusk;
+  c.accent = lamp.x;
+}
+
+// The temple grounds in a level mirror at point at (the river) along the reflected ray: the World's
+// sky as the mirror shows it (worldMirrorSky, the moon swung behind the viewer) with the deck in the
+// river's warm grey and the bolt's image, the land over it, softened behind the mirror's point by
+// its roughness and its lamps drawn out down the water (spread), and the rain between the water and
+// the bank. The passage's dusk is the mirror's to lay on.
+Mirrored templeMirror(Ctx x, vec3 at, vec3 ray, WorldView m, vec2 spread) {
+  WorldSky heaven = worldMirrorSky(lanternsWorld, m, WORLD_METEOR_FIELD);
+  vec4 deck = vec4(lanternsCloud, heaven.cloud);
+  float behind = LANTERNS_BANK - at.z;
+  vec2 lamp;
+  vec3 col = templeLand(at, ray, mix(heaven.col, deck.rgb, deck.w) + heaven.strike, deck, false, x.tm, LANTERNS_BANK / (RIG_FOCAL * uRes.y) + spread.x * behind, min(spread.y * behind, 6.0), lamp);
+  return Mirrored(col, LANTERNS_LAMP, lamp);
+}
+`;
+
+/** The river's GLSL: the water, its stones and the mist on it. */
+export const riverGlsl = `
+// ---- the river ----
+const float LANTERNS_CURRENT_SLOW = ${glslFloat(CURRENT_SLOW)};
+const float LANTERNS_CURRENT_FAST = ${glslFloat(CURRENT_FAST)};
 
 // Rows of wave facets that can catch a light. A light mirrored at a slope the ripples only now and
 // then reach is seen in the few facets tilted just right, and those lie along the crests: its
@@ -415,6 +528,242 @@ vec3 lanternsGlitter(vec2 p, float tm) {
   float dash = exp(-d * d) * (1.0 - smoothstep(0.36, 0.5, abs(f - 0.5)));
   return vec3(dash, luck, sin(row * 2.1 + tm * 0.4));
 }
+
+// A stone in the stream: half an ellipsoid r across and h tall standing in the water, its outline
+// lumpy. The ray crosses the stone's axis plane at lateral offset u and height v0 and rises climb
+// metres per metre further on. Returns the depth offset of the hit (1e4: none), with the surface
+// normal n and the height v there.
+float lanternsRock(float u, float v0, float climb, float r, float h, float salt, out vec3 n, out float v) {
+  n = vec3(0.0, 1.0, 0.0);
+  v = 0.0;
+  float rr = r * (0.9 + 0.2 * vnoise(vec2(u * 2.2 + salt, salt)));
+  float hh = h * (0.85 + 0.3 * vnoise(vec2(u * 1.6 + salt * 3.0, salt + 5.0)));
+  float ir = 1.0 / (rr * rr);
+  float ih = 1.0 / (hh * hh);
+  float qa = ir + climb * climb * ih;
+  float qb = 2.0 * v0 * climb * ih;
+  float qc = u * u * ir + v0 * v0 * ih - 1.0;
+  float disc = qb * qb - 4.0 * qa * qc;
+  if (disc < 0.0) return 1e4;
+  float w = (-qb - sqrt(disc)) / (2.0 * qa);
+  v = v0 + climb * w;
+  if (v < 0.0) return 1e4;
+  n = normalize(vec3(u * ir, v * ih, w * ir));
+  return w;
+}
+
+// A stone's face, seen along ray: speckled granite lit from the sky above; wet, so its outline
+// mirrors the bright low sky in a pale rim; and warm where the lanterns floating near it light it
+// (shine.x how much, shine.y from which side, -1 left .. 1 right): its face toward them, and a
+// bright amber rim on that side. Dark and wet just above the water; in the rain dark and wet all
+// over, its rims sharper and brighter.
+vec3 lanternsRockShade(vec3 n, float v, float u, vec3 ray, vec3 lit, vec3 haze, vec4 shine, float salt) {
+  float wet = uWeather.x;
+  vec3 alb = wetten(vec3(0.16, 0.155, 0.16) * (0.8 + 0.4 * vnoise(vec2(u * 4.0 + salt, v * 5.0))), wet, 0.1);
+  float rim = 1.0 - max(dot(n, -ray), 0.0);
+  rim *= rim * sqrt(rim);
+  rim *= 1.0 + 1.6 * wetGloss(wet, n.y);
+  vec3 col = alb * lit * (0.35 + 0.9 * max(n.y, 0.0));
+  col += haze * rim * (0.2 + 0.35 * max(n.y, 0.0));
+  float facing = clamp(0.35 - 0.45 * n.z + 0.5 * n.x * shine.y, 0.0, 1.0);
+  float side = clamp(0.35 + 0.65 * n.x * shine.y, 0.0, 1.0);
+  col += LANTERNS_AMBER * shine.x * (alb * facing * 2.4 + rim * side * 0.5);
+  return col * (0.65 + 0.35 * smoothstep(0.0, 0.06, v));
+}
+
+// ---- the river's passes ----
+// Where this cell's ray meets the water, below the far bank's waterline (x.groundTo): the river's
+// surface, the stones' lee and wakes, the rain's rings, the backdrop mirrored through the ripples
+// (composerMirror), the bank's lamps glittering down the water, darker toward our bank; the
+// stones' reflections in place of the sky's. The water's depth, and its state handed on to the
+// lanterns (lanternsWater ...).
+void riverGround(Ctx x, inout Cell c) {
+  if (x.uv.y >= x.groundTo) return;
+  float tm = x.tm;
+  vec3 dir = x.v.ray;
+  vec3 lit = lanternsLit;
+  vec3 haze = x.air.haze;
+  float current = mix(LANTERNS_CURRENT_SLOW, LANTERNS_CURRENT_FAST, K_current);
+  float rippled = K_ripple * (1.0 + 0.6 * abs(K_wind));
+  Ground g = groundHit(dir, x.eye, RIG_FOCAL);
+  float xp = g.p.x;
+  float zp = g.p.y;
+  float cellX = g.foot.x;
+  float cellZ = g.foot.y;
+  // The river's surface: five trains of ripples, crests mostly along the current (rocking half a
+  // radian about it), running slowly across it, carried downstream at 0.6 of the stream (toward
+  // -x), and slowed (more so the finer) so nothing passes a cell faster than ~0.15 Hz. xy: the
+  // slope the cells draw, z: the variance of the trains too fine to draw, which roughens the
+  // mirror instead (rippleSpectrum).
+  vec3 rip = rippleSpectrum(waterDrift(g.p, vec2(-0.6 * current, 0.0), tm), tm, g.foot, rippled,
+                            RippleFan(5, vec2(6.0, 0.53), vec2(0.06, 0.007), vec2(0.14, 0.1), vec2(0.0), vec3(0.5, 2.4, 0.7), 1.9, vec2(7.0, 14.0)));
+  vec3 glint = lanternsGlitter(g.p, tm);
+
+  // The stones: glassy water in the lee of each, a wake opening behind it in two arms that catch
+  // the sky and the lanterns' light, and a cushion of water heaped against its upstream face
+  // (only where it is a few cells wide).
+  float lee = 0.0;
+  float wake = 0.0;
+  vec3 stir = vec3(0.0);
+  for (int i = 0; i < LANTERNS_ROCKS; i++) {
+    vec4 rk = LANTERNS_ROCK[i];
+    vec2 down = LANTERNS_DOWN[i];
+    vec4 shine = lanternsShine(i);
+    vec2 d = vec2(xp - rk.x, zp - rk.y);
+    float ds = dot(d, down);                   // metres downstream of the stone
+    float across = down.x * d.y - down.y * d.x; // metres to one side of its wake
+    float lit2 = 0.0;
+    if (ds > 0.0) {
+      float side = across / rk.z;
+      lee = max(lee, exp(-side * side) * exp(-ds / (3.0 * rk.z)));
+      float arm = (abs(across) - rk.z - 0.3 * ds) / max(0.16 + 0.03 * ds, 2.5 * cellZ);
+      float line = exp(-arm * arm) * exp(-ds / 9.0) * smoothstep(0.0, rk.z, ds);
+      wake += line * sin(ds * 3.0 - tm * 1.0);
+      lit2 = line * 0.55;
+    }
+    float rim = (length(d) - rk.z) / max(0.1, 2.2 * cellZ);
+    lit2 += exp(-rim * rim) * smoothstep(0.0, 0.6, -ds / rk.z) * (1.0 - smoothstep(0.3, 0.45, 2.2 * cellZ));
+    stir += lit2 * (haze * 0.16 + LANTERNS_AMBER * shine.x * 0.12);
+  }
+  vec2 slope = rip.xy * (1.0 - 0.7 * lee) + vec2(0.0, wake * 0.09 * (0.4 + rippled));
+  float hidden = rip.z * (1.0 - 0.7 * lee);
+
+  // Rain: rings on the water, as many as it rains hard, drawn only where the bright crest of a
+  // ring (a tenth of a ring unit) is three cells or more across and deep, and expanding at well
+  // under a cell a frame; finer rings would shimmer through the dither. Further out the rings
+  // are too small to draw but still dimple the whole river, roughening its mirror into a sheen.
+  vec3 drops = vec3(0.0);
+  if (K_rain > 0.0) {
+    vec2 rp = vec2(xp * 2.5, zp * 0.8);
+    float band = 0.1 * min(1.0 / (2.5 * cellX), 1.0 / (0.8 * cellZ));
+    float rainFade = smoothstep(2.5, 4.0, band);
+    drops = rainRipples(rp, uFallTime * 0.7, K_rain) * rainFade;
+    slope += drops.xy * 0.35;
+    hidden += K_rain * 0.008 * (1.0 - rainFade);
+  }
+
+  float spread = sqrt(0.0012 + hidden + 0.003 * K_rain);
+  WaterMirror river = waterMirror(dir, slope, spread * 0.6);
+  float fres = river.fresnel;
+  vec3 refl = vec3(river.ray.x, max(river.ray.y, 0.002), max(river.ray.z, 0.05));
+  // The slope of the facets that draw lights out down the water.
+  float sigma = (0.04 + 0.16 * K_reflection) * (0.45 + 0.55 * min(rippled, 1.0)) + 0.5 * spread;
+  // The sky, hills and bank are mirrored by the same ripples tipped more steeply, so the long
+  // swells fold the afterglow low over the bank and the dark bank and upper sky into broad
+  // horizontal bands.
+  vec3 bands = reflect(dir, normalize(vec3(-slope.x * 1.4, 1.0, -slope.y * 2.2)));
+  bands = vec3(bands.x, max(bands.y, 0.002), max(bands.z, 0.05));
+  // The mirror's view: the ray the ripples reflect, tipped up a little and its footprint widened
+  // by how rough they make the mirror; what it shows softened by that roughness behind it, and its
+  // lamps drawn out by the facets.
+  WorldView mirrored = worldMirrorView(x.v, normalize(bands + vec3(0.0, spread * 0.7, 0.0)), spread * 0.7);
+  Mirrored seen = composerMirror(x, vec3(xp, 0.0, zp), bands, mirrored, vec2(spread * 0.3, 0.8 * sigma));
+  // The bank's lamps mirrored: each a wavering image, and under it glints in the rows of facets.
+  float lampSeen = seen.lamp.x + glint.x * smoothstep(0.35, 0.6, glint.y) * seen.lamp.y * 3.0;
+  vec3 mirror = seen.col + seen.lampCol * lampSeen;
+  mirror *= lanternsDusk;
+  vec3 body = vec3(0.004, 0.012, 0.018) + lit * 0.03; // the river's own dark green-blue
+  // Darker toward our bank, where the water mirrors the high, dim sky and lies in our bank's shade.
+  // Rained on, the river turns a dimpled sheet of grey light: the rings tip facets every way, so
+  // even straight below us much of the water faces the bright cloud base, and under the even
+  // light of the overcast our bank's shade lifts. The ring crests catch the cloud base too.
+  float dimple = smoothstep(0.0, 0.4, K_rain);
+  float shade = mix(0.6 + 0.4 * smoothstep(0.0, 0.32, x.uv.y), 1.0, 0.6 * dimple);
+  float sheen = mix(fres, max(fres, 0.5 + 0.2 * K_rain), dimple);
+  vec3 col = mix(body, mirror, sheen) * shade;
+  col += drops.z * (0.3 * mirror + 0.4 * x.air.deck);
+  col += stir;
+
+  // The stones' reflections, in place of the sky's (in the columns their axis planes cross).
+  vec2 sp = vec2((x.uv.x - 0.5) * x.aspect, x.uv.y); // screen heights, x from the centre
+  for (int i = 0; i < LANTERNS_ROCKS; i++) {
+    vec4 rk = LANTERNS_ROCK[i];
+    float s = RIG_FOCAL / rk.y;
+    float u = (sp.x - rk.x * s) / s;
+    if (abs(u) > rk.z * 1.15 || zp >= rk.y) continue;
+    float salt = float(i) * 7.3 + 1.0;
+    float tau = (rk.y - zp) / refl.z;
+    float ur = xp + refl.x * tau - rk.x;
+    vec3 rn;
+    float rv;
+    if (lanternsRock(ur, refl.y * tau, refl.y / refl.z, rk.z, rk.w, salt, rn, rv) < 1e3) {
+      col += (lanternsRockShade(rn, rv, ur, refl, lit, haze, lanternsShine(i), salt) - mirror) * fres;
+    }
+  }
+  c.col = col;
+  c.z = zp;
+  c.accent = lampSeen * fres * 1.3;
+
+  lanternsWater = true;
+  lanternsAt = g.p;
+  lanternsFoot = g.foot;
+  lanternsFres = fres;
+  lanternsRefl = refl;
+  lanternsSigma = sigma;
+  // How far down the water (m) a lantern's glitter runs before it has faded.
+  lanternsReach = 3.0 + 14.0 * K_reflection;
+  lanternsMirror = mirror;
+  lanternsGlint = glint;
+  lanternsDrops = drops;
+  lanternsSwell = 0.4 + K_ripple;
+}
+
+// The stones standing in the stream, where the eye ray meets one first: speckled granite, wet, warm
+// where the lanterns floating near it light it, fading into the mist with distance.
+void riverMiddle(Ctx x, inout Cell c) {
+  vec2 sp = vec2((x.uv.x - 0.5) * x.aspect, x.uv.y); // screen heights, x from the centre
+  float climb = (x.uv.y - RIG_HORIZON) / RIG_FOCAL; // the eye ray's rise per metre ahead
+  float nearest = 1e4;
+  vec3 solid = vec3(0.0);
+  for (int i = 0; i < LANTERNS_ROCKS; i++) {
+    vec4 rk = LANTERNS_ROCK[i];
+    float s = RIG_FOCAL / rk.y;
+    float u = (sp.x - rk.x * s) / s;
+    if (abs(u) > rk.z * 1.15) continue;
+    float salt = float(i) * 7.3 + 1.0;
+    vec3 rn;
+    float rv;
+    float w = lanternsRock(u, (x.uv.y - RIG_HORIZON) / s + x.eye, climb, rk.z, rk.w, salt, rn, rv);
+    if (rk.y + w < nearest) {
+      nearest = rk.y + w;
+      solid = lanternsRockShade(rn, rv, u, x.v.ray, lanternsLit, x.air.haze, lanternsShine(i), salt);
+    }
+  }
+  // It stands in the water, so only what stands nearer hides it (c.zs), never the water at its foot.
+  if (nearest >= min(c.zs, 1e3)) return;
+  float fm = lanternsMist * (1.0 - exp(-nearest / 40.0)) * 0.7;
+  c.col = mix(solid, x.air.haze * 0.92, fm);
+  c.z = nearest;
+  c.zs = nearest;
+  c.accent = 0.0;
+}
+
+// Mist over the water: thicker toward the far bank, lying in long horizontal bands (sized on screen,
+// so they stay broad near and far) that drift downstream, lit by the lanterns in it; where the cell
+// still shows the water (nothing stands in it: c.zs).
+void riverMiddleVeil(Ctx x, inout Cell c) {
+  if (!lanternsWater || c.zs < WORLD_FAR) return;
+  float xp = lanternsAt.x;
+  float zp = lanternsAt.y;
+  float current = mix(LANTERNS_CURRENT_SLOW, LANTERNS_CURRENT_FAST, K_current);
+  float wisp = vnoise(vec2((xp + 0.6 * current * x.tm) / zp * 2.5, log(zp) * 3.5));
+  float fm = lanternsMist * (1.0 - exp(-zp / 40.0)) * (0.45 + 0.55 * wisp) * 0.8;
+  c.col = mix(c.col, x.air.haze * 0.92 + lanternsInAir * 0.3, fm);
+  c.accent *= 1.0 - fm;
+}
+`;
+
+/** The lanterns' GLSL: the floating lanterns, their light on the water, in the air and on other layers. */
+export const lanternsGlsl = `
+// ---- the lanterns ----
+const float LANTERNS_HALF = ${glslFloat(LANTERN_HALF)};
+const float LANTERNS_TALL = ${glslFloat(LANTERN_TALL)};
+// How far around a lantern (m, at its distance) its light can reach on screen: halo, rings, wobble.
+const float LANTERNS_REACH = 2.2;
+// How far (m) a lantern's light on a thing near it has fallen to half (sim.ts, the stones' light).
+const float LANTERNS_GLOW_REACH = ${glslFloat(ROCK_GLOW_REACH)};
+const vec3 LANTERNS_INDIGO = vec3(0.1, 0.13, 0.36);
+const vec3 LANTERNS_WOOD = vec3(0.17, 0.1, 0.06);
 
 // A lantern's box along a ray. The ray crosses the lantern's axis plane at lateral offset u and
 // height v0 (m) and rises climb metres per metre further on (negative looking down; its shift
@@ -543,405 +892,216 @@ vec3 lanternsWall(vec4 hit, float u, float v0, float size, vec3 paper, float on,
   return col;
 }
 
-// A stone in the stream: half an ellipsoid r across and h tall standing in the water, its outline
-// lumpy. The ray crosses the stone's axis plane at lateral offset u and height v0 and rises climb
-// metres per metre further on. Returns the depth offset of the hit (1e4: none), with the surface
-// normal n and the height v there.
-float lanternsRock(float u, float v0, float climb, float r, float h, float salt, out vec3 n, out float v) {
-  n = vec3(0.0, 1.0, 0.0);
-  v = 0.0;
-  float rr = r * (0.9 + 0.2 * vnoise(vec2(u * 2.2 + salt, salt)));
-  float hh = h * (0.85 + 0.3 * vnoise(vec2(u * 1.6 + salt * 3.0, salt + 5.0)));
-  float ir = 1.0 / (rr * rr);
-  float ih = 1.0 / (hh * hh);
-  float qa = ir + climb * climb * ih;
-  float qb = 2.0 * v0 * climb * ih;
-  float qc = u * u * ir + v0 * v0 * ih - 1.0;
-  float disc = qb * qb - 4.0 * qa * qc;
-  if (disc < 0.0) return 1e4;
-  float w = (-qb - sqrt(disc)) / (2.0 * qa);
-  v = v0 + climb * w;
-  if (v < 0.0) return 1e4;
-  n = normalize(vec3(u * ir, v * ih, w * ir));
-  return w;
-}
-
-// A stone's face, seen along ray: speckled granite lit from the sky above; wet, so its outline
-// mirrors the bright low sky in a pale rim; and warm where the lanterns floating near it light it
-// (shine.x how much, shine.y from which side, -1 left .. 1 right): its face toward them, and a
-// bright amber rim on that side. Dark and wet just above the water; in the rain dark and wet all
-// over, its rims sharper and brighter.
-vec3 lanternsRockShade(vec3 n, float v, float u, vec3 ray, vec3 lit, vec3 haze, vec4 shine, float salt) {
-  float wet = uWeather.x;
-  vec3 alb = wetten(vec3(0.16, 0.155, 0.16) * (0.8 + 0.4 * vnoise(vec2(u * 4.0 + salt, v * 5.0))), wet, 0.1);
-  float rim = 1.0 - max(dot(n, -ray), 0.0);
-  rim *= rim * sqrt(rim);
-  rim *= 1.0 + 1.6 * wetGloss(wet, n.y);
-  vec3 col = alb * lit * (0.35 + 0.9 * max(n.y, 0.0));
-  col += haze * rim * (0.2 + 0.35 * max(n.y, 0.0));
-  float facing = clamp(0.35 - 0.45 * n.z + 0.5 * n.x * shine.y, 0.0, 1.0);
-  float side = clamp(0.35 + 0.65 * n.x * shine.y, 0.0, 1.0);
-  col += LANTERNS_AMBER * shine.x * (alb * facing * 2.4 + rim * side * 0.5);
-  return col * (0.65 + 0.35 * smoothstep(0.0, 0.06, v));
-}
-
-Shade sceneLanterns(vec2 uv, vec2 cell, float t) {
-  float tm = uMotionTime;
-  float aspect = uRes.x / uRes.y;
-  vec2 sp = vec2((uv.x - 0.5) * aspect, uv.y); // screen heights, x from the centre
-  vec3 dir = viewRay(uv, aspect, LANTERNS_HORIZON, LANTERNS_FOV);
-
-  // The world now, and its view from the bank; its sky turned into the camera's frame lights the
-  // scene. Rain comes under the world's overcast: the light dimmer and flatter (the world's, the
-  // moon hidden by the deck as the sun is), the haze grey, the mist thicker. For the haze: the moon
-  // swung round behind the viewer, as the river mirrors it.
-  World world = worldAt(LANTERNS_METEOR_SLOT, -1);
-  float overcast = world.overcast;
-  world.sky.moonColor *= 1.0 - WORLD_DECK_SUN * overcast;
-  WorldView view = worldViewOf(dir, uv, LANTERNS_HORIZON, LANTERNS_FOCAL, LANTERNS_EYE, -LANTERNS_FACING, 1.0);
-  Sky sky = skyFacing(world.sky, LANTERNS_FACING);
-  Sky skyM = skyMirror(sky);
-  float dark = 1.0 - smoothstep(0.05, 0.5, sky.day);
-  vec3 moonLight = sky.moonColor * (0.3 + 0.6 * sqrt(max(sky.moon.y, 0.0)));
-  vec3 lit = sky.ambient + sky.sunColor * max(sky.sun.y, 0.0) + moonLight;
-  // The sky low over the far bank in this direction: the colour of haze and mist.
-  vec3 haze = horizonHaze(skyM, dir, 0.04);
-  haze = greyed(haze, vec3(0.9), 0.55 * overcast);
-  // Entering, the dusk light settles in from a deeper blue hour; leaving, it sinks again with the
-  // flames. Exactly 1 once arrived and while staying.
-  float dusk = mix(0.42, 1.0, smoothstep(0.0, 0.55, passageIn())) * mix(1.0, 0.4, smoothstep(0.1, 1.0, passageOut()));
-  lit *= dusk;
-  haze *= dusk;
-  // (Distance haze in the rain is the shared veil's; here rain only thickens the mist a little.)
-  float mist = clamp(K_mist + 0.15 * K_rain, 0.0, 1.0);
-  // In heavy rain the candles gutter.
+// How brightly lantern st's candle burns now (its records st and lk): breathing (lanternsFlicker);
+// in heavy rain guttering now and then (a dip of a second or so, every eight), and in a downpour
+// about one in five drowned to an ember; never the M lantern's.
+float lanternsOn(vec4 st, vec4 lk, float tm) {
+  float seed = lk.x;
+  bool mark = lk.y > 0.5;
   float storm = smoothstep(0.5, 1.0, K_rain);
-  vec3 cloud = lanternsCloudBase(haze); // the rain cloud's underside
-  float current = mix(LANTERNS_CURRENT_SLOW, LANTERNS_CURRENT_FAST, K_current);
-  float rippled = K_ripple * (1.0 + 0.6 * abs(K_wind));
-  float shore = LANTERNS_HORIZON - LANTERNS_EYE * LANTERNS_FOCAL / LANTERNS_BANK;
-  float bankFoot = LANTERNS_BANK / (LANTERNS_FOCAL * uRes.y);
-  bool water = uv.y < shore;
+  float gutter = 1.0 - storm * (0.15 + 0.35 * pow(max(sin(tm * 0.8 + seed * 40.0), 0.0), 8.0));
+  gutter *= 1.0 - 0.8 * smoothstep(0.75, 1.0, K_rain) * step(fract(seed * 7.7), 0.2) * (mark ? 0.0 : 1.0);
+  return st.w * lanternsFlicker(seed, tm) * gutter;
+}
 
-  vec3 col;
-  float lamp = 0.0; // the bank's lamplight in view, for the accent
-  // Where the eye ray meets the water, the cell's footprint there, and how the water mirrors.
-  float zp = 1e4;
-  float xp = 0.0;
-  float cellX = 0.0;
-  float cellZ = 0.0;
-  float fres = 0.0;
-  float sigma = 0.0; // rms slope of the facets that draw lights out down the water
-  vec3 refl = vec3(0.0, 1.0, 1.0);
-  vec3 mirror = vec3(0.0);
-  vec3 glint = vec3(0.0);
-  // How far down the water (m) a lantern's glitter runs before it has faded.
-  float reach = 3.0 + 14.0 * K_reflection;
-  // Rain on the water: rings (xy tilt, z light on their crests) and how much of them these cells
-  // can draw.
-  vec3 drops = vec3(0.0);
-  float rainFade = 0.0;
-  // The birds' flights (no flight while K_birds is off), seen above the bank and in the water;
-  // hazed by the mist over the river.
-  BirdSky flights = birdSky(K_birds * smoothfall(0.5, 0.1, K_rain), K_birdKind, K_birdFormation - 1.0, vec2(40.0, 125.0), vec2(0.62, 0.98), vec2(K_lanternSeed * 0.37, 2.9));
-  flights.hours = vec4(0.22, 0.26, 0.86, 0.9);
-  flights.clock = vec2(K_time, K_cycle);
-  BirdCamera birdCam = BirdCamera(LANTERNS_HORIZON, LANTERNS_FOCAL, LANTERNS_EYE, 1.0, 1.0);
-  float birdHaze = 0.002 + 0.012 * mist;
+// ---- the lanterns' passes ----
+// What lanternsMiddle leaves for after the water's mist (lanternsMiddleVeil): whether a lantern's
+// box is the nearest thing in the cell, how far, how much of the cell it covers, its colour and its
+// glow; and the glow of their halos.
+bool lanternsBoxed;
+float lanternsNear;
+float lanternsCover;
+vec3 lanternsSolid;
+float lanternsSolidGlow;
+float lanternsAirGlow;
 
-  if (!water) {
-    vec2 bankLamp;
-    col = lanternsBeyond(vec3(0.0, LANTERNS_EYE, 0.0), dir, world, view, true, lit, haze, dark, tm, bankFoot, 0.0, bankLamp);
-    col += LANTERNS_LAMP * bankLamp.x;
-    lamp = bankLamp.x;
-    col *= dusk;
-    BirdHit bird = birdFlights(sp, flights, birdCam, tm, 1.0 / uRes.y);
-    if (bird.cover > 0.5) {
-      col = mix(bird.albedo * lit, haze, 1.0 - exp(-bird.depth * birdHaze));
-      lamp = 0.0;
-    }
-  } else {
-    Ground g = groundHit(dir, LANTERNS_EYE, LANTERNS_FOCAL);
-    xp = g.p.x;
-    zp = g.p.y;
-    cellX = g.foot.x;
-    cellZ = g.foot.y;
-    // The river's surface: five trains of ripples, crests mostly along the current (rocking half a
-    // radian about it), running slowly across it, carried downstream at 0.6 of the stream (toward
-    // -x), and slowed (more so the finer) so nothing passes a cell faster than ~0.15 Hz. xy: the
-    // slope the cells draw, z: the variance of the trains too fine to draw, which roughens the
-    // mirror instead (rippleSpectrum).
-    vec3 rip = rippleSpectrum(waterDrift(g.p, vec2(-0.6 * current, 0.0), tm), tm, g.foot, rippled,
-                              RippleFan(5, vec2(6.0, 0.53), vec2(0.06, 0.007), vec2(0.14, 0.1), vec2(0.0), vec3(0.5, 2.4, 0.7), 1.9, vec2(7.0, 14.0)));
-    glint = lanternsGlitter(g.p, tm);
-
-    // The stones: glassy water in the lee of each, a wake opening behind it in two arms that catch
-    // the sky and the lanterns' light, and a cushion of water heaped against its upstream face
-    // (only where it is a few cells wide).
-    float lee = 0.0;
-    float wake = 0.0;
-    vec3 stir = vec3(0.0);
-    for (int i = 0; i < LANTERNS_ROCKS; i++) {
-      vec4 rk = LANTERNS_ROCK[i];
-      vec2 down = LANTERNS_DOWN[i];
-      vec4 shine = uSimOn.x > 0.5 ? texelFetch(uSim0, ivec2(2 * LANTERNS_MAX + i, 0), 0) : vec4(0.0);
-      vec2 d = vec2(xp - rk.x, zp - rk.y);
-      float ds = dot(d, down);                   // metres downstream of the stone
-      float across = down.x * d.y - down.y * d.x; // metres to one side of its wake
-      float lit2 = 0.0;
-      if (ds > 0.0) {
-        float side = across / rk.z;
-        lee = max(lee, exp(-side * side) * exp(-ds / (3.0 * rk.z)));
-        float arm = (abs(across) - rk.z - 0.3 * ds) / max(0.16 + 0.03 * ds, 2.5 * cellZ);
-        float line = exp(-arm * arm) * exp(-ds / 9.0) * smoothstep(0.0, rk.z, ds);
-        wake += line * sin(ds * 3.0 - tm * 1.0);
-        lit2 = line * 0.55;
-      }
-      float rim = (length(d) - rk.z) / max(0.1, 2.2 * cellZ);
-      lit2 += exp(-rim * rim) * smoothstep(0.0, 0.6, -ds / rk.z) * (1.0 - smoothstep(0.3, 0.45, 2.2 * cellZ));
-      stir += lit2 * (haze * 0.16 + LANTERNS_AMBER * shine.x * 0.12);
-    }
-    vec2 slope = rip.xy * (1.0 - 0.7 * lee) + vec2(0.0, wake * 0.09 * (0.4 + rippled));
-    float hidden = rip.z * (1.0 - 0.7 * lee);
-
-    // Rain: rings on the water, as many as it rains hard, drawn only where the bright crest of a
-    // ring (a tenth of a ring unit) is three cells or more across and deep, and expanding at well
-    // under a cell a frame; finer rings would shimmer through the dither. Further out the rings
-    // are too small to draw but still dimple the whole river, roughening its mirror into a sheen.
-    if (K_rain > 0.0) {
-      vec2 rp = vec2(xp * 2.5, zp * 0.8);
-      float band = 0.1 * min(1.0 / (2.5 * cellX), 1.0 / (0.8 * cellZ));
-      rainFade = smoothstep(2.5, 4.0, band);
-      drops = rainRipples(rp, uFallTime * 0.7, K_rain) * rainFade;
-      slope += drops.xy * 0.35;
-      hidden += K_rain * 0.008 * (1.0 - rainFade);
-    }
-
-    float spread = sqrt(0.0012 + hidden + 0.003 * K_rain);
-    WaterMirror river = waterMirror(dir, slope, spread * 0.6);
-    fres = river.fresnel;
-    refl = vec3(river.ray.x, max(river.ray.y, 0.002), max(river.ray.z, 0.05));
-    sigma = (0.04 + 0.16 * K_reflection) * (0.45 + 0.55 * min(rippled, 1.0)) + 0.5 * spread;
-    // The sky, hills and bank are mirrored by the same ripples tipped more steeply, so the long
-    // swells fold the afterglow low over the bank and the dark bank and upper sky into broad
-    // horizontal bands.
-    vec3 bands = reflect(dir, normalize(vec3(-slope.x * 1.4, 1.0, -slope.y * 2.2)));
-    bands = vec3(bands.x, max(bands.y, 0.002), max(bands.z, 0.05));
-    float behind = LANTERNS_BANK - zp;
-    vec2 bankLamp;
-    // The mirror's view: the ray the ripples reflect, tipped up a little and its footprint widened
-    // by how rough they make the mirror.
-    WorldView mirrored = worldMirrorView(view, normalize(bands + vec3(0.0, spread * 0.7, 0.0)), spread * 0.7);
-    mirror = lanternsBeyond(vec3(xp, 0.0, zp), bands, world, mirrored, false, lit, haze, dark, tm,
-                            bankFoot + spread * behind * 0.3, min(0.8 * sigma * behind, 6.0), bankLamp);
-    BirdHit image = birdFlightsSeen(bands.xy / bands.z * LANTERNS_FOCAL + vec2(0.0, LANTERNS_HORIZON), flights, birdCam, tm, 1.0 / uRes.y, true);
-    if (image.cover > 0.5) {
-      mirror = mix(image.albedo * lit, haze, 1.0 - exp(-image.depth * birdHaze));
-      bankLamp = vec2(0.0);
-    }
-    // The bank's lamps mirrored: each a wavering image, and under it glints in the rows of facets.
-    float lampSeen = bankLamp.x + glint.x * smoothstep(0.35, 0.6, glint.y) * bankLamp.y * 3.0;
-    mirror += LANTERNS_LAMP * lampSeen;
-    mirror *= dusk;
-    lamp = lampSeen * fres * 1.3;
-    vec3 body = vec3(0.004, 0.012, 0.018) + lit * 0.03; // the river's own dark green-blue
-    // Darker toward our bank, where the water mirrors the high, dim sky and lies in our bank's shade.
-    // Rained on, the river turns a dimpled sheet of grey light: the rings tip facets every way, so
-    // even straight below us much of the water faces the bright cloud base, and under the even
-    // light of the overcast our bank's shade lifts. The ring crests catch the cloud base too.
-    float dimple = smoothstep(0.0, 0.4, K_rain);
-    float shade = mix(0.6 + 0.4 * smoothstep(0.0, 0.32, uv.y), 1.0, 0.6 * dimple);
-    float sheen = mix(fres, max(fres, 0.5 + 0.2 * K_rain), dimple);
-    col = mix(body, mirror, sheen) * shade;
-    col += drops.z * (0.3 * mirror + 0.4 * cloud);
-    col += stir;
-  }
-
-  // Solids on the water, nearest first by depth: the stones, then the lanterns.
-  float nearest = 1e4;
+// Every lantern of the sim's (its row: x, z (m), turn (rad), candle 0..1; then seed, M, age (s),
+// size), against what already stands nearer (the stones: c.zs): its box, its halo in the air and,
+// on the water the river drew, its reflection, its glitter, its pool of light and its rings. Their
+// light on the water goes on where the cell still shows it, before the water's mist (which takes
+// their halos' light); the boxes and the halos go on after it.
+void lanternsMiddle(Ctx x, inout Cell c) {
+  lanternsBoxed = false;
+  lanternsAirGlow = 0.0;
+  if (!lanternsSimOn()) return;
+  float tm = x.tm;
+  vec2 uv = x.uv;
+  vec2 sp = vec2((uv.x - 0.5) * x.aspect, uv.y); // screen heights, x from the centre
+  bool water = lanternsWater;
+  float xp = lanternsAt.x;
+  float zp = lanternsAt.y;
+  float cellZ = lanternsFoot.y;
+  float fres = lanternsFres;
+  vec3 refl = lanternsRefl;
+  float sigma = lanternsSigma;
+  float reach = lanternsReach;
+  vec3 mirror = lanternsMirror;
+  vec3 glint = lanternsGlint;
+  float mist = lanternsMist;
+  vec3 lit = lanternsLit;
+  float climb = (uv.y - RIG_HORIZON) / RIG_FOCAL; // the eye ray's rise per metre ahead
+  float nearest = c.zs;
   vec3 solid = vec3(0.0);
   float solidCover = 0.0;
   float solidGlow = 0.0;
-  float climb = (uv.y - LANTERNS_HORIZON) / LANTERNS_FOCAL; // the eye ray's rise per metre ahead
-  for (int i = 0; i < LANTERNS_ROCKS; i++) {
-    vec4 rk = LANTERNS_ROCK[i];
-    float s = LANTERNS_FOCAL / rk.y;
-    float u = (sp.x - rk.x * s) / s;
-    if (abs(u) > rk.z * 1.15) continue;
-    vec4 shine = uSimOn.x > 0.5 ? texelFetch(uSim0, ivec2(2 * LANTERNS_MAX + i, 0), 0) : vec4(0.0);
-    float salt = float(i) * 7.3 + 1.0;
-    vec3 rn;
-    float rv;
-    float w = lanternsRock(u, (uv.y - LANTERNS_HORIZON) / s + LANTERNS_EYE, climb, rk.z, rk.w, salt, rn, rv);
-    if (rk.y + w < nearest) {
-      nearest = rk.y + w;
-      solid = lanternsRockShade(rn, rv, u, dir, lit, haze, shine, salt);
-      solidCover = 1.0;
-      solidGlow = 0.0;
-    }
-    // Its reflection, in place of the sky's.
-    if (water && zp < rk.y) {
-      float tau = (rk.y - zp) / refl.z;
-      float ur = xp + refl.x * tau - rk.x;
-      if (lanternsRock(ur, refl.y * tau, refl.y / refl.z, rk.z, rk.w, salt, rn, rv) < 1e3) {
-        col += (lanternsRockShade(rn, rv, ur, refl, lit, haze, shine, salt) - mirror) * fres;
-      }
-    }
-  }
-
   vec3 onWater = vec3(0.0); // lantern light on the water: reflections, pools, rings
   float waterGlow = 0.0;
   vec3 inAir = vec3(0.0);   // lantern light in the air: halos
   float airGlow = 0.0;
   vec3 pool = vec3(0.0);    // lantern light falling on the water here, for the rain's rings
-  if (uSimOn.x > 0.5) {
-    for (int i = 0; i < LANTERNS_MAX; i++) {
-      vec4 st = texelFetch(uSim0, ivec2(i, 0), 0); // x, z (m), turn (rad), candle 0..1
-      if (st.y < 1.0) continue;                    // an empty slot
-      float s = LANTERNS_FOCAL / st.y;             // screen heights per metre at the lantern
-      float qx = (sp.x - st.x * s) / s;            // metres across from it, at its distance
-      if (abs(qx) > LANTERNS_REACH) continue;
-      float qy = (uv.y - LANTERNS_HORIZON) / s + LANTERNS_EYE; // metres over the water there
-      if (qy > LANTERNS_REACH + 0.6 || (!water && qy < -LANTERNS_REACH)) continue;
-      vec4 lk = texelFetch(uSim0, ivec2(i + LANTERNS_MAX, 0), 0); // seed, M, age (s), size
-      float seed = lk.x;
-      bool mark = lk.y > 0.5;
-      float size = lk.w;
-      float a = LANTERNS_HALF * size;
-      float hl = LANTERNS_TALL * size;
-      // In heavy rain each candle gutters now and then (a dip of a second or so, every eight), and
-      // in a downpour about one in five drowns to an ember; never the M lantern's.
-      float gutter = 1.0 - storm * (0.15 + 0.35 * pow(max(sin(tm * 0.8 + seed * 40.0), 0.0), 8.0));
-      gutter *= 1.0 - 0.8 * smoothstep(0.75, 1.0, K_rain) * step(fract(seed * 7.7), 0.2) * (mark ? 0.0 : 1.0);
-      float on = st.w * lanternsFlicker(seed, tm) * gutter;
-      float cs = cos(st.z);
-      float sn = sin(st.z);
-      vec3 paper = lanternsPaper(seed);
-      vec3 mean = mark ? LANTERNS_AMBER * 0.45 : paper * 0.85; // its light, seen blurred
-      float cpm = s * uRes.y;
-      // Riding the ripples: a slow bob, and a roll a little behind it.
-      float ph = tm * 0.85 + st.y * 0.7 + st.x * 0.3 + seed * TAU;
-      float swell = 0.4 + K_ripple;
-      float bob = 0.012 * swell * sin(ph);
-      float roll = 0.03 * swell * cos(ph + 0.7);
+  for (int i = 0; i < LANTERNS_MAX; i++) {
+    vec4 st = lanternsRecord(i, 0); // x, z (m), turn (rad), candle 0..1
+    if (st.y < 1.0) continue;       // an empty slot
+    float s = RIG_FOCAL / st.y;     // screen heights per metre at the lantern
+    float qx = (sp.x - st.x * s) / s; // metres across from it, at its distance
+    if (abs(qx) > LANTERNS_REACH) continue;
+    float qy = (uv.y - RIG_HORIZON) / s + x.eye; // metres over the water there
+    if (qy > LANTERNS_REACH + 0.6 || (!water && qy < -LANTERNS_REACH)) continue;
+    vec4 lk = lanternsRecord(i + LANTERNS_MAX, 0); // seed, M, age (s), size
+    float seed = lk.x;
+    bool mark = lk.y > 0.5;
+    float size = lk.w;
+    float a = LANTERNS_HALF * size;
+    float hl = LANTERNS_TALL * size;
+    float on = lanternsOn(st, lk, tm);
+    float cs = cos(st.z);
+    float sn = sin(st.z);
+    vec3 paper = lanternsPaper(seed);
+    vec3 mean = mark ? LANTERNS_AMBER * 0.45 : paper * 0.85; // its light, seen blurred
+    float cpm = s * uRes.y;
+    // Riding the ripples: a slow bob, and a roll a little behind it.
+    float ph = tm * 0.85 + st.y * 0.7 + st.x * 0.3 + seed * TAU;
+    float swell = lanternsSwell;
+    float bob = 0.012 * swell * sin(ph);
+    float roll = 0.03 * swell * cos(ph + 0.7);
 
-      // The lantern itself, its sides softened over a cell.
-      float v0 = qy - bob;
-      float u = qx - roll * (v0 - 0.5 * hl);
-      float hw = a * (abs(cs) + abs(sn));
-      float inside = (hw - abs(u)) * cpm;
-      if (inside > -0.5) {
-        vec4 hit = lanternsBox(clamp(u, -0.999 * hw, 0.999 * hw), v0, climb, cs, sn, a, hl);
-        if (hit.x >= 0.0 && st.y + hit.w < nearest) {
-          nearest = st.y + hit.w;
-          solid = lanternsWall(hit, u, v0, size, paper, on, seed, mark, cpm, tm, lit, solidGlow);
-          solidCover = clamp(inside + 0.5, 0.0, 1.0);
-        }
-      }
-
-      // Its halo in the air, wider and stronger in mist; mostly hidden while it floats behind a
-      // stone.
-      vec2 hc = vec2(qx, qy - 0.55 * hl);
-      float d2 = dot(hc, hc);
-      float hr = 0.26 + 0.42 * mist;
-      float behindStone = nearest < st.y - 0.3 ? 0.3 : 1.0;
-      float halo = on * size * behindStone * ((0.07 + 0.38 * mist) * exp(-d2 / (hr * hr)) + (0.025 + 0.05 * mist) * exp(-d2 / 0.45));
-      inAir += mean * halo;
-      airGlow += halo;
-
-      if (!water) continue;
-      // Its reflection: the box traced along the reflected ray. Right under the lantern, where
-      // that ray meets a wall, its wavering mirror image. Below that its glitter: the rows of facets
-      // that tip its light to the eye, fewer and fainter further down the water (the odds fall as
-      // the slope needed steepens, and with distance, over K_reflection's reach), each row's dash
-      // swaying a little to one side. Amber dashes, darker than the lantern.
-      if (zp < st.y) {
-        float dz = st.y - zp;
-        float tau = dz / refl.z;
-        float vr = refl.y * tau - bob;
-        float ur = xp + refl.x * tau - st.x;
-        if (vr <= hl) {
-          vec4 rh = lanternsBox(ur, vr, refl.y / refl.z, cs, sn, a, hl);
-          if (rh.x >= 0.0 && rh.x < 3.5) {
-            float gw;
-            onWater += lanternsWall(rh, ur, vr, size, paper, on, seed, mark, cpm, tm, lit, gw) * fres * 1.2;
-            waterGlow += gw * fres * 1.2;
-          }
-        }
-        float sv = 2.0 * sigma * dz + 0.05;
-        float above = max(vr - hl, 0.0) / sv;
-        float chance = exp(-above * above - dz / reach) * smoothstep(0.4 * hl, hl, vr);
-        if (chance > 0.01) {
-          float su = 0.8 * sigma * dz * LANTERNS_EYE / zp;
-          float wide = 0.7 * hw + 0.4 * su;
-          float across = 1.0 - smoothstep(wide, wide + 0.3 * hw + 0.4 * su + 1.5 / cpm, abs(ur - glint.z * 0.6 * su));
-          float k = glint.x * smoothstep(1.0 - chance, 1.15 - chance, glint.y) * across * (0.35 + 0.65 * chance) * fres * 2.0;
-          onWater += mean * on * k;
-          waterGlow += on * (mark ? 0.45 : 1.0) * k;
-        }
-      }
-      // A pool of its light on the water around it, and rings spreading where it was set down.
-      vec2 dw = vec2(xp - st.x, zp - st.y);
-      float dist2 = dot(dw, dw);
-      onWater += mean * on * size * 0.1 * exp(-dist2 / 0.3);
-      pool += mean * on * size * exp(-dist2 / 1.5);
-      if (lk.z < 4.5) {
-        float rr = 0.22 + 0.32 * lk.z;
-        float wr = max(0.07, 2.4 * cellZ);
-        float dist = sqrt(dist2);
-        float fade = 1.0 - lk.z / 4.5;
-        float r1 = (dist - rr) / wr;
-        float r2 = (dist - 0.55 * rr) / wr;
-        float ring = (exp(-r1 * r1) + 0.5 * exp(-r2 * r2)) * fade * fade;
-        onWater += (mean * max(on, 0.3) * 0.6 + mirror * 0.5) * ring;
-        waterGlow += ring * 0.5;
+    // The lantern itself, its sides softened over a cell.
+    float v0 = qy - bob;
+    float u = qx - roll * (v0 - 0.5 * hl);
+    float hw = a * (abs(cs) + abs(sn));
+    float inside = (hw - abs(u)) * cpm;
+    if (inside > -0.5) {
+      vec4 hit = lanternsBox(clamp(u, -0.999 * hw, 0.999 * hw), v0, climb, cs, sn, a, hl);
+      if (hit.x >= 0.0 && st.y + hit.w < nearest) {
+        nearest = st.y + hit.w;
+        solid = lanternsWall(hit, u, v0, size, paper, on, seed, mark, cpm, tm, lit, solidGlow);
+        solidCover = clamp(inside + 0.5, 0.0, 1.0);
+        lanternsBoxed = true;
       }
     }
-  }
 
-  float glow = lamp;
-  if (water) {
-    col += onWater;
-    glow += waterGlow;
+    // Its halo in the air, wider and stronger in mist; mostly hidden while it floats behind a
+    // stone.
+    vec2 hc = vec2(qx, qy - 0.55 * hl);
+    float d2 = dot(hc, hc);
+    float hr = 0.26 + 0.42 * mist;
+    float behindStone = nearest < st.y - 0.3 ? 0.3 : 1.0;
+    float halo = on * size * behindStone * ((0.07 + 0.38 * mist) * exp(-d2 / (hr * hr)) + (0.025 + 0.05 * mist) * exp(-d2 / 0.45));
+    inAir += mean * halo;
+    airGlow += halo;
+
+    if (!water) continue;
+    // Its reflection: the box traced along the reflected ray. Right under the lantern, where
+    // that ray meets a wall, its wavering mirror image. Below that its glitter: the rows of facets
+    // that tip its light to the eye, fewer and fainter further down the water (the odds fall as
+    // the slope needed steepens, and with distance, over K_reflection's reach), each row's dash
+    // swaying a little to one side. Amber dashes, darker than the lantern.
+    if (zp < st.y) {
+      float dz = st.y - zp;
+      float tau = dz / refl.z;
+      float vr = refl.y * tau - bob;
+      float ur = xp + refl.x * tau - st.x;
+      if (vr <= hl) {
+        vec4 rh = lanternsBox(ur, vr, refl.y / refl.z, cs, sn, a, hl);
+        if (rh.x >= 0.0 && rh.x < 3.5) {
+          float gw;
+          onWater += lanternsWall(rh, ur, vr, size, paper, on, seed, mark, cpm, tm, lit, gw) * fres * 1.2;
+          waterGlow += gw * fres * 1.2;
+        }
+      }
+      float sv = 2.0 * sigma * dz + 0.05;
+      float above = max(vr - hl, 0.0) / sv;
+      float chance = exp(-above * above - dz / reach) * smoothstep(0.4 * hl, hl, vr);
+      if (chance > 0.01) {
+        float su = 0.8 * sigma * dz * x.eye / zp;
+        float wide = 0.7 * hw + 0.4 * su;
+        float across = 1.0 - smoothstep(wide, wide + 0.3 * hw + 0.4 * su + 1.5 / cpm, abs(ur - glint.z * 0.6 * su));
+        float k = glint.x * smoothstep(1.0 - chance, 1.15 - chance, glint.y) * across * (0.35 + 0.65 * chance) * fres * 2.0;
+        onWater += mean * on * k;
+        waterGlow += on * (mark ? 0.45 : 1.0) * k;
+      }
+    }
+    // A pool of its light on the water around it, and rings spreading where it was set down.
+    vec2 dw = vec2(xp - st.x, zp - st.y);
+    float dist2 = dot(dw, dw);
+    onWater += mean * on * size * 0.1 * exp(-dist2 / 0.3);
+    pool += mean * on * size * exp(-dist2 / 1.5);
+    if (lk.z < 4.5) {
+      float rr = 0.22 + 0.32 * lk.z;
+      float wr = max(0.07, 2.4 * cellZ);
+      float dist = sqrt(dist2);
+      float fade = 1.0 - lk.z / 4.5;
+      float r1 = (dist - rr) / wr;
+      float r2 = (dist - 0.55 * rr) / wr;
+      float ring = (exp(-r1 * r1) + 0.5 * exp(-r2 * r2)) * fade * fade;
+      onWater += (mean * max(on, 0.3) * 0.6 + mirror * 0.5) * ring;
+      waterGlow += ring * 0.5;
+    }
+  }
+  lanternsNear = nearest;
+  lanternsCover = solidCover;
+  lanternsSolid = solid;
+  lanternsSolidGlow = solidGlow;
+  lanternsInAir = inAir;
+  lanternsAirGlow = airGlow;
+  if (water && c.zs >= WORLD_FAR) {
+    c.col += onWater;
+    c.accent += waterGlow;
     // The rain's rings catch the lantern light where it falls on the water.
-    col += drops.z * pool * 0.7;
-    glow += drops.z * 0.7 * dot(pool, LUMA);
-    // Mist over the water: thicker toward the far bank, lying in long horizontal bands (sized on
-    // screen, so they stay broad near and far) that drift downstream, lit by the lanterns in it.
-    float wisp = vnoise(vec2((xp + 0.6 * current * tm) / zp * 2.5, log(zp) * 3.5));
-    float fm = mist * (1.0 - exp(-zp / 40.0)) * (0.45 + 0.55 * wisp) * 0.8;
-    col = mix(col, haze * 0.92 + inAir * 0.3, fm);
-    glow *= 1.0 - fm;
+    c.col += lanternsDrops.z * pool * 0.7;
+    c.accent += lanternsDrops.z * 0.7 * dot(pool, LUMA);
   }
-  if (nearest < 1e3) {
-    float fm = mist * (1.0 - exp(-nearest / 40.0)) * 0.7;
-    col = mix(col, mix(solid, haze * 0.92, fm), solidCover);
-    glow = mix(glow, solidGlow * (1.0 - fm), solidCover);
-  }
-  col += inAir;
-  glow += airGlow * 1.2;
+}
 
-  if (K_rain > 0.0) {
-    // Rain in depth: drops only in front of the first thing along the eye ray (the water where it
-    // meets it, a lantern or a stone, or the far bank and the sky), and the distance beyond the
-    // drops a grey veil that swallows the far bank in a downpour. Each drop is lit by the light
-    // around it: bright amber streaks through the lanterns' halos and by the bank's lamps, dim grey
-    // threads elsewhere; out-of-focus drops right in front of us catch less of the lanterns.
-    float reachZ = water ? length(vec2(xp, zp)) : 1e4;
-    if (nearest < 1e3) reachZ = mix(reachZ, nearest, solidCover);
-    Precip p = rainFall(uv, aspect, tm, uFallTime, K_rain, K_wind, 1.0 - exp(-reachZ / 30.0));
-    vec3 air = greyed(haze, vec3(1.0), 0.5) * 0.85 + inAir * 0.6;
-    glow *= 1.0 - 0.5 * p.veil;
-    // Drops shine with the cloud base they refract (a floor so some rain still reads in the dark),
-    // and with lantern light where they fall through a halo; near, out-of-focus drops dimmer. The
-    // bank's lamps are a hundred metres beyond the nearest drops, so they light none of them.
-    vec3 drop = max(cloud * 1.2, vec3(0.08)) + inAir * mix(3.0, 1.0, p.near);
-    col = precipOver(col, air, drop * mix(1.0, 0.8, p.near), p);
-    glow += p.cover * airGlow * mix(1.0, 0.3, p.near) * 0.6;
+// After the water's mist: the nearest lantern's box over what the cell shows, in its own mist (as
+// the stones are), its lamplight the accent; then every lantern's halo.
+void lanternsMiddleVeil(Ctx x, inout Cell c) {
+  // It floats on the water: only what stands nearer hides it (c.zs), never the water at its foot.
+  if (lanternsBoxed && lanternsNear < c.zs) {
+    float fm = lanternsMist * (1.0 - exp(-lanternsNear / 40.0)) * 0.7;
+    c.col = mix(c.col, mix(lanternsSolid, x.air.haze * 0.92, fm), lanternsCover);
+    c.accent = mix(c.accent, lanternsSolidGlow * (1.0 - fm), lanternsCover);
+    if (lanternsCover >= 0.5) {
+      c.z = lanternsNear;
+      c.zs = min(c.zs, lanternsNear);
+    }
   }
+  c.col += lanternsInAir;
+  c.accent += lanternsAirGlow * 1.2;
+}
 
-  // Ink is the picture's light; the lantern light (and the bank's lamps) is the accent. A sunlit
-  // river puts the page in its paper theme (index.ts), where inkOf turns the ink dark.
-  return shadeOf(col, inkOf(col, 1.3, 0.8), clamp(glow, 0.0, 1.0));
+// The halos in the air light the World's rain veil and fog, and the drops that fall through them
+// shine amber.
+void lanternsAir(inout Ctx x, inout Cell c) {
+  x.air.fog += lanternsInAir * 0.6;
+  x.air.drop += lanternsInAir * 2.0;
+}
+
+// The lanterns' light on a surface at p (rig frame) facing n (0: a thin thing lit all round), for
+// the composer's localLight: the stones' model (sim.ts) at any point, each flame's warm light falling
+// to half over LANTERNS_GLOW_REACH metres, a quarter of it reaching a face turned away.
+vec3 lanternsLight(vec3 p, vec3 n) {
+  float l = 0.0;
+  if (!lanternsSimOn()) return vec3(0.0);
+  for (int i = 0; i < LANTERNS_MAX; i++) {
+    vec4 st = lanternsRecord(i, 0);
+    if (st.y < 1.0) continue;
+    vec4 lk = lanternsRecord(i + LANTERNS_MAX, 0);
+    vec3 d = vec3(st.x, 0.41 * LANTERNS_TALL * lk.w, st.y) - p; // to the flame
+    float r2 = dot(d, d);
+    float facing = dot(n, n) > 0.0 ? 0.25 + 0.75 * max(dot(n, d), 0.0) * inversesqrt(max(r2, 1e-6)) : 1.0;
+    l += lanternsOn(st, lk, uMotionTime) * lk.w * facing / (1.0 + r2 / (LANTERNS_GLOW_REACH * LANTERNS_GLOW_REACH));
+  }
+  return LANTERNS_AMBER * 2.4 * l;
 }
 `;

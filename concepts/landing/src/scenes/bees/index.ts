@@ -9,7 +9,9 @@
 // hive, mills over the garden and hangs in an apple tree before it leaves. Butterflies, bumblebees,
 // hoverflies and dragonflies work the flowers by day, and glow-worms light up in the grass after
 // dusk; everyone keeps the World's hours and shelters from its rain, lit by its light and seen
-// through its air.
+// through its air. While the cast's agents are about they garden (the gardening chore): they dig
+// beds in the lawn and sow them, the flowers come up over a minute or two, the bees follow them,
+// and the weeds creep back.
 import { composeScene } from "../../composer/compose.ts";
 import { outdoor } from "../../composer/outdoor.ts";
 import type { ScenePreset } from "../../composer/types.ts";
@@ -60,7 +62,7 @@ const preset: ScenePreset = {
     ext: 0.002,
   },
   floor: "lawn",
-  layers: ["hillside", "lawn", "apiary", "insects"],
+  layers: ["hillside", "lawn", "apiary", "insects", "gardening"],
   values: {},
   // The moon keys the night's light and the orchard's shadows by its direction: its phase code is
   // compiled in at every setting, a full moon's too (where the World leaves it out), so a full moon's

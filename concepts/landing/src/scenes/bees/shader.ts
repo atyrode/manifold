@@ -16,6 +16,9 @@
 //             standing in the wet garden take a sheen.
 //   insects   (life) the specks of the simulation (sim.ts) in the shared speck map, lit by the light
 //             where they are drawn.
+//   gardening (chore) the beds the cast's agents dig and sow on the lawn (beds.ts, gardening.ts):
+//             turned soil, seedlings growing into poppies, daisies, cosmos and wild flowers, the
+//             weeds creeping back; compiled in only while the cast has agents (PRINCIPAL_CURSORS).
 // The garden is a ground plane in perspective: a metre at row y is beesS(y) screen heights, and a point
 // of the picture has ground coordinates w = (X, Z) in metres. Places on the stage are fractions of its
 // half width (layout.ts), which spreads across a wider frame (the apiary's claims stretch with it).
@@ -56,9 +59,13 @@
 // flowers) and K_wind; the apiary's K_flowers, K_lantern, K_fairyLights, K_mark (the M painted on
 // the middle hive's front); uWeather.x for how wet the garden is, uWeather.y how much snow lies on it.
 import { glslFloat } from "../../shaders/glsl.ts";
+import { BED_GROW_SECONDS, BED_HEAD, BED_SOW_SECONDS, BED_TALL } from "./beds.ts";
 import { BEES_GRADE } from "./constants.ts";
 import {
   BEES_ALONG_WALL,
+  BEES_BED_DEPTH,
+  BEES_BED_ROWS,
+  BEES_BED_SPACING,
   BEES_BLOOMS as BLOOMS,
   BEES_BLOOMS_ALL as BLOOM_ALL,
   BEES_BOARD_HALF,
@@ -1534,5 +1541,222 @@ vec3 beesSpeck(int code, vec3 under, vec3 light) {
 // grass shine on their own); the composer then sets it in the air at its own depth.
 vec3 insectsSpeck(int code, vec3 under, Ctx x) {
   return beesSpeck(code, under, (beesAmb * 0.55 + beesSun * 0.5 * min(beesLit, 1.0)) / BEES_SPECK_DAY);
+}
+`;
+
+/** Each bed as gardeningGlsl takes it: its depth, its kind's height and head, the band of rows it can show in. */
+const BEDS = BEES_BED_ROWS.map((row) => {
+  const z = BEES_CAM / (BEES_YH - row.y);
+  const tall = BED_TALL[row.kind] ?? 0.3;
+  const head = BED_HEAD[row.kind] ?? 0.04;
+  return {
+    ...row,
+    z,
+    tall,
+    head,
+    low: BEES_YH - BEES_CAM / (z - 1.4 * BEES_BED_DEPTH - 0.02),
+    top: row.y + (1.2 * tall + head + 0.06) / z,
+  };
+});
+
+/**
+ * The gardening chore's GLSL: the beds it tends on the apiary's lawn (beds.ts, the host's state, which
+ * its sim mirrors into its records: gardening.ts), drawn after the apiary's middle, each where it is
+ * nearer than what the cell shows. Only a program drawn while the cast has agents (PRINCIPAL_CURSORS,
+ * shaders/index.ts CURSORS_GATE) holds them: without agents there are no beds (the chore gives them
+ * back to the lawn), so the garden's own program carries none of their cost.
+ */
+export const gardeningGlsl = `
+// ---- the beds the gardening chore tends (bees/shader.ts; beds.ts, gardening.ts) ----
+#ifdef PRINCIPAL_CURSORS
+const int GARDENING_ROWS = ${BEDS.length};
+const float GARDENING_F[${BEDS.length}] = ${floats(BEDS.map((b) => b.f))};
+const float GARDENING_Y[${BEDS.length}] = ${floats(BEDS.map((b) => b.y))};
+const float GARDENING_Z[${BEDS.length}] = ${floats(BEDS.map((b) => b.z))};
+const float GARDENING_LOW[${BEDS.length}] = ${floats(BEDS.map((b) => b.low))};
+const float GARDENING_TOP[${BEDS.length}] = ${floats(BEDS.map((b) => b.top))};
+const int GARDENING_N[${BEDS.length}] = ${ints(BEDS.map((b) => b.plants))};
+const int GARDENING_KIND[${BEDS.length}] = ${ints(BEDS.map((b) => b.kind))};
+const float GARDENING_TALL[${BEDS.length}] = ${floats(BEDS.map((b) => b.tall))};
+const float GARDENING_HEAD[${BEDS.length}] = ${floats(BEDS.map((b) => b.head))};
+const float GARDENING_SPACING = ${glslFloat(BEES_BED_SPACING)};
+const float GARDENING_DEPTH = ${glslFloat(BEES_BED_DEPTH)};
+const float GARDENING_SOW = ${glslFloat(BED_SOW_SECONDS)};
+const float GARDENING_GROW = ${glslFloat(BED_GROW_SECONDS)};
+// Metres between two weeds' tufts along a bed, and how far before and behind its middle they stand.
+const float GARDENING_TUFT = 0.11;
+const float GARDENING_TUFT_Z = 0.09;
+
+// Bed k's soil (its middle xm metres right of the centre line and z ahead; st its record: dug, sown,
+// age, weeds) where this cell shows the ground: dug out from its middle as far as st.x, its edges
+// ragged, clods of earth lighter and darker, a drill line down its middle as far as it is sown, and
+// the lawn back over it in patches as its weeds thicken; whitened by lying snow with the lawn.
+void gardeningSoil(int k, float xm, float z, vec4 st, inout Cell c) {
+  if (!beesOnGround || c.z < beesDepth * 0.999) return;
+  vec2 w = beesXz;
+  float halfLen = 0.5 * float(GARDENING_N[k]) * GARDENING_SPACING;
+  float rag = vnoise(w * 7.0 + float(k) * 3.7) - 0.5;
+  float d = max(abs(w.y - z) - GARDENING_DEPTH * (1.0 + 0.35 * rag), abs(w.x - xm) - st.x * halfLen - 0.05 * rag);
+  if (hardFill(d / w.y, beesAa) < 0.5) return;
+  if (vnoise(w * 4.5 + float(k) * 5.1) < 1.25 * st.w - 0.15) return;
+  vec3 soil = vec3(0.36, 0.25, 0.15) * (0.78 + 0.4 * hash12(floor(w * 14.0) + float(k) * 9.0));
+  if (abs(w.x - xm) < st.y * halfLen) soil *= 1.0 - 0.3 * hardFill((abs(w.y - z) - 0.035) / w.y, beesAa);
+  beesCut = hardEdge(beesGs);
+#if APIARY_LANTERN || APIARY_FAIRY
+  beesLamp = beesLampGround;
+#endif
+  c.col = beesShade(mix(soil, BEES_SNOW, beesSnowGround), 0.0);
+  beesCut = 0.0;
+}
+
+// Bed k's weeds (how thick: weeds), tufts of coarse grass coming up through its soil one after
+// another, before and behind its middle in turn, and on some a dandelion's head once they are thick;
+// the three nearest this column, each where it is nearer than what the cell shows.
+void gardeningWeeds(int k, float xm, float z, float weeds, inout Cell c) {
+  if (weeds < 0.04) return;
+  float halfLen = 0.5 * float(GARDENING_N[k]) * GARDENING_SPACING;
+  vec2 p = beesP;
+  float j0 = floor((p.x * z - xm + halfLen) / GARDENING_TUFT);
+  for (int m = -1; m <= 1; m++) {
+    float j = j0 + float(m);
+    if (j < 0.0 || j * GARDENING_TUFT > 2.0 * halfLen) continue;
+    vec2 h = hash22(vec2(j, float(k) * 5.0 + 11.0));
+    float grown = clamp((1.15 * weeds - h.x) * 4.0, 0.0, 1.0);
+    float zt = z + (mod(j, 2.0) < 0.5 ? -GARDENING_TUFT_Z : GARDENING_TUFT_Z);
+    if (grown <= 0.0 || zt >= c.z) continue;
+    float S = 1.0 / zt;
+    vec2 foot = vec2((xm - halfLen + (j + 0.5 + 0.6 * (h.y - 0.5)) * GARDENING_TUFT) * S, BEES_YH - BEES_CAM * S);
+    float ht = (0.05 + 0.05 * h.y) * grown;
+    vec2 q = (p - foot) / (vec2(0.035, ht) * S);
+    float e = length(q) + 0.3 * abs(sin(q.x * 7.0 + h.y * 6.0)) * smoothstep(0.0, 1.0, q.y);
+    if (q.y < -0.05 || hardFill((e - 1.0) * ht * S, beesAa) < 0.5) continue;
+    vec3 green = mix(vec3(0.13, 0.30, 0.08), vec3(0.34, 0.50, 0.15), clamp(q.y, 0.0, 1.0));
+    vec3 col = beesShade(mix(green, BEES_SNOW, 0.5 * beesLying), q.x * 0.6);
+    if (h.y < 0.3 && weeds > 0.45 && length(p - foot - vec2(0.0, ht * S)) < 0.02 * S) col = beesShade(vec3(0.98, 0.80, 0.12), 0.0);
+    c.col = col;
+    beesAt(c, zt);
+  }
+}
+
+// One plant at growth g, in metres from its stem's foot (q: right, up): two seed leaves, then a stem
+// rising to its height (tall) with a pair of leaves, leaning lean metres at its top, then its bud
+// swelling and opening into the kind's flower (head radius headR) over 0.6..0.95 of its growth.
+void gardeningPlant(int kind, vec2 q, float g, float tall, float headR, float lean, vec2 h, float S, inout vec3 col) {
+  vec3 green = mix(vec3(0.18, 0.38, 0.09), BEES_SNOW, 0.4 * beesLying);
+  float L = 0.02 + 0.05 * smoothstep(0.02, 0.4, g);
+  for (int k = 0; k < 2; k++) {
+    float side = float(k) * 2.0 - 1.0;
+    vec2 lq = rotate(q - vec2(0.0, 0.2 * L), side * 1.0);
+    if (hardFill(sdEllipse(lq - vec2(0.0, 0.5 * L), vec2(0.3 * L, 0.55 * L)) * S, beesAa) > 0.5) col = beesShade(green, side) + beesGlow(green, 0.25);
+  }
+  if (g < 0.12) return;
+  float stem = tall * smoothstep(0.12, 0.75, g);
+  vec2 top = vec2(lean, stem);
+  float r = max(0.006, 0.6 * beesAa / S);
+  if (hardFill(sdTaperCapsule(q, vec2(0.0), top, r, 0.8 * r) * S, beesAa) > 0.5) col = beesShade(green, clamp(q.x / r, -1.0, 1.0));
+  if (g > 0.3) {
+    float ll = 0.07 * smoothstep(0.3, 0.6, g);
+    for (int k = 0; k < 2; k++) {
+      float side = float(k) * 2.0 - 1.0;
+      vec2 lq = rotate(q - vec2(0.12 * lean, 0.35 * stem), side * 0.9);
+      if (hardFill(sdEllipse(lq - vec2(0.0, 0.5 * ll), vec2(0.25 * ll, 0.5 * ll)) * S, beesAa) > 0.5) col = beesShade(green, side) + beesGlow(green, 0.3);
+    }
+  }
+  if (g < 0.6) return;
+  float open = smoothstep(0.8, 0.95, g);
+  float rr = headR * mix(0.45, 1.0, smoothstep(0.6, 0.95, g));
+  vec2 d = q - top;
+  float dist = length(d);
+  if (dist > 1.2 * rr) return;
+  float th = atan(d.y, d.x);
+  float ph = h.x * 6.2831853;
+  float edge = 1.0;
+  vec3 petal;
+  vec3 core = vec3(0.0);
+  float coreR = 0.0;
+  if (kind == BEES_POPPY) {
+    edge = 0.9 + 0.1 * cos(4.0 * th + ph);
+    petal = mix(vec3(1.0, 0.16, 0.08), vec3(1.0, 0.42, 0.10), h.y);
+    core = vec3(0.10, 0.05, 0.06);
+    coreR = 0.25;
+  } else if (kind == BEES_DAISY) {
+    edge = 0.82 + 0.18 * cos(9.0 * th + ph);
+    petal = vec3(0.97, 0.96, 0.90);
+    core = vec3(0.96, 0.78, 0.12);
+    coreR = 0.36;
+  } else if (kind == BEES_COSMOS) {
+    edge = 0.88 + 0.12 * cos(8.0 * th + ph);
+    petal = h.y < 0.4 ? vec3(0.92, 0.35, 0.62) : h.y < 0.75 ? vec3(0.96, 0.78, 0.86) : vec3(0.97, 0.95, 0.95);
+    core = vec3(0.95, 0.72, 0.12);
+    coreR = 0.28;
+  } else {
+    petal = h.y < 0.3 ? vec3(0.98, 0.82, 0.16) : h.y < 0.55 ? vec3(0.45, 0.50, 0.90) : h.y < 0.8 ? vec3(0.95, 0.55, 0.70) : vec3(0.98, 0.95, 0.85);
+  }
+  // The bud: green and closed, colouring as it opens.
+  edge = mix(0.75, edge, open);
+  petal = mix(vec3(0.30, 0.46, 0.14), petal, open);
+  if (hardFill((dist - rr * edge) * S, beesAa * 0.8) < 0.5) return;
+  col = mix(beesShade(petal, d.x / rr), petal, 0.4 * open) + beesGlow(petal, 0.55 * smoothstep(0.5, 1.0, dist / rr));
+  if (coreR > 0.0 && open > 0.5 && rr * S / beesAa > 3.0) col = mix(col, beesShade(core, 0.0), hardFill((dist - rr * coreR) * S, beesAa * 0.8));
+}
+
+// Bed k's plants, sown out from its middle as far as st.y: each comes up |u| * GARDENING_SOW seconds
+// after the first seed (st.z its age), grows at its own rate, sways with the composer's gust at the
+// bed, and is gone once the weeds have choked it (its share of them at or under lost), each hashed as
+// beds.ts hashes it. The two nearest this column, shaded by what casts on the bed there.
+void gardeningPlants(Ctx x, int k, float xm, float z, vec4 st, float lost, inout Cell c) {
+  if (st.y <= 0.0 || z >= c.z) return;
+  int n = GARDENING_N[k];
+  vec2 p = beesP;
+  float S = 1.0 / z;
+  float at = (p.x * z - xm) / GARDENING_SPACING + 0.5 * float(n);
+  float i0 = floor(at);
+  float i1 = at - i0 < 0.5 ? i0 - 1.0 : i0 + 1.0;
+  float gust = clamp(gustAt(x.gust, vec2(xm, z), x.tm, 0.0), 0.0, 1.0);
+  float key = 7.0 * float(k) + 3.0;
+  vec3 before = c.col;
+  beesCut = hardEdge(casterShadow(vec2(p.x * z, z), x));
+#if APIARY_LANTERN
+  beesLamp = localLight(vec3(xm, 0.3, z), vec3(0.0));
+#endif
+  for (int m = 0; m < 2; m++) {
+    float fi = m == 0 ? i1 : i0;
+    if (fi < 0.0 || fi >= float(n)) continue;
+    float u = (2.0 * fi + 1.0) / float(n) - 1.0;
+    if (abs(u) > st.y || 0.45 + 0.5 * hash12(vec2(fi + 41.0, key)) <= lost) continue;
+    float g = clamp((st.z - abs(u) * GARDENING_SOW) * (0.85 + 0.3 * hash12(vec2(fi + 17.0, key))) / GARDENING_GROW, 0.0, 1.0);
+    if (g < 0.02) continue;
+    vec2 h = hash22(vec2(fi, key));
+    float xr = xm + (fi + 0.5 - 0.5 * float(n) + 0.35 * (h.x - 0.5)) * GARDENING_SPACING;
+    float tall = GARDENING_TALL[k] * (0.8 + 0.4 * h.y);
+    float stem = tall * smoothstep(0.12, 0.75, g);
+    float lean = stem * (0.08 * (h.x - 0.5) + 0.12 * (gust - 0.3) * x.gust.dir.x);
+    gardeningPlant(GARDENING_KIND[k], (p - vec2(xr * S, GARDENING_Y[k])) / S, g, tall, GARDENING_HEAD[k], lean, h, S, c.col);
+  }
+  beesCut = 0.0;
+  if (c.col != before) beesAt(c, z);
+}
+
+#endif
+
+// The beds, after the apiary's middle: each one dug (its record's x above 0) in the band of the
+// frame it can show in, its soil, then its weeds, then its plants.
+void gardeningMiddle(Ctx x, inout Cell c) {
+#ifdef PRINCIPAL_CURSORS
+  if (!gardeningSimOn() || gardeningRecord(0, 0).x < 0.5) return;
+  vec2 p = beesP;
+  for (int k = 0; k < GARDENING_ROWS; k++) {
+    float z = GARDENING_Z[k];
+    float xc = GARDENING_F[k] * beesW;
+    float halfLen = 0.5 * float(GARDENING_N[k]) * GARDENING_SPACING;
+    if (p.y < GARDENING_LOW[k] || p.y > GARDENING_TOP[k] || abs(p.x - xc) > (halfLen + 0.3) / z) continue;
+    vec4 st = gardeningRecord(1 + 2 * k, 0);
+    if (st.x <= 0.0) continue;
+    float xm = xc * z;
+    gardeningSoil(k, xm, z, st, c);
+    gardeningWeeds(k, xm, z, st.w, c);
+    gardeningPlants(x, k, xm, z, st, gardeningRecord(2 + 2 * k, 0).x, c);
+  }
+#endif
 }
 `;

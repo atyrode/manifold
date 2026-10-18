@@ -1,59 +1,73 @@
 import { expect, test } from "bun:test";
+import { ATLAS_WIDTH } from "../../composer/caps.ts";
+import { allocate, ATLAS_SLOT } from "../../composer/sim.ts";
 import { Cast, Presence, principal } from "../../principals.ts";
 import { HeadlessSim } from "../../sims/headless.ts";
 import type { ScenePoint } from "../types.ts";
-import { AUTUMN_CARPET, AUTUMN_VIEW } from "./layout.ts";
 import { loadScene } from "../index.ts";
+import { autumnComposed } from "./index.ts";
+import { AUTUMN_CARPET, AUTUMN_SLOTS, AUTUMN_VIEW, AUTUMN_WIDE } from "./layout.ts";
 
 const autumnScene = await loadScene("autumn");
 
-// A "now" gust as the park's shader reads it from uSim3's first texel (x: the gust's signed strength),
-// sampled every frame for six seconds after the press: the shared gust pulse (sims/wind.ts) at the
-// park's 1.6 s rise, blowing the way the wind is set, and played in real time whatever the motion.
-function gust(knobs: Record<string, number>, motion: number): { peak: number; at: number } {
-  const sim = new HeadlessSim(autumnScene);
-  sim.step({ knobs, motion });
-  let peak = 0;
-  let at = 0;
-  for (let n = 1; n <= 6 * 60; n++) {
-    const value =
-      sim.step({ knobs, motion, now: n === 1 ? ["gusts"] : [] }).upload(3).data[0] ?? Number.NaN;
-    if (Math.abs(value) > Math.abs(peak)) {
-      peak = value;
-      at = n / 60;
-    }
-  }
-  sim.dispose();
-  return { peak, at };
+// Where the preset's layers keep their data: the maple's record row (its leaves in the air), the
+// litter's two fields (the carpet's layers).
+const allocation = allocate(
+  autumnComposed.place(new Set(autumnComposed.preset.layers)).layers.map((p) => p.layer),
+);
+const LEAF_ROW = allocation.rows["maple"]?.base ?? 0;
+const [CARPET_A = 2, CARPET_B = 3] = allocation.fields["litter"] ?? [];
+
+/** The leaves in the air (alpha above 0) in the maple's row as last uploaded. */
+function airborne(sim: HeadlessSim): number {
+  const data = sim.upload(ATLAS_SLOT).data;
+  let count = 0;
+  for (let i = 0; i < AUTUMN_SLOTS; i++)
+    if ((data[(LEAF_ROW * ATLAS_WIDTH + 4 * i) * 4 + 3] ?? 0) > 0) count++;
+  return count;
 }
 
-test("a gust peaks 1.6 s after 'now' at its strength, blowing with the wind, motion or not", () => {
-  // The default strength 0.5: a gust of 0.55 + 0.45 * 0.5.
-  const left = gust({ wind: -0.6 }, 1);
-  expect(left.peak).toBeCloseTo(-0.775, 3);
-  expect(Math.abs(left.at - 1.6)).toBeLessThan(1.5 / 60);
-  const right = gust({ wind: 0.4, "gusts-amount": 1 }, 0);
-  expect(right.peak).toBeCloseTo(1, 3);
-  expect(Math.abs(right.at - 1.6)).toBeLessThan(1.5 / 60);
-  // A breath of wind to the left, inside the dead band, still blows right.
-  expect(gust({ wind: -0.04 }, 1).peak).toBeGreaterThan(0);
+test("the gusts shake leaves loose as they reach the tree; at motion 0 the park stands still", () => {
+  // No leaves let go but the gusts' showers: once the leaves already falling have landed, only a
+  // gust of the composer's field sends more down.
+  const calm = { fall: 0, gusts: 0 };
+  const gusty = { fall: 0, gusts: 1, "gusts-amount": 1, gustRate: 1 };
+  const still = new HeadlessSim(autumnScene);
+  const windy = new HeadlessSim(autumnScene);
+  for (let n = 0; n < 30 * 60; n++) {
+    still.step({ knobs: calm });
+    windy.step({ knobs: calm });
+  }
+  expect(airborne(still)).toBe(0);
+  let shaken = 0;
+  for (let n = 0; n < 60 * 60; n++) {
+    still.step({ knobs: calm });
+    shaken = Math.max(shaken, airborne(windy.step({ knobs: gusty })));
+  }
+  expect(airborne(still)).toBe(0);
+  expect(shaken).toBeGreaterThan(3);
+  // Frozen, nothing moves, gusts or not.
+  const before = Array.from(windy.step({ knobs: gusty, motion: 0 }).upload(ATLAS_SLOT).data);
+  for (let n = 0; n < 120; n++) windy.step({ knobs: gusty, motion: 0 });
+  expect(Array.from(windy.upload(ATLAS_SLOT).data)).toEqual(before);
+  for (const each of [still, windy]) each.dispose();
 });
 
 // The rake, the agents' chore: where an interest point lies on the ground (the park's camera at rest,
 // a 16:9 frame), and the leaves on the carpet within r metres of a ground point, both layers as the
-// shader reads them (uSim1, uSim2: w is 0 for no leaf).
+// shader reads them (the litter's fields: w is 0 for no leaf).
 const ASPECT = 16 / 9;
 function ground(point: ScenePoint): { x: number; z: number } {
   const { horizon, eye, focal } = AUTUMN_VIEW;
   const z = (eye * focal) / (horizon - point.y);
-  return { x: ((point.x - 0.5) * Math.max(ASPECT, 1.45) * z) / focal, z };
+  return { x: ((point.x - 0.5) * Math.max(ASPECT, AUTUMN_WIDE) * z) / focal, z };
 }
 function leavesNear(sim: HeadlessSim, x: number, z: number, r: number): number {
   const { cell, x0, z0, cols, rows } = AUTUMN_CARPET;
   let count = 0;
   for (const [slot, shift] of [
-    [1, 0],
-    [2, 0.5],
+    [CARPET_A, 0],
+    [CARPET_B, 0.5],
   ] as const) {
     const data = sim.upload(slot).data;
     for (let j = 0; j < rows; j++)
@@ -66,9 +80,12 @@ function leavesNear(sim: HeadlessSim, x: number, z: number, r: number): number {
   return count;
 }
 
-test("an agent rakes leaves into a pile, a gust scatters it, the same every run", () => {
-  // No leaves falling and no gusts but the one pressed, so the rake and the gust alone move leaves.
+test("an agent rakes leaves into a pile, the gusts scatter it, the same every run", () => {
+  // No leaves falling and no gusts while the rake works, so the rake alone moves leaves; then ten
+  // seconds of strong gusts of the composer's field come over the pile (before the leaves they lift
+  // and shake loose have settled back round it).
   const knobs = { fall: 0, gusts: 0 };
+  const gusty = { fall: 0, gusts: 1, "gusts-amount": 1, gustRate: 1 };
   const run = () => {
     const sim = new HeadlessSim(autumnScene);
     sim.step({ knobs });
@@ -88,10 +105,9 @@ test("an agent rakes leaves into a pile, a gust scatters it, the same every run"
         sim.step({ knobs, agents: [{ ...at, down: n < 27, pressed: n === 0 }] });
     const pile = leavesNear(sim, x, z, 0.8);
     const raked = band();
-    sim.step({ knobs, agents: [at], now: ["gusts"] });
-    for (let n = 0; n < 12 * 60; n++) sim.step({ knobs, agents: [at] });
+    for (let n = 0; n < 10 * 60; n++) sim.step({ knobs: gusty, agents: [at] });
     const blown = leavesNear(sim, x, z, 0.8);
-    const carpet = Array.from(sim.upload(1).data);
+    const carpet = Array.from(sim.upload(CARPET_A).data);
     sim.dispose();
     return { before, unraked, pile, raked, blown, carpet };
   };
@@ -125,7 +141,7 @@ test("the rake does nothing without agents; one agent of the cast goes to its st
   }
   expect(leavesNear(sim, x, z, 0.8)).toBeGreaterThanOrEqual(before + 8);
   // The rake on or off, a park without agents is the same park.
-  expect(Array.from(alone.upload(1).data)).toEqual(Array.from(off.upload(1).data));
-  expect(Array.from(alone.upload(2).data)).toEqual(Array.from(off.upload(2).data));
+  expect(Array.from(alone.upload(CARPET_A).data)).toEqual(Array.from(off.upload(CARPET_A).data));
+  expect(Array.from(alone.upload(CARPET_B).data)).toEqual(Array.from(off.upload(CARPET_B).data));
   for (const each of [sim, alone, off]) each.dispose();
 });

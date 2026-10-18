@@ -1,7 +1,7 @@
-// Lantern river's code, loaded the first time the scene is needed (SceneDef.code).
-import { lanternsScene } from "./index.ts";
-import { lanternsSim } from "./sim.ts";
+// Lantern river's code, loaded the first time the scene is needed (SceneDef.code): assembled from
+// the code of every layer its rig offers (composer/code.ts).
+import { composedCode } from "../../composer/code.ts";
+import { OUTDOOR_CODE } from "../../composer/outdoor-code.ts";
+import { lanternsComposed } from "./index.ts";
 
-export { lanternsGlsl as glsl } from "./shader.ts";
-export const entry = "sceneLanterns";
-export const sim = lanternsSim(lanternsScene.params);
+export const { glsl, entry, glslFor, sim } = composedCode(lanternsComposed, OUTDOOR_CODE);

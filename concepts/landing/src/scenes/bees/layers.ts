@@ -1,6 +1,7 @@
-// The Bees preset's layers (ADR 0062 Phase 1): their manifests, which load without their code
-// (shader.ts, sim.ts). Each is drawn through the garden's own rig alone (BEES_RIG): its parts are laid
-// out on the garden's stage (layout.ts), so another rig is not offered them.
+// The Bees preset's layers (ADR 0062 Phase 1, and the gardening chore of #1082 J1): their manifests,
+// which load without their code (shader.ts, sim.ts, beds.ts, gardening.ts). Each is drawn through
+// the garden's own rig alone (BEES_RIG): its parts are laid out on the garden's stage (layout.ts), so
+// another rig is not offered them.
 //   hillside  backdrop: the World's sky over three bands of hills and the far farmhouse and windmill,
 //             the valley's air; the land ends at the garden's far edge.
 //   lawn      ground: the lawn with its clover and windfalls, the hedge, the path, the blades at the
@@ -8,9 +9,13 @@
 //   apiary    dressing, the subject: the flower drifts, the orchard behind the dry-stone wall, the
 //             three hives (drawn 1.5 times life size), the lantern and the fairy lights, the near
 //             foxgloves and blooms; its claims (the hives, the wall, the path, the orchard, the drifts)
-//             are laid out at the rig's minAspect and spread with a wider frame.
+//             are laid out at the rig's minAspect and spread with a wider frame. Its sim holds the
+//             beds of the lawn (beds.ts), the host of the gardening chore and of the bees that follow.
 //   insects   life: the colony and the garden's other insects (sim.ts), specks in the shared map;
 //             they keep to the apiary's hives and flowers, so they need it.
+//   gardening chore: the cast's agents dig beds in the apiary's lawn, sow and weed them
+//             (gardening.ts, on the apiary's beds: beds.ts), the bees going to the flowers that come
+//             up; it needs the apiary, and does nothing without agents.
 // What each draws is at the top of shader.ts, how the insects live at the top of sim.ts.
 import type { Claim, LayerDef, Shape } from "../../composer/types.ts";
 import { counts, feature, range, toggle } from "../../params.ts";
@@ -352,4 +357,27 @@ export const insectsLayer: LayerDef = {
   requires: ["apiary"],
   data: { specks: Math.max(...Object.values(BEES_CODE)) },
   passes: { speck: "insectsSpeck" },
+};
+
+export const gardeningLayer: LayerDef = {
+  id: "gardening",
+  title: "Gardening",
+  composers: ["outdoor"],
+  role: "chore",
+  bands: ["middle"],
+  space: { anchors: [], claims: [] },
+  camera: GARDEN_RIG,
+  switch: toggle(
+    "layers",
+    "gardening",
+    "gardening",
+    false,
+    "Agents at work in the garden, while the cast's agents are about (the lab's agents setting): they dig small beds in the lawn and sow them along a row, and the seedlings grow into poppies, daisies, cosmos and wild flowers over a minute or two, the bees going to them; weeds creep back in slowly, so the agents come back to weed, and a bed left alone goes back to lawn. Without agents nothing changes.",
+    { icon: "sprout" },
+  ),
+  params: [],
+  groups: {},
+  requires: ["apiary"],
+  data: { rows: 1 },
+  passes: { middle: "gardeningMiddle" },
 };

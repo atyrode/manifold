@@ -7,7 +7,7 @@
 // from the eye), as LevelCamera (sims/camera.ts) and the World's `worldView` take them.
 import type { Blurb, ParamDef } from "../params.ts";
 import type { SkyPlanets } from "../scenes/planets.ts";
-import type { SceneLook, SceneTheme, SimFrame } from "../scenes/types.ts";
+import type { SceneLook, ScenePoint, SceneTheme, SimFrame } from "../scenes/types.ts";
 import type { WorldOptions } from "../scenes/world.ts";
 import type { LevelCamera } from "../sims/camera.ts";
 import type { GustField, PassageGustShape } from "./gust.ts";
@@ -99,16 +99,26 @@ export interface LayerLight {
  * composer's generated entry in its order (README "Compositing"):
  *   begin       void <fn>(inout Ctx x): per-cell state; a backdrop sets x.air, x.groundTo, x.landZ
  *   sky         void <fn>(Ctx x, inout Cell c): a backdrop's sky and its staging over the deck
+ *   mirror      Mirrored <fn>(Ctx x, vec3 at, vec3 ray, WorldView m, vec2 spread): a backdrop's
+ *               view in a level mirror at `at` along the reflected `ray` (m: worldMirrorView's view
+ *               along it), what a ground that mirrors asks through composerMirror: its colour
+ *               without its lamps, its lamps' colour and how bright they are, seen (x) and drawn out
+ *               down the water (y). spread: how much a rough mirror softens what stands d metres
+ *               behind its point, d · spread.x metres, and draws its lamps out, d · spread.y metres
  *   ground      void <fn>(Ctx x, inout Cell c): a ground layer's floor below x.groundTo
  *   far, middle, front            void <fn>(Ctx x, inout Cell c): opaque, in canonical order
  *   farVeil, middleVeil, frontVeil void <fn>(Ctx x, inout Cell c): translucent, after a band's opaque
  *   air         void <fn>(inout Ctx x, inout Cell c): after the specks, before the fog: the air's own
  *               light (a backdrop's forward scatter, a lamp's halo into x.air.fog and x.air.drop)
- * and `speck`, `vec3 <fn>(int code, vec3 under, Ctx x)`: the colour of one of its speck codes.
+ * and `speck`, `vec3 <fn>(int code, vec3 under, Ctx x)`: the colour of one of its speck codes; and
+ *   shade       void <fn>(Ctx x, Cell c, inout Shade o): after the grade's shadeOf, in canonical
+ *               order: an accent or a colour of its own over the picture's (shore's plankton light,
+ *               snapped per cell, at c.accent of the World's veil over it)
  */
 export interface LayerPasses {
   readonly begin?: string;
   readonly sky?: string;
+  readonly mirror?: string;
   readonly ground?: string;
   readonly far?: string;
   readonly farVeil?: string;
@@ -118,6 +128,7 @@ export interface LayerPasses {
   readonly frontVeil?: string;
   readonly air?: string;
   readonly speck?: string;
+  readonly shade?: string;
 }
 
 /** What a layer's sim asks of the composed sim's shared resources (README "Sims in a composition"). */
@@ -178,6 +189,12 @@ export interface LayerDef {
   readonly switch: ParamDef;
   /** Its knobs, hung on the switch with `when` by the composer. */
   readonly params: readonly ParamDef[];
+  /**
+   * The time of year it shows, when it has one: a season knob (keyed `season`, its widget the sky's
+   * `season` part) the composer lists once among its own knobs, the first offered layer's (README
+   * "Scene presets and keys": `season` where a layer has a year), for every layer to read.
+   */
+  readonly season?: ParamDef;
   readonly groups: Readonly<Record<string, Blurb>>;
   /** Named "now" slots, keyed by its knobs: the composer numbers them. */
   readonly triggers?: readonly string[];
@@ -202,10 +219,17 @@ export interface LayerDef {
     readonly gate: string;
     readonly why: string;
   }[];
-  /** A chore's host. */
+  /** Its hosts: a chore's, or the layer whose surface it draws from (shore's beach, the sea's). */
   readonly requires?: readonly string[];
   /** Its knob holding a Manifold M: the composer keeps at most one M on. */
   readonly mark?: string;
+  /**
+   * A backdrop's say over the World's rain and snow (README "Light, scale and weather"): `thin`
+   * scales the drops' and flakes' cover, far to near (worldPrecipThinned), so they never bury its
+   * subject; `air` names its `vec3 <fn>(Ctx x)`, the colour the far rain fuses into where that is not
+   * the fog's (x.air.fog).
+   */
+  readonly precip?: { readonly thin?: readonly [far: number, near: number]; readonly air?: string };
 }
 
 /**
@@ -234,6 +258,11 @@ export interface RigPassage {
   readonly glsl: string;
   /** The front the passage sends through the gust field, if it sends one (meadow's). */
   readonly gust?: PassageGustShape;
+  /**
+   * `glsl` also defines `float rigShift()`: the lens's vertical shift in screen heights (0 at rest),
+   * the world read that much lower in uv while the passage tilts the view (shore's).
+   */
+  readonly shift?: true;
 }
 
 /**
@@ -265,6 +294,11 @@ export interface Flyway {
   readonly spread: number;
   /** Their own extinction per metre, beside the backdrop's air. */
   readonly ext: number;
+  /**
+   * The share of the backdrop's dust (x.air.dust) that hazes them too, where the dust is what the
+   * air holds (the desert's): unset, the birds see through the dust as the far land's haze.
+   */
+  readonly dust?: number;
 }
 
 /** Where the World's shooting stars set out: skyAngles of the rig's ray (WorldSky's field). */
@@ -363,11 +397,24 @@ export interface LayerFrame extends SimFrame {
   readonly records: RecordRows;
   readonly specks: SpeckWriter;
   readonly fields: readonly FieldSlot[];
+  /**
+   * The affordances of another layer on (its sim's `affordances`: what a chore's host lets it do,
+   * the state a life layer follows), or undefined while that layer has none running. The caller
+   * narrows it to the host's type (`instanceof`).
+   */
+  host(layer: string): object | undefined;
 }
 
 export interface LayerSim {
   /** Steps and writes into its rows, its specks (every frame: the map is cleared before) and its fields. */
   frame(frame: LayerFrame): void;
   ready?(): boolean;
+  /**
+   * Where a press does something for it, in scene uv for a frame of `aspect` (SceneSim.interest:
+   * the cast's agents go there and act); the composed sim gathers every on-screen layer's.
+   */
+  interest?(aspect: number): readonly ScenePoint[];
+  /** What it lets other layers do to its state, or read of it: a chore's host's affordances. */
+  readonly affordances?: object;
   dispose(): void;
 }

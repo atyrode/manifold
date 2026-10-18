@@ -1,10 +1,18 @@
 import { expect, test } from "bun:test";
+import { ATLAS_WIDTH } from "../../composer/caps.ts";
+import { allocate, ATLAS_SLOT } from "../../composer/sim.ts";
 import { HeadlessSim, type HeadlessFrame } from "../../sims/headless.ts";
 import { loadScene } from "../index.ts";
 import type { PrincipalState } from "../types.ts";
-import { EYE, FOCAL, HORIZON, LANTERN_HALF, MAX_LANTERNS, ROCKS } from "./sim.ts";
+import { EYE, FOCAL, HORIZON } from "./constants.ts";
+import { lanternsComposed } from "./index.ts";
+import { LANTERN_HALF, MAX_LANTERNS, ROCKS } from "./sim.ts";
 
 const lanternsScene = await loadScene("lanterns");
+/** The lanterns' row in the records atlas with the river's own layers on screen. */
+const ROW =
+  allocate(lanternsComposed.place(new Set(lanternsComposed.preset.layers)).layers.map((p) => p.layer))
+    .rows["lanterns"]?.base ?? 0;
 
 interface Seen {
   x: number;
@@ -34,7 +42,7 @@ function river(): {
 
 /** One frame; each live lantern slot's x, z (m), size and age (s), as the shader receives them. */
 function step(sim: HeadlessSim, frame: HeadlessFrame): Map<number, Seen> {
-  const data = sim.step(frame).upload(0).data;
+  const data = sim.step(frame).upload(ATLAS_SLOT).data.subarray(ROW * ATLAS_WIDTH * 4);
   const lanterns = new Map<number, Seen>();
   for (let i = 0; i < MAX_LANTERNS; i++) {
     const z = data[i * 4 + 1] ?? 0;

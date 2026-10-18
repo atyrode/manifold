@@ -1,8 +1,7 @@
-// Waterfall's code, loaded the first time the scene is needed (SceneDef.code).
-import type { SimFactory } from "../types.ts";
-import { fallsScene } from "./index.ts";
-import { fallsSim } from "./sim.ts";
+// Waterfall's code, loaded the first time the scene is needed (SceneDef.code): assembled from the
+// code of every layer its rig offers (composer/code.ts).
+import { composedCode } from "../../composer/code.ts";
+import { OUTDOOR_CODE } from "../../composer/outdoor-code.ts";
+import { fallsComposed } from "./index.ts";
 
-export { fallsGlsl as glsl } from "./shader.ts";
-export const entry = "sceneFalls";
-export const sim: SimFactory = (gl) => fallsSim(gl, fallsScene.params);
+export const { glsl, entry, glslFor, sim } = composedCode(fallsComposed, OUTDOOR_CODE);

@@ -12,9 +12,11 @@
 // screen runs ahead at dt 0, its rows kept aside, and is copied in the frame its program arrives. A
 // layer switched off while on screen plays its exit (LAYER_EXIT seconds of wall time): the renderer
 // keeps drawing the program it is in until then (`holds`). Every layer sim keeps its own rows, so a
-// change of allocation copies them where they now belong.
+// change of allocation copies them where they now belong. The cast's points of interest are every
+// on-screen layer's (`interest`, canonical order), and a layer reaches another's affordances (a
+// chore its host's, README "Principals and chores") through `LayerFrame.host`.
 import { KnobReader, type ParamDef } from "../params.ts";
-import type { SceneSim, SimFrame } from "../scenes/types.ts";
+import type { ScenePoint, SceneSim, SimFrame } from "../scenes/types.ts";
 import { LevelCamera } from "../sims/camera.ts";
 import { SpeckMap } from "../sims/specks.ts";
 import { DataTexture } from "../sims/texture.ts";
@@ -226,6 +228,10 @@ class ComposedSim implements SceneSim {
   #stretch = Number.NaN;
   #claimsOf: Placement | undefined;
   #first = true;
+  /** The on-screen layers' points of interest, gathered afresh at each ask. */
+  readonly #interest: ScenePoint[] = [];
+  /** LayerFrame.host: another live layer's affordances. */
+  readonly #host = (layer: string): object | undefined => this.#live.get(layer)?.sim?.affordances;
 
   constructor(gl: WebGL2RenderingContext, composition: Composition) {
     this.#gl = gl;
@@ -273,6 +279,17 @@ class ComposedSim implements SceneSim {
 
   ready(): boolean {
     return this.#screen.every((layer) => this.#live.get(layer.id)?.sim?.ready?.() !== false);
+  }
+
+  /** Every on-screen layer's points of interest (LayerSim.interest), canonical order. */
+  interest(aspect: number): readonly ScenePoint[] {
+    const points = this.#interest;
+    points.length = 0;
+    for (const layer of this.#screen) {
+      const own = this.#live.get(layer.id)?.sim?.interest?.(aspect);
+      if (own !== undefined) for (const point of own) points.push(point);
+    }
+    return points;
   }
 
   holds(): boolean {
@@ -357,6 +374,7 @@ class ComposedSim implements SceneSim {
       records,
       specks,
       fields,
+      host: this.#host,
     };
     const factory = this.#c.sims[layer.id];
     return {

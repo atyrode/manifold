@@ -1,55 +1,80 @@
-// The waterfall scene: a cliff across the frame, a fall pouring from a notch in its lip into a
-// plunge pool, seen level from the pool's edge. Over the rim the world's sky (worldSky,
-// src/scenes/README.md "World layers"): the cloud deck, the stars, the moon in its phase, the aurora
-// and shooting stars; the light under it is the world's too. The ferns are the plant component's
-// fronds (shaders/lib/plants.ts), the near bank's grown by sim.ts; the birds (K_birds, K_birdKind,
-// K_birdFormation; off by default) come from shaders/lib/birds.ts.
-import { glslFloat } from "../../shaders/glsl.ts";
-import { birdsGlsl } from "../../shaders/lib/birds.ts";
-import { plantsGlsl } from "../../shaders/lib/plants.ts";
-import { worldGlsl } from "../../shaders/lib/world.ts";
-import { FALLS_CLUMPS, FALLS_FRONDS } from "./sim.ts";
-import { FALLS_METEOR_TRIGGER } from "./constants.ts";
-
-export const fallsGlsl = `${plantsGlsl}
-${birdsGlsl}
-${worldGlsl}
-// ---- falls ----
+// The Waterfall preset's GLSL (ADR 0062 Phase 2a): a cliff across the frame, a fall pouring from a
+// notch in its lip into a plunge pool, seen level from the pool's edge through FALLS_RIG. Its parts,
+// each a layer (layers.ts), drawn in the order the scene always painted them:
+//   cliff     (backdrop) the rock of the gorge (basalt flows, sandstone ledges or a limestone slot
+//             whose walls close in), the trees on the rim and the woods upstream through the notch,
+//             the fallen blocks at the cliff's foot, the carved M; over the rim the World's sky seen
+//             half turned from the sun (fallsWorld), its aurora lifted over the rim, its deck closing
+//             with the rain and hanging shafts of rain over the skyline; the gorge's air.
+//   pool      (ground) the plunge pool mirroring the cliff and the fall, ringed by the plunge and by
+//             the rain; the fireflies over it from dusk on; the near bank's boulders.
+//   falls     (dressing) the falling sheet and the plunge's white water; after dark their soft glow in
+//             the air and in the pool, which lights the rain around them.
+//   spray     (dressing) the plume and fans of spray from the plunge, the spray off the sheet, and the
+//             rainbow in it.
+//   greenery  (cover) moss on the ledges, the wet rock, the blocks and the bank; ferns and creepers
+//             hanging from the ledges; the near bank's ferns (sim.ts, the composer's records atlas).
+// The World's rain and fog fall at the composed depth (the bank's stones 3.5 m off, its ferns 2.2 m,
+// the cliff 29 m), its birds fly in front of whatever the gorge draws farther than them. The gorge
+// keeps its own light model (fallsBegin): the World's sky seen half turned, with the eye adapting to
+// the dark.
+//
 // Frame: q = ((uv.x - 0.5) * aspect, uv.y): x in screen heights from the centre, y the screen
-// height. The cliff stands at the back of the pool; the camera stands level at the pool's edge,
-// its eye at FALLS_EYE, looking straight at the rock.
+// height, uv through the passage's lens shift (rigShift). The cliff stands at the back of the pool;
+// the camera stands level at the pool's edge, its eye at FALLS_EYE, looking straight at the rock.
+import { glslFloat } from "../../shaders/glsl.ts";
+import {
+  FALLS_CAM,
+  FALLS_CLUMPS,
+  FALLS_EYE,
+  FALLS_FERN_M,
+  FALLS_FERN_Z,
+  FALLS_FOV,
+  FALLS_FRONDS,
+} from "./constants.ts";
 
-// Where shooting stars set out: skyAngles of the camera's ray (bearing, elevation, radians), the
-// band of sky over the rim; they fall behind it.
-const int FALLS_METEOR_SLOT = ${FALLS_METEOR_TRIGGER};
-const vec4 FALLS_METEOR_FIELD = vec4(-0.6, 0.5, 1.2, 0.05);
+/**
+ * The gorge's shared GLSL (every falls layer holds it, after the plants component): its constants,
+ * its light, the rock, the water and the spray's shapes, and the per-cell state the layers' begins
+ * set and their passes read and leave for each other.
+ */
+export const fallsSharedGlsl = `
+// ---- the gorge (falls/shader.ts), shared by its layers ----
 // The aurora's arc stands higher than the world hangs it (each ray's slope looked up this much
 // lower: WorldView.auroraLift), so its bright lower edge shows just over the rim rather than behind
 // the cliff.
 const float FALLS_AURORA_LIFT = 0.3;
-// The cloud deck's cover in fair weather: broken cloud over the gorge, closed by the rain's overcast.
-const float FALLS_COVER = 0.3;
 
 const float FALLS_LIP = 0.79;   // where the water pours over: the floor of the notch in the lip
 const float FALLS_POOL = 0.27;  // the waterline at the foot of the cliff
-const float FALLS_EYE = 0.34;   // eye level: the camera's horizon line
-const float FALLS_FOV = 0.9;    // vertical field of view, radians
+const float FALLS_EYE = ${glslFloat(FALLS_EYE)};   // eye level: the camera's horizon line (RIG_HORIZON)
+const float FALLS_FOV = ${glslFloat(FALLS_FOV)};    // vertical field of view, radians
 const float FALLS_FOCAL = ${glslFloat(0.5 / Math.tan(0.45))};
 const float FALLS_G = 0.34;     // gravity in screen heights / s^2: a big fall seen from afar is unhurried
 const float FALLS_DEG = 57.29578;
 const float FALLS_BEDS = 9.0;   // couplets of beds (a hard lava flow and the soft bed on it) per screen height
 const vec3 FALLS_MIST = vec3(0.86, 0.96, 1.0);
 const vec3 FALLS_CYAN = vec3(0.5, 0.86, 0.92);
-// Distances for the rain: the eye stands ~2 m over the pool (gravity at the cliff, FALLS_G, makes
-// a screen height there ~29 m), the cliff ~29 m off, the near bank's stones and ferns 2-4 m.
-const float FALLS_CAM = 2.0;      // metres per pool-plane unit (the eye's height over the water)
+// Distances (m) for the World's rain, fog and birds: the eye stands ~2 m over the pool (gravity at
+// the cliff, FALLS_G, makes a screen height there ~29 m), the cliff ~29 m off, the near bank's
+// stones and ferns 2-4 m.
+const float FALLS_CAM = ${glslFloat(FALLS_CAM)};      // metres per pool-plane unit (the eye's height over the water, RIG_EYE)
 const float FALLS_CLIFF_Z = 29.0; // metres to the cliff...
 const float FALLS_CLIFF_M = 28.0; // ...and per screen height there
 const float FALLS_BANK_Z = 3.5;   // metres to the near bank's stones...
 const float FALLS_BANK_M = 3.4;   // ...and per screen height there
-const float FALLS_FERN_Z = 2.2;   // metres to the bank's ferns...
-const float FALLS_FERN_M = 2.1;   // ...and per screen height there
+const float FALLS_FERN_Z = ${glslFloat(FALLS_FERN_Z)};   // metres to the bank's ferns...
+const float FALLS_FERN_M = ${glslFloat(FALLS_FERN_M)};   // ...and per screen height there
 const float FALLS_RAIN_Z = 30.0;  // rainFall's layers sit for depth = 1 - exp(-z / FALLS_RAIN_Z)
+// The gorge's own haze per metre, for what the World's birds and a guest layer haze (Air.dust).
+const float FALLS_HAZE = 0.004;
+// Whether the water pours (the falls layer on): without it the rock beside the notch stays dry, the
+// blocks lie across the plunge and the pool lies still.
+#if LAYER_FALLS
+const float FALLS_POUR = 1.0;
+#else
+const float FALLS_POUR = 0.0;
+#endif
 
 struct FallsLight {
   vec3 sun;     // toward the sun, camera frame
@@ -58,6 +83,75 @@ struct FallsLight {
   vec3 moonCol; // direct moonlight
   vec3 amb;     // light from the whole sky
 };
+
+// ---- the gorge's state at this cell ----
+// Set by fallsBegin, before any layer's: the clocks and the passage, the frame point (fallsQ) and its
+// parallax-shifted copies (the cliff, fall, pool and spray; the woods upstream through the notch; the
+// near bank), the camera's ray and the sky's, the light, the air, the rain and the wind, where the
+// river comes over the lip.
+float fallsTm = 0.0;
+float fallsAspect = 1.78;
+float fallsArrive = 1.0;
+float fallsLeave = 0.0;
+vec2 fallsUv = vec2(0.0);
+vec2 fallsQ = vec2(0.0);
+vec2 fallsQc = vec2(0.0);
+vec2 fallsQt = vec2(0.0);
+vec2 fallsQb = vec2(0.0);
+vec3 fallsRayCam = vec3(0.0, 0.0, 1.0);
+vec3 fallsRay = vec3(0.0, 0.0, -1.0);
+FallsLight fallsL;
+float fallsDark = 0.0;
+vec3 fallsSkyLight = vec3(0.0);
+vec3 fallsGlow = vec3(0.0);
+vec3 fallsHaze = vec3(0.0);
+vec3 fallsRainAir = vec3(0.0);
+vec3 fallsCloudBase = vec3(0.0);
+vec3 fallsRainLight = vec3(0.08);
+float fallsDripAmt = 0.0;
+float fallsRain = 0.0;
+float fallsRainWet = 0.0;
+float fallsWind = 0.0;
+float fallsFx = 0.0;
+// Set by the layers' begins from their knobs, each its own: the carved M's parting (cliff), the
+// flow and the foot of the sheet where it meets the pool (falls; with no falls, a width of -1: no
+// plunge clears the blocks), the spray (spray), the moss and ferns (greenery), the fireflies (pool).
+float fallsParting = 0.0;
+float fallsFlow = 0.0;
+float fallsFootX = 0.0;
+float fallsFootW = -1.0;
+float fallsMistAmount = 0.0;
+float fallsGreen = 0.0;
+float fallsFlies = 0.0;
+// The cliff's layout at this cell (cliffBegin): its skyline, the slot wall seen here (fallsSlot) with
+// its top and the woods over it, the trees on the rim and the woods upstream, and which part the cell
+// shows (FALLS_AT_*).
+const int FALLS_AT_WALL = 0;
+const int FALLS_AT_TREES = 1;
+const int FALLS_AT_WOODS = 2;
+const int FALLS_AT_SKY = 3;
+const int FALLS_AT_CLIFF = 4;
+const int FALLS_AT_POOL = 5;
+int fallsPart = FALLS_AT_SKY;
+float fallsRimY = 1.0;
+vec4 fallsSlotHit = vec4(0.0);
+float fallsSlotTopY = 0.0;
+float fallsSlotWoods = 0.0;
+float fallsTreesY = 1.0;
+float fallsWoodsY = 1.0;
+// What the passes leave for the later ones: the depth of what the gorge drew last (anything the cell
+// then shows nearer covers it: a bird, a guest's grass), the wet sparkle, the white water and the
+// spray there (for the dither's shimmer, cliffShade), the plunge's churn, the spray's veil, how much
+// of the near bank stands in front (its stones and ferns), and the white water's glow left in the
+// air after it (for the rain around it).
+float fallsZm = 1e4;
+float fallsGlint = 0.0;
+float fallsWhite = 0.0;
+float fallsSpray = 0.0;
+float fallsChurnX = 0.0;
+float fallsMistA = 0.0;
+float fallsFront = 0.0;
+float fallsHaloM = 0.0;
 
 // The shared sky's sun crosses the sky ahead of its camera. This camera is turned half a turn
 // about the vertical, so the sun is behind the viewer whenever it is up: it lights the cliff and
@@ -215,18 +309,6 @@ float fallsHalo(vec2 q, float fx, float flow, float wind) {
   float off = max(abs(q.x - fallsCentre(d, fx, flow, wind)) - fallsHalfWidth(d, flow), 0.0);
   float along = (1.0 - smoothstep(FALLS_LIP - 0.06, FALLS_LIP + 0.06, y)) * (inPool ? 0.7 : 1.0);
   return exp(-off / (0.035 + 0.04 * flow)) * along * (0.5 + 0.5 * smoothstep(0.0, 0.3, d));
-}
-
-float fallsLobe(float k, float c, float w) {
-  float z = (k - c) / w;
-  return max(1.0 - z * z, 0.0);
-}
-
-// The rainbow's colours across one band, k = 0 violet to 1 red: overlapping lobes shaped roughly
-// like the CIE 1931 colour-matching functions (red's small second lobe in the violet included).
-vec3 fallsSpectrum(float k) {
-  vec3 c = vec3(fallsLobe(k, 0.8, 0.3) + 0.3 * fallsLobe(k, 0.06, 0.12), fallsLobe(k, 0.52, 0.26), fallsLobe(k, 0.18, 0.24));
-  return c * smoothstep(-0.12, 0.04, k) * smoothfall(1.12, 0.96, k);
 }
 
 // ---- the cliff ----
@@ -592,19 +674,6 @@ vec3 fallsBlock(vec2 q, vec3 n, float k, float h, FallsLight L, vec3 skyLight, f
   return mix(stone, mossCol, moss) * fallsLit(L, n) + skyLight * (smoothstep(0.4, 0.9, n.y) * (0.03 + 0.1 * damp + 0.2 * dark) * (1.0 - 0.5 * moss) + 0.25 * gloss);
 }
 
-// The Manifold M cut into the rock, centred at 'at', size its height. x: groove coverage (a
-// chiselled, slightly wavering edge); y: light on the groove's floor (the upper wall shades the
-// floor below it, the light coming from above); z: the lower wall, facing up into the light.
-vec3 fallsMark(vec2 q, vec2 at, float size) {
-  vec2 m = (q - at) / size;
-  if (abs(m.x) > 0.7 || abs(m.y) > 0.7) return vec3(0.0);
-  float d = markDistance(m) - 0.085 + (vnoise(m * 24.0) - 0.5) * 0.02;
-  float groove = smoothfall(0.012, -0.004, d);
-  float lit = smoothfall(0.01, -0.02, markDistance(m + vec2(0.01, 0.07)) - 0.085);
-  float wall = smoothstep(-0.01, 0.01, markDistance(m - vec2(0.0, 0.035)) - 0.085);
-  return vec3(groove, lit, wall * groove);
-}
-
 // Down in the limestone slot the back wall at height y sees only a strip of sky, and the sun reaches
 // only its top; the other gorges stand open.
 FallsLight fallsSlotShade(FallsLight L, float y) {
@@ -617,7 +686,8 @@ FallsLight fallsSlotShade(FallsLight L, float y) {
 
 // What the pool mirrors at q (a point on the cliff above the waterline): the stone, the fallen
 // blocks, the falling water and the plunge, done cheaply (no ferns, joints or carving): the
-// ripples smear it anyway. rainWet soaks its stone as it does the cliff's.
+// ripples smear it anyway. rainWet soaks its stone as it does the cliff's. Without the falls the
+// rock beside the notch is dry, and no water falls or boils in the image.
 vec3 fallsMirror(vec2 q, FallsLight L, vec3 skyLight, vec3 glow, float fx, float flow, float green, float split, float wind, float rainWet, float dark, float tm) {
   float dsdy = 0.0;
   float s = fallsLayer(q, dsdy);
@@ -626,117 +696,33 @@ vec3 fallsMirror(vec2 q, FallsLight L, vec3 skyLight, vec3 glow, float fx, float
   float sp = fallsSplit(c, q.x);
   bool hard = g < sp;
   float f = hard ? g / sp : (g - sp) / (1.0 - sp);
+  float wet = smoothfall(FALLS_POOL + 0.035, FALLS_POOL, q.y);
+#if LAYER_FALLS
   float d = FALLS_LIP - q.y;
   float beside = abs(q.x - fallsCentre(d, fx, flow, wind)) - fallsHalfWidth(d, flow);
-  float wet = max(exp(-max(beside, 0.0) / (0.04 + 0.08 * flow)), smoothfall(FALLS_POOL + 0.035, FALLS_POOL, q.y));
+  wet = max(exp(-max(beside, 0.0) / (0.04 + 0.08 * flow)), wet);
+#endif
   float lip = hard ? smoothstep(0.7, 1.0, f) * fallsProud(c, q.x) : 0.0;
   vec3 n = normalize(vec3(0.0, hard ? (f - 0.5) * 0.5 : 0.0, -1.0));
   FallsLight Ls = fallsSlotShade(L, q.y);
   vec3 col = wetten(fallsStone(c, hard) * (0.72 + 0.45 * vnoise(q * vec2(28.0, 46.0))) * mix(1.0, 0.5, wet), 0.85 * rainWet * (1.0 - wet), hard ? 0.25 : 0.7) * fallsLit(Ls, n) * (hard ? 1.0 : 0.8);
   col = mix(col, wetten(vec3(0.2, 0.36, 0.1), rainWet, 1.0) * fallsLit(Ls, vec3(0.0, 0.85, -0.53)), lip * smoothstep(0.0, 0.15, green) * 0.8);
   col += skyLight * lip * 0.22 * dark;
-  float drop = FALLS_LIP - FALLS_POOL;
-  float footX = fallsCentre(drop, fx, flow, wind);
-  float footW = fallsHalfWidth(drop, flow);
   if (q.y < FALLS_POOL + 0.075) {
     vec3 bn = vec3(0.0, 0.0, -1.0);
     float bk = 0.0;
     float bh = 0.0;
-    float block = fallsBoulders(q, footX, footW, bn, bk, bh);
+    float block = fallsBoulders(q, fallsFootX, fallsFootW, bn, bk, bh);
     if (block > 0.0) col = mix(col, fallsBlock(q, bn, bk, bh, L, skyLight, wet, rainWet, green, dark), block);
   }
+#if LAYER_FALLS
   float sheen = 0.0;
   vec4 sheet = fallsCurtain(q, fx, flow, split, wind, tm, sheen);
   if (sheet.x > 0.0) col = mix(col, fallsWater(sheet, sheen, L, skyLight, glow), sheet.x);
-  vec2 churn = fallsChurn(q, footX, footW, flow, tm);
-  return mix(col, fallsFoam(L, glow, churn.y), churn.x);
-}
-
-// Fireflies over the pool: each drifts on its own slow loop at its own height over the water and
-// glows up and dies away every few seconds (a smooth pulse, never a per-frame flicker), a warm
-// point with a soft halo; its reflection lies straight below it, as far under the surface as it
-// is above, drawn out by the ripples. Perspective sizes them: nearer flies, lower on the screen,
-// are larger. Returns the light they add.
-vec3 fallsFireflies(vec2 q, float aspect, float tm, float count) {
-  vec3 light = vec3(0.0);
-  for (int i = 0; i < 14; i++) {
-    float fi = float(i);
-    if (fi >= count) break;
-    float hx = hash12(vec2(fi, 71.0));
-    float hy = hash12(vec2(fi, 72.0));
-    float hz = hash12(vec2(fi, 73.0));
-    float ground = 0.05 + 0.19 * hy;
-    float scale = (FALLS_EYE - ground) / (FALLS_EYE - 0.1);
-    float x = (hx - 0.5) * aspect * 0.9 + 0.06 * scale * sin(tm * (0.11 + 0.08 * hz) + fi * 2.3);
-    float alt = scale * (0.025 + 0.06 * hz) * (1.0 + 0.25 * sin(tm * 0.23 + fi * 4.1));
-    float r = 0.0042 * scale + 0.0022;
-    vec2 up = q - vec2(x, ground + alt);
-    vec2 down = (q - vec2(x, ground - alt)) * vec2(1.0, 0.4);
-    if (min(dot(up, up), dot(down, down)) > 196.0 * r * r) continue;
-    float wave = 0.5 + 0.5 * sin(tm * (1.2 + 1.1 * hx) + fi * 1.7);
-    float pulse = 0.1 + 0.9 * wave * wave * wave;
-    float du = length(up) / r;
-    float dd = length(down) / r;
-    light += pulse * (vec3(1.0, 0.95, 0.62) * 1.3 * exp(-du * du) + vec3(0.95, 0.75, 0.24) * 0.32 * exp(-du * 0.33)
-                    + vec3(1.0, 0.9, 0.5) * 0.6 * exp(-dd * dd) + vec3(0.9, 0.7, 0.22) * 0.12 * exp(-dd * 0.4));
-  }
-  return light;
-}
-
-// Ferns on the near bank: up to four clumps toward the corners (more with more greenery), fronds
-// rising and arching over: the plant component's fronds, rooted, grown and bent by the wind in the
-// sim (uSim0 holds FALLS_CLUMPS × FALLS_FRONDS records, clump by clump; a missing or shed frond's
-// tier is 0). Returns coverage; tip as for fallsFerns, pheno the year's turn of the frond in front.
-// wet (how wet the rain has left them) hangs beads of water under the leaflets' tips: bead 0..1.
-// drip finds the nearest frond overhead, for the water dripping off it: x along that frond, y how
-// far below it (screen heights), z 1 if there is one. foot: a cell in screen heights.
-// grow (1 at rest) scales the fronds and slides the clumps in from the frame's edge: the entrance
-// springs them up past 1 and back, standing upright at first and arching over as they grow.
-const int FALLS_CLUMPS = ${FALLS_CLUMPS};
-const int FALLS_FRONDS = ${FALLS_FRONDS};
-float fallsBankFerns(vec2 q, float wet, float grow, float foot, out float tip, out float pheno, out float bead, out vec3 drip) {
-  tip = 0.0;
-  pheno = 0.0;
-  bead = 0.0;
-  drip = vec3(0.0, 1.0, 0.0);
-  float cover = 0.0;
-  float len = 1.0;   // the frond in front: its length, how far below its spine q lies, its key
-  float under = 0.0;
-  float key = 0.0;
-  if (uSimOn.x < 0.5) return 0.0;
-  float g = clamp(grow, 0.0, 1.0);
-  for (int r = 0; r < FALLS_CLUMPS * FALLS_FRONDS; r++) {
-    PlantOrgan o = plantOrgan(uSim0, 0, r);
-    if (o.tier < 0.5) continue;
-    vec2 root = o.at + vec2(sign(o.at.x) * 0.08 * (1.0 - g), 0.0);
-    float lj = o.len * grow;
-    vec2 rel = q - root;
-    if (dot(rel, rel) > lj * lj * 4.0) continue;
-    float u = 0.0;
-    float uj = 0.0;
-    // The spring's turn of the frond lifts (or lowers) its tip: its bend in frond lengths.
-    float bend = o.side * o.bend * length(vec2(1.0, o.a - o.b));
-    float frond = plantFrond(rel, o.side, lj, o.a, o.b * (1.0 - 0.6 * (1.0 - g)), bend, foot, u, uj);
-    if (frond > cover) {
-      cover = frond;
-      tip = u;
-      len = lj;
-      under = uj;
-      key = o.variant;
-      pheno = o.pheno;
-    }
-    // The water runs out along the frond and drips off its outer, drooping part, down to the
-    // ground the clump grows from.
-    if (u > 0.35 && uj > 0.0 && uj < drip.y && q.y > root.y - 0.03) drip = vec3(u * lj + 0.61 * o.variant, uj, 1.0);
-  }
-  if (wet > 0.0 && cover > 0.0) {
-    // One leaflet in a few holds a bead under its tip (the leaflets peak at u = (k + 0.5) pi / 23).
-    float k = floor(tip * 7.32);
-    float uk = (k + 0.5) / 7.32;
-    vec2 v = vec2((tip - uk) * len, under - 0.75 * (len * 0.17 * (1.0 - uk) + 0.0011));
-    bead = smoothfall(0.0035, 0.0015, length(v)) * step(hash12(vec2(k, key + 0.5)), 0.2 + 0.6 * wet) * wet;
-  }
-  return cover;
+  vec2 churn = fallsChurn(q, fallsFootX, fallsFootW, flow, tm);
+  col = mix(col, fallsFoam(L, glow, churn.y), churn.x);
+#endif
+  return col;
 }
 
 // ---- the slot (the limestone gorge) ----
@@ -809,69 +795,29 @@ vec3 fallsSlotMirror(vec4 slot, FallsLight L, vec3 haze, float rainWet) {
   return stone * fallsLit(fallsSlotLight(L, slot), vec3(0.0, 0.0, -1.0)) * (hard ? 1.0 : 0.8);
 }
 
-// ---- passage ----
-// The entrance: the camera starts up at the lip and, already moving, tilts down the fall to the pool
-// (a lens shift of uv, as the countryside does), settling a touch past rest and back; then the ferns
-// on the bank spring up and the spray rises, the rainbow forming in it. The exit tilts the camera
-// back up the fall, ever faster, while the spray surges up the cliff to meet it. At rest
-// (passageIn() == 1, passageOut() == 0) every term below is exactly 1 or 0.
-const float FALLS_TILT_IN = 0.4;   // screen heights the frame starts above its rest view
-const float FALLS_TILT_OUT = 0.34; // and how far the exit lifts it
-
-// Something springing up, or the camera coming to rest: 0 at x = 0 and already moving, a gentle
-// overshoot past 1, exactly 1 (and still) at x = 1.
-float fallsSpring(float x) {
-  float u = clamp(x, 0.0, 1.0) - 1.0;
-  return 1.0 + u * u * (2.2 * u + 1.2);
-}
-
-// ---- birds ----
-// The birds over the gorge at frame point q (the passage's frame; the pointer's parallax is added
-// per flight) on the motion clock tm (the shared birds; off by default): crossing it by day, swifts
-// by default, drawn twice life size, few in the rain, a swooping party skimming the pool. No
-// occlusion: sceneFalls hides them behind what it meets nearer.
-BirdHit fallsBirds(vec2 q, float tm) {
-  BirdSky flights = birdSky(K_birds * smoothfall(0.5, 0.1, K_rain), K_birdKind, K_birdFormation - 1.0, vec2(8.0, 45.0), vec2(0.42, 1.0), vec2(3.7, 11.9));
-  flights.hours = vec4(0.22, 0.26, 0.8, 0.84);
-  flights.clock = vec2(K_time, K_cycle);
-  flights.swoopTo = FALLS_CAM + 0.5;
-  flights.parallax = -uPointer * vec2(0.006, 0.003) * FALLS_CLIFF_Z;
-  return birdFlights(q, flights, BirdCamera(FALLS_EYE, 0.5 / tan(0.5 * FALLS_FOV), FALLS_CAM, 1.0, 2.0), tm, 1.0 / uRes.y);
-}
-
-// Waterfall knobs: K_flow, K_mist, K_rainbow, K_gorge, K_greenery, K_fireflies, K_birds,
-// K_birdKind, K_birdFormation, K_time, K_cycle, K_stars, K_moon, K_meteors, K_rain, K_fog, K_wind,
-// K_aurora, K_mark; uWeather.x is how wet the rain has left the place.
-Shade sceneFalls(vec2 screenUv, vec2 cell, float t) {
-  fallsSetGorge(K_gorge);
-  float tm = uMotionTime;
-  float aspect = uRes.x / uRes.y;
-  float arrive = passageIn();
-  float leave = passageOut();
-  // Everything below, projection and rain included, looks through the shifted frame.
-  vec2 uv = screenUv + vec2(0.0, FALLS_TILT_IN * (1.0 - fallsSpring(arrive / 0.85)) + FALLS_TILT_OUT * leave * leave);
-  vec2 q = vec2((uv.x - 0.5) * aspect, uv.y);
-  float flow = K_flow;
-  // The spray is held low until the camera has come down, then rises; at the exit it surges up.
-  float mistAmount = K_mist * (1.0 - 0.75 * (1.0 - smoothstep(0.3, 0.9, arrive))) * (1.0 + 0.9 * leave * leave);
-  float green = K_greenery;
-  float rain = K_rain;
-  float rainWet = uWeather.x;
-  float wind = K_wind;
-  float mark = K_mark;
-  float fx = fallsAt(aspect);
-  float drop = FALLS_LIP - FALLS_POOL;
-  float footX = fallsCentre(drop, fx, flow, wind);
-  float footW = fallsHalfWidth(drop, flow);
+// ---- the gorge's state, per cell ----
+// What every gorge layer reads, before any layer's own begin: the clocks, the passage, the frame
+// point through the passage's lens shift (x.uv: everything below, projection and rain included, looks
+// through the shifted frame), the light, the air and the rain.
+void fallsBegin(Ctx x) {
+  fallsTm = x.tm;
+  fallsAspect = x.aspect;
+  fallsArrive = passageIn();
+  fallsLeave = passageOut();
+  fallsUv = x.uv;
+  fallsQ = vec2((fallsUv.x - 0.5) * fallsAspect, fallsUv.y);
+  fallsRain = x.w.rain;
+  fallsRainWet = uWeather.x;
+  fallsWind = x.w.wind;
+  fallsFx = fallsAt(fallsAspect);
 
   // Light, from the world's sky seen facing away from the sun (fallsWorld). Rain falls from the
   // world's overcast, which hides the sun and the moon alike and spreads their light into a flat grey
   // one from the whole sky: pale and bright for a drizzle, darker the heavier the rain.
-  World world = worldAt(FALLS_METEOR_SLOT, -1);
-  Sky sky = world.sky;
-  vec3 rayCam = viewRay(uv, aspect, FALLS_EYE, FALLS_FOV);
-  vec3 ray = fallsWorld(rayCam);
-  float overcast = world.overcast;
+  Sky sky = x.w.sky;
+  fallsRayCam = viewRay(fallsUv, fallsAspect, FALLS_EYE, FALLS_FOV);
+  fallsRay = fallsWorld(fallsRayCam);
+  float overcast = x.w.overcast;
   FallsLight L;
   L.sun = fallsWorld(sky.sun);
   L.moon = fallsWorld(sky.moon);
@@ -880,154 +826,225 @@ Shade sceneFalls(vec2 screenUv, vec2 cell, float t) {
   L.amb = sky.ambient + (0.25 * sky.sunColor + 0.3 * L.moonCol) * overcast;
   // Night vision: as the light fails the eye adapts, so the scene below the sky is shaded with
   // the light scaled back up toward a readable level (the sky itself is left as the library paints
-  // it) and its blue cast softened. dark (0 by day .. 1 at night) brings in what shows only after
-  // dusk: sky light along the ledges, the white water's soft glow, rain lit around the fall. The
-  // gloom of heavy rain is the one darkness the eye does not adapt away.
+  // it) and its blue cast softened. fallsDark (0 by day .. 1 at night) brings in what shows only
+  // after dusk: sky light along the ledges, the white water's soft glow, rain lit around the fall.
+  // The gloom of heavy rain is the one darkness the eye does not adapt away.
   float lightLum = dot(L.amb, LUMA) + 0.6 * dot(L.sunCol, LUMA) + 0.5 * dot(L.moonCol, LUMA);
-  float adapt = clamp(0.42 / max(lightLum, 0.01), 1.0, 6.0) * (1.0 - 0.45 * rain);
-  float dark = 1.0 - smoothstep(0.15, 0.5, lightLum);
-  L.amb = greyed(L.amb, vec3(1.0), 0.3 * dark) * adapt;
+  float adapt = clamp(0.42 / max(lightLum, 0.01), 1.0, 6.0) * (1.0 - 0.45 * fallsRain);
+  fallsDark = 1.0 - smoothstep(0.15, 0.5, lightLum);
+  L.amb = greyed(L.amb, vec3(1.0), 0.3 * fallsDark) * adapt;
   L.sunCol *= adapt;
   L.moonCol *= adapt;
+  fallsL = L;
   // What a glassy surface shows of the sky, the white water's own light after dark, and the haze
-  // on the horizon (fog, distance), greyed and dimmed under rain.
-  vec3 skyLight = L.amb * 1.5 + L.sunCol * 0.3 + L.moonCol * 0.35;
-  vec3 glow = vec3(0.75, 0.88, 1.0) * dot(L.amb + 0.8 * L.moonCol, LUMA) * 0.5 * dark;
-  vec3 haze = skyColor(sky, fallsWorld(normalize(vec3(rayCam.x, 0.04, 1.0))));
-  haze = greyed(haze, vec3(1.0), 0.75 * overcast) * (1.0 - 0.55 * rain);
+  // on the horizon (the fog's colour, the distance), greyed and dimmed under rain.
+  fallsSkyLight = L.amb * 1.5 + L.sunCol * 0.3 + L.moonCol * 0.35;
+  fallsGlow = vec3(0.75, 0.88, 1.0) * dot(L.amb + 0.8 * L.moonCol, LUMA) * 0.5 * fallsDark;
+  vec3 haze = skyColor(sky, fallsWorld(normalize(vec3(fallsRayCam.x, 0.04, 1.0))));
+  fallsHaze = greyed(haze, vec3(1.0), 0.75 * overcast) * (1.0 - 0.55 * fallsRain);
   // The rain's air (the veil of drops too far off to make out; after dark it is lit like the
   // scene); the overcast's underside, the sky light under the deck greyed (drops, splashes and
   // puddles all show it); the light the drops catch: each refracts the bright overcast, so a drop
   // shows ~1.2x its cloud base, plus what sun gets through, never quite dark at night. Then how
   // hard the ledges and fronds drip: while it rains, and for a while after, as long as they are wet.
-  vec3 rainAir = mix(haze, 0.35 * skyLight, dark);
-  vec3 cloudBase = mix(vec3(dot(L.amb, LUMA)), L.amb, 0.3) * 0.6 + 0.15 * L.moonCol;
-  vec3 rainLight = max(1.2 * cloudBase + 0.3 * L.sunCol, vec3(0.08));
-  float dripAmt = max(rain, 0.4 * rainWet);
+  fallsRainAir = mix(fallsHaze, 0.35 * fallsSkyLight, fallsDark);
+  fallsCloudBase = mix(vec3(dot(L.amb, LUMA)), L.amb, 0.3) * 0.6 + 0.15 * L.moonCol;
+  fallsRainLight = max(1.2 * fallsCloudBase + 0.3 * L.sunCol, vec3(0.08));
+  fallsDripAmt = max(fallsRain, 0.4 * fallsRainWet);
 
   // Parallax: nearer layers slide further as the pointer moves.
-  vec2 qc = q - uPointer * vec2(0.006, 0.003);  // cliff, fall, pool and spray
-  vec2 qt = q - uPointer * vec2(0.003, 0.0015); // the woods upstream, through the notch
-  vec2 qb = q - uPointer * vec2(0.02, 0.008);   // the near bank
+  fallsQc = fallsQ - uPointer * vec2(0.006, 0.003);  // cliff, fall, pool and spray
+  fallsQt = fallsQ - uPointer * vec2(0.003, 0.0015); // the woods upstream, through the notch
+  fallsQb = fallsQ - uPointer * vec2(0.02, 0.008);   // the near bank
+}
 
-  // The near bank and its ferns, first: the nearest thing on each line of sight decides how much
-  // rain falls in front of it.
-  float bankTop = -1.0;
-  if (qb.y < 0.3) {
-    float edgeness = smoothstep(0.15, 1.0, abs(qb.x) / max(0.5 * aspect, 0.3));
-    bankTop = 0.018 + 0.025 * fbm3(vec2(qb.x * 4.0, 2.0)) + 0.1 * edgeness * edgeness + fallsCrowns(qb.x + 0.37, 0.11, 13.0) * (0.12 + 0.5 * edgeness);
+// Something the cell shows nearer than what the gorge drew last (a bird, a guest's grass) covers it:
+// the sparkle of what lies behind goes with it, and the gorge draws on from there.
+void fallsCovered(Cell c) {
+  if (c.z < fallsZm) {
+    fallsGlint = 0.0;
+    fallsWhite = 0.0;
+    fallsSpray = 0.0;
+    fallsZm = c.z;
   }
-  float tip = 0.0;
-  float fernPheno = 0.0;
-  float bead = 0.0;
-  vec3 fernDrip = vec3(0.0);
-  float fern = 0.0;
-  // The bank's ferns grow toward the corners: skip the loop in the open middle.
-  float fernGrow = fallsSpring((arrive - 0.5) / 0.4);
-  if (green > 0.0 && fernGrow > 0.01 && qb.y < 0.45 && abs(qb.x) > 0.47 * aspect - 0.45) fern = fallsBankFerns(qb, rainWet, fernGrow, 1.0 / uRes.y, tip, fernPheno, bead, fernDrip);
-  float front = max(step(qb.y, bankTop), fern);
+}
 
-  vec3 col = vec3(0.0);
-  float fogDist = 0.55;
-  float zm = FALLS_CLIFF_Z; // metres to what is seen here beyond the bank, for the rain
-  vec3 mirror = vec3(0.0);  // what the pool reflects here...
-  float mirrorW = 0.0;      // ...and its share of the colour
-  float glint = 0.0;       // wet sparkle, for the shimmer
-  float white = 0.0;       // white water here, for the shimmer
-  float spray = 0.0;       // spray thrown off the sheet, for the shimmer
-  float markAccent = 0.0;
-  float rim = fallsRim(qc.x, fx, mark);
+// The veil of rain too fine and far to make out between the eye and a surface at this weatherDepth:
+// rainFall's own for a level camera (shaders/lib/weather.ts), without its drops. The World veils
+// what the cell shows; the pool's mirror image has crossed more rain than its surface (poolGround).
+float fallsRainVeil(float depth) {
+  float a = clamp(fallsRain, 0.0, 1.0);
+  float gusty = smoothstep(0.25, 0.95, a) * (0.35 + 0.65 * abs(fallsWind));
+  vec3 dir = rainFallDir(fallsRain, fallsWind);
+  vec2 p = vec2((fallsUv.x - 0.5) * fallsAspect, fallsUv.y - 0.5);
+  float across = p.x - p.y * dir.x / dir.y;
+  float k = 0.22 * smoothstep(0.0, 0.12, a) + 0.3 * a + 0.87 * a * a * a;
+  k *= 1.0 + gusty * (1.3 * weatherGust(across, mix(2.0, 22.0, depth), fallsTm, fallsWind) - 0.45);
+  return 1.0 - exp(-k * depth * (0.4 + 0.6 * depth));
+}
+`;
+
+/**
+ * The cliff's GLSL (a backdrop): the rock of the gorge, the rim's trees and the woods upstream, the
+ * fallen blocks, the carved M, the World's sky over the rim, the gorge's air and its rain's, and the
+ * shimmer the gorge leaves in the dither.
+ */
+export const cliffGlsl = `
+// ---- the cliff (falls/shader.ts) ----
+// The Manifold M cut into the rock, centred at 'at', size its height. x: groove coverage (a
+// chiselled, slightly wavering edge); y: light on the groove's floor (the upper wall shades the
+// floor below it, the light coming from above); z: the lower wall, facing up into the light.
+vec3 fallsMark(vec2 q, vec2 at, float size) {
+  vec2 m = (q - at) / size;
+  if (abs(m.x) > 0.7 || abs(m.y) > 0.7) return vec3(0.0);
+  float d = markDistance(m) - 0.085 + (vnoise(m * 24.0) - 0.5) * 0.02;
+  float groove = smoothfall(0.012, -0.004, d);
+  float lit = smoothfall(0.01, -0.02, markDistance(m + vec2(0.01, 0.07)) - 0.085);
+  float wall = smoothstep(-0.01, 0.01, markDistance(m - vec2(0.0, 0.035)) - 0.085);
+  return vec3(groove, lit, wall * groove);
+}
+
+// Per cell: the rock the river has cut through and the M's parting, the cliff's skyline and which of
+// its parts the cell shows; the gorge's air (its haze toward this bearing, the fog's colour, the
+// drops' light, the bright sky wet things mirror). The site's floor ends at the waterline, at the
+// pool's far edge.
+void cliffBegin(inout Ctx x) {
+  fallsSetGorge(K_gorge);
+  fallsParting = K_cliffMark;
+  vec2 qc = fallsQc;
+  fallsRimY = fallsRim(qc.x, fallsFx, fallsParting);
   // The limestone slot's walls stand in front of the back wall at the sides, the woods over their tops.
-  vec4 slot = fallsGeo.kind > 1.5 ? fallsSlot(qc, fallsSlotFit(aspect)) : vec4(0.0);
-  float slotTop = slot.x != 0.0 ? fallsSlotTop(slot.y, slot.x) : 0.0;
-  float slotWoods = slot.x != 0.0 ? 0.006 + 0.7 * fallsCrowns(slot.w, 0.05, 23.0) : 0.0;
-  if (slot.x != 0.0 && slot.z >= FALLS_POOL && slot.z < slotTop + slotWoods) {
-    if (slot.z < slotTop) {
+  vec4 slot = fallsGeo.kind > 1.5 ? fallsSlot(qc, fallsSlotFit(fallsAspect)) : vec4(0.0);
+  fallsSlotHit = slot;
+  fallsSlotTopY = slot.x != 0.0 ? fallsSlotTop(slot.y, slot.x) : 0.0;
+  fallsSlotWoods = slot.x != 0.0 ? 0.006 + 0.7 * fallsCrowns(slot.w, 0.05, 23.0) : 0.0;
+  if (slot.x != 0.0 && slot.z >= FALLS_POOL && slot.z < fallsSlotTopY + fallsSlotWoods) {
+    fallsPart = FALLS_AT_WALL;
+  } else if (qc.y > fallsRimY) {
+    // Above the cliff: trees along its top, the woods upstream through the notch, then the sky.
+    float notch = 1.0 - smoothstep(0.17, 0.25, abs(qc.x - fallsFx));
+    float lean = (0.002 + 0.004 * abs(fallsWind)) * sin(fallsTm * 0.5 + qc.x * 3.0);
+    fallsTreesY = fallsRimY + (0.003 + fallsCrowns(qc.x - lean, 0.045, 1.0)) * (1.0 - notch);
+    fallsWoodsY = FALLS_LIP + 0.028 + 0.02 * fbm3(vec2(fallsQt.x * 2.5, 8.0)) + 0.8 * fallsCrowns(fallsQt.x, 0.02, 7.0);
+    fallsPart = qc.y < fallsTreesY ? FALLS_AT_TREES : qc.y < fallsWoodsY ? FALLS_AT_WOODS : FALLS_AT_SKY;
+  } else {
+    fallsPart = qc.y > FALLS_POOL ? FALLS_AT_CLIFF : FALLS_AT_POOL;
+  }
+  x.air = Air(fallsHaze, fallsHaze, fallsRainLight, fallsSkyLight, 0.0, FALLS_HAZE, 0.0);
+  x.groundTo = FALLS_POOL + 0.003 * uPointer.y;
+  x.landZ = FALLS_CAM * FALLS_FOCAL / (FALLS_EYE - FALLS_POOL);
+}
+
+// Over the rim the World's sky, seen half turned away from the sun (its frame exactly fallsWorld's):
+// the dome; the aurora ahead of the camera, its arc lifted over the rim; the deck, broken cloud as the
+// clouds knob has it and closing from there with the rain's overcast, sinking as it grows heavier
+// (seen larger, being nearer), greyed and darker the heavier the rain, what it leaves open greyed by
+// the world; the stars and shooting stars in its gaps; the lightning. The world turns its wind by the
+// view's half turn (worldDeckDrift), so the deck drifts the way the rain slants.
+void cliffSky(Ctx x, inout Cell c) {
+  if (fallsPart != FALLS_AT_SKY) return;
+  vec2 qc = fallsQc;
+  WorldView view = worldViewOf(fallsRayCam, fallsUv, FALLS_EYE, FALLS_FOCAL, FALLS_CAM, 0.5 * TAU, 1.0);
+  view.dir = fallsRay;
+  view.auroraLift = FALLS_AURORA_LIFT;
+  World world = x.w;
+  world.cover = mix(K_clouds, 1.0, world.overcast);
+  world.low = 1.0 + WORLD_DECK_LOW * world.storm;
+  WorldSky heaven = worldSky(world, view, WORLD_METEOR_FIELD);
+  vec3 col = mix(heaven.col, greyed(heaven.col, vec3(1.0), 0.6 * world.overcast) * (1.0 - 0.55 * world.storm), heaven.cloud) + heaven.strike;
+  if (fallsRain > 0.0) {
+    // Rain hangs from the deck in grey shafts behind the cliff, slanting downwind and sweeping
+    // slowly across, thickest over the skyline and fading up into the cloud.
+    float xs = qc.x + fallsWind * 0.4 * (qc.y - fallsRimY);
+    float shaft = smoothstep(0.35, 0.75, fbm3(vec2(xs * 2.4 - fallsTm * (0.01 + 0.05 * fallsWind), 3.7)));
+    float hang = 1.0 - smoothstep(0.0, 0.1 + 0.12 * fallsRain, qc.y - fallsRimY);
+    float streaks = 0.75 + 0.25 * vnoise(vec2(xs * 26.0, qc.y * 3.0 + fallsTm * 0.4));
+    col = mix(col, fallsRainAir, shaft * hang * streaks * (0.15 + 0.6 * fallsRain));
+  }
+  c.col = col;
+}
+
+// Below the sky: a slot wall or the woods over it, the trees on the rim, the woods upstream through
+// the notch, or the cliff face with the ledge ferns (greenery), the carved M and the blocks heaped at
+// its foot, each at its depth (the World's rain and fog stop there, its birds hide behind it).
+void cliffFar(Ctx x, inout Cell c) {
+  int part = fallsPart;
+  if (part == FALLS_AT_SKY || part == FALLS_AT_POOL) return;
+  vec2 qc = fallsQc;
+  FallsLight L = fallsL;
+  float tm = fallsTm;
+  float green = fallsGreen;
+  float rainWet = fallsRainWet;
+  float dark = fallsDark;
+  vec3 col = vec3(0.0);
+  float zm = FALLS_CLIFF_Z;
+  float glint = 0.0;
+  float markAccent = 0.0;
+  if (part == FALLS_AT_WALL) {
+    vec4 slot = fallsSlotHit;
+    if (slot.z < fallsSlotTopY) {
       // The wall, shaded as the back wall is in its own frame (fallsSlotLight), wet at its foot.
       vec2 wq = vec2(slot.w, slot.z);
       float dsdy = 0.0;
       float s = fallsLayer(wq, dsdy);
       float wet = smoothfall(FALLS_POOL + 0.035, FALLS_POOL, slot.z);
-      vec3 rayWall = vec3(-slot.x * rayCam.z, rayCam.y, slot.x * rayCam.x);
-      col = fallsRock(wq, s, dsdy, rayWall, fallsSlotLight(L, slot), wet, rainWet, dripAmt, rainLight, green, dark, tm, uFallTime, glint);
+      vec3 rayWall = vec3(-slot.x * fallsRayCam.z, fallsRayCam.y, slot.x * fallsRayCam.x);
+      col = fallsRock(wq, s, dsdy, rayWall, fallsSlotLight(L, slot), wet, rainWet, fallsDripAmt, fallsRainLight, green, dark, tm, uFallTime, glint);
     } else {
       // The woods leaning over the top of the wall, seen from below.
       float clump = 0.6 * vnoise(vec2(slot.w, slot.z) * vec2(60.0, 70.0)) + 0.4 * vnoise(qc * vec2(150.0, 160.0));
       vec3 leaf = wetten(mix(vec3(0.03, 0.08, 0.04), vec3(0.12, 0.24, 0.09), clump), rainWet, 0.5);
       col = leaf * fallsLit(L, normalize(vec3(clump - 0.5, -0.4, -1.0)));
     }
-    fogDist = mix(0.15, 0.55, slot.y);
     zm = slot.y * FALLS_CLIFF_Z;
-  } else if (qc.y > rim) {
-    // Above the cliff: trees along its top, the woods upstream through the notch, then the sky.
-    float notch = 1.0 - smoothstep(0.17, 0.25, abs(qc.x - fx));
-    float lean = (0.002 + 0.004 * abs(wind)) * sin(tm * 0.5 + qc.x * 3.0);
-    float trees = rim + (0.003 + fallsCrowns(qc.x - lean, 0.045, 1.0)) * (1.0 - notch);
-    float woods = FALLS_LIP + 0.028 + 0.02 * fbm3(vec2(qt.x * 2.5, 8.0)) + 0.8 * fallsCrowns(qt.x, 0.02, 7.0);
-    if (qc.y < trees) {
-      float clump = 0.6 * vnoise(qc * vec2(60.0, 70.0)) + 0.4 * vnoise(qc * vec2(150.0, 160.0));
-      float up = clamp((qc.y - rim) / 0.07, 0.0, 1.0);
-      vec3 leaf = wetten(mix(vec3(0.04, 0.1, 0.05), vec3(0.15, 0.29, 0.11), clump), rainWet, 0.5);
-      col = leaf * fallsLit(L, normalize(vec3(clump - 0.5, 0.2 + 0.6 * up, -1.0))) * (0.55 + 0.6 * up);
-      fogDist = 0.6;
-      zm = 31.0;
-    } else if (qc.y < woods) {
-      float clump = vnoise(qt * vec2(90.0, 100.0));
-      vec3 leaf = wetten(mix(vec3(0.05, 0.11, 0.07), vec3(0.13, 0.22, 0.12), clump), rainWet, 0.5);
-      col = mix(leaf * fallsLit(L, vec3(0.0, 0.5, -0.866)), haze, 0.45);
-      fogDist = 0.85;
-      zm = 90.0;
-    } else {
-      // The world's sky, seen half-turned away from the sun (its frame exactly fallsWorld's): the
-      // dome; the aurora ahead of the camera, its arc lifted over the rim; the deck, broken cloud in
-      // fair weather and closing from there with the rain's overcast, sinking as it grows heavier
-      // (seen larger, being nearer), greyed and darker the heavier the rain, what it leaves open greyed
-      // by the world; the stars and shooting stars in its gaps. The world turns its wind by the view's
-      // half turn (worldDeckDrift), so the deck drifts the way the rain slants.
-      WorldView view = worldViewOf(rayCam, uv, FALLS_EYE, FALLS_FOCAL, FALLS_CAM, 0.5 * TAU, 1.0);
-      view.dir = ray;
-      view.auroraLift = FALLS_AURORA_LIFT;
-      world.cover = mix(FALLS_COVER, 1.0, world.cover);
-      world.low = 1.0 + WORLD_DECK_LOW * world.storm;
-      WorldSky heaven = worldSky(world, view, FALLS_METEOR_FIELD);
-      col = mix(heaven.col, greyed(heaven.col, vec3(1.0), 0.6 * overcast) * (1.0 - 0.55 * world.storm), heaven.cloud);
-      if (rain > 0.0) {
-        // Rain hangs from the deck in grey shafts behind the cliff, slanting downwind and sweeping
-        // slowly across, thickest over the skyline and fading up into the cloud.
-        float xs = qc.x + wind * 0.4 * (qc.y - rim);
-        float shaft = smoothstep(0.35, 0.75, fbm3(vec2(xs * 2.4 - tm * (0.01 + 0.05 * wind), 3.7)));
-        float hang = 1.0 - smoothstep(0.0, 0.1 + 0.12 * rain, qc.y - rim);
-        float streaks = 0.75 + 0.25 * vnoise(vec2(xs * 26.0, qc.y * 3.0 + tm * 0.4));
-        col = mix(col, rainAir, shaft * hang * streaks * (0.15 + 0.6 * rain));
-      }
-      fogDist = 1.0;
-      zm = 1e4;
-    }
-  } else if (qc.y > FALLS_POOL) {
+  } else if (part == FALLS_AT_TREES) {
+    float clump = 0.6 * vnoise(qc * vec2(60.0, 70.0)) + 0.4 * vnoise(qc * vec2(150.0, 160.0));
+    float up = clamp((qc.y - fallsRimY) / 0.07, 0.0, 1.0);
+    vec3 leaf = wetten(mix(vec3(0.04, 0.1, 0.05), vec3(0.15, 0.29, 0.11), clump), rainWet, 0.5);
+    col = leaf * fallsLit(L, normalize(vec3(clump - 0.5, 0.2 + 0.6 * up, -1.0))) * (0.55 + 0.6 * up);
+    zm = 31.0;
+  } else if (part == FALLS_AT_WOODS) {
+    float clump = vnoise(fallsQt * vec2(90.0, 100.0));
+    vec3 leaf = wetten(mix(vec3(0.05, 0.11, 0.07), vec3(0.13, 0.22, 0.12), clump), rainWet, 0.5);
+    col = mix(leaf * fallsLit(L, vec3(0.0, 0.5, -0.866)), fallsHaze, 0.45);
+    zm = 90.0;
+  } else {
     // The cliff face.
     float dsdy = 0.0;
     float s = fallsLayer(qc, dsdy);
+    float flow = fallsFlow;
+    float wind = fallsWind;
+    FallsLight Lr = L;
+#if LAYER_FALLS
     float d = FALLS_LIP - qc.y;
-    float beside = abs(qc.x - fallsCentre(d, fx, flow, wind)) - fallsHalfWidth(d, flow);
+    float beside = abs(qc.x - fallsCentre(d, fallsFx, flow, wind)) - fallsHalfWidth(d, flow);
     // Spray soaks the rock beside the fall, widest near the foot, and the pool wets the base (the
     // rain's wetness is fallsRock's own).
     float foot = smoothfall(FALLS_POOL + 0.3, FALLS_POOL, qc.y);
-    float wet = exp(-max(beside, 0.0) / (0.02 + 0.05 * flow + 0.14 * foot * mistAmount)) * smoothstep(-0.04, 0.0, d);
+    float wet = exp(-max(beside, 0.0) / (0.02 + 0.05 * flow + 0.14 * foot * fallsMistAmount)) * smoothstep(-0.04, 0.0, d);
     wet = max(wet, smoothfall(FALLS_POOL + 0.035, FALLS_POOL, qc.y));
     // The sheet is thrown clear of the rock (it leaves the lip at v0) and shades it from the sun
     // behind the viewer: step toward the sun as far as the sheet's plane and look there.
     float v0 = fallsV0(flow);
     vec2 toward = qc + L.sun.xy * ((v0 * fallsTau(d, v0) + 0.008) / max(-L.sun.z, 0.25));
     float td = FALLS_LIP - toward.y;
-    float shade = smoothfall(1.05, 0.7, abs(toward.x - fallsCentre(td, fx, flow, wind)) / fallsHalfWidth(td, flow)) * step(0.0, td);
-    FallsLight Lr = L;
+    float shade = smoothfall(1.05, 0.7, abs(toward.x - fallsCentre(td, fallsFx, flow, wind)) / fallsHalfWidth(td, flow)) * step(0.0, td);
     Lr.sunCol *= 1.0 - shade * (0.5 + 0.4 * flow);
     Lr.amb *= 1.0 - 0.35 * smoothfall(0.0, -0.02, beside) * step(0.0, d);
+#else
+    // No water comes over: only the pool wets the base.
+    float wet = smoothfall(FALLS_POOL + 0.035, FALLS_POOL, qc.y);
+#endif
     Lr = fallsSlotShade(Lr, qc.y);
-    col = fallsRock(qc, s, dsdy, rayCam, Lr, wet, rainWet, dripAmt, rainLight, green, dark, tm, uFallTime, glint);
+    col = fallsRock(qc, s, dsdy, fallsRayCam, Lr, wet, rainWet, fallsDripAmt, fallsRainLight, green, dark, tm, uFallTime, glint);
+#if LAYER_GREENERY
     if (green > 0.0) {
       // The fall's draught stirs the ferns beside it.
+#if LAYER_FALLS
       float draught = exp(-max(beside, 0.0) / 0.08) * (0.3 + 0.7 * flow);
+#else
+      float draught = 0.0;
+#endif
       float ledgeTip = 0.0;
       float ledgeFern = fallsFerns(qc, s, dsdy, green, 0.06 + 0.2 * abs(wind) + 0.12 * draught, tm, ledgeTip);
       if (ledgeFern > 0.0) {
@@ -1036,9 +1053,10 @@ Shade sceneFalls(vec2 screenUv, vec2 cell, float t) {
         glint *= 1.0 - ledgeFern;
       }
     }
-    if (mark > 0.0) {
+#endif
+    if (fallsParting > 0.0) {
       // The carved M: its smooth wet floor holds the mist's light, its lower walls catch the sky.
-      vec3 mk = fallsMark(qc, vec2(fx, FALLS_LIP - 0.215), 0.15);
+      vec3 mk = fallsMark(qc, vec2(fallsFx, FALLS_LIP - 0.215), 0.15);
       if (mk.x > 0.0) {
         vec3 held = FALLS_CYAN * (L.amb * 1.5 + L.sunCol * 0.3 + L.moonCol * 0.5);
         col = mix(col, col * mix(0.35, 0.75, mk.y) + held * (0.12 + 0.3 * mk.y + 0.35 * mk.z), mk.x);
@@ -1050,226 +1068,403 @@ Shade sceneFalls(vec2 screenUv, vec2 cell, float t) {
       vec3 bn = vec3(0.0, 0.0, -1.0);
       float bk = 0.0;
       float bh = 0.0;
-      float block = fallsBoulders(qc, footX, footW, bn, bk, bh);
+      float block = fallsBoulders(qc, fallsFootX, fallsFootW, bn, bk, bh);
       if (block > 0.0) {
-        col = mix(col, fallsBlock(qc, bn, bk, bh, Lr, skyLight, wet, rainWet, green, dark), block);
+        col = mix(col, fallsBlock(qc, bn, bk, bh, Lr, fallsSkyLight, wet, rainWet, green, dark), block);
         // Drops burst on their tops (at ~19 cells to the metre the crowns are 3-6 cells across),
         // left out on screens too small for them to read.
-        if (rain > 0.0) col = mix(col, rainLight, rainSplashes(qc * FALLS_CLIFF_M, uFallTime, rain) * smoothstep(0.25, 0.6, bn.y) * step(0.5, block) * smoothstep(12.0, 16.0, uRes.y / FALLS_CLIFF_M));
+        if (fallsRain > 0.0) col = mix(col, fallsRainLight, rainSplashes(qc * FALLS_CLIFF_M, uFallTime, fallsRain) * smoothstep(0.25, 0.6, bn.y) * step(0.5, block) * smoothstep(12.0, 16.0, uRes.y / FALLS_CLIFF_M));
         glint *= 1.0 - block;
       }
     }
-    fogDist = 0.55;
-  } else {
-    // The plunge pool: a level plane with the camera one unit (its own height) above it. Depth
-    // along the view and distance across put the ripples and foam in perspective.
-    float focal = 0.5 / tan(0.5 * FALLS_FOV);
-    float depth = focal / max(FALLS_EYE - qc.y, 0.01);
-    float back = focal / (FALLS_EYE - FALLS_POOL);
-    vec2 P = vec2(qc.x * depth / focal, depth);
-    vec2 rel = P - vec2(footX * back / focal, back - 0.6);
-    float r = length(rel);
-    // Toward the far edge the plane is squeezed into a few cells: there the surface detail fades
-    // to a still mirror (as distant water looks at a grazing angle) instead of crawling. detail
-    // follows the on-screen size of one ring wavelength.
-    float detail = smoothstep(0.004, 0.012, focal * 1.14 / (depth * depth));
-    // Rings running out from the plunge.
-    float phase = r * 5.5 - tm * 2.4;
-    float rings = exp(-r * 0.2) * (0.3 + 0.7 * flow) * detail;
-    vec2 slope = rel / max(r, 0.001) * cos(phase) * rings;
-    // Wind ruffles.
-    vec2 wp = P * vec2(1.4, 0.8) + vec2(tm * 0.3 * wind, tm * 0.12);
-    slope += (vec2(vnoise(wp), vnoise(wp + 17.0)) - 0.5) * (0.2 + 0.7 * abs(wind)) * detail;
-    // Raindrop rings: few and wide in a drizzle, crowding in smaller as the rain thickens. Being
-    // smaller than the plunge's rings, they give way to the still mirror sooner.
-    float ringScale = mix(2.5, 4.5, rain);
-    vec3 drops = rainRipples(P * ringScale, uFallTime, rain) * smoothstep(0.004, 0.012, focal * 0.9 / (ringScale * depth * depth));
-    slope += drops.xy;
-    // The mirror image: a vertical cliff at the pool's far edge reflects about the waterline
-    // exactly; the tilted surface smears it, mostly up and down.
-    vec2 mq = vec2(qc.x + slope.x * 0.012, 2.0 * FALLS_POOL - qc.y + slope.y * 0.03);
-    // In front of a slot wall the water mirrors the wall, about the waterline at the wall's depth.
-    mirror = slot.x != 0.0
-      ? fallsSlotMirror(vec4(slot.xy, 2.0 * FALLS_POOL - slot.z + slope.y * 0.03 * slot.y, slot.w + slope.x * 0.012 * slot.y), L, haze, rainWet)
-      : fallsMirror(mq, L, skyLight, glow, fx, flow, green, mark, wind, rainWet, dark, tm);
-    // Schlick's Fresnel: a mirror at grazing angles far off, dark water underfoot.
-    float fresnel = fresnelSchlick(-rayCam.y + slope.y * 0.03, 0.02, 0.02);
-    float aerated = exp(-r * 0.35) * (0.35 + 0.65 * flow);
-    vec3 body = mix(vec3(0.012, 0.035, 0.035), vec3(0.08, 0.27, 0.26), aerated) * (L.amb * 1.3 + L.sunCol * 0.45 + L.moonCol * 0.4);
-    col = mix(body, mirror * 0.92, fresnel);
-    float crest = smoothstep(0.75, 1.0, sin(phase)) * rings;
-    col += skyLight * (crest * (0.12 + 0.2 * dark) + drops.z * (0.25 + 0.2 * rain));
-    // Facets of the ruffled water tipped toward the viewer catch the open sky.
-    col += skyLight * smoothstep(0.1, 0.35, slope.y) * (0.03 + 0.1 * dark) * detail;
-    // The rings sparkle, less as they crowd in heavy rain (the shimmer is re-rolled several times
-    // a second and would boil across the whole pool).
-    glint = crest * 0.3 + drops.z * 0.5 * (1.0 - 0.5 * rain);
-    // Foam rafts carried out from the plunge, stretching sideways as they spread.
-    float ang = atan(rel.x, -rel.y);
-    vec2 fp = vec2(ang * 2.8, r * 0.7 - tm * 0.2);
-    float raft = smoothstep(0.52, 0.74, 0.65 * vnoise(fp) + 0.35 * mix(0.5, vnoise(fp * 2.1 + 5.0), detail) + 0.3 * exp(-r * 0.5)) * exp(-r * 0.12) * (0.3 + 0.7 * flow);
-    col = mix(col, fallsFoam(L, glow, 0.7), raft * 0.85);
-    white = raft * 0.6;
-    mirrorW = 0.92 * fresnel * (1.0 - 0.85 * raft);
-    fogDist = mix(0.1, 0.5, clamp((depth - focal / FALLS_EYE) / (back - focal / FALLS_EYE), 0.0, 1.0));
-    zm = FALLS_CAM * depth;
   }
+  c.col = col;
+  c.z = zm;
+  c.zs = zm;
+  c.accent = markAccent;
+  fallsGlint = glint;
+  fallsZm = zm;
+}
 
-  // The birds (fallsBirds): hidden behind whatever this line of sight meets nearer than they are,
-  // else the surface the rain stops at. Drawn once the falling water and the fog are, before the
-  // spray and the near bank.
-  BirdHit bird = birdNone();
-  if (K_birds > 0.0) {
-    bird = fallsBirds(q, tm);
-    if (bird.cover > 0.5 && bird.depth < zm) zm = bird.depth;
-    else bird.cover = 0.0;
+// The air the far rain fuses into (the backdrop's precip air): the rain's grey, lit after dark like
+// the gorge, and round the fall by the white water's glow (fallsAir).
+vec3 cliffRainAir(Ctx x) {
+  return fallsRainAir + fallsGlow * 1.5 * fallsHaloM;
+}
+
+// The dither's shimmer, re-rolled several times a second, wherever the gorge left something to
+// sparkle: wet rock and rippled water catching the light, white water, spray. None behind the near
+// bank or anything nearer than the gorge's own; most of it held back while the camera moves.
+void cliffShade(Ctx x, Cell c, inout Shade o) {
+  fallsCovered(c);
+  float keep = 1.0 - fallsFront;
+  float glint = fallsGlint * keep;
+  float white = fallsWhite * keep;
+  float spray = fallsSpray * keep;
+  float moving = max(1.0 - smoothstep(0.0, 0.85, fallsArrive), smoothstep(0.0, 0.3, fallsLeave));
+  o.shimmer = clamp(0.6 * glint + 0.15 * white + 0.35 * spray, 0.0, 1.0) * (1.0 - 0.6 * moving);
+}
+`;
+
+/** The pool's GLSL (a ground): the plunge pool and its mirror, the fireflies over it, the near bank. */
+export const poolGlsl = `
+// ---- the plunge pool and the near bank (falls/shader.ts) ----
+// Fireflies over the pool: each drifts on its own slow loop at its own height over the water and
+// glows up and dies away every few seconds (a smooth pulse, never a per-frame flicker), a warm
+// point with a soft halo; its reflection lies straight below it, as far under the surface as it
+// is above, drawn out by the ripples. Perspective sizes them: nearer flies, lower on the screen,
+// are larger. Returns the light they add.
+vec3 fallsFireflies(vec2 q, float aspect, float tm, float count) {
+  vec3 light = vec3(0.0);
+  for (int i = 0; i < 14; i++) {
+    float fi = float(i);
+    if (fi >= count) break;
+    float hx = hash12(vec2(fi, 71.0));
+    float hy = hash12(vec2(fi, 72.0));
+    float hz = hash12(vec2(fi, 73.0));
+    float ground = 0.05 + 0.19 * hy;
+    float scale = (FALLS_EYE - ground) / (FALLS_EYE - 0.1);
+    float x = (hx - 0.5) * aspect * 0.9 + 0.06 * scale * sin(tm * (0.11 + 0.08 * hz) + fi * 2.3);
+    float alt = scale * (0.025 + 0.06 * hz) * (1.0 + 0.25 * sin(tm * 0.23 + fi * 4.1));
+    float r = 0.0042 * scale + 0.0022;
+    vec2 up = q - vec2(x, ground + alt);
+    vec2 down = (q - vec2(x, ground - alt)) * vec2(1.0, 0.4);
+    if (min(dot(up, up), dot(down, down)) > 196.0 * r * r) continue;
+    float wave = 0.5 + 0.5 * sin(tm * (1.2 + 1.1 * hx) + fi * 1.7);
+    float pulse = 0.1 + 0.9 * wave * wave * wave;
+    float du = length(up) / r;
+    float dd = length(down) / r;
+    light += pulse * (vec3(1.0, 0.95, 0.62) * 1.3 * exp(-du * du) + vec3(0.95, 0.75, 0.24) * 0.32 * exp(-du * 0.33)
+                    + vec3(1.0, 0.9, 0.5) * 0.6 * exp(-dd * dd) + vec3(0.9, 0.7, 0.22) * 0.12 * exp(-dd * 0.4));
   }
+  return light;
+}
 
-  // The rain between the eye and the nearest surface on this line of sight.
-  float rainDepth = 1.0 - exp(-(fern > 0.5 ? FALLS_FERN_Z : qb.y < bankTop ? FALLS_BANK_Z : zm) / FALLS_RAIN_Z);
-  Precip pr = Precip(0.0, 0.0, 0.0);
-  if (rain > 0.0) {
-    pr = rainFall(uv, aspect, tm, uFallTime, rain, wind, rainDepth);
-    // The pool's reflection crossed the rain all the way from the cliff: veil it as the cliff is
-    // (the veil's optical depth goes as depth * (0.4 + 0.6 * depth)). The eye's own stretch to the
-    // water is veiled with everything else at the end.
-    if (mirrorW > 0.0) {
-      float cliff = 1.0 - exp(-FALLS_CLIFF_Z / FALLS_RAIN_Z);
-      float beyond = cliff * (0.4 + 0.6 * cliff) / (rainDepth * (0.4 + 0.6 * rainDepth)) - 1.0;
-      col += mirrorW * (1.0 - pow(max(1.0 - pr.veil, 1e-4), max(beyond, 0.0))) * (rainAir - mirror);
-    }
+// How many fireflies (0: none).
+void poolBegin(inout Ctx x) {
+  fallsFlies = K_poolFireflies;
+}
+
+// The plunge pool: a level plane with the camera one unit (its own height) above it. Depth along the
+// view and distance across put the ripples and foam in perspective. Without the falls it lies still
+// but for the wind and the rain.
+void poolGround(Ctx x, inout Cell c) {
+  if (fallsPart != FALLS_AT_POOL) return;
+  vec2 qc = fallsQc;
+  FallsLight L = fallsL;
+  float tm = fallsTm;
+  float flow = fallsFlow;
+  float wind = fallsWind;
+  float rain = fallsRain;
+  float dark = fallsDark;
+  vec3 skyLight = fallsSkyLight;
+  vec4 slot = fallsSlotHit;
+  float focal = 0.5 / tan(0.5 * FALLS_FOV);
+  float depth = focal / max(FALLS_EYE - qc.y, 0.01);
+  float back = focal / (FALLS_EYE - FALLS_POOL);
+  vec2 P = vec2(qc.x * depth / focal, depth);
+  vec2 rel = P - vec2(fallsFootX * back / focal, back - 0.6);
+  float r = length(rel);
+  // Toward the far edge the plane is squeezed into a few cells: there the surface detail fades
+  // to a still mirror (as distant water looks at a grazing angle) instead of crawling. detail
+  // follows the on-screen size of one ring wavelength.
+  float detail = smoothstep(0.004, 0.012, focal * 1.14 / (depth * depth));
+  // Rings running out from the plunge.
+  float phase = r * 5.5 - tm * 2.4;
+  float rings = exp(-r * 0.2) * (0.3 + 0.7 * flow) * detail * FALLS_POUR;
+  vec2 slope = rel / max(r, 0.001) * cos(phase) * rings;
+  // Wind ruffles.
+  vec2 wp = P * vec2(1.4, 0.8) + vec2(tm * 0.3 * wind, tm * 0.12);
+  slope += (vec2(vnoise(wp), vnoise(wp + 17.0)) - 0.5) * (0.2 + 0.7 * abs(wind)) * detail;
+  // Raindrop rings: few and wide in a drizzle, crowding in smaller as the rain thickens. Being
+  // smaller than the plunge's rings, they give way to the still mirror sooner.
+  float ringScale = mix(2.5, 4.5, rain);
+  vec3 drops = rainRipples(P * ringScale, uFallTime, rain) * smoothstep(0.004, 0.012, focal * 0.9 / (ringScale * depth * depth));
+  slope += drops.xy;
+  // The mirror image: a vertical cliff at the pool's far edge reflects about the waterline
+  // exactly; the tilted surface smears it, mostly up and down.
+  vec2 mq = vec2(qc.x + slope.x * 0.012, 2.0 * FALLS_POOL - qc.y + slope.y * 0.03);
+  // In front of a slot wall the water mirrors the wall, about the waterline at the wall's depth.
+  vec3 mirror = slot.x != 0.0
+    ? fallsSlotMirror(vec4(slot.xy, 2.0 * FALLS_POOL - slot.z + slope.y * 0.03 * slot.y, slot.w + slope.x * 0.012 * slot.y), L, fallsHaze, fallsRainWet)
+    : fallsMirror(mq, L, skyLight, fallsGlow, fallsFx, flow, fallsGreen, fallsParting, wind, fallsRainWet, dark, tm);
+  // Schlick's Fresnel: a mirror at grazing angles far off, dark water underfoot.
+  float fresnel = fresnelSchlick(-fallsRayCam.y + slope.y * 0.03, 0.02, 0.02);
+  float aerated = exp(-r * 0.35) * (0.35 + 0.65 * flow) * FALLS_POUR;
+  vec3 body = mix(vec3(0.012, 0.035, 0.035), vec3(0.08, 0.27, 0.26), aerated) * (L.amb * 1.3 + L.sunCol * 0.45 + L.moonCol * 0.4);
+  vec3 col = mix(body, mirror * 0.92, fresnel);
+  float crest = smoothstep(0.75, 1.0, sin(phase)) * rings;
+  col += skyLight * (crest * (0.12 + 0.2 * dark) + drops.z * (0.25 + 0.2 * rain));
+  // Facets of the ruffled water tipped toward the viewer catch the open sky.
+  col += skyLight * smoothstep(0.1, 0.35, slope.y) * (0.03 + 0.1 * dark) * detail;
+  // The rings sparkle, less as they crowd in heavy rain (the shimmer is re-rolled several times
+  // a second and would boil across the whole pool).
+  float glint = crest * 0.3 + drops.z * 0.5 * (1.0 - 0.5 * rain);
+  // Foam rafts carried out from the plunge, stretching sideways as they spread.
+  float ang = atan(rel.x, -rel.y);
+  vec2 fp = vec2(ang * 2.8, r * 0.7 - tm * 0.2);
+  float raft = smoothstep(0.52, 0.74, 0.65 * vnoise(fp) + 0.35 * mix(0.5, vnoise(fp * 2.1 + 5.0), detail) + 0.3 * exp(-r * 0.5)) * exp(-r * 0.12) * (0.3 + 0.7 * flow) * FALLS_POUR;
+  col = mix(col, fallsFoam(L, fallsGlow, 0.7), raft * 0.85);
+  float mirrorW = 0.92 * fresnel * (1.0 - 0.85 * raft);
+  float zm = FALLS_CAM * depth;
+  // The pool's reflection crossed the rain all the way from the cliff: veil it as the cliff is
+  // (the veil's optical depth goes as depth * (0.4 + 0.6 * depth)). The eye's own stretch to the
+  // water is veiled with everything else by the World.
+  if (rain > 0.0 && mirrorW > 0.0) {
+    float rainDepth = 1.0 - exp(-zm / FALLS_RAIN_Z);
+    float cliff = 1.0 - exp(-FALLS_CLIFF_Z / FALLS_RAIN_Z);
+    float beyond = cliff * (0.4 + 0.6 * cliff) / (rainDepth * (0.4 + 0.6 * rainDepth)) - 1.0;
+    col += mirrorW * (1.0 - pow(max(1.0 - fallsRainVeil(rainDepth), 1e-4), max(beyond, 0.0))) * (fallsRainAir - mirror);
   }
+  c.col = col;
+  c.z = zm;
+  fallsGlint = glint;
+  fallsWhite = raft * 0.6;
+  fallsZm = zm;
+}
 
-  // The falling water, over the rock.
+// The fireflies over the pool from dusk on, glowing over whatever the cell shows; then the near
+// bank: dark boulders along the bottom of the frame, soaked in the rain; puddles in the hollows of
+// their tops mirror the sky, and drops burst on them. Nothing of it over what stands nearer.
+void poolFront(Ctx x, inout Cell c) {
+  fallsCovered(c);
+  Sky sky = x.w.sky;
+  float dusk = clamp(sky.night + 0.8 * sky.twilight, 0.0, 1.0) * (1.0 - sky.day) * (1.0 - 0.7 * fallsRain);
+  if (fallsFlies > 0.0 && dusk > 0.0 && fallsQ.y < 0.42) {
+    c.col += fallsFireflies(fallsQ - uPointer * vec2(0.01, 0.005), fallsAspect, fallsTm, 4.0 + 10.0 * fallsFlies) * dusk;
+  }
+  vec2 qb = fallsQb;
+  if (qb.y >= 0.3 || c.z <= FALLS_BANK_Z) return;
+  float edgeness = smoothstep(0.15, 1.0, abs(qb.x) / max(0.5 * fallsAspect, 0.3));
+  float bankTop = 0.018 + 0.025 * fbm3(vec2(qb.x * 4.0, 2.0)) + 0.1 * edgeness * edgeness + fallsCrowns(qb.x + 0.37, 0.11, 13.0) * (0.12 + 0.5 * edgeness);
+  if (qb.y >= bankTop) return;
+  float green = fallsGreen;
+  float rainWet = fallsRainWet;
+  float grain = 0.6 * vnoise(qb * 40.0) + 0.4 * vnoise(qb * 110.0);
+  float top = smoothstep(bankTop - 0.025, bankTop, qb.y);
+  vec3 n = normalize(vec3((grain - 0.5) * 0.6, 0.15 + 0.8 * top, -1.0));
+  float moss = top * smoothstep(0.55 - 0.4 * green, 0.7 - 0.4 * green, grain) * smoothstep(0.0, 0.15, green);
+  vec3 stone = wetten(vec3(0.15, 0.14, 0.13) * (0.6 + 0.6 * grain), rainWet, 0.2);
+  vec3 col = mix(stone, wetten(vec3(0.1, 0.22, 0.07), rainWet, 1.0), moss) * fallsLit(fallsL, n) * 0.85;
+  if (rainWet > 0.0) {
+    // Pools a few times smaller than the library's, to fit the stones' tops; the top is seen
+    // foreshortened, so stretched in y. They mirror the overcast, brighter than the stone.
+    float bare = 1.0 - moss;
+    float puddle = rainPuddles(vec2(qb.x, (qb.y - bankTop) * 3.0) * (6.0 * FALLS_BANK_M), rainWet) * top * bare;
+    col = mix(col + fallsSkyLight * 0.3 * wetGloss(rainWet, n.y) * bare, fallsCloudBase, puddle);
+  }
+  // Splash crowns, a third of the library's size: this near (~160 cells to the metre) true-size
+  // crowns would be 25-50 cells across; these are 8-16.
+  if (fallsRain > 0.0) col = mix(col, fallsRainLight, rainSplashes(qb * (3.0 * FALLS_BANK_M), uFallTime, fallsRain) * top);
+  c.col = col;
+  c.z = FALLS_BANK_Z;
+  c.zs = FALLS_BANK_Z;
+  c.accent = 0.0;
+  fallsFront = 1.0;
+  fallsZm = FALLS_BANK_Z;
+}
+`;
+
+/** The falls' GLSL (a dressing): the falling sheet, the plunge, their glow after dark. */
+export const fallsWaterGlsl = `
+// ---- the falling water (falls/shader.ts) ----
+// The flow, and where the sheet's foot meets the pool.
+void fallsWaterBegin(inout Ctx x) {
+  fallsFlow = K_flow;
+  float drop = FALLS_LIP - FALLS_POOL;
+  fallsFootX = fallsCentre(drop, fallsFx, fallsFlow, fallsWind);
+  fallsFootW = fallsHalfWidth(drop, fallsFlow);
+}
+
+// The falling water over the rock (a slot wall in front hides it), then the plunge where it lands.
+void fallsMiddle(Ctx x, inout Cell c) {
+  vec2 qc = fallsQc;
+  FallsLight L = fallsL;
+  vec4 slot = fallsSlotHit;
   if (qc.y > FALLS_POOL && qc.y < FALLS_LIP + 0.012) {
     float sheen = 0.0;
-    vec4 sheet = fallsCurtain(qc, fx, flow, mark, wind, tm, sheen);
-    // A slot wall stands in front of the back wall: it hides whatever falls or boils behind it.
+    vec4 sheet = fallsCurtain(qc, fallsFx, fallsFlow, fallsParting, fallsWind, fallsTm, sheen);
     if (slot.x != 0.0) sheet.x = 0.0;
     if (sheet.x > 0.0) {
-      vec3 water = fallsWater(sheet, sheen, L, skyLight, glow);
+      vec3 water = fallsWater(sheet, sheen, L, fallsSkyLight, fallsGlow);
       // Where it curves over the lip the water mirrors the sky in one bright line.
-      water += skyLight * 0.6 * exp(-abs(FALLS_LIP - qc.y + 0.002) / 0.004) * max(1.0 - sheet.w * sheet.w, 0.0);
-      col = mix(col, water, sheet.x);
-      white = sheet.x * sheet.y;
-      glint *= 1.0 - sheet.x;
-      markAccent *= 1.0 - 0.85 * sheet.x;
-      fogDist = 0.55;
+      water += fallsSkyLight * 0.6 * exp(-abs(FALLS_LIP - qc.y + 0.002) / 0.004) * max(1.0 - sheet.w * sheet.w, 0.0);
+      c.col = mix(c.col, water, sheet.x);
+      fallsWhite = sheet.x * sheet.y;
+      fallsGlint *= 1.0 - sheet.x;
+      c.accent *= 1.0 - 0.85 * sheet.x;
     }
   }
-
-  // The plunge.
-  vec2 churn = slot.x != 0.0 ? vec2(0.0) : fallsChurn(qc, footX, footW, flow, tm);
+  vec2 churn = slot.x != 0.0 ? vec2(0.0) : fallsChurn(qc, fallsFootX, fallsFootW, fallsFlow, fallsTm);
+  fallsChurnX = churn.x;
   if (churn.x > 0.0) {
-    col = mix(col, fallsFoam(L, glow, churn.y), churn.x);
-    white = max(white, churn.x);
-    glint *= 1.0 - churn.x;
+    c.col = mix(c.col, fallsFoam(L, fallsGlow, churn.y), churn.x);
+    fallsWhite = max(fallsWhite, churn.x);
+    fallsGlint *= 1.0 - churn.x;
   }
+}
 
-  col = mix(col, haze, fogAmount(K_fog, fogDist, clamp((qc.y - FALLS_POOL) / 0.6, 0.0, 1.0)));
-  if (bird.cover > 0.5) {
-    col = mix(bird.albedo * (L.amb * 1.2 + L.sunCol * 0.4 + L.moonCol * 0.3), haze, 1.0 - exp(-bird.depth / 250.0));
-    col = mix(col, haze, fogAmount(K_fog, mix(0.1, 0.85, clamp(bird.depth / 90.0, 0.0, 1.0)), clamp((qc.y - FALLS_POOL) / 0.6, 0.0, 1.0)));
-    white = 0.0;
-    glint = 0.0;
-    markAccent = 0.0;
-  }
+// After dark the white water's soft bloom in the air about it and in the pool, under whatever of the
+// near bank stands in front; and its light in the rain around the fall, in the spray most.
+void fallsAir(inout Ctx x, inout Cell c) {
+  float halo = fallsDark > 0.0 ? fallsHalo(fallsQc, fallsFx, fallsFlow, fallsWind) : 0.0;
+  float keep = 1.0 - fallsFront;
+  fallsHaloM = halo * keep;
+  c.col += fallsGlow * fallsHaloM;
+  x.air.drop += fallsGlow * (3.0 * fallsHaloM + 2.0 * fallsMistA * keep);
+}
+`;
 
-  // Spray: the plume and fans from the plunge, and spray hugging the lower sheet and its frayed
-  // edges.
-  float density = fallsMist(qc, footX, footW, flow, mistAmount, wind, tm);
+/** The spray's GLSL (a dressing): the spray from the plunge and off the sheet, and the rainbow in it. */
+export const sprayGlsl = `
+// ---- the spray and the rainbow (falls/shader.ts) ----
+float fallsLobe(float k, float c, float w) {
+  float z = (k - c) / w;
+  return max(1.0 - z * z, 0.0);
+}
+
+// The rainbow's colours across one band, k = 0 violet to 1 red: overlapping lobes shaped roughly
+// like the CIE 1931 colour-matching functions (red's small second lobe in the violet included).
+vec3 fallsSpectrum(float k) {
+  vec3 c = vec3(fallsLobe(k, 0.8, 0.3) + 0.3 * fallsLobe(k, 0.06, 0.12), fallsLobe(k, 0.52, 0.26), fallsLobe(k, 0.18, 0.24));
+  return c * smoothstep(-0.12, 0.04, k) * smoothfall(1.12, 0.96, k);
+}
+
+// How much spray: held low until the camera has come down, then rising; at the exit it surges up.
+void sprayBegin(inout Ctx x) {
+  fallsMistAmount = K_spray * (1.0 - 0.75 * (1.0 - smoothstep(0.3, 0.9, fallsArrive))) * (1.0 + 0.9 * fallsLeave * fallsLeave);
+}
+
+// Spray: the plume and fans from the plunge, and spray hugging the lower sheet and its frayed edges,
+// lit from the front by the sun or moon behind the viewer and by the whole sky; it carries the
+// accent over the dark rock. Then the rainbow, wherever spray hangs in sunlight. Light refracted into
+// a drop, reflected once inside and refracted out leaves it at most ~42 degrees from the antisolar
+// point (Descartes' minimum deviation: red outermost at 42.3, violet at 40.6); reflected twice it
+// makes the fainter secondary bow at 50.4-53.6 with the colours reversed. Between the two the sky is
+// darker (Alexander's band), inside the primary brighter.
+void sprayMiddleVeil(Ctx x, inout Cell c) {
+  fallsCovered(c);
+  vec2 qc = fallsQc;
+  FallsLight L = fallsL;
+  float flow = fallsFlow;
+  float wind = fallsWind;
+  float density = fallsMist(qc, fallsFootX, fallsFootW, flow, fallsMistAmount, wind, fallsTm);
   float fallen = FALLS_LIP - qc.y;
+  float spray = 0.0;
   if (fallen > 0.1 && qc.y > FALLS_POOL - 0.03) {
-    float off = abs(qc.x - fallsCentre(fallen, fx, flow, wind)) - fallsHalfWidth(fallen, flow);
+    float off = abs(qc.x - fallsCentre(fallen, fallsFx, flow, wind)) - fallsHalfWidth(fallen, flow);
     spray = exp(-max(off, 0.0) / (0.015 + 0.03 * flow)) * smoothstep(0.12, 0.5, fallen) * (0.12 + 0.3 * flow);
     density += spray;
   }
-  spray = clamp(spray + 0.5 * churn.x, 0.0, 1.0);
-  float mistAccent = 0.0;
+  fallsSpray = clamp(spray + 0.5 * fallsChurnX, 0.0, 1.0);
   float mistA = (1.0 - exp(-density * 2.2)) * 0.92;
+  fallsMistA = mistA;
   if (mistA > 0.002) {
-    // Lit from the front by the sun or moon behind the viewer, and by the whole sky.
     vec3 mistCol = FALLS_MIST * (L.amb * 1.25 + L.sunCol * 0.55 + L.moonCol * 0.6);
-    float under = clamp(dot(col, LUMA), 0.0, 1.0);
-    col = mix(col, mistCol, mistA);
-    mistAccent = mistA * 0.6 * (1.0 - 0.7 * under);
+    float under = clamp(dot(c.col, LUMA), 0.0, 1.0);
+    c.col = mix(c.col, mistCol, mistA);
+    c.accent = max(c.accent, mistA * 0.6 * (1.0 - 0.7 * under));
   }
-
-  // The rainbow, wherever spray hangs in sunlight. Light refracted into a drop, reflected once
-  // inside and refracted out leaves it at most ~42 degrees from the antisolar point (Descartes'
-  // minimum deviation: red outermost at 42.3, violet at 40.6); reflected twice it makes the
-  // fainter secondary bow at 50.4-53.6 with the colours reversed. Between the two the sky is
-  // darker (Alexander's band), inside the primary brighter.
   if (K_rainbow > 0.0 && density > 0.0) {
-    float ang = acos(clamp(dot(rayCam, -L.sun), -1.0, 1.0)) * FALLS_DEG;
+    float ang = acos(clamp(dot(fallsRayCam, -L.sun), -1.0, 1.0)) * FALLS_DEG;
     vec3 bow = fallsSpectrum((ang - 40.6) / 1.8) + 0.4 * fallsSpectrum((53.6 - ang) / 3.2);
     float bowLit = K_rainbow * (1.0 - exp(-density * 1.6)) * smoothstep(0.0, 0.15, -L.sun.z);
     float alexander = smoothstep(42.2, 43.2, ang) * smoothfall(50.6, 49.6, ang);
-    col = col * (1.0 - bowLit * (0.3 * max(bow.r, max(bow.g, bow.b)) + 0.12 * alexander)) + (bow * 0.6 + 0.08 * smoothfall(41.0, 30.0, ang)) * L.sunCol * bowLit;
+    c.col = c.col * (1.0 - bowLit * (0.3 * max(bow.r, max(bow.g, bow.b)) + 0.12 * alexander)) + (bow * 0.6 + 0.08 * smoothfall(41.0, 30.0, ang)) * L.sunCol * bowLit;
   }
+}
+`;
 
-  // The white water's bloom after dark, in the air about it and in the pool.
-  float halo = dark > 0.0 ? fallsHalo(qc, fx, flow, wind) : 0.0;
-  col += glow * halo;
-
-  // Fireflies, from dusk on.
-  float dusk = clamp(sky.night + 0.8 * sky.twilight, 0.0, 1.0) * (1.0 - sky.day) * (1.0 - 0.7 * rain);
-  if (K_fireflies > 0.0 && dusk > 0.0 && q.y < 0.42) {
-    col += fallsFireflies(q - uPointer * vec2(0.01, 0.005), aspect, tm, 4.0 + 10.0 * K_fireflies) * dusk;
-  }
-
-  // The near bank: dark boulders along the bottom of the frame, soaked in the rain; puddles in the
-  // hollows of their tops mirror the sky, and drops burst on them.
-  if (qb.y < bankTop) {
-    float grain = 0.6 * vnoise(qb * 40.0) + 0.4 * vnoise(qb * 110.0);
-    float top = smoothstep(bankTop - 0.025, bankTop, qb.y);
-    vec3 n = normalize(vec3((grain - 0.5) * 0.6, 0.15 + 0.8 * top, -1.0));
-    float moss = top * smoothstep(0.55 - 0.4 * green, 0.7 - 0.4 * green, grain) * smoothstep(0.0, 0.15, green);
-    vec3 stone = wetten(vec3(0.15, 0.14, 0.13) * (0.6 + 0.6 * grain), rainWet, 0.2);
-    col = mix(stone, wetten(vec3(0.1, 0.22, 0.07), rainWet, 1.0), moss) * fallsLit(L, n) * 0.85;
-    if (rainWet > 0.0) {
-      // Pools a few times smaller than the library's, to fit the stones' tops; the top is seen
-      // foreshortened, so stretched in y. They mirror the overcast, brighter than the stone.
-      float bare = 1.0 - moss;
-      float puddle = rainPuddles(vec2(qb.x, (qb.y - bankTop) * 3.0) * (6.0 * FALLS_BANK_M), rainWet) * top * bare;
-      col = mix(col + skyLight * 0.3 * wetGloss(rainWet, n.y) * bare, cloudBase, puddle);
+/** The greenery's GLSL (a cover): the near bank's ferns (the moss and the ledge ferns are the cliff's to draw, at fallsGreen). */
+export const greeneryGlsl = `
+// ---- the moss and ferns (falls/shader.ts) ----
+// Ferns on the near bank: up to four clumps toward the corners (more with more greenery), fronds
+// rising and arching over: the plant component's fronds, rooted, grown and bent by the wind in the
+// sim (sim.ts: the layer's rows of the records atlas hold FALLS_CLUMPS × FALLS_FRONDS records, clump
+// by clump; a missing or shed frond's tier is 0). Returns coverage; tip as for fallsFerns, pheno the
+// year's turn of the frond in front.
+// wet (how wet the rain has left them) hangs beads of water under the leaflets' tips: bead 0..1.
+// drip finds the nearest frond overhead, for the water dripping off it: x along that frond, y how
+// far below it (screen heights), z 1 if there is one. foot: a cell in screen heights.
+// grow (1 at rest) scales the fronds and slides the clumps in from the frame's edge: the entrance
+// springs them up past 1 and back, standing upright at first and arching over as they grow.
+const int FALLS_CLUMPS = ${FALLS_CLUMPS};
+const int FALLS_FRONDS = ${FALLS_FRONDS};
+float fallsBankFerns(vec2 q, float wet, float grow, float foot, out float tip, out float pheno, out float bead, out vec3 drip) {
+  tip = 0.0;
+  pheno = 0.0;
+  bead = 0.0;
+  drip = vec3(0.0, 1.0, 0.0);
+  float cover = 0.0;
+  float len = 1.0;   // the frond in front: its length, how far below its spine q lies, its key
+  float under = 0.0;
+  float key = 0.0;
+  if (!greenerySimOn()) return 0.0;
+  float g = clamp(grow, 0.0, 1.0);
+  for (int r = 0; r < FALLS_CLUMPS * FALLS_FRONDS; r++) {
+    PlantOrgan o = plantOrgan(greeneryAtlas, greeneryRow, r);
+    if (o.tier < 0.5) continue;
+    vec2 root = o.at + vec2(sign(o.at.x) * 0.08 * (1.0 - g), 0.0);
+    float lj = o.len * grow;
+    vec2 rel = q - root;
+    if (dot(rel, rel) > lj * lj * 4.0) continue;
+    float u = 0.0;
+    float uj = 0.0;
+    // The spring's turn of the frond lifts (or lowers) its tip: its bend in frond lengths.
+    float bend = o.side * o.bend * length(vec2(1.0, o.a - o.b));
+    float frond = plantFrond(rel, o.side, lj, o.a, o.b * (1.0 - 0.6 * (1.0 - g)), bend, foot, u, uj);
+    if (frond > cover) {
+      cover = frond;
+      tip = u;
+      len = lj;
+      under = uj;
+      key = o.variant;
+      pheno = o.pheno;
     }
-    // Splash crowns, a third of the library's size: this near (~160 cells to the metre) true-size
-    // crowns would be 25-50 cells across; these are 8-16.
-    if (rain > 0.0) col = mix(col, rainLight, rainSplashes(qb * (3.0 * FALLS_BANK_M), uFallTime, rain) * top);
+    // The water runs out along the frond and drips off its outer, drooping part, down to the
+    // ground the clump grows from.
+    if (u > 0.35 && uj > 0.0 && uj < drip.y && q.y > root.y - 0.03) drip = vec3(u * lj + 0.61 * o.variant, uj, 1.0);
   }
-  // Water dripping off the bank's fronds falls in front of the stones and behind the nearer
-  // fronds; beads of it on the leaflets catch the sky.
-  if (fernDrip.z > 0.0 && dripAmt > 0.0) col = mix(col, rainLight, rainDrips(fernDrip.xy * FALLS_FERN_M, uFallTime, dripAmt, 0.07));
+  if (wet > 0.0 && cover > 0.0) {
+    // One leaflet in a few holds a bead under its tip (the leaflets peak at u = (k + 0.5) pi / 23).
+    float k = floor(tip * 7.32);
+    float uk = (k + 0.5) / 7.32;
+    vec2 v = vec2((tip - uk) * len, under - 0.75 * (len * 0.17 * (1.0 - uk) + 0.0011));
+    bead = smoothfall(0.0035, 0.0015, length(v)) * step(hash12(vec2(k, key + 0.5)), 0.2 + 0.6 * wet) * wet;
+  }
+  return cover;
+}
+
+// How green the gorge grows: moss on the ledges, the wet rock, the blocks and the bank, ferns and
+// creepers hanging from the ledges (the cliff and the pool draw them), ferns on the near bank.
+void greeneryBegin(inout Ctx x) {
+  fallsGreen = K_greenery;
+}
+
+// The near bank's ferns toward the corners (skipped in the open middle), springing up as the scene
+// arrives, and the water dripping off their fronds in front of the stones and behind the nearer
+// fronds, beads of it on the leaflets catching the sky. Nothing of them over what stands nearer.
+void greeneryFront(Ctx x, inout Cell c) {
+  fallsCovered(c);
+  vec2 qb = fallsQb;
+  float fernGrow = fallsSpring((fallsArrive - 0.5) / 0.4);
+  if (!(fallsGreen > 0.0 && fernGrow > 0.01 && qb.y < 0.45 && abs(qb.x) > 0.47 * fallsAspect - 0.45) || c.z <= FALLS_FERN_Z) return;
+  float tip = 0.0;
+  float fernPheno = 0.0;
+  float bead = 0.0;
+  vec3 fernDrip = vec3(0.0);
+  float fern = fallsBankFerns(qb, fallsRainWet, fernGrow, 1.0 / uRes.y, tip, fernPheno, bead, fernDrip);
+  if (fernDrip.z > 0.0 && fallsDripAmt > 0.0) c.col = mix(c.col, fallsRainLight, rainDrips(fernDrip.xy * FALLS_FERN_M, uFallTime, fallsDripAmt, 0.07));
   if (fern > 0.0) {
-    vec3 frond = wetten(plantPhenology(mix(vec3(0.04, 0.12, 0.04), vec3(0.22, 0.4, 0.12), 0.25 + 0.6 * tip), fernPheno), rainWet, 0.4);
-    col = mix(col, mix(frond * fallsLit(L, normalize(vec3(0.0, 0.6, -1.0))), rainLight, bead), fern);
+    vec3 frond = wetten(plantPhenology(mix(vec3(0.04, 0.12, 0.04), vec3(0.22, 0.4, 0.12), 0.25 + 0.6 * tip), fernPheno), fallsRainWet, 0.4);
+    c.col = mix(c.col, mix(frond * fallsLit(fallsL, normalize(vec3(0.0, 0.6, -1.0))), fallsRainLight, bead), fern);
+    c.accent *= 1.0 - fern;
+    fallsFront = max(fallsFront, fern);
+    if (fern > 0.5) {
+      c.z = FALLS_FERN_Z;
+      c.zs = FALLS_FERN_Z;
+      fallsZm = FALLS_FERN_Z;
+    }
   }
-  if (front > 0.0) {
-    col = mix(col, haze, fogAmount(K_fog, 0.05, 0.0) * front);
-    white *= 1.0 - front;
-    glint *= 1.0 - front;
-    spray *= 1.0 - front;
-    mistAccent *= 1.0 - front;
-    markAccent *= 1.0 - front;
-    halo *= 1.0 - front;
-    mistA *= 1.0 - front;
-  }
-
-  if (rain > 0.0) {
-    // The veil of rain too far off to make out, thickening with distance like fog (the white
-    // water lights it after dark); then the drops themselves, catching the overcast's light and,
-    // after dark, the white water's, so they show around the fall. The out-of-focus nearest drops
-    // are a little dimmer.
-    col = precipOver(col, rainAir + glow * 1.5 * halo, rainLight * (1.0 - 0.2 * pr.near) + glow * (3.0 * halo + 2.0 * mistA), pr);
-    mistAccent *= 1.0 - pr.veil;
-    markAccent *= 1.0 - pr.veil;
-  }
-
-  Shade o = shadeOf(col, inkOf(col, 1.15, 1.0), clamp(max(markAccent, mistAccent), 0.0, 1.0));
-  // The shimmer is re-rolled several times a second: hold most of it back while the camera moves.
-  float moving = max(1.0 - smoothstep(0.0, 0.85, arrive), smoothstep(0.0, 0.3, leave));
-  o.shimmer = clamp(0.6 * glint + 0.15 * white + 0.35 * spray, 0.0, 1.0) * (1.0 - 0.6 * moving);
-  return o;
 }
 `;

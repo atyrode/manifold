@@ -6,6 +6,10 @@
 // bloom's head, the path, just past the frame's edge. The flight every kind shares is here too:
 // `chase` (ease toward a point) and `steer` (a bee's beeline, weaving).
 //
+// The apiary's beds (`beds`, beds.ts: the flowers the gardening chore's agents grow) are patches too,
+// BEES_BED_FIRST on: a forager picks a bed by how much of it is in flower, and lands on an open
+// head; with none in flower every pick draws as it would without them.
+//
 // A perch (a bell, a bloom's head, a landing board, the swarm's branch) is placed in front of what it
 // rests on along its view ray (`nearer`), so it is drawn where that thing is and its depth byte
 // (BEES_DEPTH_STEP) stays in front of it whatever the rounding: PERCH_FRONT, more than half a step.
@@ -13,8 +17,10 @@ import { LevelCamera } from "../../sims/camera.ts";
 import { clamp, lerp, smoothstep } from "../../sims/math.ts";
 import { Random } from "../../sims/random.ts";
 import { daysAgo, skyState, timeOfDay } from "../../world-clock.ts";
+import { BED_OPEN, BED_PLANTS, type GardenBeds } from "./beds.ts";
 import {
   BEES_ALONG_WALL,
+  BEES_BED_ROWS,
   BEES_BLOOM_HEAD,
   BEES_BLOOMS_ALL,
   BEES_BOARD_HALF,
@@ -191,6 +197,14 @@ const GROUND_WEIGHT_TOTAL = PATCH_WEIGHTS.slice(0, BEES_GROUND_PATCHES).reduce(
   0,
 );
 
+/** The patch index of the gardening chore's bed k (beds.ts) is BEES_BED_FIRST + k. */
+export const BEES_BED_FIRST = BEES_PATCHES.length;
+/**
+ * How often a forager picks a bed in full flower, as a drift's weight: as a big drift does, fresh
+ * flowers drawing them; less, the fewer of it open.
+ */
+const BED_WEIGHT = 0.2;
+
 export class Garden {
   /** The colony's stream, which the butterflies share, as they always have; every other kind keeps its own. */
   readonly random = new Random(0x5eed);
@@ -236,6 +250,10 @@ export class Garden {
   lush = 0;
   reach = 0;
   #tod = Number.NaN;
+  /** The apiary's beds (its sim's affordances), where the gardening chore grows flowers; none without it. */
+  beds: GardenBeds | undefined;
+  /** Each bed's weight at the last pick (#bedWeights). */
+  readonly #bedWeight = new Float64Array(BEES_BED_ROWS.length);
 
   /** The flowers knob: which plants stand, and how wide the drifts are. */
   setFlowers(flowers: number): void {
@@ -289,15 +307,75 @@ export class Garden {
     g.half = BEES_BOARD_HALF * BEES_HIVE_SCALE * k;
   }
 
-  /** A patch by weight: any, or (for butterflies) only a drift on the ground. */
+  /**
+   * A patch by weight: any, the gardening chore's beds in flower among them (BEES_BED_FIRST + k: the
+   * more of a bed open, the likelier), or (for butterflies) only a drift on the ground. With no bed in
+   * flower the draw is the same as without beds.
+   */
   pickPatch(groundOnly: boolean, rand: Random = this.random): number {
-    let pick = rand.next() * (groundOnly ? GROUND_WEIGHT_TOTAL : PATCH_WEIGHT_TOTAL);
+    const beds = groundOnly ? 0 : this.#bedWeights();
+    let pick = rand.next() * ((groundOnly ? GROUND_WEIGHT_TOTAL : PATCH_WEIGHT_TOTAL) + beds);
     for (const [i, w] of PATCH_WEIGHTS.entries()) {
       if (groundOnly && i >= BEES_GROUND_PATCHES) break;
       pick -= w;
       if (pick <= 0) return i;
     }
+    if (beds > 0)
+      for (const [k, w] of this.#bedWeight.entries()) {
+        pick -= w;
+        if (pick <= 0 && w > 0) return BEES_BED_FIRST + k;
+      }
     return 0;
+  }
+
+  /** Whether patch `index` has flowers to visit: a drift always, a bed while any of it is open. */
+  blooms(index: number): boolean {
+    return index < BEES_BED_FIRST || (this.beds?.open(index - BEES_BED_FIRST) ?? 0) > 0;
+  }
+
+  /** Each bed's weight for pickPatch into #bedWeight; their sum (0 with none in flower). */
+  #bedWeights(): number {
+    const beds = this.beds;
+    let sum = 0;
+    for (const [k, row] of BEES_BED_ROWS.entries()) {
+      const w = beds === undefined ? 0 : (BED_WEIGHT * beds.open(k)) / row.plants;
+      this.#bedWeight[k] = w;
+      sum += w;
+    }
+    return sum;
+  }
+
+  /**
+   * A flower open in bed `k`, into pt: any of them (x NaN), or the one nearest a hop of up to `far`
+   * metres from x; the bed's middle where none is open. A perch in front of its head.
+   */
+  #bedFlower(k: number, x: number, far: number, rand: Random): void {
+    const row = BEES_BED_ROWS[k];
+    const plants = BED_PLANTS[k];
+    if (row === undefined || plants === undefined) throw new BeesSimError(`no bed ${k}`);
+    const pt = this.pt;
+    pt.z = CAMERA.groundDepth(BEES_YH - row.y);
+    const middle = CAMERA.worldX(row.f * this.stage, pt.z);
+    const open = this.beds?.open(k) ?? 0;
+    let pick = -1;
+    if (open > 0) {
+      const want = Number.isNaN(x) ? rand.int(open) : x - middle + rand.range(-far, far);
+      let best = Infinity;
+      let n = 0;
+      for (const [i, plant] of plants.entries()) {
+        if ((this.beds?.growth(k, i) ?? 0) < BED_OPEN) continue;
+        const off = Number.isNaN(x) ? Math.abs(n - want) : Math.abs(plant.x - want);
+        if (off < best) {
+          best = off;
+          pick = i;
+        }
+        n++;
+      }
+    }
+    const plant = plants[pick];
+    pt.x = middle + (plant?.x ?? 0);
+    pt.h = plant?.tall ?? 0.3;
+    this.nearer(PERCH_FRONT);
   }
 
   /**
@@ -359,14 +437,21 @@ export class Garden {
     this.pc.ey = ey;
   }
 
-  /** A flower in patch `index`: uniform over most of its ellipse, written to pt. */
+  /** A flower in patch `index`: uniform over most of its ellipse (a bed's: any of it open), written to pt. */
   flowerPoint(index: number, rand: Random = this.random): void {
+    if (index >= BEES_BED_FIRST) {
+      this.#bedFlower(index - BEES_BED_FIRST, Number.NaN, 0, rand);
+      return;
+    }
     const r = Math.sqrt(rand.next()) * 0.85;
     const a = rand.next() * TAU;
     this.patchPoint(index, r * Math.cos(a), r * Math.sin(a), rand);
   }
 
-  /** A flower of patch `index` a short hop (`near`..`far` m) from (x, z, h), kept inside the drift: into pt. */
+  /**
+   * A flower of patch `index` a short hop (`near`..`far` m) from (x, z, h), kept inside the drift (or
+   * the bed: the open one nearest a hop of up to `far`): into pt.
+   */
   nearFlower(
     index: number,
     x: number,
@@ -376,6 +461,10 @@ export class Garden {
     far: number,
     rand: Random,
   ): void {
+    if (index >= BEES_BED_FIRST) {
+      this.#bedFlower(index - BEES_BED_FIRST, x, far, rand);
+      return;
+    }
     const a = rand.next() * TAU;
     const r = rand.range(near, far);
     this.patchCoords(

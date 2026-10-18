@@ -165,6 +165,37 @@ export const BEES_PATCHES: readonly BeesPatch[] = [
 export const BEES_ALONG_WALL = 3;
 
 /**
+ * A bed the gardening chore's agents dig and sow (beds.ts): a row of plants across the view, its
+ * middle at x `f` (a fraction of the stage half width) on the ground at uv height `y`, `plants` of
+ * them BEES_BED_SPACING apart, sown with the drift kind `kind`.
+ */
+export interface BeesBedRow {
+  f: number;
+  y: number;
+  plants: number;
+  kind: number;
+}
+
+/** Metres between two plants of a bed's row, and half a bed's depth (its soil). */
+export const BEES_BED_SPACING = 0.16;
+export const BEES_BED_DEPTH = 0.18;
+
+/**
+ * The beds, on the open lawn between the lavender, the path and the drifts, clear of them at every
+ * frame from minAspect to 2.4 wide (gardening.test.ts): poppies in front on the left and beyond the
+ * poppy drift on the right, daisies and cosmos before the hives, wild flowers past the lavender's
+ * end, daisies by the right-hand foxgloves.
+ */
+export const BEES_BED_ROWS: readonly BeesBedRow[] = [
+  { f: -0.18, y: 0.17, plants: 7, kind: BEES_POPPY },
+  { f: -0.08, y: 0.23, plants: 9, kind: BEES_DAISY },
+  { f: 0.7, y: 0.235, plants: 11, kind: BEES_POPPY },
+  { f: -0.06, y: 0.27, plants: 10, kind: BEES_COSMOS },
+  { f: -0.55, y: 0.3, plants: 12, kind: BEES_WILD },
+  { f: 0.86, y: 0.2, plants: 6, kind: BEES_DAISY },
+];
+
+/**
  * How far the drifts have grown lusher at a `flowers` value (0 up to 1, 1 by 3: wider by half), and
  * from 2 on how far their near sides reach down the slope (1 by 3): shader.ts sceneBees' beesLush and
  * beesReach, which beesDriftQ grows the drifts by.

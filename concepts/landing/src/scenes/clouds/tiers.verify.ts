@@ -1,15 +1,22 @@
 // GPU regressions for the shared clouds in tiers (#1082 M12: shaders/lib/clouds.ts), run by
 // concepts/landing/verify-browser.ts on real WebGL output. The tiers: each tier's functions exist from
 // its tier up and not below (a scene that selects none has the lit deck), and each adopting scene
-// compiles at the tier it selects and not one lower. The shadows: over the eye the deck's shadow is the
-// cloud the sky shows over the sun, and a clear sky casts none. Autumn's cloud shadows (off by
-// default): they only ever darken the park, they fall on part of it and move with the deck, and
-// they are gone at night.
+// compiles at the tier it selects and not one lower (autumn's composed program selects the shadows
+// tier while its cloud shadows can show). The shadows: over the eye the deck's shadow is the cloud
+// the sky shows over the sun, and a clear sky casts none. Autumn's cloud shadows (off by default):
+// they only ever darken the park, they fall on part of it and move with the deck, and they are gone
+// at night.
 import { defaultsFor, paramDefaults, renderSettings } from "../../state.ts";
-import { fragmentSourceFor, packParams, vertexSource } from "../../shaders/index.ts";
+import {
+  fragmentSourceFor,
+  packParams,
+  sceneFeatures,
+  sceneFeaturesAll,
+  shaderValues,
+  vertexSource,
+} from "../../shaders/index.ts";
 import { CLOUD_TIERS } from "../../shaders/lib/clouds.ts";
 import { loadScene, type SceneId } from "../index.ts";
-import type { LoadedScene } from "../types.ts";
 
 const autumnScene = await loadScene("autumn");
 const trainScene = await loadScene("train");
@@ -51,10 +58,10 @@ function compiles(gl: WebGL2RenderingContext, fragment: string): boolean {
   return ok;
 }
 
-/** A scene whose entry only calls `call`, compiled with `features`. */
-function gate(base: LoadedScene, call: string, features: Readonly<Record<string, number>>): string {
+/** A scene whose entry only calls `call`, compiled with `features` (the train's: GLSL of its own). */
+function gate(call: string, features: Readonly<Record<string, number>>): string {
   return fragmentSourceFor({
-    ...base,
+    ...trainScene,
     features,
     entry: "cloudGate",
     glsl: `Shade cloudGate(vec2 uv, vec2 cell, float t) {\n  ${call};\n  return blankShade();\n}\n`,
@@ -152,7 +159,7 @@ export async function verifyCloudTiers(
     "float n = cloudFlatField(cloudDeckPoint(vec3(0.1, 0.4, 1.0), vec2(0.0), t, 0.2), cloudFlatFine(vec3(0.1, 0.4, 1.0)))";
   for (const features of [{}, { CLOUD_TIER: CLOUD_TIERS.flat }, top])
     check(
-      compiles(gl, gate(autumn, flat, features)),
+      compiles(gl, gate(flat, features)),
       `the flat deck missing with ${JSON.stringify(features)}`,
     );
   const calls: readonly [Exclude<keyof typeof CLOUD_TIERS, "flat">, string][] = [
@@ -166,23 +173,22 @@ export async function verifyCloudTiers(
   for (const [tier, call] of calls) {
     const level = CLOUD_TIERS[tier];
     check(
-      compiles(gl, gate(autumn, call, { CLOUD_TIER: level })),
+      compiles(gl, gate(call, { CLOUD_TIER: level })),
       `${tier} functions missing at their own tier`,
     );
-    check(compiles(gl, gate(autumn, call, top)), `${tier} functions missing at the top tier`);
+    check(compiles(gl, gate(call, top)), `${tier} functions missing at the top tier`);
     check(
-      !compiles(gl, gate(autumn, call, { CLOUD_TIER: level - 1 })),
+      !compiles(gl, gate(call, { CLOUD_TIER: level - 1 })),
       `${tier} functions present a tier below`,
     );
     check(
-      compiles(gl, gate(autumn, call, {})) === level <= CLOUD_TIERS.lit,
+      compiles(gl, gate(call, {})) === level <= CLOUD_TIERS.lit,
       `${tier} functions ${level <= CLOUD_TIERS.lit ? "missing" : "present"} without CLOUD_TIER`,
     );
   }
 
   // The adopters: each compiles at the tier it selects, and needs it (one tier lower fails).
   const adopters: readonly [SceneId, Exclude<keyof typeof CLOUD_TIERS, "flat">][] = [
-    ["autumn", "shadows"],
     ["clouds", "volume"],
   ];
   for (const [id, tier] of adopters) {
@@ -203,6 +209,19 @@ export async function verifyCloudTiers(
       `${id} compiles a tier lower: it does not use the ${tier} tier`,
     );
   }
+  // Autumn: its composed program selects the shadows tier while its cloud shadows can show, and
+  // needs it.
+  const shadowed = sceneFeatures(autumn, shaderValues(autumn, { shadows: 1 }));
+  check(
+    shadowed["CLOUD_TIER"] === CLOUD_TIERS.shadows &&
+      sceneFeatures(autumn)["CLOUD_TIER"] === CLOUD_TIERS.lit,
+    "autumn does not select the shadows tier with its cloud shadows on, the lit one off",
+  );
+  check(compiles(gl, fragmentSourceFor(autumn, shadowed)), "autumn does not compile at its tier");
+  check(
+    !compiles(gl, fragmentSourceFor(autumn, { ...shadowed, CLOUD_TIER: CLOUD_TIERS.lit })),
+    "autumn compiles a tier lower: it does not use the shadows tier",
+  );
   // The night train draws the calm deck alone: the lit deck is not in its program.
   check(
     trainScene.features?.["CLOUD_TIER"] === CLOUD_TIERS.flat &&
@@ -214,7 +233,10 @@ export async function verifyCloudTiers(
   // above the ~7 degrees the shadow holds it to; a clear sky casts none.
   const probe = program(
     gl,
-    fragmentSourceFor({ ...autumn, entry: "cloudShadowProbe", glsl: PROBE }),
+    fragmentSourceFor(
+      { ...trainScene, entry: "cloudShadowProbe", glsl: PROBE },
+      { CLOUD_TIER: CLOUD_TIERS.shadows },
+    ),
   );
   const W = 24;
   const H = 16;
@@ -255,8 +277,8 @@ export async function verifyCloudTiers(
 
   // Autumn: off by default; on, the shadows only darken, fall on part of the park and move with the
   // deck; at night there are none. The motion clock stands still (the canopy's sway holds), and the
-  // scene clock that the deck drifts on runs.
-  const scene = program(gl, fragmentSourceFor(autumn));
+  // scene clock that the deck drifts on runs. Its all-features program draws every setting.
+  const scene = program(gl, fragmentSourceFor(autumn, sceneFeaturesAll(autumn)));
   const P = 160;
   const Q = 90;
   const render = (knobs: Record<string, number>, time: number): Float32Array =>

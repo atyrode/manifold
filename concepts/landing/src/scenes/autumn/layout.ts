@@ -1,10 +1,13 @@
-// The park's fixed geometry, shared by sim.ts (where leaves fall and lie, where the M is laid) and
-// shader.ts (which templates these numbers into GLSL, so the two cannot drift).
+// The park's fixed geometry, shared by the layers' manifests (layers.ts), their sims (sim.ts: where
+// leaves fall and lie, where the M is laid) and their GLSL (shader.ts, which templates these numbers
+// into GLSL, so they cannot drift). Plain data, loaded with the composer's registry.
 //
-// World units are metres: x to the right, y up, z away from the viewer (depth). The camera is a
-// shifted-lens pinhole at height `eye`, looking along +z, the horizon at screen height `horizon`;
-// `focal` is in screen heights (the shared sky library's 0.5 / tan(fov / 2)), so a point at depth z
-// lands at (x, y - eye) * focal / z from the horizon's centre.
+// World units are metres in the rig's frame: x to the right, y up, z away from the viewer (depth).
+// The camera is the preset's rig (constants.ts AUTUMN_RIG): a level pinhole at height `eye`, looking
+// along +z, the horizon at screen height `horizon`; `focal` is in screen heights (the shared sky
+// library's 0.5 / tan(fov / 2)), so a point at depth z lands at (x, y - eye) * focal / z from the
+// horizon's centre. A frame narrower than AUTUMN_WIDE is laid out as if that wide (the rig's
+// minAspect).
 //
 //   path     a gravel walk drifting from the near left toward the far left: x = x0 - swing sin(rate (z - from)),
 //            `half` its half width
@@ -18,9 +21,14 @@
 //   passage  the scene's entrance and exit: a gust blows a flurry of leaves through the canopy as the
 //            camera lowers from the boughs onto the path; at the exit a stronger gust whirls the leaves
 //            up across the frame as the camera tilts up into the canopy
+//   gust     how hard the composer's gust field (ADR 0062 D4) pushes the park's leaves and sways its
+//            canopy: the field's load times `gain`, so a gust at the preset's strength reaches the park
+//            about as hard as its own gusts did
 import { glslFloat } from "../../shaders/glsl.ts";
 import { clamp, smoothstep } from "../../sims/math.ts";
-import { AUTUMN_PASSAGE } from "./constants.ts";
+
+/** Seconds the entrance and the exit take (SceneDef.passage). */
+export const AUTUMN_PASSAGE = { enter: 2.8, exit: 1.5 } as const;
 
 /**
  * The entrance's gust, as a strength 0..1 by seconds into the entrance: it rises from the first frame,
@@ -47,6 +55,9 @@ export const AUTUMN_WHIRL = { rise: 0.3, canopy: 1.3 } as const;
 export const AUTUMN_TILT = { enter: 0.24, exit: 0.24, exitFrom: 0.15 } as const;
 
 export const AUTUMN_VIEW = { horizon: 0.36, eye: 1.5, focal: 1.0 } as const;
+
+/** The narrowest frame the park is laid out for: a narrower one is squeezed rather than lose the tree. */
+export const AUTUMN_WIDE = 1.45;
 
 export const AUTUMN_PATH = { x: -0.2, swing: 1.25, rate: 0.11, from: 3.0, half: 1.25 } as const;
 
@@ -87,14 +98,17 @@ export const AUTUMN_MARK = {
   margin: 0.22,
 } as const;
 
-/** Leaves in the air at once (the falling-leaf texture's rows). */
+/** Leaves in the air at once (the maple's record row: four texels a leaf). */
 export const AUTUMN_SLOTS = 36;
+
+export const AUTUMN_GUST = { gain: 2 } as const;
 
 /** The layout as GLSL constants and the path's centre line (autumnPathX). */
 export const autumnLayoutGlsl = `
 const float AUTUMN_HORIZON = ${glslFloat(AUTUMN_VIEW.horizon)};
 const float AUTUMN_EYE = ${glslFloat(AUTUMN_VIEW.eye)};
 const float AUTUMN_FOCAL = ${glslFloat(AUTUMN_VIEW.focal)};
+const float AUTUMN_WIDE = ${glslFloat(AUTUMN_WIDE)};
 const vec4 AUTUMN_PATH = vec4(${glslFloat(AUTUMN_PATH.x)}, ${glslFloat(AUTUMN_PATH.swing)}, ${glslFloat(AUTUMN_PATH.rate)}, ${glslFloat(AUTUMN_PATH.from)});
 const float AUTUMN_PATH_HALF = ${glslFloat(AUTUMN_PATH.half)};
 const vec3 AUTUMN_TREE = vec3(${glslFloat(AUTUMN_TREE.x)}, ${glslFloat(AUTUMN_TREE.z)}, ${glslFloat(AUTUMN_TREE.radius)});
@@ -111,7 +125,7 @@ const int AUTUMN_SLOTS = ${AUTUMN_SLOTS};
 const vec2 AUTUMN_PASSAGE = vec2(${glslFloat(AUTUMN_PASSAGE.enter)}, ${glslFloat(AUTUMN_PASSAGE.exit)});
 const vec2 AUTUMN_FLURRY = vec2(${glslFloat(AUTUMN_FLURRY.rise)}, ${glslFloat(AUTUMN_FLURRY.fall)});
 const vec2 AUTUMN_WHIRL = vec2(${glslFloat(AUTUMN_WHIRL.rise)}, ${glslFloat(AUTUMN_WHIRL.canopy)});
-const vec3 AUTUMN_TILT = vec3(${glslFloat(AUTUMN_TILT.enter)}, ${glslFloat(AUTUMN_TILT.exit)}, ${glslFloat(AUTUMN_TILT.exitFrom)});
+const float AUTUMN_GUST_GAIN = ${glslFloat(AUTUMN_GUST.gain)};
 
 // The gust of the scene's passage, 0 at rest: the entrance's flurry (0..1, autumnFlurry in layout.ts) or
 // the exit's whirl (0..AUTUMN_WHIRL.y). The canopy leans before it.
@@ -126,21 +140,6 @@ float autumnPassageBlow() {
   }
   if (pout > 0.0) blow = max(blow, AUTUMN_WHIRL.y * smoothstep(0.0, AUTUMN_WHIRL.x, pout));
   return blow;
-}
-
-// The camera's lens shift in screen heights, up, 0 at rest: it starts the entrance raised into the
-// canopy, already coming down, and settles onto the path (easing out into a long, gentle tail); at
-// the exit it tilts back up, gathering speed to the end.
-float autumnLensShift() {
-  float pin = passageIn();
-  float pout = passageOut();
-  float shift = 0.0;
-  if (pin < 1.0) shift += AUTUMN_TILT.x * (1.0 - pin) * (1.0 - pin) * (1.0 - pin);
-  if (pout > 0.0) {
-    float t = clamp((pout - AUTUMN_TILT.z) / (1.0 - AUTUMN_TILT.z), 0.0, 1.0);
-    shift += AUTUMN_TILT.y * t * t;
-  }
-  return shift;
 }
 
 // The path's centre line at depth z.

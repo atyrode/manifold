@@ -5,20 +5,24 @@
 // set and the composed sim, composer/code.ts) loads with the scene's `code.ts`, so the metadata
 // carries none of it.
 //
-//   params            the World's knobs, the gusts' (gusts, gustRate) and the arrangement (seed), each
+//   params            the World's knobs, the gusts' (gusts, gustRate), the time of year (season,
+//                     the first offered layer's that has one) and the arrangement (seed), each
 //                     offered layer's switch (on for the preset's home layers; group "layers", a
 //                     `layer` widget), then each offered layer's knobs hung on its switch (`when`).
 //                     A key another knob holds already is qualified `<layerId><Key>` (D2). Trigger
-//                     slots: meteors 0, lightning 1, gusts 2, then the layers' in canonical order.
+//                     slots: meteors 0, lightning 1, gusts 2, then the layers' in canonical order
+//                     (a layer listing its own id in `triggers` numbers its switch's "now" first).
 //                     The preset's values set the defaults.
-//   featuresFor       the World's gates, LAYER_<ID> for every offered layer (1 where placed), each
-//                     placed layer's own gates (a gate another placed layer suppresses at 0), and
-//                     every gate of an offered layer that is off at 0, so a chunk shared by several
-//                     layers may test any of them with `#if`.
+//   featuresFor       the World's gates (with the climate where the season sets it: a season knob
+//                     beside the World's snow), LAYER_<ID> for every offered layer (1 where
+//                     placed), each placed layer's own gates (a gate another placed layer
+//                     suppresses at 0), and every gate of an offered layer that is off at 0, so a
+//                     chunk shared by several layers may test any of them with `#if`.
 //   featuresAllFor    the same with every gate of the placed layers on: a layer set's all-features
 //                     program.
 //   structural        the layer switches: turning one builds another program.
 //   layers            what the lab's Layers section reads (SceneLayers).
+import { hasClimate } from "../climate.ts";
 import { feature, range, seed, type Blurb, type ParamDef } from "../params.ts";
 import type { SceneDef } from "../scenes/types.ts";
 import { WORLD_ALL, worldFeatures, worldGroups, worldKnobs } from "../scenes/world.ts";
@@ -103,8 +107,11 @@ function withValues(def: ParamDef, values: Readonly<Record<string, number>>): Pa
   return value === undefined ? def : { ...def, value };
 }
 
-/** The composer's own knobs beside the World's: the gusts and the arrangement. */
-function composerKnobs(): ParamDef[] {
+/**
+ * The composer's own knobs beside the World's: the gusts, the time of year where a layer has one
+ * (its `season`, keyed `season`), and the arrangement.
+ */
+function composerKnobs(season: ParamDef | undefined): ParamDef[] {
   return [
     feature(
       "wind",
@@ -123,6 +130,7 @@ function composerKnobs(): ParamDef[] {
       0.45,
       "How often a gust comes through: now and then to the left, one after another to the right.",
     ),
+    ...(season === undefined ? [] : [season]),
     seed(
       "layers",
       "seed",
@@ -158,7 +166,10 @@ export function composeScene(composer: Composer, preset: ScenePreset): ComposedS
     lightning: WORLD_TRIGGERS.lightning,
     groups: { ...preset.world.groups, wind: "wind" },
   });
-  const own = composerKnobs();
+  const season = offered.find((layer) => layer.season !== undefined)?.season;
+  if (season !== undefined && season.key !== "season")
+    throw new ComposeError(`preset ${preset.id}: a layer's season knob is keyed ${season.key}`);
+  const own = composerKnobs(season);
   const taken = new Set([...world, ...own].map((def) => def.key));
   const keys: Record<string, Record<string, string>> = {};
   const switches: ParamDef[] = [];
@@ -170,11 +181,14 @@ export function composeScene(composer: Composer, preset: ScenePreset): ComposedS
     taken.add(layer.id);
     const on = home.has(layer.id);
     const sw = layer.switch;
+    const own = layer.triggers?.includes(layer.id) === true ? slot++ : undefined;
+    if (own !== undefined) triggers[layer.id] = own;
     switches.push({
       ...(sw.kind === "feature" ? { ...sw, on } : { ...sw, value: on ? 1 : 0 }),
       group: "layers",
       steady: true,
       widget: { kind: "layer", role: layer.role },
+      ...(own === undefined ? {} : { trigger: own }),
     });
     const map: Record<string, string> = {};
     for (const def of layer.params) {
@@ -206,6 +220,7 @@ export function composeScene(composer: Composer, preset: ScenePreset): ComposedS
   for (const key of Object.keys(preset.values))
     if (!params.some((def) => def.key === key || `${def.key}-amount` === key))
       throw new ComposeError(`preset ${preset.id}: its value ${key} names no knob`);
+  const climate = hasClimate(params);
 
   const gates: Record<string, string> = Object.fromEntries(
     offered.map((layer) => [layerGate(layer.id), layer.id]),
@@ -334,7 +349,7 @@ export function composeScene(composer: Composer, preset: ScenePreset): ComposedS
     ...(preset.theme === undefined ? {} : { theme: preset.theme(params) }),
     ...(preset.features === undefined ? {} : { features: preset.features }),
     featuresFor: (values) => ({
-      ...worldFeatures(values),
+      ...worldFeatures(values, climate),
       ...gatesOf(values, (layer, v) => layer.featuresFor?.(v) ?? {}),
     }),
     featuresAllFor: (values) => ({

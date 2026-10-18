@@ -1,14 +1,20 @@
-// Hands' wakes on the shore: wherever a principal (the visitor, an agent) moves over the page it
-// stirs the water and the wet sand, leaving a fading trail (uSim0.r) that the shader turns into
-// swirls of plankton light. Noctiluca flashes only while it is being disturbed, so the trail fades
-// within a couple of seconds. And the agents' cairns (knob `cairns`, cairns.ts): their stones and
-// the pebbles they carry (uSim1, while there are any), on the motion clock.
+// The shore's layer sims (layers.ts), on the composed sim's frame (composer/sim.ts):
+//   sea     hands' wakes: wherever a principal (the visitor, an agent) moves over the page it stirs
+//           the water and the wet sand, leaving a fading trail (its field 0, r8, linear) that the
+//           shader turns into swirls of plankton light. Noctiluca flashes only while it is being
+//           disturbed, so the trail fades within a couple of seconds, on the motion clock. Its
+//           affordance (SeaSurf) is the surf as it draws it, for what the swash acts on.
+//   cairns  the agents' chore (cairns.ts): their stones and the pebbles they carry (its rows of the
+//           records atlas, while there are any), on the motion clock, toppled by the sea's swash;
+//           its sites are where the cast's agents go to work.
+import { ATLAS_WIDTH } from "../../composer/caps.ts";
+import type { LayerFrame, LayerSim } from "../../composer/types.ts";
 import { KnobReader, type ParamDef } from "../../params.ts";
 import { MAX_PRINCIPALS } from "../../principals.ts";
 import { DataTexture } from "../../sims/texture.ts";
 import { TrailField } from "../../sims/trail.ts";
-import type { ScenePoint, SceneSim, SimFactory, SimFrame } from "../types.ts";
-import { CAIRN_ROW, CAIRN_SITES, ShoreCairns, type CairnFrame } from "./cairns.ts";
+import type { ScenePoint } from "../types.ts";
+import { ShoreCairns, type CairnFrame } from "./cairns.ts";
 
 /** Trail grid height in texels; the width follows the frame's aspect. Linear filtering smooths it. */
 const ROWS = 96;
@@ -23,50 +29,35 @@ const PASS = 0.33;
 const HELD = 7.2;
 /** How far the camera steps along the beach (m) for the pointer's parallax: the shader's camX. */
 const STEP_ALONG = 0.35;
-
-type Knob = "cairns" | "size" | "period";
-const KNOBS: readonly Knob[] = ["cairns", "size", "period"];
-const NO_POINTS: readonly ScenePoint[] = [];
 /** No hands: what the cairns are told of the principals while the scene comes or goes. */
 const NO_HANDS: readonly never[] = [];
 
-class ShoreSim implements SceneSim {
+/**
+ * What the sea lets the layers on its beach read (LayerSim.affordances): the surf's knobs as it last
+ * drew them, its wave size (0..1) and period (s), which beach.ts's swashAt takes.
+ */
+export class SeaSurf {
+  size = 0.5;
+  period = 8;
+}
+
+/** The sea's wake (field 0) and its surf (see the header). */
+class SeaSim implements LayerSim {
   readonly #gl: WebGL2RenderingContext;
-  readonly #knobs: KnobReader<Knob>;
+  readonly #knobs: KnobReader<"size" | "period">;
+  readonly affordances = new SeaSurf();
   #field: TrailField | undefined;
   #texture: DataTexture | undefined;
   #uploaded = -1;
-  readonly #cairns = new ShoreCairns();
-  readonly #stones: DataTexture;
-  readonly #stoneData = new Float32Array(CAIRN_ROW * (CAIRN_SITES + 1) * 4);
-  readonly #textures: (WebGLTexture | undefined)[] = [];
-  /** The cairns knob, and the camera's step along the beach, as last seen. */
-  #on: boolean;
-  #camX = 0;
-  /** What the cairns are told each frame, rewritten in place. */
-  readonly #at: CairnFrame = {
-    aspect: 16 / 9,
-    camX: 0,
-    tm: 0,
-    dt: 0,
-    period: 8,
-    size: 0.5,
-    stones: 5,
-  };
 
-  constructor(gl: WebGL2RenderingContext, knobs: KnobReader<Knob>) {
+  constructor(gl: WebGL2RenderingContext, params: readonly ParamDef[]) {
     this.#gl = gl;
-    this.#knobs = knobs;
-    this.#on = knobs.initial("cairns") > 0;
-    this.#stones = new DataTexture(gl, {
-      width: CAIRN_ROW,
-      height: CAIRN_SITES + 1,
-      format: "rgba16f",
-      filter: "nearest",
-    });
+    this.#knobs = new KnobReader("shore sea", params, ["size", "period"]);
   }
 
-  frame(frame: SimFrame): readonly (WebGLTexture | undefined)[] {
+  frame(frame: LayerFrame): void {
+    this.affordances.size = this.#knobs.value(frame, "size");
+    this.affordances.period = this.#knobs.value(frame, "period");
     const columns = Math.min(512, Math.max(16, Math.round(ROWS * frame.aspect)));
     if (this.#field === undefined || this.#field.width !== columns) {
       // A new aspect starts a fresh trail: the old one would land in the wrong place.
@@ -95,48 +86,75 @@ class ShoreSim implements SceneSim {
       texture.upload(field.data);
       this.#uploaded = field.version;
     }
-    this.#textures.length = 0;
-    this.#textures.push(texture.texture);
-
-    // The cairns, on the motion clock; the agents work at them only at rest (a passage moves the
-    // camera).
-    const knobs = this.#knobs;
-    this.#on = knobs.value(frame, "cairns") > 0;
-    this.#camX = (frame.parallax?.x ?? 0) * STEP_ALONG * frame.motion;
-    if (this.#on) {
-      const still = frame.passage.enter >= 1 && frame.passage.exit <= 0;
-      const at = this.#at;
-      at.aspect = frame.aspect;
-      at.camX = this.#camX;
-      at.tm = frame.motionTime;
-      at.dt = frame.dt * frame.motion;
-      at.period = knobs.value(frame, "period");
-      at.size = knobs.value(frame, "size");
-      at.stones = knobs.value(frame, "cairns");
-      this.#cairns.frame(still ? frame.principals : NO_HANDS, at);
-      if (this.#cairns.pack(this.#stoneData)) {
-        this.#stones.upload(this.#stoneData);
-        this.#textures.push(this.#stones.texture);
-      }
-    }
-    return this.#textures;
-  }
-
-  /** The cairns' sites to work at, while the knob is on. */
-  interest(aspect: number): readonly ScenePoint[] {
-    return this.#on ? this.#cairns.interest(aspect, this.#camX) : NO_POINTS;
+    const slot = frame.fields[0];
+    if (slot) slot.texture = texture.texture;
   }
 
   dispose(): void {
     this.#texture?.dispose();
     this.#texture = undefined;
     this.#field = undefined;
-    this.#stones.dispose();
   }
 }
 
-/** The shore's sim, for a scene whose `params` carry the knobs `Knob` names. */
-export function shoreSim(params: readonly ParamDef[]): SimFactory {
-  const knobs = new KnobReader<Knob>("shore", params, KNOBS);
-  return (gl) => new ShoreSim(gl, knobs);
+/** The agents' cairns (see the header), into the cairns' rows. */
+class CairnsSim implements LayerSim {
+  readonly #knobs: KnobReader<"cairns">;
+  readonly #cairns = new ShoreCairns();
+  /** The camera's step along the beach, as last seen. */
+  #camX = 0;
+  /** Whether the rows held any stone or pebble last frame (they go up once more as they empty). */
+  #held = false;
+  /** What the cairns are told each frame, rewritten in place. */
+  readonly #at: CairnFrame = {
+    aspect: 16 / 9,
+    camX: 0,
+    tm: 0,
+    dt: 0,
+    period: 8,
+    size: 0.5,
+    stones: 5,
+  };
+
+  constructor(params: readonly ParamDef[]) {
+    this.#knobs = new KnobReader("shore cairns", params, ["cairns"]);
+  }
+
+  frame(frame: LayerFrame): void {
+    this.#camX = (frame.parallax?.x ?? 0) * STEP_ALONG * frame.motion;
+    // The surf that topples them is the sea's (the beach's host, always on with it).
+    const sea = frame.host("sea");
+    if (!(sea instanceof SeaSurf)) return;
+    // On the motion clock; the agents work at them only at rest (a passage moves the camera).
+    const still = frame.passage.enter >= 1 && frame.passage.exit <= 0;
+    const at = this.#at;
+    at.aspect = frame.aspect;
+    at.camX = this.#camX;
+    at.tm = frame.motionTime;
+    at.dt = frame.dt * frame.motion;
+    at.period = sea.period;
+    at.size = sea.size;
+    at.stones = this.#knobs.value(frame, "cairns");
+    this.#cairns.frame(still ? frame.principals : NO_HANDS, at);
+    const held = this.#cairns.pack(frame.records.data, ATLAS_WIDTH);
+    if (held || this.#held) frame.records.touch();
+    this.#held = held;
+  }
+
+  /** The cairns' sites to work at. */
+  interest(aspect: number): readonly ScenePoint[] {
+    return this.#cairns.interest(aspect, this.#camX);
+  }
+
+  dispose(): void {}
+}
+
+/** The sea layer's sim (LayerCode.sim). */
+export function seaSim(gl: WebGL2RenderingContext, params: readonly ParamDef[]): LayerSim {
+  return new SeaSim(gl, params);
+}
+
+/** The cairns layer's sim (LayerCode.sim): records only, no texture of its own. */
+export function cairnsSim(_gl: WebGL2RenderingContext, params: readonly ParamDef[]): LayerSim {
+  return new CairnsSim(params);
 }

@@ -120,20 +120,20 @@ export const presets: readonly Preset[] = [
   },
   {
     name: "Waterfall · slot gorge",
-    commit: "f1ca6557",
-    query: "scene=falls&mist=0.8&gorge=2",
+    commit: "PENDING",
+    query: "scene=falls&spray-amount=0.8&gorge=2",
     savedAt: "2026-10-15",
   },
   {
     name: "Waterfall · slot gorge at dusk",
     commit: "f1ca6557",
-    query: "scene=falls&gorge=2&time=0.8",
+    query: "scene=falls&time=0.8&gorge=2",
     savedAt: "2026-10-15",
   },
   {
     name: "Waterfall · sandstone",
     commit: "f1ca6557",
-    query: "scene=falls&flow=0.7&gorge=1",
+    query: "scene=falls&gorge=1&flow=0.7",
     savedAt: "2026-10-15",
   },
   {

@@ -164,7 +164,7 @@ void main() { o = vec4(a()); }
  * cost; raise its ceiling on purpose, or find what it pulled in.
  */
 const BUDGET = {
-  autumn: [83500, 128000],
+  autumn: [90500, 181500],
   bamboo: [85000, 89000],
   bar: [122500],
   bees: [114500, 191000],
@@ -175,8 +175,8 @@ const BUDGET = {
   country: [116500, 242500],
   delta: [20500],
   dew: [44500],
-  dunes: [66500, 141000],
-  falls: [110000, 154500],
+  dunes: [79500, 159500],
+  falls: [110000, 196500],
   ferro: [22000],
   film: [21500],
   fireflies: [25500],
@@ -191,7 +191,7 @@ const BUDGET = {
   island: [89500, 134500],
   kelp: [67500],
   lake: [77000, 151500],
-  lanterns: [89000, 133500],
+  lanterns: [84500, 178500],
   lava: [35000],
   marble: [20000],
   meadow: [106000, 184000],
@@ -206,7 +206,7 @@ const BUDGET = {
   ripple: [20000],
   sandtable: [26000],
   shanshui: [54000],
-  shore: [89000, 160500],
+  shore: [104000, 182000],
   sill: [114000, 159000],
   skyward: [91500, 136000],
   street: [123500, 127500],

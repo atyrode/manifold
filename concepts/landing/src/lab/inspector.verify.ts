@@ -577,8 +577,8 @@ function layers(): Record<string, unknown> {
       (row) => row.dataset.role,
     );
     check(
-      rows.join() === "backdrop,ground,dressing,cover,life",
-      `bees' layer rows are ${rows.join()}, not backdrop, ground, dressing, cover, life`,
+      rows.join() === "backdrop,ground,dressing,cover,life,chore",
+      `bees' layer rows are ${rows.join()}, not backdrop, ground, dressing, cover, life, chore`,
     );
     const chip = (key: string) =>
       element<HTMLButtonElement>(inspector.el, `.layer-row .chip-cell[data-keys~="${key}"] .chip`);

@@ -8,32 +8,28 @@
 // the sand for the agents to pick up again. A stone the sea carries far from its site is gone.
 // Without agents none of it happens: the stones stand or lie where they are.
 //
-// Usage (shore/sim.ts, each frame; a principal is the agent it is by its index in `principals`):
+// Usage (shore/sim.ts, the `cairns` layer's sim, each frame; a principal is the agent it is by its
+// index in `principals`):
 //   const at: CairnFrame = { aspect, camX, tm, dt, period, size, stones };  // kept, rewritten
 //   cairns.frame(frame.principals, at);
-//   if (cairns.pack(data)) texture.upload(data);   // uSim1, laid out as CAIRN_ROW below
+//   if (cairns.pack(rows, ATLAS_WIDTH)) records.touch();  // its rows, laid out as CAIRN_ROW below
 import { MAX_PRINCIPALS } from "../../principals.ts";
 import { FixedStep } from "../../sims/clock.ts";
 import { mulberry32 } from "../../sims/random.ts";
 import { Stack, STACK_STEP } from "../../sims/stack.ts";
 import type { PrincipalState, ScenePoint } from "../types.ts";
 import { SHORE_BEACH, SHORE_FOCAL, swashAt, type Swash } from "./beach.ts";
+import { SHORE_CAIRN_SITES } from "./constants.ts";
 
-/** The sites: across the beach (m), and how far up it from the still-water line (m). */
-const SITES: readonly { readonly x: number; readonly e: number }[] = [
-  { x: -2.8, e: 2.3 },
-  { x: -0.9, e: 2.7 },
-  { x: 1.0, e: 2.5 },
-  { x: 2.9, e: 2.9 },
-];
-export const CAIRN_SITES = SITES.length;
+export const CAIRN_SITES = SHORE_CAIRN_SITES.length;
 /** Stones a site holds at most: its cairn and those fallen round it. */
 export const CAIRN_STONES = 7;
 /**
- * The upload (uSim1, rgba16f): a row per site, its first texel (x, z of the site, its stones, how wet
- * they are 0..1), then two a stone ((x from the site, height of its middle, turn, half width), (half
- * height, shade 0..1, 0, 0)), all in metres; then a row with a texel per principal, by its index in
- * uPrincipals, for the pebble it carries ((half width, half height, shade, 1), or zeros).
+ * What pack writes (rgba16f, the layer's rows of the records atlas): a row per site, its first texel
+ * (x, z of the site, its stones, how wet they are 0..1), then two a stone ((x from the site, height
+ * of its middle, turn, half width), (half height, shade 0..1, 0, 0)), all in metres; then a row with
+ * a texel per principal, by its index in uPrincipals, for the pebble it carries ((half width, half
+ * height, shade, 1), or zeros). CAIRN_ROW texels of each row are used.
  */
 export const CAIRN_ROW = 1 + 2 * CAIRN_STONES;
 
@@ -137,7 +133,7 @@ export class ShoreCairns {
   readonly #col = { base: -1, count: 0, top: -1, height: 0 };
 
   constructor() {
-    this.#sites = SITES.map(({ x, e }) => ({
+    this.#sites = SHORE_CAIRN_SITES.map(({ x, e }) => ({
       x,
       z: SHORE_BEACH.line - e,
       stack: new Stack(CAIRN_STONES),
@@ -230,14 +226,17 @@ export class ShoreCairns {
     return points;
   }
 
-  /** The stones and the carried pebbles into `data` (CAIRN_ROW × (CAIRN_SITES + 1) texels); false when there are none. */
-  pack(data: Float32Array): boolean {
+  /**
+   * The stones and the carried pebbles into `data`, `row` texels a row (at least CAIRN_ROW), the
+   * CAIRN_SITES + 1 rows laid out as CAIRN_ROW says; false when there are none.
+   */
+  pack(data: Float32Array, row: number): boolean {
     data.fill(0);
     let any = false;
-    this.#sites.forEach((site, row) => {
+    this.#sites.forEach((site, s) => {
       const stones = site.stack.stones;
       if (stones.length > 0) any = true;
-      const at = row * CAIRN_ROW * 4;
+      const at = s * row * 4;
       data[at] = site.x;
       data[at + 1] = site.z;
       data[at + 2] = stones.length;
@@ -252,7 +251,7 @@ export class ShoreCairns {
         data[o + 5] = site.shades[j] ?? 0.5;
       });
     });
-    const carried = CAIRN_SITES * CAIRN_ROW * 4;
+    const carried = CAIRN_SITES * row * 4;
     this.#held.forEach((held, i) => {
       if (!held.on) return;
       any = true;

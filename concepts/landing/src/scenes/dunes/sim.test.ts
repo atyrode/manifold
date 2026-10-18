@@ -3,7 +3,8 @@ import { visitorAlone } from "../../principals.ts";
 import { HeadlessSim } from "../../sims/headless.ts";
 import { loadScene } from "../index.ts";
 import type { SimFrame } from "../types.ts";
-import { DUNES_CAMERA, DUNES_MARK, DUNES_SAND, DUNES_SLAB, dunesPointerCell } from "./sim.ts";
+import { DUNES_CAMERA } from "./constants.ts";
+import { DUNES_MARK, DUNES_SAND, DUNES_SLAB, dunesPointerCell } from "./sim.ts";
 
 const dunesScene = await loadScene("dunes");
 
@@ -92,15 +93,17 @@ test("a click on the sandstone M lands at the M, not on the sand far behind it",
 });
 
 test("the sand goes up as often as the wind moves it: a few times a second in a breeze, 20 in a gale", () => {
+  // The heights' texture: the dune field's first field, slot 2 (the composed sim's first field slot).
+  const HEIGHTS = 2;
   const uploadsPerSecond = (wind: number): number => {
     const sim = new HeadlessSim(dunesScene);
     const frame = { knobs: { wind }, pointer: { inside: false } };
     // The warm-up ends in the first frame on the headless budget; then 5 s at 60 Hz.
     for (let f = 0; f < 60; f++) sim.step(frame);
-    let last = sim.upload(0).data;
+    let last = sim.upload(HEIGHTS).data;
     let uploads = 0;
     for (let f = 0; f < 300; f++) {
-      const data = sim.step(frame).upload(0).data;
+      const data = sim.step(frame).upload(HEIGHTS).data;
       if (data !== last) uploads++;
       last = data;
     }

@@ -1,7 +1,7 @@
-// Autumn park's code, loaded the first time the scene is needed (SceneDef.code).
-import { autumnScene } from "./index.ts";
-import { autumnSim } from "./sim.ts";
+// Autumn park's code, loaded the first time the scene is needed (SceneDef.code): assembled from the
+// code of every layer its rig offers (composer/code.ts).
+import { composedCode } from "../../composer/code.ts";
+import { OUTDOOR_CODE } from "../../composer/outdoor-code.ts";
+import { autumnComposed } from "./index.ts";
 
-export { autumnGlsl as glsl } from "./shader.ts";
-export const entry = "sceneAutumn";
-export const sim = autumnSim(autumnScene.params);
+export const { glsl, entry, glslFor, sim } = composedCode(autumnComposed, OUTDOOR_CODE);

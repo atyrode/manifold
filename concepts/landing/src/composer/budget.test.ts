@@ -22,8 +22,16 @@ const composed = (
 ).filter(({ scene }) => scene.layers !== undefined);
 
 describe("composed programs", () => {
-  test("are the pilot's two presets", () => {
-    expect(composed.map(({ id }) => id).sort()).toEqual(["bees", "meadow"]);
+  test("are the ported presets", () => {
+    expect(composed.map(({ id }) => id).sort()).toEqual([
+      "autumn",
+      "bees",
+      "dunes",
+      "falls",
+      "lanterns",
+      "meadow",
+      "shore",
+    ]);
   });
 
   test("stay within the shaken budgets: a preset's defaults, each layer set's all-features", () => {

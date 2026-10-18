@@ -35,7 +35,9 @@
 //                              slot, a small crowd;
 //                     orient   a young bee's orientation flight: slow loops in front of its hive;
 //                     out      a forager's nearly straight, slightly wobbly beeline to a flower patch
-//                              (now and then via a pass close to the lens);
+//                              (a drift, or a bed in flower the gardening chore's agents grew, which
+//                              the apiary lends: LayerFrame.host; now and then via a pass close to
+//                              the lens);
 //                     forage   hopping zig-zag from flower to flower in the patch, resting a moment on
 //                              each, loading up with pollen;
 //                     home     the beeline back to the landing board;
@@ -89,6 +91,7 @@ import type { LayerFrame, LayerSim } from "../../composer/types.ts";
 import { KnobReader, type ParamDef } from "../../params.ts";
 import { FixedStep, runBudgeted } from "../../sims/clock.ts";
 import { clamp, smoothstep } from "../../sims/math.ts";
+import { GardenBeds } from "./beds.ts";
 import { BEES_MAX_BUMBLEBEES, Bumblebees } from "./bumblebees.ts";
 import { BEES_MAX_BUTTERFLIES, Butterflies } from "./butterflies.ts";
 import { BEES_MAX_BEES, Colony } from "./colony.ts";
@@ -212,6 +215,8 @@ class InsectsSim implements LayerSim {
     garden.wet = Math.max(this.#weatherKnob(frame, "rain"), this.#weatherKnob(frame, "snow"));
     garden.wind = this.#weatherKnob(frame, "wind");
     garden.setFlowers(Math.max(0, knobs.value(frame, "flowers")));
+    const beds = frame.host("apiary");
+    garden.beds = beds instanceof GardenBeds ? beds : undefined;
     const width = Math.max(1, Math.round(frame.width));
     const height = Math.max(1, Math.round(frame.height));
     if (width !== this.#width || height !== this.#height) {

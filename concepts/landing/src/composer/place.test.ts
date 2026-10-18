@@ -224,7 +224,15 @@ describe("the pilot's placements", () => {
     const mix = beesComposed.place(
       new Set([...beesComposed.preset.layers, "grass", "wildflowers"]),
     );
-    expect(ids(mix)).toEqual(["hillside", "lawn", "apiary", "grass", "wildflowers", "insects"]);
+    expect(ids(mix)).toEqual([
+      "hillside",
+      "lawn",
+      "apiary",
+      "grass",
+      "wildflowers",
+      "insects",
+      "gardening",
+    ]);
     expect(mix.refused).toEqual([]);
     expect(mix.claims.length).toBeLessThanOrEqual(COMPOSER_CAPS.claims);
     expect(new Set(mix.claims.map((claim) => claim.layer))).toEqual(new Set(["apiary"]));

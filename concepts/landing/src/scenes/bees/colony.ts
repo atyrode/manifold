@@ -271,7 +271,8 @@ export class Colony {
   #depart(b: Bee): void {
     const garden = this.#garden;
     const rand = garden.random;
-    if (rand.next() > 0.7) b.patch = garden.pickPatch(false);
+    // Mostly back to the patch it worked last, unless that was a bed now out of flower.
+    if (rand.next() > 0.7 || !garden.blooms(b.patch)) b.patch = garden.pickPatch(false);
     b.fly = true;
     b.resting = false;
     b.via = rand.next() < PASS_SHARE;
