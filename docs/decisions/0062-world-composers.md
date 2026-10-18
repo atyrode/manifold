@@ -764,11 +764,172 @@ bench-scale layer is refused beside the delta's kilometres by its span.
 
 ### Phase 5: the matter shelf, and what stays standalone
 
-- **Optional (D7):** petri, physarum, marble, chladni, ferro, film, pearl, prism and pendula, as
-  dishes, plates and boards on the interior's ledge or the overhead's bench.
-- **Standalone:** fractal, hyperbolic, orbit and shanshui keep their own `SceneDef`: a pure field, a
-  tiling, outer space, a painted scroll have no space to share.
-- **Pending (D7):** kelp, under water: a submerged `outdoor` rig, or standalone.
+- **Optional (D7):** petri, physarum, marble, chladni, ferro, film and pearl, as dishes, plates and
+  boards on the interior's ledge or the overhead's bench; decided after the interior baseline.
+- **Standalone:** fractal, hyperbolic, orbit, shanshui, prism and pendula keep their own
+  `SceneDef`, full-screen (D24): a pure field, a tiling, outer space, a painted scroll, a beam and a
+  row of pendulums have no space to share.
+- **Kelp** stays standalone until an underwater baseline has a second variant.
+
+## Baselines and variants (U2)
+
+#1082 item U2, ratified by the operator on 2026-10-18 (D13–D24): each composer gets one baseline,
+and every scene becomes a variant stored as its differences from it, so improving the baseline
+improves every variant.
+
+### Three tiers
+
+- **The baseline** (D13), one per composer: `Composer.baseline` beside its `layers`. It holds what a
+  scene preset holds but its identity: the camera at rest, the grade, the World's options, the floor
+  or the room's shell, the shell's home layers, values and elements. Each is also a lab-only scene
+  (`room`, `land`, `patch`), outside the tour and the public cycle, to load and compare against.
+- **Curated variants** are today's scenes (D14). A `Variant` names its baseline (`base`, a composer
+  id), keeps its identity (id, title, blurb, accent, look, theme, passage, planets) and holds only
+  its differences: layers added or removed, knob values, elements, the camera's rest pose, a grade.
+  `variantPreset(baseline, variant)` makes the `ScenePreset`, so `composeScene`, ids, cards,
+  thumbnails and links stay as D1 has them. A variant never names another; a test refuses a
+  redundant difference, so no variant keeps a copy that would hide a better baseline.
+- **Saved presets** stay minimal queries over a variant: the committed ones in `src/presets.ts`, the
+  local ones in the browser, the operator's experiments.
+
+**A pinned commit keeps its meaning.** On `/@<commit>/` a query resolves against that build's
+baseline and variant, so it looks as it did; on the head it shows the baseline as it is now. Variant
+ids are never reused for another picture; a baseline change never moves a commit; a renamed key
+still rewrites the committed presets that set it and moves their commit ("Keys and links").
+
+**Promotion** (D15) makes a saved preset a curated variant with its own id, card and thumbnail and
+`from` (its commit and query) as provenance. "Promote" copies the entry, the query folded into the
+variant's differences (switches into adds and removes, `elements=` into elements, the rest into
+values), for a preset that loads as itself on this build. The entry goes into
+`src/composer/<composer>-variants.ts`, and the source preset is removed.
+
+**The lab tree** (D9 as amended, D16): the Presets view shelves by composer, each a tree of its
+baseline, its curated variants and under each its committed and local presets ("saved here", with
+Promote); standalone scenes stand apart. The committed presets' tag "baseline" becomes "committed".
+
+### The camera
+
+A live pose (D18: position offsets, eye height, yaw, pitch, focal) rides in one packed URL key,
+`cam=`, uploaded as `uCamera` outside `uParams`; `RIG_*` stays the rest pose. `CameraRange` gains
+`x`, `z` and `turn` spans, and a `tolerance` about the rest pose for layers painted on their frame.
+Layers drawn from the ray (the World, the meadow's four, the murmuration, the valley, the lava lamp,
+the koi; the mobile and the bar once ported) read the live pose; painted layers read only the offset
+within their tolerance, as they take the pointer's parallax. The pose is held to the intersection of
+the on layers' ranges, the shell's included: a drag clamps the camera, home layers whose ranges do
+not meet are a `ComposeError`, and a guest out of range is refused with its reason, never moving the
+camera. Overhead: pan and span live, yaw for layers in metres, tilt still a gated march.
+
+### Light elements
+
+An **element** (D17) is a placed light: `{ kind, at, colour, power, reach, flicker, shadow }`, a
+window, lamp, candle, neon, fire or screen, `at` in metres in the composer's frame and free to stand
+out of it (as `Room.lamp` does). In frame it draws a small body of its kind; its flicker runs on
+`uMotionTime`, still at motion 0 and under reduced motion. A link carries a variant's elements in
+one packed key, `elements=`, read as `planets=` is. Kind and count are compile-time (adding one
+builds a program, as a layer turn does); place, colour, power and flicker are uniforms.
+`localLight(p, n)` sums the layers' lights and the elements unrolled to the count; a layer is lit by
+elements once it calls it, which every shell layer does and every port adopts. **The cap**: 8 lights
+a program, checked when composed, at most 2 shadowing (the World's key through a window and one
+element, as the bonsai's veranda throws `roomCaster` toward its sun and its lamp), the shadows on
+the back wall and the ledge's top; fixed once the marginal SwiftShader cost of 1, 4 and 8 candles on
+the sill is measured. A framed picture or TV showing a standalone scene fits as a `screen` and waits
+(D23).
+
+### Window light, palette and time
+
+**The World drives a room's light** (D19, D20). The baseline room has a `facing`, the yaw from the
+staged sky's ahead to the room's forward (`Rig.turn` outdoors). A window element stands on the back,
+left, right or front wall; in frame on the back wall it draws its frame, glass and view (D11),
+elsewhere it only lights. Through its rectangle the sun (`skyFacing(sky.sun, -facing)`) lays a patch
+on the wall or the ledge at its colour less the overcast, the moon at its phase's light; the sky
+adds diffuse light greyed by the overcast; rain dapples the patch, snow brightens the room,
+lightning flashes it and the aurora tints it. A shaft shows only in a layer's smoke or dust
+(`windowShaft`). A room with no glass in frame compiles a light-only World. Every baseline lists the
+World's date at one anchor, rooms included, and **a variant may pin its hour or date through its
+values** (the lava lamp's room stays at midnight with its moon up). Light's colours, the climate and
+the page theme follow the World; a variant's own grade is a `Partial<Grade>` over the baseline's,
+data in code (D21).
+
+### The interior baseline
+
+The room's shell, from the sill's, the lava room's and the bonsai's layers, drawn from the rig in
+metres: a **wall** with materials (plaster, the papered rings, shoji, a dark alcove, panelling)
+taking the window's patches, the lamps' pools and `roomCaster`'s shadows; a **window** (clear,
+drops, frost or steam) and its **view**, a backdrop of its own (none, city, street, snowy street or
+cabin, the moving line); one **ledge** with kinds (sill, sideboard, stand, table); its light from
+elements. Its default is an empty room at dusk with the sill's rest pose. Sill, lava, bonsai,
+mobile, incense, frost, bar and train are its variants; the bar's `night` stays its evening's
+schedule (D22).
+
+### Order of work
+
+| Step | What                                                                                                                        | Accepted when                                                                                                                                                                              |
+| ---- | --------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| 1    | The interior's variant model, no picture change: `Composer.baseline`, `Variant`, `variantPreset`                            | `ab.ts` `SAME` for every interior default and committed preset; `budget.test.ts`, `presets.test.ts` and the redundancy test pass                                                           |
+| 2    | The interior's shell in metres, window light from the World, `elements=`, two shadowing lights, the light-only World        | before and after images of the eight rooms with diff shares, changes of character flagged; per-variant SwiftShader counts recorded; 1, 4 and 8 candles measured, the cap fixed and checked |
+| 3    | The interior's camera: `cam=`, ranges, clamping, refusals                                                                   | `SAME` at the rest pose; every layer draws within its range; a guest out of range refused with its reason; the mobile moves freely                                                         |
+| 4    | The lab tree (D9) and Promote                                                                                               | the tree shows baselines, variants and presets; a promoted preset's variant draws `SAME` as its query did                                                                                  |
+| 5    | The outdoor baseline (the World, `downs`, the plain floor at a standing eye), its presets as variants, `localLight` adopted | each preset's differences attributed, as in Phase 2; budgets hold                                                                                                                          |
+| 6    | The overhead baseline, after the per-program knob layout and the World over the patch                                       | the same, for the overhead presets                                                                                                                                                         |
+
+The lab dishes (the matter shelf) are decided after step 2.
+
+### Amendments
+
+- **D7 and Phase 5:** prism and pendula are standalone, full-screen, with fractal, hyperbolic, orbit
+  and shanshui; the matter shelf keeps petri, physarum, marble, chladni, ferro, film and pearl.
+- **D9:** by composer, as one tree in the Presets view (baseline, curated variants, their presets),
+  standalone scenes on a shelf of their own.
+
+### Decisions D13–D24
+
+| #   | Question                              | Decision                                                                                                                                                                |
+| --- | ------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| D13 | Is each baseline a scene?             | Yes, lab-only (`room`, `land`, `patch`): outside the tour and the public cycle.                                                                                         |
+| D14 | How deep variants go                  | One level, baseline then variant; saved presets stay queries over a variant.                                                                                            |
+| D15 | What promotion makes                  | A curated variant: its own id, card and thumbnail, `from` provenance; the source preset removed.                                                                        |
+| D16 | The lab's tag on committed presets    | "committed", no longer "baseline".                                                                                                                                      |
+| D17 | Light elements                        | One packed key, `elements=`; kinds and count compiled in, values uniforms; 8 lights, at most 2 shadowing, the cap fixed after measuring 1, 4 and 8 candles on the sill. |
+| D18 | The camera                            | A live pose in `cam=`; spans per layer, a tolerance for painted layers; the camera clamped, guests out of range refused.                                                |
+| D19 | A room's light                        | `facing` on the room, set by a variant; windows on any wall; the World's sun, moon, sky and weather light the room through them.                                        |
+| D20 | The date                              | Every baseline lists the World's date at one anchor; a variant may pin its hour or date; no glass in frame, a light-only World.                                         |
+| D21 | A variant's grade                     | Data in code; grade knobs after the per-program knob layout.                                                                                                            |
+| D22 | The bar's `night`                     | Its evening's schedule, apart from the World's hour; the variant pins the hour at night.                                                                                |
+| D23 | A picture or TV of a standalone scene | Later; the `screen` kind leaves room for it.                                                                                                                            |
+| D24 | Prism and pendula                     | Standalone (D7 and Phase 5 amended).                                                                                                                                    |
+
+### Open, not yet decided: the countryside behind the bees
+
+None of the countryside's options reach "Bees · in the valley". The `valley` is offered to the bees'
+rig (`OVER_THE_VALLEY`, `country/layers.ts`), but its seven parts (`waterway`, `farmland`,
+`settlements`, `verges`, `herds`, `travellers`, `starlings`) only to the hill's (`ON_THE_HILL`): a
+guest valley reads their knobs at the countryside's defaults (`valleyValue`) and compiles out what
+is small that far off (`countryGlsl`). The parts would add 28 knobs to the bees' 63 of 64, and the
+mix's all-features program stands at 252,886 characters of 256 KB. Three steps: (a) the per-program
+knob layout, which the overhead baseline needs too; (b) the parts offered to the bees' rig, so
+river, farmland, settlements and herds are tuned from the garden; (c) a far level of detail for the
+valley as a backdrop, making today's guest cut a rule that holds the budget.
+
+Bolder, decided after (a)–(c): **the outdoor baseline's land is the countryside**, each outdoor
+variant standing somewhere in its 3.2 km (`COUNTRY_MAP`), as the garden already stands on the
+vantage's hilltop. That is coherent for the meadow, the bees, the country, autumn, the forest, the
+campfire, the falls, dew and the flock's reeds; not for shore, swell, the island, the dunes, the
+frozen lake, the mangroves, the city's street and skyward, nor in character the temple garden, the
+grove and the lanterns. The land's `shape` (`TERRAIN_BASES`: valley, coast, plateau, hills) might
+take some: the coast's bay for the sea scenes, the plateau's gorge for the falls. Every outdoor
+program would carry the valley's march, and the flat floor would need the land's height.
+
+An idea for later, not planned: in one land, the passage between two outdoor variants could carry
+the camera from one vantage to the next across the valley instead of the dissolve between their
+programs, the arriving variant's own layers entering as layer turns do (D12). It rests on the shared
+land, the live pose (D18) and the far level of detail.
+
+Also later, not planned: an **underwater** baseline (a camera below the surface, light absorbed with
+depth, the sky only through Snell's window), kelp its first variant and the pond's koi from the
+side, the lake under its ice or the swell under its boats candidates, built once a second variant is
+wanted; and **above the clouds** as an interior variant, a seat by an aircraft window whose view is
+the outdoor World at cruise altitude over a cloud deck, once a window can show another composer's
+live view.
 
 ## Risks
 
@@ -799,7 +960,7 @@ bench-scale layer is refused beside the delta's kilometres by its span.
 
 ## Decisions
 
-The operator ratified D1–D12 on 2026-10-17. As they stand:
+The operator ratified D1–D12 on 2026-10-17 and D13–D24 ("Baselines and variants") on 2026-10-18. D1–D12 as they stand:
 
 | #   | Question                            | Decision as it stands                                                                                                                                                                                                                                                                    |
 | --- | ----------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -809,9 +970,9 @@ The operator ratified D1–D12 on 2026-10-17. As they stand:
 | D4  | One gust field                      | The meadow's field is the composer's, and what sways in it sways together; a breeze that is a scene's own subject stays its own (the fireflies', the dew web's, the lake's drifting snow), and a preset may open with the gusts off.                                                     |
 | D5  | Readability scale cheats            | Allowed when declared (`display.scale`), with the claims sized as drawn: the apiary's hives at 1.5.                                                                                                                                                                                      |
 | D6  | Caps and budgets                    | The table under "Budgets and caps", with the SwiftShader budget counted in instructions on the composed program, not as a ratio to the scene before its port.                                                                                                                            |
-| D7  | What stays outside the composers    | Fractal, hyperbolic, orbit and shanshui standalone; dew composed, locked to its macro rig; kelp decided at its wave; the matter shelf optional.                                                                                                                                          |
+| D7  | What stays outside the composers    | Fractal, hyperbolic, orbit, shanshui, prism and pendula standalone (amended by D24); dew composed, locked to its macro rig; kelp standalone, an underwater baseline later; the matter shelf optional.                                                                                    |
 | D8  | Lazy loading                        | Done: a scene's metadata loads without its code, and the layers' code loads with the first composed scene's.                                                                                                                                                                             |
-| D9  | How the Scenes view shelves presets | By composer; not built (the view still shelves by family).                                                                                                                                                                                                                               |
+| D9  | How the Scenes view shelves presets | By composer, as one tree per composer in the Presets view: baseline, curated variants, their presets (amended under "Baselines and variants"); not built.                                                                                                                                |
 | D10 | Scenes with skies of their own      | Folded into the World with staging hooks (the campfire's giant and meteors, the fireflies' night over `worldSkyOver`); the lake keeps its own night, staged on the World and its sky parts compiled out while its far shore stands.                                                      |
 | D11 | Interior windows                    | A live view through the glass, in window cells only, drawn through the window's own rig. The World crosses the glass; an outdoor backdrop crosses only once it is drawn from the ray of any rig in its spans.                                                                            |
 | D12 | Turning a layer on or off           | Plays its own entrance or exit, cut per cell (1.2 s and 0.9 s), never a cut.                                                                                                                                                                                                             |
