@@ -17,7 +17,10 @@
 //   agitation  what the anemones feel: a hard surge or a touch closes them; they reopen over seconds
 //   wetness    rock the water has run over, drying again over half a minute
 // Every hand (SimFrame.principals) dips a finger: a tap drops a ring of ripples and startles the
-// anemones around it (the first finger down's), a drag trails ripples behind it.
+// anemones around it (the first finger down's), a drag trails ripples behind it. The World's rain
+// (K_rain, the overhead composer's) drops into the water on its FixedStep, as many a second as the
+// amount asks, each step's drops hashed from its count and the rock's seed: every drop a splat
+// whose ring runs out over the sea and the basin and crosses the others and the swell.
 //
 // The life in the pool (life.ts) answers the water from the CPU: each frame the flow is averaged
 // onto a coarse grid on the GPU and read back without stalling (sims/readback.ts), a frame or two
@@ -100,11 +103,21 @@ const MAKER_RATE = 30;
 const TAP = { radius: 3, height: 1.6, reach: 12 } as const;
 /** A drag: a ripple every so many cells along the path. */
 const DRAG = { radius: 2.2, height: 0.5, spacing: 2.5 } as const;
+/**
+ * The World's rain (K_rain): drops a second over the frame at rain 1, how many may land in one
+ * step (each a chance of its own, hashed from the step's count and the rock's seed, so a seed's
+ * steps rain the same), and a drop's splat, radius and height in cells: a small, sharp push
+ * whose ring runs out through the sea and the basin, crossing the others and the swell's.
+ */
+const RAIN_RATE = 60;
+const RAIN_SLOTS = 2;
+const RAIN_DROP = { radius: 2.5, height: 1 } as const;
 
 /** The bed's knobs: the rock's arrangement and pool size, and the tide its still water stands at. */
 const ROCK_KNOBS = ["rock", "poolSize", "tide"] as const;
 /** The water's knobs, and the life's in it (the fish layer's switch, the plants' year). */
 const SURGE_KNOBS = [
+  "rain",
   "tide",
   "tideCycle",
   "swell",
@@ -416,6 +429,20 @@ export function surgeSim(
   const dragging = new Uint8Array(MAX_PRINCIPALS);
   const lastX = new Float64Array(MAX_PRINCIPALS);
   const lastY = new Float64Array(MAX_PRINCIPALS);
+  /** Sim steps since the layout, which the rain's drops are hashed from (with the rock's seed). */
+  let stepped = 0;
+  /** The World's rain on the next step: each of RAIN_SLOTS splats with its hashed chance. */
+  const rain = (sim: ShallowWater, amount: number): void => {
+    stepped++;
+    if (amount <= 0) return;
+    const chance = (Math.min(1, amount) * RAIN_RATE * STEP) / RAIN_SLOTS;
+    for (let k = 0; k < RAIN_SLOTS; k++) {
+      if (hash31(stepped, 3 * k, seed) >= chance) continue;
+      const x = hash31(stepped, 3 * k + 1, seed) * sim.width;
+      const y = hash31(stepped, 3 * k + 2, seed) * sim.height;
+      sim.splat(x, y, RAIN_DROP.radius, RAIN_DROP.height);
+    }
+  };
   /** The basin's water as laid out (frame heights), for interest(); and its points. */
   let pool: TidepoolPool | undefined;
   const points = [
@@ -485,6 +512,7 @@ export function surgeSim(
     }
     warmed = 0;
     time = 0;
+    stepped = 0;
     setStart = -Infinity;
     clock.reset();
     return water;
@@ -521,6 +549,7 @@ export function surgeSim(
           (i) => {
             writeSwell(frame, (i + 1) * STEP);
             step.time = (i + 1) * STEP;
+            rain(warming, knobs.value(frame, "rain"));
             warming.step(step);
             if ((i + 1) % PREWARM_CHUNK === 0) {
               warming.carry(PREWARM_CHUNK * STEP, step.time, carry);
@@ -580,10 +609,12 @@ export function surgeSim(
 
       const seconds = Math.max(0, frame.dt) * frame.motion * knobs.value(frame, "pace");
       const steps = clock.advance(seconds);
+      const amount = knobs.value(frame, "rain");
       for (let i = 0; i < steps; i++) {
         time += STEP;
         writeSwell(frame, time);
         step.time = time;
+        rain(sim, amount);
         sim.step(step);
       }
       const ran = steps * STEP;

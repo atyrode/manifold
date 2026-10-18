@@ -244,6 +244,9 @@ const float POND_EYE = 1.2;
 const vec2 POND_CALM = vec2(0.0003, 0.0012);
 const float POND_GLINT = 1.04;
 const float POND_TAIL = 0.585;
+// Rain's drops: the grid of their sites (screen heights, some 36 cm), a site's beat (seconds), how
+// fast a drop's ring fades (1/s) and its steepest slope.
+const vec4 POND_RAIN = vec4(0.12, 1.2, 1.6, 0.06);
 
 // A paper boat seen from above, in its own frame (x along the keel, unit = half its length):
 // rgb paper colour, a coverage. The hull is a long hexagon, the sail a ridge along the middle
@@ -350,6 +353,36 @@ void pondWaterBegin(inout Patch x) {
     ringRough += 0.5 * ring * ring;
     ringLight = max(ringLight, (smoothfall(0.004, 0.0, abs(dist - radius)) + 0.6 * smoothfall(0.003, 0.0, abs(dist - radius * 0.6))) * fade);
   }
+#if WORLD_RAIN
+  // Rain (the World's K_rain, on the fall clock): a drop lands at each site of a POND_RAIN.x grid
+  // on a fixed beat of its own (POND_RAIN.y seconds, give or take a fifth); the amount gates only
+  // which beats land, so a ring never runs backward as the rain eases. Each rings as the drops
+  // above do, carried by the current, shorter-lived, dying before its site's next beat; their
+  // slopes sum with the rest and their light adds up where they cross, so the rings interfere.
+  if (K_rain > 0.0) {
+    vec2 grid = p / POND_RAIN.x;
+    for (int y = -1; y <= 1; y++) {
+      for (int k = -1; k <= 1; k++) {
+        vec2 id = floor(grid) + vec2(float(k), float(y));
+        float period = POND_RAIN.y * (0.8 + 0.4 * hash12(id + 23.0));
+        float beat = uFallTime / period + hash12(id + 17.0);
+        float n = floor(beat);
+        if (hash12(id + vec2(n * 0.123, n * 0.731)) >= K_rain) continue;
+        float age = fract(beat) * period;
+        vec2 drop = (id + 0.15 + 0.7 * vec2(hash12(id + n * 1.7 + 3.1), hash12(id + n * 2.3 + 8.7))) * POND_RAIN.x + flow * age * 0.06;
+        float dist = length(p - drop);
+        float radius = age * 0.07;
+        float fade = exp(-age * POND_RAIN.z) * (1.0 - smoothstep(0.7, 1.0, fract(beat)));
+        float along = (dist - radius) / 0.012;
+        float ring = POND_RAIN.w * bell(along) * fade;
+        float phase = 160.0 * dist - POND_RING_OMEGA * age;
+        slope += ring * (cos(phase) - sin(phase) * along / 0.96) * (p - drop) / max(dist, 1e-5);
+        ringRough += 0.5 * ring * ring;
+        ringLight = min(ringLight + (smoothfall(0.006, 0.0, abs(dist - radius)) + 0.6 * smoothfall(0.004, 0.0, abs(dist - radius * 0.6))) * fade, 1.0);
+      }
+    }
+  }
+#endif
   // Arriving: a few drops ring the water as the koi swim in, each ring dying away before the end.
   if (pin < 1.0) {
     float ringsFade = 1.0 - smoothstep(2.2, 3.1, tin);
@@ -697,10 +730,10 @@ vec2 borderFoliageWarp(vec2 at, vec4 shift, float scale) {
 vec4 borderPlantShift;
 vec4 borderCanopyShift;
 
-// The breeze (the overhead composer's x.wind: it ruffles the water the sun glints on), and the
-// foliage's passage: it moves in from beyond the frame, and out again on leaving.
+// The foliage's passage: it moves in from beyond the frame, and out again on leaving. The breeze is
+// the World's wind (K_wind, its sign the way it blows), which the overhead composer's x.wind already
+// carries to the water the sun glints on.
 void borderBegin(inout Patch x) {
-  x.wind = K_wind;
   float pin = passageIn();
   float pout = passageOut();
   borderPlantShift = vec4(0.0);
@@ -726,7 +759,7 @@ void borderCover(Patch x, inout Spot c) {
   vec2 sunUV = x.sunUV;
   float power = x.power;
   int style = int(K_plantStyle + 0.5);
-  float wind = K_wind * m;
+  float wind = x.wind * m;
   float gust = 0.6 + 0.4 * vnoise(vec2(t * 0.25, 3.0));
   // Slow and wide enough to read as leaning in the breeze: a sway of only a cell or two, back and
   // forth quickly, reads as jitter once pixelated.

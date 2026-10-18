@@ -46,14 +46,14 @@ components"); run `bun concepts/landing/scripts/scene-docs.ts` after a change to
 | `flock`        | Murmuration      | Sky & space       | `outdoor` preset, 2 layers              | 32    | 0       | Starlings at dusk, thousands of birds folding into one shape.                                                                   |
 | `skyward`      | Skyward          | Sky & space       | `outdoor` preset, 3 layers              | 33    | 0       | Lying on your back at a crossroads: the buildings lean in, wires cross a strip of sky, pigeons wheel and a plane draws a line.  |
 | `swell`        | Swell            | Water             | `outdoor` preset, 3 layers + 2 offered  | 35    | 2       | A moonlit sea rolling toward the horizon, boats riding at anchor in the moon's path.                                            |
-| `pond`         | Pond             | Water             | `overhead` preset, 4 layers + 1 offered | 54    | 0       | A koi pond from above, light through clear water.                                                                               |
+| `pond`         | Pond             | Water             | `overhead` preset, 4 layers + 1 offered | 55    | 0       | A koi pond from above, light through clear water.                                                                               |
 | `falls`        | Waterfall        | Water             | `outdoor` preset, 5 layers + 5 offered  | 51    | 3       | A waterfall pouring into its pool: spray, a rainbow, ferns on the wet rock.                                                     |
 | `shore`        | Shore            | Water             | `outdoor` preset, 3 layers + 6 offered  | 49    | 0       | Surf on a night beach, flashing blue wherever the water breaks.                                                                 |
 | `lanterns`     | Lantern river    | Water             | `outdoor` preset, 3 layers + 4 offered  | 41    | 0       | Paper lanterns drifting down a river at dusk, their light trembling on the water.                                               |
 | `kelp`         | Kelp forest      | Water             | its own program                         | 20    | 1       | Sunlight through a swaying kelp forest, a school of fish turning in the blue.                                                   |
 | `lake`         | Frozen lake      | Water             | `outdoor` preset, 2 layers + 4 offered  | 52    | 2       | Black ice under the aurora: bubbles frozen deep, cracks that sing, snow drifting across; or an open fjord under slow drapes.    |
 | `island`       | Tiny island      | Water             | `outdoor` preset, 5 layers              | 32    | 0       | A small island in a gentle sea: a cottage on a grassy hill, a pier and lantern, a palm, a gull circling, a balloon drifting by. |
-| `tidepool`     | Tide pool        | Water             | `overhead` preset, 4 layers + 1 offered | 36    | 3       | A rock pool from above: waves pour over its rim, its anemones and kelp answer the surge, and the light dances on its floor.     |
+| `tidepool`     | Tide pool        | Water             | `overhead` preset, 4 layers + 1 offered | 37    | 3       | A rock pool from above: waves pour over its rim, its anemones and kelp answer the surge, and the light dances on its floor.     |
 | `country`      | Countryside      | Land              | `outdoor` preset, 6 layers + 2 offered  | 57    | 12      | A river valley carved by water: fields, woods and pastures, a village, a castle and roads over a bridge.                        |
 | `dunes`        | Dunes            | Land              | `outdoor` preset, 2 layers              | 31    | 0       | Wind over a sand sea: real dunes, slowly marching downwind. Click to drop a heap of sand.                                       |
 | `meadow`       | Meadow           | Land              | `outdoor` preset, 3 layers + 2 offered  | 39    | 0       | Tall grass at golden hour, gusts running across it as waves of light, dandelion seeds adrift.                                   |
@@ -76,7 +76,7 @@ components"); run `bun concepts/landing/scripts/scene-docs.ts` after a change to
 | `physarum`     | Slime mould      | Matter & patterns | its own program                         | 14    | 4       | A golden network linking its food, thickening good paths and pruning the rest.                                                  |
 | `film`         | Soap film        | Matter & patterns | its own program                         | 10    | 0       | A soap film in a wire loop, draining into bands of colour.                                                                      |
 | `sandtable`    | Sand table       | Matter & patterns | `overhead` preset, 3 layers + 1 offered | 17    | 1       | A steel ball ploughing slow patterns through sand under a low lamp; or a pendulum pouring rosettes onto slate.                  |
-| `ripple`       | Ripple tank      | Matter & patterns | `overhead` preset, 2 layers + 1 offered | 18    | 2       | A physics-lab ripple tank throwing its waves as light on a screen: interference, slits, a lens, Doppler, standing waves.        |
+| `ripple`       | Ripple tank      | Matter & patterns | `overhead` preset, 2 layers + 1 offered | 20    | 2       | A physics-lab ripple tank throwing its waves as light on a screen: interference, slits, a lens, Doppler, standing waves.        |
 | `harmonograph` | Harmonograph     | Matter & patterns | its own program                         | 11    | 0       | Two swinging pendulums draw a slowly dying figure in ink on paper: a table anyone present may draw on.                          |
 | `pendula`      | Pendulum wave    | Matter & patterns | its own program                         | 11    | 1       | A row of pendulums drifting through waves and back into line.                                                                   |
 | `sill`         | Sill             | Rooms & life      | `interior` preset, 5 layers + 2 offered | 48    | 3       | A cat on the window sill, watching the city lights.                                                                             |
@@ -1045,14 +1045,14 @@ planets (`SceneDef.planets`; "at first": the planets it opens with). Generated f
 | `flock`     | 0.76  | 0.45  | off       | 1    | off     | off, now 0 | off    | 0      | off  | off  | 0   | 0.2  | off, now 1 | off        | yes             |
 | `skyward`   | 0.58  | 0.3   | off       | 1    | off     | off, now 0 | off    | 0.35   | off  | off  | 0   | 0.2  | off, now 1 | 0.5        | yes             |
 | `swell`     | 0.818 | 1     | 1         | 1    | off     | off, now 0 | off    | 0      | off  | off  | 0   | 0.2  | off, now 1 | 0.35       | yes             |
-| `pond`      | —     | —     | —         | —    | —       | —          | —      | —      | —    | —    | —   | 0.4  | —          | —          | —               |
+| `pond`      | —     | —     | —         | —    | —       | —          | —      | —      | off  | —    | —   | 0.4  | —          | —          | —               |
 | `falls`     | 0.55  | 0.45  | off       | 1    | off     | off, now 0 | off    | 0.3    | off  | off  | 0   | 0.2  | off, now 1 | off        | yes             |
 | `shore`     | 0.82  | 0.6   | 1         | 1    | off     | off, now 0 | off    | 0.25   | off  | off  | 0   | 0.2  | off, now 1 | 0.35       | yes             |
 | `lanterns`  | 0.79  | 0.55  | off       | 1    | off     | off, now 0 | off    | 0      | off  | off  | 0   | 0.2  | off, now 1 | off        | yes             |
 | `kelp`      | 0.42  | —     | —         | —    | —       | —          | —      | —      | —    | —    | —   | —    | —          | —          | —               |
 | `lake`      | 0.822 | 0.7   | 1         | 0.3  | off     | off, now 0 | 0.6    | 0      | off  | off  | 0   | 0.2  | off, now 1 | off        | yes             |
 | `island`    | 0.58  | 0.6   | off       | 1    | off     | off, now 0 | off    | 0.35   | off  | off  | 0   | 0.2  | off, now 1 | off        | yes             |
-| `tidepool`  | 0.42  | —     | —         | —    | —       | —          | —      | —      | off  | —    | —   | —    | —          | —          | —               |
+| `tidepool`  | 0.42  | —     | —         | —    | —       | —          | —      | —      | off  | —    | —   | 0    | —          | —          | —               |
 | `country`   | 0.68  | 0.5   | 1         | 1    | off     | off, now 0 | off    | 0.35   | off  | off  | 0   | 0.2  | off, now 1 | off        | yes             |
 | `dunes`     | 0.74  | 1     | 1         | 1    | off     | off, now 0 | off    | 0.25   | off  | off  | 0   | 0.2  | off, now 1 | 0.35       | yes             |
 | `meadow`    | 0.72  | 0.6   | 1         | 1    | off     | off, now 0 | off    | 0.2    | off  | off  | 0   | 0.2  | off, now 1 | 0.35       | yes             |
@@ -1064,6 +1064,7 @@ planets (`SceneDef.planets`; "at first": the planets it opens with). Generated f
 | `campfire`  | 0.8   | 0.8   | 1         | off  | off     | 0.8, now 0 | off    | 0      | off  | off  | 0   | 0.2  | off, now 1 | off        | yes, 1 at first |
 | `autumn`    | 0.69  | 0.5   | off       | 1    | off     | off, now 0 | off    | 0.3    | off  | off  | 0   | 0.2  | off, now 1 | off        | yes             |
 | `frost`     | 0.9   | 0.5   | off       | 1    | off     | off, now 0 | off    | 0      | off  | 0.5  | 0   | 0.2  | off, now 1 | —          | yes             |
+| `ripple`    | —     | —     | —         | —    | —       | —          | —      | —      | off  | —    | —   | 0    | —          | —          | —               |
 | `sill`      | 0.8   | 0.5   | off       | 1    | off     | off, now 0 | off    | 0.35   | off  | off  | 0   | 0.2  | off, now 1 | —          | yes             |
 | `fireflies` | 0.9   | 0.5   | off       | off  | off     | off, now 0 | off    | 0      | off  | off  | 0   | 0.2  | off, now 1 | off        | yes             |
 | `dew`       | 0.27  | 0.6   | 1         | 1    | off     | off, now 0 | off    | 0      | off  | off  | 0   | 0.2  | off, now 1 | off        | —               |
@@ -2504,33 +2505,54 @@ what hangs over the patch, and the light through it), `glint`, `over` (the borde
 `grade`, each in canonical order. Turns are the outdoor composer's: a program that draws them cuts
 each layer's passes per cell, with the plain bed under a bed mid-turn.
 
-| Preset      | Layers                                              | Rig                         | Key renames                                                                                             |
-| ----------- | --------------------------------------------------- | --------------------------- | ------------------------------------------------------------------------------------------------------- |
-| `pond`      | `pondBed`, `pondWater`, `border`, `koi`; + `stone`  | 3 m a screen height         | none: `koi` (a count, `koi-amount`) and `stone` became switches; `pondBed`, `pondWater`, `border` new   |
-| `ripple`    | `tank`, `tankWater`; + `koi`                        | 1 m a screen height         | none: `tank`, `tankWater` new                                                                           |
-| `tidepool`  | `rockPool`, `surge`, `fronds`, `anemones`; + `fish` | 3 m a screen height, salt   | none: `fronds`, `anemones` and `fish` (a count, `fish-amount`) became switches; `rockPool`, `surge` new |
-| `sandtable` | `sandBed`, `tableLamp`, `ball`; + `pendulum`        | 0.93 m a screen height      | `machine` gone: the `ball` and `pendulum` switches replace it; `sandBed`, `tableLamp` new               |
-| `delta`     | `deltaBed`, `deltaWater`; + `clouds`                | 20 km a screen height, salt | none: `clouds` (a cover, `clouds-amount`) became a switch; `deltaBed`, `deltaWater` new                 |
+| Preset      | Layers                                              | Rig                         | Key renames                                                                                                                                        |
+| ----------- | --------------------------------------------------- | --------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `pond`      | `pondBed`, `pondWater`, `border`, `koi`; + `stone`  | 3 m a screen height         | none: `koi` (a count, `koi-amount`) and `stone` became switches; `pondBed`, `pondWater`, `border` new; the border's `wind` is the World's (at 0.4) |
+| `ripple`    | `tank`, `tankWater`; + `koi`                        | 1 m a screen height         | none: `tank`, `tankWater` new                                                                                                                      |
+| `tidepool`  | `rockPool`, `surge`, `fronds`, `anemones`; + `fish` | 3 m a screen height, salt   | none: `fronds`, `anemones` and `fish` (a count, `fish-amount`) became switches; `rockPool`, `surge` new; the bed's `rain` is the World's           |
+| `sandtable` | `sandBed`, `tableLamp`, `ball`; + `pendulum`        | 0.93 m a screen height      | `machine` gone: the `ball` and `pendulum` switches replace it; `sandBed`, `tableLamp` new                                                          |
+| `delta`     | `deltaBed`, `deltaWater`; + `clouds`                | 20 km a screen height, salt | none: `clouds` (a cover, `clouds-amount`) became a switch; `deltaBed`, `deltaWater` new                                                            |
 
-- **The knobs.** The overhead composer lists no knobs of its own and none of the World's: the World
-  over the patch (its weather seen from above, its light) is not built, and the pond, 51 knobs of
-  its own, would pass the renderer's 64 with the World's 20. So the pond lists 54 (its own and
-  three new switches) and the ripple tank 18 (its 11, two switches and the koi's five), each within
-  the cap without the per-program layout. The tide pool lists 36 (its 34 and two new switches): its
-  sky and rain are its own knobs (`time`, `cycle`, `rain`), its bed's. The sand table lists 17 (its
-  14 but `machine`, and four switches), the delta 18 (its 16 and two new switches). Trigger slots
-  count from 0.
+- **The knobs.** The overhead composer lists none of its own (no gusts, season or seed) and, of the
+  World's, only its rain and wind (`worldPatchKnobs`, `scenes/world.ts`: `rain` and `wind` under
+  the outdoor keys and meaning), first, while the preset offers a layer open to the sky
+  (`LayerDef.open`: the pond's water and border, the tank's water, the tide pool's bed and water).
+  The rest of the World (its sky, cloud, fog, snow, birds) is not over the patch: the pond, 51
+  knobs of its own, would pass the renderer's 64 with the World's 20. So the pond lists 55 (its own
+  but the border's `wind`, three new switches, the World's two), the ripple tank 20 (its 11, two
+  switches, the koi's five and the World's two), each within the cap without the per-program
+  layout. The tide pool lists 37 (its 34 but the bed's `rain`, two new switches and the World's
+  two): its sky is its bed's own knobs (`time`, `cycle`). The sand table, under its lamp indoors,
+  is open to no sky and lists 17 (its 14 but `machine`, and four switches); the delta, its water not yet open to the sky, lists 18 (its 16 and two new switches). Trigger slots count
+  from 0. A preset sets the wind it always had: the pond 0.4 (its breeze), the tank and the tide
+  pool 0 (still air), so their defaults draw as before.
 - **Scale.** The pond and the tank are drawn in the frame's units (screen heights; the tank in
   short sides, its own layout), so their layers are locked to their own span; the koi are drawn at
   the frame's scale at any span from 1 m to the pond's 3 m: 33–51 cm koi in the pond, 11–17 cm fish
   in the tank. The tide pool is drawn in frame heights (its frame 3 m tall) and in the sea's water,
   so its layers are locked to its span and to salt water: it offers none of the pond's (whose span
-  it shares, and whose 54 knobs would pass the cap) and the pond none of its. The delta is drawn in
+  it shares, and whose 55 knobs would pass the cap) and the pond none of its. The delta is drawn in
   its grid's cells (256 on the frame's short side, cover-fitted), a frame 20 km tall over the sea,
   so its layers are locked to that span and to salt water; no other scene's layer is offered there.
 - **Light and air.** The pond's sun (`sunX`, `sunY`, `sunPower`) is its water's, which sets
   `x.sun` for every layer (the koi's and the pads' shadows fall away from it); the tank's lamp is
-  the tank's. The border's breeze (`wind`) ruffles the water the sun glints on through `x.wind`.
+  the tank's. The World's wind (`wind`, its strength either way) is the patch's `x.wind`
+  (`OVERHEAD_WIND`, `overhead-glsl.ts`; still air where no layer is open): it stirs the pond's
+  plants and canopy and ruffles the water the sun glints on.
+- **Rain and wind on the water.** Rain is a real impulse on each water, on the fall clock where it
+  is drawn and on its sim's own fixed step where it is simulated; `WORLD_RAIN` compiles the drawn
+  part in only while it rains (`worldPatchFeatures`), so a dry patch costs nothing. The pond's
+  water is analytic: a drop lands at each site of a 0.12-screen-height grid on a fixed beat of its
+  own (1.2 s, give or take a fifth), the amount gating only which beats land, so no ring runs
+  backward as the rain eases; each rings as the pond's own drops do and its slope sums with theirs,
+  so they cross and interfere. The tank's sim presses a small dimple (the touch pass's) at hashed
+  places on its `FixedStep`, about four a second at rain 1, hashed from the tank's step count; the
+  wind pushes its surface from a field of puffs running downwind in slow gusts. The tide pool's
+  sim splats drops into its shallow water on its fixed step (some 60 a second over the frame at
+  rain 1, hashed from the step count and the rock's seed), whose rings run through the sea and the
+  basin and cross the swell's, lit on their crests where they tilt the surface more steeply than
+  the swell; its drawn rings (`rainRipples`), splashes on dry rock and falling streaks are the same
+  rain, and the wind roughens its breeze's ripples and turns the way they run.
 - **The water's sim.** The tank's waves are its water layer's sim (`tankWaterSim`, three fields:
   the shown tank's view, the next one's while it fades in, the fixtures' layout); its "now" slots
   are read from its knobs. The pond's water lays out its pads and petals once a frame (its field),
@@ -2857,13 +2879,14 @@ interface ScenePreset {
   layer's knobs, each with `when` on its switch. An offered layer is one whose `camera` admits the
   rig. Trigger slots: meteors 0, lightning 1, gusts 2, then the layers' in canonical order. A room
   lists the World's knobs only while it offers a window and none of the composer's, its slots from
-  2 ("The interior composer"); an overhead preset lists neither the World's knobs nor the
-  composer's, and its slots start at 0.
+  2 ("The interior composer"); an overhead preset lists of the World only its `rain` and `wind`,
+  while it offers a layer open to the sky, none of the composer's, and its slots start at 0 ("The
+  overhead composer").
 - **`glslFor(features)`**: the World, the prelude, the GLSL of only the layers that feature set's
   `LAYER_<ID>` gates hold, and the generated entry.
-- **`featuresFor`**: the World's gates (with the climate where the season sets it), `LAYER_<ID>`
-  for each offered layer (1 where placed), each placed layer's own gates, and every gate of a layer
-  not placed at 0.
+- **`featuresFor`**: the World's gates (with the climate where the season sets it; over a patch
+  seen from above, `WORLD_RAIN` alone), `LAYER_<ID>` for each offered layer (1 where placed), each
+  placed layer's own gates, and every gate of a layer not placed at 0.
 - **`featuresAllFor(values)`**: the same with every gate of the placed layers on.
 - **`structural`**: the layer switches, and a preset's own steady mode that builds another program
   (the dunes' `camera`, the garden's `gravelCamera`).

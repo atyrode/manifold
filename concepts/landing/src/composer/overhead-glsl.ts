@@ -6,9 +6,10 @@
 // grows or swims over them, in the composer's order:
 //   1. The patch (`overheadPatch`): the cell, its point p (screen heights from the frame's centre,
 //      x right, y up), the light (the sun or lamp on the frame, x.sunUV and x.sun, and its strength,
-//      x.power: the pond's sun until a layer's begin says otherwise), still air (x.wind) and a dry,
-//      flat surface; then every shared chunk's and every layer's `begin`, in canonical order (the
-//      water's sets the surface, the light's layer the light, the breeze's layer the breeze).
+//      x.power: the pond's sun until a layer's begin says otherwise), the World's wind over it
+//      (x.wind: |K_wind| where a layer is open to the sky, else still air) and a dry, flat surface;
+//      then every shared chunk's and every layer's `begin`, in canonical order (the water's sets
+//      the surface, the light's layer the light).
 //   2. The bed layer's `bed` (or, under one mid-turn, the plain bed).
 //   3. The water layer's `water`, over it.
 //   4. Every `floor` pass: what lies on the bed, seen through the water (weeds, stems).
@@ -23,8 +24,9 @@
 // A cell (`Spot`) carries the colour, the Shade channels its layers write (ink, accent, shimmer), the
 // cover's shade, whether it is dry, and the undithered colour where a layer dithered it (the tank's
 // lamp ramp). Turns are the outdoor composer's (glsl.ts turnsGlsl, sim.ts): a program that draws
-// them shows each layer's passes in a growing or shrinking share of cells, cut per cell. The World
-// over the patch is not built: no sky, weather or birds, and the composer lists no knobs of its own.
+// them shows each layer's passes in a growing or shrinking share of cells, cut per cell. Of the
+// World over the patch, only its rain and wind are built (compose.ts worldPatchKnobs): the water
+// layers ring under the drops and roughen in the wind; no sky, cloud or birds.
 import { effective } from "../params.ts";
 import type { SceneCode } from "../scenes/types.ts";
 import { TURNS_GATE, type ComposedScene } from "./compose.ts";
@@ -49,15 +51,17 @@ interface Assembly {
   readonly triggers: Readonly<Record<string, number>>;
   readonly rewrite: (layer: LayerDef, glsl: string) => string;
   readonly turns: boolean;
+  /** A layer open to the sky is offered, so the World's rain and wind are knobs (LayerDef.open). */
+  readonly open: boolean;
 }
 
 /** The prelude's fixed part: what every pass is given, the cell, the patch and the plain bed. */
 const PRELUDE = `
 // What every pass is given (composer/overhead-glsl.ts). p: screen heights from the frame's centre,
 // x right, y up. The light: where the sun (or lamp) stands, in uv and in p, on the frame or off it,
-// and its strength; the breeze (0 still). The surface: the water's depth (0 shallow .. 1 deep; 0
-// with none), its slope here, where the bed is seen through it (p bent by the slope), its current,
-// its own colour, and the light it gathers on the bed.
+// and its strength; the World's wind over the patch (0 still .. 1). The surface: the water's depth
+// (0 shallow .. 1 deep; 0 with none), its slope here, where the bed is seen through it (p bent by
+// the slope), its current, its own colour, and the light it gathers on the bed.
 struct Patch {
   vec2 uv; vec2 cell; float aspect; float t; float tm; float m; vec2 p;
   vec2 sunUV; vec2 sun; float power; float wind;
@@ -67,8 +71,8 @@ struct Patch {
 // it, whether it is dry (nothing glints on it), and where a layer dithered col, the colour undithered.
 struct Spot { vec3 col; Shade o; float shade; bool dry; bool dithered; vec3 src; };
 
-// The patch at this cell: the light the pond's sun gives until a layer's begin sets its own, still
-// air, and a dry, flat surface until the water's begin sets it.
+// The patch at this cell: the light the pond's sun gives until a layer's begin sets its own, the
+// World's wind (OVERHEAD_WIND), and a dry, flat surface until the water's begin sets it.
 Patch overheadPatch(vec2 uv, vec2 cell, float t) {
   Patch x;
   x.uv = uv;
@@ -81,7 +85,7 @@ Patch overheadPatch(vec2 uv, vec2 cell, float t) {
   x.sunUV = vec2(0.15, 1.15);
   x.sun = (x.sunUV - 0.5) * vec2(x.aspect, 1.0);
   x.power = 0.4;
-  x.wind = 0.0;
+  x.wind = OVERHEAD_WIND;
   x.depth = 0.0;
   x.slope = vec2(0.0);
   x.floorP = x.p;
@@ -100,7 +104,7 @@ void overheadPlainBed(Patch x, inout Spot c) {
 
 /** The whole overhead program's own GLSL: the prelude, the shared and the layers' GLSL, the entry. */
 function overheadGlsl(a: Assembly): string {
-  const { preset, layers, allocation, turns } = a;
+  const { preset, layers, allocation, turns, open } = a;
   const rig = preset.rig;
   const bed = layers.findIndex(({ def }) => def.role === "bed" && def.passes.bed !== undefined);
   const shared = new Map<string, string>();
@@ -119,6 +123,8 @@ function overheadGlsl(a: Assembly): string {
   return `
 // ---- the overhead composer (composer/overhead-glsl.ts): preset ${preset.id}, layers ${layers.map(({ def }) => def.id).join(", ")} ----
 ${triggers}
+// The World's wind over the patch where a layer is open to the sky (K_wind: its strength either way).
+#define OVERHEAD_WIND ${open ? "abs(K_wind)" : "0.0"}
 ${PRELUDE}
 ${turnsGlsl(turns)}
 ${accessorsGlsl(layers, allocation)}
@@ -188,6 +194,7 @@ export function overheadCode(
       triggers: scene.triggers,
       rewrite: scene.rewrite(layers),
       turns: features[TURNS_GATE] === 1,
+      open: scene.offered.some((layer) => layer.open === true),
     });
   };
   const params = scene.def.params;

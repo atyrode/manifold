@@ -321,6 +321,12 @@ export interface LayerDef {
    * that offers a window backdrop with a `glass` pass (README "The interior composer").
    */
   readonly glass?: true;
+  /**
+   * An `overhead` layer open to the sky (a pond's, a tank's or a pool's water, and what reads the
+   * air over it): an overhead preset lists the World's rain and wind, and compiles WORLD_RAIN, only
+   * while it offers one (README "The overhead composer").
+   */
+  readonly open?: true;
 }
 
 /**

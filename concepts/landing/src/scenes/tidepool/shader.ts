@@ -340,11 +340,16 @@ TpBed rockPoolAt(vec2 q, vec2 uv, float aspect, float tm, float foot) {
 }
 
 // The light: the shared sky, turned to look straight down (the frame's up is the sky's "ahead"),
-// greyed by the rain's storm; the rain's splashes on dry rock here.
+// greyed by the World's rain (its storm; WORLD_RAIN compiles it in only while it rains); the rain's
+// splashes on dry rock here.
 void rockPoolBegin(inout Patch x) {
   rockPoolLaid = rockPoolField0On();
   tpSky = skyAt(timeOfDayM(K_time, skyDays()));
+#if WORLD_RAIN
   tpRain = K_rain;
+#else
+  tpRain = 0.0;
+#endif
   tpStorm = weatherOvercast(tpRain, 0.0);
   bool moonlit = tpSky.sun.y < -0.04;
   vec3 body = moonlit ? tpSky.moon : tpSky.sun;
@@ -352,7 +357,11 @@ void rockPoolBegin(inout Patch x) {
   tpLightCol = (moonlit ? tpSky.moonColor * 1.4 : tpSky.sunColor * 1.15) * (1.0 - 0.75 * tpStorm);
   tpAmbient = greyed(tpSky.ambient, vec3(0.95, 0.98, 1.04), 0.4 * tpStorm) * 0.9;
   vec2 q = x.uv * vec2(x.aspect, 1.0);
+#if WORLD_RAIN
   tpSplash = tpRain > 0.0 ? rainSplashes(q * TP_METRES, uFallTime, tpRain) : 0.0;
+#else
+  tpSplash = 0.0;
+#endif
 }
 
 // The bed where the water shows it (tpSeen), lit: its relief (the layout's heights), the rock's
@@ -383,6 +392,7 @@ void rockPoolBed(Patch x, inout Spot c) {
 // the rock is laid out, the dark of the deep water.
 void rockPoolGrade(Patch x, inout Spot c) {
   vec3 col = c.col;
+#if WORLD_RAIN
   if (tpRain > 0.0) {
     vec3 dir = rainFallDir(tpRain, 0.0);
     vec3 vanish = rainVanish(dir, vec3(1.0, 0.0, 0.0), vec3(0.0, 0.0, 1.0), vec3(0.0, -1.0, 0.0), 1.2);
@@ -391,6 +401,7 @@ void rockPoolGrade(Patch x, inout Spot c) {
     vec3 drop = max(air * 1.2, vec3(0.08));
     col = precipOver(col, air, drop * (1.0 - 0.2 * pr.near), pr);
   }
+#endif
   float accent = tpWet ? tpB.accent * exp(-TP_ABSORB.r * tpD * 0.5) : tpB.accent;
   c.o = shadeOf(col, inkOf(col, 1.6, 0.8), accent);
   c.o.shimmer = tpWet ? 0.08 * smoothstep(0.02, 0.2, tpD) : 0.0;
@@ -498,9 +509,15 @@ void surgeBegin(inout Patch x) {
   float depth = surgeWater.x;
   tpWetness = max(surgeCarried.z, uWeather.x);
   vec3 hessian;
-  float breeze = 0.02 + 0.07 * K_ripples;
-  vec2 ripple = causticRipples(q, tm, normalize(vec2(0.8, 0.6)), 0.075, breeze, 0.32, foot, hessian);
+  // The breeze's ripples, roughened by the World's wind (x.wind) and running the way it blows.
+  float breeze = 0.02 + 0.07 * K_ripples + 0.08 * x.wind;
+  vec2 ripple = causticRipples(q, tm, normalize(vec2(K_wind < 0.0 ? -0.8 : 0.8, 0.6)), 0.075, breeze, 0.32, foot, hessian);
+#if WORLD_RAIN
   tpRings = tpRain > 0.0 ? rainRipples(q * TP_METRES * 2.5, uFallTime, tpRain) : vec3(0.0);
+  // The drops the water's sim takes in (sim.ts): light on their rings' crests, where they tilt the
+  // sea's own surface (cells of level per cell) more steeply than the swell does.
+  if (tpRain > 0.0) tpRings.z = max(tpRings.z, smoothstep(0.04, 0.12, length(surgeWater.yz)));
+#endif
   vec2 slope = surgeWater.yz * TP_RELIEF + ripple + tpRings.xy * 0.25;
   float d = depth * TP_DEPTH;
   tpWet = depth > 0.02;

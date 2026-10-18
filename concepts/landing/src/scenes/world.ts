@@ -141,6 +141,30 @@ export const worldGroups: Readonly<Record<"sky" | "weather" | "birds", Blurb>> =
 };
 
 /**
+ * The World's weather over a patch seen from above (the overhead composer, ADR 0062 "The World
+ * seen from every camera"): K_rain and K_wind, the very knobs worldKnobs lists, under their keys
+ * and meaning. Drops fall on the fall clock (uFallTime), the wind blows on the motion clock.
+ */
+export function worldPatchKnobs(): ParamDef[] {
+  return weatherKnobs({ rain: true, wind: true });
+}
+
+/** The lab heading of worldPatchKnobs' group, "weather", on the lab's World shelf. */
+export const worldPatchGroup: Blurb = {
+  title: "Weather",
+  shelf: "world",
+  blurb:
+    "The World's rain and wind over the patch: every drop rings the water, the rings run and cross, and the wind roughens the surface.",
+};
+
+/** worldFeatures' gates for worldPatchKnobs: WORLD_RAIN while it rains, so a dry patch compiles none of it. */
+export function worldPatchFeatures(
+  values: Readonly<Record<string, number>>,
+): Record<string, number> {
+  return { WORLD_RAIN: worldFeatures(values)["WORLD_RAIN"] ?? 0 };
+}
+
+/**
  * The world's compile-time gates for knob values as the shader reads them (SceneDef.featuresFor:
  * merge them into the scene's own), each 0 or 1, on wherever its knobs can show its part:
  * WORLD_STARS, WORLD_MILKYWAY, WORLD_AURORA and WORLD_METEORS only where night can fall (the day

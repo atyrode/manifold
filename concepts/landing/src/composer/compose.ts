@@ -27,13 +27,23 @@
 //                     set's all-features program, which draws its layers' turns as well.
 //   structural        the layer switches: turning one builds another program.
 //   layers            what the lab's Layers section reads (SceneLayers).
-// The overhead composer (overhead.ts) lists neither the World nor the gusts, season and seed: its
-// presets list their layers' switches and knobs alone, their trigger slots from 0, and their gates
-// are the layers' (ADR 0062 Phase 4: the World over the patch is not built).
+// The overhead composer (overhead.ts) lists neither the whole World nor the gusts, season and seed:
+// its presets list the World's rain and wind (worldPatchKnobs, the outdoor keys and meaning) while
+// they offer a layer open to the sky (LayerDef.open), with WORLD_RAIN as their only World gate, then
+// their layers' switches and knobs, their trigger slots from 0 (ADR 0062 "The World seen from every
+// camera": the rest of the World over the patch is not built).
 import { hasClimate } from "../climate.ts";
 import { feature, range, seed, type Blurb, type ParamDef } from "../params.ts";
 import type { SceneDef } from "../scenes/types.ts";
-import { WORLD_ALL, worldFeatures, worldGroups, worldKnobs } from "../scenes/world.ts";
+import {
+  WORLD_ALL,
+  worldFeatures,
+  worldGroups,
+  worldKnobs,
+  worldPatchFeatures,
+  worldPatchGroup,
+  worldPatchKnobs,
+} from "../scenes/world.ts";
 import { COMPOSER_CAPS } from "./caps.ts";
 import { admits, place, type Placement } from "./place.ts";
 import type { AnyPreset, ComposerId, LayerDef, Role } from "./types.ts";
@@ -200,16 +210,22 @@ export function composeScene<P extends AnyPreset>(composer: Composer, preset: P)
       : { ...WORLD_TRIGGERS };
   let slot = !listsWorld ? 0 : (indoors ? WORLD_TRIGGERS.lightning : WORLD_TRIGGERS.gusts) + 1;
   // A room's window shows the World's sky and weather; its birds fly no window yet, so a room lists
-  // none of their knobs.
+  // none of their knobs. A patch seen from above shows the World's rain and wind where it is open
+  // to the sky.
+  const open = level === undefined && offered.some((layer) => layer.open === true);
   const world =
-    level === undefined || !listsWorld
-      ? []
-      : worldKnobs({
-          ...level.world,
-          meteors: { trigger: WORLD_TRIGGERS.meteors },
-          lightning: WORLD_TRIGGERS.lightning,
-          groups: { ...level.world.groups, ...(indoors ? {} : { wind: "wind" }) },
-        }).filter((def) => !indoors || !["birds", "birdKind", "birdFormation"].includes(def.key));
+    level === undefined
+      ? open
+        ? worldPatchKnobs()
+        : []
+      : !listsWorld
+        ? []
+        : worldKnobs({
+            ...level.world,
+            meteors: { trigger: WORLD_TRIGGERS.meteors },
+            lightning: WORLD_TRIGGERS.lightning,
+            groups: { ...level.world.groups, ...(indoors ? {} : { wind: "wind" }) },
+          }).filter((def) => !indoors || !["birds", "birdKind", "birdFormation"].includes(def.key));
   const season = offered.find((layer) => layer.season !== undefined)?.season;
   if (season !== undefined && season.key !== "season")
     throw new ComposeError(`preset ${preset.id}: a layer's season knob is keyed ${season.key}`);
@@ -324,11 +340,13 @@ export function composeScene<P extends AnyPreset>(composer: Composer, preset: P)
         }),
     ...(world.length === 0
       ? {}
-      : {
-          sky: worldGroups.sky,
-          weather: worldGroups.weather,
-          ...(indoors ? {} : { birds: worldGroups.birds }),
-        }),
+      : level === undefined
+        ? { weather: worldPatchGroup }
+        : {
+            sky: worldGroups.sky,
+            weather: worldGroups.weather,
+            ...(indoors ? {} : { birds: worldGroups.birds }),
+          }),
     layers: {
       title: "Layers",
       blurb:
@@ -405,12 +423,16 @@ export function composeScene<P extends AnyPreset>(composer: Composer, preset: P)
     ...(preset.theme === undefined ? {} : { theme: preset.theme(params) }),
     ...(preset.features === undefined ? {} : { features: preset.features }),
     featuresFor: (values) => ({
-      ...(level === undefined ? {} : worldFeatures(values, climate)),
+      ...(level === undefined
+        ? open
+          ? worldPatchFeatures(values)
+          : {}
+        : worldFeatures(values, climate)),
       ...gatesOf(values, (layer, v) => layer.featuresFor?.(v) ?? {}),
       [TURNS_GATE]: 0,
     }),
     featuresAllFor: (values) => ({
-      ...(level === undefined ? {} : WORLD_ALL),
+      ...(level === undefined ? (open ? worldPatchFeatures({ rain: 1 }) : {}) : WORLD_ALL),
       ...gatesOf(values, (layer) => layer.featuresAll ?? {}),
       [TURNS_GATE]: 1,
     }),

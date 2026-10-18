@@ -169,4 +169,6 @@ export const tankWaterLayer: LayerDef = {
   },
   passes: { begin: "tankWaterBegin" },
   data: { fields: TANK_WATER_FIELDS },
+  // The World's rain drops into it and its wind pushes it (sim.ts: K_rain, K_wind).
+  open: true,
 };

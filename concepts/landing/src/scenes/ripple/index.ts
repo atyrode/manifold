@@ -24,7 +24,8 @@ const preset: OverheadPreset = {
   rig: { span: TANK_SPAN, minAspect: 1 },
   // The koi are offered, not home: "Koi in the ripple tank" (presets.ts) switches them on.
   layers: ["tank", "tankWater"],
-  values: {},
+  // Still air over the tank, as it always stood (the World's wind is 0.2 by default).
+  values: { wind: 0 },
 };
 
 /** The ripple tank composed (composer/compose.ts): its definition, and what its code is built from. */

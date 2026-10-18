@@ -26,7 +26,9 @@ const preset: OverheadPreset = {
   passage: POND_PASSAGE,
   rig: { span: POND_SPAN, minAspect: 1 },
   layers: ["pondBed", "pondWater", "border", "koi"],
-  values: {},
+  // The World's wind over the patch at the pond's own breeze (the border's `wind` before the World
+  // was over the patch).
+  values: { wind: 0.4 },
   // The floor's caustics: the shared water's cellular net (causticCells), carried by the current
   // (waterDrift); the sun's glint on the rings (waterGlint).
   features: { WATER_TIER: WATER_TIERS.caustics },

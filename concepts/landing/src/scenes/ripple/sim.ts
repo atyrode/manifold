@@ -46,6 +46,12 @@
 // entrance ends. On the way out the dippers stop and the last waves run out in time-lapse to the
 // sponges (the Doppler dipper's carriage halts). It is the same water at the same step, only more
 // steps a frame and the dippers' strength differ, and at rest (no passage) neither is touched.
+//
+// The World over the tank (the overhead composer's K_rain and K_wind, read by key where the scene
+// lists them). Rain presses small dimples in on the tank's FixedStep, as many a second as the
+// amount asks, each step's drops hashed from its count so the same steps rain the same; their
+// rings spread, cross and fade with the experiment's waves. The wind pushes the surface from a field
+// of puffs blowing downwind, in gusts on the tank's clock, which runs on the motion clock.
 import type { LayerFrame, LayerSim, OverheadRig } from "../../composer/types.ts";
 import { MARK_VERTICES } from "../../mark.ts";
 import type { ParamDef } from "../../params.ts";
@@ -57,7 +63,7 @@ import {
   type PingPong,
   type RenderTarget,
 } from "../../sims/gpu.ts";
-import { lerp, smoothstep } from "../../sims/math.ts";
+import { hash31, lerp, smoothstep } from "../../sims/math.ts";
 import { mulberry32 } from "../../sims/random.ts";
 import type { PrincipalState, SceneSim, SimFactory, SimFrame } from "../types.ts";
 import {
@@ -160,6 +166,21 @@ const DRIP = { height: -1.8, radius: 0.22 } as const;
 /** Seconds between drips at the rare and the frequent end of the knob; before the first. */
 const DRIP_INTERVAL = [140, 25] as const;
 const DRIP_FIRST = 12;
+/**
+ * The World's rain on the tank (K_rain): drops a second at rain 1, how many may land in one step
+ * (each a chance of its own, hashed from the tank's step count, so the same steps rain the same),
+ * and a drop's dimple, height and radius in wavelengths: smaller than the faucet's drip.
+ */
+const RAIN_RATE = 4;
+const RAIN_SLOTS = 2;
+const RAIN = { height: -0.7, radius: 0.16 } as const;
+/**
+ * The World's wind on the tank (K_wind): a push per step at wind 1 (× the Courant number squared,
+ * as a dipper's), from a field of puffs half a wavelength across blowing downwind at twice the
+ * waves' speed; its gusts swell and ease over GUST_PERIOD seconds of the tank's time.
+ */
+const WIND_PUSH = 0.06;
+const GUST_PERIOD = 9;
 /** A finger dragged through open water beats like a dipper this strong. */
 const FINGER = 0.8;
 /** How near (short sides) a press must be to a dipper to pick it up; how far to drag to dip a finger. */
@@ -239,11 +260,25 @@ uniform vec4 uBar;          // the bar's ends
 uniform float uBarPush;     // per step (0: none)
 uniform vec4 uMark;         // the M's centre, height (short sides), push per step (0: none)
 uniform float uViscosity;   // per step, × the Laplacian of the surface's change
+uniform vec4 uWind;         // the wind's push per step (0: none), its puffs' drift (short sides), puffs per short side
 ${PASS_COMMON}
 // A neighbour's height now and a step ago; a wall reads as the texel's own, so nothing flows through it.
 vec2 rippleTap(ivec2 q, vec2 here) {
   vec4 s = texelFetch(uState, clamp(q, ivec2(0), ivec2(uSize) - 1), 0);
   return s.z > 0.75 ? here : s.xy;
+}
+// The wind's puffs: value noise, 0..1, a puff a unit across.
+float rippleHash(vec2 q) {
+  vec3 r = fract(vec3(q.xyx) * 0.1031);
+  r += dot(r, r.yzx + 33.33);
+  return fract((r.x + r.y) * r.z);
+}
+float ripplePuffs(vec2 q) {
+  vec2 i = floor(q);
+  vec2 f = q - i;
+  vec2 u = f * f * (3.0 - 2.0 * f);
+  return mix(mix(rippleHash(i), rippleHash(i + vec2(1.0, 0.0)), u.x),
+             mix(rippleHash(i + vec2(0.0, 1.0)), rippleHash(i + vec2(1.0, 1.0)), u.x), u.y);
 }
 void main() {
   ivec2 ij = ivec2(gl_FragCoord.xy);
@@ -280,6 +315,7 @@ void main() {
     float d = rippleMark((p - uMark.xy) / uMark.z) * uMark.z;
     push += uMark.w * exp(-d * d / s2) * sin(uPhase);
   }
+  if (uWind.x != 0.0) push += uWind.x * (ripplePuffs((p - uWind.yz) * uWind.w) - 0.5);
   float next = u + (u - prev) * (1.0 - damp) + uC2 * c.w * c.w * lap.x + uViscosity * (lap.x - lap.y) + push;
   fragColor = vec4(next, u, c.z, c.w);
 }
@@ -526,6 +562,9 @@ interface Slots {
   drips: number;
   focus: number;
   mark: number;
+  /** The World's rain and wind over the tank (-1 where the scene lists neither). */
+  rain: number;
+  wind: number;
   /** The trigger slots of the "now" buttons: pace (the next experiment), the M, a drip. */
   now: readonly [pace: number, mark: number, drips: number];
 }
@@ -572,6 +611,8 @@ class Tank {
   prevScale = 1;
   /** Where the dragged dippers (0..3) and the M (4) have been moved from their places, short sides. */
   readonly offsets: (Point | undefined)[] = [undefined, undefined, undefined, undefined, undefined];
+  /** Steps run since its experiment started: what the rain's drops are hashed from. */
+  steps = 0;
 
   constructor(gpu: GpuCompute, width: number, height: number) {
     this.state = gpu.pingPong({ width, height, format: "rgba32f", filter: "nearest" });
@@ -613,6 +654,11 @@ class RippleLab implements SceneSim {
   readonly #near = new Float32Array(DIPPERS * 4);
   readonly #split = new Float32Array(4);
   readonly #gain = new Float32Array(2);
+  readonly #drops = new Float32Array(MAX_PEBBLES * 4);
+  readonly #wind = new Float32Array(4);
+  /** The World's rain and wind this frame (K_rain, K_wind; 0 where the scene has neither). */
+  #rainAmount = 0;
+  #windAmount = 0;
 
   /** The tank on show and the one being prepared or faded in. */
   #tanks: [Tank, Tank] | undefined;
@@ -675,6 +721,8 @@ class RippleLab implements SceneSim {
     );
     const previous = this.#physics;
     this.#physics = physics;
+    this.#rainAmount = this.#at.rain < 0 ? 0 : Math.max(0, this.#value(frame, this.#at.rain));
+    this.#windAmount = this.#at.wind < 0 ? 0 : this.#value(frame, this.#at.wind);
     this.#frameSize[0] = physics.frame.width;
     this.#frameSize[1] = physics.frame.height;
 
@@ -956,6 +1004,7 @@ class RippleLab implements SceneSim {
     tank.time = time;
     tank.phase = (physics.omega * time) % TAU;
     tank.clock.reset();
+    tank.steps = 0;
     tank.prevScale = 1;
     tank.offsets.fill(undefined);
     tank.layoutKey = "";
@@ -1129,6 +1178,8 @@ class RippleLab implements SceneSim {
     // The Doppler dipper's carriage stands still while the last waves run out.
     if (!this.#leaving) tank.time += physics.step;
     tank.phase = (tank.phase + physics.omega * physics.step) % TAU;
+    tank.steps++;
+    this.#rain(tank, physics);
     const C2 = physics.courant * physics.courant;
     const sigma = SIGMA * physics.n;
     // Pushes per step for a ring 1 high a wavelength out, and for plane waves 1 high.
@@ -1161,6 +1212,7 @@ class RippleLab implements SceneSim {
     );
     this.#sponge[0] = edge;
     this.#sponge[1] = physics.sponge * physics.step;
+    this.#windFor(tank, physics, C2);
     this.#step.run(tank.state, {
       textures: { uState: tank.state },
       uniforms: {
@@ -1168,6 +1220,7 @@ class RippleLab implements SceneSim {
         uC2: C2,
         uDamp: physics.damp * physics.step,
         uViscosity: VISCOSITY,
+        uWind: this.#wind,
         uSponge: this.#sponge,
         uPrevScale: tank.prevScale,
         uPhase: tank.phase,
@@ -1179,6 +1232,52 @@ class RippleLab implements SceneSim {
       },
     });
     tank.prevScale = 1;
+  }
+
+  /**
+   * The World's rain on this step: each of RAIN_SLOTS lands with a chance of RAIN_RATE × the
+   * amount × the step, hashed from the tank's step count, somewhere over the frame; a dimple (the
+   * touch pass's, as the faucet's drip) pressed in before the step, so its ring spreads, crosses
+   * the others and the experiment's waves, and fades as they do.
+   */
+  #rain(tank: Tank, physics: Physics): void {
+    const amount = this.#rainAmount;
+    if (amount <= 0) return;
+    const chance = (Math.min(1, amount) * RAIN_RATE * physics.step) / RAIN_SLOTS;
+    const { width, height } = physics.frame;
+    let count = 0;
+    this.#drops.fill(0);
+    for (let k = 0; k < RAIN_SLOTS; k++) {
+      if (hash31(tank.steps, k, 0x7a1) >= chance) continue;
+      const x = hash31(tank.steps, k, 0x7a2) * width;
+      const y = hash31(tank.steps, k, 0x7a3) * height;
+      this.#drops.set([x, y, RAIN.radius * physics.lambda, RAIN.height], count * 4);
+      count++;
+    }
+    if (count === 0) return;
+    this.#touch.run(tank.state, {
+      textures: { uState: tank.state },
+      uniforms: { uFrame: this.#frameSize, uPebbles: this.#drops },
+    });
+  }
+
+  /**
+   * The World's wind on this step, into `#wind`: its push (|K_wind| × WIND_PUSH × C², swelling
+   * and easing in gusts on the tank's own clock, which runs on the motion clock), the puffs' drift
+   * downwind (K_wind's sign) at twice the waves' speed, and their size, half a wavelength.
+   */
+  #windFor(tank: Tank, physics: Physics, C2: number): void {
+    const wind = this.#windAmount;
+    if (wind === 0) {
+      this.#wind.fill(0);
+      return;
+    }
+    const gust = 0.65 + 0.35 * Math.sin((TAU * tank.time) / GUST_PERIOD);
+    const drift = 2 * physics.speed * tank.time;
+    this.#wind[0] = Math.abs(wind) * WIND_PUSH * C2 * gust;
+    this.#wind[1] = Math.sign(wind) * drift;
+    this.#wind[2] = 0.3 * drift;
+    this.#wind[3] = 2 / physics.lambda;
   }
 
   /** The Doppler dipper, let go, eases back onto its track. */
@@ -1431,6 +1530,8 @@ export function rippleSim(knobs: readonly ParamDef[]): SimFactory {
     drips: slot("drips"),
     focus: slot("focus"),
     mark: slot("mark"),
+    rain: knobs.findIndex((knob) => knob.key === "rain"),
+    wind: knobs.findIndex((knob) => knob.key === "wind"),
     now: [trigger("pace"), trigger("mark"), trigger("drips")],
   };
   const defaults = knobs.map((knob) =>

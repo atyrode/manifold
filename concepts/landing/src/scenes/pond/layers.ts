@@ -252,6 +252,8 @@ export const pondWaterLayer: LayerDef = {
     grade: "pondWaterGrade",
   },
   data: { fields: 1 },
+  // The World's rain rings it and its wind ruffles it (the overhead composer's K_rain, x.wind).
+  open: true,
 };
 
 export const stoneLayer: LayerDef = {
@@ -465,13 +467,6 @@ export const borderLayer: LayerDef = {
     seed("canopy", "canopySeed", "arrangement", "Which canopy; re-seed for another.", {
       when: "canopy",
     }),
-    range(
-      "air",
-      "wind",
-      "wind",
-      0.4,
-      "How much the plants and canopy stir in the breeze, nearer leaves most, and how much it ruffles the water the sun glints on.",
-    ),
     // The plant component's own: the year, growth and gusts (scenes/plants.ts), all off.
     ...plantKnobs({
       group: "plants",
@@ -498,11 +493,14 @@ export const borderLayer: LayerDef = {
     },
     air: {
       title: "Breeze",
-      blurb: "Wind through the plants and the canopy, and the gusts that cross the pond.",
+      blurb:
+        "The gusts that cross the pond and stir the plants and the canopy; the wind they blow in is the World's (Weather).",
     },
   },
   passes: { begin: "borderBegin", cover: "borderCover", over: "borderOver" },
   data: { fields: 2 },
+  // Its plants and canopy stir in the World's wind (K_wind, the breeze's strength either way).
+  open: true,
 };
 
 export const koiLayer: LayerDef = {

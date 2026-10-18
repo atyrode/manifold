@@ -56,12 +56,12 @@ are the ports' own, taken under #1082 on the shared dev host.
   apiary", "A campfire on the valley's hill") were not made: their layers are drawn through their
   own rigs alone (see "Rigs, locking and offering").
 - **Not built:** the rest of the interiors (clouds and harmonograph; Phase 3); the rest of the
-  `overhead` composer (its `tilt` and `orbit`, the `height`
-  pass, the World over the patch, and its presets after delta; Phase 4); the per-program
-  knob layout and packed trigger slots; `scripts/layer-costs.ts`, the stack meter and the role's
-  "+" listing; the browser checks `composerDepth`, `composerClaims`, `composerWeather` and
-  `layerToggles`; a check of the SwiftShader instruction budget; the principals' points in the
-  site; shelving the presets by composer (D9).
+  `overhead` composer (its `tilt` and `orbit`, the `height` pass, the World over the patch beyond its
+  rain and wind, and its presets after delta; Phase 4); the per-program knob layout and packed
+  trigger slots; `scripts/layer-costs.ts`, the stack meter and the role's "+" listing; the browser
+  checks `composerDepth`, `composerClaims`, `composerWeather` and `layerToggles`; a check of the
+  SwiftShader instruction budget; the principals' points in the site; shelving the presets by
+  composer (D9).
 
 ## Decision summary
 
@@ -841,8 +841,29 @@ are its border's and its water's), because nothing of the World is drawn over th
 pond's knobs are trimmed into its layers, each knob in the layer that reads it, its feature knobs
 `koi` and `stone` becoming those layers' switches; it lists 54 (its 51, and `pondBed`,
 `pondWater` and `border`), the ripple tank 18 (its 11, `tank` and `tankWater`, the koi's five).
-Neither needs the per-program knob layout; the World over the patch (its weather seen from above,
-its light) will, for the pond.
+Neither needs the per-program knob layout; the whole World over the patch (its sky, cloud and light
+seen from above) will, for the pond.
+
+**The World's rain and wind over the patch** (W1 step 1): an overhead preset that offers a layer
+open to the sky (`LayerDef.open`: the pond's water and border, the tank's water, the tide pool's
+bed and water) lists the World's `rain` and `wind` first (`worldPatchKnobs`, the outdoor keys and
+meaning), and `WORLD_RAIN` is its only World gate, so a dry patch compiles none of the rain; the
+sand table, under its lamp, lists neither. The wind is the patch's `x.wind` (`|K_wind|`); the
+border's own `wind` became it (the pond sets 0.4, the tank and the tide pool 0, the breezes they
+had), and the tide pool's own `rain` became the World's, so there is one rain. Every drop is an
+impulse on the water: the pond's analytic rings land at each site of a grid on a fixed beat (the
+amount gates only which beats land, so no ring runs backward as the rain eases) and sum their
+slopes and light with its own; the tank's wave sim takes small dimples at hashed places on its
+`FixedStep`, and the wind pushes it from a field of puffs in gusts; the tide pool's shallow water
+takes splats on its step, hashed from the step count and the rock's seed, which it had not before
+(its rain only drew rings over the sea), lit on their crests, and the wind roughens its ripples.
+The pond lists 55 knobs, the tank 20, the tide pool 37. Defaults, the committed presets of the
+tank and the tide pool, the pond with stone and canopy, and the sand table are `SAME` against
+4bf629be; the pond without its border differs in 8 cells, the World's wind now ruffling its glint
+where the border's breeze was still. Under SwiftShader at 640×400 the pond's default draws 16,764
+M instructions (16,774 before) and at rain 1 17,566, the tank's 1,411 either way (its rain and
+wind are the sim's), the tide pool's default 6,412 (6,799 before: its rain was compiled in dry)
+and at rain 1 7,955 (7,930 before).
 
 **At their defaults:** pond `SAME`, ripple `SAME`, "Ripple tank · walled tank" `SAME` (`ab.ts`
 against 3819c80c, dithered). Further witnesses, all `SAME`: the pond with the stone, canopy, current
@@ -861,7 +882,7 @@ through it, its white water, night glow and the passage's wash, and the life's r
 on the bed before the light is the shared chunk's `tpB`: the bed's, then each life layer's `floor`
 pass over it in the scene's order, relighting the cell where it paints. Its frame is 3 m tall like
 the pond's, so the rig and the layers gained `salt`: a layer is offered only over its own water,
-which keeps the pond's 54 knobs off it and the koi out of the sea. Its default, its three committed
+which keeps the pond's 55 knobs off it and the koi out of the sea. Its default, its three committed
 presets, rain with fish and the M, and granite at dawn are `SAME` against 47e062d9; its shaken
 default is 50,001 characters (within its ceiling), its all-features program 52,896 (ceiling 58,000).
 
@@ -904,11 +925,12 @@ full river without tide against the current are `SAME` against e60dc623; its sha
 under SwiftShader wherever it ends, so the gate, off, keeps it out), the `orbit` range, a `height`
 pass and a bed height field shared across layers (the pond's and the tank's beds are flat, the
 tide pool's relief its own layout's; the water's slope is the only relief they share), a material
-at each point, the World over the patch, and the presets after delta: `dunesabove` and
-`gardenabove`, which retire the dunes' `camera` and the garden's `gravelCamera` and their own
-programs. Layers drawn in the frame's units are locked to their span; the koi are offered from 1 m
-to the pond's 3 m, drawn at the frame's scale (11–17 cm fish in the 1 m tank), so a bench-scale
-layer is refused beside the delta's 20 km by its span.
+at each point, the rest of the World over the patch (its sky, cloud shadows, fog, snow; the
+delta's rain and wind), and the presets after delta: `dunesabove` and `gardenabove`, which retire
+the dunes' `camera` and the garden's `gravelCamera` and their own programs. Layers drawn in the
+frame's units are locked to their span; the koi are offered from 1 m to the pond's 3 m, drawn at the
+frame's scale (11–17 cm fish in the 1 m tank), so a bench-scale layer is refused beside the delta's
+20 km by its span.
 
 ### Phase 5: the matter shelf, and what stays standalone
 
@@ -1014,9 +1036,11 @@ schedule (D22).
 The World's hour, sky and weather are one state, and every camera shows it. A composer never drops
 the weather; it renders the weather in the way its camera would see it. Outdoors, this is built: the
 sky, cloud, rain, snow, fog, lightning and wind. Indoors, the weather is seen through the window: drops on the
-glass, the light under overcast, lightning's flash, and the snow's brighter light. From above, it is
-not built yet: rain rings on the water and wet darkening on the bed, cloud shadows crossing, fog as
-a veil, snow settling and the wind on the surface. That waits for the World over the patch.
+glass, the light under overcast, lightning's flash, and the snow's brighter light. From above, the
+rain and the wind are built: every drop rings the water as an impulse in its sim or its analytic
+field (the pond, the ripple tank, the tide pool), the rings crossing, and the wind roughens the
+surface; not yet the wet darkening on the bed, cloud shadows crossing, fog as a veil or snow
+settling, which wait for the rest of the World over the patch.
 Underwater it would show as rain dimpling the surface, the light dimmed by overcast, lightning
 through the water, and the surge of the wind. Each camera a baseline adds, and each new kind of
 weather, is accepted only once it is rendered for every camera that can be in it.
@@ -1095,7 +1119,8 @@ live view.
 
 1. **The caps bind on offering.** Bees lists 63 of 64 knobs and the forest and the lake all 8 slots;
    every further cross-offering waits for the per-program layout and packed triggers, as do the
-   bar's port and the World over the overhead's patch (the pond lists 54 without it).
+   bar's port and the rest of the World over the overhead's patch (the pond lists 55 with its rain
+   and wind alone).
 2. **Rig-locking limits the mixes.** Of the outdoor presets' 84 layers, seven are offered beyond
    their own rig; of the interior's 11, the lava lamp, drawn from the rig; of the overhead's 19, the
    koi beyond their own span (over fresh water only). Five mixes are committed. The worth of

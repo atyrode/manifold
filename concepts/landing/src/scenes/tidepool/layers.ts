@@ -6,7 +6,7 @@
 //   rockPool  bed: the rock platform, laid out per seed (its sim, layout.ts): the reefs, the basin's
 //             rim and notch, the bands of lichen, barnacles, mussels and coralline crust, the sea
 //             lettuce, sea stars and urchins on it, the pebble M; and the shore's sky, by the time
-//             of day and the rain, that lights the patch
+//             of day and the World's rain (the overhead composer's), that lights the patch
 //   surge     water: the sea on the GPU (its sim: shallow water over the bed's rock), its surface
 //             and the light through it, its white water and night glow, the passage's wash, and the
 //             life's records it streams (life.ts); it runs over the bed's rock, so it needs the bed
@@ -15,10 +15,11 @@
 //   fish      life: rock pool fish idling over the basin's floor
 // The life is the water's records, so each life layer needs the water. Keys kept from the scene,
 // every one: `fronds`, `anemones` and `fish` became their layers' switches; `rockPool` and `surge`
-// are new switches. The "now" slot is the water's sets.
+// are new switches; `rain` is the World's now (the overhead composer lists it with the wind, for
+// the bed and the water are open to the sky), under the same key. The "now" slot is the water's sets.
 import type { CameraRange, LayerDef } from "../../composer/types.ts";
 import { choice, counts, feature, range, seed, toggle } from "../../params.ts";
-import { atmosphereGroups, skyKnobs, weatherKnobs } from "../atmosphere.ts";
+import { atmosphereGroups, skyKnobs } from "../atmosphere.ts";
 import { plantKnobs } from "../plants.ts";
 
 /** Metres a screen height spans over the tide pool: a sea star a hand across, an urchin a fist. */
@@ -50,7 +51,6 @@ export const rockPoolLayer: LayerDef = {
   ),
   params: [
     ...skyKnobs({ time: 0.42 }),
-    ...weatherKnobs({ rain: true }),
     choice(
       "rock",
       "rockType",
@@ -132,10 +132,6 @@ export const rockPoolLayer: LayerDef = {
   ],
   groups: {
     sky: { ...atmosphereGroups.sky, blurb: "The time of day over the shore." },
-    weather: {
-      ...atmosphereGroups.weather,
-      blurb: "Rain ringing the pool and darkening the rock.",
-    },
     rock: { title: "Rock", blurb: "The platform, its bands of shells and crust, and the pool." },
     rockLife: {
       title: "On the rock",
@@ -149,6 +145,8 @@ export const rockPoolLayer: LayerDef = {
   mark: "mark",
   passes: { begin: "rockPoolBegin", bed: "rockPoolBed", grade: "rockPoolGrade" },
   data: { fields: 1 },
+  // The World's rain greys its sky, wets and splashes its rock (shader.ts K_rain).
+  open: true,
 };
 
 export const surgeLayer: LayerDef = {
@@ -286,6 +284,8 @@ export const surgeLayer: LayerDef = {
   },
   passes: { begin: "surgeBegin", float: "surgeFloat", over: "surgeOver" },
   data: { fields: 3 },
+  // The World's rain drops into the sea (sim.ts) and rings it (shader.ts), its wind roughens it.
+  open: true,
   requires: ["rockPool"],
 };
 
