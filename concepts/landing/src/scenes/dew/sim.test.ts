@@ -1,36 +1,55 @@
 import { expect, test } from "bun:test";
+import { ATLAS_WIDTH } from "../../composer/caps.ts";
 import { BIN_PAGE } from "../../sims/bins.ts";
 import { HeadlessSim, type HeadlessUpload } from "../../sims/headless.ts";
 import { loadScene } from "../index.ts";
 import { DEW_CODE, DEW_KIND_SPOKE } from "./build.ts";
-import { DEW_SEG_ROW, DEW_SEG_TEXELS } from "./sim.ts";
+import { DEW_HEAD_AT, DEW_SEG_ROW, DEW_SEG_TEXELS } from "./sim.ts";
 
 const dewScene = await loadScene("dew");
 
-/** The dew sim's textures after it has run a second at this frame size and web seed. */
+// Where the composed sim puts the web's data (src/composer/sim.ts): its row of the records atlas
+// (slot 1, the row after the composer's own) and its two fields (slots 2 and 3).
+const ATLAS = 1;
+const SEGMENTS = 2;
+const LISTS = 3;
+const ROW = 1;
+
+/** The web's row of the records atlas: the drops from texel 0, the header from DEW_HEAD_AT. */
+function row(sim: HeadlessSim): Float32Array | Uint8Array {
+  const at = ROW * ATLAS_WIDTH * 4;
+  return sim.upload(ATLAS).data.subarray(at, at + ATLAS_WIDTH * 4);
+}
+
+/** The web's header, as the shader reads it (12 floats). */
+function header(sim: HeadlessSim): Float32Array | Uint8Array {
+  return row(sim).subarray(DEW_HEAD_AT * 4, DEW_HEAD_AT * 4 + 12);
+}
+
+/** The dew sim's data after it has run a second at this frame size and web seed. */
 function run(
   width: number,
   height: number,
-  webSeed: number,
-): { segments: HeadlessUpload; lists: HeadlessUpload; header: HeadlessUpload } {
+  seed: number,
+): { segments: HeadlessUpload; lists: HeadlessUpload; header: Float32Array | Uint8Array } {
   const sim = new HeadlessSim(dewScene);
   for (let f = 0; f < 30; f++)
     sim.step({
       dt: 1 / 30,
       aspect: width / height,
       height,
-      knobs: { webSeed },
+      knobs: { seed },
       pointer: { inside: false },
     });
-  return { segments: sim.upload(0), lists: sim.upload(1), header: sim.upload(3) };
+  return { segments: sim.upload(SEGMENTS), lists: sim.upload(LISTS), header: header(sim) };
 }
 
-/** The drops riding the web (uSim2: a drop's radius > 0), each as (x, y) from the hub and its radius. */
+/** The drops riding the web (a drop's radius > 0), each as (x, y) from the hub and its radius. */
 function drops(sim: HeadlessSim): { x: number; y: number; r: number }[] {
-  const head = sim.upload(3).data;
+  const head = header(sim);
   const hx = (head[0] ?? 0) + (head[2] ?? 0);
   const hy = (head[1] ?? 0) + (head[3] ?? 0);
-  const data = sim.upload(2).data;
+  const data = row(sim).subarray(0, DEW_HEAD_AT * 4);
   const out: { x: number; y: number; r: number }[] = [];
   for (let o = 0; o < data.length; o += 8) {
     const r = data[o + 4] ?? 0;
@@ -42,9 +61,9 @@ function drops(sim: HeadlessSim): { x: number; y: number; r: number }[] {
   return out;
 }
 
-/** Where the hub is drawn (uSim3's header), frame heights from the frame's left edge. */
+/** Where the hub is drawn (the header), frame heights from the frame's left edge. */
 function hubX(sim: HeadlessSim): number {
-  const head = sim.upload(3).data;
+  const head = header(sim);
   return (head[0] ?? 0) + (head[2] ?? 0);
 }
 
@@ -138,11 +157,11 @@ function crosses(
 function omissions(
   width: number,
   height: number,
-  webSeed: number,
+  seed: number,
 ): { missing: number; pages: number; hubSpokes: number; hubListed: number } {
-  const { segments, lists, header } = run(width, height, webSeed);
+  const { segments, lists, header } = run(width, height, seed);
   // As the shader reads it: at least one page.
-  const pages = Math.max(1, Math.round(header.data[10] ?? 0));
+  const pages = Math.max(1, Math.round(header[10] ?? 0));
   const rows = lists.width / BIN_PAGE;
   const cols = lists.height / pages;
   const size = 1 / rows;
@@ -157,8 +176,8 @@ function omissions(
     }
     return false;
   };
-  const hubX = (header.data[0] ?? 0) + (header.data[2] ?? 0);
-  const hubY = (header.data[1] ?? 0) + (header.data[3] ?? 0);
+  const hubX = (header[0] ?? 0) + (header[2] ?? 0);
+  const hubY = (header[1] ?? 0) + (header[3] ?? 0);
   const hubI = Math.floor(hubX / size);
   const hubJ = Math.floor(hubY / size);
   let missing = 0;
@@ -203,11 +222,11 @@ test("dense small and portrait frames list every thread in every bin it crosses,
     [320, 180],
     [185, 400],
   ] as const) {
-    for (const webSeed of [0, 5]) {
-      const result = omissions(width, height, webSeed);
-      expect({ size: `${width}x${height}`, webSeed, missing: result.missing }).toEqual({
+    for (const seed of [0, 5]) {
+      const result = omissions(width, height, seed);
+      expect({ size: `${width}x${height}`, seed, missing: result.missing }).toEqual({
         size: `${width}x${height}`,
-        webSeed,
+        seed,
         missing: 0,
       });
       expect(result.hubSpokes).toBeGreaterThan(0);
@@ -218,8 +237,8 @@ test("dense small and portrait frames list every thread in every bin it crosses,
 });
 
 test("a landscape frame at the usual size keeps one page per bin and misses nothing", () => {
-  for (const webSeed of [0, 5]) {
-    const result = omissions(960, 540, webSeed);
+  for (const seed of [0, 5]) {
+    const result = omissions(960, 540, seed);
     expect(result.missing).toBe(0);
     expect(result.pages).toBe(1);
   }

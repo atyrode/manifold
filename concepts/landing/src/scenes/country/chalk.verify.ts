@@ -6,9 +6,9 @@
 // over a third of its height and the foot of its middle (between the legs, low down) open turf.
 // The M is measured against the open grass it is cut through, not the crops the land model would
 // grow there with the knob off: those may be as pale as a ripe field.
-import { fragmentSourceFor, sceneFeatures, shaderValues } from "../../shaders/index.ts";
+import { sceneFeatures, shaderValues } from "../../shaders/index.ts";
 import { loadScene } from "../index.ts";
-import { countryBuild, countryDraw, countryProgram } from "./terrain.verify.ts";
+import { countryBuild, countryDraw, countryProgram, countrySource } from "./terrain.verify.ts";
 
 const countryScene = await loadScene("country");
 
@@ -76,16 +76,16 @@ export function verifyCountryChalk(gl: WebGL2RenderingContext): Record<string, u
   const on = { chalk: 1 };
   const program = countryProgram(
     gl,
-    fragmentSourceFor(countryScene, sceneFeatures(countryScene, shaderValues(countryScene, on))),
+    countrySource(sceneFeatures(countryScene, shaderValues(countryScene, on))),
   );
   const result: Record<string, unknown> = {};
   try {
     for (const landscape of LANDSCAPES) {
-      const built = countryBuild(gl, { landscape, ...on });
+      const built = countryBuild(gl, { seed: landscape, ...on });
       try {
         const options = { width: WIDTH, height: HEIGHT };
-        const drawn = countryDraw(gl, program, built, { landscape, ...on }, options);
-        const mask = chalked(drawn, countryDraw(gl, program, built, { landscape }, options));
+        const drawn = countryDraw(gl, program, built, { seed: landscape, ...on }, options);
+        const mask = chalked(drawn, countryDraw(gl, program, built, { seed: landscape }, options));
         let count = 0;
         let x0 = WIDTH;
         let x1 = -1;

@@ -26,7 +26,8 @@ import type { LoadedScene } from "../types.ts";
 import { loadScene, sceneIds, type SceneId } from "../index.ts";
 import { TRAIN_CROSSING, TRAIN_STATION, TRAIN_TEXELS } from "./sim.ts";
 
-const streetScene = await loadScene("street");
+// The street is composed: its program comes from glslFor, which the check's entry goes after.
+const { glslFor: streetGlslFor, ...streetScene } = await loadScene("street");
 const trainScene = await loadScene("train");
 
 export interface Clocks {
@@ -176,11 +177,11 @@ function dayCycle(id: "street" | "train", time: number): readonly number[] {
 function streetCheck(gl: WebGL2RenderingContext): number {
   const linked = compile(
     gl,
-    streetScene,
+    { ...streetScene, glsl: streetGlslFor?.(sceneFeatures(streetScene)) ?? streetScene.glsl },
     "regressionStreetHour",
     `
     Shade regressionStreetHour(vec2 uv, vec2 cell, float t) {
-      streetHour();
+      streetHour(composerCtx(uv, cell).w);
       vec3 albedo;
       vec3 emit;
       float glass;

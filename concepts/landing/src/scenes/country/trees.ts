@@ -43,7 +43,7 @@ const float COUNTRY_WOOD_REACH = ${glslFloat(Math.SQRT2 * TERRAIN_CLEARANCE_SLOP
 float countryWoodLine = 64.0;
 
 void countryWoodsSet() {
-  countryWoodLine = terrainWoodLine(uSim3);
+  countryWoodLine = terrainWoodLine(valleyField3);
 }
 
 // How much of the woods stands here, 0..1: the clearance (cover z) over the woods' line, cleared
@@ -65,10 +65,10 @@ const float COUNTRY_CROWN_CELL = 7.0;   // the woods: one tree a cell, its crown
 const float COUNTRY_WOOD_TOP = 12.5;    // the woods' envelope over the ground (its swells' crest), metres
 const float COUNTRY_LONE_TOP = 12.0;    // a lone tree's bound over its texel's centre, metres
 
-// A stable species draw for a lone tree: the pine mix (K_pines).
+// A stable species draw for a lone tree: the pine mix (VALLEY_PINES).
 bool countryPine(float h) {
 #if COUNTRY_HAS_PINES
-  return fract(h * 83.17 + 0.19) < K_pines;
+  return fract(h * 83.17 + 0.19) < VALLEY_PINES;
 #else
   return false;
 #endif
@@ -76,7 +76,7 @@ bool countryPine(float h) {
 
 // Whether the yard texel at 'at' holds a lone tree that stands: one the woods have not taken in.
 bool countryLoneStands(ivec2 at) {
-  vec4 cover = texelFetch(uSim1, at, 0);
+  vec4 cover = texelFetch(valleyField1, at, 0);
   return cover.w < -0.5 && countryWoods(cover, -2.0, false) < 0.5;
 }
 
@@ -84,13 +84,13 @@ bool countryLoneStands(ivec2 at) {
 // 1 where the parcel of texel 'at' has pine woods (packLand's LAND_PINE_FLAG in the nearest parcel
 // id's high byte), else 0.
 float countryPineTexel(ivec2 at) {
-  return step(${glslFloat(LAND_PINE_FLAG - 0.5)}, texelFetch(uSim2, at, 0).y * 255.0);
+  return step(${glslFloat(LAND_PINE_FLAG - 0.5)}, texelFetch(valleyField2, at, 0).y * 255.0);
 }
 
 // How much of the woods' canopy at p is pine woods', 0..1: the flags of the four texels round p
 // blended as the clearance itself is, so a pine wood's colour meets a broadleaf one's where they meet.
 float countryPines(vec2 p) {
-  ivec2 size = textureSize(uSim2, 0);
+  ivec2 size = textureSize(valleyField2, 0);
   vec2 f = p / COUNTRY_EXTENT * vec2(size) - 0.5;
   ivec2 base = ivec2(floor(f));
   vec2 w = f - floor(f);
@@ -111,7 +111,7 @@ float countryWoodTop(vec2 p) {
 // the tent steepened to hold the whole crown (the march); otherwise rounded to about the crown's
 // size (the sun's shadows).
 float countryCanopy(vec2 p, vec4 cover, float water, bool bound) {
-  if (K_woodland <= 0.0) return 0.0;
+  if (VALLEY_WOODLAND <= 0.0) return 0.0;
   float w = clamp(-cover.w, 0.0, 1.0);
   float lone = bound ? COUNTRY_LONE_TOP * sqrt(sqrt(w)) : 11.0 * sqrt(clamp((w - 0.1) / 0.9, 0.0, 1.0));
   return max(countryWoodTop(p) * smoothstep(0.0, 0.3, countryWoods(cover, water, true)), lone);
@@ -213,19 +213,19 @@ float countryLoneHash(ivec2 at) {
 CountryTree countryLoneTree(ivec2 at) {
   CountryTree tree;
   float h = countryLoneHash(at);
-  vec2 foot = (vec2(at) + 0.5) * (COUNTRY_EXTENT / float(textureSize(uSim1, 0).x)) + 1.6 * (hash22(vec2(at)) - 0.5);
+  vec2 foot = (vec2(at) + 0.5) * (COUNTRY_EXTENT / float(textureSize(valleyField1, 0).x)) + 1.6 * (hash22(vec2(at)) - 0.5);
   float s = 0.85 + 0.15 * fract(h * 7.1);
   tree.pine = countryPine(h);
   tree.radius = (tree.pine ? 2.8 : 3.2) * s;
   tree.top = (tree.pine ? 10.5 : 10.2) * s;
-  tree.foot = vec3(foot.x, terrainSurface(terrainGround(uSim0, foot, COUNTRY_EXTENT)), foot.y);
+  tree.foot = vec3(foot.x, terrainSurface(terrainGround(valleyField0, foot, COUNTRY_EXTENT)), foot.y);
   tree.hash = h;
   return tree;
 }
 
 // Whether p's yard texel holds a lone pine: the far canopy's species where it is a lone tree's.
 bool countryLonePine(vec2 p) {
-  ivec2 size = textureSize(uSim1, 0);
+  ivec2 size = textureSize(valleyField1, 0);
   ivec2 at = clamp(ivec2(floor(p / COUNTRY_EXTENT * vec2(size))), ivec2(0), size - 1);
   return countryLoneStands(at) && countryPine(countryLoneHash(at));
 }
@@ -239,13 +239,13 @@ CountryTree countryWoodTree(vec2 cell) {
   float r = 2.6 + 0.5 * fract(h * 13.7);
   float room = 0.5 * COUNTRY_CROWN_CELL - r - 0.05;
   vec2 root = (cell + 0.5) * COUNTRY_CROWN_CELL + room * (2.0 * hash22(cell + 1.7) - 1.0);
-  vec4 cover = terrainCover(uSim1, root, COUNTRY_EXTENT);
-  vec4 g = terrainGround(uSim0, root, COUNTRY_EXTENT);
+  vec4 cover = terrainCover(valleyField1, root, COUNTRY_EXTENT);
+  vec4 g = terrainGround(valleyField0, root, COUNTRY_EXTENT);
   float stands = countryWoods(cover, terrainWater(g), false) - (0.05 + 0.9 * fract(h * 31.7));
   tree.pine = false;
 #if COUNTRY_HAS_PINES
   if (stands > 0.0) {
-    ivec2 size = textureSize(uSim2, 0);
+    ivec2 size = textureSize(valleyField2, 0);
     ivec2 at = clamp(ivec2(floor(root / COUNTRY_EXTENT * vec2(size))), ivec2(0), size - 1);
     tree.pine = countryPineTexel(at) > 0.5;
   }
@@ -280,7 +280,7 @@ float countryCrowns(vec3 ro, vec3 rd, float tHit, vec3 p, vec4 g, out CountryTre
   float best = 1e9;
   float trunk = 1e9;
   CountryTree post;
-  ivec2 size = textureSize(uSim1, 0);
+  ivec2 size = textureSize(valleyField1, 0);
   ivec2 base = ivec2(floor(p.xz / COUNTRY_EXTENT * vec2(size) - 0.5));
   for (int k = 0; k < 4; k++) {
     ivec2 at = clamp(base + ivec2(k - (k / 2) * 2, k / 2), ivec2(0), size - 1);

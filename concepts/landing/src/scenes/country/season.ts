@@ -364,9 +364,9 @@ float countryBaleHit(vec3 ro, vec3 rd, vec3 base, vec2 axis, out vec3 n, out flo
 // crowns. Decided by the site alone, so a bale is whole or not there at all.
 bool countryBaleClear(vec2 site, float id, vec4 core) {
   if (length(site - core.xy) < core.z - 2.0 && core.w <= countryWoodLine - COUNTRY_WOOD_EDGE) return true;
-  vec4 c = terrainCover(uSim1, site, COUNTRY_EXTENT);
+  vec4 c = terrainCover(valleyField1, site, COUNTRY_EXTENT);
   if (c.x < 5.0 || c.y < 4.0 || abs(c.w) > 0.02 || countryWoods(c, -2.0, true) > 0.0) return false;
-  TerrainParcel here = terrainParcel(uSim2, uSim3, site, COUNTRY_EXTENT);
+  TerrainParcel here = terrainParcel(valleyField2, valleyField3, site, COUNTRY_EXTENT);
   return here.id == id && here.border > 6.0;
 }
 
@@ -384,7 +384,7 @@ void countryBales(vec3 eye, vec3 rd, float tHit, vec3 p, vec4 g, TerrainParcel p
   float cut = 0.418 + 0.025 * fract(fract(parcel.id * 0.618034) * 7.31);
   float fall = dot(g.zw, rd.xz) - rd.y;
   if (COUNTRY_BALE_RADIUS < 0.6 * tHit * cellAngle || fall < 1e-3) return;
-  vec4 core = terrainCore(uSim3, parcel.id);
+  vec4 core = terrainCore(valleyField3, parcel.id);
   vec2 along = parcel.axis;
   vec2 across = vec2(-along.y, along.x);
   // The ray's way over the field from where it comes down to a bale's height (two cells at most) to
@@ -434,7 +434,7 @@ void countryBales(vec3 eye, vec3 rd, float tHit, vec3 p, vec4 g, TerrainParcel p
       }
       vec3 bn;
       float rim;
-      float t = countryBaleHit(eye, rd, vec3(site.x, terrainSurface(terrainGround(uSim0, site, COUNTRY_EXTENT)), site.y), axis, bn, rim);
+      float t = countryBaleHit(eye, rd, vec3(site.x, terrainSurface(terrainGround(valleyField0, site, COUNTRY_EXTENT)), site.y), axis, bn, rim);
       if (t > 0.0 && t < tBale) {
         tBale = t;
         baleN = bn;

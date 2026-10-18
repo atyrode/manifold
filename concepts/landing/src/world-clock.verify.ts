@@ -185,7 +185,7 @@ export function verifyWorldClock(gl: WebGL2RenderingContext): Record<string, unk
   const staged: Record<string, number> = {};
   for (const [id, other] of [
     ["garden", { season: 1 }],
-    ["country", { date: 0.2 }],
+    ["country", { season: 0.2 }],
   ] as const) {
     const off = differing(drawScene(gl, id, true, {}), drawScene(gl, id, false, {}));
     check(off === 0, `${id} at its defaults draws ${off} bytes off its undated sky`);

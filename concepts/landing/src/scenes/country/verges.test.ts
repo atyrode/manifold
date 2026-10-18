@@ -177,11 +177,11 @@ test("the clumps flower and brown with the farming year, and pass with it: the h
     return { forms, turned };
   };
   const F = COUNTRY_VERGE_FORM;
-  const summer = census({ date: COUNTRY_SEASONS.summer });
-  const harvest = census({ date: COUNTRY_SEASONS.harvest });
-  const autumn = census({ date: COUNTRY_SEASONS.autumn });
-  const winter = census({ date: 0.875 });
-  const spring = census({ date: 0.15 });
+  const summer = census({ season: COUNTRY_SEASONS.summer });
+  const harvest = census({ season: COUNTRY_SEASONS.harvest });
+  const autumn = census({ season: COUNTRY_SEASONS.autumn });
+  const winter = census({ season: 0.875 });
+  const spring = census({ season: 0.15 });
   // In summer every species is out: the parsley's umbels, the campion's flowers, the grass's heads.
   for (const form of Object.values(F)) expect(summer.forms.get(form) ?? 0).toBeGreaterThan(0);
   expect(summer.turned).toBe(0);
@@ -213,7 +213,7 @@ test("the clumps flower and brown with the farming year, and pass with it: the h
   // A scene without the knob keeps the harvest.
   const plain = census(
     {},
-    params.filter((def) => def.key !== "date" && def.key !== "year"),
+    params.filter((def) => def.key !== "season" && def.key !== "year"),
   );
   expect(plain.forms).toEqual(harvest.forms);
 });

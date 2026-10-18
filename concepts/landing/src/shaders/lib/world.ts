@@ -21,6 +21,7 @@
 //   void worldFog(World w, WorldView v, vec3 fogCol, float z, inout vec3 col, inout float accent);
 //   void worldPrecip(World w, WorldView v, vec3 air, vec3 dropLight, float z, inout vec3 col, inout float accent);
 //   void worldPrecipSeen(World w, WorldView v, vec3 right, vec3 up, vec3 fwd, vec3 air, vec3 dropLight, float z, inout vec3 col, inout float accent);
+//   void worldPrecipAxes(World w, WorldView v, mat3 rain, mat3 snow, vec2 thin, vec3 air, vec3 dropLight, float z, inout vec3 col, inout float accent);
 //   void worldOver(World w, WorldView v, WorldFlyway f, vec3 haze, float thick, vec3 air, vec3 dropLight, inout vec3 col, inout float z, inout float accent);
 //   void worldPrecipThinned(World w, WorldView v, vec3 air, vec3 dropLight, float z, vec2 thin, inout vec3 col, inout float accent);
 //   WorldView worldMirrorView(WorldView v, vec3 ray, float blur);  // a level mirror's view (water, a wet film)
@@ -698,30 +699,44 @@ void worldPrecip(World w, WorldView v, vec3 air, vec3 dropLight, float z, inout 
 #endif
 }
 
-// worldPrecip for a camera that is not level: right, up and fwd are its axes in the frame of a
-// level camera facing the same way (x right, along the wind; y up; z ahead), so the paths of the
-// drops and flakes meet where this camera sees them converge (rainFallSeen and snowFallSeen through
-// rainVanish, at the view's focal): on the point below the eye looking down, overhead looking up.
-// The level axes draw worldPrecip's picture.
-void worldPrecipSeen(World w, WorldView v, vec3 right, vec3 up, vec3 fwd, vec3 air, vec3 dropLight, float z, inout vec3 col, inout float accent) {
+// worldPrecip for a camera that is not level, its rain seen through the axes rain and its snow
+// through snow (each mat3(right, up, fwd): the camera's axes in the frame of a level camera facing
+// the same way, x right, along the wind; y up; z ahead), so the paths of the drops and flakes meet
+// where this camera sees them converge (rainFallSeen and snowFallSeen through rainVanish, at the
+// view's focal): on the point below the eye looking down, overhead looking up. Looking up into the
+// rain (the drops streaming out of a point in front of the eye: vanish.z < 0) every path bunches
+// into that point, so the streaks thin out round it rather than smear. thin scales the drops' and
+// the flakes' cover far (x) to near (y), as worldPrecipThinned does; vec2(1.0) leaves them be. The
+// level axes, unthinned, draw worldPrecip's picture.
+void worldPrecipAxes(World w, WorldView v, mat3 rain, mat3 snow, vec2 thin, vec3 air, vec3 dropLight, float z, inout vec3 col, inout float accent) {
   float depth = weatherDepth(z / v.unit);
+  bool thinned = thin.x != 1.0 || thin.y != 1.0;
 #if WORLD_RAIN
   if (w.rain > 0.0) {
-    vec3 vanish = rainVanish(rainFallDir(w.rain, w.wind), right, up, fwd, v.focal);
+    vec3 vanish = rainVanish(rainFallDir(w.rain, w.wind), rain[0], rain[1], rain[2], v.focal);
     Precip fall = rainFallSeen(v.uv, v.aspect, w.tm, w.tf, w.rain, w.wind, depth, vanish);
+    if (vanish.z < 0.0) fall.cover *= smoothstep(0.12, 0.55, length(vec2((v.uv.x - 0.5) * v.aspect, v.uv.y - 0.5) - vanish.xy / min(vanish.z, -1e-3)));
+    if (thinned) fall.cover *= mix(thin.x, thin.y, fall.near);
     col = precipOver(col, air, dropLight * (1.0 - WORLD_NEAR_DIM * fall.near), fall);
     accent *= 1.0 - fall.veil;
   }
 #endif
 #if WORLD_SNOW
   if (w.snow > 0.0) {
-    vec3 vanish = rainVanish(snowFallDir(w.snow, w.wind), right, up, fwd, v.focal);
+    vec3 vanish = rainVanish(snowFallDir(w.snow, w.wind), snow[0], snow[1], snow[2], v.focal);
     Precip fall = snowFallSeen(v.uv, v.aspect, w.tm, w.snow, w.wind, depth, vanish);
+    if (thinned) fall.cover *= mix(thin.x, thin.y, fall.near);
     vec3 flake = WORLD_FLAKE * (dot(w.sky.ambient, LUMA) * 1.6 + dot(w.sky.sunColor, LUMA) * 0.5 + 0.04);
     col = precipOver(col, mix(air, flake, 0.5), flake * (1.0 - WORLD_NEAR_DIM * fall.near), fall);
     accent *= 1.0 - fall.veil;
   }
 #endif
+}
+
+// worldPrecipAxes with the rain and the snow seen through the same axes, right, up and fwd, unthinned.
+void worldPrecipSeen(World w, WorldView v, vec3 right, vec3 up, vec3 fwd, vec3 air, vec3 dropLight, float z, inout vec3 col, inout float accent) {
+  mat3 axes = mat3(right, up, fwd);
+  worldPrecipAxes(w, v, axes, axes, vec2(1.0), air, dropLight, z, col, accent);
 }
 
 // The world in front of a scene with nothing of its own to draw between: birds nearer than z, then

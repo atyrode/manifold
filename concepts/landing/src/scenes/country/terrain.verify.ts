@@ -1,11 +1,11 @@
-// GPU check (verify-browser.ts, `countryTerrain`): the countryside's real sim builds the terrain
-// toolbox's textures and the land model's uses, and the scene's all-features program (featuresAll:
-// every optional part compiled in) draws them: the land, the river and the sky all show, the same
-// frame draws bit for bit the same twice, and another landscape draws another picture. The land is
-// drawn from the records: at sample points over the map, the parcel the shader finds carries the
-// use the land model (built again here on the CPU) gave it, and the woods stand only where the
-// clearance lies above the woods' line (Terrain.clearance, landuse.ts landCanopy); a change of the
-// land's uses rebuilds nothing (one sim frame, timed, writes no ground,
+// GPU check (verify-browser.ts, `countryTerrain`): the countryside's real (composed) sim builds the
+// terrain toolbox's textures and the land model's uses into the valley's field slots, and the scene's
+// all-features program (featuresAll: every optional part compiled in) draws them: the land, the river
+// and the sky all show, the same frame draws bit for bit the same twice, and another landscape draws
+// another picture. The land is drawn from the records: at sample points over the map, the parcel the
+// shader finds carries the use the land model (built again here on the CPU) gave it, and the woods
+// stand only where the clearance lies above the woods' line (Terrain.clearance, landuse.ts
+// landCanopy); a change of the land's uses rebuilds nothing (one sim frame, timed, writes no ground,
 // and no parcels where it keeps every wood and its species, the one thing of the parcels' texture
 // it can move: their pine flag) and redraws the land, and the river switched off leaves its bed
 // dry (writing no parcels either). Sizes are small: software WebGL runs every line of the march.
@@ -26,7 +26,26 @@ import { loadScene } from "../index.ts";
 import type { SceneSim, SimFrame } from "../types.ts";
 import { COUNTRY_MAP } from "./sim.ts";
 
-const countryScene = await loadScene("country");
+const { glslFor, ...countryScene } = await loadScene("country");
+
+/**
+ * The countryside's fragment source for these compile-time features (a feature set's own program,
+ * as the renderer builds it), or with a probe's GLSL after it and the probe's entry instead of the
+ * composer's: a probe reads the valley's fields through their accessors (valleyField0..3).
+ */
+export function countrySource(
+  features: Readonly<Record<string, number>>,
+  probe?: { readonly glsl: string; readonly entry: string },
+): string {
+  if (glslFor === undefined) throw new Error("country: the scene is not composed");
+  const glsl = glslFor(features);
+  return fragmentSourceFor(
+    probe === undefined
+      ? { ...countryScene, glsl }
+      : { ...countryScene, glsl: glsl + probe.glsl, entry: probe.entry },
+    features,
+  );
+}
 
 const WIDTH = 192;
 const HEIGHT = 108;
@@ -68,7 +87,16 @@ export function countryValues(knobs: Record<string, number>): readonly number[] 
   return renderSettings(defaultsFor("country"), { ...paramDefaults("country"), ...knobs }).params;
 }
 
+/** The composed sim's slots of the valley's four fields (sim.ts): after the speck map and the atlas. */
+export const COUNTRY_SLOTS = { ground: 2, cover: 3, parcels: 4, records: 5 } as const;
+
+/** Whether a sim frame's bound textures hold the built land (its fields are unbound until then). */
+export function countryLanded(bound: readonly (WebGLTexture | undefined)[]): boolean {
+  return bound[COUNTRY_SLOTS.ground] !== undefined && bound[COUNTRY_SLOTS.records] !== undefined;
+}
+
 export interface CountryBuilt {
+  /** The composed sim's textures by slot (none at the speck map's: the countryside has no specks). */
   textures: readonly (WebGLTexture | undefined)[];
   /** Sim frames the build took. */
   frames: number;
@@ -104,17 +132,17 @@ export function countryBuild(
 ): CountryBuilt {
   const sim: SceneSim | undefined = countryScene.sim?.(gl);
   if (!sim) throw new Error("country: no sim");
-  // The build runs a budget of units a call; nothing is bound until it is done.
+  // The build runs a budget of units a call; the valley's fields are unbound until it is done.
   const frame = simFrame(knobs);
-  let textures = sim.frame(frame);
+  let textures = [...sim.frame(frame)];
   let frames = 1;
-  while (textures.length === 0 && frames < 2000) {
-    textures = sim.frame(frame);
+  while (!countryLanded(textures) && frames < 2000) {
+    textures = [...sim.frame(frame)];
     frames++;
   }
-  if (textures.length !== 4) {
+  if (textures.length !== 6 || !countryLanded(textures)) {
     sim.dispose();
-    throw new Error(`country: the sim bound ${textures.length} textures`);
+    throw new Error(`country: the sim bound ${textures.length} textures, the land unbuilt`);
   }
   return {
     textures,
@@ -123,7 +151,7 @@ export function countryBuild(
       const started = performance.now();
       const bound = sim.frame(simFrame(more));
       const ms = performance.now() - started;
-      if (bound.length !== 4 || bound.some((texture, slot) => texture !== textures[slot]))
+      if (bound.length !== 6 || bound.some((texture, slot) => texture !== textures[slot]))
         throw new Error("country: a sim frame bound other textures");
       return ms;
     },
@@ -172,7 +200,10 @@ export function countryDraw(
   const phases = new RatePhases(countryScene.params);
   phases.step(values, options.motionTime ?? 30);
   gl.uniform4fv(u("uPhases"), phases.upload);
-  gl.uniform4f(u("uSimOn"), 1, 1, 1, 1);
+  // The bound slots, as the renderer flags them (uSimOn: slots 0-3, uSimOn2: 4-7).
+  const on = Array.from({ length: 8 }, (_, slot) => (built.textures[slot] === undefined ? 0 : 1));
+  gl.uniform4fv(u("uSimOn"), on.slice(0, 4));
+  gl.uniform4fv(u("uSimOn2"), on.slice(4, 8));
   try {
     built.textures.forEach((texture, slot) => {
       gl.uniform1i(u(`uSim${slot}`), slot);
@@ -233,13 +264,13 @@ function writtenDuring(
 const PROBE = 96;
 const probeGlsl = /* glsl */ `
 Shade probeLand(vec2 uv, vec2 cell, float t) {
-  float texel = COUNTRY_EXTENT / float(textureSize(uSim2, 0).x);
-  float stride = floor(float(textureSize(uSim2, 0).x) / ${PROBE}.0);
+  float texel = COUNTRY_EXTENT / float(textureSize(valleyField2, 0).x);
+  float stride = floor(float(textureSize(valleyField2, 0).x) / ${PROBE}.0);
   vec2 p = (floor(cell) * stride + floor(0.5 * stride) + 0.5) * texel;
-  TerrainParcel parcel = terrainParcel(uSim2, uSim3, p, COUNTRY_EXTENT);
-  vec4 cover = terrainCover(uSim1, p, COUNTRY_EXTENT);
+  TerrainParcel parcel = terrainParcel(valleyField2, valleyField3, p, COUNTRY_EXTENT);
+  vec4 cover = terrainCover(valleyField1, p, COUNTRY_EXTENT);
   countryWoodsSet();
-  float woods = countryWoods(cover, terrainWater(terrainGround(uSim0, p, COUNTRY_EXTENT)), false) > 0.5 ? 8.0 : 0.0;
+  float woods = countryWoods(cover, terrainWater(terrainGround(valleyField0, p, COUNTRY_EXTENT)), false) > 0.5 ? 8.0 : 0.0;
   float high = floor(parcel.id / 256.0);
   return shadeOf(vec3(high, parcel.id - 256.0 * high, floor(parcel.use + 0.5) * 16.0 + woods) / 255.0, 0.0, 0.0);
 }
@@ -250,26 +281,20 @@ const WOODED = { crops: 0, woodland: 1, "woodland-amount": 100 };
 const MIXED = {
   pasture: 1,
   "pasture-amount": 30,
-  wildflowers: 1,
+  farmlandWildflowers: 1,
   lavender: 1,
   sunflowers: 1,
-  pines: 0.5,
+  farmlandPines: 0.5,
 };
 
 export function verifyCountryTerrain(gl: WebGL2RenderingContext): Record<string, unknown> {
-  const all = sceneFeaturesAll(countryScene);
-  const program = countryProgram(gl, fragmentSourceFor(countryScene, all));
-  const probe = countryProgram(
-    gl,
-    fragmentSourceFor(
-      { ...countryScene, entry: "probeLand", glsl: countryScene.glsl + probeGlsl },
-      all,
-    ),
-  );
-  const draw = (landscape: number): { bytes: Uint8Array; frames: number } => {
-    const built = countryBuild(gl, { landscape });
+  const all = sceneFeaturesAll(countryScene) ?? {};
+  const program = countryProgram(gl, countrySource(all));
+  const probe = countryProgram(gl, countrySource(all, { glsl: probeGlsl, entry: "probeLand" }));
+  const draw = (seed: number): { bytes: Uint8Array; frames: number } => {
+    const built = countryBuild(gl, { seed });
     try {
-      return { bytes: countryDraw(gl, program, built, { landscape }), frames: built.frames };
+      return { bytes: countryDraw(gl, program, built, { seed }), frames: built.frames };
     } finally {
       built.dispose();
     }
@@ -332,18 +357,18 @@ export function verifyCountryTerrain(gl: WebGL2RenderingContext): Record<string,
         return model.allocate({
           shares: {
             crops: share("crops"),
-            wildflowers: share("wildflowers"),
+            wildflowers: share("farmlandWildflowers"),
             lavender: share("lavender"),
             sunflowers: share("sunflowers"),
             pasture: share("pasture"),
             woodland: share("woodland"),
           },
-          pines: share("woodland") > 0 ? (values.pines ?? 0) : 0,
+          pines: share("woodland") > 0 ? (values.farmlandPines ?? 0) : 0,
           cows: values.cows ?? 0,
         });
       };
       // Per parcel its woods' species: 0 none (woodland off), 1 broadleaf, 2 pine. The parcels'
-      // species flags (uSim2) read nothing else of the land's uses.
+      // species flags (the parcels' field) read nothing else of the land's uses.
       const woodsOf = (allocation: LandAllocation): Uint8Array =>
         allocation.pine.map((pine) => (allocation.wooded ? 1 + pine : 0));
       let woods = woodsOf(allocationFor({}));
@@ -355,22 +380,23 @@ export function verifyCountryTerrain(gl: WebGL2RenderingContext): Record<string,
         const next = woodsOf(allocation);
         const same = next.every((wood, s) => wood === woods[s]);
         woods = next;
-        // One sim frame, timed. A rebuild would write the ground (uSim0). The parcels (uSim2) carry
-        // the pine woods' flag: a change that moves a wood or its species may rewrite their rows
-        // along with uSim1 and uSim3, one that keeps every wood and its species never does.
+        // One sim frame, timed. A rebuild would write the ground (its field). The parcels' field
+        // carries the pine woods' flag: a change that moves a wood or its species may rewrite their
+        // rows along with the cover's and the records', one that keeps every wood and its species
+        // never does.
         let ms = 0;
         const written = writtenDuring(gl, built.textures, () => {
           ms = built.step(knobs);
         });
         check(
-          !written.includes(0),
-          `${name}: a change of the land's uses rebuilt the land (it wrote uSim${written.join(", uSim")})`,
+          !written.includes(COUNTRY_SLOTS.ground),
+          `${name}: a change of the land's uses rebuilt the land (it wrote slots ${written.join(", ")})`,
         );
         if (same) {
           kept.push(name);
           check(
-            !written.includes(2),
-            `${name}: a change that kept every wood and its species rewrote the parcels (uSim2)`,
+            !written.includes(COUNTRY_SLOTS.parcels),
+            `${name}: a change that kept every wood and its species rewrote the parcels`,
           );
         }
         const picture = countryDraw(gl, program, built, knobs);
@@ -424,9 +450,12 @@ export function verifyCountryTerrain(gl: WebGL2RenderingContext): Record<string,
       // The river switched off: its bed dry, the rest as it was (nothing laid out again).
       built.step({});
       const flowing = countryDraw(gl, program, built, {});
-      const dryWritten = writtenDuring(gl, built.textures, () => built.step({ river: 0 }));
-      check(!dryWritten.includes(2), "the river switched off laid the parcels out again");
-      const dry = countryDraw(gl, program, built, { river: 0 });
+      const dryWritten = writtenDuring(gl, built.textures, () => built.step({ waterway: 0 }));
+      check(
+        !dryWritten.includes(COUNTRY_SLOTS.parcels),
+        "the river switched off laid the parcels out again",
+      );
+      const dry = countryDraw(gl, program, built, { waterway: 0 });
       let wet = 0;
       for (let k = 0; k < WIDTH * HEIGHT; k++) {
         const o = 4 * k;

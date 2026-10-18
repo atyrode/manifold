@@ -1,15 +1,15 @@
 import { expect, test } from "bun:test";
+import { ATLAS_WIDTH } from "../../composer/caps.ts";
 import { HeadlessSim } from "../../sims/headless.ts";
 import { loadScene } from "../index.ts";
+import { CAM_H, CAM_X, FOCAL, PITCH } from "./constants.ts";
 import {
-  CAM_H,
-  CAM_X,
-  FOCAL,
   KIND_BIKE,
   KIND_VAN,
+  LANE_EB_BIKE,
+  LANE_EB_OUT,
   MAX_AGENTS,
   MAX_WALKERS,
-  PITCH,
   PORTALS,
   SHAPES,
   Z_REF,
@@ -21,9 +21,15 @@ const streetScene = await loadScene("street");
 const FRAME = 0.2;
 /** An agent that has moved less than this (m) since it last moved stands still. */
 const STILL = 0.3;
+/**
+ * The street's life in the composer's records atlas (texture slot 1, composer/sim.ts): its rows
+ * follow the composer's row 0 (no other street layer keeps rows), the agents in the first two.
+ */
+const ATLAS = 1;
+const LIFE_ROW = 1;
 
-/** Runs the street for `seconds` with these knobs, handing uSim0 (as the shader samples it) to
- *  `look` every `every` frames with the time. */
+/** Runs the street for `seconds` with these knobs, handing the agents' two rows (as the shader
+ *  samples them: row 0's MAX_AGENTS texels, then row 1's) to `look` every `every` frames with the time. */
 function run(
   knobs: Record<string, number>,
   seconds: number,
@@ -32,9 +38,15 @@ function run(
 ): void {
   const sim = new HeadlessSim(streetScene);
   const frames = Math.round(seconds / FRAME);
+  const agents = new Float32Array(MAX_AGENTS * 2 * 4);
+  const row = ATLAS_WIDTH * 4;
   for (let f = 1; f <= frames; f++) {
     sim.step({ dt: FRAME, knobs });
-    if (f % every === 0) look(sim.upload(0).data as Float32Array, f * FRAME);
+    if (f % every !== 0) continue;
+    const atlas = sim.upload(ATLAS).data as Float32Array;
+    agents.set(atlas.subarray(LIFE_ROW * row, LIFE_ROW * row + MAX_AGENTS * 4), 0);
+    agents.set(atlas.subarray((LIFE_ROW + 1) * row, (LIFE_ROW + 1) * row + MAX_AGENTS * 4), MAX_AGENTS * 4);
+    look(agents, f * FRAME);
   }
 }
 
@@ -178,7 +190,7 @@ test("with the school outing out often and traffic at its top, no vehicle stands
     const watch = new Watch();
     let still = 0;
     let deepest = 0;
-    run({ traffic: 1, "outing-amount": 1, signal: cycle, streetSeed: seed }, 1200, 2, (data, t) => {
+    run({ traffic: 1, "outing-amount": 1, signal: cycle, seed }, 1200, 2, (data, t) => {
       watch.look(data, t);
       const boxes: Box[] = [];
       for (let i = MAX_WALKERS; i < MAX_AGENTS; i++) {
@@ -216,7 +228,7 @@ test("with the late delivery out often and everything at its top, no cyclist rid
   for (const seed of [0, 1, 2, 3]) {
     let parked = 0;
     let deepest = 0;
-    run({ ...knobs, streetSeed: seed }, 600, 1, (data) => {
+    run({ ...knobs, seed }, 600, 1, (data) => {
       const bikes: Box[] = [];
       const vans: Box[] = [];
       for (let i = MAX_WALKERS; i < MAX_AGENTS; i++) {
@@ -242,3 +254,43 @@ test("with the late delivery out often and everything at its top, no cyclist rid
     expect(deepest, `seed ${seed}: a cyclist overlapped a van (m)`).toBe(0);
   }
 }, 150_000);
+
+test("with the late delivery out often and everything at its top, no cyclist swings out round the van in front of a car", () => {
+  const knobs = { crowd: 1, traffic: 1, "outing-amount": 1, delivery: 1, "delivery-amount": 1 };
+  const bikeLength = SHAPES[KIND_BIKE]?.length ?? 1.75;
+  for (const seed of [0, 1, 2, 3, 4, 5]) {
+    let swung = 0;
+    let least = Number.POSITIVE_INFINITY;
+    let at = 0;
+    run({ ...knobs, seed }, 600, 1, (data, t) => {
+      // Eastbound cyclists swung out of the kerb lane toward the outer lane past the junction (round
+      // the van parked past the konbini), and the cars in the outer lane behind them.
+      const bikes: number[] = [];
+      const cars: { x: number; length: number }[] = [];
+      for (let i = MAX_WALKERS; i < MAX_AGENTS; i++) {
+        const o = i * 4;
+        const kind = data[o + 3] ?? 0;
+        const shape = SHAPES[kind];
+        if (!shape || Math.cos(data[o + 2] ?? 0) < 0.9) continue;
+        const x = data[o] ?? 0;
+        const z = (data[o + 1] ?? 0) + Z_REF;
+        if (kind === KIND_BIKE && x > 8 && z < LANE_EB_BIKE - 0.6 && z > LANE_EB_OUT - 0.6) bikes.push(x);
+        else if (kind !== KIND_BIKE && kind !== KIND_VAN && Math.abs(z - LANE_EB_OUT) < 0.5)
+          cars.push({ x, length: shape.length });
+      }
+      swung += bikes.length;
+      for (const bike of bikes)
+        for (const car of cars) {
+          const gap = bike - car.x - (car.length + bikeLength) / 2;
+          if (gap > -1 && gap < least) {
+            least = gap;
+            at = t;
+          }
+        }
+    });
+    // Cyclists did swing out round the van; a car behind one in the outer lane never came nearer
+    // than the standstill gap a driver keeps (IDM_S0, 2 m, less a hair): the cyclist waited for it.
+    expect(swung, `seed ${seed}: no cyclist swung out round the van`).toBeGreaterThan(0);
+    expect(least, `seed ${seed}: a car behind a swung-out cyclist at ${at.toFixed(1)} s (m)`).toBeGreaterThanOrEqual(1.9);
+  }
+}, 300_000);

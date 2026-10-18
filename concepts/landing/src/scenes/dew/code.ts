@@ -1,7 +1,7 @@
-// Dew's code, loaded the first time the scene is needed (SceneDef.code).
-import { dewScene } from "./index.ts";
-import { dewSim } from "./sim.ts";
+// Dew's code, loaded the first time the scene is needed (SceneDef.code): assembled from the code of
+// every layer its rig offers (composer/code.ts).
+import { composedCode } from "../../composer/code.ts";
+import { OUTDOOR_CODE } from "../../composer/outdoor-code.ts";
+import { dewComposed } from "./index.ts";
 
-export { dewGlsl as glsl } from "./shader.ts";
-export const entry = "sceneDew";
-export const sim = dewSim(dewScene.params);
+export const { glsl, entry, glslFor, sim } = composedCode(dewComposed, OUTDOOR_CODE);

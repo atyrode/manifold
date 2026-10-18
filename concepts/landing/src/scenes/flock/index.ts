@@ -1,118 +1,68 @@
 // Murmuration: a starling flock folding over a dusk sky. The birds fly on the CPU as a thin sheet
 // that bends, twists, folds and splits (sim.ts), or, with `emergent` on, as topological boids
-// (sims/boids.ts) whose shape is their own; the shader (shader.ts) inks them from a density field,
-// pale where the flock is stretched and black where it folds. The sky comes from the shared library.
-import { choice, counts, feature, range, type ParamDef } from "../../params.ts";
-import { atmosphereGroups, skyKnobs, weatherKnobs } from "../atmosphere.ts";
+// (sims/boids.ts) whose shape is their own; they are inked from a density field, pale where the
+// flock is stretched and black where it folds. A preset of the `outdoor` composer (src/composer,
+// README "Composers"): the roost (the World's sky and the low skyline it grounds) and the
+// murmuration over it (layers.ts), which any level rig with enough sky offers. The sky, the weather
+// and the birds besides the starlings are the World's.
+import { composeScene } from "../../composer/compose.ts";
+import { outdoor } from "../../composer/outdoor.ts";
+import type { ScenePreset } from "../../composer/types.ts";
 import type { SceneDef } from "../types.ts";
-import { FLOCK_PASSAGE, FLOCK_SIZES } from "./constants.ts";
+import { worldGroups } from "../world.ts";
+import {
+  FLOCK_FLYWAY,
+  FLOCK_GRADE,
+  FLOCK_METEORS,
+  FLOCK_PASSAGE,
+  FLOCK_RIG,
+} from "./constants.ts";
 
-const params: readonly ParamDef[] = [
-  choice(
-    "flock",
-    "birds",
-    "starlings",
-    counts(...FLOCK_SIZES),
-    3000,
-    "How many starlings. More make a deeper, darker cloud; fewer leave single birds easy to pick out.",
-  ),
-  range(
-    "flock",
-    "cohesion",
-    "cohesion",
-    0.55,
-    "Low: a loose flock that stretches into ribbons, tears and joins up again. High: a tight, dark ball.",
-  ),
-  range(
-    "flock",
-    "chaos",
-    "chaos",
-    0.35,
-    "Calm: the flock sweeps as one smooth sheet. Restless: it folds and splits, and ripples run through it now and then with no falcon in sight.",
-  ),
-  range(
-    "flock",
-    "speed",
-    "speed",
-    0.5,
-    "How fast the flock sweeps across the sky and changes shape.",
-  ),
-  feature(
-    "flock",
-    "predator",
-    "falcon",
-    true,
-    "frequency",
-    0.35,
-    "A peregrine dives through now and then: the birds flash apart around it and dark waves ripple out across the flock.",
-    { trigger: 0 },
-  ),
-  feature(
-    "flock",
-    "emergent",
-    "emergent flight",
-    false,
-    "neighbours",
-    7,
-    "Off: the flock flies as one choreographed sheet that stretches, banks, folds and parts on cue. On: every starling steers only by its nearest few neighbours, keeping its distance, matching their heading and closing on them, and the flock's shape, its turns and its splits come out of that alone; startles hop from bird to bird. The amount is how many neighbours each bird watches; real starlings watch about seven.",
-    { min: 3, max: 12, step: 1 },
-  ),
-  choice(
-    "skyline",
-    "skyline",
-    "skyline",
-    [
-      { label: "city", value: 0 },
-      { label: "reeds", value: 1 },
-      { label: "sea", value: 2 },
-    ],
-    1,
-    "The low silhouette along the bottom: rooftops, a reed bed on still water, or the sea under a headland. Lights come on as night falls.",
-  ),
-  ...skyKnobs({
-    time: 0.76,
-    stars: 0.45,
-    constellations: true,
-  }),
-  ...weatherKnobs({ wind: true }),
-  feature(
-    "manifold",
-    "mark",
-    "M formation",
-    false,
-    "frequency",
-    0.3,
-    "Every so often the flock gathers into the Manifold M, streams along its strokes for a few seconds, then lets go.",
-    { trigger: 1 },
-  ),
-];
-
-export const flockScene: SceneDef = {
+const preset: ScenePreset = {
   id: "flock",
+  composer: "outdoor",
   title: "Murmuration",
   blurb: "Starlings at dusk, thousands of birds folding into one shape.",
   accent: "#ff8a3d",
   look: { color: "full", levels: 4 },
-  params,
+  passage: FLOCK_PASSAGE,
   planets: { group: "sky", across: [-90, -18, 5], up: [3, 24, 44] },
-  groups: {
-    flock: {
-      title: "Flock",
-      blurb:
-        "How many starlings, how tightly they keep together, how restless they are, the falcon that scatters them, and whether they fly a choreographed sheet or steer by their neighbours.",
+  rig: FLOCK_RIG,
+  grade: FLOCK_GRADE,
+  // Just after sunset under a clear sky: the stars come out over the flock after dusk, no Milky Way;
+  // the World's other birds, off (the starlings are the sky's).
+  world: {
+    time: 0.76,
+    stars: 0.45,
+    milkyWay: { on: false },
+    clouds: 0,
+    birds: {
+      kind: "rooks",
+      on: false,
+      help: "Rooks and other birds crossing the sky in front of the flock on their way to roost; the reeds hide any that pass behind them, and few fly in rain or snow.",
     },
-    skyline: { title: "Skyline", blurb: "The thin silhouette that grounds the sky." },
+  },
+  meteors: FLOCK_METEORS,
+  flyway: FLOCK_FLYWAY,
+  floor: "water",
+  layers: ["roost", "murmuration"],
+  // The skyline sways with the wind alone, so the gusts are off.
+  values: { gusts: 0 },
+  groups: {
     sky: {
-      ...atmosphereGroups.sky,
+      ...worldGroups.sky,
       blurb:
         "Time of day, whether the days pass, and the stars that come out over the flock after dusk.",
     },
     weather: {
-      ...atmosphereGroups.weather,
-      blurb: "Wind carries the flock downwind, and stirs the reeds and the water.",
+      ...worldGroups.weather,
+      blurb:
+        "Wind carries the flock downwind and stirs the reeds and the water; rain and snow fall in front of the flock and grey its sky.",
     },
-    manifold: { title: "Manifold mark", blurb: "The flock itself draws the M, then lets it go." },
   },
-  code: () => import("./code.ts"),
-  passage: FLOCK_PASSAGE,
 };
+
+/** The murmuration composed (composer/compose.ts): its definition, and what its code is assembled from. */
+export const flockComposed = composeScene(outdoor, preset);
+
+export const flockScene: SceneDef = { ...flockComposed.def, code: () => import("./code.ts") };

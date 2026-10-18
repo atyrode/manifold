@@ -13,7 +13,8 @@
 // falls and most going dark late at night, `lights` the share of them that ever light (a church's
 // and the castle's half that), warming the walls and the ground round a lit cottage or farmhouse
 // (COUNTRY_HAS_LIGHTS); smoke curling from the cottages' chimney stacks and leaning with the wind,
-// thicker as the light goes, `smoke` its density (COUNTRY_HAS_SMOKE).
+// thicker as the light goes, `settlementsSmoke` its density (COUNTRY_HAS_SMOKE). Both are the
+// settlements layer's knobs, read through the valley's macros (VALLEY_LIGHTS, VALLEY_SMOKE).
 import { glslFloat } from "../../shaders/glsl.ts";
 import { TERRAIN_MAX_COTTAGES } from "../../sims/terrain-limits.ts";
 import { TERRAIN_HOUSE, TERRAIN_MAX_PLACES } from "../../sims/terrain.ts";
@@ -27,7 +28,7 @@ const float COUNTRY_HOUSE = ${glslFloat(TERRAIN_HOUSE)}; // metres a house unit 
 const float COUNTRY_MODEL_CELLS = ${glslFloat(COUNTRY_MODEL_CELLS)};
 // The share of windows that ever light (the lights knob; none while it is off).
 #if COUNTRY_HAS_LIGHTS
-#define COUNTRY_LIGHTS K_lights
+#define COUNTRY_LIGHTS VALLEY_LIGHTS
 #else
 #define COUNTRY_LIGHTS 0.0
 #endif
@@ -196,7 +197,7 @@ CountryFind countryBuilding(TerrainBuilding b, vec3 eye, vec3 rd, vec2 q, float 
 // the pixel, then only those two are drawn (countryBuilding), so the cost per pixel stays two
 // buildings' however many a village holds; and the castle, where its bounds hold it.
 CountryFind countryBuildings(vec3 eye, vec3 rd, vec2 q, float pxl, float zLimit, float tod, float dark, float wind, inout float glow, inout float halo, inout float smoke) {
-  ivec2 counts = terrainCounts(uSim3);
+  ivec2 counts = terrainCounts(valleyField3);
   int first = -1;
   int second = -1;
   int castleIndex = -1;
@@ -204,7 +205,7 @@ CountryFind countryBuildings(vec3 eye, vec3 rd, vec2 q, float pxl, float zLimit,
   float near2 = 1e9;
   for (int s = 0; s < ${TERRAIN_MAX_PLACES}; s++) {
     if (s >= counts.x) break;
-    TerrainPlace place = terrainPlace(uSim3, s);
+    TerrainPlace place = terrainPlace(valleyField3, s);
     vec3 d = place.at - eye;
     float zc = dot(d, countryFwd);
     if (zc < 30.0) continue;
@@ -213,12 +214,12 @@ CountryFind countryBuildings(vec3 eye, vec3 rd, vec2 q, float pxl, float zLimit,
     if (abs(q.x - centre.x) > reach || q.y < centre.y - reach || q.y > centre.y + reach + 80.0 / zc) continue;
 #if COUNTRY_HAS_LIGHTS && COUNTRY_HAS_FOG
     // How much light the valley fog round this settlement scatters from its lit windows.
-    float spread = K_lights > 0.0 && K_fog > 0.0 ? countryFogHalo(place.at) : 0.0;
+    float spread = VALLEY_LIGHTS > 0.0 && K_fog > 0.0 ? countryFogHalo(place.at) : 0.0;
 #endif
     // The village's cottages and its church, the most any settlement holds.
     for (int k = 0; k < ${TERRAIN_MAX_COTTAGES + 1}; k++) {
       if (k >= place.count) break;
-      TerrainBuilding b = terrainBuilding(uSim3, place.first + k);
+      TerrainBuilding b = terrainBuilding(valleyField3, place.first + k);
       bool castle = b.kind > TERRAIN_BUILDING_CASTLE - 0.5;
       vec3 db = b.at - eye;
       float zm = dot(db, countryFwd);
@@ -239,8 +240,8 @@ CountryFind countryBuildings(vec3 eye, vec3 rd, vec2 q, float pxl, float zLimit,
         vec2 l = vec2(cos(b.facing), sin(b.facing));
 #if COUNTRY_HAS_LIGHTS
         // Lit windows warm the walls and the ground around (a barn has none lit, a church's half).
-        if (K_lights > 0.0 && (b.kind < TERRAIN_BUILDING_BARN - 0.5)) {
-          float share = b.kind > 0.5 ? 0.5 * K_lights : K_lights;
+        if (VALLEY_LIGHTS > 0.0 && (b.kind < TERRAIN_BUILDING_BARN - 0.5)) {
+          float share = b.kind > 0.5 ? 0.5 * VALLEY_LIGHTS : VALLEY_LIGHTS;
           float lit = buildingWindow(fract(b.hash * 91.0 + 0.13), tod, dark, share) + buildingWindow(fract(b.hash * 91.0 + 0.57), tod, dark, share);
           vec2 g = (q - at) * zm / unit - vec2(0.0, 0.4);
           glow += lit * exp(-dot(g, g) * 0.3);
@@ -251,10 +252,10 @@ CountryFind countryBuildings(vec3 eye, vec3 rd, vec2 q, float pxl, float zLimit,
 #endif
 #if COUNTRY_HAS_SMOKE
         // A lit hearth smokes from a cottage's stack, thicker as the light goes.
-        if (K_smoke > 0.0 && b.kind < 0.5 && fract(b.hash * 7.7) < 0.6) {
+        if (VALLEY_SMOKE > 0.0 && b.kind < 0.5 && fract(b.hash * 7.7) < 0.6) {
           vec3 top = db + vec3(l.x, 0.0, l.y) * 0.15 * b.span * unit + vec3(0.0, 1.6 * unit, 0.0);
           float zt = dot(top, countryFwd);
-          smoke = max(smoke, buildingSmoke(q, vec2(dot(top, countryRight), top.y) / zt, 9.0 * unit / zt, b.hash, uMotionTime, wind) * (0.4 + 0.6 * dark) * (0.35 + 0.85 * K_smoke));
+          smoke = max(smoke, buildingSmoke(q, vec2(dot(top, countryRight), top.y) / zt, 9.0 * unit / zt, b.hash, uMotionTime, wind) * (0.4 + 0.6 * dark) * (0.35 + 0.85 * VALLEY_SMOKE));
         }
 #endif
         // Its bounds on screen: its length as it runs across the view and a gable either side, its
@@ -277,9 +278,9 @@ CountryFind countryBuildings(vec3 eye, vec3 rd, vec2 q, float pxl, float zLimit,
     }
   }
   CountryFind f = countryNoBuilding(zLimit);
-  if (first >= 0) f = countryBuilding(terrainBuilding(uSim3, first), eye, rd, q, pxl, zLimit);
+  if (first >= 0) f = countryBuilding(terrainBuilding(valleyField3, first), eye, rd, q, pxl, zLimit);
   if (second >= 0) {
-    CountryFind behind = countryBuilding(terrainBuilding(uSim3, second), eye, rd, q, pxl, f.z);
+    CountryFind behind = countryBuilding(terrainBuilding(valleyField3, second), eye, rd, q, pxl, f.z);
     if (behind.face > 0.5) f = behind;
   }
   // A loop of at most one turn rather than an if: a software rasteriser runs every line of a
@@ -287,7 +288,7 @@ CountryFind countryBuildings(vec3 eye, vec3 rd, vec2 q, float pxl, float zLimit,
   // costs only where it stands.
   int castles = castleIndex >= 0 ? 1 : 0;
   for (int i = 0; i < castles; i++) {
-    CountryFind castle = countryCastle(terrainBuilding(uSim3, castleIndex), eye, rd, pxl, f.z);
+    CountryFind castle = countryCastle(terrainBuilding(valleyField3, castleIndex), eye, rd, pxl, f.z);
     if (castle.face > 0.5) f = castle;
   }
   return f;

@@ -6,11 +6,18 @@
 // stands inside its own parcel, its fence's set and a body's length clear of the parcel's edge, off
 // the roads, streams and water and out of the woods; the scene with all its life drawn is the same
 // picture twice, stands still at motion 0 and differs from the scene without it.
-import { fragmentSourceFor, sceneFeaturesAll } from "../../shaders/index.ts";
+import { sceneFeaturesAll } from "../../shaders/index.ts";
 import { generateTerrain } from "../../sims/terrain.ts";
 import { loadScene } from "../index.ts";
 import { COUNTRY_MAP } from "./sim.ts";
-import { countryBuild, countryDraw, countryProgram, differing, fnv } from "./terrain.verify.ts";
+import {
+  countryBuild,
+  countryDraw,
+  countryProgram,
+  countrySource,
+  differing,
+  fnv,
+} from "./terrain.verify.ts";
 
 const countryScene = await loadScene("country");
 
@@ -39,8 +46,8 @@ Shade probeCountry(vec2 uv, vec2 cell, float t) {
   }
   float id = float(x + 1);
   countryWoodsSet();
-  vec4 data = terrainRecord(uSim3, TERRAIN_SITES_ROW + x / 32, 2 * (x - (x / 32) * 32) + 1);
-  vec4 core = terrainCore(uSim3, id);
+  vec4 data = terrainRecord(valleyField3, TERRAIN_SITES_ROW + x / 32, 2 * (x - (x / 32) * 32) + 1);
+  vec4 core = terrainCore(valleyField3, id);
   if (floor(data.z + 0.5) != LAND_PASTURE || core.z <= 0.0) return shadeOf(vec3(0.0), 0.0, 0.0);
   CountryHerd herd = countryHerd(id, core, data.w);
   int k = y - (y / ${HERD}) * ${HERD};
@@ -49,10 +56,10 @@ Shade probeCountry(vec2 uv, vec2 cell, float t) {
   float act;
   vec2 way;
   vec2 at = countryHerdAnimal(herd, float(k), 1.0 + 41.3 * float(y / ${HERD}), slot, act, way);
-  TerrainParcel parcel = terrainParcel(uSim2, uSim3, at, COUNTRY_EXTENT);
-  vec4 cover = terrainCover(uSim1, at, COUNTRY_EXTENT);
+  TerrainParcel parcel = terrainParcel(valleyField2, valleyField3, at, COUNTRY_EXTENT);
+  vec4 cover = terrainCover(valleyField1, at, COUNTRY_EXTENT);
   bool inside = parcel.id == id && parcel.border >= COUNTRY_FENCE_SET + herd.size;
-  float water = terrainWater(terrainGround(uSim0, at, COUNTRY_EXTENT));
+  float water = terrainWater(terrainGround(valleyField0, at, COUNTRY_EXTENT));
   bool clear = cover.x > 2.0 && cover.y > 0.0 && cover.w > -0.01 && water < 0.0 && countryWoods(cover, water, false) < 0.5;
   return shadeOf(vec3(1.0, inside && clear ? 1.0 : 0.5, clamp(parcel.border / 100.0, 0.0, 1.0)), 0.0, 0.0);
 }
@@ -63,8 +70,8 @@ Shade probeCountry(vec2 uv, vec2 cell, float t) {
  * carts, birds (a feature's amount is `<key>-amount`).
  */
 const LIFE = {
-  wildflowers: 1,
-  "wildflowers-amount": 30,
+  farmlandWildflowers: 1,
+  "farmlandWildflowers-amount": 30,
   lavender: 1,
   sunflowers: 1,
   pasture: 1,
@@ -82,16 +89,10 @@ function check(ok: boolean, message: string): void {
 }
 
 export function verifyCountryLife(gl: WebGL2RenderingContext): Record<string, unknown> {
-  const all = sceneFeaturesAll(countryScene);
+  const all = sceneFeaturesAll(countryScene) ?? {};
   const built = countryBuild(gl, LIFE);
-  const probe = countryProgram(
-    gl,
-    fragmentSourceFor(
-      { ...countryScene, entry: "probeCountry", glsl: countryScene.glsl + probeGlsl },
-      all,
-    ),
-  );
-  const scene = countryProgram(gl, fragmentSourceFor(countryScene, all));
+  const probe = countryProgram(gl, countrySource(all, { glsl: probeGlsl, entry: "probeCountry" }));
+  const scene = countryProgram(gl, countrySource(all));
   try {
     const result: Record<string, unknown> = {};
     const probeDraw = (mode: number, width: number, height: number): Uint8Array => {

@@ -1,4 +1,4 @@
-// The starling murmuration (`murmuration`, off by default): the Murmuration scene's flock (flock/
+// The starling murmuration (the `starlings` layer, off by default): the Murmuration scene's flock (flock/
 // sim.ts's Flock, flown as countryMurmuration says) wheeling over the far fields from late afternoon
 // until it goes down to roost as dusk deepens, never in steady rain nor while the starlings nest in
 // late spring (the time of year, season.ts's countryYear), carried by the scene's wind. The
@@ -15,10 +15,10 @@
 // width, height, the birds per texel of the reference sheet, 0) and the field beside the terrain's
 // records, columns 64.. and rows 1..height (rg birds and their roll), read through the atlas's
 // linear filter with its edges clamped as the flock's own texture clamps them. Compiled in only
-// while the knob is on (COUNTRY_HAS_MURMURATION, index.ts); while it is off the flock idles.
+// while the knob is on (COUNTRY_HAS_MURMURATION, the valley's featuresFor); while it is off the flock
+// idles. The flock's ink (flockInk) is the composer's shared chunk FLOCK_INK, compiled in once.
 import { glslFloat } from "../../shaders/glsl.ts";
 import { TERRAIN_RECORDS } from "../../sims/terrain.ts";
-import { flockInkGlsl } from "../flock/shader.ts";
 import { type Flock, type FlockSetup } from "../flock/sim.ts";
 
 /** Where the flock flies: its camera depth (metres) and its band of sky (screen heights). */
@@ -33,7 +33,7 @@ export const COUNTRY_FLOCK_HEAD = TERRAIN_RECORDS.width;
  */
 export const countryMurmuration: FlockSetup = {
   knobs: {
-    birds: "murmuration",
+    birds: "starlings",
     cohesion: 0.6,
     chaos: 0.3,
     speed: 0.4,
@@ -65,7 +65,6 @@ export function writeCountryFlock(flock: Flock, data: Float32Array, width: numbe
 
 export const countryMurmurationGlsl = /* glsl */ `
 #if COUNTRY_HAS_MURMURATION
-${flockInkGlsl}
 // ---- the murmuration (murmuration.ts) ----
 const int COUNTRY_FLOCK_HEAD = ${COUNTRY_FLOCK_HEAD};
 const float COUNTRY_MURMURATION_DEPTH = ${glslFloat(COUNTRY_MURMURATION.depth)};
@@ -75,14 +74,14 @@ const vec3 COUNTRY_STARLING = vec3(0.035, 0.03, 0.045);
 // big, in an atlas atlas texels big: linear, clamped to its edge texels.
 vec2 countryFlockAt(vec2 at, vec2 size, vec2 atlas) {
   vec2 c = clamp(at, vec2(0.5), size - 0.5);
-  return texture(uSim3, (vec2(float(COUNTRY_FLOCK_HEAD), 1.0) + c) / atlas).rg;
+  return texture(valleyField3, (vec2(float(COUNTRY_FLOCK_HEAD), 1.0) + c) / atlas).rg;
 }
 
 // The flock's sheet at uv (flockInk), sampled as flockSheet samples the flock's own texture.
 vec2 countryFlockSheet(vec2 uv) {
-  vec4 head = texelFetch(uSim3, ivec2(COUNTRY_FLOCK_HEAD, 0), 0);
+  vec4 head = texelFetch(valleyField3, ivec2(COUNTRY_FLOCK_HEAD, 0), 0);
   vec2 size = head.xy;
-  vec2 atlas = vec2(textureSize(uSim3, 0));
+  vec2 atlas = vec2(textureSize(valleyField3, 0));
   vec2 at = uv * size;
   vec2 fine = countryFlockAt(at, size, atlas);
   vec2 wide = 0.25 * (countryFlockAt(at - 1.0, size, atlas) + countryFlockAt(at + 1.0, size, atlas)
@@ -97,7 +96,7 @@ vec2 countryFlockSheet(vec2 uv) {
 // roost as dusk deepens; not in steady rain, and not while they nest (they thin out from early
 // spring and gather again from midsummer).
 void countryMurmuration(inout vec3 col, inout float seen, inout float accent, vec2 uv, float ahead, Sky sky, vec3 haze, float tod, float rain, float overcast) {
-  if (K_murmuration <= 0.0) return;
+  if (VALLEY_STARLINGS <= 0.0) return;
   float far = COUNTRY_MURMURATION_DEPTH / ahead;
   if (far >= seen) return;
   float nesting = smoothstep(0.06, 0.12, countryYear) * smoothfall(0.34, 0.28, countryYear);

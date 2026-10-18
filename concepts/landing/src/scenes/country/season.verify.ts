@@ -10,10 +10,16 @@
 // - Autumn turns the broadleaf trees and leaves the pines: over a countryside of woods alone (no
 //   crops or settlements), autumn's broadleaf woods draw many orange cells, near crowns and far
 //   canopy alike, and its pine woods next to none, nor does the harvest.
-import { featureKey, fragmentSourceFor, sceneFeatures, shaderValues } from "../../shaders/index.ts";
+import { featureKey, sceneFeatures, shaderValues } from "../../shaders/index.ts";
 import { loadScene } from "../index.ts";
 import { COUNTRY_SEASONS } from "./constants.ts";
-import { countryBuild, type CountryBuilt, countryDraw, countryProgram } from "./terrain.verify.ts";
+import {
+  countryBuild,
+  type CountryBuilt,
+  countryDraw,
+  countryProgram,
+  countrySource,
+} from "./terrain.verify.ts";
 
 const countryScene = await loadScene("country");
 
@@ -68,7 +74,7 @@ export function verifyCountrySeason(gl: WebGL2RenderingContext): Record<string, 
     const key = featureKey(features);
     let program = programs.get(key);
     if (!program) {
-      program = countryProgram(gl, fragmentSourceFor(countryScene, features));
+      program = countryProgram(gl, countrySource(features));
       programs.set(key, program);
     }
     return program;
@@ -130,8 +136,8 @@ export function verifyCountrySeason(gl: WebGL2RenderingContext): Record<string, 
     // Autumn over woods alone: the broadleaf turn, the pines stay.
     built.dispose();
     built = countryBuild(gl, WOODS);
-    const woods = (pines: number, date: number) => {
-      const knobs = { ...WOODS, pines, date };
+    const woods = (pines: number, season: number) => {
+      const knobs = { ...WOODS, farmlandPines: pines, season };
       return orange(draw(built, own(knobs), knobs));
     };
     const turned = woods(0, COUNTRY_SEASONS.autumn);

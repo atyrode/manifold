@@ -50,21 +50,21 @@
 // only grows on resize), so a frame allocates nothing.
 //
 // A scene flies the flock through a FlockSetup: which of its knobs drives each control (or a value
-// that holds it fixed) and the band of sky the flock keeps to; the Murmuration scene's own knobs and
-// sky are the default. With no birds (the control at 0, a switch that is off) the flock is idle: it
-// steps nothing, paints nothing and hands the shader no textures, and grows afresh when birds return.
-// `flockSim` hands the shader the two textures below; a scene that packs them into a texture of its
-// own (the countryside's records atlas) flies a `Flock`, which keeps them as arrays.
-//
-// Textures:
-//   uSim0  rg16f, about FIELD_PER_CELL texels per cell (at most FIELD_ROWS rows): R birds per texel
+// that holds it fixed) and the band of sky the flock keeps to. With no birds (the control at 0, a
+// switch that is off) the flock is idle: it steps nothing and paints nothing, and grows afresh when
+// birds return. The murmuration layer (murmurationSim) flies it over its rig's sky and hands it to
+// the composer's resources; a scene that packs it into a texture of its own (the countryside's
+// records atlas) flies a `Flock` the same way. Its data:
+//   field  rg16f, about FIELD_PER_CELL texels per cell (at most FIELD_ROWS rows): R birds per texel
 //          (a short exponential trail smooths their motion), G the same weighted by how hard the
 //          birds roll. (Flock.field, fieldWidth × fieldHeight.) Each paint uploads only the box it
 //          changed as a half float holds it (Flock.fieldChanged): the flock's last second or so.
-//   uSim1  rgba16f 3×1, nearest: texel 0 falcon (uv xy, heading cos, sin); texel 1 falcon (shown,
-//          wings open 0..1, wingbeat sin) and, in w, the birds per texel of a sheet at
-//          REFERENCE_DENSITY; texel 2 Manifold M (strength 0..1, centre uv xy, height in screen
-//          heights). (Flock.state.)
+//          The murmuration's field 0.
+//   state  3 rgba texels: texel 0 falcon (uv xy, heading cos, sin); texel 1 falcon (shown, wings
+//          open 0..1, wingbeat sin) and, in w, the birds per texel of a sheet at REFERENCE_DENSITY;
+//          texel 2 Manifold M (strength 0..1, centre uv xy, height in screen heights). (Flock.state.)
+//          The first texels of the murmuration's row of the records atlas.
+import type { LayerFrame, LayerSim } from "../../composer/types.ts";
 import { markVertex } from "../../mark.ts";
 import { KnobReader, type ParamDef } from "../../params.ts";
 import { Boids, boidRules } from "../../sims/boids.ts";
@@ -72,8 +72,8 @@ import { FixedStep } from "../../sims/clock.ts";
 import { approach, clamp, easeFactor, lerp, smoothstep } from "../../sims/math.ts";
 import { Random } from "../../sims/random.ts";
 import { DataTexture, DirtyRegion } from "../../sims/texture.ts";
-import type { SceneSim, SimFactory, SimFrame } from "../types.ts";
-import { FLOCK_SIZES } from "./constants.ts";
+import type { SimFrame } from "../types.ts";
+import { FLOCK_HORIZON, FLOCK_SIZES } from "./constants.ts";
 
 const MAX_BIRDS = Math.max(...FLOCK_SIZES);
 /** Fixed seed: the flock is the same every time it is grown with the same size. */
@@ -115,7 +115,11 @@ const BEND_WAVENUMBER = 3.4;
 const BEND_PERIOD = 4.7;
 /** Distance to the flock (screen heights): a little perspective. */
 const DISTANCE = 2.2;
-/** The Murmuration's band of sky (screen heights; FlockSetup.sky), and the margin from the frame's sides. */
+/**
+ * The band of sky over the Murmuration's own horizon (FLOCK_HORIZON; screen heights, FlockSetup.sky),
+ * and the margin from the frame's sides. Over another rig's horizon the band keeps its share of the
+ * sky above it (murmurationSky).
+ */
 const SKY_LOW = 0.28;
 const SKY_HIGH = 0.95;
 const SIDE_MARGIN = 0.1;
@@ -334,23 +338,15 @@ export interface FlockSetup {
   readonly sky: Readonly<{ low: number; high: number }>;
 }
 
-/** The Murmuration scene: every control a knob of its own name, the sky above its skyline. */
-const MURMURATION: FlockSetup = {
-  knobs: {
-    birds: "birds",
-    cohesion: "cohesion",
-    chaos: "chaos",
-    speed: "speed",
-    predator: "predator",
-    wind: "wind",
-    mark: "mark",
-    emergent: "emergent",
-  },
-  sky: { low: SKY_LOW, high: SKY_HIGH },
-};
-
-/** What an idle flock hands the renderer: no textures. */
-const IDLE: readonly (WebGLTexture | undefined)[] = [];
+/**
+ * The band of sky over a rig whose horizon is at `horizon` (uv): the same shares of the sky above it
+ * as the Murmuration's band takes over its own, exactly SKY_LOW..SKY_HIGH there.
+ */
+function murmurationSky(horizon: number): { low: number; high: number } {
+  const rise = horizon - FLOCK_HORIZON;
+  const share = (level: number) => 1 - (level - FLOCK_HORIZON) / (1 - FLOCK_HORIZON);
+  return { low: SKY_LOW + rise * share(SKY_LOW), high: SKY_HIGH + rise * share(SKY_HIGH) };
+}
 
 /** One slow swing of the choreography: a sine of the clock with the given period (s) and phase. */
 const swing = (clock: number, period: number, phase: number): number =>
@@ -1287,11 +1283,17 @@ export class Flock {
     const n = this.#n;
     const x = this.#x;
     const a = this.#aspect;
-    // Centre the M on the flock, kept clear of the frame's sides.
+    // Centre the M on the flock, kept clear of the frame's sides, and of the land under a band of
+    // sky set higher than the Murmuration's own (the M is MARK_SIZE tall).
     const left = Math.max(a * 0.3, 0.47 * MARK_SIZE + 0.05);
     const right = Math.max(left, Math.min(a * 0.7, a - 0.47 * MARK_SIZE - 0.05));
     this.#markX = Math.min(right, Math.max(left, this.#centreX));
-    this.#markY = Math.min(0.64, Math.max(0.5, this.#centreY));
+    const sky = this.#setup.sky;
+    const lift = Math.max(0, sky.low - SKY_LOW);
+    this.#markY = Math.min(
+      Math.min(0.64 + lift, sky.high - 0.2),
+      Math.max(0.5 + lift, this.#centreY),
+    );
     let lo = Number.POSITIVE_INFINITY;
     let hi = Number.NEGATIVE_INFINITY;
     for (let i = 0; i < n; i++) {
@@ -1507,41 +1509,93 @@ function markTrackAt(u: number, out: Float32Array): void {
   out[3] = (by - ay) / length;
 }
 
-/** A Flock with its two textures (uSim0, uSim1), uploaded whenever it repaints them: of the density, only what the paints changed (fieldChanged). */
-class FlockSim implements SceneSim {
-  readonly #flock: Flock;
-  readonly #density: DataTexture;
-  readonly #state: DataTexture;
+/** The murmuration's controls: each a knob of the layer's own, the wind the World's. */
+const MURMURATION_KNOBS: FlockSetup["knobs"] = {
+  birds: "murmuration",
+  cohesion: "cohesion",
+  chaos: "chaos",
+  speed: "speed",
+  predator: "predator",
+  wind: "wind",
+  mark: "murmurationMark",
+  emergent: "emergent",
+};
 
-  constructor(gl: WebGL2RenderingContext, params: readonly ParamDef[], setup: FlockSetup) {
-    this.#flock = new Flock(params, setup);
+/** A frame whose knob values the murmuration may hold (MurmurationSim). */
+type HeldFrame = Omit<SimFrame, "values"> & { values: readonly number[] };
+
+/**
+ * The murmuration layer's sim (LayerCode.sim): a Flock over its rig's band of sky (made on the first
+ * frame, which brings the rig), its density in field 0 (uploaded only where a paint changed it,
+ * fieldChanged) and its state in the first texels of its row of the records atlas, each as it
+ * repaints them. Switched off mid-scene, it keeps its last flock size through its own exit, so the
+ * birds pour down to roost as they do at the scene's end.
+ */
+class MurmurationSim implements LayerSim {
+  readonly #params: readonly ParamDef[];
+  readonly #density: DataTexture;
+  /** The switch's place in the knobs (SimFrame.values), and the flock size it last held on. */
+  readonly #switch: number;
+  #birds = 0;
+  /** The frame the flock is flown with while its size is held, made on the first such frame. */
+  #held: HeldFrame | undefined;
+  readonly #values: number[] = [];
+  #flock: Flock | undefined;
+  /** The flock has painted its state into the row since it was last cleared. */
+  #shown = false;
+
+  constructor(gl: WebGL2RenderingContext, params: readonly ParamDef[]) {
+    this.#params = params;
+    this.#switch = params.findIndex((def) => def.key === MURMURATION_KNOBS.birds);
     this.#density = new DataTexture(gl, { width: 1, height: 1, format: "rg16f" });
-    this.#state = new DataTexture(gl, {
-      width: 3,
-      height: 1,
-      format: "rgba16f",
-      filter: "nearest",
-    });
   }
 
-  frame(frame: SimFrame): readonly (WebGLTexture | undefined)[] {
+  frame(frame: LayerFrame): void {
+    this.#flock ??= new Flock(this.#params, {
+      knobs: MURMURATION_KNOBS,
+      sky: murmurationSky(frame.rig.horizon),
+    });
     const flock = this.#flock;
-    if (!flock.frame(frame)) return IDLE;
+    const birds = frame.values[this.#switch] ?? 0;
+    let flown: SimFrame = frame;
+    if (birds >= 1) this.#birds = birds;
+    else if (this.#birds >= 1) {
+      // Switched off: the layer plays its exit (frame.passage) with the birds it had.
+      const values = this.#values;
+      values.length = 0;
+      for (const value of frame.values) values.push(value);
+      values[this.#switch] = this.#birds;
+      const held = (this.#held ??= { ...frame, values });
+      Object.assign(held, frame);
+      held.values = values;
+      flown = held;
+    }
+    const slot = frame.fields[0];
+    if (!flock.frame(flown)) {
+      if (slot) slot.texture = undefined;
+      if (this.#shown) {
+        frame.records.data.fill(0, 0, flock.state.length);
+        frame.records.touch();
+        this.#shown = false;
+      }
+      return;
+    }
     if (flock.painted) {
       this.#density.resize(flock.fieldWidth, flock.fieldHeight);
       flock.fieldChanged.flush(this.#density, flock.field);
-      this.#state.upload(flock.state);
+      frame.records.data.set(flock.state);
+      frame.records.touch();
+      this.#shown = true;
     }
-    return [this.#density.texture, this.#state.texture];
+    if (slot) slot.texture = this.#density.texture;
   }
 
   dispose(): void {
     this.#density.dispose();
-    this.#state.dispose();
   }
 }
 
-/** The murmuration's simulation for a scene whose knobs are `params` (looked up by key), flown as `setup` says. */
-export function flockSim(params: readonly ParamDef[], setup: FlockSetup = MURMURATION): SimFactory {
-  return (gl) => new FlockSim(gl, params, setup);
+/** The murmuration layer's sim, its knobs `params` (its own under their short keys). */
+export function murmurationSim(gl: WebGL2RenderingContext, params: readonly ParamDef[]): LayerSim {
+  return new MurmurationSim(gl, params);
 }

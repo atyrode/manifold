@@ -10,9 +10,15 @@
 //   - the sky just over the skyline takes the fog too;
 //   - by midday the same knob changes the land less than at dawn (the bank burns off).
 // A pixel's change is how far its colour moves from the fog-off picture's (RGB distance, 0..441).
-import { fragmentSourceFor, sceneFeatures, shaderValues } from "../../shaders/index.ts";
+import { sceneFeatures, shaderValues } from "../../shaders/index.ts";
 import { loadScene } from "../index.ts";
-import { countryBuild, countryDraw, countryProgram, differing } from "./terrain.verify.ts";
+import {
+  countryBuild,
+  countryDraw,
+  countryProgram,
+  countrySource,
+  differing,
+} from "./terrain.verify.ts";
 
 const countryScene = await loadScene("country");
 
@@ -40,7 +46,7 @@ Shade probeFog(vec2 uv, vec2 cell, float t) {
   countryFwd = vec3(COUNTRY_HEADING.x, 0.0, COUNTRY_HEADING.y);
   countryRight = vec3(COUNTRY_HEADING.y, 0.0, -COUNTRY_HEADING.x);
   vec3 rd = countryToWorld(viewRay(uv, uRes.x / uRes.y, COUNTRY_HORIZON, COUNTRY_FOV));
-  vec3 eye = terrainEye(uSim3);
+  vec3 eye = terrainEye(valleyField3);
   float hit = countryMarch(eye, rd);
   if (hit <= 0.0) return shadeOf(vec3(0.0), 0.0, 0.0);
   float d = clamp(floor(hit / 10.0), 1.0, 65535.0);
@@ -69,14 +75,11 @@ const round = (value: number): number => Number(value.toFixed(1));
 export function verifyCountryFog(gl: WebGL2RenderingContext): Record<string, unknown> {
   const featuresFor = (knobs: Record<string, number>) =>
     sceneFeatures(countryScene, shaderValues(countryScene, knobs));
-  const off = countryProgram(gl, fragmentSourceFor(countryScene, featuresFor({ fog: 0 })));
-  const on = countryProgram(gl, fragmentSourceFor(countryScene, featuresFor({ fog: FOG })));
+  const off = countryProgram(gl, countrySource(featuresFor({ fog: 0 })));
+  const on = countryProgram(gl, countrySource(featuresFor({ fog: FOG })));
   const probe = countryProgram(
     gl,
-    fragmentSourceFor(
-      { ...countryScene, entry: "probeFog", glsl: countryScene.glsl + probeGlsl },
-      featuresFor({ fog: 0 }),
-    ),
+    countrySource(featuresFor({ fog: 0 }), { glsl: probeGlsl, entry: "probeFog" }),
   );
   const built = countryBuild(gl, {});
   try {

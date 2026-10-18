@@ -1,67 +1,74 @@
-// The city crossing's picture: a scramble crossing at dusk, seen from a high window.
+// The City crossing preset's layers' GLSL (ADR 0062 Phase 2c; the composer: src/composer, README
+// "Composers"): a scramble crossing at dusk, seen from a high window through the street's own rig
+// (constants.ts STREET_RIG: the eye STREET_CAM_H up, pitched STREET_PITCH down, so screen rows are
+// lines of equal z on the street).
 //
-// World units are metres, as in sim.ts: x right along the avenue, y up, z away from the window; the
-// eye is STREET_CAM_H up, pitched STREET_PITCH down, so screen rows are lines of equal z on the
-// street. Each cell's ray is traced against the street (y = 0) and everything standing on it:
-// - the city: the far blocks' facades (z = FACADE_FAR) along the avenue and the side street's walls
-//   (x = ±SIDE_FACADE), cut into buildings generated below (a ramen shop on the left corner, a
-//   konbini on the right, then izakaya, drugstores, cafés, bars, a karaoke hall, shutters), each
-//   with a lit shop window and its fascia, upper floors of windows that switch on and off over the
-//   minutes, flat signs climbing the walls; blade signs hanging out over the sidewalk with columns of
-//   characters; awnings; vending machines; lamp posts with arms over the road; signal poles with
-//   the avenue's and the side street's lights and the walk signals (the walk signals on the far
-//   corners face the window);
-// - the walkers, bicycles and cars from the simulation: walkers are a head, a coat (an ellipsoid
-//   turned to their heading), two legs that swing with their gait, a bag, and in the rain an
-//   umbrella seen from above, eight panels lit each on its own (clear vinyl ones show who is under
-//   them); a walker looking up at the window shows its face and tips its umbrella back. Cars are a
-//   body and a cabin box (corners rounded from above) with glass, lamps, taxi signs; bicycles a
-//   rider on a frame. Only the agents the simulation lists in the tile under the cell's ray are
-//   tested (sim.ts, uSim1), at most TILE_BODIES of them.
-// The street: asphalt with wheel-polished lanes and oil drips, the light concrete gutters of
-// Japanese roads, kerbs, paved sidewalks with yellow tactile strips, lane lines, arrows, stop
-// lines, the zebras (W, E, N and two diagonals; with the landmark on, the diagonals are repainted
-// as a V that makes the zebras an M from above), bicycle marks, manholes.
+// World units are metres, as in sim.ts: x right along the avenue, y up, z away from the window (the
+// eye at x = STREET_CAM_X; the composer's rig frame is this one moved STREET_CAM_X along x, its x 0
+// on the view's centre line). Each cell's ray is traced against the street (y = 0) and everything
+// standing on it, each part its layer's:
+//   city        (backdrop) the far blocks' facades (z = FACADE_FAR) along the avenue and the side
+//               street's walls (x = ±SIDE_FACADE), cut into buildings generated below (a ramen shop
+//               on the left corner, a konbini on the right, then izakaya, drugstores, cafés, bars, a
+//               karaoke hall, shutters), each with a lit shop window and its fascia, upper floors of
+//               windows that switch on and off over the minutes, flat signs climbing the walls; blade
+//               signs hanging out over the sidewalk with columns of characters; awnings, dripping in
+//               the rain; the shops' light spilling onto the sidewalks (a declared light,
+//               citySpillLight); over the roofs, while the passage raises the window, the World's
+//               sky and two ranks of hazy towers whose windows light at dusk; the air (the lamps'
+//               and signs' glow, the haze far up the streets, the colours of the World's fog and
+//               rain, the axes the World's rain and snow are seen through from a window pitched
+//               down: they converge below the street).
+//   crossing    (ground) asphalt with wheel-polished lanes and oil drips, the light concrete gutters
+//               of Japanese roads, kerbs, paved sidewalks with yellow tactile strips, lane lines,
+//               arrows, stop lines, the zebras (W, E, N and two diagonals; with its M on, the
+//               diagonals are repainted as a V that makes the zebras an M from above), bicycle marks,
+//               manholes; wet, the street mirrors the city (the reflected ray traced to the facades
+//               and the sky above the roofs, its blur growing with the distance and the asphalt's
+//               roughness, so every lit window and sign smears into a long streak toward the eye) and
+//               every lamp's streak, sharp in the puddles, ringed by drops; splashes crown on it but
+//               under the awnings; snow lies on it but for the wheel tracks and the trodden
+//               crosswalks.
+//   kerbside    (dressing) the vending machines, the lamp posts with their arms over the road (each
+//               comes on at its own moment at dusk: a declared light, kerbsideLight, with the
+//               machines' glow), the signal poles with the avenue's and the side street's lights and
+//               the walk signals (the walk signals on the far corners face the window), their glow in
+//               the air and their streaks in the wet street.
+//   streetLife  (life) the walkers, bicycles and cars from its sim (sim.ts): walkers are a head, a
+//               coat (an ellipsoid turned to their heading), two legs that swing with their gait, a
+//               bag, and in the rain an umbrella seen from above, eight panels lit each on its own
+//               (clear vinyl ones show who is under them: its veil pass); a walker looking up at the
+//               window shows its face and tips its umbrella back. Cars are a body and a cabin box
+//               (corners rounded from above) with glass, lamps, taxi signs; bicycles a rider on a
+//               frame. Only the agents the sim lists in the tile under the cell's ray are tested, at
+//               most TILE_BODIES of them; the vehicles' lamps (low beams on the road, tail glow,
+//               brake lights in the queues, blinkers) light, glow and streak, and tyres throw spray.
 //
-// Light: the sky's ambient (and the sun, shadowed by the blocks, by day), the city's own warm
-// bounce at night, the street lamps (each comes on at its own moment at dusk), the shop windows and
-// signs spilling onto the sidewalks, the vending machines, and the vehicles' lamps (low beams on
-// the road, tail glow, brake lights in the queues), each listed per tile by the simulation (uSim1).
-// Lamps, signals and vehicle lamps glow in the air round them, more in rain and fog.
+// The street is lit as a whole, as it always was: its shared begin (streetBegin) traces the ray past
+// every part of the layers that stand (each compiled in under its LAYER_<ID> gate), lights the point
+// it meets (the sky's ambient and the sun, shadowed by the blocks, by day; the city's own warm bounce
+// at night; the lamps, the shops and signs, the vending machines, the vehicles' lamps) and colours it,
+// in the order the street always summed and painted them; each layer's pass then puts that colour
+// where the point is its own, at its depth. The street keeps its own light and grey day (streetHour,
+// on the World's sky before the World's deck dims it). The World's fog, rain and snow fall at the
+// composed depth (D10: they replace the street's own); its sky shows over the roofs as the passage
+// raises the window.
 //
-// Rain (the weather contract in scenes/README.md): the sky in the puddles closes over, rain falls
-// in depth (the ray's distance to what it meets) along paths that converge below the street, as a
-// camera pitched down sees them (streetVanish), splashes crown on the street and the sidewalks
-// except under the awnings, which drip; as the street wets it darkens and mirrors: the reflected
-// ray is traced to the facades and the sky above the roofs, its blur growing with the distance and
-// the asphalt's roughness so every lit window and sign smears into a long streak toward the eye;
-// the lamps, signals and vehicle lamps add their own streaks (from the point where their mirror
-// image sits on the street, toward the eye); puddles mirror sharply, ringed by drops; tyres throw
-// spray. Snow falls the same way (streetSnow: the flakes close in on the point under the eye) and
-// settles on the street (except the wheel tracks and where people walk), on roofs of cars, on
-// umbrellas, awnings, signs and lamps.
-//
-// Under the dither: walkers, vehicles and their parts are hit or missed per cell with no soft
-// edges, so a moving outline flips each cell once; their colours are flat per part; nothing else
-// moves except the slow window lights, the signals and the weather. No shimmer.
+// Under the dither: walkers, vehicles and their parts are hit or missed per cell with no soft edges,
+// so a moving outline flips each cell once; their colours are flat per part; nothing else moves
+// except the slow window lights, the signals and the weather. No shimmer.
 //
 // The passage is the window's pitch: raised toward the skyline at the start of the entrance and
-// coming down onto the crossing, raised again as the scene leaves (STREET_TILT_*, the twin of sim.ts's
-// passageTilt; the pointer and the rain's vanishing point follow it). Raised, the view reaches the
-// roofs and over them the sky and the city beyond (streetBeyond: two ranks of hazy towers whose
-// windows light at dusk), and the far end of the avenue and the side street fade into the haze. All of
-// it is gated on the tilt, which is exactly 0 at rest.
-//
-// Knobs: K_signs, K_windows (the city), K_mark (the zebra M), K_time, K_cycle, K_stars and K_moon (the
-// shared stars and the moon in its phase, SKY_MOON_PHASE, as the windows and wet street mirror the
-// sky), K_rain, K_snow, K_fog, K_wind; the crowd, traffic and lights are the simulation's.
+// coming down onto the crossing, raised again as the scene leaves (STREET_TILT_*, the twin of
+// sim.ts's passageTilt; the pointer and the rain's vanishing point follow it). Raised, the view
+// reaches the roofs and over them the sky and the city beyond, and the far end of the avenue and the
+// side street fade into the haze. All of it is gated on the tilt, which is exactly 0 at rest.
 import { glslFloat } from "../../shaders/glsl.ts";
 import { Random } from "../../sims/random.ts";
+import { CAM_H, CAM_X, FOCAL, PITCH, TILT_ARRIVE, TILT_IN, TILT_OUT } from "./constants.ts";
 import {
   BEAM_REACH,
   BIKE_BEAM_REACH,
-  CAM_H,
-  CAM_X,
   CORNER_RADIUS,
   CROSS_HALF,
   CROSS_N,
@@ -71,7 +78,6 @@ import {
   DIAG_NEAR,
   FACADE_FAR,
   FACADE_NEAR,
-  FOCAL,
   KERB_FAR,
   KERB_NEAR,
   KIND_BIKE,
@@ -89,7 +95,6 @@ import {
   LANE_WB_IN,
   LANE_WB_OUT,
   MARK_APEX_Z,
-  PITCH,
   SHAPES,
   SIDE_FACADE,
   SIDE_KERB,
@@ -105,9 +110,6 @@ import {
   TILE_Z0,
   TILES_X,
   TILES_Z,
-  TILT_ARRIVE,
-  TILT_IN,
-  TILT_OUT,
   VENDING,
   Z_REF,
   AVENUE_MID,
@@ -287,8 +289,13 @@ const sizes = SHAPES.map(
 ).join(", ");
 const cabins = SHAPES.map((s) => `vec2(${f(s.cabinBack)}, ${f(s.cabinFront)})`).join(", ");
 
-export const streetGlsl = `
-// ---- The view and the street (sim.ts) ----
+/**
+ * The street's shared GLSL, held by every street layer (README "Composers": SharedGlsl): its
+ * constants, the buildings, the helpers, the hour, the cell's state and its begin (streetBegin), which
+ * traces the ray past every standing part and lights and colours what it meets.
+ */
+export const streetSharedGlsl = `
+// ---- The view and the street (constants.ts, sim.ts) ----
 const float STREET_CAM_X = ${f(CAM_X)};
 const float STREET_CAM_H = ${f(CAM_H)};
 const float STREET_PITCH = ${f(PITCH)};
@@ -323,33 +330,6 @@ const float STREET_DIAG_NEAR = ${f(DIAG_NEAR)};
 const float STREET_DIAG_FAR = ${f(DIAG_FAR)};
 const float STREET_DIAG_FAR_Z = ${f(DIAG_FAR_Z)};
 const float STREET_MARK_APEX = ${f(MARK_APEX_Z)};
-const float STREET_BEAM = ${f(BEAM_REACH)};
-const float STREET_BIKE_BEAM = ${f(BIKE_BEAM_REACH)};
-const int STREET_LAMPS = ${LAMPS.length};
-const vec4 STREET_LAMP[${LAMPS.length}] = vec4[${LAMPS.length}](${lamps}); // pole x, z, height, sodium
-const vec2 STREET_LAMP_HEAD[${LAMPS.length}] = vec2[${LAMPS.length}](${lampHeads});
-const int STREET_POLES = ${SIGNAL_POLES.length};
-const vec3 STREET_POLE[${SIGNAL_POLES.length}] = vec3[${SIGNAL_POLES.length}](${poles}); // x, z, height
-const vec4 STREET_VENDING[${VENDING.length}] = vec4[${VENDING.length}](${vending}); // x0, x1, z0, z1
-const vec4 STREET_CAR_HEAD[${CAR_HEADS.length}] = vec4[${CAR_HEADS.length}](${carHeads}); // x, z, facing
-const ivec2 STREET_CAR_HEAD_META[${CAR_HEADS.length}] = ivec2[${CAR_HEADS.length}](${carHeadMeta}); // pole, light
-const vec4 STREET_WALK_HEAD[${WALK_HEADS.length}] = vec4[${WALK_HEADS.length}](${walkHeads}); // x, z, facing
-const vec3 STREET_MANHOLE[${MANHOLES.length}] = vec3[${MANHOLES.length}](${manholes});
-const int STREET_KIND_CHILD = ${KIND_CHILD};
-const int STREET_KIND_BIKE = ${KIND_BIKE};
-const int STREET_KIND_TAXI = ${KIND_TAXI};
-const int STREET_KIND_KEI = ${KIND_KEI};
-const int STREET_KIND_PORTER = ${KIND_PORTER};
-const vec4 STREET_SIZE[${SHAPES.length}] = vec4[${SHAPES.length}](${sizes}); // length, width, body, top
-const vec2 STREET_CABIN[${SHAPES.length}] = vec2[${SHAPES.length}](${cabins}); // cabin back, front
-const float STREET_TILE_X0 = ${f(TILE_X0)};
-const float STREET_TILE_Z0 = ${f(TILE_Z0)};
-const float STREET_TILE = ${f(TILE)};
-const int STREET_TILES_X = ${TILES_X};
-const int STREET_TILES_Z = ${TILES_Z};
-const int STREET_TILE_TEXELS = ${TILE_TEXELS};
-const int STREET_BODY_TEXELS = ${TILE_BODIES / 4}; // the bodies' slots, four per texel
-const int STREET_LIGHT_TEXELS = ${TILE_LIGHTS / 4}; // then the lamps'
 
 // ---- The city ----
 // Facades: 0 the far left block along the avenue (x = -SIDE_FACADE - u, z = FACADE_FAR), 1 the far
@@ -381,17 +361,6 @@ const int STREET_SHOP_KARAOKE = ${KARAOKE};
 const vec3 STREET_GO = vec3(0.1, 1.0, 0.72);
 const vec3 STREET_AMBER = vec3(1.0, 0.62, 0.08);
 const vec3 STREET_STOP = vec3(1.0, 0.1, 0.07);
-
-// Umbrellas (0 clear vinyl, see-through), coats, hair.
-const vec3 STREET_BROLLY[10] = vec3[10](
-  vec3(0.86, 0.9, 0.93), vec3(0.06, 0.06, 0.07), vec3(0.08, 0.12, 0.32), vec3(0.78, 0.1, 0.12),
-  vec3(0.96, 0.78, 0.1), vec3(0.12, 0.44, 0.26), vec3(0.42, 0.7, 0.92), vec3(0.74, 0.63, 0.48),
-  vec3(0.95, 0.55, 0.68), vec3(0.1, 0.14, 0.34));
-// Coats: black, cream, navy, camel, red, grey, denim, mustard.
-const vec3 STREET_COAT[8] = vec3[8](
-  vec3(0.07, 0.07, 0.08), vec3(0.82, 0.8, 0.74), vec3(0.14, 0.18, 0.34), vec3(0.68, 0.52, 0.32),
-  vec3(0.66, 0.16, 0.16), vec3(0.48, 0.49, 0.5), vec3(0.36, 0.5, 0.68), vec3(0.58, 0.52, 0.24));
-const vec3 STREET_HAIR[4] = vec3[4](vec3(0.03, 0.025, 0.025), vec3(0.11, 0.07, 0.05), vec3(0.32, 0.2, 0.12), vec3(0.6, 0.6, 0.58));
 
 const float STREET_TAU = 6.2831853;
 const int STREET_K_GROUND = 0;
@@ -448,6 +417,27 @@ vec3 streetG;         // where the cell's ray meets the street
 vec2 streetLean;      // how the ray's ground point moves per metre up (toward the eye)
 vec4 streetSignal[3]; // avenue (green, amber, red), side street, walk (green man, red man, progress)
 float streetTilt;     // the passage: how far the camera is raised above its rest pitch (rad), 0 at rest
+
+// The cell, set once per cell by streetBegin for every street layer's passes.
+StreetHit streetHit;  // what the ray meets nearest (kind -1: nothing, the city beyond over the roofs)
+StreetHit streetVeil; // a clear vinyl umbrella in front of it
+bool streetOverRoofs; // raised, the ray passes over the near blocks' roofs: the city beyond
+vec3 streetRo;        // the eye
+vec3 streetRd;        // the ray as traced (raised over the horizon, kept just under it)
+vec3 streetRdView;    // the cell's ray
+float streetTg;       // how far along it the street is
+float streetCp;       // the cosine and sine of the pitch the cell is traced with (the tilt in it)
+float streetSp;
+vec3 streetE;         // the light on what it meets
+vec3 streetGlowAir;   // the glow of the lamps, signs, signals and vehicles in the air before it
+vec3 streetDrop;      // the light a raindrop takes here
+vec4 streetSpray;     // tyre spray over it (colour, cover)
+float streetGreen;    // the signals' green in the air and the wet street (the accent)
+float streetShelter;  // under an awning: no rain, no puddles
+float streetFw;       // metres a cell spans on the street
+vec3 streetSnowLit;   // snow in this light
+vec3 streetCol;       // what it meets, lit, in its colours (its snow on it)
+float streetAccent;
 
 // ---- Small helpers ----
 
@@ -827,10 +817,289 @@ vec3 streetHaze(vec3 d) {
   return streetSkyLight(normalize(vec3(d.x, 0.0, max(d.z, 1e-3))));
 }
 
+// Whether the sun reaches p past the blocks (1) or not (0).
+float streetSunlit(vec3 p) {
+  vec3 s = streetSky.sun;
+  if (s.y <= 0.0) return 0.0;
+  if (s.z > 0.01 && p.z < STREET_FACADE_FAR) {
+    vec3 q = p + s * ((STREET_FACADE_FAR - p.z) / s.z);
+    if (abs(q.x) > STREET_SIDE_FACADE && q.y < STREET_BLD_A[streetBuildingAt(q.x < 0.0 ? 0 : 1, abs(q.x) - STREET_SIDE_FACADE)].z) return 0.0;
+  }
+  if (abs(s.x) > 0.01) {
+    float wx = s.x > 0.0 ? STREET_SIDE_FACADE : -STREET_SIDE_FACADE;
+    float t = (wx - p.x) / s.x;
+    vec3 q = p + s * t;
+    if (t > 0.0 && q.z > STREET_FACADE_FAR && q.y < STREET_BLD_A[streetBuildingAt(s.x > 0.0 ? 3 : 2, q.z - STREET_FACADE_FAR)].z) return 0.0;
+  }
+  if (s.z < -0.01 && p.z > STREET_FACADE_NEAR) {
+    if (p.y + s.y * ((STREET_FACADE_NEAR - p.z) / s.z) < 24.0) return 0.0;
+  }
+  return 1.0;
+}
+
+// The passage's tilt of the camera (rad above its rest pitch; sim.ts passageTilt is its twin): coming
+// down from the skyline, on its way from the first frame and braking into a touch of overshoot, then
+// settled; going out it rises faster and faster. 0 at rest.
+float streetTiltAt() {
+  float pin = passageIn();
+  float pout = passageOut();
+  if (pin >= 1.0 && pout <= 0.0) return 0.0;
+  float settle = passageSettle(pin / STREET_TILT_ARRIVE, 0.8);
+  return STREET_TILT_IN * (1.0 - settle) + STREET_TILT_OUT * pout * pout;
+}
+
+// The hour, and the weather over it: rain or snow close the sky, flatten and dim the light; at
+// night the city's own light bounces about, warmer under low cloud. The sky is the World's; the
+// street greys its own light under the deck rain or snow closes over, so under one it takes the
+// World's sky before the World's deck dims it (the same clock, date and moon), the aurora's and the
+// lightning's light on it kept. Sets the clock, sky and light globals above for everything the cell
+// then draws.
+void streetHour(World w) {
+  streetTm = w.tm;
+  streetSky = w.sky;
+#if WORLD_RAIN || WORLD_SNOW
+  if (w.storm > 0.0) {
+    streetSky = skyAt(w.time);
+#ifdef SKY_MOON_PHASE
+    streetSky = skyMoonPhase(streetSky, K_moon);
+#endif
+    streetSky.ambient += w.glow + WORLD_FLASH_LIGHT * w.flash;
+  }
+#endif
+  streetStorm = w.storm;
+  streetOver = clamp(streetStorm * 8.0, 0.0, 1.0) * (0.65 + 0.35 * streetStorm);
+  streetSky.sunColor *= 1.0 - 0.85 * streetOver;
+  streetSky.moonColor *= 1.0 - 0.75 * streetOver;
+  streetSky.ambient = mix(streetSky.ambient, vec3(dot(streetSky.ambient, LUMA)), 0.5 * streetOver) * (1.0 - 0.35 * streetStorm);
+  streetDark = clamp(1.0 - streetSky.day * (1.0 - 0.5 * streetOver), 0.0, 1.0);
+  streetSun = streetSky.sunColor * 1.5;
+  // At night the sky's light all but goes: the street is lit by its own lamps, shops, signs and
+  // headlights, with only a faint warm bounce between them (more under low cloud, which the city
+  // lights from below).
+  streetBounce = vec3(0.034, 0.028, 0.024) * streetDark * (1.0 + 0.8 * streetOver);
+  streetAmbient = streetSky.ambient * mix(1.4, 0.4, streetDark) + streetBounce;
+  streetDeck = mix(vec3(dot(streetSky.ambient, LUMA)) * 1.5, vec3(0.13, 0.1, 0.09), streetDark) * (1.0 - 0.3 * streetStorm);
+  streetWet = uWeather.x;
+  streetLying = uWeather.y;
+  streetLit = clamp(K_windows * (0.35 + 0.65 * streetDark), 0.0, 1.0);
+}
+
+// The lights' state: the street's life runs them (its records' row 2); without it they stand at
+// the avenue's green.
+void streetSignals() {
+#if LAYER_STREET_LIFE
+  if (streetLifeSimOn()) {
+    streetSignal[0] = streetLifeRecord(0, 2);
+    streetSignal[1] = streetLifeRecord(1, 2);
+    streetSignal[2] = streetLifeRecord(2, 2);
+    return;
+  }
+#endif
+  streetSignal[0] = vec4(1.0, 0.0, 0.0, 0.0);
+  streetSignal[1] = vec4(0.0, 0.0, 1.0, 0.0);
+  streetSignal[2] = vec4(0.0, 1.0, 0.0, 0.0);
+}
+
+// Whether this cell shows the k-th layer on, as the composer cuts a layer's passes while it plays
+// its own entrance or exit (composer/glsl.ts passCalls, layerShown), so what its parts would hide is
+// traced behind them in the cells that do not show it yet. The street's rig offers its own four
+// layers alone, in this order: the city (always on: k 0), the crossing, the kerbside, its life.
+bool streetShown(int k, vec2 cell) {
+  float shown = layerShown(k);
+  return shown >= 1.0 || edgeThreshold(cell, vec2(13.0 + 7.0 * float(k), 29.0)) < shown;
+}
+#define STREET_KERBSIDE_K (1 + LAYER_CROSSING)
+#define STREET_LIFE_K (1 + LAYER_CROSSING + LAYER_KERBSIDE)
+
+// What the street's layers bring to the cell (their own GLSL, each compiled in while it stands).
+void cityTrace(vec3 ro, vec3 rd, vec3 inv, inout StreetHit hit, inout vec3 halo);
+vec3 citySpill(vec3 p);
+#if LAYER_CROSSING
+vec3 crossingFloor(vec2 p, float fw, out vec4 info);
+void crossingSurface(vec3 P, vec3 rd, vec3 albedo, vec4 info, float wet, float puddle, float rough, vec3 E, vec3 streaks, float green, float lampTh, vec3 dropLight, out vec3 col, inout float accent, inout float snowy);
+void crossingSplash(inout vec3 col);
+#endif
+#if LAYER_KERBSIDE
+void kerbsideTrace(vec3 ro, vec3 rd, vec3 inv, inout StreetHit hit);
+void kerbsideLamps(vec3 P, vec3 n, vec3 ro, vec3 rd, float tHit, bool ground, float wet, float rough, inout vec3 E, inout vec3 glow, inout vec3 streaks);
+void kerbsideVendingGlow(vec3 p, inout vec3 s);
+void kerbsideSignals(vec3 P, vec3 ro, vec3 rd, float tHit, bool ground, float wet, float rough, inout vec3 glow, inout vec3 streaks, inout float green);
+#endif
+#if LAYER_STREET_LIFE
+void streetLifeTrace(vec3 ro, vec3 rd, inout StreetHit hit, inout StreetHit veil);
+void streetLifeLamps(vec3 P, vec3 n, vec3 ro, vec3 rd, float tHit, float rough, bool ground, bool road, float th, inout vec3 light, inout vec3 streaks, inout vec3 glow, inout vec4 spray);
+#endif
+
+// The cell: the ray from the window, what it meets of the layers that stand, the light there and the
+// colour it shows (before the air: the clear umbrellas, the spray, the splashes and drips, the glow
+// in the air and the haze far up the streets, which the layers' veil and air passes lay over it).
+void streetBegin(Ctx x) {
+  float aspect = x.aspect;
+  streetHour(x.w);
+  streetSignals();
+
+  // The cell's ray from the window, and where it meets the street.
+  vec2 s = vec2((x.uv.x - 0.5) * aspect, x.uv.y - 0.5);
+  streetTilt = streetTiltAt();
+  float cp = cos(STREET_PITCH);
+  float sp = sin(STREET_PITCH);
+  if (streetTilt != 0.0) {
+    cp = cos(STREET_PITCH - streetTilt);
+    sp = sin(STREET_PITCH - streetTilt);
+  }
+  streetCp = cp;
+  streetSp = sp;
+  vec3 ro = vec3(STREET_CAM_X, STREET_CAM_H, 0.0);
+  vec3 rdView = normalize(vec3(s.x, s.y * cp - STREET_FOCAL * sp, s.y * sp + STREET_FOCAL * cp));
+  // Raised, the view can reach the horizon and the sky: those cells are traced as a ray just under
+  // the horizon (so nothing below divides by a ray that never meets the street) and show the city
+  // beyond (the city's sky pass).
+  bool skyward = streetTilt > 0.0 && rdView.y > -0.004;
+  vec3 rd = skyward ? normalize(vec3(rdView.x, -0.004, rdView.z)) : rdView;
+  vec3 inv = streetInv(rd);
+  float tg = -ro.y / rd.y;
+  vec3 G = ro + rd * tg;
+  streetG = G;
+  streetLean = rd.xz / rd.y;
+  float fw = tg / (STREET_FOCAL * uRes.y);
+  // The cell's own threshold, offset from the palette's, for lights that move with the traffic.
+  float lampTh = threshold(x.cell + vec2(5.0, 1.0));
+
+  StreetHit hit = streetMiss();
+  hit.t = tg;
+  hit.kind = STREET_K_GROUND;
+  StreetHit veil = streetMiss();
+  vec3 signHalo = vec3(0.0);
+  cityTrace(ro, rd, inv, hit, signHalo);
+#if LAYER_KERBSIDE
+  if (streetShown(STREET_KERBSIDE_K, x.cell)) kerbsideTrace(ro, rd, inv, hit);
+#endif
+#if LAYER_STREET_LIFE
+  // Who stands in the way: the street's life lists them for the tile under the ray.
+  if (streetShown(STREET_LIFE_K, x.cell)) streetLifeTrace(ro, rd, hit, veil);
+#endif
+  // Beyond the near blocks: the sky, and whatever a ray lands on behind the blocks' roofs.
+  bool beyond = skyward || (streetTilt > 0.0 && hit.kind == STREET_K_GROUND && G.z > STREET_FACADE_FAR && abs(G.x) > STREET_SIDE_FACADE);
+
+  vec3 P = ro + rd * hit.t;
+  vec3 n = hit.n;
+  bool ground = hit.kind == STREET_K_GROUND;
+  vec4 info = vec4(0.0);
+  vec3 albedo = hit.albedo;
+#if LAYER_CROSSING
+  if (ground) albedo = crossingFloor(P.xz, fw, info);
+#endif
+  float shelter = info.w;
+  float wet = streetWet * (1.0 - shelter);
+  float puddle = 0.0;
+#if LAYER_CROSSING
+  if (ground && wet > 0.35) puddle = rainPuddles(P.xz, wet * (info.x > 0.5 ? 0.85 : 1.0));
+#endif
+  float rough = mix(0.34, 0.02, puddle);
+
+  // Light on the point: sky, sun (the World's cloud shadows on it), street lamps, shops; the lamps'
+  // glow along the ray and their streaks in the wet street; then the vehicles' lamps.
+  vec3 E = streetAmbient * (0.55 + 0.45 * n.y) + streetBounce * 0.35;
+  if (streetSky.sun.y > 0.0) E += streetSun * max(dot(n, streetSky.sun), 0.0) * streetSunlit(P) * worldSunlit(x.w, x.v, P - ro);
+  vec3 glow = signHalo;
+  vec3 streaks = vec3(0.0);
+  float green = 0.0;
+#if LAYER_KERBSIDE
+  kerbsideLamps(P, n, ro, rd, hit.t, ground, wet, rough, E, glow, streaks);
+#endif
+  vec3 spill = citySpill(P);
+#if LAYER_KERBSIDE
+  kerbsideVendingGlow(P, spill);
+#endif
+  E += spill * (0.5 + 0.5 * max(n.y, 0.0) + 0.4 * max(n.z, 0.0));
+  // The lit street throws a little light back up onto the people and cars in it.
+  if (hit.kind == STREET_K_AGENT) E += vec3(0.15, 0.13, 0.11) * streetDark;
+#if LAYER_KERBSIDE
+  kerbsideSignals(P, ro, rd, hit.t, ground, wet, rough, glow, streaks, green);
+#endif
+  vec4 spray = vec4(0.0);
+#if LAYER_STREET_LIFE
+  streetLifeLamps(P, n, ro, rd, hit.t, rough, ground, ground && info.x < 0.5, lampTh, E, streaks, glow, spray);
+#endif
+
+  // What lights a raindrop here: the cloud base, the light round it, the glows it falls through.
+  vec3 dropLight = max(streetDeck * 1.2 + E * 0.25 + glow * 0.4, vec3(0.08));
+
+  // The surface: the ground's (the crossing's), a facade's, anything else's.
+  vec3 col = vec3(0.0);
+  float accent = 0.0;
+  float snowy = 0.0;
+  vec3 snowLit = vec3(0.82, 0.86, 0.94) * E * 0.95 + 0.02;
+  if (ground) {
+#if LAYER_CROSSING
+    crossingSurface(P, rd, albedo, info, wet, puddle, rough, E, streaks, green, lampTh, dropLight, col, accent, snowy);
+#endif
+  } else if (hit.kind == STREET_K_FACADE) {
+    vec3 a;
+    vec3 em;
+    float gl;
+    // Metres a cell spans on the wall: far more along it where the side street's walls are seen
+    // edge-on, so their windows fuse into an even glow instead of aliasing.
+    float mpc = hit.t / (STREET_FOCAL * uRes.y);
+    vec2 blur = vec2(mpc / max(abs(dot(rd, n)), 0.08), mpc * 1.4);
+    streetFacade(int(hit.q.x + 0.5), hit.q.y, hit.q.z, blur, false, a, em, gl);
+    a = wetten(a, wet * 0.5, 0.3);
+    // The shop fronts and signs bloom softly onto the wall round them.
+    vec3 bloom = streetLitBand(int(hit.q.x + 0.5), hit.q.y, hit.q.z, 0.5, 0.7, 0.7) * 0.28 * streetDark;
+    col = a * E * 0.85 + em + bloom + gl * streetSkyLight(reflect(rd, n)) * 0.45;
+  } else {
+    vec3 a = wetten(albedo, wet * (hit.kind == STREET_K_AGENT ? 0.6 : 0.8), 0.3);
+    col = a * E + hit.emit;
+    col += hit.gloss * wetGloss(wet, max(n.y, 0.0)) * streetSkyLight(reflect(rd, n)) * 0.25;
+    // The green lamps (car signals and the green man) glow in the accent colour.
+    if (hit.kind == STREET_K_SIGNAL) accent += max(hit.emit.g - hit.emit.r, 0.0) * 0.5;
+    if (streetLying > 0.0 && hit.snow > 0.0) snowy = snowCover(n, P.xz + P.y, streetLying) * hit.snow;
+  }
+  col = mix(col, snowLit, snowy);
+
+  if (beyond) {
+    hit.kind = -1;
+    glow = vec3(0.0);
+  }
+  streetHit = hit;
+  streetVeil = veil;
+  streetOverRoofs = beyond;
+  streetRo = ro;
+  streetRd = rd;
+  streetRdView = rdView;
+  streetTg = tg;
+  streetE = E;
+  streetGlowAir = glow;
+  streetDrop = dropLight;
+  streetSpray = spray;
+  streetGreen = green;
+  streetShelter = shelter;
+  streetFw = fw;
+  streetSnowLit = snowLit;
+  streetCol = col;
+  streetAccent = accent;
+}
+
+// The street's colour of what the ray meets, put in the cell at its depth where it is the layer's:
+// opaque, every part hit or missed per cell.
+void streetPut(inout Cell c) {
+  if (streetHit.t >= c.z) return;
+  c.col = streetCol;
+  c.z = streetHit.t;
+  c.zs = min(c.zs, streetHit.t);
+  c.accent = streetAccent;
+}
+`;
+
+/**
+ * The city (backdrop): the far blocks and the side street's walls, their blade signs and awnings, the
+ * shops' light; over the roofs, raised, the World's sky and the city beyond; the street's air.
+ */
+export const cityGlsl = `
 // One rank of far towers at distance D (m): the direction's azimuth picks a column of the rank, whose
 // roof stands from lo up to lo + span metres. x is 1 where the ray, at that distance, is inside a
 // tower; y the light of a window there (a coarse grid of lit ones, by the windows knob).
-vec2 streetTowers(float az, float slope, float D, float freq, float lo, float span, float seed) {
+vec2 cityTowers(float az, float slope, float D, float freq, float lo, float span, float seed) {
   float h = hash12(vec2(floor(az * freq), seed));
   float y = STREET_CAM_H + slope * D;
   if (y > lo + span * h * h) return vec2(0.0);
@@ -841,28 +1110,317 @@ vec2 streetTowers(float az, float slope, float D, float freq, float lo, float sp
   return vec2(1.0, win * lit);
 }
 
-// The city beyond the near blocks, seen over their roofs when the camera is raised: the sky above,
-// two ranks of towers in the haze below it. A function of the ray's direction alone, so it moves
-// rigidly with the camera.
-vec3 streetBeyond(vec3 d) {
+// The city beyond the near blocks, seen over their roofs while the passage raises the window: the
+// World's sky above (its lightning over it), the haze below, two ranks of towers in the haze. The
+// towers are a function of the ray's direction alone, so they move rigidly with the camera.
+vec3 cityBeyond(Ctx x) {
+  vec3 d = streetRdView;
   float slope = d.y / max(length(d.xz), 1e-3);
   float az = atan(d.x, max(d.z, 1e-3));
   vec3 haze = streetHaze(d);
-  vec3 col = d.y > 0.0 ? streetSkyLight(d) : haze;
+  WorldSky heaven = worldSky(x.w, x.v, WORLD_METEOR_FIELD);
+  vec3 col = d.y > 0.0 ? heaven.col + heaven.strike : haze;
   vec3 body = mix(vec3(0.2, 0.21, 0.25), vec3(0.03, 0.035, 0.05), streetDark);
   vec3 window = vec3(1.0, 0.74, 0.46) * streetDark;
-  vec2 rank = streetTowers(az, slope, 380.0, 23.0, 20.0, 50.0, 5.0);
+  vec2 rank = cityTowers(az, slope, 380.0, 23.0, 20.0, 50.0, 5.0);
   if (rank.x > 0.5) col = mix(body, haze, 0.8) + window * rank.y * 0.1;
-  rank = streetTowers(az, slope, 150.0, 38.0, 12.0, 28.0, 2.0);
+  rank = cityTowers(az, slope, 150.0, 38.0, 12.0, 28.0, 2.0);
   if (rank.x > 0.5) col = mix(body, haze, 0.55) + window * rank.y * 0.2;
   return col;
 }
+
+// The shops' light at u along facade f, softened over a metre, with the blade sign's colour.
+vec3 cityShopGlow(int f, float u) {
+  int b = streetBuildingAt(f, u);
+  vec4 A = STREET_BLD_A[b];
+  vec4 B = STREET_BLD_B[b];
+  float x = u - A.x;
+  float win = smoothstep(0.0, 1.2, x) * smoothstep(0.0, 1.2, A.y - A.x - x);
+  vec3 c = streetShopLight(B.x, B.w) * win * (0.35 + 0.75 * K_signs);
+  if (B.y > 0.5) {
+    float us = f < 2 ? 0.55 : 0.75;
+    c += STREET_SIGN[int(B.y - 0.5)] * exp(-(x - us) * (x - us) / 2.5) * 0.45 * K_signs;
+  }
+  return c;
+}
+
+// Light from the shops and the unseen shops below the window, at p (the street's frame).
+vec3 citySpill(vec3 p) {
+  vec3 s = vec3(0.0);
+  float ax = abs(p.x);
+  if (p.z > STREET_KERB_FAR - 7.0 && p.z < STREET_FACADE_FAR + 0.5 && ax > STREET_SIDE_FACADE - 1.5) {
+    float d = max(STREET_FACADE_FAR - p.z, 0.0);
+    s += cityShopGlow(p.x < 0.0 ? 0 : 1, max(ax - STREET_SIDE_FACADE, 0.0)) * exp(-d / 1.9) * (1.0 - smoothstep(1.5, 4.0, p.y));
+  }
+  if (p.z > STREET_FACADE_FAR - 1.5 && ax < STREET_SIDE_FACADE + 0.5) {
+    float d = max(STREET_SIDE_FACADE - ax, 0.0);
+    s += cityShopGlow(p.x < 0.0 ? 2 : 3, max(p.z - STREET_FACADE_FAR, 0.0)) * exp(-d / 1.9) * (1.0 - smoothstep(1.5, 4.0, p.y));
+  }
+  if (p.z < STREET_KERB_NEAR + 3.0) {
+    // Shops under the window: pools of light on the near sidewalk, a few metres wide.
+    float fall = exp(-max(p.z - STREET_FACADE_NEAR, 0.0) / 2.3);
+    float c0 = floor(p.x / 9.0);
+    for (int i = -1; i <= 1; i++) {
+      float cx = c0 + float(i);
+      float h = hash12(vec2(cx, 2.3));
+      if (fract(h * 3.7) < 0.3) continue;
+      float x0 = (cx + 0.25 + 0.5 * h) * 9.0;
+      vec3 c = h < 0.5 ? vec3(1.0, 0.72, 0.45) : vec3(0.88, 0.94, 1.0);
+      s += c * (0.45 + 0.6 * fract(h * 7.1)) * exp(-(p.x - x0) * (p.x - x0) / 9.0) * fall * (0.4 + 0.6 * K_signs);
+    }
+  }
+  return s;
+}
+
+// The shops' spill on a surface at p (the rig's frame) facing n: the city's light (localLight).
+vec3 citySpillLight(vec3 p, vec3 n) {
+  return citySpill(p + vec3(STREET_CAM_X, 0.0, 0.0)) * (0.5 + 0.5 * max(n.y, 0.0) + 0.4 * max(n.z, 0.0));
+}
+
+// A blade sign hanging off a far block (f 0 or 1), building b: hit it if nearer.
+void cityBladeFar(int f, int b, vec3 ro, vec3 rd, vec3 inv, inout StreetHit hit, inout vec3 halo) {
+  vec4 A = STREET_BLD_A[b];
+  vec4 B = STREET_BLD_B[b];
+  if (B.y < 0.5) return;
+  float side = f == 0 ? -1.0 : 1.0;
+  float xs = side * (STREET_SIDE_FACADE + A.x + 0.55);
+  float len = 3.2 + 1.2 * fract(B.w * 5.3);
+  vec3 lo = vec3(xs - 0.09, B.z - len, STREET_FACADE_FAR - 0.9);
+  vec3 hi = vec3(xs + 0.09, B.z, STREET_FACADE_FAR);
+  vec3 c = STREET_SIGN[int(B.y - 0.5)] * (0.2 + K_signs);
+  float gap = streetNear(vec2(xs, STREET_FACADE_FAR - 0.45), B.z) - 0.1;
+  halo += c * (0.3 * exp(-gap * gap / 0.35) + 0.12 * exp(-gap * gap / 2.5)) * streetDark;
+  vec3 n;
+  float t = streetBox(ro, rd, inv, lo, hi, n);
+  if (t <= 0.0 || t >= hit.t) return;
+  vec3 p = ro + rd * t;
+  hit.t = t;
+  hit.kind = STREET_K_SIGN;
+  hit.n = n;
+  hit.gloss = 0.4;
+  hit.snow = n.y > 0.5 ? 1.0 : 0.0;
+  float fw = t / (STREET_FOCAL * uRes.y);
+  if (abs(n.x) > 0.5) {
+    vec3 face = streetBladeFace(vec2((STREET_FACADE_FAR - p.z) / 0.9, (B.z - p.y) / len), len, B.y - 1.0, B.w, fw);
+    hit.albedo = face * 0.7;
+    hit.emit = mix(face, vec3(1.0), 0.15) * (0.2 + K_signs) * 1.3;
+  } else {
+    hit.albedo = vec3(0.2);
+    hit.emit = c * 0.3;
+  }
+}
+
+// A blade sign hanging into the side street (f 2 or 3), building b.
+void cityBladeSide(int f, int b, vec3 ro, vec3 rd, vec3 inv, inout StreetHit hit, inout vec3 halo) {
+  vec4 A = STREET_BLD_A[b];
+  vec4 B = STREET_BLD_B[b];
+  if (B.y < 0.5) return;
+  float side = f == 2 ? -1.0 : 1.0;
+  float zs = STREET_FACADE_FAR + A.x + 0.75;
+  float len = 3.2 + 1.2 * fract(B.w * 5.3);
+  float x0 = side * (STREET_SIDE_FACADE - 0.9);
+  float x1 = side * STREET_SIDE_FACADE;
+  vec3 lo = vec3(min(x0, x1), B.z - len, zs - 0.1);
+  vec3 hi = vec3(max(x0, x1), B.z, zs + 0.1);
+  vec3 c = STREET_SIGN[int(B.y - 0.5)] * (0.2 + K_signs);
+  float gap = streetNear(vec2(side * (STREET_SIDE_FACADE - 0.45), zs), B.z) - 0.1;
+  halo += c * (0.3 * exp(-gap * gap / 0.35) + 0.12 * exp(-gap * gap / 2.5)) * streetDark;
+  vec3 n;
+  float t = streetBox(ro, rd, inv, lo, hi, n);
+  if (t <= 0.0 || t >= hit.t) return;
+  vec3 p = ro + rd * t;
+  hit.t = t;
+  hit.kind = STREET_K_SIGN;
+  hit.n = n;
+  hit.gloss = 0.4;
+  hit.snow = n.y > 0.5 ? 1.0 : 0.0;
+  float fw = t / (STREET_FOCAL * uRes.y);
+  if (abs(n.z) > 0.5) {
+    vec3 face = streetBladeFace(vec2((side * STREET_SIDE_FACADE - p.x) * side / 0.9, (B.z - p.y) / len), len, B.y - 1.0, B.w, fw);
+    hit.albedo = face * 0.7;
+    hit.emit = mix(face, vec3(1.0), 0.15) * (0.2 + K_signs) * 1.3;
+  } else {
+    hit.albedo = vec3(0.2);
+    hit.emit = c * 0.3;
+  }
+}
+
+// An awning over a shop front: its top (y = 2.95) and its valance. along: u on facade f; out: how far
+// out from the wall (m) the ray is at the awning's height.
+void cityAwning(int f, float u, float reach, float t, vec3 n, bool valance, inout StreetHit hit) {
+  if (t <= 0.0 || t >= hit.t || reach < 0.0 || reach > 1.1) return;
+  int b = streetBuildingAt(f, u);
+  vec4 A = STREET_BLD_A[b];
+  vec4 B = STREET_BLD_B[b];
+  float x = u - A.x;
+  if (!streetHasAwning(B) || x < 0.3 || x > A.y - A.x - 0.3) return;
+  int s = int(B.x + 0.5);
+  vec3 c = s == STREET_SHOP_CAFE ? mix(vec3(0.08, 0.36, 0.2), vec3(0.88, 0.85, 0.74), step(0.5, fract(x / 0.9)))
+         : s == STREET_SHOP_IZAKAYA ? vec3(0.45, 0.07, 0.05)
+         : s == STREET_SHOP_KARAOKE ? vec3(0.3, 0.08, 0.36)
+         : vec3(0.08, 0.08, 0.09);
+  hit.t = t;
+  hit.kind = STREET_K_AWNING;
+  hit.n = n;
+  hit.albedo = c;
+  hit.emit = valance ? streetShopLight(B.x, B.w) * 0.12 * (0.35 + 0.75 * K_signs) : vec3(0.0);
+  hit.gloss = 0.5;
+  hit.snow = valance ? 0.0 : 1.0;
+  hit.q = vec3(float(f), u, reach);
+}
+
+// The fixed things of the city the ray meets: the facades, blade signs and awnings. halo gathers the
+// blade signs' glow.
+void cityTrace(vec3 ro, vec3 rd, vec3 inv, inout StreetHit hit, inout vec3 halo) {
+  // The far blocks' fronts.
+  if (rd.z > 0.0) {
+    float t = (STREET_FACADE_FAR - ro.z) / rd.z;
+    vec3 q = ro + rd * t;
+    if (abs(q.x) >= STREET_SIDE_FACADE && q.y >= 0.0 && t < hit.t && (streetTilt <= 0.0 || q.y < STREET_BLD_A[streetBuildingAt(q.x < 0.0 ? 0 : 1, abs(q.x) - STREET_SIDE_FACADE)].z)) {
+      hit.t = t;
+      hit.kind = STREET_K_FACADE;
+      hit.n = vec3(0.0, 0.0, -1.0);
+      hit.q = vec3(q.x < 0.0 ? 0.0 : 1.0, abs(q.x) - STREET_SIDE_FACADE, q.y);
+    }
+  }
+  // The side street's walls.
+  {
+    float wx = rd.x < 0.0 ? -STREET_SIDE_FACADE : STREET_SIDE_FACADE;
+    float t = (wx - ro.x) / (abs(rd.x) > 1e-5 ? rd.x : 1e-5);
+    vec3 q = ro + rd * t;
+    if (t > 0.0 && q.z >= STREET_FACADE_FAR && q.y >= 0.0 && t < hit.t && (streetTilt <= 0.0 || q.y < STREET_BLD_A[streetBuildingAt(rd.x < 0.0 ? 2 : 3, q.z - STREET_FACADE_FAR)].z)) {
+      hit.t = t;
+      hit.kind = STREET_K_FACADE;
+      hit.n = vec3(rd.x < 0.0 ? 1.0 : -1.0, 0.0, 0.0);
+      hit.q = vec3(rd.x < 0.0 ? 2.0 : 3.0, q.z - STREET_FACADE_FAR, q.y);
+    }
+  }
+  // Blade signs: the one on the building the ray passes over the sidewalk, and the next one.
+  {
+    float t = (STREET_FACADE_FAR - 0.45 - ro.z) / rd.z;
+    vec3 q = ro + rd * t;
+    if (abs(q.x) > STREET_SIDE_FACADE && q.y > 2.0 && q.y < 12.0) {
+      int f = q.x < 0.0 ? 0 : 1;
+      float u = abs(q.x) - STREET_SIDE_FACADE;
+      int b = streetBuildingAt(f, u);
+      cityBladeFar(f, b, ro, rd, inv, hit, halo);
+      if (b + 1 < STREET_BLD_FIRST[f] + STREET_BLD_COUNT[f] && STREET_BLD_A[b].y - u < 2.2) cityBladeFar(f, b + 1, ro, rd, inv, hit, halo);
+    }
+  }
+  if (abs(rd.x) > 1e-4) {
+    float side = rd.x < 0.0 ? -1.0 : 1.0;
+    float ta = (side * (STREET_SIDE_FACADE - 0.9) - ro.x) / rd.x;
+    float tb = (side * STREET_SIDE_FACADE - ro.x) / rd.x;
+    float za = ro.z + rd.z * ta - 0.2;
+    float zb = ro.z + rd.z * tb + 0.2;
+    if (zb > STREET_FACADE_FAR && ro.y + rd.y * ta > 2.0) {
+      int f = side < 0.0 ? 2 : 3;
+      int b0 = streetBuildingAt(f, max(za - STREET_FACADE_FAR - 2.2, 0.0));
+      int b1 = streetBuildingAt(f, max(zb - STREET_FACADE_FAR, 0.0));
+      for (int i = 0; i < 3; i++) {
+        if (b0 + i > b1) break;
+        cityBladeSide(f, b0 + i, ro, rd, inv, hit, halo);
+      }
+    }
+  }
+  // Awnings: their tops, then their fronts.
+  {
+    float t = (2.95 - ro.y) / rd.y;
+    vec3 q = ro + rd * t;
+    if (abs(q.x) > STREET_SIDE_FACADE) cityAwning(q.x < 0.0 ? 0 : 1, abs(q.x) - STREET_SIDE_FACADE, STREET_FACADE_FAR - q.z, t, vec3(0.0, 1.0, 0.0), false, hit);
+    else if (q.z > STREET_FACADE_FAR) cityAwning(q.x < 0.0 ? 2 : 3, q.z - STREET_FACADE_FAR, STREET_SIDE_FACADE - abs(q.x), t, vec3(0.0, 1.0, 0.0), false, hit);
+    float tf = (STREET_FACADE_FAR - 1.1 - ro.z) / rd.z;
+    vec3 qf = ro + rd * tf;
+    if (abs(qf.x) > STREET_SIDE_FACADE && qf.y > 2.6 && qf.y < 2.95) cityAwning(qf.x < 0.0 ? 0 : 1, abs(qf.x) - STREET_SIDE_FACADE, 1.1, tf, vec3(0.0, 0.0, -1.0), true, hit);
+    if (abs(rd.x) > 1e-4) {
+      float side = rd.x < 0.0 ? -1.0 : 1.0;
+      float ts = (side * (STREET_SIDE_FACADE - 1.1) - ro.x) / rd.x;
+      vec3 qs = ro + rd * ts;
+      if (qs.z > STREET_FACADE_FAR && qs.y > 2.6 && qs.y < 2.95) cityAwning(side < 0.0 ? 2 : 3, qs.z - STREET_FACADE_FAR, 1.1, ts, vec3(-side, 0.0, 0.0), true, hit);
+    }
+  }
+}
+
+// The street's camera and air for the composer and the World (the backdrop's begin, after the
+// street's): the ray through the window, its tilt in it (x.v: what the World's sky, fog and drops are
+// seen along); how far along it the floor is (x.zg: every depth of the street is metres along the
+// ray), and no floor under the city beyond; the air (the fog's colour, the light the drops take, the
+// cloud base wet things mirror) from the cell's light and glow.
+void cityBegin(inout Ctx x) {
+  x.v = worldViewOf(streetRdView, x.uv, RIG_HORIZON, RIG_FOCAL, x.eye, RIG_TURN, 1.0);
+  x.zg = streetTg;
+  if (streetOverRoofs) x.landZ = 0.0;
+  vec3 fog = streetAmbient * 1.4 + streetBounce * 2.0 + streetGlowAir * 0.3;
+  x.air = Air(fog, fog, streetDrop * 1.1, streetDeck, 0.0, 0.0, 0.0);
+}
+
+// The sky: none shows from the window at rest; raised, over the roofs, the city beyond.
+void citySky(Ctx x, inout Cell c) {
+  if (streetOverRoofs) c.col = cityBeyond(x);
+}
+
+// The blocks, their blade signs and awnings, where the ray meets them first.
+void cityFar(Ctx x, inout Cell c) {
+  int kind = streetHit.kind;
+  if (kind == STREET_K_FACADE || kind == STREET_K_SIGN || kind == STREET_K_AWNING) streetPut(c);
+}
+
+// Drips off the awnings' edges in the rain and while they dry, in front of what the ray meets.
+void cityDrips(inout vec3 col) {
+  if (K_rain > 0.0 || streetWet > 0.1) {
+    float amount = max(K_rain, 0.4 * streetWet);
+    float tf = (STREET_FACADE_FAR - 1.1 - streetRo.z) / streetRd.z;
+    vec3 qf = streetRo + streetRd * tf;
+    if (tf < streetHit.t && abs(qf.x) > STREET_SIDE_FACADE && qf.y > 0.0 && qf.y < 2.62) {
+      int f = qf.x < 0.0 ? 0 : 1;
+      float u = abs(qf.x) - STREET_SIDE_FACADE;
+      int b = streetBuildingAt(f, u);
+      vec4 A = STREET_BLD_A[b];
+      if (streetHasAwning(STREET_BLD_B[b]) && u - A.x > 0.35 && A.y - u > 0.35) {
+        col = mix(col, streetDrop * 1.2, rainDrips(vec2(u, 2.62 - qf.y), uFallTime, amount, 1.0));
+      }
+    }
+  }
+}
+
+// The air before what the cell shows: the splashes on the street (the crossing's) and the drips off
+// the awnings, the haze far up the streets while the window is raised, the glow of the lamps, signs,
+// signals and vehicles (more in rain and fog), and the signals' green as the accent.
+void cityAir(inout Ctx x, inout Cell c) {
+  if (!streetOverRoofs) {
+#if LAYER_CROSSING
+    crossingSplash(c.col);
+#endif
+    cityDrips(c.col);
+    if (streetTilt > 0.0 && streetHit.t > 130.0) c.col = mix(c.col, streetHaze(streetRdView), smoothstep(130.0, 520.0, streetHit.t));
+    c.col += streetGlowAir * (1.0 + 1.5 * max(K_fog, streetStorm));
+  }
+  c.accent += streetGreen * 0.6;
+}
+
+// The rain's air (the backdrop's precip.air): the cloud base, the city's bounce, the glows it falls
+// through.
+vec3 cityRainAir(Ctx x) {
+  return streetDeck * 0.9 + streetBounce + streetGlowAir * 0.25;
+}
+
+// The axes the World's rain and snow are seen through from the window (the backdrop's precip.seen):
+// pitched down, the passage's tilt in it, so their paths converge on a point below the street.
+void citySeen(Ctx x, out mat3 rain, out mat3 snow) {
+  rain = mat3(vec3(1.0, 0.0, 0.0), vec3(0.0, streetCp, streetSp), vec3(0.0, -streetSp, streetCp));
+  snow = rain;
+}
+`;
+
+/** The crossing (ground): the street's surface, its paint, its wetness and snow. */
+export const crossingGlsl = `
+const vec3 STREET_MANHOLE[${MANHOLES.length}] = vec3[${MANHOLES.length}](${manholes});
 
 // What the wet street mirrors at ground point g along the reflected ray rr: the facade it meets
 // (blurred by rough over the way) or, above the roofs, the sky; and over them the shop fronts and
 // signs, their reflections drawn out toward the eye into long wavering streaks (the rougher the
 // wet asphalt, the longer), sharp in a puddle.
-vec3 streetMirror(vec3 g, vec3 rr, float rough) {
+vec3 crossingMirror(vec3 g, vec3 rr, float rough) {
   int f = -1;
   float u = 0.0;
   float y = 0.0;
@@ -901,98 +1459,26 @@ vec3 streetMirror(vec3 g, vec3 rr, float rough) {
   return mix(c, sky, smoothstep(roof - blur.y, roof + blur.y, y)) + streaks;
 }
 
-// Whether the sun reaches p past the blocks (1) or not (0).
-float streetSunlit(vec3 p) {
-  vec3 s = streetSky.sun;
-  if (s.y <= 0.0) return 0.0;
-  if (s.z > 0.01 && p.z < STREET_FACADE_FAR) {
-    vec3 q = p + s * ((STREET_FACADE_FAR - p.z) / s.z);
-    if (abs(q.x) > STREET_SIDE_FACADE && q.y < STREET_BLD_A[streetBuildingAt(q.x < 0.0 ? 0 : 1, abs(q.x) - STREET_SIDE_FACADE)].z) return 0.0;
-  }
-  if (abs(s.x) > 0.01) {
-    float wx = s.x > 0.0 ? STREET_SIDE_FACADE : -STREET_SIDE_FACADE;
-    float t = (wx - p.x) / s.x;
-    vec3 q = p + s * t;
-    if (t > 0.0 && q.z > STREET_FACADE_FAR && q.y < STREET_BLD_A[streetBuildingAt(s.x > 0.0 ? 3 : 2, q.z - STREET_FACADE_FAR)].z) return 0.0;
-  }
-  if (s.z < -0.01 && p.z > STREET_FACADE_NEAR) {
-    if (p.y + s.y * ((STREET_FACADE_NEAR - p.z) / s.z) < 24.0) return 0.0;
-  }
-  return 1.0;
-}
-
-// The shops' light at u along facade f, softened over a metre, with the blade sign's colour.
-vec3 streetShopGlow(int f, float u) {
-  int b = streetBuildingAt(f, u);
-  vec4 A = STREET_BLD_A[b];
-  vec4 B = STREET_BLD_B[b];
-  float x = u - A.x;
-  float win = smoothstep(0.0, 1.2, x) * smoothstep(0.0, 1.2, A.y - A.x - x);
-  vec3 c = streetShopLight(B.x, B.w) * win * (0.35 + 0.75 * K_signs);
-  if (B.y > 0.5) {
-    float us = f < 2 ? 0.55 : 0.75;
-    c += STREET_SIGN[int(B.y - 0.5)] * exp(-(x - us) * (x - us) / 2.5) * 0.45 * K_signs;
-  }
-  return c;
-}
-
-// Light from the shops, the vending machines and the unseen shops below the window, at p.
-vec3 streetSpill(vec3 p) {
-  vec3 s = vec3(0.0);
-  float ax = abs(p.x);
-  if (p.z > STREET_KERB_FAR - 7.0 && p.z < STREET_FACADE_FAR + 0.5 && ax > STREET_SIDE_FACADE - 1.5) {
-    float d = max(STREET_FACADE_FAR - p.z, 0.0);
-    s += streetShopGlow(p.x < 0.0 ? 0 : 1, max(ax - STREET_SIDE_FACADE, 0.0)) * exp(-d / 1.9) * (1.0 - smoothstep(1.5, 4.0, p.y));
-  }
-  if (p.z > STREET_FACADE_FAR - 1.5 && ax < STREET_SIDE_FACADE + 0.5) {
-    float d = max(STREET_SIDE_FACADE - ax, 0.0);
-    s += streetShopGlow(p.x < 0.0 ? 2 : 3, max(p.z - STREET_FACADE_FAR, 0.0)) * exp(-d / 1.9) * (1.0 - smoothstep(1.5, 4.0, p.y));
-  }
-  if (p.z < STREET_KERB_NEAR + 3.0) {
-    // Shops under the window: pools of light on the near sidewalk, a few metres wide.
-    float fall = exp(-max(p.z - STREET_FACADE_NEAR, 0.0) / 2.3);
-    float c0 = floor(p.x / 9.0);
-    for (int i = -1; i <= 1; i++) {
-      float cx = c0 + float(i);
-      float h = hash12(vec2(cx, 2.3));
-      if (fract(h * 3.7) < 0.3) continue;
-      float x0 = (cx + 0.25 + 0.5 * h) * 9.0;
-      vec3 c = h < 0.5 ? vec3(1.0, 0.72, 0.45) : vec3(0.88, 0.94, 1.0);
-      s += c * (0.45 + 0.6 * fract(h * 7.1)) * exp(-(p.x - x0) * (p.x - x0) / 9.0) * fall * (0.4 + 0.6 * K_signs);
-    }
-  }
-  // Vending machines glow white in front of their fronts.
-  vec4 v0 = STREET_VENDING[0];
-  vec2 d0 = vec2(clamp(p.x, v0.x, v0.y) - p.x, (v0.z - p.z));
-  s += vec3(0.85, 0.92, 1.0) * 0.9 * exp(-dot(d0, d0) / 1.6) * step(p.z, v0.z + 0.1);
-  vec4 v1 = STREET_VENDING[1];
-  vec2 d1 = vec2(v1.x - p.x, clamp(p.z, v1.z, v1.w) - p.z);
-  s += vec3(0.95, 0.95, 1.0) * 0.8 * exp(-dot(d1, d1) / 1.6) * step(p.x, v1.x + 0.1);
-  return s;
-}
-
-// ---- The street surface ----
-
 // One zebra: bars every 0.9 m across the walk (along it: 0 at one kerb .. len at the other), 2 *
 // CROSS_HALF wide. fw metres per cell; far off the bars fuse into a grey.
-float streetZebra(float along, float across, float len, float fw) {
+float crossingZebra(float along, float across, float len, float fw) {
   float inside = streetBand(across, -STREET_CROSS_HALF, STREET_CROSS_HALF, fw) * streetBand(along, 0.35, len - 0.35, fw);
   float bar = streetBand(fract(along / 0.9 + 0.25), 0.25, 0.75, fw / 0.9);
   return inside * mix(bar, 0.5, smoothstep(0.12, 0.3, fw));
 }
 
 // A zebra from a to b (plan points).
-float streetZebraAB(vec2 p, vec2 a, vec2 b, float fw) {
+float crossingZebraAB(vec2 p, vec2 a, vec2 b, float fw) {
   vec2 d = b - a;
   float len = length(d);
   d /= len;
   vec2 q = p - a;
-  return streetZebra(dot(q, d), dot(q, vec2(-d.y, d.x)), len, fw);
+  return crossingZebra(dot(q, d), dot(q, vec2(-d.y, d.x)), len, fw);
 }
 
 // A lane arrow painted along a lane: q = (along, across) from its tail; turn -1 / 1 adds a branch
 // to the right / left, 2 both.
-float streetArrow(vec2 q, float fw, float turn) {
+float crossingArrow(vec2 q, float fw, float turn) {
   float shaft = streetBand(q.x, 0.0, 3.0, fw) * streetBand(q.y, -0.09, 0.09, fw);
   float head = streetBand(q.x, 3.0, 4.2, fw) * step(abs(q.y), 0.42 * (4.2 - q.x) / 1.2 + fw);
   float a = max(shaft, head);
@@ -1011,7 +1497,7 @@ float streetArrow(vec2 q, float fw, float turn) {
 
 // The street at plan point p: its colour before light. info: x 1 on a sidewalk, y white or yellow
 // paint, z the M's paint, w sheltered under an awning (no rain, no puddles). fw: metres per cell.
-vec3 streetGround(vec2 p, float fw, out vec4 info) {
+vec3 crossingFloor(vec2 p, float fw, out vec4 info) {
   float ax = abs(p.x);
   // The kerbs: signed distance, positive on the road.
   float dNear = p.y - STREET_KERB_NEAR;
@@ -1092,39 +1578,39 @@ vec3 streetGround(vec2 p, float fw, out vec4 info) {
     // Arrows: straight on the inner lanes, straight-or-left on the eastbound outer lane.
     for (int i = 0; i < 2; i++) {
       float x0 = i == 0 ? -27.0 : -40.0;
-      white = max(white, streetArrow(vec2(p.x - x0, p.y - STREET_EB_IN), fw, 0.0));
-      white = max(white, streetArrow(vec2(p.x - x0, p.y - STREET_EB_OUT), fw, 1.0));
-      white = max(white, streetArrow(vec2(-x0 - p.x, STREET_WB_IN - p.y), fw, 0.0));
-      white = max(white, streetArrow(vec2(-x0 - p.x, STREET_WB_OUT - p.y), fw, 0.0));
+      white = max(white, crossingArrow(vec2(p.x - x0, p.y - STREET_EB_IN), fw, 0.0));
+      white = max(white, crossingArrow(vec2(p.x - x0, p.y - STREET_EB_OUT), fw, 1.0));
+      white = max(white, crossingArrow(vec2(-x0 - p.x, STREET_WB_IN - p.y), fw, 0.0));
+      white = max(white, crossingArrow(vec2(-x0 - p.x, STREET_WB_OUT - p.y), fw, 0.0));
     }
     // Bicycle marks along the kerbs: blue chevrons every ten metres.
     float bz = p.y < STREET_MID ? p.y - STREET_WB_BIKE : p.y - STREET_EB_BIKE;
     float bx = fract(p.x / 10.0) * 10.0;
     blue = streetBand(abs(bz) * 0.9 + abs(bx - 5.0) * 0.55, -1.0, 0.32, fw) * step(abs(bx - 5.0), 0.55) * step(13.0, ax) * step(abs(bz), 0.45);
     // The zebras across the avenue.
-    white = max(white, streetZebra(p.y - STREET_KERB_NEAR, p.x + STREET_CROSS_WE, STREET_KERB_FAR - STREET_KERB_NEAR, fw));
-    white = max(white, streetZebra(p.y - STREET_KERB_NEAR, p.x - STREET_CROSS_WE, STREET_KERB_FAR - STREET_KERB_NEAR, fw));
-    if (K_mark > 0.5) {
+    white = max(white, crossingZebra(p.y - STREET_KERB_NEAR, p.x + STREET_CROSS_WE, STREET_KERB_FAR - STREET_KERB_NEAR, fw));
+    white = max(white, crossingZebra(p.y - STREET_KERB_NEAR, p.x - STREET_CROSS_WE, STREET_KERB_FAR - STREET_KERB_NEAR, fw));
+    if (K_crossingMark > 0.5) {
       // The landmark: the diagonals repainted as a V from the far ends of W and E down to the
       // middle, so from up here the zebras spell the M.
       vec2 top0 = vec2(-STREET_CROSS_WE, STREET_KERB_FAR);
       vec2 top1 = vec2(STREET_CROSS_WE, STREET_KERB_FAR);
       vec2 apex = vec2(0.0, STREET_MARK_APEX);
-      mark = max(streetZebraAB(p, top0, apex + vec2(0.0, -0.9), fw), streetZebraAB(p, top1, apex + vec2(0.0, -0.9), fw));
-      mark = max(mark, streetZebra(p.y - STREET_KERB_NEAR, ax - STREET_CROSS_WE, STREET_KERB_FAR - STREET_KERB_NEAR, fw));
+      mark = max(crossingZebraAB(p, top0, apex + vec2(0.0, -0.9), fw), crossingZebraAB(p, top1, apex + vec2(0.0, -0.9), fw));
+      mark = max(mark, crossingZebra(p.y - STREET_KERB_NEAR, ax - STREET_CROSS_WE, STREET_KERB_FAR - STREET_KERB_NEAR, fw));
       white = max(white, mark);
     } else {
-      white = max(white, streetZebraAB(p, vec2(-STREET_DIAG_NEAR, STREET_KERB_NEAR), vec2(STREET_DIAG_FAR, STREET_DIAG_FAR_Z), fw));
-      white = max(white, streetZebraAB(p, vec2(STREET_DIAG_NEAR, STREET_KERB_NEAR), vec2(-STREET_DIAG_FAR, STREET_DIAG_FAR_Z), fw));
+      white = max(white, crossingZebraAB(p, vec2(-STREET_DIAG_NEAR, STREET_KERB_NEAR), vec2(STREET_DIAG_FAR, STREET_DIAG_FAR_Z), fw));
+      white = max(white, crossingZebraAB(p, vec2(STREET_DIAG_NEAR, STREET_KERB_NEAR), vec2(-STREET_DIAG_FAR, STREET_DIAG_FAR_Z), fw));
     }
   } else {
     // The side street: its zebra, stop line, centre and edge lines, the turn arrow.
-    white = max(white, streetZebra(p.x + STREET_SIDE_KERB, p.y - STREET_CROSS_N, 2.0 * STREET_SIDE_KERB, fw));
+    white = max(white, crossingZebra(p.x + STREET_SIDE_KERB, p.y - STREET_CROSS_N, 2.0 * STREET_SIDE_KERB, fw));
     white = max(white, streetBand(p.y, STREET_STOP_SB - 0.5, STREET_STOP_SB - 0.05, fw) * streetBand(p.x, 0.15, STREET_SIDE_KERB - 0.6, fw));
     float up = step(STREET_STOP_SB + 0.5, p.y);
     white = max(white, streetBand(p.x, -0.07, 0.07, fw) * streetBand(fract(p.y / 8.0), 0.0, 0.55, fw / 8.0) * up);
     white = max(white, streetBand(ax, STREET_SIDE_KERB - 0.62, STREET_SIDE_KERB - 0.48, fw) * up);
-    white = max(white, streetArrow(vec2(58.0 - p.y, p.x - STREET_SB), fw, 2.0));
+    white = max(white, crossingArrow(vec2(58.0 - p.y, p.x - STREET_SB), fw, 2.0));
   }
   info.y = max(white, yellow);
   info.z = mark;
@@ -1144,170 +1630,83 @@ vec3 streetGround(vec2 p, float fw, out vec4 info) {
   return c;
 }
 
-// ---- Things standing in the street ----
-
-// A blade sign hanging off a far block (f 0 or 1), building b: hit it if nearer.
-void streetBladeFar(int f, int b, vec3 ro, vec3 rd, vec3 inv, inout StreetHit hit, inout vec3 halo) {
-  vec4 A = STREET_BLD_A[b];
-  vec4 B = STREET_BLD_B[b];
-  if (B.y < 0.5) return;
-  float side = f == 0 ? -1.0 : 1.0;
-  float xs = side * (STREET_SIDE_FACADE + A.x + 0.55);
-  float len = 3.2 + 1.2 * fract(B.w * 5.3);
-  vec3 lo = vec3(xs - 0.09, B.z - len, STREET_FACADE_FAR - 0.9);
-  vec3 hi = vec3(xs + 0.09, B.z, STREET_FACADE_FAR);
-  vec3 c = STREET_SIGN[int(B.y - 0.5)] * (0.2 + K_signs);
-  float gap = streetNear(vec2(xs, STREET_FACADE_FAR - 0.45), B.z) - 0.1;
-  halo += c * (0.3 * exp(-gap * gap / 0.35) + 0.12 * exp(-gap * gap / 2.5)) * streetDark;
-  vec3 n;
-  float t = streetBox(ro, rd, inv, lo, hi, n);
-  if (t <= 0.0 || t >= hit.t) return;
-  vec3 p = ro + rd * t;
-  hit.t = t;
-  hit.kind = STREET_K_SIGN;
-  hit.n = n;
-  hit.gloss = 0.4;
-  hit.snow = n.y > 0.5 ? 1.0 : 0.0;
-  float fw = t / (STREET_FOCAL * uRes.y);
-  if (abs(n.x) > 0.5) {
-    vec3 face = streetBladeFace(vec2((STREET_FACADE_FAR - p.z) / 0.9, (B.z - p.y) / len), len, B.y - 1.0, B.w, fw);
-    hit.albedo = face * 0.7;
-    hit.emit = mix(face, vec3(1.0), 0.15) * (0.2 + K_signs) * 1.3;
-  } else {
-    hit.albedo = vec3(0.2);
-    hit.emit = c * 0.3;
+// The street's surface at P, lit by E (crossingFloor's albedo and info): wet, it mirrors the city,
+// sharper in the puddles, the lamps' streaks in it, ringed where drops land; snow lies on it but for
+// the wheel tracks and where people walk; the M's paint in the accent colour.
+void crossingSurface(vec3 P, vec3 rd, vec3 albedo, vec4 info, float wet, float puddle, float rough, vec3 E, vec3 streaks, float green, float lampTh, vec3 dropLight, out vec3 col, inout float accent, inout float snowy) {
+  float porous = info.x > 0.5 ? 0.4 : 0.25;
+  vec3 a = wetten(albedo, wet, porous);
+  col = a * E;
+  // Snow lies on the street but for the wheel tracks and where people walk.
+  if (streetLying > 0.0) {
+    float cover = snowCover(vec3(0.0, 1.0, 0.0), P.xz, streetLying);
+    if (info.x < 0.5) {
+      float zz = P.z < STREET_MID ? min(abs(P.z - STREET_WB_IN), abs(P.z - STREET_WB_OUT)) : min(abs(P.z - STREET_EB_IN), abs(P.z - STREET_EB_OUT));
+      float xx = min(abs(P.x - STREET_SB), abs(P.x - STREET_NB));
+      float tracks = P.z < STREET_KERB_FAR ? zz : xx;
+      cover *= 0.25 + 0.75 * smoothstep(0.12, 0.32, abs(tracks - 0.78));
+      cover *= 1.0 - 0.55 * info.y;
+    } else {
+      cover *= 0.65 + 0.35 * smoothstep(0.2, 0.9, abs(fract(P.z / 7.0) - 0.5));
+    }
+    cover *= 1.0 - info.w;
+    snowy = cover;
   }
+  // Wet: the street mirrors the city, sharper in the puddles, ringed where drops land.
+  float gloss = wetGloss(wet, 1.0);
+  if (gloss > 0.01) {
+    vec3 rr = reflect(rd, vec3(0.0, 1.0, 0.0));
+    vec3 ring = vec3(0.0);
+    if (puddle > 0.0 && K_rain > 0.0) {
+      ring = rainRipples(P.xz * 2.4, uFallTime, K_rain);
+      rr = normalize(rr + vec3(ring.x, 0.0, ring.y) * 0.04);
+    }
+    float mirror = mix(gloss * 0.32, 0.72, puddle) * (1.0 - snowy);
+    vec3 seen = crossingMirror(P, rr, rough);
+    col = col * (1.0 - 0.45 * puddle) + seen * mirror + streaks * mirror * 2.2;
+    // The rings' crests catch the light, switched per cell (they move).
+    col += dropLight * 0.35 * step(lampTh, ring.z) * puddle;
+    accent += green * mirror * 1.5;
+  }
+  // The landmark's paint shows in the accent colour.
+  accent = max(accent, info.z * step(0.5, K_crossingMark) * 0.75);
 }
 
-// A blade sign hanging into the side street (f 2 or 3), building b.
-void streetBladeSide(int f, int b, vec3 ro, vec3 rd, vec3 inv, inout StreetHit hit, inout vec3 halo) {
-  vec4 A = STREET_BLD_A[b];
-  vec4 B = STREET_BLD_B[b];
-  if (B.y < 0.5) return;
-  float side = f == 2 ? -1.0 : 1.0;
-  float zs = STREET_FACADE_FAR + A.x + 0.75;
-  float len = 3.2 + 1.2 * fract(B.w * 5.3);
-  float x0 = side * (STREET_SIDE_FACADE - 0.9);
-  float x1 = side * STREET_SIDE_FACADE;
-  vec3 lo = vec3(min(x0, x1), B.z - len, zs - 0.1);
-  vec3 hi = vec3(max(x0, x1), B.z, zs + 0.1);
-  vec3 c = STREET_SIGN[int(B.y - 0.5)] * (0.2 + K_signs);
-  float gap = streetNear(vec2(side * (STREET_SIDE_FACADE - 0.45), zs), B.z) - 0.1;
-  halo += c * (0.3 * exp(-gap * gap / 0.35) + 0.12 * exp(-gap * gap / 2.5)) * streetDark;
-  vec3 n;
-  float t = streetBox(ro, rd, inv, lo, hi, n);
-  if (t <= 0.0 || t >= hit.t) return;
-  vec3 p = ro + rd * t;
-  hit.t = t;
-  hit.kind = STREET_K_SIGN;
-  hit.n = n;
-  hit.gloss = 0.4;
-  hit.snow = n.y > 0.5 ? 1.0 : 0.0;
-  float fw = t / (STREET_FOCAL * uRes.y);
-  if (abs(n.z) > 0.5) {
-    vec3 face = streetBladeFace(vec2((side * STREET_SIDE_FACADE - p.x) * side / 0.9, (B.z - p.y) / len), len, B.y - 1.0, B.w, fw);
-    hit.albedo = face * 0.7;
-    hit.emit = mix(face, vec3(1.0), 0.15) * (0.2 + K_signs) * 1.3;
-  } else {
-    hit.albedo = vec3(0.2);
-    hit.emit = c * 0.3;
-  }
+// The street where the ray meets it.
+void crossingGround(Ctx x, inout Cell c) {
+  if (streetHit.kind != STREET_K_GROUND) return;
+  c.col = streetCol;
+  c.z = streetHit.t;
+  c.accent = streetAccent;
 }
 
-// An awning over a shop front: its top (y = 2.95) and its valance. along: u on facade f; out: how far
-// out from the wall (m) the ray is at the awning's height.
-void streetAwning(int f, float u, float reach, float t, vec3 n, bool valance, inout StreetHit hit) {
-  if (t <= 0.0 || t >= hit.t || reach < 0.0 || reach > 1.1) return;
-  int b = streetBuildingAt(f, u);
-  vec4 A = STREET_BLD_A[b];
-  vec4 B = STREET_BLD_B[b];
-  float x = u - A.x;
-  if (!streetHasAwning(B) || x < 0.3 || x > A.y - A.x - 0.3) return;
-  int s = int(B.x + 0.5);
-  vec3 c = s == STREET_SHOP_CAFE ? mix(vec3(0.08, 0.36, 0.2), vec3(0.88, 0.85, 0.74), step(0.5, fract(x / 0.9)))
-         : s == STREET_SHOP_IZAKAYA ? vec3(0.45, 0.07, 0.05)
-         : s == STREET_SHOP_KARAOKE ? vec3(0.3, 0.08, 0.36)
-         : vec3(0.08, 0.08, 0.09);
-  hit.t = t;
-  hit.kind = STREET_K_AWNING;
-  hit.n = n;
-  hit.albedo = c;
-  hit.emit = valance ? streetShopLight(B.x, B.w) * 0.12 * (0.35 + 0.75 * K_signs) : vec3(0.0);
-  hit.gloss = 0.5;
-  hit.snow = valance ? 0.0 : 1.0;
-  hit.q = vec3(float(f), u, reach);
+// Splashes crowning on the street in the rain, but under the awnings (the city's air lays them over
+// the street, after the clear umbrellas and the spray).
+void crossingSplash(inout vec3 col) {
+  if (streetHit.kind == STREET_K_GROUND && K_rain > 0.0 && streetShelter < 0.5) {
+    float cpm = 1.0 / streetFw;
+    vec3 P = streetRo + streetRd * streetHit.t;
+    float splash = rainSplashes(P.xz, uFallTime, K_rain) * smoothstep(13.0, 18.0, cpm);
+    col = mix(col, streetDrop, splash * 0.85);
+  }
 }
+`;
 
-// The fixed things in the street: the facades, blade signs, awnings, vending machines, lamp posts,
-// signal poles and their heads. halo gathers the blade signs' glow.
-void streetStatics(vec3 ro, vec3 rd, vec3 inv, inout StreetHit hit, inout vec3 halo) {
-  // The far blocks' fronts.
-  if (rd.z > 0.0) {
-    float t = (STREET_FACADE_FAR - ro.z) / rd.z;
-    vec3 q = ro + rd * t;
-    if (abs(q.x) >= STREET_SIDE_FACADE && q.y >= 0.0 && t < hit.t && (streetTilt <= 0.0 || q.y < STREET_BLD_A[streetBuildingAt(q.x < 0.0 ? 0 : 1, abs(q.x) - STREET_SIDE_FACADE)].z)) {
-      hit.t = t;
-      hit.kind = STREET_K_FACADE;
-      hit.n = vec3(0.0, 0.0, -1.0);
-      hit.q = vec3(q.x < 0.0 ? 0.0 : 1.0, abs(q.x) - STREET_SIDE_FACADE, q.y);
-    }
-  }
-  // The side street's walls.
-  {
-    float wx = rd.x < 0.0 ? -STREET_SIDE_FACADE : STREET_SIDE_FACADE;
-    float t = (wx - ro.x) / (abs(rd.x) > 1e-5 ? rd.x : 1e-5);
-    vec3 q = ro + rd * t;
-    if (t > 0.0 && q.z >= STREET_FACADE_FAR && q.y >= 0.0 && t < hit.t && (streetTilt <= 0.0 || q.y < STREET_BLD_A[streetBuildingAt(rd.x < 0.0 ? 2 : 3, q.z - STREET_FACADE_FAR)].z)) {
-      hit.t = t;
-      hit.kind = STREET_K_FACADE;
-      hit.n = vec3(rd.x < 0.0 ? 1.0 : -1.0, 0.0, 0.0);
-      hit.q = vec3(rd.x < 0.0 ? 2.0 : 3.0, q.z - STREET_FACADE_FAR, q.y);
-    }
-  }
-  // Blade signs: the one on the building the ray passes over the sidewalk, and the next one.
-  {
-    float t = (STREET_FACADE_FAR - 0.45 - ro.z) / rd.z;
-    vec3 q = ro + rd * t;
-    if (abs(q.x) > STREET_SIDE_FACADE && q.y > 2.0 && q.y < 12.0) {
-      int f = q.x < 0.0 ? 0 : 1;
-      float u = abs(q.x) - STREET_SIDE_FACADE;
-      int b = streetBuildingAt(f, u);
-      streetBladeFar(f, b, ro, rd, inv, hit, halo);
-      if (b + 1 < STREET_BLD_FIRST[f] + STREET_BLD_COUNT[f] && STREET_BLD_A[b].y - u < 2.2) streetBladeFar(f, b + 1, ro, rd, inv, hit, halo);
-    }
-  }
-  if (abs(rd.x) > 1e-4) {
-    float side = rd.x < 0.0 ? -1.0 : 1.0;
-    float ta = (side * (STREET_SIDE_FACADE - 0.9) - ro.x) / rd.x;
-    float tb = (side * STREET_SIDE_FACADE - ro.x) / rd.x;
-    float za = ro.z + rd.z * ta - 0.2;
-    float zb = ro.z + rd.z * tb + 0.2;
-    if (zb > STREET_FACADE_FAR && ro.y + rd.y * ta > 2.0) {
-      int f = side < 0.0 ? 2 : 3;
-      int b0 = streetBuildingAt(f, max(za - STREET_FACADE_FAR - 2.2, 0.0));
-      int b1 = streetBuildingAt(f, max(zb - STREET_FACADE_FAR, 0.0));
-      for (int i = 0; i < 3; i++) {
-        if (b0 + i > b1) break;
-        streetBladeSide(f, b0 + i, ro, rd, inv, hit, halo);
-      }
-    }
-  }
-  // Awnings: their tops, then their fronts.
-  {
-    float t = (2.95 - ro.y) / rd.y;
-    vec3 q = ro + rd * t;
-    if (abs(q.x) > STREET_SIDE_FACADE) streetAwning(q.x < 0.0 ? 0 : 1, abs(q.x) - STREET_SIDE_FACADE, STREET_FACADE_FAR - q.z, t, vec3(0.0, 1.0, 0.0), false, hit);
-    else if (q.z > STREET_FACADE_FAR) streetAwning(q.x < 0.0 ? 2 : 3, q.z - STREET_FACADE_FAR, STREET_SIDE_FACADE - abs(q.x), t, vec3(0.0, 1.0, 0.0), false, hit);
-    float tf = (STREET_FACADE_FAR - 1.1 - ro.z) / rd.z;
-    vec3 qf = ro + rd * tf;
-    if (abs(qf.x) > STREET_SIDE_FACADE && qf.y > 2.6 && qf.y < 2.95) streetAwning(qf.x < 0.0 ? 0 : 1, abs(qf.x) - STREET_SIDE_FACADE, 1.1, tf, vec3(0.0, 0.0, -1.0), true, hit);
-    if (abs(rd.x) > 1e-4) {
-      float side = rd.x < 0.0 ? -1.0 : 1.0;
-      float ts = (side * (STREET_SIDE_FACADE - 1.1) - ro.x) / rd.x;
-      vec3 qs = ro + rd * ts;
-      if (qs.z > STREET_FACADE_FAR && qs.y > 2.6 && qs.y < 2.95) streetAwning(side < 0.0 ? 2 : 3, qs.z - STREET_FACADE_FAR, 1.1, ts, vec3(-side, 0.0, 0.0), true, hit);
-    }
-  }
+/** The kerbside (dressing): vending machines, lamp posts, signal poles and their heads. */
+export const kerbsideGlsl = `
+const int STREET_LAMPS = ${LAMPS.length};
+const vec4 STREET_LAMP[${LAMPS.length}] = vec4[${LAMPS.length}](${lamps}); // pole x, z, height, sodium
+const vec2 STREET_LAMP_HEAD[${LAMPS.length}] = vec2[${LAMPS.length}](${lampHeads});
+const int STREET_POLES = ${SIGNAL_POLES.length};
+const vec3 STREET_POLE[${SIGNAL_POLES.length}] = vec3[${SIGNAL_POLES.length}](${poles}); // x, z, height
+const vec4 STREET_VENDING[${VENDING.length}] = vec4[${VENDING.length}](${vending}); // x0, x1, z0, z1
+const vec4 STREET_CAR_HEAD[${CAR_HEADS.length}] = vec4[${CAR_HEADS.length}](${carHeads}); // x, z, facing
+const ivec2 STREET_CAR_HEAD_META[${CAR_HEADS.length}] = ivec2[${CAR_HEADS.length}](${carHeadMeta}); // pole, light
+const vec4 STREET_WALK_HEAD[${WALK_HEADS.length}] = vec4[${WALK_HEADS.length}](${walkHeads}); // x, z, facing
+
+// The kerbside's fixed things the ray meets: the vending machines, the lamp posts, the signal poles
+// and arms, the car signals and the walk signals.
+void kerbsideTrace(vec3 ro, vec3 rd, vec3 inv, inout StreetHit hit) {
   // Vending machines: glowing fronts full of little bottles.
   for (int i = 0; i < 2; i++) {
     vec4 v = STREET_VENDING[i];
@@ -1464,11 +1863,150 @@ void streetStatics(vec3 ro, vec3 rd, vec3 inv, inout StreetHit hit, inout vec3 h
   }
 }
 
+// The vending machines' white glow in front of their fronts, at p (the street's frame), added to s.
+void kerbsideVendingGlow(vec3 p, inout vec3 s) {
+  vec4 v0 = STREET_VENDING[0];
+  vec2 d0 = vec2(clamp(p.x, v0.x, v0.y) - p.x, (v0.z - p.z));
+  s += vec3(0.85, 0.92, 1.0) * 0.9 * exp(-dot(d0, d0) / 1.6) * step(p.z, v0.z + 0.1);
+  vec4 v1 = STREET_VENDING[1];
+  vec2 d1 = vec2(v1.x - p.x, clamp(p.z, v1.z, v1.w) - p.z);
+  s += vec3(0.95, 0.95, 1.0) * 0.8 * exp(-dot(d1, d1) / 1.6) * step(p.x, v1.x + 0.1);
+}
+
+// How far lamp i has come on at this dusk, each at its own moment (0 off), its colour (warm white
+// along the avenue and over the crossing, old sodium up the side street) and where its luminaire
+// hangs.
+float kerbsideLamp(int i, out vec3 c, out vec3 L) {
+  vec4 l = STREET_LAMP[i];
+  float lit = smoothstep(0.0, 0.06, streetDark - (0.18 + 0.16 * hash12(vec2(float(i), 4.1))));
+  c = (l.w > 0.5 ? vec3(1.0, 0.58, 0.24) * 2.4 : vec3(1.0, 0.84, 0.62) * 2.7) * lit;
+  L = vec3(STREET_LAMP_HEAD[i].x, l.z - 0.3, STREET_LAMP_HEAD[i].y);
+  return lit;
+}
+
+// The light a lamp of colour c at L throws on a surface at P facing n: the luminaire throws it down
+// in a cone, a bright pool some seven metres across under it, falling away fast beyond, a little
+// stray light further out.
+vec3 kerbsideLampOn(vec3 c, vec3 L, vec3 P, vec3 n) {
+  vec3 dl = L - P;
+  float d2 = dot(dl, dl);
+  float cone = 0.1 + 0.9 * smoothstep(0.42, 0.86, dl.y * inversesqrt(d2));
+  return c * max(dot(n, dl) * inversesqrt(d2), 0.0) * cone * 52.0 / (d2 + 18.0);
+}
+
+// The lamps on the point P (normal n) the ray meets at tHit: their light on it (E), their glow in the
+// air (and the cone itself, faint in clear air, plain in rain and fog: where the ray passes nearest
+// the lamp's axis, inside the cone's widening radius, in front of what it meets), their streaks in
+// the wet street.
+void kerbsideLamps(vec3 P, vec3 n, vec3 ro, vec3 rd, float tHit, bool ground, float wet, float rough, inout vec3 E, inout vec3 glow, inout vec3 streaks) {
+  vec3 G = streetG;
+  for (int i = 0; i < STREET_LAMPS; i++) {
+    vec3 c;
+    vec3 L;
+    if (kerbsideLamp(i, c, L) <= 0.0) continue;
+    E += kerbsideLampOn(c, L, P, n);
+    glow += c * streetGlow(ro, rd, L, 0.9 + 1.6 * max(K_fog, K_rain), tHit) * 0.22;
+    float yy = clamp(dot(L.xz - G.xz, streetLean) / max(dot(streetLean, streetLean), 1e-6), 0.0, L.y - 0.3);
+    float dd = length(G.xz + streetLean * yy - L.xz);
+    float rad = 0.2 + 0.72 * (L.y - yy);
+    float shown = (ro.y - yy) / -rd.y < tHit ? 1.0 : 0.0;
+    glow += c * exp(-dd * dd / (rad * rad)) * shown * (0.02 + 0.1 * max(K_fog, streetStorm)) * smoothstep(0.0, 1.0, L.y - yy);
+    if (ground && wet > 0.05) streaks += c * streetStreak(P.xz, L, rough) * 0.35;
+  }
+}
+
+// The signals' lamps (the car signals and the walk signals): their glow in the air and their streaks
+// in the wet street, and how much of it is the green (the accent).
+void kerbsideSignals(vec3 P, vec3 ro, vec3 rd, float tHit, bool ground, float wet, float rough, inout vec3 glow, inout vec3 streaks, inout float green) {
+  for (int i = 0; i < ${CAR_HEADS.length}; i++) {
+    vec4 h = STREET_CAR_HEAD[i];
+    vec4 sg = streetSignal[STREET_CAR_HEAD_META[i].y];
+    vec2 left = vec2(h.w, -h.z);
+    vec2 toEye = normalize(vec2(STREET_CAM_X, 0.0) - h.xy);
+    float facing = 0.25 + 0.75 * smoothstep(-0.3, 0.6, dot(h.zw, toEye));
+    for (int k = 0; k < 3; k++) {
+      float on = k == 0 ? sg.x : k == 1 ? sg.y : sg.z;
+      if (on < 0.01) continue;
+      vec3 lc = (k == 0 ? STREET_GO : k == 1 ? STREET_AMBER : STREET_STOP) * on;
+      vec2 at = h.xy + left * (0.42 - 0.42 * float(k)) + h.zw * 0.2;
+      vec3 L = vec3(at.x, 5.55, at.y);
+      vec3 gc = lc * (streetGlow(ro, rd, L, 0.7 + 1.2 * max(K_fog, K_rain), tHit) * 0.35 * facing);
+      vec3 sc = ground && wet > 0.05 ? lc * streetStreak(P.xz, L, rough) * 0.5 * facing : vec3(0.0);
+      glow += gc;
+      streaks += sc;
+      if (k == 0) green += dot(gc + sc, vec3(0.33));
+    }
+  }
+  for (int i = 0; i < ${WALK_HEADS.length}; i++) {
+    vec4 h = STREET_WALK_HEAD[i];
+    vec2 toEye = normalize(vec2(STREET_CAM_X, 0.0) - h.xy);
+    float facing = 0.2 + 0.8 * smoothstep(-0.3, 0.6, dot(h.zw, toEye));
+    vec4 sg = streetSignal[2];
+    vec3 L = vec3(h.x + h.z * 0.15, 2.75, h.y + h.w * 0.15);
+    vec3 gc = (STREET_GO * sg.x * streetGlow(ro, rd, L - vec3(0.0, 0.21, 0.0), 0.45, tHit) + STREET_STOP * sg.y * streetGlow(ro, rd, L + vec3(0.0, 0.21, 0.0), 0.45, tHit)) * 0.3 * facing;
+    vec3 sc = ground && wet > 0.05 ? (STREET_GO * sg.x * streetStreak(P.xz, L - vec3(0.0, 0.21, 0.0), rough) + STREET_STOP * sg.y * streetStreak(P.xz, L + vec3(0.0, 0.21, 0.0), rough)) * 0.45 * facing : vec3(0.0);
+    glow += gc;
+    streaks += sc;
+    green += (dot(gc, vec3(0.33)) + dot(sc, vec3(0.33))) * sg.x / max(sg.x + sg.y, 1e-3);
+  }
+}
+
+// The kerbside's light on a surface at p (the rig's frame) facing n (localLight): the lamps' and the
+// vending machines' glow.
+vec3 kerbsideLight(vec3 p, vec3 n) {
+  vec3 q = p + vec3(STREET_CAM_X, 0.0, 0.0);
+  vec3 light = vec3(0.0);
+  for (int i = 0; i < STREET_LAMPS; i++) {
+    vec3 c;
+    vec3 L;
+    if (kerbsideLamp(i, c, L) > 0.0) light += kerbsideLampOn(c, L, q, n);
+  }
+  vec3 s = vec3(0.0);
+  kerbsideVendingGlow(q, s);
+  return light + s * (0.5 + 0.5 * max(n.y, 0.0) + 0.4 * max(n.z, 0.0));
+}
+
+// The vending machines, lamp posts, signal poles and their heads, where the ray meets them first.
+void kerbsideMiddle(Ctx x, inout Cell c) {
+  int kind = streetHit.kind;
+  if (kind == STREET_K_VENDING || kind == STREET_K_METAL || kind == STREET_K_SIGNAL) streetPut(c);
+}
+`;
+
+/** The street's life (life): the walkers, bicycles and cars of its sim, and the vehicles' lamps. */
+export const streetLifeGlsl = `
+const int STREET_KIND_CHILD = ${KIND_CHILD};
+const int STREET_KIND_BIKE = ${KIND_BIKE};
+const int STREET_KIND_TAXI = ${KIND_TAXI};
+const int STREET_KIND_KEI = ${KIND_KEI};
+const int STREET_KIND_PORTER = ${KIND_PORTER};
+const vec4 STREET_SIZE[${SHAPES.length}] = vec4[${SHAPES.length}](${sizes}); // length, width, body, top
+const vec2 STREET_CABIN[${SHAPES.length}] = vec2[${SHAPES.length}](${cabins}); // cabin back, front
+const float STREET_BEAM = ${f(BEAM_REACH)};
+const float STREET_BIKE_BEAM = ${f(BIKE_BEAM_REACH)};
+const float STREET_TILE_X0 = ${f(TILE_X0)};
+const float STREET_TILE_Z0 = ${f(TILE_Z0)};
+const float STREET_TILE = ${f(TILE)};
+const int STREET_TILES_X = ${TILES_X};
+const int STREET_TILES_Z = ${TILES_Z};
+const int STREET_TILE_TEXELS = ${TILE_TEXELS};
+const int STREET_BODY_TEXELS = ${TILE_BODIES / 4}; // the bodies' slots, four per texel
+const int STREET_LIGHT_TEXELS = ${TILE_LIGHTS / 4}; // then the lamps'
+// Umbrellas (0 clear vinyl, see-through), coats, hair.
+const vec3 STREET_BROLLY[10] = vec3[10](
+  vec3(0.86, 0.9, 0.93), vec3(0.06, 0.06, 0.07), vec3(0.08, 0.12, 0.32), vec3(0.78, 0.1, 0.12),
+  vec3(0.96, 0.78, 0.1), vec3(0.12, 0.44, 0.26), vec3(0.42, 0.7, 0.92), vec3(0.74, 0.63, 0.48),
+  vec3(0.95, 0.55, 0.68), vec3(0.1, 0.14, 0.34));
+// Coats: black, cream, navy, camel, red, grey, denim, mustard.
+const vec3 STREET_COAT[8] = vec3[8](
+  vec3(0.07, 0.07, 0.08), vec3(0.82, 0.8, 0.74), vec3(0.14, 0.18, 0.34), vec3(0.68, 0.52, 0.32),
+  vec3(0.66, 0.16, 0.16), vec3(0.48, 0.49, 0.5), vec3(0.36, 0.5, 0.68), vec3(0.58, 0.52, 0.24));
+const vec3 STREET_HAIR[4] = vec3[4](vec3(0.03, 0.025, 0.025), vec3(0.11, 0.07, 0.05), vec3(0.32, 0.2, 0.12), vec3(0.6, 0.6, 0.58));
 // ---- The walkers, bicycles and cars ----
 
 // An umbrella over (cx, cz) at height y (its rim radius r, panels turned by spin): distance to its
 // canopy along the ray (-1: missed), and the panel's normal.
-float streetUmbrella(vec3 ro, vec3 rd, vec2 c, float y, float r, float spin, out vec3 n, out vec2 q) {
+float streetLifeUmbrella(vec3 ro, vec3 rd, vec2 c, float y, float r, float spin, out vec3 n, out vec2 q) {
   n = vec3(0.0, 1.0, 0.0);
   q = vec2(0.0);
   // A shallow cone: apex 0.1 above y, rim 0.08 below, found in two steps.
@@ -1491,7 +2029,7 @@ float streetUmbrella(vec3 ro, vec3 rd, vec2 c, float y, float r, float spin, out
 // A walker (agent id, its two texels): head, coat, legs, bag, and umbrella. A clear vinyl umbrella
 // goes to veil, to be laid over what is under it. The late delivery's driver (a porter) wears a work
 // jacket and cap and wheels a hand truck before it, with a1.y crates stacked on it.
-void streetWalker(int id, vec4 a0, vec4 a1, vec3 ro, vec3 rd, inout StreetHit hit, inout StreetHit veil) {
+void streetLifeWalker(int id, vec4 a0, vec4 a1, vec3 ro, vec3 rd, inout StreetHit hit, inout StreetHit veil) {
   vec3 F = vec3(a0.x, 0.0, a0.y + STREET_ZREF);
   bool child = int(a0.w + 0.5) == STREET_KIND_CHILD;
   bool porter = int(a0.w + 0.5) == STREET_KIND_PORTER;
@@ -1517,7 +2055,7 @@ void streetWalker(int id, vec4 a0, vec4 a1, vec3 ro, vec3 rd, inout StreetHit hi
     vec2 c = F.xz + fw * 0.1 * k + vec2(0.14 * K_wind, 0.0) - toEye * 0.25 * look;
     vec3 un;
     vec2 q;
-    float tu = streetUmbrella(ro, rd, c, h + 0.3, r, seed * STREET_TAU + a0.z, un, q);
+    float tu = streetLifeUmbrella(ro, rd, c, h + 0.3, r, seed * STREET_TAU + a0.z, un, q);
     if (tu > 0.0 && tu < best) {
       if (colour == 0) {
         if (tu < veil.t) {
@@ -1679,7 +2217,7 @@ void streetWalker(int id, vec4 a0, vec4 a1, vec3 ro, vec3 rd, inout StreetHit hi
 }
 
 // A bicycle and its rider (umbrella in hand in the rain).
-void streetBike(int id, vec4 a0, vec4 a1, vec3 ro, vec3 rd, inout StreetHit hit, inout StreetHit veil) {
+void streetLifeBike(int id, vec4 a0, vec4 a1, vec3 ro, vec3 rd, inout StreetHit hit, inout StreetHit veil) {
   vec3 P = vec3(a0.x, 0.0, a0.y + STREET_ZREF);
   if (streetNear(P.xz, 2.0) > 1.3) return;
   vec2 fw = vec2(cos(a0.z), sin(a0.z));
@@ -1710,7 +2248,7 @@ void streetBike(int id, vec4 a0, vec4 a1, vec3 ro, vec3 rd, inout StreetHit hit,
     vec3 un;
     vec2 q;
     vec2 c = P.xz + fw * 0.1 + vec2(0.12 * K_wind, 0.0);
-    float tu = streetUmbrella(ro, rd, c, 1.9, 0.5 * mix(0.18, 1.0, a1.x), seed * STREET_TAU, un, q);
+    float tu = streetLifeUmbrella(ro, rd, c, 1.9, 0.5 * mix(0.18, 1.0, a1.x), seed * STREET_TAU, un, q);
     if (tu > 0.0 && tu < best) {
       bool clear = fract(seed * 5.71) < 0.45;
       if (clear) {
@@ -1748,7 +2286,7 @@ void streetBike(int id, vec4 a0, vec4 a1, vec3 ro, vec3 rd, inout StreetHit hit,
 }
 
 // Body paint: white, black and silver most of all; taxis black, deep green, yellow or white.
-vec3 streetPaint(float seed, int kind) {
+vec3 streetLifePaint(float seed, int kind) {
   float u = fract(seed * 3.97);
   if (kind == STREET_KIND_TAXI) return u < 0.45 ? vec3(0.05, 0.05, 0.06) : u < 0.7 ? vec3(0.06, 0.26, 0.18) : u < 0.86 ? vec3(0.95, 0.74, 0.1) : vec3(0.85, 0.85, 0.82);
   return u < 0.3 ? vec3(0.86, 0.86, 0.84) : u < 0.5 ? vec3(0.05, 0.05, 0.06) : u < 0.67 ? vec3(0.55, 0.57, 0.6)
@@ -1757,7 +2295,7 @@ vec3 streetPaint(float seed, int kind) {
 }
 
 // A car, taxi, kei car or van: a body box and a cabin box, corners rounded as seen from above.
-void streetCar(int id, vec4 a0, vec4 a1, vec3 ro, vec3 rd, inout StreetHit hit) {
+void streetLifeCar(int id, vec4 a0, vec4 a1, vec3 ro, vec3 rd, inout StreetHit hit) {
   int kind = int(a0.w + 0.5);
   vec4 size = STREET_SIZE[kind];
   vec2 cab = STREET_CABIN[kind];
@@ -1795,7 +2333,7 @@ void streetCar(int id, vec4 a0, vec4 a1, vec3 ro, vec3 rd, inout StreetHit hit) 
   if (part < 0) return;
   vec3 q = lo + ld * best;
   float seed = a1.w;
-  vec3 paint = streetPaint(seed, kind);
+  vec3 paint = streetLifePaint(seed, kind);
   float on = smoothstep(0.18 + 0.12 * fract(seed * 7.7), 0.3 + 0.12 * fract(seed * 7.7), streetDark);
   hit.t = best;
   hit.kind = STREET_K_AGENT;
@@ -1838,17 +2376,17 @@ void streetCar(int id, vec4 a0, vec4 a1, vec3 ro, vec3 rd, inout StreetHit hit) 
   }
 }
 
-// One entry of the tile's body list (a channel of uSim1, 0 for none).
-void streetAgent(float code, vec3 ro, vec3 rd, inout StreetHit hit, inout StreetHit veil) {
+// One entry of the tile's body list (a channel of the tile lists, 0 for none).
+void streetLifeAgent(float code, vec3 ro, vec3 rd, inout StreetHit hit, inout StreetHit veil) {
   int id = int(code * 255.0 + 0.5) - 1;
   if (id < 0) return;
-  vec4 a0 = texelFetch(uSim0, ivec2(id, 0), 0);
-  vec4 a1 = texelFetch(uSim0, ivec2(id, 1), 0);
+  vec4 a0 = streetLifeRecord(id, 0);
+  vec4 a1 = streetLifeRecord(id, 1);
   int kind = int(a0.w + 0.5);
   if (kind <= 0) return;
-  if (kind <= STREET_KIND_CHILD || kind == STREET_KIND_PORTER) streetWalker(id, a0, a1, ro, rd, hit, veil);
-  else if (kind == STREET_KIND_BIKE) streetBike(id, a0, a1, ro, rd, hit, veil);
-  else streetCar(id, a0, a1, ro, rd, hit);
+  if (kind <= STREET_KIND_CHILD || kind == STREET_KIND_PORTER) streetLifeWalker(id, a0, a1, ro, rd, hit, veil);
+  else if (kind == STREET_KIND_BIKE) streetLifeBike(id, a0, a1, ro, rd, hit, veil);
+  else streetLifeCar(id, a0, a1, ro, rd, hit);
 }
 
 // A vehicle's lamps (an entry of the tile's light list): low beams and tail glow on p (normal n),
@@ -1857,11 +2395,11 @@ void streetAgent(float code, vec3 ro, vec3 rd, inout StreetHit hit, inout Street
 // soft gradient sliding over the street would step each colour channel at its own moment: each
 // is switched per cell against th instead (its strength becomes the density of lit cells), so a
 // passing beam lights a cell once and lets it go once.
-void streetLamps(float code, vec3 p, vec3 n, vec3 ro, vec3 rd, float tHit, float rough, bool ground, bool road, float th, inout vec3 light, inout vec3 streaks, inout vec3 glow, inout vec4 spray) {
+void streetLifeVehicleLamps(float code, vec3 p, vec3 n, vec3 ro, vec3 rd, float tHit, float rough, bool ground, bool road, float th, inout vec3 light, inout vec3 streaks, inout vec3 glow, inout vec4 spray) {
   int id = int(code * 255.0 + 0.5) - 1;
   if (id < 0) return;
-  vec4 a0 = texelFetch(uSim0, ivec2(id, 0), 0);
-  vec4 a1 = texelFetch(uSim0, ivec2(id, 1), 0);
+  vec4 a0 = streetLifeRecord(id, 0);
+  vec4 a1 = streetLifeRecord(id, 1);
   int kind = int(a0.w + 0.5);
   if (kind < STREET_KIND_BIKE || kind == STREET_KIND_PORTER) return;
   bool bike = kind == STREET_KIND_BIKE;
@@ -1925,345 +2463,57 @@ void streetLamps(float code, vec3 p, vec3 n, vec3 ro, vec3 rd, float tHit, float
   }
 }
 
-// The passage's tilt of the camera (rad above its rest pitch; sim.ts passageTilt is its twin): coming
-// down from the skyline, on its way from the first frame and braking into a touch of overshoot, then
-// settled; going out it rises faster and faster. 0 at rest.
-float streetTiltAt() {
-  float pin = passageIn();
-  float pout = passageOut();
-  if (pin >= 1.0 && pout <= 0.0) return 0.0;
-  float settle = passageSettle(pin / STREET_TILT_ARRIVE, 0.8);
-  return STREET_TILT_IN * (1.0 - settle) + STREET_TILT_OUT * pout * pout;
+// The tile of the street under the cell's ray (streetG), while the sim lists it.
+bool streetLifeTile(out ivec2 tile) {
+  tile = ivec2(floor((streetG.xz - vec2(STREET_TILE_X0, STREET_TILE_Z0)) / STREET_TILE));
+  return streetLifeSimOn() && streetLifeField0On() && tile.x >= 0 && tile.y >= 0 && tile.x < STREET_TILES_X && tile.y < STREET_TILES_Z;
 }
 
-// Where rain or snow falling along dir seems to come from or go to, seen from the window: the
-// camera is pitched down (cp, sp: the cosine and sine of the pitch a cell was traced with, the
-// passage's tilt included), so the paths converge below the street, and the point moves with the
-// camera.
-vec3 streetVanish(vec3 dir, float cp, float sp) {
-  return rainVanish(dir, vec3(1.0, 0.0, 0.0), vec3(0.0, cp, sp), vec3(0.0, -sp, cp), STREET_FOCAL);
+// Who stands in the way: the sim lists them for the tile under the ray, nearest the window first,
+// four to a texel. The four are walked in a loop rather than called one by one: SwiftShader
+// compiles a function once per call to it, and four copies of the walkers, bicycles and cars (the
+// cars' with the mirrored sky, its stars and constellations) took its GPU process down on the
+// all-features program. The vehicles' lamps below likewise.
+void streetLifeTrace(vec3 ro, vec3 rd, inout StreetHit hit, inout StreetHit veil) {
+  ivec2 tile;
+  if (!streetLifeTile(tile)) return;
+  for (int k = 0; k < STREET_BODY_TEXELS; k++) {
+    vec4 ids = texelFetch(streetLifeField0, ivec2(tile.x * STREET_TILE_TEXELS + k, tile.y), 0);
+    if (ids.x <= 0.0) break;
+    for (int c = 0; c < 4; c++) streetLifeAgent(ids[c], ro, rd, hit, veil);
+  }
 }
 
-// Snow past the window on the motion clock tm: the flakes close in on the point under the eye, as the
-// rain's paths do.
-Precip streetSnow(vec2 uv, float aspect, float tm, float depth, float cp, float sp) {
-  return snowFallSeen(uv, aspect, tm, K_snow, K_wind, depth, streetVanish(snowFallDir(K_snow, K_wind), cp, sp));
+// The vehicles' lamps listed for the tile under the ray, on the point P the ray meets.
+void streetLifeLamps(vec3 P, vec3 n, vec3 ro, vec3 rd, float tHit, float rough, bool ground, bool road, float th, inout vec3 light, inout vec3 streaks, inout vec3 glow, inout vec4 spray) {
+  ivec2 tile;
+  if (!streetLifeTile(tile)) return;
+  for (int k = 0; k < STREET_LIGHT_TEXELS; k++) {
+    vec4 ids = texelFetch(streetLifeField0, ivec2(tile.x * STREET_TILE_TEXELS + STREET_BODY_TEXELS + k, tile.y), 0);
+    if (ids.x <= 0.0) break;
+    for (int c = 0; c < 4; c++) streetLifeVehicleLamps(ids[c], P, n, ro, rd, tHit, rough, ground, road, th, light, streaks, glow, spray);
+  }
 }
 
-// The hour, and the weather over it: rain or snow close the sky, flatten and dim the light; at
-// night the city's own light bounces about, warmer under low cloud. Sets the clock, sky and light
-// globals above for everything the cell then draws.
-void streetHour() {
-  streetTm = uMotionTime;
-  streetSky = skyMoonPhase(skyAt(timeOfDayM(K_time, skyDays())), K_moon);
-  streetStorm = clamp(max(K_rain, 0.85 * K_snow), 0.0, 1.0);
-  streetOver = clamp(streetStorm * 8.0, 0.0, 1.0) * (0.65 + 0.35 * streetStorm);
-  streetSky.sunColor *= 1.0 - 0.85 * streetOver;
-  streetSky.moonColor *= 1.0 - 0.75 * streetOver;
-  streetSky.ambient = mix(streetSky.ambient, vec3(dot(streetSky.ambient, LUMA)), 0.5 * streetOver) * (1.0 - 0.35 * streetStorm);
-  streetDark = clamp(1.0 - streetSky.day * (1.0 - 0.5 * streetOver), 0.0, 1.0);
-  streetSun = streetSky.sunColor * 1.5;
-  // At night the sky's light all but goes: the street is lit by its own lamps, shops, signs and
-  // headlights, with only a faint warm bounce between them (more under low cloud, which the city
-  // lights from below).
-  streetBounce = vec3(0.034, 0.028, 0.024) * streetDark * (1.0 + 0.8 * streetOver);
-  streetAmbient = streetSky.ambient * mix(1.4, 0.4, streetDark) + streetBounce;
-  streetDeck = mix(vec3(dot(streetSky.ambient, LUMA)) * 1.5, vec3(0.13, 0.1, 0.09), streetDark) * (1.0 - 0.3 * streetStorm);
-  streetWet = uWeather.x;
-  streetLying = uWeather.y;
-  streetLit = clamp(K_windows * (0.35 + 0.65 * streetDark), 0.0, 1.0);
+// The walkers, bicycles and cars, where the ray meets one first.
+void streetLifeMiddle(Ctx x, inout Cell c) {
+  if (streetHit.kind == STREET_K_AGENT) streetPut(c);
 }
 
-Shade sceneStreet(vec2 uv, vec2 cell, float t) {
-  float aspect = uRes.x / uRes.y;
-  streetHour();
-  if (uSimOn.z > 0.5) {
-    streetSignal[0] = texelFetch(uSim2, ivec2(0, 0), 0);
-    streetSignal[1] = texelFetch(uSim2, ivec2(1, 0), 0);
-    streetSignal[2] = texelFetch(uSim2, ivec2(2, 0), 0);
-  } else {
-    streetSignal[0] = vec4(1.0, 0.0, 0.0, 0.0);
-    streetSignal[1] = vec4(0.0, 0.0, 1.0, 0.0);
-    streetSignal[2] = vec4(0.0, 1.0, 0.0, 0.0);
-  }
-
-  // The cell's ray from the window, and where it meets the street.
-  vec2 s = vec2((uv.x - 0.5) * aspect, uv.y - 0.5);
-  streetTilt = streetTiltAt();
-  float cp = cos(STREET_PITCH);
-  float sp = sin(STREET_PITCH);
-  if (streetTilt != 0.0) {
-    cp = cos(STREET_PITCH - streetTilt);
-    sp = sin(STREET_PITCH - streetTilt);
-  }
-  vec3 ro = vec3(STREET_CAM_X, STREET_CAM_H, 0.0);
-  vec3 rdView = normalize(vec3(s.x, s.y * cp - STREET_FOCAL * sp, s.y * sp + STREET_FOCAL * cp));
-  // Raised, the view can reach the horizon and the sky: those cells are traced as a ray just under
-  // the horizon (so nothing below divides by a ray that never meets the street) and replaced by the
-  // city beyond once shaded.
-  bool skyward = streetTilt > 0.0 && rdView.y > -0.004;
-  vec3 rd = skyward ? normalize(vec3(rdView.x, -0.004, rdView.z)) : rdView;
-  vec3 inv = streetInv(rd);
-  float tg = -ro.y / rd.y;
-  vec3 G = ro + rd * tg;
-  streetG = G;
-  streetLean = rd.xz / rd.y;
-  float fw = tg / (STREET_FOCAL * uRes.y);
-  // The cell's own threshold, offset from the palette's, for lights that move with the traffic.
-  float lampTh = threshold(cell + vec2(5.0, 1.0));
-
-  StreetHit hit = streetMiss();
-  hit.t = tg;
-  hit.kind = STREET_K_GROUND;
-  StreetHit veil = streetMiss();
-  vec3 signHalo = vec3(0.0);
-  streetStatics(ro, rd, inv, hit, signHalo);
-
-  // Who stands in the way: the simulation lists them for the tile under the ray.
-  ivec2 tile = ivec2(floor((G.xz - vec2(STREET_TILE_X0, STREET_TILE_Z0)) / STREET_TILE));
-  bool inGrid = uSimOn.x > 0.5 && uSimOn.y > 0.5 && tile.x >= 0 && tile.y >= 0 && tile.x < STREET_TILES_X && tile.y < STREET_TILES_Z;
-  if (inGrid) {
-    for (int k = 0; k < STREET_BODY_TEXELS; k++) {
-      vec4 ids = texelFetch(uSim1, ivec2(tile.x * STREET_TILE_TEXELS + k, tile.y), 0);
-      if (ids.x <= 0.0) break;
-      streetAgent(ids.x, ro, rd, hit, veil);
-      streetAgent(ids.y, ro, rd, hit, veil);
-      streetAgent(ids.z, ro, rd, hit, veil);
-      streetAgent(ids.w, ro, rd, hit, veil);
-    }
-  }
-  // Beyond the near blocks: the sky, and whatever a ray lands on behind the blocks' roofs.
-  bool beyond = skyward || (streetTilt > 0.0 && hit.kind == STREET_K_GROUND && G.z > STREET_FACADE_FAR && abs(G.x) > STREET_SIDE_FACADE);
-
-  vec3 P = ro + rd * hit.t;
-  vec3 n = hit.n;
-  bool ground = hit.kind == STREET_K_GROUND;
-  vec4 info = vec4(0.0);
-  vec3 albedo = hit.albedo;
-  if (ground) albedo = streetGround(P.xz, fw, info);
-  float shelter = info.w;
-  float wet = streetWet * (1.0 - shelter);
-  float puddle = 0.0;
-  if (ground && wet > 0.35) puddle = rainPuddles(P.xz, wet * (info.x > 0.5 ? 0.85 : 1.0));
-  float rough = mix(0.34, 0.02, puddle);
-
-  // Light on the point: sky, sun, street lamps, shops; the lamps' glow along the ray and their
-  // streaks in the wet street; then the vehicles' lamps.
-  vec3 E = streetAmbient * (0.55 + 0.45 * n.y) + streetBounce * 0.35;
-  if (streetSky.sun.y > 0.0) E += streetSun * max(dot(n, streetSky.sun), 0.0) * streetSunlit(P);
-  vec3 glow = signHalo;
-  vec3 streaks = vec3(0.0);
-  float green = 0.0;
-  for (int i = 0; i < STREET_LAMPS; i++) {
-    vec4 l = STREET_LAMP[i];
-    float lit = smoothstep(0.0, 0.06, streetDark - (0.18 + 0.16 * hash12(vec2(float(i), 4.1))));
-    if (lit <= 0.0) continue;
-    // Warm white along the avenue and over the crossing, old sodium up the side street.
-    vec3 c = (l.w > 0.5 ? vec3(1.0, 0.58, 0.24) * 2.4 : vec3(1.0, 0.84, 0.62) * 2.7) * lit;
-    vec3 L = vec3(STREET_LAMP_HEAD[i].x, l.z - 0.3, STREET_LAMP_HEAD[i].y);
-    vec3 dl = L - P;
-    float d2 = dot(dl, dl);
-    // The luminaire throws its light down in a cone: a bright pool some seven metres across under
-    // it, falling away fast beyond, a little stray light further out.
-    float cone = 0.1 + 0.9 * smoothstep(0.42, 0.86, dl.y * inversesqrt(d2));
-    E += c * max(dot(n, dl) * inversesqrt(d2), 0.0) * cone * 52.0 / (d2 + 18.0);
-    glow += c * streetGlow(ro, rd, L, 0.9 + 1.6 * max(K_fog, K_rain), hit.t) * 0.22;
-    // The cone itself in the air, faint in clear air, plain in rain and fog: where the ray passes
-    // nearest the lamp's axis, inside the cone's widening radius, in front of what it meets.
-    float yy = clamp(dot(L.xz - G.xz, streetLean) / max(dot(streetLean, streetLean), 1e-6), 0.0, L.y - 0.3);
-    float dd = length(G.xz + streetLean * yy - L.xz);
-    float rad = 0.2 + 0.72 * (L.y - yy);
-    float shown = (ro.y - yy) / -rd.y < hit.t ? 1.0 : 0.0;
-    glow += c * exp(-dd * dd / (rad * rad)) * shown * (0.02 + 0.1 * max(K_fog, streetStorm)) * smoothstep(0.0, 1.0, L.y - yy);
-    if (ground && wet > 0.05) streaks += c * streetStreak(P.xz, L, rough) * 0.35;
-  }
-  E += streetSpill(P) * (0.5 + 0.5 * max(n.y, 0.0) + 0.4 * max(n.z, 0.0));
-  // The lit street throws a little light back up onto the people and cars in it.
-  if (hit.kind == STREET_K_AGENT) E += vec3(0.15, 0.13, 0.11) * streetDark;
-  // The signals' lamps: glow in the air and streaks in the wet street.
-  for (int i = 0; i < ${CAR_HEADS.length}; i++) {
-    vec4 h = STREET_CAR_HEAD[i];
-    vec4 sg = streetSignal[STREET_CAR_HEAD_META[i].y];
-    vec2 left = vec2(h.w, -h.z);
-    vec2 toEye = normalize(vec2(STREET_CAM_X, 0.0) - h.xy);
-    float facing = 0.25 + 0.75 * smoothstep(-0.3, 0.6, dot(h.zw, toEye));
-    for (int k = 0; k < 3; k++) {
-      float on = k == 0 ? sg.x : k == 1 ? sg.y : sg.z;
-      if (on < 0.01) continue;
-      vec3 lc = (k == 0 ? STREET_GO : k == 1 ? STREET_AMBER : STREET_STOP) * on;
-      vec2 at = h.xy + left * (0.42 - 0.42 * float(k)) + h.zw * 0.2;
-      vec3 L = vec3(at.x, 5.55, at.y);
-      vec3 gc = lc * (streetGlow(ro, rd, L, 0.7 + 1.2 * max(K_fog, K_rain), hit.t) * 0.35 * facing);
-      vec3 sc = ground && wet > 0.05 ? lc * streetStreak(P.xz, L, rough) * 0.5 * facing : vec3(0.0);
-      glow += gc;
-      streaks += sc;
-      if (k == 0) green += dot(gc + sc, vec3(0.33));
-    }
-  }
-  for (int i = 0; i < ${WALK_HEADS.length}; i++) {
-    vec4 h = STREET_WALK_HEAD[i];
-    vec2 toEye = normalize(vec2(STREET_CAM_X, 0.0) - h.xy);
-    float facing = 0.2 + 0.8 * smoothstep(-0.3, 0.6, dot(h.zw, toEye));
-    vec4 sg = streetSignal[2];
-    vec3 L = vec3(h.x + h.z * 0.15, 2.75, h.y + h.w * 0.15);
-    vec3 gc = (STREET_GO * sg.x * streetGlow(ro, rd, L - vec3(0.0, 0.21, 0.0), 0.45, hit.t) + STREET_STOP * sg.y * streetGlow(ro, rd, L + vec3(0.0, 0.21, 0.0), 0.45, hit.t)) * 0.3 * facing;
-    vec3 sc = ground && wet > 0.05 ? (STREET_GO * sg.x * streetStreak(P.xz, L - vec3(0.0, 0.21, 0.0), rough) + STREET_STOP * sg.y * streetStreak(P.xz, L + vec3(0.0, 0.21, 0.0), rough)) * 0.45 * facing : vec3(0.0);
-    glow += gc;
-    streaks += sc;
-    green += (dot(gc, vec3(0.33)) + dot(sc, vec3(0.33))) * sg.x / max(sg.x + sg.y, 1e-3);
-  }
-  vec4 spray = vec4(0.0);
-  if (inGrid) {
-    bool road = ground && info.x < 0.5;
-    for (int k = 0; k < STREET_LIGHT_TEXELS; k++) {
-      vec4 ids = texelFetch(uSim1, ivec2(tile.x * STREET_TILE_TEXELS + STREET_BODY_TEXELS + k, tile.y), 0);
-      if (ids.x <= 0.0) break;
-      streetLamps(ids.x, P, n, ro, rd, hit.t, rough, ground, road, lampTh, E, streaks, glow, spray);
-      streetLamps(ids.y, P, n, ro, rd, hit.t, rough, ground, road, lampTh, E, streaks, glow, spray);
-      streetLamps(ids.z, P, n, ro, rd, hit.t, rough, ground, road, lampTh, E, streaks, glow, spray);
-      streetLamps(ids.w, P, n, ro, rd, hit.t, rough, ground, road, lampTh, E, streaks, glow, spray);
-    }
-  }
-
-  // What lights a raindrop here: the cloud base, the light round it, the glows it falls through.
-  vec3 dropLight = max(streetDeck * 1.2 + E * 0.25 + glow * 0.4, vec3(0.08));
-
-  // The surface.
-  vec3 col;
-  float accent = 0.0;
-  float snowy = 0.0;
-  vec3 snowLit = vec3(0.82, 0.86, 0.94) * E * 0.95 + 0.02;
-  if (ground) {
-    float porous = info.x > 0.5 ? 0.4 : 0.25;
-    vec3 a = wetten(albedo, wet, porous);
-    col = a * E;
-    // Snow lies on the street but for the wheel tracks and where people walk.
-    if (streetLying > 0.0) {
-      float cover = snowCover(vec3(0.0, 1.0, 0.0), P.xz, streetLying);
-      if (info.x < 0.5) {
-        float zz = P.z < STREET_MID ? min(abs(P.z - STREET_WB_IN), abs(P.z - STREET_WB_OUT)) : min(abs(P.z - STREET_EB_IN), abs(P.z - STREET_EB_OUT));
-        float xx = min(abs(P.x - STREET_SB), abs(P.x - STREET_NB));
-        float tracks = P.z < STREET_KERB_FAR ? zz : xx;
-        cover *= 0.25 + 0.75 * smoothstep(0.12, 0.32, abs(tracks - 0.78));
-        cover *= 1.0 - 0.55 * info.y;
-      } else {
-        cover *= 0.65 + 0.35 * smoothstep(0.2, 0.9, abs(fract(P.z / 7.0) - 0.5));
-      }
-      cover *= 1.0 - shelter;
-      snowy = cover;
-    }
-    // Wet: the street mirrors the city, sharper in the puddles, ringed where drops land.
-    float gloss = wetGloss(wet, 1.0);
-    if (gloss > 0.01) {
-      vec3 rr = reflect(rd, vec3(0.0, 1.0, 0.0));
-      vec3 ring = vec3(0.0);
-      if (puddle > 0.0 && K_rain > 0.0) {
-        ring = rainRipples(P.xz * 2.4, uFallTime, K_rain);
-        rr = normalize(rr + vec3(ring.x, 0.0, ring.y) * 0.04);
-      }
-      float mirror = mix(gloss * 0.32, 0.72, puddle) * (1.0 - snowy);
-      vec3 seen = streetMirror(P, rr, rough);
-      col = col * (1.0 - 0.45 * puddle) + seen * mirror + streaks * mirror * 2.2;
-      // The rings' crests catch the light, switched per cell (they move).
-      col += dropLight * 0.35 * step(lampTh, ring.z) * puddle;
-      accent += green * mirror * 1.5;
-    }
-    // The landmark's paint shows in the accent colour.
-    accent = max(accent, info.z * step(0.5, K_mark) * 0.75);
-  } else if (hit.kind == STREET_K_FACADE) {
-    vec3 a;
-    vec3 em;
-    float gl;
-    // Metres a cell spans on the wall: far more along it where the side street's walls are seen
-    // edge-on, so their windows fuse into an even glow instead of aliasing.
-    float mpc = hit.t / (STREET_FOCAL * uRes.y);
-    vec2 blur = vec2(mpc / max(abs(dot(rd, n)), 0.08), mpc * 1.4);
-    streetFacade(int(hit.q.x + 0.5), hit.q.y, hit.q.z, blur, false, a, em, gl);
-    a = wetten(a, wet * 0.5, 0.3);
-    // The shop fronts and signs bloom softly onto the wall round them.
-    vec3 bloom = streetLitBand(int(hit.q.x + 0.5), hit.q.y, hit.q.z, 0.5, 0.7, 0.7) * 0.28 * streetDark;
-    col = a * E * 0.85 + em + bloom + gl * streetSkyLight(reflect(rd, n)) * 0.45;
-  } else {
-    vec3 a = wetten(albedo, wet * (hit.kind == STREET_K_AGENT ? 0.6 : 0.8), 0.3);
-    col = a * E + hit.emit;
-    col += hit.gloss * wetGloss(wet, max(n.y, 0.0)) * streetSkyLight(reflect(rd, n)) * 0.25;
-    // The green lamps (car signals and the green man) glow in the accent colour.
-    if (hit.kind == STREET_K_SIGNAL) accent += max(hit.emit.g - hit.emit.r, 0.0) * 0.5;
-    if (streetLying > 0.0 && hit.snow > 0.0) snowy = snowCover(n, P.xz + P.y, streetLying) * hit.snow;
-  }
-  col = mix(col, snowLit, snowy);
-  // A clear vinyl umbrella: the city's light through it and on it.
-  if (veil.t < hit.t) {
-    vec3 vp = ro + rd * veil.t;
-    vec3 ve = streetAmbient * (0.6 + 0.4 * veil.n.y) + E * 0.5;
-    vec3 sheen = streetSkyLight(reflect(rd, veil.n)) * 0.25 + wetGloss(streetWet, veil.n.y) * 0.12;
+// Over what the cell shows: a clear vinyl umbrella (the city's light through it and on it), then the
+// spray behind tyres.
+void streetLifeMiddleVeil(Ctx x, inout Cell c) {
+  if (streetOverRoofs) return;
+  StreetHit veil = streetVeil;
+  if (veil.t < streetHit.t) {
+    vec3 vp = streetRo + streetRd * veil.t;
+    vec3 ve = streetAmbient * (0.6 + 0.4 * veil.n.y) + streetE * 0.5;
+    vec3 sheen = streetSkyLight(reflect(streetRd, veil.n)) * 0.25 + wetGloss(streetWet, veil.n.y) * 0.12;
     vec3 vc = veil.albedo * ve + sheen;
-    if (streetLying > 0.0) vc = mix(vc, snowLit, snowCover(veil.n, vp.xz, streetLying));
-    col = mix(col, vc, 0.45);
-    accent *= 0.6;
+    if (streetLying > 0.0) vc = mix(vc, streetSnowLit, snowCover(veil.n, vp.xz, streetLying));
+    c.col = mix(c.col, vc, 0.45);
+    c.accent *= 0.6;
   }
-  // Spray behind tyres.
-  col = mix(col, spray.rgb, spray.a * 0.8);
-
-  // Splashes on hard ground; drips from the awnings' edges.
-  if (ground && K_rain > 0.0 && shelter < 0.5) {
-    float cpm = 1.0 / fw;
-    float splash = rainSplashes(P.xz, uFallTime, K_rain) * smoothstep(13.0, 18.0, cpm);
-    col = mix(col, dropLight, splash * 0.85);
-  }
-  if (K_rain > 0.0 || streetWet > 0.1) {
-    float amount = max(K_rain, 0.4 * streetWet);
-    float tf = (STREET_FACADE_FAR - 1.1 - ro.z) / rd.z;
-    vec3 qf = ro + rd * tf;
-    if (tf < hit.t && abs(qf.x) > STREET_SIDE_FACADE && qf.y > 0.0 && qf.y < 2.62) {
-      int f = qf.x < 0.0 ? 0 : 1;
-      float u = abs(qf.x) - STREET_SIDE_FACADE;
-      int b = streetBuildingAt(f, u);
-      vec4 A = STREET_BLD_A[b];
-      if (streetHasAwning(STREET_BLD_B[b]) && u - A.x > 0.35 && A.y - u > 0.35) {
-        col = mix(col, dropLight * 1.2, rainDrips(vec2(u, 2.62 - qf.y), uFallTime, amount, 1.0));
-      }
-    }
-  }
-
-  // Raised toward the skyline: over the roofs the city beyond and its sky; what is far in the
-  // streets fades into the haze (nothing at rest reaches that far).
-  if (streetTilt > 0.0) {
-    if (beyond) {
-      col = streetBeyond(rdView);
-      accent = 0.0;
-      glow = vec3(0.0);
-      hit.t = 800.0;
-    } else if (hit.t > 130.0) {
-      col = mix(col, streetHaze(rdView), smoothstep(130.0, 520.0, hit.t));
-    }
-  }
-  // The air: lamp glow, then fog, then the falling rain or snow.
-  float wetAir = 1.0 + 1.5 * max(K_fog, streetStorm);
-  col += glow * wetAir;
-  accent += green * 0.6;
-  if (K_fog > 0.0) {
-    vec3 fogCol = streetAmbient * 1.4 + streetBounce * 2.0 + glow * 0.3;
-    col = mix(col, fogCol, fogAmount(K_fog * 1.4, hit.t / 90.0, P.y / 12.0));
-  }
-  float depth = weatherDepth(hit.t);
-  if (K_rain > 0.0) {
-    // From the window the rain falls past a camera pitched down: its paths converge below the street.
-    Precip pr = rainFallSeen(uv, aspect, streetTm, uFallTime, K_rain, K_wind, depth, streetVanish(rainFallDir(K_rain, K_wind), cp, sp));
-    vec3 air = streetDeck * 0.9 + streetBounce + glow * 0.25;
-    col = mix(col, air, pr.veil);
-    // At the window there are no drops at arm's length.
-    col = mix(col, dropLight * 1.1, pr.cover * (1.0 - pr.near));
-  }
-  if (K_snow > 0.0) {
-    Precip ps = streetSnow(uv, aspect, streetTm, depth, cp, sp);
-    vec3 air = mix(streetDeck * 1.3, vec3(0.75, 0.78, 0.85) * (streetAmbient + 0.1), 0.5) + glow * 0.3;
-    col = mix(col, air, ps.veil);
-    col = mix(col, max(vec3(0.8, 0.83, 0.9) * (streetDeck * 1.6 + E * 0.4 + glow * 0.5), vec3(0.1)), ps.cover);
-  }
-
-  // Ink is the picture's light; the green of the signals (and the M, when painted) is the accent. A
-  // sunlit street puts the page in its paper theme (index.ts), where inkOf makes ink dark on light.
-  return shadeOf(col, inkOf(col, 1.3, 0.8), clamp(accent, 0.0, 1.0));
+  c.col = mix(c.col, streetSpray.rgb, streetSpray.a * 0.8);
 }
 `;

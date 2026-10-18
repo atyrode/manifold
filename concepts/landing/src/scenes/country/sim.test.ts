@@ -5,11 +5,11 @@ import { COUNTRY_MAP } from "./sim.ts";
 
 const countryScene = await loadScene("country");
 
-// The countryside's stages keyed by what they read: a land-use change re-allocates and repacks only
-// the parcels it moves, on the terrain already built. On the headless stand-in, which also counts
-// the texel rows each texture is sent.
+// The valley's stages keyed by what they read: a land-use change re-allocates and repacks only the
+// parcels it moves, on the terrain already built. On the headless stand-in, which also counts the
+// texel rows each texture is sent. The composed sim binds the valley's four fields from slot 2.
 
-/** The country sim on a stand-in context, and the rows sent to each texture since `clear()`. */
+/** The composed sim on a stand-in context, and the rows sent to each texture since `clear()`. */
 function counted(): { sim: HeadlessSim; headless: HeadlessGl; rows: Map<WebGLTexture, number> } {
   const headless = new HeadlessGl();
   // The stand-in's own calls, wrapped to see which texture each upload lands in.
@@ -39,7 +39,7 @@ const same = (a: Float32Array | Uint8Array, b: Float32Array | Uint8Array): boole
 
 test("a land-use change reuses the terrain and repacks only the parcels it moves", () => {
   const { sim, headless, rows } = counted();
-  const [ground, cover, parcels, records] = sim.frame();
+  const [, , ground, cover, parcels, records] = sim.frame();
   if (!ground || !cover || !parcels || !records) throw new Error("the countryside built nothing");
   // A one-point share step, pasture switched on, then the herds alone, which move no texel.
   const steps: { knobs: Record<string, number>; narrow?: true; herds?: true }[] = [
@@ -78,9 +78,9 @@ test("a land-use change reuses the terrain and repacks only the parcels it moves
     if (herds) expect([rows.get(cover), rows.get(parcels)]).toEqual([undefined, undefined]);
     // And it is byte for byte the land a build made with these knobs from the start packs.
     const fresh = new HeadlessSim(countryScene).step({ knobs });
-    expect(same(headless.upload(cover).data, fresh.upload(1).data)).toBe(true);
-    expect(same(now, fresh.upload(2).data)).toBe(true);
-    expect(same(headless.upload(records).data, fresh.upload(3).data)).toBe(true);
+    expect(same(headless.upload(cover).data, fresh.upload(3).data)).toBe(true);
+    expect(same(now, fresh.upload(4).data)).toBe(true);
+    expect(same(headless.upload(records).data, fresh.upload(5).data)).toBe(true);
     fresh.dispose();
   }
   sim.dispose();
@@ -88,10 +88,10 @@ test("a land-use change reuses the terrain and repacks only the parcels it moves
 
 test("a terrain change builds the terrain again", () => {
   const { sim, rows } = counted();
-  const [ground] = sim.frame();
+  const [, , ground] = sim.frame();
   if (!ground) throw new Error("the countryside built nothing");
   rows.clear();
-  sim.frame({ knobs: { relief: 0.6 } });
+  sim.frame({ knobs: { valleyRelief: 0.6 } });
   expect(rows.get(ground)).toBe(COUNTRY_MAP.size);
   sim.dispose();
 }, 60_000);

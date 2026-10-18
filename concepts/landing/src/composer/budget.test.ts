@@ -28,15 +28,21 @@ describe("composed programs", () => {
       "bamboo",
       "bees",
       "campfire",
+      "country",
+      "dew",
       "dunes",
       "falls",
       "fireflies",
+      "flock",
       "forest",
       "garden",
       "lake",
       "lanterns",
       "meadow",
       "shore",
+      "skyward",
+      "street",
+      "swell",
     ]);
   });
 

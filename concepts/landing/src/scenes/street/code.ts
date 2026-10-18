@@ -1,7 +1,7 @@
-// City crossing's code, loaded the first time the scene is needed (SceneDef.code).
-import { streetScene } from "./index.ts";
-import { streetSim } from "./sim.ts";
+// City crossing's code, loaded the first time the scene is needed (SceneDef.code): assembled from the
+// code of every layer its rig offers (composer/code.ts).
+import { composedCode } from "../../composer/code.ts";
+import { OUTDOOR_CODE } from "../../composer/outdoor-code.ts";
+import { streetComposed } from "./index.ts";
 
-export { streetGlsl as glsl } from "./shader.ts";
-export const entry = "sceneStreet";
-export const sim = streetSim(streetScene.params);
+export const { glsl, entry, glslFor, sim } = composedCode(streetComposed, OUTDOOR_CODE);

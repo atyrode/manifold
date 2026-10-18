@@ -1,5 +1,7 @@
-// The valley fog (the `fog` knob, its amount): a bank of mist lying on the valley floor with mist
-// thinning upward over it, seen through along each ray rather than painted on the surface it ends at.
+// The valley fog (the World's `fog` knob, its amount, drawn the valley's own way: the valley puts the
+// World's own fog out of the composer's x.w on its hill, as the desert does its dust): a bank of mist
+// lying on the valley floor with mist thinning upward over it, seen through along each ray rather
+// than painted on the surface it ends at.
 //
 // The floor: cold air drains down the valley and pools along the river, so the bank's floor is the
 // river's level along the valley, a profile the sim lays into the records once per terrain
@@ -30,7 +32,7 @@
 // and grey in the hills' shadows. Dim by night: the lit windows deep in it are dimmed by it, and the
 // fog round them glows with the light it scatters (their halo, buildings.ts).
 //
-// Compiled in only while the knob is on (COUNTRY_HAS_FOG, index.ts).
+// Compiled in only while the knob is on (COUNTRY_HAS_FOG, the valley's featuresFor, layers.ts).
 import { hypot2 } from "../../sims/math.ts";
 import { TERRAIN_RECORDS, type Terrain, type TerrainPacked } from "../../sims/terrain.ts";
 
@@ -120,8 +122,8 @@ float countryFogFloor(vec2 p) {
   float f = clamp((s - axis.z) / (axis.w - axis.z), 0.0, 1.0) * float(COUNTRY_FOG_SAMPLES - 1);
   int i = min(int(f), COUNTRY_FOG_SAMPLES - 2);
   int j = i + 1;
-  float a = terrainRecord(uSim3, TERRAIN_MISC_ROW, COUNTRY_FOG_COLUMN + 1 + i / 4)[i % 4];
-  float b = terrainRecord(uSim3, TERRAIN_MISC_ROW, COUNTRY_FOG_COLUMN + 1 + j / 4)[j % 4];
+  float a = terrainRecord(valleyField3, TERRAIN_MISC_ROW, COUNTRY_FOG_COLUMN + 1 + i / 4)[i % 4];
+  float b = terrainRecord(valleyField3, TERRAIN_MISC_ROW, COUNTRY_FOG_COLUMN + 1 + j / 4)[j % 4];
   return mix(a, b, f - float(i));
 }
 
@@ -147,7 +149,7 @@ void countryFogSet(Sky sky, vec3 eye, vec3 rd, vec3 sun, vec3 haze, float tod, f
   countryFog.soft = 2.0 + countryFog.depth * (0.35 + 0.4 * abs(wind) + 0.4 * overcast);
   countryFog.mist = 2.0 * K_fog * K_fog * (1.0 + 0.6 * overcast) * (1.0 - 0.3 * day) / 1500.0;
   countryFog.scale = 100.0 + 200.0 * K_fog;
-  countryFog.axis = terrainRecord(uSim3, TERRAIN_MISC_ROW, COUNTRY_FOG_COLUMN);
+  countryFog.axis = terrainRecord(valleyField3, TERRAIN_MISC_ROW, COUNTRY_FOG_COLUMN);
   // Down the valley as the cold air drains, and across the view with the wind.
   countryFog.drift = -(countryFog.axis.xy * 0.8 + countryRight.xz * 3.0 * wind) * tm;
   countryFog.eye = eye;
@@ -188,8 +190,8 @@ vec2 countryFogDepth(float dist) {
 // runs down through it.
 float countryFogHollow(vec3 p, float dist) {
   float r = 70.0;
-  float around = 0.25 * (terrainGround(uSim0, p.xz + vec2(r, 0.0), COUNTRY_EXTENT).x + terrainGround(uSim0, p.xz - vec2(r, 0.0), COUNTRY_EXTENT).x
-    + terrainGround(uSim0, p.xz + vec2(0.0, r), COUNTRY_EXTENT).x + terrainGround(uSim0, p.xz - vec2(0.0, r), COUNTRY_EXTENT).x);
+  float around = 0.25 * (terrainGround(valleyField0, p.xz + vec2(r, 0.0), COUNTRY_EXTENT).x + terrainGround(valleyField0, p.xz - vec2(r, 0.0), COUNTRY_EXTENT).x
+    + terrainGround(valleyField0, p.xz + vec2(0.0, r), COUNTRY_EXTENT).x + terrainGround(valleyField0, p.xz - vec2(0.0, r), COUNTRY_EXTENT).x);
   float deep = clamp(0.5 * (around - p.y), 0.0, 0.3 * countryFog.depth);
   return countryFog.bank * 0.8 * min(dist, deep / max(-countryFog.rd.y, 0.03));
 }

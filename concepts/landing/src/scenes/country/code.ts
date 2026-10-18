@@ -1,7 +1,7 @@
-// Countryside's code, loaded the first time the scene is needed (SceneDef.code).
-import { countryScene } from "./index.ts";
-import { countrySim } from "./sim.ts";
+// Countryside's code, loaded the first time the scene is needed (SceneDef.code): assembled from the
+// code of every layer its rig offers (composer/code.ts).
+import { composedCode } from "../../composer/code.ts";
+import { OUTDOOR_CODE } from "../../composer/outdoor-code.ts";
+import { countryComposed } from "./index.ts";
 
-export { countryGlsl as glsl } from "./shader.ts";
-export const entry = "sceneCountry";
-export const sim = countrySim(countryScene.params);
+export const { glsl, entry, glslFor, sim } = composedCode(countryComposed, OUTDOOR_CODE);

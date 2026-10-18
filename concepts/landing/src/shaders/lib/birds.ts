@@ -11,8 +11,8 @@
 // the depth of its own first surface) and the lighting (BirdHit.albedo under its sky light, hazed
 // by BirdHit.depth). The library decides what flies and how: the species' size, colour, wingbeat
 // and party, the formation, the lane each species keeps to within the scene's, the schedule.
-// For a murmuration, fly the Murmuration scene's flock instead (flockSim with a FlockSetup, inked
-// with flockSheet): its authored sheet, or with the setup's `emergent` control genuine topological
+// For a murmuration, fly the Murmuration scene's flock instead (the `murmuration` layer, or a Flock
+// with a FlockSetup, inked with flockInk): its authored sheet, or with the setup's `emergent` control genuine topological
 // boids. Birds that must react to one another rather than fly hashed paths are a CPU job for `Boids`
 // (sims/boids.ts), drawn from a sim texture as the flock is.
 //

@@ -1,8 +1,10 @@
-// Where the cast's agents go in the swell (SceneSim.interest): the boats riding at anchor, as many
-// as the `boats` knob brings in, and the lighthouse's lamp on the headland while it stands. Nothing
-// here moves the picture: the shader draws the boats on its own clock, so a sim frame only notes
-// the knobs and uploads nothing.
-import type { ScenePoint, SceneSim, SimFactory } from "../types.ts";
+// Where the cast's agents go at sea (LayerSim.interest): the boats riding at anchor, as many as the
+// boats layer's switch brings in, and the lighthouse's lamp on the headland while it stands. Nothing
+// here moves the picture: the shader draws the boats on its own clock, so a frame only notes the
+// knob and writes nothing.
+import type { LayerFrame, LayerSim } from "../../composer/types.ts";
+import { KnobReader, type ParamDef } from "../../params.ts";
+import type { ScenePoint } from "../types.ts";
 import {
   SWELL_BOAT_MIDDLE,
   SWELL_BOATS,
@@ -31,19 +33,28 @@ export function swellInterest(aspect: number, boats: number, lighthouse: boolean
   return points.filter((point) => point.x > 0 && point.x < 1 && point.y > 0 && point.y < 1);
 }
 
-export const swellSim: SimFactory = () => {
-  let boats = 0;
-  let lighthouse = false;
-  const sim: SceneSim = {
-    frame(frame) {
-      boats = (frame.params["boats"] ?? 0) > 0 ? (frame.params["boats-amount"] ?? 0) : 0;
-      lighthouse = (frame.params["lighthouse"] ?? 0) > 0;
-      return [];
+/** The boats layer's sim (LayerCode.sim), for a composition whose `params` carry `boats`. */
+export function boatsSim(_gl: WebGL2RenderingContext, params: readonly ParamDef[]): LayerSim {
+  const knobs = new KnobReader<"boats">("boats", params, ["boats"]);
+  let boats = knobs.initial("boats");
+  return {
+    frame(frame: LayerFrame) {
+      boats = knobs.value(frame, "boats");
     },
     interest(aspect) {
-      return swellInterest(aspect, boats, lighthouse);
+      return swellInterest(aspect, boats, false);
     },
     dispose() {},
   };
-  return sim;
-};
+}
+
+/** The lighthouse layer's sim (LayerCode.sim): its lamp, while it stands. */
+export function lighthouseSim(): LayerSim {
+  return {
+    frame() {},
+    interest(aspect) {
+      return swellInterest(aspect, 0, true);
+    },
+    dispose() {},
+  };
+}

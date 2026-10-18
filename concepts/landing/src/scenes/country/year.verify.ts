@@ -17,7 +17,7 @@
 // - No pops: from summer through the harvest into autumn, and from midwinter through spring, in steps
 //   of a few days, no step changes more than a small share of the land's cells, while each stretch
 //   changes many.
-import { featureKey, fragmentSourceFor, sceneFeatures, shaderValues } from "../../shaders/index.ts";
+import { featureKey, sceneFeatures, shaderValues } from "../../shaders/index.ts";
 import { loadScene } from "../index.ts";
 import { COUNTRY_SEASONS } from "./constants.ts";
 import {
@@ -25,6 +25,7 @@ import {
   type CountryBuilt,
   countryDraw,
   countryProgram,
+  countrySource,
   differing,
 } from "./terrain.verify.ts";
 
@@ -92,7 +93,7 @@ export function verifyCountryYear(gl: WebGL2RenderingContext): Record<string, un
     const key = featureKey(features);
     let program = programs.get(key);
     if (!program) {
-      program = countryProgram(gl, fragmentSourceFor(countryScene, features));
+      program = countryProgram(gl, countrySource(features));
       programs.set(key, program);
     }
     return program;
@@ -132,7 +133,7 @@ export function verifyCountryYear(gl: WebGL2RenderingContext): Record<string, un
     ] as const) {
       const motionTime = (date - COUNTRY_SEASONS.harvest) * YEAR_SECONDS;
       const passed = draw(valley, { ...PASSING }, { motionTime, weather });
-      const dated = draw(valley, { date }, { motionTime, weather });
+      const dated = draw(valley, { season: date }, { motionTime, weather });
       const off = differing(passed, dated);
       check(
         off === 0,
@@ -144,16 +145,16 @@ export function verifyCountryYear(gl: WebGL2RenderingContext): Record<string, un
     // uWeather.y's alone, over the land with its woods off (the near ground may be wooded).
     const rain = { rain: 1, "rain-amount": 0.8 };
     const snow = { snow: 1, "snow-amount": 0.8 };
-    const winterRain = draw(valley, { ...rain, date: MIDWINTER }, { weather: lying });
-    const winterSnow = draw(valley, { ...snow, date: MIDWINTER }, { weather: lying });
+    const winterRain = draw(valley, { ...rain, season: MIDWINTER }, { weather: lying });
+    const winterSnow = draw(valley, { ...snow, season: MIDWINTER }, { weather: lying });
     const asSnow = differing(winterRain, winterSnow);
     check(asSnow === 0, `midwinter's rain draws ${asSnow} pixels other than its snow`);
-    const summerRain = draw(valley, { ...rain, date: COUNTRY_SEASONS.summer });
-    const summerSnow = draw(valley, { ...snow, date: COUNTRY_SEASONS.summer });
+    const summerRain = draw(valley, { ...rain, season: COUNTRY_SEASONS.summer });
+    const summerSnow = draw(valley, { ...snow, season: COUNTRY_SEASONS.summer });
     result.summerRainVsSnow = differing(summerRain, summerSnow);
     check((result.summerRainVsSnow as number) > 500, "summer's rain draws as its snow");
     const landCells = Math.floor(LAND_ROWS * HEIGHT) * WIDTH;
-    const noon = { date: MIDWINTER, time: 0.5, woodland: 0 };
+    const noon = { season: MIDWINTER, time: 0.5, woodland: 0 };
     const bareWhite = count(draw(valley, noon, { weather: [0, 0] }), WIDTH, white);
     const snowWhite = count(draw(valley, noon, { weather: lying }), WIDTH, white);
     result.midwinterWhite = { bare: bareWhite, lying: snowWhite, land: landCells };
@@ -165,8 +166,8 @@ export function verifyCountryYear(gl: WebGL2RenderingContext): Record<string, un
     // Winter bares the broadleaves and keeps the pines, over the woods' own cells (those the
     // species changes in summer): the broadleaf woods' green goes, the pine woods stay as they were.
     const woods = land(WOODS);
-    const at = (pines: number, date: number) =>
-      draw(woods, { ...WOODS, pines, date }, { weather: [0, 0] });
+    const at = (pines: number, season: number) =>
+      draw(woods, { ...WOODS, farmlandPines: pines, season }, { weather: [0, 0] });
     const frames = {
       broad: { summer: at(0, COUNTRY_SEASONS.summer), winter: at(0, MIDWINTER) },
       pine: { summer: at(1, COUNTRY_SEASONS.summer), winter: at(1, MIDWINTER) },
@@ -204,9 +205,9 @@ export function verifyCountryYear(gl: WebGL2RenderingContext): Record<string, un
 
     // Spring over the fields: bare earth early, the rapeseed in flower late, the may in the hedges.
     const fields = land(FIELDS);
-    const early = draw(fields, { ...FIELDS, date: 0.06 });
-    const late = draw(fields, { ...FIELDS, date: 0.23 });
-    const summer = draw(fields, { ...FIELDS, date: COUNTRY_SEASONS.summer });
+    const early = draw(fields, { ...FIELDS, season: 0.06 });
+    const late = draw(fields, { ...FIELDS, season: 0.23 });
+    const summer = draw(fields, { ...FIELDS, season: COUNTRY_SEASONS.summer });
     const spring = {
       yellow: { early: count(early, WIDTH, yellow), late: count(late, WIDTH, yellow) },
       earth: { early: count(early, WIDTH, earth), late: count(late, WIDTH, earth) },
@@ -227,7 +228,7 @@ export function verifyCountryYear(gl: WebGL2RenderingContext): Record<string, un
       `near-white land cells: ${spring.white.late} with the may out, ${spring.white.summer} in summer`,
     );
 
-    // No pops: the date knob's steps (0.005 of the year, under two days) through the busiest
+    // No pops: the season knob's steps (0.005 of the year, under two days) through the busiest
     // stretches; the most any step changes against the whole stretch's change (a season that
     // switched at once would change all of it in one step).
     const sweep = (from: number, to: number): { step: number; whole: number } => {
@@ -236,7 +237,7 @@ export function verifyCountryYear(gl: WebGL2RenderingContext): Record<string, un
       let step = 0;
       for (let k = 0; from + 0.005 * k <= to + 1e-9; k++) {
         const date = Math.round((from + 0.005 * k) * 1000) / 1000;
-        const frame = draw(fields, { ...FIELDS, date: date % 1 }, SWEEP);
+        const frame = draw(fields, { ...FIELDS, season: date % 1 }, SWEEP);
         if (last) step = Math.max(step, changedShare(last, frame, SWEEP.width));
         first ??= frame;
         last = frame;

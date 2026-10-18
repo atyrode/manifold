@@ -42,6 +42,8 @@ import {
   lawnGlsl,
 } from "../scenes/bees/shader.ts";
 import { insectsSim } from "../scenes/bees/sim.ts";
+import { bokehGlsl, dewSharedGlsl, webGlsl } from "../scenes/dew/shader.ts";
+import { webSim } from "../scenes/dew/sim.ts";
 import { desertGlsl, dunesFieldGlsl, dunesSharedGlsl } from "../scenes/dunes/shader.ts";
 import { dunesSim } from "../scenes/dunes/sim.ts";
 import {
@@ -83,6 +85,8 @@ import {
   templeWallGlsl,
   templeWoodsGlsl,
 } from "../scenes/garden/shader.ts";
+import { countryGlsl, valleyGlsl } from "../scenes/country/shader.ts";
+import { valleySim } from "../scenes/country/sim.ts";
 import {
   creekGlsl,
   firefliesSharedGlsl,
@@ -90,6 +94,8 @@ import {
   mangrovesGlsl,
 } from "../scenes/fireflies/shader.ts";
 import { fireflySwarmSim, mangrovesSim } from "../scenes/fireflies/sim.ts";
+import { flockInkGlsl, murmurationGlsl, roostGlsl } from "../scenes/flock/shader.ts";
+import { murmurationSim } from "../scenes/flock/sim.ts";
 import { dandelionsGlsl, downsGlsl, grassGlsl, meadowSharedGlsl } from "../scenes/meadow/shader.ts";
 import { dandelionsSim, grassSim } from "../scenes/meadow/sim.ts";
 import { wildflowersGlsl, wildflowersSim } from "../scenes/meadow/wildflowers.ts";
@@ -101,6 +107,28 @@ import {
   shoreSharedGlsl,
 } from "../scenes/shore/shader.ts";
 import { cairnsSim, seaSim } from "../scenes/shore/sim.ts";
+import {
+  crossroadsGlsl,
+  skywardSharedGlsl,
+  streetTreeGlsl,
+  tramwayGlsl,
+} from "../scenes/skyward/shader.ts";
+import {
+  cityGlsl,
+  crossingGlsl,
+  kerbsideGlsl,
+  streetLifeGlsl,
+  streetSharedGlsl,
+} from "../scenes/street/shader.ts";
+import { streetLifeSim } from "../scenes/street/sim.ts";
+import {
+  boatsGlsl,
+  lighthouseGlsl,
+  openSeaGlsl,
+  swellGlsl,
+  swellSharedGlsl,
+} from "../scenes/swell/shader.ts";
+import { boatsSim, lighthouseSim } from "../scenes/swell/sim.ts";
 import { plantsGlsl } from "../shaders/lib/plants.ts";
 import type { LayerCode, SharedGlsl } from "./types.ts";
 
@@ -156,6 +184,19 @@ const FIREFLIES: SharedGlsl = {
   glsl: () => firefliesSharedGlsl,
   begin: "firefliesBegin",
 };
+/** The crossing's frame, per-cell state and rods (skyward/shader.ts), set by the crossroads' begin: held by its layers. */
+const SKYWARD: SharedGlsl = { id: "skyward", glsl: () => skywardSharedGlsl };
+/** The city crossing's constants, buildings, light and cell (street/shader.ts), held by each of its layers. */
+const STREET: SharedGlsl = { id: "street", glsl: () => streetSharedGlsl, begin: "streetBegin" };
+/** The open sea's units, trains, lamps, headland and boats (swell/shader.ts), and the state its layers' begins set. */
+const SWELL: SharedGlsl = { id: "swell", glsl: () => swellSharedGlsl };
+/** The macro's sky, light, meadow out of focus and the web's header (dew/shader.ts), held by its layers. */
+const DEW: SharedGlsl = { id: "dew", glsl: () => dewSharedGlsl, begin: "dewBegin" };
+/** The flock's ink (flock/shader.ts), held by every layer that inks a Flock's density field. */
+const FLOCK_INK: SharedGlsl = { id: "flockInk", glsl: () => flockInkGlsl };
+/** The flock's ink (flock/shader.ts), once for every layer that draws a flock's density field. */
+/** The countryside's land, march and parts (country/shader.ts), for the valley's passes; after the plants (its verges are records) and the flock's ink (its starlings). */
+const COUNTRY: SharedGlsl = { id: "country", glsl: countryGlsl };
 
 export const OUTDOOR_CODE: Readonly<Record<string, LayerCode>> = {
   downs: { glsl: () => downsGlsl, shared: [MEADOW] },
@@ -214,4 +255,27 @@ export const OUTDOOR_CODE: Readonly<Record<string, LayerCode>> = {
   border: { glsl: () => borderGlsl, shared: [PLANTS, STONE_GARDEN], sim: borderSim },
   raking: { glsl: () => "", sim: rakingSim },
   fireflySwarm: { glsl: () => fireflySwarmGlsl, shared: [FIREFLIES], sim: fireflySwarmSim },
+  crossroads: { glsl: () => crossroadsGlsl, shared: [SKYWARD] },
+  streetTree: { glsl: () => streetTreeGlsl, shared: [SKYWARD] },
+  tramway: { glsl: () => tramwayGlsl, shared: [SKYWARD] },
+  city: { glsl: () => cityGlsl, shared: [STREET] },
+  crossing: { glsl: () => crossingGlsl, shared: [STREET] },
+  kerbside: { glsl: () => kerbsideGlsl, shared: [STREET] },
+  streetLife: { glsl: () => streetLifeGlsl, shared: [STREET], sim: streetLifeSim },
+  openSea: { glsl: () => openSeaGlsl, shared: [SWELL] },
+  swell: { glsl: () => swellGlsl, shared: [SWELL] },
+  lighthouse: { glsl: () => lighthouseGlsl, shared: [SWELL], sim: lighthouseSim },
+  boats: { glsl: () => boatsGlsl, shared: [SWELL], sim: boatsSim },
+  bokeh: { glsl: () => bokehGlsl, shared: [DEW] },
+  web: { glsl: () => webGlsl, shared: [DEW], sim: webSim },
+  roost: { glsl: () => roostGlsl },
+  murmuration: { glsl: () => murmurationGlsl, shared: [FLOCK_INK], sim: murmurationSim },
+  valley: { glsl: valleyGlsl, shared: [PLANTS, FLOCK_INK, COUNTRY], sim: valleySim },
+  waterway: { glsl: () => "" },
+  farmland: { glsl: () => "" },
+  settlements: { glsl: () => "" },
+  verges: { glsl: () => "" },
+  herds: { glsl: () => "" },
+  travellers: { glsl: () => "" },
+  starlings: { glsl: () => "" },
 };

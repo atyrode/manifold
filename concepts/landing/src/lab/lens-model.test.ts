@@ -74,7 +74,7 @@ describe("changedCounts", () => {
     const byGroup = new Map<string, string[][]>();
     for (const def of scene)
       byGroup.set(def.group, [...(byGroup.get(def.group) ?? []), knobKeys(def)]);
-    const changed = changedKnobs(scene, { relief: 0.8, rain: 1 }, paramDefaults("country"));
+    const changed = changedKnobs(scene, { valleyRelief: 0.8, rain: 1 }, paramDefaults("country"));
     const counted = changedCounts(
       [...byGroup].map(([id, knobs]) => ({ id, knobs })),
       changed,

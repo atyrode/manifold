@@ -7,9 +7,9 @@
 // grazing a crest finer than the march's own steps may land beyond it). A single step onto the
 // ground taken flat under the bound's hit (what it was) is counted beside: under a third land, the
 // rest metres off, which drew the land seen between the trees displaced, in a halo round each tree.
-import { fragmentSourceFor, sceneFeaturesAll } from "../../shaders/index.ts";
+import { sceneFeaturesAll } from "../../shaders/index.ts";
 import { loadScene } from "../index.ts";
-import { countryBuild, countryDraw, countryProgram } from "./terrain.verify.ts";
+import { countryBuild, countryDraw, countryProgram, countrySource } from "./terrain.verify.ts";
 
 const countryScene = await loadScene("country");
 
@@ -24,7 +24,7 @@ float probeFirstLand(vec3 ro, vec3 rd, float t0) {
   bool met = false;
   for (int i = 0; i < 2500; i++) {
     vec3 q = ro + rd * t;
-    if (q.y < terrainSurface(terrainGround(uSim0, q.xz, COUNTRY_EXTENT))) {
+    if (q.y < terrainSurface(terrainGround(valleyField0, q.xz, COUNTRY_EXTENT))) {
       met = true;
       break;
     }
@@ -35,7 +35,7 @@ float probeFirstLand(vec3 ro, vec3 rd, float t0) {
   for (int i = 0; i < 16; i++) {
     float mid = 0.5 * (prev + t);
     vec3 q = ro + rd * mid;
-    if (q.y < terrainSurface(terrainGround(uSim0, q.xz, COUNTRY_EXTENT))) t = mid;
+    if (q.y < terrainSurface(terrainGround(valleyField0, q.xz, COUNTRY_EXTENT))) t = mid;
     else prev = mid;
   }
   return 0.5 * (prev + t);
@@ -47,12 +47,12 @@ Shade probeCountryBehind(vec2 uv, vec2 cell, float t) {
   countryFwd = vec3(COUNTRY_HEADING.x, 0.0, COUNTRY_HEADING.y);
   countryRight = vec3(COUNTRY_HEADING.y, 0.0, -COUNTRY_HEADING.x);
   vec3 rd = countryToWorld(viewRay(uv, aspect, COUNTRY_HORIZON, COUNTRY_FOV));
-  vec3 eye = terrainEye(uSim3);
+  vec3 eye = terrainEye(valleyField3);
   float tHit = countryMarch(eye, rd);
   vec3 o = vec3(0.0);
   if (tHit > 0.0) {
     vec3 p = eye + rd * tHit;
-    vec4 g = terrainGround(uSim0, p.xz, COUNTRY_EXTENT);
+    vec4 g = terrainGround(valleyField0, p.xz, COUNTRY_EXTENT);
     float ground = terrainSurface(g);
     float fall = dot(g.zw, rd.xz) - rd.y;
     if (p.y > ground + 0.3 && 3.0 / (tHit * cellAngle) >= 1.2 && fall >= 0.02) {
@@ -78,13 +78,10 @@ Shade probeCountryBehind(vec2 uv, vec2 cell, float t) {
 `;
 
 export function verifyCountryBehind(gl: WebGL2RenderingContext): Record<string, unknown> {
-  const all = sceneFeaturesAll(countryScene);
+  const all = sceneFeaturesAll(countryScene) ?? {};
   const probe = countryProgram(
     gl,
-    fragmentSourceFor(
-      { ...countryScene, entry: "probeCountryBehind", glsl: countryScene.glsl + probeGlsl },
-      all,
-    ),
+    countrySource(all, { glsl: probeGlsl, entry: "probeCountryBehind" }),
   );
   const built = countryBuild(gl, {});
   try {

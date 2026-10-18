@@ -45,7 +45,6 @@
 import { seasonKnob, type SeasonKnob, yearAt, yearCycleKnob, yearNow } from "../../climate.ts";
 import { effective, KnobReader, type ParamDef } from "../../params.ts";
 import { glslFloat } from "../../shaders/glsl.ts";
-import { plantsGlsl } from "../../shaders/lib/plants.ts";
 import { splitHalf, toHalf } from "../../sims/half.ts";
 import { landCanopy, LAND_USES, type LandUse, landWoodLine } from "../../sims/landuse.ts";
 import { clamp, fract, glslHash12, hash31, hypot2, lerp } from "../../sims/math.ts";
@@ -1008,9 +1007,10 @@ export class CountryVerges {
 
 const F = COUNTRY_VERGE_FORM;
 
+// The verges' GLSL, over the rooted plants component (shaders/lib/plants.ts), which the composer
+// compiles in once as a shared chunk (composer/outdoor-code.ts PLANTS) before the countryside's.
 export const countryVergesGlsl = /* glsl */ `
 #if COUNTRY_HAS_VERGES
-${plantsGlsl}
 // ---- the verges (verges.ts) ----
 const int COUNTRY_VERGE_HEAD = ${COUNTRY_VERGE_HEAD};
 const int COUNTRY_VERGE_ORGANS = ${COUNTRY_VERGE.organs};
@@ -1027,7 +1027,7 @@ struct CountryVerge { float cover; float z; vec3 albedo; float up; vec3 root; };
 
 // Texel k of the verges' block (from atlas row 'row', 'width' texels a row).
 vec4 countryVergeTexel(int row, int width, int k) {
-  return texelFetch(uSim3, ivec2(k - (k / width) * width, row + k / width), 0);
+  return texelFetch(valleyField3, ivec2(k - (k / width) * width, row + k / width), 0);
 }
 
 // Organ o of a clump at m (life metres from the clump's root, y up); foot: a cell in those metres.
@@ -1092,15 +1092,15 @@ vec3 countryVergeColour(float form, float pheno, float along, vec2 year) {
 // organs cover it. mapped: the atlas is bound.
 CountryVerge countryVergeAt(bool mapped, vec3 eye, vec2 q, float cellAngle, float zLimit) {
   CountryVerge v = CountryVerge(0.0, zLimit, vec3(0.0), 0.0, vec3(0.0));
-  if (!mapped || K_verges <= 0.0) return v;
-  vec4 grid = texelFetch(uSim3, ivec2(COUNTRY_VERGE_HEAD, 0), 0);
+  if (!mapped || VALLEY_VERGES <= 0.0) return v;
+  vec4 grid = texelFetch(valleyField3, ivec2(COUNTRY_VERGE_HEAD, 0), 0);
   int bin = int(floor((q.x - grid.z) / grid.w));
   if (bin < 0 || bin >= int(grid.y + 0.5)) return v;
   int row = int(grid.x + 0.5);
-  int width = textureSize(uSim3, 0).x;
+  int width = textureSize(valleyField3, 0).x;
   vec4 head = countryVergeTexel(row, width, bin * COUNTRY_VERGE_BIN);
   if (q.y > head.x) return v;
-  vec4 more = texelFetch(uSim3, ivec2(COUNTRY_VERGE_HEAD + 1, 0), 0);
+  vec4 more = texelFetch(valleyField3, ivec2(COUNTRY_VERGE_HEAD + 1, 0), 0);
   int clumps = int(more.x + 0.5);
   int organs = int(more.y + 0.5);
   vec2 year = vec2(countryKeys(0.0, 1.0, 1.0, 1.0, 0.0), countryKeys(0.0, 0.0, 1.0, 1.0, 0.0));
@@ -1121,7 +1121,7 @@ CountryVerge countryVergeAt(bool mapped, vec3 eye, vec2 q, float cellAngle, floa
     if (abs(m.x) > COUNTRY_VERGE_WIDE + foot || m.y < -foot || m.y > COUNTRY_VERGE_TALL + foot) continue;
     // Back to front: leaves, stems, heads; the last covering organ is the one seen.
     for (int k = 0; k < COUNTRY_VERGE_ORGANS; k++) {
-      PlantOrgan o = plantOrgan(uSim3, organs, c * COUNTRY_VERGE_ORGANS + k);
+      PlantOrgan o = plantOrgan(valleyField3, organs, c * COUNTRY_VERGE_ORGANS + k);
       if (o.tier < 0.5) continue;
       float at = 0.0;
       float up = 0.0;

@@ -277,8 +277,15 @@ class ComposedSim implements SceneSim {
     return this.#textures;
   }
 
+  /**
+   * Whether every on-screen layer's sim has what it shows; never before the first frame, which
+   * starts them (no layer is on screen to ask until then).
+   */
   ready(): boolean {
-    return this.#screen.every((layer) => this.#live.get(layer.id)?.sim?.ready?.() !== false);
+    return (
+      !this.#first &&
+      this.#screen.every((layer) => this.#live.get(layer.id)?.sim?.ready?.() !== false)
+    );
   }
 
   /** Every on-screen layer's points of interest (LayerSim.interest), canonical order. */

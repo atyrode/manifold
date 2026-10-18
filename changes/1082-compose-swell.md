@@ -1,0 +1,6 @@
+---
+section: Changed
+issue: 1082
+---
+
+The landing concept's swell scene is now a preset of the `outdoor` composer (ADR 0062 Phase 2c), in four layers drawn through its own rig: the `openSea` backdrop (the World's sky over the sea, the M in the moon's seas, the rain's shafts and the moonlit air, the scene's own ink over a black point), the `swell` ground (the long swells, the wind's sea and chop, the mirror and the moon's glitter, the relief), and two dressings, the `lighthouse` (its headland, its beams over the fog) and the `boats` (riding the swell, their lanterns by night). It draws as before at its defaults, in `view=source`, with the lighthouse and the lanterns, in fog, rain and snow and with a big swell; only the World's gulls cross on the composer's arrangement (`seed`) rather than the scene's own. The boats' `lanterns` knob is now `boatsLanterns` (the lantern river holds `lanterns`); the scene gains the `openSea` and `swell` switches, `lighthouse` and `boats` become layer switches, and the composer's `gusts` (off), `gustRate` and `seed` are new. The composer gained one hook for it: a layer's `glow` pass, light in the air laid on after the World's fog and before its rain and snow.

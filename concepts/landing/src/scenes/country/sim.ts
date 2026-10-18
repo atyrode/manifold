@@ -1,28 +1,36 @@
-// The countryside's land: the terrain toolbox (sims/terrain.ts) built from the land's knobs on the
-// build worker (build.ts, sims/build.ts), each parcel given its use by the land model
-// (sims/landuse.ts), packed into the four textures the shader reads through terrainGlsl:
-//   uSim0  rgba16f linear   ground, water level, the ground's slope (d/dx, d/dz)
-//   uSim1  rgba16f linear   road and stream signed distance, the woods' clearance (the woods stand
-//                           above the records' woods' line), yard (-1 a standing lone tree)
-//   uSim2  rgba8 nearest    the nearest two parcels per texel, the first flagged in pine woods
-//   uSim3  rgba16f linear   records: parcel sites with their use and attribute, buildings,
-//                           settlements, the bridge, the eye, the roads' way points, the chalk M's
-//                           site (chalk.ts), the valley floor under the fog (fog.ts) (texelFetch);
-//                           beside and above them the murmuration's field and the verges' plants
-//                           while they are on (the records atlas, atlas.ts)
+// The valley's sim (ADR 0062: its LayerSim, layers.ts valleyLayer): the countryside's land, the
+// terrain toolbox (sims/terrain.ts) built from the land's knobs on the build worker (build.ts,
+// sims/build.ts), each parcel given its use by the land model (sims/landuse.ts), packed into the
+// four textures the shader reads through terrainGlsl, the valley's four field slots (valleyField0..3):
+//   field 0  rgba16f linear   ground, water level, the ground's slope (d/dx, d/dz)
+//   field 1  rgba16f linear   road and stream signed distance, the woods' clearance (the woods stand
+//                             above the records' woods' line), yard (-1 a standing lone tree)
+//   field 2  rgba8 nearest    the nearest two parcels per texel, the first flagged in pine woods
+//   field 3  rgba16f linear   records: parcel sites with their use and attribute, buildings,
+//                             settlements, the bridge, the eye, the roads' way points, the chalk
+//                             M's site (chalk.ts), the valley floor under the fog (fog.ts)
+//                             (texelFetch); beside and above them the murmuration's field and the
+//                             verges' plants while they are on (the records atlas, atlas.ts)
+// The land is built from the knobs of every country layer (layers.ts): the valley's (its shape,
+// relief and erosion; the composer's seed), the waterway's (the river), the farmland's (the shares,
+// the pine mix, the cattle share, the chalk M), the settlements' (the village, hamlets, farms,
+// castle, roads and tracks); a layer switched off lays none of its part (the waterway's river runs
+// dry, keeping its size), and one the preset does not offer (a guest valley: the bees garden's) lays
+// it as the countryside opens it (its defaults, its home layers on).
 // Three tiers of change, cheapest last, each a stage keyed by what it reads:
-//   the terrain (land shape, landscape, relief, erosion, the river's size, the settlements and
-//     roads): a new build on the worker (build.ts), reusing what the change leaves alone
-//     (terrain.ts), packed and weighed there with the land as it stood when asked for; the last map
-//     stays on screen until it lands, a newer terrain supersedes a build in progress, and the
-//     terrain on screen asked for again drops it (BuildSlot) and builds nothing;
+//   the terrain (land shape, seed, relief, erosion, the river's size, the settlements and roads): a
+//     new build on the worker (build.ts), reusing what the change leaves alone (terrain.ts), packed
+//     and weighed there with the land as it stood when asked for; the last map stays on screen until
+//     it lands, a newer terrain supersedes a build in progress, and the terrain on screen asked for
+//     again drops it (BuildSlot) and builds nothing;
 //   the land's uses (the shares, the pine mix, the cattle share, the chalk M keeping its parcels
 //     open, its site looked for once per terrain): the allocation (LandModel.allocate) within the
 //     frame, repacking only the parcels whose use changed (repackLand) and uploading only the rows of
-//     uSim1 and uSim2 whose bytes changed, and uSim3 (where the woodland share moves the woods' line);
-//   the river switched on or off: packWater within the frame, uploading uSim0 and uSim1.
-// Nothing is drawn before the first build: the shader shows the sky meanwhile, which the entrance
-// looks into. Where there is no worker the build runs here a few units a frame, as before.
+//     fields 1 and 2 whose bytes changed, and field 3 (where the woodland share moves the woods' line);
+//   the river switched on or off: packWater within the frame, uploading fields 0 and 1.
+// Nothing is drawn before the first build: the valley shows the World's sky meanwhile, which the
+// entrance looks into. Where there is no worker the build runs here a few units a frame, as before.
+import type { LayerFrame, LayerSim } from "../../composer/types.ts";
 import { KnobReader, type ParamDef } from "../../params.ts";
 import { BuildSlot } from "../../sims/build.ts";
 import {
@@ -31,13 +39,14 @@ import {
   type LandOptions,
   type LandRows,
   repackLand,
+  type SharedUse,
 } from "../../sims/landuse.ts";
 import { TERRAIN_BASES } from "../../sims/terrain-limits.ts";
 import { packWater } from "../../sims/terrain.ts";
 import { DataTexture, DirtyRegion } from "../../sims/texture.ts";
 import { type SkyState, skyState } from "../../world-clock.ts";
-import type { SceneSim, SimFactory, SimFrame } from "../types.ts";
 import { CountryAtlas } from "./atlas.ts";
+import { withCountryDefaults } from "./layers.ts";
 import {
   countryAllocation,
   countryBuild,
@@ -59,23 +68,40 @@ const FIRST_BUDGET_MS = 24;
 
 const KNOBS = [
   "shape",
-  "landscape",
-  "relief",
+  "seed",
+  "valleyRelief",
   "erosion",
-  "river",
+  "waterway",
+  "settlements",
   "village",
   "hamlets",
   "farms",
   "castle",
   "roads",
   "tracks",
-  "pines",
+  "farmland",
+  "crops",
+  "farmlandWildflowers",
+  "lavender",
+  "sunflowers",
+  "pasture",
+  "woodland",
+  "farmlandPines",
   "cows",
   "chalk",
   "time",
-  ...LAND_SHARED,
 ] as const;
 type Knob = (typeof KNOBS)[number];
+
+/** The land model's shared uses by the farmland's knobs (its wildflowers qualified). */
+const SHARE_KNOBS: Readonly<Record<SharedUse, Knob>> = {
+  crops: "crops",
+  wildflowers: "farmlandWildflowers",
+  lavender: "lavender",
+  sunflowers: "sunflowers",
+  pasture: "pasture",
+  woodland: "woodland",
+};
 
 /** A finished terrain on screen: its land model and its packed textures, rewritten in place. */
 interface Land extends Omit<CountryBuilt, "model"> {
@@ -93,7 +119,7 @@ function usesKey(uses: LandOptions, chalk: boolean): string {
   return JSON.stringify({ ...uses, chalk });
 }
 
-class CountrySim implements SceneSim {
+class ValleySim implements LayerSim {
   readonly #knobs: KnobReader<Knob>;
   readonly #ground: DataTexture;
   readonly #cover: DataTexture;
@@ -112,8 +138,10 @@ class CountrySim implements SceneSim {
   #asked: { key: string; request: CountryRequest } | undefined;
   #land: Land | undefined;
 
-  constructor(gl: WebGL2RenderingContext, params: readonly ParamDef[]) {
-    this.#knobs = new KnobReader("country", params, KNOBS);
+  constructor(gl: WebGL2RenderingContext, sceneParams: readonly ParamDef[]) {
+    // Every country knob the scene lacks (a guest valley's) reads as the countryside opens it.
+    const params = withCountryDefaults(sceneParams);
+    this.#knobs = new KnobReader("valley", params, KNOBS);
     this.#sky = skyState(this.#knobs.initial("time"));
     const { size } = COUNTRY_MAP;
     this.#ground = new DataTexture(gl, { width: size, height: size, format: "rgba16f" });
@@ -127,35 +155,40 @@ class CountrySim implements SceneSim {
     this.#atlas = new CountryAtlas(gl, params);
   }
 
-  frame(frame: SimFrame): readonly (WebGLTexture | undefined)[] {
+  frame(frame: LayerFrame): void {
     const knobs = this.#knobs;
+    // A part's knob while its layer is on, nothing of it while it is off (layers.ts).
+    const settled = knobs.on(frame, "settlements");
+    const farmed = knobs.on(frame, "farmland");
+    const settlement = (key: Knob) => (settled ? knobs.value(frame, key) : 0);
+    const farm = (key: Knob) => (farmed ? knobs.value(frame, key) : 0);
     const options = {
-      seed: Math.round(knobs.value(frame, "landscape")),
+      seed: Math.round(knobs.value(frame, "seed")),
       size: COUNTRY_MAP.size,
       extent: COUNTRY_MAP.extent,
-      relief: knobs.value(frame, "relief"),
+      relief: knobs.value(frame, "valleyRelief"),
       erosion: knobs.value(frame, "erosion"),
       // The river keeps its size while it runs dry: only its water goes (packWater).
-      river: knobs.amount(frame, "river"),
-      village: Math.round(knobs.value(frame, "village")),
-      hamlets: Math.round(knobs.value(frame, "hamlets")),
-      farms: Math.round(knobs.value(frame, "farms")),
-      castle: knobs.value(frame, "castle") > 0.5,
-      roads: knobs.value(frame, "roads") > 0.5,
-      tracks: knobs.value(frame, "tracks") > 0.5,
+      river: knobs.amount(frame, "waterway"),
+      village: Math.round(settlement("village")),
+      hamlets: Math.round(settlement("hamlets")),
+      farms: Math.round(settlement("farms")),
+      castle: settlement("castle") > 0.5,
+      roads: settlement("roads") > 0.5,
+      tracks: settlement("tracks") > 0.5,
       base: knobs.pick(frame, "shape", TERRAIN_BASES, "valley"),
     };
 
     const shares: LandOptions["shares"] = Object.fromEntries(
-      LAND_SHARED.map((use) => [use, knobs.value(frame, use)]),
+      LAND_SHARED.map((use) => [use, farm(SHARE_KNOBS[use])]),
     );
     const uses: LandOptions = {
       shares,
-      pines: knobs.value(frame, "pines"),
-      cows: knobs.value(frame, "cows"),
+      pines: farm("farmlandPines"),
+      cows: farm("cows"),
     };
-    const chalk = knobs.on(frame, "chalk");
-    const water = knobs.on(frame, "river");
+    const chalk = farmed && knobs.on(frame, "chalk");
+    const water = knobs.on(frame, "waterway");
     const key = JSON.stringify(options);
     let asked = this.#asked;
     if (key !== asked?.key) {
@@ -169,7 +202,7 @@ class CountrySim implements SceneSim {
     const fresh = landed !== undefined;
     if (fresh) this.#land = this.#adopt(landed.result, asked.request);
     const land = this.#land;
-    if (!land) return [];
+    if (!land) return;
     const nextUses = usesKey(uses, chalk);
     const allocate = nextUses !== land.uses;
     const rows = allocate ? this.#allocate(land, uses, chalk, nextUses) : undefined;
@@ -189,7 +222,11 @@ class CountrySim implements SceneSim {
     this.#coverChanged.flush(this.#cover, land.packed.cover);
     this.#parcelsChanged.flush(this.#parcels, land.packed.parcels);
     const records = this.#atlas.frame(frame, land.terrain, land.packed, fresh || allocate);
-    return [this.#ground.texture, this.#cover.texture, this.#parcels.texture, records];
+    const textures = [this.#ground.texture, this.#cover.texture, this.#parcels.texture, records];
+    textures.forEach((texture, k) => {
+      const field = frame.fields[k];
+      if (field !== undefined) field.texture = texture;
+    });
   }
 
   /** Ready once the first land is built (a later rebuild keeps showing the previous land). */
@@ -218,7 +255,7 @@ class CountrySim implements SceneSim {
 
   /**
    * The land's uses as they stand now: allocated, and repacked where the allocation differs
-   * (repackLand). Returns the rows of uSim1 and uSim2 rewritten.
+   * (repackLand). Returns the rows of fields 1 and 2 rewritten.
    */
   #allocate(land: Land, uses: LandOptions, chalk: boolean, key: string): LandRows {
     if (chalk && !land.chalked) {
@@ -233,7 +270,7 @@ class CountrySim implements SceneSim {
   }
 }
 
-/** The countryside's sim for its knobs. */
-export function countrySim(params: readonly ParamDef[]): SimFactory {
-  return (gl) => new CountrySim(gl, params);
+/** The valley's sim (LayerCode.sim): the countryside's land for the scene's knobs. */
+export function valleySim(gl: WebGL2RenderingContext, params: readonly ParamDef[]): LayerSim {
+  return new ValleySim(gl, params);
 }

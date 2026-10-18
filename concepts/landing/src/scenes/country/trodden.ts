@@ -20,8 +20,8 @@ float countryTrod = 0.0;
 // (negative on it; terrainCover's x) and footRoad metres a cell spans across it: the way but for a
 // rim at its edges, or most of the road where a cell is too coarse for the rim.
 float countryTrodden(float edge, float footRoad, float road) {
-  float walkers = K_walkers > 0.0 ? 0.4 + 0.6 * K_walkers : 0.0;
-  float carts = K_carts > 0.0 ? 0.35 + 0.15 * K_carts : 0.0;
+  float walkers = VALLEY_WALKERS > 0.0 ? 0.4 + 0.6 * VALLEY_WALKERS : 0.0;
+  float carts = VALLEY_CARTS > 0.0 ? 0.35 + 0.15 * VALLEY_CARTS : 0.0;
   float busy = 1.0 - (1.0 - walkers) * (1.0 - carts);
   if (busy <= 0.0) return 0.0;
   float way = mix(hardFill(edge + 0.35, 0.5 * footRoad), 0.8, smoothstep(0.8, 2.0, footRoad));

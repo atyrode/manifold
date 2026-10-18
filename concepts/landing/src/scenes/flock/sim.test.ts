@@ -1,9 +1,12 @@
 import { expect, spyOn, test } from "bun:test";
+import { ATLAS_WIDTH } from "../../composer/caps.ts";
+import { featureKey, sceneFeatures } from "../../shaders/index.ts";
 import { Boids, type BoidRules } from "../../sims/boids.ts";
 import { HeadlessSim } from "../../sims/headless.ts";
 import type { Random } from "../../sims/random.ts";
 import { DataTexture } from "../../sims/texture.ts";
 import { loadScene } from "../index.ts";
+import type { LoadedScene } from "../types.ts";
 import { FLOCK_SIZES } from "./constants.ts";
 import { boidNear, FLOCK_FEAR_RADIUS } from "./sim.ts";
 
@@ -11,8 +14,17 @@ const flockScene = await loadScene("flock");
 
 const EMERGENT = { emergent: 1, "emergent-amount": 7 };
 
+/**
+ * Where the composed sim hands over the murmuration's data: its field 0 in the first field slot (the
+ * roost has none), its state in the first texels of its row, the atlas's first after the composer's.
+ */
+const FIELD_SLOT = 2;
+const ATLAS_SLOT = 1;
+const STATE_AT = ATLAS_WIDTH * 4;
+
 /** The density field (R birds per texel, G rolled) after a frame. */
-const density = (sim: HeadlessSim): Float32Array => Float32Array.from(sim.upload(0).data);
+const density = (sim: HeadlessSim): Float32Array =>
+  Float32Array.from(sim.upload(FIELD_SLOT).data);
 
 /** How much the field changed between two frames (L1 of the birds channel). */
 function change(a: Float32Array, b: Float32Array): number {
@@ -31,6 +43,45 @@ function totals(field: Float32Array): { birds: number; rolled: number } {
   }
   return { birds, rolled };
 }
+
+/** The birds' mean height in the field (screen heights from the frame's foot), and how many there are. */
+function heightOf(sim: HeadlessSim): { height: number; birds: number } {
+  const { width, height, data } = sim.upload(FIELD_SLOT);
+  let birds = 0;
+  let sum = 0;
+  for (let k = 0; k < width * height; k++) {
+    const r = data[2 * k] ?? 0;
+    birds += r;
+    sum += r * (Math.floor(k / width) + 0.5);
+  }
+  return { height: sum / Math.max(birds, 1e-9) / height, birds };
+}
+
+test("switched off, the murmuration plays its own exit with its birds: they pour down to roost", () => {
+  // The renderer keeps drawing the program the flock is in through the layer's exit
+  // (SimFrame.features), so the composed sim plays it on the layer's own clock.
+  const drawn = featureKey(sceneFeatures(flockScene));
+  const factory = flockScene.sim;
+  if (factory === undefined) throw new Error("the murmuration has a sim");
+  const scene: LoadedScene = {
+    ...flockScene,
+    sim: (gl) => {
+      const sim = factory(gl);
+      return {
+        frame: (frame) => sim.frame({ ...frame, features: drawn }),
+        dispose: () => sim.dispose(),
+      };
+    },
+  };
+  const sim = new HeadlessSim(scene);
+  for (let f = 0; f < 240; f++) sim.step();
+  const flying = heightOf(sim);
+  // 0.8 s into the 0.9 s exit: the birds are still all there, most of the way down.
+  for (let f = 0; f < 48; f++) sim.step({ knobs: { murmuration: 0 } });
+  const leaving = heightOf(sim);
+  expect(leaving.birds).toBeGreaterThan(0.8 * flying.birds);
+  expect(leaving.height).toBeLessThan(flying.height - 0.15);
+});
 
 test("with emergent flight off, whatever its neighbours, the flock flies its authored sheet", () => {
   const plain = new HeadlessSim(flockScene);
@@ -87,7 +138,7 @@ for (const birds of [1500, 5000]) {
       const sim = new HeadlessSim(flockScene);
       let least = Number.POSITIVE_INFINITY;
       for (let f = 0; f < 900; f++) {
-        sim.step({ knobs: { ...EMERGENT, birds } });
+        sim.step({ knobs: { ...EMERGENT, "murmuration-amount": birds } });
         if (f >= 300 && f % 30 === 0) least = Math.min(least, totals(density(sim)).birds);
       }
       // Each bird lays down about its own ink once the trail has filled: none of them off the frame.
@@ -173,10 +224,10 @@ test(
         threatened = false;
         sim.step({ knobs: EMERGENT, aspect, now: f % 150 === 0 ? ["predator"] : [] });
         if (!threatened) continue;
-        // The falcon where the frame draws it (uSim1 texel 0: uv x, y).
-        const state = sim.upload(1).data;
-        const fx = (state[0] ?? 0) * aspect;
-        const fy = state[1] ?? 0;
+        // The falcon where the frame draws it (the murmuration's row, texel 0: uv x, y).
+        const state = sim.upload(ATLAS_SLOT).data;
+        const fx = (state[STATE_AT] ?? 0) * aspect;
+        const fy = state[STATE_AT + 1] ?? 0;
         for (let i = 0; i < birds; i++) {
           const drawn =
             Math.hypot((drawnX[i] ?? 0) - fx, (drawnY[i] ?? 0) - fy) < FLOCK_FEAR_RADIUS;
@@ -206,7 +257,9 @@ test(
 test("the density texture holds the field, but for texels too faint for a half float to tell from 0", () => {
   // Each paint uploads only the box it changed; outside it the texture keeps an older paint's values,
   // which must be ones the rg16f texture holds as 0, as it does the field's own there now. Through a
-  // strike, a new frame shape (a new field), the flock leaving and growing afresh, and emergent flight.
+  // strike, a new frame shape (a new field), the layer switched off and on (the flock growing
+  // afresh), and emergent flight. The composer's atlas goes up by uploadRegion too: a field upload
+  // is one of the field's size.
   const faint = 2 ** -25; // half the smallest half float: anything under it is held as 0
   const region = spyOn(DataTexture.prototype, "uploadRegion");
   const sim = new HeadlessSim(flockScene);
@@ -218,11 +271,17 @@ test("the density texture holds the field, but for texels too faint for a half f
       sim.step({
         aspect: f < 200 ? 16 / 9 : 4 / 3,
         now: f % 150 === 75 ? ["predator"] : [],
-        knobs: f >= 300 && f < 320 ? { birds: 0 } : f >= 400 ? EMERGENT : {},
+        knobs: f >= 300 && f < 320 ? { murmuration: 0 } : f >= 400 ? EMERGENT : {},
       });
-      const field = region.mock.calls.length > calls ? region.mock.lastCall?.[0] : undefined;
+      if (!sim.uploaded(FIELD_SLOT)) continue;
+      const texture = sim.upload(FIELD_SLOT);
+      const size = texture.width * texture.height * 2;
+      const field = region.mock.calls
+        .slice(calls)
+        .map(([data]) => data)
+        .findLast((data) => data.length === size);
       if (field === undefined) continue;
-      const shown = sim.upload(0).data;
+      const shown = texture.data;
       checked++;
       for (let k = 0; k < field.length; k++) {
         const a = field[k] ?? 0;

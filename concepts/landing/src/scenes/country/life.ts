@@ -1,4 +1,5 @@
-// The countryside's life, each part compiled in only while its knobs are on (countryFeatures):
+// The countryside's life, each part compiled in only while its knobs are on (the valley's
+// featuresFor, layers.ts), its knobs read through the valley's macros (VALLEY_*, shader.ts):
 //
 // Herds (COUNTRY_HAS_HERDS; the shared livestock, shaders/lib/livestock.ts). A pasture parcel (the
 // land model's, sims/landuse.ts, read from its record with its herd's kind: cattle or sheep) keeps a
@@ -15,9 +16,7 @@
 // roads: each takes a road of the network (terrainWays, resampled evenly) and goes out along it and
 // back by arc length on the motion clock (figureShuttle; half the walkers stopping now and then,
 // figureStroll), always between two of its points, so always on it.
-//
-// Birds (COUNTRY_HAS_BIRDS; shaders/lib/birds.ts) cross the sky by day through the countryside's
-// own level pinhole camera, hidden by whatever stands nearer along the ray.
+// The birds over the valley are the World's (ADR 0062 D10: the preset's flyway, constants.ts).
 export const countryLifeGlsl = /* glsl */ `
 #if COUNTRY_HAS_HERDS
 const float COUNTRY_FENCE_HIGH = 1.7;     // post-and-rail fence height, metres (drawn large, as the houses are)
@@ -53,7 +52,7 @@ CountryHerd countryHerd(float id, vec4 core, float cattle) {
   herd.span = herd.cattle > 0.5 ? 11.0 : 8.0;
   herd.middle = core.xy;
   float room = core.z - COUNTRY_FENCE_SET - 1.6 * herd.size;
-  float want = floor(K_herd * (herd.cattle > 0.5 ? 10.0 : 14.0) * (0.65 + 0.7 * hash12(vec2(id, 7.37))) + 0.5);
+  float want = floor(VALLEY_HERD * (herd.cattle > 0.5 ? 10.0 : 14.0) * (0.65 + 0.7 * hash12(vec2(id, 7.37))) + 0.5);
   bool clear = core.w <= countryWoodLine - COUNTRY_WOOD_EDGE;
   herd.count = room > 0.0 && clear ? min(min(want, livestockFit(room / herd.spacing)), float(COUNTRY_HERD_MAX)) : 0.0;
   // The drift reaches sqrt(2) of the roam at a corner.
@@ -116,7 +115,7 @@ CountryStock countryHerdAt(vec3 eye, vec2 q, float cellAngle, float zGround, flo
     float act;
     vec2 way;
     vec2 at = countryHerdAnimal(herd, k, tm, slot, act, way);
-    vec3 feet = vec3(at.x, terrainSurface(terrainGround(uSim0, at, COUNTRY_EXTENT)), at.y);
+    vec3 feet = vec3(at.x, terrainSurface(terrainGround(valleyField0, at, COUNTRY_EXTENT)), at.y);
     vec3 d = feet - eye;
     float zc = dot(d, countryFwd);
     if (zc < 5.0) continue;
@@ -181,7 +180,7 @@ vec4 countryFence(vec3 eye, vec3 rd, float tHit, vec3 p, vec4 g, TerrainParcel p
     float rails = max(step(abs(rise - 0.48 * COUNTRY_FENCE_HIGH), max(0.07, 0.5 * cell)), step(abs(rise - 0.9 * COUNTRY_FENCE_HIGH), max(0.07, 0.5 * cell)));
     float cover = max(post * step(rise, COUNTRY_FENCE_HIGH + 0.5 * cell), rails);
     if (cover < 0.5) continue;
-    vec4 under = terrainCover(uSim1, x.xz, COUNTRY_EXTENT);
+    vec4 under = terrainCover(valleyField1, x.xz, COUNTRY_EXTENT);
     if (under.x < 2.0 || countryWoods(under, -2.0, false) > 0.5) continue;
     zFence = t;
     vec3 timber = mix(vec3(0.42, 0.35, 0.27), vec3(0.6, 0.53, 0.42), rails) * (0.88 + 0.24 * hash12(vec2(which, parcel.id)));
@@ -211,16 +210,16 @@ struct CountryAgent {
 bool countryAgent(int a, float tm, out CountryAgent agent) {
   bool cart = a >= COUNTRY_PARTIES;
   float n = cart ? float(a - COUNTRY_PARTIES) : float(a);
-  // One to six parties as K_walkers rises, one to three carts.
-  if (n >= (cart ? K_carts : (K_walkers > 0.0 ? 1.0 + floor(K_walkers * 5.99) : 0.0))) return false;
-  int ways = terrainWayCount(uSim3);
+  // One to six parties as the walkers knob rises, one to three carts.
+  if (n >= (cart ? VALLEY_CARTS : (VALLEY_WALKERS > 0.0 ? 1.0 + floor(VALLEY_WALKERS * 5.99) : 0.0))) return false;
+  int ways = terrainWayCount(valleyField3);
   if (ways < 1) return false;
   float h = hash12(vec2(float(a) * 7.31 + 1.7, 3.9));
-  TerrainWay way = terrainWay(uSim3, min(int(fract(h * 5.13) * float(ways)), ways - 1));
+  TerrainWay way = terrainWay(valleyField3, min(int(fract(h * 5.13) * float(ways)), ways - 1));
   float span = way.spacing * float(way.count - 1);
   agent.seed = h;
   agent.kind = cart ? (fract(h * 3.3) < 0.55 ? 1.0 : 2.0) : 0.0;
-  agent.size = cart ? 1.0 : (fract(h * 7.7) < 0.25 + 0.45 * K_walkers ? (fract(h * 11.3) < 0.35 ? 3.0 : 2.0) : 1.0);
+  agent.size = cart ? 1.0 : (fract(h * 7.7) < 0.25 + 0.45 * VALLEY_WALKERS ? (fract(h * 11.3) < 0.35 ? 3.0 : 2.0) : 1.0);
   // A walk ~1.4-1.7 m/s, a horse and cart ~1.9, a tractor ~4; ten seconds' turn at either end.
   float pace = cart ? (agent.kind < 1.5 ? 1.9 : 4.0) : 1.4 + 0.3 * fract(h * 9.1);
   vec2 walk = vec2(tm, 1.0);
@@ -228,7 +227,7 @@ bool countryAgent(int a, float tm, out CountryAgent agent) {
   float rest = 10.0 * pace;
   vec3 trip = figureShuttle(walk.x * pace + fract(h * 3.7) * 2.0 * (span + rest), span, span, rest, rest);
   float s = trip.y > 0.5 ? trip.x : (trip.y < -0.5 ? span - trip.x : trip.z * span);
-  agent.at = terrainWayAt(uSim3, way, s, agent.heading);
+  agent.at = terrainWayAt(valleyField3, way, s, agent.heading);
   if (trip.y < -0.5) agent.heading = -agent.heading;
   agent.moving = abs(trip.y) * walk.y;
   agent.stride = walk.x * TAU * 0.95 + 6.0 * h;
@@ -243,7 +242,7 @@ Figure countryAgentAt(vec3 eye, vec2 q, float cellAngle, float zLimit, float dar
   z = zLimit;
   float cells = 1.0 / cellAngle;
   // The bound follows the knob, so compilers keep one loop body rather than unrolling every candidate.
-  int candidates = COUNTRY_PARTIES + int(clamp(K_carts, 0.0, float(COUNTRY_CARTS)));
+  int candidates = COUNTRY_PARTIES + int(clamp(VALLEY_CARTS, 0.0, float(COUNTRY_CARTS)));
   for (int a = 0; a < candidates; a++) {
     CountryAgent agent;
     if (!countryAgent(a, uMotionTime, agent)) continue;
@@ -300,23 +299,6 @@ Figure countryAgentAt(vec3 eye, vec2 q, float cellAngle, float zLimit, float dar
     }
   }
   return best;
-}
-#endif
-
-#if COUNTRY_HAS_BIRDS
-// The shared birds over the country through its level pinhole camera (metres), by day and in calm
-// weather: mixed, mostly rooks, with gulls up from the river, swallows low and a buzzard on a
-// thermal. uv: the frame's point (the passage's lens shift included).
-BirdHit countryBirds(vec2 uv, float aspect, vec3 eye, float rain, float snow, float pxl) {
-  float calm = (1.0 - smoothstep(0.05, 0.3, rain)) * (1.0 - 0.6 * snow);
-  BirdSky sky = birdSky(K_birds * calm, K_birdKind, K_birdFormation - 1.0, vec2(90.0, 2400.0), vec2(COUNTRY_HORIZON + 0.03, 0.93), vec2(13.7, 3.1));
-  sky.hours = vec4(0.22, 0.26, 0.8, 0.84);
-  sky.clock = vec2(K_time, K_cycle);
-  sky.mixA = vec4(4.0, 2.0, 2.0, 1.0);
-  sky.mixB = vec3(1.0, 1.0, 0.5);
-  sky.swoopTo = eye.y - 25.0;
-  BirdCamera cam = BirdCamera(COUNTRY_HORIZON, COUNTRY_FOCAL, eye.y, 1.0, 3.0);
-  return birdFlights(vec2((uv.x - 0.5) * aspect, uv.y), sky, cam, uMotionTime, pxl);
 }
 #endif
 `;

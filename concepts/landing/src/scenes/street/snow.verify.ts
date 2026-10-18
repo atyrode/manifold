@@ -1,13 +1,14 @@
-// GPU check (verify-browser.ts): street's snow, through the window's camera and streetSnow. The eye
-// looks down on the crossing (STREET_PITCH), so the flakes' paths close in on the point below the
-// street, as the rain's do: in still air those at the sides of the frame drift inward while they fall,
-// and those in the middle fall straight down. A level camera's snow (snowFall) would bring every
-// flake straight down the frame.
+// GPU check (verify-browser.ts): street's snow, the World's through the city's axes (citySeen, the
+// backdrop's precip.seen). The eye looks down on the crossing (STREET_PITCH), so the flakes' paths
+// close in on the point below the street, as the rain's do: in still air those at the sides of the
+// frame drift inward while they fall, and those in the middle fall straight down. A level camera's
+// snow (snowFall) would bring every flake straight down the frame.
 import { defaultsFor, paramDefaults, renderSettings } from "../../state.ts";
-import { fragmentSourceFor, packParams, vertexSource } from "../../shaders/index.ts";
+import { fragmentSourceFor, packParams, sceneFeatures, vertexSource } from "../../shaders/index.ts";
 import { loadScene } from "../index.ts";
 
-const streetScene = await loadScene("street");
+// A composed scene draws its program from glslFor: the check's entry goes after the default one.
+const { glslFor, ...streetScene } = await loadScene("street");
 
 const WIDTH = 320;
 const HEIGHT = 180;
@@ -79,9 +80,15 @@ export function streetSnowCheck(gl: WebGL2RenderingContext): Record<string, unkn
     fragmentSourceFor({
       ...streetScene,
       entry: "regressionStreetSnow",
-      glsl: `${streetScene.glsl}
+      glsl: `${glslFor?.(sceneFeatures(streetScene)) ?? streetScene.glsl}
     Shade regressionStreetSnow(vec2 uv, vec2 cell, float t) {
-      Precip p = streetSnow(uv, uRes.x / uRes.y, t, 1.0, cos(STREET_PITCH), sin(STREET_PITCH));
+      Ctx x = composerCtx(uv, cell);
+      streetBegin(x);
+      mat3 rain;
+      mat3 snow;
+      citySeen(x, rain, snow);
+      vec3 vanish = rainVanish(snowFallDir(K_snow, K_wind), snow[0], snow[1], snow[2], RIG_FOCAL);
+      Precip p = snowFallSeen(uv, uRes.x / uRes.y, t, K_snow, K_wind, 1.0, vanish);
       return shadeOf(vec3(p.cover), p.cover, 0.0);
     }`,
     }),

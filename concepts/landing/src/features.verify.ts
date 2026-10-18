@@ -1,19 +1,21 @@
 // GPU regressions for knob-keyed compile-time features (SceneDef.featuresFor, featuresAll), through
 // the actual renderer. The countryside compiles its optional parts in only while their knobs are on
-// (countryFeatures), the meadow its wildflowers and the shared world's parts (worldFeatures), the
-// shore, the dunes and the bees the world's parts. The renderer is made to take its context for a
-// hardware GPU's or a software rasteriser's (`watched`), whatever renders the check. Registered in
-// verify-browser.ts.
+// (its valley's featuresFor), the meadow its wildflowers and the shared world's parts
+// (worldFeatures), the shore, the dunes and the bees the world's parts. The renderer is made to take
+// its context for a hardware GPU's or a software rasteriser's (`watched`), whatever renders the
+// check. Registered in verify-browser.ts.
 //
 // sceneFeatures: the default countryside compiles in none of the parts whose knobs are off (flower
-// fields, herds, walkers and carts, birds, rain, snow, fog) and its all-features program every one
-// (src/shaders/index.test.ts checks that each scene's covers every knob's turn). On a software
-// rasteriser nothing is built ahead; a gated knob builds the setting's own program in the
-// background (the old frame holding meanwhile, nothing waiting on the build) and switches to it;
-// turning it back finds the old program kept; several gated knobs at once build once; past four
-// sets the least recently drawn program is freed. The countryside's sim builds its land over a few
-// frames first (its terrain); every page here is run until it shows (`landed`), so a frame that
-// changes is a program's doing, not the build's.
+// fields, herds, walkers and carts, the World's birds, rain and snow, fog) and the all-features
+// program of all its layers every one (src/shaders/index.test.ts checks that each scene's covers
+// every knob's turn). On a software rasteriser nothing is built ahead; a gated knob builds the
+// setting's own program in the background (the old frame holding meanwhile, nothing waiting on the
+// build) and switches to it; turning it back finds the old program kept; several gated knobs at
+// once build once; past four sets the least recently drawn program is freed. The countryside's sim
+// builds its land over a few frames first (its terrain), and dew's its web (on the build worker,
+// which fails to load on this page, so on the page from the first wait on, a frame's budget at a
+// time); every page here is run until it shows (`landed`), so a frame that changes is a program's
+// doing, not the build's.
 //
 // featureToggles, on a GPU, for every scene with `featuresFor` (KNOB_KEYED; their library gates,
 // the night sky's constellations and giant planet, among their gated turns; the scenes keyed by
@@ -283,13 +285,18 @@ async function arrive(frame: () => void, renderer: DitherRenderer): Promise<void
   );
 }
 
-/** Scenes whose sim builds their picture over frames before it shows (the countryside's terrain). */
-const BUILT_OVER_FRAMES: Partial<Record<SceneId, true>> = { country: true };
+/**
+ * Scenes whose sim builds their picture over frames before it shows: the countryside's terrain, and
+ * dew's web, which shows nothing until a web spun for the frame's shape lands. Without the wait, a
+ * page settles on the meadow alone (nothing moves while the web is spun) and the web lands among
+ * the frames compared.
+ */
+const BUILT_OVER_FRAMES: Partial<Record<SceneId, true>> = { country: true, dew: true };
 
 /**
  * Frames until a scene that builds its picture over frames (BUILT_OVER_FRAMES) shows it: the frame
- * changes from the first one drawn (the sky alone) and then holds still. A scene drawn whole from
- * its first frame returns at once.
+ * changes from the first one drawn (the countryside's sky alone, dew's meadow without its web) and
+ * then holds still. A scene drawn whole from its first frame returns at once.
  */
 async function landed(scene: SceneId, frame: () => void, context: Watched): Promise<void> {
   if (BUILT_OVER_FRAMES[scene] !== true) return;
@@ -307,7 +314,7 @@ async function landed(scene: SceneId, frame: () => void, context: Watched): Prom
       return false;
     },
     BUILD_SECONDS,
-    `${scene}: its land did not show`,
+    `${scene}: what its sim builds did not show`,
     10,
   );
 }
@@ -343,15 +350,16 @@ async function countryPrograms(
   if (!scenes.includes("country")) return {};
   const country = sceneDefs.country;
   const defaults = paramDefaults("country");
-  // The default setting compiles in none of the parts whose knobs are off, the all-features program
+  // The default setting compiles in none of the parts whose knobs are off (its birds, rain and snow
+  // the World's), the all-features program of all its layers (the verges and the starlings placed)
   // every one.
   const off = [
     "COUNTRY_HAS_FIELDS",
     "COUNTRY_HAS_HERDS",
     "COUNTRY_HAS_AGENTS",
-    "COUNTRY_HAS_BIRDS",
-    "COUNTRY_HAS_RAIN",
-    "COUNTRY_HAS_SNOW",
+    "WORLD_BIRDS",
+    "WORLD_RAIN",
+    "WORLD_SNOW",
     "COUNTRY_HAS_FOG",
   ];
   const plainSet = sceneFeatures(country);
@@ -359,8 +367,10 @@ async function countryPrograms(
     off.every((name) => plainSet[name] === 0),
     `Default countryside compiles optional parts in: ${JSON.stringify(plainSet)}`,
   );
-  const all = sceneFeaturesAll(country) ?? {};
-  const gates = Object.keys(plainSet).filter((name) => name.startsWith("COUNTRY_HAS_"));
+  const all = sceneFeaturesAll(country, shaderValues(country, { verges: 1, starlings: 1 })) ?? {};
+  const gates = Object.keys(plainSet).filter(
+    (name) => name.startsWith("COUNTRY_HAS_") || off.includes(name),
+  );
   check(
     gates.length >= off.length && gates.every((name) => all[name] === 1),
     `The countryside's all-features program leaves parts out: ${JSON.stringify(all)}`,

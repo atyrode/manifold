@@ -10,13 +10,13 @@
 //   under the lens and under a search, in three scenes; a sync that changes something does write;
 // - `night`: in a night with an aurora (three drawings over one another), a click on a planet picks
 //   it, and one on the aurora, or on the Milky Way under the drawings over it, switches that part;
-// - `compact`: the compact bar (menu.ts) has a chip per section in the Controls order, each opening
-//   the section's own element, open and whole, in the tab order only while open; Escape gives it
-//   back where it stood and the keyboard to its chip; the arrows walk the chips; the Find chip
-//   shows the whole view, the keyboard in its search, and gives it back as it closes; a change
-//   lights its chip and a sync that changes nothing writes nothing; country's chips drop their
-//   titles, then scroll, as the room shrinks; another scene closes its sections' popovers, not
-//   Global's;
+// - `compact`: the compact bar (menu.ts) has a chip per section in the Controls order (a composed
+//   scene's layer's sections under one chip of the layer's), each opening the section's own
+//   element, open and whole, in the tab order only while open; Escape gives it back where it stood
+//   and the keyboard to its chip; the arrows walk the chips; the Find chip shows the whole view,
+//   the keyboard in its search, and gives it back as it closes; a change lights its chip and a
+//   sync that changes nothing writes nothing; country's chips drop their titles, then scroll, as
+//   the room shrinks; another scene closes its sections' popovers, not Global's;
 // - `layers`: a composed scene's (bees') Layers section has a row per role with a chip per offered
 //   layer; a backdrop's chip swaps for the one on, and the one on stays on; a layer whose host goes
 //   off shows refused with its reason; a layer's sections show while it is on, and in the compact
@@ -419,26 +419,34 @@ function compactBar(query: URLSearchParams, sections: Record<string, boolean>) {
 }
 
 /**
- * The compact bar: a chip per section in the Controls order, each opening that section's own
- * element (one set of controls) open and whole, in the tab order only while open; Escape gives it
- * back where it stood and the keyboard to its chip; the arrows walk the chips; the chips light
- * with changes, show their switches, go icon-only and then scroll as the room shrinks, and a sync
- * that changes nothing writes nothing; a scene change closes a scene section's popover.
+ * The compact bar: a chip per section in the Controls order (a layer's sections under its one
+ * chip), each opening that section's own element (one set of controls) open and whole, in the tab
+ * order only while open; Escape gives it back where it stood and the keyboard to its chip; the
+ * arrows walk the chips; the chips light with changes, show their switches, go icon-only and then
+ * scroll as the room shrinks, and a sync that changes nothing writes nothing; a scene change closes
+ * a scene section's popover.
  */
 async function compact(): Promise<Record<string, unknown>> {
   const country = compactBar(setup("scene=country"), { "country:sky": false });
   try {
     const { inspector, bar } = country;
-    const order = [...inspector.el.querySelectorAll<HTMLElement>("section.group")].map(
-      (section) => section.dataset.id,
-    );
+    // The sections in order, a layer's (the countryside is composed) under its layer's one chip.
+    const groups = sceneDefs.country.groups;
+    const order = [...inspector.el.querySelectorAll<HTMLElement>("section.group")]
+      .map(({ dataset: { id = "" } }) => {
+        const layer = groups[id.replace(/^country:/, "")]?.layer;
+        return layer === undefined ? id : `country:layer:${layer}`;
+      })
+      .filter((id, k, ids) => id !== ids[k - 1]);
     const chips = [...bar.el.querySelectorAll<HTMLButtonElement>(".menu-chip[data-id]")];
     check(
       chips.map((chip) => chip.dataset.id).join() === order.join(),
       `the chips (${chips.map((chip) => chip.dataset.id).join()}) are not the sections in order (${order.join()})`,
     );
+    // The World's birds' section hinges on its switch (off by default), which its chip shows; a
+    // layer's chip shows none (the river's switch, once its section's, is the waterway's own).
     check(
-      chips.some((chip) => chip.dataset.switch === "on"),
+      chips.some((chip) => chip.dataset.switch !== undefined),
       "no chip of country shows its section's master switch",
     );
 

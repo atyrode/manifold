@@ -1,4 +1,6 @@
-// Skyward: the view from the middle of a crossroads, lying on your back. Everything is analytic.
+// Skyward's picture: the view from the middle of a crossroads, lying on your back, in three layers of
+// the `outdoor` composer (layers.ts) and the GLSL they share (skywardSharedGlsl). Everything is
+// analytic.
 //
 // The street. The avenue runs along z between two rows of facades on the planes x = +-A, the cross
 // street along x between facades on z = +-B; the four corner blocks stand in the corners, each with
@@ -8,58 +10,69 @@
 // lookups; the same trace answers the sun's shadow and what a glass panel reflects.
 //
 // The camera lies at the crossing looking steeply up (SKYWARD_PITCH off the zenith toward the feet),
-// turned SKYWARD_YAW about the vertical so the streets run diagonally across the frame. The world's
-// sky lives in the same world, turned SKYWARD_SKY_YAW so the sun's noon path runs down the avenue.
+// turned SKYWARD_YAW about the vertical so the streets run diagonally across the frame: the rig's
+// frame is the street's (constants.ts SKYWARD_RIG), and the world's sky lives in the same world,
+// turned SKYWARD_SKY_YAW so the sun's noon path runs down the avenue. Units are metres; a cell's
+// depth (c.z) is its distance along its ray.
 //
-// Overhead, nearest to farthest: a signal gantry and two street lamps, the tram wires and the spans
-// that hold them, trams on their tracks (felt more than seen), the street tree's canopy, the banner
-// (opt-in M), the birds (the shared birds library, seen from below), then the plane and its
-// contrail beyond the clouds.
+// crossroads (backdrop, crossroadsGlsl). Its begin sets the camera (the passage's tip toward the
+// street, the pointer's sway), the street's light from the World's sky, the facade or the road each
+// ray meets, the World's sky along the one ray the cell sees it by (skywardSeen), the street's air,
+// and takes the World's fog over (x.w.fog put out: the composer's worldFog reckons heights for a level
+// camera). Its sky pass is the surface: the strip of sky (the World's, with the deck, the stars, the
+// planets, the shooting stars and the lightning, under the city's glow, the airliners and their
+// trails beyond the deck), the facades round it, the road under you while the passage tips the view
+// toward it. Its middle pass, what hangs and flies over the crossing far to near: the street's birds
+// (the shared birds seen from below, on the World's birds knobs: the World's own fly a level camera's
+// view, so they are compiled out while the crossroads stands, index.ts) and the banner with its M.
+// Its air pass lays the World's fog along each ray at its true height; its shade pass sets the
+// stars' shimmer. Its say over the World's rain and snow (`precip`): the air the far rain fuses into,
+// and the axes they are seen through (crossroadsSeen): the rain streams out of the zenith, the snow
+// too with 'snow from overhead', else down the frame as for a camera looking ahead.
 //
-// Knobs (index.ts): K_towers, K_windows, K_greenery, K_traffic, K_citySeed (city); K_time, K_cycle,
-// K_stars, K_moon, K_meteors (sky); K_birds, K_planes (air); K_clouds, K_rain, K_snow, K_fog, K_wind,
-// K_snowOverhead (weather); K_mark. The sky is the world's (worldSky, src/scenes/README.md "World
-// layers"): the cloud deck, the stars, the moon in its phase (SKY_MOON_PHASE) and shooting stars,
-// under the city's tint.
+// streetTree (dressing, streetTreeGlsl): the street tree's canopy in the corner of the sky, its size
+// the crossroads' greenery, swaying a little and tossed by the composer's gusts.
+//
+// tramway (dressing, tramwayGlsl): nearest of all, the tram wires and the spans that hold them, the
+// trams on their tracks (felt more than seen, at the crossroads' traffic), the two street lamps and
+// the signal gantry.
+//
+// Overhead parts keep the order the scene painted them in, each hidden behind the facade or the road
+// (skywardTw), and hand the composer the depth of what they cover (skywardZ): the World's fog, rain
+// and snow fall to it.
+//
+// Knobs read here: K_towers, K_crossroadsWindows, K_crossroadsGreenery, K_crossroadsTraffic,
+// K_planes, K_snowOverhead, K_crossroadsMark (the crossroads); K_seed; the World's K_birds and
+// K_birdKind, K_wind and K_snow.
 import { glslFloat } from "../../shaders/glsl.ts";
 import { birdsGlsl } from "../../shaders/lib/birds.ts";
-import { worldGlsl } from "../../shaders/lib/world.ts";
-import { SKYWARD_METEOR_TRIGGER } from "./constants.ts";
+import { SKYWARD_EYE, SKYWARD_FOCAL, SKYWARD_PITCH, SKYWARD_SKY_YAW } from "./constants.ts";
 
-export const skywardGlsl = `
-${birdsGlsl}
-${worldGlsl}
-// ---- The frame ----
+/**
+ * What the crossing's layers share (outdoor-code.ts, held by each): the frame, the per-cell state the
+ * crossroads' begin sets (the camera, the light, the depth of the facade or road behind everything,
+ * the knobs the dressings take from it), the patterns and the rods every part is drawn with.
+ */
+export const skywardSharedGlsl = `
+// ---- the crossing (skyward/shader.ts): what its layers share ----
 const float SKYWARD_A = 11.0;        // the avenue's walls stand at x = +-A
 const float SKYWARD_B = 9.0;         // the cross street's at z = +-B
-const vec3 SKYWARD_RO = vec3(0.0, 0.2, 0.0);
-const float SKYWARD_FOCAL = 0.5367;  // 0.5 / tan(fov / 2), fov 1.5 rad
+const vec3 SKYWARD_RO = vec3(0.0, ${glslFloat(SKYWARD_EYE)}, 0.0);
+const float SKYWARD_FOCAL = ${glslFloat(SKYWARD_FOCAL)};  // 0.5 / tan(fov / 2), fov 1.5 rad
 const float SKYWARD_YAW = 0.55;
-const float SKYWARD_PITCH = 0.28;
-const float SKYWARD_STREET = 1.05;   // the pitch the entrance starts at and the exit ends at: the street a sliver at the foot of the frame
-const float SKYWARD_WALK = 3.0;      // the sidewalks' width along the facades, m
-const float SKYWARD_SKY_YAW = -3.19;
-const float SKYWARD_LOT = 26.0;
-// Where shooting stars set out: skyAngles of the camera's ray (bearing, elevation, radians), the
-// upper half of the strip of sky.
-const int SKYWARD_METEOR_SLOT = ${SKYWARD_METEOR_TRIGGER};
-const vec4 SKYWARD_METEOR_FIELD = vec4(-0.84, 0.18, 1.68, 0.46);
-// The world's deck seen farther off (World.low), so a few cloud bodies fit the strip of sky.
-const float SKYWARD_DECK_LOW = ${glslFloat(1 / 1.9)};
+const float SKYWARD_PITCH = ${glslFloat(SKYWARD_PITCH)};
+const float SKYWARD_SKY_YAW = ${glslFloat(SKYWARD_SKY_YAW)};
 const float SKYWARD_FAR = 100000.0;
-const float SKYWARD_HP = 10500.0;    // airliners' altitude, m
-const float SKYWARD_PLANE_V = 140.0; // m/s
-const float SKYWARD_PLANE_T = 260.0; // s per flight
-const float SKYWARD_RAIL = 5.2;      // the tram tracks at x = +-RAIL
-const float SKYWARD_SAIL_Y = 17.0;
-const vec4 SKYWARD_TREE[3] = vec4[3](vec4(9.0, 10.8, -17.0, 5.4), vec4(7.2, 9.6, -21.5, 4.4), vec4(9.8, 12.6, -20.0, 3.8));
 
 World skywardWorld;     // the world now: its sky in the sky's own frame, the weather
-WorldView skywardView;  // the camera at this pixel, for the world's sky along any ray (skywardSkyAlong)
+WorldView skywardView;  // the camera at this cell, for the world's sky along any ray (skywardSkyAlong)
 Sky skywardSky;         // the world's sky turned into the street's frame: where the light comes from
 vec3 skywardR;
 vec3 skywardU;
 vec3 skywardF;
+vec3 skywardRd;        // this cell's ray, in the street's frame
+float skywardTw;       // how far along it the facade or the road stands (SKYWARD_FAR: open sky)
+float skywardZ;        // the nearest a part has covered along it, for the composer's depth
 float skywardPx;       // radians per cell
 float skywardTm;       // the motion clock
 float skywardSeedOff;
@@ -70,9 +83,81 @@ float skywardOver;
 float skywardDark;
 float skywardWet;
 float skywardLying;
+float skywardFog;      // the World's fog, which the crossroads lays itself (crossroadsAir)
 vec3 skywardAmbient;
 vec3 skywardSunLight;
 vec3 skywardDeck;
+// The crossroads' knobs the dressings draw by: its greenery (the street tree's size) and its traffic
+// (the trams); 0 until its begin sets them.
+float skywardGreenery = 0.0;
+float skywardTrafficLevel = 0.0;
+
+// Coverage of the band [lo, hi] (fractions of a pitch) in a pattern repeating every pitch metres;
+// f metres per cell. Pitches under ~4 cells fade to the band's mean.
+float skywardCover1(float x, float pitch, float lo, float hi, float f) {
+  float fr = fract(x / pitch);
+  float aa = max(0.5 * f / pitch, 1e-3);
+  float cov = smoothstep(lo - aa, lo + aa, fr) - smoothstep(hi - aa, hi + aa, fr);
+  return mix(cov, hi - lo, smoothstep(0.1, 0.28, aa));
+}
+
+// Closest approach of the ray from the eye along rd to the segment a-b: its distance, and s, the
+// ray's length at that point.
+float skywardSegment(vec3 rd, vec3 a, vec3 b, out float s) {
+  vec3 pa = a - SKYWARD_RO;
+  vec3 d = b - a;
+  float c = dot(d, d);
+  float bb = dot(rd, d);
+  float e = dot(rd, pa);
+  float f = dot(d, pa);
+  float den = c - bb * bb;
+  float u = den > 1e-6 ? clamp((e * bb - f) / den, 0.0, 1.0) : 0.5;
+  vec3 q = pa + d * u;
+  s = max(dot(rd, q), 0.0);
+  return length(q - rd * s);
+}
+
+// A rod or wire from a.xyz to b.xyz of radius a.w, never thinner than ~1.6 cells (it fades instead),
+// drawn per cell; strength b.w < 1 for the finest wires. The lamps, the gantry, the wires, the
+// pantograph and the banner's cables keep their rods in const tables of such records (two vec4s a
+// rod), drawn in order by a loop around one call, so the shader holds a handful of rods rather than a
+// copy per rod. Where it covers the cell, its depth is the cell's (skywardZ).
+vec3 skywardRod(vec3 col, vec3 rd, float tw, vec4 a, vec4 b, vec3 alb) {
+  float s;
+  float d = skywardSegment(rd, a.xyz, b.xyz, s);
+  if (s <= 0.0 || s >= tw) return col;
+  float r = a.w;
+  float w = max(r / s, 0.8 * skywardPx);
+  float cov = hardFill(d / s - w, 0.5 * skywardPx);
+  if (cov <= 0.0) return col;
+  float thin = clamp(r / (s * 0.8 * skywardPx), 0.3, 1.0) * b.w;
+  vec3 lit = alb * (skywardAmbient * 0.9 + skywardSunLight * 0.25) + 0.02;
+  if (cov * thin >= 0.5) skywardZ = min(skywardZ, s);
+  return mix(col, lit, cov * thin);
+}
+`;
+
+/** The crossroads' GLSL: the camera and the street's light, the sky, the facades and the road, the birds and the banner, the air. */
+export const crossroadsGlsl = `
+// ---- the crossroads (skyward/shader.ts) ----
+#if CROSSROADS_BIRDS
+${birdsGlsl}
+#endif
+const float SKYWARD_STREET = 1.05;   // the pitch the entrance starts at and the exit ends at: the street a sliver at the foot of the frame
+const float SKYWARD_WALK = 3.0;      // the sidewalks' width along the facades, m
+const float SKYWARD_LOT = 26.0;
+// The world's deck seen farther off (World.low), so a few cloud bodies fit the strip of sky.
+const float SKYWARD_DECK_LOW = ${glslFloat(1 / 1.9)};
+const float SKYWARD_HP = 10500.0;    // airliners' altitude, m
+const float SKYWARD_PLANE_V = 140.0; // m/s
+const float SKYWARD_PLANE_T = 260.0; // s per flight
+const float SKYWARD_SAIL_Y = 17.0;
+
+// The street's haze toward this cell's bearing, a little over the horizon; whether the ray reaches
+// the road (only while the passage tips the view toward it), and how far.
+vec3 skywardHaze;
+bool skywardOnRoad;
+float skywardTg;
 
 // ---- The sky ----
 
@@ -134,24 +219,26 @@ vec3 skywardPlanes(vec3 rd, vec3 col) {
   return col;
 }
 
-// The world's sky along rd (the street's frame), seen by the camera at this pixel: worldSky (the
-// dome, the deck, the stars and the giant planet in its gaps, in the sky's frame; shooting stars in
-// the camera's own), under the city's tint: under rain or snow a grey sheet over what the deck
-// leaves open, the city's orange-violet glow on the air there after dark and on the deck's
-// underside. With planes, the airliners and their trails cross it beyond the deck (seen directly
+// The world's sky along rd (the street's frame), seen by the camera at this cell: worldSky (the
+// dome, the deck, the stars and the planets in its gaps, in the sky's frame; shooting stars in the
+// camera's own), under the city's tint: under rain or snow a grey sheet over what the deck leaves
+// open, the city's orange-violet glow on the air there after dark and on the deck's underside; then
+// the lightning. With planes, the airliners and their trails cross it beyond the deck (seen directly
 // or in the wet road's mirror; the glass mirrors none).
 vec3 skywardSkyAlong(vec3 rd, bool planes) {
   WorldView view = skywardView;
   view.ray = vec3(dot(rd, skywardR), dot(rd, skywardU), dot(rd, skywardF));
   view.dir = skyFacing(rd, -SKYWARD_SKY_YAW);
-  WorldSky heaven = worldSky(skywardWorld, view, SKYWARD_METEOR_FIELD);
+  WorldSky heaven = worldSky(skywardWorld, view, WORLD_METEOR_FIELD);
   float open = 1.0 - heaven.cloud;
   vec3 c = mix(heaven.col, skywardDeck, skywardOver * 0.9 * open);
   float glow = skywardSky.night * (0.35 + 0.65 * (1.0 - clamp(rd.y, 0.0, 1.0)));
   c += mix(vec3(0.3, 0.14, 0.07), vec3(0.15, 0.07, 0.19), clamp(rd.y, 0.0, 1.0)) * glow * 0.6 * (1.0 + 1.5 * skywardOver) * open;
   c += vec3(0.16, 0.08, 0.04) * skywardSky.night * 0.45 * heaven.cloud;
-  if (planes) c = mix(skywardPlanes(rd, c), c, heaven.cloud);
-  return c;
+#if CROSSROADS_PLANES
+  if (planes && K_planes > 0.0) c = mix(skywardPlanes(rd, c), c, heaven.cloud);
+#endif
+  return c + heaven.strike;
 }
 
 // ---- Lots ----
@@ -364,7 +451,7 @@ vec3 skywardCheap(SkywardHit r) {
 
 // x: light (headlights at dusk, windscreen glints by day), y: shade; both 0..1 before the knob.
 vec2 skywardTraffic(SkywardHit h) {
-  if (K_traffic <= 0.0 || h.y > 18.0) return vec2(0.0);
+  if (K_crossroadsTraffic <= 0.0 || h.y > 18.0) return vec2(0.0);
   bool xf = h.fid < 3.5;
   float f = xf ? h.fid : h.fid - 4.0;
   float sgn = xf ? (f > 1.5 ? 1.0 : -1.0) : (mod(f, 2.0) > 0.5 ? 1.0 : -1.0);
@@ -380,7 +467,7 @@ vec2 skywardTraffic(SkywardHit h) {
     float g = exp(-q * q);
     if (j == 0) shade = g; else light = max(light, g);
   }
-  return vec2(min(light * hy * K_traffic * 1.8, 1.0), min(shade * hy * K_traffic * 1.3, 1.0));
+  return vec2(min(light * hy * K_crossroadsTraffic * 1.8, 1.0), min(shade * hy * K_crossroadsTraffic * 1.3, 1.0));
 }
 
 // Rain running down glass: streaks of water that catch the sky, slowly sliding.
@@ -393,15 +480,6 @@ float skywardStreaks(float x, float y, vec2 fp) {
 }
 
 // ---- Facade patterns ----
-
-// Coverage of the band [lo, hi] (fractions of a pitch) in a pattern repeating every pitch metres;
-// f metres per cell. Pitches under ~4 cells fade to the band's mean.
-float skywardCover1(float x, float pitch, float lo, float hi, float f) {
-  float fr = fract(x / pitch);
-  float aa = max(0.5 * f / pitch, 1e-3);
-  float cov = smoothstep(lo - aa, lo + aa, fr) - smoothstep(hi - aa, hi + aa, fr);
-  return mix(cov, hi - lo, smoothstep(0.1, 0.28, aa));
-}
 
 // Brick, stone or concrete: window grid, string courses, balconies seen from below, window boxes.
 // slope: how much wall height one metre of depth in front of it hides (the ray's steepness).
@@ -426,7 +504,7 @@ vec3 skywardMasonry(SkywardHit h, vec2 fp, float slope, vec3 tone, vec3 E, vec3 
   vec3 col = wallAlb * E;
 
   // The window: dark glass holding a little of the sky, or a light left on.
-  float litP = clamp(K_windows * (0.08 + 1.5 * skywardDark), 0.0, 0.95);
+  float litP = clamp(K_crossroadsWindows * (0.08 + 1.5 * skywardDark), 0.0, 0.95);
   float hw = hash12(vec2(bi * 1.7 + l.seed * 91.0, fi * 3.3 + 1.0));
   float v = hw / max(litP, 1e-3);
   vec3 warm = v < 0.75 ? vec3(1.0, 0.7, 0.38) : v < 0.9 ? vec3(0.75, 0.88, 1.0) : vec3(1.0, 0.9, 0.6);
@@ -451,7 +529,7 @@ vec3 skywardMasonry(SkywardHit h, vec2 fp, float slope, vec3 tone, vec3 E, vec3 
     float aa = 0.5 * fp.y + 0.05;
     zoneA = 1.0 - smoothstep(dS - aa, dS + aa, ly);
     zoneB = smoothstep(dS - aa, dS + aa, ly) * (1.0 - smoothstep(dS + 0.95 - aa, dS + 0.95 + aa, ly));
-    float grown = hash12(vec2(g * 4.3 + l.seed * 71.0, fi * 2.9 + 7.0)) < K_greenery ? 1.0 : 0.0;
+    float grown = hash12(vec2(g * 4.3 + l.seed * 71.0, fi * 2.9 + 7.0)) < skywardGreenery ? 1.0 : 0.0;
     float height = clamp((ly - dS) / 0.95, 0.0, 1.0);
     float ln = mix(vnoise(vec2(x * 2.6, ly * 3.4) + l.seed * 17.0), 0.5, smoothstep(0.15, 0.4, fp.x * 2.6));
     plant = zoneB * grown * smoothstep(0.3, 0.55, 0.9 * ln + 0.55 * (1.0 - height));
@@ -492,12 +570,12 @@ vec3 skywardPanelReflect(SkywardHit h, vec3 rd) {
   return reflect(rd, nn);
 }
 
-// The one ray of the world's sky a pixel sees, if any, worked out before its surface is shaded:
+// The one ray of the world's sky a cell sees, if any, worked out before its surface is shaded:
 // straight up past the walls, mirrored in a glass tower's panel (without the airliners), or in the
 // wet road, whichever its first surface is. Where that mirror's ray meets a facade first (wall.hit)
 // it mirrors the facade instead and sees no sky. The sky's colour is worked out here alone, so the
-// program holds one copy of it (the dome, the deck, the stars, the giant and the planets), not one
-// per surface that can show it.
+// program holds one copy of it (the dome, the deck, the stars and the planets), not one per surface
+// that can show it.
 struct SkywardSeen {
   vec3 dir;         // the ray to the sky (or to the facade a mirror's ray meets)
   SkywardHit wall;  // the facade a mirror's ray meets first
@@ -559,7 +637,7 @@ vec3 skywardGlassTower(SkywardHit h, vec2 fp, vec3 E, SkywardSeen sky) {
   vec3 frameCol = vec3(0.26, 0.28, 0.3) * E;
 
   // Offices lit in blocks of panels, cool white.
-  float litP = clamp(K_windows * (0.06 + 1.4 * skywardDark), 0.0, 0.95);
+  float litP = clamp(K_crossroadsWindows * (0.06 + 1.4 * skywardDark), 0.0, 0.95);
   float block = hash12(vec2(floor(bi / 3.0) * 2.1 + l.seed * 83.0, fi * 1.9 + 5.0));
   vec3 office = vec3(0.88, 0.94, 1.0) * (0.55 + 0.4 * fract(block * 37.0));
   glassCol = block < litP ? mix(glassCol, office, 0.9) : glassCol;
@@ -616,358 +694,7 @@ vec3 skywardFacade(SkywardHit h, vec3 rd, SkywardSeen sky) {
   float dusk = 0.35 + 0.65 * skywardDark;
   col += mix(vec3(0.5, 0.58, 0.7) * (0.14 + 0.2 * step(k, 0.5)), vec3(1.0, 0.85, 0.6) * 0.5, skywardDark) * hardEdge(tr.x * dusk, skywardThC);
   // Distance haze, a little, so the far upper floors lighten toward the sky.
-  vec3 haze = skyColor(skywardSky, normalize(vec3(rd.x, 0.14, rd.z)));
-  haze = mix(haze, skywardDeck, skywardOver * 0.9);
-  col = mix(col, haze, (1.0 - exp(-h.t / 300.0)) * 0.55);
-  if (K_fog > 0.0) col = mix(col, haze * 0.85 + 0.02, fogAmount(K_fog * 1.4, h.t / 120.0, h.y / 60.0));
-  return col;
-}
-
-// ---- Overhead hardware ----
-
-// Closest approach of the ray from the eye along rd to the segment a-b: its distance, and s, the
-// ray's length at that point.
-float skywardSegment(vec3 rd, vec3 a, vec3 b, out float s) {
-  vec3 pa = a - SKYWARD_RO;
-  vec3 d = b - a;
-  float c = dot(d, d);
-  float bb = dot(rd, d);
-  float e = dot(rd, pa);
-  float f = dot(d, pa);
-  float den = c - bb * bb;
-  float u = den > 1e-6 ? clamp((e * bb - f) / den, 0.0, 1.0) : 0.5;
-  vec3 q = pa + d * u;
-  s = max(dot(rd, q), 0.0);
-  return length(q - rd * s);
-}
-
-// A rod or wire from a.xyz to b.xyz of radius a.w, never thinner than ~1.6 cells (it fades instead),
-// drawn per cell; strength b.w < 1 for the finest wires. The lamps, the gantry, the wires and the
-// pantograph keep their rods in const tables of such records (two vec4s a rod), drawn in order by a
-// loop around one call, so the shader holds a handful of rods rather than a copy per rod.
-vec3 skywardRod(vec3 col, vec3 rd, float tw, vec4 a, vec4 b, vec3 alb) {
-  float s;
-  float d = skywardSegment(rd, a.xyz, b.xyz, s);
-  if (s <= 0.0 || s >= tw) return col;
-  float r = a.w;
-  float w = max(r / s, 0.8 * skywardPx);
-  float cov = hardFill(d / s - w, 0.5 * skywardPx);
-  if (cov <= 0.0) return col;
-  float thin = clamp(r / (s * 0.8 * skywardPx), 0.3, 1.0) * b.w;
-  vec3 lit = alb * (skywardAmbient * 0.9 + skywardSunLight * 0.25) + 0.02;
-  return mix(col, lit, cov * thin);
-}
-
-vec3 skywardInv(vec3 d) {
-  return (step(vec3(0.0), d) * 2.0 - 1.0) / max(abs(d), vec3(1e-5));
-}
-
-// Ray against an axis-aligned box from the eye: entry distance (-1 if missed) and the face's normal.
-float skywardBox(vec3 rd, vec3 lo, vec3 hi, out vec3 n) {
-  vec3 inv = skywardInv(rd);
-  vec3 t0 = (lo - SKYWARD_RO) * inv;
-  vec3 t1 = (hi - SKYWARD_RO) * inv;
-  vec3 tn = min(t0, t1);
-  vec3 tf = max(t0, t1);
-  float tin = max(max(tn.x, tn.y), tn.z);
-  float tout = min(min(tf.x, tf.y), tf.z);
-  n = vec3(0.0);
-  if (tin > tout || tin < 0.0) return -1.0;
-  if (tin == tn.x) n = vec3(-sign(rd.x), 0.0, 0.0);
-  else if (tin == tn.y) n = vec3(0.0, -sign(rd.y), 0.0);
-  else n = vec3(0.0, 0.0, -sign(rd.z));
-  return tin;
-}
-
-// The glow of a point light round it, r metres wide; 0 behind a wall.
-float skywardGlow(vec3 rd, vec3 L, float r, float tw) {
-  vec3 d = L - SKYWARD_RO;
-  float s = dot(rd, d);
-  if (s <= 0.0 || s >= tw) return 0.0;
-  vec3 off = d - rd * s;
-  return exp(-dot(off, off) / (r * r));
-}
-
-// The foliage of the street tree, in the corner of the sky: balls of leaves seen from underneath,
-// backlit by the sky, swaying a little. Edges are cut per cell so the leaves never shimmer.
-vec3 skywardCanopy(vec3 col, vec3 rd, float tw) {
-  if (K_greenery <= 0.0) return col;
-  for (int i = 0; i < 3; i++) {
-    vec4 s = SKYWARD_TREE[i];
-    vec3 oc = s.xyz - SKYWARD_RO;
-    float b = dot(rd, oc);
-    if (b <= 0.0) continue;
-    vec3 off = rd * b - oc;
-    float r = s.w * (0.65 + 0.4 * K_greenery);
-    float d = length(off);
-    if (d > r * 1.15) continue;
-    if (b - sqrt(max(r * r - d * d, 0.0)) >= tw) continue;
-    vec3 ax = normalize(cross(rd, vec3(0.0, 1.0, 0.0)));
-    vec3 ay = cross(ax, rd);
-    vec2 pq = vec2(dot(off, ax), dot(off, ay));
-    float fi = float(i);
-    vec2 sway = vec2(sin(skywardTm * 0.45 + fi * 2.0), cos(skywardTm * 0.37 + fi)) * (0.1 + 0.12 * abs(K_wind));
-    float n1 = fbm3(pq * 0.55 + fi * 7.3 + sway);
-    float n2 = vnoise(pq * 2.4 + fi * 3.1 + sway * 2.0);
-    float env = 1.0 - smoothstep(0.55, 1.0, d / r);
-    float v = env * (0.4 + 0.9 * n1) + 0.3 * n2 - 0.5;
-    float cover = smoothstep(0.0, 0.35, v);
-    if (hardEdge(cover) < 0.5) continue;
-    float back = smoothstep(-0.4, 0.8, dot(rd, skywardSky.sun));
-    vec3 leafAlb = mix(vec3(0.04, 0.1, 0.04), vec3(0.14, 0.28, 0.07), smoothstep(0.2, 0.7, n2));
-    leafAlb = mix(leafAlb, vec3(0.45, 0.58, 0.14), smoothstep(0.6, 0.9, n2 * 0.7 + back * 0.4 * (1.0 - env * 0.5)));
-    leafAlb = wetten(leafAlb, skywardWet, 0.5);
-    vec3 e = skywardAmbient * 0.9 + skywardSunLight * 0.55 * back;
-    vec3 leaf = leafAlb * e + vec3(1.0, 0.6, 0.3) * 0.07 * skywardDark;
-    col = leaf;
-  }
-  return col;
-}
-
-// A street lamp's housing seen from underneath, its lens lit after dusk, haloed.
-vec3 skywardLuminaire(vec3 col, vec3 rd, float tw, vec3 lo, vec3 hi) {
-  float lit = smoothstep(0.3, 0.6, skywardDark);
-  vec3 c = vec3(1.0, 0.8, 0.52);
-  vec3 centre = 0.5 * (lo + hi);
-  vec3 n;
-  float t = skywardBox(rd, lo, hi, n);
-  if (t > 0.0 && t < tw) {
-    vec3 p = SKYWARD_RO + rd * t;
-    vec3 body = vec3(0.1, 0.11, 0.12) * (skywardAmbient * 0.9 + skywardSunLight * 0.25) + 0.02;
-    vec2 q = abs(p.xz - centre.xz) - 0.5 * (hi.xz - lo.xz) + vec2(0.1, 0.08);
-    float inLens = n.y < -0.5 ? 1.0 - step(0.0, max(q.x, q.y)) : 0.0;
-    vec3 lens = mix(vec3(0.45, 0.47, 0.46) * (skywardAmbient + 0.05), c * 2.2, lit);
-    col = mix(body, lens, inLens);
-  }
-  float rain = 1.0 + 1.8 * skywardStorm + 1.0 * K_fog;
-  col += c * lit * skywardGlow(rd, centre, 0.9 * rain, tw) * 0.5;
-  col += c * lit * skywardGlow(rd, centre, 3.5 * rain, tw) * 0.1;
-  return col;
-}
-
-// The two street lamps, each a pole, its arm and the arm's outreach (rod records, see skywardRod),
-// then its luminaire (SKYWARD_LUMINAIRE: lo, hi). Right of the frame: the pole at the kerb, its arm
-// reaching over the avenue. Left of the frame, among the branches: the corner's lamp over the cross
-// street.
-const vec4 SKYWARD_LAMP_ROD[12] = vec4[12](
-  vec4(-9.4, 0.0, 3.8, 0.1), vec4(-9.4, 8.0, 3.8, 1.0),
-  vec4(-9.4, 8.0, 3.8, 0.07), vec4(-8.5, 8.75, 3.8, 1.0),
-  vec4(-8.5, 8.75, 3.8, 0.06), vec4(-7.3, 8.6, 3.8, 1.0),
-  vec4(9.4, 0.0, -9.2, 0.1), vec4(9.4, 8.3, -9.2, 1.0),
-  vec4(9.4, 8.3, -9.2, 0.07), vec4(8.4, 8.9, -9.2, 1.0),
-  vec4(8.4, 8.9, -9.2, 0.06), vec4(7.2, 8.75, -9.2, 1.0)
-);
-const vec3 SKYWARD_LUMINAIRE[4] = vec3[4](vec3(-7.55, 8.34, 3.6), vec3(-6.45, 8.6, 4.0), vec3(7.45, 8.5, -9.4), vec3(6.35, 8.76, -9.0));
-
-vec3 skywardLamps(vec3 col, vec3 rd, float tw) {
-  vec3 steel = vec3(0.12, 0.14, 0.14);
-  for (int i = 0; i < 2; i++) {
-    for (int k = 3 * i; k < 3 * i + 3; k++) col = skywardRod(col, rd, tw, SKYWARD_LAMP_ROD[2 * k], SKYWARD_LAMP_ROD[2 * k + 1], steel);
-    col = skywardLuminaire(col, rd, tw, SKYWARD_LUMINAIRE[2 * i], SKYWARD_LUMINAIRE[2 * i + 1]);
-  }
-  return col;
-}
-
-vec4 skywardLamp(vec2 f, float off, vec3 lampCol, float on) {
-  float cov = hardFill(length(f - vec2(0.0, off)) - 0.125, 0.02);
-  return vec4(lampCol * (0.06 + 1.7 * on), cov);
-}
-
-// The signal gantry across the cross street: pole, arm and the arm's brace (rod records, see
-// skywardRod), three heads facing the crossing; the lights turn green, amber and red over 46 seconds.
-const vec4 SKYWARD_GANTRY_ROD[6] = vec4[6](
-  vec4(9.4, 0.0, -4.0, 0.15), vec4(9.4, 6.4, -4.0, 1.0),
-  vec4(9.4, 6.35, -4.0, 0.12), vec4(-4.4, 6.35, -4.0, 1.0),
-  vec4(9.4, 4.6, -4.0, 0.07), vec4(6.6, 6.3, -4.0, 1.0)
-);
-
-vec3 skywardGantry(vec3 col, vec3 rd, float tw) {
-  vec3 steel = vec3(0.16, 0.17, 0.18);
-  for (int k = 0; k < 3; k++) col = skywardRod(col, rd, tw, SKYWARD_GANTRY_ROD[2 * k], SKYWARD_GANTRY_ROD[2 * k + 1], steel);
-  float ph = fract(skywardTm / 46.0);
-  float green = 1.0 - smoothstep(0.46, 0.5, ph);
-  float amber = smoothstep(0.46, 0.5, ph) * (1.0 - smoothstep(0.56, 0.6, ph));
-  float red = smoothstep(0.56, 0.6, ph);
-  vec3 cRed = vec3(1.0, 0.12, 0.08);
-  vec3 cAmber = vec3(1.0, 0.62, 0.1);
-  vec3 cGreen = vec3(0.15, 1.0, 0.62);
-  float halo = 1.0 + 1.8 * skywardStorm + K_fog;
-  for (int i = 0; i < 3; i++) {
-    float x = 5.2 - 4.0 * float(i);
-    col = skywardRod(col, rd, tw, vec4(x, 6.35, -4.0, 0.05), vec4(x, 6.0, -4.0, 1.0), steel);
-    vec3 n;
-    float t = skywardBox(rd, vec3(x - 0.2, 5.0, -4.18), vec3(x + 0.2, 6.0, -3.82), n);
-    if (t > 0.0 && t < tw) {
-      vec3 p = SKYWARD_RO + rd * t;
-      vec3 c = vec3(0.07, 0.075, 0.08) * (skywardAmbient + 0.04) + 0.01;
-      if (n.z > 0.5) {
-        vec2 f = vec2(p.x - x, p.y - 5.5);
-        vec4 lr = skywardLamp(f, 0.32, cRed, red);
-        vec4 la = skywardLamp(f, 0.0, cAmber, amber);
-        vec4 lg = skywardLamp(f, -0.32, cGreen, green);
-        c = mix(c, lr.rgb, lr.a);
-        c = mix(c, la.rgb, la.a);
-        c = mix(c, lg.rgb, lg.a);
-      }
-      col = c;
-    }
-    col += cRed * red * skywardGlow(rd, vec3(x, 5.82, -3.8), 0.5 * halo, tw) * 0.45;
-    col += cAmber * amber * skywardGlow(rd, vec3(x, 5.5, -3.8), 0.5 * halo, tw) * 0.45;
-    col += cGreen * green * skywardGlow(rd, vec3(x, 5.18, -3.8), 0.5 * halo, tw) * 0.45;
-  }
-  return col;
-}
-
-// The tram wires (rod records, see skywardRod): a contact wire and its messenger over each track, a
-// pair crossing the avenue's at the crossing, and spans from a rosette on each facade, sagging in the
-// middle.
-const vec4 SKYWARD_WIRE[20] = vec4[20](
-  vec4(-SKYWARD_RAIL, 6.0, -140.0, 0.012), vec4(-SKYWARD_RAIL, 6.0, 140.0, 0.9),
-  vec4(-SKYWARD_RAIL, 6.55, -140.0, 0.009), vec4(-SKYWARD_RAIL, 6.55, 140.0, 0.8),
-  vec4(SKYWARD_RAIL, 6.0, -140.0, 0.012), vec4(SKYWARD_RAIL, 6.0, 140.0, 0.9),
-  vec4(SKYWARD_RAIL, 6.55, -140.0, 0.009), vec4(SKYWARD_RAIL, 6.55, 140.0, 0.8),
-  vec4(-140.0, 6.3, -2.2, 0.011), vec4(140.0, 6.3, -2.2, 0.9),
-  vec4(-140.0, 6.3, 2.2, 0.011), vec4(140.0, 6.3, 2.2, 0.9),
-  vec4(-SKYWARD_A, 7.9, -15.0, 0.012), vec4(0.0, 7.0, -15.0, 0.9),
-  vec4(0.0, 7.0, -15.0, 0.012), vec4(SKYWARD_A, 7.9, -15.0, 0.9),
-  vec4(-SKYWARD_A, 7.9, 16.0, 0.012), vec4(0.0, 7.0, 16.0, 0.9),
-  vec4(0.0, 7.0, 16.0, 0.012), vec4(SKYWARD_A, 7.9, 16.0, 0.9)
-);
-
-vec3 skywardWires(vec3 col, vec3 rd, float tw) {
-  for (int k = 0; k < 10; k++) col = skywardRod(col, rd, tw, SKYWARD_WIRE[2 * k], SKYWARD_WIRE[2 * k + 1], vec3(0.05));
-  return col;
-}
-
-// The pantograph, from the tram's roof up to the contact wire at 6 m: its lower arm, its upper arm
-// and the pan across the wire, as rod records (see skywardRod) with x across from the track and z
-// along the tram's travel from the pantograph's foot.
-const vec4 SKYWARD_PANTOGRAPH[6] = vec4[6](
-  vec4(0.0, 3.45, 0.0, 0.035), vec4(0.0, 4.9, -0.9, 1.0),
-  vec4(0.0, 4.9, -0.9, 0.03), vec4(0.0, 5.97, 0.0, 1.0),
-  vec4(-0.75, 5.99, 0.0, 0.04), vec4(0.75, 5.99, 0.0, 1.0)
-);
-
-// A tram on its track: a long body gliding past the foot of the frame (felt more than seen), its
-// pantograph on the contact wire, a small spark now and then where they meet.
-vec3 skywardTram(vec3 col, vec3 rd, float tw, float side) {
-  if (K_traffic <= 0.0) return col;
-  float period = mix(190.0, 80.0, K_traffic);
-  float travel = 26.0;
-  float lt = mod(skywardTm + (side > 0.0 ? 20.0 : 75.0), period);
-  if (lt > travel) return col;
-  float k = lt / travel;
-  float zc = side > 0.0 ? -60.0 + 120.0 * k : 60.0 - 120.0 * k;
-  float x0 = side * SKYWARD_RAIL;
-  vec3 n;
-  float t = skywardBox(rd, vec3(x0 - 1.25, 0.5, zc - 11.0), vec3(x0 + 1.25, 3.4, zc + 11.0), n);
-  if (t > 0.0 && t < tw) {
-    vec3 p = SKYWARD_RO + rd * t;
-    float fp = skywardPx * t * 1.6;
-    vec3 e = skywardAmbient * 0.85 + skywardSunLight * 0.3 * max(dot(n, skywardSky.sun), 0.0);
-    vec3 body = vec3(0.05);
-    if (abs(n.x) > 0.5) {
-      float yy = p.y;
-      vec3 alb = yy < 0.9 ? vec3(0.1, 0.12, 0.12) : yy < 2.75 ? vec3(0.11, 0.3, 0.22) : vec3(0.78, 0.76, 0.68);
-      body = wetten(alb, skywardWet, 0.1) * e;
-      float band = smoothstep(1.3 - fp, 1.3 + fp, yy) - smoothstep(2.75 - fp, 2.75 + fp, yy);
-      float posts = skywardCover1(p.z - zc, 2.3, 0.07, 0.93, fp);
-      vec3 inside = vec3(1.0, 0.8, 0.55) * mix(0.1, 0.8, skywardDark);
-      vec3 glass = vec3(0.05, 0.07, 0.1) + skywardAmbient * 0.3 + inside;
-      body = mix(body, glass, band * posts);
-    } else if (abs(n.z) > 0.5) {
-      body = vec3(0.22, 0.23, 0.22) * e;
-    }
-    col = body;
-  }
-  // The pantograph on the roof.
-  float dirSign = side > 0.0 ? 1.0 : -1.0;
-  float pz = zc - 7.0 * dirSign;
-  for (int k = 0; k < 6; k += 2) {
-    vec4 a = SKYWARD_PANTOGRAPH[k];
-    vec4 b = SKYWARD_PANTOGRAPH[k + 1];
-    col = skywardRod(col, rd, tw, vec4(x0 + a.x, a.y, pz + a.z * dirSign, a.w), vec4(x0 + b.x, b.y, pz + b.z * dirSign, b.w), vec3(0.07));
-  }
-  float sk = skywardTm * 0.9 + side * 3.1;
-  float hh = hash12(vec2(floor(sk), 9.0 + side));
-  float env = hh > 0.55 ? bell((fract(sk) - 0.3) / 0.12) : 0.0;
-  if (env > 0.0) {
-    vec3 L = vec3(x0, 6.02, pz);
-    float core = skywardGlow(rd, L, 0.3, tw) * env;
-    col = mix(col, vec3(0.85, 0.92, 1.0), hardEdge(core * 1.2, skywardThC));
-    col += vec3(0.45, 0.55, 1.0) * skywardGlow(rd, L, 1.0, tw) * env * 0.25;
-  }
-  return col;
-}
-
-// The banner over the crossroads (opt-in): a square of cloth on four cables, the M in the accent
-// colour, lit from within at night. accent: the M's coverage.
-vec3 skywardBanner(vec3 col, vec3 rd, float tw, out float accent) {
-  accent = 0.0;
-  if (K_mark < 0.5 || rd.y < 0.2) return col;
-  vec2 rh = normalize(skywardR.xz);
-  vec2 uh = normalize(skywardU.xz);
-  for (int i = 0; i < 4; i++) {
-    float ca = (i == 0 || i == 3) ? 5.0 : -5.0;
-    float cb = i < 2 ? 5.0 : -5.0;
-    vec2 cw = rh * ca + uh * cb;
-    vec3 from = vec3(cw.x, SKYWARD_SAIL_Y, cw.y);
-    vec3 to = vec3(cw.x > 0.0 ? SKYWARD_A : -SKYWARD_A, SKYWARD_SAIL_Y + 4.5, cw.y > 0.0 ? SKYWARD_B + 8.0 : -SKYWARD_B - 8.0);
-    col = skywardRod(col, rd, tw, vec4(from, 0.04), vec4(to, 1.0), vec3(0.07));
-  }
-  float t = (SKYWARD_SAIL_Y - SKYWARD_RO.y) / rd.y;
-  if (t >= tw) return col;
-  vec3 p = SKYWARD_RO + rd * t;
-  float a = dot(p.xz, rh);
-  float b = dot(p.xz, uh);
-  float aa = 0.5 * skywardPx * t / rd.y;
-  float cloth = hardFill(sdBox(vec2(a, b), vec2(5.0), 0.0), aa);
-  if (cloth <= 0.0) return col;
-  float fold = 0.9 + 0.1 * vnoise(vec2(a, b) * 0.45 + 3.0);
-  vec3 fabric = vec3(0.88, 0.82, 0.7) * fold * (skywardAmbient * 1.1 + skywardSunLight * 0.45) + col * 0.22;
-  float m = hardFill(markDistance(vec2(a, b) / 8.4) * 8.4 - 0.5, aa);
-  vec3 paint = vec3(1.0, 0.5, 0.2) * (0.7 + 0.6 * skywardDark);
-  vec3 shown = mix(fabric, paint, m);
-  col = mix(col, shown, cloth);
-  accent = m * cloth;
-  return col;
-}
-
-// ---- Birds ----
-
-// Pigeons wheeling over the street in a loose chain, swifts on long loops above them: the shared
-// birds seen from below (birdBelowHit), each a world position and velocity, its silhouette cut per
-// cell, the pigeons gliding and beating slowly in bouts. Drawn life size, the swifts, far above,
-// three times; hidden behind anything nearer along the ray (tw).
-vec3 skywardBirds(vec3 rd, float tw, vec3 col) {
-  float present = clamp(skywardSky.day + 0.7 * skywardSky.twilight, 0.0, 1.0) * (1.0 - 0.75 * skywardStorm);
-  if (K_birds <= 0.0 || present < 0.2) return col;
-  for (int i = 0; i < 10; i++) {
-    float fi = float(i);
-    if (fi + 0.5 > K_birds * 10.0 || present < 0.2 + 0.05 * fi) break;
-    bool swift = (i % 3) == 2;
-    vec3 pos;
-    vec3 vel;
-    if (swift) {
-      float sp = float(i / 3);
-      float th = 0.25 * skywardTm * (1.0 + 0.2 * sp) + sp * 2.1;
-      pos = vec3(30.0 * cos(th), 52.0 + 5.0 * sin(1.7 * th + sp), 18.0 * sin(2.0 * th));
-      vel = 0.25 * (1.0 + 0.2 * sp) * vec3(-30.0 * sin(th), 8.5 * cos(1.7 * th + sp), 36.0 * cos(2.0 * th));
-    } else {
-      float th = 0.42 * skywardTm + fi * 0.23;
-      float r = 16.0 + 2.5 * sin(fi * 2.3 + skywardTm * 0.2);
-      pos = vec3(-1.5 + r * cos(th), 31.0 + 2.0 * sin(fi * 1.7) + 4.0 * sin(th), -1.5 + r * sin(th));
-      vel = vec3(-r * 0.42 * sin(th), 4.0 * 0.42 * cos(th), r * 0.42 * cos(th));
-    }
-    float kind = swift ? BIRD_SWIFT : BIRD_PIGEON;
-    float semi = birdSpecies(kind).span * (swift ? 3.0 : 1.0) * 0.5;
-    vec3 own = vec3(fi * 1.3, fi * 2.9, 0.1 * hash12(vec2(fi, 4.4)));
-    BirdHit bird = birdBelowHit(SKYWARD_RO, rd, pos, vel, kind, semi, own, skywardTm, skywardPx);
-    if (bird.cover > 0.0 && bird.depth <= tw) {
-      col = mix(col, bird.albedo * (0.5 + skywardAmbient * 0.8) + skywardSunLight * 0.06, bird.cover);
-    }
-  }
-  return col;
+  return mix(col, skywardHaze, (1.0 - exp(-h.t / 300.0)) * 0.55);
 }
 
 // ---- The street under you, seen only while the view is tipped toward it ----
@@ -1028,38 +755,114 @@ vec3 skywardGround(vec3 rd, float tg, SkywardHit h, SkywardSeen sky) {
     col = mix(col, vec3(0.8, 0.84, 0.92) * (E * 0.9 + 0.05), sn);
   }
   // Distance haze, as on the facades but heavier: the road runs away grazing, into the haze.
-  vec3 haze = skyColor(skywardSky, normalize(vec3(rd.x, 0.14, rd.z)));
-  haze = mix(haze, skywardDeck, skywardOver * 0.9);
-  col = mix(col, haze, 0.75 * (1.0 - exp(-tg / 14.0)));
-  if (K_fog > 0.0) col = mix(col, haze * 0.85 + 0.02, fogAmount(K_fog * 1.4, tg / 120.0, 0.0));
+  return mix(col, skywardHaze, 0.75 * (1.0 - exp(-tg / 14.0)));
+}
+
+// ---- Over the crossing ----
+
+// Pigeons wheeling over the street in a loose chain, swifts on long loops above them: the shared
+// birds seen from below (birdBelowHit), each a world position and velocity, its silhouette cut per
+// cell, the pigeons gliding and beating slowly in bouts. Drawn life size, the swifts, far above,
+// three times; hidden behind anything nearer along the ray (tw). On the World's birds knobs: how many
+// (K_birds), and which, the street's own mix (K_birdKind -1: the pigeons and the swifts) or one
+// species on both their paths.
+#if CROSSROADS_BIRDS
+vec3 skywardBirds(vec3 rd, float tw, vec3 col) {
+  float present = clamp(skywardSky.day + 0.7 * skywardSky.twilight, 0.0, 1.0) * (1.0 - 0.75 * skywardStorm);
+  if (K_birds <= 0.0 || present < 0.2) return col;
+  for (int i = 0; i < 10; i++) {
+    float fi = float(i);
+    if (fi + 0.5 > K_birds * 10.0 || present < 0.2 + 0.05 * fi) break;
+    bool swift = (i % 3) == 2;
+    vec3 pos;
+    vec3 vel;
+    if (swift) {
+      float sp = float(i / 3);
+      float th = 0.25 * skywardTm * (1.0 + 0.2 * sp) + sp * 2.1;
+      pos = vec3(30.0 * cos(th), 52.0 + 5.0 * sin(1.7 * th + sp), 18.0 * sin(2.0 * th));
+      vel = 0.25 * (1.0 + 0.2 * sp) * vec3(-30.0 * sin(th), 8.5 * cos(1.7 * th + sp), 36.0 * cos(2.0 * th));
+    } else {
+      float th = 0.42 * skywardTm + fi * 0.23;
+      float r = 16.0 + 2.5 * sin(fi * 2.3 + skywardTm * 0.2);
+      pos = vec3(-1.5 + r * cos(th), 31.0 + 2.0 * sin(fi * 1.7) + 4.0 * sin(th), -1.5 + r * sin(th));
+      vel = vec3(-r * 0.42 * sin(th), 4.0 * 0.42 * cos(th), r * 0.42 * cos(th));
+    }
+    float kind = K_birdKind < 0.0 ? (swift ? BIRD_SWIFT : BIRD_PIGEON) : K_birdKind;
+    float semi = birdSpecies(kind).span * (swift ? 3.0 : 1.0) * 0.5;
+    vec3 own = vec3(fi * 1.3, fi * 2.9, 0.1 * hash12(vec2(fi, 4.4)));
+    BirdHit bird = birdBelowHit(SKYWARD_RO, rd, pos, vel, kind, semi, own, skywardTm, skywardPx);
+    if (bird.cover > 0.0 && bird.depth <= tw) {
+      col = mix(col, bird.albedo * (0.5 + skywardAmbient * 0.8) + skywardSunLight * 0.06, bird.cover);
+      if (bird.cover >= 0.5) skywardZ = min(skywardZ, bird.depth);
+    }
+  }
   return col;
 }
+#endif
 
-// The snow between the eye and depth (weatherDepth), seen through the camera sceneSkyward set up, on
-// the motion clock tm: down the frame as a level camera sees it, or with K_snowOverhead streaming out
-// of the patch of sky the flakes fall from (vanish.z = 0 is the level camera's snow, snowFall).
-Precip skywardSnow(vec2 uv, float aspect, float tm, float depth) {
-  vec3 vanish = K_snowOverhead > 0.5 ? rainVanish(snowFallDir(K_snow, K_wind), skywardR, skywardU, skywardF, SKYWARD_FOCAL) : vec3(0.0, -1.0, 0.0);
-  return snowFallSeen(uv, aspect, tm, K_snow, K_wind, depth, vanish);
+// The banner over the crossroads (opt-in: its M): a square of cloth on four cables, the M in the
+// accent colour, lit from within at night. accent: the M's coverage.
+#if CROSSROADS_MARK
+vec3 skywardBanner(vec3 col, vec3 rd, float tw, out float accent) {
+  accent = 0.0;
+  if (K_crossroadsMark < 0.5 || rd.y < 0.2) return col;
+  vec2 rh = normalize(skywardR.xz);
+  vec2 uh = normalize(skywardU.xz);
+  for (int i = 0; i < 4; i++) {
+    float ca = (i == 0 || i == 3) ? 5.0 : -5.0;
+    float cb = i < 2 ? 5.0 : -5.0;
+    vec2 cw = rh * ca + uh * cb;
+    vec3 from = vec3(cw.x, SKYWARD_SAIL_Y, cw.y);
+    vec3 to = vec3(cw.x > 0.0 ? SKYWARD_A : -SKYWARD_A, SKYWARD_SAIL_Y + 4.5, cw.y > 0.0 ? SKYWARD_B + 8.0 : -SKYWARD_B - 8.0);
+    col = skywardRod(col, rd, tw, vec4(from, 0.04), vec4(to, 1.0), vec3(0.07));
+  }
+  float t = (SKYWARD_SAIL_Y - SKYWARD_RO.y) / rd.y;
+  if (t >= tw) return col;
+  vec3 p = SKYWARD_RO + rd * t;
+  float a = dot(p.xz, rh);
+  float b = dot(p.xz, uh);
+  float aa = 0.5 * skywardPx * t / rd.y;
+  float cloth = hardFill(sdBox(vec2(a, b), vec2(5.0), 0.0), aa);
+  if (cloth <= 0.0) return col;
+  float fold = 0.9 + 0.1 * vnoise(vec2(a, b) * 0.45 + 3.0);
+  vec3 fabric = vec3(0.88, 0.82, 0.7) * fold * (skywardAmbient * 1.1 + skywardSunLight * 0.45) + col * 0.22;
+  float m = hardFill(markDistance(vec2(a, b) / 8.4) * 8.4 - 0.5, aa);
+  vec3 paint = vec3(1.0, 0.5, 0.2) * (0.7 + 0.6 * skywardDark);
+  vec3 shown = mix(fabric, paint, m);
+  col = mix(col, shown, cloth);
+  accent = m * cloth;
+  if (cloth >= 0.5) skywardZ = min(skywardZ, t);
+  return col;
 }
+#endif
 
-// ---- The picture ----
+// ---- The passes ----
 
-Shade sceneSkyward(vec2 uv, vec2 cell, float t) {
-  float aspect = uRes.x / uRes.y;
-  skywardTm = uMotionTime;
+// Per cell: the street's clocks, the World now (its deck seen farther off, SKYWARD_DECK_LOW; the
+// moon hidden by the deck as the sun is) and the light it throws in the street's frame, the city's
+// glow lifting it after dark; the camera; the facade or road the cell's ray meets and the World's sky
+// it sees (skywardSeen); the street's air; the crossroads' knobs the dressings draw by. The World's
+// fog is taken over (crossroadsAir), and the composer's plain floor put out: the road is the
+// crossroads' own.
+SkywardSeen skywardSky0;
+SkywardHit skywardHit0;
+
+void crossroadsBegin(inout Ctx x) {
+  skywardTm = x.tm;
   skywardPx = 1.0 / (uRes.y * SKYWARD_FOCAL);
-  skywardSeedOff = K_citySeed * 0.317;
-  skywardThB = edgeThreshold(cell, vec2(3.0, 7.0));
-  skywardThC = edgeThreshold(cell, vec2(11.0, 5.0));
+  skywardSeedOff = K_seed * 0.317;
+  skywardThB = edgeThreshold(x.cell, vec2(3.0, 7.0));
+  skywardThC = edgeThreshold(x.cell, vec2(11.0, 5.0));
+  skywardGreenery = K_crossroadsGreenery;
+  skywardTrafficLevel = K_crossroadsTraffic;
 
   // The hour, and the weather over it: the world's (rain and snow close the sky, flatten and dim the
-  // light; the moon is hidden by the deck as the sun is), its deck seen farther off
-  // (SKYWARD_DECK_LOW). The world turns its wind by the view's yaw (worldDeckDrift), so the wind
-  // drifts the deck along the street's x as it does the rain and the snow.
-  skywardWorld = worldAt(SKYWARD_METEOR_SLOT, -1);
-  skywardWorld.low = SKYWARD_DECK_LOW;
-  skywardWorld.sky.moonColor *= 1.0 - WORLD_DECK_SUN * skywardWorld.overcast;
+  // light; the moon is hidden by the deck as the sun is), its deck seen farther off. The world turns
+  // its wind by the view's yaw (worldDeckDrift), so the wind drifts the deck along the street's x as
+  // it does the rain and the snow.
+  x.w.low = SKYWARD_DECK_LOW;
+  x.w.sky.moonColor *= 1.0 - WORLD_DECK_SUN * x.w.overcast;
+  skywardWorld = x.w;
   skywardSky = skyFacing(skywardWorld.sky, SKYWARD_SKY_YAW);
   skywardStorm = skywardWorld.storm;
   skywardOver = skywardWorld.overcast;
@@ -1070,6 +873,8 @@ Shade sceneSkyward(vec2 uv, vec2 cell, float t) {
   skywardDeck = mix(vec3(dot(skywardSky.ambient, LUMA)) * 1.5, vec3(0.13, 0.1, 0.09), skywardDark) * (1.0 - 0.3 * skywardStorm);
   skywardWet = uWeather.x;
   skywardLying = uWeather.y;
+  skywardFog = x.w.fog;
+  x.w.fog = 0.0;
 
   // The camera lies on its back, tilted toward the feet, the screen's top toward the heading h.
   // The entrance tips the view back from street level to the zenith, on its way from the first frame
@@ -1090,56 +895,370 @@ Shade sceneSkyward(vec2 uv, vec2 cell, float t) {
   skywardF = normalize(vec3(-sin(pitch) * hd.x, cos(pitch), -sin(pitch) * hd.z));
   skywardU = normalize(hd - skywardF * dot(hd, skywardF));
   skywardR = cross(skywardU, skywardF);
-  vec2 s = vec2((uv.x - 0.5) * aspect, uv.y - 0.5);
+  vec2 s = vec2((x.uv.x - 0.5) * x.aspect, x.uv.y - 0.5);
   vec3 rd = normalize(skywardR * s.x + skywardU * s.y + skywardF * SKYWARD_FOCAL);
-  // The world's view at this pixel: the screen's middle on the camera's axis (no horizon in a view
-  // looking up), the eye lying on the road; skywardSkyAlong gives it each ray.
-  skywardView = worldView(uv, 0.5, SKYWARD_FOCAL, SKYWARD_RO.y, -SKYWARD_SKY_YAW, 1.0);
+  skywardRd = rd;
+  // The world's view at this cell is the rig's (the screen's middle on the camera's axis, the eye
+  // lying on the road, the street's frame turned into the sky's): skywardSkyAlong gives it each ray.
+  skywardView = x.v;
 
   SkywardHit hit = skywardTrace(SKYWARD_RO, rd);
   // Tipped toward the street, a ray looking down reaches the road before any wall.
   float tg = (passing && rd.y < -1e-3) ? SKYWARD_RO.y / -rd.y : SKYWARD_FAR;
   bool ground = tg < (hit.hit ? hit.t : SKYWARD_FAR);
-  float tw = ground ? tg : (hit.hit ? hit.t : SKYWARD_FAR);
-  // The sky this pixel sees, once, whichever surface shows it (skywardSeen).
-  SkywardSeen sky = skywardSeen(rd, hit, ground, tg);
-  vec3 col = ground ? skywardGround(rd, tg, hit, sky) : hit.hit ? skywardFacade(hit, rd, sky) : sky.col;
+  skywardHit0 = hit;
+  skywardTg = tg;
+  skywardOnRoad = ground;
+  skywardTw = ground ? tg : (hit.hit ? hit.t : SKYWARD_FAR);
+  // The sky this cell sees, once, whichever surface shows it (skywardSeen).
+  skywardSky0 = skywardSeen(rd, hit, ground, tg);
 
-  // Overhead, far to near.
-  col = skywardBirds(rd, tw, col);
+  // The street's air: its haze toward this bearing (the facades and the road fade into it, the fog
+  // and the World's drops take it), the drops lit by the deck.
+  skywardHaze = mix(skyColor(skywardSky, normalize(vec3(rd.x, 0.14, rd.z))), skywardDeck, skywardOver * 0.9);
+  x.air = Air(skywardHaze, skywardHaze * 0.85 + 0.02, max(skywardDeck * 1.2 + skywardAmbient * 0.25, vec3(0.08)), skywardDeck, 0.0, 0.0, 0.0);
+  x.groundTo = 0.0;
+  x.zg = ground ? tg : WORLD_FAR;
+}
+
+// The surface: the road under you, a facade, or the strip of sky.
+void crossroadsSky(Ctx x, inout Cell c) {
+  SkywardHit hit = skywardHit0;
+  c.col = skywardOnRoad ? skywardGround(skywardRd, skywardTg, hit, skywardSky0) : hit.hit ? skywardFacade(hit, skywardRd, skywardSky0) : skywardSky0.col;
+  if (skywardOnRoad || hit.hit) {
+    c.z = skywardTw;
+    c.zs = skywardTw;
+  }
+}
+
+// Over the crossing, far to near: the street's birds, then the banner and its M.
+void crossroadsMiddle(Ctx x, inout Cell c) {
+  skywardZ = c.z;
+#if CROSSROADS_BIRDS
+  c.col = skywardBirds(skywardRd, skywardTw, c.col);
+#endif
+#if CROSSROADS_MARK
   float accent = 0.0;
-  col = skywardBanner(col, rd, tw, accent);
-  col = skywardCanopy(col, rd, tw);
-  col = skywardWires(col, rd, tw);
-  for (int i = 0; i < 2; i++) col = skywardTram(col, rd, tw, float(2 * i - 1)); // the side -1, then 1
-  col = skywardLamps(col, rd, tw);
-  col = skywardGantry(col, rd, tw);
+  c.col = skywardBanner(c.col, skywardRd, skywardTw, accent);
+  c.accent = accent;
+#endif
+  c.z = skywardZ;
+}
 
-  // The air: rain streams out of the zenith straight at you; snow comes down the frame or, with
-  // K_snowOverhead, streams out of the sky the same way (vanish.z = 0 is the level camera's snow).
-  float depth = weatherDepth(tw);
-  float stars = 0.0;
-  if (K_rain > 0.0) {
-    vec3 vanish = rainVanish(rainFallDir(K_rain, K_wind), skywardR, skywardU, skywardF, SKYWARD_FOCAL);
-    Precip pr = rainFallSeen(uv, aspect, skywardTm, uFallTime, K_rain, K_wind, depth, vanish);
-    // Every path bunches into the zenith: thin the streaks out there so the centre is not a smear.
-    vec2 vp = vanish.xy / (abs(vanish.z) < 1e-3 ? 1e-3 : vanish.z);
-    float vd = length(vec2((uv.x - 0.5) * aspect, uv.y - 0.5) - vp);
-    pr.cover *= smoothstep(0.12, 0.55, vd);
-    vec3 air = skywardDeck * 0.9 + vec3(0.02, 0.016, 0.012) * skywardDark;
-    vec3 dropLight = max(skywardDeck * 1.2 + skywardAmbient * 0.25, vec3(0.08));
-    col = precipOver(col, air, dropLight * (1.0 - 0.2 * pr.near), pr);
+// The World's fog (K_fog), laid along this cell's ray to what it shows at the height it has climbed
+// there (the composer's worldFog reckons heights for a level camera), toward the street's haze.
+void crossroadsAir(inout Ctx x, inout Cell c) {
+#if WORLD_FOG
+  if (skywardFog > 0.0) {
+    World w = x.w;
+    w.fog = skywardFog;
+    float f = worldFogAt(w, c.z, SKYWARD_RO.y + min(c.z, WORLD_FOG_SKY) * skywardRd.y);
+    c.col = mix(c.col, x.air.fog, f);
+    c.accent *= 1.0 - f;
   }
-  if (K_snow > 0.0) {
-    Precip ps = skywardSnow(uv, aspect, skywardTm, depth);
-    vec3 air = mix(skywardDeck * 1.3, vec3(0.75, 0.78, 0.85) * (skywardAmbient + 0.1), 0.5);
-    col = mix(col, air, ps.veil);
-    col = mix(col, max(vec3(0.8, 0.83, 0.9) * (skywardDeck * 1.6 + skywardAmbient * 0.4), vec3(0.1)), ps.cover);
-  }
-  if (!hit.hit && !ground) stars = skyStars(skywardWorld.sky, skyFacing(rd, -SKYWARD_SKY_YAW), skywardWorld.stars) * (1.0 - skywardOver);
+#endif
+}
 
-  Shade o = shadeOf(col, inkOf(col, 1.15, 0.85), clamp(accent, 0.0, 1.0));
-  o.shimmer = stars * 0.4; // main scales it by the motion
-  return o;
+// The stars' shimmer in the open strip of sky (main scales it by the motion).
+void crossroadsShade(Ctx x, Cell c, inout Shade o) {
+#if WORLD_STARS
+  if (!skywardHit0.hit && !skywardOnRoad) {
+    float stars = skyStars(skywardWorld.sky, skyFacing(skywardRd, -SKYWARD_SKY_YAW), skywardWorld.stars) * (1.0 - skywardOver);
+    o.shimmer = stars * 0.4;
+  }
+#endif
+}
+
+// The axes the World's rain and snow are seen through (worldPrecipAxes): the camera's own, so the
+// rain streams out of the zenith straight at you; the snow the same way with 'snow from overhead',
+// else down the frame as for a camera looking ahead (the level axes).
+void crossroadsSeen(Ctx x, out mat3 rain, out mat3 snow) {
+  rain = mat3(skywardR, skywardU, skywardF);
+  snow = K_snowOverhead > 0.5 ? rain : mat3(1.0);
+}
+
+// The air the far rain fuses into: the deck's grey, warmed by the city after dark.
+vec3 crossroadsRainAir(Ctx x) {
+  return skywardDeck * 0.9 + vec3(0.02, 0.016, 0.012) * skywardDark;
+}
+`;
+
+/** The street tree's GLSL: its canopy in the corner of the sky. */
+export const streetTreeGlsl = `
+// ---- the street tree (skyward/shader.ts) ----
+const vec4 SKYWARD_TREE[3] = vec4[3](vec4(9.0, 10.8, -17.0, 5.4), vec4(7.2, 9.6, -21.5, 4.4), vec4(9.8, 12.6, -20.0, 3.8));
+
+// The foliage of the street tree, in the corner of the sky: balls of leaves seen from underneath,
+// backlit by the sky, swaying a little (push: the gust on it, along the wind). Edges are cut per
+// cell so the leaves never shimmer.
+vec3 skywardCanopy(vec3 col, vec3 rd, float tw, vec2 push) {
+  if (skywardGreenery <= 0.0) return col;
+  for (int i = 0; i < 3; i++) {
+    vec4 s = SKYWARD_TREE[i];
+    vec3 oc = s.xyz - SKYWARD_RO;
+    float b = dot(rd, oc);
+    if (b <= 0.0) continue;
+    vec3 off = rd * b - oc;
+    float r = s.w * (0.65 + 0.4 * skywardGreenery);
+    float d = length(off);
+    if (d > r * 1.15) continue;
+    float t = b - sqrt(max(r * r - d * d, 0.0));
+    if (t >= tw) continue;
+    vec3 ax = normalize(cross(rd, vec3(0.0, 1.0, 0.0)));
+    vec3 ay = cross(ax, rd);
+    vec2 pq = vec2(dot(off, ax), dot(off, ay));
+    float fi = float(i);
+    vec2 sway = vec2(sin(skywardTm * 0.45 + fi * 2.0), cos(skywardTm * 0.37 + fi)) * (0.1 + 0.12 * abs(K_wind)) + push;
+    float n1 = fbm3(pq * 0.55 + fi * 7.3 + sway);
+    float n2 = vnoise(pq * 2.4 + fi * 3.1 + sway * 2.0);
+    float env = 1.0 - smoothstep(0.55, 1.0, d / r);
+    float v = env * (0.4 + 0.9 * n1) + 0.3 * n2 - 0.5;
+    float cover = smoothstep(0.0, 0.35, v);
+    if (hardEdge(cover) < 0.5) continue;
+    float back = smoothstep(-0.4, 0.8, dot(rd, skywardSky.sun));
+    vec3 leafAlb = mix(vec3(0.04, 0.1, 0.04), vec3(0.14, 0.28, 0.07), smoothstep(0.2, 0.7, n2));
+    leafAlb = mix(leafAlb, vec3(0.45, 0.58, 0.14), smoothstep(0.6, 0.9, n2 * 0.7 + back * 0.4 * (1.0 - env * 0.5)));
+    leafAlb = wetten(leafAlb, skywardWet, 0.5);
+    vec3 e = skywardAmbient * 0.9 + skywardSunLight * 0.55 * back;
+    vec3 leaf = leafAlb * e + vec3(1.0, 0.6, 0.3) * 0.07 * skywardDark;
+    col = leaf;
+    skywardZ = min(skywardZ, t);
+  }
+  return col;
+}
+
+// The canopy over what the crossroads drew, tossed by the composer's gust where the tree stands.
+void streetTreeMiddle(Ctx x, inout Cell c) {
+  skywardZ = c.z;
+  vec2 push = x.gust.dir * (0.5 * gustAt(x.gust, vec2(9.0, -19.0), x.tm, 0.0));
+  c.col = skywardCanopy(c.col, skywardRd, skywardTw, push);
+  c.z = skywardZ;
+}
+`;
+
+/** The tramway's GLSL: the wires and spans, the trams, the street lamps and the signal gantry. */
+export const tramwayGlsl = `
+// ---- the tramway (skyward/shader.ts) ----
+const float SKYWARD_RAIL = 5.2;      // the tram tracks at x = +-RAIL
+
+vec3 skywardInv(vec3 d) {
+  return (step(vec3(0.0), d) * 2.0 - 1.0) / max(abs(d), vec3(1e-5));
+}
+
+// Ray against an axis-aligned box from the eye: entry distance (-1 if missed) and the face's normal.
+float skywardBox(vec3 rd, vec3 lo, vec3 hi, out vec3 n) {
+  vec3 inv = skywardInv(rd);
+  vec3 t0 = (lo - SKYWARD_RO) * inv;
+  vec3 t1 = (hi - SKYWARD_RO) * inv;
+  vec3 tn = min(t0, t1);
+  vec3 tf = max(t0, t1);
+  float tin = max(max(tn.x, tn.y), tn.z);
+  float tout = min(min(tf.x, tf.y), tf.z);
+  n = vec3(0.0);
+  if (tin > tout || tin < 0.0) return -1.0;
+  if (tin == tn.x) n = vec3(-sign(rd.x), 0.0, 0.0);
+  else if (tin == tn.y) n = vec3(0.0, -sign(rd.y), 0.0);
+  else n = vec3(0.0, 0.0, -sign(rd.z));
+  return tin;
+}
+
+// The glow of a point light round it, r metres wide; 0 behind a wall.
+float skywardGlow(vec3 rd, vec3 L, float r, float tw) {
+  vec3 d = L - SKYWARD_RO;
+  float s = dot(rd, d);
+  if (s <= 0.0 || s >= tw) return 0.0;
+  vec3 off = d - rd * s;
+  return exp(-dot(off, off) / (r * r));
+}
+
+// A street lamp's housing seen from underneath, its lens lit after dusk, haloed.
+vec3 skywardLuminaire(vec3 col, vec3 rd, float tw, vec3 lo, vec3 hi) {
+  float lit = smoothstep(0.3, 0.6, skywardDark);
+  vec3 c = vec3(1.0, 0.8, 0.52);
+  vec3 centre = 0.5 * (lo + hi);
+  vec3 n;
+  float t = skywardBox(rd, lo, hi, n);
+  if (t > 0.0 && t < tw) {
+    vec3 p = SKYWARD_RO + rd * t;
+    vec3 body = vec3(0.1, 0.11, 0.12) * (skywardAmbient * 0.9 + skywardSunLight * 0.25) + 0.02;
+    vec2 q = abs(p.xz - centre.xz) - 0.5 * (hi.xz - lo.xz) + vec2(0.1, 0.08);
+    float inLens = n.y < -0.5 ? 1.0 - step(0.0, max(q.x, q.y)) : 0.0;
+    vec3 lens = mix(vec3(0.45, 0.47, 0.46) * (skywardAmbient + 0.05), c * 2.2, lit);
+    col = mix(body, lens, inLens);
+    skywardZ = min(skywardZ, t);
+  }
+  float rain = 1.0 + 1.8 * skywardStorm + 1.0 * skywardFog;
+  col += c * lit * skywardGlow(rd, centre, 0.9 * rain, tw) * 0.5;
+  col += c * lit * skywardGlow(rd, centre, 3.5 * rain, tw) * 0.1;
+  return col;
+}
+
+// The two street lamps, each a pole, its arm and the arm's outreach (rod records, see skywardRod),
+// then its luminaire (SKYWARD_LUMINAIRE: lo, hi). Right of the frame: the pole at the kerb, its arm
+// reaching over the avenue. Left of the frame, among the branches: the corner's lamp over the cross
+// street.
+const vec4 SKYWARD_LAMP_ROD[12] = vec4[12](
+  vec4(-9.4, 0.0, 3.8, 0.1), vec4(-9.4, 8.0, 3.8, 1.0),
+  vec4(-9.4, 8.0, 3.8, 0.07), vec4(-8.5, 8.75, 3.8, 1.0),
+  vec4(-8.5, 8.75, 3.8, 0.06), vec4(-7.3, 8.6, 3.8, 1.0),
+  vec4(9.4, 0.0, -9.2, 0.1), vec4(9.4, 8.3, -9.2, 1.0),
+  vec4(9.4, 8.3, -9.2, 0.07), vec4(8.4, 8.9, -9.2, 1.0),
+  vec4(8.4, 8.9, -9.2, 0.06), vec4(7.2, 8.75, -9.2, 1.0)
+);
+const vec3 SKYWARD_LUMINAIRE[4] = vec3[4](vec3(-7.55, 8.34, 3.6), vec3(-6.45, 8.6, 4.0), vec3(7.45, 8.5, -9.4), vec3(6.35, 8.76, -9.0));
+
+vec3 skywardLamps(vec3 col, vec3 rd, float tw) {
+  vec3 steel = vec3(0.12, 0.14, 0.14);
+  for (int i = 0; i < 2; i++) {
+    for (int k = 3 * i; k < 3 * i + 3; k++) col = skywardRod(col, rd, tw, SKYWARD_LAMP_ROD[2 * k], SKYWARD_LAMP_ROD[2 * k + 1], steel);
+    col = skywardLuminaire(col, rd, tw, SKYWARD_LUMINAIRE[2 * i], SKYWARD_LUMINAIRE[2 * i + 1]);
+  }
+  return col;
+}
+
+vec4 skywardLamp(vec2 f, float off, vec3 lampCol, float on) {
+  float cov = hardFill(length(f - vec2(0.0, off)) - 0.125, 0.02);
+  return vec4(lampCol * (0.06 + 1.7 * on), cov);
+}
+
+// The signal gantry across the cross street: pole, arm and the arm's brace (rod records, see
+// skywardRod), three heads facing the crossing; the lights turn green, amber and red over 46 seconds.
+const vec4 SKYWARD_GANTRY_ROD[6] = vec4[6](
+  vec4(9.4, 0.0, -4.0, 0.15), vec4(9.4, 6.4, -4.0, 1.0),
+  vec4(9.4, 6.35, -4.0, 0.12), vec4(-4.4, 6.35, -4.0, 1.0),
+  vec4(9.4, 4.6, -4.0, 0.07), vec4(6.6, 6.3, -4.0, 1.0)
+);
+
+vec3 skywardGantry(vec3 col, vec3 rd, float tw) {
+  vec3 steel = vec3(0.16, 0.17, 0.18);
+  for (int k = 0; k < 3; k++) col = skywardRod(col, rd, tw, SKYWARD_GANTRY_ROD[2 * k], SKYWARD_GANTRY_ROD[2 * k + 1], steel);
+  float ph = fract(skywardTm / 46.0);
+  float green = 1.0 - smoothstep(0.46, 0.5, ph);
+  float amber = smoothstep(0.46, 0.5, ph) * (1.0 - smoothstep(0.56, 0.6, ph));
+  float red = smoothstep(0.56, 0.6, ph);
+  vec3 cRed = vec3(1.0, 0.12, 0.08);
+  vec3 cAmber = vec3(1.0, 0.62, 0.1);
+  vec3 cGreen = vec3(0.15, 1.0, 0.62);
+  float halo = 1.0 + 1.8 * skywardStorm + skywardFog;
+  for (int i = 0; i < 3; i++) {
+    float x = 5.2 - 4.0 * float(i);
+    col = skywardRod(col, rd, tw, vec4(x, 6.35, -4.0, 0.05), vec4(x, 6.0, -4.0, 1.0), steel);
+    vec3 n;
+    float t = skywardBox(rd, vec3(x - 0.2, 5.0, -4.18), vec3(x + 0.2, 6.0, -3.82), n);
+    if (t > 0.0 && t < tw) {
+      vec3 p = SKYWARD_RO + rd * t;
+      vec3 c = vec3(0.07, 0.075, 0.08) * (skywardAmbient + 0.04) + 0.01;
+      if (n.z > 0.5) {
+        vec2 f = vec2(p.x - x, p.y - 5.5);
+        vec4 lr = skywardLamp(f, 0.32, cRed, red);
+        vec4 la = skywardLamp(f, 0.0, cAmber, amber);
+        vec4 lg = skywardLamp(f, -0.32, cGreen, green);
+        c = mix(c, lr.rgb, lr.a);
+        c = mix(c, la.rgb, la.a);
+        c = mix(c, lg.rgb, lg.a);
+      }
+      col = c;
+      skywardZ = min(skywardZ, t);
+    }
+    col += cRed * red * skywardGlow(rd, vec3(x, 5.82, -3.8), 0.5 * halo, tw) * 0.45;
+    col += cAmber * amber * skywardGlow(rd, vec3(x, 5.5, -3.8), 0.5 * halo, tw) * 0.45;
+    col += cGreen * green * skywardGlow(rd, vec3(x, 5.18, -3.8), 0.5 * halo, tw) * 0.45;
+  }
+  return col;
+}
+
+// The tram wires (rod records, see skywardRod): a contact wire and its messenger over each track, a
+// pair crossing the avenue's at the crossing, and spans from a rosette on each facade, sagging in the
+// middle.
+const vec4 SKYWARD_WIRE[20] = vec4[20](
+  vec4(-SKYWARD_RAIL, 6.0, -140.0, 0.012), vec4(-SKYWARD_RAIL, 6.0, 140.0, 0.9),
+  vec4(-SKYWARD_RAIL, 6.55, -140.0, 0.009), vec4(-SKYWARD_RAIL, 6.55, 140.0, 0.8),
+  vec4(SKYWARD_RAIL, 6.0, -140.0, 0.012), vec4(SKYWARD_RAIL, 6.0, 140.0, 0.9),
+  vec4(SKYWARD_RAIL, 6.55, -140.0, 0.009), vec4(SKYWARD_RAIL, 6.55, 140.0, 0.8),
+  vec4(-140.0, 6.3, -2.2, 0.011), vec4(140.0, 6.3, -2.2, 0.9),
+  vec4(-140.0, 6.3, 2.2, 0.011), vec4(140.0, 6.3, 2.2, 0.9),
+  vec4(-SKYWARD_A, 7.9, -15.0, 0.012), vec4(0.0, 7.0, -15.0, 0.9),
+  vec4(0.0, 7.0, -15.0, 0.012), vec4(SKYWARD_A, 7.9, -15.0, 0.9),
+  vec4(-SKYWARD_A, 7.9, 16.0, 0.012), vec4(0.0, 7.0, 16.0, 0.9),
+  vec4(0.0, 7.0, 16.0, 0.012), vec4(SKYWARD_A, 7.9, 16.0, 0.9)
+);
+
+vec3 skywardWires(vec3 col, vec3 rd, float tw) {
+  for (int k = 0; k < 10; k++) col = skywardRod(col, rd, tw, SKYWARD_WIRE[2 * k], SKYWARD_WIRE[2 * k + 1], vec3(0.05));
+  return col;
+}
+
+// The pantograph, from the tram's roof up to the contact wire at 6 m: its lower arm, its upper arm
+// and the pan across the wire, as rod records (see skywardRod) with x across from the track and z
+// along the tram's travel from the pantograph's foot.
+const vec4 SKYWARD_PANTOGRAPH[6] = vec4[6](
+  vec4(0.0, 3.45, 0.0, 0.035), vec4(0.0, 4.9, -0.9, 1.0),
+  vec4(0.0, 4.9, -0.9, 0.03), vec4(0.0, 5.97, 0.0, 1.0),
+  vec4(-0.75, 5.99, 0.0, 0.04), vec4(0.75, 5.99, 0.0, 1.0)
+);
+
+// A tram on its track: a long body gliding past the foot of the frame (felt more than seen), its
+// pantograph on the contact wire, a small spark now and then where they meet. As often as the
+// crossroads' traffic has them.
+vec3 skywardTram(vec3 col, vec3 rd, float tw, float side) {
+  if (skywardTrafficLevel <= 0.0) return col;
+  float period = mix(190.0, 80.0, skywardTrafficLevel);
+  float travel = 26.0;
+  float lt = mod(skywardTm + (side > 0.0 ? 20.0 : 75.0), period);
+  if (lt > travel) return col;
+  float k = lt / travel;
+  float zc = side > 0.0 ? -60.0 + 120.0 * k : 60.0 - 120.0 * k;
+  float x0 = side * SKYWARD_RAIL;
+  vec3 n;
+  float t = skywardBox(rd, vec3(x0 - 1.25, 0.5, zc - 11.0), vec3(x0 + 1.25, 3.4, zc + 11.0), n);
+  if (t > 0.0 && t < tw) {
+    vec3 p = SKYWARD_RO + rd * t;
+    float fp = skywardPx * t * 1.6;
+    vec3 e = skywardAmbient * 0.85 + skywardSunLight * 0.3 * max(dot(n, skywardSky.sun), 0.0);
+    vec3 body = vec3(0.05);
+    if (abs(n.x) > 0.5) {
+      float yy = p.y;
+      vec3 alb = yy < 0.9 ? vec3(0.1, 0.12, 0.12) : yy < 2.75 ? vec3(0.11, 0.3, 0.22) : vec3(0.78, 0.76, 0.68);
+      body = wetten(alb, skywardWet, 0.1) * e;
+      float band = smoothstep(1.3 - fp, 1.3 + fp, yy) - smoothstep(2.75 - fp, 2.75 + fp, yy);
+      float posts = skywardCover1(p.z - zc, 2.3, 0.07, 0.93, fp);
+      vec3 inside = vec3(1.0, 0.8, 0.55) * mix(0.1, 0.8, skywardDark);
+      vec3 glass = vec3(0.05, 0.07, 0.1) + skywardAmbient * 0.3 + inside;
+      body = mix(body, glass, band * posts);
+    } else if (abs(n.z) > 0.5) {
+      body = vec3(0.22, 0.23, 0.22) * e;
+    }
+    col = body;
+    skywardZ = min(skywardZ, t);
+  }
+  // The pantograph on the roof.
+  float dirSign = side > 0.0 ? 1.0 : -1.0;
+  float pz = zc - 7.0 * dirSign;
+  for (int k = 0; k < 6; k += 2) {
+    vec4 a = SKYWARD_PANTOGRAPH[k];
+    vec4 b = SKYWARD_PANTOGRAPH[k + 1];
+    col = skywardRod(col, rd, tw, vec4(x0 + a.x, a.y, pz + a.z * dirSign, a.w), vec4(x0 + b.x, b.y, pz + b.z * dirSign, b.w), vec3(0.07));
+  }
+  float sk = skywardTm * 0.9 + side * 3.1;
+  float hh = hash12(vec2(floor(sk), 9.0 + side));
+  float env = hh > 0.55 ? bell((fract(sk) - 0.3) / 0.12) : 0.0;
+  if (env > 0.0) {
+    vec3 L = vec3(x0, 6.02, pz);
+    float core = skywardGlow(rd, L, 0.3, tw) * env;
+    col = mix(col, vec3(0.85, 0.92, 1.0), hardEdge(core * 1.2, skywardThC));
+    col += vec3(0.45, 0.55, 1.0) * skywardGlow(rd, L, 1.0, tw) * env * 0.25;
+  }
+  return col;
+}
+
+// Nearest of all, far to near as the scene painted them: the wires, the trams (the side -1, then 1),
+// the lamps, the gantry.
+void tramwayMiddle(Ctx x, inout Cell c) {
+  skywardZ = c.z;
+  vec3 col = skywardWires(c.col, skywardRd, skywardTw);
+  for (int i = 0; i < 2; i++) col = skywardTram(col, skywardRd, skywardTw, float(2 * i - 1));
+  col = skywardLamps(col, skywardRd, skywardTw);
+  c.col = skywardGantry(col, skywardRd, skywardTw);
+  c.z = skywardZ;
 }
 `;

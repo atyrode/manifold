@@ -1,13 +1,15 @@
-// The dewy web, drawn: threads, beads, drops and stems from the simulation's records (sim.ts), the
-// spider and her M at the hub, and behind it all a dawn meadow far out of focus.
+// The dewy web and the meadow behind it, drawn for the Dew preset's two layers (layers.ts): the
+// shared part (dewSharedGlsl: the low sun the camera keeps to the right, its light, the meadow far
+// out of focus, the web's header), the bokeh's (bokehGlsl) and the web's (webGlsl).
 //
-// Every cell looks up its bin (uSim1) and walks the short list of threads, stems and drops that
-// reach into it. Silk itself is nearly invisible: a thread is a faint, thin line that brightens
-// where it lies across the light (a cylinder glints where its axis is square to the half-vector
-// between the light and the eye; the capture spiral's axis is taken from its own winding round the
-// hub, so its glints swell and fade smoothly along it). The dew carries the picture: beads strung at
-// even spacing along the threads and the big drops, each a small ball lens with a lit body holding
-// the scene behind it upside down, and a spark of the low sun.
+// The web: threads, beads, drops and stems from the simulation's records (sim.ts), the spider and her
+// M at the hub. Every cell looks up its bin (the web's field 1) and walks the short list of threads,
+// stems and drops that reach into it. Silk itself is nearly invisible: a thread is a faint, thin line
+// that brightens where it lies across the light (a cylinder glints where its axis is square to the
+// half-vector between the light and the eye; the capture spiral's axis is taken from its own winding
+// round the hub, so its glints swell and fade smoothly along it). The dew carries the picture: beads
+// strung at even spacing along the threads and the big drops, each a small ball lens with a lit body
+// holding the scene behind it upside down, and a spark of the low sun.
 //
 // The entrance's spider is drawn here: she comes down the top radius to the hub in a walking gait and
 // spins her M or ribbon out from it on arriving (DEW_WALK). The web's swing is in sim.ts.
@@ -16,8 +18,23 @@
 // levels, or nothing, decided against the cell's own dither threshold (a feature fainter than the
 // first level becomes a sparse, still stipple). A slowly moving edge then flips each cell once, and
 // no thread or bead breaks into multicoloured dots. Depth of field only widens and thins them.
+//
+// The composer (ADR 0062) has no focal blur of its own: the layers draw their own. The meadow and the
+// sky are drawn out of focus whole, nothing in them finer than a few cells, and every thread, bead
+// and drop blurs by its depth off the hub's (DEW_DOF). The World comes in as its sky's light and
+// colour (its hour, sun and moon, greyed under its rain or snow, the flash of its lightning, the
+// aurora's glow), its wetness and lying snow on the grass, and its fog, drops and birds at the
+// composed depth (the web's plane, the grass tops, the hedge, open sky); its stars, cloud deck,
+// painted cumulus and bolts would be sharp details in a picture with none, so they are not drawn.
 import { DEW_CODE, DEW_KIND_FRAME, DEW_KIND_SPIRAL, DEW_KIND_STEM } from "./build.ts";
-import { DEW_PASSAGE } from "./constants.ts";
+import {
+  DEW_FOV,
+  DEW_GRASS_Z,
+  DEW_HEDGE_Z,
+  DEW_HORIZON,
+  DEW_PASSAGE,
+  DEW_WEB_Z,
+} from "./constants.ts";
 import {
   DEW_BEAD_HANG,
   DEW_BEAD_R,
@@ -26,6 +43,7 @@ import {
   DEW_DOF,
   DEW_FRAME_HALF,
   DEW_GLINT_SWELL,
+  DEW_HEAD_AT,
   DEW_PIECE_AWN,
   DEW_PIECE_HEAD,
   DEW_PIECE_LEAF,
@@ -41,42 +59,18 @@ import {
 import { binListsGlsl } from "../../sims/bins.ts";
 import { glslFloat, glslVec3 } from "../../shaders/glsl.ts";
 
-export const dewGlsl = `
-// Knobs: K_breeze, K_dew, K_dof and K_webSeed drive the simulation; the shader reads K_dew (bead
-// sizes), K_dof, K_spider, K_backdrop, K_mark and the sky (K_time, K_cycle). Textures: sim.ts.
-const int DEW_SEG_TEXELS = ${DEW_SEG_TEXELS};
-const int DEW_SEG_ROW = ${DEW_SEG_ROW};
-${binListsGlsl}
-const float DEW_CODE = ${glslFloat(DEW_CODE)};
-const float DEW_KIND_SPIRAL = ${glslFloat(DEW_KIND_SPIRAL)};
-const float DEW_KIND_FRAME = ${glslFloat(DEW_KIND_FRAME)};
-const float DEW_KIND_STEM = ${glslFloat(DEW_KIND_STEM)};
-const float DEW_STEM_UNIT = ${glslFloat(DEW_STEM_UNIT)};
-const float DEW_PIECE_LEAF = ${glslFloat(DEW_PIECE_LEAF)};
-const float DEW_PIECE_HEAD = ${glslFloat(DEW_PIECE_HEAD)};
-const float DEW_PIECE_AWN = ${glslFloat(DEW_PIECE_AWN)};
-const float DEW_WET_LEVELS = ${glslFloat(DEW_WET_LEVELS)};
-const float DEW_DOF = ${glslFloat(DEW_DOF)};
-const float DEW_BLUR_MAX = ${glslFloat(DEW_BLUR_MAX)};
-const float DEW_BEAD_R = ${glslFloat(DEW_BEAD_R)};
-const vec3 DEW_BEAD_SCALE = ${glslVec3(DEW_BEAD_SCALE)};
-const vec3 DEW_PRESENCE_BASE = ${glslVec3(DEW_PRESENCE_BASE)};
-const vec3 DEW_PRESENCE_DEW = ${glslVec3(DEW_PRESENCE_DEW)};
-const float DEW_BEAD_HANG = ${glslFloat(DEW_BEAD_HANG)};
-const float DEW_SILK_HALF = ${glslFloat(DEW_SILK_HALF)};
-const float DEW_FRAME_HALF = ${glslFloat(DEW_FRAME_HALF)};
-const float DEW_GLINT_SWELL = ${glslFloat(DEW_GLINT_SWELL)};
-// The entrance: its length, and the spider's walk down the top radius to the hub (the seconds she
-// sets off and arrives, and the web radii above the hub she starts).
-const float DEW_ENTER = ${glslFloat(DEW_PASSAGE.enter)};
-const float DEW_WALK_FROM = ${glslFloat(DEW_WALK.from)};
-const float DEW_WALK_TO = ${glslFloat(DEW_WALK.to)};
-const float DEW_WALK_START = ${glslFloat(DEW_WALK.start)};
-
+/**
+ * What the bokeh and the web share (outdoor-code.ts DEW): the camera's sky, its light and the
+ * meadow behind (the web's drops hold it too), and the web's header, set per cell by dewBegin.
+ */
+export const dewSharedGlsl = `
+// ---- dew (dew/shader.ts): the camera's sky, its light, the meadow out of focus, the web's header ----
+// Knobs: K_backdrop (the bokeh's: what lies behind) and the World's. The web's header comes from its
+// sim's row of the records atlas while the web is on (LAYER_WEB).
 // The backdrop's camera: the horizon's height in the frame, the hedge's crown, the field of view.
-const float DEW_HORIZON = 0.4;
+const float DEW_HORIZON = ${glslFloat(DEW_HORIZON)};
 const float DEW_HEDGE = 0.56;
-const float DEW_FOV = 0.6;
+const float DEW_FOV = ${glslFloat(DEW_FOV)};
 // The camera keeps the sun beyond the frame's right edge, this share of the frame's width right of
 // its centre (so the sun's glow comes in from the edge but its disc stays out of the frame); the
 // sun wanders this much either way (radians) over DEW_DRIFT seconds, so glints and sparks travel.
@@ -84,30 +78,13 @@ const float DEW_SUN_X = 0.66;
 const float DEW_SUN_WANDER = 0.07;
 const float DEW_DRIFT = 90.0;
 const float DEW_SUN_GAIN = 2.0;
-// Silk: the little light it scatters (key light, sky); the soft sheen and the brighter glint where it
-// lies across the light; how wide in angle they are on the smooth radii and frame and on the
-// glue-beaded spiral; how much a thread's tilt out of the web's plane moves its glint.
-const float DEW_SILK_GLOW = 0.02;
-const float DEW_SILK_SKY = 0.03;
-const float DEW_SHEEN = 0.12;
-const float DEW_GLINT = 0.8;
-const float DEW_SHARP_GLINT = 0.08;
-const float DEW_SOFT_GLINT = 0.11;
-const float DEW_TILT = 0.5;
-// Water: how far behind it a drop sees (frame heights, edge to centre), the light its body gathers,
-// and where on it the spark sits (share of the radius toward the half-vector).
-const float DEW_LENS = 0.3;
-const float DEW_BODY = 0.45;
-const float DEW_SPARK_AT = 0.5;
-// Beads on the stems: spacing (frame heights) and share of places taken at full dew.
-const float DEW_STEM_BEADS = 0.014;
-const float DEW_STEM_WET = 0.5;
-// The spider's unit (her body is about 1.6 long) as a share of the web's radius; the hub's mat of
-// dense silk under her (spider units); her M's height (web radii) at the smallest and largest size.
-const float DEW_SPIDER = 0.11;
-const float DEW_MAT = 1.2;
-const float DEW_MARK_MIN = 0.4;
-const float DEW_MARK_MAX = 0.8;
+// The web's header in its row of the records atlas (sim.ts).
+const int DEW_HEAD_AT = ${DEW_HEAD_AT};
+// Snow lying on the grass, lit by the sky and the low sun.
+const vec3 DEW_SNOW = vec3(0.92, 0.94, 0.98);
+// How far the meadow's grass tops and the hedge stand (m): the depths the composer is handed there.
+const float DEW_GRASS_Z = ${glslFloat(DEW_GRASS_Z)};
+const float DEW_HEDGE_Z = ${glslFloat(DEW_HEDGE_Z)};
 
 struct DewLight {
   vec3 L;      // toward the key light (x right, y up, z toward the viewer)
@@ -118,28 +95,6 @@ struct DewLight {
   vec2 glow;   // where the key light sits in the frame (uv, usually just outside it)
 };
 
-struct DewView {
-  vec2 p;      // this cell, frame heights from the bottom-left corner
-  vec2 hub;
-  float px;    // one cell, frame heights
-  float focus; // depth in focus
-  float dof;   // blur (frame heights) per unit of depth off the focus
-  float dew;
-  float aspect;
-  float tm;
-  float stir;  // breeze and gust, for the backdrop's grass
-};
-
-struct DewAcc {
-  vec3 silk;        // light on the brightest thread here (linear)
-  float silkCover;  // its coverage
-  float silkRank;   // coverage × brightness, to pick it
-  float glint;      // its glint, for the accent
-  vec4 water;       // the bead or drop in front: body colour (linear), coverage
-  float spark;      // coverage of that drop's spark
-  vec4 stem;        // the stem in front: colour (linear), coverage
-};
-
 vec3 dewTone(vec3 c) {
   return 1.0 - exp(-c * 1.15);
 }
@@ -147,10 +102,6 @@ vec3 dewTone(vec3 c) {
 // Brightness of linear light once rolled off for display, for the ramp.
 float dewBright(vec3 light) {
   return 1.0 - exp(-dot(light, LUMA) * 1.15);
-}
-
-float dewByKind(vec3 values, float kind) {
-  return kind < 0.5 ? values.x : (kind < 1.5 ? values.y : values.z);
 }
 
 // The key light (the sun, or the moon at night) seen from the camera, which keeps it off to the right.
@@ -169,7 +120,6 @@ DewLight dewLight(Sky view, float aspect) {
   lt.glow = vec2(0.5 + key.x / depth * f / aspect, DEW_HORIZON + key.y / depth * f);
   return lt;
 }
-
 // Out-of-focus highlights on the dewy leaves and grass far behind: a few big soft discs, faint, warm
 // where they face the low sun and pale elsewhere, each swelling and fading very slowly. 'q' in frame
 // heights, 'sun' where the key light sits in the same, 'key' its strength, 'land' how much of this
@@ -196,12 +146,30 @@ vec3 dewBokeh(vec2 q, vec2 sun, float key, float land, float tm, float aspect) {
   return sum * land;
 }
 
+// Per cell (dewBegin): the World now; its sky as the camera sees it, which keeps the low sun beyond
+// the frame's right edge whatever the hour (dewSky); the key light from it (dewLt) and the hue the
+// whites are inked in (dewTint); the web's header, where its sim has one (LAYER_WEB): where the hub
+// is drawn, the depth in focus, how far the hub has turned, the web's radius, the breeze and gust
+// that stir the meadow's grass, and the pages of the web's bin lists.
+World dewWorld;
+Sky dewSky;
+DewLight dewLt;
+vec3 dewTint;
+vec2 dewHub;
+float dewFocus;
+float dewTurn;
+float dewWebR;
+float dewStir;
+int dewPages;
+
 // What lies behind the web, far out of focus, nothing in it finer than a few cells: the dawn sky
 // graded from the gold haze at the horizon to blue overhead; a low hedge as a soft, hazy crown; the
 // mist lying over the meadow, catching the low sun; the meadow's grass tops as a broad dark band
 // that fades up into the mist with no line; a few big soft bokeh discs. Also what the water drops
-// hold, upside down.
-vec3 dewBackdrop(vec2 uv, float aspect, Sky view, DewLight lt, float tm, float stir) {
+// hold, upside down. The sky is the World's (view: its sky as the camera sees it), its dome greyed
+// as the World greys what its deck leaves open under rain or snow (worldGrey) and lit by its
+// lightning's flash. land: how much of what it shows is the hedge (x) and the grass (y).
+vec3 dewBackdrop(vec2 uv, float aspect, Sky view, DewLight lt, float tm, float stir, out vec2 land) {
   int mode = int(K_backdrop + 0.5);
   float x = uv.x * aspect;
   vec3 dir = viewRay(uv, aspect, DEW_HORIZON, DEW_FOV);
@@ -211,7 +179,10 @@ vec3 dewBackdrop(vec2 uv, float aspect, Sky view, DewLight lt, float tm, float s
   vec3 glow = lt.color * (0.3 * near + 0.6 * near * near);
 
   // The sky, its height stretched so the gradient from haze to blue shows within the frame.
-  vec3 air = skyColor(view, normalize(vec3(dir.x, max(dir.y, 0.0) * 2.0 + 0.03, dir.z)));
+  vec3 air = worldGrey(dewWorld, skyColor(view, normalize(vec3(dir.x, max(dir.y, 0.0) * 2.0 + 0.03, dir.z))), 1.0);
+#if WORLD_LIGHTNING
+  air += WORLD_FLASH_SKY * dewWorld.flash * exp(-max(dir.y, 0.0) * 6.0);
+#endif
   vec3 col = air + glow;
 
   // The hedge across the back: a low crown of rounded bushes, hazed toward the sky, its top lit.
@@ -241,7 +212,172 @@ vec3 dewBackdrop(vec2 uv, float aspect, Sky view, DewLight lt, float tm, float s
   } else if (mode == 1) {
     col *= 0.42;
   }
+  land = vec2(hedge, ground);
   return col;
+}
+
+void dewBegin(inout Ctx x) {
+  float aspect = x.aspect;
+  int mode = int(K_backdrop + 0.5);
+  dewWorld = x.w;
+  // The low sun, kept off the frame's right edge by the camera, wandering a few degrees.
+  Sky sky = x.w.sky;
+  float bearing = atan(DEW_SUN_X * aspect * 2.0 * tan(0.5 * DEW_FOV)) + DEW_SUN_WANDER * sin(x.tm * TAU / DEW_DRIFT);
+  float yaw = atan(sky.sun.x, sky.sun.z) - bearing;
+  dewSky = skyFacing(sky, yaw);
+  dewLt = dewLight(dewSky, aspect);
+  if (mode == 2) {
+    // Mist scatters the sun: softer glints, more light from all round.
+    dewLt.color *= 0.65;
+    dewLt.sky = dewLt.sky * 1.3 + 0.08;
+  }
+  // The whites silk and dew are inked in: golden by day, bluer under the moon.
+  float warmth = smoothstep(-0.2, 0.2, (dewLt.color.r - dewLt.color.b) / (dewLt.color.r + dewLt.color.b + 1e-3));
+  dewTint = mix(vec3(0.75, 0.85, 1.0), vec3(1.0, 1.0, 0.6), warmth);
+  dewHub = vec2(-10.0);
+  dewFocus = 0.0;
+  dewTurn = 0.0;
+  dewWebR = 0.4;
+  dewStir = 0.0;
+  // Pages of bin lists: one unless a dense patch (the hub of a small or portrait frame) needs more.
+  dewPages = 1;
+#if LAYER_WEB
+  if (webField0On()) {
+    vec4 h0 = webRecord(DEW_HEAD_AT, 0);
+    vec4 h1 = webRecord(DEW_HEAD_AT + 1, 0);
+    vec4 h2 = webRecord(DEW_HEAD_AT + 2, 0);
+    dewHub = h0.xy + h0.zw;
+    dewFocus = h1.y;
+    dewTurn = h1.z;
+    dewWebR = h1.w;
+    dewStir = h2.x + 0.5 * h2.y;
+    dewPages = max(1, int(h2.z + 0.5));
+  }
+#endif
+  // The World seen through this camera, turned with it to keep the sun to the right: its fog, its
+  // drops and its birds.
+  x.v = worldView(x.uv, RIG_HORIZON, RIG_FOCAL, x.eye, -yaw, 1.0);
+}
+`;
+
+/** The bokeh's GLSL: the air it gives the World's fog and drops, and the meadow and sky behind the web. */
+export const bokehGlsl = `
+// ---- the bokeh (dew/shader.ts): the meadow and the sky far out of focus behind the web ----
+// The air (the backdrop's): the dawn mist's colour toward which the World's fog and far rain fade,
+// the light its drops shine by. Nothing of the floor shows: the meadow's grass, out of focus, fills
+// the frame below its tops, so the plain floor is closed.
+void bokehBegin(inout Ctx x) {
+  vec3 mist = dewTone(dewLt.sky * 1.3 + vec3(0.33, 0.32, 0.3) + dewLt.color * 0.1);
+  vec3 drop = max(dewTone(dewLt.sky * 1.2 + dewLt.color * 0.3), vec3(0.08));
+  x.air = Air(mist, mist, drop, mist, 0.0, 0.0, 0.0);
+  x.groundTo = 0.0;
+  x.landZ = 0.0;
+}
+
+// Behind the web, shifting a little against it as the viewer moves, at the depth of what each cell
+// shows: the grass tops, the hedge, open sky. The World's weather lies on the hedge and the grass as
+// everything there does, out of focus: darker and deeper wet, white where snow lies; in the shadow
+// as dark, and mostly lost in the thick mist. The drops hold the meadow as it is without it.
+void bokehFar(Ctx x, inout Cell c) {
+  int mode = int(K_backdrop + 0.5);
+  vec2 land;
+  vec3 col = dewBackdrop(x.uv - uPointer * vec2(0.008, 0.005), x.aspect, dewSky, dewLt, x.tm, dewStir, land);
+  float share = max(0.9 * land.x, land.y) * (mode == 2 ? 0.18 : 1.0);
+  if (uWeather.x > 0.0) col = mix(col, wetten(col, uWeather.x, 0.4), share);
+  if (uWeather.y > 0.0) {
+    vec3 snow = DEW_SNOW * (dewLt.sky * 1.3 + dewLt.color * 0.15) * (mode == 1 ? 0.42 : 1.0);
+    col = mix(col, snow, 0.85 * share * snowCover(vec3(0.0, 1.0, 0.0), vec2(x.uv.x * x.aspect, 0.0) * 0.4, uWeather.y));
+  }
+  c.col = dewTone(col);
+  c.z = land.y > 0.5 ? DEW_GRASS_Z : (land.x > 0.5 ? DEW_HEDGE_Z : WORLD_FAR);
+}
+`;
+
+/** The web's GLSL: the threads, beads, drops and stems from its sim's data, the spider, her M. */
+export const webGlsl = `
+// ---- the web (dew/shader.ts): an orb web strung with dew between two grass stems ----
+// Knobs: K_breeze, K_dew, K_dof and K_seed drive the simulation; the shader reads K_dew (bead sizes),
+// K_dof, K_spider and K_webMark, and the shared part's light and header (dewBegin). Data: sim.ts.
+const int DEW_SEG_TEXELS = ${DEW_SEG_TEXELS};
+const int DEW_SEG_ROW = ${DEW_SEG_ROW};
+${binListsGlsl}
+const float DEW_CODE = ${glslFloat(DEW_CODE)};
+const float DEW_KIND_SPIRAL = ${glslFloat(DEW_KIND_SPIRAL)};
+const float DEW_KIND_FRAME = ${glslFloat(DEW_KIND_FRAME)};
+const float DEW_KIND_STEM = ${glslFloat(DEW_KIND_STEM)};
+const float DEW_STEM_UNIT = ${glslFloat(DEW_STEM_UNIT)};
+const float DEW_PIECE_LEAF = ${glslFloat(DEW_PIECE_LEAF)};
+const float DEW_PIECE_HEAD = ${glslFloat(DEW_PIECE_HEAD)};
+const float DEW_PIECE_AWN = ${glslFloat(DEW_PIECE_AWN)};
+const float DEW_WET_LEVELS = ${glslFloat(DEW_WET_LEVELS)};
+const float DEW_DOF = ${glslFloat(DEW_DOF)};
+const float DEW_BLUR_MAX = ${glslFloat(DEW_BLUR_MAX)};
+const float DEW_BEAD_R = ${glslFloat(DEW_BEAD_R)};
+const vec3 DEW_BEAD_SCALE = ${glslVec3(DEW_BEAD_SCALE)};
+const vec3 DEW_PRESENCE_BASE = ${glslVec3(DEW_PRESENCE_BASE)};
+const vec3 DEW_PRESENCE_DEW = ${glslVec3(DEW_PRESENCE_DEW)};
+const float DEW_BEAD_HANG = ${glslFloat(DEW_BEAD_HANG)};
+const float DEW_SILK_HALF = ${glslFloat(DEW_SILK_HALF)};
+const float DEW_FRAME_HALF = ${glslFloat(DEW_FRAME_HALF)};
+const float DEW_GLINT_SWELL = ${glslFloat(DEW_GLINT_SWELL)};
+// The entrance: its length, and the spider's walk down the top radius to the hub (the seconds she
+// sets off and arrives, and the web radii above the hub she starts).
+const float DEW_ENTER = ${glslFloat(DEW_PASSAGE.enter)};
+const float DEW_WALK_FROM = ${glslFloat(DEW_WALK.from)};
+const float DEW_WALK_TO = ${glslFloat(DEW_WALK.to)};
+const float DEW_WALK_START = ${glslFloat(DEW_WALK.start)};
+// How far the web's plane stands from the eye (m): the depth the composer is handed where it draws.
+const float DEW_WEB_Z = ${glslFloat(DEW_WEB_Z)};
+// Silk: the little light it scatters (key light, sky); the soft sheen and the brighter glint where it
+// lies across the light; how wide in angle they are on the smooth radii and frame and on the
+// glue-beaded spiral; how much a thread's tilt out of the web's plane moves its glint.
+const float DEW_SILK_GLOW = 0.02;
+const float DEW_SILK_SKY = 0.03;
+const float DEW_SHEEN = 0.12;
+const float DEW_GLINT = 0.8;
+const float DEW_SHARP_GLINT = 0.08;
+const float DEW_SOFT_GLINT = 0.11;
+const float DEW_TILT = 0.5;
+// Water: how far behind it a drop sees (frame heights, edge to centre), the light its body gathers,
+// and where on it the spark sits (share of the radius toward the half-vector).
+const float DEW_LENS = 0.3;
+const float DEW_BODY = 0.45;
+const float DEW_SPARK_AT = 0.5;
+// Beads on the stems: spacing (frame heights) and share of places taken at full dew.
+const float DEW_STEM_BEADS = 0.014;
+const float DEW_STEM_WET = 0.5;
+// The spider's unit (her body is about 1.6 long) as a share of the web's radius; the hub's mat of
+// dense silk under her (spider units); her M's height (web radii) at the smallest and largest size.
+const float DEW_SPIDER = 0.11;
+const float DEW_MAT = 1.2;
+const float DEW_MARK_MIN = 0.4;
+const float DEW_MARK_MAX = 0.8;
+
+struct DewView {
+  vec2 p;      // this cell, frame heights from the bottom-left corner
+  vec2 hub;
+  float px;    // one cell, frame heights
+  float focus; // depth in focus
+  float dof;   // blur (frame heights) per unit of depth off the focus
+  float dew;
+  float aspect;
+  float tm;
+  float stir;  // breeze and gust, for the backdrop's grass
+};
+
+struct DewAcc {
+  vec3 silk;        // light on the brightest thread here (linear)
+  float silkCover;  // its coverage
+  float silkRank;   // coverage × brightness, to pick it
+  float glint;      // its glint, for the accent
+  vec4 water;       // the bead or drop in front: body colour (linear), coverage
+  float spark;      // coverage of that drop's spark
+  vec4 stem;        // the stem in front: colour (linear), coverage
+  float stemUp;     // how far its surface here faces up (its normal's y), for the snow lying on it
+};
+
+float dewByKind(vec3 values, float kind) {
+  return kind < 0.5 ? values.x : (kind < 1.5 ? values.y : values.z);
 }
 
 // A drop of water at 'center' with half-axes 'radii' ('off' = this cell - centre, out of focus by
@@ -262,7 +398,8 @@ vec4 dewWater(vec2 off, vec2 radii, float blur, vec2 center, float lit, DewLight
   if (cover <= 0.0) return vec4(0.0);
   vec2 oc = o / max(rr, 1.0);
   vec2 behind = vec2(center.x / v.aspect, center.y) - oc * vec2(DEW_LENS / v.aspect, DEW_LENS);
-  vec3 seen = dewBackdrop(behind, v.aspect, view, lt, v.tm, 0.0);
+  vec2 land;
+  vec3 seen = dewBackdrop(behind, v.aspect, view, lt, v.tm, 0.0, land);
   // The dark lens rim only shows on drops big enough to hold it; small beads stay solid.
   float rim = smoothstep(0.45, 1.0, length(oc)) * smoothstep(2.0, 4.0, rc);
   vec2 g = oc + lt.L.xy * 0.45;
@@ -313,6 +450,7 @@ void dewStem(vec2 a, vec2 ab, float tt, float radius, float piece, float blur, f
     vec3 col = albedo * (lt.sky * 1.3 * (0.4 + 0.6 * nz) + lt.color * (0.08 * lt.back + 0.22 * diff + through * lt.back * 0.3) + 0.01)
       + lt.color * vec3(1.0, 0.85, 0.45) * rim * (0.25 + 0.35 * lt.back);
     acc.stem = vec4(col, cover);
+    acc.stemUp = nrm.y;
   }
   if (v.dew <= 0.0 || piece > DEW_PIECE_LEAF + 0.5) return;
   float j = floor(tt * len / DEW_STEM_BEADS);
@@ -333,7 +471,7 @@ void dewStem(vec2 a, vec2 ab, float tt, float radius, float piece, float blur, f
 }
 
 vec4 dewSegTexel(int s, int j) {
-  return texelFetch(uSim0, ivec2((s % DEW_SEG_ROW) * DEW_SEG_TEXELS + j, s / DEW_SEG_ROW), 0);
+  return texelFetch(webField0, ivec2((s % DEW_SEG_ROW) * DEW_SEG_TEXELS + j, s / DEW_SEG_ROW), 0);
 }
 
 // A bead of dew on a thread at parameter 'tc' and radius 'rb' (frame heights), hanging below it.
@@ -428,8 +566,8 @@ void dewSegment(int s, DewLight lt, Sky view, DewView v, inout DewAcc acc) {
 
 // One of the big drops: pendant on its thread (or falling, drawn out by its speed), wobbling when shaken.
 void dewDrop(int d, DewLight lt, Sky view, DewView v, inout DewAcc acc) {
-  vec4 h = texelFetch(uSim2, ivec2(d * 2, 0), 0);
-  vec4 g = texelFetch(uSim2, ivec2(d * 2 + 1, 0), 0);
+  vec4 h = webRecord(d * 2, 0);
+  vec4 g = webRecord(d * 2 + 1, 0);
   if (g.x <= 0.0) return;
   vec2 c = h.xy + h.zw;
   vec2 radii = max(g.x * vec2(1.0 + g.w, (1.0 - g.w) * g.z), vec2(1.1 * v.px));
@@ -578,54 +716,32 @@ float dewZigzag(vec2 q, float unit, float px) {
   return max(silk, sheet * 0.2);
 }
 
-Shade sceneDew(vec2 uv, vec2 cell, float t) {
-  float aspect = uRes.x / uRes.y;
-  float tm = uMotionTime;
-  int mode = int(K_backdrop + 0.5);
-
-  // The low sun, kept off the frame's right edge by the camera, wandering a few degrees.
-  Sky sky = skyAt(timeOfDayM(K_time, skyDays()));
-  float bearing = atan(DEW_SUN_X * aspect * 2.0 * tan(0.5 * DEW_FOV)) + DEW_SUN_WANDER * sin(tm * TAU / DEW_DRIFT);
-  float yaw = atan(sky.sun.x, sky.sun.z) - bearing;
-  Sky view = skyFacing(sky, yaw);
-  DewLight lt = dewLight(view, aspect);
-  if (mode == 2) {
-    // Mist scatters the sun: softer glints, more light from all round.
-    lt.color *= 0.65;
-    lt.sky = lt.sky * 1.3 + 0.08;
-  }
-  // The whites silk and dew are inked in: golden by day, bluer under the moon.
-  float warmth = smoothstep(-0.2, 0.2, (lt.color.r - lt.color.b) / (lt.color.r + lt.color.b + 1e-3));
-  vec3 tint = mix(vec3(0.75, 0.85, 1.0), vec3(1.0, 1.0, 0.6), warmth);
+// The web in front of the meadow: its stems, its silk, the hub's mat and her M or ribbon, the dew,
+// and the spider, each over the last where it covers the cell (every part takes the cell whole);
+// what it draws stands in the web's plane, where the World's nearest drops fall in front of it.
+void webFront(Ctx x, inout Cell c) {
+  if (!webField0On()) return;
+  float aspect = x.aspect;
+  float tm = x.tm;
+  DewLight lt = dewLt;
+  Sky view = dewSky;
+  vec3 tint = dewTint;
 
   DewView v;
-  v.p = vec2(uv.x * aspect, uv.y);
-  v.hub = vec2(-10.0);
+  v.p = vec2(x.uv.x * aspect, x.uv.y);
+  v.hub = dewHub;
   v.px = 1.0 / uRes.y;
-  v.focus = 0.0;
+  v.focus = dewFocus;
   v.dof = DEW_DOF * K_dof;
   v.dew = K_dew;
   v.aspect = aspect;
   v.tm = tm;
-  v.stir = 0.0;
-  float turn = 0.0;
-  float webR = 0.4;
-  // Pages of bin lists: one unless a dense patch (the hub of a small or portrait frame) needs more.
-  int binPages = 1;
-  if (uSimOn.w > 0.5) {
-    vec4 h0 = texelFetch(uSim3, ivec2(0, 0), 0);
-    vec4 h1 = texelFetch(uSim3, ivec2(1, 0), 0);
-    vec4 h2 = texelFetch(uSim3, ivec2(2, 0), 0);
-    v.hub = h0.xy + h0.zw;
-    v.focus = h1.y;
-    turn = h1.z;
-    webR = h1.w;
-    v.stir = h2.x + 0.5 * h2.y;
-    binPages = max(1, int(h2.z + 0.5));
-  }
-
-  // Behind, shifting a little against the web as the viewer moves.
-  vec3 col = dewTone(dewBackdrop(uv - uPointer * vec2(0.008, 0.005), aspect, view, lt, tm, v.stir));
+  v.stir = dewStir;
+  float turn = dewTurn;
+  float webR = dewWebR;
+  int binPages = dewPages;
+  vec3 col = c.col;
+  bool drawn = false;
 
   DewAcc acc;
   acc.silk = vec3(0.0);
@@ -635,11 +751,12 @@ Shade sceneDew(vec2 uv, vec2 cell, float t) {
   acc.water = vec4(0.0);
   acc.spark = 0.0;
   acc.stem = vec4(0.0);
-  if (uSimOn.x > 0.5 && uSimOn.y > 0.5 && uSimOn.z > 0.5) {
-    ivec3 bin = binListsAt(uSim1, binPages, v.p);
+  acc.stemUp = 0.0;
+  if (webField1On()) {
+    ivec3 bin = binListsAt(webField1, binPages, v.p);
     int slots = BIN_PAGE * binPages;
     for (int k = 0; k < slots; k++) {
-      float id = binListsEntry(uSim1, bin, k);
+      float id = binListsEntry(webField1, bin, k);
       if (id == 0.0) break;
       if (id > 0.0) dewSegment(int(id + 0.5) - 1, lt, view, v, acc);
       else dewDrop(int(-id + 0.5) - 1, lt, view, v, acc);
@@ -647,10 +764,20 @@ Shade sceneDew(vec2 uv, vec2 cell, float t) {
   }
 
   // Stems: hard-edged against the cell's threshold, shaded smoothly.
-  if (hardEdge(acc.stem.a) > 0.5) col = dewTone(acc.stem.rgb);
+  if (hardEdge(acc.stem.a) > 0.5) {
+    // The World's weather on the grass: darker and deeper wet, white where snow lies on its upper side.
+    vec3 stem = acc.stem.rgb;
+    if (uWeather.x > 0.0) stem = wetten(stem, uWeather.x, 0.3);
+    if (uWeather.y > 0.0) stem = mix(stem, DEW_SNOW * (lt.sky * 1.3 + lt.color * 0.15), snowCover(vec3(0.0, acc.stemUp, 0.0), v.p * 60.0, uWeather.y));
+    col = dewTone(stem);
+    drawn = true;
+  }
   // Silk: faint stipple, or solid where it glints.
   vec4 silk = hardRamp(dewBright(acc.silk), acc.silkCover, tint, cellTh);
-  if (silk.a > 0.5) col = silk.rgb;
+  if (silk.a > 0.5) {
+    col = silk.rgb;
+    drawn = true;
+  }
 
   // At the hub: a mat of dense silk under her, her M of zig-zag silk.
   vec2 local = rotate(v.p - v.hub, -turn);
@@ -677,25 +804,40 @@ Shade sceneDew(vec2 uv, vec2 cell, float t) {
   if (K_spider > 0.5) {
     float mat = (1.0 - smoothstep(0.7, 1.0, length(local) / (unit * DEW_MAT))) * 0.35;
     vec4 hubSilk = hardRamp(dewBright(silkWhite * 0.4), mat, tint, cellTh);
-    if (hubSilk.a > 0.5) col = hubSilk.rgb;
+    if (hubSilk.a > 0.5) {
+      col = hubSilk.rgb;
+      drawn = true;
+    }
   }
   float markOn = 0.0;
-  if (K_mark > 0.0) {
-    float markSize = webR * mix(DEW_MARK_MIN, DEW_MARK_MAX, K_mark);
+  if (K_webMark > 0.0) {
+    float markSize = webR * mix(DEW_MARK_MIN, DEW_MARK_MAX, K_webMark);
     vec4 band = hardRamp(dewBright(silkWhite), dewStabilimentum(local, markSize, v.px) * step(length(local), weaveM * markSize), tint, cellTh);
     markOn = band.a;
-    if (markOn > 0.5) col = band.rgb;
+    if (markOn > 0.5) {
+      col = band.rgb;
+      drawn = true;
+    }
   } else if (K_spider > 0.5) {
     // Her own stabilimentum: the zig-zag ribbon above and below the hub.
     vec4 band = hardRamp(dewBright(silkWhite), dewZigzag(local, unit, v.px) * step(abs(local.y), weaveZ * unit), tint, cellTh);
-    if (band.a > 0.5) col = band.rgb;
+    if (band.a > 0.5) {
+      col = band.rgb;
+      drawn = true;
+    }
   }
 
   // Dew: the bead or drop's body, then its spark.
   vec4 water = hardRamp(dewBright(acc.water.rgb), acc.water.a, tint, cellTh);
-  if (water.a > 0.5) col = water.rgb;
+  if (water.a > 0.5) {
+    col = water.rgb;
+    drawn = true;
+  }
   float sparkOn = hardEdge(acc.spark);
-  if (sparkOn > 0.5) col = hardRamp(1.0, 1.0, vec3(1.0, 1.0, 0.9), cellTh).rgb;
+  if (sparkOn > 0.5) {
+    col = hardRamp(1.0, 1.0, vec3(1.0, 1.0, 0.9), cellTh).rgb;
+    drawn = true;
+  }
 
   if (K_spider > 0.5) {
     // She is opaque: her colour snapped to the palette, black where she is dark, a silhouette on the mat.
@@ -703,13 +845,15 @@ Shade sceneDew(vec2 uv, vec2 cell, float t) {
     if (hardEdge(spider.a) > 0.5) {
       col = snapLevel(dewTone(spider.rgb));
       markOn = 0.0;
+      drawn = true;
     }
   }
 
-  // Mist is light: the page goes to its paper theme (index.ts) and ink turns dark on it.
-  float ink = inkOf(col, 1.3, 0.8, vec2(0.92, 0.8));
-  // The accent is all or nothing per cell too: glinting silk and the sparks on the dew.
-  float accent = K_mark > 0.0 ? markOn : max(silk.a * step(0.5, acc.glint), sparkOn);
-  return shadeOf(col, ink, accent);
+  if (!drawn || DEW_WEB_Z >= c.z) return;
+  c.col = col;
+  c.z = DEW_WEB_Z;
+  c.zs = DEW_WEB_Z;
+  // The accent is all or nothing per cell too: glinting silk and the sparks on the dew, or her M.
+  c.accent = K_webMark > 0.0 ? markOn : max(silk.a * step(0.5, acc.glint), sparkOn);
 }
 `;

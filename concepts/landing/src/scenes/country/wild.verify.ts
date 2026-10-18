@@ -17,14 +17,16 @@
 // view there.
 import { visitorAlone } from "../../principals.ts";
 import { glslFloat } from "../../shaders/glsl.ts";
-import { fragmentSourceFor, sceneFeaturesAll } from "../../shaders/index.ts";
+import { sceneFeaturesAll, shaderValues } from "../../shaders/index.ts";
 import { paramDefaults } from "../../state.ts";
 import { loadScene } from "../index.ts";
 import type { SimFrame } from "../types.ts";
 import {
   type CountryBuilt,
   countryDraw,
+  countryLanded,
   countryProgram,
+  countrySource,
   countryValues,
   differing,
 } from "./terrain.verify.ts";
@@ -40,38 +42,38 @@ const CLUMPS = { width: 64, height: 32 } as const;
 const probeGlsl = /* glsl */ `
 uniform int probeMode;
 Shade probeCountryWild(vec2 uv, vec2 cell, float t) {
-  Shade actual = sceneCountry(uv, cell, t);
+  Shade actual = composerEntry(uv, cell, t);
   if (probeMode == 0) return actual;
   if (probeMode == 1) {
     // r: the flock's sheet covers here before any occlusion; g: the land the ray meets lies nearer
     // than the flock; b: the ray meets land at all.
     vec3 rd = countryToWorld(viewRay(uv, uRes.x / uRes.y, COUNTRY_HORIZON, COUNTRY_FOV));
-    float tHit = countryMarch(terrainEye(uSim3), rd);
+    float tHit = countryMarch(terrainEye(valleyField3), rd);
     bool near = tHit > 0.0 && tHit * dot(rd, countryFwd) < COUNTRY_MURMURATION_DEPTH;
     return shadeOf(vec3(step(0.05, countryFlockSheet(uv).x), near ? 1.0 : 0.0, tHit > 0.0 ? 1.0 : 0.0), 0.0, 0.0);
   }
   // r: a clump at this pixel's index; g 1 where the shader finds its root as the sim placed it.
   int c = int(cell.x) + int(cell.y) * int(uRes.x);
-  vec4 grid = texelFetch(uSim3, ivec2(COUNTRY_VERGE_HEAD, 0), 0);
-  vec4 more = texelFetch(uSim3, ivec2(COUNTRY_VERGE_HEAD + 1, 0), 0);
+  vec4 grid = texelFetch(valleyField3, ivec2(COUNTRY_VERGE_HEAD, 0), 0);
+  vec4 more = texelFetch(valleyField3, ivec2(COUNTRY_VERGE_HEAD + 1, 0), 0);
   if (c >= int(more.z + 0.5)) return shadeOf(vec3(0.0), 0.0, 0.0);
   int clumps = int(more.x + 0.5);
   int row = int(grid.x + 0.5);
-  int width = textureSize(uSim3, 0).x;
+  int width = textureSize(valleyField3, 0).x;
   vec4 xz = countryVergeTexel(row, width, clumps + 2 * c);
   vec4 hy = countryVergeTexel(row, width, clumps + 2 * c + 1);
   vec3 root = vec3(xz.x + xz.y, hy.x + hy.y, xz.z + xz.w);
-  TerrainParcel parcel = terrainParcel(uSim2, uSim3, root.xz, COUNTRY_EXTENT);
+  TerrainParcel parcel = terrainParcel(valleyField2, valleyField3, root.xz, COUNTRY_EXTENT);
   float use = floor(parcel.use + 0.5);
   float other = floor(parcel.otherUse + 0.5);
   bool hedged = (use >= LAND_CROPS && use <= LAND_PASTURE) || (other >= LAND_CROPS && other <= LAND_PASTURE);
   bool grows = use != LAND_PASTURE && use != LAND_WOODLAND;
   bool foot = abs(parcel.border - ${glslFloat(COUNTRY_VERGE.inset)}) <= ${glslFloat(COUNTRY_VERGE.slack + 0.05)};
-  bool ground = abs(root.y - terrainSurface(terrainGround(uSim0, root.xz, COUNTRY_EXTENT))) < 0.3;
-  vec4 cover = terrainCover(uSim1, root.xz, COUNTRY_EXTENT);
+  bool ground = abs(root.y - terrainSurface(terrainGround(valleyField0, root.xz, COUNTRY_EXTENT))) < 0.3;
+  vec4 cover = terrainCover(valleyField1, root.xz, COUNTRY_EXTENT);
   bool clear = cover.x > ${glslFloat(COUNTRY_VERGE.road - 0.25)} && cover.y > ${glslFloat(COUNTRY_VERGE.stream - 0.25)};
   countryWoodsSet();
-  bool open = countryWoods(cover, terrainWater(terrainGround(uSim0, root.xz, COUNTRY_EXTENT)), false) <= 0.0;
+  bool open = countryWoods(cover, terrainWater(terrainGround(valleyField0, root.xz, COUNTRY_EXTENT)), false) <= 0.0;
   return shadeOf(vec3(1.0, hedged && grows && foot && ground && clear && open ? 1.0 : 0.5, clamp(parcel.border / 10.0, 0.0, 1.0)), 0.0, 0.0);
 }
 `;
@@ -113,14 +115,14 @@ function running(gl: WebGL2RenderingContext, knobs: Record<string, number>): Run
   let time = 0;
   let textures = sim.frame(simFrame(knobs, time, 0));
   let frames = 1;
-  while (textures.length === 0 && frames < 4000) {
+  while (!countryLanded(textures) && frames < 4000) {
     time += 1 / 60;
     textures = sim.frame(simFrame(knobs, time, 0));
     frames++;
   }
-  if (textures.length !== 4) {
+  if (textures.length !== 6 || !countryLanded(textures)) {
     sim.dispose();
-    throw new Error(`country: the sim bound ${textures.length} textures`);
+    throw new Error(`country: the sim bound ${textures.length} textures, the land unbuilt`);
   }
   const built: CountryBuilt = {
     textures,
@@ -148,17 +150,16 @@ function running(gl: WebGL2RenderingContext, knobs: Record<string, number>): Run
   };
 }
 
+/**
+ * The scene's all-features program and the probe's, for the layers the verges and the starlings
+ * join (a layer switch builds another layer set's program): each still draws them off at 0.
+ */
 function programs(gl: WebGL2RenderingContext): { scene: WebGLProgram; probe: WebGLProgram } {
-  const all = sceneFeaturesAll(countryScene);
+  const all =
+    sceneFeaturesAll(countryScene, shaderValues(countryScene, { verges: 1, starlings: 1 })) ?? {};
   return {
-    scene: countryProgram(gl, fragmentSourceFor(countryScene, all)),
-    probe: countryProgram(
-      gl,
-      fragmentSourceFor(
-        { ...countryScene, entry: "probeCountryWild", glsl: countryScene.glsl + probeGlsl },
-        all,
-      ),
-    ),
+    scene: countryProgram(gl, countrySource(all)),
+    probe: countryProgram(gl, countrySource(all, { glsl: probeGlsl, entry: "probeCountryWild" })),
   };
 }
 
@@ -172,7 +173,7 @@ function changed(a: Uint8Array, b: Uint8Array): boolean[] {
 export function verifyCountryMurmuration(gl: WebGL2RenderingContext): Record<string, unknown> {
   const { scene, probe } = programs(gl);
   const dusk = { time: 0.72, clouds: 0, shadows: 0, wind: 0, fog: 0 };
-  const flock = { ...dusk, murmuration: 1, "murmuration-amount": 3000 };
+  const flock = { ...dusk, starlings: 1, "starlings-amount": 3000 };
   const sim = running(gl, dusk);
   const options = { width: WIDTH, height: HEIGHT, time: 30, motionTime: 30 };
   const draw = (program: WebGLProgram, knobs: Record<string, number>, mode: number) => {

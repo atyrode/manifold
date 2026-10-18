@@ -1,9 +1,16 @@
-// GPU check (verify-browser.ts): skyward's snow, through the scene's own camera and skywardSnow. With
+// GPU check (verify-browser.ts): skyward's snow, the World's, through the crossing's own camera and
+// the axes the crossroads hands the World for it (crossroadsSeen), as worldPrecipAxes draws it. With
 // 'snow from overhead' the flakes stream out of the patch of sky they fall from (the zenith, a little
 // above the frame's centre, in still air): at the sides of the frame they move outward, below it down;
 // switched off, the snow keeps the level camera's look and comes straight down the frame everywhere.
 import { defaultsFor, paramDefaults, renderSettings } from "../../state.ts";
-import { fragmentSourceFor, packParams, vertexSource } from "../../shaders/index.ts";
+import {
+  fragmentSourceFor,
+  packParams,
+  sceneFeatures,
+  shaderValues,
+  vertexSource,
+} from "../../shaders/index.ts";
 import { loadScene } from "../index.ts";
 
 const skywardScene = await loadScene("skyward");
@@ -13,6 +20,8 @@ const HEIGHT = 180;
 /** Rows searched each way, and columns either side, for the shift that best maps one frame onto the next. */
 const ROWS = 10;
 const COLUMNS = 10;
+/** Steady snow in still air. */
+const SNOW = { snow: 1, "snow-amount": 1, wind: 0 } as const;
 
 function compile(gl: WebGL2RenderingContext, fragment: string): WebGLProgram {
   const linked = gl.createProgram();
@@ -73,18 +82,28 @@ function drift(
 }
 
 export function skywardSnowCheck(gl: WebGL2RenderingContext): Record<string, unknown> {
+  const { glslFor } = skywardScene;
+  if (glslFor === undefined) throw new Error("skyward snow: the scene is not composed");
   const linked = compile(
     gl,
-    fragmentSourceFor({
-      ...skywardScene,
-      entry: "regressionSkywardSnow",
-      glsl: `${skywardScene.glsl}
+    fragmentSourceFor(
+      {
+        ...skywardScene,
+        entry: "regressionSkywardSnow",
+        glslFor: (features) => `${glslFor(features)}
     Shade regressionSkywardSnow(vec2 uv, vec2 cell, float t) {
-      sceneSkyward(uv, cell, t);
-      Precip p = skywardSnow(uv, uRes.x / uRes.y, t, 1.0);
+      Ctx x = composerCtx(uv, cell);
+      crossroadsBegin(x);
+      mat3 rain;
+      mat3 snow;
+      crossroadsSeen(x, rain, snow);
+      vec3 vanish = rainVanish(snowFallDir(x.w.snow, x.w.wind), snow[0], snow[1], snow[2], x.v.focal);
+      Precip p = snowFallSeen(x.v.uv, x.v.aspect, x.w.tm, x.w.snow, x.w.wind, 1.0, vanish);
       return shadeOf(vec3(p.cover), p.cover, 0.0);
     }`,
-    }),
+      },
+      sceneFeatures(skywardScene, shaderValues(skywardScene, SNOW)),
+    ),
   );
   gl.canvas.width = WIDTH;
   gl.canvas.height = HEIGHT;
@@ -93,22 +112,17 @@ export function skywardSnowCheck(gl: WebGL2RenderingContext): Record<string, unk
   gl.uniform2f(gl.getUniformLocation(linked, "uRes"), WIDTH, HEIGHT);
   gl.uniform1i(gl.getUniformLocation(linked, "uView"), 1);
   gl.uniform1f(gl.getUniformLocation(linked, "uMotion"), 1);
-  gl.uniform1f(gl.getUniformLocation(linked, "uMotionTime"), 30);
+  gl.uniform1f(gl.getUniformLocation(linked, "uTime"), 30);
   gl.uniform2f(gl.getUniformLocation(linked, "uPassage"), 1, 0);
   gl.uniform1fv(gl.getUniformLocation(linked, "uTriggers"), new Float32Array(8).fill(-1e4));
   const frame = (overhead: boolean, time: number): Uint8Array => {
-    const knobs = {
-      ...paramDefaults("skyward"),
-      snow: 1,
-      "snow-amount": 1,
-      wind: 0,
-      snowOverhead: overhead ? 1 : 0,
-    };
+    const knobs = { ...paramDefaults("skyward"), ...SNOW, snowOverhead: overhead ? 1 : 0 };
     gl.uniform4fv(
       gl.getUniformLocation(linked, "uParams"),
       packParams(renderSettings(defaultsFor("skyward"), knobs).params),
     );
-    gl.uniform1f(gl.getUniformLocation(linked, "uTime"), time);
+    // The World's snow falls on the motion clock.
+    gl.uniform1f(gl.getUniformLocation(linked, "uMotionTime"), time);
     gl.drawArrays(gl.TRIANGLES, 0, 3);
     const bytes = new Uint8Array(WIDTH * HEIGHT * 4);
     gl.readPixels(0, 0, WIDTH, HEIGHT, gl.RGBA, gl.UNSIGNED_BYTE, bytes);

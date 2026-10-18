@@ -350,10 +350,10 @@ export const countryChalkGlsl = /* glsl */ `
 // vantage (the records' eye, wherever the camera is) sees inside the M (chalk.ts's record), near its
 // site. foot: metres a cell spans there across the view.
 float countryChalk(vec3 p, float foot) {
-  vec4 view = terrainRecord(uSim3, TERRAIN_MISC_ROW, ${CHALK.column});
+  vec4 view = terrainRecord(valleyField3, TERRAIN_MISC_ROW, ${CHALK.column});
   if (view.z <= 0.0) return 0.0;
-  vec4 span = terrainRecord(uSim3, TERRAIN_MISC_ROW, ${CHALK.column + 1});
-  vec3 e = p - terrainEye(uSim3);
+  vec4 span = terrainRecord(valleyField3, TERRAIN_MISC_ROW, ${CHALK.column + 1});
+  vec3 e = p - terrainEye(valleyField3);
   float depth = dot(e, countryFwd);
   if (abs(depth - span.x) > span.y) return 0.0;
   vec2 m = (vec2(dot(e, countryRight), e.y) / depth - view.xy) / view.zw;

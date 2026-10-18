@@ -1,13 +1,14 @@
 // GPU regression for Swell's wave relief (#1082 R02): the bounded march must find where each ray
 // first meets the lifted sea (no crest stepped over, the hit on the surface) and must keep the
 // waves below the camera, at the default sea, the tallest swell in the hardest wind, and the
-// entrance's low camera over its rolling wave. It runs the scene's own GLSL, with the relief's code
-// compiled in (SWELL_RELIEF); registered in verify-browser.ts.
+// entrance's low camera over its rolling wave. It runs the swell layer's own GLSL in the composed
+// program at the defaults, with the relief's code compiled in (SWELL_RELIEF); registered in
+// verify-browser.ts.
 import { fragmentSourceFor, packParams, sceneFeatures, vertexSource } from "../../shaders/index.ts";
 import { defaultsFor, paramDefaults, renderSettings } from "../../state.ts";
 import { loadScene } from "../index.ts";
 
-const swellScene = await loadScene("swell");
+const { glslFor, ...swellScene } = await loadScene("swell");
 
 const WIDTH = 240;
 const HEIGHT = 60;
@@ -40,6 +41,8 @@ function program(gl: WebGL2RenderingContext, fragment: string): WebGLProgram {
 }
 
 export function verifySwellRelief(gl: WebGL2RenderingContext): Record<string, unknown> {
+  if (glslFor === undefined) throw new Error("swell relief: the scene is not composed");
+  const features = { ...sceneFeatures(swellScene), SWELL_RELIEF: 1 };
   // One ray per pixel, fanning across and down from just under the horizon to steeply down; red: the
   // march's hit lies on the sea, green: no point of the ray before it is a centimetre (0.01 camera
   // heights) or more under the sea, sampled densely, blue: the waves stay below the camera.
@@ -50,7 +53,7 @@ export function verifySwellRelief(gl: WebGL2RenderingContext): Record<string, un
         ...swellScene,
         entry: "regressionSwellRelief",
         glsl:
-          swellScene.glsl +
+          glslFor(features) +
           `
       uniform vec3 regressionCamera;
       Shade regressionSwellRelief(vec2 uv, vec2 cell, float t) {
@@ -71,7 +74,7 @@ export function verifySwellRelief(gl: WebGL2RenderingContext): Record<string, un
         return shadeOf(vec3(onSea, first, relief.y < camH ? 1.0 : 0.0), 0.0, 0.0);
       }`,
       },
-      { ...sceneFeatures(swellScene), SWELL_RELIEF: 1 },
+      features,
     ),
   );
   gl.canvas.width = WIDTH;

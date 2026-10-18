@@ -110,6 +110,8 @@ export interface LayerLight {
  *   farVeil, middleVeil, frontVeil void <fn>(Ctx x, inout Cell c): translucent, after a band's opaque
  *   air         void <fn>(inout Ctx x, inout Cell c): after the specks, before the fog: the air's own
  *               light (a backdrop's forward scatter, a lamp's halo into x.air.fog and x.air.drop)
+ *   glow        void <fn>(Ctx x, inout Cell c): after the fog, before the rain and snow: light the air
+ *               scatters toward the eye over what the fog has veiled (swell's beams, its lamps' glow)
  * and `speck`, `vec3 <fn>(int code, vec3 under, Ctx x)`: the colour of one of its speck codes; and
  *   shade       void <fn>(Ctx x, Cell c, inout Shade o): after the grade's shadeOf, in canonical
  *               order: an accent or a colour of its own over the picture's (shore's plankton light,
@@ -127,6 +129,7 @@ export interface LayerPasses {
   readonly front?: string;
   readonly frontVeil?: string;
   readonly air?: string;
+  readonly glow?: string;
   readonly speck?: string;
   readonly shade?: string;
 }
@@ -227,16 +230,26 @@ export interface LayerDef {
    * A backdrop's say over the World's rain and snow (README "Light, scale and weather"): `thin`
    * scales the drops' and flakes' cover, far to near (worldPrecipThinned), so they never bury its
    * subject; `air` names its `vec3 <fn>(Ctx x)`, the colour the far rain fuses into where that is not
-   * the fog's (x.air.fog).
+   * the fog's (x.air.fog); `seen`, for a rig that is not level (skyward's, looking up), names its
+   * `void <fn>(Ctx x, out mat3 rain, out mat3 snow)`, the axes its camera sees the rain and the snow
+   * through (worldPrecipAxes: each mat3(right, up, fwd) in the frame of a level camera facing the
+   * same way, x along the wind), its thinning and the shelter claims' still applied.
    */
-  readonly precip?: { readonly thin?: readonly [far: number, near: number]; readonly air?: string };
+  readonly precip?: {
+    readonly thin?: readonly [far: number, near: number];
+    readonly air?: string;
+    readonly seen?: string;
+  };
 }
 
 /**
  * The `outdoor` rig: a level pinhole at `eye` metres, the horizon at uv.y `horizon`, `focal` screen
  * heights per unit of slope, turned `turn` radians left of the sky's frame. `minAspect`: a frame
  * narrower than this is laid out as if this wide. `passage` names GLSL (and its CPU twin) that moves
- * the rig through the preset's entrance and exit.
+ * the rig through the preset's entrance and exit. `pitch` (rad down; 0 level): a pitched rig's
+ * backdrop gives the cell's ray and how far along it the floor is in its begin (x.v, x.zg: metres
+ * along the ray, the depths its layers give the cell), and the axes the World's drops are seen
+ * through (`precip.seen`); the plain floor stands where they say.
  */
 export interface Rig {
   readonly horizon: number;
@@ -283,7 +296,15 @@ export interface Grade {
    * oval of the frame's height.
    */
   readonly vignetteRound?: { readonly from: number; readonly to: number; readonly scale: number };
-  readonly ink: { readonly gain: number; readonly gamma: number };
+  /**
+   * shadeOf's ink (inkOf's gain and gamma), and on the paper theme the white and range it takes
+   * (inkOf's `paper`: dew's mist, 0.92 and 0.8). Unset, inkOf's own (0.9, 0.8).
+   */
+  readonly ink: {
+    readonly gain: number;
+    readonly gamma: number;
+    readonly paper?: readonly [number, number];
+  };
 }
 
 /** The World's birds over the preset (worldBirds' WorldFlyway, README "Birds"). */

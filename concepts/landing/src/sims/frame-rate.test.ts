@@ -45,23 +45,19 @@ const EXEMPT: Partial<
     reason:
       "its leaves (the culms' and the water clock's rows of the records atlas) let go by a chance drawn once a frame and fall over each frame's whole time",
   },
-  swell: {
-    reason:
-      "it hands the shader no texture: its sim only names the boats and the lamp as points of interest for the cast, so there is no state to compare",
-  },
   dew: {
-    slots: [1],
+    slots: [3],
     reason:
-      "its bins list what reaches into each (ids, not amounts): a drop a hair from where the other rate draws it lists in the next bin",
+      "its bins (the web's field 1) list what reaches into each (ids, not amounts): a drop a hair from where the other rate draws it lists in the next bin",
   },
   dunes: {
     reason:
       "the creeping sand goes up at most every UPLOAD_EVERY of wall time, so its last upload falls on another frame at each rate",
   },
   flock: {
-    slots: [0],
+    slots: [2],
     reason:
-      "the specks' density field fades by TRAIL and takes each speck where it stands once a frame, so a 144 Hz frame lays more, closer samples of each streak",
+      "the specks' density field (the murmuration's field, uSim2) fades by TRAIL and takes each speck where it stands once a frame, so a 144 Hz frame lays more, closer samples of each streak",
   },
   garden: {
     slots: [2, 3],

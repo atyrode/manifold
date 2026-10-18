@@ -1,13 +1,22 @@
 // Real-WebGL check of the dew web's bin lists: on a small frame, where the hub's bins need more than
-// one page, the shader's reader (binListsGlsl, through the dew program and the sim's header pages)
-// must walk exactly the lists the sim built, page after page. The expected lists come from a twin
-// of the same sim run on the headless stand-in context, which keeps its uploads.
-import { fragmentSourceFor, vertexSource } from "../../shaders/index.ts";
+// one page, the shader's reader (binListsGlsl, through the dew program, the web's field 1 and the
+// header's pages in its row of the records atlas) must walk exactly the lists the sim built, page
+// after page. The expected lists come from a twin of the same sim run on the headless stand-in
+// context, which keeps its uploads.
+import { ATLAS_WIDTH } from "../../composer/caps.ts";
+import { fragmentSourceFor, sceneFeatures, vertexSource } from "../../shaders/index.ts";
 import { BIN_PAGE } from "../../sims/bins.ts";
 import { HeadlessSim, type HeadlessFrame } from "../../sims/headless.ts";
 import { loadScene } from "../index.ts";
+import { DEW_HEAD_AT } from "./sim.ts";
 
-const dewScene = await loadScene("dew");
+const { glslFor, ...dewScene } = await loadScene("dew");
+
+/** The composed sim's slots (src/composer/sim.ts): the atlas, then the web's two fields. */
+const ATLAS = 1;
+const LISTS = 3;
+/** The web's row of the atlas: the one after the composer's own. */
+const ROW = 1;
 
 function linked(gl: WebGL2RenderingContext, fragment: string): WebGLProgram {
   const program = gl.createProgram();
@@ -31,6 +40,7 @@ function linked(gl: WebGL2RenderingContext, fragment: string): WebGLProgram {
 }
 
 export function verifyDewBins(gl: WebGL2RenderingContext): Record<string, unknown> {
+  if (glslFor === undefined) throw new Error("dew bins: the scene is not composed");
   const frame: HeadlessFrame = {
     dt: 1 / 30,
     aspect: 480 / 270,
@@ -44,33 +54,38 @@ export function verifyDewBins(gl: WebGL2RenderingContext): Record<string, unknow
     textures = sim.frame(frame);
     twin.step(frame);
   }
-  const lists = twin.upload(1);
-  const pages = Math.max(1, Math.round(twin.upload(3).data[10] ?? 0));
+  const lists = twin.upload(LISTS);
+  const header = (ROW * ATLAS_WIDTH + DEW_HEAD_AT) * 4;
+  const pages = Math.max(1, Math.round(twin.upload(ATLAS).data[header + 10] ?? 0));
   const rows = lists.width / BIN_PAGE;
   const cols = lists.height / pages;
 
   // One pixel per bin: how many entries the shader walks there, their ids' sum mod 251, the pages.
+  const features = sceneFeatures(dewScene);
   const program = linked(
     gl,
-    fragmentSourceFor({
-      ...dewScene,
-      entry: "regressionDewBins",
-      glsl: `${dewScene.glsl}
+    fragmentSourceFor(
+      {
+        ...dewScene,
+        entry: "regressionDewBins",
+        glsl: `${glslFor(features)}
       Shade regressionDewBins(vec2 uv, vec2 cell, float t) {
-        int pages = max(1, int(texelFetch(uSim3, ivec2(2, 0), 0).z + 0.5));
-        int rows = textureSize(uSim1, 0).x / BIN_PAGE;
-        ivec3 bin = binListsAt(uSim1, pages, (floor(cell) + 0.5) / float(rows));
+        int pages = max(1, int(webRecord(DEW_HEAD_AT + 2, 0).z + 0.5));
+        int rows = textureSize(webField1, 0).x / BIN_PAGE;
+        ivec3 bin = binListsAt(webField1, pages, (floor(cell) + 0.5) / float(rows));
         float count = 0.0;
         float sum = 0.0;
         for (int k = 0; k < BIN_PAGE * pages; k++) {
-          float id = binListsEntry(uSim1, bin, k);
+          float id = binListsEntry(webField1, bin, k);
           if (id == 0.0) break;
           count += 1.0;
           sum = mod(sum + abs(id), 251.0);
         }
         return shadeOf(vec3(count, sum, float(pages)) / 255.0, 0.0, 0.0);
       }`,
-    }),
+      },
+      features,
+    ),
   );
   gl.canvas.width = cols;
   gl.canvas.height = rows;

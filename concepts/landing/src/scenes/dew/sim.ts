@@ -16,32 +16,39 @@
 // with drops it meets and falls when it gets too heavy, is shaken loose by a gust or a pluck, or
 // hangs at a low point too long.
 //
+// The web layer's sim (layers.ts web): a LayerSim of the composer (ADR 0062), its data in a row of
+// the records atlas and two field slots (constants.ts DEW_DATA), read by shader.ts through the
+// accessors the composer generates (webRecord, webField0, webField1). Knobs: the web's breeze, dew
+// and dof, and the composer's seed (the web's spinning).
+//
 // The scene's passage (DEW_PASSAGE, #swingWeb): the web is drawn swung on a long pendulum above the
 // frame. It comes in from beyond the right edge on its anchor threads, the moorings staying on their
 // stems so the threads stretch, over the middle with a small overshoot, settling as a gust dies away;
 // a gust swings it out the same way at the exit. The Verlet net itself is not moved, no drop is shaken
 // loose while it swings, and at rest none of this runs.
 //
-// Textures (all nearest, read with texelFetch):
-//   uSim0  rgba16f segments, DEW_SEG_TEXELS texels each, DEW_SEG_ROW per row; segment s starts at
-//          (3 (s % DEW_SEG_ROW), s / DEW_SEG_ROW). Positions are split hi + lo (hi a multiple of
-//          1/64, exact in half floats, lo the remainder) so threads stay put to a hundredth of a cell:
-//          t0 = (a.x, a.y, b.x, b.y) hi; t1 = the same, lo; t2 = (a.z, b.z, wet, code). Threads:
-//          wet = round(wetness × DEW_WET_LEVELS) + 0.5 + 0.45 × dry, where dry > 0 means beads at
-//          t < dry are gone and dry < 0 beads at t > -dry (a drop is sweeping the thread); code =
-//          kind × DEW_CODE + beads along it. Stems (stalk, leaf blades, seed head, awns; sim.ts
-//          #packStems): wet = the radius at b in DEW_STEM_UNIT + DEW_CODE × the piece (DEW_PIECE_*),
-//          code = kind × DEW_CODE + the radius at a in DEW_STEM_UNIT.
-//   uSim1  r16f bins (sims/bins.ts BinLists): a grid of square bins one 1/rows of the frame height
-//          across, from the frame's bottom-left corner, each listing what reaches into it: s + 1 for
-//          segment s, -(d + 1) for drop d, 0 ends the list. As many pages of BIN_PAGE entries as the
-//          fullest bin needs (header t2.z), so the hub, where every radius meets, keeps them all.
-//   uSim2  rgba16f drops, two texels each: (x, y) hi, (x, y) lo of the centre; (radius, z,
-//          stretch, squash). Radius 0 = no drop.
-//   uSim3  rgba16f header: t0 = hub (x, y) hi, lo; t1 = (hub z, focus z, the hub's turn (radians),
-//          web radius); t2 = (gust 0..1, breeze 0..1, pages of bin lists, 0).
+// Data (all nearest, read with texelFetch):
+//   field 0  rgba16f segments, DEW_SEG_TEXELS texels each, DEW_SEG_ROW per row; segment s starts at
+//            (3 (s % DEW_SEG_ROW), s / DEW_SEG_ROW). Positions are split hi + lo (hi a multiple of
+//            1/64, exact in half floats, lo the remainder) so threads stay put to a hundredth of a
+//            cell: t0 = (a.x, a.y, b.x, b.y) hi; t1 = the same, lo; t2 = (a.z, b.z, wet, code).
+//            Threads: wet = round(wetness × DEW_WET_LEVELS) + 0.5 + 0.45 × dry, where dry > 0 means
+//            beads at t < dry are gone and dry < 0 beads at t > -dry (a drop is sweeping the
+//            thread); code = kind × DEW_CODE + beads along it. Stems (stalk, leaf blades, seed head,
+//            awns; sim.ts #packStems): wet = the radius at b in DEW_STEM_UNIT + DEW_CODE × the piece
+//            (DEW_PIECE_*), code = kind × DEW_CODE + the radius at a in DEW_STEM_UNIT.
+//   field 1  r16f bins (sims/bins.ts BinLists): a grid of square bins one 1/rows of the frame height
+//            across, from the frame's bottom-left corner, each listing what reaches into it: s + 1
+//            for segment s, -(d + 1) for drop d, 0 ends the list. As many pages of BIN_PAGE entries
+//            as the fullest bin needs (header t2.z), so the hub, where every radius meets, keeps them.
+//   row 0    rgba16f (the records atlas): the drops, two texels each from texel 0: (x, y) hi, (x, y)
+//            lo of the centre; (radius, z, stretch, squash), radius 0 = no drop. Then the header
+//            from texel DEW_HEAD_AT: t0 = hub (x, y) hi, lo; t1 = (hub z, focus z, the hub's turn
+//            (radians), web radius); t2 = (gust 0..1, breeze 0..1, pages of bin lists, 0).
+// Until the first web is up the fields are unbound (webField0On() false) and nothing of it is drawn.
 //
 // Units: frame heights, x from the frame's left edge, y up from its bottom, z toward the viewer.
+import type { LayerFrame, LayerSim } from "../../composer/types.ts";
 import { KnobReader, type ParamDef } from "../../params.ts";
 import { MAX_PRINCIPALS } from "../../principals.ts";
 import { BinLists } from "../../sims/bins.ts";
@@ -51,7 +58,7 @@ import { approach } from "../../sims/math.ts";
 import { mulberry32 } from "../../sims/random.ts";
 import { DataTexture } from "../../sims/texture.ts";
 import type { VerletForce, VerletStepOptions } from "../../sims/verlet.ts";
-import type { PrincipalState, SceneSim, SimFactory, SimFrame, ScenePoint } from "../types.ts";
+import type { PrincipalState, ScenePoint } from "../types.ts";
 import {
   BEAD_SPACING,
   breezeAt,
@@ -85,6 +92,8 @@ import { DEW_PASSAGE } from "./constants.ts";
 export const DEW_SEG_TEXELS = 3;
 export const DEW_SEG_ROW = 512;
 export const DEW_DROPS = 48;
+/** The header's first texel in the web's row of the records atlas: after the drops' two texels each. */
+export const DEW_HEAD_AT = DEW_DROPS * 2;
 /** A stem's radius unit in its code, frame heights. */
 export const DEW_STEM_UNIT = 1 / 4000;
 /** What a stem capsule is: the stalk, a leaf blade, the seed head's spindle, an awn (a bristle of the head). */
@@ -281,32 +290,22 @@ function leafProfile(t: number): number {
 
 // ---- the simulation ---------------------------------------------------------------------------------
 
-type DewKnob = "breeze" | "dew" | "dof" | "webSeed";
+type DewKnob = "breeze" | "dew" | "dof" | "seed";
 
 const RIDING = 1;
 const FALLING = 2;
-/** What the sim hands the renderer before its first web is up: nothing (the shader draws no web). */
-const NO_TEXTURES: readonly (WebGLTexture | undefined)[] = [
-  undefined,
-  undefined,
-  undefined,
-  undefined,
-];
 
-class DewSim implements SceneSim {
+class DewSim implements LayerSim {
   readonly #knobs: KnobReader<DewKnob>;
   /** The trigger slot of the breeze's "now" (a gust). */
   readonly #gustSlot: number;
   readonly #segTex: DataTexture;
   readonly #binTex: DataTexture;
-  readonly #dropTex: DataTexture;
-  readonly #headTex: DataTexture;
   #segData = new Float32Array(4);
-  /** What reaches into each bin of the frame, for uSim1. */
+  /** What reaches into each bin of the frame, for field 1. */
   readonly #lists = new BinLists(BIN_PAGES);
   readonly #dropData = new Float32Array(DEW_DROPS * 2 * 4);
   readonly #headData = new Float32Array(3 * 4);
-  readonly #textures: (WebGLTexture | undefined)[] = [undefined, undefined, undefined, undefined];
 
   /** The web on show; undefined until the first one lands. */
   #web: DewWeb | undefined;
@@ -397,19 +396,7 @@ class DewSim implements SceneSim {
     });
     // Sized to the bin lists before each upload.
     this.#binTex = new DataTexture(gl, { width: 1, height: 1, format: "r16f", filter: "nearest" });
-    this.#dropTex = new DataTexture(gl, {
-      width: DEW_DROPS * 2,
-      height: 1,
-      format: "rgba16f",
-      filter: "nearest",
-    });
-    this.#headTex = new DataTexture(gl, {
-      width: 3,
-      height: 1,
-      format: "rgba16f",
-      filter: "nearest",
-    });
-    this.#openingSeed = Math.round(knobs.initial("webSeed"));
+    this.#openingSeed = Math.round(knobs.initial("seed"));
     this.#opts = {
       gravity: [0, GRAVITY, 0],
       damping: DAMPING,
@@ -418,16 +405,17 @@ class DewSim implements SceneSim {
     };
   }
 
-  frame(frame: SimFrame): readonly (WebGLTexture | undefined)[] {
+  frame(frame: LayerFrame): void {
     const knobs = this.#knobs;
     this.#breeze = Math.max(0, knobs.value(frame, "breeze"));
     this.#dew = Math.min(1, Math.max(0, knobs.value(frame, "dew")));
     this.#dof = Math.max(0, knobs.value(frame, "dof"));
     const aspect = Number.isFinite(frame.aspect) && frame.aspect > 0 ? frame.aspect : 16 / 9;
-    const seed = Math.round(knobs.value(frame, "webSeed"));
+    const seed = Math.round(knobs.value(frame, "seed"));
     this.#respin(frame.now, frame.budget, aspect, seed);
-    // Nothing shows, and no clock runs, until a web for the frame's shape is up.
-    if (!this.#fitted) return NO_TEXTURES;
+    // Nothing shows, and no clock runs, until a web for the frame's shape is up: its fields stay
+    // unbound until then.
+    if (!this.#fitted) return;
     this.#fitBins(frame.height, aspect);
 
     // The passage: the web swings in on its anchor threads as a gust settles, and out again on another.
@@ -456,11 +444,13 @@ class DewSim implements SceneSim {
     if (!this.#passing) this.#play(frame.principals, aspect);
 
     this.#pack(frame.height);
-    this.#textures[0] = this.#segTex.texture;
-    this.#textures[1] = this.#binTex.texture;
-    this.#textures[2] = this.#dropTex.texture;
-    this.#textures[3] = this.#headTex.texture;
-    return this.#textures;
+    const row = frame.records.data;
+    row.set(this.#dropData, 0);
+    row.set(this.#headData, DEW_HEAD_AT * 4);
+    frame.records.touch();
+    const [segments, lists] = frame.fields;
+    if (segments !== undefined) segments.texture = this.#segTex.texture;
+    if (lists !== undefined) lists.texture = this.#binTex.texture;
   }
 
   ready(): boolean {
@@ -485,8 +475,6 @@ class DewSim implements SceneSim {
     this.#spinning.dispose();
     this.#segTex.dispose();
     this.#binTex.dispose();
-    this.#dropTex.dispose();
-    this.#headTex.dispose();
   }
 
   // ---- building -----------------------------------------------------------------------------------
@@ -1376,8 +1364,6 @@ class DewSim implements SceneSim {
     this.#segTex.upload(seg);
     this.#binTex.resize(lists.width, lists.height);
     this.#binTex.upload(lists.data);
-    this.#dropTex.upload(drop);
-
     // The header: the hub, the focus, how the hub has turned (for the spider and her M).
     const hub = web.layout.hub * 3;
     const hx = drawn[hub] ?? 0;
@@ -1397,7 +1383,6 @@ class DewSim implements SceneSim {
     head[9] = this.#breeze;
     head[10] = lists.pages;
     head[11] = 0;
-    this.#headTex.upload(head);
   }
 
   #writeSegment(
@@ -1435,8 +1420,7 @@ class DewSim implements SceneSim {
   }
 }
 
-/** The dewy web's simulation, for a scene whose `params` carry the knobs `DewKnob` names. */
-export function dewSim(params: readonly ParamDef[]): SimFactory {
-  const knobs = new KnobReader<DewKnob>("dew", params, ["breeze", "dew", "dof", "webSeed"]);
-  return (gl) => new DewSim(gl, knobs);
+/** The web's simulation (the web layer's LayerSim), for its knobs under their short keys. */
+export function webSim(gl: WebGL2RenderingContext, params: readonly ParamDef[]): LayerSim {
+  return new DewSim(gl, new KnobReader<DewKnob>("web", params, ["breeze", "dew", "dof", "seed"]));
 }

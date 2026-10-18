@@ -35,69 +35,70 @@ export const presets: readonly Preset[] = [
   },
   {
     name: "Countryside · flower valley",
-    commit: "e3e1d4ec",
+    commit: "PENDING",
     query:
-      "scene=country&time=0.58&clouds=0.25&landscape=17&crops=0&woodland-amount=50&wildflowers=1&wildflowers-amount=100&date=0.375",
+      "scene=country&time=0.58&clouds=0.25&season=0.375&seed=17&crops=0&woodland-amount=50&farmlandWildflowers=1&farmlandWildflowers-amount=100",
     savedAt: "2026-10-16",
   },
   {
     name: "Countryside · lavender rows",
-    commit: "e3e1d4ec",
-    query: "scene=country&crops=0&woodland-amount=50&lavender=1&lavender-amount=100&date=0.375",
+    commit: "PENDING",
+    query: "scene=country&season=0.375&crops=0&woodland-amount=50&lavender=1&lavender-amount=100",
     savedAt: "2026-10-16",
   },
   {
     name: "Countryside · sunflowers",
-    commit: "e3e1d4ec",
-    query: "scene=country&crops=0&woodland-amount=50&sunflowers=1&sunflowers-amount=100&date=0.375",
+    commit: "PENDING",
+    query:
+      "scene=country&season=0.375&crops=0&woodland-amount=50&sunflowers=1&sunflowers-amount=100",
     savedAt: "2026-10-16",
   },
   {
     name: "Countryside · mixed patchwork",
-    commit: "e3e1d4ec",
+    commit: "PENDING",
     query:
-      "scene=country&crops-amount=30&woodland-amount=50&wildflowers=1&wildflowers-amount=28&lavender=1&lavender-amount=22&sunflowers=1&date=0.375",
+      "scene=country&season=0.375&crops-amount=30&woodland-amount=50&farmlandWildflowers=1&farmlandWildflowers-amount=28&lavender=1&lavender-amount=22&sunflowers=1",
     savedAt: "2026-10-16",
   },
   {
     name: "Countryside · woodland valley",
-    commit: "e3e1d4ec",
+    commit: "PENDING",
     query:
-      "scene=country&time=0.64&crops-amount=40&woodland-amount=100&pasture=1&pasture-amount=60&pines=0.4&birds=1&birds-amount=0.8&birdKind=4&date=0.6",
+      "scene=country&time=0.64&birds=1&birds-amount=0.8&birdKind=4&season=0.6&crops-amount=40&woodland-amount=100&pasture=1&pasture-amount=60&farmlandPines=0.4",
     savedAt: "2026-10-16",
   },
   {
     name: "Countryside · riverside",
-    commit: "e3e1d4ec",
+    commit: "PENDING",
     query:
-      "scene=country&time=0.72&crops-amount=65&woodland-amount=50&pasture=1&pasture-amount=35&cows=1&river-amount=1&walkers=1&walkers-amount=0.7&carts=1&birds=1&birds-amount=0.8&murmuration=1&date=0.375",
+      "scene=country&time=0.72&birds=1&birds-amount=0.8&season=0.375&waterway-amount=1&starlings=1&crops-amount=65&woodland-amount=50&pasture=1&pasture-amount=35&cows=1&walkers=1&walkers-amount=0.7&carts=1",
     savedAt: "2026-10-16",
   },
   {
     name: "Countryside · wildwood",
-    commit: "defa703a",
-    query: "scene=country&time=0.64&crops=0&woodland-amount=100&pines=0.45&date=0.6",
+    commit: "PENDING",
+    query: "scene=country&time=0.64&season=0.6&crops=0&woodland-amount=100&farmlandPines=0.45",
     savedAt: "2026-10-16",
   },
   {
     name: "Countryside · grazing valley",
-    commit: "defa703a",
+    commit: "PENDING",
     query:
-      "scene=country&crops-amount=40&woodland-amount=20&pasture=1&pasture-amount=45&cows=0.7&herd=0.8&verges=1&date=0.375",
+      "scene=country&season=0.375&verges=1&crops-amount=40&woodland-amount=20&pasture=1&pasture-amount=45&cows=0.7&herd=0.8",
     savedAt: "2026-10-16",
   },
   {
     name: "Countryside · flower country",
-    commit: "defa703a",
+    commit: "PENDING",
     query:
-      "scene=country&time=0.6&crops-amount=25&woodland-amount=15&wildflowers=1&lavender=1&sunflowers=1&date=0.375",
+      "scene=country&time=0.6&season=0.375&crops-amount=25&woodland-amount=15&farmlandWildflowers=1&lavender=1&sunflowers=1",
     savedAt: "2026-10-16",
   },
   {
     name: "Countryside · market town at dusk",
-    commit: "defa703a",
+    commit: "PENDING",
     query:
-      "scene=country&time=0.78&village-amount=26&hamlets-amount=3&farms-amount=8&walkers=1&walkers-amount=0.8&carts=1&murmuration=1",
+      "scene=country&time=0.78&starlings=1&village-amount=26&hamlets-amount=3&farms-amount=8&walkers=1&walkers-amount=0.8&carts=1",
     savedAt: "2026-10-16",
   },
   {
@@ -108,8 +109,8 @@ export const presets: readonly Preset[] = [
   },
   {
     name: "Swell · heavy swell",
-    commit: "f1ca6557",
-    query: "scene=swell&height=0.8&relief=0.6&wind=0.6",
+    commit: "PENDING",
+    query: "scene=swell&wind=0.6&height=0.8&relief=0.6",
     savedAt: "2026-10-15",
   },
   {
@@ -289,8 +290,8 @@ export const presets: readonly Preset[] = [
   },
   {
     name: "City crossing · late delivery",
-    commit: "f1ca6557",
-    query: "scene=street&crowd=0.2&traffic=0.3&delivery=1&delivery-amount=0.8&time=0.96",
+    commit: "PENDING",
+    query: "scene=street&time=0.96&crowd=0.2&traffic=0.3&delivery=1&delivery-amount=0.8",
     savedAt: "2026-10-15",
   },
   {
@@ -360,6 +361,12 @@ export const presets: readonly Preset[] = [
     query:
       "scene=bees&grass=1&wildflowers=1&wildflowers-amount=1&flowers=1.6&grassHeight=0.3&grassDensity=0.45&overgrowth=0.15",
     savedAt: "2026-10-17",
+  },
+  {
+    name: "Bees · in the valley",
+    commit: "PENDING",
+    query: "scene=bees&hillside=0&valley=1",
+    savedAt: "2026-10-18",
   },
 ];
 

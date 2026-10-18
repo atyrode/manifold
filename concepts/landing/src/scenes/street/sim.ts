@@ -1,5 +1,6 @@
-// The city crossing's simulation: a scramble crossing where a side street meets an avenue, seen
-// from a high window, run on the CPU and handed to the shader (shader.ts) as three textures.
+// The city crossing's simulation, the `streetLife` layer's (layers.ts): a scramble crossing where a
+// side street meets an avenue, seen from a high window, run on the CPU and handed to the shader
+// (shader.ts) through the composer's shared resources.
 //
 // World units are metres: x right along the avenue, y up, z away from the window. The eye is
 // CAM_H up at x = CAM_X, z = 0, looking up the side street and down at the crossing. The avenue
@@ -84,30 +85,34 @@
 // before the scramble (crowds waiting at the kerbs, the avenue's traffic queued at its red light)
 // and runs it for PREWARM seconds, the walkers on the opening's own paths (#layingOut): a count of
 // steps, spread over as many frames as the frame's budget needs, while the clock holds and the
-// textures keep what they show (on a reseed, the old street). Nothing is allocated per frame.
+// rows and the field keep what they show (on a reseed, the old street); the sim is ready (`ready`)
+// once that street is laid out. Nothing is allocated per frame.
 //
-// The scene's passage (SceneDef.passage, STREET_PASSAGE): the camera comes down from the skyline onto
-// the crossing as the crowd walks in along its sidewalks to where it gathers, and on the way out it
-// tilts up again. The tilt (passageTilt) is the window's pitch raised above its rest value; the shader
-// reads the same tilt from passageIn() / passageOut(), and the pointer is traced with it. The crowd's
-// walk-in only moves where walkers are drawn (and binned), never the simulation, and draws no random
-// numbers. Both are exactly off at rest.
+// The layer's passage (LayerFrame.passage: the scene's, or its own when switched on mid-scene): the
+// crowd walks in along its sidewalks to where it gathers. The scene's passage also tilts the window
+// (passageTilt, the window's pitch raised above its rest value; the shader reads the same tilt from
+// passageIn() / passageOut()), and the pointer is traced with it. The crowd's walk-in only moves where
+// walkers are drawn (and binned), never the simulation, and draws no random numbers. Both are exactly
+// off at rest.
 //
-// Textures:
-//   uSim0  rgba16f, MAX_AGENTS × 2, nearest. Slot i (walkers first, then vehicles):
+// What it keeps in the composer's shared resources (constants.ts STREET_DATA; the shader reads them
+// through the layer's accessors, streetLifeRecord and streetLifeField0):
+//   rows 0, 1 of its records: texel i the slot i (walkers first, then vehicles; rgba16f):
 //          row 0: x, z − Z_REF (m), heading (rad: direction cos, sin in x, z), kind (KIND_*; 0 empty)
 //          row 1: walkers and bicycles: umbrella open 0..1, looking up 0..1 (a porter: crates on its
 //                 trolley), gait phase 0..1, seed;
 //                 motor vehicles: brake 0..1, blinker (+1 left, −1 right, 2 hazards, 0), speed (m/s), seed
-//   uSim1  rgba8, TILES_X·TILE_TEXELS × TILES_Z, nearest: for each TILE-metre square of the street,
+//   row 2: texel 0 the avenue's lights (green, amber, red, 0), texel 1 the side street's, texel 2 the
+//          walk signals (green man, red man, 0, 0), each eased over LAMP_FADE seconds; the green man
+//          blinks while the walk phase runs out.
+//   field 0: rgba8, TILES_X·TILE_TEXELS × TILES_Z, nearest: for each TILE-metre square of the street,
 //          the first TILE_BODIES / 4 texels hold up to TILE_BODIES agent slots + 1 (0: none) whose
 //          bodies may be seen through it (seen from the window, a body covers the ground from its
 //          feet to where the ray past its top lands), nearest the window first; the next
 //          TILE_LIGHTS / 4 texels up to TILE_LIGHTS vehicles whose lamps light it (beams, tail
 //          glow, their halo and their reflection).
-//   uSim2  rgba16f, 3 × 1, nearest: texel 0 the avenue's lights (green, amber, red, 0), texel 1 the
-//          side street's, texel 2 the walk signals (green man, red man, 0, 0), each eased over
-//          LAMP_FADE seconds; the green man blinks while the walk phase runs out.
+import { ATLAS_WIDTH } from "../../composer/caps.ts";
+import type { LayerFrame, LayerSim, RecordRows } from "../../composer/types.ts";
 import type { ParamDef } from "../../params.ts";
 import { MAX_PRINCIPALS } from "../../principals.ts";
 import { FixedStep, runBudgeted } from "../../sims/clock.ts";
@@ -115,19 +120,19 @@ import { DataTexture } from "../../sims/texture.ts";
 import { Errand } from "../../sims/errand.ts";
 import { clamp, fract, smoothstep } from "../../sims/math.ts";
 import { Random } from "../../sims/random.ts";
-import type { SceneSim, SimFactory, SimFrame } from "../types.ts";
-import { STREET_PASSAGE } from "./constants.ts";
+import {
+  CAM_H,
+  CAM_X,
+  FOCAL,
+  PITCH,
+  STREET_PASSAGE,
+  TILT_ARRIVE,
+  TILT_IN,
+  TILT_OUT,
+} from "./constants.ts";
 
-// ---- The view and the street, shared with the shader ----
+// ---- The street, shared with the shader ----
 
-/** The eye: x (m), height (m), pitch below the horizontal (rad, 42°), focal length (screen heights
- *  per unit of slope: a 37° vertical field of view). The window is a little left of the side
- *  street, so the crossing sits right of centre and the lower left (the page's copy) looks down
- *  the quieter avenue with its queue of cars. */
-export const CAM_X = -5;
-export const CAM_H = 28;
-export const PITCH = 0.733;
-export const FOCAL = 1.5;
 /** Positions go to the shader as z − Z_REF, which keeps them small for half floats. */
 export const Z_REF = 40;
 
@@ -740,11 +745,15 @@ const PULL_OUT = 12;
 const CLEAR_BEHIND = 32;
 const CLEAR_AHEAD = 6;
 /** A cyclist in the kerb lane swings out round the parked van by this much (m), easing out and back
- *  over SWERVE_RAMP metres, and waits behind it while a car in the next lane is within SWERVE_WAIT
- *  metres behind it or alongside. */
+ *  over SWERVE_RAMP metres (its swing rising at most SWERVE_RISE a second, so one held at the ramp's
+ *  foot eases out when let go), and waits short of it, in its lane, while a car comes along the next
+ *  lane or onto it (#carComing): one within SWERVE_WAIT metres plus SWERVE_HEADWAY seconds of its
+ *  speed behind it, or alongside. */
 const BIKE_SWERVE = 1.7;
 const SWERVE_RAMP = 4;
+const SWERVE_RISE = 2;
 const SWERVE_WAIT = 10;
+const SWERVE_HEADWAY = 1.5;
 /** The van and the cyclists in the kerb lane. Within DELIVERY_APPROACH metres of its stop, until it
  *  stands in at the kerb, they keep in one file: it does not pass a cyclist it would ease in over,
  *  nor a cyclist it. It stands in once VAN_IN metres off its lane toward the kerb, so near straight
@@ -773,8 +782,7 @@ const OPENING = 3;
 const SEED_BASE = 0x5717ee7;
 const TAU = Math.PI * 2;
 
-type KnobKey =
-  "crowd" | "signal" | "outing" | "traffic" | "delivery" | "rain" | "snow" | "streetSeed";
+type KnobKey = "crowd" | "signal" | "outing" | "traffic" | "delivery" | "rain" | "snow" | "seed";
 
 /** Angle a − b wrapped to −π..π. */
 const angleDiff = (a: number, b: number): number => {
@@ -783,13 +791,6 @@ const angleDiff = (a: number, b: number): number => {
 };
 
 // ---- The passage ----
-
-/** How far the window's pitch is raised (rad, 31.5°) when the entrance starts, with the skyline in
- *  view and the crossing below the frame, and where the exit ends. */
-export const TILT_IN = 0.55;
-export const TILT_OUT = 0.55;
-/** The share of the entrance the camera takes to come down and settle. */
-export const TILT_ARRIVE = 0.8;
 
 /** How far the camera is raised above its rest pitch (rad), from the passage's progress (0..1 each):
  *  coming in it is on its way down from the first frame, braking into a little overshoot, then
@@ -1185,17 +1186,18 @@ class Vehicle {
   pullOut = Number.NaN;
   /** A bicycle: how far round the parked van it has swung, 0..1. */
   swerve = 0;
+  /** A bicycle: held short of swinging out round the parked van this step, a car coming (#carComing). */
+  held = false;
 }
 
-class StreetCrossing implements SceneSim {
-  readonly #agents: DataTexture;
+/** The records' row length (rgba16f texels: four floats each). */
+const ROW = ATLAS_WIDTH * 4;
+if (MAX_AGENTS > ATLAS_WIDTH)
+  throw new Error(`street: ${MAX_AGENTS} agent slots do not fit a row of the records atlas`);
+
+class StreetCrossing implements LayerSim {
   readonly #tiles: DataTexture;
-  readonly #state: DataTexture;
-  /** The textures handed to the renderer every frame. */
-  readonly #textures: readonly (WebGLTexture | undefined)[];
-  readonly #agentData = new Float32Array(MAX_AGENTS * 2 * 4);
   readonly #tileData = new Uint8Array(TILES_X * TILE_TEXELS * TILES_Z * 4);
-  readonly #stateData = new Float32Array(3 * 4);
   readonly #bodyCount = new Uint8Array(TILES_X * TILES_Z);
   readonly #lightCount = new Uint8Array(TILES_X * TILES_Z);
   readonly #order = new Int32Array(MAX_AGENTS);
@@ -1279,11 +1281,22 @@ class StreetCrossing implements SceneSim {
   readonly #hoverX = new Float64Array(MAX_PRINCIPALS);
   readonly #hoverZ = new Float64Array(MAX_PRINCIPALS);
 
+  /** The "now" slots of the lights' change, the outing and the delivery. */
+  readonly #signalSlot: number;
+  readonly #outingSlot: number;
+  readonly #deliverySlot: number;
+
   constructor(gl: WebGL2RenderingContext, params: readonly ParamDef[]) {
     const index = (key: KnobKey): number => {
       const at = params.findIndex((def) => def.key === key);
       if (at < 0) throw new StreetSimError(`street: the scene has no '${key}' knob`);
       return at;
+    };
+    const slot = (key: KnobKey): number => {
+      const trigger = params[index(key)]?.trigger;
+      if (trigger === undefined)
+        throw new StreetSimError(`street: the '${key}' knob has no trigger slot`);
+      return trigger;
     };
     this.#knobIndex = {
       crowd: index("crowd"),
@@ -1293,30 +1306,26 @@ class StreetCrossing implements SceneSim {
       delivery: index("delivery"),
       rain: index("rain"),
       snow: index("snow"),
-      streetSeed: index("streetSeed"),
+      seed: index("seed"),
     };
-    this.#agents = new DataTexture(gl, {
-      width: MAX_AGENTS,
-      height: 2,
-      format: "rgba16f",
-      filter: "nearest",
-    });
+    this.#signalSlot = slot("signal");
+    this.#outingSlot = slot("outing");
+    this.#deliverySlot = slot("delivery");
     this.#tiles = new DataTexture(gl, {
       width: TILES_X * TILE_TEXELS,
       height: TILES_Z,
       format: "rgba8",
       filter: "nearest",
     });
-    this.#state = new DataTexture(gl, {
-      width: 3,
-      height: 1,
-      format: "rgba16f",
-      filter: "nearest",
-    });
-    this.#textures = [this.#agents.texture, this.#tiles.texture, this.#state.texture];
   }
 
-  frame(frame: SimFrame): readonly (WebGLTexture | undefined)[] {
+  /** Ready once the street is laid out (the warm-up done); a reseed's old street shows meanwhile. */
+  ready(): boolean {
+    return this.#warmed >= PREWARM_STEPS;
+  }
+
+
+  frame(frame: LayerFrame): void {
     const values = frame.values;
     const index = this.#knobIndex;
     this.#crowd = clamp(values[index.crowd] ?? 0.5, 0, 1);
@@ -1334,7 +1343,7 @@ class StreetCrossing implements SceneSim {
     this.#enter = enter;
     this.#tilt = passageTilt(enter, clamp(frame.passage.exit, 0, 1));
 
-    const seed = Math.round(values[index.streetSeed] ?? 0);
+    const seed = Math.round(values[index.seed] ?? 0);
     if (seed !== this.#seed) this.#reset(seed);
     if (this.#warmed < PREWARM_STEPS) {
       this.#warmed = runBudgeted(
@@ -1344,8 +1353,8 @@ class StreetCrossing implements SceneSim {
         this.#warmed,
         PREWARM_CHUNK,
       );
-      // Until the street is laid out its clock holds and the textures keep what they show.
-      if (this.#warmed < PREWARM_STEPS) return this.#textures;
+      // Until the street is laid out its clock holds and the rows and the field keep what they show.
+      if (this.#warmed < PREWARM_STEPS) return;
       this.#laidOut();
     }
 
@@ -1362,22 +1371,21 @@ class StreetCrossing implements SceneSim {
 
     const steps = this.#steps.advance(Math.max(0, frame.dt) * Math.max(0, frame.motion));
     for (let i = 0; i < steps; i++) this.#step(STEP);
-    this.#upload(this.#steps.alpha);
+    this.#upload(this.#steps.alpha, frame.records);
+    const field = frame.fields[0];
+    if (field !== undefined) field.texture = this.#tiles.texture;
     this.#shown = true;
-    return this.#textures;
   }
 
   dispose(): void {
-    this.#agents.dispose();
     this.#tiles.dispose();
-    this.#state.dispose();
   }
 
   /** A "now" button stamps its slot with the scene clock: any change since the last frame fires. */
   #watchTriggers(triggers: readonly number[]): void {
-    const signal = triggers[0] ?? -1e4;
-    const outing = triggers[1] ?? -1e4;
-    const delivery = triggers[2] ?? -1e4;
+    const signal = triggers[this.#signalSlot] ?? -1e4;
+    const outing = triggers[this.#outingSlot] ?? -1e4;
+    const delivery = triggers[this.#deliverySlot] ?? -1e4;
     if (this.#primed) {
       if (signal !== this.#seenSignal && signal > -1e3) this.#changeLights();
       if (outing !== this.#seenOuting && outing > -1e3) this.#startOuting();
@@ -1393,7 +1401,7 @@ class StreetCrossing implements SceneSim {
    * The hands: where on the street each points (walkers near any look up); the visitor's click
    * changes the lights (one controller, one hand on it: see the header).
    */
-  #follow(frame: SimFrame): void {
+  #follow(frame: LayerFrame): void {
     for (let i = 0; i < MAX_PRINCIPALS; i++) {
       const hand = frame.principals[i];
       const over = hand !== undefined && hand.inside && this.#toGround(hand.x, hand.y);
@@ -2803,6 +2811,7 @@ class StreetCrossing implements SceneSim {
     vehicle.offset = 0;
     vehicle.pullOut = Number.NaN;
     vehicle.swerve = 0;
+    vehicle.held = false;
     return vehicle;
   }
 
@@ -2882,7 +2891,10 @@ class StreetCrossing implements SceneSim {
           lead = 0;
         }
       }
-      // A cyclist in the kerb lane waits behind the parked van while a car comes up the next lane.
+      // A cyclist in the kerb lane waits behind the parked van while a car comes along the next lane
+      // (or onto it), and does not swing out meanwhile. Its swing begins once its middle passes the
+      // ramp's foot, so it is held while its front is short of that.
+      me.held = false;
       if (bike && kerbVan && me.lane === L_EB_BIKE && me.swerve === 0) {
         const toSwerve =
           kerbVan.laneC -
@@ -2890,19 +2902,9 @@ class StreetCrossing implements SceneSim {
           SWERVE_RAMP -
           front -
           (me.laneC - me.s);
-        if (toSwerve > -0.5 && toSwerve < 12) {
-          let busy = false;
-          for (const other of vehicles) {
-            if (
-              other.alive &&
-              other.kind !== KIND_BIKE &&
-              other.lane === L_EB_OUT &&
-              other.laneC > me.laneC - SWERVE_WAIT &&
-              other.laneC < me.laneC + 3
-            )
-              busy = true;
-          }
-          if (busy && toSwerve < gap) {
+        if (toSwerve > -length / 2 && toSwerve < 12 && this.#carComing(me.laneC, kerbVan)) {
+          me.held = true;
+          if (toSwerve < gap) {
             gap = Math.max(toSwerve, 0);
             lead = 0;
           }
@@ -3147,18 +3149,39 @@ class StreetCrossing implements SceneSim {
 
   /** A cyclist in the kerb lane swings out (to its right) round the delivery van over it, and eases
    *  back in once past; if the van leaves first it eases back where it is. Past the van's middle it
-   *  only eases back in: it never swings out ahead of a van coming in behind it. */
+   *  only eases back in: it never swings out ahead of a van coming in behind it. Held (a car coming)
+   *  it keeps to its lane. */
   #swerve(bike: Vehicle, kerbVan: Vehicle | undefined, dt: number): void {
     const round = bike.lane === L_EB_BIKE ? kerbVan : undefined;
     const past = round !== undefined && bike.laneC > round.laneC;
-    let target = round ? swerveRound(round, bike.laneC) : 0;
+    let target = round && !bike.held ? swerveRound(round, bike.laneC) : 0;
     if (past) target = Math.min(target, bike.swerve);
-    bike.swerve = target >= bike.swerve ? target : Math.max(target, bike.swerve - dt);
+    bike.swerve =
+      target >= bike.swerve
+        ? Math.min(target, bike.swerve + SWERVE_RISE * dt)
+        : Math.max(target, bike.swerve - dt);
     if (bike.swerve <= 0) return;
     const next = round ? swerveRound(round, bike.laneC + 0.5) : target;
     const turn = past ? Math.min(next - target, 0) : next - target;
     bike.z -= BIKE_SWERVE * bike.swerve;
     bike.heading -= Math.atan((BIKE_SWERVE * turn) / 0.5);
+  }
+
+  /**
+   * Whether a car comes along the outer lane behind lane position c of the kerb lane, or is level with
+   * it, near enough that a cyclist there swinging out round the parked van would ride out in front of
+   * it: one in that lane, or still on its way into it (round the side street's left turn), by how far
+   * its own path runs to come level, SWERVE_WAIT metres and SWERVE_HEADWAY seconds of its speed.
+   */
+  #carComing(c: number, van: Vehicle): boolean {
+    for (const other of this.#vehicles) {
+      if (!other.alive || other === van || other.kind === KIND_BIKE) continue;
+      const at = PATHS[other.path].locate(L_EB_OUT, c);
+      if (Number.isNaN(at)) continue;
+      const behind = at - other.s;
+      if (behind > -3 && behind < SWERVE_WAIT + other.v * SWERVE_HEADWAY) return true;
+    }
+    return false;
   }
 
   // ---- The crowd's walk-in ----
@@ -3200,12 +3223,13 @@ class StreetCrossing implements SceneSim {
 
   // ---- Upload ----
 
-  #upload(alpha: number): void {
-    const data = this.#agentData;
+  /** The agents into rows 0 and 1 of the records, their tile lists, the signals into row 2. */
+  #upload(alpha: number, records: RecordRows): void {
+    const data = records.data;
     const walkers = this.#walkers;
     const vehicles = this.#vehicles;
-    const row1 = MAX_AGENTS * 4;
-    data.fill(0);
+    const row1 = ROW;
+    data.fill(0, 0, 3 * ROW);
     const order = this.#order;
     const key = this.#orderKey;
     let n = 0;
@@ -3265,7 +3289,6 @@ class StreetCrossing implements SceneSim {
       key[n] = Math.hypot(x - CAM_X, z);
       n++;
     }
-    this.#agents.upload(data);
 
     // Nearest the window first, so a full tile keeps the nearest.
     for (let a = 1; a < n; a++) {
@@ -3315,18 +3338,17 @@ class StreetCrossing implements SceneSim {
     this.#tiles.upload(this.#tileData);
 
     // The signals' lamps.
-    const state = this.#stateData;
     const lamps = this.#signals.lamps;
-    state.fill(0);
-    state[0] = lamps[0] ?? 0;
-    state[1] = lamps[1] ?? 0;
-    state[2] = lamps[2] ?? 0;
-    state[4] = lamps[3] ?? 0;
-    state[5] = lamps[4] ?? 0;
-    state[6] = lamps[5] ?? 0;
-    state[8] = lamps[6] ?? 0;
-    state[9] = lamps[7] ?? 0;
-    this.#state.upload(state);
+    const state = 2 * ROW;
+    data[state] = lamps[0] ?? 0;
+    data[state + 1] = lamps[1] ?? 0;
+    data[state + 2] = lamps[2] ?? 0;
+    data[state + 4] = lamps[3] ?? 0;
+    data[state + 5] = lamps[4] ?? 0;
+    data[state + 6] = lamps[5] ?? 0;
+    data[state + 8] = lamps[6] ?? 0;
+    data[state + 9] = lamps[7] ?? 0;
+    records.touch();
   }
 
   /** Bin an agent's body: a box (half extents along and across its heading) standing `top` high,
@@ -3553,7 +3575,7 @@ function towardMiddle(x: number, z: number, p: Float64Array): void {
   p[1] = d > 1e-9 ? dz / d : 0;
 }
 
-/** The crossing's simulation for a scene whose knobs are `params` (looked up by key). */
-export function streetSim(params: readonly ParamDef[]): SimFactory {
-  return (gl) => new StreetCrossing(gl, params);
+/** The street's life (layers.ts streetLife): the crossing's simulation over the composer's knobs `params`. */
+export function streetLifeSim(gl: WebGL2RenderingContext, params: readonly ParamDef[]): LayerSim {
+  return new StreetCrossing(gl, params);
 }

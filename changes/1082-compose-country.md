@@ -1,0 +1,6 @@
+---
+section: Changed
+issue: 1082
+---
+
+The landing concept's countryside is now a preset of the `outdoor` composer (ADR 0062 Phase 2c): eight layers drawn through the hill's rig, its camera still coming down out of the sky on the way in. The `valley` is the backdrop (the land carved by running water, its sim in four field slots, the far ridges over the World's sky, the valley fog on the World's fog knob), the `waterway` (the river, its switch the old `river`), `farmland` (the land's uses, the hedges, the bales and the chalk M), `settlements`, `verges`, `herds`, `travellers` (walkers and carts) and `starlings` (the murmuration) stand on it; the World's sky, rain, snow and birds replace the countryside's own, and its default picture draws as before. The valley is also offered to the bees garden, which the committed preset "Bees · in the valley" sets behind its hedge in place of the painted hillside. Keys: `landscape` is `seed`, `date` the composer's `season`, `river` `waterway`, `murmuration` `starlings`, and `relief`, `ripples`, `wildflowers`, `pines` and `smoke` are qualified (`valleyRelief`, `waterwayRipples`, `farmlandWildflowers`, `farmlandPines`, `settlementsSmoke`); old links do not carry over and the committed country presets are rewritten.

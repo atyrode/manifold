@@ -25,20 +25,20 @@ const states = (layers: SceneLayers, value: (key: string) => number) =>
 describe("the Layers section", () => {
   test("lays the offered layers out by role, each on, off or refused with its reason", () => {
     expect(states(bees, beesAt())).toEqual([
-      { role: "backdrop", layers: ["downs off", "hillside on"] },
+      { role: "backdrop", layers: ["downs off", "hillside on", "valley off"] },
       { role: "ground", layers: ["lawn on"] },
       { role: "dressing", layers: ["apiary on", "dandelions off"] },
       { role: "cover", layers: ["grass off", "wildflowers off"] },
-      { role: "life", layers: ["insects on"] },
+      { role: "life", layers: ["insects on", "murmuration off"] },
       { role: "chore", layers: ["gardening on"] },
     ]);
     expect(states(bees, beesAt({ apiary: 0 })).slice(-2)).toEqual([
-      { role: "life", layers: ["insects refused: needs Apiary"] },
+      { role: "life", layers: ["insects refused: needs Apiary", "murmuration off"] },
       { role: "chore", layers: ["gardening refused: needs Apiary"] },
     ]);
     expect(
       states(meadow, (key) => paramDefaults("meadow")[key] ?? 0).map((row) => row.role),
-    ).toEqual(["backdrop", "dressing", "cover"]);
+    ).toEqual(["backdrop", "dressing", "cover", "life"]);
   });
 
   test("swaps a backdrop or a ground for the one of its role, and keeps the backdrop on", () => {
@@ -52,7 +52,7 @@ describe("the Layers section", () => {
     const swapped = beesAt(layerTurn(bees, beesAt(), "downs", true));
     expect(states(bees, swapped)[0]).toEqual({
       role: "backdrop",
-      layers: ["downs on", "hillside off"],
+      layers: ["downs on", "hillside off", "valley off"],
     });
   });
 

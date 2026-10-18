@@ -15,7 +15,10 @@
 //   7. The shared speck map, against c.zs (what stands above the floor: specks hide behind it).
 //   8. Every layer's `air` (the backdrop's forward scatter, a lamp's halo in the fog's air).
 //   9. worldFog, then worldPrecip at c.z (thinned under shelter claims, and as the backdrop's
-//      `precip` says: its thinning, its rain's air).
+//      `precip` says: its thinning, its rain's air, the axes a rig that is not level sees it through).
+//   9. worldFog; every layer's `glow` (light the air scatters toward the eye that the fog does not
+//      veil: swell's beams, its lamps' glow); then worldPrecip at c.z (thinned under shelter claims,
+//      and as the backdrop's `precip` says: its thinning, its rain's air).
 //  10. The grade's vignette and exposure, a speck's palette snap, and shadeOf with the grade's ink;
 //      then every layer's `shade` over it, in canonical order.
 // A pass of a layer playing its own entrance or exit (sim.ts, row 0 of the atlas) is shown in a
@@ -158,24 +161,30 @@ Mirrored composerMirror(Ctx x, vec3 at, vec3 ray, WorldView m, vec2 spread);
 
 /**
  * The plain floor (README "The site") of the preset's kind, where no ground layer lies. A kind that
- * holds no snow (water) is drawn without it: its snow's share would be 0 at every cell.
+ * holds no snow (water) is drawn without it: its snow's share would be 0 at every cell. Under a
+ * pitched rig (`pitched`: Rig.pitch not 0) the backdrop's begin gives the ray (x.v.ray, level frame)
+ * and how far along it the floor is (x.zg, metres along the ray), and the floor stands where they say.
  */
-function floorGlsl(kind: FloorKind): string {
+function floorGlsl(kind: FloorKind, pitched: boolean): string {
   const floor = FLOORS[kind];
   const snowed =
     floor.snow === 0
       ? "  c.col = col;"
       : `  float snow = ${glslFloat(floor.snow)} * snowCover(vec3(0.0, 1.0, 0.0), xz, uWeather.y) * (1.0 - shelterAt(xz, x));
   c.col = mix(col, vec3(0.92, 0.94, 0.98) * (x.light.amb * 1.1 + x.light.sun * 0.5 * lit), snow);`;
+  const at = pitched
+    ? "x.v.ray.xz * x.zg"
+    : "vec2((x.uv.x - 0.5) * x.aspect * x.zg / RIG_FOCAL, x.zg)";
+  const ahead = pitched ? "xz.y" : "x.zg";
   return `
 // The plain floor: ${kind}, lit by the key (the claims' and the clouds' shadows taken out) and the
 // layers' lights, wet and snowed on by the World, below the backdrop's land line.
 void composerFloor(Ctx x, inout Cell c) {
   if (x.uv.y >= x.groundTo || x.zg >= x.landZ) return;
-  vec2 xz = vec2((x.uv.x - 0.5) * x.aspect * x.zg / RIG_FOCAL, x.zg);
-  float lit = worldSunlit(x.w, x.v, vec3(xz.x, -x.eye, x.zg)) * (1.0 - casterShadow(xz, x));
+  vec2 xz = ${at};
+  float lit = worldSunlit(x.w, x.v, vec3(xz.x, -x.eye, ${ahead})) * (1.0 - casterShadow(xz, x));
   vec3 albedo = wetten(${vec3(floor.albedo)}, uWeather.x, ${glslFloat(floor.porous)});
-  vec3 col = albedo * (x.light.amb * 0.55 + x.light.sun * 0.5 * lit + localLight(vec3(xz.x, 0.0, x.zg), vec3(0.0, 1.0, 0.0)));
+  vec3 col = albedo * (x.light.amb * 0.55 + x.light.sun * 0.5 * lit + localLight(vec3(xz.x, 0.0, ${ahead}), vec3(0.0, 1.0, 0.0)));
   col += wetGloss(uWeather.x, 0.85) * x.air.deck * 0.3;
 ${snowed}
   c.z = x.zg;
@@ -360,21 +369,33 @@ ${specks
     grade.exposure === undefined
       ? ""
       : `  c.col = clamp(c.col * ${glslFloat(grade.exposure)}, 0.0, 1.0);\n`;
-  // The backdrop's say over the rain and snow: their thinning, and the air the far rain fuses into.
+  // The backdrop's say over the rain and snow: their thinning, the air the far rain fuses into, and
+  // the axes a rig that is not level sees them through.
   const backdrop = layers.find(({ def }) => def.role === "backdrop")?.def.precip;
   const rainAir = backdrop?.air === undefined ? "x.air.fog" : `${backdrop.air}(x)`;
   const thin =
     backdrop?.thin === undefined
       ? undefined
       : `vec2(${glslFloat(backdrop.thin[0])}, ${glslFloat(backdrop.thin[1])})`;
-  const precip = shelter
-    ? `  vec2 under = vec2((uv.x - 0.5) * x.aspect * min(c.z, x.landZ) / RIG_FOCAL, min(c.z, x.landZ));
-  worldPrecipThinned(x.w, x.v, ${rainAir}, x.air.drop, c.z, ${thin === undefined ? "" : `${thin} * `}vec2(1.0 - shelterAt(under, x)), c.col, c.accent);`
-    : thin === undefined
-      ? `  worldPrecip(x.w, x.v, ${rainAir}, x.air.drop, c.z, c.col, c.accent);`
-      : `  worldPrecipThinned(x.w, x.v, ${rainAir}, x.air.drop, c.z, ${thin}, c.col, c.accent);`;
+  const under = `  vec2 under = vec2((uv.x - 0.5) * x.aspect * min(c.z, x.landZ) / RIG_FOCAL, min(c.z, x.landZ));\n`;
+  const sheltered = `${thin === undefined ? "" : `${thin} * `}vec2(1.0 - shelterAt(under, x))`;
+  const precip =
+    backdrop?.seen !== undefined
+      ? `${shelter ? under : ""}  mat3 rainAxes;
+  mat3 snowAxes;
+  ${backdrop.seen}(x, rainAxes, snowAxes);
+  worldPrecipAxes(x.w, x.v, rainAxes, snowAxes, ${shelter ? sheltered : (thin ?? "vec2(1.0)")}, ${rainAir}, x.air.drop, c.z, c.col, c.accent);`
+      : shelter
+        ? `${under}  worldPrecipThinned(x.w, x.v, ${rainAir}, x.air.drop, c.z, ${sheltered}, c.col, c.accent);`
+        : thin === undefined
+          ? `  worldPrecip(x.w, x.v, ${rainAir}, x.air.drop, c.z, c.col, c.accent);`
+          : `  worldPrecipThinned(x.w, x.v, ${rainAir}, x.air.drop, c.z, ${thin}, c.col, c.accent);`;
   const shaded = layers.some(({ def }) => def.passes.shade !== undefined);
-  const shade = `shadeOf(c.col, inkOf(c.col, ${glslFloat(grade.ink.gain)}, ${glslFloat(grade.ink.gamma)}), clamp(c.accent, 0.0, 1.0))`;
+  const paper =
+    grade.ink.paper === undefined
+      ? ""
+      : `, vec2(${glslFloat(grade.ink.paper[0])}, ${glslFloat(grade.ink.paper[1])})`;
+  const shade = `shadeOf(c.col, inkOf(c.col, ${glslFloat(grade.ink.gain)}, ${glslFloat(grade.ink.gamma)}${paper}), clamp(c.accent, 0.0, 1.0))`;
   return `
 ${worldGlsl}
 // ---- the composer (composer/glsl.ts): preset ${preset.id}, layers ${layers.map(({ def }) => def.id).join(", ")} ----
@@ -432,7 +453,7 @@ ${rig.passage?.shift === true ? "  // The passage's tilt: the world read lower i
   x.landZ = WORLD_FAR;
   return x;
 }
-${floorGlsl(preset.floor)}
+${floorGlsl(preset.floor, rig.pitch !== 0)}
 ${[...shared.values()].map((chunk) => chunk.glsl).join("\n")}
 ${layers.map(({ def, code }) => a.rewrite(def, code.glsl(rig))).join("\n")}
 ${lightsGlsl(layers)}${mirrorGlsl(layers, preset)}
@@ -463,7 +484,7 @@ ${passCalls(layers, "front", "x, c")}${passCalls(layers, "frontVeil", "x, c")}${
 ${passCalls(layers, "air", "x, c")}
   // 9. The World's fog, then its rain and snow, at the depth of what the cell shows.
   worldFog(x.w, x.v, x.air.fog, c.z, c.col, c.accent);
-${precip}
+${passCalls(layers, "glow", "x, c")}${precip}
   // 10. The grade.
 ${vignette}${exposure}${specks.length === 0 ? "" : "  if (speck) c.col = snapLevel(c.col);\n"}${shaded ? `  Shade o = ${shade};\n${passCalls(layers, "shade", "x, c, o", () => true, ["Shade", "o"])}  return o;` : `  return ${shade};`}
 }

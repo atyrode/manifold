@@ -20,9 +20,9 @@ const q = (query: string) => new URLSearchParams(query);
 describe("a link", () => {
   test("is read in this build's keys: any other key is ignored and never written back", () => {
     expect(reread("v=3&scene=forest&rain=1&nonsense=2")).toBe("scene=forest&rain=1");
-    // The countryside has no season: its date stays at the default.
-    expect(reread("scene=country&season=2")).toBe("scene=country");
-    expect(readSetup(q("scene=country&season=2")).params).toEqual(paramDefaults("country"));
+    // The countryside's old `date` is the composer's `season` now: a link's `date` is no key of it.
+    expect(reread("scene=country&date=0.3")).toBe("scene=country");
+    expect(readSetup(q("scene=country&date=0.3")).params).toEqual(paramDefaults("country"));
   });
 
   test("naming an unknown scene opens the default scene with its lab settings, and is reported", () => {
