@@ -34,8 +34,8 @@ are the ports' own, taken under #1082 on the shared dev host.
 - **Built:** `src/composer/` (the contract in `types.ts`, `composeScene` in `compose.ts`, the
   placer in `place.ts`, the claims in `claims.ts`, the program in `glsl.ts`, the gust field in
   `gust.ts`, the composed sim in `sim.ts`, the code assembly in `code.ts`, the caps in `caps.ts`)
-  and the `outdoor` composer: 79 layers in canonical order (`outdoor.ts`: 19 backdrops, 15 grounds,
-  22 dressings, 7 covers, 12 life, 4 chores), their code by id in `outdoor-code.ts`. The `interior`
+  and the `outdoor` composer: 84 layers in canonical order (`outdoor.ts`: 20 backdrops, 16 grounds,
+  23 dressings, 7 covers, 14 life, 4 chores), their code by id in `outdoor-code.ts`. The `interior`
   composer (Phase 3): 11 layers (`interior.ts`: 3 backdrops, 3 grounds, 5 dressings), their code in
   `interior-code.ts`, the room's program in `room.ts`. The `overhead` composer (Phase 4): 12 layers
   (`overhead.ts`: 3 beds, 3 waters, 1 dressing, 1 cover, 4 life), its program and code assembly in
@@ -43,12 +43,13 @@ are the ports' own, taken under #1082 on the shared dev host.
   `composeScene`, the placer, the composed sim and the layers' turns (`turnsGlsl`, `passCalls`).
 - **Presets:** meadow and bees (Phase 1); shore, dunes, autumn, lanterns and falls (2a); campfire,
   fireflies, forest, bamboo, garden and lake (2b); country, street, skyward, flock, swell and dew
-  (2c); sill and lava (the Phase 3 pilot) and bonsai; pond and ripple (the Phase 4 pilot), tidepool (4).
-  `src/composer/budget.test.ts` holds that list.
+  (2c); island (after Phase 2); sill and lava (the Phase 3 pilot) and bonsai; pond and ripple (the
+  Phase 4 pilot), tidepool (4). `src/composer/budget.test.ts` holds that list.
 - **Committed mixes:** "Bees · overgrown meadow" (the meadow's grass and wildflowers in the bees'
   garden), "Bees · in the valley" (the countryside's `valley` in place of the bees' hillside),
-  "Sill · lava lamp on the sill" (the lava lamp standing on the sill, lighting the room) and
-  "Ripple tank · koi in the tank" (the pond's koi in the ripple tank's water). The other mixes the
+  "Sill · lava lamp on the sill" (the lava lamp standing on the sill, lighting the room),
+  "Ripple tank · koi in the tank" (the pond's koi in the ripple tank's water) and "Swell · an
+  island offshore" (the island standing out on the afternoon swell; commit pending). The other mixes the
   waves planned ("Autumn maple by the lantern river", "Campfire in the meadow", "Fireflies over the
   apiary", "A campfire on the valley's hill") were not made: their layers are drawn through their
   own rigs alone (see "Rigs, locking and offering").
@@ -376,6 +377,10 @@ its spans draws it correctly:
   lawn's hedge, seen from the vantage's hilltop, and its program leaves out the hill's own parts
   (herds, walkers and carts, flower fields, the chalk M, ripples, bales, near crowns, the valley
   fog) to hold the 256 KB budget.
+- **the island**, for its own camera and the open sea's: under the swell's level rig it is drawn
+  from the ray, standing 220 m out (`ISLAND_OFFSHORE`) at a cottage's true size (6 m a unit, its
+  own camera's toy island 2.2), without the shallows, swash and shadow that go with the island's own
+  sea.
 
 Offering is not free. Every offered layer's switch and knobs are knobs of the preset, and its "now"
 buttons trigger slots, whether it is on or not: the meadow's four bring nine knobs and one slot to
@@ -585,25 +590,26 @@ their own (campfire, fireflies, forest, bamboo, garden, lake); 2c, raised, pitch
 and sky subjects (country, street, skyward, flock, swell, dew). Every port ran `ab.ts` against the
 revision before it:
 
-| Preset    | At its defaults (dithered) | Differences, attributed                                                              | SwiftShader, against the scene before |
-| --------- | -------------------------- | ------------------------------------------------------------------------------------ | ------------------------------------- |
-| shore     | `SAME`                     | none: every witness `SAME`                                                           | 1.07–1.16× wall time                  |
-| dunes     | `SAME`                     | `seed` reseeds the World's cumulus                                                   | about 1.0× wall time                  |
-| autumn    | 52 cells (0.23 %)          | the gust field (D4); the World's rain at the composed depth (D10)                    | 1.06–1.10× wall time                  |
-| lanterns  | 3 cells                    | a lantern's edge now blends with the near stone; the World's rain and birds          | 0.45–0.68× wall time                  |
-| falls     | `SAME`                     | the World's fog (22 % of cells with fog on); the nearest drops dimmed as the World's | 0.70–0.89× wall time                  |
-| campfire  | 7.2 %, the sky only        | the World's stars, Milky Way and shooting stars; the giant a World planet (D10)      | 1.07–1.08× instructions               |
-| fireflies | 1.1 %, the stars only      | the World's stars (D10)                                                              | 1.69× instructions                    |
-| forest    | `SAME`                     | the World's rain, fog and snow                                                       | 1.01–1.07× wall time                  |
-| bamboo    | 7.2 %                      | the culms' sway in the gust field (D4): `SAME` with the old gusts swapped back       | 0.93× wall time                       |
-| garden    | `SAME`                     | the World's rain (5.5 %) and snow (2.8 %)                                            | about 0.86× wall time                 |
-| lake      | `SAME`                     | the World's rain (new), snow and fog                                                 | about 0.83× wall time                 |
-| country   | `SAME`                     | the World's rain (19 %) and snow (79 %)                                              | 1.06× timer queries (worst 1.11×)     |
-| street    | `SAME`                     | the World's fog, rain and snow                                                       | 1.02–1.03× wall time                  |
-| skyward   | `SAME`                     | the World's rain (1.4 %), snow (about 20 %) and fog (9 %)                            | 0.94× wall time                       |
-| flock     | `SAME`                     | the World's stars at night, a cell or two                                            | 1.08× instructions                    |
-| swell     | 5 cells                    | the gulls fly on the composer's `seed` (D10)                                         | 1.02× instructions                    |
-| dew       | `SAME`                     | the World's rain (new)                                                               | 1.144× instructions                   |
+| Preset    | At its defaults (dithered) | Differences, attributed                                                                                                                       | SwiftShader, against the scene before |
+| --------- | -------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------- |
+| shore     | `SAME`                     | none: every witness `SAME`                                                                                                                    | 1.07–1.16× wall time                  |
+| dunes     | `SAME`                     | `seed` reseeds the World's cumulus                                                                                                            | about 1.0× wall time                  |
+| autumn    | 52 cells (0.23 %)          | the gust field (D4); the World's rain at the composed depth (D10)                                                                             | 1.06–1.10× wall time                  |
+| lanterns  | 3 cells                    | a lantern's edge now blends with the near stone; the World's rain and birds                                                                   | 0.45–0.68× wall time                  |
+| falls     | `SAME`                     | the World's fog (22 % of cells with fog on); the nearest drops dimmed as the World's                                                          | 0.70–0.89× wall time                  |
+| campfire  | 7.2 %, the sky only        | the World's stars, Milky Way and shooting stars; the giant a World planet (D10)                                                               | 1.07–1.08× instructions               |
+| fireflies | 1.1 %, the stars only      | the World's stars (D10)                                                                                                                       | 1.69× instructions                    |
+| forest    | `SAME`                     | the World's rain, fog and snow                                                                                                                | 1.01–1.07× wall time                  |
+| bamboo    | 7.2 %                      | the culms' sway in the gust field (D4): `SAME` with the old gusts swapped back                                                                | 0.93× wall time                       |
+| garden    | `SAME`                     | the World's rain (5.5 %) and snow (2.8 %)                                                                                                     | about 0.86× wall time                 |
+| lake      | `SAME`                     | the World's rain (new), snow and fog                                                                                                          | about 0.83× wall time                 |
+| country   | `SAME`                     | the World's rain (19 %) and snow (79 %)                                                                                                       | 1.06× timer queries (worst 1.11×)     |
+| street    | `SAME`                     | the World's fog, rain and snow                                                                                                                | 1.02–1.03× wall time                  |
+| skyward   | `SAME`                     | the World's rain (1.4 %), snow (about 20 %) and fog (9 %)                                                                                     | 0.94× wall time                       |
+| flock     | `SAME`                     | the World's stars at night, a cell or two                                                                                                     | 1.08× instructions                    |
+| swell     | 5 cells                    | the gulls fly on the composer's `seed` (D10)                                                                                                  | 1.02× instructions                    |
+| island    | `SAME`                     | night: 1 cell of the World's stars (D10); rain 44 %, snow 92 %, fog 36 % of cells: the World's darker grey day, its drops and its thinner fog | not measured                          |
+| dew       | `SAME`                     | the World's rain (new)                                                                                                                        | 1.144× instructions                   |
 
 What Phase 2 settled beyond its ports: the layers stay locked to their rigs unless drawn from the
 ray (decision 11), the caps bind on offering, the SwiftShader budget is counted on the program
@@ -750,11 +756,11 @@ default is 50,001 characters (within its ceiling), its all-features program 52,8
 under SwiftShader wherever it ends, so the gate, off, keeps it out), the `orbit` range, a `height`
 pass and a bed height field shared across layers (the pond's and the tank's beds are flat, the
 tide pool's relief its own layout's; the water's slope is the only relief they share), a material
-at each point, the World over the patch, and the presets after tidepool: sandtable, delta, island,
-and `dunesabove` and `gardenabove`, which retire the dunes' `camera` and the garden's
-`gravelCamera` and their own programs. Layers drawn in the frame's units are locked to their span;
-the koi are offered from 1 m to the pond's 3 m, drawn at the frame's scale (11–17 cm fish in the 1
-m tank), so a bench-scale layer is refused beside the delta's kilometres by its span.
+at each point, the World over the patch, and the presets after tidepool: sandtable, delta, and
+`dunesabove` and `gardenabove`, which retire the dunes' `camera` and the garden's `gravelCamera` and
+their own programs. Layers drawn in the frame's units are locked to their span; the koi are offered
+from 1 m to the pond's 3 m, drawn at the frame's scale (11–17 cm fish in the 1 m tank), so a
+bench-scale layer is refused beside the delta's kilometres by its span.
 
 ### Phase 5: the matter shelf, and what stays standalone
 
@@ -769,9 +775,9 @@ m tank), so a bench-scale layer is refused beside the delta's kilometres by its 
 1. **The caps bind on offering.** Bees lists 63 of 64 knobs and the forest and the lake all 8 slots;
    every further cross-offering waits for the per-program layout and packed triggers, as do the
    bar's port and the World over the overhead's patch (the pond lists 54 without it).
-2. **Rig-locking limits the mixes.** Of the nineteen outdoor presets' 79 layers, six are offered
-   beyond their own rig; of the interior's 11, the lava lamp, drawn from the rig; of the overhead's
-   12, the koi beyond their own span (over fresh water only). Four mixes are committed. The worth of
+2. **Rig-locking limits the mixes.** Of the outdoor presets' 84 layers, seven are offered beyond
+   their own rig; of the interior's 11, the lava lamp, drawn from the rig; of the overhead's 12, the
+   koi beyond their own span (over fresh water only). Five mixes are committed. The worth of
    composing grows only as layers are redrawn from the ray (or, from above, in metres).
 3. **Shared chunks couple layers.** The countryside's layers are switches and knobs over one march
    (`VALLEY_*` macros), the street's over one trace whose turn cut assumes its four layers are the

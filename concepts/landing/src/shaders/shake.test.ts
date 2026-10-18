@@ -189,7 +189,8 @@ const BUDGET = {
   harmonograph: [17000],
   hyperbolic: [24000],
   incense: [39000],
-  island: [89500, 134500],
+  // All features: the World's every part and the layers' turns since its port (171,849 then).
+  island: [89500, 189000],
   kelp: [67500],
   lake: [89000, 179500],
   lanterns: [84500, 178500],

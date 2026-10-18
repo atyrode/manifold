@@ -1,16 +1,18 @@
-// GPU check (verify-browser.ts): Island's snow, through the scene's own camera and islSnowFall. The
+// GPU check (verify-browser.ts): Island's snow, through the scene's own camera: the World's snow seen
+// through the axes the sky over the sea gives it (seaSkySeen, the precip `seen` of its backdrop). The
 // eye looks down on the island (ISL_PITCH, 20 degrees), so the flakes' paths close in on the point
-// below the sea that its rain's converge on too (islVanish), several screen heights under the frame:
-// in still air the flakes at the sides of the frame lean inward while they fall, those in the middle
-// fall straight down. At this pitch the lean is gentle (about a column in four rows at the sides of
-// a wide frame) and the flakes sway on their own, so the check follows them over several steps and
-// sums the shifts. The level camera's snowFall, drawn the same way as the control, brings every flake
-// straight down the frame.
+// below the sea that its rain's converge on too, several screen heights under the frame: in still
+// air the flakes at the sides of the frame lean inward while they fall, those in the middle fall
+// straight down. At this pitch the lean is gentle (about a column in four rows at the sides of a wide
+// frame) and the flakes sway on their own, so the check follows them over several steps and sums the
+// shifts. The level camera's snowFall, drawn the same way as the control, brings every flake straight
+// down the frame.
 import { defaultsFor, paramDefaults, renderSettings } from "../../state.ts";
-import { fragmentSourceFor, packParams, vertexSource } from "../../shaders/index.ts";
+import { fragmentSourceFor, packParams, sceneFeatures, vertexSource } from "../../shaders/index.ts";
 import { loadScene } from "../index.ts";
 
-const islandScene = await loadScene("island");
+// A composed scene draws its program from glslFor: the check's entry goes after the default one.
+const { glslFor, ...islandScene } = await loadScene("island");
 
 /** A wide frame (2.4:1): the lean grows toward the sides. */
 const WIDTH = 384;
@@ -102,9 +104,14 @@ function follow(gl: WebGL2RenderingContext, snow: string): Record<Band, Moved> {
     fragmentSourceFor({
       ...islandScene,
       entry: "regressionIslandSnow",
-      glsl: `${islandScene.glsl}
+      glsl: `${glslFor?.(sceneFeatures(islandScene)) ?? islandScene.glsl}
     Shade regressionIslandSnow(vec2 uv, vec2 cell, float t) {
-      sceneIsland(uv, cell, t);
+      Ctx x = composerCtx(uv, cell);
+      isleBegin(x);
+      seaSkyBegin(x);
+      mat3 rain;
+      mat3 axes;
+      seaSkySeen(x, rain, axes);
       Precip p = ${snow};
       return shadeOf(vec3(p.cover), p.cover, 0.0);
     }`,
@@ -165,7 +172,10 @@ export function islandSnowCheck(gl: WebGL2RenderingContext): Record<string, unkn
   gl.canvas.width = WIDTH;
   gl.canvas.height = HEIGHT;
   gl.viewport(0, 0, WIDTH, HEIGHT);
-  const seen = follow(gl, "islSnowFall(uv, uRes.x / uRes.y, t, 1.0, 1.0)");
+  const seen = follow(
+    gl,
+    "snowFallSeen(uv, uRes.x / uRes.y, t, 1.0, islWind, 1.0, rainVanish(snowFallDir(1.0, islWind), axes[0], axes[1], axes[2], RIG_FOCAL))",
+  );
   const level = follow(gl, "snowFall(uv, uRes.x / uRes.y, t, 1.0, islWind, 1.0)");
   for (const [name, measured] of Object.entries({ seen, level })) {
     for (const [band, moved] of Object.entries(measured)) {

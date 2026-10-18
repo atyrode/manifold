@@ -45,14 +45,14 @@ components"); run `bun concepts/landing/scripts/scene-docs.ts` after a change to
 | `clouds`       | Above the clouds | Sky & space       | its own program                         | 16    | 0       | A window seat at cruise altitude: a sea of cloud below, the day turning overhead.                                               |
 | `flock`        | Murmuration      | Sky & space       | `outdoor` preset, 2 layers              | 32    | 0       | Starlings at dusk, thousands of birds folding into one shape.                                                                   |
 | `skyward`      | Skyward          | Sky & space       | `outdoor` preset, 3 layers              | 33    | 0       | Lying on your back at a crossroads: the buildings lean in, wires cross a strip of sky, pigeons wheel and a plane draws a line.  |
-| `swell`        | Swell            | Water             | `outdoor` preset, 3 layers + 1 offered  | 31    | 1       | A moonlit sea rolling toward the horizon, boats riding at anchor in the moon's path.                                            |
+| `swell`        | Swell            | Water             | `outdoor` preset, 3 layers + 2 offered  | 35    | 2       | A moonlit sea rolling toward the horizon, boats riding at anchor in the moon's path.                                            |
 | `pond`         | Pond             | Water             | `overhead` preset, 4 layers + 1 offered | 54    | 0       | A koi pond from above, light through clear water.                                                                               |
 | `falls`        | Waterfall        | Water             | `outdoor` preset, 5 layers + 5 offered  | 51    | 3       | A waterfall pouring into its pool: spray, a rainbow, ferns on the wet rock.                                                     |
 | `shore`        | Shore            | Water             | `outdoor` preset, 3 layers + 6 offered  | 49    | 0       | Surf on a night beach, flashing blue wherever the water breaks.                                                                 |
 | `lanterns`     | Lantern river    | Water             | `outdoor` preset, 3 layers + 4 offered  | 41    | 0       | Paper lanterns drifting down a river at dusk, their light trembling on the water.                                               |
 | `kelp`         | Kelp forest      | Water             | its own program                         | 20    | 1       | Sunlight through a swaying kelp forest, a school of fish turning in the blue.                                                   |
 | `lake`         | Frozen lake      | Water             | `outdoor` preset, 2 layers + 4 offered  | 52    | 2       | Black ice under the aurora: bubbles frozen deep, cracks that sing, snow drifting across; or an open fjord under slow drapes.    |
-| `island`       | Tiny island      | Water             | its own program                         | 17    | 0       | A small island in a gentle sea: a cottage on a grassy hill, a pier and lantern, a palm, a gull circling, a balloon drifting by. |
+| `island`       | Tiny island      | Water             | `outdoor` preset, 5 layers              | 32    | 0       | A small island in a gentle sea: a cottage on a grassy hill, a pier and lantern, a palm, a gull circling, a balloon drifting by. |
 | `tidepool`     | Tide pool        | Water             | `overhead` preset, 4 layers + 1 offered | 36    | 3       | A rock pool from above: waves pour over its rim, its anemones and kelp answer the surge, and the light dances on its floor.     |
 | `country`      | Countryside      | Land              | `outdoor` preset, 6 layers + 2 offered  | 57    | 12      | A river valley carved by water: fields, woods and pastures, a village, a castle and roads over a bridge.                        |
 | `dunes`        | Dunes            | Land              | `outdoor` preset, 2 layers              | 31    | 0       | Wind over a sand sea: real dunes, slowly marching downwind. Click to drop a heap of sand.                                       |
@@ -827,20 +827,20 @@ component carried by another named through it:
 
 <!-- gen:composed-by -->
 
-| String            | File                           | Composed by                                                                                                                                                      | See                                  |
-| ----------------- | ------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------ |
-| `worldGlsl`       | `src/shaders/lib/world.ts`     | flock, skyward, swell, falls, shore, lanterns, lake, country, dunes, meadow, bamboo, garden, forest, campfire, autumn, frost, sill, fireflies, dew, street, bees | "World layers"                       |
-| `birdsGlsl`       | `src/shaders/lib/birds.ts`     | train; through `worldGlsl`                                                                                                                                       | "Birds"                              |
-| `milkyWayGlsl`    | `src/shaders/lib/milkyway.ts`  | through `worldGlsl`                                                                                                                                              | the Milky Way row below              |
-| `canopyGroveGlsl` | `src/shaders/lib/canopy.ts`    | bamboo, forest                                                                                                                                                   | "Shared libraries" (the canopy)      |
-| `plantsGlsl`      | `src/shaders/lib/plants.ts`    | pond, falls, tidepool, country, garden, fireflies                                                                                                                | "Rooted plants"                      |
-| `planetGlsl`      | `src/shaders/lib/planet.ts`    | orbit, mobile; every sky's `skyGiant`, in `libs` behind its gate (`SKY_PLANETS`)                                                                                 | "The giant planet"                   |
-| `figuresGlsl`     | `src/shaders/lib/figures.ts`   | country                                                                                                                                                          | "Figures, livestock and buildings"   |
-| `livestockGlsl`   | `src/shaders/lib/livestock.ts` | country                                                                                                                                                          | "Figures, livestock and buildings"   |
-| `buildingsGlsl`   | `src/shaders/buildings.ts`     | country                                                                                                                                                          | "Figures, livestock and buildings"   |
-| `terrainGlsl`     | `src/shaders/lib/terrain.ts`   | country                                                                                                                                                          | `TerrainBuilder` under "Simulations" |
-| `fieldsGlsl`      | `src/shaders/lib/fields.ts`    | country                                                                                                                                                          | the fields row below                 |
-| `treesGlsl`       | `src/shaders/lib/trees.ts`     | country                                                                                                                                                          | the trees row below                  |
+| String            | File                           | Composed by                                                                                                                                                              | See                                  |
+| ----------------- | ------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------ |
+| `worldGlsl`       | `src/shaders/lib/world.ts`     | flock, skyward, swell, falls, shore, lanterns, lake, island, country, dunes, meadow, bamboo, garden, forest, campfire, autumn, frost, sill, fireflies, dew, street, bees | "World layers"                       |
+| `birdsGlsl`       | `src/shaders/lib/birds.ts`     | train; through `worldGlsl`                                                                                                                                               | "Birds"                              |
+| `milkyWayGlsl`    | `src/shaders/lib/milkyway.ts`  | through `worldGlsl`                                                                                                                                                      | the Milky Way row below              |
+| `canopyGroveGlsl` | `src/shaders/lib/canopy.ts`    | bamboo, forest                                                                                                                                                           | "Shared libraries" (the canopy)      |
+| `plantsGlsl`      | `src/shaders/lib/plants.ts`    | pond, falls, tidepool, country, garden, fireflies                                                                                                                        | "Rooted plants"                      |
+| `planetGlsl`      | `src/shaders/lib/planet.ts`    | orbit, mobile; every sky's `skyGiant`, in `libs` behind its gate (`SKY_PLANETS`)                                                                                         | "The giant planet"                   |
+| `figuresGlsl`     | `src/shaders/lib/figures.ts`   | country                                                                                                                                                                  | "Figures, livestock and buildings"   |
+| `livestockGlsl`   | `src/shaders/lib/livestock.ts` | country                                                                                                                                                                  | "Figures, livestock and buildings"   |
+| `buildingsGlsl`   | `src/shaders/buildings.ts`     | country                                                                                                                                                                  | "Figures, livestock and buildings"   |
+| `terrainGlsl`     | `src/shaders/lib/terrain.ts`   | country                                                                                                                                                                  | `TerrainBuilder` under "Simulations" |
+| `fieldsGlsl`      | `src/shaders/lib/fields.ts`    | country                                                                                                                                                                  | the fields row below                 |
+| `treesGlsl`       | `src/shaders/lib/trees.ts`     | country                                                                                                                                                                  | the trees row below                  |
 
 <!-- /gen:composed-by -->
 
@@ -1051,7 +1051,7 @@ planets (`SceneDef.planets`; "at first": the planets it opens with). Generated f
 | `lanterns`  | 0.79  | 0.55  | off       | 1    | off     | off, now 0 | off    | 0      | off  | off  | 0   | 0.2  | off, now 1 | off        | yes             |
 | `kelp`      | 0.42  | —     | —         | —    | —       | —          | —      | —      | —    | —    | —   | —    | —          | —          | —               |
 | `lake`      | 0.822 | 0.7   | 1         | 0.3  | off     | off, now 0 | 0.6    | 0      | off  | off  | 0   | 0.2  | off, now 1 | off        | yes             |
-| `island`    | 0.58  | 0.6   | —         | —    | off     | —          | —      | 0.35   | off  | off  | 0   | 0.2  | —          | —          | yes             |
+| `island`    | 0.58  | 0.6   | off       | 1    | off     | off, now 0 | off    | 0.35   | off  | off  | 0   | 0.2  | off, now 1 | off        | yes             |
 | `tidepool`  | 0.42  | —     | —         | —    | —       | —          | —      | —      | off  | —    | —   | —    | —          | —          | —               |
 | `country`   | 0.68  | 0.5   | 1         | 1    | off     | off, now 0 | off    | 0.35   | off  | off  | 0   | 0.2  | off, now 1 | off        | yes             |
 | `dunes`     | 0.74  | 1     | 1         | 1    | off     | off, now 0 | off    | 0.25   | off  | off  | 0   | 0.2  | off, now 1 | 0.35       | yes             |
@@ -1105,7 +1105,7 @@ the component could be composed.
 | `clouds` †  | above the cloud sea                                                                                  | knob                                          | own bearing, drawn by `skyColor`                                                  | knob (`auroraCurtains`, full detail)                    | open                                 |
 | `country`   | over the valley (the world's sky)                                                                    | knob + the world's Milky Way                  | knob (phase)                                                                      | knob (the world's)                                      | knob (the world's)                   |
 | `flock`     | the subject over a skyline (the world's sky; only the dome mirrored in its water)                    | knob                                          | knob (the world's)                                                                | knob (the world's)                                      | knob (the world's)                   |
-| `island` †  | round the island                                                                                     | knob                                          | full                                                                              | open                                                    | open                                 |
+| `island`    | over the sea round the island (the world's sky, staged in the camera's frame)                        | knob                                          | knob (phase)                                                                      | knob, behind the clouds                                 | knob                                 |
 | `campfire`  | above the pines (the world's sky, with a skyglow along its horizon)                                  | knob + the world's Milky Way                  | knob (off in the preset: the giant is the sky's other light)                      | knob, behind the pines                                  | knob, over the giant                 |
 | `kelp`      | Snell's window                                                                                       | —                                             | full, refracted                                                                   | —                                                       | —                                    |
 | `tidepool`  | the sky in the pools' mirror                                                                         | —                                             | full, mirrored                                                                    | —                                                       | —                                    |
@@ -1524,7 +1524,8 @@ bit the full-detail picture.
 | `frost`, `lanterns`, `sill` | lit (`worldGates`)                                                      | the world's deck (`worldSky`; `worldMirrorSky` in lanterns' river), its fair cover (`World.cover`) and nearness (`World.low`) staged, tinted over `WorldSky.cloud`                                                         |
 | `falls`                     | shadows while its `shadows` knob is on (`worldFeatures`), lit while off | the world's deck (`worldSky`) seen half turned over the cliff: the clouds knob's cover closing with the overcast (`World.cover`) and its nearness (`World.low`) staged, greyed over `WorldSky.cloud`; no shadows cast      |
 | `skyward`                   | shadows while its `shadows` knob is on (`worldFeatures`), lit while off | the world's deck (`worldSky`) over the strip of sky looking up: its fair cover (`World.cover`) and nearness (`World.low`) staged, tinted over `WorldSky.cloud` by the city's glow; no shadows cast                         |
-| `island`, `lake`            | lit (none selected)                                                     | `skyClouds` over their own sky, greyed and lowered under rain each its own way                                                                                                                                             |
+| `island`                    | lit (its `shadows` knob casts none: below)                              | the world's deck (`worldSky`), staged in the camera's frame (the sky over the sea's begin), so it lies over the sea as the island's own did                                                                                |
+| `lake`                      | lit (none selected)                                                     | `skyClouds` over its own sky, greyed and lowered under rain its own way                                                                                                                                                    |
 
 **Painted cumulus** (the world's, `WORLD_CUMULUS`, "World layers"): bees' authored lobed towers and
 their drifting ground shadows, a picture-book style rather than a deck, are an opt-in part of the
@@ -1535,7 +1536,7 @@ their shadows multiply into `worldSunlit`; they draw on no cloud tier.
 Not unified, on purpose:
 
 - `island`'s far cumulus are toon billboards on the horizon, its ground shadows a lattice of puffs
-  cut per cell to match them (its dome's deck is the lit tier).
+  cut per cell to match them, under the world's deck.
 - `delta` is seen from orbit: its puffs and their offset shadows are one top-down field.
 - Rain tints over the world's deck (`lanterns`, `meadow`, `shore`, `sill`) and `garden`'s flat
   grey sheet are each scene's tint, not a deck; the canopy's deck is the canopy component's
@@ -1608,10 +1609,9 @@ surfaces and change them. Never paste them over the frame as a flat layer.
 - **A tilted camera.** `rainFall` and `snowFall` assume a level camera, paths straight down the
   frame. A camera pitched up or down passes the vanishing point of the fall instead:
   `rainFallSeen` / `snowFallSeen` with `rainVanish(rainFallDir(...))` / `rainVanish(snowFallDir(...))`
-  and the camera's own axes, so rain and snow agree (tidepool for rain; island from above looking
-  down, for both, through one vanishing helper of its own, `islVanish`; street looking down,
-  skyward looking up and dunes from overhead through the world's `worldPrecipSeen` and
-  `worldPrecipAxes`).
+  and the camera's own axes, so rain and snow agree (tidepool for rain; street looking down,
+  island from above looking down, skyward looking up and dunes from overhead through the world's
+  `worldPrecipSeen` and `worldPrecipAxes`).
 - **Intensity.** Amount 0.1 is drizzle (slow faint streaks, mostly veil), 0.4 steady rain, 0.7
   heavy rain with near drops and gust sheets, and 1.0 a downpour: dense sheets sweeping with the
   wind, loud splashes, and visibility falling. Let the sky, the light, the wetness and the splashes
@@ -2368,9 +2368,9 @@ and `dwell` (`state.ts` refuses to load such a scene).
 ## Composers
 
 **Status.** The `outdoor` composer (`src/composer/`, ADR 0062
-`docs/decisions/0062-world-composers.md`, #1082 item U1) runs the nineteen eye-level scenes as
-presets of its 79 layers; the `interior` composer (Phase 3, "The interior composer") runs sill,
-lava and bonsai as presets of its 11 layers, with a lava lamp that stands on the sill; the
+`docs/decisions/0062-world-composers.md`, #1082 item U1) runs the nineteen eye-level scenes and the
+island as presets of its 84 layers; the `interior` composer (Phase 3, "The interior composer") runs
+sill, lava and bonsai as presets of its 11 layers, with a lava lamp that stands on the sill; the
 `overhead` composer (Phase 4, "The overhead composer" below) runs pond and ripple (its pilot) and
 tidepool as presets of its 12 layers, with koi offered to the ripple tank. The rest of the interiors
 and of the scenes seen from above are the rest of those phases. Not built yet, so still the
@@ -2430,8 +2430,9 @@ scene's own.
 | `street`    | `city`, `crossing`, `kerbside`, `streetLife`                                                       | 28 m, pitched 0.733 rad (42°) down, focal 1.5                                                         | `mark` → `crossingMark`; `streetSeed` → `seed`                                                                                                                                                                                                      | D10                   |
 | `skyward`   | `crossroads`, `streetTree`, `tramway`                                                              | 0.2 m, looking up to 0.28 rad short of the zenith, 0.5, 0.54                                          | `windows`, `traffic`, `greenery`, `mark` → `crossroadsWindows`, `-Traffic`, `-Greenery`, `-Mark`; `citySeed` → `seed`                                                                                                                               | D10                   |
 | `flock`     | `roost`, `murmuration`                                                                             | 3 m, 0.08, 0.92                                                                                       | `birds` (a count) → `murmuration-amount`; `mark` → `murmurationMark`                                                                                                                                                                                | D10                   |
-| `swell`     | `openSea`, `swell`, `boats`; + `lighthouse`                                                        | 15 m, 0.44, 3.0; lift and lens shift                                                                  | `lanterns` → `boatsLanterns`; `boats`, `lighthouse` switches                                                                                                                                                                                        | D10                   |
+| `swell`     | `openSea`, `swell`, `boats`; + `lighthouse`, `island`                                              | 15 m, 0.44, 3.0; lift and lens shift                                                                  | `lanterns` → `boatsLanterns`; `boats`, `lighthouse` switches                                                                                                                                                                                        | D10                   |
 | `dew`       | `bokeh`, `web`                                                                                     | 0.6 m, 0.4, 1.62: the macro rig                                                                       | `webSeed` → `seed`; `mark` → `webMark`                                                                                                                                                                                                              | D7                    |
+| `island`    | `seaSky`, `shallows`, `island`, `gull`, `balloon`                                                  | 4.14 m, pitched 0.349 rad (20°) down, its lens shifted (horizon 0.66), 1.2; `minAspect` 1.65          | `isle` → `seed`; `gull` and `balloon` (with its amount and "now") switches                                                                                                                                                                          | D10                   |
 
 Every port also gained the composer's knobs it lacked (`gusts`, `gustRate`, `seed`) and the World's,
 each set in the preset to the scene's old picture: ten presets open with the gusts off, the
@@ -2443,12 +2444,18 @@ The cases that are not a standing eye:
 - **Raised rigs** (the countryside's hill, the swell, the dunes) are level rigs with a high eye. A
   scene in units of its own hands the composer metres: the swell's sea in heights of its eye, the
   dunes' 5 m grid cells, the garden's depths of `GARDEN_METRES` (10 m).
-- **Pitched rigs** (street, skyward): the backdrop's `begin` gives each cell's ray and the floor's
-  distance along it (`x.v`, `x.zg`), the plain floor stands where they say, and the backdrop names
-  the axes the World's rain and snow are seen through (`precip.seen`, drawn by
+- **Pitched rigs** (street, skyward, island): the backdrop's `begin` gives each cell's ray and the
+  floor's distance along it (`x.v`, `x.zg`), the plain floor stands where they say, and the backdrop
+  names the axes the World's rain and snow are seen through (`precip.seen`, drawn by
   `worldPrecipAxes`). Skyward compiles the World's birds out (`WORLD_BIRDS` 0, they fly a level
   camera's view) and flies the street's own on the World's birds knobs; its backdrop takes the
-  World's fog over (`x.w.fog` put out), laying it along each ray, and closes the floor.
+  World's fog over (`x.w.fog` put out), laying it along each ray, and closes the floor. The
+  island's camera backs away and up on a frame narrower than its `minAspect` rather than cropping
+  it, and swoops through the passage; its backdrop (`seaSky`) stages the World's sky in the
+  camera's frame (`x.w.sky` turned by the rig's turn, `x.v.yaw` 0), so the cloud deck lies over the
+  sea as the island's own did. The island itself is drawn from the ray, so the swell offers it too:
+  under the open sea's level rig it stands at `ISLAND_OFFSHORE`, 240 m out, its cottage at a
+  cottage's true size (6 m a unit, where its own camera's toy island takes 2.2).
 - **The macro rig** (dew): the composer has no focal blur, so each dew layer draws its own defocus,
   the backdrop's grass tops close the floor, and no other scene's layer is offered the rig (it would
   be drawn sharp). The World's stars, cloud deck, painted cumulus and bolts are not drawn in the

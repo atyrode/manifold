@@ -94,6 +94,14 @@ import {
   mangrovesGlsl,
 } from "../scenes/fireflies/shader.ts";
 import { fireflySwarmSim, mangrovesSim } from "../scenes/fireflies/sim.ts";
+import {
+  balloonGlsl,
+  gullGlsl,
+  islandGlsl,
+  isleSharedGlsl,
+  seaSkyGlsl,
+  shallowsGlsl,
+} from "../scenes/island/shader.ts";
 import { flockInkGlsl, murmurationGlsl, roostGlsl } from "../scenes/flock/shader.ts";
 import { murmurationSim } from "../scenes/flock/sim.ts";
 import { dandelionsGlsl, downsGlsl, grassGlsl, meadowSharedGlsl } from "../scenes/meadow/shader.ts";
@@ -197,6 +205,8 @@ const FLOCK_INK: SharedGlsl = { id: "flockInk", glsl: () => flockInkGlsl };
 /** The flock's ink (flock/shader.ts), once for every layer that draws a flock's density field. */
 /** The countryside's land, march and parts (country/shader.ts), for the valley's passes; after the plants (its verges are records) and the flock's ink (its starlings). */
 const COUNTRY: SharedGlsl = { id: "country", glsl: countryGlsl };
+/** The island's layout, shape, light and ray (island/shader.ts), built for the rig: held by its layers. */
+const ISLE: SharedGlsl = { id: "isle", glsl: isleSharedGlsl, begin: "isleBegin" };
 
 export const OUTDOOR_CODE: Readonly<Record<string, LayerCode>> = {
   downs: { glsl: () => downsGlsl, shared: [MEADOW] },
@@ -266,6 +276,11 @@ export const OUTDOOR_CODE: Readonly<Record<string, LayerCode>> = {
   swell: { glsl: () => swellGlsl, shared: [SWELL] },
   lighthouse: { glsl: () => lighthouseGlsl, shared: [SWELL], sim: lighthouseSim },
   boats: { glsl: () => boatsGlsl, shared: [SWELL], sim: boatsSim },
+  seaSky: { glsl: () => seaSkyGlsl, shared: [ISLE] },
+  shallows: { glsl: () => shallowsGlsl, shared: [ISLE] },
+  island: { glsl: () => islandGlsl, shared: [ISLE] },
+  gull: { glsl: () => gullGlsl, shared: [ISLE] },
+  balloon: { glsl: () => balloonGlsl, shared: [ISLE] },
   bokeh: { glsl: () => bokehGlsl, shared: [DEW] },
   web: { glsl: () => webGlsl, shared: [DEW], sim: webSim },
   roost: { glsl: () => roostGlsl },

@@ -114,6 +114,12 @@ export const presets: readonly Preset[] = [
     savedAt: "2026-10-15",
   },
   {
+    name: "Swell · an island offshore",
+    commit: "PENDING",
+    query: "scene=swell&time=0.62&island=1",
+    savedAt: "2026-10-18",
+  },
+  {
     name: "Pond · koi come to you",
     commit: "f1ca6557",
     query: "koi-amount=8&follow=1&eager=0.7",

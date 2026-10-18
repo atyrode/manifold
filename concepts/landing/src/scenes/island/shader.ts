@@ -1,34 +1,56 @@
-// A small island in a gentle sea, seen from a low three-quarter view with the horizon in frame.
-// Raymarched, bounded: only rays through the island's box march (at most 64 steps) against one
-// signed-distance map: a smooth heightfield (a sloping sand beach with a wet band, a lawn rising
-// into a grassy hill with a rocky cliff edge and grass hanging over it), irregular leafy fruit
-// trees, a swaying palm, a cottage, a pier with a lantern, driftwood, rocks and bushes. The sea is
-// the analytic plane y = 0: clear turquoise shallows over the sand bed, deep blue-green beyond,
-// swell lines, a soft swash, and haze into the horizon; the sky is the shared dome.
+// Tiny island's GLSL (a preset of the `outdoor` composer, README "Composers"; its manifests in
+// layers.ts): a small island in a gentle sea, seen from a low three-quarter view with the horizon in
+// frame. Raymarched, bounded: only rays through the island's box march (at most 64 steps) against one
+// signed-distance map: a smooth heightfield (a sloping sand beach with a wet band, a lawn rising into
+// a grassy hill with a rocky cliff edge and grass hanging over it), irregular leafy fruit trees, a
+// swaying palm, a cottage, a pier with a lantern, driftwood, rocks and bushes. The sea is the analytic
+// plane y = 0: clear turquoise shallows over the sand bed, deep blue-green beyond, swell lines, a soft
+// swash, and haze into the horizon; the sky is the World's.
+//   isleSharedGlsl  every layer's: the island's layout and shape (its map, its shadow, the clouds' and
+//                   what flies' shade), the light (the World's sky in the rig's frame), the sky's
+//                   colour low over the sea; its begin (isleBegin) lays them out, and under a level
+//                   rig gives the cell's ray to the island standing at ISLAND_OFFSHORE
+//   seaSkyGlsl      the backdrop: the island's own camera (it hands the World its ray and stages the
+//                   World's sky in the rig's frame), the air, the far cumulus along the horizon
+//   shallowsGlsl    the ground: the sea, and round the island (only while it stands: LAYER_ISLAND)
+//                   its shallows, swash, foam, shadow, fish and the lantern's path
+//   islandGlsl      the dressing: the island itself, its land's materials and light
+//   gullGlsl, balloonGlsl  life: the seagull circling the island, the gift balloon drifting by
 //
-// Frame. World: x right, y up, z away from the camera. The island is built in its own frame q, which
-// is the world with x mirrored when the seed says so (islSide), so one layout serves both hands.
-// Camera: pitched 20 degrees, focal length 1.2 screen heights, a lens shift that puts the horizon at
-// about 66% of the frame, aimed so the island sits in the lower middle.
+// Frame. World: x right, y up, z away from the camera, in the island's units (ISLAND_METRES): its own
+// camera's frame, or a level rig's with the island's centre at ISLAND_OFFSHORE. The island is built
+// in its own frame q, the world with x mirrored when the seed says so (islSide), so one layout serves
+// both hands. Its camera: pitched 20 degrees, focal length 1.2 screen heights, a lens shift that puts
+// the horizon at about 66% of the frame, aimed so the island sits in the lower middle. Depths handed
+// to the composer are metres: along the ray under the island's pitched camera (as the composer's
+// pitched rigs reckon them), straight ahead under a level rig.
 //
-// Light and weather are the shared ones: skyAt turned by ISL_YAW so the sun climbs over the left
-// shoulder and sets behind the viewer; rain greys the deck and the light, rain and snow fall through
-// the depth of each pixel's first surface along paths that close in on the point below the sea the
-// pitched-down camera sees them converge on (islVanish), uWeather wets and whitens every exposed albedo.
+// Light and weather are the World's: its sky turned into the rig's frame (under its own camera the
+// sun climbs over the left shoulder and sets behind the viewer), the rain greying the far cumulus,
+// the sea and the sky they mirror, uWeather wetting and whitening every exposed albedo; the World's
+// rain and snow fall through each cell's depth along paths that close in on the point below the sea
+// the pitched-down camera sees them converge on (seaSkySeen).
 //
 // Calm under the dither: moving edges (foam, swell lines, cloud shadows, sprites, sparkle, glints)
 // are cut per cell with hardEdge / hardFill, and every noise is faded out where a cell outgrows it.
 
+import type { Rig } from "../../composer/types.ts";
 import { glslFloat } from "../../shaders/glsl.ts";
-import { ISLAND_PASSAGE } from "./constants.ts";
+import { ISLAND_METRES, ISLAND_OFFSHORE, ISLAND_PASSAGE, ISLAND_RIG } from "./constants.ts";
 
-export const islandGlsl = /* glsl */ `
+/** What every island layer shares, built for the preset's rig (see the header). */
+export function isleSharedGlsl(rig: Rig): string {
+  // The island's own camera, or a level rig that offers the island.
+  const own = rig.pitch === ISLAND_RIG.pitch && rig.eye === ISLAND_RIG.eye;
+  return /* glsl */ `
+// ---- the island (island/shader.ts): what its layers share ----
 const float ISL_SINP = 0.34202;
 const float ISL_COSP = 0.93969;
 const float ISL_FOCAL = 1.2;
 const float ISL_LENS = 0.277;
 const vec3 ISL_TARGET = vec3(0.0, 0.35, 0.1);
-const float ISL_YAW = 2.2;
+// Where the island stands under a level rig that offers it (metres: across, ahead of the eye's foot).
+const vec2 ISL_OFFSHORE = vec2(${glslFloat(ISLAND_OFFSHORE.across)}, ${glslFloat(ISLAND_OFFSHORE.ahead)});
 
 // Passage (ISLAND_PASSAGE): the camera comes down from higher and farther, pitched further over the
 // sea, and settles into the usual framing; on the way out it lifts and backs away again.
@@ -39,7 +61,9 @@ const float ISL_SWOOP_PITCH = 0.2443;
 const float ISL_SWOOP_DIST = 0.42;
 const float ISL_LIFT_PITCH = 0.2094;
 const float ISL_LIFT_DIST = 0.4;
-const float ISL_METRES = 2.2;
+// Metres in one of the island's units: its toy scale under its own camera, a cottage's true size
+// offshore (ISLAND_OFFSHORE).
+const float ISL_METRES = ${glslFloat(own ? ISLAND_METRES : ISLAND_OFFSHORE.metres)};
 const float ISL_RS = 2.4;
 const float ISL_TOP = 0.98;
 const float ISL_PIER_Z = -0.85;
@@ -100,6 +124,16 @@ float islHardS;
 float islSnowOk;
 vec3 islEmit;
 float islAccent;
+// The cell's ray: from islRo along islRd (the sky over the sea's begin under the island's own camera,
+// isleBegin under a level rig), meeting the sea islTSea along it (1e5: never); the screen point the
+// sprites are laid out on (screen heights from the frame's middle) and the horizon's height (uv),
+// under the island's own camera.
+vec3 islRd;
+float islTSea;
+vec2 islSp;
+float islHor;
+// How far the front of the lawn lies from the island's centre (islSetup): the flowerbed's scale.
+float islFs;
 
 // ---- shapes ----
 
@@ -121,7 +155,7 @@ float islRBox(vec3 p, vec3 b, float r) {
 }
 
 float islRnd(float i) {
-  return hash12(vec2(K_isle * 0.731 + 4.7, i * 3.917 + 1.3));
+  return hash12(vec2(K_seed * 0.731 + 4.7, i * 3.917 + 1.3));
 }
 
 // The shore's radius toward unit direction u: a round island with three gentle harmonics.
@@ -176,15 +210,16 @@ void islSetup() {
   islCph = cos(ph);
   islSph = sin(ph);
   islAmp = vec3(0.07, 0.045, 0.025) * (0.55 + 0.6 * islRnd(4.0));
-  float fs = islShore(vec2(0.0, -1.0)) - islBeach(vec2(0.0, -1.0));
+  islFs = islShore(vec2(0.0, -1.0)) - islBeach(vec2(0.0, -1.0));
+  float fs = islFs;
   islPl = vec2(-0.55, 0.85) + (vec2(islRnd(5.0), islRnd(6.0)) - 0.5) * 0.24;
   islHouse = islPl + vec2(0.0, 0.16);
 
   float count = floor(K_trees * 6.0 + 0.5);
   for (int i = 0; i < 6; i++) {
     float fi = float(i);
-    vec2 pos = islTreeSlot(i) * (fs / 1.85) + (hash22(vec2(fi * 3.7 + 1.0, K_isle * 0.31 + 2.0)) - 0.5) * 0.28;
-    float rad = 0.31 + 0.08 * hash12(vec2(fi + 5.3, K_isle * 0.17 + 1.9));
+    vec2 pos = islTreeSlot(i) * (fs / 1.85) + (hash22(vec2(fi * 3.7 + 1.0, K_seed * 0.31 + 2.0)) - 0.5) * 0.28;
+    float rad = 0.31 + 0.08 * hash12(vec2(fi + 5.3, K_seed * 0.17 + 1.9));
     float rr = max(length(pos), 1e-3);
     vec2 uu = pos / rr;
     float lim = islShore(uu) - islBeach(uu) - rad - 0.12;
@@ -202,8 +237,6 @@ void islSetup() {
     islFrondDir[k] = vec2(cos(a), sin(a));
   }
 
-  islMark = K_mark;
-  islBedH = vec2(0.27, 0.5) * fs * islMark;
   islBedC = vec2(0.35, -0.38) * fs;
 
   vec2 ru = normalize(vec2(0.12, -1.0));
@@ -449,20 +482,6 @@ vec3 islProject(vec3 P) {
   return vec3(ISL_FOCAL * dot(v, islRgt) / zc, ISL_FOCAL * dot(v, islUp) / zc - ISL_LENS, zc);
 }
 
-// Where a fall in the world direction dir converges on the screen (rainVanish for the camera's
-// axes; the lens shift moves the frame's centre ISL_LENS up the image plane). The camera looks down
-// on the island, so the rain's and the snow's paths both close in on a point below the sea.
-vec3 islVanish(vec3 dir) {
-  vec3 vanish = rainVanish(dir, islRgt, islUp, islFwd, ISL_FOCAL);
-  vanish.y -= ISL_LENS * vanish.z;
-  return vanish;
-}
-
-// The snow between the eye and a surface depth away, as the pitched-down camera sees it.
-Precip islSnowFall(vec2 uv, float aspect, float tm, float amount, float depth) {
-  return snowFallSeen(uv, aspect, tm, amount, islWind, depth, islVanish(snowFallDir(amount, islWind)));
-}
-
 // ---- clouds' shadows and the shadows of what flies ----
 
 // The shade of the cloud deck overhead, 0, 0.5 or 1 per cell: a lattice of puffs drifting with the
@@ -499,6 +518,67 @@ float islAirShadow(vec3 pos) {
   }
   return s;
 }
+
+// ---- the sky's colour low over the sea (the far cumulus' and the sea's haze) ----
+
+vec3 islSkyCol(vec3 dir) {
+  vec3 c = skyColor(islSky, dir);
+  return greyed(c, vec3(0.92, 0.95, 1.0), 0.6 * islGrey) * (1.0 - 0.2 * K_rain);
+}
+
+vec3 islHaze(vec3 rd) {
+  return islSkyCol(normalize(vec3(rd.x, 0.025, rd.z)));
+}
+
+// A distance t along the ray (units) as the composer's depth (metres).
+float islDepth(float t) {
+  return ${own ? "t * ISL_METRES" : "t * islRd.z * ISL_METRES"};
+}
+
+// The island now, once a cell before its layers' own begins: the clocks, the layout, the light (the
+// World's sky turned into the rig's frame: the sun, or once it is down the moon, as the key; the
+// lamps lit from dusk), the weather on it; nothing flies yet (the gull's and the balloon's begins).
+void isleBegin(inout Ctx x) {
+  islT = x.tm;
+  islWind = x.w.wind;
+  islCell = x.cell;
+  islSetup();
+  islSky = skyFacing(x.w.sky, -RIG_TURN);
+  float rain = x.w.rain;
+  float snow = x.w.snow;
+  float storm = weatherOvercast(rain, snow);
+  float heavy = max(rain, 0.85 * snow);
+  islStorm = storm;
+  islGrey = smoothstep(0.0, 0.05, heavy);
+  islCover = clamp(max(K_clouds, storm), 0.0, 1.0);
+  islLdir = islSky.sun.y > -0.06 ? islSky.sun : islSky.moon;
+  islSdir = normalize(vec3(islLdir.x, max(islLdir.y, 0.12), islLdir.z));
+  islLcol = islSky.sunColor + islSky.moonColor * 1.1;
+  islAmb = islSky.ambient + islSky.night * vec3(0.05, 0.07, 0.13);
+  islDark = clamp(1.0 - smoothstep(-0.12, 0.2, islSky.sun.y) + 0.3 * storm, 0.0, 1.0);
+  islWet = uWeather.x;
+  islSnow = uWeather.y;
+  islDrop = max(vec3(dot(islAmb + 0.3 * islSky.sunColor, LUMA)) * 1.1, vec3(0.08));
+  islGullOn = 0.0;
+  islBallOn = 0.0;
+${
+  own
+    ? ""
+    : `  // A level rig's ray, to the island standing at ISL_OFFSHORE.
+  islRo = (vec3(0.0, x.eye, 0.0) - vec3(ISL_OFFSHORE.x, 0.0, ISL_OFFSHORE.y)) / ISL_METRES;
+  islRd = x.v.ray;
+  islFwd = vec3(0.0, 0.0, 1.0);
+  islRgt = vec3(1.0, 0.0, 0.0);
+  islUp = vec3(0.0, 1.0, 0.0);
+  islTSea = islRd.y < -1e-4 ? -islRo.y / islRd.y : 1.0e5;
+`
+}}
+`;
+}
+
+/** The island itself (the `island` dressing): its land's materials and light, and its march. */
+export const islandGlsl = /* glsl */ `
+// ---- the island (island/shader.ts) ----
 
 // ---- materials ----
 
@@ -818,26 +898,48 @@ vec3 islLand(vec3 pos, vec3 n, float id, vec3 rd) {
   return col;
 }
 
-// ---- sky ----
+// ---- the island's passes ----
 
-vec3 islSkyCol(vec3 dir) {
-  vec3 c = skyColor(islSky, dir);
-  return greyed(c, vec3(0.92, 0.95, 1.0), 0.6 * islGrey) * (1.0 - 0.2 * K_rain);
+// The flowerbed's M (K_mark, which the composer keeps to one M on).
+void islandBegin(inout Ctx x) {
+  islMark = K_mark;
+  islBedH = vec2(0.27, 0.5) * islFs * islMark;
 }
 
-vec3 islHaze(vec3 rd) {
-  return islSkyCol(normalize(vec3(rd.x, 0.025, rd.z)));
+// The island where the ray meets it inside its box, behind whatever stands nearer.
+void islandMiddle(Ctx x, inout Cell c) {
+  vec3 ro = islRo;
+  vec3 rd = islRd;
+  vec2 tb = islSlab(ro, rd);
+  float tEnd = min(tb.y, islTSea);
+  if (tb.y <= tb.x || tEnd <= max(tb.x, 0.0)) return;
+  float tHit = -1.0;
+  float hid = 0.0;
+  float tt = max(tb.x, 0.0);
+  for (int i = 0; i < 64; i++) {
+    vec2 h = islMap(ro + rd * tt);
+    if (h.x < 0.0008 * tt + 0.002) {
+      tHit = tt;
+      hid = h.y;
+      break;
+    }
+    tt += h.x * 0.9;
+    if (tt > tEnd) break;
+  }
+  if (tHit <= 0.0) return;
+  float z = islDepth(tHit);
+  if (z >= c.z) return;
+  vec3 pos = ro + rd * tHit;
+  cellPut(c, vec4(islLand(pos, islNormal(pos), hid, rd), 1.0), z);
+  c.accent = islAccent;
 }
+`;
 
-// The dome: the sky, the stars and the giant planet in the cloud's gaps, the cloud over them.
-vec3 islDome(vec3 rd) {
-  vec3 c = islSkyCol(rd);
-  vec4 cl = skyClouds(islSky, rd, islT, islCover, islWind);
-  cl.rgb = greyed(cl.rgb, vec3(0.94, 0.96, 1.0), 0.6 * islGrey) * (1.0 + 0.2 * islGrey - 0.35 * K_rain);
-  c += skyStarLight(islSky, rd, K_stars) * (1.0 - cl.a);
-  c = skyGiant(islSky, c, rd, 1.0 / (ISL_FOCAL * uRes.y), 1.0);
-  return mix(c, cl.rgb, cl.a);
-}
+/** The sky over the sea (the `seaSky` backdrop): the island's camera, the air, the far cumulus. */
+export const seaSkyGlsl = /* glsl */ `
+// ---- the sky over the sea (island/shader.ts) ----
+// The haze off the sky low over the sea in this cell's bearing, where fog or rain needs it.
+vec3 seaSkyHaze = vec3(0.0);
 
 // Low toon cumulus drifting along the horizon, far behind the island: billboards on a long loop that
 // wraps well outside the frame. rgb and coverage; zScene hides those the sea in front of them covers.
@@ -849,7 +951,7 @@ vec4 islFarClouds(vec2 sp, float zScene) {
   float alpha = 0.0;
   for (int i = 0; i < 7; i++) {
     float fi = float(i);
-    if (hash12(vec2(fi, 11.0 + K_isle * 0.13)) > islCover * 1.05 + 0.12) continue;
+    if (hash12(vec2(fi, 11.0 + K_seed * 0.13)) > islCover * 1.05 + 0.12) continue;
     float x = mod(hash12(vec2(fi, 3.1)) * 60.0 + islT * cs * 2.5, 60.0) - 30.0;
     float z = 19.0 + 11.0 * fract(fi * 0.618 + 0.3);
     float y = 3.0 + 3.5 * hash12(vec2(fi, 8.1));
@@ -872,7 +974,82 @@ vec4 islFarClouds(vec2 sp, float zScene) {
   return vec4(res, alpha);
 }
 
-// ---- the sea ----
+// The island's camera at the cell (see the header), as its scene had it: it backs away on a frame
+// narrower than 1.65, and through the passage swoops down from higher and farther and settles (1 at
+// the start, 0 once settled; it dips a little below 0 in the overshoot), then lifts and backs away.
+// It hands the World its ray and the eye's height and stages the World's sky in the rig's frame
+// (isleBegin's turn), so the deck lies over the sea as the island's always did; the floor's distance
+// along the ray, the horizon, and the air: the haze, the fog's mist, the drops' light.
+void seaSkyBegin(inout Ctx x) {
+  float aspect = x.aspect;
+  float pin = passageIn();
+  float pout = passageOut();
+  float sinP = ISL_SINP;
+  float cosP = ISL_COSP;
+  float D = 7.0 * max(1.0, 1.65 / aspect);
+  if (pin < 1.0 || pout > 0.0) {
+    float swoop = 1.0 - passageSettle(pin, 1.2);
+    float away = pout * pout;
+    float pitch = ISL_PITCH + swoop * ISL_SWOOP_PITCH + away * ISL_LIFT_PITCH;
+    sinP = sin(pitch);
+    cosP = cos(pitch);
+    D *= 1.0 + swoop * ISL_SWOOP_DIST + away * ISL_LIFT_DIST;
+  }
+  islFwd = vec3(0.0, -sinP, cosP);
+  islRgt = vec3(1.0, 0.0, 0.0);
+  islUp = vec3(0.0, cosP, sinP);
+  // Aim a little below the island so it sits in the lower middle of the frame, under the horizon.
+  islRo = ISL_TARGET - islUp * (0.1314 * D) - islFwd * D;
+  islSp = vec2((x.uv.x - 0.5) * aspect, x.uv.y - 0.5);
+  islRd = normalize(ISL_FOCAL * islFwd + islSp.x * islRgt + (islSp.y + ISL_LENS) * islUp);
+  islTSea = islRd.y < -1e-4 ? -islRo.y / islRd.y : 1.0e5;
+  islHor = 0.5 + ISL_FOCAL * sinP / cosP - ISL_LENS;
+  x.eye = islRo.y * ISL_METRES;
+  x.v.ray = islRd;
+  x.v.dir = islRd;
+  x.v.yaw = 0.0;
+  x.v.eye = x.eye;
+  x.w.sky = islSky;
+  x.zg = islTSea < 1.0e4 ? islTSea * ISL_METRES : WORLD_FAR;
+  x.groundTo = islHor;
+  vec3 haze = (x.w.fog > 0.0 || x.w.rain > 0.0) ? islHaze(islRd) : vec3(0.0);
+  seaSkyHaze = haze;
+  x.air = Air(haze, mix(haze, vec3(dot(haze, LUMA)), 0.4), max(greyed(haze, vec3(1.0), 0.5) * 1.2, vec3(0.08)), haze, 0.0, 0.0, 0.0);
+}
+
+// The rain veil's colour (its precip air): the haze, half greyed and cooled.
+vec3 seaSkyRainAir(Ctx x) {
+  return mix(vec3(dot(seaSkyHaze, LUMA)) * vec3(0.94, 0.97, 1.0), seaSkyHaze, 0.4);
+}
+
+// The axes the World's rain and snow are seen through (its precip seen): the camera's, its up axis
+// leaning toward the view by the lens shift, so the paths close in on the point below the sea the
+// pitched-down camera sees them converge on, where its lens puts it.
+void seaSkySeen(Ctx x, out mat3 rain, out mat3 snow) {
+  rain = mat3(islRgt, islUp - islFwd * (ISL_LENS / ISL_FOCAL), islFwd);
+  snow = rain;
+}
+
+// The World's sky where the ray never meets the sea.
+void seaSkySky(Ctx x, inout Cell c) {
+  if (islTSea < 1.0e4) return;
+  WorldSky heaven = worldSky(x.w, x.v, WORLD_METEOR_FIELD);
+  c.col = heaven.col + heaven.strike;
+}
+
+// The far cumulus over the sea or the sky behind them (before the island, the gull and the balloon,
+// which stand nearer): their colour, the depth the cell shows left as the sea's or the sky's.
+void seaSkyMiddle(Ctx x, inout Cell c) {
+  if (x.uv.y <= 0.55) return;
+  float zScene = islTSea < 1.0e4 ? islTSea * dot(islRd, islFwd) : 1.0e4;
+  vec4 fc = islFarClouds(islSp, zScene);
+  if (fc.a > 0.0) c.col = mix(c.col, mix(fc.rgb, islHaze(islRd), mix(0.5, 0.12, smoothstep(0.0, 0.2, x.uv.y - islHor))), fc.a);
+}
+`;
+
+/** The sea round the island (the `shallows` ground). */
+export const shallowsGlsl = /* glsl */ `
+// ---- the shallows (island/shader.ts) ----
 
 // The wind ripples: four trains crossing at odd angles, the longest 4 units, at a slowed .35 of the
 // deep-water pace.
@@ -892,9 +1069,15 @@ vec3 islSea(vec3 Pfull, vec3 rd, float t) {
   // Past ~140 units everything below is faded flat anyway; keep the coordinates sane.
   vec3 P = t > 140.0 ? islRo + rd * 140.0 : Pfull;
   vec3 q = vec3(P.x * islSide, 0.0, P.z);
+#if LAYER_ISLAND
   float r = max(length(q.xz), 1e-4);
   float S = islShore(q.xz / r);
   float dsh = r - S;
+#else
+  // No island: the open sea all round, as deep as it gets far from the island.
+  float r = 1.0e3;
+  float dsh = 1.0e3;
+#endif
   float ang = atan(q.z, q.x);
   float ws = smoothstep(0.0, 1.1, dsh);
   float wd = smoothstep(0.8, 3.6, dsh);
@@ -928,10 +1111,12 @@ vec3 islSea(vec3 Pfull, vec3 rd, float t) {
   float cs = max(islCloudShadow(P, islCover * (1.0 - islStorm)) * smoothstep(0.02, 0.25, islLdir.y), islAirShadow(P));
   // The island's shadow, marched only where it can reach (islShadowClear).
   float sh = 1.0;
+#if LAYER_ISLAND
   vec3 shadowFrom = P + vec3(0.0, 0.02, 0.0);
   if (r < 5.3 && islLdir.y > 0.04 && dot(islLcol, vec3(0.333)) > 0.02 && !islShadowClear(shadowFrom, islSdir)) {
     sh = islShadow(shadowFrom, islSdir);
   }
+#endif
   vec3 ambN = mix(vec3(dot(islAmb, LUMA)), islAmb, 0.6);
   vec3 lm = ambN * (1.15 * (1.0 - 0.15 * cs)) + islLcol * (0.34 * sh * (1.0 - 0.85 * cs));
   vec3 col = base * lm * 1.1;
@@ -961,6 +1146,7 @@ vec3 islSea(vec3 Pfull, vec3 rd, float t) {
   float fres = clamp(1.3 * sea.fresnel, 0.0, 0.9);
   col = mix(col, islSkyCol(rr), fres);
 
+#if LAYER_ISLAND
   // Foam: a ragged swash lapping the beach, a thin line at the waterline, and long soft swell
   // lines that roll toward the shore in broken pieces, each wave with its own gaps; a ring round
   // each pile. Every edge is cut per cell.
@@ -983,7 +1169,9 @@ vec3 islSea(vec3 Pfull, vec3 rd, float t) {
   }
   vec3 foamCol = vec3(0.95, 0.97, 0.97) * min(lm * 1.1, vec3(1.0));
   col = mix(col, foamCol, 0.85 * hardEdge(clamp(foam * 1.2, 0.0, 1.0)));
+#endif
 
+#if LAYER_ISLAND
   // Fish: dark shapes gliding round the island in the shallows, tails swishing.
   if (K_fish > 0.5) {
     float vis = (1.0 - smoothstep(0.6, 1.0, wd)) * smoothstep(0.1, 0.5, ws);
@@ -1002,6 +1190,7 @@ vec3 islSea(vec3 Pfull, vec3 rd, float t) {
       col *= 1.0 - 0.3 * hardFill(d * sc, 0.02) * vis;
     }
   }
+#endif
 
   // Sparkle: little stars that kindle and die over a second or two, cut per cell; none where a cell
   // is bigger than they are.
@@ -1033,12 +1222,14 @@ vec3 islSea(vec3 Pfull, vec3 rd, float t) {
       col += islLcol * (0.45 * hardEdge(tail * fleck * lodS));
     }
   }
+#if LAYER_ISLAND
   if (islDark > 0.02) {
     vec3 toLamp = islLampL - P;
     float lamp = waterGlint(sea.normal, view, normalize(toLamp), rough, ISL_LAMP * islDark / dot(toLamp, toLamp));
     vec2 dl = P.xz - islLampL.xz;
     col += vec3(1.0, 0.76, 0.42) * (hardEdge(lamp) * 0.9 + islDark * 0.2 * exp(-dot(dl, dl) * 0.9));
   }
+#endif
 
   // Rain rings.
   if (K_rain > 0.0) col += islDrop * (0.35 * ringFade * hardEdge(rr3.z * 1.3, edgeThreshold(islCell, vec2(6.0, 1.0))));
@@ -1049,43 +1240,25 @@ vec3 islSea(vec3 Pfull, vec3 rd, float t) {
   return mix(col, islHaze(rd) * vec3(0.92, 0.96, 1.0), 0.85 * hz);
 }
 
-// ---- tiny life ----
+// The sea where the ray meets it, behind whatever stands nearer.
+void shallowsGround(Ctx x, inout Cell c) {
+  if (islTSea >= 1.0e4) return;
+  float z = islDepth(islTSea);
+  if (c.z < WORLD_FAR && z >= c.z) return;
+  c.col = islSea(islRo + islRd * islTSea, islRd, islTSea);
+  c.z = z;
+  c.accent = 0.0;
+}
+`;
+
+/** The seagull (the `gull` life layer): its loop round the island, its glide in and out. */
+export const gullGlsl = /* glsl */ `
+// ---- the seagull (island/shader.ts) ----
 
 vec3 islGullAt(float tm) {
   float th = tm * 0.16 + 1.0;
   float R = 4.2 + 0.5 * sin(tm * 0.07);
   return vec3(0.2 + R * 1.25 * cos(th), 2.5 + 0.25 * sin(tm * 0.31) + 0.12 * sin(tm * 0.77), 0.6 + R * 0.9 * sin(th));
-}
-
-// A gift balloon floats across every minute or two, or when asked: left to right or the other way,
-// at its own height and depth, taking as long as half the interval to cross. tm: the motion clock;
-// since: motion seconds since it was asked for (sinceTriggerM).
-void islBalloonSetup(float tm, float since) {
-  islBallOn = 0.0;
-  islBall = vec3(0.0);
-  islBallHue = 0.0;
-  islBallDir = 1.0;
-  float P = mix(200.0, 70.0, clamp(K_balloon, 0.0, 1.0));
-  float span = 0.5 * P;
-  float prog = -1.0;
-  float hs = 0.0;
-  if (since >= 0.0 && since < span) {
-    prog = since / span;
-    hs = hash12(vec2(floor(uTriggers[0]), 7.7));
-  } else if (K_balloon > 0.0) {
-    float u = tm / P + 0.8;
-    float f = fract(u);
-    if (f < 0.5) {
-      prog = f / 0.5;
-      hs = hash12(vec2(floor(u), 31.7));
-    }
-  }
-  if (prog < 0.0) return;
-  float dirS = hs < 0.5 ? 1.0 : -1.0;
-  islBallDir = dirS;
-  islBall = vec3(dirS * (prog - 0.5) * 26.0, 2.9 + 0.6 * fract(hs * 7.31) + 0.1 * sin(tm * 0.6), -1.0 + 5.0 * fract(hs * 13.7));
-  islBallHue = hs;
-  islBallOn = 1.0;
 }
 
 vec4 islGullSprite(vec2 sp, vec3 pj) {
@@ -1117,6 +1290,81 @@ vec4 islGullSprite(vec2 sp, vec3 pj) {
   return vec4(col, hardFill(d, 0.012));
 }
 
+// Whether the gull is out (not by night, nor in rain), where it flies now and a moment on; through the
+// passage it glides in along a bearing of its own from beyond the frame's edge (a quadratic glide,
+// decelerating to its loop) and out the other way, its heading taken from its velocity so it flies
+// the way it travels. The island and the sea shade under it (islAirShadow).
+void gullBegin(inout Ctx x) {
+  islGullOn = (x.w.rain < 0.35 && islSky.night < 0.7) ? 1.0 : 0.0;
+  islGull = islGullAt(islT);
+  islGullAhead = islGullAt(islT + 0.6);
+  float pin = passageIn();
+  float pout = passageOut();
+  if (islGullOn > 0.0 && (pin < 1.0 || pout > 0.0)) {
+    float sgn = hash12(vec2(K_seed, 41.0)) < 0.5 ? 1.0 : -1.0;
+    float tin = pin * ISL_ENTER;
+    float tout = pout * ISL_EXIT;
+    vec3 vIn = vec3(-sgn * 16.0, 1.5, -1.0);
+    float fin = 1.0 - clamp(tin / ISL_ENTER, 0.0, 1.0);
+    vec3 gOff = vIn * (fin * fin);
+    vec3 gVel = vIn * (-2.0 * fin / ISL_ENTER);
+    if (pout > 0.0) {
+      vec3 vOut = vec3(sgn * 18.0, 2.5, 1.0);
+      float fout = tout / ISL_EXIT;
+      gOff += vOut * (fout * fout);
+      gVel += vOut * (2.0 * fout / ISL_EXIT);
+    }
+    islGull += gOff;
+    islGullAhead += gOff + 0.6 * gVel;
+  }
+}
+
+// The gull in front of whatever lies behind it; the depth the cell shows stays that of what lies
+// behind.
+void gullMiddle(Ctx x, inout Cell c) {
+  if (islGullOn <= 0.0) return;
+  vec3 pj = islProject(islGull);
+  float z = islDepth(pj.z / dot(islRd, islFwd));
+  if (z >= c.z) return;
+  cellVeil(c, islGullSprite(islSp, pj), z);
+}
+`;
+
+/** The gift balloon (the `balloon` life layer): its crossings, now and then or when asked. */
+export const balloonGlsl = /* glsl */ `
+// ---- the gift balloon (island/shader.ts) ----
+
+// A gift balloon floats across every minute or two, or when asked: left to right or the other way,
+// at its own height and depth, taking as long as half the interval to cross. tm: the motion clock;
+// since: motion seconds since it was asked for (sinceTriggerM).
+void islBalloonSetup(float tm, float since) {
+  islBallOn = 0.0;
+  islBall = vec3(0.0);
+  islBallHue = 0.0;
+  islBallDir = 1.0;
+  float P = mix(200.0, 70.0, clamp(K_balloon, 0.0, 1.0));
+  float span = 0.5 * P;
+  float prog = -1.0;
+  float hs = 0.0;
+  if (since >= 0.0 && since < span) {
+    prog = since / span;
+    hs = hash12(vec2(floor(uTriggers[TRIGGER_balloon]), 7.7));
+  } else if (K_balloon > 0.0) {
+    float u = tm / P + 0.8;
+    float f = fract(u);
+    if (f < 0.5) {
+      prog = f / 0.5;
+      hs = hash12(vec2(floor(u), 31.7));
+    }
+  }
+  if (prog < 0.0) return;
+  float dirS = hs < 0.5 ? 1.0 : -1.0;
+  islBallDir = dirS;
+  islBall = vec3(dirS * (prog - 0.5) * 26.0, 2.9 + 0.6 * fract(hs * 7.31) + 0.1 * sin(tm * 0.6), -1.0 + 5.0 * fract(hs * 13.7));
+  islBallHue = hs;
+  islBallOn = 1.0;
+}
+
 vec4 islBalloonSprite(vec2 sp, vec3 pj) {
   vec2 l = (sp - pj.xy) * pj.z / ISL_FOCAL;
   if (dot(l, l) > 0.95) return vec4(0.0);
@@ -1144,179 +1392,26 @@ vec4 islBalloonSprite(vec2 sp, vec3 pj) {
   return vec4(col, a);
 }
 
-// ---- the scene ----
-
-Shade sceneIsland(vec2 uv, vec2 cell, float t) {
-  islT = uMotionTime;
-  islWind = K_wind;
-  islCell = cell;
-  float aspect = uRes.x / uRes.y;
-  islSetup();
-
-  // The sky, turned so the sun climbs over the left shoulder; rain closes it as in the other scenes.
-  float tod = timeOfDayM(K_time, skyDays());
-  islSky = skyFacing(skyAt(tod), ISL_YAW);
-  float rain = K_rain;
-  float snow = K_snow;
-  float storm = weatherOvercast(rain, snow);
-  float heavy = max(rain, 0.85 * snow);
-  islStorm = storm;
-  islGrey = smoothstep(0.0, 0.05, heavy);
-  float lost = storm * (0.5 + 0.4 * heavy);
-  vec3 diffused = islSky.sunColor * (lost * (0.55 - 0.3 * heavy));
-  islSky.sunColor *= 1.0 - lost;
-  islSky.moonColor *= 1.0 - storm * 0.6;
-  islSky.ambient = greyed(islSky.ambient, vec3(0.95, 0.98, 1.04), 0.3 * storm) * (1.0 - 0.25 * rain) + diffused;
-  islCover = clamp(max(K_clouds, storm), 0.0, 1.0);
-  islLdir = islSky.sun.y > -0.06 ? islSky.sun : islSky.moon;
-  islSdir = normalize(vec3(islLdir.x, max(islLdir.y, 0.12), islLdir.z));
-  islLcol = islSky.sunColor + islSky.moonColor * 1.1;
-  islAmb = islSky.ambient + islSky.night * vec3(0.05, 0.07, 0.13);
-  islDark = clamp(1.0 - smoothstep(-0.12, 0.2, islSky.sun.y) + 0.3 * storm, 0.0, 1.0);
-  islWet = uWeather.x;
-  islSnow = uWeather.y;
-  islDrop = max(vec3(dot(islAmb + 0.3 * islSky.sunColor, LUMA)) * 1.1, vec3(0.08));
-
-  islGullOn = (K_gull > 0.5 && rain < 0.35 && islSky.night < 0.7) ? 1.0 : 0.0;
-  islGull = islGullAt(islT);
-  islGullAhead = islGullAt(islT + 0.6);
-  islBalloonSetup(islT, sinceTriggerM(0));
-  if (rain > 0.7) islBallOn = 0.0;
-
-  // Passage: the camera's swoop (1 at the start, 0 once settled; it dips a little below 0 in the
-  // overshoot) and lift away, the gull gliding in along a bearing of its own and out the
-  // other way, the balloon drifting in along its heading and rising away. Nothing below runs at rest.
+// The balloon now (none in heavy rain); through the passage it drifts in along its heading and rises
+// away. The island and the sea shade under it (islAirShadow).
+void balloonBegin(inout Ctx x) {
+  islBalloonSetup(islT, sinceTriggerM(TRIGGER_balloon));
+  if (x.w.rain > 0.7) islBallOn = 0.0;
   float pin = passageIn();
   float pout = passageOut();
-  bool passing = pin < 1.0 || pout > 0.0;
-  float sinP = ISL_SINP;
-  float cosP = ISL_COSP;
-  float D = 7.0 * max(1.0, 1.65 / aspect);
-  if (passing) {
-    float swoop = 1.0 - passageSettle(pin, 1.2);
-    float away = pout * pout;
-    float pitch = ISL_PITCH + swoop * ISL_SWOOP_PITCH + away * ISL_LIFT_PITCH;
-    sinP = sin(pitch);
-    cosP = cos(pitch);
-    D *= 1.0 + swoop * ISL_SWOOP_DIST + away * ISL_LIFT_DIST;
-    float tin = pin * ISL_ENTER;
-    float tout = pout * ISL_EXIT;
-    if (islGullOn > 0.0) {
-      float sgn = hash12(vec2(K_isle, 41.0)) < 0.5 ? 1.0 : -1.0;
-      // Gull: a quadratic glide in from beyond the frame's edge (decelerating to the orbit), the
-      // heading taken from its velocity so it flies the way it travels.
-      vec3 vIn = vec3(-sgn * 16.0, 1.5, -1.0);
-      float fin = 1.0 - clamp(tin / ISL_ENTER, 0.0, 1.0);
-      vec3 gOff = vIn * (fin * fin);
-      vec3 gVel = vIn * (-2.0 * fin / ISL_ENTER);
-      if (pout > 0.0) {
-        vec3 vOut = vec3(sgn * 18.0, 2.5, 1.0);
-        float fout = tout / ISL_EXIT;
-        gOff += vOut * (fout * fout);
-        gVel += vOut * (2.0 * fout / ISL_EXIT);
-      }
-      islGull += gOff;
-      islGullAhead += gOff + 0.6 * gVel;
-    }
-    if (islBallOn > 0.0) {
-      float fb = 1.0 - pin;
-      islBall += vec3(-islBallDir * 14.0, 0.6, 0.0) * (fb * fb) + vec3(islBallDir * 5.0, 5.0, 0.0) * (pout * pout);
-    }
+  if (islBallOn > 0.0 && (pin < 1.0 || pout > 0.0)) {
+    float fb = 1.0 - pin;
+    islBall += vec3(-islBallDir * 14.0, 0.6, 0.0) * (fb * fb) + vec3(islBallDir * 5.0, 5.0, 0.0) * (pout * pout);
   }
+}
 
-  // The camera.
-  islFwd = vec3(0.0, -sinP, cosP);
-  islRgt = vec3(1.0, 0.0, 0.0);
-  islUp = vec3(0.0, cosP, sinP);
-
-  // Aim a little below the island so it sits in the lower middle of the frame, under the horizon.
-  islRo = ISL_TARGET - islUp * (0.1314 * D) - islFwd * D;
-  vec2 sp = vec2((uv.x - 0.5) * aspect, uv.y - 0.5);
-  vec3 rd = normalize(ISL_FOCAL * islFwd + sp.x * islRgt + (sp.y + ISL_LENS) * islUp);
-
-  // March the island inside its box; anything it misses is sea or sky.
-  float tSea = rd.y < -1e-4 ? -islRo.y / rd.y : 1.0e5;
-  vec2 tb = islSlab(islRo, rd);
-  float tEnd = min(tb.y, tSea);
-  float tHit = -1.0;
-  float hid = 0.0;
-  if (tb.y > tb.x && tEnd > max(tb.x, 0.0)) {
-    float tt = max(tb.x, 0.0);
-    for (int i = 0; i < 64; i++) {
-      vec2 h = islMap(islRo + rd * tt);
-      if (h.x < 0.0008 * tt + 0.002) {
-        tHit = tt;
-        hid = h.y;
-        break;
-      }
-      tt += h.x * 0.9;
-      if (tt > tEnd) break;
-    }
-  }
-
-  vec3 col;
-  float zScene = 1.0e4;
-  bool onIsland = false;
-  float accent = 0.0;
-  if (tHit > 0.0) {
-    vec3 pos = islRo + rd * tHit;
-    col = islLand(pos, islNormal(pos), hid, rd);
-    accent = islAccent;
-    zScene = tHit * dot(rd, islFwd);
-    onIsland = true;
-  } else if (tSea < 1.0e4) {
-    col = islSea(islRo + rd * tSea, rd, tSea);
-    zScene = tSea * dot(rd, islFwd);
-  } else {
-    col = islDome(rd);
-  }
-
-  if (!onIsland && uv.y > 0.55) {
-    vec4 fc = islFarClouds(sp, zScene);
-    float hor = 0.5 + ISL_FOCAL * sinP / cosP - ISL_LENS;
-    if (fc.a > 0.0) col = mix(col, mix(fc.rgb, islHaze(rd), mix(0.5, 0.12, smoothstep(0.0, 0.2, uv.y - hor))), fc.a);
-  }
-
-  // The gull and the balloon, in front of whatever lies behind them.
-  if (islGullOn > 0.0) {
-    vec3 pj = islProject(islGull);
-    if (pj.z < zScene) {
-      vec4 g = islGullSprite(sp, pj);
-      col = mix(col, g.rgb, g.a);
-    }
-  }
-  if (islBallOn > 0.0) {
-    vec3 pj = islProject(islBall);
-    if (pj.z < zScene) {
-      vec4 b = islBalloonSprite(sp, pj);
-      col = mix(col, b.rgb, b.a);
-    }
-  }
-
-  // Mist, then rain and snow falling through the air down to each pixel's first surface.
-  float fogK = K_fog;
-  vec3 haze = (fogK > 0.0 || rain > 0.0) ? islHaze(rd) : vec3(0.0);
-  if (fogK > 0.0) {
-    vec3 fogCol = mix(haze, vec3(dot(haze, LUMA)), 0.4);
-    col = mix(col, fogCol, fogAmount(fogK, 1.0 - exp(-zScene / 9.0), 0.0));
-  }
-  float dep = 1.0 - exp(-zScene * ISL_METRES / 30.0);
-  if (rain > 0.0) {
-    Precip pr = rainFallSeen(uv, aspect, islT, uFallTime, rain, islWind, dep, islVanish(rainFallDir(rain, islWind)));
-    vec3 air = mix(vec3(dot(haze, LUMA)) * vec3(0.94, 0.97, 1.0), haze, 0.4);
-    vec3 dropCol = max(greyed(haze, vec3(1.0), 0.5) * 1.2, vec3(0.08));
-    col = precipOver(col, air, dropCol * (1.0 - 0.2 * pr.near), pr);
-  }
-  if (snow > 0.0) {
-    Precip ps = islSnowFall(uv, aspect, islT, snow, dep);
-    float airL = dot(islAmb + 0.5 * islSky.sunColor + 0.4 * islSky.moonColor, LUMA);
-    vec3 flake = vec3(0.95, 0.96, 1.0) * clamp(airL * 1.3 + 0.1, 0.0, 1.0);
-    col = mix(col, flake * 0.92, ps.veil);
-    float contrast = clamp((dot(flake, LUMA) - dot(col, LUMA)) * 3.0, 0.0, 1.0);
-    col = mix(col, flake, clamp(ps.cover, 0.0, 1.0) * (0.85 - 0.2 * ps.near) * contrast);
-  }
-
-  vec3 rgb = clamp(col, 0.0, 1.0);
-  return shadeOf(rgb, inkOf(rgb, 1.15, 1.0), clamp(accent, 0.0, 1.0));
+// The balloon in front of whatever lies behind it; the depth the cell shows stays that of what lies
+// behind.
+void balloonMiddle(Ctx x, inout Cell c) {
+  if (islBallOn <= 0.0) return;
+  vec3 pj = islProject(islBall);
+  float z = islDepth(pj.z / dot(islRd, islFwd));
+  if (z >= c.z) return;
+  cellVeil(c, islBalloonSprite(islSp, pj), z);
 }
 `;

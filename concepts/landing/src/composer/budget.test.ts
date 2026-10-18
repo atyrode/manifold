@@ -37,6 +37,7 @@ describe("composed programs", () => {
       "flock",
       "forest",
       "garden",
+      "island",
       "lake",
       "lanterns",
       "lava",

@@ -4,21 +4,22 @@
 //   backdrops  downs (meadow), hillside (bees), sea (shore), desert (dunes), parkland (autumn),
 //              temple (lanterns), cliff (falls), pines (campfire), grove (bamboo), woods (forest),
 //              farShore (lake), templeWall (garden), mangroves (fireflies), crossroads (skyward),
-//              city (street), openSea (swell), bokeh (dew), roost (flock), valley (country)
+//              city (street), openSea (swell), seaSky (island), bokeh (dew), roost (flock), valley
+//              (country)
 //   grounds    lawn (bees), beach (shore), dunes (dunes), parkPath (autumn), river (lanterns),
 //              pool (falls), clearing (campfire), groveFloor (bamboo), forestFloor (forest), lake
 //              (lake), gravel (garden), creek (fireflies), crossing (street), swell (swell),
-//              farmland (country)
+//              shallows (island), farmland (country)
 //   dressings  apiary (bees), lamp, maple (autumn), falls and spray (falls), camp and campfire
 //              (campfire), culms, stoneLantern and clock (bamboo), shrine (forest), templeWoods
 //              (garden), streetTree and tramway (skyward), kerbside (street), lighthouse and boats
-//              (swell), web (dew), waterway and settlements (country)
+//              (swell), island (island), web (dew), waterway and settlements (country)
 //   covers     grass, wildflowers (meadow), litter (autumn), greenery (falls), undergrowth
 //              (forest), border (garden), verges (country)
 //   dressings  dandelions (meadow), boughs (garden), after the covers: they stand or fall on them
 //   life       insects (bees), fish (shore), lanterns (lanterns), smoke and sparks (campfire),
 //              kodama (forest), fireflySwarm (fireflies), streetLife (street), murmuration (flock),
-//              herds, travellers and starlings (country)
+//              herds, travellers and starlings (country), gull and balloon (island)
 //   chores     gardening (bees: on the apiary's beds), cairns (shore), rake (autumn), raking (garden)
 import {
   apiaryLayer,
@@ -89,6 +90,13 @@ import {
 import { creekLayer, fireflySwarmLayer, mangrovesLayer } from "../scenes/fireflies/layers.ts";
 import { murmurationLayer, roostLayer } from "../scenes/flock/layers.ts";
 import {
+  balloonLayer,
+  gullLayer,
+  islandLayer,
+  seaSkyLayer,
+  shallowsLayer,
+} from "../scenes/island/layers.ts";
+import {
   dandelionsLayer,
   downsLayer,
   grassLayer,
@@ -124,6 +132,7 @@ export const outdoor: Composer = {
     crossroadsLayer,
     cityLayer,
     openSeaLayer,
+    seaSkyLayer,
     bokehLayer,
     roostLayer,
     valleyLayer,
@@ -141,6 +150,7 @@ export const outdoor: Composer = {
     creekLayer,
     crossingLayer,
     swellLayer,
+    shallowsLayer,
     farmlandLayer,
     apiaryLayer,
     lampLayer,
@@ -159,6 +169,7 @@ export const outdoor: Composer = {
     kerbsideLayer,
     lighthouseLayer,
     boatsLayer,
+    islandLayer,
     webLayer,
     waterwayLayer,
     settlementsLayer,
@@ -183,6 +194,8 @@ export const outdoor: Composer = {
     herdsLayer,
     travellersLayer,
     starlingsLayer,
+    gullLayer,
+    balloonLayer,
     gardeningLayer,
     cairnsLayer,
     rakeLayer,

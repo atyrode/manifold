@@ -1,0 +1,6 @@
+---
+section: Changed
+issue: 1082
+---
+
+The landing concept's tiny island is now a preset of the `outdoor` composer (ADR 0062), in five layers: the `seaSky` backdrop (the island's own camera, pitched 20° over the sea, which hands the World its ray and stages the World's sky in its frame so the cloud deck lies over the sea as before; the far cumulus along the horizon; the air), the `shallows` ground (the sea, and round the island its turquoise shallows, swash, foam, shadow, fish and the lantern's path, which go with the island), the `island` dressing (beach, lawn, hill, cottage, fruit trees, palm, pier and lantern, the flowerbed M), and the `gull` and `balloon` life layers (the balloon keeps its "how often" and its "now"). Its sky, rain, snow and fog are now the World's, so it gains the World's moon phase, aurora, shooting stars, lightning and cumulus; `isle` is the composer's `seed`. It draws exactly as before at its defaults, in `view=source`, at dusk and with the M and all six trees; at night one cell of stars differs, and in rain, snow and fog the World's darker grey day, its drops and its thinner fog take over. The island itself is drawn from the ray, so the swell offers it too: "Swell · an island offshore" stands it 220 m out on the afternoon swell, at a cottage's true size.
