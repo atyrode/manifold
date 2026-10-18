@@ -1417,7 +1417,8 @@ export function rippleSim(knobs: readonly ParamDef[]): SimFactory {
   };
   const trigger = (key: string): number => {
     const now = knobs[slot(key)]?.trigger;
-    if (now === undefined) throw new Error(`landing: the ripple scene's "${key}" has no "now" slot`);
+    if (now === undefined)
+      throw new Error(`landing: the ripple scene's "${key}" has no "now" slot`);
     return now;
   };
   const at: Slots = {

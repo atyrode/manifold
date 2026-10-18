@@ -97,7 +97,10 @@ export function pondWaterSim(
 }
 
 /** The koi's sim: steered to the pointer (koi.ts), and their loops' layout. */
-export function koiSim(gl: WebGL2RenderingContext, params: readonly ParamDef[]): LayerSim<OverheadRig> {
+export function koiSim(
+  gl: WebGL2RenderingContext,
+  params: readonly ParamDef[],
+): LayerSim<OverheadRig> {
   const koi = new PondKoi(params, gl);
   const layout = new PondLayout(gl, params, "koi");
   return {
@@ -115,7 +118,10 @@ export function koiSim(gl: WebGL2RenderingContext, params: readonly ParamDef[]):
 }
 
 /** The border's sim: the plants and the canopy. */
-export function borderSim(gl: WebGL2RenderingContext, params: readonly ParamDef[]): LayerSim<OverheadRig> {
+export function borderSim(
+  gl: WebGL2RenderingContext,
+  params: readonly ParamDef[],
+): LayerSim<OverheadRig> {
   const knobs = new KnobReader<Knob>("pond", params, KNOBS);
   const atlas = new SheetPainter(gl);
   const canopy = new SheetPainter(gl);

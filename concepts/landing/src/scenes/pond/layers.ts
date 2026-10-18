@@ -436,9 +436,15 @@ export const borderLayer: LayerDef = {
       "Tufts of grass along the waterline, blades arching every way.",
       { when: "plants" },
     ),
-    seed("plants", "plantSeed", "arrangement", "Which arrangement of plants; re-seed for another.", {
-      when: "plants",
-    }),
+    seed(
+      "plants",
+      "plantSeed",
+      "arrangement",
+      "Which arrangement of plants; re-seed for another.",
+      {
+        when: "plants",
+      },
+    ),
     feature(
       "canopy",
       "canopy",
