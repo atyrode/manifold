@@ -1,15 +1,20 @@
-// The frost scene: a window pane on a winter night, frosting over. In front, the glass: feathery
-// fern frost (branches grown by build.ts, barbs drawn here), the fur frost between the fronds, thick
-// rime along the frame, condensation, cleared lines where a warm fingertip passed, and the window
-// frame. Behind it, out of focus and blurred further wherever the frost is thick: a snowy street
-// with lit windows and lamps, or a cabin among spruces. Snow falls through that world in depth (the
-// shared snowFall, hidden behind whatever is nearer), lit by the lamps and windows, and lies on its
-// roofs, boughs, rails, sills, lamp cap and the outside sill as deep as uWeather.y says. Over it, the
-// world's sky (worldSky, src/scenes/README.md "World layers"): the snow cloud, the stars, the moon
-// in its phase, the aurora and shooting stars, softened by the blur, hidden by whatever stands in
-// front, and lighting the snow, the air and the frost.
+// The frost's layers (layers.ts) on the `interior` composer (composer/room.ts), back to front: the
+// view (the backdrop, a window: the window frame and, through the glass, out of focus and blurred
+// further wherever the frost is thick, a snowy street with lit windows and lamps or a cabin among
+// spruces; snow falls through that world in depth, the shared snowFall, lit by the lamps and
+// windows, and lies on its roofs, boughs, rails, sills, lamp cap and the outside sill as deep as
+// uWeather.y says; over it, the World's sky, worldSky, through the window's own camera: the snow
+// cloud, the stars, the moon in its phase, the aurora and shooting stars, softened by the blur); then
+// the frost on the glass (frostGlass, a far veil over any window's glass, roomGlass): feathery fern
+// frost (branches grown by build.ts, barbs drawn here), the fur frost between the fronds, thick
+// rime along the glass's edges, condensation, cleared lines where a warm fingertip passed, lit by
+// the room's light (roomLight) and by what shows through the glass behind it.
+// Knobs: the view's K_outside, and the World's (K_snow, K_wind, uWeather.y for the snow lying
+// outside); the glass's K_style, K_sparkle, K_condensation (K_speed, K_pattern, K_warmth and K_mark
+// drive its simulation, sim.ts). The glass's fields (layouts in sim.ts): frostGlassField0 crystals,
+// frostGlassField1 melt, frostGlassField2 growth clock, frostGlassField3 crystal detail.
+import type { SharedGlsl } from "../../composer/types.ts";
 import { glslFloat } from "../../shaders/glsl.ts";
-import { worldGlsl } from "../../shaders/lib/world.ts";
 import { FROST_FRAME, FUR_SCALE, WIDTH_SCALE } from "./build.ts";
 import {
   FROST_EMERGE_FROM,
@@ -21,15 +26,8 @@ import {
   MELT_CLEAR,
   RIME_GROWN,
 } from "./sim.ts";
-import { FROST_METEOR_TRIGGER } from "./constants.ts";
 
-export const frostGlsl = `
-${worldGlsl}
-// Knobs: K_speed, K_pattern, K_warmth and K_mark drive the simulation (sim.ts); the shader reads
-// K_style, K_sparkle, K_condensation, K_outside, the sky (K_time, K_cycle, K_stars, K_moon,
-// K_meteors) and weather (K_snow, K_wind, K_aurora, and uWeather.y for the snow lying outside).
-// Simulation textures (layouts in sim.ts): uSim0 crystals, uSim1 melt, uSim2 growth clock, uSim3
-// crystal detail.
+const frostShared = `
 const float FROST_FRAME = ${glslFloat(FROST_FRAME)};
 const float FROST_CLEAR = ${glslFloat(MELT_CLEAR)};
 const float FROST_RIPEN = ${glslFloat(FUR_RIPEN)};
@@ -48,6 +46,60 @@ const float FROST_WIDTH_SCALE = ${glslFloat(WIDTH_SCALE)};
 // they take to grow out from it.
 const float FROST_BARB_PITCH = 0.0055;
 const float FROST_BARB_LAG = 160.0;
+
+// Set once per cell by frostBegin (nothing on the glass), the frost glass's begin (the frost on the
+// glass here) and the view's (its World, its light), read by the layers.
+vec2 frostKey;       // where the light that makes the frost glint is (x centred, y up the frame)
+vec3 frostGlow;      // the wide halos of the lights behind the glass, scattered by the frost
+vec4 frostEdges;     // roomGlass: how far inside the window's glass, from its bottom, top, left, right
+float frostDens;     // frost thickness round here: the view behind blurs with it
+vec2 frostBend;      // its slope: the view behind bends with it
+vec2 frostFilm;      // the meltwater film's wobble where the glass is clear
+float frostHaze;     // condensation
+float frostBody;     // fur, veil and rime
+float frostCrystal;  // the branches and their barbs
+float frostRimeHere; // the thick rime along the edges
+float frostDeep;     // deep in it
+float frostRim;      // the wet edge of a cleared patch
+float frostClearHere; // cleared by warmth
+float frostFresh;    // fresh growth: tips and new barbs
+vec2 frostAxis;      // the crystal's direction here, for its glints
+float frostMarkHere; // the traced M's melt
+
+// Nothing on the glass; the street lamp's light where the room's window has no light of its own.
+void frostBegin(Ctx x) {
+  frostKey = vec2(0.36 * x.aspect, 0.79);
+  frostGlow = vec3(0.0);
+  frostEdges = roomGlass(x);
+  frostDens = 0.0;
+  frostBend = vec2(0.0);
+  frostFilm = vec2(0.0);
+  frostHaze = 0.0;
+  frostBody = 0.0;
+  frostCrystal = 0.0;
+  frostRimeHere = 0.0;
+  frostDeep = 0.0;
+  frostRim = 0.0;
+  frostClearHere = 0.0;
+  frostFresh = 0.0;
+  frostAxis = vec2(1.0, 0.0);
+  frostMarkHere = 0.0;
+}
+`;
+
+/** The frost's GLSL its layers share: the glass's and the view's state for the cell. */
+export const frostSharedGlsl: SharedGlsl = {
+  id: "frost",
+  glsl: () => frostShared,
+  begin: "frostBegin",
+};
+
+/**
+ * The view (the frost's backdrop, a window): the winter night through the glass, blurred and bent
+ * by the frost on it, and the window frame round it; its glass for a frost glass (roomGlass) and
+ * the World's light coming in (its daylight).
+ */
+export const frostViewGlsl = `
 // uv height of the far kerb (street) or the clearing's far edge (cabin).
 const float FROST_HORIZON = 0.3;
 const vec3 FROST_LAMP = vec3(1.0, 0.68, 0.36);
@@ -62,10 +114,10 @@ const float FROST_WOODS_STARS = 1.7;
 // which the world's deck dims (WORLD_DECK_TWILIGHT); added where the cloud is by the twilight and
 // the overcast.
 const vec3 FROST_DUSK = vec3(0.62, 0.17, 0.12);
-// The shooting stars' trigger, and where they set out: bearing -0.6..0.6 rad and 0.42..0.6 rad up
-// (skyAngles), the sky over the roofs and treetops in any aspect from 4:3 to 16:9.
-const int FROST_METEOR_SLOT = ${FROST_METEOR_TRIGGER};
+// Where the World's shooting stars set out: bearing -0.6..0.6 rad and 0.42..0.6 rad up (skyAngles),
+// the sky over the roofs and treetops in any aspect from 4:3 to 16:9.
 const vec4 FROST_METEOR_FIELD = vec4(-0.6, 0.42, 1.2, 0.18);
+
 
 // Metres to the ground seen at screen height y: the eye looks out level at screen height 'eye',
 // and 'lift' (eye height in metres times the focal length in screen heights) sets how fast the
@@ -413,17 +465,75 @@ vec3 frostOutside(vec2 uv, float aspect, float blur, World world, out vec3 glow)
   return col;
 }
 
-// How far into the thick frost along the frame a point of the glass lies, in units of that
-// frost's depth (under 1: inside it), by growth second 'clock'. It lies deepest along the bottom,
-// where the glass is coldest, thinner up the sides and least along the top, and fills the corners
-// in round.
-float frostRime(vec2 uv, float aspect, float clock, float emerge) {
+// The World through the window, set by its begin.
+World frostWorld;
+
+// The World now, through the window: the moon in its phase (its disc, halo and light on the land),
+// the snow cloud's overcast and the light under it; the light the frost glints in.
+void frostViewBegin(Ctx x) {
+  frostWorld = worldAt(TRIGGER_meteors, TRIGGER_lightning);
+  frostKey = frostKeyLight(x.aspect);
+}
+
+// The glass inside the window frame round the frame's edges.
+vec4 frostViewGlass(Ctx x) {
+  vec2 uv = x.uv;
+  return vec4(uv.y - FROST_FRAME, 1.0 - uv.y - FROST_FRAME, uv.x * x.aspect - FROST_FRAME, (1.0 - uv.x) * x.aspect - FROST_FRAME);
+}
+
+// The night's light coming in through the glass onto the room's side of it.
+vec3 frostViewDaylight(Ctx x, vec2 p) {
+  return frostWorld.sky.ambient * 0.7;
+}
+
+// The world outside, seen through the glass (bent and blurred by the frost on it, shifting a little as
+// the viewer moves); the window frame: painted wood, lit faintly from the room and, along its inner
+// bevel, by the light outside; a hairline where its mitred rails meet; a shadow where it holds the
+// glass (the frost glass's own, while it is on).
+void frostViewFar(Ctx x, inout Cell c) {
+  vec2 uv = x.uv;
+  float aspect = x.aspect;
+  vec2 view = uv + frostBend * 0.025 + frostFilm + uPointer * vec2(0.006, 0.004);
+  vec3 glow;
+  vec3 col = frostOutside(view, aspect, 0.007 + frostDens * 0.05 + frostHaze * 0.025, frostWorld, glow);
+  frostGlow = glow;
+  vec2 edges = vec2(min(uv.x, 1.0 - uv.x) * aspect, min(uv.y, 1.0 - uv.y));
+  float edge = min(edges.x, edges.y);
+  if (edge < FROST_FRAME) {
+    float depth = edge / FROST_FRAME;
+    float bevel = smoothstep(0.65, 1.0, depth);
+    float grain = vnoise(vec2(edges.x < edges.y ? uv.y * 30.0 : uv.x * 30.0 * aspect, depth * 2.0));
+    col = vec3(0.17, 0.155, 0.14) * (0.9 + 0.1 * grain) + (glow * 0.12 + vec3(0.06, 0.07, 0.09)) * bevel;
+    col *= 1.0 - 0.35 * (1.0 - smoothstep(0.0, 0.0025, abs(edges.x - edges.y)));
+  }
+#if !LAYER_FROST_GLASS
+  else {
+    col *= 1.0 - 0.35 * (1.0 - smoothstep(0.0, 0.006, edge - FROST_FRAME));
+  }
+#endif
+  c.col = col;
+  c.accent = 0.0;
+}
+`;
+
+/**
+ * The frost on a window's glass (a far veil over the backdrop's window, wherever roomGlass says the
+ * glass is): its state for the cell (its begin, which the view's blur reads), then the frost over
+ * what shows through the glass.
+ */
+export const frostGlassGlsl = `
+// How far into the thick frost along the window's edges a point of the glass lies, in units of that
+// frost's depth (under 1: inside it), by growth second 'clock'; g: how far inside the glass it lies
+// from its bottom, top, left and right edges (roomGlass), y its height on the frame. It lies
+// deepest along the bottom, where the glass is coldest, thinner up the sides and least along the
+// top, and fills the corners in round.
+float frostRime(vec4 g, float y, float clock, float emerge) {
   float grown = smoothstep(-40.0, FROST_RIME_GROWN, clock);
   // Entering, the frost along the frame starts as a hairline on clear glass and thickens out.
   float spread = max(emerge, 0.02);
-  float bottom = (uv.y - FROST_FRAME) / ((0.03 + 0.055 * grown) * spread);
-  float top = (1.0 - uv.y - FROST_FRAME) / ((0.008 + 0.02 * grown) * spread);
-  float side = (min(uv.x, 1.0 - uv.x) * aspect - FROST_FRAME) / ((0.012 + 0.03 * grown) * (1.5 - uv.y) * spread);
+  float bottom = g.x / ((0.03 + 0.055 * grown) * spread);
+  float top = g.y / ((0.008 + 0.02 * grown) * spread);
+  float side = min(g.z, g.w) / ((0.012 + 0.03 * grown) * (1.5 - y) * spread);
   float rail = min(bottom, top);
   float h = max(1.3 - abs(rail - side), 0.0) / 1.3;
   return min(rail, side) - h * h * 0.325;
@@ -431,26 +541,27 @@ float frostRime(vec2 uv, float aspect, float clock, float emerge) {
 
 // Frost thickness at 'uv' without its fine structure: what blurs and bends the view behind it.
 float frostDensity(vec2 uv, float clock, float slow) {
-  vec4 g = texture(uSim0, uv);
+  vec4 g = texture(frostGlassField0, uv);
   float since = clock - g.r;
   float n = abs(g.g);
   float fronds = (1.0 - smoothstep(0.0, g.a + 0.006, n)) * smoothstep(0.0, 3.0, since) * 0.6;
   float fur = smoothstep(0.0, FROST_RIPEN, since - 1.0 - n * slow) * 0.6;
-  float melted = smoothstep(FROST_CLEAR - 0.05, FROST_CLEAR + 0.05, texture(uSim1, uv).r * uSimOn.y);
-  return max(fronds, fur) * (1.0 - melted) * uSimOn.x;
+  float melted = smoothstep(FROST_CLEAR - 0.05, FROST_CLEAR + 0.05, texture(frostGlassField1, uv).r * (frostGlassField1On() ? 1.0 : 0.0));
+  return max(fronds, fur) * (1.0 - melted) * (frostGlassField0On() ? 1.0 : 0.0);
 }
 
-Shade sceneFrost(vec2 uv, vec2 cell, float t) {
-  float aspect = uRes.x / uRes.y;
-  float tm = uMotionTime;
+// The frost on the glass here (the knobs' and the fields' alone): the crystal branch and its barbs,
+// the fur and the veil, the rime along the glass's edges, where warmth has cleared it, the
+// condensation; and its thickness round here, for the view behind (a frost view's blur and bend).
+void frostGlassBegin(Ctx x) {
+  vec2 uv = x.uv;
+  vec2 cell = x.cell;
+  float aspect = x.aspect;
+  float tm = x.tm;
   vec2 p = vec2((uv.x - 0.5) * aspect, uv.y);
   // One dither cell, in frame heights: the finest line worth drawing.
   float px = 1.0 / uRes.y;
-  // The world now: the moon in its phase (its disc, halo and light on the land), the snow cloud's
-  // overcast and the light under it; the street, the clouds and the room follow.
-  World world = worldAt(FROST_METEOR_SLOT, -1);
-  Sky sky = world.sky;
-  float clock = uSimOn.z > 0.5 ? texture(uSim2, vec2(0.5)).r : FROST_START;
+  float clock = frostGlassField2On() ? texture(frostGlassField2, vec2(0.5)).r : FROST_START;
   // 0 on the glass as the entrance opens, forming fast at first and settling; exactly 1 for every
   // clock at rest.
   float unformed = 1.0 - clamp((clock - FROST_EMERGE_FROM) / (FROST_EMERGE_TO - FROST_EMERGE_FROM), 0.0, 1.0);
@@ -459,15 +570,15 @@ Shade sceneFrost(vec2 uv, vec2 cell, float t) {
   float slow = FROST_FUR_FERN * pow(FROST_FUR_FUR / FROST_FUR_FERN, K_style);
 
   // Melt: where the glass is clear, how recently it refroze, how warm it is, the traced M.
-  vec4 melt = uSimOn.y > 0.5 ? texture(uSim1, uv) : vec4(0.0);
+  vec4 melt = frostGlassField1On() ? texture(frostGlassField1, uv) : vec4(0.0);
   float thr = FROST_CLEAR + 0.12 * (vnoise(p * 90.0) - 0.5);
   float clear = smoothstep(thr - 0.05, thr + 0.05, melt.r);
 
   // The nearest crystal branch (layouts in sim.ts): when it grew here, the signed distance across
   // it, the distance along it and how far its barbs reach; its fur lag, half-width, brightness and
   // a random number of its own.
-  vec4 g = uSimOn.x > 0.5 ? texture(uSim0, uv) : vec4(1e4, 1.0, 0.0, 0.0);
-  vec4 detail = uSimOn.w > 0.5 ? texture(uSim3, uv) : vec4(1.0, 0.0, 0.0, 0.0);
+  vec4 g = frostGlassField0On() ? texture(frostGlassField0, uv) : vec4(1e4, 1.0, 0.0, 0.0);
+  vec4 detail = frostGlassField3On() ? texture(frostGlassField3, uv) : vec4(1.0, 0.0, 0.0, 0.0);
   float since = clock - g.r;
   float n = abs(g.g);
   // Barbs leave the branch every 'pitch' along it, leaning 60° toward its tip: 'phase' counts them.
@@ -511,7 +622,7 @@ Shade sceneFrost(vec2 uv, vec2 cell, float t) {
   float fibre = vnoise(vec2(phase * 2.2, n / pitch * 0.6));
   float low = 1.0 - smoothstep(0.04, 0.32, uv.y);
   // Rime: thick, opaque frost along the frame, ragged at its edge, reaching out along the fronds.
-  float q = frostRime(uv, aspect, clock, emerge) + (vnoise(p * 16.0) - 0.5) * 0.7 + (fibre - 0.5) * 0.3;
+  float q = frostRime(frostEdges, uv.y, clock, emerge) + (vnoise(p * 16.0) - 0.5) * 0.7 + (fibre - 0.5) * 0.3;
   q -= 0.35 * (1.0 - smoothstep(0.0, reach + 0.012, lag)) * smoothstep(0.0, 3.0, since);
   float rime = 1.0 - smoothstep(0.7, 1.15, q);
   float deep = 1.0 - smoothstep(0.2, 0.8, q);
@@ -529,70 +640,80 @@ Shade sceneFrost(vec2 uv, vec2 cell, float t) {
   crystal = mix(crystal, barb * 0.6 * (1.0 - 0.6 * melt.g), young) * keep;
   rime *= keep;
 
-  // Frost thickness around this point: the view through the glass blurs and bends with it.
+  // Frost thickness around this point: the view through the glass blurs and bends with it (the
+  // frost's own view, offered only in its own room; a guest's window draws its own view, unblurred).
+#ifdef LAYER_FROST_VIEW
+#if LAYER_FROST_VIEW
   vec2 sx = vec2(0.012 / aspect, 0.0);
   vec2 sy = vec2(0.0, 0.012);
   float right = frostDensity(uv + sx, clock, slow);
   float left = frostDensity(uv - sx, clock, slow);
   float up = frostDensity(uv + sy, clock, slow);
   float down = frostDensity(uv - sy, clock, slow);
-  float dens = (2.0 * max(body, crystal * 0.7) + right + left + up + down) / 6.0;
+  frostDens = (2.0 * max(body, crystal * 0.7) + right + left + up + down) / 6.0;
+  frostBend = vec2(right - left, up - down);
+#endif
+#endif
 
   // Condensation: a milky film, heavier low on the pane; the warmth of a touch fogs the glass
   // around it, and a fingertip wipes it away where it melts the frost.
   float haze = K_condensation * emerge * (0.45 + 0.55 * fbm(p * 2.2 + vec2(0.0, tm * 0.004))) * (1.0 - 0.45 * smoothstep(0.05, 0.7, uv.y));
   haze = max(haze, smoothstep(0.03, 0.4, melt.b) * 0.7) * (1.0 - 0.9 * clear);
 
-  // The world outside, seen through it all (and shifting a little as the viewer moves).
-  vec2 film = (vec2(vnoise(p * 26.0 + 3.0), vnoise(p * 26.0 + 9.0)) - 0.5) * 0.006 * clear;
-  vec2 view = uv + vec2(right - left, up - down) * 0.025 + film + uPointer * vec2(0.006, 0.004);
-  vec3 glow;
-  vec3 outside = frostOutside(view, aspect, 0.007 + dens * 0.05 + haze * 0.025, world, glow);
-  vec3 col = mix(outside, vec3(0.1, 0.12, 0.15) + glow * 0.35 + outside * 0.3, clamp(haze, 0.0, 1.0) * 0.55);
 
-  // Light in the ice: the room's dim light on this side, and the night behind the pane scattered
-  // on through it, so the frost glows warm before windows and lamps and cool white-blue elsewhere.
-  vec3 back = outside * 0.5 + glow;
-  vec3 room = vec3(0.3, 0.31, 0.34) + sky.ambient * 0.7;
-  vec3 ice = vec3(0.82, 0.9, 1.0);
-  vec3 furCol = ice * (room * 2.0 + back * 0.9) * (1.0 + 0.3 * rime * deep);
-  vec3 lineCol = ice * (room * 3.4 + back * 1.7);
+  frostFilm = (vec2(vnoise(p * 26.0 + 3.0), vnoise(p * 26.0 + 9.0)) - 0.5) * 0.006 * clear;
+  frostHaze = haze;
+  frostBody = body;
+  frostCrystal = crystal;
+  frostRimeHere = rime;
+  frostDeep = deep;
+  frostRim = rim;
+  frostClearHere = clear;
   // Fresh growth: tips and new barbs brightest just as they form.
-  float fresh = exp(-max(since, 0.0) / 2.0) * step(0.0, since);
+  frostFresh = exp(-max(since, 0.0) / 2.0) * step(0.0, since);
+  frostAxis = branch >= barb ? vec2(-dn.y, dn.x) / max(length(dn), 1e-4) : vec2(-dp.y, dp.x) / max(length(dp), 1e-6);
+  frostMarkHere = melt.a;
+}
+
+// The frost over what shows through the glass (c.col, the view behind it), lit by the room's light on
+// this side and by the night behind the pane scattered on through it, so the frost glows warm before
+// windows and lamps and cool white-blue elsewhere; the glints; the traced M's wet edges; a shadow
+// where the frame holds the glass.
+void frostGlassFarVeil(Ctx x, inout Cell c) {
+  vec4 e = frostEdges;
+  float edge = min(min(e.x, e.y), min(e.z, e.w));
+  if (edge < 0.0) return;
+  vec2 uv = x.uv;
+  float aspect = x.aspect;
+  float tm = x.tm;
+  vec2 p = vec2((uv.x - 0.5) * aspect, uv.y);
+  vec3 outside = c.col;
+  vec3 glow = frostGlow;
+  float body = frostBody;
+  float crystal = frostCrystal;
+  float rime = frostRimeHere;
+  float rim = frostRim;
+  vec3 col = mix(outside, vec3(0.1, 0.12, 0.15) + glow * 0.35 + outside * 0.3, clamp(frostHaze, 0.0, 1.0) * 0.55);
+  vec3 back = outside * 0.5 + glow;
+  vec3 room = roomLight(x, x.p, vec3(0.0, 0.0, -1.0));
+  vec3 ice = vec3(0.82, 0.9, 1.0);
+  vec3 furCol = ice * (room * 2.0 + back * 0.9) * (1.0 + 0.3 * rime * frostDeep);
+  vec3 lineCol = ice * (room * 3.4 + back * 1.7);
   // Glints: a crystal lying across the line to the light flashes, so glints gather in rings round
   // it, as on scratched glass, and shift as the viewer moves; here and there a facet winks, slowly.
-  vec2 toLight = frostKeyLight(aspect) + uPointer * 0.15 - p;
+  vec2 toLight = frostKey + uPointer * 0.15 - p;
   vec2 lightDir = toLight / max(length(toLight), 1e-4);
-  vec2 axis = branch >= barb ? vec2(-dn.y, dn.x) / max(length(dn), 1e-4) : vec2(-dp.y, dp.x) / max(length(dp), 1e-6);
   float sway = 0.1 * sin(tm * 0.3 + hash12(floor(uv * 240.0)) * TAU);
-  float glint = pow(max(1.0 - abs(dot(rotate(axis, sway), lightDir)), 0.0), 10.0) * (0.35 + 1.4 * exp(-length(toLight) / 0.5));
-  vec2 speck = floor(cell * 0.5);
+  float glint = pow(max(1.0 - abs(dot(rotate(frostAxis, sway), lightDir)), 0.0), 10.0) * (0.35 + 1.4 * exp(-length(toLight) / 0.5));
+  vec2 speck = floor(x.cell * 0.5);
   float wink = step(0.972, hash12(speck + 7.0)) * smoothstep(0.5, 1.0, sin(tm * (0.5 + 0.8 * hash12(speck + 19.0)) + hash12(speck + 31.0) * 60.0));
   float sparkle = K_sparkle * (crystal * glint * 1.2 + max(crystal, rime * 0.6) * wink * (0.6 + glint)) * (0.35 + dot(back, LUMA));
   col = mix(col, furCol, clamp(body, 0.0, 1.0));
-  col = mix(col, lineCol + vec3(0.6, 0.75, 0.9) * fresh, clamp(crystal, 0.0, 1.0));
+  col = mix(col, lineCol + vec3(0.6, 0.75, 0.9) * frostFresh, clamp(crystal, 0.0, 1.0));
   col += vec3(1.0, 0.97, 0.92) * sparkle + vec3(0.9, 0.95, 1.0) * rim * 0.45;
   // The traced M's wet edges catch a cold light.
-  col += vec3(0.25, 0.5, 0.7) * melt.a * rim * 0.4;
-  float accent = melt.a * max(clear, rim) * 0.9;
-
-  // The window frame: painted wood, lit faintly from the room and, along its inner bevel, by the
-  // light outside; a hairline where its mitred rails meet; a shadow where it holds the glass.
-  vec2 edges = vec2(min(uv.x, 1.0 - uv.x) * aspect, min(uv.y, 1.0 - uv.y));
-  float edge = min(edges.x, edges.y);
-  if (edge < FROST_FRAME) {
-    float depth = edge / FROST_FRAME;
-    float bevel = smoothstep(0.65, 1.0, depth);
-    float grain = vnoise(vec2(edges.x < edges.y ? uv.y * 30.0 : uv.x * 30.0 * aspect, depth * 2.0));
-    col = vec3(0.17, 0.155, 0.14) * (0.9 + 0.1 * grain) + (glow * 0.12 + vec3(0.06, 0.07, 0.09)) * bevel;
-    col *= 1.0 - 0.35 * (1.0 - smoothstep(0.0, 0.0025, abs(edges.x - edges.y)));
-    accent = 0.0;
-  } else {
-    col *= 1.0 - 0.35 * (1.0 - smoothstep(0.0, 0.006, edge - FROST_FRAME));
-  }
-
-  // Lights run past 1: roll them off softly rather than clipping.
-  col = 1.0 - exp(-col * 1.2);
-  return shadeOf(col, inkOf(col, 1.25, 1.0), accent);
+  col += vec3(0.25, 0.5, 0.7) * frostMarkHere * rim * 0.4;
+  c.accent = frostMarkHere * max(frostClearHere, rim) * 0.9;
+  c.col = col * (1.0 - 0.35 * (1.0 - smoothstep(0.0, 0.006, edge)));
 }
 `;

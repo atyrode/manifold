@@ -983,6 +983,18 @@ vec3 cityWindowDaylight(Ctx x, vec2 p) {
   return sill.cool * ((0.08 + 0.25 * nearWindow) * (1.0 + 2.0 * sill.sky.day) + 0.6 * sill.flash);
 }
 
+// Where the window's glass is (roomGlass: a frost glass's): the panes of the raised sash above its
+// rail, between its stiles and glazing bars, from each pane's bottom, top, left and right edges; the
+// top row runs on out of frame.
+vec4 cityWindowGlass(Ctx x) {
+  vec2 p = x.p;
+  if (!sill.inGlass) return vec4(-1.0);
+  bool low = p.y < 0.405;
+  float l = p.x < sill.xm1 ? sill.xg0 : (p.x < sill.xm2 ? sill.xm1 : sill.xm2) + 0.006;
+  float r = p.x < sill.xm1 ? sill.xm1 - 0.006 : (p.x < sill.xm2 ? sill.xm2 - 0.006 : sill.xg1);
+  return vec4(p.y - (low ? SILL_RAIL_TOP : 0.411), low ? 0.399 - p.y : 1e3, p.x - l, r - p.x);
+}
+
 void cityWindowFar(Ctx x, inout Cell c) {
   vec2 p = x.p;
   float aspect = x.aspect;

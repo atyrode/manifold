@@ -1,7 +1,7 @@
-// Frost's code, loaded the first time the scene is needed (SceneDef.code).
-import { frostScene } from "./index.ts";
-import { frostSim } from "./sim.ts";
+// Frost's code, loaded the first time the scene is needed (SceneDef.code): assembled from the code
+// of every layer its rig offers (composer/code.ts).
+import { composedCode } from "../../composer/code.ts";
+import { INTERIOR_CODE } from "../../composer/interior-code.ts";
+import { frostComposed } from "./index.ts";
 
-export { frostGlsl as glsl } from "./shader.ts";
-export const entry = "sceneFrost";
-export const sim = frostSim(frostScene.params);
+export const { glsl, entry, glslFor, sim } = composedCode(frostComposed, INTERIOR_CODE);

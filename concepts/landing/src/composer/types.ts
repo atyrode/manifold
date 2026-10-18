@@ -140,6 +140,12 @@ export interface LayerLight {
  * and, in the `interior` composer (room.ts), a backdrop's
  *   daylight    vec3 <fn>(Ctx x, vec2 p): the light it lets into the room onto a surface at frame
  *               point p, which the room's light (roomLight) adds for every layer (the window's)
+ *   glass       vec4 <fn>(Ctx x): where its window's glass is, which roomGlass gives every layer
+ *               (the frost glass's): how far inside the glass the cell lies from its bottom, top,
+ *               left and right edges, frame heights, negative off it (a large number where the
+ *               glass runs on out of frame)
+ * and every layer's farVeil there: over the backdrop's far pass, before the ground (the frost on a
+ * window's glass).
  * Under the overhead composer (overhead-glsl.ts) a pass is given `Patch x` (its begin `inout`)
  * and `inout Spot c`, and the entry runs, after the begins (the water's sets the surface:
  * x.slope, x.floorP, x.depth, x.flow, x.waterCol, x.caustic; the light's layer x.sun, x.power):
@@ -172,6 +178,7 @@ export interface LayerPasses {
   readonly speck?: string;
   readonly shade?: string;
   readonly daylight?: string;
+  readonly glass?: string;
   readonly bed?: string;
   readonly water?: string;
   readonly floor?: string;
@@ -301,6 +308,11 @@ export interface LayerDef {
    * preset lists the World's knobs only while it offers one (README "The interior composer").
    */
   readonly window?: true;
+  /**
+   * An `interior` layer drawn on a window's glass (roomGlass: the frost): offered only to a room
+   * that offers a window backdrop with a `glass` pass (README "The interior composer").
+   */
+  readonly glass?: true;
 }
 
 /**
@@ -364,6 +376,11 @@ export interface Grade {
   readonly moonlight?: number;
   readonly exposure?: number;
   readonly vignette?: number;
+  /**
+   * The room's (room.ts): lights past 1 rolled off softly, `1 - exp(-col · rolloff)`, after the
+   * exposure (the frost's lamps and glints).
+   */
+  readonly rolloff?: number;
   /**
    * The vignette's reach where it is a circle across the frame's width as well as its height (the
    * campfire's): `scale` units a screen height, darkening from `from` to `to` units out. Unset, an

@@ -44,11 +44,22 @@ export function incenseVentVerify(gl: WebGL2RenderingContext): Record<string, un
     return Float32Array.from({ length: COLUMNS * ROWS }, (_, k) => pixels[4 * k + channel] ?? 0);
   };
 
-  /** The room with these knobs over the laminar defaults, after its prewarm and three seconds. */
+  /**
+   * The room with these knobs over the laminar defaults, after its prewarm and three seconds. The
+   * composed sim's textures: the speck map, the records atlas, then the incense's fields (its dye
+   * at slot 2, its velocity at 3).
+   */
   const room = (knobs: Record<string, number>): Air => {
     const sim = incenseScene.sim?.(gl);
     if (!sim) throw new Error("Incense simulation unavailable");
-    const raw: Record<string, number> = { turbulence: 0, door: 0, hand: 0, dust: 0, ...knobs };
+    const raw: Record<string, number> = {
+      incense: 1,
+      turbulence: 0,
+      door: 0,
+      hand: 0,
+      dust: 0,
+      ...knobs,
+    };
     const frame: SimFrame = {
       dt: 0,
       time: 0,
@@ -76,7 +87,7 @@ export function incenseVentVerify(gl: WebGL2RenderingContext): Record<string, un
       frame.motionTime += frame.dt;
       textures = sim.frame(frame);
     }
-    const air = { vx: read(textures[1], 0), fresh: read(textures[0], 2) };
+    const air = { vx: read(textures[3], 0), fresh: read(textures[2], 2) };
     sim.dispose();
     return air;
   };

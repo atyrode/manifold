@@ -12,13 +12,15 @@
 //   3. The backdrop's `far` pass: what the back wall holds (the window and what it shows, a papered
 //      wall). A backdrop that looks out (`LayerDef.window`) brings the World in with it: the World's
 //      sky and weather cross its glass in its own cells only, drawn through the window's own rig.
+//      Then every `farVeil` pass: what lies on the window's glass (the frost), where `roomGlass`
+//      says the backdrop's glass is (its `glass` pass).
 //   4. The ground layer's `ground`: the ledge (a sill, a sideboard) and the wall under it.
 //   5. Every `middle` pass, then every `front` pass, then every `frontVeil`, in canonical order: what
 //      stands on the ledge and in front of it. Painter's order is the canonical order; the room keeps
 //      no depth (a stated limit). A layer's shapes throw shadows only where a backdrop asks for them
 //      (`roomCaster`, below).
-//   6. The grade: the room's vignette (its corners fall into the dark), the exposure, shadeOf with
-//      the grade's ink, the cell's shimmer.
+//   6. The grade: the room's vignette (its corners fall into the dark), the exposure, the soft
+//      roll-off of lights past 1, shadeOf with the grade's ink, the cell's shimmer.
 // The room's light at a surface (`roomLight`) is its lamp out of frame (`Room.lamp`), its ambient,
 // the backdrop's daylight through the window (its `daylight` pass) and every on layer's declared
 // lights (`localLight`, at the surface's point in metres on the frame: x across, y up from the seat).
@@ -119,6 +121,7 @@ export function roomGlsl(a: RoomAssembly): string {
     lamp === undefined ? "" : `${vec3(lamp.color)} * roomLamp(p) * ${glslFloat(lamp.gain)} + `;
   const daylight =
     backdrop?.passes.daylight === undefined ? "" : ` + ${backdrop.passes.daylight}(x, p)`;
+  const glass = backdrop?.passes.glass === undefined ? "vec4(-1.0)" : `${backdrop.passes.glass}(x)`;
   const n = Math.max(1, layers.length);
   const vignette =
     grade.vignette === undefined
@@ -128,6 +131,10 @@ export function roomGlsl(a: RoomAssembly): string {
     grade.exposure === undefined
       ? ""
       : `  c.col = clamp(c.col * ${glslFloat(grade.exposure)}, 0.0, 1.0);\n`;
+  const rolloff =
+    grade.rolloff === undefined
+      ? ""
+      : `  c.col = 1.0 - exp(-c.col * ${glslFloat(grade.rolloff)});\n`;
   const paper =
     grade.ink.paper === undefined
       ? ""
@@ -160,6 +167,7 @@ ${lampGlsl(room)}
 vec3 localLight(vec3 p, vec3 n);
 vec3 roomLight(Ctx x, vec2 p, vec3 n);
 float roomCaster(vec2 p);
+vec4 roomGlass(Ctx x);
 ${turnsGlsl(turns)}
 ${accessorsGlsl(layers, allocation)}
 // Where each layer on stands (its anchor: x a share of the frame's width from its centre).
@@ -185,6 +193,12 @@ vec3 roomLight(Ctx x, vec2 p, vec3 n) {
   return ${lampTerm}${vec3(room.ambient)}${daylight} + localLight(roomAt(p), n);
 }
 
+// Where the backdrop's window glass is (its glass pass): how far inside it from its bottom, top, left
+// and right edges, negative off it.
+vec4 roomGlass(Ctx x) {
+  return ${glass};
+}
+
 Shade ${COMPOSER_ENTRY}(vec2 uv, vec2 cell, float t) {
   // 1. The context, then each shared part's and each layer's own state for this cell.
   Ctx x = roomCtx(uv, cell);
@@ -199,13 +213,13 @@ ${layers.map((_, k) => `  shows[${k}] = layerShows(${k}, cell);`).join("\n")}\n`
 }  // 2. The back wall.
   Cell c = Cell(${vec3(room.wall)} * roomLight(x, x.p, vec3(0.0, 0.0, -1.0)), 0.0, 0.0);
   // 3. What the back wall holds.
-${passCalls(layers, turns, "far", "x, c", (def) => def.role === "backdrop")}
+${passCalls(layers, turns, "far", "x, c", (def) => def.role === "backdrop")}${passCalls(layers, turns, "farVeil", "x, c")}
   // 4. The ledge.
 ${passCalls(layers, turns, "ground", "x, c", (def) => def.role === "ground")}
   // 5. What stands on the ledge and in front of it.
 ${passCalls(layers, turns, "middle", "x, c")}${passCalls(layers, turns, "front", "x, c")}${passCalls(layers, turns, "frontVeil", "x, c")}
   // 6. The grade.
-${turns ? "" : "  if (heldTurn < -1.5) c.col = vec3(0.0);\n"}${vignette}${exposure}  Shade o = shadeOf(c.col, inkOf(c.col, ${glslFloat(grade.ink.gain)}, ${glslFloat(grade.ink.gamma)}${paper}), clamp(c.accent, 0.0, 1.0));
+${turns ? "" : "  if (heldTurn < -1.5) c.col = vec3(0.0);\n"}${vignette}${exposure}${rolloff}  Shade o = shadeOf(c.col, inkOf(c.col, ${glslFloat(grade.ink.gain)}, ${glslFloat(grade.ink.gamma)}${paper}), clamp(c.accent, 0.0, 1.0));
   o.shimmer = c.shimmer;
   return o;
 }

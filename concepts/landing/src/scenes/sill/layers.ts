@@ -2,7 +2,8 @@
 // (code.ts). Every one is drawn on the sill's frame, through its rig alone (ON_THE_SILL).
 //   cityWindow  backdrop: the sash window in the back wall, raised onto the city at dusk; the World's
 //               sky and weather cross its glass, the city's windows and the neon M across the street.
-//               Its light comes into the room (its daylight).
+//               Its light comes into the room (its daylight); its panes are glass for a frost glass
+//               (its glass, roomGlass).
 //   sill        ground: the sill's wooden top in the reading lamp's pool, its nosing, the wall and the
 //               radiator under it.
 //   props       dressing: the plant, the mug and the books on the sill, the steam off the mug.
@@ -69,7 +70,7 @@ export const cityWindowLayer: LayerDef = {
   },
   triggers: ["neon"],
   mark: "neon",
-  passes: { far: "cityWindowFar", daylight: "cityWindowDaylight" },
+  passes: { far: "cityWindowFar", daylight: "cityWindowDaylight", glass: "cityWindowGlass" },
 };
 
 export const sillLayer: LayerDef = {

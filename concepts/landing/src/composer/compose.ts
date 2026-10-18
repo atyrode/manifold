@@ -162,9 +162,14 @@ export function composeScene<P extends AnyPreset>(composer: Composer, preset: P)
     throw new ComposeError(
       `preset ${preset.id} is for the ${preset.composer} composer, not ${composer.id}`,
     );
-  const offered = composer.layers.filter(
+  const admitted = composer.layers.filter(
     (layer) => layer.composers.includes(preset.composer) && admits(layer, preset.rig),
   );
+  // A layer drawn on a window's glass is offered only where a window with glass is (roomGlass).
+  const glazed = admitted.some(
+    (layer) => layer.window === true && layer.passes.glass !== undefined,
+  );
+  const offered = admitted.filter((layer) => layer.glass !== true || glazed);
   for (const id of preset.layers)
     if (!offered.some((layer) => layer.id === id))
       throw new ComposeError(`preset ${preset.id}: home layer ${id} is not offered by its rig`);

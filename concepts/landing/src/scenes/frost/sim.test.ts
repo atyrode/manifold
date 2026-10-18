@@ -4,9 +4,11 @@ import { loadScene } from "../index.ts";
 
 const frostScene = await loadScene("frost");
 
-// uSim0 (sim.ts) is the crystal field over the glass, `height` texels to the frame height, rows
-// bottom to top; a texel's g is its signed distance across the nearest branch, in frame heights.
-// These run the sim on the headless stand-in, the pointer off the glass, and read the field there.
+// The frost glass's field 0 (sim.ts; slot 2, after the composed sim's speck map and records atlas) is
+// the crystal field over the glass, `height` texels to the frame height, rows bottom to top; a
+// texel's g is its signed distance across the nearest branch, in frame heights. These run the sim
+// on the headless stand-in, the pointer off the glass, and read the field there.
+const CRYSTALS = 2;
 
 /** Half a dither cell at the headless frame's 540 cells high, in frame heights. */
 const HALF_CELL = 0.5 / 540;
@@ -15,14 +17,14 @@ const WIDE = (16 / 9) * 1.02;
 /** The field on show once the first frames have grown the default pane's full field. */
 function grownPane(sim: HeadlessSim): HeadlessUpload {
   for (let f = 0; f < 120; f++) sim.step({ pointer: { inside: false } });
-  return sim.upload(0);
+  return sim.upload(CRYSTALS);
 }
 
 /** Steps at `aspect` until the field on show is a new one, as wide as the frame; at most `frames`. */
 function regrown(sim: HeadlessSim, aspect: number, frames: number): HeadlessUpload {
-  const from = sim.upload(0);
+  const from = sim.upload(CRYSTALS);
   for (let f = 0; f < frames; f++) {
-    const field = sim.step({ aspect, pointer: { inside: false } }).upload(0);
+    const field = sim.step({ aspect, pointer: { inside: false } }).upload(CRYSTALS);
     if (field.data !== from.data && field.width !== from.width) return field;
   }
   throw new Error(`no field regrown for aspect ${aspect} in ${frames} frames`);
@@ -85,7 +87,7 @@ test("another pattern is another pane: the same test finds next to none of its b
   const before = grownPane(sim);
   const other = new HeadlessSim(frostScene);
   for (let f = 0; f < 120; f++) other.step({ knobs: { pattern: 1 }, pointer: { inside: false } });
-  expect(kept(before, other.upload(0))).toBeLessThan(0.2);
+  expect(kept(before, other.upload(CRYSTALS))).toBeLessThan(0.2);
   sim.dispose();
   other.dispose();
 });
@@ -96,11 +98,15 @@ test("a window edge being dragged leaves the pane as it is until the drag rests,
   // A drag: the frame a little wider every frame for a second; the field on show stays as it was.
   for (let f = 1; f <= 60; f++) {
     const aspect = (16 / 9) * (1 + f / 3000);
-    expect(sim.step({ aspect, pointer: { inside: false } }).upload(0).data).toBe(before.data);
+    expect(sim.step({ aspect, pointer: { inside: false } }).upload(CRYSTALS).data).toBe(
+      before.data,
+    );
   }
   const after = regrown(sim, WIDE, 200);
   // Held still at its new shape, the pane does not grow again.
   for (let f = 0; f < 120; f++)
-    expect(sim.step({ aspect: WIDE, pointer: { inside: false } }).upload(0).data).toBe(after.data);
+    expect(sim.step({ aspect: WIDE, pointer: { inside: false } }).upload(CRYSTALS).data).toBe(
+      after.data,
+    );
   sim.dispose();
 });

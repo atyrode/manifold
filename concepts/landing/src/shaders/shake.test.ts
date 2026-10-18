@@ -184,11 +184,15 @@ const BUDGET = {
   flock: [51500, 147500],
   forest: [124000, 199000],
   fractal: [34000],
-  frost: [68000, 112500],
+  // The all-features program is the interior composer's (ADR 0062): the World's every gate (its rain,
+  // fog, lightning and cloud parts, new to the frost's window) and the layers' turns.
+  frost: [68000, 139500],
   garden: [97000, 127500],
   harmonograph: [17000],
   hyperbolic: [24000],
-  incense: [39000],
+  // The interior composer's room program (ADR 0062): its context, its layers' passes and the shared
+  // cell state; the all-features program is the one a layer's turn plays in.
+  incense: [43000, 46000],
   // All features: the World's every part and the layers' turns since its port (171,849 then).
   island: [89500, 189000],
   kelp: [67500],

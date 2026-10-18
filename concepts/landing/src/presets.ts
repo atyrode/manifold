@@ -151,8 +151,8 @@ export const presets: readonly Preset[] = [
   },
   {
     name: "Frost · aurora over the cabin",
-    commit: "f1ca6557",
-    query: "scene=frost&outside=1&time=0.93&moon-amount=0.5&snow=0&aurora=1&aurora-amount=0.8",
+    commit: "PENDING",
+    query: "scene=frost&time=0.93&moon-amount=0.5&snow=0&aurora=1&aurora-amount=0.8&outside=1",
     savedAt: "2026-10-15",
   },
   {
@@ -378,6 +378,12 @@ export const presets: readonly Preset[] = [
     name: "Sill · lava lamp on the sill",
     commit: "d0701915",
     query: "scene=sill&lavaLamp=1",
+    savedAt: "2026-10-18",
+  },
+  {
+    name: "Sill · frost on the window",
+    commit: "PENDING",
+    query: "scene=sill&frostGlass=1",
     savedAt: "2026-10-18",
   },
   {

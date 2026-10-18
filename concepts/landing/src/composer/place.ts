@@ -7,7 +7,8 @@
 //   - its role holds one and has it already (a second backdrop or ground), or a layer kept before
 //     excludes it or it excludes one, or its host (`requires`) is not kept;
 //   - COMPOSER_CAPS.layers are kept already, or it is a subject and the front band holds
-//     COMPOSER_CAPS.subjects of them;
+//     COMPOSER_CAPS.subjects of them, or its textures would take the kept layers' past
+//     COMPOSER_CAPS.fields (the incense's four and the lava lamp's three);
 //   - none of its anchors fits: each in turn, the first whose exclusive and clearing claims overlap
 //     none of those placed, and whose `mustShow` claims lie in the rig's view at its minAspect;
 //   - its claims would take the program past COMPOSER_CAPS.claims.
@@ -138,6 +139,14 @@ export function place(
       kept.filter((placed) => front(placed.layer)).length >= COMPOSER_CAPS.subjects
     ) {
       refuse(`the front holds ${COMPOSER_CAPS.subjects} subjects already`);
+      continue;
+    }
+    const textures = kept.reduce(
+      (n, placed) => n + (placed.layer.data?.fields ?? 0),
+      layer.data?.fields ?? 0,
+    );
+    if (textures > COMPOSER_CAPS.fields) {
+      refuse(`its textures would take the stack past ${COMPOSER_CAPS.fields} fields`);
       continue;
     }
     let blocker: PlacedClaim | undefined;

@@ -162,7 +162,7 @@ describe("the placer", () => {
     ]);
   });
 
-  test("caps the layers on, the front's subjects and the claims", () => {
+  test("caps the layers on, the front's subjects, the fields and the claims", () => {
     const covers = Array.from({ length: COMPOSER_CAPS.layers }, (_, i) =>
       layer(`cover${i}`, "cover"),
     );
@@ -181,6 +181,12 @@ describe("the placer", () => {
     expect(
       outcome(place([...offered, stall], preset, new Set(["fire", "bench", "stall"]))).refused,
     ).toEqual([`stall: the front holds ${COMPOSER_CAPS.subjects} subjects already`]);
+
+    const smoke = layer("smoke", "life", { data: { fields: 4 } });
+    const lamp = layer("lamp", "life", { data: { fields: 3 } });
+    expect(
+      outcome(place([hills, smoke, lamp], preset, new Set(["smoke", "lamp"]))).refused,
+    ).toEqual([`lamp: its textures would take the stack past ${COMPOSER_CAPS.fields} fields`]);
 
     const posts = (id: string, count: number, z: number) =>
       layer(id, "dressing", {

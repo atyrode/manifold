@@ -1,129 +1,66 @@
-// A window pane on a winter night, frosting over: fern frost grown on the CPU (build.ts: the
-// branches and their fur in uSim0 and uSim3; the shader adds their feathery barbs, the rime along
-// the frame and the glints), melted by a warm fingertip and refreezing (uSim1), on a growth clock
-// (uSim2) that opens on a pane already frosted along its bottom. Behind the glass, out of focus:
-// a snowy street or a cabin in the woods, under the world's sky (its snow cloud, stars, the moon in
-// a phase, shooting stars and the aurora, worldSky) and snowfall. Entering, the glass starts clear
-// and the frost grows in from the frame; leaving, a warm breath clears a patch that spreads over the
-// pane (FROST_PASSAGE).
-import { choice, feature, range, seed, type ParamDef } from "../../params.ts";
-import { atmosphereGroups, skyKnobs, weatherKnobs } from "../atmosphere.ts";
+// A window pane on a winter night, frosting over: fern frost grown on the CPU (build.ts), melted by
+// a warm fingertip and refreezing, on a growth clock that opens on a pane already frosted along its
+// bottom (sim.ts). Behind the glass, out of focus: a snowy street or a cabin in the woods, under the
+// World's sky and snowfall. Entering, the glass starts clear and the frost grows in from the frame;
+// leaving, a warm breath clears a patch that spreads over the pane (FROST_PASSAGE). A preset of the
+// `interior` composer (src/composer, README "The interior composer"): the view and its window frame
+// behind (layers.ts), the frost on its glass, a layer any room with a glazed window is offered.
+import { composeScene } from "../../composer/compose.ts";
+import { interior } from "../../composer/interior.ts";
+import type { ScenePreset } from "../../composer/types.ts";
+import { atmosphereGroups } from "../atmosphere.ts";
 import type { SceneDef } from "../types.ts";
-import { worldGates } from "../world.ts";
-import { FROST_METEOR_TRIGGER, FROST_PASSAGE } from "./constants.ts";
+import { FROST_PASSAGE, FROST_RIG, FROST_ROOM } from "./constants.ts";
 
-const params: readonly ParamDef[] = [
-  range(
-    "frost",
-    "speed",
-    "growth speed",
-    1,
-    "How fast the frost creeps over the glass: fern fronds first, then the finer frost between them.",
-    { min: 0.2, max: 4, step: 0.1 },
-  ),
-  range(
-    "frost",
-    "style",
-    "ferns or fur",
-    0.35,
-    "Left: clean fern fronds on clear glass. Right: a fine fur of frost soon filling in between them.",
-  ),
-  range(
-    "frost",
-    "sparkle",
-    "sparkle",
-    0.5,
-    "How much the crystals glint where the light behind them catches their facets.",
-  ),
-  range(
-    "frost",
-    "condensation",
-    "condensation",
-    0.35,
-    "A milky film of moisture on the glass, heaviest low down, softening the lights outside.",
-  ),
-  seed(
-    "frost",
-    "pattern",
-    "pattern",
-    "Where the frost takes hold; re-seed and a fresh pane frosts over from the start.",
-  ),
-  feature(
-    "touch",
-    "warmth",
-    "warm touch",
-    true,
-    "warmth",
-    0.5,
-    "Hold and drag to warm the glass: your fingertip melts clear lines through the frost, which slowly grows back in from their edges. Warmer melts wider.",
-  ),
-  choice(
-    "outside",
-    "outside",
-    "outside",
-    [
-      { label: "street", value: 0 },
-      { label: "cabin", value: 1 },
-    ],
-    0,
-    "What lies beyond the glass: a snowy street with lit windows and a street lamp, or a log cabin among snowy spruces.",
-  ),
-  // The street's own default star density; the cabin, away from the town's lights, shows 1.7x as many.
-  ...skyKnobs({
-    time: 0.9,
-    stars: 0.5,
-    moon: 1,
-    meteors: { trigger: FROST_METEOR_TRIGGER },
-    constellations: true,
-  }),
-  ...weatherKnobs({ snow: true, wind: true, aurora: true, on: { snow: true } }),
-  feature(
-    "manifold",
-    "mark",
-    "traced M",
-    false,
-    "size",
-    0.5,
-    "An M written in the frost by a fingertip, frosting slowly over again; while on, it is traced afresh now and then.",
-    { trigger: 0 },
-  ),
-];
-
-export const frostScene: SceneDef = {
+const preset: ScenePreset = {
   id: "frost",
+  composer: "interior",
   title: "Frost",
   blurb: "A window on a winter night, slowly frosting over.",
   accent: "#8fd8ff",
   look: { color: "full", levels: 4 },
-  params,
+  passage: FROST_PASSAGE,
   planets: { group: "sky", across: [-45, -18, 45], up: [4, 23, 40] },
+  rig: FROST_RIG,
+  room: FROST_ROOM,
+  // Lights past 1 roll off softly rather than clipping.
+  grade: { ink: { gain: 1.25, gamma: 1 }, rolloff: 1.2 },
+  // A winter night, snowing; the stars thinner over the town (the cabin shows 1.7 times as many), the
+  // moon full, no Milky Way, no fair-weather cloud (the view keeps its own, FROST_COVER). A room lists
+  // no birds (compose.ts): `birds` names the World's only to satisfy its options.
+  world: {
+    time: 0.9,
+    stars: 0.5,
+    moon: 1,
+    clouds: 0,
+    milkyWay: { on: false },
+    on: { snow: true },
+    birds: { kind: "rooks", help: "" },
+  },
+  meteors: [-0.6, 0.42, 1.2, 0.18],
+  flyway: { depth: [10, 100], above: 0, top: 1, seed: 0, skim: 1, spread: 1, ext: 0 },
+  floor: "snowfield",
+  layers: ["frostView", "frostGlass"],
+  values: {},
   groups: {
-    frost: {
-      title: "Frost",
-      blurb: "How the frost grows across the glass and how it catches the light.",
-    },
-    touch: {
-      title: "Touch",
-      blurb: "Warm the glass with your fingertip and draw through the frost.",
-    },
-    outside: {
-      title: "Outside",
-      blurb: "The winter night beyond the glass, out of focus behind the frost.",
-    },
     sky: {
       ...atmosphereGroups.sky,
       blurb:
         "Time of day, and the night over the town or the woods: its stars, the moon's phase, the odd shooting star and the aurora.",
     },
     weather: atmosphereGroups.weather,
-    manifold: {
-      title: "Manifold M",
-      blurb: "A landmark of its own: an M traced in the frost with a fingertip.",
-    },
   },
+};
+
+/** The frost composed (composer/compose.ts): its definition, and what its code is assembled from. */
+export const frostComposed = composeScene(interior, preset);
+
+const { featuresFor } = frostComposed.def;
+
+// The view's snow cloud stands in fair weather too (its FROST_COVER), so the World's cloud deck is
+// compiled in at every setting, as the scene's own sky held it, not only while it snows or rains.
+export const frostScene: SceneDef = {
+  ...frostComposed.def,
+  featuresFor: (values) => ({ ...featuresFor?.(values), WORLD_CLOUDS: 1 }),
   code: () => import("./code.ts"),
-  passage: FROST_PASSAGE,
-  // The world's sky, every part its knobs can show compiled in: the moon's phase (K_moon), the snow
-  // cloud, the stars, the aurora and shooting stars.
-  features: worldGates(params),
 };

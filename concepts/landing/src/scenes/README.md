@@ -65,7 +65,7 @@ components"); run `bun concepts/landing/scripts/scene-docs.ts` after a change to
 | `campfire`     | Campfire         | Land              | `outdoor` preset, 6 layers              | 36    | 2       | A small fire under a vast sky: sparks drifting up, a marshmallow toasting, a giant planet low over the pines.                   |
 | `autumn`       | Autumn park      | Land              | `outdoor` preset, 6 layers + 4 offered  | 42    | 0       | A great tree letting go of its leaves over a park path, the low sun glowing through them.                                       |
 | `marble`       | Marbling         | Matter & patterns | its own program                         | 13    | 1       | Ink floating on water, dropped and combed: ebru and suminagashi.                                                                |
-| `frost`        | Frost            | Matter & patterns | its own program                         | 18    | 2       | A window on a winter night, slowly frosting over.                                                                               |
+| `frost`        | Frost            | Matter & patterns | `interior` preset, 2 layers             | 27    | 2       | A window on a winter night, slowly frosting over.                                                                               |
 | `prism`        | Prism            | Matter & patterns | its own program                         | 12    | 1       | A sunbeam through turning glass, fanned out into its spectrum.                                                                  |
 | `ferro`        | Ferrofluid       | Matter & patterns | its own program                         | 12    | 0       | Black magnetic fluid in a dish, breathing a crown of spikes in and out of a mirror.                                             |
 | `chladni`      | Chladni plate    | Matter & patterns | its own program                         | 12    | 1       | Sand on a singing plate, gathering where it stands still.                                                                       |
@@ -79,10 +79,10 @@ components"); run `bun concepts/landing/scripts/scene-docs.ts` after a change to
 | `ripple`       | Ripple tank      | Matter & patterns | `overhead` preset, 2 layers + 1 offered | 18    | 2       | A physics-lab ripple tank throwing its waves as light on a screen: interference, slits, a lens, Doppler, standing waves.        |
 | `harmonograph` | Harmonograph     | Matter & patterns | its own program                         | 11    | 0       | Two swinging pendulums draw a slowly dying figure in ink on paper: a table anyone present may draw on.                          |
 | `pendula`      | Pendulum wave    | Matter & patterns | its own program                         | 11    | 1       | A row of pendulums drifting through waves and back into line.                                                                   |
-| `sill`         | Sill             | Rooms & life      | `interior` preset, 5 layers + 1 offered | 40    | 2       | A cat on the window sill, watching the city lights.                                                                             |
+| `sill`         | Sill             | Rooms & life      | `interior` preset, 5 layers + 2 offered | 48    | 3       | A cat on the window sill, watching the city lights.                                                                             |
 | `fireflies`    | Fireflies        | Rooms & life      | `outdoor` preset, 3 layers + 4 offered  | 46    | 1       | A mangrove river at night: thousands of fireflies falling into step.                                                            |
 | `dew`          | Dew              | Rooms & life      | `outdoor` preset, 2 layers              | 31    | 0       | An orb web at dawn, strung with dew, glinting as it breathes in the breeze.                                                     |
-| `incense`      | Incense          | Rooms & life      | its own program                         | 15    | 0       | A thread of smoke rising through a shaft of light, curling into veils.                                                          |
+| `incense`      | Incense          | Rooms & life      | `interior` preset, 3 layers + 1 offered | 30    | 0       | A thread of smoke rising through a shaft of light, curling into veils.                                                          |
 | `lava`         | Lava lamp        | Rooms & life      | `interior` preset, 3 layers             | 17    | 2       | Wax rising and falling in a glowing lamp on a sideboard, late at night.                                                         |
 | `bonsai`       | Bonsai           | Rooms & life      | `interior` preset, 3 layers             | 19    | 0       | A bonsai on its stand through the seasons, its shadow moving on the wall.                                                       |
 | `street`       | City crossing    | Rooms & life      | `outdoor` preset, 4 layers              | 35    | 1       | A scramble crossing at dusk from a high window: the crowd gathers, the lights turn, everyone crosses at once.                   |
@@ -1063,7 +1063,7 @@ planets (`SceneDef.planets`; "at first": the planets it opens with). Generated f
 | `forest`    | 0.82  | 0.5   | off       | 1    | off     | off, now 0 | off    | 0      | off  | off  | 0   | 0.2  | off, now 1 | off        | yes             |
 | `campfire`  | 0.8   | 0.8   | 1         | off  | off     | 0.8, now 0 | off    | 0      | off  | off  | 0   | 0.2  | off, now 1 | off        | yes, 1 at first |
 | `autumn`    | 0.69  | 0.5   | off       | 1    | off     | off, now 0 | off    | 0.3    | off  | off  | 0   | 0.2  | off, now 1 | off        | yes             |
-| `frost`     | 0.9   | 0.5   | —         | 1    | off     | off, now 1 | off    | —      | —    | 0.5  | —   | 0.2  | —          | —          | yes             |
+| `frost`     | 0.9   | 0.5   | off       | 1    | off     | off, now 0 | off    | 0      | off  | 0.5  | 0   | 0.2  | off, now 1 | —          | yes             |
 | `sill`      | 0.8   | 0.5   | off       | 1    | off     | off, now 0 | off    | 0.35   | off  | off  | 0   | 0.2  | off, now 1 | —          | yes             |
 | `fireflies` | 0.9   | 0.5   | off       | off  | off     | off, now 0 | off    | 0      | off  | off  | 0   | 0.2  | off, now 1 | off        | yes             |
 | `dew`       | 0.27  | 0.6   | 1         | 1    | off     | off, now 0 | off    | 0      | off  | off  | 0   | 0.2  | off, now 1 | off        | —               |
@@ -2370,13 +2370,12 @@ and `dwell` (`state.ts` refuses to load such a scene).
 **Status.** The `outdoor` composer (`src/composer/`, ADR 0062
 `docs/decisions/0062-world-composers.md`, #1082 item U1) runs the nineteen eye-level scenes and the
 island as presets of its 84 layers; the `interior` composer (Phase 3, "The interior composer") runs
-sill, lava and bonsai as presets of its 11 layers, with a lava lamp that stands on the sill; the
-`overhead` composer (Phase 4, "The overhead composer" below) runs pond and ripple (its pilot),
-tidepool and sandtable as presets of its 16 layers, with koi offered to the ripple tank. The rest
-of the interiors and of the scenes seen from above are the rest of those phases. Not built yet, so
-still the
-contract: the per-program knob layout (a composed scene keeps the renderer's 64 knobs and 8 trigger
-slots,
+sill, lava, bonsai, incense and frost as presets of its 16 layers, with a lava lamp that stands on
+the sill and the frost on the sill's panes; the `overhead` composer (Phase 4, "The overhead
+composer" below) runs pond and ripple (its pilot), tidepool and sandtable as presets of its 16
+layers, with koi offered to the ripple tank. The rest of the interiors and of the scenes seen from
+above are the rest of those phases. Not built yet, so still the contract: the per-program knob
+layout (a composed scene keeps the renderer's 64 knobs and 8 trigger slots,
 `src/composer/caps.ts`), the layer costs (`scripts/layer-costs.ts`) with the stack meter and the
 role's "+" listing, the browser checks `composerDepth`, `composerClaims`, `composerWeather` and
 `layerToggles`, a check of the SwiftShader instruction budget, the principals' points in the site,
@@ -2662,8 +2661,9 @@ cast too (`casters`: the orchard's crowns, the maple).
 and home layers) and the set of layers on: never the window's aspect or another knob. It places
 the home layers first, then the guests, each group in canonical order. A layer is refused, with a
 reason that names what holds its place, when its role holds one already, a layer kept before
-excludes it, its host is not kept, eight layers are kept, the front holds two subjects, none of
-its anchors fits (its exclusive and clearing claims overlap one placed, or a `mustShow` claim
+excludes it, its host is not kept, eight layers are kept, the front holds two subjects, its
+textures would take the stack past six fields (the incense's four and the lava lamp's three), none
+of its anchors fits (its exclusive and clearing claims overlap one placed, or a `mustShow` claim
 leaves the rig's view at its `minAspect`), or its claims would pass twelve. A later layer never
 moves an earlier one. A refused layer keeps its switch on and is not drawn; the lab shows why.
 
@@ -3128,10 +3128,11 @@ agents draws as before. Three chores are not layers:
 
 ### The interior composer
 
-ADR 0062 Phase 3: `src/composer/interior.ts` (its eleven layers in canonical order), `room.ts` (the
-program) and `interior-code.ts` (the layers' code). Its presets are sill, lava and bonsai, and the
-committed mix "Sill · lava lamp on the sill" stands the lava lamp on the sill. Bar, train, mobile,
-incense, frost, clouds and harmonograph are still scenes of their own.
+ADR 0062 Phase 3: `src/composer/interior.ts` (its sixteen layers in canonical order), `room.ts`
+(the program) and `interior-code.ts` (the layers' code). Its presets are sill, lava, bonsai, incense
+and frost; the committed mixes "Sill · lava lamp on the sill" and "Sill · frost on the window" stand
+the lava lamp on the sill and frost the sill's panes. Bar, train, mobile, clouds and harmonograph are
+still scenes of their own.
 
 - **The rig** is a level pinhole in the room (`ScenePreset.rig`), its `eye` measured over the
   ledge's top. The room (`ScenePreset.room`, `Room`) adds `distance`, from the eye to the line things
@@ -3142,7 +3143,8 @@ incense, frost, clouds and harmonograph are still scenes of their own.
   and a claim's x is a share of the width (at the rig's `minAspect`, 1), their z metres back from
   the seat line; each placed layer's anchor reaches its GLSL as `<id>Anchor`.
 - **The site** is the back wall (`Room.wall`, an albedo) lit by the room's light, and a ledge
-  across the front, which is the ground layer (the sill, the sideboard, the bonsai's stand).
+  across the front, which is the ground layer (the sill, the sideboard, the bonsai's stand, the
+  incense's low table).
 - **The room's light** (`roomLight(x, p, n)`) is the room's lamp out of frame (`Room.lamp`, the
   sill's reading lamp), its ambient, the backdrop's daylight through its window (a `daylight`
   pass) and every on layer's declared lights (`localLight`, at the surface's point in metres on the
@@ -3153,39 +3155,71 @@ incense, frost, clouds and harmonograph are still scenes of their own.
   window, and never its birds (none fly a window yet), the gusts or the arrangement seed; its
   layers' trigger slots follow the World's two (from 2). The lava lamp's room shows no window, so it
   lists no World; its moonlight stays the papered wall's own knob.
-- **The order** (`room.ts`): the begins, then the wall, the backdrop's `far` pass, the ground's
-  `ground` pass, and every `middle`, `front` and `frontVeil` pass in canonical order. Then the
-  grade: a vignette into the room's corners, the exposure, shadeOf with the grade's ink, the cell's
-  shimmer. Painter's order is the canonical order. A room keeps no depth (a stated limit). Turns play
+- **The glass.** A window backdrop may say where its glass is (a `glass` pass, `vec4 <fn>(Ctx x)`:
+  how far inside the glass the cell lies from its bottom, top, left and right edges, negative off
+  it), which `roomGlass(x)` gives every layer: the frost's pane inside its frame, the sill's six panes
+  above the raised sash's rail. A layer drawn on the glass (`LayerDef.glass`: the frost) is offered
+  only to a room whose window has glass, and paints in a `farVeil` pass, over the backdrop and under
+  everything standing in the room.
+- **The order** (`room.ts`): the begins, then the wall, the backdrop's `far` pass, every `farVeil`
+  pass (what lies on the glass), the ground's `ground` pass, and every `middle`, `front` and
+  `frontVeil` pass in canonical order. Then the grade: a vignette into the room's corners, the
+  exposure, the soft roll-off of lights past 1 (`Grade.rolloff`, the frost's), shadeOf with the
+  grade's ink, the cell's shimmer. Painter's order is the canonical order. A room keeps no depth (a
+  stated limit). Turns play
   as they do outdoors (`turnsGlsl`, `passCalls`).
 - **Shadows on the wall** are the room's: a layer that stands in the room declares its silhouette
   (`LayerDef.casters`, `float <fn>(vec2 p)`: how much of a light it stops at frame point p on the
   plane it stands in), and `roomCaster(p)` takes the most of every on layer's. A backdrop that
   throws shadows asks it, seen from each of its points toward each of its lights: the bonsai's
   veranda toward the sun (the tree's soft shadow creeping through the day) and toward the paper lamp
-  (its big soft one at dusk). A caster still casts on no other layer's surface, and a layer's turn
-  does not cut its silhouette (both stated limits).
-- **Locking and offering.** The sill's five layers, the papered wall, the sideboard and the
-  bonsai's three are drawn on their scene's frame and locked to its rig (`ON_THE_SILL`,
-  `ON_THE_SIDEBOARD`, `ON_THE_VERANDA`). The lava lamp is drawn from the rig: it stands at its
+  (its big soft one at dusk); the incense's wall back along the window's light (the smoke's soft
+  shadows curling over the pane of light, the incense's and the candle's). A caster still casts on
+  no other layer's surface, and a layer's turn does not cut its silhouette (both stated limits).
+- **Locking and offering.** The sill's five layers, the papered wall, the sideboard, the bonsai's
+  three, the incense's three and the frost's view are drawn on their scene's frame and locked to its
+  rig (`ON_THE_SILL`, `ON_THE_SIDEBOARD`, `ON_THE_VERANDA`, `ON_THE_TABLE`, `AT_THE_PANE`). The lava
+  lamp is drawn from the rig: it stands at its
   anchor on any room's seat line, 0.4 m tall at the room's scale, its rims dipping by the rig's eye
   over its distance. It is offered to every interior preset whose eye stands 0.2 m or more over its
   ledge: not to the bonsai's (0.17 m), whose five trigger slots and the lamp's two would pass the
-  eight. On the sill it takes its second anchor (left of the middle), because the cat holds the
-  first. Its light is a declared light (`lavaLampLight`), which the sill's wall, window frame, sill,
-  props, curtain and cat take through `roomLight` and `localLight`.
+  eight, nor the frost's (0.15 m: its eye is at the pane). On the sill it takes its second anchor
+  (left of the middle), because the cat holds the first. In the incense's room it stands only while
+  the incense is off: the incense's four fields and its three would pass the six. Its light is a
+  declared light (`lavaLampLight`), which the sill's wall, window frame, sill, props, curtain and cat
+  take through `roomLight` and `localLight`, and the incense's wall and table through `roomLight`.
+  The frost glass is drawn on any window's glass (`roomGlass`), lit by the room's light: offered to
+  the frost's room and the sill's.
 - **The bonsai** keeps its room's shell apart from its subject: the `veranda` (the wall, plaster,
   shoji or dark, with the window's patch of sun, the paper lamp's pool and the floorboards; its
   knobs the light: `time` and `cycle`, its own as the papered wall's moonlight is, `light`, `wall`,
   `lamp`), the `stand` (the ground), the `bonsaiTree` (the tree in its pot, its sim's four fields,
   the falling snow its front veil, its silhouette its caster). The pot's and the stand's shadows on
   the wall and the stand's on the floor are the veranda's, gated by those layers.
+- **The incense** keeps its room's shell apart from its subject: the `shaftWall` (the dark plaster,
+  ink, indigo, umber or washi, the window's light lying on it as a tall pane, the M of lamplight on
+  it, and the hazy shaft the light crosses the room in, its front veil; its knobs the light:
+  `window`, `angle`, `tint`, `room`, `mark`), the `lowTable` (the ground), the `incense` (what burns,
+  the candle, the smoke and the dust motes; its fluid's four fields; its silhouette, the smoke's and
+  the holder's, its caster). The cell's state, the window's light and the smoke's shadow down the
+  shaft, is the scene's shared chunk (`incenseBegin`).
+- **The frost** keeps the window apart from what lies on its glass: the `frostView` (a window: the
+  painted frame and the winter night beyond the glass, the street or the cabin through its own
+  camera, 1.8 m over the street, under the World's sky and snow; blurred and bent by the frost on its
+  glass, which it reads from the glass's begin; the World's light on the room's side its daylight)
+  and the `frostGlass` (the fronds, the fur, the rime along the glass's edges, the condensation, the
+  fingertip's melt and the traced M, lit by `roomLight` and by what shows through the glass; its
+  sim's four fields). On a guest's window (the sill's) the view behind is the guest's own, unblurred.
+  The World's cloud deck is compiled in at every setting (`WORLD_CLOUDS`, in `frost/index.ts`):
+  the view's snow cloud stands in fair weather too.
 
-| Preset   | Layers                                                        | Rig                                                                     | Key renames                                                                                                                                                                   | A/B at defaults |
-| -------- | ------------------------------------------------------------- | ----------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------- |
-| `sill`   | `cityWindow`, `sill`, `props`, `cat`, `curtain`; + `lavaLamp` | eye 0.35 m, horizon 0.47, focal 0.915 (one radian), 1.14 m: 0.8 a metre | none; its sky and weather knobs are the World's (Milky Way, cumulus and cloud shadows new, off), its trigger slots renumbered; "Sill · quiet shelter" rewritten (query order) | `SAME`          |
-| `lava`   | `papered`, `sideboard`, `lavaLamp`                            | eye 0.248 m, horizon 0.589, focal 2.432, 1.28 m: 1.9 a metre            | none; `spill` and `twin` in the lamp's section                                                                                                                                | `SAME`          |
-| `bonsai` | `veranda`, `stand`, `bonsaiTree`                              | eye 0.167 m, horizon 0.413, focal 1.4, 1.19 m: 1.175 a metre            | none; its trigger slots renumbered (from 2)                                                                                                                                   | `SAME`          |
+| Preset    | Layers                                                                      | Rig                                                                      | Key renames                                                                                                                                                                                                                             | A/B at defaults |
+| --------- | --------------------------------------------------------------------------- | ------------------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------- |
+| `sill`    | `cityWindow`, `sill`, `props`, `cat`, `curtain`; + `lavaLamp`, `frostGlass` | eye 0.35 m, horizon 0.47, focal 0.915 (one radian), 1.14 m: 0.8 a metre  | none; its sky and weather knobs are the World's (Milky Way, cumulus and cloud shadows new, off), its trigger slots renumbered; "Sill · quiet shelter" rewritten (query order)                                                           | `SAME`          |
+| `lava`    | `papered`, `sideboard`, `lavaLamp`                                          | eye 0.248 m, horizon 0.589, focal 2.432, 1.28 m: 1.9 a metre             | none; `spill` and `twin` in the lamp's section                                                                                                                                                                                          | `SAME`          |
+| `bonsai`  | `veranda`, `stand`, `bonsaiTree`                                            | eye 0.167 m, horizon 0.413, focal 1.4, 1.19 m: 1.175 a metre             | none; its trigger slots renumbered (from 2)                                                                                                                                                                                             | `SAME`          |
+| `incense` | `shaftWall`, `lowTable`, `incense`; + `lavaLamp`                            | eye 0.3 m, horizon 0.46, focal 1.2, 1 m: 1.2 a metre                     | none; `dust` in the Air section, `candle` in the Incense one; its trigger slots renumbered (from 2)                                                                                                                                     | `SAME`          |
+| `frost`   | `frostView`, `frostGlass`                                                   | eye 0.15 m, horizon 0.3, focal 0.915 (one radian), 0.518 m: 1.77 a metre | none; its sky and weather knobs are the World's (rain, fog, lightning, cumulus, cloud shadows and the Milky Way new, off; no fair-weather cloud), its trigger slots renumbered; "Frost · aurora over the cabin" rewritten (query order) | `SAME`          |
 
 ## Art direction
 

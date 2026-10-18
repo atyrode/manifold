@@ -1,6 +1,7 @@
 // Frost on a window pane: the crystals that grow over the glass, and where warmth melted them.
+// The frost glass layer's sim (frostGlassSim): its four textures are the layer's fields.
 //
-// uSim0  crystals, rgba16f, GROWTH_ROWS texels high and as wide as the frame (512×288 at 16:9; a
+// field 0  crystals, rgba16f, GROWTH_ROWS texels high and as wide as the frame (512×288 at 16:9; a
 //        half-resolution pass comes first). Each texel describes the nearest crystal branch:
 //          r  growth-clock seconds at which the branch reached its point nearest this texel
 //          g  signed distance across the branch, frame heights (+ on its left). It is linear
@@ -9,11 +10,11 @@
 //             shader spots those seams by how fast it changes there
 //          b  distance along the branch from its root, frame heights: the phase of its barbs
 //          a  how far its barbs reach here, frame heights: longest near its root, none at its tip
-// uSim1  melt, rgba8 at half the crystal field's resolution, stepped every frame:
+// field 1  melt, rgba8 at half the crystal field's resolution, stepped every frame:
 //          r  melt level (clear glass above MELT_CLEAR), g how recently the patch refroze,
 //          b  warmth of the glass, a the M traced by the Manifold fingertip
-// uSim2  clock, r16f 1×1: the growth clock in seconds
-// uSim3  crystal detail, rgba8 at uSim0's resolution:
+// field 2  clock, r16f 1×1: the growth clock in seconds
+// field 3  crystal detail, rgba8 at field 0's resolution:
 //          r  fur lag × FUR_SCALE: the distance to the nearest branch in frame heights, roughened
 //             by noise and shortened low on the pane, where the glass is coldest. The fur frost
 //             reaches a texel this much behind its branch, at a pace the shader takes from the
@@ -59,6 +60,7 @@
 // texels next to frozen glass refreeze quickly), and the new frost there starts thin and thickens
 // back. While no warmth is left and nothing is melted or regrowing, the melt grid is not stepped at
 // all.
+import type { LayerFrame, LayerSim } from "../../composer/types.ts";
 import { MARK_VERTICES } from "../../mark.ts";
 import { KnobReader, type ParamDef } from "../../params.ts";
 import { MAX_PRINCIPALS } from "../../principals.ts";
@@ -66,7 +68,7 @@ import { BuildSlot } from "../../sims/build.ts";
 import { smoothstep } from "../../sims/math.ts";
 import { DataTexture } from "../../sims/texture.ts";
 import { TrailField } from "../../sims/trail.ts";
-import type { SceneSim, SimFactory, SimFrame } from "../types.ts";
+import type { SceneSim, SimFrame } from "../types.ts";
 import { frostGrowth, type GrowthField, hash, type Size } from "./build.ts";
 import { FROST_PASSAGE } from "./constants.ts";
 
@@ -319,268 +321,285 @@ function markPoint(elapsed: number): readonly [number, number] | undefined {
  * The frost simulation. `params` are the scene's knobs, so it can read its own knobs from
  * `SimFrame.values` by key.
  */
-export function frostSim(params: readonly ParamDef[]): SimFactory {
+function frostSim(gl: WebGL2RenderingContext, params: readonly ParamDef[]): SceneSim {
   const knobs = new KnobReader("frost", params, ["speed", "style", "pattern", "warmth", "mark"]);
   const markTrigger = knobs.trigger("mark");
 
-  return (gl): SceneSim => {
-    const growthTexture = new DataTexture(gl, { width: 1, height: 1, format: "rgba16f" });
-    const meltTexture = new DataTexture(gl, { width: 1, height: 1, format: "rgba8" });
-    const clockTexture = new DataTexture(gl, {
-      width: 1,
-      height: 1,
-      format: "r16f",
-      filter: "nearest",
-    });
-    const detailTexture = new DataTexture(gl, { width: 1, height: 1, format: "rgba8" });
-    const clockData = new Float32Array(1);
-    let field: GrowthField | undefined;
-    const growth = new BuildSlot(frostGrowth);
-    /** The pattern and texel size the pane grows (or grew) for, as `${pattern}|${width}x${height}`. */
-    let jobKey = "";
-    let jobPattern: number | undefined;
-    let jobSize: Size | undefined;
-    /** The pattern of the field on show: until it is the job's, the job races to its first field. */
-    let shownPattern: number | undefined;
-    /** A new frame shape waiting to rest before the pane regrows for it, and since when (ms). */
-    let pendingKey = "";
-    let pendingSince = 0;
-    let lastFrame: number | undefined;
-    let pattern: number | undefined;
-    let clock = FROST_START;
-    let uploadedClock = Number.NaN;
-    let melt: MeltField | undefined;
-    let traceStart: number | undefined;
-    let traceSize = 0.4;
-    let nextTrace: number | undefined;
-    /** Whether the entrance is still on, and seconds of it gone since the first field was on show. */
-    let arriving: boolean | undefined;
-    let arrived = 0;
-    /** Where the exit's breath landed. */
-    let breath: { x: number; y: number } | undefined;
+  const growthTexture = new DataTexture(gl, { width: 1, height: 1, format: "rgba16f" });
+  const meltTexture = new DataTexture(gl, { width: 1, height: 1, format: "rgba8" });
+  const clockTexture = new DataTexture(gl, {
+    width: 1,
+    height: 1,
+    format: "r16f",
+    filter: "nearest",
+  });
+  const detailTexture = new DataTexture(gl, { width: 1, height: 1, format: "rgba8" });
+  const clockData = new Float32Array(1);
+  let field: GrowthField | undefined;
+  const growth = new BuildSlot(frostGrowth);
+  /** The pattern and texel size the pane grows (or grew) for, as `${pattern}|${width}x${height}`. */
+  let jobKey = "";
+  let jobPattern: number | undefined;
+  let jobSize: Size | undefined;
+  /** The pattern of the field on show: until it is the job's, the job races to its first field. */
+  let shownPattern: number | undefined;
+  /** A new frame shape waiting to rest before the pane regrows for it, and since when (ms). */
+  let pendingKey = "";
+  let pendingSince = 0;
+  let lastFrame: number | undefined;
+  let pattern: number | undefined;
+  let clock = FROST_START;
+  let uploadedClock = Number.NaN;
+  let melt: MeltField | undefined;
+  let traceStart: number | undefined;
+  let traceSize = 0.4;
+  let nextTrace: number | undefined;
+  /** Whether the entrance is still on, and seconds of it gone since the first field was on show. */
+  let arriving: boolean | undefined;
+  let arrived = 0;
+  /** Where the exit's breath landed. */
+  let breath: { x: number; y: number } | undefined;
 
-    const show = (next: GrowthField): void => {
-      field = next;
-      growthTexture.resize(next.width, next.height);
-      growthTexture.upload(next.data);
-      detailTexture.resize(next.width, next.height);
-      detailTexture.upload(next.detail);
-    };
+  const show = (next: GrowthField): void => {
+    field = next;
+    growthTexture.resize(next.width, next.height);
+    growthTexture.upload(next.data);
+    detailTexture.resize(next.width, next.height);
+    detailTexture.upload(next.detail);
+  };
 
-    /**
-     * Warm the glass under every hand over it (each principal's its own stroke): a held fingertip
-     * melts, a passing hand only breathes on it.
-     */
-    const touch = (frame: SimFrame, glass: MeltField): void => {
-      const warmth = knobs.value(frame, "warmth");
-      const { aspect, dt } = frame;
-      const radius = TOUCH_RADIUS[0] + (TOUCH_RADIUS[1] - TOUCH_RADIUS[0]) * warmth;
-      for (let i = 0; i < MAX_PRINCIPALS; i++) {
-        const hand = frame.principals[i];
-        if (warmth <= 0 || hand === undefined || !hand.inside || dt <= 0) {
-          glass.heat.lift(i);
-          continue;
-        }
-        if (hand.pressed) glass.heat.lift(i);
-        if (hand.down) {
-          const heat = 0.55 + 0.45 * warmth;
-          glass.heat.stroke(hand.x, hand.y, radius, HELD_PASS * heat, aspect, i);
-          glass.heat.hold(hand.x, hand.y, radius, Math.min(1, dt * WARM_RATE) * heat, aspect);
-        } else glass.heat.stroke(hand.x, hand.y, radius * 1.25, HOVER_PASS, aspect, i);
+  /**
+   * Warm the glass under every hand over it (each principal's its own stroke): a held fingertip
+   * melts, a passing hand only breathes on it.
+   */
+  const touch = (frame: SimFrame, glass: MeltField): void => {
+    const warmth = knobs.value(frame, "warmth");
+    const { aspect, dt } = frame;
+    const radius = TOUCH_RADIUS[0] + (TOUCH_RADIUS[1] - TOUCH_RADIUS[0]) * warmth;
+    for (let i = 0; i < MAX_PRINCIPALS; i++) {
+      const hand = frame.principals[i];
+      if (warmth <= 0 || hand === undefined || !hand.inside || dt <= 0) {
+        glass.heat.lift(i);
+        continue;
       }
-    };
+      if (hand.pressed) glass.heat.lift(i);
+      if (hand.down) {
+        const heat = 0.55 + 0.45 * warmth;
+        glass.heat.stroke(hand.x, hand.y, radius, HELD_PASS * heat, aspect, i);
+        glass.heat.hold(hand.x, hand.y, radius, Math.min(1, dt * WARM_RATE) * heat, aspect);
+      } else glass.heat.stroke(hand.x, hand.y, radius * 1.25, HOVER_PASS, aspect, i);
+    }
+  };
 
-    /** The Manifold M: a fingertip writes it in the frost on "now", and now and then while on. */
-    const trace = (frame: SimFrame, glass: MeltField): void => {
-      const size = knobs.value(frame, "mark");
-      if (frame.fired[markTrigger]) {
-        // "now": start over, even halfway through a tracing.
-        glass.finger.lift();
-        traceStart = frame.time;
-      }
-      if (size <= 0) nextTrace = undefined;
-      else if (
-        traceStart === undefined &&
-        clock >= MARK_FIRST &&
-        (nextTrace === undefined || frame.time >= nextTrace)
-      )
-        traceStart = frame.time;
-      if (traceStart === undefined) return;
-      const elapsed = frame.time - traceStart;
-      if (elapsed < 0) {
+  /** The Manifold M: a fingertip writes it in the frost on "now", and now and then while on. */
+  const trace = (frame: SimFrame, glass: MeltField): void => {
+    const size = knobs.value(frame, "mark");
+    if (frame.fired[markTrigger]) {
+      // "now": start over, even halfway through a tracing.
+      glass.finger.lift();
+      traceStart = frame.time;
+    }
+    if (size <= 0) nextTrace = undefined;
+    else if (
+      traceStart === undefined &&
+      clock >= MARK_FIRST &&
+      (nextTrace === undefined || frame.time >= nextTrace)
+    )
+      traceStart = frame.time;
+    if (traceStart === undefined) return;
+    const elapsed = frame.time - traceStart;
+    if (elapsed < 0) {
+      traceStart = undefined;
+      glass.finger.lift();
+      return;
+    }
+    if (elapsed === 0 || frame.dt > 0) {
+      if (elapsed === 0) traceSize = 0.24 + 0.32 * (size > 0 ? size : 0.5);
+      const point = markPoint(elapsed);
+      if (!point) {
         traceStart = undefined;
         glass.finger.lift();
+        nextTrace = frame.time + MARK_REPEAT;
         return;
       }
-      if (elapsed === 0 || frame.dt > 0) {
-        if (elapsed === 0) traceSize = 0.24 + 0.32 * (size > 0 ? size : 0.5);
-        const point = markPoint(elapsed);
-        if (!point) {
-          traceStart = undefined;
-          glass.finger.lift();
-          nextTrace = frame.time + MARK_REPEAT;
-          return;
-        }
-        const x = 0.5 + (point[0] * traceSize) / frame.aspect;
-        const y = 0.52 + point[1] * traceSize;
-        glass.finger.stroke(x, y, traceSize * 0.085, MARK_PASS, frame.aspect);
-      }
-    };
+      const x = 0.5 + (point[0] * traceSize) / frame.aspect;
+      const y = 0.52 + point[1] * traceSize;
+      glass.finger.stroke(x, y, traceSize * 0.085, MARK_PASS, frame.aspect);
+    }
+  };
 
-    /**
-     * Growth seconds the shown clock is behind the real one: FROST_EMERGE_FROM's worth at the start
-     * of the entrance, running down fast at first and easing to exactly 0 over FROST_PASSAGE.enter
-     * seconds that begin once the first field is up (so a slow first frame does not use the entrance
-     * up). 0 when not entered with a passage.
-     */
-    const enterLead = (frame: SimFrame): number => {
-      if (arriving === undefined) arriving = frame.passage.enter < 1;
-      if (!arriving) return 0;
-      if (field) arrived += Math.max(0, frame.dt);
-      const progress = arrived / FROST_PASSAGE.enter;
-      if (progress >= 1) {
-        arriving = false;
-        return 0;
-      }
-      return ENTER_LEAD * (1 - progress) ** 3;
-    };
+  /**
+   * Growth seconds the shown clock is behind the real one: FROST_EMERGE_FROM's worth at the start
+   * of the entrance, running down fast at first and easing to exactly 0 over FROST_PASSAGE.enter
+   * seconds that begin once the first field is up (so a slow first frame does not use the entrance
+   * up). 0 when not entered with a passage.
+   */
+  const enterLead = (frame: SimFrame): number => {
+    if (arriving === undefined) arriving = frame.passage.enter < 1;
+    if (!arriving) return 0;
+    if (field) arrived += Math.max(0, frame.dt);
+    const progress = arrived / FROST_PASSAGE.enter;
+    if (progress >= 1) {
+      arriving = false;
+      return 0;
+    }
+    return ENTER_LEAD * (1 - progress) ** 3;
+  };
 
-    /**
-     * The exit: a warm breath lands on the glass and its warmth spreads, gathering pace and still
-     * spreading as the exit ends, melting the frost out of its way.
-     */
-    const breathe = (frame: SimFrame, glass: MeltField): void => {
-      const { exit } = frame.passage;
-      if (!(exit > 0)) {
-        breath = undefined;
-        return;
-      }
-      if (frame.dt <= 0) return;
-      const { pointer, aspect } = frame;
-      breath ??= pointer.inside
-        ? { x: pointer.x, y: pointer.y }
-        : { x: BREATH_AT[0], y: BREATH_AT[1] };
-      const far = Math.hypot(
-        Math.max(breath.x, 1 - breath.x) * aspect,
-        Math.max(breath.y, 1 - breath.y),
-      );
-      const spread = Math.min(1, exit);
-      const radius = BREATH_START + (BREATH_REACH * far - BREATH_START) * spread * spread;
-      glass.heat.hold(breath.x, breath.y, radius, Math.min(1, frame.dt * WARM_RATE) * 0.9, aspect);
-    };
+  /**
+   * The exit: a warm breath lands on the glass and its warmth spreads, gathering pace and still
+   * spreading as the exit ends, melting the frost out of its way.
+   */
+  const breathe = (frame: SimFrame, glass: MeltField): void => {
+    const { exit } = frame.passage;
+    if (!(exit > 0)) {
+      breath = undefined;
+      return;
+    }
+    if (frame.dt <= 0) return;
+    const { pointer, aspect } = frame;
+    breath ??= pointer.inside
+      ? { x: pointer.x, y: pointer.y }
+      : { x: BREATH_AT[0], y: BREATH_AT[1] };
+    const far = Math.hypot(
+      Math.max(breath.x, 1 - breath.x) * aspect,
+      Math.max(breath.y, 1 - breath.y),
+    );
+    const spread = Math.min(1, exit);
+    const radius = BREATH_START + (BREATH_REACH * far - BREATH_START) * spread * spread;
+    glass.heat.hold(breath.x, breath.y, radius, Math.min(1, frame.dt * WARM_RATE) * 0.9, aspect);
+  };
 
-    return {
-      frame(frame) {
-        const now = frame.now;
-        const interval =
-          lastFrame === undefined ? 16 : Math.min(1000, Math.max(0, now - lastFrame));
-        lastFrame = now;
-        const { aspect } = frame;
-        if (!(aspect > 0) || !Number.isFinite(aspect)) {
-          return [
-            field ? growthTexture.texture : undefined,
-            melt ? meltTexture.texture : undefined,
-            clockTexture.texture,
-            field ? detailTexture.texture : undefined,
-          ];
-        }
-
-        // A new pattern frosts over afresh from the opening state; a new frame shape, once it has
-        // rested RESHAPE_MS, regrows the same pattern (see "Resize" above).
-        const seed = Math.round(knobs.value(frame, "pattern"));
-        if (pattern !== undefined && seed !== pattern) {
-          clock = FROST_START;
-          // Recreate both trails too: clearing only their bytes would leave hidden warmth and
-          // stroke endpoints behind. The new field is uploaded below even when dt is zero.
-          melt = undefined;
-          traceStart = undefined;
-          traceSize = 0.4;
-          nextTrace = undefined;
-          breath = undefined;
-        }
-        pattern = seed;
-        const size = growthSize(aspect);
-        const key = `${seed}|${size.width}x${size.height}`;
-        let grow = false;
-        if (key === jobKey) pendingKey = "";
-        else if (shownPattern !== seed) grow = true;
-        else {
-          if (key !== pendingKey) {
-            pendingKey = key;
-            pendingSince = now;
-          }
-          grow = now - pendingSince >= RESHAPE_MS;
-        }
-        if (grow) {
-          jobKey = key;
-          jobPattern = seed;
-          jobSize = size;
-          growth.request(key, { pattern: seed, size, quick: shownPattern !== seed });
-          pendingKey = "";
-        }
-        // On the build worker; on the page, race to this pattern's first field, then refine a few
-        // slices a frame (REFINE_SLICES). Regrown for a new shape, the same pattern grows no quick
-        // field: the old one stays up until the new one is finished.
-        const race = shownPattern !== seed;
-        const landed = growth.advance(
-          Math.max(race ? FIRST_CAP_MS : SLICE_CAP_MS, frame.budget),
-          race ? Number.POSITIVE_INFINITY : REFINE_SLICES,
-        );
-        if (landed) {
-          show(landed.result);
-          shownPattern = jobPattern;
-        }
-
-        // The growth clock: real time between frames while the scene runs (see MAX_FRAME_SECONDS),
-        // paced by the speed knob and the lab's motion, held once all is frosted.
-        const elapsed =
-          frame.dt > 0 ? Math.max(frame.dt, Math.min(interval / 1000, MAX_FRAME_SECONDS)) : 0;
-        clock += elapsed * frame.motion * knobs.value(frame, "speed");
-        if (field)
-          clock = Math.min(
-            clock,
-            Math.max(
-              RIME_GROWN,
-              field.latest + field.reach * furSlowness(knobs.value(frame, "style")) + FUR_RIPEN + 5,
-            ),
-          );
-        clock = Math.min(clock, 60000);
-        const shown = clock - enterLead(frame);
-        if (shown !== uploadedClock) {
-          clockData[0] = shown;
-          clockTexture.upload(clockData);
-          uploadedClock = shown;
-        }
-
-        // The melt grid: half the resolution of the field the pane grows for.
-        const meltWidth = Math.ceil((jobSize ?? size).width / 2);
-        const meltHeight = Math.ceil((jobSize ?? size).height / 2);
-        if (!melt || melt.width !== meltWidth || melt.height !== meltHeight) {
-          melt = new MeltField(meltWidth, meltHeight);
-          meltTexture.resize(meltWidth, meltHeight);
-          meltTexture.upload(melt.bytes);
-        }
-        touch(frame, melt);
-        breathe(frame, melt);
-        trace(frame, melt);
-        if (melt.step(frame.dt, frame.dt * frame.motion)) meltTexture.upload(melt.bytes);
-
+  return {
+    frame(frame) {
+      const now = frame.now;
+      const interval = lastFrame === undefined ? 16 : Math.min(1000, Math.max(0, now - lastFrame));
+      lastFrame = now;
+      const { aspect } = frame;
+      if (!(aspect > 0) || !Number.isFinite(aspect)) {
         return [
           field ? growthTexture.texture : undefined,
-          meltTexture.texture,
+          melt ? meltTexture.texture : undefined,
           clockTexture.texture,
           field ? detailTexture.texture : undefined,
         ];
-      },
-      // The pane is ready once its first field is up.
-      ready: () => field !== undefined,
-      dispose() {
-        growthTexture.dispose();
-        meltTexture.dispose();
-        clockTexture.dispose();
-        detailTexture.dispose();
-        growth.dispose();
-      },
-    };
+      }
+
+      // A new pattern frosts over afresh from the opening state; a new frame shape, once it has
+      // rested RESHAPE_MS, regrows the same pattern (see "Resize" above).
+      const seed = Math.round(knobs.value(frame, "pattern"));
+      if (pattern !== undefined && seed !== pattern) {
+        clock = FROST_START;
+        // Recreate both trails too: clearing only their bytes would leave hidden warmth and
+        // stroke endpoints behind. The new field is uploaded below even when dt is zero.
+        melt = undefined;
+        traceStart = undefined;
+        traceSize = 0.4;
+        nextTrace = undefined;
+        breath = undefined;
+      }
+      pattern = seed;
+      const size = growthSize(aspect);
+      const key = `${seed}|${size.width}x${size.height}`;
+      let grow = false;
+      if (key === jobKey) pendingKey = "";
+      else if (shownPattern !== seed) grow = true;
+      else {
+        if (key !== pendingKey) {
+          pendingKey = key;
+          pendingSince = now;
+        }
+        grow = now - pendingSince >= RESHAPE_MS;
+      }
+      if (grow) {
+        jobKey = key;
+        jobPattern = seed;
+        jobSize = size;
+        growth.request(key, { pattern: seed, size, quick: shownPattern !== seed });
+        pendingKey = "";
+      }
+      // On the build worker; on the page, race to this pattern's first field, then refine a few
+      // slices a frame (REFINE_SLICES). Regrown for a new shape, the same pattern grows no quick
+      // field: the old one stays up until the new one is finished.
+      const race = shownPattern !== seed;
+      const landed = growth.advance(
+        Math.max(race ? FIRST_CAP_MS : SLICE_CAP_MS, frame.budget),
+        race ? Number.POSITIVE_INFINITY : REFINE_SLICES,
+      );
+      if (landed) {
+        show(landed.result);
+        shownPattern = jobPattern;
+      }
+
+      // The growth clock: real time between frames while the scene runs (see MAX_FRAME_SECONDS),
+      // paced by the speed knob and the lab's motion, held once all is frosted.
+      const elapsed =
+        frame.dt > 0 ? Math.max(frame.dt, Math.min(interval / 1000, MAX_FRAME_SECONDS)) : 0;
+      clock += elapsed * frame.motion * knobs.value(frame, "speed");
+      if (field)
+        clock = Math.min(
+          clock,
+          Math.max(
+            RIME_GROWN,
+            field.latest + field.reach * furSlowness(knobs.value(frame, "style")) + FUR_RIPEN + 5,
+          ),
+        );
+      clock = Math.min(clock, 60000);
+      const shown = clock - enterLead(frame);
+      if (shown !== uploadedClock) {
+        clockData[0] = shown;
+        clockTexture.upload(clockData);
+        uploadedClock = shown;
+      }
+
+      // The melt grid: half the resolution of the field the pane grows for.
+      const meltWidth = Math.ceil((jobSize ?? size).width / 2);
+      const meltHeight = Math.ceil((jobSize ?? size).height / 2);
+      if (!melt || melt.width !== meltWidth || melt.height !== meltHeight) {
+        melt = new MeltField(meltWidth, meltHeight);
+        meltTexture.resize(meltWidth, meltHeight);
+        meltTexture.upload(melt.bytes);
+      }
+      touch(frame, melt);
+      breathe(frame, melt);
+      trace(frame, melt);
+      if (melt.step(frame.dt, frame.dt * frame.motion)) meltTexture.upload(melt.bytes);
+
+      return [
+        field ? growthTexture.texture : undefined,
+        meltTexture.texture,
+        clockTexture.texture,
+        field ? detailTexture.texture : undefined,
+      ];
+    },
+    // The pane is ready once its first field is up.
+    ready: () => field !== undefined,
+    dispose() {
+      growthTexture.dispose();
+      meltTexture.dispose();
+      clockTexture.dispose();
+      detailTexture.dispose();
+      growth.dispose();
+    },
+  };
+}
+
+/**
+ * The frost glass layer's sim (README "The interior composer"): the crystals and the melt, its four
+ * textures to its fields (frostGlassField0..3).
+ */
+export function frostGlassSim(gl: WebGL2RenderingContext, params: readonly ParamDef[]): LayerSim {
+  const sim = frostSim(gl, params);
+  return {
+    frame(frame: LayerFrame) {
+      const textures = sim.frame(frame);
+      frame.fields.forEach((field, k) => {
+        field.texture = textures[k];
+      });
+    },
+    ready: () => sim.ready?.() !== false,
+    dispose() {
+      sim.dispose();
+    },
   };
 }

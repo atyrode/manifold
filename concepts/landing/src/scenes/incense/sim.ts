@@ -27,16 +27,19 @@
 // motes and the falling ash with them; the hand gives the air a step's push for every step's worth
 // of time a frame holds.
 //
-// Textures for the shader (shader.ts), the fluid's between its last two steps:
-//   uSim0  the dye, rgba16f over the frame: r smoke, g heat (negative: the backflow's cold smoke),
-//          b fresh smoke (faded faster than r, so b / r says how young the smoke is), a unused
-//   uSim1  the velocity, rg16f, frame heights per second: bends the candle flame, fans the ember
-//   uSim2  the burner, 3×1 rgba16f (Burner.write)
-//   uSim3  the dust motes, r16f over the frame (while the dust knob is up)
-// Without float render targets only uSim2 is supplied and the shader paints an analytic plume.
+// Textures for the shader (shader.ts), the incense layer's four fields (incenseLayerSim), the
+// fluid's between its last two steps:
+//   field 0  the dye, rgba16f over the frame: r smoke, g heat (negative: the backflow's cold smoke),
+//            b fresh smoke (faded faster than r, so b / r says how young the smoke is), a unused
+//   field 1  the velocity, rg16f, frame heights per second: bends the candle flame, fans the ember
+//   field 2  the burner, 3×1 rgba16f (Burner.write)
+//   field 3  the dust motes, r16f over the frame (while the dust knob is up)
+// Without float render targets only field 2 is supplied and the shader paints an analytic plume.
+// Its "now" slots are its knobs' (the composer numbers them): the new incense's and the door's.
 //
 // Units are frame heights, p = uv * (aspect, 1), as in the fluid. Everything stands on the table at
 // the anchor (INCENSE_X of the width, INCENSE_FLOOR up); the table is the fluid's floor.
+import type { LayerFrame, LayerSim } from "../../composer/types.ts";
 import { KnobReader, type ParamDef } from "../../params.ts";
 import { MAX_PRINCIPALS } from "../../principals.ts";
 import { gpuCommonGlsl } from "../../shaders/common.ts";
@@ -57,7 +60,7 @@ import {
 import { clamp, lerp, smoothstep } from "../../sims/math.ts";
 import { mulberry32 } from "../../sims/random.ts";
 import { DataTexture } from "../../sims/texture.ts";
-import type { SceneSim, SimFactory, SimFrame } from "../types.ts";
+import type { SceneSim, SimFrame } from "../types.ts";
 import { INCENSE_PASSAGE, incenseKinds } from "./constants.ts";
 
 export type IncenseKind = (typeof incenseKinds)[number];
@@ -1386,7 +1389,7 @@ class Plume {
 // ---- the simulation ----------------------------------------------------------------------------
 
 /** The incense, for a scene whose `params` carry the knobs IncenseKnob names. */
-export function incenseSim(params: readonly ParamDef[]): SimFactory {
+function incenseSim(gl: WebGL2RenderingContext, params: readonly ParamDef[]): SceneSim {
   const knobs = new KnobReader<IncenseKnob>("incense", params, [
     "stick",
     "smoke",
@@ -1401,84 +1404,101 @@ export function incenseSim(params: readonly ParamDef[]): SimFactory {
   ]);
   const renewSlot = knobs.trigger("renew");
   const doorSlot = knobs.trigger("door");
-  return (gl): SceneSim => {
-    const state = new DataTexture(gl, {
-      width: 3,
-      height: 1,
-      format: "rgba16f",
-      filter: "nearest",
-    });
-    const stateData = new Float32Array(12);
-    const doors = new Doors();
-    const arrival = new Arrival();
-    const settings: Settings = {
-      kind: "stick",
-      smoke: 0,
-      renew: false,
-      draft: 0,
-      turbulence: 0,
-      vent: 0,
-      doors: 0,
-      hand: false,
-      candle: false,
-      dust: false,
-    };
-    const textures: (WebGLTexture | undefined)[] = [undefined, undefined, undefined, undefined];
-    const clock = new FixedStep(STEP, MAX_STEPS);
-    let burner: Burner | undefined;
+  const state = new DataTexture(gl, {
+    width: 3,
+    height: 1,
+    format: "rgba16f",
+    filter: "nearest",
+  });
+  const stateData = new Float32Array(12);
+  const doors = new Doors();
+  const arrival = new Arrival();
+  const settings: Settings = {
+    kind: "stick",
+    smoke: 0,
+    renew: false,
+    draft: 0,
+    turbulence: 0,
+    vent: 0,
+    doors: 0,
+    hand: false,
+    candle: false,
+    dust: false,
+  };
+  const textures: (WebGLTexture | undefined)[] = [undefined, undefined, undefined, undefined];
+  const clock = new FixedStep(STEP, MAX_STEPS);
+  let burner: Burner | undefined;
 
-    /** Entering, the ember takes light first: the stick stands in the dish, unlit. */
-    const kindled = (lit: Burner): void => {
-      if (arrival.active) lit.glow = Math.min(lit.glow, kindle(arrival.progress));
-    };
+  /** Entering, the ember takes light first: the stick stands in the dish, unlit. */
+  const kindled = (lit: Burner): void => {
+    if (arrival.active) lit.glow = Math.min(lit.glow, kindle(arrival.progress));
+  };
 
-    const gpu = GpuCompute.create(gl);
-    let plume: Plume | undefined;
-    if (gpu) {
-      try {
-        plume = new Plume(gpu);
-      } catch (error: unknown) {
-        if (!(error instanceof GpuError)) throw error;
-        // No smoke simulation here: the shader paints its analytic plume instead.
-        console.error("evt=landing.incense.fluid_unavailable", error);
-        gpu.dispose();
-      }
+  const gpu = GpuCompute.create(gl);
+  let plume: Plume | undefined;
+  if (gpu) {
+    try {
+      plume = new Plume(gpu);
+    } catch (error: unknown) {
+      if (!(error instanceof GpuError)) throw error;
+      // No smoke simulation here: the shader paints its analytic plume instead.
+      console.error("evt=landing.incense.fluid_unavailable", error);
+      gpu.dispose();
     }
+  }
 
-    return {
-      frame(frame) {
-        readSettings(settings, frame, knobs);
-        arrival.advance(frame);
-        if (!burner) burner = new Burner(settings.kind);
-        else if (burner.kind !== settings.kind) burner.replace(settings.kind);
-        if (frame.fired[renewSlot] === true) burner.renew();
-        if (frame.fired[doorSlot] === true) doors.open();
+  return {
+    frame(frame) {
+      readSettings(settings, frame, knobs);
+      arrival.advance(frame);
+      if (!burner) burner = new Burner(settings.kind);
+      else if (burner.kind !== settings.kind) burner.replace(settings.kind);
+      if (frame.fired[renewSlot] === true) burner.renew();
+      if (frame.fired[doorSlot] === true) doors.open();
 
-        // While the opening plume warms up over several frames, the burner, the doors and the
-        // clock hold still with it.
-        if (!plume || plume.ready(frame, burner, doors, settings, arrival)) {
-          plume?.feel(frame, burner, settings, arrival);
-          const steps = clock.advance(Math.max(0, frame.dt) * frame.motion);
-          for (let i = 0; i < steps; i++) {
-            burner.step(STEP, settings.renew);
-            kindled(burner);
-            plume?.step(burner, doors, settings, i === steps - 1);
-          }
+      // While the opening plume warms up over several frames, the burner, the doors and the
+      // clock hold still with it.
+      if (!plume || plume.ready(frame, burner, doors, settings, arrival)) {
+        plume?.feel(frame, burner, settings, arrival);
+        const steps = clock.advance(Math.max(0, frame.dt) * frame.motion);
+        for (let i = 0; i < steps; i++) {
+          burner.step(STEP, settings.renew);
+          kindled(burner);
+          plume?.step(burner, doors, settings, i === steps - 1);
         }
-        kindled(burner);
+      }
+      kindled(burner);
 
-        const alpha = clock.alpha;
-        burner.write(stateData, (1 - alpha) * STEP);
-        state.upload(stateData);
-        // Without a plume (no float targets) slots 0, 1 and 3 stay empty: the analytic plume.
-        plume?.show(alpha, settings.dust, textures);
-        textures[2] = state.texture;
-        return textures;
-      },
-      dispose() {
-        state.dispose();
-        gpu?.dispose();
-      },
-    };
+      const alpha = clock.alpha;
+      burner.write(stateData, (1 - alpha) * STEP);
+      state.upload(stateData);
+      // Without a plume (no float targets) slots 0, 1 and 3 stay empty: the analytic plume.
+      plume?.show(alpha, settings.dust, textures);
+      textures[2] = state.texture;
+      return textures;
+    },
+    dispose() {
+      state.dispose();
+      gpu?.dispose();
+    },
+  };
+}
+
+/**
+ * The incense layer's sim (README "The interior composer"): the fluid, the burner, the doors and
+ * the motes, its four textures to its fields (incenseField0..3).
+ */
+export function incenseLayerSim(gl: WebGL2RenderingContext, params: readonly ParamDef[]): LayerSim {
+  const sim = incenseSim(gl, params);
+  return {
+    frame(frame: LayerFrame) {
+      const textures = sim.frame(frame);
+      frame.fields.forEach((field, k) => {
+        field.texture = textures[k];
+      });
+    },
+    dispose() {
+      sim.dispose();
+    },
   };
 }

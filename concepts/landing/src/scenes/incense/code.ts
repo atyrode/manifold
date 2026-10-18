@@ -1,7 +1,7 @@
-// Incense's code, loaded the first time the scene is needed (SceneDef.code).
-import { incenseScene } from "./index.ts";
-import { incenseSim } from "./sim.ts";
+// Incense's code, loaded the first time the scene is needed (SceneDef.code): assembled from the
+// code of every layer its rig offers (composer/code.ts).
+import { composedCode } from "../../composer/code.ts";
+import { INTERIOR_CODE } from "../../composer/interior-code.ts";
+import { incenseComposed } from "./index.ts";
 
-export { incenseGlsl as glsl } from "./shader.ts";
-export const entry = "sceneIncense";
-export const sim = incenseSim(incenseScene.params);
+export const { glsl, entry, glslFor, sim } = composedCode(incenseComposed, INTERIOR_CODE);

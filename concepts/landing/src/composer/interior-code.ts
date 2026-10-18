@@ -8,6 +8,15 @@ import {
   verandaGlsl,
 } from "../scenes/bonsai/shader.ts";
 import { bonsaiTreeSim } from "../scenes/bonsai/sim.ts";
+import { frostGlassGlsl, frostSharedGlsl, frostViewGlsl } from "../scenes/frost/shader.ts";
+import { frostGlassSim } from "../scenes/frost/sim.ts";
+import {
+  incenseGlsl,
+  incenseSharedGlsl,
+  lowTableGlsl,
+  shaftWallGlsl,
+} from "../scenes/incense/shader.ts";
+import { incenseLayerSim } from "../scenes/incense/sim.ts";
 import { lavaLampGlsl, lavaSharedGlsl, paperedGlsl, sideboardGlsl } from "../scenes/lava/shader.ts";
 import { lavaLampSim } from "../scenes/lava/sim.ts";
 import {
@@ -33,4 +42,9 @@ export const INTERIOR_CODE: Readonly<Record<string, LayerCode>> = {
   veranda: { glsl: () => verandaGlsl, shared: [bonsaiSharedGlsl] },
   stand: { glsl: () => standGlsl, shared: [bonsaiSharedGlsl] },
   bonsaiTree: { glsl: () => bonsaiTreeGlsl, shared: [bonsaiSharedGlsl], sim: bonsaiTreeSim },
+  shaftWall: { glsl: () => shaftWallGlsl, shared: [incenseSharedGlsl] },
+  lowTable: { glsl: () => lowTableGlsl, shared: [incenseSharedGlsl] },
+  incense: { glsl: () => incenseGlsl, shared: [incenseSharedGlsl], sim: incenseLayerSim },
+  frostView: { glsl: () => frostViewGlsl, shared: [frostSharedGlsl] },
+  frostGlass: { glsl: () => frostGlassGlsl, shared: [frostSharedGlsl], sim: frostGlassSim },
 };

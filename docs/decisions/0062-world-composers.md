@@ -36,7 +36,7 @@ are the ports' own, taken under #1082 on the shared dev host.
   `gust.ts`, the composed sim in `sim.ts`, the code assembly in `code.ts`, the caps in `caps.ts`)
   and the `outdoor` composer: 84 layers in canonical order (`outdoor.ts`: 20 backdrops, 16 grounds,
   23 dressings, 7 covers, 14 life, 4 chores), their code by id in `outdoor-code.ts`. The `interior`
-  composer (Phase 3): 11 layers (`interior.ts`: 3 backdrops, 3 grounds, 5 dressings), their code in
+  composer (Phase 3): 16 layers (`interior.ts`: 5 backdrops, 4 grounds, 7 dressings), their code in
   `interior-code.ts`, the room's program in `room.ts`. The `overhead` composer (Phase 4): 16 layers
   (`overhead.ts`: 4 beds, 3 waters, 4 dressings, 1 cover, 4 life), its program and code assembly in
   `overhead-glsl.ts`, the layers' code in `overhead-code.ts`. All three share
@@ -47,13 +47,14 @@ are the ports' own, taken under #1082 on the shared dev host.
   Phase 4 pilot), tidepool and sandtable (4). `src/composer/budget.test.ts` holds that list.
 - **Committed mixes:** "Bees · overgrown meadow" (the meadow's grass and wildflowers in the bees'
   garden), "Bees · in the valley" (the countryside's `valley` in place of the bees' hillside),
-  "Sill · lava lamp on the sill" (the lava lamp standing on the sill, lighting the room),
-  "Ripple tank · koi in the tank" (the pond's koi in the ripple tank's water) and "Swell · an
-  island offshore" (the island standing out on the afternoon swell; commit pending). The other mixes the
+  "Sill · lava lamp on the sill" (the lava lamp standing on the sill, lighting the room), "Sill ·
+  frost on the window" (the frost's glass layer on the sill's panes), "Ripple tank ·
+  koi in the tank" (the pond's koi in the ripple tank's water) and "Swell · an island offshore" (the
+  island standing out on the afternoon swell). The other mixes the
   waves planned ("Autumn maple by the lantern river", "Campfire in the meadow", "Fireflies over the
   apiary", "A campfire on the valley's hill") were not made: their layers are drawn through their
   own rigs alone (see "Rigs, locking and offering").
-- **Not built:** the rest of the interiors (bar, train, mobile, incense, frost, clouds,
+- **Not built:** the rest of the interiors (bar, train, mobile, clouds,
   harmonograph; Phase 3); the rest of the `overhead` composer (its `tilt` and `orbit`, the `height`
   pass, the World over the patch, and its presets after sandtable; Phase 4); the per-program
   knob layout and packed trigger slots; `scripts/layer-costs.ts`, the stack meter and the role's
@@ -67,8 +68,8 @@ are the ports' own, taken under #1082 on the shared dev host.
    pitched; `interior` a room with a ledge and a window; `overhead` a patch of ground seen from
    above. A composer is a camera rig, a site and an order of composition, and the World is in all
    three (in a room, through its window; over the overhead's patch, not yet). `outdoor` is built;
-   `interior` is piloted with sill and lava and runs bonsai (Phase 3), `overhead` is piloted with
-   pond and ripple and runs the tide pool and the sand table too (Phase 4).
+   `interior` is piloted with sill and lava and runs bonsai, incense and frost (Phase 3),
+   `overhead` is piloted with pond and ripple and runs the tide pool and the sand table too (Phase 4).
 2. **A layer is a module.** Its manifest (`LayerDef`: role, bands, claims, the rigs it can be drawn
    through, its switch, knobs, passes and data) loads without its code (`LayerCode`: its GLSL built
    for the preset's rig, the chunks it shares with its scene's other layers, its sim). One steady
@@ -669,16 +670,52 @@ a metre, the eye's height over its distance the display's tilt, 0.14):
   snow; cherry in the unglazed pot, the sun from the left, the kintsugi M on. The shaken default
   program is 58,003 characters; its all-features program, which plays the layers' turns, 60,500.
 
-| Preset | At its defaults (dithered)                                             | Differences, attributed                                                                                    |
-| ------ | ---------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------- |
-| sill   | `SAME`                                                                 | none; the World's knobs replace the sill's sky and weather (Milky Way, cumulus, cloud shadows new and off) |
-| lava   | `SAME`                                                                 | none                                                                                                       |
-| bonsai | `SAME`                                                                 | none                                                                                                       |
-| mix    | 1,434 of 23,040 cells against the sill (6.2 %): the lamp and its light | the lamp on the sill, its warm light on the wall, the frame, the sill, the props and the cat               |
+| Preset    | At its defaults (dithered)                                             | Differences, attributed                                                                                                                  |
+| --------- | ---------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------- |
+| sill      | `SAME`                                                                 | none; the World's knobs replace the sill's sky and weather (Milky Way, cumulus, cloud shadows new and off)                               |
+| lava      | `SAME`                                                                 | none                                                                                                                                     |
+| bonsai    | `SAME`                                                                 | none                                                                                                                                     |
+| mix       | 1,434 of 23,040 cells against the sill (6.2 %): the lamp and its light | the lamp on the sill, its warm light on the wall, the frame, the sill, the props and the cat                                             |
+| incense   | `SAME`                                                                 | none                                                                                                                                     |
+| frost     | `SAME`                                                                 | none; the World's knobs replace the frost's sky and weather (rain, fog, lightning, cumulus, cloud shadows and the Milky Way new and off) |
+| frost mix | 2,101 of 23,040 cells against the sill (9.1 %): the frost on the panes | the rime along each pane's edges and the condensation over the glass; the sill's city unblurred behind it                                |
 
-**Still to build:** bar, train, mobile, incense, frost, clouds and harmonograph as presets; the
-World's birds through a window; depth across a room's layers, and shadows on another layer's
-surface than a backdrop's, once two layers that overlap need them. What Phase 2 changes for them:
+**The incense, built:** three layers, the shell kept apart from the subject, locked to the
+incense's rig (`ON_THE_TABLE`: eye 0.3 m, 1 m from where the incense stands, 1.2 screen heights a
+metre): the **`shaftWall`** (backdrop: the dark plaster, the window's light lying on it as a tall
+pane, the M of lamplight, the hazy shaft as its front veil; its knobs the light), the
+**`lowTable`** (ground) and the **`incense`** (dressing: the burner, the candle, the smoke and the
+motes, its fluid's four fields). The smoke's and the holder's shadows on the wall go through
+`roomCaster`: the incense declares its silhouette, the wall asks it back along the window's light,
+the second backdrop to throw the room's shadows. The cell's state (the window's light, the shaft,
+the smoke's shadow down it) is the scene's shared chunk. The placer now refuses a layer whose
+textures would take the stack past its six fields (`COMPOSER_CAPS.fields`; the allocation threw
+before): the lava lamp the incense's room offers (eye 0.3 m) stands only while the incense is off,
+their four and three fields passing the six. At its defaults, dithered and `view=source`, and four
+witnesses (coil, candle and late sun; washi and the M; the waterfall burner, steep light, umber,
+dust; the cone, window off, candle) `SAME` against 113498b3. Its programs: 39,286 and 41,848 shaken
+characters (ceilings 43,000 and 46,000: the room's program frame).
+
+**The frost, built:** the window kept apart from what lies on its glass. The **`frostView`**
+(backdrop, a window, locked to `AT_THE_PANE`: eye 0.15 m over the window's bottom rail, half a
+metre from the pane) draws the frame and, through its own camera 1.8 m over the street (D11), the
+street or the cabin under the World's sky and snow, blurred and bent by the frost; the World's light
+on the room's side of the glass is its `daylight`. The **`frostGlass`** (dressing) is the first
+**glass layer**: a window backdrop says where its glass is (`LayerPasses.glass`, `roomGlass(x)`:
+how far inside it from its four edges), the room paints every layer's `farVeil` over the backdrop
+and under all that stands in the room, and a layer marked `LayerDef.glass` is offered only where a
+window with glass is (`compose.ts`). The frost's rime forms along the glass's edges, so on the sill
+it gathers along each of the six panes; it is lit by `roomLight` and by what shows through the
+glass (a guest window's view is its own, unblurred: a stated limit). The room's grade gains the
+frost's soft roll-off (`Grade.rolloff`), and the frost holds the World's cloud deck at every
+setting (its view's fair-weather cover). At its defaults (dithered and `view=source`), its two
+committed presets and two witnesses (fur, condensation and sparkle up; the cabin in a blizzard)
+`SAME` against 113498b3; "Frost · aurora over the cabin" is rewritten for its query's order. Its
+all-features program is the World's every gate now, 126,601 shaken characters (ceiling 139,500).
+
+**Still to build:** bar, train, mobile, clouds and harmonograph as presets; the World's birds
+through a window; depth across a room's layers, and shadows on another layer's surface than a
+backdrop's, once two layers that overlap need them. What Phase 2 changes for them:
 
 - **The window's view is drawn for the window (D11).** Outdoor backdrops are locked to their own
   rigs (the street's `city` to a window 28 m up and pitched down), so a room's window draws a view of
@@ -687,8 +724,9 @@ surface than a backdrop's, once two layers that overlap need them. What Phase 2 
   six of its own, which fill the eight; the train has five, which leave one, as the bonsai's do; the
   packed trigger slots come before a guest with a "now" is offered to the bar, the train or the
   bonsai. The lava lamp brings two (its cold start and its M), so it is offered only to rooms whose
-  eye stands 0.2 m or more over the ledge (not the bonsai's); the bar's and the train's ports lock it
-  out too or wait for the packed slots.
+  eye stands 0.2 m or more over the ledge (not the bonsai's or the frost's); the frost glass brings
+  one (its traced M) to every room whose window has glass. The bar's and the train's ports, whose
+  windows would offer both, lock them out too or come after the packed slots.
 
 ### Phase 4: the overhead composer
 
