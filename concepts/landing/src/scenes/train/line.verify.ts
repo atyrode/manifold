@@ -114,7 +114,7 @@ export function verifyTrainLine(gl: WebGL2RenderingContext): Record<string, unkn
     gl.useProgram(linked);
     gl.uniform1i(part, 0);
     const sky = (line: number, sim: DataTexture) =>
-      row(draw(gl, linked, onLine(line), sim.texture, BASE));
+      row(draw(gl, linked, trainScene.params, onLine(line), sim.texture, BASE));
     const country = sky(0, none);
     const rural = sky(1, none);
     const mountain = sky(2, none);
@@ -144,7 +144,7 @@ export function verifyTrainLine(gl: WebGL2RenderingContext): Record<string, unkn
 
     gl.uniform1i(part, 1);
     const share = (sim: DataTexture, channel: 0 | 1): number => {
-      const bytes = draw(gl, linked, onLine(2), sim.texture, BASE);
+      const bytes = draw(gl, linked, trainScene.params, onLine(2), sim.texture, BASE);
       let n = 0;
       for (let i = channel; i < bytes.length; i += 4) if ((bytes[i] ?? 0) > 127) n++;
       return n / (bytes.length / 4);
@@ -170,7 +170,7 @@ export function verifyTrainLine(gl: WebGL2RenderingContext): Record<string, unkn
     const birds = (more: Readonly<Record<string, number>>): number => {
       let n = 0;
       for (let m = 15; m <= 600; m += 15) {
-        const bytes = draw(gl, linked, onLine(1, more), none.texture, {
+        const bytes = draw(gl, linked, trainScene.params, onLine(1, more), none.texture, {
           time: m,
           motionTime: m,
           fallTime: m,

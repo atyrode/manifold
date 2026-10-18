@@ -12,7 +12,8 @@
 // the scenes in MOTION_AMPLITUDE, which scale something by the motion itself (no phase): nothing
 // animates on uTime times uMotion.
 import { defaultsFor, paramDefaults, renderSettings } from "../../state.ts";
-import { effective } from "../../params.ts";
+import { effective, type ParamDef } from "../../params.ts";
+import { RatePhases } from "../../rate-phase.ts";
 import {
   fragmentSourceFor,
   packParams,
@@ -88,10 +89,16 @@ export function compile(
   return link(gl, scene.id, fragmentSourceFor({ ...scene, entry, glsl: scene.glsl + glsl }));
 }
 
-/** One source-view frame of `linked` at `clocks` with the knobs `values`, uSim0 = `sim` if given. */
+/**
+ * One source-view frame of `linked` at `clocks` with the knobs `values` (of the scene's `params`),
+ * uSim0 = `sim` if given. The rate knobs' phases (uPhases: the day cycle's days the sky reads, a
+ * swing's cycles) are those the renderer integrates with the knobs at `values` all the motion clock
+ * long, so they follow the motion clock and nothing else.
+ */
 export function draw(
   gl: WebGL2RenderingContext,
   linked: WebGLProgram,
+  params: readonly ParamDef[],
   values: readonly number[],
   sim: WebGLTexture | undefined,
   clocks: Clocks,
@@ -109,6 +116,9 @@ export function draw(
   gl.uniform1i(at("uView"), 1);
   gl.uniform4f(at("uPrincipals"), 0.5, 0.5, 0, -1e4);
   gl.uniform4fv(at("uParams"), packParams(values));
+  const phases = new RatePhases(params);
+  phases.step(values, clocks.motionTime);
+  gl.uniform4fv(at("uPhases"), phases.upload);
   gl.uniform1fv(at("uTriggers"), new Float32Array(8).fill(-1e4));
   gl.uniform1fv(at("uMotionTriggers"), new Float32Array(8).fill(-1e4));
   gl.uniform2f(at("uPassage"), 1, 0);
@@ -137,16 +147,17 @@ function invariance(
   gl: WebGL2RenderingContext,
   label: string,
   linked: WebGLProgram,
+  params: readonly ParamDef[],
   values: readonly number[],
   sim?: WebGLTexture,
 ): number {
-  const base = draw(gl, linked, values, sim, BASE);
+  const base = draw(gl, linked, params, values, sim, BASE);
   for (const clocks of [
     { ...BASE, motion: 0.25 },
     { ...BASE, motion: 0 },
     { ...BASE, time: 900, motion: 0.25 },
   ]) {
-    const changed = differing(base, draw(gl, linked, values, sim, clocks));
+    const changed = differing(base, draw(gl, linked, params, values, sim, clocks));
     if (changed > 0)
       fail(
         `${label}: ${changed} of ${WIDTH * HEIGHT} pixels jumped at the same motion clock (uTime ${clocks.time}, uMotion ${clocks.motion})`,
@@ -155,7 +166,7 @@ function invariance(
   // At cycle 1 a day takes 240 s of motion clock: 10 s more is an hour later.
   const later = differing(
     base,
-    draw(gl, linked, values, sim, { ...BASE, motionTime: BASE.motionTime + 10 }),
+    draw(gl, linked, params, values, sim, { ...BASE, motionTime: BASE.motionTime + 10 }),
   );
   if (later === 0)
     fail(`${label}: an hour on the motion clock changed nothing (the check would be vacuous)`);
@@ -190,7 +201,7 @@ function streetCheck(gl: WebGL2RenderingContext): number {
     }`,
   );
   try {
-    return invariance(gl, "street windows", linked, dayCycle("street", 0));
+    return invariance(gl, "street windows", linked, streetScene.params, dayCycle("street", 0));
   } finally {
     gl.deleteProgram(linked);
   }
@@ -243,17 +254,37 @@ function trainCheck(gl: WebGL2RenderingContext): Record<string, number> {
   try {
     gl.useProgram(linked);
     gl.uniform1i(part, 0);
-    const clouds = invariance(gl, "train clouds", linked, dayCycle("train", 0.5));
+    const clouds = invariance(
+      gl,
+      "train clouds",
+      linked,
+      trainScene.params,
+      dayCycle("train", 0.5),
+    );
     gl.uniform1i(part, 1);
     const midnight = dayCycle("train", 0);
-    const face = draw(gl, linked, midnight, sim.texture, BASE);
+    const face = draw(gl, linked, trainScene.params, midnight, sim.texture, BASE);
     let atClock = 0;
     for (let i = 1; i < face.length; i += 4) if ((face[i] ?? 0) > 127) atClock++;
     if (atClock < 0.2 * WIDTH * HEIGHT)
       fail(`the station clock is not in view (${atClock} pixels at its depth)`);
-    const stationClock = invariance(gl, "train station clock", linked, midnight, sim.texture);
+    const stationClock = invariance(
+      gl,
+      "train station clock",
+      linked,
+      trainScene.params,
+      midnight,
+      sim.texture,
+    );
     gl.uniform1i(part, 2);
-    const flashers = invariance(gl, "train crossing flashers", linked, midnight, sim.texture);
+    const flashers = invariance(
+      gl,
+      "train crossing flashers",
+      linked,
+      trainScene.params,
+      midnight,
+      sim.texture,
+    );
     return { clouds, stationClock, flashers, clockPixels: atClock };
   } finally {
     gl.deleteProgram(linked);
@@ -289,11 +320,14 @@ export function motionClocksAll(part: number, parts: number): SceneWalk {
       try {
         const values = scene.params.map((def) => effective(def, knobs));
         const rest: Clocks = { ...BASE, motion: 0.6 };
-        const base = draw(gl, linked, values, undefined, rest);
+        const base = draw(gl, linked, scene.params, values, undefined, rest);
         const others: Clocks[] = [{ ...rest, time: 2400 }];
         if (MOTION_AMPLITUDE[id] === undefined) others.push({ ...rest, motion: 1 });
         for (const clocks of others) {
-          const changed = differing(base, draw(gl, linked, values, undefined, clocks));
+          const changed = differing(
+            base,
+            draw(gl, linked, scene.params, values, undefined, clocks),
+          );
           if (changed > 0)
             fail(
               `${id}: ${changed} of ${WIDTH * HEIGHT} pixels jumped at the same motion clock (uTime ${clocks.time}, uMotion ${clocks.motion})`,
@@ -301,7 +335,10 @@ export function motionClocksAll(part: number, parts: number): SceneWalk {
         }
         result[id] = differing(
           base,
-          draw(gl, linked, values, undefined, { ...rest, motionTime: rest.motionTime + 10 }),
+          draw(gl, linked, scene.params, values, undefined, {
+            ...rest,
+            motionTime: rest.motionTime + 10,
+          }),
         );
       } finally {
         gl.deleteProgram(linked);

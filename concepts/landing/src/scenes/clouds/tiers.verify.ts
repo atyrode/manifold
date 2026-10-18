@@ -276,15 +276,18 @@ export async function verifyCloudTiers(
   gl.deleteProgram(probe);
 
   // Autumn: off by default; on, the shadows only darken, fall on part of the park and move with the
-  // deck; at night there are none. The motion clock stands still (the canopy's sway holds), and the
-  // scene clock that the deck drifts on runs. Its all-features program draws every setting.
+  // deck; at night there are none. The deck drifts on the motion clock, as everything that moves does
+  // (the canopy sways on it too): each of four moments of it is drawn with the shadows and without at
+  // the same clocks, so only the shadows tell the two apart. Its all-features program draws every
+  // setting.
   const scene = program(gl, fragmentSourceFor(autumn, sceneFeaturesAll(autumn)));
   const P = 160;
   const Q = 90;
-  const render = (knobs: Record<string, number>, time: number): Float32Array =>
+  // At `at` seconds on the scene and the motion clock, as the renderer runs them at Motion 1.
+  const render = (knobs: Record<string, number>, at: number): Float32Array =>
     draw(gl, scene, P, Q, {
-      uTime: [time],
-      uMotionTime: [40],
+      uTime: [at],
+      uMotionTime: [at],
       uParams: renderSettings(defaultsFor("autumn"), {
         ...paramDefaults("autumn"),
         clouds: 0.6,
@@ -294,27 +297,40 @@ export async function verifyCloudTiers(
     });
   check(paramDefaults("autumn")["shadows"] === 0, "autumn's cloud shadows are on by default");
   const shaded: boolean[][] = [];
+  const bare: Float32Array[] = [];
   let darker = 0;
-  for (const time of [10, 50, 90, 130]) {
-    const off = render({ time: 0.55 }, time);
-    const on = render({ time: 0.55, shadows: 1 }, time);
+  for (const at of [10, 50, 90, 130]) {
+    const off = render({ time: 0.55 }, at);
+    const on = render({ time: 0.55, shadows: 1 }, at);
     const mask: boolean[] = [];
     for (let i = 0; i < P * Q; i++) {
       const drop = luma(off, i) - luma(on, i);
-      check(drop >= -1e-6, `a cloud shadow brightened the park at pixel ${i}, ${time} s`);
+      check(drop >= -1e-6, `a cloud shadow brightened the park at pixel ${i}, ${at} s`);
       mask.push(drop > 1e-3);
       if (drop > 1e-3) darker++;
     }
     shaded.push(mask);
+    bare.push(off);
   }
   const share = darker / (4 * P * Q);
   check(
     share > 0.05 && share < 0.95,
     `the shadows darken ${(share * 100).toFixed(1)}% of the frame over four moments`,
   );
-  const moved = shaded
-    .slice(1)
-    .map((mask, k) => mask.filter((value, i) => value !== shaded[k]?.[i]).length / (P * Q));
+  // The shadows move where the park without them holds still from one moment to the next, so the
+  // canopy's sway does not count as their drift.
+  const still = (a: Float32Array | undefined, b: Float32Array | undefined, i: number): boolean =>
+    a !== undefined &&
+    b !== undefined &&
+    a[i * 4] === b[i * 4] &&
+    a[i * 4 + 1] === b[i * 4 + 1] &&
+    a[i * 4 + 2] === b[i * 4 + 2];
+  const moved = shaded.slice(1).map((mask, k) => {
+    let flipped = 0;
+    for (let i = 0; i < P * Q; i++)
+      if (mask[i] !== shaded[k]?.[i] && still(bare[k], bare[k + 1], i)) flipped++;
+    return flipped / (P * Q);
+  });
   check(
     moved.some((part) => part > 0.02),
     `the cloud shadows stand still as the deck drifts: ${moved.map((part) => part.toFixed(3)).join(", ")} of the frame`,
