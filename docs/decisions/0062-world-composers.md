@@ -20,11 +20,11 @@ Scene ids stay as presets; no aliases and no link migrations (no backward compat
 decision 2026-10-17).
 
 This record is the decision as it stands after Phase 2, when the `outdoor` composer runs all
-nineteen eye-level scenes, and of the two pilots: the `interior` composer's (Phase 3) runs sill and
-lava, the `overhead` composer's (Phase 4) pond and ripple. It keeps the reasoning, the evidence and
-the phases ahead. The lab is not product code, so no axiom, `REGISTRY.md` row or
-`docs/CONTRACTS.md` section changes; the contract's normative form is the "Composers" section of
-`concepts/landing/src/scenes/README.md`, the lab's own spec.
+nineteen eye-level scenes, and of the two pilots and what followed them: the `interior` composer's
+(Phase 3) runs sill, lava and bonsai, the `overhead` composer's (Phase 4) pond and ripple. It keeps
+the reasoning, the evidence and the phases ahead. The lab is not product code, so no axiom,
+`REGISTRY.md` row or `docs/CONTRACTS.md` section changes; the contract's normative form is the
+"Composers" section of `concepts/landing/src/scenes/README.md`, the lab's own spec.
 
 Paths are relative to `concepts/landing/` unless they start at the repository root. Measurements
 are the ports' own, taken under #1082 on the shared dev host.
@@ -36,14 +36,14 @@ are the ports' own, taken under #1082 on the shared dev host.
   `gust.ts`, the composed sim in `sim.ts`, the code assembly in `code.ts`, the caps in `caps.ts`)
   and the `outdoor` composer: 79 layers in canonical order (`outdoor.ts`: 19 backdrops, 15 grounds,
   22 dressings, 7 covers, 12 life, 4 chores), their code by id in `outdoor-code.ts`. The `interior`
-  composer's pilot (Phase 3): 8 layers (`interior.ts`: 2 backdrops, 2 grounds, 4 dressings), their
-  code in `interior-code.ts`, the room's program in `room.ts`. The `overhead` composer's pilot
+  composer (Phase 3): 11 layers (`interior.ts`: 3 backdrops, 3 grounds, 5 dressings), their code in
+  `interior-code.ts`, the room's program in `room.ts`. The `overhead` composer's pilot
   (Phase 4): 7 layers (`overhead.ts`: 2 beds, 2 waters, 1 dressing, 1 cover, 1 life), its program
   and code assembly in `overhead-glsl.ts`, the layers' code in `overhead-code.ts`. All three share
   `composeScene`, the placer, the composed sim and the layers' turns (`turnsGlsl`, `passCalls`).
 - **Presets:** meadow and bees (Phase 1); shore, dunes, autumn, lanterns and falls (2a); campfire,
   fireflies, forest, bamboo, garden and lake (2b); country, street, skyward, flock, swell and dew
-  (2c); sill and lava (the Phase 3 pilot); pond and ripple (the Phase 4 pilot).
+  (2c); sill and lava (the Phase 3 pilot) and bonsai; pond and ripple (the Phase 4 pilot).
   `src/composer/budget.test.ts` holds that list.
 - **Committed mixes:** "Bees · overgrown meadow" (the meadow's grass and wildflowers in the bees'
   garden), "Bees · in the valley" (the countryside's `valley` in place of the bees' hillside),
@@ -52,7 +52,7 @@ are the ports' own, taken under #1082 on the shared dev host.
   waves planned ("Autumn maple by the lantern river", "Campfire in the meadow", "Fireflies over the
   apiary", "A campfire on the valley's hill") were not made: their layers are drawn through their
   own rigs alone (see "Rigs, locking and offering").
-- **Not built:** the rest of the interiors (bar, train, bonsai, mobile, incense, frost, clouds,
+- **Not built:** the rest of the interiors (bar, train, mobile, incense, frost, clouds,
   harmonograph; Phase 3); the rest of the `overhead` composer (its `tilt` and `orbit`, the `height`
   pass, the World over the patch, and its presets after pond and ripple; Phase 4); the per-program
   knob layout and packed trigger slots; `scripts/layer-costs.ts`, the stack meter and the role's
@@ -66,7 +66,8 @@ are the ports' own, taken under #1082 on the shared dev host.
    pitched; `interior` a room with a ledge and a window; `overhead` a patch of ground seen from
    above. A composer is a camera rig, a site and an order of composition, and the World is in all
    three (in a room, through its window; over the overhead's patch, not yet). `outdoor` is built;
-   `interior` is piloted with sill and lava (Phase 3), `overhead` with pond and ripple (Phase 4).
+   `interior` is piloted with sill and lava and runs bonsai (Phase 3), `overhead` is piloted with
+   pond and ripple (Phase 4).
 2. **A layer is a module.** Its manifest (`LayerDef`: role, bands, claims, the rigs it can be drawn
    through, its switch, knobs, passes and data) loads without its code (`LayerCode`: its GLSL built
    for the preset's rig, the chunks it shares with its scene's other layers, its sim). One steady
@@ -345,7 +346,8 @@ they were:
 | The World's settled gates: `WORLD_METEOR_RATE`, `WORLD_LIGHTNING_RATE`, `WORLD_MOON`, `WORLD_DAYLIGHT`             | each part a setting cannot show compiled out, drawing what the runtime path draws there                               | every composed preset                                                                   |
 | Planet gates: `SKY_PLANETS_<KIND>`, `SKY_PLANETS_WIDE_RING`, `_MOONS`, `_AURORA`, `_LIGHTS`, `SKY_PLANETS_SEVERAL` | only the kinds, palettes and dress a planet list holds, a lone planet drawn straight                                  | every scene with planets                                                                |
 | A preset's own gates over the composer's (`index.ts`)                                                              | the lake's night (`lakeNight`), skyward's `WORLD_BIRDS` 0, dunes' and garden's overhead programs                      | lake, skyward, dunes, garden                                                            |
-| `ScenePreset.room`, `LayerFrame.room`, `<id>Anchor` (interior)                                                     | the room: the eye's distance to the seat line, the wall, its ambient and lamp; the seat and scale for sims; anchors   | sill, lava; the lava lamp's sim and GLSL                                                |
+| `ScenePreset.room`, `LayerFrame.room`, `<id>Anchor` (interior)                                                     | the room: the eye's distance to the seat line, the wall, its ambient and lamp; the seat and scale for sims; anchors   | sill, lava, bonsai; the lava lamp's sim and GLSL                                        |
+| `LayerDef.casters`, `roomCaster` (interior)                                                                        | a layer's silhouette on the plane it stands in; the most of every on layer's, for a backdrop's shadows on its wall    | the bonsai's tree; asked by the veranda                                                 |
 | `daylight` pass, `LayerDef.window` (interior)                                                                      | a window's light into the room (`roomLight`); a backdrop the World crosses, which lists the World's knobs             | cityWindow                                                                              |
 
 ### Rigs, locking and offering
@@ -629,32 +631,58 @@ itself, and dew joined the composer (D7).
   never its birds (none fly a window yet), and no gusts or seed; its layers' trigger slots follow the
   World's two. The lava lamp's room shows no window and lists no World.
 - **The order** is the canonical order, painter's: the begins, the wall, the backdrop's `far`, the
-  ground's `ground`, every `middle`, `front` and `frontVeil`, the grade. A room keeps no depth and
-  casts no shadow from one layer onto another (stated limits).
+  ground's `ground`, every `middle`, `front` and `frontVeil`, the grade. A room keeps no depth (a
+  stated limit); a layer's shapes throw shadows only where a backdrop asks for them (`roomCaster`,
+  below).
 - **The lamp's light is a declared light.** The lava lamp (`lavaLamp`) is drawn from the rig, 0.4 m
-  tall on any room's seat line at its anchor, so it is offered to every interior preset; on the sill
-  it takes its second anchor, the cat holding the first. Its `lavaLampLight` reaches the sill's wall,
-  frame, sill, props, curtain and cat through `roomLight` and `localLight`. The sill's five layers and
-  the lava room's papered wall and sideboard stay locked to their rigs.
+  tall on any room's seat line at its anchor, so it is offered to every interior preset whose eye
+  stands 0.2 m or more over its ledge (the sill's and its own); on the sill it takes its second
+  anchor, the cat holding the first. Its `lavaLampLight` reaches the sill's wall, frame, sill, props,
+  curtain and cat through `roomLight` and `localLight`. The sill's five layers and the lava room's
+  papered wall and sideboard stay locked to their rigs.
+
+**The bonsai, built:** three layers, the room's shell kept apart from its subject, all locked to
+the bonsai's rig (`ON_THE_VERANDA`: eye 0.167 m, 1.19 m from the stand's top, 1.175 screen heights
+a metre, the eye's height over its distance the display's tilt, 0.14):
+
+- **The `veranda`** (backdrop): the wall (plaster, shoji or dark) with the window's patch of sun,
+  the paper lamp's pool, the floorboards; its knobs the light (`time` and `cycle` its own, as the
+  papered wall's moonlight is: a room without a window lists no World; `light`, `wall`, `lamp`).
+  The **`stand`** (ground): the rosewood stand. The **`bonsaiTree`** (dressing): the tree in its pot,
+  its sim's four textures as its fields, the falling snow its front veil.
+- **Shadows on the wall are the room's** (`LayerDef.casters`, `roomCaster`): a layer that stands in
+  the room declares its silhouette at a frame point on the plane it stands in, and a backdrop asks
+  the most of every on layer's, seen from each of its points toward each of its lights. The veranda
+  asks it toward the sun and toward the lamp, so the tree's shadow is no longer drawn by the wall's
+  own code. The pot's and the stand's boxes on the wall and the stand's shadow on the floor stay the
+  veranda's, gated by those layers, because the scene's lamp threw the tree's shadow alone.
+- **The caps:** the bonsai's five "now" slots run 2 to 6; the lava lamp is offered only to rooms
+  whose eye stands 0.2 m or more over the ledge, so it is not offered to the bonsai.
+- **At its defaults** `SAME` (`ab.ts` against 47e062d9, dithered and `view=source`); further
+  witnesses, all `SAME`: shoji, pine and the lamp at dusk; winter in the dark alcove under heavy
+  snow; cherry in the unglazed pot, the sun from the left, the kintsugi M on. The shaken default
+  program is 58,003 characters; its all-features program, which plays the layers' turns, 60,500.
 
 | Preset | At its defaults (dithered)                                             | Differences, attributed                                                                                    |
 | ------ | ---------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------- |
 | sill   | `SAME`                                                                 | none; the World's knobs replace the sill's sky and weather (Milky Way, cumulus, cloud shadows new and off) |
 | lava   | `SAME`                                                                 | none                                                                                                       |
+| bonsai | `SAME`                                                                 | none                                                                                                       |
 | mix    | 1,434 of 23,040 cells against the sill (6.2 %): the lamp and its light | the lamp on the sill, its warm light on the wall, the frame, the sill, the props and the cat               |
 
-**Still to build:** bar, train, bonsai, mobile, incense, frost, clouds and harmonograph as presets;
-the World's birds through a window; depth and shadows across a room's layers, once two layers that
-overlap need them. What Phase 2 changes for them:
+**Still to build:** bar, train, mobile, incense, frost, clouds and harmonograph as presets; the
+World's birds through a window; depth across a room's layers, and shadows on another layer's
+surface than a backdrop's, once two layers that overlap need them. What Phase 2 changes for them:
 
 - **The window's view is drawn for the window (D11).** Outdoor backdrops are locked to their own
   rigs (the street's `city` to a window 28 m up and pitched down), so a room's window draws a view of
   its own through its rig, as the sill's city is.
 - **The caps.** A room's layers number their trigger slots from 2, after the World's two. The bar has
-  six of its own, which fill the eight; the train and the bonsai have five each, which leave one; the
+  six of its own, which fill the eight; the train has five, which leave one, as the bonsai's do; the
   packed trigger slots come before a guest with a "now" is offered to the bar, the train or the
-  bonsai. The lava lamp brings two (its cold start and its M) and is offered to every room today, so
-  those ports lock it out or wait for the packed slots.
+  bonsai. The lava lamp brings two (its cold start and its M), so it is offered only to rooms whose
+  eye stands 0.2 m or more over the ledge (not the bonsai's); the bar's and the train's ports lock it
+  out too or wait for the packed slots.
 
 ### Phase 4: the overhead composer
 
@@ -729,7 +757,7 @@ beside the delta's kilometres by its span.
    every further cross-offering waits for the per-program layout and packed triggers, as do the
    bar's port and the World over the overhead's patch (the pond lists 54 without it).
 2. **Rig-locking limits the mixes.** Of the nineteen outdoor presets' 79 layers, six are offered
-   beyond their own rig; of the interior's 8, the lava lamp, drawn from the rig; of the overhead's 7,
+   beyond their own rig; of the interior's 11, the lava lamp, drawn from the rig; of the overhead's 7,
    the koi beyond their own span. Four mixes are committed. The worth of composing grows only as
    layers are redrawn from the ray (or, from above, in metres).
 3. **Shared chunks couple layers.** The countryside's layers are switches and knobs over one march

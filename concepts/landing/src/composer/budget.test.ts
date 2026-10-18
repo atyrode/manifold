@@ -27,6 +27,7 @@ describe("composed programs", () => {
       "autumn",
       "bamboo",
       "bees",
+      "bonsai",
       "campfire",
       "country",
       "dew",

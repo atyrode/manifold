@@ -11,11 +11,11 @@
 // the first is up the sim is not ready, nothing runs and the stand stands bare where the entrance
 // has it; a new species or seed keeps the tree on show until its own lands.
 //
-// Textures (layout in geometry.ts):
-//   uSim0  rgba16f map, linear: wood (distance, radius, front depth, deadness).
-//   uSim1  rgba16f map, linear: foliage (field, dome normal x, y, tuft index).
-//   uSim2  rgba16f atlas: the litter (BONSAI_LITTER, read with texelFetch) and two cut-twig sprites.
-//   uSim3  rgba16f, linear for the field rows: rows 0..FIELD.height-1 (sway x, y, wood and foliage
+// Textures (layout in geometry.ts), the tree layer's four fields (bonsaiTreeSim):
+//   field 0  rgba16f map, linear: wood (distance, radius, front depth, deadness).
+//   field 1  rgba16f map, linear: foliage (field, dome normal x, y, tuft index).
+//   field 2  rgba16f atlas: the litter (BONSAI_LITTER, read with texelFetch) and two cut-twig sprites.
+//   field 3  rgba16f, linear for the field rows: rows 0..FIELD.height-1 (sway x, y, wood and foliage
 //          silhouettes); then, read with texelFetch, the tuft table (x, screen y, front depth, r),
 //          (r1, r2, outer, regrow); shoots (base x, y, angle, length), (bend, grown, leaves, hash);
 //          motes (x, y, angle, size), (kind + hue, flip, alpha, -); litter slot decay (4 a texel);
@@ -23,6 +23,9 @@
 //          2 (blossom, -, -, -), 3 (the box round every mote: x0, y0, x1, y1), 4 + 2k / 5 + 2k
 //          twig k (x, y, angle, alpha), (active, -, -, -);
 //          then the shoot grid (up to four shoot indices + 1 per cell).
+// Its "now" slots are its knobs' (the composer numbers them): the breeze's gust, the growth's snip,
+// the leaves' and the snowfall's.
+import type { LayerFrame, LayerSim } from "../../composer/types.ts";
 import { climateCold, climateLying } from "../../climate.ts";
 import type { ParamDef } from "../../params.ts";
 import { BuildSlot } from "../../sims/build.ts";
@@ -31,7 +34,7 @@ import { FixedStep } from "../../sims/clock.ts";
 import { easeFactor, smoothstep } from "../../sims/math.ts";
 import { mulberry32 } from "../../sims/random.ts";
 import { DataTexture } from "../../sims/texture.ts";
-import type { PrincipalState, SceneSim, SimFactory, SimFrame, ScenePoint } from "../types.ts";
+import type { PrincipalState, SceneSim, SimFrame, ScenePoint } from "../types.ts";
 import { type BonsaiGrowth, bonsaiGrowth } from "./build.ts";
 import {
   BONSAI_ATLAS,
@@ -255,6 +258,13 @@ class BonsaiSim implements SceneSim {
   /** Growing a tree for a new species or seed, on the build worker (sims/build.ts). */
   readonly #growing = new BuildSlot(bonsaiGrowth);
   readonly #knob: Readonly<Record<KnobKey, number>>;
+  /** The trigger slots of the breeze's gust, the growth's snip, the leaves' and the snowfall's "now". */
+  readonly #slot: {
+    readonly gust: number;
+    readonly snip: number;
+    readonly leaves: number;
+    readonly snow: number;
+  };
 
   #tree: Tree = { nodes: [], pads: [], tufts: [], tip: 0.002 };
   #pads: PadState[] = [];
@@ -334,6 +344,17 @@ class BonsaiSim implements SceneSim {
       year: index("year"),
       leaves: index("leaves"),
       snowfall: index("snowfall"),
+    };
+    const slot = (key: KnobKey): number => {
+      const at = params[index(key)]?.trigger;
+      if (at === undefined) throw new BonsaiSimError(`bonsai: its '${key}' knob has no "now"`);
+      return at;
+    };
+    this.#slot = {
+      gust: slot("breeze"),
+      snip: slot("growth"),
+      leaves: slot("leaves"),
+      snow: slot("snowfall"),
     };
     // Bare (one texel of nothing drawn) until the first tree's maps are uploaded.
     this.#woodTexture = new DataTexture(gl, { width: 1, height: 1, format: "rgba16f" });
@@ -566,10 +587,10 @@ class BonsaiSim implements SceneSim {
   }
 
   #watchTriggers(triggers: readonly number[]): void {
-    const gust = triggers[0] ?? -1e4;
-    const snip = triggers[1] ?? -1e4;
-    const leaves = triggers[3] ?? -1e4;
-    const snow = triggers[4] ?? -1e4;
+    const gust = triggers[this.#slot.gust] ?? -1e4;
+    const snip = triggers[this.#slot.snip] ?? -1e4;
+    const leaves = triggers[this.#slot.leaves] ?? -1e4;
+    const snow = triggers[this.#slot.snow] ?? -1e4;
     if (this.#primed) {
       if (gust !== this.#seenGust && gust > -1e3) this.#launchGust(1.3);
       if (snip !== this.#seenSnip && snip > -1e3) this.#gardenerSnip();
@@ -1642,7 +1663,23 @@ function segment(px: number, py: number, ax: number, ay: number, bx: number, by:
   return Math.hypot(px - ax - ex * t, py - ay - ey * t);
 }
 
-/** The bonsai's simulation for a scene whose knobs are `params` (looked up by key). */
-export function bonsaiSim(params: readonly ParamDef[]): SimFactory {
-  return (gl) => new BonsaiSim(gl, params);
+/**
+ * The bonsai tree layer's sim (README "The interior composer"): the tree, its year and everything
+ * that falls, its four textures to its fields (bonsaiTreeField0..3), its pads to the cast.
+ */
+export function bonsaiTreeSim(gl: WebGL2RenderingContext, params: readonly ParamDef[]): LayerSim {
+  const sim = new BonsaiSim(gl, params);
+  return {
+    frame(frame: LayerFrame) {
+      const textures = sim.frame(frame);
+      frame.fields.forEach((field, k) => {
+        field.texture = textures[k];
+      });
+    },
+    ready: () => sim.ready(),
+    interest: (aspect) => sim.interest(aspect),
+    dispose() {
+      sim.dispose();
+    },
+  };
 }

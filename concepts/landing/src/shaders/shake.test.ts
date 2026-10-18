@@ -168,7 +168,8 @@ const BUDGET = {
   bamboo: [103500, 195000],
   bar: [122500],
   bees: [114500, 191000],
-  bonsai: [59500],
+  // The all-features program is the composer's (ADR 0062): the one a layer's turn plays in.
+  bonsai: [59500, 66500],
   campfire: [122500, 169000],
   chladni: [23000],
   clouds: [59500, 104500],

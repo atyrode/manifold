@@ -1,7 +1,7 @@
-// Bonsai's code, loaded the first time the scene is needed (SceneDef.code).
-import { bonsaiScene } from "./index.ts";
-import { bonsaiSim } from "./sim.ts";
+// Bonsai's code, loaded the first time the scene is needed (SceneDef.code): assembled from the code
+// of every layer its rig offers (composer/code.ts).
+import { composedCode } from "../../composer/code.ts";
+import { INTERIOR_CODE } from "../../composer/interior-code.ts";
+import { bonsaiComposed } from "./index.ts";
 
-export { bonsaiGlsl as glsl } from "./shader.ts";
-export const entry = "sceneBonsai";
-export const sim = bonsaiSim(bonsaiScene.params);
+export const { glsl, entry, glslFor, sim } = composedCode(bonsaiComposed, INTERIOR_CODE);

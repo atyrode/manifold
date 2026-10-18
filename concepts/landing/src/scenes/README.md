@@ -84,7 +84,7 @@ components"); run `bun concepts/landing/scripts/scene-docs.ts` after a change to
 | `dew`          | Dew              | Rooms & life      | `outdoor` preset, 2 layers              | 31    | 0       | An orb web at dawn, strung with dew, glinting as it breathes in the breeze.                                                     |
 | `incense`      | Incense          | Rooms & life      | its own program                         | 15    | 0       | A thread of smoke rising through a shaft of light, curling into veils.                                                          |
 | `lava`         | Lava lamp        | Rooms & life      | `interior` preset, 3 layers             | 17    | 2       | Wax rising and falling in a glowing lamp on a sideboard, late at night.                                                         |
-| `bonsai`       | Bonsai           | Rooms & life      | its own program                         | 16    | 0       | A bonsai on its stand through the seasons, its shadow moving on the wall.                                                       |
+| `bonsai`       | Bonsai           | Rooms & life      | `interior` preset, 3 layers             | 19    | 0       | A bonsai on its stand through the seasons, its shadow moving on the wall.                                                       |
 | `street`       | City crossing    | Rooms & life      | `outdoor` preset, 4 layers              | 35    | 1       | A scramble crossing at dusk from a high window: the crowd gathers, the lights turn, everyone crosses at once.                   |
 | `train`        | Night train      | Rooms & life      | its own program                         | 33    | 0       | The view from a slow night train: tea trembling with the rails, the country sliding by under the moon.                          |
 | `bar`          | Late bar         | Rooms & life      | its own program                         | 16    | 0       | A quiet bar late at night, seen from a corner booth while it rains outside.                                                     |
@@ -2369,12 +2369,12 @@ and `dwell` (`state.ts` refuses to load such a scene).
 
 **Status.** The `outdoor` composer (`src/composer/`, ADR 0062
 `docs/decisions/0062-world-composers.md`, #1082 item U1) runs the nineteen eye-level scenes as
-presets of its 79 layers; the `interior` composer's pilot (Phase 3, "The interior composer") runs
-sill and lava as presets of its 8 layers, with a lava lamp that stands on the sill; the `overhead`
-composer's pilot (Phase 4, "The overhead composer" below) runs pond and ripple as presets of its 7
-layers, with koi offered to the ripple tank. The rest of the interiors and of the scenes seen from
-above are the rest of those phases. Not built yet, so still the contract: the per-program knob
-layout (a composed scene keeps the renderer's 64 knobs and 8 trigger slots,
+presets of its 79 layers; the `interior` composer (Phase 3, "The interior composer") runs sill,
+lava and bonsai as presets of its 11 layers, with a lava lamp that stands on the sill; the
+`overhead` composer's pilot (Phase 4, "The overhead composer" below) runs pond and ripple as
+presets of its 7 layers, with koi offered to the ripple tank. The rest of the interiors and of the
+scenes seen from above are the rest of those phases. Not built yet, so still the contract: the
+per-program knob layout (a composed scene keeps the renderer's 64 knobs and 8 trigger slots,
 `src/composer/caps.ts`), the layer costs (`scripts/layer-costs.ts`) with the stack meter and the
 role's "+" listing, the browser checks `composerDepth`, `composerClaims`, `composerWeather` and
 `layerToggles`, a check of the SwiftShader instruction budget, the principals' points in the site,
@@ -2386,11 +2386,11 @@ of it, a landscape behind, the sky above. A **composer** makes that shared: one 
 site (the floor everything stands on), one light, one weather and one order of composition. On top
 of it stack **layers**, each a module from a scene. Three composers cover the roster:
 
-| Composer   | Rig                                                                                                                                                                                  | Site                                                                                                                                                                                                    | Scenes, by phase                                                                                                                                          |
-| ---------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `outdoor`  | A pinhole over the floor: eye height, horizon, focal, turn (the yaw to the sky's frame), pitch, `minAspect` (narrower frames are laid out this wide and cropped), a passage          | The floor plane y = 0, in metres in the rig's frame (x right, z ahead), of one floor kind (earth, lawn, gravel, sand, rock, moss, ice, snowfield, water, asphalt) unless a ground layer replaces it     | 1: meadow, bees. 2: shore, dunes, autumn, lanterns, falls, campfire, fireflies, forest, bamboo, garden, lake, country, street, skyward, flock, swell, dew |
-| `interior` | A level pinhole in the room, its eye over a ledge across the front, and the room's `distance` to the ledge's seat line (its scale there); the window's view through a rig of its own | The back wall (an albedo) lit by the room's light (its lamp, its ambient, the window's daylight, the layers' lights); the ledge a ground layer (sill, sideboard); a window a backdrop the World crosses | 3 (pilot): sill, lava. Then bar, train, bonsai, mobile, incense, frost, clouds, harmonograph                                                              |
-| `overhead` | A patch seen straight down, orthographic, `span` metres per screen height; the ADR's `tilt` feature and `orbit` range are not built                                                  | A bed layer, seen through the water layer's surface (its slope bends the bed, its depth dims it), the light of a layer's sun or lamp; the plain bed under a bed mid-turn                                | 4 (pilot): pond, ripple. Then sandtable, tidepool, delta, island, and garden and dunes from above                                                         |
+| Composer   | Rig                                                                                                                                                                                  | Site                                                                                                                                                                                                                                                                            | Scenes, by phase                                                                                                                                          |
+| ---------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `outdoor`  | A pinhole over the floor: eye height, horizon, focal, turn (the yaw to the sky's frame), pitch, `minAspect` (narrower frames are laid out this wide and cropped), a passage          | The floor plane y = 0, in metres in the rig's frame (x right, z ahead), of one floor kind (earth, lawn, gravel, sand, rock, moss, ice, snowfield, water, asphalt) unless a ground layer replaces it                                                                             | 1: meadow, bees. 2: shore, dunes, autumn, lanterns, falls, campfire, fireflies, forest, bamboo, garden, lake, country, street, skyward, flock, swell, dew |
+| `interior` | A level pinhole in the room, its eye over a ledge across the front, and the room's `distance` to the ledge's seat line (its scale there); the window's view through a rig of its own | The back wall (an albedo) lit by the room's light (its lamp, its ambient, the window's daylight, the layers' lights); the ledge a ground layer (sill, sideboard, stand); a window a backdrop the World crosses; the layers' silhouettes for a backdrop's shadows (`roomCaster`) | 3: sill, lava, bonsai. Then bar, train, mobile, incense, frost, clouds, harmonograph                                                                      |
+| `overhead` | A patch seen straight down, orthographic, `span` metres per screen height; the ADR's `tilt` feature and `orbit` range are not built                                                  | A bed layer, seen through the water layer's surface (its slope bends the bed, its depth dims it), the light of a layer's sun or lamp; the plain bed under a bed mid-turn                                                                                                        | 4 (pilot): pond, ripple. Then sandtable, tidepool, delta, island, and garden and dunes from above                                                         |
 
 Fractal, hyperbolic, orbit and shanshui stay scenes of their own. The matter shelf and kelp are
 open (ADR 0062, D7).
@@ -3085,10 +3085,10 @@ agents draws as before. Three chores are not layers:
 
 ### The interior composer
 
-The pilot of ADR 0062 Phase 3: `src/composer/interior.ts` (its eight layers in canonical order),
-`room.ts` (the program) and `interior-code.ts` (the layers' code). Its presets are sill and lava,
-and the committed mix "Sill · lava lamp on the sill" stands the lava lamp on the sill. Bar, train,
-bonsai, mobile, incense, frost, clouds and harmonograph are still scenes of their own.
+ADR 0062 Phase 3: `src/composer/interior.ts` (its eleven layers in canonical order), `room.ts` (the
+program) and `interior-code.ts` (the layers' code). Its presets are sill, lava and bonsai, and the
+committed mix "Sill · lava lamp on the sill" stands the lava lamp on the sill. Bar, train, mobile,
+incense, frost, clouds and harmonograph are still scenes of their own.
 
 - **The rig** is a level pinhole in the room (`ScenePreset.rig`), its `eye` measured over the
   ledge's top. The room (`ScenePreset.room`, `Room`) adds `distance`, from the eye to the line things
@@ -3099,7 +3099,7 @@ bonsai, mobile, incense, frost, clouds and harmonograph are still scenes of thei
   and a claim's x is a share of the width (at the rig's `minAspect`, 1), their z metres back from
   the seat line; each placed layer's anchor reaches its GLSL as `<id>Anchor`.
 - **The site** is the back wall (`Room.wall`, an albedo) lit by the room's light, and a ledge
-  across the front, which is the ground layer (the sill, the sideboard).
+  across the front, which is the ground layer (the sill, the sideboard, the bonsai's stand).
 - **The room's light** (`roomLight(x, p, n)`) is the room's lamp out of frame (`Room.lamp`, the
   sill's reading lamp), its ambient, the backdrop's daylight through its window (a `daylight`
   pass) and every on layer's declared lights (`localLight`, at the surface's point in metres on the
@@ -3113,21 +3113,36 @@ bonsai, mobile, incense, frost, clouds and harmonograph are still scenes of thei
 - **The order** (`room.ts`): the begins, then the wall, the backdrop's `far` pass, the ground's
   `ground` pass, and every `middle`, `front` and `frontVeil` pass in canonical order. Then the
   grade: a vignette into the room's corners, the exposure, shadeOf with the grade's ink, the cell's
-  shimmer. Painter's order is the canonical order. Two limits are stated: a room keeps no depth, and
-  no layer casts a shadow onto another layer's surface. Turns play as they do outdoors (`turnsGlsl`,
-  `passCalls`).
-- **Locking and offering.** The sill's five layers, the papered wall and the sideboard are drawn on
-  their scene's frame and locked to its rig (`ON_THE_SILL`, `ON_THE_SIDEBOARD`). The lava lamp is
-  drawn from the rig: it stands at its anchor on any room's seat line, 0.4 m tall at the room's scale,
-  its rims dipping by the rig's eye over its distance. It is offered to every interior preset. On
-  the sill it takes its second anchor (left of the middle), because the cat holds the first. Its
-  light is a declared light (`lavaLampLight`), which the sill's wall, window frame, sill, props,
-  curtain and cat take through `roomLight` and `localLight`.
+  shimmer. Painter's order is the canonical order. A room keeps no depth (a stated limit). Turns play
+  as they do outdoors (`turnsGlsl`, `passCalls`).
+- **Shadows on the wall** are the room's: a layer that stands in the room declares its silhouette
+  (`LayerDef.casters`, `float <fn>(vec2 p)`: how much of a light it stops at frame point p on the
+  plane it stands in), and `roomCaster(p)` takes the most of every on layer's. A backdrop that
+  throws shadows asks it, seen from each of its points toward each of its lights: the bonsai's
+  veranda toward the sun (the tree's soft shadow creeping through the day) and toward the paper lamp
+  (its big soft one at dusk). A caster still casts on no other layer's surface, and a layer's turn
+  does not cut its silhouette (both stated limits).
+- **Locking and offering.** The sill's five layers, the papered wall, the sideboard and the
+  bonsai's three are drawn on their scene's frame and locked to its rig (`ON_THE_SILL`,
+  `ON_THE_SIDEBOARD`, `ON_THE_VERANDA`). The lava lamp is drawn from the rig: it stands at its
+  anchor on any room's seat line, 0.4 m tall at the room's scale, its rims dipping by the rig's eye
+  over its distance. It is offered to every interior preset whose eye stands 0.2 m or more over its
+  ledge: not to the bonsai's (0.17 m), whose five trigger slots and the lamp's two would pass the
+  eight. On the sill it takes its second anchor (left of the middle), because the cat holds the
+  first. Its light is a declared light (`lavaLampLight`), which the sill's wall, window frame, sill,
+  props, curtain and cat take through `roomLight` and `localLight`.
+- **The bonsai** keeps its room's shell apart from its subject: the `veranda` (the wall, plaster,
+  shoji or dark, with the window's patch of sun, the paper lamp's pool and the floorboards; its
+  knobs the light: `time` and `cycle`, its own as the papered wall's moonlight is, `light`, `wall`,
+  `lamp`), the `stand` (the ground), the `bonsaiTree` (the tree in its pot, its sim's four fields,
+  the falling snow its front veil, its silhouette its caster). The pot's and the stand's shadows on
+  the wall and the stand's on the floor are the veranda's, gated by those layers.
 
-| Preset | Layers                                                        | Rig                                                                     | Key renames                                                                                                                                                                   | A/B at defaults |
-| ------ | ------------------------------------------------------------- | ----------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------- |
-| `sill` | `cityWindow`, `sill`, `props`, `cat`, `curtain`; + `lavaLamp` | eye 0.35 m, horizon 0.47, focal 0.915 (one radian), 1.14 m: 0.8 a metre | none; its sky and weather knobs are the World's (Milky Way, cumulus and cloud shadows new, off), its trigger slots renumbered; "Sill · quiet shelter" rewritten (query order) | `SAME`          |
-| `lava` | `papered`, `sideboard`, `lavaLamp`                            | eye 0.248 m, horizon 0.589, focal 2.432, 1.28 m: 1.9 a metre            | none; `spill` and `twin` in the lamp's section                                                                                                                                | `SAME`          |
+| Preset   | Layers                                                        | Rig                                                                     | Key renames                                                                                                                                                                   | A/B at defaults |
+| -------- | ------------------------------------------------------------- | ----------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------- |
+| `sill`   | `cityWindow`, `sill`, `props`, `cat`, `curtain`; + `lavaLamp` | eye 0.35 m, horizon 0.47, focal 0.915 (one radian), 1.14 m: 0.8 a metre | none; its sky and weather knobs are the World's (Milky Way, cumulus and cloud shadows new, off), its trigger slots renumbered; "Sill · quiet shelter" rewritten (query order) | `SAME`          |
+| `lava`   | `papered`, `sideboard`, `lavaLamp`                            | eye 0.248 m, horizon 0.589, focal 2.432, 1.28 m: 1.9 a metre            | none; `spill` and `twin` in the lamp's section                                                                                                                                | `SAME`          |
+| `bonsai` | `veranda`, `stand`, `bonsaiTree`                              | eye 0.167 m, horizon 0.413, focal 1.4, 1.19 m: 1.175 a metre            | none; its trigger slots renumbered (from 2)                                                                                                                                   | `SAME`          |
 
 ## Art direction
 

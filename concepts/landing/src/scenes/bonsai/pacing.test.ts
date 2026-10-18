@@ -7,13 +7,16 @@ const bonsaiScene = await loadScene("bonsai");
 
 const KNOBS = { breeze: 1 };
 
-/** The field rows of uSim3 (sway x, y per texel) after one second of breeze in frames of 1/rate s. */
+/**
+ * The tree's field 3 (slot 5, after the composed sim's speck map, records atlas and the tree's
+ * fields 0–2): its field rows (sway x, y per texel) after one second of breeze in frames of 1/rate s.
+ */
 function second(rate: number): Float32Array {
   const sim = new HeadlessSim(bonsaiScene);
   for (let f = 0; f < rate; f++)
     sim.step({ dt: 1 / rate, knobs: KNOBS, pointer: { inside: false } });
   const field = Float32Array.from(
-    sim.upload(3).data.subarray(0, BONSAI_FIELD.width * BONSAI_FIELD.height * 4),
+    sim.upload(5).data.subarray(0, BONSAI_FIELD.width * BONSAI_FIELD.height * 4),
   );
   sim.dispose();
   return field;

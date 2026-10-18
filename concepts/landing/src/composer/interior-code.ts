@@ -1,6 +1,13 @@
 // The code of every `interior` layer (interior.ts), by layer id: its GLSL, the GLSL it shares with
 // its scene's other layers, its sim. A composed scene's code module gathers it (composer/code.ts), so
 // it loads with the scene's code and never with the registry.
+import {
+  bonsaiSharedGlsl,
+  bonsaiTreeGlsl,
+  standGlsl,
+  verandaGlsl,
+} from "../scenes/bonsai/shader.ts";
+import { bonsaiTreeSim } from "../scenes/bonsai/sim.ts";
 import { lavaLampGlsl, lavaSharedGlsl, paperedGlsl, sideboardGlsl } from "../scenes/lava/shader.ts";
 import { lavaLampSim } from "../scenes/lava/sim.ts";
 import {
@@ -23,4 +30,7 @@ export const INTERIOR_CODE: Readonly<Record<string, LayerCode>> = {
   lavaLamp: { glsl: () => lavaLampGlsl, shared: [lavaSharedGlsl], sim: lavaLampSim },
   cat: { glsl: () => catGlsl, shared: [sillSharedGlsl], sim: catSim },
   curtain: { glsl: () => curtainGlsl, shared: [sillSharedGlsl] },
+  veranda: { glsl: () => verandaGlsl, shared: [bonsaiSharedGlsl] },
+  stand: { glsl: () => standGlsl, shared: [bonsaiSharedGlsl] },
+  bonsaiTree: { glsl: () => bonsaiTreeGlsl, shared: [bonsaiSharedGlsl], sim: bonsaiTreeSim },
 };

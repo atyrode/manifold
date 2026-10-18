@@ -15,12 +15,17 @@
 //   4. The ground layer's `ground`: the ledge (a sill, a sideboard) and the wall under it.
 //   5. Every `middle` pass, then every `front` pass, then every `frontVeil`, in canonical order: what
 //      stands on the ledge and in front of it. Painter's order is the canonical order; the room keeps
-//      no depth (a stated limit), and a layer casts no shadow onto another's surface.
+//      no depth (a stated limit). A layer's shapes throw shadows only where a backdrop asks for them
+//      (`roomCaster`, below).
 //   6. The grade: the room's vignette (its corners fall into the dark), the exposure, shadeOf with
 //      the grade's ink, the cell's shimmer.
 // The room's light at a surface (`roomLight`) is its lamp out of frame (`Room.lamp`), its ambient,
 // the backdrop's daylight through the window (its `daylight` pass) and every on layer's declared
 // lights (`localLight`, at the surface's point in metres on the frame: x across, y up from the seat).
+// A layer that stands in the room may declare `casters` (LayerDef.casters): each its silhouette at a
+// frame point on the plane it stands in, how much of a light it stops there, 0 .. 1. `roomCaster(p)`
+// takes the most of every on layer's, so a wall (the bonsai's veranda) throws the shadows of whatever
+// stands in the room, seen from each of its points toward each of its lights.
 // A program draws its layers' own entrances and exits as the outdoor composer's do (glsl.ts
 // `turnsGlsl`, `passCalls`).
 import { glslFloat } from "../shaders/glsl.ts";
@@ -72,6 +77,17 @@ function lampGlsl(room: Room): string {
   return `float roomLamp(vec2 p) {
   vec2 d = (p - vec2(0.5 * uRes.x / uRes.y + ${glslFloat(lamp.at[0])}, ${glslFloat(lamp.at[1])})) * vec2(1.0, ${glslFloat(lamp.squash)});
   return 1.0 / (1.0 + dot(d, d) * 6.0);
+}
+`;
+}
+
+/** The on layers' silhouettes for a backdrop's shadows (LayerDef.casters), the most of them. */
+function castersGlsl(layers: RoomAssembly["layers"]): string {
+  const casters = layers.flatMap(({ def }) => def.casters ?? []).map((fn) => `${fn}(p)`);
+  return `
+// How much of a light the room's layers stop at frame point p, on the plane they stand in.
+float roomCaster(vec2 p) {
+  return ${casters.length === 0 ? "0.0" : casters.reduce((a, b) => `max(${a}, ${b})`)};
 }
 `;
 }
@@ -143,6 +159,7 @@ vec3 roomAt(vec2 p) {
 ${lampGlsl(room)}
 vec3 localLight(vec3 p, vec3 n);
 vec3 roomLight(Ctx x, vec2 p, vec3 n);
+float roomCaster(vec2 p);
 ${turnsGlsl(turns)}
 ${accessorsGlsl(layers, allocation)}
 // Where each layer on stands (its anchor: x a share of the frame's width from its centre).
@@ -161,6 +178,7 @@ Ctx roomCtx(vec2 uv, vec2 cell) {
 ${[...shared.values()].join("\n")}
 ${layers.map(({ def, code }) => a.rewrite(def, code.glsl(rig))).join("\n")}
 ${lightsGlsl(layers)}
+${castersGlsl(layers)}
 // The room's light on a surface at frame point p facing n (0 for a thing lit all round): its lamp,
 // its ambient, the window's daylight, the layers' lights.
 vec3 roomLight(Ctx x, vec2 p, vec3 n) {

@@ -24,8 +24,9 @@ function maxSway(params: Record<string, number>, seconds: number, gustAt?: numbe
       pointer: { inside: false },
     });
     if (f < 60) continue;
-    // uSim3: its field rows hold each texel's sway in r and g.
-    const field = sim.upload(3).data.subarray(0, BONSAI_FIELD.width * BONSAI_FIELD.height * 4);
+    // The tree's field 3 (slot 5, after the composed sim's speck map, records atlas and the tree's
+    // fields 0–2): its field rows hold each texel's sway in r and g.
+    const field = sim.upload(5).data.subarray(0, BONSAI_FIELD.width * BONSAI_FIELD.height * 4);
     for (let i = 0; i < field.length; i += 4)
       largest = Math.max(largest, Math.abs(field[i] ?? 0), Math.abs(field[i + 1] ?? 0));
   }

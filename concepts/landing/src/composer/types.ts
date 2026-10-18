@@ -252,7 +252,10 @@ export interface LayerDef {
   readonly lights?: readonly LayerLight[];
   /**
    * Key-light shadows of its own shapes beyond its claims' bands (the orchard's crowns): each names
-   * its `float <fn>(vec2 xz, Ctx x)`, 0 lit .. 1 shaded, which `casterShadow` takes the most of.
+   * its `float <fn>(vec2 xz, Ctx x)`, 0 lit .. 1 shaded, which `casterShadow` takes the most of. In
+   * the `interior` composer (room.ts) each names `float <fn>(vec2 p)`: its silhouette at frame point
+   * p on the plane it stands in, how much of a light it stops there, which `roomCaster` takes the
+   * most of for a backdrop that throws the room's shadows on its wall (the bonsai's tree).
    */
   readonly casters?: readonly string[];
   readonly passes: LayerPasses;

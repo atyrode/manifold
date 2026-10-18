@@ -1,13 +1,17 @@
-// The bonsai's picture, back to front: the wall (plaster, shoji or dark) with the window's patch of
-// sun on it and the tree's soft shadow moving through the day (and the lamp's big one at night);
-// the veranda floor; the rosewood stand; the pot and its glaze; the moss with the litter of the
-// season on it, a stone and a little clay sage; then the tree from the sim's maps, warped by the
-// pads' sway: bark with its own light and snow along the tops of branches, foliage tuft by tuft in
-// the season's colour, thinning as it falls; this spring's shoots; leaves, petals and needles in
-// the air; a cut twig falling; the snip's glint; and in winter the snow, in depth.
-// Knobs read here: K_species, K_pot, K_figure, K_time, K_cycle, K_light, K_wall, K_lamp, K_mark
-// (trigger 2: the M gleams). The sim (sim.ts) owns the year, the snow, the sway, the shoots and
-// everything that falls; its textures are described there and laid out in geometry.ts.
+// The bonsai's layers (layers.ts) on the `interior` composer (composer/room.ts), back to front: the
+// veranda (the backdrop: the wall, plaster, shoji or dark, with the window's patch of sun on it and
+// the shadows the room's layers throw on it, roomCaster: the tree's soft one moving through the day,
+// the lamp's big one at night; the veranda floor); the rosewood stand (the ground); the tree in its
+// pot (a dressing): the pot and its glaze, the moss with the litter of the season on it, a stone and
+// a little clay sage, then the tree from the sim's maps, warped by the pads' sway: bark with its own
+// light and snow along the tops of branches, foliage tuft by tuft in the season's colour, thinning as
+// it falls; this spring's shoots; leaves, petals and needles in the air; a cut twig falling; the
+// snip's glint; and in winter the snow, in depth (its front veil).
+// Knobs read here: the veranda's K_time, K_cycle, K_light, K_wall, K_lamp; the tree's K_species,
+// K_pot, K_figure, K_breeze, K_mark (TRIGGER_mark: the M gleams). The sim (sim.ts) owns the year, the
+// snow, the sway, the shoots and everything that falls; its textures (the tree's fields,
+// bonsaiTreeField0..3) are described there and laid out in geometry.ts.
+import type { SharedGlsl } from "../../composer/types.ts";
 import {
   BONSAI_ATLAS,
   BONSAI_FIELD,
@@ -37,7 +41,7 @@ import { bonsaiSeasonGlsl } from "./season.ts";
 /** A number as a GLSL float literal. */
 const f = (value: number): string => value.toFixed(5);
 
-export const bonsaiGlsl = `
+const bonsaiShared = `
 // ---- bonsai ----
 const float BONSAI_TILT = ${f(BONSAI_TILT)};
 const vec4 BONSAI_REGION = vec4(${f(BONSAI_REGION.x0)}, ${f(BONSAI_REGION.y0)}, ${f(BONSAI_REGION.x1)}, ${f(BONSAI_REGION.y1)});
@@ -97,7 +101,11 @@ const vec3 BONSAI_GOLD = vec3(1.0, 0.76, 0.32);
 
 ${bonsaiSeasonGlsl}
 
-// This pixel's world, set once at the top of sceneBonsai.
+// This cell's world, set once by bonsaiBegin.
+vec2 bonsaiD;          // the cell in display units: the room's, where the wall and floor stand
+vec2 bonsaiG;          // the cell in the stand's own display units, slid by the passage (bonsaiD at rest)
+float bonsaiScale;     // the display's scale on the frame (1 on a wide frame, less on a narrow one)
+vec2 bonsaiOrigin;     // where the display's origin stands on the room's frame (screen heights from its centre)
 float bonsaiPx;        // display units per cell
 float bonsaiYear;      // year phase 0..1 from the start of spring
 float bonsaiSpecies;   // 0 pine, 1 maple, 2 cherry
@@ -110,17 +118,31 @@ vec3 bonsaiSun;        // direct sun
 vec3 bonsaiAmb;        // soft light from the sky over the veranda
 vec3 bonsaiLampLight;  // the lamp's colour and strength
 float bonsaiShift;     // how far right the stand (pot, tree, everything on it) stands off its place: 0 at rest, the entrance and exit slide it
+float bonsaiDepth;     // how far off the nearest thing drawn in this cell stands, for the falling snow
 
 // A record in one of the sim's tables: entry i of a table starting at 'row', laid along the rows.
 vec4 bonsaiTable(int row, int i) {
-  return texelFetch(uSim3, ivec2(i % BONSAI_DATA_W, row + i / BONSAI_DATA_W), 0);
+#if LAYER_BONSAI_TREE
+  return texelFetch(bonsaiTreeField3, ivec2(i % BONSAI_DATA_W, row + i / BONSAI_DATA_W), 0);
+#else
+  return vec4(0.0);
+#endif
 }
 
 // The low-resolution field at display point d: sway (x, y), wood and foliage silhouettes.
 vec4 bonsaiField(vec2 d) {
+#if LAYER_BONSAI_TREE
   vec2 u = (d - BONSAI_REGION.xy) / (BONSAI_REGION.zw - BONSAI_REGION.xy);
   if (u.x < 0.0 || u.y < 0.0 || u.x > 1.0 || u.y > 1.0) return vec4(0.0);
-  return texture(uSim3, vec2(u.x, clamp(u.y * BONSAI_FIELD_H, 0.5, BONSAI_FIELD_H - 0.5) / BONSAI_DATA_H));
+  return texture(bonsaiTreeField3, vec2(u.x, clamp(u.y * BONSAI_FIELD_H, 0.5, BONSAI_FIELD_H - 0.5) / BONSAI_DATA_H));
+#else
+  return vec4(0.0);
+#endif
+}
+
+// The room's frame point (screen heights from its centre) at display point d (roomCaster's).
+vec2 bonsaiFrame(vec2 d) {
+  return d * bonsaiScale + bonsaiOrigin;
 }
 
 // What casts a shadow at display point d: the wood, and the foliage as far as the season has it.
@@ -168,31 +190,94 @@ vec3 bonsaiFoliageColor(float hue) {
   return bonsaiSpecies < 0.5 ? bonsaiNeedleColor(hue) : bonsaiLeafColor(hue);
 }
 
-// Bark: pine in rough reddish plates, maple smooth grey, cherry dark with pale lenticels; jin bleached.
-vec3 bonsaiBark(vec2 q, vec2 g, float r, float dead) {
-  float vertical = abs(g.x);
-  vec2 a = mix(vec2(q.y, q.x), q, vertical);
-  vec3 c;
-  if (bonsaiSpecies < 0.5) {
-    float plates = vnoise(vec2(a.x * 90.0, a.y * 26.0));
-    float cracks = 1.0 - smoothstep(0.18, 0.32, abs(vnoise(vec2(a.x * 40.0, a.y * 12.0)) - 0.5));
-    c = mix(vec3(0.30, 0.21, 0.17), vec3(0.42, 0.31, 0.25), plates);
-    c = mix(c, vec3(0.11, 0.08, 0.07), cracks * smoothstep(0.004, 0.012, r));
-  } else if (bonsaiSpecies < 1.5) {
-    float mottle = vnoise(q * 70.0);
-    c = mix(vec3(0.36, 0.35, 0.32), vec3(0.52, 0.51, 0.46), mottle);
-    c = mix(c, vec3(0.36, 0.22, 0.16), 1.0 - smoothstep(0.0025, 0.006, r));
-  } else {
-    float bands = smoothstep(0.62, 0.8, vnoise(vec2(a.x * 22.0, a.y * 160.0)));
-    c = mix(vec3(0.24, 0.17, 0.16), vec3(0.32, 0.23, 0.21), vnoise(q * 60.0));
-    c = mix(c, vec3(0.52, 0.44, 0.40), bands * smoothstep(0.005, 0.012, r));
-  }
-  vec3 bone = mix(vec3(0.70, 0.68, 0.62), vec3(0.88, 0.86, 0.80), vnoise(vec2(a.x * 120.0, a.y * 20.0)));
-  return mix(c, bone, dead);
+// The snow on an upward surface at display point d: mixes toward lit snow.
+vec3 bonsaiSnowOn(vec3 col, vec3 n, vec2 p, vec3 light, float amount) {
+  float cover = snowCover(n, p, bonsaiLying * amount);
+  return mix(col, BONSAI_SNOW * light, hardEdge(cover));
 }
 
-// ---- the room ----
+// ---- the litter: what has come down and lies on the moss, the stand and the floor ----
 
+vec4 bonsaiLitter(vec2 d) {
+#if LAYER_BONSAI_TREE
+  ivec2 c = ivec2(floor((d - BONSAI_LITTER_AT) * BONSAI_PER));
+  if (c.x < 0 || c.y < 0 || c.x >= BONSAI_LITTER_SIZE.x || c.y >= BONSAI_LITTER_SIZE.y) return vec4(0.0);
+  vec4 l = texelFetch(bonsaiTreeField2, c, 0);
+  if (l.a <= 0.0) return vec4(0.0);
+  int slot = int(l.g + 0.5);
+  vec4 decays = texelFetch(bonsaiTreeField3, ivec2(slot / 4, BONSAI_ROW_LITTER), 0);
+  int k = slot - (slot / 4) * 4;
+  float decay = k == 0 ? decays.x : k == 1 ? decays.y : k == 2 ? decays.z : decays.w;
+  if (l.b < decay * 1.15 - 0.05) return vec4(0.0);
+  float code = l.r * 4.0;
+  float kind = floor(code);
+  float hue = fract(code);
+  vec3 col;
+  if (kind < 0.5) col = bonsaiFoliageColor(hue);
+  else if (kind < 1.5) col = mix(vec3(0.96, 0.80, 0.85), vec3(0.88, 0.62, 0.70), hue);
+  else if (kind < 2.5) col = vec3(0.48, 0.32, 0.16) * (0.8 + 0.4 * hue);
+  else col = vec3(0.30, 0.20, 0.14);
+  // Drying and rotting: browner, then gone in patches.
+  col = mix(col, vec3(0.30, 0.19, 0.10), smoothstep(0.1, 0.8, decay) * 0.8);
+  return vec4(col * l.a, 1.0);
+#else
+  return vec4(0.0);
+#endif
+}
+
+// The placement: display point for a screen point; at, where the display's origin stands on it.
+vec2 bonsaiDisplay(vec2 uv, float aspect, out float scale, out vec2 at) {
+  scale = min(1.0, aspect / BONSAI_FRAME.z);
+  float wide = clamp((aspect - 1.0) / (BONSAI_FRAME.y - 1.0), 0.0, 1.0);
+  at = vec2(BONSAI_FRAME.x * wide, BONSAI_FRAME.w + (1.0 - scale) * BONSAI_LIFT);
+  return (vec2((uv.x - 0.5) * aspect, uv.y) - at) / scale;
+}
+
+// The cell's world (sceneBonsai's, before the composer): where it stands in the display and on the
+// stand, the year and the snow from the tree's sim (spring, nothing lying, with the tree off), and the
+// light. The light: the sky's sun, dated by the season (lower in winter, higher in summer), turned so
+// it comes in from the front at the knob's angle and sweeping across with the hours, colder in
+// winter. Its sky dims under snow cloud.
+void bonsaiBegin(Ctx x) {
+  vec2 at;
+  bonsaiD = bonsaiDisplay(x.uv, x.aspect, bonsaiScale, at);
+  bonsaiOrigin = at - vec2(0.0, 0.5);
+  bonsaiPx = 1.0 / (uRes.y * bonsaiScale);
+  bonsaiSpecies = K_species;
+  vec4 state = bonsaiTable(BONSAI_ROW_STATE, 0);
+  bonsaiYear = state.x;
+  bonsaiLying = state.y;
+  bonsaiFalling = state.z;
+  bonsaiLeafy = state.w;
+  bonsaiShift = bonsaiTable(BONSAI_ROW_STATE, 2).y;
+  bonsaiG = vec2(bonsaiD.x - bonsaiShift, bonsaiD.y);
+  bonsaiDepth = 2.0 + 1.2 * BONSAI_WALL_Z;
+  // Midsummer warm, midwinter cold: the year's chill (src/climate.ts) tints the light.
+  bonsaiCold = climateChill(bonsaiYear);
+  Sky sky = skyAt(timeOfDayM(K_time, skyDays()));
+  float az = clamp(K_light * 1.0 + sky.sun.x * 0.5, -1.3, 1.3);
+  float elev = asin(clamp(sky.sun.y, -1.0, 1.0)) * BONSAI_SUN_RISE;
+  float ce = cos(max(elev, 0.03));
+  bonsaiL = normalize(vec3(sin(az) * ce, sin(max(elev, 0.03)), -cos(az) * ce));
+  float overcast = smoothstep(0.0, 0.5, bonsaiFalling);
+  bonsaiSun = sky.sunColor * vec3(1.12, 1.0, 0.86) * mix(vec3(1.0), vec3(0.86, 0.94, 1.1), bonsaiCold) * (1.0 - 0.85 * overcast) * 1.05;
+  bonsaiAmb = (sky.ambient * 0.42 + vec3(0.012, 0.011, 0.01)) * mix(vec3(1.0), vec3(0.95, 1.0, 1.1), bonsaiCold) * (1.0 + 0.6 * overcast + 0.35 * bonsaiLying);
+  bonsaiLampLight = BONSAI_LAMP * K_lamp * (1.0 - 0.85 * sky.day) * 1.4;
+}
+`;
+
+/** The bonsai's GLSL its layers share: its geometry, the sim's tables, its light, the cell's state. */
+export const bonsaiSharedGlsl: SharedGlsl = {
+  id: "bonsai",
+  glsl: () => bonsaiShared,
+  begin: "bonsaiBegin",
+};
+
+/**
+ * The veranda (the backdrop of the bonsai's room): the wall with the window's patch of sun and the
+ * shadows the room's layers throw on it, the lamp's pool, the floorboards with what lies on them.
+ */
+export const verandaGlsl = `
 vec3 bonsaiWall(vec2 d) {
   vec3 p = vec3(d.x, d.y - BONSAI_TILT * BONSAI_WALL_Z, BONSAI_WALL_Z);
   float wall = K_wall;
@@ -228,21 +313,28 @@ vec3 bonsaiWall(vec2 d) {
   float soft = 0.05;
   float beam = smoothstep(w.x - soft, w.x + soft, d.x) * (1.0 - smoothstep(w.z - soft, w.z + soft, d.x))
              * smoothstep(w.y - soft, w.y + soft, d.y) * (1.0 - smoothstep(w.w - soft * 1.6, w.w + soft * 1.6, d.y));
-  // The tree's shadow (and the stand's and pot's below it): seen from the wall toward the sun.
+  // What stands in the room throws its shadow on the wall (roomCaster: the tree's), the pot and the
+  // stand theirs below it: seen from the wall toward the sun, on the plane they stand in.
   float s = min(BONSAI_WALL_Z * cot, 1.3);
-  vec2 at = vec2(d.x - bonsaiShift + bonsaiL.x * s, p.y + bonsaiL.y * s);
-  float shade = bonsaiCaster(at);
+  vec2 at = vec2(d.x + bonsaiL.x * s, p.y + bonsaiL.y * s);
+  float shade = roomCaster(bonsaiFrame(at));
+  at.x -= bonsaiShift;
+#if LAYER_BONSAI_TREE
   float pot = (1.0 - smoothstep(-0.01, 0.02, abs(at.x) - BONSAI_POT_SIZE.x)) * (1.0 - smoothstep(-0.01, 0.02, abs(at.y + 0.5 * BONSAI_POT_SIZE.z) - 0.5 * BONSAI_POT_SIZE.z));
+  shade = max(shade, pot * 0.9);
+#endif
+#if LAYER_STAND
   float stand = (1.0 - smoothstep(-0.01, 0.02, abs(at.x) - BONSAI_STAND_HALF.x)) * (1.0 - smoothstep(-0.01, 0.02, abs(at.y - BONSAI_STAND_TOP + 0.5 * BONSAI_STAND_SLAB) - 0.5 * BONSAI_STAND_SLAB));
-  shade = max(shade, max(pot, stand) * 0.9);
+  shade = max(shade, stand * 0.9);
+#endif
   vec3 n = vec3(0.0, 0.0, -1.0);
   vec3 c = albedo * (bonsaiSun * max(-bonsaiL.z, 0.0) * beam * (1.0 - 0.82 * shade) + bonsaiAmb * 0.8);
-  // The lamp: a warm pool on the wall, and the tree's shadow thrown big and soft.
+  // The lamp: a warm pool on the wall, and the shadows of what stands in the room thrown big and soft.
   vec3 l = BONSAI_LAMP_AT - p;
   float r2 = dot(l, l);
   float u = -BONSAI_WALL_Z / (BONSAI_LAMP_AT.z - BONSAI_WALL_Z);
   vec3 q = p + (BONSAI_LAMP_AT - p) * u;
-  float lampShade = 0.75 * bonsaiCaster(vec2(q.x - bonsaiShift, q.y));
+  float lampShade = 0.75 * roomCaster(bonsaiFrame(q.xy));
   vec3 lamp = bonsaiLampLight * max(dot(n, normalize(l)), 0.0) * 0.45 / (r2 + 0.15);
   c += albedo * lamp * (1.0 - lampShade);
   c += vec3(0.95, 0.88, 0.72) * glow * (bonsaiAmb * 0.5 + bonsaiSun * 0.12) * (1.0 - 0.7 * shade * beam);
@@ -260,50 +352,38 @@ vec3 bonsaiFloorAt(vec2 d) {
   vec3 albedo = mix(vec3(0.17, 0.11, 0.07), vec3(0.25, 0.16, 0.10), hash12(vec2(k, 3.0)));
   albedo *= 0.88 + 0.2 * vnoise(vec2(d.x * 7.0 + k * 5.0, k * 3.0 + z * 4.0));
   albedo *= 1.0 - 0.45 * (1.0 - smoothstep(0.4 * bonsaiPx, 1.4 * bonsaiPx, 0.5 * 0.11 * BONSAI_TILT - seam));
-  // The stand's shadow: from the floor toward the sun up to the stand's top.
+  // The stand's shadow: from the floor toward the sun up to the stand's top; the dark under it.
+  float shadow = 0.0;
+  float ao = 1.0;
+#if LAYER_STAND
   float h = BONSAI_STAND_TOP - BONSAI_FLOOR;
   vec3 s = p + bonsaiL * (h / max(bonsaiL.y, 0.12));
   vec2 e = abs(vec2(s.x - bonsaiShift, s.z)) - BONSAI_STAND_HALF;
-  float shadow = 1.0 - smoothstep(-0.02, 0.03, max(e.x, e.y));
+  shadow = 1.0 - smoothstep(-0.02, 0.03, max(e.x, e.y));
   vec2 under = abs(vec2(p.x - bonsaiShift, p.z)) - BONSAI_STAND_HALF;
-  float ao = 1.0 - 0.55 * (1.0 - smoothstep(-0.02, 0.06, max(under.x, under.y)));
+  ao = 1.0 - 0.55 * (1.0 - smoothstep(-0.02, 0.06, max(under.x, under.y)));
+#endif
   vec3 c = albedo * bonsaiLight(p, vec3(0.0, 1.0, 0.0), 1.0 - 0.85 * shadow) * ao;
   return c;
 }
 
-// The snow on an upward surface at display point d: mixes toward lit snow.
-vec3 bonsaiSnowOn(vec3 col, vec3 n, vec2 p, vec3 light, float amount) {
-  float cover = snowCover(n, p, bonsaiLying * amount);
-  return mix(col, BONSAI_SNOW * light, hardEdge(cover));
+// The wall over the floor, or the floor with the season's litter and the snow lying on it.
+void verandaFar(Ctx x, inout Cell c) {
+  vec2 d = bonsaiD;
+  if (d.y > BONSAI_FLOOR + BONSAI_TILT * BONSAI_WALL_Z) {
+    c.col = bonsaiWall(d);
+  } else {
+    vec3 col = bonsaiFloorAt(d);
+    bonsaiDepth = 2.0 + 1.2 * (d.y - BONSAI_FLOOR) / BONSAI_TILT;
+    vec4 l = bonsaiLitter(d);
+    col = mix(col, l.rgb * bonsaiLight(vec3(d.x, BONSAI_FLOOR, 0.0), vec3(0.0, 1.0, 0.0), 1.0), l.a);
+    c.col = bonsaiSnowOn(col, vec3(0.0, 1.0, 0.0), d * vec2(5.0, 25.0), bonsaiLight(vec3(d.x, BONSAI_FLOOR, 0.0), vec3(0.0, 1.0, 0.0), 1.0), 0.8);
+  }
 }
+`;
 
-// ---- the litter: what has come down and lies on the moss, the stand and the floor ----
-
-vec4 bonsaiLitter(vec2 d) {
-  ivec2 c = ivec2(floor((d - BONSAI_LITTER_AT) * BONSAI_PER));
-  if (c.x < 0 || c.y < 0 || c.x >= BONSAI_LITTER_SIZE.x || c.y >= BONSAI_LITTER_SIZE.y) return vec4(0.0);
-  vec4 l = texelFetch(uSim2, c, 0);
-  if (l.a <= 0.0) return vec4(0.0);
-  int slot = int(l.g + 0.5);
-  vec4 decays = texelFetch(uSim3, ivec2(slot / 4, BONSAI_ROW_LITTER), 0);
-  int k = slot - (slot / 4) * 4;
-  float decay = k == 0 ? decays.x : k == 1 ? decays.y : k == 2 ? decays.z : decays.w;
-  if (l.b < decay * 1.15 - 0.05) return vec4(0.0);
-  float code = l.r * 4.0;
-  float kind = floor(code);
-  float hue = fract(code);
-  vec3 col;
-  if (kind < 0.5) col = bonsaiFoliageColor(hue);
-  else if (kind < 1.5) col = mix(vec3(0.96, 0.80, 0.85), vec3(0.88, 0.62, 0.70), hue);
-  else if (kind < 2.5) col = vec3(0.48, 0.32, 0.16) * (0.8 + 0.4 * hue);
-  else col = vec3(0.30, 0.20, 0.14);
-  // Drying and rotting: browner, then gone in patches.
-  col = mix(col, vec3(0.30, 0.19, 0.10), smoothstep(0.1, 0.8, decay) * 0.8);
-  return vec4(col * l.a, 1.0);
-}
-
-// ---- the stand, the pot, the moss ----
-
+/** The rosewood stand (the ground of the bonsai's room), slid by the passage, with what lies on its top. */
+export const standGlsl = `
 // The stand at display point d: rgb and coverage. top: 1 on its top surface (for litter and snow).
 vec4 bonsaiStand(vec2 d, out float top) {
   top = 0.0;
@@ -348,12 +428,64 @@ vec4 bonsaiStand(vec2 d, out float top) {
   vec3 v = normalize(vec3(0.0, BONSAI_TILT, -1.0));
   float spec = pow(max(dot(n, normalize(bonsaiL + v)), 0.0), 30.0);
   c += bonsaiSun * spec * 0.18;
+#if LAYER_BONSAI_TREE
   if (top > 0.5) {
     // The pot's contact shadow on the top.
     vec2 e = vec2(d.x / (BONSAI_POT_SIZE.x + 0.02), p.z / (BONSAI_POT_SIZE.y + 0.02));
     c *= 0.55 + 0.45 * smoothstep(0.85, 1.25, length(e));
   }
+#endif
   return vec4(c, 1.0);
+}
+
+// The stand, and the litter and snow on its top in the canopy's shade.
+void standGround(Ctx x, inout Cell c) {
+  vec2 g = bonsaiG;
+  float standTop;
+  vec4 stand = bonsaiStand(g, standTop);
+  if (stand.a > 0.0) {
+    c.col = stand.rgb;
+    bonsaiDepth = 2.0 - 0.2;
+    if (standTop > 0.5) {
+      vec3 p = vec3(g.x, BONSAI_STAND_TOP, (g.y - BONSAI_STAND_TOP) / BONSAI_TILT);
+      vec3 light = bonsaiLight(p, vec3(0.0, 1.0, 0.0), 1.0 - bonsaiCanopyShade(p));
+      vec4 l = bonsaiLitter(g);
+      c.col = mix(c.col, l.rgb * light, l.a);
+      c.col = bonsaiSnowOn(c.col, vec3(0.0, 1.0, 0.0), g * vec2(6.0, 30.0), light, 1.0);
+    }
+  }
+}
+`;
+
+/**
+ * The tree in its pot (a dressing on the stand): the pot, the moss, the stone and the figure, the
+ * tree, what falls from it, the snip's glint; the winter's snow falling in depth (its front veil);
+ * its silhouette for the shadows on the wall (bonsaiTreeCaster, the room's roomCaster).
+ */
+export const bonsaiTreeGlsl = `
+// ---- the pot, the moss, the tree ----
+
+// Bark: pine in rough reddish plates, maple smooth grey, cherry dark with pale lenticels; jin bleached.
+vec3 bonsaiBark(vec2 q, vec2 g, float r, float dead) {
+  float vertical = abs(g.x);
+  vec2 a = mix(vec2(q.y, q.x), q, vertical);
+  vec3 c;
+  if (bonsaiSpecies < 0.5) {
+    float plates = vnoise(vec2(a.x * 90.0, a.y * 26.0));
+    float cracks = 1.0 - smoothstep(0.18, 0.32, abs(vnoise(vec2(a.x * 40.0, a.y * 12.0)) - 0.5));
+    c = mix(vec3(0.30, 0.21, 0.17), vec3(0.42, 0.31, 0.25), plates);
+    c = mix(c, vec3(0.11, 0.08, 0.07), cracks * smoothstep(0.004, 0.012, r));
+  } else if (bonsaiSpecies < 1.5) {
+    float mottle = vnoise(q * 70.0);
+    c = mix(vec3(0.36, 0.35, 0.32), vec3(0.52, 0.51, 0.46), mottle);
+    c = mix(c, vec3(0.36, 0.22, 0.16), 1.0 - smoothstep(0.0025, 0.006, r));
+  } else {
+    float bands = smoothstep(0.62, 0.8, vnoise(vec2(a.x * 22.0, a.y * 160.0)));
+    c = mix(vec3(0.24, 0.17, 0.16), vec3(0.32, 0.23, 0.21), vnoise(q * 60.0));
+    c = mix(c, vec3(0.52, 0.44, 0.40), bands * smoothstep(0.005, 0.012, r));
+  }
+  vec3 bone = mix(vec3(0.70, 0.68, 0.62), vec3(0.88, 0.86, 0.80), vnoise(vec2(a.x * 120.0, a.y * 20.0)));
+  return mix(c, bone, dead);
 }
 
 // The pot's outline: half depth at x for its shape (oval, or a rounded rectangle when unglazed).
@@ -509,7 +641,7 @@ vec4 bonsaiStone(vec2 d, inout float accent) {
     vec2 m = (d - c - vec2(0.0, 0.002)) / (BONSAI_STONE.w * 1.25);
     float dm = markDistance(m);
     float gold = hardEdge(1.0 - smoothstep(0.085, 0.085 + 2.5 * bonsaiPx / (BONSAI_STONE.w * 1.25), dm));
-    float since = sinceTrigger(2);
+    float since = sinceTrigger(TRIGGER_mark);
     float gleam = since >= 0.0 && since < 6.0 ? sin(3.14159 * since / 6.0) : 0.0;
     float shine = pow(max(dot(n, normalize(bonsaiL + view)), 0.0), 8.0);
     vec3 lit = BONSAI_GOLD * (0.35 + bonsaiLight(p, n, 1.0) * 0.9 + shine * bonsaiSun * 0.6) * (0.75 + 0.5 * K_mark) + BONSAI_GOLD * gleam * 0.6;
@@ -564,8 +696,8 @@ vec4 bonsaiTree(vec2 d, out float z, inout float accent) {
   vec2 u = (q - BONSAI_REGION.xy) / (BONSAI_REGION.zw - BONSAI_REGION.xy);
   if (u.x <= 0.0 || u.y <= 0.0 || u.x >= 1.0 || u.y >= 1.0) return vec4(0.0);
   vec2 e = 1.0 / BONSAI_MAP;
-  vec4 w = texture(uSim0, u);
-  vec4 fo = texture(uSim1, u);
+  vec4 w = texture(bonsaiTreeField0, u);
+  vec4 fo = texture(bonsaiTreeField1, u);
   float px = bonsaiPx;
   vec3 col = vec3(0.0);
   float cover = 0.0;
@@ -576,8 +708,8 @@ vec4 bonsaiTree(vec2 d, out float z, inout float accent) {
   vec3 woodCol = vec3(0.0);
   if (w.x < 2.0 * px) {
     cw = hardEdge(clamp(0.5 - w.x / px, 0.0, 1.0));
-    vec2 g = vec2(texture(uSim0, u + vec2(e.x, 0.0)).x - texture(uSim0, u - vec2(e.x, 0.0)).x,
-                  texture(uSim0, u + vec2(0.0, e.y)).x - texture(uSim0, u - vec2(0.0, e.y)).x);
+    vec2 g = vec2(texture(bonsaiTreeField0, u + vec2(e.x, 0.0)).x - texture(bonsaiTreeField0, u - vec2(e.x, 0.0)).x,
+                  texture(bonsaiTreeField0, u + vec2(0.0, e.y)).x - texture(bonsaiTreeField0, u - vec2(0.0, e.y)).x);
     g /= max(length(g), 1e-6);
     float r = max(w.y, 1e-4);
     float across = clamp((w.x + r) / r, 0.0, 1.0);
@@ -597,7 +729,7 @@ vec4 bonsaiTree(vec2 d, out float z, inout float accent) {
   vec3 leafCol = vec3(0.0);
   float zf = 1.0;
   if (fo.x > -0.3) {
-    int id = int(texelFetch(uSim1, ivec2(u * BONSAI_MAP), 0).a + 0.5);
+    int id = int(texelFetch(bonsaiTreeField1, ivec2(u * BONSAI_MAP), 0).a + 0.5);
     vec4 t0 = bonsaiTable(BONSAI_ROW_TUFTS, 2 * id);
     vec4 t1 = bonsaiTable(BONSAI_ROW_TUFTS, 2 * id + 1);
     float lf = bonsaiLeafiness(bonsaiSpecies, bonsaiYear, t1.x, t1.z, t1.w);
@@ -784,7 +916,7 @@ vec4 bonsaiTwigs(vec2 d) {
     vec2 l = rotate(d - s.xy, -s.z);
     ivec2 c = ivec2(floor((l / BONSAI_SPRITE_SPAN + 0.5) * float(BONSAI_SPRITE_SIZE)));
     if (c.x < 0 || c.y < 0 || c.x >= BONSAI_SPRITE_SIZE || c.y >= BONSAI_SPRITE_SIZE) continue;
-    vec4 t = texelFetch(uSim2, ivec2(BONSAI_SPRITE_X + k * BONSAI_SPRITE_SIZE + c.x, c.y), 0);
+    vec4 t = texelFetch(bonsaiTreeField2, ivec2(BONSAI_SPRITE_X + k * BONSAI_SPRITE_SIZE + c.x, c.y), 0);
     if (t.a <= 0.0) continue;
     vec3 p = vec3(d.x, d.y, -0.12);
     vec3 light = bonsaiLight(p, normalize(vec3(0.0, 0.4, -1.0)), 1.0);
@@ -794,78 +926,22 @@ vec4 bonsaiTwigs(vec2 d) {
   return out4;
 }
 
-// The placement: display point for a screen point.
-vec2 bonsaiDisplay(vec2 uv, float aspect, out float scale) {
-  scale = min(1.0, aspect / BONSAI_FRAME.z);
-  float wide = clamp((aspect - 1.0) / (BONSAI_FRAME.y - 1.0), 0.0, 1.0);
-  vec2 at = vec2(BONSAI_FRAME.x * wide, BONSAI_FRAME.w + (1.0 - scale) * BONSAI_LIFT);
-  return (vec2((uv.x - 0.5) * aspect, uv.y) - at) / scale;
+// The tree's silhouette at frame point p, on the plane it stands in: how much of a light it stops.
+float bonsaiTreeCaster(vec2 p) {
+  vec2 d = (p - bonsaiOrigin) / bonsaiScale;
+  return bonsaiCaster(vec2(d.x - bonsaiShift, d.y));
 }
 
-Shade sceneBonsai(vec2 uv, vec2 cell, float t) {
-  Shade o = blankShade();
-  float aspect = uRes.x / uRes.y;
-  float scale;
-  vec2 d = bonsaiDisplay(uv, aspect, scale);
-  bonsaiPx = 1.0 / (uRes.y * scale);
-  bonsaiSpecies = K_species;
-  vec4 state = bonsaiTable(BONSAI_ROW_STATE, 0);
-  vec4 snip = bonsaiTable(BONSAI_ROW_STATE, 1);
-  bonsaiYear = state.x;
-  bonsaiLying = state.y;
-  bonsaiFalling = state.z;
-  bonsaiLeafy = state.w;
-  bonsaiShift = bonsaiTable(BONSAI_ROW_STATE, 2).y;
-  // Midsummer warm, midwinter cold: the year's chill (src/climate.ts) tints the light.
-  bonsaiCold = climateChill(bonsaiYear);
-
-  // The light: the sky's sun, dated by the season (lower in winter, higher in summer), turned so it
-  // comes in from the front at the knob's angle and sweeping across with the hours, colder in
-  // winter. Its sky dims under snow cloud.
-  Sky sky = skyAt(timeOfDayM(K_time, skyDays()));
-  float az = clamp(K_light * 1.0 + sky.sun.x * 0.5, -1.3, 1.3);
-  float elev = asin(clamp(sky.sun.y, -1.0, 1.0)) * BONSAI_SUN_RISE;
-  float ce = cos(max(elev, 0.03));
-  bonsaiL = normalize(vec3(sin(az) * ce, sin(max(elev, 0.03)), -cos(az) * ce));
-  float overcast = smoothstep(0.0, 0.5, bonsaiFalling);
-  bonsaiSun = sky.sunColor * vec3(1.12, 1.0, 0.86) * mix(vec3(1.0), vec3(0.86, 0.94, 1.1), bonsaiCold) * (1.0 - 0.85 * overcast) * 1.05;
-  bonsaiAmb = (sky.ambient * 0.42 + vec3(0.012, 0.011, 0.01)) * mix(vec3(1.0), vec3(0.95, 1.0, 1.1), bonsaiCold) * (1.0 + 0.6 * overcast + 0.35 * bonsaiLying);
-  bonsaiLampLight = BONSAI_LAMP * K_lamp * (1.0 - 0.85 * sky.day) * 1.4;
-
-  float accent = 0.0;
-  float standTop;
+// The pot, the moss and what sits on it, the tree, the twigs and leaves in the air, the snip's glint.
+void bonsaiTreeFront(Ctx x, inout Cell c) {
+  vec2 g = bonsaiG;
+  vec3 col = c.col;
+  float accent = c.accent;
   float rim;
-  vec3 col;
-  float depth = 2.0 + 1.2 * BONSAI_WALL_Z;
-  float base = BONSAI_FLOOR + BONSAI_TILT * BONSAI_WALL_Z;
-  if (d.y > base) {
-    col = bonsaiWall(d);
-  } else {
-    col = bonsaiFloorAt(d);
-    depth = 2.0 + 1.2 * (d.y - BONSAI_FLOOR) / BONSAI_TILT;
-    vec4 l = bonsaiLitter(d);
-    col = mix(col, l.rgb * bonsaiLight(vec3(d.x, BONSAI_FLOOR, 0.0), vec3(0.0, 1.0, 0.0), 1.0), l.a);
-    col = bonsaiSnowOn(col, vec3(0.0, 1.0, 0.0), d * vec2(5.0, 25.0), bonsaiLight(vec3(d.x, BONSAI_FLOOR, 0.0), vec3(0.0, 1.0, 0.0), 1.0), 0.8);
-  }
-  // Everything on the stand (and the stand) is drawn in its own frame g, slid by the passage; the
-  // wall and floor stay in the room's, d (g == d at rest).
-  vec2 g = vec2(d.x - bonsaiShift, d.y);
-  vec4 stand = bonsaiStand(g, standTop);
-  if (stand.a > 0.0) {
-    col = stand.rgb;
-    depth = 2.0 - 0.2;
-    if (standTop > 0.5) {
-      vec3 p = vec3(g.x, BONSAI_STAND_TOP, (g.y - BONSAI_STAND_TOP) / BONSAI_TILT);
-      vec3 light = bonsaiLight(p, vec3(0.0, 1.0, 0.0), 1.0 - bonsaiCanopyShade(p));
-      vec4 l = bonsaiLitter(g);
-      col = mix(col, l.rgb * light, l.a);
-      col = bonsaiSnowOn(col, vec3(0.0, 1.0, 0.0), g * vec2(6.0, 30.0), light, 1.0);
-    }
-  }
   vec4 pot = bonsaiPot(g, rim);
   if (pot.a > 0.0) {
     col = pot.rgb;
-    depth = 1.8;
+    bonsaiDepth = 1.8;
   }
   vec3 mp;
   vec4 moss = bonsaiMossAt(g, mp);
@@ -875,7 +951,7 @@ Shade sceneBonsai(vec2 uv, vec2 cell, float t) {
     vec4 l = bonsaiLitter(g);
     col = mix(col, l.rgb * light, l.a);
     col = bonsaiSnowOn(col, vec3(0.0, 1.0, 0.0), vec2(g.x, mp.z) * 10.0, light, 1.1);
-    depth = 1.9;
+    bonsaiDepth = 1.9;
   }
   // The stone and the figure sit on the moss among the roots: whichever is nearer shows.
   float stoneAccent = 0.0;
@@ -887,7 +963,7 @@ Shade sceneBonsai(vec2 uv, vec2 cell, float t) {
   if (pot.a > 0.0 && rim < 0.5) tree.a = 0.0;
   if (tree.a > 0.0) {
     col = tree.rgb;
-    depth = 1.9 + 1.2 * treeZ;
+    bonsaiDepth = 1.9 + 1.2 * treeZ;
   }
   if (stone.a > 0.0 && (tree.a <= 0.0 || treeZ > BONSAI_STONE.y)) {
     col = stone.rgb;
@@ -901,6 +977,7 @@ Shade sceneBonsai(vec2 uv, vec2 cell, float t) {
   if (motes.a > 0.0) col = motes.rgb;
 
   // The snip: a brief glint where the blades met.
+  vec4 snip = bonsaiTable(BONSAI_ROW_STATE, 1);
   if (snip.z < 0.5) {
     vec2 v = (g - snip.xy) / max(bonsaiPx, 1e-5);
     float k = snip.z / 0.5;
@@ -909,20 +986,18 @@ Shade sceneBonsai(vec2 uv, vec2 cell, float t) {
     star = max(star, 1.0 - smoothstep(1.0, 2.2, length(v)));
     col = mix(col, vec3(1.0, 0.95, 0.85), hardEdge(clamp(star, 0.0, 1.0) * (1.0 - k)));
   }
+  c.col = col;
+  c.accent = accent;
+}
 
-  // Winter's snow, falling in depth in front of the wall and through the tree.
+// Winter's snow, falling in depth in front of the wall and through the tree.
+void bonsaiTreeFrontVeil(Ctx x, inout Cell c) {
   if (bonsaiFalling > 0.0) {
-    Precip p = snowFall(uv, aspect, uMotionTime, bonsaiFalling, 0.12 * K_breeze, 1.0 - exp(-depth / 30.0));
+    Precip p = snowFall(x.uv, x.aspect, x.tm, bonsaiFalling, 0.12 * K_breeze, 1.0 - exp(-bonsaiDepth / 30.0));
     vec3 air = vec3(0.70, 0.74, 0.80) * (dot(bonsaiAmb, LUMA) * 1.4 + dot(bonsaiSun, LUMA) * 0.3 + 0.03);
-    col = mix(col, air, p.veil);
+    c.col = mix(c.col, air, p.veil);
     vec3 flake = BONSAI_SNOW * (dot(bonsaiAmb, LUMA) * 1.6 + dot(bonsaiSun, LUMA) * 0.6 + dot(bonsaiLampLight, LUMA) * 0.08 + 0.06);
-    col = mix(col, flake, p.cover);
+    c.col = mix(c.col, flake, p.cover);
   }
-
-  o.rgb = col;
-  o.source = col;
-  o.ink = clamp(dot(col, LUMA) * 1.6, 0.0, 1.0);
-  o.accent = clamp(accent, 0.0, 1.0);
-  return o;
 }
 `;
