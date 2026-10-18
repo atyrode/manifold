@@ -114,19 +114,46 @@ vec4 swellLong(vec2 x, float tm, SwellSea s, float seen[SWELL_TRAINS]) {
   return vec4(h, rise / squeeze, steep);
 }
 
-// ---- lamps on the water ----
+// ---- lamps on the water, and in the air ----
 // A lamp's glitter (waterGlint), its exposure per unit of its brightness over its squared distance
-// (camera heights) to the water; and its glow in the air: the core's radius and the halo's, in
-// cells, the halo widening by this many cells per unit of the air's thickness (fog, rain, snow).
+// (camera heights) to the water. The share of a lamp's or a beam's light rain or snow scatters out of
+// the straight path per camera height, at full storm. A lamp's glow in the air: its core's radius and
+// its glare's width, in cells, and its aura's widening in cells per unit of optical depth; how many
+// times the brightest a cell shows its core is; how many widths out the glare and the aura reach
+// (exactly 0 from there); and how deep a lamp's own hull or tower stands, which does not hide it.
 const float SWELL_LAMP_GLINT = 0.6;
-const vec3 SWELL_LAMP_GLOW = vec3(1.2, 2.5, 7.0);
+const float SWELL_THICK = 0.012;
+const vec3 SWELL_LAMP_GLOW = vec3(1.2, 2.5, 2.0);
+const float SWELL_LAMP_POWER = 48.0;
+const float SWELL_LAMP_SPAN = 5.0;
+const float SWELL_LAMP_DEEP = 0.25;
 
-// A lamp of brightness b seen at p (screen heights, the view's frame) from its projection at lamp:
-// its core, cut per cell, and its halo, wider in thick air.
-float swellLampGlow(vec2 p, vec2 lamp, float b, float air) {
+// A lamp of brightness b, ahead camera heights out through air of optical depth tau
+// (swellLampDepth), seen at p (screen heights, the view's frame) from its projection at lamp, over
+// what the cell shows zHit ahead. What comes straight through (exp(-tau)): its core, cut per cell,
+// SWELL_LAMP_POWER times the brightest a cell shows, exposed so it dims only in thick air; and its
+// glare. All the rest of the light of both the air scatters into an aura that widens with the
+// depth, its light spread over it, so in thick air the point fades into a broad soft glow that
+// holds the light it lost. Anything nearer hides the core; of the glare and the aura, scattered all
+// along the way, it hides the share beyond it. Glare and aura reach exactly 0 SWELL_LAMP_SPAN widths
+// out.
+float swellLampGlow(vec2 p, vec2 lamp, float ahead, float tau, float zHit, float b) {
   float d = length(p - lamp) * uRes.y;
-  float core = hardEdge(softFill(d - SWELL_LAMP_GLOW.x, 0.6));
-  return core + b * exp(-d / (SWELL_LAMP_GLOW.y + SWELL_LAMP_GLOW.z * air));
+  float through = exp(-tau);
+  float wide = SWELL_LAMP_GLOW.y + SWELL_LAMP_GLOW.z * tau;
+  float tail = exp(-SWELL_LAMP_SPAN);
+  float core = hardEdge(softFill(d - SWELL_LAMP_GLOW.x, 0.6)) * (1.0 - exp(-through * SWELL_LAMP_POWER));
+  float glare = through * b * max(exp(-d / SWELL_LAMP_GLOW.y) - tail, 0.0);
+  // The light the core and the glare hold, in the glare's peak over its width squared.
+  float held = b + 0.5 * SWELL_LAMP_POWER * SWELL_LAMP_GLOW.x * SWELL_LAMP_GLOW.x / (SWELL_LAMP_GLOW.y * SWELL_LAMP_GLOW.y);
+  float aura = (1.0 - through) * held * SWELL_LAMP_GLOW.y * SWELL_LAMP_GLOW.y / (wide * wide) * max(exp(-d / wide) - tail, 0.0);
+  return core * step(ahead - SWELL_LAMP_DEEP, zHit) + (glare + aura) * min(zHit / ahead, 1.0);
+}
+
+// How far out a lamp's glow reaches through air of optical depth tau (screen heights): its aura's
+// SWELL_LAMP_SPAN widths, the glare's at least.
+float swellLampReach(float tau) {
+  return SWELL_LAMP_SPAN * (SWELL_LAMP_GLOW.y + SWELL_LAMP_GLOW.z * tau) / uRes.y;
 }
 
 // What each cell's begins set (openSeaBegin, swellBegin) and the layers read: the camera (its height
@@ -134,8 +161,9 @@ float swellLampGlow(vec2 p, vec2 lamp, float b, float air) {
 // horizon's middle); the sky in the rig's frame, the moon's light dimmed under the deck as the sun's
 // is, the light on a level surface and the sun's share of it; how dark it is getting (lamps are lit
 // then); the air over the sea (the haze toward this bearing, the rain's grey lit up by the lightning,
-// how thick the air is for a lamp's halo); the sea's trains now. And what the sea drew here, for the
-// shade: its depth (m; -1 none), the crests' blue and the moon's glitter.
+// how thick the rain or snow is for the lamps and the beams, per camera height); the sea's trains
+// now. And what the sea drew here, for the shade: its depth (m; -1 none), the crests' blue and the
+// moon's glitter.
 float swellCamH = 1.0;
 vec3 swellEye = vec3(0.0, 1.0, 0.0);
 vec3 swellRd = vec3(0.0, 0.0, 1.0);
@@ -156,6 +184,16 @@ float swellPath = 0.0;
 // WORLD_FAR: the sea far out lies beyond it in metres) as far as it gets.
 float swellDepth(float z) {
   return z == WORLD_FAR ? WORLD_FAR : z / SWELL_METRES;
+}
+
+// The optical depth of the air between the eye and a lamp at (across, up, ahead): the World's fog's,
+// as deep as worldFogAt veils a point there (thin up over its layer), and the rain's or snow's over
+// the distance. The World's fog is never deeper than SWELL_FOG_DEEPEST per unit of fog (fogAmount's
+// exponent), whatever the distance: a bound the lamps cull their glow by before working it out.
+const float SWELL_FOG_DEEPEST = 5.0;
+float swellLampDepth(World w, vec3 at) {
+  float far = length(at - swellEye);
+  return -log(1.0 - worldFogAt(w, far * SWELL_METRES, at.y * SWELL_METRES)) + swellThick * far;
 }
 
 #if LAYER_LIGHTHOUSE
@@ -394,12 +432,12 @@ void openSeaBegin(inout Ctx x) {
   swellDusk = 1.0 - smoothstep(0.05, 0.4, sky.day);
   // The air over the sea: the sky just over the horizon in this bearing, greyed as the day is; the
   // rain's grey, lit up by the lightning, and the light its drops catch; the fog's mist, moonlit; how
-  // thick the air is for a lamp's halo and the beams.
+  // thick the rain or snow is for the lamps and the beams.
   vec3 haze = worldGrey(x.w, horizonHaze(x.w.sky, x.v.dir, 0.02), 1.0);
   swellHaze = haze;
   swellAir = mix(haze, vec3(dot(haze, LUMA)), 0.5) * 1.1 + WORLD_FLASH_SKY * x.w.flash;
   vec3 dropLight = max(swellAir * 1.4 + swellLight * 0.25, vec3(0.08));
-  swellThick = x.w.fog + 0.6 * x.w.rain + 0.6 * x.w.snow;
+  swellThick = SWELL_THICK * x.w.storm;
   x.air = Air(haze, haze + sky.moonColor * SWELL_AIR.x * SWELL_AIR.w, dropLight, haze, 0.0, 0.0, 0.0);
 }
 
@@ -797,11 +835,11 @@ void swellGround(Ctx x, inout Cell c) {
 export const lighthouseGlsl = `
 // ---- the lighthouse (swell/shader.ts) ----
 // The beams: the lens they leave (camera heights), how much the air scatters of them (clear, and per
-// unit of fog, rain and snow), how far they carry (the share they lose per camera height, per unit of
-// fog and of rain or snow), and the glow's exposure.
+// unit of fog, rain and snow), how far they carry (the share they lose per camera height per unit of
+// fog, and the rain's or snow's, swellThick), and the glow's exposure.
 const float LIGHTHOUSE_LENS = 0.06;
 const vec4 LIGHTHOUSE_AIR = vec4(0.12, 0.5, 0.4, 0.4);
-const vec2 LIGHTHOUSE_CARRY = vec2(0.04, 0.012);
+const float LIGHTHOUSE_CARRY = 0.04;
 const float LIGHTHOUSE_EXPOSURE = 0.5;
 
 // The two beams' heading now, how lit the lamp is (once it is getting dark), how brightly it shows
@@ -822,44 +860,73 @@ void lighthouseFar(Ctx x, inout Cell c) {
   if (cape.a > 0.5) cellPut(c, vec4(cape.rgb, 1.0), SWELL_CAPE_AHEAD * SWELL_METRES);
 }
 
-// The light a beam from the lamp along b scatters toward the eye along rd, out to the ray's reach
-// (distance along it): where the ray passes nearest the beam's axis, the cone's light there (its
-// gaussian profile, spreading as it goes, so dimming with the cone's width, and spent by the thick
-// air it has crossed at carry a camera height), the depth of air the ray crosses in it (1 / sin of
-// the angle between them, capped where the beam points at the eye) and the air's forward
-// scattering (Henyey-Greenstein, g 0.5, 1 at right angles).
+// The error function (Winitzki's, within 2e-4), odd and smooth.
+float lighthouseErf(float x) {
+  float x2 = x * x;
+  return sign(x) * sqrt(1.0 - exp(-x2 * (1.2732395 + 0.147 * x2) / (1.0 + 0.147 * x2)));
+}
+
+// The light a beam from the lamp along b scatters toward the eye along rd, from the eye out to the
+// ray's reach (distance along it), where the ray runs in front of the lens: the cone's light (its
+// gaussian profile r wide, r growing along it, so thinning as 1 / r^2) gathered along the ray in
+// closed form, so smooth at every heading, toward the eye too. From a point t1 on that stretch, where
+// the cone is r1 wide, y = (t - t1) / r(t) turns dt / r^2 into dy / r1 and the ray's offset from the
+// axis over r into m + y n, so the light is a gaussian's integral over y: an erf at each end (over
+// sqrt(pi), so a ray across the beam gathers exp(-gap^2) / (r sin) of the angle between them). Spent
+// by the thick air it has crossed at carry a camera height, reckoned where the light it gathers lies
+// on the mean (the truncated gaussian's), and the air's forward scattering (Henyey-Greenstein, g
+// 0.5, 1 at right angles).
 float lighthouseBeam(vec3 eye, vec3 rd, vec3 lamp, vec3 b, float reach, float carry) {
   vec3 w0 = eye - lamp;
   float c = dot(rd, b);
-  float den = max(1.0 - c * c, 0.004);
-  float s = (c * dot(b, w0) - dot(rd, w0)) / den;
-  float u = dot(b, w0) + s * c;
-  if (s <= 0.0 || u <= 0.0 || s >= reach) return 0.0;
-  float r = LIGHTHOUSE_LENS + u * SWELL_BEAM_SPREAD;
-  float gap = length(w0 + s * rd - u * b) / r;
+  float u0 = dot(w0, b);
+  float ta = 0.0;
+  float tb = reach;
+  if (c > 0.0) ta = -u0 / c;
+  else if (c < 0.0) tb = min(tb, -u0 / c);
+  else if (u0 < 0.0) return 0.0;
+  ta = max(ta, 0.0);
+  if (tb <= ta) return 0.0;
+  // t1: where the ray passes nearest the axis, kept to the stretch.
+  float t1 = clamp((c * u0 - dot(rd, w0)) / max(1.0 - c * c, 1e-4), ta, tb);
+  float grow = SWELL_BEAM_SPREAD * c;
+  float r1 = LIGHTHOUSE_LENS + SWELL_BEAM_SPREAD * (u0 + c * t1);
+  vec3 m = cross(w0 + t1 * rd, b) / r1;
+  vec3 n = cross(rd, b) - grow * m;
+  float nn = max(dot(n, n), 1e-6);
+  float nl = sqrt(nn);
+  float mn = dot(m, n);
+  float ys = -mn / nn;
+  float ya = (ta - t1) / (LIGHTHOUSE_LENS + SWELL_BEAM_SPREAD * (u0 + c * ta)) - ys;
+  float yb = (tb - t1) / (LIGHTHOUSE_LENS + SWELL_BEAM_SPREAD * (u0 + c * tb)) - ys;
+  float along = max(0.5 * (lighthouseErf(nl * yb) - lighthouseErf(nl * ya)) / nl, 1e-6);
+  float mean = ys + clamp((exp(-nn * ya * ya) - exp(-nn * yb * yb)) / (3.5449077 * nn * along), ya, yb);
+  float u = (r1 / (1.0 - grow * mean) - LIGHTHOUSE_LENS) / SWELL_BEAM_SPREAD;
+  float miss = max(dot(m, m) - mn * mn / nn, 0.0);
   float phase = pow(1.25 / (1.25 + c), 1.5);
-  return exp(-gap * gap - u * carry) * phase / (r * sqrt(den));
+  return exp(-miss - u * carry) * along * phase / r1;
 }
 
 // The beams' light in the air, as far as the cell sees, more the thicker the air; the lamp's glow
-// through the fog over all. After the World's fog, which does not veil it.
+// through the air over all, as far as it reaches. After the World's fog, which does not veil it.
 void lighthouseGlow(Ctx x, inout Cell c) {
   if (swellLampLit <= 0.0) return;
   float zHit = swellDepth(c.z);
   float scatter = LIGHTHOUSE_AIR.x + LIGHTHOUSE_AIR.y * x.w.fog + LIGHTHOUSE_AIR.z * x.w.rain + LIGHTHOUSE_AIR.w * x.w.snow;
-  float carry = LIGHTHOUSE_CARRY.x * x.w.fog + LIGHTHOUSE_CARRY.y * x.w.storm;
+  float carry = LIGHTHOUSE_CARRY * x.w.fog + swellThick;
   float reach = zHit / max(swellRd.z, 1e-3);
   float shaft = lighthouseBeam(swellEye, swellRd, swellLamp, swellBeamDir, reach, carry) + lighthouseBeam(swellEye, swellRd, swellLamp, -swellBeamDir, reach, carry);
   c.col += SWELL_BEAM * swellLampLit * (1.0 - exp(-LIGHTHOUSE_EXPOSURE * scatter * shaft));
-  if (zHit >= SWELL_CAPE_AHEAD - 1.0) c.col += SWELL_BEAM * swellLampFlash * swellLampGlow(swellP, swellLampSeen, 1.0, swellThick) * (1.0 - 0.85 * worldFogAt(x.w, SWELL_CAPE_AHEAD / SWELL_UNIT, SWELL_CAPE_LAMP.y / SWELL_UNIT));
+  float off = length(swellP - swellLampSeen);
+  if (off >= swellLampReach(SWELL_FOG_DEEPEST * x.w.fog + swellThick * length(swellLamp - swellEye))) return;
+  float tau = swellLampDepth(x.w, swellLamp);
+  if (off < swellLampReach(tau)) c.col += SWELL_BEAM * swellLampFlash * swellLampGlow(swellP, swellLampSeen, swellLamp.z, tau, zHit, 1.0);
 }
 `;
 
 /** The boats' GLSL: how many ride, the hulls on the sea, their lanterns' glow. */
 export const boatsGlsl = `
 // ---- the boats (swell/shader.ts) ----
-// Their lanterns' glow in the air, gathered as the hulls are drawn and laid on over the fog.
-vec3 boatsShine = vec3(0.0);
 
 // How many ride (K_boats), and whether their lanterns are lit (K_boatsLanterns), for the sea too.
 void boatsBegin(inout Ctx x) {
@@ -870,7 +937,7 @@ void boatsBegin(inout Ctx x) {
 }
 
 // The boats riding at anchor, in front of the sea behind them and of the sky their masts rise into,
-// each worked out only where the cell may see it; their lanterns once it is dark.
+// each worked out only where the cell may see it; the fishing boats' windows lit with the lanterns.
 void boatsMiddle(Ctx x, inout Cell c) {
   vec2 p = swellP;
   vec3 eye = swellEye;
@@ -891,10 +958,6 @@ void boatsMiddle(Ctx x, inout Cell c) {
     float lit = 0.0;
 #if BOATS_LANTERNS
     lit = swellLanterns * swellDusk;
-    if (lit > 0.0) {
-      vec3 hang = swellLanternAt(hull);
-      boatsShine += SWELL_LANTERN * lit * swellLampGlow(p, (hang.xy - eye.xy) / hang.z * RIG_FOCAL, 0.6, swellThick);
-    }
 #endif
     if (hardFill(shape.x * hull.size, foot) > 0.5) {
       cellPut(c, vec4(swellBoatColour(q, shape, hull.kind, sky.ambient + swellSideLight(sky.sun, sky.sunColor) + swellSideLight(sky.moon, sky.moonColor), lit), 1.0), hull.at.z * SWELL_METRES);
@@ -903,8 +966,28 @@ void boatsMiddle(Ctx x, inout Cell c) {
   }
 }
 
-// The lanterns' glow, over the fog (and the beams' light).
+// The lanterns' glow once it is dark, over the fog (and the beams' light), over what the cell shows
+// in the end: each worked out only as far as it reaches round where it would hang on the still sea,
+// give or take the most the boat heaves and rocks, and there where it hangs now.
 void boatsGlow(Ctx x, inout Cell c) {
-  c.col += boatsShine;
+#if BOATS_LANTERNS
+  float lit = swellLanterns * swellDusk;
+  if (lit <= 0.0) return;
+  vec2 p = swellP;
+  vec3 eye = swellEye;
+  float zHit = swellDepth(c.z);
+  float bow = x.w.wind >= 0.0 ? -1.0 : 1.0;
+  for (int i = 0; i < SWELL_BOAT_COUNT; i++) {
+    if (float(i) >= swellBoats) break;
+    vec4 b = SWELL_BOAT[i];
+    vec3 still = vec3(vec2(b.x, 0.0) + SWELL_LANTERN_AT[b.w > 0.5 ? 1 : 0] * vec2(bow, 1.0) * b.z, b.y);
+    float off = length(p - (still.xy - eye.xy) / b.y * RIG_FOCAL) - (swellNow.reach + 0.5 * b.z) / b.y * RIG_FOCAL;
+    if (off > swellLampReach(SWELL_FOG_DEEPEST * x.w.fog + swellThick * length(still - eye))) continue;
+    float tau = swellLampDepth(x.w, still);
+    if (off > swellLampReach(tau)) continue;
+    vec3 hang = swellLanternAt(swellHull(i, x.tm, swellNow, x.w.wind));
+    c.col += SWELL_LANTERN * lit * swellLampGlow(p, (hang.xy - eye.xy) / hang.z * RIG_FOCAL, hang.z, tau, zHit, 0.6);
+  }
+#endif
 }
 `;

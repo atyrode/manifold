@@ -2034,9 +2034,12 @@ the weather (`uWeather` on its surfaces).
   (blurred by its slopes), and cloud along the mirrored ray hides the moon's path. Under rain or
   snow it dulls the world's deck toward the rain's grey (its narrow strip of sky draws the deck's
   moonlit edges out into bands), and hangs `rainShafts` out at sea. The lighthouse's beams are its
-  own (lit cones scattering in the world's fog, rain and snow) and are drawn after `worldFog`, the
-  lamp's glow through the fog after them; the moon's phase is compiled in at every setting, as in
-  shore.
+  own (lit cones scattering in the world's fog, rain and snow, gathered along the view ray in closed
+  form, so smooth at every heading, toward the eye too) and are drawn after `worldFog`, the lamps'
+  glow after them: the lighthouse's and each lantern's light through the air as deep as `worldFogAt`
+  veils a point there plus the rain's or snow's over the distance, what comes straight through dimmed
+  by it and the rest spread into an aura that widens with the depth and holds the light lost; the
+  moon's phase is compiled in at every setting, as in shore.
 - Dunes' fog is the desert's dust: the shared `fog` knob drives the `desert` backdrop's own haze
   (with a hard wind, the sandstorm), and the backdrop puts the World's fog out of the composer's
   `x.w` once its shared begin has read it (`desertBegin`), so `worldFog`, whose fog assumes an eye
