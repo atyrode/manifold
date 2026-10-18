@@ -270,6 +270,14 @@ export interface LayerDef {
    * most of for a backdrop that throws the room's shadows on its wall (the bonsai's tree).
    */
   readonly casters?: readonly string[];
+  /**
+   * In the `interior` composer (room.ts): shapes that hang in the room's space rather than stand on a
+   * plane (the mobile's), each naming `float <fn>(vec3 P, vec3 L, float r)`: how much of a round
+   * light, centre L and radius r, they hide from point P, 0 .. 1, in the metres the layer is drawn
+   * in. `roomRayCaster` takes the most of every on layer's, for a light that throws the room's
+   * shadows along the ray from each point of a surface toward it (the mobile's Sun on its walls).
+   */
+  readonly rayCasters?: readonly string[];
   readonly passes: LayerPasses;
   /** Its own gates (named with its prefix) at a setting, from the values the shader reads. */
   readonly featuresFor?: (values: Readonly<Record<string, number>>) => Record<string, number>;

@@ -46,6 +46,7 @@ describe("composed programs", () => {
       "lanterns",
       "lava",
       "meadow",
+      "mobile",
       "pond",
       "ripple",
       "sandtable",

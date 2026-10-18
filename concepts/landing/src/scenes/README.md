@@ -89,7 +89,7 @@ components"); run `bun concepts/landing/scripts/scene-docs.ts` after a change to
 | `train`        | Night train      | Rooms & life      | `interior` preset, 4 layers + 1 offered | 49    | 0       | The view from a slow night train: tea trembling with the rails, the country sliding by under the moon.                          |
 | `bar`          | Late bar         | Rooms & life      | `interior` preset, 5 layers + 1 offered | 33    | 0       | A quiet bar late at night, seen from a corner booth while it rains outside.                                                     |
 | `bees`         | Bees             | Rooms & life      | `outdoor` preset, 5 layers + 6 offered  | 63    | 2       | A summer hillside at an orchard's edge: bees and butterflies at work among the hives and flowers.                               |
-| `mobile`       | Mobile           | Rooms & life      | its own program                         | 11    | 3       | A solar system hung under a glowing Sun, each planet turning at its own pace, its shadow wheeling across the wall.              |
+| `mobile`       | Mobile           | Rooms & life      | `interior` preset, 2 layers + 1 offered | 25    | 3       | A solar system hung under a glowing Sun, each planet turning at its own pace, its shadow wheeling across the wall.              |
 
 <!-- /gen:scenes -->
 
@@ -2387,11 +2387,11 @@ of it, a landscape behind, the sky above. A **composer** makes that shared: one 
 site (the floor everything stands on), one light, one weather and one order of composition. On top
 of it stack **layers**, each a module from a scene. Three composers cover the roster:
 
-| Composer   | Rig                                                                                                                                                                                  | Site                                                                                                                                                                                                                                                                            | Scenes, by phase                                                                                                                                          |
-| ---------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `outdoor`  | A pinhole over the floor: eye height, horizon, focal, turn (the yaw to the sky's frame), pitch, `minAspect` (narrower frames are laid out this wide and cropped), a passage          | The floor plane y = 0, in metres in the rig's frame (x right, z ahead), of one floor kind (earth, lawn, gravel, sand, rock, moss, ice, snowfield, water, asphalt) unless a ground layer replaces it                                                                             | 1: meadow, bees. 2: shore, dunes, autumn, lanterns, falls, campfire, fireflies, forest, bamboo, garden, lake, country, street, skyward, flock, swell, dew |
-| `interior` | A level pinhole in the room, its eye over a ledge across the front, and the room's `distance` to the ledge's seat line (its scale there); the window's view through a rig of its own | The back wall (an albedo) lit by the room's light (its lamp, its ambient, the window's daylight, the layers' lights); the ledge a ground layer (sill, sideboard, stand); a window a backdrop the World crosses; the layers' silhouettes for a backdrop's shadows (`roomCaster`) | 3: sill, lava, bonsai. Then bar, train, mobile, incense, frost, clouds, harmonograph                                                                      |
-| `overhead` | A patch seen straight down, orthographic, `span` metres per screen height, over fresh water or the sea's (`salt`); the ADR's `tilt` feature and `orbit` range are not built          | A bed layer, seen through the water layer's surface (its slope bends the bed, its depth dims it), the light of a layer's sun or lamp; the plain bed under a bed mid-turn                                                                                                        | 4: pond, ripple (the pilot), tidepool, sandtable, delta. Then island, and garden and dunes from above                                                     |
+| Composer   | Rig                                                                                                                                                                                  | Site                                                                                                                                                                                                                                                                                                                                               | Scenes, by phase                                                                                                                                          |
+| ---------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `outdoor`  | A pinhole over the floor: eye height, horizon, focal, turn (the yaw to the sky's frame), pitch, `minAspect` (narrower frames are laid out this wide and cropped), a passage          | The floor plane y = 0, in metres in the rig's frame (x right, z ahead), of one floor kind (earth, lawn, gravel, sand, rock, moss, ice, snowfield, water, asphalt) unless a ground layer replaces it                                                                                                                                                | 1: meadow, bees. 2: shore, dunes, autumn, lanterns, falls, campfire, fireflies, forest, bamboo, garden, lake, country, street, skyward, flock, swell, dew |
+| `interior` | A level pinhole in the room, its eye over a ledge across the front, and the room's `distance` to the ledge's seat line (its scale there); the window's view through a rig of its own | The back wall (an albedo) lit by the room's light (its lamp, its ambient, the window's daylight, the layers' lights); the ledge a ground layer (sill, sideboard, stand); a window a backdrop the World crosses; the layers' silhouettes for a backdrop's shadows (`roomCaster`), and shapes hung in the room along a light's ray (`roomRayCaster`) | 3: sill, lava, bonsai, incense, frost, bar, train, mobile. Then clouds, harmonograph                                                                      |
+| `overhead` | A patch seen straight down, orthographic, `span` metres per screen height, over fresh water or the sea's (`salt`); the ADR's `tilt` feature and `orbit` range are not built          | A bed layer, seen through the water layer's surface (its slope bends the bed, its depth dims it), the light of a layer's sun or lamp; the plain bed under a bed mid-turn                                                                                                                                                                           | 4: pond, ripple (the pilot), tidepool, sandtable, delta. Then island, and garden and dunes from above                                                     |
 
 Fractal, hyperbolic, orbit and shanshui stay scenes of their own. The matter shelf and kelp are
 open (ADR 0062, D7).
@@ -3150,11 +3150,11 @@ agents draws as before. Three chores are not layers:
 
 ### The interior composer
 
-ADR 0062 Phase 3: `src/composer/interior.ts` (its twenty-five layers in canonical order), `room.ts`
+ADR 0062 Phase 3: `src/composer/interior.ts` (its twenty-seven layers in canonical order), `room.ts`
 (the program) and `interior-code.ts` (the layers' code). Its presets are sill, lava, bonsai, incense,
-frost, bar and train; the committed mixes "Sill · lava lamp on the sill" and "Sill · frost on the
-window" stand the lava lamp on the sill and frost the sill's panes. Mobile, clouds and harmonograph
-are still scenes of their own.
+frost, bar, train and mobile; the committed mixes "Sill · lava lamp on the sill" and "Sill · frost on
+the window" stand the lava lamp on the sill and frost the sill's panes. Clouds and harmonograph are
+still scenes of their own.
 
 - **The rig** is a level pinhole in the room (`ScenePreset.rig`), its `eye` measured over the
   ledge's top. The room (`ScenePreset.room`, `Room`) adds `distance`, from the eye to the line things
@@ -3200,11 +3200,21 @@ are still scenes of their own.
   (its big soft one at dusk); the incense's wall back along the window's light (the smoke's soft
   shadows curling over the pane of light, the incense's and the candle's). A caster still casts on
   no other layer's surface, and a layer's turn does not cut its silhouette (both stated limits).
+- **Shadows along a ray** are the room's too, for shapes that hang in the room's space rather than
+  stand on a plane: a layer declares them (`LayerDef.rayCasters`, `float <fn>(vec3 P, vec3 L, float
+r)`: how much of a round light, centre L and radius r, they hide from point P, in the metres it is
+  drawn in), and `roomRayCaster(P, L, r)` takes the most of every on layer's. A light that throws the
+  room's shadows asks it from each point of a surface toward itself: the mobile's Sun, a declared
+  light (`solarMobileSun`, through `localLight`), asks it for the quiet room's wall, floor and
+  ceiling, so the planets' shadows wheel across the room while the room's code knows nothing of
+  the mobile. The planets' shadows on one another stay the mobile's own (a caster casts on no other
+  layer's surface). The room declares `roomRayCaster` only while a layer on declares one.
 - **Locking and offering.** The sill's five layers, the papered wall, the sideboard, the bonsai's
-  three, the incense's three, the frost's view, the bar's five and the train's four are drawn on
-  their scene's frame (the bar's through its own pinhole, the train's country through its view's)
-  and locked to its rig (`ON_THE_SILL`, `ON_THE_SIDEBOARD`, `ON_THE_VERANDA`, `ON_THE_TABLE`,
-  `AT_THE_PANE`, `IN_THE_BOOTH`, `BY_THE_WINDOW`). The lava lamp is drawn from the rig: it stands at
+  three, the incense's three, the frost's view, the bar's five, the train's four and the mobile's
+  two are drawn on their scene's frame (the bar's and the mobile's through their own pinholes, the
+  train's country through its view's) and locked to its rig (`ON_THE_SILL`, `ON_THE_SIDEBOARD`,
+  `ON_THE_VERANDA`, `ON_THE_TABLE`, `AT_THE_PANE`, `IN_THE_BOOTH`, `BY_THE_WINDOW`,
+  `UNDER_THE_SUN`). The lava lamp is drawn from the rig: it stands at
   its anchor on any room's seat line, 0.4 m tall at the room's scale, its rims dipping by the rig's
   eye over its distance. It is offered to every interior preset; its two trigger slots fit beside
   every room's own (the fullest, the bar's six, the train's six, and the sill's World, neon, cat and
@@ -3213,7 +3223,9 @@ are still scenes of their own.
   beside no four of another's: in the incense's room it stands only while the incense is off, on the
   bonsai's stand only while the tree is off, at the frost's pane only while the frost is off. On the
   bar's table it finds no room: the booth claims the table's right, where the whisky, the candle and
-  the coffee stand, and the floor off its left edge. Its light is a declared light (`lavaLampLight`), which the sill's wall, window frame, sill,
+  the coffee stand, and the floor off its left edge; nor in the mobile's room, whose quiet room
+  claims the floor along the wall (its room is in the mobile's own metres, which nothing drawn on
+  the frame shares). Its light is a declared light (`lavaLampLight`), which the sill's wall, window frame, sill,
   props, curtain and cat take through `roomLight` and `localLight`, and the incense's wall and table
   through `roomLight`. The frost glass is drawn on any window's glass (`roomGlass`), lit by the
   room's light: offered to the frost's room and the sill's.
@@ -3268,6 +3280,22 @@ are still scenes of their own.
   The view keeps its own sky and weather, so the room lists no World (the World through a moving
   window waits for U2), and its planets stay the preset's. Its six "now" slots run 0 to 5, as
   they did.
+- **The mobile** keeps its room's shell apart from the mobile, both drawn through the mobile's own
+  pinhole (`mobileBegin`, the scene's shared chunk: its eye 3.3 m over the floor and 3 m out from
+  the Sun, looking down about 26°, swayed by the pointer; where the cell's ray meets the wall, the
+  floor or the ceiling) on the room's rig, whose seat line is the wall's foot (the floor the ledge,
+  eye 3.3 m over it, 4.4 m to it, focal 1.41: the camera's on a 16:9 frame, pitch 0.448). The
+  `quietRoom` (backdrop, the shell: the plaster wall and its skirting, the oak floor, the ceiling,
+  the window's dim light on the right and the M of glow-in-the-dark stars on the wall; at night the
+  room falling away into the dark toward the picture's edges, its front veil; `room`, `fill`,
+  `mark`) and the `solarMobile` (dressing, the subject: the Sun on its cord and the rose it hangs
+  from, the arms, wires and links, the planets and Saturn's rings, the Sun's glow; its sim's one
+  field the mobile; `planets`, `motor`, `clearance`, `wind`, `gusts`, `drift`, `sun`, `softness`).
+  The Sun is the solar system's declared light (`solarMobileSun`): the quiet room lights its
+  surfaces with `localLight`, and the Sun asks `roomRayCaster` along its ray for the mobile's
+  shadows there (the solar system's `rayCasters`: the balls, the wires, the links and Saturn's
+  rings). With the solar system off the room keeps its ambient and the window's light. Its one
+  "now" slot (a gust) is 0.
 
 | Preset    | Layers                                                                      | Rig                                                                      | Key renames                                                                                                                                                                                                                             | A/B at defaults |
 | --------- | --------------------------------------------------------------------------- | ------------------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------- |
@@ -3278,6 +3306,7 @@ are still scenes of their own.
 | `frost`   | `frostView`, `frostGlass`; + `lavaLamp`                                     | eye 0.15 m, horizon 0.3, focal 0.915 (one radian), 0.518 m: 1.77 a metre | none; its sky and weather knobs are the World's (rain, fog, lightning, cumulus, cloud shadows and the Milky Way new, off; no fair-weather cloud), its trigger slots renumbered; "Frost · aurora over the cabin" rewritten (query order) | `SAME`          |
 | `bar`     | `storefront`, `booth`, `backBar`, `pendants`, `ceilingFan`; + `lavaLamp`    | eye 0.33 m, horizon 0.53, focal 0.85, 1 m: 0.85 a metre                  | none; the knobs in their layers' sections, its trigger slots renumbered (0 to 5, in the layers' order)                                                                                                                                  | `SAME`          |
 | `train`   | `nightLine`, `compartment`, `teaGlass`, `velvetCurtain`; + `lavaLamp`       | eye 0.265 m, horizon 0.55, focal 0.82, 0.7 m: 1.17 a metre               | none; the knobs in their layers' sections, its trigger slots as they were                                                                                                                                                               | `SAME`          |
+| `mobile`  | `quietRoom`, `solarMobile`; + `lavaLamp`                                    | eye 3.3 m, horizon 1.176, focal 1.41, pitch 0.448, 4.4 m: 0.32 a metre   | none; the knobs in their layers' sections (`room`, `fill` and `mark` first); "Mobile · inner planets, glow stars" and "Mobile · dwarf planets, daylight" rewritten (query order)                                                        | `SAME`          |
 
 ## Art direction
 

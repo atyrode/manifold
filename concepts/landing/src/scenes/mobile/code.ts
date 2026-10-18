@@ -1,7 +1,7 @@
-// Mobile's code, loaded the first time the scene is needed (SceneDef.code).
-import { mobileScene } from "./index.ts";
-import { mobileSim } from "./sim.ts";
+// Mobile's code, loaded the first time the scene is needed (SceneDef.code): assembled from the code
+// of every layer its rig offers (composer/code.ts).
+import { composedCode } from "../../composer/code.ts";
+import { INTERIOR_CODE } from "../../composer/interior-code.ts";
+import { mobileComposed } from "./index.ts";
 
-export { mobileSceneGlsl as glsl } from "./shader.ts";
-export const entry = "sceneMobile";
-export const sim = mobileSim(mobileScene.params);
+export const { glsl, entry, glslFor, sim } = composedCode(mobileComposed, INTERIOR_CODE);

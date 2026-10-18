@@ -4,10 +4,11 @@
 //   ones are. A still fixture of an arm of two balls and an arm of balls hung from its loop: the
 //   sharp shadow `mobileShadow` throws on a wall and what `mobileTrace` sees from an eye, each
 //   against the same picture worked out on the CPU from the balls' centres and radii.
-// - kepler: the scene's own sim, motor at full speed, turns each planet's arm once in au^1.5 years of
+// - kepler: the scene's own sim (the solar system's, its field 0 at slot ORBITS), motor at full
+//   speed, turns each planet's arm once in au^1.5 years of
 //   `mobileYear` seconds (Kepler's third law) and the Moon's once a sidereal month: Mars against the
 //   Earth 1.881.
-// - sunlit: the scene's real program on its real sim: every planet whose sunward side faces across
+// - sunlit: the scene's composed program on its real sim: every planet whose sunward side faces across
 //   the picture is brighter on that half of its disc than on the other.
 // - rest: an entrance changes what is drawn while it plays, and leaves the sim, and so the picture
 //   at rest, bit for bit what a scene that never had one draws.
@@ -31,6 +32,12 @@ import { mobileYear } from "./sim.ts";
 import { SOLAR_BODIES, SOLAR_LOOKS, SOLAR_MOON, SOLAR_SUN_RADIUS, solarMobile } from "./solar.ts";
 
 const mobileScene = await loadScene("mobile");
+/** The scene without its composed GLSL, which a fixture's own GLSL replaces (SceneCode.glslFor). */
+const { glslFor, ...mobileFixture } = mobileScene;
+if (glslFor === undefined) throw new Error("mobile: the scene is not composed");
+
+/** The solar system's field 0: slot 2, after the composed sim's speck map and records atlas. */
+const ORBITS = 2;
 
 const ORIGIN: Vec3 = [0, 1.8, 0];
 const WIDTH = 120;
@@ -120,7 +127,7 @@ function verifyParts(gl: WebGL2RenderingContext): Record<string, unknown> {
   const program = compile(
     gl,
     fragmentSourceFor({
-      ...mobileScene,
+      ...mobileFixture,
       entry: "regressionMobile",
       glsl: `${mobileGlsl("uSim0", ORIGIN)}
 uniform int regressionMode;
@@ -227,13 +234,13 @@ function verifyKepler(): Record<string, unknown> {
   const arms = solarMobile(1, 1, MOBILE_SUN_CENTRE).arms;
   const jupiter = SOLAR_BODIES.find((body) => body.name === "Jupiter")?.au ?? 0;
   const turned = new Float64Array(arms.length);
-  let last = sim.step(frame).upload(0).data;
+  let last = sim.step(frame).upload(ORBITS).data;
   // Spin up, then watch for a little over a Jupiter year.
-  for (let i = 0; i < 100; i++) last = sim.step(frame).upload(0).data;
+  for (let i = 0; i < 100; i++) last = sim.step(frame).upload(ORBITS).data;
   const watch = 1.05 * jupiter ** 1.5 * year;
   const frames = Math.round(watch / frame.dt);
   for (let i = 0; i < frames; i++) {
-    const next = sim.step(frame).upload(0).data;
+    const next = sim.step(frame).upload(ORBITS).data;
     for (let k = 0; k < arms.length; k++) {
       let d = heading(next, k) - heading(last, k);
       if (d > Math.PI) d -= 2 * Math.PI;
@@ -292,8 +299,9 @@ function sceneProgram(gl: WebGL2RenderingContext): {
     at("uParams"),
     packParams(renderSettings(defaultsFor("mobile"), paramDefaults("mobile")).params),
   );
-  gl.uniform1i(at("uSim0"), 0);
-  gl.uniform4f(at("uSimOn"), 1, 0, 0, 0);
+  // The composed sim's slots: the speck map and the records atlas unbound, the mobile at ORBITS.
+  gl.uniform1i(at(`uSim${ORBITS}`), 0);
+  gl.uniform4f(at("uSimOn"), 0, 0, 1, 0);
   return {
     program,
     draw: (texture, passage) => {
@@ -340,7 +348,7 @@ function verifySunlit(gl: WebGL2RenderingContext): Record<string, unknown> {
   const frame = { dt: 1 / 30, aspect: SCENE_W / SCENE_H, height: SCENE_H };
   const twin = new HeadlessSim(mobileScene);
   for (let i = 0; i < 60; i++) twin.step(frame);
-  const data = twin.upload(0).data;
+  const data = twin.upload(ORBITS).data;
   const texture = upload(gl, data);
   try {
     const bytes = scene.draw(texture.texture, [1, 0]);
@@ -472,8 +480,8 @@ function verifyRest(gl: WebGL2RenderingContext): Record<string, unknown> {
   const frames = Math.ceil((MOBILE_PASSAGE.enter + 1.5) / frame.dt);
   for (let i = 1; i <= frames; i++) {
     const enter = Math.min(1, (i * frame.dt) / MOBILE_PASSAGE.enter);
-    const a = entered.step({ ...frame, passage: { enter } }).upload(0).data;
-    const b = never.step(frame).upload(0).data;
+    const a = entered.step({ ...frame, passage: { enter } }).upload(ORBITS).data;
+    const b = never.step(frame).upload(ORBITS).data;
     let same = a.length === b.length;
     for (let j = 0; same && j < a.length; j++) same = a[j] === b[j];
     if (enter < 1 && !same) during++;
@@ -485,8 +493,8 @@ function verifyRest(gl: WebGL2RenderingContext): Record<string, unknown> {
   }
   if (during === 0 || middle === undefined)
     throw new Error("mobile: the entrance never moved the mobile");
-  const rest = upload(gl, entered.upload(0).data);
-  const plain = upload(gl, never.upload(0).data);
+  const rest = upload(gl, entered.upload(ORBITS).data);
+  const plain = upload(gl, never.upload(ORBITS).data);
   const coming = upload(gl, middle);
   try {
     const atRest = scene.draw(rest.texture, [1, 0]);

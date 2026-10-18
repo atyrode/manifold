@@ -28,6 +28,8 @@ import {
 import { incenseLayerSim } from "../scenes/incense/sim.ts";
 import { lavaLampGlsl, lavaSharedGlsl, paperedGlsl, sideboardGlsl } from "../scenes/lava/shader.ts";
 import { lavaLampSim } from "../scenes/lava/sim.ts";
+import { mobileSharedGlsl, quietRoomGlsl, solarMobileGlsl } from "../scenes/mobile/shader.ts";
+import { solarMobileSim } from "../scenes/mobile/sim.ts";
 import {
   catGlsl,
   cityWindowGlsl,
@@ -73,4 +75,6 @@ export const INTERIOR_CODE: Readonly<Record<string, LayerCode>> = {
   compartment: { glsl: () => compartmentGlsl, shared: [trainSharedGlsl] },
   teaGlass: { glsl: () => teaGlassGlsl, shared: [trainSharedGlsl] },
   velvetCurtain: { glsl: () => velvetCurtainGlsl, shared: [trainSharedGlsl] },
+  quietRoom: { glsl: () => quietRoomGlsl, shared: [mobileSharedGlsl] },
+  solarMobile: { glsl: () => solarMobileGlsl, shared: [mobileSharedGlsl], sim: solarMobileSim },
 };

@@ -205,7 +205,8 @@ const BUDGET = {
   lava: [39500, 42500],
   marble: [20000],
   meadow: [106000, 184000],
-  mobile: [39000],
+  // The all-features program is the composer's (ADR 0062): the one a layer's turn plays in.
+  mobile: [39000, 40000],
   orbit: [21000, 33500],
   pearl: [14000],
   pendula: [25500, 30500],

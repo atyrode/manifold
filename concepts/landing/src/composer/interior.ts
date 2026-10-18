@@ -3,12 +3,13 @@
 // (room.ts). The manifests alone: their code is in interior-code.ts, which a composed scene's code
 // module loads.
 //   backdrops  cityWindow (sill), papered (lava), veranda (bonsai), shaftWall (incense), frostView
-//              (frost), storefront (bar), nightLine (train)
+//              (frost), storefront (bar), nightLine (train), quietRoom (mobile)
 //   grounds    sill (sill), sideboard (lava), stand (bonsai), lowTable (incense), booth (bar),
 //              compartment (train)
 //   dressings  props (sill), incense (incense; before the lamp, whose `hand` it keeps unqualified),
 //              backBar, pendants, ceilingFan (bar), teaGlass, velvetCurtain (train; before the lamp,
-//              whose `mark` and the like they keep unqualified), lavaLamp (lava; drawn from the rig,
+//              whose `mark` and the like they keep unqualified), solarMobile (mobile; its Sun's
+//              shadows the room's through roomRayCaster), lavaLamp (lava; drawn from the rig,
 //              offered to every room), cat (sill), curtain (sill), bonsaiTree (bonsai), frostGlass
 //              (frost; on a window's glass, offered to every room whose window has glass: its far
 //              veil)
@@ -23,6 +24,7 @@ import { bonsaiTreeLayer, standLayer, verandaLayer } from "../scenes/bonsai/laye
 import { frostGlassLayer, frostViewLayer } from "../scenes/frost/layers.ts";
 import { incenseLayer, lowTableLayer, shaftWallLayer } from "../scenes/incense/layers.ts";
 import { lavaLampLayer, paperedLayer, sideboardLayer } from "../scenes/lava/layers.ts";
+import { quietRoomLayer, solarMobileLayer } from "../scenes/mobile/layers.ts";
 import {
   catLayer,
   cityWindowLayer,
@@ -48,6 +50,7 @@ export const interior: Composer = {
     frostViewLayer,
     storefrontLayer,
     nightLineLayer,
+    quietRoomLayer,
     sillLayer,
     sideboardLayer,
     standLayer,
@@ -61,6 +64,7 @@ export const interior: Composer = {
     ceilingFanLayer,
     teaGlassLayer,
     velvetCurtainLayer,
+    solarMobileLayer,
     lavaLampLayer,
     catLayer,
     curtainLayer,

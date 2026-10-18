@@ -20,7 +20,8 @@
 // (entrance) and hoisted back up (exit) by a pose applied as it is packed; on the exit the motors
 // also wind down. At rest nothing differs: the pose is not applied and the motors run at their rate.
 //
-// Texture: uSim0, the MobileTexture (layout in the sims/mobile.ts header).
+// Texture: the solar system's field 0, the MobileTexture (layout in the sims/mobile.ts header).
+import type { LayerFrame, LayerSim } from "../../composer/types.ts";
 import { KnobReader, type ParamDef } from "../../params.ts";
 import { smoothstep } from "../../sims/math.ts";
 import {
@@ -32,7 +33,7 @@ import {
 } from "../../sims/mobile.ts";
 import { Random } from "../../sims/random.ts";
 import { GustTrain, windNoise } from "../../sims/wind.ts";
-import type { ScenePoint, SceneSim, SimFactory, SimFrame } from "../types.ts";
+import type { ScenePoint, SceneSim, SimFrame } from "../types.ts";
 import {
   MOBILE_SUN_CENTRE,
   MOBILE_EYE,
@@ -257,7 +258,21 @@ class MobileSim implements SceneSim {
   }
 }
 
-/** The mobile's simulation for a scene whose knobs are `params` (looked up by key). */
-export function mobileSim(params: readonly ParamDef[]): SimFactory {
-  return (gl) => new MobileSim(gl, params);
+/**
+ * The solar system's sim (its layer's field 0, layers.ts solarMobile): the mobile, from the scene's
+ * knobs (`params`, looked up by key); a press blows on the planet under it.
+ */
+export function solarMobileSim(gl: WebGL2RenderingContext, params: readonly ParamDef[]): LayerSim {
+  const sim = new MobileSim(gl, params);
+  return {
+    frame(frame: LayerFrame) {
+      const [texture] = sim.frame(frame);
+      const field = frame.fields[0];
+      if (field !== undefined) field.texture = texture;
+    },
+    interest: (aspect) => sim.interest(aspect),
+    dispose() {
+      sim.dispose();
+    },
+  };
 }

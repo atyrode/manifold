@@ -36,15 +36,16 @@ are the ports' own, taken under #1082 on the shared dev host.
   `gust.ts`, the composed sim in `sim.ts`, the code assembly in `code.ts`, the caps in `caps.ts`)
   and the `outdoor` composer: 84 layers in canonical order (`outdoor.ts`: 20 backdrops, 16 grounds,
   23 dressings, 7 covers, 14 life, 4 chores), their code by id in `outdoor-code.ts`. The `interior`
-  composer (Phase 3): 16 layers (`interior.ts`: 5 backdrops, 4 grounds, 7 dressings), their code in
+  composer (Phase 3): 27 layers (`interior.ts`: 8 backdrops, 6 grounds, 13 dressings), their code in
   `interior-code.ts`, the room's program in `room.ts`. The `overhead` composer (Phase 4): 19 layers
   (`overhead.ts`: 5 beds, 4 waters, 4 dressings, 2 covers, 4 life), its program and code assembly in
   `overhead-glsl.ts`, the layers' code in `overhead-code.ts`. All three share
   `composeScene`, the placer, the composed sim and the layers' turns (`turnsGlsl`, `passCalls`).
 - **Presets:** meadow and bees (Phase 1); shore, dunes, autumn, lanterns and falls (2a); campfire,
   fireflies, forest, bamboo, garden and lake (2b); country, street, skyward, flock, swell and dew
-  (2c); island (after Phase 2); sill and lava (the Phase 3 pilot) and bonsai; pond and ripple (the
-  Phase 4 pilot), tidepool, sandtable and delta (4). `src/composer/budget.test.ts` holds that list.
+  (2c); island (after Phase 2); sill and lava (the Phase 3 pilot), bonsai, incense, frost, bar,
+  train and mobile; pond and ripple (the Phase 4 pilot), tidepool, sandtable and delta (4).
+  `src/composer/budget.test.ts` holds that list.
 - **Committed mixes:** "Bees · overgrown meadow" (the meadow's grass and wildflowers in the bees'
   garden), "Bees · in the valley" (the countryside's `valley` in place of the bees' hillside),
   "Sill · lava lamp on the sill" (the lava lamp standing on the sill, lighting the room), "Sill ·
@@ -54,8 +55,8 @@ are the ports' own, taken under #1082 on the shared dev host.
   waves planned ("Autumn maple by the lantern river", "Campfire in the meadow", "Fireflies over the
   apiary", "A campfire on the valley's hill") were not made: their layers are drawn through their
   own rigs alone (see "Rigs, locking and offering").
-- **Not built:** the rest of the interiors (bar, train, mobile, clouds,
-  harmonograph; Phase 3); the rest of the `overhead` composer (its `tilt` and `orbit`, the `height`
+- **Not built:** the rest of the interiors (clouds and harmonograph; Phase 3); the rest of the
+  `overhead` composer (its `tilt` and `orbit`, the `height`
   pass, the World over the patch, and its presets after delta; Phase 4); the per-program
   knob layout and packed trigger slots; `scripts/layer-costs.ts`, the stack meter and the role's
   "+" listing; the browser checks `composerDepth`, `composerClaims`, `composerWeather` and
@@ -351,6 +352,7 @@ they were:
 | A preset's own gates over the composer's (`index.ts`)                                                              | the lake's night (`lakeNight`), skyward's `WORLD_BIRDS` 0, dunes' and garden's overhead programs                      | lake, skyward, dunes, garden                                                            |
 | `ScenePreset.room`, `LayerFrame.room`, `<id>Anchor` (interior)                                                     | the room: the eye's distance to the seat line, the wall, its ambient and lamp; the seat and scale for sims; anchors   | sill, lava, bonsai; the lava lamp's sim and GLSL                                        |
 | `LayerDef.casters`, `roomCaster` (interior)                                                                        | a layer's silhouette on the plane it stands in; the most of every on layer's, for a backdrop's shadows on its wall    | the bonsai's tree; asked by the veranda                                                 |
+| `LayerDef.rayCasters`, `roomRayCaster` (interior)                                                                  | shapes hanging in the room's space: how much of a round light they hide from a point; the most of every on layer's    | the mobile's solar system; asked by its Sun's declared light for the quiet room         |
 | `daylight` pass, `LayerDef.window` (interior)                                                                      | a window's light into the room (`roomLight`); a backdrop the World crosses, which lists the World's knobs             | cityWindow                                                                              |
 
 ### Rigs, locking and offering
@@ -641,7 +643,8 @@ itself, and dew joined the composer (D7).
 - **The order** is the canonical order, painter's: the begins, the wall, the backdrop's `far`, the
   ground's `ground`, every `middle`, `front` and `frontVeil`, the grade. A room keeps no depth (a
   stated limit); a layer's shapes throw shadows only where a backdrop asks for them (`roomCaster`,
-  below).
+  below), or, hung in the room's space, where a light asks along its ray (`roomRayCaster`: the
+  mobile's).
 - **The lamp's light is a declared light.** The lava lamp (`lavaLamp`) is drawn from the rig, 0.4 m
   tall on any room's seat line at its anchor, so it is offered to every interior preset; on the
   sill it takes its second anchor, the cat holding the first. Its `lavaLampLight` reaches the sill's
@@ -681,6 +684,7 @@ a metre, the eye's height over its distance the display's tilt, 0.14):
 | frost mix | 2,101 of 23,040 cells against the sill (9.1 %): the frost on the panes | the rime along each pane's edges and the condensation over the glass; the sill's city unblurred behind it                                |
 | bar       | `SAME`                                                                 | none; the knobs gathered in their layers' sections                                                                                       |
 | train     | `SAME`                                                                 | none; the knobs gathered in their layers' sections                                                                                       |
+| mobile    | `SAME`                                                                 | none; the knobs gathered in their layers' sections, the shell's first                                                                    |
 
 **The incense, built:** three layers, the shell kept apart from the subject, locked to the
 incense's rig (`ON_THE_TABLE`: eye 0.3 m, 1 m from where the incense stands, 1.2 screen heights a
@@ -753,7 +757,37 @@ snow; the rural line, no cloud, stations every stretch, the aurora) `SAME` again
 programs: 144,396 and 191,566 shaken characters, within its standalone ceilings (154,000 and
 199,000).
 
-**Still to build:** mobile, clouds and harmonograph as presets; the World's birds through a window;
+**The mobile, built:** two layers, the room's shell kept apart from the mobile, both drawn through
+the mobile's own pinhole (`mobileBegin`, the scene's shared chunk: the eye 3.3 m over the floor
+looking down about 26°, swayed by the pointer, and where the cell's ray meets the wall, the floor or
+the ceiling) and locked to its rig (`UNDER_THE_SUN`: the wall's foot the seat line, eye 3.3 m over
+the floor, 4.4 m to it, focal 1.41, pitch 0.448). The **`quietRoom`** (backdrop, the shell: the
+plaster wall, the oak floor, the ceiling, the window's dim light, the M of glow-in-the-dark stars,
+and the night room falling away toward the picture's edges as its front veil; `room`, `fill`,
+`mark`) and the **`solarMobile`** (dressing, the subject: the Sun on its cord and its ceiling rose,
+the arms, the planets, Saturn's rings, the Sun's glow; the mobile's sim its one field). **The
+shadows are the room's, in a 3D form:** the Sun is the solar system's declared light
+(`solarMobileSun`), the quiet room lights its surfaces through `localLight`, and the light asks
+`roomRayCaster(P, L, r)` from each point toward itself, the most of every on layer's
+`LayerDef.rayCasters` (`float <fn>(vec3 P, vec3 L, float r)`: how much of a round light the
+layer's shapes hide from P); the solar system declares its balls, wires, links and rings. The
+planets' shadows on one another stay the mobile's own. Its cost: a manifest field and a dozen lines
+of `room.ts`'s generator, `roomRayCaster` declared only while a layer on declares one, so every
+other room's program is unchanged; in the mobile's the same trace runs behind two more calls. It is
+the hook U2's two
+shadowing lights can ask once the shell is in metres. The lava lamp, offered, finds no room: the
+quiet room claims the floor, its room being in the mobile's metres, which nothing drawn on the
+frame shares. No mix: the mobile is drawn through its own camera, and the lava room's would need
+it redrawn from that rig at another scale. At its defaults (dithered and `view=source`), its three
+committed presets and two witnesses (crisp shadows from a bright bulb, a compact mobile in a strong
+draft from the left, no window light; the daylight room, the inner planets with the motor off, the
+whole globe's soft shadows from a dim Sun, the M of stars at full glow) `SAME` against 768cbbd2;
+sill, lava and bonsai `SAME` beside it. "Mobile · inner planets, glow stars" and "Mobile · dwarf
+planets, daylight" are rewritten for their query's order. Its programs: 34,175 and 36,484 shaken
+characters (31,358 standalone; ceilings 39,000 and 40,000: the room's program frame, and the
+composer's turns in the all-features program).
+
+**Still to build:** clouds and harmonograph as presets; the World's birds through a window;
 the World through the bar's storefront and the train's window; depth across a room's layers, and
 shadows on another layer's surface than a backdrop's, once two layers that overlap need them. What
 Phase 2 changes for them:

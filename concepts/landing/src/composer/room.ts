@@ -28,6 +28,10 @@
 // frame point on the plane it stands in, how much of a light it stops there, 0 .. 1. `roomCaster(p)`
 // takes the most of every on layer's, so a wall (the bonsai's veranda) throws the shadows of whatever
 // stands in the room, seen from each of its points toward each of its lights.
+// A layer whose shapes hang in the room's space may declare `rayCasters` (LayerDef.rayCasters): each
+// how much of a round light they hide from a point, in the metres the layer is drawn in.
+// `roomRayCaster(P, L, r)` takes the most of every on layer's (declared only while one is on), so a
+// light (the mobile's Sun) throws them on the room's surfaces along the ray from each point to it.
 // A program draws its layers' own entrances and exits as the outdoor composer's do (glsl.ts
 // `turnsGlsl`, `passCalls`).
 import { glslFloat } from "../shaders/glsl.ts";
@@ -83,15 +87,28 @@ function lampGlsl(room: Room): string {
 `;
 }
 
-/** The on layers' silhouettes for a backdrop's shadows (LayerDef.casters), the most of them. */
+/**
+ * The on layers' silhouettes for a backdrop's shadows (LayerDef.casters), the most of them; and,
+ * where a layer hangs shapes in the room (LayerDef.rayCasters), the most of those along a ray.
+ */
 function castersGlsl(layers: RoomAssembly["layers"]): string {
   const casters = layers.flatMap(({ def }) => def.casters ?? []).map((fn) => `${fn}(p)`);
+  const rays = layers.flatMap(({ def }) => def.rayCasters ?? []).map((fn) => `${fn}(P, L, r)`);
   return `
 // How much of a light the room's layers stop at frame point p, on the plane they stand in.
 float roomCaster(vec2 p) {
   return ${casters.length === 0 ? "0.0" : casters.reduce((a, b) => `max(${a}, ${b})`)};
 }
-`;
+${
+  rays.length === 0
+    ? ""
+    : `
+// How much of a round light (centre L, radius r) the shapes hanging in the room hide from point P.
+float roomRayCaster(vec3 P, vec3 L, float r) {
+  return ${rays.reduce((a, b) => `max(${a}, ${b})`)};
+}
+`
+}`;
 }
 
 /** The whole room program's own GLSL: the World (with a window on), the prelude, the layers, the entry. */
@@ -168,7 +185,7 @@ ${lampGlsl(room)}
 vec3 localLight(vec3 p, vec3 n);
 vec3 roomLight(Ctx x, vec2 p, vec3 n);
 float roomCaster(vec2 p);
-vec4 roomGlass(Ctx x);
+${layers.some(({ def }) => (def.rayCasters?.length ?? 0) > 0) ? "float roomRayCaster(vec3 P, vec3 L, float r);\n" : ""}vec4 roomGlass(Ctx x);
 ${turnsGlsl(turns)}
 ${accessorsGlsl(layers, allocation)}
 // Where each layer on stands (its anchor: x a share of the frame's width from its centre).
