@@ -120,7 +120,7 @@ export const presets: readonly Preset[] = [
   },
   {
     name: "Waterfall · slot gorge",
-    commit: "PENDING",
+    commit: "e500c565",
     query: "scene=falls&spray-amount=0.8&gorge=2",
     savedAt: "2026-10-15",
   },
