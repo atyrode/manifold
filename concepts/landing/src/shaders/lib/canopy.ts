@@ -146,22 +146,25 @@ struct CanopyDrips { float horizon; float eye; float width; float share; vec2 ti
 
 // Water gathered in the canopy running off and falling through the grove at depth z (m), seen at
 // screen point q. In metres at that depth, columns drips.width wide, drips.share × amount of them
-// holding a tip that drips over and over on the motion clock tm: a bead swells at the tip for half
-// the beat, lets go and falls under gravity as a streak lengthening with its speed, down to the
-// floor; then a fresh tip in the column takes its turn. amount 0..1 also sets how quickly they
-// refill; salt sets the layer apart. Returns coverage; a falling drop is never narrower than two
-// cells.
+// holding a tip that drips on the motion clock tm: a bead swells at the tip for half the beat, lets
+// go and falls under gravity as a streak lengthening with its speed, down to the floor; then a fresh
+// tip in the column takes its turn. Each column's beat is fixed in time, and amount 0..1 picks how
+// many beats drip, at the rate a beat of mix(4.5, 2.0, amount) s would give (a phase of tm over a
+// period that moved with the amount would run backward while the grove dries, the drops rising);
+// salt sets the layer apart. Returns coverage; a falling drop is never narrower than two cells.
 float canopyDrip(vec2 q, float tm, float amount, float z, float salt, CanopyDrips drips) {
   vec2 w = vec2(q.x * z, (q.y - drips.horizon) * z + drips.eye);
   float cw = drips.width;
   float cx = floor(w.x / cw);
   float h = hash12(vec2(cx + 0.5, salt * 17.0 + 3.0));
   if (h > drips.share * amount) return 0.0;
-  float period = mix(4.5, 2.0, amount) * (0.75 + 0.5 * fract(h * 37.3));
+  float jitter = 0.75 + 0.5 * fract(h * 37.3);
+  float period = 3.0 * jitter;
   float ph = tm / period + fract(h * 91.0);
   float n = floor(ph);
   float age = (ph - n) * period;
   float hn = hash12(vec2(cx + 0.5, n + salt * 11.0));
+  if (hash12(vec2(cx + 7.5, n + salt * 5.0)) > 3.0 / mix(4.5, 2.0, amount)) return 0.0;
   float tipY = (drips.tip.x + drips.tip.y * hn - drips.horizon) * z + drips.eye;
   float x = (cx + 0.2 + 0.6 * fract(hn * 17.3)) * cw;
   float aa = z / uRes.y;

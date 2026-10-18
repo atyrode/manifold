@@ -306,16 +306,19 @@ vec3 precipOver(vec3 col, vec3 air, vec3 dropLight, Precip p) {
 
 // One grid of splash sites, p in cells: each cell's drops land at a fresh spot every ~0.45-1.1 s
 // and crown for ~0.2-0.3 s, a disc that widens as it fades, so each dither cell lights once and
-// goes dark once per splash. a 0..1 rain amount.
+// goes dark once per splash. a 0..1 rain amount. The beat is fixed in time (a beat's phase as t over
+// a period that moved with the amount would run backward while the amount falls); the amount picks
+// how many beats splash, at the rate a period of mix(1.1, 0.45, a) would give.
 float weatherSplash(vec2 p, float t, float a, float salt) {
   vec2 id = floor(p);
   float h = hash12(id + salt);
-  float period = mix(1.1, 0.45, a) * (0.8 + 0.4 * fract(h * 7.1));
+  float jitter = 0.8 + 0.4 * fract(h * 7.1);
+  float period = 0.45 * jitter;
   float ph = t / period + h * 7.0;
   float n = floor(ph);
   float age = (ph - n) * period;
   float life = mix(0.2, 0.32, a);
-  if (age >= life || hash12(id + vec2(n * 0.37 + salt, n * 0.61)) >= 0.9 * a) return 0.0;
+  if (age >= life || hash12(id + vec2(n * 0.37 + salt, n * 0.61)) >= 0.9 * a * 0.45 / mix(1.1, 0.45, a)) return 0.0;
   vec2 c = 0.32 + 0.36 * vec2(hash12(id + n * 1.7 + 3.1 + salt), hash12(id + n * 2.3 + 8.7));
   float k = age / life;
   float r = mix(0.16, 0.3, a) * (0.45 + 0.55 * sqrt(k));
@@ -497,9 +500,11 @@ float wetGloss(float wet, float up) {
 // drip points. Lane k (p.x in [k, k+1) widths) drips from a fixed spot at
 // (k + 0.3 + 0.4 * hash12(vec2(k, 3.7))) * width: a bead swells under the edge (radius up to 0.11
 // width), lets go, and the drop falls, accelerating and drawn out by its speed, fading 3..5 widths
-// down. Heavier rain drips more often; some beats are skipped. Pass amount = max(K_rain,
-// 0.4 * uWeather.x) to keep edges dripping while they dry. tf: the fall clock (uFallTime). Returns 0
-// or 1 per cell (the drop's light).
+// down. Heavier rain drips more often: each lane's beat is fixed in time, and the amount picks how
+// many beats drip, at the rate a beat of 0.8 + mix(3.2, 0.6, a) s would give (a phase of tf over a
+// period that moved with the amount would run backward while an edge dries, the drops rising). Pass
+// amount = max(K_rain, 0.4 * uWeather.x) to keep edges dripping while they dry. tf: the fall clock
+// (uFallTime). Returns 0 or 1 per cell (the drop's light).
 float rainDrips(vec2 p, float tf, float amount, float width) {
   if (amount <= 0.0 || width <= 0.0) return 0.0;
   vec2 u = p / width;
@@ -509,10 +514,12 @@ float rainDrips(vec2 p, float tf, float amount, float width) {
   float h = hash12(vec2(k, 3.7));
   float x0 = k + 0.3 + 0.4 * h;
   float drop = 0.8; // seconds a drop takes to fall out of sight
-  float period = drop + mix(3.2, 0.6, a) * (0.7 + 0.6 * fract(h * 13.1));
+  float jitter = 0.7 + 0.6 * fract(h * 13.1);
+  float period = drop + 1.2 * jitter;
   float ph = tf / period + fract(h * 7.3);
   float n = floor(ph);
-  if (hash12(vec2(k + 0.5, n)) > 0.35 + 0.65 * a) return 0.0;
+  float keep = (0.35 + 0.65 * a) * period / (drop + mix(3.2, 0.6, a) * jitter);
+  if (hash12(vec2(k + 0.5, n)) > keep) return 0.0;
   float age = (ph - n) * period;
   float gather = period - drop;
   float r0 = 0.11;
