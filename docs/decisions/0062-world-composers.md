@@ -37,14 +37,14 @@ are the ports' own, taken under #1082 on the shared dev host.
   and the `outdoor` composer: 84 layers in canonical order (`outdoor.ts`: 20 backdrops, 16 grounds,
   23 dressings, 7 covers, 14 life, 4 chores), their code by id in `outdoor-code.ts`. The `interior`
   composer (Phase 3): 11 layers (`interior.ts`: 3 backdrops, 3 grounds, 5 dressings), their code in
-  `interior-code.ts`, the room's program in `room.ts`. The `overhead` composer (Phase 4): 12 layers
-  (`overhead.ts`: 3 beds, 3 waters, 1 dressing, 1 cover, 4 life), its program and code assembly in
+  `interior-code.ts`, the room's program in `room.ts`. The `overhead` composer (Phase 4): 16 layers
+  (`overhead.ts`: 4 beds, 3 waters, 4 dressings, 1 cover, 4 life), its program and code assembly in
   `overhead-glsl.ts`, the layers' code in `overhead-code.ts`. All three share
   `composeScene`, the placer, the composed sim and the layers' turns (`turnsGlsl`, `passCalls`).
 - **Presets:** meadow and bees (Phase 1); shore, dunes, autumn, lanterns and falls (2a); campfire,
   fireflies, forest, bamboo, garden and lake (2b); country, street, skyward, flock, swell and dew
   (2c); island (after Phase 2); sill and lava (the Phase 3 pilot) and bonsai; pond and ripple (the
-  Phase 4 pilot), tidepool (4). `src/composer/budget.test.ts` holds that list.
+  Phase 4 pilot), tidepool and sandtable (4). `src/composer/budget.test.ts` holds that list.
 - **Committed mixes:** "Bees · overgrown meadow" (the meadow's grass and wildflowers in the bees'
   garden), "Bees · in the valley" (the countryside's `valley` in place of the bees' hillside),
   "Sill · lava lamp on the sill" (the lava lamp standing on the sill, lighting the room),
@@ -55,7 +55,7 @@ are the ports' own, taken under #1082 on the shared dev host.
   own rigs alone (see "Rigs, locking and offering").
 - **Not built:** the rest of the interiors (bar, train, mobile, incense, frost, clouds,
   harmonograph; Phase 3); the rest of the `overhead` composer (its `tilt` and `orbit`, the `height`
-  pass, the World over the patch, and its presets after tidepool; Phase 4); the per-program
+  pass, the World over the patch, and its presets after sandtable; Phase 4); the per-program
   knob layout and packed trigger slots; `scripts/layer-costs.ts`, the stack meter and the role's
   "+" listing; the browser checks `composerDepth`, `composerClaims`, `composerWeather` and
   `layerToggles`; a check of the SwiftShader instruction budget; the principals' points in the
@@ -68,7 +68,7 @@ are the ports' own, taken under #1082 on the shared dev host.
    above. A composer is a camera rig, a site and an order of composition, and the World is in all
    three (in a room, through its window; over the overhead's patch, not yet). `outdoor` is built;
    `interior` is piloted with sill and lava and runs bonsai (Phase 3), `overhead` is piloted with
-   pond and ripple and runs the tide pool too (Phase 4).
+   pond and ripple and runs the tide pool and the sand table too (Phase 4).
 2. **A layer is a module.** Its manifest (`LayerDef`: role, bands, claims, the rigs it can be drawn
    through, its switch, knobs, passes and data) loads without its code (`LayerCode`: its GLSL built
    for the preset's rig, the chunks it shares with its scene's other layers, its sim). One steady
@@ -752,11 +752,28 @@ which keeps the pond's 54 knobs off it and the koi out of the sea. Its default, 
 presets, rain with fish and the M, and granite at dawn are `SAME` against 47e062d9; its shaken
 default is 50,001 characters (within its ceiling), its all-features program 52,896 (ceiling 58,000).
 
+**The sand table** (sandtable) is four layers: `sandBed` (the bed: one height field with two
+finishes, the ball's fine sand or the pendulum's slate, its rim and the floor, and the table's pace,
+run of drawings and "next drawing"), `tableLamp` (the low lamp, a dressing: without it the patch's
+light rakes the table from the lamp's height), and two subjects that exclude each other, `ball`
+(home: the steel ball, its drawings, its M and the agents' rake) and `pendulum` (offered). One bed
+with two finishes, not two beds: both machines work one height field under one lamp in one rim, and
+the slate shows only where the pendulum has not yet trickled sand. The bed's sim holds the sand and
+lends it through its affordances to the machine on the table, which lays its opening table once the
+other has swept its own away, works it and settles it in the scene's order; so a switch between them
+plays the one's sweep as its exit and the other's arrival as its entrance. A machine's shadow comes
+off the lamp's light in its begin, as the scene drew it, rather than through the composer's `cast`
+darkening. Its frame is 0.93 m tall (the ball a one-inch ball), below the koi's metre, so nothing
+else is offered. Its default, its committed preset, the pendulum on slate and on ochre in a brass
+rim, the M under a low lamp on black sand, and rimless at full depth are `SAME` against dfc9c2dc;
+its shaken default is 23,168 characters (23,891 before), its all-features program 26,250 (ceiling
+29,000, new).
+
 **Not built yet:** the `tilt` feature and its march (a tilted rig's march costs its full length
 under SwiftShader wherever it ends, so the gate, off, keeps it out), the `orbit` range, a `height`
 pass and a bed height field shared across layers (the pond's and the tank's beds are flat, the
 tide pool's relief its own layout's; the water's slope is the only relief they share), a material
-at each point, the World over the patch, and the presets after tidepool: sandtable, delta, and
+at each point, the World over the patch, and the presets after sandtable: delta, and
 `dunesabove` and `gardenabove`, which retire the dunes' `camera` and the garden's `gravelCamera` and
 their own programs. Layers drawn in the frame's units are locked to their span; the koi are offered
 from 1 m to the pond's 3 m, drawn at the frame's scale (11–17 cm fish in the 1 m tank), so a
@@ -949,7 +966,7 @@ live view.
    every further cross-offering waits for the per-program layout and packed triggers, as do the
    bar's port and the World over the overhead's patch (the pond lists 54 without it).
 2. **Rig-locking limits the mixes.** Of the outdoor presets' 84 layers, seven are offered beyond
-   their own rig; of the interior's 11, the lava lamp, drawn from the rig; of the overhead's 12, the
+   their own rig; of the interior's 11, the lava lamp, drawn from the rig; of the overhead's 16, the
    koi beyond their own span (over fresh water only). Five mixes are committed. The worth of
    composing grows only as layers are redrawn from the ray (or, from above, in metres).
 3. **Shared chunks couple layers.** The countryside's layers are switches and knobs over one march

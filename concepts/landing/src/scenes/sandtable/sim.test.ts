@@ -2,13 +2,16 @@ import { afterEach, expect, test } from "bun:test";
 import { Cast, Presence, principal } from "../../principals.ts";
 import { HeadlessSim } from "../../sims/headless.ts";
 import { loadScene } from "../index.ts";
-import { SANDTABLE } from "./sim.ts";
+import { SANDTABLE } from "./constants.ts";
 
 const sandtableScene = await loadScene("sandtable");
 
 // The sim sends its machines' state every frame and the heights at most every 1000/30 ms. These
 // checks drive it at 60 Hz with a little jitter on a fake clock, on the headless stand-in, which
 // keeps what each texture last received: what the shader would draw from. Knobs are as in the URL.
+// The composed sim's slots (composer/sim.ts): the bed's heights first, then the machine's state.
+const HEIGHTS = 2;
+const STATE = 3;
 
 const realNow = performance.now.bind(performance);
 let clock = 0;
@@ -29,8 +32,8 @@ function table(knobs: Record<string, number>): Table {
     frame: (dt, next) => {
       sim.step({ dt, knobs, now: next ? ["renew"] : [], pointer: { inside: false } });
     },
-    heights: () => sim.upload(0).data,
-    state: () => sim.upload(1).data,
+    heights: () => sim.upload(HEIGHTS).data,
+    state: () => sim.upload(STATE).data,
   };
 }
 
@@ -88,8 +91,8 @@ test("a fast ball never runs ahead of the groove the shader shows: its head stay
 test("a fast wipe's edge and the funnel's stream never run ahead of the sand the shader shows", () => {
   // "Next drawing" at once: the straight edge wipes the slate at the fastest speed, then the funnel
   // is swung and pours. A twin whose clock leaps a second a frame sends every change: the live sand.
-  const shownTable = table({ machine: 1, speed: 4 });
-  const liveTable = table({ machine: 1, speed: 4 });
+  const shownTable = table({ ball: 0, pendulum: 1, speed: 4 });
+  const liveTable = table({ ball: 0, pendulum: 1, speed: 4 });
   const depth = SANDTABLE.depthMin + SANDTABLE.depthRange * 0.5;
   const n = SANDTABLE.grid;
   let edgeFrames = 0;
@@ -158,8 +161,8 @@ function apart(
   y1: number,
 ): number {
   const grid = SANDTABLE.grid;
-  const ha = a.upload(0).data;
-  const hb = b.upload(0).data;
+  const ha = a.upload(HEIGHTS).data;
+  const hb = b.upload(HEIGHTS).data;
   let sum = 0;
   for (let r = Math.floor((0.5 + y0) * grid); r < Math.ceil((0.5 + y1) * grid); r++)
     for (let c = Math.floor((0.5 + x0) * grid); c < Math.ceil((0.5 + x1) * grid); c++)
@@ -190,7 +193,7 @@ test("an agent combs the sand, the ball's erase spirals groom it away, the same 
     const combed = apart(sim, twin, -0.2, 0.2, 0.03, 0.17);
     for (let n = 0; n < 100 * 60; n++) both([to]);
     const groomed = apart(sim, twin, -0.2, 0.2, 0.03, 0.17);
-    const heights = Array.from(sim.upload(0).data);
+    const heights = Array.from(sim.upload(HEIGHTS).data);
     for (const each of [sim, twin]) each.dispose();
     return { combed, groomed, heights };
   };
@@ -226,8 +229,8 @@ test("the cast's agent combs the table; a drag rakes it and leaves the ball be",
   }
   expect(apart(dragged, still, -0.25, 0.25, -0.22, -0.08)).toBeGreaterThan(1);
   // The ball went its own way, untouched.
-  expect(Array.from(dragged.upload(1).data).slice(0, 2)).toEqual(
-    Array.from(still.upload(1).data).slice(0, 2),
+  expect(Array.from(dragged.upload(STATE).data).slice(0, 2)).toEqual(
+    Array.from(still.upload(STATE).data).slice(0, 2),
   );
   for (const each of [dragged, still]) each.dispose();
 });

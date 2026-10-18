@@ -37,19 +37,29 @@
 // track on, draws the M as far as it is drawn at first); the funnel is carried in on its string and
 // starts to pour. On the way out a straight edge sweeps the table from the far side of the frame,
 // leaving the sand smooth (the pendulum's shoves its berm off the table), the ball pushed ahead of it
-// out of the frame and the funnel carried off before it. At rest none of it exists.
+// out of the frame and the funnel carried off before it. At rest none of it exists. A machine's own
+// layer turning on or off plays the same passage on its layer's clock (LayerFrame.passage).
+//
+// The layers (layers.ts): the bed's sim holds the sand (SandtableSand, its affordances: the height
+// field and its heights texture); the ball's and the pendulum's (SandtableMachine) each take it once
+// no other machine holds it, lay their opening table, work it, and settle it at the end of their
+// frame (slumping and the throttled upload, in the scene's order); with no machine on the table the
+// bed settles it. The table's knobs (speed, renew, drawings, depth) are the bed's, read by the
+// machine on it; the ball's rake rides with the ball.
 //
 // Field space, shared with the shader: the height field spans a square one field unit across,
 // centred on the table, heights in field units too (a HeightField at aspect 1). The shader draws it
 // SANDTABLE.span view heights across, so the grid never changes with the window. Tracks are laid in
 // the unit disc, radius 1 = SANDTABLE.track.
 //
-// Uploads: uSim0 r16f heights, SANDTABLE.grid square; uSim1 rgba16f, 3 texels:
+// Fields: sandBedField0 r16f heights, SANDTABLE.grid square; a machine's field 0 (ballField0,
+// pendulumField0) rgba16f, 3 texels:
 //   0  the ball or the funnel: centre (field units from the table's centre), shown 0..1, stream 0..1
 //   1  the straight edge: normal (unit), offset of its middle along the normal, shown 0..1
 //   2  the M: lit 0..1, its height in field units; ball: how much of it is drawn, in mark units along
 //      its stroke (positive from the left foot, negative from the right); pendulum: the funnel's
 //      fill 0..1; 0
+import type { LayerFrame, LayerSim, OverheadRig } from "../../composer/types.ts";
 import { markVertex } from "../../mark.ts";
 import { KnobReader, type ParamDef } from "../../params.ts";
 import { MAX_PRINCIPALS } from "../../principals.ts";
@@ -64,48 +74,19 @@ import { clamp, smoothstep } from "../../sims/math.ts";
 import { springStep, type Spring } from "../../sims/spring.ts";
 import { mulberry32 } from "../../sims/random.ts";
 import { DataTexture } from "../../sims/texture.ts";
-import type { PrincipalState, ScenePoint, SceneSim, SimFactory, SimFrame } from "../types.ts";
+import type { PrincipalState, ScenePoint, SimFrame } from "../types.ts";
 import {
+  SANDTABLE,
   SANDTABLE_PASSAGE,
   sandtableFigures,
   sandtableMachines,
   sandtablePatterns,
 } from "./constants.ts";
+import { MACHINE_FIELDS, SAND_FIELDS } from "./layers.ts";
 
 export class SandtableError extends Error {}
 
 const TAU = Math.PI * 2;
-
-/** The table, in field units; the shader draws with the same numbers. */
-export const SANDTABLE = {
-  /** View heights per field unit on a landscape screen (on a portrait one, times its aspect). */
-  span: 0.9,
-  /** Radius of the sand, out to the rim's inner edge. */
-  sand: 0.47,
-  /** Width of the rim, and how far it stands above the sand. */
-  rim: 0.055,
-  rimHeight: 0.018,
-  /** Farthest the ball's centre goes from the middle: radius 1 of the theta–rho tracks. */
-  track: 0.452,
-  /**
-   * The steel ball's radius (some 2.9% of the table across; the shader keeps it at least ten cells
-   * across on coarse pixels), and the groove it ploughs, about where a ball that size sinking a
-   * groove's depth meets the sand.
-   */
-  ball: 0.015,
-  groove: 0.021,
-  /** Height-field texels across the field (about a cell and a half each on screen). */
-  grid: 320,
-  /** The pendulum's funnel: radius of its mouth, and how high it hangs over the table. */
-  funnel: 0.026,
-  funnelHeight: 0.2,
-  /** The straight edge that wipes the slate: its width and height. */
-  edge: 0.018,
-  edgeHeight: 0.012,
-  /** Groove depth at the bottom of the depth knob, and what the whole knob adds. */
-  depthMin: 0.0015,
-  depthRange: 0.005,
-} as const;
 
 type Machine = (typeof sandtableMachines)[number];
 type Pattern = (typeof sandtablePatterns)[number];
@@ -140,21 +121,16 @@ const TALUS = 0.62;
 
 // ---- knobs ---------------------------------------------------------------------------------------
 
-const SANDTABLE_KNOBS = [
-  "machine",
-  "pattern",
-  "figure",
-  "speed",
-  "renew",
-  "drawings",
-  "depth",
-  "mark",
-  "rake",
-] as const;
-type Knob = (typeof SANDTABLE_KNOBS)[number];
+/**
+ * The table's knobs (the bed's: layers.ts), which the machine standing on it reads; then each
+ * machine's own.
+ */
+const TABLE_KNOBS = ["speed", "renew", "drawings", "depth"] as const;
+const BALL_KNOBS = [...TABLE_KNOBS, "pattern", "mark", "rake"] as const;
+const PENDULUM_KNOBS = [...TABLE_KNOBS, "figure"] as const;
+type Knob = (typeof BALL_KNOBS)[number] | (typeof PENDULUM_KNOBS)[number];
 
 interface Settings {
-  machine: Machine;
   pattern: Pattern;
   figure: Figure;
   /** Drawing-speed multiplier. */
@@ -174,17 +150,24 @@ interface Settings {
 
 const markSize = (amount: number): number => 0.8 + 0.5 * amount;
 
-/** The knobs as settings, written into `out` so a frame allocates nothing. */
-function readSettings(knobs: KnobReader<Knob>, frame: SimFrame, out: Settings): void {
+/** The knobs `machine` reads as settings, written into `out` so a frame allocates nothing. */
+function readSettings(
+  knobs: KnobReader<Knob>,
+  machine: Machine,
+  frame: SimFrame,
+  out: Settings,
+): void {
   const renew = knobs.value(frame, "renew");
-  const mark = knobs.value(frame, "mark");
-  out.machine = sandtableMachines[Math.round(knobs.value(frame, "machine"))] ?? "ball";
-  out.pattern = sandtablePatterns[Math.round(knobs.value(frame, "pattern"))] ?? "cycle";
-  out.figure = sandtableFigures[Math.round(knobs.value(frame, "figure"))] ?? "cycle";
   out.speed = Math.max(0.05, knobs.value(frame, "speed"));
   out.pause = renew > 0 ? 60 * renew : undefined;
   out.seed = Math.round(knobs.value(frame, "drawings"));
   out.depth = clamp(knobs.value(frame, "depth"), 0, 1);
+  if (machine === "pendulum") {
+    out.figure = sandtableFigures[Math.round(knobs.value(frame, "figure"))] ?? "cycle";
+    return;
+  }
+  const mark = knobs.value(frame, "mark");
+  out.pattern = sandtablePatterns[Math.round(knobs.value(frame, "pattern"))] ?? "cycle";
   out.mark = mark > 0 ? markSize(mark) : 0;
   out.markNow = markSize(knobs.amount(frame, "mark"));
   out.rake = Math.round(knobs.value(frame, "rake"));
@@ -2111,22 +2094,117 @@ const UPLOAD_MS = 1000 / 30;
  */
 const SYNC_LAG = 0.25 * SANDTABLE.ball;
 
-class SandtableSim implements SceneSim {
-  readonly #knobs: KnobReader<Knob>;
-  readonly #field = new HeightField(SANDTABLE.grid, SANDTABLE.grid, 1);
+/**
+ * The sand the bed holds (its sim's affordances, LayerFrame.host): the height field the machine on
+ * the table works, which machine that is, and the heights the shader shows. The machine settles it
+ * at the end of its frame (`settle`: slumping, then the heights sent up as its tools ask); with no
+ * machine on the table, the bed does.
+ */
+export class SandtableSand {
+  readonly field = new HeightField(SANDTABLE.grid, SANDTABLE.grid, 1);
+  /** The machine working the table (its sim), or undefined while none is. */
+  holder: object | undefined = undefined;
   readonly #heights: DataTexture;
+  #uploadedAt = -Infinity;
+  #force = true;
+  /** The tools as they stood at the last heights upload: ball or funnel centre, and the edge's offset. */
+  readonly #shown = { x: 0, y: 0, edge: 0 };
+
+  constructor(gl: WebGL2RenderingContext) {
+    this.#heights = new DataTexture(gl, {
+      width: SANDTABLE.grid,
+      height: SANDTABLE.grid,
+      format: "r16f",
+    });
+  }
+
+  get texture(): WebGLTexture {
+    return this.#heights.texture;
+  }
+
+  /** A fresh table was laid: its heights go up at the next settle. */
+  laid(): void {
+    this.#force = true;
+  }
+
+  /**
+   * The sand slumps over `dt`, and its heights go up at most every UPLOAD_MS while it changes; every
+   * frame while the machines move in or out (`moving`), or once a tool (`state`, as a machine writes
+   * it: the ball, the stream while it pours, or the straight edge) has run on past SYNC_LAG since the
+   * last upload. Uploaded or unchanged, the sand on screen is then the sand as it is, with the tools
+   * where they are.
+   */
+  settle(
+    dt: number,
+    now: number,
+    state: Float32Array | undefined,
+    pouring: boolean,
+    moving: boolean,
+  ): void {
+    this.field.relax(TALUS, RELAX_RATE, dt, RELAX_ROWS);
+    const shown = this.#shown;
+    const lead =
+      state === undefined
+        ? 0
+        : Math.max(
+            pouring ? Math.hypot((state[0] ?? 0) - shown.x, (state[1] ?? 0) - shown.y) : 0,
+            (state[7] ?? 0) > 0 ? Math.abs((state[6] ?? 0) - shown.edge) : 0,
+          );
+    if (this.#force || moving || lead > SYNC_LAG || now - this.#uploadedAt >= UPLOAD_MS) {
+      if (this.field.upload(this.#heights)) this.#uploadedAt = now;
+      shown.x = state?.[0] ?? 0;
+      shown.y = state?.[1] ?? 0;
+      shown.edge = state?.[6] ?? 0;
+      this.#force = false;
+    }
+  }
+
+  dispose(): void {
+    this.#heights.dispose();
+  }
+}
+
+const stepOf = (frame: SimFrame): number =>
+  Math.min(Math.max(Number.isFinite(frame.dt) ? frame.dt : 0, 0), MAX_STEP);
+
+/** The bed's sim: the sand, lent to the machine on the table, settling on its own with none there. */
+export function sandBedSim(gl: WebGL2RenderingContext): LayerSim<OverheadRig> {
+  const sand = new SandtableSand(gl);
+  return {
+    affordances: sand,
+    frame(frame: LayerFrame<OverheadRig>) {
+      if (sand.holder === undefined) sand.settle(stepOf(frame), frame.now, undefined, false, false);
+      const field = frame.fields[SAND_FIELDS.heights];
+      if (field) field.texture = sand.texture;
+    },
+    dispose() {
+      sand.dispose();
+    },
+  };
+}
+
+/**
+ * A machine on the table (the ball's layer or the pendulum's): it takes the bed's sand once no other
+ * machine holds it, lays its opening table there (arriving, while its layer or the scene enters),
+ * works it, and settles it; the ball with the agents' rake. It gives the sand back when it goes.
+ */
+class SandtableMachine implements LayerSim<OverheadRig> {
+  readonly #machine: Machine;
+  readonly #knobs: KnobReader<Knob>;
   readonly #state: DataTexture;
   readonly #stateData = new Float32Array(12);
-  readonly #textures: readonly WebGLTexture[];
-  readonly #ball: Ball;
-  readonly #pendulum: Pendulum;
-  readonly #rake: SandRake;
+  /** The sand it works, and its machine and rake bound to that sand's field. */
+  #sand: SandtableSand | undefined;
+  #ball: Ball | undefined;
+  #pendulum: Pendulum | undefined;
+  #rake: SandRake | undefined;
+  /** Its opening table is laid on the sand it holds. */
+  #laid = false;
   /** The rake was out last frame: where the agents go to work then. */
   #raking = false;
   readonly #touch: Touch = { x: 0, y: 0, pressed: false, down: false };
   /** The knobs as settings, rewritten each frame. */
   readonly #settings: Settings = {
-    machine: "ball",
     pattern: "cycle",
     figure: "cycle",
     speed: 1,
@@ -2137,58 +2215,64 @@ class SandtableSim implements SceneSim {
     markNow: 0,
     rake: 0,
   };
-  /** Trigger slots of the "next drawing" and "M track" knobs. */
+  /** Trigger slots of the "next drawing" knob (the table's) and the ball's "M track". */
   readonly #nextSlot: number;
   readonly #markSlot: number;
-  /** The machine the table is laid out for; none until the first frame. */
-  #machine: Machine | undefined;
-  #uploadedAt = -Infinity;
-  #force = true;
-  /** The tools as they stood at the last heights upload: ball or funnel centre, and the edge's offset. */
-  readonly #shown = { x: 0, y: 0, edge: 0 };
-  /** What the machines are told of the scene's passage, rewritten each frame. */
+  /** What the machine is told of its passage each frame. */
   readonly #passage: Passage = { arrive: Infinity, leave: 0, aspect: 16 / 9 };
-  /** Whether the scene is arriving (decided on the first frame), and seconds since its table was laid. */
-  #arriving: boolean | undefined;
+  /** Whether it is arriving (decided as its table is laid), and seconds since that table was laid. */
+  #arriving = false;
   #arrived = 0;
 
-  constructor(gl: WebGL2RenderingContext, knobs: KnobReader<Knob>) {
+  constructor(gl: WebGL2RenderingContext, machine: Machine, knobs: KnobReader<Knob>) {
+    this.#machine = machine;
     this.#knobs = knobs;
     this.#nextSlot = knobs.trigger("renew");
-    this.#markSlot = knobs.trigger("mark");
-    this.#heights = new DataTexture(gl, {
-      width: SANDTABLE.grid,
-      height: SANDTABLE.grid,
-      format: "r16f",
-    });
+    this.#markSlot = machine === "ball" ? knobs.trigger("mark") : -1;
     this.#state = new DataTexture(gl, {
       width: 3,
       height: 1,
       format: "rgba16f",
       filter: "nearest",
     });
-    this.#textures = [this.#heights.texture, this.#state.texture];
-    this.#ball = new Ball(this.#field);
-    this.#pendulum = new Pendulum(this.#field);
-    this.#rake = new SandRake(this.#field);
   }
 
-  frame(frame: SimFrame): readonly (WebGLTexture | undefined)[] {
-    const dt = Math.min(Math.max(Number.isFinite(frame.dt) ? frame.dt : 0, 0), MAX_STEP);
+  frame(frame: LayerFrame<OverheadRig>): void {
+    const field = frame.fields[MACHINE_FIELDS.state];
+    const host = frame.host("sandBed");
+    const sand = host instanceof SandtableSand ? host : undefined;
+    // Off the table until the sand is free: the other machine still sweeps its own table away.
+    if (sand === undefined || (sand.holder !== undefined && sand.holder !== this)) {
+      if (field) field.texture = undefined;
+      return;
+    }
+    if (sand !== this.#sand) {
+      this.#sand = sand;
+      this.#ball = this.#machine === "ball" ? new Ball(sand.field) : undefined;
+      this.#pendulum = this.#machine === "pendulum" ? new Pendulum(sand.field) : undefined;
+      this.#rake = this.#machine === "ball" ? new SandRake(sand.field) : undefined;
+      this.#laid = false;
+    }
+    sand.holder = this;
+
+    const dt = stepOf(frame);
     const settings = this.#settings;
-    readSettings(this.#knobs, frame, settings);
+    readSettings(this.#knobs, this.#machine, frame, settings);
     const touch = this.#readTouch(frame);
     const passage = this.#passage;
     passage.aspect = aspectOf(frame);
     passage.leave = clamp(frame.passage.exit, 0, 1);
-    if (this.#arriving === undefined) this.#arriving = frame.passage.enter < 1;
-    // The opening table is laid out on the first frame, the first time the page's knobs are known,
-    // and afresh whenever the machine changes. Only the first has an entrance.
+    // The opening table is laid as the machine takes the sand, the first time the page's knobs are
+    // known; it arrives while its layer (or the scene) is entering.
     let laid = false;
-    if (settings.machine !== this.#machine) {
-      const first = this.#machine === undefined;
-      this.#lay(settings, first && this.#arriving ? passage.aspect : undefined);
-      if (!first) this.#arriving = false;
+    if (!this.#laid) {
+      this.#arriving = frame.passage.enter < 1;
+      this.#arrived = 0;
+      const aspect = this.#arriving ? passage.aspect : undefined;
+      if (this.#ball) this.#ball.reset(settings, aspect);
+      if (this.#pendulum) this.#pendulum.reset(settings, aspect);
+      sand.laid();
+      this.#laid = true;
       laid = true;
     }
     if (this.#arriving) {
@@ -2202,7 +2286,7 @@ class SandtableSim implements SceneSim {
     const state = this.#stateData;
     this.#raking =
       settings.rake > 0 &&
-      settings.machine === "ball" &&
+      this.#ball !== undefined &&
       passage.arrive === Infinity &&
       passage.leave === 0;
     const grab =
@@ -2211,80 +2295,48 @@ class SandtableSim implements SceneSim {
         Math.hypot(touch.x - (state[0] ?? 0), touch.y - (state[1] ?? 0)) < RAKE_GRAB);
     touch.pressed = grab;
 
-    const machine = settings.machine;
-    switch (machine) {
-      case "ball":
-        this.#ball.frame(
-          dt,
-          frame.motion,
-          touch,
-          settings,
-          frame.fired[this.#nextSlot] === true,
-          frame.fired[this.#markSlot] === true,
-          passage,
-        );
-        this.#ball.write(this.#stateData);
-        break;
-      case "pendulum":
-        this.#pendulum.frame(
-          dt,
-          frame.motion,
-          touch,
-          settings,
-          frame.fired[this.#nextSlot] === true,
-          passage,
-        );
-        this.#pendulum.write(this.#stateData);
-        break;
-      default: {
-        const unreachable: never = machine;
-        throw new SandtableError(`sandtable: unknown machine ${String(unreachable)}`);
-      }
+    const next = frame.fired[this.#nextSlot] === true;
+    if (this.#ball) {
+      this.#ball.frame(
+        dt,
+        frame.motion,
+        touch,
+        settings,
+        next,
+        frame.fired[this.#markSlot] === true,
+        passage,
+      );
+      this.#ball.write(state);
+    }
+    if (this.#pendulum) {
+      this.#pendulum.frame(dt, frame.motion, touch, settings, next, passage);
+      this.#pendulum.write(state);
     }
     if (this.#raking)
-      this.#rake.frame(frame.principals, passage.aspect, settings.rake, settings.depth, grab, dt);
-    else this.#rake.lift();
-    this.#field.relax(TALUS, RELAX_RATE, dt, RELAX_ROWS);
+      this.#rake?.frame(frame.principals, passage.aspect, settings.rake, settings.depth, grab, dt);
+    else this.#rake?.lift();
 
-    const now = frame.now;
-    // While the machines move in or out the sand is shown as it is, every frame; so it is while a
-    // tool has run on past SYNC_LAG since the last upload.
-    const moving = passage.arrive !== Infinity || passage.leave > 0;
-    const shown = this.#shown;
-    const pouring = machine === "ball" || (state[3] ?? 0) > 0;
-    const lead = Math.max(
-      pouring ? Math.hypot((state[0] ?? 0) - shown.x, (state[1] ?? 0) - shown.y) : 0,
-      (state[7] ?? 0) > 0 ? Math.abs((state[6] ?? 0) - shown.edge) : 0,
+    // While the machine moves in or out the sand is shown as it is, every frame.
+    sand.settle(
+      dt,
+      frame.now,
+      state,
+      this.#ball !== undefined || (state[3] ?? 0) > 0,
+      passage.arrive !== Infinity || passage.leave > 0,
     );
-    if (this.#force || moving || lead > SYNC_LAG || now - this.#uploadedAt >= UPLOAD_MS) {
-      if (this.#field.upload(this.#heights)) this.#uploadedAt = now;
-      // Uploaded or unchanged, the sand on screen is the sand as it is, with the tools where they are.
-      shown.x = state[0] ?? 0;
-      shown.y = state[1] ?? 0;
-      shown.edge = state[6] ?? 0;
-      this.#force = false;
-    }
-    this.#state.upload(this.#stateData);
-    return this.#textures;
+    this.#state.upload(state);
+    if (field) field.texture = this.#state.texture;
   }
 
   /** While the rake is out, its sites, but those by the ball: where the agents go to comb the sand. */
   interest(aspect: number): readonly ScenePoint[] {
-    if (!this.#raking) return NO_SITES;
+    if (!this.#raking || this.#rake === undefined) return NO_SITES;
     return this.#rake.interest(aspect, this.#stateData[0] ?? 0, this.#stateData[1] ?? 0);
   }
 
   dispose(): void {
-    this.#heights.dispose();
+    if (this.#sand?.holder === this) this.#sand.holder = undefined;
     this.#state.dispose();
-  }
-
-  /** A fresh table for the settings' machine, already part way through its work (or, arriving, short of its last moments). */
-  #lay(settings: Settings, aspect: number | undefined): void {
-    this.#machine = settings.machine;
-    if (settings.machine === "ball") this.#ball.reset(settings, aspect);
-    else this.#pendulum.reset(settings, aspect);
-    this.#force = true;
   }
 
   /** The pointer in field units from the table's centre (the shader's mapping, inverted). */
@@ -2302,8 +2354,22 @@ class SandtableSim implements SceneSim {
   }
 }
 
-/** The sand table, for a scene whose `params` carry the knobs `Knob` names. */
-export function sandtableSim(params: readonly ParamDef[]): SimFactory {
-  const knobs = new KnobReader<Knob>("sandtable", params, SANDTABLE_KNOBS);
-  return (gl) => new SandtableSim(gl, knobs);
+/** The steel ball's layer sim: the ball, its drawings, its M and the agents' rake on its table. */
+export function ballSim(
+  gl: WebGL2RenderingContext,
+  params: readonly ParamDef[],
+): LayerSim<OverheadRig> {
+  return new SandtableMachine(gl, "ball", new KnobReader<Knob>("ball", params, BALL_KNOBS));
+}
+
+/** The pendulum's layer sim: the funnel trickling its rosettes onto the slate, and the wipe. */
+export function pendulumSim(
+  gl: WebGL2RenderingContext,
+  params: readonly ParamDef[],
+): LayerSim<OverheadRig> {
+  return new SandtableMachine(
+    gl,
+    "pendulum",
+    new KnobReader<Knob>("pendulum", params, PENDULUM_KNOBS),
+  );
 }

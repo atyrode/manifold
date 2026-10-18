@@ -1,19 +1,36 @@
-// The sand table's picture, from straight above: the sand (or slate) of the sim's height field
-// (sim.ts), lit by one low lamp standing off beyond the table, inside a walnut or brass rim on a
-// dark floor; and on it the steel ball, or the pendulum's funnel, string and wiping edge.
-//   uSim0  heights, field units (r16f), the field square centred on the table
-//   uSim1  texel 0: ball or funnel centre (field units from the table's centre), shown, stream
-//          texel 1: wiping edge normal, offset of its middle along it, shown (the pendulum's wipe;
-//          for the ball only while the scene leaves)
-//          texel 2: M lit, M height (field units), ball: M drawn so far (mark units, signed by the
-//          foot it set off from) / pendulum: funnel fill
+// The sand table's layers' GLSL (layers.ts), under the overhead composer (composer/overhead-glsl.ts):
+// the table from straight above, the sand (or slate) of the bed's height field (sim.ts) lit by one
+// low lamp standing off beyond it, inside a walnut or brass rim on a dark floor (sandBed, the bed);
+// the lamp (tableLamp); on the table the steel ball (ball), or the pendulum's funnel, string and
+// wiping edge (pendulum).
+//   sandBedField0   heights, field units (r16f), the field square centred on the table
+//   ballField0      the ball's state (rgba16f, 3 texels); pendulumField0 the pendulum's, the same:
+//                   texel 0: ball or funnel centre (field units from the table's centre), shown, stream
+//                   texel 1: wiping edge normal, offset of its middle along it, shown (the pendulum's
+//                   wipe; for the ball only while it leaves)
+//                   texel 2: M lit, M height (field units), ball: M drawn so far (mark units, signed
+//                   by the foot it set off from) / pendulum: funnel fill
 // Field space: x right, y up, field units from the table's centre; the screen shows SANDTABLE.span
-// view heights per field unit (times the aspect on a portrait screen).
-// Knobs read here: K_machine, K_sand, K_depth, K_sparkle, K_light, K_height, K_rim.
+// view heights per field unit (times the aspect on a portrait screen). The shared chunk's begin sets
+// the cell's point and the light (the patch's, until the lamp's begin sets the table's own); each
+// machine's begin takes its shadows off the lamp's light on everything beneath it (sandtableVis),
+// and the pendulum's sets the slate finish; the bed then lights the sand, the rim and the floor; the
+// ball's M glows in the sand it carved (its floor pass), the machines stand over it (stand), and the
+// bed's grade inks the picture with the accent every layer gathered.
+// Knobs read here: the bed's K_sand, K_depth, K_sparkle, K_rim; the lamp's K_light, K_height.
+import type { OverheadRig, SharedGlsl } from "../../composer/types.ts";
 import { glslFloat } from "../../shaders/glsl.ts";
-import { SANDTABLE } from "./sim.ts";
+import { SANDTABLE } from "./constants.ts";
 
-export const sandtableGlsl = `
+/** The lamp's default height (the lamp knob's), at which the patch's light rakes the table without it. */
+const LAMP_HEIGHT = 0.45;
+
+/** What every sand table layer shares: the table's numbers, the cell's point, the light, the metal. */
+export const sandtableSharedGlsl: SharedGlsl<OverheadRig> = {
+  id: "sandtable",
+  begin: "sandtableBegin",
+  glsl: () => `
+// ---- sand table (scenes/sandtable/shader.ts) ----
 const float SANDTABLE_SPAN = ${glslFloat(SANDTABLE.span)};
 const float SANDTABLE_SAND = ${glslFloat(SANDTABLE.sand)};
 const float SANDTABLE_RIM = ${glslFloat(SANDTABLE.rim)};
@@ -28,6 +45,7 @@ const float SANDTABLE_EDGE_H = ${glslFloat(SANDTABLE.edgeHeight)};
 const float SANDTABLE_DEPTH_MIN = ${glslFloat(SANDTABLE.depthMin)};
 const float SANDTABLE_DEPTH_RANGE = ${glslFloat(SANDTABLE.depthRange)};
 const float SANDTABLE_LAMP_D = 2.4;    // how far out from the table's centre the lamp stands
+const float SANDTABLE_LAMP_HEIGHT = ${glslFloat(LAMP_HEIGHT)};
 const float SANDTABLE_PIVOT = 2.2;     // the pendulum's string hangs from this high over the centre
 const float SANDTABLE_DROP = 0.32;     // the floor lies this far below the sand
 const vec3 SANDTABLE_LAMP = vec3(1.0, 0.8, 0.56);      // warm tungsten
@@ -38,6 +56,47 @@ const vec3 SANDTABLE_WALNUT = vec3(0.3, 0.165, 0.085);
 const vec3 SANDTABLE_BRASS = vec3(0.88, 0.66, 0.31);
 const vec3 SANDTABLE_FLOOR = vec3(0.05, 0.043, 0.038);
 const vec3 SANDTABLE_CORD = vec3(0.62, 0.55, 0.44);
+const float SANDTABLE_RIM_OUT = SANDTABLE_SAND + SANDTABLE_RIM;
+
+// The cell (sandtableBegin): its point in field units, a cell's size there, the ball's radius (never
+// below ten cells across, or the dither has nothing to draw it with); the lamp (field units) and the
+// sine of its height; how much of the lamp's light reaches the table here past what stands on or
+// hangs over it (each machine's begin takes its shadows off); the slate finish (the pendulum's
+// begin); the accent the layers gather for the grade; and what the bed leaves for the ball's M: the
+// sand's height, how squarely the lamp falls on it, and how far the rim covers the cell.
+vec2 sandtableP;
+float sandtablePx;
+float sandtableBallR;
+vec3 sandtableLamp;
+float sandtableSinE;
+float sandtableVis;
+bool sandtableSlate;
+float sandtableAccent;
+float sandtableH;
+float sandtableLit;
+float sandtableInRim;
+
+// The lamp at bearing az (radians round the table) and elevation from the table's centre.
+void sandtableLampAt(float az, float elev) {
+  sandtableSinE = sin(elev);
+  sandtableLamp = SANDTABLE_LAMP_D * vec3(cos(az), sin(az), tan(elev));
+}
+
+void sandtableBegin(inout Patch x) {
+  float span = SANDTABLE_SPAN * min(1.0, x.aspect);
+  sandtableP = vec2((x.uv.x - 0.5) * x.aspect, x.uv.y - 0.5) / span;
+  sandtablePx = 1.0 / (uRes.y * span);
+  sandtableBallR = max(SANDTABLE_BALL, 5.0 * sandtablePx);
+  // The patch's light, from where it stands round the frame, at the lamp's default height, until
+  // the lamp's begin sets the table's own.
+  sandtableLampAt(atan(x.sun.y, x.sun.x), mix(0.1, 0.95, SANDTABLE_LAMP_HEIGHT));
+  sandtableVis = 1.0;
+  sandtableSlate = false;
+  sandtableAccent = 0.0;
+  sandtableH = 0.0;
+  sandtableLit = 1.0;
+  sandtableInRim = 0.0;
+}
 
 // The sand's own colour: pale silica, black basalt, or ochre.
 vec3 sandtableSandColor() {
@@ -46,9 +105,9 @@ vec3 sandtableSandColor() {
   return vec3(0.8, 0.55, 0.3);
 }
 
-// Height of the sand above its rest level at p (field units from the table's centre).
-float sandtableHeight(vec2 p) {
-  return uSimOn.x > 0.5 ? texture(uSim0, p + 0.5).r : 0.0;
+// Level, lamplit ground: what the polished metal mirrors round its sides.
+vec3 sandtableAround() {
+  return (sandtableSlate ? SANDTABLE_SLATE : sandtableSandColor()) * (SANDTABLE_ROOM + 0.42 * SANDTABLE_LAMP);
 }
 
 // Where a point at height z over the table at 'at' throws its shadow from the lamp.
@@ -71,9 +130,201 @@ vec3 sandtableBrass(vec3 n, vec2 p, float z, vec3 lamp, float sinE, vec3 around,
   return SANDTABLE_BRASS * (0.85 * env + SANDTABLE_LAMP * fall * (0.12 * dif * vis + spark));
 }
 
+// The wiping edge's shadow: the band between the bar and where its top edge's shadow lands.
+float sandtableEdgeShadow(vec2 p, vec4 edge, vec3 lamp) {
+  if (edge.w <= 0.0) return 0.0;
+  vec2 mid = edge.xy * edge.z;
+  float shift = dot(sandtableCast(lamp, mid, SANDTABLE_EDGE_H) - mid, edge.xy);
+  float d = dot(p, edge.xy) - edge.z;
+  float lo = -0.5 * SANDTABLE_EDGE + min(shift, 0.0);
+  float hi = 0.5 * SANDTABLE_EDGE + max(shift, 0.0);
+  float band = smoothstep(lo - 0.003, lo + 0.001, d) * (1.0 - smoothstep(hi - 0.001, hi + 0.003, d));
+  float along = abs(dot(p, vec2(-edge.y, edge.x)));
+  return 0.7 * edge.w * band * (1.0 - smoothstep(SANDTABLE_RIM_OUT + 0.026, SANDTABLE_RIM_OUT + 0.036, along));
+}
+
+// The wiping edge: a brass bar longer than the table is wide, resting across the rim, rounded on top.
+vec3 sandtableEdgeBar(vec3 under, vec2 p, vec4 edge, vec3 lamp, float sinE, vec3 around, float px, inout float spark) {
+  if (edge.w <= 0.0) return under;
+  float d = dot(p, edge.xy) - edge.z;
+  float along = abs(dot(p, vec2(-edge.y, edge.x)));
+  float halfW = 0.5 * SANDTABLE_EDGE;
+  float halfLen = SANDTABLE_RIM_OUT + 0.03;
+  float cover = edge.w * (1.0 - smoothstep(halfW - px, halfW + px, abs(d))) * (1.0 - smoothstep(halfLen - px, halfLen + px, along));
+  if (cover <= 0.0) return under;
+  float phi = clamp(d / halfW, -1.0, 1.0) * 1.2;
+  float shine;
+  vec3 col = sandtableBrass(vec3(edge.xy * sin(phi), cos(phi)), p, SANDTABLE_EDGE_H, lamp, sinE, around, 1.0, shine);
+  spark = max(spark, cover * min(shine, 1.0));
+  return mix(under, col, cover);
+}
+`,
+};
+
+/** The bed: the sand (or the slate) of the height field, the rim, the floor; the picture's ink. */
+export const sandBedGlsl = `
+// Height of the sand above its rest level at p (field units from the table's centre).
+float sandBedHeight(vec2 p) {
+  return sandBedField0On() ? texture(sandBedField0, p + 0.5).r : 0.0;
+}
+
+// The sand at p (on the slate, the sand trickled onto it): lit by the lamp, shadowed by its own
+// relief and by the rim, grains glinting where a facet catches the lamp. vis is what else shades the
+// lamp here. Returns the colour; h the height, lit how squarely the lamp falls on it (1 = as on
+// level sand).
+vec3 sandBedSurface(vec2 p, vec2 cell, vec3 lamp, float sinE, float vis, bool slate, bool framed, vec3 sand, out float h, out float lit) {
+  float e = 1.0 / SANDTABLE_GRID;
+  h = sandBedHeight(p);
+  vec2 slope = vec2(
+    sandBedHeight(p + vec2(e, 0.0)) - sandBedHeight(p - vec2(e, 0.0)),
+    sandBedHeight(p + vec2(0.0, e)) - sandBedHeight(p - vec2(0.0, e))
+  ) / (2.0 * e);
+  vec3 n = normalize(vec3(-slope, 1.0));
+  vec3 toL = lamp - vec3(p, h);
+  float fall = dot(lamp, lamp) / dot(toL, toL);
+  vec3 L = normalize(toL);
+  // The lamp is a broad shade, not a point: its light wraps a little way round onto slopes facing
+  // away, so their shadow sides fall to dim sand rather than black.
+  lit = max(dot(n, L) + 0.3, 0.0) / (sinE + 0.3);
+
+  // Shadows: the relief between here and the lamp, a few steps out (the penumbra widening with
+  // distance); then the rim's, a crescent along the side nearest the lamp.
+  vec2 ld = normalize(toL.xy);
+  float rise = toL.z / length(toL.xy);
+  float shadow = 0.0;
+  for (int k = 1; k <= 6; k++) {
+    float d = float(k) * 0.0035;
+    float over = sandBedHeight(p + ld * d) - h - d * rise;
+    shadow = max(shadow, smoothstep(0.0, 0.0002 + 0.04 * d, over));
+  }
+  if (framed) {
+    float b = dot(p, ld);
+    float reach = sqrt(max(b * b - dot(p, p) + SANDTABLE_SAND * SANDTABLE_SAND, 0.0)) - b;
+    float w = 0.001 + 0.02 * reach;
+    shadow = max(shadow, smoothstep(-w, w, SANDTABLE_RIM_H - h - reach * rise));
+  }
+
+  // The sand's colour, mottled a little and grain by grain (fixed to the cells, so it never crawls).
+  vec3 albedo = sand * (1.0 + 0.08 * (vnoise(p * 150.0) - 0.5) + 0.08 * (hash12(cell) - 0.5));
+  float cover = 1.0;
+  if (slate) {
+    cover = smoothstep(0.00002, 0.00045, h);
+    float cleft = vnoise(rotate(p, 0.6) * vec2(5.0, 38.0));
+    vec3 slab = SANDTABLE_SLATE * (0.88 + 0.16 * vnoise(p * 6.0 + 4.3) + 0.1 * cleft);
+    albedo = mix(slab, albedo, cover);
+  }
+  // Grooves see less of the room; so does the sand tucked in against the rim.
+  float cavity = clamp(1.0 + 40.0 * min(h, 0.0), 0.7, 1.0);
+  if (framed) cavity *= 1.0 - 0.35 * smoothstep(SANDTABLE_SAND - 0.014, SANDTABLE_SAND, length(p));
+  // Sand scatters a little light into its own shade: shadows stay dim sand, never black holes.
+  float light = fall * vis * (1.0 - 0.8 * shadow);
+  vec3 col = albedo * (SANDTABLE_ROOM * (0.55 + 0.45 * n.z) * cavity + SANDTABLE_LAMP * (0.42 * min(lit, 2.2) * light));
+
+  // Glints: a few grains in a hundred are tiny mirrors, each tilted its own way, flashing when one
+  // turns the lamp up toward us. They hold still while the sand does, and wake along a new groove.
+  float black = step(0.5, K_sand) * step(K_sand, 1.5);
+  float density = mix(0.025, 0.08, black) * 2.0 * K_sparkle * cover;
+  if (hash12(cell + 71.3) > 1.0 - density) {
+    vec2 tilt = vec2(hash12(cell + 19.1), hash12(cell + 47.7)) - 0.5;
+    vec3 facet = normalize(n + vec3(1.8 * tilt, 0.0));
+    float glint = smoothstep(0.95, 0.993, dot(facet, normalize(L + vec3(0.0, 0.0, 1.0))));
+    col += SANDTABLE_LAMP * (1.2 * glint * light);
+  }
+  return col;
+}
+
+// The rim, a rounded band round the sand: dark walnut (rings of bent grain, a lacquer sheen on the
+// bevels that face the lamp) or polished brass.
+vec3 sandBedRim(vec2 p, float r, vec3 lamp, float sinE, bool brass, vec3 around, float vis) {
+  float u = clamp((r - SANDTABLE_SAND) / SANDTABLE_RIM, 0.0, 1.0);
+  vec2 radial = p / max(r, 1e-4);
+  float phi = (u - 0.5) * 2.4;
+  vec3 n = vec3(radial * sin(phi), cos(phi));
+  float shine;
+  if (brass) return sandtableBrass(n, p, SANDTABLE_RIM_H, lamp, sinE, around, vis, shine);
+  vec3 toL = lamp - vec3(p, SANDTABLE_RIM_H);
+  float fall = dot(lamp, lamp) / dot(toL, toL);
+  vec3 L = normalize(toL);
+  float dif = max(dot(n, L), 0.0) / sinE;
+  float grain = sin(r * 520.0 + 9.0 * vnoise(p * 22.0));
+  vec3 wood = SANDTABLE_WALNUT * (0.84 + 0.16 * grain) * (0.9 + 0.2 * vnoise(p * 70.0));
+  float gloss = pow(max(dot(n, normalize(L + vec3(0.0, 0.0, 1.0))), 0.0), 36.0);
+  return wood * (SANDTABLE_ROOM + SANDTABLE_LAMP * (0.42 * fall * dif * vis)) + SANDTABLE_LAMP * (0.14 * gloss * fall * vis);
+}
+
+// The floor round the table, nearly black, and the table's own soft shadow thrown off across it.
+vec3 sandBedFloor(vec2 p, float r, vec3 lamp, float sinE, float vis) {
+  vec3 toL = lamp - vec3(p, -SANDTABLE_DROP);
+  float fall = dot(lamp, lamp) / dot(toL, toL);
+  vec2 ld = normalize(toL.xy);
+  float rise = toL.z / length(toL.xy);
+  float b = dot(p, ld);
+  float disc = b * b - dot(p, p) + SANDTABLE_RIM_OUT * SANDTABLE_RIM_OUT;
+  float shadow = 0.0;
+  if (disc > 0.0 && b < 0.0) {
+    // The ray toward the lamp meets the table: in shadow while it meets it below the top.
+    float enter = -b - sqrt(disc);
+    shadow = 1.0 - smoothstep(-0.02, 0.02, enter * rise - SANDTABLE_DROP);
+  }
+  float ao = 1.0 - 0.6 * exp(-(r - SANDTABLE_RIM_OUT) / 0.025);
+  vec3 ground = SANDTABLE_FLOOR * (0.85 + 0.3 * vnoise(p * 7.0));
+  float dif = normalize(toL).z / sinE;
+  return ground * ao * (SANDTABLE_ROOM + SANDTABLE_LAMP * (0.42 * fall * dif * (1.0 - 0.85 * shadow) * vis));
+}
+
+// The table: the sand inside the rim, the rim, the floor beyond, each lit by the lamp past what
+// shades it (sandtableVis).
+void sandBedBed(Patch x, inout Spot c) {
+  vec2 p = sandtableP;
+  float px = sandtablePx;
+  float r = length(p);
+  bool framed = K_rim < 1.5;
+  bool brass = framed && K_rim > 0.5;
+  vec3 lamp = sandtableLamp;
+  float sinE = sandtableSinE;
+  float vis = sandtableVis;
+  float inRim = framed ? smoothstep(SANDTABLE_SAND - px, SANDTABLE_SAND + px, r) : 0.0;
+  float outRim = framed ? smoothstep(SANDTABLE_RIM_OUT - px, SANDTABLE_RIM_OUT + px, r) : 0.0;
+  sandtableInRim = inRim;
+  vec3 col = vec3(0.0);
+  if (inRim < 1.0)
+    col += (1.0 - inRim) * sandBedSurface(p, x.cell, lamp, sinE, vis, sandtableSlate, framed, sandtableSandColor(), sandtableH, sandtableLit);
+  if (inRim > outRim) {
+    vec3 rim = sandBedRim(p, r, lamp, sinE, brass, sandtableAround(), vis);
+    col += (inRim - outRim) * rim;
+    if (brass) sandtableAccent = max(sandtableAccent, (inRim - outRim) * clamp(1.5 * dot(rim, LUMA), 0.0, 1.0));
+  }
+  if (outRim > 0.0) col += outRim * sandBedFloor(p, r, lamp, sinE, vis);
+  c.col = col;
+}
+
+// The picture's ink, and the accent the layers gathered: the M's glow, the brass, the steel's spark.
+void sandBedGrade(Patch x, inout Spot c) {
+  c.o = shadeOf(c.col, inkOf(c.col, 1.35, 1.0), clamp(sandtableAccent, 0.0, 1.0));
+}
+`;
+
+/** The lamp: where it stands round the table and how high, as the table's light and the patch's. */
+export const tableLampGlsl = `
+// The lamp, standing off beyond the table: K_light round it, K_height up. It is the patch's light
+// too, where it stands on the frame.
+void tableLampBegin(inout Patch x) {
+  sandtableLampAt(K_light * TAU, mix(0.1, 0.95, K_height));
+  x.sun = sandtableLamp.xy * SANDTABLE_SPAN * min(1.0, x.aspect);
+  x.sunUV = x.sun / vec2(x.aspect, 1.0) + 0.5;
+}
+`;
+
+/** The steel ball: its shadow, the M it carves, the ball itself and its wiping edge on the way out. */
+export const ballGlsl = `
+// The ball's state (ballField0): its centre, shown; the edge; the M.
+vec4 ballS0;
+vec4 ballS1;
+vec4 ballS2;
+
 // The steel ball's shadow (ball of radius rb): an ellipse thrown away from the lamp, the longer the
 // lower the lamp, and a soft dark ring where it sits down in its groove.
-float sandtableBallShadow(vec2 p, vec4 ball, float rb, vec3 lamp, float sinE) {
+float ballShadow(vec2 p, vec4 ball, float rb, vec3 lamp, float sinE) {
   if (ball.z <= 0.0) return 0.0;
   vec2 c = sandtableCast(lamp, ball.xy, 0.8 * rb);
   vec2 away = c - ball.xy;
@@ -85,10 +336,25 @@ float sandtableBallShadow(vec2 p, vec4 ball, float rb, vec3 lamp, float sinE) {
   return ball.z * max(0.88 * thrown, 0.7 * foot);
 }
 
+// The ball's state for this cell, and its shadows (the ball's, the edge's) off the lamp's light.
+void ballBegin(inout Patch x) {
+  ballS0 = vec4(0.0);
+  ballS1 = vec4(0.0);
+  ballS2 = vec4(0.0);
+  if (ballField0On()) {
+    ballS0 = texelFetch(ballField0, ivec2(0, 0), 0);
+    ballS1 = texelFetch(ballField0, ivec2(1, 0), 0);
+    ballS2 = texelFetch(ballField0, ivec2(2, 0), 0);
+  }
+  vec2 p = sandtableP;
+  sandtableVis *= (1.0 - ballShadow(p, ballS0, sandtableBallR, sandtableLamp, sandtableSinE))
+    * (1.0 - sandtableEdgeShadow(p, ballS1, sandtableLamp));
+}
+
 // The part of the M the ball has drawn so far, 0..1 at q (mark units): drawn is the length along
 // its one stroke, foot to foot (positive from the left foot, negative from the right), width the
 // stroke's half width and aa a cell, both in mark units.
-float sandtableMarkDrawn(vec2 q, float drawn, float width, float aa) {
+float ballMarkDrawn(vec2 q, float drawn, float width, float aa) {
   float lit = 0.0;
   float along = 0.0;
   float reach = abs(drawn);
@@ -106,10 +372,69 @@ float sandtableMarkDrawn(vec2 q, float drawn, float width, float aa) {
   return lit;
 }
 
+// The Manifold M, while it lies in the sand: as far as the ball has carved it, lit and glowing a
+// warm brass.
+void ballFloor(Patch x, inout Spot c) {
+  vec4 s2 = ballS2;
+  if (sandtableInRim >= 1.0 || s2.x <= 0.0 || s2.y <= 0.0) return;
+  float drawn = ballMarkDrawn(sandtableP / s2.y, s2.z, 0.45 * SANDTABLE_GROOVE / s2.y, sandtablePx / s2.y);
+  float depth = SANDTABLE_DEPTH_MIN + SANDTABLE_DEPTH_RANGE * K_depth;
+  float carved = 1.0 - smoothstep(-0.45 * depth, -0.15 * depth, sandtableH);
+  float accent = s2.x * drawn * carved * (0.5 + 0.5 * clamp(sandtableLit, 0.0, 1.0)) * (1.0 - sandtableInRim);
+  c.col += 0.3 * accent * SANDTABLE_BRASS;
+  sandtableAccent = max(sandtableAccent, accent);
+}
+
+// The steel ball of radius rb, polished: a small convex mirror of the dark room, seen from above.
+// Its crown mirrors the ceiling, dimly warm with the lamp's spill; a dark band all round mirrors
+// the unlit walls; outside it a bright ring mirrors the lamplit sand (bright toward the lamp, dim
+// away from it), darkening at the very edge where it mirrors its own shadow. The lamp is a white
+// hot spot a few cells across at the band's inner edge (into spark, for the accent), so it rolls
+// along rather than flickers.
+vec3 ballSteel(vec3 under, vec2 p, vec4 ball, float rb, vec3 lamp, vec3 around, float px, inout float spark) {
+  if (ball.z <= 0.0) return under;
+  vec2 q = (p - ball.xy) / rb;
+  float d = length(q);
+  float aa = px / rb;
+  float cover = ball.z * (1.0 - smoothstep(1.0 - aa, 1.0 + aa, d));
+  if (cover <= 0.0) return under;
+  vec3 n = vec3(q, sqrt(max(1.0 - d * d, 0.0)));
+  vec3 toL = lamp - vec3(ball.xy, rb);
+  vec3 L = normalize(toL);
+  float fall = dot(lamp, lamp) / dot(toL, toL);
+  vec3 R = reflect(vec3(0.0, 0.0, -1.0), n);
+  float facing = dot(normalize(R.xy + 1e-5), normalize(L.xy));
+  vec3 ground = around * mix(0.25, 2.5, smoothstep(-0.5, 0.8, facing)) * smoothstep(-1.0, -0.6, R.z);
+  vec3 env = mix(ground, vec3(0.012, 0.012, 0.016), smoothstep(-0.02, 0.1, R.z));
+  env = mix(env, SANDTABLE_NIGHT + 0.34 * SANDTABLE_LAMP, smoothstep(0.45, 0.62, R.z));
+  float s = max(dot(R, L), 0.0);
+  float hot = 3.0 * smoothstep(0.86, 0.95, s) + 0.5 * pow(s, 8.0);
+  vec3 steel = 0.85 * env * vec3(0.9, 0.93, 1.0) + SANDTABLE_LAMP * hot * fall;
+  spark = max(spark, cover * min(hot, 1.0));
+  return mix(under, steel, cover);
+}
+
+// On the table: the wiping edge (on the way out), then the ball.
+void ballStand(Patch x, inout Spot c) {
+  float spark = 0.0;
+  vec3 around = sandtableAround();
+  c.col = sandtableEdgeBar(c.col, sandtableP, ballS1, sandtableLamp, sandtableSinE, around, sandtablePx, spark);
+  c.col = ballSteel(c.col, sandtableP, ballS0, sandtableBallR, sandtableLamp, around, sandtablePx, spark);
+  sandtableAccent = max(sandtableAccent, spark);
+}
+`;
+
+/** The pendulum: its shadows, the slate it pours onto, its string, its funnel and its wiping edge. */
+export const pendulumGlsl = `
+// The pendulum's state (pendulumField0): the funnel, shown, its stream; the edge; its fill.
+vec4 pendulumS0;
+vec4 pendulumS1;
+vec4 pendulumS2;
+
 // The pendulum's shadows on the table: the thin falling stream, the funnel's mouth (a soft disc,
 // the softer the higher it hangs), and its string running on away from the lamp: one chain that
 // sweeps across the table with every swing.
-float sandtablePendulumShadow(vec2 p, vec4 bob, vec3 lamp, float px) {
+float pendulumShadow(vec2 p, vec4 bob, vec3 lamp, float px) {
   if (bob.z <= 0.0) return 0.0;
   float shade = 0.0;
   float top = SANDTABLE_FUNNEL_H;
@@ -139,171 +464,26 @@ float sandtablePendulumShadow(vec2 p, vec4 bob, vec3 lamp, float px) {
   return shade * bob.z;
 }
 
-// The wiping edge's shadow: the band between the bar and where its top edge's shadow lands.
-float sandtableEdgeShadow(vec2 p, vec4 edge, vec3 lamp, float rimOut) {
-  if (edge.w <= 0.0) return 0.0;
-  vec2 mid = edge.xy * edge.z;
-  float shift = dot(sandtableCast(lamp, mid, SANDTABLE_EDGE_H) - mid, edge.xy);
-  float d = dot(p, edge.xy) - edge.z;
-  float lo = -0.5 * SANDTABLE_EDGE + min(shift, 0.0);
-  float hi = 0.5 * SANDTABLE_EDGE + max(shift, 0.0);
-  float band = smoothstep(lo - 0.003, lo + 0.001, d) * (1.0 - smoothstep(hi - 0.001, hi + 0.003, d));
-  float along = abs(dot(p, vec2(-edge.y, edge.x)));
-  return 0.7 * edge.w * band * (1.0 - smoothstep(rimOut + 0.026, rimOut + 0.036, along));
-}
-
-// The sand at p (under the pendulum, the slate and the sand trickled onto it): lit by the lamp,
-// shadowed by its own relief and by the rim, grains glinting where a facet catches the lamp. vis
-// is what else shades the lamp here. Returns the colour; h the height, lit how squarely the lamp
-// falls on it (1 = as on level sand).
-vec3 sandtableSurface(vec2 p, vec2 cell, vec3 lamp, float sinE, float vis, bool pendulum, bool framed, vec3 sand, out float h, out float lit) {
-  float e = 1.0 / SANDTABLE_GRID;
-  h = sandtableHeight(p);
-  vec2 slope = vec2(
-    sandtableHeight(p + vec2(e, 0.0)) - sandtableHeight(p - vec2(e, 0.0)),
-    sandtableHeight(p + vec2(0.0, e)) - sandtableHeight(p - vec2(0.0, e))
-  ) / (2.0 * e);
-  vec3 n = normalize(vec3(-slope, 1.0));
-  vec3 toL = lamp - vec3(p, h);
-  float fall = dot(lamp, lamp) / dot(toL, toL);
-  vec3 L = normalize(toL);
-  // The lamp is a broad shade, not a point: its light wraps a little way round onto slopes facing
-  // away, so their shadow sides fall to dim sand rather than black.
-  lit = max(dot(n, L) + 0.3, 0.0) / (sinE + 0.3);
-
-  // Shadows: the relief between here and the lamp, a few steps out (the penumbra widening with
-  // distance); then the rim's, a crescent along the side nearest the lamp.
-  vec2 ld = normalize(toL.xy);
-  float rise = toL.z / length(toL.xy);
-  float shadow = 0.0;
-  for (int k = 1; k <= 6; k++) {
-    float d = float(k) * 0.0035;
-    float over = sandtableHeight(p + ld * d) - h - d * rise;
-    shadow = max(shadow, smoothstep(0.0, 0.0002 + 0.04 * d, over));
+// The pendulum's state for this cell, its shadows (its own, the edge's) off the lamp's light, and
+// the slate it pours onto: the bed's other finish.
+void pendulumBegin(inout Patch x) {
+  pendulumS0 = vec4(0.0);
+  pendulumS1 = vec4(0.0);
+  pendulumS2 = vec4(0.0);
+  if (pendulumField0On()) {
+    pendulumS0 = texelFetch(pendulumField0, ivec2(0, 0), 0);
+    pendulumS1 = texelFetch(pendulumField0, ivec2(1, 0), 0);
+    pendulumS2 = texelFetch(pendulumField0, ivec2(2, 0), 0);
   }
-  if (framed) {
-    float b = dot(p, ld);
-    float reach = sqrt(max(b * b - dot(p, p) + SANDTABLE_SAND * SANDTABLE_SAND, 0.0)) - b;
-    float w = 0.001 + 0.02 * reach;
-    shadow = max(shadow, smoothstep(-w, w, SANDTABLE_RIM_H - h - reach * rise));
-  }
-
-  // The sand's colour, mottled a little and grain by grain (fixed to the cells, so it never crawls).
-  vec3 albedo = sand * (1.0 + 0.08 * (vnoise(p * 150.0) - 0.5) + 0.08 * (hash12(cell) - 0.5));
-  float cover = 1.0;
-  if (pendulum) {
-    cover = smoothstep(0.00002, 0.00045, h);
-    float cleft = vnoise(rotate(p, 0.6) * vec2(5.0, 38.0));
-    vec3 slate = SANDTABLE_SLATE * (0.88 + 0.16 * vnoise(p * 6.0 + 4.3) + 0.1 * cleft);
-    albedo = mix(slate, albedo, cover);
-  }
-  // Grooves see less of the room; so does the sand tucked in against the rim.
-  float cavity = clamp(1.0 + 40.0 * min(h, 0.0), 0.7, 1.0);
-  if (framed) cavity *= 1.0 - 0.35 * smoothstep(SANDTABLE_SAND - 0.014, SANDTABLE_SAND, length(p));
-  // Sand scatters a little light into its own shade: shadows stay dim sand, never black holes.
-  float light = fall * vis * (1.0 - 0.8 * shadow);
-  vec3 col = albedo * (SANDTABLE_ROOM * (0.55 + 0.45 * n.z) * cavity + SANDTABLE_LAMP * (0.42 * min(lit, 2.2) * light));
-
-  // Glints: a few grains in a hundred are tiny mirrors, each tilted its own way, flashing when one
-  // turns the lamp up toward us. They hold still while the sand does, and wake along a new groove.
-  float black = step(0.5, K_sand) * step(K_sand, 1.5);
-  float density = mix(0.025, 0.08, black) * 2.0 * K_sparkle * cover;
-  if (hash12(cell + 71.3) > 1.0 - density) {
-    vec2 tilt = vec2(hash12(cell + 19.1), hash12(cell + 47.7)) - 0.5;
-    vec3 facet = normalize(n + vec3(1.8 * tilt, 0.0));
-    float glint = smoothstep(0.95, 0.993, dot(facet, normalize(L + vec3(0.0, 0.0, 1.0))));
-    col += SANDTABLE_LAMP * (1.2 * glint * light);
-  }
-  return col;
-}
-
-// The rim, a rounded band round the sand: dark walnut (rings of bent grain, a lacquer sheen on the
-// bevels that face the lamp) or polished brass.
-vec3 sandtableRim(vec2 p, float r, vec3 lamp, float sinE, bool brass, vec3 around, float vis) {
-  float u = clamp((r - SANDTABLE_SAND) / SANDTABLE_RIM, 0.0, 1.0);
-  vec2 radial = p / max(r, 1e-4);
-  float phi = (u - 0.5) * 2.4;
-  vec3 n = vec3(radial * sin(phi), cos(phi));
-  float shine;
-  if (brass) return sandtableBrass(n, p, SANDTABLE_RIM_H, lamp, sinE, around, vis, shine);
-  vec3 toL = lamp - vec3(p, SANDTABLE_RIM_H);
-  float fall = dot(lamp, lamp) / dot(toL, toL);
-  vec3 L = normalize(toL);
-  float dif = max(dot(n, L), 0.0) / sinE;
-  float grain = sin(r * 520.0 + 9.0 * vnoise(p * 22.0));
-  vec3 wood = SANDTABLE_WALNUT * (0.84 + 0.16 * grain) * (0.9 + 0.2 * vnoise(p * 70.0));
-  float gloss = pow(max(dot(n, normalize(L + vec3(0.0, 0.0, 1.0))), 0.0), 36.0);
-  return wood * (SANDTABLE_ROOM + SANDTABLE_LAMP * (0.42 * fall * dif * vis)) + SANDTABLE_LAMP * (0.14 * gloss * fall * vis);
-}
-
-// The floor round the table, nearly black, and the table's own soft shadow thrown off across it.
-vec3 sandtableFloor(vec2 p, float r, vec3 lamp, float sinE, float rimOut, float vis) {
-  vec3 toL = lamp - vec3(p, -SANDTABLE_DROP);
-  float fall = dot(lamp, lamp) / dot(toL, toL);
-  vec2 ld = normalize(toL.xy);
-  float rise = toL.z / length(toL.xy);
-  float b = dot(p, ld);
-  float disc = b * b - dot(p, p) + rimOut * rimOut;
-  float shadow = 0.0;
-  if (disc > 0.0 && b < 0.0) {
-    // The ray toward the lamp meets the table: in shadow while it meets it below the top.
-    float enter = -b - sqrt(disc);
-    shadow = 1.0 - smoothstep(-0.02, 0.02, enter * rise - SANDTABLE_DROP);
-  }
-  float ao = 1.0 - 0.6 * exp(-(r - rimOut) / 0.025);
-  vec3 ground = SANDTABLE_FLOOR * (0.85 + 0.3 * vnoise(p * 7.0));
-  float dif = normalize(toL).z / sinE;
-  return ground * ao * (SANDTABLE_ROOM + SANDTABLE_LAMP * (0.42 * fall * dif * (1.0 - 0.85 * shadow) * vis));
-}
-
-// The steel ball of radius rb, polished: a small convex mirror of the dark room, seen from above.
-// Its crown mirrors the ceiling, dimly warm with the lamp's spill; a dark band all round mirrors
-// the unlit walls; outside it a bright ring mirrors the lamplit sand (bright toward the lamp, dim
-// away from it), darkening at the very edge where it mirrors its own shadow. The lamp is a white
-// hot spot a few cells across at the band's inner edge (into spark, for the accent), so it rolls
-// along rather than flickers.
-vec3 sandtableBall(vec3 under, vec2 p, vec4 ball, float rb, vec3 lamp, vec3 around, float px, inout float spark) {
-  if (ball.z <= 0.0) return under;
-  vec2 q = (p - ball.xy) / rb;
-  float d = length(q);
-  float aa = px / rb;
-  float cover = ball.z * (1.0 - smoothstep(1.0 - aa, 1.0 + aa, d));
-  if (cover <= 0.0) return under;
-  vec3 n = vec3(q, sqrt(max(1.0 - d * d, 0.0)));
-  vec3 toL = lamp - vec3(ball.xy, rb);
-  vec3 L = normalize(toL);
-  float fall = dot(lamp, lamp) / dot(toL, toL);
-  vec3 R = reflect(vec3(0.0, 0.0, -1.0), n);
-  float facing = dot(normalize(R.xy + 1e-5), normalize(L.xy));
-  vec3 ground = around * mix(0.25, 2.5, smoothstep(-0.5, 0.8, facing)) * smoothstep(-1.0, -0.6, R.z);
-  vec3 env = mix(ground, vec3(0.012, 0.012, 0.016), smoothstep(-0.02, 0.1, R.z));
-  env = mix(env, SANDTABLE_NIGHT + 0.34 * SANDTABLE_LAMP, smoothstep(0.45, 0.62, R.z));
-  float s = max(dot(R, L), 0.0);
-  float hot = 3.0 * smoothstep(0.86, 0.95, s) + 0.5 * pow(s, 8.0);
-  vec3 steel = 0.85 * env * vec3(0.9, 0.93, 1.0) + SANDTABLE_LAMP * hot * fall;
-  spark = max(spark, cover * min(hot, 1.0));
-  return mix(under, steel, cover);
-}
-
-// The wiping edge: a brass bar longer than the table is wide, resting across the rim, rounded on top.
-vec3 sandtableEdgeBar(vec3 under, vec2 p, vec4 edge, vec3 lamp, float sinE, vec3 around, float px, float rimOut, inout float spark) {
-  if (edge.w <= 0.0) return under;
-  float d = dot(p, edge.xy) - edge.z;
-  float along = abs(dot(p, vec2(-edge.y, edge.x)));
-  float halfW = 0.5 * SANDTABLE_EDGE;
-  float halfLen = rimOut + 0.03;
-  float cover = edge.w * (1.0 - smoothstep(halfW - px, halfW + px, abs(d))) * (1.0 - smoothstep(halfLen - px, halfLen + px, along));
-  if (cover <= 0.0) return under;
-  float phi = clamp(d / halfW, -1.0, 1.0) * 1.2;
-  float shine;
-  vec3 col = sandtableBrass(vec3(edge.xy * sin(phi), cos(phi)), p, SANDTABLE_EDGE_H, lamp, sinE, around, 1.0, shine);
-  spark = max(spark, cover * min(shine, 1.0));
-  return mix(under, col, cover);
+  vec2 p = sandtableP;
+  sandtableVis *= (1.0 - pendulumShadow(p, pendulumS0, sandtableLamp, sandtablePx))
+    * (1.0 - sandtableEdgeShadow(p, pendulumS1, sandtableLamp));
+  sandtableSlate = true;
 }
 
 // The funnel's string, climbing to its pivot over the table's centre: from above, a pale cord
 // running toward the middle, kept a couple of cells wide so it glides rather than flickers.
-vec3 sandtableString(vec3 under, vec2 p, vec4 bob, float px) {
+vec3 pendulumString(vec3 under, vec2 p, vec4 bob, float px) {
   float len = length(bob.xy);
   if (bob.z <= 0.0 || len < SANDTABLE_FUNNEL) return under;
   float d = segmentDistance(p, bob.xy * (1.0 - 0.9 * SANDTABLE_FUNNEL / len), vec2(0.0));
@@ -313,7 +493,7 @@ vec3 sandtableString(vec3 under, vec2 p, vec4 bob, float px) {
 
 // The funnel from above: a rolled brass lip round a brass cone; the sand still in it a disc that
 // shrinks as it runs low, dimpled where it drains; and at the last, the dark hole.
-vec3 sandtableFunnel(vec3 under, vec2 p, vec4 bob, float fill, vec3 lamp, float sinE, vec3 sand, vec3 around, float px, inout float spark) {
+vec3 pendulumFunnel(vec3 under, vec2 p, vec4 bob, float fill, vec3 lamp, float sinE, vec3 sand, vec3 around, float px, inout float spark) {
   if (bob.z <= 0.0) return under;
   vec2 q = (p - bob.xy) / SANDTABLE_FUNNEL;
   float d = length(q);
@@ -345,78 +525,15 @@ vec3 sandtableFunnel(vec3 under, vec2 p, vec4 bob, float fill, vec3 lamp, float 
   return mix(under, col, cover);
 }
 
-Shade sceneSandtable(vec2 uv, vec2 cell, float t) {
-  float aspect = uRes.x / uRes.y;
-  float span = SANDTABLE_SPAN * min(1.0, aspect);
-  vec2 p = vec2((uv.x - 0.5) * aspect, uv.y - 0.5) / span;
-  float px = 1.0 / (uRes.y * span);
-  // The ball never shrinks below ten cells across, or the dither has nothing to draw it with.
-  float ballR = max(SANDTABLE_BALL, 5.0 * px);
-  float r = length(p);
-  bool pendulum = K_machine > 0.5;
-  bool framed = K_rim < 1.5;
-  bool brass = framed && K_rim > 0.5;
-  float rimOut = SANDTABLE_SAND + SANDTABLE_RIM;
-
-  // One lamp, standing off beyond the table: K_light round it, K_height up.
-  float az = K_light * TAU;
-  float elev = mix(0.1, 0.95, K_height);
-  float sinE = sin(elev);
-  vec3 lamp = SANDTABLE_LAMP_D * vec3(cos(az), sin(az), tan(elev));
-
-  vec4 s0 = vec4(0.0);
-  vec4 s1 = vec4(0.0);
-  vec4 s2 = vec4(0.0);
-  if (uSimOn.y > 0.5) {
-    s0 = texelFetch(uSim1, ivec2(0, 0), 0);
-    s1 = texelFetch(uSim1, ivec2(1, 0), 0);
-    s2 = texelFetch(uSim1, ivec2(2, 0), 0);
-  }
-  vec3 sand = sandtableSandColor();
-  // Level, lamplit ground: what the polished metal mirrors round its sides.
-  vec3 around = (pendulum ? SANDTABLE_SLATE : sand) * (SANDTABLE_ROOM + 0.42 * SANDTABLE_LAMP);
-
-  // What stands on or hangs over the table shades the lamp on everything beneath it.
-  float vis = (pendulum
-    ? 1.0 - sandtablePendulumShadow(p, s0, lamp, px)
-    : 1.0 - sandtableBallShadow(p, s0, ballR, lamp, sinE))
-    * (1.0 - sandtableEdgeShadow(p, s1, lamp, rimOut));
-
-  float inRim = framed ? smoothstep(SANDTABLE_SAND - px, SANDTABLE_SAND + px, r) : 0.0;
-  float outRim = framed ? smoothstep(rimOut - px, rimOut + px, r) : 0.0;
-  vec3 col = vec3(0.0);
-  float accent = 0.0;
-  if (inRim < 1.0) {
-    float h;
-    float lit;
-    col += (1.0 - inRim) * sandtableSurface(p, cell, lamp, sinE, vis, pendulum, framed, sand, h, lit);
-    // The Manifold M, while it lies in the sand: as far as the ball has carved it, lit and glowing
-    // a warm brass.
-    if (!pendulum && s2.x > 0.0 && s2.y > 0.0) {
-      float drawn = sandtableMarkDrawn(p / s2.y, s2.z, 0.45 * SANDTABLE_GROOVE / s2.y, px / s2.y);
-      float depth = SANDTABLE_DEPTH_MIN + SANDTABLE_DEPTH_RANGE * K_depth;
-      float carved = 1.0 - smoothstep(-0.45 * depth, -0.15 * depth, h);
-      accent = s2.x * drawn * carved * (0.5 + 0.5 * clamp(lit, 0.0, 1.0)) * (1.0 - inRim);
-      col += 0.3 * accent * SANDTABLE_BRASS;
-    }
-  }
-  if (inRim > outRim) {
-    vec3 rim = sandtableRim(p, r, lamp, sinE, brass, around, vis);
-    col += (inRim - outRim) * rim;
-    if (brass) accent = max(accent, (inRim - outRim) * clamp(1.5 * dot(rim, LUMA), 0.0, 1.0));
-  }
-  if (outRim > 0.0) col += outRim * sandtableFloor(p, r, lamp, sinE, rimOut, vis);
-
-  // On top: the wiping edge, then the ball; or the funnel's string and the funnel.
+// Over the table: the wiping edge, the funnel's string, the funnel.
+void pendulumStand(Patch x, inout Spot c) {
   float spark = 0.0;
-  col = sandtableEdgeBar(col, p, s1, lamp, sinE, around, px, rimOut, spark);
-  if (pendulum) {
-    col = sandtableString(col, p, s0, px);
-    col = sandtableFunnel(col, p, s0, s2.z, lamp, sinE, sand, around, px, spark);
-  } else {
-    col = sandtableBall(col, p, s0, ballR, lamp, around, px, spark);
-  }
-
-  return shadeOf(col, inkOf(col, 1.35, 1.0), clamp(max(accent, spark), 0.0, 1.0));
+  vec3 around = sandtableAround();
+  vec2 p = sandtableP;
+  float px = sandtablePx;
+  c.col = sandtableEdgeBar(c.col, p, pendulumS1, sandtableLamp, sandtableSinE, around, px, spark);
+  c.col = pendulumString(c.col, p, pendulumS0, px);
+  c.col = pendulumFunnel(c.col, p, pendulumS0, pendulumS2.z, sandtableLamp, sandtableSinE, sandtableSandColor(), around, px, spark);
+  sandtableAccent = max(sandtableAccent, spark);
 }
 `;

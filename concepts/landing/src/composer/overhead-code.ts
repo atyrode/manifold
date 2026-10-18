@@ -14,6 +14,14 @@ import { borderSim, koiSim, pondWaterSim } from "../scenes/pond/sim.ts";
 import { rippleSharedGlsl, tankGlsl, tankWaterGlsl } from "../scenes/ripple/shader.ts";
 import { tankWaterSim } from "../scenes/ripple/sim.ts";
 import {
+  ballGlsl,
+  pendulumGlsl,
+  sandBedGlsl,
+  sandtableSharedGlsl,
+  tableLampGlsl,
+} from "../scenes/sandtable/shader.ts";
+import { ballSim, pendulumSim, sandBedSim } from "../scenes/sandtable/sim.ts";
+import {
   anemonesGlsl,
   frondsGlsl,
   rockPoolGlsl,
@@ -37,4 +45,8 @@ export const OVERHEAD_CODE: Readonly<Record<string, OverheadCode>> = {
   fronds: { glsl: () => frondsGlsl, shared: [tidepoolSharedGlsl] },
   anemones: { glsl: () => anemonesGlsl, shared: [tidepoolSharedGlsl] },
   fish: { glsl: () => tidepoolFishGlsl, shared: [tidepoolSharedGlsl] },
+  sandBed: { glsl: () => sandBedGlsl, shared: [sandtableSharedGlsl], sim: sandBedSim },
+  tableLamp: { glsl: () => tableLampGlsl, shared: [sandtableSharedGlsl] },
+  ball: { glsl: () => ballGlsl, shared: [sandtableSharedGlsl], sim: ballSim },
+  pendulum: { glsl: () => pendulumGlsl, shared: [sandtableSharedGlsl], sim: pendulumSim },
 };
