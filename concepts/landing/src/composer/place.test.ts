@@ -202,6 +202,17 @@ describe("the placer", () => {
     expect(admits(high, RIG)).toBe(true);
     expect(admits(high, { ...RIG, eye: 2.5 })).toBe(false);
   });
+
+  test("offers an overhead layer only over its own water: the sea's to the sea's alone", () => {
+    const span = { span: 3, minAspect: 1 };
+    const koi = layer("koi", "life", { camera: { span: [1, 3] } });
+    const anemones = layer("anemones", "life", { camera: { span: [3, 3], salt: true } });
+    expect([admits(koi, span), admits(anemones, span)]).toEqual([true, false]);
+    expect([
+      admits(koi, { ...span, salt: true }),
+      admits(anemones, { ...span, salt: true }),
+    ]).toEqual([false, true]);
+  });
 });
 
 describe("the pilot's placements", () => {

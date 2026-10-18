@@ -52,7 +52,8 @@ const within = (value: number, span: Span | undefined): boolean =>
 /** Whether the layer can be drawn through the rig (its `camera` range admits it): offered at all. */
 export function admits(layer: LayerDef, rig: Rig | OverheadRig): boolean {
   const camera = layer.camera;
-  if ("span" in rig) return within(rig.span, camera.span);
+  if ("span" in rig)
+    return within(rig.span, camera.span) && (camera.salt === true) === (rig.salt === true);
   return (
     within(rig.eye, camera.eye) &&
     within(rig.horizon, camera.horizon) &&

@@ -97,6 +97,11 @@ export interface CameraRange {
   readonly pitch?: Span;
   /** Under the overhead rig: the metres a screen height spans (OverheadRig.span). */
   readonly span?: Span;
+  /**
+   * Under the overhead rig: drawn in the sea's water (the tide pool's), so offered only over it
+   * (OverheadRig.salt), and a layer without it only away from it: the koi never in a tide pool.
+   */
+  readonly salt?: true;
 }
 
 /**
@@ -326,6 +331,8 @@ export interface Rig {
 export interface OverheadRig {
   readonly span: number;
   readonly minAspect: number;
+  /** The patch is the sea's water (the tide pool's): it offers the layers drawn in it alone. */
+  readonly salt?: true;
 }
 
 /**

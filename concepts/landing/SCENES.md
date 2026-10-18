@@ -111,6 +111,10 @@ the others), built from shared parts rather than scene code:
 - Art direction still open: the rock reads too dark and busy at the dither, the open sea reads as
   mottled rather than as swell, and the zonation wants a look of its own.
 
+Since the overhead composer (ADR 0062 Phase 4) the tide pool is a preset of its layers `rockPool`
+(the rock, under the shore's sky), `surge` (the sea and the life it streams), `fronds`, `anemones`
+and `fish`, drawn over salt water only, so the pond's koi are never offered to it.
+
 ## Above the clouds
 
 The view from a plane window: a sea of clouds below, open sky above.

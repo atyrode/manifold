@@ -48,6 +48,7 @@ describe("composed programs", () => {
       "skyward",
       "street",
       "swell",
+      "tidepool",
     ]);
   });
 

@@ -37,13 +37,13 @@ are the ports' own, taken under #1082 on the shared dev host.
   and the `outdoor` composer: 79 layers in canonical order (`outdoor.ts`: 19 backdrops, 15 grounds,
   22 dressings, 7 covers, 12 life, 4 chores), their code by id in `outdoor-code.ts`. The `interior`
   composer (Phase 3): 11 layers (`interior.ts`: 3 backdrops, 3 grounds, 5 dressings), their code in
-  `interior-code.ts`, the room's program in `room.ts`. The `overhead` composer's pilot
-  (Phase 4): 7 layers (`overhead.ts`: 2 beds, 2 waters, 1 dressing, 1 cover, 1 life), its program
-  and code assembly in `overhead-glsl.ts`, the layers' code in `overhead-code.ts`. All three share
+  `interior-code.ts`, the room's program in `room.ts`. The `overhead` composer (Phase 4): 12 layers
+  (`overhead.ts`: 3 beds, 3 waters, 1 dressing, 1 cover, 4 life), its program and code assembly in
+  `overhead-glsl.ts`, the layers' code in `overhead-code.ts`. All three share
   `composeScene`, the placer, the composed sim and the layers' turns (`turnsGlsl`, `passCalls`).
 - **Presets:** meadow and bees (Phase 1); shore, dunes, autumn, lanterns and falls (2a); campfire,
   fireflies, forest, bamboo, garden and lake (2b); country, street, skyward, flock, swell and dew
-  (2c); sill and lava (the Phase 3 pilot) and bonsai; pond and ripple (the Phase 4 pilot).
+  (2c); sill and lava (the Phase 3 pilot) and bonsai; pond and ripple (the Phase 4 pilot), tidepool (4).
   `src/composer/budget.test.ts` holds that list.
 - **Committed mixes:** "Bees · overgrown meadow" (the meadow's grass and wildflowers in the bees'
   garden), "Bees · in the valley" (the countryside's `valley` in place of the bees' hillside),
@@ -54,7 +54,7 @@ are the ports' own, taken under #1082 on the shared dev host.
   own rigs alone (see "Rigs, locking and offering").
 - **Not built:** the rest of the interiors (bar, train, mobile, incense, frost, clouds,
   harmonograph; Phase 3); the rest of the `overhead` composer (its `tilt` and `orbit`, the `height`
-  pass, the World over the patch, and its presets after pond and ripple; Phase 4); the per-program
+  pass, the World over the patch, and its presets after tidepool; Phase 4); the per-program
   knob layout and packed trigger slots; `scripts/layer-costs.ts`, the stack meter and the role's
   "+" listing; the browser checks `composerDepth`, `composerClaims`, `composerWeather` and
   `layerToggles`; a check of the SwiftShader instruction budget; the principals' points in the
@@ -67,7 +67,7 @@ are the ports' own, taken under #1082 on the shared dev host.
    above. A composer is a camera rig, a site and an order of composition, and the World is in all
    three (in a room, through its window; over the overhead's patch, not yet). `outdoor` is built;
    `interior` is piloted with sill and lava and runs bonsai (Phase 3), `overhead` is piloted with
-   pond and ripple (Phase 4).
+   pond and ripple and runs the tide pool too (Phase 4).
 2. **A layer is a module.** Its manifest (`LayerDef`: role, bands, claims, the rigs it can be drawn
    through, its switch, knobs, passes and data) loads without its code (`LayerCode`: its GLSL built
    for the preset's rig, the chunks it shares with its scene's other layers, its sim). One steady
@@ -733,15 +733,28 @@ safelight, and at another focus. The shaken programs grew: pond 42,308 → 44,37
 18,233 → 20,724 (the composer's prelude, and the still water the tank lays before its water's
 begin); their ceilings in `shake.test.ts` were raised with them.
 
+**The tide pool** (tidepool, after the pilot) is five layers: `rockPool` (the bed: the rock laid out
+per seed by its sim, its zones, sea lettuce, sea stars, urchins and pebble M, and the shore's sky by
+the time of day and the rain, which lights the patch), `surge` (the water: the GPU shallow water
+over the bed's rock, which it reaches through the bed's affordances, its surface and the light
+through it, its white water, night glow and the passage's wash, and the life's records it streams),
+`fronds`, `anemones` and `fish` (life on the water's records, so each needs the water). What lies
+on the bed before the light is the shared chunk's `tpB`: the bed's, then each life layer's `floor`
+pass over it in the scene's order, relighting the cell where it paints. Its frame is 3 m tall like
+the pond's, so the rig and the layers gained `salt`: a layer is offered only over its own water,
+which keeps the pond's 54 knobs off it and the koi out of the sea. Its default, its three committed
+presets, rain with fish and the M, and granite at dawn are `SAME` against 47e062d9; its shaken
+default is 50,001 characters (within its ceiling), its all-features program 52,896 (ceiling 58,000).
+
 **Not built yet:** the `tilt` feature and its march (a tilted rig's march costs its full length
 under SwiftShader wherever it ends, so the gate, off, keeps it out), the `orbit` range, a `height`
-pass and a bed height field shared across layers (the pond's and the tank's beds are flat; the
-water's slope is the only relief), a material at each point, the World over the patch, and the
-presets after the pilot: sandtable, tidepool, delta, island, and `dunesabove` and `gardenabove`,
-which retire the dunes' `camera` and the garden's `gravelCamera` and their own programs. Layers
-drawn in the frame's units are locked to their span; the koi are offered from 1 m to the pond's
-3 m, drawn at the frame's scale (11–17 cm fish in the 1 m tank), so a bench-scale layer is refused
-beside the delta's kilometres by its span.
+pass and a bed height field shared across layers (the pond's and the tank's beds are flat, the
+tide pool's relief its own layout's; the water's slope is the only relief they share), a material
+at each point, the World over the patch, and the presets after tidepool: sandtable, delta, island,
+and `dunesabove` and `gardenabove`, which retire the dunes' `camera` and the garden's
+`gravelCamera` and their own programs. Layers drawn in the frame's units are locked to their span;
+the koi are offered from 1 m to the pond's 3 m, drawn at the frame's scale (11–17 cm fish in the 1
+m tank), so a bench-scale layer is refused beside the delta's kilometres by its span.
 
 ### Phase 5: the matter shelf, and what stays standalone
 
@@ -757,9 +770,9 @@ beside the delta's kilometres by its span.
    every further cross-offering waits for the per-program layout and packed triggers, as do the
    bar's port and the World over the overhead's patch (the pond lists 54 without it).
 2. **Rig-locking limits the mixes.** Of the nineteen outdoor presets' 79 layers, six are offered
-   beyond their own rig; of the interior's 11, the lava lamp, drawn from the rig; of the overhead's 7,
-   the koi beyond their own span. Four mixes are committed. The worth of composing grows only as
-   layers are redrawn from the ray (or, from above, in metres).
+   beyond their own rig; of the interior's 11, the lava lamp, drawn from the rig; of the overhead's
+   12, the koi beyond their own span (over fresh water only). Four mixes are committed. The worth of
+   composing grows only as layers are redrawn from the ray (or, from above, in metres).
 3. **Shared chunks couple layers.** The countryside's layers are switches and knobs over one march
    (`VALLEY_*` macros), the street's over one trace whose turn cut assumes its four layers are the
    only ones the rig offers; neither can be offered elsewhere as it stands.

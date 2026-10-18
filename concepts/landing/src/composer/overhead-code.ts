@@ -13,6 +13,15 @@ import {
 import { borderSim, koiSim, pondWaterSim } from "../scenes/pond/sim.ts";
 import { rippleSharedGlsl, tankGlsl, tankWaterGlsl } from "../scenes/ripple/shader.ts";
 import { tankWaterSim } from "../scenes/ripple/sim.ts";
+import {
+  anemonesGlsl,
+  frondsGlsl,
+  rockPoolGlsl,
+  surgeGlsl,
+  tidepoolFishGlsl,
+  tidepoolSharedGlsl,
+} from "../scenes/tidepool/shader.ts";
+import { rockPoolSim, surgeSim } from "../scenes/tidepool/sim.ts";
 import type { OverheadCode } from "./overhead-glsl.ts";
 
 export const OVERHEAD_CODE: Readonly<Record<string, OverheadCode>> = {
@@ -23,4 +32,9 @@ export const OVERHEAD_CODE: Readonly<Record<string, OverheadCode>> = {
   stone: { glsl: () => stoneGlsl },
   border: { glsl: () => borderGlsl, shared: [pondSharedGlsl], sim: borderSim },
   koi: { glsl: () => koiGlsl, shared: [pondSharedGlsl], sim: koiSim },
+  rockPool: { glsl: () => rockPoolGlsl, shared: [tidepoolSharedGlsl], sim: rockPoolSim },
+  surge: { glsl: () => surgeGlsl, shared: [tidepoolSharedGlsl], sim: surgeSim },
+  fronds: { glsl: () => frondsGlsl, shared: [tidepoolSharedGlsl] },
+  anemones: { glsl: () => anemonesGlsl, shared: [tidepoolSharedGlsl] },
+  fish: { glsl: () => tidepoolFishGlsl, shared: [tidepoolSharedGlsl] },
 };
