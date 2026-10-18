@@ -643,11 +643,10 @@ itself, and dew joined the composer (D7).
   stated limit); a layer's shapes throw shadows only where a backdrop asks for them (`roomCaster`,
   below).
 - **The lamp's light is a declared light.** The lava lamp (`lavaLamp`) is drawn from the rig, 0.4 m
-  tall on any room's seat line at its anchor, so it is offered to every interior preset whose eye
-  stands 0.2 m or more over its ledge (the sill's and its own); on the sill it takes its second
-  anchor, the cat holding the first. Its `lavaLampLight` reaches the sill's wall, frame, sill, props,
-  curtain and cat through `roomLight` and `localLight`. The sill's five layers and the lava room's
-  papered wall and sideboard stay locked to their rigs.
+  tall on any room's seat line at its anchor, so it is offered to every interior preset; on the
+  sill it takes its second anchor, the cat holding the first. Its `lavaLampLight` reaches the sill's
+  wall, frame, sill, props, curtain and cat through `roomLight` and `localLight`. The sill's five
+  layers and the lava room's papered wall and sideboard stay locked to their rigs.
 
 **The bonsai, built:** three layers, the room's shell kept apart from its subject, all locked to
 the bonsai's rig (`ON_THE_VERANDA`: eye 0.167 m, 1.19 m from the stand's top, 1.175 screen heights
@@ -664,8 +663,8 @@ a metre, the eye's height over its distance the display's tilt, 0.14):
   asks it toward the sun and toward the lamp, so the tree's shadow is no longer drawn by the wall's
   own code. The pot's and the stand's boxes on the wall and the stand's shadow on the floor stay the
   veranda's, gated by those layers, because the scene's lamp threw the tree's shadow alone.
-- **The caps:** the bonsai's five "now" slots run 2 to 6; the lava lamp is offered only to rooms
-  whose eye stands 0.2 m or more over the ledge, so it is not offered to the bonsai.
+- **The caps:** the bonsai's five "now" slots run 0 to 4 (its room lists no World: below, "The
+  caps"); the lava lamp, offered to it, stands only while the tree is off (their fields pass six).
 - **At its defaults** `SAME` (`ab.ts` against 47e062d9, dithered and `view=source`); further
   witnesses, all `SAME`: shoji, pine and the lamp at dusk; winter in the dark alcove under heavy
   snow; cherry in the unglazed pot, the sun from the left, the kintsugi M on. The shaken default
@@ -680,6 +679,8 @@ a metre, the eye's height over its distance the display's tilt, 0.14):
 | incense   | `SAME`                                                                 | none                                                                                                                                     |
 | frost     | `SAME`                                                                 | none; the World's knobs replace the frost's sky and weather (rain, fog, lightning, cumulus, cloud shadows and the Milky Way new and off) |
 | frost mix | 2,101 of 23,040 cells against the sill (9.1 %): the frost on the panes | the rime along each pane's edges and the condensation over the glass; the sill's city unblurred behind it                                |
+| bar       | `SAME`                                                                 | none; the knobs gathered in their layers' sections                                                                                       |
+| train     | `SAME`                                                                 | none; the knobs gathered in their layers' sections                                                                                       |
 
 **The incense, built:** three layers, the shell kept apart from the subject, locked to the
 incense's rig (`ON_THE_TABLE`: eye 0.3 m, 1 m from where the incense stands, 1.2 screen heights a
@@ -714,20 +715,59 @@ committed presets and two witnesses (fur, condensation and sparkle up; the cabin
 `SAME` against 113498b3; "Frost · aurora over the cabin" is rewritten for its query's order. Its
 all-features program is the World's every gate now, 126,601 shaken characters (ceiling 139,500).
 
-**Still to build:** bar, train, mobile, clouds and harmonograph as presets; the World's birds
-through a window; depth across a room's layers, and shadows on another layer's surface than a
-backdrop's, once two layers that overlap need them. What Phase 2 changes for them:
+**The bar, built:** five layers, the shell kept apart from the subject, all drawn through the bar's
+own pinhole (its eye 1.5 m over the floor, panned on narrow frames, moved by the pointer and the
+passage: `barBegin`, the scene's shared chunk) and locked to its rig (`IN_THE_BOOTH`: the booth
+table's far edge the seat line, eye 0.33 m over its top, 1 m to it, 0.85 screen heights a metre).
+The **`storefront`** (backdrop, the shell: the front wall and its window onto the rainy street, the
+column with the coat and the dripping umbrella, the tin ceiling, the floor, the back wall's bare
+panelling; the street's and the rain's knobs), the **`booth`** (ground: your table, its candle,
+coffee and whisky; nearest the eye, its front veil), the **`backBar`** (dressing, the subject: the
+mirror wall, the bottles and the M, the bartender, the counter and its glasses, the stools and the
+patrons; its sim's one field schedules the evening), the **`pendants`** (the four lamps, their
+light on the room with them) and the **`ceilingFan`** (the fan, its bowl's light and the blades'
+shadows on the tin with it). The street is the window's own view under the bar's own rain: the
+storefront is not yet a `window` (its sim reads the rain for the umbrellas; the World's rain
+through it is U2's), so the room lists no World, and it has no `glass` pass. The room's grade
+gains the vignette's reach (`Grade.vignetteReach`: the bar's from 0.5, the train's from 0.5 to 1.05
+across 1.25). At its defaults (dithered and `view=source`) and three witnesses (closing time, one
+patron, cold lamps, soft bokeh; no rain, the fan and the candle off, the neon M; heavy traffic in a
+downpour and wind, the jukebox up, the sign off) `SAME` against e60dc623. Its programs: 114,615 and
+117,194 shaken characters (ceilings 122,500 and 129,000: the all-features program is the composer's
+turns).
+
+**The train, built:** four layers, the window's view kept apart from the compartment, locked to its
+rig (`BY_THE_WINDOW`: the table's back edge under the window the seat line, eye 0.265 m over it,
+0.7 m to it, 1.17 screen heights a metre). The **`nightLine`** (backdrop: through the glass the
+country sliding past under the night sky through the view's own pinhole, the rain on the pane, the
+snow banked at its foot, the compartment mirrored in it; the journey's sim its one field; the
+journey's, line's, country's, birds', sky's and weather's knobs, the M stars; its gates the shared
+moon's phase and the calm cloud deck), the **`compartment`** (ground: the frame round the glass,
+the laminate wall, the curtain rod and the walnut table, lit by the reading lamp), the
+**`teaGlass`** and the **`velvetCurtain`** (dressings). The cell's state (the journey, the sky's
+light, the rails' knock, the compartment's light) is the scene's shared chunk (`trainBegin`). The
+view keeps its own sky and weather and the room lists no World, as the bar's; its planets are the
+preset's. At its defaults (dithered and `view=source`) and three witnesses (noon on the mountain
+line in heavy rain at full speed; a dark lamp, full reflections, no tea or curtain, the M stars in
+snow; the rural line, no cloud, stations every stretch, the aurora) `SAME` against e60dc623. Its
+programs: 144,396 and 191,566 shaken characters, within its standalone ceilings (154,000 and
+199,000).
+
+**Still to build:** mobile, clouds and harmonograph as presets; the World's birds through a window;
+the World through the bar's storefront and the train's window; depth across a room's layers, and
+shadows on another layer's surface than a backdrop's, once two layers that overlap need them. What
+Phase 2 changes for them:
 
 - **The window's view is drawn for the window (D11).** Outdoor backdrops are locked to their own
   rigs (the street's `city` to a window 28 m up and pitched down), so a room's window draws a view of
   its own through its rig, as the sill's city is.
-- **The caps.** A room's layers number their trigger slots from 2, after the World's two. The bar has
-  six of its own, which fill the eight; the train has five, which leave one, as the bonsai's do; the
-  packed trigger slots come before a guest with a "now" is offered to the bar, the train or the
-  bonsai. The lava lamp brings two (its cold start and its M), so it is offered only to rooms whose
-  eye stands 0.2 m or more over the ledge (not the bonsai's or the frost's); the frost glass brings
-  one (its traced M) to every room whose window has glass. The bar's and the train's ports, whose
-  windows would offer both, lock them out too or come after the packed slots.
+- **The caps.** No slot is held for a knob a preset does not list: a room with a window numbers its
+  layers' trigger slots from 2, after the World's two; a room without one from 0. The bar's six and
+  the train's six run 0 to 5 and the lava lamp's two (its cold start and its M) fit beside them, so
+  the lamp is offered to every room (the eye-height workaround that kept it from the bonsai's is
+  gone); the frost glass brings one to every room whose window has glass. The fullest rooms leave
+  two: the bar and the train (six each) and the sill (the World's two, its neon, its cat and the
+  frost's, five). A guest with more slots than a room leaves waits for the packed trigger slots.
 
 ### Phase 4: the overhead composer
 

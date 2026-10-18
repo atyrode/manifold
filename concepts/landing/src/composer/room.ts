@@ -123,10 +123,11 @@ export function roomGlsl(a: RoomAssembly): string {
     backdrop?.passes.daylight === undefined ? "" : ` + ${backdrop.passes.daylight}(x, p)`;
   const glass = backdrop?.passes.glass === undefined ? "vec4(-1.0)" : `${backdrop.passes.glass}(x)`;
   const n = Math.max(1, layers.length);
+  const reach = grade.vignetteReach ?? { from: 0.45, to: 1, across: 1.2 };
   const vignette =
     grade.vignette === undefined
       ? ""
-      : `  c.col *= 1.0 - ${glslFloat(grade.vignette)} * smoothstep(0.45, 1.0, length((uv - 0.5) * vec2(1.2, 1.0)));\n`;
+      : `  c.col *= 1.0 - ${glslFloat(grade.vignette)} * smoothstep(${glslFloat(reach.from)}, ${glslFloat(reach.to)}, length((uv - 0.5) * vec2(${glslFloat(reach.across)}, 1.0)));\n`;
   const exposure =
     grade.exposure === undefined
       ? ""

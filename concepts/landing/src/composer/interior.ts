@@ -3,12 +3,22 @@
 // (room.ts). The manifests alone: their code is in interior-code.ts, which a composed scene's code
 // module loads.
 //   backdrops  cityWindow (sill), papered (lava), veranda (bonsai), shaftWall (incense), frostView
-//              (frost)
-//   grounds    sill (sill), sideboard (lava), stand (bonsai), lowTable (incense)
+//              (frost), storefront (bar), nightLine (train)
+//   grounds    sill (sill), sideboard (lava), stand (bonsai), lowTable (incense), booth (bar),
+//              compartment (train)
 //   dressings  props (sill), incense (incense; before the lamp, whose `hand` it keeps unqualified),
-//              lavaLamp (lava; drawn from the rig, offered to every room an eye 0.2 m or more over
-//              its ledge), cat (sill), curtain (sill), bonsaiTree (bonsai), frostGlass (frost; on
-//              a window's glass, offered to every room whose window has glass: its far veil)
+//              backBar, pendants, ceilingFan (bar), teaGlass, velvetCurtain (train; before the lamp,
+//              whose `mark` and the like they keep unqualified), lavaLamp (lava; drawn from the rig,
+//              offered to every room), cat (sill), curtain (sill), bonsaiTree (bonsai), frostGlass
+//              (frost; on a window's glass, offered to every room whose window has glass: its far
+//              veil)
+import {
+  backBarLayer,
+  boothLayer,
+  ceilingFanLayer,
+  pendantsLayer,
+  storefrontLayer,
+} from "../scenes/bar/layers.ts";
 import { bonsaiTreeLayer, standLayer, verandaLayer } from "../scenes/bonsai/layers.ts";
 import { frostGlassLayer, frostViewLayer } from "../scenes/frost/layers.ts";
 import { incenseLayer, lowTableLayer, shaftWallLayer } from "../scenes/incense/layers.ts";
@@ -20,6 +30,12 @@ import {
   propsLayer,
   sillLayer,
 } from "../scenes/sill/layers.ts";
+import {
+  compartmentLayer,
+  nightLineLayer,
+  teaGlassLayer,
+  velvetCurtainLayer,
+} from "../scenes/train/layers.ts";
 import type { Composer } from "./compose.ts";
 
 export const interior: Composer = {
@@ -30,12 +46,21 @@ export const interior: Composer = {
     verandaLayer,
     shaftWallLayer,
     frostViewLayer,
+    storefrontLayer,
+    nightLineLayer,
     sillLayer,
     sideboardLayer,
     standLayer,
     lowTableLayer,
+    boothLayer,
+    compartmentLayer,
     propsLayer,
     incenseLayer,
+    backBarLayer,
+    pendantsLayer,
+    ceilingFanLayer,
+    teaGlassLayer,
+    velvetCurtainLayer,
     lavaLampLayer,
     catLayer,
     curtainLayer,

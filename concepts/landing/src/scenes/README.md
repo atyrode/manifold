@@ -65,7 +65,7 @@ components"); run `bun concepts/landing/scripts/scene-docs.ts` after a change to
 | `campfire`     | Campfire         | Land              | `outdoor` preset, 6 layers              | 36    | 2       | A small fire under a vast sky: sparks drifting up, a marshmallow toasting, a giant planet low over the pines.                   |
 | `autumn`       | Autumn park      | Land              | `outdoor` preset, 6 layers + 4 offered  | 42    | 0       | A great tree letting go of its leaves over a park path, the low sun glowing through them.                                       |
 | `marble`       | Marbling         | Matter & patterns | its own program                         | 13    | 1       | Ink floating on water, dropped and combed: ebru and suminagashi.                                                                |
-| `frost`        | Frost            | Matter & patterns | `interior` preset, 2 layers             | 27    | 2       | A window on a winter night, slowly frosting over.                                                                               |
+| `frost`        | Frost            | Matter & patterns | `interior` preset, 2 layers + 1 offered | 39    | 2       | A window on a winter night, slowly frosting over.                                                                               |
 | `prism`        | Prism            | Matter & patterns | its own program                         | 12    | 1       | A sunbeam through turning glass, fanned out into its spectrum.                                                                  |
 | `ferro`        | Ferrofluid       | Matter & patterns | its own program                         | 12    | 0       | Black magnetic fluid in a dish, breathing a crown of spikes in and out of a mirror.                                             |
 | `chladni`      | Chladni plate    | Matter & patterns | its own program                         | 12    | 1       | Sand on a singing plate, gathering where it stands still.                                                                       |
@@ -84,10 +84,10 @@ components"); run `bun concepts/landing/scripts/scene-docs.ts` after a change to
 | `dew`          | Dew              | Rooms & life      | `outdoor` preset, 2 layers              | 31    | 0       | An orb web at dawn, strung with dew, glinting as it breathes in the breeze.                                                     |
 | `incense`      | Incense          | Rooms & life      | `interior` preset, 3 layers + 1 offered | 30    | 0       | A thread of smoke rising through a shaft of light, curling into veils.                                                          |
 | `lava`         | Lava lamp        | Rooms & life      | `interior` preset, 3 layers             | 17    | 2       | Wax rising and falling in a glowing lamp on a sideboard, late at night.                                                         |
-| `bonsai`       | Bonsai           | Rooms & life      | `interior` preset, 3 layers             | 19    | 0       | A bonsai on its stand through the seasons, its shadow moving on the wall.                                                       |
+| `bonsai`       | Bonsai           | Rooms & life      | `interior` preset, 3 layers + 1 offered | 31    | 0       | A bonsai on its stand through the seasons, its shadow moving on the wall.                                                       |
 | `street`       | City crossing    | Rooms & life      | `outdoor` preset, 4 layers              | 35    | 1       | A scramble crossing at dusk from a high window: the crowd gathers, the lights turn, everyone crosses at once.                   |
-| `train`        | Night train      | Rooms & life      | its own program                         | 33    | 0       | The view from a slow night train: tea trembling with the rails, the country sliding by under the moon.                          |
-| `bar`          | Late bar         | Rooms & life      | its own program                         | 16    | 0       | A quiet bar late at night, seen from a corner booth while it rains outside.                                                     |
+| `train`        | Night train      | Rooms & life      | `interior` preset, 4 layers + 1 offered | 49    | 0       | The view from a slow night train: tea trembling with the rails, the country sliding by under the moon.                          |
+| `bar`          | Late bar         | Rooms & life      | `interior` preset, 5 layers + 1 offered | 33    | 0       | A quiet bar late at night, seen from a corner booth while it rains outside.                                                     |
 | `bees`         | Bees             | Rooms & life      | `outdoor` preset, 5 layers + 6 offered  | 63    | 2       | A summer hillside at an orchard's edge: bees and butterflies at work among the hives and flowers.                               |
 | `mobile`       | Mobile           | Rooms & life      | its own program                         | 11    | 3       | A solar system hung under a glowing Sun, each planet turning at its own pace, its shadow wheeling across the wall.              |
 
@@ -3150,11 +3150,11 @@ agents draws as before. Three chores are not layers:
 
 ### The interior composer
 
-ADR 0062 Phase 3: `src/composer/interior.ts` (its sixteen layers in canonical order), `room.ts`
-(the program) and `interior-code.ts` (the layers' code). Its presets are sill, lava, bonsai, incense
-and frost; the committed mixes "Sill · lava lamp on the sill" and "Sill · frost on the window" stand
-the lava lamp on the sill and frost the sill's panes. Bar, train, mobile, clouds and harmonograph are
-still scenes of their own.
+ADR 0062 Phase 3: `src/composer/interior.ts` (its twenty-five layers in canonical order), `room.ts`
+(the program) and `interior-code.ts` (the layers' code). Its presets are sill, lava, bonsai, incense,
+frost, bar and train; the committed mixes "Sill · lava lamp on the sill" and "Sill · frost on the
+window" stand the lava lamp on the sill and frost the sill's panes. Mobile, clouds and harmonograph
+are still scenes of their own.
 
 - **The rig** is a level pinhole in the room (`ScenePreset.rig`), its `eye` measured over the
   ledge's top. The room (`ScenePreset.room`, `Room`) adds `distance`, from the eye to the line things
@@ -3166,7 +3166,7 @@ still scenes of their own.
   the seat line; each placed layer's anchor reaches its GLSL as `<id>Anchor`.
 - **The site** is the back wall (`Room.wall`, an albedo) lit by the room's light, and a ledge
   across the front, which is the ground layer (the sill, the sideboard, the bonsai's stand, the
-  incense's low table).
+  incense's low table, the bar's booth table).
 - **The room's light** (`roomLight(x, p, n)`) is the room's lamp out of frame (`Room.lamp`, the
   sill's reading lamp), its ambient, the backdrop's daylight through its window (a `daylight`
   pass) and every on layer's declared lights (`localLight`, at the surface's point in metres on the
@@ -3174,9 +3174,10 @@ still scenes of their own.
 - **The window** is a backdrop marked `window`, drawn through a rig of its own: the sill's city is
   seen through a camera 10 m over the street with the room's horizon and focal. The World crosses its
   glass (sky and weather, in its cells only). A room lists the World's knobs only while it offers a
-  window, and never its birds (none fly a window yet), the gusts or the arrangement seed; its
-  layers' trigger slots follow the World's two (from 2). The lava lamp's room shows no window, so it
-  lists no World; its moonlight stays the papered wall's own knob.
+  window, and never its birds (none fly a window yet), the gusts or the arrangement seed. While it
+  lists the World its layers' trigger slots follow the World's two (from 2); a room that lists none
+  numbers its layers' from 0, as no slot is held for a knob it does not list. The lava lamp's room
+  shows no window, so it lists no World; its moonlight stays the papered wall's own knob.
 - **The glass.** A window backdrop may say where its glass is (a `glass` pass, `vec4 <fn>(Ctx x)`:
   how far inside the glass the cell lies from its bottom, top, left and right edges, negative off
   it), which `roomGlass(x)` gives every layer: the frost's pane inside its frame, the sill's six panes
@@ -3185,11 +3186,12 @@ still scenes of their own.
   everything standing in the room.
 - **The order** (`room.ts`): the begins, then the wall, the backdrop's `far` pass, every `farVeil`
   pass (what lies on the glass), the ground's `ground` pass, and every `middle`, `front` and
-  `frontVeil` pass in canonical order. Then the grade: a vignette into the room's corners, the
-  exposure, the soft roll-off of lights past 1 (`Grade.rolloff`, the frost's), shadeOf with the
-  grade's ink, the cell's shimmer. Painter's order is the canonical order. A room keeps no depth (a
-  stated limit). Turns play
-  as they do outdoors (`turnsGlsl`, `passCalls`).
+  `frontVeil` pass in canonical order. Then the grade: a vignette into the room's corners (its reach
+  `Grade.vignetteReach`, unset from 0.45 to 1 across 1.2; the bar's from 0.5, the train's from 0.5
+  to 1.05 across 1.25), the exposure, the soft roll-off of lights past
+  1 (`Grade.rolloff`, the frost's), shadeOf with the grade's ink, the cell's shimmer. Painter's
+  order is the canonical order. A room keeps no depth (a stated limit). Turns play as they do
+  outdoors (`turnsGlsl`, `passCalls`).
 - **Shadows on the wall** are the room's: a layer that stands in the room declares its silhouette
   (`LayerDef.casters`, `float <fn>(vec2 p)`: how much of a light it stops at frame point p on the
   plane it stands in), and `roomCaster(p)` takes the most of every on layer's. A backdrop that
@@ -3199,19 +3201,22 @@ still scenes of their own.
   shadows curling over the pane of light, the incense's and the candle's). A caster still casts on
   no other layer's surface, and a layer's turn does not cut its silhouette (both stated limits).
 - **Locking and offering.** The sill's five layers, the papered wall, the sideboard, the bonsai's
-  three, the incense's three and the frost's view are drawn on their scene's frame and locked to its
-  rig (`ON_THE_SILL`, `ON_THE_SIDEBOARD`, `ON_THE_VERANDA`, `ON_THE_TABLE`, `AT_THE_PANE`). The lava
-  lamp is drawn from the rig: it stands at its
-  anchor on any room's seat line, 0.4 m tall at the room's scale, its rims dipping by the rig's eye
-  over its distance. It is offered to every interior preset whose eye stands 0.2 m or more over its
-  ledge: not to the bonsai's (0.17 m), whose five trigger slots and the lamp's two would pass the
-  eight, nor the frost's (0.15 m: its eye is at the pane). On the sill it takes its second anchor
-  (left of the middle), because the cat holds the first. In the incense's room it stands only while
-  the incense is off: the incense's four fields and its three would pass the six. Its light is a
-  declared light (`lavaLampLight`), which the sill's wall, window frame, sill, props, curtain and cat
-  take through `roomLight` and `localLight`, and the incense's wall and table through `roomLight`.
-  The frost glass is drawn on any window's glass (`roomGlass`), lit by the room's light: offered to
-  the frost's room and the sill's.
+  three, the incense's three, the frost's view, the bar's five and the train's four are drawn on
+  their scene's frame (the bar's through its own pinhole, the train's country through its view's)
+  and locked to its rig (`ON_THE_SILL`, `ON_THE_SIDEBOARD`, `ON_THE_VERANDA`, `ON_THE_TABLE`,
+  `AT_THE_PANE`, `IN_THE_BOOTH`, `BY_THE_WINDOW`). The lava lamp is drawn from the rig: it stands at
+  its anchor on any room's seat line, 0.4 m tall at the room's scale, its rims dipping by the rig's
+  eye over its distance. It is offered to every interior preset; its two trigger slots fit beside
+  every room's own (the fullest, the bar's six, the train's six, and the sill's World, neon, cat and
+  frost, five, leave two). On the sill it takes its second anchor (left of the middle), because the
+  cat holds the first; on the train's table too, the tea holding the first. Its three fields stand
+  beside no four of another's: in the incense's room it stands only while the incense is off, on the
+  bonsai's stand only while the tree is off, at the frost's pane only while the frost is off. On the
+  bar's table it finds no room: the booth claims the table's right, where the whisky, the candle and
+  the coffee stand, and the floor off its left edge. Its light is a declared light (`lavaLampLight`), which the sill's wall, window frame, sill,
+  props, curtain and cat take through `roomLight` and `localLight`, and the incense's wall and table
+  through `roomLight`. The frost glass is drawn on any window's glass (`roomGlass`), lit by the
+  room's light: offered to the frost's room and the sill's.
 - **The bonsai** keeps its room's shell apart from its subject: the `veranda` (the wall, plaster,
   shoji or dark, with the window's patch of sun, the paper lamp's pool and the floorboards; its
   knobs the light: `time` and `cycle`, its own as the papered wall's moonlight is, `light`, `wall`,
@@ -3234,14 +3239,45 @@ still scenes of their own.
   sim's four fields). On a guest's window (the sill's) the view behind is the guest's own, unblurred.
   The World's cloud deck is compiled in at every setting (`WORLD_CLOUDS`, in `frost/index.ts`):
   the view's snow cloud stands in fair weather too.
+- **The bar** keeps its room's shell apart from its subject, all five drawn through the bar's own
+  pinhole (`barBegin`: its eye 1.5 m over the floor, panned toward the window on narrow frames,
+  moved by the pointer and the passage) on the room's rig, whose seat line is the booth table's far
+  edge (eye 0.33 m over its top, 1 m to its edge). The `storefront` (backdrop, the shell: the front
+  wall and its window onto the rainy street, the column, the coat and the dripping umbrella, the
+  tin ceiling, the floor and the back wall's bare panelling; its knobs the street's and the rain:
+  `traffic`, `sign`, `jukebox`, `rain`, `wind`, `drops`), the `booth` (the ground: your table, the
+  candle, the coffee and the whisky, nearest the eye and so its front veil), the `backBar` (the
+  subject: the mirror wall, its bottles and the M, the bartender, the counter, its glasses, the
+  stools and the patrons; its sim's one field schedules the evening; `night`, `patrons`,
+  `bartender`, `bokeh`, `mark`), the `pendants` (the four lamps; their light on the room goes with
+  them) and the `ceilingFan` (the fan; its bowl's light and the blades' shadows on the tin go with
+  it). The street is the window's own view under the bar's own rain, so the room lists no World: the
+  storefront has no `window` mark yet (its sim reads the rain for the umbrellas, the World's rain
+  through it waits for U2), and no `glass` pass, so the frost is not offered. Its six "now" slots
+  run 0 to 5.
+- **The train** keeps the window's view apart from the compartment, and the tea and the curtain
+  from both: the `nightLine` (backdrop: through the glass the country sliding past under the night
+  sky, through the view's own pinhole, the rain driven along the pane, the snow banked at its foot
+  and the lit compartment mirrored in it; its sim's one field runs the journey; its knobs the
+  journey's, the line's, the country's, the birds', the sky's and the weather's, and the M stars;
+  its gates the shared moon's phase and the calm cloud deck), the `compartment` (the ground: the
+  seal and the enamelled frame round the glass, the laminate wall, the curtain rod and the walnut
+  table, lit by the reading lamp: `lamp`, `reflection`), the `teaGlass` (the glass of tea and its
+  steam: `tea`) and the `velvetCurtain` (`curtain`). The cell's state, the journey, the sky's
+  light, the rails' knock and the compartment's light, is the scene's shared chunk (`trainBegin`).
+  The view keeps its own sky and weather, so the room lists no World (the World through a moving
+  window waits for U2), and its planets stay the preset's. Its six "now" slots run 0 to 5, as
+  they did.
 
 | Preset    | Layers                                                                      | Rig                                                                      | Key renames                                                                                                                                                                                                                             | A/B at defaults |
 | --------- | --------------------------------------------------------------------------- | ------------------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------- |
 | `sill`    | `cityWindow`, `sill`, `props`, `cat`, `curtain`; + `lavaLamp`, `frostGlass` | eye 0.35 m, horizon 0.47, focal 0.915 (one radian), 1.14 m: 0.8 a metre  | none; its sky and weather knobs are the World's (Milky Way, cumulus and cloud shadows new, off), its trigger slots renumbered; "Sill · quiet shelter" rewritten (query order)                                                           | `SAME`          |
 | `lava`    | `papered`, `sideboard`, `lavaLamp`                                          | eye 0.248 m, horizon 0.589, focal 2.432, 1.28 m: 1.9 a metre             | none; `spill` and `twin` in the lamp's section                                                                                                                                                                                          | `SAME`          |
-| `bonsai`  | `veranda`, `stand`, `bonsaiTree`                                            | eye 0.167 m, horizon 0.413, focal 1.4, 1.19 m: 1.175 a metre             | none; its trigger slots renumbered (from 2)                                                                                                                                                                                             | `SAME`          |
-| `incense` | `shaftWall`, `lowTable`, `incense`; + `lavaLamp`                            | eye 0.3 m, horizon 0.46, focal 1.2, 1 m: 1.2 a metre                     | none; `dust` in the Air section, `candle` in the Incense one; its trigger slots renumbered (from 2)                                                                                                                                     | `SAME`          |
-| `frost`   | `frostView`, `frostGlass`                                                   | eye 0.15 m, horizon 0.3, focal 0.915 (one radian), 0.518 m: 1.77 a metre | none; its sky and weather knobs are the World's (rain, fog, lightning, cumulus, cloud shadows and the Milky Way new, off; no fair-weather cloud), its trigger slots renumbered; "Frost · aurora over the cabin" rewritten (query order) | `SAME`          |
+| `bonsai`  | `veranda`, `stand`, `bonsaiTree`; + `lavaLamp`                              | eye 0.167 m, horizon 0.413, focal 1.4, 1.19 m: 1.175 a metre             | none; its trigger slots from 0                                                                                                                                                                                                          | `SAME`          |
+| `incense` | `shaftWall`, `lowTable`, `incense`; + `lavaLamp`                            | eye 0.3 m, horizon 0.46, focal 1.2, 1 m: 1.2 a metre                     | none; `dust` in the Air section, `candle` in the Incense one; its trigger slots from 0                                                                                                                                                  | `SAME`          |
+| `frost`   | `frostView`, `frostGlass`; + `lavaLamp`                                     | eye 0.15 m, horizon 0.3, focal 0.915 (one radian), 0.518 m: 1.77 a metre | none; its sky and weather knobs are the World's (rain, fog, lightning, cumulus, cloud shadows and the Milky Way new, off; no fair-weather cloud), its trigger slots renumbered; "Frost · aurora over the cabin" rewritten (query order) | `SAME`          |
+| `bar`     | `storefront`, `booth`, `backBar`, `pendants`, `ceilingFan`; + `lavaLamp`    | eye 0.33 m, horizon 0.53, focal 0.85, 1 m: 0.85 a metre                  | none; the knobs in their layers' sections, its trigger slots renumbered (0 to 5, in the layers' order)                                                                                                                                  | `SAME`          |
+| `train`   | `nightLine`, `compartment`, `teaGlass`, `velvetCurtain`; + `lavaLamp`       | eye 0.265 m, horizon 0.55, focal 0.82, 0.7 m: 1.17 a metre               | none; the knobs in their layers' sections, its trigger slots as they were                                                                                                                                                               | `SAME`          |
 
 ## Art direction
 

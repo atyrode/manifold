@@ -52,12 +52,13 @@
 //                3 highball), x (m, on the counter at GLASS_Z), source slot (-1 a cocktail)
 //   18           candle: draught x, y (-1..1); the ceiling fan's angle (rad, 0..2π); seconds since
 //                last call was called (-1: not called)
+import type { LayerFrame, LayerSim } from "../../composer/types.ts";
 import type { ParamDef } from "../../params.ts";
 import { MAX_PRINCIPALS } from "../../principals.ts";
 import { approach, clamp, smoothstep } from "../../sims/math.ts";
 import { Random } from "../../sims/random.ts";
 import { DataTexture } from "../../sims/texture.ts";
-import type { SceneSim, SimFactory, SimFrame, ScenePoint } from "../types.ts";
+import type { SceneSim, SimFrame, ScenePoint } from "../types.ts";
 import { PASSAGE } from "./constants.ts";
 
 // ---- The room, shared with the shader ----
@@ -183,10 +184,8 @@ const SEED = 0x6ba7;
 type KnobKey = "night" | "patrons" | "bartender" | "rain" | "fan";
 const KNOB_KEYS: readonly KnobKey[] = ["night", "patrons", "bartender", "rain", "fan"];
 
-/** Trigger slots (index.ts): a cocktail now, a new patron now, last call now. */
-const TRIGGER_COCKTAIL = 0;
-const TRIGGER_ARRIVAL = 4;
-const TRIGGER_LAST_CALL = 5;
+/** The knobs whose "now" the sim answers: a cocktail now, a new patron now, last call now. */
+const NOW_KEYS = { cocktail: "bartender", arrival: "patrons", lastCall: "night" } as const;
 /** At last call: where he stands to talk to you, how many of those at the bar order one for the road. */
 const YOUR_END = 0;
 const ONE_FOR_THE_ROAD = 0.5;
@@ -309,6 +308,8 @@ class BarEvening implements SceneSim {
   readonly #texture: DataTexture;
   readonly #data = new Float32Array(TEXELS * 4);
   readonly #index: Readonly<Record<KnobKey, number>>;
+  /** The trigger slots of the "now" buttons it answers (NOW_KEYS), as the composer numbered them. */
+  readonly #slots: Readonly<Record<keyof typeof NOW_KEYS, number>>;
   readonly #patrons: readonly Patron[] = Array.from({ length: SEATS }, blankPatron);
   readonly #drinks: readonly Drink[] = Array.from({ length: SEATS }, (_, seat) => ({
     fill: -1,
@@ -365,6 +366,16 @@ class BarEvening implements SceneSim {
     const index: Record<KnobKey, number> = { night: 0, patrons: 0, bartender: 0, rain: 0, fan: 0 };
     for (const key of KNOB_KEYS) index[key] = find(key);
     this.#index = index;
+    const slot = (key: KnobKey): number => {
+      const at = params[index[key]]?.trigger;
+      if (at === undefined) throw new BarSimError(`bar: its '${key}' knob has no "now"`);
+      return at;
+    };
+    this.#slots = {
+      cocktail: slot(NOW_KEYS.cocktail),
+      arrival: slot(NOW_KEYS.arrival),
+      lastCall: slot(NOW_KEYS.lastCall),
+    };
     this.#texture = new DataTexture(gl, {
       width: TEXELS,
       height: 1,
@@ -501,12 +512,12 @@ class BarEvening implements SceneSim {
 
   /** A "now" button stamps its slot with the scene clock: any change since the last frame fires. */
   #watchTriggers(triggers: readonly number[]): void {
-    if (this.#fired(triggers, TRIGGER_COCKTAIL) && this.#serving) {
+    if (this.#fired(triggers, this.#slots.cocktail) && this.#serving) {
       this.#cocktail = true;
       this.#interrupt();
     }
-    if (this.#fired(triggers, TRIGGER_ARRIVAL)) this.#arrive(true);
-    if (this.#fired(triggers, TRIGGER_LAST_CALL)) this.#call();
+    if (this.#fired(triggers, this.#slots.arrival)) this.#arrive(true);
+    if (this.#fired(triggers, this.#slots.lastCall)) this.#call();
     this.#seen.length = triggers.length;
     for (let slot = 0; slot < triggers.length; slot++) this.#seen[slot] = triggers[slot] ?? -1e4;
   }
@@ -1116,7 +1127,21 @@ class BarEvening implements SceneSim {
   }
 }
 
-/** The bar's simulation for a scene whose knobs are `params` (looked up by key). */
-export function barSim(params: readonly ParamDef[]): SimFactory {
-  return (gl) => new BarEvening(gl, params);
+/**
+ * The back bar's sim (its layer's field 0, layers.ts backBar): the evening, from the scene's knobs
+ * (`params`, looked up by key: the back bar's and the storefront's rain and the fan's).
+ */
+export function backBarSim(gl: WebGL2RenderingContext, params: readonly ParamDef[]): LayerSim {
+  const sim = new BarEvening(gl, params);
+  return {
+    frame(frame: LayerFrame) {
+      const [texture] = sim.frame(frame);
+      const field = frame.fields[0];
+      if (field !== undefined) field.texture = texture;
+    },
+    interest: (aspect) => sim.interest(aspect),
+    dispose() {
+      sim.dispose();
+    },
+  };
 }

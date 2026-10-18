@@ -6,9 +6,7 @@
 //              on the lamp's room's frame alone.
 //   lavaLamp   dressing: the lamp (and its twin), drawn from the room's rig: it stands on any room's
 //              ledge at its anchor, 0.4 m tall at the room's scale there, and its light reaches the
-//              other layers' surfaces (lavaLampLight). Offered to the rooms whose eye stands 0.2 m or
-//              more over the ledge: the sill's and its own, not the bonsai's stand, whose five "now"
-//              slots and the lamp's two would pass the renderer's eight (ADR 0062 "The caps").
+//              other layers' surfaces (lavaLampLight). Offered to every room.
 // Space: the room is laid out on the frame, so claims and anchors are in shares of the frame's width
 // across (at the rig's minAspect, 1) and metres back from the seat line (README "The interior
 // composer").
@@ -104,8 +102,7 @@ export const lavaLampLayer: LayerDef = {
       },
     ],
   },
-  // Not under the bonsai's low eye (0.17 m): its trigger slots and the lamp's pass the eight.
-  camera: { eye: [0.2, 2] },
+  camera: {},
   switch: toggle(
     "layers",
     "lavaLamp",

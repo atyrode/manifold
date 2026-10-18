@@ -7,14 +7,12 @@
 // out of a long tunnel with the next one just across a viaduct, the train is still in the one it is
 // in, though the next one's middle is nearer. The shared birds fly over the line's country by day
 // (some cross the window over a few minutes of the motion clock) and not at night or while off.
-// Small entries draw those parts on their own, from a uSim0 timetable laid out as sim.ts documents.
+// Small entries draw those parts on their own, from a timetable laid out as sim.ts documents (the
+// night line's field, which `draw` binds).
 import { defaultsFor, paramDefaults, renderSettings } from "../../state.ts";
 import { DataTexture } from "../../sims/texture.ts";
-import { loadScene } from "../index.ts";
-import { BASE, compile, draw, WIDTH } from "./motion-clock.verify.ts";
+import { BASE, compile, draw, trainScene, WIDTH } from "./motion-clock.verify.ts";
 import { TRAIN_BLOCK, TRAIN_BRIDGE, TRAIN_TEXELS, TRAIN_TUNNEL } from "./sim.ts";
-
-const trainScene = await loadScene("train");
 
 function fail(message: string): never {
   throw new Error(`train line: ${message}`);

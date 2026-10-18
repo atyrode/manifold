@@ -2,6 +2,15 @@
 // its scene's other layers, its sim. A composed scene's code module gathers it (composer/code.ts), so
 // it loads with the scene's code and never with the registry.
 import {
+  backBarGlsl,
+  barSharedGlsl,
+  boothGlsl,
+  ceilingFanGlsl,
+  pendantsGlsl,
+  storefrontGlsl,
+} from "../scenes/bar/shader.ts";
+import { backBarSim } from "../scenes/bar/sim.ts";
+import {
   bonsaiSharedGlsl,
   bonsaiTreeGlsl,
   standGlsl,
@@ -28,6 +37,14 @@ import {
   sillSharedGlsl,
 } from "../scenes/sill/shader.ts";
 import { catSim } from "../scenes/sill/sim.ts";
+import {
+  compartmentGlsl,
+  nightLineGlsl,
+  teaGlassGlsl,
+  trainSharedGlsl,
+  velvetCurtainGlsl,
+} from "../scenes/train/shader.ts";
+import { nightLineSim } from "../scenes/train/sim.ts";
 import type { LayerCode } from "./types.ts";
 
 export const INTERIOR_CODE: Readonly<Record<string, LayerCode>> = {
@@ -47,4 +64,13 @@ export const INTERIOR_CODE: Readonly<Record<string, LayerCode>> = {
   incense: { glsl: () => incenseGlsl, shared: [incenseSharedGlsl], sim: incenseLayerSim },
   frostView: { glsl: () => frostViewGlsl, shared: [frostSharedGlsl] },
   frostGlass: { glsl: () => frostGlassGlsl, shared: [frostSharedGlsl], sim: frostGlassSim },
+  storefront: { glsl: () => storefrontGlsl, shared: [barSharedGlsl] },
+  booth: { glsl: () => boothGlsl, shared: [barSharedGlsl] },
+  backBar: { glsl: () => backBarGlsl, shared: [barSharedGlsl], sim: backBarSim },
+  pendants: { glsl: () => pendantsGlsl, shared: [barSharedGlsl] },
+  ceilingFan: { glsl: () => ceilingFanGlsl, shared: [barSharedGlsl] },
+  nightLine: { glsl: () => nightLineGlsl, shared: [trainSharedGlsl], sim: nightLineSim },
+  compartment: { glsl: () => compartmentGlsl, shared: [trainSharedGlsl] },
+  teaGlass: { glsl: () => teaGlassGlsl, shared: [trainSharedGlsl] },
+  velvetCurtain: { glsl: () => velvetCurtainGlsl, shared: [trainSharedGlsl] },
 };

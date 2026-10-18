@@ -14,7 +14,9 @@
 //                     (a layer listing its own id in `triggers` numbers its switch's "now" first).
 //                     The preset's values set the defaults. A room (the `interior` composer)
 //                     lists the World's knobs but its birds only while it offers a window, no
-//                     gusts, season or seed, and its layers' slots from 2.
+//                     gusts, season or seed; its layers' slots follow the World's two while it
+//                     lists the World and start at 0 while it lists none (no slot is held for a
+//                     knob the preset does not list).
 //   featuresFor       the World's gates (with the climate where the season sets it: a season knob
 //                     beside the World's snow), LAYER_<ID> for every offered layer (1 where
 //                     placed), each placed layer's own gates (a gate another placed layer
@@ -187,20 +189,20 @@ export function composeScene<P extends AnyPreset>(composer: Composer, preset: P)
   if (indoors && level?.room === undefined)
     throw new ComposeError(`preset ${preset.id}: an interior preset needs its room`);
 
-  // Trigger slots and keys: a room has no gusts, so its layers' slots follow the World's two; a
-  // patch seen from above has no World, so its layers' start at 0.
-  const triggers: Record<string, number> =
-    level === undefined
-      ? {}
-      : indoors
-        ? { meteors: WORLD_TRIGGERS.meteors, lightning: WORLD_TRIGGERS.lightning }
-        : { ...WORLD_TRIGGERS };
-  let slot =
-    level === undefined ? 0 : (indoors ? WORLD_TRIGGERS.lightning : WORLD_TRIGGERS.gusts) + 1;
+  // Trigger slots and keys: a room has no gusts, so its layers' slots follow the World's two while a
+  // window lists the World, and start at 0 in a room without one; a patch seen from above has no
+  // World, so its layers' start at 0. No slot is held for a knob the preset does not list.
+  const listsWorld = level !== undefined && (!indoors || offered.some((l) => l.window === true));
+  const triggers: Record<string, number> = !listsWorld
+    ? {}
+    : indoors
+      ? { meteors: WORLD_TRIGGERS.meteors, lightning: WORLD_TRIGGERS.lightning }
+      : { ...WORLD_TRIGGERS };
+  let slot = !listsWorld ? 0 : (indoors ? WORLD_TRIGGERS.lightning : WORLD_TRIGGERS.gusts) + 1;
   // A room's window shows the World's sky and weather; its birds fly no window yet, so a room lists
   // none of their knobs.
   const world =
-    level === undefined || (indoors && !offered.some((layer) => layer.window === true))
+    level === undefined || !listsWorld
       ? []
       : worldKnobs({
           ...level.world,

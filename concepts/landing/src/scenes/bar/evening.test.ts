@@ -3,10 +3,12 @@ import { HeadlessSim } from "../../sims/headless.ts";
 import { loadScene } from "../index.ts";
 
 const barScene = await loadScene("bar");
+/** The back bar's field 0 (sim.ts): slot 2, after the composed sim's speck map and records atlas. */
+const EVENING = 2;
 
 /** The room as the shader sees it: the bartender, every stool and every glass (texels 0..17; 18 holds the candle and the fan, which carry on). */
 function room(sim: HeadlessSim): number[] {
-  return Array.from(sim.upload(0).data.subarray(0, 18 * 4));
+  return Array.from(sim.upload(EVENING).data.subarray(0, 18 * 4));
 }
 
 /** The room at the opening frame and then every 30 s for two minutes, in tenths of a second. */

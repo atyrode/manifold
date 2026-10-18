@@ -1,6 +1,7 @@
-// GPU check of last call through the bar's real sim (sim.ts) and shader: early in the evening the
-// OPEN sign in the window is lit, and once last call has been called it is closing time, the sign
-// dark, whatever the time-of-night knob says.
+// GPU check of last call through the bar's real sim (sim.ts, the back bar's field 0, slot 2 of the
+// composed sim) and its program at the defaults: early in the evening the OPEN sign in the window is
+// lit, and once last call has been called it is closing time, the sign dark, whatever the
+// time-of-night knob says.
 import { fragmentSourceFor, packParams, vertexSource } from "../../shaders/index.ts";
 import { visitorAlone } from "../../principals.ts";
 import { defaultsFor, paramDefaults, renderSettings } from "../../state.ts";
@@ -8,6 +9,8 @@ import { loadScene } from "../index.ts";
 import type { SimFrame } from "../types.ts";
 
 const barScene = await loadScene("bar");
+/** The back bar's field 0: slot 2, after the composed sim's speck map and records atlas. */
+const EVENING = 2;
 
 const W = 320;
 const H = 180;
@@ -53,8 +56,9 @@ export function verifyBarLastCall(gl: WebGL2RenderingContext): Record<string, un
     gl.uniform4fv(u("uParams"), packParams(params));
     gl.uniform1fv(u("uTriggers"), new Float32Array(8).fill(-1e4));
     gl.uniform2f(u("uPassage"), 1, 0);
-    gl.uniform4f(u("uSimOn"), 1, 0, 0, 0);
-    gl.uniform1i(u("uSim0"), 0);
+    // The composed sim's slots: the speck map and the records atlas unbound, the evening at 2.
+    gl.uniform4f(u("uSimOn"), 0, 0, 1, 0);
+    gl.uniform1i(u(`uSim${EVENING}`), 0);
     gl.activeTexture(gl.TEXTURE0);
     gl.bindTexture(gl.TEXTURE_2D, texture ?? null);
     gl.drawArrays(gl.TRIANGLES, 0, 3);
@@ -91,13 +95,13 @@ export function verifyBarLastCall(gl: WebGL2RenderingContext): Record<string, un
       ...visitorAlone(),
       passage: { enter: 1, exit: 0 },
     };
-    let texture = sim.frame(frame)[0];
+    let texture = sim.frame(frame)[EVENING];
     frame.dt = 0.1;
     for (let i = 1; i <= 300; i++) {
       frame.time = i * 0.1;
       frame.motionTime = frame.time;
       if (i === callAt * 10) triggers[slot] = frame.time;
-      texture = sim.frame(frame)[0];
+      texture = sim.frame(frame)[EVENING];
     }
     return { texture, dispose: () => sim.dispose() };
   };

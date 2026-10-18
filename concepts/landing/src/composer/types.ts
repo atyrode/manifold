@@ -382,6 +382,12 @@ export interface Grade {
    */
   readonly rolloff?: number;
   /**
+   * The room's (room.ts): where its vignette darkens, `from` to `to` out from the centre with the
+   * frame's width taken `across` times its share. Unset 0.45, 1 and 1.2; the bar's from 0.5, the
+   * train's from 0.5 to 1.05 across 1.25.
+   */
+  readonly vignetteReach?: { readonly from: number; readonly to: number; readonly across: number };
+  /**
    * The vignette's reach where it is a circle across the frame's width as well as its height (the
    * campfire's): `scale` units a screen height, darkening from `from` to `to` units out. Unset, an
    * oval of the frame's height.

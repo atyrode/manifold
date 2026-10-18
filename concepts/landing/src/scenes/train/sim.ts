@@ -24,11 +24,12 @@
 //   2..13   events, two texels each: (block, metre where it starts, length m, kind) and (seed 0..1,
 //           metres before the start the train slows over, 0, 0); kind 0 is an empty slot
 //   14, 15  cars on the road alongside: (metres ahead of the train, heading +1 / -1, 1 while there, 0)
+import type { LayerFrame, LayerSim } from "../../composer/types.ts";
 import { KnobReader, type ParamDef } from "../../params.ts";
 import { approach, clamp, smoothstep } from "../../sims/math.ts";
 import { mulberry32 } from "../../sims/random.ts";
 import { DataTexture } from "../../sims/texture.ts";
-import type { SceneSim, SimFactory, SimFrame } from "../types.ts";
+import type { SceneSim, SimFrame } from "../types.ts";
 
 // ---- Shared with the shader ----
 
@@ -561,7 +562,20 @@ class TrainJourney implements SceneSim {
   }
 }
 
-/** The journey's simulation for a scene whose knobs are `params` (looked up by key). */
-export function trainSim(params: readonly ParamDef[]): SimFactory {
-  return (gl) => new TrainJourney(gl, params);
+/**
+ * The night line's sim (its layer's field 0, layers.ts nightLine): the journey, from the scene's
+ * knobs (`params`, looked up by key).
+ */
+export function nightLineSim(gl: WebGL2RenderingContext, params: readonly ParamDef[]): LayerSim {
+  const sim = new TrainJourney(gl, params);
+  return {
+    frame(frame: LayerFrame) {
+      const [texture] = sim.frame(frame);
+      const field = frame.fields[0];
+      if (field !== undefined) field.texture = texture;
+    },
+    dispose() {
+      sim.dispose();
+    },
+  };
 }

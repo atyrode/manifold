@@ -166,7 +166,8 @@ void main() { o = vec4(a()); }
 const BUDGET = {
   autumn: [90500, 181500],
   bamboo: [103500, 195000],
-  bar: [122500],
+  // The all-features program is the composer's (ADR 0062): the one a layer's turn plays in.
+  bar: [122500, 129000],
   bees: [114500, 191000],
   // The all-features program is the composer's (ADR 0062): the one a layer's turn plays in.
   bonsai: [59500, 66500],

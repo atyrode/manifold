@@ -4,6 +4,8 @@ import { loadScene } from "../index.ts";
 import { ACT, SEATS } from "./sim.ts";
 
 const barScene = await loadScene("bar");
+/** The back bar's field 0 (sim.ts): slot 2, after the composed sim's speck map and records atlas. */
+const EVENING = 2;
 
 /** The bar's sim on the headless stand-in, driven a frame at a time, the pointer away. */
 class Evening {
@@ -34,7 +36,7 @@ class Evening {
   }
 
   texel(i: number, c: number): number {
-    return this.#sim.upload(0).data[i * 4 + c] ?? Number.NaN;
+    return this.#sim.upload(EVENING).data[i * 4 + c] ?? Number.NaN;
   }
 
   #frame(dt: number): HeadlessFrame {

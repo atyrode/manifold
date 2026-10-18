@@ -11,6 +11,8 @@ import {
 } from "./sim.ts";
 
 const trainScene = await loadScene("train");
+/** The night line's field 0 (sim.ts): slot 2, after the composed sim's speck map and records atlas. */
+const JOURNEY = 2;
 
 /** An event as the shader is handed it: kind code, odometer reading (m) where it starts, length, seed 0..255. */
 type Seen = [kind: number, start: number, length: number, seed: number];
@@ -52,7 +54,7 @@ function journey(
   const frames = Math.round(seconds / FRAME);
   for (let i = 0; i < frames; i++) {
     const now = presses.filter(([at]) => Math.round(at / FRAME) === i).map(([, key]) => key);
-    const data = sim.step({ dt: FRAME, knobs, now }).upload(0).data as Float32Array;
+    const data = sim.step({ dt: FRAME, knobs, now }).upload(JOURNEY).data as Float32Array;
     const s = (data[0] ?? 0) * TRAIN_BLOCK + (data[1] ?? 0) + (data[2] ?? 0);
     if (Number.isNaN(from)) from = s;
     for (let k = 0; k < TRAIN_EVENT_SLOTS; k++) {
@@ -174,7 +176,9 @@ test("every event is handed over well before it comes into view, on every line a
 test("changing the line starts a fresh journey on it", () => {
   const switched = new HeadlessSim(trainScene);
   for (let i = 0; i < 300; i++) switched.step({ dt: FRAME });
-  const after = switched.step({ dt: FRAME, knobs: { line: 2 } }).upload(0).data;
-  const fresh = new HeadlessSim(trainScene).step({ dt: FRAME, knobs: { line: 2 } }).upload(0).data;
+  const after = switched.step({ dt: FRAME, knobs: { line: 2 } }).upload(JOURNEY).data;
+  const fresh = new HeadlessSim(trainScene)
+    .step({ dt: FRAME, knobs: { line: 2 } })
+    .upload(JOURNEY).data;
   expect(Array.from(after)).toEqual(Array.from(fresh));
 });

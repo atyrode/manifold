@@ -32,6 +32,11 @@
 // country, the tea sloshing and settling from the jolt) and, leaving, runs into one (the cutting
 // rises, the mouth sweeps in, the window turns to a mirror). trainPassage lays a tunnel of its own
 // over the timetable while it plays; all of it is exactly off at rest.
+//
+// A preset of the `interior` composer (layers.ts): the shared chunk below holds the country, the
+// sky, the journey and the compartment's shapes, and the cell's state (trainBegin); the night line
+// draws through the glass, the compartment round it, then the tea and the curtain.
+import type { SharedGlsl } from "../../composer/types.ts";
 import { glslFloat } from "../../shaders/glsl.ts";
 import { birdsGlsl } from "../../shaders/lib/birds.ts";
 import { TRAIN_LINES, TRAIN_PASSAGE } from "./constants.ts";
@@ -48,8 +53,17 @@ import {
   TRAIN_TUNNEL,
 } from "./sim.ts";
 
-export const trainGlsl = `
+const trainShared = `
 ${birdsGlsl}
+// The journey: the night line's field 0 (sim.ts), read through TRAIN_SIM while it runs.
+#if LAYER_NIGHT_LINE
+#define TRAIN_SIM nightLineField0
+#define TRAIN_SIM_ON nightLineField0On()
+#else
+#define TRAIN_SIM uSim0
+#define TRAIN_SIM_ON false
+#endif
+
 // ---- The view ----
 const float TRAIN_F = ${glslFloat(TRAIN_FOCAL)};
 const float TRAIN_HORIZON = 0.05;     // the horizon's height on screen (centre 0)
@@ -196,7 +210,7 @@ void trainRead(float t) {
   trainTunnel = vec4(1e5, 0.0, 0.0, 0.0);
   for (int i = 0; i < TRAIN_CARS; i++) trainCars[i] = vec3(0.0);
   for (int k = 0; k < TRAIN_EVENTS; k++) trainTunnels[k] = vec2(0.0);
-  if (uSimOn.x < 0.5) {
+  if (!TRAIN_SIM_ON) {
     // No simulation yet: a steady run from a fixed point on the line.
     float s = 4096.0 + 12.0 * uMotionTime;
     trainBlockN = floor(s / TRAIN_BLOCK);
@@ -204,15 +218,15 @@ void trainRead(float t) {
     trainV = 12.0;
     trainAcc = 0.0;
   } else {
-    vec4 odo = texelFetch(uSim0, ivec2(0, 0), 0);
+    vec4 odo = texelFetch(TRAIN_SIM, ivec2(0, 0), 0);
     trainBlockN = odo.x;
     trainInto = odo.y + odo.z;
     trainV = max(odo.w, 0.0);
-    trainAcc = texelFetch(uSim0, ivec2(1, 0), 0).x;
+    trainAcc = texelFetch(TRAIN_SIM, ivec2(1, 0), 0).x;
     for (int k = 0; k < TRAIN_EVENTS; k++) {
-      vec4 e = texelFetch(uSim0, ivec2(2 + 2 * k, 0), 0);
+      vec4 e = texelFetch(TRAIN_SIM, ivec2(2 + 2 * k, 0), 0);
       if (e.w < 0.5) continue;
-      vec4 e2 = texelFetch(uSim0, ivec2(3 + 2 * k, 0), 0);
+      vec4 e2 = texelFetch(TRAIN_SIM, ivec2(3 + 2 * k, 0), 0);
       float blocks = e.x - trainBlockN;
       blocks -= TRAIN_BLOCKS * floor(blocks / TRAIN_BLOCKS + 0.5);
       vec4 ev = vec4(blocks * TRAIN_BLOCK + e.y - trainInto, e.z, e2.x, e2.y);
@@ -230,7 +244,7 @@ void trainRead(float t) {
         trainTunnels[k] = ev.xy;
       }
     }
-    for (int i = 0; i < TRAIN_CARS; i++) trainCars[i] = texelFetch(uSim0, ivec2(2 + 2 * TRAIN_EVENTS + i, 0), 0).xyz;
+    for (int i = 0; i < TRAIN_CARS; i++) trainCars[i] = texelFetch(TRAIN_SIM, ivec2(2 + 2 * TRAIN_EVENTS + i, 0), 0).xyz;
   }
   trainS = trainBlockN * TRAIN_BLOCK + trainInto;
 }
@@ -499,7 +513,7 @@ float trainMeteor(vec3 dir, float t) {
     float k = floor(tm / period);
     m = trainStreak(dir, tm - (k + 0.1 + 0.75 * hash12(vec2(k, 71.3))) * period, k);
   }
-  return max(m, trainStreak(dir, sinceTrigger(5), uTriggers[5]));
+  return max(m, trainStreak(dir, sinceTrigger(TRIGGER_meteors), uTriggers[TRIGGER_meteors]));
 }
 
 // By night the eye adapts and the air low over the land holds the moon's light: a pale band along
@@ -2275,144 +2289,202 @@ void trainSetup(float t) {
   trainTunnelIn = trainTunnel.x < 0.0 && trainTunnel.x + trainTunnel.y > 0.0 ? smoothstep(0.0, 3.0, -trainTunnel.x) * smoothstep(0.0, 3.0, trainTunnel.x + trainTunnel.y) : 0.0;
 }
 
-Shade sceneTrain(vec2 uv, vec2 cell, float t) {
+// ---- The cell's state (trainBegin), set once a cell and read by the train's layers
+
+float trainAspect;
+vec2 trainP;          // the cell: screen heights from the frame's middle, x across
+vec4 trainKnock;      // seconds since each of the carriage's four axles last crossed a joint
+float trainJolt;      // what a joint does to the carriage now
+float trainPress;     // seconds since the visitor knocked on the table (or the passage's jolt)
+float trainRock;      // the carriage's slow rock
+float trainBrake;     // how hard the train brakes (-1.5 .. 1.5)
+vec2 trainGC;         // the window's glass: its centre, half size and corner radius; the cell's
+vec2 trainGH;         // distance to it (negative on the glass)
+float trainGR;
+float trainSdG;
+float trainTeaX;      // where the glass of tea stands on the table
+vec2 trainTeaFoot;
+vec3 trainSpillHere;  // what comes in through the window at the cell's x
+vec3 trainRoomHere;   // the compartment's light at the cell: the reading lamp, a night light, the window's spill
+
+// The cell's journey, sky and light, the rails' rhythm, the window and the compartment's light.
+void trainBegin(Ctx x) {
+  float t = uTime;
   float tm = uMotionTime;
-  float aspect = uRes.x / uRes.y;
-  vec2 p = (uv - 0.5) * vec2(aspect, 1.0);
-  Shade o = blankShade();
+  float aspect = x.aspect;
+  trainAspect = aspect;
+  vec2 p = (x.uv - 0.5) * vec2(aspect, 1.0);
+  trainP = p;
   trainSetup(t);
 
   // The rails' rhythm: seconds since each of the carriage's four axles last crossed a joint, and
   // what that does: a jolt, the carriage's slow rock.
-  vec4 knock = mod(vec4(trainInto) - vec4(0.0, 2.6, 17.4, 20.0), TRAIN_JOINT) / max(trainV, 0.3);
+  trainKnock = mod(vec4(trainInto) - vec4(0.0, 2.6, 17.4, 20.0), TRAIN_JOINT) / max(trainV, 0.3);
   float beat = K_rhythm * smoothstep(0.5, 6.0, trainV);
   float jolt = 0.0;
-  for (int i = 0; i < 4; i++) jolt += exp(-knock[i] * 14.0) * sin(knock[i] * 70.0);
+  for (int i = 0; i < 4; i++) jolt += exp(-trainKnock[i] * 14.0) * sin(trainKnock[i] * 70.0);
   jolt *= 0.5 * beat;
-  jolt += trainPassRattle;
-  float press = t - uPrincipals[0].w;
-  if (trainPassAge >= 0.0) press = min(press, trainPassAge);
-  float rock = (0.3 + 0.7 * K_rhythm) * smoothstep(1.0, 10.0, trainV) * (0.6 * sin(tm * 1.7 + 0.8 * sin(tm * 0.23)) + 0.4 * sin(tm * 2.9 + 1.3));
-  float brake = clamp(-trainAcc, -1.5, 1.5);
+  trainJolt = jolt + trainPassRattle;
+  trainPress = t - uPrincipals[0].w;
+  if (trainPassAge >= 0.0) trainPress = min(trainPress, trainPassAge);
+  trainRock = (0.3 + 0.7 * K_rhythm) * smoothstep(1.0, 10.0, trainV) * (0.6 * sin(tm * 1.7 + 0.8 * sin(tm * 0.23)) + 0.4 * sin(tm * 2.9 + 1.3));
+  trainBrake = clamp(-trainAcc, -1.5, 1.5);
 
   // The window: a big pane with rounded corners in a cream-enamelled frame.
-  vec2 gC = vec2(0.0, 0.1);
-  vec2 gH = vec2(0.4 * aspect, 0.32);
-  float gR = 0.075;
-  float sdG = sdBox(p - gC, gH, gR);
-  float teaX = 0.22 * aspect;
-  vec2 teaFoot = vec2(teaX, -0.395);
+  trainGC = vec2(0.0, 0.1);
+  trainGH = vec2(0.4 * aspect, 0.32);
+  trainGR = 0.075;
+  trainSdG = sdBox(p - trainGC, trainGH, trainGR);
+  trainTeaX = 0.22 * aspect;
+  trainTeaFoot = vec2(trainTeaX, -0.395);
 
   // The compartment's light: the reading lamp above and to the right, a little night light, and
   // what comes in through the window.
-  vec3 spill = trainSpill(p.x, tm);
+  trainSpillHere = trainSpill(p.x, tm);
   vec2 lampAt = vec2(0.42 * aspect, 0.74);
   vec2 dl = (p - lampAt) * vec2(0.8, 1.0);
-  float nearWin = smoothstep(0.35, 0.0, sdG);
-  vec3 room = TRAIN_LAMP * K_lamp * 1.25 / (1.0 + dot(dl, dl) * 3.0) + vec3(0.025, 0.028, 0.04) + spill * (0.3 + 0.7 * nearWin);
+  float nearWin = smoothstep(0.35, 0.0, trainSdG);
+  trainRoomHere = TRAIN_LAMP * K_lamp * 1.25 / (1.0 + dot(dl, dl) * 3.0) + vec3(0.025, 0.028, 0.04) + trainSpillHere * (0.3 + 0.7 * nearWin);
+}
+`;
 
-  vec3 col = vec3(0.0);
+/** The train's GLSL its layers share: the country, the sky, the journey, the compartment's shapes, the cell's state. */
+export const trainSharedGlsl: SharedGlsl = {
+  id: "train",
+  glsl: () => trainShared,
+  begin: "trainBegin",
+};
+
+/**
+ * The night line (the backdrop of the train's room): through the glass, the country sliding past
+ * under the sky through the view's own pinhole, the rain driven along the pane, the snow banked at
+ * its foot, and the lit compartment mirrored in it.
+ */
+export const nightLineGlsl = `
+void nightLineFar(Ctx x, inout Cell c) {
+  if (trainSdG >= 0.0) return;
+  float t = uTime;
+  float aspect = trainAspect;
+  vec2 p = trainP;
+  vec3 room = trainRoomHere;
   float accent = 0.0;
-  if (sdG < 0.0) {
-    // Through the glass: rain driven along it, refracting what lies behind each drop.
-    float streaks = K_rain * K_streaks * (1.0 - smoothstep(0.0, 60.0, -trainTunnel.x) * smoothstep(0.0, 60.0, trainTunnel.x + trainTunnel.y));
-    vec4 pane = trainPaneRain(p, t, streaks);
-    float drop = hardEdge(pane.z);
-    float bead = hardEdge(pane.w) * (1.0 - drop);
-    vec2 at = p + pane.xy * drop;
-    vec2 ctr = vec2(0.0, TRAIN_HORIZON);
-    vec2 img = rotate(at - ctr, trainRoll) + ctr + vec2(TRAIN_F * trainLook, 0.0);
-    vec2 rainUV = vec2(at.x / aspect + 0.5, at.y + 0.5);
-    col = trainOutside(img, rainUV, aspect, t, accent);
-    // Snow banked on the outside of the pane along its foot, deepest in the corners.
-    if (trainLying > 0.0) {
-      float corner = min(p.x + gH.x, gH.x - p.x);
-      float h = (0.004 + 0.02 * exp(-corner / 0.06)) * snowCover(vec3(0.0, 1.0, 0.0), vec2(p.x * 14.0, 0.3), trainLying);
-      float bank = hardEdge(clamp((gC.y - gH.y + h - p.y) / trainPx + 0.5, 0.0, 1.0)) * step(0.0005, h);
-      col = mix(col, TRAIN_SNOW * (dot(trainAmbient + trainMoonLight, LUMA) * 1.2 + 0.05) + room * 0.25, bank);
-      accent *= 1.0 - bank;
-    }
-    // The pane: a little light lost; the drops gather light, darken at the rim and catch the lamp;
-    // the beads of their trails glint.
-    float ring = 4.0 * pane.z * (1.0 - pane.z) * drop;
-    col *= 0.9 * (1.0 + 0.35 * drop - 0.5 * ring);
-    float side = smoothstep(0.1, 0.9, dot(normalize(-pane.xy + 1e-6), vec2(0.707, 0.707)));
-    col += TRAIN_LAMP * K_lamp * 0.6 * ring * side + room * 0.08 * drop;
-    col = mix(col, col * 1.2 + TRAIN_LAMP * K_lamp * 0.12 + dot(trainAir, LUMA) * 0.4, bead * 0.8);
-    // The compartment, mirrored in the glass: faint over the night, a mirror in a tunnel.
-    float mirrorK = 0.22 * K_reflection * (1.0 + 4.0 * trainTunnelIn);
-    float macc = 0.0;
-    col += trainMirror(p, aspect, jolt, teaX, macc) * mirrorK;
-    accent = max(accent * 0.85, macc * min(mirrorK * 8.0, 1.0));
+  // Through the glass: rain driven along it, refracting what lies behind each drop.
+  float streaks = K_rain * K_streaks * (1.0 - smoothstep(0.0, 60.0, -trainTunnel.x) * smoothstep(0.0, 60.0, trainTunnel.x + trainTunnel.y));
+  vec4 pane = trainPaneRain(p, t, streaks);
+  float drop = hardEdge(pane.z);
+  float bead = hardEdge(pane.w) * (1.0 - drop);
+  vec2 at = p + pane.xy * drop;
+  vec2 ctr = vec2(0.0, TRAIN_HORIZON);
+  vec2 img = rotate(at - ctr, trainRoll) + ctr + vec2(TRAIN_F * trainLook, 0.0);
+  vec2 rainUV = vec2(at.x / aspect + 0.5, at.y + 0.5);
+  vec3 col = trainOutside(img, rainUV, aspect, t, accent);
+  // Snow banked on the outside of the pane along its foot, deepest in the corners.
+  if (trainLying > 0.0) {
+    float corner = min(p.x + trainGH.x, trainGH.x - p.x);
+    float h = (0.004 + 0.02 * exp(-corner / 0.06)) * snowCover(vec3(0.0, 1.0, 0.0), vec2(p.x * 14.0, 0.3), trainLying);
+    float bank = hardEdge(clamp((trainGC.y - trainGH.y + h - p.y) / trainPx + 0.5, 0.0, 1.0)) * step(0.0005, h);
+    col = mix(col, TRAIN_SNOW * (dot(trainAmbient + trainMoonLight, LUMA) * 1.2 + 0.05) + room * 0.25, bank);
+    accent *= 1.0 - bank;
+  }
+  // The pane: a little light lost; the drops gather light, darken at the rim and catch the lamp;
+  // the beads of their trails glint.
+  float ring = 4.0 * pane.z * (1.0 - pane.z) * drop;
+  col *= 0.9 * (1.0 + 0.35 * drop - 0.5 * ring);
+  float side = smoothstep(0.1, 0.9, dot(normalize(-pane.xy + 1e-6), vec2(0.707, 0.707)));
+  col += TRAIN_LAMP * K_lamp * 0.6 * ring * side + room * 0.08 * drop;
+  col = mix(col, col * 1.2 + TRAIN_LAMP * K_lamp * 0.12 + dot(trainAir, LUMA) * 0.4, bead * 0.8);
+  // The compartment, mirrored in the glass: faint over the night, a mirror in a tunnel.
+  float mirrorK = 0.22 * K_reflection * (1.0 + 4.0 * trainTunnelIn);
+  float macc = 0.0;
+  col += trainMirror(p, aspect, trainJolt, trainTeaX, macc) * mirrorK;
+  c.col = col;
+  c.accent = max(accent * 0.85, macc * min(mirrorK * 8.0, 1.0));
+}
+`;
+
+/**
+ * The compartment (the ground): round the glass, its rubber seal and cream-enamelled frame with the
+ * brass catch, the laminate wall, the curtain rod, and the walnut table under the window.
+ */
+export const compartmentGlsl = `
+void compartmentGround(Ctx x, inout Cell c) {
+  if (trainSdG < 0.0) return;
+  float aspect = trainAspect;
+  vec2 p = trainP;
+  vec2 gC = trainGC;
+  vec2 gH = trainGH;
+  float gR = trainGR;
+  float sdG = trainSdG;
+  vec3 room = trainRoomHere;
+  vec3 spill = trainSpillHere;
+  vec3 col;
+  if (sdG < 0.007) {
+    // the rubber seal
+    col = vec3(0.02) + room * 0.03;
+  } else if (sdG < 0.045) {
+    // The frame: a rounded bead of enamel, lit from the lamp above right, its inner lip catching
+    // the light from outside.
+    float e = 0.002;
+    vec2 g = normalize(vec2(sdBox(p - gC + vec2(e, 0.0), gH, gR) - sdBox(p - gC - vec2(e, 0.0), gH, gR),
+                            sdBox(p - gC + vec2(0.0, e), gH, gR) - sdBox(p - gC - vec2(0.0, e), gH, gR)) + 1e-6);
+    float u = (sdG - 0.007) / 0.038;
+    vec3 n = normalize(vec3(g * cos(u * 3.14159 - 1.57), 0.6 + sin(u * 3.14159)));
+    vec3 toLamp = normalize(vec3(0.5, 0.6, 0.6));
+    float diff = max(dot(n, toLamp), 0.0);
+    col = vec3(0.72, 0.68, 0.58) * (room * (0.35 + 0.8 * diff) + spill * 0.4 * smoothstep(0.4, 0.0, u));
+    col += TRAIN_LAMP * K_lamp * 0.25 * pow(max(dot(reflect(-toLamp, n), vec3(0.0, 0.0, 1.0)), 0.0), 12.0);
+    // the brass catch at the top of the frame
+    vec2 cq = p - vec2(0.0, gC.y + gH.y + 0.024);
+    if (sdBox(cq, vec2(0.035, 0.007), 0.004) < 0.0) col = vec3(0.8, 0.6, 0.3) * (room * 1.1 + 0.03);
   } else {
-    vec3 up = vec3(0.0, 1.0, 0.0);
-    if (sdG < 0.007) {
-      // the rubber seal
-      col = vec3(0.02) + room * 0.03;
-    } else if (sdG < 0.045) {
-      // The frame: a rounded bead of enamel, lit from the lamp above right, its inner lip catching
-      // the light from outside.
-      float e = 0.002;
-      vec2 g = normalize(vec2(sdBox(p - gC + vec2(e, 0.0), gH, gR) - sdBox(p - gC - vec2(e, 0.0), gH, gR),
-                              sdBox(p - gC + vec2(0.0, e), gH, gR) - sdBox(p - gC - vec2(0.0, e), gH, gR)) + 1e-6);
-      float u = (sdG - 0.007) / 0.038;
-      vec3 n = normalize(vec3(g * cos(u * 3.14159 - 1.57), 0.6 + sin(u * 3.14159)));
-      vec3 toLamp = normalize(vec3(0.5, 0.6, 0.6));
-      float diff = max(dot(n, toLamp), 0.0);
-      col = vec3(0.72, 0.68, 0.58) * (room * (0.35 + 0.8 * diff) + spill * 0.4 * smoothstep(0.4, 0.0, u));
-      col += TRAIN_LAMP * K_lamp * 0.25 * pow(max(dot(reflect(-toLamp, n), vec3(0.0, 0.0, 1.0)), 0.0), 12.0);
-      // the brass catch at the top of the frame
-      vec2 cq = p - vec2(0.0, gC.y + gH.y + 0.024);
-      if (sdBox(cq, vec2(0.035, 0.007), 0.004) < 0.0) col = vec3(0.8, 0.6, 0.3) * (room * 1.1 + 0.03);
-    } else {
-      // The wall: warm wood-grain laminate, a seam at each panel's edge.
-      float grain = 0.88 + 0.12 * vnoise(vec2(p.x * 3.0 + 4.0 * vnoise(vec2(p.x * 1.5, p.y * 20.0)), p.y * 90.0));
-      col = vec3(0.36, 0.22, 0.13) * grain * room;
-      col *= 1.0 - 0.5 * step(abs(abs(p.x) - (gH.x + 0.11)), 0.0025);
-      // the curtain rod
-      if (abs(p.y - 0.478) < 0.0045 && p.x < 0.46 * aspect) col = vec3(0.75, 0.55, 0.25) * (room * 1.2 + 0.02) * (0.7 + 0.5 * smoothstep(0.0045, -0.002, p.y - 0.478));
-      // The table under the window: walnut veneer with an aluminium edge.
-      float tx = p.x - 0.03 * aspect;
-      float tableW = 0.34 * aspect;
-      if (p.y < gC.y - gH.y - 0.04 && p.y > -0.445 && abs(tx) < tableW) {
-        float depth = clamp((p.y + 0.425) / (gC.y - gH.y - 0.04 + 0.425), 0.0, 1.0);
-        float cornerD = sdBox(vec2(tx, p.y + 0.36), vec2(tableW, 0.085), 0.03);
-        if (cornerD < 0.0 || p.y > -0.36) {
-          if (p.y > -0.425) {
-            col = trainTableTop(p, aspect, depth, room, spill, teaFoot);
-          } else {
-            // the chrome edge, a line of lamp light along it
-            col = vec3(0.55, 0.55, 0.56) * room * 0.6 + TRAIN_LAMP * K_lamp * 0.35 * smoothstep(0.004, 0.0, abs(p.y + 0.43));
-          }
+    // The wall: warm wood-grain laminate, a seam at each panel's edge.
+    float grain = 0.88 + 0.12 * vnoise(vec2(p.x * 3.0 + 4.0 * vnoise(vec2(p.x * 1.5, p.y * 20.0)), p.y * 90.0));
+    col = vec3(0.36, 0.22, 0.13) * grain * room;
+    col *= 1.0 - 0.5 * step(abs(abs(p.x) - (gH.x + 0.11)), 0.0025);
+    // the curtain rod
+    if (abs(p.y - 0.478) < 0.0045 && p.x < 0.46 * aspect) col = vec3(0.75, 0.55, 0.25) * (room * 1.2 + 0.02) * (0.7 + 0.5 * smoothstep(0.0045, -0.002, p.y - 0.478));
+    // The table under the window: walnut veneer with an aluminium edge.
+    float tx = p.x - 0.03 * aspect;
+    float tableW = 0.34 * aspect;
+    if (p.y < gC.y - gH.y - 0.04 && p.y > -0.445 && abs(tx) < tableW) {
+      float depth = clamp((p.y + 0.425) / (gC.y - gH.y - 0.04 + 0.425), 0.0, 1.0);
+      float cornerD = sdBox(vec2(tx, p.y + 0.36), vec2(tableW, 0.085), 0.03);
+      if (cornerD < 0.0 || p.y > -0.36) {
+        if (p.y > -0.425) {
+          col = trainTableTop(p, aspect, depth, room, spill, trainTeaFoot);
+        } else {
+          // the chrome edge, a line of lamp light along it
+          col = vec3(0.55, 0.55, 0.56) * room * 0.6 + TRAIN_LAMP * K_lamp * 0.35 * smoothstep(0.004, 0.0, abs(p.y + 0.43));
         }
-      } else if (p.y < -0.445 && abs(tx) < tableW + 0.02) {
-        col *= 0.45;
       }
+    } else if (p.y < -0.445 && abs(tx) < tableW + 0.02) {
+      col *= 0.45;
     }
   }
+  c.col = col;
+}
+`;
 
-  // The glass of tea, its steam over the window.
-  if (K_tea > 0.0) {
-    // It stands in the lamp's pool on the table.
-    vec4 tea = trainTea(p - teaFoot, room + TRAIN_LAMP * K_lamp * 0.9, spill, knock, press, brake * 0.5 + rock * 0.08 + trainPassSlosh, jolt);
-    col = mix(col, tea.rgb, tea.a);
-    accent *= 1.0 - tea.a;
-    float steam = trainSteam(p - teaFoot - vec2(0.0, 0.2), tm, K_tea, 0.4 * rock + 0.6 * brake + 0.5 * trainPassSlosh);
-    col += (vec3(0.78, 0.74, 0.7) * (0.25 + 0.6 * K_lamp) + spill * 0.25) * steam * 0.7;
-  }
+/** The glass of tea in its silver holder on the table, and its steam over the window. */
+export const teaGlassGlsl = `
+void teaGlassFront(Ctx x, inout Cell c) {
+  if (K_tea <= 0.0) return;
+  vec2 p = trainP;
+  // It stands in the lamp's pool on the table.
+  vec4 tea = trainTea(p - trainTeaFoot, trainRoomHere + TRAIN_LAMP * K_lamp * 0.9, trainSpillHere, trainKnock, trainPress, trainBrake * 0.5 + trainRock * 0.08 + trainPassSlosh, trainJolt);
+  c.col = mix(c.col, tea.rgb, tea.a);
+  c.accent *= 1.0 - tea.a;
+  float steam = trainSteam(p - trainTeaFoot - vec2(0.0, 0.2), uMotionTime, K_tea, 0.4 * trainRock + 0.6 * trainBrake + 0.5 * trainPassSlosh);
+  c.col += (vec3(0.78, 0.74, 0.7) * (0.25 + 0.6 * K_lamp) + trainSpillHere * 0.25) * steam * 0.7;
+}
+`;
 
-  // The curtain: it rocks with the carriage, swings forward as the train brakes, shivers at a clack.
-  if (K_curtain > 0.0) {
-    vec4 curtain = trainCurtain(p, aspect, (0.012 * rock + 0.02 * brake + 0.008 * jolt + 0.03 * trainPassSlosh) * K_curtain * 2.0, room, spill);
-    col = mix(col, curtain.rgb, curtain.a);
-    accent *= 1.0 - curtain.a;
-  }
-
-  col *= 1.0 - 0.3 * smoothstep(0.5, 1.05, length((uv - 0.5) * vec2(1.25, 1.0)));
-  o.rgb = col;
-  o.source = col;
-  o.ink = clamp(pow(max(dot(col, LUMA), 0.0), 0.8) * 1.2, 0.0, 1.0);
-  o.accent = clamp(accent, 0.0, 1.0);
-  return o;
+/** The red velvet curtain: it rocks with the carriage, swings forward as the train brakes, shivers at a clack. */
+export const velvetCurtainGlsl = `
+void velvetCurtainFront(Ctx x, inout Cell c) {
+  if (K_curtain <= 0.0) return;
+  vec4 curtain = trainCurtain(trainP, trainAspect, (0.012 * trainRock + 0.02 * trainBrake + 0.008 * trainJolt + 0.03 * trainPassSlosh) * K_curtain * 2.0, trainRoomHere, trainSpillHere);
+  c.col = mix(c.col, curtain.rgb, curtain.a);
+  c.accent *= 1.0 - curtain.a;
 }
 `;

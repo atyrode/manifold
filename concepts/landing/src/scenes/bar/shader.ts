@@ -40,12 +40,18 @@
 // rises and turns to the door; he gives a small wave). The pane's drops and the rain move with the
 // window. At rest every term is exactly zero or one.
 //
+// A preset of the `interior` composer (layers.ts): the shared chunk below holds the room in metres,
+// every shape and the cell's state (barBegin); each layer's passes draw its part of the room on the
+// bar's own frame (barP), in the order the original scene painted them.
+//
 // Knobs: K_night (the sim thins the room; here the lamps dim and OPEN goes dark at last call),
 // K_patrons and K_bartender (sim), K_warmth, K_bokeh, K_fan (the sim turns it), K_candle, K_steam,
-// K_whisky, K_traffic, K_sign, K_jukebox, K_rain, K_wind, K_drops, K_mark. Triggers: 1 a taxi,
-// 2 a new record on the jukebox, 3 the M (0, 4 and 5 are the sim's: a cocktail, a newcomer, last
-// call). Last call (barMisc.w, seconds since it was called): the bartender's bell (ACT.bell), the
-// lamps blinking twice, then closing time: the lamps, the shelf glow and OPEN as at CLOSING_NIGHT.
+// K_whisky, K_traffic, K_sign, K_jukebox, K_rain, K_wind, K_drops, K_mark. Triggers, numbered by
+// the composer: TRIGGER_traffic a taxi, TRIGGER_jukebox a new record, TRIGGER_mark the M (the sim
+// reads its own: a cocktail, a newcomer, last call). Last call (barMisc.w, seconds since it was
+// called): the bartender's bell (ACT.bell), the lamps blinking twice, then closing time: the lamps,
+// the shelf glow and OPEN as at CLOSING_NIGHT.
+import type { SharedGlsl } from "../../composer/types.ts";
 import { glslFloat } from "../../shaders/glsl.ts";
 import { PASSAGE } from "./constants.ts";
 import {
@@ -85,7 +91,7 @@ import {
   WALK_Z,
 } from "./sim.ts";
 
-export const barGlsl = `
+const barShared = `
 // ---- Shared with the simulation (sim.ts)
 
 const float BAR_F = ${glslFloat(FOCAL)};
@@ -294,10 +300,12 @@ float barEvent(float t, float period, float salt, out float pick) {
   return t - (k + 0.1 + 0.5 * hash12(vec2(k, salt))) * period;
 }
 
-// A simulation texel. Without the simulation: a still evening, three at the bar, the bartender
-// polishing a glass, no last call.
+// A simulation texel (the back bar's field 0, sim.ts). Without it (the back bar off, or its sim not
+// yet running): a still evening, three at the bar, the bartender polishing a glass, no last call.
 vec4 barSimTexel(int i) {
-  if (uSimOn.x > 0.5) return texelFetch(uSim0, ivec2(i, 0), 0);
+#if LAYER_BACK_BAR
+  if (backBarField0On()) return texelFetch(backBarField0, ivec2(i, 0), 0);
+#endif
   if (i == 0) return vec4(1.2, float(BAR_POLISH), 5.0, 60.0);
   if (i == 1) return vec4(0.0, -1.0, 0.0, 0.0);
   if (i >= 18) return vec4(0.0, 0.0, 0.0, -1.0);
@@ -576,7 +584,7 @@ vec2 barCar(float x, float period, float dir, float salt, float share, float x0,
     }
   }
   if (near) {
-    float e = sinceTriggerM(1);
+    float e = sinceTriggerM(TRIGGER_traffic);
     if (e >= 0.0 && e < 14.0) {
       float rear = x0 - BAR_CAR_LEN - 0.5 + 3.8 * e;
       float mid = rear + 0.5 * BAR_CAR_LEN;
@@ -786,7 +794,7 @@ vec3 barJukebox(vec2 p) {
   if (K_jukebox <= 0.0) return vec3(0.0);
   vec2 q = (barAt(p, 4.2) - vec2(-0.645, -0.1)) / vec2(0.07, 0.115);
   if (abs(q.x) > 1.4 || abs(q.y) > 1.4) return vec3(0.0);
-  float song = sinceTriggerM(2);
+  float song = sinceTriggerM(TRIGGER_jukebox);
   float swell = song >= 0.0 ? exp(-song / 8.0) : 0.0;
   float arch = q.y > 0.3 ? length((q - vec2(0.0, 0.3)) / vec2(1.0, 0.7)) - 1.0 : abs(q.x) - 1.0;
   arch = max(arch, -1.0 - q.y);
@@ -1173,7 +1181,7 @@ vec3 barMark(vec2 w, float px, vec3 col, inout float accent) {
   vec2 q = (w - BAR_MARK.xy) / BAR_MARK.z;
   if (abs(q.x) > 1.4 || abs(q.y) > 1.4) return col;
   float e = px / BAR_MARK.z;
-  float since = sinceTriggerM(3);
+  float since = sinceTriggerM(TRIGGER_mark);
   float pick = 0.0;
   if (K_mark < 1.5) {
     float d = markDistance(q);
@@ -2097,21 +2105,44 @@ void barTable(vec2 p, inout vec3 col, inout float accent) {
   }
 }
 
-// ---- The scene
+// The back wall where the back bar is off: dark panelling under the cornice, lit by the room.
+vec3 barBareWall(vec2 p) {
+  vec2 w = barWorld(p, BAR_BACK_Z);
+  float px = barPx * BAR_BACK_Z / BAR_F;
+  float panel = softFill(abs(fract((w.x + 0.2) / 0.9) - 0.5) * 0.9 - 0.4, px);
+  vec3 light = barAmbient * 1.6 + barLamp * 0.08 * barLampNear(w.x, 1.2) + barShelf * 0.05;
+  return vec3(0.12, 0.065, 0.04) * light * (0.85 + 0.15 * panel);
+}
 
-Shade sceneBar(vec2 uv, vec2 cell, float t) {
-  float aspect = uRes.x / uRes.y;
+// ---- The cell's state (barBegin), set once a cell and read by the bar's layers
+
+float barAspect;
+vec2 barP;          // screen heights from the eye level (BAR_HORIZON above the frame's middle), x from the middle, panned and turned
+float barXl;        // the frame's left edge there
+vec2 barUvGlass;    // the cell on the window's pane, which moves with the room
+float barColX;      // across the column's plane at the cell (m): the front wall left of BAR_COL_X1, the room right of it
+bool barSimOn;      // the back bar's sim is running
+
+// The bar's own frame (its pinhole through the room's rig, IN_THE_BOOTH), the sim's state and the
+// light. The lamps' light is the pendants' (dark while they are off), the bowl's light the fan's.
+void barBegin(Ctx x) {
+  float aspect = x.aspect;
+  barAspect = aspect;
   barPx = 1.0 / uRes.y;
   barTm = uMotionTime;
   barPassage();
   barEye = uPointer * vec2(0.06, 0.025) + barPassEye;
   float pan = -max(0.0, BAR_PAN_FROM - aspect) * BAR_PAN_RATE;
-  // Screen heights from the eye level (BAR_HORIZON above the frame's middle), x from the middle;
-  // the passage's turn of the view is added (exactly zero at rest).
-  vec2 p = (uv - 0.5) * vec2(aspect, 1.0) + vec2(pan, -BAR_HORIZON) + barPassTurn;
-  float xl = -0.5 * aspect + pan + barPassTurn.x;
+  // The passage's turn of the view is added (exactly zero at rest).
+  barP = (x.uv - 0.5) * vec2(aspect, 1.0) + vec2(pan, -BAR_HORIZON) + barPassTurn;
+  barXl = -0.5 * aspect + pan + barPassTurn.x;
   // The pane belongs to the room: its drops, and the rain seen through it, move with the window.
-  vec2 uvGlass = uv + (barPassTurn + BAR_F * barPassEye * (1.0 / BAR_WIN_Z - 1.0 / BAR_FOCUS)) / vec2(aspect, 1.0);
+  barUvGlass = x.uv + (barPassTurn + BAR_F * barPassEye * (1.0 / BAR_WIN_Z - 1.0 / BAR_FOCUS)) / vec2(aspect, 1.0);
+  barColX = barWorld(barP, BAR_COL_Z).x;
+  barSimOn = false;
+#if LAYER_BACK_BAR
+  barSimOn = backBarField0On();
+#endif
   barB0 = barSimTexel(0);
   barB1 = barSimTexel(1);
   for (int k = 0; k < 4; k++) {
@@ -2121,7 +2152,7 @@ Shade sceneBar(vec2 uv, vec2 cell, float t) {
     barGl[k] = barSimTexel(14 + k);
   }
   barMisc = barSimTexel(18);
-  barFanAngle = uSimOn.x > 0.5 ? barMisc.z : barTm * TAU * (BAR_FAN_SLOW + (BAR_FAN_FAST - BAR_FAN_SLOW) * K_fan) * step(0.001, K_fan);
+  barFanAngle = barSimOn ? barMisc.z : barTm * TAU * (BAR_FAN_SLOW + (BAR_FAN_FAST - BAR_FAN_SLOW) * K_fan) * step(0.001, K_fan);
 
   // The light: the lamps' warmth and the room dimming toward last call; the night outside, a
   // little brighter under rain cloud lit by the city; the OPEN sign switched off at last call.
@@ -2141,48 +2172,91 @@ Shade sceneBar(vec2 uv, vec2 cell, float t) {
   // The lamps warm on a little as you arrive (exactly 1 at rest).
   float lampK = 1.0 - 0.14 * (1.0 - smoothstep(0.1, 0.85, passageIn()));
   barLamp = warm * barLevel * 1.3 * lampK;
+#if !LAYER_PENDANTS
+  barLamp = vec3(0.0);
+#endif
   barShelf = mix(vec3(1.0, 0.72, 0.42), warm, 0.5) * 0.85 * mix(1.0, 0.5, smoothstep(0.6, 1.0, night));
   barFanCol = vec3(1.0, 0.82, 0.62) * 0.4 * barLevel;
+#if !LAYER_CEILING_FAN
+  barFanCol = vec3(0.0);
+#endif
   barAmbient = vec3(0.05, 0.04, 0.036) * (0.6 + 0.4 * barLevel);
   barCity = vec3(0.11, 0.1, 0.115) * (1.0 + 0.3 * K_rain);
   barWet = uWeather.x;
   barSign = K_sign * (1.0 - smoothstep(0.9, 0.94, night));
+}
+`;
 
-  vec3 col;
-  float accent = 0.0;
-  float colX = barWorld(p, BAR_COL_Z).x;
-  if (colX < BAR_COL_X1) {
-    // The front wall and the column, the floor before them.
-    col = colX < BAR_COL_X0 ? barFrontWall(p, uvGlass, aspect, xl) : barColumn(p);
-    if (barAt(p, BAR_WIN_Z).y < -BAR_F * BAR_EYE / BAR_WIN_Z) col = barFloor(p);
-  } else {
-    // The room: ceiling, back wall or floor, then the bartender, the counter, the glasses standing
-    // on it, the lamps, the stools and who sits on them.
-    vec2 qb = barAt(p, BAR_BACK_Z);
-    if (qb.y > BAR_F * (BAR_CEIL - BAR_EYE) / BAR_BACK_Z) col = barCeiling(p);
-    else if (qb.y < -BAR_F * BAR_EYE / BAR_BACK_Z) col = barFloor(p);
-    else col = barBackWall(p, K_bartender > 0.5 ? barB1.y : -1.0, accent);
-    barTender(p, col);
-    vec4 counter = barCounter(p);
-    col = mix(col, counter.rgb, counter.a);
-    accent *= 1.0 - counter.a;
-    barGlasses(p, col);
-    barLamps(p, col, accent);
-    barSeats(p, col);
+/** The bar's GLSL its layers share: its room in metres, its shapes and people, the cell's state. */
+export const barSharedGlsl: SharedGlsl = { id: "bar", glsl: () => barShared, begin: "barBegin" };
+
+/**
+ * The storefront (the backdrop of the bar's room): left of the column, the front wall and its
+ * window onto the rainy street, the column and the floor before them; right of it the pressed-tin
+ * ceiling, the floor and the back wall's bare panelling (the back bar covers it). In front, the coat
+ * and the wet umbrella on the column's hook.
+ */
+export const storefrontGlsl = `
+void storefrontFar(Ctx x, inout Cell c) {
+  vec2 p = barP;
+  if (barColX < BAR_COL_X1) {
+    c.col = barColX < BAR_COL_X0 ? barFrontWall(p, barUvGlass, barAspect, barXl) : barColumn(p);
+    if (barAt(p, BAR_WIN_Z).y < -BAR_F * BAR_EYE / BAR_WIN_Z) c.col = barFloor(p);
+    return;
   }
-  barCoat(p, col);
-  barWalkers(p, col);
-  barFan(p, col);
-  barTable(p, col, accent);
+  vec2 qb = barAt(p, BAR_BACK_Z);
+  if (qb.y > BAR_F * (BAR_CEIL - BAR_EYE) / BAR_BACK_Z) c.col = barCeiling(p);
+  else if (qb.y < -BAR_F * BAR_EYE / BAR_BACK_Z) c.col = barFloor(p);
+  else c.col = barBareWall(p);
+}
 
-  // A soft vignette pulls the corners into the room's dark.
-  col *= 1.0 - 0.2 * smoothstep(0.5, 1.0, length((uv - 0.5) * vec2(1.2, 1.0)));
+void storefrontFront(Ctx x, inout Cell c) {
+  barCoat(barP, c.col);
+}
+`;
 
-  Shade o = blankShade();
-  o.rgb = col;
-  o.source = col;
-  o.ink = clamp(pow(max(dot(col, LUMA), 0.0), 0.8) * 1.15, 0.0, 1.0);
-  o.accent = clamp(accent, 0.0, 1.0);
-  return o;
+/** Your table in the booth, nearest the eye: it paints over all that stands in the room. */
+export const boothGlsl = `
+void boothFrontVeil(Ctx x, inout Cell c) {
+  barTable(barP, c.col, c.accent);
+}
+`;
+
+/**
+ * The back bar (the bar's subject): the mirror wall with its shelves of bottles and the M, the
+ * bartender, the counter and the glasses on it; in front, the stools and the patrons, and whoever
+ * is walking in or out.
+ */
+export const backBarGlsl = `
+void backBarMiddle(Ctx x, inout Cell c) {
+  if (barColX < BAR_COL_X1) return;
+  vec2 p = barP;
+  vec2 qb = barAt(p, BAR_BACK_Z);
+  if (qb.y <= BAR_F * (BAR_CEIL - BAR_EYE) / BAR_BACK_Z && qb.y >= -BAR_F * BAR_EYE / BAR_BACK_Z)
+    c.col = barBackWall(p, K_bartender > 0.5 ? barB1.y : -1.0, c.accent);
+  barTender(p, c.col);
+  vec4 counter = barCounter(p);
+  c.col = mix(c.col, counter.rgb, counter.a);
+  c.accent *= 1.0 - counter.a;
+  barGlasses(p, c.col);
+}
+
+void backBarFront(Ctx x, inout Cell c) {
+  if (barColX >= BAR_COL_X1) barSeats(barP, c.col);
+  barWalkers(barP, c.col);
+}
+`;
+
+/** The four green pendants over the counter (their light is the room's: barBegin). */
+export const pendantsGlsl = `
+void pendantsMiddle(Ctx x, inout Cell c) {
+  if (barColX >= BAR_COL_X1) barLamps(barP, c.col, c.accent);
+}
+`;
+
+/** The fan under the tin ceiling (its bowl's light and the blades' shadows on the tin: barBegin). */
+export const ceilingFanGlsl = `
+void ceilingFanFront(Ctx x, inout Cell c) {
+  barFan(barP, c.col);
 }
 `;

@@ -29,7 +29,17 @@ import { TRAIN_CROSSING, TRAIN_STATION, TRAIN_TEXELS } from "./sim.ts";
 
 // The street is composed: its program comes from glslFor, which the check's entry goes after.
 const { glslFor: streetGlslFor, ...streetScene } = await loadScene("street");
-const trainScene = await loadScene("train");
+const { glslFor: trainGlslFor, ...trainLoaded } = await loadScene("train");
+/**
+ * The train's default program as a plain scene's, so a small entry appended to it is compiled (its
+ * per-features builder would drop it), as the street's.
+ */
+export const trainScene = {
+  ...trainLoaded,
+  glsl: trainGlslFor?.(sceneFeatures(trainLoaded)) ?? trainLoaded.glsl,
+};
+/** The night line's field 0 (the journey, sim.ts): slot 2, after the composed sim's speck map and records atlas. */
+const JOURNEY = 2;
 
 export interface Clocks {
   /** uTime, the scene clock. */
@@ -91,9 +101,10 @@ export function compile(
 
 /**
  * One source-view frame of `linked` at `clocks` with the knobs `values` (of the scene's `params`),
- * uSim0 = `sim` if given. The rate knobs' phases (uPhases: the day cycle's days the sky reads, a
- * swing's cycles) are those the renderer integrates with the knobs at `values` all the motion clock
- * long, so they follow the motion clock and nothing else.
+ * the train's journey (the night line's field 0, slot JOURNEY of the composed sim) = `sim` if given.
+ * The rate knobs' phases (uPhases: the day cycle's days the sky reads, a swing's cycles) are those
+ * the renderer integrates with the knobs at `values` all the motion clock long, so they follow the
+ * motion clock and nothing else.
  */
 export function draw(
   gl: WebGL2RenderingContext,
@@ -125,8 +136,8 @@ export function draw(
   gl.uniform2f(at("uWeather"), 0, 0);
   gl.activeTexture(gl.TEXTURE0);
   gl.bindTexture(gl.TEXTURE_2D, sim ?? null);
-  gl.uniform1i(at("uSim0"), 0);
-  gl.uniform4f(at("uSimOn"), sim ? 1 : 0, 0, 0, 0);
+  gl.uniform1i(at(`uSim${JOURNEY}`), 0);
+  gl.uniform4f(at("uSimOn"), 0, 0, sim ? 1 : 0, 0);
   gl.drawArrays(gl.TRIANGLES, 0, 3);
   const bytes = new Uint8Array(WIDTH * HEIGHT * 4);
   gl.readPixels(0, 0, WIDTH, HEIGHT, gl.RGBA, gl.UNSIGNED_BYTE, bytes);
@@ -209,7 +220,7 @@ function streetCheck(gl: WebGL2RenderingContext): number {
 
 /** Train: the far country and its clouds at noon (stars, whose twinkle is the shared sky library's
  *  own, are out of it); then at midnight, a station's canopy middle and a level crossing level with
- *  the window (the odometer and two events in uSim0, as sim.ts lays them out), its clock face filling
+ *  the window (the odometer and two events in the journey's field, as sim.ts lays them out), its clock face filling
  *  the frame, then the ground round the crossing under its flashers. */
 function trainCheck(gl: WebGL2RenderingContext): Record<string, number> {
   const linked = compile(

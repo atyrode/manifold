@@ -26,6 +26,7 @@ describe("composed programs", () => {
     expect(composed.map(({ id }) => id).sort()).toEqual([
       "autumn",
       "bamboo",
+      "bar",
       "bees",
       "bonsai",
       "campfire",
@@ -54,6 +55,7 @@ describe("composed programs", () => {
       "street",
       "swell",
       "tidepool",
+      "train",
     ]);
   });
 
