@@ -1,948 +1,699 @@
 # 0062 — One world, three composers: the landing scenes become presets of stacked layers
 
 Date: 2026-10-17
-Status: accepted; Phase 1 landed (see "Phase 1 as landed")
-Ratified: D1–D12 resolved as recommended below (2026-10-17, #1082 item U1).
+Status: accepted
+Ratified: D1–D12 by the operator, 2026-10-17 (#1082 item U1); restated after Phase 2 below
 
 ## Problem and boundary
 
-The landing concept lab (`concepts/landing`, tracker #1082, draft #1083) holds 49 scenes. Each is
-one `SceneDef` compiled to a fragment program of its own (`src/scenes/types.ts:4-12`,
-`src/shaders/index.ts:184-199`). Most of the outdoor scenes show the same thing: a camera standing
-on the ground at eye level, something in front of it, a landscape behind, the sky above. Stage 2 of
-the World (`src/scenes/README.md:1546-1790`) already gives them one sky, one weather and one set of
-birds. Each scene still owns its camera, its ground, its light grade, its gusts and everything in
-front of the eye, so nothing from one scene can stand in another. The lab cannot show the bees'
-garden overgrown by the meadow, or a campfire on the valley's hill.
+The landing concept lab (`concepts/landing`, tracker #1082, draft #1083) holds 49 scenes, each one
+`SceneDef` compiled to a fragment program of its own. Most of the outdoor scenes show the same
+thing: a camera standing on the ground, something in front of it, a landscape behind, the sky
+above. The World (`src/scenes/README.md` "World layers") gave them one sky, one weather and one set
+of birds, but each scene kept its camera, its ground, its light, its gusts and everything in front
+of the eye, so nothing of one scene could stand in another: the lab could not show the bees'
+garden overgrown by the meadow, or the bees' garden above the countryside's valley.
 
 #1082 item U1, which the operator ratified as "go all in", folds the scenes into three composers.
-Each composer is a shared camera, ground and light over which layers stack. Scene ids stay as
-presets; no aliases (no backward compatibility, operator decision 2026-10-17).
+Each composer is a shared camera, site and light over which layers taken from the scenes stack.
+Scene ids stay as presets; no aliases and no link migrations (no backward compatibility, operator
+decision 2026-10-17).
 
-This record is U1's **design milestone only**. It sets out:
+This record is the decision as it stands after Phase 2, when the `outdoor` composer runs all
+nineteen eye-level scenes. It keeps the reasoning, the evidence and the phases ahead. The lab is
+not product code, so no axiom, `REGISTRY.md` row or `docs/CONTRACTS.md` section changes; the
+contract's normative form is the "Composers" section of `concepts/landing/src/scenes/README.md`,
+the lab's own spec.
 
-- the contract: what a composer provides and what a layer declares;
-- the rules for space, compositing, cost, sims, the lab and principals;
-- an ordered migration with acceptance criteria.
+Paths are relative to `concepts/landing/` unless they start at the repository root. Measurements
+are the ports' own, taken under #1082 on the shared dev host.
 
-None of it exists at `4d490f15`, and no code changes with this record. It authorizes no port by
-itself: each phase lands as its own change under #1082, with the evidence its acceptance names.
+## Where it stands
 
-The concept lab is not product code, so no axiom, `REGISTRY.md` row or `docs/CONTRACTS.md`
-section changes. Once ratified, the contract's normative form is the "Composers" section of
-`concepts/landing/src/scenes/README.md`, the lab's own spec. This record keeps the reasoning, the
-evidence and the phases.
-
-Paths are relative to `concepts/landing/` unless they start at the repository root.
-
-## What the tree does today
-
-| Seam                  | What the source does at `4d490f15`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             | Consequence for composers                                                                                                                   |
-| --------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
-| One program per scene | `fragmentSourceFor` concatenates `common`, the feature defines, the knob defines, `libs`, `scene.glsl` and `main` (`src/shaders/index.ts:184-199`). A knob key is both a URL key and a GLSL name, `^[a-z][A-Za-z0-9]*$` (`:30`).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               | A composed scene assembles its source from the layers it shows. Knob keys must be unique across everything one program holds.               |
-| Gates                 | `featuresFor` leaves code behind an off knob out of the program. `featuresAll` turns every gate on and must draw every setting byte for byte as that setting's own program does (`src/scenes/types.ts:177-195`). On a GPU, a knob change draws with the all-features program, which is built once in the background; a software rasteriser builds the setting's own program instead (`README.md:802-823`). The renderer keeps 4 programs per scene and 8 in all (`src/program-cache.ts:22-33`).                                                                                                                                                                                                                                                                                                | Reusable as it is, provided the all-features set is per layer set. A composer-wide all-features program is infeasible (see "Measurements"). |
-| Software cost         | SwiftShader "runs every line of a program whatever branches a pixel takes" (`README.md:765-772`). The countryside's all-features program takes about 20 s to compile there; a setting's own program takes 2–5 s (`:818-819`).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  | An off layer must be absent from the source, not branched over.                                                                             |
-| One pass              | "one full-screen pass at ~960×540 cells must hold 60 fps on an integrated GPU" (`README.md` "Art direction").                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  | Composition happens inside one fragment program.                                                                                            |
-| The World             | `worldAt`, `worldView`, `worldSky`, `worldBirds`, `worldFog`, `worldPrecip` and the mirrors. The scene supplies its camera (horizon, focal, eye, yaw, units per metre), the depth of the first opaque thing in each cell, its haze, its air and its drop light (`README.md:1558-1594`, `:1742-1748`). The gates are `worldFeatures`, `WORLD_ALL` and `worldGates` (`src/scenes/world.ts:147-224`). Views from straight above are not in it yet (`README.md:1789-1790`).                                                                                                                                                                                                                                                                                                                        | The World becomes the layer every composition has. Its contract already asks each scene for exactly what a composer will provide.           |
-| Depth per cell        | Scenes paint far to near and keep the depth of what each cell shows: meadow's `zHit` (`src/scenes/meadow/shader.ts:1199-1256`), autumn's `hitZ` (`src/scenes/autumn/shader.ts:813-878`), and bees' `beesZ`, set by every part that changes the cell (`src/scenes/bees/shader.ts:1354-1406`). The bees' specks are drawn against that depth (`:1467-1474`).                                                                                                                                                                                                                                                                                                                                                                                                                                     | Per-cell depth compositing generalises existing practice; it does not need a new renderer.                                                  |
-| Cameras               | Each outdoor scene has a camera of its own, most of them a level pinhole. Horizon, focal length and eye height: meadow 0.4, 1.18, 2 m (`src/scenes/meadow/sim.ts:78-84`); bees 0.47, 1.0, 1.6 m (`src/scenes/bees/sim.ts:95-97`, `:111`); autumn 0.36, 1.0, 1.5 m (`src/scenes/autumn/layout.ts:51`). Horizon and eye only: bamboo 0.4 and 1.3 m (`src/scenes/bamboo/sim.ts:49-50`); forest 0.36 and 1.15 m (`src/scenes/forest/sim.ts:51-52`). Fireflies' eye is 1.2 m, with focal 1.2 and the bank 60 m away (`src/scenes/fireflies/sim.ts:102-108`). The countryside looks down from a hill, horizon 0.63 (`src/scenes/country/camera.ts:15`); the dunes are seen from about 80 m up (`README.md:1765-1774`). One CPU camera class already serves four scenes (`src/sims/camera.ts:30-32`). | One camera rig per preset; layers project through it.                                                                                       |
-| Scale                 | The World works in metres (`WorldView.unit`), but bees builds its hives 1.5× "so the entrances read" (`src/scenes/bees/sim.ts:133-134`).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       | Scale is metres. A readability cheat is declared, never implicit.                                                                           |
-| Sims                  | A `SceneSim` returns up to four textures, bound as `uSim0..uSim3` (`src/scenes/types.ts:119-134`, `src/program-cache.ts:19-21`, `src/renderer.ts:1227-1230`). Precedents for packing: the countryside's records atlas, `PlantTexture.pack` (`README.md:1812-1816`, `src/sims/plants.ts:48-59`) and the nearest-depth speck map (`src/sims/specks.ts:1-42`).                                                                                                                                                                                                                                                                                                                                                                                                                                    | Meadow (4 textures) and bees (1) do not fit four slots together. Records pack; fields need slots.                                           |
-| Knob limits           | `MAX_PARAMS` is 64 and `MAX_TRIGGERS` is 8 (`src/params.ts:118-120`). A scene has at most `MAX_PARAMS` knobs (`src/scenes/types.ts:153`).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      | Meadow (28 knobs) and bees (31) share 19 World keys. A third large layer passes 64. Their trigger slots collide: meadow uses 0–3, bees 0–2. |
-| Links                 | A setup is a query with defaults left out. `MIGRATIONS` holds `keys` steps and `alias` steps (`src/state.ts:274-297`, `:392-425`). `url-keys.json` lists every key ever published and only grows (`README.md:231-241`). Committed presets must load as themselves (`src/presets.ts:1-9`).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      | No key needs to keep its meaning: no backward compatibility (operator decision 2026-10-17). A port rewrites the committed presets.          |
-| Lab                   | Controls are laid out from knob metadata, and `when` chains a knob to its switches (`README.md:492-499`). The World shelf comes from `Blurb.shelf` (`src/params.ts:305-317`). The compact bar has one chip per section (`README.md:359-376`).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  | A layer can be a switch with its knobs hung on it, gathered into one section as the Night sky section is.                                   |
-| Presence              | There is one pointer (`src/scenes/types.ts:24-35`). "Principals as a renderer concept" is A2 follow-through: second-audit item I-20 adds `SimFrame.principals` and `uPrincipals[8]`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           | Principals become a composer service built on I-20.                                                                                         |
-
-## Measurements
-
-The numbers come from Bun probes at `4d490f15`, using the second audit's item-level shaker
-prototype (H2-1). The prototype evaluates the `#if`s, strips comments and keeps what `main` reaches
-by name. Because it matches by name, it over-keeps, so these figures are upper bounds.
-
-**Shaken program size, at defaults / with all features (KB).**
-
-| Scene     | Default / all | Scene   | Default / all | Scene    | Default / all |
-| --------- | ------------- | ------- | ------------- | -------- | ------------- |
-| meadow    | 81 / 153      | bees    | 84 / 151      | campfire | 54 / 57       |
-| fireflies | 19 / 19       | autumn  | 71 / 111      | forest   | 87 / 90       |
-| bamboo    | 73 / 76       | garden  | 78 / 78       | country  | 98 / 213      |
-| falls     | 95 / 135      | lake    | 65 / 132      | shore    | 77 / 141      |
-| dunes     | 56 / 123      | street  | 107 / 110     | skyward  | 78 / 118      |
-| lanterns  | 76 / 116      | sill    | 98 / 139      | lava     | 27 / 27       |
-| bonsai    | 50 / 50       | train   | 134 / 174     | bar      | 105 / 105     |
-| mobile    | 31 / 31       | incense | 30 / 30       | ripple   | 14 / 14       |
-| sandtable | 20 / 20       | pond    | 36 / 36       | tidepool | 44 / 44       |
-| delta     | 15 / 15       |         |               |          |               |
-
-**Union of the shaken all-features programs.** Items shared by the scenes (`common`, the
-libraries, the World) count once:
-
-| Set                                  | Union  | Sum of parts |
-| ------------------------------------ | ------ | ------------ |
-| meadow + bees                        | 204 KB | 304 KB       |
-| meadow + bees + campfire + fireflies | 253 KB | 381 KB       |
-| the 15 eye-level scenes U1 names     | 868 KB | 1,707 KB     |
-| the 7 named interiors                | 447 KB | 557 KB       |
-| the 5 named top-down views           | 115 KB | 129 KB       |
-
-The pilot mix is no larger than the countryside's all-features program is today (213 KB). One
-all-features program for the whole outdoor composer would be four times that, and the countryside's
-alone already takes about 20 s to compile under SwiftShader.
-
-**Sim textures.** Counting the distinct `uSimN` slots each shader reads:
-
-- four slots: meadow, fireflies, autumn, garden, country, lake, bonsai, incense, pond, tidepool;
-- three: forest, bamboo, street, lava, ripple;
-- two: dunes, sandtable, delta;
-- one: bees, campfire, falls, shore, lanterns, sill, train, bar, mobile.
-
-Most of these textures are small `rgba16f` record textures read with `texelFetch`. The linear-filtered
-fields are the exceptions: dunes' sand, lake's crack and snow fields, garden's gravel, and the
-`rgba32f` GPU solvers of ripple, delta, tidepool and incense.
-
-**Knob keys.**
-
-- Own knobs, World keys excluded: meadow 9, bees 12, campfire 19, country 30, lake 19.
-- Across 23 outdoor candidates, 29 own keys collide. `mark` alone collides in 19 scenes; `gusts`
-  in 4; `lantern` is a feature in bees and bamboo but a toggle in fireflies.
-- Among 11 interior candidates (with frost, harmonograph, pendula and prism), 17 own keys collide;
-  among 12 top-down and matter candidates, 27.
+- **Built:** `src/composer/` (the contract in `types.ts`, `composeScene` in `compose.ts`, the
+  placer in `place.ts`, the claims in `claims.ts`, the program in `glsl.ts`, the gust field in
+  `gust.ts`, the composed sim in `sim.ts`, the code assembly in `code.ts`, the caps in `caps.ts`)
+  and the `outdoor` composer: 79 layers in canonical order (`outdoor.ts`: 19 backdrops, 15 grounds,
+  22 dressings, 7 covers, 12 life, 4 chores), their code by id in `outdoor-code.ts`.
+- **Presets:** meadow and bees (Phase 1); shore, dunes, autumn, lanterns and falls (2a); campfire,
+  fireflies, forest, bamboo, garden and lake (2b); country, street, skyward, flock, swell and dew
+  (2c). `src/composer/budget.test.ts` holds that list.
+- **Committed mixes:** "Bees · overgrown meadow" (the meadow's grass and wildflowers in the bees'
+  garden) and "Bees · in the valley" (the countryside's `valley` in place of the bees' hillside).
+  The other mixes the waves planned ("Autumn maple by the lantern river", "Campfire in the meadow",
+  "Fireflies over the apiary", "A campfire on the valley's hill") were not made: their layers are
+  drawn through their own rigs alone (see "Rigs, locking and offering").
+- **Not built:** the `interior` and `overhead` composers (Phases 3 and 4); the per-program knob
+  layout and packed trigger slots; `scripts/layer-costs.ts`, the stack meter and the role's "+"
+  listing; the browser checks `composerDepth`, `composerClaims`, `composerWeather` and
+  `layerToggles`; a check of the SwiftShader instruction budget; the principals' points in the
+  site; shelving the presets by composer (D9).
 
 ## Decision summary
 
-1. **Three composers share one layer contract.** They are `outdoor` (an eye-level pinhole on the
-   ground), `interior` (a room box with a ledge and a window) and `overhead` (a patch of ground
-   seen from above, with optional tilt and orbit). A composer is a camera rig, a site model and a
-   composition order. The World is in all three.
-2. **A layer is a module.** It has a manifest (role, bands, claims, exclusions, cost), GLSL behind
-   its own gate, an optional sim, and its knobs. One steady toggle or feature knob switches it,
-   keyed by the layer's id. Its knobs hang on that switch (`when`).
-3. **Composition is per-cell depth.** A `Cell { col, z, accent }` is written by opaque passes
-   behind a depth test, which is order-independent because edges are cut per cell. Translucent
-   passes then run from far to front. The World's fog and precipitation are applied once, at the
-   composed depth, and every speck shares one nearest-depth map.
-4. **Light, scale and weather are shared.** Scale is metres. There is one World, one light grade
-   per preset, up to 8 local lights and one gust field. Every layer reads `uWeather`.
-5. **Space is claimed, not painted.** Layers claim footprints on the floor (exclusive, clearing or
-   shared), choose among candidate anchors and stand in bands. A deterministic solver resolves
-   foreground conflicts and refuses a layer, with a reason, when there is no room.
-6. **Scenes become scene presets.** Every ported scene's id stays, with its card, thumbnail, tour
-   step and links, but is generated from data: a composer, a rig, a light grade, home layers and
-   values. Scene ids stay as presets; no aliases or key migrations (no backward compatibility,
-   operator decision 2026-10-17).
-7. **Cost is bounded per layer set.** The layer set is structural; the all-features program is
-   built per layer set; an off layer is absent from the source; the shaker prunes the rest. There
-   are budgets per program and caps per stack, and never a composer-wide all-features program.
-8. **Sims share one frame.** One `SimFrame` goes to a composed sim, which fans out to the layer
-   sims. They share a speck map and a records atlas and get up to six field slots, eight in all.
-   The sim follows the program on screen (`SimFrame.features`).
-9. **The lab shows layers by role.** A Layers section gathers the switches by role; each on layer's
-   sections stand under it; the compact bar has one chip per on layer; presets are the starting
-   points.
-10. **Principals are a composer service.** Chores are layers that act on a host layer's affordances,
-    and the composer draws every principal's cursor.
-11. **Migration runs in five phases after its prerequisites.** The pilot ports meadow and bees and
-    proves the overgrown garden; then the rest of the outdoor scenes, the interiors, the top-down
-    views, and finally the matter shelf.
+1. **Three composers share one layer contract.** `outdoor` is a pinhole over a floor, level or
+   pitched; `interior` a room with a ledge and a window; `overhead` a patch of ground seen from
+   above. A composer is a camera rig, a site and an order of composition, and the World is in all
+   three. `outdoor` is built; the other two are Phases 3 and 4.
+2. **A layer is a module.** Its manifest (`LayerDef`: role, bands, claims, the rigs it can be drawn
+   through, its switch, knobs, passes and data) loads without its code (`LayerCode`: its GLSL built
+   for the preset's rig, the chunks it shares with its scene's other layers, its sim). One steady
+   switch keyed by its id turns it on, and its knobs hang on that switch.
+3. **Composition is per-cell depth.** The composer generates the entry. Opaque passes write a cell
+   behind a depth test and translucent ones veil it; the bands run far to front, the layers in
+   canonical order, and each layer keeps its scene's painter's order inside its passes. The World's
+   birds, fog, rain and snow are laid once, at the depth each cell shows.
+4. **One light, one scale, one weather, one wind.** The World's sky times the preset's grade lights
+   every layer, with the lights layers declare; everything is in metres in the rig's frame; the
+   World's knobs are the only weather; one gust field moves what sways (D4).
+5. **Space is claimed, not painted.** Layers claim the floor and take the first of their anchors
+   that fits; a pure placer refuses, with a reason, a layer it has no room for.
+6. **Scenes become scene presets** (D1): a composer, a rig, a grade, home layers and values, from
+   which `composeScene` makes the scene.
+7. **A layer set is a program, and a program costs what it holds.** Turning a layer on or off builds
+   another program; no composer-wide all-features program is ever built. Under SwiftShader every
+   line a program holds runs, so only compile-time gates remove cost. Budgets hold each program's
+   size, uniforms and SwiftShader instructions.
+8. **Sims share one frame.** One composed sim fans out to the layers' sims, which share a speck
+   map, a records atlas and up to six field slots, and reach each other's state only through the
+   affordances a sim declares.
+9. **The lab shows layers by role:** a Layers section, each layer's sections under it, a chip per
+   layer on in the compact bar.
+10. **Chores are layers that act on a host layer's affordances**: the host owns the state and
+    nature's undo, the chore the plan and the tool.
+11. **A layer is drawn through its own scene's rig** unless it is drawn in metres from the ray of
+    any rig in a declared span, as the meadow's layers, the murmuration and the valley are. Every
+    preset that offers a layer pays for its knobs and trigger slots, on or off.
+12. **Migration runs in phases.** Phases 0 to 2 built the `outdoor` composer and ported every
+    eye-level scene; the interiors, the views from above and the matter shelf follow (see
+    "Migration").
 
-## The composer contract
+## The outdoor composer
 
-### Composers and their rigs
+### The rig
 
-Each composer has one camera rig, and each preset fixes its values. They are compile-time constants
-of the preset's programs, as each scene's camera constants are today, so a preset's own layers
-draw exactly as their scene drew them. Passages move the rig at run time, as they move the cameras
-today: meadow's drop, autumn's lens shift, forest's dolly, the countryside's tilt. The camera
-belongs to the preset, so it has no knobs, except the overhead's tilt and orbit (below). Layers
-declare the rigs they can be drawn through.
+The `outdoor` rig (`Rig`, `src/composer/types.ts`) is a pinhole `eye` metres over the floor: the
+horizon at uv.y `horizon`, `focal` screen heights per unit of slope, turned `turn` from the sky's
+frame, `pitch` off the level, and `minAspect`, the narrowest frame laid out as itself (a narrower
+one is laid out as if this wide and cropped; a layer whose `space.stretch` is set spreads across a
+wider one, as the bees' garden does). The values are compile-time constants of the preset's
+programs (`RIG_*`), so a preset's own layers draw as their scene drew them. The camera belongs to
+the preset and has no knobs.
 
-| Composer   | Rig                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               | Site                                                                                                                                                                                                                     | Scenes it takes |
-| ---------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | --------------- |
-| `outdoor`  | A level pinhole: eye height (m), turn (the yaw from its frame to the sky's), horizon (uv.y), focal (screen heights per unit of slope), pitch (rad, 0 by default), a lens shift for passages, and `minAspect` (a frame narrower than this is laid out as if this wide, then cropped: bees 1.24, its stage half width of at least 0.62; autumn 1.45; forest 1.3). Its projection is `LevelCamera` (`src/sims/camera.ts`) and `worldView` / `worldViewOf`; a pitched rig draws precipitation with `worldPrecipSeen`. | The floor plane `y = 0` in the camera's frame (x right, z ahead, metres). Its floor kind is earth, lawn, gravel, sand, rock, moss, ice, snowfield, water or asphalt, unless a ground layer replaces it.                  | Phases 1 and 2  |
-| `interior` | A pinhole inside a room box: room size (m), eye position and look, the window as a rectangle on the back wall. Rays that leave through the window continue as an `outdoor` rig standing at the eye.                                                                                                                                                                                                                                                                                                               | Floor, walls and ceiling with their kinds (boards, plaster, paper, tin, stone); one ledge across the front (sill, counter, table, sideboard, stand: height, depth, kind); the window's glass, with rain and frost on it. | Phase 3         |
-| `overhead` | A patch of ground seen straight down, orthographic, at a given number of metres per screen height (0.6 m for the tank, 5 km for the delta). The one exception to fixed rigs: a `tilt` feature knob (off: straight down, with no march compiled in; on: a pitch from 90° down to 30°) and an `orbit` range (yaw), both steady. A tilted rig marches the composed height; `src/sims/heightray.ts` is the CPU twin of that march.                                                                                    | The bed: a height field in metres over the patch. The water: its depth over the bed, from a layer's sim. A material at each point.                                                                                       | Phase 4         |
+`RigPassage` moves the rig through the preset's entrance and exit: `lift` raises the eye (the
+meadow's drop, with the gust front it sends), `shift` tilts the lens (`rigShift()`: shore, autumn,
+falls, lake, country and swell), and its `glsl` may do more (the forest's dolly, `forestCamera`). A
+passage that does what a rig cannot stays inside the preset's layers: the dunes' glide, the
+street's tilt, skyward's tip toward the street.
+
+Four kinds of rig are not a standing eye:
+
+- **Raised level rigs** need nothing new: the countryside's hill (eye 30 m), the swell's (15 m, its
+  sea worked in heights of that eye and its depths handed over in metres) and the dunes' (70 m).
+- **Pitched rigs:** the street's window, 28 m up and pitched 0.733 rad (42°) down, and skyward's,
+  lying on the road and looking up to 0.28 rad short of the zenith (`pitch` 1.29). The backdrop's
+  `begin` gives each cell's ray and the floor's distance along it (`x.v`, `x.zg`), the plain floor
+  stands where they say, and the backdrop names the axes the World's rain and snow are seen
+  through (`precip.seen`). The World's birds fly a level camera's view: skyward compiles them out
+  (`WORLD_BIRDS` 0 in `skyward/index.ts`) and flies the street's own pigeons and swifts on the
+  World's birds knobs, and the street's window never shows their band at rest. Skyward's backdrop
+  also takes over the World's fog (`x.w.fog` put out), laying it along each ray at the height it
+  has climbed, and closes the floor (`x.groundTo` 0).
+- **The macro rig:** dew's, 0.6 m up among the grass tops. The composer has no focal blur: every
+  pass cuts its edges per cell, and one pass cannot blur another layer's output. Each dew layer
+  draws its own defocus (the backdrop with nothing finer than a few cells, every thread and drop by
+  its depth off the hub's), the backdrop's grass tops close the floor, and no layer of another
+  scene is offered the rig, since a guest standing on the floor would be drawn sharp. The World
+  arrives as light, colour and weather at the composed depth; its stars, cloud deck, painted
+  cumulus and bolts are not drawn in the blur.
+- **Views from above** are not an `outdoor` rig at all. Until the overhead composer, dunes'
+  `camera` and garden's `gravelCamera` are steady structural knobs: at 1 the setting's features
+  hold `DUNES_OVERHEAD` or `GARDEN_OVERHEAD`, and its own and all-features programs are the scene's
+  own view from above (`dunesAboveGlsl`, `gardenAboveGlsl`), reading the fields the composed sim
+  allocates for that layer set.
 
 ### The site
 
-The site is the floor every layer stands on: its height, its kind, its wetness and its lying snow.
+The preset names its floor's kind (`ScenePreset.floor`): earth, lawn, gravel, sand, rock, moss,
+ice, snowfield, water or asphalt, each with an albedo, how porous it is and how well it holds
+snow (`FLOORS` in `glsl.ts`). The composer draws this plain floor below the backdrop's land line
+(`x.groundTo`, and `x.landZ` in depth) wherever no ground layer lies: lit by the key with the
+clouds' and the claims' shadows taken out, by the layers' lights, wetted by `uWeather.x` and
+snowed on by `uWeather.y` (water holds none and is drawn without the snow term). A ground layer
+replaces it: the bees' lawn, shore's beach, the lake's ice.
 
-- The composer draws a plain floor of the preset's kind wherever no cover or ground layer
-  overrides it. A ground layer replaces the floor with something richer: bees' lawn with its path
-  and hedge, the garden's gravel field, shore's beach and surf, lake's ice.
-- Wetness is `uWeather.x`. Lying snow is `uWeather.y`, scaled by how well the kind holds it: none
-  on water, little on asphalt. A ground layer may add its own local wetness, such as shore's wet
-  band.
-- Claims (see "Layers") change the floor inside their footprint: a campfire's clearing is bare
-  earth and stone, a path is gravel.
-- Under a tilted `overhead` rig, the bed's height is the sum of the on layers' `height(xz)`
-  contributions.
+### Layers
 
-### Depth compositing
+A layer lives in its scene's folder (`src/scenes/<scene>/layers.ts` for its manifest, its GLSL and
+sim beside it). The composer's registry lists every layer in canonical order, by role: backdrops,
+grounds, dressings, covers, the dressings that stand or fall on covers (dandelions, boughs), life,
+chores.
 
-The composer generates the program's entry function. Layers contribute passes; they never write
-the entry themselves.
+| Role     | How many                                             | Built                                                                                      |
+| -------- | ---------------------------------------------------- | ------------------------------------------------------------------------------------------ |
+| backdrop | exactly 1; with none switched on the home one stands | one per preset (19): its sky staging, air, far land, and the rain's air                    |
+| ground   | at most 1; without one, the plain floor              | 15: the lawn, beach, ice, river, gravel, the sea's swell, the farmland                     |
+| dressing | any number; at most 2 `subject`s in the front band   | 22: the apiary, the campfire, the maple, the water clock, the shrine, the web              |
+| cover    | any number                                           | 7: grass, wildflowers, litter, greenery, undergrowth, border, verges                       |
+| life     | any number                                           | 12: the insects, fish, lanterns, kodama, the firefly swarm, the street's life, murmuration |
+| chore    | any number, each with its host on                    | 4: gardening, cairns, rake, raking                                                         |
 
-```glsl
-struct Cell { vec3 col; float z; float accent; };
-void cellPut(inout Cell c, vec4 rgba, float z);   // opaque: where z < c.z, over by rgba.a; takes z once a >= 0.5
-void cellVeil(inout Cell c, vec4 rgba, float z);  // translucent: where z < c.z, over by rgba.a; keeps c.z
-```
-
-The entry runs, in this order:
-
-1. The World now (`worldAt`), the rig's ray for this cell, the light (see "Light").
-2. The sky: `worldSky`, with the backdrop's sky staging over it, and `c.z = WORLD_FAR`.
-3. The floor or ground layer, where the ray meets the site. Claims and caster shadows apply, then
-   cloud shadows, wetness and snow.
-4. For each band (far, middle, front), every on layer's opaque pass in canonical order, then every
-   on layer's veil pass.
-5. `worldBirds` at `c.z`.
-6. Each local light's glow in the air, added to the fog's air and the drop light (bees' lantern
-   model, `src/scenes/bees/shader.ts:1433-1460`, generalised).
-7. `worldFog`, then `worldPrecip` at `c.z`, thinned under shelter claims.
-8. The shared speck map, drawn against `c.z`.
-9. Every principal's cursor.
-10. `shadeOf(col, inkOf(col, gain, gamma), accent)`, with the preset's ink gain and gamma.
-
-Opaque passes are order-independent because the art direction cuts edges per cell (`hardEdge`,
-`hardFill`; README "Hard edges"). A cell's coverage is 0 or 1, so the depth test alone decides what
-shows. Soft alpha (fringes, glows, smoke) does depend on order. That is why passes run by band and
-then in canonical order, which is also each preset's old painter's order for its own layers. A
-layer's passes keep their internal order exactly as its scene drew them, so a preset with only its
-home layers can draw byte for byte as before.
-
-### Light
-
-`composerLight(w)` is the World's sky (`w.sky`), times the preset's grade:
-
-- the sun's tint, the sky's tint and an ambient floor;
-- whether the moon takes over as the key light once the sun has set. This is bees' model
-  (`BEES_SUN_TINT`, `BEES_SKY_TINT`, `BEES_MOONLIGHT`), made a preset parameter.
-
-Every layer is lit by the same light, so the layers of a mix match.
-
-- **Local lights.** A layer declares up to a few lights in its manifest: a position relative to its
-  anchor, a reach, and the GLSL function that gives the light's colour now (the apiary's lantern
-  reads `K_lantern` and the dusk; the campfire's flame flickers on the motion clock). The
-  composer generates `localLight(p, n)`, which sums the lights of the layers on, at most 8 in
-  all. Every layer lights its materials with it: a campfire lights the hives, a lava lamp lights
-  the cat.
-- **Shadows.** The World's cloud shadows reach every layer through `worldSunlit`, at points the
-  layer chooses. A claim with a `shadow` (a height and a radius) casts a key-light shadow onto the
-  floor and onto covers (`casterShadow(xz)`, bees' `beesGroundShadow` model lifted unchanged).
-- **Not shadowed across layers.** A local light casts no shadow from one layer onto another; each
-  layer may shadow its own parts. This is a stated limit, not an omission.
-- **The air.** The backdrop owns it: the haze colour toward each bearing, the forward scatter
-  round the sun, and the sky staging over the deck. Meadow's golden haze and `meadowDeck` belong
-  to its backdrop, and bees' warm haze to its own.
-
-### Scale
-
-Everything is in metres in the rig's frame, and a cell spans `foot(z) = z / (focal · uRes.y)`
-metres at depth z.
-
-A readability cheat is declared, as `display: { scale }` on the layer (bees' hives at 1.5). The
-layer's claims are sized as it is drawn, so a cheated layer never overlaps its neighbours.
-
-Each layer declares the range of scales it makes sense at. The `overhead` composer refuses to put
-a 6 m pond beside a 5 km delta.
-
-### Weather and wind
-
-The World's knobs are the only weather, and they reach every layer:
-
-- Precipitation and fog are applied once, at the composed depth, so rain falls between the hives
-  and the grass exactly as it does between meadow's blades today.
-- Every layer's materials go through the shared surface functions (`wetten`, `wetGloss`,
-  `snowCover`), reading `uWeather`. A check holds every layer to it (see "Checks").
-- A layer may claim shelter: under a canopy, the precipitation and the lying snow thin by the
-  claim's `shelter` (forest's 45 %, bamboo's half).
-
-There is one wind direction (`K_wind`) and one gust field, `gustAt(xz, tm)` in GLSL with a CPU
-twin. It bows every layer's grass, flowers, crowns and leaves together, and its knobs (`gusts`,
-`gustRate`, the gusts' trigger) are the composer's.
-
-Meadow's honami field is the one promoted: it is already deterministic and shared between its
-shader and its sim (`src/scenes/meadow/index.ts:1-6`). Bees', autumn's, bamboo's, garden's and
-falls' gusts then follow it (an operator decision, D4).
-
-## Layers
-
-### What a layer declares
-
-| Field                                    | Meaning                                                                                                                                                                       |
-| ---------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `id`                                     | camelCase. It is the layer's switch key, a token in diagnostics and the prefix of any qualified key (see "Keys").                                                             |
-| `composers`                              | The rigs it can be drawn through (garden's gravel: `outdoor` and `overhead`).                                                                                                 |
-| `role`                                   | One of backdrop, ground, dressing, cover, life, chore (below).                                                                                                                |
-| `bands`                                  | Where it stands: far (beyond about 60 m), middle (6–60 m), front (within about 6 m of the eye).                                                                               |
-| `space`                                  | Its anchors (candidate placements in metres, in order of preference) and its claims relative to the chosen anchor.                                                            |
-| `camera`                                 | The eye heights, pitches and scales it can be drawn at. A preset whose rig falls outside them does not offer it.                                                              |
-| `params`, `groups`                       | Its knobs and lab groups, as a scene's are today.                                                                                                                             |
-| `triggers`                               | Named "now" slots; the composer assigns the numbers.                                                                                                                          |
-| `glsl`, `passes`                         | Functions prefixed with the id, and the name of each pass it has: `far`, `middle`, `front` (opaque or veil), `ground`, `height` (overhead), `sky` (a backdrop's sky staging). |
-| `features`, `featuresFor`, `featuresAll` | Its own gates, named with its prefix.                                                                                                                                         |
-| `sim`                                    | A `LayerSim` (see "Sims").                                                                                                                                                    |
-| `excludes`, `suppresses`, `requires`     | Its relations to other layers (below).                                                                                                                                        |
-| `cost`                                   | Generated, never hand-written: shaken KB, uniform vectors, sim textures and SwiftShader milliseconds, each as a margin over the composer's base.                              |
-
-### Roles and bands
-
-| Role     | How many                                                 | Examples                                                                                                    |
-| -------- | -------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------- |
-| backdrop | exactly 1; turning on another swaps it                   | meadow's downs and tree line, bees' hillside, campfire's pines, lake's mountains, the sea, the city skyline |
-| ground   | at most 1; without one, the site's plain floor           | bees' lawn, garden's gravel, shore's beach, lake's ice, a river                                             |
-| dressing | any number; at most 2 marked `subject` in the front band | the apiary, the campfire, the maple and bench, the water clock, the cat on the sill                         |
-| cover    | any number                                               | meadow's grass, wildflowers, leaf litter, moss                                                              |
-| life     | any number                                               | bees' insects, the fireflies' swarm, the koi, the kodama, a murmuration                                     |
-| chore    | any number; each needs its host on                       | leaf raking, cairns, sand raking, star-joining                                                              |
-
+Bands say where a layer stands: far (beyond about 60 m), middle (6–60 m), front (within about 6 m).
 The World is not a role: every composition has it, under its own knobs and gates.
 
-### Claims
+`LayerCode` holds what does not load with the scene's metadata: `glsl(rig)`, the layer's functions
+prefixed with its id; `shared`, the chunks (`SharedGlsl`) several layers of a scene compile in once,
+each with an optional per-cell `begin`; and `sim(gl, params)`. A composed scene's code module
+gathers every offered layer's code (`composedCode`), and `outdoor-code.ts` loads with the first
+composed scene's code, never with the registry (D8).
 
-A claim is a shape in metres (a disc, a box with a turn, or a strip along points with a half width)
-of one of three kinds:
+### Claims and placement
 
-- **exclusive**: no other exclusive or clearing claim may overlap it, and covers do not grow inside
-  it. Examples: the hives on their stands, the campfire's ring, the wall.
-- **clears**: covers thin to nothing inside its core and feather out over about 0.3 m. Another
-  layer's exclusive claim may stand at its edge but not in its core. It may set the floor's kind
-  inside. Examples: the campfire's clearing, a path, a bench's patch.
-- **shared**: a covered area that covers may grow into by their `overgrowth`. Example: bees'
-  flower drifts, which meadow's grass overgrows as far as its `overgrowth` knob says.
+A claim is a disc, a box with a turn, or a strip along points with a half width, in metres from
+its layer's anchor, of one of three kinds:
 
-A claim may also carry:
+- **exclusive:** no other exclusive or clearing claim overlaps it and no cover grows inside: the
+  hives, the campfire's ring, the river's water, the forest's stream;
+- **clears:** covers thin to nothing in its core and come back over 0.3 m (`CLEAR_FEATHER`); an
+  exclusive claim may stand at its edge: the campfire's clearing, the park's path;
+- **shared:** covers grow in by their `overgrowth` knob: the bees' drifts under the meadow's grass,
+  and the forest's and the grove's canopies.
 
-- a `shadow` (height and radius), which casts on the floor and covers;
-- a `shelter` (0..1);
-- `keepOut`, which life layers steer around.
+A claim may also cast a key-light `shadow` on the floor and on covers (`casterShadow`, the hives'
+model; a layer may add shadow functions of its own, `casters`, as the orchard's crowns and the
+maple do), give `shelter` (the share of rain, snow and lying snow kept off beneath it: the forest's
+canopy 0.55, the grove's 0.5), `keepOut` life, or be `mustShow`.
 
-The placement depends only on the preset and the layer set (see "Foreground conflicts"), which are
-what a program is built for. So claims and anchors reach the GLSL as compile-time constants of the
-program: at most 12 claims, and no uniforms. Covers ask `coverAllowed(xz)`: 0 inside exclusive and
-clearing cores, the overgrowth inside shared claims, 1 elsewhere. The same placement reaches the
-sims through `LayerFrame.ground`, so the bees' drifts and the meadow's dandelion clocks are laid
-out where they may grow.
+#### Foreground conflicts
 
-### Foreground conflicts
+A pure TypeScript solver (`place.ts`) places the layers from the preset (its rig and home layers)
+and the layers switched on, and nothing else: never the window's aspect or another knob. It takes
+the home layers, then the guests, each in canonical order. A layer is refused, with a reason that
+names what holds its place, when its role holds one already (a second backdrop or ground), a layer
+kept before excludes it, its host is not kept, eight layers are kept already, the front holds two
+subjects, none of its anchors fits (its exclusive and clearing claims overlap one placed, or a
+`mustShow` claim leaves the rig's view at its `minAspect`), or its claims would pass twelve. A
+later layer never moves an earlier one, so adding a layer never shifts what was there. A refused
+layer keeps its switch on and is not drawn; the lab shows it refused, with the reason.
 
-A pure TypeScript solver places the layers. Its inputs are the preset (rig, home layers) and the
-on layers, and nothing else: not the window's aspect, not any other knob. It places, in order:
+Placement is a function of what a program is built for, so the claims and anchors are compile-time
+constants of the program (`coverAllowed`, `casterShadow`, `shelterAt`) and reach the sims as
+`LayerFrame.ground`. Anchors are part of a layer's meaning: changing a shipped one moves things in
+every setup that holds the layer.
 
-1. the preset's home layers, in canonical order (the composer's registry order);
-2. then every guest layer, in canonical order.
+#### Relations
 
-Each layer takes its first anchor that meets all of these:
+- `excludes`: never on together (the lake's ice and the meadow's grass, wildflowers and
+  dandelions). The lab switches the other off; in a link the one placed first stands.
+- `suppresses`: turns off another layer's gate while both are on (`grass` turns off the lawn's
+  `LAWN_BLADES`, so the front holds one sea of grass).
+- `requires`: a host, for a chore or for any layer that draws on another (shore's beach on the
+  sea, the falls' spray on the falls, every grove layer on the grove).
+- The Manifold M: a layer names its M knob (`mark`); the lab keeps one on, and a program turns a
+  later layer's M off while an earlier one's is on (`compose.ts` `rewrite`).
 
-- none of its exclusive or clearing claims overlaps an exclusive or clearing claim already placed;
-- the front band holds at most two `subject` dressings;
-- a claim marked `mustShow` lies inside the rig's view at the preset's `minAspect`.
+### Compositing
 
-A layer with no such anchor is **refused**. The lab dims it with a reason that names the layer
-holding the space ("the hives stand where the campfire would"). A link that turns it on drops it,
-with a one-line notice like the unknown-scene notice. A later layer never moves an earlier one, so
-adding a layer never shifts what was there.
+The composer generates the program's entry (`composerEntry`, `glsl.ts`); layers contribute passes
+and never write the entry. A cell is `Cell { col, z, zs, accent }`: its colour, the depth of what it
+shows (`WORLD_FAR` for open sky), the depth of the nearest thing standing above the floor (what
+hides a speck), and its accent. `cellPut` writes where its depth is nearer and takes it once the
+alpha reaches 0.5; `cellVeil` veils where nearer and keeps the depth. The entry runs:
 
-So when two layers both want the foreground:
+1. The context (`composerCtx`): the World now, the arrangement seed (`K_seed`), the rig's ray
+   through the passage's lens shift, the floor's distance, the gust state, the light; then each
+   shared chunk's and each layer's `begin`, in canonical order (the backdrop's sets the air, the
+   land line and how far the land reaches).
+2. The backdrop's `sky`.
+3. The far band: every `far` pass, then every `farVeil`.
+4. The ground layer's `ground`, or the plain floor.
+5. The middle band's opaque passes, the World's birds at the composed depth, the middle veils.
+6. The front band's opaque passes, then its veils.
+7. The shared speck map, against `zs`.
+8. Every layer's `air` pass (a backdrop's forward scatter, a lamp's halo in the fog's air).
+9. `worldFog`, every layer's `glow`, then the World's rain and snow at the composed depth.
+10. The grade's vignette and exposure, the specks' palette snap, `shadeOf` with the grade's ink,
+    then every layer's `shade` pass.
 
-- the one the preset is built round keeps its anchor;
-- otherwise the one first in canonical order keeps it;
-- the other steps aside or back to its next candidate (the campfire at 3.4 m in the middle, or at
-  4.5 m to the left or right);
-- if it has no candidate left, it is refused rather than overlapped.
+Opaque passes need no order across layers: edges are cut per cell (`hardEdge`; README "Hard
+edges"), so coverage is 0 or 1 and the depth test decides. Soft alpha (fringes, glows, smoke) is
+why there are bands and a canonical order. Each layer's parts keep their scene's painter's order,
+standing at depths in metres, so the World's fog and rain fall between them: the campfire's parts
+each stand behind what stands nearer (`c.zs`), the forest's over whatever nothing nearer has
+covered (`forestStand`), skyward's against the facade behind them. A scene drawn as one march or
+one trace keeps it as one shared chunk, whose parts its layers' passes put down: the countryside's
+terrain (`COUNTRY`), the street's lit trace (`streetBegin`).
 
-A cover in the front band (meadow's near blades) is not a subject. Its conflicts with another
-front cover are settled by `suppresses` (below).
+A layer turned on or off mid-scene plays its own entrance or exit (D12, `LAYER_ENTER` 1.2 s,
+`LAYER_EXIT` 0.9 s): row 0 of the records atlas holds each on layer's turn, and every one of its
+passes is shown in a growing or shrinking share of cells, cut per cell (`layerShown`). At rest every
+pass runs as written. Each pass has one call site, because a software rasteriser runs every line: a
+second call site ran shore's passes twice (1.8× its scene before the port, 1.16× after).
 
-Anchors are part of a layer's meaning, like a knob's: changing a shipped anchor moves things in
-every setup that holds the layer, the committed presets among them.
+### Light, air and weather
 
-### Exclusions and dependencies
+- **Light.** `composerLight` is the World's sky times the preset's `Grade`: the sun's and the sky's
+  tints, an ambient floor, and the moon as the key once the sun has set where the grade gives it a
+  `moonlight` share (bees' model); then `exposure`, a `vignette` (round across the frame's width
+  with `vignetteRound`, the campfire's) and `ink` for `shadeOf` (with `paper`, inkOf's paper
+  white and range: dew's mist). Every layer is lit alike. A preset whose scene had a light of its
+  own keeps it in its layers, read from the World's sky: the gorge's eye adapting to the dark, the
+  forest's and the grove's canopy weather (`canopyWeather`), the garden's and the street's grey
+  days. Guests there are lit by the composer's light, an approximation of theirs.
+- **Local lights.** A layer declares lights (`LayerLight`, each a GLSL function and an optional
+  gate), and `localLight(p, n)` sums those of the layers on; every layer lights its materials with
+  it: the apiary's lantern, autumn's lamp, the campfire, the lanterns, the stone lantern, the
+  street's shops and kerbside, the fireflies' glow and lantern. A light casts no shadow from one
+  layer onto another; this is a stated limit.
+- **The air** is the backdrop's (`Air`, set in its `begin`): the haze toward each bearing, the
+  fog's and the rain's colours, the light the drops shine by, the sky wet things mirror, the dust.
+  A backdrop may take a World part over and put the World's out: the dunes' desert lays its dust
+  in place of the World's fog, the valley its valley fog on the World's fog knob, skyward its fog
+  along its rays.
+- **Precipitation.** The World's knobs are the only weather, laid once at the composed depth,
+  thinned under `shelter` claims, and as the backdrop's `precip` says: `thin` (far, near) so the
+  drops never bury a subject, `air` the colour the far rain fuses into, `seen` the axes a pitched
+  rig sees them through. Layers' materials go through `wetten`, `wetGloss` and `snowCover` on
+  `uWeather`.
+- **The night sky** is the World's (D10): the campfire's giant is a planet of the World's list
+  (`SkyPlanets.defaults`), its shooting stars the World's `meteors`; the fireflies' moonless night
+  is the World's stars with the moon off, the bank's skyglow standing in for the World's dome
+  (`worldSkyOver`, with `WORLD_DAYLIGHT` off). The lake keeps a night of its own: its far shore
+  stages it on the World (its `begin` sets the World's sky to the lake's and relights the
+  composer's light) and `lake/index.ts` compiles the World's stars, Milky Way, shooting stars,
+  aurora, birds, painted cumulus, cloud shadows and lightning out while it stands, so the World's
+  rain, snow and fog fall through the lake's night.
+- **Wind.** One wind direction (`K_wind`) and one gust field (`gust.ts`: `gustAt` in GLSL with its
+  CPU twin, the meadow's honami field), on the composer's knobs `gusts`, `gustRate` and the gusts'
+  "now" (D4). It bows the meadow's grass and clocks, the bees' lawn and blooms, autumn's canopy and
+  leaves, the bamboo culms, the garden's woods, maple, border and leaves, the forest's ferns and
+  skyward's tree. Ten presets open with it off. It does not move what kept a breeze of its own: the
+  fireflies' breeze (a single front, timed by `gustRate`, as strong as `gusts`), the lake's
+  drifting snow, the dew web's breeze, a press in the bamboo grove, and the flock's reeds, which
+  sway in the wind alone because one gust sample a cell cost a tenth of their frame.
+- **Mirrors.** A ground that mirrors asks `composerMirror`: the backdrop's own view in a level
+  mirror (its `mirror` pass: the temple grounds, the mangroves, the lake's far shore), else the
+  World's sky, with the World's birds in it.
+- **Scale** is metres in the rig's frame. A readability cheat is declared (`display.scale`: the
+  apiary's hives at 1.5, D5), and the claims are sized as the layer is drawn. A scene in units of
+  its own hands the composer metres: the garden's depths are 10 m each (`GARDEN_METRES`), the
+  dunes' grid cells 5 m, the swell's heights its eye's.
 
-- **`excludes`**: two layers that cannot be on together (lake's ice and meadow's grass). The lab
-  turns the other off in the same undoable change. A link holding both keeps the first in
-  canonical order and drops the other, with a notice.
-- **`suppresses`**: a layer turns off a named gate of another layer while both are on.
-  `grass` suppresses `lawn`'s near blades (`LAWN_BLADES`), so the front band shows one sea of
-  grass, not two.
-- **`requires`**: a chore's host. Without it, the chore is off and offered dimmed.
-- **Single-role swap**: a second backdrop or ground replaces the first.
-- **Camera range**: a layer drawn for a standing eye is not offered at all under the countryside's
-  hill rig, the street's high window or skyward's upturned rig.
-- **The Manifold M**: at most one layer's M is on at a time. The lab turns the others off; a link
-  keeps the first in canonical order (art direction: "one standalone element", `README.md`
-  "Art direction").
+### Hooks
 
-## Scene presets and links
+What the ports added to the contract, each optional and each leaving the other presets' pictures as
+they were:
 
-### A scene becomes a preset
+| Hook                                                                                                               | What it does                                                                                                          | Used by                                                                                 |
+| ------------------------------------------------------------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------- |
+| `LayerSim.interest(aspect)`                                                                                        | where a press does something for the layer; the composed sim gathers every on-screen layer's, in canonical order      | the chores, the lanterns' drop-off points, the swell's boats and lamp                   |
+| `LayerSim.affordances`, `LayerFrame.host(id)`                                                                      | another layer's state, narrowed by the caller with `instanceof`                                                       | the chores' hosts; the bamboo grove's sim, the fireflies' bank, shore's sea             |
+| `RigPassage.shift`                                                                                                 | the passage's lens shift, `rigShift()`: the world read lower in uv                                                    | shore, autumn, falls, lake, country, swell                                              |
+| `LayerDef.precip`: `thin`, `air`, `seen`                                                                           | a backdrop's say over the World's drops: their thinning, the far rain's air, a pitched rig's axes (`worldPrecipAxes`) | thin: sea, grove, woods, templeWall, city; air: seven backdrops; seen: crossroads, city |
+| `shade` pass                                                                                                       | after `shadeOf`: an accent or a colour of the layer's own                                                             | sea, cliff, dunes, crossroads, openSea, roost, valley, fireflySwarm                     |
+| `glow` pass                                                                                                        | after `worldFog`, before the rain and snow: light the fog does not veil                                               | the lighthouse's beams, the boats' lanterns                                             |
+| `mirror` pass, `composerMirror`                                                                                    | a backdrop's view in a level mirror; the World's sky and birds where it has none                                      | temple, mangroves, farShore; asked by the river, the creek, the lake                    |
+| `Flyway.dust`                                                                                                      | the World's birds hazed by the backdrop's dust (`composerMirror` does not take it)                                    | dunes                                                                                   |
+| `Grade.vignetteRound`                                                                                              | a vignette round across the frame's width                                                                             | campfire                                                                                |
+| `Grade.ink.paper`                                                                                                  | inkOf's paper white and range                                                                                         | dew                                                                                     |
+| `LayerDef.season`                                                                                                  | the first offered layer's `season` knob is the composer's, with the climate in the World's gates                      | autumn, falls, garden, country (and bees, through the valley)                           |
+| `SkyPlanets.defaults`                                                                                              | the planets a scene opens with: a link without the `planets` key holds them, `planets=` none                          | campfire's giant                                                                        |
+| `worldSkyOver`                                                                                                     | `worldSky` over a dome of the scene's own, so the World's dome is never worked out                                    | the fireflies' mangroves                                                                |
+| The World's settled gates: `WORLD_METEOR_RATE`, `WORLD_LIGHTNING_RATE`, `WORLD_MOON`, `WORLD_DAYLIGHT`             | each part a setting cannot show compiled out, drawing what the runtime path draws there                               | every composed preset                                                                   |
+| Planet gates: `SKY_PLANETS_<KIND>`, `SKY_PLANETS_WIDE_RING`, `_MOONS`, `_AURORA`, `_LIGHTS`, `SKY_PLANETS_SEVERAL` | only the kinds, palettes and dress a planet list holds, a lone planet drawn straight                                  | every scene with planets                                                                |
+| A preset's own gates over the composer's (`index.ts`)                                                              | the lake's night (`lakeNight`), skyward's `WORLD_BIRDS` 0, dunes' and garden's overhead programs                      | lake, skyward, dunes, garden                                                            |
 
-A **scene preset** is data:
+### Rigs, locking and offering
 
-- its composer, id, title, blurb, accent, look, page theme, passage and planets pad;
-- its rig, its light grade and its home layers;
-- the values where it departs from its layers' defaults.
+A layer's `camera` gives the spans of eye, horizon, focal and pitch it can be drawn through; a
+preset whose rig falls outside any span does not offer it (`admits`, `place.ts`). Most ports locked
+every layer to their own rig: each span is the rig's own value (`ON_THE_HILL`, `ON_THE_BANK`),
+because the scene was drawn for that pinhole and no other:
 
-`composeScene(preset)` makes the `SceneDef` from it:
+- its parts are laid out on the frame (autumn's `layout.ts`, the grove's corner where the clock and
+  the lantern stand, the fireflies' lattice over the mangroves' crowns, the flock's skyline);
+- it works in units of its own (the garden's depths, the swell's eye heights, the dunes' cells);
+- it is one march or one trace that every layer's knobs feed (the countryside, the street);
+- it keeps a light of its own, which a guest would not share.
 
-- **params**: the composer's own knobs (the World's, `gusts`, `gustRate`, `seed`, and `season`
-  where a layer has a year), then every offered layer's switch (on by default for home layers),
-  then every offered layer's knobs, hung on their switches with `when`. An offered layer is one
-  whose camera range admits the preset's rig.
-- **defaults**: the preset's values.
-- **`glslFor(features)`**: the composer's prelude, the GLSL of the layers on in that feature set,
-  and the generated entry.
-- **`featuresFor`**: the World's gates, a `LAYER_<ID>` gate per placed layer, and each on layer's
-  own gates.
-- **`featuresAllFor(values)`**: every gate of the layers on in `values`.
-- **`structural`**: the layer switches.
-- **`sim`**: a composed sim.
+A layer is offered to other rigs when it is drawn in metres from the rig's ray, so that any rig in
+its spans draws it correctly:
 
-The id, card, thumbnail, family, tour step and passage stay, so `scene=bees` opens the bees
-preset and `ab.ts bees` compares the same setting on both sides of a port.
+- **the meadow's four** (`downs`, `grass`, `wildflowers`, `dandelions`), for any level standing
+  eye of 1 to 2.5 m: offered to ten presets (meadow, bees, shore, lanterns, falls, fireflies,
+  forest, bamboo, lake, autumn);
+- **the murmuration**, for a level eye of 1.6 to 3 m with the horizon at 0.08 to 0.6 and a focal of
+  0.9 to 1.4: it flies the same shares of the sky above any such rig's horizon, its M kept clear of
+  the land (meadow, bees, shore, falls, flock);
+- **the valley**, for the bees' garden's rig and the hill's: under the bees' rig it lies beyond the
+  lawn's hedge, seen from the vantage's hilltop, and its program leaves out the hill's own parts
+  (herds, walkers and carts, flower fields, the chalk M, ripples, bales, near crowns, the valley
+  fog) to hold the 256 KB budget.
 
-A committed preset (`src/presets.ts`) remains a saved setup of a scene. "Bees · overgrown meadow"
-is `scene=bees&grass=1&wildflowers=1` plus its values.
+Offering is not free. Every offered layer's switch and knobs are knobs of the preset, and its "now"
+buttons trigger slots, whether it is on or not: the meadow's four bring nine knobs and one slot to
+each of their ten presets, the murmuration seven knobs and two slots to its five. A layer is
+offered only where the preset still holds its knobs (see "Budgets and caps").
 
-Considered and rejected: one scene per composer with a `preset` key. Every link would then write
-every value where its preset departs from the composer's defaults: for bees, about a dozen keys
-(eight layer switches, its hour, its cumulus). Every committed preset of a ported scene would have
-to be rewritten into the composer's form to light in the Presets view again, and the composer's
-own defaults would be arbitrary.
+### Keys and links
 
-### Keys
-
-- **Unique per composer.** A registry test checks it in both directions, as AXIOMS' law for
-  runtime-joined namespaces asks (`AXIOMS.md:436-469`): every key a committed preset names
-  resolves to a knob, and every knob is reachable.
-- **A port keeps its scene's keys** wherever they are unique in the composer. For meadow and bees
-  every key survives but the two seeds (`meadowSeed`, `scenerySeed`, which become the composer's
-  `seed`): `grassHeight`, `haze`, `dandelions`, `wildflowers`, `mown`, `flowers`, `lantern`,
-  `bees`, `swarm` and the rest keep their meaning.
-- **A colliding key is qualified** as `<layerId><Key>`. The scenes ported later take most of the
-  qualifying: country's `wildflowers` becomes `valleyWildflowers`; each further scene's `mark`
-  becomes `<layer>Mark`.
-- **A layer's switch is its id**: a toggle, or the feature knob it grew from (meadow's
-  `dandelions` and `wildflowers` keep their key, kind and `-amount`).
-- **Keys that become the composer's** (`meadowSeed` and `scenerySeed` become `seed`; autumn's and
-  bamboo's `gusts` take the shared field's meaning) change with the port.
-- **Rejected**: a dotted form `bees.flowers`. It reads like the A/B slots' `a.` and `b.` prefixes
-  and would change the knob key pattern and the GLSL names.
-
-No link is carried over (no backward compatibility, operator decision 2026-10-17): there is no URL
-schema history, no `keys`, `alias` or `split` step and no `url-keys.json`. A setup made before a
-port replays on its own build (`/@<sha>/`).
-
-- **Garden's and dunes' `camera=1`** (from above, overhead) become scene ids of the `overhead`
-  composer, `gardenabove` and `dunesabove`.
-- **Committed presets** that set a renamed key are rewritten in the new keys, their `commit`
-  moved to the porting build (`src/presets.ts`).
-
-### The A/B plan
-
-Every port carries its pixel comparison (`scripts/ab.ts`, `README.md` "Pixel identity").
-
-1. **Before porting,** record the scene's witness set in the PR:
-   - its defaults, both dithered and with `view=source`;
-   - every committed preset of the scene;
-   - one witness per knob group: night, rain, snow, and each gate on.
-2. **After porting,** run `ab.ts --base <pre-port revision>` over the witnesses.
-3. **Pass:**
-   - `SAME`; or
-   - `DIFFERS` within tolerance: at most 0.5 % of cells at defaults and 2 % on witnesses, each
-     difference attributed in the PR to a named shared-part change (the gust field, the grade),
-     with its diff image inspected.
-   - A structural difference fails at any share: a part missing, moved or lit differently.
-4. `ab.ts` gains a `--tolerance` report of the share of differing cells. The operator decides
-   whether a tolerance is allowed at all (D3).
-5. Regenerate a thumbnail only where the defaults differ.
-6. The GPU checks keep holding every layer set's all-features program byte for byte to each
-   setting's own program, as `worldFeaturesAll` does today.
+- **A port keeps its scene's keys** wherever they are still unique in the preset. Every composed
+  preset lists the World's 20 knobs, then the composer's (`gusts`, `gustRate`, `season` where a
+  layer has a year, `seed`), every offered layer's switch, then every offered layer's knobs.
+- **A colliding key is qualified** `<layerId><Key>` (D2): `composeScene` qualifies a key another
+  knob of the preset already holds, and the ports qualified by hand in the manifest the keys a
+  layer that might share a rig already holds (falls' `mark` as `cliffMark`, the grove's `mist` as
+  `groveMist`). Layers that never share a rig may hold the same key: `mark` is the apiary's and the
+  beach's, `ripples` and `drift` the dunes' and the lake's.
+- **A layer's switch is its id**: a toggle, or the feature knob it grew from, keeping its amount
+  (the lanterns' count as `lanterns-amount`, the flock's starling count as
+  `murmuration-amount`, the garden's raking speed as `raking-amount`).
+- **Keys that became the composer's** are renamed with the port: every scene's seed is `seed`, its
+  gusts the composer's `gusts`, its date or season the composer's `season`.
+- **No link is carried over:** no URL schema step, no alias, no key history. A setup made before a
+  port replays on its own build (`/@<sha>/`). A committed preset that set a renamed key, or whose
+  query's order changed, is rewritten with its `commit` moved to the porting build.
 
 ## Cost
 
-### Per-pixel cost
+### What a program costs
 
-**What costs.** Under SwiftShader a stack costs:
+Under SwiftShader a program costs every line it holds, whatever a cell takes: an untaken branch,
+an early return and a loop's body all run at least once. PlanetKinds measured it on the campfire:
+the giant's drawing loop cost the same with no planet in the list (2.72 G instructions a draw at
+320×200, against 3.03 G with one and 1.60 G with the planet code cut out), and wrapping it in an
+`if` saved nothing. Only compile-time gates remove cost. Hence the World's settled gates, the
+planet gates, the lake's and skyward's gates over the World's, the flock's skyline compiled in one
+at a time (`ROOST_CITY`, `ROOST_REEDS`, `ROOST_SEA`), and the bees' beds compiled in only behind
+`PRINCIPAL_CURSORS`.
 
-```
-base (World and composer prelude) + Σ over on layers of (the gated cost of its passes)
-```
+The composer's own part is the context, the turn machinery and the plain floor. FirefliesFix
+counted the fireflies' default program part by part (490 M instructions a draw, against 290 M before
+its port; the parts, as it measured them, overlap and do not add up to the whole):
 
-Every line runs whatever a pixel takes, so covering only part of the frame saves nothing.
+| Part                                                       | M instructions |
+| ---------------------------------------------------------- | -------------- |
+| Dithering and `main` (as before the port)                  | 78             |
+| `worldAt`                                                  | 33             |
+| View, light and gust                                       | 11             |
+| The mangroves' and the fireflies' begins                   | 71             |
+| The World's sky: stars, shooting stars, the bolt, the rest | 140            |
+| The swarm's shade pass, the lantern pass, the creek        | 123            |
+| The composer's turn machinery (shown, guards, the floor)   | 79             |
 
-On a GPU, each layer's passes first test its claims' screen bounds, which is a coherent branch, so
-a stack costs about:
-
-```
-base + Σ (gated cost × the share of cells the layer covers)
-```
-
-The composer's own work per cell is small: the depth tests, at most 12 claim tests where a cover
-asks, and at most 8 lights.
-
-**What is free.**
-
-- An off layer is absent from the source: its GLSL is not concatenated.
-- An off gate inside an on layer is absent after `#if`.
-- Whatever is left unreached is removed by the function shaker (A2, in flight).
-- On a GPU drawing the all-features program of the current layer set, an off gate's runtime test
-  is a uniform branch.
-
-So "off layers are free" holds on every renderer, and the cost of a stack is the sum of what is
-on.
+A guard can cost more than its lines: dew's around the web's list walk measured about 700 M of
+6,354 M, without which the port measured 1.018× its scene. On a GPU a coherent branch is cheap; the
+GPU budget is `bench.html`'s.
 
 ### Budgets and caps
 
-| Limit                                      | Value                                                                                                                   | Basis                                                                                                                                                                                                                                                                                                                                    |
-| ------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Layers on, the World not counted           | at most 8                                                                                                               | Bees has 4 layers, and the pilot mix 6.                                                                                                                                                                                                                                                                                                  |
-| Front `subject` dressings                  | at most 2                                                                                                               | Placement (see "Foreground conflicts").                                                                                                                                                                                                                                                                                                  |
-| Shaken program at a preset's defaults      | at most 160 KB                                                                                                          | The largest today: train 134 KB, street 107 KB.                                                                                                                                                                                                                                                                                          |
-| Shaken all-features program of a layer set | at most 256 KB                                                                                                          | The pilot mix's union is 204 KB, and meadow + bees + campfire + fireflies 253 KB. Today's largest is the countryside at 213 KB.                                                                                                                                                                                                          |
-| Fragment uniform vectors                   | at most 224                                                                                                             | WebGL2's guaranteed minimum, checked by the shaker's `glsl:check`.                                                                                                                                                                                                                                                                       |
-| Knobs one program reads                    | at most 128                                                                                                             | `uParams` is laid out per program, holding only the knobs of on layers (see "Programs: how many and when").                                                                                                                                                                                                                              |
-| Knobs a composed scene lists               | at most 512                                                                                                             | CPU only.                                                                                                                                                                                                                                                                                                                                |
-| Trigger slots                              | 32                                                                                                                      | Packed; every offered layer's slots are numbered statically at assembly. An estimate from today's scenes: about 28 for the outdoor composer once the World's meteors and lightning and the shared gusts are counted once. `triggers.test.ts` checks each composer; one that outgrows 32 lays its slots out per program, as `uParams` is. |
-| Composer uniforms                          | 8 vectors                                                                                                               | The principals' ground points only. Claims, anchors, lights and the grade are compile-time constants of the program.                                                                                                                                                                                                                     |
-| Sim textures                               | 8                                                                                                                       | WebGL2 guarantees 16 fragment texture units. Today uses 4 + `uLeaving`.                                                                                                                                                                                                                                                                  |
-| Sim CPU time, whole stack                  | at most 4 ms a frame (headless)                                                                                         | The audit measured 0.001–4 ms per sim.                                                                                                                                                                                                                                                                                                   |
-| SwiftShader frame, 320×200                 | a preset at most 1.15× its scene before porting; a committed mix within the sum of its layers' marginal costs plus 10 % | `verify.ts`                                                                                                                                                                                                                                                                                                                              |
-| GPU frame, 960×540                         | at most 16.7 ms on the reference integrated GPU, once one is recorded (`SCENES.md`, "GPU cost on real hardware")        | `bench.html`, which gains `layers=`                                                                                                                                                                                                                                                                                                      |
+| Limit                                      | Value                                                                                                                                                | Held by, and where the presets stand                                                |
+| ------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------- |
+| Layers on, the World not counted           | 8                                                                                                                                                    | `place.ts`; the largest home stacks hold 6 (autumn, campfire, country)              |
+| Front subjects                             | 2                                                                                                                                                    | `place.ts`                                                                          |
+| Claims a program holds                     | 12                                                                                                                                                   | `place.ts`; the apiary alone holds 11                                               |
+| Local lights                               | 8                                                                                                                                                    | `caps.ts`, not checked; no stack holds more than 2                                  |
+| Sim textures                               | 8: the speck map, the records atlas, 6 fields                                                                                                        | `allocate` (`sim.ts`); the valley alone takes 4 fields                              |
+| Knobs a preset lists                       | 64, the renderer's `MAX_PARAMS`                                                                                                                      | `compose.ts`, `budget.test.ts`; bees 63, country 57, lake 52, falls 51, shore 49    |
+| Trigger slots                              | 8, the renderer's `MAX_TRIGGERS`                                                                                                                     | `compose.ts`, `budget.test.ts`; forest and lake 8, bees, shore and bamboo 7         |
+| Shaken program at a preset's defaults      | 160 KB                                                                                                                                               | `budget.test.ts`; the largest, street, 129,136 characters                           |
+| Shaken all-features program of a layer set | 256 KB                                                                                                                                               | `budget.test.ts`; country 253,359 characters, "Bees · in the valley" 252,886        |
+| The pilot mix's all-features program       | 230 KB                                                                                                                                               | `budget.test.ts`; "Bees · overgrown meadow" 220,819 characters                      |
+| Fragment uniform vectors                   | 224, WebGL2's guaranteed minimum                                                                                                                     | `scripts/glsl-check.ts`; the largest measured, 180 (lake)                           |
+| SwiftShader draw at 320×200                | a preset's default program within 10 % of its recorded instruction count; a mix within its preset's count plus its guests' marginal counts plus 10 % | not checked yet; recorded: fireflies 490 M, campfire 1.63–1.65 G, dew 6,354 M       |
+| Sim CPU time, whole stack, headless        | 4 ms a frame                                                                                                                                         | not checked yet                                                                     |
+| GPU frame at 960×540                       | 16.7 ms on the reference integrated GPU, once one is recorded                                                                                        | `bench.html` (`SCENES.md`, "GPU cost on real hardware"), which has no `layers=` yet |
 
-The lab sums the on layers' costs (`cost`) into a stack meter. A layer whose turn would break a
-budget is dimmed, with the budget named. A link over the cap keeps layers in canonical order up to
-it and drops the rest, with a notice.
+**The SwiftShader budget is on the composed program itself**, counted, not timed: the user-space
+instructions the GPU process retires per draw of the preset's default program at 320×200 (`perf`),
+which repeat within about 1 % where wall time on the shared host swung by ±15 %. A preset's count is
+recorded beside its shaken size and moves only on purpose, as `shake.test.ts` holds sizes. During
+Phase 2 the yardstick was each scene before its port (1.15× its frame time); that program no longer
+exists to compare against, and the ratio said nothing of a scene whose old program lacked what the
+World and the composer add (the fireflies, 1.69× in instructions; the campfire, 2.7× in time until
+the planet gates).
+
+**The caps bind on offering, not on stacking.** A preset lists its own layers' knobs and every
+offered guest's, so the bees' garden, offered the meadow's four, the valley and the murmuration,
+lists 63 of 64 knobs, and the forest and the lake use all 8 trigger slots: one more layer with a
+knob offered to the bees, or with a "now" offered to the forest or the lake, makes the preset fail
+to compose (`ComposeError`). The way past is the per-program layout: a program defines `K_<key>`
+only for the composer's knobs and its on layers', packed into `uParams` with an index map the
+renderer uploads through, so a preset lists up to 512 knobs and a program reads up to 128; and
+trigger slots packed to 32, numbered statically. `uParams` at 128 floats takes 16 more uniform
+vectors than today's 64, which the largest program (180) has room for.
 
 ### Programs: how many and when
 
-A composer's feature sets are every subset of its layers, each with every subset of its own gates:
-for a layer set S, Π over i in S of 2^gᵢ. Summed over sets, that is astronomically many. None is
-compiled ahead; the renderer builds what is visited:
-
-- **A knob turn inside a layer set** draws with that set's all-features program on a GPU, built
-  once in the background; a software rasteriser builds the setting's own program. This is today's
-  rule, scoped to the set.
-- **A layer turn is structural.** It builds the new set's own program in the background on every
-  renderer. Meanwhile the old picture keeps drawing as it did. When the new program is on screen,
-  the layer's entrance plays. While the lab is open, the new set's all-features program is then
-  built aside.
-- **The set is order-free.** A layer set's key is its layers in canonical order, so the same set
-  reached two ways is one program.
-- **Knobs are laid out per program.** A program defines `K_<key>` only for the composer's knobs
-  and its on layers' knobs, packed into `uParams` in canonical order. The program carries its
-  index map, and the renderer uploads through it; today it copies the first `MAX_PARAMS` values
-  (`src/renderer.ts:1249-1250`). `MAX_PARAMS` splits in two: the scene's knob list (512, CPU
-  only) and what one program reads (128).
-- **Retention is unchanged:** 4 programs per scene, 8 in all.
-- **Never** is a composer-wide all-features program built: 868 KB shaken for the outdoor scenes,
-  where the countryside's 213 KB already takes 20 s under SwiftShader.
+- **A layer turn is structural.** A layer switch is a `LAYER_<ID>` gate in the feature key, so
+  turning it builds the new set's own program in the background on every renderer while the old
+  picture keeps drawing; the layer enters once the program is on screen. A layer switched off
+  plays its exit in the program it is in, which the renderer keeps drawing until then.
+- **A knob turn inside a layer set** draws with that set's all-features program on a GPU, built once
+  in the background, and a software rasteriser builds the setting's own program, as for any scene.
+  A turn that flips a settled gate (the moon, the day cycle, a planet's kind or dress) is such a
+  turn.
+- **A set is order-free:** its key is its `LAYER_*` gates.
+- **Retention is the renderer's:** 4 programs a scene, 8 in all (`program-cache.ts`).
+- **No composer-wide all-features program is ever built.** The second audit's shaker measured one
+  for the fifteen outdoor scenes then named at 868 KB, against the countryside's 213 KB, which
+  already took about 20 s to compile under SwiftShader.
 
 ### Checks
 
-- **Static (glslang, compile only):**
-  - each preset's default and all-features programs;
-  - each committed mix;
-  - each layer alone over its composer's base;
-  - for each changed layer only, each compatible pair with it. Estimated from the porting tables
-    below, the outdoor composer will hold about 60 layers, so at most about 59 pairs per changed
-    layer. Each must be under the budgets.
-- **Browser (SwiftShader, draws):**
-  - each preset's and committed mix's all-features program byte for byte against every knob turn
-    of its layers (`src/knob-turns.ts`);
-  - `composerDepth`: with alpha rounded to 0 or 1 (a define only the check sets), the opaque passes
-    in reversed order draw the same cells;
-  - `composerClaims`: no cover grows inside an exclusive or clearing core;
-  - `composerWeather`: with wetness and lying snow at 1, every on layer's cells change;
-  - `layerToggles`: a layer turn never waits for a build;
-  - `passageSpeeds` per preset (split in four by A2's in-flight tests work).
-- **Generated:** `scripts/layer-costs.ts` writes `src/composer/costs.json`, and a check fails when
-  the file is stale, as the decisions index does.
-- **Timing records:** every new browser check gets a record in `scripts/verify-timings.ts`, which
-  A2's in-flight tests work makes `verify-plan.test.ts` require.
+- **Built:** `budget.test.ts` (the ported presets, the shaken budgets of each preset's defaults, of
+  the all-features program of each one-layer turn and of each committed preset, the knob and
+  trigger caps); `place.test.ts`, `claims.test.ts`, `sim.test.ts`; `glsl-check.ts`, which also
+  compiles each choice of a structural knob that is not a layer switch; each scene's ceilings in
+  `src/shaders/shake.test.ts`; the Layers section's model and its browser check
+  (`layers-model.test.ts`, `inspector.verify.ts`); `ab.ts` with `--turns` and `--presets`.
+- **Not built:** `composerDepth` (with alpha rounded, the opaque passes in reversed order draw the
+  same cells), `composerClaims` (no cover in an exclusive or clearing core), `composerWeather`
+  (wetness and lying snow change every on layer), `layerToggles` (a layer turn never waits for a
+  build), `scripts/layer-costs.ts` writing `src/composer/costs.json`, and the instruction count.
 
 ## Sims
 
-One `SimFrame` reaches one `ComposedSim`, which is what the renderer sees as the scene's sim. Each
-on layer's `LayerSim` receives a `LayerFrame`: the same clocks, budget, size, pointer, parallax and
-passage, plus the following.
+The renderer sees one sim, the composed sim (`sim.ts`). Each on layer's `LayerSim` gets a
+`LayerFrame`: the scene's clocks, size, pointer and principals, its own knobs under their short
+keys, the rig at rest (`LevelCamera`) and the passage's lift, the placement (`ground`), the gust
+field's CPU twin, its rows of the records atlas, its codes in the speck map, its field slots, and
+`host(id)`.
 
-- **Its knobs** under their short keys. The views are rewritten in place each frame, so nothing is
-  allocated per frame.
-- **Its trigger slots and `fired`.**
-- **The rig** as a `LevelCamera`, or the interior or overhead twin.
-- **The ground:** the placed claims, `coverAllowed`, the floor at a point, and the layer's own
-  anchor.
-- **The gust field's CPU twin.**
-- **The principals** (see "Principals and chores").
-- **Writers for the shared resources:**
-  - slot 0, the **speck map**: rg8 at frame size, one nearest-depth `SpeckMap` (`src/sims/specks.ts`)
-    with a range of codes per layer and one depth step for all (bees' quarter metre). Every speck
-    of every layer is hidden by every other layer's nearer things.
-  - slot 1, the **records atlas**: `rgba16f`, nearest, 512 texels wide, rows allocated per layer.
-    `PlantTexture`'s `rowBase` already writes there. Meadow's `rg16f` blades take two channels of
-    a row.
-  - slots 2–7, the **fields**: up to six textures in any format and filter. Height fields, the
-    pointer's wake, GPU solvers' outputs.
+| Slot | Texture                                   | Shared how                                                                                      |
+| ---- | ----------------------------------------- | ----------------------------------------------------------------------------------------------- |
+| 0    | the speck map: rg8 at frame size, nearest | each layer a range of codes, one depth step (a quarter metre), every speck behind nearer things |
+| 1    | the records atlas: `rgba16f`, 512 wide    | row 0 the layers' turns, then each layer's rows in canonical order                              |
+| 2–7  | fields: any format and filter             | each layer's own, in canonical order                                                            |
 
-Allocation is a pure function of the layer set **on screen**:
-
-- Rows and slots go by canonical order.
-- `SimFrame` gains `features`, the feature set of the program this frame draws with, and the
-  composed sim serves that set's allocation. A layer switched on but not yet on screen is built and
-  run ahead at `dt` 0, as an incoming scene's sim is during a passage. When the new program
-  arrives, the allocation switches within that frame.
-- A layer's GLSL reads its data through accessors the assembler generates (`<layer>Record(x, y)`,
-  `<layer>Field0()`, `<layer>SimOn()`), never through `uSimN` directly.
-
-Budgeted work (`runBudgeted`) is handed down the layers in canonical order. The composed sim's
-`ready()` is true when every layer on screen is ready. Every layer sim keeps the frame-rate
-contract A2's tests work adds (`src/sims/frame-rate.test.ts`, 60 against 144 Hz): a `FixedStep`,
-and chance drawn on steps. GPU solvers (ripple, tidepool, delta, incense) keep their own passes and
-only hand their output to a field slot.
+The allocation is a pure function of the layer set on screen, the program the frame draws with
+(`SimFrame.features`). A layer switched on but not yet on screen runs ahead at `dt` 0 and is copied
+in the frame its program arrives. A layer's GLSL reads its data through the accessors the composer
+generates (`<id>Record`, `<id>Field<k>`, `<id>SimOn`), never `uSimN`. GPU solvers keep their own
+passes and hand their output to a field slot. A scene whose life is one simulation keeps it in one
+sim and lends it: the grove's sim moves the culms, leaves, tube and rings, the mangroves' sim grows
+the bank the swarm lives in, the maple's sim holds the park's leaves and piles.
 
 ## The lab
 
-- **Layer switches.** Each layer's switch carries a `{ kind: "layer", role }` widget. The switches
-  gather into one **Layers** section after the World shelf, as the `night` parts gather into the
-  Night sky section. It has a row per role:
-  - in each row, a chip per offered layer: on, off, refused (dimmed, with its reason) or over
-    budget (dimmed, with the meter);
-  - a "+" opens the role's offered layers, with their thumbnails and costs.
-- **Layer sections.** Each layer's groups carry `Blurb.layer`. They stand under their layer's
-  heading after the Layers section, in role order, and show only while the layer is on (`when`).
-  The lens still counts changes left dormant on an off layer, so turning a layer back on keeps its
-  settings.
-- **Presets are the starting points.** The Scenes view's cards are the scene presets, shelved by
-  composer (an operator decision, D9). "Reset what changed" returns to the preset, layers
-  included.
-- **Shuffle, undo and redo.** Shuffle never turns layers (their switches are steady). Undo and
-  redo cover layer turns like any knob.
-- **The compact bar,** in order:
-  - the World chips;
-  - a Layers chip, lit while the layer set differs from the preset's;
-  - one chip per on layer: its icon, and a popover holding all of that layer's sections;
-  - Global.
-
-  The fit rule is unchanged: chips go icon-only together, then the strip scrolls.
+- **The Layers section** (`src/lab/layers.ts`, its rules in `layers-model.ts`): every switch
+  carries a `{ kind: "layer", role }` widget, and they gather into one section after the World
+  shelf, a row per role, a chip per offered layer: on, off or refused (switched on and not drawn,
+  the placer's reason in its title and under the row). A backdrop's or a ground's chip swaps for
+  the one of its role, the backdrop on stays on, and switching a layer on switches off what it
+  excludes.
+- **Layer sections:** a layer's groups carry `Blurb.layer` and show while it is on; a change left
+  on an off layer still counts under the lens and comes back with the layer.
+- **The compact bar:** the World's chips, the Layers chip, a chip per layer on lending all its
+  sections (`Inspector.lend`), then Global.
+- **Presets are the starting points.** Shuffle never turns a layer (switches are steady); undo and
+  redo take layer turns like any knob; "Reset what changed" returns to the preset, layers included.
+- **Not built:** the stack meter and the over-budget chip, the role's "+" listing with thumbnails
+  and costs, and shelving the Scenes view by composer (D9): it is shelved by family
+  (`src/lab/families.ts`).
 
 ## Principals and chores
 
-Principals (A2, audit I-20) are a composer service. For each principal, the composed sim has:
+Principals (I-20) are a renderer concept (`src/principals.ts`): the visitor is principal 0, then up
+to three agents of a scripted cast that goes to the points the sims declare (`interest`). A
+**chore** is a layer of role `chore` that `requires` its host and acts through the affordances the
+host's sim exposes, reached with `LayerFrame.host`: the host owns the state and nature's undo, the
+chore the plan and the tool. Chores are deterministic for the seed and stand still at motion 0.
+The bees', shore's and autumn's act only through the cast's agents, so a page without agents draws
+as before; the garden's has a default agent of its own, the unseen rake on the layout's plan, and
+every hand dragged on the gravel rakes it too.
 
-- its screen point;
-- its point in the site, through the rig: the ground hit outdoors, the ledge or floor indoors, the
-  patch point from above;
-- the claim and the layer under it.
+| Chore       | Preset | Host                         | Affordance                                                                               | Nature's undo                                   |
+| ----------- | ------ | ---------------------------- | ---------------------------------------------------------------------------------------- | ----------------------------------------------- |
+| `gardening` | bees   | the apiary's beds            | `GardenBeds`: `dig`, `plant`, `weed` along a row                                         | weeds choke a bed left alone; the lawn takes it |
+| `cairns`    | shore  | the beach                    | the sea's surf (`SeaSurf`, `host("sea")`) toppling stones stacked on `src/sims/stack.ts` | the bigger waves' swash knocks the cairns down  |
+| `rake`      | autumn | the litter, the maple's park | `Park.rake`                                                                              | the gusts lift the piles                        |
+| `raking`    | garden | the gravel                   | `Gravel.groove`                                                                          | the garden's drying and weather                 |
 
-Layers receive this list. The GLSL gets `uPrincipalGround[8]` beside I-20's `uPrincipals[8]`. The
-composer draws every cursor last: a human's and an agent's differ by motion alone (I-40). The
-visitor is principal 0.
-
-A **chore** is a layer of role `chore`:
-
-- It `requires` its host.
-- It acts through **affordances** the host's `LayerSim` exposes, a typed interface: the host owns
-  the state and nature's undo; the chore owns the plan and the tool.
-- The cast (I-40) assigns agents to chores.
-- Chores are deterministic for the seed and stand still at motion 0.
-- Principal 0 can do the same chore with the pointer.
-
-| Chore         | Composer                                                | Host                                   | Affordance                                                                  | Nature's undo                                                    |
-| ------------- | ------------------------------------------------------- | -------------------------------------- | --------------------------------------------------------------------------- | ---------------------------------------------------------------- |
-| Leaf raking   | `outdoor`                                               | autumn's litter (`src/sims/litter.ts`) | `rake(path, width)` gathers the top layer into piles                        | gusts lift the piles in swirls                                   |
-| Cairns        | `outdoor`                                               | shore's beach                          | `place(stone, on)` on a small rigid stacking sim (new, `src/sims/stack.ts`) | the surf's run-up topples them                                   |
-| Garden chores | `outdoor`                                               | bees' apiary                           | `plant(drift, row)`, `weed(drift)` change a drift's density map             | weeds come back on the growth clock; the bees follow the flowers |
-| Star-joining  | any composer with a sky, an interior through its window | the World's constellations             | `join(starA, starB)` adds a figure line                                     | the figure fades at dawn and is redrawn the next night           |
-| Sand raking   | `overhead` (sand table), `outdoor` (garden)             | the sand bed, the gravel               | `groove(path, tines)` writes the height field                               | the ball's track; garden's drying and weather (`AgeField`)       |
-| Shared table  | `interior`                                              | the harmonograph's sheet               | `pen(path)`                                                                 | a fresh sheet slides in once the figure is signed with the M     |
-
-J1 ("agents at work") builds these chores. This record only fixes where they plug in.
+Star-joining is the World's (the `join` knob beside the constellations), and the shared table is
+the harmonograph's own; neither is a layer. The principals' points in the site (the ground a
+principal stands over, through the rig) are not built: chores read the cast's screen points.
 
 ## Migration
 
-Each phase is one coherent change under #1082, with its acceptance below and the A/B plan above.
+### Phases 0 and 1: done
 
-### Phase 0: prerequisites (A2, already scoped; U1 waits for them)
+Phase 0's prerequisites are in the tree: the function shaker and its compile budget, `glsl-check`,
+the verify kit and the frame-rate contract, lazy scene loading (D8) and presence (I-20). Phase 1
+built the composer and its first eight layers, with meadow and bees as presets: meadow `SAME`, bees
+`SAME` but for its lawn moving in the shared gust field (13 % of cells, accepted by the operator
+under D4). The pilot mix, "Bees · overgrown meadow", stands within its 230 KB.
 
-- The function shaker, the compile budget test, `glsl:check` and the uniform packing (A2 "Shader
-  assembly", A-16). These are in flight.
-- The shared verify kit and the frame-rate contract suite, in flight in A2's tests and CI work.
-- Lazy scene loading (A-8, I-22), before Phase 2: a composed scene's import closure is every
-  layer it offers.
-- Presence plumbing (I-20), before the first chore and before any layer reads principals.
+### Phase 2: the rest of the eye-level scenes
 
-**Acceptance:** those items' own criteria, on `main`.
+Phase 2 ported the rest of the eye-level scenes in three waves: 2a, the World's adopters on level
+rigs (shore, dunes, autumn, lanterns, falls); 2b, ground-level scenes with skies or canopies of
+their own (campfire, fireflies, forest, bamboo, garden, lake); 2c, raised, pitched and macro rigs
+and sky subjects (country, street, skyward, flock, swell, dew). Every port ran `ab.ts` against the
+revision before it:
 
-### Phase 1: the composer runtime and the outdoor pilot (meadow, bees, the overgrown garden)
+| Preset    | At its defaults (dithered) | Differences, attributed                                                              | SwiftShader, against the scene before |
+| --------- | -------------------------- | ------------------------------------------------------------------------------------ | ------------------------------------- |
+| shore     | `SAME`                     | none: every witness `SAME`                                                           | 1.07–1.16× wall time                  |
+| dunes     | `SAME`                     | `seed` reseeds the World's cumulus                                                   | about 1.0× wall time                  |
+| autumn    | 52 cells (0.23 %)          | the gust field (D4); the World's rain at the composed depth (D10)                    | 1.06–1.10× wall time                  |
+| lanterns  | 3 cells                    | a lantern's edge now blends with the near stone; the World's rain and birds          | 0.45–0.68× wall time                  |
+| falls     | `SAME`                     | the World's fog (22 % of cells with fog on); the nearest drops dimmed as the World's | 0.70–0.89× wall time                  |
+| campfire  | 7.2 %, the sky only        | the World's stars, Milky Way and shooting stars; the giant a World planet (D10)      | 1.07–1.08× instructions               |
+| fireflies | 1.1 %, the stars only      | the World's stars (D10)                                                              | 1.69× instructions                    |
+| forest    | `SAME`                     | the World's rain, fog and snow                                                       | 1.01–1.07× wall time                  |
+| bamboo    | 7.2 %                      | the culms' sway in the gust field (D4): `SAME` with the old gusts swapped back       | 0.93× wall time                       |
+| garden    | `SAME`                     | the World's rain (5.5 %) and snow (2.8 %)                                            | about 0.86× wall time                 |
+| lake      | `SAME`                     | the World's rain (new), snow and fog                                                 | about 0.83× wall time                 |
+| country   | `SAME`                     | the World's rain (19 %) and snow (79 %)                                              | 1.06× timer queries (worst 1.11×)     |
+| street    | `SAME`                     | the World's fog, rain and snow                                                       | 1.02–1.03× wall time                  |
+| skyward   | `SAME`                     | the World's rain (1.4 %), snow (about 20 %) and fog (9 %)                            | 0.94× wall time                       |
+| flock     | `SAME`                     | the World's stars at night, a cell or two                                            | 1.08× instructions                    |
+| swell     | 5 cells                    | the gulls fly on the composer's `seed` (D10)                                         | 1.02× instructions                    |
+| dew       | `SAME`                     | the World's rain (new)                                                               | 1.144× instructions                   |
 
-**Builds:**
-
-- `src/composer/`: types, `composeScene`, the placement solver, the claims, the composed sim, the
-  site.
-- `src/composer/glsl.ts`: `Cell`, the rig, claims, lights, the gust field and the entry
-  generator.
-- The `outdoor` composer.
-- The `SceneDef` additions: `glslFor`, `featuresAllFor`, `structural`.
-- Per-program `uParams` layout; `SimFrame.features`; 8 sim slots; 32 triggers.
-- The layer widget, `Blurb.layer`, the Layers section and its chips.
-- The checks listed under "Checks", and `layer-costs.ts`.
-
-**Layers:**
-
-- `downs` (backdrop): meadow's hills, tree line, mown M, air and deck tint, rain shafts and
-  curtains.
-- `grass` (cover): the sea of grass and the two near layers.
-- `dandelions` (dressing): the clocks and their seeds.
-- `wildflowers` (cover): the shared plant component.
-- `hillside` (backdrop): bees' three hill bands and the far orchard.
-- `lawn` (ground): lawn, path, hedge and near blades.
-- `apiary` (dressing, subject): hives, wall, orchard trees, drifts, foxgloves, near blooms,
-  lantern, fairy lights.
-- `insects` (life).
-
-**Presets:** `meadow`, `bees`.
-
-**Committed mix:** "Bees · overgrown meadow".
-
-**Acceptance:**
-
-1. **Pixels.** `ab.ts --base <pre-port> meadow bees`, over the witness sets, passes the A/B plan.
-   Meadow is `SAME` (its gust field becomes the shared one). Bees is `SAME` except the sway its
-   gusts move, if D4 promotes meadow's field; that difference is attributed.
-2. **The mix.**
-   - Covers grow nowhere inside the hives', wall's and path's cores (`composerClaims`).
-   - Nearer grass hides the feet of the hives and stands in front of the hills.
-   - A bee behind a near blade is hidden.
-   - The lawn's near blades are suppressed.
-   - Hive shadows fall on the grass.
-3. **Weather.** `composerWeather` passes for all 8 layers. Rain falls between the hives and the
-   grass at the composed depth.
-4. **Cost.**
-   - Meadow and bees are each within 5 % of today's shaken sizes (81 and 153 KB, 84 and 151 KB).
-   - The mix's all-features program is at most 230 KB shaken.
-   - Every program is at most 224 uniform vectors.
-   - SwiftShader frames: each preset at most 1.15× its scene before the port; the mix within the
-     sum of the layer margins plus 10 %.
-5. **Links.** Their committed presets load as themselves (`presets.test.ts`).
-6. **Lab.** In a real browser, driving the actual controls:
-   - adding and removing `grass` in bees;
-   - the refusal of a second ground, with its reason;
-   - undo and redo;
-   - the lens counting a dormant change.
-
-   Vision inspection of screenshots of the panel and the compact bar.
-
-7. **Programs and passages.**
-   - A layer turn never waits for a build (`layerToggles`).
-   - Turning `grass` on plays its entrance.
-   - `passageSpeeds` holds for both presets.
-
-| Scene  | At risk                                                                                                                                                                                                                                        | Preserved by                                                                                                                                                                                                                                                 |
-| ------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| meadow | Camera constants baked into the grass (`MEADOW_LAYER_Z`, the root and pitch arrays), the eye's drop on entry (`meadowDrop`), the golden haze and `meadowDeck`, its own gust field, `meadowSeed`                                                | Rig parameters with the same values; the drop as the rig's passage; the air and sky staging owned by `downs`; its gust field becomes the composer's; `seed` with the same value draws the same                                                               |
-| bees   | Its camera (0.47, 1.0, 1.6 m) and its stage of at least 0.62 half widths; the 1.5× hives; shadows of trees and hives on the lawn; `beesGust`; the moon as key after sunset; `SKY_MOON_PHASE` compiled in always; specks tested against `beesZ` | A rig with `minAspect` 1.24; a declared display scale; caster claims on bees' own shadow model; the shared gust field (the attributed sway difference); the grade's moon key; a preset feature; the composed depth, which equals `beesZ` while bees is alone |
-
-#### Phase 1 as landed
-
-- **Code.** `src/composer/` (types, `composeScene`, the placer, the claims, the composed sim, the
-  program and its entry in `glsl.ts`, the gust field, the caps, the `outdoor` registry); the eight
-  layers in `scenes/meadow/` and `scenes/bees/`; the Layers section and the compact bar's layer
-  chips (`src/lab/layers.ts`, `layers-model.ts`); unit tests for the placer, the claims, the
-  allocation and the budgets (`src/composer/*.test.ts`).
-- **Pixels** (`ab.ts --base f58c3424`, with `--turns`). Meadow is `SAME` at its defaults, in
-  `view=source` and under every World knob turn. Bees differs on its lawn only: under D4 the lawn's
-  swells of paler light, the drifts' leaves, the lavender and the blooms move in the shared gust
-  field (13 % of cells dithered, 27 % in `view=source`, all below the land line). The operator
-  accepted that difference with D4.
-- **The mix.** "Bees · overgrown meadow" sets the grass knee-high and thinner, the drifts lusher
-  and every wildflower clump. The meadow's grass took a response to a higher sun than golden
-  hour's (lit from above, green through its blades, its depths lighter), which is exactly 0 at
-  meadow's own light.
-- **Cost.** Shaken defaults: meadow 96,158 characters (+8.8 % over the pre-port 88,367), bees
-  103,817 (+12.2 % over 92,552); all-features 166,939 and 173,630 (+2.4 %, +7.0 %); the mix's
-  all-features 207,738. The 5 % criterion on the defaults is missed by the composer's prelude
-  (placement, local lights, the plain floor); the mix's 230 KB holds. Every program is at most 175
-  uniform vectors.
-- **Not built yet:** the per-program knob layout (a composed scene keeps the renderer's 64 knobs
-  and 8 trigger slots), `layer-costs.ts`, the stack meter and the "+" listing, the principals'
-  ground points, and the checks `composerDepth`, `composerClaims`, `composerWeather` and
-  `layerToggles`.
-
-### Phase 2: the rest of the outdoor composer
-
-Phase 2 runs in three waves, each with its own A/B and one committed cross-scene mix:
-
-- **2a** (World adopters on level rigs): shore, autumn, falls, lanterns, and dunes' aerial view.
-  Mix: "Autumn maple by the lantern river".
-- **2b** (ground-level scenes with skies or canopies of their own): campfire, fireflies, forest,
-  bamboo, garden from the veranda, lake. Mixes: "Campfire in the meadow" and "Fireflies over the
-  apiary".
-- **2c** (raised or tilted rigs, sky subjects): country, street, skyward, flock, swell, dew. Mix: "A
-  campfire on the valley's hill".
-
-**Acceptance for each wave:**
-
-- every ported scene passes the A/B plan;
-- every budget holds;
-- the new scenes' links and committed presets pass;
-- `triggers.test.ts` holds;
-- the wave's mixes pass `composerClaims` and `composerWeather`.
-
-| Scene          | At risk                                                                                                                                                                                                                                                         | Preserved by                                                                                                                                                                                                                                          |
-| -------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| shore          | The storm bank at sea and its bolts on the World's strike timing; drops thinned so they never bury the surf; the sky mirrored in the sea and the wet sand; the pointer's wake (`r8`)                                                                            | The `sea` backdrop owns the bank and its bolts; the backdrop may thin precipitation (`thin`, as `worldPrecipThinned` does); the `beach` ground draws its mirror through `worldMirrorView`; the wake becomes a field slot                              |
-| dunes          | The Werner sand fields (`r16f` heights, `rgba16f` slopes, linear); the heat shimmer bending the ray; the dust replacing the World's fog; the pour under the pointer; the overhead view                                                                          | Two field slots; the backdrop's ray hook (`worldViewOf`); the backdrop owns the air; principal 0 on the dune field; the overhead view as a scene id of its own, `dunesabove`, in Phase 4                                                              |
-| autumn         | Its own `rainFall` and `fogAmount` instead of the World's (`src/scenes/autumn/shader.ts:888-897`); canopy layers blended by alpha; the passage's lens shift; litter and leaves (4 `rgba16f` textures); the `gusts` knob's meaning                               | World precipitation at the composed depth (attributed, close); one `maple` dressing that keeps its internal order; the rig's lens shift; the records atlas; `gusts` takes the shared field's meaning                                                  |
-| falls          | The cliff as a backdrop that is also the subject; `auroraLift`; its own swifts (`birdKnobs`); the ferns on plant records; the spray and the rainbow                                                                                                             | `auroraLift` stays the backdrop's World staging; its birds move to the World's (the species stays the preset's); the records atlas; the spray as a veil                                                                                               |
-| lanterns       | The river mirroring the World's sky; potential-flow lanterns; the young crescent, already lost (#1082 known open point)                                                                                                                                         | A `river` ground, shared with fireflies; a `lanterns` life layer; no further loss                                                                                                                                                                     |
-| campfire       | Its own shooting stars (`K_shooting`) and the giant planet in place of the moon (`README.md:947`); a low seat across the flames; the fire, sparks and smoke; the fuel bed                                                                                       | World meteors and the giant as a planet in the World's list; a rig eye of about 0.9 m; a `campfire` dressing (subject) with veils and a declared light, which lights every other layer; the records atlas                                             |
-| fireflies      | Its own moonless sky and its own stars (`README.md:953`); the river's mirror; the mangrove bank (plant records); the pointer's lantern; bees' simpler fireflies, a second implementation                                                                        | World stars with the moon off (close, attributed); the `river` ground; a `mangroves` backdrop; every principal a lantern (I-35); one `fireflySwarm` life layer (not `swarm`, which is bees' key), with bees' `fireflies` mapped onto it at coupling 0 |
-| forest, bamboo | The canopy weather (shelter, gap sky, rays, drips; `canopyGroveGlsl`); kodama, stag and spores; the water clock; the dolly passages                                                                                                                             | A `grove` backdrop and dressing with shelter claims; the life layers keep their sims; the clock as a subject dressing; the dolly as the rig's passage                                                                                                 |
-| garden         | Its own units (garden depths, not metres) and gravel grid (672 × 280 over an aspect of 2.4; `src/scenes/garden/sim.ts:74-99`); the horizon at the frame's top edge (1.0: no stars); the woods over the wall (plant records); the unseen rake; its season choice | A fixed number of metres per garden depth, declared by the layer; a `gravel` ground with a field slot; a rig horizon of 1.0; the records atlas; the rake as a chore whose default agent is unseen; the composer's `season`                            |
-| lake           | Its own night by design (own stars and hour knobs, the substorm aurora, the drapes; `README.md:955-961`); two places (ice, fjord)                                                                                                                               | A night override the backdrop stages on the World, keeping lake's keys; `setting` becomes two layer pairs under a radio (`setting=1` turns the fjord's layers on)                                                                                     |
-| country        | The terrain build on the worker; its records atlas and terrain textures (all 4 slots); 30 own knobs and 19 gates; the hill vantage; the keys `wildflowers`, `smoke`, `mark`                                                                                     | A `valley` backdrop and ground pair that keeps its textures in field slots; a hill rig whose front band offers the hilltop to dressings; its budget measured; collisions qualified (`valleyWildflowers`)                                              |
-| street         | The high window, pitched down; crowd and traffic sims (3 slots); the city round the crossing                                                                                                                                                                    | A pitched rig; `crowd` and `traffic` life layers; a `city` backdrop shared with the interiors' windows; standing-eye layers not offered (camera range)                                                                                                |
-| skyward        | Lying on your back (pitch about 70–90°); birds from below (`birdBelowHit`); snow from overhead (`snowFallSeen`)                                                                                                                                                 | The rig's pitch; the World's `worldPrecipSeen`; only sky-side layers offered                                                                                                                                                                          |
-| flock          | The murmuration over a skyline; the boids and density field                                                                                                                                                                                                     | A `murmuration` life layer (any outdoor sky) over a skyline backdrop                                                                                                                                                                                  |
-| swell          | Its own moon disc and its `waterGlitter` path                                                                                                                                                                                                                   | The World's moon (close, attributed); a `sea` backdrop and ground                                                                                                                                                                                     |
-| dew            | A macro web against a backdrop out of focus                                                                                                                                                                                                                     | A rig with a focal blur that raises each layer's `foot` with distance. If the blur cannot hold the picture, dew stays standalone (D7).                                                                                                                |
+What Phase 2 settled beyond its ports: the layers stay locked to their rigs unless drawn from the
+ray (decision 11), the caps bind on offering, the SwiftShader budget is counted on the program
+itself, and dew joined the composer (D7).
 
 ### Phase 3: the interior composer
 
-**Builds:** the `interior` rig and site, with a window that continues the ray into `outdoor`
-backdrops and the World.
+**Builds:** the `interior` rig and site (a room box, one ledge across the front, a window on the
+back wall) and its presets: sill, lava (with the mix "Lava lamp on the sill"), then bar, train,
+bonsai, mobile, incense, frost, clouds and harmonograph.
 
-**Pilot:** sill, lava, and the mix "Lava lamp on the sill". Then bar, train, bonsai, mobile,
-incense, frost, clouds and harmonograph.
+What Phase 2 changes for it:
 
-**Acceptance:**
-
-- the A/B plan for each scene;
-- in the pilot mix, the lamp's declared light lighting the cat and the books;
-- outdoor layers drawn through the window only in window cells;
-- the budgets, with the window's outdoor cost counted.
-
-| Scene        | At risk                                                                                                        | Preserved by                                                                                                                                                         |
-| ------------ | -------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| sill         | The city through the glass under the World's sky; the cat's gaze sim; steam; the curtain; the neon M           | The room's window with the `city` backdrop; dressings for the cat, mug, plant and books; the M as the `city` backdrop's                                              |
-| lava         | The coloured light thrown about the room; the metaballs through the glass; its parcels                         | A `lavaLamp` dressing with a declared light; the records atlas                                                                                                       |
-| bonsai       | The sun's shadow moving over the wall; its seasons; the build on the worker (4 slots)                          | A key-light caster on the back wall; the composer's `season`; field slots                                                                                            |
-| train        | The carriage; the country sliding past; tunnels turning the window into a mirror; stations; `line`; 6 triggers | A `line` backdrop that travels with its own sim; the tunnel mirror inside the backdrop; 6 static trigger slots                                                       |
-| bar          | The back-bar mirror doubling the room; bartender and patrons; the street in the rain                           | The mirror stays inside the `bar` dressing and reflects only its own parts: guest dressings are not mirrored (a stated loss); the `city` backdrop through the window |
-| mobile       | Shadows from the Sun lamp onto the wall and ceiling                                                            | A declared light, with casters on the walls and ceiling                                                                                                              |
-| incense      | The GPU smoke (`rgba32f`, 4 slots); the window's shaft of light; the vent                                      | Field slots; the window as an area light; the vent as the dressing's own                                                                                             |
-| frost        | The pane's frost; the street or cabin outside                                                                  | A `pane` dressing on the window glass; an `outdoor` backdrop beyond it                                                                                               |
-| clouds       | The cloud sea from a plane window                                                                              | A cabin room; a `cloudSea` backdrop (the clouds' volume tier)                                                                                                        |
-| harmonograph | Paper, pendulums, pen                                                                                          | The shared table (I-41): the ledge as the table, with the pens as a chore                                                                                            |
+- **The window's view is drawn for the window (D11).** Outdoor backdrops are locked to their own
+  rigs (the street's `city` to a window 28 m up and pitched down), so a window shows a backdrop
+  drawn through the room's window rig: the sill's city stays the sill's. What crosses the glass is
+  the World, its sky and weather at the composed depth, in window cells only.
+- **The lamp's light is a declared light.** `localLight` already carries the campfire's and the
+  lanterns' light onto every layer; the lava lamp lighting the cat and the books is the same.
+- **The caps.** The bar has six triggers of its own, which with the composer's three pass eight,
+  and the train and the bonsai have five each, which fill them; the packed trigger slots come
+  before the bar's port, and before any guest with a "now" is offered to the train or the bonsai.
 
 ### Phase 4: the overhead composer
 
-**Builds:** the `overhead` rig, with tilt and orbit gated, and the bed and water site.
+**Builds:** the `overhead` rig (orthographic, metres per screen height; a `tilt` feature, off
+straight down with no march compiled in, and an `orbit` range), the site (a bed height field, water
+over it, a material at each point) and a `height` pass, which `LayerPasses` does not have yet. Its
+presets: pond and ripple (with the mix "Ripples in the koi pond"), then sandtable, tidepool, delta,
+island, and `dunesabove` and `gardenabove`, which retire the dunes' `camera` and the garden's
+`gravelCamera` and their own programs.
 
-**Pilot:** pond and ripple, and the mix "Ripples in the koi pond", in which every principal is a
-wave source (I-38). Then sandtable, tidepool, delta, island, and garden's and dunes' views from
-above (`gardenabove`, `dunesabove`).
+What Phase 2 changes for it:
 
-**Acceptance:**
-
-- the A/B plan at a tilt of 90°, where the picture is exactly today's;
-- tilt and orbit off cost nothing (the gate is absent);
-- with tilt on, the march stays within the budgets;
-- scale ranges refuse mismatched layers.
-
-| Scene                       | At risk                                                                                   | Preserved by                                                                                                                         |
-| --------------------------- | ----------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------ |
-| pond                        | 51 knobs; plant sheets rasterised flat on the worker; koi; caustics; the canopy           | Bed, water, dressing and `koi` life layers; while a sheet layer is on, the tilt knob stops at 60°, since the sheets are flat sprites |
-| ripple                      | The wave tank's GPU solver; the experiments' layouts                                      | A `tank` layer; in the mix, its wave field is the pond's surface slope                                                               |
-| sandtable                   | The ball and funnel machines on a height field                                            | A `sandBed` ground, which is also the raking chore's host                                                                            |
-| tidepool                    | GPU shallow water; plants read back from the GPU; caustics                                | Bed, water and life layers                                                                                                           |
-| delta                       | Kilometre scale; satellite palettes                                                       | A scale class of its own; layers at bench scale are refused                                                                          |
-| island                      | A raymarched island under an orbiting camera at 20° (`src/scenes/island/shader.ts:30-39`) | The rig's orbit at tilt 20° and kilometre scale                                                                                      |
-| garden and dunes from above | Their second camera                                                                       | The same layers drawn through the `overhead` rig (`gardenabove`, `dunesabove`)                                                       |
+- **The knobs.** The pond has 50 knobs of its own; with the World's 20 and the composer's three it
+  passes the renderer's 64, so the per-program knob layout comes before the pond's port, or the
+  overhead composer lists a World without the sky's knobs, as the dunes' view from above draws no
+  sky, stars, meteors, bolts or birds.
+- **Cost.** A tilted rig's march costs its full length under SwiftShader wherever it ends, so the
+  `tilt` gate, off, keeps the march out of the program.
+- **Scale.** Layers declare the scales they make sense at, so the delta's kilometres refuse a
+  bench-scale layer beside them.
 
 ### Phase 5: the matter shelf, and what stays standalone
 
 - **Optional (D7):** petri, physarum, marble, chladni, ferro, film, pearl, prism and pendula, as
   dishes, plates and boards on the interior's ledge or the overhead's bench.
-- **Standalone:** fractal, hyperbolic, orbit and shanshui keep their own `SceneDef`. They have no
-  space to share: a pure field, a tiling, outer space, a painted scroll.
-- **Pending (D7):** kelp, under water. It could become a "submerged" outdoor rig, or stay
-  standalone.
+- **Standalone:** fractal, hyperbolic, orbit and shanshui keep their own `SceneDef`: a pure field, a
+  tiling, outer space, a painted scroll have no space to share.
+- **Pending (D7):** kelp, under water: a submerged `outdoor` rig, or standalone.
 
 ## Risks
 
-1. **Porting effort.** The 35 scenes the phases port hold about 87,000 lines of TypeScript outside
-   their tests and checks (`wc` over their folders at `4d490f15`). Every port turns camera
-   constants into rig parameters, a source of slow visual drift. The phases, the A/B plan and the
-   kept ids bound it, but U1 is the largest workload in #1082.
-2. **Compile stalls.** A layer turn costs a background build: 2–5 s under SwiftShader, and an
-   unknown time on a phone GPU. The old picture keeps drawing and the layer enters on arrival,
-   but a slow phone may show a long wait. Mitigations: bench `layers=`, and keep the landing page
-   to fixed presets, where no structural turn happens.
-3. **Program size on drivers.** A 256 KB shaken program may exceed a mobile driver's limits even
-   inside WebGL2's minimums. `glsl:check` sees uniforms, not instruction limits; only `bench.html`
-   on real devices does.
-4. **Software rasterisers.** There, the cost of a stack is its full sum. Audit I-10's lite mode (a
-   poster on software renderers) becomes more important.
-5. **Link churn.** Each later port qualifies colliding keys, and every committed preset that sets
-   a renamed key is rewritten; links made before it are not carried over.
-6. **Art-direction clashes.** Bees' picture-book cumulus and meadow's photographic grass may not
-   belong in one frame. That is curation, not engineering: committed mixes are operator-reviewed.
-7. **Placement stability.** Anchors and claims become part of each layer's meaning (see
-   "Foreground conflicts"). A careless change moves things in every setup that holds the layer.
-8. **Shared fields change scenes.** One gust field, one grade model and one firefly
-   implementation make some scenes close rather than `SAME` (D3, D4).
-9. **README growth.** The audit already flags it (H2-17). The Composers section replaces per-scene
-   prose as scenes port: their "what stays the scene's" paragraphs move into each layer's header.
-10. **Dependencies.** U1 depends on in-flight A2 work: the shaker, the packing, presence and lazy
-    loading. A late prerequisite delays Phase 1 or 2; it does not change the design.
+1. **The caps bind on offering.** Bees lists 63 of 64 knobs and the forest and the lake all 8 slots;
+   every further cross-offering waits for the per-program layout and packed triggers, as do the
+   bar's and the pond's ports.
+2. **Rig-locking limits the mixes.** Of the nineteen presets' 79 layers, six are offered beyond
+   their own rig, and two mixes are committed. The worth of composing grows only as layers are
+   redrawn from the ray.
+3. **Shared chunks couple layers.** The countryside's layers are switches and knobs over one march
+   (`VALLEY_*` macros), the street's over one trace whose turn cut assumes its four layers are the
+   only ones the rig offers; neither can be offered elsewhere as it stands.
+4. **Software rasterisers pay for everything a program holds.** The World's sky and the composer's
+   turn machinery cost in full at every cell; the fix is a compile-time gate, and each gate is
+   another program a knob turn may build. Audit I-10's lite mode (a poster on software renderers)
+   matters more.
+5. **Program size.** The countryside's all-features program and "Bees · in the valley" stand
+   within about 9 KB of 256 KB, and only `bench.html` on real devices sees a mobile driver's limits.
+6. **Shared fields change scenes.** The gust field, the World's stars, fog, rain and snow and the
+   arrangement seed make ports close rather than `SAME` (D3, D4, D10).
+7. **Knobs that do nothing.** A preset lists every World and composer knob, so some move nothing
+   there: the lake's hour and day cycle, cumulus, cloud shadows and lightning while its far shore
+   stands; skyward's `birdFormation` and cloud shadows; dew's stars, cumulus and fair-weather cloud;
+   the gusts where nothing reads them (the dunes, the lake, the flock).
+8. **Placement stability.** Anchors and claims are part of each layer's meaning; a careless change
+   moves things in every setup that holds the layer.
 
-## Decisions for the operator
+## Decisions
 
-| #   | Question                                                                                   | Options                                                                                                                              | Recommendation                                                                                                    |
-| --- | ------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------- |
-| D1  | How a scene becomes a preset                                                               | (a) The scene id stays and is generated from a scene preset. (b) One scene per composer with a `preset` key.                         | (a): compact links, unchanged cards, thumbnails and tours, and `ab.ts` compares like for like; no aliases         |
-| D2  | Layer knob keys                                                                            | (a) Keep each scene's keys where unique; qualify collisions as `beesFlowers`. (b) Qualify every key. (c) Dotted, `bees.flowers`.     | (a)                                                                                                               |
-| D3  | Pixel identity per port                                                                    | (a) `SAME` only. (b) `SAME`, or "close" within the tolerances above with each difference attributed.                                 | (b), with structural differences always failing                                                                   |
-| D4  | One gust field                                                                             | (a) Promote meadow's field; bees', autumn's, bamboo's, garden's and falls' sway changes. (b) Keep each scene's gusts as layer-local. | (a): one wind is what makes a mix one world                                                                       |
-| D5  | Readability scale cheats                                                                   | (a) Allowed when declared. (b) Forbidden.                                                                                            | (a)                                                                                                               |
-| D6  | Caps and budgets                                                                           | the table under "Budgets and caps"                                                                                                   | as stated, revisited after Phase 1's measurements                                                                 |
-| D7  | What stays outside the composers                                                           | dew, kelp, the matter shelf                                                                                                          | fractal, hyperbolic, orbit and shanshui standalone; kelp and dew decided at their wave; the matter shelf optional |
-| D8  | Lazy loading before Phase 2                                                                | yes / no                                                                                                                             | yes                                                                                                               |
-| D9  | How the Scenes view shelves presets                                                        | (a) Today's families. (b) By composer.                                                                                               | (b) once Phase 2 lands                                                                                            |
-| D10 | Scenes with skies of their own (campfire's meteors, fireflies' moonless sky, lake's night) | (a) Fold into the World, with staging hooks. (b) Keep each scene's own.                                                              | (a), except lake's night, which stays as a backdrop's night override (by design today)                            |
-| D11 | Interior windows                                                                           | (a) A live `outdoor` backdrop through the glass. (b) A painted backdrop.                                                             | (a), in window cells only                                                                                         |
-| D12 | Turning a layer on or off                                                                  | (a) Plays its entrance or exit. (b) A cut.                                                                                           | (a)                                                                                                               |
+The operator ratified D1–D12 on 2026-10-17. As they stand:
+
+| #   | Question                            | Decision as it stands                                                                                                                                                                                                                                                                    |
+| --- | ----------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| D1  | How a scene becomes a preset        | Its id stays and its `SceneDef` is generated from a scene preset (`composeScene`): card, thumbnail, family, tour step and links unchanged, so `ab.ts` compares like for like. No aliases.                                                                                                |
+| D2  | Layer knob keys                     | Keep each scene's keys where unique in the preset; qualify a collision `<layerId><Key>`, automatically within a preset and by hand where a layer might share a rig. No dotted keys.                                                                                                      |
+| D3  | Pixel identity per port             | `SAME` for every part a scene keeps; a difference stands when it is attributed to a shared part taking over (D4, D10) or to a named fix, with its diff image inspected. Weather a scene never had compares against nothing. A part missing, moved or lit differently fails at any share. |
+| D4  | One gust field                      | The meadow's field is the composer's, and what sways in it sways together; a breeze that is a scene's own subject stays its own (the fireflies', the dew web's, the lake's drifting snow), and a preset may open with the gusts off.                                                     |
+| D5  | Readability scale cheats            | Allowed when declared (`display.scale`), with the claims sized as drawn: the apiary's hives at 1.5.                                                                                                                                                                                      |
+| D6  | Caps and budgets                    | The table under "Budgets and caps", with the SwiftShader budget counted in instructions on the composed program, not as a ratio to the scene before its port.                                                                                                                            |
+| D7  | What stays outside the composers    | Fractal, hyperbolic, orbit and shanshui standalone; dew composed, locked to its macro rig; kelp decided at its wave; the matter shelf optional.                                                                                                                                          |
+| D8  | Lazy loading                        | Done: a scene's metadata loads without its code, and the layers' code loads with the first composed scene's.                                                                                                                                                                             |
+| D9  | How the Scenes view shelves presets | By composer; not built (the view still shelves by family).                                                                                                                                                                                                                               |
+| D10 | Scenes with skies of their own      | Folded into the World with staging hooks (the campfire's giant and meteors, the fireflies' night over `worldSkyOver`); the lake keeps its own night, staged on the World and its sky parts compiled out while its far shore stands.                                                      |
+| D11 | Interior windows                    | A live view through the glass, in window cells only, drawn through the window's own rig. The World crosses the glass; an outdoor backdrop crosses only once it is drawn from the ray of any rig in its spans.                                                                            |
+| D12 | Turning a layer on or off           | Plays its own entrance or exit, cut per cell (1.2 s and 0.9 s), never a cut.                                                                                                                                                                                                             |
 
 ## Alternatives considered
 
 - **Status quo, with more shared components.** Rejected: it gives no mixes, and every new scene
   repeats a camera, a ground and a grade.
-- **One scene per composer, with a `preset` key.** Rejected: see "A scene becomes a preset".
+- **One scene per composer, with a `preset` key.** Rejected (D1): every link would write every
+  value where its preset departs from the composer's defaults, every committed preset would be
+  rewritten into the composer's form, and the composer's own defaults would be arbitrary.
 - **One all-layers program per composer.** Rejected by measurement: 868 KB shaken for the outdoor
-  scenes, against 213 KB that already takes 20 s under SwiftShader.
-- **Deferred layers.** Each layer would draw into its own colour-and-depth target, and a fixed
-  pass would composite them. This would remove the combinatorial programs: each layer compiles
-  once, and a scissor at its footprint saves work even under SwiftShader. Rejected for now:
-  - it breaks the one-pass budget (`README.md` "Art direction");
-  - it breaks the five-channel `Shade` contract and the leaving scene's dissolve;
-  - it costs N full-frame `rgba16f` targets of bandwidth on phones;
-  - it would rewrite the renderer's frame loop.
-
-  The revisit trigger is below.
-
-- **A `layers=` list key.** Rejected in favour of switch knobs, which reuse `when`, the lens,
-  undo and presets unchanged.
-- **Dotted keys.** Rejected: see "Keys".
+  scenes, against a countryside of 213 KB that already took 20 s to compile under SwiftShader.
+- **Deferred layers.** Each layer would draw into its own colour-and-depth target and a fixed pass
+  would composite them: each layer compiled once, a scissor at its footprint saving work even under
+  SwiftShader. Rejected for now: it breaks the one-pass budget (README "Art direction"), the
+  five-channel `Shade` contract and the leaving scene's dissolve, costs N full-frame `rgba16f`
+  targets of bandwidth on phones, and would rewrite the renderer's frame loop.
+- **A focal blur in the rig** (dew's macro). Rejected: passes cut their edges per cell and one pass
+  cannot blur another's output; the macro preset's layers draw their own defocus.
+- **A `layers=` list key.** Rejected for switch knobs, which reuse `when`, the lens, undo and the
+  presets unchanged.
+- **Dotted keys** (`bees.flowers`). Rejected: they read like the A/B slots' `a.` and `b.` prefixes
+  and would change the knob key pattern and the GLSL names.
 - **An entity system or scene graph.** Rejected, as the second audit's slices already did.
 
 ## Revisit when
 
 - A committed preset's own program takes more than 5 s to compile on the reference GPU, or a layer
-  turn on a phone takes more than 2 s before the layer shows. Revisit deferred layers then.
-- The stack meter's budget refuses a mix the operator wants. Revisit the caps with that mix's
-  measurements.
-- WebGPU reaches Firefox on Linux and Android. The platform consensus (WebGL2) is the premise of
+  turn on a phone takes more than 2 s before the layer shows: revisit deferred layers.
+- A preset outgrows 64 knobs or 8 trigger slots, or a port needs to: build the per-program layout.
+- The stack meter refuses a mix the operator wants: revisit the caps with that mix's measurements.
+- WebGPU reaches Firefox on Linux and Android: the platform consensus (WebGL2) is the premise of
   the single-program design.
