@@ -1,3 +1,9 @@
+// The ripple tank's layers' GLSL (layers.ts), under the overhead composer (composer/overhead-glsl.ts):
+// the tank (tank, its bed: the screen or the table, the tray, the lamp's colours) and its water
+// (tankWater: the waves the sim steps, and the experiment's fixtures in them). The water's begin
+// works out how the cell looks (rippleLook, the shared chunk's), the tank's bed puts it down through
+// the tray and the lamp's ramp; with no water the tank holds still water.
+//
 // The ripple tank's picture: a lamp above the tank throws the water's light and shadow on a white
 // screen below it (the classic projection: crests gather the light into bright bands, troughs
 // spread it thin), or, as a surface, the dark water itself with the room and the lamp mirrored in
@@ -6,10 +12,11 @@
 // water (the dippers' beam and needles, the barriers' tops) as soft shadows cast away from the
 // lamp, the lens plate as a fine outline, the tank's frame as a dark border (on the screen) or a
 // lipped tray on a lamp-lit table (seen as a surface).
-//   uSim0  the shown tank's view (sim.ts): x how hard the screen focuses there, y the Jacobian of
-//          the light's path to the screen, zw the slope (1 at a unit wave's steepest)
-//   uSim1  the tank fading in, while it does
-//   uSim2  the layout, 16×2 rgba32f: row 0 shown, row 1 fading in (RIPPLE_TEXELS)
+//   tankWaterField0  the shown tank's view (sim.ts): x how hard the screen focuses there, y the
+//                    Jacobian of the light's path to the screen, zw the slope (1 at a unit wave's
+//                    steepest)
+//   tankWaterField1  the tank fading in, while it does
+//   tankWaterField2  the layout, 16×2 rgba32f: row 0 shown, row 1 fading in (RIPPLE_TEXELS)
 // Without the sim (no float render targets) the screen shows two dippers' interference worked out
 // here.
 //
@@ -17,7 +24,7 @@
 // colour the palette can show exactly: a cell takes the step below or above against its own
 // threshold, so as a band of light passes, each cell changes once per step and all its channels
 // together, never through stray hues. The M, a strip of coloured acrylic, throws accent light.
-// Knobs read here: K_render, K_light, K_focus, K_speed, K_frequency.
+import type { OverheadRig, SharedGlsl } from "../../composer/types.ts";
 import {
   RIPPLE_BAR,
   RIPPLE_BEAM_HEIGHT,
@@ -76,7 +83,11 @@ const STOPS = LIGHTS.flat();
 const STOP_AT = `const float RIPPLE_AT[${STOPS.length}] = float[${STOPS.length}](${STOPS.map(([at]) => glsl(at)).join(", ")});`;
 const STOP_RGB = `const vec3 RIPPLE_RGB[${STOPS.length}] = vec3[${STOPS.length}](${STOPS.map(([, [r, g, b]]) => `vec3(${glsl(r)}, ${glsl(g)}, ${glsl(b)}) / 3.0`).join(", ")});`;
 
-export const rippleGlsl = `
+/** What the tank and its water share: the lamp, the tray, the ramp, and how this cell looks. */
+export const rippleSharedGlsl: SharedGlsl<OverheadRig> = {
+  id: "ripple",
+  begin: "rippleBegin",
+  glsl: () => `
 const float RIPPLE_DIPPER_R = ${glsl(RIPPLE_DIPPER)};
 const float RIPPLE_BAR_HALF = ${glsl(RIPPLE_BAR)};
 const float RIPPLE_MARK_W = ${glsl(RIPPLE_MARK_HALF)};
@@ -98,24 +109,12 @@ const float RIPPLE_INSET = 0.05;    // the tank's rim, in from the frame's edges
 const float RIPPLE_CORNER = 0.03;
 ${STOP_AT}
 ${STOP_RGB}
-${RIPPLE_LENS_GLSL}
 float ripplePx = 0.002;
 
 struct RippleLook {
   float b;    // brightness 0..1
   float m;    // coverage of the M's acrylic strip (soft)
   float lit;  // the light falling on the M
-};
-
-struct RippleFix {
-  float wall;   // barriers (soft coverage; cut per cell when drawn)
-  float bar;    // the plane-wave bar
-  float tip;    // dippers' needle points
-  float mark;   // the M strip
-  float rim;    // the meniscus round anything in the water
-  float shade;  // shadows of what stands over the water, 0..1
-  float lens;   // over the lens plate
-  float edge;   // the plate's rim
 };
 
 // The palette's own colour nearest c, nudged so the dither never rounds it down a level.
@@ -146,12 +145,132 @@ vec2 ripplePlace(float a, float b, bool portrait) {
   return portrait ? vec2(b, a) : vec2(a, b);
 }
 
+// The tank: a tray inset from the frame's edges with rounded corners; negative over the water.
+float rippleTray(vec2 p, vec2 F) {
+  vec2 q = abs(p - 0.5 * F) - (0.5 * F - RIPPLE_INSET - RIPPLE_CORNER);
+  return length(max(q, 0.0)) + min(max(q.x, q.y), 0.0) - RIPPLE_CORNER;
+}
+
+// Projection: the tank's wooden frame throws a soft dark border on the screen, and the glass
+// tray's edge a fine bright line just inside it.
+float rippleFrameShadow(float b, float tray, float pool) {
+  b *= 1.0 - 0.7 * smoothstep(-0.012, 0.012, tray + 0.004);
+  float x = (tray + 0.016) / (1.3 * ripplePx);
+  return b + 0.12 * pool * exp(-x * x);
+}
+
+// Surface: the table round the tank, lit by the lamp and grained, the tank's shadow cast on it
+// away from the lamp, the tray's pale lip, and the water's meniscus bright along it.
+float rippleTable(float b, vec2 p, vec2 F, vec2 lamp, float tray) {
+  vec2 d = p - lamp;
+  float lamplit = exp(-dot(d, d) / 0.9);
+  float table = (0.07 + 0.16 * lamplit) * (0.85 + 0.15 * sin(p.y * 140.0 + 3.0 * sin(p.x * 9.0)));
+  float under = rippleTray(p - 0.025 * normalize(d + vec2(1e-4)), F);
+  table *= 1.0 - 0.5 * (1.0 - smoothstep(-0.01, 0.01, under));
+  float x = (tray + 0.011) / (1.2 * ripplePx);
+  b += 0.1 * exp(-x * x);
+  b = mix(b, table, smoothstep(-ripplePx, ripplePx, tray));
+  float lip = 1.0 - smoothstep(-ripplePx, ripplePx, abs(tray + 0.004) - 0.004);
+  return mix(b, 0.28 + 0.4 * lamplit, lip);
+}
+
+// The tank at this cell (rippleBegin): the frame in short sides, the point, the lamp, the pool of
+// its light, how the tank is seen, and how the cell looks, which the water's begin works out.
+vec2 rippleF;
+vec2 rippleP;
+vec2 rippleLampAt;
+float ripplePool;
+bool rippleSurfaceView;
+RippleLook rippleLook;
+
+// The tank with no waves in it: still water throws the lamp's light evenly on the screen, or, seen
+// as a surface, mirrors the room's light and the lamp.
+RippleLook rippleCalm(vec2 p, vec2 lamp, float pool) {
+  if (!rippleSurfaceView) return RippleLook(pool * (1.0 - exp(-RIPPLE_TONE / sqrt(1.0 + RIPPLE_SOFT * RIPPLE_SOFT))), 0.0, pool * 0.8);
+  vec2 d = p - lamp;
+  float b = 0.12 + 0.12 * exp(-dot(d, d) / 1.1);
+  b += 0.8 * exp(-dot(d, d) / 0.0025) + 0.08 * exp(-dot(d, d) / 0.05);
+  return RippleLook(b, 0.0, 0.9);
+}
+
+// The tank's frame at this cell, and the lamp as the patch's light (the koi's shadows fall away
+// from it): the cell looks calm until the water's begin says otherwise.
+void rippleBegin(inout Patch x) {
+  float aspect = x.aspect;
+  vec2 F = aspect >= 1.0 ? vec2(aspect, 1.0) : vec2(1.0, 1.0 / aspect);
+  bool portrait = F.y > F.x;
+  ripplePx = 1.0 / min(uRes.x, uRes.y);
+  vec2 p = x.uv * F;
+  vec2 lamp = ripplePlace(RIPPLE_LAMP_AT.x * max(F.x, F.y), RIPPLE_LAMP_AT.y, portrait);
+  vec2 dl = p - lamp;
+  rippleF = F;
+  rippleP = p;
+  rippleLampAt = lamp;
+  ripplePool = 0.45 + 0.55 * exp(-dot(dl, dl) / 0.72);
+  rippleSurfaceView = K_render > 0.5;
+  rippleLook = rippleCalm(p, lamp, ripplePool);
+  x.sunUV = lamp / F;
+  x.sun = (x.sunUV - 0.5) * vec2(aspect, 1.0);
+}
+`,
+};
+
+/**
+ * The tank: the screen under it lit by the lamp through the water (or the table round it, the water
+ * seen as a surface), the tray, and the lamp's colour ramp. Knobs read here: K_light (and K_render,
+ * in the shared chunk's begin).
+ */
+export const tankGlsl = `
+// The cell as the tank shows it: the tray's frame shadow on the screen (or the table round the
+// tank), the M's strip inside the tray, the lamp's colour ramp, dithered per cell.
+void tankBed(Patch x, inout Spot c) {
+  vec2 p = rippleP;
+  vec2 F = rippleF;
+  RippleLook look = rippleLook;
+  float tray = rippleTray(p, F);
+  if (rippleSurfaceView) look.b = rippleTable(look.b, p, F, rippleLampAt, tray);
+  else look.b = rippleFrameShadow(look.b, tray, ripplePool);
+  look.m *= 1.0 - smoothstep(-ripplePx, ripplePx, tray);
+
+  vec3 smoothCol;
+  vec3 col = rippleRamp(look.b, clamp(int(K_light + 0.5), 0, ${LIGHTS.length - 1}), smoothCol);
+  vec3 tint = uAccent * (0.25 + 0.9 * look.lit);
+  float mark = hardEdge(look.m);
+  if (mark > 0.5) col = rippleSnap(tint);
+  smoothCol = mix(smoothCol, tint, look.m);
+
+  c.col = col;
+  c.src = smoothCol;
+  c.dithered = true;
+  c.o.ink = clamp(1.1 * look.b, 0.0, 1.0) * (1.0 - mark);
+  c.o.accent = mark;
+}
+`;
+
+/**
+ * The tank's water: the sim's view of its waves (tankWaterField0, tankWaterField1 while a new
+ * experiment fades in) and the experiment's fixtures (tankWaterField2), thrown on the screen or seen
+ * as a surface. Knobs read here: K_focus, K_speed, K_frequency.
+ */
+export const tankWaterGlsl = `
+${RIPPLE_LENS_GLSL}
+struct RippleFix {
+  float wall;   // barriers (soft coverage; cut per cell when drawn)
+  float bar;    // the plane-wave bar
+  float tip;    // dippers' needle points
+  float mark;   // the M strip
+  float rim;    // the meniscus round anything in the water
+  float shade;  // shadows of what stands over the water, 0..1
+  float lens;   // over the lens plate
+  float edge;   // the plate's rim
+};
+
 vec4 rippleView(int row, vec2 uv) {
-  return row == 0 ? textureLod(uSim0, uv, 0.0) : textureLod(uSim1, uv, 0.0);
+  return row == 0 ? textureLod(tankWaterField0, uv, 0.0) : textureLod(tankWaterField1, uv, 0.0);
 }
 
 vec4 rippleAt(int row, int texel) {
-  return texelFetch(uSim2, ivec2(texel, row), 0);
+  return texelFetch(tankWaterField2, ivec2(texel, row), 0);
 }
 
 // Where a point at height z over the screen throws its shadow: out along the line from the lamp.
@@ -271,35 +390,6 @@ RippleLook rippleSurface(int row, vec2 p, vec2 F, vec2 lamp) {
   return RippleLook(b, f.mark, 0.9);
 }
 
-// The tank: a tray inset from the frame's edges with rounded corners; negative over the water.
-float rippleTray(vec2 p, vec2 F) {
-  vec2 q = abs(p - 0.5 * F) - (0.5 * F - RIPPLE_INSET - RIPPLE_CORNER);
-  return length(max(q, 0.0)) + min(max(q.x, q.y), 0.0) - RIPPLE_CORNER;
-}
-
-// Projection: the tank's wooden frame throws a soft dark border on the screen, and the glass
-// tray's edge a fine bright line just inside it.
-float rippleFrameShadow(float b, float tray, float pool) {
-  b *= 1.0 - 0.7 * smoothstep(-0.012, 0.012, tray + 0.004);
-  float x = (tray + 0.016) / (1.3 * ripplePx);
-  return b + 0.12 * pool * exp(-x * x);
-}
-
-// Surface: the table round the tank, lit by the lamp and grained, the tank's shadow cast on it
-// away from the lamp, the tray's pale lip, and the water's meniscus bright along it.
-float rippleTable(float b, vec2 p, vec2 F, vec2 lamp, float tray) {
-  vec2 d = p - lamp;
-  float lamplit = exp(-dot(d, d) / 0.9);
-  float table = (0.07 + 0.16 * lamplit) * (0.85 + 0.15 * sin(p.y * 140.0 + 3.0 * sin(p.x * 9.0)));
-  float under = rippleTray(p - 0.025 * normalize(d + vec2(1e-4)), F);
-  table *= 1.0 - 0.5 * (1.0 - smoothstep(-0.01, 0.01, under));
-  float x = (tray + 0.011) / (1.2 * ripplePx);
-  b += 0.1 * exp(-x * x);
-  b = mix(b, table, smoothstep(-ripplePx, ripplePx, tray));
-  float lip = 1.0 - smoothstep(-ripplePx, ripplePx, abs(tray + 0.004) - 0.004);
-  return mix(b, 0.28 + 0.4 * lamplit, lip);
-}
-
 // Without the sim: two dippers' rings summed on the motion clock tm, the screen's focus worked out
 // from the height (a ring's curvature is -k^2 times its height).
 RippleLook rippleStill(vec2 p, vec2 F, float pool, float tm) {
@@ -323,19 +413,16 @@ RippleLook rippleStill(vec2 p, vec2 F, float pool, float tm) {
   return RippleLook(b, 0.0, pool);
 }
 
-Shade sceneRipple(vec2 uv, vec2 cell, float t) {
-  float aspect = uRes.x / uRes.y;
-  vec2 F = aspect >= 1.0 ? vec2(aspect, 1.0) : vec2(1.0, 1.0 / aspect);
-  bool portrait = F.y > F.x;
-  ripplePx = 1.0 / min(uRes.x, uRes.y);
-  vec2 p = uv * F;
-  vec2 lamp = ripplePlace(RIPPLE_LAMP_AT.x * max(F.x, F.y), RIPPLE_LAMP_AT.y, portrait);
-  vec2 dl = p - lamp;
-  float pool = 0.45 + 0.55 * exp(-dot(dl, dl) / 0.72);
-  bool surface = K_render > 0.5;
-
+// How the cell looks through the waves: the sim's tank (fading into the next while it changes), or
+// without the sim, two dippers' interference worked out here.
+void tankWaterBegin(inout Patch x) {
+  vec2 p = rippleP;
+  vec2 F = rippleF;
+  vec2 lamp = rippleLampAt;
+  float pool = ripplePool;
+  bool surface = rippleSurfaceView;
   RippleLook look;
-  if (uSimOn.x > 0.5 && uSimOn.z > 0.5) {
+  if (tankWaterField0On() && tankWaterField2On()) {
     if (surface) look = rippleSurface(0, p, F, lamp);
     else look = rippleProjection(0, p, F, lamp, pool);
     float fade = rippleAt(1, ${RIPPLE_TEXELS.meta}).x;
@@ -350,23 +437,6 @@ Shade sceneRipple(vec2 uv, vec2 cell, float t) {
   } else {
     look = rippleStill(p, F, pool, uMotionTime);
   }
-  float tray = rippleTray(p, F);
-  if (surface) look.b = rippleTable(look.b, p, F, lamp, tray);
-  else look.b = rippleFrameShadow(look.b, tray, pool);
-  look.m *= 1.0 - smoothstep(-ripplePx, ripplePx, tray);
-
-  vec3 smoothCol;
-  vec3 col = rippleRamp(look.b, clamp(int(K_light + 0.5), 0, ${LIGHTS.length - 1}), smoothCol);
-  vec3 tint = uAccent * (0.25 + 0.9 * look.lit);
-  float mark = hardEdge(look.m);
-  if (mark > 0.5) col = rippleSnap(tint);
-  smoothCol = mix(smoothCol, tint, look.m);
-
-  Shade o = blankShade();
-  o.rgb = col;
-  o.source = smoothCol;
-  o.ink = clamp(1.1 * look.b, 0.0, 1.0) * (1.0 - mark);
-  o.accent = mark;
-  return o;
+  rippleLook = look;
 }
 `;

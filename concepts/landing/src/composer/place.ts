@@ -12,10 +12,20 @@
 //     none of those placed, and whose `mustShow` claims lie in the rig's view at its minAspect;
 //   - its claims would take the program past COMPOSER_CAPS.claims.
 // A layer dropped is refused with a reason naming what holds its place. A later layer never moves an
-// earlier one. A preset always has a backdrop: with none switched on, its home backdrop stands.
+// earlier one. A preset always has a backdrop (the overhead's: a bed): with none switched on, its
+// home one stands.
 import { COMPOSER_CAPS } from "./caps.ts";
 import { overlaps, placeClaim } from "./claims.ts";
-import type { Anchor, LayerDef, PlacedClaim, Rig, ScenePreset, Span } from "./types.ts";
+import type {
+  Anchor,
+  LayerDef,
+  OverheadRig,
+  PlacedClaim,
+  Rig,
+  Role,
+  ScenePreset,
+  Span,
+} from "./types.ts";
 
 export interface PlacedLayer {
   readonly layer: LayerDef;
@@ -40,8 +50,9 @@ const within = (value: number, span: Span | undefined): boolean =>
   span === undefined || (value >= span[0] - 1e-9 && value <= span[1] + 1e-9);
 
 /** Whether the layer can be drawn through the rig (its `camera` range admits it): offered at all. */
-export function admits(layer: LayerDef, rig: Rig): boolean {
+export function admits(layer: LayerDef, rig: Rig | OverheadRig): boolean {
   const camera = layer.camera;
+  if ("span" in rig) return within(rig.span, camera.span);
   return (
     within(rig.eye, camera.eye) &&
     within(rig.horizon, camera.horizon) &&
@@ -51,7 +62,15 @@ export function admits(layer: LayerDef, rig: Rig): boolean {
 }
 
 /** The roles a stack holds at most one of. */
-const SINGLE: Readonly<Partial<Record<string, true>>> = { backdrop: true, ground: true };
+const SINGLE: Readonly<Partial<Record<Role, true>>> = {
+  backdrop: true,
+  bed: true,
+  ground: true,
+  water: true,
+};
+
+/** The roles a stack always holds one of: the home one stands while none is switched on. */
+const ALWAYS: readonly Role[] = ["backdrop", "bed"];
 
 /** Where a layer with no anchors of its own stands: the rig's own origin. */
 const ORIGIN: Anchor = { name: "here", at: [0, 0] };
@@ -62,15 +81,16 @@ const ORIGIN: Anchor = { name: "here", at: [0, 0] };
  */
 export function place(
   offered: readonly LayerDef[],
-  preset: Pick<ScenePreset, "rig" | "layers">,
+  preset: { readonly rig: Rig | OverheadRig; readonly layers: ScenePreset["layers"] },
   on: ReadonlySet<string>,
 ): Placement {
   const home = new Set(preset.layers);
-  const backdropOn = offered.some((layer) => layer.role === "backdrop" && on.has(layer.id));
-  const forced = backdropOn
-    ? undefined
-    : offered.find((layer) => layer.role === "backdrop" && home.has(layer.id));
-  const wanted = offered.filter((layer) => on.has(layer.id) || layer === forced);
+  const forced = ALWAYS.flatMap((role) =>
+    offered.some((layer) => layer.role === role && on.has(layer.id))
+      ? []
+      : offered.filter((layer) => layer.role === role && home.has(layer.id)).slice(0, 1),
+  );
+  const wanted = offered.filter((layer) => on.has(layer.id) || forced.includes(layer));
   const order = [
     ...wanted.filter((layer) => home.has(layer.id)),
     ...wanted.filter((layer) => !home.has(layer.id)),
@@ -156,19 +176,27 @@ export function place(
   return { layers: kept, claims, refused };
 }
 
-/** Whether floor point (x, z) is in the rig's view at its minAspect: in front, inside the frame's sides. */
-function inView(rig: Rig, x: number, z: number): boolean {
+/**
+ * Whether floor point (x, z) is in the rig's view at its minAspect: in front, inside the frame's
+ * sides; from overhead, inside the frame (z up it).
+ */
+function inView(rig: Rig | OverheadRig, x: number, z: number): boolean {
+  if ("span" in rig)
+    return Math.abs(x) <= 0.5 * rig.minAspect * rig.span && Math.abs(z) <= 0.5 * rig.span;
   return z > 0 && Math.abs(x) * rig.focal <= 0.5 * rig.minAspect * z;
 }
 
 /** Whether the claim's outline shows at the rig's minAspect (its extreme points). */
-function shows(rig: Rig, claim: PlacedClaim): boolean {
+function shows(rig: Rig | OverheadRig, claim: PlacedClaim): boolean {
   const shape = claim.shape;
   switch (shape.kind) {
     case "disc": {
       const [x, z] = shape.at;
       return (
-        inView(rig, x - shape.r, z) && inView(rig, x + shape.r, z) && inView(rig, x, z - shape.r)
+        inView(rig, x - shape.r, z) &&
+        inView(rig, x + shape.r, z) &&
+        inView(rig, x, z - shape.r) &&
+        inView(rig, x, z + shape.r)
       );
     }
     case "box":

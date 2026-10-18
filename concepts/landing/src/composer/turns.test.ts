@@ -14,8 +14,10 @@ import { TURNS_GATE } from "./compose.ts";
 // or exit, so it carries none of the cut per cell and no plain floor under a ground layer, but
 // reads row 0's first texel all the same (`heldTurn`); the one a turn plays in (TURNS_GATE, as
 // every all-features program) carries both. A room (composer/room.ts) lays no plain floor in either:
-// its back wall stands under every layer. A view of the scene's own (the dunes' and the garden's
-// from above) draws no turns, so its composed sim names no program to play one in.
+// its back wall stands under every layer. The overhead composer's (overhead-glsl.ts) are the same
+// but for the plain bed in place of the floor, under a bed layer, and no `heldTurn`. A view of the
+// scene's own (the dunes' and the garden's from above) draws no turns, so its composed sim names no
+// program to play one in.
 
 const composed = (
   await Promise.all(sceneIds.map(async (id) => ({ id, scene: await loadScene(id) })))
@@ -35,8 +37,12 @@ describe("a composed scene's programs", () => {
       const steady = fragmentSourceFor(scene, features);
       const turning = fragmentSourceFor(scene, { ...features, [TURNS_GATE]: 1 });
       const placed = scene.layers?.place(shaderValues(scene)).layers ?? [];
+      const overhead = placed.some(({ layer }) => layer.composers.includes("overhead"));
+      const [role, pass, plain] = overhead
+        ? (["bed", "bed", "overheadPlainBed"] as const)
+        : (["ground", "ground", "composerFloor"] as const);
       const ground = placed.findIndex(
-        ({ layer }) => layer.role === "ground" && layer.passes.ground !== undefined,
+        ({ layer }) => layer.role === role && layer.passes[pass] !== undefined,
       );
       const room = steady.includes("Ctx roomCtx(");
       expect({
@@ -44,22 +50,20 @@ describe("a composed scene's programs", () => {
         steady: {
           cut: steady.includes("bool shows["),
           turn: steady.includes("layerTurn("),
-          floor: steady.includes("  composerFloor(x, c);\n"),
+          floor: steady.includes(`  ${plain}(x, c);\n`),
           held: steady.includes("float heldTurn = ") && steady.includes("if (heldTurn < -1.5)"),
         },
         turning: {
           cut: turning.includes("bool shows["),
           turn: turning.includes("layerTurn("),
           floor: turning.includes(
-            ground < 0
-              ? "  composerFloor(x, c);\n"
-              : `  if (!shows[${ground}]) composerFloor(x, c);\n`,
+            ground < 0 ? `  ${plain}(x, c);\n` : `  if (!shows[${ground}]) ${plain}(x, c);\n`,
           ),
           held: turning.includes("heldTurn"),
         },
       }).toEqual({
         id,
-        steady: { cut: false, turn: false, floor: !room && ground < 0, held: true },
+        steady: { cut: false, turn: false, floor: !room && ground < 0, held: !overhead },
         turning: { cut: true, turn: true, floor: !room, held: false },
       });
     }

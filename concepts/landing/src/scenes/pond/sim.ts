@@ -1,16 +1,16 @@
-// The pond's sim: the border plants (uSim0), grown and swayed by the shared plant component
-// (plants.ts, sims/plants.ts) and drawn every frame on the GPU into the plant sheet
-// (sims/plantsheet.ts) from the botany atlas, painted once on the worker (sheet.ts, atlas.ts); the
-// overhead canopy (uSim1), a sheet painted on the worker whenever its knobs or the frame's shape
-// change; the koi while they are drawn to the pointer (uSim2, koi.ts); and this frame's layout of
-// the pads, the koi on their loops and the petals, worked out once on the GPU (uSim3, layout.ts).
-// The last finished canopy stays bound while a new one paints; the plants show as soon as the atlas
-// is ready.
+// The pond's layers' sims (layers.ts): the border's plants (its field 0), grown and swayed by the
+// shared plant component (plants.ts, sims/plants.ts) and drawn every frame on the GPU into the plant
+// sheet (sims/plantsheet.ts) from the botany atlas, painted once on the worker (sheet.ts, atlas.ts),
+// and its overhead canopy (its field 1), a sheet painted on the worker whenever its knobs or the
+// frame's shape change; the koi while they are drawn to the pointer (the koi's field 0, koi.ts) and
+// their loops (its field 1); and the water's layout of the pads and the petals (its field 0), each
+// layout worked out once a frame on the GPU (layout.ts). The last finished canopy stays bound while
+// a new one paints; the plants show as soon as the atlas is ready.
+import type { LayerFrame, LayerSim, OverheadRig } from "../../composer/types.ts";
 import { KnobReader, type ParamDef } from "../../params.ts";
 import { PlantSheet } from "../../sims/plantsheet.ts";
 import { PLANT_SUMMER, plantClimate, RootedPlants } from "../../sims/plants.ts";
 import { windNoise } from "../../sims/wind.ts";
-import type { SceneSim } from "../types.ts";
 import {
   canopyKey,
   CANOPY_MARGIN,
@@ -19,6 +19,7 @@ import {
   type CanopyConfig,
 } from "./atlas.ts";
 import { PondKoi } from "./koi.ts";
+import { BORDER_FIELDS, KOI_FIELDS, WATER_FIELDS } from "./layers.ts";
 import { PondLayout } from "./layout.ts";
 import {
   growPondPlants,
@@ -78,7 +79,43 @@ const SPECIES: readonly (readonly [ClumpSpecies, Knob])[] = [
   ["banana", "banana"],
 ];
 
-export function pondSim(gl: WebGL2RenderingContext, params: readonly ParamDef[]): SceneSim {
+/** The water's sim: the pads' and petals' layout. */
+export function pondWaterSim(
+  gl: WebGL2RenderingContext,
+  params: readonly ParamDef[],
+): LayerSim<OverheadRig> {
+  const layout = new PondLayout(gl, params, "surface");
+  return {
+    frame(frame: LayerFrame<OverheadRig>) {
+      const field = frame.fields[WATER_FIELDS.layout];
+      if (field) field.texture = layout.frame(frame);
+    },
+    dispose() {
+      layout.dispose();
+    },
+  };
+}
+
+/** The koi's sim: steered to the pointer (koi.ts), and their loops' layout. */
+export function koiSim(gl: WebGL2RenderingContext, params: readonly ParamDef[]): LayerSim<OverheadRig> {
+  const koi = new PondKoi(params, gl);
+  const layout = new PondLayout(gl, params, "koi");
+  return {
+    frame(frame: LayerFrame<OverheadRig>) {
+      const fish = frame.fields[KOI_FIELDS.fish];
+      if (fish) fish.texture = koi.frame(frame);
+      const loops = frame.fields[KOI_FIELDS.loops];
+      if (loops) loops.texture = layout.frame(frame);
+    },
+    dispose() {
+      koi.dispose();
+      layout.dispose();
+    },
+  };
+}
+
+/** The border's sim: the plants and the canopy. */
+export function borderSim(gl: WebGL2RenderingContext, params: readonly ParamDef[]): LayerSim<OverheadRig> {
   const knobs = new KnobReader<Knob>("pond", params, KNOBS);
   const atlas = new SheetPainter(gl);
   const canopy = new SheetPainter(gl);
@@ -88,9 +125,6 @@ export function pondSim(gl: WebGL2RenderingContext, params: readonly ParamDef[])
   const gustSlot = knobs.trigger("gusts");
   let sheet: PlantSheet | undefined;
   const maxSize = Number(gl.getParameter(gl.MAX_TEXTURE_SIZE)) || 4096;
-  const textures: (WebGLTexture | undefined)[] = [undefined, undefined, undefined, undefined];
-  const koi = new PondKoi(params, gl);
-  const layoutPass = new PondLayout(gl, params);
   // The knobs as last seen, then the frame's aspect: the layout is rebuilt only when one of its
   // inputs moves, so a steady frame allocates nothing.
   const seen = new Float64Array(KNOBS.length + 1).fill(Number.NaN);
@@ -146,7 +180,7 @@ export function pondSim(gl: WebGL2RenderingContext, params: readonly ParamDef[])
   }
 
   return {
-    frame(frame) {
+    frame(frame: LayerFrame<OverheadRig>) {
       framed = true;
       let moved = false;
       let relayout = false;
@@ -205,11 +239,10 @@ export function pondSim(gl: WebGL2RenderingContext, params: readonly ParamDef[])
         canopy.advance(
           Math.max(canopy.texture ? SHEET_BUDGET_MS : FIRST_SHEET_BUDGET_MS, frame.budget),
         );
-      textures[0] = plantsOn && drawn ? sheet?.texture : undefined;
-      textures[1] = leaves ? canopy.texture : undefined;
-      textures[2] = koi.frame(frame);
-      textures[3] = layoutPass.frame(frame);
-      return textures;
+      const plantField = frame.fields[BORDER_FIELDS.plants];
+      if (plantField) plantField.texture = plantsOn && drawn ? sheet?.texture : undefined;
+      const canopyField = frame.fields[BORDER_FIELDS.canopy];
+      if (canopyField) canopyField.texture = leaves ? canopy.texture : undefined;
     },
     // The plant and canopy sheets are painted on a worker: ready once those it shows are back.
     ready() {
@@ -219,8 +252,6 @@ export function pondSim(gl: WebGL2RenderingContext, params: readonly ParamDef[])
       atlas.dispose();
       canopy.dispose();
       sheet?.dispose();
-      koi.dispose();
-      layoutPass.dispose();
     },
   };
 }

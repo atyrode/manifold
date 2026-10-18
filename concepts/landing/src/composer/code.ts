@@ -4,9 +4,11 @@
 // LAYER_<ID> gates hold, placed as the setting places them (glsl.ts), steady or drawing their turns
 // as its TURNS_GATE says; `glsl` is the one at the scene's defaults; `sim` the composed sim
 // (sim.ts), which follows the program on screen. A scene whose `code.ts` draws some feature sets
-// with a program of its own (a view from above) names them (`own`): those draw no layer turns.
+// with a program of its own (a view from above) names them (`own`): those draw no layer turns. An
+// overhead preset's code is overheadCode's (overhead-glsl.ts), the same assembly over its program.
 import { effective } from "../params.ts";
 import type { SceneCode } from "../scenes/types.ts";
+import { LevelCamera } from "../sims/camera.ts";
 import { TURNS_GATE, WORLD_TRIGGERS, type ComposedScene } from "./compose.ts";
 import { COMPOSER_ENTRY, composedGlsl } from "./glsl.ts";
 import { roomFrame, roomGlsl, type RoomAssembly } from "./room.ts";
@@ -25,6 +27,8 @@ export function composedCode(
   own: (features: Readonly<Record<string, number>>) => boolean = () => false,
 ): Required<SceneCode> {
   const preset = scene.preset;
+  if (preset.composer === "overhead")
+    throw new ComposedCodeError(`scene ${preset.id}: an overhead preset's code is overheadCode's`);
   const codeOf = (id: string): LayerCode => {
     const code = codes[id];
     if (code === undefined)
@@ -63,12 +67,17 @@ export function composedCode(
     glslFor,
     sim: composedSim({
       params,
-      rig: preset.rig,
+      camera: new LevelCamera({
+        horizon: preset.rig.horizon,
+        eye: preset.rig.eye,
+        focal: preset.rig.focal,
+      }),
+      minAspect: preset.rig.minAspect,
       gates: scene.gates,
       placement: scene.placed,
       sims: Object.fromEntries(scene.offered.map((layer) => [layer.id, codes[layer.id]?.sim])),
       shortParams: scene.shortParams,
-      gust,
+      gust: interior ? undefined : gust,
       rigLift: preset.rig.passage?.lift ?? (() => 0),
       offered: scene.offered,
       drawsTurns: (features) => features[TURNS_GATE] === 1 && !own(features),

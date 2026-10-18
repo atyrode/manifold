@@ -1,8 +1,7 @@
-// Pond's code, loaded the first time the scene is needed (SceneDef.code).
-import type { SimFactory } from "../types.ts";
-import { pondScene } from "./index.ts";
-import { pondSim } from "./sim.ts";
+// Pond's code, loaded the first time the scene is needed (SceneDef.code): assembled from the code of
+// every layer its rig offers (composer/overhead-glsl.ts).
+import { OVERHEAD_CODE } from "../../composer/overhead-code.ts";
+import { overheadCode } from "../../composer/overhead-glsl.ts";
+import { pondComposed } from "./index.ts";
 
-export { pondGlsl as glsl } from "./shader.ts";
-export const entry = "scenePond";
-export const sim: SimFactory = (gl) => pondSim(gl, pondScene.params);
+export const { glsl, entry, glslFor, sim } = overheadCode(pondComposed, OVERHEAD_CODE);

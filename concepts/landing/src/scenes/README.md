@@ -46,7 +46,7 @@ components"); run `bun concepts/landing/scripts/scene-docs.ts` after a change to
 | `flock`        | Murmuration      | Sky & space       | `outdoor` preset, 2 layers              | 32    | 0       | Starlings at dusk, thousands of birds folding into one shape.                                                                   |
 | `skyward`      | Skyward          | Sky & space       | `outdoor` preset, 3 layers              | 33    | 0       | Lying on your back at a crossroads: the buildings lean in, wires cross a strip of sky, pigeons wheel and a plane draws a line.  |
 | `swell`        | Swell            | Water             | `outdoor` preset, 3 layers + 1 offered  | 31    | 1       | A moonlit sea rolling toward the horizon, boats riding at anchor in the moon's path.                                            |
-| `pond`         | Pond             | Water             | its own program                         | 51    | 0       | A koi pond from above, light through clear water.                                                                               |
+| `pond`         | Pond             | Water             | `overhead` preset, 4 layers + 1 offered | 54    | 0       | A koi pond from above, light through clear water.                                                                               |
 | `falls`        | Waterfall        | Water             | `outdoor` preset, 5 layers + 5 offered  | 51    | 3       | A waterfall pouring into its pool: spray, a rainbow, ferns on the wet rock.                                                     |
 | `shore`        | Shore            | Water             | `outdoor` preset, 3 layers + 6 offered  | 49    | 0       | Surf on a night beach, flashing blue wherever the water breaks.                                                                 |
 | `lanterns`     | Lantern river    | Water             | `outdoor` preset, 3 layers + 4 offered  | 41    | 0       | Paper lanterns drifting down a river at dusk, their light trembling on the water.                                               |
@@ -76,7 +76,7 @@ components"); run `bun concepts/landing/scripts/scene-docs.ts` after a change to
 | `physarum`     | Slime mould      | Matter & patterns | its own program                         | 14    | 4       | A golden network linking its food, thickening good paths and pruning the rest.                                                  |
 | `film`         | Soap film        | Matter & patterns | its own program                         | 10    | 0       | A soap film in a wire loop, draining into bands of colour.                                                                      |
 | `sandtable`    | Sand table       | Matter & patterns | its own program                         | 14    | 1       | A steel ball ploughing slow patterns through sand under a low lamp; or a pendulum pouring rosettes onto slate.                  |
-| `ripple`       | Ripple tank      | Matter & patterns | its own program                         | 11    | 1       | A physics-lab ripple tank throwing its waves as light on a screen: interference, slits, a lens, Doppler, standing waves.        |
+| `ripple`       | Ripple tank      | Matter & patterns | `overhead` preset, 2 layers + 1 offered | 18    | 2       | A physics-lab ripple tank throwing its waves as light on a screen: interference, slits, a lens, Doppler, standing waves.        |
 | `harmonograph` | Harmonograph     | Matter & patterns | its own program                         | 11    | 0       | Two swinging pendulums draw a slowly dying figure in ink on paper: a table anyone present may draw on.                          |
 | `pendula`      | Pendulum wave    | Matter & patterns | its own program                         | 11    | 1       | A row of pendulums drifting through waves and back into line.                                                                   |
 | `sill`         | Sill             | Rooms & life      | `interior` preset, 5 layers + 1 offered | 40    | 2       | A cat on the window sill, watching the city lights.                                                                             |
@@ -2369,15 +2369,17 @@ and `dwell` (`state.ts` refuses to load such a scene).
 
 **Status.** The `outdoor` composer (`src/composer/`, ADR 0062
 `docs/decisions/0062-world-composers.md`, #1082 item U1) runs the nineteen eye-level scenes as
-presets of its 79 layers; the `interior` composer's pilot runs sill and lava as presets of its 8
-layers, with a lava lamp that stands on the sill ("The interior composer"). The rest of the
-interiors and the `overhead` composer are the ADR's Phases 3 and 4. Not built yet, so still the
-contract: the per-program knob layout (a composed scene keeps the renderer's 64 knobs and 8 trigger
-slots, `src/composer/caps.ts`), the layer costs (`scripts/layer-costs.ts`) with the stack meter
-and the role's "+" listing, the browser checks `composerDepth`, `composerClaims`,
-`composerWeather` and `layerToggles`, a check of the SwiftShader instruction budget, the principals'
-points in the site, and shelving the Scenes view by composer. The ADR keeps the reasoning, the
-measurements, the decisions (D1–D12) and the phases ahead.
+presets of its 79 layers; the `interior` composer's pilot (Phase 3, "The interior composer") runs
+sill and lava as presets of its 8 layers, with a lava lamp that stands on the sill; the `overhead`
+composer's pilot (Phase 4, "The overhead composer" below) runs pond and ripple as presets of its 7
+layers, with koi offered to the ripple tank. The rest of the interiors and of the scenes seen from
+above are the rest of those phases. Not built yet, so still the contract: the per-program knob
+layout (a composed scene keeps the renderer's 64 knobs and 8 trigger slots,
+`src/composer/caps.ts`), the layer costs (`scripts/layer-costs.ts`) with the stack meter and the
+role's "+" listing, the browser checks `composerDepth`, `composerClaims`, `composerWeather` and
+`layerToggles`, a check of the SwiftShader instruction budget, the principals' points in the site,
+and shelving the Scenes view by composer. The ADR keeps the reasoning, the measurements, the
+decisions (D1–D12) and the phases ahead.
 
 Most outdoor scenes show the same thing: a camera on the ground at eye level, something in front
 of it, a landscape behind, the sky above. A **composer** makes that shared: one camera rig, one
@@ -2388,7 +2390,7 @@ of it stack **layers**, each a module from a scene. Three composers cover the ro
 | ---------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `outdoor`  | A pinhole over the floor: eye height, horizon, focal, turn (the yaw to the sky's frame), pitch, `minAspect` (narrower frames are laid out this wide and cropped), a passage          | The floor plane y = 0, in metres in the rig's frame (x right, z ahead), of one floor kind (earth, lawn, gravel, sand, rock, moss, ice, snowfield, water, asphalt) unless a ground layer replaces it     | 1: meadow, bees. 2: shore, dunes, autumn, lanterns, falls, campfire, fireflies, forest, bamboo, garden, lake, country, street, skyward, flock, swell, dew |
 | `interior` | A level pinhole in the room, its eye over a ledge across the front, and the room's `distance` to the ledge's seat line (its scale there); the window's view through a rig of its own | The back wall (an albedo) lit by the room's light (its lamp, its ambient, the window's daylight, the layers' lights); the ledge a ground layer (sill, sideboard); a window a backdrop the World crosses | 3 (pilot): sill, lava. Then bar, train, bonsai, mobile, incense, frost, clouds, harmonograph                                                              |
-| `overhead` | A patch seen straight down, at so many metres per screen height; a `tilt` feature and an `orbit` range, both steady                                                                  | A bed (a height field in metres), water over it from a layer's sim, and a material at each point                                                                                                        | 4: pond, ripple, sandtable, tidepool, delta, island, and garden and dunes from above                                                                      |
+| `overhead` | A patch seen straight down, orthographic, `span` metres per screen height; the ADR's `tilt` feature and `orbit` range are not built                                                  | A bed layer, seen through the water layer's surface (its slope bends the bed, its depth dims it), the light of a layer's sun or lamp; the plain bed under a bed mid-turn                                | 4 (pilot): pond, ripple. Then sandtable, tidepool, delta, island, and garden and dunes from above                                                         |
 
 Fractal, hyperbolic, orbit and shanshui stay scenes of their own. The matter shelf and kelp are
 open (ADR 0062, D7).
@@ -2463,13 +2465,67 @@ The cases that are not a standing eye:
   `streetBegin`) whose parts the layers' passes put down; the countryside's other layers are
   switches and knobs read through the valley's macros (`VALLEY_*`, `valleyValue` for the sim).
 
+### The overhead composer
+
+The `overhead` composer (`src/composer/overhead.ts`, its program and code in `overhead-glsl.ts`,
+the layers' code in `overhead-code.ts`; ADR 0062 Phase 4) draws a patch seen straight down. Its rig
+(`OverheadRig`) is orthographic: `span`, the metres a screen height covers, and `minAspect`. It is
+straight down only: the ADR's `tilt` (a march) and `orbit` are not built. A layer's `camera.span`
+says which spans it is drawn at, so a preset offers only the layers that make sense at its scale.
+
+Its site is a bed and the water over it, two roles that stand as the backdrop and the ground do:
+
+| Role    | How many                                             | Built                                                                                |
+| ------- | ---------------------------------------------------- | ------------------------------------------------------------------------------------ |
+| `bed`   | exactly 1; with none switched on the home one stands | the pond's floor (`pondBed`), the ripple tank's screen, tray and lamp (`tank`)       |
+| `water` | at most 1; without one, the dry bed                  | the pond's water (`pondWater`), the tank's waves (`tankWater`: the wave sim's water) |
+
+Every pass is given `Patch x`: the cell, its point `x.p` (screen heights from the frame's centre),
+the light (`x.sunUV`, `x.sun`, `x.power`: the pond's sun until a layer's begin sets its own; the
+tank's begin sets its lamp), the breeze (`x.wind`, the border's), and the surface the water's begin
+sets from its own field or sim: `x.slope`, `x.floorP` (where the bed is seen through it), `x.depth`,
+`x.flow`, `x.waterCol`, `x.caustic`. The cell is a `Spot`: its colour, its Shade channels (ink,
+accent, shimmer), the cover's shade, whether it is dry, and the undithered colour where a layer
+dithered it (the tank's lamp ramp). The entry runs the begins, then `bed`, `water`, every `floor`
+(on the bed, through the water: weeds, stems), every `cast` (`void <fn>(Patch x, inout float
+shadow)`: the most of every layer's shadow on the bed, which darkens what lies there), `swim` (the
+koi), `float` (pads, petals, the rings' light, a boat), `stand` (a stone), `cover` (the shade of
+what hangs over the patch, and the light through it), `glint`, `over` (the border's leaves) and
+`grade`, each in canonical order. Turns are the outdoor composer's: a program that draws them cuts
+each layer's passes per cell, with the plain bed under a bed mid-turn.
+
+| Preset   | Layers                                             | Rig                 | Key renames                                                                                           |
+| -------- | -------------------------------------------------- | ------------------- | ----------------------------------------------------------------------------------------------------- |
+| `pond`   | `pondBed`, `pondWater`, `border`, `koi`; + `stone` | 3 m a screen height | none: `koi` (a count, `koi-amount`) and `stone` became switches; `pondBed`, `pondWater`, `border` new |
+| `ripple` | `tank`, `tankWater`; + `koi`                       | 1 m a screen height | none: `tank`, `tankWater` new                                                                         |
+
+- **The knobs.** The overhead composer lists no knobs of its own and none of the World's: the World
+  over the patch (its weather seen from above, its light) is not built, and the pond, 51 knobs of
+  its own, would pass the renderer's 64 with the World's 20. So the pond lists 54 (its own and
+  three new switches) and the ripple tank 18 (its 11, two switches and the koi's five), each within
+  the cap without the per-program layout. Its trigger slots count from 0.
+- **Scale.** The pond and the tank are drawn in the frame's units (screen heights; the tank in
+  short sides, its own layout), so their layers are locked to their own span; the koi are drawn at
+  the frame's scale at any span from 1 m to the pond's 3 m: 33–51 cm koi in the pond, 11–17 cm fish
+  in the tank.
+- **Light and air.** The pond's sun (`sunX`, `sunY`, `sunPower`) is its water's, which sets
+  `x.sun` for every layer (the koi's and the pads' shadows fall away from it); the tank's lamp is
+  the tank's. The border's breeze (`wind`) ruffles the water the sun glints on through `x.wind`.
+- **The water's sim.** The tank's waves are its water layer's sim (`tankWaterSim`, three fields:
+  the shown tank's view, the next one's while it fades in, the fixtures' layout); its "now" slots
+  are read from its knobs. The pond's water lays out its pads and petals once a frame (its field),
+  the koi their loops (theirs), the border its plant and canopy sheets (two).
+- **Mix.** "Ripple tank · koi in the tank" (`scene=ripple&koi=1`): the koi swim in the tank over
+  its screen, their shadows on it, drawn in their own colours over the lamp's dithered ramp.
+
 ### Layers
 
 A layer lives in its scene's folder: its manifest in `scenes/<scene>/layers.ts`, its GLSL and sim
-beside it. Its composer's registry (`src/composer/outdoor.ts`) lists every layer in **canonical
-order**, the order layers are placed in and paint in, by role: backdrops, grounds, dressings,
-covers, the dressings that stand or fall on covers (dandelions, boughs), life, chores. The manifest
-loads with the scene's metadata; the code (`outdoor-code.ts`) loads with the first composed scene's
+beside it. Its composer's registry (`src/composer/outdoor.ts`, `interior.ts`, `overhead.ts`) lists
+every layer in **canonical order**, the order layers are placed in and paint in, by role: backdrops
+or beds, grounds or waters, dressings, covers, the dressings that stand or fall on covers
+(dandelions, boughs), life, chores. The manifest loads with the scene's metadata; the code
+(`outdoor-code.ts`, `interior-code.ts`, `overhead-code.ts`) loads with the first composed scene's
 code, never with the registry.
 
 ```ts
@@ -2477,11 +2533,11 @@ interface LayerDef {
   id: string; // camelCase: its switch key, the prefix of its GLSL and of its qualified keys
   title: string; // its heading in the lab, and its chip's label
   composers: readonly ComposerId[]; // "outdoor" | "interior" | "overhead"
-  role: Role; // "backdrop" | "ground" | "dressing" | "cover" | "life" | "chore"
+  role: Role; // "backdrop" | "bed" | "ground" | "water" | "dressing" | "cover" | "life" | "chore"
   subject?: boolean; // a dressing that holds the front band
   bands: readonly Band[]; // "far" (beyond ~60 m), "middle" (6–60 m), "front" (within ~6 m)
   space: { anchors: readonly Anchor[]; claims: readonly Claim[]; stretch?: boolean };
-  camera: CameraRange; // spans of eye, horizon, focal and pitch: the rigs it can be drawn through
+  camera: CameraRange; // spans of eye, horizon, focal, pitch, or the overhead's span: its rigs
   display?: { scale: number }; // a declared readability cheat: the apiary's hives at 1.5
   switch: ParamDef; // steady: a toggle, or the feature knob it grew from, keyed by its id
   params: readonly ParamDef[]; // hung on the switch with `when` by the composer
@@ -2501,10 +2557,11 @@ interface LayerDef {
   mark?: string; // the knob of its Manifold M
   precip?: { thin?: readonly [far: number, near: number]; air?: string; seen?: string };
 }
-interface LayerCode {
-  glsl: (rig: Rig) => string; // its functions and consts, prefixed with its id
-  shared?: readonly SharedGlsl[]; // { id, glsl(rig), begin? }: compiled in once for its scene
-  sim?: (gl: WebGL2RenderingContext, params: readonly ParamDef[]) => LayerSim;
+interface LayerCode<G = Rig, R = LevelCamera> {
+  // G: the rig its GLSL is built for, R: the rig its sim sees (the overhead's: OverheadRig for both)
+  glsl: (rig: G) => string; // its functions and consts, prefixed with its id
+  shared?: readonly SharedGlsl<G>[]; // { id, glsl(rig), begin? }: compiled in once for its scene
+  sim?: (gl: WebGL2RenderingContext, params: readonly ParamDef[]) => LayerSim<R>;
 }
 ```
 
@@ -2706,7 +2763,7 @@ generated from a **scene preset** (`src/composer/types.ts`):
 ```ts
 interface ScenePreset {
   id: string;
-  composer: ComposerId;
+  composer: "outdoor" | "interior"; // OverheadPreset: "overhead", rig OverheadRig, no more
   title: string;
   blurb: string;
   accent: string;
@@ -2733,7 +2790,10 @@ interface ScenePreset {
 - **`params`**: the World's knobs, the composer's (`gusts`, `gustRate`, `season` where an offered
   layer has a year, `seed`), every offered layer's switch (on for home layers), then every offered
   layer's knobs, each with `when` on its switch. An offered layer is one whose `camera` admits the
-  rig. Trigger slots: meteors 0, lightning 1, gusts 2, then the layers' in canonical order.
+  rig. Trigger slots: meteors 0, lightning 1, gusts 2, then the layers' in canonical order. A room
+  lists the World's knobs only while it offers a window and none of the composer's, its slots from
+  2 ("The interior composer"); an overhead preset lists neither the World's knobs nor the
+  composer's, and its slots start at 0.
 - **`glslFor(features)`**: the World, the prelude, the GLSL of only the layers that feature set's
   `LAYER_<ID>` gates hold, and the generated entry.
 - **`featuresFor`**: the World's gates (with the climate where the season sets it), `LAYER_<ID>`

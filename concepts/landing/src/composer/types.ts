@@ -4,7 +4,8 @@
 // scene presets (`ScenePreset`), from which `composeScene` (compose.ts) makes each `SceneDef`.
 //
 // Units: metres in the rig's frame (x right of the view's centre line, y up from the floor, z away
-// from the eye), as LevelCamera (sims/camera.ts) and the World's `worldView` take them.
+// from the eye), as LevelCamera (sims/camera.ts) and the World's `worldView` take them. The overhead
+// composer's (overhead-glsl.ts): the frame's centre, x right and z up the frame, `span` metres tall.
 import type { Blurb, ParamDef } from "../params.ts";
 import type { SkyPlanets } from "../scenes/planets.ts";
 import type { SceneLook, ScenePoint, SceneTheme, SimFrame } from "../scenes/types.ts";
@@ -14,8 +15,21 @@ import type { GustField, PassageGustShape } from "./gust.ts";
 
 export type ComposerId = "outdoor" | "interior" | "overhead";
 
-/** What a layer is to the composition (README "Layers"), in the lab's order of rows. */
-export const ROLES = ["backdrop", "ground", "dressing", "cover", "life", "chore"] as const;
+/**
+ * What a layer is to the composition (README "Layers"), in the lab's order of rows. The overhead
+ * composer's site is a bed and the water over it: `bed` stands as a backdrop does (exactly one, the
+ * home one with none switched on), `water` as a ground (at most one; without it, the dry bed).
+ */
+export const ROLES = [
+  "backdrop",
+  "bed",
+  "ground",
+  "water",
+  "dressing",
+  "cover",
+  "life",
+  "chore",
+] as const;
 export type Role = (typeof ROLES)[number];
 
 /** Where a layer stands: beyond about 60 m, 6–60 m, within about 6 m of the eye. */
@@ -81,6 +95,8 @@ export interface CameraRange {
   readonly horizon?: Span;
   readonly focal?: Span;
   readonly pitch?: Span;
+  /** Under the overhead rig: the metres a screen height spans (OverheadRig.span). */
+  readonly span?: Span;
 }
 
 /**
@@ -119,6 +135,21 @@ export interface LayerLight {
  * and, in the `interior` composer (room.ts), a backdrop's
  *   daylight    vec3 <fn>(Ctx x, vec2 p): the light it lets into the room onto a surface at frame
  *               point p, which the room's light (roomLight) adds for every layer (the window's)
+ * Under the overhead composer (overhead-glsl.ts) a pass is given `Patch x` (its begin `inout`)
+ * and `inout Spot c`, and the entry runs, after the begins (the water's sets the surface:
+ * x.slope, x.floorP, x.depth, x.flow, x.waterCol, x.caustic; the light's layer x.sun, x.power):
+ *   bed         the bed layer's floor, seen at x.floorP through the water
+ *   water       the water layer's colour over the bed
+ *   floor       on the bed, seen through the water (weeds, stems), in canonical order
+ *   cast        void <fn>(Patch x, inout float shadow): its shadow on the bed, the most of every
+ *               layer's taken
+ *   swim        in the water, over the shadows (the koi)
+ *   float       on the surface (pads, petals, the rings' light, a boat)
+ *   stand       standing out of the water (a stone)
+ *   cover       the shade of what hangs over the patch (c.shade), and the light through it
+ *   glint       the sun's glint on the open water (not where c.dry)
+ *   over        over everything (the leaves of the border)
+ *   grade       last, in canonical order (a passage's dimming)
  */
 export interface LayerPasses {
   readonly begin?: string;
@@ -136,6 +167,17 @@ export interface LayerPasses {
   readonly speck?: string;
   readonly shade?: string;
   readonly daylight?: string;
+  readonly bed?: string;
+  readonly water?: string;
+  readonly floor?: string;
+  readonly cast?: string;
+  readonly swim?: string;
+  readonly float?: string;
+  readonly stand?: string;
+  readonly cover?: string;
+  readonly glint?: string;
+  readonly over?: string;
+  readonly grade?: string;
 }
 
 /** What a layer's sim asks of the composed sim's shared resources (README "Sims in a composition"). */
@@ -151,11 +193,11 @@ export interface LayerData {
 /**
  * GLSL several layers of one scene share (its colours, its shading, its per-cell state): compiled
  * in once, before the layers, when any layer holding it is on; `begin` names its `void <fn>(Ctx x)`,
- * run once per cell before the layers' own.
+ * run once per cell before the layers' own. `G`: the rig it is built for (the overhead's under it).
  */
-export interface SharedGlsl {
+export interface SharedGlsl<G = Rig> {
   readonly id: string;
-  readonly glsl: (rig: Rig) => string;
+  readonly glsl: (rig: G) => string;
   readonly begin?: string;
 }
 
@@ -163,11 +205,13 @@ export interface SharedGlsl {
  * A layer's code: its GLSL, built for the preset's rig, the GLSL it shares with its scene's other
  * layers, and its sim. Kept apart from its manifest (LayerDef), so a scene's metadata loads without
  * it: each composed scene's code module (`<scene>/code.ts`) gathers the code of every layer it offers.
+ * `G` is the rig its GLSL is built for, `R` the rig its sim sees (LayerFrame.rig): the outdoor's
+ * pinhole and level camera, or the overhead rig for both.
  */
-export interface LayerCode {
-  readonly glsl: (rig: Rig) => string;
-  readonly shared?: readonly SharedGlsl[];
-  readonly sim?: (gl: WebGL2RenderingContext, params: readonly ParamDef[]) => LayerSim;
+export interface LayerCode<G = Rig, R = LevelCamera> {
+  readonly glsl: (rig: G) => string;
+  readonly shared?: readonly SharedGlsl<G>[];
+  readonly sim?: (gl: WebGL2RenderingContext, params: readonly ParamDef[]) => LayerSim<R>;
 }
 
 export interface LayerDef {
@@ -271,6 +315,17 @@ export interface Rig {
 }
 
 /**
+ * The `overhead` rig (ADR 0062 Phase 4): the patch seen straight down, orthographic, `span` metres
+ * from the frame's bottom to its top; `minAspect` the narrowest frame its claims are laid out for.
+ * The frame's centre is the patch's origin, x right and z up the frame. Straight down only: the
+ * ADR's `tilt` (a march) and `orbit` are not built.
+ */
+export interface OverheadRig {
+  readonly span: number;
+  readonly minAspect: number;
+}
+
+/**
  * The rig moved by the preset's passage: `lift(enter, exit)` the eye's height over its rest height
  * (m); `glsl` defines its twin `float rigLift()` on passageIn() / passageOut(), and `float rigCut()`,
  * the share of cells cutting their edges per cell while the rig moves (0 at rest).
@@ -340,16 +395,28 @@ export interface Flyway {
 /** Where the World's shooting stars set out: skyAngles of the rig's ray (WorldSky's field). */
 export type MeteorField = readonly [number, number, number, number];
 
-/** A scene preset: the data a composed `SceneDef` is made from (README "Scene presets and keys"). */
-export interface ScenePreset {
+/** What every scene preset holds, whatever its composer (README "Scene presets and keys"). */
+interface PresetBase {
   readonly id: string;
-  readonly composer: ComposerId;
   readonly title: string;
   readonly blurb: string;
   readonly accent: string;
   readonly look?: SceneLook;
   readonly theme?: (params: readonly ParamDef[]) => SceneTheme;
   readonly passage?: { readonly enter: number; readonly exit: number };
+  /** Home layers, on by default. */
+  readonly layers: readonly string[];
+  /** Where it departs from its knobs' defaults, keyed as in the URL. */
+  readonly values: Readonly<Record<string, number>>;
+  /** Compile-time features it holds at every setting (bees' moon phase). */
+  readonly features?: Readonly<Record<string, number>>;
+  /** Its own lab headings, over the composer's and its layers' (the World's sections' text). */
+  readonly groups?: Readonly<Record<string, Blurb>>;
+}
+
+/** A scene preset at eye level: the data a composed `SceneDef` is made from. */
+export interface ScenePreset extends PresetBase {
+  readonly composer: "outdoor" | "interior";
   readonly planets?: SkyPlanets;
   readonly rig: Rig;
   readonly grade: Grade;
@@ -359,14 +426,6 @@ export interface ScenePreset {
   readonly flyway: Flyway;
   /** The floor's kind where no ground layer lies (FLOOR_KINDS). */
   readonly floor: FloorKind;
-  /** Home layers, on by default. */
-  readonly layers: readonly string[];
-  /** Where it departs from its knobs' defaults, keyed as in the URL. */
-  readonly values: Readonly<Record<string, number>>;
-  /** Compile-time features it holds at every setting (bees' moon phase). */
-  readonly features?: Readonly<Record<string, number>>;
-  /** Its own lab headings, over the composer's and its layers' (the World's sections' text). */
-  readonly groups?: Readonly<Record<string, Blurb>>;
   /** The `interior` composer's room (README "The interior composer"); required there, unused outdoors. */
   readonly room?: Room;
 }
@@ -405,6 +464,18 @@ export interface RoomFrame {
   /** Screen heights a metre at the seat line. */
   readonly scale: number;
 }
+
+/**
+ * A preset of the overhead composer: a patch seen from above. Its light is its layers' (the pond's
+ * sun, the tank's lamp); the World over the patch is not built (ADR 0062 Phase 4).
+ */
+export interface OverheadPreset extends PresetBase {
+  readonly composer: "overhead";
+  readonly rig: OverheadRig;
+}
+
+/** A preset of any composer. */
+export type AnyPreset = ScenePreset | OverheadPreset;
 
 export const FLOOR_KINDS = [
   "earth",
@@ -460,12 +531,16 @@ export interface PlacedClaim extends Claim {
   readonly layer: string;
 }
 
-/** What each layer's sim gets each frame (README "Sims in a composition"). */
-export interface LayerFrame extends SimFrame {
+/**
+ * What each layer's sim gets each frame (README "Sims in a composition"). `R`: the rig at rest as
+ * its sim sees it, the outdoor's level camera or the overhead rig.
+ */
+export interface LayerFrame<R = LevelCamera> extends SimFrame {
   /** The rig at rest, and how far the passage lifts the eye over it now (m). */
-  readonly rig: LevelCamera;
+  readonly rig: R;
   readonly lift: number;
   readonly ground: LayerGround;
+  /** The outdoor's gust field: still under a composer without one. */
   readonly gusts: GustField;
   readonly records: RecordRows;
   readonly specks: SpeckWriter;
@@ -480,9 +555,9 @@ export interface LayerFrame extends SimFrame {
   readonly room?: RoomFrame;
 }
 
-export interface LayerSim {
+export interface LayerSim<R = LevelCamera> {
   /** Steps and writes into its rows, its specks (every frame: the map is cleared before) and its fields. */
-  frame(frame: LayerFrame): void;
+  frame(frame: LayerFrame<R>): void;
   ready?(): boolean;
   /**
    * Where a press does something for it, in scene uv for a frame of `aspect` (SceneSim.interest:

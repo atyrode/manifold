@@ -1,7 +1,7 @@
-// Ripple tank's code, loaded the first time the scene is needed (SceneDef.code).
-import { rippleScene } from "./index.ts";
-import { rippleSim } from "./sim.ts";
+// Ripple tank's code, loaded the first time the scene is needed (SceneDef.code): assembled from the
+// code of every layer its rig offers (composer/overhead-glsl.ts).
+import { OVERHEAD_CODE } from "../../composer/overhead-code.ts";
+import { overheadCode } from "../../composer/overhead-glsl.ts";
+import { rippleComposed } from "./index.ts";
 
-export { rippleGlsl as glsl } from "./shader.ts";
-export const entry = "sceneRipple";
-export const sim = rippleSim(rippleScene.params);
+export const { glsl, entry, glslFor, sim } = overheadCode(rippleComposed, OVERHEAD_CODE);

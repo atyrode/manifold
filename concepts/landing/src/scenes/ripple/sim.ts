@@ -4,13 +4,14 @@
 // line their rims with), as strongly as the edge absorption knob asks: at 0 the frame's edges are
 // bare walls that reflect every wave, independently of the open-water damping.
 //
-// uSim0  the shown tank's view, rgba16f at grid size (linear), frame uv: x how hard the screen
-//        focuses here (× the knob's; softened round each dipper, split at the double slit's
-//        barrier), y the Jacobian of the light's path through the surface to the screen (1 flat;
-//        under 1 the light is focused, brighter), zw the surface slope, 1 at a unit wave's steepest
-// uSim1  the same for the tank fading in during a change of experiment (stale otherwise)
-// uSim2  the layout, rgba32f 16×2 (nearest): row 0 the shown tank, row 1 the one fading in; texels
-//        as RIPPLE_TEXELS, lengths in short sides
+// The water layer's fields (layers.ts tankWater; tankWaterSim below hands them over), in order:
+// 0  the shown tank's view, rgba16f at grid size (linear), frame uv: x how hard the screen focuses
+//    here (× the knob's; softened round each dipper, split at the double slit's barrier), y the
+//    Jacobian of the light's path through the surface to the screen (1 flat; under 1 the light is
+//    focused, brighter), zw the surface slope, 1 at a unit wave's steepest
+// 1  the same for the tank fading in during a change of experiment (stale otherwise)
+// 2  the layout, rgba32f 16×2 (nearest): row 0 the shown tank, row 1 the one fading in; texels as
+//    RIPPLE_TEXELS, lengths in short sides
 //
 // The model. Height u on a grid with a short side of N texels, N set so a wavelength spans about
 // PER_WAVE texels; leapfrog in time (state rgba32f: u now, u a step ago, wall or box damping, wave
@@ -45,6 +46,7 @@
 // entrance ends. On the way out the dippers stop and the last waves run out in time-lapse to the
 // sponges (the Doppler dipper's carriage halts). It is the same water at the same step, only more
 // steps a frame and the dippers' strength differ, and at rest (no passage) neither is touched.
+import type { LayerFrame, LayerSim, OverheadRig } from "../../composer/types.ts";
 import { MARK_VERTICES } from "../../mark.ts";
 import type { ParamDef } from "../../params.ts";
 import { FixedStep } from "../../sims/clock.ts";
@@ -75,7 +77,7 @@ import {
 } from "./layout.ts";
 import { RIPPLE_ENTER } from "./constants.ts";
 
-/** Texels of a layout row (uSim2). */
+/** Texels of a layout row (the water's field 2, tankWaterField2). */
 export const RIPPLE_TEXELS = {
   /** weight (row 1: how far faded in), experiment, contrast, wavelength */
   meta: 0,
@@ -524,6 +526,8 @@ interface Slots {
   drips: number;
   focus: number;
   mark: number;
+  /** The trigger slots of the "now" buttons: pace (the next experiment), the M, a drip. */
+  now: readonly [pace: number, mark: number, drips: number];
 }
 
 /** The water's physics for this frame's knobs and frame. */
@@ -691,9 +695,9 @@ class RippleLab implements SceneSim {
       this.#experimentKnob = Math.round(this.#value(frame, this.#at.experiment));
       this.#markOn = this.#value(frame, this.#at.mark) > 0;
       this.#seen = [
-        frame.triggers[0] ?? -1e4,
-        frame.triggers[1] ?? -1e4,
-        frame.triggers[2] ?? -1e4,
+        frame.triggers[this.#at.now[0]] ?? -1e4,
+        frame.triggers[this.#at.now[1]] ?? -1e4,
+        frame.triggers[this.#at.now[2]] ?? -1e4,
       ];
     } else {
       for (const tank of tanks) {
@@ -858,11 +862,11 @@ class RippleLab implements SceneSim {
     return tanks;
   }
 
-  /** Whether a 'now' button fired since the last frame. */
-  #fired(frame: SimFrame, slot: 0 | 1 | 2): boolean {
-    const fired = frame.triggers[slot] ?? -1e4;
-    const seen = this.#seen[slot];
-    this.#seen[slot] = fired;
+  /** Whether a 'now' button (Slots.now: 0 pace, 1 the M, 2 a drip) fired since the last frame. */
+  #fired(frame: SimFrame, which: 0 | 1 | 2): boolean {
+    const fired = frame.triggers[this.#at.now[which]] ?? -1e4;
+    const seen = this.#seen[which];
+    this.#seen[which] = fired;
     return seen !== undefined && fired !== seen && fired > -1e3;
   }
 
@@ -1411,6 +1415,11 @@ export function rippleSim(knobs: readonly ParamDef[]): SimFactory {
     if (index < 0) throw new Error(`landing: the ripple scene has no "${key}" knob`);
     return index;
   };
+  const trigger = (key: string): number => {
+    const now = knobs[slot(key)]?.trigger;
+    if (now === undefined) throw new Error(`landing: the ripple scene's "${key}" has no "now" slot`);
+    return now;
+  };
   const at: Slots = {
     experiment: slot("experiment"),
     pace: slot("pace"),
@@ -1421,6 +1430,7 @@ export function rippleSim(knobs: readonly ParamDef[]): SimFactory {
     drips: slot("drips"),
     focus: slot("focus"),
     mark: slot("mark"),
+    now: [trigger("pace"), trigger("mark"), trigger("drips")],
   };
   const defaults = knobs.map((knob) =>
     knob.kind === "feature" ? (knob.on ? knob.value : 0) : knob.value,
@@ -1429,5 +1439,25 @@ export function rippleSim(knobs: readonly ParamDef[]): SimFactory {
     const gpu = GpuCompute.create(gl);
     if (!gpu) return { frame: () => [], dispose: () => undefined };
     return new RippleLab(gpu, at, defaults);
+  };
+}
+
+/** The tank's water as a layer (layers.ts): the sim's view, the one fading in and the layout, its fields. */
+export function tankWaterSim(
+  gl: WebGL2RenderingContext,
+  params: readonly ParamDef[],
+): LayerSim<OverheadRig> {
+  const sim = rippleSim(params)(gl);
+  return {
+    frame(frame: LayerFrame<OverheadRig>) {
+      const textures = sim.frame(frame);
+      for (let k = 0; k < frame.fields.length; k++) {
+        const field = frame.fields[k];
+        if (field) field.texture = textures[k];
+      }
+    },
+    dispose() {
+      sim.dispose();
+    },
   };
 }

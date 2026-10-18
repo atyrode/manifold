@@ -68,6 +68,11 @@ a layout pass works it out once a frame on the GPU (`layout.ts`, read as `uSim3`
 own functions, so the picture is the same as working it out per pixel, which the shader still does
 where float render targets are missing.
 
+Since the overhead composer (ADR 0062 Phase 4) the pond is a preset of its layers `pondBed`,
+`pondWater`, `stone`, `border` and `koi`, and the ripple tank (`ripple`) one of `tank` and
+`tankWater`, the koi offered: the tank's waves are its water layer's sim, so the koi can swim in
+the tank.
+
 ## Tide pool
 
 `tidepool`: a rock pool on a basalt platform, seen from straight above, with the open sea along the

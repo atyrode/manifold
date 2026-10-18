@@ -25,13 +25,16 @@
 //                     set's all-features program, which draws its layers' turns as well.
 //   structural        the layer switches: turning one builds another program.
 //   layers            what the lab's Layers section reads (SceneLayers).
+// The overhead composer (overhead.ts) lists neither the World nor the gusts, season and seed: its
+// presets list their layers' switches and knobs alone, their trigger slots from 0, and their gates
+// are the layers' (ADR 0062 Phase 4: the World over the patch is not built).
 import { hasClimate } from "../climate.ts";
 import { feature, range, seed, type Blurb, type ParamDef } from "../params.ts";
 import type { SceneDef } from "../scenes/types.ts";
 import { WORLD_ALL, worldFeatures, worldGroups, worldKnobs } from "../scenes/world.ts";
 import { COMPOSER_CAPS } from "./caps.ts";
 import { admits, place, type Placement } from "./place.ts";
-import type { ComposerId, LayerDef, Role, ScenePreset } from "./types.ts";
+import type { AnyPreset, ComposerId, LayerDef, Role } from "./types.ts";
 
 export class ComposeError extends Error {}
 
@@ -62,10 +65,13 @@ export interface SceneLayers {
   >;
 }
 
-/** A composed scene: its metadata, and what composer/code.ts assembles its code from. */
-export interface ComposedScene {
+/**
+ * A composed scene: its metadata, and what composer/code.ts assembles its code from. `P`: its
+ * preset's kind (an eye-level one, or one seen from above).
+ */
+export interface ComposedScene<P extends AnyPreset = AnyPreset> {
   readonly def: SceneMeta;
-  readonly preset: ScenePreset;
+  readonly preset: P;
   /** The layers its rig offers, canonical order. */
   readonly offered: readonly LayerDef[];
   /** `LAYER_<ID>` gate names, and the layer id each turns on. */
@@ -151,7 +157,7 @@ function composerKnobs(season: ParamDef | undefined): ParamDef[] {
 }
 
 /** Compose `preset` from `composer`'s layers (see the header). */
-export function composeScene(composer: Composer, preset: ScenePreset): ComposedScene {
+export function composeScene<P extends AnyPreset>(composer: Composer, preset: P): ComposedScene<P> {
   if (preset.composer !== composer.id)
     throw new ComposeError(
       `preset ${preset.id} is for the ${preset.composer} composer, not ${composer.id}`,
@@ -166,33 +172,41 @@ export function composeScene(composer: Composer, preset: ScenePreset): ComposedS
     if ((layer.featuresFor === undefined) !== (layer.featuresAll === undefined))
       throw new ComposeError(`layer ${layer.id}: featuresFor and featuresAll come together`);
   const home = new Set(preset.layers);
+  /** An eye-level preset, under the World; undefined for one seen from above. */
+  const kind: AnyPreset = preset;
+  const level = kind.composer === "overhead" ? undefined : kind;
   // A room lists the World only while a window looks out of it, and neither the gusts nor the
   // arrangement: nothing in it sways in the gust field or stands where a seed puts it (README "The
   // interior composer").
   const indoors = composer.id === "interior";
-  if (indoors && preset.room === undefined)
+  if (indoors && level?.room === undefined)
     throw new ComposeError(`preset ${preset.id}: an interior preset needs its room`);
 
-  // Trigger slots and keys: a room has no gusts, so its layers' slots follow the World's two.
-  const triggers: Record<string, number> = indoors
-    ? { meteors: WORLD_TRIGGERS.meteors, lightning: WORLD_TRIGGERS.lightning }
-    : { ...WORLD_TRIGGERS };
-  let slot = (indoors ? WORLD_TRIGGERS.lightning : WORLD_TRIGGERS.gusts) + 1;
+  // Trigger slots and keys: a room has no gusts, so its layers' slots follow the World's two; a
+  // patch seen from above has no World, so its layers' start at 0.
+  const triggers: Record<string, number> =
+    level === undefined
+      ? {}
+      : indoors
+        ? { meteors: WORLD_TRIGGERS.meteors, lightning: WORLD_TRIGGERS.lightning }
+        : { ...WORLD_TRIGGERS };
+  let slot =
+    level === undefined ? 0 : (indoors ? WORLD_TRIGGERS.lightning : WORLD_TRIGGERS.gusts) + 1;
   // A room's window shows the World's sky and weather; its birds fly no window yet, so a room lists
   // none of their knobs.
   const world =
-    indoors && !offered.some((layer) => layer.window === true)
+    level === undefined || (indoors && !offered.some((layer) => layer.window === true))
       ? []
       : worldKnobs({
-          ...preset.world,
+          ...level.world,
           meteors: { trigger: WORLD_TRIGGERS.meteors },
           lightning: WORLD_TRIGGERS.lightning,
-          groups: { ...preset.world.groups, ...(indoors ? {} : { wind: "wind" }) },
+          groups: { ...level.world.groups, ...(indoors ? {} : { wind: "wind" }) },
         }).filter((def) => !indoors || !["birds", "birdKind", "birdFormation"].includes(def.key));
   const season = offered.find((layer) => layer.season !== undefined)?.season;
   if (season !== undefined && season.key !== "season")
     throw new ComposeError(`preset ${preset.id}: a layer's season knob is keyed ${season.key}`);
-  const own = indoors ? [] : composerKnobs(season);
+  const own = level === undefined || indoors ? [] : composerKnobs(season);
   const taken = new Set([...world, ...own].map((def) => def.key));
   const keys: Record<string, Record<string, string>> = {};
   const switches: ParamDef[] = [];
@@ -291,7 +305,7 @@ export function composeScene(composer: Composer, preset: ScenePreset): ComposedS
   }
 
   const groups: Record<string, Blurb> = {
-    ...(indoors
+    ...(level === undefined || indoors
       ? {}
       : {
           wind: {
@@ -308,19 +322,16 @@ export function composeScene(composer: Composer, preset: ScenePreset): ComposedS
           weather: worldGroups.weather,
           ...(indoors ? {} : { birds: worldGroups.birds }),
         }),
-    layers: indoors
-      ? {
-          title: "Layers",
-          blurb:
-            "What the room holds, by role: the back wall's backdrop (a window, a papered wall), the ledge in front, and what stands on it; add or take away any.",
-          icon: "layers",
-        }
-      : {
-          title: "Layers",
-          blurb:
-            "What stands in the view, by role: one backdrop, at most one ground, and dressings, covers and life over them; add or take away any, and re-seed the arrangement.",
-          icon: "layers",
-        },
+    layers: {
+      title: "Layers",
+      blurb:
+        level === undefined
+          ? "What lies in the patch seen from above, by role: one bed, at most one water over it, and what stands, floats, grows and swims there; add or take away any."
+          : indoors
+            ? "What the room holds, by role: the back wall's backdrop (a window, a papered wall), the ledge in front, and what stands on it; add or take away any."
+            : "What stands in the view, by role: one backdrop, at most one ground, and dressings, covers and life over them; add or take away any, and re-seed the arrangement.",
+      icon: "layers",
+    },
     ...Object.fromEntries(
       // The Manifold M's group is every layer's (one M at a time): it stands under none of them.
       offered.flatMap((layer) =>
@@ -382,17 +393,17 @@ export function composeScene(composer: Composer, preset: ScenePreset): ComposedS
     ...(preset.look === undefined ? {} : { look: preset.look }),
     params,
     groups,
-    ...(preset.planets === undefined ? {} : { planets: preset.planets }),
+    ...(level?.planets === undefined ? {} : { planets: level.planets }),
     ...(preset.passage === undefined ? {} : { passage: preset.passage }),
     ...(preset.theme === undefined ? {} : { theme: preset.theme(params) }),
     ...(preset.features === undefined ? {} : { features: preset.features }),
     featuresFor: (values) => ({
-      ...worldFeatures(values, climate),
+      ...(level === undefined ? {} : worldFeatures(values, climate)),
       ...gatesOf(values, (layer, v) => layer.featuresFor?.(v) ?? {}),
       [TURNS_GATE]: 0,
     }),
     featuresAllFor: (values) => ({
-      ...WORLD_ALL,
+      ...(level === undefined ? {} : WORLD_ALL),
       ...gatesOf(values, (layer) => layer.featuresAll ?? {}),
       [TURNS_GATE]: 1,
     }),

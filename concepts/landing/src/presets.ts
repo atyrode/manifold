@@ -374,6 +374,12 @@ export const presets: readonly Preset[] = [
     query: "scene=sill&lavaLamp=1",
     savedAt: "2026-10-18",
   },
+  {
+    name: "Ripple tank · koi in the tank",
+    commit: "PENDING",
+    query: "scene=ripple&koi=1",
+    savedAt: "2026-10-18",
+  },
 ];
 
 const LOCAL_PRESETS = "landing.presets";

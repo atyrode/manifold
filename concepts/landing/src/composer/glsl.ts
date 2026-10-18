@@ -29,6 +29,7 @@
 // cells, cut per cell (`layerShows`); at rest it draws as the steady one does.
 import { glslFloat } from "../shaders/glsl.ts";
 import { worldGlsl } from "../shaders/lib/world.ts";
+import type { LevelCamera } from "../sims/camera.ts";
 import { SPECK_DEPTH_STEP } from "./caps.ts";
 import { claimsGlsl } from "./claims.ts";
 import { gustGlsl, type PassageGustShape } from "./gust.ts";
@@ -40,6 +41,7 @@ import type {
   LayerDef,
   LayerPasses,
   PlacedClaim,
+  Rig,
   ScenePreset,
 } from "./types.ts";
 
@@ -73,9 +75,9 @@ export function simOn(slot: number): string {
 }
 
 /** A layer on in this program, its code loaded, and its index among them. */
-export interface OnLayer {
+export interface OnLayer<G = Rig, R = LevelCamera> {
   readonly def: LayerDef;
-  readonly code: LayerCode;
+  readonly code: LayerCode<G, R>;
 }
 
 /** What one composed program is assembled from (compose.ts glslFor). */
@@ -200,7 +202,7 @@ ${snowed}
 }
 
 /** Each layer's data accessors (README "Sims in a composition"): never uSimN in a layer's own GLSL. */
-export function accessorsGlsl(layers: readonly OnLayer[], alloc: Allocation): string {
+export function accessorsGlsl<G, R>(layers: readonly OnLayer<G, R>[], alloc: Allocation): string {
   return layers
     .map(({ def }) => {
       const id = def.id;
@@ -275,8 +277,8 @@ ${view}
  * that runs only where a branch is taken costs it far more than the pass (dew's backdrop: a tenth of
  * the program more), a result dropped after it next to nothing.
  */
-export function passCalls(
-  layers: readonly OnLayer[],
+export function passCalls<G, R>(
+  layers: readonly OnLayer<G, R>[],
   turns: boolean,
   kind: keyof LayerPasses,
   args: string,
@@ -299,7 +301,7 @@ export function passCalls(
  * Each cell's begins, in canonical order: before a layer's own, the begin of every shared chunk it
  * holds that has not run yet (so the backdrop's runs before a later layer's chunk reads its air).
  */
-export function begins(layers: readonly OnLayer[]): string {
+export function begins<G, R>(layers: readonly OnLayer<G, R>[]): string {
   const ran = new Set<string>();
   return layers
     .flatMap(({ def, code }) => [
@@ -357,7 +359,6 @@ bool layerShows(int k, vec2 cell) {
   return true;
 }`;
 }
-
 /** The whole composed program's own GLSL: the World, the prelude, the shared and the layers' GLSL, the entry. */
 export function composedGlsl(a: Assembly): string {
   const { preset, layers, allocation, turns } = a;

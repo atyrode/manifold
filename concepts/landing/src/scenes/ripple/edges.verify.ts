@@ -1,14 +1,23 @@
 // GPU check (verify-browser.ts): the ripple tank's edge absorption. The real wave sim runs the
 // interference experiment twice, beaches full and bare walls, and its view texture (the surface's
 // slope) is read back: bare walls must send waves back into the tank, while the open water away from
-// the edges starts out the same either way (the knob is not a second damping).
+// the edges starts out the same either way (the knob is not a second damping). It is read at the
+// water layer's first field, where the composed sim binds it (composer/sim.ts allocate).
+import { allocate } from "../../composer/sim.ts";
 import { effective } from "../../params.ts";
 import { visitorAlone } from "../../principals.ts";
 import { GpuCompute } from "../../sims/gpu.ts";
 import { loadScene } from "../index.ts";
 import type { SimFrame } from "../types.ts";
+import { rippleComposed } from "./index.ts";
 
 const rippleScene = await loadScene("ripple");
+
+/** The texture slot of the water's view (its first field) with the tank and its water on. */
+const VIEW_SLOT =
+  allocate(
+    rippleComposed.place(new Set(["tank", "tankWater"])).layers.map((placed) => placed.layer),
+  ).fields["tankWater"]?.[0] ?? 2;
 
 /** The view sampled on a COLUMNS × ROWS grid of texel centres over the frame. */
 const COLUMNS = 64;
@@ -94,7 +103,7 @@ export function rippleEdgesVerify(gl: WebGL2RenderingContext): Record<string, un
   const tank = (edges: number, seconds: number): { first: View; later: View } => {
     const sim = rippleScene.sim?.(gl);
     if (!sim) throw new Error("Ripple simulation unavailable");
-    const raw: Record<string, number> = { experiment: 1, drips: 0, edges };
+    const raw: Record<string, number> = { tank: 1, tankWater: 1, experiment: 1, drips: 0, edges };
     const frame: SimFrame = {
       dt: 0,
       time: 0,
@@ -112,7 +121,7 @@ export function rippleEdgesVerify(gl: WebGL2RenderingContext): Record<string, un
       ...visitorAlone(),
       passage: { enter: 1, exit: 0 },
     };
-    const first = read(sim.frame(frame)[0]);
+    const first = read(sim.frame(frame)[VIEW_SLOT]);
     frame.dt = 0.2;
     let textures = sim.frame(frame);
     for (let t = 0.2; t < seconds; t += frame.dt) {
@@ -120,7 +129,7 @@ export function rippleEdgesVerify(gl: WebGL2RenderingContext): Record<string, un
       frame.motionTime += frame.dt;
       textures = sim.frame(frame);
     }
-    const later = read(textures[0]);
+    const later = read(textures[VIEW_SLOT]);
     sim.dispose();
     return { first, later };
   };

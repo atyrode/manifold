@@ -4,13 +4,22 @@
 //     does not jump;
 //   - a koi texture at tag 0 leaves the picture exactly as without it (the default render), and at
 //     tag 1 the koi is drawn where the sim has it, not on its loop.
+import { allocate } from "../../composer/sim.ts";
 import { paramDefaults, defaultsFor, renderSettings } from "../../state.ts";
 import { fragmentSourceFor, packParams, vertexSource } from "../../shaders/index.ts";
 import { FishGroup, FishTexture, KOI } from "../../sims/fish.ts";
 import { loadScene } from "../index.ts";
+import { pondComposed } from "./index.ts";
 import { koiLoop, koiLoops, KOI_MAX } from "./koi.ts";
+import { KOI_FIELDS } from "./layers.ts";
 
 const pondScene = await loadScene("pond");
+
+/** Where the composed sim binds the koi's steering (their field) at the pond's defaults. */
+const FISH_SLOT =
+  allocate(
+    pondComposed.place(new Set(pondComposed.preset.layers)).layers.map((placed) => placed.layer),
+  ).fields["koi"]?.[KOI_FIELDS.fish] ?? 2;
 
 const W = 160;
 const H = 90;
@@ -64,11 +73,14 @@ function draw(
     at("uParams"),
     packParams(renderSettings(defaultsFor("pond"), { ...paramDefaults("pond"), ...knobs }).params),
   );
-  gl.uniform1i(at("uSim2"), 2);
-  gl.activeTexture(gl.TEXTURE2);
+  gl.uniform1i(at(`uSim${FISH_SLOT}`), FISH_SLOT);
+  gl.activeTexture(gl.TEXTURE0 + FISH_SLOT);
   gl.bindTexture(gl.TEXTURE_2D, koi ?? null);
   gl.activeTexture(gl.TEXTURE0);
-  gl.uniform4f(at("uSimOn"), 0, 0, koi ? 1 : 0, 0);
+  // Only the koi's field bound (uSimOn: slots 0-3, uSimOn2: 4-7): no layout, plants or canopy.
+  const on = Array.from({ length: 8 }, (_, slot) => (koi && slot === FISH_SLOT ? 1 : 0));
+  gl.uniform4f(at("uSimOn"), on[0] ?? 0, on[1] ?? 0, on[2] ?? 0, on[3] ?? 0);
+  gl.uniform4f(at("uSimOn2"), on[4] ?? 0, on[5] ?? 0, on[6] ?? 0, on[7] ?? 0);
   gl.drawArrays(gl.TRIANGLES, 0, 3);
   const bytes = new Uint8Array(W * H * 4);
   gl.readPixels(0, 0, W, H, gl.RGBA, gl.UNSIGNED_BYTE, bytes);
@@ -82,13 +94,16 @@ export function verifyPondKoi(gl: WebGL2RenderingContext): Record<string, unknow
 
   // 1. The loops: the shader's pondKoiPath minus the sim's koiLoop, 50× about mid-grey, one pixel per
   //    koi and path time. A cell at 540 rows is 1/540 pond heights: within it, a byte stays within ±0.1.
+  //    A composed scene draws its program from glslFor: the check's entry goes after the default one.
   const times = [0.5, 37.25, 412.5, 2981.75];
+  const { glslFor } = pondScene;
+  if (glslFor === undefined) fail("the scene is not composed");
   const mirror = program(
     gl,
     fragmentSourceFor({
       ...pondScene,
       entry: "regressionKoiLoop",
-      glsl: `${pondScene.glsl}
+      glslFor: (features) => `${glslFor(features)}
 uniform vec2 regressionLoop[${KOI_MAX * times.length}];
 uniform float regressionTime[${times.length}];
 Shade regressionKoiLoop(vec2 uv, vec2 cell, float t) {

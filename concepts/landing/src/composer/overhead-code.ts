@@ -1,0 +1,26 @@
+// The code of every `overhead` layer (overhead.ts), by layer id: its GLSL, the GLSL it shares with
+// its scene's other layers, its sim. A composed scene's code module gathers it
+// (composer/overhead-glsl.ts overheadCode), so it loads with the first overhead scene's code and
+// never with the registry.
+import {
+  borderGlsl,
+  koiGlsl,
+  pondBedGlsl,
+  pondSharedGlsl,
+  pondWaterGlsl,
+  stoneGlsl,
+} from "../scenes/pond/shader.ts";
+import { borderSim, koiSim, pondWaterSim } from "../scenes/pond/sim.ts";
+import { rippleSharedGlsl, tankGlsl, tankWaterGlsl } from "../scenes/ripple/shader.ts";
+import { tankWaterSim } from "../scenes/ripple/sim.ts";
+import type { OverheadCode } from "./overhead-glsl.ts";
+
+export const OVERHEAD_CODE: Readonly<Record<string, OverheadCode>> = {
+  pondBed: { glsl: () => pondBedGlsl },
+  tank: { glsl: () => tankGlsl, shared: [rippleSharedGlsl] },
+  pondWater: { glsl: () => pondWaterGlsl, shared: [pondSharedGlsl], sim: pondWaterSim },
+  tankWater: { glsl: () => tankWaterGlsl, shared: [rippleSharedGlsl], sim: tankWaterSim },
+  stone: { glsl: () => stoneGlsl },
+  border: { glsl: () => borderGlsl, shared: [pondSharedGlsl], sim: borderSim },
+  koi: { glsl: () => koiGlsl, shared: [pondSharedGlsl], sim: koiSim },
+};

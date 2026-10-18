@@ -24,7 +24,7 @@
 // `LayerFrame.host`.
 import { KnobReader, type ParamDef } from "../params.ts";
 import type { ScenePoint, SceneSim, SceneTurn, SimFrame } from "../scenes/types.ts";
-import { LevelCamera } from "../sims/camera.ts";
+import type { LevelCamera } from "../sims/camera.ts";
 import { SpeckMap } from "../sims/specks.ts";
 import { DataTexture } from "../sims/texture.ts";
 import { ATLAS_WIDTH, COMPOSER_CAPS } from "./caps.ts";
@@ -41,7 +41,6 @@ import type {
   LayerSim,
   PlacedClaim,
   RecordRows,
-  Rig,
   RoomFrame,
   SpeckWriter,
 } from "./types.ts";
@@ -133,10 +132,15 @@ function featuresOfKey(key: string): Record<string, number> {
   return features;
 }
 
-/** What compose.ts gives the composed sim. */
-export interface Composition {
+/**
+ * What compose.ts gives the composed sim. `R`: the rig at rest as the layers' sims see it
+ * (LayerFrame.rig): the outdoor's level camera, or the overhead rig.
+ */
+export interface Composition<R = LevelCamera> {
   readonly params: readonly ParamDef[];
-  readonly rig: Rig;
+  readonly camera: R;
+  /** The narrowest frame laid out as itself (Rig.minAspect): stage layers stretch past it. */
+  readonly minAspect: number;
   /** `LAYER_<ID>` gate names, and the layer id each turns on. */
   readonly gates: Readonly<Record<string, string>>;
   /** The placement of the layers switched on in these raw knobs. */
@@ -145,12 +149,15 @@ export interface Composition {
   readonly sims: Readonly<
     Record<
       string,
-      ((gl: WebGL2RenderingContext, params: readonly ParamDef[]) => LayerSim) | undefined
+      ((gl: WebGL2RenderingContext, params: readonly ParamDef[]) => LayerSim<R>) | undefined
     >
   >;
   readonly shortParams: Readonly<Record<string, readonly ParamDef[]>>;
-  /** The gusts' "now" slot, and the preset passage's gust front (if it sends one). */
-  readonly gust: { readonly slot: number; readonly shape: GustField["shape"] };
+  /**
+   * The gusts' "now" slot, and the preset passage's gust front (if it sends one); undefined under a
+   * composer without the gust field (the overhead, a room), whose LayerFrame.gusts stays still.
+   */
+  readonly gust: { readonly slot: number; readonly shape: GustField["shape"] } | undefined;
   readonly rigLift: (enter: number, exit: number) => number;
   readonly offered: readonly LayerDef[];
   /**
@@ -216,14 +223,14 @@ class Ground implements LayerGround {
 }
 
 /** One layer's sim and what it keeps across frames. */
-interface Live {
+interface Live<R> {
   readonly layer: LayerDef;
-  readonly sim: LayerSim | undefined;
+  readonly sim: LayerSim<R> | undefined;
   readonly records: Rows;
   readonly fields: FieldSlot[];
   readonly specks: Specks;
   readonly ground: Ground;
-  readonly frame: Mutable<LayerFrame>;
+  readonly frame: Mutable<LayerFrame<R>>;
   readonly passage: { enter: number; exit: number };
   /**
    * Wall time (ms) its own entrance began, and its exit; NaN: neither plays (one switched off waits
@@ -247,18 +254,21 @@ interface TurnPlan {
   readonly setting: SceneTurn | undefined;
 }
 
-class ComposedSim implements SceneSim {
+class ComposedSim<R> implements SceneSim {
   readonly #gl: WebGL2RenderingContext;
-  readonly #c: Composition;
-  readonly #rig: LevelCamera;
-  /** The gust field's knobs; undefined where the preset lists none (a room: README "The interior composer"). */
+  readonly #c: Composition<R>;
+  readonly #rig: R;
+  /**
+   * The gust field's knobs, under a composer with the field (Composition.gust): neither the
+   * overhead nor a room (README "The interior composer") has one.
+   */
   readonly #knobs: KnobReader<"wind" | "gusts" | "gustRate"> | undefined;
   readonly #map = new SpeckMap();
   readonly #speckTexture: DataTexture;
   readonly #atlas: DataTexture;
   #atlasData = new Float32Array(ATLAS_WIDTH * 4);
   readonly #textures: (WebGLTexture | undefined)[] = [];
-  readonly #live = new Map<string, Live>();
+  readonly #live = new Map<string, Live<R>>();
   readonly #pass: PassageGust = { front: 0, amp: 0 };
   readonly #gusts: Mutable<GustField>;
   /** The layer set on screen, what it was worked out from, and where its data goes. */
@@ -283,17 +293,14 @@ class ComposedSim implements SceneSim {
   /** LayerFrame.host: another live layer's affordances. */
   readonly #host = (layer: string): object | undefined => this.#live.get(layer)?.sim?.affordances;
 
-  constructor(gl: WebGL2RenderingContext, composition: Composition) {
+  constructor(gl: WebGL2RenderingContext, composition: Composition<R>) {
     this.#gl = gl;
     this.#c = composition;
-    const rig = composition.rig;
-    this.#rig = new LevelCamera({ horizon: rig.horizon, eye: rig.eye, focal: rig.focal });
-    const gusty = ["wind", "gusts", "gustRate"].every((key) =>
-      composition.params.some((def) => def.key === key),
-    );
-    this.#knobs = gusty
-      ? new KnobReader("composer", composition.params, ["wind", "gusts", "gustRate"])
-      : undefined;
+    this.#rig = composition.camera;
+    this.#knobs =
+      composition.gust === undefined
+        ? undefined
+        : new KnobReader("composer", composition.params, ["wind", "gusts", "gustRate"]);
     this.#speckTexture = new DataTexture(gl, {
       width: 1,
       height: 1,
@@ -312,9 +319,9 @@ class ComposedSim implements SceneSim {
       gusts: 0,
       rate: 0,
       nowAge: -1,
-      slot: composition.gust.slot,
+      slot: composition.gust?.slot ?? 0,
       pass: NO_PASSAGE_GUST,
-      shape: composition.gust.shape,
+      shape: composition.gust?.shape,
     };
   }
 
@@ -474,7 +481,7 @@ class ComposedSim implements SceneSim {
     }
   }
 
-  #start(layer: LayerDef, frame: SimFrame, shown: boolean): Live {
+  #start(layer: LayerDef, frame: SimFrame, shown: boolean): Live<R> {
     const records = new Rows(layer.data?.rows ?? 0);
     const fields: FieldSlot[] = Array.from({ length: layer.data?.fields ?? 0 }, () => ({
       texture: undefined,
@@ -482,7 +489,7 @@ class ComposedSim implements SceneSim {
     const passage = { enter: 1, exit: 0 };
     const specks = new Specks(this.#map);
     const ground = new Ground();
-    const lf: Mutable<LayerFrame> = {
+    const lf: Mutable<LayerFrame<R>> = {
       ...frame,
       passage,
       rig: this.#rig,
@@ -518,7 +525,7 @@ class ComposedSim implements SceneSim {
     this.#speckTexture.resize(width, height);
   }
 
-  /** The gust field's knobs, its 'now' age and the passage's front, for this frame. */
+  /** The gust field's knobs, its 'now' age and the passage's front, for this frame (still without). */
   #gustField(frame: SimFrame): void {
     const g = this.#gusts;
     const knobs = this.#knobs;
@@ -542,7 +549,7 @@ class ComposedSim implements SceneSim {
    * only when the stretch or the placement changes, so a layer sim may key its growth on it.
    */
   #stretchClaims(aspect: number, placement: Placement): void {
-    const half = 0.5 * this.#c.rig.minAspect;
+    const half = 0.5 * this.#c.minAspect;
     const stretch = Math.max(0.5 * aspect, half) / half;
     if (stretch === this.#stretch && placement === this.#claimsOf) return;
     this.#stretch = stretch;
@@ -563,7 +570,7 @@ class ComposedSim implements SceneSim {
     }
   }
 
-  #step(live: Live, frame: SimFrame, lift: number): void {
+  #step(live: Live<R>, frame: SimFrame, lift: number): void {
     const alloc = this.#allocation;
     const onScreen = alloc.layers.includes(live.layer.id);
     // The scene's frame over the layer's (every field, whatever SimFrame holds), then its own.
@@ -638,6 +645,8 @@ class ComposedSim implements SceneSim {
 }
 
 /** The composed sim for a composition (compose.ts). */
-export function composedSim(composition: Composition): (gl: WebGL2RenderingContext) => SceneSim {
+export function composedSim<R>(
+  composition: Composition<R>,
+): (gl: WebGL2RenderingContext) => SceneSim {
   return (gl) => new ComposedSim(gl, composition);
 }
