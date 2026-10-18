@@ -139,7 +139,8 @@ export const beachLayer: LayerDef = {
   groups: {
     sand: {
       title: "Sand",
-      blurb: "The wet sand the swash leaves: the plankton stranded on it sparks as the water drains.",
+      blurb:
+        "The wet sand the swash leaves: the plankton stranded on it sparks as the water drains.",
     },
     manifold: {
       title: "Manifold mark",

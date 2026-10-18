@@ -11,8 +11,9 @@ import { LANTERN_HALF, MAX_LANTERNS, ROCKS } from "./sim.ts";
 const lanternsScene = await loadScene("lanterns");
 /** The lanterns' row in the records atlas with the river's own layers on screen. */
 const ROW =
-  allocate(lanternsComposed.place(new Set(lanternsComposed.preset.layers)).layers.map((p) => p.layer))
-    .rows["lanterns"]?.base ?? 0;
+  allocate(
+    lanternsComposed.place(new Set(lanternsComposed.preset.layers)).layers.map((p) => p.layer),
+  ).rows["lanterns"]?.base ?? 0;
 
 interface Seen {
   x: number;
@@ -42,7 +43,10 @@ function river(): {
 
 /** One frame; each live lantern slot's x, z (m), size and age (s), as the shader receives them. */
 function step(sim: HeadlessSim, frame: HeadlessFrame): Map<number, Seen> {
-  const data = sim.step(frame).upload(ATLAS_SLOT).data.subarray(ROW * ATLAS_WIDTH * 4);
+  const data = sim
+    .step(frame)
+    .upload(ATLAS_SLOT)
+    .data.subarray(ROW * ATLAS_WIDTH * 4);
   const lanterns = new Map<number, Seen>();
   for (let i = 0; i < MAX_LANTERNS; i++) {
     const z = data[i * 4 + 1] ?? 0;

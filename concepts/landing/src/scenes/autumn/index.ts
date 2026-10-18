@@ -19,7 +19,8 @@ const preset: ScenePreset = {
   id: "autumn",
   composer: "outdoor",
   title: "Autumn park",
-  blurb: "A great tree letting go of its leaves over a park path, the low sun glowing through them.",
+  blurb:
+    "A great tree letting go of its leaves over a park path, the low sun glowing through them.",
   accent: "#e8a23a",
   look: { color: "full", levels: 4 },
   // Entrance: the camera lowers from the canopy onto the path as a gust blows a flurry of leaves
