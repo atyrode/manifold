@@ -1324,7 +1324,6 @@ class StreetCrossing implements LayerSim {
     return this.#warmed >= PREWARM_STEPS;
   }
 
-
   frame(frame: LayerFrame): void {
     const values = frame.values;
     const index = this.#knobIndex;

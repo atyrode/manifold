@@ -10,13 +10,7 @@ import { outdoor } from "../../composer/outdoor.ts";
 import type { ScenePreset } from "../../composer/types.ts";
 import type { SceneDef } from "../types.ts";
 import { worldGroups } from "../world.ts";
-import {
-  FLOCK_FLYWAY,
-  FLOCK_GRADE,
-  FLOCK_METEORS,
-  FLOCK_PASSAGE,
-  FLOCK_RIG,
-} from "./constants.ts";
+import { FLOCK_FLYWAY, FLOCK_GRADE, FLOCK_METEORS, FLOCK_PASSAGE, FLOCK_RIG } from "./constants.ts";
 
 const preset: ScenePreset = {
   id: "flock",

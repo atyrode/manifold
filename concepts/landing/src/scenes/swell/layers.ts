@@ -45,7 +45,13 @@ export const openSeaLayer: LayerDef = {
     { icon: "sky" },
   ),
   params: [
-    toggle("manifold", "mmoon", "M on the moon", false, "The moon's dark seas form the Manifold M."),
+    toggle(
+      "manifold",
+      "mmoon",
+      "M on the moon",
+      false,
+      "The moon's dark seas form the Manifold M.",
+    ),
   ],
   groups: {
     manifold: { title: "Manifold mark", blurb: "Ways the M can live in this night." },

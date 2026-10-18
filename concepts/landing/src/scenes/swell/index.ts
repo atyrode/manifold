@@ -10,13 +10,7 @@ import { WATER_TIERS } from "../../shaders/lib/water.ts";
 import { skyTheme } from "../atmosphere.ts";
 import type { SceneDef } from "../types.ts";
 import { worldGroups } from "../world.ts";
-import {
-  SWELL_FLYWAY,
-  SWELL_GRADE,
-  SWELL_METEORS,
-  SWELL_PASSAGE,
-  SWELL_RIG,
-} from "./constants.ts";
+import { SWELL_FLYWAY, SWELL_GRADE, SWELL_METEORS, SWELL_PASSAGE, SWELL_RIG } from "./constants.ts";
 
 const preset: ScenePreset = {
   id: "swell",

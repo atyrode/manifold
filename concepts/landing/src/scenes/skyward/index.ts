@@ -50,7 +50,8 @@ const preset: ScenePreset = {
     clouds: 0.35,
     birds: {
       kind: "mixed",
-      mixed: "the street's own: pigeons wheeling over the crossing in a loose chain, swifts looping high above them.",
+      mixed:
+        "the street's own: pigeons wheeling over the crossing in a loose chain, swifts looping high above them.",
       on: true,
       often: 0.5,
       help: "Birds over the crossroads seen from below, by day and in the golden hour, fewer in rain or snow: pigeons wheeling over the street and a few swifts higher up, or one kind flying both their paths (they keep to their paths, whatever the formation).",

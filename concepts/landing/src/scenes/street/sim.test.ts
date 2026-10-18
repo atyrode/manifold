@@ -45,7 +45,10 @@ function run(
     if (f % every !== 0) continue;
     const atlas = sim.upload(ATLAS).data as Float32Array;
     agents.set(atlas.subarray(LIFE_ROW * row, LIFE_ROW * row + MAX_AGENTS * 4), 0);
-    agents.set(atlas.subarray((LIFE_ROW + 1) * row, (LIFE_ROW + 1) * row + MAX_AGENTS * 4), MAX_AGENTS * 4);
+    agents.set(
+      atlas.subarray((LIFE_ROW + 1) * row, (LIFE_ROW + 1) * row + MAX_AGENTS * 4),
+      MAX_AGENTS * 4,
+    );
     look(agents, f * FRAME);
   }
 }
@@ -274,7 +277,8 @@ test("with the late delivery out often and everything at its top, no cyclist swi
         if (!shape || Math.cos(data[o + 2] ?? 0) < 0.9) continue;
         const x = data[o] ?? 0;
         const z = (data[o + 1] ?? 0) + Z_REF;
-        if (kind === KIND_BIKE && x > 8 && z < LANE_EB_BIKE - 0.6 && z > LANE_EB_OUT - 0.6) bikes.push(x);
+        if (kind === KIND_BIKE && x > 8 && z < LANE_EB_BIKE - 0.6 && z > LANE_EB_OUT - 0.6)
+          bikes.push(x);
         else if (kind !== KIND_BIKE && kind !== KIND_VAN && Math.abs(z - LANE_EB_OUT) < 0.5)
           cars.push({ x, length: shape.length });
       }
@@ -291,6 +295,9 @@ test("with the late delivery out often and everything at its top, no cyclist swi
     // Cyclists did swing out round the van; a car behind one in the outer lane never came nearer
     // than the standstill gap a driver keeps (IDM_S0, 2 m, less a hair): the cyclist waited for it.
     expect(swung, `seed ${seed}: no cyclist swung out round the van`).toBeGreaterThan(0);
-    expect(least, `seed ${seed}: a car behind a swung-out cyclist at ${at.toFixed(1)} s (m)`).toBeGreaterThanOrEqual(1.9);
+    expect(
+      least,
+      `seed ${seed}: a car behind a swung-out cyclist at ${at.toFixed(1)} s (m)`,
+    ).toBeGreaterThanOrEqual(1.9);
   }
 }, 300_000);

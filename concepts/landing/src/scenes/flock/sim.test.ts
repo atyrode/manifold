@@ -23,8 +23,7 @@ const ATLAS_SLOT = 1;
 const STATE_AT = ATLAS_WIDTH * 4;
 
 /** The density field (R birds per texel, G rolled) after a frame. */
-const density = (sim: HeadlessSim): Float32Array =>
-  Float32Array.from(sim.upload(FIELD_SLOT).data);
+const density = (sim: HeadlessSim): Float32Array => Float32Array.from(sim.upload(FIELD_SLOT).data);
 
 /** How much the field changed between two frames (L1 of the birds channel). */
 function change(a: Float32Array, b: Float32Array): number {
