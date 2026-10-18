@@ -115,7 +115,7 @@ export const presets: readonly Preset[] = [
   },
   {
     name: "Swell · an island offshore",
-    commit: "PENDING",
+    commit: "124e7cd6",
     query: "scene=swell&time=0.62&island=1",
     savedAt: "2026-10-18",
   },
