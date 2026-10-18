@@ -351,13 +351,13 @@ export const presets: readonly Preset[] = [
   },
   {
     name: "Mobile · inner planets, glow stars",
-    commit: "PENDING",
+    commit: "2e69f6b1",
     query: "scene=mobile&mark=1&planets=0&motor-amount=0.7",
     savedAt: "2026-10-15",
   },
   {
     name: "Mobile · dwarf planets, daylight",
-    commit: "PENDING",
+    commit: "2e69f6b1",
     query: "scene=mobile&room=1&planets=2&sun=0.7&softness=0.6",
     savedAt: "2026-10-15",
   },
