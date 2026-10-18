@@ -3,6 +3,13 @@
 // (composer/overhead-glsl.ts overheadCode), so it loads with the first overhead scene's code and
 // never with the registry.
 import {
+  deltaBedGlsl,
+  deltaCloudsGlsl,
+  deltaSharedGlsl,
+  deltaWaterGlsl,
+} from "../scenes/delta/shader.ts";
+import { deltaBedSim, deltaWaterSim } from "../scenes/delta/sim.ts";
+import {
   borderGlsl,
   koiGlsl,
   pondBedGlsl,
@@ -49,4 +56,7 @@ export const OVERHEAD_CODE: Readonly<Record<string, OverheadCode>> = {
   tableLamp: { glsl: () => tableLampGlsl, shared: [sandtableSharedGlsl] },
   ball: { glsl: () => ballGlsl, shared: [sandtableSharedGlsl], sim: ballSim },
   pendulum: { glsl: () => pendulumGlsl, shared: [sandtableSharedGlsl], sim: pendulumSim },
+  deltaBed: { glsl: () => deltaBedGlsl, shared: [deltaSharedGlsl], sim: deltaBedSim },
+  deltaWater: { glsl: () => deltaWaterGlsl, shared: [deltaSharedGlsl], sim: deltaWaterSim },
+  clouds: { glsl: () => deltaCloudsGlsl, shared: [deltaSharedGlsl] },
 };

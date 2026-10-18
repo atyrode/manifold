@@ -28,14 +28,21 @@
 // shallow platform, an older lobe off to one side, abandoned and turned to marsh, plants on the
 // old ground; then a short fixed run of the simulation (a count of steps) sets the water flowing.
 //
-// Textures handed to the shader (rgba16f, linear, the grid's size; the shader cover-fits the grid
-// to the frame), eased toward each new state so nothing jumps under the dither:
-//   uSim0  r bed height above the sea level knob (cells), g water depth (cells), b silt per unit
-//          of water depth, a vegetation 0..1
-//   uSim1  r fresh sediment 0..1 (recently laid or cut), g recently under water 0..1, b the
-//          Manifold M's rock 0..1, a current speed (cells per model time unit)
-// When float render targets are missing (GpuCompute.create returns undefined), the same layout is
-// uploaded once and stands still.
+// Two sims, one per layer that keeps state (layers.ts):
+//   deltaBedSim    the bed: lays the landscape out for a seed and the frame's shape, and affords it
+//                  to the water (DeltaLand); its fields the layout lying dry
+//   deltaWaterSim  the water: the river and the sea on the GPU over the bed's layout, the bed they
+//                  work, the floods and the hands that dig; its fields the live state
+// Each hands the shader two views (rgba16f, linear, the grid's size; the shader cover-fits the grid
+// to the frame), the water's eased toward each new state so nothing jumps under the dither:
+//   Field0  r bed height above the sea level knob (cells), g water depth (cells), b silt per unit
+//           of water depth, a vegetation 0..1
+//   Field1  r fresh sediment 0..1 (recently laid or cut), g recently under water 0..1, b the
+//           Manifold M's rock 0..1, a current speed (cells per model time unit)
+// The bed's views are its layout with no water on it; when float render targets are missing
+// (GpuCompute.create returns undefined), the water's are the layout with its still water, uploaded
+// once and standing still.
+import type { LayerFrame, LayerSim, OverheadRig } from "../../composer/types.ts";
 import { markDistance } from "../../mark.ts";
 import { KnobReader, type ParamDef } from "../../params.ts";
 import { MAX_PRINCIPALS } from "../../principals.ts";
@@ -54,7 +61,8 @@ import { fbm, valueNoise } from "../../sims/noise.ts";
 import { mulberry32 } from "../../sims/random.ts";
 import { type ShallowStep, ShallowWater } from "../../sims/shallow.ts";
 import { DataTexture } from "../../sims/texture.ts";
-import type { SceneSim, SimFactory, SimFrame } from "../types.ts";
+import type { SimFrame } from "../types.ts";
+import { DELTA_FIELDS } from "./layers.ts";
 
 // ---- grid and clocks ------------------------------------------------------------------------------
 
@@ -195,13 +203,16 @@ const VIEW_FLOOR = 60;
 
 // ---- knobs -------------------------------------------------------------------------------------------
 
-const DELTA_KNOBS = [
+/** The bed's knobs: the landscape, and the sea level, plants and current it is laid out for; its M. */
+const BED_KNOBS = ["landscape", "seaLevel", "vegetation", "current", "mark"] as const;
+type BedKnob = (typeof BED_KNOBS)[number];
+/** The water's knobs, and the bed's it works under: the plants, the hand's tool, the M. */
+const WATER_KNOBS = [
   "discharge",
   "sediment",
   "erosion",
   "floods",
   "speed",
-  "landscape",
   "seaLevel",
   "tide",
   "current",
@@ -209,7 +220,7 @@ const DELTA_KNOBS = [
   "tool",
   "mark",
 ] as const;
-type DeltaKnob = (typeof DELTA_KNOBS)[number];
+type WaterKnob = (typeof WATER_KNOBS)[number];
 
 // ---- noise ---------------------------------------------------------------------------------------------
 
@@ -1212,8 +1223,8 @@ class DeltaField {
     return this.#layout;
   }
 
-  /** The textures for the shader (they swap: read them every frame). */
-  get textures(): readonly WebGLTexture[] {
+  /** The shader's two views, ground and surface (they swap: read them every frame). */
+  get textures(): readonly [WebGLTexture, WebGLTexture] {
     return [this.#viewGround.texture, this.#viewSurface.texture];
   }
 
@@ -1351,12 +1362,12 @@ class DeltaField {
   }
 }
 
-// ---- the scene's sim --------------------------------------------------------------------------------------
+// ---- the layers' sims -------------------------------------------------------------------------------------
 
 /** Everything a frame's steps need from the knobs. */
 function environment(
   frame: SimFrame,
-  knobs: KnobReader<DeltaKnob>,
+  knobs: KnobReader<WaterKnob>,
   clock: number,
   flood: number,
 ): DeltaEnv {
@@ -1381,7 +1392,7 @@ function environment(
   };
 }
 
-/** The landscape, the grid shape and the plants a layout was made for. */
+/** The landscape and the grid shape a layout was made for. */
 interface LayoutKey {
   seed: number;
   columns: number;
@@ -1407,11 +1418,15 @@ function gridFor(frame: SimFrame, current: LayoutKey | undefined, out: LayoutKey
   out.rows = height;
 }
 
-/** The views of a layout as they stand, for machines without float render targets. */
+/**
+ * The views of a layout as they stand: with its still water, or `dry`, with none on it (the ground
+ * it left still wet).
+ */
 function staticViews(
   layout: DeltaLayout,
   sea: number,
   mark: MarkPlace,
+  dry: boolean,
 ): { ground: Float32Array; surface: Float32Array } {
   const n = layout.columns * layout.rows;
   const ground = new Float32Array(n * 4);
@@ -1419,7 +1434,7 @@ function staticViews(
   for (let c = 0; c < n; c++) {
     const depth = layout.depth[c] ?? 0;
     ground[c * 4] = (layout.terrain[c * 4] ?? 0) - sea;
-    ground[c * 4 + 1] = depth;
+    ground[c * 4 + 1] = dry ? 0 : depth;
     ground[c * 4 + 2] = layout.terrain[c * 4 + 1] ?? 0;
     ground[c * 4 + 3] = layout.terrain[c * 4 + 2] ?? 0;
     const x = (c % layout.columns) + 0.5;
@@ -1431,26 +1446,101 @@ function staticViews(
   return { ground, surface };
 }
 
-function markSize(frame: SimFrame, knobs: KnobReader<DeltaKnob>, rows: number): number {
-  const amount = knobs.value(frame, "mark");
+/** The M's height in cells for the mark knob's amount (0: none). */
+function markSize(amount: number, rows: number): number {
   return amount > 0 ? (MARK_SMALL + (MARK_LARGE - MARK_SMALL) * amount) * rows : 0;
 }
 
-/** A still picture of the layout, where the GPU cannot run the simulation. */
-function stillSim(gl: WebGL2RenderingContext, knobs: KnobReader<DeltaKnob>): SceneSim {
-  let key: LayoutKey | undefined;
-  let layout: DeltaLayout | undefined;
-  let shownSea = Number.NaN;
-  let shownSize = Number.NaN;
-  let ground: DataTexture | undefined;
-  let surface: DataTexture | undefined;
+/** The landscape the bed laid out, which the water runs over and works (LayerFrame.host). */
+export class DeltaLand {
+  /** The latest layout and its seed. */
+  layout: DeltaLayout | undefined = undefined;
+  seed = 0;
+  /** Layouts made so far: the water starts over on each new one. */
+  laid = 0;
+}
+
+/** A layer's two views into its fields (DELTA_FIELDS); undefined unbinds one. */
+function bindViews(
+  frame: LayerFrame<OverheadRig>,
+  ground: WebGLTexture | undefined,
+  surface: WebGLTexture | undefined,
+): void {
+  const g = frame.fields[DELTA_FIELDS.ground];
+  const s = frame.fields[DELTA_FIELDS.surface];
+  if (g) g.texture = ground;
+  if (s) s.texture = surface;
+}
+
+/** A layout's static views (staticViews) on the GPU, uploaded again when what they show changes. */
+class StillViews {
+  readonly #gl: WebGL2RenderingContext;
+  readonly #dry: boolean;
+  #ground: DataTexture | undefined;
+  #surface: DataTexture | undefined;
+  #laid = 0;
+  #sea = Number.NaN;
+  #size = Number.NaN;
+
+  constructor(gl: WebGL2RenderingContext, dry: boolean) {
+    this.#gl = gl;
+    this.#dry = dry;
+  }
+
+  /** The land's layout under a sea at `sea`, its M `size` cells tall, bound to the frame's fields. */
+  show(
+    frame: LayerFrame<OverheadRig>,
+    land: DeltaLand,
+    layout: DeltaLayout,
+    sea: number,
+    size: number,
+  ): void {
+    if (land.laid !== this.#laid || sea !== this.#sea || size !== this.#size) {
+      const mark = { x: layout.markX, y: layout.markY, size };
+      const views = staticViews(layout, sea, mark, this.#dry);
+      const texture = { width: layout.columns, height: layout.rows, format: "rgba16f" } as const;
+      this.#ground ??= new DataTexture(this.#gl, texture);
+      this.#surface ??= new DataTexture(this.#gl, texture);
+      this.#ground.resize(layout.columns, layout.rows);
+      this.#surface.resize(layout.columns, layout.rows);
+      this.#ground.upload(views.ground);
+      this.#surface.upload(views.surface);
+      this.#laid = land.laid;
+      this.#sea = sea;
+      this.#size = size;
+    }
+    bindViews(frame, this.#ground?.texture, this.#surface?.texture);
+  }
+
+  dispose(): void {
+    this.#ground?.dispose();
+    this.#surface?.dispose();
+  }
+}
+
+/**
+ * The bed: lays the landscape out for the landscape knob and the frame's shape, at once the first
+ * time and then once they have rested RELAYOUT_MS, for the sea level, the plants and the current as
+ * they stand; affords it to the water (DeltaLand) and shows it lying dry.
+ */
+export function deltaBedSim(
+  gl: WebGL2RenderingContext,
+  params: readonly ParamDef[],
+): LayerSim<OverheadRig> {
+  const knobs = new KnobReader<BedKnob>("deltaBed", params, BED_KNOBS);
+  const land = new DeltaLand();
+  const views = new StillViews(gl, true);
+  const settle = new Settle<LayoutKey>(RELAYOUT_MS, { same: sameKey, copy: (k) => ({ ...k }) });
+  // Scratch the frame rewrites: the grid the frame wants.
   const want: LayoutKey = { seed: 0, columns: 0, rows: 0 };
   return {
-    frame(frame: SimFrame): readonly (WebGLTexture | undefined)[] {
-      gridFor(frame, key, want);
+    affordances: land,
+    frame(frame: LayerFrame<OverheadRig>): void {
+      gridFor(frame, settle.laid, want);
       want.seed = knobs.value(frame, "landscape");
       const sea = (knobs.value(frame, "seaLevel") - 0.5) * 2 * SEA_RANGE;
-      if (key === undefined || layout === undefined || !sameKey(key, want)) {
+      let layout = land.layout;
+      if (settle.due(want, frame.now) || layout === undefined) {
         layout = layDelta(
           want.columns,
           want.rows,
@@ -1459,154 +1549,170 @@ function stillSim(gl: WebGL2RenderingContext, knobs: KnobReader<DeltaKnob>): Sce
           knobs.value(frame, "vegetation") > 0,
           knobs.value(frame, "current"),
         );
-        key = { ...want };
-        shownSea = Number.NaN;
+        land.layout = layout;
+        land.seed = want.seed;
+        land.laid++;
+        settle.lay(want);
       }
-      const size = markSize(frame, knobs, layout.rows);
-      if (sea !== shownSea || size !== shownSize) {
-        const views = staticViews(layout, sea, { x: layout.markX, y: layout.markY, size });
-        const texture = { width: layout.columns, height: layout.rows, format: "rgba16f" } as const;
-        ground ??= new DataTexture(gl, texture);
-        surface ??= new DataTexture(gl, texture);
-        ground.resize(layout.columns, layout.rows);
-        surface.resize(layout.columns, layout.rows);
-        ground.upload(views.ground);
-        surface.upload(views.surface);
-        shownSea = sea;
-        shownSize = size;
-      }
-      return [ground?.texture, surface?.texture];
+      views.show(frame, land, layout, sea, markSize(knobs.value(frame, "mark"), layout.rows));
     },
     dispose(): void {
-      ground?.dispose();
-      surface?.dispose();
+      views.dispose();
     },
   };
 }
 
-/** The delta, for a scene whose `params` carry the knobs `DeltaKnob` names. */
-export function deltaSim(params: readonly ParamDef[]): SimFactory {
-  return (gl: WebGL2RenderingContext): SceneSim => {
-    const knobs = new KnobReader<DeltaKnob>("delta", params, DELTA_KNOBS);
-    const gpu = GpuCompute.create(gl);
-    if (!gpu) return stillSim(gl, knobs);
-    const floodSlot = knobs.trigger("floods");
+/** The bed's landscape, once it has laid one out. */
+function landOf(frame: LayerFrame<OverheadRig>): DeltaLand | undefined {
+  const land = frame.host("deltaBed");
+  return land instanceof DeltaLand && land.layout !== undefined ? land : undefined;
+}
 
-    let field: DeltaField | undefined;
-    const settle = new Settle<LayoutKey>(RELAYOUT_MS, { same: sameKey, copy: (k) => ({ ...k }) });
-    /** Time-lapse seconds so far, and the steps they owe. */
-    let clock = 0;
-    const steps = new FixedStep(1 / STEPS_PER_SECOND, MAX_FRAME_STEPS);
-    let markShown = -1;
-    /** Warm-up steps taken since the last layout; the sim holds still until all PREWARM_STEPS are done. */
-    let warmed = PREWARM_STEPS;
-    let manualFlood = -Infinity;
-    /** Per hand (by place in SimFrame.principals): whether it dragged last frame, and where (cells). */
-    const dragging = new Uint8Array(MAX_PRINCIPALS);
-    const lastX = new Float64Array(MAX_PRINCIPALS);
-    const lastY = new Float64Array(MAX_PRINCIPALS);
-    // Scratch the frame rewrites: the grid the frame wants, where a hand is, and where it was.
-    const want: LayoutKey = { seed: 0, columns: 0, rows: 0 };
-    const at = { x: 0, y: 0 };
-    const cell = { x: 0, y: 0 };
-    const last = { x: 0, y: 0 };
-
-    /** How high the floods stand at time-lapse second `at`: the seasonal ones while on, and one asked for now. */
-    const floodAt = (at: number, seasonal: number, strength: number): number =>
-      Math.max(seasonal > 0 ? seasonalFlood(at, want.seed) : 0, floodShape(at - manualFlood)) *
-      strength;
-
-    /** Lay out afresh for the grid in `want`; the frame then runs the warm-up. */
-    const relayout = (frame: SimFrame): DeltaField => {
+/** The water where the GPU cannot run the simulation: the bed's layout with its still water. */
+function stillWater(
+  gl: WebGL2RenderingContext,
+  knobs: KnobReader<WaterKnob>,
+): LayerSim<OverheadRig> {
+  const views = new StillViews(gl, false);
+  return {
+    frame(frame: LayerFrame<OverheadRig>): void {
+      const land = landOf(frame);
+      const layout = land?.layout;
+      if (land === undefined || layout === undefined) {
+        bindViews(frame, undefined, undefined);
+        return;
+      }
       const sea = (knobs.value(frame, "seaLevel") - 0.5) * 2 * SEA_RANGE;
-      const layout = layDelta(
-        want.columns,
-        want.rows,
-        want.seed,
-        sea,
-        knobs.value(frame, "vegetation") > 0,
-        knobs.value(frame, "current"),
-      );
-      if (field === undefined) field = new DeltaField(gpu, layout);
-      else field.reset(layout);
-      settle.lay(want);
-      markShown = -1;
-      warmed = 0;
-      field.setEnvironment(environment(frame, knobs, clock, 0));
-      return field;
-    };
+      views.show(frame, land, layout, sea, markSize(knobs.value(frame, "mark"), layout.rows));
+    },
+    dispose(): void {
+      views.dispose();
+    },
+  };
+}
 
-    return {
-      frame(frame: SimFrame): readonly (WebGLTexture | undefined)[] {
-        const now = frame.now;
-        gridFor(frame, settle.laid, want);
-        want.seed = knobs.value(frame, "landscape");
-        const sim = settle.due(want, now) || field === undefined ? relayout(frame) : field;
-        const layout = sim.layout;
+/**
+ * The water: the river and the sea on the GPU over the bed's layout (started over on each new one),
+ * the bed they work, the floods, and every hand digging or banking the land.
+ */
+export function deltaWaterSim(
+  gl: WebGL2RenderingContext,
+  params: readonly ParamDef[],
+): LayerSim<OverheadRig> {
+  const knobs = new KnobReader<WaterKnob>("deltaWater", params, WATER_KNOBS);
+  const gpu = GpuCompute.create(gl);
+  if (!gpu) return stillWater(gl, knobs);
+  const floodSlot = knobs.trigger("floods");
 
-        // The warm-up: a fixed count of steps, over as many frames as the machine needs.
+  let field: DeltaField | undefined;
+  /** The bed's layout the field was started from (DeltaLand.laid), and its landscape. */
+  let laid = 0;
+  let seed = 0;
+  /** Time-lapse seconds so far, and the steps they owe. */
+  let clock = 0;
+  const steps = new FixedStep(1 / STEPS_PER_SECOND, MAX_FRAME_STEPS);
+  let markShown = -1;
+  /** Warm-up steps taken since the last layout; the sim holds still until all PREWARM_STEPS are done. */
+  let warmed = PREWARM_STEPS;
+  let manualFlood = -Infinity;
+  /** Per hand (by place in SimFrame.principals): whether it dragged last frame, and where (cells). */
+  const dragging = new Uint8Array(MAX_PRINCIPALS);
+  const lastX = new Float64Array(MAX_PRINCIPALS);
+  const lastY = new Float64Array(MAX_PRINCIPALS);
+  // Scratch the frame rewrites: where a hand is, and where it was.
+  const at = { x: 0, y: 0 };
+  const cell = { x: 0, y: 0 };
+  const last = { x: 0, y: 0 };
+
+  /** How high the floods stand at time-lapse second `at`: the seasonal ones while on, and one asked for now. */
+  const floodAt = (at: number, seasonal: number, strength: number): number =>
+    Math.max(seasonal > 0 ? seasonalFlood(at, seed) : 0, floodShape(at - manualFlood)) * strength;
+
+  return {
+    frame(frame: LayerFrame<OverheadRig>): void {
+      const land = landOf(frame);
+      const layout = land?.layout;
+      if (land === undefined || layout === undefined) {
+        bindViews(frame, undefined, undefined);
+        return;
+      }
+      // A new layout from the bed: start over on it, and run the warm-up.
+      if (field === undefined || land.laid !== laid) {
+        if (field === undefined) field = new DeltaField(gpu, layout);
+        else field.reset(layout);
+        laid = land.laid;
+        seed = land.seed;
+        markShown = -1;
+        warmed = 0;
+        field.setEnvironment(environment(frame, knobs, clock, 0));
+      }
+      const sim = field;
+
+      // The warm-up: a fixed count of steps, over as many frames as the machine needs.
+      if (warmed < PREWARM_STEPS) {
+        warmed = sim.warm(warmed, Math.max(PREWARM_MS, frame.budget));
+        sim.view(1);
         if (warmed < PREWARM_STEPS) {
-          warmed = sim.warm(warmed, Math.max(PREWARM_MS, frame.budget));
-          sim.view(1);
-          if (warmed < PREWARM_STEPS) return sim.textures;
+          bindViews(frame, ...sim.textures);
+          return;
         }
+      }
 
-        // The M: stamped into the ground when it appears, grows or goes.
-        const size = markSize(frame, knobs, layout.rows);
-        if (size !== markShown) {
-          sim.setMark(size);
-          markShown = size;
+      // The M: stamped into the ground when it appears, grows or goes.
+      const size = markSize(knobs.value(frame, "mark"), layout.rows);
+      if (size !== markShown) {
+        sim.setMark(size);
+        markShown = size;
+      }
+
+      // Time-lapse seconds, the floods (seasonal while on, and one now when asked) and the steps
+      // owed, each step under the tide and flood of its own moment.
+      const lapse = Math.max(0, frame.dt * frame.motion * knobs.value(frame, "speed"));
+      clock += lapse;
+      if (frame.fired[floodSlot] === true) manualFlood = clock;
+      const seasonal = knobs.value(frame, "floods");
+      const strength = seasonal > 0 ? seasonal : knobs.amount(frame, "floods");
+      const env = environment(frame, knobs, clock, floodAt(clock, seasonal, strength));
+      for (let i = 0, n = steps.advance(lapse); i < n; i++) {
+        const at = clock - steps.lag(i);
+        sim.setEnvironment(environment(frame, knobs, at, floodAt(at, seasonal, strength)));
+        sim.step();
+      }
+
+      // Every hand (SimFrame.principals) digs a ditch, or throws up a bank, wherever it is held
+      // down and dragged; a press held still digs a pit. Not while the passage's camera moves: the
+      // picture is not yet (or no longer) where a hand maps it.
+      const still = frame.passage.enter >= 1 && frame.passage.exit <= 0;
+      const amount = 1 - Math.exp(-BRUSH_RATE * Math.max(frame.dt, 1 / 120));
+      const dig = knobs.value(frame, "tool") < 0.5;
+      for (let i = 0; i < MAX_PRINCIPALS; i++) {
+        const hand = frame.principals[i];
+        if (!still || hand === undefined || !hand.inside || !hand.down) {
+          dragging[i] = 0;
+          continue;
         }
+        gridUv(hand.x, hand.y, frame.aspect, layout.columns / layout.rows, at);
+        cell.x = at.x * layout.columns;
+        cell.y = at.y * layout.rows;
+        last.x = lastX[i] ?? cell.x;
+        last.y = lastY[i] ?? cell.y;
+        sim.brush(dragging[i] === 1 ? last : cell, cell, amount, dig, env.seaBase);
+        lastX[i] = cell.x;
+        lastY[i] = cell.y;
+        dragging[i] = 1;
+      }
 
-        // Time-lapse seconds, the floods (seasonal while on, and one now when asked) and the steps
-        // owed, each step under the tide and flood of its own moment.
-        const lapse = Math.max(0, frame.dt * frame.motion * knobs.value(frame, "speed"));
-        clock += lapse;
-        if (frame.fired[floodSlot] === true) manualFlood = clock;
-        const seasonal = knobs.value(frame, "floods");
-        const strength = seasonal > 0 ? seasonal : knobs.amount(frame, "floods");
-        const env = environment(frame, knobs, clock, floodAt(clock, seasonal, strength));
-        for (let i = 0, n = steps.advance(lapse); i < n; i++) {
-          const at = clock - steps.lag(i);
-          sim.setEnvironment(environment(frame, knobs, at, floodAt(at, seasonal, strength)));
-          sim.step();
-        }
-
-        // Every hand (SimFrame.principals) digs a ditch, or throws up a bank, wherever it is held
-        // down and dragged; a press held still digs a pit. Not while the passage's camera moves: the
-        // picture is not yet (or no longer) where a hand maps it.
-        const still = frame.passage.enter >= 1 && frame.passage.exit <= 0;
-        const amount = 1 - Math.exp(-BRUSH_RATE * Math.max(frame.dt, 1 / 120));
-        const dig = knobs.value(frame, "tool") < 0.5;
-        for (let i = 0; i < MAX_PRINCIPALS; i++) {
-          const hand = frame.principals[i];
-          if (!still || hand === undefined || !hand.inside || !hand.down) {
-            dragging[i] = 0;
-            continue;
-          }
-          gridUv(hand.x, hand.y, frame.aspect, layout.columns / layout.rows, at);
-          cell.x = at.x * layout.columns;
-          cell.y = at.y * layout.rows;
-          last.x = lastX[i] ?? cell.x;
-          last.y = lastY[i] ?? cell.y;
-          sim.brush(dragging[i] === 1 ? last : cell, cell, amount, dig, env.seaBase);
-          lastX[i] = cell.x;
-          lastY[i] = cell.y;
-          dragging[i] = 1;
-        }
-
-        // The view follows the time-lapse time that passed, and the frame clock while that stands still.
-        const eased = Math.max(
-          Math.min(lapse * STEPS_PER_SECOND, MAX_FRAME_STEPS),
-          Math.max(frame.dt, 1 / 120) * VIEW_FLOOR,
-        );
-        sim.view(1 - (1 - VIEW_EASE) ** eased);
-        return sim.textures;
-      },
-      dispose(): void {
-        if (field) field.dispose();
-        else gpu.dispose();
-      },
-    };
+      // The view follows the time-lapse time that passed, and the frame clock while that stands still.
+      const eased = Math.max(
+        Math.min(lapse * STEPS_PER_SECOND, MAX_FRAME_STEPS),
+        Math.max(frame.dt, 1 / 120) * VIEW_FLOOR,
+      );
+      sim.view(1 - (1 - VIEW_EASE) ** eased);
+      bindViews(frame, ...sim.textures);
+    },
+    dispose(): void {
+      if (field) field.dispose();
+      else gpu.dispose();
+    },
   };
 }

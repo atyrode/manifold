@@ -60,7 +60,7 @@ components"); run `bun concepts/landing/scripts/scene-docs.ts` after a change to
 | `shanshui`     | Shan shui        | Land              | its own program                         | 17    | 3       | An ink-wash handscroll of mountains and water, unrolling without end.                                                           |
 | `bamboo`       | Bamboo grove     | Land              | `outdoor` preset, 5 layers + 4 offered  | 43    | 0       | A misty bamboo grove, and a water clock tipping into a stone basin.                                                             |
 | `garden`       | Stone garden     | Land              | `outdoor` preset, 5 layers + 1 offered  | 39    | 0       | Raked gravel, stones and moss, always being tended, under a maple letting go of its leaves. Drag to rake.                       |
-| `delta`        | Delta            | Land              | its own program                         | 16    | 0       | A river building its delta into the sea, seen from orbit. Drag to dig a new channel.                                            |
+| `delta`        | Delta            | Land              | `overhead` preset, 2 layers + 1 offered | 18    | 0       | A river building its delta into the sea, seen from orbit. Drag to dig a new channel.                                            |
 | `forest`       | Mystic forest    | Land              | `outdoor` preset, 5 layers + 4 offered  | 46    | 1       | An ancient misty cedar forest, where small spirits appear on the mossy roots.                                                   |
 | `campfire`     | Campfire         | Land              | `outdoor` preset, 6 layers              | 36    | 2       | A small fire under a vast sky: sparks drifting up, a marshmallow toasting, a giant planet low over the pines.                   |
 | `autumn`       | Autumn park      | Land              | `outdoor` preset, 6 layers + 4 offered  | 42    | 0       | A great tree letting go of its leaves over a park path, the low sun glowing through them.                                       |
@@ -2372,8 +2372,8 @@ and `dwell` (`state.ts` refuses to load such a scene).
 island as presets of its 84 layers; the `interior` composer (Phase 3, "The interior composer") runs
 sill, lava, bonsai, incense and frost as presets of its 16 layers, with a lava lamp that stands on
 the sill and the frost on the sill's panes; the `overhead` composer (Phase 4, "The overhead
-composer" below) runs pond and ripple (its pilot), tidepool and sandtable as presets of its 16
-layers, with koi offered to the ripple tank. The rest of the interiors and of the scenes seen from
+composer" below) runs pond and ripple (its pilot), tidepool, sandtable and delta as presets of its
+19 layers, with koi offered to the ripple tank. The rest of the interiors and of the scenes seen from
 above are the rest of those phases. Not built yet, so still the contract: the per-program knob
 layout (a composed scene keeps the renderer's 64 knobs and 8 trigger slots,
 `src/composer/caps.ts`), the layer costs (`scripts/layer-costs.ts`) with the stack meter and the
@@ -2391,7 +2391,7 @@ of it stack **layers**, each a module from a scene. Three composers cover the ro
 | ---------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `outdoor`  | A pinhole over the floor: eye height, horizon, focal, turn (the yaw to the sky's frame), pitch, `minAspect` (narrower frames are laid out this wide and cropped), a passage          | The floor plane y = 0, in metres in the rig's frame (x right, z ahead), of one floor kind (earth, lawn, gravel, sand, rock, moss, ice, snowfield, water, asphalt) unless a ground layer replaces it                                                                             | 1: meadow, bees. 2: shore, dunes, autumn, lanterns, falls, campfire, fireflies, forest, bamboo, garden, lake, country, street, skyward, flock, swell, dew |
 | `interior` | A level pinhole in the room, its eye over a ledge across the front, and the room's `distance` to the ledge's seat line (its scale there); the window's view through a rig of its own | The back wall (an albedo) lit by the room's light (its lamp, its ambient, the window's daylight, the layers' lights); the ledge a ground layer (sill, sideboard, stand); a window a backdrop the World crosses; the layers' silhouettes for a backdrop's shadows (`roomCaster`) | 3: sill, lava, bonsai. Then bar, train, mobile, incense, frost, clouds, harmonograph                                                                      |
-| `overhead` | A patch seen straight down, orthographic, `span` metres per screen height, over fresh water or the sea's (`salt`); the ADR's `tilt` feature and `orbit` range are not built          | A bed layer, seen through the water layer's surface (its slope bends the bed, its depth dims it), the light of a layer's sun or lamp; the plain bed under a bed mid-turn                                                                                                        | 4: pond, ripple (the pilot), tidepool, sandtable. Then delta, island, and garden and dunes from above                                                     |
+| `overhead` | A patch seen straight down, orthographic, `span` metres per screen height, over fresh water or the sea's (`salt`); the ADR's `tilt` feature and `orbit` range are not built          | A bed layer, seen through the water layer's surface (its slope bends the bed, its depth dims it), the light of a layer's sun or lamp; the plain bed under a bed mid-turn                                                                                                        | 4: pond, ripple (the pilot), tidepool, sandtable, delta. Then island, and garden and dunes from above                                                     |
 
 Fractal, hyperbolic, orbit and shanshui stay scenes of their own. The matter shelf and kelp are
 open (ADR 0062, D7).
@@ -2485,10 +2485,10 @@ as a layer without it only over one whose is not (the koi never in a tide pool).
 
 Its site is a bed and the water over it, two roles that stand as the backdrop and the ground do:
 
-| Role    | How many                                             | Built                                                                                                                                                                                              |
-| ------- | ---------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `bed`   | exactly 1; with none switched on the home one stands | the pond's floor (`pondBed`), the ripple tank's screen, tray and lamp (`tank`), the tide pool's rock under the shore's sky (`rockPool`), the sand table's sand or slate, rim and floor (`sandBed`) |
-| `water` | at most 1; without one, the dry bed                  | the pond's water (`pondWater`), the tank's waves (`tankWater`: the wave sim's water), the sea over the rock (`surge`: shallow water)                                                               |
+| Role    | How many                                             | Built                                                                                                                                                                                                                                         |
+| ------- | ---------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `bed`   | exactly 1; with none switched on the home one stands | the pond's floor (`pondBed`), the ripple tank's screen, tray and lamp (`tank`), the tide pool's rock under the shore's sky (`rockPool`), the sand table's sand or slate, rim and floor (`sandBed`), the delta's land and sea bed (`deltaBed`) |
+| `water` | at most 1; without one, the dry bed                  | the pond's water (`pondWater`), the tank's waves (`tankWater`: the wave sim's water), the sea over the rock (`surge`: shallow water), the river and the sea over the delta (`deltaWater`: shallow water over the bed it works)                |
 
 Every pass is given `Patch x`: the cell, its point `x.p` (screen heights from the frame's centre),
 the light (`x.sunUV`, `x.sun`, `x.power`: the pond's sun until a layer's begin sets its own; the
@@ -2504,12 +2504,13 @@ what hangs over the patch, and the light through it), `glint`, `over` (the borde
 `grade`, each in canonical order. Turns are the outdoor composer's: a program that draws them cuts
 each layer's passes per cell, with the plain bed under a bed mid-turn.
 
-| Preset      | Layers                                              | Rig                       | Key renames                                                                                             |
-| ----------- | --------------------------------------------------- | ------------------------- | ------------------------------------------------------------------------------------------------------- |
-| `pond`      | `pondBed`, `pondWater`, `border`, `koi`; + `stone`  | 3 m a screen height       | none: `koi` (a count, `koi-amount`) and `stone` became switches; `pondBed`, `pondWater`, `border` new   |
-| `ripple`    | `tank`, `tankWater`; + `koi`                        | 1 m a screen height       | none: `tank`, `tankWater` new                                                                           |
-| `tidepool`  | `rockPool`, `surge`, `fronds`, `anemones`; + `fish` | 3 m a screen height, salt | none: `fronds`, `anemones` and `fish` (a count, `fish-amount`) became switches; `rockPool`, `surge` new |
-| `sandtable` | `sandBed`, `tableLamp`, `ball`; + `pendulum`        | 0.93 m a screen height    | `machine` gone: the `ball` and `pendulum` switches replace it; `sandBed`, `tableLamp` new               |
+| Preset      | Layers                                              | Rig                         | Key renames                                                                                             |
+| ----------- | --------------------------------------------------- | --------------------------- | ------------------------------------------------------------------------------------------------------- |
+| `pond`      | `pondBed`, `pondWater`, `border`, `koi`; + `stone`  | 3 m a screen height         | none: `koi` (a count, `koi-amount`) and `stone` became switches; `pondBed`, `pondWater`, `border` new   |
+| `ripple`    | `tank`, `tankWater`; + `koi`                        | 1 m a screen height         | none: `tank`, `tankWater` new                                                                           |
+| `tidepool`  | `rockPool`, `surge`, `fronds`, `anemones`; + `fish` | 3 m a screen height, salt   | none: `fronds`, `anemones` and `fish` (a count, `fish-amount`) became switches; `rockPool`, `surge` new |
+| `sandtable` | `sandBed`, `tableLamp`, `ball`; + `pendulum`        | 0.93 m a screen height      | `machine` gone: the `ball` and `pendulum` switches replace it; `sandBed`, `tableLamp` new               |
+| `delta`     | `deltaBed`, `deltaWater`; + `clouds`                | 20 km a screen height, salt | none: `clouds` (a cover, `clouds-amount`) became a switch; `deltaBed`, `deltaWater` new                 |
 
 - **The knobs.** The overhead composer lists no knobs of its own and none of the World's: the World
   over the patch (its weather seen from above, its light) is not built, and the pond, 51 knobs of
@@ -2517,13 +2518,16 @@ each layer's passes per cell, with the plain bed under a bed mid-turn.
   three new switches) and the ripple tank 18 (its 11, two switches and the koi's five), each within
   the cap without the per-program layout. The tide pool lists 36 (its 34 and two new switches): its
   sky and rain are its own knobs (`time`, `cycle`, `rain`), its bed's. The sand table lists 17 (its
-  14 but `machine`, and four switches). Trigger slots count from 0.
+  14 but `machine`, and four switches), the delta 18 (its 16 and two new switches). Trigger slots
+  count from 0.
 - **Scale.** The pond and the tank are drawn in the frame's units (screen heights; the tank in
   short sides, its own layout), so their layers are locked to their own span; the koi are drawn at
   the frame's scale at any span from 1 m to the pond's 3 m: 33–51 cm koi in the pond, 11–17 cm fish
   in the tank. The tide pool is drawn in frame heights (its frame 3 m tall) and in the sea's water,
   so its layers are locked to its span and to salt water: it offers none of the pond's (whose span
-  it shares, and whose 54 knobs would pass the cap) and the pond none of its.
+  it shares, and whose 54 knobs would pass the cap) and the pond none of its. The delta is drawn in
+  its grid's cells (256 on the frame's short side, cover-fitted), a frame 20 km tall over the sea,
+  so its layers are locked to that span and to salt water; no other scene's layer is offered there.
 - **Light and air.** The pond's sun (`sunX`, `sunY`, `sunPower`) is its water's, which sets
   `x.sun` for every layer (the koi's and the pads' shadows fall away from it); the tank's lamp is
   the tank's. The border's breeze (`wind`) ruffles the water the sun glints on through `x.wind`.
@@ -2557,6 +2561,24 @@ each layer's passes per cell, with the plain bed under a bed mid-turn.
   it) sets the table's light and the patch's `x.sun`; without it the shared begin takes the
   patch's light from where `x.sun` stands at the lamp's default height. The frame is 0.93 m tall
   (the ball a one-inch ball), below the koi's metre, so no other scene's layer is offered.
+- **The delta.** The land and the water work each other every step (the water erodes and silts the
+  bed, the plants hold it), so the bed's sim lays the landscape out (`deltaBedSim`, per seed and the
+  frame's shape, settled over 300 ms) and affords it (`DeltaLand`, through `LayerFrame.host`), and
+  the water's sim (`deltaWaterSim`) runs the coupled river, sea and bed on the GPU over each new
+  layout, with the floods, the M stamped into the ground and the hands that dig or bank (`tool`, the
+  bed's knob, as are `vegetation` and `mark`, which the water reads). Each binds two fields, the same
+  two views of the ground: the water's of the live state, the bed's of its layout lying dry, which
+  the bed draws when the water is off. The shared chunk (`deltaSharedGlsl`) keeps the cell's ground:
+  the water's begin looks at its live view through the passage's camera, the bed's pass at its own
+  where none is up; the bed paints the land (satellite, infrared or chart, its knob `palette`), the
+  water's `water` pass the river and the sea over it and the plumes' accent, and the bed's `grade`
+  the passage's bank of cloud and the picture's ink. The sea is the water's boundary (its level,
+  tide and longshore current), the river its inflow, one shallow water: the rig is `salt`, the
+  river's fresh water running into it. The fair-weather clouds are a cover of their own (`clouds`,
+  their shadows in `cover`, the puffs in `over`), the delta's weather until the World is drawn over
+  the patch. The browser check `deltaDig` (`delta/dig.verify.ts`) drags a hand through the composed
+  sim with each tool and finds the ditch and the bank in the water's live view, the ground beside
+  them unmoved.
 - **Mix.** "Ripple tank · koi in the tank" (`scene=ripple&koi=1`): the koi swim in the tank over
   its screen, their shadows on it, drawn in their own colours over the lamp's dithered ramp.
 

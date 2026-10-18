@@ -174,7 +174,10 @@ const BUDGET = {
   chladni: [23000],
   clouds: [59500, 104500],
   country: [138500, 278500],
-  delta: [20500],
+  // Composed (ADR 0062 Phase 4): the overhead composer's prelude and the layers' passes and shared
+  // ground, as the pond and the ripple tank grew (18,850 before); its all-features program, new, is
+  // the one a layer's turn plays in.
+  delta: [23000, 26000],
   dew: [62500, 94500],
   dunes: [79500, 159500],
   falls: [110000, 196500],

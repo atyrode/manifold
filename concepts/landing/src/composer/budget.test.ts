@@ -30,6 +30,7 @@ describe("composed programs", () => {
       "bonsai",
       "campfire",
       "country",
+      "delta",
       "dew",
       "dunes",
       "falls",

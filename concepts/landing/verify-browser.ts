@@ -9,6 +9,7 @@ import { rippleEdgesVerify } from "./src/scenes/ripple/edges.verify.ts";
 import { verifyHarmonographPrewarm } from "./src/scenes/harmonograph/prewarm.verify.ts";
 import { fragmentSourceFor, packParams, sceneFeatures } from "./src/shaders/index.ts";
 import { verifyFrostSky } from "./src/scenes/frost/sky.verify.ts";
+import { verifyDeltaDig } from "./src/scenes/delta/dig.verify.ts";
 import { GpuCompute } from "./src/sims/gpu.ts";
 import { verifyOrbitRingDepth } from "./src/scenes/orbit/ring-depth.verify.ts";
 import { verifySwellRelief } from "./src/scenes/swell/relief.verify.ts";
@@ -573,6 +574,7 @@ export const checks: readonly Check[] = [
   ["worldClock", verifyWorldClock],
   ["fluidPressure", verifyFluidPressure],
   ["layerToggles", verifyLayerToggles],
+  ["deltaDig", verifyDeltaDig],
 ];
 
 /**

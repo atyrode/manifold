@@ -1,0 +1,6 @@
+---
+section: Changed
+issue: 1082
+---
+
+The landing concept's delta is now a preset of the `overhead` composer (ADR 0062 Phase 4), in three layers: the land and the sea's bed (`deltaBed`, the bed: its sim lays the valley, the fan of channels, the old lobe and the shelf out per seed and affords them to the water, and it draws the land in satellite colour, infrared or as a chart, lying dry when the water is off), the river and the sea (`deltaWater`, the water: the GPU shallow water over the bed it erodes and silts, with the floods, the sea's level, tide and longshore current, and the hand that digs a channel or banks one up) and the fair-weather clouds and their shadows (`clouds`, an offered cover, the delta's own weather until the World is drawn over the patch); its frame is 20 km tall over the sea (`salt`), so nothing else is offered there, and a new browser check, `deltaDig`, drags a hand through the composed sim to find the ditch and the bank it leaves. It draws the same pixels as before at its defaults, in infrared and as a chart, with clouds, with the M and the bank tool, on another landscape with a high sea and no plants or fields, and with a muddy full river against the current; every knob keeps its key, the clouds' becoming their layer's switch, and `deltaBed` and `deltaWater` are new switches.

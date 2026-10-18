@@ -1,7 +1,7 @@
-// Delta's code, loaded the first time the scene is needed (SceneDef.code).
-import { deltaScene } from "./index.ts";
-import { deltaSim } from "./sim.ts";
+// Delta's code, loaded the first time the scene is needed (SceneDef.code): assembled from the code
+// of every layer its rig offers (composer/overhead-glsl.ts).
+import { OVERHEAD_CODE } from "../../composer/overhead-code.ts";
+import { overheadCode } from "../../composer/overhead-glsl.ts";
+import { deltaComposed } from "./index.ts";
 
-export { deltaGlsl as glsl } from "./shader.ts";
-export const entry = "sceneDelta";
-export const sim = deltaSim(deltaScene.params);
+export const { glsl, entry, glslFor, sim } = overheadCode(deltaComposed, OVERHEAD_CODE);

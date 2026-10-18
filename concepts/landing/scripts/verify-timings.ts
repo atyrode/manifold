@@ -18,6 +18,7 @@ export const recordedSeconds: Readonly<Record<string, number>> = {
   countryTerrain: 14.3,
   countryVerges: 14.4,
   countryYear: 30.1,
+  deltaDig: 3.7,
   dewBins: 0.4,
   fallsBirds: 8,
   fallsGorge: 0.9,
