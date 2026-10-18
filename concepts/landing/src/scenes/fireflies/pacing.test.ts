@@ -6,12 +6,12 @@ const firefliesScene = await loadScene("fireflies");
 
 const POINTER = { inside: false };
 
-/** The swarm after its warm-up (paused frames) and one second in frames of 1/rate s: uSim0. */
+/** The swarm after its warm-up (paused frames) and one second in frames of 1/rate s: its field (composer slot 4). */
 function second(rate: number): Float32Array {
   const sim = new HeadlessSim(firefliesScene);
   for (let f = 0; f < 20; f++) sim.step({ dt: 0, pointer: POINTER });
   for (let f = 0; f < rate; f++) sim.step({ dt: 1 / rate, pointer: POINTER });
-  const swarm = Float32Array.from(sim.upload(0).data);
+  const swarm = Float32Array.from(sim.upload(4).data);
   sim.dispose();
   return swarm;
 }

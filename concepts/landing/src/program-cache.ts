@@ -291,7 +291,7 @@ export class ScenePrograms {
         const values = settingKeyed(def)
           ? Object.fromEntries(def.params.map((knob, index) => [knob.key, s.params[index] ?? 0]))
           : undefined;
-        const features = sceneFeatures(def, values, s.planets.count, s.agents > 0);
+        const features = sceneFeatures(def, values, s.planets, s.agents > 0);
         const all = sceneFeaturesAll(def, values);
         const allKey = all === undefined ? undefined : featureKey(all);
         if (allKey !== undefined) this.#allKeys.add(keptName(s.scene, allKey));

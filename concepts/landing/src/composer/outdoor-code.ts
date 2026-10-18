@@ -4,6 +4,15 @@
 import { apiarySim } from "../scenes/bees/beds.ts";
 import { gardeningSim } from "../scenes/bees/gardening.ts";
 import {
+  bambooSharedGlsl,
+  clockGlsl,
+  culmsGlsl,
+  groveFloorGlsl,
+  groveGlsl,
+  stoneLanternGlsl,
+} from "../scenes/bamboo/shader.ts";
+import { clockSim, culmsSim, groveSim } from "../scenes/bamboo/sim.ts";
+import {
   autumnFloorGlsl,
   autumnSharedGlsl,
   lampGlsl,
@@ -13,6 +22,16 @@ import {
   parkPathGlsl,
 } from "../scenes/autumn/shader.ts";
 import { litterSim, mapleSim, rakeSim } from "../scenes/autumn/sim.ts";
+import {
+  campfireGlsl,
+  campfireSharedGlsl,
+  campGlsl,
+  clearingGlsl,
+  pinesGlsl,
+  smokeGlsl,
+  sparksGlsl,
+} from "../scenes/campfire/shader.ts";
+import { campfireSim } from "../scenes/campfire/sim.ts";
 import {
   apiaryGlsl,
   beesSharedGlsl,
@@ -41,6 +60,36 @@ import {
   sprayGlsl,
 } from "../scenes/falls/shader.ts";
 import { greenerySim } from "../scenes/falls/sim.ts";
+import {
+  forestFloorGlsl,
+  forestSharedGlsl,
+  kodamaGlsl,
+  shrineGlsl,
+  undergrowthGlsl,
+  woodsGlsl,
+} from "../scenes/forest/shader.ts";
+import { kodamaSim } from "../scenes/forest/sim.ts";
+import { farShoreGlsl, lakeGlsl, lakeNightGlsl } from "../scenes/lake/shader.ts";
+import { farShoreSim, lakeSim } from "../scenes/lake/sim.ts";
+import { boughsSim } from "../scenes/garden/boughs.ts";
+import { gravelSim } from "../scenes/garden/gravel.ts";
+import { borderSim, templeWoodsSim } from "../scenes/garden/planting.ts";
+import { rakingSim } from "../scenes/garden/raking.ts";
+import {
+  borderGlsl,
+  boughsGlsl,
+  gravelGlsl,
+  stoneGardenSharedGlsl,
+  templeWallGlsl,
+  templeWoodsGlsl,
+} from "../scenes/garden/shader.ts";
+import {
+  creekGlsl,
+  firefliesSharedGlsl,
+  fireflySwarmGlsl,
+  mangrovesGlsl,
+} from "../scenes/fireflies/shader.ts";
+import { fireflySwarmSim, mangrovesSim } from "../scenes/fireflies/sim.ts";
 import { dandelionsGlsl, downsGlsl, grassGlsl, meadowSharedGlsl } from "../scenes/meadow/shader.ts";
 import { dandelionsSim, grassSim } from "../scenes/meadow/sim.ts";
 import { wildflowersGlsl, wildflowersSim } from "../scenes/meadow/wildflowers.ts";
@@ -83,6 +132,30 @@ const LANTERNS: SharedGlsl = {
 };
 /** The gorge's constants, light and shapes (falls/shader.ts), held by each of its layers after the plants (its ledge ferns are fronds). */
 const FALLS: SharedGlsl = { id: "falls", glsl: () => fallsSharedGlsl, begin: "fallsBegin" };
+/** The campfire's layout, light and fire (campfire/shader.ts), held by each of its layers. */
+const CAMPFIRE: SharedGlsl = {
+  id: "campfire",
+  glsl: () => campfireSharedGlsl,
+  begin: "campfireBegin",
+};
+/** The bamboo grove's constants, light and shapes (bamboo/shader.ts), held by each of its layers. */
+const BAMBOO: SharedGlsl = { id: "bamboo", glsl: () => bambooSharedGlsl, begin: "bambooBegin" };
+/** The forest's constants, light, mist and layout (forest/shader.ts), held by each of its layers. */
+const FOREST: SharedGlsl = { id: "forest", glsl: () => forestSharedGlsl, begin: "forestBegin" };
+/** The lake's night (lake/shader.ts), set by the far shore's begin: held by the far shore and the lake. */
+const LAKE_NIGHT: SharedGlsl = { id: "lakeNight", glsl: () => lakeNightGlsl };
+/** The stone garden's constants, light and cell (garden/shader.ts), held by each of its drawing layers after the plants (its woods and border are plant records). */
+const STONE_GARDEN: SharedGlsl = {
+  id: "stoneGarden",
+  glsl: () => stoneGardenSharedGlsl,
+  begin: "stoneGardenBegin",
+};
+/** The mangrove river's constants and per-cell state (fireflies/shader.ts), held by each of its layers after the plants (its prop roots are records). */
+const FIREFLIES: SharedGlsl = {
+  id: "fireflies",
+  glsl: () => firefliesSharedGlsl,
+  begin: "firefliesBegin",
+};
 
 export const OUTDOOR_CODE: Readonly<Record<string, LayerCode>> = {
   downs: { glsl: () => downsGlsl, shared: [MEADOW] },
@@ -91,6 +164,8 @@ export const OUTDOOR_CODE: Readonly<Record<string, LayerCode>> = {
   parkland: { glsl: () => parklandGlsl, shared: [AUTUMN] },
   temple: { glsl: () => templeGlsl, shared: [LANTERNS] },
   cliff: { glsl: () => cliffGlsl, shared: [PLANTS, FALLS] },
+  farShore: { glsl: () => farShoreGlsl, shared: [LAKE_NIGHT], sim: farShoreSim },
+  mangroves: { glsl: () => mangrovesGlsl, shared: [PLANTS, FIREFLIES], sim: mangrovesSim },
   lawn: { glsl: () => lawnGlsl, shared: [BEES, GARDEN] },
   apiary: { glsl: () => apiaryGlsl, shared: [BEES, GARDEN], sim: apiarySim },
   dunes: { glsl: () => dunesFieldGlsl, shared: [DUNE_SEA], sim: dunesSim },
@@ -99,6 +174,8 @@ export const OUTDOOR_CODE: Readonly<Record<string, LayerCode>> = {
   maple: { glsl: () => mapleGlsl, shared: [AUTUMN], sim: mapleSim },
   river: { glsl: () => riverGlsl, shared: [LANTERNS] },
   pool: { glsl: () => poolGlsl, shared: [PLANTS, FALLS] },
+  lake: { glsl: () => lakeGlsl, shared: [LAKE_NIGHT], sim: lakeSim },
+  creek: { glsl: () => creekGlsl, shared: [FIREFLIES] },
   falls: { glsl: () => fallsWaterGlsl, shared: [PLANTS, FALLS] },
   spray: { glsl: () => sprayGlsl, shared: [PLANTS, FALLS] },
   grass: { glsl: () => grassGlsl, shared: [MEADOW], sim: grassSim },
@@ -114,4 +191,27 @@ export const OUTDOOR_CODE: Readonly<Record<string, LayerCode>> = {
   cairns: { glsl: () => cairnsGlsl, shared: [SHORE], sim: cairnsSim },
   rake: { glsl: () => "", sim: rakeSim },
   lanterns: { glsl: () => lanternsGlsl, shared: [LANTERNS], sim: lanternsSim },
+  pines: { glsl: () => pinesGlsl, shared: [CAMPFIRE] },
+  clearing: { glsl: () => clearingGlsl, shared: [CAMPFIRE] },
+  camp: { glsl: () => campGlsl, shared: [CAMPFIRE] },
+  campfire: { glsl: () => campfireGlsl, shared: [CAMPFIRE], sim: campfireSim },
+  smoke: { glsl: () => smokeGlsl, shared: [CAMPFIRE] },
+  sparks: { glsl: () => sparksGlsl, shared: [CAMPFIRE] },
+  grove: { glsl: () => groveGlsl, shared: [BAMBOO], sim: groveSim },
+  groveFloor: { glsl: () => groveFloorGlsl, shared: [BAMBOO] },
+  culms: { glsl: () => culmsGlsl, shared: [BAMBOO], sim: culmsSim },
+  stoneLantern: { glsl: () => stoneLanternGlsl, shared: [BAMBOO] },
+  clock: { glsl: () => clockGlsl, shared: [BAMBOO], sim: clockSim },
+  woods: { glsl: () => woodsGlsl, shared: [FOREST] },
+  forestFloor: { glsl: () => forestFloorGlsl, shared: [FOREST] },
+  shrine: { glsl: () => shrineGlsl, shared: [FOREST] },
+  undergrowth: { glsl: () => undergrowthGlsl, shared: [FOREST] },
+  kodama: { glsl: () => kodamaGlsl, shared: [FOREST], sim: kodamaSim },
+  templeWall: { glsl: () => templeWallGlsl, shared: [PLANTS, STONE_GARDEN] },
+  gravel: { glsl: () => gravelGlsl, shared: [PLANTS, STONE_GARDEN], sim: gravelSim },
+  templeWoods: { glsl: () => templeWoodsGlsl, shared: [PLANTS, STONE_GARDEN], sim: templeWoodsSim },
+  boughs: { glsl: () => boughsGlsl, shared: [PLANTS, STONE_GARDEN], sim: boughsSim },
+  border: { glsl: () => borderGlsl, shared: [PLANTS, STONE_GARDEN], sim: borderSim },
+  raking: { glsl: () => "", sim: rakingSim },
+  fireflySwarm: { glsl: () => fireflySwarmGlsl, shared: [FIREFLIES], sim: fireflySwarmSim },
 };

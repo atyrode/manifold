@@ -1,11 +1,18 @@
-// GPU check (verify-browser.ts): the garden's climate (src/climate.ts), through its shader on its own
-// sim's garden. The season sets what falls: in winter the rain comes down as snow, drawing exactly as
-// the snow switch does, while outside winter rain stays rain; the snow switch falls in any season;
-// and the snow lying on the garden is uWeather.y's alone (the renderer lays winter's own there), never
-// the season's. Below the maple (the only other thing the season changes in the shader) winter with
-// no snow lying draws the garden exactly as autumn does. The garden's sky is dated (world-clock.ts):
-// autumn's sun and winter's, either side of midwinter, stand alike, so those two seasons compare.
-import { fragmentSourceFor, packParams, vertexSource } from "../../shaders/index.ts";
+// GPU check (verify-browser.ts): the garden's climate (src/climate.ts), through the all-features
+// program of its home layers on their own sims' garden. The season sets what falls (the World's
+// worldAt): in winter the rain comes down as snow, drawing exactly as the snow switch does, while
+// outside winter rain stays rain; the snow switch falls in any season; and the snow lying on the
+// garden is uWeather.y's alone (the renderer lays winter's own there), never the season's. Below the
+// maple (the only other thing the season changes in the shader) winter with no snow lying draws the
+// garden exactly as autumn does. The garden's sky is dated (world-clock.ts): autumn's sun and
+// winter's, either side of midwinter, stand alike, so those two seasons compare.
+import {
+  fragmentSourceFor,
+  packParams,
+  sceneFeaturesAll,
+  shaderValues,
+  vertexSource,
+} from "../../shaders/index.ts";
 import { visitorAlone } from "../../principals.ts";
 import { defaultsFor, paramDefaults, renderSettings, type Params } from "../../state.ts";
 import { loadScene } from "../index.ts";
@@ -81,7 +88,13 @@ export function gardenClimateCheck(gl: WebGL2RenderingContext): Record<string, u
     ...visitorAlone(),
   };
   const textures = sim.frame(frame);
-  const linked = compile(gl, fragmentSourceFor(gardenScene));
+  const linked = compile(
+    gl,
+    fragmentSourceFor(
+      gardenScene,
+      sceneFeaturesAll(gardenScene, shaderValues(gardenScene)) ?? fail("not knob-keyed"),
+    ),
+  );
   gl.canvas.width = WIDTH;
   gl.canvas.height = HEIGHT;
   gl.viewport(0, 0, WIDTH, HEIGHT);

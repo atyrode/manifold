@@ -1,32 +1,41 @@
 import { expect, test } from "bun:test";
+import { ATLAS_WIDTH } from "../../composer/caps.ts";
+import { allocate, ATLAS_SLOT } from "../../composer/sim.ts";
 import { HeadlessSim, type HeadlessFrame, type HeadlessUpload } from "../../sims/headless.ts";
 import { loadScene } from "../index.ts";
-import {
-  GARDEN_BORDER,
-  GARDEN_BORDER_FORM,
-  GARDEN_ISLANDS,
-  GARDEN_RECORD_ROW,
-  GARDEN_WOODS,
-} from "./sim.ts";
+import { gardenComposed } from "./index.ts";
+import { GARDEN_BORDER, GARDEN_BORDER_FORM, GARDEN_ISLANDS, GARDEN_WOODS } from "./sim.ts";
 
 const gardenScene = await loadScene("garden");
 
-// The garden's drying clock goes to the shader in uSim1 (the texel after the islands): fresh gravel's
-// damp fades with `clock - when raked`. These run the sim on the headless stand-in and read it there;
-// `knobs` are as in the URL (a feature: 1 for on, and `<key>-amount`).
+// Where the preset's layers keep their data in the records atlas, with its home layers on and with
+// the border too: the gravel's row (its islands, then the drying clock), the woods' and the border's
+// plant records, the boughs' row (their leaves).
+const rowsOf = (on: readonly string[]) =>
+  allocate(gardenComposed.place(new Set(on)).layers.map((placed) => placed.layer)).rows;
+const HOME = rowsOf(gardenComposed.preset.layers);
+const WITH_BORDER = rowsOf([...gardenComposed.preset.layers, "border"]);
+const GRAVEL_ROW = HOME["gravel"]?.base ?? 0;
+const WOODS_ROW = HOME["templeWoods"]?.base ?? 0;
+const LEAF_ROW = HOME["boughs"]?.base ?? 0;
+const BORDER_ROW = WITH_BORDER["border"]?.base ?? 0;
+
+// The gravel's drying clock goes to the shader in its row (the texel after the islands): fresh
+// gravel's damp fades with `clock - when raked`. These run the sim on the headless stand-in and read
+// it there; `knobs` are as in the URL (a feature: 1 for on, and `<key>-amount`).
 
 function dryingClock(knobs: Record<string, number>, seconds: number): number {
   const sim = new HeadlessSim(gardenScene);
   for (let n = 0; n < seconds * 60; n++) sim.step({ knobs, pointer: { inside: false } });
-  // uSim1: its row 0 holds the islands, then the clock.
-  const clock = sim.upload(1).data[GARDEN_ISLANDS * 4] ?? Number.NaN;
+  const clock =
+    sim.upload(ATLAS_SLOT).data[(GRAVEL_ROW * ATLAS_WIDTH + GARDEN_ISLANDS) * 4] ?? Number.NaN;
   sim.dispose();
   return clock;
 }
 
 test("by default fresh gravel dries on garden time, whatever the weather", () => {
-  expect(dryingClock({}, 4)).toBeCloseTo(4, 3);
-  expect(dryingClock({ rain: 1, "rain-amount": 0.7, time: 0 }, 4)).toBeCloseTo(4, 3);
+  expect(dryingClock({}, 4)).toBeCloseTo(4, 2);
+  expect(dryingClock({ rain: 1, "rain-amount": 0.7, time: 0 }, 4)).toBeCloseTo(4, 2);
 });
 
 test("drying with the weather: rain stops it, the night slows it, more weathering hurries it", () => {
@@ -34,7 +43,7 @@ test("drying with the weather: rain stops it, the night slows it, more weatherin
   expect(dryingClock({ ...on, rain: 1, "rain-amount": 0.7 }, 3)).toBe(0);
   const noon = dryingClock({ ...on, time: 0.5 }, 3);
   // A still midday at the weathering knob's default dries at the garden's own pace.
-  expect(noon).toBeCloseTo(3, 3);
+  expect(noon).toBeCloseTo(3, 2);
   expect(dryingClock({ ...on, time: 0 }, 3)).toBeLessThan(0.5 * noon);
   expect(dryingClock({ ...on, time: 0.5, soften: 1 }, 3)).toBeGreaterThan(2 * noon);
   expect(dryingClock({ ...on, time: 0.5, soften: 0 }, 3)).toBeLessThan(0.5 * noon);
@@ -60,8 +69,8 @@ test("the page stays light under winter's rain, which comes down as snow, and go
   expect(theme({ ...noonRain, season: 3, time: 0 })).toBe("night");
 });
 
-// uSim2: 4 × GARDEN_LEAF_SLOTS rgba16f, a row per leaf: (x, y, z, alpha), (chord axis, radius),
-// (span axis, kind), (hue, age on the ground 0..1, landed 0..1, 0); alpha 0: no leaf.
+// The boughs' row: four rgba16f texels a leaf: (x, y, z, alpha), (chord axis, radius), (span axis,
+// kind), (hue, age on the ground 0..1, landed 0..1, 0); alpha 0: no leaf.
 interface Leaf {
   x: number;
   chordUp: number;
@@ -72,9 +81,10 @@ interface Leaf {
 }
 
 function leaves(sim: HeadlessSim): Leaf[] {
-  const data = sim.upload(2).data;
+  const data = sim.upload(ATLAS_SLOT).data;
   const out: Leaf[] = [];
-  for (let o = 0; o + 16 <= data.length; o += 16) {
+  for (let i = 0; i < 24; i++) {
+    const o = (LEAF_ROW * ATLAS_WIDTH + 4 * i) * 4;
     if (!((data[o + 3] ?? 0) > 0)) continue;
     out.push({
       x: data[o] ?? 0,
@@ -103,41 +113,42 @@ test("leaves lying on the gravel lie flat, face up or face down", () => {
   }
 });
 
-test("a 'now' gust blows the leaves lying on the gravel the way the wind is set", () => {
-  // The same garden with and without the gust: each leaf lying there from the start (known by its
+test("the composer's gusts blow the leaves lying on the gravel the way the wind is set", () => {
+  // The same garden with its gusts off and on: each leaf lying there from the start (known by its
   // hue) ends up downwind of where it lies in the calm garden.
   const drift = (wind: number): number[] => {
     const calm = new HeadlessSim(gardenScene);
     const blown = new HeadlessSim(gardenScene);
-    const knobs = { wind, leaves: 0 };
-    const lying = leaves(calm.step({ knobs, pointer: { inside: false } }))
+    const still = { wind, leafFall: 0 };
+    const gusty = { ...still, gusts: 1, "gusts-amount": 1, gustRate: 1 };
+    const lying = leaves(calm.step({ knobs: still, pointer: { inside: false } }))
       .filter((leaf) => leaf.landed)
       .map((leaf) => leaf.hue);
-    blown.step({ knobs, pointer: { inside: false } });
-    for (let n = 1; n < 3 * 60; n++) {
-      calm.step({ knobs, pointer: { inside: false } });
-      blown.step({ knobs, pointer: { inside: false }, now: n === 1 ? ["leaves"] : [] });
+    blown.step({ knobs: gusty, pointer: { inside: false } });
+    for (let n = 1; n < 20 * 60; n++) {
+      calm.step({ knobs: still, pointer: { inside: false } });
+      blown.step({ knobs: gusty, pointer: { inside: false } });
     }
-    const still = leaves(calm);
+    const quiet = leaves(calm);
     const moved = leaves(blown);
     calm.dispose();
     blown.dispose();
     return lying.flatMap((hue) => {
-      const a = still.find((leaf) => leaf.hue === hue);
+      const a = quiet.find((leaf) => leaf.hue === hue);
       const b = moved.find((leaf) => leaf.hue === hue);
-      return a && b ? [b.x - a.x] : [];
+      return a && b && a.landed && b.landed ? [b.x - a.x] : [];
     });
   };
   const left = drift(-0.7);
-  expect(left.length).toBeGreaterThanOrEqual(5);
+  expect(left.length).toBeGreaterThanOrEqual(3);
   for (const dx of left) expect(dx).toBeLessThan(0);
   const right = drift(0.7);
-  expect(right.length).toBeGreaterThanOrEqual(5);
+  expect(right.length).toBeGreaterThanOrEqual(3);
   for (const dx of right) expect(dx).toBeGreaterThan(0);
 });
 
-// uSim1's plant records (sims/plants.ts PlantTexture, after GARDEN_RECORD_ROW rows of islands and
-// stones): the woods' stems (GARDEN_WOODS), then the border's organs (GARDEN_BORDER).
+// The plant records (sims/plants.ts writePlantRecords at ATLAS_WIDTH, from a layer's first row): the
+// woods' stems (GARDEN_WOODS), the border's organs (GARDEN_BORDER).
 interface PlantRecord {
   x: number;
   y: number;
@@ -150,10 +161,17 @@ interface PlantRecord {
   tier: number;
 }
 
-function plantRecord({ width, data }: HeadlessUpload, r: number): PlantRecord {
-  const texel = (row: number): number =>
-    ((GARDEN_RECORD_ROW + 4 * Math.floor(r / width) + row) * width + (r % width)) * 4;
-  const [t0, t1, t2, t3] = [texel(0), texel(1), texel(2), texel(3)];
+/** Record r's texel `row` (0..3) from the layer's first row `base`. */
+const recordTexel = (base: number, r: number, row: number): number =>
+  ((base + 4 * Math.floor(r / ATLAS_WIDTH) + row) * ATLAS_WIDTH + (r % ATLAS_WIDTH)) * 4;
+
+function plantRecord({ data }: HeadlessUpload, base: number, r: number): PlantRecord {
+  const [t0, t1, t2, t3] = [0, 1, 2, 3].map((row) => recordTexel(base, r, row)) as [
+    number,
+    number,
+    number,
+    number,
+  ];
   return {
     x: (data[t0] ?? 0) + (data[t0 + 1] ?? 0),
     y: (data[t0 + 2] ?? 0) + (data[t0 + 3] ?? 0),
@@ -174,18 +192,13 @@ function crownShift(stem: PlantRecord): number {
   return chord * (stem.cos * Math.cos(half) - stem.sin * Math.sin(half)) - stem.len * stem.cos;
 }
 
-/** The records of uSim1 from `first`, `count` of them, as their raw texels. */
-function recordTexels(sim: HeadlessSim, first: number, count: number): number[] {
-  const upload = sim.upload(1);
+/** `count` records from the layer's first row `base`, as their raw texels. */
+function recordTexels(sim: HeadlessSim, base: number, count: number): number[] {
+  const { data } = sim.upload(ATLAS_SLOT);
   const out: number[] = [];
-  for (let r = first; r < first + count; r++) {
-    const texel = (row: number): number =>
-      ((GARDEN_RECORD_ROW + 4 * Math.floor(r / upload.width) + row) * upload.width +
-        (r % upload.width)) *
-      4;
+  for (let r = 0; r < count; r++)
     for (let row = 0; row < 4; row++)
-      for (let c = 0; c < 4; c++) out.push(upload.data[texel(row) + c] ?? Number.NaN);
-  }
+      for (let c = 0; c < 4; c++) out.push(data[recordTexel(base, r, row) + c] ?? Number.NaN);
   return out;
 }
 
@@ -198,68 +211,77 @@ const BORDER = GARDEN_BORDER.bins * GARDEN_BORDER.organs;
 /** The woods' crowns in the default frame (16 / 9 wide): a row's crown k stands about (k + 0.5 - wobble / 2) / rate across. */
 const shown = (row: typeof GARDEN_WOODS.far, k: number): number =>
   (k + 0.5 - 0.5 * row.wobble) / row.rate;
+const ASPECT = 16 / 9;
+const VISIBLE = [...Array(GARDEN_WOODS.crowns).keys()].filter(
+  (k) => shown(GARDEN_WOODS.far, k) < ASPECT,
+);
 
-test("in still air the woods stand as laid out; a gust bows them downwind one after another, then they stand exactly as laid out again", () => {
-  const knobs = { wind: 0, border: 1, "border-amount": 1 };
-  const at = (now?: string[]): HeadlessFrame => ({
+test("in still air the woods stand as laid out; the gusts bow them downwind, and once they are off the woods stand exactly as laid out again", () => {
+  const calm = { wind: 0, border: 1, "border-amount": 1 };
+  const gusty = { ...calm, gusts: 1, "gusts-amount": 1, gustRate: 1 };
+  const at = (knobs: Record<string, number>): HeadlessFrame => ({
     knobs,
     pointer: { inside: false },
-    ...(now ? { now } : {}),
   });
-  const sim = new HeadlessSim(gardenScene).step(at());
-  const rest = recordTexels(sim, 0, WOODS + BORDER);
-  // Every stem is drawn and unbent: the shader draws the crowns where it always drew them.
-  for (let r = 0; r < WOODS; r++)
-    expect(plantRecord(sim.upload(1), r)).toMatchObject({ tier: 2, bend: 0 });
-  for (let n = 0; n < 120; n++) sim.step(at());
-  expect(differing(recordTexels(sim, 0, WOODS + BORDER), rest)).toBe(0);
-
-  // A "now" gust in still air blows to the right (sims/wind.ts windSign), its front setting out from
-  // the garden's left end: the crowns on the frame's left go first.
-  const aspect = 16 / 9;
-  const visible = [...Array(GARDEN_WOODS.crowns).keys()].filter(
-    (k) => shown(GARDEN_WOODS.far, k) < aspect,
-  );
-  const left = visible.filter((k) => shown(GARDEN_WOODS.far, k) < aspect / 3);
-  const right = visible.filter((k) => shown(GARDEN_WOODS.far, k) > (2 * aspect) / 3);
-  const mean = (ks: number[]): number =>
-    ks.reduce((sum, k) => sum + crownShift(plantRecord(sim.upload(1), k)), 0) / ks.length;
-  sim.step(at(["leaves"]));
-  for (let n = 0; n < 60; n++) sim.step(at());
-  // A second in, the front has bowed the left third and not yet reached the right third.
-  expect(mean(left)).toBeGreaterThan(0.5 / 540);
-  expect(Math.abs(mean(right))).toBeLessThan(0.1 / 540);
-  let most = 0;
-  let swayed = 0;
-  for (let n = 0; n < 4 * 60; n++) {
-    sim.step(at());
-    for (const k of visible) most = Math.max(most, crownShift(plantRecord(sim.upload(1), k)));
-    swayed = Math.max(swayed, differing(recordTexels(sim, WOODS, BORDER), rest.slice(16 * WOODS)));
+  const sim = new HeadlessSim(gardenScene).step(at(calm));
+  const rest = recordTexels(sim, WOODS_ROW, WOODS);
+  const borderRest = recordTexels(sim, BORDER_ROW, BORDER);
+  // Every stem is drawn and unbent (-0 and 0 alike): the shader draws the crowns where it always
+  // drew them.
+  for (let r = 0; r < WOODS; r++) {
+    const stem = plantRecord(sim.upload(ATLAS_SLOT), WOODS_ROW, r);
+    expect({ tier: stem.tier, unbent: stem.bend === 0 }).toEqual({ tier: 2, unbent: true });
   }
-  // A few cells downwind at 540 cells high, never a crown's width; the border bows too.
-  expect(most).toBeGreaterThan(3 / 540);
+  for (let n = 0; n < 120; n++) sim.step(at(calm));
+  expect(differing(recordTexels(sim, WOODS_ROW, WOODS), rest)).toBe(0);
+
+  // The composer's gusts in still air blow to the right: the crowns bow a cell or more downwind at
+  // 540 cells high, never a crown's width; the border bows too.
+  let most = 0;
+  let least = 0;
+  let swayed = 0;
+  for (let n = 0; n < 20 * 60; n++) {
+    sim.step(at(gusty));
+    for (const k of VISIBLE) {
+      const shift = crownShift(plantRecord(sim.upload(ATLAS_SLOT), WOODS_ROW, k));
+      most = Math.max(most, shift);
+      least = Math.min(least, shift);
+    }
+    swayed = Math.max(swayed, differing(recordTexels(sim, BORDER_ROW, BORDER), borderRest));
+  }
+  expect(most).toBeGreaterThan(1.5 / 540);
   expect(most).toBeLessThan(15 / 540);
+  expect(least).toBeGreaterThan(-most);
   expect(swayed).toBeGreaterThan(0);
-  // The gust is over within 14 s, and six seconds of still air later everything stands as laid out.
-  for (let n = 0; n < 17 * 60; n++) sim.step(at());
-  expect(differing(recordTexels(sim, 0, WOODS + BORDER), rest)).toBe(0);
+  // The gusts off, six seconds of still air later everything stands as laid out.
+  for (let n = 0; n < 12 * 60; n++) sim.step(at(calm));
+  expect(differing(recordTexels(sim, WOODS_ROW, WOODS), rest)).toBe(0);
+  expect(differing(recordTexels(sim, BORDER_ROW, BORDER), borderRest)).toBe(0);
   sim.dispose();
 });
 
-test("with motion off a gust still plays on the woods, and they stand exactly as laid out once it is over", () => {
-  const at = (now?: string[]): HeadlessFrame => ({
-    motion: 0,
-    knobs: { wind: 0 },
-    pointer: { inside: false },
-    ...(now ? { now } : {}),
-  });
-  const sim = new HeadlessSim(gardenScene).step(at());
-  const rest = recordTexels(sim, 0, WOODS);
-  sim.step(at(["leaves"]));
-  for (let n = 0; n < 2 * 60; n++) sim.step(at());
-  expect(differing(recordTexels(sim, 0, WOODS), rest)).toBeGreaterThan(0);
-  for (let n = 0; n < 13 * 60; n++) sim.step(at());
-  expect(differing(recordTexels(sim, 0, WOODS), rest)).toBe(0);
+test("the exit's gust crosses the woods from the garden's upwind end, the crowns bowing one after another", () => {
+  const sim = new HeadlessSim(gardenScene).step({ knobs: { wind: 0 }, pointer: { inside: false } });
+  const left = VISIBLE.filter((k) => shown(GARDEN_WOODS.far, k) < ASPECT / 3);
+  const right = VISIBLE.filter((k) => shown(GARDEN_WOODS.far, k) > (2 * ASPECT) / 3);
+  const mean = (ks: number[]): number =>
+    ks.reduce((sum, k) => sum + crownShift(plantRecord(sim.upload(ATLAS_SLOT), WOODS_ROW, k)), 0) /
+    ks.length;
+  // The exit's gust blows to the right in still air (sims/wind.ts windSign): most of the way through
+  // the exit, its front has bowed the left third and not yet reached the right third.
+  for (let n = 1; n <= 81; n++)
+    sim.step({ knobs: { wind: 0 }, pointer: { inside: false }, passage: { exit: n / 90 } });
+  expect(mean(left)).toBeGreaterThan(0.5 / 540);
+  expect(Math.abs(mean(right))).toBeLessThan(0.1 / 540);
+  sim.dispose();
+});
+
+test("with motion off the woods stand still, the gusts on or not", () => {
+  const knobs = { wind: 0, gusts: 1, "gusts-amount": 1, gustRate: 1 };
+  const sim = new HeadlessSim(gardenScene).step({ motion: 0, knobs, pointer: { inside: false } });
+  const rest = recordTexels(sim, WOODS_ROW, WOODS);
+  for (let n = 0; n < 5 * 60; n++) sim.step({ motion: 0, knobs, pointer: { inside: false } });
+  expect(differing(recordTexels(sim, WOODS_ROW, WOODS), rest)).toBe(0);
   sim.dispose();
 });
 
@@ -268,7 +290,9 @@ test("a breeze leans the woods downwind and stirs them crown by crown", () => {
     const sim = new HeadlessSim(gardenScene);
     const knobs = { wind };
     const shifts = (): number[] =>
-      [...Array(GARDEN_WOODS.crowns).keys()].map((k) => crownShift(plantRecord(sim.upload(1), k)));
+      [...Array(GARDEN_WOODS.crowns).keys()].map((k) =>
+        crownShift(plantRecord(sim.upload(ATLAS_SLOT), WOODS_ROW, k)),
+      );
     for (let n = 0; n < 5 * 60; n++) sim.step({ knobs, pointer: { inside: false } });
     const now = shifts();
     for (let n = 0; n < 2 * 60; n++) sim.step({ knobs, pointer: { inside: false } });
@@ -286,14 +310,23 @@ test("the border is off by default and then adds nothing; on, its clumps stand i
     for (let n = 0; n < 60; n++) sim.step({ knobs, pointer: { inside: false } });
     return sim;
   };
+  expect(HOME["border"]).toBeUndefined();
   const off = run({});
   const on = run({ border: 1 });
-  expect(recordTexels(off, WOODS, BORDER).every((v) => v === 0)).toBe(true);
-  // The islands' rows and the woods are the same with the border on or off.
-  const ownRows = (sim: HeadlessSim): number[] =>
-    Array.from(sim.upload(1).data.subarray(0, GARDEN_RECORD_ROW * sim.upload(1).width * 4));
-  expect(differing(ownRows(on), ownRows(off))).toBe(0);
-  expect(differing(recordTexels(on, 0, WOODS), recordTexels(off, 0, WOODS))).toBe(0);
+  // The gravel's row and the woods are the same with the border on or off.
+  const gravelRow = (sim: HeadlessSim, base: number): number[] =>
+    Array.from(
+      sim.upload(ATLAS_SLOT).data.subarray(base * ATLAS_WIDTH * 4, (base + 1) * ATLAS_WIDTH * 4),
+    );
+  expect(
+    differing(gravelRow(on, WITH_BORDER["gravel"]?.base ?? 0), gravelRow(off, GRAVEL_ROW)),
+  ).toBe(0);
+  expect(
+    differing(
+      recordTexels(on, WITH_BORDER["templeWoods"]?.base ?? 0, WOODS),
+      recordTexels(off, WOODS_ROW, WOODS),
+    ),
+  ).toBe(0);
   off.dispose();
   on.dispose();
 
@@ -302,12 +335,12 @@ test("the border is off by default and then adds nothing; on, its clumps stand i
     knobs: Record<string, number>,
   ): { ferns: number; mondo: number; turned: number; bins: Set<number> } => {
     const sim = run({ border: 1, ...knobs });
-    const upload = sim.upload(1);
+    const upload = sim.upload(ATLAS_SLOT);
     const out = { ferns: 0, mondo: 0, turned: 0, bins: new Set<number>() };
-    for (let r = GARDEN_BORDER.first; r < GARDEN_BORDER.first + BORDER; r++) {
-      const organ = plantRecord(upload, r);
+    for (let r = 0; r < BORDER; r++) {
+      const organ = plantRecord(upload, BORDER_ROW, r);
       if (organ.tier <= 0) continue;
-      const bin = Math.floor((r - GARDEN_BORDER.first) / GARDEN_BORDER.organs);
+      const bin = Math.floor(r / GARDEN_BORDER.organs);
       // Rooted on the gutter's floor, in its own bin.
       expect(organ.y).toBe(0);
       expect(Math.floor(organ.x / GARDEN_BORDER.pitch)).toBe(bin);

@@ -1,7 +1,7 @@
-// Fireflies's code, loaded the first time the scene is needed (SceneDef.code).
-import { firefliesScene } from "./index.ts";
-import { firefliesSim } from "./sim.ts";
+// Fireflies's code, loaded the first time the scene is needed (SceneDef.code): assembled from the
+// code of every layer its rig offers (composer/code.ts).
+import { composedCode } from "../../composer/code.ts";
+import { OUTDOOR_CODE } from "../../composer/outdoor-code.ts";
+import { firefliesComposed } from "./index.ts";
 
-export { firefliesGlsl as glsl } from "./shader.ts";
-export const entry = "sceneFireflies";
-export const sim = firefliesSim(firefliesScene.params);
+export const { glsl, entry, glslFor, sim } = composedCode(firefliesComposed, OUTDOOR_CODE);

@@ -1,10 +1,10 @@
 // GPU regressions for the shared canopy weather (shaders/lib/canopy.ts: bamboo and forest), run by
-// concepts/landing/verify-browser.ts on real WebGL output. A probe entry compiled with Forest's knobs
-// evaluates the library functions into a small float target, one case per pixel.
-import { fragmentSourceFor, vertexSource } from "../../shaders/index.ts";
+// concepts/landing/verify-browser.ts on real WebGL output. A probe entry compiled into Forest's
+// composed program evaluates the library functions into a small float target, one case per pixel.
+import { fragmentSourceFor, sceneFeatures, vertexSource } from "../../shaders/index.ts";
 import { loadScene } from "../index.ts";
 
-const forestScene = await loadScene("forest");
+const { glslFor, ...forestScene } = await loadScene("forest");
 
 function check(ok: boolean, message: string): void {
   if (!ok) throw new Error(`canopy: ${message}`);
@@ -148,9 +148,14 @@ interface Weather {
 
 export function verifyCanopy(gl: WebGL2RenderingContext): Record<string, unknown> {
   check(gl.getExtension("EXT_color_buffer_float") !== null, "float render targets unavailable");
+  if (glslFor === undefined) throw new Error("canopy: the forest is not composed");
+  const features = sceneFeatures(forestScene);
   const probe = program(
     gl,
-    fragmentSourceFor({ ...forestScene, entry: "canopyProbe", glsl: PROBE }),
+    fragmentSourceFor(
+      { ...forestScene, entry: "canopyProbe", glsl: `${glslFor(features)}${PROBE}` },
+      features,
+    ),
   );
   const weather = (tod: number, rain: number): Weather => {
     const out = draw(gl, probe, 10, 1, { uProbe: [0], uProbeA: [tod, rain, 0, 0] });

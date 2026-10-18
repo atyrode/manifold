@@ -1,6 +1,6 @@
-// The frozen lake's simulation, all on the CPU: the crack network and the singing ice, the snow the
-// wind drifts across the ice, and the aurora's substorms (the scene is index.ts, the picture
-// shader.ts).
+// The frozen lake's layer sims (layers.ts), all on the CPU, on the composed sim's frame
+// (composer/sim.ts): the lake's crack network and singing ice and the snow the wind drifts across
+// it (lakeSim), and the far shore's aurora substorms (farShoreSim); the picture is shader.ts.
 //
 // Field coordinates. The ice is addressed by where it shows on screen with the camera at rest
 // (CAMERA, a LevelCamera, sims/camera.ts): fu = F x / z (screenX), screen heights right of the
@@ -30,53 +30,51 @@
 // Dragging on the ice sweeps it clear and heaps the snow either side of the stroke. Every hand
 // (SimFrame.principals) knocks and sweeps alike.
 //
-// The aurora. A quiet arc brightens slowly for most of a minute, then breaks up: the light surges,
-// curtains spread overhead and ripple faster, and over a couple of minutes the display recovers.
-// Substorms come at random, every few minutes at the default frequency; "now" starts one at once.
-// The sim keeps the aurora's own clock (motion time, sped up through a breakup) for the shader.
+// The aurora (the far shore's sim). A quiet arc brightens slowly for most of a minute, then breaks
+// up: the light surges, curtains spread overhead and ripple faster, and over a couple of minutes the
+// display recovers. Substorms come at random, every few minutes at the default frequency; "now"
+// starts one at once. The sim keeps the aurora's own clock (motion time, sped up through a breakup)
+// for the shader.
 //
 // Time: schedules, the snow and the aurora's clock run on dt * motion; a zipping crack, its glow
 // and a substorm's surge play on dt, so a "now" still plays at motion 0. Everything depends only on
-// the seed, the knobs and the clocks, except what the hands do.
+// the seed (the composer's `seed`), the knobs and the clocks, except what the hands do.
 //
-// Textures:
-//   uSim0  rgba8 FIELD_W × FIELD_H, linear: R the distance to the nearest crack (DIST_RANGE = 1);
-//          G how far up the screen the nearest crack above is (ABOVE_RANGE = 1: none within it);
-//          B the nearest crack's class (1 a pressure crack .. ~0.2 a hairline); A the class of the
-//          crack above, whose fracture plane the shader hangs down into the ice.
-//   uSim1  rgba8, the same field, nearest: R the nearest crack's id / 255, G how far along it
-//          (0..1); B and A the same for the crack above.
-//   uSim2  rgba16f CRACK_SLOTS × 2, nearest. Row 0, texel id: how far that crack's front has run
+// What they write into the composer's shared resources (LayerDef.data, constants.ts LAKE_DATA):
+//   lake field 0  rgba8 FIELD_W × FIELD_H, linear: R the distance to the nearest crack
+//          (DIST_RANGE = 1); G how far up the screen the nearest crack above is (ABOVE_RANGE = 1:
+//          none within it); B the nearest crack's class (1 a pressure crack .. ~0.2 a hairline); A
+//          the class of the crack above, whose fracture plane the shader hangs down into the ice.
+//   lake field 1  rgba8, the same field, nearest: R the nearest crack's id / 255, G how far along
+//          it (0..1); B and A the same for the crack above.
+//   lake field 2  rgba8 SNOW_W × SNOW_H, linear, the same field: R lying snow (SNOW_MAX = 1), G
+//          drifting snow (DRIFT_MAX = 1), B the share of the lying snow that is loose.
+//   lake row  its row of the records atlas (rgba16f): texel id, how far that crack's front has run
 //          (0..1 along it), its glow 0..1, and how far behind the front the glow reaches (a share of
-//          its length). Row 1: texel 0 the aurora (gain, clock = G + B, substorm 0..1); texel 1 the
-//          drifting snow (streamer offset downwind = R + G metres, wind m/s).
-//   uSim3  rgba8 SNOW_W × SNOW_H, linear, the same field: R lying snow (SNOW_MAX = 1), G drifting
-//          snow (DRIFT_MAX = 1), B the share of the lying snow that is loose.
+//          its length); texel CRACK_SLOTS the drifting snow (streamer offset downwind = R + G
+//          metres, wind m/s).
+//   far shore row  texel 0 the aurora (gain, clock = G + B, substorm 0..1).
 //
 // Cost (V8 estimates): the first frame grows the network (~2-3k steps, stamped twice), packs and
 // uploads both fields (1.3 MB each) and prewarms the snow: ~20-30 ms. Each frame then steps the
-// snow (20k texels, ~1 ms) and uploads it (80 KB) and the state row (8 KB); a zipping crack
+// snow (20k texels, ~1 ms) and uploads it (80 KB) and the rows (8 KB); a zipping crack
 // stamps a few segments and uploads the few columns they touch. A change of seed, fractures or the
 // M re-stamps the whole field (~10 ms). Nothing is allocated per frame outside those events.
+import type { LayerFrame, LayerSim } from "../../composer/types.ts";
 import { markVertex } from "../../mark.ts";
-import type { ParamDef } from "../../params.ts";
+import { KnobReader, type ParamDef } from "../../params.ts";
 import { MAX_PRINCIPALS } from "../../principals.ts";
 import { LevelCamera } from "../../sims/camera.ts";
 import { approach, clamp, hash31, smoothstep } from "../../sims/math.ts";
 import { valueNoise } from "../../sims/noise.ts";
 import { Random } from "../../sims/random.ts";
 import { DataTexture } from "../../sims/texture.ts";
-import type { PrincipalState, ScenePoint, SceneSim, SimFactory, SimFrame } from "../types.ts";
+import type { PrincipalState, ScenePoint } from "../types.ts";
+import { EYE, FOCAL, HORIZON } from "./constants.ts";
 
 // ---- The view and the fields, shared with the shader ----
 
-/** Screen height (uv) of the horizon, the vertical field of view (rad) and its focal length (screen heights). */
-export const HORIZON = 0.4;
-export const FOV = 1.08;
-export const FOCAL = 0.5 / Math.tan(FOV / 2);
-/** The eye's height over the ice (m). */
-export const EYE = 1.6;
-/** The eye at rest, which lays out the fields: world on the ice ↔ field (screen) coordinates. */
+/** The eye at rest (the lake's rig), which lays out the fields: world on the ice ↔ field (screen) coordinates. */
 const CAMERA = new LevelCamera({ horizon: HORIZON, eye: EYE, focal: FOCAL });
 /** Refractive index of ice, and how far down the deepest fracture planes and bubbles reach (m). */
 export const ICE_INDEX = 1.31;
@@ -234,11 +232,6 @@ const SETTLE_FRAMES = 8;
 /** Clocks handed to the shader in half floats wrap here (s, m): 9 hours. */
 const CLOCK_WRAP = 32768;
 const SEED_BASE = 0x1ce1a4e;
-
-type KnobKey = "substorm" | "cracks" | "fractures" | "drift" | "iceSeed" | "wind" | "snow" | "mark";
-
-/** The simulation was set up wrong: a knob it reads is missing. */
-export class LakeSimError extends Error {}
 
 /**
  * One octave of the snow patches at (x, z) on the ice (m): noise stretched sx by sz metres, eased to
@@ -690,20 +683,23 @@ class DriftingSnow {
   }
 }
 
-class FrozenLake implements SceneSim {
+/** The lake's sim (see the header): its cracks, its snow and the hands on it. */
+class LakeIce implements LayerSim {
   readonly #gl: WebGL2RenderingContext;
-  readonly #knob: Readonly<Record<KnobKey, number>>;
+  readonly #knobs: KnobReader<
+    "cracks" | "fractures" | "drift" | "seed" | "wind" | "snow" | "lakeMark"
+  >;
+  /** The trigger slots of the ice's song and of the M's. */
+  readonly #singSlot: number;
+  readonly #markSlot: number;
   readonly #nearTexture: DataTexture;
   readonly #idTexture: DataTexture;
-  readonly #stateTexture: DataTexture;
   readonly #snowTexture: DataTexture;
-  readonly #state = new Float32Array(CRACK_SLOTS * 2 * 4);
   readonly #field = new CrackField();
   readonly #snow = new DriftingSnow();
-  /** The network's growth, the night's songs and its substorms draw from separate streams. */
+  /** The network's growth and the night's songs draw from separate streams. */
   readonly #growth = new Random();
   readonly #songs = new Random();
-  readonly #storms = new Random();
   readonly #cracks: Crack[] = [];
   readonly #byId: (Crack | undefined)[] = new Array<Crack | undefined>(CRACK_SLOTS).fill(undefined);
   #mark: Crack | undefined;
@@ -721,14 +717,9 @@ class FrozenLake implements SceneSim {
   #markAspect = Number.NaN;
   #markOn = false;
 
-  /** Motion-scaled time (s): schedules, snow, the aurora's clock. */
+  /** Motion-scaled time (s): the songs' schedule and the snow. */
   #clock = 0;
   #nextSong = Number.POSITIVE_INFINITY;
-  #nextStorm = Number.POSITIVE_INFINITY;
-  /** Seconds since the current substorm's onset (scene time), its eased surge, the aurora's clock. */
-  #stormAge = 1e4;
-  #surge = 0;
-  #auroraClock = 0;
   /** The snow's wind (m/s, eased), the streamers' offset downwind and the gust fronts' (m). */
   #wind = 0;
   #windOffset = 0;
@@ -746,21 +737,17 @@ class FrozenLake implements SceneSim {
   readonly #lastV = new Float64Array(MAX_PRINCIPALS);
 
   constructor(gl: WebGL2RenderingContext, params: readonly ParamDef[]) {
-    const index = (key: KnobKey): number => {
-      const at = params.findIndex((def) => def.key === key);
-      if (at < 0) throw new LakeSimError(`lake: the scene has no '${key}' knob`);
-      return at;
-    };
-    this.#knob = {
-      substorm: index("substorm"),
-      cracks: index("cracks"),
-      fractures: index("fractures"),
-      drift: index("drift"),
-      iceSeed: index("iceSeed"),
-      wind: index("wind"),
-      snow: index("snow"),
-      mark: index("mark"),
-    };
+    this.#knobs = new KnobReader("lake", params, [
+      "cracks",
+      "fractures",
+      "drift",
+      "seed",
+      "wind",
+      "snow",
+      "lakeMark",
+    ]);
+    this.#singSlot = this.#knobs.trigger("cracks");
+    this.#markSlot = this.#knobs.trigger("lakeMark");
     this.#gl = gl;
     this.#nearTexture = new DataTexture(gl, {
       width: FIELD_W,
@@ -774,12 +761,6 @@ class FrozenLake implements SceneSim {
       format: "rgba8",
       filter: "nearest",
     });
-    this.#stateTexture = new DataTexture(gl, {
-      width: CRACK_SLOTS,
-      height: 2,
-      format: "rgba16f",
-      filter: "nearest",
-    });
     this.#snowTexture = new DataTexture(gl, {
       width: SNOW_W,
       height: SNOW_H,
@@ -788,21 +769,19 @@ class FrozenLake implements SceneSim {
     });
   }
 
-  frame(frame: SimFrame): readonly (WebGLTexture | undefined)[] {
-    const values = frame.values;
-    const knob = this.#knob;
+  frame(frame: LayerFrame): void {
+    const knobs = this.#knobs;
     const dt = clamp(frame.dt, 0, DT_MAX);
     const motion = clamp(frame.motion, 0, 1);
     const mdt = dt * motion;
     if (frame.aspect > 0) this.#aspect = frame.aspect;
-    const substorm = clamp(values[knob.substorm] ?? 0, 0, 1);
-    const songs = clamp(values[knob.cracks] ?? 0, 0, 1);
-    const fractures = clamp(values[knob.fractures] ?? 0.5, 0, 1);
-    const drift = clamp(values[knob.drift] ?? 0, 0, 1);
-    const seed = Math.round(values[knob.iceSeed] ?? 0);
-    const wind = clamp(values[knob.wind] ?? 0, -1, 1) * WIND_SPEED;
-    const snowfall = clamp(values[knob.snow] ?? 0, 0, 1);
-    const markOn = (values[knob.mark] ?? 0) > 0.5;
+    const songs = clamp(knobs.value(frame, "cracks"), 0, 1);
+    const fractures = clamp(knobs.value(frame, "fractures"), 0, 1);
+    const drift = clamp(knobs.value(frame, "drift"), 0, 1);
+    const seed = Math.round(knobs.value(frame, "seed"));
+    const wind = clamp(knobs.value(frame, "wind"), -1, 1) * WIND_SPEED;
+    const snowfall = clamp(knobs.value(frame, "snow"), 0, 1);
+    const markOn = knobs.value(frame, "lakeMark") > 0.5;
 
     if (!this.#primed) {
       this.#prime(seed, fractures, markOn, wind, drift, snowfall);
@@ -829,9 +808,9 @@ class FrozenLake implements SceneSim {
         this.#removeMark();
         this.#placeMark(false);
       }
-      if (frame.fired[0]) this.#stormAge = 0;
-      if (frame.fired[1]) this.#sing();
-      if (frame.fired[2] && this.#mark) this.#mark.sing(MARK_ZIP_SPEED, MARK_GLOW_FADE, 0);
+      if (frame.fired[this.#singSlot]) this.#sing();
+      if (frame.fired[this.#markSlot] && this.#mark)
+        this.#mark.sing(MARK_ZIP_SPEED, MARK_GLOW_FADE, 0);
     }
 
     if (this.#arriving === undefined) this.#arriving = frame.passage.enter < 1;
@@ -856,20 +835,13 @@ class FrozenLake implements SceneSim {
         SONG_RARE * Math.pow(SONG_OFTEN / SONG_RARE, songs) * (0.6 + 0.8 * this.#songs.next());
     }
     this.#zip(dt);
-    this.#auroraStep(dt, mdt, substorm);
 
     this.#wind = approach(this.#wind, wind, mdt, WIND_EASE);
     this.#windOffset += this.#wind * SALTATION * mdt;
     this.#gustOffset += this.#wind * GUST_PACE * mdt;
     this.#snow.step(mdt, this.#wind, drift, snowfall, this.#gustOffset);
 
-    this.#upload();
-    return [
-      this.#nearTexture.texture,
-      this.#idTexture.texture,
-      this.#stateTexture.texture,
-      this.#snowTexture.texture,
-    ];
+    this.#upload(frame);
   }
 
   /** The open ice, where a knock sends cracks running. */
@@ -880,11 +852,10 @@ class FrozenLake implements SceneSim {
   dispose(): void {
     this.#nearTexture.dispose();
     this.#idTexture.dispose();
-    this.#stateTexture.dispose();
     this.#snowTexture.dispose();
   }
 
-  /** The first frame: grow the network, lay and settle the snow, schedule the first surge and the M. */
+  /** The first frame: grow the network, lay and settle the snow, place the M. */
   #prime(
     seed: number,
     fractures: number,
@@ -898,7 +869,6 @@ class FrozenLake implements SceneSim {
     this.#fractures = fractures;
     this.#wantFractures = fractures;
     this.#markOn = markOn;
-    this.#storms.seed(SEED_BASE ^ Math.imul(seed + 7, 0x85ebca6b));
     this.#grow(true);
     this.#snow.reset(seed);
     this.#wind = wind;
@@ -906,7 +876,6 @@ class FrozenLake implements SceneSim {
       this.#gustOffset += wind * GUST_PACE * SNOW_PREWARM_DT;
       this.#snow.step(SNOW_PREWARM_DT, wind, drift, snowfall, this.#gustOffset);
     }
-    this.#surge = GROWTH_SHARE * 0.3;
   }
 
   // ---- The crack network ----
@@ -1344,9 +1313,83 @@ class FrozenLake implements SceneSim {
     }
   }
 
-  // ---- The aurora ----
+  // ---- Upload ----
 
-  #auroraStep(dt: number, mdt: number, frequency: number): void {
+  /** The fields up (the stamped columns, the snow), the cracks' state and the drift into the row, the fields handed over. */
+  #upload(frame: LayerFrame): void {
+    const field = this.#field;
+    field.flush();
+    if ((field.rect[2] ?? 0) > 0) {
+      uploadRect(this.#gl, this.#nearTexture.texture, field.near, field.rect);
+      uploadRect(this.#gl, this.#idTexture.texture, field.ids, field.rect);
+    }
+
+    const row = frame.records.data;
+    for (let id = 0; id < CRACK_SLOTS; id++) {
+      const crack = this.#byId[id];
+      const o = id * 4;
+      if (!crack?.singing) {
+        row[o] = 1;
+        row[o + 1] = 0;
+        row[o + 2] = 1;
+        row[o + 3] = 0;
+        continue;
+      }
+      const length = Math.max(crack.length, 1e-6);
+      row[o] = crack.delay > 0 ? 0 : Math.min(crack.front / length, 1);
+      row[o + 1] =
+        crack.delay > 0 ? 0 : crack.front < crack.length ? 1 : Math.exp(-crack.since / crack.fade);
+      row[o + 2] = GLOW_REACH / length;
+      row[o + 3] = 0;
+    }
+    const g = CRACK_SLOTS * 4;
+    splitClock(this.#windOffset, row, g);
+    row[g + 2] = this.#wind;
+    row[g + 3] = 0;
+    frame.records.touch();
+
+    this.#snow.pack();
+    this.#snowTexture.upload(this.#snow.data);
+    const [near, ids, snow] = frame.fields;
+    if (near) near.texture = this.#nearTexture.texture;
+    if (ids) ids.texture = this.#idTexture.texture;
+    if (snow) snow.texture = this.#snowTexture.texture;
+  }
+}
+
+/** The far shore's sim (see the header): the aurora's substorms and its clock, into its row. */
+class FarShoreAurora implements LayerSim {
+  readonly #knobs: KnobReader<"substorm" | "seed">;
+  /** The trigger slot of the substorm's "now". */
+  readonly #stormSlot: number;
+  readonly #storms = new Random();
+  #primed = false;
+  /** Motion-scaled time (s): the substorms' schedule. */
+  #clock = 0;
+  #nextStorm = Number.POSITIVE_INFINITY;
+  /** Seconds since the current substorm's onset (scene time), its eased surge, the aurora's clock. */
+  #stormAge = 1e4;
+  #surge = 0;
+  #auroraClock = 0;
+
+  constructor(params: readonly ParamDef[]) {
+    this.#knobs = new KnobReader("far shore", params, ["substorm", "seed"]);
+    this.#stormSlot = this.#knobs.trigger("substorm");
+  }
+
+  frame(frame: LayerFrame): void {
+    const dt = clamp(frame.dt, 0, DT_MAX);
+    const mdt = dt * clamp(frame.motion, 0, 1);
+    const frequency = clamp(this.#knobs.value(frame, "substorm"), 0, 1);
+    if (!this.#primed) {
+      // The first frame: the night's substorms for the seed, its arc already growing a little.
+      this.#primed = true;
+      const seed = Math.round(this.#knobs.value(frame, "seed"));
+      this.#storms.seed(SEED_BASE ^ Math.imul(seed + 7, 0x85ebca6b));
+      this.#surge = GROWTH_SHARE * 0.3;
+    } else if (frame.fired[this.#stormSlot]) this.#stormAge = 0;
+    this.#clock += mdt;
+
     if (frequency <= 0) this.#nextStorm = Number.POSITIVE_INFINITY;
     else if (!Number.isFinite(this.#nextStorm))
       this.#nextStorm = this.#clock + SUBSTORM_FIRST * (0.8 + 0.4 * this.#storms.next());
@@ -1368,51 +1411,23 @@ class FrozenLake implements SceneSim {
     const target = Math.max(breakup, growth);
     this.#surge = approach(this.#surge, target, dt, SURGE_EASE);
     this.#auroraClock += mdt * (1 + PACE_SURGE * this.#surge);
+
+    const row = frame.records.data;
+    row[0] = GAIN_QUIET + GAIN_SURGE * this.#surge;
+    splitClock(this.#auroraClock, row, 1);
+    row[3] = this.#surge;
+    frame.records.touch();
   }
 
-  // ---- Upload ----
-
-  #upload(): void {
-    const field = this.#field;
-    field.flush();
-    if ((field.rect[2] ?? 0) > 0) {
-      uploadRect(this.#gl, this.#nearTexture.texture, field.near, field.rect);
-      uploadRect(this.#gl, this.#idTexture.texture, field.ids, field.rect);
-    }
-
-    const state = this.#state;
-    for (let id = 0; id < CRACK_SLOTS; id++) {
-      const crack = this.#byId[id];
-      const o = id * 4;
-      if (!crack?.singing) {
-        state[o] = 1;
-        state[o + 1] = 0;
-        state[o + 2] = 1;
-        state[o + 3] = 0;
-        continue;
-      }
-      const length = Math.max(crack.length, 1e-6);
-      state[o] = crack.delay > 0 ? 0 : Math.min(crack.front / length, 1);
-      state[o + 1] =
-        crack.delay > 0 ? 0 : crack.front < crack.length ? 1 : Math.exp(-crack.since / crack.fade);
-      state[o + 2] = GLOW_REACH / length;
-      state[o + 3] = 0;
-    }
-    const g = CRACK_SLOTS * 4;
-    state[g] = GAIN_QUIET + GAIN_SURGE * this.#surge;
-    splitClock(this.#auroraClock, state, g + 1);
-    state[g + 3] = this.#surge;
-    splitClock(this.#windOffset, state, g + 4);
-    state[g + 6] = this.#wind;
-    state[g + 7] = 0;
-    this.#stateTexture.upload(state);
-
-    this.#snow.pack();
-    this.#snowTexture.upload(this.#snow.data);
-  }
+  dispose(): void {}
 }
 
-/** The frozen lake's simulation for a scene whose knobs are `params` (looked up by key). */
-export function lakeSim(params: readonly ParamDef[]): SimFactory {
-  return (gl) => new FrozenLake(gl, params);
+/** The lake layer's sim (LayerCode.sim): its fields and its row. */
+export function lakeSim(gl: WebGL2RenderingContext, params: readonly ParamDef[]): LayerSim {
+  return new LakeIce(gl, params);
+}
+
+/** The far shore layer's sim (LayerCode.sim): its row alone. */
+export function farShoreSim(_gl: WebGL2RenderingContext, params: readonly ParamDef[]): LayerSim {
+  return new FarShoreAurora(params);
 }

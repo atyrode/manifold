@@ -139,7 +139,9 @@ const differing = (a: Uint8Array, b: Uint8Array): number =>
 
 export function verifyWorldClock(gl: WebGL2RenderingContext): Record<string, unknown> {
   check(gl.getExtension("EXT_color_buffer_float") !== null, "float render targets unavailable");
-  const garden = gardenScene;
+  // The probe in place of the garden's composed program (its glslFor), with the garden's knobs.
+  const { glslFor: composed, ...garden } = gardenScene;
+  check(composed !== undefined, "the garden is not composed");
   const probe = link(
     gl,
     fragmentSourceFor(

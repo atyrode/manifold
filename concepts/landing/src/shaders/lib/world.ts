@@ -15,6 +15,7 @@
 //   vec3 worldGrey(World w, vec3 col, float open);                // the grey day under rain or snow
 //   float worldFogAt(World w, float metres, float height);        // the fog over a distance, in metres
 //   WorldSky worldSky(World w, WorldView v, vec4 meteorField);   // behind the scene
+//   WorldSky worldSkyOver(World w, WorldView v, vec4 meteorField, vec3 col); // the same over a dome of its own
 //   float worldSunlit(World w, WorldView v, vec3 at);             // the cloud deck's and the cumulus' shadows
 //   void worldBirds(World w, WorldView v, WorldFlyway f, vec3 haze, float thick, inout vec3 col, inout float z, inout float accent);
 //   void worldFog(World w, WorldView v, vec3 fogCol, float z, inout vec3 col, inout float accent);
@@ -29,7 +30,11 @@
 // Each part behind a knob is compiled in only while its gate is on (WORLD_STARS, WORLD_MILKYWAY,
 // WORLD_METEORS, WORLD_AURORA, WORLD_CLOUDS, WORLD_SHADOWS, WORLD_CUMULUS, WORLD_BIRDS, WORLD_RAIN,
 // WORLD_SNOW, WORLD_FOG, WORLD_LIGHTNING, each 0 or 1: worldFeatures), and keeps its runtime test
-// of the knob inside, so with the knob off (gate on or not) it gives its neutral value exactly.
+// of the knob inside, so with the knob off (gate on or not) it gives its neutral value exactly. So
+// does what a setting's knobs settle before the program runs: the shower's and the storm's own
+// events (WORLD_METEOR_RATE, WORLD_LIGHTNING_RATE, off while their knobs are: the "now" buttons'
+// stay), the moon's phase (WORLD_MOON, off without a moon) and the sun's light (WORLD_DAYLIGHT, off
+// at an hour deep in the night on every date: day, night and sunColor are then constants).
 import { glslFloat } from "../glsl.ts";
 import { birdsGlsl } from "./birds.ts";
 import { milkyWayGlsl } from "./milkyway.ts";
@@ -209,8 +214,20 @@ World worldAt(int meteorSlot, int lightningSlot) {
   w.tf = uFallTime;
   w.time = timeOfDayM(K_time, skyDays());
   Sky sky = skyAt(w.time);
+#if !WORLD_DAYLIGHT
+  // An hour at which the sun stands deep below the horizon (worldFeatures): exactly what skyAt
+  // gives there, known before the program runs.
+  sky.day = 0.0;
+  sky.night = 1.0;
+  sky.sunColor = vec3(0.0);
+#endif
 #ifdef SKY_MOON_PHASE
+#if WORLD_MOON
   sky = skyMoonPhase(sky, K_moon);
+#else
+  // No moon (K_moon 0 or 2): its phase, worked out before the program runs.
+  sky = skyMoonPhase(sky, 0.0);
+#endif
 #endif
   w.year = SKY_YEAR;
   w.chill = climateChill(w.year);
@@ -267,13 +284,23 @@ World worldAt(int meteorSlot, int lightningSlot) {
   w.boltSeed = 0.0;
   w.flash = 0.0;
 #if WORLD_LIGHTNING
+  // The storm's own strikes while its knob is on (WORLD_LIGHTNING_RATE), the "now" button's always.
+#if WORLD_LIGHTNING_RATE
   w.boltAge = lightningAge(w.tm, K_lightning, lightningSlot, w.boltSeed);
+#else
+  w.boltAge = lightningAge(w.tm, 0.0, lightningSlot, w.boltSeed);
+#endif
   w.flash = lightningFlash(w.boltAge);
 #endif
   w.meteorAge = 1e4;
   w.meteorSeed = 0.0;
 #if WORLD_METEORS
+  // The shower's own shooting stars while its knob is on (WORLD_METEOR_RATE), the "now" button's always.
+#if WORLD_METEOR_RATE
   w.meteorAge = meteorAge(w.tm, K_meteors, meteorSlot, w.meteorSeed);
+#else
+  w.meteorAge = meteorAge(w.tm, 0.0, meteorSlot, w.meteorSeed);
+#endif
 #endif
   w.seed = 0.0;
   sky.sunColor *= 1.0 - WORLD_DECK_SUN * w.overcast;
@@ -515,15 +542,11 @@ struct WorldSky {
   float cloud;  // the cloud's alpha along the ray, the deck's and the cumulus' (0 clear): hide what lies behind cloud (a sun disc's accent)
 };
 
-// The sky behind everything along the view's ray, in order: the dome (sun and moon discs), the
-// aurora behind the clouds (lifted by v.auroraLift), the cloud deck (as near as w.low, drifting with
-// the wind: worldDeckDrift), the painted cumulus in front of it, the stars (at w.stars), the Milky Way
-// and the sky's planets in their gaps, shooting stars (starting in meteorField, skyAngles of the
-// camera's ray: xy its lower left corner, zw its size), all of what the cloud leaves open greyed under
-// rain or snow (worldGrey), then the lightning (strike). Draw the scene's land, distance and near
-// things over it.
-WorldSky worldSky(World w, WorldView v, vec4 meteorField) {
-  vec3 col = skyColor(w.sky, v.dir);
+// worldSky over a dome of the scene's own, col, in place of the World's (skyColor): a backdrop that
+// stages its own night where the World's dome would be gives it that night, or vec3(0.0) for the
+// sky's lights alone (what stands in front of the dome: the aurora, the cloud, the stars, the
+// shooting stars, greyed, and the strike), so the World's dome is never worked out.
+WorldSky worldSkyOver(World w, WorldView v, vec4 meteorField, vec3 col) {
 #if WORLD_AURORA
   // The curtains hang ahead of the camera, behind the clouds.
   vec3 curtains = v.auroraLift == 0.0 ? v.ray : normalize(vec3(v.ray.x, v.ray.y - v.auroraLift * length(v.ray.xz), v.ray.z));
@@ -574,6 +597,17 @@ WorldSky worldSky(World w, WorldView v, vec4 meteorField) {
   strike += WORLD_FLASH_SKY * w.flash * (exp(-max(v.ray.y, 0.0) * 6.0) + cloud);
 #endif
   return WorldSky(col, strike, cloud);
+}
+
+// The sky behind everything along the view's ray, in order: the dome (sun and moon discs), the
+// aurora behind the clouds (lifted by v.auroraLift), the cloud deck (as near as w.low, drifting with
+// the wind: worldDeckDrift), the painted cumulus in front of it, the stars (at w.stars), the Milky Way
+// and the sky's planets in their gaps, shooting stars (starting in meteorField, skyAngles of the
+// camera's ray: xy its lower left corner, zw its size), all of what the cloud leaves open greyed under
+// rain or snow (worldGrey), then the lightning (strike). Draw the scene's land, distance and near
+// things over it.
+WorldSky worldSky(World w, WorldView v, vec4 meteorField) {
+  return worldSkyOver(w, v, meteorField, skyColor(w.sky, v.dir));
 }
 
 // How much of the sun's light reaches a point at (scene units from the eye, in the camera's frame,

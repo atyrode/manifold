@@ -1,7 +1,7 @@
-// Mystic forest's code, loaded the first time the scene is needed (SceneDef.code).
-import { forestScene } from "./index.ts";
-import { forestSim } from "./sim.ts";
+// Mystic forest's code, loaded the first time the scene is needed (SceneDef.code): assembled from the
+// code of every layer its rig offers (composer/code.ts).
+import { composedCode } from "../../composer/code.ts";
+import { OUTDOOR_CODE } from "../../composer/outdoor-code.ts";
+import { forestComposed } from "./index.ts";
 
-export { forestGlsl as glsl } from "./shader.ts";
-export const entry = "sceneForest";
-export const sim = forestSim(forestScene.params);
+export const { glsl, entry, glslFor, sim } = composedCode(forestComposed, OUTDOOR_CODE);

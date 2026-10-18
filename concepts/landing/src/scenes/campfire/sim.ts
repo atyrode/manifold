@@ -1,21 +1,21 @@
 // The campfire's fuel (the `fuel` knob): a FuelBed (sims/fuel.ts) of the three logs the shader draws
 // (the back log, then the two crossed in front), stepped on the motion clock and handed to the
-// shader as CAMPFIRE_FUEL_TEXELS texels of uSim0 (rgba16f, nearest), written by campfireFuelTexels:
+// campfire layer's GLSL (shader.ts) as CAMPFIRE_FUEL_TEXELS texels of its row of the records atlas,
+// written by campfireFuelTexels:
 //   0, 1, 2   log i: wood left (0 burnt away), char, slump 0..1, laid on 0..1
 //   3         the bed: heat (flames, 1 a steady fire), embers, smoke 0..1, spark burst 0..1
 // The bed steps FUEL_STEP (a twentieth of a second) at a time; the texels are drawn between its last
 // two steps by the clock's alpha, so the fire changes smoothly at any frame rate.
-// While the knob is off nothing is stepped or uploaded and the shader draws the fire it always has.
+// While the knob is off nothing is stepped or written and the shader draws the fire it always has.
 // Each time it is switched on (and in every new sim that starts with it on) the fire opens under way
 // (STEADY_FIRE: the back log 70% wood, the front ones 45 and 25%), so the same knobs show the same fire.
+import type { LayerFrame, LayerSim } from "../../composer/types.ts";
 import { KnobReader, type ParamDef } from "../../params.ts";
 import { FixedStep } from "../../sims/clock.ts";
 import { FUEL_STEP, FuelBed, STEADY_FIRE } from "../../sims/fuel.ts";
-import { DataTexture } from "../../sims/texture.ts";
-import type { SceneSim, SimFactory, SimFrame } from "../types.ts";
+import { CAMPFIRE_LOGS } from "./constants.ts";
 
-/** Log slots (the shader draws three logs) and the texels that carry them and the bed. */
-export const CAMPFIRE_LOGS = 3;
+/** The texels that carry the logs and the bed. */
 const CAMPFIRE_FUEL_TEXELS = CAMPFIRE_LOGS + 1;
 const SEED = 0xf1e;
 
@@ -36,32 +36,22 @@ function campfireFuelTexels(bed: FuelBed, out: Float32Array): void {
 
 type CampfireKnob = "fuel" | "tend";
 
-class CampfireFuel implements SceneSim {
+class CampfireFuel implements LayerSim {
   readonly #knobs: KnobReader<CampfireKnob>;
   readonly #tendSlot: number;
-  readonly #texture: DataTexture;
-  readonly #textures: readonly (WebGLTexture | undefined)[];
-  /** The texels after the step before last and after the last; uploaded between them. */
+  /** The texels after the step before last and after the last; written between them. */
   readonly #was = new Float32Array(CAMPFIRE_FUEL_TEXELS * 4);
   readonly #now = new Float32Array(CAMPFIRE_FUEL_TEXELS * 4);
-  readonly #data = new Float32Array(CAMPFIRE_FUEL_TEXELS * 4);
   readonly #bed = new FuelBed(CAMPFIRE_LOGS, SEED);
   readonly #clock = new FixedStep(FUEL_STEP, 4);
   #on = false;
 
-  constructor(gl: WebGL2RenderingContext, params: readonly ParamDef[]) {
+  constructor(params: readonly ParamDef[]) {
     this.#knobs = new KnobReader<CampfireKnob>("campfire", params, ["fuel", "tend"]);
     this.#tendSlot = this.#knobs.trigger("tend");
-    this.#texture = new DataTexture(gl, {
-      width: CAMPFIRE_FUEL_TEXELS,
-      height: 1,
-      format: "rgba16f",
-      filter: "nearest",
-    });
-    this.#textures = [this.#texture.texture];
   }
 
-  frame(frame: SimFrame): readonly (WebGLTexture | undefined)[] {
+  frame(frame: LayerFrame): void {
     const minutes = this.#knobs.value(frame, "fuel");
     const on = minutes > 0;
     if (on && !this.#on) {
@@ -71,7 +61,7 @@ class CampfireFuel implements SceneSim {
       this.#was.set(this.#now);
     }
     this.#on = on;
-    if (!on) return this.#textures;
+    if (!on) return;
     const bed = this.#bed;
     if (frame.fired[this.#tendSlot]) bed.addLog();
     const tend = this.#knobs.value(frame, "tend") > 0.5;
@@ -84,21 +74,18 @@ class CampfireFuel implements SceneSim {
     const alpha = this.#clock.alpha;
     const was = this.#was;
     const now = this.#now;
-    const data = this.#data;
-    for (let i = 0; i < data.length; i++) {
+    const data = frame.records.data;
+    for (let i = 0; i < CAMPFIRE_FUEL_TEXELS * 4; i++) {
       const a = was[i] ?? 0;
       data[i] = a + ((now[i] ?? 0) - a) * alpha;
     }
-    this.#texture.upload(data);
-    return this.#textures;
+    frame.records.touch();
   }
 
-  dispose(): void {
-    this.#texture.dispose();
-  }
+  dispose(): void {}
 }
 
-/** The fuel's simulation, for a scene whose `params` carry the `fuel` and `tend` knobs. */
-export function campfireSim(params: readonly ParamDef[]): SimFactory {
-  return (gl) => new CampfireFuel(gl, params);
+/** The campfire layer's sim (LayerCode.sim), for a composition whose `params` carry `fuel` and `tend`. */
+export function campfireSim(_gl: WebGL2RenderingContext, params: readonly ParamDef[]): LayerSim {
+  return new CampfireFuel(params);
 }

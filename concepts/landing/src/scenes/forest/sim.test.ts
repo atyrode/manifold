@@ -1,9 +1,17 @@
 import { expect, test } from "bun:test";
+import { ATLAS_WIDTH } from "../../composer/caps.ts";
+import { allocate, ATLAS_SLOT } from "../../composer/sim.ts";
 import { HeadlessSim } from "../../sims/headless.ts";
 import { loadScene } from "../index.ts";
-import { FOREST_SPIRITS } from "./build.ts";
+import { forestComposed } from "./index.ts";
+import { FOREST_SPIRITS } from "./layout.ts";
 
 const forestScene = await loadScene("forest");
+
+/** The kodama's record row (its spirits, three texels each) in the preset's records atlas. */
+const KODAMA_ROW =
+  allocate(forestComposed.place(new Set(forestComposed.preset.layers)).layers.map((p) => p.layer))
+    .rows["kodama"]?.base ?? 0;
 
 interface SpiritRow {
   x: number;
@@ -26,10 +34,10 @@ function approach(shy: number): { near: SpiritRow; away: SpiritRow[] } {
   const step = (): void => {
     sim.step({ aspect, height: 360, knobs: { shy }, pointer });
   };
-  // The spirits' row (uSim0) as last uploaded.
+  // The spirit's texels in the kodama's row as last uploaded.
   const row = (i: number): SpiritRow => {
-    const data = sim.upload(0).data;
-    const o = i * 12;
+    const data = sim.upload(ATLAS_SLOT).data;
+    const o = (KODAMA_ROW * ATLAS_WIDTH + 3 * i) * 4;
     return {
       x: data[o] ?? 0,
       y: data[o + 1] ?? 0,

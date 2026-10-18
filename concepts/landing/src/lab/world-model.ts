@@ -3,7 +3,7 @@
 // takes over from the one left (lab.ts #setScene): the World knobs both scenes have, by key, the
 // season through the year it stands at (almanac-model.ts), and the planets of its night sky.
 import { MAX_SEED, type Blurb, type ParamDef } from "../params.ts";
-import { readPlanet, type SkyPlanet, type SkyPlanets } from "../scenes/planets.ts";
+import { openingPlanets, readPlanet, type SkyPlanet, type SkyPlanets } from "../scenes/planets.ts";
 import type { Params } from "../state.ts";
 import { seasonDef, seasonPatch, yearDistance, yearOf } from "./almanac-model.ts";
 
@@ -70,8 +70,8 @@ export function carryWorld(
 
 /**
  * The planets the next scene takes over from the one left: every one of `planets`, each kept within
- * the next scene's pad (readPlanet), where both scenes hold their planets in a World group; none
- * otherwise, the next scene's own sky as it starts.
+ * the next scene's pad (readPlanet), where both scenes hold their planets in a World group; the ones
+ * the next scene opens with otherwise, its own sky as it starts.
  */
 export function carryPlanets(
   from: WorldScene,
@@ -79,11 +79,12 @@ export function carryPlanets(
   to: WorldScene,
 ): SkyPlanet[] {
   const spec = to.planets;
+  if (spec === undefined) return [];
   const world = (scene: WorldScene) =>
     scene.planets !== undefined && scene.groups[scene.planets.group]?.shelf === "world";
-  return spec !== undefined && world(from) && world(to)
+  return world(from) && world(to)
     ? planets.map((planet) => readPlanet(spec, planet))
-    : [];
+    : openingPlanets(spec);
 }
 
 /** Knob `source`'s setting in `params` as a patch for `def`, a knob of the same kind. */

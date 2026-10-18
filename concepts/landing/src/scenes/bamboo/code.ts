@@ -1,7 +1,7 @@
-// Bamboo grove's code, loaded the first time the scene is needed (SceneDef.code).
-import { bambooScene } from "./index.ts";
-import { bambooSim } from "./sim.ts";
+// Bamboo grove's code, loaded the first time the scene is needed (SceneDef.code): assembled from the
+// code of every layer its rig offers (composer/code.ts).
+import { composedCode } from "../../composer/code.ts";
+import { OUTDOOR_CODE } from "../../composer/outdoor-code.ts";
+import { bambooComposed } from "./index.ts";
 
-export { bambooGlsl as glsl } from "./shader.ts";
-export const entry = "sceneBamboo";
-export const sim = bambooSim(bambooScene.params);
+export const { glsl, entry, glslFor, sim } = composedCode(bambooComposed, OUTDOOR_CODE);

@@ -1,7 +1,7 @@
 // GPU regressions for the night sky's opt-in parts, the constellations (skyStars, src/shaders/lib/
 // sky.ts), compiled in only while their knob is on (the library gate SKY_FIGURES), and the planets
-// (skyGiant), compiled in only while the scene's list holds any (SKY_PLANETS); run by
-// concepts/landing/verify-browser.ts on real WebGL output.
+// (skyGiant), compiled in only while the scene's list holds any (SKY_PLANETS), each kind and piece
+// of dress only while a planet has it; run by concepts/landing/verify-browser.ts on real WebGL output.
 // - `nightSky`: a probe compiled with Frost's knobs and every gate on samples skyStars, both
 //   overloads, at every figure's stars and the middle of every figure line. At a clear midnight the
 //   figures add light there while on (the lines as strong as their amount), and the knobs off draw
@@ -29,6 +29,7 @@ import { effective, type ParamDef } from "./params.ts";
 import { MAX_PRINCIPALS, type Pose } from "./principals.ts";
 import { ratedKnobs } from "./rate-phase.ts";
 import {
+  featureKey,
   fragmentSourceFor,
   sceneFeatures,
   sceneFeaturesAll,
@@ -528,20 +529,19 @@ async function nightPlanets(
     const spec = scene.planets;
     if (spec === undefined) throw new VerifyError(`${id} takes no planets`);
     const params = scene.params.map((knob) => effective(knob, knobs));
-    const programs = new Map<number, WebGLProgram>();
+    const programs = new Map<string, WebGLProgram>();
     const frame = (planets: readonly SkyPlanet[], motionTime = 24): Float32Array => {
-      const gate = planets.length > 0 ? 1 : 0;
-      const linked =
-        programs.get(gate) ??
-        link(gl, fragmentSourceFor(scene, sceneFeatures(scene, shaderValues(scene, knobs), gate)));
-      programs.set(gate, linked);
-      const { count, data } = planetUniforms(planets);
+      const uniforms = planetUniforms(planets);
+      const features = sceneFeatures(scene, shaderValues(scene, knobs), uniforms);
+      const key = featureKey(features);
+      const linked = programs.get(key) ?? link(gl, fragmentSourceFor(scene, features));
+      programs.set(key, linked);
       return draw(gl, linked, {
         width,
         height,
         params,
-        uniforms: { uPlanets: Array.from(data), uMotionTime: [motionTime] },
-        ints: { uPlanetCount: count },
+        uniforms: { uPlanets: Array.from(uniforms.data), uMotionTime: [motionTime] },
+        ints: { uPlanetCount: uniforms.count },
       });
     };
     const [low, , high] = spec.across;

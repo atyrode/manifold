@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { climateCold, seasonKnob, yearAt } from "../../climate.ts";
 import { sceneFeatures, sceneFeaturesAll, shaderValues } from "../../shaders/index.ts";
+import { PLANET_BODY_GATES_ALL } from "../../shaders/lib/planet.ts";
 import { COUNTRY_ALL, countryScene } from "./index.ts";
 import { COUNTRY_BALES, COUNTRY_SEASONS } from "./constants.ts";
 
@@ -57,9 +58,16 @@ describe("the countryside's year", () => {
 
   test("the all-features program covers every date and the passing year", () => {
     const all = sceneFeaturesAll(countryScene) ?? {};
-    // COUNTRY_ALL, the shared sky's library gates (its constellations and planets) and the agents'
-    // cursors on.
-    expect(all).toEqual({ ...COUNTRY_ALL, SKY_FIGURES: 1, SKY_PLANETS: 1, PRINCIPAL_CURSORS: 1 });
+    // COUNTRY_ALL, the shared sky's library gates (its constellations and planets, several of them,
+    // every kind with every palette and every piece of dress) and the agents' cursors on.
+    expect(all).toEqual({
+      ...COUNTRY_ALL,
+      SKY_FIGURES: 1,
+      SKY_PLANETS: 1,
+      SKY_PLANETS_SEVERAL: 1,
+      ...PLANET_BODY_GATES_ALL,
+      PRINCIPAL_CURSORS: 1,
+    });
     for (let date = 0; date < 1; date += 0.005)
       for (const knobs of [{ date }, { date, rain: 1 }, { date, year: 1, snow: 1 }])
         for (const [name, value] of Object.entries(features(knobs)))

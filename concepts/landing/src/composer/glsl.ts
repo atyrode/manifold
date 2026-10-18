@@ -156,9 +156,17 @@ struct Mirrored { vec3 col; vec3 lampCol; vec2 lamp; };
 Mirrored composerMirror(Ctx x, vec3 at, vec3 ray, WorldView m, vec2 spread);
 `;
 
-/** The plain floor (README "The site") of the preset's kind, where no ground layer lies. */
+/**
+ * The plain floor (README "The site") of the preset's kind, where no ground layer lies. A kind that
+ * holds no snow (water) is drawn without it: its snow's share would be 0 at every cell.
+ */
 function floorGlsl(kind: FloorKind): string {
   const floor = FLOORS[kind];
+  const snowed =
+    floor.snow === 0
+      ? "  c.col = col;"
+      : `  float snow = ${glslFloat(floor.snow)} * snowCover(vec3(0.0, 1.0, 0.0), xz, uWeather.y) * (1.0 - shelterAt(xz, x));
+  c.col = mix(col, vec3(0.92, 0.94, 0.98) * (x.light.amb * 1.1 + x.light.sun * 0.5 * lit), snow);`;
   return `
 // The plain floor: ${kind}, lit by the key (the claims' and the clouds' shadows taken out) and the
 // layers' lights, wet and snowed on by the World, below the backdrop's land line.
@@ -169,8 +177,7 @@ void composerFloor(Ctx x, inout Cell c) {
   vec3 albedo = wetten(${vec3(floor.albedo)}, uWeather.x, ${glslFloat(floor.porous)});
   vec3 col = albedo * (x.light.amb * 0.55 + x.light.sun * 0.5 * lit + localLight(vec3(xz.x, 0.0, x.zg), vec3(0.0, 1.0, 0.0)));
   col += wetGloss(uWeather.x, 0.85) * x.air.deck * 0.3;
-  float snow = ${glslFloat(floor.snow)} * snowCover(vec3(0.0, 1.0, 0.0), xz, uWeather.y) * (1.0 - shelterAt(xz, x));
-  c.col = mix(col, vec3(0.92, 0.94, 0.98) * (x.light.amb * 1.1 + x.light.sun * 0.5 * lit), snow);
+${snowed}
   c.z = x.zg;
   c.accent = 0.0;
 }
@@ -342,10 +349,13 @@ ${specks
     }
   }
 `;
+  const round = grade.vignetteRound;
   const vignette =
     grade.vignette === undefined
       ? ""
-      : `  c.col *= 1.0 - ${glslFloat(grade.vignette)} * smoothstep(0.7, 1.4, length((uv - 0.5) * vec2(1.0, 0.9)) * 1.5);\n`;
+      : round === undefined
+        ? `  c.col *= 1.0 - ${glslFloat(grade.vignette)} * smoothstep(0.7, 1.4, length((uv - 0.5) * vec2(1.0, 0.9)) * 1.5);\n`
+        : `  c.col *= 1.0 - ${glslFloat(grade.vignette)} * smoothstep(${glslFloat(round.from)}, ${glslFloat(round.to)}, length((uv - 0.5) * vec2(x.aspect, 1.0) * ${glslFloat(round.scale)}));\n`;
   const exposure =
     grade.exposure === undefined
       ? ""

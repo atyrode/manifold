@@ -105,7 +105,7 @@ test("the GLSL tables are the placed figures, compiled in only behind their gate
 test("the planets compile in only behind their gate, the shared planet and its body tier with them", () => {
   const fallback = skyGlsl.indexOf("#ifndef SKY_PLANETS\n#define SKY_PLANETS 0\n#endif");
   const gate = skyGlsl.indexOf("#if SKY_PLANETS\n");
-  const otherwise = skyGlsl.indexOf("#else", gate);
+  const otherwise = skyGlsl.lastIndexOf("#else");
   expect(fallback).toBeGreaterThan(0);
   expect(gate).toBeGreaterThan(fallback);
   // The whole of planetGlsl, the body tier, the list's uniforms and skyGiant, then a stand-in that
@@ -118,4 +118,10 @@ test("the planets compile in only behind their gate, the shared planet and its b
   expect(skyGlsl.slice(otherwise)).toMatch(
     /^#else\nvec3 skyGiant\(Sky sky, vec3 col, vec3 dir, float foot, float clear\) \{\n {2}return col;\n\}\n#endif/,
   );
+  // In skyGiant, several planets are drawn in the loop over the list; a lone one straight.
+  const several = skyGlsl.indexOf("#if SKY_PLANETS_SEVERAL\n", skyGlsl.indexOf("vec3 skyGiant("));
+  const lone = skyGlsl.indexOf("#else\n", several);
+  expect(several).toBeGreaterThan(0);
+  expect(skyGlsl.indexOf("i >= uPlanetCount", several)).toBeLessThan(lone);
+  expect(skyGlsl.slice(lone, skyGlsl.indexOf("#endif", lone))).not.toContain("uPlanetCount");
 });

@@ -24,7 +24,9 @@
 // The body tier (`planetBodyGlsl`, after `planetGlsl`) is the decoration tier for the sky's planets
 // (skyGiant in sky.ts): one planet of any of PLANET_BODY_KINDS (the banded giant as planetOver
 // draws it, a belted giant, a rocky, an ocean, a home-like, a lava, a crystal, an eye and a bubble
-// world), in its kind's palettes, with a thin or a wide banded ring, on its own clock.
+// world), in its kind's palettes, with a thin or a wide banded ring, on its own clock; each kind,
+// palette and piece of dress compiled in only while the sky's list holds it (PLANET_KIND_GATES,
+// PLANET_DRESS_GATES).
 import { WINTER_COVER } from "../../climate.ts";
 import { glslFloat, glslVec3 } from "../glsl.ts";
 
@@ -1089,25 +1091,69 @@ export const PLANET_BODY_KINDS: readonly PlanetBodyKind[] = [
 const kindConstants = PLANET_BODY_KINDS.map(
   (kind, index) => `const int PLANET_${kind.id.toUpperCase()} = ${index};`,
 ).join("\n");
+
 /**
- * planetBodyColours' cases, one per palette of every kind (index kind * 4 + palette): a chain of
- * branches rather than a const table, which a software rasteriser would build afresh for every
+ * The body tier's library gates (shaders/index.ts), defined with the sky's planets' SKY_PLANETS in a
+ * scene that takes planets (planetUniforms in src/scenes/planets.ts works them out from its list).
+ * Each kind's (SKY_PLANETS_<ID>, in PLANET_BODY_KINDS' order) holds its palettes the list holds, a
+ * bit each (palette p is 1 << p), so it is 0 while no planet is of that kind and its surface compiles
+ * in with only those palettes; each piece of dress's is 1 while a planet wears it. A software
+ * rasteriser runs every line a program holds for each pixel that draws the planets, whichever way
+ * its branches go and even a loop's body none of its pixels enters, so the program holds only what
+ * its planets draw.
+ */
+export const PLANET_KIND_GATES = PLANET_BODY_KINDS.map(
+  (kind) => `SKY_PLANETS_${kind.id.toUpperCase()}`,
+);
+export const PLANET_DRESS_GATES = {
+  /** The wide banded ring (ring 2) and its shadow on the planet. */
+  wideRing: "SKY_PLANETS_WIDE_RING",
+  /** Moons, their discs and their shadows on the planet. */
+  moons: "SKY_PLANETS_MOONS",
+  /** The aurora's oval and its curtains off the limb. */
+  aurora: "SKY_PLANETS_AURORA",
+  /** City lights on the night side. */
+  lights: "SKY_PLANETS_LIGHTS",
+} as const;
+/** Every body tier gate open: each kind with all its palettes, and all the dress. */
+export const PLANET_BODY_GATES_ALL: Readonly<Record<string, number>> = Object.fromEntries([
+  ...PLANET_KIND_GATES.map((gate, index) => [
+    gate,
+    (1 << (PLANET_BODY_KINDS[index]?.palettes.length ?? 0)) - 1,
+  ]),
+  ...Object.values(PLANET_DRESS_GATES).map((gate) => [gate, 1]),
+]);
+
+/**
+ * planetBodyColours' cases, per kind behind its gate, one per palette behind its bit of the gate: a
+ * branch each rather than a const table, which a software rasteriser would build afresh for every
  * pixel of the program, near a planet or not.
  */
-const colourCases = PLANET_BODY_KINDS.flatMap((kind) => kind.palettes)
-  .map((palette, at) => {
+const colourCases = PLANET_BODY_KINDS.map((kind, index) => {
+  const gate = PLANET_KIND_GATES[index] ?? "";
+  const cases = kind.palettes.flatMap((palette, at) => {
     const set = (["deep", "mid", "pale", "eye", "rim", "glow", "ringDark", "ringLight"] as const)
       .map((name) => `look.${name} = ${glslVec3(palette[name])};`)
       .join(" ");
-    return `  ${at === 0 ? "if" : "else if"} (at == ${at}) { ${set} }`;
-  })
-  .join("\n");
+    return [`#if ${gate} & ${1 << at}`, `    if (palette == ${at}) { ${set} }`, "#endif"];
+  });
+  return [
+    `#if ${gate}`,
+    `  if (kind == PLANET_${kind.id.toUpperCase()}) {`,
+    ...cases,
+    "  }",
+    "#endif",
+  ].join("\n");
+}).join("\n");
 
 export const planetBodyGlsl = `
 // ---- the body tier: the sky's planets ----
 
 // The kinds (PLANET_BODY_KINDS in shaders/lib/planet.ts); each kind's four palettes are
-// planetBodyColours' (deep, mid, pale, eye, rim, glow, ring dark, ring light).
+// planetBodyColours' (deep, mid, pale, eye, rim, glow, ring dark, ring light). Each kind with its
+// palettes, and each piece of dress (the wide ring, moons, an aurora, city lights), compiles in only
+// behind its gate (PLANET_KIND_GATES: a bit per palette the list holds; PLANET_DRESS_GATES: 1 while
+// a planet of the list wears it).
 ${kindConstants}
 
 // A sky planet: the decoration tier's look (PlanetLook: where it stands, its light, its ring's plane,
@@ -1124,9 +1170,8 @@ struct PlanetBody {
   float clock;
 };
 
-// look's colours: palette 'palette' of kind 'kind'.
+// look's colours: palette 'palette' of kind 'kind', a palette compiled in.
 void planetBodyColours(inout PlanetLook look, int kind, int palette) {
-  int at = kind * 4 + palette;
 ${colourCases}
 }
 
@@ -1341,22 +1386,39 @@ PlanetFace planetBubble(PlanetBody b, vec2 q, vec3 n, vec3 light, float foot) {
   return PlanetFace(tint, l.eye * heart * 0.35 + vec3(0.9 * glint) + tint * edge * 0.35, n, 0.1 + 0.8 * edge);
 }
 
-// The face of planet b at q on its disc (n the sphere's normal there). One kind per planet, each in a
-// loop of at most one turn: a software rasteriser runs every line of a branch whichever way its pixels
-// go, but no turn of a loop none of them enters, so a pixel pays for the kinds on screen only.
+// The face of planet b at q on its disc (n the sphere's normal there): its kind's, each kind behind
+// its gate.
 PlanetFace planetBodyFace(PlanetBody b, vec2 q, vec3 n, float foot, float t) {
   vec3 light = b.look.light;
   int k = b.kind;
   PlanetFace face = PlanetFace(b.look.mid, vec3(0.0), n, 1.0);
-  for (int i = 0; i < (k == PLANET_BANDED ? 1 : 0); i++) face = planetBanded(b, q, n);
-  for (int i = 0; i < (k == PLANET_BELTED ? 1 : 0); i++) face = planetBelted(b, n, max(dot(n, light), 0.0), foot, t);
-  for (int i = 0; i < (k == PLANET_ROCKY ? 1 : 0); i++) face = planetRocky(b, n, foot);
-  for (int i = 0; i < (k == PLANET_OCEAN ? 1 : 0); i++) face = planetOcean(b, n, light, foot);
-  for (int i = 0; i < (k == PLANET_HOME ? 1 : 0); i++) face = planetHome(b, n, light, foot);
-  for (int i = 0; i < (k == PLANET_LAVA ? 1 : 0); i++) face = planetLava(b, n, foot);
-  for (int i = 0; i < (k == PLANET_CRYSTAL ? 1 : 0); i++) face = planetCrystal(b, n, light);
-  for (int i = 0; i < (k == PLANET_EYE ? 1 : 0); i++) face = planetEye(b, n, light, foot);
-  for (int i = 0; i < (k == PLANET_BUBBLE ? 1 : 0); i++) face = planetBubble(b, q, n, light, foot);
+#if SKY_PLANETS_BANDED
+  if (k == PLANET_BANDED) face = planetBanded(b, q, n);
+#endif
+#if SKY_PLANETS_BELTED
+  if (k == PLANET_BELTED) face = planetBelted(b, n, max(dot(n, light), 0.0), foot, t);
+#endif
+#if SKY_PLANETS_ROCKY
+  if (k == PLANET_ROCKY) face = planetRocky(b, n, foot);
+#endif
+#if SKY_PLANETS_OCEAN
+  if (k == PLANET_OCEAN) face = planetOcean(b, n, light, foot);
+#endif
+#if SKY_PLANETS_HOME
+  if (k == PLANET_HOME) face = planetHome(b, n, light, foot);
+#endif
+#if SKY_PLANETS_LAVA
+  if (k == PLANET_LAVA) face = planetLava(b, n, foot);
+#endif
+#if SKY_PLANETS_CRYSTAL
+  if (k == PLANET_CRYSTAL) face = planetCrystal(b, n, light);
+#endif
+#if SKY_PLANETS_EYE
+  if (k == PLANET_EYE) face = planetEye(b, n, light, foot);
+#endif
+#if SKY_PLANETS_BUBBLE
+  if (k == PLANET_BUBBLE) face = planetBubble(b, q, n, light, foot);
+#endif
   return face;
 }
 
@@ -1365,11 +1427,12 @@ PlanetFace planetBodyFace(PlanetBody b, vec2 q, vec3 n, float foot, float t) {
 const PlanetRingBands PLANET_WIDE_RING = PlanetRingBands(1.3, 2.2, 5.0, 0.22, 0.9, 0.0, 0.4);
 
 // Planet b's ring at q ('at' its plane there, planetRingAt): its colour, and in 'cover' how much of
-// what lies behind it hides. Thin: planetOver's, all or nothing per cell; wide: PLANET_WIDE_RING's
-// bands, alternately dark and light, as thick as their material, in the planet's shadow behind it;
-// none: nothing.
+// what lies behind it hides. Thin: planetOver's, all or nothing per cell; wide (behind its gate):
+// PLANET_WIDE_RING's bands, alternately dark and light, as thick as their material, in the planet's
+// shadow behind it; none: nothing.
 vec3 planetBodyRing(PlanetBody b, vec2 q, vec3 at, float foot, out float cover) {
   PlanetLook l = b.look;
+#if SKY_PLANETS_WIDE_RING
   if (b.ring == 2) {
     float band;
     float body = planetRingBands(at.xy, PLANET_WIDE_RING, b.clock, foot / max(l.ring.facing, 0.02), band);
@@ -1378,6 +1441,7 @@ vec3 planetBodyRing(PlanetBody b, vec2 q, vec3 at, float foot, out float cover) 
     cover = min(planetRingOpacity(body) * 1.25, 1.0);
     return colour;
   }
+#endif
   float streak;
   float body = planetRingThin(length(at.xy), streak);
   cover = hardEdge(body * 0.85) * l.ringed;
@@ -1387,8 +1451,8 @@ vec3 planetBodyRing(PlanetBody b, vec2 q, vec3 at, float foot, out float cover) 
 // Planet b over 'col' at p (scene units; px a cell there), t the scene clock, drawn as planetOver
 // draws its giant, back to front (the glow round the limb, the ring's far half, aurora curtains off
 // the limb, the disc, the ring's near half, then the moons), with its kind's face on the disc, lit by
-// the face's normal, and a wide ring's shadow across it. A banded planet with a thin ring or none is
-// planetOver's giant on the planet's own clock.
+// the face's normal, and a wide ring's shadow across it; each piece of dress behind its gate. A
+// banded planet with a thin ring or none is planetOver's giant on the planet's own clock.
 vec3 planetBodyOver(vec3 col, vec2 p, float px, PlanetBody b, float t) {
   PlanetLook look = b.look;
   float tm = b.clock;
@@ -1410,11 +1474,18 @@ vec3 planetBodyOver(vec3 col, vec2 p, float px, PlanetBody b, float t) {
     float lit = smoothstep(-0.12, 0.62, dot(face.normal, look.light));
     vec3 disc = face.base * (0.10 + 0.95 * lit) * (0.55 + 0.45 * n.z);
     disc += look.rim * planetRim(n) * lit * 0.8;
+#if SKY_PLANETS_LIGHTS || SKY_PLANETS_AURORA
     if (look.lights > 0.5 || look.aurora > 0.0) {
       float night = planetNight(max(dot(n, look.light), 0.0));
+#if SKY_PLANETS_LIGHTS
       if (look.lights > 0.5) disc += look.lightsColor * planetCityLights(n, planetLongitude(n, tm * 0.012, 0.0), t, look.twinkle, foot) * night;
+#endif
+#if SKY_PLANETS_AURORA
       if (look.aurora > 0.0) disc += look.auroraColor * planetAurora(n, pole, look.auroraSize, tm, foot) * mix(0.6, 1.0, night) * look.aurora;
+#endif
     }
+#endif
+#if SKY_PLANETS_MOONS
     if (look.eclipses > 0.5) {
       for (int i = 0; i < 3; i++) {
         if (float(i) >= look.moons) break;
@@ -1422,16 +1493,23 @@ vec3 planetBodyOver(vec3 col, vec2 p, float px, PlanetBody b, float t) {
         disc *= 1.0 - 0.9 * planetMoonShadow(q, planetMoonAt(m, tm, 0.0, 1.0), m.size * look.moonScale, look.light);
       }
     }
+#endif
+#if SKY_PLANETS_WIDE_RING
     vec2 shadowAt;
     if (b.ring == 2 && planetRingShadowAt(look.ring, n, look.light, shadowAt)) {
       float band;
       disc *= 1.0 - 0.7 * min(planetRingBands(shadowAt, PLANET_WIDE_RING, tm, foot, band) * 1.3, 1.0);
     }
+#endif
     col = mix(col, disc + face.glow, vis * face.cover);
-  } else if (look.aurora > 0.0) {
+  }
+#if SKY_PLANETS_AURORA
+  else if (look.aurora > 0.0) {
     col += look.auroraColor * planetAuroraCurtain(q, s.d, pole, look.auroraSize, tm, foot) * look.aurora * 1.2 * vis;
   }
+#endif
   if (ring.z > 0.0) col = mix(col, ringCol, ringCover * vis);
+#if SKY_PLANETS_MOONS
   for (int i = 0; i < 3; i++) {
     if (float(i) >= look.moons) break;
     PlanetMoon m = planetMoon(i, look.ring);
@@ -1441,6 +1519,7 @@ vec3 planetBodyOver(vec3 col, vec2 p, float px, PlanetBody b, float t) {
       if (ring.z > moon.z) col = mix(col, ringCol, ringCover * vis);
     }
   }
+#endif
   return col;
 }
 `;

@@ -2,11 +2,12 @@ import { visitorAlone } from "./src/principals.ts";
 import { LEAVING_UNIT } from "./src/program-cache.ts";
 import { DitherRenderer } from "./src/renderer.ts";
 import { defaultsFor, paramDefaults, renderSettings } from "./src/state.ts";
+import { RatePhases } from "./src/rate-phase.ts";
 import { loadScene, loadScenes } from "./src/scenes/index.ts";
 import { incenseVentVerify } from "./src/scenes/incense/vent.verify.ts";
 import { rippleEdgesVerify } from "./src/scenes/ripple/edges.verify.ts";
 import { verifyHarmonographPrewarm } from "./src/scenes/harmonograph/prewarm.verify.ts";
-import { fragmentSourceFor, packParams } from "./src/shaders/index.ts";
+import { fragmentSourceFor, packParams, sceneFeatures } from "./src/shaders/index.ts";
 import { verifyFrostSky } from "./src/scenes/frost/sky.verify.ts";
 import { GpuCompute } from "./src/sims/gpu.ts";
 import { verifyOrbitRingDepth } from "./src/scenes/orbit/ring-depth.verify.ts";
@@ -73,7 +74,7 @@ import {
   type SceneWalk,
 } from "./src/verify/kit.ts";
 
-const forestScene = await loadScene("forest");
+const { glslFor: forestGlslFor, ...forestScene } = await loadScene("forest");
 const frostScene = await loadScene("frost");
 const countryScene = await loadScene("country");
 
@@ -83,21 +84,27 @@ function context(): WebGL2RenderingContext {
   return gl;
 }
 
-// Observe Forest's actual scene entry sky state, so a legacy caller regression fails this check.
+// Observe Forest's actual entry sky state (the composer's entry, its shared begin's forestSky), so a
+// legacy caller regression fails this check.
 function forestClock(gl: WebGL2RenderingContext): number[] {
+  if (forestGlslFor === undefined) throw new Error("forestClock: the forest is not composed");
+  const features = sceneFeatures(forestScene);
   const clock = link(
     gl,
-    fragmentSourceFor({
-      ...forestScene,
-      entry: "regressionClock",
-      glsl:
-        forestScene.glsl +
-        `
+    fragmentSourceFor(
+      {
+        ...forestScene,
+        entry: "regressionClock",
+        glsl:
+          forestGlslFor(features) +
+          `
     Shade regressionClock(vec2 uv, vec2 cell, float t) {
-      sceneForest(uv, cell, t);
+      composerEntry(uv, cell, t);
       return shadeOf(vec3(forestSky.day), forestSky.day, 0.0);
     }`,
-    }),
+      },
+      features,
+    ),
   );
   gl.useProgram(clock);
   gl.viewport(0, 0, 1, 1);
@@ -106,10 +113,13 @@ function forestClock(gl: WebGL2RenderingContext): number[] {
   gl.uniform1f(gl.getUniformLocation(clock, "uTime"), 96);
   gl.uniform1f(gl.getUniformLocation(clock, "uMotionTime"), 24);
   const clockKnobs = { ...paramDefaults("forest"), time: 0.2, cycle: 1, "cycle-amount": 1 };
-  gl.uniform4fv(
-    gl.getUniformLocation(clock, "uParams"),
-    packParams(renderSettings(defaultsFor("forest"), clockKnobs).params),
-  );
+  const clockParams = renderSettings(defaultsFor("forest"), clockKnobs).params;
+  gl.uniform4fv(gl.getUniformLocation(clock, "uParams"), packParams(clockParams));
+  // The day cycle's phase as the renderer integrates it over the motion clock so far (the days it
+  // has carried the clock on into the day): the sky reads it, never the Motion setting.
+  const phases = new RatePhases(forestScene.params);
+  phases.step(clockParams, 24);
+  gl.uniform4fv(gl.getUniformLocation(clock, "uPhases"), phases.upload);
   const clockValues: number[] = [];
   for (const motion of [0.25, 1, 0]) {
     gl.uniform1f(gl.getUniformLocation(clock, "uMotion"), motion);

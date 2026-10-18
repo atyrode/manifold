@@ -1,15 +1,26 @@
 import { expect, test } from "bun:test";
+import { ATLAS_WIDTH } from "../../composer/caps.ts";
 import { HeadlessSim, type HeadlessFrame } from "../../sims/headless.ts";
 import { loadScene } from "../index.ts";
 import {
   FIREFLIES_CELL,
   FIREFLIES_PROFILE_RES,
   FIREFLIES_ROOT_PITCH,
-  FIREFLIES_STATE_BANK,
   FIREFLIES_WATER,
-} from "./sim.ts";
+} from "./constants.ts";
 
 const firefliesScene = await loadScene("fireflies");
+
+/**
+ * The composer's texture slots at the preset's layers (composer/sim.ts allocate): the records
+ * atlas, the mangroves' profile and prop roots, the swarm.
+ */
+const ATLAS = 1;
+const PROFILE = 2;
+const ROOTS = 3;
+const SWARM = 4;
+/** The breeze in the atlas: the mangroves' row (row 1, after the composer's), texel 0: front x, on. */
+const BREEZE = 4 * ATLAS_WIDTH;
 
 /** A frame at these knobs: a thirtieth of a second at motion 0.6, the pointer away. */
 const frameAt = (knobs: Record<string, number>): HeadlessFrame => ({
@@ -19,12 +30,12 @@ const frameAt = (knobs: Record<string, number>): HeadlessFrame => ({
   pointer: { inside: false },
 });
 
-/** The bank's fireflies as uSim0 has them after one more frame: how many, and their mean height above the waterline. */
+/** The bank's fireflies as the swarm's field has them after one more frame: how many, and their mean height above the waterline. */
 function census(
   sim: HeadlessSim,
   knobs: Record<string, number>,
 ): { count: number; height: number } {
-  const swarm = sim.step(frameAt(knobs)).upload(0);
+  const swarm = sim.step(frameAt(knobs)).upload(SWARM);
   let count = 0;
   let height = 0;
   for (let i = 0; i < swarm.width * swarm.height; i++) {
@@ -77,9 +88,9 @@ interface Root {
   foot: [number, number];
 }
 
-/** The prop roots uSim3 holds (records of the plant component after a row of the sim's own): each drawn root's apex and foot. */
+/** The prop roots the mangroves' roots field holds (records of the plant component after a row of the sim's own): each drawn root's apex and foot. */
 function propRoots(sim: HeadlessSim): { first: number; roots: Root[] } {
-  const { width, data } = sim.upload(3);
+  const { width, data } = sim.upload(ROOTS);
   const first = data[0] ?? 0;
   const bins = data[1] ?? 0;
   const roots: Root[] = [];
@@ -105,9 +116,10 @@ function propRoots(sim: HeadlessSim): { first: number; roots: Root[] } {
 }
 
 /**
- * How far the crowns stand shifted between two uSim1 profiles over the stretch of bank from x0 to x1
- * (screen heights from the middle): the whole number of profile texels the resting canopy's top
- * must slide by to match it best; 0 where the stretch is not all in the profile, or matches as is.
+ * How far the crowns stand shifted between two profiles (the mangroves' field 0) over the stretch of
+ * bank from x0 to x1 (screen heights from the middle): the whole number of profile texels the
+ * resting canopy's top must slide by to match it best; 0 where the stretch is not all in the
+ * profile, or matches as is.
  */
 function crownShift(
   rest: ArrayLike<number>,
@@ -156,7 +168,7 @@ test("prop roots stand in pairs from an apex in their bin under the crowns, down
   }
 });
 
-test("a breeze bows the crowns downwind as it crosses, and the bank then stands exactly as laid out", () => {
+test("a gust's breeze bows the crowns downwind as it crosses, and the bank then stands exactly as laid out", () => {
   for (const seed of [0, 4]) {
     const knobs = { seed };
     const at = (now?: string[]): HeadlessFrame => ({
@@ -167,24 +179,23 @@ test("a breeze bows the crowns downwind as it crosses, and the bank then stands 
       ...(now ? { now } : {}),
     });
     const sim = settled(knobs);
-    const profile = sim.upload(1);
+    const profile = sim.upload(PROFILE);
     const rest = Float32Array.from(profile.data);
-    const restRoots = Float32Array.from(sim.upload(3).data);
-    sim.step(at(["unrest"]));
-    const bank = 4 * FIREFLIES_STATE_BANK;
-    let front = sim.upload(2).data[bank + 1] ?? 0;
+    const restRoots = Float32Array.from(sim.upload(ROOTS).data);
+    sim.step(at(["gusts"]));
+    let front = sim.upload(ATLAS).data[BREEZE] ?? 0;
     let bow = 0;
     let deepest = 0;
     let downwind = 0;
     let moved = false;
     for (let f = 0; f < 30 * 40; f++) {
       sim.step(at());
-      const state = sim.upload(2).data;
-      const now = sim.upload(1).data;
-      if ((state[bank + 2] ?? 0) > 0.5) {
+      const state = sim.upload(ATLAS).data;
+      const now = sim.upload(PROFILE).data;
+      if ((state[BREEZE + 1] ?? 0) > 0.5) {
         // The trees the front has just passed, a little behind it.
-        downwind = Math.sign((state[bank + 1] ?? 0) - front);
-        front = state[bank + 1] ?? 0;
+        downwind = Math.sign((state[BREEZE] ?? 0) - front);
+        front = state[BREEZE] ?? 0;
         const shift = crownShift(
           rest,
           now,
@@ -203,29 +214,29 @@ test("a breeze bows the crowns downwind as it crosses, and the bank then stands 
     expect(Math.sign(bow)).toBe(downwind);
     expect(deepest).toBeGreaterThanOrEqual(2);
     // Long after it has passed: the profile and the roots are the bank's own again, bit for bit.
-    expect(sim.upload(1).data).toEqual(rest);
-    expect(sim.upload(3).data).toEqual(restRoots);
+    expect(sim.upload(PROFILE).data).toEqual(rest);
+    expect(sim.upload(ROOTS).data).toEqual(restRoots);
   }
 });
 
 test("between breezes the trees stand still", () => {
-  const knobs = { seed: 2, unrest: 0 };
+  const knobs = { seed: 2, gusts: 0 };
   const sim = settled(knobs);
-  const rest = Float32Array.from(sim.upload(1).data);
-  const restRoots = Float32Array.from(sim.upload(3).data);
+  const rest = Float32Array.from(sim.upload(PROFILE).data);
+  const restRoots = Float32Array.from(sim.upload(ROOTS).data);
   for (let f = 0; f < 600; f++) sim.step(frameAt(knobs));
-  expect(sim.upload(1).data).toEqual(rest);
-  expect(sim.upload(3).data).toEqual(restRoots);
+  expect(sim.upload(PROFILE).data).toEqual(rest);
+  expect(sim.upload(ROOTS).data).toEqual(restRoots);
 });
 
 /**
  * The bank's pulses after `settle` seconds without breezes, watched for `watch` seconds at 60 frames
  * a second: how widely the flashes of a pulse start about its middle (ms from the 10th to the 90th
  * percentile, every pulse pooled), and the mean seconds from one pulse to the next. A flash starts
- * where a firefly's light (uSim0 B) leaves 0; a pulse is a run of starts without a 0.15 s gap.
+ * where a firefly's light (the swarm's B) leaves 0; a pulse is a run of starts without a 0.15 s gap.
  */
 function pulses(unison: number, settle: number, watch: number): { spread: number; period: number } {
-  const knobs = { unison, unrest: 0 };
+  const knobs = { unison, gusts: 0 };
   const pointer = { inside: false };
   const sim = new HeadlessSim(firefliesScene);
   for (let f = 0; f < 20; f++) sim.step({ dt: 0, pointer, knobs });
@@ -233,7 +244,7 @@ function pulses(unison: number, settle: number, watch: number): { spread: number
   const starts: number[] = [];
   let was = new Float32Array(0);
   for (let f = 0; f < watch * 60; f++) {
-    const swarm = sim.step({ pointer, knobs }).upload(0).data;
+    const swarm = sim.step({ pointer, knobs }).upload(SWARM).data;
     const light = new Float32Array(swarm.length / 4);
     for (let i = 0; i < light.length; i++) light[i] = swarm[4 * i + 2] ?? 0;
     if (was.length === light.length) {

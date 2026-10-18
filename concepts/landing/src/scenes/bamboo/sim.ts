@@ -1,28 +1,44 @@
-// The bamboo grove's simulation: everything that moves with weight.
+// The Bamboo grove preset's sims (ADR 0062 Phase 2b): everything in the grove that moves with weight
+// is one simulation, the grove's (its backdrop's LayerSim, `Grove`), on one random stream for the
+// seed, so a seed lets the same leaves go and fills the tube as it always did. The culms and the
+// water clock hand it nothing but their knobs; they reach it through `LayerFrame.host` and take their
+// data from it.
 // - The grove: every culm in view, depth layer by depth layer, is a damped spring whose target is set
-//   by the wind: a gentle breeze always rolling through, and gust fronts that cross the grove a little
-//   obliquely, so the stems bow one after another, the front rows first, and ring on after it passes.
+//   by the wind: a gentle breeze always rolling through, and the composer's one gust field (D4,
+//   composer/gust.ts) where the culm stands, so the stems bow one after another as a front crosses
+//   them and ring on after it passes; a press sends a breath of wind of its own downwind from where it
+//   landed, and the exit a fast front across the whole grove.
 // - The shishi-odoshi: a bamboo tube on a pivot, a damped rotational oscillator whose torque comes
 //   from its own weight (heavier behind the pivot) and the water filling its mouth. It fills, lifts
 //   off its stone, tips past its balance point as the water rushes to the mouth, pours into the
 //   basin, swings back and clacks on the stone with a small bounce; or, the knock knob turned down,
 //   eases onto a pad of moss on the stone with a soft knock, too soft to bounce or startle a leaf.
-// - Leaves letting go of the canopy and gliding down; some land on the basin and float.
+// - Leaves letting go of the canopy and gliding down (while the culms stand); some land on the basin
+//   and float (while the water clock stands).
 // - Rings on the basin's water: the pour, the clack, a leaf landing, a press (any principal's).
 // - The passage (BAMBOO_PASSAGE): entering, the tube starts empty and fills to where the warm-up left
 //   it as the spout's first water arrives; leaving, the spout rushes so the tube brims, tips and
 //   clacks, a fast gust front crosses the grove and a couple of leaves let go. The culms' lean in and
 //   out is the shader's (it needs no state).
-// The shader (shader.ts) reads three textures:
-//   uSim0  rg16f, BAMBOO_CELLS x layers, linear: per culm (column = grid cell + BAMBOO_CELLS / 2, row =
-//          depth layer) its deflection in metres at BAMBOO_SWAY_HEIGHT, and the gust on it 0..1.
-//   uSim1  rgba16f, (2 + BAMBOO_RIPPLES) x 1, nearest: texel 0 the tube (angle in radians, mouth up
-//          positive; fill relative to the tipping point; pour 0..1; spout flow 0 dry, 1 steady, more
-//          while it gushes), texel 1 (seconds since the clack, its strength 0..1, the grove's mean gust
-//          0..1, 0), then one texel per ripple (centre in basin-disc units, age in seconds, strength).
-//   uSim2  rgba16f, 2 x BAMBOO_MAX_LEAVES, nearest: one row per leaf. Falling or lying: (screen x, y,
-//          angle, length in screen heights), (width 0..1, depth m, alpha, 1). Floating: (disc u, v,
-//          angle, length in disc units), (1, depth m, alpha, 2). Unused rows are 0.
+// Knobs read: the water clock's `clock` (its period, 0 while off) and `knock`, the culms' `leaves`,
+// the composer's `seed`, and the gust field's (LayerFrame.gusts: the World's wind, the composer's
+// gusts).
+//
+// Data (shader.ts reads it):
+//   the grove's field 0, and the culms' (the same texture): rg16f, BAMBOO_CELLS x layers, linear: per
+//          culm (column = grid cell + BAMBOO_CELLS / 2, row = depth layer) its deflection in metres
+//          at BAMBOO_SWAY_HEIGHT, and the gust on it 0..1.
+//   the grove's row: texel 0 (the grove's mean gust 0..1, 0, 0, 0).
+//   the culms' row, and the clock's second row: two texels a leaf (leaf i at 2i, 2i + 1). Falling or
+//          lying: (screen x, y, angle, length in screen heights), (width 0..1, depth m, alpha, 1).
+//          Floating: (disc u, v, angle, length in disc units), (1, depth m, alpha, 2). Unused are 0.
+//   the clock's first row: texel 0 the tube (angle in radians, mouth up positive; fill relative to
+//          the tipping point; pour 0..1; spout flow 0 dry, 1 steady, more while it gushes), texel 1
+//          (seconds since the clack, its strength 0..1, 0, 0), then one texel per ripple (centre in
+//          basin-disc units, age in seconds, strength).
+import { ATLAS_WIDTH } from "../../composer/caps.ts";
+import { gustAt, gustWind, newGustWind } from "../../composer/gust.ts";
+import type { LayerFrame, LayerSim } from "../../composer/types.ts";
 import { KnobReader, type ParamDef } from "../../params.ts";
 import { MAX_PRINCIPALS } from "../../principals.ts";
 import { FixedStep } from "../../sims/clock.ts";
@@ -30,136 +46,23 @@ import { approach, hash31, smoothstep } from "../../sims/math.ts";
 import { mulberry32 } from "../../sims/random.ts";
 import { springStep, type Spring } from "../../sims/spring.ts";
 import { DataTexture } from "../../sims/texture.ts";
-import type { PrincipalState, SceneSim, SimFactory, SimFrame, ScenePoint } from "../types.ts";
+import type { PrincipalState, ScenePoint } from "../types.ts";
 import { BAMBOO_PASSAGE } from "./constants.ts";
-
-/** Seconds into the entrance at which the spout's first water leaves its lip (the shader's stream starts here). */
-export const BAMBOO_STREAM_START = 0.7;
-
-// ---- geometry shared with shader.ts ----
-
-/**
- * Side-on camera: the ground's horizon in screen heights, and the eye's height in metres. A point at
- * depth z and height y (metres) lands at screen y = HORIZON + (y - EYE) / z; x scales by 1 / z.
- */
-export const BAMBOO_HORIZON = 0.4;
-export const BAMBOO_EYE = 1.3;
-
-export interface BambooLayer {
-  /** Metres from the eye. */
-  readonly depth: number;
-  /** Grid cell width in metres: each cell may hold one culm. */
-  readonly spacing: number;
-  /** Culm diameter in metres (each culm varies about it). */
-  readonly diameter: number;
-}
-
-/**
- * The grove's depth layers, near to far. The nearest holds a single big culm framing the left edge
- * (shader.ts places it); the others are grids of cells, each of which may hold a culm.
- */
-export const BAMBOO_LAYERS: readonly BambooLayer[] = [
-  { depth: 0.85, spacing: 1.2, diameter: 0.14 },
-  { depth: 1.6, spacing: 1.0, diameter: 0.12 },
-  { depth: 3.6, spacing: 0.95, diameter: 0.11 },
-  { depth: 7, spacing: 0.9, diameter: 0.1 },
-  { depth: 13, spacing: 0.85, diameter: 0.1 },
-];
-/** Grid cells simulated per layer, centred on the view axis (enough for a 2.9:1 frame). */
-export const BAMBOO_CELLS = 64;
-/** Height (m) at which a culm's deflection is measured; it bends as (height / this)^1.5. */
-export const BAMBOO_SWAY_HEIGHT = 8;
-
-/**
- * The water clock, in device units: screen heights before the corner's scale (bambooDeviceScale,
- * 1.25 on landscape frames, less on narrow ones), origin at the frame's bottom-right corner, y up.
- * The tube pivots at (x, y); `back` and `front` are its lengths behind and ahead of the pivot, the
- * mouth is cut obliquely over `cut`; it rests mouth up at `rest` (radians) on the striking stone and
- * tips no lower than `low`. At full size the tube spans about a quarter of a 16:9 frame's width.
- */
-export const BAMBOO_TUBE = {
-  x: -0.31,
-  y: 0.22,
-  back: 0.15,
-  front: 0.22,
-  radius: 0.022,
-  cut: 0.055,
-  rest: 0.38,
-  low: -0.4,
-} as const;
-/** Where the tube's closed end strikes: the top of the stone under it at rest. */
-export const BAMBOO_STRIKE = {
-  x: BAMBOO_TUBE.x - BAMBOO_TUBE.back * Math.cos(BAMBOO_TUBE.rest),
-  top:
-    BAMBOO_TUBE.y -
-    BAMBOO_TUBE.back * Math.sin(BAMBOO_TUBE.rest) -
-    BAMBOO_TUBE.radius * Math.cos(BAMBOO_TUBE.rest),
-} as const;
-/** The spout (kakei): a thin cane from beyond the right edge to its cut end. */
-export const BAMBOO_SPOUT = {
-  fromX: 0.05,
-  fromY: 0.367,
-  toX: -0.135,
-  toY: 0.356,
-  radius: 0.012,
-} as const;
-/** The spout's lower lip, where the trickle leaves it: the cane's end, one radius below its axis. */
-export const BAMBOO_LIP = (() => {
-  const dx = BAMBOO_SPOUT.toX - BAMBOO_SPOUT.fromX;
-  const dy = BAMBOO_SPOUT.toY - BAMBOO_SPOUT.fromY;
-  const length = Math.hypot(dx, dy);
-  // The cane's "up" normal: its direction turned a quarter toward +y.
-  const upX = dy / length;
-  const upY = -dx / length;
-  return {
-    x: BAMBOO_SPOUT.toX - BAMBOO_SPOUT.radius * upX,
-    y: BAMBOO_SPOUT.toY - BAMBOO_SPOUT.radius * upY,
-  } as const;
-})();
-/** The post the spout is tied to. */
-export const BAMBOO_POST_X = -0.035;
-/** The basin's water: centre and radii of its ellipse (a circle seen from a little above). */
-export const BAMBOO_BASIN = { x: -0.13, y: 0.06, rx: 0.078, ry: 0.02 } as const;
-/** The pour leaves the mouth along the tube at `speed` and falls under `gravity` (device units). */
-export const BAMBOO_POUR = { speed: 0.12, gravity: 1.2 } as const;
-/** How far away the water clock stands (m): its parallax, and the depth of leaves meant for it. */
-export const BAMBOO_DEVICE_DEPTH = 1.35;
-/** The stone lantern standing on the grove floor left of the water clock: its axis in device units
- *  across, its depth in metres (it stands between the second and third layers of culms). */
-export const BAMBOO_LANTERN = { x: -0.64, depth: 3.4 } as const;
-/** Ripple events the shader rings at once. */
-export const BAMBOO_RIPPLES = 8;
-/** Leaves in the air or on the water at once. */
-export const BAMBOO_MAX_LEAVES = 12;
-
-/** The corner group (water clock and lantern) is drawn `size` times its device units from this aspect
- *  up, and shrinks with narrower frames down to `smallest` of that, so it never fills a phone's screen. */
-export const BAMBOO_CORNER_FIT = { aspect: 1.5, smallest: 0.55, size: 1.25 } as const;
-
-/** The corner group's scale (screen heights per device unit) for a frame of this aspect. */
-export function bambooDeviceScale(aspect: number): number {
-  return (
-    BAMBOO_CORNER_FIT.size *
-    Math.min(1, Math.max(BAMBOO_CORNER_FIT.smallest, aspect / BAMBOO_CORNER_FIT.aspect))
-  );
-}
-
-/**
- * Where the pour meets the water, in device x, for the tube at `angle`: it leaves the mouth's lower
- * lip along the tube and falls in a parabola.
- */
-export function bambooPourLanding(angle: number): number {
-  const c = Math.cos(angle);
-  const s = Math.sin(angle);
-  const lipX = BAMBOO_TUBE.x + BAMBOO_TUBE.front * c + BAMBOO_TUBE.radius * s;
-  const lipY = BAMBOO_TUBE.y + BAMBOO_TUBE.front * s - BAMBOO_TUBE.radius * c;
-  const vx = BAMBOO_POUR.speed * c;
-  const vy = BAMBOO_POUR.speed * s;
-  const drop = Math.max(lipY - BAMBOO_BASIN.y, 0);
-  const g = BAMBOO_POUR.gravity;
-  const flight = (vy + Math.sqrt(vy * vy + 2 * g * drop)) / g;
-  return lipX + vx * flight;
-}
+import {
+  BAMBOO_BASIN,
+  BAMBOO_CELLS,
+  BAMBOO_DEVICE_DEPTH,
+  BAMBOO_EYE,
+  BAMBOO_GUST_GAIN,
+  BAMBOO_HORIZON,
+  BAMBOO_LAYERS,
+  BAMBOO_MAX_LEAVES,
+  BAMBOO_RIPPLES,
+  BAMBOO_STREAM_START,
+  BAMBOO_TUBE,
+  bambooDeviceScale,
+  bambooPourLanding,
+} from "./layout.ts";
 
 // ---- wind ----
 
@@ -172,7 +75,7 @@ const CULM_DAMPING = 0.08;
 /** The always-present breeze: two slow waves (wavenumbers per metre) rolling downwind. */
 const BREEZE_LONG = (2 * Math.PI) / 22;
 const BREEZE_SHORT = (2 * Math.PI) / 9;
-/** A gust's leading edge rises over this many metres; its tail is set per gust. */
+/** A breath's leading edge rises over this many metres; its tail is set per breath. */
 const GUST_RISE = 0.8;
 /** The grove's fixed step; a frame's time (at most FRAME_MAX) is caught up in whole steps of it. */
 const GROVE_STEP = 1 / 60;
@@ -185,12 +88,12 @@ function windSway(wind: number): number {
   return 0.12 + 1.5 * Math.abs(wind) ** 0.9;
 }
 
-/** How fast gust fronts and the breeze travel (m/s). */
+/** How fast the breeze and a breath travel (m/s). */
 function windSpeed(wind: number): number {
   return 1.8 + 2.6 * Math.abs(wind);
 }
 
-/** Peak of the gust pulse (1 - e^(-xi/rise)) e^(-xi/tail), so a gust's crest can be normalised. */
+/** Peak of the breath's pulse (1 - e^(-xi/rise)) e^(-xi/tail), so its crest can be normalised. */
 function pulsePeak(tail: number): number {
   const xi = GUST_RISE * Math.log(1 + tail / GUST_RISE);
   return (1 - Math.exp(-xi / GUST_RISE)) * Math.exp(-xi / tail);
@@ -205,7 +108,7 @@ const BRUSH_GAIN = 0.3;
 const BRUSH_MAX = 2.5;
 /** Smoothing of a hand's speed (s). */
 const BRUSH_SMOOTH = 0.12;
-/** Where a press breathes a gust into the grove, uv: upwind of the middle, among the stems. */
+/** Where a press breathes wind into the grove, uv: upwind of the middle, among the stems. */
 const GROVE_POINTS: readonly ScenePoint[] = [
   { x: 0.24, y: 0.56 },
   { x: 0.46, y: 0.64 },
@@ -294,6 +197,9 @@ const NEAR_SHARE = 0.3;
 const LEAF_NEAR = 1.8;
 const LEAF_FAR = 8;
 
+/** Texels of the clock's first row: the tube, the clack, then the rings. */
+const DEVICE_TEXELS = 2 + BAMBOO_RIPPLES;
+
 const TAU = 2 * Math.PI;
 
 export class BambooSimError extends Error {}
@@ -308,7 +214,7 @@ class EntranceClock {
   #arriving: boolean | undefined = undefined;
   #seconds = 0;
 
-  advance(frame: SimFrame, ready: boolean): number {
+  advance(frame: LayerFrame, ready: boolean): number {
     if (this.#arriving === undefined) this.#arriving = frame.passage.enter < 1;
     if (!this.#arriving) return BAMBOO_PASSAGE.enter;
     if (ready) this.#seconds += Math.max(0, frame.dt);
@@ -337,11 +243,12 @@ interface Culm {
   push: number;
 }
 
-interface Gust {
+/** A breath of wind of the grove's own: a press's, or the exit's front. */
+interface Breath {
   readonly born: number;
   /** Front position along its heading when it set off (m). */
   readonly from: number;
-  /** Only culms at or past this position feel it (a gust sent from a hand starts there). */
+  /** Only culms at or past this position feel it (a breath sent from a hand starts there). */
   readonly origin: number;
   /** +1 blowing toward +x, -1 toward -x. */
   readonly heading: number;
@@ -386,20 +293,27 @@ interface Ripple {
   strength: number;
 }
 
-type KnobKey = "clock" | "knock" | "gusts" | "leaves" | "groveSeed" | "wind";
+type KnobKey = "clock" | "knock" | "leaves" | "seed";
 
-class BambooSim implements SceneSim {
-  readonly #groveTexture: DataTexture;
-  readonly #deviceTexture: DataTexture;
-  readonly #leafTexture: DataTexture;
-  readonly #groveData = new Float32Array(BAMBOO_CELLS * BAMBOO_LAYERS.length * 2);
-  readonly #deviceData = new Float32Array((2 + BAMBOO_RIPPLES) * 4);
-  readonly #leafData = new Float32Array(2 * BAMBOO_MAX_LEAVES * 4);
+/**
+ * The grove's simulation (see the header): the grove backdrop's sim, and the host the culms and the
+ * water clock take their data from (its affordances are itself).
+ */
+export class Grove implements LayerSim {
+  /** The culms' sway: the grove's field, and the culms'. */
+  readonly sway: DataTexture;
+  /** The clock's first row as packed (DEVICE_TEXELS texels). */
+  readonly device = new Float32Array(DEVICE_TEXELS * 4);
+  /** The leaves as packed: the culms' row, and the clock's second (2 texels a leaf). */
+  readonly leaves = new Float32Array(2 * BAMBOO_MAX_LEAVES * 4);
+  /** How many times the data has been packed: the culms and the clock copy it when it moves on. */
+  packs = 0;
+
+  readonly #swayData = new Float32Array(BAMBOO_CELLS * BAMBOO_LAYERS.length * 2);
   readonly #knobs: KnobReader<KnobKey>;
-  readonly #textures: (WebGLTexture | undefined)[] = [undefined, undefined, undefined];
 
   readonly #culms: Culm[] = [];
-  readonly #gusts: Gust[] = [];
+  readonly #breaths: Breath[] = [];
   readonly #leaves: Leaf[] = [];
   readonly #ripples: Ripple[] = [];
   #nextRipple = 0;
@@ -408,17 +322,18 @@ class BambooSim implements SceneSim {
   #period = 20;
   /** 1 bare stone .. 0 the thickest pad of moss on it. */
   #knock = 1;
-  #gustRate = 0.4;
   #leafAmount = 0.4;
   #wind = 0.2;
   #seed = -1;
+  /** The composer's gusts are on (its strength over 0): the exit then sends its front. */
+  #gusting = true;
+  /** Whether the culms and the water clock stand (their sims are running). */
+  #culmsOn = true;
+  #clockOn = true;
   /**
-   * Two streams, so the gust train is the same at any frame rate: the natural gusts (their waits,
-   * strengths and tails) draw only from #gustRandom, on the grove's fixed steps; everything drawn a
-   * frame or an event at a time (leaves letting go, ripples, the clack, gusts sent by a press or the
-   * exit, the tube's opening fill) from #random.
+   * Everything drawn a frame or an event at a time (leaves letting go, ripples, the clack, breaths
+   * sent by a press or the exit, the tube's opening fill), on one stream for the seed.
    */
-  #gustRandom = mulberry32(1);
   #random = mulberry32(1);
 
   /** The sim's own clock: scene seconds scaled by motion, advanced a grove step at a time. */
@@ -427,8 +342,10 @@ class BambooSim implements SceneSim {
   readonly #tubeSteps = new FixedStep(TUBE_STEP, Math.ceil(FRAME_MAX / TUBE_STEP));
   #warm = false;
   #dirty = true;
-  #nextGust = Number.POSITIVE_INFINITY;
   #gustMean = 0;
+  /** The composer's gust field at the moment being stepped (motion seconds #tm). */
+  readonly #field = newGustWind();
+  #tm = 0;
 
   // The tube.
   #angle: number = BAMBOO_TUBE.rest;
@@ -451,35 +368,17 @@ class BambooSim implements SceneSim {
   // and smoothed speed.
   readonly #handX: (number | undefined)[] = new Array<number | undefined>(MAX_PRINCIPALS);
   readonly #handSpeed = new Float64Array(MAX_PRINCIPALS);
-  /** Points of interest (SceneSim.interest) for #interestAspect: the basin, then GROVE_POINTS. */
-  readonly #interest: { x: number; y: number }[] = [{ x: 0, y: 0 }, ...GROVE_POINTS];
+  /** Points of interest (LayerSim.interest) for #interestAspect: the basin, then GROVE_POINTS. */
+  readonly #basin = { x: 0, y: 0 };
+  readonly #interest: ScenePoint[] = [];
   #interestAspect = Number.NaN;
 
   constructor(gl: WebGL2RenderingContext, params: readonly ParamDef[]) {
-    this.#knobs = new KnobReader("bamboo", params, [
-      "clock",
-      "knock",
-      "gusts",
-      "leaves",
-      "groveSeed",
-      "wind",
-    ]);
-    this.#groveTexture = new DataTexture(gl, {
+    this.#knobs = new KnobReader("grove", params, ["clock", "knock", "leaves", "seed"]);
+    this.sway = new DataTexture(gl, {
       width: BAMBOO_CELLS,
       height: BAMBOO_LAYERS.length,
       format: "rg16f",
-    });
-    this.#deviceTexture = new DataTexture(gl, {
-      width: 2 + BAMBOO_RIPPLES,
-      height: 1,
-      format: "rgba16f",
-      filter: "nearest",
-    });
-    this.#leafTexture = new DataTexture(gl, {
-      width: 2,
-      height: BAMBOO_MAX_LEAVES,
-      format: "rgba16f",
-      filter: "nearest",
     });
     for (const [layer, { depth, spacing }] of BAMBOO_LAYERS.entries()) {
       for (let cell = 0; cell < BAMBOO_CELLS; cell++) {
@@ -519,12 +418,18 @@ class BambooSim implements SceneSim {
       this.#ripples.push({ u: 0, v: 0, born: -1e4, strength: 0 });
   }
 
-  frame(frame: SimFrame): readonly (WebGLTexture | undefined)[] {
+  get affordances(): Grove {
+    return this;
+  }
+
+  frame(frame: LayerFrame): void {
     const aspect = frame.aspect > 0 ? frame.aspect : 16 / 9;
+    this.#culmsOn = frame.host("culms") !== undefined;
+    this.#clockOn = frame.host("clock") !== undefined;
     this.#readKnobs(frame);
     const warming = !this.#warm;
     if (warming) {
-      this.#prewarm(aspect);
+      this.#prewarm(aspect, frame);
       this.#warm = true;
     }
     // The entrance's clock starts after the warm-up frame; once over it is exactly BAMBOO_PASSAGE.enter.
@@ -544,7 +449,7 @@ class BambooSim implements SceneSim {
     }
 
     const advance = Math.min(Math.max(0, frame.dt) * Math.max(0, frame.motion), FRAME_MAX);
-    if (advance > 0) this.#advance(advance, aspect);
+    if (advance > 0) this.#advance(advance, aspect, frame);
     // The water arrives with the stream and fills the tube (a floor: a "now" can still fill it faster).
     if (arriving) {
       this.#fill = Math.max(
@@ -555,48 +460,46 @@ class BambooSim implements SceneSim {
     }
     if (advance > 0 || this.#dirty) {
       this.#pack(aspect);
-      this.#groveTexture.upload(this.#groveData);
-      this.#deviceTexture.upload(this.#deviceData);
-      this.#leafTexture.upload(this.#leafData);
+      this.sway.upload(this.#swayData);
+      const row = frame.records.data;
+      row[0] = this.#gustMean;
+      frame.records.touch();
+      this.packs++;
       this.#dirty = false;
     }
-    this.#textures[0] = this.#groveTexture.texture;
-    this.#textures[1] = this.#deviceTexture.texture;
-    this.#textures[2] = this.#leafTexture.texture;
-    return this.#textures;
+    const field = frame.fields[0];
+    if (field) field.texture = this.sway.texture;
   }
 
   dispose(): void {
-    this.#groveTexture.dispose();
-    this.#deviceTexture.dispose();
-    this.#leafTexture.dispose();
+    this.sway.dispose();
   }
 
-  /** The basin (a press rings it) and the grove upwind (a press sends a breath of wind). */
+  /** The basin while the water clock stands (a press rings it) and the grove upwind (a press sends a breath of wind). */
   interest(aspect: number): readonly ScenePoint[] {
     if (aspect !== this.#interestAspect) {
       this.#interestAspect = aspect;
       const k = bambooDeviceScale(aspect);
-      const basin = this.#interest[0];
-      if (basin !== undefined) {
-        basin.x = 1 + (k * BAMBOO_BASIN.x) / aspect;
-        basin.y = k * BAMBOO_BASIN.y;
-      }
+      this.#basin.x = 1 + (k * BAMBOO_BASIN.x) / aspect;
+      this.#basin.y = k * BAMBOO_BASIN.y;
     }
-    return this.#interest;
+    const points = this.#interest;
+    points.length = 0;
+    if (this.#clockOn) points.push(this.#basin);
+    for (const point of GROVE_POINTS) points.push(point);
+    return points;
   }
 
-  #readKnobs(frame: SimFrame): void {
+  #readKnobs(frame: LayerFrame): void {
     const knobs = this.#knobs;
     this.#period = knobs.value(frame, "clock");
     this.#knock = knobs.value(frame, "knock");
-    this.#gustRate = knobs.value(frame, "gusts");
-    this.#leafAmount = knobs.value(frame, "leaves");
-    this.#wind = knobs.value(frame, "wind");
-    const seed = Math.round(knobs.value(frame, "groveSeed"));
+    this.#leafAmount = this.#culmsOn ? knobs.value(frame, "leaves") : 0;
+    this.#wind = frame.gusts.wind;
+    this.#gusting = frame.gusts.gusts > 0;
+    const seed = Math.round(knobs.value(frame, "seed"));
     if (seed !== this.#seed) {
       this.#seed = seed;
-      this.#gustRandom = mulberry32(0x6b616b65 ^ Math.imul(seed + 1, 0x9e3779b1));
       this.#random = mulberry32(0x6c656166 ^ Math.imul(seed + 1, 0x85ebca6b));
       for (const [i, culm] of this.#culms.entries()) {
         const cell = i % BAMBOO_CELLS;
@@ -609,28 +512,32 @@ class BambooSim implements SceneSim {
   }
 
   /**
-   * Before the first frame: the grove has been swaying for a while with a gust half way across it,
-   * two leaves are on their way down, and the tube is half full, so the first seconds already live.
+   * The composer's gust field at motion time `tm`, its "now" gust `nowAge` seconds old (negative:
+   * none), the moment a grove step stands for: what #gustAt reads.
    */
-  #prewarm(aspect: number): void {
+  #fieldAt(frame: LayerFrame, tm: number, nowAge: number): void {
+    const g = frame.gusts;
+    gustWind(this.#field, g.wind, g.gusts, g.rate, nowAge, g.pass, g.shape);
+    this.#tm = tm;
+  }
+
+  /**
+   * Before the first frame: the grove has been swaying in the gust field for a while (the field as it
+   * blew up to now, no "now" gust in it), two leaves are on their way down, and the tube is half
+   * full, so the first seconds already live.
+   */
+  #prewarm(aspect: number, frame: LayerFrame): void {
     const heading = this.#wind < 0 ? -1 : 1;
     const sway = windSway(this.#wind);
     for (const culm of this.#culms) {
       culm.sway.x = heading * sway * 0.28;
       culm.swayWas = culm.sway.x;
     }
-    const mid = BAMBOO_LAYERS[2]?.depth ?? 6.4;
-    const crossing = mid * SKEW_SIN - 0.15 * aspect * mid * SKEW_COS;
-    this.#launchGust(
-      crossing - windSpeed(this.#wind) * PREWARM_SECONDS,
-      Number.NEGATIVE_INFINITY,
-      0.9,
-      this.#gustRandom,
-    );
     const steps = Math.round(PREWARM_SECONDS / GROVE_STEP);
     for (let s = 0; s < steps; s++) {
       this.#clock += GROVE_STEP;
-      this.#scheduleGusts(aspect);
+      this.#fieldAt(frame, frame.motionTime - (steps - 1 - s) * GROVE_STEP, -1);
+      this.#retireBreaths(aspect);
       this.#stepGrove(aspect);
     }
     this.#fill = TIP_FILL * (0.7 + 0.12 * this.#random());
@@ -643,15 +550,6 @@ class BambooSim implements SceneSim {
   #watchTriggers(fired: readonly boolean[], aspect: number): void {
     const knobs = this.#knobs;
     if (fired[knobs.trigger("clock")] === true) this.#gushLeft = GUSH_LIMIT;
-    if (fired[knobs.trigger("gusts")] === true) {
-      // Felt even in still air: at least half a metre of sway at its crest.
-      this.#launchGust(
-        this.#gustStart(aspect),
-        Number.NEGATIVE_INFINITY,
-        Math.max(1, 0.55 / windSway(this.#wind)),
-        this.#random,
-      );
-    }
     if (fired[knobs.trigger("leaves")] === true) {
       this.#release(aspect, true);
       this.#release(aspect, false);
@@ -660,8 +558,8 @@ class BambooSim implements SceneSim {
   }
 
   /**
-   * Every hand moving through the stems brushes them aside (their pushes add); a press sends a gust
-   * or rings the basin.
+   * Every hand moving through the stems brushes them aside (their pushes add); a press sends a
+   * breath of wind or rings the basin.
    */
   #trackHands(principals: readonly PrincipalState[], dt: number, aspect: number): void {
     for (const culm of this.#culms) culm.push = 0;
@@ -691,36 +589,37 @@ class BambooSim implements SceneSim {
   }
 
   #press(px: number, py: number, aspect: number): void {
-    const k = bambooDeviceScale(aspect);
-    const u = (px - (aspect / 2 + k * BAMBOO_BASIN.x)) / (k * BAMBOO_BASIN.rx);
-    const v = (py - k * BAMBOO_BASIN.y) / (k * BAMBOO_BASIN.ry);
-    if (u * u + 0.25 * v * v < 1.1) {
-      this.#addRipple(u, Math.min(0.9, Math.max(-0.9, v)), 0.8);
-      return;
+    if (this.#clockOn) {
+      const k = bambooDeviceScale(aspect);
+      const u = (px - (aspect / 2 + k * BAMBOO_BASIN.x)) / (k * BAMBOO_BASIN.rx);
+      const v = (py - k * BAMBOO_BASIN.y) / (k * BAMBOO_BASIN.ry);
+      if (u * u + 0.25 * v * v < 1.1) {
+        this.#addRipple(u, Math.min(0.9, Math.max(-0.9, v)), 0.8);
+        return;
+      }
     }
     // A breath of wind from where the press landed, downwind only.
     const heading = this.#wind < 0 ? -1 : 1;
     const z = BAMBOO_LAYERS[2]?.depth ?? 6.4;
     const at = heading * px * z * SKEW_COS + z * SKEW_SIN;
-    this.#launchGust(at, at, Math.max(0.9, 0.5 / windSway(this.#wind)), this.#random);
+    this.#launchBreath(at, at, Math.max(0.9, 0.5 / windSway(this.#wind)));
   }
 
   /** Front position just upwind of everything in view. */
-  #gustStart(aspect: number): number {
+  #breathStart(aspect: number): number {
     const far = BAMBOO_LAYERS[BAMBOO_LAYERS.length - 1]?.depth ?? 17;
     return far * (SKEW_SIN - (aspect / 2 + 0.3) * SKEW_COS) - 2;
   }
 
-  /** A gust front from `from`, its tail drawn from `random` (#gustRandom for the natural train). */
-  #launchGust(
+  /** A breath from `from`, its tail drawn from the grove's stream. */
+  #launchBreath(
     from: number,
     origin: number,
     strength: number,
-    random: () => number,
     speed: number = windSpeed(this.#wind),
   ): void {
-    const tail = 4 + 3 * random();
-    this.#gusts.push({
+    const tail = 4 + 3 * this.#random();
+    this.#breaths.push({
       born: this.#clock,
       from,
       origin,
@@ -740,12 +639,11 @@ class BambooSim implements SceneSim {
       this.#gushLeft = GUSH_LIMIT;
       this.#rushLeft = EXIT_RUSH_TIME;
     }
-    if (this.#gustRate > 0) {
-      this.#launchGust(
-        this.#gustStart(aspect),
+    if (this.#gusting) {
+      this.#launchBreath(
+        this.#breathStart(aspect),
         Number.NEGATIVE_INFINITY,
         Math.max(1, EXIT_GUST_SWAY / windSway(this.#wind)),
-        this.#random,
         EXIT_GUST_SPEED,
       );
     }
@@ -755,65 +653,57 @@ class BambooSim implements SceneSim {
     }
   }
 
-  #scheduleGusts(aspect: number): void {
-    const rate = this.#gustRate;
-    if (rate <= 0) {
-      this.#nextGust = Number.POSITIVE_INFINITY;
-    } else {
-      // Mean wait from 18 s (rare) down to 5 s (restless).
-      const mean = 18 - 13 * Math.min(1, rate);
-      if (!Number.isFinite(this.#nextGust)) this.#nextGust = this.#clock + this.#wait(mean);
-      if (this.#clock >= this.#nextGust) {
-        this.#launchGust(
-          this.#gustStart(aspect),
-          Number.NEGATIVE_INFINITY,
-          0.7 + 0.3 * this.#gustRandom(),
-          this.#gustRandom,
-        );
-        this.#nextGust = this.#clock + this.#wait(mean);
-      }
-    }
-    // Retire gusts whose tails have left the far side of the view.
+  /** Retire breaths whose tails have left the far side of the view. */
+  #retireBreaths(aspect: number): void {
     const far = BAMBOO_LAYERS[BAMBOO_LAYERS.length - 1]?.depth ?? 17;
     const end = far * (SKEW_SIN + (aspect / 2 + 0.3) * SKEW_COS);
-    for (let i = this.#gusts.length - 1; i >= 0; i--) {
-      const gust = this.#gusts[i];
-      if (gust && gust.from + gust.speed * (this.#clock - gust.born) - end > 8 * gust.tail)
-        this.#gusts.splice(i, 1);
+    for (let i = this.#breaths.length - 1; i >= 0; i--) {
+      const breath = this.#breaths[i];
+      if (!breath) continue;
+      if (breath.from + breath.speed * (this.#clock - breath.born) - end > 8 * breath.tail)
+        this.#breaths.splice(i, 1);
     }
   }
 
-  /** The wait until the next gust: exponential about `mean` seconds, kept between 0.35x and 2.5x. */
-  #wait(mean: number): number {
-    return mean * Math.min(2.5, Math.max(0.35, -Math.log(1 - this.#gustRandom())));
-  }
-
-  /** The gusts' push at (x, z) in the grove: signed toward +x. */
+  /**
+   * The wind's push at (x, z) in the grove beyond the breeze, signed toward +x: the gust field's load
+   * there (#fieldAt's moment) times BAMBOO_GUST_GAIN, the way it blows, and the breaths'.
+   */
   #gustAt(x: number, z: number): number {
-    let sum = 0;
-    for (const gust of this.#gusts) {
-      const at = gust.heading * x * SKEW_COS + z * SKEW_SIN;
-      if (at < gust.origin) continue;
-      const xi = gust.from + gust.speed * (this.#clock - gust.born) - at;
+    const field = this.#field;
+    let sum = (field.dirX < 0 ? -1 : 1) * BAMBOO_GUST_GAIN * gustAt(field, x, z, this.#tm, 0);
+    for (const breath of this.#breaths) {
+      const at = breath.heading * x * SKEW_COS + z * SKEW_SIN;
+      if (at < breath.origin) continue;
+      const xi = breath.from + breath.speed * (this.#clock - breath.born) - at;
       if (xi <= 0) continue;
-      sum += gust.heading * gust.gain * (1 - Math.exp(-xi / GUST_RISE)) * Math.exp(-xi / gust.tail);
+      sum +=
+        breath.heading *
+        breath.gain *
+        (1 - Math.exp(-xi / GUST_RISE)) *
+        Math.exp(-xi / breath.tail);
     }
     return sum;
   }
 
   /**
    * `total` scene seconds: the grove and the tube in their whole fixed steps due (each grove step
-   * on the clock at its own moment), the leaves over the whole of it.
+   * on the clock at its own moment, in the gust field as it stood then), the leaves over the whole of
+   * it in the field as it stands now.
    */
-  #advance(total: number, aspect: number): void {
+  #advance(total: number, aspect: number, frame: LayerFrame): void {
     const clock = this.#clock + total;
     const grove = this.#groveSteps;
+    const nowAge = frame.gusts.nowAge;
     for (let s = 0, n = grove.advance(total); s < n; s++) {
-      this.#clock = clock - grove.lag(s);
-      this.#scheduleGusts(aspect);
+      const lag = grove.lag(s);
+      this.#clock = clock - lag;
+      this.#fieldAt(frame, frame.motionTime - lag, nowAge < 0 ? -1 : nowAge - lag);
+      this.#retireBreaths(aspect);
       this.#stepGrove(aspect);
     }
     this.#clock = clock;
+    this.#fieldAt(frame, frame.motionTime, nowAge);
 
     // The tube: steady inflow from the spout at the period knob's pace, plus any gush.
     const steady = this.#period > 0 ? TIP_FILL / Math.max(this.#period - CYCLE_OVERHEAD, 3) : 0;
@@ -1015,7 +905,8 @@ class BambooSim implements SceneSim {
           } else if (leaf.near) {
             if (sy / k <= BAMBOO_BASIN.y + 0.004) {
               const u = ((sx - right) / k - BAMBOO_BASIN.x) / BAMBOO_BASIN.rx;
-              if (Math.abs(u) < 0.8) {
+              // Onto the water while the water clock stands; else on down out of the frame.
+              if (this.#clockOn && Math.abs(u) < 0.8) {
                 leaf.state = "floating";
                 leaf.age = 0;
                 leaf.u = u;
@@ -1082,7 +973,7 @@ class BambooSim implements SceneSim {
   }
 
   #pack(aspect: number): void {
-    const grove = this.#groveData;
+    const grove = this.#swayData;
     const groveAlpha = this.#groveSteps.alpha;
     for (let i = 0; i < this.#culms.length; i++) {
       const culm = this.#culms[i];
@@ -1091,14 +982,14 @@ class BambooSim implements SceneSim {
       grove[i * 2 + 1] = culm.gust;
     }
 
-    const device = this.#deviceData;
+    const device = this.device;
     device[0] = this.#angleWas + (this.#angle - this.#angleWas) * this.#tubeSteps.alpha;
     device[1] = this.#fill / TIP_FILL;
     device[2] = Math.min(1, this.#outflow / POUR_FULL);
     device[3] = (this.#period > 0 ? 1 : 0) + (this.#gushLeft > 0 ? 1.5 : 0);
     device[4] = Math.min(this.#clock - this.#clackAt, 60);
     device[5] = this.#clackStrength;
-    device[6] = this.#gustMean;
+    device[6] = 0;
     device[7] = 0;
     for (let i = 0; i < this.#ripples.length; i++) {
       const ripple = this.#ripples[i];
@@ -1110,7 +1001,7 @@ class BambooSim implements SceneSim {
       device[o + 3] = ripple.strength;
     }
 
-    const leaves = this.#leafData;
+    const leaves = this.leaves;
     const k = bambooDeviceScale(aspect);
     for (let i = 0; i < this.#leaves.length; i++) {
       const leaf = this.#leaves[i];
@@ -1155,7 +1046,51 @@ class BambooSim implements SceneSim {
   }
 }
 
-/** The grove's simulation for a scene whose knobs are `params` (looked up by key). */
-export function bambooSim(params: readonly ParamDef[]): SimFactory {
-  return (gl) => new BambooSim(gl, params);
+/**
+ * A layer that draws from the grove's sim: each frame it takes the grove's latest data into its
+ * own rows (and its field), where its GLSL reads them; without the grove it shows nothing moving.
+ */
+class GroveReader implements LayerSim {
+  readonly #take: (grove: Grove, frame: LayerFrame) => void;
+  #packs = -1;
+
+  constructor(take: (grove: Grove, frame: LayerFrame) => void) {
+    this.#take = take;
+  }
+
+  /** Present, so the grove sees the layer stand (LayerFrame.host). */
+  get affordances(): GroveReader {
+    return this;
+  }
+
+  frame(frame: LayerFrame): void {
+    const grove = frame.host("grove");
+    if (!(grove instanceof Grove)) return;
+    const field = frame.fields[0];
+    if (field) field.texture = grove.sway.texture;
+    if (grove.packs === this.#packs) return;
+    this.#packs = grove.packs;
+    this.#take(grove, frame);
+    frame.records.touch();
+  }
+
+  dispose(): void {}
+}
+
+/** The grove's sim (the grove backdrop's). */
+export function groveSim(gl: WebGL2RenderingContext, params: readonly ParamDef[]): LayerSim {
+  return new Grove(gl, params);
+}
+
+/** The culms' sim: the grove's sway as its field, the leaves in the air as its row. */
+export function culmsSim(): LayerSim {
+  return new GroveReader((grove, frame) => frame.records.data.set(grove.leaves));
+}
+
+/** The water clock's sim: the tube, the clack and the rings as its first row, the leaves as its second. */
+export function clockSim(): LayerSim {
+  return new GroveReader((grove, frame) => {
+    frame.records.data.set(grove.device);
+    frame.records.data.set(grove.leaves, ATLAS_WIDTH * 4);
+  });
 }

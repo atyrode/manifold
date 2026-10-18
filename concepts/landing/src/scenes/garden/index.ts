@@ -1,169 +1,121 @@
 // A dry stone garden (karesansui): white gravel raked into lines and rings around islands of
 // weathered stones and moss, always being re-raked by an unseen hand, under a maple letting go of
-// its leaves, the temple woods swaying over its wall. The gravel, the rake, the falling leaves and
-// the plants (the woods' trees, an optional border along the wall's foot) are simulated in sim.ts;
-// shader.ts lights it all from the veranda or from straight above.
+// its leaves, the temple woods swaying over its wall. A preset of the `outdoor` composer
+// (src/composer, README "Composers"): the temple wall behind (the haze over it, the wall, the
+// veranda's boards), the raked gravel, the temple woods, the maple's boughs and their leaves, the
+// border along the wall's foot and the raking chore (layers.ts), all seen from the veranda. The
+// weather is the World's, the gusts and the arrangement the composer's.
+//
+// The view from straight above (the gravel's `gravelCamera` knob at 1) is not the composer's yet: it
+// is a program of the garden's own (shader.ts gardenAboveGlsl, code.ts) until the overhead composer
+// takes it as the scene `gardenabove` (ADR 0062 Phase 4). The knob is steady and structural here: at
+// 1 (with the gravel on) the setting's features hold GARDEN_OVERHEAD, so its own and its
+// all-features programs are that one, and turning it builds the other program, as a layer turn does.
 import { climateCold, fallingRain, seasonKnob, yearAt } from "../../climate.ts";
-import { choice, effective, feature, knobDef, range, seed, type ParamDef } from "../../params.ts";
-import { atmosphereGroups, skyKnobs, skyTheme, weatherKnobs } from "../atmosphere.ts";
-import { plantKnobs } from "../plants.ts";
+import { composeScene } from "../../composer/compose.ts";
+import { outdoor } from "../../composer/outdoor.ts";
+import type { ScenePreset } from "../../composer/types.ts";
+import { effective, knobDef } from "../../params.ts";
+import { skyTheme } from "../atmosphere.ts";
 import type { SceneDef } from "../types.ts";
-import { GARDEN_PAPER, GARDEN_PASSAGE, gardenPatterns, gardenSeasons } from "./constants.ts";
+import { worldGroups } from "../world.ts";
+import {
+  GARDEN_FLYWAY,
+  GARDEN_GRADE,
+  GARDEN_OVERHEAD,
+  GARDEN_PAPER,
+  GARDEN_PASSAGE,
+  GARDEN_RIG,
+} from "./constants.ts";
 
-const params: readonly ParamDef[] = [
-  choice(
-    "garden",
-    "pattern",
-    "raked pattern",
-    gardenPatterns.map((label, value) => ({ label, value })),
-    0,
-    "Waves: parallel lines meandering across the garden like a slow current, five rings round each island. Straight: the still-water lines of the classic gardens, rings round the islands. Circles: rings spreading out from every stone until they meet the next stone's. The garden is laid out afresh; the rake then keeps it.",
-  ),
-  range(
-    "garden",
-    "speed",
-    "raking",
-    0.4,
-    "How fast the unseen rake works its way round the garden: a board levels the old pattern just ahead of five tines cutting the new, pass after pass, then lap after lap round the stones. Fresh gravel is a little darker until it dries. At 0 the rake rests.",
-  ),
-  range(
-    "garden",
-    "soften",
-    "weathering",
-    0.4,
-    "How quickly grooves slump and soften once raked: crisp just behind the rake, gentler the longer since it passed. Drying with the weather, fresh gravel dries faster or slower with it too.",
-  ),
-  feature(
-    "garden",
-    "drying",
-    "drying with weather",
-    false,
-    "dampness",
-    0.5,
-    "Freshly turned gravel dries with the weather instead of over a fixed minute or two: its damp lingers in the groove bottoms while the crests pale first, faster with more weathering, in sun and wind, slower toward dusk and at night, and not at all in the rain. Dampness: how dark the fresh gravel shows. Off: it is evenly a little darker and dries back over a minute or two.",
-  ),
-  range(
-    "garden",
-    "moss",
-    "moss",
-    0.6,
-    "Moss cushions round the stones: none leaves bare stones in smooth gravel; full gives deep green collars, creeping up the stones' feet.",
-  ),
-  feature(
-    "garden",
-    "border",
-    "border planting",
-    false,
-    "fullness",
-    0.6,
-    "Ferns and tufts of mondo grass planted along the foot of the wall, in the gutter of dark pebbles: they sway in the wind, bow one after another as a gust crosses, and follow the season (pale young fronds in spring, ferns turning gold in autumn and half of them gone in winter, the evergreen grass dulling). Fullness: how much of the gutter is planted, from a clump here and there to an unbroken border.",
-  ),
-  // The border's growth (scenes/plants.ts), off; it follows the maple's season choice.
-  ...plantKnobs({ group: "garden", growth: 0.4, when: "border" }),
-  seed(
-    "garden",
-    "stones",
-    "stones",
-    "Another arrangement of the stone islands; the garden is raked afresh round them.",
-  ),
-  choice(
-    "maple",
-    "season",
-    "season",
-    gardenSeasons.map((label, value) => ({ label, value })),
-    2,
-    "Spring: cherry blossom, its petals drifting down. Summer: a deep green maple, a leaf now and then, dappled shade. Autumn: the maple turns red and lets go of its leaves. Winter: bare branches, and snow lying on the stones, the moss and the wall with none falling; rain (Weather) comes down as snow then, while snow (Weather) falls in any season. The border planting (Garden) follows the season.",
-    { widget: { kind: "sky", part: "season", year: { at: [0.125, 0.375, 0.625, 0.875] } } },
-  ),
-  range(
-    "maple",
-    "leaves",
-    "leaf fall",
-    0.5,
-    "How often a leaf lets go. Light ones flutter, swinging from side to side and gliding up at the end of each swing; heavier ones tumble end over end. They lie on the gravel a while, then fade or are raked away. Now: a gust shakes a shower loose, blows lying leaves along the gravel and crosses the woods over the wall, bowing the trees one after another.",
-    { trigger: 0 },
-  ),
-  range(
-    "maple",
-    "dapple",
-    "dappled shade",
-    0.6,
-    "The maple's shadow on the gravel, pierced by round flecks of sun; it shows when the sun stands high enough to throw it into the garden.",
-  ),
-  choice(
-    "view",
-    "camera",
-    "view",
-    [
-      { label: "veranda", value: 0 },
-      { label: "above", value: 1 },
-    ],
-    0,
-    "Sit on the temple veranda looking across the garden to its earthen wall, or look straight down on it like a plan. Drag on the gravel to rake your own lines.",
-    { steady: true },
-  ),
-  // 0.735: golden hour, the sun low on the left behind the wall, raking across the grooves.
-  ...skyKnobs({ time: 0.735, moon: 1 }),
-  ...weatherKnobs({ rain: true, snow: true, wind: true }),
-  feature(
-    "manifold",
-    "mark",
-    "M stone",
-    false,
-    "size",
-    0.5,
-    "A low slab of grey-blue slate in the shape of the Manifold M, set nearly flush in the gravel: worn pale at its edges, lichen on it, a fringe of moss round it, and rings raked round it in its own shape, as round the other stones. The garden is laid out afresh round it.",
-  ),
-];
-
-const seasonDef = seasonKnob(params);
-const rainDef = knobDef("garden", params, "rain");
-
-/** The rain that falls as rain, as the shader has it (climatePrecip): winter's comes down as snow. */
-function rainAsRain(values: Readonly<Record<string, number>>): number {
-  const cold = seasonDef ? climateCold(yearAt(seasonDef, effective(seasonDef, values))) : 0;
-  return fallingRain(effective(rainDef, values), cold);
-}
-
-export const gardenScene: SceneDef = {
+const preset: ScenePreset = {
   id: "garden",
+  composer: "outdoor",
   title: "Stone garden",
   blurb:
     "Raked gravel, stones and moss, always being tended, under a maple letting go of its leaves. Drag to rake.",
   accent: "#c8321e",
   look: { color: "full", levels: 4 },
-  params,
-  groups: {
-    garden: {
-      title: "Garden",
-      blurb:
-        "The raked pattern, the unseen rake's pace, the stones and their moss, and a border planting along the wall. Drag on the gravel to rake your own lines.",
-    },
-    maple: { title: "Maple", blurb: "The season, and the leaves it lets fall on the gravel." },
-    view: { title: "View", blurb: "From the veranda, or from above." },
-    sky: atmosphereGroups.sky,
-    // The shared heading, with what the weather does here.
-    weather: {
-      ...atmosphereGroups.weather,
-      blurb:
-        "Rain greys the sky and soaks the garden: wet gravel darkens, stones and tiles shine, water stands in the grooves and the eaves and maple drip; drizzle is a soft grey mist, a downpour closes the garden in. In winter the rain comes down as snow. Snow settles, crests and stone tops first. Wind sways the maple and the woods over the wall and carries the leaves.",
-    },
-    manifold: {
-      title: "Manifold M",
-      blurb: "A landmark of its own: a slate M among the stones, the gravel raked round it.",
-    },
-  },
-  code: () => import("./code.ts"),
+  // Entrance: the maple's boughs sway in from the top of the frame and a few leaves drift down and
+  // land. Exit: a gust, rising over the whole exit, blows a flurry of leaves across the gravel while
+  // the boughs sway up out of the frame.
   passage: GARDEN_PASSAGE,
   // White gravel in daylight is a light page, golden hour included: the copy goes dark on it from
   // just after sunrise to just before sunset, on a still clock, unless steady rain greys it (rain
   // that falls as rain: winter's snow leaves it white). The shader follows the page (pagePaper in
   // inkOf).
-  theme: skyTheme(params, {
-    from: GARDEN_PAPER.from,
-    to: GARDEN_PAPER.to,
-    when: (values) => rainAsRain(values) < GARDEN_PAPER.rain,
-  }),
-  // The moon takes a phase (K_moon) in the shared sky: it keys the garden's light at night.
+  theme: (params) => {
+    const season = seasonKnob(params);
+    const rain = knobDef("garden", params, "rain");
+    return skyTheme(params, {
+      from: GARDEN_PAPER.from,
+      to: GARDEN_PAPER.to,
+      when: (values) => {
+        const cold = season ? climateCold(yearAt(season, effective(season, values))) : 0;
+        return fallingRain(effective(rain, values), cold) < GARDEN_PAPER.rain;
+      },
+    });
+  },
+  rig: GARDEN_RIG,
+  grade: GARDEN_GRADE,
+  // Golden hour, the sun low on the left behind the wall, raking across the grooves; the full moon
+  // keys the garden's light at night (no stars: the horizon is the frame's top edge); no birds pass
+  // in view.
+  world: {
+    time: 0.735,
+    birds: {
+      kind: "rooks",
+      on: false,
+      help: "Birds crossing over the temple woods by day, rooks by default; they fly above the top of the view (the horizon), so none is seen from the veranda.",
+    },
+  },
+  // Shooting stars would set out over the woods, above the frame's top edge.
+  meteors: [-0.5, 0.2, 1.0, 0.1],
+  flyway: GARDEN_FLYWAY,
+  floor: "gravel",
+  layers: ["templeWall", "gravel", "templeWoods", "boughs", "raking"],
+  // No gusts of their own over the garden until switched on ('now' still sends one).
+  values: { gusts: 0 },
+  // The moon takes a phase (K_moon) in the shared sky: it keys the garden's light at night, compiled
+  // in at every setting, a full moon's too, as the garden always drew it.
   features: { SKY_MOON_PHASE: 1 },
+  groups: {
+    sky: {
+      ...worldGroups.sky,
+      blurb:
+        "Time of day, the season, whether the days pass, and the moon's phase, which keys the garden's light at night; the horizon is the top of the view, so no stars show.",
+    },
+    weather: {
+      ...worldGroups.weather,
+      blurb:
+        "Rain greys the sky and soaks the garden: wet gravel darkens, stones and tiles shine, water stands in the grooves and the eaves and maple drip; a downpour closes the garden in. In winter the rain comes down as snow. Snow settles, crests and stone tops first. Wind sways the maple and the woods over the wall and carries the leaves.",
+    },
+  },
+};
+
+/** The garden composed (composer/compose.ts): its definition, and what its code is assembled from. */
+export const gardenComposed = composeScene(outdoor, preset);
+
+/** Whether these knobs (as the shader reads them) look down from straight above: the gravel's camera at 1. */
+function overhead(values: Readonly<Record<string, number>>): boolean {
+  return (
+    (values["gravelCamera"] ?? 0) >= 0.5 &&
+    gardenComposed.placed(values).layers.some((placed) => placed.layer.id === "gravel")
+  );
+}
+
+const { featuresFor, featuresAllFor, structural } = gardenComposed.def;
+
+export const gardenScene: SceneDef = {
+  ...gardenComposed.def,
+  featuresFor: (values) => ({
+    ...featuresFor?.(values),
+    [GARDEN_OVERHEAD]: overhead(values) ? 1 : 0,
+  }),
+  featuresAllFor: (values) => ({
+    ...featuresAllFor?.(values),
+    [GARDEN_OVERHEAD]: overhead(values) ? 1 : 0,
+  }),
+  structural: [...(structural ?? []), "gravelCamera"],
+  code: () => import("./code.ts"),
 };

@@ -14,11 +14,13 @@
 import { seasonKnob, yearCycleKnob, yearNowGlsl } from "../climate.ts";
 import { effective, MAX_PARAMS, type Widget } from "../params.ts";
 import { phaseDefines } from "../rate-phase.ts";
+import { openingPlanets, planetUniforms, type PlanetUniforms } from "../scenes/planets.ts";
 import type { LoadedScene, SceneDef } from "../scenes/types.ts";
 import { skyAnchor } from "../world-clock.ts";
 import { common } from "./common.ts";
 import { glslFloat } from "./glsl.ts";
 import { libs } from "./lib/index.ts";
+import { PLANET_BODY_GATES_ALL } from "./lib/planet.ts";
 import { main } from "./main.ts";
 import { shakeGlsl } from "./shake.ts";
 
@@ -107,14 +109,26 @@ type NightPartName = Extract<Widget, { kind: "night" }>["part"];
  * defines it 0 where a scene lacks it). The constellations in skyStars (SKY_FIGURES) come with their
  * night part's knob: a scene holding it gets the gate in every feature set it compiles, 1 while the
  * knob is above 0 and 0 while not. The planets of skyGiant (PLANETS_GATE) come with a scene's list
- * (SceneDef.planets): 1 while it holds any. Both are in shaders/lib/sky.ts, and both are 1 in the
- * all-features set, so a scene with either is setting-keyed (`settingKeyed`) like a scene with
+ * (SceneDef.planets): 1 while it holds any, and with it SEVERAL_PLANETS_GATE, 1 while it holds more
+ * than one (one is drawn straight, several in a loop), and the body tier's gates
+ * (PlanetUniforms.gates: PLANET_KIND_GATES, a bit per palette of that kind the list holds, and
+ * PLANET_DRESS_GATES in shaders/lib/planet.ts), so changing a planet's kind or palette, putting on
+ * a piece of dress or adding a second planet builds another program as turning a gated knob does.
+ * They are in shaders/lib/sky.ts and planet.ts, and all are on in the all-features set, so a scene
+ * with the constellations' knob or planets is setting-keyed (`settingKeyed`) like a scene with
  * `featuresFor`, whether or not it has gates of its own.
  */
 export const LIBRARY_GATES: Readonly<Partial<Record<NightPartName, string>>> = {
   constellations: "SKY_FIGURES",
 };
 export const PLANETS_GATE = "SKY_PLANETS";
+export const SEVERAL_PLANETS_GATE = "SKY_PLANETS_SEVERAL";
+/** Every planet gate open: the all-features set's. */
+const PLANET_GATES_ALL: Readonly<Record<string, number>> = {
+  [PLANETS_GATE]: 1,
+  [SEVERAL_PLANETS_GATE]: 1,
+  ...PLANET_BODY_GATES_ALL,
+};
 /**
  * The renderer's gate for the other principals' cursors (shaders/main.ts), drawn over every scene
  * while the cast has agents (RenderSettings.agents): in a scene's feature set only then, tested
@@ -143,18 +157,23 @@ export function settingKeyed(scene: SceneDef): boolean {
 
 /**
  * The compile-time features of `scene`'s program for knob values as its shader reads them (keyed by
- * knob key; default: the scene's defaults), how many planets it holds and whether other principals'
- * cursors are drawn over it (`cursors`): `features`, its library gates and `featuresFor(values)`
- * over them, and CURSORS_GATE while `cursors`.
+ * knob key; default: the scene's defaults), the planets it holds as skyGiant takes them (default:
+ * those it opens with) and whether other principals' cursors are drawn over it (`cursors`):
+ * `features`, its library gates and `featuresFor(values)` over them, and CURSORS_GATE while
+ * `cursors`.
  */
 export function sceneFeatures(
   scene: SceneDef,
   values?: Readonly<Record<string, number>>,
-  planets = 0,
+  planets?: PlanetUniforms,
   cursors = false,
 ): Readonly<Record<string, number>> {
   const own = settingKeyed(scene)
-    ? keyedFeatures(scene, values ?? shaderValues(scene), planets)
+    ? keyedFeatures(
+        scene,
+        values ?? shaderValues(scene),
+        planets ?? planetUniforms(scene.planets === undefined ? [] : openingPlanets(scene.planets)),
+      )
     : (scene.features ?? {});
   return cursors ? { ...own, [CURSORS_GATE]: 1 } : own;
 }
@@ -163,14 +182,20 @@ export function sceneFeatures(
 function keyedFeatures(
   scene: SceneDef,
   knobs: Readonly<Record<string, number>>,
-  planets: number,
+  planets: PlanetUniforms,
 ): Readonly<Record<string, number>> {
   return {
     ...scene.features,
     ...Object.fromEntries(
       libraryGates(scene).map(([key, gate]) => [gate, (knobs[key] ?? 0) > 0 ? 1 : 0]),
     ),
-    ...(scene.planets === undefined ? {} : { [PLANETS_GATE]: planets > 0 ? 1 : 0 }),
+    ...(scene.planets === undefined
+      ? {}
+      : {
+          [PLANETS_GATE]: planets.count > 0 ? 1 : 0,
+          [SEVERAL_PLANETS_GATE]: planets.count > 1 ? 1 : 0,
+          ...planets.gates,
+        }),
     ...scene.featuresFor?.(knobs),
   };
 }
@@ -198,7 +223,7 @@ export function sceneFeaturesAll(
   return {
     ...scene.features,
     ...Object.fromEntries(libraryGates(scene).map(([, gate]) => [gate, 1])),
-    ...(scene.planets === undefined ? {} : { [PLANETS_GATE]: 1 }),
+    ...(scene.planets === undefined ? {} : PLANET_GATES_ALL),
     ...(scene.featuresAllFor?.(values ?? shaderValues(scene)) ?? scene.featuresAll),
     [CURSORS_GATE]: 1,
   };

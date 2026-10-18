@@ -2,19 +2,31 @@ import { describe, expect, test } from "bun:test";
 import { turned } from "../knob-turns.ts";
 import { effective, type ParamDef } from "../params.ts";
 import { loadScenes } from "../scenes/index.ts";
+import { openingPlanets, planetUniforms, readPlanet } from "../scenes/planets.ts";
 import {
   assembleFragment,
   featureKey,
+  fragmentSourceFor,
   LIBRARY_GATES,
   packParams,
   PLANETS_GATE,
   sceneFeatures,
   sceneFeaturesAll,
+  SEVERAL_PLANETS_GATE,
   settingKeyed,
   shaderValues,
 } from "./index.ts";
+import { PLANET_BODY_KINDS, PLANET_DRESS_GATES, PLANET_KIND_GATES } from "./lib/planet.ts";
 
 const scenes = await loadScenes();
+
+/** Every planet gate: the sky's two, then each kind's, then each piece of dress's. */
+const PLANET_GATES = [
+  PLANETS_GATE,
+  SEVERAL_PLANETS_GATE,
+  ...PLANET_KIND_GATES,
+  ...Object.values(PLANET_DRESS_GATES),
+];
 
 /** Each scene's library gates: the knob that opens each, by gate. */
 function gatesOf(params: readonly ParamDef[]): Record<string, string> {
@@ -27,26 +39,111 @@ function gatesOf(params: readonly ParamDef[]): Record<string, string> {
 }
 
 describe("library gates", () => {
-  test("compile the planets in only while a scene that takes them holds any", () => {
+  test("compile the planets in only while a scene that takes them holds any, and only their kinds, palettes and dress", () => {
+    const [banded = "", , rocky = "", , , , , eye = ""] = PLANET_KIND_GATES;
     let takers = 0;
     for (const scene of scenes) {
-      if (scene.planets === undefined) {
-        expect(sceneFeatures(scene, undefined, 3)[PLANETS_GATE]).toBeUndefined();
+      const spec = scene.planets;
+      if (spec === undefined) {
+        const features = sceneFeatures(scene, undefined, planetUniforms([{ kind: 3, ring: 2 }]));
+        for (const gate of PLANET_GATES) expect(features[gate]).toBeUndefined();
         continue;
       }
       takers++;
       expect({ id: scene.id, keyed: settingKeyed(scene) }).toEqual({ id: scene.id, keyed: true });
-      expect(sceneFeatures(scene)[PLANETS_GATE]).toBe(0);
-      expect(sceneFeatures(scene, undefined, 1)[PLANETS_GATE]).toBe(1);
-      expect(sceneFeaturesAll(scene)?.[PLANETS_GATE]).toBe(1);
-      // Its knob gates and own features stay as they are whatever the list holds.
-      const withPlanets: Readonly<Record<string, number>> = {
-        ...sceneFeatures(scene, undefined, 8),
-        [PLANETS_GATE]: 0,
+      /** The planet gates a list opens, and their values. */
+      const open = (planets: readonly Record<string, number>[]) => {
+        const features = sceneFeatures(scene, undefined, planetUniforms(planets));
+        return Object.fromEntries(
+          PLANET_GATES.flatMap((gate) =>
+            (features[gate] ?? 0) > 0 ? [[gate, features[gate]]] : [],
+          ),
+        );
       };
-      expect(withPlanets).toEqual(sceneFeatures(scene));
+      const one = (fields: Record<string, number>) => open([readPlanet(spec, fields)]);
+      // As it opens, the gates of the planets it opens with; every gate defined whatever the list.
+      expect(sceneFeatures(scene)).toEqual(
+        sceneFeatures(scene, undefined, planetUniforms(openingPlanets(spec))),
+      );
+      for (const gate of PLANET_GATES)
+        expect(sceneFeatures(scene, undefined, planetUniforms([]))[gate]).toBe(0);
+      expect(open([])).toEqual({});
+      // A planet opens its kind's gate with its palette's bit (its default ring the thin one, no
+      // gate of its own).
+      PLANET_KIND_GATES.forEach((gate, kind) =>
+        expect(one({ kind })).toEqual({ [PLANETS_GATE]: 1, [gate]: 1 }),
+      );
+      expect(one({ kind: 7, palette: 2 })).toEqual({ [PLANETS_GATE]: 1, [eye]: 4 });
+      // Each piece of dress opens its own; eclipses without moons draw nothing and open none.
+      const plain = { [PLANETS_GATE]: 1, [banded]: 1 };
+      const { wideRing, moons, aurora, lights } = PLANET_DRESS_GATES;
+      expect(one({ ring: 2 })).toEqual({ ...plain, [wideRing]: 1 });
+      expect(one({ moons: 1 })).toEqual({ ...plain, [moons]: 1 });
+      expect(one({ moons: 0, eclipses: 1 })).toEqual(plain);
+      expect(one({ aurora: 1 })).toEqual({ ...plain, [aurora]: 1 });
+      expect(one({ lights: 1 })).toEqual({ ...plain, [lights]: 1 });
+      // Several planets open the several gate and each of their kinds' palettes.
+      expect(
+        open([
+          readPlanet(spec, { kind: 2, palette: 1 }),
+          readPlanet(spec, { kind: 7, palette: 3 }),
+          readPlanet(spec, { kind: 2, palette: 3 }),
+        ]),
+      ).toEqual({ [PLANETS_GATE]: 1, [SEVERAL_PLANETS_GATE]: 1, [rocky]: 10, [eye]: 8 });
+      const all = sceneFeaturesAll(scene) ?? {};
+      for (const gate of PLANET_GATES)
+        expect({ gate, all: all[gate] }).toEqual({
+          gate,
+          all: PLANET_KIND_GATES.includes(gate) ? 15 : 1,
+        });
+      // Its knob gates and own features stay as they are whatever the list holds.
+      const others = (planets: readonly Record<string, number>[]) =>
+        Object.entries(sceneFeatures(scene, undefined, planetUniforms(planets))).filter(
+          ([gate]) => !PLANET_GATES.includes(gate),
+        );
+      const eight = Array.from({ length: 8 }, (_, kind) =>
+        readPlanet(spec, { kind, ring: 2, moons: 1, aurora: 1, lights: 1 }),
+      );
+      expect(others(eight)).toEqual(others([]));
     }
     expect(takers).toBeGreaterThan(0);
+  });
+
+  test("leave out of a program every kind, palette and piece of dress its planets lack, and a lone planet's loop", () => {
+    const campfire = scenes.find((scene) => scene.id === "campfire");
+    const spec = campfire?.planets;
+    if (campfire === undefined || spec === undefined) throw new Error("campfire takes no planets");
+    /** Each kind's surface, by kind: planet<Id> (planetBanded, planetBelted, ...). */
+    const faces = PLANET_BODY_KINDS.map(
+      (kind) => `planet${kind.id[0]?.toUpperCase() ?? ""}${kind.id.slice(1)}(`,
+    );
+    const dress = [
+      "planetRingBands(",
+      "planetMoonDisc(",
+      "planetAuroraCurtain(",
+      "planetCityLights(",
+    ];
+    const program = (planets: readonly Record<string, number>[]) =>
+      fragmentSourceFor(campfire, sceneFeatures(campfire, undefined, planetUniforms(planets)));
+    /** How many palettes a program's planetBodyColours holds. */
+    const palettes = (source: string) => source.split("look.deep = ").length - 1;
+    faces.forEach((face, kind) => {
+      const source = program([readPlanet(spec, { kind, palette: 1, ring: 1 })]);
+      expect({
+        kind,
+        faces: faces.filter((each) => source.includes(each)),
+        dress: dress.filter((call) => source.includes(call)),
+        palettes: palettes(source),
+        loop: source.includes("uPlanetCount"),
+      }).toEqual({ kind, faces: [face], dress: [], palettes: 1, loop: false });
+    });
+    const all = program([readPlanet(spec, { ring: 2, moons: 1, aurora: 1, lights: 1 })]);
+    expect(dress.filter((call) => all.includes(call))).toEqual(dress);
+    const two = program([readPlanet(spec, { palette: 0 }), readPlanet(spec, { palette: 3 })]);
+    expect({ palettes: palettes(two), loop: two.includes("uPlanetCount") }).toEqual({
+      palettes: 2,
+      loop: true,
+    });
   });
 
   test("make every scene holding one knob-keyed, off at its defaults, on in its all-features set", () => {

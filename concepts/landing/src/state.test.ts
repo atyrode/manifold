@@ -1,6 +1,12 @@
 import { describe, expect, test } from "bun:test";
 import { sceneDefs } from "./scenes/index.ts";
-import { encodePlanets, readPlanet } from "./scenes/planets.ts";
+import {
+  encodePlanets,
+  openingPlanets,
+  openingPlanetsValue,
+  PLANETS_KEY,
+  readPlanet,
+} from "./scenes/planets.ts";
 import { defaults, paramDefaults, readPlanets, readSetup, readState, serialise } from "./state.ts";
 
 /** A setup query as the page reads it back and writes it again: its scene's knobs and planets, minimal. */
@@ -57,12 +63,31 @@ describe("the night sky's planets", () => {
     expect(query.toString()).toBe(`scene=frost&planets=${encodePlanets(frost, planets)}`);
     expect(readPlanets("frost", query)).toEqual(planets);
     expect(reread(query.toString())).toBe(query.toString());
-    // None: no key at all.
+    // None, for a scene that opens with none: no key at all.
     expect(reread("scene=frost&planets=")).toBe("scene=frost");
   });
 
+  test("open as the scene's own: no key holds them, `planets=` none, and either reads back", () => {
+    const campfire = sceneDefs.campfire.planets;
+    if (campfire === undefined) throw new Error("campfire takes no planets");
+    const giant = readSetup(q("scene=campfire")).planets;
+    expect(giant).toEqual(openingPlanets(campfire));
+    expect(giant.length).toBe(1);
+    const opened = serialise(readState(q("scene=campfire")), paramDefaults("campfire"), giant);
+    expect(opened.toString()).toBe("scene=campfire");
+    expect(readSetup(q("scene=campfire&planets=")).planets).toEqual([]);
+    expect(reread("scene=campfire&planets=")).toBe("scene=campfire&planets=");
+    // Two planets, then back to the opening list as a reset puts it (openingPlanetsValue).
+    const two = [...giant, readPlanet(campfire, { kind: 2, across: -20 })];
+    const query = serialise(readState(q("scene=campfire")), paramDefaults("campfire"), two);
+    expect(readPlanets("campfire", query)).toEqual(two);
+    query.set(PLANETS_KEY, openingPlanetsValue(campfire));
+    expect(readPlanets("campfire", query)).toEqual(giant);
+    expect(reread(query.toString())).toBe("scene=campfire");
+  });
+
   test("belong to the scenes that take them: elsewhere the key is ignored, or a knob of that name", () => {
-    expect(readSetup(q("scene=campfire&planets=AQEA")).planets).toEqual([]);
+    expect(readSetup(q("scene=pond&planets=AQEA")).planets).toEqual([]);
     expect(reread("scene=pond&planets=AQEA")).toBe("");
     expect(reread("scene=mobile&planets=2")).toBe("scene=mobile&planets=2");
   });

@@ -1,13 +1,14 @@
 // GPU check (verify-browser.ts): fresh snow changes the look of the lake's lying snow, never how much
-// of the ice it covers. The real sim lays the night's snow; the scene's own lakeSnowAt / lakeSnowShade
-// say, per pixel of the near and middle ice, whether snow covers it and how it is lit.
-import { fragmentSourceFor, packParams, vertexSource } from "../../shaders/index.ts";
+// of the ice it covers. The real (composed) sim lays the night's snow in the lake's field; the lake
+// layer's own lakeSnowAt / lakeSnowShade say, per pixel of the near and middle ice, whether snow
+// covers it and how it is lit.
+import { fragmentSourceFor, packParams, sceneFeatures, vertexSource } from "../../shaders/index.ts";
 import { visitorAlone } from "../../principals.ts";
 import { defaultsFor, paramDefaults, renderSettings } from "../../state.ts";
 import { loadScene } from "../index.ts";
 import type { SimFrame } from "../types.ts";
 
-const lakeScene = await loadScene("lake");
+const { glslFor, ...lakeScene } = await loadScene("lake");
 
 const WIDTH = 320;
 const HEIGHT = 200;
@@ -45,6 +46,7 @@ interface SnowStats {
 }
 
 export function verifyLakeFreshSnow(gl: WebGL2RenderingContext): Record<string, unknown> {
+  if (glslFor === undefined) fail("the scene is not composed");
   const knobs = { ...paramDefaults("lake"), cover: 0.45 };
   const sim = lakeScene.sim?.(gl) ?? fail("no sim");
   const frame: SimFrame = {
@@ -65,20 +67,24 @@ export function verifyLakeFreshSnow(gl: WebGL2RenderingContext): Record<string, 
     ...visitorAlone(),
   };
   const textures = sim.frame(frame);
+  // The lake's own program at its defaults, with the check's entry after it.
+  const features = sceneFeatures(lakeScene);
   const linked = compile(
     gl,
-    fragmentSourceFor({
-      ...lakeScene,
-      entry: "regressionLakeSnow",
-      glsl: `${lakeScene.glsl}
+    fragmentSourceFor(
+      {
+        ...lakeScene,
+        entry: "regressionLakeSnow",
+        glsl: `${glslFor(features)}
     Shade regressionLakeSnow(vec2 uv, vec2 cell, float t) {
       float aspect = uRes.x / uRes.y;
-      lakeSetup(aspect);
       if (uv.y > LAKE_HORIZON - 0.02) return shadeOf(vec3(0.0, 0.0, 1.0), 0.0, 0.0);
       LakeSnow s = lakeSnowAt(uv, aspect);
       return shadeOf(vec3(s.cover, s.cover > 0.5 ? lakeSnowShade(s) / 1.5 : 0.0, 0.0), 0.0, 0.0);
     }`,
-    }),
+      },
+      features,
+    ),
   );
   gl.canvas.width = WIDTH;
   gl.canvas.height = HEIGHT;
@@ -93,12 +99,16 @@ export function verifyLakeFreshSnow(gl: WebGL2RenderingContext): Record<string, 
   gl.uniform1f(uniform("uMotion"), 1);
   gl.uniform2f(uniform("uPassage"), 1, 0);
   gl.uniform1fv(uniform("uTriggers"), new Float32Array(8).fill(-1e4));
+  // The composed sim's slots: the speck map, the records atlas, then the lake's three fields.
+  const bound = [0, 0, 0, 0, 0, 0, 0, 0];
   textures.forEach((texture, slot) => {
     gl.activeTexture(gl.TEXTURE0 + slot);
     gl.bindTexture(gl.TEXTURE_2D, texture ?? null);
     gl.uniform1i(uniform(`uSim${slot}`), slot);
+    bound[slot] = texture === undefined ? 0 : 1;
   });
-  gl.uniform4f(uniform("uSimOn"), 1, 1, 1, 1);
+  gl.uniform4fv(uniform("uSimOn"), bound.slice(0, 4));
+  gl.uniform4fv(uniform("uSimOn2"), bound.slice(4, 8));
 
   const draw = (fresh: number): SnowStats => {
     gl.uniform4fv(
@@ -133,7 +143,7 @@ export function verifyLakeFreshSnow(gl: WebGL2RenderingContext): Record<string, 
   const fresh = draw(1);
   sim.dispose();
   gl.deleteProgram(linked);
-  for (let slot = 0; slot < 4; slot++) {
+  for (let slot = 0; slot < textures.length; slot++) {
     gl.activeTexture(gl.TEXTURE0 + slot);
     gl.bindTexture(gl.TEXTURE_2D, null);
   }

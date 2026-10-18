@@ -22,7 +22,13 @@
 import { formatValue, MAX_SEED, type Option, type ParamDef } from "../params.ts";
 import { colorIds, ditherIds, viewIds } from "../renderer.ts";
 import { sceneDefs, type SceneId } from "../scenes/index.ts";
-import { encodePlanets, PLANETS_KEY, type SkyPlanets } from "../scenes/planets.ts";
+import {
+  encodePlanets,
+  openingPlanetsValue,
+  PLANETS_KEY,
+  planetsChanged,
+  type SkyPlanets,
+} from "../scenes/planets.ts";
 import {
   accentOf,
   defaultsFor,
@@ -403,15 +409,16 @@ export class Inspector {
 
   /**
    * Find what differs from the defaults: the lens's count and head, and the rail's dots. A scene's
-   * planets differ while it has any (PLANETS_KEY, one knob of their group). A knob counts whether
-   * or not its switch is on: the lens shows it dormant beside that switch.
+   * planets differ while they are not the ones it opens with (PLANETS_KEY, one knob of their group).
+   * A knob counts whether or not its switch is on: the lens shows it dormant beside that switch.
    */
   #syncLens(): void {
     const { state, params, planets } = this.#ctx.current();
+    const spec = sceneDefs[state.scene].planets;
     this.#changed = new Set([
       ...changedKnobs(sceneDefs[state.scene].params, params, this.#defaults),
       ...changedSettings(SETTING_KEYS, state, this.#base()),
-      ...(planets.length > 0 ? [PLANETS_KEY] : []),
+      ...(spec !== undefined && planetsChanged(spec, planets) ? [PLANETS_KEY] : []),
     ]);
     const counts = changedCounts(this.#lensGroups, this.#changed);
     this.#counts = counts;
@@ -430,7 +437,8 @@ export class Inspector {
 
   /**
    * Every knob of the scene and global setting that differs from its default back to it, and its
-   * planets gone, in one undoable change; under a search, only the changes it shows (#narrow).
+   * planets back to the ones it opens with, in one undoable change; under a search, only the changes
+   * it shows (#narrow).
    */
   #resetChanged(): void {
     const keys = this.#search.value.trim() === "" ? this.#changed : this.#shownChanged;
@@ -439,7 +447,8 @@ export class Inspector {
     for (const [key, value] of Object.entries(this.#defaults))
       if (keys.has(key)) patch[key] = value;
     for (const key of SETTING_KEYS) if (keys.has(key)) patch[key] = base[key];
-    if (keys.has(PLANETS_KEY)) patch[PLANETS_KEY] = "";
+    const spec = sceneDefs[this.#ctx.current().state.scene].planets;
+    if (spec !== undefined && keys.has(PLANETS_KEY)) patch[PLANETS_KEY] = openingPlanetsValue(spec);
     this.#ctx.change(patch, true);
   }
 
@@ -1017,8 +1026,10 @@ export class Inspector {
           }
         : {}),
       modified: () =>
-        knobs.modified(keys) || (planets !== undefined && this.#ctx.current().planets.length > 0),
-      reset: () => knobs.reset(keys, planets ? { [PLANETS_KEY]: "" } : {}),
+        knobs.modified(keys) ||
+        (planets !== undefined && planetsChanged(planets, this.#ctx.current().planets)),
+      reset: () =>
+        knobs.reset(keys, planets ? { [PLANETS_KEY]: openingPlanetsValue(planets) } : {}),
       ...(defs.some((def) => !def.steady)
         ? {
             roll: () =>

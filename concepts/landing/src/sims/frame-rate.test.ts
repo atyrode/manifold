@@ -41,9 +41,9 @@ const EXEMPT: Partial<
   Record<SceneId, { readonly slots?: readonly number[]; readonly reason: string }>
 > = {
   bamboo: {
-    slots: [2],
+    slots: [1],
     reason:
-      "its leaves let go by a chance drawn once a frame and fall over each frame's whole time, on a stream of their own so the gusts keep the seed",
+      "its leaves (the culms' and the water clock's rows of the records atlas) let go by a chance drawn once a frame and fall over each frame's whole time",
   },
   swell: {
     reason:
@@ -64,9 +64,9 @@ const EXEMPT: Partial<
       "the specks' density field fades by TRAIL and takes each speck where it stands once a frame, so a 144 Hz frame lays more, closer samples of each streak",
   },
   garden: {
-    slots: [0, 3],
+    slots: [2, 3],
     reason:
-      "the rake and the gravel's slump step once a frame (a band of RELAX_ROWS rows), not on a fixed step",
+      "the gravel's raked heights (uSim2) are cut by the rake and slump a band of RELAX_ROWS rows once a frame, not on a fixed step, and they and when each spot was last raked (uSim3) go up at most every UPLOAD_EVERY_MS of wall time, so the last upload holds the rake's leading edge from another frame at each rate",
   },
   sandtable: {
     slots: [0],

@@ -1,144 +1,87 @@
 // Fireflies that fall into step: a mangrove river at night, where thousands of fireflies, each an
 // oscillator nudged by the flashes it sees (sim.ts), drift out of their own rhythms into one, the
-// way Pteroptyx do along Malaysian rivers. The bank, the mirror of the water, the foreground bokeh
-// and the lantern the pointer carries are drawn in shader.ts.
-import { choice, counts, feature, range, seed, toggle, type ParamDef } from "../../params.ts";
-import { atmosphereGroups, skyComponentKnobs } from "../atmosphere.ts";
+// way Pteroptyx do along Malaysian rivers. A preset of the `outdoor` composer (src/composer, README
+// "Composers"): the mangroves behind (the bank, its trees and the breeze crossing it), the creek
+// mirroring them and the swarm in their crowns, with the lights nearer than the bank and the lantern
+// the pointer carries (layers.ts); shader.ts draws them. The sky, the weather and the birds are the
+// World's: a moonless night, its stars and the odd shooting star over the trees.
+import { composeScene } from "../../composer/compose.ts";
+import { outdoor } from "../../composer/outdoor.ts";
+import type { ScenePreset } from "../../composer/types.ts";
+import { skyTheme } from "../atmosphere.ts";
 import type { SceneDef } from "../types.ts";
-import { FIREFLIES_METEOR_TRIGGER, FIREFLIES_PASSAGE } from "./constants.ts";
+import { worldGroups } from "../world.ts";
+import { FIREFLIES_GRADE, FIREFLIES_PASSAGE, FIREFLIES_RIG } from "./constants.ts";
 
-const params: readonly ParamDef[] = [
-  range(
-    "swarm",
-    "coupling",
-    "coupling",
-    0.5,
-    "How strongly each firefly answers the flashes it sees. Low: everyone keeps their own time and the bank twinkles. High: the beat spreads within seconds and the whole forest pulses as one.",
-  ),
-  range(
-    "swarm",
-    "unison",
-    "unison",
-    0,
-    "How far each firefly's own pace gives way to the beat it sees. At 0 each keeps its own pace, so every pulse sweeps out from the fastest trees as a wave. Higher, each adapts its pace to the beat, as the mangrove fireflies of Malaysia do, and the bank flashes in a single instant.",
-  ),
-  range(
-    "swarm",
-    "density",
-    "fireflies",
-    0.65,
-    "How many fireflies settle in the mangroves, from a few scattered sparks to crowns full of them, with a few more drifting low over the water.",
-    { min: 0.1, max: 1 },
-  ),
-  choice(
-    "swarm",
-    "habitat",
-    "bank",
-    [
-      { label: "dense crowns", value: 0 },
-      { label: "open bank", value: 1 },
-    ],
-    0,
-    "Where the fireflies gather. Dense crowns: a wall of mangroves, the fireflies packed into the crowns of the tall trees, so each pulse lights the trees from within. Open bank: low scrub along a wide mud bank with a lone tree here and there, the fireflies hovering low over all of it, so each pulse is a band of light along the waterline, doubled in the river. Both hold the same number of fireflies at any setting of 'fireflies'.",
-  ),
-  range(
-    "swarm",
-    "period",
-    "flash period",
-    3,
-    "Seconds from one flash to the next. A flash lasts under a second; the rest is dark.",
-    { min: 1.5, max: 6, step: 0.1 },
-  ),
-  range("swarm", "drift", "drift", 0.35, "How far each firefly wanders about its leaf."),
-  feature(
-    "swarm",
-    "near",
-    "close fireflies",
-    true,
-    "how many",
-    3,
-    "Fireflies close to you, out of focus up at the sides: soft warm-green discs that pulse with the rest.",
-    { options: counts(1, 3, 6) },
-  ),
-  feature(
-    "swarm",
-    "unrest",
-    "breeze",
-    true,
-    "frequency",
-    0.3,
-    "Now and then a breeze crosses the river: every firefly it passes loses the beat, and behind it the forest falls into step again.",
-    { trigger: 0 },
-  ),
-  seed(
-    "swarm",
-    "seed",
-    "forest",
-    "The trees along the bank and where the fireflies settle; re-seed for another stretch of river, starting out of step.",
-  ),
-  toggle(
-    "lantern",
-    "lantern",
-    "lantern",
-    true,
-    "Your pointer carries a small lantern. Fireflies near a light lose the beat, and right beside it they stop flashing; click to flare it and scatter their rhythm.",
-  ),
-  range(
-    "river",
-    "reflections",
-    "reflections",
-    0.85,
-    "How clearly the still river mirrors the skyglow, the trees and their lights.",
-  ),
-  range(
-    "river",
-    "mist",
-    "mist",
-    0.35,
-    "Mist lying on the water and under the trees, glowing green with each pulse.",
-  ),
-  range("sky", "stars", "stars", 0.5, "Sparse stars high over the trees."),
-  // The shared shooting stars (scenes/atmosphere.ts), off: the moonless night sky is the scene's own.
-  ...skyComponentKnobs({ meteors: { trigger: FIREFLIES_METEOR_TRIGGER } }),
-  feature(
-    "manifold",
-    "mark",
-    "M of fireflies",
-    false,
-    "beats",
-    5,
-    "A few seconds after you switch it on, and every minute after, the fireflies along the strokes of a Manifold M gather onto them, glowing faintly, and flash half a beat apart from the forest, so the M lights up alone between the pulses for a few beats, mirrored in the river, then lets go.",
-    { trigger: 1, options: counts(3, 5, 8) },
-  ),
-];
-
-export const firefliesScene: SceneDef = {
+const preset: ScenePreset = {
   id: "fireflies",
+  composer: "outdoor",
   title: "Fireflies",
   blurb: "A mangrove river at night: thousands of fireflies falling into step.",
   accent: "#b6f03c",
   look: { color: "full", levels: 4 },
-  params,
-  groups: {
-    swarm: {
-      title: "Fireflies",
-      blurb:
-        "Each firefly flashes on its own clock and is nudged by the flashes it sees, until the whole bank pulses together. The breeze breaks the beat now and then.",
-    },
-    lantern: { title: "Lantern", blurb: "The light you carry along the river." },
-    river: { title: "River", blurb: "The mirror of the water, and the mist." },
-    sky: {
-      ...atmosphereGroups.skyNight,
-      blurb: "The moonless night over the river: sparse stars and the odd shooting star.",
-    },
-    manifold: {
-      title: "Manifold mark",
-      blurb: "The fireflies themselves draw the M, flashing out of step with the forest.",
-    },
-  },
-  code: () => import("./code.ts"),
   // Entrance: the bank is dark, a few fireflies blink out of step in the first trees, more join tree
   // by tree, the clusters begin to fall into step, and the camera drifts along the river into place.
   // Exit: the beat is lost, the crowns go dark tree by tree, the camera drifts on.
   passage: FIREFLIES_PASSAGE,
+  // The World's planets hang over the mangroves' crowns: the sky shows from the crowns' tops, about
+  // 7 degrees up, to the frame's top edge at 28 (the lens is 1.2 screen heights per unit of slope,
+  // the true horizon at 0.36 of the frame), a little right of the middle first.
+  planets: { group: "sky", across: [-30, 8, 30], up: [12, 20, 26] },
+  // A sunlit river is bright water and sky: the copy needs dark ink on it by day; at night, as it
+  // opens, the night theme.
+  theme: skyTheme,
+  rig: FIREFLIES_RIG,
+  grade: FIREFLIES_GRADE,
+  // Deep in the evening, the moon off (the moon knob's off: no moon in the sky), sparse stars, no
+  // cloud and no Milky Way (the river's night had neither); swifts over the water by day, off until
+  // switched on.
+  world: {
+    time: 0.9,
+    stars: 0.5,
+    clouds: 0,
+    milkyWay: { on: false },
+    birds: {
+      kind: "swifts",
+      on: false,
+      help: "Swifts hawking over the river by day, low over the water and up over the trees; few in the rain.",
+    },
+  },
+  // Shooting stars set out high over the trees.
+  meteors: [-0.6, 0.35, 1.2, 0.08],
+  // The swifts cross 15 to 55 m out, nearer than the far bank, from just over its trees to the top of
+  // the frame; they never come down to the water.
+  flyway: {
+    depth: [15, 55],
+    above: 0.1,
+    top: 0.98,
+    seed: 4.1,
+    skim: 1e9,
+    spread: 1,
+    ext: 0.003,
+  },
+  floor: "water",
+  layers: ["mangroves", "creek", "fireflySwarm"],
+  // The moon off; the breeze (the composer's gusts) now and then, as the river's own came.
+  values: { moon: 0, gustRate: 0.3 },
+  groups: {
+    sky: {
+      ...worldGroups.sky,
+      blurb:
+        "Time of day, whether the days pass, and the night over the river: sparse stars, the moon (off: a moonless night), the odd shooting star and the aurora.",
+    },
+    weather: {
+      ...worldGroups.weather,
+      blurb:
+        "Cloud over the river, rain dulling its mirror and veiling the fireflies, snow, fog and lightning: the World's.",
+    },
+  },
+};
+
+/** The fireflies composed (composer/compose.ts): its definition, and what its code is assembled from. */
+export const firefliesComposed = composeScene(outdoor, preset);
+
+export const firefliesScene: SceneDef = {
+  ...firefliesComposed.def,
+  code: () => import("./code.ts"),
 };

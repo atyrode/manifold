@@ -7,7 +7,8 @@
 // skyStars draws from the tables built below (SKY_FIGURES, while their knob is on; in a program that
 // draws the agents' cursors, with the agents' star-joining, constellations.ts), and the planets
 // skyGiant hangs among the stars (SKY_PLANETS, while the scene's list holds any: the shared planet's
-// planetGlsl and planetBodyGlsl with them). The cloud deck is clouds.ts, compiled right after it.
+// planetGlsl and planetBodyGlsl with them, and in the body tier only the kinds and the dress the list
+// holds, behind gates of their own). The cloud deck is clouds.ts, compiled right after it.
 // Compiled into every scene program right after the common preamble; the contract and conventions
 // are in src/scenes/README.md.
 import {
@@ -196,7 +197,9 @@ export const skyGlsl = `
 
 // The library gates (src/shaders/index.ts): 1 compiles in the constellations (SKY_FIGURES, defined 0
 // or 1 in a scene with their knob as it is off or on) or the planets (SKY_PLANETS, defined in a scene
-// that takes them as its list is empty or not); 0 in any other.
+// that takes them as its list is empty or not, with SKY_PLANETS_SEVERAL, 1 while it holds more than
+// one, and the body tier's gates for its kinds, palettes and dress, PLANET_KIND_GATES and
+// PLANET_DRESS_GATES in planet.ts); 0 in any other.
 #ifndef SKY_FIGURES
 #define SKY_FIGURES 0
 #endif
@@ -775,6 +778,14 @@ vec3 skyPlanetOver(Sky sky, vec3 col, vec3 dir, float foot, float vis, int i, fl
   return planetBodyOver(col, p, foot, PlanetBody(look, kind, palette, ring, float(${flag("seed")}), tm * dress.y), uTime);
 }
 
+// Whether planet i reaches along dir: within its drawn square's corners, 2.3 radii out along each
+// axis, as a tangent.
+bool skyPlanetReaches(vec3 dir, int i, float tm, vec2 turn) {
+  float ahead = dot(dir, skyPlanetCentre(i, tm, turn));
+  float k = 3.26 * uPlanets[i * SKY_PLANET_ROWS + 1].w;
+  return ahead > 0.0 && ahead * ahead * (1.0 + k * k) >= 1.0;
+}
+
 // The sky's planets (src/scenes/planets.ts: the scene's list) over 'col', the sky along dir so far:
 // the dome, the Milky Way and the stars, which they stand in front of. dir is the view ray the scene
 // gives skyStars (the sky's frame), foot the radians a dither cell spans there, clear how much of the
@@ -783,23 +794,23 @@ vec3 skyPlanetOver(Sky sky, vec3 col, vec3 dir, float foot, float vis, int i, fl
 // placement says while they stand as staged), or rides its orbit round our world, rising, crossing
 // the sky and setting on its own period; a bigger one stands in front of a smaller.
 // They fade to pale ghosts by day as campfire's giant does, and hide behind the moon's disc and under
-// the horizon. A cheap bound finds the planets that reach this pixel and only those are drawn, in a
-// loop whose turns are those planets: a software rasteriser runs no turn that none of its pixels
-// enters, so more planets cost little more than one. Draw the cloud, the aurora,
-// shooting stars and the ground over them.
+// the horizon. A cheap bound finds the planets that reach this pixel and only those are drawn. A
+// lone planet (SKY_PLANETS_SEVERAL 0) is drawn straight behind it; several in a loop whose turns are
+// those planets: a software rasteriser runs a loop's body once even where none of its pixels enters
+// it, but no further turn none of them takes, so a pixel pays for one planet's drawing wherever it is
+// and more planets cost little more than one (the loop itself costs that rasteriser more than a
+// planet drawn straight). Draw the cloud, the aurora, shooting stars and the ground over them.
 vec3 skyGiant(Sky sky, vec3 col, vec3 dir, float foot, float clear) {
   float vis = (1.0 - 0.85 * sky.day) * clear * (1.0 - skyMoonCover(sky, dir)) * smoothstep(-0.004, 0.004, dir.y);
   if (vis <= 0.0) return col;
   float tm = uMotionTime;
   vec2 turn = sky.starTurn == 0.0 ? vec2(1.0, 0.0) : vec2(cos(sky.starTurn), sin(sky.starTurn));
+#if SKY_PLANETS_SEVERAL
   int reach = 0;
   int hits = 0;
   for (int i = 0; i < SKY_PLANET_CAP; i++) {
     if (i >= uPlanetCount) break;
-    // Within the drawn square's corners, 2.3 radii out along each axis, as a tangent.
-    float ahead = dot(dir, skyPlanetCentre(i, tm, turn));
-    float k = 3.26 * uPlanets[i * SKY_PLANET_ROWS + 1].w;
-    if (ahead > 0.0 && ahead * ahead * (1.0 + k * k) >= 1.0) {
+    if (skyPlanetReaches(dir, i, tm, turn)) {
       reach |= 1 << i;
       hits++;
     }
@@ -810,6 +821,9 @@ vec3 skyGiant(Sky sky, vec3 col, vec3 dir, float foot, float clear) {
     reach &= ~(1 << i);
     col = skyPlanetOver(sky, col, dir, foot, vis, i, tm, turn);
   }
+#else
+  if (skyPlanetReaches(dir, 0, tm, turn)) col = skyPlanetOver(sky, col, dir, foot, vis, 0, tm, turn);
+#endif
   return col;
 }
 #else

@@ -222,7 +222,6 @@ const WORD_ICONS: Readonly<Record<string, IconName>> = {
   door: "wind",
   fan: "wind",
   blow: "wind",
-  unrest: "wind",
   lightning: "lightning",
   storms: "lightning",
   aurora: "aurora",

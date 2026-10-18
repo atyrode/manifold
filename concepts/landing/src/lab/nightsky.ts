@@ -11,7 +11,7 @@
 // daylight (or the day passes), "See it at night" sets a night hour as one change. A part that
 // hangs on another switch (`when`) is drawn while that one is on, and its control is a gate the
 // Controls view shows (availability-model.ts). nightsky-model.ts holds the rules.
-import { PLANETS_KEY } from "../scenes/planets.ts";
+import { openingPlanetsValue, PLANETS_KEY, planetsChanged } from "../scenes/planets.ts";
 import { chipGrid, fader } from "./chips.ts";
 import { resetDot, row, textButton } from "./controls.ts";
 import { gate, h, setAttr, setHidden, setStyle, setText, svg, type Built } from "./dom.ts";
@@ -591,8 +591,15 @@ export function nightSection(
     icon: "stars",
     block: scene,
     readout: () => nightSummary(parts, stateOf, planetCount()),
-    modified: () => knobs.modified(keys) || planetCount() > 0,
-    reset: () => knobs.reset(keys, planets ? { [PLANETS_KEY]: "" } : {}),
+    modified: () =>
+      knobs.modified(keys) ||
+      (group.planets !== undefined &&
+        planetsChanged(group.planets.spec, group.planets.ctx.current().planets)),
+    reset: () =>
+      knobs.reset(
+        keys,
+        group.planets ? { [PLANETS_KEY]: openingPlanetsValue(group.planets.spec) } : {},
+      ),
   });
   // The section's own words cover its heading, which shows whenever any of its parts does.
   header.el.removeAttribute("data-search");

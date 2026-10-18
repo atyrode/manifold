@@ -1,9 +1,19 @@
 import { expect, test } from "bun:test";
+import { ATLAS_WIDTH } from "../../composer/caps.ts";
+import { allocate, ATLAS_SLOT } from "../../composer/sim.ts";
 import { HeadlessSim } from "../../sims/headless.ts";
 import { loadScene } from "../index.ts";
-import { BAMBOO_DEVICE_DEPTH, BAMBOO_MAX_LEAVES } from "./sim.ts";
+import { bambooComposed } from "./index.ts";
+import { BAMBOO_DEVICE_DEPTH, BAMBOO_MAX_LEAVES } from "./layout.ts";
 
 const bambooScene = await loadScene("bamboo");
+
+/** The water clock's and the culms' rows in the records atlas with the grove's own layers on screen. */
+const ROWS = allocate(
+  bambooComposed.place(new Set(bambooComposed.preset.layers)).layers.map((p) => p.layer),
+).rows;
+const CLOCK_ROW = ROWS["clock"]?.base ?? 0;
+const CULMS_ROW = ROWS["culms"]?.base ?? 0;
 
 const STEP = 1 / 60;
 
@@ -15,22 +25,23 @@ interface Knock {
   startled: number;
 }
 
-/** Every knock of the tube on its stone over `seconds` at the lab's motion, read from the textures the shader samples. */
+/** Every knock of the tube on its stone over `seconds` at the lab's motion, read from the data the shader samples. */
 function knocks(knobs: Record<string, number>, seconds: number): Knock[] {
   const sim = new HeadlessSim(bambooScene);
   const out: Knock[] = [];
   let since = 60;
   while (sim.time < seconds) {
     sim.step({ dt: STEP, motion: 0.6, knobs, pointer: { inside: false } });
-    const device = sim.upload(1).data;
-    const leaves = sim.upload(2).data;
-    // Device texel 1: seconds since the last knock (60 before the first), its strength.
+    const atlas = sim.upload(ATLAS_SLOT).data;
+    const device = atlas.subarray(CLOCK_ROW * ATLAS_WIDTH * 4);
+    const leaves = atlas.subarray(CULMS_ROW * ATLAS_WIDTH * 4);
+    // The clock's texel 1: seconds since the last knock (60 before the first), its strength.
     const age = device[4] ?? 60;
     if (age < since) {
       let startled = 0;
       for (let i = 0; i < BAMBOO_MAX_LEAVES; i++) {
-        // A falling leaf at the water clock's depth (as the float texture holds it), still fading
-        // in: it has only just let go.
+        // A falling leaf at the water clock's depth (as the float data holds it), still fading in:
+        // it has only just let go.
         const row = i * 8;
         if (
           leaves[row + 7] === 1 &&

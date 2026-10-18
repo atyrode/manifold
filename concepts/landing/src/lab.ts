@@ -58,6 +58,7 @@ import { encodePlanets, PLANETS_KEY, type SkyPlanet } from "./scenes/planets.ts"
 import {
   carryLook,
   paramDefaults,
+  readPlanets,
   readState,
   serialise,
   type LabState,
@@ -1303,10 +1304,8 @@ export class Lab {
     const from = sceneDefs[state.scene];
     const to = sceneDefs[scene];
     const next = keep ? carryWorld(from, params, to, defaults) : defaults;
-    this.#host.apply(
-      serialise(carryLook(state, scene), next, keep ? carryPlanets(from, planets, to) : []),
-      { keepClocks: keep },
-    );
+    const sky = keep ? carryPlanets(from, planets, to) : readPlanets(scene, new URLSearchParams());
+    this.#host.apply(serialise(carryLook(state, scene), next, sky), { keepClocks: keep });
     this.#commit(by === "advance" ? "advance" : "hand");
   }
 

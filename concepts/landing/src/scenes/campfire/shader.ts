@@ -1,43 +1,87 @@
-// The campfire's picture, back to front: the night sky (dusk to deep night from the shared sky, the
-// shared Milky Way, stars, the shared giant ringed planet, shooting stars), two rows of far pines
-// fading into the haze, the ground (soil, and a flat rocky outcrop under the fire) lit by the fire,
-// two big pines framing the view, the tent with its lantern and the backpack at the edge of the
-// light, the far half of the stone ring, the coals, the back log, the flames (four nested layers of
-// licking tongues), the smoke column, the two front logs, the near stones, the mug, the marshmallow
-// stick, the log bench (with the M carved in it when it is on) and the sparks.
+// The Campfire preset's layers' GLSL (ADR 0062 Phase 2b; the composer: src/composer, README
+// "Composers"): a small campfire at night seen from a low seat just across the flames, through the
+// seat's rig (constants.ts CAMPFIRE_RIG: horizon 0.37, a field of one radian, the eye 0.9 m up). Its
+// parts, each a layer, drawn in the order the campfire always painted them:
+//   pines     (backdrop) the World's sky over the clearing with a faint skyglow along the horizon,
+//             two rows of far pines fading into the haze, and the two big pines framing the view;
+//             the clearing's air.
+//   clearing  (ground) the soil and the flat rocky outcrop under the fire, lit by it, the stones'
+//             contact shadows; dark and glossy in rain, snowed on away from the fire.
+//   camp      (dressing) the tent with its lantern glowing inside and the backpack at the edge of the
+//             light.
+//   campfire  (dressing, the subject) the far half of the ring of stones, the breathing coals, the back
+//             log, the flames (four nested layers of licking tongues), the two front logs, the near
+//             stones, the mug, the marshmallow toasting on its stick and the log bench (with the M
+//             carved in it when it is on); its light falls on every other layer (campfireLightAt).
+//   smoke     (life) the thin column rising from the flames, leaning with the wind.
+//   sparks    (life) sparks climbing from the flames in lazy arcs.
 //
-// Space: p = (x in view heights from the centre, y up from the bottom), one cell = 1 / uRes.y. The
-// fire stands at campfireF; ground distances are foreshortened (a circle on the ground is an ellipse
-// 0.32 as tall). Light is one warm source at the fire, falling off as 1 / (1 + (d / r0)^2)^2, breathing
-// a few percent; every surface is albedo * (sky ambient + warm * firelight).
+// Space: p = (x in view heights from the centre, y up from the bottom), one cell = 1 / uRes.y, as the
+// campfire was drawn: the fire stands at campfireF; ground distances are foreshortened (a circle on
+// the ground is an ellipse 0.32 as tall). Every part stands at a depth in metres (CAMPFIRE_Z_*: its
+// foot on the rig's floor, nearer in the order the campfire painted them), over the floor and behind
+// whatever already stands nearer (c.zs), so the parts compose as they were painted and the World's
+// fog and rain fall between them at those depths. Light is one warm source at the fire, falling off as
+// 1 / (1 + (d / r0)^2)^2, breathing a few percent; every surface is albedo * (sky light + warm *
+// firelight), the sky's light the World's (its moon put away by the preset) times 1.35 over a cool
+// floor (CAMPFIRE_GRADE matches it for guests).
 //
-// The picture itself is no simulation. Moving edges (flame layers, smoke, sparks, shooting stars) are
-// cut per cell with hardEdge / hardFill so a passing edge flips a cell once; the flames' noise advects
-// upward at well under a flame height per second, the sparks drift at ~25 px/s, so nothing flickers
-// cell by cell. With K_fuel on, the logs burn down (sim.ts, a FuelBed in uSim0): the flames, the
-// firelight, the coals, the smoke and the sparks follow the bed, and each log chars, thins, slumps and
-// crumbles away; off, the fire is exactly the steady one it always was.
-// Knobs read here: K_flame, K_lively, K_sparks, K_smoke, K_marshmallow, K_fuel (K_tend: sim.ts,
-// trigger 1), K_reach, K_camp, K_time, K_cycle, K_stars, K_milkyWay, K_planet and its shared options
-// (K_planetMoons, K_planetEclipses, K_planetAurora, K_planetAuroraSize, K_planetLights,
-// K_planetLightsTwinkle, K_planetDaycycle), K_shooting (trigger 0), K_wind, K_fog, K_mark.
-import { milkyWayGlsl } from "../../shaders/lib/milkyway.ts";
-import { planetGlsl } from "../../shaders/lib/planet.ts";
-import { CAMPFIRE_LOGS } from "./sim.ts";
+// The picture itself is no simulation. Moving edges (flame layers, smoke, sparks) are cut per cell
+// with hardEdge / hardFill so a passing edge flips a cell once; the flames' noise advects upward at
+// well under a flame height per second, the sparks drift at ~25 px/s, so nothing flickers cell by
+// cell. With K_fuel on, the logs burn down (sim.ts, a FuelBed in the campfire's row of the records
+// atlas): the flames, the firelight, the coals, the smoke and the sparks follow the bed, and each log
+// chars, thins, slumps and crumbles away; off, the fire is exactly the steady one it always was.
+//
+// What the campfire keeps of its own, and what is the World's (ADR 0062 D10): the sky, its stars,
+// the Milky Way, the shooting stars and the giant planet (the World's planets, the giant the first
+// the preset opens with) are the World's, and so are the fog and the rain and snow, at the composed
+// depth. The passage is the campfire's: embers in the dark, a flame catching and growing, the
+// firelight spreading, the sparks and the smoke starting up; all exactly off at rest.
+// Knobs read: the campfire's K_flame, K_lively, K_marshmallow, K_fuel (K_tend: sim.ts), K_reach,
+// K_campfireMark; the life layers' switches K_smoke and K_sparks (their amounts); the World's K_wind.
+import { glslFloat } from "../../shaders/glsl.ts";
+import {
+  CAMPFIRE_FIRE_Z,
+  CAMPFIRE_FOV,
+  CAMPFIRE_HORIZON,
+  CAMPFIRE_LOGS,
+  campfireDepth,
+} from "./constants.ts";
 
-export const campfireGlsl = `
-${planetGlsl}
-${milkyWayGlsl}
-// ---- campfire ----
+/**
+ * What every campfire layer shares: the layout, the light and the fire's state each cell takes
+ * (campfireBegin), the firelight, the ring's stones and where the clearing ends.
+ */
+export const campfireSharedGlsl = `
+// ---- the campfire (campfire/shader.ts), shared by its layers ----
 const int CAMPFIRE_LOGS = ${CAMPFIRE_LOGS};      // the fuel's log texels (sim.ts), the bed's after them
-const float CAMPFIRE_HORIZON = 0.37;   // screen height of the far horizon (the pines hide it)
-const float CAMPFIRE_FOV = 1.0;
+const float CAMPFIRE_HORIZON = ${glslFloat(CAMPFIRE_HORIZON)};   // screen height of the far horizon (the pines hide it)
+const float CAMPFIRE_FOV = ${glslFloat(CAMPFIRE_FOV)};
 const float CAMPFIRE_FLAME = 0.30;     // the full flame's height, in the fire's own units
 const vec3 CAMPFIRE_WARM = vec3(1.0, 0.52, 0.18);
-// The Milky Way's band: it runs from low on the left up to the top right.
-const MilkyWayBand CAMPFIRE_GALAXY = MILKY_WAY_BAND(vec3(0.5, -0.82, 0.28));
+// Where each part stands (m ahead): the fire's foot, then the parts nearer in the order the campfire
+// painted them, back to front, each over what it was painted over.
+const float CAMPFIRE_Z_FIRE = ${glslFloat(CAMPFIRE_FIRE_Z)};
+const float CAMPFIRE_Z_FAR = 60.0;           // the far row of pines
+const float CAMPFIRE_Z_MID = 30.0;           // the middle row
+const float CAMPFIRE_Z_PINES = 5.5;          // the two big pines framing the view
+const float CAMPFIRE_Z_TENT = ${glslFloat(campfireDepth(0.2))};
+const float CAMPFIRE_Z_PACK = ${glslFloat(campfireDepth(0.06))};
+const float CAMPFIRE_Z_RING_BACK = CAMPFIRE_Z_FIRE + 0.3;
+const float CAMPFIRE_Z_COALS = CAMPFIRE_Z_FIRE + 0.2;
+const float CAMPFIRE_Z_BACK_LOG = CAMPFIRE_Z_FIRE + 0.15;
+const float CAMPFIRE_Z_FLAMES = CAMPFIRE_Z_FIRE + 0.1;
+const float CAMPFIRE_Z_SMOKE = CAMPFIRE_Z_FIRE + 0.05;
+const float CAMPFIRE_Z_FRONT_LOG = CAMPFIRE_Z_FIRE - 0.15;
+const float CAMPFIRE_Z_CROSS_LOG = CAMPFIRE_Z_FIRE - 0.2;   // laid over the other front log
+const float CAMPFIRE_Z_RING_FRONT = CAMPFIRE_Z_FIRE - 0.3;
+const float CAMPFIRE_Z_MUG = ${glslFloat(campfireDepth(0.0835))};
+const float CAMPFIRE_Z_STICK = CAMPFIRE_Z_FIRE - 0.35;  // its end over the fire; it rests on the bench
+const float CAMPFIRE_Z_BENCH = ${glslFloat(campfireDepth(0.027))};
+const float CAMPFIRE_Z_SPARKS = CAMPFIRE_Z_FIRE - 0.4;
 
-Sky campfireSkyState;
+Sky campfireSkyState;   // the World's sky now
 vec3 campfireAmb;       // light from the sky on upturned surfaces
 vec2 campfireF;         // the fire's centre on the ground
 float campfireS;        // flame scale, 0.62 .. 1.38
@@ -52,6 +96,10 @@ float campfireSmokeG;   // smoke column strength 0..1
 float campfireCoalK;    // coal glow gain, 0.6 (low embers) .. 1
 float campfireSparkK;   // share of the spark slots flying (K_sparks, or the bed's)
 float campfireSmokeK;   // smoke density gain (1, or the bed's)
+vec2 campfireP;         // the cell, in the campfire's space (above)
+float campfirePx;       // one cell
+vec3 campfireDir;       // the cell's ray, as the campfire laid its haze out
+vec3 campfireHaze;      // the haze toward its bearing
 // The fuel (K_fuel, sim.ts): per log x wood left (0 burnt away), y char, z slump, w laid on; the bed
 // x heat, y embers, z smoke, w spark burst. Off: whole fresh logs over a steady bed, vec4(1, 0, 0, 1)
 // and vec4(1, 1, 0, 0), which change nothing.
@@ -72,25 +120,62 @@ float campfireEaseOut(float lo, float hi, float x) {
 }
 
 // Firelight reaching p: 1 at the fire, falling off. lift 0 is flat ground (distances foreshortened),
-// 1 an upright surface.
+// 1 an upright surface. None while the fire is out of the stack.
 float campfireLight(vec2 p, float lift) {
+#if LAYER_CAMPFIRE
   vec2 d = p - (campfireF + vec2(0.0, 0.085 * campfireS));
   d.y /= mix(0.34, 1.0, lift);
   float r0 = (0.28 + 0.42 * K_reach) * (0.8 + 0.2 * campfireS) * mix(0.5, 1.0, campfireLit);
   float l = 1.0 / (1.0 + dot(d, d) / (r0 * r0));
   return l * (0.3 + 0.7 * l) * campfireBreath;
+#else
+  return 0.0;
+#endif
 }
 
-void campfireSetup(float aspect) {
-  campfireTm = uMotionTime;
-  Sky sky = skyAt(timeOfDayM(K_time, skyDays()));
-  vec3 amb = sky.ambient - sky.moonColor * 0.3;
-  // No moon: the giant planet is the sky's other light.
-  sky.moon = vec3(0.0, -1.0, 0.0);
-  sky.moonColor = vec3(0.0);
-  campfireSkyState = sky;
-  campfireAmb = amb * 1.35 + vec3(0.012, 0.017, 0.034);
-  campfireHalf = clamp(0.5 * aspect, 0.5, 0.9);
+// An albedo wet by the World's rain (wetten), porous 0 stone .. 1 soil, wood, cloth; dry, as it is.
+vec3 campfireWet(vec3 alb, float porous) {
+  return uWeather.x > 0.0 ? wetten(alb, uWeather.x, porous) : alb;
+}
+
+// A part of the camp now stands in the cell at depth z, over the floor: what it shows, and what hides
+// a speck or a part drawn after it from behind.
+void campfireStand(inout Cell c, float z) {
+  c.z = z;
+  c.zs = z;
+}
+
+// The ring of stones: centre of stone i and its half size. Stones further from the viewer sit higher
+// and smaller.
+vec2 campfireStone(int i, out vec2 sz) {
+  float fi = float(i);
+  float ang = (fi + 0.35 * hash12(vec2(fi, 5.1))) * (TAU / 12.0) + 0.2;
+  float rr = 1.0 + 0.10 * (hash12(vec2(fi, 6.2)) - 0.5);
+  float depth = sin(ang);
+  vec2 c = campfireF + vec2(cos(ang) * 0.175 * rr, depth * 0.052 * rr);
+  float sizeV = 0.020 + 0.012 * hash12(vec2(fi, 7.3));
+  float scale = 1.0 - 0.22 * depth;
+  sz = vec2(sizeV * 1.25, sizeV * 0.85) * scale;
+  return c;
+}
+
+// The clearing's far edge, where the pines' rows take over: higher toward the sides.
+float campfireGroundTop(float x) {
+  float side = smoothstep(0.55 * campfireHalf, campfireHalf * 1.05, abs(x));
+  return 0.285 + 0.014 * vnoise(vec2(x * 3.0, 1.7)) + 0.045 * side;
+}
+
+// Every campfire layer's state for this cell: the layout, the sky's light (the World's, its moon put
+// away by the preset), the fire's size and breath, its passage, and the fuel's bed.
+void campfireBegin(Ctx x) {
+  campfireTm = x.tm;
+  campfireSkyState = x.w.sky;
+  campfireAmb = campfireSkyState.ambient * 1.35 + vec3(0.012, 0.017, 0.034);
+  campfireHalf = clamp(0.5 * x.aspect, 0.5, 0.9);
+  campfireP = vec2((x.uv.x - 0.5) * x.aspect, x.uv.y);
+  campfirePx = x.aa;
+  campfireDir = viewRay(x.uv, x.aspect, CAMPFIRE_HORIZON, CAMPFIRE_FOV);
+  campfireHaze = horizonHaze(campfireSkyState, campfireDir, 0.01);
   campfireS = 0.62 + 0.76 * K_flame;
   campfireF = vec2(0.0, 0.16);
   float slow = 0.5 + 0.5 * sin(campfireTm * 0.9 + 1.3 * sin(campfireTm * 0.37));
@@ -111,12 +196,14 @@ void campfireSetup(float aspect) {
   campfireAmb *= mix(0.6, 1.0, campfireLit);
   campfireSparkK = K_sparks;
   campfireSmokeK = 1.0;
-  campfireFuelOn = K_fuel > 0.0 && uSimOn.x > 0.5;
   campfireFuelBed = vec4(1.0, 1.0, 0.0, 0.0);
   for (int i = 0; i < CAMPFIRE_LOGS; i++) campfireFuelLog[i] = vec4(1.0, 0.0, 0.0, 1.0);
+  campfireFuelOn = false;
+#if LAYER_CAMPFIRE
+  campfireFuelOn = K_fuel > 0.0 && campfireSimOn();
   if (campfireFuelOn) {
-    for (int i = 0; i < CAMPFIRE_LOGS; i++) campfireFuelLog[i] = texelFetch(uSim0, ivec2(i, 0), 0);
-    campfireFuelBed = texelFetch(uSim0, ivec2(CAMPFIRE_LOGS, 0), 0);
+    for (int i = 0; i < CAMPFIRE_LOGS; i++) campfireFuelLog[i] = campfireRecord(i, 0);
+    campfireFuelBed = campfireRecord(CAMPFIRE_LOGS, 0);
     float heat = campfireFuelBed.x;
     float embers = campfireFuelBed.y;
     // The flames follow the flaming wood (a fresh armful flares past the usual fire, coals alone have
@@ -129,80 +216,18 @@ void campfireSetup(float aspect) {
     campfireSparkK = min(1.0, K_sparks * clamp(heat, 0.0, 1.2) + 0.6 * campfireFuelBed.w);
     campfireSmokeK = clamp(0.85 * min(heat, 1.2) + 1.6 * campfireFuelBed.z, 0.0, 2.2);
   }
+#endif
   campfireGlow = 0.0;
 }
+`;
 
-// ---- the sky ----
-
-vec3 campfireSkyAt(vec3 d) {
-  Sky sky = campfireSkyState;
-  vec3 col = skyColor(sky, d);
-  float mw = milkyWay(skyStarFrame(sky, d), d.y, CAMPFIRE_GALAXY) * K_milkyWay * K_stars * sky.night;
-  col += vec3(0.085, 0.080, 0.110) * mw;
-  col += skyStarLight(sky, d, milkyWayStars(K_stars, mw));
-  // A faint skyglow along the horizon, so the pines keep a backdrop even in the deepest night.
-  col += vec3(0.09, 0.10, 0.15) * exp(-max(d.y, 0.0) * 5.0) * sky.night;
-  return col;
-}
-
-// The giant: the shared planet's decoration tier (planetGiant, planetOver in shaders/lib/planet.ts),
-// a banded, storm-swirled planet lit from the upper left with a thin ring tipped across it, low in
-// the sky behind the pines (drawn over it later), fading by day. Its options (moons on the ring
-// plane, an aurora round its tipped pole, night-side city lights, the sun circling it) are the shared
-// planet knobs, prefixed: K_planetMoons .. K_planetDaycycle; all off, it is exactly as it was.
-vec3 campfirePlanetOver(vec3 col, vec2 p, float px) {
-  if (K_planet <= 0.0) return col;
-  vec3 light = normalize(vec3(-0.62, 0.42, 0.66));
-  if (K_planetDaycycle > 0.0) light = planetSun(light, PHASE_planetDaycycle);
-  PlanetLook look = planetGiant(vec2(0.58 * campfireHalf, 0.57), 0.07 + 0.13 * K_planet, light);
-  look.visible = 1.0 - 0.85 * campfireSkyState.day;
-  look.night = campfireSkyState.night;
-  look.moons = K_planetMoons;
-  look.eclipses = K_planetEclipses;
-  look.aurora = K_planetAurora;
-  look.auroraSize = K_planetAuroraSize;
-  look.lights = K_planetLights;
-  look.twinkle = K_planetLightsTwinkle;
-  return planetOver(col, p, px, look, campfireTm, uTime);
-}
-
-// A shooting star age seconds after it appeared: a head sliding along a straight path, a tail behind it.
-float campfireMeteor(vec2 p, float age, float seed, float px) {
-  const float dur = 1.4;
-  if (age < 0.0 || age > dur) return 0.0;
-  float f = age / dur;
-  vec2 a = vec2((hash12(vec2(seed, 1.3)) - 0.5) * 1.5 * campfireHalf, 0.72 + 0.22 * hash12(vec2(seed, 2.3)));
-  float sgn = hash12(vec2(seed, 3.3)) < 0.5 ? -1.0 : 1.0;
-  vec2 dv = normalize(vec2(sgn, -0.42 - 0.3 * hash12(vec2(seed, 4.3))));
-  vec2 head = a + dv * (0.5 * f);
-  float tail = 0.02 + 0.2 * smoothstep(0.0, 0.2, f);
-  vec2 ba = dv * tail;
-  vec2 pa = p - (head - ba);
-  float u = clamp(dot(pa, ba) / dot(ba, ba), 0.0, 1.0);
-  float d = length(pa - ba * u);
-  float r = px * (0.5 + 1.1 * u);
-  float bright = u * u * smoothstep(0.0, 0.12, f) * (1.0 - smoothstep(0.6, 1.0, f));
-  return hardEdge(softFill(d - r, px * 0.8) * bright * 1.3);
-}
-
-vec3 campfireMeteors(vec3 col, vec2 p, float px) {
-  if (campfireSkyState.night < 0.2 || p.y < 0.4) return col;
-  float m = 0.0;
-  if (K_shooting > 0.0) {
-    float period = 8.0 / (0.15 + K_shooting);
-    float k = floor(campfireTm / period);
-    float start = (k + 0.1 + 0.6 * hash12(vec2(k, 17.0))) * period;
-    if (hash12(vec2(k, 23.0)) < 0.8) m = campfireMeteor(p, campfireTm - start, k * 1.31 + 2.0, px);
-  }
-  m = max(m, campfireMeteor(p, sinceTrigger(0), fract(uTriggers[0] * 0.173) * 50.0 + 5.0, px));
-  return mix(col, vec3(0.86, 0.93, 1.0), m * campfireSkyState.night);
-}
-
-// ---- pines ----
+/** The pines' GLSL: the sky over the clearing, the rows of far pines, the two big ones, the air. */
+export const pinesGlsl = `
+// ---- the pines ----
 
 // A pine of tiered boughs as a signed distance (< 0 inside): bare trunk below s = 0.14, then tiers that
 // widen downward and taper to the top; lean sways the top.
-float campfireTree(vec2 p, float cx, float base, float h, float w, float tiers, float lean) {
+float pinesTree(vec2 p, float cx, float base, float h, float w, float tiers, float lean) {
   float s = (p.y - base) / h;
   float sc = clamp(s, 0.0, 1.2);
   float cr = clamp((s - 0.14) / 0.86, 0.0, 1.0);
@@ -212,7 +237,7 @@ float campfireTree(vec2 p, float cx, float base, float h, float w, float tiers, 
 }
 
 // A row of pines along x, one per cell of width spacing (jittered), the nearest three tested.
-float campfireRow(vec2 p, float spacing, float base, float hMin, float hMax, float w, float salt, float lean) {
+float pinesRow(vec2 p, float spacing, float base, float hMin, float hMax, float w, float salt, float lean) {
   float d = 1e3;
   float i0 = floor(p.x / spacing);
   for (int k = -1; k <= 1; k++) {
@@ -223,39 +248,93 @@ float campfireRow(vec2 p, float spacing, float base, float hMin, float hMax, flo
     float h = mix(hMin, hMax, h2 * h2);
     float tiers = 5.0 + floor(h1 * 3.0);
     float sway = lean * sin(campfireTm * 0.3 + id * 1.7);
-    d = min(d, campfireTree(p, cx, base, h, w * mix(0.8, 1.2, h1), tiers, sway));
+    d = min(d, pinesTree(p, cx, base, h, w * mix(0.8, 1.2, h1), tiers, sway));
   }
   return d;
 }
 
-// Pine colour: nearly black, more haze the farther it stands.
-vec3 campfireTreeTone(float haziness, vec3 haze) {
+// Pine colour: nearly black, more haze the farther it stands (the World's fog falls on them at their
+// depth).
+vec3 pinesTone(float haziness) {
   vec3 dark = vec3(0.05, 0.075, 0.06) * (campfireAmb * 3.0 + 0.04) + vec3(0.006, 0.009, 0.016);
-  return mix(dark, haze * 0.8, clamp(haziness + K_fog * 0.6, 0.0, 1.0));
+  return mix(dark, campfireHaze * 0.8, clamp(haziness, 0.0, 1.0));
 }
 
-// ---- the ground ----
-
-float campfireGroundTop(float x) {
-  float side = smoothstep(0.55 * campfireHalf, campfireHalf * 1.05, abs(x));
-  return 0.285 + 0.014 * vnoise(vec2(x * 3.0, 1.7)) + 0.045 * side;
+// The rim of a pine's silhouette, lit by the haze behind it.
+vec3 pinesRim() {
+  return campfireHaze * 0.7 + vec3(0.012, 0.018, 0.034) * campfireSkyState.night;
 }
 
-// The ring of stones: centre of stone i and its half size. Stones further from the viewer sit higher
-// and smaller.
-vec2 campfireStone(int i, out vec2 sz) {
-  float fi = float(i);
-  float ang = (fi + 0.35 * hash12(vec2(fi, 5.1))) * (TAU / 12.0) + 0.2;
-  float rr = 1.0 + 0.10 * (hash12(vec2(fi, 6.2)) - 0.5);
-  float depth = sin(ang);
-  vec2 c = campfireF + vec2(cos(ang) * 0.175 * rr, depth * 0.052 * rr);
-  float sizeV = 0.020 + 0.012 * hash12(vec2(fi, 7.3));
-  float scale = 1.0 - 0.22 * depth;
-  sz = vec2(sizeV * 1.25, sizeV * 0.85) * scale;
-  return c;
+// A pine drawn over the cell at depth z, by its cover (0 or 1): over the floor, behind what stands nearer.
+void pinesPut(inout Cell c, vec3 col, float cover, float z) {
+  if (z > c.zs) return;
+  c.col = mix(c.col, col, cover);
+  if (cover > 0.5) {
+    c.z = z;
+    c.zs = z;
+  }
 }
 
-vec3 campfireGround(vec2 p) {
+// ---- the pines' passes ----
+// The clearing's air (the backdrop's): the haze toward this bearing, which the fog takes on, as mist
+// did between the pines; the drops' light, the sky's and near the fire the fire's; the clearing ends
+// at the foot of the pines.
+void pinesBegin(inout Ctx x) {
+  vec3 drop = max(campfireAmb * 1.2, vec3(0.08)) + CAMPFIRE_WARM * 1.2 * campfireLight(campfireP, 0.6);
+  x.air = Air(campfireHaze, campfireHaze * 0.9 + campfireAmb * 0.6, drop, campfireHaze, 0.0, 0.01, 0.0);
+  x.groundTo = campfireGroundTop(campfireP.x);
+  x.landZ = 1e9;
+}
+
+// The World's sky over the pines (the dome, the aurora and the cloud, the stars and the Milky Way,
+// the planets in their gaps, shooting stars, the lightning), and a faint skyglow along the horizon,
+// so the pines keep a backdrop even in the deepest night.
+void pinesSky(Ctx x, inout Cell c) {
+  WorldSky heaven = worldSky(x.w, x.v, WORLD_METEOR_FIELD);
+  vec3 glow = vec3(0.09, 0.10, 0.15) * exp(-max(campfireDir.y, 0.0) * 5.0) * campfireSkyState.night;
+  c.col = heaven.col + glow + heaven.strike;
+}
+
+// The far and middle rows of pines in the haze, a little parallax with the pointer; the far row's
+// band fills the land below it.
+void pinesFar(Ctx x, inout Cell c) {
+  vec2 p = campfireP;
+  float px = campfirePx;
+  vec2 pf = p + vec2(uPointer.x * 0.006, 0.0);
+  vec2 pm = p + vec2(uPointer.x * 0.012, 0.0);
+  float dFar = min(pinesRow(pf, 0.105, 0.27, 0.15, 0.27, 0.045, 3.0, 0.0), p.y - 0.30);
+  pinesPut(c, pinesTone(0.55), hardFill(dFar, px * 1.2), CAMPFIRE_Z_FAR);
+  float dMid = pinesRow(pm, 0.165, 0.25, 0.17, 0.36, 0.07, 17.0, 0.0);
+  vec3 midTone = pinesTone(0.2);
+  float cMid = hardFill(dMid, px * 1.2);
+  pinesPut(c, midTone, cMid, CAMPFIRE_Z_MID);
+  pinesPut(c, midTone + pinesRim() * 0.5, cMid * (1.0 - hardFill(dMid + 0.005, px * 1.2)), CAMPFIRE_Z_MID);
+}
+
+// The two big pines framing the view, swaying a little in the wind.
+void pinesMiddle(Ctx x, inout Cell c) {
+  vec2 p = campfireP;
+  float px = campfirePx;
+  float tm = campfireTm;
+  float lean = 0.004 + 0.006 * abs(K_wind);
+  float dNear = min(
+    pinesTree(p, -0.90 * campfireHalf, 0.12, 1.05, 0.17, 7.0, lean * sin(tm * 0.31)),
+    pinesTree(p, 0.84 * campfireHalf, 0.10, 0.95, 0.15, 6.0, -lean * sin(tm * 0.27 + 1.0)));
+  vec3 nearTone = pinesTone(0.0);
+  float cNear = hardFill(dNear, px * 1.2);
+  pinesPut(c, nearTone, cNear, CAMPFIRE_Z_PINES);
+  pinesPut(c, nearTone + pinesRim() * 0.4, cNear * (1.0 - hardFill(dNear + 0.006, px * 1.2)), CAMPFIRE_Z_PINES);
+}
+`;
+
+/** The clearing's GLSL: the ground round the fire. */
+export const clearingGlsl = `
+// ---- the clearing ----
+
+// The ground: soil, and the flat rocky slab the fire stands on, cracked, lit by the fire; the ring's
+// contact shadows; wet, it darkens and glints with the sky and the fire; lying snow, melted round
+// the fire.
+vec3 clearingColour(Ctx x, vec2 p) {
   vec2 q = p - campfireF;
   vec2 g = vec2(q.x, q.y / 0.32);
   float rho = length(g);
@@ -269,9 +348,10 @@ vec3 campfireGround(vec2 p) {
   float crack = smoothfall(0.05, 0.022, abs(vnoise(p * vec2(6.0, 15.0) + 8.0) - 0.5));
   rock *= 1.0 - 0.55 * crack;
   float slab = hardEdge(smoothfall(slabR + 0.02, slabR - 0.02, rho));
-  vec3 alb = mix(soil, rock, slab);
+  vec3 alb = campfireWet(mix(soil, rock, slab), mix(0.8, 0.2, slab));
   // Contact shadows under the stones.
   float occ = 1.0;
+#if LAYER_CAMPFIRE
   if (abs(q.x) < 0.27 && abs(q.y) < 0.11) {
     for (int i = 0; i < 12; i++) {
       vec2 sz;
@@ -280,12 +360,110 @@ vec3 campfireGround(vec2 p) {
       occ *= 1.0 - 0.55 * (1.0 - smoothstep(0.7, 1.3, length(e)));
     }
   }
-  vec3 lightc = campfireAmb * 0.9 + vec3(1.0, 0.46, 0.12) * (3.8 * campfireLight(p, 0.0));
-  return alb * lightc * occ;
+#endif
+  float fire = campfireLight(p, 0.0);
+  vec3 lightc = campfireAmb * 0.9 + vec3(1.0, 0.46, 0.12) * (3.8 * fire);
+  vec3 col = alb * lightc * occ;
+  if (uWeather.x > 0.0) col += wetGloss(uWeather.x, 1.0) * (x.air.deck * 0.3 + CAMPFIRE_WARM * 0.6 * fire) * occ;
+  if (uWeather.y > 0.0) {
+    vec2 xz = vec2(p.x * x.zg / RIG_FOCAL, x.zg);
+    float snow = snowCover(vec3(0.0, 1.0, 0.0), xz, uWeather.y) * (1.0 - smoothstep(0.08, 0.35, fire));
+    col = mix(col, vec3(0.92, 0.94, 0.98) * lightc * occ, snow);
+  }
+  return col;
 }
 
-void campfireStones(vec2 p, float px, bool front, inout vec3 col) {
-  if (abs(p.x - campfireF.x) > 0.27 || abs(p.y - campfireF.y) > 0.10) return;
+// ---- the clearing's pass ----
+// Below the clearing's far edge, where the ray meets the ground.
+void clearingGround(Ctx x, inout Cell c) {
+  vec2 p = campfireP;
+  float top = campfireGroundTop(p.x);
+  if (p.y >= top + 0.01 || hardFill(p.y - top, campfirePx * 1.5) <= 0.5) return;
+  c.col = clearingColour(x, p);
+  c.z = x.zg;
+}
+`;
+
+/** The camp's GLSL: the tent with its lantern and the backpack. */
+export const campGlsl = `
+// ---- the camp ----
+
+// The tent at the edge of the light, its lantern glowing in the doorway and spilling onto the ground;
+// true where it covers the cell (its contact shadow and the spill fall on what lies behind).
+bool campfireTent(vec2 p, float px, inout vec3 col) {
+  float cx = -mix(0.44, 0.58, smoothstep(0.5, 0.89, campfireHalf));
+  vec2 q = p - vec2(cx, 0.2);
+  const float tentH = 0.2;
+  const float tentW = 0.16;
+  if (abs(q.x) > 0.3 || q.y < -0.08 || q.y > 0.25) return false;
+  // Contact shadow, and the lantern's light spilling out of the door onto the ground.
+  col *= 1.0 - 0.5 * (1.0 - smoothstep(0.6, 1.2, length(vec2(q.x / (tentW * 1.35), (q.y + 0.005) / 0.034))));
+  float lantern = 0.88 + 0.12 * sin(campfireTm * 0.9 + 1.0);
+  if (q.y < 0.0) col += vec3(1.0, 0.55, 0.2) * 0.16 * lantern * bell(length(vec2(q.x / 0.26, (q.y + 0.01) / 0.07)));
+  float ty = clamp(q.y / tentH, 0.0, 1.0);
+  float d = max((abs(q.x) - tentW * (1.0 - ty)) * 0.78, max(-q.y, q.y - tentH));
+  if (hardFill(d, px) < 0.5) return false;
+  float side = smoothstep(-tentW, tentW, q.x);
+  vec3 alb = mix(vec3(0.34, 0.22, 0.17), vec3(0.44, 0.31, 0.20), side);
+  alb *= 0.88 + 0.12 * vnoise(vec2(q.x * 60.0, q.y * 8.0));
+  alb = campfireWet(alb, 0.7);
+  float lightv = campfireLight(p, 0.9);
+  vec3 c = alb * (campfireAmb * 0.8 + CAMPFIRE_WARM * 3.0 * lightv * (0.5 + 0.5 * side));
+  c += vec3(1.0, 0.55, 0.2) * 0.30 * lantern * bell(length(vec2(q.x, q.y - 0.07)) / 0.17);
+  c = mix(c, c + vec3(0.9, 0.5, 0.2) * 0.12, smoothstep(0.0, 0.01, 0.007 + d));
+  // Snow lying on the flysheet's slopes.
+  if (uWeather.y > 0.0) {
+    float snow = snowCover(normalize(vec3(sign(q.x) * 0.78, 0.62, 0.0)), q * vec2(9.0, 6.0), uWeather.y);
+    c = mix(c, vec3(0.92, 0.94, 0.98) * (campfireAmb * 1.1 + CAMPFIRE_WARM * 2.0 * lightv), snow);
+  }
+  // The doorway, with the lantern inside.
+  float dd = max((abs(q.x) - tentW * 0.36 * (1.0 - clamp(q.y / (tentH * 0.86), 0.0, 1.0))) * 0.8, q.y - tentH * 0.86);
+  float door = hardFill(dd, px);
+  vec3 inside = vec3(0.10, 0.05, 0.03) + vec3(1.0, 0.58, 0.22) * 0.8 * lantern * bell(length(vec2(q.x, q.y - 0.07)) / 0.10);
+  col = mix(c, inside, door);
+  return true;
+}
+
+// The backpack leaning by the stones; true where it covers the cell.
+bool campfirePack(vec2 p, float px, inout vec3 col) {
+  vec2 q = p - vec2(-0.285, 0.15);
+  if (abs(q.x) > 0.07 || q.y < -0.09 || q.y > 0.075) return false;
+  col *= 1.0 - 0.5 * (1.0 - smoothstep(0.6, 1.2, length(vec2(q.x / 0.052, (q.y + 0.056) / 0.014))));
+  float body = sdBox(q, vec2(0.030, 0.045), 0.013);
+  float lid = sdBox(q - vec2(0.0, 0.041), vec2(0.032, 0.013), 0.009);
+  float pocket = sdBox(q - vec2(0.027, -0.018), vec2(0.012, 0.020), 0.007);
+  float roll = sdBox(q - vec2(0.0, -0.047), vec2(0.036, 0.010), 0.009);
+  if (hardFill(min(min(body, lid), min(pocket, roll)), px) < 0.5) return false;
+  vec3 alb = vec3(0.46, 0.31, 0.10);
+  if (hardFill(roll, px) > 0.5) alb = vec3(0.20, 0.27, 0.25);
+  if (hardFill(pocket, px) > 0.5) alb = vec3(0.38, 0.25, 0.08);
+  if (hardFill(lid, px) > 0.5) alb = vec3(0.34, 0.22, 0.08);
+  if (abs(q.x + 0.005) < 0.004 && q.y > -0.03 && q.y < 0.054) alb *= 0.55;
+  alb = campfireWet(alb, 0.7);
+  float lightv = campfireLight(p, 0.9);
+  float side = 0.45 + 0.55 * smoothstep(-0.035, 0.035, q.x);
+  col = alb * (campfireAmb * 0.8 + CAMPFIRE_WARM * 3.2 * lightv * side);
+  return true;
+}
+
+// ---- the camp's pass ----
+// The tent, then the pack: each over the floor and the pines, behind what stands nearer.
+void campFront(Ctx x, inout Cell c) {
+  vec2 p = campfireP;
+  float px = campfirePx;
+  if (CAMPFIRE_Z_TENT < c.zs && campfireTent(p, px, c.col)) campfireStand(c, CAMPFIRE_Z_TENT);
+  if (CAMPFIRE_Z_PACK < c.zs && campfirePack(p, px, c.col)) campfireStand(c, CAMPFIRE_Z_PACK);
+}
+`;
+
+/** The campfire's GLSL: the ring, the coals, the logs, the flames, the mug, the stick, the bench, its light. */
+export const campfireGlsl = `
+// ---- the campfire ----
+
+// The ring's stones on the far (front false) or near side of the fire; true where one covers the cell.
+bool campfireStones(vec2 p, float px, bool front, inout vec3 col) {
+  if (abs(p.x - campfireF.x) > 0.27 || abs(p.y - campfireF.y) > 0.10) return false;
+  bool hit = false;
   for (int i = 0; i < 12; i++) {
     vec2 sz;
     vec2 c = campfireStone(i, sz);
@@ -302,83 +480,37 @@ void campfireStones(vec2 p, float px, bool front, inout vec3 col) {
     float upward = clamp(0.5 + 0.5 * nn.y, 0.0, 1.0);
     vec3 alb = mix(vec3(0.17, 0.16, 0.17), vec3(0.25, 0.22, 0.19), hash12(vec2(fi, 9.4)));
     alb *= 0.82 + 0.3 * vnoise(lp * vec2(55.0, 70.0) + fi * 5.0);
+    alb = campfireWet(alb, 0.2);
     float lightv = campfireLight(c, 0.6);
     col = alb * (campfireAmb * (0.6 + 0.5 * upward) + CAMPFIRE_WARM * (4.2 * lightv * (0.12 + 1.15 * lit * lit)));
     col += vec3(1.0, 0.42, 0.10) * (0.22 * lightv * lit * lit * lit);
+    hit = true;
   }
+  return hit;
 }
 
-// ---- the camp ----
-
-void campfireTent(vec2 p, float px, inout vec3 col) {
-  if (K_camp < 0.5) return;
-  float cx = -mix(0.44, 0.58, smoothstep(0.5, 0.89, campfireHalf));
-  vec2 q = p - vec2(cx, 0.2);
-  const float tentH = 0.2;
-  const float tentW = 0.16;
-  if (abs(q.x) > 0.3 || q.y < -0.08 || q.y > 0.25) return;
-  // Contact shadow, and the lantern's light spilling out of the door onto the ground.
-  col *= 1.0 - 0.5 * (1.0 - smoothstep(0.6, 1.2, length(vec2(q.x / (tentW * 1.35), (q.y + 0.005) / 0.034))));
-  float lantern = 0.88 + 0.12 * sin(campfireTm * 0.9 + 1.0);
-  if (q.y < 0.0) col += vec3(1.0, 0.55, 0.2) * 0.16 * lantern * bell(length(vec2(q.x / 0.26, (q.y + 0.01) / 0.07)));
-  float ty = clamp(q.y / tentH, 0.0, 1.0);
-  float d = max((abs(q.x) - tentW * (1.0 - ty)) * 0.78, max(-q.y, q.y - tentH));
-  if (hardFill(d, px) < 0.5) return;
-  float side = smoothstep(-tentW, tentW, q.x);
-  vec3 alb = mix(vec3(0.34, 0.22, 0.17), vec3(0.44, 0.31, 0.20), side);
-  alb *= 0.88 + 0.12 * vnoise(vec2(q.x * 60.0, q.y * 8.0));
-  float lightv = campfireLight(p, 0.9);
-  vec3 c = alb * (campfireAmb * 0.8 + CAMPFIRE_WARM * 3.0 * lightv * (0.5 + 0.5 * side));
-  c += vec3(1.0, 0.55, 0.2) * 0.30 * lantern * bell(length(vec2(q.x, q.y - 0.07)) / 0.17);
-  c = mix(c, c + vec3(0.9, 0.5, 0.2) * 0.12, smoothstep(0.0, 0.01, 0.007 + d));
-  // The doorway, with the lantern inside.
-  float dd = max((abs(q.x) - tentW * 0.36 * (1.0 - clamp(q.y / (tentH * 0.86), 0.0, 1.0))) * 0.8, q.y - tentH * 0.86);
-  float door = hardFill(dd, px);
-  vec3 inside = vec3(0.10, 0.05, 0.03) + vec3(1.0, 0.58, 0.22) * 0.8 * lantern * bell(length(vec2(q.x, q.y - 0.07)) / 0.10);
-  col = mix(c, inside, door);
-}
-
-void campfirePack(vec2 p, float px, inout vec3 col) {
-  if (K_camp < 0.5) return;
-  vec2 q = p - vec2(-0.285, 0.15);
-  if (abs(q.x) > 0.07 || q.y < -0.09 || q.y > 0.075) return;
-  col *= 1.0 - 0.5 * (1.0 - smoothstep(0.6, 1.2, length(vec2(q.x / 0.052, (q.y + 0.056) / 0.014))));
-  float body = sdBox(q, vec2(0.030, 0.045), 0.013);
-  float lid = sdBox(q - vec2(0.0, 0.041), vec2(0.032, 0.013), 0.009);
-  float pocket = sdBox(q - vec2(0.027, -0.018), vec2(0.012, 0.020), 0.007);
-  float roll = sdBox(q - vec2(0.0, -0.047), vec2(0.036, 0.010), 0.009);
-  if (hardFill(min(min(body, lid), min(pocket, roll)), px) < 0.5) return;
-  vec3 alb = vec3(0.46, 0.31, 0.10);
-  if (hardFill(roll, px) > 0.5) alb = vec3(0.20, 0.27, 0.25);
-  if (hardFill(pocket, px) > 0.5) alb = vec3(0.38, 0.25, 0.08);
-  if (hardFill(lid, px) > 0.5) alb = vec3(0.34, 0.22, 0.08);
-  if (abs(q.x + 0.005) < 0.004 && q.y > -0.03 && q.y < 0.054) alb *= 0.55;
-  float lightv = campfireLight(p, 0.9);
-  float side = 0.45 + 0.55 * smoothstep(-0.035, 0.035, q.x);
-  col = alb * (campfireAmb * 0.8 + CAMPFIRE_WARM * 3.2 * lightv * side);
-}
-
-void campfireMug(vec2 p, float px, inout vec3 col) {
+// The enamel mug by the near stones; true where it covers the cell.
+bool campfireMug(vec2 p, float px, inout vec3 col) {
   vec2 q = p - vec2(0.232, 0.096);
-  if (abs(q.x) > 0.03 || abs(q.y) > 0.03) return;
+  if (abs(q.x) > 0.03 || abs(q.y) > 0.03) return false;
   col *= 1.0 - 0.5 * (1.0 - smoothstep(0.6, 1.2, length(vec2(q.x / 0.02, (q.y + 0.0125) / 0.006))));
   float body = sdBox(q, vec2(0.0108, 0.0125), 0.003);
   float handle = max(abs(length(q - vec2(0.0122, 0.0)) - 0.0068) - 0.0021, 0.008 - q.x);
-  if (hardFill(min(body, handle), px) < 0.5) return;
+  if (hardFill(min(body, handle), px) < 0.5) return false;
   float lightv = campfireLight(p, 0.8);
   vec3 c = vec3(0.60, 0.58, 0.50) * (campfireAmb * 0.8 + CAMPFIRE_WARM * 3.4 * lightv * (0.5 + 0.5 * smoothstep(-0.011, 0.011, -q.x)));
   float rim = hardFill(sdEllipse(q - vec2(0.0, 0.0122), vec2(0.0100, 0.0030)), px);
   col = mix(c, vec3(0.06, 0.03, 0.02) + CAMPFIRE_WARM * 0.05 * lightv, rim);
+  return true;
 }
 
-// ---- the fire ----
-
-void campfireCoals(vec2 p, float px, inout vec3 col) {
+// The bed of coals under the logs, breathing; true where it covers the cell.
+bool campfireCoals(vec2 p, float px, inout vec3 col) {
   vec2 q = p - (campfireF + vec2(0.0, 0.02));
   float k = 0.75 + 0.25 * campfireS;
   // A burning-down fire's bed grows with its embers (fuel only).
   if (campfireFuelOn) k *= mix(0.8, 1.08, clamp(campfireFuelBed.y / 1.2, 0.0, 1.0));
-  if (hardFill(sdEllipse(q, vec2(0.125, 0.036) * k), px) < 0.5) return;
+  if (hardFill(sdEllipse(q, vec2(0.125, 0.036) * k), px) < 0.5) return false;
   vec2 cp = p * vec2(55.0, 95.0);
   float lump = 0.6 * vnoise(cp) + 0.4 * vnoise(cp * 2.1 + 3.3);
   float phase = vnoise(p * vec2(9.0, 15.0) + 1.0) * 12.0;
@@ -390,16 +522,18 @@ void campfireCoals(vec2 p, float px, inout vec3 col) {
   vec3 ash = vec3(0.05, 0.04, 0.04) + CAMPFIRE_WARM * 0.06 * centre * min(campfireFuelBed.y, 1.0);
   col = mix(ash, ember, clamp(glow * (0.5 + 0.8 * centre), 0.0, 1.0));
   campfireGlow = max(campfireGlow, glow * 0.7);
+  return true;
 }
 
 // A log from a to b (radius ra to rb): bark furrows, lit from the fire's side, glowing cracks where it
 // burns near the flames. fuel (campfireFuelLog, used while the fuel is on): laid on from above, it
 // slumps into the coals as it burns through, thins where the flames are hottest until it breaks there,
-// and chars black and crazed, its cracks glowing, greying with ash once the flames die down.
-void campfireLog(vec2 p, vec2 a, vec2 b, float ra, float rb, float seed, vec4 fuel, float px, inout vec3 col) {
+// and chars black and crazed, its cracks glowing, greying with ash once the flames die down. True
+// where it covers the cell.
+bool campfireLog(vec2 p, vec2 a, vec2 b, float ra, float rb, float seed, vec4 fuel, float px, inout vec3 col) {
   float wood = 1.0;
   if (campfireFuelOn) {
-    if (fuel.x <= 0.0) return;
+    if (fuel.x <= 0.0) return false;
     float lower = 0.016 * fuel.z - 0.07 * (1.0 - fuel.w) * (1.0 - fuel.w);
     a.y -= lower;
     b.y -= lower;
@@ -416,7 +550,7 @@ void campfireLog(vec2 p, vec2 a, vec2 b, float ra, float rb, float seed, vec4 fu
     d += radius * thin;
     radius *= max(1.0 - thin, 0.05);
   }
-  if (hardFill(d, px) < 0.5) return;
+  if (hardFill(d, px) < 0.5) return false;
   vec2 ba = b - a;
   float len = length(ba);
   vec2 axis = ba / len;
@@ -445,6 +579,7 @@ void campfireLog(vec2 p, vec2 a, vec2 b, float ra, float rb, float seed, vec4 fu
   float breath = 0.55 + 0.45 * sin(campfireTm * 0.7 + seed * 4.0 + along * 25.0);
   c = c * (1.0 - 0.5 * heat) + vec3(1.0, 0.36, 0.07) * (crack * heat * breath * 1.3 * campfireCoalK);
   col = c;
+  return true;
 }
 
 // One layer of the flame as a signed distance in the fire's own units (x across, y up): five tongues,
@@ -487,16 +622,18 @@ float campfireTongues(vec2 q, float wk, float hk) {
   return d;
 }
 
-void campfireFlames(vec2 p, float px, inout vec3 col) {
+// The flames: four nested layers of tongues, red-orange outside to a pale yellow heart; true where
+// the outer layer covers the cell.
+bool campfireFlames(vec2 p, float px, inout vec3 col) {
   float g = campfireFlameG;
-  if (g < 0.03) return;
+  if (g < 0.03) return false;
   float s = campfireS * g;
   vec2 q = (p - (campfireF + vec2(0.0, 0.032))) / s;
-  if (abs(q.x) > 0.42 || q.y < -0.06 || q.y > 0.66) return;
+  if (abs(q.x) > 0.42 || q.y < -0.06 || q.y > 0.66) return false;
   float aa = px * 5.0 / s;
   float ht = clamp(q.y / CAMPFIRE_FLAME, 0.0, 1.0);
   float c0 = hardEdge(softFill(campfireTongues(q, 1.0, 1.0), aa));
-  if (c0 < 0.5) return;
+  if (c0 < 0.5) return false;
   float c1 = hardEdge(softFill(campfireTongues(q, 0.66, 0.72), aa)) * c0;
   float c2 = hardEdge(softFill(campfireTongues(q, 0.40, 0.48), aa)) * c1;
   float c3 = hardEdge(softFill(campfireTongues(q, 0.22, 0.26), aa)) * c2;
@@ -508,12 +645,147 @@ void campfireFlames(vec2 p, float px, inout vec3 col) {
   col = mix(col, inner, c2 * 0.98);
   col = mix(col, vec3(1.0, 0.96, 0.74), c3);
   campfireGlow = max(campfireGlow, max(c0 * 0.5, c1));
+  return true;
 }
 
+// The stick rests on the bench and reaches over the fire; the marshmallow on its end slowly toasts.
+// True where either covers the cell, and how far along the stick (0 at the bench, 1 over the fire).
+bool campfireStick(vec2 p, float px, inout vec3 col, out float along) {
+  vec2 a = vec2(0.56, 0.112);
+  vec2 b = campfireF + vec2(0.052, 0.05);
+  vec2 dir = normalize(b - a);
+  vec2 nrm = vec2(-dir.y, dir.x);
+  float t;
+  float ds = sdTaperCapsule(p, a, b + dir * 0.012, 0.0078, 0.0050, t);
+  along = t;
+  vec2 mc = b - dir * 0.014;
+  vec2 lp = vec2(dot(p - mc, dir), dot(p - mc, nrm));
+  float dm = sdBox(lp, vec2(0.027, 0.0165), 0.012);
+  if (hardFill(dm, px) > 0.5) {
+    float toast = (0.5 - 0.5 * cos(campfireTm * 0.04 + 1.2)) * 0.95;
+    float hot = smoothstep(-0.8, 1.0, lp.y / 0.0165);
+    float tl = toast * (0.5 + 0.8 * hot);
+    vec3 alb = mix(vec3(0.95, 0.90, 0.78), vec3(0.82, 0.52, 0.18), smoothstep(0.1, 0.55, tl));
+    alb = mix(alb, vec3(0.28, 0.14, 0.06), smoothstep(0.7, 1.0, tl));
+    float lightv = campfireLight(p, 0.9);
+    vec3 lit = alb * (campfireAmb * 0.8 + 0.12 + CAMPFIRE_WARM * 2.2 * lightv * (0.5 + 0.5 * hot));
+    // A darker, toasted skin round the edge, so the marshmallow reads against the flames.
+    float skin = 1.0 - hardFill(dm + 0.0032, px);
+    col = mix(lit, lit * vec3(0.55, 0.38, 0.28), skin);
+    along = 1.0;
+    return true;
+  }
+  if (hardFill(ds, px) > 0.5) {
+    float lightv = campfireLight(p, 0.9);
+    col = vec3(0.30, 0.20, 0.11) * (campfireAmb * 0.8 + CAMPFIRE_WARM * 3.4 * lightv) + vec3(0.11, 0.07, 0.035);
+    return true;
+  }
+  return false;
+}
+
+// The log bench across the near right: a squared log with its cut end toward the fire, bark furrows,
+// and (with the knob) the Manifold M carved into its side, the grooves glowing like coals; snow on its
+// top. True where it covers the cell.
+bool campfireBench(vec2 p, float px, inout vec3 col) {
+  float x0 = 0.30;
+  float x1 = campfireHalf + 0.2;
+  vec2 c = vec2(0.5 * (x0 + x1), 0.072);
+  vec2 hs = vec2(0.5 * (x1 - x0), 0.045);
+  if (p.y > 0.13 || p.x < x0 - 0.04) return false;
+  col *= 1.0 - 0.5 * (1.0 - smoothstep(0.6, 1.2, length(vec2((p.x - c.x) / (hs.x * 1.04), (p.y - 0.028) / 0.022))));
+  float d = sdBox(p - c, hs, 0.028);
+  if (hardFill(d, px) < 0.5) return false;
+  float yy = (p.y - c.y) / hs.y;
+  float bark = vnoise(vec2(p.x * 7.0, p.y * 42.0));
+  vec3 alb = mix(vec3(0.085, 0.05, 0.03), vec3(0.16, 0.105, 0.065), bark);
+  alb *= 1.0 + 0.5 * smoothstep(0.75, 0.95, yy);
+  alb = campfireWet(alb, 0.8);
+  float lightv = campfireLight(p, 0.75);
+  float facing = 0.35 + 0.65 * smoothstep(-0.8, 0.9, yy);
+  vec3 c0 = alb * (campfireAmb * 0.8 + CAMPFIRE_WARM * 3.0 * lightv * facing);
+  // The cut end, rings and all, catching the firelight.
+  vec2 e = (p - vec2(x0 + 0.002, c.y)) / vec2(0.016, 0.043);
+  float cap = hardFill((length(e) - 1.0) * 0.016, px);
+  float ring = 0.5 + 0.5 * sin(length(e) * 16.0 + 1.3);
+  vec3 wood = campfireWet(mix(vec3(0.32, 0.20, 0.11), vec3(0.45, 0.30, 0.17), ring), 0.8);
+  c0 = mix(c0, wood * (campfireAmb * 0.8 + CAMPFIRE_WARM * 3.6 * lightv), cap);
+  if (uWeather.y > 0.0) {
+    float snow = snowCover(vec3(0.0, smoothstep(0.55, 0.95, yy), 0.0), p * vec2(9.0, 30.0), uWeather.y);
+    c0 = mix(c0, vec3(0.92, 0.94, 0.98) * (campfireAmb * 1.1 + CAMPFIRE_WARM * 2.0 * lightv), snow);
+  }
+  if (K_campfireMark > 0.0) {
+    float size = 0.066;
+    float xm = 0.5 * (x0 + campfireHalf) + 0.03;
+    float dm = markDistance((p - vec2(xm, 0.073)) / size) * size;
+    float g = min(K_campfireMark, 1.4);
+    float pulse = 0.78 + 0.22 * sin(campfireTm * 0.8 + p.x * 6.0);
+    float groove = hardFill(dm - 0.0042, px);
+    float halo = hardEdge(0.45 * bell(dm / 0.011) * min(g, 1.0));
+    c0 += vec3(1.0, 0.4, 0.1) * 0.35 * g * halo;
+    c0 = mix(c0, vec3(1.0, 0.44, 0.10) * (0.55 + 0.6 * g * pulse), groove);
+    campfireGlow = max(campfireGlow, groove * min(g, 1.0));
+  }
+  col = c0;
+  return true;
+}
+
+// ---- the campfire's pass ----
+// The far half of the ring, the coals and the back log, the flames, the two front logs crossed over
+// the flames' foot, the near stones, the mug, the stick and the bench, in the order the campfire
+// painted them, each drawn only where nothing stands nearer; their glow the accent.
+void campfireFront(Ctx x, inout Cell c) {
+  vec2 p = campfireP;
+  float px = campfirePx;
+  vec2 f = campfireF;
+  if (CAMPFIRE_Z_RING_BACK < c.zs && campfireStones(p, px, false, c.col)) campfireStand(c, CAMPFIRE_Z_RING_BACK);
+  if (CAMPFIRE_Z_COALS < c.zs && campfireCoals(p, px, c.col)) campfireStand(c, CAMPFIRE_Z_COALS);
+  if (CAMPFIRE_Z_BACK_LOG < c.zs && campfireLog(p, f + vec2(-0.125, 0.036), f + vec2(0.115, 0.056), 0.0155, 0.0145, 1.0, campfireFuelLog[0], px, c.col))
+    campfireStand(c, CAMPFIRE_Z_BACK_LOG);
+  if (CAMPFIRE_Z_FLAMES < c.zs && campfireFlames(p, px, c.col)) campfireStand(c, CAMPFIRE_Z_FLAMES);
+  if (CAMPFIRE_Z_FRONT_LOG < c.zs && campfireLog(p, f + vec2(-0.135, -0.014), f + vec2(0.03, 0.052), 0.0175, 0.0145, 2.0, campfireFuelLog[1], px, c.col))
+    campfireStand(c, CAMPFIRE_Z_FRONT_LOG);
+  if (CAMPFIRE_Z_CROSS_LOG < c.zs && campfireLog(p, f + vec2(0.145, -0.010), f + vec2(-0.02, 0.05), 0.0165, 0.0140, 3.0, campfireFuelLog[2], px, c.col))
+    campfireStand(c, CAMPFIRE_Z_CROSS_LOG);
+  if (CAMPFIRE_Z_RING_FRONT < c.zs && campfireStones(p, px, true, c.col)) campfireStand(c, CAMPFIRE_Z_RING_FRONT);
+  if (CAMPFIRE_Z_MUG < c.zs && campfireMug(p, px, c.col)) campfireStand(c, CAMPFIRE_Z_MUG);
+  // The stick stands the farther the further it reaches from the bench toward the fire.
+  if (K_marshmallow > 0.5) {
+    vec3 col = c.col;
+    float along;
+    if (campfireStick(p, px, col, along)) {
+      float z = mix(CAMPFIRE_Z_BENCH + 0.05, CAMPFIRE_Z_STICK, along);
+      if (z < c.zs) {
+        c.col = col;
+        campfireStand(c, z);
+      }
+    }
+  }
+  if (CAMPFIRE_Z_BENCH < c.zs && campfireBench(p, px, c.col)) campfireStand(c, CAMPFIRE_Z_BENCH);
+  c.accent = max(c.accent, campfireGlow);
+}
+
+// The fire's light on another layer's surface at p (rig frame, m) facing n (0: lit all round), for
+// the composer's localLight: the campfire's own falloff (campfireLight) laid out in metres round the
+// flames' heart, at the fire's depth.
+vec3 campfireLightAt(vec3 p, vec3 n) {
+  float m = CAMPFIRE_Z_FIRE / RIG_FOCAL;
+  vec3 d = p - vec3(0.0, 0.085 * campfireS * m, CAMPFIRE_Z_FIRE);
+  float r0 = (0.28 + 0.42 * K_reach) * (0.8 + 0.2 * campfireS) * mix(0.5, 1.0, campfireLit) * m;
+  float l = 1.0 / (1.0 + dot(d, d) / (r0 * r0));
+  float facing = dot(n, n) > 0.0 ? clamp(0.35 + 0.65 * dot(n, -d) * inversesqrt(max(dot(d, d), 1e-6)), 0.0, 1.0) : 1.0;
+  return CAMPFIRE_WARM * 3.0 * l * (0.3 + 0.7 * l) * campfireBreath * facing;
+}
+`;
+
+/** The smoke's GLSL: the column over the flames. */
+export const smokeGlsl = `
+// ---- the smoke ----
 // A thin column from the flame tips: it meanders, widens and thins as it climbs, leans with the wind,
 // lit warm near the fire and by the sky higher up. Cut per cell, so its edge flips each cell once.
-void campfireSmoke(vec2 p, float px, inout vec3 col) {
+// Translucent, over what lies behind it and behind the logs, the stones, the stick and the bench.
+void smokeFrontVeil(Ctx x, inout Cell c) {
   if (K_smoke <= 0.0 || campfireSmokeG <= 0.0) return;
+  vec2 p = campfireP;
   float tm = campfireTm;
   float u = p.y - campfireF.y - 0.26 * campfireS * mix(0.3, 1.0, campfireFlameG);
   if (u < 0.0) return;
@@ -530,13 +802,21 @@ void campfireSmoke(vec2 p, float px, inout vec3 col) {
   if (cover < 0.5) return;
   float nearFire = bell(u / 0.30);
   vec3 smokeC = vec3(0.07, 0.08, 0.115) + campfireAmb * 1.4 + CAMPFIRE_WARM * (0.75 * nearFire * campfireBreath);
-  col = mix(col, smokeC, 0.62);
+  cellVeil(c, vec4(smokeC, 0.62), CAMPFIRE_Z_SMOKE);
 }
+`;
 
+/** The sparks' GLSL: the sparks climbing from the flames. */
+export const sparksGlsl = `
+// ---- the sparks ----
 // Sparks: each slot flies one slow arc (rising, swaying, leaning with the wind), winks out, and is
-// re-rolled for its next flight. Few cells wide, moving about a quarter of a cell a frame.
-void campfireSparks(vec2 p, float px, inout vec3 col) {
+// re-rolled for its next flight. Few cells wide, moving about a quarter of a cell a frame; in front
+// of the flames and the smoke, their glow the accent.
+void sparksFront(Ctx x, inout Cell c) {
+  vec2 p = campfireP;
+  float px = campfirePx;
   if (K_sparks <= 0.0 || campfireSparkG <= 0.0 || p.y < campfireF.y + 0.1 * campfireS || abs(p.x - campfireF.x) > 0.75) return;
+  if (CAMPFIRE_Z_SPARKS >= c.zs) return;
   float tm = campfireTm;
   float s = campfireS;
   vec3 hit = vec3(0.0);
@@ -567,148 +847,9 @@ void campfireSparks(vec2 p, float px, inout vec3 col) {
       on = 1.0;
     }
   }
-  col = mix(col, hit, on);
+  c.col = mix(c.col, hit, on);
+  if (on > 0.5) campfireStand(c, CAMPFIRE_Z_SPARKS);
   campfireGlow = max(campfireGlow, on * 0.8);
-}
-
-// The stick rests on the bench and reaches over the fire; the marshmallow on its end slowly toasts.
-void campfireStick(vec2 p, float px, inout vec3 col) {
-  if (K_marshmallow < 0.5) return;
-  vec2 a = vec2(0.56, 0.112);
-  vec2 b = campfireF + vec2(0.052, 0.05);
-  vec2 dir = normalize(b - a);
-  vec2 nrm = vec2(-dir.y, dir.x);
-  float t;
-  float ds = sdTaperCapsule(p, a, b + dir * 0.012, 0.0078, 0.0050, t);
-  vec2 mc = b - dir * 0.014;
-  vec2 lp = vec2(dot(p - mc, dir), dot(p - mc, nrm));
-  float dm = sdBox(lp, vec2(0.027, 0.0165), 0.012);
-  if (hardFill(dm, px) > 0.5) {
-    float toast = (0.5 - 0.5 * cos(campfireTm * 0.04 + 1.2)) * 0.95;
-    float hot = smoothstep(-0.8, 1.0, lp.y / 0.0165);
-    float tl = toast * (0.5 + 0.8 * hot);
-    vec3 alb = mix(vec3(0.95, 0.90, 0.78), vec3(0.82, 0.52, 0.18), smoothstep(0.1, 0.55, tl));
-    alb = mix(alb, vec3(0.28, 0.14, 0.06), smoothstep(0.7, 1.0, tl));
-    float lightv = campfireLight(p, 0.9);
-    vec3 lit = alb * (campfireAmb * 0.8 + 0.12 + CAMPFIRE_WARM * 2.2 * lightv * (0.5 + 0.5 * hot));
-    // A darker, toasted skin round the edge, so the marshmallow reads against the flames.
-    float skin = 1.0 - hardFill(dm + 0.0032, px);
-    col = mix(lit, lit * vec3(0.55, 0.38, 0.28), skin);
-  } else if (hardFill(ds, px) > 0.5) {
-    float lightv = campfireLight(p, 0.9);
-    col = vec3(0.30, 0.20, 0.11) * (campfireAmb * 0.8 + CAMPFIRE_WARM * 3.4 * lightv) + vec3(0.11, 0.07, 0.035);
-  }
-}
-
-// The log bench across the near right: a squared log with its cut end toward the fire, bark furrows,
-// and (with the knob) the Manifold M carved into its side, the grooves glowing like coals.
-void campfireBench(vec2 p, float px, inout vec3 col) {
-  float x0 = 0.30;
-  float x1 = campfireHalf + 0.2;
-  vec2 c = vec2(0.5 * (x0 + x1), 0.072);
-  vec2 hs = vec2(0.5 * (x1 - x0), 0.045);
-  if (p.y > 0.13 || p.x < x0 - 0.04) return;
-  col *= 1.0 - 0.5 * (1.0 - smoothstep(0.6, 1.2, length(vec2((p.x - c.x) / (hs.x * 1.04), (p.y - 0.028) / 0.022))));
-  float d = sdBox(p - c, hs, 0.028);
-  if (hardFill(d, px) < 0.5) return;
-  float yy = (p.y - c.y) / hs.y;
-  float bark = vnoise(vec2(p.x * 7.0, p.y * 42.0));
-  vec3 alb = mix(vec3(0.085, 0.05, 0.03), vec3(0.16, 0.105, 0.065), bark);
-  alb *= 1.0 + 0.5 * smoothstep(0.75, 0.95, yy);
-  float lightv = campfireLight(p, 0.75);
-  float facing = 0.35 + 0.65 * smoothstep(-0.8, 0.9, yy);
-  vec3 c0 = alb * (campfireAmb * 0.8 + CAMPFIRE_WARM * 3.0 * lightv * facing);
-  // The cut end, rings and all, catching the firelight.
-  vec2 e = (p - vec2(x0 + 0.002, c.y)) / vec2(0.016, 0.043);
-  float cap = hardFill((length(e) - 1.0) * 0.016, px);
-  float ring = 0.5 + 0.5 * sin(length(e) * 16.0 + 1.3);
-  vec3 wood = mix(vec3(0.32, 0.20, 0.11), vec3(0.45, 0.30, 0.17), ring);
-  c0 = mix(c0, wood * (campfireAmb * 0.8 + CAMPFIRE_WARM * 3.6 * lightv), cap);
-  if (K_mark > 0.0) {
-    float size = 0.066;
-    float xm = 0.5 * (x0 + campfireHalf) + 0.03;
-    float dm = markDistance((p - vec2(xm, 0.073)) / size) * size;
-    float g = min(K_mark, 1.4);
-    float pulse = 0.78 + 0.22 * sin(campfireTm * 0.8 + p.x * 6.0);
-    float groove = hardFill(dm - 0.0042, px);
-    float halo = hardEdge(0.45 * bell(dm / 0.011) * min(g, 1.0));
-    c0 += vec3(1.0, 0.4, 0.1) * 0.35 * g * halo;
-    c0 = mix(c0, vec3(1.0, 0.44, 0.10) * (0.55 + 0.6 * g * pulse), groove);
-    campfireGlow = max(campfireGlow, groove * min(g, 1.0));
-  }
-  col = c0;
-}
-
-Shade sceneCampfire(vec2 uv, vec2 cell, float t) {
-  float aspect = uRes.x / uRes.y;
-  campfireSetup(aspect);
-  float px = 1.0 / uRes.y;
-  vec2 p = vec2((uv.x - 0.5) * aspect, uv.y);
-  vec3 dir = viewRay(uv, aspect, CAMPFIRE_HORIZON, CAMPFIRE_FOV);
-  float tm = campfireTm;
-
-  // The sky: stars, the Milky Way, the planet, a shooting star.
-  vec3 col = campfireSkyAt(dir);
-  col = campfirePlanetOver(col, p, px);
-  col = campfireMeteors(col, p, px);
-
-  // Far and middle pines in the haze, a little parallax with the pointer.
-  vec3 haze = horizonHaze(campfireSkyState, dir, 0.01);
-  vec2 pf = p + vec2(uPointer.x * 0.006, 0.0);
-  vec2 pm = p + vec2(uPointer.x * 0.012, 0.0);
-  float dFar = min(campfireRow(pf, 0.105, 0.27, 0.15, 0.27, 0.045, 3.0, 0.0), p.y - 0.30);
-  col = mix(col, campfireTreeTone(0.55, haze), hardFill(dFar, px * 1.2));
-  vec3 rimLight = haze * 0.7 + vec3(0.012, 0.018, 0.034) * campfireSkyState.night;
-  float dMid = campfireRow(pm, 0.165, 0.25, 0.17, 0.36, 0.07, 17.0, 0.0);
-  vec3 midTone = campfireTreeTone(0.2, haze);
-  float cMid = hardFill(dMid, px * 1.2);
-  col = mix(col, midTone, cMid);
-  col = mix(col, midTone + rimLight * 0.5, cMid * (1.0 - hardFill(dMid + 0.005, px * 1.2)));
-  if (K_fog > 0.0) {
-    float mist = K_fog * 0.5 * bell((p.y - 0.31) / 0.12) * (0.6 + 0.8 * fbm3(vec2(p.x * 3.0 - tm * 0.01 * (0.3 + K_wind), p.y * 9.0)));
-    col = mix(col, haze * 0.9 + campfireAmb * 0.6, hardEdge(mist));
-  }
-
-  // The clearing.
-  float top = campfireGroundTop(p.x);
-  if (p.y < top + 0.01 && hardFill(p.y - top, px * 1.5) > 0.5) col = campfireGround(p);
-
-  // Two big pines frame the view, swaying a little.
-  float lean = 0.004 + 0.006 * abs(K_wind);
-  float dNear = min(
-    campfireTree(p, -0.90 * campfireHalf, 0.12, 1.05, 0.17, 7.0, lean * sin(tm * 0.31)),
-    campfireTree(p, 0.84 * campfireHalf, 0.10, 0.95, 0.15, 6.0, -lean * sin(tm * 0.27 + 1.0)));
-  vec3 nearTone = campfireTreeTone(0.0, haze);
-  float cNear = hardFill(dNear, px * 1.2);
-  col = mix(col, nearTone, cNear);
-  col = mix(col, nearTone + rimLight * 0.4, cNear * (1.0 - hardFill(dNear + 0.006, px * 1.2)));
-
-  // The camp, the far half of the ring, the coals and the back log, then the flames and the smoke.
-  campfireTent(p, px, col);
-  campfirePack(p, px, col);
-  campfireStones(p, px, false, col);
-  campfireCoals(p, px, col);
-  campfireLog(p, campfireF + vec2(-0.125, 0.036), campfireF + vec2(0.115, 0.056), 0.0155, 0.0145, 1.0, campfireFuelLog[0], px, col);
-  campfireFlames(p, px, col);
-  campfireSmoke(p, px, col);
-
-  // The two front logs crossed over the flames' foot, the near stones, the mug, the stick, the bench.
-  campfireLog(p, campfireF + vec2(-0.135, -0.014), campfireF + vec2(0.03, 0.052), 0.0175, 0.0145, 2.0, campfireFuelLog[1], px, col);
-  campfireLog(p, campfireF + vec2(0.145, -0.010), campfireF + vec2(-0.02, 0.05), 0.0165, 0.0140, 3.0, campfireFuelLog[2], px, col);
-  campfireStones(p, px, true, col);
-  campfireMug(p, px, col);
-  campfireStick(p, px, col);
-  campfireBench(p, px, col);
-  campfireSparks(p, px, col);
-
-  // A soft vignette keeps the eye by the fire.
-  col *= 1.0 - 0.35 * smoothstep(0.6, 1.4, length((uv - 0.5) * vec2(aspect, 1.0) * 1.2));
-
-  Shade o = blankShade();
-  o.ink = inkOf(col, 1.5, 0.8);
-  o.accent = clamp(campfireGlow, 0.0, 1.0);
-  o.rgb = col;
-  o.source = col;
-  return o;
+  c.accent = max(c.accent, campfireGlow);
 }
 `;

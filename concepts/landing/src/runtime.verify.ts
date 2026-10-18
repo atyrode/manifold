@@ -66,7 +66,9 @@ export async function verifyRuntime(_gl: WebGL2RenderingContext): Promise<Record
   const dunes = dunesScene;
   const dunesSim = dunes.sim;
   const lake = lakeScene;
-  const lakeGlsl = lake.glsl;
+  // The lake is composed: its programs come from glslFor (shaders/index.ts fragmentSourceFor).
+  const lakeGlslFor = lake.glslFor;
+  if (lakeGlslFor === undefined) throw new Error("The lake is not composed");
   const errorLog = console.error;
   const seen = { time: Number.NaN, trigger: Number.NaN, fired: false };
   let fault: Error | undefined;
@@ -229,7 +231,7 @@ export async function verifyRuntime(_gl: WebGL2RenderingContext): Promise<Record
     );
     // A shader that does not build is reported too (its program built in the background meanwhile,
     // the scene on screen going on), and retry builds it again once it is fixed.
-    lake.glsl = `${lakeGlsl}\n#error injected build fault\n`;
+    lake.glslFor = (features) => `${lakeGlslFor(features)}\n#error injected build fault\n`;
     renderer.update(labSettings("lake"));
     check(frame((now += 16)), "No next frame was scheduled after a shader failed to build");
     await arrive();
@@ -237,7 +239,7 @@ export async function verifyRuntime(_gl: WebGL2RenderingContext): Promise<Record
       renderer.failure?.stage === "build",
       `Build fault not reported: ${JSON.stringify(renderer.failure)}`,
     );
-    lake.glsl = lakeGlsl;
+    lake.glslFor = lakeGlslFor;
     renderer.retry();
     frame((now += 16));
     await arrive();
@@ -288,9 +290,11 @@ export async function verifyRuntime(_gl: WebGL2RenderingContext): Promise<Record
       `Unchanged state was sent again: ${JSON.stringify(steady)}`,
     );
     const knobs = paramDefaults("lake");
-    const index = lake.params.findIndex((def) => def.kind === "range");
+    // The ice's ripples: a plain uniform. (The hour would not do: it sets the World's daylight gate,
+    // so a change can build another program.)
+    const index = lake.params.findIndex((def) => def.kind === "range" && def.key === "ripples");
     const knob = lake.params[index];
-    if (!knob) throw new Error("The lake has no range knob");
+    if (!knob) throw new Error("The lake has no ripples knob");
     const original = labSettings("lake", knobs).params[index];
     knobs[knob.key] = (knobs[knob.key] ?? 0) + 0.125;
     const changed = labSettings("lake", knobs);
@@ -339,7 +343,7 @@ export async function verifyRuntime(_gl: WebGL2RenderingContext): Promise<Record
   } finally {
     console.error = errorLog;
     if (dunesSim !== undefined) dunes.sim = dunesSim;
-    lake.glsl = lakeGlsl;
+    lake.glslFor = lakeGlslFor;
     frames.restore();
     canvas.remove();
   }

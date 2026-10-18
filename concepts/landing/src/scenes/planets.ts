@@ -7,7 +7,12 @@
 // knobs, and readPlanet reads it as state.ts readParams reads knobs. The whole list rides in one URL
 // key, PLANETS_KEY, packed (encodePlanets); the shader takes it as uniforms (planetUniforms).
 import { choice, counts, feature, range, readKnobs, toggle, type ParamDef } from "../params.ts";
-import { PLANET_BODY_KINDS, PLANET_RINGS } from "../shaders/lib/planet.ts";
+import {
+  PLANET_BODY_KINDS,
+  PLANET_DRESS_GATES,
+  PLANET_KIND_GATES,
+  PLANET_RINGS,
+} from "../shaders/lib/planet.ts";
 import { SKY_PLANET_CAP, SKY_PLANET_FLAGS, SKY_PLANET_ROWS } from "../shaders/lib/sky.ts";
 import { COS_LAT, SIN_LAT } from "../world-clock.ts";
 
@@ -25,6 +30,12 @@ export interface SkyPlanets {
    */
   across: PlanetSpan;
   up: PlanetSpan;
+  /**
+   * The planets the scene opens with, each keyed as planetDefs keys a planet (anything left out at
+   * its default: `{}` is the banded giant where the pad starts); none when unset. A link without
+   * PLANETS_KEY holds these; `planets=` holds none.
+   */
+  defaults?: readonly SkyPlanet[];
 }
 
 /** The URL key holding a scene's planets. */
@@ -341,6 +352,24 @@ export function encodePlanets(spec: SkyPlanets, planets: readonly SkyPlanet[]): 
     .replace(/=+$/, "");
 }
 
+/**
+ * The planets a scene opens with (SkyPlanets.defaults, each read by readPlanet): what a link
+ * without PLANETS_KEY holds.
+ */
+export function openingPlanets(spec: SkyPlanets): SkyPlanet[] {
+  return (spec.defaults ?? []).map((planet) => readPlanet(spec, planet));
+}
+
+/** The URL value of the planets a scene opens with: what puts a list back to them. */
+export function openingPlanetsValue(spec: SkyPlanets): string {
+  return encodePlanets(spec, openingPlanets(spec));
+}
+
+/** Whether a list differs from the one the scene opens with. */
+export function planetsChanged(spec: SkyPlanets, planets: readonly SkyPlanet[]): boolean {
+  return encodePlanets(spec, planets) !== openingPlanetsValue(spec);
+}
+
 /** A stream of varints; undefined once it runs out or holds a malformed one. */
 class Reader {
   #at = 0;
@@ -406,10 +435,15 @@ export function decodePlanets(spec: SkyPlanets, text: string): SkyPlanet[] {
 
 // ---- the shader ---------------------------------------------------------------------------------
 
-/** The planets as skyGiant takes them: how many, and their rows of uPlanets. */
+/**
+ * The planets as skyGiant takes them: how many, their rows of uPlanets, and the body tier's library
+ * gates their program compiles in, every one defined (PLANET_KIND_GATES: each kind's palettes among
+ * them, a bit each; PLANET_DRESS_GATES: 1 while one of them wears that piece of dress).
+ */
 export interface PlanetUniforms {
   count: number;
   data: Float32Array;
+  gates: Readonly<Record<string, number>>;
 }
 
 type Vec3 = [number, number, number];
@@ -479,10 +513,14 @@ const amountOf = (planet: SkyPlanet, key: string) =>
 /**
  * The list as uPlanets rows (sky.ts: SKY_PLANET_ROWS each, SKY_PLANET_FLAGS packed), in drawing
  * order: the smaller first, so a bigger planet stands in front (equal sizes in the list's order).
- * Each planet's seed is its place in the list.
+ * Each planet's seed is its place in the list. Its gates open on the switches as the shader reads
+ * them (sky.ts skyPlanetOver), so a program compiles in all its planets draw.
  */
 export function planetUniforms(planets: readonly SkyPlanet[]): PlanetUniforms {
   const data = new Float32Array(SKY_PLANET_CAP * SKY_PLANET_ROWS * 4);
+  const gates: Record<string, number> = Object.fromEntries(
+    [...PLANET_KIND_GATES, ...Object.values(PLANET_DRESS_GATES)].map((gate) => [gate, 0]),
+  );
   const order = planets
     .slice(0, SKY_PLANET_CAP)
     .map((planet, seed) => ({ planet, seed }))
@@ -502,6 +540,17 @@ export function planetUniforms(planets: readonly SkyPlanet[]): PlanetUniforms {
       field("ring", planet["ring"] ?? 0) |
       field("moons", amountOf(planet, "moons")) |
       field("seed", seed);
+    const read = (name: keyof typeof SKY_PLANET_FLAGS) => {
+      const [shift, bits] = SKY_PLANET_FLAGS[name];
+      return (flags >> shift) & ((1 << bits) - 1);
+    };
+    const aurora = amountOf(planet, "aurora");
+    const kindGate = PLANET_KIND_GATES[read("kind")];
+    if (kindGate !== undefined) gates[kindGate] = (gates[kindGate] ?? 0) | (1 << read("palette"));
+    if (read("ring") === 2) gates[PLANET_DRESS_GATES.wideRing] = 1;
+    if (read("moons") > 0) gates[PLANET_DRESS_GATES.moons] = 1;
+    if (Math.fround(aurora) > 0) gates[PLANET_DRESS_GATES.aurora] = 1;
+    if (read("lights") === 1) gates[PLANET_DRESS_GATES.lights] = 1;
     data.set(
       [
         ...a,
@@ -516,11 +565,11 @@ export function planetUniforms(planets: readonly SkyPlanet[]): PlanetUniforms {
         planet["ringTilt"] ?? 0,
         planet["ringRoll"] ?? 0,
         planet["moonSize"] ?? 0,
-        amountOf(planet, "aurora"),
+        aurora,
         planet["auroraSize"] ?? 0,
       ],
       slot * SKY_PLANET_ROWS * 4,
     );
   });
-  return { count: order.length, data };
+  return { count: order.length, data, gates };
 }

@@ -1,14 +1,14 @@
 // GPU regressions for the shared Milky Way (#1082: shaders/lib/milkyway.ts) and its brightness knob,
 // run by concepts/landing/verify-browser.ts on real WebGL output. A probe entry on Campfire's program
-// evaluates the band over a grid of directions: nothing below the horizon or off the galactic plane,
-// a band along it, and the stars crowding into it. Then the knob in both skies that show the band:
-// off, on and twice as bright light the night sky more and more, and leave what the band does not
-// reach (Campfire's fire-lit ground) as it was.
+// evaluates the World's band (WORLD_GALAXY) over a grid of directions: nothing below the horizon or
+// off the galactic plane, a band along it, and the stars crowding into it. Then the knob in both
+// skies that show the band: off, on and twice as bright light the night sky more and more, and leave
+// what the band does not reach (Campfire's fire-lit ground) as it was.
 import { defaultsFor, paramDefaults, renderSettings } from "../../state.ts";
 import { fragmentSourceFor, packParams, vertexSource } from "../../shaders/index.ts";
 import { loadScene } from "../index.ts";
 
-const campfireScene = await loadScene("campfire");
+const { glslFor, ...campfireScene } = await loadScene("campfire");
 
 function check(ok: boolean, message: string): void {
   if (!ok) throw new Error(`milky way: ${message}`);
@@ -46,9 +46,9 @@ Shade milkyWayProbe(vec2 uv, vec2 cell, float t) {
   float az = uProbe.x + floor(cell.x) * uProbe.y;
   float el = uProbe.z + floor(cell.y) * uProbe.y;
   vec3 dir = vec3(sin(az) * cos(el), sin(el), cos(az) * cos(el));
-  float band = milkyWay(dir, dir.y, CAMPFIRE_GALAXY);
+  float band = milkyWay(dir, dir.y, WORLD_GALAXY);
   Shade o = blankShade();
-  o.source = vec3(band, dot(dir, CAMPFIRE_GALAXY.pole), milkyWayStars(0.5, band));
+  o.source = vec3(band, dot(dir, WORLD_GALAXY.pole), milkyWayStars(0.5, band));
   return o;
 }
 `;
@@ -124,6 +124,7 @@ function light(pixels: Float32Array, width: number, from: number, to: number): n
 export async function verifyMilkyWay(gl: WebGL2RenderingContext): Promise<Record<string, unknown>> {
   check(gl.getExtension("EXT_color_buffer_float") !== null, "float render targets unavailable");
   const campfire = campfireScene;
+  if (glslFor === undefined) throw new Error("milky way: campfire is not composed");
 
   // The band over the dome: none below the horizon or more than 0.35 off the plane, up to ~1.3 along
   // it, over a fair share of the sky; the stars it crowds are 0.7x the density off it, up to 1.5x

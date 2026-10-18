@@ -1,45 +1,40 @@
-// The mystic forest's simulation on the page: its life (build.ts, warmed up on the build worker)
-// followed and stepped every frame and uploaded for the shader. Until the warmed-up life has landed
+// The kodama's sim (the forest's life on the page): its life (build.ts, warmed up on the build worker)
+// followed and stepped every frame and written for the shader. Until the warmed-up life has landed
 // the sim is not ready and nothing of it shows.
-// The shader (shader.ts) reads three textures (rows bottom to top):
-//   uSim0  rgba16f, 3 x (FOREST_SPIRITS + 1), nearest: one row per spirit, (screen x, screen y of its
-//          feet, depth m, alpha 0..1), (head tilt rad + = its top to the left, yaw -1..1 + = its face
-//          to the right, glow, variant 0..1), (sink: 0..1 while rising out of the moss, up to
-//          DUCK_SINK ducked away from the pointer, in 0.45 of its height; height m, 0, 0); all 0 for
-//          a free slot. The last row is the stag: (x m, gait phase 0..1, heading +-1,
-//          alpha), (look 0..1, head up 0..1, x where it set out m, distance walked m), (standing 0..1:
-//          1 - its speed / its walking pace, 0, 0, 0).
-//   uSim1  rgba16f, (2 x bins) x FOREST_MOTE_ROWS, nearest: the motes, binned on square bins
+// What the GLSL (shader.ts) reads, through the composer's accessors:
+//   kodamaRecord(3 s + k, 0)  its row of the records atlas: texels 3 s .. 3 s + 2 for spirit slot s
+//          (FOREST_SPIRITS of them), (screen x, screen y of its feet, depth m, alpha 0..1), (head tilt
+//          rad + = its top to the left, yaw -1..1 + = its face to the right, glow, variant 0..1),
+//          (sink: 0..1 while rising out of the moss, up to DUCK_SINK ducked away from the pointer, in
+//          0.45 of its height; height m, 0, 0); all 0 for a free slot. Then the stag's three: (x m,
+//          gait phase 0..1, heading +-1, alpha), (look 0..1, head up 0..1, x where it set out m,
+//          distance walked m), (standing 0..1: 1 - its speed / its walking pace, 0, 0, 0).
+//   kodamaField0  rgba16f, (2 x bins) x FOREST_MOTE_ROWS, nearest: the motes, binned on square bins
 //          FOREST_MOTE_ROWS to the screen height starting at the left edge, two slots (texels) per
 //          bin: (x, y within the bin 0..1, depth m, glow 0..1); glow 0 marks an empty slot.
-//   uSim2  r16f, FOREST_FOG.width x FOREST_FOG.height over the screen's uv, linear: how thick the
-//          mist is here, about 1.
+//   kodamaField1  r16f, FOREST_FOG.width x FOREST_FOG.height over the screen's uv, linear: how thick
+//          the mist is here, about 1 (the woods draw its banks).
+import type { LayerFrame, LayerSim } from "../../composer/types.ts";
 import type { ParamDef } from "../../params.ts";
 import { BuildSlot } from "../../sims/build.ts";
 import { DataTexture } from "../../sims/texture.ts";
 import { skyNow } from "../../world-clock.ts";
-import type { SceneSim, SimFactory, SimFrame } from "../types.ts";
 import {
-  FOREST_FOG,
-  FOREST_MOTE_ROWS,
-  FOREST_SPIRITS,
   type ForestKnobs,
   ForestLife,
   ForestSimError,
+  type ForestSlots,
   forestWarmup,
 } from "./build.ts";
+import { FOREST_FOG, FOREST_MOTE_ROWS } from "./layout.ts";
 
-type KnobKey = "spirits" | "shy" | "stag" | "spores" | "wind" | "time" | "forestSeed";
+type KnobKey = "spirits" | "shy" | "stag" | "spores" | "wind" | "time" | "seed";
 
-/** What the sim hands the renderer before its life is up: nothing (no spirits, motes or mist field). */
-const NO_TEXTURES: readonly (WebGLTexture | undefined)[] = [undefined, undefined, undefined];
-
-class ForestSim implements SceneSim {
-  readonly #beingTexture: DataTexture;
+class KodamaSim implements LayerSim {
   readonly #moteTexture: DataTexture;
   readonly #fogTexture: DataTexture;
-  readonly #textures: readonly (WebGLTexture | undefined)[];
   readonly #knobIndex: Readonly<Record<KnobKey, number>>;
+  readonly #slots: ForestSlots;
   /** The knobs as the life follows them, rewritten in place each frame; the hour they set. */
   readonly #knobs: ForestKnobs = {
     spirits: 0.5,
@@ -58,7 +53,7 @@ class ForestSim implements SceneSim {
   constructor(gl: WebGL2RenderingContext, params: readonly ParamDef[]) {
     const index = (key: KnobKey): number => {
       const at = params.findIndex((def) => def.key === key);
-      if (at < 0) throw new ForestSimError(`forest: the scene has no '${key}' knob`);
+      if (at < 0) throw new ForestSimError(`kodama: the scene has no '${key}' knob`);
       return at;
     };
     this.#knobIndex = {
@@ -68,14 +63,15 @@ class ForestSim implements SceneSim {
       spores: index("spores"),
       wind: index("wind"),
       time: index("time"),
-      forestSeed: index("forestSeed"),
+      seed: index("seed"),
     };
-    this.#beingTexture = new DataTexture(gl, {
-      width: 3,
-      height: FOREST_SPIRITS + 1,
-      format: "rgba16f",
-      filter: "nearest",
-    });
+    const slot = (key: string): number => params.find((def) => def.key === key)?.trigger ?? -1;
+    this.#slots = {
+      gather: slot("spirits"),
+      stag: slot("stag"),
+      mark: slot("shrineMark"),
+      spores: slot("spores"),
+    };
     // Sized to the life's mote bins before each upload.
     this.#moteTexture = new DataTexture(gl, {
       width: 1,
@@ -88,14 +84,9 @@ class ForestSim implements SceneSim {
       height: FOREST_FOG.height,
       format: "r16f",
     });
-    this.#textures = [
-      this.#beingTexture.texture,
-      this.#moteTexture.texture,
-      this.#fogTexture.texture,
-    ];
   }
 
-  frame(frame: SimFrame): readonly (WebGLTexture | undefined)[] {
+  frame(frame: LayerFrame): void {
     const aspect = frame.aspect > 0 ? frame.aspect : 16 / 9;
     const knobs = this.#read(frame);
     let life = this.#life;
@@ -104,21 +95,24 @@ class ForestSim implements SceneSim {
       // Warmed up on the build worker; nothing of the life shows until it lands.
       this.#warming.request(String(knobs.seed), { aspect, knobs: { ...knobs } });
       const landed = this.#warming.advance(frame.budget);
-      if (landed === undefined) return NO_TEXTURES;
+      if (landed === undefined) return;
       life = new ForestLife(landed.result);
       this.#life = life;
+      const [motes, fog] = frame.fields;
+      if (motes !== undefined) motes.texture = this.#moteTexture.texture;
+      if (fog !== undefined) fog.texture = this.#fogTexture.texture;
     }
     life.follow(knobs);
     if (aspect !== life.aspect) life.resize(aspect);
     if (landing) life.arrive(frame.passage.enter);
-    if (life.frame(frame, aspect)) {
+    if (life.frame(frame, aspect, this.#slots)) {
       const cols = 2 * life.moteCols;
       if (this.#moteTexture.width !== cols) this.#moteTexture.resize(cols, FOREST_MOTE_ROWS);
-      this.#beingTexture.upload(life.beingData);
+      frame.records.data.set(life.beingData);
+      frame.records.touch();
       this.#moteTexture.upload(life.moteData);
       this.#fogTexture.upload(life.fogData);
     }
-    return this.#textures;
   }
 
   /** Ready once the life has been warmed up (on the build worker). */
@@ -128,13 +122,12 @@ class ForestSim implements SceneSim {
 
   dispose(): void {
     this.#warming.dispose();
-    this.#beingTexture.dispose();
     this.#moteTexture.dispose();
     this.#fogTexture.dispose();
   }
 
   /** The knobs as the frame has them (written in place), with the dark of the sky at their hour. */
-  #read(frame: SimFrame): ForestKnobs {
+  #read(frame: LayerFrame): ForestKnobs {
     const values = frame.values;
     const index = this.#knobIndex;
     const knobs = this.#knobs;
@@ -144,14 +137,14 @@ class ForestSim implements SceneSim {
     knobs.spores = values[index.spores] ?? knobs.spores;
     knobs.wind = values[index.wind] ?? knobs.wind;
     this.#time = values[index.time] ?? this.#time;
-    // The dark of the shader's sky (src/world-clock.ts): none once the sun is ~12 degrees up.
+    // The dark of the World's sky (src/world-clock.ts): none once the sun is ~12 degrees up.
     knobs.dark = 1 - skyNow({ time: this.#time, days: frame.phases?.["cycle"] ?? 0 }).day;
-    knobs.seed = Math.round(values[index.forestSeed] ?? 0);
+    knobs.seed = Math.round(values[index.seed] ?? 0);
     return knobs;
   }
 }
 
-/** The forest's simulation for a scene whose knobs are `params` (looked up by key). */
-export function forestSim(params: readonly ParamDef[]): SimFactory {
-  return (gl) => new ForestSim(gl, params);
+/** The kodama's sim, given the composed scene's knobs (its own under their short keys). */
+export function kodamaSim(gl: WebGL2RenderingContext, params: readonly ParamDef[]): LayerSim {
+  return new KodamaSim(gl, params);
 }

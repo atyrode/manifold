@@ -193,8 +193,8 @@ export const presets: readonly Preset[] = [
   },
   {
     name: "Fireflies · riverbank glow",
-    commit: "f1ca6557",
-    query: "scene=fireflies&density=0.8&habitat=1",
+    commit: "PENDING",
+    query: "scene=fireflies&habitat=1&density=0.8",
     savedAt: "2026-10-15",
   },
   {
@@ -271,14 +271,14 @@ export const presets: readonly Preset[] = [
   },
   {
     name: "Mystic forest · shy kodama",
-    commit: "f1ca6557",
-    query: "scene=forest&shy=1&time=0.78",
+    commit: "PENDING",
+    query: "scene=forest&time=0.78&shy=1",
     savedAt: "2026-10-15",
   },
   {
     name: "Frozen lake · fresh powder under the moon",
-    commit: "f1ca6557",
-    query: "scene=lake&cover=0.5&fresh=1&moon-amount=1",
+    commit: "PENDING",
+    query: "scene=lake&moon-amount=1&cover=0.5&fresh=1",
     savedAt: "2026-10-15",
   },
   {
@@ -313,9 +313,9 @@ export const presets: readonly Preset[] = [
   },
   {
     name: "Frozen lake · breezy fjord",
-    commit: "54e534c8",
+    commit: "PENDING",
     query:
-      "scene=lake&setting=1&ripples=0.35&aurora-amount=0.7&drapes=1&substorm=0&hour=1&moon-amount=0.25&milkyWay=0&wind=0.45",
+      "scene=lake&milkyWay=0&moon-amount=0.25&aurora-amount=0.7&wind=0.45&setting=1&hour=1&drapes=1&substorm=0&ripples=0.35",
     savedAt: "2026-10-17",
   },
   {

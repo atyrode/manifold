@@ -281,7 +281,8 @@ export interface SceneDef {
    * The planets its night sky can hang among its stars (src/scenes/planets.ts, drawn by the sky's
    * skyGiant, which the scene calls): an open list, empty to start, under one URL key, edited in the
    * Night sky section of this group, placed on a pad over this stretch of its sky. The list is
-   * compiled in only while it holds a planet (the library gate SKY_PLANETS).
+   * compiled in only while it holds a planet (the library gate SKY_PLANETS), and only the kinds,
+   * palettes and dress its planets have (their gates, PlanetUniforms.gates).
    */
   planets?: SkyPlanets;
 }

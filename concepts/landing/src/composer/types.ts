@@ -277,6 +277,12 @@ export interface Grade {
   readonly moonlight?: number;
   readonly exposure?: number;
   readonly vignette?: number;
+  /**
+   * The vignette's reach where it is a circle across the frame's width as well as its height (the
+   * campfire's): `scale` units a screen height, darkening from `from` to `to` units out. Unset, an
+   * oval of the frame's height.
+   */
+  readonly vignetteRound?: { readonly from: number; readonly to: number; readonly scale: number };
   readonly ink: { readonly gain: number; readonly gamma: number };
 }
 

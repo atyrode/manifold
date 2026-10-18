@@ -8,7 +8,7 @@ import { feature, type Blurb, type ParamDef } from "../params.ts";
 import { birdKnobs, birdsGroup, type BirdOptions } from "../shaders/lib/birds.ts";
 import { CLOUD_TIERS } from "../shaders/lib/clouds.ts";
 import { WORLD_BIRD_HOURS } from "../shaders/lib/world.ts";
-import { SUNRISE, SUNSET } from "../world-clock.ts";
+import { skyState, SUNRISE, SUNSET, timeOfDay } from "../world-clock.ts";
 import {
   skyKnobs,
   skyRecipes,
@@ -30,6 +30,13 @@ export const WORLD_DEFAULTS = {
   /** K_cumulus: the painted cumulus towers, off; their size once switched on. */
   cumulus: { on: false, value: 0.55 },
 } as const;
+
+/**
+ * The sun's elevation (the sine, skyState's sun.y) at or below which WORLD_DAYLIGHT goes off: skyAt's
+ * night is whole from -0.26 down (its day and sunColor 0 from -0.02 and -0.035), less a margin for
+ * the shader's single precision.
+ */
+const WORLD_DEEP_NIGHT = -0.27;
 
 export interface WorldOptions {
   /** Starting time of day, 0..1: 0 midnight, 0.25 sunrise, 0.5 noon, 0.75 sunset. */
@@ -146,6 +153,13 @@ export const worldGroups: Readonly<Record<"sky" | "weather" | "birds", Blurb>> =
  * sets the scene's climate (`climate`: climate.ts hasClimate, a season and a snow knob), its rain may
  * fall as snow (worldAt), so WORLD_SNOW holds with the rain too. SKY_MOON_PHASE while the moon is off
  * or short of full or past it (a full moon is the sky library's own).
+ *
+ * What a setting settles before its program runs, each gate on where it does not: the shower's and
+ * the storm's own events while their knobs are on (WORLD_METEOR_RATE, WORLD_LIGHTNING_RATE; off, the
+ * "now" buttons' alone), the moon's phase while there is a moon (WORLD_MOON: off at K_moon 0 or 2),
+ * and the sun's light (WORLD_DAYLIGHT: off with the day cycle off at an hour whose sun stands below
+ * WORLD_DEEP_NIGHT on the undated sky, so that its night is exactly 1, its day and sunColor exactly
+ * 0; on wherever the season dates the sky). Each draws what the runtime path draws there, exactly.
  */
 export function worldFeatures(
   values: Readonly<Record<string, number>>,
@@ -156,12 +170,15 @@ export function worldFeatures(
   const cycle = on("cycle") === 1;
   const night = cycle || time < SUNRISE || time > SUNSET ? 1 : 0;
   const day = cycle || (time > WORLD_BIRD_HOURS[0] && time < WORLD_BIRD_HOURS[3]) ? 1 : 0;
+  const daylight = cycle || climate || skyState(timeOfDay(time, 0)).sun[1] > WORLD_DEEP_NIGHT;
+  const moon = values["moon"] ?? 1;
   const clouds = Math.max(on("clouds"), on("rain"), on("snow"));
   const shadows = clouds * on("shadows");
   return {
     WORLD_STARS: night * on("stars"),
     WORLD_MILKYWAY: night * on("stars") * on("milkyWay"),
     WORLD_METEORS: night,
+    WORLD_METEOR_RATE: on("meteors"),
     WORLD_AURORA: night * on("aurora"),
     WORLD_CLOUDS: clouds,
     WORLD_SHADOWS: shadows,
@@ -172,7 +189,10 @@ export function worldFeatures(
     WORLD_SNOW: climate ? Math.max(on("snow"), on("rain")) : on("snow"),
     WORLD_FOG: on("fog"),
     WORLD_LIGHTNING: 1,
-    ...((values["moon"] ?? 1) !== 1 ? { SKY_MOON_PHASE: 1 } : {}),
+    WORLD_LIGHTNING_RATE: on("lightning"),
+    WORLD_MOON: moon > 0 && moon < 2 ? 1 : 0,
+    WORLD_DAYLIGHT: daylight ? 1 : 0,
+    ...(moon !== 1 ? { SKY_MOON_PHASE: 1 } : {}),
   };
 }
 
@@ -194,6 +214,8 @@ export const WORLD_ALL = worldFeatures({
   rain: 1,
   snow: 1,
   fog: 1,
+  meteors: 1,
+  lightning: 1,
   moon: 0.5,
 });
 
@@ -201,6 +223,7 @@ export const WORLD_ALL = worldFeatures({
 const WORLD_GATED = [
   "stars",
   "milkyWay",
+  "meteors",
   "aurora",
   "clouds",
   "shadows",
@@ -209,22 +232,23 @@ const WORLD_GATED = [
   "rain",
   "snow",
   "fog",
+  "lightning",
 ] as const;
 
 /**
  * The world's gates for a scene that draws through the world with sky and weather knobs of its own
  * (skyKnobs, weatherKnobs rather than worldKnobs) and compiles in, at every setting, each part its
  * knobs can show (SceneDef.features, no featuresFor): worldFeatures with every gated knob it has on
- * and the day cycle on, so the night's parts are in; lightning only with a lightning knob, the moon's
- * phase only with a moon knob. A part whose knob is off draws its neutral value by its runtime test;
- * one whose knob the scene lacks stays out. Set a part the scene draws its own way to 0 over it (its
- * own birds: WORLD_BIRDS).
+ * and the day cycle on, so the night's parts and the sun's light are in; lightning only with a
+ * lightning knob, the moon's phase (a moon in it: K_moon 0.5) only with a moon knob. A part whose knob
+ * is off draws its neutral value by its runtime test; one whose knob the scene lacks stays out. Set a
+ * part the scene draws its own way to 0 over it (its own birds: WORLD_BIRDS).
  */
 export function worldGates(params: readonly ParamDef[]): Record<string, number> {
   const keys = new Set(params.map((def) => def.key));
   const on = Object.fromEntries(WORLD_GATED.filter((key) => keys.has(key)).map((key) => [key, 1]));
   return {
-    ...worldFeatures({ ...on, cycle: 1, moon: keys.has("moon") ? 0 : 1 }, hasClimate(params)),
+    ...worldFeatures({ ...on, cycle: 1, moon: keys.has("moon") ? 0.5 : 1 }, hasClimate(params)),
     WORLD_LIGHTNING: keys.has("lightning") ? 1 : 0,
   };
 }

@@ -1,6 +1,8 @@
 import { expect, test } from "bun:test";
 import { effective } from "../params.ts";
+import { worldGlsl } from "../shaders/lib/world.ts";
 import { skyComponentKnobs, skyKnobs } from "./atmosphere.ts";
+import { openingPlanets } from "./planets.ts";
 import { loadScenes, sceneDefs } from "./index.ts";
 
 const scenes = await loadScenes();
@@ -31,28 +33,19 @@ test("constellations: off by default, in the stars' group, a night part, star-jo
   ]);
 });
 
-test("campfire's giant keeps its own keys and defaults, and no part of the night sky", () => {
-  const params = sceneDefs.campfire.params;
-  const planet = params.find((knob) => knob.key === "planet");
-  if (planet?.kind !== "feature") throw new Error("campfire lacks its planet");
-  expect([planet.group, planet.on, planet.value, planet.min, planet.max]).toEqual([
-    "planet",
-    true,
-    0.55,
-    0.2,
-    1,
-  ]);
-  expect(planet.widget).toBeUndefined();
-  expect(params.filter((knob) => knob.key.startsWith("planet")).map((knob) => knob.key)).toEqual([
-    "planet",
-    "planetAurora",
-    "planetAuroraSize",
-    "planetLights",
-    "planetLightsTwinkle",
-    "planetDaycycle",
-    "planetMoons",
-    "planetEclipses",
-  ]);
+test("campfire opens with its giant as the first of the World's planets, and no giant's knobs", () => {
+  const scene = sceneDefs.campfire;
+  const spec = scene.planets;
+  if (spec === undefined) throw new Error("campfire takes no planets");
+  const [giant, ...rest] = openingPlanets(spec);
+  expect(rest).toEqual([]);
+  // The banded giant with its thin ring, in its first palette, still among the stars, lit from the
+  // upper left: the planet the campfire composed itself before it took the World's.
+  const look = ["kind", "ring", "palette", "orbit", "phases"].map((key) => giant?.[key]);
+  expect(look).toEqual([0, 1, 0, 0, 0]);
+  expect([giant?.["across"], giant?.["up"]]).toEqual([spec.across[1], spec.up[1]]);
+  const giantKnobs = scene.params.filter((knob) => knob.key.startsWith("planet"));
+  expect(giantKnobs.map((knob) => knob.key)).toEqual([]);
 });
 
 test("every scene whose stars skyStars draws has the constellations, and no other scene has them", () => {
@@ -70,8 +63,13 @@ test("every scene whose stars skyStars draws has the constellations, and no othe
 
 test("every scene that hangs planets in its sky takes them, keeps no giant's knobs and composes no planet of its own", () => {
   for (const { id, ...scene } of scenes) {
-    // skyGiant: the scene's own call, or the world's sky's (worldGlsl is in the scene's GLSL).
-    const draws = scene.glsl.includes("skyGiant(");
+    // skyGiant: the scene's own call, or the World's sky's where the scene draws it (worldSky). The
+    // World's library (worldGlsl) is left out: a composed scene carries it whole, its worldSky and
+    // worldMirrorSky calling skyGiant whether the scene draws them or not, as the composer's mirror
+    // falls back on worldMirrorSky whether a ground calls it or not. The garden draws neither: its
+    // horizon is the frame's top edge, its top band the haze below it.
+    const own = scene.glsl.replace(worldGlsl, "");
+    const draws = own.includes("skyGiant(") || own.includes("worldSky(");
     expect({ id, takes: scene.planets !== undefined }).toEqual({ id, takes: draws });
     if (!draws) continue;
     expect(

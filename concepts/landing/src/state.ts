@@ -22,7 +22,9 @@ import { sceneDefs, sceneIds, type SceneId } from "./scenes/index.ts";
 import {
   decodePlanets,
   encodePlanets,
+  openingPlanets,
   PLANETS_KEY,
+  planetsChanged,
   planetUniforms,
   type SkyPlanet,
 } from "./scenes/planets.ts";
@@ -214,11 +216,14 @@ export function readParams(scene: SceneId, query: URLSearchParams): Params {
 }
 
 /**
- * The scene's planets (none for a scene without SceneDef.planets), from its PLANETS_KEY in a query.
+ * The scene's planets (none for a scene without SceneDef.planets), from its PLANETS_KEY in a query:
+ * without the key, the ones the scene opens with (SkyPlanets.defaults); `planets=` holds none.
  */
 export function readPlanets(scene: SceneId, query: URLSearchParams): SkyPlanet[] {
   const spec = sceneDefs[scene].planets;
-  return spec === undefined ? [] : decodePlanets(spec, query.get(PLANETS_KEY) ?? "");
+  if (spec === undefined) return [];
+  const value = query.get(PLANETS_KEY);
+  return value === null ? openingPlanets(spec) : decodePlanets(spec, value);
 }
 
 /** Each knob's default, keyed as readParams keys them. */
@@ -258,8 +263,8 @@ export function readSetup(query: URLSearchParams): LinkSetup {
 }
 
 /**
- * Minimal query: only values that differ from their defaults, the scene's planets (when it has any)
- * last, packed under PLANETS_KEY.
+ * Minimal query: only values that differ from their defaults, the scene's planets (when they differ
+ * from the ones it opens with; `planets=` for none) last, packed under PLANETS_KEY.
  */
 export function serialise(
   state: LabState,
@@ -278,15 +283,16 @@ export function serialise(
     if (value !== fallback[key]) q.set(key, String(value));
   }
   const spec = sceneDefs[state.scene].planets;
-  if (spec !== undefined && planets.length > 0) q.set(PLANETS_KEY, encodePlanets(spec, planets));
+  if (spec !== undefined && planetsChanged(spec, planets))
+    q.set(PLANETS_KEY, encodePlanets(spec, planets));
   return q;
 }
 
-/** What the renderer draws for a setup; a sky without planets unless `planets` names some. */
+/** What the renderer draws for a setup; the scene's sky as it opens unless `planets` names others. */
 export function renderSettings(
   state: LabState,
   params: Params,
-  planets: readonly SkyPlanet[] = [],
+  planets: readonly SkyPlanet[] = readPlanets(state.scene, new URLSearchParams()),
 ): RenderSettings {
   const colours = palette(state, params);
   return {

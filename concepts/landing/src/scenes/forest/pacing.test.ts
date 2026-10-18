@@ -1,12 +1,19 @@
 import { expect, test } from "bun:test";
+import { allocate } from "../../composer/sim.ts";
 import { HeadlessSim, type HeadlessUpload } from "../../sims/headless.ts";
 import { loadScene } from "../index.ts";
+import { forestComposed } from "./index.ts";
 
 const forestScene = await loadScene("forest");
 
+/** The kodama's mote field's slot in the preset's program. */
+const MOTES =
+  allocate(forestComposed.place(new Set(forestComposed.preset.layers)).layers.map((p) => p.layer))
+    .fields["kodama"]?.[0] ?? 2;
+
 const KNOBS = { spores: 1, wind: 0.8 };
 
-/** Every mote drawn (bin units: x across from the left edge, y up; glow), from uSim1's two slots per bin. */
+/** Every mote drawn (bin units: x across from the left edge, y up; glow), from the field's two slots per bin. */
 function motes(upload: HeadlessUpload): { x: number; y: number; glow: number }[] {
   const out: { x: number; y: number; glow: number }[] = [];
   const data = upload.data;
@@ -27,7 +34,7 @@ function second(rate: number): { x: number; y: number; glow: number }[] {
   const sim = new HeadlessSim(forestScene);
   for (let f = 0; f < rate; f++)
     sim.step({ dt: 1 / rate, knobs: KNOBS, pointer: { inside: false } });
-  const drawn = motes(sim.upload(1));
+  const drawn = motes(sim.upload(MOTES));
   sim.dispose();
   return drawn;
 }

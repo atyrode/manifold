@@ -1,4 +1,7 @@
-// Fireflies that fall into step: a mangrove bank at night where every firefly is an oscillator.
+// Fireflies that fall into step: a mangrove bank at night where every firefly is an oscillator. Two
+// layer sims of the outdoor composer (layers.ts): the mangroves' (MangrovesSim: the bank, its trees
+// and the breeze crossing it, lent to the swarm as a MangroveBank) and the swarm's (FireflySwarmSim:
+// the fireflies, the lights nearer than the bank, the lantern, the M).
 //
 // The model. Each firefly keeps a phase φ (in cycles) that runs at its own natural rate, a few
 // percent either side of the flash-period knob, and flashes as φ wraps through 0: a smooth envelope,
@@ -32,7 +35,9 @@
 // Disturbances: the pointer's lantern (fireflies near a light lose the beat, and right beside it
 // stop flashing, as real ones do under a street lamp), a click (the lantern flares and scatters the
 // phases around it), and a breeze that now and then crosses the bank, detuning every firefly it
-// passes; behind it the forest falls into step again. The Manifold M: the fireflies along its
+// passes; behind it the forest falls into step again. The breeze is the composer's gusts (on, their
+// strength and how often, their "now"), a front of its own crossing the bank, run by the mangroves'
+// sim; a breeze waits for the M and the M for a breeze. The Manifold M: the fireflies along its
 // strokes gather onto them and lock half a cycle away from the forest, so the M flashes alone in
 // the dark between the pulses for a few beats, then lets go.
 //
@@ -45,28 +50,35 @@
 //
 // Time: the swarm steps STEP at a time on a FixedStep (sims/clock.ts), so a seed falls into step
 // the same at 60 and at 144 Hz, and is drawn between its last two steps (phases the short way
-// round), as the lantern is between its own.
+// round), as the lantern is between its own. The mangroves keep a clock of their own on the same
+// step for the breeze and the trees' sway.
 //
 // Units: x in screen heights from the middle of the view, y in uv height (0 bottom, 1 top).
 //
-// Textures:
-//   uSim0  rgba16f, cols × FIREFLIES_ROWS (row 0 at the waterline), linear: R, G the firefly's place
-//          in its cell (0.06..0.94, read with texelFetch; R = -1: no firefly in this cell, G negative:
-//          it is drawing the M); B its light (flash × its own brightness); A its soft halo, the
-//          light of the 3×3 cells around it over 9 (sampled smoothly, it glows through the crowns).
-//   uSim1  rgba16f, cols·FIREFLIES_PROFILE_RES × 2, linear: the far bank. Row 0: canopy top, canopy
-//          underside (uv heights), crown tone 0..1, 0. Row 1: R trunk 0..1. While the crowns sway it
-//          is the bank's profile with every crown where its stem carries it.
-//   uSim2  rgba16f, (FIREFLIES_NEAR + 2) × 1, nearest: the lights nearer than the bank (x, y on
-//          screen, distance in metres, negative for a drifter left out, flash): FIREFLIES_DRIFTERS
-//          drifters, then the out-of-focus ones; then the lantern (x, y, shown, flare) and the bank
-//          (mean flash, breeze front x, breeze on 0/1, M strength 0..1).
-//   uSim3  rgba16f PlantTexture (sims/plants.ts) of the prop roots, after one row of its own whose
-//          first texel is (first root bin, bins, 0, 0): bin k's left root at record 2 (k - first),
-//          its right root at the next (tier 0: none); a and the record's bend give each its turn.
+// Textures (the composer's slots, LayerFrame.records and .fields):
+//   mangroves row 0     texel 0: the breeze front's x, breeze on 0/1, its strength (1 at the
+//                       composer's default gusts), 0.
+//   mangroves field 0   rgba16f, cols·FIREFLIES_PROFILE_RES × 2, linear: the far bank. Row 0: canopy
+//                       top, canopy underside (uv heights), crown tone 0..1, 0. Row 1: R trunk 0..1.
+//                       While the crowns sway it is the bank's profile with every crown where its
+//                       stem carries it.
+//   mangroves field 1   rgba16f PlantTexture (sims/plants.ts) of the prop roots, after one row of its
+//                       own whose first texel is (first root bin, bins, 0, 0): bin k's left root at
+//                       record 2 (k - first), its right root at the next (tier 0: none); a and the
+//                       record's bend give each its turn.
+//   fireflySwarm field 0  rgba16f, cols × FIREFLIES_ROWS (row 0 at the waterline), linear: R, G the
+//                       firefly's place in its cell (0.06..0.94, read with texelFetch; R = -1: no
+//                       firefly in this cell, G negative: it is drawing the M); B its light (flash ×
+//                       its own brightness); A its soft halo, the light of the 3×3 cells around it
+//                       over 9 (sampled smoothly, it glows through the crowns).
+//   fireflySwarm row 0  FIREFLIES_NEAR + 2 texels: the lights nearer than the bank (x, y on screen,
+//                       distance in metres, negative for a drifter left out, flash): FIREFLIES_DRIFTERS
+//                       drifters, then the out-of-focus ones; then the lantern (x, y, shown, flare)
+//                       and the bank (mean flash, 0, 0, M strength 0..1).
+import type { LayerFrame, LayerSim } from "../../composer/types.ts";
 import { markVertex } from "../../mark.ts";
 import { KnobReader, type ParamDef } from "../../params.ts";
-import { LevelCamera } from "../../sims/camera.ts";
+import type { LevelCamera } from "../../sims/camera.ts";
 import { FixedStep, runBudgeted } from "../../sims/clock.ts";
 import { approach, clamp, easeFactor, glslHash12, smoothstep } from "../../sims/math.ts";
 import {
@@ -81,44 +93,18 @@ import {
 import { mulberry32 } from "../../sims/random.ts";
 import { springStep, type Spring } from "../../sims/spring.ts";
 import { DataTexture } from "../../sims/texture.ts";
-import type { PrincipalState, SceneSim, SimFactory, SimFrame } from "../types.ts";
-
-/** Lattice pitch in screen heights: one firefly per square cell (5–6 dither cells at 540 rows). */
-export const FIREFLIES_CELL = 0.01;
-/** The far bank's waterline, in uv height. */
-export const FIREFLIES_WATER = 0.34;
-/** Lattice rows, from the waterline to the top of the frame. */
-export const FIREFLIES_ROWS = Math.ceil((1 - FIREFLIES_WATER) / FIREFLIES_CELL);
-/** Forest profile texels per lattice column. */
-export const FIREFLIES_PROFILE_RES = 4;
-/**
- * Lights nearer than the bank, one uSim2 texel each: first FIREFLIES_DRIFTERS fireflies drifting
- * low over the river, then out-of-focus ones close to us (the `near` knob shows some of those).
- */
-export const FIREFLIES_NEAR = 16;
-export const FIREFLIES_DRIFTERS = 10;
-/**
- * The camera, for the foreground fireflies: eye height above the river (m), focal length (screen
- * heights per unit of slope), the far bank's distance (m) and the aperture that blurs whatever is
- * nearer into a disc of radius APERTURE · FOCAL · (1/z − 1/BANK) screen heights.
- */
-export const FIREFLIES_EYE = 1.2;
-export const FIREFLIES_FOCAL = 1.2;
-export const FIREFLIES_BANK = 60;
-export const FIREFLIES_APERTURE = 0.15;
-/** The true horizon, hidden behind the far bank: where the river would meet the sky. */
-export const FIREFLIES_HORIZON =
-  FIREFLIES_WATER + (FIREFLIES_EYE / FIREFLIES_BANK) * FIREFLIES_FOCAL;
-/** uSim2 texels: the foreground fireflies, then the lantern and the bank. */
-export const FIREFLIES_STATE_LANTERN = FIREFLIES_NEAR;
-export const FIREFLIES_STATE_BANK = FIREFLIES_NEAR + 1;
-const STATE_TEXELS = FIREFLIES_NEAR + 2;
-/** The eye the lights nearer than the bank move about in front of (sims/camera.ts). */
-const CAMERA = new LevelCamera({
-  horizon: FIREFLIES_HORIZON,
-  eye: FIREFLIES_EYE,
-  focal: FIREFLIES_FOCAL,
-});
+import type { PrincipalState, SimFrame } from "../types.ts";
+import {
+  FIREFLIES_CELL,
+  FIREFLIES_DRIFTERS,
+  FIREFLIES_NEAR,
+  FIREFLIES_PROFILE_RES,
+  FIREFLIES_ROOT_PITCH,
+  FIREFLIES_ROWS,
+  FIREFLIES_STATE_BANK,
+  FIREFLIES_STATE_LANTERN,
+  FIREFLIES_WATER,
+} from "./constants.ts";
 
 const TAU = Math.PI * 2;
 /** Widest frame aspect the lattice grows for; wider frames repeat the edge columns. */
@@ -236,8 +222,6 @@ const OPEN_GRAND = 0.12;
 const OPEN_GAPS = 0.6;
 
 // The trees as rooted plants.
-/** The prop roots' lattice (screen heights): an apex now and then in each bin, as the shader always hashed them. */
-export const FIREFLIES_ROOT_PITCH = 0.012;
 /** Bins either side of the lattice's span: a root reaches at most 2.4 pitches from its own. */
 const ROOT_MARGIN = 3;
 /** How far a root goes on below the waterline, so its foot stays in the water as it gives. */
@@ -376,13 +360,10 @@ type KnobKey =
   | "coupling"
   | "unison"
   | "density"
-  | "habitat"
-  | "period"
-  | "drift"
-  | "unrest"
-  | "lantern"
-  | "mark"
-  | "seed";
+  | "fireflySwarmPeriod"
+  | "fireflySwarmDrift"
+  | "fireflySwarmLantern"
+  | "fireflySwarmMark";
 
 interface Knobs {
   coupling: number;
@@ -390,17 +371,12 @@ interface Knobs {
   unison: number;
   density: number;
   period: number;
-  /** The open bank (habitat 1) instead of the dense crowns. */
-  open: boolean;
   drift: number;
-  /** Breeze frequency 0..1; 0 while the breeze is off. */
-  unrest: number;
   lantern: boolean;
   /** Beats the M holds; 0 while it is off. */
   mark: number;
   /** Beats a triggered M holds (the feature's amount, even while it is off). */
   markNow: number;
-  seed: number;
 }
 
 /** One rounded clump of a crown, and the tree it belongs to. */
@@ -812,47 +788,61 @@ function layRoots(
   return { first, bins: last - first + 1 };
 }
 
-class FirefliesSim implements SceneSim {
-  readonly #swarmTexture: DataTexture;
-  readonly #forestTexture: DataTexture;
-  readonly #stateTexture: DataTexture;
-  readonly #state = new Float32Array(4 * STATE_TEXELS);
-  readonly #reader: KnobReader<KnobKey>;
-  /** The trigger slots of the breeze's and the M's "now". */
+/** The breeze's strength the scene was drawn at: the composer's gusts at their default. */
+const BREEZE_AT = 0.7;
+
+/**
+ * The far bank as the mangroves' sim lays it out over the lattice, lent to the swarm (its
+ * affordances, LayerFrame.host): the seed it was grown for, whether the open bank is on show, the
+ * lattice's columns, the profiles over them (the dense crowns', which set how many fireflies live,
+ * and the bank on show's) and its trees; and the breeze crossing it: whether one is, its front
+ * (screen heights from the middle) now and a step before, the way it blows, how many have come (the
+ * salt of each one's detuning) and its strength (1 at the composer's default gusts).
+ */
+export class MangroveBank {
+  seed = Number.NaN;
+  open = false;
+  cols = 0;
+  crowns: Profile = emptyProfile;
+  shown: Profile = emptyProfile;
+  trees: readonly Tree[] = [];
+  breeze = false;
+  front = 0;
+  frontWas = 0;
+  dir = 1;
+  gusts = 0;
+  strength = 1;
+}
+
+/** What the swarm lends the mangroves (LayerFrame.host): whether its M is under way, which a breeze waits for. */
+export class SwarmState {
+  marking = false;
+}
+
+/**
+ * The mangroves' sim: the bank for the seed and the habitat knob over the lattice's span, its trees
+ * as rooted plants (field 0 the profile, field 1 the prop roots), the breeze (the composer's gusts)
+ * crossing it and their sway in it (its row of the atlas: the breeze for the creek's catspaw).
+ */
+class MangrovesSim implements LayerSim {
+  readonly affordances = new MangroveBank();
+  readonly #reader: KnobReader<"habitat" | "seed" | "gusts" | "gustRate">;
+  /** The gusts' "now" slot: a breeze at once. */
   readonly #breezeSlot: number;
-  readonly #markSlot: number;
-  readonly #textures: (WebGLTexture | undefined)[] = [undefined, undefined, undefined, undefined];
-  /** One prewarm step, as runBudgeted calls it. */
-  readonly #warmStep = (): void => this.#step(PREWARM_STEP, this.#knobs);
-  #warmed = 0;
+  readonly #forestTexture: DataTexture;
+  /** The mangroves' own clock, on the swarm's step: scene seconds times motion. */
   readonly #steps = new FixedStep(STEP, MAX_STEPS);
-  readonly #knobs: Knobs = {
-    coupling: 0.5,
-    unison: 0,
-    density: 0.7,
-    period: 3,
-    open: false,
-    drift: 0.35,
-    unrest: 0,
-    lantern: true,
-    mark: 0,
-    markNow: 5,
-    seed: 0,
-  };
-  readonly #nearest = new Float64Array(2);
+  #clock = 0;
+  #aspect = 16 / 9;
+  #nextBreeze = Number.POSITIVE_INFINITY;
+  #breezeNow = false;
 
   // The banks, grown once per seed: the dense crowns, and the open bank.
-  #seed = -1;
   #crowns: Bank = { lumps: [], trees: [] };
   #openBank: Bank = { lumps: [], trees: [] };
-  /** The lattice is laid out on the open bank (the habitat knob, as last fitted). */
-  #open = false;
-  /** The profiles over the lattice: the bank on show, and the dense crowns', which set how many live. */
-  #shown: Profile = emptyProfile;
-  #crownProfile: Profile = emptyProfile;
 
-  // The bank's trees as rooted plants: stems, crown clumps and prop roots (uSim3), and the profile
-  // with the crowns where their stems carry them while they sway.
+  // The bank's trees as rooted plants: stems, crown clumps and prop roots (field 1), and the profile
+  // with the crowns where their stems carry them while they sway (field 0).
   readonly #trees = new RootedPlants(TREE_ORGANS, 0);
   readonly #roots: PlantTexture;
   readonly #treeClimate = plantClimate();
@@ -872,6 +862,254 @@ class FirefliesSim implements SceneSim {
   #swaying = 0;
   /** Dither cells per screen height the roots' tiers were set for. */
   #treeCells = 0;
+
+  constructor(gl: WebGL2RenderingContext, params: readonly ParamDef[]) {
+    this.#reader = new KnobReader("mangroves", params, ["habitat", "seed", "gusts", "gustRate"]);
+    this.#breezeSlot = this.#reader.trigger("gusts");
+    this.#forestTexture = new DataTexture(gl, { width: 1, height: 2, format: "rgba16f" });
+    this.#roots = new PlantTexture(gl, ROOT_RECORDS, { rowBase: 1 });
+    // The breeze is the trees' only air: a front crossing the bank, pushing downwind.
+    this.#treeClimate.wind = (x, _y, out) => {
+      const bank = this.affordances;
+      if (!bank.breeze) return;
+      const u = (x - bank.front) / BREEZE_WIDTH;
+      out[0] = bank.dir * BREEZE_PUSH * bank.strength * Math.exp(-u * u);
+    };
+  }
+
+  frame(frame: LayerFrame): void {
+    const bank = this.affordances;
+    if (frame.aspect > 0) this.#aspect = frame.aspect;
+    const seed = Math.round(this.#reader.value(frame, "seed"));
+    const open = this.#reader.value(frame, "habitat") > 0.5;
+    const dt = Math.max(0, frame.dt);
+    const cells = frame.height > 0 ? frame.height : this.#treeCells;
+    const retier = cells !== this.#treeCells;
+    this.#treeCells = cells;
+    this.#trees.cells = cells;
+    if (seed !== bank.seed) this.#grow(seed, open);
+    else this.#fit(open);
+    if (retier) {
+      // The roots' tiers follow the frame's resolution.
+      this.#trees.pose();
+      this.#showTrees();
+    }
+
+    // The breeze: the composer's gusts, on at their strength (their "now" plays one at it even while
+    // they are off), as often as their frequency. It waits while the swarm's M is up, and runs on
+    // while motion is 0 once it has set out.
+    const reader = this.#reader;
+    bank.strength = reader.amount(frame, "gusts") / BREEZE_AT;
+    if (frame.fired[this.#breezeSlot] === true) this.#breezeNow = true;
+    const swarm = frame.host("fireflySwarm");
+    const marking = swarm instanceof SwarmState && swarm.marking;
+    this.#schedule(reader.value(frame, "gusts") > 0, reader.value(frame, "gustRate"), marking);
+    const passing = frame.passage.enter < 1 || frame.passage.exit > 0;
+    const busy = bank.breeze || marking || passing;
+    const advance = dt * (frame.motion > 0 ? frame.motion : busy ? 1 : 0);
+    for (let s = 0, n = this.#steps.advance(advance); s < n; s++) {
+      bank.frontWas = bank.front;
+      this.#clock += STEP;
+      this.#blow(STEP);
+    }
+    // The trees swing while a breeze crosses and for a while after (at the breeze's pace while
+    // motion is 0); then they stand exactly as laid out.
+    if (bank.breeze) this.#swaying = SWAY_SETTLE;
+    if (this.#swaying > 0 && dt > 0) this.#swayTrees(dt * (frame.motion > 0 ? frame.motion : 1));
+
+    // The breeze for the creek's catspaw, drawn between its last two steps.
+    const data = frame.records.data;
+    const front = bank.frontWas + (bank.front - bank.frontWas) * this.#steps.alpha;
+    const on = bank.breeze ? 1 : 0;
+    if (data[0] !== front || data[1] !== on || data[2] !== bank.strength) {
+      data[0] = front;
+      data[1] = on;
+      data[2] = bank.strength;
+      frame.records.touch();
+    }
+    const [profile, roots] = frame.fields;
+    if (profile !== undefined) profile.texture = this.#forestTexture.texture;
+    if (roots !== undefined) roots.texture = this.#roots.texture;
+  }
+
+  dispose(): void {
+    this.#forestTexture.dispose();
+    this.#roots.dispose();
+  }
+
+  /** A new seed: grow its banks, calm (its trees grow in #fit standing still). */
+  #grow(seed: number, open: boolean): void {
+    const bank = this.affordances;
+    bank.seed = seed;
+    this.#crowns = growForest(seed, false);
+    this.#openBank = growForest(seed, true);
+    bank.cols = 0;
+    bank.breeze = false;
+    bank.gusts = 0;
+    this.#swaying = 0;
+    this.#clock = 0;
+    this.#nextBreeze = Number.POSITIVE_INFINITY;
+    this.#fit(open);
+  }
+
+  /** Fit the bank to the frame's aspect (the lattice's columns) and the habitat knob's bank. */
+  #fit(open: boolean): void {
+    const bank = this.affordances;
+    const cols = Math.min(MAX_COLS, 2 * Math.ceil(this.#aspect / 2 / FIREFLIES_CELL + 1));
+    if (cols === bank.cols && open === bank.open) return;
+    bank.cols = cols;
+    bank.open = open;
+    this.#paintForest();
+  }
+
+  /** The bank on show and the dense crowns over the lattice's span; its trees grown on the one on show (fields 0 and 1). */
+  #paintForest(): void {
+    const bank = this.affordances;
+    bank.crowns = profileOf(this.#crowns, bank.cols, bank.seed);
+    bank.shown = bank.open ? profileOf(this.#openBank, bank.cols, bank.seed) : bank.crowns;
+    bank.trees = (bank.open ? this.#openBank : this.#crowns).trees;
+    this.#forestTexture.resize(bank.cols * FIREFLIES_PROFILE_RES, 2);
+    this.#growTrees();
+  }
+
+  /** The bank on show as rooted plants: a plant per tree, its roots in their bins over this lattice, at rest in the air now. */
+  #growTrees(): void {
+    const shown = this.affordances;
+    const bank = shown.open ? this.#openBank : this.#crowns;
+    const layout = this.#layout;
+    layout.bank = bank;
+    layout.lumpsOf = bank.trees.map(() => []);
+    layout.apexesOf = bank.trees.map(() => []);
+    layout.lumpOrgan = new Int32Array(bank.lumps.length).fill(-1);
+    bank.lumps.forEach((lump, l) => layout.lumpsOf[lump.tree]?.push(l));
+    const { first, bins } = layRoots(layout, shown.shown, shown.cols);
+    this.#rootFirst = first;
+    this.#rootBins = bins;
+    const trees = this.#trees;
+    trees.clear();
+    bank.trees.forEach((tree, t) => {
+      trees.add(
+        tree.trunk ? this.#species.sonneratia : this.#species.rhizophora,
+        { x: tree.x, y: FIREFLIES_WATER, heading: Math.PI / 2, moisture: 1, kind: t, slot: 0 },
+        NO_DRAWS,
+      );
+    });
+    this.#drawn = blankProfile(shown.cols * FIREFLIES_PROFILE_RES);
+    this.#centres = new Float64Array(2 * bank.lumps.length);
+    trees.settle(this.#treeClimate);
+    this.#showTrees();
+  }
+
+  /**
+   * The trees to the shader: the bank's profile (as laid out at rest, else with every crown clump
+   * where its stem carries it) and the roots' records.
+   */
+  #showTrees(): void {
+    const bank = this.affordances;
+    if (this.#swaying > 0) {
+      const lumps = this.#layout.bank.lumps;
+      const centres = this.#centres;
+      const point = this.#point;
+      for (let l = 0; l < lumps.length; l++) {
+        const organ = this.#layout.lumpOrgan[l] ?? -1;
+        if (organ >= 0) this.#trees.pointAt(organ, 1, point);
+        centres[2 * l] = organ >= 0 ? (point[0] ?? 0) : (lumps[l]?.x ?? 0);
+        centres[2 * l + 1] = organ >= 0 ? (point[1] ?? 0) : (lumps[l]?.y ?? 0);
+      }
+      paintProfile(this.#drawn, this.#layout.bank, bank.cols, bank.seed, centres);
+      this.#forestTexture.upload(this.#drawn.texels);
+    } else {
+      this.#forestTexture.upload(bank.shown.texels);
+    }
+    const roots = this.#roots;
+    roots.pack(this.#trees);
+    roots.data[0] = this.#rootFirst;
+    roots.data[1] = this.#rootBins;
+    roots.upload();
+  }
+
+  /** h seconds of the trees in the breeze; once they have swung out, they are set exactly at rest. */
+  #swayTrees(h: number): void {
+    const climate = this.#treeClimate;
+    climate.dt = h;
+    climate.time = this.#clock;
+    this.#trees.step(climate);
+    if (!this.affordances.breeze) this.#swaying = Math.max(0, this.#swaying - h);
+    if (this.#swaying <= 0) this.#trees.settle(climate);
+    this.#showTrees();
+  }
+
+  /** Start a breeze when one is due (the gusts on, at their frequency) or asked for, unless the M is up. */
+  #schedule(on: boolean, frequency: number, marking: boolean): void {
+    const bank = this.affordances;
+    const clock = this.#clock;
+    if (!on) this.#nextBreeze = Number.POSITIVE_INFINITY;
+    else if (!Number.isFinite(this.#nextBreeze))
+      this.#nextBreeze = clock + this.#breezeInterval(frequency);
+    if (this.#breezeNow || (!bank.breeze && !marking && clock >= this.#nextBreeze)) {
+      this.#breezeNow = false;
+      this.#startBreeze();
+      this.#nextBreeze = on ? clock + this.#breezeInterval(frequency) : Number.POSITIVE_INFINITY;
+    }
+  }
+
+  #breezeInterval(frequency: number): number {
+    const bank = this.affordances;
+    const mean = BREEZE_RARE + (BREEZE_OFTEN - BREEZE_RARE) * Math.min(1, frequency);
+    return mean * (0.7 + 0.6 * cellHash(bank.gusts, 7, bank.seed * 16 + 11));
+  }
+
+  #startBreeze(): void {
+    const bank = this.affordances;
+    bank.gusts++;
+    bank.breeze = true;
+    bank.dir = cellHash(bank.gusts, 3, bank.seed * 16 + 12) < 0.6 ? 1 : -1;
+    bank.front = -bank.dir * (this.#aspect / 2 + 2.5 * BREEZE_WIDTH);
+    bank.frontWas = bank.front;
+  }
+
+  /** h seconds of the breeze crossing the bank, until it has left the frame. */
+  #blow(h: number): void {
+    const bank = this.affordances;
+    if (!bank.breeze) return;
+    bank.front += bank.dir * BREEZE_SPEED * h;
+    if (bank.front * bank.dir > this.#aspect / 2 + 2.5 * BREEZE_WIDTH) bank.breeze = false;
+  }
+}
+
+/**
+ * The swarm's sim: the fireflies on the lattice over the mangroves' bank (read each frame through
+ * LayerFrame.host), the lights nearer than the bank, the lantern and the M (field 0 the swarm, its
+ * row of the atlas the nearer lights, the lantern and the bank's mean flash).
+ */
+class FireflySwarmSim implements LayerSim {
+  readonly affordances = new SwarmState();
+  readonly #swarmTexture: DataTexture;
+  readonly #reader: KnobReader<KnobKey>;
+  /** The trigger slot of the M's "now". */
+  readonly #markSlot: number;
+  /** One prewarm step, as runBudgeted calls it. */
+  readonly #warmStep = (): void => this.#step(PREWARM_STEP, this.#knobs);
+  #warmed = 0;
+  readonly #steps = new FixedStep(STEP, MAX_STEPS);
+  readonly #knobs: Knobs = {
+    coupling: 0.5,
+    unison: 0,
+    density: 0.7,
+    period: 3,
+    drift: 0.35,
+    lantern: true,
+    mark: 0,
+    markNow: 5,
+  };
+  readonly #nearest = new Float64Array(2);
+  /** The bank the lattice lives over (the mangroves'), and the rig at rest the nearer lights are placed through. */
+  #bank = new MangroveBank();
+  #camera: LevelCamera | undefined;
+
+  /** The seed the lattice was laid out for, and whether on the open bank (the habitat knob, as last fitted). */
+  #seed = Number.NaN;
+  #open = false;
 
   // The lattice: cols × FIREFLIES_ROWS cells, row-major from the waterline up.
   #cols = 0;
@@ -922,10 +1160,9 @@ class FirefliesSim implements SceneSim {
   #clock = 0;
   #dirty = true;
   #meanFlash = 0;
-  /** The clock, the bank's mean flash, the breeze's front and the M's strength a step before. */
+  /** The clock, the bank's mean flash and the M's strength a step before. */
   #clockWas = 0;
   #meanFlashWas = 0;
-  #breezeFrontWas = 0;
   #markStrengthWas = 0;
   /** The bank's mean phase (cycles) and how much in step it is (0..1): the Kuramoto order parameter. */
   #theta = 0;
@@ -960,14 +1197,6 @@ class FirefliesSim implements SceneSim {
   /** This frame's clicks, each scattering the phases about where it fell, numbered by `#clicks`. */
   readonly #scatters: { x: number; y: number; click: number }[] = [];
 
-  // The breeze.
-  #breeze = false;
-  #breezeFront = 0;
-  #breezeDir = 1;
-  #gusts = 0;
-  #nextBreeze = Number.POSITIVE_INFINITY;
-  #breezeNow = false;
-
   // The M.
   #mark = false;
   #markAge = 0;
@@ -979,54 +1208,32 @@ class FirefliesSim implements SceneSim {
   #markNow = false;
 
   constructor(gl: WebGL2RenderingContext, params: readonly ParamDef[]) {
-    this.#reader = new KnobReader("fireflies", params, [
+    this.#reader = new KnobReader("fireflySwarm", params, [
       "coupling",
       "unison",
       "density",
-      "habitat",
-      "period",
-      "drift",
-      "unrest",
-      "lantern",
-      "mark",
-      "seed",
+      "fireflySwarmPeriod",
+      "fireflySwarmDrift",
+      "fireflySwarmLantern",
+      "fireflySwarmMark",
     ]);
-    this.#breezeSlot = this.#reader.trigger("unrest");
-    this.#markSlot = this.#reader.trigger("mark");
+    this.#markSlot = this.#reader.trigger("fireflySwarmMark");
     this.#swarmTexture = new DataTexture(gl, { width: 1, height: 1, format: "rgba16f" });
-    this.#forestTexture = new DataTexture(gl, { width: 1, height: 2, format: "rgba16f" });
-    this.#stateTexture = new DataTexture(gl, {
-      width: STATE_TEXELS,
-      height: 1,
-      format: "rgba16f",
-      filter: "nearest",
-    });
-    this.#roots = new PlantTexture(gl, ROOT_RECORDS, { rowBase: 1 });
-    // The breeze is the trees' only air: a front crossing the bank, pushing downwind.
-    this.#treeClimate.wind = (x, _y, out) => {
-      if (!this.#breeze) return;
-      const u = (x - this.#breezeFront) / BREEZE_WIDTH;
-      out[0] = this.#breezeDir * BREEZE_PUSH * Math.exp(-u * u);
-    };
   }
 
-  frame(frame: SimFrame): readonly (WebGLTexture | undefined)[] {
+  frame(frame: LayerFrame): void {
+    // The lattice lives over the mangroves' bank: nothing to lay out until it is grown.
+    const bank = frame.host("mangroves");
+    if (!(bank instanceof MangroveBank) || bank.cols === 0) return;
+    this.#bank = bank;
+    this.#camera = frame.rig;
     const knobs = this.#read(frame);
     if (frame.aspect > 0) this.#aspect = frame.aspect;
     this.#arrive = clamp(frame.passage.enter, 0, 1);
     this.#leave = clamp(frame.passage.exit, 0, 1);
     const dt = Math.max(0, frame.dt);
-    const cells = frame.height > 0 ? frame.height : this.#treeCells;
-    const retier = cells !== this.#treeCells;
-    this.#treeCells = cells;
-    this.#trees.cells = cells;
-    if (knobs.seed !== this.#seed) this.#grow(knobs);
+    if (bank.seed !== this.#seed) this.#grow(knobs);
     else this.#fit(knobs);
-    if (retier) {
-      // The roots' tiers follow the frame's resolution.
-      this.#trees.pose();
-      this.#showTrees();
-    }
     // The opening seconds run in whole steps (a few frames of them on a slow machine) before the
     // swarm moves on its own.
     if (this.#warmed < PREWARM_STEPS) {
@@ -1036,8 +1243,10 @@ class FirefliesSim implements SceneSim {
         PREWARM_STEPS,
         this.#warmed,
       );
-      // Shown as the warm-up left it, nothing to draw between.
+      // Shown as the warm-up left it, nothing to draw between; packed again even on a paused frame,
+      // so a warm-up spread over frames is drawn as it ends, not as its first frame left it.
       this.#keepDrawn();
+      this.#dirty = true;
     }
     this.#watchTriggers(frame.fired, knobs);
     if (this.#warmed >= PREWARM_STEPS) {
@@ -1046,7 +1255,7 @@ class FirefliesSim implements SceneSim {
       this.#othersClick(frame.principals, knobs);
 
       // Motion runs the swarm; a breeze or an M under way still plays while motion is 0.
-      const busy = this.#breeze || this.#mark || this.#arrive < 1 || this.#leave > 0;
+      const busy = bank.breeze || this.#mark || this.#arrive < 1 || this.#leave > 0;
       const advance = dt * (frame.motion > 0 ? frame.motion : busy ? 1 : 0);
       for (let s = 0, n = this.#steps.advance(advance); s < n; s++) {
         this.#keepDrawn();
@@ -1054,31 +1263,22 @@ class FirefliesSim implements SceneSim {
       }
       for (const at of this.#scatters) this.#scatterPhases(at.x, at.y, at.click);
       this.#scatters.length = 0;
-      // The trees swing while a breeze crosses and for a while after (at the breeze's pace while
-      // motion is 0); then they stand exactly as laid out.
-      if (this.#breeze) this.#swaying = SWAY_SETTLE;
-      if (this.#swaying > 0 && dt > 0) this.#swayTrees(dt * (frame.motion > 0 ? frame.motion : 1));
     }
+    this.affordances.marking = this.#mark;
 
     if (dt > 0 || this.#dirty) {
       this.#pack(knobs);
       this.#swarmTexture.upload(this.#data);
-      this.#packState(knobs);
-      this.#stateTexture.upload(this.#state);
+      this.#packState(knobs, frame.records.data);
+      frame.records.touch();
       this.#dirty = false;
     }
-    this.#textures[0] = this.#swarmTexture.texture;
-    this.#textures[1] = this.#forestTexture.texture;
-    this.#textures[2] = this.#stateTexture.texture;
-    this.#textures[3] = this.#roots.texture;
-    return this.#textures;
+    const [swarm] = frame.fields;
+    if (swarm !== undefined) swarm.texture = this.#swarmTexture.texture;
   }
 
   dispose(): void {
     this.#swarmTexture.dispose();
-    this.#forestTexture.dispose();
-    this.#stateTexture.dispose();
-    this.#roots.dispose();
   }
 
   #read(frame: SimFrame): Knobs {
@@ -1087,62 +1287,35 @@ class FirefliesSim implements SceneSim {
     knobs.coupling = reader.value(frame, "coupling");
     knobs.unison = reader.value(frame, "unison");
     knobs.density = reader.value(frame, "density");
-    knobs.open = reader.value(frame, "habitat") > 0.5;
-    knobs.period = Math.max(0.5, reader.value(frame, "period"));
-    knobs.drift = reader.value(frame, "drift");
-    knobs.unrest = reader.value(frame, "unrest");
-    knobs.lantern = reader.value(frame, "lantern") > 0.5;
-    knobs.mark = Math.round(reader.value(frame, "mark"));
-    knobs.markNow = Math.max(1, Math.round(reader.amount(frame, "mark")));
-    knobs.seed = Math.round(reader.value(frame, "seed"));
+    knobs.period = Math.max(0.5, reader.value(frame, "fireflySwarmPeriod"));
+    knobs.drift = reader.value(frame, "fireflySwarmDrift");
+    knobs.lantern = reader.value(frame, "fireflySwarmLantern") > 0.5;
+    knobs.mark = Math.round(reader.value(frame, "fireflySwarmMark"));
+    knobs.markNow = Math.max(1, Math.round(reader.amount(frame, "fireflySwarmMark")));
     return knobs;
   }
 
   /** A "now" button stamps its slot with the scene clock: `fired` is true for the one frame after. */
   #watchTriggers(fired: readonly boolean[], knobs: Knobs): void {
-    if (fired[this.#breezeSlot] === true) this.#breezeNow = true;
     if (fired[this.#markSlot] === true) {
       this.#markNow = true;
       this.#markBeats = knobs.markNow;
     }
   }
 
-  /** Start the breeze and the M when they are due or asked for. */
+  /** Start the M when it is due or asked for, unless a breeze is crossing. */
   #schedule(knobs: Knobs): void {
     const clock = this.#clock;
-    if (knobs.unrest <= 0) this.#nextBreeze = Number.POSITIVE_INFINITY;
-    else if (!Number.isFinite(this.#nextBreeze))
-      this.#nextBreeze = clock + this.#breezeInterval(knobs.unrest);
-    if (this.#breezeNow || (!this.#breeze && !this.#mark && clock >= this.#nextBreeze)) {
-      this.#breezeNow = false;
-      this.#startBreeze();
-      this.#nextBreeze =
-        knobs.unrest > 0 ? clock + this.#breezeInterval(knobs.unrest) : Number.POSITIVE_INFINITY;
-    }
-
     const on = knobs.mark > 0;
     if (on && !this.#markWasOn) this.#nextMark = clock + MARK_FIRST;
     if (!on) this.#nextMark = Number.POSITIVE_INFINITY;
     this.#markWasOn = on;
-    if (this.#markNow || (!this.#mark && !this.#breeze && clock >= this.#nextMark)) {
+    if (this.#markNow || (!this.#mark && !this.#bank.breeze && clock >= this.#nextMark)) {
       if (!this.#markNow) this.#markBeats = knobs.mark;
       this.#markNow = false;
       this.#startMark();
       this.#nextMark = on ? clock + MARK_INTERVAL : Number.POSITIVE_INFINITY;
     }
-  }
-
-  #breezeInterval(frequency: number): number {
-    const mean = BREEZE_RARE + (BREEZE_OFTEN - BREEZE_RARE) * Math.min(1, frequency);
-    return mean * (0.7 + 0.6 * cellHash(this.#gusts, 7, this.#seed * 16 + 11));
-  }
-
-  #startBreeze(): void {
-    this.#gusts++;
-    this.#breeze = true;
-    this.#breezeDir = cellHash(this.#gusts, 3, this.#seed * 16 + 12) < 0.6 ? 1 : -1;
-    this.#breezeFront = -this.#breezeDir * (this.#aspect / 2 + 2.5 * BREEZE_WIDTH);
-    this.#breezeFrontWas = this.#breezeFront;
   }
 
   #startMark(): void {
@@ -1153,19 +1326,16 @@ class FirefliesSim implements SceneSim {
     this.#placeMark();
   }
 
-  // ---- the forest and the lattice ---------------------------------------------------------------
+  // ---- the lattice -----------------------------------------------------------------------------
 
-  /** A new seed: grow its forest and a fresh, unsynchronised swarm, and run its first seconds. */
+  /** A new bank: a fresh, unsynchronised swarm over it, and its first seconds run. */
   #grow(knobs: Knobs): void {
-    this.#seed = knobs.seed;
-    this.#crowns = growForest(knobs.seed, false);
-    this.#openBank = growForest(knobs.seed, true);
+    const seed = this.#bank.seed;
+    const camera = this.#camera;
+    this.#seed = seed;
     this.#cols = 0;
-    // A new stretch of river starts calm: its trees grow (in #fit) standing still.
-    this.#breeze = false;
-    this.#swaying = 0;
     this.#fit(knobs);
-    const near = mulberry32((Math.imul(knobs.seed + 7, 0x85ebca6b) ^ 0x2545f491) >>> 0);
+    const near = mulberry32((Math.imul(seed + 7, 0x85ebca6b) ^ 0x2545f491) >>> 0);
     for (let k = 0; k < FIREFLIES_NEAR; k++) {
       if (k < FIREFLIES_DRIFTERS) {
         // Drifters: golden-ratio steps across the frame, so however many show, they spread out.
@@ -1180,7 +1350,7 @@ class FirefliesSim implements SceneSim {
         const y = BOKEH_Y_MIN + (BOKEH_Y_MAX - BOKEH_Y_MIN) * near();
         this.#nearAnchorX[k] =
           0.5 * side * (BOKEH_SIDE_MIN + (BOKEH_SIDE_MAX - BOKEH_SIDE_MIN) * near());
-        this.#nearAnchorY[k] = CAMERA.worldY(y, z);
+        this.#nearAnchorY[k] = camera === undefined ? 0 : camera.worldY(y, z);
         this.#nearAnchorZ[k] = z;
       }
       for (let j = 0; j < 3; j++) {
@@ -1194,8 +1364,6 @@ class FirefliesSim implements SceneSim {
     this.#clock = 0;
     this.#mark = false;
     this.#markStrength = 0;
-    this.#gusts = 0;
-    this.#nextBreeze = Number.POSITIVE_INFINITY;
     this.#nextMark = Number.POSITIVE_INFINITY;
     this.#markWasOn = false;
     this.#warmed = 0;
@@ -1203,13 +1371,15 @@ class FirefliesSim implements SceneSim {
   }
 
   /**
-   * Fit the lattice to the frame's aspect and the habitat knob's bank, keeping every firefly whose
-   * column stays in view (all of them when only the bank changes: they move over to their new places).
+   * Fit the lattice to the bank's columns (the frame's aspect) and the bank on show, keeping every
+   * firefly whose column stays in view (all of them when only the bank changes: they move over to
+   * their new places).
    */
   #fit(knobs: Knobs): void {
-    const cols = Math.min(MAX_COLS, 2 * Math.ceil(this.#aspect / 2 / FIREFLIES_CELL + 1));
-    if (cols === this.#cols && knobs.open === this.#open) return;
-    this.#open = knobs.open;
+    const bank = this.#bank;
+    const cols = bank.cols;
+    if (cols === this.#cols && bank.open === this.#open) return;
+    this.#open = bank.open;
     const oldCols = this.#cols;
     const oldPhase = this.#phase;
     const oldPresent = this.#present;
@@ -1249,14 +1419,13 @@ class FirefliesSim implements SceneSim {
     this.#halo = new Float32Array(n);
     this.#haloSum = new Float32Array(n);
     this.#swarmTexture.resize(cols, FIREFLIES_ROWS);
-    this.#paintForest();
 
     const salt = this.#seed * 16;
     const half = cols / 2;
-    const trees = (this.#open ? this.#openBank : this.#crowns).trees;
+    const trees = bank.trees;
     this.#arrival = new Float32Array(cols);
     for (let c = 0; c < cols; c++) {
-      const tree = this.#shown.treeAt[c * FIREFLIES_PROFILE_RES + FIREFLIES_PROFILE_RES / 2] ?? -1;
+      const tree = bank.shown.treeAt[c * FIREFLIES_PROFILE_RES + FIREFLIES_PROFILE_RES / 2] ?? -1;
       const x = tree >= 0 ? (trees[tree]?.x ?? 0) : (c + 0.5 - half) * FIREFLIES_CELL;
       const fromRight = clamp((this.#aspect / 2 - x) / this.#aspect, 0, 1);
       const luck = cellHash(tree >= 0 ? tree : c - half, 5, salt + 19);
@@ -1306,88 +1475,13 @@ class FirefliesSim implements SceneSim {
     this.#dirty = true;
   }
 
-  /** The bank on show and the dense crowns over the lattice's span; its trees grown on the one on show (uSim1, uSim3). */
-  #paintForest(): void {
-    this.#crownProfile = profileOf(this.#crowns, this.#cols, this.#seed);
-    this.#shown = this.#open
-      ? profileOf(this.#openBank, this.#cols, this.#seed)
-      : this.#crownProfile;
-    this.#forestTexture.resize(this.#cols * FIREFLIES_PROFILE_RES, 2);
-    this.#growTrees();
-  }
-
-  /** The bank on show as rooted plants: a plant per tree, its roots in their bins over this lattice, at rest in the air now. */
-  #growTrees(): void {
-    const bank = this.#open ? this.#openBank : this.#crowns;
-    const layout = this.#layout;
-    layout.bank = bank;
-    layout.lumpsOf = bank.trees.map(() => []);
-    layout.apexesOf = bank.trees.map(() => []);
-    layout.lumpOrgan = new Int32Array(bank.lumps.length).fill(-1);
-    bank.lumps.forEach((lump, l) => layout.lumpsOf[lump.tree]?.push(l));
-    const { first, bins } = layRoots(layout, this.#shown, this.#cols);
-    this.#rootFirst = first;
-    this.#rootBins = bins;
-    const trees = this.#trees;
-    trees.clear();
-    bank.trees.forEach((tree, t) => {
-      trees.add(
-        tree.trunk ? this.#species.sonneratia : this.#species.rhizophora,
-        { x: tree.x, y: FIREFLIES_WATER, heading: Math.PI / 2, moisture: 1, kind: t, slot: 0 },
-        NO_DRAWS,
-      );
-    });
-    this.#drawn = blankProfile(this.#cols * FIREFLIES_PROFILE_RES);
-    this.#centres = new Float64Array(2 * bank.lumps.length);
-    trees.settle(this.#treeClimate);
-    this.#showTrees();
-  }
-
-  /**
-   * The trees to the shader: the bank's profile (as laid out at rest, else with every crown clump
-   * where its stem carries it) and the roots' records.
-   */
-  #showTrees(): void {
-    if (this.#swaying > 0) {
-      const lumps = this.#layout.bank.lumps;
-      const centres = this.#centres;
-      const point = this.#point;
-      for (let l = 0; l < lumps.length; l++) {
-        const organ = this.#layout.lumpOrgan[l] ?? -1;
-        if (organ >= 0) this.#trees.pointAt(organ, 1, point);
-        centres[2 * l] = organ >= 0 ? (point[0] ?? 0) : (lumps[l]?.x ?? 0);
-        centres[2 * l + 1] = organ >= 0 ? (point[1] ?? 0) : (lumps[l]?.y ?? 0);
-      }
-      paintProfile(this.#drawn, this.#layout.bank, this.#cols, this.#seed, centres);
-      this.#forestTexture.upload(this.#drawn.texels);
-    } else {
-      this.#forestTexture.upload(this.#shown.texels);
-    }
-    const roots = this.#roots;
-    roots.pack(this.#trees);
-    roots.data[0] = this.#rootFirst;
-    roots.data[1] = this.#rootBins;
-    roots.upload();
-  }
-
-  /** h seconds of the trees in the breeze; once they have swung out, they are set exactly at rest. */
-  #swayTrees(h: number): void {
-    const climate = this.#treeClimate;
-    climate.dt = h;
-    climate.time = this.#clock;
-    this.#trees.step(climate);
-    if (!this.#breeze) this.#swaying = Math.max(0, this.#swaying - h);
-    if (this.#swaying <= 0) this.#trees.settle(climate);
-    this.#showTrees();
-  }
-
   /** How much a cell of the dense crowns suits a firefly (0..1): the crowns' outer leaves, a few in the air and roots. */
   #habitatAt(i: number): number {
     const column = i % this.#cols;
     const row = Math.floor(i / this.#cols);
     const k = column * FIREFLIES_PROFILE_RES + FIREFLIES_PROFILE_RES / 2;
     const y = FIREFLIES_WATER + (row + 0.5) * FIREFLIES_CELL;
-    const profile = this.#crownProfile;
+    const profile = this.#bank.crowns;
     const top = profile.top[k] ?? 0;
     const under = profile.under[k] ?? 0;
     const host = profile.host[k] ?? 0;
@@ -1403,8 +1497,9 @@ class FirefliesSim implements SceneSim {
     const k = column * FIREFLIES_PROFILE_RES + FIREFLIES_PROFILE_RES / 2;
     const y = FIREFLIES_WATER + (row + 0.5) * FIREFLIES_CELL;
     const air = Math.exp(-(((y - FIREFLIES_WATER) / OPEN_REACH) ** 2));
-    if (y < (this.#shown.under[k] ?? 0)) return OPEN_UNDER * air;
-    if (y <= (this.#shown.top[k] ?? 0)) return OPEN_LEAVES * air;
+    const shown = this.#bank.shown;
+    if (y < (shown.under[k] ?? 0)) return OPEN_UNDER * air;
+    if (y <= (shown.top[k] ?? 0)) return OPEN_LEAVES * air;
     return air;
   }
 
@@ -1495,7 +1590,6 @@ class FirefliesSim implements SceneSim {
     this.#nearPhaseWas.set(this.#nearPhase);
     this.#clockWas = this.#clock;
     this.#meanFlashWas = this.#meanFlash;
-    this.#breezeFrontWas = this.#breezeFront;
     this.#markStrengthWas = this.#markStrength;
   }
 
@@ -1669,12 +1763,14 @@ class FirefliesSim implements SceneSim {
       }
     }
 
-    if (this.#breeze) {
-      const front = this.#breezeFront;
+    const bank = this.#bank;
+    if (bank.breeze) {
+      const front = bank.front;
       const reach = 2.5 * BREEZE_WIDTH;
       const c0 = Math.max(0, Math.floor((front - reach - x0) / FIREFLIES_CELL));
       const c1 = Math.min(cols - 1, Math.ceil((front + reach - x0) / FIREFLIES_CELL));
-      const salt = this.#seed * 16 + 15 + this.#gusts * 131;
+      const salt = this.#seed * 16 + 15 + bank.gusts * 131;
+      const scatter = BREEZE_SCATTER * bank.strength;
       const half = cols / 2;
       for (let c = c0; c <= c1; c++) {
         const u = (x0 + (c + 0.5) * FIREFLIES_CELL - front) / BREEZE_WIDTH;
@@ -1683,7 +1779,7 @@ class FirefliesSim implements SceneSim {
           const i = r * cols + c;
           const noise = 2 * cellHash(c - half, r, salt) - 1;
           this.#calm[i] = (this.#calm[i] ?? 1) * (1 - g);
-          this.#detune[i] = (this.#detune[i] ?? 0) + BREEZE_SCATTER * g * noise;
+          this.#detune[i] = (this.#detune[i] ?? 0) + scatter * g * noise;
         }
       }
     }
@@ -1699,15 +1795,8 @@ class FirefliesSim implements SceneSim {
     }
   }
 
-  /** The breeze crosses the bank; the M gathers, holds its beats and lets go. */
+  /** The M gathers, holds its beats and lets go. */
   #advanceEvents(h: number, period: number): void {
-    if (this.#breeze) {
-      this.#breezeFront += this.#breezeDir * BREEZE_SPEED * h;
-      const edge = this.#aspect / 2 + 2.5 * BREEZE_WIDTH;
-      if (this.#breezeFront * this.#breezeDir > edge) {
-        this.#breeze = false;
-      }
-    }
     if (this.#mark) {
       this.#markAge += h;
       const rise = MARK_RISE * period;
@@ -1856,7 +1945,8 @@ class FirefliesSim implements SceneSim {
     const mark = this.#mark
       ? this.#markStrengthWas + (this.#markStrength - this.#markStrengthWas) * alpha
       : 0;
-    const front = this.#breezeFrontWas + (this.#breezeFront - this.#breezeFrontWas) * alpha;
+    const bank = this.#bank;
+    const front = bank.frontWas + (bank.front - bank.frontWas) * alpha;
     const x0 = -0.5 * cols * FIREFLIES_CELL;
     for (let i = 0; i < n; i++) {
       const at = 4 * i;
@@ -1886,9 +1976,9 @@ class FirefliesSim implements SceneSim {
           Math.sin(
             clock * (this.#wanderSpeed[2 * i + 1] ?? 0) + (this.#wanderPhase[2 * i + 1] ?? 0),
           );
-      if (this.#breeze) {
+      if (bank.breeze) {
         const u = (x0 + ((i % cols) + 0.5) * FIREFLIES_CELL - front) / BREEZE_WIDTH;
-        ox += this.#breezeDir * BREEZE_SWAY * Math.exp(-u * u);
+        ox += bank.dir * BREEZE_SWAY * bank.strength * Math.exp(-u * u);
       }
       if (a > 0) {
         ox += ((this.#snapX[i] ?? 0.5) - ox) * a * MARK_GATHER;
@@ -1918,9 +2008,10 @@ class FirefliesSim implements SceneSim {
     );
   }
 
-  /** The lights nearer than the bank, the lantern and the bank, drawn between their last two steps, for uSim2. */
-  #packState(knobs: Knobs): void {
-    const state = this.#state;
+  /** The lights nearer than the bank, the lantern and the bank, drawn between their last two steps, into the swarm's row. */
+  #packState(knobs: Knobs, state: Float32Array): void {
+    const camera = this.#camera;
+    if (camera === undefined) return;
     const span = knobs.period / Math.min(FLASH_SECONDS, FLASH_SHARE * knobs.period);
     const step = this.#steps.alpha;
     const clock = this.#clockWas + (this.#clock - this.#clockWas) * step;
@@ -1945,8 +2036,8 @@ class FirefliesSim implements SceneSim {
         (this.#nearAnchorY[j] ?? 1) + (drifter ? DRIFT_WANDER_Y : BOKEH_WANDER_Y) * wanderY;
       const x =
         (this.#nearAnchorX[j] ?? 0) * this.#aspect +
-        CAMERA.screenX((drifter ? DRIFT_WANDER_X : BOKEH_WANDER_X) * wanderX, z);
-      const y = CAMERA.screenY(height, z);
+        camera.screenX((drifter ? DRIFT_WANDER_X : BOKEH_WANDER_X) * wanderX, z);
+      const y = camera.screenY(height, z);
       this.#nearX[j] = x;
       this.#nearY[j] = y;
       const d = Math.hypot(x - lanternX, y - lanternY);
@@ -1965,15 +2056,20 @@ class FirefliesSim implements SceneSim {
     state[at + 3] = this.#flare;
     at = 4 * FIREFLIES_STATE_BANK;
     state[at] = this.#meanFlashWas + (this.#meanFlash - this.#meanFlashWas) * step;
-    state[at + 1] = this.#breezeFrontWas + (this.#breezeFront - this.#breezeFrontWas) * step;
-    state[at + 2] = this.#breeze ? 1 : 0;
+    state[at + 1] = 0;
+    state[at + 2] = 0;
     state[at + 3] = this.#mark
       ? this.#markStrengthWas + (this.#markStrength - this.#markStrengthWas) * step
       : 0;
   }
 }
 
-/** The fireflies' simulation, for a scene whose `params` carry the knobs KnobKey names. */
-export function firefliesSim(params: readonly ParamDef[]): SimFactory {
-  return (gl) => new FirefliesSim(gl, params);
+/** The mangroves' sim (outdoor-code.ts): the bank, its trees and the breeze. */
+export function mangrovesSim(gl: WebGL2RenderingContext, params: readonly ParamDef[]): LayerSim {
+  return new MangrovesSim(gl, params);
+}
+
+/** The swarm's sim (outdoor-code.ts): the fireflies over the mangroves' bank. */
+export function fireflySwarmSim(gl: WebGL2RenderingContext, params: readonly ParamDef[]): LayerSim {
+  return new FireflySwarmSim(gl, params);
 }

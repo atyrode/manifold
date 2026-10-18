@@ -8,14 +8,18 @@
 //   2. Level of detail: belts that resolve are fbm bit for bit (what keeps orbit's picture
 //      unchanged), a tiny planet's belts are their even mean, and a far planet's city lights merge
 //      into blocks rather than single shimmering cells.
-//   3. Campfire composes moons, aurora, city lights and the circling sun: each one shows, and only
-//      where the planet itself shows (inside its glow, behind the pines and the ground). A moon
-//      behind the planet is hidden; the same moon in front of it is drawn over the disc.
-import { fragmentSourceFor, packParams, vertexSource } from "../../shaders/index.ts";
+//   3. Campfire's giant (the first of the World's planets it opens with) shows its moons, aurora,
+//      city lights and circling sun: each one shows, and only where the planet itself shows (inside
+//      its glow, behind the pines and the ground). A moon behind the planet is hidden; the same moon
+//      in front of it is drawn over the disc.
+import { fragmentSourceFor, packParams, sceneFeatures, vertexSource } from "../../shaders/index.ts";
 import { defaultsFor, paramDefaults, renderSettings } from "../../state.ts";
 import { loadScene } from "../index.ts";
+import { openingPlanets, planetRadius, planetUniforms, readPlanet } from "../planets.ts";
+import { CAMPFIRE_FOCAL, CAMPFIRE_HORIZON } from "./constants.ts";
 
-const campfireScene = await loadScene("campfire");
+const loaded = await loadScene("campfire");
+const { glslFor, ...campfireScene } = loaded;
 
 function check(ok: boolean, message: string): void {
   if (!ok) throw new Error(message);
@@ -111,6 +115,7 @@ Shade regressionPlanet(vec2 uv, vec2 cell, float t) {
 }`;
 
 export function verifyPlanet(gl: WebGL2RenderingContext): Record<string, unknown> {
+  if (glslFor === undefined) throw new Error("planet: campfire is not composed");
   const component = program(
     gl,
     fragmentSourceFor({
@@ -205,19 +210,41 @@ export function verifyPlanet(gl: WebGL2RenderingContext): Record<string, unknown
   );
   gl.deleteProgram(component);
 
-  // Campfire's sky: the default planet, then each composed feature. Only the cells round the planet
-  // are shaded (2.6 radii, past the 2.3 its features may reach): the rest of the scene is costly.
-  const scene = program(gl, fragmentSourceFor(campfireScene));
+  // Campfire's sky: its giant, then each of its features. Only the cells round the planet are shaded
+  // (2.6 radii, past the 2.3 its features may reach, widened for the projection 27 degrees off the
+  // view's axis): the rest of the scene is costly. One program draws every planet here, the lone
+  // giant's: compiled with the gates of the giant wearing every feature at once (moons, aurora, city
+  // lights), which draws it in each alone as that one's own program would.
+  const spec = loaded.planets;
+  const [giant] = spec === undefined ? [] : openingPlanets(spec);
+  if (spec === undefined || giant === undefined) throw new Error("campfire opens with no giant");
+  const features: Record<string, Record<string, number>> = {
+    moons: { moons: 1, "moons-amount": 3 },
+    aurora: { aurora: 1 },
+    lights: { lights: 1 },
+    daycycle: { daycycle: 1, "daycycle-amount": 1 },
+  };
+  const dressed = readPlanet(
+    spec,
+    Object.values(features).reduce((all, fields) => ({ ...all, ...fields }), giant),
+  );
+  const scene = program(
+    gl,
+    fragmentSourceFor(loaded, sceneFeatures(loaded, undefined, planetUniforms([dressed]))),
+  );
   gl.useProgram(scene);
   const where = (name: string) => gl.getUniformLocation(scene, name);
   const WIDTH = 320;
   const HEIGHT = 180;
+  const across = ((giant["across"] ?? 0) * Math.PI) / 180;
+  const up = ((giant["up"] ?? 0) * Math.PI) / 180;
+  const ahead = Math.cos(up) * Math.cos(across);
   const centre = {
-    x: WIDTH / 2 + 0.58 * Math.min(Math.max(WIDTH / HEIGHT / 2, 0.5), 0.9) * HEIGHT,
-    y: 0.57 * HEIGHT,
+    x: WIDTH / 2 + ((Math.cos(up) * Math.sin(across)) / ahead) * CAMPFIRE_FOCAL * HEIGHT,
+    y: (CAMPFIRE_HORIZON + (Math.sin(up) / ahead) * CAMPFIRE_FOCAL) * HEIGHT,
   };
-  const radius = (0.07 + 0.13 * 0.55) * HEIGHT;
-  const reach = Math.ceil(2.6 * radius);
+  const radius = (planetRadius(giant["size"] ?? 0) * CAMPFIRE_FOCAL * HEIGHT) / ahead;
+  const reach = Math.ceil(2.6 * radius * 1.2);
   const box = [
     Math.floor(centre.x) - reach,
     Math.floor(centre.y) - reach,
@@ -230,15 +257,18 @@ export function verifyPlanet(gl: WebGL2RenderingContext): Record<string, unknown
   gl.uniform2f(where("uPassage"), 1, 0);
   gl.uniform4f(where("uPrincipals"), 0.5, 0.5, 0, -1e4);
   gl.uniform1fv(where("uTriggers"), new Float32Array(8).fill(-1e4));
-  const render = (knobs: Record<string, number>, time: number): Uint8Array => {
+  gl.uniform4fv(
+    where("uParams"),
+    packParams(renderSettings(defaultsFor("campfire"), paramDefaults("campfire")).params),
+  );
+  const render = (fields: Record<string, number> | undefined, time: number): Uint8Array => {
+    const { count, data } = planetUniforms(
+      fields === undefined ? [] : [readPlanet(spec, { ...giant, ...fields })],
+    );
+    gl.uniform4fv(where("uPlanets"), data);
+    gl.uniform1i(where("uPlanetCount"), count);
     gl.uniform1f(where("uTime"), time);
     gl.uniform1f(where("uMotionTime"), time);
-    gl.uniform4fv(
-      where("uParams"),
-      packParams(
-        renderSettings(defaultsFor("campfire"), { ...paramDefaults("campfire"), ...knobs }).params,
-      ),
-    );
     return draw(gl, WIDTH, HEIGHT, box);
   };
   const differs = (a: Uint8Array, b: Uint8Array, pixel: number) =>
@@ -246,14 +276,8 @@ export function verifyPlanet(gl: WebGL2RenderingContext): Record<string, unknown
     a[pixel * 4 + 1] !== b[pixel * 4 + 1] ||
     a[pixel * 4 + 2] !== b[pixel * 4 + 2];
   const TIME = 40;
-  const bare = render({ planet: 0 }, TIME);
+  const bare = render(undefined, TIME);
   const plain = render({}, TIME);
-  const features: Record<string, Record<string, number>> = {
-    moons: { planetMoons: 1, "planetMoons-amount": 3 },
-    aurora: { planetAurora: 1 },
-    lights: { planetLights: 1 },
-    daycycle: { planetDaycycle: 1, "planetDaycycle-amount": 1 },
-  };
   const shown: Record<string, number> = {};
   for (const [name, knobs] of Object.entries(features)) {
     const picture = render(knobs, TIME);
@@ -262,29 +286,29 @@ export function verifyPlanet(gl: WebGL2RenderingContext): Record<string, unknown
       if (!differs(picture, plain, pixel)) continue;
       check(
         differs(plain, bare, pixel),
-        `Campfire's planet ${name} drew outside the planet or over its foreground at pixel ${pixel}`,
+        `Campfire's giant's ${name} drew outside the planet or over its foreground at pixel ${pixel}`,
       );
       changed++;
     }
-    check(changed >= 10, `Campfire's planet ${name} does not show: ${changed} pixels`);
+    check(changed >= 10, `Campfire's giant's ${name} does not show: ${changed} pixels`);
     shown[name] = changed;
   }
 
-  // The third moon orbits edge-on through the planet's centre (campfire's ring plane, from phase 3,
-  // 1.56 radii out, at Kepler's 0.06·(1.2 / 1.56)^1.5 = 0.0405 rad/s): at 42.3 s it crosses in
-  // front of the disc's centre, at 119.9 s behind it. Eclipses off, so only the moon itself can
-  // differ between two and three moons.
+  // The third moon orbits edge-on through the planet's centre (the thin ring's plane, from phase 3,
+  // 1.56 radii out, at Kepler's 0.06·(1.2 / 1.56)^1.5 = 0.0405 rad/s, on the planet's clock at spin
+  // 1): at 42.3 s it crosses in front of the disc's centre, at 119.9 s behind it. Eclipses off, so
+  // only the moon itself can differ between two and three moons.
   const moons = (count: number) => ({
-    planetMoons: 1,
-    "planetMoons-amount": count,
-    planetEclipses: 0,
+    moons: 1,
+    "moons-amount": count,
+    eclipses: 0,
   });
   const changedPixels = (a: Uint8Array, b: Uint8Array, discOnly: boolean) => {
     let changed = 0;
     for (let pixel = 0; pixel < WIDTH * HEIGHT; pixel++) {
       const onDisc =
         Math.hypot((pixel % WIDTH) + 0.5 - centre.x, Math.floor(pixel / WIDTH) + 0.5 - centre.y) <
-        radius - 1;
+        0.8 * radius - 1;
       if ((onDisc || !discOnly) && differs(a, b, pixel)) changed++;
     }
     return changed;

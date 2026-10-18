@@ -7,34 +7,7 @@ import type { BuildKind } from "../../sims/build.ts";
 import type { RakeOptions } from "../../sims/heightfield.ts";
 import { clamp } from "../../sims/math.ts";
 import { mulberry32 } from "../../sims/random.ts";
-import type { GardenPattern } from "./constants.ts";
-
-/**
- * The garden and its two cameras, shared with the shader. Garden space: X right (0..aspect), Y away
- * from the veranda (0..1), Z up, in garden depths.
- *   veranda: a shifted-lens pinhole at (aspect / 2, eyeY, eyeHeight) looking along +Y, horizon at
- *            screen height `horizon`, focal length `focal` in screen heights (as viewRay's 0.5 /
- *            tan(fov / 2)); the earthen wall stands at Y = wallY.
- *   above:   a pinhole `overheadHeight` above (aspect / 2, overheadY) looking straight down; the
- *            ground spans `span` garden depths per screen height, from the drip line to the wall's cap.
- */
-export const GARDEN = {
-  aspect: 2.4,
-  cols: 672,
-  rows: 280,
-  /** The pebble drip line along the veranda: garden Y below this is not raked. */
-  drip: 0.03,
-  wallY: 1.03,
-  wallHeight: 0.125,
-  capHeight: 0.032,
-  focal: 1.25,
-  horizon: 1.0,
-  eyeHeight: 0.253,
-  eyeY: -0.316,
-  span: 1.06,
-  overheadHeight: 1.5,
-  overheadY: 0.52,
-} as const;
+import { GARDEN, type GardenPattern } from "./constants.ts";
 
 /**
  * The Manifold M: where it lies when it is on (that patch of gravel is kept clear of islands), its

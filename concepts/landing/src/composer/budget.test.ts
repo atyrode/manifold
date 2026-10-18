@@ -25,9 +25,15 @@ describe("composed programs", () => {
   test("are the ported presets", () => {
     expect(composed.map(({ id }) => id).sort()).toEqual([
       "autumn",
+      "bamboo",
       "bees",
+      "campfire",
       "dunes",
       "falls",
+      "fireflies",
+      "forest",
+      "garden",
+      "lake",
       "lanterns",
       "meadow",
       "shore",
