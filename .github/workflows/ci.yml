@@ -457,11 +457,11 @@ jobs:
           task: landing-concept
 
   landing-webgl:
-    name: landing-webgl (${{ matrix.shard }}/4)
+    name: landing-webgl (${{ matrix.shard }}/8)
     needs: plan
     if: contains(fromJSON(needs.plan.outputs.checks), 'landing-webgl')
     runs-on: ubuntu-latest
-    # Lab regressions render one after another in software WebGL, four disjoint shares balanced by
+    # Lab regressions render one after another in software WebGL, eight disjoint shares balanced by
     # their recorded seconds, each check within its own deadline. A pull request confined to some
     # scenes' directories runs only the checks that cover those scenes, and the checks that walk
     # every scene walk those alone. The lab and its driver import no package and read no history:
@@ -471,7 +471,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        shard: [1, 2, 3, 4]
+        shard: [1, 2, 3, 4, 5, 6, 7, 8]
     steps:
       - name: Check out
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -484,7 +484,7 @@ jobs:
       - name: Verify landing WebGL shard
         env:
           LANDING_SCENES: ${{ needs.plan.outputs.landingScenes }}
-        run: bun scripts/gate.ts --only landing-webgl --shard "${{ matrix.shard }}/4"
+        run: bun scripts/gate.ts --only landing-webgl --shard "${{ matrix.shard }}/8"
 
   runtime-jobs:
     name: runtime-jobs

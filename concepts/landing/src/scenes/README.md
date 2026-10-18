@@ -870,10 +870,10 @@ braces or conditionals) fails as one whose program does not compile. Rules:
   that changes the program, derived from the knobs by `src/knob-turns.ts`, and all of them at once)
   with it, dithered and as source, and require it byte for byte as the setting's own program:
   `countryFeaturesAll` (`src/scenes/country/features.verify.ts`, over the countryside's land
-  directly, with the settings no single turn reaches added by name) and `worldFeaturesAll`
+  directly, with the settings no single turn reaches added by name) and `worldFeaturesAll1`..`8`
   (`src/features.verify.ts`, the world's adopters, through the renderer). Through the renderer,
-  `featureToggles` checks that no change waits for a build or builds a program after the first,
-  and `sceneFeatures` how the programs take over.
+  `featureToggles1`..`4` checks that no change waits for a build or builds a program after the
+  first, and `sceneFeatures` how the programs take over.
 - Checks that draw many settings with one program compile with every gate on (`country`'s
   `COUNTRY_ALL`).
 
@@ -2977,9 +2977,9 @@ seconds, deadline and outcome, with the browser's version, to the job summary.
   every scene those files name (`sceneDefs.<id>` or `"<id>"`); one that walks every scene
   (`sceneIds`, `Object.values(sceneDefs)`), or any check from outside a scene's directory, covers
   them all (`scripts/verify-plan.ts`). The checks that walk the scenes one by one (`walk` in
-  `src/verify/kit.ts`: `passageSpeeds1`..`4`, `motionClocksAll1`..`4`, `featureToggles`,
-  `worldFeaturesAll`, `sceneFeatures`, `nightPlanets`) walk only those in scope, and the shards
-  weigh each by its record times the share of its scenes in scope.
+  `src/verify/kit.ts`: `passageSpeeds1`..`4`, `motionClocksAll1`..`4`, `featureToggles1`..`4`,
+  `worldFeaturesAll1`..`8`, `sceneFeatures`, `nightPlanets`) walk only those in scope, and the
+  shards weigh each by its record times the share of its scenes in scope.
 - `--record` rewrites `scripts/verify-timings.ts` with the seconds of the checks that passed (and
   drops checks no longer registered); run it, without a scene scope, after adding or speeding up a
   check and commit the file. `scripts/verify-plan.test.ts` fails while a registered check has no
@@ -3023,16 +3023,17 @@ log, uniform location or use of a program before its completion or fence was see
 `sceneFeatures`, software: a gated knob builds its own program in the background and switches to
 it once built, the old frame holding until then; several gated knobs at once build once; past four
 sets the least recently drawn program is freed; nothing is built ahead with the lab closed, and with
-it open only the program a layer switched off would play its exit in, once. `featureToggles`, GPU,
-for every scene with `featuresFor` (country, meadow, shore, dunes, bees, orbit, lake, pendula): the
-plain page builds only its own program; after the first gated change, which builds the
-all-features program in the background, no change builds a program; with changes expected that
-program is built ahead at rest, draws one frame without changing it, and the first change switches
-to it at once. `worldFeaturesAll` (every scene with `featuresFor` but the countryside: meadow,
-shore, dunes, bees, orbit, lake, pendula), GPU: the all-features program draws every gated
-setting, dithered and as source, byte for byte as the setting's own (drawn on a renderer taken for
-a software rasteriser's that enters at the same starting setting, settles and switches the same
-way, so the sims share their history).
+it open only the program a layer switched off would play its exit in, once. `featureToggles1`..`4`
+(a quarter of the scenes each), GPU, for every scene with `featuresFor` (country, meadow, shore,
+dunes, bees, orbit, lake, pendula): the plain page builds only its own program; after the first
+gated change, which builds the all-features program in the background, no change builds a
+program; with changes expected that program is built ahead at rest, draws one frame without
+changing it, and the first change switches to it at once. `worldFeaturesAll1`..`8` (an eighth of
+the scenes each; every scene with `featuresFor` but the countryside: meadow, shore, dunes, bees,
+orbit, lake, pendula), GPU: the all-features program draws every gated setting, dithered and as
+source, byte for byte as the setting's own (drawn on a renderer taken for a software rasteriser's
+that enters at the same starting setting, settles and switches the same way, so the sims share
+their history).
 `countryFeaturesAll` (`src/scenes/country/features.verify.ts`) checks the same of the countryside
 over its land directly, each distinct program compiled once.
 
@@ -3081,7 +3082,7 @@ The shared components have checks of their own:
   orbiting planet drifts left with the motion clock and, half a circuit on, has set, the sky byte
   for byte the empty list's.
 
-CI runs these checks (gate group `landing-webgl`, four jobs `landing-webgl (1/4)` to `(4/4)`, one
+CI runs these checks (gate group `landing-webgl`, eight jobs `landing-webgl (1/8)` to `(8/8)`, one
 `--shard` each, on a shallow checkout with Bun alone and a pinned Chrome for Testing,
 `.github/actions/landing-chromium`) and the lab's TypeScript, unit tests and GLSL check
 (`landing-concept`: `scripts/glsl-check.ts` through glslang, with node for the countryside's V8
@@ -3090,7 +3091,7 @@ than its documentation and thumbnails, and on every full run (each push to `main
 dispatch). A pull request that changes only scene directories (and documentation) runs only the
 checks covering those scenes and the scenes whose files import theirs (the planner's
 `landingScenes`), the checks that walk the scenes on those alone; full runs cover every scene.
-`bun scripts/gate.ts --only landing-webgl [--shard i/4]` or `--only landing-concept` runs the same
+`bun scripts/gate.ts --only landing-webgl [--shard i/8]` or `--only landing-concept` runs the same
 slice locally. A pull request that changes the lab also gets an advisory, never required, A/B
 render of a canary set of scenes and their knob turns against its merge base
 (`.github/workflows/landing-ab.yml`, `scripts/ab.ts --turns`), its report and the pictures that

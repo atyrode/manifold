@@ -13,29 +13,31 @@
 // turning it back finds the old program kept; several gated knobs at once build once; past four
 // sets the least recently drawn program is freed. Nothing is built ahead with the lab closed; with
 // it open, only the program a layer switched off would play its exit in (the layer set on screen
-// drawing turns), once. The countryside's sim builds its land over a few frames first (its
-// terrain), and dew's its web (on the build worker, which fails to load on this page, so on the
-// page from the first wait on, a frame's budget at a time); every page here is run until it shows
-// (`landed`), so a frame that changes is a program's doing, not the build's.
+// drawing turns), once. The countryside's sim builds its land, dew's its web, the forest's its life
+// and the dry garden's its layout on the build worker (src/sims/build.ts), landing frames after the
+// scene has entered; every page here is run until it shows (`landed`), so a frame that changes is a
+// program's doing, not the build's.
 //
-// featureToggles, on a GPU, for every scene with `featuresFor` (KNOB_KEYED; their library gates,
-// the night sky's constellations and giant planet, among their gated turns; the scenes keyed by
-// their library gates alone are proven structurally by src/shaders/index.test.ts): the plain page
-// builds nothing but the program it entered with; no knob change waits for a build (a compile or
-// link status or log, a uniform location or a use of a program before the renderer has seen it
-// finish building); the first gated change builds the all-features program in the background and
-// no change after it builds a program. With changes expected (the lab open) the all-features
-// program is built ahead once the scene is at rest and draws one frame without changing it, and the
-// first change switches to it at once.
+// featureToggles (registered as `featureToggles1`..`4`, a quarter of the scenes each), on a GPU,
+// for every scene with `featuresFor` (KNOB_KEYED; their library gates, the night sky's
+// constellations and giant planet, among their gated turns; the scenes keyed by their library gates
+// alone are proven structurally by src/shaders/index.test.ts): the plain page builds nothing but
+// the program it entered with; no knob change waits for a build (a compile or link status or log, a
+// uniform location or a use of a program before the renderer has seen it finish building); the
+// first gated change builds the all-features program in the background and no change after it
+// builds a program. With changes expected (the lab open) the all-features program is built ahead
+// once the scene is at rest and draws one frame without changing it, and the first change switches
+// to it at once.
 //
-// worldFeaturesAll (the shared world's adopters, the rest of KNOB_KEYED), on a GPU: the
-// all-features program draws every gated setting, dithered and as source, byte for byte as that
-// setting's own program does. The own program draws on a renderer taken for a software
-// rasteriser's (which builds a changed setting's own program): it enters at the same starting
-// setting as the all-features page, settles there and switches the same way, at the same frozen
-// clocks, so the sims share their history (the meadow's clocks close in the rain) and only the
-// program differs. The countryside's own check of that (`countryFeaturesAll`) draws over its land
-// directly, without the renderer (src/scenes/country/features.verify.ts).
+// worldFeaturesAll (registered as `worldFeaturesAll1`..`8`, an eighth of the scenes each; the
+// shared world's adopters, the rest of KNOB_KEYED), on a GPU: the all-features program draws every
+// gated setting, dithered and as source, byte for byte as that setting's own program does. The own
+// program draws on a renderer taken for a software rasteriser's (which builds a changed setting's
+// own program): it enters at the same starting setting as the all-features page, settles there and
+// switches the same way, at the same frozen clocks, so the sims share their history (the meadow's
+// clocks close in the rain) and only the program differs. The countryside's own check of that
+// (`countryFeaturesAll`) draws over its land directly, without the renderer
+// (src/scenes/country/features.verify.ts).
 //
 // A run scoped to some scenes (LANDING_SCENES) walks those of them alone, and sceneFeatures runs only
 // with the countryside among them.
@@ -44,7 +46,16 @@ import { DitherRenderer, type ViewId } from "./renderer.ts";
 import { sceneDefs, sceneIds, type SceneId } from "./scenes/index.ts";
 import { featureKey, sceneFeatures, sceneFeaturesAll, shaderValues } from "./shaders/index.ts";
 import { paramDefaults, type Params } from "./state.ts";
-import { check, holdFrames, labSettings, pause, stage, until, walk } from "./verify/kit.ts";
+import {
+  check,
+  holdFrames,
+  labSettings,
+  pause,
+  stage,
+  until,
+  walk,
+  type SceneWalk,
+} from "./verify/kit.ts";
 
 const WIDTH = 160;
 const HEIGHT = 100;
@@ -307,20 +318,26 @@ async function arrive(frame: () => void, renderer: DitherRenderer): Promise<void
 }
 
 /**
- * Scenes whose sim builds their picture over frames before it shows: the countryside's terrain, and
- * dew's web, which shows nothing until a web spun for the frame's shape lands. Without the wait, a
- * page settles on the meadow alone (nothing moves while the web is spun) and the web lands among
- * the frames compared.
+ * Scenes whose sim builds their picture on the build worker before it shows: the countryside's
+ * terrain, dew's web (nothing until a web spun for the frame's shape lands), the forest's life
+ * (warmed up) and the dry garden's layout. Without the wait, a page settles on the picture without
+ * it (nothing moves while it is built) and it lands among the frames compared.
  */
-const BUILT_OVER_FRAMES: Partial<Record<SceneId, true>> = { country: true, dew: true };
+const BUILT_ON_WORKER: Partial<Record<SceneId, true>> = {
+  country: true,
+  dew: true,
+  forest: true,
+  garden: true,
+};
 
 /**
- * Frames until a scene that builds its picture over frames (BUILT_OVER_FRAMES) shows it: the frame
- * changes from the first one drawn (the countryside's sky alone, dew's meadow without its web) and
- * then holds still. A scene drawn whole from its first frame returns at once.
+ * Frames, a little real time apart (a build's result arrives between tasks), until a scene that
+ * builds its picture on the build worker (BUILT_ON_WORKER) shows it: the frame changes from the
+ * first one drawn (the countryside's sky alone, dew's meadow without its web) and then holds still.
+ * A scene drawn whole from its first frame returns at once.
  */
 async function landed(scene: SceneId, frame: () => void, context: Watched): Promise<void> {
-  if (BUILT_OVER_FRAMES[scene] !== true) return;
+  if (BUILT_ON_WORKER[scene] !== true) return;
   frame();
   const first = context.image();
   let last = first;
@@ -604,10 +621,19 @@ function drawTurns(
   return drawn;
 }
 
-/** featureToggles (see the header), for every scene with `featuresFor` in the run's scope. */
-export const verifyFeatureToggles = walk(KNOB_KEYED, featureToggles);
+/**
+ * featureToggles (see the header), split `parts` ways (verify-browser.ts registers four) so that no
+ * one entry holds a shard up: every `parts`-th scene with `featuresFor` from the `part`-th
+ * (0-based), of those in the run's scope.
+ */
+export function featureToggles(part: number, parts: number): SceneWalk {
+  return walk(
+    KNOB_KEYED.filter((_, index) => index % parts === part),
+    toggles,
+  );
+}
 
-async function featureToggles(
+async function toggles(
   _gl: WebGL2RenderingContext,
   scenes: readonly SceneId[],
 ): Promise<Record<string, unknown>> {
@@ -719,16 +745,25 @@ async function featureToggles(
 }
 
 /**
- * worldFeaturesAll: for each scene with `featuresFor` but the countryside (whose own check draws
- * over its land directly) in the run's scope, the all-features program draws every gated setting
- * as its own program does (see the header).
+ * Every scene with `featuresFor` but the countryside, whose own check of the same draws over its
+ * land directly (`countryFeaturesAll`).
  */
-export const verifyWorldFeaturesAll = walk(
-  KNOB_KEYED.filter((id) => id !== "country"),
-  worldFeaturesAll,
-);
+const WORLD_KEYED = KNOB_KEYED.filter((id) => id !== "country");
 
-async function worldFeaturesAll(
+/**
+ * worldFeaturesAll (see the header), split `parts` ways (verify-browser.ts registers eight) so that
+ * no one entry holds a shard up: every `parts`-th scene of WORLD_KEYED from the `part`-th (0-based),
+ * of those in the run's scope. For each, the all-features program draws every gated setting as its
+ * own program does.
+ */
+export function worldFeaturesAll(part: number, parts: number): SceneWalk {
+  return walk(
+    WORLD_KEYED.filter((_, index) => index % parts === part),
+    drawsAsOwn,
+  );
+}
+
+async function drawsAsOwn(
   _gl: WebGL2RenderingContext,
   scenes: readonly SceneId[],
 ): Promise<Record<string, unknown>> {

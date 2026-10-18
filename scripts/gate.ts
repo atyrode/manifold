@@ -39,7 +39,7 @@ interface GateTask {
   readonly cwd?: string;
   readonly usesDist?: true;
   readonly retry?: true;
-  /** Under `--shard i/4` the task runs its own share of its work: the shard reaches its command. */
+  /** Under `--shard i/n` the task runs its own share of its work: the shard reaches its command. */
   readonly shardsItself?: true;
 }
 
@@ -283,15 +283,21 @@ const tasks: readonly GateTask[] = [
   },
 ];
 
+/** The `index`th (1-based) of `count` disjoint shares of a sharded selection. */
+interface Shard {
+  readonly index: number;
+  readonly count: number;
+}
+
 interface Options {
   readonly list: boolean;
   readonly only: string | null;
-  readonly shard: number | null;
+  readonly shard: Shard | null;
 }
 
 function usage(message: string): never {
   console.error(
-    `gate: ${message}\nusage: bun scripts/gate.ts [--list | --only <group-or-task> [--shard 1/4|2/4|3/4|4/4]]`,
+    `gate: ${message}\nusage: bun scripts/gate.ts [--list | --only <group-or-task> [--shard i/n]]`,
   );
   process.exit(2);
 }
@@ -299,7 +305,7 @@ function usage(message: string): never {
 function parseArgs(argv: readonly string[]): Options {
   let list = false;
   let only: string | null = null;
-  let shard: number | null = null;
+  let shard: Shard | null = null;
   for (let index = 0; index < argv.length; index += 1) {
     const argument = argv[index];
     if (argument === "--list") {
@@ -319,9 +325,12 @@ function parseArgs(argv: readonly string[]): Options {
     if (argument === "--shard") {
       if (shard !== null) usage("--shard may be specified only once");
       const value = argv[index + 1];
-      const match = value === undefined ? null : /^([1-4])\/4$/.exec(value);
-      if (match === null) usage("--shard requires one of 1/4, 2/4, 3/4, or 4/4");
-      shard = Number(match[1]);
+      const match = value === undefined ? null : /^(\d+)\/(\d+)$/.exec(value);
+      const share = Number(match?.[1]);
+      const count = Number(match?.[2]);
+      if (match === null || share < 1 || share > count)
+        usage("--shard requires i/n, the ith of n shares (1 <= i <= n)");
+      shard = { index: share, count };
       index += 1;
       continue;
     }
@@ -421,8 +430,9 @@ async function selected(selector: string): Promise<number> {
     shard === null
       ? group
       : group.flatMap((task, index): GateTask[] => {
-          if (task.shardsItself !== true) return index % 4 === shard - 1 ? [task] : [];
-          const share = `${shard}/4`;
+          if (task.shardsItself !== true)
+            return index % shard.count === shard.index - 1 ? [task] : [];
+          const share = `${shard.index}/${shard.count}`;
           return [
             {
               ...task,

@@ -538,17 +538,22 @@ export const ciCoverageErrors = (
         errors.push(`workflow job ${id} must use planner condition: ${expected}`);
     }
 
-    // A sharded slice runs all four of its disjoint shares, each in its own job.
-    for (const id of ["types", "landing-webgl"]) {
+    // A sharded slice runs all its disjoint shares, each in its own job: the type checks four ways,
+    // the landing lab's browser checks (software WebGL, packed by their recorded seconds) eight.
+    for (const [id, count] of [
+      ["types", 4],
+      ["landing-webgl", 8],
+    ] as const) {
       const job = optionalChildMap(jobs, id, `${id} job`);
       const shards = job
         ? childMap(childMap(job, "strategy", `${id} strategy`), "matrix", `${id} matrix`)["shard"]
         : undefined;
-      if (!Array.isArray(shards) || !same(shards.map(String), ["1", "2", "3", "4"]))
-        errors.push(`${id} job must use the complete 1/4 through 4/4 matrix`);
+      const every = Array.from({ length: count }, (_, index) => String(index + 1));
+      if (!Array.isArray(shards) || !same(shards.map(String), every))
+        errors.push(`${id} job must use the complete 1/${count} through ${count}/${count} matrix`);
       const script = job ? collectKey(job["steps"], "run").map(String).join("\n") : "";
-      if (!script.includes(`--only ${id} --shard "\${{ matrix.shard }}/4"`))
-        errors.push(`${id} job must execute its selected four-way shard`);
+      if (!script.includes(`--only ${id} --shard "\${{ matrix.shard }}/${count}"`))
+        errors.push(`${id} job must execute its selected ${count}-way shard`);
     }
     // Main and dispatch plans are full, so their scope is every scene; nothing else may narrow it.
     const landing = optionalChildMap(jobs, "landing-webgl", "landing-webgl job");

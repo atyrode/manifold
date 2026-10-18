@@ -6,7 +6,7 @@
 // (scripts/verify-timings.ts), never under 180 s, or LANDING_CHECK_SECONDS for every check when
 // that is set. A check whose renderer crashes or is killed fails at once, not at that deadline.
 //   --shard i/n          runs the ith of n disjoint shares of the checks, balanced by those
-//                        recorded seconds (CI runs four);
+//                        recorded seconds (CI runs eight);
 //   LANDING_SCENES=a,b   keeps only the checks that cover those scenes (scripts/verify-plan.ts),
 //                        and the checks that walk scenes (`walk`, src/verify/kit.ts) walk those
 //                        alone, weighed in the shards by that share of their seconds; unset or *
@@ -76,19 +76,29 @@ interface Row {
   readonly outcome: "PASS" | "FAIL" | "LOST" | "OVERRAN";
 }
 
-const build = await Bun.build({
-  entrypoints: [`${here}verify-browser.ts`],
-  target: "browser",
-  define: { LANDING_SCENES: JSON.stringify(scenes?.join(",") ?? "") },
-});
-if (!build.success || !build.outputs[0]) throw new Error(build.logs.map(String).join("\n"));
-const bundle = await build.outputs[0].text();
+/** `entry` bundled for the browser, as one module's source. */
+async function bundle(entry: string): Promise<string> {
+  const built = await Bun.build({
+    entrypoints: [`${here}${entry}`],
+    target: "browser",
+    define: { LANDING_SCENES: JSON.stringify(scenes?.join(",") ?? "") },
+  });
+  if (!built.success || !built.outputs[0]) throw new Error(built.logs.map(String).join("\n"));
+  return built.outputs[0].text();
+}
+// The checks, and the page's build worker where the page looks for it (src/sims/build.ts
+// `buildWorker`), so the checks build on it as the site does.
+const served: Readonly<Record<string, string>> = {
+  "/checks.js": await bundle("verify-browser.ts"),
+  "/build-worker.js": await bundle("src/build-worker.ts"),
+};
 const server = Bun.serve({
   hostname: "127.0.0.1",
   port: 0,
   fetch(request) {
-    return new URL(request.url).pathname === "/checks.js"
-      ? new Response(bundle, { headers: { "content-type": "text/javascript" } })
+    const script = served[new URL(request.url).pathname];
+    return script !== undefined
+      ? new Response(script, { headers: { "content-type": "text/javascript" } })
       : new Response("<!doctype html><title>Landing regressions</title>", {
           headers: { "content-type": "text/html" },
         });

@@ -355,8 +355,8 @@ export async function verifyContextRestore(
   try {
     const opened = await appear(1000, 0);
     let now = opened.at;
-    // The pond painted its plant atlas before it appeared (here on the page: the check's server
-    // has no build worker), and keeps it once disposed, for its next visit.
+    // The pond painted its plant atlas before it appeared (on the build worker, uploaded here), and
+    // keeps it once disposed, for its next visit.
     const painted = atlases();
     check(frame((now += 17)) > 0 && drawn(), "The scene did not draw before the context was lost");
     const ranFor = sceneTime();

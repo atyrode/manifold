@@ -275,9 +275,9 @@ executable mapping.
 `bun run gate` remains the memory-bounded authoritative full local gate. Changes to this policy,
 the planner, workflow, toolchain or gate registry require full cutover proof. Any gate-task addition
 or change must update CI topology and pass `bun scripts/ci-coverage.ts`; no check or assertion may
-be removed or weakened for speed without explicit operator acceptance. Full CI partitions types,
-and the landing lab's browser checks (balanced by their recorded seconds), into four disjoint
-shards each, while no-argument local `bun run gate` retains complete unsharded behavior. A
+be removed or weakened for speed without explicit operator acceptance. Full CI partitions types
+into four disjoint shards and the landing lab's browser checks (balanced by their recorded seconds)
+into eight, while no-argument local `bun run gate` retains complete unsharded behavior. A
 pull-request change confined to landing scene directories (and documentation) runs only the
 browser checks that cover those scenes and the scenes importing them; main pushes and dispatches
 plan every scene. Build consumers may use only a SHA-named artifact from the exact source tree

@@ -38,11 +38,7 @@ import { verifyWaterTiers } from "./src/shaders/lib/water.verify.ts";
 import { verifyPondPlants } from "./src/scenes/pond/plants.verify.ts";
 import { islandSnowCheck } from "./src/scenes/island/snow.verify.ts";
 import { gardenClimateCheck } from "./src/scenes/garden/climate.verify.ts";
-import {
-  verifyFeatureToggles,
-  verifySceneFeatures,
-  verifyWorldFeaturesAll,
-} from "./src/features.verify.ts";
+import { featureToggles, verifySceneFeatures, worldFeaturesAll } from "./src/features.verify.ts";
 import { verifyCloudTiers } from "./src/scenes/clouds/tiers.verify.ts";
 import { verifyMilkyWay } from "./src/scenes/campfire/milkyway.verify.ts";
 import { verifyStarsKnob } from "./src/scenes/shore/stars.verify.ts";
@@ -549,7 +545,10 @@ export const checks: readonly Check[] = [
   ["meadowWildflowers", verifyMeadowWildflowers],
   ["countryTerrain", verifyCountryTerrain],
   ["countryBehind", verifyCountryBehind],
-  ["featureToggles", verifyFeatureToggles],
+  ["featureToggles1", featureToggles(0, 4)],
+  ["featureToggles2", featureToggles(1, 4)],
+  ["featureToggles3", featureToggles(2, 4)],
+  ["featureToggles4", featureToggles(3, 4)],
   ["countryLife", verifyCountryLife],
   ["countryFeaturesAll", verifyCountryFeaturesAll],
   ["countryMurmuration", verifyCountryMurmuration],
@@ -557,7 +556,14 @@ export const checks: readonly Check[] = [
   ["countrySeason", verifyCountrySeason],
   ["countryYear", verifyCountryYear],
   ["countryChalk", verifyCountryChalk],
-  ["worldFeaturesAll", verifyWorldFeaturesAll],
+  ["worldFeaturesAll1", worldFeaturesAll(0, 8)],
+  ["worldFeaturesAll2", worldFeaturesAll(1, 8)],
+  ["worldFeaturesAll3", worldFeaturesAll(2, 8)],
+  ["worldFeaturesAll4", worldFeaturesAll(3, 8)],
+  ["worldFeaturesAll5", worldFeaturesAll(4, 8)],
+  ["worldFeaturesAll6", worldFeaturesAll(5, 8)],
+  ["worldFeaturesAll7", worldFeaturesAll(6, 8)],
+  ["worldFeaturesAll8", worldFeaturesAll(7, 8)],
   ["nightSky", verifyNightSky],
   ["countryFog", verifyCountryFog],
   ["motionClocksAll1", motionClocksAll(0, 4)],

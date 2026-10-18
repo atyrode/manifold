@@ -206,15 +206,15 @@ describe("gate CLI", () => {
 
   test("each landing WebGL shard hands its share to the runner, which packs the checks", async () => {
     const shards = await Promise.all(
-      ([1, 2, 3, 4] as const).map((shard) =>
-        runSelectedTasks("landing-webgl", ["--shard", `${shard}/4`]),
+      Array.from({ length: 8 }, (_, index) =>
+        runSelectedTasks("landing-webgl", ["--shard", `${index + 1}/8`]),
       ),
     );
     shards.forEach(({ result, invocations }, index) => {
       expect(result.exitCode).toBe(0);
-      expect(result.stdout).toContain(`PASS  verify:landing-webgl (shard ${index + 1}/4)`);
+      expect(result.stdout).toContain(`PASS  verify:landing-webgl (shard ${index + 1}/8)`);
       expect(invocations).toEqual([
-        { args: ["concepts/landing/verify.ts", "--shard", `${index + 1}/4`] },
+        { args: ["concepts/landing/verify.ts", "--shard", `${index + 1}/8`] },
       ]);
     });
   });
@@ -226,8 +226,9 @@ describe("gate CLI", () => {
     [["--list", "--only", "types"], "--list and --only cannot be combined"],
     [["--shard", "1/4"], "--shard requires --only"],
     [["--only", "style", "--shard", "1/4"], "--shard requires --only types or a task that shards"],
-    [["--only", "types", "--shard", "0/4"], "--shard requires one of"],
-    [["--only", "types", "--shard", "1/3"], "--shard requires one of"],
+    [["--only", "types", "--shard", "0/4"], "--shard requires i/n"],
+    [["--only", "types", "--shard", "5/4"], "--shard requires i/n"],
+    [["--only", "types", "--shard", "4"], "--shard requires i/n"],
     [["--unknown"], 'unknown argument "--unknown"'],
     [["types"], 'unknown argument "types"'],
     [["--only", "not-a-gate-selector"], 'unknown task or group "not-a-gate-selector"'],
@@ -249,7 +250,7 @@ describe("gate CLI", () => {
     expect(result.exitCode).not.toBe(0);
     expect(result.stderr).toBe(
       "gate: MANIFOLD_GATE_DIST must be an absolute path\n" +
-        "usage: bun scripts/gate.ts [--list | --only <group-or-task> [--shard 1/4|2/4|3/4|4/4]]\n",
+        "usage: bun scripts/gate.ts [--list | --only <group-or-task> [--shard i/n]]\n",
     );
     expect(result.stdout).toBe("");
   });

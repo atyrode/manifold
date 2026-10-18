@@ -165,17 +165,24 @@ describe("risk-selected CI topology coverage", () => {
     );
   });
 
-  test("requires all four landing WebGL shards, each running its own share", () => {
+  test("requires all eight landing WebGL shards, each running its own share", () => {
     const at = ci.indexOf("\n  landing-webgl:\n");
     const inLanding = (from: string, to: string): string =>
       ci.slice(0, at) + ci.slice(at).replace(from, to);
-    const threeShards = inLanding("shard: [1, 2, 3, 4]", "shard: [1, 2, 3]");
-    expect(ciCoverageErrors(registry, threeShards)).toContain(
-      "landing-webgl job must use the complete 1/4 through 4/4 matrix",
+    const fourShards = inLanding("shard: [1, 2, 3, 4, 5, 6, 7, 8]", "shard: [1, 2, 3, 4]");
+    expect(ciCoverageErrors(registry, fourShards)).toContain(
+      "landing-webgl job must use the complete 1/8 through 8/8 matrix",
     );
-    const oneShare = inLanding('--shard "${{ matrix.shard }}/4"', '--shard "1/4"');
+    const oneShare = inLanding('--shard "${{ matrix.shard }}/8"', '--shard "1/8"');
     expect(ciCoverageErrors(registry, oneShare)).toContain(
-      "landing-webgl job must execute its selected four-way shard",
+      "landing-webgl job must execute its selected 8-way shard",
+    );
+    const quarters = inLanding(
+      '--shard "${{ matrix.shard }}/8"',
+      '--shard "${{ matrix.shard }}/4"',
+    );
+    expect(ciCoverageErrors(registry, quarters)).toContain(
+      "landing-webgl job must execute its selected 8-way shard",
     );
   });
 
