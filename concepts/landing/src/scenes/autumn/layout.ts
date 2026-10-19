@@ -98,9 +98,6 @@ export const AUTUMN_MARK = {
   margin: 0.22,
 } as const;
 
-/** Leaves in the air at once (the maple's record row: four texels a leaf). */
-export const AUTUMN_SLOTS = 36;
-
 export const AUTUMN_GUST = { gain: 2 } as const;
 
 /** The layout as GLSL constants and the path's centre line (autumnPathX). */
@@ -121,7 +118,6 @@ const vec4 AUTUMN_CARPET = vec4(${glslFloat(AUTUMN_CARPET.x0)}, ${glslFloat(AUTU
 const ivec2 AUTUMN_CARPET_SIZE = ivec2(${AUTUMN_CARPET.cols}, ${AUTUMN_CARPET.rows});
 const vec2 AUTUMN_MARK_AT = vec2(${glslFloat(AUTUMN_MARK.x)}, ${glslFloat(AUTUMN_MARK.z)});
 const vec2 AUTUMN_MARK_SIZE = vec2(${glslFloat(AUTUMN_MARK.width / 0.94)}, ${glslFloat(AUTUMN_MARK.depth)});
-const int AUTUMN_SLOTS = ${AUTUMN_SLOTS};
 const vec2 AUTUMN_PASSAGE = vec2(${glslFloat(AUTUMN_PASSAGE.enter)}, ${glslFloat(AUTUMN_PASSAGE.exit)});
 const vec2 AUTUMN_FLURRY = vec2(${glslFloat(AUTUMN_FLURRY.rise)}, ${glslFloat(AUTUMN_FLURRY.fall)});
 const vec2 AUTUMN_WHIRL = vec2(${glslFloat(AUTUMN_WHIRL.rise)}, ${glslFloat(AUTUMN_WHIRL.canopy)});

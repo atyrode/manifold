@@ -195,7 +195,9 @@ export const mapleLayer: LayerDef = {
     },
   },
   casters: ["mapleShade"],
-  data: AUTUMN_DATA.maple,
+  // Its leaves in the air (sim.ts): the composer's falling things, in the tree's palette (shader.ts
+  // mapleLeafSpeck).
+  falling: { kinds: ["leaf"], leaf: "mapleLeafSpeck" },
   passes: { front: "mapleFront" },
 };
 

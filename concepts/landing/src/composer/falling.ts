@@ -42,6 +42,23 @@
 // a smear MARK_METRES wide, a cell nearer than its surface so its own surface does not hide it,
 // fading through three codes.
 //
+// Leaves (FallingWriter.leaves, FallingWriter.leaf). A layer's crown lets leaves go on the pool's
+// own steps, each step a beat that lets one go with the chance the crown's rate gives it (rate ×
+// FALL_STEP; while fewer than its `least` are in the air, at least LEAF_LEAST_RATE): the rate only
+// chooses which steps let go, so nothing runs backward as it changes. The layer fills each leaf in
+// from the leaf's own stream of chance (hash31 of the crown, the step and the seed), and may hand
+// the pool a leaf at once (lifted off the ground, blown in). A leaf is a fluttering plate under heavy
+// drag (sims/flutter.ts, as the garden's and the park's always fell): light ones flutter, heavy ones
+// tumble, the plane turning, rocking about its chord, spinning in its plane, carried by its layer's
+// air (FallLeaves.air at the step's moment on the motion clock; the gust field's drift where it
+// names none). It comes down on the highest surface under it no higher than itself, eases flat over
+// LEAF_SETTLE (face up or face down, whichever is nearer), and then joins the litter of the layer the
+// surface names where that layer's affordances take it (FallingLitter.lay), else lies there
+// LEAF_REST and fades. It is drawn as its outline (FALL_LEAF_SHAPES: the plate's two axes through
+// the rig, cell by cell), one code a cell: its hue in FALL_LEAF_HUES bands of its layer's palette
+// and the face it shows, flat or standing (FALL_LEAF_SHADES); it dissolves in over LEAF_FADE_IN as
+// it lets go and out as it fades, a cell at a time.
+//
 // Determinism: everything is drawn from the pool's step count, the lanes and the seed (hash31),
 // never from the frame: a seed plays the same at any frame rate. The fixed step runs on the fall
 // clock's pace (README "Time and motion": dt × min(1, 2.5 × motion)), as the World's rain falls.
@@ -49,9 +66,18 @@ import { SPECK_DEPTH_STEP } from "./caps.ts";
 import { gustAt, gustWind, newGustWind, type GustField, type GustWind } from "./gust.ts";
 import { glslFloat } from "../shaders/glsl.ts";
 import { FixedStep } from "../sims/clock.ts";
-import { hash31 } from "../sims/math.ts";
+import { FlutterPlates } from "../sims/flutter.ts";
+import { hash31, smoothstep } from "../sims/math.ts";
+import { mulberry32 } from "../sims/random.ts";
 import type { LevelCamera } from "../sims/camera.ts";
-import type { FallKind, FallSurface, FallingWater } from "./types.ts";
+import type {
+  FallKind,
+  FallLeaf,
+  FallLeaves,
+  FallSurface,
+  FallingLitter,
+  FallingWater,
+} from "./types.ts";
 
 /** Seconds a step of the pool; most steps one frame runs. */
 export const FALL_STEP = 1 / 60;
@@ -95,19 +121,49 @@ const DROP_CELLS = 2;
 /** A drop of water's mass (kg) per cubic metre of it. */
 const WATER_DENSITY = 1000;
 
-/** The pool's particles. */
+/** How far a leaf rocks about its chord in flight (radians). */
+const LEAF_ROCK = 0.3;
+/** The fewest leaves a second a crown lets go while fewer than its `least` are in the air. */
+const LEAF_LEAST_RATE = 1 / 0.45;
+/** Seconds a leaf takes to dissolve in as it lets go, to ease flat once down, to lie, and to fade at the end of it. */
+const LEAF_FADE_IN = 0.9;
+const LEAF_SETTLE = 0.7;
+const LEAF_REST = 8;
+const LEAF_FADE_OUT = 3;
+/** Where a leaf is gone: higher it does not rise (m), nearer, farther and farther aside, older (s). */
+const LEAF_TOP = 12;
+const LEAF_NEAR = 1.5;
+const LEAF_FAR = 60;
+const LEAF_ASIDE = 40;
+const LEAF_MAX_AGE = 60;
+/** Below this many cells across a leaf is a dot of a cell or two. */
+const LEAF_DOT = 3;
+/**
+ * A leaf's outlines, in leaf units (radius about 1, tip toward +y, the stalk toward -y), as the park
+ * drew its leaves: a five-lobed maple's, a ginkgo's fan, an oak's long lobed blade.
+ */
+export const FALL_LEAF_SHAPES = 3;
+/** A leaf's hue bands (of its palette, 0..1), and its codes a band: the face it shows (top, underside) × flat or standing. */
+export const FALL_LEAF_HUES = 8;
+export const FALL_LEAF_SHADES = 4;
+
+/** The pool's particles: a drop's family, then a leaf flying, easing flat and lying. */
 const enum Kind {
   free = 0,
   drop = 1,
   droplet = 2,
   crown = 3,
   mark = 4,
+  leaf = 5,
+  settling = 6,
+  lying = 7,
 }
 
 /**
  * The falling things' codes in the speck map (1-based, from Allocation.falling's base), by kind:
  * the drop's head, its streak, a bead at a drip point, a splash's crown and droplets, and the wet
- * mark fresh, drying and nearly dry.
+ * mark fresh, drying and nearly dry. A leaf's are its kind's own from 1: band × FALL_LEAF_SHADES +
+ * shade + 1 (fallingGlsl).
  */
 export const FALL_CODE = {
   drop: 1,
@@ -119,8 +175,24 @@ export const FALL_CODE = {
   dry: 7,
 } as const;
 
-/** Codes each kind takes, in the order they are allocated (every kind's codes from 1). */
-export const FALL_CODES: Readonly<Record<FallKind, number>> = { drop: 7 };
+/** Every kind, in the order their codes follow each other (each kind's codes from 1). */
+export const FALL_KINDS: readonly FallKind[] = ["drop", "leaf"];
+
+/** Codes each kind takes. */
+export const FALL_CODES: Readonly<Record<FallKind, number>> = {
+  drop: 7,
+  leaf: FALL_LEAF_HUES * FALL_LEAF_SHADES,
+};
+
+/** Where `kind`'s codes start among the falling things' when `kinds` are on (FALL_KINDS' order): codes before its own. */
+export function fallOffset(kinds: readonly FallKind[], kind: FallKind): number {
+  let offset = 0;
+  for (const each of FALL_KINDS) {
+    if (each === kind) return offset;
+    if (kinds.includes(each)) offset += FALL_CODES[each];
+  }
+  return offset;
+}
 
 /** What the composed sim hands the pool for a frame's steps. */
 export interface FallFrame {
@@ -147,6 +219,8 @@ export interface FallView {
   /** The pointer's parallax (SimFrame.parallax), -1..1 each way. */
   readonly parallaxX: number;
   readonly parallaxY: number;
+  /** The kinds whose codes the speck map holds (Allocation.falling): the others are not drawn. */
+  readonly kinds: readonly FallKind[];
 }
 
 /** Where the pool plots: the speck map, a code from its allocated base (1-based codes). */
@@ -173,10 +247,101 @@ interface Surface {
   length: number;
 }
 
+/** A layer's leaves named this frame: its lanes' first key, and how its leaves slide. */
+interface Crown {
+  key: number;
+  leaves: FallLeaves;
+  slideX: number;
+  slideY: number;
+}
+
 /** Whether `host` (a layer's affordances) lends the falling things its water. */
 function isFallingWater(host: object | undefined): host is FallingWater {
   return host !== undefined && typeof (host as Partial<FallingWater>).strike === "function";
 }
+
+/** Whether `host` (a layer's affordances) takes leaves into its litter. */
+function isFallingLitter(host: object | undefined): host is FallingLitter {
+  return host !== undefined && typeof (host as Partial<FallingLitter>).lay === "function";
+}
+
+/** A fresh leaf to fill in (FallLeaves.shed): still, flat, shown at once. */
+const FRESH_LEAF: Readonly<FallLeaf> = {
+  x: 0,
+  y: 0,
+  z: 0,
+  radius: 0.1,
+  hue: 0,
+  shape: 0,
+  mass: 0.3,
+  chord: 0.3,
+  pace: 0.2,
+  psi: 0,
+  dpsi: 0,
+  th: 0,
+  sigma: 0,
+  dsigma: 0,
+  roll: 0,
+  rollRate: 0,
+  rest: 0,
+  phase: 0,
+  shown: true,
+  ahead: 0,
+};
+
+/**
+ * Signed distance (leaf units, negative inside) to outline `shape`'s edge at leaf point (qx, qy),
+ * the stalk included (FALL_LEAF_SHAPES): the park's leaves' outlines (autumn/shader.ts autumnLeafD)
+ * at a middling leaf of each.
+ */
+function leafEdge(qx: number, qy: number, shape: number): number {
+  let blade: number;
+  if (shape === 0) {
+    const a = Math.abs(Math.atan2(qx, qy + 1e-5));
+    let r = 0.36;
+    r = Math.max(r, Math.max(1 - a / 0.46, 0) ** 1.2);
+    r = Math.max(r, 0.89 * Math.max(1 - Math.abs(a - 1.08) / 0.42, 0) ** 1.2);
+    r = Math.max(r, 0.58 * Math.max(1 - Math.abs(a - 2.1) / 0.38, 0) ** 1.2);
+    r *= 1 - 0.8 * smoothstep(2.65, 3.1, a);
+    blade = (Math.hypot(qx, qy) - r) * 0.9;
+  } else if (shape === 1) {
+    const fy = qy + 0.7;
+    const a = Math.atan2(qx, fy + 1e-5);
+    const rr = Math.hypot(qx, fy);
+    const outer = rr - (1.35 - 0.3 * Math.exp((-a * a) / 0.012));
+    const wedge = (Math.abs(a) - 0.92) * Math.max(rr, 0.25);
+    blade = Math.max(Math.max(outer, wedge), 0.18 - rr) * 0.85;
+  } else {
+    const t = Math.min(1, Math.max(0, (qy + 0.95) / 1.9));
+    const lobes = 0.78 + 0.22 * Math.cos(18 * t + 1.4);
+    const w = 0.64 * Math.max(Math.sin(Math.PI * t ** 0.85), 0) ** 0.75 * lobes;
+    blade = Math.max(Math.abs(qx) - w, Math.abs(qy) - 0.95) * 0.85;
+  }
+  // The stalk: a short segment from the blade's foot.
+  const y0 = shape === 0 ? -0.25 : shape === 1 ? -0.6 : -0.85;
+  const sx = 0.03;
+  const sy = -0.55;
+  const u = Math.min(1, Math.max(0, (qx * sx + (qy - y0) * sy) / (sx * sx + sy * sy)));
+  const stalk = Math.hypot(qx - sx * u, qy - y0 - sy * u) - 0.045;
+  return Math.min(blade, stalk);
+}
+
+/** Texels along a side of each outline's mask, over leaf units -LEAF_SPAN..LEAF_SPAN each way. */
+const LEAF_MASK = 48;
+const LEAF_SPAN = 1.4;
+/** Each outline as a mask (1 inside, rows up), drawn once: a leaf's cells read it, not the outline's sums. */
+const LEAF_MASKS = ((): Uint8Array => {
+  const masks = new Uint8Array(FALL_LEAF_SHAPES * LEAF_MASK * LEAF_MASK);
+  const texel = (2 * LEAF_SPAN) / LEAF_MASK;
+  for (let shape = 0; shape < FALL_LEAF_SHAPES; shape++)
+    for (let my = 0; my < LEAF_MASK; my++)
+      for (let mx = 0; mx < LEAF_MASK; mx++) {
+        const qx = -LEAF_SPAN + (mx + 0.5) * texel;
+        const qy = -LEAF_SPAN + (my + 0.5) * texel;
+        if (leafEdge(qx, qy, shape) <= 0) masks[(shape * LEAF_MASK + my) * LEAF_MASK + mx] = 1;
+      }
+  return masks;
+})();
 
 /** The pool (see the header). */
 export class FallingPool {
@@ -198,6 +363,15 @@ export class FallingPool {
   readonly #floor = new Float64Array(FALL_CAPACITY);
   readonly #slideX = new Float64Array(FALL_CAPACITY);
   readonly #slideY = new Float64Array(FALL_CAPACITY);
+  /** A leaf's plate, its hue, outline, eddy phase, lane (its layer's key + lane), whether it shows at once, its serial, and the litter it may join. */
+  readonly #plates = new FlutterPlates(FALL_CAPACITY, LEAF_ROCK);
+  readonly #hue = new Float64Array(FALL_CAPACITY);
+  readonly #shape = new Uint8Array(FALL_CAPACITY);
+  readonly #phase = new Float64Array(FALL_CAPACITY);
+  readonly #lane = new Int32Array(FALL_CAPACITY);
+  readonly #shown = new Uint8Array(FALL_CAPACITY);
+  readonly #serial = new Float64Array(FALL_CAPACITY);
+  readonly #litter: (string | undefined)[] = [];
   /** Free slots, a stack; the slots above `#top` have never been used. */
   readonly #free = new Int32Array(FALL_CAPACITY);
   #freeCount = 0;
@@ -213,7 +387,31 @@ export class FallingPool {
   #dripCount = 0;
   readonly #surfaces: Surface[] = [];
   #surfaceCount = 0;
-  /** A water surface's layer's affordances (LayerFrame.host). */
+  readonly #crowns: Crown[] = [];
+  #crownCount = 0;
+  /** A leaf to fill in, the air at a leaf (x, y, z), a leaf's position for its plate (x, z, y) and its frame. */
+  readonly #leafOut: FallLeaf = { ...FRESH_LEAF };
+  readonly #air = new Float64Array(3);
+  readonly #at = new Float64Array(3);
+  readonly #frame = new Float64Array(9);
+  /** The height a leaf starts its step at (it lands on nothing above it), and the surface it last came down on. */
+  #leafFrom = 0;
+  #leafOn: Surface | undefined;
+  /** Where a leaf comes down (FlutterFloor): the highest surface under (x, z) no higher than it was. */
+  readonly #leafFloor = (x: number, z: number): number => {
+    let best = -Infinity;
+    this.#leafOn = undefined;
+    for (let k = 0; k < this.#surfaceCount; k++) {
+      const s = this.#surfaces[k];
+      if (s === undefined) continue;
+      const sy = s.surface.y;
+      if (sy > this.#leafFrom || sy <= best || !this.#within(s, x, z)) continue;
+      best = sy;
+      this.#leafOn = s;
+    }
+    return best;
+  };
+  /** A water surface's layer's affordances, a litter's (LayerFrame.host). */
   readonly #host: (layer: string) => object | undefined;
 
   constructor(host: (layer: string) => object | undefined) {
@@ -230,10 +428,34 @@ export class FallingPool {
     return this.#steps;
   }
 
-  /** Forget this frame's drip points and surfaces: the layers name them afresh. */
+  /** Forget this frame's drip points, surfaces and crowns: the layers name them afresh. */
   begin(): void {
     this.#dripCount = 0;
     this.#surfaceCount = 0;
+    this.#crownCount = 0;
+  }
+
+  /** A layer's leaves this frame: `key` its lanes' first (its crown's lane), how they slide. */
+  leaves(key: number, leaves: FallLeaves, slideX: number, slideY: number): void {
+    const c = (this.#crowns[this.#crownCount] ??= { key, leaves, slideX, slideY });
+    c.key = key;
+    c.leaves = leaves;
+    c.slideX = slideX;
+    c.slideY = slideY;
+    this.#crownCount++;
+  }
+
+  /** A leaf let go now under lane `key` (its layer's first key + its lane); false when the pool is full. */
+  leaf(key: number, leaf: FallLeaf, slideX: number, slideY: number): boolean {
+    return this.#spawnLeaf(key, leaf, slideX, slideY) >= 0;
+  }
+
+  /** Leaves of lane `key` in the air now (not yet come down). */
+  aloft(key: number): number {
+    let n = 0;
+    for (let i = 0; i < this.#top; i++)
+      if (this.#kind[i] === Kind.leaf && this.#lane[i] === key) n++;
+    return n;
   }
 
   /** A drip point this frame: `key` its lane among every layer's, (x, y, z) rig frame, metres. */
@@ -324,6 +546,10 @@ export class FallingPool {
         if (age >= MARK_LIFE) this.#kill(i);
         continue;
       }
+      if (k >= Kind.leaf) {
+        this.#stepLeaf(i, k, age, px, py, pz, wind, drift, gusty, tm);
+        continue;
+      }
       // Drawn toward the air (the wind and the gust where it is), and down.
       const load = gusty ? gustAt(wind, px, pz, tm, 0) : 0;
       const air = drift + GUST_DRIFT * load;
@@ -347,6 +573,151 @@ export class FallingPool {
       if (nvy < 0 && this.#land(i, px, py, pz, nx, ny, nz)) continue;
       if (ny < -FALL_FLOOR || age >= MAX_AGE || nz < 0.05) this.#kill(i);
     }
+    this.#shed();
+  }
+
+  /** Leaf i's step (see the header): flying in its layer's air, easing flat, lying. */
+  #stepLeaf(
+    i: number,
+    k: Kind,
+    age: number,
+    px: number,
+    py: number,
+    pz: number,
+    wind: GustWind,
+    drift: number,
+    gusty: boolean,
+    tm: number,
+  ): void {
+    if (k === Kind.leaf) {
+      if (age >= LEAF_MAX_AGE) {
+        this.#kill(i);
+        return;
+      }
+      const air = this.#air;
+      const lane = this.#lane[i] ?? 0;
+      const crown = this.#crownOf(lane - (lane & 0xffff));
+      if (crown !== undefined) crown.leaves.air(px, py, pz, tm, this.#phase[i] ?? 0, air);
+      else {
+        const load = gusty ? gustAt(wind, px, pz, tm, 0) : 0;
+        const speed = drift + GUST_DRIFT * load;
+        air[0] = speed * wind.dirX;
+        air[1] = 0;
+        air[2] = speed * wind.dirZ;
+      }
+      this.#flyLeaf(i, air[0] ?? 0, air[1] ?? 0, air[2] ?? 0);
+      return;
+    }
+    if (k === Kind.lying) {
+      if (age >= LEAF_REST) this.#kill(i);
+      return;
+    }
+    const p = this.#plates;
+    const eased = smoothstep(0, LEAF_SETTLE, age);
+    p.settle(i, eased);
+    p.sigma[i] = (p.sigma[i] ?? 0) + (p.dsigma[i] ?? 0) * FALL_STEP * (1 - eased);
+    if (age < LEAF_SETTLE) return;
+    const f = this.#frame;
+    p.orient(i, 0, f);
+    const litter = this.#litter[i];
+    const host = litter === undefined ? undefined : this.#host(litter);
+    const face = (f[8] ?? 1) >= 0 ? 1 : -1;
+    const angle = Math.atan2(f[1] ?? 0, f[0] ?? 1);
+    if (isFallingLitter(host) && host.lay(px, pz, angle, this.#hue[i] ?? 0, face)) {
+      this.#kill(i);
+      return;
+    }
+    this.#kind[i] = Kind.lying;
+    this.#age[i] = 0;
+  }
+
+  /** Leaf i flies a step in the air (m/s): it comes down on a surface, or is gone out of the picture. */
+  #flyLeaf(i: number, airX: number, airY: number, airZ: number): void {
+    const at = this.#at;
+    at[0] = this.#x[i] ?? 0;
+    at[1] = this.#z[i] ?? 0;
+    at[2] = this.#y[i] ?? 0;
+    this.#leafFrom = at[2];
+    const landed = this.#plates.fly(i, FALL_STEP, at, airX, airZ, airY, this.#leafFloor);
+    const x = at[0];
+    const z = at[1];
+    const y = Math.min(at[2], LEAF_TOP);
+    this.#x[i] = x;
+    this.#y[i] = y;
+    this.#z[i] = z;
+    if (Math.abs(x) > LEAF_ASIDE || z < LEAF_NEAR || z > LEAF_FAR || y < -FALL_FLOOR) {
+      this.#kill(i);
+      return;
+    }
+    if (!landed) return;
+    const on = this.#leafOn?.surface;
+    this.#kind[i] = Kind.settling;
+    this.#age[i] = 0;
+    this.#litter[i] = on !== undefined && on.kind !== "water" ? on.litter : undefined;
+    this.#plates.touchDown(i);
+  }
+
+  /** The crown named this frame whose lanes start at `key`, if any. */
+  #crownOf(key: number): Crown | undefined {
+    for (let c = 0; c < this.#crownCount; c++) {
+      const crown = this.#crowns[c];
+      if (crown?.key === key) return crown;
+    }
+    return undefined;
+  }
+
+  /**
+   * Each crown's beat this step: a leaf lets go with the chance its rate gives a step, at least
+   * LEAF_LEAST_RATE's while fewer than its `least` are in the air (see the header).
+   */
+  #shed(): void {
+    for (let c = 0; c < this.#crownCount; c++) {
+      const crown = this.#crowns[c];
+      if (crown === undefined || !(crown.leaves.rate > 0)) continue;
+      const { key, leaves } = crown;
+      const least = leaves.least > 0 && this.aloft(key) < leaves.least;
+      const rate = least ? Math.max(leaves.rate, LEAF_LEAST_RATE) : leaves.rate;
+      if (hash31(key, this.#steps, this.#seed + 21) >= rate * FALL_STEP) continue;
+      const leaf = Object.assign(this.#leafOut, FRESH_LEAF);
+      leaves.shed(
+        mulberry32(Math.floor(hash31(key, this.#steps, this.#seed + 23) * 2 ** 32)),
+        leaf,
+      );
+      this.#spawnLeaf(key, leaf, crown.slideX, crown.slideY);
+    }
+  }
+
+  /** A leaf into a free slot (its plate as `leaf` seeds it), flown ahead as it says; -1 when none is free. */
+  #spawnLeaf(key: number, leaf: FallLeaf, slideX: number, slideY: number): number {
+    const i = this.#spawn(Kind.leaf, leaf.x, leaf.y, leaf.z, 0, 0, 0, leaf.radius, slideX, slideY);
+    if (i < 0) return -1;
+    const p = this.#plates;
+    p.start(i);
+    p.mass[i] = leaf.mass;
+    p.chord[i] = leaf.chord;
+    p.pace[i] = leaf.pace;
+    p.psi[i] = leaf.psi;
+    p.dpsi[i] = leaf.dpsi;
+    p.th[i] = leaf.th;
+    p.sigma[i] = leaf.sigma;
+    p.dsigma[i] = leaf.dsigma;
+    p.roll[i] = leaf.roll;
+    p.rollRate[i] = leaf.rollRate;
+    p.rest[i] = leaf.rest;
+    this.#hue[i] = leaf.hue;
+    this.#shape[i] = leaf.shape;
+    this.#phase[i] = leaf.phase;
+    this.#lane[i] = key;
+    this.#shown[i] = leaf.shown ? 1 : 0;
+    this.#serial[i] = this.#born;
+    this.#litter[i] = undefined;
+    // Already on its way down: flown that long in still air.
+    for (let t = 0; t < leaf.ahead && this.#kind[i] === Kind.leaf; t += FALL_STEP)
+      this.#flyLeaf(i, 0, 0, 0);
+    this.#px[i] = this.#x[i] ?? 0;
+    this.#py[i] = this.#y[i] ?? 0;
+    this.#pz[i] = this.#z[i] ?? 0;
+    return i;
   }
 
   /**
@@ -525,10 +896,13 @@ export class FallingPool {
     const cellY = (y: number, z: number, slide: number): number =>
       (rig.horizon + (rig.focal * (y - eye)) / z - view.shift + slide * view.parallaxY) * H;
     const depthOf = (z: number): number => Math.min(255, Math.floor(z * SPECK_DEPTH_STEP));
+    const drops = view.kinds.includes("drop");
+    const leaves = view.kinds.includes("leaf");
+    const leafFrom = fallOffset(view.kinds, "leaf");
     const top = this.#top;
     for (let i = 0; i < top; i++) {
       const k = this.#kind[i] ?? Kind.free;
-      if (k === Kind.free) continue;
+      if (k === Kind.free || !(k >= Kind.leaf ? leaves : drops)) continue;
       const x0 = this.#px[i] ?? 0;
       const y0 = this.#py[i] ?? 0;
       const z0 = this.#pz[i] ?? 0;
@@ -573,6 +947,11 @@ export class FallingPool {
         plot.plot(ix + 1, iy, FALL_CODE.splash, depth);
         plot.plot(ix - 1, iy + 1, FALL_CODE.splash, depth);
         plot.plot(ix + 1, iy + 1, FALL_CODE.splash, depth);
+      } else if (k >= Kind.leaf) {
+        // Off the map, a leaf draws nothing: its cells lie within 1.55 radii of its middle.
+        const out = 0.78 * across + 1;
+        if (cx + out >= 0 && cx - out < view.width && cy + out >= 0 && cy - out < H)
+          this.#paintLeaf(plot, i, k, cx, cy, x / z, (y - eye) / z, scale, depth, leafFrom);
       } else {
         const share = (this.#age[i] ?? 0) / MARK_LIFE;
         const code = share < 0.34 ? FALL_CODE.wet : share < 0.67 ? FALL_CODE.drying : FALL_CODE.dry;
@@ -581,7 +960,83 @@ export class FallingPool {
         for (let s = 0; s < w; s++) plot.plot(ix - (w >> 1) + s, iy, code, nearer);
       }
     }
-    this.#paintBeads(plot, cellX, cellY, depthOf, rig, H);
+    if (drops) this.#paintBeads(plot, cellX, cellY, depthOf, rig, H);
+  }
+
+  /**
+   * Leaf i as its outline, cell by cell (see the header): (cx, cy) the cell it is at, (wx, wy) its
+   * place over the depth (x / z, (y - eye) / z) that folds the view's perspective into its axes'
+   * images, `scale` cells a metre at its depth, `from` the leaf codes' place among the falling's.
+   */
+  #paintLeaf(
+    plot: FallPlot,
+    i: number,
+    k: Kind,
+    cx: number,
+    cy: number,
+    wx: number,
+    wy: number,
+    scale: number,
+    depth: number,
+    from: number,
+  ): void {
+    const f = this.#frame;
+    const age = this.#age[i] ?? 0;
+    const rock =
+      k === Kind.leaf ? 1 : k === Kind.settling ? 1 - smoothstep(0, LEAF_SETTLE, age) : 0;
+    this.#plates.orient(i, rock, f);
+    // The chord axis (toward the tip) and the span axis on the screen, in cells: a point `a` along an
+    // axis moves its image by (ax - wx az, ay - wy az) times the scale. The frame's axes are (x, z, y).
+    const r = (this.#radius[i] ?? 0) * scale;
+    const tx = r * ((f[0] ?? 0) - wx * (f[1] ?? 0));
+    const ty = r * ((f[2] ?? 0) - wy * (f[1] ?? 0));
+    const sx = r * ((f[3] ?? 0) - wx * (f[4] ?? 0));
+    const sy = r * ((f[5] ?? 0) - wy * (f[4] ?? 0));
+    const det = tx * sy - ty * sx;
+    const band = Math.min(FALL_LEAF_HUES - 1, Math.floor((this.#hue[i] ?? 0) * FALL_LEAF_HUES));
+    const shade = (det > 0 ? 0 : 2) + (Math.abs(f[8] ?? 1) < 0.5 ? 1 : 0);
+    const code = from + band * FALL_LEAF_SHADES + shade + 1;
+    // How much of it shows: dissolving in as it lets go, out as it fades where it lies.
+    const shown =
+      k === Kind.lying
+        ? Math.min(1, (LEAF_REST - age) / LEAF_FADE_OUT)
+        : k === Kind.leaf && this.#shown[i] === 0
+          ? Math.min(1, age / LEAF_FADE_IN)
+          : 1;
+    const serial = this.#serial[i] ?? 0;
+    const ix = Math.floor(cx);
+    const iy = Math.floor(cy);
+    if (2 * r < LEAF_DOT) {
+      if (shown >= 1 || hash31(ix, iy, serial) < shown) plot.plot(ix, iy, code, depth);
+      return;
+    }
+    // Edge on, it is a sliver a tenth of it wide (the park's leaves were drawn so). The cells within
+    // reach of its middle, each read in its outline's mask at the leaf point it shows.
+    const dm = (det >= 0 ? 1 : -1) * Math.max(Math.abs(det), 0.1 * r * r);
+    const reach = 2.4 * r * r;
+    const ex = Math.ceil(Math.min(1.4 * (Math.abs(tx) + Math.abs(sx)), 1.55 * r));
+    const ey = Math.ceil(Math.min(1.4 * (Math.abs(ty) + Math.abs(sy)), 1.55 * r));
+    const mask = (this.#shape[i] ?? 0) * LEAF_MASK * LEAF_MASK;
+    const texels = LEAF_MASK / (2 * LEAF_SPAN);
+    // Mask texels a cell to the right and a cell up.
+    const qxRight = (-ty / dm) * texels;
+    const qyRight = (sy / dm) * texels;
+    const qxUp = (tx / dm) * texels;
+    const qyUp = (-sx / dm) * texels;
+    for (let py = iy - ey; py <= iy + ey; py++) {
+      const dy = py + 0.5 - cy;
+      const dx0 = ix - ex + 0.5 - cx;
+      let mx = LEAF_MASK / 2 + dx0 * qxRight + dy * qxUp;
+      let my = LEAF_MASK / 2 + dx0 * qyRight + dy * qyUp;
+      for (let px = ix - ex; px <= ix + ex; px++, mx += qxRight, my += qyRight) {
+        const dx = px + 0.5 - cx;
+        if (dx * dx + dy * dy > reach || mx < 0 || my < 0 || mx >= LEAF_MASK || my >= LEAF_MASK)
+          continue;
+        if (LEAF_MASKS[mask + Math.floor(my) * LEAF_MASK + Math.floor(mx)] === 0) continue;
+        if (shown < 1 && hash31(px, py, serial) >= shown) continue;
+        plot.plot(px, py, code, depth);
+      }
+    }
   }
 
   /** The beads swelling at the drip points whose beat will let go (see the header). */
@@ -641,30 +1096,49 @@ const WET_GLINT = 0.7;
 
 /**
  * The falling things' colours in the program (README "Falling things"): `vec3 fallingSpeck(int code,
- * vec3 under, float z, Ctx x)` for the kinds on (FALL_CODES' order, each kind's codes from its
- * base), at depth z, which the composer's speck pass calls for a code of the composer's range
- * (glsl.ts). A drop is a lens: its head, a bead and a splash's crown and droplets show the
- * brightest light behind and over the eye (LENS_*). Its body, the rim either side of the head and
- * its streak, passes a third of what lies behind it: a darker rim and trail against bright spray,
- * lost in dark rock, where the head alone shows. A wet mark darkens what it lies on and glosses it,
- * the bright sky (x.air.deck) glinting on some of its cells; both fade as it dries.
+ * vec3 under, float z, Ctx x)` for the kinds on (FALL_KINDS' order, each kind's codes from its base),
+ * which the composer's speck pass calls for a code of the composer's range (glsl.ts), z the speck's
+ * depth. A drop is a lens: its head, a bead and a splash's crown and droplets show the brightest
+ * light behind and over the eye (LENS_*). Its body, the rim either side of the head and its streak,
+ * passes a third of what lies behind it: a darker rim and trail against bright spray, lost in dark
+ * rock, where the head alone shows. A wet mark darkens what it lies on and glosses it, the bright
+ * sky (x.air.deck) glinting on some of its cells; both fade as it dries. A leaf takes the palette
+ * its layer names (LayerFalling.leaf: the hue band's middle, its shade code 0..3), a plain brown
+ * where none does.
  */
-export function fallingGlsl(kinds: readonly FallKind[]): string {
+export function fallingGlsl(falling: {
+  readonly kinds: readonly FallKind[];
+  readonly leaf?: string | undefined;
+}): string {
+  const { kinds, leaf } = falling;
   const drops = kinds.includes("drop");
+  const from = fallOffset(kinds, "leaf");
+  const leaves = kinds.includes("leaf")
+    ? `  if (code > ${from} && code <= ${from + FALL_CODES.leaf}) {
+    int k = code - ${from + 1};
+    int band = k / ${FALL_LEAF_SHADES};
+${
+  leaf === undefined
+    ? `    return vec3(${glslFloat(0.45)}, ${glslFloat(0.25)}, ${glslFloat(0.1)}) * (k - band * ${FALL_LEAF_SHADES} < 2 ? 1.0 : 1.2);`
+    : `    return ${leaf}((float(band) + 0.5) / ${glslFloat(FALL_LEAF_HUES)}, k - band * ${FALL_LEAF_SHADES}, z, x);`
+}
+  }
+`
+    : "";
   return `
 // ---- the falling things (composer/falling.ts) ----
-vec3 fallingSpeck(int code, vec3 under, float z, Ctx x) {
-${
-  drops
-    ? `  vec3 at = vec3((x.uv.x - 0.5) * x.aspect, x.uv.y - RIG_HORIZON, 0.0) * (z / RIG_FOCAL) + vec3(0.0, x.eye, z);
+${leaf === undefined || leaves === "" ? "" : `vec3 ${leaf}(float hue, int shade, float z, Ctx x);\n`}vec3 fallingSpeck(int code, vec3 under, float z, Ctx x) {
+${leaves}${
+    drops
+      ? `  vec3 at = vec3((x.uv.x - 0.5) * x.aspect, x.uv.y - RIG_HORIZON, 0.0) * (z / RIG_FOCAL) + vec3(0.0, x.eye, z);
   vec3 lens = max(x.air.drop, x.air.deck) + x.light.sun * (${glslFloat(LENS_KEY)} * x.light.keyUp) + localLight(at, vec3(0.0)) * ${glslFloat(LENS_LAMP)};
   if (code == ${FALL_CODE.drop} || code == ${FALL_CODE.bead} || code == ${FALL_CODE.splash}) return lens;
   if (code == ${FALL_CODE.streak}) return under * ${glslFloat(BODY_SEE)} + lens * ${glslFloat(BODY_LENS)};
   float wet = code == ${FALL_CODE.wet} ? 1.0 : (code == ${FALL_CODE.drying} ? 0.66 : 0.33);
   float glint = step(hash12(x.cell), ${glslFloat(WET_GLINTS)} * (1.5 * wet - 0.5));
   return under * (1.0 - ${glslFloat(WET_DARK)} * wet) + x.air.deck * (${glslFloat(WET_GLINT)} * glint);`
-    : "  return under;"
-}
+      : "  return under;"
+  }
 }
 `;
 }

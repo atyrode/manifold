@@ -1,23 +1,27 @@
 // The Autumn park preset's sims (ADR 0062 Phase 2a): the leaves of the great tree let go, fall as the
 // flat plates they are, and lie; the agents rake them into piles. Three layer sims over one park:
-//   maple   the Park itself (its LayerSim, and its affordances): the leaves in the air, the carpet,
-//           the M, the piles and what the gusts do to them, on one random stream for the seed, so a
-//           seed lays out the carpet and the leaves already falling as it always did. Its record row
-//           (AUTUMN_DATA.maple) holds the leaves in the air.
+//   maple   the Park itself (its LayerSim, and its affordances): the crown the leaves let go from and
+//           the air they fall through, the carpet, the M, the piles and what the gusts do to them, on
+//           one random stream for the seed, so a seed lays out the carpet and the leaves already
+//           falling as it always did.
 //   litter  the carpet's two layers as its fields, and the M's knob: it hands the Park the M's goal
-//           and lends the rake the Park (its affordances); it lies under the tree, so it needs the
-//           maple.
+//           and lends the rake and the falling leaves the Park (its affordances: `lay`); it lies
+//           under the tree, so it needs the maple.
 //   rake    the chore: the plan and the tool. The agents' presses by the path set strokes going and
 //           each stroke drags the carpet into a pile through the Park (`rake`); the Park, the host,
 //           owns the piles and nature's undo.
 //
-// Falling leaves are rigid plates in a vertical plane (the shared fluttering-plate model,
-// sims/flutter.ts, as the garden's leaves fall). Light leaves flutter, swinging from side to side and
-// gliding up at the end of each swing; heavier ones tumble end over end. Each leaf's plane turns
+// The leaves in the air are the composer's falling things (composer/falling.ts, README "Falling
+// things"), the maple's `leaf` kind: each frame the Park names its crown (FallLeaves: how many
+// leaves a second let go, each filled in from its own stream of chance, and the air that carries
+// them) and the lawn and the path they land on, and hands the pool the leaves it lifts off the
+// ground or blows in. They are rigid plates in a vertical plane (the shared fluttering-plate model,
+// sims/flutter.ts, as the garden's leaves fall). Light leaves flutter, swinging from side to side
+// and gliding up at the end of each swing; heavier ones tumble end over end. Each leaf's plane turns
 // slowly, the leaf rocks about its chord and spins in its own plane, and the wind, the gusts (the
 // composer's one gust field, composer/gust.ts, where the leaf is: ADR 0062 D4) and the swirl of a gust
 // carry it. A leaf that touches down eases flat (face up or face down, whichever is nearer) and is
-// then handed to the carpet.
+// then laid in the carpet while the litter is on (`lay`), else lies a while and fades.
 //
 // A gust is the field's: as one reaches the tree (its load at the canopy rises past GUST_ONSET) a
 // shower of leaves is shaken loose and often a swirl sets off up or down the path, lifting the
@@ -47,21 +51,22 @@
 // it runs.
 //
 // Data (rgba16f, nearest):
-//   the maple's row   AUTUMN_SLOTS leaves of four texels each, leaf i at texels 4i..4i+3:
-//          (x, y, radius, alpha)  screen position from the horizon's centre and radius, in screen heights;
-//          (tx, ty, sx, sy)       the plate's two in-plane axes projected on the screen (perspective kept),
-//                                 so screen offset = radius * (lx * s + ly * t) for leaf-local (lx, ly);
-//          (nx, ny, nz, z)        the upward plate normal in the world, and the depth in metres;
-//          (hue, seed, 0, 0)
 //   the litter's fields 0 and 1   carpet layers A and B: AUTUMN_CARPET.cols x rows, one cell per texel:
 //          (ox, oz, angle, w): the leaf's offset in cell units, its tip's heading in the ground plane
 //          (atan2(dz, dx)), and w = face * (level + 16 * isMark + 0.98 * hue), face +1 top up, -1 top
 //          down, level 1..8 (alpha = level / 8), 0 for no leaf.
 import { gustAt, gustWind, newGustWind } from "../../composer/gust.ts";
-import type { LayerFrame, LayerSim } from "../../composer/types.ts";
+import type {
+  FallLeaf,
+  FallLeaves,
+  FallSurface,
+  FallingLitter,
+  FallingWriter,
+  LayerFrame,
+  LayerSim,
+} from "../../composer/types.ts";
 import { markDistance } from "../../mark.ts";
 import { KnobReader, type ParamDef } from "../../params.ts";
-import { FlutterPlates } from "../../sims/flutter.ts";
 import {
   CLEARED,
   HEAPED,
@@ -81,7 +86,6 @@ import {
   AUTUMN_MARK,
   AUTUMN_PASSAGE,
   AUTUMN_PATH,
-  AUTUMN_SLOTS,
   AUTUMN_TREE,
   AUTUMN_VIEW,
   AUTUMN_WHIRL,
@@ -94,7 +98,6 @@ type ParkKnob = "species" | "fall" | "season" | "seed" | "gusts";
 const PARK_KNOBS: readonly ParkKnob[] = ["species", "fall", "season", "seed", "gusts"];
 
 const TAU = Math.PI * 2;
-const SLOTS = AUTUMN_SLOTS;
 const COLS = AUTUMN_CARPET.cols;
 const ROWS = AUTUMN_CARPET.rows;
 const CELLS = COLS * ROWS;
@@ -120,8 +123,6 @@ const FLUTTER_MASS: readonly [number, number] = [0.2, 0.42];
 const TUMBLE_MASS: readonly [number, number] = [0.72, 0.9];
 /** Real seconds per model time unit: the pace of the swing (a leaf drifts down at about 0.8 m/s). */
 const PACE = 0.21;
-/** How far a falling leaf rocks about its chord (radians). */
-const ROLL = 0.3;
 
 // ---- the weather in the air ----------------------------------------------------------------------
 
@@ -143,7 +144,7 @@ const SWIRL_TURN = 3.4;
 const SWIRL_LIFT = 1.9;
 const SWIRL_REACH = 2.4;
 const SWIRL_PICKUP = 1.5;
-/** Most leaves a swirl lifts at once (of the slots). */
+/** Most leaves a swirl has lifted in the air at once. */
 const SWIRL_LEAVES = 14;
 
 // ---- the passage ----
@@ -174,18 +175,20 @@ const EXIT_SHOWER_SECONDS = 0.7;
 
 // ---- leaves -------------------------------------------------------------------------------------
 
-const FREE = 0;
-const FALLING = 1;
-const SETTLING = 2;
+/** The falling things' lanes (FallingWriter): the crown's leaves, and those lifted off the ground. */
+const CROWN = 0;
+const LIFTED = 1;
 /** A landed leaf lies this far above the ground. */
 const LEAF_LIFT = 0.012;
-const SETTLE_SECONDS = 0.7;
-const FADE_IN = 0.9;
 /** Leaves per second at the leaf-fall knob's full travel and the season's busiest. */
 const FALL_RATE = 3.4;
-/** Ambient leaves leave this many slots for a swirl. */
-const AMBIENT_SLOTS = SLOTS - 8;
+/** While leaves fall at all, the fewest in the air at once. */
+const FALL_LEAST = 6;
 const PREWARM_FALLING = 12;
+/** The path's stretches as the surfaces the leaves land on: from this depth, this long each, how many. */
+const PATH_FROM = 2;
+const PATH_STRETCH = 5;
+const PATH_STRETCHES = 9;
 
 // ---- the carpet ----------------------------------------------------------------------------------
 
@@ -282,43 +285,33 @@ function carpetBase(season: number): number {
 }
 
 /**
- * The park's leaves: the maple's sim, and the host the litter and the rake reach through
- * `LayerFrame.host` (its affordances are itself).
+ * The park's leaves: the maple's sim, and the host the litter, the rake and the falling leaves reach
+ * through `LayerFrame.host` (its affordances are itself).
  */
-export class Park implements LayerSim {
+export class Park implements LayerSim, FallingLitter {
   readonly #knobs: KnobReader<ParkKnob>;
 
-  // The falling leaves, one slot each.
-  readonly #state = new Uint8Array(SLOTS);
-  readonly #x = new Float64Array(SLOTS);
-  readonly #y = new Float64Array(SLOTS);
-  readonly #z = new Float64Array(SLOTS);
-  /** Each leaf's plate in flight: its plane, pitch, spin, rock, mass, chord, pace and the pitch it lands and rests at. */
-  readonly #plates = new FlutterPlates(SLOTS, ROLL);
-  readonly #radius = new Float64Array(SLOTS);
-  readonly #hue = new Float64Array(SLOTS);
-  readonly #seed = new Float64Array(SLOTS);
-  readonly #alpha = new Float64Array(SLOTS);
-  /** Seconds since touchdown; eddy phase. */
-  readonly #lain = new Float64Array(SLOTS);
-  readonly #phase = new Float64Array(SLOTS);
-  /** 1 for a leaf a swirl lifted off the path. */
-  readonly #lifted = new Uint8Array(SLOTS);
-  /** The air at a leaf (x, y, z); its position for the plates, (x, z, y); its frame from the plates, (x, z, y) each, written by #orient. */
-  readonly #air = new Float64Array(3);
-  readonly #pos = new Float64Array(3);
-  readonly #frame = new Float64Array(9);
-  /** Where a falling leaf touches down: the lawn and the path are level. */
-  readonly #floor = (): number => LEAF_LIFT;
+  // The leaves in the air are the composer's falling things: the crown this frame (its rate, the
+  // fewest kept in the air, a leaf's making and the air), the frame's falling things while it runs,
+  // the leaves laid out or blown in to hand them at the next frame, the lawn and the path.
+  readonly #crown: { rate: number; least: number } & FallLeaves = {
+    rate: 0,
+    least: 0,
+    shed: (rand, leaf) => this.#shed(rand, leaf),
+    air: (x, y, z, tm, phase, out) => this.#airAt(x, y, z, tm, phase, out),
+  };
+  #falling: FallingWriter | undefined;
+  readonly #pending: FallLeaf[] = [];
+  readonly #ground: readonly FallSurface[];
   #rand = mulberry32(1);
-  #nextLeaf = 1;
-  #clock = 0;
   #species = 0;
   #seedKnob = -1;
+  /** A leaf lifted off the ground, filled in to hand the falling things (they copy it). */
+  readonly #lifting = this.#newLeaf();
 
-  // The weather: the composer's gust field as this frame has it, and whether it blows yet (not while
-  // the park is laid out: the leaves already falling fell in still air); the gust under way, set off
-  // as one reached the tree; the composer's last "now", and whether the next gust swirls for it.
+  // The weather: the composer's gust field as this frame has it, and whether it blows yet (not
+  // before the first frame); the gust under way, set off as one reached the tree; the composer's
+  // last "now", and whether the next gust swirls for it.
   readonly #gusts = newGustWind();
   #fieldOn = false;
   #tm = 0;
@@ -333,19 +326,17 @@ export class Park implements LayerSim {
   #swirlZ = 0;
   #swirlX = 0;
   #swirlPickup = 0;
-  #shower = 0;
   #wind = 0;
 
-  // The passage: whether its first frame has passed, the gust's strength and the way it blows, the whirl's core.
+  // The passage: whether its first frame has passed, the gust's strength and the way it blows, the
+  // whirl's core, and the seconds into the exit.
   #entered = false;
   #blow = 0;
   #blowSign = 1;
   #whirl = 0;
   #whirlX = 0;
   #whirlPickup = 0;
-  #exiting = false;
-  #exitShower = 0;
-  #exitSeconds = 0;
+  #exitSeconds = -1;
 
   // The carpet (sims/litter.ts): layer 0 the lattice on top, layer 1 the shifted one beneath; the
   // litter's fields. While the litter is off nothing is lifted off it.
@@ -396,6 +387,22 @@ export class Park implements LayerSim {
       format: "rgba16f",
       filter: "nearest",
     });
+    // Where the leaves land: the path's stretches first, then the lawn, level, both joining the
+    // litter while it is on.
+    const path: FallSurface[] = [];
+    for (let k = 0; k < PATH_STRETCHES; k++) {
+      const z0 = PATH_FROM + k * PATH_STRETCH;
+      const z1 = z0 + PATH_STRETCH;
+      path.push({
+        kind: "ledge",
+        y: LEAF_LIFT,
+        from: [autumnPathX(z0), z0],
+        to: [autumnPathX(z1), z1],
+        depth: 2 * AUTUMN_PATH.half,
+        litter: "litter",
+      });
+    }
+    this.#ground = [...path, { kind: "plane", y: LEAF_LIFT, litter: "litter" }];
     this.#layOut(
       this.#knobs.initial("seed"),
       this.#knobs.initial("season"),
@@ -418,6 +425,8 @@ export class Park implements LayerSim {
     const season = clamp(knobs.value(frame, "season"), 0, 1);
     const species = Math.round(knobs.value(frame, "species"));
     this.#wind = frame.gusts.wind;
+    this.#falling = frame.falling;
+    for (const surface of this.#ground) frame.falling.surface(surface);
     if (seed !== this.#seedKnob) this.#layOut(seed, season, species);
     this.#species = clamp(species, 0, SPECIES.length - 1);
     this.#litterOn = frame.host("litter") !== undefined;
@@ -429,16 +438,24 @@ export class Park implements LayerSim {
     this.#passage(frame.aspect, enter, exit);
     // A passage plays in real time whatever the motion.
     const dt = real * Math.max(frame.motion, enter < 1 || exit > 0 ? 1 : 0);
-    this.#clock += dt;
     this.#weather(frame, dt);
+    for (const leaf of this.#pending) frame.falling.leaf(CROWN, leaf);
+    this.#pending.length = 0;
     this.#leaves(dt, knobs.value(frame, "fall"), season);
+    frame.falling.leaves(this.#crown);
     this.#scatter(dt);
+    this.#falling = undefined;
 
     if (season !== this.#season) this.#changeSeason(season);
     this.#gather(real);
     this.#sweep(real);
     this.#fade(real);
-    this.#pack(frame);
+    this.#upload(frame);
+  }
+
+  /** A leaf come down where it lies (FallingLitter): laid in the carpet, unless off it or on the M's cells. */
+  lay(x: number, z: number, angle: number, hue: number, face: number): boolean {
+    return this.#carpet.deposit(x, z, angle, hue, face, this.#rand);
   }
 
   dispose(): void {
@@ -455,8 +472,7 @@ export class Park implements LayerSim {
     this.#rand = mulberry32(Math.imul(seed + 1, 0x9e3779b1) ^ 0x6c656166);
     const rand = this.#rand;
 
-    this.#state.fill(FREE);
-    this.#lifted.fill(0);
+    this.#pending.length = 0;
     this.#carpet.clear();
     for (const pile of this.piles) pile.live = false;
     this.#markShown = 0;
@@ -523,18 +539,15 @@ export class Park implements LayerSim {
     }
     this.#uploadedAt = -Infinity;
 
-    // Leaves already on their way down, caught in their swing, in still air.
-    const fieldOn = this.#fieldOn;
-    this.#fieldOn = false;
+    // Leaves already on their way down, caught in their swing, in still air: the pool flies them
+    // ahead as they let go at the next frame.
     for (let n = 0; n < PREWARM_FALLING; n++) {
-      const i = this.#spawn(false);
-      if (i < 0) break;
-      this.#alpha[i] = 1;
-      const seconds = 1.5 + 3.5 * rand();
-      for (let t = 0; t < seconds && this.#state[i] === FALLING; t += 0.05) this.#fall(i, 0.05);
+      const leaf = this.#newLeaf();
+      this.#shed(rand, leaf);
+      leaf.shown = true;
+      leaf.ahead = 1.5 + 3.5 * rand();
+      this.#pending.push(leaf);
     }
-    this.#fieldOn = fieldOn;
-    this.#nextLeaf = 0.5 + 1.5 * rand();
   }
 
   /** Whether the carpet, in its sweep, wants a leaf in this layer's cell at the season's density. */
@@ -564,36 +577,29 @@ export class Park implements LayerSim {
     }
     this.#blow = enter < 1 ? autumnFlurry(enter * AUTUMN_PASSAGE.enter) : 0;
     this.#whirl = exit > 0 ? smoothstep(0, AUTUMN_WHIRL.rise, exit) : 0;
-    if (exit > 0) {
-      this.#exitSeconds = exit * AUTUMN_PASSAGE.exit;
+    this.#exitSeconds = exit > 0 ? exit * AUTUMN_PASSAGE.exit : -1;
+    if (exit > 0)
       this.#whirlX =
         autumnPathX(WHIRL_Z) + this.#blowSign * (WHIRL_SPEED * this.#exitSeconds - WHIRL_FROM);
-      if (!this.#exiting) {
-        this.#exiting = true;
-        this.#exitShower = EXIT_SHOWER;
-      }
-    }
   }
 
   /** Leaves already streaming in: spread beyond the windward edge of the frame, at depths through the canopy, each arriving as the gust reaches it. */
   #startFlurry(aspect: number): void {
-    const kind = SPECIES[this.#species] ?? SPECIES[0];
-    if (kind === undefined) return;
     const { horizon, eye, focal } = AUTUMN_VIEW;
     const half = 0.5 * Math.max(aspect, AUTUMN_WIDE);
     const rand = this.#rand;
     for (let n = 0; n < FLURRY_LEAVES; n++) {
-      const i = this.#freeSlot();
-      if (i < 0) return;
+      const leaf = this.#newLeaf();
       const z = 3.6 + 6.4 * Math.pow(rand(), 1.2);
       const sx = -this.#blowSign * (half + 0.2 + 1.4 * rand());
       const sy = 0.42 + 0.7 * rand();
-      this.#x[i] = (sx * z) / focal;
-      this.#y[i] = eye + ((sy - horizon) * z) / focal;
-      this.#z[i] = z;
-      this.#begin(i, kind, false);
+      leaf.x = (sx * z) / focal;
+      leaf.y = eye + ((sy - horizon) * z) / focal;
+      leaf.z = z;
+      this.#plate(rand, leaf);
       // Off the frame already: no dissolve in.
-      this.#alpha[i] = 1;
+      leaf.shown = true;
+      this.#pending.push(leaf);
     }
   }
 
@@ -640,7 +646,6 @@ export class Park implements LayerSim {
     this.#gustAge = 0;
     this.#gustSign = this.#gusts.dirX < 0 ? -1 : 1;
     this.#gustPower = 0.55 + 0.45 * clamp(amount, 0, 1);
-    this.#shower = GUST_SHOWER;
     this.#swirlOn = swirl;
     this.#swirlPickup = 0;
     if (swirl) {
@@ -650,21 +655,22 @@ export class Park implements LayerSim {
     }
   }
 
-  /** The gust field's push at floor point (x, z), the way it blows: 0 in still air (while the park is laid out). */
-  #gustAt(x: number, z: number): number {
+  /** The gust field's push at floor point (x, z) at motion time tm, the way it blows: 0 before the first frame. */
+  #gustAt(x: number, z: number, tm: number): number {
     if (!this.#fieldOn) return 0;
     const sign = this.#gusts.dirX < 0 ? -1 : 1;
-    return sign * AUTUMN_GUST.gain * gustAt(this.#gusts, x, z, this.#tm, 0);
+    return sign * AUTUMN_GUST.gain * gustAt(this.#gusts, x, z, tm, 0);
   }
 
-  /** The air at (x, y, z) for leaf i: the wind, the gust field, slow eddies and the swirl, written to #air. */
-  #airAt(i: number, x: number, y: number, z: number): void {
-    const phase = at(this.#phase, i);
-    const gust = this.#gustAt(x, z);
-    let vx =
-      this.#wind * WIND_DRIFT + gust * GUST_DRIFT + 0.3 * Math.sin(0.9 * this.#clock + phase);
-    let vy = 0.12 * Math.sin(0.7 * this.#clock + 1.7 * phase);
-    let vz = 0.2 * Math.sin(0.6 * this.#clock + 2.3 * phase) - 0.15 * Math.abs(gust);
+  /**
+   * The air (FallLeaves.air) at (x, y, z) at motion time tm for a leaf of eddy phase `phase`: the
+   * wind, the gust field, slow eddies, the swirl and the passage's gusts, into `out` (x, y, z).
+   */
+  #airAt(x: number, y: number, z: number, tm: number, phase: number, out: Float64Array): void {
+    const gust = this.#gustAt(x, z, tm);
+    let vx = this.#wind * WIND_DRIFT + gust * GUST_DRIFT + 0.3 * Math.sin(0.9 * tm + phase);
+    let vy = 0.12 * Math.sin(0.7 * tm + 1.7 * phase);
+    let vz = 0.2 * Math.sin(0.6 * tm + 2.3 * phase) - 0.15 * Math.abs(gust);
     if (this.#swirlOn) {
       const strength =
         smoothstep(0, 2, this.#gustAge) *
@@ -690,21 +696,15 @@ export class Park implements LayerSim {
     if (this.#blow > 0) {
       // The entrance's gust: a strong push along the wind, buffeting a little.
       vx +=
-        this.#blowSign *
-        FLURRY_DRIFT *
-        this.#blow *
-        (0.8 + 0.2 * Math.sin(1.7 * phase + 2 * this.#clock));
-      vy += 0.5 * this.#blow * Math.sin(1.3 * this.#clock + 2.1 * phase);
-      vz += 0.4 * this.#blow * Math.sin(0.9 * this.#clock + 3.1 * phase);
+        this.#blowSign * FLURRY_DRIFT * this.#blow * (0.8 + 0.2 * Math.sin(1.7 * phase + 2 * tm));
+      vy += 0.5 * this.#blow * Math.sin(1.3 * tm + 2.1 * phase);
+      vz += 0.4 * this.#blow * Math.sin(0.9 * tm + 3.1 * phase);
     }
     if (this.#whirl > 0) {
       // The exit's gust: a harder push, an updraft over the park, and a vortex crossing the path that
       // turns the leaves round its core and throws them up.
       vx +=
-        this.#blowSign *
-        WHIRL_DRIFT *
-        this.#whirl *
-        (0.75 + 0.25 * Math.sin(1.7 * phase + 2 * this.#clock));
+        this.#blowSign * WHIRL_DRIFT * this.#whirl * (0.75 + 0.25 * Math.sin(1.7 * phase + 2 * tm));
       vy += WHIRL_UPDRAFT * this.#whirl * (1 - smoothstep(3, 7, y));
       const dx = x - this.#whirlX;
       const dz = z - WHIRL_Z;
@@ -721,176 +721,101 @@ export class Park implements LayerSim {
           (1 - smoothstep(2.5, 6.5, y));
       }
     }
-    this.#air[0] = vx;
-    this.#air[1] = vy;
-    this.#air[2] = vz;
+    out[0] = vx;
+    out[1] = vy;
+    out[2] = vz;
   }
 
   // ---- leaves ----------------------------------------------------------------------------------
 
+  /**
+   * The crown this frame: leaves let go at the knob's pace, faster through a gust's shake and the
+   * exit's first moments (the falling things' beats, which the rate only gates); and the leaves the
+   * swirl and the exit's whirl lift off the carpet.
+   */
   #leaves(dt: number, fall: number, season: number): void {
+    const crown = this.#crown;
+    crown.rate = fall * FALL_RATE * activity(season);
+    // There are always a few in the air while leaves fall at all.
+    crown.least = crown.rate > 0 ? FALL_LEAST : 0;
+    if (this.#gustAge < GUST_SHAKE) crown.rate += GUST_SHOWER / GUST_SHAKE;
+    if (this.#exitSeconds >= 0 && this.#exitSeconds < EXIT_SHOWER_SECONDS)
+      crown.rate += EXIT_SHOWER / EXIT_SHOWER_SECONDS;
     if (!(dt > 0)) return;
-    const rand = this.#rand;
-    let inUse = 0;
-    let airborne = 0;
-    for (let i = 0; i < SLOTS; i++) {
-      if (this.#state[i] !== FREE) inUse++;
-      if (this.#state[i] === FALLING) airborne++;
-    }
-
-    // Let go: at the knob's pace (a Poisson clock), and a gust's shower over its first moments.
-    const rate = fall * FALL_RATE * activity(season);
-    if (rate > 0 && inUse < AMBIENT_SLOTS) {
-      this.#nextLeaf -= dt;
-      // There are always a few in the air: when fewer than six are falling, the next lets go soon.
-      if (airborne < 6 && this.#nextLeaf > 0.45) this.#nextLeaf = 0.45;
-      if (this.#nextLeaf <= 0) {
-        this.#spawn(false);
-        this.#nextLeaf = -Math.log(1 - 0.999 * rand()) / rate;
-      }
-    }
-    if (this.#shower > 0 && this.#gustAge < GUST_SHAKE + 2 && inUse < AMBIENT_SLOTS) {
-      const due =
-        this.#gustAge < GUST_SHAKE ? Math.ceil(GUST_SHOWER * (1 - this.#gustAge / GUST_SHAKE)) : 0;
-      while (this.#shower > due && this.#spawn(false) >= 0) this.#shower--;
-    }
     if (this.#swirlOn && this.#litterOn) this.#pickUp(dt);
-    if (this.#exitShower > 0 && inUse < AMBIENT_SLOTS) {
-      const due = Math.ceil(
-        EXIT_SHOWER * (1 - Math.min(1, this.#exitSeconds / EXIT_SHOWER_SECONDS)),
-      );
-      while (this.#exitShower > due && this.#spawn(false) >= 0) this.#exitShower--;
-    }
     if (this.#whirl > 0 && this.#litterOn) this.#whirlUp(dt);
-
-    for (let i = 0; i < SLOTS; i++) {
-      const state = this.#state[i];
-      if (state === FALLING) {
-        this.#alpha[i] = Math.min(1, at(this.#alpha, i) + dt / FADE_IN);
-        this.#fall(i, dt);
-      } else if (state === SETTLING) {
-        this.#settle(i, dt);
-      }
-    }
   }
 
-  #freeSlot(): number {
-    for (let i = 0; i < SLOTS; i++) if (this.#state[i] === FREE) return i;
-    return -1;
+  /** A fresh leaf, shown at once, flown no seconds ahead. */
+  #newLeaf(): FallLeaf {
+    return {
+      x: 0,
+      y: 0,
+      z: 0,
+      radius: 0,
+      hue: 0,
+      shape: this.#species,
+      mass: 0,
+      chord: 0,
+      pace: PACE,
+      psi: 0,
+      dpsi: 0,
+      th: 0,
+      sigma: 0,
+      dsigma: 0,
+      roll: 0,
+      rollRate: 0,
+      rest: 0,
+      phase: 0,
+      shown: true,
+      ahead: 0,
+    };
   }
 
-  /** A leaf lets go inside the canopy: in screen terms somewhere across its lower reaches, at a depth between the nearest bough and the far side. */
-  #spawn(lifted: boolean): number {
-    const i = this.#freeSlot();
-    if (i < 0) return -1;
-    const rand = this.#rand;
-    const kind = SPECIES[this.#species] ?? SPECIES[0];
-    if (kind === undefined) return -1;
+  /**
+   * A leaf lets go inside the canopy (FallLeaves.shed): in screen terms somewhere across its lower
+   * reaches, at a depth between the nearest bough and the far side, dissolving in.
+   */
+  #shed(rand: () => number, leaf: FallLeaf): void {
     const { horizon, eye, focal } = AUTUMN_VIEW;
     // A fifth let go close to the viewer, above the frame, and come into it large; the rest higher in
     // the canopy, a little way behind the nearest boughs.
     const z = rand() < 0.22 ? 2.6 + 1.6 * rand() : 4.4 + 6.6 * Math.pow(rand(), 1.2);
     const sx = -1.15 + 2.3 * rand();
     const sy = z < 4.3 ? 1.0 + 0.3 * rand() : 0.64 + 0.45 * rand();
-    this.#x[i] = (sx * z) / focal - this.#wind * 1.5;
-    this.#y[i] = eye + ((sy - horizon) * z) / focal;
-    this.#z[i] = z;
-    this.#begin(i, kind, lifted);
-    return i;
+    leaf.x = (sx * z) / focal - this.#wind * 1.5;
+    leaf.y = eye + ((sy - horizon) * z) / focal;
+    leaf.z = z;
+    this.#plate(rand, leaf);
+    leaf.shown = false;
   }
 
-  /** Fresh plate state for slot i at its position. */
-  #begin(i: number, kind: Species, lifted: boolean): void {
-    const rand = this.#rand;
-    const p = this.#plates;
-    this.#state[i] = FALLING;
-    this.#lifted[i] = lifted ? 1 : 0;
+  /** A fresh plate for the leaf at its position, of the tree's species: its mass, shape, hue and pose. */
+  #plate(rand: () => number, leaf: FallLeaf): void {
+    const kind = SPECIES[this.#species] ?? SPECIES[0];
+    if (kind === undefined) return;
     const range = rand() < kind.tumbling ? TUMBLE_MASS : FLUTTER_MASS;
-    p.mass[i] = lerp(range[0], range[1], rand());
-    p.chord[i] = kind.chord * (0.85 + 0.3 * rand());
-    p.pace[i] = PACE * (0.9 + 0.2 * rand());
-    this.#hue[i] = rand();
-    this.#radius[i] =
-      kind.radius *
-      (0.9 + 0.2 * ((this.#hue[i] ?? 0) * 7.3 - Math.floor((this.#hue[i] ?? 0) * 7.3)));
-    this.#seed[i] = rand();
-    p.psi[i] = rand() * TAU;
-    p.dpsi[i] = (rand() - 0.5) * 0.5;
-    p.start(i);
-    p.th[i] = (rand() - 0.5) * 1.2;
-    p.sigma[i] = rand() * TAU;
-    p.dsigma[i] = (rand() - 0.5) * 0.9;
-    p.roll[i] = rand() * TAU;
-    p.rollRate[i] = 1.0 + 1.4 * rand();
-    this.#phase[i] = rand() * TAU;
-    this.#lain[i] = 0;
-    p.rest[i] = (rand() - 0.5) * 0.1;
-    this.#alpha[i] = lifted ? 1 : 0;
-  }
-
-  /** Flutter or tumble down: the plate in its plane, the plane turning, the air where it starts the step carrying it. */
-  #fall(i: number, dt: number): void {
-    this.#airAt(i, at(this.#x, i), at(this.#y, i), at(this.#z, i));
-    const air = this.#air;
-    const pos = this.#pos;
-    pos[0] = at(this.#x, i);
-    pos[1] = at(this.#z, i);
-    pos[2] = at(this.#y, i);
-    const landed = this.#plates.fly(i, dt, pos, air[0] ?? 0, air[2] ?? 0, air[1] ?? 0, this.#floor);
-    const x = pos[0] ?? 0;
-    const z = pos[1] ?? 0;
-    this.#x[i] = x;
-    this.#y[i] = Math.min(pos[2] ?? 0, 12);
-    this.#z[i] = z;
-    if (x < -40 || x > 40 || z < 1.5 || z > 60) {
-      this.#state[i] = FREE;
-      return;
-    }
-    if (landed) {
-      this.#state[i] = SETTLING;
-      this.#plates.touchDown(i);
-      this.#lain[i] = 0;
-    }
-  }
-
-  /** Down: ease flat (face up or face down, whichever is nearer), then lie in the carpet. */
-  #settle(i: number, dt: number): void {
-    const p = this.#plates;
-    const lain = at(this.#lain, i) + dt;
-    this.#lain[i] = lain;
-    const k = smoothstep(0, SETTLE_SECONDS, lain);
-    p.settle(i, k);
-    p.sigma[i] = at(p.sigma, i) + at(p.dsigma, i) * dt * (1 - k);
-    this.#y[i] = LEAF_LIFT;
-    if (lain < SETTLE_SECONDS) return;
-    this.#orient(i);
-    const f = this.#frame;
-    this.#carpet.deposit(
-      at(this.#x, i),
-      at(this.#z, i),
-      Math.atan2(f[1] ?? 0, f[0] ?? 1),
-      at(this.#hue, i),
-      (f[8] ?? 1) >= 0 ? 1 : -1,
-      this.#rand,
-    );
-    this.#state[i] = FREE;
-  }
-
-  /**
-   * Leaf i's frame into #frame (FlutterPlates.orient, each axis (x, z, y)): its chord axis (0..2), its
-   * span axis (3..5) and the upward plate normal (6..8), its rock fading as it settles.
-   */
-  #orient(i: number): void {
-    const settle =
-      this.#state[i] === SETTLING ? 1 - smoothstep(0, SETTLE_SECONDS, at(this.#lain, i)) : 1;
-    this.#plates.orient(i, settle, this.#frame);
+    leaf.shape = this.#species;
+    leaf.mass = lerp(range[0], range[1], rand());
+    leaf.chord = kind.chord * (0.85 + 0.3 * rand());
+    leaf.pace = PACE * (0.9 + 0.2 * rand());
+    leaf.hue = rand();
+    leaf.radius = kind.radius * (0.9 + 0.2 * (leaf.hue * 7.3 - Math.floor(leaf.hue * 7.3)));
+    leaf.psi = rand() * TAU;
+    leaf.dpsi = (rand() - 0.5) * 0.5;
+    leaf.th = (rand() - 0.5) * 1.2;
+    leaf.sigma = rand() * TAU;
+    leaf.dsigma = (rand() - 0.5) * 0.9;
+    leaf.roll = rand() * TAU;
+    leaf.rollRate = 1.0 + 1.4 * rand();
+    leaf.phase = rand() * TAU;
+    leaf.rest = (rand() - 0.5) * 0.1;
   }
 
   /** A swirl passing over the path lifts leaves off it: plates stood up from the carpet, in the pose they lay in. */
   #pickUp(dt: number): void {
     this.#swirlPickup += dt * 30;
-    let lifted = 0;
-    for (let i = 0; i < SLOTS; i++) if (this.#lifted[i] === 1 && this.#state[i] !== FREE) lifted++;
+    let lifted = this.#falling?.aloft(LIFTED) ?? 0;
     const rand = this.#rand;
     const strength =
       smoothstep(0, 2, this.#gustAge) *
@@ -912,8 +837,7 @@ export class Park implements LayerSim {
   /** The exit's whirl lifts leaves off the carpet round its core, as the swirl does but harder and wider. */
   #whirlUp(dt: number): void {
     this.#whirlPickup += dt * WHIRL_RATE;
-    let lifted = 0;
-    for (let i = 0; i < SLOTS; i++) if (this.#lifted[i] === 1 && this.#state[i] !== FREE) lifted++;
+    let lifted = this.#falling?.aloft(LIFTED) ?? 0;
     const rand = this.#rand;
     while (this.#whirlPickup >= 1) {
       this.#whirlPickup -= 1;
@@ -927,28 +851,31 @@ export class Park implements LayerSim {
     }
   }
 
-  /** Stand a leaf taken off the carpet up as a plate in a free slot, in the pose it lay in: the chord axis along its heading, the face as it lay. False when no slot is free. */
+  /**
+   * Stand a leaf taken off the carpet up as a plate and let it go into the air, in the pose it lay
+   * in: the chord axis along its heading, the face as it lay. False when the falling things do not
+   * take it.
+   */
   #launch(found: LitterItem): boolean {
     const rand = this.#rand;
-    const slot = this.#freeSlot();
-    if (slot < 0) return false;
     const kind = SPECIES[this.#species] ?? SPECIES[0];
-    if (kind === undefined) return false;
-    this.#x[slot] = found.x;
-    this.#y[slot] = LEAF_LIFT + 0.02;
-    this.#z[slot] = found.z;
-    this.#begin(slot, kind, true);
-    this.#hue[slot] = found.hue;
-    this.#radius[slot] =
-      kind.radius * (0.9 + 0.2 * (found.hue * 7.3 - Math.floor(found.hue * 7.3)));
-    const p = this.#plates;
+    if (kind === undefined || this.#falling === undefined) return false;
+    const leaf = this.#lifting;
+    leaf.x = found.x;
+    leaf.y = LEAF_LIFT + 0.02;
+    leaf.z = found.z;
+    this.#plate(rand, leaf);
+    leaf.hue = found.hue;
+    leaf.radius = kind.radius * (0.9 + 0.2 * (found.hue * 7.3 - Math.floor(found.hue * 7.3)));
     const down = found.face < 0;
-    p.th[slot] = down ? Math.PI : 0;
-    p.psi[slot] = rand() * TAU;
-    p.sigma[slot] = down ? at(p.psi, slot) + Math.PI - found.angle : found.angle - at(p.psi, slot);
-    p.roll[slot] = 0;
-    p.rollRate[slot] = 1.4 + 1.4 * rand();
-    return true;
+    leaf.th = down ? Math.PI : 0;
+    leaf.psi = rand() * TAU;
+    leaf.sigma = down ? leaf.psi + Math.PI - found.angle : found.angle - leaf.psi;
+    leaf.roll = 0;
+    leaf.rollRate = 1.4 + 1.4 * rand();
+    leaf.shown = true;
+    leaf.ahead = 0;
+    return this.#falling.leaf(LIFTED, leaf);
   }
 
   // ---- the piles (the rake's host) ----------------------------------------------------------------
@@ -987,12 +914,11 @@ export class Park implements LayerSim {
    * a pile rises in place of its top, and a pile blown flat is gone, its ground left to the carpet.
    */
   #scatter(dt: number): void {
-    let flying = 0;
-    for (let i = 0; i < SLOTS; i++) if (this.#lifted[i] === 1 && this.#state[i] !== FREE) flying++;
+    let flying = this.#falling?.aloft(LIFTED) ?? 0;
     const rand = this.#rand;
     for (const pile of this.piles) {
       if (!pile.live) continue;
-      const gust = Math.abs(this.#gustAt(pile.x, pile.z));
+      const gust = Math.abs(this.#gustAt(pile.x, pile.z, this.#tm));
       if (gust > SCATTER_FROM && dt > 0) pile.debt += dt * SCATTER_RATE * gust;
       else pile.debt = 0;
       const lifts = Math.floor(pile.debt);
@@ -1154,45 +1080,8 @@ export class Park implements LayerSim {
 
   // ---- upload ------------------------------------------------------------------------------------
 
-  /** The leaves into the maple's row, and the carpet up (at most UPLOAD_EVERY_MS apart on the frame's wall clock). */
-  #pack(frame: LayerFrame): void {
-    const { horizon, eye, focal } = AUTUMN_VIEW;
-    const data = frame.records.data;
-    for (let i = 0; i < SLOTS; i++) {
-      const o = i * 16;
-      if (this.#state[i] === FREE) {
-        data.fill(0, o, o + 16);
-        continue;
-      }
-      this.#orient(i);
-      const f = this.#frame;
-      const x = at(this.#x, i);
-      const y = at(this.#y, i);
-      const z = at(this.#z, i);
-      const scale = focal / z;
-      const wx = x / z;
-      const wy = (y - eye) / z;
-      data[o] = x * scale;
-      data[o + 1] = horizon + (y - eye) * scale;
-      data[o + 2] = at(this.#radius, i) * scale;
-      data[o + 3] = at(this.#alpha, i);
-      // The axes with the view's perspective folded in: a point `a` along an axis moves its screen
-      // image by (ax - wx az, ay - wy az) times the scale. The frame's axes are (x, z, y).
-      data[o + 4] = (f[0] ?? 0) - wx * (f[1] ?? 0);
-      data[o + 5] = (f[2] ?? 0) - wy * (f[1] ?? 0);
-      data[o + 6] = (f[3] ?? 0) - wx * (f[4] ?? 0);
-      data[o + 7] = (f[5] ?? 0) - wy * (f[4] ?? 0);
-      data[o + 8] = f[6] ?? 0;
-      data[o + 9] = f[8] ?? 1;
-      data[o + 10] = f[7] ?? 0;
-      data[o + 11] = z;
-      data[o + 12] = at(this.#hue, i);
-      data[o + 13] = at(this.#seed, i);
-      data[o + 14] = 0;
-      data[o + 15] = 0;
-    }
-    frame.records.touch();
-
+  /** The carpet up (at most UPLOAD_EVERY_MS apart on the frame's wall clock). */
+  #upload(frame: LayerFrame): void {
     if (this.#carpet.dirty && frame.now - this.#uploadedAt >= UPLOAD_EVERY_MS) {
       this.carpetA.upload(this.#carpet.layers[0]);
       this.carpetB.upload(this.#carpet.layers[1]);

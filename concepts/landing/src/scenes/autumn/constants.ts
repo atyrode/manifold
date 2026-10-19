@@ -62,8 +62,7 @@ export const AUTUMN_GRADE: Grade = {
 };
 
 /**
- * What the layers keep in the composer's shared resources (LayerDef.data): the maple a row of the
- * records atlas (its leaves in the air, layout.ts AUTUMN_SLOTS of four texels), the litter its two
- * carpet layers as fields.
+ * What the layers keep in the composer's shared resources (LayerDef.data): the litter its two carpet
+ * layers as fields. The maple's leaves in the air are the composer's falling things.
  */
-export const AUTUMN_DATA = { maple: { rows: 1 }, litter: { fields: 2 } } as const;
+export const AUTUMN_DATA = { litter: { fields: 2 } } as const;

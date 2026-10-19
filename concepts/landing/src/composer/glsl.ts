@@ -489,7 +489,7 @@ ${passage}${gustGlsl(a.gust.slot, a.gust.shape)}${STRUCTS}${lightGlsl(grade, rig
     layers.flatMap(({ def }) => def.casters ?? []),
   )}
 ${turnsGlsl(turns)}
-${accessorsGlsl(layers, allocation)}${falling === undefined ? "" : fallingGlsl(falling.kinds)}
+${accessorsGlsl(layers, allocation)}${falling === undefined ? "" : fallingGlsl(falling)}
 Ctx composerCtx(vec2 uv, vec2 cell) {
   Ctx x;
 ${rig.passage?.shift === true ? "  // The passage's tilt: the world read lower in uv (rigShift, 0 at rest).\n  uv.y += rigShift();\n" : ""}  x.uv = uv;

@@ -15,10 +15,10 @@
 //   maple     (dressing, the subject) the bench on the lawn, the great tree (maple, ginkgo or oak:
 //             its canopy as a solid mass and three layers of leaf sprites at three depths, back and
 //             mid behind the trunk, the front layer before it; its trunk and boughs between them),
-//             and the leaves in the air from the simulation (sim.ts), each a plate the simulation
-//             tumbles, two-toned (its paler underside shows when it turns over), sorted into the
-//             canopy's depths so a leaf can fall out from behind the front boughs and in front of the
-//             bench.
+//             and the colours of its leaves in the air (mapleLeafSpeck): the leaves are the composer's
+//             falling things (sim.ts, composer/falling.ts), each a plate the simulation tumbles drawn
+//             cell by cell in the speck map, two-toned (its paler underside shows when it turns
+//             over), hidden by depth behind the canopy's layers, the trunk and the bench nearer.
 //   litter    (cover) the carpet of fallen leaves (one leaf per lattice cell in two layers, from the
 //             simulation) lying on the lawn and the path, the gold leaves of the M among them.
 // Everything that moves cuts its edges per cell (hardFill / hardEdge) so it never shimmers: leaves,
@@ -39,8 +39,8 @@
 // litter's) read the other layers' gates, LAYER_MAPLE and LAYER_LAMP, so a park without its tree
 // keeps the maple's palette and casts no tree's shadow, and one without its lamp no lamp's light.
 // The tree's species is the maple's (K_species), the season the composer's (K_season), the
-// arrangement the composer's seed (K_seed). Data: the maple's record row (its leaves in the air, four
-// texels each, mapleRecord), the litter's two fields (the carpet's layers, litterField0/1).
+// arrangement the composer's seed (K_seed). Data: the litter's two fields (the carpet's layers,
+// litterField0/1).
 import { autumnLayoutGlsl } from "./layout.ts";
 
 /**
@@ -831,83 +831,33 @@ vec4 autumnCanopyLayer(vec2 p, float cs, float salt, float density, float shadeK
   return best;
 }
 
-// ---- loose leaves ----
+// ---- the leaves in the air ----
 
-// The nearest loose leaf in each depth bin (rgb, cover), and its depth.
-vec4 autumnBin[5];
-float autumnBinZ[5];
-
-// The leaves in the air at this cell: the nearest in each of five depth bins, in autumnBin.
-// opaqueZ: the depth of what the cell shows already (ground, lamp, bench), which hides the farther ones.
-void autumnLoose(vec2 p, float opaqueZ) {
-  for (int b = 0; b < 5; b++) {
-    autumnBin[b] = vec4(0.0);
-    autumnBinZ[b] = 1e4;
-  }
-  if (!mapleSimOn()) return;
-  float aa = 0.8 / uRes.y;
-  for (int i = 0; i < AUTUMN_SLOTS; i++) {
-    vec4 a = mapleRecord(4 * i, 0);
-    if (a.w <= 0.0) continue;
-    vec2 d = p - a.xy;
-    float rr = a.z;
-    if (dot(d, d) > rr * rr * 2.4) continue;
-    vec4 e = mapleRecord(4 * i + 2, 0);
-    float z = e.w;
-    if (z > opaqueZ + 0.5) continue;
-    int b = z < 4.2 ? 0 : (z < 5.0 ? 1 : (z < 7.0 ? 2 : (z < 9.5 ? 3 : 4)));
-    if (z >= autumnBinZ[b]) continue;
-    vec4 axes = mapleRecord(4 * i + 1, 0);
-    vec4 info = mapleRecord(4 * i + 3, 0);
-    // The plate's two axes on the screen (t' = axes.xy along the leaf's tip, s' = axes.zw across it):
-    // the leaf-local point whose image is this cell, and which face looks at us.
-    float det = axes.x * axes.w - axes.y * axes.z;
-    float dm = (det > 0.0 ? -1.0 : 1.0) * max(abs(det), 0.1);
-    vec2 u = d / rr;
-    vec2 q = vec2(axes.y * u.x - axes.x * u.y, -axes.w * u.x + axes.z * u.y) / dm;
-    if (dot(q, q) > 2.4) continue;
-    float scale = rr * sqrt(max(abs(det), 0.1));
-    float cov = hardFill(autumnLeafD(q, info.y) * scale, aa);
-    // A leaf that has just let go dissolves in, a cell at a time.
-    cov *= step(edgeThreshold(gl_FragCoord.xy, vec2(3.0, 9.0)), a.w);
-    if (cov <= 0.0) continue;
-    float vein = 0.0;
-    if (scale * uRes.y > 7.0) vein = hardFill(autumnVein(q) - 0.04, aa / scale);
-    bool top = det > 0.0;
-    vec3 n = e.xyz;
-    vec3 P = vec3(a.x * z, AUTUMN_EYE + (a.y - AUTUMN_HORIZON) * z, z);
-    float lit = hardEdge(autumnShadow(P));
-    vec3 col = autumnLeafColour(info.x, top, top ? n : -n, lit, vein, 0.0);
-    col += autumnLeafTop(info.x) * autumnLampLight(P.xz) * 0.5 * step(P.y, 1.0);
-    autumnBin[b] = vec4(col, 1.0);
-    autumnBinZ[b] = z;
-  }
-}
-
-// The nearest loose leaf of bin b over the cell, if one is there.
-void mapleLeaf(inout Cell c, int b) {
-  if (autumnBin[b].a <= 0.0) return;
-  c.col = autumnBin[b].rgb;
-  c.z = min(c.z, autumnBinZ[b]);
-  c.zs = min(c.zs, autumnBinZ[b]);
+// A falling leaf's cell (the composer's falling things, composer/falling.ts; LayerFalling.leaf): its
+// hue band's colour in the tree's palette, the face it shows (shade 0 and 1 its top, 2 and 3 its
+// paler underside), lying toward the sky (0, 2) or standing on edge (1, 3), lit where the sun reaches
+// its point at depth z, warmed by the lamp's pool near the ground.
+vec3 mapleLeafSpeck(float hue, int shade, float z, Ctx x) {
+  bool top = shade < 2;
+  vec3 nv = normalize(shade == 1 || shade == 3 ? vec3(0.0, 0.35, -1.0) : vec3(0.0, 1.0, -0.35));
+  vec3 P = vec3(autumnP.x * z, AUTUMN_EYE + (autumnP.y - AUTUMN_HORIZON) * z, z);
+  float lit = hardEdge(autumnShadow(P));
+  vec3 col = autumnLeafColour(hue, top, nv, lit, 0.0, 0.0);
+  return col + autumnLeafTop(hue) * autumnLampLight(P.xz) * 0.5 * step(P.y, 1.0);
 }
 
 // ---- the maple's pass ----
-// Back to front over what stands behind (the ground, the litter, the lamp): the bench, then the loose
-// leaves bin by bin between the canopy's layers and the trunk, nearest last. Each part stands at its
-// depth: drawn unless something already nearer (a guest) hides it, a foot over the ground just before it.
+// Back to front over what stands behind (the ground, the litter, the lamp): the bench, the canopy's
+// layers and the trunk. Each part stands at its depth: drawn unless something already nearer (a
+// guest) hides it, a foot over the ground just before it; the leaves in the air are drawn among them
+// by depth in the composer's speck pass.
 void mapleFront(Ctx x, inout Cell c) {
   vec2 p = autumnP;
-  float opaqueZ = c.z;
   vec4 bench = autumnBench(p);
   if (bench.a > 0.0 && AUTUMN_BENCH_AT.y < c.z + 0.5) {
     autumnStand(c, bench, AUTUMN_BENCH_AT.y);
     c.accent = 0.0;
-    opaqueZ = min(opaqueZ, AUTUMN_BENCH_AT.y);
   }
-
-  autumnLoose(p, opaqueZ);
-  mapleLeaf(c, 4);
   bool high = x.uv.y > 0.4;
   if (high) {
     // Back: the canopy's body (clumps lit on the sun's side, the light glowing through where it thins)
@@ -916,24 +866,18 @@ void mapleFront(Ctx x, inout Cell c) {
     vec4 back = autumnCanopyLayer(p, 0.020, 1.0, 0.45, 0.6);
     vec4 b = back.a > 0.5 ? back : body;
     if (b.a > 0.0 && 9.5 < c.z + 0.5) autumnStand(c, b, 9.5);
-  }
-  mapleLeaf(c, 3);
-  if (high) {
     vec4 mid = autumnCanopyLayer(p, 0.026, 2.0, 0.6, 0.85);
     if (mid.a > 0.0 && 7.0 < c.z + 0.5) autumnStand(c, mid, 7.0);
   }
-  mapleLeaf(c, 2);
   vec4 trunk = autumnTrunk(p);
   if (trunk.a > 0.0 && AUTUMN_TREE.y < c.z + 0.5) {
     autumnStand(c, trunk, AUTUMN_TREE.y);
     c.accent = 0.0;
   }
-  mapleLeaf(c, 1);
   if (high) {
     vec4 front = autumnCanopyLayer(p, 0.034, 3.0, 0.3, 1.0);
     if (front.a > 0.0 && 4.2 < c.z + 0.5) autumnStand(c, front, 4.2);
   }
-  mapleLeaf(c, 0);
 }
 
 // The tree's, the bench's and the lamp's shadows on another layer's floor (the composer's casterShadow).

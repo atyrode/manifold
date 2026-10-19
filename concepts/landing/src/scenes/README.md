@@ -3072,21 +3072,37 @@ points into the shared speck map, under the composer's own codes after every lay
 (`Allocation.falling`). The outdoor speck pass colours them (`fallingSpeck`) and hides them behind
 nearer things, so no layer loops over them per pixel.
 
-- **A layer declares** `falling: { kinds: ["drop"], slide?: [x, y] }`: the kinds it lets fall,
-  whose colours compile in while it is on, and the screen heights its things slide per unit of
-  the pointer's parallax, where the layer slides so (the falls' near bank).
-- **Its sim names each frame** its drip points, `frame.falling.drip(lane, x, y, z)`, and the
-  surfaces drops land on, `frame.falling.surface(...)`, in rig-frame metres:
+- **A layer declares** `falling: { kinds: ["drop" | "leaf", …], slide?: [x, y], leaf?: "<fn>" }`:
+  the kinds it lets fall, whose colours compile in while it is on, the screen heights its things
+  slide per unit of the pointer's parallax, where the layer slides so (the falls' near bank), and
+  for leaves the GLSL in its own code that colours them, `vec3 <fn>(float hue, int shade, float z,
+Ctx x)` (the first layer on that names one colours every leaf).
+- **Its sim names each frame** its drip points, `frame.falling.drip(lane, x, y, z)`, its leaves,
+  `frame.falling.leaves(crown)`, and the surfaces things land on, `frame.falling.surface(...)`, in
+  rig-frame metres:
   - `plane`: a level box;
   - `ledge`: a strip `depth` deep along a floor segment;
   - `water`: names the layer whose sim the drop strikes, the `FallingWater` among its affordances.
     Keep `lane` stable, so the point's beat holds from frame to frame.
+  - A plane or a ledge may name a `litter` layer: a leaf that comes to rest there joins it where
+    that layer's affordances take it (`FallingLitter.lay`), else it lies 8 s and fades.
 - **A drip point** gathers a bead and lets a drop go on its own beat, fixed in time. The World's
   rain and wetness, `max(rain, 0.4 × wet)` (`SimFrame.weather`), only pick which beats let go, at
   the rate `rainDrips` gives. Nothing runs backward as the world dries.
 - **Drops** fall under gravity and drag toward the wind and the gust field's load where they are.
   On a plane or a ledge a drop splashes, with a crown and droplets, and leaves a wet mark that
   dries over 3 s. On water it strikes the named layer's sim.
+- **Leaves.** A crown (`FallLeaves`) gives a rate in leaves a second and the fewest it keeps in
+  the air; each of the pool's steps is a beat that lets one go with the chance the rate gives it,
+  so the rate only gates fixed beats. The crown fills each leaf in from the leaf's own stream of
+  chance (`hash31` of the crown, the step and the seed) and names the air that carries its leaves
+  at each step's moment on the motion clock. `frame.falling.leaf(lane, leaf)` lets one go at once
+  (lifted off the ground, blown in) and `aloft(lane)` counts a lane's leaves in the air. A leaf is a
+  fluttering plate (`sims/flutter.ts`): it flutters or tumbles down under heavy drag, comes down on
+  the highest surface under it no higher than itself and eases flat over 0.7 s. It is drawn as its
+  outline (a maple's, a ginkgo's or an oak's mask) cell by cell through its plate's two axes, one
+  code a cell: its hue in 8 bands of the layer's palette, and the face it shows, flat or on edge
+  (32 codes). It dissolves in as it lets go and out as it fades, a cell at a time.
 - **Drawing.** Particles are drawn through the rig at rest, lifted with the passage's eye and
   moved by its lens shift (`RigPassage.shiftAt`, `rigShift`'s CPU twin, which a preset with a
   shift and falling things gives).
@@ -3098,10 +3114,14 @@ nearer things, so no layer loops over them per pixel.
   bright spray, lost in dark rock, where the head alone shows. A wet mark darkens the stone and
   glosses it, the bright sky glinting on some of its cells; both fade as it dries.
 - **Users:** the waterfall's bank ferns (`falls/sim.ts`): drip points under their fronds' outer
-  leaflets, and the boulders' top as ledges (poolFront's `bankTop`, its CPU twin).
-- **Not drawn yet** by the interior's and the overhead's programs. Leaves, petals, seeds, flakes
-  and sparks are not built. The other scenes still draw their own drips (`rainDrips`,
-  `canopyDrip`) and leaves.
+  leaflets, and the boulders' top as ledges (poolFront's `bankTop`, its CPU twin). Autumn's maple
+  (`autumn/sim.ts`): its crown, its air (the wind, the gust field, eddies, a gust's swirl, the
+  passage's flurry and whirl), the leaves a swirl, the exit's whirl or a gust over a pile lifts off
+  the carpet, and the path's stretches and the lawn joining the litter; `mapleLeafSpeck` colours
+  them in the tree's palette, lit where the sun reaches them.
+- **Not drawn yet** by the interior's and the overhead's programs. Petals, seeds, flakes and sparks
+  are not built. The other scenes still draw their own drips (`rainDrips`, `canopyDrip`) and
+  leaves (bonsai, the garden's maple, the bamboo's).
 
 ### Layers in the lab
 

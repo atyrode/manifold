@@ -18,7 +18,8 @@
 //   deposit(x, z, angle, hue, face, rand)
 //                            an item that came to rest at (x, z) (m), heading `angle` (rad in the ground
 //                            plane): into the lattice cell under it, else the shifted cell under it,
-//                            else over the lattice cell's item. Draws one number from rand.
+//                            else over the lattice cell's item. Draws one number from rand. False
+//                            where nothing is laid: off the lattice, or on a pinned cell.
 //   take(x, z)               lift the whole item lying on top at (x, z) (the lattice cell's) off the
 //                            ground, never a pinned cell's: where it lay, its heading, hue and face, or
 //                            undefined. What lies beneath stays.
@@ -170,15 +171,15 @@ export class Litter {
     hue: number,
     face: number,
     rand: () => number,
-  ): void {
+  ): boolean {
     const { cell: size, x0, z0, cols, rows } = this.lattice;
     const gx = (x - x0) / size;
     const gz = (z - z0) / size;
     const i = Math.floor(gx);
     const j = Math.floor(gz);
-    if (i < 0 || j < 0 || i >= cols || j >= rows) return;
+    if (i < 0 || j < 0 || i >= cols || j >= rows) return false;
     const cell = j * cols + i;
-    if (this.protect[cell] === PINNED) return;
+    if (this.protect[cell] === PINNED) return false;
     let layer = 0;
     let ci = i;
     let cj = j;
@@ -208,6 +209,7 @@ export class Litter {
     this.hue[slot] = hue;
     this.face[slot] = face;
     this.#sync(slot);
+    return true;
   }
 
   take(x: number, z: number): LitterItem | undefined {

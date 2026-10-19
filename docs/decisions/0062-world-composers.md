@@ -1099,10 +1099,31 @@ every layer on (`composer/falling.ts`, README "Falling things"), in the composed
   rain 0.7 differs in 3 cells, a bead's rim. SwiftShader: 2,117 → 2,109 at the defaults and
   2,567 → 2,570 in rain 0.7. The bench binds no speck map, so that is the program's code alone;
   only the few cells a falling thing covers run its colours.
-- **Not built yet:** leaves, petals, seeds, flakes and sparks; the interior's and the overhead's
-  draw (a room keeps no depth, and its program has no speck pass); the other scenes' leaf and
-  drip code (autumn, bonsai, dew, meadow, campfire, garden, bamboo, `rainDrips` and `canopyDrip`
-  elsewhere).
+- **Leaves: autumn's maple (2026-10-19).** The `leaf` kind: a crown (`FallLeaves`) gives a rate
+  that only gates the pool's per-step beats (`4bf629be` again cannot happen), fills each leaf in
+  from the leaf's own `hash31` stream, and names the air its leaves fly in at each step's moment;
+  `leaf(lane, …)` lets one go at once and `aloft(lane)` counts them. A leaf is the shared
+  fluttering plate on the pool's fixed step; it comes to rest on the highest surface under it, eases
+  flat, and joins the litter its surface names where that layer's `FallingLitter.lay` takes it
+  (`Litter.deposit` now says whether it laid the leaf), else lies 8 s and fades. It is drawn as its
+  outline, from a mask per outline, through its plate's two axes, one code a cell: 8 hue bands of
+  the layer's palette × the face shown, flat or on edge (32 codes, after the drops'). The layer
+  names its palette (`LayerFalling.leaf`, `mapleLeafSpeck`), declared ahead of the layers' GLSL; the
+  speck pass hands it the speck's depth for the canopy's shadow. The 512 particles hold a park's
+  leaves many times over; nothing about the speck map's encoding changed. The Park keeps its knobs,
+  air (swirl, passage flurry and whirl), shower, pickups and carpet; its record row and the shader's
+  36-slot loop over it are gone. Differences: autumn's still differs in 290 of 144,000 cells (the
+  leaves in the air, `ab.ts --base c14f1c9f`, 960×600); every other scene `SAME`. A leaf has no
+  veins any more, its hue is one of 8 bands, it falls on the fall clock (still at motion 0 even
+  through a passage), a new seed lets the leaves already in the air finish their fall, and with
+  the litter off a leaf lies and fades instead of vanishing. Cost:
+  SwiftShader, M user-space instructions of the GPU process per presented frame of the lab page at
+  960×600, base → head: 20,429 → 9,843 at the defaults, 20,449 → 9,858 with the leaf fall at 1 and
+  strong gusts. Composed sim, headless, 480×300 cells: 0.054 → 0.138 ms a frame at the defaults,
+  0.087 → 0.173 ms at leaf fall 1.
+- **Not built yet:** petals, seeds, flakes and sparks; the interior's and the overhead's draw (a
+  room keeps no depth, and its program has no speck pass); the other scenes' leaf and drip code
+  (bonsai, dew, meadow, campfire, garden, bamboo, `rainDrips` and `canopyDrip` elsewhere).
 
 ### Order of work
 

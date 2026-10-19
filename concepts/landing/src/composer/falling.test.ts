@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { LevelCamera } from "../sims/camera.ts";
 import {
   FALL_CODE,
+  FALL_CODES,
   FALL_STEP,
   FallingPool,
   fallingGlsl,
@@ -9,7 +10,7 @@ import {
   type FallView,
 } from "./falling.ts";
 import { NO_PASSAGE_GUST, type GustField } from "./gust.ts";
-import type { FallSurface, FallingWater } from "./types.ts";
+import type { FallLeaf, FallLeaves, FallSurface, FallingLitter, FallingWater } from "./types.ts";
 
 const RIG = new LevelCamera({ horizon: 0.4, eye: 1.5, focal: 1.2 });
 const VIEW: FallView = {
@@ -20,6 +21,7 @@ const VIEW: FallView = {
   height: 540,
   parallaxX: 0,
   parallaxY: 0,
+  kinds: ["drop", "leaf"],
 };
 const STILL: GustField = {
   wind: 0,
@@ -176,7 +178,149 @@ describe("the falling things", () => {
   });
 
   test("colour only the kinds on", () => {
-    expect(fallingGlsl(["drop"])).toContain("x.air.drop");
-    expect(fallingGlsl([])).not.toContain("x.air.drop");
+    expect(fallingGlsl({ kinds: ["drop"] })).toContain("x.air.drop");
+    expect(fallingGlsl({ kinds: [] })).not.toContain("x.air.drop");
+    // A leaf takes its layer's palette, declared ahead of the layers' GLSL, after the drops' codes.
+    const leaves = fallingGlsl({ kinds: ["drop", "leaf"], leaf: "parkLeaf" });
+    expect(leaves).toContain("vec3 parkLeaf(float hue, int shade, float z, Ctx x);");
+    expect(leaves).toContain(
+      `code > ${FALL_CODES.drop} && code <= ${FALL_CODES.drop + FALL_CODES.leaf}`,
+    );
   });
 });
+
+/** A crown 6 m up, 5 m off, letting `rate` leaves a second go into still air but the wind's. */
+function crown(rate: number, wind = 0): FallLeaves {
+  return {
+    rate,
+    least: 0,
+    shed(rand, leaf) {
+      leaf.x = -1 + 2 * rand();
+      leaf.y = 6;
+      leaf.z = 5 + rand();
+      leaf.radius = 0.15;
+      leaf.hue = rand();
+      leaf.mass = 0.2 + 0.7 * rand();
+      leaf.chord = 0.4;
+      leaf.pace = 0.21;
+      leaf.psi = 6.28 * rand();
+      leaf.th = rand() - 0.5;
+      leaf.dsigma = rand() - 0.5;
+      leaf.rollRate = 1.5;
+      leaf.phase = 6.28 * rand();
+      leaf.shown = false;
+    },
+    air(_x, _y, _z, tm, phase, out) {
+      out[0] = wind + 0.3 * Math.sin(0.9 * tm + phase);
+      out[1] = 0;
+      out[2] = 0;
+    },
+  };
+}
+
+/** The ground, joining `litter`'s litter. */
+const GROUND: FallSurface = { kind: "plane", y: 0.01, litter: "litter" };
+
+/** A pool under a crown over the ground, run `seconds` at `rate` frames a second: the last frame's cells. */
+function leafRun(
+  seconds: number,
+  rate: number,
+  leaves: FallLeaves,
+  host: (layer: string) => object | undefined = () => undefined,
+): { pool: FallingPool; cells: Plotted[] } {
+  const pool = new FallingPool(host);
+  let painted = recorder();
+  for (let f = 0; f < Math.round(seconds * rate); f++) {
+    pool.begin();
+    pool.surface(GROUND);
+    pool.leaves(0, leaves, 0, 0);
+    pool.step(frame({ dt: 1 / rate, motionTime: (f + 1) / rate, rain: 0, wet: 0 }));
+    painted = recorder();
+    pool.paint(painted, VIEW);
+  }
+  return { pool, cells: painted.cells };
+}
+
+describe("the falling leaves", () => {
+  const leafCode = (cell: Plotted): boolean =>
+    cell.code > FALL_CODES.drop && cell.code <= FALL_CODES.drop + FALL_CODES.leaf;
+
+  test("let go from the crown, flutter down and lie where they land, or join the litter", () => {
+    const { pool, cells } = leafRun(20, 60, crown(1));
+    expect(pool.live).toBeGreaterThan(5);
+    expect(cells.filter(leafCode).length).toBeGreaterThan(50);
+    const laid: number[][] = [];
+    const litter: FallingLitter = {
+      lay: (x, z, angle, hue, face) => laid.push([x, z, angle, hue, face]) > 0,
+    };
+    const taken = leafRun(20, 60, crown(1), (layer) => (layer === "litter" ? litter : undefined));
+    expect(laid.length).toBeGreaterThan(5);
+    for (const [, z = 0, , hue = -1, face = 0] of laid) {
+      expect(z).toBeGreaterThan(2);
+      expect(hue).toBeGreaterThanOrEqual(0);
+      expect(Math.abs(face)).toBe(1);
+    }
+    // What the litter takes leaves the pool.
+    expect(taken.pool.live).toBeLessThan(pool.live);
+  });
+
+  test("shed nothing while the crown's rate is 0; a leaf handed at once counts under its lane", () => {
+    expect(leafRun(5, 60, crown(0)).pool.live).toBe(0);
+    const pool = new FallingPool(() => undefined);
+    const handed: FallLeaf = {
+      ...FRESH,
+      x: 0,
+      y: 3,
+      z: 4,
+      radius: 0.1,
+      mass: 0.3,
+      chord: 0.3,
+      pace: 0.2,
+    };
+    pool.begin();
+    pool.surface(GROUND);
+    expect(pool.leaf(1, handed, 0, 0)).toBe(true);
+    expect(pool.aloft(1)).toBe(1);
+    expect(pool.aloft(0)).toBe(0);
+  });
+
+  test("play a seed the same at 60 and 144 frames a second", () => {
+    const slow = leafRun(6, 60, crown(2, 0.8)).cells;
+    const fast = leafRun(6, 144, crown(2, 0.8)).cells;
+    expect(slow.filter(leafCode).length).toBeGreaterThan(0);
+    expect(fast).toEqual(slow);
+  });
+
+  test("are carried by their layer's air", () => {
+    const meanX = (cells: readonly Plotted[]): number =>
+      cells.reduce((sum, cell) => sum + cell.cx, 0) / Math.max(1, cells.length);
+    const still = leafRun(8, 60, crown(2)).cells.filter(leafCode);
+    const windy = leafRun(8, 60, crown(2, 0.3)).cells.filter(leafCode);
+    expect(windy.length).toBeGreaterThan(0);
+    expect(meanX(windy)).toBeGreaterThan(meanX(still) + 20);
+  });
+});
+
+/** A still, flat leaf, shown at once. */
+const FRESH: FallLeaf = {
+  x: 0,
+  y: 0,
+  z: 0,
+  radius: 0.1,
+  hue: 0,
+  shape: 0,
+  mass: 0.3,
+  chord: 0.3,
+  pace: 0.2,
+  psi: 0,
+  dpsi: 0,
+  th: 0,
+  sigma: 0,
+  dsigma: 0,
+  roll: 0,
+  rollRate: 0,
+  rest: 0,
+  phase: 0,
+  shown: true,
+  ahead: 0,
+};

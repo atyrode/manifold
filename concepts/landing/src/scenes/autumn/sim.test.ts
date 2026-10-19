@@ -1,55 +1,59 @@
 import { expect, test } from "bun:test";
-import { ATLAS_WIDTH } from "../../composer/caps.ts";
-import { allocate, ATLAS_SLOT } from "../../composer/sim.ts";
+import { allocate, SPECK_SLOT } from "../../composer/sim.ts";
 import { Cast, Presence, principal } from "../../principals.ts";
 import { HeadlessSim } from "../../sims/headless.ts";
 import type { ScenePoint } from "../types.ts";
 import { loadScene } from "../index.ts";
 import { autumnComposed } from "./index.ts";
-import { AUTUMN_CARPET, AUTUMN_SLOTS, AUTUMN_VIEW, AUTUMN_WIDE } from "./layout.ts";
+import { AUTUMN_CARPET, AUTUMN_VIEW, AUTUMN_WIDE } from "./layout.ts";
 
 const autumnScene = await loadScene("autumn");
 
-// Where the preset's layers keep their data: the maple's record row (its leaves in the air), the
-// litter's two fields (the carpet's layers).
+// Where the preset's layers keep their data: the composer's falling things' codes in the speck map
+// (the maple's leaves in the air), the litter's two fields (the carpet's layers).
 const allocation = allocate(
   autumnComposed.place(new Set(autumnComposed.preset.layers)).layers.map((p) => p.layer),
 );
-const LEAF_ROW = allocation.rows["maple"]?.base ?? 0;
+const FALLING = allocation.falling ?? { base: 0, count: 0 };
 const [CARPET_A = 2, CARPET_B = 3] = allocation.fields["litter"] ?? [];
 
-/** The leaves in the air (alpha above 0) in the maple's row as last uploaded. */
-function airborne(sim: HeadlessSim): number {
-  const data = sim.upload(ATLAS_SLOT).data;
+/** The cells of leaves in the air or lying (the falling things' codes) in the speck map as last uploaded. */
+function leafCells(sim: HeadlessSim): number {
+  if (!sim.uploaded(SPECK_SLOT)) return 0;
+  const data = sim.upload(SPECK_SLOT).data;
   let count = 0;
-  for (let i = 0; i < AUTUMN_SLOTS; i++)
-    if ((data[(LEAF_ROW * ATLAS_WIDTH + 4 * i) * 4 + 3] ?? 0) > 0) count++;
+  for (let i = 0; i < data.length; i += 2) {
+    const code = data[i] ?? 0;
+    if (code > FALLING.base && code <= FALLING.base + FALLING.count) count++;
+  }
   return count;
 }
 
 test("the gusts shake leaves loose as they reach the tree; at motion 0 the park stands still", () => {
-  // No leaves let go but the gusts' showers: once the leaves already falling have landed, only a
-  // gust of the composer's field sends more down.
+  // No leaves let go but the gusts' showers: once the leaves already falling have landed and faded
+  // where they lie (the litter is off), only a gust of the composer's field sends more down.
   const calm = { fall: 0, gusts: 0 };
   const gusty = { fall: 0, gusts: 1, "gusts-amount": 1, gustRate: 1 };
   const still = new HeadlessSim(autumnScene);
   const windy = new HeadlessSim(autumnScene);
+  let prewarmed = 0;
   for (let n = 0; n < 30 * 60; n++) {
-    still.step({ knobs: calm });
+    prewarmed = Math.max(prewarmed, leafCells(still.step({ knobs: calm })));
     windy.step({ knobs: calm });
   }
-  expect(airborne(still)).toBe(0);
+  expect(prewarmed).toBeGreaterThan(30);
+  expect(leafCells(still)).toBe(0);
   let shaken = 0;
   for (let n = 0; n < 60 * 60; n++) {
     still.step({ knobs: calm });
-    shaken = Math.max(shaken, airborne(windy.step({ knobs: gusty })));
+    shaken = Math.max(shaken, leafCells(windy.step({ knobs: gusty })));
   }
-  expect(airborne(still)).toBe(0);
-  expect(shaken).toBeGreaterThan(3);
+  expect(leafCells(still)).toBe(0);
+  expect(shaken).toBeGreaterThan(30);
   // Frozen, nothing moves, gusts or not.
-  const before = Array.from(windy.step({ knobs: gusty, motion: 0 }).upload(ATLAS_SLOT).data);
+  const before = Array.from(windy.step({ knobs: gusty, motion: 0 }).upload(SPECK_SLOT).data);
   for (let n = 0; n < 120; n++) windy.step({ knobs: gusty, motion: 0 });
-  expect(Array.from(windy.upload(ATLAS_SLOT).data)).toEqual(before);
+  expect(Array.from(windy.upload(SPECK_SLOT).data)).toEqual(before);
   for (const each of [still, windy]) each.dispose();
 });
 

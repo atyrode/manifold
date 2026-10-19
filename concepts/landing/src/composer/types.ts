@@ -219,20 +219,26 @@ export interface LayerData {
  * lands and how it is drawn. `drop`: water gathered at a drip point, a bead swelling there until it
  * lets go, falling under gravity and drag in the wind, drawn out into a streak by its speed; on a
  * ledge or a plane it splashes (droplets thrown up, a crown) and wets the spot, on water it strikes
- * the water's sim.
+ * the water's sim. `leaf`: a leaf let go from a crown, a plate under heavy drag that flutters or
+ * tumbles down (sims/flutter.ts) in the layer's air, drawn as its outline in a few cells in the
+ * layer's palette; it eases flat where it lands and lies there, or joins the litter there.
  */
-export type FallKind = "drop";
+export type FallKind = "drop" | "leaf";
 
 /**
  * What a layer gives the composer's falling things (README "Falling things"): the kinds it lets
  * fall (each compiles its codes' colours into the program while the layer is on), and how far
  * they slide on the screen with the pointer's parallax (SimFrame.parallax, screen heights per unit),
  * where the layer itself slides so (the falls' near bank). Its sim names its drip points and the
- * surfaces they land on each frame (LayerFrame.falling).
+ * surfaces they land on each frame (LayerFrame.falling). A layer that lets leaves fall names the
+ * GLSL that colours them, `vec3 <leaf>(float hue, int shade, float z, Ctx x)` in its own GLSL: hue
+ * 0..1 in its palette, shade FALL_LEAF_SHADES' code (the face we see, how it is tilted), z the
+ * leaf's depth (m); the first layer on that names one colours every leaf.
  */
 export interface LayerFalling {
   readonly kinds: readonly FallKind[];
   readonly slide?: readonly [x: number, y: number];
+  readonly leaf?: string;
 }
 
 /**
@@ -241,7 +247,9 @@ export interface LayerFalling {
  *   ledge  a strip `depth` deep along the floor segment from → to: a sill, a bank's top;
  *   water  over the box x × z: a drop strikes the sim of the layer `strikes` names (its
  *          affordances' FallingWater), where that layer is on and has one.
- * A drop splashes on a plane or a ledge and leaves a wet mark there.
+ * A drop splashes on a plane or a ledge and leaves a wet mark there. A leaf comes to rest on any
+ * of them; on a plane or a ledge whose `litter` names a layer on whose affordances take it
+ * (FallingLitter) it joins that layer's litter, else it lies there a while and fades.
  */
 export type FallSurface =
   | {
@@ -249,6 +257,7 @@ export type FallSurface =
       readonly y: number;
       readonly x?: Span;
       readonly z?: Span;
+      readonly litter?: string;
     }
   | {
       readonly kind: "ledge";
@@ -256,6 +265,7 @@ export type FallSurface =
       readonly from: FloorPoint;
       readonly to: FloorPoint;
       readonly depth: number;
+      readonly litter?: string;
     }
   | {
       readonly kind: "water";
@@ -264,6 +274,56 @@ export type FallSurface =
       readonly z?: Span;
       readonly strikes: string;
     };
+
+/**
+ * A leaf let go (FallingWriter.leaves' shed, FallingWriter.leaf), rig frame, metres: where it is,
+ * how it is drawn and the fluttering plate it flies as (sims/flutter.ts FlutterPlates, whose fields
+ * these seed).
+ */
+export interface FallLeaf {
+  x: number;
+  y: number;
+  z: number;
+  /** Its drawn radius (m), its hue in the layer's palette (0..1), its outline (FALL_LEAF_SHAPES). */
+  radius: number;
+  hue: number;
+  shape: number;
+  /** The plate: its mass, its aerodynamic chord (m), real seconds per model time unit. */
+  mass: number;
+  chord: number;
+  pace: number;
+  /** Its plane's heading and turn rate, its pitch, its spin and spin rate, its rock's phase and rate, the pitch it rests at. */
+  psi: number;
+  dpsi: number;
+  th: number;
+  sigma: number;
+  dsigma: number;
+  roll: number;
+  rollRate: number;
+  rest: number;
+  /** Its eddies' phase (the layer's air reads it). */
+  phase: number;
+  /** Shown at once (true: blown in, lifted off the ground) or dissolving in as it lets go. */
+  shown: boolean;
+  /** Seconds it has already flown in still air (a leaf already on its way down). */
+  ahead: number;
+}
+
+/**
+ * A layer's leaves this frame (FallingWriter.leaves): the crown it sheds them from and the air that
+ * carries every leaf it lets fall. The pool lets leaves go on fixed beats of its own clock; `rate`
+ * only says which beats let one go (README "Falling things").
+ */
+export interface FallLeaves {
+  /** Leaves a second the crown lets go now (0: none). */
+  readonly rate: number;
+  /** The fewest of its shed leaves kept in the air while it sheds at all. */
+  readonly least: number;
+  /** A leaf letting go from the crown: `leaf` filled in from `rand`, the leaf's own stream of chance. */
+  shed(rand: () => number, leaf: FallLeaf): void;
+  /** The air (m/s, x y z) at (x, y, z) at motion time tm for a leaf of eddy phase `phase`, into `out`. */
+  air(x: number, y: number, z: number, tm: number, phase: number, out: Float64Array): void;
+}
 
 /**
  * GLSL several layers of one scene share (its colours, its shading, its per-cell state): compiled
@@ -743,7 +803,8 @@ export interface FieldSlot {
 
 /**
  * Where a layer's sim tells the composer's falling things (README "Falling things") what its water
- * gathers on and lands on this frame, rig frame, metres. Every call holds for this frame only.
+ * gathers on, what leaves it lets go and what they land on this frame, rig frame, metres. Every call
+ * holds for this frame only.
  */
 export interface FallingWriter {
   /**
@@ -755,6 +816,18 @@ export interface FallingWriter {
   drip(lane: number, x: number, y: number, z: number): void;
   /** A surface every layer's falling things land on. */
   surface(surface: FallSurface): void;
+  /**
+   * The layer's leaves this frame: its crown's shedding, and the air its leaves fly in (they fall
+   * in the gust field's air while it names none). A layer that does not let leaves fall sheds none.
+   */
+  leaves(leaves: FallLeaves): void;
+  /**
+   * A leaf let go now under `lane` (1..65535; the crown's are lane 0): lifted off the ground, blown
+   * in. False when it is not taken (the pool full, the layer letting no leaves fall).
+   */
+  leaf(lane: number, leaf: FallLeaf): boolean;
+  /** The layer's leaves of `lane` in the air now (not yet come to rest). */
+  aloft(lane: number): number;
 }
 
 /**
@@ -763,6 +836,15 @@ export interface FallingWriter {
  */
 export interface FallingWater {
   strike(x: number, z: number, mass: number, speed: number): void;
+}
+
+/**
+ * What a litter layer's sim lends the falling things through its affordances (LayerFrame.host): a
+ * leaf come to rest at (x, z), rig frame, metres, its tip heading `angle` (atan2(dz, dx)) in the
+ * ground plane, its hue, `face` +1 top up or -1 top down. False where the litter does not take it.
+ */
+export interface FallingLitter {
+  lay(x: number, z: number, angle: number, hue: number, face: number): boolean;
 }
 
 /** The placement as a layer's sim sees it (README "Space"). */

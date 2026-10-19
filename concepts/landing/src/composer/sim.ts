@@ -34,11 +34,13 @@ import { DataTexture } from "../sims/texture.ts";
 import { ATLAS_WIDTH, COMPOSER_CAPS } from "./caps.ts";
 import { coverAt, moveShape } from "./claims.ts";
 import { TURNS_GATE } from "./compose.ts";
-import { FallingPool, FALL_CODES, type FallFrame, type FallView } from "./falling.ts";
+import { FallingPool, FALL_CODES, FALL_KINDS, type FallFrame, type FallView } from "./falling.ts";
 import { NO_PASSAGE_GUST, passageGust, type GustField, type PassageGust } from "./gust.ts";
 import type { Placement } from "./place.ts";
 import type {
   FallKind,
+  FallLeaf,
+  FallLeaves,
   FallSurface,
   FallingWriter,
   FieldSlot,
@@ -73,10 +75,17 @@ export interface Allocation {
   readonly fields: Readonly<Record<string, readonly number[]>>;
   /**
    * The composer's falling things' codes (falling.ts FALL_CODES), after every layer's: the first
-   * code's base, how many, and the kinds the layers on let fall; undefined while none does.
+   * code's base, how many, the kinds the layers on let fall (FALL_KINDS' order), and the GLSL that
+   * colours the leaves (the first layer's on that names one, LayerFalling.leaf); undefined while
+   * none lets anything fall.
    */
   readonly falling:
-    | { readonly base: number; readonly count: number; readonly kinds: readonly FallKind[] }
+    | {
+        readonly base: number;
+        readonly count: number;
+        readonly kinds: readonly FallKind[];
+        readonly leaf?: string;
+      }
     | undefined;
   /** Slots bound: 2 plus the fields. */
   readonly slots: number;
@@ -112,11 +121,14 @@ export function allocate(layers: readonly LayerDef[]): Allocation {
       slot += data.fields ?? 0;
     }
   }
-  const kinds = [...new Set(layers.flatMap((layer) => layer.falling?.kinds ?? []))];
+  const kinds = FALL_KINDS.filter((kind) =>
+    layers.some((layer) => layer.falling?.kinds.includes(kind) === true),
+  );
   let falling: Allocation["falling"];
   if (kinds.length > 0) {
     const count = kinds.reduce((sum, kind) => sum + FALL_CODES[kind], 0);
-    falling = { base: code, count, kinds };
+    const leaf = layers.find((layer) => layer.falling?.leaf !== undefined)?.falling?.leaf;
+    falling = { base: code, count, kinds, ...(leaf === undefined ? {} : { leaf }) };
     code += count;
     if (code > 255)
       throw new ComposerSimError(
@@ -259,14 +271,15 @@ class Ground implements LayerGround {
 }
 
 /**
- * A layer's view of the falling things (LayerFrame.falling): its drip points (lanes keyed by its
- * place among the offered layers) and its surfaces into the pool, while it is on screen; nowhere
- * under a composer whose program draws no falling things (Composition.falling unset).
+ * A layer's view of the falling things (LayerFrame.falling): its drip points and its leaves (lanes
+ * keyed by its place among the offered layers) and its surfaces into the pool, while it is on
+ * screen; nowhere under a composer whose program draws no falling things (Composition.falling unset).
  */
 class FallingInlet implements FallingWriter {
   readonly #pool: FallingPool | undefined;
   readonly #key: number;
   readonly #drops: boolean;
+  readonly #leaves: boolean;
   readonly #slide: readonly [number, number];
   shown = false;
 
@@ -274,6 +287,7 @@ class FallingInlet implements FallingWriter {
     this.#pool = pool;
     this.#key = index * 65536;
     this.#drops = layer.falling?.kinds.includes("drop") === true;
+    this.#leaves = layer.falling?.kinds.includes("leaf") === true;
     this.#slide = layer.falling?.slide ?? [0, 0];
   }
 
@@ -284,6 +298,20 @@ class FallingInlet implements FallingWriter {
 
   surface(surface: FallSurface): void {
     if (this.shown) this.#pool?.surface(surface);
+  }
+
+  leaves(leaves: FallLeaves): void {
+    if (this.shown && this.#leaves)
+      this.#pool?.leaves(this.#key, leaves, this.#slide[0], this.#slide[1]);
+  }
+
+  leaf(lane: number, leaf: FallLeaf): boolean {
+    if (!this.shown || !this.#leaves || this.#pool === undefined) return false;
+    return this.#pool.leaf(this.#key + (lane & 0xffff), leaf, this.#slide[0], this.#slide[1]);
+  }
+
+  aloft(lane: number): number {
+    return this.#pool?.aloft(this.#key + (lane & 0xffff)) ?? 0;
   }
 }
 
@@ -445,6 +473,7 @@ class ComposedSim<R> implements SceneSim {
       height: 1,
       parallaxX: 0,
       parallaxY: 0,
+      kinds: [],
     };
   }
 
@@ -767,6 +796,7 @@ class ComposedSim<R> implements SceneSim {
     v.height = this.#map.height;
     v.parallaxX = frame.parallax?.x ?? 0;
     v.parallaxY = frame.parallax?.y ?? 0;
+    v.kinds = codes.kinds;
     this.#fallPlot.base = codes.base;
     pool.paint(this.#fallPlot, v);
   }
