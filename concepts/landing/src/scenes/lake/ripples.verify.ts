@@ -4,6 +4,7 @@
 // strongest wind they stay calm under the dither. Registered in verify-browser.ts.
 import {
   fragmentSourceFor,
+  knobSlots,
   packParams,
   sceneFeatures,
   shaderValues,
@@ -70,7 +71,10 @@ export function verifyLakeRipples(gl: WebGL2RenderingContext): Record<string, un
     gl.uniform1f(at("uMotionTime"), time);
     gl.uniform4fv(
       at("uParams"),
-      packParams(renderSettings(defaultsFor("lake"), { ...LAKE_FJORD, ...knobs }).params),
+      packParams(
+        renderSettings(defaultsFor("lake"), { ...LAKE_FJORD, ...knobs }).params,
+        knobSlots(lakeScene, features),
+      ),
     );
     gl.drawArrays(gl.TRIANGLES, 0, 3);
     const bytes = new Uint8Array(WIDTH * HEIGHT * 4);

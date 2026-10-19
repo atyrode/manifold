@@ -6,7 +6,9 @@
 import { glslFloat } from "../../shaders/glsl.ts";
 import {
   fragmentSourceFor,
+  knobSlots,
   packParams,
+  sceneFeatures,
   sceneFeaturesAll,
   vertexSource,
 } from "../../shaders/index.ts";
@@ -15,6 +17,8 @@ import { loadScene } from "../index.ts";
 import { ORBIT_CAPTURE } from "./shader.ts";
 
 const orbitScene = await loadScene("orbit");
+/** The orbit composes no layers: every program of it reads all its knobs, in their order. */
+const orbitSlots = knobSlots(orbitScene, sceneFeatures(orbitScene));
 
 const WIDTH = 480;
 const HEIGHT = 270;
@@ -91,7 +95,7 @@ Shade probeCaptureBehindRing(vec2 uv, vec2 cell, float t) {
   gl.useProgram(probe);
   gl.uniform2f(gl.getUniformLocation(probe, "uRes"), WIDTH, HEIGHT);
   gl.uniform1i(gl.getUniformLocation(probe, "uView"), 1);
-  gl.uniform4fv(gl.getUniformLocation(probe, "uParams"), packParams(params));
+  gl.uniform4fv(gl.getUniformLocation(probe, "uParams"), packParams(params, orbitSlots));
   gl.drawArrays(gl.TRIANGLES, 0, 3);
   const bytes = new Uint8Array(MOMENTS * 4);
   gl.readPixels(0, 0, MOMENTS, 1, gl.RGBA, gl.UNSIGNED_BYTE, bytes);
@@ -146,7 +150,7 @@ export function verifyOrbitRingDepth(gl: WebGL2RenderingContext): Record<string,
     gl.uniform1f(at("uMotionTime"), time);
     gl.uniform4fv(
       at("uParams"),
-      packParams(renderSettings(defaultsFor("orbit"), { ...scene, ...knobs }).params),
+      packParams(renderSettings(defaultsFor("orbit"), { ...scene, ...knobs }).params, orbitSlots),
     );
     gl.drawArrays(gl.TRIANGLES, 0, 3);
     const bytes = new Uint8Array(WIDTH * HEIGHT * 4);

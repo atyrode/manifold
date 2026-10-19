@@ -5,6 +5,7 @@
 import { glslFloat } from "../../shaders/glsl.ts";
 import {
   fragmentSourceFor,
+  knobSlots,
   packParams,
   sceneFeatures,
   shaderValues,
@@ -111,7 +112,13 @@ export function verifyFallsBirds(gl: WebGL2RenderingContext): Record<string, unk
     gl.uniform1f(at("uTime"), clock);
     gl.uniform1f(at("uMotionTime"), motionTime);
     gl.uniform1f(at("uMotion"), motion);
-    gl.uniform4fv(at("uParams"), packParams(renderSettings(defaultsFor("falls"), knobs).params));
+    gl.uniform4fv(
+      at("uParams"),
+      packParams(
+        renderSettings(defaultsFor("falls"), knobs).params,
+        knobSlots(fallsScene, features),
+      ),
+    );
     gl.drawArrays(gl.TRIANGLES, 0, 3);
     const bytes = new Uint8Array(WIDTH * HEIGHT * 4);
     gl.readPixels(0, 0, WIDTH, HEIGHT, gl.RGBA, gl.UNSIGNED_BYTE, bytes);

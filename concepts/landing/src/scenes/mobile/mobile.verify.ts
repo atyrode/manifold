@@ -13,7 +13,13 @@
 // - rest: an entrance changes what is drawn while it plays, and leaves the sim, and so the picture
 //   at rest, bit for bit what a scene that never had one draws.
 import { defaultsFor, paramDefaults, renderSettings } from "../../state.ts";
-import { fragmentSourceFor, packParams, vertexSource } from "../../shaders/index.ts";
+import {
+  fragmentSourceFor,
+  knobSlots,
+  packParams,
+  sceneFeatures,
+  vertexSource,
+} from "../../shaders/index.ts";
 import { HeadlessSim } from "../../sims/headless.ts";
 import {
   Mobile,
@@ -297,7 +303,10 @@ function sceneProgram(gl: WebGL2RenderingContext): {
   gl.uniform1fv(at("uTriggers"), new Float32Array(8).fill(-1e4));
   gl.uniform4fv(
     at("uParams"),
-    packParams(renderSettings(defaultsFor("mobile"), paramDefaults("mobile")).params),
+    packParams(
+      renderSettings(defaultsFor("mobile"), paramDefaults("mobile")).params,
+      knobSlots(mobileScene, sceneFeatures(mobileScene)),
+    ),
   );
   // The composed sim's slots: the speck map and the records atlas unbound, the mobile at ORBITS.
   gl.uniform1i(at(`uSim${ORBITS}`), 0);

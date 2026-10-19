@@ -40,7 +40,8 @@ are the ports' own, taken under #1082 on the shared dev host.
   `interior-code.ts`, the room's program in `room.ts`. The `overhead` composer (Phase 4): 19 layers
   (`overhead.ts`: 5 beds, 4 waters, 4 dressings, 2 covers, 4 life), its program and code assembly in
   `overhead-glsl.ts`, the layers' code in `overhead-code.ts`. All three share
-  `composeScene`, the placer, the composed sim and the layers' turns (`turnsGlsl`, `passCalls`).
+  `composeScene`, the placer, the composed sim and the layers' turns (`turnsGlsl`, `passCalls`),
+  and the per-program knob layout (`knobSlots` in `src/shaders/index.ts`, `checkKnobCaps`).
 - **Presets:** meadow and bees (Phase 1); shore, dunes, autumn, lanterns and falls (2a); campfire,
   fireflies, forest, bamboo, garden and lake (2b); country, street, skyward, flock, swell and dew
   (2c); island (after Phase 2); sill and lava (the Phase 3 pilot), bonsai, incense, frost, bar,
@@ -57,8 +58,8 @@ are the ports' own, taken under #1082 on the shared dev host.
   own rigs alone (see "Rigs, locking and offering").
 - **Not built:** the rest of the interiors (clouds and harmonograph; Phase 3); the rest of the
   `overhead` composer (its `tilt` and `orbit`, the `height` pass, the World over the patch beyond its
-  rain and wind, and its presets after delta; Phase 4); the per-program knob layout and packed
-  trigger slots; `scripts/layer-costs.ts`, the stack meter and the role's "+" listing; the browser
+  rain and wind, and its presets after delta; Phase 4); packed trigger slots;
+  `scripts/layer-costs.ts`, the stack meter and the role's "+" listing; the browser
   checks `composerDepth`, `composerClaims`, `composerWeather` and `layerToggles`; a check of the
   SwiftShader instruction budget; the principals' points in the site; shelving the presets by
   composer (D9).
@@ -443,22 +444,23 @@ GPU budget is `bench.html`'s.
 
 ### Budgets and caps
 
-| Limit                                      | Value                                                                                                                                                | Held by, and where the presets stand                                                |
-| ------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------- |
-| Layers on, the World not counted           | 8                                                                                                                                                    | `place.ts`; the largest home stacks hold 6 (autumn, campfire, country)              |
-| Front subjects                             | 2                                                                                                                                                    | `place.ts`                                                                          |
-| Claims a program holds                     | 12                                                                                                                                                   | `place.ts`; the apiary alone holds 11                                               |
-| Local lights                               | 8                                                                                                                                                    | `caps.ts`, not checked; no stack holds more than 2                                  |
-| Sim textures                               | 8: the speck map, the records atlas, 6 fields                                                                                                        | `allocate` (`sim.ts`); the valley alone takes 4 fields                              |
-| Knobs a preset lists                       | 64, the renderer's `MAX_PARAMS`                                                                                                                      | `compose.ts`, `budget.test.ts`; bees 63, country 57, lake 52, falls 51, shore 49    |
-| Trigger slots                              | 8, the renderer's `MAX_TRIGGERS`                                                                                                                     | `compose.ts`, `budget.test.ts`; forest and lake 8, bees, shore and bamboo 7         |
-| Shaken program at a preset's defaults      | 160 KB                                                                                                                                               | `budget.test.ts`; the largest, street, 129,136 characters                           |
-| Shaken all-features program of a layer set | 256 KB                                                                                                                                               | `budget.test.ts`; country 253,359 characters, "Bees · in the valley" 252,886        |
-| The pilot mix's all-features program       | 230 KB                                                                                                                                               | `budget.test.ts`; "Bees · overgrown meadow" 220,819 characters                      |
-| Fragment uniform vectors                   | 224, WebGL2's guaranteed minimum                                                                                                                     | `scripts/glsl-check.ts`; the largest measured, 180 (lake)                           |
-| SwiftShader draw at 320×200                | a preset's default program within 10 % of its recorded instruction count; a mix within its preset's count plus its guests' marginal counts plus 10 % | not checked yet; recorded: fireflies 490 M, campfire 1.63–1.65 G, dew 6,354 M       |
-| Sim CPU time, whole stack, headless        | 4 ms a frame                                                                                                                                         | not checked yet                                                                     |
-| GPU frame at 960×540                       | 16.7 ms on the reference integrated GPU, once one is recorded                                                                                        | `bench.html` (`SCENES.md`, "GPU cost on real hardware"), which has no `layers=` yet |
+| Limit                                      | Value                                                                                                                                                | Held by, and where the presets stand                                                                                  |
+| ------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------- |
+| Layers on, the World not counted           | 8                                                                                                                                                    | `place.ts`; the largest home stacks hold 6 (autumn, campfire, country)                                                |
+| Front subjects                             | 2                                                                                                                                                    | `place.ts`                                                                                                            |
+| Claims a program holds                     | 12                                                                                                                                                   | `place.ts`; the apiary alone holds 11                                                                                 |
+| Local lights                               | 8                                                                                                                                                    | `caps.ts`, not checked; no stack holds more than 2                                                                    |
+| Sim textures                               | 8: the speck map, the records atlas, 6 fields                                                                                                        | `allocate` (`sim.ts`); the valley alone takes 4 fields                                                                |
+| Knobs a preset lists                       | 512, `MAX_PARAMS`                                                                                                                                    | `checkKnobCaps` (`compose.ts`), `budget.test.ts`; bees 63, country 57, lake 52                                        |
+| Knobs one program reads                    | 128, `MAX_PROGRAM_PARAMS`: the composer's and its eight largest offered layers'                                                                      | `checkKnobCaps`, `knobSlots`; `knobs.test.ts`                                                                         |
+| Trigger slots                              | 8, the renderer's `MAX_TRIGGERS`                                                                                                                     | `compose.ts`, `budget.test.ts`; forest and lake 8, bees, shore and bamboo 7                                           |
+| Shaken program at a preset's defaults      | 160 KB                                                                                                                                               | `budget.test.ts`; the largest, street, 129,136 characters                                                             |
+| Shaken all-features program of a layer set | 256 KB                                                                                                                                               | `budget.test.ts`; country 253,359 characters, "Bees · in the valley" 252,886                                          |
+| The pilot mix's all-features program       | 230 KB                                                                                                                                               | `budget.test.ts`; "Bees · overgrown meadow" 220,819 characters                                                        |
+| Fragment uniform vectors                   | 224, WebGL2's guaranteed minimum                                                                                                                     | `scripts/glsl-check.ts`; of 211 programs measured, the largest 202 (sill, frost glass on; 205 before the knob layout) |
+| SwiftShader draw at 320×200                | a preset's default program within 10 % of its recorded instruction count; a mix within its preset's count plus its guests' marginal counts plus 10 % | not checked yet; recorded: fireflies 490 M, campfire 1.63–1.65 G, dew 6,354 M                                         |
+| Sim CPU time, whole stack, headless        | 4 ms a frame                                                                                                                                         | not checked yet                                                                                                       |
+| GPU frame at 960×540                       | 16.7 ms on the reference integrated GPU, once one is recorded                                                                                        | `bench.html` (`SCENES.md`, "GPU cost on real hardware"), which has no `layers=` yet                                   |
 
 **The SwiftShader budget is on the composed program itself**, counted, not timed: the user-space
 instructions the GPU process retires per draw of the preset's default program at 320×200 (`perf`),
@@ -471,13 +473,13 @@ the planet gates).
 
 **The caps bind on offering, not on stacking.** A preset lists its own layers' knobs and every
 offered guest's, so the bees' garden, offered the meadow's four, the valley and the murmuration,
-lists 63 of 64 knobs, and the forest and the lake use all 8 trigger slots: one more layer with a
-knob offered to the bees, or with a "now" offered to the forest or the lake, makes the preset fail
-to compose (`ComposeError`). The way past is the per-program layout: a program defines `K_<key>`
-only for the composer's knobs and its on layers', packed into `uParams` with an index map the
-renderer uploads through, so a preset lists up to 512 knobs and a program reads up to 128; and
-trigger slots packed to 32, numbered statically. `uParams` at 128 floats takes 16 more uniform
-vectors than today's 64, which the largest program (180) has room for.
+lists 63 knobs, and the forest and the lake use all 8 trigger slots: one more layer with a "now"
+offered to the forest or the lake makes the preset fail to compose (`ComposeError`); packed
+trigger slots (32, numbered statically) are the way past, not built. Knobs take the per-program
+layout: a program defines `K_<key>` only for the knobs it reads (the composer's, its on layers',
+and any other its code names), packed into a `uParams` sized to them with a slot map the renderer
+uploads through, so a preset lists up to 512 knobs and a program reads up to 128 ("Step 6's knob
+layout, built" below).
 
 ### Programs: how many and when
 
@@ -1217,6 +1219,31 @@ scratch tree as `silllava`, drew `SAME` as `scene=sill&lavaLamp=1` at `36bc94dd`
 (`ab.ts 'scene=silllava~scene=sill&lavaLamp=1'`, dithered and `view=source`); no preset is promoted
 in the tree yet.
 
+**Step 6's knob layout, built (2026-10-19):** the per-program knob layout that step 6 waits on. A
+program defines `K_<key>` only for the knobs it reads: the composer's (the World's and its own),
+its on layers' (each switch and its knobs, `SceneDef.knobsFor`, from the program's `LAYER_<ID>`
+gates) and any other knob its code names (`knobSlots` in `src/shaders/index.ts` scans the year
+define, the libraries and the program's GLSL). The last are needed: a chunk shared by several
+layers names a knob of one that is off (the night line's lamp and tea glass, the incense's stick
+in the shaft wall's program, the bar's back bar, pendants and fan, the sill's cat in the room's),
+and `SKY_YEAR` a layer's season or year cycle (the bees' `year`, the tidepool's `season`); without
+them 31 of 211 programs failed to compile. `uParams` moved out of `common` into the knob defines,
+sized to the program (`ceil(n / 4)` rows, one at least). The program cache keeps each program's
+slot map and an upload buffer of its length (`SceneProgram.knobs`, `params`); the renderer packs
+the knobs through it (`packParams`) when the settings change; the lab, the URL, the sims and the
+rate phases keep the preset's whole list. `checkKnobCaps` (`compose.ts`) refuses a preset listing
+more than 512 knobs (`MAX_PARAMS`), or whose composer's knobs and eight largest offered layers'
+pass 128 (`MAX_PROGRAM_PARAMS`); `knobSlots` refuses a program past 128. No program grows: of the
+211 programs `glsl-check.ts` builds for bees, meadow, country, autumn, sill, frost, bar, pond,
+tidepool, delta, falls, street, room, lava, bonsai, incense, train, mobile and lake, each uses 0
+to 6 fewer uniform vectors, the largest 202 of 224 (sill's all-features with the frost glass on,
+205 before); bees' default 42 (45), its all-features 174 (177). Shaken programs shrink by 34 to 60
+characters (`shake.test.ts` ceilings unchanged). `ab.ts --base 94463a6a --size 960x600 --presets`
+over those twelve presets, `scene=meadow&wildflowers=1`, `scene=pond&canopy=1` and every
+committed preset: 75 `SAME`, 0 differ. `knobs.test.ts` holds both caps at their boundaries and
+each composed program's defines (at its defaults and each one-layer turn, steady and
+all-features) against the composer's, its on layers' and the knobs its code names.
+
 ### Amendments
 
 - **D7 and Phase 5:** prism and pendula are standalone, full-screen, with fractal, hyperbolic, orbit
@@ -1251,11 +1278,12 @@ None of the countryside's options reach "Bees · in the valley". The `valley` is
 rig (`OVER_THE_VALLEY`, `country/layers.ts`), but its seven parts (`waterway`, `farmland`,
 `settlements`, `verges`, `herds`, `travellers`, `starlings`) only to the hill's (`ON_THE_HILL`): a
 guest valley reads their knobs at the countryside's defaults (`valleyValue`) and compiles out what
-is small that far off (`countryGlsl`). The parts would add 28 knobs to the bees' 63 of 64, and the
+is small that far off (`countryGlsl`). The parts would add 28 knobs to the bees' 63, and the
 mix's all-features program stands at 252,886 characters of 256 KB. Three steps: (a) the per-program
-knob layout, which the overhead baseline needs too; (b) the parts offered to the bees' rig, so
-river, farmland, settlements and herds are tuned from the garden; (c) a far level of detail for the
-valley as a backdrop, making today's guest cut a rule that holds the budget.
+knob layout, which the overhead baseline needs too (built: a preset lists up to 512); (b) the parts
+offered to the bees' rig, so river, farmland, settlements and herds are tuned from the garden; (c) a
+far level of detail for the valley as a backdrop, making today's guest cut a rule that holds the
+budget.
 
 Bolder, decided after (a)–(c): **the outdoor baseline's land is the countryside**, each outdoor
 variant standing somewhere in its 3.2 km (`COUNTRY_MAP`), as the garden already stands on the
@@ -1280,10 +1308,10 @@ live view.
 
 ## Risks
 
-1. **The caps bind on offering.** Bees lists 63 of 64 knobs and the forest and the lake all 8 slots;
-   every further cross-offering waits for the per-program layout and packed triggers, as do the
-   bar's port and the rest of the World over the overhead's patch (the pond lists 55 with its rain
-   and wind alone).
+1. **The caps bind on offering.** The forest and the lake use all 8 trigger slots; every further
+   cross-offering of a "now" waits for packed triggers. Knobs no longer bind there: the
+   per-program layout lets a preset list 512 and each program reads its own (the bees list 63,
+   the pond 55 with its rain and wind alone).
 2. **Rig-locking limits the mixes.** Of the outdoor presets' 84 layers, seven are offered beyond
    their own rig; of the interior's 11, the lava lamp, drawn from the rig; of the overhead's 19, the
    koi beyond their own span (over fresh water only). Five mixes are committed. The worth of
@@ -1351,7 +1379,8 @@ The operator ratified D1–D12 on 2026-10-17 and D13–D24 ("Baselines and varia
 
 - A committed preset's own program takes more than 5 s to compile on the reference GPU, or a layer
   turn on a phone takes more than 2 s before the layer shows: revisit deferred layers.
-- A preset outgrows 64 knobs or 8 trigger slots, or a port needs to: build the per-program layout.
+- A preset outgrows 8 trigger slots, or a program 128 knobs, or a port needs either: pack the
+  trigger slots, or split what one program reads.
 - The stack meter refuses a mix the operator wants: revisit the caps with that mix's measurements.
 - WebGPU reaches Firefox on Linux and Android: the platform consensus (WebGL2) is the premise of
   the single-program design.

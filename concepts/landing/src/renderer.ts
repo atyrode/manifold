@@ -20,7 +20,7 @@ import {
   type Picture,
   type RestId,
 } from "./governor.ts";
-import { MAX_PARAMS, MAX_TRIGGERS, type ParamDef } from "./params.ts";
+import { MAX_TRIGGERS, type ParamDef } from "./params.ts";
 import { Cast, Presence, principal } from "./principals.ts";
 import { RatePhases } from "./rate-phase.ts";
 import {
@@ -38,7 +38,7 @@ import type { CameraPose } from "./composer/camera.ts";
 import type { LightElement } from "./composer/types.ts";
 import type { PlanetUniforms } from "./scenes/planets.ts";
 import type { PrincipalState, SceneSim, SceneTurn } from "./scenes/types.ts";
-import { featureKey, vertexSource } from "./shaders/index.ts";
+import { featureKey, packParams, vertexSource } from "./shaders/index.ts";
 import { forgetSheets } from "./scenes/pond/sheet.ts";
 import type { Params } from "./state.ts";
 
@@ -448,7 +448,6 @@ export class DitherRenderer {
   fps = 0;
   /** Reduced motion: see `#interactionClock`. */
   #frozen: boolean;
-  readonly #params = new Float32Array(MAX_PARAMS);
   /** Interaction-clock time each trigger slot last fired; far in the past when idle. */
   readonly #triggers: number[] = Array.from({ length: MAX_TRIGGERS }, () => NEVER);
   /** The motion clock when each slot last fired; far in the past when idle. */
@@ -1514,8 +1513,8 @@ export class DitherRenderer {
     const sent = program.sent;
     if (sent.settings !== s) {
       sent.settings = s;
-      const params = this.#params;
-      for (let i = 0; i < MAX_PARAMS; i++) params[i] = s.params[i] ?? 0;
+      // The knobs this program reads, packed through its slot map (shaders/index.ts knobSlots).
+      const params = packParams(s.params, program.knobs, program.params);
       gl.uniform1i(u.uDither, ditherIds.indexOf(s.dither));
       gl.uniform1i(u.uColor, colorIds.indexOf(s.color));
       gl.uniform1f(u.uLevels, s.levels);

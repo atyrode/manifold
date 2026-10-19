@@ -6,7 +6,13 @@
 //     tag 1 the koi is drawn where the sim has it, not on its loop.
 import { allocate } from "../../composer/sim.ts";
 import { paramDefaults, defaultsFor, renderSettings } from "../../state.ts";
-import { fragmentSourceFor, packParams, vertexSource } from "../../shaders/index.ts";
+import {
+  fragmentSourceFor,
+  knobSlots,
+  packParams,
+  sceneFeatures,
+  vertexSource,
+} from "../../shaders/index.ts";
 import { FishGroup, FishTexture, KOI } from "../../sims/fish.ts";
 import { loadScene } from "../index.ts";
 import { pondComposed } from "./index.ts";
@@ -49,7 +55,10 @@ function program(gl: WebGL2RenderingContext, fragment: string): WebGLProgram {
   return linked;
 }
 
-/** One frame of `linked` in the source view (raw colour), W × H, with `knobs` over the pond's defaults. */
+/**
+ * One frame of `linked` (a program of the pond's own layers) in the source view (raw colour), W × H,
+ * with `knobs` over the pond's defaults.
+ */
 function draw(
   gl: WebGL2RenderingContext,
   linked: WebGLProgram,
@@ -71,7 +80,10 @@ function draw(
   gl.uniform1fv(at("uTriggers"), new Float32Array(8).fill(-1e4));
   gl.uniform4fv(
     at("uParams"),
-    packParams(renderSettings(defaultsFor("pond"), { ...paramDefaults("pond"), ...knobs }).params),
+    packParams(
+      renderSettings(defaultsFor("pond"), { ...paramDefaults("pond"), ...knobs }).params,
+      knobSlots(pondScene, sceneFeatures(pondScene)),
+    ),
   );
   gl.uniform1i(at(`uSim${FISH_SLOT}`), FISH_SLOT);
   gl.activeTexture(gl.TEXTURE0 + FISH_SLOT);

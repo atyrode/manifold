@@ -8,7 +8,13 @@
 // shifts. The level camera's snowFall, drawn the same way as the control, brings every flake straight
 // down the frame.
 import { defaultsFor, paramDefaults, renderSettings } from "../../state.ts";
-import { fragmentSourceFor, packParams, sceneFeatures, vertexSource } from "../../shaders/index.ts";
+import {
+  fragmentSourceFor,
+  knobSlots,
+  packParams,
+  sceneFeatures,
+  vertexSource,
+} from "../../shaders/index.ts";
 import { loadScene } from "../index.ts";
 
 // A composed scene draws its program from glslFor: the check's entry goes after the default one.
@@ -128,7 +134,10 @@ function follow(gl: WebGL2RenderingContext, snow: string): Record<Band, Moved> {
     const knobs = { ...paramDefaults("island"), snow: 1, "snow-amount": 1, wind: 0 };
     gl.uniform4fv(
       gl.getUniformLocation(linked, "uParams"),
-      packParams(renderSettings(defaultsFor("island"), knobs).params),
+      packParams(
+        renderSettings(defaultsFor("island"), knobs).params,
+        knobSlots(islandScene, sceneFeatures(islandScene)),
+      ),
     );
     const frame = (time: number): Uint8Array => {
       gl.uniform1f(gl.getUniformLocation(linked, "uTime"), time);

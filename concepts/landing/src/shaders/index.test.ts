@@ -7,6 +7,7 @@ import {
   assembleFragment,
   featureKey,
   fragmentSourceFor,
+  knobSlots,
   LIBRARY_GATES,
   packParams,
   PLANETS_GATE,
@@ -221,19 +222,33 @@ describe("library gates", () => {
 });
 
 describe("knob uniforms", () => {
-  test("read each knob from the component of uParams that packParams fills with it", () => {
+  test("read each knob the program reads from the component of uParams packParams fills with it", () => {
     for (const scene of scenes) {
-      const source = assembleFragment(scene);
-      const packed = packParams(scene.params.map((_, index) => index + 1));
+      const features = sceneFeatures(scene);
+      const source = assembleFragment(scene, features);
+      const slots = knobSlots(scene, features);
+      const packed = packParams(
+        scene.params.map((_, index) => index + 1),
+        slots,
+      );
+      // uParams holds the knobs it reads, four a row, and nothing past them.
+      expect({ id: scene.id, rows: /uniform vec4 uParams\[(\d+)\];/.exec(source)?.[1] }).toEqual({
+        id: scene.id,
+        rows: String(Math.max(1, Math.ceil(slots.length / 4))),
+      });
+      expect({ id: scene.id, length: packed.length }).toEqual({
+        id: scene.id,
+        length: Math.max(1, Math.ceil(slots.length / 4)) * 4,
+      });
       scene.params.forEach((def, index) => {
         const define = new RegExp(`#define K_${def.key} uParams\\[(\\d+)\\]\\.([xyzw])\\n`).exec(
           source,
         );
         const slot = define === null ? -1 : Number(define[1]) * 4 + "xyzw".indexOf(define[2] ?? "");
-        expect({ id: scene.id, key: def.key, value: packed[slot] }).toEqual({
+        expect({ id: scene.id, key: def.key, value: slot < 0 ? undefined : packed[slot] }).toEqual({
           id: scene.id,
           key: def.key,
-          value: index + 1,
+          value: slots.includes(index) ? index + 1 : undefined,
         });
       });
     }

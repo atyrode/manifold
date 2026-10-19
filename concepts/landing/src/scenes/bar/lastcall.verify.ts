@@ -2,7 +2,13 @@
 // composed sim) and its program at the defaults: early in the evening the OPEN sign in the window is
 // lit, and once last call has been called it is closing time, the sign dark, whatever the
 // time-of-night knob says.
-import { fragmentSourceFor, packParams, vertexSource } from "../../shaders/index.ts";
+import {
+  fragmentSourceFor,
+  knobSlots,
+  packParams,
+  sceneFeatures,
+  vertexSource,
+} from "../../shaders/index.ts";
 import { visitorAlone } from "../../principals.ts";
 import { defaultsFor, paramDefaults, renderSettings } from "../../state.ts";
 import { loadScene } from "../index.ts";
@@ -53,7 +59,7 @@ export function verifyBarLastCall(gl: WebGL2RenderingContext): Record<string, un
     gl.uniform1f(u("uTime"), time);
     gl.uniform1f(u("uMotionTime"), time);
     gl.uniform1f(u("uMotion"), 1);
-    gl.uniform4fv(u("uParams"), packParams(params));
+    gl.uniform4fv(u("uParams"), packParams(params, knobSlots(barScene, sceneFeatures(barScene))));
     gl.uniform1fv(u("uTriggers"), new Float32Array(8).fill(-1e4));
     gl.uniform2f(u("uPassage"), 1, 0);
     // The composed sim's slots: the speck map and the records atlas unbound, the evening at 2.

@@ -16,7 +16,7 @@ const COMPONENTS = "xyzw";
 /** A scene whose rate knobs cannot become phases. */
 export class RatePhaseError extends Error {}
 
-/** A rate knob and where it sits: its index in the scene's params (uParams, SimFrame.values). */
+/** A rate knob and where it sits: its index in the scene's params (SimFrame.values). */
 export interface RatedKnob {
   readonly def: ParamDef & { rate: Rate };
   readonly index: number;
@@ -73,7 +73,7 @@ export class RatePhases {
 
   /**
    * Advance every phase by `motionStep` seconds of the motion clock with the knobs at `values` (as
-   * the shader reads them, in params order: uParams): each by its rate now, a feature that is off
+   * the shader reads them, in params order): each by its rate now, a feature that is off
    * back to 0.
    */
   step(values: readonly number[], motionStep: number): void {

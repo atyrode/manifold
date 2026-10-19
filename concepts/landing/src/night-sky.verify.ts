@@ -31,6 +31,7 @@ import { ratedKnobs } from "./rate-phase.ts";
 import {
   featureKey,
   fragmentSourceFor,
+  knobSlots,
   sceneFeatures,
   sceneFeaturesAll,
   shaderValues,
@@ -55,7 +56,9 @@ const nightPart = (def: ParamDef): boolean =>
 interface Draw {
   readonly width: number;
   readonly height: number;
+  /** The knobs in `params` order, and the program's slot map (`knobSlots`) they go up through. */
   readonly params: readonly number[];
+  readonly slots: readonly number[];
   readonly uniforms?: Readonly<Record<string, readonly number[]>>;
   /** Integer uniforms (uPlanetCount). */
   readonly ints?: Readonly<Record<string, number>>;
@@ -87,7 +90,7 @@ function draw(gl: WebGL2RenderingContext, linked: WebGLProgram, frame: Draw): Fl
       gl.uniform1i(at("uConMarkStar"), figures.markStar);
       gl.uniform1i(at("uConMarkLine"), figures.markLine);
       gl.uniform1i(at("uView"), 1);
-      gl.uniform4fv(at("uParams"), packParams(frame.params));
+      gl.uniform4fv(at("uParams"), packParams(frame.params, frame.slots));
       gl.uniform1fv(at("uTriggers"), new Float32Array(8).fill(-1e4));
       const uniforms: Record<string, readonly number[]> = {
         uRes: [width, height],
@@ -196,6 +199,8 @@ export function verifyNightSky(gl: WebGL2RenderingContext): Record<string, unkno
       width,
       height: 1,
       params: def.params.map((knob) => effective(knob, { ...frostKnobs, ...over })),
+      // The probes switch no layer: every program of `def` here reads its defaults' knobs.
+      slots: knobSlots(def, sceneFeatures(def)),
       // uRes.y: a cell of 1 / uRes.y radians for the overload without a footprint.
       uniforms: {
         uRes: [width, 1 / night[2]],
@@ -444,6 +449,7 @@ function joinTwin(gl: WebGL2RenderingContext, frost: LoadedScene): number {
         width: figures,
         height: 1,
         params: values,
+        slots: knobSlots(def, sceneFeatures(def)),
         uniforms: { uMotionTime: [motionTime], uPhases: phases, uPrincipals: NOBODY },
         ints: { uPrincipalCount: 1 + agents },
       });
@@ -542,6 +548,7 @@ async function nightPlanets(
         width,
         height,
         params,
+        slots: knobSlots(scene, features),
         uniforms: { uPlanets: Array.from(uniforms.data), uMotionTime: [motionTime] },
         ints: { uPlanetCount: uniforms.count },
       });

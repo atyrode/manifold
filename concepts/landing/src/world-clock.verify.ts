@@ -9,7 +9,13 @@
 //   the same programs draw undated (SKY_DATE_ANCHOR left out), and at another date they do not.
 import { climateChill, climateCold, climateLying, fallingSnow } from "./climate.ts";
 import { loadScene } from "./scenes/index.ts";
-import { assembleFragment, fragmentSourceFor, packParams, sceneFeatures } from "./shaders/index.ts";
+import {
+  assembleFragment,
+  fragmentSourceFor,
+  knobSlots,
+  packParams,
+  sceneFeatures,
+} from "./shaders/index.ts";
 import { shakeGlsl } from "./shaders/shake.ts";
 import { defaultsFor, paramDefaults, renderSettings } from "./state.ts";
 import { check, drawFloats, link, readBytes } from "./verify/kit.ts";
@@ -126,7 +132,10 @@ function drawScene(
   gl.uniform2f(location("uPassage"), 1, 0);
   gl.uniform4fv(
     location("uParams"),
-    packParams(renderSettings(defaultsFor(id), { ...paramDefaults(id), ...over }).params),
+    packParams(
+      renderSettings(defaultsFor(id), { ...paramDefaults(id), ...over }).params,
+      knobSlots(scene, sceneFeatures(scene)),
+    ),
   );
   gl.drawArrays(gl.TRIANGLES, 0, 3);
   const bytes = readBytes(gl, width, height);

@@ -7,9 +7,10 @@
 // Shader: each scene compiles to its own WebGL2 program:
 //   common preamble (uniforms, noise, dithering helpers, Shade)   — src/shaders/common.ts
 //   + one `#define <NAME> <n>` per compile-time feature, from `features` and `featuresFor(knobs)`
-//   + one `#define K_<key> uParams[i / 4].<xyzw>` per knob (uParams packs four knobs a row),
-//     generated from `params`, and `SKY_YEAR`, the scene's year position for the climate
-//     (src/climate.ts; -1.0 without a season)
+//   + `uParams`, sized to the knobs the program reads, and one `#define K_<key> uParams[s / 4].<xyzw>`
+//     per knob it reads (slot s, src/shaders/index.ts `knobSlots`: every knob, or a composed scene's
+//     `knobsFor`), and `SKY_YEAR`, the scene's year position for the climate (src/climate.ts; -1.0
+//     without a season)
 //   + shared libraries (sky, clouds, weather, surface, water, lightning, aurora, meteors, canopy)
 //     — src/shaders/lib/
 //   + the scene's `glsl`, which defines `Shade <entry>(vec2 uv, vec2 cell, float t)`
@@ -99,7 +100,7 @@ export interface SimFrame {
   height: number;
   /** width / height. */
   aspect: number;
-  /** The scene's knobs as the shader sees them, in `params` order (uParams). */
+  /** The scene's knobs as the shader sees them, in `params` order (not `uParams`'s: `knobSlots`). */
   values: readonly number[];
   /** The scene's raw knobs, keyed as in the URL (features also carry `<key>-amount`). */
   params: Readonly<Record<string, number>>;
@@ -255,7 +256,10 @@ export interface SceneDef {
   /** Lab dot and the default accent colour for the 'accent' palette. */
   accent: string;
   look?: SceneLook;
-  /** Knobs, in uParams order. At most MAX_PARAMS. */
+  /**
+   * Knobs, in the order the CPU holds their values (`SimFrame.values`). At most MAX_PARAMS; a program
+   * reads at most MAX_PROGRAM_PARAMS of them (`knobsFor`).
+   */
   params: readonly ParamDef[];
   /** Lab section headings, keyed by ParamDef.group. */
   groups: Readonly<Record<string, Blurb>>;
@@ -309,6 +313,13 @@ export interface SceneDef {
     values: Readonly<Record<string, number>>,
     pose?: CameraPose,
   ) => Readonly<Record<string, number>>;
+  /**
+   * A composed scene's knobs a program of these compile-time features reads, by key: its composer's
+   * and those of the layers its `LAYER_<ID>` gates switch on (src/composer/compose.ts). Only these
+   * get `K_<key>` and a slot in its `uParams` (src/shaders/index.ts `knobSlots`); absent, a program
+   * reads every knob.
+   */
+  knobsFor?: (features: Readonly<Record<string, number>>) => ReadonlySet<string>;
   /**
    * A composed scene's layer switches: turning one changes the layer set, so the program; and a
    * preset's own steady mode that builds another program (the dunes' overhead `camera`).

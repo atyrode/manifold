@@ -6,6 +6,7 @@
 import { defaultsFor, paramDefaults, renderSettings } from "../../state.ts";
 import {
   fragmentSourceFor,
+  knobSlots,
   packParams,
   sceneFeatures,
   shaderValues,
@@ -119,7 +120,10 @@ export function skywardSnowCheck(gl: WebGL2RenderingContext): Record<string, unk
     const knobs = { ...paramDefaults("skyward"), ...SNOW, snowOverhead: overhead ? 1 : 0 };
     gl.uniform4fv(
       gl.getUniformLocation(linked, "uParams"),
-      packParams(renderSettings(defaultsFor("skyward"), knobs).params),
+      packParams(
+        renderSettings(defaultsFor("skyward"), knobs).params,
+        knobSlots(skywardScene, sceneFeatures(skywardScene, shaderValues(skywardScene, SNOW))),
+      ),
     );
     // The World's snow falls on the motion clock.
     gl.uniform1f(gl.getUniformLocation(linked, "uMotionTime"), time);

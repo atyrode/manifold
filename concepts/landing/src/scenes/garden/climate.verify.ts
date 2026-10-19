@@ -8,6 +8,7 @@
 // winter's, either side of midwinter, stand alike, so those two seasons compare.
 import {
   fragmentSourceFor,
+  knobSlots,
   packParams,
   sceneFeaturesAll,
   shaderValues,
@@ -88,13 +89,9 @@ export function gardenClimateCheck(gl: WebGL2RenderingContext): Record<string, u
     ...visitorAlone(),
   };
   const textures = sim.frame(frame);
-  const linked = compile(
-    gl,
-    fragmentSourceFor(
-      gardenScene,
-      sceneFeaturesAll(gardenScene, shaderValues(gardenScene)) ?? fail("not knob-keyed"),
-    ),
-  );
+  const all = sceneFeaturesAll(gardenScene, shaderValues(gardenScene)) ?? fail("not knob-keyed");
+  const linked = compile(gl, fragmentSourceFor(gardenScene, all));
+  const slots = knobSlots(gardenScene, all);
   gl.canvas.width = WIDTH;
   gl.canvas.height = HEIGHT;
   gl.viewport(0, 0, WIDTH, HEIGHT);
@@ -122,6 +119,7 @@ export function gardenClimateCheck(gl: WebGL2RenderingContext): Record<string, u
       uniform("uParams"),
       packParams(
         renderSettings(defaultsFor("garden"), { ...defaults, time: 0.5, ...knobs }).params,
+        slots,
       ),
     );
     gl.uniform2f(uniform("uWeather"), 0, lying);

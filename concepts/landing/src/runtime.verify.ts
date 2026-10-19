@@ -291,23 +291,41 @@ export async function verifyRuntime(_gl: WebGL2RenderingContext): Promise<Record
       `Unchanged state was sent again: ${JSON.stringify(steady)}`,
     );
     const knobs = paramDefaults("lake");
-    // The ice's ripples: a plain uniform. (The hour would not do: it sets the World's daylight gate,
-    // so a change can build another program.)
-    const index = lake.params.findIndex((def) => def.kind === "range" && def.key === "ripples");
+    // The program drawing packs each knob it reads into its own slot (shaders/index.ts knobSlots),
+    // and the shaker drops the define of a knob no reachable code reads (the fjord's ripples on the
+    // frozen lake): read the slots off the defines in its source, four knobs a row.
+    const sourceOf = (program: WebGLProgram): string =>
+      (gl.getAttachedShaders(program) ?? [])
+        .map((shader) => gl.getShaderSource(shader) ?? "")
+        .join("\n");
+    const lakeProgram = gl.getParameter(gl.CURRENT_PROGRAM) as WebGLProgram;
+    const defined = new Set(
+      [...sourceOf(lakeProgram).matchAll(/#define K_(\w+) uParams\[/g)].map(([, key]) => key),
+    );
+    // A plain uniform the frozen lake reads. (The hour would not do: it sets the World's daylight
+    // gate, so a change can build another program.)
+    const index = lake.params.findIndex(
+      (def) => def.kind === "range" && def.key !== "time" && defined.has(def.key),
+    );
     const knob = lake.params[index];
-    if (!knob) throw new Error("The lake has no ripples knob");
+    if (!knob) throw new Error("The lake's program reads no range knob but the hour");
     const original = labSettings("lake", knobs).params[index];
     knobs[knob.key] = (knobs[knob.key] ?? 0) + 0.125;
     const changed = labSettings("lake", knobs);
     check(changed.params[index] !== original, "The knob change was a no-op");
     renderer.update(changed);
     frame((now += 16));
-    // uParams packs four knobs a row (shaders/index.ts packParams).
-    const row = uniform(`uParams[${index >> 2}]`) as Float32Array;
+    const drawing = gl.getParameter(gl.CURRENT_PROGRAM) as WebGLProgram;
+    check(drawing === lakeProgram, `K_${knob.key} built another program: not a plain uniform`);
+    const define = new RegExp(`#define K_${knob.key} uParams\\[(\\d+)\\]\\.([xyzw])`).exec(
+      sourceOf(drawing),
+    );
+    if (!define) throw new Error(`The lake's program defines no K_${knob.key}`);
+    const row = uniform(`uParams[${define[1] ?? ""}]`) as Float32Array;
     check(
       sends.uParams === (base.uParams ?? 0) + 1 &&
-        row[index & 3] === Math.fround(changed.params[index] ?? Number.NaN),
-      "A changed knob did not reach the shader",
+        row["xyzw".indexOf(define[2] ?? "")] === Math.fround(changed.params[index] ?? Number.NaN),
+      `A changed knob (K_${knob.key}) did not reach the shader`,
     );
     // A look change made while another program draws reaches this one when it draws again.
     renderer.update(labSettings("dunes", paramDefaults("dunes"), { levels: 5 }));

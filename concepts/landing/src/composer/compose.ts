@@ -17,7 +17,13 @@
 //                     lists the World's knobs but its birds only while it offers a window, no
 //                     gusts, season or seed; its layers' slots follow the World's two while it
 //                     lists the World and start at 0 while it lists none (no slot is held for a
-//                     knob the preset does not list).
+//                     knob the preset does not list). At most COMPOSER_CAPS.params knobs
+//                     (`checkKnobCaps`).
+//   knobsFor          the knobs a program reads: the composer's (the World's and its own) and
+//                     the switch and knobs of each layer its LAYER_<ID> gates turn on; with any
+//                     other knob its code names, only those take a slot in its `uParams`
+//                     (shaders/index.ts `knobSlots`). The composer's and its COMPOSER_CAPS.layers
+//                     largest offered layers' at most COMPOSER_CAPS.programParams (`checkKnobCaps`).
 //   featuresFor       the World's gates (with the climate where the season sets it: a season knob
 //                     beside the World's snow), LAYER_<ID> for every offered layer (1 where
 //                     placed: in a room at the camera pose it is given), each placed layer's own
@@ -301,6 +307,31 @@ export function variantPreset(baseline: Baseline, variant: Variant): ScenePreset
   };
 }
 
+/**
+ * The knob caps (ADR 0062 "Budgets and caps"): preset `preset` lists `listed` knobs, at most
+ * COMPOSER_CAPS.params, and each of its programs reads the composer's `composer` knobs and those of
+ * the layers it holds (`layers`: each offered layer's switch and knobs, by id), at most
+ * COMPOSER_CAPS.layers of them: the composer's and its largest layers' bound every program, at
+ * most COMPOSER_CAPS.programParams. Throws ComposeError past either.
+ */
+export function checkKnobCaps(
+  preset: string,
+  listed: number,
+  composer: number,
+  layers: Readonly<Record<string, number>>,
+): void {
+  if (listed > COMPOSER_CAPS.params)
+    throw new ComposeError(`preset ${preset}: ${listed} knobs, at most ${COMPOSER_CAPS.params}`);
+  const largest = Object.entries(layers)
+    .sort(([, a], [, b]) => b - a)
+    .slice(0, COMPOSER_CAPS.layers);
+  const read = largest.reduce((sum, [, knobs]) => sum + knobs, composer);
+  if (read > COMPOSER_CAPS.programParams)
+    throw new ComposeError(
+      `preset ${preset}: a program holding its layers ${largest.map(([id]) => id).join(", ")} reads ${read} knobs (the composer's ${composer} and theirs), at most ${COMPOSER_CAPS.programParams}`,
+    );
+}
+
 /** Compose `preset` from `composer`'s layers (see the header). */
 export function composeScene<P extends AnyPreset>(composer: Composer, preset: P): ComposedScene<P> {
   if (preset.composer !== composer.id)
@@ -458,10 +489,14 @@ export function composeScene<P extends AnyPreset>(composer: Composer, preset: P)
   const params = [...world, ...own, ...switches, ...knobs].map((def) =>
     withValues(def, preset.values),
   );
-  if (params.length > COMPOSER_CAPS.params)
-    throw new ComposeError(
-      `preset ${preset.id}: ${params.length} knobs, at most ${COMPOSER_CAPS.params}`,
-    );
+  checkKnobCaps(
+    preset.id,
+    params.length,
+    world.length + own.length,
+    Object.fromEntries(
+      offered.map((layer) => [layer.id, 1 + Object.keys(keys[layer.id] ?? {}).length]),
+    ),
+  );
   for (const key of Object.keys(preset.values))
     if (!params.some((def) => def.key === key || `${def.key}-amount` === key))
       throw new ComposeError(`preset ${preset.id}: its value ${key} names no knob`);
@@ -469,6 +504,11 @@ export function composeScene<P extends AnyPreset>(composer: Composer, preset: P)
 
   const gates: Record<string, string> = Object.fromEntries(
     offered.map((layer) => [layerGate(layer.id), layer.id]),
+  );
+  /** The knobs a program reads (`knobsFor`): the composer's always, each layer's while it is on. */
+  const composerKeys = [...world, ...own].map((def) => def.key);
+  const layerKeys = Object.fromEntries(
+    offered.map((layer) => [layer.id, [layer.id, ...Object.values(keys[layer.id] ?? {})]]),
   );
   const placeOn = (on: ReadonlySet<string>, pose?: CameraPose) => place(offered, preset, on, pose);
   const switched = (values: Readonly<Record<string, number>>) =>
@@ -684,6 +724,13 @@ export function composeScene<P extends AnyPreset>(composer: Composer, preset: P)
       ...(indoors ? { [POSE_GATE]: 1 } : {}),
       [TURNS_GATE]: 1,
     }),
+    knobsFor: (features) =>
+      new Set([
+        ...composerKeys,
+        ...offered.flatMap((layer) =>
+          features[layerGate(layer.id)] === 1 ? (layerKeys[layer.id] ?? []) : [],
+        ),
+      ]),
     structural: offered.map((layer) => layer.id),
     layers,
   };

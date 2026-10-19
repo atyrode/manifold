@@ -14,6 +14,8 @@ import type { LoadedScene } from "./scenes/types.ts";
 import {
   featureKey,
   fragmentSourceFor,
+  knobSlots,
+  packParams,
   sceneFeatures,
   sceneFeaturesAll,
   settingKeyed,
@@ -102,6 +104,10 @@ export interface SceneProgram {
   key: string;
   program: WebGLProgram;
   uniforms: Record<UniformName, WebGLUniformLocation | null>;
+  /** Its slot map (shaders/index.ts `knobSlots`): the index in the scene's knobs of each slot. */
+  knobs: readonly number[];
+  /** Its `uParams` as the renderer packs it through `knobs` (`packParams`), as long as its rows. */
+  params: Float32Array;
   sent: {
     settings: RenderSettings | undefined;
     motion: number;
@@ -131,6 +137,7 @@ interface Building {
   program: WebGLProgram;
   fragment: WebGLShader;
   source: string;
+  knobs: readonly number[];
   fence: WebGLSync | null;
   started: number;
   warm: boolean;
@@ -344,8 +351,10 @@ export class ScenePrograms {
     const gl = this.#gl;
     const gpu = this.#gpu();
     let source: string;
+    let knobs: readonly number[];
     try {
       source = fragmentSourceFor(scene, set.features);
+      knobs = knobSlots(scene, set.features);
     } catch (error: unknown) {
       return this.#failed(id, set.key, error);
     }
@@ -366,6 +375,7 @@ export class ScenePrograms {
       program,
       fragment,
       source,
+      knobs,
       fence,
       started: performance.now(),
       warm: false,
@@ -425,6 +435,9 @@ export class ScenePrograms {
       key: building.key,
       program,
       uniforms,
+      knobs: building.knobs,
+      // Zeros until the first frame packs the knobs: sized to the program's rows.
+      params: packParams([], building.knobs),
       sent: {
         settings: undefined,
         motion: Number.NaN,

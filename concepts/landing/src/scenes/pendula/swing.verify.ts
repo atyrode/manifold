@@ -3,6 +3,7 @@
 // with the scene's all-features program, which compiles the real swing in (PENDULA_REAL).
 import {
   fragmentSourceFor,
+  knobSlots,
   packParams,
   sceneFeaturesAll,
   vertexSource,
@@ -85,6 +86,7 @@ export function verifyPendulaSwing(gl: WebGL2RenderingContext): Record<string, u
           swing: 0.5,
           ...knobs,
         }).params,
+        knobSlots(pendulaScene, features),
       ),
     );
     gl.drawArrays(gl.TRIANGLES, 0, 3);

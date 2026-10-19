@@ -5,7 +5,13 @@
 // skies that show the band: off, on and twice as bright light the night sky more and more, and leave
 // what the band does not reach (Campfire's fire-lit ground) as it was.
 import { defaultsFor, paramDefaults, renderSettings } from "../../state.ts";
-import { fragmentSourceFor, packParams, vertexSource } from "../../shaders/index.ts";
+import {
+  fragmentSourceFor,
+  knobSlots,
+  packParams,
+  sceneFeatures,
+  vertexSource,
+} from "../../shaders/index.ts";
 import { loadScene } from "../index.ts";
 
 const { glslFor, ...campfireScene } = await loadScene("campfire");
@@ -92,7 +98,6 @@ function draw(
     const at = gl.getUniformLocation(linked, name);
     if (at === null) continue;
     if (name === "uView") gl.uniform1i(at, value[0] ?? 0);
-    else if (name === "uParams") gl.uniform4fv(at, packParams(value));
     else if (name === "uTriggers") gl.uniform1fv(at, Float32Array.from(value));
     else if (value.length === 1) gl.uniform1f(at, value[0] ?? 0);
     else if (value.length === 2) gl.uniform2fv(at, value);
@@ -174,15 +179,21 @@ export async function verifyMilkyWay(gl: WebGL2RenderingContext): Promise<Record
     ["campfire", { time: 0 }],
     ["lake", { hour: 1, moon: 0 }],
   ] as const) {
-    const scene = program(gl, fragmentSourceFor(await loadScene(id)));
+    const loaded = await loadScene(id);
+    const scene = program(gl, fragmentSourceFor(loaded));
+    const slots = knobSlots(loaded, sceneFeatures(loaded));
     check(
       paramDefaults(id)["milkyWay"] === 1 && paramDefaults(id)["milkyWay-amount"] === 1,
       `${id}'s Milky Way is not on at its own brightness by default`,
     );
     const render = (knobs: Record<string, number>) =>
       draw(gl, scene, P, Q, {
-        uParams: renderSettings(defaultsFor(id), { ...paramDefaults(id), ...night, ...knobs })
-          .params,
+        uParams: [
+          ...packParams(
+            renderSettings(defaultsFor(id), { ...paramDefaults(id), ...night, ...knobs }).params,
+            slots,
+          ),
+        ],
       });
     const shots = [render({ milkyWay: 0 }), render({}), render({ "milkyWay-amount": 2 })];
     const sums = shots.map((pixels) => light(pixels, P, 0, Q));

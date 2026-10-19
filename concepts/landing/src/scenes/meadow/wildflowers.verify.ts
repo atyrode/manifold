@@ -6,6 +6,7 @@
 import { visitorAlone } from "../../principals.ts";
 import {
   fragmentSourceFor,
+  knobSlots,
   packParams,
   sceneFeatures,
   shaderValues,
@@ -72,6 +73,11 @@ export function verifyMeadowWildflowers(gl: WebGL2RenderingContext): Record<stri
   check(on.LAYER_WILDFLOWERS === 1, "the wildflowers are not compiled in while they are on");
   const plain = program(gl, fragmentSourceFor(meadow, off));
   const gated = program(gl, fragmentSourceFor(meadow, on));
+  /** Each program's slot map (`knobSlots`): the knobs go up through the one drawing. */
+  const slots = new Map([
+    [plain, knobSlots(meadow, off)],
+    [gated, knobSlots(meadow, on)],
+  ]);
   gl.canvas.width = W;
   gl.canvas.height = H;
   gl.viewport(0, 0, W, H);
@@ -94,7 +100,10 @@ export function verifyMeadowWildflowers(gl: WebGL2RenderingContext): Record<stri
     gl.uniform2f(u("uPointer"), 0, 0);
     gl.uniform1fv(u("uTriggers"), new Float32Array(8).fill(-1e4));
     gl.uniform1fv(u("uMotionTriggers"), new Float32Array(8).fill(-1e4));
-    gl.uniform4fv(u("uParams"), packParams(renderSettings(defaultsFor("meadow"), knobs).params));
+    gl.uniform4fv(
+      u("uParams"),
+      packParams(renderSettings(defaultsFor("meadow"), knobs).params, slots.get(linked) ?? []),
+    );
     const bound = Array.from({ length: SLOTS }, (_, slot) => (textures[slot] ? 1 : 0));
     for (let slot = 0; slot < SLOTS; slot++) {
       gl.activeTexture(gl.TEXTURE0 + slot);

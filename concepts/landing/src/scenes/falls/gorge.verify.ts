@@ -4,7 +4,13 @@
 // a 16:9 frame, and at the default flow on a 4:3 one, with or without the carved M's horn parting it,
 // while the walls close in on both sides of the frame; the default basalt cliff stands open.
 import { defaultsFor, paramDefaults, renderSettings } from "../../state.ts";
-import { fragmentSourceFor, packParams, sceneFeatures, vertexSource } from "../../shaders/index.ts";
+import {
+  fragmentSourceFor,
+  knobSlots,
+  packParams,
+  sceneFeatures,
+  vertexSource,
+} from "../../shaders/index.ts";
 import { loadScene } from "../index.ts";
 
 const { glslFor, ...fallsScene } = await loadScene("falls");
@@ -83,7 +89,10 @@ export function fallsGorgeCheck(gl: WebGL2RenderingContext): Record<string, unkn
     };
     gl.uniform4fv(
       gl.getUniformLocation(linked, "uParams"),
-      packParams(renderSettings(defaultsFor("falls"), knobs).params),
+      packParams(
+        renderSettings(defaultsFor("falls"), knobs).params,
+        knobSlots(fallsScene, features),
+      ),
     );
     let hidden = 0;
     let water = 0;

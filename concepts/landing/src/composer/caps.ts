@@ -1,7 +1,7 @@
 // The composer's caps and budgets (ADR 0062 "Budgets and caps", README "Programs and cost"). The
 // counts are enforced as layers are resolved and assembled (place.ts, compose.ts, sim.ts); the
 // program sizes and uniform vectors by src/composer/budget.test.ts and scripts/glsl-check.ts.
-import { MAX_PARAMS, MAX_TRIGGERS } from "../params.ts";
+import { MAX_PARAMS, MAX_PROGRAM_PARAMS, MAX_TRIGGERS } from "../params.ts";
 
 export const COMPOSER_CAPS = {
   /** Layers on at once, the World not counted. */
@@ -16,11 +16,13 @@ export const COMPOSER_CAPS = {
   simTextures: 8,
   fields: 6,
   /**
-   * Knobs a composed scene lists, and trigger slots: the renderer's uParams and uTriggers today
-   * (MAX_PARAMS, MAX_TRIGGERS). The ADR's per-program uParams layout (512 listed, 128 read) and its
-   * 32 packed trigger slots are what a composer outgrowing these takes on.
+   * Knobs a composed scene lists, and knobs one of its programs reads: the per-program layout
+   * (shaders/index.ts `knobSlots`, compose.ts `checkKnobCaps`) packs only the composer's and the on
+   * layers' into a program's `uParams`. Trigger slots: the renderer's uTriggers (MAX_TRIGGERS); the
+   * ADR's 32 packed slots are what a composer outgrowing them takes on.
    */
   params: MAX_PARAMS,
+  programParams: MAX_PROGRAM_PARAMS,
   triggers: MAX_TRIGGERS,
   /** Characters of a shaken program: at a preset's defaults, and a layer set's all-features one. */
   shakenDefault: 160 * 1024,

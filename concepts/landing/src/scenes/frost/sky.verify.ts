@@ -6,7 +6,9 @@
 import { defaultsFor, paramDefaults, renderSettings } from "../../state.ts";
 import {
   fragmentSourceFor,
+  knobSlots,
   packParams,
+  sceneFeatures,
   sceneFeaturesAll,
   vertexSource,
 } from "../../shaders/index.ts";
@@ -146,7 +148,6 @@ function draw(
     const at = gl.getUniformLocation(linked, name);
     if (at === null) return;
     if (name === "uProbe" || name === "uView") gl.uniform1i(at, value[0] ?? 0);
-    else if (name === "uParams") gl.uniform4fv(at, packParams(value));
     else if (name === "uTriggers") gl.uniform1fv(at, Float32Array.from(value));
     else if (value.length === 1) gl.uniform1f(at, value[0] ?? 0);
     else if (value.length === 2) gl.uniform2fv(at, value);
@@ -183,9 +184,17 @@ const luma = (pixels: Float32Array, i: number): number =>
   0.0722 * (pixels[i * 4 + 2] ?? 0);
 const same = (a: Float32Array, b: Float32Array): boolean => a.every((value, i) => value === b[i]);
 
-/** Frost's knobs as the shader reads them, with overrides keyed as in the URL. */
+/**
+ * Frost's knobs as its programs here take them (`uParams`: packed through the slot map of its own
+ * layer set, which no override switches), with overrides keyed as in the URL.
+ */
 function frostParams(over: Record<string, number>): readonly number[] {
-  return renderSettings(defaultsFor("frost"), { ...paramDefaults("frost"), ...over }).params;
+  return [
+    ...packParams(
+      renderSettings(defaultsFor("frost"), { ...paramDefaults("frost"), ...over }).params,
+      knobSlots(frostScene, sceneFeatures(frostScene)),
+    ),
+  ];
 }
 
 export function verifyFrostSky(gl: WebGL2RenderingContext): Record<string, unknown> {

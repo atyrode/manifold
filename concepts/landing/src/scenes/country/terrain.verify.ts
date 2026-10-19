@@ -13,8 +13,11 @@
 // countryside's other checks too (life.verify.ts).
 import {
   fragmentSourceFor,
+  knobSlots,
   packParams,
+  sceneFeatures,
   sceneFeaturesAll,
+  shaderValues,
   vertexSource,
 } from "../../shaders/index.ts";
 import { visitorAlone } from "../../principals.ts";
@@ -171,7 +174,10 @@ export interface CountryDraw {
   weather?: readonly [number, number];
 }
 
-/** One frame of `program` over the built textures with these knobs, read back (RGBA bytes). */
+/**
+ * One frame of `program` over the built textures with these knobs, read back (RGBA bytes): a
+ * program of the layer set these knobs switch on, whose slot map they go up through.
+ */
 export function countryDraw(
   gl: WebGL2RenderingContext,
   program: WebGLProgram,
@@ -195,7 +201,12 @@ export function countryDraw(
   gl.uniform2f(u("uWeather"), options.weather?.[0] ?? 0, options.weather?.[1] ?? 0);
   gl.uniform1fv(u("uTriggers"), new Float32Array(8).fill(-1e4));
   const values = countryValues(knobs);
-  gl.uniform4fv(u("uParams"), packParams(values));
+  const layers = sceneFeatures(
+    countryScene,
+    shaderValues(countryScene, { ...paramDefaults("country"), ...knobs }),
+  );
+  const scene = glslFor === undefined ? countryScene : { ...countryScene, glslFor };
+  gl.uniform4fv(u("uParams"), packParams(values, knobSlots(scene, layers)));
   // The rate knobs' phases as the renderer integrates them over the motion clock at these knobs.
   const phases = new RatePhases(countryScene.params);
   phases.step(values, options.motionTime ?? 30);

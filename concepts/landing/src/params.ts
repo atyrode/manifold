@@ -1,6 +1,7 @@
-// Knob builders for scene modules (see scenes/README.md). A scene's `params` order is the index into
-// the shader's `uParams` (packed four a row), which scenes read through the generated `K_<key>`
-// defines.
+// Knob builders for scene modules (see scenes/README.md). A scene's `params` order is its knobs'
+// order everywhere on the CPU (`SimFrame.values`, `RenderSettings.params`); a program packs the
+// knobs it reads into the shader's `uParams` (four a row, through its slot map: shaders/index.ts
+// `knobSlots`), which scenes read through the generated `K_<key>` defines.
 //
 // Kinds:
 //   range    a slider
@@ -139,8 +140,13 @@ export type ParamDef =
 /** Largest arrangement number a seed knob can hold. */
 export const MAX_SEED = 999;
 
-/** Must match `MAX_PARAMS` / `MAX_TRIGGERS` in the fragment shader. */
-export const MAX_PARAMS = 64;
+/**
+ * Knobs a scene lists (its `params`), and knobs one of its programs reads: `uParams` holds those,
+ * four a row, sized to them (shaders/index.ts `knobSlots`). Trigger slots: `MAX_TRIGGERS` in the
+ * fragment shader.
+ */
+export const MAX_PARAMS = 512;
+export const MAX_PROGRAM_PARAMS = 128;
 export const MAX_TRIGGERS = 8;
 
 interface Extra {
@@ -397,7 +403,7 @@ export function knobValue(
 
 /** One knob's place in the scene, resolved once by KnobReader. */
 interface KnobSlot {
-  /** Position in the scene's `params`, so in `SimFrame.values` and `uParams`. */
+  /** Position in the scene's `params`, so in `SimFrame.values`. */
   readonly index: number;
   readonly def: ParamDef;
   /** A feature's `<key>-amount` URL key; undefined for every other kind. */

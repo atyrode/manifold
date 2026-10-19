@@ -12,7 +12,13 @@
 //      city lights and circling sun: each one shows, and only where the planet itself shows (inside
 //      its glow, behind the pines and the ground). A moon behind the planet is hidden; the same moon
 //      in front of it is drawn over the disc.
-import { fragmentSourceFor, packParams, sceneFeatures, vertexSource } from "../../shaders/index.ts";
+import {
+  fragmentSourceFor,
+  knobSlots,
+  packParams,
+  sceneFeatures,
+  vertexSource,
+} from "../../shaders/index.ts";
 import { defaultsFor, paramDefaults, renderSettings } from "../../state.ts";
 import { loadScene } from "../index.ts";
 import { openingPlanets, planetRadius, planetUniforms, readPlanet } from "../planets.ts";
@@ -228,10 +234,8 @@ export function verifyPlanet(gl: WebGL2RenderingContext): Record<string, unknown
     spec,
     Object.values(features).reduce((all, fields) => ({ ...all, ...fields }), giant),
   );
-  const scene = program(
-    gl,
-    fragmentSourceFor(loaded, sceneFeatures(loaded, undefined, planetUniforms([dressed]))),
-  );
+  const drawn = sceneFeatures(loaded, undefined, planetUniforms([dressed]));
+  const scene = program(gl, fragmentSourceFor(loaded, drawn));
   gl.useProgram(scene);
   const where = (name: string) => gl.getUniformLocation(scene, name);
   const WIDTH = 320;
@@ -259,7 +263,10 @@ export function verifyPlanet(gl: WebGL2RenderingContext): Record<string, unknown
   gl.uniform1fv(where("uTriggers"), new Float32Array(8).fill(-1e4));
   gl.uniform4fv(
     where("uParams"),
-    packParams(renderSettings(defaultsFor("campfire"), paramDefaults("campfire")).params),
+    packParams(
+      renderSettings(defaultsFor("campfire"), paramDefaults("campfire")).params,
+      knobSlots(loaded, drawn),
+    ),
   );
   const render = (fields: Record<string, number> | undefined, time: number): Uint8Array => {
     const { count, data } = planetUniforms(

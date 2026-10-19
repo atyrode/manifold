@@ -136,8 +136,8 @@ Available in GLSL (from `common`): `uRes`, `uTime`, `uMotion` (the lab's motion 
 `uMotionTime` (the motion clock, below), `uFallTime` (the fall clock, below), `uPointer` (smoothed
 -1..1 parallax, 0 when the pointer is not followed), `uPrincipals[MAX_PRINCIPALS]` (everyone
 present, the visitor first, then the cast's agents: xy in uv, z = button held, w = scene time of
-the last press), `uPrincipalCount`, `principalMotion(i)` (velocity, uv/s), `uBg` (the page background), `uParams` (the knobs, four a
-row: read them as `K_<key>`), `uTriggers[]`,
+the last press), `uPrincipalCount`, `principalMotion(i)` (velocity, uv/s), `uBg` (the page background), `uParams` (the knobs the
+program reads, four a row: read them as `K_<key>`), `uTriggers[]`,
 `sinceTrigger(slot)`, `uMotionTriggers[]`, `sinceTriggerM(slot)` (below), `uSim0..uSim3` +
 `uSimOn` (textures from the scene's sim), `uWeather` (x: how wet the world is, y: how much snow
 lies, both 0..1; see "Weather in the world"), `hash12`, `vnoise`, `fbm`, `rotate`, `rotateAbout`,
@@ -338,10 +338,14 @@ the page re-rolls it several times a second.
 ### Knobs
 
 Declare knobs with the builders in `src/params.ts` (`range`, `toggle`, `feature`, `choice`, `seed`,
-`counts`). Each knob gets a define: `K_<key>` reads its value (a feature reads its amount while on
-and 0 while off). `uParams` packs the knobs four a row (`vec4 uParams[MAX_PARAMS / 4]`), so knob i
-is the constant swizzle `uParams[i / 4].xyzw[i % 4]` and goes up with `uniform4fv` (a GPU check
-builds the array with `packParams`); never index `uParams` by hand. Keys are camelCase letters.
+`counts`). Each knob a program reads gets a define: `K_<key>` reads its value (a feature reads its
+amount while on and 0 while off). `uParams` packs those knobs four a row, sized to them (`vec4
+uParams[ceil(n / 4)]`): the program's slot map (`knobSlots` in `src/shaders/index.ts`) lists the
+index in `params` of the knob in each slot, slot s being the constant swizzle `uParams[s /
+4].xyzw[s % 4]`, and the renderer packs the values through it (`packParams`, as a GPU check does);
+never index `uParams` by hand. A scene's program reads all its knobs (at most 128); a composed
+scene's reads the composer's, its on layers' and any other its code names (see "Budgets" under
+"Composers"). Keys are camelCase letters.
 
 URL keys are this build's: a link, a preset and the lab's history are read in the keys of the build
 that opens them, and a key it does not know is ignored (see "Links and the URL schema" below). A
@@ -2389,14 +2393,15 @@ layers (ADR 0062 "Baselines and variants", step 1: `Composer.baseline`, `Variant
 `variantPreset`), with a lava lamp that stands on the sill and the frost on the sill's panes, and
 the baseline itself as the lab-only scene `room`; the `overhead` composer (Phase 4, "The overhead
 composer" below) runs pond and ripple (its pilot), tidepool, sandtable and delta as presets of its
-19 layers, with koi offered to the ripple tank. The rest of the interiors and of the scenes seen from
-above are the rest of those phases. Not built yet, so still the contract: the per-program knob
-layout (a composed scene keeps the renderer's 64 knobs and 8 trigger slots,
-`src/composer/caps.ts`), the layer costs (`scripts/layer-costs.ts`) with the stack meter and the
-role's "+" listing, the browser checks `composerDepth`, `composerClaims`, `composerWeather` and
-`layerToggles`, a check of the SwiftShader instruction budget, the principals' points in the site,
-and shelving the Scenes view by composer. The ADR keeps the reasoning, the measurements, the
-decisions (D1–D24) and the phases ahead.
+19 layers, with koi offered to the ripple tank. The per-program knob layout is built (a preset
+lists up to 512 knobs, one program reads up to 128: "Budgets" below); a composed scene keeps the
+renderer's 8 trigger slots (`src/composer/caps.ts`). The rest of the interiors and of the scenes
+seen from above are the rest of those phases. Not built yet, so still the contract: packed trigger
+slots, the layer costs (`scripts/layer-costs.ts`) with the stack meter and the role's "+" listing,
+the browser checks `composerDepth`, `composerClaims`, `composerWeather` and `layerToggles`, a check
+of the SwiftShader instruction budget, the principals' points in the site, and shelving the Scenes
+view by composer. The ADR keeps the reasoning, the measurements, the decisions (D1–D24) and the
+phases ahead.
 
 Most outdoor scenes show the same thing: a camera on the ground at eye level, something in front
 of it, a landscape behind, the sky above. A **composer** makes that shared: one camera rig, one
@@ -2983,7 +2988,8 @@ GPU process down on the all-features program, well inside its size budget.
 | Claims in a program                          | 12                                                                                                            |
 | Local lights                                 | 8 (not checked)                                                                                               |
 | Sim textures                                 | 8: the speck map, the records atlas, 6 fields                                                                 |
-| Knobs a preset lists                         | 64 (`MAX_PARAMS`)                                                                                             |
+| Knobs a preset lists                         | 512 (`MAX_PARAMS`)                                                                                            |
+| Knobs one program reads                      | 128 (`MAX_PROGRAM_PARAMS`)                                                                                    |
 | Trigger slots                                | 8 (`MAX_TRIGGERS`)                                                                                            |
 | Shaken program at a preset's defaults        | 160 KB                                                                                                        |
 | Shaken all-features program of a layer set   | 256 KB (the pilot mix: 230 KB)                                                                                |
@@ -2996,17 +3002,29 @@ GPU process down on the all-features program, well inside its size budget.
 layers are placed, composed and allocated, `src/composer/budget.test.ts` holds the shaken sizes,
 the knobs and the trigger slots of every composed preset, and `scripts/glsl-check.ts` the uniform
 vectors. The caps bind on offering: a preset lists every offered layer's knobs and "now" slots, on
-or off, so the bees' garden lists 63 knobs and the forest and the lake use all 8 trigger slots. A
-composer that outgrows them takes the per-program layout: a program defines `K_<key>` only for the
-composer's knobs and its on layers', packed into `uParams` with the index map the renderer uploads
-through (a preset's list up to 512 knobs, one program's up to 128), and trigger slots packed to 32.
+or off, so the bees' garden lists 63 knobs and the forest and the lake use all 8 trigger slots
+(packed trigger slots, 32, are not built).
+
+**The per-program knob layout.** A program defines `K_<key>` only for the knobs it reads: the
+composer's (the World's, the gusts', the season, the seed, a room's date), its on layers' (each
+switch and its knobs, `SceneDef.knobsFor`) and any other knob its code names (a chunk shared by
+several layers names one that is off: the night line's lamp in its tea glass; `SKY_YEAR` a
+layer's season or year cycle; a library an opt-in knob it tests with `#ifdef`). Its `uParams` is
+sized to them, four a row, so no program declares rows it does not read. `knobSlots` (in
+`src/shaders/index.ts`) gives each program's slot map, the index in `params` of the knob in each
+slot; the program cache keeps it beside the program (`SceneProgram.knobs`, with an upload buffer of
+the program's length) and the renderer packs the knobs through it (`packParams`) whenever the
+settings change. Everything on the CPU (the lab, the URL, `SimFrame.values`, the rate phases)
+keeps the preset's whole list in `params` order. `checkKnobCaps` (`compose.ts`) refuses a preset
+listing more than 512 knobs, or one whose composer's knobs and largest eight offered layers' (each
+layer's switch and knobs) pass 128, with a `ComposeError` naming them.
 
 **Checks:**
 
 - **Static (glslang):** every preset's programs, each choice of a structural knob, the committed
   mixes (`scripts/glsl-check.ts`).
 - **Unit:** `src/composer/*.test.ts` (the placer, the claims, the allocation, the budgets, the
-  two kinds of program).
+  two kinds of program, the knob caps and each program's `K_<key>` defines: `knobs.test.ts`).
 - **Browser:** `layerToggles` (`src/composer/turns.verify.ts`), software, the fireflies' creek: the
   program a switch-off leaves through is built ahead at rest and takes over on the next frame,
   playing the exit; the setting's steady program takes over after it; turned on again, the creek

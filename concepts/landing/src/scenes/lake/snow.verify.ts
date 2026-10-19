@@ -2,7 +2,13 @@
 // of the ice it covers. The real (composed) sim lays the night's snow in the lake's field; the lake
 // layer's own lakeSnowAt / lakeSnowShade say, per pixel of the near and middle ice, whether snow
 // covers it and how it is lit.
-import { fragmentSourceFor, packParams, sceneFeatures, vertexSource } from "../../shaders/index.ts";
+import {
+  fragmentSourceFor,
+  knobSlots,
+  packParams,
+  sceneFeatures,
+  vertexSource,
+} from "../../shaders/index.ts";
 import { visitorAlone } from "../../principals.ts";
 import { defaultsFor, paramDefaults, renderSettings } from "../../state.ts";
 import { loadScene } from "../index.ts";
@@ -113,7 +119,10 @@ export function verifyLakeFreshSnow(gl: WebGL2RenderingContext): Record<string, 
   const draw = (fresh: number): SnowStats => {
     gl.uniform4fv(
       uniform("uParams"),
-      packParams(renderSettings(defaultsFor("lake"), { ...knobs, fresh }).params),
+      packParams(
+        renderSettings(defaultsFor("lake"), { ...knobs, fresh }).params,
+        knobSlots(lakeScene, features),
+      ),
     );
     gl.drawArrays(gl.TRIANGLES, 0, 3);
     const bytes = new Uint8Array(WIDTH * HEIGHT * 4);

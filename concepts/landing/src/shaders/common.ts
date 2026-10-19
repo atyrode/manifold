@@ -3,7 +3,7 @@
 // their own as `gpuCommonGlsl`, for GPU simulation passes, which do not get this preamble.
 
 import { markGlsl } from "../mark.ts";
-import { MAX_PARAMS, MAX_TRIGGERS } from "../params.ts";
+import { MAX_TRIGGERS } from "../params.ts";
 import { MAX_PRINCIPALS } from "../principals.ts";
 
 /**
@@ -194,7 +194,6 @@ precision highp float;
 precision highp int;
 precision highp sampler2D;
 
-#define MAX_PARAMS ${MAX_PARAMS}
 #define MAX_CON_STARS 48
 #define MAX_CON_LINES 48
 #define MAX_TRIGGERS ${MAX_TRIGGERS}
@@ -217,7 +216,6 @@ uniform vec4 uPrincipalMotion[MAX_PRINCIPALS / 2]; // each principal's velocity 
 uniform vec3 uBg;
 uniform vec3 uInk;
 uniform vec3 uAccent;
-uniform vec4 uParams[MAX_PARAMS / 4]; // the knobs, four a row: read knob <key> as K_<key> (shaders/index.ts)
 uniform vec4 uPhases;    // the rate knobs' phases (src/rate-phase.ts), one a component: read one as PHASE_<key>
 uniform vec4 uConStars[MAX_CON_STARS]; // anchor (half-width fraction, y), offset
 uniform vec4 uConBright[MAX_CON_STARS / 4]; // four stars' brightness a row: read it with conBright

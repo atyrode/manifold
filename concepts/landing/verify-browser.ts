@@ -8,7 +8,7 @@ import { loadScene, loadScenes } from "./src/scenes/index.ts";
 import { incenseVentVerify } from "./src/scenes/incense/vent.verify.ts";
 import { rippleEdgesVerify } from "./src/scenes/ripple/edges.verify.ts";
 import { verifyHarmonographPrewarm } from "./src/scenes/harmonograph/prewarm.verify.ts";
-import { fragmentSourceFor, packParams, sceneFeatures } from "./src/shaders/index.ts";
+import { fragmentSourceFor, knobSlots, packParams, sceneFeatures } from "./src/shaders/index.ts";
 import { verifyFrostSky } from "./src/scenes/frost/sky.verify.ts";
 import { frostComposed } from "./src/scenes/frost/index.ts";
 import { verifyDeltaDig } from "./src/scenes/delta/dig.verify.ts";
@@ -118,7 +118,10 @@ function forestClock(gl: WebGL2RenderingContext): number[] {
   gl.uniform1f(gl.getUniformLocation(clock, "uMotionTime"), 24);
   const clockKnobs = { ...paramDefaults("forest"), time: 0.2, cycle: 1, "cycle-amount": 1 };
   const clockParams = renderSettings(defaultsFor("forest"), clockKnobs).params;
-  gl.uniform4fv(gl.getUniformLocation(clock, "uParams"), packParams(clockParams));
+  gl.uniform4fv(
+    gl.getUniformLocation(clock, "uParams"),
+    packParams(clockParams, knobSlots(forestScene, features)),
+  );
   // The day cycle's phase as the renderer integrates it over the motion clock so far (the days it
   // has carried the clock on into the day): the sky reads it, never the Motion setting.
   const phases = new RatePhases(forestScene.params);

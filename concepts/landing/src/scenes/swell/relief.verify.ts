@@ -4,7 +4,13 @@
 // entrance's low camera over its rolling wave. It runs the swell layer's own GLSL in the composed
 // program at the defaults, with the relief's code compiled in (SWELL_RELIEF); registered in
 // verify-browser.ts.
-import { fragmentSourceFor, packParams, sceneFeatures, vertexSource } from "../../shaders/index.ts";
+import {
+  fragmentSourceFor,
+  knobSlots,
+  packParams,
+  sceneFeatures,
+  vertexSource,
+} from "../../shaders/index.ts";
 import { defaultsFor, paramDefaults, renderSettings } from "../../state.ts";
 import { loadScene } from "../index.ts";
 
@@ -113,6 +119,7 @@ export function verifySwellRelief(gl: WebGL2RenderingContext): Record<string, un
       at("uParams"),
       packParams(
         renderSettings(defaultsFor("swell"), { ...paramDefaults("swell"), ...knobs }).params,
+        knobSlots(swellScene, features),
       ),
     );
     gl.uniform3f(at("regressionCamera"), camera[0], camera[1], camera[2]);

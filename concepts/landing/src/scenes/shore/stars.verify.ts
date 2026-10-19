@@ -4,7 +4,13 @@
 // it drew before, and on a clear night no stars, its own and a dark-site sky light it more and more:
 // each step by more than 0.02% of the whole frame's light, far more than the wet sand's glints alone.
 import { defaultsFor, paramDefaults, renderSettings } from "../../state.ts";
-import { fragmentSourceFor, packParams, vertexSource } from "../../shaders/index.ts";
+import {
+  fragmentSourceFor,
+  knobSlots,
+  packParams,
+  sceneFeatures,
+  vertexSource,
+} from "../../shaders/index.ts";
 import { loadScene } from "../index.ts";
 
 function check(ok: boolean, message: string): void {
@@ -42,6 +48,7 @@ function light(
   gl: WebGL2RenderingContext,
   linked: WebGLProgram,
   params: readonly number[],
+  slots: readonly number[],
 ): number {
   const texture = gl.createTexture();
   gl.bindTexture(gl.TEXTURE_2D, texture);
@@ -65,7 +72,7 @@ function light(
   gl.uniform1fv(at("uTriggers"), new Float32Array(8).fill(-1e4));
   gl.uniform4f(at("uPrincipals"), -1, -1, 0, -1e4);
   gl.uniform3f(at("uBg"), 0.03, 0.03, 0.05);
-  gl.uniform4fv(at("uParams"), packParams(params));
+  gl.uniform4fv(at("uParams"), packParams(params, slots));
   gl.drawArrays(gl.TRIANGLES, 0, 3);
   const out = new Float32Array(WIDTH * HEIGHT * 4);
   gl.readPixels(0, 0, WIDTH, HEIGHT, gl.RGBA, gl.FLOAT, out);
@@ -95,12 +102,15 @@ export async function verifyStarsKnob(
       paramDefaults(id)["stars"] === before,
       `${id} does not start at its former density ${before}`,
     );
-    const linked = program(gl, fragmentSourceFor(await loadScene(id)));
+    const loaded = await loadScene(id);
+    const linked = program(gl, fragmentSourceFor(loaded));
+    const slots = knobSlots(loaded, sceneFeatures(loaded));
     const sums = [0, before, 1].map((stars) =>
       light(
         gl,
         linked,
         renderSettings(defaultsFor(id), { ...paramDefaults(id), ...night, stars }).params,
+        slots,
       ),
     );
     const [none = 0, own = 0, dark = 0] = sums;

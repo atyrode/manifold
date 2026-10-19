@@ -4,18 +4,19 @@
 // Every scene compiles to its own fragment shader (see scenes/types.ts): the common preamble, the
 // scene's compile-time features (fixed, and keyed by its setting: one program per distinct set, the
 // library gates of its night parts and of its planets among them, and the gate of the other
-// principals' cursors), one `#define K_<key>` per knob (its component of the packed `uParams`), one
-// `#define PHASE_<key>` per rate knob, SKY_YEAR (and a dated sky's SKY_DATE_ANCHOR), the shared
-// libraries, the scene's GLSL, then `main`, which calls the scene's entry, dithers the Shade it
-// returns into the palette and draws the cursors over it (`assembleFragment`). The driver
-// gets that program shaken (shaders/shake.ts): its conditionals resolved with its features, its
-// comments gone and only what `main` reaches, line for line (`fragmentSourceFor`).
+// principals' cursors), the program's `uParams` and one `#define K_<key>` per knob it reads (its
+// component of `uParams`, `knobSlots`), one `#define PHASE_<key>` per rate knob, SKY_YEAR (and a
+// dated sky's SKY_DATE_ANCHOR), the shared libraries, the scene's GLSL, then `main`, which calls the
+// scene's entry, dithers the Shade it returns into the palette and draws the cursors over it
+// (`assembleFragment`). The driver gets that program shaken (shaders/shake.ts): its conditionals
+// resolved with its features, its comments gone and only what `main` reaches, line for line
+// (`fragmentSourceFor`).
 
 import { seasonKnob, yearCycleKnob, yearNowGlsl } from "../climate.ts";
 import type { CameraPose } from "../composer/camera.ts";
 import { elementFeatures } from "../composer/elements.ts";
 import type { LightElement } from "../composer/types.ts";
-import { effective, MAX_PARAMS, type Widget } from "../params.ts";
+import { effective, MAX_PARAMS, MAX_PROGRAM_PARAMS, type Widget } from "../params.ts";
 import { phaseDefines } from "../rate-phase.ts";
 import { openingPlanets, planetUniforms, type PlanetUniforms } from "../scenes/planets.ts";
 import type { LoadedScene, SceneDef } from "../scenes/types.ts";
@@ -41,39 +42,92 @@ export class SceneShaderError extends Error {}
 const KNOB_KEY = /^[a-z][A-Za-z0-9]*$/;
 
 /**
- * `K_<key>` reads knob `key`: its index i in `scene.params` is its slot in `uParams`, which packs
- * four knobs a row (`uniform vec4 uParams[MAX_PARAMS / 4]`), so knob i is component i % 4 of row
- * i / 4, a constant swizzle (knob 13 is `uParams[3].y`).
+ * The program's slot map: the index in `scene.params` of each knob a program of these compile-time
+ * features reads, in params order, so slot s holds knob `knobSlots(...)[s]`. A composed scene's
+ * program reads its composer's knobs and its on layers' (`SceneDef.knobsFor`), and any other knob
+ * its code names: a chunk shared by several layers names a knob of one that is off (the night
+ * line's lamp in its tea glass), the year (`SKY_YEAR`) a layer's season or year cycle, a library an
+ * opt-in knob it tests with `#ifdef`; every other scene's reads them all. At most
+ * MAX_PROGRAM_PARAMS.
  */
-function knobDefines(scene: SceneDef): string {
+export function knobSlots(
+  scene: LoadedScene,
+  features: Readonly<Record<string, number>>,
+  glsl: string = scene.glslFor?.(features) ?? scene.glsl,
+): readonly number[] {
+  const read = scene.knobsFor?.(features);
+  const named =
+    read === undefined
+      ? undefined
+      : new Set(
+          [...`${yearDefine(scene)}${libs}${glsl}`.matchAll(/\bK_(\w+)/g)].map(([, key]) => key),
+        );
+  const slots = scene.params.flatMap((def, index) =>
+    read === undefined || read.has(def.key) || named?.has(def.key) === true ? [index] : [],
+  );
+  if (slots.length > MAX_PROGRAM_PARAMS)
+    throw new SceneShaderError(
+      `scene ${scene.id}: a program reads ${slots.length} knobs, at most ${MAX_PROGRAM_PARAMS}`,
+    );
+  return slots;
+}
+
+/** `uParams` rows for a program reading `knobs` knobs: four a row, one at least. */
+function paramRows(knobs: number): number {
+  return Math.max(1, Math.ceil(knobs / 4));
+}
+
+/**
+ * The program's `uParams`, sized to the knobs it reads (`knobSlots`), and `K_<key>` for each: the
+ * knob in slot s is component s % 4 of row s / 4, a constant swizzle (slot 13 is `uParams[3].y`).
+ * Every knob of the scene is checked (keyed for GLSL, declared once), whether or not this program
+ * reads it.
+ */
+function knobDefines(
+  scene: LoadedScene,
+  features: Readonly<Record<string, number>>,
+  glsl: string,
+): string {
   if (scene.params.length > MAX_PARAMS) {
     throw new SceneShaderError(
       `scene ${scene.id}: ${scene.params.length} knobs, at most ${MAX_PARAMS}`,
     );
   }
   const seen = new Set<string>();
-  return scene.params
-    .map((def, index) => {
-      if (!KNOB_KEY.test(def.key))
-        throw new SceneShaderError(
-          `scene ${scene.id}: knob key "${def.key}" must match ${String(KNOB_KEY)}`,
-        );
-      if (seen.has(def.key))
-        throw new SceneShaderError(`scene ${scene.id}: knob key "${def.key}" is declared twice`);
-      seen.add(def.key);
-      return `#define K_${def.key} uParams[${index >> 2}].${"xyzw".charAt(index & 3)}\n`;
-    })
-    .join("");
+  for (const def of scene.params) {
+    if (!KNOB_KEY.test(def.key))
+      throw new SceneShaderError(
+        `scene ${scene.id}: knob key "${def.key}" must match ${String(KNOB_KEY)}`,
+      );
+    if (seen.has(def.key))
+      throw new SceneShaderError(`scene ${scene.id}: knob key "${def.key}" is declared twice`);
+    seen.add(def.key);
+  }
+  const slots = knobSlots(scene, features, glsl);
+  return (
+    `uniform vec4 uParams[${paramRows(slots.length)}]; // the knobs this program reads, four a row: read knob <key> as K_<key>\n` +
+    slots
+      .map(
+        (index, slot) =>
+          `#define K_${scene.params[index]?.key ?? ""} uParams[${slot >> 2}].${"xyzw".charAt(slot & 3)}\n`,
+      )
+      .join("")
+  );
 }
 
 /**
- * Knob values in `params` order as `uParams` takes them (`uniform4fv`): MAX_PARAMS floats, knob i
- * at float i (row i / 4, component i % 4), zeros past the last knob.
+ * Knob values in `params` order as a program's `uParams` takes them (`uniform4fv`), through its slot
+ * map (`knobSlots`): slot s holds `values[slots[s]]`, four a row, zeros past the last. Written into
+ * `into` (the renderer's buffer for the program, as long as its rows) when given.
  */
-export function packParams(values: ArrayLike<number>): Float32Array {
-  const packed = new Float32Array(MAX_PARAMS);
-  packed.set(values);
-  return packed;
+export function packParams(
+  values: ArrayLike<number>,
+  slots: readonly number[],
+  into: Float32Array = new Float32Array(paramRows(slots.length) * 4),
+): Float32Array {
+  let slot = 0;
+  for (const index of slots) into[slot++] = values[index] ?? 0;
+  return into;
 }
 
 /**
@@ -281,14 +335,15 @@ export function assembleFragment(
 ): string {
   // Knob defines come ahead of the libraries so that a library may test for an opt-in shared knob
   // with `#ifdef K_<key>`; the libraries read no other knob.
+  const glsl = scene.glslFor?.(features) ?? scene.glsl;
   return (
     common +
     featureDefines(scene, features) +
-    knobDefines(scene) +
+    knobDefines(scene, features, glsl) +
     phaseDefines(scene) +
     yearDefine(scene) +
     libs +
-    (scene.glslFor?.(features) ?? scene.glsl) +
+    glsl +
     main(scene.entry)
   );
 }

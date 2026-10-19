@@ -9,6 +9,7 @@
 import { defaultsFor, paramDefaults, renderSettings } from "../../state.ts";
 import {
   fragmentSourceFor,
+  knobSlots,
   packParams,
   sceneFeatures,
   sceneFeaturesAll,
@@ -136,7 +137,6 @@ function draw(
     const at = gl.getUniformLocation(linked, name);
     if (at === null) continue;
     if (name === "uView") gl.uniform1i(at, value[0] ?? 0);
-    else if (name === "uParams") gl.uniform4fv(at, packParams(value));
     else if (name === "uTriggers") gl.uniform1fv(at, Float32Array.from(value));
     else if (value.length === 1) gl.uniform1f(at, value[0] ?? 0);
     else if (value.length === 2) gl.uniform2fv(at, value);
@@ -292,7 +292,9 @@ export async function verifyCloudTiers(
   // (the canopy sways on it too): each of four moments of it is drawn with the shadows and without at
   // the same clocks, so only the shadows tell the two apart. Its all-features program draws every
   // setting.
-  const scene = program(gl, fragmentSourceFor(autumn, sceneFeaturesAll(autumn)));
+  const autumnAll = sceneFeaturesAll(autumn);
+  const scene = program(gl, fragmentSourceFor(autumn, autumnAll));
+  const autumnSlots = knobSlots(autumn, autumnAll ?? sceneFeatures(autumn));
   const P = 160;
   const Q = 90;
   // At `at` seconds on the scene and the motion clock, as the renderer runs them at Motion 1.
@@ -300,12 +302,17 @@ export async function verifyCloudTiers(
     draw(gl, scene, P, Q, {
       uTime: [at],
       uMotionTime: [at],
-      uParams: renderSettings(defaultsFor("autumn"), {
-        ...paramDefaults("autumn"),
-        clouds: 0.6,
-        wind: 0.8,
-        ...knobs,
-      }).params,
+      uParams: [
+        ...packParams(
+          renderSettings(defaultsFor("autumn"), {
+            ...paramDefaults("autumn"),
+            clouds: 0.6,
+            wind: 0.8,
+            ...knobs,
+          }).params,
+          autumnSlots,
+        ),
+      ],
     });
   check(paramDefaults("autumn")["shadows"] === 0, "autumn's cloud shadows are on by default");
   const shaded: boolean[][] = [];

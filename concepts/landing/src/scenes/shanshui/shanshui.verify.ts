@@ -4,7 +4,13 @@
 // larger jumps), and the change to a new section's origin must leave the picture on screen as it
 // was (the section before runs on beyond the join).
 import { defaultsFor, paramDefaults, renderSettings } from "../../state.ts";
-import { fragmentSourceFor, packParams, vertexSource } from "../../shaders/index.ts";
+import {
+  fragmentSourceFor,
+  knobSlots,
+  packParams,
+  sceneFeatures,
+  vertexSource,
+} from "../../shaders/index.ts";
 import { HeadlessSim } from "../../sims/headless.ts";
 import { loadScene } from "../index.ts";
 import { SHANSHUI_SECTION } from "./shader.ts";
@@ -73,7 +79,10 @@ export function verifyShanshui(gl: WebGL2RenderingContext): Record<string, unkno
   const setKnobs = (values: Record<string, number>): void => {
     gl.uniform4fv(
       uniform("uParams"),
-      packParams(renderSettings(defaultsFor("shanshui"), values).params),
+      packParams(
+        renderSettings(defaultsFor("shanshui"), values).params,
+        knobSlots(shanshuiScene, sceneFeatures(shanshuiScene)),
+      ),
     );
   };
   setKnobs(knobs);

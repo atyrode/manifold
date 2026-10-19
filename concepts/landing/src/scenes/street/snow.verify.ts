@@ -4,7 +4,13 @@
 // frame drift inward while they fall, and those in the middle fall straight down. A level camera's
 // snow (snowFall) would bring every flake straight down the frame.
 import { defaultsFor, paramDefaults, renderSettings } from "../../state.ts";
-import { fragmentSourceFor, packParams, sceneFeatures, vertexSource } from "../../shaders/index.ts";
+import {
+  fragmentSourceFor,
+  knobSlots,
+  packParams,
+  sceneFeatures,
+  vertexSource,
+} from "../../shaders/index.ts";
 import { loadScene } from "../index.ts";
 
 // A composed scene draws its program from glslFor: the check's entry goes after the default one.
@@ -106,7 +112,10 @@ export function streetSnowCheck(gl: WebGL2RenderingContext): Record<string, unkn
   const knobs = { ...paramDefaults("street"), snow: 1, "snow-amount": 1, wind: 0 };
   gl.uniform4fv(
     gl.getUniformLocation(linked, "uParams"),
-    packParams(renderSettings(defaultsFor("street"), knobs).params),
+    packParams(
+      renderSettings(defaultsFor("street"), knobs).params,
+      knobSlots(streetScene, sceneFeatures(streetScene)),
+    ),
   );
   const frame = (time: number): Uint8Array => {
     gl.uniform1f(gl.getUniformLocation(linked, "uTime"), time);
