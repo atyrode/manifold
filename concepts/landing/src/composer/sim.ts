@@ -1,7 +1,9 @@
 // The composed sim (README "Sims in a composition"): what the renderer sees as a composed scene's
 // sim. One SimFrame comes in; each layer on gets a LayerFrame and writes into the shared resources:
 //   slot 0  the speck map: rg8 at frame size, nearest (sims/specks.ts). Cleared every frame; each
-//           layer plots its own codes from its base (`Allocation.specks`), every speck it shows.
+//           layer plots its own codes from its base (`Allocation.specks`), every speck it shows; then
+//           the composer's falling things (falling.ts) plot theirs, after every layer's
+//           (`Allocation.falling`), while a layer on lets things fall (LayerDef.falling).
 //   slot 1  the records atlas: rgba16f, nearest, ATLAS_WIDTH wide. Row 0 is the composer's: texel k
 //           the k-th layer on screen's own entrance and exit (x, y; -1: it follows the scene's
 //           passage), read by `layerIn`, `layerOut` and `layerShown` (glsl.ts; a steady program
@@ -21,18 +23,24 @@
 // sim keeps its own rows, so a change of allocation copies them where they now belong. The cast's
 // points of interest are every on-screen layer's (`interest`, canonical order), and a layer reaches
 // another's affordances (a chore its host's, README "Principals and chores") through
-// `LayerFrame.host`.
+// `LayerFrame.host`. The falling things (falling.ts) step after every layer has named its drip
+// points and surfaces for the frame (LayerFrame.falling), under a composer whose program draws them
+// (Composition.falling: the outdoor's).
 import { KnobReader, type ParamDef } from "../params.ts";
 import type { ScenePoint, SceneSim, SceneTurn, SimFrame } from "../scenes/types.ts";
-import type { LevelCamera } from "../sims/camera.ts";
+import { LevelCamera } from "../sims/camera.ts";
 import { SpeckMap } from "../sims/specks.ts";
 import { DataTexture } from "../sims/texture.ts";
 import { ATLAS_WIDTH, COMPOSER_CAPS } from "./caps.ts";
 import { coverAt, moveShape } from "./claims.ts";
 import { TURNS_GATE } from "./compose.ts";
+import { FallingPool, FALL_CODES, type FallFrame, type FallView } from "./falling.ts";
 import { NO_PASSAGE_GUST, passageGust, type GustField, type PassageGust } from "./gust.ts";
 import type { Placement } from "./place.ts";
 import type {
+  FallKind,
+  FallSurface,
+  FallingWriter,
   FieldSlot,
   FloorPoint,
   LayerDef,
@@ -63,6 +71,13 @@ export interface Allocation {
   readonly specks: Readonly<Record<string, number>>;
   /** Texture slots of each layer's fields, in order. */
   readonly fields: Readonly<Record<string, readonly number[]>>;
+  /**
+   * The composer's falling things' codes (falling.ts FALL_CODES), after every layer's: the first
+   * code's base, how many, and the kinds the layers on let fall; undefined while none does.
+   */
+  readonly falling:
+    | { readonly base: number; readonly count: number; readonly kinds: readonly FallKind[] }
+    | undefined;
   /** Slots bound: 2 plus the fields. */
   readonly slots: number;
 }
@@ -97,6 +112,17 @@ export function allocate(layers: readonly LayerDef[]): Allocation {
       slot += data.fields ?? 0;
     }
   }
+  const kinds = [...new Set(layers.flatMap((layer) => layer.falling?.kinds ?? []))];
+  let falling: Allocation["falling"];
+  if (kinds.length > 0) {
+    const count = kinds.reduce((sum, kind) => sum + FALL_CODES[kind], 0);
+    falling = { base: code, count, kinds };
+    code += count;
+    if (code > 255)
+      throw new ComposerSimError(
+        "speck codes past 255 with the falling things: one byte holds a code",
+      );
+  }
   if (slot - FIELD_SLOT > COMPOSER_CAPS.fields || slot > COMPOSER_CAPS.simTextures)
     throw new ComposerSimError(
       `${slot} sim textures for ${layers.map((layer) => layer.id).join(", ")}: at most ${COMPOSER_CAPS.simTextures}`,
@@ -107,6 +133,7 @@ export function allocate(layers: readonly LayerDef[]): Allocation {
     atlasRows: row,
     specks,
     fields,
+    falling,
     slots: slot,
   };
 }
@@ -167,6 +194,15 @@ export interface Composition<R = LevelCamera> {
   readonly drawsTurns: (features: Readonly<Record<string, number>>) => boolean;
   /** The room's seat line and scale, in an `interior` preset: every layer's frame carries it. */
   readonly room?: RoomFrame;
+  /**
+   * Under a composer whose program draws the falling things (the outdoor's speck pass, glsl.ts):
+   * the rig at rest they are drawn through, and the CPU twin of its passage's lens shift
+   * (RigPassage.shiftAt: screen heights the world is read lower; 0 at rest).
+   */
+  readonly falling?: {
+    readonly rig: LevelCamera;
+    readonly shift: (enter: number, exit: number) => number;
+  };
 }
 
 type Mutable<T> = { -readonly [K in keyof T]: T[K] };
@@ -222,6 +258,35 @@ class Ground implements LayerGround {
   }
 }
 
+/**
+ * A layer's view of the falling things (LayerFrame.falling): its drip points (lanes keyed by its
+ * place among the offered layers) and its surfaces into the pool, while it is on screen; nowhere
+ * under a composer whose program draws no falling things (Composition.falling unset).
+ */
+class FallingInlet implements FallingWriter {
+  readonly #pool: FallingPool | undefined;
+  readonly #key: number;
+  readonly #drops: boolean;
+  readonly #slide: readonly [number, number];
+  shown = false;
+
+  constructor(pool: FallingPool | undefined, layer: LayerDef, index: number) {
+    this.#pool = pool;
+    this.#key = index * 65536;
+    this.#drops = layer.falling?.kinds.includes("drop") === true;
+    this.#slide = layer.falling?.slide ?? [0, 0];
+  }
+
+  drip(lane: number, x: number, y: number, z: number): void {
+    if (this.shown && this.#drops)
+      this.#pool?.drip(this.#key + (lane & 0xffff), x, y, z, this.#slide[0], this.#slide[1]);
+  }
+
+  surface(surface: FallSurface): void {
+    if (this.shown) this.#pool?.surface(surface);
+  }
+}
+
 /** The scene's raw knobs under a layer's view keys (Live.renames), written into `out`. */
 function viewParams(
   params: Readonly<Record<string, number>>,
@@ -245,6 +310,7 @@ interface Live<R> {
   readonly fields: FieldSlot[];
   readonly specks: Specks;
   readonly ground: Ground;
+  readonly falls: FallingInlet;
   readonly frame: Mutable<LayerFrame<R>>;
   /**
    * Where its view's keys (Composition.shortParams) differ from the scene's: each view key, a
@@ -314,6 +380,20 @@ class ComposedSim<R> implements SceneSim {
   readonly #interest: ScenePoint[] = [];
   /** LayerFrame.host: another live layer's affordances. */
   readonly #host = (layer: string): object | undefined => this.#live.get(layer)?.sim?.affordances;
+  /** The falling things (falling.ts), under a composer whose program draws them (Composition.falling). */
+  readonly #falling: FallingPool | undefined;
+  /** The seed knob's place in the scene's knobs (-1: none), for the falling things' chance. */
+  readonly #seedAt: number;
+  readonly #fallFrame: Mutable<FallFrame>;
+  readonly #fallView: Mutable<FallView>;
+  /** Where the falling things plot: the speck map, from the codes' base (Allocation.falling). */
+  readonly #fallPlot = {
+    base: 0,
+    map: this.#map,
+    plot(cx: number, cy: number, code: number, depth: number): void {
+      this.map.plot(cx, cy, code + this.base, depth);
+    },
+  };
 
   constructor(gl: WebGL2RenderingContext, composition: Composition<R>) {
     this.#gl = gl;
@@ -345,6 +425,27 @@ class ComposedSim<R> implements SceneSim {
       pass: NO_PASSAGE_GUST,
       shape: composition.gust?.shape,
     };
+    const falling = composition.falling;
+    this.#falling = falling === undefined ? undefined : new FallingPool(this.#host);
+    this.#seedAt = composition.params.findIndex((def) => def.key === "seed");
+    this.#fallFrame = {
+      dt: 0,
+      motion: 0,
+      motionTime: 0,
+      seed: 0,
+      rain: 0,
+      wet: 0,
+      gusts: this.#gusts,
+    };
+    this.#fallView = {
+      rig: falling?.rig ?? new LevelCamera({ horizon: 0.5, eye: 1, focal: 1 }),
+      lift: 0,
+      shift: 0,
+      width: 1,
+      height: 1,
+      parallaxX: 0,
+      parallaxY: 0,
+    };
   }
 
   frame(frame: SimFrame): readonly (WebGLTexture | undefined)[] {
@@ -354,8 +455,10 @@ class ComposedSim<R> implements SceneSim {
     this.#gustField(frame);
     this.#stretchClaims(frame.aspect, placement);
     this.#map.clear();
+    this.#falling?.begin();
     const lift = this.#c.rigLift(frame.passage.enter, frame.passage.exit);
     for (const live of this.#live.values()) this.#step(live, frame, lift);
+    this.#fall(frame, lift);
     this.#first = false;
     this.#upload();
     return this.#textures;
@@ -511,6 +614,7 @@ class ComposedSim<R> implements SceneSim {
     const passage = { enter: 1, exit: 0 };
     const specks = new Specks(this.#map);
     const ground = new Ground();
+    const falls = new FallingInlet(this.#falling, layer, this.#c.offered.indexOf(layer));
     const lf: Mutable<LayerFrame<R>> = {
       ...frame,
       passage,
@@ -521,6 +625,7 @@ class ComposedSim<R> implements SceneSim {
       records,
       specks,
       fields,
+      falling: falls,
       host: this.#host,
       ...(this.#c.room === undefined ? {} : { room: this.#c.room }),
     };
@@ -539,6 +644,7 @@ class ComposedSim<R> implements SceneSim {
       fields,
       specks,
       ground,
+      falls,
       frame: lf,
       renames,
       params: {},
@@ -631,8 +737,38 @@ class ComposedSim<R> implements SceneSim {
       if (passage.enter >= 1) live.arrived = Number.NaN;
     }
     live.specks.shown = onScreen;
+    live.falls.shown = onScreen;
     live.specks.base = alloc.specks[live.layer.id] ?? 0;
     live.sim?.frame(lf);
+  }
+
+  /**
+   * The falling things' steps for this frame, once every layer has named its drip points and
+   * surfaces; drawn while a layer on screen lets things fall (Allocation.falling), at their codes.
+   */
+  #fall(frame: SimFrame, lift: number): void {
+    const pool = this.#falling;
+    const falling = this.#c.falling;
+    if (pool === undefined || falling === undefined) return;
+    const f = this.#fallFrame;
+    f.dt = frame.dt;
+    f.motion = frame.motion;
+    f.motionTime = frame.motionTime;
+    f.seed = this.#seedAt < 0 ? 0 : (frame.values[this.#seedAt] ?? 0);
+    f.rain = frame.weather?.rain ?? 0;
+    f.wet = frame.weather?.wet ?? 0;
+    pool.step(f);
+    const codes = this.#allocation.falling;
+    if (codes === undefined) return;
+    const v = this.#fallView;
+    v.lift = lift;
+    v.shift = falling.shift(frame.passage.enter, frame.passage.exit);
+    v.width = this.#map.width;
+    v.height = this.#map.height;
+    v.parallaxX = frame.parallax?.x ?? 0;
+    v.parallaxY = frame.parallax?.y ?? 0;
+    this.#fallPlot.base = codes.base;
+    pool.paint(this.#fallPlot, v);
   }
 
   /** Row 0 and the rows that changed up into the atlas, the speck map up, and the slots to bind. */
@@ -665,7 +801,9 @@ class ComposedSim<R> implements SceneSim {
     const textures = this.#textures;
     textures.length = alloc.slots;
     textures[SPECK_SLOT] =
-      Object.keys(alloc.specks).length > 0 ? this.#speckTexture.texture : undefined;
+      Object.keys(alloc.specks).length > 0 || alloc.falling !== undefined
+        ? this.#speckTexture.texture
+        : undefined;
     textures[ATLAS_SLOT] = this.#atlas.texture;
     for (const [id, slots] of Object.entries(alloc.fields)) {
       const live = this.#live.get(id);

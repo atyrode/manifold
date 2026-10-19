@@ -1610,7 +1610,8 @@ surfaces and change them. Never paste them over the frame as a flat layer.
   belongs. Edges (eaves, leaves, branches, sills, rails) get
   `rainDrips(vec2(along, below), uFallTime, max(K_rain, 0.4 * uWeather.x), spacing)`, keeping the spacing
   at least ~15 cells on screen. To drip from a given tip, lane k drips at
-  `(k + 0.3 + 0.4 * hash12(vec2(k, 3.7))) * spacing`.
+  `(k + 0.3 + 0.4 * hash12(vec2(k, 3.7))) * spacing`. In a composed outdoor scene, prefer real drops
+  that fall and land: the composer's falling things ("Falling things"; the falls' ferns use them).
 - **Snow.** `snowFall` works like `rainFall`, from a flurry to a blizzard whiteout; its veil mixes
   toward the snow-lit air. `uWeather.y` is how much snow lies: it settles within ~10–20 s of
   steady snow, faster in a blizzard, and melts over ~90 s, faster in rain. Mix every exposed
@@ -3062,6 +3063,38 @@ when every layer on screen is ready. Layer sims keep the frame-rate contract: a 
 chance drawn on steps. GPU solvers keep their own passes and hand their output to a field slot. A
 scene whose life is one simulation keeps it in one layer's sim and lends it through `host`: the
 grove's culms, leaves, tube and rings; the mangroves' bank and breeze; the maple's park.
+
+### Falling things
+
+One pool of falling things serves every layer on (`src/composer/falling.ts`, ADR 0062 "Falling
+things (W1)"). It is stepped on the CPU on a `FixedStep` at the fall clock's pace and drawn as
+points into the shared speck map, under the composer's own codes after every layer's
+(`Allocation.falling`). The outdoor speck pass colours them (`fallingSpeck`) and hides them behind
+nearer things, so no layer loops over them per pixel.
+
+- **A layer declares** `falling: { kinds: ["drop"], slide?: [x, y] }`: the kinds it lets fall,
+  whose colours compile in while it is on, and the screen heights its things slide per unit of
+  the pointer's parallax, where the layer slides so (the falls' near bank).
+- **Its sim names each frame** its drip points, `frame.falling.drip(lane, x, y, z)`, and the
+  surfaces drops land on, `frame.falling.surface(...)`, in rig-frame metres:
+  - `plane`: a level box;
+  - `ledge`: a strip `depth` deep along a floor segment;
+  - `water`: names the layer whose sim the drop strikes, the `FallingWater` among its affordances.
+    Keep `lane` stable, so the point's beat holds from frame to frame.
+- **A drip point** gathers a bead and lets a drop go on its own beat, fixed in time. The World's
+  rain and wetness, `max(rain, 0.4 × wet)` (`SimFrame.weather`), only pick which beats let go, at
+  the rate `rainDrips` gives. Nothing runs backward as the world dries.
+- **Drops** fall under gravity and drag toward the wind and the gust field's load where they are.
+  On a plane or a ledge a drop splashes, with a crown and droplets, and leaves a wet mark that
+  dries over 3 s. On water it strikes the named layer's sim.
+- **Drawing.** Particles are drawn through the rig at rest, lifted with the passage's eye and
+  moved by its lens shift (`RigPassage.shiftAt`, `rigShift`'s CPU twin, which a preset with a
+  shift and falling things gives).
+- **Users:** the waterfall's bank ferns (`falls/sim.ts`): drip points under their fronds' outer
+  leaflets, and the boulders' top as ledges (poolFront's `bankTop`, its CPU twin).
+- **Not drawn yet** by the interior's and the overhead's programs. Leaves, petals, seeds, flakes
+  and sparks are not built. The other scenes still draw their own drips (`rainDrips`,
+  `canopyDrip`) and leaves.
 
 ### Layers in the lab
 

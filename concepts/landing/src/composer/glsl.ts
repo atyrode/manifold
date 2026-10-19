@@ -13,7 +13,8 @@
 //      (under a ground layer only while it plays its own entrance or exit, where it does not show).
 //   5. The middle band's opaque passes; the World's birds at c.z; the middle veils.
 //   6. The front band's opaque passes, then its veils.
-//   7. The shared speck map, against c.zs (what stands above the floor: specks hide behind it).
+//   7. The shared speck map, against c.zs (what stands above the floor: specks hide behind it): each
+//      layer's codes, and the composer's falling things' (falling.ts, `fallingSpeck`).
 //   8. Every layer's `air` (the backdrop's forward scatter, a lamp's halo in the fog's air).
 //   9. worldFog, then worldPrecip at c.z (thinned under shelter claims, and as the backdrop's
 //      `precip` says: its thinning, its rain's air, the axes a rig that is not level sees it through).
@@ -32,6 +33,7 @@ import { worldGlsl } from "../shaders/lib/world.ts";
 import type { LevelCamera } from "../sims/camera.ts";
 import { SPECK_DEPTH_STEP } from "./caps.ts";
 import { claimsGlsl } from "./claims.ts";
+import { fallingGlsl } from "./falling.ts";
 import { gustGlsl, type PassageGustShape } from "./gust.ts";
 import { ATLAS_SLOT, SPECK_SLOT, type Allocation } from "./sim.ts";
 import type {
@@ -387,8 +389,9 @@ export function composedGlsl(a: Assembly): string {
   const passage =
     rig.passage?.glsl ??
     "float rigLift() {\n  return 0.0;\n}\nfloat rigCut() {\n  return 0.0;\n}\n";
+  const falling = allocation.falling;
   const speckDraw =
-    specks.length === 0
+    specks.length === 0 && falling === undefined
       ? ""
       : `
   // 7. The shared speck map, against what stands above the floor.
@@ -412,7 +415,16 @@ ${specks
           speck = true;
         }`;
   })
-  .join("\n")}
+  .join("\n")}${
+          falling === undefined
+            ? ""
+            : `
+        if (code > ${falling.base} && code <= ${falling.base + falling.count}) {
+          c.col = fallingSpeck(code - ${falling.base}, c.col, x);
+          c.z = zSpeck;
+          speck = true;
+        }`
+        }
       }
     }
   }
@@ -477,7 +489,7 @@ ${passage}${gustGlsl(a.gust.slot, a.gust.shape)}${STRUCTS}${lightGlsl(grade, rig
     layers.flatMap(({ def }) => def.casters ?? []),
   )}
 ${turnsGlsl(turns)}
-${accessorsGlsl(layers, allocation)}
+${accessorsGlsl(layers, allocation)}${falling === undefined ? "" : fallingGlsl(falling.kinds)}
 Ctx composerCtx(vec2 uv, vec2 cell) {
   Ctx x;
 ${rig.passage?.shift === true ? "  // The passage's tilt: the world read lower in uv (rigShift, 0 at rest).\n  uv.y += rigShift();\n" : ""}  x.uv = uv;
@@ -538,7 +550,7 @@ ${passCalls(layers, turns, "air", "x, c")}
   worldFog(x.w, x.v, x.air.fog, c.z, c.col, c.accent);
 ${passCalls(layers, turns, "glow", "x, c")}${precip}
   // 10. The grade.
-${turns ? "" : "  if (heldTurn < -1.5) c.col = vec3(0.0);\n"}${vignette}${exposure}${specks.length === 0 ? "" : "  if (speck) c.col = snapLevel(c.col);\n"}${shaded ? `  Shade o = ${shade};\n${passCalls(layers, turns, "shade", "x, c, o", () => true, ["Shade", "o"])}  return o;` : `  return ${shade};`}
+${turns ? "" : "  if (heldTurn < -1.5) c.col = vec3(0.0);\n"}${vignette}${exposure}${speckDraw === "" ? "" : "  if (speck) c.col = snapLevel(c.col);\n"}${shaded ? `  Shade o = ${shade};\n${passCalls(layers, turns, "shade", "x, c, o", () => true, ["Shade", "o"])}  return o;` : `  return ${shade};`}
 }
 `;
 }

@@ -1050,6 +1050,45 @@ Underwater it would show as rain dimpling the surface, the light dimmed by overc
 through the water, and the surge of the wind. Each camera a baseline adds, and each new kind of
 weather, is accepted only once it is rendered for every camera that can be in it.
 
+### Falling things (W1)
+
+#1082 item W1, step 2, built (2026-10-19) as far as the edge drips: one pool of falling things for
+every layer on (`composer/falling.ts`, README "Falling things"), in the composed sim.
+
+- **On the CPU.** Layers name their drip points and surfaces from their own sims each frame, and a
+  landing reaches another layer's sim. A pool on the GPU would need to read both back every frame.
+  A few hundred particles step on the CPU in a fraction of a millisecond.
+- **Drawn as points into the speck map.** Each particle is plotted in the cell its rig-frame position
+  projects to, at its depth, under codes of the composer's own, after every layer's
+  (`Allocation.falling`; no texture slot, no trigger, no knob). The outdoor speck pass colours them
+  (`fallingSpeck`) and hides them behind nearer things, so no layer loops over them per pixel.
+- **The contract.** A layer's `falling` declares the kinds it lets fall (`drop`, whose codes compile
+  in while it is on) and how far they slide with the pointer's parallax. Its sim calls
+  `LayerFrame.falling.drip(lane, x, y, z)` and `.surface(...)`: a plane, a ledge strip, or water,
+  which strikes the named layer's `FallingWater` through its affordances. A preset whose passage
+  shifts the lens gives `RigPassage.shiftAt`, the CPU twin of `rigShift`.
+- **The physics.** Drops fall under gravity and drag toward the air: the wind, plus the gust
+  field's load where they are (D4). Each lane's beat is fixed on the pool's step count, and the
+  World's rain and wetness only pick which beats let go, at the rate the shared edge drips had.
+  Nothing can run backward as the world dries (`4bf629be`). A drop that lands splashes, with a
+  crown and droplets, and leaves a wet mark that dries, or it strikes the water. The pool steps
+  on a `FixedStep` at the fall clock's pace, with chance drawn from the step count, the lane and
+  the seed. The renderer hands sims the world's weather (`SimFrame.weather`).
+- **First user: the waterfall's bank ferns.** Each frame they name drip points under their fronds'
+  outer leaflets. Each side's bank top (poolFront's `bankTop`, its CPU twin) is a run of short
+  ledges that the drops land on. The shader's `rainDrips` for the ferns is gone. Differences:
+  the defaults are `SAME` (`ab.ts --base 1d9460ef`, 960×600). In rain at 0.7, 10 cells of the
+  still frame differ: beads at drip points the old lanes did not draw. In motion, drops now fall
+  the whole way to the boulders and splash there, where the old streaks faded out at the fronds'
+  roots.
+- **Cost.** SwiftShader, M user-space instructions per 320×200 draw, median of six rounds, base →
+  head: 2,116 → 2,107 at the defaults, and 2,570 → 2,567 in rain. Composed sim, headless, at
+  480×300 cells: 0.024 → 0.038 ms a frame dry, and 0.024 → 0.049 ms in rain 0.7.
+- **Not built yet:** leaves, petals, seeds, flakes and sparks; the interior's and the overhead's
+  draw (a room keeps no depth, and its program has no speck pass); the other scenes' leaf and
+  drip code (autumn, bonsai, dew, meadow, campfire, garden, bamboo, `rainDrips` and `canopyDrip`
+  elsewhere).
+
 ### Order of work
 
 | Step | What                                                                                                                        | Accepted when                                                                                                                                                                              |

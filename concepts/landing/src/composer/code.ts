@@ -61,17 +61,18 @@ export function composedCode(
   };
   const params = scene.def.params;
   const defaults = Object.fromEntries(params.map((knob) => [knob.key, effective(knob, {})]));
+  const camera = new LevelCamera({
+    horizon: preset.rig.horizon,
+    eye: preset.rig.eye,
+    focal: preset.rig.focal,
+  });
   return {
     glsl: glslFor(scene.def.featuresFor?.(defaults) ?? {}),
     entry: COMPOSER_ENTRY,
     glslFor,
     sim: composedSim({
       params,
-      camera: new LevelCamera({
-        horizon: preset.rig.horizon,
-        eye: preset.rig.eye,
-        focal: preset.rig.focal,
-      }),
+      camera,
       minAspect: preset.rig.minAspect,
       gates: scene.gates,
       placement: scene.placed,
@@ -81,7 +82,10 @@ export function composedCode(
       rigLift: preset.rig.passage?.lift ?? (() => 0),
       offered: scene.offered,
       drawsTurns: (features) => features[TURNS_GATE] === 1 && !own(features),
-      ...(interior ? { room: roomFrame(preset) } : {}),
+      // The outdoor program draws the falling things in its speck pass (glsl.ts); a room's has none.
+      ...(interior
+        ? { room: roomFrame(preset) }
+        : { falling: { rig: camera, shift: preset.rig.passage?.shiftAt ?? (() => 0) } }),
     }),
   };
 }

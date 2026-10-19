@@ -33,17 +33,17 @@
 //                                 for a test that runs the cast (src/principals.ts) against the sim
 //
 // A HeadlessFrame is all optional: dt 1/60 s, motion 1, aspect 16 / 9 at 540 cells high, the visitor
-// over the page at its centre with no button and no agents beside it, no parallax, arrived and not
-// leaving. Each principal moves at what it moved since the previous frame over the frame's wall
-// time, unless its velocity is given. The wall clock (SimFrame.now) moves on by `elapsed`
-// milliseconds a frame, by default dt's (a sixtieth of a second while dt is 0, as a paused page goes
-// on drawing), and the budget is Infinity, so a warm-up ends in the first frame (give a finite
-// `budget` to test one spread over frames). `knobs` are keyed as in the URL (features also
-// `<key>-amount`) and handed over as given, unclamped, so a test may go past a slider's end; the
-// rest are at their defaults, as the lab fills them, so `params` and `values` are what the renderer
-// would hand over. `now` presses those knobs' "now" buttons just before the frame: each slot is
-// stamped on the clock as it stood and keeps its stamp, as the lab's, and the frame reports it
-// fired; a sim's first frame, as in the renderer, reports no presses.
+// over the page at its centre with no button and no agents beside it, no parallax, a dry world with
+// nothing falling (`weather`), arrived and not leaving. Each principal moves at what it moved since
+// the previous frame over the frame's wall time, unless its velocity is given. The wall clock
+// (SimFrame.now) moves on by `elapsed` milliseconds a frame, by default dt's (a sixtieth of a second
+// while dt is 0, as a paused page goes on drawing), and the budget is Infinity, so a warm-up ends in
+// the first frame (give a finite `budget` to test one spread over frames). `knobs` are keyed as in
+// the URL (features also `<key>-amount`) and handed over as given, unclamped, so a test may go past
+// a slider's end; the rest are at their defaults, as the lab fills them, so `params` and `values` are
+// what the renderer would hand over. `now` presses those knobs' "now" buttons just before the frame:
+// each slot is stamped on the clock as it stood and keeps its stamp, as the lab's, and the frame
+// reports it fired; a sim's first frame, as in the renderer, reports no presses.
 //
 // Usage (a drag held still while the screen turns portrait must not move the plane):
 //   const sim = new HeadlessSim(await loadScene("hyperbolic"));
@@ -298,6 +298,8 @@ export interface HeadlessFrame {
   agents?: readonly Partial<PrincipalState>[];
   /** The smoothed pointer parallax, -1..1 each way (default 0, 0). */
   parallax?: Partial<{ x: number; y: number }>;
+  /** SimFrame.weather: how wet the world is, how much snow lies, the rain falling (default all 0). */
+  weather?: Partial<{ wet: number; lying: number; rain: number }>;
   /** Knobs whose "now" was pressed since the previous frame. */
   now?: readonly string[];
   /** Default: arrived, not leaving. */
@@ -410,6 +412,7 @@ export class HeadlessSim {
       pointer: visitor,
       principals,
       parallax: { x: 0, y: 0, ...options.parallax },
+      weather: { wet: 0, lying: 0, rain: 0, ...options.weather },
       passage: { enter: 1, exit: 0, ...options.passage },
     });
     return this.#textures;

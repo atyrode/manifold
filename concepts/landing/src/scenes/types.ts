@@ -147,6 +147,14 @@ export interface SimFrame {
    */
   parallax?: Readonly<{ x: number; y: number }>;
   /**
+   * The world's weather as the shader's `uWeather` holds it, on the scene clock: `wet` how wet the
+   * world is and `lying` how much snow lies (0..1 each), and `rain` the rain falling now (0..1: the
+   * scene's rain knob, the cold's share of it falling as snow where the season sets the climate).
+   * The renderer rewrites it in place each frame: read it, don't keep it. Absent (hand-built frames
+   * in tests) means a dry world with nothing falling.
+   */
+  weather?: Readonly<{ wet: number; lying: number; rain: number }>;
+  /**
    * How far the scene has come in (`enter`, 0→1 over `SceneDef.passage.enter` seconds of real time,
    * then 1; always 1 when passages are off) and gone out (`exit`, 0 until it leaves, then 0→1), as
    * the shader's `passageIn()` and `passageOut()`. A sim is built afresh for every entrance, and

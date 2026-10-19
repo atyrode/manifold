@@ -27,7 +27,6 @@ import {
   FALLS_CAM,
   FALLS_CLUMPS,
   FALLS_EYE,
-  FALLS_FERN_M,
   FALLS_FERN_Z,
   FALLS_FOV,
   FALLS_FRONDS,
@@ -63,8 +62,7 @@ const float FALLS_CLIFF_Z = 29.0; // metres to the cliff...
 const float FALLS_CLIFF_M = 28.0; // ...and per screen height there
 const float FALLS_BANK_Z = 3.5;   // metres to the near bank's stones...
 const float FALLS_BANK_M = 3.4;   // ...and per screen height there
-const float FALLS_FERN_Z = ${glslFloat(FALLS_FERN_Z)};   // metres to the bank's ferns...
-const float FALLS_FERN_M = ${glslFloat(FALLS_FERN_M)};   // ...and per screen height there
+const float FALLS_FERN_Z = ${glslFloat(FALLS_FERN_Z)};   // metres to the bank's ferns
 const float FALLS_RAIN_Z = 30.0;  // rainFall's layers sit for depth = 1 - exp(-z / FALLS_RAIN_Z)
 // The gorge's own haze per metre, for what the World's birds and a guest layer haze (Air.dust).
 const float FALLS_HAZE = 0.004;
@@ -1384,17 +1382,16 @@ export const greeneryGlsl = `
 // by clump; a missing or shed frond's tier is 0). Returns coverage; tip as for fallsFerns, pheno the
 // year's turn of the frond in front.
 // wet (how wet the rain has left them) hangs beads of water under the leaflets' tips: bead 0..1.
-// drip finds the nearest frond overhead, for the water dripping off it: x along that frond, y how
-// far below it (screen heights), z 1 if there is one. foot: a cell in screen heights.
+// The water dripping off them is the composer's falling things (sim.ts: its drip points and the
+// banks they land on). foot: a cell in screen heights.
 // grow (1 at rest) scales the fronds and slides the clumps in from the frame's edge: the entrance
 // springs them up past 1 and back, standing upright at first and arching over as they grow.
 const int FALLS_CLUMPS = ${FALLS_CLUMPS};
 const int FALLS_FRONDS = ${FALLS_FRONDS};
-float fallsBankFerns(vec2 q, float wet, float grow, float foot, out float tip, out float pheno, out float bead, out vec3 drip) {
+float fallsBankFerns(vec2 q, float wet, float grow, float foot, out float tip, out float pheno, out float bead) {
   tip = 0.0;
   pheno = 0.0;
   bead = 0.0;
-  drip = vec3(0.0, 1.0, 0.0);
   float cover = 0.0;
   float len = 1.0;   // the frond in front: its length, how far below its spine q lies, its key
   float under = 0.0;
@@ -1421,9 +1418,6 @@ float fallsBankFerns(vec2 q, float wet, float grow, float foot, out float tip, o
       key = o.variant;
       pheno = o.pheno;
     }
-    // The water runs out along the frond and drips off its outer, drooping part, down to the
-    // ground the clump grows from.
-    if (u > 0.35 && uj > 0.0 && uj < drip.y && q.y > root.y - 0.03) drip = vec3(u * lj + 0.61 * o.variant, uj, 1.0);
   }
   if (wet > 0.0 && cover > 0.0) {
     // One leaflet in a few holds a bead under its tip (the leaflets peak at u = (k + 0.5) pi / 23).
@@ -1442,8 +1436,8 @@ void greeneryBegin(inout Ctx x) {
 }
 
 // The near bank's ferns toward the corners (skipped in the open middle), springing up as the scene
-// arrives, and the water dripping off their fronds in front of the stones and behind the nearer
-// fronds, beads of it on the leaflets catching the sky. Nothing of them over what stands nearer.
+// arrives, beads of water on the leaflets catching the sky (the drops off them are the composer's
+// falling things, drawn in its speck pass). Nothing of them over what stands nearer.
 void greeneryFront(Ctx x, inout Cell c) {
   fallsCovered(c);
   vec2 qb = fallsQb;
@@ -1452,9 +1446,7 @@ void greeneryFront(Ctx x, inout Cell c) {
   float tip = 0.0;
   float fernPheno = 0.0;
   float bead = 0.0;
-  vec3 fernDrip = vec3(0.0);
-  float fern = fallsBankFerns(qb, fallsRainWet, fernGrow, 1.0 / uRes.y, tip, fernPheno, bead, fernDrip);
-  if (fernDrip.z > 0.0 && fallsDripAmt > 0.0) c.col = mix(c.col, fallsRainLight, rainDrips(fernDrip.xy * FALLS_FERN_M, uFallTime, fallsDripAmt, 0.07));
+  float fern = fallsBankFerns(qb, fallsRainWet, fernGrow, 1.0 / uRes.y, tip, fernPheno, bead);
   if (fern > 0.0) {
     vec3 frond = wetten(plantPhenology(mix(vec3(0.04, 0.12, 0.04), vec3(0.22, 0.4, 0.12), 0.25 + 0.6 * tip), fernPheno), fallsRainWet, 0.4);
     c.col = mix(c.col, mix(frond * fallsLit(fallsL, normalize(vec3(0.0, 0.6, -1.0))), fallsRainLight, bead), fern);

@@ -161,7 +161,7 @@ interface ActiveScene {
   snow: number;
   season: { def: SeasonKnob; at: number; cycle: string | undefined } | undefined;
   readonly phases: RatePhases;
-  readonly weather: { wet: number; lying: number };
+  readonly weather: { wet: number; lying: number; rain: number };
   readonly passage: { enter: number; exit: number };
   /**
    * The renderer's scene, motion and fall clocks when it was created (or, taking over the clocks
@@ -811,7 +811,7 @@ export class DitherRenderer {
         return def ? { def, at: params.indexOf(def), cycle: cycle?.key } : undefined;
       })(),
       phases: new RatePhases(params),
-      weather: { wet: 0, lying: 0 },
+      weather: { wet: 0, lying: 0, rain: 0 },
       passage: { enter: 1, exit: 0 },
       presence: scenePresence(params),
       origin: from?.origin ?? {
@@ -1429,6 +1429,7 @@ export class DitherRenderer {
       snow > 0 ? Math.min(1, 0.25 + snow) * (1 - 0.5 * rain) : 0,
       climateLying(cold),
     );
+    weather.rain = rain;
     if (draw.fresh || this.#frozen) {
       weather.wet = wetTo;
       weather.lying = lyingTo;
@@ -1473,6 +1474,7 @@ export class DitherRenderer {
         pointer: visitor,
         principals: presence.frame.principals,
         parallax: this.#pointer,
+        weather,
         passage,
         features: program.key,
       }) ?? [];

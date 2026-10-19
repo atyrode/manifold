@@ -215,6 +215,57 @@ export interface LayerData {
 }
 
 /**
+ * A kind of falling thing (composer/falling.ts, README "Falling things"): what moves it, how it
+ * lands and how it is drawn. `drop`: water gathered at a drip point, a bead swelling there until it
+ * lets go, falling under gravity and drag in the wind, drawn out into a streak by its speed; on a
+ * ledge or a plane it splashes (droplets thrown up, a crown) and wets the spot, on water it strikes
+ * the water's sim.
+ */
+export type FallKind = "drop";
+
+/**
+ * What a layer gives the composer's falling things (README "Falling things"): the kinds it lets
+ * fall (each compiles its codes' colours into the program while the layer is on), and how far
+ * they slide on the screen with the pointer's parallax (SimFrame.parallax, screen heights per unit),
+ * where the layer itself slides so (the falls' near bank). Its sim names its drip points and the
+ * surfaces they land on each frame (LayerFrame.falling).
+ */
+export interface LayerFalling {
+  readonly kinds: readonly FallKind[];
+  readonly slide?: readonly [x: number, y: number];
+}
+
+/**
+ * A level surface the falling things land on, rig frame, metres, at height `y`:
+ *   plane  over the box x × z (unbounded where a span is left out): a floor;
+ *   ledge  a strip `depth` deep along the floor segment from → to: a sill, a bank's top;
+ *   water  over the box x × z: a drop strikes the sim of the layer `strikes` names (its
+ *          affordances' FallingWater), where that layer is on and has one.
+ * A drop splashes on a plane or a ledge and leaves a wet mark there.
+ */
+export type FallSurface =
+  | {
+      readonly kind: "plane";
+      readonly y: number;
+      readonly x?: Span;
+      readonly z?: Span;
+    }
+  | {
+      readonly kind: "ledge";
+      readonly y: number;
+      readonly from: FloorPoint;
+      readonly to: FloorPoint;
+      readonly depth: number;
+    }
+  | {
+      readonly kind: "water";
+      readonly y: number;
+      readonly x?: Span;
+      readonly z?: Span;
+      readonly strikes: string;
+    };
+
+/**
  * GLSL several layers of one scene share (its colours, its shading, its per-cell state): compiled
  * in once, before the layers, when any layer holding it is on; `begin` names its `void <fn>(Ctx x)`,
  * run once per cell before the layers' own. `G`: the rig it is built for (the overhead's under it).
@@ -339,6 +390,8 @@ export interface LayerDef {
    * while it offers one (README "The overhead composer").
    */
   readonly open?: true;
+  /** The kinds of falling things it lets fall, and how they slide (README "Falling things"). */
+  readonly falling?: LayerFalling;
 }
 
 /**
@@ -388,6 +441,11 @@ export interface RigPassage {
    * the world read that much lower in uv while the passage tilts the view (shore's).
    */
   readonly shift?: true;
+  /**
+   * The CPU twin of `rigShift()` on the passage's progress, for what the sims draw through the rig
+   * (the falling things, README "Falling things"): given where layers let things fall (the falls').
+   */
+  readonly shiftAt?: (enter: number, exit: number) => number;
 }
 
 /**
@@ -683,6 +741,30 @@ export interface FieldSlot {
   texture: WebGLTexture | undefined;
 }
 
+/**
+ * Where a layer's sim tells the composer's falling things (README "Falling things") what its water
+ * gathers on and lands on this frame, rig frame, metres. Every call holds for this frame only.
+ */
+export interface FallingWriter {
+  /**
+   * Water gathers at (x, y, z), a drip point (a frond's tip, a branch's end): a bead swells there
+   * and lets go on the point's own beat, as often as the World's rain and the wetness it leaves say.
+   * `lane` names the point among the layer's (0..65535), so its beat holds from frame to frame.
+   * A layer that does not let drops fall (LayerFalling.kinds) drips nothing.
+   */
+  drip(lane: number, x: number, y: number, z: number): void;
+  /** A surface every layer's falling things land on. */
+  surface(surface: FallSurface): void;
+}
+
+/**
+ * What a water layer's sim lends the falling things through its affordances (LayerFrame.host): a
+ * drop of `mass` (kg) striking its surface at (x, z), rig frame, metres, `speed` m/s downward.
+ */
+export interface FallingWater {
+  strike(x: number, z: number, mass: number, speed: number): void;
+}
+
 /** The placement as a layer's sim sees it (README "Space"). */
 export interface LayerGround {
   /** Where its anchor stands (m, rig frame, stretched with the frame). */
@@ -712,6 +794,8 @@ export interface LayerFrame<R = LevelCamera> extends SimFrame {
   readonly records: RecordRows;
   readonly specks: SpeckWriter;
   readonly fields: readonly FieldSlot[];
+  /** The composer's falling things: its drip points and surfaces this frame. */
+  readonly falling: FallingWriter;
   /**
    * The affordances of another layer on (its sim's `affordances`: what a chore's host lets it do,
    * the state a life layer follows), or undefined while that layer has none running. The caller

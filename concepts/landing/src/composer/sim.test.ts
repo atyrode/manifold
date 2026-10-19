@@ -5,6 +5,7 @@ import { meadowComposed, meadowScene } from "../scenes/meadow/index.ts";
 import { featureKey, sceneFeatures, shaderValues } from "../shaders/index.ts";
 import { COMPOSER_CAPS } from "./caps.ts";
 import { layerGate } from "./compose.ts";
+import { FALL_CODES } from "./falling.ts";
 import { allocate, ATLAS_SLOT, ComposerSimError, layersOfKey, SPECK_SLOT } from "./sim.ts";
 import type { LayerData, LayerDef } from "./types.ts";
 
@@ -45,6 +46,7 @@ describe("the composed sim's allocation", () => {
       atlasRows: 9,
       specks: { bees: 0, moths: 30 },
       fields: { grass: [2], bees: [3, 4] },
+      falling: undefined,
       slots: 5,
     });
     expect([SPECK_SLOT, ATLAS_SLOT]).toEqual([0, 1]);
@@ -72,6 +74,21 @@ describe("the composed sim's allocation", () => {
       ComposerSimError,
     );
     expect(() => allocate([layer("a", { specks: 200 }), layer("b", { specks: 55 })])).not.toThrow();
+  });
+
+  test("gives the falling things their codes after every layer's, once, while a layer lets things fall", () => {
+    const ferns: LayerDef = { ...layer("ferns", { rows: 1 }), falling: { kinds: ["drop"] } };
+    const eaves: LayerDef = { ...layer("eaves"), falling: { kinds: ["drop"] } };
+    const bees = layer("bees", { specks: 30 });
+    const alloc = allocate([ferns, bees, eaves]);
+    expect(alloc.specks).toEqual({ bees: 0 });
+    expect(alloc.falling).toEqual({ base: 30, count: FALL_CODES.drop, kinds: ["drop"] });
+    expect(alloc.slots).toBe(2);
+    expect(allocate([bees]).falling).toBeUndefined();
+    expect(() => allocate([layer("a", { specks: 255 - FALL_CODES.drop + 1 }), eaves])).toThrow(
+      ComposerSimError,
+    );
+    expect(() => allocate([layer("a", { specks: 255 - FALL_CODES.drop }), eaves])).not.toThrow();
   });
 
   test("reads the layer set off a program's feature key", () => {

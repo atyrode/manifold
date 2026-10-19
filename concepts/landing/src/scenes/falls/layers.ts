@@ -223,5 +223,8 @@ export const greeneryLayer: LayerDef = {
   },
   requires: ["cliff"],
   data: { rows: FALLS_ROWS },
+  // The water dripping off the bank ferns' fronds onto the bank (sim.ts): the composer's falling
+  // things, sliding with the pointer as the near bank does (shader.ts fallsQb).
+  falling: { kinds: ["drop"], slide: [0.02, 0.008] },
   passes: { begin: "greeneryBegin", front: "greeneryFront" },
 };

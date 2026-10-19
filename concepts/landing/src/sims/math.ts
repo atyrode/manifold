@@ -16,6 +16,9 @@
 //                            loops, falls' bank ferns)
 //   glslHash22(x, y, out)    common.ts `hash22(vec2(x, y))` the same way, into out[0], out[1] (tide
 //                            pool's holdfasts)
+//   glslVnoise(x, y)         common.ts `vnoise(vec2(x, y))` and `fbm3(vec2(x, y))` on glslHash12's
+//   glslFbm3(x, y)           lattice (the blend in float64): falls' near bank's top, where the drops
+//                            off its ferns land
 //   hypot2(x, y)             √(x² + y²) and √(x² + y² + z²) with the bits of V8's Math.hypot (the
 //   hypot3(x, y, z)          page's in Chrome) in every engine: for a seeded layout that must come
 //                            out the same in every browser (country's terrain, land use, chalk M,
@@ -115,6 +118,31 @@ export function glslHash22(x: number, y: number, out: Float64Array): void {
   const v = f32(f32(a + c) * b);
   out[0] = f32(u - Math.floor(u));
   out[1] = f32(v - Math.floor(v));
+}
+
+/** common.ts `vnoise(vec2(x, y))`: glslHash12's lattice round (x, y), blended smoothly. */
+export function glslVnoise(x: number, y: number): number {
+  const ix = Math.floor(x);
+  const iy = Math.floor(y);
+  const fx = x - ix;
+  const fy = y - iy;
+  const ux = fx * fx * (3 - 2 * fx);
+  const uy = fy * fy * (3 - 2 * fy);
+  const a = glslHash12(ix, iy);
+  const b = glslHash12(ix + 1, iy);
+  const c = glslHash12(ix, iy + 1);
+  const d = glslHash12(ix + 1, iy + 1);
+  return a + (b - a) * ux + (c + (d - c) * ux - (a + (b - a) * ux)) * uy;
+}
+
+/** common.ts `fbm3(vec2(x, y))`: three octaves of glslVnoise. */
+export function glslFbm3(x: number, y: number): number {
+  return (
+    (0.5 * glslVnoise(x, y) +
+      0.25 * glslVnoise(x * 2.03 + 17.1, y * 2.03 + 9.2) +
+      0.125 * glslVnoise(x * 4.11 + 4.3, y * 4.11 + 31.7)) /
+    0.875
+  );
 }
 
 // Math.hypot is only approximated, each engine its own way: JavaScriptCore (Safari, bun) rounds a

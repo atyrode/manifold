@@ -17,7 +17,7 @@ export const FALLS_CAM = 2;
 /** Clumps of ferns on the near bank, and fronds a clump (the greenery's records, sim.ts). */
 export const FALLS_CLUMPS = 4;
 export const FALLS_FRONDS = 5;
-/** The bank's ferns: metres to them, and metres to a screen height there (for the rain and the gusts). */
+/** The bank's ferns: metres to them, and metres to a screen height there (for the gusts). */
 export const FALLS_FERN_Z = 2.2;
 export const FALLS_FERN_M = 2.1;
 /** Rows of the composer's records atlas the greenery writes: one organ record a frond (PlantTexture's four texels). */
@@ -26,6 +26,15 @@ export const FALLS_ROWS = 4;
 /** Screen heights the frame starts above its rest view at the entrance, and how far the exit lifts it. */
 const TILT_IN = 0.4;
 const TILT_OUT = 0.34;
+
+/**
+ * Something springing up, or the camera coming to rest (the GLSL's fallsSpring, line for line): 0 at
+ * x = 0 and already moving, a gentle overshoot past 1, exactly 1 (and still) at x = 1.
+ */
+export function fallsSpring(x: number): number {
+  const u = Math.min(Math.max(x, 0), 1) - 1;
+  return 1 + u * u * (2.2 * u + 1.2);
+}
 
 /**
  * The gorge's rig: level at the pool's edge, the eye FALLS_CAM metres over the water and the horizon
@@ -46,6 +55,7 @@ export const FALLS_RIG: Rig = {
   passage: {
     lift: () => 0,
     shift: true,
+    shiftAt: (enter, exit) => TILT_IN * (1 - fallsSpring(enter / 0.85)) + TILT_OUT * exit * exit,
     glsl: `
 // ---- the waterfall's passage: a tilt down the fall and back up it (falls/constants.ts) ----
 const float FALLS_TILT_IN = ${glslFloat(TILT_IN)};
