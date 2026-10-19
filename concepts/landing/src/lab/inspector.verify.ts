@@ -140,11 +140,12 @@ function focus(): Record<string, number> {
       remove();
     }
   }
-  // A group folding while it holds the focus hands it to its header.
+  // A group folding while it holds the focus hands it to its header. The koi group's own chip (its
+  // count and switch are the koi layer's, under Layers): "drawn to mouse".
   const pond = view(setup("scene=pond"), { "pond:koi": true });
   try {
     const group = element<HTMLElement>(pond.inspector.el, 'section.group[data-id="pond:koi"]');
-    const chip = element<HTMLElement>(group, '.chip-cell[data-keys="koi koi-amount"] .chip');
+    const chip = element<HTMLElement>(group, '.chip-cell[data-keys="follow"] .chip');
     chip.focus();
     check(document.activeElement === chip, "the koi's chip takes no focus in its open group");
     pond.sections["pond:koi"] = false;
@@ -554,7 +555,7 @@ async function compact(): Promise<Record<string, unknown>> {
     check(sky.closest(".popover:not([hidden])") === null, "the sky of the scene left stays open");
     check(
       bar.el.querySelector('.menu-chip[data-id^="country:"]') === null &&
-        bar.el.querySelector('.menu-chip[data-id="pond:koi"]') !== null,
+        bar.el.querySelector('.menu-chip[data-id^="pond:"]') !== null,
       "the chips do not follow the scene",
     );
     const look = element<HTMLButtonElement>(bar.el, '.menu-chip[data-id="look"]');
