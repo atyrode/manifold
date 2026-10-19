@@ -593,7 +593,7 @@ export class Lab {
    * (lab/canvas.ts) in place of the scene's knobs, the picture takes the pointer while the lab is
    * open, and undo steps through the document and the setup beside it as one history. Back on the
    * canvas after leaving it, the document is as it was left; a document picked meanwhile (the
-   * Scenes view's Canvas shelf or Saved list) opens.
+   * Scenes view's baselines or Saved list) opens.
    */
   attachCanvas(host: CanvasHost): void {
     this.detachCanvas();
@@ -666,7 +666,7 @@ export class Lab {
   }
 
   /**
-   * Open document `saved` (the Scenes view's Canvas shelf or Saved list): in the canvas on screen, or once
+   * Open document `saved` (a baseline in the Scenes view's Library, or its Saved list): in the canvas on screen, or once
    * the canvas scene, shown for it, attaches its view.
    */
   #openDoc(saved: SavedDoc): void {

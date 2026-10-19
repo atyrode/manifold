@@ -632,18 +632,22 @@ The Scenes view (`src/lab/gallery.ts`) keeps what ships apart from what this bro
 switch over its search picks the Library or Saved, and the one search serves the half on screen.
 
 The Library (its shelves in `src/lab/gallery-model.ts`; ADR 0062 D9 as amended) holds only what
-ships. First the Canvas shelf: the engine's bare canvases, each drawn as a plan from
-above, opened in the canvas. Then the scenes by baseline: the room's, the land's and the patch's
-shelf, each its baseline's own scene first (tagged "baseline"), then its curated variants in their
-registry's order (a room's folders, then the promoted ones); then the standalone scenes, a program of
-their own each, on one shelf in their families' order (`src/lab/families.ts`). A card counts its
-scene's committed presets (`src/presets.ts`) in its corner. Right under the card of the scene on
-screen, a row of its own (the cards after it fill the card's row first), stand what it is, a
-variant's Compare with its baseline in the A/B slots, and its committed presets: a click loads
-one, its arrow opens it on the build it was made on, and a room's preset that loads as itself
-promotes to a variant of its own (`src/lab/preset-rows.ts`). The rail jumps between the shelves, the
-search matches the scenes' ids and titles, their presets' names and the documents' names and kinds,
-and the arrow keys roam the cards across the shelves, one card in the tab order.
+ships: the scenes by baseline, the room's, the land's and the view from above's shelf, then the
+standalone scenes, a program of their own each, on one shelf in their families' order
+(`src/lab/families.ts`). A shelf's baseline comes first (tagged "baseline"): its subject's bare
+canvas (`src/engine/docs.ts`), drawn as a plan from above and opened in the canvas. Then its curated
+variants in their registry's order (a room's folders, then the promoted ones). The composer's own
+render of a baseline (`room`, `land`, `patch`) is on no shelf: it stays a lab-only scene, what the
+variants are composed over and the A of their Compare. Nor is the canvas scene, the engine's host,
+which the baselines open. A scene's card counts its committed presets (`src/presets.ts`) in its
+corner. Right under the card of the scene on screen, a row of its own (the cards after it fill the
+card's row first), stand what it is, a variant's Compare with the render it is composed over in the
+A/B slots, and its committed presets: a click loads one, its arrow opens it on the build it was made
+on, and a room's preset that loads as itself promotes to a variant of its own
+(`src/lab/preset-rows.ts`). With the canvas on screen, the baseline whose document it holds (by its
+title) is the card marked. The rail jumps between the shelves, the search matches the scenes' ids and
+titles, their presets' names and the baselines' titles and renders, and the arrow keys roam the cards
+across the shelves, one card in the tab order.
 
 Saved (`src/lab/saved.ts`, `src/lab/saved-model.ts`) is everything saved in this browser as one
 list, the last saved first: the setups over the scenes (`landing.presets`) beside the canvas's

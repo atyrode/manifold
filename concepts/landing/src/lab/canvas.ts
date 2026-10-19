@@ -351,7 +351,7 @@ export class CanvasEditor {
     this.#syncCue();
   }
 
-  /** Open a document (the Scenes view's Canvas shelf or its Saved list): one undo step. */
+  /** Open a document (a baseline in the Scenes view's Library, or its Saved list): one undo step. */
   open(saved: SavedDoc): void {
     const parsed = parseDoc(saved.doc, this.#host.kinds);
     if ("why" in parsed) {

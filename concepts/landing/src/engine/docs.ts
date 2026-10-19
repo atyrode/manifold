@@ -1,5 +1,5 @@
 // The shipped documents. Three bare canvases, the plainest land, an empty room and a view straight
-// down (on spheres), the Library's Canvas shelf; and examples of the kinds, which the Library does
+// down (on spheres), the Library's baselines (lab/gallery-model.ts); and examples of the kinds, which the Library does
 // not show: the bench's pictures (bench.ts) and the tests' worlds, a lava lamp on a plinth at night,
 // a pond seen from its shore, a grove of trees in the grass, and the lava scene's room rebuilt with
 // its lava lamp. The canvas scene opens on `land`.

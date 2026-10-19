@@ -2,11 +2,11 @@ import { describe, expect, test } from "bun:test";
 import { interiorVariants } from "../composer/interior-variants.ts";
 import { outdoorVariants } from "../composer/outdoor-variants.ts";
 import { overheadVariants } from "../composer/overhead-variants.ts";
+import { landDoc, roomDoc, topDoc } from "../engine/docs.ts";
 import type { Preset } from "../presets.ts";
 import { sceneDefs, sceneIds } from "../scenes/index.ts";
 import {
   cardMatches,
-  docMatches,
   galleryShelves,
   labOnly,
   sceneCycle,
@@ -23,13 +23,19 @@ const committed = (name: string, query: string): Preset => ({
   savedAt: "2026-10-19",
 });
 
-const scenesOf = (cards: readonly GalleryCard[]) => cards.map((card) => card.scene);
+const scenesOf = (cards: readonly GalleryCard[]) =>
+  cards.flatMap((card) => (card.kind === "scene" ? [card.scene] : []));
 
 describe("the Scenes view's shelves", () => {
   const shelves = galleryShelves;
 
-  test("are the room's, the land's and the patch's, then the standalone scenes", () => {
-    expect(shelves.map((shelf) => shelf.baseline)).toEqual(["room", "land", "patch", undefined]);
+  test("are the room's, the land's and the view from above's, then the standalone scenes", () => {
+    expect(shelves.map((shelf) => shelf.title)).toEqual([
+      "Room",
+      "Land",
+      "From above",
+      "Standalone",
+    ]);
     expect(shelves.map((shelf) => shelf.composer)).toEqual([
       "interior",
       "outdoor",
@@ -38,28 +44,34 @@ describe("the Scenes view's shelves", () => {
     ]);
   });
 
-  test("put the baseline first, tagged, then its variants in their registry's order", () => {
-    const registries = [interiorVariants, outdoorVariants, overheadVariants];
-    for (const [at, registry] of registries.entries()) {
+  test("open on the baseline, its bare canvas over the composer's render, then its variants", () => {
+    const baselines = [
+      { doc: roomDoc, render: "room", registry: interiorVariants },
+      { doc: landDoc, render: "land", registry: outdoorVariants },
+      { doc: topDoc, render: "patch", registry: overheadVariants },
+    ] as const;
+    for (const [at, { doc, render, registry }] of baselines.entries()) {
       const shelf = shelves[at];
-      if (shelf?.baseline === undefined) throw new Error("a baseline's shelf without its baseline");
-      expect(shelf.cards[0]).toEqual({ scene: shelf.baseline, baseline: true });
-      expect<string[]>(scenesOf(shelf.cards)).toEqual(Object.keys(registry));
-      expect(shelf.cards.slice(1).every((card) => !card.baseline)).toBe(true);
+      expect(shelf?.cards[0]).toEqual({ kind: "canvas", doc, render });
+      expect<string[]>(scenesOf(shelf?.cards ?? [])).toEqual(
+        Object.keys(registry).filter((id) => id !== render),
+      );
+      expect(shelf?.cards.slice(1).every((card) => card.kind === "scene")).toBe(true);
     }
   });
 
-  test("hold every scene in exactly one shelf, the standalone ones a program of their own", () => {
+  test("hold every scene but the lab-only ones in exactly one shelf", () => {
     const placed = shelves.flatMap((shelf) => scenesOf(shelf.cards));
-    expect([...placed].sort()).toEqual([...sceneIds].sort());
+    expect([...placed].sort()).toEqual(sceneIds.filter((id) => labOnly[id] !== true).sort());
     expect(new Set(placed).size).toBe(placed.length);
     const standalone = scenesOf(shelves.at(-1)?.cards ?? []);
     expect(standalone).toContain("fractal");
+    expect(standalone).not.toContain("canvas");
     expect(standalone.every((scene) => sceneDefs[scene].layers === undefined)).toBe(true);
   });
 
   test("match a search by a scene's title or one of its committed presets' names", () => {
-    const sill = shelves[0]?.cards.find((card) => card.scene === "sill");
+    const sill = shelves[0]?.cards.find((card) => card.kind === "scene" && card.scene === "sill");
     if (sill === undefined) throw new Error("no sill");
     expect(cardMatches(sill, "")).toBe(true);
     expect(cardMatches(sill, ` ${sceneDefs.sill.title.toUpperCase()} `)).toBe(true);
@@ -69,6 +81,12 @@ describe("the Scenes view's shelves", () => {
     expect(cardMatches(sill, "nothing like it")).toBe(false);
     // Not by a blurb.
     expect(cardMatches(sill, sceneDefs.sill.blurb)).toBe(false);
+    // A baseline by its title, as a canvas, or by its render's name.
+    const top = shelves[2]?.cards[0];
+    if (top === undefined) throw new Error("no baseline");
+    for (const query of ["above", "CANVAS", "baseline", "patch"])
+      expect(cardMatches(top, query)).toBe(true);
+    expect(cardMatches(top, "sill")).toBe(false);
   });
 
   test("give each scene its committed presets, and none of a scene this build lacks", () => {
@@ -86,8 +104,13 @@ describe("the Scenes view's shelves", () => {
   });
 });
 
-test("the Scenes view's order is its shelves' scenes in order", () => {
-  expect(sceneOrder).toEqual(galleryShelves.flatMap((shelf) => scenesOf(shelf.cards)));
+test("the Scenes view's order is its shelves' scenes, each baseline's render in its canvas's place", () => {
+  // The canvas scene, on no shelf, stands among the standalone scenes.
+  expect<string[]>(sceneOrder.filter((id) => id !== "canvas")).toEqual(
+    galleryShelves.flatMap((shelf) =>
+      shelf.cards.flatMap((card) => (card.kind === "canvas" ? [card.render] : [card.scene])),
+    ),
+  );
 });
 
 test("the cycle is the Scenes view's order less the lab-only scenes, the baselines", () => {
@@ -122,23 +145,4 @@ test("[ and ] leave a lab-only scene for the cycle's scenes either side of it", 
     expect(sceneStep(id, -1)).toBe(before.at(-1) ?? sceneCycle.at(-1) ?? id);
   }
   expect(sceneStep("land", 1)).toBe("meadow");
-});
-
-test("a saved document's card matches by its name, its title or the kinds it holds", () => {
-  const doc = {
-    name: "Evening",
-    savedAt: 1,
-    doc: {
-      v: 1 as const,
-      title: "Garden at dusk",
-      camera: { at: [0, 1.6, -4] as const, yaw: 0, pitch: 0, fov: 1 },
-      world: {},
-      objects: [
-        { id: "lamp-1", kind: "lamp", at: [0, 0, 0] as const, yaw: 0, scale: 1, options: {} },
-      ],
-    },
-  };
-  for (const query of ["", "even", "DUSK", "lamp", "canvas"])
-    expect(docMatches(doc, query)).toBe(true);
-  expect(docMatches(doc, "harbour")).toBe(false);
 });

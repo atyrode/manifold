@@ -1750,7 +1750,7 @@ body.lab-open .lab-opener {
 .canvas-family:not(:has(.canvas-kind:not(.no-match))) {
   display: none;
 }
-/* a shipped document's card on the Library's Canvas shelf: its plan from above */
+/* a baseline's card in the Library, its bare canvas: its plan from above */
 .scene-card.doc {
   --dot: var(--lab-accent);
 }

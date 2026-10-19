@@ -1,27 +1,25 @@
 // The lab panel's Scenes view (ADR 0062 D9, again), one switch between two halves. The Library is
-// what ships: every scene as a thumbnail card, shelved by baseline (lab/gallery-model.ts) with a rail
-// of the shelves, each baseline's own scene first ("baseline"), its variants, the standalone scenes
-// apart, and ahead of them the Canvas shelf of the engine's bare canvases, each drawn as a plan from
-// above and opened in the canvas. A card counts its scene's
-// committed presets; under the shelf of the scene on screen stand its presets (lab/preset-rows.ts)
-// and, for a variant, its compare with its baseline in the A/B slots (compare.ts). Saved is
-// everything saved in this browser, one list (lab/saved.ts), apart from what ships. One search
-// serves the half on screen: the Library by the scenes' titles, their presets' names and the
-// documents', Saved by the saved entries'. Arrow keys move between the Library's cards (one card in
-// the tab order), Enter or Space shows the scene or opens the document. The lab syncs it while it
+// what ships: thumbnail cards shelved by baseline (lab/gallery-model.ts) with a rail of the shelves,
+// each shelf's baseline first ("baseline"), its subject's bare canvas drawn as a plan from above and
+// opened in the canvas, then its variants; the standalone scenes apart. A scene's card counts its
+// committed presets; under the card of the scene on screen stand its presets (lab/preset-rows.ts)
+// and, for a variant, its compare with the render it is composed over in the A/B slots
+// (compare.ts). Saved is everything saved in this browser, one list (lab/saved.ts), apart from what
+// ships. One search serves the half on screen: the Library by the cards' titles and the scenes'
+// presets' names, Saved by the saved entries'. Arrow keys move between the Library's cards (one card
+// in the tab order), Enter or Space shows the scene or opens the canvas. The lab syncs it while it
 // shows, and as it comes on screen.
 import type { ComposerId } from "../composer/types.ts";
-import { canonicalSetup } from "../compare.ts";
-import { canvasDocs } from "../engine/docs.ts";
 import type { EngineDoc } from "../engine/types.ts";
+import { canonicalSetup } from "../compare.ts";
 import { sceneDefs, type SceneId } from "../scenes/index.ts";
 import { textButton } from "./controls.ts";
 import { docPlan } from "./doc-plan.ts";
 import { h, setAttr, setHidden, setText, type LabContext } from "./dom.ts";
 import { sceneFamily } from "./families.ts";
 import {
+  baselineCanvas,
   cardMatches,
-  docMatches,
   galleryShelves,
   scenePresets,
   type GalleryCard,
@@ -31,7 +29,7 @@ import { PresetRows } from "./preset-rows.ts";
 import { Rail, type RailEntry } from "./rail.ts";
 import { SavedView, type SavedHost } from "./saved.ts";
 import { standIn, thumbUrl } from "./thumbs.ts";
-import { baselineScene, variantBaseline } from "./tree-model.ts";
+import { sceneComposer, variantBaseline } from "./tree-model.ts";
 
 export interface GalleryHost extends SavedHost {
   /** Show `scene` at its defaults, picked by hand. */
@@ -75,17 +73,13 @@ export class SceneGallery {
   readonly #tabs: Record<GalleryMode, HTMLButtonElement>;
   readonly #savedCount = h("span", { class: "scenes-switch-count" });
   #mode: GalleryMode = "library";
-  /** The scenes' cards, by scene. */
-  readonly #cards = new Map<SceneId, HTMLButtonElement>();
   readonly #shelves: Shelf[] = [];
-  readonly #docShelf: HTMLElement;
-  readonly #docCards: { readonly doc: EngineDoc; readonly el: HTMLButtonElement }[];
   readonly #empty = h("p", { class: "lab-empty", hidden: true }, "No scene matches.");
   /** Under the shelf of the scene on screen: its presets, and its compare with its baseline. */
   readonly #here = h("div", { class: "scene-here" });
   readonly #presetRows: PresetRows;
-  /** The scene the cards and the presets under its shelf were last set for. */
-  #shown: SceneId | undefined;
+  /** The card on screen the cards and the presets under it were last set for. */
+  #shown: GalleryCard | undefined;
 
   constructor(ctx: LabContext, host: GalleryHost) {
     this.#ctx = ctx;
@@ -124,7 +118,7 @@ export class SceneGallery {
       return button;
     };
     this.#tabs = {
-      library: tab("library", "Library", "What ships: the canvases, the scenes and their presets"),
+      library: tab("library", "Library", "What ships: the baselines, the scenes and their presets"),
       saved: tab(
         "saved",
         "Saved",
@@ -144,60 +138,48 @@ export class SceneGallery {
     const baselines: RailEntry[] = [];
     const apart: RailEntry[] = [];
     for (const shelf of galleryShelves) {
-      const title = shelf.baseline === undefined ? "Standalone" : sceneDefs[shelf.baseline].title;
+      const { title } = shelf;
       const name = shelf.composer === undefined ? STANDALONE_ICON : SHELF_ICONS[shelf.composer];
       const cards = shelf.cards.map((card) => ({ card, el: this.#card(card) }));
       const row = h("div", { class: "cards" }, ...cards.map(({ el }) => el));
+      const variants = cards.length - 1;
       const el = h(
         "section",
         {
           class: "shelf",
-          "aria-label": shelf.baseline === undefined ? title : `${title} baseline`,
+          "aria-label": shelf.composer === undefined ? title : `${title} baseline`,
         },
         h(
           "h3",
           { class: "shelf-title" },
           icon(name),
           h("span", {}, title),
-          shelf.baseline !== undefined && h("span", { class: "shelf-chip" }, "baseline"),
-          h("span", { class: "shelf-count" }, `${cards.length} scenes`),
+          shelf.composer !== undefined && h("span", { class: "shelf-chip" }, "baseline"),
+          h(
+            "span",
+            { class: "shelf-count" },
+            shelf.composer === undefined
+              ? `${cards.length} scenes`
+              : `${variants} variant${variants === 1 ? "" : "s"}`,
+          ),
         ),
-        shelf.baseline === undefined &&
+        shelf.composer === undefined &&
           h("p", { class: "shelf-note" }, "Scenes with a program of their own, in no composer."),
         row,
       );
       this.#shelves.push({ el, row, cards });
       const entry = {
-        id: shelf.baseline ?? "standalone",
+        id: shelf.composer ?? "standalone",
         title,
         icon: name,
         el,
         focus: cards[0]?.el,
       };
-      (shelf.baseline === undefined ? apart : baselines).push(entry);
+      (shelf.composer === undefined ? apart : baselines).push(entry);
     }
-    this.#docCards = canvasDocs.map((doc) => this.#docCard(doc));
-    const docRow = h("div", { class: "cards" }, ...this.#docCards.map(({ el }) => el));
-    this.#docShelf = h(
-      "section",
-      { class: "shelf", "aria-label": "Canvas" },
-      h(
-        "h3",
-        { class: "shelf-title" },
-        icon("layers"),
-        h("span", {}, "Canvas"),
-        h("span", { class: "shelf-count" }, `${canvasDocs.length} canvases`),
-      ),
-      h("p", { class: "shelf-note" }, "One world with a free camera: start from a bare canvas."),
-      docRow,
-    );
-    this.#body.append(this.#docShelf, ...this.#shelves.map(({ el }) => el), this.#empty);
+    this.#body.append(...this.#shelves.map(({ el }) => el), this.#empty);
     this.#body.addEventListener("keydown", (event) => this.#roam(event));
-    this.#rail.set([
-      [{ id: "canvas", title: "Canvas", icon: "layers", el: this.#docShelf, focus: docRow }],
-      baselines,
-      apart,
-    ]);
+    this.#rail.set([baselines, apart]);
 
     this.el = h(
       "div",
@@ -233,45 +215,57 @@ export class SceneGallery {
     setAttr(
       this.#search,
       "aria-label",
-      library ? "Find a scene, a preset or a canvas" : "Find something saved in this browser",
+      library ? "Find a scene, a preset or a baseline" : "Find something saved in this browser",
     );
     if (!library) this.#saved.sync();
     this.#filter();
   }
 
-  /** Hand the keyboard the current scene's card, in view (the Library, the scene picker). */
+  /** Hand the keyboard the card on screen, in view (the Library, the scene picker). */
   focusCurrent(): void {
     if (this.#mode !== "library") this.show("library");
-    const card = this.#cards.get(this.#ctx.current().state.scene);
+    const card = this.#current()?.el;
     card?.focus({ preventScroll: true });
     card?.scrollIntoView({ block: "nearest" });
   }
 
-  /** The view came on screen: bring the current scene's card into view. */
+  /** The view came on screen: bring the card on screen into view. */
   shown(): void {
     if (this.#mode === "library" && !this.el.contains(document.activeElement))
-      this.#cards.get(this.#ctx.current().state.scene)?.scrollIntoView({ block: "nearest" });
+      this.#current()?.el.scrollIntoView({ block: "nearest" });
     this.#rail.spy();
   }
 
   sync(): void {
     this.#countSaved();
-    const { scene } = this.#ctx.current().state;
-    for (const { card, el } of this.#all()) {
-      const current = card.scene === scene;
-      setAttr(el, "aria-pressed", String(current));
-      if (current) setAttr(el, "aria-current", "true");
+    const current = this.#current();
+    for (const { el } of this.#all()) {
+      const on = el === current?.el;
+      setAttr(el, "aria-pressed", String(on));
+      if (on) setAttr(el, "aria-current", "true");
       else el.removeAttribute("aria-current");
     }
-    // One card in the tab order: the current scene's, unless the keyboard is already in the gallery.
-    if (this.#shown !== scene) {
-      this.#shown = scene;
-      for (const { card, el } of this.#all()) el.tabIndex = card.scene === scene ? 0 : -1;
-      this.#setHere(scene);
+    // One card in the tab order: the one on screen, unless the keyboard is already in the gallery.
+    if (this.#shown !== current?.card) {
+      this.#shown = current?.card;
+      for (const { el } of this.#all()) el.tabIndex = el === current?.el ? 0 : -1;
+      this.#setHere(current);
       if (this.#mode === "library" && !this.el.contains(document.activeElement))
-        this.#cards.get(scene)?.scrollIntoView({ block: "nearest" });
+        current?.el.scrollIntoView({ block: "nearest" });
     }
     this.#presetRows.mark(this.#host.query());
+  }
+
+  /**
+   * The card of what is on screen: the scene's, or with the canvas on screen the baseline whose
+   * document it holds (by its title); none for a lab-only scene, or a document of another title.
+   */
+  #current(): Card | undefined {
+    const { scene } = this.#ctx.current().state;
+    const title = this.#host.doc()?.title;
+    return this.#all().find(({ card }) =>
+      card.kind === "scene" ? card.scene === scene : title === card.doc.title,
+    );
   }
 
   /** The Saved tab's count: how many entries this browser holds. */
@@ -282,21 +276,21 @@ export class SceneGallery {
   }
 
   /**
-   * Put `scene`'s presets and its compare with its baseline right after its card, a row of its own
-   * (the cards after it fill the card's row first: `.cards`); nothing for a scene with neither (a
-   * baseline, a standalone scene without presets, the canvas).
+   * Put the presets of the scene on screen and its compare with its baseline's render right after
+   * its card, a row of its own (the cards after it fill the card's row first: `.cards`); nothing for
+   * a scene with neither (a standalone scene without presets) or a baseline.
    */
-  #setHere(scene: SceneId): void {
-    const def = sceneDefs[scene];
-    const committed = scenePresets(scene);
-    const over = variantBaseline(scene);
-    const card = this.#cards.get(scene);
+  #setHere(current: Card | undefined): void {
     this.#presetRows.clear();
-    if (!card || (committed.length === 0 && over === undefined)) {
+    const scene = current?.card.kind === "scene" ? current.card.scene : undefined;
+    const committed = scene === undefined ? [] : scenePresets(scene);
+    const over = scene === undefined ? undefined : variantBaseline(scene);
+    if (!current || scene === undefined || (committed.length === 0 && over === undefined)) {
       this.#here.remove();
       return;
     }
-    const isBaseline = Object.values(baselineScene).includes(scene);
+    const def = sceneDefs[scene];
+    const composer = sceneComposer(scene);
     const head = h(
       "div",
       { class: "scene-here-head" },
@@ -304,11 +298,9 @@ export class SceneGallery {
       h(
         "span",
         { class: "scene-here-what" },
-        isBaseline
-          ? "a baseline"
-          : over !== undefined
-            ? `a variant of ${sceneDefs[over].title}`
-            : "a scene of its own",
+        composer !== undefined && over !== undefined
+          ? `a variant of ${baselineCanvas[composer].title}`
+          : "a scene of its own",
       ),
     );
     if (over !== undefined)
@@ -316,7 +308,7 @@ export class SceneGallery {
         textButton(
           "compare",
           "Compare",
-          `Compare ${def.title} with its baseline in the A/B slots (A: ${sceneDefs[over].title}, B: ${def.title})`,
+          `Compare ${def.title} in the A/B slots with the ${sceneDefs[over].title} render it is composed over (A: ${sceneDefs[over].title}, B: ${def.title})`,
           () =>
             this.#host.compare(
               canonicalSetup(new URLSearchParams({ scene: over })),
@@ -340,11 +332,15 @@ export class SceneGallery {
     setHidden(list, committed.length === 0);
     this.#here.style.setProperty("--dot", def.accent);
     this.#here.replaceChildren(head, list);
-    card.after(this.#here);
+    current.el.after(this.#here);
   }
 
-  /** A bare canvas's card. */
-  #docCard(doc: EngineDoc): { doc: EngineDoc; el: HTMLButtonElement } {
+  #card(card: GalleryCard): HTMLButtonElement {
+    return card.kind === "canvas" ? this.#baselineCard(card.doc) : this.#sceneCard(card.scene);
+  }
+
+  /** A baseline's card: its bare canvas, drawn as a plan from above, opened in the canvas. */
+  #baselineCard(doc: EngineDoc): HTMLButtonElement {
     const count = doc.objects.length;
     const el = h(
       "button",
@@ -352,49 +348,46 @@ export class SceneGallery {
         type: "button",
         class: "scene-card doc baseline",
         tabIndex: -1,
-        "aria-label": `${doc.title}, a bare canvas`,
-        title: `${doc.title}: ${count} object${count === 1 ? "" : "s"}, a bare canvas. Opens in the canvas.`,
+        "aria-label": `${doc.title}, baseline`,
+        title: `${doc.title}: the bare canvas, ${count} object${count === 1 ? "" : "s"}. Opens in the canvas.`,
       },
-      h("span", { class: "thumb" }, docPlan(doc), h("span", { class: "card-tag" }, "canvas")),
+      h("span", { class: "thumb" }, docPlan(doc), h("span", { class: "card-tag" }, "baseline")),
       h("span", { class: "card-title" }, doc.title),
     );
     el.addEventListener("click", () => this.#host.openDoc({ name: doc.title, savedAt: 0, doc }));
-    return { doc, el };
+    return el;
   }
 
-  /** A scene's card (tagged "baseline" for a baseline's own), counting its committed presets. */
-  #card(card: GalleryCard): HTMLButtonElement {
-    const def = sceneDefs[card.scene];
+  /** A scene's card, counting its committed presets. */
+  #sceneCard(scene: SceneId): HTMLButtonElement {
+    const def = sceneDefs[scene];
     const image = h("img", {
       alt: "",
-      src: thumbUrl(card.scene),
+      src: thumbUrl(scene),
       loading: "lazy",
       decoding: "async",
       draggable: false,
     });
     // A build without this scene's thumbnail shows its stand-in.
-    image.addEventListener(
-      "error",
-      () => (image.src = standIn(def.accent, sceneFamily[card.scene])),
-      { once: true },
-    );
-    const count = scenePresets(card.scene).length;
+    image.addEventListener("error", () => (image.src = standIn(def.accent, sceneFamily[scene])), {
+      once: true,
+    });
+    const count = scenePresets(scene).length;
     const presets = count > 0 ? `, ${count} preset${count === 1 ? "" : "s"}` : "";
     const el = h(
       "button",
       {
         type: "button",
-        class: card.baseline ? "scene-card baseline" : "scene-card",
+        class: "scene-card",
         tabIndex: -1,
-        "data-scene": card.scene,
-        "aria-label": `${def.title}${card.baseline ? ", baseline" : ""}${presets}`,
+        "data-scene": scene,
+        "aria-label": `${def.title}${presets}`,
         title: `${def.title}: ${def.blurb}`,
       },
       h(
         "span",
         { class: "thumb" },
         image,
-        card.baseline && h("span", { class: "card-tag" }, "baseline"),
         count > 0 &&
           h(
             "span",
@@ -406,8 +399,7 @@ export class SceneGallery {
       h("span", { class: "card-title" }, def.title),
     );
     el.style.setProperty("--dot", def.accent);
-    el.addEventListener("click", () => this.#host.setScene(card.scene));
-    this.#cards.set(card.scene, el);
+    el.addEventListener("click", () => this.#host.setScene(scene));
     return el;
   }
 
@@ -417,7 +409,9 @@ export class SceneGallery {
   }
 
   #visibleCards(): HTMLButtonElement[] {
-    return [...this.#docCards, ...this.#all()].map(({ el }) => el).filter((el) => !el.hidden);
+    return this.#all()
+      .map(({ el }) => el)
+      .filter((el) => !el.hidden);
   }
 
   /** Arrow keys between cards: across a row, and up or down to the card nearest in the next row. */
@@ -470,14 +464,7 @@ export class SceneGallery {
       this.#saved.filter(query);
       return;
     }
-    let docs = 0;
-    for (const { doc, el } of this.#docCards) {
-      const hit = docMatches({ name: doc.title, savedAt: 0, doc }, query);
-      setHidden(el, !hit);
-      if (hit) docs++;
-    }
-    setHidden(this.#docShelf, docs === 0);
-    let any = docs > 0;
+    let any = false;
     for (const shelf of this.#shelves) {
       let shown = 0;
       for (const { card, el } of shelf.cards) {
@@ -488,7 +475,7 @@ export class SceneGallery {
       setHidden(shelf.el, shown === 0);
       if (shown > 0) any = true;
     }
-    // The scene on screen's presets go with its card.
+    // The presets of the scene on screen go with its card.
     const card = this.#here.previousElementSibling;
     setHidden(this.#here, card instanceof HTMLElement && card.hidden);
     setHidden(this.#empty, any);
