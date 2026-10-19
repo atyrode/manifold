@@ -1084,6 +1084,21 @@ every layer on (`composer/falling.ts`, README "Falling things"), in the composed
 - **Cost.** SwiftShader, M user-space instructions per 320×200 draw, median of six rounds, base →
   head: 2,116 → 2,107 at the defaults, and 2,570 → 2,567 in rain. Composed sim, headless, at
   480×300 cells: 0.024 → 0.038 ms a frame dry, and 0.024 → 0.049 ms in rain 0.7.
+- **The drops' light.** A drop is a lens (`fallingSpeck`, at the speck's depth, which the speck pass
+  hands it). Its head, a bead and a splash show the brightest light behind and over the eye at its
+  own brightness, the brighter of `x.air.drop` and `x.air.deck`, plus 0.4 of the key while it is up
+  and the lamps at the drop (`localLight`). Its body passes a third of what lies behind it: a cell
+  either side of a head two cells across, painted with the streak's code (no new code), and the
+  streak, so it reads as a darker rim and trail against the spray. A wet mark darkens the stone by
+  up to 45% and glints with the sky on up to 30% of its cells, both fading as it dries. The first
+  rule (heads at 1.1 × the World's rain's drop light) drew them on the palette level of the spray
+  behind the ferns. Now, at rain 0.7 and 0.2 (`rain=1&rain-amount=…`; `rain=0.7` alone is the
+  switch, on at the default 0.5, so the "rain at 0.7" above is 0.5, and `rain=0.2` is off), heads
+  and crowns show light grey under the closed deck and white in sunlit drizzle, and marks a dark
+  dash with a glint. The falls' defaults are `SAME` (`ab.ts --base c14f1c9f`); the still frame at
+  rain 0.7 differs in 3 cells, a bead's rim. SwiftShader: 2,117 → 2,109 at the defaults and
+  2,567 → 2,570 in rain 0.7. The bench binds no speck map, so that is the program's code alone;
+  only the few cells a falling thing covers run its colours.
 - **Not built yet:** leaves, petals, seeds, flakes and sparks; the interior's and the overhead's
   draw (a room keeps no depth, and its program has no speck pass); the other scenes' leaf and
   drip code (autumn, bonsai, dew, meadow, campfire, garden, bamboo, `rainDrips` and `canopyDrip`

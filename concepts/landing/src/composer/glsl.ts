@@ -420,7 +420,7 @@ ${specks
             ? ""
             : `
         if (code > ${falling.base} && code <= ${falling.base + falling.count}) {
-          c.col = fallingSpeck(code - ${falling.base}, c.col, x);
+          c.col = fallingSpeck(code - ${falling.base}, c.col, zSpeck, x);
           c.z = zSpeck;
           speck = true;
         }`

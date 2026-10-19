@@ -36,9 +36,11 @@
 // parallax as its layer slides (LayerFalling.slide), at its depth in SPECK_DEPTH_STEP-ths of a metre
 // (the speck pass hides it behind whatever stands nearer). A drop is a head DROP_CELLS wide where it
 // is at least half a cell across, else one, with a streak behind it as long as it moves in
-// STREAK_SECONDS; a bead a cell under its point (two cells wide at its fullest where it is big
-// enough); a crown a cup of five cells; a droplet a cell; a wet mark a smear MARK_METRES wide, a
-// cell nearer than its surface so its own surface does not hide it, fading through three codes.
+// STREAK_SECONDS and, at two cells, a cell of its body either side (the streak's code: the rim that
+// reads against bright spray); a bead a cell under its point (two cells wide at its fullest where
+// it is big enough, with the drop's rim); a crown a cup of five cells; a droplet a cell; a wet mark
+// a smear MARK_METRES wide, a cell nearer than its surface so its own surface does not hide it,
+// fading through three codes.
 //
 // Determinism: everything is drawn from the pool's step count, the lanes and the seed (hash31),
 // never from the frame: a seed plays the same at any frame rate. The fixed step runs on the fall
@@ -544,7 +546,8 @@ export class FallingPool {
       const scale = (rig.focal / z) * H;
       const across = (this.#radius[i] ?? 0) * 2 * scale;
       if (k === Kind.drop) {
-        // The streak first, back along the way it moves on the screen; then the head over it.
+        // The streak first, back along the way it moves on the screen, and the body either side of
+        // a head two cells across (the streak's code); then the head over them.
         const vxs = (this.#vx[i] ?? 0) * scale;
         const vys = (this.#vy[i] ?? 0) * scale;
         const len = Math.min(STREAK_CELLS, Math.hypot(vxs, vys) * STREAK_SECONDS);
@@ -557,8 +560,11 @@ export class FallingPool {
             FALL_CODE.streak,
             depth,
           );
-        plot.plot(ix, iy, FALL_CODE.drop, depth);
-        if (across >= 0.5 && DROP_CELLS > 1) plot.plot(ix + 1, iy, FALL_CODE.drop, depth);
+        if (across >= 0.5 && DROP_CELLS > 1) {
+          plot.plot(ix - 1, iy, FALL_CODE.streak, depth);
+          plot.plot(ix + DROP_CELLS, iy, FALL_CODE.streak, depth);
+          for (let c = 0; c < DROP_CELLS; c++) plot.plot(ix + c, iy, FALL_CODE.drop, depth);
+        } else plot.plot(ix, iy, FALL_CODE.drop, depth);
       } else if (k === Kind.droplet) {
         plot.plot(ix, iy, FALL_CODE.splash, depth);
       } else if (k === Kind.crown) {
@@ -603,36 +609,60 @@ export class FallingPool {
       const ix = Math.floor(cellX(d.x, d.z, d.slideX));
       const iy = Math.floor(cellY(d.y, d.z, d.slideY)) - 1;
       const depth = depthOf(d.z);
-      plot.plot(ix, iy, FALL_CODE.bead, depth);
       const across = DROP_RADIUS * 2 * grown * (rig.focal / d.z) * H;
-      if (across >= 0.5 && grown > 0.8) plot.plot(ix + 1, iy, FALL_CODE.bead, depth);
+      if (across >= 0.5 && grown > 0.8) {
+        plot.plot(ix - 1, iy, FALL_CODE.streak, depth);
+        plot.plot(ix + 2, iy, FALL_CODE.streak, depth);
+        plot.plot(ix + 1, iy, FALL_CODE.bead, depth);
+      }
+      plot.plot(ix, iy, FALL_CODE.bead, depth);
     }
   }
 }
 
 /**
+ * A drop's lens (`fallingSpeck`): its highlight shows the brightest light behind and over the eye
+ * small and inverted, at the brightness it has (a lens keeps it): the brighter of the backdrop's drop
+ * light and the sky wet things mirror, then LENS_KEY of the key while it is up and LENS_LAMP of the
+ * lamps' light at the drop.
+ */
+const LENS_KEY = 0.4;
+const LENS_LAMP = 1.5;
+/** A drop's body (its rim and its streak): the share of what lies behind it that it passes, and of its lens. */
+const BODY_SEE = 0.35;
+const BODY_LENS = 0.05;
+/**
+ * A fresh wet mark: how much it darkens what it lies on, the share of its cells that glint with the
+ * sky, and how brightly; less as it dries.
+ */
+const WET_DARK = 0.45;
+const WET_GLINTS = 0.3;
+const WET_GLINT = 0.7;
+
+/**
  * The falling things' colours in the program (README "Falling things"): `vec3 fallingSpeck(int code,
- * vec3 under, Ctx x)` for the kinds on (FALL_CODES' order, each kind's codes from its base), which the
- * composer's speck pass calls for a code of the composer's range (glsl.ts). A drop and its splash
- * shine with the light the backdrop gives the drops (x.air.drop: each refracts the bright sky), the
- * streak and the bead over what lies behind them; a wet mark darkens what it lies on and mirrors the
- * bright sky over it (x.air.deck) at the grazing angle a surface below the eye is seen at, a sheen
- * that reads on dark ground, less as it dries.
+ * vec3 under, float z, Ctx x)` for the kinds on (FALL_CODES' order, each kind's codes from its
+ * base), at depth z, which the composer's speck pass calls for a code of the composer's range
+ * (glsl.ts). A drop is a lens: its head, a bead and a splash's crown and droplets show the
+ * brightest light behind and over the eye (LENS_*). Its body, the rim either side of the head and
+ * its streak, passes a third of what lies behind it: a darker rim and trail against bright spray,
+ * lost in dark rock, where the head alone shows. A wet mark darkens what it lies on and glosses it,
+ * the bright sky (x.air.deck) glinting on some of its cells; both fade as it dries.
  */
 export function fallingGlsl(kinds: readonly FallKind[]): string {
   const drops = kinds.includes("drop");
   return `
 // ---- the falling things (composer/falling.ts) ----
-vec3 fallingSpeck(int code, vec3 under, Ctx x) {
+vec3 fallingSpeck(int code, vec3 under, float z, Ctx x) {
 ${
   drops
-    ? `  vec3 drop = max(x.air.drop, vec3(0.08));
-  if (code == ${FALL_CODE.drop}) return drop * 1.1;
-  if (code == ${FALL_CODE.streak}) return mix(under, drop, 0.7);
-  if (code == ${FALL_CODE.bead}) return mix(under, drop * 1.05, 0.85);
-  if (code == ${FALL_CODE.splash}) return drop * 1.2;
+    ? `  vec3 at = vec3((x.uv.x - 0.5) * x.aspect, x.uv.y - RIG_HORIZON, 0.0) * (z / RIG_FOCAL) + vec3(0.0, x.eye, z);
+  vec3 lens = max(x.air.drop, x.air.deck) + x.light.sun * (${glslFloat(LENS_KEY)} * x.light.keyUp) + localLight(at, vec3(0.0)) * ${glslFloat(LENS_LAMP)};
+  if (code == ${FALL_CODE.drop} || code == ${FALL_CODE.bead} || code == ${FALL_CODE.splash}) return lens;
+  if (code == ${FALL_CODE.streak}) return under * ${glslFloat(BODY_SEE)} + lens * ${glslFloat(BODY_LENS)};
   float wet = code == ${FALL_CODE.wet} ? 1.0 : (code == ${FALL_CODE.drying} ? 0.66 : 0.33);
-  return mix(under, under * ${glslFloat(0.6)} + x.air.deck * ${glslFloat(0.3)}, wet);`
+  float glint = step(hash12(x.cell), ${glslFloat(WET_GLINTS)} * (1.5 * wet - 0.5));
+  return under * (1.0 - ${glslFloat(WET_DARK)} * wet) + x.air.deck * (${glslFloat(WET_GLINT)} * glint);`
     : "  return under;"
 }
 }

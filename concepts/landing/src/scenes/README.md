@@ -3090,6 +3090,13 @@ nearer things, so no layer loops over them per pixel.
 - **Drawing.** Particles are drawn through the rig at rest, lifted with the passage's eye and
   moved by its lens shift (`RigPassage.shiftAt`, `rigShift`'s CPU twin, which a preset with a
   shift and falling things gives).
+- **Colours.** A drop is a lens. Its head, a bead, and a splash's crown and droplets show the
+  brightest light behind and over the eye at its own brightness: the brighter of the backdrop's
+  drop light and the sky wet things mirror (`x.air.drop`, `x.air.deck`), plus the key while it is
+  up and the lamps at the drop (`localLight`). Its body, a cell either side of a head two cells
+  across and its streak, passes a third of what lies behind it: a darker rim and trail against
+  bright spray, lost in dark rock, where the head alone shows. A wet mark darkens the stone and
+  glosses it, the bright sky glinting on some of its cells; both fade as it dries.
 - **Users:** the waterfall's bank ferns (`falls/sim.ts`): drip points under their fronds' outer
   leaflets, and the boulders' top as ledges (poolFront's `bankTop`, its CPU twin).
 - **Not drawn yet** by the interior's and the overhead's programs. Leaves, petals, seeds, flakes
