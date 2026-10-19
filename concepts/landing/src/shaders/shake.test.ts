@@ -205,6 +205,9 @@ const BUDGET = {
   island: [89500, 189000],
   kelp: [67500],
   lake: [89000, 179500],
+  // The outdoor composer's baseline (ADR 0062 D13): the downs over bare earth; its all-features
+  // program is the one a guest's turn plays in.
+  land: [65500, 106500],
   lanterns: [84500, 178500],
   lava: [56500, 60500],
   marble: [20000],

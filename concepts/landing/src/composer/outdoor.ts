@@ -1,6 +1,7 @@
-// The `outdoor` composer (ADR 0062): a pinhole on the ground, and its layers in canonical order, the
-// order they are placed in and paint in (README "Layers"). The manifests alone: their code is in
-// outdoor-code.ts, which a composed scene's code module loads.
+// The `outdoor` composer (ADR 0062): a pinhole on the ground, its baseline (ADR 0062 "Baselines and
+// variants": the plain land every outdoor scene is to be a variant of) and its layers in canonical
+// order, the order they are placed in and paint in (README "Layers"). The manifests alone: their
+// code is in outdoor-code.ts, which a composed scene's code module loads.
 //   backdrops  downs (meadow), hillside (bees), sea (shore), desert (dunes), parkland (autumn),
 //              temple (lanterns), cliff (falls), pines (campfire), grove (bamboo), woods (forest),
 //              farShore (lake), templeWall (garden), mangroves (fireflies), crossroads (skyward),
@@ -112,9 +113,35 @@ import {
 } from "../scenes/street/layers.ts";
 import { boatsLayer, lighthouseLayer, openSeaLayer, swellLayer } from "../scenes/swell/layers.ts";
 import type { Composer } from "./compose.ts";
+import type { Baseline } from "./types.ts";
 
-export const outdoor: Composer = {
+export const outdoor: Composer & { readonly baseline: Baseline } = {
   id: "outdoor",
+  // The plainest land: an eye standing 1.65 m over the plain floor of lawn, level, the downs
+  // beyond (`downs`, its tree line at 110 m) through the meadow's lens (the horizon at 0.4, focal
+  // 1.18: about 46° high), facing the staged sky's ahead; a fair-weather World mid-afternoon (the
+  // World's own cloud, rooks by day), no tint, no vignette and the meadow's ink; the
+  // shooting stars from where most presets set them out, a generic flyway. No light elements:
+  // `localLight` is not adopted outdoors yet (ADR 0062 "Order of work", step 5). The rig admits the
+  // meadow's layers and the murmuration, offered as guests. Its own scene is `land`, lab-only (D13).
+  baseline: {
+    composer: "outdoor",
+    rig: { horizon: 0.4, focal: 1.18, eye: 1.65, turn: 0, pitch: 0, minAspect: 1 },
+    grade: { ink: { gain: 1.3, gamma: 1 } },
+    world: {
+      time: 0.62,
+      birds: {
+        kind: "rooks",
+        help: "Birds crossing over the land by day, rooks by default, rowing in loose parties over the downs; few fly in rain or snow.",
+      },
+    },
+    meteors: [-0.5, 0.3, 1, 0.1],
+    flyway: { depth: [12, 120], above: 0.04, top: 0.95, seed: 3.1, skim: 2, spread: 1, ext: 0.004 },
+    floor: "lawn",
+    layers: ["downs"],
+    values: {},
+    elements: [],
+  },
   layers: [
     downsLayer,
     hillsideLayer,

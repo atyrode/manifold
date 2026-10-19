@@ -64,6 +64,7 @@ export const sceneFamily = {
   forest: "land",
   campfire: "land",
   autumn: "land",
+  land: "land",
   marble: "matter",
   prism: "matter",
   ferro: "matter",
@@ -95,7 +96,7 @@ export const sceneOrder: readonly SceneId[] = families.flatMap((family) =>
  * The scenes shown in the lab alone (ADR 0062 D13): the composers' baselines, loaded to compare
  * their variants against, outside the tour and `[` / `]`.
  */
-export const labOnly: Readonly<Partial<Record<SceneId, true>>> = { room: true };
+export const labOnly: Readonly<Partial<Record<SceneId, true>>> = { room: true, land: true };
 
 /** The Scenes view's order less the lab-only scenes: what `[`, `]` and the tour step through. */
 export const sceneCycle: readonly SceneId[] = sceneOrder.filter((id) => labOnly[id] !== true);

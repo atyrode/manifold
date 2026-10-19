@@ -155,6 +155,6 @@ console.log(
     "promote: next,",
     `  bun concepts/landing/scripts/thumbs.ts ${names.id}`,
     `  bun concepts/landing/scripts/ab.ts '${scene}~${query}'   # the base: the commit before this`,
-    "  bun test concepts/landing/src/composer/interior-variants.test.ts concepts/landing/src/scenes/registry.test.ts concepts/landing/src/shaders/shake.test.ts",
+    "  bun test concepts/landing/src/composer/variants.test.ts concepts/landing/src/scenes/registry.test.ts concepts/landing/src/shaders/shake.test.ts",
   ].join("\n"),
 );

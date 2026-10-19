@@ -13,6 +13,7 @@ test("the Scenes view's order holds every scene once, shelf by shelf", () => {
 test("the cycle is the Scenes view's order less the lab-only scenes", () => {
   expect(sceneCycle).toEqual(sceneOrder.filter((id) => labOnly[id] !== true));
   expect(sceneCycle).not.toContain("room");
+  expect(sceneCycle).not.toContain("land");
 });
 
 test("[ and ] walk the cycle, round from the last scene to the first", () => {

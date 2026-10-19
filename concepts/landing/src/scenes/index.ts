@@ -31,6 +31,7 @@ import { incenseScene } from "./incense/index.ts";
 import { islandScene } from "./island/index.ts";
 import { kelpScene } from "./kelp/index.ts";
 import { lakeScene } from "./lake/index.ts";
+import { landScene } from "./land/index.ts";
 import { lanternsScene } from "./lanterns/index.ts";
 import { lavaScene } from "./lava/index.ts";
 import { marbleScene } from "./marble/index.ts";
@@ -108,6 +109,7 @@ export const sceneDefs = {
   tidepool: tidepoolScene,
   mobile: mobileScene,
   room: roomScene,
+  land: landScene,
   ...promotedScenes,
 } satisfies Record<string, SceneDef>;
 

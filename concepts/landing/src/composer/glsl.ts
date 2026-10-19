@@ -50,20 +50,31 @@ import type {
 /** The entry every composed program has. */
 export const COMPOSER_ENTRY = "composerEntry";
 
-/** The plain floor's albedo, how porous it is (wetten), and how well it holds lying snow. */
+/**
+ * The plain floor's albedo, how porous it is (wetten), how well it holds lying snow, and how much its
+ * tone mottles (patches of a few metres and of tens of centimetres, band-limited).
+ */
 const FLOORS: Readonly<
-  Record<FloorKind, { albedo: readonly [number, number, number]; porous: number; snow: number }>
+  Record<
+    FloorKind,
+    {
+      albedo: readonly [number, number, number];
+      porous: number;
+      snow: number;
+      mottle: number;
+    }
+  >
 > = {
-  earth: { albedo: [0.32, 0.25, 0.17], porous: 0.8, snow: 1 },
-  lawn: { albedo: [0.2, 0.36, 0.13], porous: 0.6, snow: 1 },
-  gravel: { albedo: [0.55, 0.52, 0.47], porous: 0.3, snow: 0.9 },
-  sand: { albedo: [0.76, 0.66, 0.47], porous: 0.7, snow: 0.8 },
-  rock: { albedo: [0.42, 0.41, 0.39], porous: 0.2, snow: 0.7 },
-  moss: { albedo: [0.22, 0.32, 0.12], porous: 0.9, snow: 1 },
-  ice: { albedo: [0.72, 0.8, 0.86], porous: 0, snow: 0.6 },
-  snowfield: { albedo: [0.9, 0.92, 0.96], porous: 0.4, snow: 1 },
-  water: { albedo: [0.1, 0.16, 0.2], porous: 0, snow: 0 },
-  asphalt: { albedo: [0.16, 0.16, 0.17], porous: 0.1, snow: 0.3 },
+  earth: { albedo: [0.32, 0.25, 0.17], porous: 0.8, snow: 1, mottle: 0.5 },
+  lawn: { albedo: [0.26, 0.44, 0.16], porous: 0.6, snow: 1, mottle: 0.5 },
+  gravel: { albedo: [0.55, 0.52, 0.47], porous: 0.3, snow: 0.9, mottle: 0.35 },
+  sand: { albedo: [0.76, 0.66, 0.47], porous: 0.7, snow: 0.8, mottle: 0.25 },
+  rock: { albedo: [0.42, 0.41, 0.39], porous: 0.2, snow: 0.7, mottle: 0.4 },
+  moss: { albedo: [0.22, 0.32, 0.12], porous: 0.9, snow: 1, mottle: 0.45 },
+  ice: { albedo: [0.72, 0.8, 0.86], porous: 0, snow: 0.6, mottle: 0.15 },
+  snowfield: { albedo: [0.9, 0.92, 0.96], porous: 0.4, snow: 1, mottle: 0.1 },
+  water: { albedo: [0.1, 0.16, 0.2], porous: 0, snow: 0, mottle: 0 },
+  asphalt: { albedo: [0.16, 0.16, 0.17], porous: 0.1, snow: 0.3, mottle: 0.15 },
 };
 
 const vec3 = (v: readonly [number, number, number]): string =>
@@ -187,14 +198,28 @@ function floorGlsl(kind: FloorKind, pitched: boolean): string {
     : "vec2((x.uv.x - 0.5) * x.aspect * x.zg / RIG_FOCAL, x.zg)";
   const ahead = pitched ? "xz.y" : "x.zg";
   return `
-// The plain floor: ${kind}, lit by the key (the claims' and the clouds' shadows taken out) and the
-// layers' lights, wet and snowed on by the World, below the backdrop's land line.
+// The plain floor: ${kind}, its tone mottled, lit by the open sky all round, the key as it falls on
+// level ground (the claims' and the clouds' shadows taken out) and the layers' lights, wet and snowed
+// on by the World, below the backdrop's land line.
 void composerFloor(Ctx x, inout Cell c) {
-  if (x.uv.y >= x.groundTo || x.zg >= x.landZ) return;
   vec2 xz = ${at};
+${
+  floor.mottle === 0
+    ? ""
+    : `  // A cell's footprint on the floor, taken before any cell leaves (derivatives need them all).
+  vec2 fw = fwidth(xz);
+  float foot = max(fw.x, fw.y);
+`
+}  if (x.uv.y >= x.groundTo || x.zg >= x.landZ) return;
   float lit = worldSunlit(x.w, x.v, vec3(xz.x, -x.eye, ${ahead})) * (1.0 - casterShadow(xz, x));
   vec3 albedo = wetten(${vec3(floor.albedo)}, uWeather.x, ${glslFloat(floor.porous)});
-  vec3 col = albedo * (x.light.amb * 0.55 + x.light.sun * 0.5 * lit + localLight(vec3(xz.x, 0.0, ${ahead}), vec3(0.0, 1.0, 0.0)));
+${
+  floor.mottle === 0
+    ? ""
+    : `  float tone = fbmLod(xz * 0.3 + 17.0, foot * 0.3, 2).x + 0.6 * (fbmLod(xz * 2.7, foot * 2.7, 2).x - 0.5);
+  albedo *= 1.0 + ${glslFloat(floor.mottle)} * (tone - 0.5) * 1.6;
+`
+}  vec3 col = albedo * (x.light.amb + x.light.sun * clamp(x.light.key.y, 0.0, 1.0) * lit + localLight(vec3(xz.x, 0.0, ${ahead}), vec3(0.0, 1.0, 0.0)));
   col += wetGloss(uWeather.x, 0.85) * x.air.deck * 0.3;
 ${snowed}
   c.z = x.zg;

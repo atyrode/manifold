@@ -271,9 +271,10 @@ function lightOnlyValues(values: Readonly<Record<string, number>>): Record<strin
 /**
  * The scene preset `variant` makes over `baseline` (ADR 0062 D14): the variant's identity; the
  * baseline's home layers less those it removes, then those it adds; the baseline's values under
- * its own; its camera's rest pose and its room for the baseline's; its grade key by key over the
- * baseline's; its light elements for the baseline's; the baseline's World, floor, meteors and
- * flyway. A variant over another composer's baseline is a ComposeError.
+ * its own; its camera's rest pose and its room for the baseline's; its grade, its World, its
+ * flyway and its compile-time features key by key over the baseline's; its meteors' field, its
+ * floor and its light elements for the baseline's. A variant over another composer's baseline is a
+ * ComposeError.
  */
 export function variantPreset(baseline: Baseline, variant: Variant): ScenePreset {
   if (variant.base !== baseline.composer)
@@ -282,6 +283,10 @@ export function variantPreset(baseline: Baseline, variant: Variant): ScenePreset
     );
   const remove = new Set(variant.layers?.remove);
   const room = variant.room ?? baseline.room;
+  const features =
+    baseline.features === undefined && variant.features === undefined
+      ? undefined
+      : { ...baseline.features, ...variant.features };
   return {
     id: variant.id,
     title: variant.title,
@@ -297,11 +302,11 @@ export function variantPreset(baseline: Baseline, variant: Variant): ScenePreset
     ...(room === undefined ? {} : { room }),
     elements: variant.elements ?? baseline.elements,
     grade: { ...baseline.grade, ...variant.grade },
-    world: baseline.world,
-    meteors: baseline.meteors,
-    flyway: baseline.flyway,
-    floor: baseline.floor,
-    ...(baseline.features === undefined ? {} : { features: baseline.features }),
+    world: { ...baseline.world, ...variant.world },
+    meteors: variant.meteors ?? baseline.meteors,
+    flyway: { ...baseline.flyway, ...variant.flyway },
+    floor: variant.floor ?? baseline.floor,
+    ...(features === undefined ? {} : { features }),
     layers: [...baseline.layers.filter((id) => !remove.has(id)), ...(variant.layers?.add ?? [])],
     values: { ...baseline.values, ...variant.values },
   };

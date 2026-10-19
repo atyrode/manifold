@@ -1244,6 +1244,48 @@ committed preset: 75 `SAME`, 0 differ. `knobs.test.ts` holds both caps at their 
 each composed program's defines (at its defaults and each one-layer turn, steady and
 all-features) against the composer's, its on layers' and the knobs its code names.
 
+**Step 5, built (2026-10-19) as far as the baseline and the meadow:** `outdoor.baseline`
+(`composer/outdoor.ts`) is the plainest land: an eye 1.65 m over the plain floor of lawn, level,
+the meadow's lens (horizon 0.4, focal 1.18), turned 0, no passage; `downs` its one home layer, its
+rig admitting the meadow's other three layers and the murmuration as guests; the World at 0.62
+(mid-afternoon) under its own fair-weather cloud (0.25), rooks by day; no tint, no vignette, the
+ink at gain 1.3 and gamma 1 (the meadow's, the gain most outdoor scenes take); the shooting stars
+from `[-0.5, 0.3, 1, 0.1]`, where most presets set them out; a flyway 12 to 120 m out, 0.04 to
+0.95 of the frame, skimming at 2 m; no light elements. Its lab-only scene `land` (`labOnly`) is in
+the Scenes view's Land family, outside the tour and `[` / `]`: at 960×600 the downs' tree line and
+chalk hill under a blue sky with fair-weather wisps, the sun above the frame, and a mottled green
+field below. The plain floor drew flat and near-black there (an earth floor and a lawn alike: its
+light was a ground layer's half sky and half key, with no texture), so it now takes the open sky
+all round and the key as it falls on level ground, and mottles its tone by kind (`FLOORS`, patches
+of a few metres and of tens of centimetres, band-limited by the cell's footprint, none on water);
+the lawn's albedo is the bees' mid grass. No outdoor default or committed preset shows the plain
+floor: `ab.ts --base 83a1bd84 --size 960x600 --presets` over the nineteen outdoor scenes, 80
+settings, all `SAME`. `Variant` gains `world` (the World's options, key by key over the baseline's,
+birds and groups each whole), `meteors` (whole), `flyway` (key by key), `floor` (whole) and
+`features` (key by key), which `variantPreset` folds; the interior's variants set none of them. The
+meadow (`scenes/meadow/index.ts`) is the first outdoor variant: `grass` and `dandelions` added,
+`MEADOW_RIG`, its golden hour (0.72, cloud 0.2, swallows and their help), its floor (earth), its
+meteors and five flyway keys (depth, top, seed, skim, spread). `composer/outdoor-variants.ts`
+registers `land` and the meadow; `variants.test.ts` (the redundancy test, renamed from
+`interior-variants.test.ts`) checks both composers, refusing besides a room's redundancies a World
+option the scene lists the same knobs without and the baseline's meteors, flyway key or floor. The
+Presets view shelves the outdoor under `land` ("baseline"), the meadow under it ("variant", "Compare
+with baseline" against `land`), and the other outdoor scenes after it (`ComposerShelf.scenes`), as
+the overhead's stand until step 6. The meadow's and the nine rooms' metadata and default and
+all-features programs are byte for byte as at `94463a6a`; `ab.ts --base 94463a6a --size 960x600
+--presets meadow sill room 'scene=meadow&view=source'`: `SAME` for all 65 settings, the meadow's,
+the sill's and the room's defaults among them (the meadow has no committed preset). `land` compiles
+to 59,235 and 96,599 characters shaken (default, all-features; ceilings 65,500 and 106,500), 40
+and 132 of 224 uniform vectors. **Remains:** the other nineteen outdoor scenes, each ported as the
+meadow was with its differences attributed; twelve of them hold compile-time features at every
+setting, now spelled as `features` (`SKY_MOON_PHASE`: autumn, bamboo, bees, falls, forest, garden,
+street; `WATER_TIER`: island, lake, lanterns; both: shore, swell); dunes, garden, lake and skyward
+wrap their composed definition's `featuresFor` (and the dunes' and the garden's `structural`) in
+their folders, as the frost does as a variant. A variant cannot unset a World
+option the baseline sets (only `time` and `birds`, which every outdoor preset sets). Also left:
+`localLight` outdoors, promotion of outdoor presets (`promotedFrom` reads the interior's variants
+alone), and the Scenes view's shelves by baseline (D9, again).
+
 ### Amendments
 
 - **D7 and Phase 5:** prism and pendula are standalone, full-screen, with fractal, hyperbolic, orbit

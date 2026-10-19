@@ -33,6 +33,7 @@ import {
   baselineScene,
   presetScene,
   presetTree,
+  variantBaseline,
   type TreePreset,
   type TreeScene,
 } from "./tree-model.ts";
@@ -54,13 +55,13 @@ interface Group {
   count: HTMLElement;
 }
 
-/** A composer's shelf: its heading, and why its scenes stand at the top while it has no baseline. */
+/** A composer's shelf: its heading, and what stands on it beside its baseline and variants. */
 const SHELVES: Readonly<Record<ComposerId, { title: string; icon: IconName; note?: string }>> = {
   interior: { title: "Interior", icon: "house" },
   outdoor: {
     title: "Outdoor",
     icon: "mountain",
-    note: "No baseline yet: its scenes stand at the top until the outdoor baseline (ADR 0062, step 5).",
+    note: "Its scenes not yet ported to variants of the land stand after its variants (ADR 0062, step 5).",
   },
   overhead: {
     title: "Overhead",
@@ -290,7 +291,7 @@ export class PresetsView {
     for (const shelf of this.#shelves) {
       const branch = tree.composers.find((composer) => composer.composer === shelf.composer);
       const nodes = branch
-        ? [...(branch.baseline ? [branch.baseline] : []), ...branch.variants]
+        ? [...(branch.baseline ? [branch.baseline] : []), ...branch.variants, ...branch.scenes]
         : tree.standalone;
       shelf.list.replaceChildren(...nodes.map((node) => this.#node(node, shelf.entry.id, scene)));
       shelf.count.textContent = String(nodes.reduce((sum, node) => sum + node.presets.length, 0));
@@ -315,13 +316,13 @@ export class PresetsView {
   #node({ scene, presets: rows }: TreeScene, group: string, current: SceneId): HTMLElement {
     const def = sceneDefs[scene];
     const isBaseline = Object.values(baselineScene).includes(scene);
-    const variant = promotedFrom(`scene=${scene}`);
+    const over = variantBaseline(scene);
     const promoted = promotedVariants.some((entry) => entry.id === scene);
     const tag = isBaseline
       ? "baseline"
       : promoted
         ? "promoted"
-        : variant !== undefined
+        : over !== undefined
           ? "variant"
           : undefined;
     const query = canonicalSetup(new URLSearchParams({ scene }));
@@ -357,11 +358,11 @@ export class PresetsView {
     main.style.setProperty("--dot", def.accent);
     main.addEventListener("click", () => this.#host.load(query));
     const compare =
-      variant !== undefined && !isBaseline
+      over !== undefined
         ? iconButton(
             "compare",
-            `Compare ${def.title} with the baseline (A: room, B: ${def.title})`,
-            () => this.#host.compare(canonicalSetup(new URLSearchParams({ scene: "room" })), query),
+            `Compare ${def.title} with the baseline (A: ${over}, B: ${def.title})`,
+            () => this.#host.compare(canonicalSetup(new URLSearchParams({ scene: over })), query),
           )
         : h("span", { class: "tree-spacer" });
     const row = h(

@@ -3,7 +3,7 @@
 // baseline: a layer's switch into the layers added or removed, `elements=` into its elements, the
 // look and the accent into its identity, every other knob into its values; its camera, room and
 // grade are the source's, and `from` records the commit and query it came from. A value the baseline
-// already holds is dropped, as interior-variants.test.ts would refuse it. A key a variant cannot
+// already holds is dropped, as variants.test.ts would refuse it. A key a variant cannot
 // hold (a lab setting, the planets' list, a pose) refuses the promotion with its reason, and so does
 // a preset that does not load as itself on this build (presets.test.ts's rule): load it and save it
 // again first. The fold is checked before it is offered: the variant composed must list the

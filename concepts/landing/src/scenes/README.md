@@ -66,6 +66,7 @@ components"); run `bun concepts/landing/scripts/scene-docs.ts` after a change to
 | `forest`       | Mystic forest    | Land              | `outdoor` preset, 5 layers + 4 offered  | 46    | 1       | An ancient misty cedar forest, where small spirits appear on the mossy roots.                                                   |
 | `campfire`     | Campfire         | Land              | `outdoor` preset, 6 layers              | 36    | 2       | A small fire under a vast sky: sparks drifting up, a marshmallow toasting, a giant planet low over the pines.                   |
 | `autumn`       | Autumn park      | Land              | `outdoor` preset, 6 layers + 4 offered  | 42    | 0       | A great tree letting go of its leaves over a park path, the low sun glowing through them.                                       |
+| `land`         | Land             | Land              | `outdoor` preset, 1 layer + 4 offered   | 39    | 0       | The outdoor scenes' baseline: chalk downs under a fair afternoon sky, an open field underfoot.                                  |
 | `marble`       | Marbling         | Matter & patterns | its own program                         | 13    | 1       | Ink floating on water, dropped and combed: ebru and suminagashi.                                                                |
 | `frost`        | Frost            | Matter & patterns | `interior` preset, 2 layers + 1 offered | 40    | 2       | A window on a winter night, slowly frosting over.                                                                               |
 | `prism`        | Prism            | Matter & patterns | its own program                         | 12    | 1       | A sunbeam through turning glass, fanned out into its spectrum.                                                                  |
@@ -838,20 +839,20 @@ component carried by another named through it:
 
 <!-- gen:composed-by -->
 
-| String            | File                           | Composed by                                                                                                                                                                                           | See                                  |
-| ----------------- | ------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------ |
-| `worldGlsl`       | `src/shaders/lib/world.ts`     | flock, skyward, swell, falls, shore, lanterns, lake, island, country, dunes, meadow, bamboo, garden, forest, campfire, autumn, frost, sill, fireflies, dew, incense, lava, bonsai, street, bees, room | "World layers"                       |
-| `birdsGlsl`       | `src/shaders/lib/birds.ts`     | train; through `worldGlsl`                                                                                                                                                                            | "Birds"                              |
-| `milkyWayGlsl`    | `src/shaders/lib/milkyway.ts`  | through `worldGlsl`                                                                                                                                                                                   | the Milky Way row below              |
-| `canopyGroveGlsl` | `src/shaders/lib/canopy.ts`    | bamboo, forest                                                                                                                                                                                        | "Shared libraries" (the canopy)      |
-| `plantsGlsl`      | `src/shaders/lib/plants.ts`    | pond, falls, tidepool, country, garden, fireflies                                                                                                                                                     | "Rooted plants"                      |
-| `planetGlsl`      | `src/shaders/lib/planet.ts`    | orbit, mobile; every sky's `skyGiant`, in `libs` behind its gate (`SKY_PLANETS`)                                                                                                                      | "The giant planet"                   |
-| `figuresGlsl`     | `src/shaders/lib/figures.ts`   | country                                                                                                                                                                                               | "Figures, livestock and buildings"   |
-| `livestockGlsl`   | `src/shaders/lib/livestock.ts` | country                                                                                                                                                                                               | "Figures, livestock and buildings"   |
-| `buildingsGlsl`   | `src/shaders/buildings.ts`     | country                                                                                                                                                                                               | "Figures, livestock and buildings"   |
-| `terrainGlsl`     | `src/shaders/lib/terrain.ts`   | country                                                                                                                                                                                               | `TerrainBuilder` under "Simulations" |
-| `fieldsGlsl`      | `src/shaders/lib/fields.ts`    | country                                                                                                                                                                                               | the fields row below                 |
-| `treesGlsl`       | `src/shaders/lib/trees.ts`     | country                                                                                                                                                                                               | the trees row below                  |
+| String            | File                           | Composed by                                                                                                                                                                                                 | See                                  |
+| ----------------- | ------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------ |
+| `worldGlsl`       | `src/shaders/lib/world.ts`     | flock, skyward, swell, falls, shore, lanterns, lake, island, country, dunes, meadow, bamboo, garden, forest, campfire, autumn, land, frost, sill, fireflies, dew, incense, lava, bonsai, street, bees, room | "World layers"                       |
+| `birdsGlsl`       | `src/shaders/lib/birds.ts`     | train; through `worldGlsl`                                                                                                                                                                                  | "Birds"                              |
+| `milkyWayGlsl`    | `src/shaders/lib/milkyway.ts`  | through `worldGlsl`                                                                                                                                                                                         | the Milky Way row below              |
+| `canopyGroveGlsl` | `src/shaders/lib/canopy.ts`    | bamboo, forest                                                                                                                                                                                              | "Shared libraries" (the canopy)      |
+| `plantsGlsl`      | `src/shaders/lib/plants.ts`    | pond, falls, tidepool, country, garden, fireflies                                                                                                                                                           | "Rooted plants"                      |
+| `planetGlsl`      | `src/shaders/lib/planet.ts`    | orbit, mobile; every sky's `skyGiant`, in `libs` behind its gate (`SKY_PLANETS`)                                                                                                                            | "The giant planet"                   |
+| `figuresGlsl`     | `src/shaders/lib/figures.ts`   | country                                                                                                                                                                                                     | "Figures, livestock and buildings"   |
+| `livestockGlsl`   | `src/shaders/lib/livestock.ts` | country                                                                                                                                                                                                     | "Figures, livestock and buildings"   |
+| `buildingsGlsl`   | `src/shaders/buildings.ts`     | country                                                                                                                                                                                                     | "Figures, livestock and buildings"   |
+| `terrainGlsl`     | `src/shaders/lib/terrain.ts`   | country                                                                                                                                                                                                     | `TerrainBuilder` under "Simulations" |
+| `fieldsGlsl`      | `src/shaders/lib/fields.ts`    | country                                                                                                                                                                                                     | the fields row below                 |
+| `treesGlsl`       | `src/shaders/lib/trees.ts`     | country                                                                                                                                                                                                     | the trees row below                  |
 
 <!-- /gen:composed-by -->
 
@@ -1074,6 +1075,7 @@ planets (`SceneDef.planets`; "at first": the planets it opens with). Generated f
 | `forest`    | 0.82  | 0.5   | off       | 1    | off     | off, now 0 | off    | 0      | off  | off  | 0   | 0.2  | off, now 1 | off        | yes             |
 | `campfire`  | 0.8   | 0.8   | 1         | off  | off     | 0.8, now 0 | off    | 0      | off  | off  | 0   | 0.2  | off, now 1 | off        | yes, 1 at first |
 | `autumn`    | 0.69  | 0.5   | off       | 1    | off     | off, now 0 | off    | 0.3    | off  | off  | 0   | 0.2  | off, now 1 | off        | yes             |
+| `land`      | 0.62  | 0.6   | 1         | 1    | off     | off, now 0 | off    | 0.25   | off  | off  | 0   | 0.2  | off, now 1 | 0.35       | —               |
 | `frost`     | 0.9   | 0.5   | off       | 1    | off     | off, now 0 | off    | 0      | off  | 0.5  | 0   | 0.2  | off, now 1 | —          | yes             |
 | `ripple`    | —     | —     | —         | —    | —       | —          | —      | —      | off  | —    | —   | 0    | —          | —          | —               |
 | `sill`      | 0.8   | 0.5   | off       | 1    | off     | off, now 0 | off    | 0.35   | off  | off  | 0   | 0.2  | off, now 1 | —          | yes             |
@@ -2387,7 +2389,9 @@ and `dwell` (`state.ts` refuses to load such a scene).
 
 **Status.** The `outdoor` composer (`src/composer/`, ADR 0062
 `docs/decisions/0062-world-composers.md`, #1082 item U1) runs the nineteen eye-level scenes and the
-island as presets of its 84 layers; the `interior` composer (Phase 3, "The interior composer") runs
+island as presets of its 84 layers, the meadow among them a variant of its baseline (ADR 0062
+"Baselines and variants", step 5, under way: "The outdoor baseline" below), the baseline itself the
+lab-only scene `land`; the `interior` composer (Phase 3, "The interior composer") runs
 sill, lava, bonsai, incense, frost, bar, train and mobile as variants of its baseline over its 27
 layers (ADR 0062 "Baselines and variants", step 1: `Composer.baseline`, `Variant`,
 `variantPreset`), with a lava lamp that stands on the sill and the frost on the sill's panes, and
@@ -2424,6 +2428,27 @@ dolly). The World ("World layers") is in every composition: everything it asks o
 camera, the depth of what each cell shows, the haze, the air, the drop light) the composer
 provides.
 
+### The outdoor baseline
+
+`outdoor.baseline` (`src/composer/outdoor.ts`, a `Baseline`, ADR 0062 D13) is the plainest land:
+an eye standing 1.65 m over the plain floor of lawn (`floor: "lawn"`), level, the meadow's lens
+(horizon 0.4, focal 1.18), turned 0 (the staged sky's ahead), no passage; the `downs` its one home
+layer (the meadow's other three and the murmuration offered as guests); a fair-weather World
+mid-afternoon (`time` 0.62, the World's own cloud, 0.25; rooks by day); no tint, no vignette, the
+ink at gain 1.3 and gamma 1 (the meadow's, the gain most outdoor scenes take); the shooting stars from `[-0.5, 0.3, 1, 0.1]`, where
+most presets set them out; a generic flyway (12 to 120 m, 0.04 to 0.95 of the frame, skimming at
+2 m); no light elements. Its own scene, `land`, is lab-only (`labOnly`, `src/lab/families.ts`).
+An outdoor scene ported to a variant (`src/composer/outdoor-variants.ts`, by scene id, `land`
+first) spells its differences as a room does, with four more: its World's options key by key over
+the baseline's (`world`: its hour, its cloud, its birds and its groups' names, each whole), its
+shooting stars' field (`meteors`), its flyway key by key (`flyway`) and its floor's kind (`floor`);
+`variantPreset` folds them. The meadow is the first: the grass and the dandelions added, its rig
+(`MEADOW_RIG`, the eye 2 m in the grass, its drop), its ink, its golden hour (0.72, cloud 0.2,
+swallows), its meteors and five flyway keys. `variants.test.ts` refuses a difference that changes
+nothing for both composers: a World option the scene lists the same knobs without, the baseline's
+meteors, flyway key or floor, besides the room's checks. The other outdoor scenes stay presets of
+their own until ported, on the Presets view's outdoor shelf after the land's variants.
+
 ### Presets
 
 Every outdoor preset, its layers (its home layers, on in the preset, then **+** the guests its rig
@@ -2434,6 +2459,7 @@ scene's own.
 
 | Preset      | Layers                                                                                             | Rig                                                                                                   | Key renames                                                                                                                                                                                                                                         | Decisions             |
 | ----------- | -------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------- |
+| `land`      | `downs`; + `grass`, `wildflowers`, `dandelions`, `murmuration`                                     | 1.65 m, 0.4, 1.18; the outdoor baseline ("The outdoor baseline")                                      | none (new, lab-only)                                                                                                                                                                                                                                | D13                   |
 | `meadow`    | `downs`, `grass`, `dandelions`; + `wildflowers`, `murmuration`                                     | 2 m, 0.4, 1.18; the drop, with its gust                                                               | `meadowSeed` → `seed`                                                                                                                                                                                                                               | its gusts became D4's |
 | `bees`      | `hillside`, `lawn`, `apiary`, `insects`, `gardening`; + the meadow's four, `valley`, `murmuration` | 1.6 m, 0.47, 1.0; `minAspect` 1.24, the stage stretching wider                                        | `scenerySeed` → `seed`                                                                                                                                                                                                                              | D4, D5                |
 | `shore`     | `sea`, `beach`, `cairns`; + `fish`, the meadow's four, `murmuration`                               | 1.8 m, 0.6, 1.37; lens shift                                                                          | none                                                                                                                                                                                                                                                | —                     |
@@ -2700,10 +2726,12 @@ composer generates; never another layer's knobs or `uSimN`. It also obeys these 
 ### The site
 
 The preset names its floor's kind; the composer draws that plain floor wherever no ground layer
-lies, below the backdrop's land line (`x.groundTo`, and `x.landZ` in depth): lit by the key with the
-clouds' and the claims' shadows taken out and by the layers' lights, wetted by `uWeather.x`,
-snowed on by `uWeather.y` by how well its kind holds snow (water holds none). A ground layer
-replaces it.
+lies, below the backdrop's land line (`x.groundTo`, and `x.landZ` in depth): its tone mottled by
+its kind (`FLOORS` in `composer/glsl.ts`: patches of a few metres and of tens of centimetres,
+band-limited by the cell's footprint, none on water), lit by the open sky all round and by the key
+as it falls on level ground with the clouds' and the claims' shadows taken out, and by the layers'
+lights, wetted by `uWeather.x`, snowed on by `uWeather.y` by how well its kind holds snow (water
+holds none). A ground layer replaces it; no outdoor scene's default or committed preset shows it.
 
 ### Space
 
@@ -3290,7 +3318,7 @@ frost the sill's panes. Clouds and harmonograph are still scenes of their own.
   `variantPreset(baseline, variant)` (compose.ts) makes the `ScenePreset` that `composeScene`
   takes, so ids, cards, thumbnails and links stay. Sill, `room` and lava stand on the shell; the
   other rooms bring their own shell layers, camera and room in place of the baseline's.
-  `interior-variants.test.ts` refuses a difference that changes nothing: a layer added that is on
+  `variants.test.ts` refuses a difference that changes nothing: a layer added that is on
   or removed that is off, the baseline's camera, room, grade key or elements, a value the knob
   holds without it. The baseline's own scene, `room`, is lab-only (`labOnly`,
   `src/lab/families.ts`): shown in the Scenes view, outside the tour and `[` / `]`.

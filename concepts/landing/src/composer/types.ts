@@ -715,8 +715,8 @@ export type Identity = Pick<
 /**
  * A composer's baseline (ADR 0062 D13, `Composer.baseline`): what a scene preset holds but its
  * identity, the camera at rest (`rig`), the grade, the World's options, the floor or the room's
- * shell, the shell's home layers and values, and its light elements. Its own scene (the interior's
- * `room`) is lab-only.
+ * shell, the shell's home layers and values, and its light elements (none outdoors yet). Its own
+ * scene (the interior's `room`, the outdoor's `land`) is lab-only.
  */
 export interface Baseline extends Omit<ScenePreset, keyof Identity> {
   readonly elements: readonly LightElement[];
@@ -725,7 +725,7 @@ export interface Baseline extends Omit<ScenePreset, keyof Identity> {
 /**
  * A curated variant (ADR 0062 D14): a scene stored as its differences from its composer's baseline,
  * which `variantPreset` (compose.ts) makes into its scene preset. It keeps its identity and holds
- * only what differs; a test refuses a difference that changes nothing (interior-variants.test.ts).
+ * only what differs; a test refuses a difference that changes nothing (variants.test.ts).
  */
 export interface Variant extends Identity {
   /** Its baseline's composer. */
@@ -744,6 +744,19 @@ export interface Variant extends Identity {
   readonly room?: Room;
   /** Its grade, key by key over the baseline's (D21). */
   readonly grade?: Partial<Grade>;
+  /**
+   * The World as it opens, key by key over the baseline's (`ScenePreset.world`): its hour, its cloud,
+   * its birds (a species and its help, whole), its groups' names (whole).
+   */
+  readonly world?: Partial<ScenePreset["world"]>;
+  /** Where its shooting stars set out, in place of the baseline's. */
+  readonly meteors?: MeteorField;
+  /** Its birds' flyway, key by key over the baseline's. */
+  readonly flyway?: Partial<Flyway>;
+  /** Its floor's kind where no ground layer lies, in place of the baseline's. */
+  readonly floor?: FloorKind;
+  /** Compile-time features it holds at every setting (the moon's phase, a water tier), key by key over the baseline's. */
+  readonly features?: Readonly<Record<string, number>>;
   /** Its light elements, in place of the baseline's. */
   readonly elements?: readonly LightElement[];
   /** Where a promoted variant came from (D15): the commit and the saved preset's query. */
