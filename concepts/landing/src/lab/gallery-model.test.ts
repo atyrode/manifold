@@ -11,22 +11,22 @@ import {
   labOnly,
   sceneCycle,
   sceneOrder,
+  scenePresets,
   sceneStep,
   type GalleryCard,
 } from "./gallery-model.ts";
 
-const saved = (name: string, query: string): Preset => ({
+const committed = (name: string, query: string): Preset => ({
   name,
-  commit: "working-tree",
+  commit: "abc12345",
   query,
   savedAt: "2026-10-19",
 });
 
-const scenesOf = (cards: readonly GalleryCard[]) =>
-  cards.filter((card) => card.kind === "scene").map((card) => card.scene);
+const scenesOf = (cards: readonly GalleryCard[]) => cards.map((card) => card.scene);
 
 describe("the Scenes view's shelves", () => {
-  const shelves = galleryShelves([]);
+  const shelves = galleryShelves;
 
   test("are the room's, the land's and the patch's, then the standalone scenes", () => {
     expect(shelves.map((shelf) => shelf.baseline)).toEqual(["room", "land", "patch", undefined]);
@@ -43,11 +43,9 @@ describe("the Scenes view's shelves", () => {
     for (const [at, registry] of registries.entries()) {
       const shelf = shelves[at];
       if (shelf?.baseline === undefined) throw new Error("a baseline's shelf without its baseline");
-      expect(shelf.cards[0]).toEqual({ kind: "scene", scene: shelf.baseline, baseline: true });
+      expect(shelf.cards[0]).toEqual({ scene: shelf.baseline, baseline: true });
       expect<string[]>(scenesOf(shelf.cards)).toEqual(Object.keys(registry));
-      expect(shelf.cards.slice(1).every((card) => card.kind === "scene" && !card.baseline)).toBe(
-        true,
-      );
+      expect(shelf.cards.slice(1).every((card) => !card.baseline)).toBe(true);
     }
   });
 
@@ -60,45 +58,36 @@ describe("the Scenes view's shelves", () => {
     expect(standalone.every((scene) => sceneDefs[scene].layers === undefined)).toBe(true);
   });
 
-  test("put a setup saved here on its scene's baseline's shelf, after the scenes, as custom", () => {
-    const rain = saved("Sill · my rain", "scene=sill&rain=1");
-    const local = [
-      rain,
-      saved("Fractal · deep", "scene=fractal&zoom=3"),
-      saved("Gone", "scene=nowhere"),
-      saved("Land · dusk", "scene=land&time=0.8"),
-      saved("Pond · still", "scene=pond&wind=0"),
-    ];
-    const [room, land, patch, standalone] = galleryShelves(local);
-    const custom = (cards: readonly GalleryCard[] = []) =>
-      cards.flatMap((card) => (card.kind === "custom" ? [[card.scene, card.local]] : []));
-    expect(custom(room?.cards)).toEqual([["sill", 0]]);
-    expect(custom(land?.cards)).toEqual([["land", 3]]);
-    expect(custom(patch?.cards)).toEqual([["pond", 4]]);
-    expect(custom(standalone?.cards)).toEqual([["fractal", 1]]);
-    expect(room?.cards.at(-1)).toEqual({ kind: "custom", scene: "sill", preset: rain, local: 0 });
-    // A setup of a scene this build lacks is on no shelf.
-    expect(galleryShelves(local).flatMap((shelf) => custom(shelf.cards))).toHaveLength(4);
-  });
-
-  test("match a search by a scene's title or a custom setup's name", () => {
-    const [room] = galleryShelves([saved("Quiet evening", "scene=sill&rain=1")]);
-    const sill = room?.cards.find((card) => card.kind === "scene" && card.scene === "sill");
-    const mine = room?.cards.find((card) => card.kind === "custom");
-    if (sill === undefined || mine === undefined) throw new Error("no sill or no custom card");
+  test("match a search by a scene's title or one of its committed presets' names", () => {
+    const sill = shelves[0]?.cards.find((card) => card.scene === "sill");
+    if (sill === undefined) throw new Error("no sill");
     expect(cardMatches(sill, "")).toBe(true);
     expect(cardMatches(sill, ` ${sceneDefs.sill.title.toUpperCase()} `)).toBe(true);
-    expect(cardMatches(sill, "quiet")).toBe(false);
-    expect(cardMatches(mine, "quiet")).toBe(true);
-    expect(cardMatches(mine, sceneDefs.sill.title)).toBe(true);
-    expect(cardMatches(mine, "nothing like it")).toBe(false);
+    const [preset] = scenePresets("sill");
+    if (preset === undefined) throw new Error("the sill has no committed preset");
+    expect(cardMatches(sill, preset.name.slice(-8))).toBe(true);
+    expect(cardMatches(sill, "nothing like it")).toBe(false);
     // Not by a blurb.
     expect(cardMatches(sill, sceneDefs.sill.blurb)).toBe(false);
+  });
+
+  test("give each scene its committed presets, and none of a scene this build lacks", () => {
+    const list = [
+      committed("Sill · rain", "scene=sill&rain=1"),
+      committed("Gone", "scene=nowhere"),
+      committed("Sill · cat", "scene=sill&cat=0"),
+      committed("Land · dusk", "scene=land&time=0.8"),
+    ];
+    expect(scenePresets("sill", list).map((preset) => preset.name)).toEqual([
+      "Sill · rain",
+      "Sill · cat",
+    ]);
+    expect(scenePresets("pond", list)).toEqual([]);
   });
 });
 
 test("the Scenes view's order is its shelves' scenes in order", () => {
-  expect(sceneOrder).toEqual(galleryShelves([]).flatMap((shelf) => scenesOf(shelf.cards)));
+  expect(sceneOrder).toEqual(galleryShelves.flatMap((shelf) => scenesOf(shelf.cards)));
 });
 
 test("the cycle is the Scenes view's order less the lab-only scenes, the baselines", () => {
@@ -113,7 +102,7 @@ test("[ and ] walk the cycle, round from the last scene to the first", () => {
   expect(sceneStep(last, 1)).toBe(first);
   expect(sceneStep(first, -1)).toBe(last);
   // Along a shelf, and off its end onto the next shelf's first scene but its baseline.
-  const shelves = galleryShelves([]).map((shelf) =>
+  const shelves = galleryShelves.map((shelf) =>
     scenesOf(shelf.cards).filter((id) => labOnly[id] !== true),
   );
   for (const [at, shelf] of shelves.slice(0, -1).entries()) {

@@ -5,7 +5,7 @@ import { sceneDefs, type SceneId } from "./scenes/index.ts";
 import { encodePlanets, PLANETS_KEY } from "./scenes/planets.ts";
 import { defaults, readSetup, readState } from "./state.ts";
 
-// A committed preset is a setup in the form the lab writes it: the Presets view lights the row
+// A committed preset is a setup in the form the lab writes it: the Scenes view marks the row
 // whose query is the setup on screen, and loading a preset puts on screen that query as the page
 // reads it back. A knob that changes kind or goes away changes what a query loads without a word
 // (a share of 0..100 read by an on/off switch keeps only "on"), so every preset must still read as
@@ -56,7 +56,7 @@ describe("the committed presets", () => {
     expect(changed).toEqual([]);
   });
 
-  test("load back as themselves, so the Presets view lights the one just applied", () => {
+  test("load back as themselves, so the Scenes view marks the one just applied", () => {
     const unlit = presets.flatMap(({ name, query }) => {
       const loads = canonicalSetup(new URLSearchParams(query));
       return loads === query ? [] : [{ name, query, loads }];

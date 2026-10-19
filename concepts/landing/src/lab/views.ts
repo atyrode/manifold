@@ -1,11 +1,11 @@
-// The lab panel's views, Scenes, Presets and Controls: one shows at a time, picked with segmented
+// The lab panel's views, Scenes and Controls: one shows at a time, picked with segmented
 // icon tabs in the panel's header (on a narrow screen, the sheet's). Beside the tabs stand the
 // view's name and the scene on screen, whose name opens the scene picker (the Scenes view), then
 // the header's own tools (the way to the compact bar).
 import { h, setAttr, setStyle, setText } from "./dom.ts";
 import { icon, type IconName } from "./icons.ts";
 
-export type ViewId = "scenes" | "presets" | "controls";
+export type ViewId = "scenes" | "controls";
 
 export interface View {
   id: ViewId;

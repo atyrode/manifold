@@ -1,6 +1,6 @@
 // Saved lab setups. `query` is the setup as the lab writes it (`canonicalSetup`: minimal, in its
-// knobs' order), so it loads as saved and the Presets view lights it once loaded. A setup saved in
-// this browser or pasted from an export is read in this build's keys, as a link is. `commit` is the
+// knobs' order), so it loads as saved and the Scenes view marks it once loaded. A setup saved in
+// this browser or imported from a file is read in this build's keys, as a link is. `commit` is the
 // build the setup was made on: `/@<commit>/?<query>` replays it exactly, on that build's keys and
 // shader logic. A knob that changes kind or goes away must have the committed presets that set it
 // rewritten in the knobs that replace it, their commit moved to a build that has those
@@ -394,9 +394,11 @@ export const presets: readonly Preset[] = [
   },
 ];
 
-const LOCAL_PRESETS = "landing.presets";
+/** Where this browser keeps the setups saved in it. */
+export const PRESETS_KEY = "landing.presets";
 
-function isPreset(entry: unknown): entry is Preset {
+/** Whether `entry` is a preset: a name, the commit it was made on, its query and when it was saved. */
+export function isPreset(entry: unknown): entry is Preset {
   if (typeof entry !== "object" || entry === null) return false;
   const record = entry as Record<string, unknown>;
   return (
@@ -410,7 +412,7 @@ function isPreset(entry: unknown): entry is Preset {
 /** Setups saved in this browser. */
 export function loadLocalPresets(): Preset[] {
   try {
-    const parsed: unknown = JSON.parse(localStorage.getItem(LOCAL_PRESETS) ?? "[]");
+    const parsed: unknown = JSON.parse(localStorage.getItem(PRESETS_KEY) ?? "[]");
     return Array.isArray(parsed) ? parsed.filter(isPreset) : [];
   } catch (error: unknown) {
     console.error("evt=landing.presets.unreadable", error);
@@ -419,13 +421,5 @@ export function loadLocalPresets(): Preset[] {
 }
 
 export function saveLocalPresets(list: readonly Preset[]): void {
-  localStorage.setItem(LOCAL_PRESETS, JSON.stringify(list));
-}
-
-/** Presets from pasted export JSON; throws on anything that is not a preset list. */
-export function parsePresets(text: string): Preset[] {
-  const parsed: unknown = JSON.parse(text);
-  const list = Array.isArray(parsed) ? parsed : [parsed];
-  if (!list.every(isPreset)) throw new Error("not a list of presets");
-  return list;
+  localStorage.setItem(PRESETS_KEY, JSON.stringify(list));
 }

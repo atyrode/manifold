@@ -4,7 +4,7 @@
 // screen, standing on the bar or panel foot it opens from. Open, it stands in the tab order after
 // what its button stands in (the panels' zone, or the sheet). Escape or a press elsewhere closes it,
 // and the keyboard comes back to its button; closed, nothing in it takes the focus. A popover may
-// show what the inspector panel holds (a Controls section, the Scenes or Presets view): its `open`
+// show what the inspector panel holds (a Controls section, the Scenes view): its `open`
 // takes the element in, its `close` gives it back, so both presentations share one set of controls.
 import { h, reveal, setAttr, setOpen, setStyle } from "./dom.ts";
 import { icon, type IconName } from "./icons.ts";

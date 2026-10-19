@@ -1,36 +1,29 @@
-// The Scenes view's shelves (ADR 0062 D9, again): a shelf per baseline, in the Presets view's tree's
-// order (lab/tree-model.ts), its baseline's own scene (D13) first, then its curated variants in
-// their registry's order (a room's folders, then the promoted ones), then a "custom" card for each
-// setup saved in this browser over any of them, in the order saved; then the standalone scenes, a
-// program of their own each (D24), on one shelf in their families' order, with the setups saved
-// over them. The standalone scenes stay one shelf: by family they would make three shelves of one
-// or two cards (sky, water, land) beside the matter shelf's twelve. Ahead of them all, the Canvas
-// shelf: the engine's documents saved in this browser (lab/canvas-docs.ts), in the order saved.
+// The Scenes view's Library shelves (ADR 0062 D9, again): a shelf per baseline, in the tree's order
+// (lab/tree-model.ts), its baseline's own scene (D13) first, then its curated variants in their
+// registry's order (a room's folders, then the promoted ones); then the standalone scenes, a program
+// of their own each (D24), on one shelf in their families' order. The standalone scenes stay one
+// shelf: by family they would make three shelves of one or two cards (sky, water, land) beside the
+// matter shelf's twelve. Ahead of them all stands the Canvas shelf of the engine's shipped documents.
+// What is saved in this browser is not shelved here: the view's Saved list holds it (saved-model.ts).
 // `sceneOrder` is the shelves' scenes in order; `sceneCycle` is that order less the lab-only scenes
 // (`labOnly`: the baselines, D13), which `[` and `]` and the tour step through.
 import type { ComposerId } from "../composer/types.ts";
-import type { Preset } from "../presets.ts";
+import { presets, type Preset } from "../presets.ts";
 import { sceneDefs, type SceneId } from "../scenes/index.ts";
 import type { SavedDoc } from "./canvas-docs.ts";
-import { baselineScene, presetScene, presetTree } from "./tree-model.ts";
+import { baselineScene, presetScene, sceneTree } from "./tree-model.ts";
 
-/** A card on a shelf: a scene's, or a setup saved in this browser over one (`custom`). */
-export type GalleryCard =
-  | { readonly kind: "scene"; readonly scene: SceneId; readonly baseline: boolean }
-  | {
-      readonly kind: "custom";
-      readonly scene: SceneId;
-      readonly preset: Preset;
-      /** Its index among the setups saved in this browser. */
-      readonly local: number;
-    };
+/** A scene's card on a shelf, and whether it is its baseline's own. */
+export interface GalleryCard {
+  readonly scene: SceneId;
+  readonly baseline: boolean;
+}
 
 export interface GalleryShelf {
   /** Its baseline's composer, or undefined for the standalone scenes' shelf. */
   readonly composer: ComposerId | undefined;
   /** Its baseline's own scene, or undefined for the standalone scenes' shelf. */
   readonly baseline: SceneId | undefined;
-  /** Its scenes' cards, then its custom ones. */
   readonly cards: readonly GalleryCard[];
 }
 
@@ -40,48 +33,40 @@ const SHELVES: readonly {
   baseline: SceneId | undefined;
   scenes: readonly SceneId[];
 }[] = (() => {
-  const tree = presetTree([], []);
+  const tree = sceneTree();
   return [
     ...tree.composers.map(({ composer, baseline, variants }) => ({
       composer,
-      baseline: baseline.scene,
-      scenes: [baseline.scene, ...variants.map((node) => node.scene)],
+      baseline,
+      scenes: [baseline, ...variants],
     })),
-    { composer: undefined, baseline: undefined, scenes: tree.standalone.map((node) => node.scene) },
+    { composer: undefined, baseline: undefined, scenes: tree.standalone },
   ];
 })();
 
-/** The shelves, with a custom card for each of the `local` setups (saved in this browser). */
-export function galleryShelves(local: readonly Preset[]): readonly GalleryShelf[] {
-  return SHELVES.map(({ composer, baseline, scenes }) => ({
+/** The shelves. */
+export const galleryShelves: readonly GalleryShelf[] = SHELVES.map(
+  ({ composer, baseline, scenes }) => ({
     composer,
     baseline,
-    cards: [
-      ...scenes.map((scene): GalleryCard => ({
-        kind: "scene",
-        scene,
-        baseline: scene === baseline,
-      })),
-      ...local.flatMap((preset, index): GalleryCard[] => {
-        const scene = presetScene(preset);
-        return scene !== undefined && scenes.includes(scene)
-          ? [{ kind: "custom", scene, preset, local: index }]
-          : [];
-      }),
-    ],
-  }));
+    cards: scenes.map((scene) => ({ scene, baseline: scene === baseline })),
+  }),
+);
+
+/** Each scene's committed presets (src/presets.ts), in their order. */
+export function scenePresets(scene: SceneId, committed: readonly Preset[] = presets): Preset[] {
+  return committed.filter((preset) => presetScene(preset) === scene);
 }
 
 /**
  * Whether `card` answers the search `query` (an empty one answers every card): by its scene's id or
- * title, and a custom card by its name too.
+ * title, or the name of one of its committed presets.
  */
 export function cardMatches(card: GalleryCard, query: string): boolean {
   const text = query.trim().toLowerCase();
   if (text === "") return true;
-  const scene = `${card.scene} ${sceneDefs[card.scene].title}`;
-  const words = card.kind === "custom" ? `${scene} ${card.preset.name}` : scene;
-  return words.toLowerCase().includes(text);
+  const names = scenePresets(card.scene).map((preset) => preset.name);
+  return [card.scene, sceneDefs[card.scene].title, ...names].join(" ").toLowerCase().includes(text);
 }
 
 /**

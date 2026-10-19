@@ -1,7 +1,7 @@
 // The interior's variants (ADR 0062 "Baselines and variants", D14, D15): the rooms in their folders,
 // each with code of its own, and the promoted ones, saved presets made curated variants, which have
 // no code of their own and are written here by `bun concepts/landing/scripts/promote.ts <query>`
-// (the lab's Presets view shows the same entry under Promote). A promoted variant is a scene like
+// (a preset's Promote in the lab's Scenes view shows the same entry). A promoted variant is a scene like
 // any other (its card, its thumbnail, its links: src/scenes/promoted/), keyed here by its id, which
 // is never reused for another picture. It holds its own differences from the baseline, the source
 // variant's folded with the preset's query, and `from`, the commit and query it was promoted from;

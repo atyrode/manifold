@@ -1,6 +1,6 @@
 // The lab's compact presentation (lab.ts): its whole menu laid flat along a bar. The Find chip
 // opens the Controls view itself (its search, lens and rail, narrowing as in the panel), the scene's
-// chip the Scenes view and the Presets chip the presets; then a chip per Controls section, in the
+// chip the Scenes view (its Library and what is saved here); then a chip per Controls section, in the
 // Controls order (the World shelf, the scene's groups, Global), opens that section. A composed
 // scene's layer gathers its sections (MenuSection.layer) under one chip of its own, its icon and
 // title, shown while it is switched on, after its Layers section's chip. Each opens in a popover
@@ -19,9 +19,9 @@ import { chipState, chipStep, fitChips, stripRoom } from "./menu-model.ts";
 import { Popover } from "./popover.ts";
 
 /** The panel's views the bar opens besides the sections: the Controls view is its Find chip's. */
-export type MenuViewId = "controls" | "scenes" | "presets";
+export type MenuViewId = "controls" | "scenes";
 
-/** A view of the panel the bar opens (Controls, Scenes, Presets): its element, lent while open. */
+/** A view of the panel the bar opens (Controls, Scenes): its element, lent while open. */
 export interface MenuView {
   el: HTMLElement;
   /** It came on screen in its popover. */
@@ -82,7 +82,7 @@ export class MenuBar {
   readonly #scene: HTMLButtonElement;
   readonly #sceneName = h("span", { class: "menu-chip-title" });
   readonly #entries = new Map<string, Entry>();
-  /** The Scenes and Presets views' popovers. */
+  /** The Controls and Scenes views' popovers. */
   readonly #views: Record<MenuViewId, Popover>;
   #menu: readonly MenuSection[] = [];
   /** The strip's width with the chips' titles and as icons, measured for the chips it holds. */
@@ -105,7 +105,6 @@ export class MenuBar {
       h("span", { class: "scene-dot" }),
       this.#sceneName,
     );
-    const presets = chipButton("bookmark", "Presets");
     // The Controls view moves into the popover whole, its search taking the keyboard.
     this.#views = {
       controls: this.#view("controls", "Find a control", "search", this.find, {
@@ -114,9 +113,8 @@ export class MenuBar {
         focus: () => inspector.focusSearch(),
       }),
       scenes: this.#view("scenes", "Scenes", "grid", this.#scene, views.scenes),
-      presets: this.#view("presets", "Presets", "bookmark", presets, views.presets),
     };
-    this.#strip = h("div", { class: "menu-strip" }, presets, divider(), this.#sections, divider());
+    this.#strip = h("div", { class: "menu-strip" }, this.#sections, divider());
     this.#strip.dataset.fit = "titled";
     this.#chips = h(
       "div",
@@ -215,7 +213,7 @@ export class MenuBar {
     return this.#views[id].open;
   }
 
-  /** The Scenes or Presets view's chip opens it, lent from the panel while it is open. */
+  /** The Scenes view's chip opens it, lent from the panel while it is open. */
   #view(
     id: MenuViewId,
     title: string,

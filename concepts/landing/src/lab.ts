@@ -1,6 +1,6 @@
 // The lab: one menu over the scene, built entirely from the scene catalogue and knob definitions,
 // in two presentations (a lab preference): expanded, the inspector panel, whose views
-// (lab/views.ts) are the scene picker (lab/gallery.ts), the presets (lab/presets.ts) and the
+// (lab/views.ts) are the Scenes view (lab/gallery.ts: the Library and what is saved here) and the
 // controls (lab/inspector.ts); and compact, a bar of chips that open the same views and sections in
 // popovers (lab/menu.ts). Both carry one row of tools: play, undo, redo, shuffle, and "⋯", a
 // popover (lab/popover.ts) with the setup's and the session's tools: reset, the link,
@@ -62,7 +62,6 @@ import { Workspace, type PanelLayout } from "./lab/panels.ts";
 import { rollPlanets } from "./lab/planets-model.ts";
 import { fold, Popover } from "./lab/popover.ts";
 import { PREFS_KEY, readPrefs, type Presentation } from "./lab/prefs.ts";
-import { PresetsView } from "./lab/presets.ts";
 import { rollPatch } from "./lab/roll-model.ts";
 import { sceneChange, type SceneChangeBy } from "./lab/scene-change-model.ts";
 import { Views } from "./lab/views.ts";
@@ -171,7 +170,6 @@ export class Lab {
   readonly #workspace: Workspace;
   readonly #views: Views;
   readonly #gallery: SceneGallery;
-  readonly #presets: PresetsView;
   readonly #inspector: Inspector;
   /** The compact presentation: the menu laid flat along a bar. */
   readonly #bar: MenuBar;
@@ -273,22 +271,18 @@ export class Lab {
     root.classList.toggle("explain", this.#prefs.explain);
 
     const save = () => this.#savePrefs();
-    // The Scenes view's custom cards load a saved setup as the Presets view does.
-    const load = (query: string) => {
-      host.apply(new URLSearchParams(query));
-      this.commit();
-    };
     this.#gallery = new SceneGallery(this.#ctx, {
       setScene: (scene) => this.#setScene(scene, "hand"),
-      load,
-      query: () => this.#query(),
-      openDoc: (saved) => this.#openDoc(saved),
-    });
-    this.#presets = new PresetsView(this.#ctx, {
-      load,
+      load: (query) => {
+        host.apply(new URLSearchParams(query));
+        this.commit();
+      },
       compare: (a, b) => this.#compareWith(a, b),
       query: () => this.#query(),
+      openDoc: (saved) => this.#openDoc(saved),
+      doc: () => this.#canvas?.host.view.doc,
       build: host.build,
+      changed: () => this.sync(),
     });
     const prefs = this.#prefs;
     this.#inspector = new Inspector(
@@ -308,7 +302,7 @@ export class Lab {
     this.#minimise = iconButton("minimise", "Minimise the lab to a bar", () =>
       this.#present("compact", true),
     );
-    // The Scenes and Presets views reflect the setup only while on screen, and as they come on.
+    // The Scenes view reflects the setup only while on screen, and as it comes on.
     this.#views = new Views(
       [
         {
@@ -319,16 +313,6 @@ export class Lab {
           shown: () => {
             this.#gallery.sync();
             this.#gallery.shown();
-          },
-        },
-        {
-          id: "presets",
-          label: "Presets",
-          icon: "bookmark",
-          el: this.#presets.el,
-          shown: () => {
-            this.#presets.sync();
-            this.#presets.shown();
           },
         },
         {
@@ -358,13 +342,6 @@ export class Lab {
             this.#gallery.shown();
           },
           focus: () => this.#gallery.focusCurrent(),
-        },
-        presets: {
-          el: this.#presets.el,
-          shown: () => {
-            this.#presets.sync();
-            this.#presets.shown();
-          },
         },
       },
       () => this.#present("expanded", true),
@@ -498,11 +475,9 @@ export class Lab {
     this.#tour?.follow(state.scene);
     // The canvas's selection and its cue follow the document.
     this.#canvas?.editor.sync();
-    // The Scenes and Presets views reflect the setup only while on screen, in the panel or the bar.
+    // The Scenes view reflects the setup only while on screen, in the panel or the bar.
     if (compact ? this.#bar.showing("scenes") : this.#views.current === "scenes")
       this.#gallery.sync();
-    if (compact ? this.#bar.showing("presets") : this.#views.current === "presets")
-      this.#presets.sync();
     // The controls follow in full only while on screen (the open lab on the Controls view, in the
     // panel or the bar's Find popover, or a section lent to the bar); off it only their counts,
     // which the bar's chips read.
@@ -617,8 +592,8 @@ export class Lab {
    * The canvas mode: while `host`'s engine view is on screen, the Controls show its document
    * (lab/canvas.ts) in place of the scene's knobs, the picture takes the pointer while the lab is
    * open, and undo steps through the document and the setup beside it as one history. Back on the
-   * canvas after leaving it, the document is as it was left; a saved document picked meanwhile
-   * (the Scenes view's Canvas shelf) opens.
+   * canvas after leaving it, the document is as it was left; a document picked meanwhile (the
+   * Scenes view's Canvas shelf or Saved list) opens.
    */
   attachCanvas(host: CanvasHost): void {
     this.detachCanvas();
@@ -691,7 +666,7 @@ export class Lab {
   }
 
   /**
-   * Open saved document `saved` (the Scenes view's Canvas shelf): in the canvas on screen, or once
+   * Open document `saved` (the Scenes view's Canvas shelf or Saved list): in the canvas on screen, or once
    * the canvas scene, shown for it, attaches its view.
    */
   #openDoc(saved: SavedDoc): void {

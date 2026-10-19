@@ -375,7 +375,7 @@ switch: on, at the default share) needs the committed presets (`src/presets.ts`)
 rewritten in the knobs that now say it (the share on its `-amount`), their `commit` moved to a
 build that has them. `src/presets.test.ts` holds every committed preset to loading as itself: only
 its scene's keys and the lab's, each value as its knob reads it, and the whole query as the lab
-writes it (`canonicalSetup`), which is how the Presets view lights the preset just loaded.
+writes it (`canonicalSetup`), which is how the Scenes view marks the preset just loaded.
 
 Shared knobs come from `src/scenes/atmosphere.ts`: `skyKnobs({ time })` gives `K_time`, `K_cycle`;
 `weatherKnobs({...})` gives `K_rain`, `K_snow`, `K_fog`, `K_wind`, `K_lightning`, `K_aurora`
@@ -426,7 +426,7 @@ key the build does not know is ignored and never written back.
 The schema is this build's alone: it carries no version, and the lab keeps no migrations or scene
 aliases (no backward compatibility, operator decision 2026-10-17). A key renamed or a scene removed
 leaves a link that names it reading as the current keys say. A setup made on an older build replays
-exactly on that build, `/@<sha>/?<query>`, as the Presets view's arrow does for each preset.
+exactly on that build, `/@<sha>/?<query>`, as a preset's arrow in the Scenes view does.
 
 A setup naming a scene this build lacks opens the default scene with its lab settings, and the lab
 says so in one line over the scene until another scene is on screen. A tour names scenes only; a
@@ -445,15 +445,12 @@ its own that no knob of its scenes may take (`state.ts` checks `planets`).
 
 The lab (`src/lab.ts`, `src/lab/`) is one menu over the scene in two presentations, a lab
 preference (`presentation` in `src/lab/prefs.ts`): expanded, a floating inspector panel, and
-compact, a bar along the bottom edge. The inspector has three views, picked by the icons in its
-header: Scenes (every scene's thumbnail, shelved by baseline with the setups saved here: below),
-Presets (saved setups: this scene's, those saved in this browser, then a tree per composer of its
-baseline, its variants and their presets, the standalone scenes apart; a variant compares with its
-baseline in the A/B slots, and a room's preset promotes to a variant of its own) and Controls (the
-scene's groups, then Look, Motion and Page); a rail beside each view jumps between its shelves,
-preset groups or control groups. The scene's name in the header opens the Scenes view, and the
-header's last icons minimise the lab to the bar and hide it. The Scenes and Presets views follow the
-setup only while on screen, and the Controls view only while the open lab shows it (in the panel
+compact, a bar along the bottom edge. The inspector has two views, picked by the icons in its
+header: Scenes (a switch between the Library, what ships, and Saved, what this browser holds:
+below) and Controls (the scene's groups, then Look, Motion and Page); a rail beside each view jumps
+between its shelves or control groups. The scene's name in the header opens the Scenes view on the
+Library, and the header's last icons minimise the lab to the bar and hide it. The Scenes view
+follows the setup only while on screen, and the Controls view only while the open lab shows it (in the panel
 or the bar's Find popover) or lends one of its sections to the bar (below); otherwise it keeps only
 the lens's counts, which light the bar's chips, and catches up as it comes back.
 
@@ -468,7 +465,7 @@ name. Pausing the clock is the tools' play button (`p`) alone.
 The compact bar (`src/lab/menu.ts`, rules in `menu-model.ts`) is the same menu laid flat: the Find
 chip (a magnifier at its head) opens the whole Controls view, its search, lens and rail, in a
 popover with the keyboard in its search; the scene's chip (its dot and name) opens the Scenes view,
-a Presets chip the presets, then one chip per Controls section in the Controls order (the World
+then one chip per Controls section in the Controls order (the World
 shelf, the scene's groups, Global), its icon and title as the rail and the headings pick them. A
 chip is lit while its section differs from its defaults, as the lens counts it, and a section with
 a master switch shows it on or off. A chip opens a popover (`src/lab/popover.ts`) holding the
@@ -631,20 +628,35 @@ looks at rest (or adding one), run `bun concepts/landing/scripts/thumbs.ts <id>`
 file. A scene without one shows a stand-in in its accent, and `src/scenes/registry.test.ts` fails
 until it has one.
 
-The Scenes view (`src/lab/gallery.ts`, its shelves in `src/lab/gallery-model.ts`; ADR 0062 D9 as
-amended) shelves the scenes by baseline: the room's, the land's and the patch's shelf, each its
-baseline's own scene first (tagged "baseline"), then its curated variants in their registry's order
-(a room's folders, then the promoted ones), then a "custom" card for each setup saved in this
-browser over any of them (its name over its scene's thumbnail; a click loads it as the Presets view
-does, one undo step, and it is marked while that exact setup is on screen); then the standalone
-scenes, a program of their own each, on one shelf in their families' order (`src/lab/families.ts`)
-with the setups saved over them. Each shelf's heading counts its scenes and custom setups, the rail
-jumps between the shelves, the search matches the scenes' ids and titles and the custom setups'
-names, and the arrow keys roam the cards across the shelves, one card in the tab order. The view
-reads the setups saved here (`loadLocalPresets`) on every sync and rebuilds the custom cards when
-they changed, so a setup saved, deleted or imported in the Presets view is on its shelf as the
-Scenes view comes back on screen. The families shelve nothing any more: they order the standalone
-shelf, pick a missing thumbnail's stand-in and name each scene's family in the table above.
+The Scenes view (`src/lab/gallery.ts`) keeps what ships apart from what this browser holds: a
+switch over its search picks the Library or Saved, and the one search serves the half on screen.
+
+The Library (its shelves in `src/lab/gallery-model.ts`; ADR 0062 D9 as amended) holds only what
+ships. First the Canvas shelf: the engine's bare canvases and examples, each drawn as a plan from
+above, opened in the canvas. Then the scenes by baseline: the room's, the land's and the patch's
+shelf, each its baseline's own scene first (tagged "baseline"), then its curated variants in their
+registry's order (a room's folders, then the promoted ones); then the standalone scenes, a program of
+their own each, on one shelf in their families' order (`src/lab/families.ts`). A card counts its
+scene's committed presets (`src/presets.ts`) in its corner. Right under the card of the scene on
+screen, a row of its own (the cards after it fill the card's row first), stand what it is, a
+variant's Compare with its baseline in the A/B slots, and its committed presets: a click loads
+one, its arrow opens it on the build it was made on, and a room's preset that loads as itself
+promotes to a variant of its own (`src/lab/preset-rows.ts`). The rail jumps between the shelves, the
+search matches the scenes' ids and titles, their presets' names and the documents' names and kinds,
+and the arrow keys roam the cards across the shelves, one card in the tab order.
+
+Saved (`src/lab/saved.ts`, `src/lab/saved-model.ts`) is everything saved in this browser as one
+list, the last saved first: the setups over the scenes (`landing.presets`) beside the canvas's
+documents (`landing.docs`), each with its picture (its scene's thumbnail, or a document's plan).
+The bar on top saves what is on screen under a name: on the canvas its document (over one of that
+name), elsewhere the setup. A setup's row loads it (one undo step), opens it on its build and
+promotes a room's; a document's row opens it in the canvas and downloads it as a file; either
+deletes it from this browser, and the entry on screen is marked. Export all downloads the whole list
+as one `.json` file; Import adds what a file holds (that file, a document's own file, or setups as
+the lab once exported them), all of it or, naming what it cannot read, none, a document under a
+name already here taking the next free number. The families shelve nothing any more: they order the
+standalone shelf, pick a missing thumbnail's stand-in and name each scene's family in the table
+above.
 
 ### Page theme
 

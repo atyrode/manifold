@@ -29,9 +29,7 @@ import {
   wrapAngle,
 } from "./canvas-camera.ts";
 import {
-  deleteDoc,
   exportDoc,
-  importDoc,
   loadSavedDocs,
   parseDoc,
   saveDoc,
@@ -248,8 +246,6 @@ export class CanvasEditor {
   #fast = false;
   #flyFrame: number | undefined;
   #flyLast: number | undefined;
-  /** Documents saved in this browser, as last read or written. */
-  #saved: SavedDoc[] = loadSavedDocs();
   readonly #status = h("p", { class: "canvas-status", role: "status" });
 
   constructor(host: CanvasHost, lab: CanvasLab) {
@@ -355,7 +351,7 @@ export class CanvasEditor {
     this.#syncCue();
   }
 
-  /** Open a saved document (the Scenes view's Canvas shelf, the Document section): one undo step. */
+  /** Open a document (the Scenes view's Canvas shelf or its Saved list): one undo step. */
   open(saved: SavedDoc): void {
     const parsed = parseDoc(saved.doc, this.#host.kinds);
     if ("why" in parsed) {
@@ -658,7 +654,10 @@ export class CanvasEditor {
 
   // ---- the sections ---------------------------------------------------------------------------
 
-  /** The document: its name, saving it here, new, export, import, and the documents saved here. */
+  /**
+   * The document: its name, saving it here (the Scenes view's Saved list holds what is saved, and
+   * imports files), new, and export as a file.
+   */
   #documentSection(): CanvasSection {
     const title = h("input", {
       type: "text",
@@ -672,29 +671,11 @@ export class CanvasEditor {
       if (text !== this.doc.title)
         this.#apply({ ...this.doc, title: text }, { what: "title", words: "the name" });
     });
-    const file = h("input", { type: "file", accept: ".json,application/json", hidden: true });
-    file.addEventListener("change", () => {
-      const chosen = file.files?.[0];
-      file.value = "";
-      if (!chosen) return;
-      void chosen.text().then((text) => {
-        const read = importDoc(text, this.#host.kinds);
-        if ("why" in read) {
-          setText(this.#status, `Cannot import ${chosen.name}: ${read.why}`);
-          return;
-        }
-        this.#selected = undefined;
-        this.#apply(read.doc, { what: "import", words: `import “${read.doc.title}”` });
-        setText(this.#status, `Imported “${read.doc.title || chosen.name}”.`);
-      });
-    });
-    const list = h("ul", { class: "canvas-docs", "aria-label": "Documents saved in this browser" });
-    let listed = "";
     const save = () => {
       const name = this.doc.title.trim() || "Untitled";
-      const over = this.#saved.some((saved) => saved.name === name);
-      this.#saved = saveDoc(this.#saved, name, this.doc, Date.now());
-      storeSavedDocs(this.#saved);
+      const docs = loadSavedDocs();
+      const over = docs.some((saved) => saved.name === name);
+      storeSavedDocs(saveDoc(docs, name, this.doc, Date.now()));
       setText(this.#status, over ? `Saved over “${name}”.` : `Saved as “${name}”.`);
       this.#lab.changed();
     };
@@ -714,7 +695,12 @@ export class CanvasEditor {
     const actions = h(
       "div",
       { class: "lab-actions canvas-doc-actions" },
-      textButton("bookmark", "Save", "Save this document in this browser, under its name", save),
+      textButton(
+        "bookmark",
+        "Save",
+        "Save this document in this browser under its name (the Scenes view's Saved list)",
+        save,
+      ),
       textButton(
         "renew",
         "New",
@@ -722,67 +708,28 @@ export class CanvasEditor {
         fresh,
       ),
       textButton("external", "Export", "Download this document as a .json file", exported),
-      textButton("down", "Import", "Open a document from a .json file", () => file.click()),
     );
     this.#syncers.push(() => {
       if (document.activeElement !== title && title.value !== this.doc.title)
         title.value = this.doc.title;
-      const signature = JSON.stringify(this.#saved.map((saved) => [saved.name, saved.savedAt]));
-      if (signature === listed) return;
-      listed = signature;
-      list.replaceChildren(
-        ...this.#saved.map((saved) => {
-          const openIt = h(
-            "button",
-            {
-              type: "button",
-              class: "canvas-doc-open",
-              title: `Open “${saved.name}”, saved ${new Date(saved.savedAt).toLocaleString()} (undo brings this one back)`,
-            },
-            icon("bookmark"),
-            h("span", { class: "canvas-doc-name" }, saved.name),
-            h(
-              "span",
-              { class: "canvas-doc-meta" },
-              `${saved.doc.objects.length} object${saved.doc.objects.length === 1 ? "" : "s"}`,
-            ),
-          );
-          openIt.addEventListener("click", () => this.open(saved));
-          const remove = iconButton("trash", `Delete “${saved.name}” from this browser`, () => {
-            this.#saved = deleteDoc(this.#saved, saved.name);
-            storeSavedDocs(this.#saved);
-            setText(this.#status, `Deleted “${saved.name}”.`);
-            this.#lab.changed();
-          });
-          return h(
-            "li",
-            { class: "canvas-doc", "data-search": saved.name.toLowerCase() },
-            openIt,
-            remove,
-          );
-        }),
-      );
-      setHidden(list, this.#saved.length === 0);
     });
     return {
       id: "canvas:document",
       title: "Document",
       blurb:
-        "This setup as a document: its name, saving it in this browser (it shows on the Scenes view's Canvas shelf), a new one from the view's own, and a .json file to keep or share.",
+        "This setup as a document: its name, saving it in this browser (the Scenes view lists it under Saved, which also imports files), a new one from the view's own, and a .json file to keep or share.",
       icon: "bookmark",
       open: true,
       content: [
         h(
           "div",
-          { class: "canvas-doc-head", "data-search": "document name save new export import" },
+          { class: "canvas-doc-head", "data-search": "document name save new export" },
           title,
         ),
         actions,
-        file,
         this.#status,
-        list,
       ],
-      summary: () => [this.doc.title || "Untitled", `${this.#saved.length} saved`],
+      summary: () => [this.doc.title || "Untitled"],
     };
   }
 

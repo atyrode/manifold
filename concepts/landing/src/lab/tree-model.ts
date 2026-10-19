@@ -1,8 +1,7 @@
-// The Presets view's tree (ADR 0062 D9 as amended, "Baselines and variants"): a shelf per composer,
+// The scenes' tree (ADR 0062 D9 as amended, "Baselines and variants"): a shelf per composer,
 // each its baseline's own scene (D13), then its curated variants in their registry's order (a room's
-// folders, then the promoted ones), the scenes stored over it, each with its committed presets and
-// then the ones saved in this browser. The scenes neither a baseline nor a variant (a program of
-// their own, D24) stand on a shelf apart, in their families' order (lab/families.ts). A scene's
+// folders, then the promoted ones), the scenes stored over it. The scenes neither a baseline nor a
+// variant (a program of their own, D24) stand on a shelf apart, in their families' order (lab/families.ts). A scene's
 // composer is the one whose layers hold every layer it offers. The Scenes view shelves the same way
 // (lab/gallery-model.ts).
 import type { Composer } from "../composer/compose.ts";
@@ -18,31 +17,19 @@ import type { Preset } from "../presets.ts";
 import { sceneDefs, sceneIds, type SceneId } from "../scenes/index.ts";
 import { families, sceneFamily } from "./families.ts";
 
-/** A preset in the tree, and where it is kept: committed (undefined) or its local index. */
-export interface TreePreset {
-  readonly preset: Preset;
-  readonly local: number | undefined;
-}
-
-/** A scene in the tree with its presets: the committed ones, then the ones saved here. */
-export interface TreeScene {
-  readonly scene: SceneId;
-  readonly presets: readonly TreePreset[];
-}
-
 /** A composer's shelf. */
 export interface ComposerShelf {
   readonly composer: ComposerId;
   /** Its baseline's own scene. */
-  readonly baseline: TreeScene;
+  readonly baseline: SceneId;
   /** Its curated variants (over its baseline), in their registry's order. */
-  readonly variants: readonly TreeScene[];
+  readonly variants: readonly SceneId[];
 }
 
-export interface PresetTree {
+export interface SceneTree {
   readonly composers: readonly ComposerShelf[];
   /** The scenes neither a baseline nor a variant, in their families' order. */
-  readonly standalone: readonly TreeScene[];
+  readonly standalone: readonly SceneId[];
 }
 
 /** The composers in the tree's order: the interior first, the first with a baseline. */
@@ -103,25 +90,16 @@ export function presetScene(preset: Preset): SceneId | undefined {
   return sceneIds.find((id) => id === named);
 }
 
-/** The tree of `committed` and `local` presets (see the header). */
-export function presetTree(committed: readonly Preset[], local: readonly Preset[]): PresetTree {
-  const all: TreePreset[] = [
-    ...committed.map((preset) => ({ preset, local: undefined })),
-    ...local.map((preset, index) => ({ preset, local: index })),
-  ];
-  const node = (scene: SceneId): TreeScene => ({
-    scene,
-    presets: all.filter((entry) => presetScene(entry.preset) === scene),
-  });
+/** The tree (see the header). */
+export function sceneTree(): SceneTree {
   const composers = COMPOSERS.map(({ id }): ComposerShelf => {
     const baseline = baselineScene[id];
     return {
       composer: id,
-      baseline: node(baseline),
+      baseline,
       variants: Object.keys(VARIANTS[id])
         .flatMap((key) => sceneIds.filter((scene) => scene === key))
-        .filter((scene) => variantBaseline(scene) === baseline)
-        .map(node),
+        .filter((scene) => variantBaseline(scene) === baseline),
     };
   });
   const baselines: readonly SceneId[] = Object.values(baselineScene);
@@ -129,7 +107,6 @@ export function presetTree(committed: readonly Preset[], local: readonly Preset[
     composers,
     standalone: families
       .flatMap((family) => sceneIds.filter((scene) => sceneFamily[scene] === family.id))
-      .filter((scene) => !baselines.includes(scene) && variantBaseline(scene) === undefined)
-      .map(node),
+      .filter((scene) => !baselines.includes(scene) && variantBaseline(scene) === undefined),
   };
 }

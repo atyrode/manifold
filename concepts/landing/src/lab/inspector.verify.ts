@@ -390,12 +390,7 @@ function compactBar(query: URLSearchParams, sections: Record<string, boolean>) {
   const box = document.createElement("div");
   box.style.cssText = "position: absolute; left: 0; bottom: 0; display: flex; background: #0b0c10";
   const nothing = { el: document.createElement("div"), shown: () => {} };
-  const bar = new MenuBar(
-    layer,
-    controls.inspector,
-    { scenes: nothing, presets: nothing },
-    () => {},
-  );
+  const bar = new MenuBar(layer, controls.inspector, { scenes: nothing }, () => {});
   box.append(bar.el);
   layer.append(box);
   document.body.append(layer);
