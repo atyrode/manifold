@@ -2,7 +2,7 @@
 // sim (shader.ts, sim.ts), without loading them: the low seat's rig, the light guest layers are
 // graded by, where the fire and the camp stand (m), the depths the campfire's parts are composed at,
 // and the fuel's row of the records atlas.
-import type { Flyway, Grade, Rig } from "../../composer/types.ts";
+import type { Grade, Rig } from "../../composer/types.ts";
 
 /** Screen height (uv) of the far horizon, which the pines hide. */
 export const CAMPFIRE_HORIZON = 0.37;
@@ -51,17 +51,6 @@ export const CAMPFIRE_GRADE: Grade = {
   vignette: 0.35,
   vignetteRound: { from: 0.6, to: 1.4, scale: 1.2 },
   ink: { gain: 1.5, gamma: 0.8 },
-};
-
-/** The World's birds over the clearing, by day: above the pines, the near ones skimming the clearing. */
-export const CAMPFIRE_FLYWAY: Flyway = {
-  depth: [12, 140],
-  above: 0.1,
-  top: 0.95,
-  seed: 4.7,
-  skim: 2.5,
-  spread: 1.5,
-  ext: 0.01,
 };
 
 /** Seconds the entrance and the exit take (the preset's `passage`). */

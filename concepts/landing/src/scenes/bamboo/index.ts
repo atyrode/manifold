@@ -2,20 +2,21 @@
 // five depth layers fading into the mist, leafy branches and a canopy of slender leaves, gusts
 // sweeping through them as visible fronts, god rays falling through the canopy, leaves letting go, a
 // stone lantern; and the tube that fills from the spout, tips into the mossy stone basin and clacks
-// back on its stone, the grove's heartbeat. A preset of the `outdoor` composer (src/composer, README
-// "Composers"): the grove's air and canopy, its floor, the culms, the stone lantern and the water
-// clock (layers.ts). The sky in the canopy's gaps, the weather and the gusts are the World's and the
-// composer's.
-import { composeScene } from "../../composer/compose.ts";
+// back on its stone, the grove's heartbeat. A variant of the `outdoor` composer's baseline
+// (src/composer, README "The outdoor composer"): the grove's air and canopy for the baseline's downs,
+// its floor, the culms, the stone lantern and the water clock (layers.ts). The sky in the canopy's
+// gaps, the weather and the gusts are the World's and the composer's.
+import { composeScene, variantPreset } from "../../composer/compose.ts";
 import { outdoor } from "../../composer/outdoor.ts";
-import type { ScenePreset } from "../../composer/types.ts";
+import type { Variant } from "../../composer/types.ts";
 import type { SceneDef } from "../types.ts";
 import { worldGroups } from "../world.ts";
 import { BAMBOO_GRADE, BAMBOO_PASSAGE, BAMBOO_RIG } from "./constants.ts";
 
-const preset: ScenePreset = {
+/** The grove over the outdoor's baseline: its culms and water clock, its lens, its sunrise in the mist. */
+export const bambooVariant: Variant = {
   id: "bamboo",
-  composer: "outdoor",
+  base: "outdoor",
   title: "Bamboo grove",
   blurb: "A misty bamboo grove, and a water clock tipping into a stone basin.",
   accent: "#ffa64d",
@@ -26,8 +27,23 @@ const preset: ScenePreset = {
   // The World's planets hang in the canopy's gaps: high in the frame (its lens is a radian tall,
   // the gaps open from about 22 degrees up to its top edge's 33), over the rays' middle gap first.
   planets: { group: "sky", across: [-35, -2, 35], up: [22, 30, 33] },
-  rig: BAMBOO_RIG,
+  groups: {
+    sky: {
+      ...worldGroups.sky,
+      blurb:
+        "Time of day, whether the days pass, and the night sky in the canopy's gaps: its stars and the moon in its phase, whose rays fall through the gaps at night.",
+    },
+    weather: {
+      ...worldGroups.weather,
+      blurb:
+        "Rain closes the sky and greys the mist; the canopy shelters the grove but pours through its gaps, the leaves gather water and drip, long after the rain, stems and stones go dark and glossy, pools gather on the floor and rings spread on the basin. The wind sets how hard the grove sways and which way the gusts travel.",
+    },
+  },
+  layers: { remove: ["downs"], add: ["grove", "groveFloor", "culms", "stoneLantern", "clock"] },
+  camera: BAMBOO_RIG,
   grade: BAMBOO_GRADE,
+  // Bare earth wherever the grove floor is switched off.
+  floor: "earth",
   // Just after sunrise; the stars and the moon in its phase in the canopy's gaps at night. The gaps
   // show the clear sky (no fair-weather cloud, no Milky Way in a strip that narrow); birds to switch
   // on.
@@ -54,28 +70,12 @@ const preset: ScenePreset = {
     spread: 1.5,
     ext: 0.02,
   },
-  // Bare earth wherever the grove floor is switched off.
-  floor: "earth",
-  layers: ["grove", "groveFloor", "culms", "stoneLantern", "clock"],
-  values: {},
   // The moon takes a phase (K_moon) in the shared sky: in the gaps, and in its rays at night;
   // compiled in at every setting, a full moon's too, as the grove always drew it.
   features: { SKY_MOON_PHASE: 1 },
-  groups: {
-    sky: {
-      ...worldGroups.sky,
-      blurb:
-        "Time of day, whether the days pass, and the night sky in the canopy's gaps: its stars and the moon in its phase, whose rays fall through the gaps at night.",
-    },
-    weather: {
-      ...worldGroups.weather,
-      blurb:
-        "Rain closes the sky and greys the mist; the canopy shelters the grove but pours through its gaps, the leaves gather water and drip, long after the rain, stems and stones go dark and glossy, pools gather on the floor and rings spread on the basin. The wind sets how hard the grove sways and which way the gusts travel.",
-    },
-  },
 };
 
 /** The grove composed (composer/compose.ts): its definition, and what its code is assembled from. */
-export const bambooComposed = composeScene(outdoor, preset);
+export const bambooComposed = composeScene(outdoor, variantPreset(outdoor.baseline, bambooVariant));
 
 export const bambooScene: SceneDef = { ...bambooComposed.def, code: () => import("./code.ts") };

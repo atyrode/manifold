@@ -3,24 +3,26 @@
 // half swallowed by moss, a fallen log, stepping stones, ferns, shafts of light in the mist; and the
 // mystical layer, strongest at dusk and night: small pale forest spirits (kodama) appearing on the
 // roots, stones and branches, rattling their heads round and fading, glowing mushrooms, drifting
-// spores, and now and then a great stag crossing far off between the trunks. A preset of the
-// `outdoor` composer (src/composer, README "Composers"): the misty woods behind (the mist, the canopy,
-// the far trunks, the shafts), the forest floor and its stream, the shrine (the torii, the log, the
-// beech, the boulders, the great cedar, the mushrooms, the M), the ferns and the kodama (layers.ts).
-// The sky in the canopy's gaps, the weather and the birds are the World's.
+// spores, and now and then a great stag crossing far off between the trunks. A variant of the
+// `outdoor` composer's baseline (src/composer, README "The outdoor composer"): the misty woods behind
+// for the baseline's downs (the mist, the canopy, the far trunks, the shafts), the forest floor and
+// its stream, the shrine (the torii, the log, the beech, the boulders, the great cedar, the
+// mushrooms, the M), the ferns and the kodama (layers.ts). The sky in the canopy's gaps, the weather
+// and the birds are the World's.
 // Passage: the camera glides in between the trunks, braking, and settles, then the spirits pop up
 // one by one on their perches; on the way out they turn their heads and vanish one by one while the
 // camera drifts back into the mist, gathering speed (FOREST_RIG's dolly, FOREST_PASSAGE).
-import { composeScene } from "../../composer/compose.ts";
+import { composeScene, variantPreset } from "../../composer/compose.ts";
 import { outdoor } from "../../composer/outdoor.ts";
-import type { ScenePreset } from "../../composer/types.ts";
+import type { Variant } from "../../composer/types.ts";
 import type { SceneDef } from "../types.ts";
 import { worldGroups } from "../world.ts";
 import { FOREST_GRADE, FOREST_PASSAGE, FOREST_RIG } from "./constants.ts";
 
-const preset: ScenePreset = {
+/** The forest over the outdoor's baseline: its woods, shrine and spirits, its lens, its dusk. */
+export const forestVariant: Variant = {
   id: "forest",
-  composer: "outdoor",
+  base: "outdoor",
   title: "Mystic forest",
   blurb: "An ancient misty cedar forest, where small spirits appear on the mossy roots.",
   accent: "#bff5cf",
@@ -29,8 +31,22 @@ const preset: ScenePreset = {
   // The World's planets hang in the canopy's gaps: high in the frame (its lens is a radian tall, the
   // gaps open from about 27 degrees up to its top edge's 35), over the shafts' middle gap first.
   planets: { group: "sky", across: [-35, 4, 35], up: [27, 32, 35] },
-  rig: FOREST_RIG,
+  groups: {
+    sky: {
+      ...worldGroups.sky,
+      blurb:
+        "Time of day, whether the days pass, and the night sky in the canopy's gaps: its stars, the moon's phase in the gaps and in its shafts, the odd shooting star and the aurora.",
+    },
+    weather: {
+      ...worldGroups.weather,
+      blurb:
+        "Rain closes the sky and greys the mist; the canopy shelters the forest from rain and snow but lets some through. The beards of lichen, the torii and the canopy gather water and drip long after; roots and stones go dark and glossy, pools gather on the floor, rings spread on the stream and drops burst on the stones. Fog thickens the distance; the wind slants the rain and sets the mist and the spores drifting.",
+    },
+  },
+  layers: { remove: ["downs"], add: ["woods", "forestFloor", "shrine", "undergrowth", "kodama"] },
+  camera: FOREST_RIG,
   grade: FOREST_GRADE,
+  floor: "moss",
   // Dusk turning to night, the stars in the canopy's gaps; no cloud of its own and no Milky Way over
   // the gaps; birds to switch on.
   world: {
@@ -56,28 +72,14 @@ const preset: ScenePreset = {
     spread: 1.5,
     ext: 0.05,
   },
-  floor: "moss",
-  layers: ["woods", "forestFloor", "shrine", "undergrowth", "kodama"],
   // No gusts under the canopy until switched on.
   values: { gusts: 0 },
   // The moon takes a phase (K_moon) in the gaps and in its shafts at night, compiled in at every
   // setting, a full moon's too, as the forest always drew it.
   features: { SKY_MOON_PHASE: 1 },
-  groups: {
-    sky: {
-      ...worldGroups.sky,
-      blurb:
-        "Time of day, whether the days pass, and the night sky in the canopy's gaps: its stars, the moon's phase in the gaps and in its shafts, the odd shooting star and the aurora.",
-    },
-    weather: {
-      ...worldGroups.weather,
-      blurb:
-        "Rain closes the sky and greys the mist; the canopy shelters the forest from rain and snow but lets some through. The beards of lichen, the torii and the canopy gather water and drip long after; roots and stones go dark and glossy, pools gather on the floor, rings spread on the stream and drops burst on the stones. Fog thickens the distance; the wind slants the rain and sets the mist and the spores drifting.",
-    },
-  },
 };
 
 /** The forest composed (composer/compose.ts): its definition, and what its code is assembled from. */
-export const forestComposed = composeScene(outdoor, preset);
+export const forestComposed = composeScene(outdoor, variantPreset(outdoor.baseline, forestVariant));
 
 export const forestScene: SceneDef = { ...forestComposed.def, code: () => import("./code.ts") };
