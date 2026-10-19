@@ -1,0 +1,6 @@
+---
+section: Changed
+issue: 1082
+---
+
+The landing concept's engine no longer takes the page down on a machine without a GPU. Under software rendering (SwiftShader, which the lab's checks and a GPU-less machine use) the lava room drew a frame in over two seconds and could lose the WebGL context, leaving the page white. A picture now traces, shades and lights its segments (the eye's ray, the view through a window's panes, the bounce off a mirror) in one loop, each written once, so a cell that needs no glass or mirror pays for neither. An object is tested only when the ray reaches its bounds, and a room only tests the walls and openings a ray reaches. At the landing's cell budget the lava room now draws a whole picture in about 840 ms instead of 2260, the room in 330 instead of 970 and the grove in 990 instead of 1400. Where a whole picture still draws too slowly, the renderer times each draw on the GPU and draws the picture in strips, one a frame, each within about 100 ms, so the picture completes over a few frames and never holds the GPU long enough to lose it. A fast GPU draws the whole picture as before. The GPU timing page (`bench.html`) gains dev-only entries for the starter documents, `canvas:<doc>`, and `scripts/engine-bench.ts` times them in headless Chromium.

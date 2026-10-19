@@ -30,8 +30,8 @@ const float GROUND_TRUST = ${glslFloat(GROUND_TRUST)};
 const int GROUND_STEPS = 160;
 
 // The land's height over the ground's origin at plan point x (its frame, metres), with no detail
-// finer than foot metres.
-float groundAt(EngineObj o, vec2 x, float foot) {
+// finer than foot metres: the kind contract's <id>Land, which engineLand reads for every kind.
+float groundLand(EngineObj o, vec2 x, float foot) {
   float spread = groundSpread(o);
   return groundRelief(o) * (groundShape(x / spread, foot / spread) - GROUND_LEVEL);
 }
@@ -48,14 +48,14 @@ float groundHit(EngineObj o, vec3 ro, vec3 rd, vec2 span, out vec3 n, out float 
   float lean = groundLean(o, rd);
   float t = span.x;
   float before = t;
-  float d = ro.y + rd.y * t - groundAt(o, ro.xz + rd.xz * t, t * engineCell);
+  float d = ro.y + rd.y * t - groundLand(o, ro.xz + rd.xz * t, t * engineCell);
   // An eye under the land sees none of it.
   if (d < 0.0) return -1.0;
   for (int i = 0; i < GROUND_STEPS; i++) {
     if (d < 0.0 || t >= span.y) break;
     before = t;
     t = min(span.y, t + max(d / lean, 0.01 + t * 0.008));
-    d = ro.y + rd.y * t - groundAt(o, ro.xz + rd.xz * t, t * engineCell);
+    d = ro.y + rd.y * t - groundLand(o, ro.xz + rd.xz * t, t * engineCell);
   }
   // Out of its bounds without meeting it; a ray still skimming it once the steps run out meets it
   // there, at the far edge of what it can draw.
@@ -64,7 +64,7 @@ float groundHit(EngineObj o, vec3 ro, vec3 rd, vec2 span, out vec3 n, out float 
     float after = t;
     for (int i = 0; i < 6; i++) {
       float mid = 0.5 * (before + after);
-      if (ro.y + rd.y * mid - groundAt(o, ro.xz + rd.xz * mid, mid * engineCell) >= 0.0) before = mid;
+      if (ro.y + rd.y * mid - groundLand(o, ro.xz + rd.xz * mid, mid * engineCell) >= 0.0) before = mid;
       else after = mid;
     }
     t = before;
@@ -73,9 +73,9 @@ float groundHit(EngineObj o, vec3 ro, vec3 rd, vec2 span, out vec3 n, out float 
   float foot = t * engineCell;
   float e = max(0.04, foot);
   n = normalize(vec3(
-    groundAt(o, x - vec2(e, 0.0), foot) - groundAt(o, x + vec2(e, 0.0), foot),
+    groundLand(o, x - vec2(e, 0.0), foot) - groundLand(o, x + vec2(e, 0.0), foot),
     2.0 * e,
-    groundAt(o, x - vec2(0.0, e), foot) - groundAt(o, x + vec2(0.0, e), foot)));
+    groundLand(o, x - vec2(0.0, e), foot) - groundLand(o, x + vec2(0.0, e), foot)));
   part = t;
   return t;
 }
@@ -89,7 +89,7 @@ float groundShadow(EngineObj o, vec3 ro, vec3 rd, vec2 span) {
   float t = span.x + 0.05 + engineFoot;
   for (int i = 0; i < 40; i++) {
     if (t >= span.y || lit <= 0.0) break;
-    float d = ro.y + rd.y * t - groundAt(o, ro.xz + rd.xz * t, engineFoot);
+    float d = ro.y + rd.y * t - groundLand(o, ro.xz + rd.xz * t, engineFoot);
     lit = min(lit, 10.0 * d / t);
     t += max(0.8 * d / lean, 0.05 + 0.03 * t);
   }

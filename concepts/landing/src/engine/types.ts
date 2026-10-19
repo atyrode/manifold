@@ -64,6 +64,12 @@ export interface Bounds {
 }
 
 /**
+ * The land under an object: its height over the object's origin at plan point (x, z) of the
+ * object's own frame, metres at scale 1 (src/engine/land.ts `landUnder`).
+ */
+export type Land = (x: number, z: number) => number;
+
+/**
  * A kind's manifest: loads without its code. Options reuse the lab's knobs (ParamDef): a knob is a
  * per-instance value read from the instance texture, so moving it never builds a program; one marked
  * in `compiled` is a compile-time switch of the kind instead (its code differs, as a layer turn does).
@@ -81,9 +87,11 @@ export interface KindDef {
   readonly compiled?: readonly string[];
   /**
    * Its extent for these option values (every option, defaults filled in): the ray's bounding test
-   * and the lab's picking.
+   * and the lab's picking. `land`, where the caller knows the document (the instance texture, the
+   * CPU's cast), is the land under the object (land.ts `landUnder`): a kind standing on it (grass)
+   * fits its bounds to it there, and elsewhere (the lab's framing) bounds any land it may meet.
    */
-  bounds(options: Readonly<Record<string, number>>): Bounds;
+  bounds(options: Readonly<Record<string, number>>, land?: Land): Bounds;
   /** At most one object of each exclusive group in a document (one ground, one sky dome). */
   readonly exclusive?: string;
   /** Most instances a document may hold of it (at most 32, the largest instance bucket). */
@@ -110,6 +118,12 @@ export interface KindDef {
     rd: Vec3,
     span: readonly [number, number],
   ): { readonly t: number; readonly normal: Vec3 } | undefined;
+  /**
+   * It is the land (one of the exclusive group `ground`): its height over its origin at plan point
+   * (x, z) of its own frame, metres at scale 1, at full detail: the CPU twin of its GLSL `<id>Land`
+   * (the header of src/engine/glsl.ts, THE LAND), read for every kind through src/engine/land.ts.
+   */
+  land?(options: Readonly<Record<string, number>>, x: number, z: number): number;
   /** Its code: GLSL and an optional sim, loaded when a document first holds it. */
   code(): Promise<KindCode>;
 }

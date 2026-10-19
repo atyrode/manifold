@@ -7,10 +7,14 @@
 import { range } from "../../../params.ts";
 import type { KindDef } from "../../types.ts";
 
-/** How far the land under a patch may rise or fall from its origin, per metre from it. */
-export const GRASS_LIFT = 0.2;
+/** How far any land under a patch may rise or fall from its origin, per metre from it. */
+const GRASS_LIFT = 0.2;
 /** And at least this, metres. */
 const GRASS_LIFT_MIN = 0.15;
+/** The land under a patch is sampled at most this far apart, metres, for its bounds. */
+const GRASS_SAMPLE = 0.5;
+/** Metres of bounds past the land's sampled extremes, over what the slope between samples allows. */
+const GRASS_LAND_MARGIN = 0.05;
 /** The tallest blade, flower and all, over the patch's `height`. */
 export const GRASS_TOP = 1.12;
 
@@ -35,11 +39,36 @@ export const grassKind: KindDef = {
     range("grass", "flowers", "flowers", 0.15, "The wildflowers through it: none to a meadow's."),
     range("grass", "dry", "dry", 0.15, "How much of it has gone to straw."),
   ],
-  bounds(options) {
+  bounds(options, land) {
     const w = (options["width"] ?? 6) / 2;
     const d = (options["depth"] ?? 6) / 2;
-    const lift = GRASS_LIFT * Math.hypot(w, d) + GRASS_LIFT_MIN;
-    return { min: [-w, -lift, -d], max: [w, (options["height"] ?? 0.4) * GRASS_TOP + lift, d] };
+    const top = (options["height"] ?? 0.4) * GRASS_TOP;
+    if (land === undefined) {
+      const lift = GRASS_LIFT * Math.hypot(w, d) + GRASS_LIFT_MIN;
+      return { min: [-w, -lift, -d], max: [w, top + lift, d] };
+    }
+    // The land under it, on a grid, and past its extremes what its steepest step between samples
+    // could hide.
+    const nx = Math.max(2, Math.ceil((2 * w) / GRASS_SAMPLE));
+    const nz = Math.max(2, Math.ceil((2 * d) / GRASS_SAMPLE));
+    const dx = (2 * w) / nx;
+    const dz = (2 * d) / nz;
+    let lo = Infinity;
+    let hi = -Infinity;
+    let rise = 0;
+    const row: number[] = [];
+    for (let j = 0; j <= nz; j++) {
+      for (let i = 0; i <= nx; i++) {
+        const y = land(-w + i * dx, -d + j * dz);
+        lo = Math.min(lo, y);
+        hi = Math.max(hi, y);
+        if (i > 0) rise = Math.max(rise, Math.abs(y - (row[i - 1] ?? y)));
+        if (j > 0) rise = Math.max(rise, Math.abs(y - (row[i] ?? y)));
+        row[i] = y;
+      }
+    }
+    const margin = rise + GRASS_LAND_MARGIN;
+    return { min: [-w, lo - margin, -d], max: [w, hi + top + margin, d] };
   },
   max: 16,
   rests: "surface",

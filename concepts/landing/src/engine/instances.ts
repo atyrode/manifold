@@ -13,6 +13,7 @@
 //                                 kind's order, four a texel (option k: component 1 + k from texel 3)
 import { cameraBasis } from "./camera.ts";
 import { kindById, kindRow, kinds, optionValues } from "./kinds/index.ts";
+import { landUnder } from "./land.ts";
 import type { EngineDoc, KindDef } from "./types.ts";
 
 /** The most instances of one kind a program draws: its largest bucket. */
@@ -62,7 +63,7 @@ export function packInstances(
       throw new RangeError(`engine: more than ${MAX_INSTANCES} objects of kind ${kind.id}`);
     counts[row] = i + 1;
     const options = optionValues(kind, placed);
-    const bounds = kind.bounds(options);
+    const bounds = kind.bounds(options, landUnder(doc, placed));
     const at = (row * INSTANCE_WIDTH + i * instanceStride(kind)) * 4;
     into.set(
       [

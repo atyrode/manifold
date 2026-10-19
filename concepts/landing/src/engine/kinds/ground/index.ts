@@ -1,7 +1,8 @@
 // The ground: rolling land out to the horizon, a heightfield in the ground's own frame (its origin
-// lies on it: height.ts). One a document (exclusive group `ground`). Its relief and spread shape
-// it, its material colours it; the code marches it with detail by distance and lets it shade
-// itself where the land stands between a point and the sun.
+// lies on it: height.ts). One a document (exclusive group `ground`), and the document's land
+// (KindDef.land): what stands on the land reads it through the core's engineLand, never this kind.
+// Its relief and spread shape it, its material colours it; the code marches it with detail by
+// distance and lets it shade itself where the land stands between a point and the sun.
 import { choice, range } from "../../../params.ts";
 import type { KindDef, Vec3 } from "../../types.ts";
 import { GROUND_SLOPE, groundHeight, groundShape } from "./height.ts";
@@ -98,5 +99,6 @@ export const groundKind: KindDef = {
     const length = Math.hypot(n[0], n[1], n[2]);
     return { t: before, normal: [n[0] / length, n[1] / length, n[2] / length] };
   },
+  land: (options, x, z) => groundHeight(x, z, options["relief"] ?? 0, options["spread"] ?? 1),
   code: () => import("./code.ts"),
 };

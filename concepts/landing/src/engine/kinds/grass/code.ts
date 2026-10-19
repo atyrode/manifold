@@ -1,21 +1,19 @@
 // The grass's code (src/engine/glsl.ts, the kind contract). The patch is a layer of blades over the
-// land: the document's ground where it holds one (read from its instance, its own `groundAt`, under
-// ENGINE_GROUND), else the patch's plane; along a ray the land is a line through its heights where
-// the ray enters the patch and where it meets the land. The wind at the patch (engineWind, gusts
-// and all) shears the layer downwind, the more the stronger, over a lie combed in swirls, so every
-// blade is straight in the sheared frame and the ray, sheared too, stays a line: it walks the
-// blades' lattice cell by cell (a 2D DDA, at most GRASS_STEPS cells) and meets each cell's blade as
-// a card facing it, tapering to its tip, curling its own way; some carry a wildflower's head.
-// Detail by distance: a blade narrower than a cell widens and thins in step, and once a cell spans a
-// lattice cell the patch is a carpet at its blades' mean height, textured, with the flowers as
-// colour. Between the blades lies thatch; past the patch's ragged edge the land shows. A gust
-// presses the grass pale (gustAt where it is hit) and its rebound shades it, so gusts cross it as
-// waves.
+// land: the core's (engineLandOver: the document's ground where it holds one, else the patch's
+// plane); along a ray the land is a line through its heights where the ray enters the patch and
+// where it meets the land. The wind at the patch (engineWind, gusts and all) shears the layer
+// downwind, the more the stronger, over a lie combed in swirls, so every blade is straight in the
+// sheared frame and the ray, sheared too, stays a line: it walks the blades' lattice cell by cell (a
+// 2D DDA, at most GRASS_STEPS cells) and meets each cell's blade as a card facing it, tapering to
+// its tip, curling its own way; some carry a wildflower's head. Detail by distance: a blade
+// narrower than a cell widens and thins in step, and once a cell spans a lattice cell the patch is
+// a carpet at its blades' mean height, textured, with the flowers as colour. Between the blades lies
+// thatch; past the patch's ragged edge the land shows. Blades are thin: they pass the key light
+// (Hit.through), green from a high sun and gold toward their tips against a low one, dry and green
+// mixed blade by blade. A gust presses the grass pale (gustAt where it is hit), turns it downwind
+// and flares its glow, and its rebound shades it, so gusts cross it as waves.
 import { glslFloat } from "../../../shaders/glsl.ts";
-import { instanceStride } from "../../instances.ts";
 import type { KindCode } from "../../types.ts";
-import { groundKind } from "../ground/index.ts";
-import { kindRow } from "../index.ts";
 import { GRASS_TOP } from "./index.ts";
 
 /** The blades' lattice cell and a blade's half-width at its root, metres. */
@@ -29,28 +27,20 @@ const float GRASS_CELL = ${glslFloat(CELL)};
 const float GRASS_WIDTH = ${glslFloat(WIDTH)};
 const float GRASS_HEAD = ${glslFloat(HEAD)};
 const float GRASS_TOP = ${glslFloat(GRASS_TOP)};
-const int GRASS_STEPS = 40;
+const int GRASS_STEPS = 30;
 // What a hit is (Hit.part's type, its first digit): a blade, a flower's head, the thatch, the carpet.
 const float GRASS_BLADE = 0.0;
 const float GRASS_FLOWER = 1.0;
 const float GRASS_THATCH = 2.0;
 const float GRASS_CARPET = 3.0;
-const vec3 GRASS_GREEN = vec3(0.3, 0.5, 0.14);
-const vec3 GRASS_STRAW = vec3(0.62, 0.54, 0.3);
+const vec3 GRASS_GREEN = vec3(0.22, 0.38, 0.1);
+const vec3 GRASS_STRAW = vec3(0.56, 0.47, 0.24);
 const vec3 GRASS_PALE = vec3(0.72, 0.78, 0.5);
-
-// The land under point x of the patch (its frame), with no detail finer than foot: its height over
-// the patch's plane.
-float grassFloor(EngineObj o, vec2 x, float foot) {
-#ifdef ENGINE_GROUND
-  if (engineCount(${kindRow(groundKind)}) > 0) {
-    EngineObj g = engineObj(${kindRow(groundKind)}, 0, ${instanceStride(groundKind)});
-    vec3 q = engineToObject(g, enginePointToWorld(o, vec3(x.x, 0.0, x.y)));
-    return (g.at.y + g.scale * groundAt(g, q.xz, foot * o.scale / g.scale) - o.at.y) / o.scale;
-  }
-#endif
-  return 0.0;
-}
+// The key through a blade (Hit.through): a high sun's green, a low sun's, and the gold of a tip
+// against it (the meadow's).
+const vec3 GRASS_SUNLIT = vec3(0.3, 0.62, 0.22);
+const vec3 GRASS_THROUGH = vec3(0.55, 0.62, 0.22);
+const vec3 GRASS_RIM = vec3(1.0, 0.8, 0.45);
 
 // How far inside the patch's ragged edge x lies, metres (below 0: outside it); deep inside, the
 // raggedness cannot reach it.
@@ -83,14 +73,14 @@ float grassHit(EngineObj o, vec3 ro, vec3 rd, vec2 span, out vec3 n, out float p
   // meets the land (refined once there).
   vec3 pa = ro + rd * span.x;
   vec3 pb = ro + rd * span.y;
-  float ha = pa.y - grassFloor(o, pa.xz, span.x * engineCell);
+  float ha = pa.y - engineLandOver(o, pa.xz, span.x * engineCell);
   if (ha < 0.0) return -1.0;
-  float hb = pb.y - grassFloor(o, pb.xz, span.y * engineCell);
+  float hb = pb.y - engineLandOver(o, pb.xz, span.y * engineCell);
   float k = (hb - ha) / max(span.y - span.x, 1e-5);
   if (hb < 0.0) {
     float tg = span.x + ha / max(ha - hb, 1e-6) * (span.y - span.x);
     vec3 pg = ro + rd * tg;
-    float hg = pg.y - grassFloor(o, pg.xz, tg * engineCell);
+    float hg = pg.y - engineLandOver(o, pg.xz, tg * engineCell);
     if (tg - span.x > 1e-3) k = (hg - ha) / (tg - span.x);
   }
   if (k >= 0.0 && ha > top) return -1.0;
@@ -210,20 +200,29 @@ void grassSurface(EngineObj o, vec3 p, inout vec3 n, float part, inout Hit h) {
   float up = floor(rest / 256.0) / 255.0;
   float tone = (rest - floor(rest / 256.0) * 256.0) / 255.0;
   vec3 world = enginePointToWorld(o, p);
-  float foot = length(world - engineCamera().eye) / o.scale * engineCell;
+  float foot = h.eye * engineCell / o.scale;
   // A gust presses the grass over and shows its paler side; just behind it the grass springs back
   // past upright, darker.
   GustWind wind = gustWind();
   float gust = gustAt(wind, world.xz, uMotionTime, foot * 4.0);
   float press = 0.85 * smoothstep(0.1, 0.8, gust);
   float rebound = 1.0 + 0.6 * min(gust, 0.0);
-  // Patches gone further to straw than the rest.
-  float dry = clamp(grassDry(o) + 0.6 * (vnoise(world.xz * 0.35 + 2.1) - 0.5) + 0.3 * (tone - 0.5), 0.0, 1.0);
+  vec3 down = engineDirToObject(o, vec3(wind.dir.x, 0.0, wind.dir.y));
+  // Patches gone further to straw than the rest, and blade by blade dry and green through each other.
+  float dry = clamp(grassDry(o) + 0.6 * (vnoise(world.xz * 0.35 + 2.1) - 0.5) + 0.75 * (tone - 0.5), 0.0, 1.0);
   vec3 albedo = mix(GRASS_GREEN, GRASS_STRAW, dry);
+  // Thin blades let the key through: green from a high sun, gold against a low one, most looking
+  // into it and toward their tips; a gust bows them into the light and they flare.
+  vec3 key = engineKeyLight.dir;
+  float toward = max(dot(h.d, key), 0.0);
+  float glow = (0.08 + 0.7 * toward * toward * toward + 0.9 * pow(toward, 24.0)) * (1.0 + 1.2 * max(gust, 0.0));
+  vec3 through = mix(GRASS_SUNLIT, GRASS_THROUGH, smoothstep(0.5, 0.1, key.y)) * (1.0 - 0.55 * dry);
+  vec3 rim = GRASS_RIM * 1.5 * toward * toward;
   h.rough = 0.85;
   h.mat = int(kind);
   if (kind == GRASS_FLOWER) {
     h.albedo = grassFlower(tone);
+    h.through = 0.3 * glow * h.albedo;
     h.rough = 1.0;
     return;
   }
@@ -245,12 +244,17 @@ void grassSurface(EngineObj o, vec3 p, inout vec3 n, float part, inout Hit h) {
     albedo = mix(albedo, grassFlower(fract(bloom * 13.1)), near * step(bloom, grassFlowers(o) * 0.2));
     albedo = mix(albedo, drift, (1.0 - near) * grassFlowers(o) * 0.12);
     // Pressed over, it faces downwind.
-    vec3 down = engineDirToObject(o, vec3(wind.dir.x, 0.0, wind.dir.y));
     n = normalize(vec3(0.0, 1.0, 0.0) + down * 0.6 * press + vec3(tuft.x - 0.5, 0.0, fbmLod(world.zx * 6.0 + 9.1, foot * 6.0, 2).x - 0.5) * 0.8 * tuft.y);
+    // Its top is the blades' tips, its shading their mean.
+    h.through = (through * (0.5 + 0.5 * tuft.x) + rim * 0.4) * glow * up * up;
   } else {
-    // A blade: dark at its root in the others' shade, lighter to its tip.
+    // A blade: dark at its root in the others' shade, lighter to its tip, which the light catches;
+    // pressed over, it turns its face downwind.
     albedo *= 0.45 + 0.55 * sqrt(up);
+    n = normalize(n + down * press);
+    h.through = (through + rim * up * up) * glow * up * up * sqrt(up);
   }
   h.albedo = mix(albedo, GRASS_PALE, press * (0.3 + 0.7 * up)) * rebound;
+  h.through *= rebound;
 }
 `;

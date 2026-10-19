@@ -7,16 +7,50 @@
 // or save; nothing leaves the page.
 //
 //   bench.html?scenes=a,b&cells=960x540&frames=120&warmup=30&budget=off&auto=1
+//
+// Dev-only options for the engine and software rasterisers (scripts/engine-bench.ts drives them):
+// a scene `canvas:<doc>` is the canvas showing a starter document (src/engine/docs.ts, its title
+// in kebab case: `canvas:lava-room`; `canvas:*` every one) with its World; `sync=1` waits for each
+// frame's draw (it reads a pixel back: WebGL's finish only flushes), so a frame's main-thread time
+// is its draw's where there is no timer; `hold=<s>` keeps each scene drawing at least that many
+// seconds once warm, every frame kept; a lost context fails the scene it happens in; `still=1`
+// stands the motion clock and `view=source` shows the source, to compare a picture across builds.
+import { canvasDocs, exampleDocs } from "./engine/docs.ts";
+import { engineStage } from "./engine/stage.ts";
+import type { EngineDoc } from "./engine/types.ts";
 import { CELL_BUDGET, stageCells } from "./display.ts";
 import { DitherRenderer, type RenderSettings } from "./renderer.ts";
 import { loadScene, sceneIds, type SceneId } from "./scenes/index.ts";
-import { fragmentSourceFor, vertexSource } from "./shaders/index.ts";
-import { defaults, defaultsFor, paramDefaults, renderSettings } from "./state.ts";
+import type { SceneDef } from "./scenes/types.ts";
+import {
+  featureKey,
+  fragmentSourceFor,
+  sceneFeatures,
+  shaderValues,
+  vertexSource,
+} from "./shaders/index.ts";
+import { defaults, defaultsFor, paramDefaults, renderSettings, type Params } from "./state.ts";
 
 /** The budget the README sets: one full-screen pass at ~960×540 cells holds 60 fps. */
 const BUDGET_CELLS = "960x540";
 /** How long a scene may take to compile, to reach the screen, and to give its frames. */
 const SCENE_SECONDS = 60;
+/** The canvas scene, whose entries `canvas:<doc>` show a starter document. */
+const CANVAS: SceneId = "canvas";
+
+/** What one bench entry draws: a scene at its defaults, or the canvas showing a starter document. */
+interface Entry {
+  readonly name: string;
+  readonly scene: SceneId;
+  readonly doc?: EngineDoc;
+}
+
+/** The starter documents' entries: `canvas:` and the title in kebab case. */
+const docEntries: readonly Entry[] = [...canvasDocs, ...exampleDocs].map((doc) => ({
+  name: `${CANVAS}:${doc.title.toLowerCase().replace(/[^a-z0-9]+/g, "-")}`,
+  scene: CANVAS,
+  doc,
+}));
 
 class BenchError extends Error {}
 
@@ -46,6 +80,17 @@ const warmup = Math.max(1, Number(query.get("warmup") ?? 30) || 30);
  * larger grid as the landing does; `budget=off` draws the cells asked for, to time grids past it.
  */
 const budgeted = query.get("budget") !== "off";
+/** Whether each frame waits for its draw (a pixel read back), so `cpuMs` holds it (see the header). */
+const synced = query.get("sync") === "1";
+const syncPixel = new Uint8Array(4);
+/** Seconds each scene keeps drawing once warm, every frame kept (see the header). */
+const hold = Math.max(0, Number(query.get("hold") ?? 0) || 0);
+/** Whether the motion clock stands (motion 0), so a picture can be compared across builds. */
+const still = query.get("still") === "1";
+/** Whether the source shows rather than its dither (`view=source`), for comparing pictures. */
+const source = query.get("view") === "source";
+/** Whether the renderer bounds its draws in strips (src/strips.ts); `strips=off` times whole pictures. */
+const stripped = query.get("strips") !== "off";
 
 /** The middle and the 95th percentile of some frame measurements, in ms. */
 interface Spread {
@@ -64,7 +109,8 @@ function spread(values: readonly number[]): Spread | null {
 }
 
 interface SceneReport {
-  readonly scene: SceneId;
+  /** The entry: a scene id, or `canvas:<doc>` (see the header). */
+  readonly scene: string;
   /** The canvas's cells as the renderer sized it for this scene. */
   readonly cells: string;
   /** Compiling the scene's two shaders at its defaults, then linking its program. */
@@ -78,21 +124,25 @@ interface SceneReport {
   readonly samplers: number | null;
   /** Frames kept once the scene was on screen and warm. */
   readonly frames: number;
-  /** GPU time per frame (a timer query around each frame); null without the extension. */
+  /**
+   * GPU time of each draw of the picture (the renderer's timer query): a strip of it while it is
+   * drawn in strips (src/strips.ts); null without the extension.
+   */
   readonly gpuMs: Spread | null;
+  /** The strips the picture was drawn in at the end (1: whole). */
+  readonly strips: number | null;
+  /** A whole picture's GPU time: the timed draws' mean time a row, times the rows. */
+  readonly pictureMs: number | null;
   /** Time from one drawn frame to the next: what the display got, capped by its refresh rate. */
   readonly intervalMs: Spread | null;
-  /** Main-thread time of each frame: the scene's simulation and the renderer's calls. */
+  /**
+   * Main-thread time of each frame: the scene's simulation and the renderer's calls (with `sync=1`,
+   * its draw too).
+   */
   readonly cpuMs: Spread | null;
-  /** The median frame time per million cells: from the GPU timer when there is one, else rAF. */
+  /** The median picture's time per million cells: the GPU timer's, else `cpuMs` (sync=1), else rAF's. */
   readonly msPerMegacell: number | null;
   readonly error?: string;
-}
-
-/** EXT_disjoint_timer_query_webgl2: elapsed-time queries on the GPU, and whether they were upset. */
-interface TimerQuery {
-  readonly TIME_ELAPSED_EXT: number;
-  readonly GPU_DISJOINT_EXT: number;
 }
 
 const SAMPLERS = new Set<number>([
@@ -125,11 +175,14 @@ const MATRIX_ROWS = new Map<number, number>([
   [WebGL2RenderingContext.FLOAT_MAT4x3, 4],
 ]);
 
-/** Waits for `done`, a task at a time (shader completion status only changes between tasks). */
-async function until(done: () => boolean, what: string): Promise<void> {
-  const deadline = performance.now() + SCENE_SECONDS * 1000;
+/**
+ * Waits for `done`, a task at a time (shader completion status only changes between tasks), at most
+ * `seconds`.
+ */
+async function until(done: () => boolean, what: string, seconds = SCENE_SECONDS): Promise<void> {
+  const deadline = performance.now() + seconds * 1000;
   while (!done()) {
-    if (performance.now() > deadline) throw new BenchError(`${what} took over ${SCENE_SECONDS} s`);
+    if (performance.now() > deadline) throw new BenchError(`${what} took over ${seconds} s`);
     const next = Promise.withResolvers<void>();
     setTimeout(next.resolve, 0);
     await next.promise;
@@ -138,47 +191,66 @@ async function until(done: () => boolean, what: string): Promise<void> {
 
 /** One tick of the renderer's loop, as the page measured it. */
 interface Frame {
+  /** Its rAF time. */
+  readonly at: number;
   /** The program that drew to the screen this frame, or null when nothing did. */
   readonly shown: WebGLProgram | null;
   readonly cpuMs: number;
   /** Time since the last frame that drew to the screen. */
   readonly intervalMs: number;
-  /** The frame's timer query until the GPU answers it. */
-  query: WebGLQuery | null;
-  gpuMs: number | null;
+}
+
+/** One draw of the picture on screen as the renderer's GPU timer measured it (when it came in). */
+interface Timed {
+  readonly at: number;
+  readonly ms: number;
+  /** The rows it drew (a strip, src/strips.ts, or the whole picture) of how many. */
+  readonly rows: number;
+  readonly height: number;
 }
 
 /**
  * The renderer and the meters around it: one context for the whole run, each scene entered by a
  * cut. The renderer draws unpaced, every tick of its loop (it asks requestAnimationFrame for each),
  * so frames come as fast as the display takes them rather than at the landing's 60 a second; each
- * is timed on the main thread and, with the extension and while a scene is measured, on the GPU.
- * The context's draws to the screen say which program a frame showed, so frames that still show
- * the previous scene, or nothing, are not counted.
+ * is timed on the main thread and, with the extension, on the GPU by the renderer itself (its own
+ * timer queries bound its draws, src/strips.ts: one of the page's around a frame would nest in
+ * them). The context's draws and blits to the screen say which program a frame showed, so frames
+ * that still show the previous scene, or nothing, are not counted.
  */
 class Bench {
   readonly renderer: DitherRenderer;
   readonly gl: WebGL2RenderingContext;
-  readonly timer: TimerQuery | null;
+  /** Whether the context has EXT_disjoint_timer_query_webgl2. */
+  readonly timer: boolean;
   readonly parallel: KHR_parallel_shader_compile | null;
   /** The frames of the scene being measured, from its cut on. */
   #frames: Frame[] | undefined;
-  /** Frames whose timer query the GPU has not answered yet. */
-  #pending: Frame[] = [];
+  /** The draws the GPU timed meanwhile. */
+  #timed: Timed[] | undefined;
   /** rAF time of the last frame that drew to the screen. */
   #lastDrawn = Number.NaN;
   /** The program the last measured scene showed. */
   #lastShown: WebGLProgram | null = null;
+  /** The features key of the last measured entry. */
+  #lastKey = "";
+  /** How many times the context has been lost. */
+  #lost = 0;
 
   constructor(settings: RenderSettings) {
     this.renderer = new DitherRenderer(canvas, settings, false, {
       cellBudget: budgeted ? CELL_BUDGET : Number.POSITIVE_INFINITY,
+      strips: stripped,
+      timed: (ms, rows, height) => this.#timed?.push({ at: performance.now(), ms, rows, height }),
     });
     const gl = canvas.getContext("webgl2");
     if (!gl) throw new BenchError("WebGL2 unavailable");
     this.gl = gl;
-    this.timer = gl.getExtension("EXT_disjoint_timer_query_webgl2");
+    this.timer = gl.getExtension("EXT_disjoint_timer_query_webgl2") !== null;
     this.parallel = gl.getExtension("KHR_parallel_shader_compile");
+    canvas.addEventListener("webglcontextlost", () => {
+      this.#lost += 1;
+    });
 
     let target: WebGLFramebuffer | null = null;
     let program: WebGLProgram | null = null;
@@ -198,68 +270,48 @@ class Bench {
       if (target === null) shown = program;
       drawArrays(mode, first, count);
     };
+    // A picture drawn through the renderer's frame of strips reaches the screen by a blit.
+    const blitFramebuffer = gl.blitFramebuffer.bind(gl);
+    gl.blitFramebuffer = (...args) => {
+      if (target === null) shown = program;
+      blitFramebuffer(...args);
+    };
 
     const nativeFrame = window.requestAnimationFrame.bind(window);
     window.requestAnimationFrame = (callback) =>
       nativeFrame((now) => {
-        this.#collect();
-        const timer = this.#frames === undefined ? null : this.timer;
-        const query = timer === null ? null : gl.createQuery();
-        if (timer !== null && query !== null) gl.beginQuery(timer.TIME_ELAPSED_EXT, query);
         shown = null;
         const started = performance.now();
         try {
           callback(now);
         } finally {
-          if (timer !== null && query !== null) gl.endQuery(timer.TIME_ELAPSED_EXT);
+          if (synced) gl.readPixels(0, 0, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, syncPixel);
           const frame: Frame = {
+            at: now,
             shown,
             cpuMs: performance.now() - started,
             intervalMs: now - this.#lastDrawn,
-            query,
-            gpuMs: null,
           };
           if (shown !== null) this.#lastDrawn = now;
           this.#frames?.push(frame);
-          if (query !== null) this.#pending.push(frame);
         }
       });
     this.renderer.start({ paced: false });
   }
 
-  /** Reads the timer queries the GPU has answered; a disjoint event voids every one in flight. */
-  #collect(): void {
-    const { gl, timer } = this;
-    if (timer === null || this.#pending.length === 0) return;
-    const disjoint = gl.getParameter(timer.GPU_DISJOINT_EXT) === true;
-    const waiting: Frame[] = [];
-    for (const frame of this.#pending) {
-      const query = frame.query;
-      if (query === null) continue;
-      if (!disjoint && gl.getQueryParameter(query, gl.QUERY_RESULT_AVAILABLE) !== true) {
-        waiting.push(frame);
-        continue;
-      }
-      if (!disjoint) frame.gpuMs = Number(gl.getQueryParameter(query, gl.QUERY_RESULT)) / 1e6;
-      gl.deleteQuery(query);
-      frame.query = null;
-    }
-    this.#pending = waiting;
-  }
-
-  /** Compiles and links `id`'s program at its defaults beside the renderer, timing each step. */
+  /** Compiles and links `entry`'s program at its defaults beside the renderer, timing each step. */
   async build(
-    id: SceneId,
+    entry: Entry,
   ): Promise<Pick<SceneReport, "compileMs" | "linkMs" | "uniformVectors" | "samplers">> {
     const { gl, parallel } = this;
-    const scene = await loadScene(id);
+    const scene = await loadScene(entry.scene);
     const program = gl.createProgram();
     const shaders: WebGLShader[] = [];
     try {
       const compiling = performance.now();
       for (const [kind, source] of [
         [gl.VERTEX_SHADER, vertexSource],
-        [gl.FRAGMENT_SHADER, fragmentSourceFor(scene)],
+        [gl.FRAGMENT_SHADER, fragmentSourceFor(scene, featuresOf(entry, scene))],
       ] as const) {
         const shader = gl.createShader(kind);
         if (!shader) throw new BenchError("shader allocation failed");
@@ -312,40 +364,104 @@ class Bench {
   }
 
   /**
-   * Cuts to `id` and returns `count` of its frames: from the first frame that shows a program other
-   * than the previous scene's, `warmup` frames are let go, then `count` are kept, each with its GPU
-   * time once the GPU has answered.
+   * Cuts to `entry` and returns `count` of its frames (every one drawn over `hold` seconds, if
+   * longer): from the first frame that shows a program other than the previous entry's (any, if
+   * it draws with the same), `warmup` frames are let go, then the rest are kept; and the draws the
+   * GPU timed from the first kept frame on, as many at least where it times them. A context lost
+   * meanwhile fails it.
    */
-  async sample(id: SceneId, count: number): Promise<Frame[]> {
+  async sample(
+    entry: Entry,
+    count: number,
+    key: string,
+  ): Promise<{ frames: Frame[]; timed: Timed[] }> {
     const frames: Frame[] = [];
-    const before = this.#lastShown;
-    const kept = (): Frame[] => {
+    const timed: Timed[] = [];
+    const before = key === this.#lastKey ? null : this.#lastShown;
+    const lost = this.#lost;
+    // The frames shown from the cut on, up to the last one kept: `warmup` + `count` of them, or as
+    // many as reach `hold` seconds past the first one kept; undefined until there are as many.
+    const kept = (): Frame[] | undefined => {
       const entered = frames.findIndex((frame) => frame.shown !== null && frame.shown !== before);
-      return entered === -1 ? [] : frames.slice(entered).filter((frame) => frame.shown !== null);
+      const shown =
+        entered === -1 ? [] : frames.slice(entered).filter((frame) => frame.shown !== null);
+      const warm = shown[warmup];
+      if (warm === undefined) return undefined;
+      const held = shown.findIndex((frame) => frame.at - warm.at >= hold * 1000);
+      const end = Math.max(warmup + count, held + 1);
+      return held === -1 || shown.length < end ? undefined : shown.slice(0, end);
     };
+    const timedSince = (at: number): Timed[] => timed.filter((draw) => draw.at >= at);
     this.#frames = frames;
+    this.#timed = timed;
+    let shown: Frame[] | undefined;
     try {
-      this.renderer.update(settingsFor(id));
-      await until(() => {
-        const failure = this.renderer.failure;
-        if (failure?.scene === id) throw new BenchError(`${failure.stage}: ${failure.message}`);
-        const shown = kept().slice(0, warmup + count);
-        return shown.length === warmup + count && shown.every((frame) => frame.query === null);
-      }, "drawing");
+      this.renderer.update(settingsFor(entry));
+      await until(
+        () => {
+          if (this.#lost !== lost) throw new BenchError("the context was lost");
+          const failure = this.renderer.failure;
+          if (failure?.scene === entry.scene)
+            throw new BenchError(`${failure.stage}: ${failure.message}`);
+          shown = kept();
+          const warm = shown?.[warmup];
+          return warm !== undefined && (!this.timer || timedSince(warm.at).length >= count);
+        },
+        "drawing",
+        SCENE_SECONDS + hold,
+      );
     } finally {
       this.#frames = undefined;
+      this.#timed = undefined;
     }
-    const shown = kept();
-    this.#lastShown = shown.at(-1)?.shown ?? before;
-    return shown.slice(warmup, warmup + count);
+    this.#lastShown = shown?.at(-1)?.shown ?? before;
+    this.#lastKey = key;
+    const warm = shown?.[warmup];
+    return {
+      frames: shown?.slice(warmup) ?? [],
+      timed: warm === undefined ? [] : timedSince(warm.at),
+    };
   }
 }
 
-/** `id` at its defaults, one cell per device pixel. */
-function settingsFor(id: SceneId): RenderSettings {
+/** `entry`'s knob values: its scene's defaults, and a starter document's World over them. */
+function paramsOf(entry: Entry): Params {
+  return { ...paramDefaults(entry.scene), ...entry.doc?.world };
+}
+
+/** The features `entry` draws with: its scene's at its defaults, or a document's with its World. */
+function featuresOf(entry: Entry, scene: SceneDef): Readonly<Record<string, number>> {
+  return entry.doc === undefined
+    ? sceneFeatures(scene)
+    : sceneFeatures(scene, shaderValues(scene, paramsOf(entry)));
+}
+
+/**
+ * Shows `entry`'s document on the engine's stage once the code of its kinds has loaded: the canvas
+ * scene's features and its sim follow the stage.
+ */
+async function stage(entry: Entry): Promise<void> {
+  if (entry.doc === undefined) return;
+  let shown = false;
+  engineStage.show(entry.doc, () => {
+    shown = true;
+  });
+  await until(() => shown, "loading its kinds' code");
+}
+
+/** `entry` at its defaults (a document's World over them), one cell per device pixel. */
+function settingsFor(entry: Entry): RenderSettings {
+  const state = defaultsFor(entry.scene);
   return renderSettings(
-    { ...defaultsFor(id), pixel: 1 / devicePixelRatio, transitions: "off", mouse: "still" },
-    paramDefaults(id),
+    {
+      ...state,
+      pixel: 1 / devicePixelRatio,
+      transitions: "off",
+      mouse: "still",
+      motion: still ? 0 : state.motion,
+      view: source ? "source" : state.view,
+    },
+    paramsOf(entry),
   );
 }
 
@@ -379,7 +495,7 @@ function contextReport(bench: Bench): Record<string, unknown> {
     renderer: String(gl.getParameter(gl.RENDERER)),
     unmaskedVendor: debug ? String(gl.getParameter(debug.UNMASKED_VENDOR_WEBGL)) : null,
     unmaskedRenderer: debug ? String(gl.getParameter(debug.UNMASKED_RENDERER_WEBGL)) : null,
-    timerQuery: bench.timer !== null,
+    timerQuery: bench.timer,
     parallelCompile: bench.parallel !== null,
     limits: Object.fromEntries(limits.map((name) => [name, Number(gl.getParameter(gl[name]))])),
     fragmentPrecision: {
@@ -405,14 +521,24 @@ async function run(): Promise<void> {
     .split(",")
     .map((id) => id.trim())
     .filter((id) => id !== "");
-  const unknown = asked.filter((id) => !sceneIds.some((scene) => scene === id));
-  if (unknown.length > 0) throw new BenchError(`unknown scenes: ${unknown.join(", ")}`);
-  const scenes =
-    asked.length === 0 ? sceneIds : asked.flatMap((id) => sceneIds.filter((scene) => scene === id));
+  const entryOf = (name: string): readonly Entry[] =>
+    name === `${CANVAS}:*`
+      ? docEntries
+      : [
+          ...docEntries.filter((entry) => entry.name === name),
+          ...sceneIds.filter((scene) => scene === name).map((scene) => ({ name, scene })),
+        ];
+  const unknown = asked.filter((name) => entryOf(name).length === 0);
+  if (unknown.length > 0)
+    throw new BenchError(
+      `unknown scenes: ${unknown.join(", ")} (documents: ${docEntries.map((entry) => entry.name).join(", ")}, ${CANVAS}:*)`,
+    );
+  const entries: Entry[] =
+    asked.length === 0 ? sceneIds.map((scene) => ({ name: scene, scene })) : asked.flatMap(entryOf);
   const [width = 0, height = 0] = cellsInput.value.split("x").map(Number);
   if (!(width >= 1 && height >= 1)) throw new BenchError("cells takes WxH, as 960x540");
   const frames = Math.max(10, Math.round(Number(framesInput.value)) || 120);
-  const first = scenes[0];
+  const first = entries[0];
   if (first === undefined) throw new BenchError("no scene to time");
 
   // One cell per device pixel (settingsFor), so the canvas's CSS size is its cells over the ratio.
@@ -446,6 +572,8 @@ async function run(): Promise<void> {
       cells: `${width}x${height}`,
       frames,
       warmup,
+      sync: synced,
+      hold,
       cellBudget: budgeted ? CELL_BUDGET : null,
     },
     scenes: results,
@@ -454,23 +582,36 @@ async function run(): Promise<void> {
     reportBox.value = JSON.stringify(report, null, 2);
   };
   show();
-  for (const [index, id] of scenes.entries()) {
-    status.textContent = `${index + 1}/${scenes.length}: ${id}`;
+  for (const [index, entry] of entries.entries()) {
+    status.textContent = `${index + 1}/${entries.length}: ${entry.name}`;
     let result: SceneReport;
     try {
-      const built = await bench.build(id);
-      const kept = await bench.sample(id, frames);
-      const gpuMs = spread(kept.flatMap((frame) => (frame.gpuMs === null ? [] : [frame.gpuMs])));
-      const intervalMs = spread(kept.map((frame) => frame.intervalMs));
-      const median = gpuMs?.median ?? intervalMs?.median;
+      await stage(entry);
+      const built = await bench.build(entry);
+      const key = featureKey(featuresOf(entry, await loadScene(entry.scene)));
+      const kept = await bench.sample(entry, frames, key);
+      const gpuMs = spread(kept.timed.map((draw) => draw.ms));
+      // The draws' mean time a row: over whole passes, a whole picture's time a row.
+      const timedRows = kept.timed.reduce((sum, draw) => sum + draw.rows, 0);
+      const rate =
+        timedRows === 0
+          ? undefined
+          : kept.timed.reduce((sum, draw) => sum + draw.ms, 0) / timedRows;
+      const pictureMs =
+        rate === undefined ? null : Math.round(rate * (kept.timed[0]?.height ?? 0) * 10) / 10;
+      const intervalMs = spread(kept.frames.map((frame) => frame.intervalMs));
+      const cpuMs = spread(kept.frames.map((frame) => frame.cpuMs));
+      const median = pictureMs ?? (synced ? cpuMs : intervalMs)?.median;
       result = {
-        scene: id,
+        scene: entry.name,
         cells: `${canvas.width}x${canvas.height}`,
         ...built,
-        frames: kept.length,
+        frames: kept.frames.length,
         gpuMs,
+        strips: bench.renderer.strips,
+        pictureMs,
         intervalMs,
-        cpuMs: spread(kept.map((frame) => frame.cpuMs)),
+        cpuMs,
         msPerMegacell:
           median === undefined
             ? null
@@ -478,7 +619,7 @@ async function run(): Promise<void> {
       };
     } catch (error: unknown) {
       result = {
-        scene: id,
+        scene: entry.name,
         cells: `${canvas.width}x${canvas.height}`,
         compileMs: null,
         linkMs: null,
@@ -486,6 +627,8 @@ async function run(): Promise<void> {
         samplers: null,
         frames: 0,
         gpuMs: null,
+        strips: null,
+        pictureMs: null,
         intervalMs: null,
         cpuMs: null,
         msPerMegacell: null,
@@ -493,16 +636,16 @@ async function run(): Promise<void> {
       };
     }
     results.push(result);
-    const frameMs = result.gpuMs ?? result.intervalMs;
+    const frameMs = result.gpuMs ?? (synced ? result.cpuMs : result.intervalMs);
     const row = document.createElement("tr");
     row.append(
-      cell(id),
+      cell(entry.name),
       cell(result.compileMs),
       cell(result.linkMs),
       cell(result.uniformVectors),
       cell(frameMs?.median),
       cell(frameMs?.p95),
-      cell(result.error ?? (result.gpuMs === null ? "rAF" : "GPU timer")),
+      cell(result.error ?? (result.gpuMs === null ? (synced ? "read back" : "rAF") : "GPU timer")),
       cell(result.msPerMegacell),
     );
     rows.append(row);

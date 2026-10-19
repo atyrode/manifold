@@ -262,14 +262,20 @@ void roomDoor(vec4 q, bool leaf, vec3 ro, vec3 rd, vec3 inv, float from, inout f
   if (t < before) part = ROOM_P_HANDLE;
 }
 
+// Whether the ray ro + rd t of wall s's frame, t in [from, t), crosses the box of all it holds.
+bool roomReaches(RoomShape r, int s, vec3 ro, vec3 rd, float from, float t) {
+  float reach = s == 0 || s == 2 ? 0.5 * r.w + ROOM_T : 0.5 * r.d;
+  vec2 cull = engineSlab(ro, rd, vec3(-reach, 0.0, -ROOM_T - ROOM_OUT), vec3(reach, r.top, ROOM_IN));
+  return cull.x <= cull.y && cull.y >= from && cull.x < t;
+}
+
 // Wall s and all it holds against the ray ro + rd t of its frame, t in [from, t): t, n (its frame)
 // and part become the nearest hit's. Skipped unless the ray crosses the box of all it holds.
 void roomSide(EngineObj o, RoomShape r, int s, vec3 ro, vec3 rd, float from, bool shadow, inout float t, inout vec3 n, inout float part) {
+  if (!roomReaches(r, s, ro, rd, from, t)) return;
   bool across = s == 0 || s == 2;
   float inside = across ? r.w : r.d;
   float reach = across ? 0.5 * r.w + ROOM_T : 0.5 * r.d;
-  vec2 cull = engineSlab(ro, rd, vec3(-reach, 0.0, -ROOM_T - ROOM_OUT), vec3(reach, r.top, ROOM_IN));
-  if (cull.x > cull.y || cull.y < from || cull.x >= t) return;
   vec3 inv = roomInv(rd);
   vec2 op = roomOpenings(o, s);
   bool door = op.y > 0.5;
@@ -325,9 +331,22 @@ void roomSide(EngineObj o, RoomShape r, int s, vec3 ro, vec3 rd, float from, boo
   }
   if (r.ceiling && roomCutBox(ro, rd, inv, vec3(-0.5 * inside, r.top - ROOM_CORNICE.x, 0.0), vec3(0.5 * inside, r.top, ROOM_CORNICE.y), vec4(0.0, -1.0 / ROOM_CORNICE.x, 1.0 / ROOM_CORNICE.y, 1.0 - r.top / ROOM_CORNICE.x), from, t, n))
     part = ROOM_P_CORNICE;
+  // The trims of the openings the ray reaches (bit k), gathered first so that a software rasteriser
+  // works out as many as a cell reaches rather than every one (src/engine/glsl.ts "What a program
+  // costs"); each is tried again as the hits so far leave it.
   float m = ROOM_STOOL.z + 0.01;
+  uint reached = 0u;
   for (int k = 0; k < 4; k++) {
-    if (k >= count || (shadow && part >= 0.0)) break;
+    if (k >= count) break;
+    vec4 q = ops[k];
+    vec2 box = engineSlab(ro, rd, vec3(q.x - q.y - m, q.z - 0.12, -ROOM_T - ROOM_OUT), vec3(q.x + q.y + m, q.w + ROOM_CASING.x + 0.01, ROOM_IN));
+    if (box.x <= box.y && box.y >= from && box.x < t) reached |= 1u << uint(k);
+  }
+  while (reached != 0u) {
+    if (shadow && part >= 0.0) break;
+    uint low = reached & (~reached + 1u);
+    reached ^= low;
+    int k = int(log2(float(low)) + 0.5);
     vec4 q = ops[k];
     vec2 box = engineSlab(ro, rd, vec3(q.x - q.y - m, q.z - 0.12, -ROOM_T - ROOM_OUT), vec3(q.x + q.y + m, q.w + ROOM_CASING.x + 0.01, ROOM_IN));
     if (box.x > box.y || box.y < from || box.x >= t) continue;
@@ -347,8 +366,15 @@ float roomTrace(EngineObj o, vec3 ro, vec3 rd, vec2 span, bool shadow, out vec3 
   if (r.ceiling && roomBox(ro, inv, vec3(-0.5 * r.w - ROOM_T, r.top, -0.5 * r.d - ROOM_T), vec3(0.5 * r.w + ROOM_T, r.top + ROOM_CEILING_T, 0.5 * r.d + ROOM_T), span.x, t, n)) part = ROOM_P_CEILING;
   if (shadow && part >= 0.0) return t;
   if (roomBox(ro, inv, vec3(-0.5 * r.w, 0.0, -0.5 * r.d), vec3(0.5 * r.w, ROOM_FLOOR_TOP, 0.5 * r.d), span.x, t, n)) part = ROOM_P_FLOOR;
-  for (int s = 0; s < 4; s++) {
+  // The walls the ray reaches (bit s), gathered first as their openings are (roomSide).
+  uint walls = 0u;
+  for (int s = 0; s < 4; s++)
+    if (roomReaches(r, s, roomWallPoint(r, s, ro), roomWallDir(s, rd), span.x, t)) walls |= 1u << uint(s);
+  while (walls != 0u) {
     if (shadow && part >= 0.0) break;
+    uint low = walls & (~walls + 1u);
+    walls ^= low;
+    int s = int(log2(float(low)) + 0.5);
     float before = t;
     vec3 m = n;
     roomSide(o, r, s, roomWallPoint(r, s, ro), roomWallDir(s, rd), span.x, shadow, t, m, part);

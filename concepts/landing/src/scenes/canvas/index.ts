@@ -24,6 +24,7 @@ export const canvasScene: SceneDef = {
     "The engine's canvas: one world in metres and a free camera, with objects placed anywhere in it.",
   accent: "#c8a24a",
   look: { color: "full", levels: 4 },
+  strips: true,
   // The night sky's planets, where the land's hang them (src/scenes/meadow).
   planets: { group: "sky", across: [-84, -22, -8], up: [0, 14, 26] },
   params: [

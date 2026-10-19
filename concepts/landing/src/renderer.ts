@@ -41,6 +41,7 @@ import type { PrincipalState, SceneSim, SceneTurn } from "./scenes/types.ts";
 import { featureKey, packParams, vertexSource } from "./shaders/index.ts";
 import { forgetSheets } from "./scenes/pond/sheet.ts";
 import type { Params } from "./state.ts";
+import { STRIPS, StripScheduler } from "./strips.ts";
 
 export const ditherIds = ["bayer8", "bayer4", "ign", "none"] as const;
 export type DitherId = (typeof ditherIds)[number];
@@ -290,21 +291,57 @@ function rgb(hex: string): [number, number, number] {
   return [((n >> 16) & 255) / 255, ((n >> 8) & 255) / 255, (n & 255) / 255];
 }
 
+/** EXT_disjoint_timer_query_webgl2: elapsed-time queries on the GPU, and whether they were upset. */
+interface TimerQuery {
+  readonly TIME_ELAPSED_EXT: number;
+  readonly GPU_DISJOINT_EXT: number;
+}
+
 /**
  * What the context holds for every scene's program, made at start and again once a lost context
  * is restored: what programs are built with (`ProgramContext`: the vertex shader they share,
  * KHR_parallel_shader_compile when the browser has it, whether the context renders in software),
  * the vertex array every draw uses (bound again after a failed frame, see `#fail`), a black texel
  * for unbound sim slots, the frame the leaving scene draws into while the incoming one dissolves
- * out of it and its framebuffer (sized in `#draw`), and the WebGL version and renderer, for
- * diagnosing remote reports.
+ * out of it and its framebuffer (sized in `#draw`), the frame a picture drawn in strips is drawn
+ * into and its framebuffer (src/strips.ts, sized in `#render`), the GPU's timer for the draws, and
+ * the WebGL version and renderer, for diagnosing remote reports.
  */
 interface GlResources extends ProgramContext {
   vertexArray: WebGLVertexArrayObject;
   blank: WebGLTexture;
   leavingFrame: WebGLTexture;
   leavingTarget: WebGLFramebuffer;
+  stripFrame: WebGLTexture;
+  stripTarget: WebGLFramebuffer;
+  timer: TimerQuery | null;
   info: string;
+}
+
+/** A frame of nearest-sampled RGBA (one texel until sized) and a framebuffer drawing into it. */
+function frameTarget(gl: WebGL2RenderingContext): [WebGLTexture, WebGLFramebuffer] {
+  const frame = gl.createTexture();
+  gl.bindTexture(gl.TEXTURE_2D, frame);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+  gl.texImage2D(
+    gl.TEXTURE_2D,
+    0,
+    gl.RGBA,
+    1,
+    1,
+    0,
+    gl.RGBA,
+    gl.UNSIGNED_BYTE,
+    new Uint8Array([0, 0, 0, 255]),
+  );
+  const target = gl.createFramebuffer();
+  gl.bindFramebuffer(gl.FRAMEBUFFER, target);
+  gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, frame, 0);
+  gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+  return [frame, target];
 }
 
 function glResources(gl: WebGL2RenderingContext): GlResources {
@@ -330,33 +367,19 @@ function glResources(gl: WebGL2RenderingContext): GlResources {
     gl.UNSIGNED_BYTE,
     new Uint8Array([0, 0, 0, 255]),
   );
-  const leavingFrame = gl.createTexture();
-  gl.bindTexture(gl.TEXTURE_2D, leavingFrame);
-  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
-  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
-  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
-  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
-  gl.texImage2D(
-    gl.TEXTURE_2D,
-    0,
-    gl.RGBA,
-    1,
-    1,
-    0,
-    gl.RGBA,
-    gl.UNSIGNED_BYTE,
-    new Uint8Array([0, 0, 0, 255]),
-  );
-  const leavingTarget = gl.createFramebuffer();
-  gl.bindFramebuffer(gl.FRAMEBUFFER, leavingTarget);
-  gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, leavingFrame, 0);
-  gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+  const [leavingFrame, leavingTarget] = frameTarget(gl);
+  const [stripFrame, stripTarget] = frameTarget(gl);
+  // The renderer's alone: a query of the page's own around a frame would nest in its draw's.
+  const timer: TimerQuery | null = gl.getExtension("EXT_disjoint_timer_query_webgl2");
   return {
     vertex,
     vertexArray,
     blank,
     leavingFrame,
     leavingTarget,
+    stripFrame,
+    stripTarget,
+    timer,
     parallel,
     software: SOFTWARE_RENDERER.test(String(gpu)),
     info: `${String(gl.getParameter(gl.VERSION))} · ${String(gpu)}`,
@@ -515,6 +538,19 @@ export class DitherRenderer {
   } = { start: -Infinity, entered: 0, from: undefined, reveal: false, crossfade: false };
   #reenter = false;
   readonly #leavingSize = { width: 0, height: 0 };
+  /**
+   * The strips the picture on screen is drawn in (src/strips.ts), unless off (`options.strips`):
+   * how many, and the one each frame draws, from the GPU's time for its draws.
+   */
+  readonly #strips = new StripScheduler();
+  readonly #stripping: boolean;
+  /** The program the strips were last set for: a new one starts them afresh. */
+  #stripsFor: SceneProgram | undefined;
+  readonly #stripSize = { width: 0, height: 0 };
+  /** The on-screen draws the GPU has not timed yet: each one's query, the rows it drew, of how many. */
+  #timings: { query: WebGLQuery; rows: number; height: number }[] = [];
+  /** Told each on-screen draw's GPU time (`options.timed`). */
+  readonly #timed: ((ms: number, rows: number, height: number) => void) | undefined;
   /** What the leaving scene's sim and shader see of the triggers: none fire. */
   readonly #quietTriggers: readonly number[] = Array.from({ length: MAX_TRIGGERS }, () => NEVER);
   readonly #quietFired: readonly boolean[] = Array.from({ length: MAX_TRIGGERS }, () => false);
@@ -523,13 +559,19 @@ export class DitherRenderer {
   /**
    * `frozen`: reduced motion (see `#interactionClock`). `options.cellBudget`: the cells a frame is
    * budgeted (default CELL_BUDGET, src/display.ts; the GPU timing page lifts it to time larger
-   * grids).
+   * grids). `options.strips` false draws every picture whole however long it takes (the GPU timing
+   * page, to time a whole picture); `options.timed` is told the GPU's time for each draw of the
+   * picture on screen, the rows it drew and of how many.
    */
   constructor(
     canvas: HTMLCanvasElement,
     settings: RenderSettings,
     frozen: boolean,
-    options: { cellBudget?: number } = {},
+    options: {
+      cellBudget?: number;
+      strips?: boolean;
+      timed?: (ms: number, rows: number, height: number) => void;
+    } = {},
   ) {
     const gl = canvas.getContext("webgl2", {
       antialias: false,
@@ -542,6 +584,8 @@ export class DitherRenderer {
     this.#governor.rest = settings.rest;
     this.#frozen = frozen;
     this.#gpu = glResources(gl);
+    this.#stripping = options.strips ?? true;
+    this.#timed = options.timed;
     this.#programs = new ScenePrograms(
       gl,
       () => this.#gpu,
@@ -784,6 +828,11 @@ export class DitherRenderer {
     return this.#gpu.info;
   }
 
+  /** How many strips the picture on screen is drawn in (src/strips.ts): 1 draws it whole. */
+  get strips(): number {
+    return this.#stripping ? this.#strips.strips : 1;
+  }
+
   /** The cell grid the scene on screen draws at (src/display.ts `stageCells`). */
   get grid(): { readonly width: number; readonly height: number } {
     const cells = this.#stage.cells(this.#settings.pixel);
@@ -931,9 +980,9 @@ export class DitherRenderer {
   }
 
   /**
-   * The context is lost: let go of every scene and program, which went with it, and of the sheets
-   * the scenes' painters kept on it (src/sheet.ts), which a scene entered after the restore would
-   * otherwise adopt dead.
+   * The context is lost: let go of every scene and program, which went with it, of the sheets the
+   * scenes' painters kept on it (src/sheet.ts), which a scene entered after the restore would
+   * otherwise adopt dead, and of the draws' timer queries.
    */
   #lose(): void {
     const leaving = this.#leaving;
@@ -947,6 +996,8 @@ export class DitherRenderer {
     this.#rebuild = false;
     this.#waiting = false;
     this.#entering = false;
+    this.#timings = [];
+    this.#stripsFor = undefined;
     this.#programs.lose();
     forgetSheets(this.#gl);
   }
@@ -961,6 +1012,8 @@ export class DitherRenderer {
     }
     this.#leavingSize.width = 0;
     this.#leavingSize.height = 0;
+    this.#stripSize.width = 0;
+    this.#stripSize.height = 0;
     this.#governor.wake(SETTLE_SECONDS);
   }
 
@@ -1461,6 +1514,44 @@ export class DitherRenderer {
     gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, width, height, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
   }
 
+  /** Size the frame the picture on screen is drawn into in strips to its cells, `bg` until drawn. */
+  #sizeStrips(width: number, height: number, bg: string): void {
+    const size = this.#stripSize;
+    if (size.width === width && size.height === height) return;
+    size.width = width;
+    size.height = height;
+    const gl = this.#gl;
+    gl.activeTexture(gl.TEXTURE0 + LEAVING_UNIT);
+    gl.bindTexture(gl.TEXTURE_2D, this.#gpu.stripFrame);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, width, height, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, this.#gpu.stripTarget);
+    gl.clearColor(...rgb(bg), 1);
+    gl.clear(gl.COLOR_BUFFER_BIT);
+  }
+
+  /**
+   * Hand the strips (and `options.timed`) the GPU's time for each on-screen draw it has timed, in
+   * the order they were drawn; a disjoint event (the GPU's clock upset) voids every one in flight.
+   */
+  #timeDraws(): void {
+    const gl = this.#gl;
+    const timer = this.#gpu.timer;
+    if (timer === null || this.#timings.length === 0) return;
+    const disjoint = gl.getParameter(timer.GPU_DISJOINT_EXT) === true;
+    let done = 0;
+    for (const { query, rows, height } of this.#timings) {
+      if (!disjoint && gl.getQueryParameter(query, gl.QUERY_RESULT_AVAILABLE) !== true) break;
+      if (!disjoint) {
+        const ms = Number(gl.getQueryParameter(query, gl.QUERY_RESULT)) / 1e6;
+        this.#strips.measured(ms, rows, height);
+        this.#timed?.(ms, rows, height);
+      }
+      gl.deleteQuery(query);
+      done += 1;
+    }
+    this.#timings.splice(0, done);
+  }
+
   /**
    * Step `scene`'s simulation and draw it with `program` into `draw.target`, with `visitor` and the
    * cast's agents present; a scene that cannot draw (no program, or failed) clears the target to
@@ -1568,10 +1659,30 @@ export class DitherRenderer {
         features: program.key,
       }) ?? [];
 
-    gl.bindFramebuffer(gl.FRAMEBUFFER, target);
+    // The picture on screen of a scene that asks for it (SceneDef.strips, the engine's canvas) is
+    // bounded (src/strips.ts): drawn a strip at a time into a frame of its own, shown whole every
+    // frame, while a whole one draws too slowly, and on a software rasteriser always through that
+    // frame, so a pass that begins finds the last picture in it. A program's first draw is not
+    // timed: it builds the program on the GPU too.
+    const gpu = this.#gpu;
+    const onScreen = target === null && !draw.oneCell;
+    const stripped = this.#stripping && sceneDefs[scene.id].strips === true;
+    const first = onScreen && program !== this.#stripsFor;
+    let rows: readonly [number, number] = [0, height];
+    let framed = false;
+    if (onScreen) {
+      this.#timeDraws();
+      if (first) {
+        this.#stripsFor = program;
+        this.#strips.reset(stripped && gpu.software ? STRIPS.start : 1);
+      }
+      if (stripped) rows = this.#strips.rows(height);
+      framed = stripped && (gpu.software || this.#strips.strips > 1);
+      if (framed) this.#sizeStrips(width, height, s.bg);
+    }
+    gl.bindFramebuffer(gl.FRAMEBUFFER, framed ? gpu.stripTarget : target);
     gl.viewport(0, 0, draw.oneCell ? 1 : width, draw.oneCell ? 1 : height);
     gl.useProgram(program.program);
-    const gpu = this.#gpu;
     for (let slot = 0; slot < SIM_SLOTS; slot++) {
       gl.activeTexture(gl.TEXTURE0 + slot);
       gl.bindTexture(gl.TEXTURE_2D, simTextures[slot] ?? gpu.blank);
@@ -1651,7 +1762,25 @@ export class DitherRenderer {
         (simOn >> 7) & 1,
       );
     }
+    const timer = onScreen && !first ? gpu.timer : null;
+    const query = timer === null ? null : gl.createQuery();
+    if (timer !== null && query !== null) gl.beginQuery(timer.TIME_ELAPSED_EXT, query);
+    const strip = rows[0] > 0 || rows[1] < height;
+    if (strip) {
+      gl.enable(gl.SCISSOR_TEST);
+      gl.scissor(0, rows[0], width, rows[1] - rows[0]);
+    }
     gl.drawArrays(gl.TRIANGLES, 0, 3);
+    if (strip) gl.disable(gl.SCISSOR_TEST);
+    if (timer !== null && query !== null) {
+      gl.endQuery(timer.TIME_ELAPSED_EXT);
+      this.#timings.push({ query, rows: rows[1] - rows[0], height });
+    }
+    if (framed) {
+      gl.bindFramebuffer(gl.READ_FRAMEBUFFER, gpu.stripTarget);
+      gl.bindFramebuffer(gl.DRAW_FRAMEBUFFER, null);
+      gl.blitFramebuffer(0, 0, width, height, 0, 0, width, height, gl.COLOR_BUFFER_BIT, gl.NEAREST);
+    }
     gl.bindFramebuffer(gl.FRAMEBUFFER, null);
     this.#drawing = undefined;
     return true;

@@ -327,6 +327,12 @@ export interface SceneDef {
    * preset's own steady mode that builds another program (the dunes' overhead `camera`).
    */
   structural?: readonly string[];
+  /**
+   * Draws its picture in strips across frames while a whole one draws too slowly (src/strips.ts,
+   * the renderer's draw bound): the engine's canvas, whose documents may hold more than a software
+   * rasteriser draws within a frame. Every other scene draws whole, as it always has.
+   */
+  strips?: boolean;
   /** A composed scene's layers, for the lab's Layers section (src/composer/compose.ts). */
   layers?: SceneLayers;
   /**

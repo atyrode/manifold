@@ -3,6 +3,7 @@
 // gives one (KindDef.cast: the ground's height, a sphere), else the bounds themselves. Nearest wins.
 import type { Ray } from "./camera.ts";
 import { kindById, optionValues } from "./kinds/index.ts";
+import { landUnder } from "./land.ts";
 import type { Bounds, EngineDoc, Vec3 } from "./types.ts";
 
 /** Where a ray first meets an object: its id, the distance, the point and the unit normal there. */
@@ -69,7 +70,7 @@ export function castDoc(doc: EngineDoc, ray: Ray, ignore?: string): DocHit | und
     ];
     const ro: Vec3 = [c * q[0] + s * q[2], q[1], c * q[2] - s * q[0]];
     const rd: Vec3 = [c * ray.d[0] + s * ray.d[2], ray.d[1], c * ray.d[2] - s * ray.d[0]];
-    const box = slab(ro, rd, kind.bounds(options));
+    const box = slab(ro, rd, kind.bounds(options, landUnder(doc, placed)));
     if (box === undefined) continue;
     const span = [Math.max(box.near, 0), Math.min(box.far, (best?.t ?? Infinity) * k)] as const;
     if (span[0] > span[1]) continue;

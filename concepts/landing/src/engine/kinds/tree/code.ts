@@ -1,14 +1,18 @@
 // The tree's code (src/engine/glsl.ts, the kind contract). Every ray grows the same tree from its
 // seed: a trunk of one or three tapered capsules, limbs branching from it and twigs from them (an
-// oak's five limbs of two twigs, a birch's six drooping, a windswept pine's four swept one way; a
-// pine's tiers hang straight off its trunk), each a rounded cone tested exactly (iq's), and clumps
-// of foliage at the twigs' and limbs' tips and the crown's top: ellipsoids whose outer shell is
-// leaves, a short march through a density of leaf clusters (3D value noise) that leaves holes the
-// sky shows through, smooth once a cell spans a cluster. A limb and all it carries is skipped by
-// one bounding sphere. Bare in winter, a deciduous crown is a haze of fine twigs. The wind at its
-// crown (engineWind) leans it with the square of its height, sways each limb by its reach on its own
-// phase and flutters each clump, gusts and all; its shadow is its wood and the light its clumps let
-// through, dappled by the same clusters. The time of year is the World's where it keeps one
+// oak's five limbs of two twigs, a birch's six of two drooping, a windswept pine's four swept one
+// way; a pine's tiers hang straight off its trunk), each a rounded cone tested exactly (iq's), and
+// clumps of foliage at the twigs' and limbs' tips and the crown's top: ellipsoids whose outer shell
+// is leaves round a hollow heart, a short march through a density of leaf clusters (3D value noise,
+// drawn out into hanging strands on a birch) that leaves holes the sky shows through where the
+// near and far shells' holes meet, smooth once a cell spans a cluster or two. The nearest leaves
+// face out of their own cluster (the density's slope), so each is lit on its own side. A limb and
+// all it carries is skipped by one bounding sphere. Bare in winter, a deciduous crown is a haze of
+// fine twigs. The wind at its crown (engineWind) leans it with the square of its height, sways each
+// limb by its reach on its own phase and flutters each clump, gusts and all; its shadow is its wood
+// and the light its clumps let through, dappled by the same clusters. Leaves pass the key light
+// (Hit.through), so a crown against the sun glows at its rim, and each cluster turns in autumn to
+// its own colour in its species' range. The time of year is the World's where it keeps one
 // (SKY_YEAR), else the tree's `season`.
 import { glslFloat, glslVec3 } from "../../../shaders/glsl.ts";
 import type { KindCode, Vec3 } from "../../types.ts";
@@ -36,12 +40,21 @@ interface Shape {
   /** Its foliage's clusters, metres, and its leaves' (the surface's flecks). */
   readonly grain: number;
   readonly leaf: number;
+  /**
+   * How its clusters are drawn out, across and up (× 1/grain): a birch's hang in long strands, its
+   * twigs' curtains; the others' are round.
+   */
+  readonly hang: readonly [number, number];
   readonly evergreen: boolean;
   readonly bark: Rgb;
-  /** Spring's fresh leaves, summer's, autumn's turn and its last brown (an evergreen: its needles all year). */
+  /**
+   * Spring's fresh leaves, summer's, autumn's turn from one end of its range to the other cluster by
+   * cluster (an oak's russet to ochre, a birch's butter to lemon) and its last brown (an evergreen:
+   * its needles all year, dark to light).
+   */
   readonly spring: Rgb;
   readonly summer: Rgb;
-  readonly autumn: Rgb;
+  readonly autumn: readonly [Rgb, Rgb];
   readonly fallen: Rgb;
   /** When its leaves fall: the year positions the fall starts and ends. */
   readonly fall: readonly [number, number];
@@ -60,11 +73,15 @@ const SHAPES: Readonly<Record<TreeSpecies, Shape>> = {
     give: 1,
     grain: 0.5,
     leaf: 0.07,
+    hang: [1, 1],
     evergreen: false,
     bark: [0.27, 0.23, 0.19],
     spring: [0.44, 0.58, 0.17],
     summer: [0.24, 0.4, 0.12],
-    autumn: [0.56, 0.33, 0.09],
+    autumn: [
+      [0.6, 0.25, 0.07],
+      [0.84, 0.6, 0.16],
+    ],
     fallen: [0.36, 0.22, 0.1],
     fall: [0.62, 0.78],
   },
@@ -73,18 +90,22 @@ const SHAPES: Readonly<Record<TreeSpecies, Shape>> = {
     limbs: 6,
     twigs: 1,
     tiers: 0,
-    twig: [0.12, -0.05, 0.5],
-    twigClump: [0.16, 0.2, 0.16],
-    limbClump: [0.17, 0.2, 0.17],
-    apex: [0.16, 0.08, 0.16],
+    twig: [0.12, -0.1, 0.5],
+    twigClump: [0.15, 0.28, 0.15],
+    limbClump: [0.16, 0.26, 0.16],
+    apex: [0.15, 0.12, 0.15],
     give: 1.5,
     grain: 0.36,
     leaf: 0.05,
+    hang: [2.2, 0.35],
     evergreen: false,
     bark: [0.84, 0.83, 0.78],
     spring: [0.52, 0.64, 0.2],
     summer: [0.33, 0.48, 0.15],
-    autumn: [0.86, 0.66, 0.15],
+    autumn: [
+      [0.9, 0.58, 0.08],
+      [0.97, 0.86, 0.32],
+    ],
     fallen: [0.62, 0.45, 0.14],
     fall: [0.57, 0.72],
   },
@@ -100,11 +121,15 @@ const SHAPES: Readonly<Record<TreeSpecies, Shape>> = {
     give: 0.8,
     grain: 0.3,
     leaf: 0.04,
+    hang: [1, 1],
     evergreen: true,
     bark: [0.37, 0.24, 0.16],
     spring: [0.17, 0.3, 0.13],
     summer: [0.14, 0.27, 0.13],
-    autumn: [0.12, 0.22, 0.11],
+    autumn: [
+      [0.11, 0.21, 0.1],
+      [0.16, 0.27, 0.12],
+    ],
     fallen: [0.11, 0.19, 0.11],
     fall: [2, 2],
   },
@@ -120,11 +145,15 @@ const SHAPES: Readonly<Record<TreeSpecies, Shape>> = {
     give: 0.6,
     grain: 0.3,
     leaf: 0.04,
+    hang: [1, 1],
     evergreen: true,
     bark: [0.33, 0.27, 0.22],
     spring: [0.18, 0.3, 0.14],
     summer: [0.15, 0.28, 0.13],
-    autumn: [0.13, 0.24, 0.12],
+    autumn: [
+      [0.11, 0.22, 0.1],
+      [0.2, 0.32, 0.13],
+    ],
     fallen: [0.12, 0.21, 0.12],
     fall: [2, 2],
   },
@@ -211,7 +240,7 @@ const int TREE_SPINE = 3;
 const int TREE_LIMBS = 6;
 const int TREE_TWIGS = 2;
 const int TREE_TIERS = 7;
-const int TREE_LEAF_STEPS = 6;
+const int TREE_LEAF_STEPS = 5;
 // A limb's sway, radians a second, and a clump's flutter.
 const float TREE_RATE = 1.7;
 const float TREE_FLUTTER_RATE = 3.3;
@@ -396,14 +425,16 @@ float treeNoise(vec3 p) {
 
 // A clump's foliage at x (from its centre in clusters, seeded; q: the point in its unit sphere):
 // above 0 inside its leaves. Clusters of leaves and, nearer (fine: their share), the sprays within
-// them; a clump in leaf is a lumpy shell deep enough for the sky to show through its holes, a bare
-// one a sparse haze of twigs.
+// them; a clump in leaf is a lumpy shell, its heart twigs and shade, so the sky shows through where
+// the holes of its near and far sides meet; a bare one a sparse haze of twigs.
 float treeLeaves(float leafy, vec3 q, vec3 x, float amp, float fine) {
   float noise = treeNoise(x);
   if (fine > 0.0) noise = mix(noise, treeNoise(x * 2.7 + 5.3), 0.4 * fine);
   // Value noise keeps near its mean: stretched, its clusters and the gaps between them are clear.
   noise = smoothstep(0.25, 0.75, noise);
-  return (1.0 - length(q)) * mix(0.6, 0.8, leafy) - mix(0.32, 0.08, leafy) + amp * (noise - 0.5);
+  float depth = 1.0 - length(q);
+  // Every cluster ends inside the clump, so its outline is theirs, not the ellipsoid's.
+  return min(depth, 0.62 - depth) * mix(2.4, 3.5, leafy) - mix(0.85, 0.5 + 0.3 * amp, leafy) + 1.6 * amp * (noise - 0.5);
 }
 
 // A ray through one tree: the nearest hit so far (t, its normal, its part) or, for a shadow ray,
@@ -419,7 +450,14 @@ struct TreeRay {
   float part;
   float lit;
   float grain;   // the clumps' clusters, metres
+  vec3 cluster;  // metres to clusters, each way (Shape.hang over grain)
   float dapple;  // a shadow's share of dappling, by the lit surface's footprint
+  float leafy;
+  // The clump of the nearest leaves: its centre, radii, seed and clusters' share, for their normal.
+  vec3 c;
+  vec3 e;
+  vec3 seed;
+  float amp;
 };
 
 // A capsule of wood: the nearest hit, or no light past it.
@@ -450,27 +488,27 @@ void treeClump(inout TreeRay r, TreeForm f, vec3 c, vec3 e, float k) {
   vec3 seed = vec3(k * 7.31, f.seed * 0.37, k * 3.17);
   if (r.shadow) {
     float cover = 1.0 - exp(-mix(0.7, 3.4, f.leafy) / min(min(e.x, e.y), e.z) * (t1 - t0));
-    float gaps = smoothstep(0.2, 0.65, treeNoise((r.o + r.d * (0.5 * (t0 + t1)) - c) / (1.4 * r.grain) + seed));
+    float gaps = smoothstep(0.2, 0.65, treeNoise((r.o + r.d * (0.5 * (t0 + t1)) - c) * r.cluster / 1.4 + seed));
     r.lit *= 1.0 - 0.88 * cover * mix(1.0, gaps, r.dapple);
     if (r.lit < 0.02) r.lit = 0.0;
     return;
   }
-  // The leaves' clusters, fading to the clump's smooth shell once a cell spans one; the march goes
-  // no deeper than its leaves can be.
+  // The leaves' clusters, fading to the clump's smooth shell once a cell spans a cluster or two;
+  // the march crosses its near shell and its hollow heart to its far one.
   float foot = t0 * engineCell;
-  float amp = 1.0 - smoothstep(0.35, 1.0, foot / r.grain);
+  float amp = 1.0 - smoothstep(0.6, 1.6, foot / r.grain);
   float fine = 1.0 - smoothstep(0.2, 0.5, foot / (0.37 * r.grain));
   float dt = min(t1 - t0, 0.9 * min(min(e.x, e.y), e.z)) / float(TREE_LEAF_STEPS);
   float t = t0;
   vec3 p = r.o + r.d * t;
-  float d = treeLeaves(f.leafy, (p - c) / e, (p - c) / r.grain + seed, amp, fine);
+  float d = treeLeaves(f.leafy, (p - c) / e, (p - c) * r.cluster + seed, amp, fine);
   float before = d;
   for (int i = 0; i < TREE_LEAF_STEPS; i++) {
     if (d >= 0.0) break;
     before = d;
     t += dt;
     p = r.o + r.d * t;
-    d = treeLeaves(f.leafy, (p - c) / e, (p - c) / r.grain + seed, amp, fine);
+    d = treeLeaves(f.leafy, (p - c) / e, (p - c) * r.cluster + seed, amp, fine);
   }
   if (d < 0.0) return;
   if (t > t0) t -= dt * d / max(d - before, 1e-4);
@@ -480,6 +518,10 @@ void treeClump(inout TreeRay r, TreeForm f, vec3 c, vec3 e, float k) {
   r.hi = t;
   r.n = normalize(q / e);
   r.part = clamp(1.0 - length(q), 0.0, 0.99);
+  r.c = c;
+  r.e = e;
+  r.seed = seed;
+  r.amp = amp;
 }
 
 TreeRay treeTrace(EngineObj o, vec3 ro, vec3 rd, vec2 span, bool shadow) {
@@ -495,7 +537,10 @@ TreeRay treeTrace(EngineObj o, vec3 ro, vec3 rd, vec2 span, bool shadow) {
   r.part = -1.0;
   r.lit = 1.0;
   r.grain = mix(0.09, ${num(({ grain }) => grain)}, f.leafy);
+  vec2 hang = ${pick(({ hang }) => `vec2(${glslFloat(hang[0])}, ${glslFloat(hang[1])})`)};
+  r.cluster = vec3(hang.x, hang.y, hang.x) / r.grain;
   r.dapple = 0.85 * (1.0 - smoothstep(0.3, 1.2, engineFoot / r.grain));
+  r.leafy = f.leafy;
   int spine = ${int(({ spine }) => spine)};
   for (int i = 0; i < TREE_SPINE; i++) {
     if (i >= spine) break;
@@ -573,6 +618,18 @@ float treeHit(EngineObj o, vec3 ro, vec3 rd, vec2 span, out vec3 n, out float pa
   TreeRay r = treeTrace(o, ro, rd, span, false);
   n = r.n;
   part = r.part;
+  if (r.part >= 0.0 && r.amp > 0.0) {
+    // Its leaves face out of their own cluster, not the clump's shell, wherever the clusters show
+    // (the clusters' slope alone: their sprays' would cost as much again for little).
+    vec3 p = ro + rd * r.t - r.c;
+    float s = 0.3 / max(r.cluster.x, r.cluster.y);
+    float d = treeLeaves(r.leafy, p / r.e, p * r.cluster + r.seed, r.amp, 0.0);
+    vec3 g = vec3(
+      treeLeaves(r.leafy, (p + vec3(s, 0.0, 0.0)) / r.e, (p + vec3(s, 0.0, 0.0)) * r.cluster + r.seed, r.amp, 0.0),
+      treeLeaves(r.leafy, (p + vec3(0.0, s, 0.0)) / r.e, (p + vec3(0.0, s, 0.0)) * r.cluster + r.seed, r.amp, 0.0),
+      treeLeaves(r.leafy, (p + vec3(0.0, 0.0, s)) / r.e, (p + vec3(0.0, 0.0, s)) * r.cluster + r.seed, r.amp, 0.0)) - d;
+    if (dot(g, g) > 1e-8) n = normalize(mix(n, -normalize(g), 0.8 * r.amp));
+  }
   return r.t;
 }
 
@@ -586,7 +643,7 @@ void treeSurface(EngineObj o, vec3 p, inout vec3 n, float part, inout Hit h) {
   TreeForm f;
   f.species = int(treeSpecies(o) + 0.5);
   f.seed = floor(treeSeed(o) + 0.5);
-  float foot = length(enginePointToWorld(o, p) - engineCamera().eye) / o.scale * engineCell;
+  float foot = h.eye * engineCell / o.scale;
   h.rough = 1.0;
   if (part < 0.0) {
     // Bark: a birch's white, banded with dark lenticels and dark at the foot; the others' furrowed.
@@ -604,10 +661,15 @@ void treeSurface(EngineObj o, vec3 p, inout vec3 n, float part, inout Hit h) {
   }
   float year = treeYear(o);
   float leafy = treeLeafy(f, year);
-  // The leaves by the time of year, each part of the crown turning in its own time.
-  float turn = hash12(floor(p.xz * 0.8 + p.y * 0.5) + f.seed * 0.13);
+  // The leaves by the time of year, cluster by cluster each turning in its own time to its own
+  // colour in the species' range.
+  float grain = ${num(({ grain }) => grain)};
+  vec3 lump = floor(p / (1.3 * grain));
+  float turn = hash12(lump.xz + lump.y * 7.13 + f.seed * 0.13);
+  float hue = hash12(lump.zx * 1.31 + lump.y * 3.7 + f.seed * 0.29);
   vec3 leaf = mix(${vec(({ spring }) => spring)}, ${vec(({ summer }) => summer)}, smoothstep(0.1, 0.3, year));
-  leaf = mix(leaf, ${vec(({ autumn }) => autumn)}, smoothstep(0.46, 0.6, year - 0.06 * (turn - 0.5)));
+  vec3 fall = mix(${vec(({ autumn }) => autumn[0])}, ${vec(({ autumn }) => autumn[1])}, hue);
+  leaf = mix(leaf, fall, smoothstep(0.46, 0.6, year - 0.1 * (turn - 0.5)));
   leaf = mix(leaf, ${vec(({ fallen }) => fallen)}, smoothstep(0.62, 0.74, year + 0.04 * turn));
   leaf *= 0.85 + 0.3 * turn;
   // Leaf by leaf, up close: each its own tilt and shade, the bare twigs between them as they fall.
@@ -617,11 +679,17 @@ void treeSurface(EngineObj o, vec3 p, inout vec3 n, float part, inout Hit h) {
   float keep = 1.0 - smoothstep(0.4, 1.2, foot / size);
   float clothed = mix(smoothstep(0.1, 0.6, leafy), step(jitter.y + 0.5, leafy), keep);
   vec3 albedo = mix(TREE_TWIG, leaf * (1.0 + 0.6 * jitter.x * keep), clothed);
-  // Deep in the clump the leaves are in each other's shade.
-  h.albedo = albedo * mix(1.0, 0.45, smoothstep(0.0, 0.35, part));
+  // Deep in the clump (past where its outer clusters stand) the leaves are in each other's shade.
+  float shade = smoothstep(0.18, 0.45, part);
+  h.albedo = albedo * mix(1.0, 0.45, shade);
   n = normalize(n + vec3(0.0, 0.5, 0.0) + jitter * 0.9 * keep);
   h.rough = mix(1.0, 0.8, clothed);
   h.mat = 1;
+  // Thin leaves pass the key, deepened in colour: all round the crown a little, much more looking
+  // into it; the core shadows it through the crown, so a crown against the sun glows at its rim.
+  float toward = max(dot(h.d, engineKeyLight.dir), 0.0);
+  float glow = 0.12 + 1.1 * toward * toward * toward * toward;
+  h.through = 1.6 * sqrt(leaf) * leaf * clothed * glow * (1.0 - 0.8 * shade);
 }
 `;
 };
