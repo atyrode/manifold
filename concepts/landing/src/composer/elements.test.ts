@@ -1,5 +1,8 @@
 import { describe, expect, test } from "bun:test";
+import { landVariant } from "../scenes/land/index.ts";
+import { loadScene } from "../scenes/index.ts";
 import { sillVariant } from "../scenes/sill/index.ts";
+import { sceneFeatures } from "../shaders/index.ts";
 import { readElements } from "../state.ts";
 import { ComposeError, composeScene, variantPreset } from "./compose.ts";
 import {
@@ -11,6 +14,7 @@ import {
   WINDOW_CAP,
 } from "./elements.ts";
 import { interior } from "./interior.ts";
+import { outdoor } from "./outdoor.ts";
 import type { LightElement } from "./types.ts";
 
 // A room's light elements (ADR 0062 "Light elements", D17): one packed URL key read as `planets=` is,
@@ -53,8 +57,11 @@ describe("light elements", () => {
     expect(readElements("sill", new URLSearchParams(`${ELEMENTS_KEY}=`))).toEqual([]);
     const two = encodeElements([candle(0), candle(0.1)]);
     expect(readElements("sill", new URLSearchParams({ [ELEMENTS_KEY]: two }))).toHaveLength(2);
-    // A scene without elements (outdoors) holds none whatever the link says.
-    expect(readElements("meadow", new URLSearchParams({ [ELEMENTS_KEY]: two }))).toEqual([]);
+    // Outdoors too; a scene without elements (seen from above, or an authored one) holds none
+    // whatever the link says.
+    expect(readElements("land", new URLSearchParams({ [ELEMENTS_KEY]: two }))).toHaveLength(2);
+    expect(readElements("pond", new URLSearchParams({ [ELEMENTS_KEY]: two }))).toEqual([]);
+    expect(readElements("fractal", new URLSearchParams({ [ELEMENTS_KEY]: two }))).toEqual([]);
   });
 
   test("kinds and count are compiled in", () => {
@@ -124,5 +131,48 @@ describe("light elements", () => {
     expect(readElements("sill", new URLSearchParams({ [ELEMENTS_KEY]: many }))).toHaveLength(
       LIGHT_CAP - 1,
     );
+  });
+
+  describe("outdoors", () => {
+    const lamp: LightElement = {
+      kind: "lamp",
+      at: [0.4, 1.4, 5],
+      colour: [1, 0.72, 0.42],
+      power: 1.4,
+      reach: 1.6,
+      flicker: 0,
+      shadow: false,
+    };
+    const landWith = (elements: readonly LightElement[]) =>
+      composeScene(outdoor, variantPreset(outdoor.baseline, { ...landVariant, elements }));
+
+    test("a window or a shadowing element is refused when composed, and left out of a link", () => {
+      const window = interior.baseline.elements[0];
+      if (window?.kind !== "window") throw new Error("the baseline opens with its window");
+      expect(() => landWith([lamp, { ...candle(0), kind: "fire" }])).not.toThrow();
+      expect(() => landWith([window])).toThrow(/a window element outdoors/);
+      expect(() => landWith([{ ...lamp, shadow: true }])).toThrow(/a shadowing element outdoors/);
+      expect(() => landWith([{ ...lamp, kind: "screen" }])).toThrow(ComposeError);
+      const query = new URLSearchParams({
+        [ELEMENTS_KEY]: encodeElements([window, { ...lamp, shadow: true }, lamp]),
+      });
+      expect(readElements("land", query)).toEqual([lamp]);
+    });
+
+    test("an element count compiles in only when present", async () => {
+      expect(elementFeatures([])).toEqual({});
+      const land = await loadScene("land");
+      const none = sceneFeatures(land, undefined, undefined, false, []);
+      const one = sceneFeatures(land, undefined, undefined, false, [lamp]);
+      expect(Object.keys(none).filter((name) => name.startsWith("ROOM_"))).toEqual([]);
+      expect(one).toMatchObject({ ROOM_ELEMENTS: 1, ROOM_KIND_0: 1 });
+      // No element, no code: the program is the one without any.
+      expect(none).toEqual(sceneFeatures(land));
+      expect(land.glslFor?.(none)).not.toContain("uElements");
+      const lit = land.glslFor?.(one) ?? "";
+      expect(lit).toContain("uniform vec4 uElements[");
+      expect(lit).toContain("vec3 l = composerElements(p, n);");
+      expect(lit).toContain("composerElementBody(x, c, 0, 1);");
+    });
   });
 });

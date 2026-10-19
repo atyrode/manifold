@@ -11,7 +11,8 @@
 //   3. The far band: every layer's `far`, then every `farVeil`, in canonical order.
 //   4. The ground layer's `ground`, or the composer's plain floor, below the backdrop's land line
 //      (under a ground layer only while it plays its own entrance or exit, where it does not show).
-//   5. The middle band's opaque passes; the World's birds at c.z; the middle veils.
+//   5. The middle band's opaque passes; the World's birds at c.z; the bodies of the light elements
+//      the program compiles in (`elementsGlsl`), at their depths; the middle veils.
 //   6. The front band's opaque passes, then its veils.
 //   7. The shared speck map, against c.zs (what stands above the floor: specks hide behind it): each
 //      layer's codes, and the composer's falling things' (falling.ts, `fallingSpeck`).
@@ -33,8 +34,10 @@ import { worldGlsl } from "../shaders/lib/world.ts";
 import type { LevelCamera } from "../sims/camera.ts";
 import { SPECK_DEPTH_STEP } from "./caps.ts";
 import { claimsGlsl } from "./claims.ts";
+import { ELEMENT_ROWS, LIGHT_CAP } from "./elements.ts";
 import { fallingGlsl } from "./falling.ts";
 import { gustGlsl, type PassageGustShape } from "./gust.ts";
+import { elementBodyKinds } from "./shell.ts";
 import { ATLAS_SLOT, SPECK_SLOT, type Allocation } from "./sim.ts";
 import type {
   FloorKind,
@@ -253,19 +256,92 @@ export function accessorsGlsl<G, R>(layers: readonly OnLayer<G, R>[], alloc: All
     .join("");
 }
 
-/** The on layers' lights summed (README "Light"): every layer lights its materials with it. */
-export function lightsGlsl(layers: readonly OnLayer[]): string {
+/**
+ * The on layers' lights summed (README "Light"): every layer lights its materials with it; with the
+ * light elements' (`elements`: the program compiles some in) first.
+ */
+export function lightsGlsl(layers: readonly OnLayer[], elements: boolean): string {
   const lights = layers.flatMap(({ def }) => def.lights ?? []);
   const terms = lights.map((light) =>
     light.gate === undefined
       ? `  l += ${light.glsl}(p, n);`
       : `#if ${light.gate}\n  l += ${light.glsl}(p, n);\n#endif`,
   );
+  const body =
+    terms.length === 0 && !elements
+      ? "  return vec3(0.0);"
+      : `  vec3 l = ${elements ? "composerElements(p, n)" : "vec3(0.0)"};\n${terms.map((term) => `${term}\n`).join("")}  return l;`;
   return `
-// The layers' lights on a surface at p (rig frame) facing n (0 for a thin thing lit all round).
+// The ${elements ? "light elements' and the " : ""}layers' lights on a surface at p (rig frame) facing n (0 for a thin thing lit all round).
 vec3 localLight(vec3 p, vec3 n) {
-${terms.length === 0 ? "  return vec3(0.0);" : `  vec3 l = vec3(0.0);\n${terms.join("\n")}\n  return l;`}
+${body}
 }
+`;
+}
+
+/**
+ * The light elements a program compiles in (README "Light", composer/elements.ts), outdoors: each
+ * kind in `kinds` (elementKinds: a lamp, a candle, a neon tube, a fire; never a window), its light
+ * (`composerElements`, localLight's share: its fall over its reach, the surface's turn toward it,
+ * its flicker on the motion clock) and its body where it stands (`composerBodies`: over what lies
+ * behind it, under what stands nearer, taking its depth where it covers the cell). An element's `at`
+ * is in the rig's frame (x across, y up from the floor, z ahead); a pitched rig's cell meets its
+ * depth along the backdrop's ray (x.v.ray), a level one's through the lens.
+ */
+function elementsGlsl(kinds: readonly number[], pitched: boolean): string {
+  const row = (k: number, r: number): string => `uElements[${k * ELEMENT_ROWS + r}]`;
+  return `
+// ---- the light elements (composer/glsl.ts elementsGlsl): kinds ${kinds.join(", ")} ----
+uniform vec4 uElements[${LIGHT_CAP * ELEMENT_ROWS}];
+
+// An element's flicker: 1 at rest, a candle's or a fire's breath on the motion clock.
+float composerFlicker(float amount, float seed) {
+  float t = uMotionTime + seed;
+  return 1.0 + amount * (0.3 * sin(t * 9.1) + 0.2 * sin(t * 17.3 + 1.7) + 0.12 * sin(t * 31.7 + 0.4));
+}
+
+// An element's light on a surface at p facing n (0: lit all round), from its rows a (at, power),
+// b (colour, reach) and f (flicker, seed): its fall over its reach, the surface's turn toward it.
+vec3 composerElementLight(vec4 a, vec4 b, vec4 f, vec3 p, vec3 n) {
+  vec3 d = a.xyz - p;
+  float r2 = max(dot(d, d), 1e-4);
+  vec3 L = d * inversesqrt(r2);
+  float face = dot(n, n) < 0.5 ? 1.0 : 0.25 + 0.75 * max(dot(n, L), 0.0);
+  return b.rgb * a.w * composerFlicker(f.x, f.y) * face / (1.0 + r2 / max(b.w * b.w, 1e-4));
+}
+
+// The elements' light on a surface at p facing n (localLight's share).
+vec3 composerElements(vec3 p, vec3 n) {
+  vec3 l = vec3(0.0);
+${kinds.map((_, k) => `  l += composerElementLight(${row(k, 0)}, ${row(k, 1)}, ${row(k, 2)}, p, n);`).join("\n")}
+  return l;
+}
+
+// Element k's body (its kind's) where it stands: over what the cell shows behind it, under what
+// stands nearer; it takes the cell's depth where it covers it.
+void composerElementBody(Ctx x, inout Cell c, int k, int kind) {
+  vec4 a = uElements[k * ${ELEMENT_ROWS}];
+  vec4 b = uElements[k * ${ELEMENT_ROWS} + 1];
+  vec4 e = uElements[k * ${ELEMENT_ROWS} + 2];
+  if (a.z < 0.2 || a.z >= c.z) return;
+  // The cell's ray (rig frame) at the element's depth: q, metres from it across and up; aa, a
+  // cell's width there.
+  vec3 ray = ${pitched ? "x.v.ray" : "vec3((x.uv.x - 0.5) * x.aspect, x.uv.y - RIG_HORIZON, RIG_FOCAL)"};
+  if (ray.z < 1e-4) return;
+  vec2 q = vec2(0.0, x.eye) + ray.xy * (a.z / ray.z) - a.xy;
+  float aa = x.aa * a.z / RIG_FOCAL;
+  float glow = a.w * composerFlicker(e.x, e.y);
+  vec3 light = b.rgb * glow;
+  float cover = 0.0;
+${elementBodyKinds("x.light.amb", "x.tm", true)}
+  if (cover >= 0.5) {
+    c.z = a.z;
+    c.zs = min(c.zs, a.z);
+  }
+}
+
+void composerBodies(Ctx x, inout Cell c) {
+${kinds.map((kind, k) => (kind >= 1 && kind <= 4 ? `  composerElementBody(x, c, ${k}, ${kind});\n` : "")).join("")}}
 `;
 }
 
@@ -386,9 +462,13 @@ bool layerShows(int k, vec2 cell) {
   return true;
 }`;
 }
-/** The whole composed program's own GLSL: the World, the prelude, the shared and the layers' GLSL, the entry. */
-export function composedGlsl(a: Assembly): string {
+/**
+ * The whole composed program's own GLSL: the World, the prelude, the shared and the layers' GLSL, the
+ * light elements of `kinds` (elements.ts elementKinds: none compiles nothing in), the entry.
+ */
+export function composedGlsl(a: Assembly, kinds: readonly number[]): string {
   const { preset, layers, allocation, turns } = a;
+  const elements = kinds.length > 0;
   const rig = preset.rig;
   const grade = preset.grade;
   const fly = preset.flyway;
@@ -540,7 +620,7 @@ ${rig.passage?.shift === true ? "  // The passage's tilt: the world read lower i
 ${floorGlsl(preset.floor, rig.pitch !== 0)}
 ${[...shared.values()].map((chunk) => chunk.glsl).join("\n")}
 ${layers.map(({ def, code }) => a.rewrite(def, code.glsl(rig))).join("\n")}
-${lightsGlsl(layers)}${mirrorGlsl(layers, preset)}
+${elements ? elementsGlsl(kinds, rig.pitch !== 0) : ""}${lightsGlsl(layers, elements)}${mirrorGlsl(layers, preset)}
 Shade ${COMPOSER_ENTRY}(vec2 uv, vec2 cell, float t) {
   // 1. The context, then each shared part's and each layer's own state for this cell.
   Ctx x = composerCtx(uv, cell);
@@ -566,7 +646,7 @@ ${passCalls(layers, turns, "middle", "x, c")}  float zBird = c.z;
     c.z = zBird;
     c.zs = zBird;
   }
-${passCalls(layers, turns, "middleVeil", "x, c")}
+${elements ? "  composerBodies(x, c);\n" : ""}${passCalls(layers, turns, "middleVeil", "x, c")}
   // 6. The front band.
 ${passCalls(layers, turns, "front", "x, c")}${passCalls(layers, turns, "frontVeil", "x, c")}${speckDraw}
   // 8. The air's own light.

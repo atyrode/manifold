@@ -77,7 +77,10 @@ export interface RenderSettings {
   knobs: Params;
   /** The current scene's planets as skyGiant takes them (none for a scene without). */
   planets: PlanetUniforms;
-  /** A room's light elements, and as uElements takes them (composer/elements.ts); none elsewhere. */
+  /**
+   * An eye-level composed scene's light elements, and as uElements takes them
+   * (composer/elements.ts); none elsewhere.
+   */
   elements: { readonly list: readonly LightElement[]; readonly data: Float32Array };
   /** A room's camera pose, and as uCamera takes it (composer/camera.ts); the rest pose elsewhere. */
   camera: { readonly pose: CameraPose; readonly data: Float32Array };

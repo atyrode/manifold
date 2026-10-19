@@ -2,14 +2,17 @@
 // from the code of every layer the preset offers (LayerCode, by layer id) and the scene's
 // composition (compose.ts). `glslFor(features)` builds the program of the layers that feature set's
 // LAYER_<ID> gates hold, placed as the setting places them (glsl.ts), steady or drawing their turns
-// as its TURNS_GATE says; `glsl` is the one at the scene's defaults; `sim` the composed sim
-// (sim.ts), which follows the program on screen. A scene whose `code.ts` draws some feature sets
-// with a program of its own (a view from above) names them (`own`): those draw no layer turns. An
-// overhead preset's code is overheadCode's (overhead-glsl.ts), the same assembly over its program.
+// as its TURNS_GATE says, outdoors with the light elements it compiles in (elements.ts
+// `elementKinds`; a room's shell reads them from its defines); `glsl` is the one at the scene's
+// defaults; `sim` the composed sim (sim.ts), which follows the program on screen. A scene whose
+// `code.ts` draws some feature sets with a program of its own (a view from above) names them
+// (`own`): those draw no layer turns. An overhead preset's code is overheadCode's
+// (overhead-glsl.ts), the same assembly over its program.
 import { effective } from "../params.ts";
 import type { SceneCode } from "../scenes/types.ts";
 import { LevelCamera } from "../sims/camera.ts";
 import { TURNS_GATE, WORLD_TRIGGERS, type ComposedScene } from "./compose.ts";
+import { elementKinds } from "./elements.ts";
 import { COMPOSER_ENTRY, composedGlsl } from "./glsl.ts";
 import { roomFrame, roomGlsl, type RoomAssembly } from "./room.ts";
 import { allocate, composedSim } from "./sim.ts";
@@ -57,7 +60,7 @@ export function composedCode(
       rewrite: scene.rewrite(layers),
       turns: features[TURNS_GATE] === 1,
     };
-    return interior ? roomGlsl(assembly) : composedGlsl(assembly);
+    return interior ? roomGlsl(assembly) : composedGlsl(assembly, elementKinds(features));
   };
   const params = scene.def.params;
   const defaults = Object.fromEntries(params.map((knob) => [knob.key, effective(knob, {})]));

@@ -215,10 +215,11 @@ export function settingKeyed(scene: SceneDef): boolean {
 /**
  * The compile-time features of `scene`'s program for knob values as its shader reads them (keyed by
  * knob key; default: the scene's defaults), the planets it holds as skyGiant takes them (default:
- * those it opens with), whether other principals' cursors are drawn over it (`cursors`), a room's
- * light elements (default: those it opens with) and its camera pose (default: the rest pose):
- * `features`, its library gates and `featuresFor(values, pose)` over them, CURSORS_GATE while
- * `cursors`, and the elements' count and kinds (composer/elements.ts `elementFeatures`).
+ * those it opens with), whether other principals' cursors are drawn over it (`cursors`), its
+ * light elements (an eye-level composed scene's; default: those it opens with) and a room's camera
+ * pose (default: the rest pose): `features`, its library gates and `featuresFor(values, pose)` over
+ * them, CURSORS_GATE while `cursors`, and the elements' count and kinds (composer/elements.ts
+ * `elementFeatures`).
  */
 export function sceneFeatures(
   scene: SceneDef,
@@ -291,8 +292,8 @@ export function sceneFeaturesAll(
     ...scene.features,
     ...Object.fromEntries(libraryGates(scene).map(([, gate]) => [gate, 1])),
     ...(scene.planets === undefined ? {} : PLANET_GATES_ALL),
-    // A room's elements are compiled in by count and kind: its all-features program draws those
-    // it opens with, and another list builds its own program.
+    // A scene's elements are compiled in by count and kind (none for none): its all-features
+    // program draws those it opens with, and another list builds its own program.
     ...(scene.elements === undefined ? {} : elementFeatures(scene.elements.defaults)),
     ...(scene.featuresAllFor?.(values ?? shaderValues(scene), pose) ?? scene.featuresAll),
     [CURSORS_GATE]: 1,

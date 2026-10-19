@@ -69,7 +69,14 @@ import {
   type PoseRange,
 } from "./camera.ts";
 import { COMPOSER_CAPS } from "./caps.ts";
-import { checkElements, ElementError, LIGHT_CAP, roomListsWorld } from "./elements.ts";
+import {
+  checkElements,
+  ElementError,
+  LAND_HOLDS,
+  LIGHT_CAP,
+  ROOM_HOLDS,
+  roomListsWorld,
+} from "./elements.ts";
 import { admits, place, type Placement } from "./place.ts";
 import type {
   AnyPreset,
@@ -370,12 +377,15 @@ export function composeScene<P extends AnyPreset>(composer: Composer, preset: P)
   const indoors = composer.id === "interior";
   if (indoors && level?.room === undefined)
     throw new ComposeError(`preset ${preset.id}: an interior preset needs its room`);
-  if (indoors) {
+  // Its light elements (composer/elements.ts): a room's with its windows and shadowing element,
+  // the land's with neither.
+  const holds = indoors ? ROOM_HOLDS : LAND_HOLDS;
+  if (level !== undefined) {
     const lights = offered
       .filter((layer) => home.has(layer.id))
       .reduce((sum, layer) => sum + (layer.lights?.length ?? 0), 0);
     try {
-      checkElements(level?.elements ?? [], lights);
+      checkElements(level.elements ?? [], lights, holds);
     } catch (error) {
       if (error instanceof ElementError)
         throw new ComposeError(`preset ${preset.id}: ${error.message}`);
@@ -699,15 +709,16 @@ export function composeScene<P extends AnyPreset>(composer: Composer, preset: P)
     params,
     groups,
     ...(level?.planets === undefined ? {} : { planets: level.planets }),
-    ...(!indoors
+    ...(level === undefined
       ? {}
       : {
           elements: {
-            defaults: level?.elements ?? [],
+            defaults: level.elements ?? [],
             cap: LIGHT_CAP - offered.reduce((sum, layer) => sum + (layer.lights?.length ?? 0), 0),
+            ...holds,
           },
-          ...(shell === undefined ? {} : { camera: { range: poseRange, reach: shell } }),
         }),
+    ...(shell === undefined ? {} : { camera: { range: poseRange, reach: shell } }),
     ...(preset.passage === undefined ? {} : { passage: preset.passage }),
     ...(preset.theme === undefined ? {} : { theme: preset.theme(params) }),
     ...(preset.features === undefined ? {} : { features: preset.features }),

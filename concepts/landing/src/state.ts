@@ -251,16 +251,16 @@ export function readPlanets(scene: SceneId, query: URLSearchParams): SkyPlanet[]
 }
 
 /**
- * A room's light elements (none for a scene without SceneDef.elements), from its ELEMENTS_KEY in a
+ * A scene's light elements (none for a scene without SceneDef.elements), from its ELEMENTS_KEY in a
  * query, as `planets=` is read: without the key, the ones the scene opens with; `elements=` holds
- * none; past the scene's caps (its lights, WINDOW_CAP windows, SHADOW_CAP shadowing), the first that
- * fit.
+ * none; past the scene's caps (its lights, its windows and shadowing elements: a room's WINDOW_CAP
+ * and SHADOW_CAP, none outdoors), the first that fit.
  */
 export function readElements(scene: SceneId, query: URLSearchParams): LightElement[] {
   const spec = sceneDefs[scene].elements;
   if (spec === undefined) return [];
   const value = query.get(ELEMENTS_KEY);
-  return value === null ? [...spec.defaults] : fitElements(decodeElements(value), spec.cap);
+  return value === null ? [...spec.defaults] : fitElements(decodeElements(value), spec);
 }
 
 /**

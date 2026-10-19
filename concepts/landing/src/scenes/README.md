@@ -2437,7 +2437,8 @@ layer (the meadow's other three and the murmuration offered as guests); a fair-w
 mid-afternoon (`time` 0.62, the World's own cloud, 0.25; rooks by day); no tint, no vignette, the
 ink at gain 1.3 and gamma 1 (the meadow's, the gain most outdoor scenes take); the shooting stars from `[-0.5, 0.3, 1, 0.1]`, where
 most presets set them out; a generic flyway (12 to 120 m, 0.04 to 0.95 of the frame, skimming at
-2 m); no light elements. Its own scene, `land`, is lab-only (`labOnly`, `src/lab/families.ts`).
+2 m); no light elements (a link's `elements=` places them: "Local lights"). Its own scene, `land`,
+is lab-only (`labOnly`, `src/lab/families.ts`).
 Every outdoor scene is a variant of it (`src/composer/outdoor-variants.ts`, by scene id, `land`
 first): it spells its differences as a room does, with five more: its World's options key by key
 over the baseline's (`world`: its hour, its cloud, its birds and its groups' names, each whole),
@@ -2836,7 +2837,7 @@ void cellVeil(inout Cell c, vec4 rgba, float z); // translucent: nearer, over by
 float coverAllowed(vec2 xz, float stretch, float overgrowth); // 0 in cores, overgrowth in shared, 1
 float casterShadow(vec2 xz, Ctx x);              // the claims' and casters' shadows, 0 lit
 float shelterAt(vec2 xz, Ctx x);                 // the share of rain and snow kept off there
-vec3 localLight(vec3 p, vec3 n);                 // the on layers' lights
+vec3 localLight(vec3 p, vec3 n);                 // the on layers' lights and the light elements
 float gustAt(GustWind w, vec2 p, float tm, float blur); // the one gust field, with a CPU twin
 Mirrored composerMirror(Ctx x, vec3 at, vec3 ray, WorldView m, vec2 spread); // a level mirror
 
@@ -2896,8 +2897,19 @@ bees' 16%.
   `shadeOf`'s ink (`ink.paper`: inkOf's paper white and range, dew's). Every layer is lit alike. A
   preset whose scene had a light of its own keeps it in its layers, read from the World's sky (the
   gorge's, the forest's and the grove's canopy weather, the garden's and the street's grey days).
-- **Local lights.** Declared by layers (`LayerLight`) and summed by `localLight`; at most 8 in a
-  composition. They cast no shadows from one layer onto another.
+- **Local lights.** Declared by layers (`LayerLight`) and summed by `localLight`, with the
+  preset's or the link's light elements (`elements=`, as a room's: see "The interior composer");
+  at most 8 in a composition (`LIGHT_CAP`). They cast no shadows from one layer onto another.
+  Outdoors an element is a lamp, a candle, a neon tube or a fire (`composer/glsl.ts`
+  `elementsGlsl`), `at` in metres in the rig's frame (x across, y up from the floor, z ahead): its
+  light on every surface that asks `localLight` (the plain floor; bees' lawn and apiary, the
+  meadow's grass, the fireflies' glow, the falling things' lens), and in frame its body (the
+  room's, with the sky's ambient for the room's: a lamp's shade on a stem down to the floor) at
+  its depth, after the middle band's opaque passes and the World's birds: it hides what lies
+  behind it, what stands nearer hides it, the fog and the rain veil it there. A window lets the
+  World into a room and a shadowing element asks the room's casters, so outdoors both are refused
+  when composed (`ComposeError`) and left out of a link (`LAND_HOLDS`). No element compiles
+  nothing in: every outdoor default's program is the one it was.
 - **The air.** The backdrop owns it (`Air`, in its `begin`): the haze toward each bearing, the
   fog's and the rain's colours, the drop light, the sky wet things mirror, the dust; and its say
   over the World's drops (`precip`): `thin` them far to near so they never bury its subject (the
@@ -3394,17 +3406,18 @@ frost the sill's panes. Clouds and harmonograph are still scenes of their own.
 - **Light elements** (ADR 0062 D17, `composer/elements.ts`) are placed lights:
   `{ kind, at, colour, power, reach, flicker, shadow }`, a window, lamp, candle, neon tube or fire
   (a `screen` is reserved), `at` in metres in the room's frame, in frame or out of it. Their kinds
-  and count are compiled in (`ROOM_ELEMENTS`, `ROOM_KIND_<k>`), so adding one builds a program;
-  their values ride in `uElements`, so moving one builds nothing. A link carries them in one key,
-  `elements=` (packed: base64url varints, centimetres and hundredths), read as `planets=` is: no
-  key holds the variant's elements, `elements=` none. In frame each lamp (a table lamp: its glowing
-  shade, stem and foot on the ledge), candle (a wax pillar, its flame and halo), neon tube or fire
-  (tongues over an iron bowl) draws a small body (`roomShellBodies`, before the `middle` pass);
-  flicker runs on the motion clock, so it holds still at motion 0. The caps are checked when
+  and count are compiled in (`ROOM_ELEMENTS`, `ROOM_KIND_<k>`; none for none), so adding one builds
+  a program; their values ride in `uElements`, so moving one builds nothing. A link carries them in
+  one key, `elements=` (packed: base64url varints, centimetres and hundredths), read as `planets=`
+  is: no key holds the variant's elements, `elements=` none. In frame each lamp (a table lamp: its
+  glowing shade, stem and foot on the ledge), candle (a wax pillar, its flame and halo), neon tube
+  or fire (tongues over an iron bowl) draws a small body (`roomShellBodies`, before the `middle`
+  pass); flicker runs on the motion clock, so it holds still at motion 0. The caps are checked when
   composed (`checkElements`) and on a link (`fitElements`, the first that fit): 8 lights a program
   with the layers' own (`LIGHT_CAP`), 2 windows among them (`WINDOW_CAP`), 1 shadowing element
-  beside the World's key (`SHADOW_CAP`). Measured under SwiftShader at 320×200: a point light about
-  30 M instructions a draw, a window's light about 300 M, a shadow about 11 M.
+  beside the World's key (`SHADOW_CAP`; outdoors neither, `LAND_HOLDS`: "Local lights" for the
+  outdoor composer's elements). Measured under SwiftShader at 320×200: a point light about 30 M
+  instructions a draw, a window's light about 300 M, a shadow about 11 M.
 - **Window light from the World** (ADR 0062 D19). A room faces `Room.facing`, the yaw from the
   staged sky's ahead to the room's forward (`Rig.turn` outdoors). A window element on the back,
   left, right or front wall (`window: { wall, size, bars, sash }`) lets in the sun

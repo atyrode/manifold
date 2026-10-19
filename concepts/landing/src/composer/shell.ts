@@ -56,6 +56,74 @@ function slotTerms(call: (k: number) => string): string {
 }
 
 /**
+ * Each kind's small body (ROOM_KIND_<k> 1..4: a lamp, a candle, a neon tube, a fire) over `c.col`,
+ * sized to read through the dither (README "Art direction": nothing thinner than about two cells),
+ * shared by a room's shell and the outdoor composer (glsl.ts). It reads `kind`, `q` (metres from the
+ * element across and up, at its depth), `aa` (a cell's width there), the element's rows `a` and
+ * `e`, `glow` and `light`; `ambient` and `tm` name the light all round and the motion clock. With
+ * `cover` it also sets `cover`, how much of the cell the body takes (for its depth outdoors).
+ */
+export function elementBodyKinds(ambient: string, tm: string, cover: boolean): string {
+  const covers = (expr: string): string => (cover ? `\n    cover = ${expr};` : "");
+  return `  if (kind == 2) {
+    // A candle: a pillar of wax on what it stands on, glowing through near its top, its flame
+    // swaying on its wick and a halo round it.
+    float R = 0.026;
+    float H = 0.085;
+    float wax = smoothfall(R + aa, R - aa, abs(q.x)) * smoothstep(-aa, aa, q.y) * smoothfall(H + aa, H - aa, q.y);
+    float bulge = sqrt(max(1.0 - q.x * q.x / (R * R), 0.0));
+    vec3 waxCol = vec3(0.9, 0.84, 0.7) * (${ambient} * 3.0 + light * (0.9 + 1.6 * smoothstep(0.4 * H, H, q.y))) * (0.65 + 0.35 * bulge);
+    c.col = mix(c.col, waxCol, wax);
+    vec2 at = vec2(0.003 * sin(${tm} * 7.0 + e.y) * e.x, H + 0.024);
+    vec2 f = (q - at) / vec2(0.0095, 0.024);
+    float d = length(vec2(f.x / max(1.0 - 0.35 * f.y, 0.3), f.y));
+    float flame = smoothfall(1.0, 1.0 - 2.0 * aa / 0.0095, d);
+    c.col = mix(c.col, mix(light * 2.2 + vec3(0.3, 0.1, 0.0), vec3(1.0, 0.95, 0.8) * 1.7, smoothfall(0.75, 0.2, d)), flame);
+    c.col += light * 0.7 * exp(-length(q - at) / 0.02) * (1.0 - flame);
+    c.accent *= 1.0 - max(wax, flame);${covers("max(wax, flame)")}
+  } else if (kind == 1) {
+    // A lamp: its shade glowing, brightest at its open foot, and its stem and round foot down to
+    // the ledge or the floor it stands on.
+    float t = clamp(0.5 - q.y / 0.1, 0.0, 1.0);
+    float hw = mix(0.05, 0.08, t);
+    float shade = smoothfall(hw + aa, hw - aa, abs(q.x)) * smoothfall(0.05 + aa, 0.05 - aa, abs(q.y));
+    vec3 shadeCol = light * (0.55 + 0.6 * t * t) + light * 0.8 * smoothfall(-0.04, -0.05, q.y);
+    float foot = -a.y;
+    float stem = step(0.06, a.y) * smoothfall(0.006 + aa, 0.006 - aa, abs(q.x)) * step(foot, q.y) * step(q.y, -0.05);
+    float base = step(0.06, a.y) * smoothfall(0.045 + aa, 0.045 - aa, abs(q.x)) * smoothstep(foot - aa, foot + aa, q.y) * smoothfall(foot + 0.018 + aa, foot + 0.018 - aa, q.y);
+    float metal = max(stem, base);
+    c.col = mix(c.col, vec3(0.42, 0.33, 0.2) * (${ambient} * 2.0 + light * (0.25 + 0.5 * smoothstep(foot + 0.01, foot + 0.018, q.y))), metal);
+    c.col = mix(c.col, shadeCol, shade);
+    c.accent *= 1.0 - max(shade, metal);${covers("max(shade, metal)")}
+  } else if (kind == 3) {
+    // A neon tube: a short bar of light, its glow round it.
+    float d = length(vec2(max(abs(q.x) - 0.12, 0.0), q.y));
+    float tube = smoothfall(0.007 + aa, 0.007 - aa, d);
+    c.col = mix(c.col, mix(light, vec3(1.0), 0.4) * 1.2, tube) + light * 0.25 * exp(-d * 30.0);
+    c.accent = max(c.accent * (1.0 - tube), tube * 0.6);${covers("tube")}
+  } else if (kind == 4) {
+    // A fire: a cluster of tongues over an iron bowl, red at their edges and white at their heart,
+    // the middle one tallest, each wavering on the motion clock; the bowl's rim catching it.
+    vec2 r = vec2(q.x / 0.065, (q.y + 0.004) / 0.032);
+    float bowl = smoothfall(1.0 + aa / 0.032, 1.0 - aa / 0.032, length(vec2(r.x, min(r.y, 0.0)))) * smoothfall(aa / 0.032, 0.0, r.y);
+    c.col = mix(c.col, vec3(0.1, 0.08, 0.07) * (${ambient} * 2.0 + light * (0.2 + 0.9 * smoothstep(-0.5, 0.0, r.y))), bowl);
+    float heat = 0.0;
+    for (int i = 0; i < 5; i++) {
+      float fi = float(i) - 2.0;
+      float h = 0.075 - 0.016 * abs(fi) + 0.012 * sin(${tm} * (6.3 + fi) + fi * 2.0 + e.y) * e.x;
+      vec2 f = (q - vec2(fi * 0.017 + 0.004 * sin(${tm} * (5.0 + fi) + e.y) * e.x, -0.004)) / vec2(0.022, h);
+      float d = length(vec2(f.x / max(1.0 - f.y, 0.12), (f.y - 0.4) * 1.6));
+      heat = max(heat, clamp((1.0 - d) / 0.6, 0.0, 1.0) * step(0.0, f.y) * (1.0 - 0.55 * f.y));
+    }
+    float tongue = smoothstep(0.0, 0.08, heat);
+    vec3 flameCol = mix(mix(vec3(0.85, 0.2, 0.04), vec3(1.0, 0.55, 0.12), smoothstep(0.1, 0.4, heat)), vec3(1.0, 0.92, 0.7), smoothstep(0.55, 0.9, heat));
+    c.col = mix(c.col, flameCol * (0.6 + 0.8 * glow / max(a.w, 1e-3)), tongue);
+    c.col += light * 0.5 * exp(-length(q - vec2(0.0, 0.03)) / 0.04) * (1.0 - tongue);
+    c.accent *= 1.0 - max(bowl, tongue);${covers("max(bowl, tongue)")}
+  }`;
+}
+
+/**
  * The shell's GLSL for `room`: its constants, the World in the room (`world`: the room lists it),
  * the elements' light, the wall, window and ledge passes and the bodies.
  */
@@ -536,62 +604,7 @@ void roomElementBody(Ctx x, inout Cell c, int k, int kind) {
 #endif
   float glow = a.w * roomFlicker(e.x, e.y);
   vec3 light = b.rgb * glow;
-  if (kind == 2) {
-    // A candle: a pillar of wax on the ledge, glowing through near its top, its flame swaying on
-    // its wick and a halo round it.
-    float R = 0.026;
-    float H = 0.085;
-    float wax = smoothfall(R + aa, R - aa, abs(q.x)) * smoothstep(-aa, aa, q.y) * smoothfall(H + aa, H - aa, q.y);
-    float bulge = sqrt(max(1.0 - q.x * q.x / (R * R), 0.0));
-    vec3 waxCol = vec3(0.9, 0.84, 0.7) * (ROOM_AMBIENT * 3.0 + light * (0.9 + 1.6 * smoothstep(0.4 * H, H, q.y))) * (0.65 + 0.35 * bulge);
-    c.col = mix(c.col, waxCol, wax);
-    vec2 at = vec2(0.003 * sin(roomTm * 7.0 + e.y) * e.x, H + 0.024);
-    vec2 f = (q - at) / vec2(0.0095, 0.024);
-    float d = length(vec2(f.x / max(1.0 - 0.35 * f.y, 0.3), f.y));
-    float flame = smoothfall(1.0, 1.0 - 2.0 * aa / 0.0095, d);
-    c.col = mix(c.col, mix(light * 2.2 + vec3(0.3, 0.1, 0.0), vec3(1.0, 0.95, 0.8) * 1.7, smoothfall(0.75, 0.2, d)), flame);
-    c.col += light * 0.7 * exp(-length(q - at) / 0.02) * (1.0 - flame);
-    c.accent *= 1.0 - max(wax, flame);
-  } else if (kind == 1) {
-    // A table lamp: its shade glowing, brightest at its open foot, and its stem and round foot down
-    // to the ledge it stands on.
-    float t = clamp(0.5 - q.y / 0.1, 0.0, 1.0);
-    float hw = mix(0.05, 0.08, t);
-    float shade = smoothfall(hw + aa, hw - aa, abs(q.x)) * smoothfall(0.05 + aa, 0.05 - aa, abs(q.y));
-    vec3 shadeCol = light * (0.55 + 0.6 * t * t) + light * 0.8 * smoothfall(-0.04, -0.05, q.y);
-    float foot = -a.y;
-    float stem = step(0.06, a.y) * smoothfall(0.006 + aa, 0.006 - aa, abs(q.x)) * step(foot, q.y) * step(q.y, -0.05);
-    float base = step(0.06, a.y) * smoothfall(0.045 + aa, 0.045 - aa, abs(q.x)) * smoothstep(foot - aa, foot + aa, q.y) * smoothfall(foot + 0.018 + aa, foot + 0.018 - aa, q.y);
-    float metal = max(stem, base);
-    c.col = mix(c.col, vec3(0.42, 0.33, 0.2) * (ROOM_AMBIENT * 2.0 + light * (0.25 + 0.5 * smoothstep(foot + 0.01, foot + 0.018, q.y))), metal);
-    c.col = mix(c.col, shadeCol, shade);
-    c.accent *= 1.0 - max(shade, metal);
-  } else if (kind == 3) {
-    // A neon tube: a short bar of light, its glow round it.
-    float d = length(vec2(max(abs(q.x) - 0.12, 0.0), q.y));
-    float tube = smoothfall(0.007 + aa, 0.007 - aa, d);
-    c.col = mix(c.col, mix(light, vec3(1.0), 0.4) * 1.2, tube) + light * 0.25 * exp(-d * 30.0);
-    c.accent = max(c.accent * (1.0 - tube), tube * 0.6);
-  } else if (kind == 4) {
-    // A fire: a cluster of tongues over an iron bowl, red at their edges and white at their heart,
-    // the middle one tallest, each wavering on the motion clock; the bowl's rim catching it.
-    vec2 r = vec2(q.x / 0.065, (q.y + 0.004) / 0.032);
-    float bowl = smoothfall(1.0 + aa / 0.032, 1.0 - aa / 0.032, length(vec2(r.x, min(r.y, 0.0)))) * smoothfall(aa / 0.032, 0.0, r.y);
-    c.col = mix(c.col, vec3(0.1, 0.08, 0.07) * (ROOM_AMBIENT * 2.0 + light * (0.2 + 0.9 * smoothstep(-0.5, 0.0, r.y))), bowl);
-    float heat = 0.0;
-    for (int i = 0; i < 5; i++) {
-      float fi = float(i) - 2.0;
-      float h = 0.075 - 0.016 * abs(fi) + 0.012 * sin(roomTm * (6.3 + fi) + fi * 2.0 + e.y) * e.x;
-      vec2 f = (q - vec2(fi * 0.017 + 0.004 * sin(roomTm * (5.0 + fi) + e.y) * e.x, -0.004)) / vec2(0.022, h);
-      float d = length(vec2(f.x / max(1.0 - f.y, 0.12), (f.y - 0.4) * 1.6));
-      heat = max(heat, clamp((1.0 - d) / 0.6, 0.0, 1.0) * step(0.0, f.y) * (1.0 - 0.55 * f.y));
-    }
-    float tongue = smoothstep(0.0, 0.08, heat);
-    vec3 flameCol = mix(mix(vec3(0.85, 0.2, 0.04), vec3(1.0, 0.55, 0.12), smoothstep(0.1, 0.4, heat)), vec3(1.0, 0.92, 0.7), smoothstep(0.55, 0.9, heat));
-    c.col = mix(c.col, flameCol * (0.6 + 0.8 * glow / max(a.w, 1e-3)), tongue);
-    c.col += light * 0.5 * exp(-length(q - vec2(0.0, 0.03)) / 0.04) * (1.0 - tongue);
-    c.accent *= 1.0 - max(bowl, tongue);
-  }
+${elementBodyKinds("ROOM_AMBIENT", "roomTm", false)}
 }
 
 void roomShellBodies(Ctx x, inout Cell c) {

@@ -1331,6 +1331,43 @@ fires as elements); promotion of outdoor presets (`promotedFrom` reads the inter
 alone); a variant cannot unset a World option the baseline sets (only `time` and `birds`, which
 every outdoor scene sets); the Scenes view's shelves by baseline (D9, again).
 
+**Step 5's `localLight` outdoors, built (2026-10-19):** an outdoor preset's or link's light elements
+are summed into `localLight` and drawn where they stand. `composeScene` gives every eye-level
+scene `SceneDef.elements` (its defaults, `cap`: `LIGHT_CAP` less its offered layers' lights, and
+what it holds beside them: a room's `ROOM_HOLDS`, `WINDOW_CAP` windows and `SHADOW_CAP` shadowing
+elements; the land's `LAND_HOLDS`, neither), so `elements=` reads outdoors as indoors
+(`readElements`, `fitElements` keeping the first that fit). `checkElements` takes the holds: a
+window outdoors ("it lets the World into a room, and outdoors the World is all round") and a
+shadowing element (no caster is drawn toward one there) are a `ComposeError`; the caps and the
+screen's refusal are shared. `elementFeatures` gives nothing for no element (it gave
+`ROOM_ELEMENTS 0`, which a room's shell defaults to), and `composedCode` passes the kinds a feature
+set compiles in (`elementKinds`) to `composedGlsl`, which compiles code in only for them
+(`elementsGlsl`): `uElements`, each element's point light (the shell's fall over its reach, turn
+toward it and flicker on the motion clock, unshadowed) summed first in `localLight`, and
+`composerBodies` after the middle band's opaque passes and the World's birds: each body is the
+room's (`elementBodyKinds`, now shared with `shell.ts`, the sky's ambient for the room's) at the
+element's depth along the cell's ray (the backdrop's `x.v.ray` under a pitched rig), drawn only
+where it stands nearer than what the cell shows and taking the cell's depth where it covers it,
+so what stands nearer, the fog and the rain treat it as anything at that depth. Every outdoor
+program without elements is byte for byte as at `289cee24` (the default and all-features
+programs of land, meadow, autumn, campfire, street, bees and fireflies hashed before and after);
+the rooms' shaken programs differ only in the dropped define and two comments of the shared
+bodies. `ab.ts --base 289cee24 --size 960x600 meadow autumn campfire street land sill bar`: all
+seven `SAME`. Witnesses: `scene=land&time=0.95&elements=AQEBZPABsAnIAZABVJADkAMAAA` (a lamp
+1.2 m up, 6 m ahead, 0.5 m right, power 2, reach 2) draws its shade on a stem to the lawn and a
+warm pool round its foot; `scene=land&time=0.76&elements=AQEEYwCUCsgBbizAAsACeAA` (a fire 6.5 m
+ahead at dusk, power 1.6, reach 1.6, flicker 0.6) its tongues over the bowl, about six cells
+across, and a faint warm pool. The bodies are the room's sizes, so a few metres out they are small.
+Four elements (a lamp, a candle, a neon tube, a fire) compile and link under glslangValidator in
+land, meadow, autumn, campfire, street, skyward (pitched) and bees; `uElements` takes 32 uniform
+vectors, and the outdoor programs `glsl-check` builds use at most 181 of 224, so 213 with
+elements. `glsl-check` builds no program with elements. SwiftShader cost not measured.
+`elements.test.ts`: the outdoor refusals and a link's windows and shadowing elements left out,
+and a count compiled in only when present (land's features and program without elements as
+before, `composerElements` in `localLight` and the body with one lamp). **Remains:** porting the
+scenes' own lights (autumn's lamp, the campfire, the lanterns, the street lamps) into elements;
+shadows toward an element outdoors.
+
 ### Amendments
 
 - **D7 and Phase 5:** prism and pendula are standalone, full-screen, with fractal, hyperbolic, orbit

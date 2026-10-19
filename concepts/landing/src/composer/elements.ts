@@ -1,16 +1,18 @@
-// A room's light elements (ADR 0062 "Light elements", D17): placed lights, a window, a lamp, a
-// candle, a neon tube or a fire, `at` in metres in the room's frame (x across from the centre line,
-// y up from the ledge's top, z ahead of the eye). Their kinds and how many there are are compiled in
-// (`elementFeatures`: adding one builds a program, as a layer turn does); where each stands, its
-// colour, power, reach and flicker are uniforms (`elementUniforms`, uElements), so moving one builds
-// nothing. A link carries the list in one key, ELEMENTS_KEY, packed (`encodeElements`), read as
-// `planets=` is: without the key a scene holds its variant's elements, `elements=` holds none.
-// The shell draws and lights them (composer/shell.ts).
+// Light elements (ADR 0062 "Light elements", D17): placed lights, a window, a lamp, a candle, a
+// neon tube or a fire, `at` in metres in the frame of the eye-level composer's rig (x across from
+// the centre line, y up from the floor, a room's ledge top, z ahead of the eye). Their kinds and
+// how many there are are compiled in (`elementFeatures`: adding one builds a program, as a layer
+// turn does; none compiles nothing in); where each stands, its colour, power, reach and flicker
+// are uniforms (`elementUniforms`, uElements), so moving one builds nothing. A link carries the
+// list in one key, ELEMENTS_KEY, packed (`encodeElements`), read as `planets=` is: without the key
+// a scene holds its variant's elements, `elements=` holds none. A room's shell draws and lights
+// them (composer/shell.ts), the outdoor composer's program outdoors (composer/glsl.ts), which holds
+// no window and no shadowing element (LAND_HOLDS).
 import type { ElementKind, LightElement, ScenePreset, WindowWall } from "./types.ts";
 
 export class ElementError extends Error {}
 
-/** The URL key holding a room's elements. */
+/** The URL key holding a scene's elements. */
 export const ELEMENTS_KEY = "elements";
 
 /**
@@ -34,6 +36,26 @@ export const WINDOW_CAP = 2;
  */
 export const SHADOW_CAP = 1;
 
+/** What a composer's programs hold of the elements beside LIGHT_CAP lights. */
+export interface ElementHolds {
+  readonly windows: number;
+  readonly shadows: number;
+}
+
+/** A room's: WINDOW_CAP windows, SHADOW_CAP shadowing elements. */
+export const ROOM_HOLDS: ElementHolds = { windows: WINDOW_CAP, shadows: SHADOW_CAP };
+
+/**
+ * The land's: no window (it lets the World into a room; outdoors the World is all round) and no
+ * shadowing element (no caster is drawn toward an element outdoors).
+ */
+export const LAND_HOLDS: ElementHolds = { windows: 0, shadows: 0 };
+
+/** What a link's list may keep (`fitElements`): `cap` lights beside the layers', and the holds. */
+export interface ElementRoom extends ElementHolds {
+  readonly cap: number;
+}
+
 /** uElements rows an element takes: (at, power), (colour, reach), (flicker, seed, size), (bars, sash). */
 export const ELEMENT_ROWS = 4;
 
@@ -54,11 +76,24 @@ export function kindCode(element: LightElement): number {
   return WALL_CODES[element.window.wall];
 }
 
-/** The compile-time features of a room's elements: how many, and each one's kind. */
+/**
+ * The compile-time features of a scene's elements: how many (ROOM_ELEMENTS), and each one's kind
+ * (ROOM_KIND_<k>); none for none, so a scene without elements compiles nothing in (a room's shell
+ * reads a missing count as 0).
+ */
 export function elementFeatures(elements: readonly LightElement[]): Record<string, number> {
+  if (elements.length === 0) return {};
   const out: Record<string, number> = { ROOM_ELEMENTS: elements.length };
   elements.forEach((element, k) => (out[`ROOM_KIND_${k}`] = kindCode(element)));
   return out;
+}
+
+/** The elements' kinds as `features` compile them in (`elementFeatures`), in order. */
+export function elementKinds(features: Readonly<Record<string, number>>): number[] {
+  return Array.from(
+    { length: features["ROOM_ELEMENTS"] ?? 0 },
+    (_, k) => features[`ROOM_KIND_${k}`] ?? 0,
+  );
 }
 
 /** Whether a room lists the World: a window layer looks out of it, or a window element lets it in. */
@@ -100,37 +135,49 @@ export function elementUniforms(elements: readonly LightElement[]): Float32Array
 
 /**
  * Refuses a list a program cannot hold: more lights than LIGHT_CAP beside `layerLights` the layers
- * declare, more windows than WINDOW_CAP, more shadowing elements than SHADOW_CAP, a `screen`
- * (reserved, not drawn yet).
+ * declare, more windows or shadowing elements than its composer `holds` (a room: WINDOW_CAP and
+ * SHADOW_CAP; outdoors none), a `screen` (reserved, not drawn yet).
  */
-export function checkElements(elements: readonly LightElement[], layerLights: number): void {
+export function checkElements(
+  elements: readonly LightElement[],
+  layerLights: number,
+  holds: ElementHolds,
+): void {
   if (elements.length + layerLights > LIGHT_CAP)
     throw new ElementError(
       `${elements.length} elements and ${layerLights} layer lights, at most ${LIGHT_CAP} lights a program`,
     );
   const windows = elements.filter((e) => e.kind === "window").length;
-  if (windows > WINDOW_CAP)
-    throw new ElementError(`${windows} windows, at most ${WINDOW_CAP} a program`);
+  if (windows > holds.windows)
+    throw new ElementError(
+      holds.windows === 0
+        ? "a window element outdoors: it lets the World into a room, and outdoors the World is all round"
+        : `${windows} windows, at most ${holds.windows} a program`,
+    );
   const shadows = elements.filter((e) => e.shadow && e.kind !== "window").length;
-  if (shadows > SHADOW_CAP)
-    throw new ElementError(`${shadows} shadowing elements, at most ${SHADOW_CAP}`);
+  if (shadows > holds.shadows)
+    throw new ElementError(
+      holds.shadows === 0
+        ? "a shadowing element outdoors: no caster is drawn toward one there"
+        : `${shadows} shadowing elements, at most ${holds.shadows}`,
+    );
   if (elements.some((e) => e.kind === "screen"))
     throw new ElementError("a screen element is reserved, not drawn yet (D23)");
 }
 
 /**
- * The first of `elements` a program holds, in order: at most `room` of them (LIGHT_CAP less the
- * layers' lights), each window past WINDOW_CAP, shadowing element past SHADOW_CAP and screen left
- * out.
+ * The first of `elements` a program holds, in order: at most `room.cap` of them (LIGHT_CAP less the
+ * layers' lights), each window and shadowing element past what its composer holds and each screen
+ * left out.
  */
-export function fitElements(elements: readonly LightElement[], room: number): LightElement[] {
+export function fitElements(elements: readonly LightElement[], room: ElementRoom): LightElement[] {
   const out: LightElement[] = [];
   let windows = 0;
   let shadows = 0;
   for (const e of elements) {
-    if (out.length >= room || e.kind === "screen") continue;
-    if (e.kind === "window" && windows >= WINDOW_CAP) continue;
-    if (e.kind !== "window" && e.shadow && shadows >= SHADOW_CAP) continue;
+    if (out.length >= room.cap || e.kind === "screen") continue;
+    if (e.kind === "window" && windows >= room.windows) continue;
+    if (e.kind !== "window" && e.shadow && shadows >= room.shadows) continue;
     if (e.kind === "window") windows += 1;
     else if (e.shadow) shadows += 1;
     out.push(e);

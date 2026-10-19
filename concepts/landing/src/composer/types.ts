@@ -612,7 +612,7 @@ export interface ScenePreset extends PresetBase {
   readonly floor: FloorKind;
   /** The `interior` composer's room (README "The interior composer"); required there, unused outdoors. */
   readonly room?: Room;
-  /** A room's light elements (composer/elements.ts): what a link without `elements=` holds. */
+  /** Its light elements (composer/elements.ts): what a link without `elements=` holds. */
   readonly elements?: readonly LightElement[];
 }
 
@@ -676,12 +676,13 @@ export interface RoomFrame {
 export type ElementKind = "window" | "lamp" | "candle" | "neon" | "fire" | "screen";
 
 /**
- * A placed light (ADR 0062 "Light elements", D17): `at` in metres in the room's frame (x across from
- * the centre line, y up from the ledge's top, z ahead of the eye), free to stand out of frame; its
- * colour, its power, how far it reaches (m), how much it flickers (on `uMotionTime`), and whether it
- * throws shadows (`roomCaster` toward it). A window's `at` is its opening's centre on its wall, its
- * colour a tint on the World's light through it, its `shadow` whether the World's key through it
- * throws the room's shadows (composer/elements.ts, shell.ts).
+ * A placed light (ADR 0062 "Light elements", D17): `at` in metres in the rig's frame (x across from
+ * the centre line, y up from the floor, a room's ledge top, z ahead of the eye), free to stand out
+ * of frame; its colour, its power, how far it reaches (m), how much it flickers (on `uMotionTime`),
+ * and whether it throws shadows (a room's: `roomCaster` toward it; none outdoors). A window (a
+ * room's alone) has its `at` at its opening's centre on its wall, its colour a tint on the World's
+ * light through it, its `shadow` whether the World's key through it throws the room's shadows
+ * (composer/elements.ts, shell.ts).
  */
 export interface LightElement {
   readonly kind: ElementKind;
@@ -722,8 +723,8 @@ export type Identity = Pick<
 /**
  * A composer's baseline (ADR 0062 D13, `Composer.baseline`): what a scene preset holds but its
  * identity, the camera at rest (`rig`), the grade, the World's options, the floor or the room's
- * shell, the shell's home layers and values, and its light elements (none outdoors yet). Its own
- * scene (the interior's `room`, the outdoor's `land`) is lab-only.
+ * shell, the shell's home layers and values, and its light elements. Its own scene (the interior's
+ * `room`, the outdoor's `land`) is lab-only.
  */
 export interface Baseline extends Omit<ScenePreset, keyof Identity> {
   readonly elements: readonly LightElement[];

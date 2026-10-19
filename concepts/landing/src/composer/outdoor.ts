@@ -121,9 +121,10 @@ export const outdoor: Composer & { readonly baseline: Baseline } = {
   // beyond (`downs`, its tree line at 110 m) through the meadow's lens (the horizon at 0.4, focal
   // 1.18: about 46° high), facing the staged sky's ahead; a fair-weather World mid-afternoon (the
   // World's own cloud, rooks by day), no tint, no vignette and the meadow's ink; the
-  // shooting stars from where most presets set them out, a generic flyway. No light elements:
-  // `localLight` is not adopted outdoors yet (ADR 0062 "Order of work", step 5). The rig admits the
-  // meadow's layers and the murmuration, offered as guests. Its own scene is `land`, lab-only (D13).
+  // shooting stars from where most presets set them out, a generic flyway. No light elements (a
+  // link's `elements=` places lamps, candles, neon or fires on the land: composer/glsl.ts
+  // `elementsGlsl`; no window, no shadowing one). The rig admits the meadow's layers and the
+  // murmuration, offered as guests. Its own scene is `land`, lab-only (D13).
   baseline: {
     composer: "outdoor",
     rig: { horizon: 0.4, focal: 1.18, eye: 1.65, turn: 0, pitch: 0, minAspect: 1 },
