@@ -3,6 +3,8 @@
 // (state.ts `readSetup`: this build's keys, an unknown scene reported).
 import { Lab } from "./lab.ts";
 import { sceneStep } from "./lab/gallery-model.ts";
+import { kinds } from "./engine/kinds/index.ts";
+import { CANVAS_SCENE, createEngineView } from "./engine/view.ts";
 import { DitherRenderer } from "./renderer.ts";
 import { loadScene, prefetchScene, type SceneId } from "./scenes/index.ts";
 import type { CameraPose } from "./composer/camera.ts";
@@ -53,6 +55,31 @@ try {
   prefetchScene(state.scene);
 } catch (error: unknown) {
   console.error("evt=landing.renderer.unavailable", error);
+}
+
+/**
+ * The engine's view of its document (src/engine), while the canvas scene is on screen: the lab edits
+ * the document through it (Lab.attachCanvas), and a change of the document's World comes back here
+ * as the scene's knobs.
+ */
+const engine =
+  renderer === undefined
+    ? undefined
+    : createEngineView(renderer, (world) => {
+        if (state.scene === CANVAS_SCENE)
+          apply(serialise(state, { ...params, ...world }, planets, elements, camera));
+      });
+let canvasAttached = false;
+
+/** The lab's canvas mode follows the scene on screen: attached on the canvas, detached off it. */
+function followCanvas(): void {
+  const view = state.scene === CANVAS_SCENE ? engine : undefined;
+  const drawn = renderer;
+  if ((view !== undefined) === canvasAttached) return;
+  canvasAttached = view !== undefined;
+  if (view !== undefined && drawn !== undefined)
+    lab.attachCanvas({ view, kinds, element: stage, cellAt: (x, y) => drawn.cellAt(x, y) });
+  else lab.detachCanvas();
 }
 
 /** Milliseconds to wait for a quiet moment where the browser cannot say when it is idle. */
@@ -175,6 +202,7 @@ function apply(
   // A link (or a preset) naming a scene this build lacks opened the default scene: the lab says so.
   if (setup.unknownScene !== undefined) lab?.noteUnknownScene(setup.unknownScene);
   lab?.sync();
+  followCanvas();
 }
 
 // `apply` reads `lab`, so nothing may apply before this line has run: the first call is the last

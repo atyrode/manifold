@@ -8,7 +8,10 @@
 // shortcuts (the motion and the transitions live in the Controls' Motion section alone). Every
 // change goes through the host as a URL query (a scene's planets under their one key among its
 // knobs), so links, presets and undo (lab/history-model.ts) all share one representation; the
-// session tools sit beside the setup in the URL (`sessionQuery`) and never inside it.
+// session tools sit beside the setup in the URL (`sessionQuery`) and never inside it. While the
+// engine's view is on screen (`attachCanvas`, the canvas mode, lab/canvas.ts) the Controls edit its
+// document instead of a scene's knobs, the picture takes the pointer, and undo steps through the
+// document and the setup beside it as one history (lab/canvas-history-model.ts).
 import {
   otherSlot,
   readComparison,
@@ -19,6 +22,18 @@ import {
   type Comparison,
   type Slot,
 } from "./compare.ts";
+import type { EngineDoc } from "./engine/types.ts";
+import { CanvasEditor } from "./lab/canvas.ts";
+import type { SavedDoc } from "./lab/canvas-docs.ts";
+import {
+  canvasHistoryAt,
+  recordCanvas,
+  redoCanvas,
+  undoCanvas,
+  type CanvasHistory,
+  type CanvasStep,
+} from "./lab/canvas-history-model.ts";
+import type { CanvasHost } from "./lab/canvas-host.ts";
 import { sceneCycle, sceneStep } from "./lab/gallery-model.ts";
 import { SceneGallery } from "./lab/gallery.ts";
 import { flash, iconButton, nowButton, row, slider, textButton } from "./lab/controls.ts";
@@ -132,7 +147,20 @@ const SHORTCUTS: readonly (readonly [string, string])[] = [
   ["t", "play or pause the tour"],
   ["Ctrl Z", "undo"],
   ["Ctrl ⇧ Z", "redo"],
+  ["W A S D Q E", "the canvas: fly its camera (the picture clicked first; ⇧ faster)"],
+  ["Esc", "the canvas: let go of the object selected (the picture clicked first)"],
 ];
+
+/** The engine's canvas scene (src/scenes/canvas), where this build has it. */
+const CANVAS_SCENE = "canvas";
+
+/** The canvas mode while an engine view is attached (Lab.attachCanvas). */
+interface Canvas {
+  readonly host: CanvasHost;
+  readonly editor: CanvasEditor;
+  /** The scene on screen as it was attached: setup commits on it are the canvas's undo steps. */
+  readonly scene: SceneId;
+}
 
 export class Lab {
   readonly #root: HTMLElement;
@@ -205,6 +233,15 @@ export class Lab {
   );
   /** The scene on screen when the notice went up: it goes once another scene is. */
   #noticeScene: SceneId | undefined;
+  /** The canvas mode, while an engine view is attached (attachCanvas). */
+  #canvas: Canvas | undefined;
+  /**
+   * The canvas's undo history and the document "New" starts from, kept across a detach: back on
+   * the same canvas scene, the document is as it was left, with its undo.
+   */
+  #canvasSession: { scene: SceneId; history: CanvasHistory; starter: EngineDoc } | undefined;
+  /** A saved document picked while no view was attached: it opens once one is. */
+  #pendingDoc: SavedDoc | undefined;
 
   constructor(root: HTMLElement, opener: HTMLButtonElement, host: LabHost) {
     this.#root = root;
@@ -245,6 +282,7 @@ export class Lab {
       setScene: (scene) => this.#setScene(scene, "hand"),
       load,
       query: () => this.#query(),
+      openDoc: (saved) => this.#openDoc(saved),
     });
     this.#presets = new PresetsView(this.#ctx, {
       load,
@@ -424,6 +462,8 @@ export class Lab {
     // Knob changes are likely while the lab is open: on a GPU, scenes with knob-keyed features get
     // their all-features program built ahead (DitherRenderer.expectChanges).
     this.#host.renderer()?.expectChanges(open);
+    // The canvas takes the picture's pointer, and shows its selection, while the lab is open.
+    this.#canvas?.editor.setActive(open);
   }
 
   /**
@@ -456,6 +496,8 @@ export class Lab {
     if (this.#noticeScene !== undefined && state.scene !== this.#noticeScene) this.#dismissNotice();
     // A step of the tour (its own switch or the user's) becomes the current one; another scene holds it.
     this.#tour?.follow(state.scene);
+    // The canvas's selection and its cue follow the document.
+    this.#canvas?.editor.sync();
     // The Scenes and Presets views reflect the setup only while on screen, in the panel or the bar.
     if (compact ? this.#bar.showing("scenes") : this.#views.current === "scenes")
       this.#gallery.sync();
@@ -535,17 +577,139 @@ export class Lab {
   }
 
   #commit(by: CommitBy): void {
+    // On the canvas, a change of the setup is a step of the canvas's own history, beside its document.
+    const canvas = this.#canvas;
+    const history = this.#canvasSession?.history;
+    if (canvas && history && this.#current().state.scene === canvas.scene) {
+      const query = this.#query();
+      const keys = setupDifferences(history.committed.query, query).sort();
+      if (keys.length === 0) this.#recordCanvas("document", "the document");
+      else
+        this.#recordCanvas(
+          `setup:${keys.join(" ")}`,
+          this.#stepWords(history.committed.query, query),
+        );
+      return;
+    }
     if (record(this.#history, this.#query(), performance.now(), by)) this.#syncHistory();
   }
 
+  /** Step back: on the canvas through its own history, and past its first step through the setup's. */
   undo(): void {
+    if (this.#canvas && this.#canvasSession?.history.undo.length) {
+      this.#stepCanvas(undoCanvas);
+      return;
+    }
     const previous = undoStep(this.#history);
     if (previous !== undefined) this.#host.apply(new URLSearchParams(previous));
   }
 
   redo(): void {
+    if (this.#canvas && this.#canvasSession?.history.redo.length) {
+      this.#stepCanvas(redoCanvas);
+      return;
+    }
     const next = redoStep(this.#history);
     if (next !== undefined) this.#host.apply(new URLSearchParams(next));
+  }
+
+  /**
+   * The canvas mode: while `host`'s engine view is on screen, the Controls show its document
+   * (lab/canvas.ts) in place of the scene's knobs, the picture takes the pointer while the lab is
+   * open, and undo steps through the document and the setup beside it as one history. Back on the
+   * canvas after leaving it, the document is as it was left; a saved document picked meanwhile
+   * (the Scenes view's Canvas shelf) opens.
+   */
+  attachCanvas(host: CanvasHost): void {
+    this.detachCanvas();
+    const scene = this.#current().state.scene;
+    // The setup's own history learns the canvas (an undo from another scene comes back to it).
+    this.#commit("hand");
+    const query = this.#query();
+    const kept = this.#canvasSession?.scene === scene ? this.#canvasSession : undefined;
+    if (kept) {
+      host.view.setDoc(kept.history.committed.doc);
+      kept.history.committed = { ...kept.history.committed, query };
+    }
+    const session = kept ?? {
+      scene,
+      history: canvasHistoryAt({ doc: host.view.doc, query, words: "" }),
+      starter: host.view.doc,
+    };
+    this.#canvasSession = session;
+    const editor = new CanvasEditor(host, {
+      ctx: this.#ctx,
+      worldDefs: sceneDefs[scene].params,
+      starter: session.starter,
+      layer: this.#root,
+      commit: (what, words) => this.#recordCanvas(what, words),
+      changed: () => this.sync(),
+      reveal: (id) => {
+        if (this.#presentation === "expanded") this.#views.show("controls");
+        this.#inspector.reveal(id);
+      },
+    });
+    this.#canvas = { host, editor, scene };
+    this.#inspector.setCanvas(editor.controls);
+    editor.setActive(this.open);
+    const pending = this.#pendingDoc;
+    this.#pendingDoc = undefined;
+    if (pending) editor.open(pending);
+    this.sync();
+  }
+
+  /** Leave the canvas mode: the view is gone, the scene's own controls come back. */
+  detachCanvas(): void {
+    const canvas = this.#canvas;
+    if (!canvas) return;
+    this.#canvas = undefined;
+    canvas.editor.detach();
+    this.#inspector.setCanvas(undefined);
+    // The setup's own history goes on from the setup as it now stands.
+    this.#commit("hand");
+    this.sync();
+  }
+
+  /** Record the canvas's document and the setup beside it as an undo step of change `what`. */
+  #recordCanvas(what: string, words: string): void {
+    const canvas = this.#canvas;
+    const history = this.#canvasSession?.history;
+    if (!canvas || !history) return;
+    const step: CanvasStep = { doc: canvas.host.view.doc, query: this.#query(), words };
+    if (recordCanvas(history, step, performance.now(), what)) this.#syncHistory();
+  }
+
+  /** Show the canvas's step `step` takes it to: the setup, then the document over it. */
+  #stepCanvas(step: (history: CanvasHistory) => CanvasStep | undefined): void {
+    const canvas = this.#canvas;
+    const history = this.#canvasSession?.history;
+    const to = canvas && history && step(history);
+    if (!canvas || !to) return;
+    if (to.query !== this.#query()) this.#host.apply(new URLSearchParams(to.query));
+    canvas.host.view.setDoc(to.doc);
+    this.sync();
+  }
+
+  /**
+   * Open saved document `saved` (the Scenes view's Canvas shelf): in the canvas on screen, or once
+   * the canvas scene, shown for it, attaches its view.
+   */
+  #openDoc(saved: SavedDoc): void {
+    const canvas = this.#canvas;
+    if (canvas) {
+      canvas.editor.open(saved);
+      return;
+    }
+    const scene = Object.keys(sceneDefs).find((id): id is SceneId => id === CANVAS_SCENE);
+    if (scene === undefined) {
+      const { scene: here } = this.#current().state;
+      this.#noticeScene = here;
+      setText(this.#noticeText, `No canvas in this build to open “${saved.name}” in.`);
+      setHidden(this.#notice, false);
+      return;
+    }
+    this.#pendingDoc = saved;
+    this.#setScene(scene, "hand");
   }
 
   /** The session tools' URL keys (comparison, tour), for the host to write beside the setup. */
@@ -627,20 +791,41 @@ export class Lab {
     localStorage.setItem(PREFS_KEY, JSON.stringify(this.#prefs));
   }
 
-  /** The undo and redo buttons: off with nothing to step to, else named by what the step changes. */
+  /**
+   * The undo and redo buttons: off with nothing to step to, else named by what the step changes; on
+   * the canvas its own steps first (named by the words they were recorded with), past them the
+   * setup's.
+   */
   #syncHistory(): void {
+    const canvas = this.#canvas ? this.#canvasSession?.history : undefined;
+    const canvasBack = canvas && canvas.undo.length > 0 ? canvas.committed.words : undefined;
+    const canvasAhead = canvas?.redo.at(-1)?.words;
     const { undo, redo, committed } = this.#history;
     const [back, ahead] = [undo.at(-1), redo.at(-1)];
-    const shown = `${back ?? ""}\n${committed}\n${ahead ?? ""}`;
+    const shown = [
+      canvas ? `${canvas.undo.length} ${canvas.redo.length} ${canvasBack} ${canvasAhead}` : "",
+      back ?? "",
+      committed,
+      ahead ?? "",
+    ].join("\n");
     if (shown === this.#historyShown) return;
     this.#historyShown = shown;
-    for (const [button, verb, keys, to] of [
-      [this.#undoButton, "Undo", "Ctrl Z", back],
-      [this.#redoButton, "Redo", "Ctrl ⇧ Z", ahead],
+    for (const [button, verb, keys, words] of [
+      [
+        this.#undoButton,
+        "Undo",
+        "Ctrl Z",
+        canvasBack ?? (back === undefined ? undefined : this.#stepWords(committed, back)),
+      ],
+      [
+        this.#redoButton,
+        "Redo",
+        "Ctrl ⇧ Z",
+        canvasAhead ?? (ahead === undefined ? undefined : this.#stepWords(committed, ahead)),
+      ],
     ] as const) {
-      if (button.disabled !== (to === undefined)) button.disabled = to === undefined;
-      const words = to === undefined ? "" : this.#stepWords(committed, to);
-      const label = words === "" ? verb : `${verb}: ${words}`;
+      if (button.disabled !== (words === undefined)) button.disabled = words === undefined;
+      const label = words === undefined || words === "" ? verb : `${verb}: ${words}`;
       setAttr(button, "title", `${label} (${keys})`);
       setAttr(button, "aria-label", label);
     }

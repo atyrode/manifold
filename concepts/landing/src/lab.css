@@ -1466,6 +1466,291 @@ body.lab-open .lab-opener {
   opacity: 0.5;
 }
 
+/* the canvas mode (lab/canvas.ts): the document's sections, and the selection cue over the picture */
+.lab > .canvas-overlay {
+  position: fixed;
+  pointer-events: none;
+}
+.canvas-cue {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+}
+.canvas-cue-brackets {
+  fill: none;
+  stroke: var(--lab-accent);
+  stroke-width: 2;
+  stroke-linecap: square;
+  filter: drop-shadow(0 0 1px rgb(0 0 0 / 0.9));
+}
+.canvas-cue-label {
+  position: absolute;
+  padding: 1px 5px;
+  font: 10px/1.4 var(--lab-mono);
+  color: var(--lab-on-accent);
+  white-space: nowrap;
+  background: var(--lab-accent);
+  border-radius: 3px;
+  transform: translateY(calc(-100% - 4px));
+}
+.canvas-note,
+.canvas-status,
+.canvas-selected {
+  margin: 0;
+  color: var(--lab-muted);
+}
+.canvas-status:empty {
+  display: none;
+}
+.canvas-status {
+  padding: 7px 10px;
+  color: var(--lab-ink);
+  background: var(--lab-well);
+  border-radius: var(--lab-radius-s);
+}
+.canvas-title {
+  width: 100%;
+  height: 32px;
+  padding: 0 10px;
+  font-weight: 500;
+  background: var(--lab-well);
+  border: 1px solid var(--lab-line);
+  border-radius: var(--lab-radius-m);
+}
+.canvas-title:focus-visible {
+  outline: none;
+  border-color: var(--lab-accent-line);
+  box-shadow: 0 0 0 3px var(--lab-accent-soft);
+}
+.canvas-doc-actions {
+  flex-wrap: wrap;
+}
+.canvas-doc-actions > .text-button {
+  padding-inline: 8px;
+}
+.canvas-docs,
+.canvas-outline {
+  display: grid;
+  /* rows as narrow as the panel: a long name ends in an ellipsis rather than widening it */
+  grid-template-columns: minmax(0, 1fr);
+  gap: 2px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.canvas-outline.fixed {
+  padding-bottom: 6px;
+  border-bottom: 1px solid var(--lab-line);
+}
+.canvas-doc,
+.canvas-row {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  border-radius: var(--lab-radius-s);
+}
+.canvas-doc:hover,
+.canvas-row:hover {
+  background: var(--lab-raise);
+}
+.canvas-row[aria-current="true"] {
+  background: var(--lab-accent-soft);
+  box-shadow: inset 2px 0 0 var(--lab-accent);
+}
+.canvas-doc-open,
+.canvas-row-pick {
+  display: flex;
+  flex: 1;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+  height: 30px;
+  padding: 0 8px;
+  text-align: left;
+  background: none;
+  border: 0;
+}
+.canvas-doc-open .icon,
+.canvas-row-pick .icon {
+  flex: none;
+  width: 13px;
+  height: 13px;
+  color: var(--lab-muted);
+}
+.canvas-row[aria-current="true"] .canvas-row-pick .icon {
+  color: var(--lab-accent);
+}
+.canvas-doc-name,
+.canvas-row-title {
+  min-width: 0;
+  overflow: hidden;
+  font-weight: 500;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.canvas-row-label {
+  font: 11px var(--lab-mono);
+  color: var(--lab-muted);
+}
+.canvas-doc-meta,
+.canvas-row-meta {
+  margin-left: auto;
+  overflow: hidden;
+  font: 10px var(--lab-mono);
+  color: var(--lab-faint);
+  white-space: nowrap;
+}
+.canvas-search {
+  flex: none;
+}
+.canvas-palette {
+  display: grid;
+  gap: 10px;
+}
+.canvas-family-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0 0 5px;
+  font: 10px var(--lab-sans);
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--lab-muted);
+}
+.canvas-family-title .icon {
+  width: 12px;
+  height: 12px;
+  color: var(--lab-accent);
+}
+.canvas-kinds {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
+  gap: 5px;
+}
+.canvas-kind {
+  display: grid;
+  gap: 2px;
+  align-content: start;
+  min-height: 32px;
+  padding: 6px 9px;
+  text-align: left;
+  background: var(--lab-raise);
+  border: 1px solid var(--lab-line-strong);
+  border-radius: var(--lab-radius-s);
+  transition:
+    border-color var(--lab-quick),
+    background var(--lab-quick);
+}
+.canvas-kind:hover:not(:disabled) {
+  background: var(--lab-lift);
+  border-color: var(--lab-accent-line);
+}
+.canvas-kind:disabled {
+  color: var(--lab-faint);
+  background: none;
+  border-style: dashed;
+}
+.canvas-kind-title {
+  font-weight: 500;
+}
+.canvas-refusal {
+  font-size: var(--lab-text-xs);
+  line-height: 1.35;
+  color: var(--lab-muted);
+}
+.canvas-fields {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 6px;
+}
+.canvas-field {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  height: 30px;
+  background: var(--lab-well);
+  border: 1px solid var(--lab-line);
+  border-radius: var(--lab-radius-s);
+}
+.canvas-field:focus-within {
+  border-color: var(--lab-accent-line);
+}
+.canvas-field-name {
+  flex: none;
+  padding: 0 4px 0 7px;
+  font: 10px var(--lab-mono);
+  color: var(--lab-muted);
+  cursor: ew-resize;
+  user-select: none;
+  touch-action: none;
+}
+.canvas-field-name:hover {
+  color: var(--lab-accent);
+}
+.canvas-field input {
+  flex: 1;
+  width: 0;
+  min-width: 0;
+  padding: 0 2px;
+  font: 11px var(--lab-mono);
+  text-align: right;
+  background: none;
+  border: 0;
+  outline: none;
+  -moz-appearance: textfield;
+}
+.canvas-field input::-webkit-inner-spin-button,
+.canvas-field input::-webkit-outer-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+.canvas-field input:disabled {
+  color: var(--lab-faint);
+}
+.canvas-field-unit {
+  flex: none;
+  padding-right: 7px;
+  font: 10px var(--lab-mono);
+  color: var(--lab-faint);
+}
+.canvas-options {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+.canvas-options:empty {
+  display: none;
+}
+.canvas-row.no-match,
+.canvas-doc.no-match,
+.canvas-kind.no-match,
+.canvas-field.no-match,
+.canvas-doc-head.no-match {
+  display: none;
+}
+.canvas-family:not(:has(.canvas-kind:not(.no-match))) {
+  display: none;
+}
+/* a saved document's card on the Scenes view's Canvas shelf: its plan from above */
+.scene-card.doc {
+  --dot: var(--lab-accent);
+}
+.plan {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+}
+.plan-object {
+  fill: var(--lab-ink);
+  opacity: 0.8;
+}
+.plan-camera {
+  fill: var(--lab-accent);
+}
+
 /* rows */
 .row {
   display: grid;

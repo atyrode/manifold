@@ -4,12 +4,14 @@
 // setup saved in this browser over any of them, in the order saved; then the standalone scenes, a
 // program of their own each (D24), on one shelf in their families' order, with the setups saved
 // over them. The standalone scenes stay one shelf: by family they would make three shelves of one
-// or two cards (sky, water, land) beside the matter shelf's twelve. `sceneOrder` is the shelves'
-// scenes in order; `sceneCycle` is that order less the lab-only scenes (`labOnly`: the baselines,
-// D13), which `[` and `]` and the tour step through.
+// or two cards (sky, water, land) beside the matter shelf's twelve. Ahead of them all, the Canvas
+// shelf: the engine's documents saved in this browser (lab/canvas-docs.ts), in the order saved.
+// `sceneOrder` is the shelves' scenes in order; `sceneCycle` is that order less the lab-only scenes
+// (`labOnly`: the baselines, D13), which `[` and `]` and the tour step through.
 import type { ComposerId } from "../composer/types.ts";
 import type { Preset } from "../presets.ts";
 import { sceneDefs, type SceneId } from "../scenes/index.ts";
+import type { SavedDoc } from "./canvas-docs.ts";
 import { baselineScene, presetScene, presetTree } from "./tree-model.ts";
 
 /** A card on a shelf: a scene's, or a setup saved in this browser over one (`custom`). */
@@ -82,16 +84,28 @@ export function cardMatches(card: GalleryCard, query: string): boolean {
   return words.toLowerCase().includes(text);
 }
 
+/**
+ * Whether a saved document's card answers the search `query` (an empty one answers every card): by
+ * its name, its title, or the kinds of the objects it holds.
+ */
+export function docMatches(saved: SavedDoc, query: string): boolean {
+  const text = query.trim().toLowerCase();
+  if (text === "") return true;
+  const kinds = saved.doc.objects.map((object) => object.kind).join(" ");
+  return `canvas ${saved.name} ${saved.doc.title} ${kinds}`.toLowerCase().includes(text);
+}
+
 /** Every scene in the Scenes view's order: shelf by shelf. */
 export const sceneOrder: readonly SceneId[] = SHELVES.flatMap((shelf) => shelf.scenes);
 
 /**
  * The scenes shown in the lab alone (ADR 0062 D13): the composers' baselines, loaded to compare
- * their variants against, outside the tour and `[` / `]`.
+ * their variants against, and the engine's canvas (src/engine), outside the tour and `[` / `]`.
  */
-export const labOnly: Readonly<Partial<Record<SceneId, true>>> = Object.fromEntries(
-  Object.values(baselineScene).map((scene) => [scene, true]),
-);
+export const labOnly: Readonly<Partial<Record<SceneId, true>>> = {
+  ...Object.fromEntries(Object.values(baselineScene).map((scene) => [scene, true])),
+  canvas: true,
+};
 
 /** The Scenes view's order less the lab-only scenes: what `[`, `]` and the tour step through. */
 export const sceneCycle: readonly SceneId[] = sceneOrder.filter((id) => labOnly[id] !== true);

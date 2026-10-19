@@ -784,6 +784,37 @@ export class DitherRenderer {
     return this.#gpu.info;
   }
 
+  /** The cell grid the scene on screen draws at (src/display.ts `stageCells`). */
+  get grid(): { readonly width: number; readonly height: number } {
+    const cells = this.#stage.cells(this.#settings.pixel);
+    return { width: cells.width, height: cells.height };
+  }
+
+  /**
+   * The cell point under a point of the page (client pixels), as `gl_FragCoord` has it: x right, y
+   * up from the bottom left of the grid, cell i's centre at i + 0.5; undefined off the picture.
+   */
+  cellAt(clientX: number, clientY: number): readonly [number, number] | undefined {
+    const cells = this.#stage.cells(this.#settings.pixel);
+    const across = this.#stage.across(clientX, cells);
+    const down = this.#stage.down(clientY, cells);
+    if (across < 0 || across > 1 || down < 0 || down > 1) return undefined;
+    return [across * cells.width, (1 - down) * cells.height];
+  }
+
+  /** The feature key of the program the scene on screen draws with, once it has one. */
+  get programKey(): string | undefined {
+    return this.#scene?.program?.key;
+  }
+
+  /**
+   * Something the scene draws from outside its settings changed (the engine's document,
+   * src/engine/view.ts): work its program's features out again, as for a new setting, and draw.
+   */
+  refresh(): void {
+    this.update({ ...this.#settings });
+  }
+
   /**
    * Where a passage stands: "preparing" while the leaving scene idles for the incoming one to be
    * ready, "exiting" while it plays its exit before the incoming one enters, "blending" while both

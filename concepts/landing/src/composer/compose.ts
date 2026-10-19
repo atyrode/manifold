@@ -201,28 +201,44 @@ function withValues(def: ParamDef, values: Readonly<Record<string, number>>): Pa
 }
 
 /**
+ * The gusts over the World's wind, one for everything in the land: their strength (a "now" button
+ * sends a big one) and how often they come. The outdoor composer's, and the engine's canvas's.
+ */
+export const GUST_KNOBS: readonly ParamDef[] = [
+  feature(
+    "wind",
+    "gusts",
+    "gusts",
+    true,
+    "strength",
+    0.7,
+    "Gusts sweeping across the land, one wind for everything in it: grass bows and shows its paler side, so each gust travels as a broad wave of light, and flowers, stalks and crowns sway as it reaches them. 'Now' sends a big one across the whole view.",
+    { trigger: WORLD_TRIGGERS.gusts, widget: { kind: "gusts" } },
+  ),
+  range(
+    "wind",
+    "gustRate",
+    "gust frequency",
+    0.45,
+    "How often a gust comes through: now and then to the left, one after another to the right.",
+  ),
+];
+
+/** The lab heading of the World's wind and its gusts (GUST_KNOBS), on the World shelf. */
+export const WIND_GROUP: Blurb = {
+  title: "Wind",
+  shelf: "world",
+  blurb:
+    "Which way the wind blows, and the gusts it sends across the land: one wind for every layer.",
+};
+
+/**
  * The composer's own knobs beside the World's: the gusts, the time of year where a layer has one
  * (its `season`, keyed `season`), and the arrangement.
  */
 function composerKnobs(season: ParamDef | undefined): ParamDef[] {
   return [
-    feature(
-      "wind",
-      "gusts",
-      "gusts",
-      true,
-      "strength",
-      0.7,
-      "Gusts sweeping across the land, one wind for everything in it: grass bows and shows its paler side, so each gust travels as a broad wave of light, and flowers, stalks and crowns sway as it reaches them. 'Now' sends a big one across the whole view.",
-      { trigger: WORLD_TRIGGERS.gusts, widget: { kind: "gusts" } },
-    ),
-    range(
-      "wind",
-      "gustRate",
-      "gust frequency",
-      0.45,
-      "How often a gust comes through: now and then to the left, one after another to the right.",
-    ),
+    ...GUST_KNOBS,
     ...(season === undefined ? [] : [season]),
     seed(
       "layers",
@@ -669,16 +685,7 @@ export function composeScene<P extends AnyPreset>(composer: Composer, preset: P)
   }
 
   const groups: Record<string, Blurb> = {
-    ...(level === undefined || indoors
-      ? {}
-      : {
-          wind: {
-            title: "Wind",
-            shelf: "world",
-            blurb:
-              "Which way the wind blows, and the gusts it sends across the land: one wind for every layer.",
-          },
-        }),
+    ...(level === undefined || indoors ? {} : { wind: WIND_GROUP }),
     ...(world.length === 0
       ? {}
       : level === undefined

@@ -10,6 +10,7 @@ import { barScene } from "./bar/index.ts";
 import { beesScene } from "./bees/index.ts";
 import { bonsaiScene } from "./bonsai/index.ts";
 import { campfireScene } from "./campfire/index.ts";
+import { canvasScene } from "./canvas/index.ts";
 import { cloudsScene } from "./clouds/index.ts";
 import { chladniScene } from "./chladni/index.ts";
 import { countryScene } from "./country/index.ts";
@@ -112,6 +113,7 @@ export const sceneDefs = {
   room: roomScene,
   land: landScene,
   patch: patchScene,
+  canvas: canvasScene,
   ...promotedScenes,
 } satisfies Record<string, SceneDef>;
 

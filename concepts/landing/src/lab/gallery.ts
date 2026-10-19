@@ -1,16 +1,21 @@
 // The lab panel's Scenes view (ADR 0062 D9, again): every scene as a thumbnail card, shelved by
 // baseline (lab/gallery-model.ts) with a rail of the shelves: each baseline's own scene first
 // ("baseline"), its variants, then the setups saved in this browser over them ("custom", loaded as
-// the Presets view loads them), and the standalone scenes apart. Searchable by the scenes' titles
-// and the custom setups' names, the scene on screen marked. Arrow keys move between cards (one card
-// in the tab order), Enter or Space shows the scene or loads the setup. The lab syncs it while it
-// shows, and as it comes on screen; a sync rebuilds the custom cards once the saved setups change.
+// the Presets view loads them), and the standalone scenes apart; ahead of them, the Canvas shelf of
+// the engine's documents saved in this browser (lab/canvas-docs.ts), each drawn as a plan from
+// above, opened in the canvas. Searchable by the scenes' titles, the custom setups' names and the
+// documents', the scene on screen marked. Arrow keys move between cards (one card in the tab
+// order), Enter or Space shows the scene or loads the setup. The lab syncs it while it shows, and
+// as it comes on screen; a sync rebuilds the custom cards and the documents' once they change.
 import type { ComposerId } from "../composer/types.ts";
+import { starterDocs } from "../engine/docs.ts";
+import type { EngineDoc } from "../engine/types.ts";
 import { loadLocalPresets, type Preset } from "../presets.ts";
 import { sceneDefs, type SceneId } from "../scenes/index.ts";
-import { h, setAttr, setHidden, setText, type LabContext } from "./dom.ts";
+import { DOCS_KEY, readDocs, type SavedDoc } from "./canvas-docs.ts";
+import { h, setAttr, setHidden, setText, svg, type LabContext } from "./dom.ts";
 import { sceneFamily } from "./families.ts";
-import { cardMatches, galleryShelves, type GalleryCard } from "./gallery-model.ts";
+import { cardMatches, docMatches, galleryShelves, type GalleryCard } from "./gallery-model.ts";
 import { icon, type IconName } from "./icons.ts";
 import { Rail, type RailEntry } from "./rail.ts";
 import { standIn, thumbUrl } from "./thumbs.ts";
@@ -22,6 +27,8 @@ export interface GalleryHost {
   load(query: string): void;
   /** The setup on screen as a minimal query. */
   query(): string;
+  /** Open a document saved in this browser in the canvas (one undo step). */
+  openDoc(saved: SavedDoc): void;
 }
 
 /** A card on screen: what it shows, and its element. */
@@ -48,6 +55,44 @@ const SHELF_ICONS: Readonly<Record<ComposerId, IconName>> = {
 };
 const STANDALONE_ICON: IconName = "pattern";
 
+/**
+ * A document from above, for its card: x across, z up the card, every object a dot and the
+ * camera a wedge pointing the way it looks, all fitted in.
+ */
+function docPlan(doc: EngineDoc): SVGSVGElement {
+  const [w, hgt, pad] = [160, 100, 14];
+  const points = [doc.camera.at, ...doc.objects.map((object) => object.at)];
+  const xs = points.map((p) => p[0]);
+  const zs = points.map((p) => p[2]);
+  const [x0, x1, z0, z1] = [Math.min(...xs), Math.max(...xs), Math.min(...zs), Math.max(...zs)];
+  const fit = Math.min(
+    (w - 2 * pad) / Math.max(x1 - x0, 1),
+    (hgt - 2 * pad) / Math.max(z1 - z0, 1),
+  );
+  const at = (x: number, z: number) =>
+    [w / 2 + (x - (x0 + x1) / 2) * fit, hgt / 2 - (z - (z0 + z1) / 2) * fit] as const;
+  const dots = doc.objects.map((object) => {
+    const [cx, cy] = at(object.at[0], object.at[2]);
+    return svg("circle", { cx: cx.toFixed(1), cy: cy.toFixed(1), r: 2.5, class: "plan-object" });
+  });
+  const [ex, ey] = at(doc.camera.at[0], doc.camera.at[2]);
+  // The camera's heading on the card: +z up, a yaw turning counter-clockwise.
+  const [dx, dy] = [-Math.sin(doc.camera.yaw), -Math.cos(doc.camera.yaw)];
+  const wedge = [
+    [ex + dx * 9, ey + dy * 9],
+    [ex - dy * 4, ey + dx * 4],
+    [ex + dy * 4, ey - dx * 4],
+  ]
+    .map(([px, py]) => `${(px ?? 0).toFixed(1)},${(py ?? 0).toFixed(1)}`)
+    .join(" ");
+  return svg(
+    "svg",
+    { viewBox: `0 0 ${w} ${hgt}`, class: "plan", "aria-hidden": "true" },
+    ...dots,
+    svg("polygon", { points: wedge, class: "plan-camera" }),
+  );
+}
+
 export class SceneGallery {
   readonly el: HTMLElement;
   readonly #ctx: LabContext;
@@ -62,6 +107,18 @@ export class SceneGallery {
   #shown: SceneId | undefined;
   /** The saved setups the custom cards show, as stored, to rebuild them only when they change. */
   #saved = "";
+  /** The Canvas shelf: the documents saved in this browser, and their cards. */
+  readonly #docShelf: {
+    readonly el: HTMLElement;
+    readonly row: HTMLElement;
+    readonly count: HTMLElement;
+  };
+  #docCards: { readonly saved: SavedDoc; readonly el: HTMLButtonElement }[] = [];
+  /**
+   * The documents the Canvas shelf shows, as read, to rebuild its cards only when they change
+   * (undefined until the first sync builds the shelf with its starters).
+   */
+  #docs: string | undefined;
 
   constructor(ctx: LabContext, host: GalleryHost) {
     this.#ctx = ctx;
@@ -121,9 +178,27 @@ export class SceneGallery {
       };
       (shelf.baseline === undefined ? apart : baselines).push(entry);
     }
-    this.#body.append(...this.#shelves.map(({ el }) => el), this.#empty);
+    const docRow = h("div", { class: "cards" });
+    const docCount = h("span", { class: "shelf-count" });
+    const docShelf = h(
+      "section",
+      { class: "shelf", "aria-label": "Canvas documents", hidden: true },
+      h("h3", { class: "shelf-title" }, icon("layers"), h("span", {}, "Canvas"), docCount),
+      h(
+        "p",
+        { class: "shelf-note" },
+        "One world with a free camera: start from a canvas, or open a document saved in this browser.",
+      ),
+      docRow,
+    );
+    this.#docShelf = { el: docShelf, row: docRow, count: docCount };
+    this.#body.append(docShelf, ...this.#shelves.map(({ el }) => el), this.#empty);
     this.#body.addEventListener("keydown", (event) => this.#roam(event));
-    this.#rail.set([baselines, apart]);
+    this.#rail.set([
+      [{ id: "canvas-documents", title: "Canvas", icon: "layers", el: docShelf, focus: docRow }],
+      baselines,
+      apart,
+    ]);
 
     this.el = h(
       "div",
@@ -157,6 +232,11 @@ export class SceneGallery {
     if (saved !== this.#saved) {
       this.#saved = saved;
       this.#setCustom(local);
+    }
+    const docs = localStorage.getItem(DOCS_KEY) ?? "";
+    if (docs !== this.#docs) {
+      this.#docs = docs;
+      this.#setDocs(readDocs(docs));
     }
     const { scene } = this.#ctx.current().state;
     const query = this.#host.query();
@@ -192,6 +272,47 @@ export class SceneGallery {
         shelf.custom.length ? `${scenes} · ${shelf.custom.length} custom` : scenes,
       );
     }
+    this.#filter();
+  }
+
+  /** Rebuild the Canvas shelf's cards from the documents saved in this browser. */
+  #setDocs(docs: readonly SavedDoc[]): void {
+    const starters = Object.values(starterDocs).map((doc) => ({
+      name: doc.title,
+      savedAt: 0,
+      doc,
+    }));
+    this.#docCards = [...starters, ...docs].map((saved, at) => {
+      const start = at < starters.length;
+      const count = saved.doc.objects.length;
+      const objects = `${count} object${count === 1 ? "" : "s"}`;
+      const el = h(
+        "button",
+        {
+          type: "button",
+          class: `scene-card doc${start ? " baseline" : ""}`,
+          tabIndex: -1,
+          "aria-label": `${saved.name}, ${start ? "a canvas to start from" : "a canvas document"}`,
+          title: start
+            ? `${saved.name}: ${objects}, a canvas to start from. Opens in the canvas.`
+            : `${saved.name}: ${objects}, saved ${new Date(saved.savedAt).toLocaleString()}. Opens in the canvas.`,
+        },
+        h(
+          "span",
+          { class: "thumb" },
+          docPlan(saved.doc),
+          h("span", { class: "card-tag" }, start ? "start" : "doc"),
+        ),
+        h("span", { class: "card-title" }, saved.name),
+      );
+      el.addEventListener("click", () => this.#host.openDoc(saved));
+      return { saved, el };
+    });
+    this.#docShelf.row.replaceChildren(...this.#docCards.map(({ el }) => el));
+    setText(
+      this.#docShelf.count,
+      docs.length ? `${docs.length} saved` : `${starters.length} to start from`,
+    );
     this.#filter();
   }
 
@@ -249,9 +370,7 @@ export class SceneGallery {
   }
 
   #visibleCards(): HTMLButtonElement[] {
-    return this.#all()
-      .map(({ el }) => el)
-      .filter((el) => !el.hidden);
+    return [...this.#docCards, ...this.#all()].map(({ el }) => el).filter((el) => !el.hidden);
   }
 
   /** Arrow keys between cards: across a row, and up or down to the card nearest in the next row. */
@@ -300,7 +419,14 @@ export class SceneGallery {
 
   #filter(): void {
     const query = this.#search.value;
-    let any = false;
+    let docs = 0;
+    for (const { saved, el } of this.#docCards) {
+      const hit = docMatches(saved, query);
+      setHidden(el, !hit);
+      if (hit) docs++;
+    }
+    setHidden(this.#docShelf.el, docs === 0);
+    let any = docs > 0;
     for (const shelf of this.#shelves) {
       let shown = 0;
       for (const { card, el } of [...shelf.scenes, ...shelf.custom]) {

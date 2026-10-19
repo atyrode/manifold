@@ -18,7 +18,9 @@
 // narrowing as in the panel), and a section's chip its section (a layer's chip all of its layer's
 // sections: `lend`), which shows open and whole, nothing narrowing it, until given back; so both
 // presentations share these controls and their syncs. Under a search, "Reset what changed"
-// restores only the changes the search shows.
+// restores only the changes the search shows. In the canvas mode (`setCanvas`, lab/canvas.ts) the
+// engine document's sections stand in for the scene's groups, then the World's groups over the
+// document's knobs, then the Global ones: the same sections, rail, search and lens.
 import {
   atRest,
   CAMERA_KEY,
@@ -181,6 +183,76 @@ export interface SectionPrefs {
 const options = (list: readonly Option[]) =>
   list.map((option) => ({ label: option.label, value: String(option.value) }));
 
+/** A range, choice or seed as a row, with its "now" when it has a trigger. */
+export function knobRow(knobs: Knobs, def: Exclude<ParamDef, SwitchDef>): Built {
+  const slot = def.trigger;
+  const now = slot === undefined ? [] : [nowButton(def.label, () => knobs.fire(slot))];
+  const common = {
+    label: def.label,
+    help: def.help,
+    modified: () => knobs.modified([def.key]),
+    reset: () => knobs.reset([def.key]),
+  };
+  switch (def.kind) {
+    case "range": {
+      const control = slider(
+        def.label,
+        def.min,
+        def.max,
+        def.step,
+        () => knobs.value(def.key),
+        (value, commit) => knobs.set({ [def.key]: value }, commit),
+      );
+      const built = row({
+        ...common,
+        inline: now,
+        block: control.el,
+        readout: () => formatValue(def, knobs.value(def.key)),
+      });
+      return {
+        el: built.el,
+        sync: () => {
+          control.sync();
+          built.sync();
+        },
+      };
+    }
+    case "choice": {
+      const control = segments(
+        def.label,
+        options(def.options),
+        () => String(knobs.value(def.key)),
+        (value) => knobs.set({ [def.key]: Number(value) }, true),
+      );
+      const built = row({ ...common, inline: now, block: control.el });
+      return {
+        el: built.el,
+        sync: () => {
+          control.sync();
+          built.sync();
+        },
+      };
+    }
+    case "seed": {
+      const roll = dice(def.label, () => {
+        let next = Math.floor(Math.random() * (MAX_SEED + 1));
+        if (next === knobs.value(def.key)) next = (next + 1) % (MAX_SEED + 1);
+        knobs.set({ [def.key]: next }, true);
+      });
+      return row({
+        ...common,
+        icon: "dice",
+        inline: [...now, roll],
+        readout: () => formatValue(def, knobs.value(def.key)),
+      });
+    }
+    default: {
+      const unreachable: never = def;
+      throw new Error(`landing: unknown knob ${String(unreachable)}`);
+    }
+  }
+}
+
 /** Where a section stands in the Controls order: on the World shelf, the scene's own, or Global. */
 export type Shelf = "world" | "scene" | "global";
 
@@ -216,6 +288,39 @@ interface Section extends MenuSection {
   sync(searching: boolean): void;
 }
 
+/**
+ * A section of the canvas mode (lab/canvas.ts): its heading, its content, and what the heading's
+ * summary and reset read.
+ */
+export interface CanvasSection {
+  id: string;
+  title: string;
+  blurb: string;
+  icon: IconName;
+  open: boolean;
+  content: HTMLElement[];
+  summary: () => string[];
+  modified?: () => boolean;
+  reset?: () => void;
+}
+
+/**
+ * The canvas mode's controls (lab.ts attachCanvas): while set, they replace the scene's groups,
+ * the document's sections first, then the World's groups over its knobs (`world`, reading and
+ * writing the document), then the Global groups as ever.
+ */
+export interface CanvasControls {
+  /** The document's name, over its sections. */
+  title(): string;
+  sections: readonly CanvasSection[];
+  /** The World's knobs (the canvas scene's), as the document holds them. */
+  world: Knobs;
+  /** Every World knob's value as the document holds it, keyed as the URL keys them. */
+  worldValues(): Params;
+  /** Reflect the document into the sections. */
+  sync(): void;
+}
+
 export class Inspector {
   readonly el: HTMLElement;
   readonly #ctx: LabContext;
@@ -235,7 +340,10 @@ export class Inspector {
   #sceneSyncers: (() => void)[] = [];
   #sceneSections: Section[] = [];
   readonly #globalSections: Section[] = [];
-  #built: SceneId | undefined;
+  /** What the groups were built for: the scene on screen, or the canvas mode over it. */
+  #built: string | undefined;
+  /** The canvas mode's controls while an engine view is attached (setCanvas). */
+  #canvas: CanvasControls | undefined;
   /** The fold button: folds every group while every one is open, else opens them all. */
   readonly #fold: HTMLButtonElement;
   /** Whether every group was open as the fold button last showed it. */
@@ -398,6 +506,31 @@ export class Inspector {
   }
 
   /**
+   * Put the canvas mode's controls (lab.ts attachCanvas) in place of the scene's groups, or the
+   * scene's back with none; the next sync builds them.
+   */
+  setCanvas(canvas: CanvasControls | undefined): void {
+    if (canvas === this.#canvas) return;
+    this.#canvas = canvas;
+    this.#built = undefined;
+  }
+
+  /** Open section `id` and bring it into view; "world" is the World's first group. */
+  reveal(id: string): void {
+    const section =
+      id === "world"
+        ? this.#sceneSections.find((candidate) => candidate.shelf === "world")
+        : this.#menu.find((candidate) => candidate.id === id);
+    if (!section) return;
+    section.open();
+    this.sync();
+    section.el.scrollIntoView({
+      block: "start",
+      behavior: this.#ctx.reducedMotion ? "auto" : "smooth",
+    });
+  }
+
+  /**
    * Reflect the setup into every control, then decide once what shows (#narrow): a sync that
    * changes nothing writes nothing. Off screen (`onScreen` false, the Controls view not showing,
    * and no section lent to the bar) only the lens counts, which the bar's chips read; the controls
@@ -405,7 +538,11 @@ export class Inspector {
    */
   sync(onScreen = true): void {
     const { scene } = this.#ctx.current().state;
-    if (this.#built !== scene) this.#build(scene);
+    const canvas = this.#canvas;
+    if (this.#built !== (canvas ? `canvas:${scene}` : scene)) {
+      if (canvas) this.#buildCanvas(scene, canvas);
+      else this.#build(scene);
+    }
     this.#stale = !onScreen && this.#lent === undefined;
     if (this.#stale) {
       this.#syncLens();
@@ -426,8 +563,10 @@ export class Inspector {
   #syncLens(): void {
     const { state, params, planets, camera } = this.#ctx.current();
     const spec = sceneDefs[state.scene].planets;
+    // In the canvas mode the World's knobs are the document's.
+    const values = this.#canvas ? this.#canvas.worldValues() : params;
     this.#changed = new Set([
-      ...changedKnobs(sceneDefs[state.scene].params, params, this.#defaults),
+      ...changedKnobs(sceneDefs[state.scene].params, values, this.#defaults),
       ...changedSettings(SETTING_KEYS, state, this.#base()),
       ...(spec !== undefined && planetsChanged(spec, planets) ? [PLANETS_KEY] : []),
       ...(atRest(camera) ? [] : [CAMERA_KEY]),
@@ -455,14 +594,21 @@ export class Inspector {
   #resetChanged(): void {
     const keys = this.#search.value.trim() === "" ? this.#changed : this.#shownChanged;
     const base = this.#base();
-    const patch: Patch = {};
+    const knobs: Patch = {};
     for (const [key, value] of Object.entries(this.#defaults))
-      if (keys.has(key)) patch[key] = value;
+      if (keys.has(key)) knobs[key] = value;
+    const patch: Patch = {};
     for (const key of SETTING_KEYS) if (keys.has(key)) patch[key] = base[key];
     const spec = sceneDefs[this.#ctx.current().state.scene].planets;
     if (spec !== undefined && keys.has(PLANETS_KEY)) patch[PLANETS_KEY] = openingPlanetsValue(spec);
     if (keys.has(CAMERA_KEY)) patch[CAMERA_KEY] = "";
-    this.#ctx.change(patch, true);
+    // In the canvas mode the World's knobs go back in the document, the settings in the setup.
+    if (this.#canvas) {
+      if (Object.keys(knobs).length > 0) this.#canvas.world.set(knobs, true);
+      if (Object.keys(patch).length > 0) this.#ctx.change(patch, true);
+      return;
+    }
+    this.#ctx.change({ ...knobs, ...patch }, true);
   }
 
   #allOpen(): boolean {
@@ -776,6 +922,60 @@ export class Inspector {
   }
 
   /**
+   * The canvas mode's groups over `scene` (the canvas scene on screen): the document's sections
+   * under its name, then the World's groups (the scene's World shelf) over the document's knobs, as
+   * any scene shows them; the lens counts those and the global settings.
+   */
+  #buildCanvas(scene: SceneId, canvas: CanvasControls): void {
+    this.#built = `canvas:${scene}`;
+    const title = h("span", {}, canvas.title());
+    this.#sceneSyncers = [canvas.sync, () => setText(title, canvas.title())];
+    const defs = sceneDefs[scene].params;
+    this.#defaults = paramDefaults(scene);
+    const groups = new Map<string, ParamDef[]>();
+    for (const def of defs) groups.set(def.group, [...(groups.get(def.group) ?? []), def]);
+    gatherAlmanac(groups);
+    const world = shelves(sceneDefs[scene]).world.filter((group) => groups.has(group));
+    this.#lensGroups = [
+      ...world.map((group) => ({
+        id: `${scene}:${group}`,
+        knobs: (groups.get(group) ?? []).map(knobKeys),
+      })),
+      ...SETTING_GROUPS,
+    ];
+    const own = canvas.sections.map((section) => this.#section({ ...section, shelf: "scene" }));
+    const worldSections = world.map((group) =>
+      this.#sceneGroup(
+        scene,
+        canvas.world,
+        group,
+        groups.get(group) ?? [],
+        false,
+        "world",
+        undefined,
+      ),
+    );
+    this.#sceneSections = [...own, ...worldSections];
+    this.#menu = [...this.#sceneSections, ...this.#globalSections];
+    if (this.#lent?.sections.some((lent) => !this.#globalSections.includes(lent)) === true)
+      this.#lent = undefined;
+    this.#worldDivider.el.hidden = true;
+    this.#worldSlot.replaceChildren();
+    this.#sceneDivider.replaceChildren(title);
+    this.#sceneSlot.replaceChildren(
+      ...own.map((section) => section.el),
+      h("p", { class: "shelf-divider" }, h("span", {}, "World")),
+      ...worldSections.map((section) => section.el),
+    );
+    this.#rail.set(
+      [own, worldSections, this.#globalSections].map((list) =>
+        list.map((section) => this.#railEntry(section)),
+      ),
+    );
+    this.#body.scrollTop = 0;
+  }
+
+  /**
    * A room's camera (composer/camera.ts, ADR 0062 D18): a slider per axis of the pose across the
    * shell's reach, the poses the layers on allow shaded on its track. A move is held to them: a
    * painted layer keeps the camera within its tolerance, and a guest out of range stays refused.
@@ -943,7 +1143,7 @@ export class Inspector {
       place(
         firstNight,
         nightSection(knobs, night, clock && { time: clock, cycle }, {
-          row: (rowKnobs, def) => this.#knobRow(rowKnobs, def),
+          row: knobRow,
           ...(planets ? { planets: { spec: planets, ctx: this.#ctx } } : {}),
         }),
       );
@@ -1046,7 +1246,7 @@ export class Inspector {
     const chips = switches.length > 0 ? chipGrid(knobs, switches, { marks }) : undefined;
     for (const def of defs)
       if (!used.has(def) && def.kind !== "toggle" && def.kind !== "feature")
-        place(def, this.#knobRow(knobs, def));
+        place(def, knobRow(knobs, def));
 
     const content: HTMLElement[] = [];
     const keys = defs.flatMap(knobKeys);
@@ -1192,77 +1392,6 @@ export class Inspector {
         built.sync();
       },
     };
-  }
-
-  /** A range, choice or seed as a row, with its "now" when it has a trigger. */
-  #knobRow(knobs: Knobs, def: Exclude<ParamDef, SwitchDef>): Built {
-    const slot = def.trigger;
-    const now = slot === undefined ? [] : [nowButton(def.label, () => knobs.fire(slot))];
-    const common = {
-      label: def.label,
-      help: def.help,
-      modified: () => knobs.modified([def.key]),
-      reset: () => knobs.reset([def.key]),
-    };
-    switch (def.kind) {
-      case "range": {
-        const control = slider(
-          def.label,
-          def.min,
-          def.max,
-          def.step,
-          () => knobs.value(def.key),
-          (value, commit) => knobs.set({ [def.key]: value }, commit),
-        );
-        const built = row({
-          ...common,
-          inline: now,
-          block: control.el,
-          readout: () => formatValue(def, knobs.value(def.key)),
-        });
-        return {
-          el: built.el,
-          sync: () => {
-            control.sync();
-            built.sync();
-          },
-        };
-      }
-      case "choice": {
-        const control = segments(
-          def.label,
-          options(def.options),
-          () => String(knobs.value(def.key)),
-          (value) => knobs.set({ [def.key]: Number(value) }, true),
-        );
-        const built = row({ ...common, inline: now, block: control.el });
-        return {
-          el: built.el,
-          sync: () => {
-            control.sync();
-            built.sync();
-          },
-        };
-      }
-      case "seed": {
-        const roll = dice(def.label, () => {
-          let next = Math.floor(Math.random() * (MAX_SEED + 1));
-          if (next === knobs.value(def.key)) next = (next + 1) % (MAX_SEED + 1);
-          knobs.set({ [def.key]: next }, true);
-        });
-        const built = row({
-          ...common,
-          icon: "dice",
-          inline: [...now, roll],
-          readout: () => formatValue(def, knobs.value(def.key)),
-        });
-        return built;
-      }
-      default: {
-        const unreachable: never = def;
-        throw new Error(`landing: unknown knob ${String(unreachable)}`);
-      }
-    }
   }
 
   /** A folded group in words: what of it takes effect (a knob whose switches are off says nothing). */

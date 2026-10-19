@@ -65,6 +65,7 @@ export const sceneFamily = {
   campfire: "land",
   autumn: "land",
   land: "land",
+  canvas: "land",
   marble: "matter",
   prism: "matter",
   ferro: "matter",

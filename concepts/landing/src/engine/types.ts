@@ -74,24 +74,53 @@ export interface KindDef {
   readonly blurb: string;
   readonly family: Family;
   readonly options: readonly ParamDef[];
-  /** Option keys that select code at compile time (the program key holds their values). */
+  /**
+   * Option keys that select code at compile time: choices whose values are small integers. The
+   * program key holds, per key, the set of values the document's instances hold (KindCode.glsl).
+   */
   readonly compiled?: readonly string[];
-  /** Its extent for these option values: the ray's bounding test and the lab's picking. */
+  /**
+   * Its extent for these option values (every option, defaults filled in): the ray's bounding test
+   * and the lab's picking.
+   */
   bounds(options: Readonly<Record<string, number>>): Bounds;
   /** At most one object of each exclusive group in a document (one ground, one sky dome). */
   readonly exclusive?: string;
-  /** Most instances a document may hold of it. */
+  /** Most instances a document may hold of it (at most 32, the largest instance bucket). */
   readonly max: number;
   /** How the lab sets it down: on whatever the ray meets below it, or anywhere in the air. */
   readonly rests: "surface" | "free";
+  /** It blocks the World's key and the lamps' light: its GLSL defines `<id>Shadow`. */
+  readonly casts?: boolean;
+  /** It emits a point light: its GLSL defines `<id>Light`. */
+  readonly emits?: boolean;
+  /**
+   * Its exact shape on the CPU, for picking and dragging (src/engine/cast.ts): where the ray
+   * `ro + rd t` (its own frame, `rd` unit, metres at scale 1) first meets it with `t` within `span`,
+   * and the unit normal there in its own frame. Absent, its bounds stand in for it.
+   */
+  cast?(
+    options: Readonly<Record<string, number>>,
+    ro: Vec3,
+    rd: Vec3,
+    span: readonly [number, number],
+  ): { readonly t: number; readonly normal: Vec3 } | undefined;
   /** Its code: GLSL and an optional sim, loaded when a document first holds it. */
   code(): Promise<KindCode>;
 }
 
-/** A kind's code. The GLSL contract is README "Kinds"; names are prefixed with the kind's id. */
+/** A kind's code. The GLSL contract is src/engine/glsl.ts's header; names are prefixed with the kind's id. */
 export interface KindCode {
-  /** GLSL for these compile-time option values (KindDef.compiled). */
+  /**
+   * GLSL for these compile-time option values: for each key of KindDef.compiled, the bitmask of the
+   * values the document's instances hold (bit v for value v), so one program draws all of them.
+   */
   glsl(compiled: Readonly<Record<string, number>>): string;
+  /**
+   * Whether the code for these compile-time values can draw a mirror (`Hit.mirror` above 0): the
+   * program then traces one reflected ray. Absent: never.
+   */
+  mirror?(compiled: Readonly<Record<string, number>>): boolean;
 }
 
 /** Why a document cannot hold another object of a kind, or undefined if it can. */
@@ -111,6 +140,12 @@ export interface EngineView {
   surface(
     cellX: number,
     cellY: number,
+    ignore?: string,
+  ): { readonly at: Vec3; readonly normal: Vec3 } | undefined;
+  /** Where a ray from `origin` along unit `dir` first meets a surface, if anywhere. */
+  cast(
+    origin: Vec3,
+    dir: Vec3,
     ignore?: string,
   ): { readonly at: Vec3; readonly normal: Vec3 } | undefined;
 }

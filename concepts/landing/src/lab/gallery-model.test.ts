@@ -6,6 +6,7 @@ import type { Preset } from "../presets.ts";
 import { sceneDefs, sceneIds } from "../scenes/index.ts";
 import {
   cardMatches,
+  docMatches,
   galleryShelves,
   labOnly,
   sceneCycle,
@@ -101,7 +102,7 @@ test("the Scenes view's order is its shelves' scenes in order", () => {
 });
 
 test("the cycle is the Scenes view's order less the lab-only scenes, the baselines", () => {
-  expect(labOnly).toEqual({ room: true, land: true, patch: true });
+  expect(labOnly).toEqual({ room: true, land: true, patch: true, canvas: true });
   expect(sceneCycle).toEqual(sceneOrder.filter((id) => labOnly[id] !== true));
 });
 
@@ -132,4 +133,23 @@ test("[ and ] leave a lab-only scene for the cycle's scenes either side of it", 
     expect(sceneStep(id, -1)).toBe(before.at(-1) ?? sceneCycle.at(-1) ?? id);
   }
   expect(sceneStep("land", 1)).toBe("meadow");
+});
+
+test("a saved document's card matches by its name, its title or the kinds it holds", () => {
+  const doc = {
+    name: "Evening",
+    savedAt: 1,
+    doc: {
+      v: 1 as const,
+      title: "Garden at dusk",
+      camera: { at: [0, 1.6, -4] as const, yaw: 0, pitch: 0, fov: 1 },
+      world: {},
+      objects: [
+        { id: "lamp-1", kind: "lamp", at: [0, 0, 0] as const, yaw: 0, scale: 1, options: {} },
+      ],
+    },
+  };
+  for (const query of ["", "even", "DUSK", "lamp", "canvas"])
+    expect(docMatches(doc, query)).toBe(true);
+  expect(docMatches(doc, "harbour")).toBe(false);
 });

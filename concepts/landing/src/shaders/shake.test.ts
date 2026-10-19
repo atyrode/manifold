@@ -176,6 +176,9 @@ const BUDGET = {
   // The all-features program is the composer's (ADR 0062): the one a layer's turn plays in.
   bonsai: [77000, 81500],
   campfire: [122500, 169000],
+  // The engine's canvas (src/engine) at its opening document, the land: the World, the core, the
+  // ground and the air; its all-features program holds every World gate.
+  canvas: [45500, 84500],
   chladni: [23000],
   clouds: [59500, 104500],
   country: [138500, 278500],
