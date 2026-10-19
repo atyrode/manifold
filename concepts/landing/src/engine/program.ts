@@ -81,5 +81,6 @@ export function enginePlans(features: Readonly<Record<string, number>>): KindPla
 export function engineProgramGlsl(features: Readonly<Record<string, number>>): string {
   const plans = enginePlans(features);
   const mirror = plans.some((plan) => plan.code.mirror?.(plan.compiled) === true);
-  return `${worldGlsl}${gustGlsl(WORLD_TRIGGERS.gusts, undefined)}${engineTypesGlsl}${engineAirGlsl}${engineGlsl(plans, mirror)}`;
+  const glass = plans.some((plan) => plan.code.glass?.(plan.compiled) === true);
+  return `${worldGlsl}${gustGlsl(WORLD_TRIGGERS.gusts, undefined)}${engineTypesGlsl}${engineAirGlsl}${engineGlsl(plans, mirror, glass)}`;
 }

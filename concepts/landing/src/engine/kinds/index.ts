@@ -4,11 +4,32 @@
 import { effective } from "../../params.ts";
 import type { KindCode, KindDef, Placed } from "../types.ts";
 import { blockKind } from "./block/index.ts";
+import { grassKind } from "./grass/index.ts";
 import { groundKind } from "./ground/index.ts";
 import { lampKind } from "./lamp/index.ts";
+import { lavaLampKind } from "./lavaLamp/index.ts";
+import { roomKind } from "./room/index.ts";
+import { shelfKind } from "./shelf/index.ts";
+import { sideboardKind } from "./sideboard/index.ts";
 import { sphereKind } from "./sphere/index.ts";
+import { tableKind } from "./table/index.ts";
+import { treeKind } from "./tree/index.ts";
+import { waterKind } from "./water/index.ts";
 
-export const kinds: readonly KindDef[] = [groundKind, blockKind, sphereKind, lampKind];
+export const kinds: readonly KindDef[] = [
+  groundKind,
+  blockKind,
+  sphereKind,
+  lampKind,
+  lavaLampKind,
+  waterKind,
+  treeKind,
+  grassKind,
+  roomKind,
+  sideboardKind,
+  tableKind,
+  shelfKind,
+];
 
 const byId: Readonly<Record<string, KindDef>> = Object.fromEntries(
   kinds.map((kind) => [kind.id, kind]),

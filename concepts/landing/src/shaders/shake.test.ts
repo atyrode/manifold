@@ -177,8 +177,8 @@ const BUDGET = {
   bonsai: [77000, 81500],
   campfire: [122500, 169000],
   // The engine's canvas (src/engine) at its opening document, the land: the World, the core, the
-  // ground and the air; its all-features program holds every World gate.
-  canvas: [45500, 84500],
+  // ground and the air; its all-features program holds every World gate and the night sky's planet.
+  canvas: [45500, 126000],
   chladni: [23000],
   clouds: [59500, 104500],
   country: [138500, 278500],

@@ -95,6 +95,11 @@ export interface KindDef {
   /** It emits a point light: its GLSL defines `<id>Light`. */
   readonly emits?: boolean;
   /**
+   * It keeps sim state per instance (KindCode.sim steps it): a block of `width` × `height` texels of
+   * the state texture (src/engine/state.ts), which its GLSL reads as `<id>State(o, x, y)`.
+   */
+  readonly state?: { readonly width: number; readonly height: number };
+  /**
    * Its exact shape on the CPU, for picking and dragging (src/engine/cast.ts): where the ray
    * `ro + rd t` (its own frame, `rd` unit, metres at scale 1) first meets it with `t` within `span`,
    * and the unit normal there in its own frame. Absent, its bounds stand in for it.
@@ -117,10 +122,41 @@ export interface KindCode {
    */
   glsl(compiled: Readonly<Record<string, number>>): string;
   /**
+   * Whether the code for these compile-time values can draw a see-through surface (`Hit.clear`
+   * above 0, a window's glass): the program then carries the ray on past it, and traces the one
+   * reflected ray for its reflection. Absent: never.
+   */
+  glass?(compiled: Readonly<Record<string, number>>): boolean;
+  /**
    * Whether the code for these compile-time values can draw a mirror (`Hit.mirror` above 0): the
    * program then traces one reflected ray. Absent: never.
    */
   mirror?(compiled: Readonly<Record<string, number>>): boolean;
+  /** The sim of a kind with KindDef.state: one per instance, keyed by its object's id. */
+  readonly sim?: KindSim;
+}
+
+/**
+ * A kind's per-instance sim (src/engine/state.ts runs it): every instance of the kind in the
+ * document steps on fixed steps of motion time, so a seed plays the same at any frame rate.
+ */
+export interface KindSim {
+  /** Seconds of motion time a step covers. */
+  readonly step: number;
+  /** Steps a new instance runs before it shows: a count, never a duration (src/sims/clock.ts). */
+  readonly warmSteps: number;
+  /** A new instance's sim, from `seed` (its object's id hashed) at its option values. */
+  create(seed: number, options: Readonly<Record<string, number>>): InstanceSim;
+}
+
+/** One instance's sim: its state, stepped as KindSim says and written for its kind's GLSL. */
+export interface InstanceSim {
+  /** Warm-up step `i` of KindSim.warmSteps (a step size of its own); true once settled. */
+  warm(i: number, options: Readonly<Record<string, number>>): boolean | void;
+  /** One step of KindSim.step seconds at its option values now. */
+  step(options: Readonly<Record<string, number>>): void;
+  /** Its state into `block`: KindDef.state's width × height RGBA texels, row by row. */
+  write(block: Float32Array): void;
 }
 
 /** Why a document cannot hold another object of a kind, or undefined if it can. */

@@ -15,8 +15,10 @@
 // footprint at object distance t is `t * engineCell`, for detail by distance; `engineFoot` the
 // footprint of the point a shadow ray leaves from, so a shadow tests no finer detail than its
 // surface was drawn with. Animate an instance from its option values and the motion clock
-// (`uMotionTime`, as the lamp's flicker does), never the scene clock. No kind keeps sim state per
-// instance yet: the instance texture holds a document's data alone (src/engine/instances.ts).
+// (`uMotionTime`, as the lamp's flicker does), never the scene clock. A kind that keeps sim state
+// per instance (KindDef.state, stepped on the CPU by KindCode.sim: src/engine/state.ts) reads it
+// as `vec4 <id>State(EngineObj o, int x, int y)`, texel (x, y) of the instance's block, generated
+// beside its option accessors: zeros until its sim has warmed up.
 //
 // A kind's code follows the core's types and helpers (EngineObj, Hit, EngineLight, engineTexel,
 // engineSlab, the frame conversions, its option accessors) and the shared libraries, and comes
@@ -32,8 +34,9 @@
 //     The surface at the hit (point p, normal n, as <id>Hit gave them), called once a cell for the
 //     winning hit: sets h.albedo, h.emit (light it gives off, also the cell's accent), h.rough (0
 //     polished .. 1 matte: the key's highlight), h.mirror (the share the one reflected ray shows: a
-//     kind whose code can set it says so, KindCode.mirror) and h.mat (its material, any id); may
-//     bend n (a bump).
+//     kind whose code can set it says so, KindCode.mirror), h.clear (the light it lets through, per
+//     channel, below: a kind whose code can set it says so, KindCode.glass) and h.mat (its
+//     material, any id); may bend n (a bump).
 // With KindDef.casts:
 //   float <id>Shadow(EngineObj o, vec3 ro, vec3 rd, vec2 span);
 //     How much light the ray ro + rd t, t in span, lets through it: 1 open .. 0 blocked (soft
@@ -43,9 +46,21 @@
 //     The point light it gives off: where (its own frame), its colour times its power, its reach
 //     (metres at scale 1: the light falls to half at reach). Every lit surface sums it, shadowed by
 //     the casting objects between.
+//
+// SEE-THROUGH SURFACES. A surface whose h.clear is above 0 (a window's glass) shows what lies behind
+// it: the ray carries on from just past it (engineBehind) through at most ENGINE_PANES more such
+// surfaces, each adding its own light and tinting what lies behind by its h.clear, to what it meets
+// (lit, and hazed and fogged from the last pane on) or the sky. That, times h.clear, adds to the
+// surface's own light (its albedo, small for clean glass), and its h.mirror reflects over both as a
+// mirror's does: a pane shows the world outside by day and, faintly, the lit room at night. Light
+// passes it as its kind's <id>Shadow says (the room's lets it through). All of it (Hit.clear itself,
+// the ray carried on, the one reflected ray) is compiled in only while some kind's code can set it
+// (KindCode.glass), so a kind's GLSL writes h.clear only for the compiled values its KindCode.glass
+// answers true for; a program without one carries none of it.
 import { WORLD_TRIGGERS } from "../composer/compose.ts";
 import { glslFloat } from "../shaders/glsl.ts";
 import { instanceStride, optionTexel } from "./instances.ts";
+import { stateRow } from "./state.ts";
 import type { KindCode, KindDef } from "./types.ts";
 
 /** What a program draws of one kind: its code for its compiled values, its row, its loop's size. */
@@ -71,15 +86,24 @@ struct EngineRay { vec3 o; vec3 d; };  // from o along d (unit), metres
 
 const XYZW = "xyzw";
 
-/** `<id><Key>(o)` for each of a kind's options: its value of the instance. */
+/**
+ * `<id><Key>(o)` for each of a kind's options: its value of the instance; and `<id>State(o, x, y)`
+ * for a kind that keeps state: texel (x, y) of the instance's block (src/engine/state.ts), its
+ * index among its kind's instances from its first texel in the instance texture.
+ */
 function accessors(kind: KindDef): string {
-  return kind.options
-    .map((def, k) => {
-      const [texel, component] = optionTexel(k);
-      const name = `${kind.id}${def.key.charAt(0).toUpperCase()}${def.key.slice(1)}`;
-      return `float ${name}(EngineObj o) { return engineTexel(o.col + ${texel}, o.row).${XYZW.charAt(component)}; }`;
-    })
-    .join("\n");
+  const options = kind.options.map((def, k) => {
+    const [texel, component] = optionTexel(k);
+    const name = `${kind.id}${def.key.charAt(0).toUpperCase()}${def.key.slice(1)}`;
+    return `float ${name}(EngineObj o) { return engineTexel(o.col + ${texel}, o.row).${XYZW.charAt(component)}; }`;
+  });
+  const state =
+    kind.state === undefined
+      ? []
+      : [
+          `vec4 ${kind.id}State(EngineObj o, int x, int y) { return engineState(o.col / ${instanceStride(kind)} * ${kind.state.width} + x, ${stateRow(kind)} + y); }`,
+        ];
+  return [...options, ...state].join("\n");
 }
 
 /** The loop over one kind's instances (its bucket's size), testing each in its own frame. */
@@ -97,10 +121,11 @@ ${body}
 }
 
 /**
- * The core, every kind's code and the entry for one program's kinds (`plans`, in row order) and
- * whether any of them can draw a mirror (`mirror`: the one reflected ray is compiled in).
+ * The core, every kind's code and the entry for one program's kinds (`plans`, in row order), whether
+ * any of them can draw a mirror (`mirror`: the one reflected ray is compiled in) and whether any can
+ * draw a see-through surface (`glass`: the ray carried on past it, and the reflected ray with it).
  */
-export function engineGlsl(plans: readonly KindPlan[], mirror: boolean): string {
+export function engineGlsl(plans: readonly KindPlan[], mirror: boolean, glass: boolean): string {
   const casting = plans.filter((plan) => plan.kind.casts === true);
   const emitting = plans.filter((plan) => plan.kind.emits === true);
   const trace = plans
@@ -157,7 +182,13 @@ const float ENGINE_HAZE = ${glslFloat(9000)};
 const vec4 ENGINE_METEOR_FIELD = vec4(-3.14159, 0.12, 6.28318, 0.8);
 // The ink of the dither (inkOf): the outdoor composer's.
 const float ENGINE_INK_GAIN = 1.3;
-const float ENGINE_INK_GAMMA = 1.0;
+const float ENGINE_INK_GAMMA = 1.0;${
+    glass
+      ? `
+// The most see-through surfaces a ray carries on past beyond the first (engineBehind).
+const int ENGINE_PANES = 2;`
+      : ""
+  }
 
 // Radians one cell spans (set once a cell, in the entry): a footprint at distance t is t * engineCell.
 float engineCell;
@@ -183,7 +214,12 @@ struct Hit {
   vec3 albedo;
   vec3 emit;     // light it gives off
   float rough;   // 0 polished .. 1 matte
-  float mirror;  // the share of the reflected ray it shows, 0..1
+  float mirror;  // the share of the reflected ray it shows, 0..1${
+    glass
+      ? `
+  vec3 clear;    // the light it lets through, per channel: 0 opaque .. 1 clear (see-through surfaces)`
+      : ""
+  }
   int obj;       // its index in the document's objects; -1 nothing
   int mat;       // its kind's material id
   int row;       // its kind's row; 0 nothing
@@ -201,6 +237,11 @@ struct EngineLight {
 
 vec4 engineTexel(int col, int row) {
   return texelFetch(uSim0, ivec2(col, row), 0);
+}
+
+// Texel (col, row) of the state texture (src/engine/state.ts): zeros until the sim has handed it over.
+vec4 engineState(int col, int row) {
+  return uSimOn.y > 0.5 ? texelFetch(uSim1, ivec2(col, row), 0) : vec4(0.0);
 }
 
 bool engineOn() {
@@ -320,7 +361,7 @@ Hit engineTrace(EngineRay r, float tMax) {
   h.albedo = vec3(0.0);
   h.emit = vec3(0.0);
   h.rough = 1.0;
-  h.mirror = 0.0;
+  h.mirror = 0.0;${glass ? "\n  h.clear = vec3(0.0);" : ""}
 ${trace}
   return h;
 }
@@ -371,7 +412,46 @@ vec3 engineLit(World w, WorldView v, EngineKey key, EngineRay r, Hit h, EngineCa
 // Far land taking on the haze of the sky at its horizon.
 vec3 engineHaze(World w, vec3 d, float t, vec3 col) {
   return mix(col, horizonHaze(w.sky, d, 0.02), 1.0 - exp(-t / ENGINE_HAZE));
-}
+}${
+    glass
+      ? `
+
+// What lies behind the see-through hit h along r (Hit.clear): the ray carried on from just past it
+// through at most ENGINE_PANES more see-through surfaces, each adding its own light and tinting what
+// lies behind it, to what it meets (lit, then hazed and fogged from the last pane on) or the sky.
+// glow: the light given off there that comes through, for the cell's accent.
+vec3 engineBehind(World w, WorldView v, EngineKey key, EngineRay r, Hit h, EngineCam c, vec2 uv, out float glow) {
+  vec3 col = vec3(0.0);
+  vec3 pass = vec3(1.0);
+  float from = h.t;
+  glow = 0.0;
+  for (int k = 0; k <= ENGINE_PANES; k++) {
+    float skip = from + 0.002 + from * 4e-4;
+    Hit g = engineTrace(EngineRay(r.o + r.d * skip, r.d), ENGINE_FAR);
+    float to = ENGINE_FAR;
+    vec3 seen;
+    if (g.row == 0) {
+      seen = engineSky(w, c, r.d, uv);
+    } else {
+      g.t += skip;
+      to = g.t;
+      engineSurface(g);
+      seen = engineLit(w, v, key, r, g, c);
+      if (k < ENGINE_PANES && g.clear != vec3(0.0)) {
+        col += pass * seen;
+        pass *= g.clear;
+        from = g.t;
+        continue;
+      }
+      seen = engineHaze(w, r.d, to - from, seen);
+      glow = dot(g.emit * pass, LUMA);
+    }
+    return col + pass * engineFog(w, EngineRay(r.o + r.d * from, r.d), to - from, seen, key.dir, key.col);
+  }
+  return col;
+}`
+      : ""
+  }
 
 Shade ${ENGINE_ENTRY}(vec2 uv, vec2 cell, float time) {
   World w = worldAt(${WORLD_TRIGGERS.meteors}, ${WORLD_TRIGGERS.lightning});
@@ -388,9 +468,19 @@ Shade ${ENGINE_ENTRY}(vec2 uv, vec2 cell, float time) {
   if (h.row == 0) {
     col = engineSky(w, c, r.d, uv);
   } else {
-    col = engineLit(w, v, key, r, h, c);
+    col = engineLit(w, v, key, r, h, c);${
+      glass
+        ? `
+    // A see-through surface: what lies behind it, through it.
+    float glow = 0.0;
+    if (h.clear != vec3(0.0)) {
+      col += h.clear * engineBehind(w, v, key, r, h, c, uv, glow);
+      glow *= dot(h.clear, LUMA);
+    }`
+        : ""
+    }
 ${
-  mirror
+  mirror || glass
     ? `    if (h.mirror > 0.0) {
       // One bounce: what the mirror shows, lit but not mirrored again.
       vec3 n = dot(h.n, r.d) > 0.0 ? -h.n : h.n;
@@ -404,7 +494,7 @@ ${
 `
     : ""
 }    col = engineHaze(w, r.d, h.t, col);
-    accent = clamp(dot(h.emit, LUMA), 0.0, 1.0);
+    accent = clamp(dot(h.emit, LUMA)${glass ? " + glow" : ""}, 0.0, 1.0);
   }
   // The air between the eye and what the cell shows: fog, then rain and snow.
   col = engineFog(w, r, h.t, col, key.dir, key.col);

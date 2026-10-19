@@ -24,7 +24,8 @@ document looks as good or better, and its old code is then deleted.
 4. A hit is shaded once, by the shared shader: the World's key (sun or moon) times its visibility
    (a shadow ray against the objects that cast), the sky's ambient, the lights placed objects emit
    (`localLight`), wet and snow cover from the World on surfaces that face up; a mirror-like
-   material (water, glass) traces one reflected ray.
+   material (water, glass) traces one reflected ray; a see-through one (a window's glass) carries
+   the ray on past it and shows what lies behind, tinted (compiled in only where a kind has one).
 5. The air between the eye and the hit: height fog integrated along the ray, rain and snow as
    particles in world space along it (hidden behind the hit), lightning's flash.
 6. The result is a `Shade` for the dither pass (`src/shaders/main.ts`), unchanged.
@@ -36,7 +37,11 @@ every name prefixed with its id, works in the object's own frame (origin at its 
 +z its forward, metres at scale 1) and implements the core's hit contract (`src/engine/glsl.ts`
 documents it). Its options are knobs (`ParamDef`) read per instance from the instance texture, so a
 slider never builds a program; an option listed in `compiled` selects code and is part of the program
-key. A kind may emit light, cast shadows, and run a sim whose state it reads back per instance.
+key. A kind may emit light, cast shadows, and run a sim whose state it reads back per instance: its
+`KindCode.sim` runs one sim per placed object on the CPU, keyed by the object's id (it lives through
+moves and edits, a new object's warms up first, a removed one's is dropped), all on fixed steps of the
+motion clock, into its block of the state texture (`src/engine/state.ts`), which its GLSL reads as
+`<id>State(o, x, y)`. The lava lamp's wax is one (`src/engine/kinds/lavaLamp`).
 
 ## Programs
 

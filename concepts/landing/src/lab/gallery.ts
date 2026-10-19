@@ -8,7 +8,7 @@
 // order), Enter or Space shows the scene or loads the setup. The lab syncs it while it shows, and
 // as it comes on screen; a sync rebuilds the custom cards and the documents' once they change.
 import type { ComposerId } from "../composer/types.ts";
-import { starterDocs } from "../engine/docs.ts";
+import { canvasDocs, exampleDocs } from "../engine/docs.ts";
 import type { EngineDoc } from "../engine/types.ts";
 import { loadLocalPresets, type Preset } from "../presets.ts";
 import { sceneDefs, type SceneId } from "../scenes/index.ts";
@@ -187,7 +187,7 @@ export class SceneGallery {
       h(
         "p",
         { class: "shelf-note" },
-        "One world with a free camera: start from a canvas, or open a document saved in this browser.",
+        "One world with a free camera: start from a bare canvas or an example, or open a document saved in this browser.",
       ),
       docRow,
     );
@@ -275,33 +275,47 @@ export class SceneGallery {
     this.#filter();
   }
 
-  /** Rebuild the Canvas shelf's cards from the documents saved in this browser. */
+  /**
+   * Rebuild the Canvas shelf's cards: the bare canvases to start from, the examples, then the
+   * documents saved in this browser.
+   */
   #setDocs(docs: readonly SavedDoc[]): void {
-    const starters = Object.values(starterDocs).map((doc) => ({
-      name: doc.title,
-      savedAt: 0,
-      doc,
-    }));
-    this.#docCards = [...starters, ...docs].map((saved, at) => {
-      const start = at < starters.length;
+    const shipped = (doc: EngineDoc, tag: "canvas" | "example") => ({
+      saved: { name: doc.title, savedAt: 0, doc },
+      tag,
+    });
+    const cards = [
+      ...canvasDocs.map((doc) => shipped(doc, "canvas")),
+      ...exampleDocs.map((doc) => shipped(doc, "example")),
+      ...docs.map((saved) => ({ saved, tag: "saved" as const })),
+    ];
+    this.#docCards = cards.map(({ saved, tag }) => {
       const count = saved.doc.objects.length;
       const objects = `${count} object${count === 1 ? "" : "s"}`;
+      const what = { canvas: "a bare canvas", example: "an example", saved: "a saved document" }[
+        tag
+      ];
       const el = h(
         "button",
         {
           type: "button",
-          class: `scene-card doc${start ? " baseline" : ""}`,
+          class: `scene-card doc${tag === "canvas" ? " baseline" : ""}`,
           tabIndex: -1,
-          "aria-label": `${saved.name}, ${start ? "a canvas to start from" : "a canvas document"}`,
-          title: start
-            ? `${saved.name}: ${objects}, a canvas to start from. Opens in the canvas.`
-            : `${saved.name}: ${objects}, saved ${new Date(saved.savedAt).toLocaleString()}. Opens in the canvas.`,
+          "aria-label": `${saved.name}, ${what}`,
+          title:
+            tag === "saved"
+              ? `${saved.name}: ${objects}, saved ${new Date(saved.savedAt).toLocaleString()}. Opens in the canvas.`
+              : `${saved.name}: ${objects}, ${what}. Opens in the canvas.`,
         },
         h(
           "span",
           { class: "thumb" },
           docPlan(saved.doc),
-          h("span", { class: "card-tag" }, start ? "start" : "doc"),
+          h(
+            "span",
+            { class: "card-tag" },
+            { canvas: "canvas", example: "example", saved: "doc" }[tag],
+          ),
         ),
         h("span", { class: "card-title" }, saved.name),
       );
@@ -311,7 +325,9 @@ export class SceneGallery {
     this.#docShelf.row.replaceChildren(...this.#docCards.map(({ el }) => el));
     setText(
       this.#docShelf.count,
-      docs.length ? `${docs.length} saved` : `${starters.length} to start from`,
+      docs.length
+        ? `${docs.length} saved`
+        : `${canvasDocs.length} canvases · ${exampleDocs.length} examples`,
     );
     this.#filter();
   }

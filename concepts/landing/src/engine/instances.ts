@@ -82,6 +82,22 @@ export function packInstances(
   return into;
 }
 
+/** An RGBA32F texture of this size, read texel by texel (texelFetch), its storage fixed. */
+export function floatTexture(
+  gl: WebGL2RenderingContext,
+  width: number,
+  height: number,
+): WebGLTexture {
+  const texture = gl.createTexture();
+  gl.bindTexture(gl.TEXTURE_2D, texture);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+  gl.texStorage2D(gl.TEXTURE_2D, 1, gl.RGBA32F, width, height);
+  return texture;
+}
+
 /** The texture on the GPU, uploaded only when the document it was last packed from changes. */
 export class InstanceTexture {
   readonly #gl: WebGL2RenderingContext;
@@ -91,13 +107,7 @@ export class InstanceTexture {
 
   constructor(gl: WebGL2RenderingContext) {
     this.#gl = gl;
-    this.texture = gl.createTexture();
-    gl.bindTexture(gl.TEXTURE_2D, this.texture);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
-    gl.texStorage2D(gl.TEXTURE_2D, 1, gl.RGBA32F, INSTANCE_WIDTH, INSTANCE_HEIGHT);
+    this.texture = floatTexture(gl, INSTANCE_WIDTH, INSTANCE_HEIGHT);
   }
 
   /** Show `doc`: packed and uploaded if it is not the document uploaded last. */
