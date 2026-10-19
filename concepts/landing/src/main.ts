@@ -2,7 +2,7 @@
 // and hands the lab a host interface. Every change is a URL query applied here, read as a link is
 // (state.ts `readSetup`: this build's keys, an unknown scene reported).
 import { Lab } from "./lab.ts";
-import { sceneStep } from "./lab/families.ts";
+import { sceneStep } from "./lab/gallery-model.ts";
 import { DitherRenderer } from "./renderer.ts";
 import { loadScene, prefetchScene, type SceneId } from "./scenes/index.ts";
 import type { CameraPose } from "./composer/camera.ts";

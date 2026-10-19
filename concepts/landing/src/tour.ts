@@ -14,7 +14,7 @@
 //   const player = new TourPlayer(readTour(query) ?? tour, true);
 //   const next = player.tick(frameSeconds, renderer.paused); // a scene to switch to, or undefined
 //   player.follow(state.scene);                              // after every page change
-import { sceneCycle } from "./lab/families.ts";
+import { sceneCycle } from "./lab/gallery-model.ts";
 import type { SceneId } from "./scenes/index.ts";
 import { sessionKeys } from "./state.ts";
 
@@ -45,7 +45,7 @@ export function clampDwell(seconds: number): number {
 }
 
 /**
- * The tour in a query, or undefined when it has none: unknown, lab-only (lab/families.ts) and
+ * The tour in a query, or undefined when it has none: unknown, lab-only (lab/gallery-model.ts) and
  * repeated scenes are dropped.
  */
 export function readTour(query: URLSearchParams): Tour | undefined {

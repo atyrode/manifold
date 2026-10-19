@@ -1,8 +1,10 @@
 // The Presets view's tree (ADR 0062 D9 as amended, "Baselines and variants"): a shelf per composer,
-// each its baseline's own scene (D13), then its curated variants, the scenes stored over it, each
-// with its committed presets and then the ones saved in this browser. The scenes no composer draws
-// (a program of their own, D24) stand on a shelf apart. A scene's composer is the one whose layers
-// hold every layer it offers.
+// each its baseline's own scene (D13), then its curated variants in their registry's order (a room's
+// folders, then the promoted ones), the scenes stored over it, each with its committed presets and
+// then the ones saved in this browser. The scenes neither a baseline nor a variant (a program of
+// their own, D24) stand on a shelf apart, in their families' order (lab/families.ts). A scene's
+// composer is the one whose layers hold every layer it offers. The Scenes view shelves the same way
+// (lab/gallery-model.ts).
 import type { Composer } from "../composer/compose.ts";
 import { interior } from "../composer/interior.ts";
 import { interiorVariants } from "../composer/interior-variants.ts";
@@ -14,7 +16,7 @@ import type { ComposerId, OverheadVariant, Variant } from "../composer/types.ts"
 import { defaults } from "../state.ts";
 import type { Preset } from "../presets.ts";
 import { sceneDefs, sceneIds, type SceneId } from "../scenes/index.ts";
-import { sceneOrder } from "./families.ts";
+import { families, sceneFamily } from "./families.ts";
 
 /** A preset in the tree, and where it is kept: committed (undefined) or its local index. */
 export interface TreePreset {
@@ -33,13 +35,13 @@ export interface ComposerShelf {
   readonly composer: ComposerId;
   /** Its baseline's own scene. */
   readonly baseline: TreeScene;
-  /** Its curated variants (over its baseline), in the Scenes view's order. */
+  /** Its curated variants (over its baseline), in their registry's order. */
   readonly variants: readonly TreeScene[];
 }
 
 export interface PresetTree {
   readonly composers: readonly ComposerShelf[];
-  /** The scenes of no composer, in the Scenes view's order. */
+  /** The scenes neither a baseline nor a variant, in their families' order. */
   readonly standalone: readonly TreeScene[];
 }
 
@@ -98,15 +100,23 @@ export function presetTree(committed: readonly Preset[], local: readonly Preset[
     scene,
     presets: all.filter((entry) => presetScene(entry.preset) === scene),
   });
-  const composers = COMPOSERS.map(({ id }): ComposerShelf => ({
-    composer: id,
-    baseline: node(baselineScene[id]),
-    variants: sceneOrder
-      .filter((scene) => sceneComposer(scene) === id && variantBaseline(scene) !== undefined)
-      .map(node),
-  }));
+  const composers = COMPOSERS.map(({ id }): ComposerShelf => {
+    const baseline = baselineScene[id];
+    return {
+      composer: id,
+      baseline: node(baseline),
+      variants: Object.keys(VARIANTS[id])
+        .flatMap((key) => sceneIds.filter((scene) => scene === key))
+        .filter((scene) => variantBaseline(scene) === baseline)
+        .map(node),
+    };
+  });
+  const baselines: readonly SceneId[] = Object.values(baselineScene);
   return {
     composers,
-    standalone: sceneOrder.filter((scene) => sceneComposer(scene) === undefined).map(node),
+    standalone: families
+      .flatMap((family) => sceneIds.filter((scene) => sceneFamily[scene] === family.id))
+      .filter((scene) => !baselines.includes(scene) && variantBaseline(scene) === undefined)
+      .map(node),
   };
 }

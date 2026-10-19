@@ -864,6 +864,35 @@ body.lab-open .lab-opener {
   outline: 2px solid var(--lab-accent);
   outline-offset: 2px;
 }
+/* a card's tag over its thumbnail's corner: a baseline's own scene, or a setup saved here */
+.card-tag {
+  position: absolute;
+  top: 4px;
+  left: 4px;
+  padding: 1px 4px;
+  font-size: 8px;
+  line-height: 1.4;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--lab-ink);
+  background: rgb(11 12 16 / 0.8);
+  border: 1px solid var(--lab-line-strong);
+  border-radius: 3px;
+}
+/* the baseline's: on its card, and beside its shelf's title */
+.shelf-chip {
+  padding: 0 4px;
+  font-size: 8px;
+  line-height: 1.5;
+  letter-spacing: 0.1em;
+  border: 1px solid;
+  border-radius: 3px;
+}
+.scene-card.baseline .card-tag,
+.shelf-chip {
+  color: var(--lab-accent);
+  border-color: var(--lab-accent-line);
+}
 
 /* presets */
 .pop-note,

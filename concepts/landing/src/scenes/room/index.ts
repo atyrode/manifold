@@ -2,7 +2,8 @@
 // the sill's rest pose, the window onto the city over the bare sill, the plum wall and the reading
 // lamp out of frame (composer/interior.ts). Every room is a variant of it (sill, lava, bonsai,
 // incense, frost, bar, train, mobile), stored as its differences; this scene loads the baseline
-// itself to compare them against. Lab-only: outside the tour and `[` / `]` (src/lab/families.ts).
+// itself to compare them against. Lab-only: outside the tour and `[` / `]`
+// (src/lab/gallery-model.ts).
 import { composeScene, variantPreset } from "../../composer/compose.ts";
 import { interior } from "../../composer/interior.ts";
 import type { Variant } from "../../composer/types.ts";

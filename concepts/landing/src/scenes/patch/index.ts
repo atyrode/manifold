@@ -2,7 +2,7 @@
 // from above, the pond's floor alone, dry, under the World's afternoon (composer/overhead.ts). The
 // pond, the ripple tank, the tide pool, the sand table and the delta are variants of it, stored as
 // their differences (composer/overhead-variants.ts); this scene loads the baseline itself to compare
-// them against. Lab-only: outside the tour and `[` / `]` (src/lab/families.ts).
+// them against. Lab-only: outside the tour and `[` / `]` (src/lab/gallery-model.ts).
 import { composeScene, overheadVariantPreset } from "../../composer/compose.ts";
 import { overhead } from "../../composer/overhead.ts";
 import type { OverheadVariant } from "../../composer/types.ts";

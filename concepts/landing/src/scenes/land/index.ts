@@ -2,7 +2,7 @@
 // standing in an open field, the downs beyond under a fair afternoon sky (composer/outdoor.ts). The
 // meadow is a variant of it, stored as its differences, and the other outdoor scenes become variants
 // as they are ported; this scene loads the baseline itself to compare them against. Lab-only:
-// outside the tour and `[` / `]` (src/lab/families.ts).
+// outside the tour and `[` / `]` (src/lab/gallery-model.ts).
 import { composeScene, variantPreset } from "../../composer/compose.ts";
 import { outdoor } from "../../composer/outdoor.ts";
 import type { Variant } from "../../composer/types.ts";

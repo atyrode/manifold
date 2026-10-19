@@ -1,30 +1,75 @@
-// The lab panel's Scenes view: every scene as a thumbnail card, shelved by family with a rail of the
-// families, searchable, the one on screen marked. Arrow keys move between cards (one card in the tab
-// order), Enter or Space shows the scene. The lab syncs it while it shows, and as it comes on screen.
+// The lab panel's Scenes view (ADR 0062 D9, again): every scene as a thumbnail card, shelved by
+// baseline (lab/gallery-model.ts) with a rail of the shelves: each baseline's own scene first
+// ("baseline"), its variants, then the setups saved in this browser over them ("custom", loaded as
+// the Presets view loads them), and the standalone scenes apart. Searchable by the scenes' titles
+// and the custom setups' names, the scene on screen marked. Arrow keys move between cards (one card
+// in the tab order), Enter or Space shows the scene or loads the setup. The lab syncs it while it
+// shows, and as it comes on screen; a sync rebuilds the custom cards once the saved setups change.
+import type { ComposerId } from "../composer/types.ts";
+import { loadLocalPresets, type Preset } from "../presets.ts";
 import { sceneDefs, type SceneId } from "../scenes/index.ts";
-import { h, setAttr, type LabContext } from "./dom.ts";
-import { families, sceneFamily, sceneOrder } from "./families.ts";
-import { icon } from "./icons.ts";
-import { Rail } from "./rail.ts";
+import { h, setAttr, setHidden, setText, type LabContext } from "./dom.ts";
+import { sceneFamily } from "./families.ts";
+import { cardMatches, galleryShelves, type GalleryCard } from "./gallery-model.ts";
+import { icon, type IconName } from "./icons.ts";
+import { Rail, type RailEntry } from "./rail.ts";
 import { standIn, thumbUrl } from "./thumbs.ts";
+
+export interface GalleryHost {
+  /** Show `scene` at its defaults, picked by hand. */
+  setScene(scene: SceneId): void;
+  /** Load a saved setup (one undo step), as the Presets view does. */
+  load(query: string): void;
+  /** The setup on screen as a minimal query. */
+  query(): string;
+}
+
+/** A card on screen: what it shows, and its element. */
+interface Card {
+  readonly card: GalleryCard;
+  readonly el: HTMLButtonElement;
+}
+
+interface Shelf {
+  readonly el: HTMLElement;
+  /** Its cards' row. */
+  readonly row: HTMLElement;
+  readonly count: HTMLElement;
+  readonly scenes: readonly Card[];
+  /** Its custom cards, after its scenes', rebuilt as the saved setups change. */
+  custom: readonly Card[];
+}
+
+/** A baseline's shelf's icon, by its composer (the Presets view's shelves'); the standalone one's. */
+const SHELF_ICONS: Readonly<Record<ComposerId, IconName>> = {
+  interior: "house",
+  outdoor: "mountain",
+  overhead: "ripple",
+};
+const STANDALONE_ICON: IconName = "pattern";
 
 export class SceneGallery {
   readonly el: HTMLElement;
   readonly #ctx: LabContext;
+  readonly #host: GalleryHost;
   readonly #search: HTMLInputElement;
   readonly #body: HTMLElement;
   readonly #rail: Rail;
+  /** The scenes' cards, by scene. */
   readonly #cards = new Map<SceneId, HTMLButtonElement>();
-  readonly #shelves: { el: HTMLElement; scenes: SceneId[]; title: string }[] = [];
+  readonly #shelves: Shelf[] = [];
   readonly #empty = h("p", { class: "lab-empty", hidden: true }, "No scene matches.");
   #shown: SceneId | undefined;
+  /** The saved setups the custom cards show, as stored, to rebuild them only when they change. */
+  #saved = "";
 
-  constructor(ctx: LabContext, setScene: (scene: SceneId) => void) {
+  constructor(ctx: LabContext, host: GalleryHost) {
     this.#ctx = ctx;
+    this.#host = host;
     this.#search = h("input", {
       type: "search",
-      placeholder: "Find a scene…",
-      "aria-label": "Find a scene",
+      placeholder: "Find a scene or setup…",
+      "aria-label": "Find a scene or a saved setup",
       spellcheck: false,
     });
     this.#search.addEventListener("input", () => this.#filter());
@@ -39,28 +84,46 @@ export class SceneGallery {
     });
 
     this.#body = h("div", { class: "view-body gallery", role: "group", "aria-label": "Scenes" });
-    this.#rail = new Rail(this.#body, "Scene families", ctx.reducedMotion);
-    const entries = families.map((family) => {
-      const scenes = sceneOrder.filter((id) => sceneFamily[id] === family.id);
-      const cards = scenes.map((id) => this.#card(id, setScene));
+    this.#rail = new Rail(this.#body, "Scene shelves", ctx.reducedMotion);
+    const baselines: RailEntry[] = [];
+    const apart: RailEntry[] = [];
+    for (const shelf of galleryShelves([])) {
+      const title = shelf.baseline === undefined ? "Standalone" : sceneDefs[shelf.baseline].title;
+      const name = shelf.composer === undefined ? STANDALONE_ICON : SHELF_ICONS[shelf.composer];
+      const scenes = shelf.cards.map((card) => ({ card, el: this.#card(card) }));
+      const row = h("div", { class: "cards" }, ...scenes.map(({ el }) => el));
+      const count = h("span", { class: "shelf-count" });
       const el = h(
         "section",
-        { class: "shelf", "aria-label": family.title },
+        {
+          class: "shelf",
+          "aria-label": shelf.baseline === undefined ? title : `${title} baseline`,
+        },
         h(
           "h3",
           { class: "shelf-title" },
-          icon(family.icon),
-          h("span", {}, family.title),
-          h("span", { class: "shelf-count" }, String(scenes.length)),
+          icon(name),
+          h("span", {}, title),
+          shelf.baseline !== undefined && h("span", { class: "shelf-chip" }, "baseline"),
+          count,
         ),
-        h("div", { class: "cards" }, ...cards),
+        shelf.baseline === undefined &&
+          h("p", { class: "shelf-note" }, "Scenes with a program of their own, in no composer."),
+        row,
       );
-      this.#shelves.push({ el, scenes, title: family.title });
-      return { id: family.id, title: family.title, icon: family.icon, el, focus: cards[0] };
-    });
-    this.#body.append(...entries.map((entry) => entry.el), this.#empty);
+      this.#shelves.push({ el, row, count, scenes, custom: [] });
+      const entry = {
+        id: shelf.baseline ?? "standalone",
+        title,
+        icon: name,
+        el,
+        focus: scenes[0]?.el,
+      };
+      (shelf.baseline === undefined ? apart : baselines).push(entry);
+    }
+    this.#body.append(...this.#shelves.map(({ el }) => el), this.#empty);
     this.#body.addEventListener("keydown", (event) => this.#roam(event));
-    this.#rail.set([entries]);
+    this.#rail.set([baselines, apart]);
 
     this.el = h(
       "div",
@@ -89,55 +152,106 @@ export class SceneGallery {
   }
 
   sync(): void {
+    const local = loadLocalPresets();
+    const saved = JSON.stringify(local);
+    if (saved !== this.#saved) {
+      this.#saved = saved;
+      this.#setCustom(local);
+    }
     const { scene } = this.#ctx.current().state;
-    for (const [id, card] of this.#cards) {
-      const current = id === scene;
-      setAttr(card, "aria-pressed", String(current));
-      if (current) setAttr(card, "aria-current", "true");
-      else card.removeAttribute("aria-current");
+    const query = this.#host.query();
+    for (const { card, el } of this.#all()) {
+      const current = card.kind === "scene" && card.scene === scene;
+      const exact = card.kind === "custom" && card.preset.query === query;
+      setAttr(el, "aria-pressed", String(current || exact));
+      if (current) setAttr(el, "aria-current", "true");
+      else el.removeAttribute("aria-current");
     }
     // One card in the tab order: the current scene's, unless the keyboard is already in the gallery.
     if (this.#shown !== scene) {
       this.#shown = scene;
-      for (const [id, card] of this.#cards) card.tabIndex = id === scene ? 0 : -1;
+      for (const { card, el } of this.#all())
+        el.tabIndex = card.kind === "scene" && card.scene === scene ? 0 : -1;
       if (!this.el.contains(document.activeElement))
         this.#cards.get(scene)?.scrollIntoView({ block: "nearest" });
     }
   }
 
-  #card(id: SceneId, setScene: (scene: SceneId) => void): HTMLButtonElement {
-    const scene = sceneDefs[id];
+  /** Rebuild the custom cards from the `local` setups, each on its scene's shelf. */
+  #setCustom(local: readonly Preset[]): void {
+    const shelves = galleryShelves(local);
+    for (const [at, shelf] of this.#shelves.entries()) {
+      for (const { el } of shelf.custom) el.remove();
+      shelf.custom = (shelves[at]?.cards ?? [])
+        .filter((card) => card.kind === "custom")
+        .map((card) => ({ card, el: this.#card(card) }));
+      shelf.row.append(...shelf.custom.map(({ el }) => el));
+      const scenes = `${shelf.scenes.length} scenes`;
+      setText(
+        shelf.count,
+        shelf.custom.length ? `${scenes} · ${shelf.custom.length} custom` : scenes,
+      );
+    }
+    this.#filter();
+  }
+
+  /** A card: a scene's (tagged "baseline" for a baseline's own) or a custom setup's. */
+  #card(card: GalleryCard): HTMLButtonElement {
+    const def = sceneDefs[card.scene];
     const image = h("img", {
       alt: "",
-      src: thumbUrl(id),
+      src: thumbUrl(card.scene),
       loading: "lazy",
       decoding: "async",
       draggable: false,
     });
     // A build without this scene's thumbnail shows its stand-in.
-    image.addEventListener("error", () => (image.src = standIn(scene.accent, sceneFamily[id])), {
-      once: true,
-    });
-    const card = h(
+    image.addEventListener(
+      "error",
+      () => (image.src = standIn(def.accent, sceneFamily[card.scene])),
+      { once: true },
+    );
+    const custom = card.kind === "custom";
+    const name = custom ? card.preset.name : def.title;
+    const tag = custom ? "custom" : card.baseline ? "baseline" : undefined;
+    const el = h(
       "button",
       {
         type: "button",
-        class: "scene-card",
-        "data-scene": id,
-        "aria-label": scene.title,
-        title: `${scene.title}: ${scene.blurb}`,
+        class: tag === undefined ? "scene-card" : `scene-card ${tag}`,
+        tabIndex: -1,
+        "data-scene": card.scene,
+        "data-preset": custom ? `local-${card.local}` : undefined,
+        "aria-label": tag === undefined ? name : `${name}, ${tag}`,
+        title: custom
+          ? `${name}: ${def.title} as saved in this browser, @${card.preset.commit}`
+          : `${def.title}: ${def.blurb}`,
       },
-      h("span", { class: "thumb" }, image),
-      h("span", { class: "card-title" }, scene.title),
+      h(
+        "span",
+        { class: "thumb" },
+        image,
+        tag !== undefined && h("span", { class: "card-tag" }, tag),
+      ),
+      h("span", { class: "card-title" }, name),
     );
-    card.style.setProperty("--dot", scene.accent);
-    card.addEventListener("click", () => setScene(id));
-    this.#cards.set(id, card);
-    return card;
+    el.style.setProperty("--dot", def.accent);
+    el.addEventListener("click", () =>
+      card.kind === "custom" ? this.#host.load(card.preset.query) : this.#host.setScene(card.scene),
+    );
+    if (card.kind === "scene") this.#cards.set(card.scene, el);
+    return el;
+  }
+
+  /** Every card, shelf by shelf, in the order shown. */
+  #all(): Card[] {
+    return this.#shelves.flatMap((shelf) => [...shelf.scenes, ...shelf.custom]);
   }
 
   #visibleCards(): HTMLButtonElement[] {
-    return [...this.#cards.values()].filter((card) => !card.hidden);
+    return this.#all()
+      .map(({ el }) => el)
+      .filter((el) => !el.hidden);
   }
 
   /** Arrow keys between cards: across a row, and up or down to the card nearest in the next row. */
@@ -185,24 +299,22 @@ export class SceneGallery {
   }
 
   #filter(): void {
-    const text = this.#search.value.trim().toLowerCase();
+    const query = this.#search.value;
     let any = false;
     for (const shelf of this.#shelves) {
       let shown = 0;
-      for (const id of shelf.scenes) {
-        const scene = sceneDefs[id];
-        const words = `${id} ${scene.title} ${scene.blurb} ${shelf.title}`.toLowerCase();
-        const hit = text === "" || words.includes(text);
-        const card = this.#cards.get(id);
-        if (card) card.hidden = !hit;
+      for (const { card, el } of [...shelf.scenes, ...shelf.custom]) {
+        const hit = cardMatches(card, query);
+        setHidden(el, !hit);
         if (hit) shown++;
       }
-      shelf.el.hidden = shown === 0;
+      setHidden(shelf.el, shown === 0);
       if (shown > 0) any = true;
     }
-    this.#empty.hidden = any;
-    const first = this.#visibleCards()[0];
-    if (first && !this.#visibleCards().some((card) => card.tabIndex === 0)) first.tabIndex = 0;
+    setHidden(this.#empty, any);
+    const visible = this.#visibleCards();
+    const first = visible[0];
+    if (first && !visible.some((card) => card.tabIndex === 0)) first.tabIndex = 0;
     this.#rail.spy();
   }
 }

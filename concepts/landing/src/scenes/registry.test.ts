@@ -1,7 +1,8 @@
 import { expect, test } from "bun:test";
 import { existsSync, readdirSync } from "node:fs";
 import { promotedVariants } from "../composer/interior-variants.ts";
-import { families, sceneFamily, sceneOrder } from "../lab/families.ts";
+import { families, sceneFamily } from "../lab/families.ts";
+import { sceneOrder } from "../lab/gallery-model.ts";
 import { assembleFragment } from "../shaders/index.ts";
 import { loadedScene, loadScene, sceneDefs, sceneIds } from "./index.ts";
 

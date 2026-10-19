@@ -552,9 +552,9 @@ the bank the swarm lives in, the maple's sim holds the park's leaves and piles.
   sections (`Inspector.lend`), then Global.
 - **Presets are the starting points.** Shuffle never turns a layer (switches are steady); undo and
   redo take layer turns like any knob; "Reset what changed" returns to the preset, layers included.
-- **Not built:** the stack meter and the over-budget chip, the role's "+" listing with thumbnails
-  and costs, and shelving the Scenes view by composer (D9): it is shelved by family
-  (`src/lab/families.ts`).
+- **Not built:** the stack meter and the over-budget chip, and the role's "+" listing with
+  thumbnails and costs. The Scenes view is shelved by baseline (D9, again:
+  `src/lab/gallery-model.ts`).
 
 ## Principals and chores
 
@@ -1414,6 +1414,31 @@ five as variants ("Compare with baseline" against `patch`); with every composed 
 baseline. **Remains:** a variant cannot unset a feature the baseline holds (the overhead's holds
 none); the overhead's fog, snow, wet bed, tilt and orbit and the World over the delta, as before.
 
+**The Scenes view by baseline (D9, again), built (2026-10-19):** `lab/gallery-model.ts` builds the
+shelves from the Presets view's tree (`presetTree`, `lab/tree-model.ts`): `room`, `land` and
+`patch`, each its baseline's own scene first, then its curated variants in their registry's order
+(`interiorVariants`, the folders then the promoted ones; `outdoorVariants`; `overheadVariants`),
+then a "custom" card for each setup saved in this browser (`loadLocalPresets`) whose scene is on
+the shelf, in the order saved; then the sixteen standalone scenes on one shelf, in their families'
+order (by family they would make shelves of two, one and one beside the matter's twelve). The tree
+now orders its variants by registry and its standalone scenes by family as well, so both views
+agree. `lab/gallery.ts` renders the shelves: a heading with the baseline's title, a "baseline"
+chip and the counts, a rail of the four shelves, cards tagged "baseline" and "custom", a search
+over the scenes' ids and titles and the custom setups' names (no longer the blurbs), the arrow-key
+roaming across the rows, one card in the tab order and `aria-current` on the scene shown. A custom
+card loads its setup through the Presets view's `load` (one undo step) and is pressed while its
+exact query is on screen; each sync re-reads the saved setups and rebuilds the custom cards when
+they changed. `sceneOrder`, `labOnly` (now `baselineScene`'s values), `sceneCycle` and `sceneStep`
+moved from `lab/families.ts` to `gallery-model.ts`: `[`, `]` and the tour step through the
+shelves' order less the baselines (`]` from mobile, the room's last variant, is the meadow), and
+the README's scenes table follows it. `families.ts` keeps the themes, for the standalone shelf's
+order, the thumbnails' stand-ins and the table's Family column; its icons, read only by the old
+shelves, are gone. `gallery-model.test.ts` holds the shelf order, every scene on exactly one
+shelf, each baseline first with its variants in registry order, a saved setup on its baseline's
+shelf and a standalone scene's on Standalone, the search and the cycle. In Chromium: the four
+shelves, a setup saved from the Presets view under Patch as "custom", the search by its name, the
+card loading it, and its deletion in the Presets view clearing it.
+
 ### Amendments
 
 - **D7 and Phase 5:** prism and pendula are standalone, full-screen, with fractal, hyperbolic, orbit
@@ -1424,6 +1449,7 @@ none); the overhead's fog, snow, wet bed, tilt and orbit and the World over the 
   overhead baselines are built: each baseline (`room`, `land`, `patch`) a shelf with its variants
   in a row and the setups saved here in that row as "custom", the standalone scenes apart; between
   variants of one baseline the lab keeps the World and blends rather than loading another scene.
+  The shelves are built (Order of work, "The Scenes view by baseline").
 
 ### Decisions D13–D24
 
@@ -1518,7 +1544,7 @@ The operator ratified D1–D12 on 2026-10-17 and D13–D24 ("Baselines and varia
 | D6  | Caps and budgets                    | The table under "Budgets and caps", with the SwiftShader budget counted in instructions on the composed program, not as a ratio to the scene before its port.                                                                                                                            |
 | D7  | What stays outside the composers    | Fractal, hyperbolic, orbit, shanshui, prism and pendula standalone (amended by D24); dew composed, locked to its macro rig; kelp standalone, an underwater baseline later; the matter shelf optional.                                                                                    |
 | D8  | Lazy loading                        | Done: a scene's metadata loads without its code, and the layers' code loads with the first composed scene's.                                                                                                                                                                             |
-| D9  | How the Scenes view shelves presets | By composer, as one tree per composer in the Presets view: baseline, curated variants, their presets (amended under "Baselines and variants"); not built.                                                                                                                                |
+| D9  | How the Scenes view shelves presets | By composer, as one tree per composer in the Presets view: baseline, curated variants, their presets (amended under "Baselines and variants"); built, and the Scenes view shelved by baseline (D9, again).                                                                               |
 | D10 | Scenes with skies of their own      | Folded into the World with staging hooks (the campfire's giant and meteors, the fireflies' night over `worldSkyOver`); the lake keeps its own night, staged on the World and its sky parts compiled out while its far shore stands.                                                      |
 | D11 | Interior windows                    | A live view through the glass, in window cells only, drawn through the window's own rig. The World crosses the glass; an outdoor backdrop crosses only once it is drawn from the ray of any rig in its spans.                                                                            |
 | D12 | Turning a layer on or off           | Plays its own entrance or exit, cut per cell (1.2 s and 0.9 s), never a cut.                                                                                                                                                                                                             |

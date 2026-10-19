@@ -1,6 +1,6 @@
 // The icon rail beside a view's scrolling body: a button per section that jumps to it, the section
 // in view marked as the body scrolls, the sections a search hides dimmed and, where the view counts
-// them, a dot on those with changes. Each view of the lab panel has its own: scene families
+// them, a dot on those with changes. Each view of the lab panel has its own: scene shelves
 // (Scenes), preset groups (Presets), control groups (Controls). Marking the section in view reads
 // the layout, so it waits for the next frame and runs once however often it is asked for.
 import { h, setAttr } from "./dom.ts";

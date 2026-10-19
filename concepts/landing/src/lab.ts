@@ -19,7 +19,7 @@ import {
   type Comparison,
   type Slot,
 } from "./compare.ts";
-import { sceneCycle, sceneStep } from "./lab/families.ts";
+import { sceneCycle, sceneStep } from "./lab/gallery-model.ts";
 import { SceneGallery } from "./lab/gallery.ts";
 import { flash, iconButton, nowButton, row, slider, textButton } from "./lab/controls.ts";
 import {
@@ -230,12 +230,18 @@ export class Lab {
     root.classList.toggle("explain", this.#prefs.explain);
 
     const save = () => this.#savePrefs();
-    this.#gallery = new SceneGallery(this.#ctx, (scene) => this.#setScene(scene, "hand"));
+    // The Scenes view's custom cards load a saved setup as the Presets view does.
+    const load = (query: string) => {
+      host.apply(new URLSearchParams(query));
+      this.commit();
+    };
+    this.#gallery = new SceneGallery(this.#ctx, {
+      setScene: (scene) => this.#setScene(scene, "hand"),
+      load,
+      query: () => this.#query(),
+    });
     this.#presets = new PresetsView(this.#ctx, {
-      load: (query) => {
-        host.apply(new URLSearchParams(query));
-        this.commit();
-      },
+      load,
       compare: (a, b) => this.#compareWith(a, b),
       query: () => this.#query(),
       build: host.build,
@@ -579,7 +585,7 @@ export class Lab {
 
   /**
    * Go to the previous (-1) or next (1) scene in the Scenes view's order less the lab-only scenes
-   * (lab/families.ts `sceneCycle`), as a scene picked by hand.
+   * (lab/gallery-model.ts `sceneCycle`), as a scene picked by hand.
    */
   stepScene(by: -1 | 1): void {
     this.#setScene(sceneStep(this.#current().state.scene, by), "hand");
