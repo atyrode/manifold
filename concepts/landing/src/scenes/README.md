@@ -632,7 +632,7 @@ The Scenes view (`src/lab/gallery.ts`) keeps what ships apart from what this bro
 switch over its search picks the Library or Saved, and the one search serves the half on screen.
 
 The Library (its shelves in `src/lab/gallery-model.ts`; ADR 0062 D9 as amended) holds only what
-ships. First the Canvas shelf: the engine's bare canvases and examples, each drawn as a plan from
+ships. First the Canvas shelf: the engine's bare canvases, each drawn as a plan from
 above, opened in the canvas. Then the scenes by baseline: the room's, the land's and the patch's
 shelf, each its baseline's own scene first (tagged "baseline"), then its curated variants in their
 registry's order (a room's folders, then the promoted ones); then the standalone scenes, a program of

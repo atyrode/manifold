@@ -1,8 +1,8 @@
 // The lab panel's Scenes view (ADR 0062 D9, again), one switch between two halves. The Library is
 // what ships: every scene as a thumbnail card, shelved by baseline (lab/gallery-model.ts) with a rail
 // of the shelves, each baseline's own scene first ("baseline"), its variants, the standalone scenes
-// apart, and ahead of them the Canvas shelf of the engine's shipped documents, the bare canvases and
-// the examples, each drawn as a plan from above and opened in the canvas. A card counts its scene's
+// apart, and ahead of them the Canvas shelf of the engine's bare canvases, each drawn as a plan from
+// above and opened in the canvas. A card counts its scene's
 // committed presets; under the shelf of the scene on screen stand its presets (lab/preset-rows.ts)
 // and, for a variant, its compare with its baseline in the A/B slots (compare.ts). Saved is
 // everything saved in this browser, one list (lab/saved.ts), apart from what ships. One search
@@ -12,7 +12,7 @@
 // shows, and as it comes on screen.
 import type { ComposerId } from "../composer/types.ts";
 import { canonicalSetup } from "../compare.ts";
-import { canvasDocs, exampleDocs } from "../engine/docs.ts";
+import { canvasDocs } from "../engine/docs.ts";
 import type { EngineDoc } from "../engine/types.ts";
 import { sceneDefs, type SceneId } from "../scenes/index.ts";
 import { textButton } from "./controls.ts";
@@ -176,10 +176,7 @@ export class SceneGallery {
       };
       (shelf.baseline === undefined ? apart : baselines).push(entry);
     }
-    this.#docCards = [
-      ...canvasDocs.map((doc) => this.#docCard(doc, "canvas")),
-      ...exampleDocs.map((doc) => this.#docCard(doc, "example")),
-    ];
+    this.#docCards = canvasDocs.map((doc) => this.#docCard(doc));
     const docRow = h("div", { class: "cards" }, ...this.#docCards.map(({ el }) => el));
     this.#docShelf = h(
       "section",
@@ -189,17 +186,9 @@ export class SceneGallery {
         { class: "shelf-title" },
         icon("layers"),
         h("span", {}, "Canvas"),
-        h(
-          "span",
-          { class: "shelf-count" },
-          `${canvasDocs.length} canvases · ${exampleDocs.length} examples`,
-        ),
+        h("span", { class: "shelf-count" }, `${canvasDocs.length} canvases`),
       ),
-      h(
-        "p",
-        { class: "shelf-note" },
-        "One world with a free camera: start from a bare canvas or an example.",
-      ),
+      h("p", { class: "shelf-note" }, "One world with a free camera: start from a bare canvas."),
       docRow,
     );
     this.#body.append(this.#docShelf, ...this.#shelves.map(({ el }) => el), this.#empty);
@@ -354,20 +343,19 @@ export class SceneGallery {
     card.after(this.#here);
   }
 
-  /** A shipped document's card: a bare canvas's or an example's. */
-  #docCard(doc: EngineDoc, tag: "canvas" | "example"): { doc: EngineDoc; el: HTMLButtonElement } {
+  /** A bare canvas's card. */
+  #docCard(doc: EngineDoc): { doc: EngineDoc; el: HTMLButtonElement } {
     const count = doc.objects.length;
-    const what = tag === "canvas" ? "a bare canvas" : "an example";
     const el = h(
       "button",
       {
         type: "button",
-        class: `scene-card doc${tag === "canvas" ? " baseline" : ""}`,
+        class: "scene-card doc baseline",
         tabIndex: -1,
-        "aria-label": `${doc.title}, ${what}`,
-        title: `${doc.title}: ${count} object${count === 1 ? "" : "s"}, ${what}. Opens in the canvas.`,
+        "aria-label": `${doc.title}, a bare canvas`,
+        title: `${doc.title}: ${count} object${count === 1 ? "" : "s"}, a bare canvas. Opens in the canvas.`,
       },
-      h("span", { class: "thumb" }, docPlan(doc), h("span", { class: "card-tag" }, tag)),
+      h("span", { class: "thumb" }, docPlan(doc), h("span", { class: "card-tag" }, "canvas")),
       h("span", { class: "card-title" }, doc.title),
     );
     el.addEventListener("click", () => this.#host.openDoc({ name: doc.title, savedAt: 0, doc }));

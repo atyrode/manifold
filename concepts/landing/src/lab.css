@@ -865,7 +865,7 @@ body.lab-open .lab-opener {
   outline: 2px solid var(--lab-accent);
   outline-offset: 2px;
 }
-/* a card's tag over its thumbnail's corner: a baseline's own scene, a canvas, an example */
+/* a card's tag over its thumbnail's corner: a baseline's own scene, a canvas */
 .card-tag {
   position: absolute;
   top: 4px;

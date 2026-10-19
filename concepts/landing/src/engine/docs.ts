@@ -1,7 +1,8 @@
-// The starter documents. Three bare canvases, the plainest land, an empty room and a view straight
-// down (on spheres), and examples of the kinds: a lava lamp on a plinth at night, a pond seen from its
-// shore, a grove of trees in the grass, and the lava scene's room rebuilt with its lava lamp. The
-// canvas scene opens on `land`.
+// The shipped documents. Three bare canvases, the plainest land, an empty room and a view straight
+// down (on spheres), the Library's Canvas shelf; and examples of the kinds, which the Library does
+// not show: the bench's pictures (bench.ts) and the tests' worlds, a lava lamp on a plinth at night,
+// a pond seen from its shore, a grove of trees in the grass, and the lava scene's room rebuilt with
+// its lava lamp. The canvas scene opens on `land`.
 import { groundHeight } from "./kinds/ground/height.ts";
 import { WATER_LIFT } from "./kinds/water/index.ts";
 import { ROOM } from "./kinds/room/shape.ts";
@@ -338,5 +339,5 @@ export const lavaRoomDoc: EngineDoc = {
 /** The bare canvases a setup starts from: the land, an empty room, the view from above. */
 export const canvasDocs: readonly EngineDoc[] = [landDoc, roomDoc, topDoc];
 
-/** Examples of the kinds, each a setup to open and change. */
+/** Examples of the kinds, for the bench and the tests (see the header). */
 export const exampleDocs: readonly EngineDoc[] = [lavaRoomDoc, lavaLampDoc, pondDoc, groveDoc];
