@@ -1,0 +1,983 @@
+// The composer contract (ADR 0062, src/scenes/README.md "Composers"): what a composer provides and
+// what a layer declares. A composer is a camera rig, a site (the floor every layer stands on) and an
+// order of composition; layers are modules from the scenes, stacked over it. Scene ids stay as
+// scene presets (`ScenePreset`), from which `composeScene` (compose.ts) makes each `SceneDef`.
+//
+// Units: metres in the rig's frame (x right of the view's centre line, y up from the floor, z away
+// from the eye), as LevelCamera (sims/camera.ts) and the World's `worldView` take them. The overhead
+// composer's (overhead-glsl.ts): the frame's centre, x right and z up the frame, `span` metres tall.
+import type { Blurb, ParamDef } from "../params.ts";
+import type { SkyPlanets } from "../scenes/planets.ts";
+import type { SceneLook, ScenePoint, SceneTheme, SimFrame } from "../scenes/types.ts";
+import type { WorldOptions } from "../scenes/world.ts";
+import type { LevelCamera } from "../sims/camera.ts";
+import type { PoseTolerance } from "./camera.ts";
+import type { GustField, PassageGustShape } from "./gust.ts";
+
+export type ComposerId = "outdoor" | "interior" | "overhead";
+
+/**
+ * What a layer is to the composition (README "Layers"), in the lab's order of rows. The overhead
+ * composer's site is a bed and the water over it: `bed` stands as a backdrop does (exactly one, the
+ * home one with none switched on), `water` as a ground (at most one; without it, the dry bed).
+ */
+export const ROLES = [
+  "backdrop",
+  "bed",
+  "ground",
+  "water",
+  "dressing",
+  "cover",
+  "life",
+  "chore",
+] as const;
+export type Role = (typeof ROLES)[number];
+
+/** Where a layer stands: beyond about 60 m, 6–60 m, within about 6 m of the eye. */
+export type Band = "far" | "middle" | "front";
+
+/** An inclusive range. */
+export type Span = readonly [min: number, max: number];
+
+/** A point on the floor, metres. */
+export type FloorPoint = readonly [x: number, z: number];
+
+/** A claim's outline on the floor, metres from its layer's anchor. */
+export type Shape =
+  | { readonly kind: "disc"; readonly at: FloorPoint; readonly r: number }
+  | {
+      readonly kind: "box";
+      readonly at: FloorPoint;
+      /** Half its width (x) and depth (z) before the turn. */
+      readonly half: FloorPoint;
+      /** Radians, counter-clockwise seen from above. */
+      readonly turn?: number;
+    }
+  | { readonly kind: "strip"; readonly points: readonly FloorPoint[]; readonly half: number };
+
+/**
+ * exclusive: nothing else exclusive or clearing overlaps it and no cover grows inside; clears:
+ * covers thin to nothing in its core, feathered over CLEAR_FEATHER metres, and another layer's
+ * exclusive claim may stand at its edge but not in its core; shared: covers grow in by their
+ * overgrowth.
+ */
+export type ClaimKind = "exclusive" | "clears" | "shared";
+
+export interface Claim {
+  /** What stands there, for a refusal's reason: "the hives". */
+  readonly name: string;
+  readonly kind: ClaimKind;
+  readonly shape: Shape;
+  /**
+   * A key-light shadow on the floor and on covers: a soft band from its centre away from the key,
+   * the caster's height times the light's reach long but at most `length` (m), `radius` wide.
+   */
+  readonly shadow?: { readonly height: number; readonly radius: number; readonly length: number };
+  /** The share of precipitation and lying snow kept off beneath it, 0..1. */
+  readonly shelter?: number;
+  /** Life layers steer round it. */
+  readonly keepOut?: boolean;
+  /** Placement refuses an anchor where it leaves the rig's view at the preset's minAspect. */
+  readonly mustShow?: boolean;
+}
+
+/** A candidate placement, metres in the rig's frame; the first that fits is taken. */
+export interface Anchor {
+  readonly name: string;
+  readonly at: FloorPoint;
+}
+
+/**
+ * The rigs a layer can be drawn through: a preset whose rig falls outside any span does not offer
+ * it (README "Relations between layers"). In a room (composer/camera.ts, ADR 0062 D18) they are also
+ * the live poses it holds: a layer drawn from the ray its `eye`, `x`, `z`, `turn`, `pitch` and
+ * `focal` spans (any where it gives none), a layer painted on its frame its `tolerance` about the
+ * rest pose instead, which it takes as parallax.
+ */
+export interface CameraRange {
+  readonly eye?: Span;
+  readonly horizon?: Span;
+  readonly focal?: Span;
+  readonly pitch?: Span;
+  /** Across the room's frame (m), the rest rig at 0. */
+  readonly x?: Span;
+  /** Ahead in the room's frame (m), the rest rig at 0. */
+  readonly z?: Span;
+  /** The yaw (rad, left), as `Rig.turn`. */
+  readonly turn?: Span;
+  /** A painted layer's half widths about the rest pose (camera.ts PoseTolerance); held where unset. */
+  readonly tolerance?: PoseTolerance;
+  /** Under the overhead rig: the metres a screen height spans (OverheadRig.span). */
+  readonly span?: Span;
+  /**
+   * Under the overhead rig: drawn in the sea's water (the tide pool's), so offered only over it
+   * (OverheadRig.salt), and a layer without it only away from it: the koi never in a tide pool.
+   */
+  readonly salt?: true;
+}
+
+/**
+ * A light the layer brings: `glsl` names its `vec3 <fn>(vec3 p, vec3 n)`, the light it throws on
+ * a surface at p (rig frame, metres) facing n, which the composer sums into `localLight` for every
+ * layer; `gate` the layer's feature it is compiled under.
+ */
+export interface LayerLight {
+  readonly name: string;
+  readonly glsl: string;
+  readonly gate?: string;
+}
+
+/**
+ * The passes a layer has, each a GLSL function of its own (prefixed with its id), called by the
+ * composer's generated entry in its order (README "Compositing"):
+ *   begin       void <fn>(inout Ctx x): per-cell state; a backdrop sets x.air, x.groundTo, x.landZ
+ *   sky         void <fn>(Ctx x, inout Cell c): a backdrop's sky and its staging over the deck
+ *   mirror      Mirrored <fn>(Ctx x, vec3 at, vec3 ray, WorldView m, vec2 spread): a backdrop's
+ *               view in a level mirror at `at` along the reflected `ray` (m: worldMirrorView's view
+ *               along it), what a ground that mirrors asks through composerMirror: its colour
+ *               without its lamps, its lamps' colour and how bright they are, seen (x) and drawn out
+ *               down the water (y). spread: how much a rough mirror softens what stands d metres
+ *               behind its point, d · spread.x metres, and draws its lamps out, d · spread.y metres
+ *   ground      void <fn>(Ctx x, inout Cell c): a ground layer's floor below x.groundTo
+ *   far, middle, front            void <fn>(Ctx x, inout Cell c): opaque, in canonical order
+ *   farVeil, middleVeil, frontVeil void <fn>(Ctx x, inout Cell c): translucent, after a band's opaque
+ *   air         void <fn>(inout Ctx x, inout Cell c): after the specks, before the fog: the air's own
+ *               light (a backdrop's forward scatter, a lamp's halo into x.air.fog and x.air.drop)
+ *   glow        void <fn>(Ctx x, inout Cell c): after the fog, before the rain and snow: light the air
+ *               scatters toward the eye over what the fog has veiled (swell's beams, its lamps' glow)
+ * and `speck`, `vec3 <fn>(int code, vec3 under, Ctx x)`: the colour of one of its speck codes; and
+ *   shade       void <fn>(Ctx x, Cell c, inout Shade o): after the grade's shadeOf, in canonical
+ *               order: an accent or a colour of its own over the picture's (shore's plankton light,
+ *               snapped per cell, at c.accent of the World's veil over it)
+ * and, in the `interior` composer (room.ts), a backdrop's
+ *   daylight    vec3 <fn>(Ctx x, vec2 p): the light it lets into the room onto a surface at frame
+ *               point p, which the room's light (roomLight) adds for every layer (the window's)
+ *   glass       vec4 <fn>(Ctx x): where its window's glass is, which roomGlass gives every layer
+ *               (the frost glass's): how far inside the glass the cell lies from its bottom, top,
+ *               left and right edges, frame heights, negative off it (a large number where the
+ *               glass runs on out of frame)
+ * and every layer's farVeil there: over the backdrop's far pass, before the ground (the frost on a
+ * window's glass).
+ * Under the overhead composer (overhead-glsl.ts) a pass is given `Patch x` (its begin `inout`)
+ * and `inout Spot c`, and the entry runs, after the begins (the water's sets the surface:
+ * x.slope, x.floorP, x.depth, x.flow, x.waterCol, x.caustic; the light's layer x.sun, x.power):
+ *   bed         the bed layer's floor, seen at x.floorP through the water
+ *   water       the water layer's colour over the bed
+ *   floor       on the bed, seen through the water (weeds, stems), in canonical order
+ *   cast        void <fn>(Patch x, inout float shadow): its shadow on the bed, the most of every
+ *               layer's taken
+ *   swim        in the water, over the shadows (the koi)
+ *   float       on the surface (pads, petals, the rings' light, a boat)
+ *   stand       standing out of the water (a stone)
+ *   cover       the shade of what hangs over the patch (c.shade), and the light through it
+ *   glint       the sun's glint on the open water (not where c.dry)
+ *   over        over everything (the leaves of the border)
+ *   grade       last, in canonical order (a passage's dimming)
+ */
+export interface LayerPasses {
+  readonly begin?: string;
+  readonly sky?: string;
+  readonly mirror?: string;
+  readonly ground?: string;
+  readonly far?: string;
+  readonly farVeil?: string;
+  readonly middle?: string;
+  readonly middleVeil?: string;
+  readonly front?: string;
+  readonly frontVeil?: string;
+  readonly air?: string;
+  readonly glow?: string;
+  readonly speck?: string;
+  readonly shade?: string;
+  readonly daylight?: string;
+  readonly glass?: string;
+  readonly bed?: string;
+  readonly water?: string;
+  readonly floor?: string;
+  readonly cast?: string;
+  readonly swim?: string;
+  readonly float?: string;
+  readonly stand?: string;
+  readonly cover?: string;
+  readonly glint?: string;
+  readonly over?: string;
+  readonly grade?: string;
+}
+
+/** What a layer's sim asks of the composed sim's shared resources (README "Sims in a composition"). */
+export interface LayerData {
+  /** Rows of the records atlas (rgba16f, ATLAS_WIDTH texels a row). */
+  readonly rows?: number;
+  /** Speck codes 1..specks in the shared speck map. */
+  readonly specks?: number;
+  /** Textures of its own, in any format and filter. */
+  readonly fields?: number;
+}
+
+/**
+ * A kind of falling thing (composer/falling.ts, README "Falling things"): what moves it, how it
+ * lands and how it is drawn. `drop`: water gathered at a drip point, a bead swelling there until it
+ * lets go, falling under gravity and drag in the wind, drawn out into a streak by its speed; on a
+ * ledge or a plane it splashes (droplets thrown up, a crown) and wets the spot, on water it strikes
+ * the water's sim. `leaf`: a leaf let go from a crown, a plate under heavy drag that flutters or
+ * tumbles down (sims/flutter.ts) in the layer's air, drawn as its outline in a few cells in the
+ * layer's palette; it eases flat where it lands and lies there, or joins the litter there.
+ */
+export type FallKind = "drop" | "leaf";
+
+/**
+ * What a layer gives the composer's falling things (README "Falling things"): the kinds it lets
+ * fall (each compiles its codes' colours into the program while the layer is on), and how far
+ * they slide on the screen with the pointer's parallax (SimFrame.parallax, screen heights per unit),
+ * where the layer itself slides so (the falls' near bank). Its sim names its drip points and the
+ * surfaces they land on each frame (LayerFrame.falling). A layer that lets leaves fall names the
+ * GLSL that colours them, `vec3 <leaf>(float hue, int shade, float z, Ctx x)` in its own GLSL: hue
+ * 0..1 in its palette, shade FALL_LEAF_SHADES' code (the face we see, how it is tilted), z the
+ * leaf's depth (m); the first layer on that names one colours every leaf.
+ */
+export interface LayerFalling {
+  readonly kinds: readonly FallKind[];
+  readonly slide?: readonly [x: number, y: number];
+  readonly leaf?: string;
+}
+
+/**
+ * A level surface the falling things land on, rig frame, metres, at height `y`:
+ *   plane  over the box x × z (unbounded where a span is left out): a floor;
+ *   ledge  a strip `depth` deep along the floor segment from → to: a sill, a bank's top;
+ *   water  over the box x × z: a drop strikes the sim of the layer `strikes` names (its
+ *          affordances' FallingWater), where that layer is on and has one.
+ * A drop splashes on a plane or a ledge and leaves a wet mark there. A leaf comes to rest on any
+ * of them; on a plane or a ledge whose `litter` names a layer on whose affordances take it
+ * (FallingLitter) it joins that layer's litter, else it lies there a while and fades.
+ */
+export type FallSurface =
+  | {
+      readonly kind: "plane";
+      readonly y: number;
+      readonly x?: Span;
+      readonly z?: Span;
+      readonly litter?: string;
+    }
+  | {
+      readonly kind: "ledge";
+      readonly y: number;
+      readonly from: FloorPoint;
+      readonly to: FloorPoint;
+      readonly depth: number;
+      readonly litter?: string;
+    }
+  | {
+      readonly kind: "water";
+      readonly y: number;
+      readonly x?: Span;
+      readonly z?: Span;
+      readonly strikes: string;
+    };
+
+/**
+ * A leaf let go (FallingWriter.leaves' shed, FallingWriter.leaf), rig frame, metres: where it is,
+ * how it is drawn and the fluttering plate it flies as (sims/flutter.ts FlutterPlates, whose fields
+ * these seed).
+ */
+export interface FallLeaf {
+  x: number;
+  y: number;
+  z: number;
+  /** Its drawn radius (m), its hue in the layer's palette (0..1), its outline (FALL_LEAF_SHAPES). */
+  radius: number;
+  hue: number;
+  shape: number;
+  /** The plate: its mass, its aerodynamic chord (m), real seconds per model time unit. */
+  mass: number;
+  chord: number;
+  pace: number;
+  /** Its plane's heading and turn rate, its pitch, its spin and spin rate, its rock's phase and rate, the pitch it rests at. */
+  psi: number;
+  dpsi: number;
+  th: number;
+  sigma: number;
+  dsigma: number;
+  roll: number;
+  rollRate: number;
+  rest: number;
+  /** Its eddies' phase (the layer's air reads it). */
+  phase: number;
+  /** Shown at once (true: blown in, lifted off the ground) or dissolving in as it lets go. */
+  shown: boolean;
+  /** Seconds it has already flown in still air (a leaf already on its way down). */
+  ahead: number;
+}
+
+/**
+ * A layer's leaves this frame (FallingWriter.leaves): the crown it sheds them from and the air that
+ * carries every leaf it lets fall. The pool lets leaves go on fixed beats of its own clock; `rate`
+ * only says which beats let one go (README "Falling things").
+ */
+export interface FallLeaves {
+  /** Leaves a second the crown lets go now (0: none). */
+  readonly rate: number;
+  /** The fewest of its shed leaves kept in the air while it sheds at all. */
+  readonly least: number;
+  /** A leaf letting go from the crown: `leaf` filled in from `rand`, the leaf's own stream of chance. */
+  shed(rand: () => number, leaf: FallLeaf): void;
+  /** The air (m/s, x y z) at (x, y, z) at motion time tm for a leaf of eddy phase `phase`, into `out`. */
+  air(x: number, y: number, z: number, tm: number, phase: number, out: Float64Array): void;
+}
+
+/**
+ * GLSL several layers of one scene share (its colours, its shading, its per-cell state): compiled
+ * in once, before the layers, when any layer holding it is on; `begin` names its `void <fn>(Ctx x)`,
+ * run once per cell before the layers' own. `G`: the rig it is built for (the overhead's under it).
+ */
+export interface SharedGlsl<G = Rig> {
+  readonly id: string;
+  readonly glsl: (rig: G) => string;
+  readonly begin?: string;
+}
+
+/**
+ * A layer's code: its GLSL, built for the preset's rig, the GLSL it shares with its scene's other
+ * layers, and its sim. Kept apart from its manifest (LayerDef), so a scene's metadata loads without
+ * it: each composed scene's code module (`<scene>/code.ts`) gathers the code of every layer it offers.
+ * `G` is the rig its GLSL is built for, `R` the rig its sim sees (LayerFrame.rig): the outdoor's
+ * pinhole and level camera, or the overhead rig for both.
+ */
+export interface LayerCode<G = Rig, R = LevelCamera> {
+  readonly glsl: (rig: G) => string;
+  readonly shared?: readonly SharedGlsl<G>[];
+  readonly sim?: (gl: WebGL2RenderingContext, params: readonly ParamDef[]) => LayerSim<R>;
+}
+
+export interface LayerDef {
+  /** camelCase: its switch key, the prefix of its GLSL and of its qualified keys. */
+  readonly id: string;
+  /** Its heading in the lab, and its chip's label. */
+  readonly title: string;
+  readonly composers: readonly ComposerId[];
+  readonly role: Role;
+  /** A dressing that holds the front band (at most COMPOSER_CAPS.subjects of them). */
+  readonly subject?: boolean;
+  readonly bands: readonly Band[];
+  readonly space: {
+    readonly anchors: readonly Anchor[];
+    readonly claims: readonly Claim[];
+    /**
+     * Its anchor and claims are laid out at the rig's minAspect and spread across a wider frame, as
+     * the stage they were painted on does (the bees' garden): x scales by `stretch` (glsl.ts).
+     */
+    readonly stretch?: boolean;
+  };
+  readonly camera: CameraRange;
+  /** A declared readability cheat: the apiary's hives at 1.5. Claims are sized as it is drawn. */
+  readonly display?: { readonly scale: number };
+  /** Its switch: a steady toggle, or the feature knob it grew from, keyed by its id. */
+  readonly switch: ParamDef;
+  /** Its knobs, hung on the switch with `when` by the composer. */
+  readonly params: readonly ParamDef[];
+  /**
+   * The time of year it shows, when it has one: a season knob (keyed `season`, its widget the sky's
+   * `season` part) the composer lists once among its own knobs, the first offered layer's (README
+   * "Scene presets and keys": `season` where a layer has a year), for every layer to read.
+   */
+  readonly season?: ParamDef;
+  readonly groups: Readonly<Record<string, Blurb>>;
+  /** Named "now" slots, keyed by its knobs: the composer numbers them. */
+  readonly triggers?: readonly string[];
+  readonly lights?: readonly LayerLight[];
+  /**
+   * Key-light shadows of its own shapes beyond its claims' bands (the orchard's crowns): each names
+   * its `float <fn>(vec2 xz, Ctx x)`, 0 lit .. 1 shaded, which `casterShadow` takes the most of. In
+   * the `interior` composer (room.ts) each names `float <fn>(vec2 p)`: its silhouette at frame point
+   * p on the plane it stands in, how much of a light it stops there, which `roomCaster` takes the
+   * most of for a backdrop that throws the room's shadows on its wall (the bonsai's tree).
+   */
+  readonly casters?: readonly string[];
+  /**
+   * In the `interior` composer (room.ts): shapes that hang in the room's space rather than stand on a
+   * plane (the mobile's), each naming `float <fn>(vec3 P, vec3 L, float r)`: how much of a round
+   * light, centre L and radius r, they hide from point P, 0 .. 1, in the metres the layer is drawn
+   * in. `roomRayCaster` takes the most of every on layer's, for a light that throws the room's
+   * shadows along the ray from each point of a surface toward it (the mobile's Sun on its walls).
+   */
+  readonly rayCasters?: readonly string[];
+  readonly passes: LayerPasses;
+  /** Its own gates (named with its prefix) at a setting, from the values the shader reads. */
+  readonly featuresFor?: (values: Readonly<Record<string, number>>) => Record<string, number>;
+  /** Every gate it can turn on, on. Required with featuresFor. */
+  readonly featuresAll?: Readonly<Record<string, number>>;
+  /**
+   * The shared libraries' tiers its GLSL calls into (`WATER_TIER`: shaders/lib/water.ts), at least
+   * these wherever it is placed: compiled in where its preset's features hold a lower tier or none,
+   * so it draws as a guest where its home preset is not (the pond's water over the bare `patch`).
+   */
+  readonly tiers?: Readonly<Record<string, number>>;
+  readonly data?: LayerData;
+  /** Its covers' share inside shared claims comes from this knob (0..1). */
+  readonly overgrowth?: string;
+  readonly excludes?: readonly { readonly layer: string; readonly why: string }[];
+  /** Another layer's gate it turns off while both are on. */
+  readonly suppresses?: readonly {
+    readonly layer: string;
+    readonly gate: string;
+    readonly why: string;
+  }[];
+  /** Its hosts: a chore's, or the layer whose surface it draws from (shore's beach, the sea's). */
+  readonly requires?: readonly string[];
+  /** Its knob holding a Manifold M: the composer keeps at most one M on. */
+  readonly mark?: string;
+  /**
+   * A backdrop's say over the World's rain and snow (README "Light, scale and weather"): `thin`
+   * scales the drops' and flakes' cover, far to near (worldPrecipThinned), so they never bury its
+   * subject; `air` names its `vec3 <fn>(Ctx x)`, the colour the far rain fuses into where that is not
+   * the fog's (x.air.fog); `seen`, for a rig that is not level (skyward's, looking up), names its
+   * `void <fn>(Ctx x, out mat3 rain, out mat3 snow)`, the axes its camera sees the rain and the snow
+   * through (worldPrecipAxes: each mat3(right, up, fwd) in the frame of a level camera facing the
+   * same way, x along the wind), its thinning and the shelter claims' still applied.
+   */
+  readonly precip?: {
+    readonly thin?: readonly [far: number, near: number];
+    readonly air?: string;
+    readonly seen?: string;
+  };
+  /**
+   * An `interior` backdrop that looks out (a window): the World crosses its glass, and an interior
+   * preset lists the World's knobs only while it offers one (README "The interior composer").
+   */
+  readonly window?: true;
+  /**
+   * An `interior` layer drawn on a window's glass (roomGlass: the frost): offered only to a room
+   * that offers a window backdrop with a `glass` pass (README "The interior composer").
+   */
+  readonly glass?: true;
+  /**
+   * An `overhead` layer open to the sky (a pond's, a tank's or a pool's water, and what reads the
+   * air over it): an overhead preset lists the World's rain and wind, and compiles WORLD_RAIN, only
+   * while it offers one (README "The overhead composer").
+   */
+  readonly open?: true;
+  /**
+   * An `overhead` layer the World's sky lights (the pond's water, the tide pool's rock; open too):
+   * an overhead preset that offers one lists the World's hour and cloud besides its rain and wind
+   * (`time`, `cycle`, `clouds`, `shadows`), and its patch takes the World's light (overhead-glsl.ts
+   * `overheadWorld`: x.key, x.keyCol, x.amb, the sun's place from the key).
+   */
+  readonly sunlit?: true;
+  /** The kinds of falling things it lets fall, and how they slide (README "Falling things"). */
+  readonly falling?: LayerFalling;
+}
+
+/**
+ * The `outdoor` rig: a level pinhole at `eye` metres, the horizon at uv.y `horizon`, `focal` screen
+ * heights per unit of slope, turned `turn` radians left of the sky's frame. `minAspect`: a frame
+ * narrower than this is laid out as if this wide. `passage` names GLSL (and its CPU twin) that moves
+ * the rig through the preset's entrance and exit. `pitch` (rad down; 0 level): a pitched rig's
+ * backdrop gives the cell's ray and how far along it the floor is in its begin (x.v, x.zg: metres
+ * along the ray, the depths its layers give the cell), and the axes the World's drops are seen
+ * through (`precip.seen`); the plain floor stands where they say.
+ */
+export interface Rig {
+  readonly horizon: number;
+  readonly focal: number;
+  readonly eye: number;
+  readonly turn: number;
+  readonly pitch: number;
+  readonly minAspect: number;
+  readonly passage?: RigPassage;
+}
+
+/**
+ * The `overhead` rig (ADR 0062 Phase 4): the patch seen straight down, orthographic, `span` metres
+ * from the frame's bottom to its top; `minAspect` the narrowest frame its claims are laid out for.
+ * The frame's centre is the patch's origin, x right and z up the frame. Straight down only: the
+ * ADR's `tilt` (a march) and `orbit` are not built.
+ */
+export interface OverheadRig {
+  readonly span: number;
+  readonly minAspect: number;
+  /** The patch is the sea's water (the tide pool's): it offers the layers drawn in it alone. */
+  readonly salt?: true;
+}
+
+/**
+ * The rig moved by the preset's passage: `lift(enter, exit)` the eye's height over its rest height
+ * (m); `glsl` defines its twin `float rigLift()` on passageIn() / passageOut(), and `float rigCut()`,
+ * the share of cells cutting their edges per cell while the rig moves (0 at rest).
+ */
+export interface RigPassage {
+  readonly lift: (enter: number, exit: number) => number;
+  readonly glsl: string;
+  /** The front the passage sends through the gust field, if it sends one (meadow's). */
+  readonly gust?: PassageGustShape;
+  /**
+   * `glsl` also defines `float rigShift()`: the lens's vertical shift in screen heights (0 at rest),
+   * the world read that much lower in uv while the passage tilts the view (shore's).
+   */
+  readonly shift?: true;
+  /**
+   * The CPU twin of `rigShift()` on the passage's progress, for what the sims draw through the rig
+   * (the falling things, README "Falling things"): given where layers let things fall (the falls').
+   */
+  readonly shiftAt?: (enter: number, exit: number) => number;
+}
+
+/**
+ * The preset's light: the World's sky times these. Tints multiply the sun's and the sky's colours,
+ * `floor` lifts the ambient, `moonlight` (when set) makes the moon the key light once the sun has set
+ * at that share of its colour. `exposure` and `vignette` close the picture; `ink` is shadeOf's.
+ */
+export interface Grade {
+  readonly sunTint?: readonly [number, number, number];
+  readonly skyTint?: readonly [number, number, number];
+  readonly floor?: readonly [number, number, number];
+  readonly moonlight?: number;
+  readonly exposure?: number;
+  readonly vignette?: number;
+  /**
+   * The room's (room.ts): lights past 1 rolled off softly, `1 - exp(-col · rolloff)`, after the
+   * exposure (the frost's lamps and glints).
+   */
+  readonly rolloff?: number;
+  /**
+   * The room's (room.ts): where its vignette darkens, `from` to `to` out from the centre with the
+   * frame's width taken `across` times its share. Unset 0.45, 1 and 1.2; the bar's from 0.5, the
+   * train's from 0.5 to 1.05 across 1.25.
+   */
+  readonly vignetteReach?: { readonly from: number; readonly to: number; readonly across: number };
+  /**
+   * The vignette's reach where it is a circle across the frame's width as well as its height (the
+   * campfire's): `scale` units a screen height, darkening from `from` to `to` units out. Unset, an
+   * oval of the frame's height.
+   */
+  readonly vignetteRound?: { readonly from: number; readonly to: number; readonly scale: number };
+  /**
+   * shadeOf's ink (inkOf's gain and gamma), and on the paper theme the white and range it takes
+   * (inkOf's `paper`: dew's mist, 0.92 and 0.8). Unset, inkOf's own (0.9, 0.8).
+   */
+  readonly ink: {
+    readonly gain: number;
+    readonly gamma: number;
+    readonly paper?: readonly [number, number];
+  };
+}
+
+/** The World's birds over the preset (worldBirds' WorldFlyway, README "Birds"). */
+export interface Flyway {
+  /** Nearest and farthest a flight passes (m). */
+  readonly depth: readonly [number, number];
+  /** The band of the frame they cross: this far above the horizon, up to `top` (uv). */
+  readonly above: number;
+  readonly top: number;
+  /** The flights' seed offset beside the composer's seed. */
+  readonly seed: number;
+  /** The height (m) a swooping party skims at, and the formation's spread. */
+  readonly skim: number;
+  readonly spread: number;
+  /** Their own extinction per metre, beside the backdrop's air. */
+  readonly ext: number;
+  /**
+   * The share of the backdrop's dust (x.air.dust) that hazes them too, where the dust is what the
+   * air holds (the desert's): unset, the birds see through the dust as the far land's haze.
+   */
+  readonly dust?: number;
+}
+
+/** Where the World's shooting stars set out: skyAngles of the rig's ray (WorldSky's field). */
+export type MeteorField = readonly [number, number, number, number];
+
+/** What every scene preset holds, whatever its composer (README "Scene presets and keys"). */
+interface PresetBase {
+  readonly id: string;
+  readonly title: string;
+  readonly blurb: string;
+  readonly accent: string;
+  readonly look?: SceneLook;
+  readonly theme?: (params: readonly ParamDef[]) => SceneTheme;
+  readonly passage?: { readonly enter: number; readonly exit: number };
+  /** Home layers, on by default. */
+  readonly layers: readonly string[];
+  /** Where it departs from its knobs' defaults, keyed as in the URL. */
+  readonly values: Readonly<Record<string, number>>;
+  /** Compile-time features it holds at every setting (bees' moon phase). */
+  readonly features?: Readonly<Record<string, number>>;
+  /** Its own lab headings, over the composer's and its layers' (the World's sections' text). */
+  readonly groups?: Readonly<Record<string, Blurb>>;
+}
+
+/** A scene preset at eye level: the data a composed `SceneDef` is made from. */
+export interface ScenePreset extends PresetBase {
+  readonly composer: "outdoor" | "interior";
+  readonly planets?: SkyPlanets;
+  readonly rig: Rig;
+  readonly grade: Grade;
+  /** The World as this preset opens it: its hour, its cloud, its birds, its groups' text. */
+  readonly world: Omit<WorldOptions, "meteors" | "lightning">;
+  readonly meteors: MeteorField;
+  readonly flyway: Flyway;
+  /** The floor's kind where no ground layer lies (FLOOR_KINDS). */
+  readonly floor: FloorKind;
+  /** The `interior` composer's room (README "The interior composer"); required there, unused outdoors. */
+  readonly room?: Room;
+  /** Its light elements (composer/elements.ts): what a link without `elements=` holds. */
+  readonly elements?: readonly LightElement[];
+}
+
+/**
+ * An `interior` preset's room (README "The interior composer"). Its rig (`ScenePreset.rig`) is a
+ * level pinhole `eye` metres over the ledge across the front of the view (a sill, a sideboard), the
+ * ledge's top the rig's floor; `distance` is how far the eye stands from the line things on the
+ * ledge stand on (the seat), so the seat lies at `RIG_HORIZON - RIG_FOCAL · eye / distance` and the
+ * ledge is drawn at `RIG_FOCAL / distance` screen heights a metre (room.ts `roomFrame`). The room is
+ * laid out on the frame: across, as a share of the frame's width (anchors' x); up, in screen heights.
+ */
+export interface Room {
+  /** From the eye to the seat line (m). */
+  readonly distance: number;
+  /** From the eye to the back wall (m): the shell's wall stands there (composer/shell.ts). */
+  readonly back: number;
+  /**
+   * The yaw from the staged sky's ahead to the room's forward (radians, as `Rig.turn` outdoors): the
+   * World's sun and moon come in through its windows from there (ADR 0062 D19).
+   */
+  readonly facing: number;
+  /** The back wall's albedo, where no backdrop covers it. */
+  readonly wall: readonly [number, number, number];
+  /** What the back wall is (the shell's wall, composer/shell.ts). */
+  readonly material: WallMaterial;
+  /** The room's light all round, beside its elements, the World through its windows and the layers' lights. */
+  readonly ambient: readonly [number, number, number];
+  /** The shell's ledge across the front of the view; none where a ground layer draws its own. */
+  readonly ledge?: Ledge;
+}
+
+/** What the shell's back wall is (ADR 0062 "The interior baseline"). */
+export type WallMaterial = "plaster" | "papered" | "shoji" | "alcove" | "panel";
+
+/** What the shell's ledge is: a window's sill, a sideboard, a stand, a low table. */
+export type LedgeKind = "sill" | "sideboard" | "stand" | "table";
+
+/**
+ * The shell's ledge: its top at the rig's floor (the eye `Rig.eye` over it) from its front edge,
+ * `front` metres ahead of the eye, back to the wall; `half` its half width (m), its top `thick`
+ * metres thick, its wood's albedo.
+ */
+export interface Ledge {
+  readonly kind: LedgeKind;
+  readonly front: number;
+  readonly half: number;
+  readonly thick: number;
+  readonly albedo: readonly [number, number, number];
+}
+
+/** Where the room's seat line stands on the frame (screen heights up from its centre) and its scale. */
+export interface RoomFrame {
+  readonly seat: number;
+  /** Screen heights a metre at the seat line. */
+  readonly scale: number;
+}
+
+// ---- baselines and variants (ADR 0062 "Baselines and variants") ----------------------------------
+
+/** What a light element is (ADR 0062 D17). */
+export type ElementKind = "window" | "lamp" | "candle" | "neon" | "fire" | "screen";
+
+/**
+ * A placed light (ADR 0062 "Light elements", D17): `at` in metres in the rig's frame (x across from
+ * the centre line, y up from the floor, a room's ledge top, z ahead of the eye), free to stand out
+ * of frame; its colour, its power, how far it reaches (m), how much it flickers (on `uMotionTime`),
+ * and whether it throws shadows (a room's: `roomCaster` toward it; none outdoors). A window (a
+ * room's alone) has its `at` at its opening's centre on its wall, its colour a tint on the World's
+ * light through it, its `shadow` whether the World's key through it throws the room's shadows
+ * (composer/elements.ts, shell.ts).
+ */
+export interface LightElement {
+  readonly kind: ElementKind;
+  readonly at: readonly [x: number, y: number, z: number];
+  readonly colour: readonly [number, number, number];
+  readonly power: number;
+  readonly reach: number;
+  readonly flicker: number;
+  readonly shadow: boolean;
+  /** A window's frame: required for a window, unused by the other kinds. */
+  readonly window?: WindowFrame;
+}
+
+/** Which wall a window stands in: the back, the left, the right, or the front (behind the eye). */
+export type WindowWall = "back" | "left" | "right" | "front";
+
+/**
+ * A window's frame: its wall, its opening's width and height (m), its glazing bars (panes across
+ * and up), and for a raised sash the height of its bottom rail over the opening's foot (m), open
+ * below it.
+ */
+export interface WindowFrame {
+  readonly wall: WindowWall;
+  readonly size: readonly [width: number, height: number];
+  readonly bars: readonly [across: number, up: number];
+  readonly sash?: number;
+}
+
+/**
+ * What names a scene (ADR 0062 D14): a variant's own, never its baseline's. `groups` is the copy of
+ * its own lab headings (the sill's sky over the city), named as the blurb names it.
+ */
+export type Identity = Pick<
+  ScenePreset,
+  "id" | "title" | "blurb" | "accent" | "look" | "theme" | "passage" | "planets" | "groups"
+>;
+
+/**
+ * A composer's baseline (ADR 0062 D13, `Composer.baseline`): what a scene preset holds but its
+ * identity, the camera at rest (`rig`), the grade, the World's options, the floor or the room's
+ * shell, the shell's home layers and values, and its light elements. Its own scene (the interior's
+ * `room`, the outdoor's `land`) is lab-only.
+ */
+export interface Baseline extends Omit<ScenePreset, keyof Identity> {
+  readonly elements: readonly LightElement[];
+}
+
+/** Layers switched on beyond a baseline's home layers (in canonical order), and home ones off. */
+export interface LayerChanges {
+  readonly add?: readonly string[];
+  readonly remove?: readonly string[];
+}
+
+/**
+ * A curated variant (ADR 0062 D14): a scene stored as its differences from its composer's baseline,
+ * which `variantPreset` (compose.ts) makes into its scene preset. It keeps its identity and holds
+ * only what differs; a test refuses a difference that changes nothing (variants.test.ts).
+ */
+export interface Variant extends Identity {
+  /** Its baseline's composer. */
+  readonly base: ComposerId;
+  /** Layers switched on beyond the baseline's home layers (in canonical order), and home ones off. */
+  readonly layers?: LayerChanges;
+  /** Knob values over the baseline's, keyed as in the URL (its hour, its date, the World's weather). */
+  readonly values?: Readonly<Record<string, number>>;
+  /** Its camera's rest pose. */
+  readonly camera?: Rig;
+  /**
+   * Its room's shell, where a variant's own shell layers ask for another (the seat's distance, the
+   * wall, the light all round, the lamp out of frame): until the shell is one in metres (ADR 0062
+   * "Order of work", step 2).
+   */
+  readonly room?: Room;
+  /** Its grade, key by key over the baseline's (D21). */
+  readonly grade?: Partial<Grade>;
+  /**
+   * The World as it opens, key by key over the baseline's (`ScenePreset.world`): its hour, its cloud,
+   * its birds (a species and its help, whole), its groups' names (whole).
+   */
+  readonly world?: Partial<ScenePreset["world"]>;
+  /** Where its shooting stars set out, in place of the baseline's. */
+  readonly meteors?: MeteorField;
+  /** Its birds' flyway, key by key over the baseline's. */
+  readonly flyway?: Partial<Flyway>;
+  /** Its floor's kind where no ground layer lies, in place of the baseline's. */
+  readonly floor?: FloorKind;
+  /** Compile-time features it holds at every setting (the moon's phase, a water tier), key by key over the baseline's. */
+  readonly features?: Readonly<Record<string, number>>;
+  /** Its light elements, in place of the baseline's. */
+  readonly elements?: readonly LightElement[];
+  /** Where a promoted variant came from (D15): the commit and the saved preset's query. */
+  readonly from?: { readonly commit: string; readonly query: string };
+}
+
+/**
+ * A preset of the overhead composer: a patch seen from above. Where it offers a layer the World's
+ * sky lights (LayerDef.sunlit), the World's hour places the sun and lights the patch; else its light
+ * is its layers' (the tank's lamp, the sand table's).
+ */
+export interface OverheadPreset extends PresetBase {
+  readonly composer: "overhead";
+  readonly rig: OverheadRig;
+  /**
+   * The World over the patch as it opens, where it offers a layer the sky lights: its hour (K_time's
+   * default; skyKnobs' dusk, 0.78, without). A preset pins an hour of its own through its values.
+   */
+  readonly world?: Pick<WorldOptions, "time">;
+  /**
+   * The hour (K_time) its layers' own colours were painted for (the pond's), where they take no
+   * light of the World's themselves: the patch's light against that hour's relights every cell and
+   * scales the sun's strength (x.relight, x.keyGain; 1 at that hour). A preset whose layers light
+   * themselves with the patch's World light (the tide pool's) gives none.
+   */
+  readonly painted?: number;
+}
+
+/** What names a scene seen from above (ADR 0062 D14): an eye-level scene's identity but its planets. */
+export type OverheadIdentity = Pick<OverheadPreset, Exclude<keyof Identity, "planets">>;
+
+/**
+ * The overhead composer's baseline (ADR 0062 D13, `Composer.baseline`): what an overhead preset
+ * holds but its identity: the rig at rest, the World's hour over the patch, the hour its home layers
+ * were painted for, its home layers and values. Its own scene (`patch`) is lab-only.
+ */
+export type OverheadBaseline = Omit<OverheadPreset, keyof OverheadIdentity>;
+
+/**
+ * A curated variant seen from above (ADR 0062 D14): as a `Variant`, a scene stored as its
+ * differences from the overhead baseline, which `overheadVariantPreset` (compose.ts) makes into its
+ * preset; its identity, and only what differs (variants.test.ts).
+ */
+export interface OverheadVariant extends OverheadIdentity {
+  /** Its baseline's composer. */
+  readonly base: ComposerId;
+  /** Layers switched on beyond the baseline's home layers (in canonical order), and home ones off. */
+  readonly layers?: LayerChanges;
+  /** Knob values over the baseline's, keyed as in the URL (its hour, its weather, its layers' knobs). */
+  readonly values?: Readonly<Record<string, number>>;
+  /** Its rig at rest (its span, its narrowest frame, the sea's water), in place of the baseline's. */
+  readonly camera?: OverheadRig;
+  /**
+   * The hour its layers were painted for, in place of the baseline's; `false` where they light
+   * themselves with the World's light (the tide pool's). Read only where a layer the sky lights is
+   * offered (LayerDef.sunlit).
+   */
+  readonly painted?: number | false;
+  /** Compile-time features it holds at every setting (a water tier), key by key over the baseline's. */
+  readonly features?: Readonly<Record<string, number>>;
+}
+
+/** A preset of any composer. */
+export type AnyPreset = ScenePreset | OverheadPreset;
+
+export const FLOOR_KINDS = [
+  "earth",
+  "lawn",
+  "gravel",
+  "sand",
+  "rock",
+  "moss",
+  "ice",
+  "snowfield",
+  "water",
+  "asphalt",
+] as const;
+export type FloorKind = (typeof FLOOR_KINDS)[number];
+
+// ---- sims ---------------------------------------------------------------------------------------
+
+/** Rows of the records atlas a layer writes (its own, from its first row). */
+export interface RecordRows {
+  /** rgba16f texels: ATLAS_WIDTH a row, `rows` rows, rows bottom to top. */
+  readonly data: Float32Array;
+  readonly rows: number;
+  /** Its rows changed: they go up this frame. */
+  touch(): void;
+}
+
+/** A layer's codes in the shared speck map: `code` 1..its count, `depth` in SPECK_DEPTH_STEP-ths of a metre. */
+export interface SpeckWriter {
+  readonly width: number;
+  readonly height: number;
+  plot(cx: number, cy: number, code: number, depth: number): void;
+  block(cx: number, cy: number, w: number, h: number, code: number, depth: number): void;
+}
+
+/** A texture of a layer's own (README "Sims in a composition", slots 2–7). */
+export interface FieldSlot {
+  /** The texture to bind, or undefined while it has none (its `<id>Field<k>On()` reads false). */
+  texture: WebGLTexture | undefined;
+}
+
+/**
+ * Where a layer's sim tells the composer's falling things (README "Falling things") what its water
+ * gathers on, what leaves it lets go and what they land on this frame, rig frame, metres. Every call
+ * holds for this frame only.
+ */
+export interface FallingWriter {
+  /**
+   * Water gathers at (x, y, z), a drip point (a frond's tip, a branch's end): a bead swells there
+   * and lets go on the point's own beat, as often as the World's rain and the wetness it leaves say.
+   * `lane` names the point among the layer's (0..65535), so its beat holds from frame to frame.
+   * A layer that does not let drops fall (LayerFalling.kinds) drips nothing.
+   */
+  drip(lane: number, x: number, y: number, z: number): void;
+  /** A surface every layer's falling things land on. */
+  surface(surface: FallSurface): void;
+  /**
+   * The layer's leaves this frame: its crown's shedding, and the air its leaves fly in (they fall
+   * in the gust field's air while it names none). A layer that does not let leaves fall sheds none.
+   */
+  leaves(leaves: FallLeaves): void;
+  /**
+   * A leaf let go now under `lane` (1..65535; the crown's are lane 0): lifted off the ground, blown
+   * in. False when it is not taken (the pool full, the layer letting no leaves fall).
+   */
+  leaf(lane: number, leaf: FallLeaf): boolean;
+  /** The layer's leaves of `lane` in the air now (not yet come to rest). */
+  aloft(lane: number): number;
+}
+
+/**
+ * What a water layer's sim lends the falling things through its affordances (LayerFrame.host): a
+ * drop of `mass` (kg) striking its surface at (x, z), rig frame, metres, `speed` m/s downward.
+ */
+export interface FallingWater {
+  strike(x: number, z: number, mass: number, speed: number): void;
+}
+
+/**
+ * What a litter layer's sim lends the falling things through its affordances (LayerFrame.host): a
+ * leaf come to rest at (x, z), rig frame, metres, its tip heading `angle` (atan2(dz, dx)) in the
+ * ground plane, its hue, `face` +1 top up or -1 top down. False where the litter does not take it.
+ */
+export interface FallingLitter {
+  lay(x: number, z: number, angle: number, hue: number, face: number): boolean;
+}
+
+/** The placement as a layer's sim sees it (README "Space"). */
+export interface LayerGround {
+  /** Where its anchor stands (m, rig frame, stretched with the frame). */
+  readonly anchor: FloorPoint;
+  /** The placed claims of every layer on, in metres (stretched with the frame). */
+  readonly claims: readonly PlacedClaim[];
+  /** 0 in exclusive and clearing cores, the overgrowth inside shared claims, else 1. */
+  coverAllowed(x: number, z: number, overgrowth?: number): number;
+}
+
+/** A claim where its layer was placed, rig frame (at minAspect), and whose it is. */
+export interface PlacedClaim extends Claim {
+  readonly layer: string;
+}
+
+/**
+ * What each layer's sim gets each frame (README "Sims in a composition"). `R`: the rig at rest as
+ * its sim sees it, the outdoor's level camera or the overhead rig.
+ */
+export interface LayerFrame<R = LevelCamera> extends SimFrame {
+  /** The rig at rest, and how far the passage lifts the eye over it now (m). */
+  readonly rig: R;
+  readonly lift: number;
+  readonly ground: LayerGround;
+  /** The outdoor's gust field: still under a composer without one. */
+  readonly gusts: GustField;
+  readonly records: RecordRows;
+  readonly specks: SpeckWriter;
+  readonly fields: readonly FieldSlot[];
+  /** The composer's falling things: its drip points and surfaces this frame. */
+  readonly falling: FallingWriter;
+  /**
+   * The affordances of another layer on (its sim's `affordances`: what a chore's host lets it do,
+   * the state a life layer follows), or undefined while that layer has none running. The caller
+   * narrows it to the host's type (`instanceof`).
+   */
+  host(layer: string): object | undefined;
+  /** The room's seat line and scale on the frame, in an `interior` preset (undefined outdoors). */
+  readonly room?: RoomFrame;
+}
+
+export interface LayerSim<R = LevelCamera> {
+  /** Steps and writes into its rows, its specks (every frame: the map is cleared before) and its fields. */
+  frame(frame: LayerFrame<R>): void;
+  ready?(): boolean;
+  /**
+   * Where a press does something for it, in scene uv for a frame of `aspect` (SceneSim.interest:
+   * the cast's agents go there and act); the composed sim gathers every on-screen layer's.
+   */
+  interest?(aspect: number): readonly ScenePoint[];
+  /** What it lets other layers do to its state, or read of it: a chore's host's affordances. */
+  readonly affordances?: object;
+  dispose(): void;
+}

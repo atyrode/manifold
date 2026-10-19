@@ -1,0 +1,700 @@
+// The lava lamp's layers (layers.ts) on the `interior` composer (composer/room.ts): a dark room at
+// night, a lava lamp on a teak sideboard against papered wall. Its bulb, hidden in the metal base,
+// shines up through the glass: the liquid glows, bright over the coil and dimmer toward the cap, and
+// the wax drifting in it (simulated in sim.ts) is drawn as a metaball surface seen through the glass:
+// dark and saturated where it is thick, glowing along its thin edges, lit from below, pale and matte
+// while still cold and solid. The lamp throws its coloured light on the room (lavaLampLight, which
+// the shell's papered wall and sideboard take through localLight): the glass's glow cast larger on
+// the wall with the wax's shadows drifting through it, a pool on the sideboard ringed by the base's
+// shadow, a glint down the brushed metal; the World's moon through the window off to the left lays
+// a cool pane on the wall (composer/shell.ts). On another room's ledge (the sill) the lamp stands at
+// its anchor and its light reaches the other layers' surfaces the same way.
+//   lavaLampField0  the wax parcels: row 2k (x, y, radius, temperature), row 2k + 1 (vx, vy, M glow)
+//          for lamp k (0 the lamp, 1 its twin), in glass units (the liquid 1 tall, gx across)
+//   lavaLampField1  the coarse wax picture: r how much wax, g the bulb's light left after the wax below
+//   lavaLampField2  per lamp (texels 0, 1): parcels in use, bulb 0..1, warm-up 0..1, the wax's share of
+//          the glass; texel 2: the wax's body, its metaball reach and teardrop stretch (× classic wax's)
+// Knobs read here: the lamp's K_wax, K_spill, K_hand, K_twin, K_badge (the rest drive the
+// simulation); the shelf's K_shelf; the record's K_sleeve.
+import type { SharedGlsl } from "../../composer/types.ts";
+import { lavaLayoutGlsl } from "./sim.ts";
+
+const lavaShared = `
+${lavaLayoutGlsl}
+// The eye, in lamp units from a lamp's foot: its height and distance (the room's rig, or the live
+// camera's eye off its rest pose). On the sideboard we look down a little on the base and the
+// sideboard and up a little at the cap; the sideboard's depth on screen follows. The lamp stands on
+// the seat's plane, so the room's painted frame point (x.p) is where the live camera sees it.
+#if ROOM_POSE
+#define LAVA_EYE (roomEye.y / LAVA_HEIGHT)
+#define LAVA_DIST ((ROOM_DISTANCE - roomEye.z) / LAVA_HEIGHT)
+#else
+#define LAVA_EYE (RIG_EYE / LAVA_HEIGHT)
+#define LAVA_DIST (ROOM_DISTANCE / LAVA_HEIGHT)
+#endif
+// Where lamp A stands across the frame (share of its width from the left): the lamp layer's anchor,
+// or with the lamp off its place on the sideboard.
+#if LAYER_LAVA_LAMP
+#define LAVA_A_X (0.5 + lavaLampAnchor.x)
+#else
+#define LAVA_A_X 0.655
+#endif
+// The sideboard: its top's front edge and where it meets the wall (frame heights), the top's thickness.
+#define LAVA_TOP_FRONT 0.088
+#define LAVA_TOP_BACK 0.2
+#define LAVA_TOP_EDGE 0.014
+// The lamp's light on the wall: the glass's glow cast LAVA_CAST times larger, as if from a point
+// LAVA_CAST_Y up inside the base (lamp units).
+#define LAVA_CAST 1.55
+#define LAVA_CAST_Y 0.12
+// How far the wax stands out of the picture: the dome over its outline (glass units).
+#define LAVA_BULGE 0.06
+// The record sleeve's half size (frame heights).
+#define LAVA_SLEEVE 0.15
+
+const vec3 LAVA_PAPER = vec3(0.5, 0.44, 0.4);   // the wallpaper
+const vec3 LAVA_TEAK = vec3(0.42, 0.23, 0.12);  // the sideboard
+const vec3 LAVA_MOON = vec3(0.42, 0.52, 0.8);   // moonlight through the window
+const vec3 LAVA_BULB = vec3(1.0, 0.86, 0.6);    // the bulb itself, seen through the base
+
+// A lamp's colours: its wax, its liquid, the light it throws on the room, its metal, and how much
+// the liquid itself glows (clear liquid hardly scatters the light: the room shows through it).
+struct LavaInk { vec3 wax; vec3 liquid; vec3 light; vec3 metal; float glow; };
+
+struct LavaLamp {
+  vec2 foot;    // where it stands (frame units: x from the left, y up)
+  float size;   // its height (frame heights)
+  int lamp;     // 0 the lamp, 1 its twin
+  int count;    // wax parcels in use
+  float bulb;   // 0 off .. 1 on
+  float warm;   // 0 cold .. 1 warmed through
+  float share;  // how much of the glass the wax covers in the picture
+  float blend;   // the wax's body (sim): metaball reach × LAVA_REACH,
+  float stretch; // teardrop stretch × LAVA_STRETCH,
+  float iso;     // and the field's level at a lone parcel's rim
+  LavaInk ink;
+};
+
+// The wax's metaball field at a point: its value and gradient, and the field-weighted temperature
+// and M glow of the parcels making it.
+struct LavaField { float f; vec2 grad; float temp; float mark; };
+
+// Set once per cell by lavaBegin.
+vec2 lavaP;           // the cell in lava's frame units (x from the left, y up, frame heights)
+float lavaPx;         // one cell, in frame heights
+float lavaAccent;     // the accent gathered while drawing the lamps
+float lavaCover;      // how much of the cell the lamps cover
+float lavaSpill;      // how much of the lamps' light reaches the room
+float lavaMoonlight;  // the moonlight from the window off to the left (the papered wall's)
+vec3 lavaAmbient;     // the room's own dim light: the lamps' glow bounced about, a little moonlight
+LavaLamp lavaA;       // the lamp
+LavaLamp lavaB;       // its twin
+bool lavaTwin;
+// The palettes, in K_wax order: red in yellow on gold, purple in blue on silver, green in aqua on
+// black, white in clear on silver.
+LavaInk lavaInk(float k) {
+  LavaInk p;
+  if (k < 0.5) {
+    p.wax = vec3(0.95, 0.17, 0.05);
+    p.liquid = vec3(1.0, 0.64, 0.12);
+    p.light = vec3(1.0, 0.6, 0.2);
+    p.metal = vec3(0.86, 0.62, 0.3);
+    p.glow = 1.0;
+  } else if (k < 1.5) {
+    p.wax = vec3(0.72, 0.16, 0.92);
+    p.liquid = vec3(0.14, 0.38, 1.0);
+    p.light = vec3(0.34, 0.42, 1.0);
+    p.metal = vec3(0.74, 0.76, 0.82);
+    p.glow = 0.85;
+  } else if (k < 2.5) {
+    p.wax = vec3(0.45, 0.95, 0.12);
+    p.liquid = vec3(0.05, 0.55, 0.75);
+    p.light = vec3(0.22, 0.75, 0.7);
+    p.metal = vec3(0.2, 0.2, 0.22);
+    p.glow = 0.8;
+  } else {
+    p.wax = vec3(0.98, 0.94, 0.86);
+    p.liquid = vec3(0.7, 0.78, 0.9);
+    p.light = vec3(1.0, 0.84, 0.62);
+    p.metal = vec3(0.74, 0.76, 0.82);
+    p.glow = 0.35;
+  }
+  return p;
+}
+// Lamp k as it stands and as the simulation left it; the twin takes the next palette. Lamp A stands
+// on the room's ledge at the lamp layer's anchor (x a share of the frame's width from its centre), its
+// height in metres at the room's scale; the twin beside it, further back. With the lamp off (its room
+// left dark), A's place on the sideboard and no light.
+LavaLamp lavaLamp(int k, float aspect) {
+  LavaLamp L;
+  L.lamp = k;
+  L.foot = vec2(LAVA_A_X * aspect, 0.5 + ROOM_SEAT);
+  L.size = LAVA_HEIGHT * ROOM_SCALE;
+  if (k == 1) {
+    L.foot += vec2(LAVA_TWIN_X * aspect, LAVA_TWIN_FOOT * L.size);
+    L.size *= LAVA_TWIN_SIZE;
+  }
+#if LAYER_LAVA_LAMP
+  vec4 s = lavaLampField2On() ? texelFetch(lavaLampField2, ivec2(k, 0), 0) : vec4(0.0, 1.0, 1.0, 0.0);
+  L.count = lavaLampField0On() ? int(s.x + 0.5) : 0;
+  vec4 body = lavaLampField2On() ? texelFetch(lavaLampField2, ivec2(2, 0), 0) : vec4(1.0, 1.0, 0.0, 0.0);
+#else
+  vec4 s = vec4(0.0);
+  L.count = 0;
+  vec4 body = vec4(1.0, 1.0, 0.0, 0.0);
+#endif
+  L.bulb = s.y;
+  L.warm = s.z;
+  L.share = s.w;
+  L.blend = body.x;
+  L.stretch = body.y;
+  // A lone parcel's surface sits at its radius whatever the reach: the field (1 - s²)³ there.
+  float reach = LAVA_REACH * body.x;
+  L.iso = body.x == 1.0 ? LAVA_ISO : pow(1.0 - 1.0 / (reach * reach), 3.0);
+  float pal = floor(K_wax + 0.5);
+  L.ink = lavaInk(k == 0 ? pal : mod(pal + 1.0, 4.0));
+  // The more of the glass the wax covers (spread out, not merged), the more of its colour is in the
+  // light the lamp throws.
+  L.ink.light = mix(L.ink.light, L.ink.light * L.ink.wax * 1.4, 0.5 * L.share);
+  return L;
+}
+
+// The coarse wax picture at glass point g: how much wax, and how much of the bulb's light is left.
+vec2 lavaGrid(int lamp, vec2 g) {
+#if LAYER_LAVA_LAMP
+  if (!lavaLampField1On()) return vec2(0.0, 1.0);
+  float u = (g.x + LAVA_GRID_HALF) / (2.0 * LAVA_GRID_HALF);
+  float v = (clamp(g.y * LAVA_GRID_Y, 0.5, LAVA_GRID_Y - 0.5) + float(lamp) * LAVA_GRID_Y) / (2.0 * LAVA_GRID_Y);
+  return textureLod(lavaLampField1, vec2(u, v), 0.0).rg;
+#else
+  return vec2(0.0, 1.0);
+#endif
+}
+
+// The wax at glass point q: each parcel a metaball, drawn out behind it into a teardrop as it moves
+// (a rising blob trails a tail, a sinking one hangs a drip).
+LavaField lavaField(vec2 q, int row, int n, float blend, float stretch) {
+  LavaField w;
+  w.f = 0.0;
+  w.grad = vec2(0.0);
+  w.temp = 0.0;
+  w.mark = 0.0;
+  float sum = 0.0;
+  for (int i = 0; i < LAVA_MAX; i++) {
+    if (i >= n) break;
+    vec4 a = texelFetch(lavaLampField0, ivec2(i, row), 0);
+    float R = a.z * LAVA_REACH * blend;
+    vec2 d = q - a.xy;
+    if (R <= 0.0 || dot(d, d) > 3.0 * R * R) continue;
+    vec4 b = texelFetch(lavaLampField0, ivec2(i, row + 1), 0);
+    float sp = length(b.xy);
+    vec2 dir = sp > 1e-4 ? b.xy / sp : vec2(0.0, 1.0);
+    vec2 side = vec2(dir.y, -dir.x);
+    float st = min(sp * LAVA_STRETCH * stretch, 0.5);
+    float along = dot(d, dir);
+    float ka = along < 0.0 ? 1.0 / (1.0 + 1.3 * st) : 1.0 / (1.0 + 0.1 * st);
+    float kc = 1.0 + 0.25 * st;
+    float u = along * ka;
+    float v = dot(d, side) * kc;
+    float s2 = (u * u + v * v) / (R * R);
+    if (s2 >= 1.0) continue;
+    float k = 1.0 - s2;
+    float k3 = k * k * k;
+    w.f += k3;
+    w.grad -= 6.0 * k * k / (R * R) * (u * ka * dir + v * kc * side);
+    w.temp += k3 * a.w;
+    w.mark += k3 * b.z;
+    sum += k3;
+  }
+  if (sum > 0.0) {
+    w.temp /= sum;
+    w.mark /= sum;
+  }
+  return w;
+}
+
+// How far the front of a level circle of radius r at height y (lamp units) dips below its centre
+// line at x across: we look down on the base and up at the cap.
+float lavaDip(float y, float r, float x) {
+  float c = clamp(x / r, -1.0, 1.0);
+  return r * (LAVA_EYE - y) / LAVA_DIST * sqrt(1.0 - c * c);
+}
+
+// Distance to the outline of an ellipse of radii r (first order: good near the outline).
+float lavaEllipseRing(vec2 q, vec2 r) {
+  vec2 a = q / r;
+  float k = length(a);
+  return abs(k - 1.0) * k / max(length(a / r), 1e-4);
+}
+
+// The wire coil lying on the bottom of the glass, seen nearly edge on: two turns of a flat spiral.
+float lavaCoil(vec2 q, float px) {
+  float d = min(lavaEllipseRing(q - vec2(0.0, 0.03), vec2(0.11, 0.016)), lavaEllipseRing(q - vec2(0.0, 0.027), vec2(0.065, 0.01)));
+  return 1.0 - smoothstep(0.8 * px, 1.8 * px, d);
+}
+
+// The light lamp L throws on the wall at p: the glass's glow cast larger on the paper, as if from a
+// point low in the base, coloured and shadowed by the wax inside it, and a soft halo all round.
+vec3 lavaAura(LavaLamp L, vec2 p) {
+  vec2 c = L.foot + vec2(0.0, LAVA_CAST_Y * L.size);
+  vec2 l = (c + (p - c) / LAVA_CAST - L.foot) / L.size;
+  float s = (l.y - LAVA_BASE_H) / LAVA_GLASS_H;
+  float rg = lavaGlassR(s);
+  float soft = 0.025 + 0.05 * clamp(s, 0.0, 1.5);
+  float shown = (1.0 - smoothstep(rg - soft, rg + soft, abs(l.x))) * smoothstep(-0.08, 0.04, s) * (1.0 - smoothstep(0.92, 1.04, s));
+  vec3 col = vec3(0.0);
+  if (shown > 0.0) {
+    vec2 g = lavaGrid(L.lamp, vec2(l.x / LAVA_GLASS_H, clamp(s, 0.0, 1.0)));
+    float bright = (0.3 + 0.9 * exp(-2.4 * max(s, 0.0))) * mix(1.0, g.y, 0.5);
+    col = mix(L.ink.light, L.ink.wax * L.ink.light * 1.4, 0.6 * g.x) * (1.0 - 0.4 * g.x) * bright * shown;
+  }
+  // A warm halo all round: strong close to the glass, and faint over the whole wall.
+  vec2 h = (p - L.foot) / L.size - vec2(0.0, 0.55);
+  float d2 = dot(h, h);
+  col += L.ink.light * (0.4 / (1.0 + 1.5 * d2) + 0.07 / (1.0 + 0.15 * d2));
+  return col * L.bulb;
+}
+
+// Where p on the sideboard's top lies around lamp L's foot, in lamp units (x across, y in depth).
+vec2 lavaOnTop(LavaLamp L, vec2 p) {
+  return vec2(p.x - L.foot.x, (p.y - L.foot.y) * LAVA_DIST / LAVA_EYE) / L.size;
+}
+
+// Lamp L's light on the sideboard at p: from the glowing glass above, cut off close in by the base's
+// shadow (the higher up the glass the light leaves, the nearer the foot it reaches).
+vec3 lavaPool(LavaLamp L, vec2 p) {
+  float rho = length(lavaOnTop(L, p));
+  float e = 0.0;
+  for (int k = 0; k < 3; k++) {
+    float h = 0.4 + 0.18 * float(k);
+    float r2 = rho * rho + h * h;
+    float lit = smoothstep(-0.03, 0.03, rho - LAVA_COLLAR_R * h / (h - LAVA_BASE_H));
+    e += (1.0 - 0.25 * float(k)) * h / (r2 * sqrt(r2)) * lit;
+  }
+  return L.ink.light * L.bulb * e * 0.1;
+}
+
+// The dark ring where lamp L's foot stands on the sideboard: 0.3 at its rim, 1 clear of it.
+float lavaContact(LavaLamp L, vec2 p) {
+  return mix(0.3, 1.0, smoothstep(LAVA_FOOT_R, LAVA_FOOT_R + 0.05, length(lavaOnTop(L, p))));
+}
+
+// The World's light through the room's windows on the wall at p (lava's frame units): the moon's pane
+// and the sky's light, for what stands against the wall (the shelf, the record).
+vec3 lavaWindowLight(vec2 p) {
+  return roomElementsLight(roomWallAt(p - vec2(0.5 * uRes.x / uRes.y, 0.5)), vec3(0.0, 0.0, -1.0));
+}
+
+// Brushed metal round a cone, at xi across it (-1..1) and v up the part: the moonlit window streaked
+// down its left, the room's warm glow on its right, the glowing glass above mirrored where it faces
+// up (up 0..1), the pool on the sideboard where it faces down (down 0..1), faint lathe rings.
+vec3 lavaMetal(LavaLamp L, float xi, float v, float up, float down) {
+  float face = sqrt(max(1.0 - xi * xi, 0.0));
+  vec3 tint = L.ink.metal;
+  vec3 shine = mix(tint, vec3(1.0), 0.3);
+  vec3 warm = L.ink.light * L.bulb;
+  vec3 col = tint * (0.03 + 0.05 * face) + 2.0 * tint * lavaAmbient;
+  col += shine * LAVA_MOON * lavaMoonlight * bell((xi + 0.52) / 0.12);
+  col += tint * warm * 0.24 * bell((xi - 0.4) / 0.25);
+  col += tint * warm * up * face * 0.7;
+  col += tint * warm * down * 0.2 * lavaSpill;
+  col *= 0.95 + 0.05 * sin(v * 130.0);
+  return col * mix(0.5, 1.0, face);
+}
+
+// The Manifold M etched into the base's metal: a shallow groove, darker than the metal round it, its
+// floor catching only a little of the bulb's warmth and the glass's glow.
+vec3 lavaBadge(vec3 metal, LavaLamp L, vec2 l, float aa) {
+  float size = 0.075;
+  float stroke = 0.006;
+  float d = markDistance((l - vec2(0.0, 0.14)) / size) * size;
+  float cut = 1.0 - smoothstep(stroke - aa, stroke + aa, d);
+  vec3 groove = 0.45 * metal + L.bulb * (0.06 * L.ink.metal * L.ink.light + 0.035 * LAVA_BULB);
+  lavaAccent = max(lavaAccent, 0.4 * cut);
+  return mix(metal, groove, cut);
+}
+
+// What shows through the glass at lamp point l (s up the glass, rg its outer radius there): the
+// glowing liquid and the coil, the wax, then the glass itself. 'behind' is the room behind it.
+vec3 lavaGlass(vec3 behind, LavaLamp L, vec2 l, float s, float rg, float aa) {
+  LavaInk ink = L.ink;
+  float ax = abs(l.x);
+  float ri = rg - LAVA_WALL;
+  float xo = l.x / rg;
+  float xi = clamp(l.x / ri, -1.0, 1.0);
+  // What shows here lies nearer the axis: the liquid magnifies the middle of the glass.
+  vec2 q = vec2(ri / LAVA_GLASS_H * xi * (LAVA_LENS + (1.0 - LAVA_LENS) * xi * xi), s);
+  vec2 grid = lavaGrid(L.lamp, vec2(q.x, clamp(s, 0.0, 1.0)));
+  float P = sqrt(max(1.0 - xi * xi, 0.0));
+  float low = exp(-3.0 * max(s, 0.0));
+  float shade = mix(1.0, grid.y, 0.55);
+
+  // The liquid glows with the bulb's light scattered in it: brightest low down, dimmer toward the
+  // cap and over the wax that shades it, fuller through the middle where the glass is deepest, with
+  // a faint warm haze all the way up so the glass reads to the cap; over the coil a white-hot core.
+  // Cold, it is cloudy.
+  float glow = L.bulb * (0.3 + low * shade) * (0.6 + 0.4 * P);
+  vec3 col = ink.liquid * glow * ink.glow + behind * (1.0 - ink.glow) * 0.8;
+  col += ink.light * L.bulb * (0.045 + 0.03 * (1.0 - clamp(s, 0.0, 1.0)));
+  float core = L.bulb * exp(-(q.x * q.x / 0.01 + s * s / 0.005));
+  col = mix(col, vec3(1.0, 0.92, 0.76), 0.55 * core);
+  float cloud = 1.0 - smoothstep(0.15, 0.8, L.warm);
+  vec3 milky = mix(ink.liquid, vec3(0.92, 0.9, 0.86), 0.55) * L.bulb * (0.16 + 0.5 * low) * (0.5 + 0.5 * P);
+  col = mix(col, milky, 0.85 * cloud);
+  col *= 1.0 - 0.75 * lavaCoil(q, aa / LAVA_GLASS_H);
+  // Your hand on the glass: the liquid under it warms and glows a little.
+  if (K_hand > 0.5 && uPrincipals[0].z > 0.5) {
+    vec2 hand = (uPrincipals[0].xy * vec2(uRes.x / uRes.y, 1.0) - L.foot) / L.size - l;
+    col += ink.light * 0.12 * L.bulb * exp(-dot(hand, hand) / 0.004);
+  }
+
+  // The wax: its outline all or nothing per cell against the dither, so a moving edge flips each
+  // cell once. Inside, lit by the glowing liquid all round it and by the bulb from below, deeper and
+  // more saturated where thick, glowing along its thin, back-lit edges; pale and matte while solid;
+  // brighter in the M.
+  if (L.count > 0) {
+    LavaField w = lavaField(q, 2 * L.lamp, L.count, L.blend, L.stretch);
+    float depth = w.f - L.iso;
+    float cell = aa / LAVA_GLASS_H * 0.5 * (1.0 + LAVA_LENS + 3.0 * (1.0 - LAVA_LENS) * xi * xi);
+    float cover = clamp(0.5 + depth / (max(length(w.grad), 1e-3) * cell), 0.0, 1.0);
+    if (cover > cellTh) {
+      float dd = max(depth, 0.0);
+      vec3 n = normalize(vec3(-w.grad * LAVA_BULGE / (2.0 * sqrt(dd + 0.002)), 1.0));
+      float thick = 1.0 - exp(-2.4 * dd);
+      float liq = L.bulb * (0.3 + low * shade);
+      float under = L.bulb * (0.16 + 1.05 * low * shade);
+      float below = max(-n.y, 0.0);
+      float rim = 1.0 - smoothstep(0.0, 0.42, thick);
+      vec3 wax = ink.wax * (0.7 * liq + 0.7 * under * (0.45 + 0.55 * below)) * (1.0 - 0.3 * thick);
+      wax += ink.wax * rim * (0.5 * liq + 0.9 * under) + ink.light * rim * rim * 0.12 * L.bulb;
+      wax *= mix(vec3(1.0), ink.wax, 0.4 * thick);
+      wax = mix(wax, wax * ink.liquid * 1.6, 0.2 * ink.glow);
+      float solid = 1.0 - smoothstep(0.1, 0.22, w.temp);
+      vec3 cold = mix(ink.wax, vec3(0.86, 0.84, 0.8), 0.35) * (0.08 + 0.5 * under * (0.6 + 0.4 * below));
+      wax = mix(wax, cold, solid);
+      wax *= 1.0 + 0.3 * smoothstep(0.6, 1.0, w.temp);
+      wax = mix(wax, ink.wax * 1.25 + 0.12, 0.55 * w.mark);
+      col = wax;
+      lavaAccent = max(lavaAccent, mix(0.6 + 0.4 * rim, 1.0, w.mark));
+    }
+  }
+
+  // The glass: its wall a darker band where the light bends away, a bright line along its outer edge,
+  // the moonlit window mirrored in a narrow streak down the left, the room's glow broad on the right.
+  float wall = smoothstep(ri - aa, ri + aa, ax);
+  col = mix(col, col * 0.5 + ink.liquid * glow * 0.12, wall);
+  col += (vec3(0.06) + ink.light * 0.14 * L.bulb) * bell((ax - rg + 0.8 * aa) / (1.1 * aa));
+  col += LAVA_MOON * (0.04 + 0.5 * lavaMoonlight) * bell((xo + 0.56) / 0.075) * (0.5 + 0.5 * smoothstep(0.0, 0.4, s));
+  col += ink.light * 0.06 * L.bulb * bell((xo - 0.5) / 0.2);
+  return col;
+}
+
+// Lamp L over col at p: the glass, then the metal base (a cone from its foot ring up to the collar
+// the glass sits in) and the cap. Their level rims curve with the eye's height.
+vec3 lavaDrawLamp(vec3 col, vec2 p, LavaLamp L) {
+  vec2 l = (p - L.foot) / L.size;
+  float ax = abs(l.x);
+  if (ax > LAVA_FOOT_R + 0.02 || l.y < -0.05 || l.y > 1.02) return col;
+  float aa = lavaPx / L.size;
+  float footY = -lavaDip(0.0, LAVA_FOOT_R + 0.006, l.x);
+  float collarY = LAVA_BASE_H - lavaDip(LAVA_BASE_H, LAVA_COLLAR_R + 0.007, l.x);
+  float capY = LAVA_BASE_H + LAVA_GLASS_H;
+  float capLow = capY - lavaDip(capY, LAVA_CAP_BOTTOM, l.x);
+  float capHigh = 1.0 - lavaDip(1.0, LAVA_CAP_TOP, l.x);
+
+  float s = (l.y - LAVA_BASE_H) / LAVA_GLASS_H;
+  float rg = lavaGlassR(s);
+  float inGlass = (1.0 - smoothstep(-aa, aa, ax - rg)) * step(collarY - 2.0 * aa, l.y) * step(l.y, capLow + 2.0 * aa);
+  if (inGlass > 0.0) col = mix(col, lavaGlass(col, L, l, s, rg, aa), inGlass);
+
+  float v = clamp(l.y / LAVA_BASE_H, 0.0, 1.0);
+  float lipY = collarY - 0.03;
+  float lip = smoothstep(lipY - aa, lipY + aa, l.y);
+  float ring = 1.0 - smoothstep(0.012, 0.012 + aa, l.y - footY);
+  float rb = mix(LAVA_FOOT_R, LAVA_COLLAR_R, v) + 0.007 * lip + 0.006 * ring;
+  float inBase = (1.0 - smoothstep(-aa, aa, ax - rb)) * smoothstep(footY - aa, footY + aa, l.y) * (1.0 - smoothstep(collarY - aa, collarY + aa, l.y));
+  if (inBase > 0.0) {
+    float xi = clamp(l.x / rb, -1.0, 1.0);
+    // Up the surface, so the lathe rings curve round the cone with its rims.
+    float around = (l.y + lavaDip(l.y, rb, l.x)) / LAVA_BASE_H;
+    vec3 metal = lavaMetal(L, xi, around, max(lip, 0.6 * smoothstep(0.6, 0.95, v)), 1.0 - smoothstep(0.0, 0.25, v));
+    // Grooves under the collar's lip and over the foot ring.
+    float groove = max(1.0 - smoothstep(0.0, 1.5 * aa, abs(l.y - lipY)), 1.0 - smoothstep(0.0, 1.5 * aa, abs(l.y - footY - 0.012)));
+    metal *= 1.0 - 0.6 * groove;
+    if (L.lamp == 0 && K_badge > 0.5) metal = lavaBadge(metal, L, l, aa);
+    col = mix(col, metal, inBase);
+  }
+
+  float u = clamp((l.y - capY) / LAVA_CAP_H, 0.0, 1.0);
+  float rc = mix(LAVA_CAP_BOTTOM, LAVA_CAP_TOP, u);
+  float inCap = (1.0 - smoothstep(-aa, aa, ax - rc)) * smoothstep(capLow - aa, capLow + aa, l.y) * (1.0 - smoothstep(capHigh - aa, capHigh + aa, l.y));
+  if (inCap > 0.0) {
+    float xi = clamp(l.x / rc, -1.0, 1.0);
+    // Its lower rim lit by the glowing liquid just under it.
+    vec3 metal = lavaMetal(L, xi, u, 0.25, 0.0) + L.ink.metal * L.ink.light * L.bulb * 0.5 * (1.0 - smoothstep(0.0, 0.25, u));
+    col = mix(col, metal, inCap);
+  }
+  lavaCover = max(lavaCover, max(inGlass, max(inBase, inCap)));
+  return col;
+}
+
+// The record sleeve leaning on the wall left of the lamp: its centre (frame units).
+vec2 lavaSleeveAt(LavaLamp A) {
+  return vec2(A.foot.x - 0.43, LAVA_TOP_BACK - 0.008 + LAVA_SLEEVE);
+}
+
+// 1 inside the sleeve centred at c, soft-edged by w; leaning back, it is a touch narrower at the top.
+float lavaSleeveMask(vec2 p, vec2 c, float w) {
+  vec2 q = p - c;
+  float hw = LAVA_SLEEVE * (1.0 - 0.03 * q.y / LAVA_SLEEVE);
+  return (1.0 - smoothstep(hw - w, hw + w, abs(q.x))) * (1.0 - smoothstep(LAVA_SLEEVE - w, LAVA_SLEEVE + w, abs(q.y)));
+}
+
+// The sleeve's shadow on the wall: the lamp stands to its right and in front, so it falls a little left.
+float lavaSleeveShadow(vec2 p, LavaLamp A) {
+  return lavaSleeveMask(p + vec2(0.03, 0.0), lavaSleeveAt(A), 0.02);
+}
+
+// The lamps' state for this cell (sceneLava's, before the composer): the frame point in lava's own
+// frame units (x from the left), a cell, the light thrown about, lamps A and B, the moonlight (the
+// World's moon in the room: roomShellBegin), for the glint down the metal.
+void lavaBegin(Ctx x) {
+  float aspect = x.aspect;
+  lavaP = vec2(x.uv.x * aspect, x.uv.y);
+  lavaPx = x.px;
+  lavaAccent = 0.0;
+  lavaCover = 0.0;
+  lavaMoonlight = clamp(dot(roomMoonLight, vec3(1.0)) * 0.4, 0.0, 1.0);
+  lavaSpill = 1.2 * K_spill;
+  lavaA = lavaLamp(0, aspect);
+  lavaB = lavaLamp(1, aspect);
+  lavaTwin = K_twin > 0.5;
+  vec3 bounce = lavaA.ink.light * lavaA.bulb + (lavaTwin ? 0.6 * lavaB.ink.light * lavaB.bulb : vec3(0.0));
+  lavaAmbient = vec3(0.008, 0.009, 0.014) + 0.03 * lavaSpill * bounce + 0.01 * lavaMoonlight * LAVA_MOON;
+}
+`;
+
+/** The lava lamp's GLSL its room's layers share: the lamps, their light on the room, the cell's state. */
+export const lavaSharedGlsl: SharedGlsl = {
+  id: "lava",
+  glsl: () => lavaShared,
+  begin: "lavaBegin",
+};
+
+/**
+ * The sideboard's things (a ground over the shell's sideboard, composer/shell.ts): the lamp's cord
+ * across its top, the record sleeve leaning on the wall.
+ */
+export const sideboardGlsl = `
+// The sleeve's print at a (-1..1 across and up): a setting sun cut by bands that thicken toward the
+// horizon, a brown ground with an orange line, the title as two bars, and ring wear where the
+// record inside has rubbed through the ink.
+vec3 lavaSleeveArt(vec2 a) {
+  vec3 col = vec3(0.86, 0.78, 0.62);
+  vec2 sc = a - vec2(0.0, 0.12);
+  float sun = 1.0 - smoothstep(0.6, 0.63, length(sc));
+  float below = max(-sc.y, 0.0);
+  float bands = sc.y > 0.0 ? 1.0 : smoothstep(0.3, 0.36, fract(sqrt(below) * 3.5));
+  vec3 sunCol = mix(vec3(0.98, 0.72, 0.22), vec3(0.86, 0.26, 0.12), smoothstep(-0.6, 0.6, -sc.y));
+  col = mix(col, sunCol, sun * bands);
+  col = mix(col, vec3(0.32, 0.15, 0.08), 1.0 - smoothstep(-0.63, -0.6, a.y));
+  col = mix(col, vec3(0.9, 0.45, 0.12), (1.0 - smoothstep(0.0, 0.02, abs(a.y + 0.56))));
+  float title = step(abs(a.y - 0.8), 0.035) * step(-0.84, a.x) * step(a.x, -0.18);
+  title = max(title, step(abs(a.y - 0.68), 0.025) * step(-0.84, a.x) * step(a.x, -0.42));
+  col = mix(col, vec3(0.22, 0.12, 0.08), title);
+  col *= 1.0 + 0.08 * (1.0 - smoothstep(0.0, 0.05, abs(length(a) - 0.88)));
+  return col * (0.9 + 0.1 * (1.0 - smoothstep(0.9, 1.0, max(abs(a.x), abs(a.y)))));
+}
+
+// The lamp's cord, out of the back of the base and across the top to the wall, with its switch.
+vec3 lavaCord(vec3 col, vec2 p, LavaLamp A) {
+  float x0 = A.foot.x - 0.02;
+  float x1 = A.foot.x - 0.3;
+  if (p.x > x0 || p.x < x1 - 0.02 || p.y < A.foot.y) return col;
+  float y0 = A.foot.y + 0.018;
+  float y1 = LAVA_TOP_BACK - 0.004;
+  float t = clamp((x0 - p.x) / (x0 - x1), 0.0, 1.0);
+  float y = mix(y0, y1, smoothstep(0.0, 1.0, t));
+  float slope = (y1 - y0) * 6.0 * t * (1.0 - t) / (x0 - x1);
+  float d = abs(p.y - y) / sqrt(1.0 + slope * slope);
+  float cord = 1.0 - smoothstep(0.0022 - 0.6 * lavaPx, 0.0022 + 0.6 * lavaPx, d);
+  vec2 sc = vec2(mix(x0, x1, 0.55), mix(y0, y1, smoothstep(0.0, 1.0, 0.55)));
+  vec2 sd = abs(p - sc) - vec2(0.016, 0.0045);
+  float sw = 1.0 - smoothstep(-lavaPx, lavaPx, length(max(sd, 0.0)) + min(max(sd.x, sd.y), 0.0) - 0.002);
+  vec3 lit = lavaAmbient + lavaSpill * lavaPool(A, p);
+  vec3 c = vec3(0.018) + lit * (0.25 + 0.35 * sw * smoothstep(sc.y - 0.002, sc.y + 0.005, p.y));
+  return mix(col, c, max(cord, sw));
+}
+
+// The record sleeve and its record, slid half out to the right: black vinyl whose grooves catch the
+// lamp in a bright band pointing at it, a printed sleeve lit by the lamps and the window's light.
+vec3 lavaSleeve(vec3 col, vec2 p, LavaLamp A, LavaLamp B, bool twin, float aspect) {
+  vec2 c = lavaSleeveAt(A);
+  vec2 q = p - c;
+  if (abs(q.y) > LAVA_SLEEVE + 0.01 || q.x < -LAVA_SLEEVE - 0.01 || q.x > LAVA_SLEEVE + 0.08) return col;
+  vec3 lamp = lavaAura(A, p);
+  if (twin) lamp += lavaAura(B, p);
+  vec3 light = lavaAmbient + lavaSpill * lamp * 1.15 + lavaWindowLight(p);
+
+  vec2 rc = c + vec2(0.072, 0.004);
+  vec2 rq = p - rc;
+  float rr = LAVA_SLEEVE * 0.94;
+  float dr = length(rq);
+  float disc = 1.0 - smoothstep(rr - lavaPx, rr + lavaPx, dr);
+  if (disc > 0.0) {
+    vec2 toLamp = normalize(A.foot + vec2(0.0, 0.55 * A.size) - rc);
+    float c1 = dot(rq / max(dr, 1e-4), toLamp);
+    float grooves = smoothstep(0.045, 0.06, dr) * (1.0 - smoothstep(rr - 0.012, rr - 0.004, dr));
+    float sheen = pow(abs(c1), 24.0) * grooves;
+    vec3 vinyl = vec3(0.025, 0.024, 0.028) * (0.4 + 2.0 * light) + sheen * (1.2 * lavaSpill * lamp + 0.02);
+    vinyl += 0.6 * lavaSpill * lamp * (1.0 - smoothstep(0.0, 2.0 * lavaPx, rr - dr)) * max(c1, 0.0);
+    col = mix(col, vinyl, disc);
+  }
+
+  float inside = lavaSleeveMask(p, c, lavaPx);
+  if (inside > 0.0) {
+    vec2 a = vec2(q.x / (LAVA_SLEEVE * (1.0 - 0.03 * q.y / LAVA_SLEEVE)), q.y / LAVA_SLEEVE);
+    vec3 sleeve = lavaSleeveArt(a) * light * 1.1;
+    // The open edge on the right, catching the lamp.
+    sleeve += 0.25 * lavaSpill * lamp * (1.0 - smoothstep(0.0, 0.03, 1.0 - a.x));
+    col = mix(col, sleeve, inside);
+  }
+  return col;
+}
+
+// The sideboard's things: the lamp's cord across the shell's top; the record sleeve leaning on the
+// wall, standing on it.
+void sideboardGround(Ctx x, inout Cell c) {
+  vec2 p = lavaP;
+#if LAYER_LAVA_LAMP
+  if (p.y > LAVA_TOP_FRONT && p.y <= LAVA_TOP_BACK) c.col = lavaCord(c.col, p, lavaA);
+#endif
+  if (K_sleeve > 0.5) c.col = lavaSleeve(c.col, p, lavaA, lavaB, lavaTwin, x.aspect);
+}
+`;
+
+/**
+ * The shelf on the papered wall (a backdrop over the shell's papered wall, composer/shell.ts): a
+ * shelf of books and a trailing plant.
+ */
+export const paperedGlsl = `
+// A small trailing plant in a clay pot standing on the shelf at base: a crown of leaves over the pot,
+// two vines hanging over the shelf's edge, swaying very slowly.
+vec3 lavaPlant(vec3 col, vec2 p, vec2 base, vec3 light, float tm) {
+  vec2 q = p - base;
+  if (abs(q.x) > 0.12 || q.y > 0.13 || q.y < -0.32) return col;
+  float potW = mix(0.026, 0.034, clamp(q.y / 0.06, 0.0, 1.0));
+  float pot = step(0.0, q.y) * step(q.y, 0.06) * (1.0 - smoothstep(potW - lavaPx, potW + lavaPx, abs(q.x)));
+  col = mix(col, vec3(0.5, 0.26, 0.16) * light * (0.75 + 0.5 * smoothstep(-0.03, 0.03, q.x)), pot);
+  float cover = 0.0;
+  float lit = 0.0;
+  for (int k = 0; k < 16; k++) {
+    float fk = float(k);
+    vec2 c;
+    float ang;
+    float sz;
+    if (k < 4) {
+      ang = -1.0 + 0.65 * fk;
+      c = vec2(0.0, 0.07) + 0.03 * vec2(sin(ang), 0.8 * cos(ang));
+      sz = 0.016;
+    } else {
+      float vine = k < 10 ? 0.0 : 1.0;
+      float j = fk - (k < 10 ? 4.0 : 10.0);
+      float s = (j + 0.6) / 6.0;
+      float len = vine < 0.5 ? 0.28 : 0.2;
+      float alt = mod(j, 2.0) < 0.5 ? 1.0 : -1.0;
+      c = vec2((vine < 0.5 ? -0.032 : 0.028) + 0.012 * sin(s * 5.0 + vine) + 0.006 * sin(0.25 * tm + 2.0 * vine) * s * s + 0.008 * alt, 0.04 - len * s);
+      ang = 3.14159 + 0.8 * alt;
+      sz = 0.013 * (1.0 - 0.3 * s);
+    }
+    vec2 d = rotate(q - c, -ang);
+    float lf = length(vec2(d.x / (sz * 0.62 * (1.1 - 0.45 * clamp(d.y / sz, -1.0, 1.0))), d.y / sz));
+    float leaf = 1.0 - smoothstep(1.0 - lavaPx / sz, 1.0 + lavaPx / sz, lf);
+    if (leaf > cover) {
+      cover = leaf;
+      lit = 0.7 + 0.5 * clamp(d.x / sz, -1.0, 1.0) - 0.25 * (1.0 - smoothstep(0.0, 0.12, abs(d.x / sz)));
+    }
+  }
+  return mix(col, vec3(0.1, 0.24, 0.08) * light * lit * 1.4, cover);
+}
+
+// A wall shelf up to the left: a row of books, the plant, the board and its shadow on the wall.
+vec3 lavaShelf(vec3 col, vec2 p, LavaLamp A, LavaLamp B, bool twin, float aspect, float tm) {
+  float x0 = A.foot.x - 1.08;
+  float x1 = A.foot.x - 0.46;
+  float top = 0.7;
+  if (p.x < x0 - 0.05 || p.x > x1 + 0.05 || p.y > top + 0.2 || p.y < top - 0.34) return col;
+  vec3 lamp = lavaAura(A, p);
+  if (twin) lamp += lavaAura(B, p);
+  vec3 light = lavaAmbient + lavaSpill * lamp + lavaWindowLight(p);
+  float span = smoothstep(x0 - 0.03, x0 + 0.03, p.x) * (1.0 - smoothstep(x1 - 0.03, x1 + 0.03, p.x));
+  col *= 1.0 - 0.5 * span * smoothstep(top - 0.09, top - 0.02, p.y) * step(p.y, top - 0.02);
+
+  float bx = p.x - (x0 + 0.03);
+  if (bx > 0.0 && bx < 0.33 && p.y > top && p.y < top + 0.2) {
+    float i = floor(bx / 0.024);
+    float h = hash12(vec2(i, 7.1));
+    float height = 0.11 + 0.07 * h;
+    float fx = fract(bx / 0.024);
+    float book = step(p.y, top + height) * smoothstep(0.02, 0.08, fx) * (1.0 - smoothstep(0.92, 0.98, fx)) * step(0.12, hash12(vec2(i, 3.3)));
+    vec3 cover = mix(vec3(0.35, 0.12, 0.08), vec3(0.12, 0.2, 0.3), h);
+    cover = mix(cover, vec3(0.5, 0.42, 0.28), step(0.7, fract(h * 13.7)));
+    cover *= 1.0 - 0.3 * step(abs(p.y - top - height + 0.025), 0.004);
+    col = mix(col, cover * light * (0.85 + 0.3 * sin(fx * 3.14159)), book);
+  }
+  col = lavaPlant(col, p, vec2(x1 - 0.07, top), light, tm);
+
+  float board = span * (1.0 - smoothstep(0.011 - lavaPx, 0.011 + lavaPx, abs(p.y - top + 0.011)));
+  vec3 wood = LAVA_TEAK * light * (0.9 + 0.8 * (1.0 - smoothstep(0.0, 2.0 * lavaPx, top - p.y)));
+  return mix(col, wood, board);
+}
+
+// The shelf on the shell's papered wall.
+void paperedFar(Ctx x, inout Cell c) {
+  if (K_shelf > 0.5) c.col = lavaShelf(c.col, lavaP, lavaA, lavaB, lavaTwin, x.aspect, x.tm);
+}
+`;
+
+/**
+ * The lava lamp (a dressing standing on the ledge, drawn from the room's rig): the lamp and its twin,
+ * and their light on the room's surfaces (a declared light, lavaLampLight).
+ */
+export const lavaLampGlsl = `
+// Lamp L's light on a surface at P (the room's frame, metres) facing n (0: lit all round), at its
+// point f on lava's frame: on a wall facing the eye, the glass's glow cast on it (lavaAura, the
+// record's shadow in it); on a top, its pool ringed by the base's shadow; elsewhere the warm halo
+// round its glass, by distance in lamp heights, on what faces it.
+vec3 lavaLampOn(LavaLamp L, vec3 P, vec3 n, vec2 f) {
+  if (n.z < -0.5) {
+    vec3 aura = lavaAura(L, f);
+#ifdef LAYER_SIDEBOARD
+#if LAYER_SIDEBOARD
+    if (K_sleeve > 0.5 && L.lamp == 0) aura *= 1.0 - 0.55 * lavaSleeveShadow(f, L);
+#endif
+#endif
+    return aura;
+  }
+  if (n.y > 0.5) return lavaPool(L, f) * lavaContact(L, f);
+  vec2 h = (f - L.foot) / L.size - vec2(0.0, 0.55);
+  float d2 = dot(h, h);
+  float halo = 0.4 / (1.0 + 1.5 * d2) + 0.07 / (1.0 + 0.15 * d2);
+  float facing = dot(n, n) < 0.5 ? 1.0 : 0.35 + 0.65 * max(dot(n, normalize(vec3(-h, -0.6))), 0.0);
+  return L.ink.light * L.bulb * halo * facing;
+}
+
+// The lamps' light on the room's surfaces (its localLight).
+vec3 lavaLampLight(vec3 p, vec3 n) {
+  vec2 f = roomFrameOf(p) + vec2(0.5 * uRes.x / uRes.y, 0.5);
+  vec3 l = lavaLampOn(lavaA, p, n, f);
+  if (lavaTwin) l += lavaLampOn(lavaB, p, n, f);
+  return lavaSpill * l;
+}
+
+// The twin, then the lamp, over what stands behind them; the M in its base and in its wax its accent.
+void lavaLampFront(Ctx x, inout Cell c) {
+  vec3 col = c.col;
+  if (lavaTwin) col = lavaDrawLamp(col, lavaP, lavaB);
+  c.col = max(lavaDrawLamp(col, lavaP, lavaA), 0.0);
+  c.accent = max(c.accent * (1.0 - lavaCover), lavaAccent);
+}
+`;

@@ -26,6 +26,8 @@ type Group =
   | "budgets"
   | "pwa"
   | "axioms"
+  | "landing-concept"
+  | "landing-webgl"
   | "nix";
 type Phase = "prepare" | "build" | "static" | "post-static" | "convergence" | "browser";
 
@@ -37,6 +39,8 @@ interface GateTask {
   readonly cwd?: string;
   readonly usesDist?: true;
   readonly retry?: true;
+  /** Under `--shard i/4` the task runs its own share of its work: the shard reaches its command. */
+  readonly shardsItself?: true;
 }
 
 interface TaskResult {
@@ -248,6 +252,35 @@ const tasks: readonly GateTask[] = [
     command: fixed("bun", "scripts/verify-axioms.ts"),
     usesDist: true,
   },
+  {
+    name: "tsc concepts/landing",
+    group: "landing-concept",
+    phase: "static",
+    command: fixed("bunx", "tsc", "-p", "concepts/landing"),
+  },
+  {
+    name: "landing concept tests",
+    group: "landing-concept",
+    phase: "static",
+    command: fixed("bun", "test", "concepts/landing"),
+  },
+  {
+    // Every program the lab's scenes build, through glslang: it compiles, links and keeps within
+    // WebGL2's guaranteed fragment uniforms (glslangValidator on the PATH; CI installs it).
+    name: "glsl:check concepts/landing",
+    group: "landing-concept",
+    phase: "static",
+    command: fixed("bun", "concepts/landing/scripts/glsl-check.ts"),
+  },
+  {
+    // Every real-WebGL regression on a fresh page, each within its own deadline. Under --shard it
+    // runs that share of the checks, balanced by their recorded seconds (verify.ts --shard).
+    name: "verify:landing-webgl",
+    group: "landing-webgl",
+    phase: "browser",
+    command: fixed("bun", "concepts/landing/verify.ts"),
+    shardsItself: true,
+  },
 ];
 
 interface Options {
@@ -296,7 +329,7 @@ function parseArgs(argv: readonly string[]): Options {
   }
   if (list && only !== null) usage("--list and --only cannot be combined");
   if (list && shard !== null) usage("--list and --shard cannot be combined");
-  if (shard !== null && only !== "types") usage("--shard requires --only types");
+  if (shard !== null && only === null) usage("--shard requires --only");
   return { list, only, shard };
 }
 
@@ -378,10 +411,26 @@ async function selected(selector: string): Promise<number> {
   const group = tasks.filter((task) => task.group === selector || task.name === selector);
   if (group.length === 0) usage(`unknown task or group ${JSON.stringify(selector)}`);
   const shard = options.shard;
+  if (
+    shard !== null &&
+    !group.every((task) => task.group === "types" || task.shardsItself === true)
+  )
+    usage("--shard requires --only types or a task that shards itself (landing-webgl)");
+  // Type checks split by task; a task that shards itself runs its share of its own work.
   const matching =
     shard === null
       ? group
-      : group.filter((task, index) => task.group !== "types" || index % 4 === shard - 1);
+      : group.flatMap((task, index): GateTask[] => {
+          if (task.shardsItself !== true) return index % 4 === shard - 1 ? [task] : [];
+          const share = `${shard}/4`;
+          return [
+            {
+              ...task,
+              name: `${task.name} (shard ${share})`,
+              command: (dist) => [...task.command(dist), "--shard", share],
+            },
+          ];
+        });
   const results: TaskResult[] = [];
   // Registry order is significant for the build group: generated history must exist before Vite.
   if (matching.some((task) => task.phase === "build" || task.phase === "prepare")) {

@@ -1,0 +1,6 @@
+---
+section: Changed
+issue: 1082
+---
+
+The landing concept's Swell scene gets its old look back and joins the shared world. The rebuild had lost what made the old picture: the two-tone palette (black, white and the scene's blue, now its default look again); a glitter path of flecks from the foreground to a bright horizon (now the physical glint with single facets flashing in it, `waterFacets`, lifted from the shore into the shared water library); waves readable across the whole sea, their crests glowing blue in the moonlight; and a crisp horizon instead of a grey haze. The sea is now a spectrum: two long swells, three trains of wind sea and the chop, raised and turned by the world's wind (which replaces the chop control) and breaking white in a gale. The sky is the shared world's, with its time dial, day cycle, stars, moon phase, shooting stars, constellations, planets, cloud, rain, snow, fog, lightning, aurora and gulls, all mirrored in the sea. Through a longer lens the full moon rises large. Up to five boats ride at anchor on the same waves, one black against the moon's path by default, with lanterns at night as an option. An optional lighthouse on a headland sweeps two beams that light the fog and rain as cones. The cast's agents visit the boats and the lighthouse.

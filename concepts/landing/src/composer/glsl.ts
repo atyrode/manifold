@@ -1,0 +1,661 @@
+// The composer's GLSL (README "Compositing"): the prelude every composed program starts with (the
+// rig, the cell, the context its passes are given, the light, the placement, the layers' data
+// accessors and their own entrances and exits, the plain floor) and the entry it generates, which
+// runs the on layers' passes in the composer's order. Layers never write the entry themselves.
+//
+// The entry's order:
+//   1. The context (`composerCtx`): the World now, the rig's ray (through the passage's lens shift,
+//      `rigShift`, where the rig's passage has one), the light; then every shared chunk's and every
+//      layer's `begin` (the backdrop's sets the air and where the floor ends).
+//   2. The backdrop's `sky`; c.z starts at WORLD_FAR.
+//   3. The far band: every layer's `far`, then every `farVeil`, in canonical order.
+//   4. The ground layer's `ground`, or the composer's plain floor, below the backdrop's land line
+//      (under a ground layer only while it plays its own entrance or exit, where it does not show).
+//   5. The middle band's opaque passes; the World's birds at c.z; the bodies of the light elements
+//      the program compiles in (`elementsGlsl`), at their depths; the middle veils.
+//   6. The front band's opaque passes, then its veils.
+//   7. The shared speck map, against c.zs (what stands above the floor: specks hide behind it): each
+//      layer's codes, and the composer's falling things' (falling.ts, `fallingSpeck`).
+//   8. Every layer's `air` (the backdrop's forward scatter, a lamp's halo in the fog's air).
+//   9. worldFog, then worldPrecip at c.z (thinned under shelter claims, and as the backdrop's
+//      `precip` says: its thinning, its rain's air, the axes a rig that is not level sees it through).
+//   9. worldFog; every layer's `glow` (light the air scatters toward the eye that the fog does not
+//      veil: swell's beams, its lamps' glow); then worldPrecip at c.z (thinned under shelter claims,
+//      and as the backdrop's `precip` says: its thinning, its rain's air).
+//  10. The grade's vignette and exposure, a speck's palette snap, and shadeOf with the grade's ink;
+//      then every layer's `shade` over it, in canonical order.
+// Two kinds of program (compose.ts TURNS_GATE). A steady one runs every pass as written, every
+// layer following the scene's passage: no layer can be mid-turn in it. One that draws turns, which
+// the renderer draws while a layer turned on or off mid-scene plays its own entrance or exit (sim.ts
+// SceneSim.turning; row 0 of the atlas), shows each layer's passes in a growing or shrinking share of
+// cells, cut per cell (`layerShows`); at rest it draws as the steady one does.
+import { glslFloat } from "../shaders/glsl.ts";
+import { worldGlsl } from "../shaders/lib/world.ts";
+import type { LevelCamera } from "../sims/camera.ts";
+import { SPECK_DEPTH_STEP } from "./caps.ts";
+import { claimsGlsl } from "./claims.ts";
+import { ELEMENT_ROWS, LIGHT_CAP } from "./elements.ts";
+import { fallingGlsl } from "./falling.ts";
+import { gustGlsl, type PassageGustShape } from "./gust.ts";
+import { elementBodyKinds } from "./shell.ts";
+import { ATLAS_SLOT, SPECK_SLOT, type Allocation } from "./sim.ts";
+import type {
+  FloorKind,
+  Grade,
+  LayerCode,
+  LayerDef,
+  LayerPasses,
+  PlacedClaim,
+  Rig,
+  ScenePreset,
+} from "./types.ts";
+
+/** The entry every composed program has. */
+export const COMPOSER_ENTRY = "composerEntry";
+
+/**
+ * The plain floor's albedo, how porous it is (wetten), how well it holds lying snow, and how much its
+ * tone mottles (patches of a few metres and of tens of centimetres, band-limited).
+ */
+const FLOORS: Readonly<
+  Record<
+    FloorKind,
+    {
+      albedo: readonly [number, number, number];
+      porous: number;
+      snow: number;
+      mottle: number;
+    }
+  >
+> = {
+  earth: { albedo: [0.32, 0.25, 0.17], porous: 0.8, snow: 1, mottle: 0.5 },
+  lawn: { albedo: [0.26, 0.44, 0.16], porous: 0.6, snow: 1, mottle: 0.5 },
+  gravel: { albedo: [0.55, 0.52, 0.47], porous: 0.3, snow: 0.9, mottle: 0.35 },
+  sand: { albedo: [0.76, 0.66, 0.47], porous: 0.7, snow: 0.8, mottle: 0.25 },
+  rock: { albedo: [0.42, 0.41, 0.39], porous: 0.2, snow: 0.7, mottle: 0.4 },
+  moss: { albedo: [0.22, 0.32, 0.12], porous: 0.9, snow: 1, mottle: 0.45 },
+  ice: { albedo: [0.72, 0.8, 0.86], porous: 0, snow: 0.6, mottle: 0.15 },
+  snowfield: { albedo: [0.9, 0.92, 0.96], porous: 0.4, snow: 1, mottle: 0.1 },
+  water: { albedo: [0.1, 0.16, 0.2], porous: 0, snow: 0, mottle: 0 },
+  asphalt: { albedo: [0.16, 0.16, 0.17], porous: 0.1, snow: 0.3, mottle: 0.15 },
+};
+
+const vec3 = (v: readonly [number, number, number]): string =>
+  `vec3(${v.map(glslFloat).join(", ")})`;
+
+const XYZW = "xyzw";
+
+/** The uSimOn component that says whether sim slot `slot` is bound. */
+export function simOn(slot: number): string {
+  return `${slot < 4 ? "uSimOn" : "uSimOn2"}.${XYZW.charAt(slot % 4)}`;
+}
+
+/** A layer on in this program, its code loaded, and its index among them. */
+export interface OnLayer<G = Rig, R = LevelCamera> {
+  readonly def: LayerDef;
+  readonly code: LayerCode<G, R>;
+}
+
+/** What one composed program is assembled from (compose.ts glslFor). */
+export interface Assembly {
+  readonly preset: ScenePreset;
+  /** On, placed, canonical order: index k is texel k of the atlas's row 0. */
+  readonly layers: readonly OnLayer[];
+  readonly claims: readonly PlacedClaim[];
+  readonly allocation: Allocation;
+  /** Every trigger slot by knob key (the World's, the gusts', each offered layer's). */
+  readonly triggers: Readonly<Record<string, number>>;
+  readonly gust: { readonly slot: number; readonly shape: PassageGustShape | undefined };
+  /** Each layer's GLSL as this program takes it: its qualified keys and its M rewritten (compose.ts). */
+  readonly rewrite: (layer: LayerDef, glsl: string) => string;
+  /** Whether it draws its layers' own entrances and exits (compose.ts TURNS_GATE): else steady. */
+  readonly turns: boolean;
+}
+
+/** The light (README "Light"): the World's sky times the preset's grade. */
+function lightGlsl(grade: Grade, turn: number): string {
+  const tint = (expr: string, by: readonly [number, number, number] | undefined) =>
+    by === undefined ? expr : `${expr} * ${vec3(by)}`;
+  const floor = grade.floor === undefined ? "" : ` + ${vec3(grade.floor)}`;
+  const moon = grade.moonlight;
+  return `
+// The light (composer/glsl.ts): the sun${moon === undefined ? "" : ", or once it has set the moon,"} as the key, in the rig's frame.
+Light composerLight(World w) {
+  Sky sky = w.sky;
+  Light l;
+  l.moonKey = ${moon === undefined ? "false" : "sky.sun.y < -0.02"};
+  l.key = skyFacing(${moon === undefined ? "sky.sun" : "l.moonKey ? sky.moon : sky.sun"}, ${glslFloat(-turn)});
+  l.sun = ${moon === undefined ? tint("sky.sunColor", grade.sunTint) : `l.moonKey ? sky.moonColor * ${glslFloat(moon)} : ${tint("sky.sunColor", grade.sunTint)}`};
+  l.amb = ${tint("sky.ambient", grade.skyTint)}${floor};
+  float keyLen = max(length(l.key.xz), 1e-3);
+  l.keyGround = l.key.xz / keyLen;
+  l.keyTan = max(l.key.y, 0.04) / keyLen;
+  l.keyUp = smoothstep(-0.02, 0.12, l.key.y);
+  return l;
+}
+`;
+}
+
+/** The prelude's fixed part: the structs and the cell's two writes. */
+const STRUCTS = `
+// The key light and the light around (composerLight): the key's direction in the rig's frame, its
+// bearing on the floor and the tangent of its height, how far up it is (0 below the horizon).
+struct Light { vec3 sun; vec3 amb; vec3 key; vec2 keyGround; float keyTan; float keyUp; bool moonKey; };
+// The air, the backdrop's (its begin): the haze toward this bearing, the fog's and the rain's colour,
+// the light the drops shine by, the bright sky wet things mirror; per metre, how much the rain hides
+// (its own mist beside the World's veil) and the dust (haze) does; the share of a golden veil the far
+// land takes beyond the dust.
+struct Air { vec3 haze; vec3 fog; vec3 drop; vec3 deck; float rain; float dust; float veil; };
+// What every pass is given. p of the rig's frame: x right, y up from the floor, z ahead (metres).
+// eye: the rig's eye now, lift above its rest (the preset's passage); zg: how far this cell's ray
+// meets the floor (WORLD_FAR above the horizon); groundTo: the uv height below which the site floor
+// shows, landZ how far it reaches in this column (the backdrop's); stretch: how much wider the frame
+// is than the rig's minAspect (layers on a stage spread with it).
+struct Ctx {
+  World w; WorldView v; vec2 uv; vec2 cell; float aspect; float aa; float tm; float eye; float lift;
+  bool moving; float stretch; float zg; float groundTo; float landZ; GustWind gust; Light light; Air air;
+};
+// What a cell shows: its colour, the depth of what it shows (WORLD_FAR: open sky), the depth of the
+// nearest thing standing above the floor (what hides a speck; the floor and the sky leave it), accent.
+struct Cell { vec3 col; float z; float zs; float accent; };
+
+// Opaque: where z is nearer than what the cell shows, over by rgba.a, taking z once a >= 0.5.
+void cellPut(inout Cell c, vec4 rgba, float z) {
+  if (z >= c.z) return;
+  c.col = mix(c.col, rgba.rgb, rgba.a);
+  if (rgba.a >= 0.5) {
+    c.z = z;
+    c.zs = min(c.zs, z);
+    c.accent = 0.0;
+  }
+}
+
+// Translucent: where z is nearer than what the cell shows, over by rgba.a; the depth stays.
+void cellVeil(inout Cell c, vec4 rgba, float z) {
+  if (z < c.z) c.col = mix(c.col, rgba.rgb, rgba.a);
+}
+
+vec3 localLight(vec3 p, vec3 n);
+
+// What a level mirror shows (composerMirror; a backdrop's mirror pass): its colour without the
+// lamps, the lamps' colour, and how bright they are as seen (x) and drawn out down the water (y).
+struct Mirrored { vec3 col; vec3 lampCol; vec2 lamp; };
+Mirrored composerMirror(Ctx x, vec3 at, vec3 ray, WorldView m, vec2 spread);
+`;
+
+/**
+ * The plain floor (README "The site") of the preset's kind, where no ground layer lies. A kind that
+ * holds no snow (water) is drawn without it: its snow's share would be 0 at every cell. Under a
+ * pitched rig (`pitched`: Rig.pitch not 0) the backdrop's begin gives the ray (x.v.ray, level frame)
+ * and how far along it the floor is (x.zg, metres along the ray), and the floor stands where they say.
+ */
+function floorGlsl(kind: FloorKind, pitched: boolean): string {
+  const floor = FLOORS[kind];
+  const snowed =
+    floor.snow === 0
+      ? "  c.col = col;"
+      : `  float snow = ${glslFloat(floor.snow)} * snowCover(vec3(0.0, 1.0, 0.0), xz, uWeather.y) * (1.0 - shelterAt(xz, x));
+  c.col = mix(col, vec3(0.92, 0.94, 0.98) * (x.light.amb * 1.1 + x.light.sun * 0.5 * lit), snow);`;
+  const at = pitched
+    ? "x.v.ray.xz * x.zg"
+    : "vec2((x.uv.x - 0.5) * x.aspect * x.zg / RIG_FOCAL, x.zg)";
+  const ahead = pitched ? "xz.y" : "x.zg";
+  return `
+// The plain floor: ${kind}, its tone mottled, lit by the open sky all round, the key as it falls on
+// level ground (the claims' and the clouds' shadows taken out) and the layers' lights, wet and snowed
+// on by the World, below the backdrop's land line.
+void composerFloor(Ctx x, inout Cell c) {
+  vec2 xz = ${at};
+${
+  floor.mottle === 0
+    ? ""
+    : `  // A cell's footprint on the floor, taken before any cell leaves (derivatives need them all).
+  vec2 fw = fwidth(xz);
+  float foot = max(fw.x, fw.y);
+`
+}  if (x.uv.y >= x.groundTo || x.zg >= x.landZ) return;
+  float lit = worldSunlit(x.w, x.v, vec3(xz.x, -x.eye, ${ahead})) * (1.0 - casterShadow(xz, x));
+  vec3 albedo = wetten(${vec3(floor.albedo)}, uWeather.x, ${glslFloat(floor.porous)});
+${
+  floor.mottle === 0
+    ? ""
+    : `  float tone = fbmLod(xz * 0.3 + 17.0, foot * 0.3, 2).x + 0.6 * (fbmLod(xz * 2.7, foot * 2.7, 2).x - 0.5);
+  albedo *= 1.0 + ${glslFloat(floor.mottle)} * (tone - 0.5) * 1.6;
+`
+}  vec3 col = albedo * (x.light.amb + x.light.sun * clamp(x.light.key.y, 0.0, 1.0) * lit + localLight(vec3(xz.x, 0.0, ${ahead}), vec3(0.0, 1.0, 0.0)));
+  col += wetGloss(uWeather.x, 0.85) * x.air.deck * 0.3;
+${snowed}
+  c.z = x.zg;
+  c.accent = 0.0;
+}
+`;
+}
+
+/** Each layer's data accessors (README "Sims in a composition"): never uSimN in a layer's own GLSL. */
+export function accessorsGlsl<G, R>(layers: readonly OnLayer<G, R>[], alloc: Allocation): string {
+  return layers
+    .map(({ def }) => {
+      const id = def.id;
+      const out: string[] = [];
+      const rows = alloc.rows[id];
+      if (rows !== undefined)
+        out.push(
+          `#define ${id}Atlas uSim${ATLAS_SLOT}`,
+          `const int ${id}Row = ${rows.base};`,
+          `bool ${id}SimOn() { return ${simOn(ATLAS_SLOT)} > 0.5; }`,
+          `vec4 ${id}Record(int x, int y) { return texelFetch(uSim${ATLAS_SLOT}, ivec2(x, ${id}Row + y), 0); }`,
+        );
+      (alloc.fields[id] ?? []).forEach((slot, k) => {
+        out.push(
+          `#define ${id}Field${k} uSim${slot}`,
+          `bool ${id}Field${k}On() { return ${simOn(slot)} > 0.5; }`,
+        );
+      });
+      return out.length === 0 ? "" : `// ${id}'s data\n${out.join("\n")}\n`;
+    })
+    .join("");
+}
+
+/**
+ * The on layers' lights summed (README "Light"): every layer lights its materials with it; with the
+ * light elements' (`elements`: the program compiles some in) first.
+ */
+export function lightsGlsl(layers: readonly OnLayer[], elements: boolean): string {
+  const lights = layers.flatMap(({ def }) => def.lights ?? []);
+  const terms = lights.map((light) =>
+    light.gate === undefined
+      ? `  l += ${light.glsl}(p, n);`
+      : `#if ${light.gate}\n  l += ${light.glsl}(p, n);\n#endif`,
+  );
+  const body =
+    terms.length === 0 && !elements
+      ? "  return vec3(0.0);"
+      : `  vec3 l = ${elements ? "composerElements(p, n)" : "vec3(0.0)"};\n${terms.map((term) => `${term}\n`).join("")}  return l;`;
+  return `
+// The ${elements ? "light elements' and the " : ""}layers' lights on a surface at p (rig frame) facing n (0 for a thin thing lit all round).
+vec3 localLight(vec3 p, vec3 n) {
+${body}
+}
+`;
+}
+
+/**
+ * The light elements a program compiles in (README "Light", composer/elements.ts), outdoors: each
+ * kind in `kinds` (elementKinds: a lamp, a candle, a neon tube, a fire; never a window), its light
+ * (`composerElements`, localLight's share: its fall over its reach, the surface's turn toward it,
+ * its flicker on the motion clock) and its body where it stands (`composerBodies`: over what lies
+ * behind it, under what stands nearer, taking its depth where it covers the cell). An element's `at`
+ * is in the rig's frame (x across, y up from the floor, z ahead); a pitched rig's cell meets its
+ * depth along the backdrop's ray (x.v.ray), a level one's through the lens.
+ */
+function elementsGlsl(kinds: readonly number[], pitched: boolean): string {
+  const row = (k: number, r: number): string => `uElements[${k * ELEMENT_ROWS + r}]`;
+  return `
+// ---- the light elements (composer/glsl.ts elementsGlsl): kinds ${kinds.join(", ")} ----
+uniform vec4 uElements[${LIGHT_CAP * ELEMENT_ROWS}];
+
+// An element's flicker: 1 at rest, a candle's or a fire's breath on the motion clock.
+float composerFlicker(float amount, float seed) {
+  float t = uMotionTime + seed;
+  return 1.0 + amount * (0.3 * sin(t * 9.1) + 0.2 * sin(t * 17.3 + 1.7) + 0.12 * sin(t * 31.7 + 0.4));
+}
+
+// An element's light on a surface at p facing n (0: lit all round), from its rows a (at, power),
+// b (colour, reach) and f (flicker, seed): its fall over its reach, the surface's turn toward it.
+vec3 composerElementLight(vec4 a, vec4 b, vec4 f, vec3 p, vec3 n) {
+  vec3 d = a.xyz - p;
+  float r2 = max(dot(d, d), 1e-4);
+  vec3 L = d * inversesqrt(r2);
+  float face = dot(n, n) < 0.5 ? 1.0 : 0.25 + 0.75 * max(dot(n, L), 0.0);
+  return b.rgb * a.w * composerFlicker(f.x, f.y) * face / (1.0 + r2 / max(b.w * b.w, 1e-4));
+}
+
+// The elements' light on a surface at p facing n (localLight's share).
+vec3 composerElements(vec3 p, vec3 n) {
+  vec3 l = vec3(0.0);
+${kinds.map((_, k) => `  l += composerElementLight(${row(k, 0)}, ${row(k, 1)}, ${row(k, 2)}, p, n);`).join("\n")}
+  return l;
+}
+
+// Element k's body (its kind's) where it stands: over what the cell shows behind it, under what
+// stands nearer; it takes the cell's depth where it covers it.
+void composerElementBody(Ctx x, inout Cell c, int k, int kind) {
+  vec4 a = uElements[k * ${ELEMENT_ROWS}];
+  vec4 b = uElements[k * ${ELEMENT_ROWS} + 1];
+  vec4 e = uElements[k * ${ELEMENT_ROWS} + 2];
+  if (a.z < 0.2 || a.z >= c.z) return;
+  // The cell's ray (rig frame) at the element's depth: q, metres from it across and up; aa, a
+  // cell's width there.
+  vec3 ray = ${pitched ? "x.v.ray" : "vec3((x.uv.x - 0.5) * x.aspect, x.uv.y - RIG_HORIZON, RIG_FOCAL)"};
+  if (ray.z < 1e-4) return;
+  vec2 q = vec2(0.0, x.eye) + ray.xy * (a.z / ray.z) - a.xy;
+  float aa = x.aa * a.z / RIG_FOCAL;
+  float glow = a.w * composerFlicker(e.x, e.y);
+  vec3 light = b.rgb * glow;
+  float cover = 0.0;
+${elementBodyKinds("x.light.amb", "x.tm", true)}
+  if (cover >= 0.5) {
+    c.z = a.z;
+    c.zs = min(c.zs, a.z);
+  }
+}
+
+void composerBodies(Ctx x, inout Cell c) {
+${kinds.map((kind, k) => (kind >= 1 && kind <= 4 ? `  composerElementBody(x, c, ${k}, ${kind});\n` : "")).join("")}}
+`;
+}
+
+/**
+ * What a level mirror shows (README "Compositing"), for a ground that mirrors (the river): the
+ * backdrop's view in it where it has one (its `mirror` pass), else the World's sky; then the World's
+ * birds in it, along the preset's flyway as the entry's worldBirds flies them.
+ */
+function mirrorGlsl(layers: readonly OnLayer[], preset: ScenePreset): string {
+  const backdrop = layers.find(
+    ({ def }) => def.role === "backdrop" && def.passes.mirror !== undefined,
+  );
+  const fly = preset.flyway;
+  const view =
+    backdrop === undefined
+      ? `  WorldSky sky = worldMirrorSky(x.w, m, WORLD_METEOR_FIELD);
+  Mirrored r = Mirrored(sky.col + sky.strike, vec3(0.0), vec2(0.0));`
+      : `  Mirrored r = ${backdrop.def.passes.mirror}(x, at, ray, m, spread);`;
+  return `
+// What a level mirror at point at shows along the reflected ray (m: its view, worldMirrorView): the
+// backdrop's own view in it, or the World's sky; the World's birds in it.
+Mirrored composerMirror(Ctx x, vec3 at, vec3 ray, WorldView m, vec2 spread) {
+${view}
+  worldBirdsMirrored(x.w, m, WorldFlyway(vec2(${glslFloat(fly.depth[0])}, ${glslFloat(fly.depth[1])}), vec2(RIG_HORIZON + ${glslFloat(fly.above)}, ${glslFloat(fly.top)}), vec2(K_seed * 0.37, ${glslFloat(fly.seed)}), ${glslFloat(fly.skim)}, ${glslFloat(fly.spread)}), x.air.haze, ${glslFloat(fly.ext)} + x.air.rain, 1.0, r.col);
+  return r;
+}
+`;
+}
+
+/**
+ * The passes of `kind` of the on layers (those `only` keeps), in canonical order. In a program that
+ * draws turns (`turns`), a cell that does not show the pass's layer (`shows`, see `composedGlsl`)
+ * keeps what it had before the pass (`held`: the cell or the shade); a steady program runs each as
+ * written. A software rasteriser runs every line of a program whatever branch a cell takes, so each
+ * pass has one call site (a second would run the pass twice), and it is never under a branch: a pass
+ * that runs only where a branch is taken costs it far more than the pass (dew's backdrop: a tenth of
+ * the program more), a result dropped after it next to nothing.
+ */
+export function passCalls<G, R>(
+  layers: readonly OnLayer<G, R>[],
+  turns: boolean,
+  kind: keyof LayerPasses,
+  args: string,
+  only: (def: LayerDef) => boolean = () => true,
+  held: readonly [type: string, name: string] = ["Cell", "c"],
+): string {
+  const [type, name] = held;
+  return layers
+    .map(({ def }, k) => {
+      const fn = def.passes[kind];
+      if (fn === undefined || !only(def)) return "";
+      return turns
+        ? `  { ${type} was = ${name}; ${fn}(${args}); if (!shows[${k}]) ${name} = was; }\n`
+        : `  ${fn}(${args});\n`;
+    })
+    .join("");
+}
+
+/**
+ * Each cell's begins, in canonical order: before a layer's own, the begin of every shared chunk it
+ * holds that has not run yet (so the backdrop's runs before a later layer's chunk reads its air).
+ */
+export function begins<G, R>(layers: readonly OnLayer<G, R>[]): string {
+  const ran = new Set<string>();
+  return layers
+    .flatMap(({ def, code }) => [
+      ...(code.shared ?? []).flatMap((chunk) => {
+        if (ran.has(chunk.id)) return [];
+        ran.add(chunk.id);
+        return chunk.begin === undefined ? [] : [`  ${chunk.begin}(x);`];
+      }),
+      ...(def.passes.begin === undefined ? [] : [`  ${def.passes.begin}(x);`]),
+    ])
+    .join("\n");
+}
+
+/**
+ * The layers' own entrances and exits (`layerIn`, `layerOut`, `layerShown`, `layerShows`): read from
+ * the atlas's row 0 in a program that draws turns, the scene's passage in every cell in a steady one.
+ */
+export function turnsGlsl(turns: boolean): string {
+  return turns
+    ? `// The layers' own entrances and exits (sim.ts, the atlas's row 0, texel k for the k-th layer on):
+// -1 while the layer follows the scene's passage.
+vec2 layerTurn(int k) {
+  return ${simOn(ATLAS_SLOT)} > 0.5 ? texelFetch(uSim${ATLAS_SLOT}, ivec2(k, 0), 0).xy : vec2(-1.0);
+}
+float layerIn(int k) {
+  float own = layerTurn(k).x;
+  return own < 0.0 ? passageIn() : own;
+}
+float layerOut(int k) {
+  float own = layerTurn(k).y;
+  return own < 0.0 ? passageOut() : own;
+}
+// The share of cells showing layer k: 1 at rest and through the scene's passage.
+float layerShown(int k) {
+  vec2 own = layerTurn(k);
+  return own.x < 0.0 ? 1.0 : own.x * (1.0 - max(own.y, 0.0));
+}
+// Whether this cell shows layer k: its share of the cells, cut per cell.
+bool layerShows(int k, vec2 cell) {
+  float shown = layerShown(k);
+  return shown >= 1.0 || edgeThreshold(cell, vec2(13.0 + 7.0 * float(k), 29.0)) < shown;
+}`
+    : `// A steady program (compose.ts TURNS_GATE): no layer plays its own entrance or exit in it, so every
+// layer follows the scene's passage and shows in every cell.
+float layerIn(int k) {
+  return passageIn();
+}
+float layerOut(int k) {
+  return passageOut();
+}
+float layerShown(int k) {
+  return 1.0;
+}
+bool layerShows(int k, vec2 cell) {
+  return true;
+}`;
+}
+/**
+ * The whole composed program's own GLSL: the World, the prelude, the shared and the layers' GLSL, the
+ * light elements of `kinds` (elements.ts elementKinds: none compiles nothing in), the entry.
+ */
+export function composedGlsl(a: Assembly, kinds: readonly number[]): string {
+  const { preset, layers, allocation, turns } = a;
+  const elements = kinds.length > 0;
+  const rig = preset.rig;
+  const grade = preset.grade;
+  const fly = preset.flyway;
+  const ground = layers.findIndex(
+    ({ def }) => def.role === "ground" && def.passes.ground !== undefined,
+  );
+  const specks = layers.filter(
+    ({ def }) => allocation.specks[def.id] !== undefined && def.passes.speck !== undefined,
+  );
+  const stretched = new Set(
+    layers.filter(({ def }) => def.space.stretch === true).map(({ def }) => def.id),
+  );
+  const shelter = a.claims.some((claim) => (claim.shelter ?? 0) > 0);
+  const shared = new Map<string, { glsl: string; begin: string | undefined }>();
+  for (const { code } of layers)
+    for (const chunk of code.shared ?? [])
+      if (!shared.has(chunk.id))
+        shared.set(chunk.id, { glsl: chunk.glsl(rig), begin: chunk.begin });
+  const triggers = Object.entries(a.triggers)
+    .map(([key, slot]) => `const int TRIGGER_${key} = ${slot};`)
+    .join("\n");
+  const n = Math.max(1, layers.length);
+  const passage =
+    rig.passage?.glsl ??
+    "float rigLift() {\n  return 0.0;\n}\nfloat rigCut() {\n  return 0.0;\n}\n";
+  const falling = allocation.falling;
+  const speckDraw =
+    specks.length === 0 && falling === undefined
+      ? ""
+      : `
+  // 7. The shared speck map, against what stands above the floor.
+  bool speck = false;
+  {
+    ivec2 ic = ivec2(cell);
+    ivec2 size = textureSize(uSim${SPECK_SLOT}, 0);
+    if (${simOn(SPECK_SLOT)} > 0.5 && ic.x < size.x && ic.y < size.y) {
+      vec2 tex = texelFetch(uSim${SPECK_SLOT}, ic, 0).rg;
+      int code = int(tex.r * 255.0 + 0.5);
+      float zSpeck = tex.g * 255.0 / ${glslFloat(SPECK_DEPTH_STEP)};
+      if (code > 0 && zSpeck < c.zs) {
+${specks
+  .map(({ def }) => {
+    const k = layers.findIndex((on) => on.def === def);
+    const base = allocation.specks[def.id] ?? 0;
+    const count = def.data?.specks ?? 0;
+    return `        if (code > ${base} && code <= ${base + count}${turns ? ` && shows[${k}]` : ""}) {
+          c.col = ${def.passes.speck}(code - ${base}, c.col, x);
+          c.z = zSpeck;
+          speck = true;
+        }`;
+  })
+  .join("\n")}${
+          falling === undefined
+            ? ""
+            : `
+        if (code > ${falling.base} && code <= ${falling.base + falling.count}) {
+          c.col = fallingSpeck(code - ${falling.base}, c.col, zSpeck, x);
+          c.z = zSpeck;
+          speck = true;
+        }`
+        }
+      }
+    }
+  }
+`;
+  const round = grade.vignetteRound;
+  const vignette =
+    grade.vignette === undefined
+      ? ""
+      : round === undefined
+        ? `  c.col *= 1.0 - ${glslFloat(grade.vignette)} * smoothstep(0.7, 1.4, length((uv - 0.5) * vec2(1.0, 0.9)) * 1.5);\n`
+        : `  c.col *= 1.0 - ${glslFloat(grade.vignette)} * smoothstep(${glslFloat(round.from)}, ${glslFloat(round.to)}, length((uv - 0.5) * vec2(x.aspect, 1.0) * ${glslFloat(round.scale)}));\n`;
+  const exposure =
+    grade.exposure === undefined
+      ? ""
+      : `  c.col = clamp(c.col * ${glslFloat(grade.exposure)}, 0.0, 1.0);\n`;
+  // The backdrop's say over the rain and snow: their thinning, the air the far rain fuses into, and
+  // the axes a rig that is not level sees them through.
+  const backdrop = layers.find(({ def }) => def.role === "backdrop")?.def.precip;
+  const rainAir = backdrop?.air === undefined ? "x.air.fog" : `${backdrop.air}(x)`;
+  const thin =
+    backdrop?.thin === undefined
+      ? undefined
+      : `vec2(${glslFloat(backdrop.thin[0])}, ${glslFloat(backdrop.thin[1])})`;
+  const under = `  vec2 under = vec2((uv.x - 0.5) * x.aspect * min(c.z, x.landZ) / RIG_FOCAL, min(c.z, x.landZ));\n`;
+  const sheltered = `${thin === undefined ? "" : `${thin} * `}vec2(1.0 - shelterAt(under, x))`;
+  const precip =
+    backdrop?.seen !== undefined
+      ? `${shelter ? under : ""}  mat3 rainAxes;
+  mat3 snowAxes;
+  ${backdrop.seen}(x, rainAxes, snowAxes);
+  worldPrecipAxes(x.w, x.v, rainAxes, snowAxes, ${shelter ? sheltered : (thin ?? "vec2(1.0)")}, ${rainAir}, x.air.drop, c.z, c.col, c.accent);`
+      : shelter
+        ? `${under}  worldPrecipThinned(x.w, x.v, ${rainAir}, x.air.drop, c.z, ${sheltered}, c.col, c.accent);`
+        : thin === undefined
+          ? `  worldPrecip(x.w, x.v, ${rainAir}, x.air.drop, c.z, c.col, c.accent);`
+          : `  worldPrecipThinned(x.w, x.v, ${rainAir}, x.air.drop, c.z, ${thin}, c.col, c.accent);`;
+  const shaded = layers.some(({ def }) => def.passes.shade !== undefined);
+  const paper =
+    grade.ink.paper === undefined
+      ? ""
+      : `, vec2(${glslFloat(grade.ink.paper[0])}, ${glslFloat(grade.ink.paper[1])})`;
+  const shade = `shadeOf(c.col, inkOf(c.col, ${glslFloat(grade.ink.gain)}, ${glslFloat(grade.ink.gamma)}${paper}), clamp(c.accent, 0.0, 1.0))`;
+  // Every program samples the composer's row 0 right after the begins and uses what it read to the
+  // end: one that draws turns for its cut per cell (`shows`), a steady one its first texel
+  // (`heldTurn`), spent at the grade on a test no texel passes (row 0 holds -1 or a share 0..1, and
+  // -1 without the atlas). Under SwiftShader a sample there whose value lives across the passes
+  // keeps their code cheaper: without it skyward's steady program costs 18% more, bees' 16%.
+  return `
+${worldGlsl}
+// ---- the composer (composer/glsl.ts): preset ${preset.id}, layers ${layers.map(({ def }) => def.id).join(", ")} ----
+const float RIG_HORIZON = ${glslFloat(rig.horizon)};
+const float RIG_FOCAL = ${glslFloat(rig.focal)};
+const float RIG_EYE = ${glslFloat(rig.eye)};
+const float RIG_TURN = ${glslFloat(rig.turn)};
+// Half the width of the narrowest frame laid out as itself (minAspect): wider frames stretch.
+const float RIG_STAGE = ${glslFloat(0.5 * rig.minAspect)};
+const vec4 WORLD_METEOR_FIELD = vec4(${preset.meteors.map(glslFloat).join(", ")});
+${triggers}
+${passage}${gustGlsl(a.gust.slot, a.gust.shape)}${STRUCTS}${lightGlsl(grade, rig.turn)}${claimsGlsl(
+    a.claims,
+    stretched,
+    layers.flatMap(({ def }) => def.casters ?? []),
+  )}
+${turnsGlsl(turns)}
+${accessorsGlsl(layers, allocation)}${falling === undefined ? "" : fallingGlsl(falling)}
+Ctx composerCtx(vec2 uv, vec2 cell) {
+  Ctx x;
+${rig.passage?.shift === true ? "  // The passage's tilt: the world read lower in uv (rigShift, 0 at rest).\n  uv.y += rigShift();\n" : ""}  x.uv = uv;
+  x.cell = cell;
+  x.aspect = uRes.x / uRes.y;
+  x.aa = 1.0 / uRes.y;
+  x.tm = uMotionTime;
+  x.lift = rigLift();
+  x.eye = RIG_EYE + x.lift;
+  x.moving = rigCut() > edgeThreshold(cell, vec2(41.0, 17.0));
+  x.stretch = max(0.5 * x.aspect, RIG_STAGE) / RIG_STAGE;
+  x.w = worldAt(TRIGGER_meteors, TRIGGER_lightning);
+  x.w.seed = K_seed * 0.37;
+  x.v = worldView(uv, RIG_HORIZON, RIG_FOCAL, x.eye, RIG_TURN, 1.0);
+  x.zg = uv.y < RIG_HORIZON ? x.eye * RIG_FOCAL / (RIG_HORIZON - uv.y) : WORLD_FAR;
+  x.gust = gustWind();
+  x.light = composerLight(x.w);
+  x.air = Air(vec3(0.0), vec3(0.0), vec3(0.0), vec3(0.0), 0.0, 0.0, 0.0);
+  x.groundTo = RIG_HORIZON;
+  x.landZ = WORLD_FAR;
+  return x;
+}
+${floorGlsl(preset.floor, rig.pitch !== 0)}
+${[...shared.values()].map((chunk) => chunk.glsl).join("\n")}
+${layers.map(({ def, code }) => a.rewrite(def, code.glsl(rig))).join("\n")}
+${elements ? elementsGlsl(kinds, rig.pitch !== 0) : ""}${lightsGlsl(layers, elements)}${mirrorGlsl(layers, preset)}
+Shade ${COMPOSER_ENTRY}(vec2 uv, vec2 cell, float t) {
+  // 1. The context, then each shared part's and each layer's own state for this cell.
+  Ctx x = composerCtx(uv, cell);
+${begins(layers)}
+${
+  turns
+    ? `  // Which cells show each layer: every one at rest, its share while it enters or leaves.
+  bool shows[${n}];
+${layers.map((_, k) => `  shows[${k}] = layerShows(${k}, cell);`).join("\n")}\n`
+    : `  // Row 0's first texel, spent at the grade (see composedGlsl).
+  float heldTurn = ${simOn(ATLAS_SLOT)} > 0.5 ? texelFetch(uSim${ATLAS_SLOT}, ivec2(0, 0), 0).x : -1.0;\n`
+}  Cell c = Cell(vec3(0.0), WORLD_FAR, WORLD_FAR, 0.0);
+  // 2. The sky.
+${passCalls(layers, turns, "sky", "x, c", (def) => def.role === "backdrop")}
+  // 3. The far band.
+${passCalls(layers, turns, "far", "x, c")}${passCalls(layers, turns, "farVeil", "x, c")}
+  // 4. The floor: the ground layer's, else the plain one.
+${ground < 0 ? "  composerFloor(x, c);\n" : `${turns ? `  if (!shows[${ground}]) composerFloor(x, c);\n` : ""}${passCalls(layers, turns, "ground", "x, c", (def) => def.role === "ground")}`}
+  // 5. The middle band, the World's birds among it, its veils.
+${passCalls(layers, turns, "middle", "x, c")}  float zBird = c.z;
+  worldBirds(x.w, x.v, WorldFlyway(vec2(${glslFloat(fly.depth[0])}, ${glslFloat(fly.depth[1])}), vec2(RIG_HORIZON + ${glslFloat(fly.above)}, ${glslFloat(fly.top)}), vec2(K_seed * 0.37, ${glslFloat(fly.seed)}), ${glslFloat(fly.skim)}, ${glslFloat(fly.spread)}), x.air.haze, ${glslFloat(fly.ext)} + x.air.rain${fly.dust === undefined ? "" : ` + ${glslFloat(fly.dust)} * x.air.dust`}, c.col, zBird, c.accent);
+  if (zBird < c.z) {
+    c.z = zBird;
+    c.zs = zBird;
+  }
+${elements ? "  composerBodies(x, c);\n" : ""}${passCalls(layers, turns, "middleVeil", "x, c")}
+  // 6. The front band.
+${passCalls(layers, turns, "front", "x, c")}${passCalls(layers, turns, "frontVeil", "x, c")}${speckDraw}
+  // 8. The air's own light.
+${passCalls(layers, turns, "air", "x, c")}
+  // 9. The World's fog, then its rain and snow, at the depth of what the cell shows.
+  worldFog(x.w, x.v, x.air.fog, c.z, c.col, c.accent);
+${passCalls(layers, turns, "glow", "x, c")}${precip}
+  // 10. The grade.
+${turns ? "" : "  if (heldTurn < -1.5) c.col = vec3(0.0);\n"}${vignette}${exposure}${speckDraw === "" ? "" : "  if (speck) c.col = snapLevel(c.col);\n"}${shaded ? `  Shade o = ${shade};\n${passCalls(layers, turns, "shade", "x, c, o", () => true, ["Shade", "o"])}  return o;` : `  return ${shade};`}
+}
+`;
+}

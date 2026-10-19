@@ -1,0 +1,6 @@
+---
+section: Added
+issue: 1082
+---
+
+The landing concept lab's night sky is one section of named controls under a small drawing of it: the moon picked by phase from drawn moons, the stars by density, and the Milky Way, aurora, shooting stars and two new shared sky components, constellations with their stick figures fading in by amount and planets, which sixteen scenes can now hang in their night sky: up to eight each, added, picked and removed as chips, each its own kind (Campfire's banded giant, a ringed giant, a cratered rock, an ocean world, a world with our own seasons, lava, crystal, an eye, a bubble) in its own palette, standing on a placement pad or orbiting so it rises, crosses the sky and sets, lit by the scene's sun if asked, with its own spin, ring, moons, aurora and city lights, the whole list in one short link key; a "See it at night" button shows while the scene is in daylight; both parts are compiled into a scene's shader only while out, so a sky without them renders as fast as before; the time dial's day cycle and the year's cycle are now one speed slider each, still at the left end, with readouts such as "a day in 4 min".

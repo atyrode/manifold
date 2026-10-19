@@ -1,0 +1,24 @@
+name: Install the landing lab's pinned Chromium
+description: >-
+  Chrome for Testing at one pinned, checksum-verified version, handed to scripts/cdp.ts as
+  MANIFOLD_CHROMIUM, so the lab's software-WebGL checks and renders do not move with the runner's
+  Chrome.
+
+runs:
+  using: composite
+  steps:
+    - name: Install Chrome for Testing
+      shell: bash
+      env:
+        # The branch the dev hosts run (148.0.7778); bump the version and its checksum together.
+        VERSION: "148.0.7778.178"
+        SHA256: "05b6843867b4ee40f280327b748397a158b84ccbe20b94c3e89740d15422988f"
+      run: |
+        archive="${RUNNER_TEMP:?}/chrome-linux64.zip"
+        curl --fail --silent --show-error --location --retry 3 --output "$archive" \
+          "https://storage.googleapis.com/chrome-for-testing-public/${VERSION}/linux64/chrome-linux64.zip"
+        echo "${SHA256}  ${archive}" | sha256sum --check --strict -
+        unzip -q -o "$archive" -d "$RUNNER_TEMP"
+        chromium="$RUNNER_TEMP/chrome-linux64/chrome"
+        "$chromium" --version
+        echo "MANIFOLD_CHROMIUM=$chromium" >> "$GITHUB_ENV"

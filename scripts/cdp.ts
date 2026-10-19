@@ -6,11 +6,12 @@
  * the driver and owns bounded protocol-operation deadlines.
  */
 import { existsSync, rmSync } from "node:fs";
-import { reserveLoopbackPort, sleep } from "./gate-lib.ts";
+import { connect, type Socket } from "node:net";
+import { sleep } from "./gate-lib.ts";
 
 interface CdpFrame {
   id?: number;
-  /** Set on EVENTS rather than command replies; the two arrive on one socket. */
+  /** Set on EVENTS rather than command replies; the two arrive on one pipe. */
   method?: string;
   params?: Record<string, unknown>;
   result?: Record<string, unknown>;
@@ -41,15 +42,61 @@ export interface DragPayload {
 /** Bounded so a chatty page cannot grow the driver without limit across a long gate. */
 const MAX_PAGE_MESSAGES = 500;
 const MAX_PAGE_MESSAGE_CHARS = 2_000;
-/** One devtools readiness probe; the launch loop retries within its own overall deadline. */
-const DEVTOOLS_PROBE_MS = 2_000;
 /**
- * Opening the advertised endpoint needs Chromium's busy main thread. Hosted runners have been
- * measured taking ~44s just to advertise it while D-Bus calls stall that thread (#837), so this
- * bound matches the launch readiness budget rather than tightening it: it exists to end an
- * infinite wait with diagnostics, not to fail a slow-but-progressing launch.
+ * Chromium answers its first command only once its busy main thread gets to it. Hosted runners
+ * have been measured taking ~44s just to come up while D-Bus calls stall that thread (#837), so
+ * this bound exists to end an infinite wait with diagnostics, not to fail a slow-but-progressing
+ * launch.
  */
-const CDP_SOCKET_OPEN_MS = 60_000;
+const LAUNCH_MS = 60_000;
+const COMMAND_MS = 30_000;
+
+/**
+ * Chromium's parent: a POSIX shell in a session of its own, given the profile, the private bus's
+ * pid and socket (empty without one), then Chromium's command line. Chromium quits when the
+ * driver's end of its DevTools pipe closes, and that happens however the driver ends: `close()`,
+ * an uncaught error, SIGINT, SIGTERM, or a harness timeout's SIGKILL. The shell then stops the
+ * private bus (only while that pid is still the daemon on this launch's socket) and removes the
+ * profile and the socket, so nothing a launch made outlives its driver. Its own session keeps
+ * signals sent to the driver's process group (a terminal's ^C, `timeout`) from killing it before
+ * it has cleaned up.
+ */
+const SUPERVISOR = `profile=$1 bus=$2 socket=$3
+shift 3
+"$@"
+status=$?
+if [ -n "$bus" ] && grep -qF -- "$socket" "/proc/$bus/cmdline" 2>/dev/null; then kill "$bus"; fi
+rm -rf -- "$profile"
+if [ -n "$socket" ]; then rm -f -- "$socket"; fi
+exit "$status"`;
+
+/** The last launch's stamp, so two browsers launched within one millisecond differ. */
+let lastLaunch = 0;
+
+/** `<pid>-<ms>`, unique to one launch on this machine: names its profile and its bus socket. */
+function launchStamp(): string {
+  lastLaunch = Math.max(Date.now(), lastLaunch + 1);
+  return `${String(process.pid)}-${String(lastLaunch)}`;
+}
+
+/**
+ * A rejection that may come before anyone waits for it, handled up front: a page lost while
+ * nothing raced {@link Browser.lost} must not end the process as an unhandled rejection.
+ */
+function lossSignal(): PromiseWithResolvers<never> {
+  const signal = Promise.withResolvers<never>();
+  void signal.promise.catch(() => {});
+  return signal;
+}
+
+/**
+ * The page a {@link Browser} drives is gone: its renderer crashed or was killed, it detached, or
+ * Chromium exited. {@link Browser.lost} rejects with it and so does every command from then on,
+ * so a caller can tell a dead page from a busy one.
+ */
+export class PageLostError extends Error {
+  override readonly name = "PageLostError";
+}
 
 /** Renders one CDP `Runtime.RemoteObject` as the text a reader wants in a dump. */
 function describeRemoteObject(value: unknown): string {
@@ -66,17 +113,42 @@ function describeRemoteObject(value: unknown): string {
   return object.description ?? object.unserializableValue ?? object.type ?? "?";
 }
 
+/** How {@link Browser.launch} starts Chromium. */
+export interface LaunchOptions {
+  /** Pages in an off-the-record browser context. */
+  readonly incognito?: boolean;
+  /** WebGL rendered in software (SwiftShader) rather than no GPU at all. */
+  readonly softwareWebgl?: boolean;
+}
+
 /** Just enough CDP to navigate, evaluate, click, type, and drive real pointer gestures. */
 export class Browser {
-  private socket: WebSocket | null = null;
+  /** The driver's ends of Chromium's DevTools pipe: commands to its fd 3, frames from its fd 4. */
+  private toBrowser: Socket | null = null;
+  private fromBrowser: Socket | null = null;
+  /** The supervisor shell ({@link SUPERVISOR}), Chromium's parent. */
   private proc: Bun.Subprocess | null = null;
   private privateBus: Bun.Subprocess | null = null;
   private privateBusSocket: string | null = null;
-  private transientProfile: string | null = null;
+  private profile: string | null = null;
+  /** Set by {@link close}: the pipe closing then is no loss. */
+  private closing = false;
+  /** Counts launches, so a closing pipe of an earlier launch never loses a later one's page. */
+  private launches = 0;
+  /** What the last launch was given, for {@link relaunch}. */
+  private launchOptions: LaunchOptions = {};
+  /** `Browser.getVersion`'s product of the running browser ("HeadlessChrome/148.0.…"). */
+  private launchedProduct = "";
+  /** Why the page is gone, once it is (see {@link lost}). */
+  private lostReason: string | null = null;
+  private lostSignal = lossSignal();
   private nextId = 1;
   /** DevTools protocol session (a CDP connection — canon "session", never a PTY). */
   private sessionId = "";
-  private readonly pending = new Map<number, (frame: CdpFrame) => void>();
+  private readonly pending = new Map<
+    number,
+    { readonly method: string; readonly reply: PromiseWithResolvers<CdpFrame> }
+  >();
   private readonly messages: PageMessage[] = [];
   /**
    * Extra CDP events a caller asked for, beyond the three {@link capture} files by default.
@@ -84,7 +156,7 @@ export class Browser {
    * The budget gate is the reason this exists: what it measures — requests by resource,
    * socket frames — is only observable as a STREAM of protocol events, and reading it out of
    * the page instead would mean instrumenting `fetch` and `WebSocket` in the very code under
-   * measurement. The driver already owns the socket; it just never let anyone listen.
+   * measurement. The driver already owns the pipe; it just never let anyone listen.
    */
   private readonly listeners = new Map<string, ((params: Record<string, unknown>) => void)[]>();
 
@@ -111,6 +183,21 @@ export class Browser {
     };
   }
 
+  /**
+   * Never resolves; rejects with a {@link PageLostError} once the page is gone: its renderer
+   * crashed or was killed (earlyoom picks renderers first), it detached, or Chromium exited.
+   * Commands fail at once from then on by themselves; a caller waiting for anything else (a page
+   * binding, an event) races this, so a dead page fails it at once rather than at its deadline.
+   */
+  get lost(): Promise<never> {
+    return this.lostSignal.promise;
+  }
+
+  /** The running browser's product and version, as `Browser.getVersion` names them. */
+  get product(): string {
+    return this.launchedProduct;
+  }
+
   static detect(): string {
     const explicit = process.env["MANIFOLD_CHROMIUM"];
     if (explicit !== undefined && explicit !== "") return explicit;
@@ -124,14 +211,15 @@ export class Browser {
   /**
    * Chromium's D-Bus client auto-launches a session bus when no usable address exists. That
    * fork/exec path has stalled headless startup on hosted Linux, while an invalid address is
-   * retried by current Chromium. Give each browser a real, disposable bus instead.
+   * retried by current Chromium. Give each browser a real, disposable bus instead; Chromium's
+   * supervisor stops it once Chromium has exited, so it does not outlive a killed driver either.
    */
-  private async startPrivateBus(port: number): Promise<string | null> {
+  private async startPrivateBus(stamp: string): Promise<string | null> {
     if (process.platform !== "linux") return null;
     const daemon = Bun.which("dbus-daemon");
     if (daemon === null) throw new Error("no dbus-daemon available for isolated Chromium launch");
 
-    const socket = `/tmp/manifold-verify-dbus-${String(port)}-${String(Date.now())}`;
+    const socket = `/tmp/manifold-verify-dbus-${stamp}`;
     rmSync(socket, { force: true });
     const bus = Bun.spawn(
       [daemon, "--session", "--nofork", "--nopidfile", `--address=unix:path=${socket}`],
@@ -181,17 +269,17 @@ export class Browser {
   }
 
   /**
-   * Spawns a headless Chromium on a devtools port the kernel just confirmed free
-   * ({@link reserveLoopbackPort}). No caller picks the port: the fixed per-gate bands and
-   * the random picks that preceded this collided the moment two checkouts ran the gate at
-   * once, and the driver is the one place that turns a port into a Chromium flag (#198).
+   * Spawns a headless Chromium driven over `--remote-debugging-pipe` rather than a devtools port:
+   * there is no port for two checkouts to collide on (#198) and no endpoint to probe for
+   * readiness (#835). Chromium quits when the driver's end of the pipe closes, so it cannot
+   * outlive the driver, and its supervisor ({@link SUPERVISOR}) then removes the profile.
    */
-  async launch(
-    options: { readonly incognito?: boolean; readonly softwareWebgl?: boolean } = {},
-  ): Promise<void> {
+  async launch(options: LaunchOptions = {}): Promise<void> {
+    this.launchOptions = options;
+    const generation = ++this.launches;
     const binary = Browser.detect();
-    const port = reserveLoopbackPort();
-    const busAddress = await this.startPrivateBus(port);
+    const stamp = launchStamp();
+    const busAddress = await this.startPrivateBus(stamp);
     // Do not inherit runner buses or give Chromium an invalid endpoint. A private D-Bus daemon
     // prevents libdbus auto-launch while letting its clients fail missing-service requests
     // normally. Non-Linux launchers retain the previous non-connectable sentinel.
@@ -200,13 +288,23 @@ export class Browser {
       DBUS_SESSION_BUS_ADDRESS: busAddress ?? "unix:path=/dev/null",
       DBUS_SYSTEM_BUS_ADDRESS: busAddress ?? "unix:path=/dev/null",
     };
-    const profile = `/tmp/manifold-verify-${String(port)}-${String(Date.now())}`;
-    this.transientProfile = options.incognito ? profile : null;
+    const profile = `/tmp/manifold-verify-${stamp}`;
+    this.profile = profile;
+    this.closing = false;
+    this.lostReason = null;
+    this.lostSignal = lossSignal();
     const proc = Bun.spawn(
       [
+        "/bin/sh",
+        "-c",
+        SUPERVISOR,
+        "sh",
+        profile,
+        this.privateBus === null ? "" : String(this.privateBus.pid),
+        this.privateBusSocket ?? "",
         binary,
         "--headless=new",
-        `--remote-debugging-port=${String(port)}`,
+        "--remote-debugging-pipe",
         `--user-data-dir=${profile}`,
         "--no-first-run",
         "--no-sandbox",
@@ -217,14 +315,14 @@ export class Browser {
         "--window-size=1440,900",
         "about:blank",
       ],
-      { stdout: "ignore", stderr: "pipe", env },
+      { detached: true, stdio: ["ignore", "ignore", "pipe", "socket-fd", "socket-fd"], env },
     );
     this.proc = proc;
 
     // Keep a bounded stderr tail: launch failures on CI runners are
     // undiagnosable without it (issue #44).
     let stderrTail = "";
-    void (async () => {
+    const stderrDrained = (async () => {
       const decoder = new TextDecoder();
       const reader = proc.stderr.getReader();
       for (;;) {
@@ -235,63 +333,56 @@ export class Browser {
     })();
     const launched = Date.now();
     const diagnostics = (): string =>
-      `${binary} (devtools port ${String(port)}, ${String(Date.now() - launched)}ms after launch)${stderrTail === "" ? "" : `\nchromium stderr tail:\n${stderrTail}`}`;
+      `${binary} (profile ${profile}, ${String(Date.now() - launched)}ms after launch)${stderrTail === "" ? "" : `\nchromium stderr tail:\n${stderrTail}`}`;
 
-    let endpoint = "";
-    const deadline = launched + 60_000;
-    for (;;) {
-      if (proc.exitCode !== null) {
-        throw new Error(
-          `chromium exited with code ${String(proc.exitCode)} before its devtools endpoint came up: ${diagnostics()}`,
-        );
-      }
-      try {
-        // Chromium can accept a devtools connection before answering it. Bound each probe so
-        // one stalled response cannot silently outlive the launch deadline below (#835).
-        const res = await fetch(`http://127.0.0.1:${String(port)}/json/version`, {
-          signal: AbortSignal.timeout(
-            Math.max(1, Math.min(DEVTOOLS_PROBE_MS, deadline - Date.now())),
-          ),
-        });
-        const body = (await res.json()) as { webSocketDebuggerUrl?: string };
-        endpoint = body.webSocketDebuggerUrl ?? "";
-        if (endpoint !== "") break;
-      } catch {
-        // devtools endpoint not accepting connections yet
-      }
-      if (Date.now() > deadline) {
-        throw new Error(`timed out waiting for chromium devtools endpoint: ${diagnostics()}`);
-      }
-      await sleep(150);
+    const [, , , commandFd, frameFd] = proc.stdio;
+    if (typeof commandFd !== "number" || typeof frameFd !== "number") {
+      throw new Error(`no devtools pipe was opened for chromium: ${diagnostics()}`);
     }
+    // Bun adopts inherited sockets through connect({fd}), not new Socket({fd}).
+    // node:net's declarations do not yet include this Bun overload.
+    const adopt = connect as unknown as (options: { readonly fd: number }) => Socket;
+    const toBrowser = adopt({ fd: commandFd });
+    const fromBrowser = adopt({ fd: frameFd });
+    this.toBrowser = toBrowser;
+    this.fromBrowser = fromBrowser;
+    // A write racing Chromium's exit fails on the socket; the close below says why.
+    toBrowser.on("error", () => {});
+    fromBrowser.on("error", () => {});
+    // Each frame is one JSON text ended by a NUL. The utf8 encoding hands over text whole even
+    // where a chunk splits a character.
+    let partial = "";
+    fromBrowser.setEncoding("utf8");
+    fromBrowser.on("data", (data: string | Buffer) => {
+      const chunk = data.toString();
+      let start = 0;
+      for (let end = chunk.indexOf("\0"); end !== -1; end = chunk.indexOf("\0", start)) {
+        this.dispatch(JSON.parse(partial + chunk.slice(start, end)) as CdpFrame);
+        partial = "";
+        start = end + 1;
+      }
+      partial += chunk.slice(start);
+    });
+    // The pipe closes only when Chromium has gone. Unless close() did that, it is a loss: wait
+    // briefly for the exit code and the last of stderr, which say why.
+    fromBrowser.once("close", () => {
+      if (this.closing) return;
+      void Promise.race([Promise.all([proc.exited, stderrDrained]), sleep(2_000)]).then(() => {
+        // A browser relaunched meanwhile is not this one.
+        if (generation !== this.launches) return;
+        const code = proc.exitCode === null ? "" : ` with code ${String(proc.exitCode)}`;
+        this.lose(`chromium exited${code}: ${diagnostics()}`);
+      });
+    });
 
-    const socket = new WebSocket(endpoint);
-    this.socket = socket;
-    const opened = Promise.withResolvers<void>();
-    socket.onopen = () => opened.resolve();
-    socket.onerror = () => opened.reject(new Error(`cdp socket failed: ${diagnostics()}`));
-    socket.onclose = () =>
-      opened.reject(new Error(`cdp socket closed before opening: ${diagnostics()}`));
-    const openTimer = setTimeout(
-      () => opened.reject(new Error(`timed out opening cdp socket: ${diagnostics()}`)),
-      CDP_SOCKET_OPEN_MS,
-    );
     try {
-      await opened.promise;
-    } finally {
-      clearTimeout(openTimer);
+      const version = await this.command("Browser.getVersion", {}, false, LAUNCH_MS);
+      this.launchedProduct = String(version.result?.["product"] ?? "");
+    } catch (error) {
+      // A timeout says nothing on its own; an exit (stderr included) or close() says why.
+      if (this.lostReason !== null || this.closing) throw error;
+      throw new Error(`timed out waiting for chromium's devtools pipe: ${diagnostics()}`);
     }
-    socket.onmessage = (event: MessageEvent) => {
-      if (typeof event.data !== "string") return;
-      const frame = JSON.parse(event.data) as CdpFrame;
-      // Events carry a method and no id; command replies carry an id and no method.
-      if (frame.id === undefined) {
-        this.capture(frame);
-        return;
-      }
-      this.pending.get(frame.id)?.(frame);
-      this.pending.delete(frame.id);
-    };
 
     // A disposable verifier may handle admission credentials that must stay in memory.
     // Use Chromium's actual off-the-record storage, not a replacement localStorage.
@@ -315,6 +406,9 @@ export class Browser {
     // Browser-side log entries (blocked requests, failed websockets, CSP refusals) are
     // invisible to `Runtime` yet are exactly what a silent transport failure looks like.
     await this.send("Log.enable", {});
+    // A renderer that crashes or is killed (earlyoom picks renderers first) is reported only
+    // through Inspector; without it the page would just stop answering.
+    await this.send("Inspector.enable", {});
   }
 
   async send(
@@ -322,16 +416,72 @@ export class Browser {
     params: Record<string, unknown>,
     withSession = true,
   ): Promise<CdpFrame> {
-    const socket = this.socket;
-    if (socket === null) throw new Error("browser not launched");
+    return await this.command(method, params, withSession, COMMAND_MS);
+  }
+
+  private async command(
+    method: string,
+    params: Record<string, unknown>,
+    withSession: boolean,
+    ms: number,
+  ): Promise<CdpFrame> {
+    const pipe = this.toBrowser;
+    if (pipe === null) throw new Error(this.closing ? "browser closed" : "browser not launched");
+    if (this.lostReason !== null) throw new PageLostError(`cdp ${method}: ${this.lostReason}`);
     const id = this.nextId++;
-    const { promise, resolve, reject } = Promise.withResolvers<CdpFrame>();
-    this.pending.set(id, resolve);
+    const reply = Promise.withResolvers<CdpFrame>();
+    this.pending.set(id, { method, reply });
     const frame: Record<string, unknown> = { id, method, params };
     if (withSession && this.sessionId !== "") frame["sessionId"] = this.sessionId;
-    socket.send(JSON.stringify(frame));
-    const timer = setTimeout(() => reject(new Error(`cdp ${method} timed out`)), 30_000);
-    return await promise.finally(() => clearTimeout(timer));
+    pipe.write(`${JSON.stringify(frame)}\0`);
+    const timer = setTimeout(() => {
+      this.pending.delete(id);
+      reply.reject(new Error(`cdp ${method} timed out`));
+    }, ms);
+    return await reply.promise.finally(() => clearTimeout(timer));
+  }
+
+  /** Hands a command's reply to its waiter, and an event to {@link capture} and {@link watch}. */
+  private dispatch(frame: CdpFrame): void {
+    // Events carry a method and no id; command replies carry an id and no method.
+    if (frame.id === undefined) {
+      this.capture(frame);
+      this.watch(frame);
+      return;
+    }
+    this.pending.get(frame.id)?.reply.resolve(frame);
+    this.pending.delete(frame.id);
+  }
+
+  /** Turns the events that say the page is gone into a {@link lose loss}. */
+  private watch(frame: CdpFrame): void {
+    const params = frame.params ?? {};
+    if (frame.method === "Inspector.targetCrashed") {
+      this.lose(
+        "renderer crashed or was killed (earlyoom picks renderers first; see journalctl and dmesg)",
+      );
+    } else if (frame.method === "Inspector.detached") {
+      this.lose(`page detached: ${String(params["reason"] ?? "no reason given")}`);
+    } else if (
+      frame.method === "Target.detachedFromTarget" &&
+      params["sessionId"] === this.sessionId
+    ) {
+      this.lose("page detached from its devtools session");
+    }
+  }
+
+  /**
+   * Records, once, why the page is gone: {@link lost} rejects with it, and so does every command
+   * in flight and every later one, instead of each waiting out its own deadline.
+   */
+  private lose(reason: string): void {
+    if (this.lostReason !== null || this.closing) return;
+    this.lostReason = reason;
+    this.lostSignal.reject(new PageLostError(reason));
+    for (const { method, reply } of this.pending.values()) {
+      reply.reject(new PageLostError(`cdp ${method}: ${reason}`));
+    }
+    this.pending.clear();
   }
 
   /**
@@ -673,24 +823,51 @@ export class Browser {
     await this.send("Page.setWebLifecycleState", { state });
   }
 
+  /**
+   * Closes this browser, whatever became of its page, and launches a fresh one as the last
+   * {@link launch} did: a driver goes on after a {@link PageLostError} with a new page. What was
+   * added through the old page's session (bindings, scripts, emulation) went with it; {@link on}
+   * subscriptions and the page messages not yet drained stay.
+   */
+  async relaunch(): Promise<void> {
+    await this.close();
+    await this.launch(this.launchOptions);
+  }
+
   async close(): Promise<void> {
-    this.socket?.close();
+    this.closing = true;
+    for (const { method, reply } of this.pending.values()) {
+      reply.reject(new Error(`cdp ${method}: browser closed`));
+    }
+    this.pending.clear();
+    // Chromium quits when its end of the pipe closes, as it does when the driver dies without
+    // getting here; its supervisor then removes the profile.
+    this.toBrowser?.destroy();
+    this.fromBrowser?.destroy();
+    this.toBrowser = null;
+    this.fromBrowser = null;
     const proc = this.proc;
-    proc?.kill();
     // The private bus must outlive its Chromium client. Stopping it first can
     // abort a still-running browser and keep the page's sockets alive during
     // the core dump, including for ordinary non-incognito launches.
     if (proc !== null) {
-      const timer = setTimeout(() => proc.kill("SIGKILL"), 5_000);
+      // The supervisor leads its own process group, so this reaches Chromium and its helpers.
+      const timer = setTimeout(() => {
+        try {
+          process.kill(-proc.pid, "SIGKILL");
+        } catch {
+          // the group has just exited
+        }
+      }, 5_000);
       try {
         await proc.exited;
       } finally {
         clearTimeout(timer);
       }
     }
-    if (this.transientProfile !== null) {
-      rmSync(this.transientProfile, { recursive: true, force: true });
-      this.transientProfile = null;
+    if (this.profile !== null) {
+      rmSync(this.profile, { recursive: true, force: true });
+      this.profile = null;
     }
     await this.closePrivateBus();
   }

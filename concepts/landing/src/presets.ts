@@ -1,0 +1,425 @@
+// Saved lab setups. `query` is the setup as the lab writes it (`canonicalSetup`: minimal, in its
+// knobs' order), so it loads as saved and the Scenes view marks it once loaded. A setup saved in
+// this browser or imported from a file is read in this build's keys, as a link is. `commit` is the
+// build the setup was made on: `/@<commit>/?<query>` replays it exactly, on that build's keys and
+// shader logic. A knob that changes kind or goes away must have the committed presets that set it
+// rewritten in the knobs that replace it, their commit moved to a build that has those
+// (presets.test.ts holds every preset to loading as itself). Add entries from the lab's "export"
+// output.
+
+export interface Preset {
+  name: string;
+  commit: string;
+  query: string;
+  savedAt: string;
+}
+
+export const presets: readonly Preset[] = [
+  {
+    name: "orbit · red ign (baseline)",
+    commit: "db4ca2e8",
+    query: "scene=orbit&dither=ign&levels=4&motion=0.45&accent=%23ff004e",
+    savedAt: "2026-10-13",
+  },
+  {
+    name: "Orbit · ringed planet",
+    commit: "f1ca6557",
+    query: "scene=orbit&captures=1&planetX=0&planetY=0&planet=0.35&moons=1&moons-amount=3&ring=1",
+    savedAt: "2026-10-15",
+  },
+  {
+    name: "Countryside · crops (baseline)",
+    commit: "6e72cac6",
+    query: "scene=country",
+    savedAt: "2026-10-14",
+  },
+  {
+    name: "Countryside · flower valley",
+    commit: "838e5bc0",
+    query:
+      "scene=country&time=0.58&clouds=0.25&season=0.375&seed=17&crops=0&woodland-amount=50&farmlandWildflowers=1&farmlandWildflowers-amount=100",
+    savedAt: "2026-10-16",
+  },
+  {
+    name: "Countryside · lavender rows",
+    commit: "838e5bc0",
+    query: "scene=country&season=0.375&crops=0&woodland-amount=50&lavender=1&lavender-amount=100",
+    savedAt: "2026-10-16",
+  },
+  {
+    name: "Countryside · sunflowers",
+    commit: "838e5bc0",
+    query:
+      "scene=country&season=0.375&crops=0&woodland-amount=50&sunflowers=1&sunflowers-amount=100",
+    savedAt: "2026-10-16",
+  },
+  {
+    name: "Countryside · mixed patchwork",
+    commit: "838e5bc0",
+    query:
+      "scene=country&season=0.375&crops-amount=30&woodland-amount=50&farmlandWildflowers=1&farmlandWildflowers-amount=28&lavender=1&lavender-amount=22&sunflowers=1",
+    savedAt: "2026-10-16",
+  },
+  {
+    name: "Countryside · woodland valley",
+    commit: "838e5bc0",
+    query:
+      "scene=country&time=0.64&birds=1&birds-amount=0.8&birdKind=4&season=0.6&crops-amount=40&woodland-amount=100&pasture=1&pasture-amount=60&farmlandPines=0.4",
+    savedAt: "2026-10-16",
+  },
+  {
+    name: "Countryside · riverside",
+    commit: "838e5bc0",
+    query:
+      "scene=country&time=0.72&birds=1&birds-amount=0.8&season=0.375&waterway-amount=1&starlings=1&crops-amount=65&woodland-amount=50&pasture=1&pasture-amount=35&cows=1&walkers=1&walkers-amount=0.7&carts=1",
+    savedAt: "2026-10-16",
+  },
+  {
+    name: "Countryside · wildwood",
+    commit: "838e5bc0",
+    query: "scene=country&time=0.64&season=0.6&crops=0&woodland-amount=100&farmlandPines=0.45",
+    savedAt: "2026-10-16",
+  },
+  {
+    name: "Countryside · grazing valley",
+    commit: "838e5bc0",
+    query:
+      "scene=country&season=0.375&verges=1&crops-amount=40&woodland-amount=20&pasture=1&pasture-amount=45&cows=0.7&herd=0.8",
+    savedAt: "2026-10-16",
+  },
+  {
+    name: "Countryside · flower country",
+    commit: "838e5bc0",
+    query:
+      "scene=country&time=0.6&season=0.375&crops-amount=25&woodland-amount=15&farmlandWildflowers=1&lavender=1&sunflowers=1",
+    savedAt: "2026-10-16",
+  },
+  {
+    name: "Countryside · market town at dusk",
+    commit: "838e5bc0",
+    query:
+      "scene=country&time=0.78&starlings=1&village-amount=26&hamlets-amount=3&farms-amount=8&walkers=1&walkers-amount=0.8&carts=1",
+    savedAt: "2026-10-16",
+  },
+  {
+    name: "Countryside · chalk M",
+    commit: "defa703a",
+    query: "scene=country&time=0.62&chalk=1",
+    savedAt: "2026-10-16",
+  },
+  {
+    name: "Swell · heavy swell",
+    commit: "838e5bc0",
+    query: "scene=swell&wind=0.6&height=0.8&relief=0.6",
+    savedAt: "2026-10-15",
+  },
+  {
+    name: "Swell · an island offshore",
+    commit: "124e7cd6",
+    query: "scene=swell&time=0.62&island=1",
+    savedAt: "2026-10-18",
+  },
+  {
+    name: "Pond · koi come to you",
+    commit: "f1ca6557",
+    query: "koi-amount=8&follow=1&eager=0.7",
+    savedAt: "2026-10-15",
+  },
+  {
+    name: "Waterfall · slot gorge",
+    commit: "e500c565",
+    query: "scene=falls&spray-amount=0.8&gorge=2",
+    savedAt: "2026-10-15",
+  },
+  {
+    name: "Waterfall · slot gorge at dusk",
+    commit: "f1ca6557",
+    query: "scene=falls&time=0.8&gorge=2",
+    savedAt: "2026-10-15",
+  },
+  {
+    name: "Waterfall · sandstone",
+    commit: "f1ca6557",
+    query: "scene=falls&gorge=1&flow=0.7",
+    savedAt: "2026-10-15",
+  },
+  {
+    name: "Marbling · riso rings",
+    commit: "f1ca6557",
+    query: "scene=marble&pattern=0&palette=2&practice=2",
+    savedAt: "2026-10-15",
+  },
+  {
+    name: "Frost · aurora over the cabin",
+    commit: "b860d9c5",
+    query: "scene=frost&time=0.93&moon-amount=0.5&snow=0&aurora=1&aurora-amount=0.8&outside=1",
+    savedAt: "2026-10-15",
+  },
+  {
+    name: "Frost · crescent and shooting stars",
+    commit: "f1ca6557",
+    query: "scene=frost&time=0.95&stars=0.8&moon-amount=0.25&meteors=1&meteors-amount=0.6&snow=0",
+    savedAt: "2026-10-15",
+  },
+  {
+    name: "Sill · quiet shelter",
+    commit: "d0701915",
+    query:
+      "scene=sill&rain=1&rain-amount=0.4&wind=0.05&curtain-amount=0.25&steam-amount=0.8&restless=0.1",
+    savedAt: "2026-10-15",
+  },
+  {
+    name: "Prism · clean Newton",
+    commit: "f1ca6557",
+    query: "scene=prism&dispersion=0.25&beam=1&eclipse=0&second=1&second-amount=0.1&reflections=0",
+    savedAt: "2026-10-15",
+  },
+  {
+    name: "Chladni plate · grit on brass",
+    commit: "f1ca6557",
+    query: "scene=chladni&tone=2&grainSize=1&sand=1",
+    savedAt: "2026-10-15",
+  },
+  {
+    name: "Shan shui · snow scroll",
+    commit: "f1ca6557",
+    query: "scene=shanshui&season=4&density=0.65&mist=0.65",
+    savedAt: "2026-10-15",
+  },
+  {
+    name: "Shan shui · autumn colours",
+    commit: "f1ca6557",
+    query: "scene=shanshui&season=3&wetness=0.25&mist=0.45",
+    savedAt: "2026-10-15",
+  },
+  {
+    name: "Shan shui · blue-green summer",
+    commit: "f1ca6557",
+    query: "scene=shanshui&palette=1&season=2",
+    savedAt: "2026-10-15",
+  },
+  {
+    name: "Fireflies · riverbank glow",
+    commit: "d925e429",
+    query: "scene=fireflies&habitat=1&density=0.8",
+    savedAt: "2026-10-15",
+  },
+  {
+    name: "Pearl · settling tank",
+    commit: "f1ca6557",
+    query: "scene=pearl&speed=0.4&drift=0.1&vorticity=0",
+    savedAt: "2026-10-15",
+  },
+  {
+    name: "Kelp forest · bull kelp",
+    commit: "f1ca6557",
+    query: "scene=kelp&species=1",
+    savedAt: "2026-10-15",
+  },
+  {
+    name: "Petri dish · holes",
+    commit: "f1ca6557",
+    query: "scene=petri&regime=7",
+    savedAt: "2026-10-15",
+  },
+  {
+    name: "Petri dish · spots",
+    commit: "f1ca6557",
+    query: "scene=petri&regime=5",
+    savedAt: "2026-10-15",
+  },
+  {
+    name: "Petri dish · ink mazes",
+    commit: "f1ca6557",
+    query: "scene=petri&regime=6&palette=1",
+    savedAt: "2026-10-15",
+  },
+  {
+    name: "Slime mould · lace",
+    commit: "f1ca6557",
+    query: "scene=physarum&angle=60&reach=4&decay=0.15",
+    savedAt: "2026-10-15",
+  },
+  {
+    name: "Slime mould · ink lace",
+    commit: "f1ca6557",
+    query: "scene=physarum&angle=60&reach=4&decay=0.15&palette=1",
+    savedAt: "2026-10-15",
+  },
+  {
+    name: "Slime mould · routes",
+    commit: "f1ca6557",
+    query: "scene=physarum&angle=22&reach=18&decay=0.75",
+    savedAt: "2026-10-15",
+  },
+  {
+    name: "Slime mould · Tokyo rail routes",
+    commit: "f1ca6557",
+    query: "scene=physarum&angle=22&reach=18&decay=0.75&layout=2&palette=2",
+    savedAt: "2026-10-15",
+  },
+  {
+    name: "Sand table · quick drawings",
+    commit: "f1ca6557",
+    query: "scene=sandtable&speed=4",
+    savedAt: "2026-10-15",
+  },
+  {
+    name: "Lava lamp · chunky wax",
+    commit: "f1ca6557",
+    query: "scene=lava&heat=0.35&viscosity=1",
+    savedAt: "2026-10-15",
+  },
+  {
+    name: "Lava lamp · silky purple in blue",
+    commit: "f1ca6557",
+    query: "scene=lava&wax=1&heat=0.7&viscosity=0",
+    savedAt: "2026-10-15",
+  },
+  {
+    name: "Mystic forest · shy kodama",
+    commit: "d925e429",
+    query: "scene=forest&time=0.78&shy=1",
+    savedAt: "2026-10-15",
+  },
+  {
+    name: "Frozen lake · fresh powder under the moon",
+    commit: "d925e429",
+    query: "scene=lake&moon-amount=1&cover=0.5&fresh=1",
+    savedAt: "2026-10-15",
+  },
+  {
+    name: "Ripple tank · walled tank",
+    commit: "f1ca6557",
+    query: "scene=ripple&experiment=1&damping=0.15&edges=0&drips=0",
+    savedAt: "2026-10-15",
+  },
+  {
+    name: "City crossing · late delivery",
+    commit: "838e5bc0",
+    query: "scene=street&time=0.96&crowd=0.2&traffic=0.3&delivery=1&delivery-amount=0.8",
+    savedAt: "2026-10-15",
+  },
+  {
+    name: "Campfire · burning down",
+    commit: "f1ca6557",
+    query: "scene=campfire&fuel=1&fuel-amount=4",
+    savedAt: "2026-10-15",
+  },
+  {
+    name: "Campfire · last embers",
+    commit: "f1ca6557",
+    query: "scene=campfire&fuel=1&fuel-amount=3&tend=0",
+    savedAt: "2026-10-15",
+  },
+  {
+    name: "Pendulum wave · real, wide swing",
+    commit: "f1ca6557",
+    query: "scene=pendula&swing=1&release=0&physics=1",
+    savedAt: "2026-10-15",
+  },
+  {
+    name: "Frozen lake · breezy fjord",
+    commit: "d925e429",
+    query:
+      "scene=lake&milkyWay=0&moon-amount=0.25&aurora-amount=0.7&wind=0.45&setting=1&hour=1&drapes=1&substorm=0&ripples=0.35",
+    savedAt: "2026-10-17",
+  },
+  {
+    name: "Tide pool · sets",
+    commit: "f1ca6557",
+    query: "scene=tidepool&swell=0.75&sets-amount=0.8",
+    savedAt: "2026-10-15",
+  },
+  {
+    name: "Tide pool · low tide",
+    commit: "f1ca6557",
+    query: "scene=tidepool&tide=-0.8&swell=0.35",
+    savedAt: "2026-10-15",
+  },
+  {
+    name: "Tide pool · night glow",
+    commit: "f1ca6557",
+    query: "scene=tidepool&time=0.95&glow=1",
+    savedAt: "2026-10-15",
+  },
+  {
+    name: "Mobile · solar system at night",
+    commit: "d99647f0",
+    query: "scene=mobile",
+    savedAt: "2026-10-15",
+  },
+  {
+    name: "Mobile · inner planets, glow stars",
+    commit: "2e69f6b1",
+    query: "scene=mobile&mark=1&planets=0&motor-amount=0.7",
+    savedAt: "2026-10-15",
+  },
+  {
+    name: "Mobile · dwarf planets, daylight",
+    commit: "2e69f6b1",
+    query: "scene=mobile&room=1&planets=2&sun=0.7&softness=0.6",
+    savedAt: "2026-10-15",
+  },
+  {
+    name: "Bees · overgrown meadow",
+    commit: "0877fa68",
+    query:
+      "scene=bees&grass=1&wildflowers=1&wildflowers-amount=1&flowers=1.6&grassHeight=0.3&grassDensity=0.45&overgrowth=0.15",
+    savedAt: "2026-10-17",
+  },
+  {
+    name: "Bees · in the valley",
+    commit: "838e5bc0",
+    query: "scene=bees&hillside=0&valley=1",
+    savedAt: "2026-10-18",
+  },
+  {
+    name: "Sill · lava lamp on the sill",
+    commit: "d0701915",
+    query: "scene=sill&lavaLamp=1",
+    savedAt: "2026-10-18",
+  },
+  {
+    name: "Sill · frost on the window",
+    commit: "b860d9c5",
+    query: "scene=sill&frostGlass=1",
+    savedAt: "2026-10-18",
+  },
+  {
+    name: "Ripple tank · koi in the tank",
+    commit: "161889d0",
+    query: "scene=ripple&koi=1",
+    savedAt: "2026-10-18",
+  },
+];
+
+/** Where this browser keeps the setups saved in it. */
+export const PRESETS_KEY = "landing.presets";
+
+/** Whether `entry` is a preset: a name, the commit it was made on, its query and when it was saved. */
+export function isPreset(entry: unknown): entry is Preset {
+  if (typeof entry !== "object" || entry === null) return false;
+  const record = entry as Record<string, unknown>;
+  return (
+    typeof record.name === "string" &&
+    typeof record.commit === "string" &&
+    typeof record.query === "string" &&
+    typeof record.savedAt === "string"
+  );
+}
+
+/** Setups saved in this browser. */
+export function loadLocalPresets(): Preset[] {
+  try {
+    const parsed: unknown = JSON.parse(localStorage.getItem(PRESETS_KEY) ?? "[]");
+    return Array.isArray(parsed) ? parsed.filter(isPreset) : [];
+  } catch (error: unknown) {
+    console.error("evt=landing.presets.unreadable", error);
+    return [];
+  }
+}
+
+export function saveLocalPresets(list: readonly Preset[]): void {
+  localStorage.setItem(PRESETS_KEY, JSON.stringify(list));
+}

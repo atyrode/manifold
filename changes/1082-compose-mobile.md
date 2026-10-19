@@ -1,0 +1,6 @@
+---
+section: Changed
+issue: 1082
+---
+
+The landing concept's mobile is now a preset of the `interior` composer (ADR 0062 Phase 3), in two layers drawn through the mobile's own camera: the quiet room (the backdrop: the plaster wall, the oak floor, the ceiling, the window's dim light and the M of glow-in-the-dark stars, with the room, window-light and M knobs) and the solar system (the subject: the Sun on its cord, the arms, the planets and Saturn's rings, with its sim and its planets, motor, clearance, air and Sun knobs). The Sun is the solar system's declared light, and the mobile's shadows on the room go through a new 3D form of the room's casters: a layer whose shapes hang in the room declares `rayCasters` (how much of a round light they hide from a point), and a light asks `roomRayCaster` along its ray from each point of a surface, so the wall, floor and ceiling take the planets' shadows without knowing the mobile; every other room's program is unchanged. At its defaults, its three committed presets and two witnesses the mobile draws the same pixels as before, and sill, lava and bonsai are unchanged beside it; the knob keys are unchanged, and two presets are rewritten for their query's order.
