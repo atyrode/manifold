@@ -1223,6 +1223,10 @@ in the tree yet.
   and shanshui; the matter shelf keeps petri, physarum, marble, chladni, ferro, film and pearl.
 - **D9:** by composer, as one tree in the Presets view (baseline, curated variants, their presets),
   standalone scenes on a shelf of their own.
+- **D9, again (2026-10-19):** the Scenes view shelves by baseline too, once the outdoor and the
+  overhead baselines are built: each baseline (`room`, `land`, `patch`) a shelf with its variants
+  in a row and the setups saved here in that row as "custom", the standalone scenes apart; between
+  variants of one baseline the lab keeps the World and blends rather than loading another scene.
 
 ### Decisions D13–D24
 
