@@ -34,17 +34,10 @@ export const ISLAND_GRADE: Grade = { exposure: 1, ink: { gain: 1.15, gamma: 1 } 
 
 /**
  * The World's birds over the island, should they be switched on (the preset opens with them off: its
- * own gull circles it): 8 to 60 m out, cruising from just over the horizon to the top of the frame.
+ * own gull circles it), over the baseline's flyway: 8 to 60 m out, cruising from just over the
+ * horizon to the top of the frame.
  */
-export const ISLAND_FLYWAY: Flyway = {
-  depth: [8, 60],
-  above: 0.03,
-  top: 0.95,
-  seed: 3.1,
-  skim: 2,
-  spread: 1,
-  ext: 0.004,
-};
+export const ISLAND_FLYWAY: Partial<Flyway> = { depth: [8, 60], above: 0.03 };
 
 /** Where shooting stars set out: skyAngles of the rig's ray, high over the sea. */
 export const ISLAND_METEORS: MeteorField = [-0.3, 0.12, 0.6, 0.1];

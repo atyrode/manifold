@@ -1,20 +1,21 @@
 // A moonlit sea rolling toward the horizon: boats ride at anchor in the moon's path and a lighthouse
-// can stand on a headland. A preset of the `outdoor` composer (src/composer, README "Composers"): the
-// open sea (the sky over it, the air, the picture's ink), the swell (the water, its mirror and its
-// glitter), the lighthouse and the boats (layers.ts). The sky, the weather and the gulls are the
-// World's.
-import { composeScene } from "../../composer/compose.ts";
+// can stand on a headland. A variant of the `outdoor` composer's baseline (src/composer, README "The
+// outdoor composer"), the open sea in place of its downs and its lawn: the open sea (the sky over
+// it, the air, the picture's ink), the swell (the water, its mirror and its glitter), the lighthouse
+// and the boats (layers.ts). The sky, the weather and the gulls are the World's.
+import { composeScene, variantPreset } from "../../composer/compose.ts";
 import { outdoor } from "../../composer/outdoor.ts";
-import type { ScenePreset } from "../../composer/types.ts";
+import type { Variant } from "../../composer/types.ts";
 import { WATER_TIERS } from "../../shaders/lib/water.ts";
 import { skyTheme } from "../atmosphere.ts";
 import type { SceneDef } from "../types.ts";
 import { worldGroups } from "../world.ts";
 import { SWELL_FLYWAY, SWELL_GRADE, SWELL_METEORS, SWELL_PASSAGE, SWELL_RIG } from "./constants.ts";
 
-const preset: ScenePreset = {
+/** The swell over the outdoor's baseline: its open sea, swell and boats, its moonrise. */
+export const swellVariant: Variant = {
   id: "swell",
-  composer: "outdoor",
+  base: "outdoor",
   title: "Swell",
   blurb: "A moonlit sea rolling toward the horizon, boats riding at anchor in the moon's path.",
   accent: "#4c6ef5",
@@ -24,8 +25,22 @@ const preset: ScenePreset = {
   planets: { group: "sky", across: [24, 56, 66], up: [1, 9, 15] },
   // A sunlit sea is bright water and sky: the copy needs dark ink on it by full daylight, as shore's.
   theme: skyTheme,
-  rig: SWELL_RIG,
+  groups: {
+    sky: {
+      ...worldGroups.sky,
+      blurb:
+        "Time of day, whether the days pass, and the night sky over the sea: its stars and the Milky Way, the moon's phase and its path on the water, the odd shooting star glinting in the waves, and the aurora.",
+    },
+    weather: {
+      ...worldGroups.weather,
+      blurb:
+        "Cloud, rain, snow, fog and lightning over the open sea, all mirrored in it, and the wind that raises its chop: a light breeze ruffles it, a gale tops the waves with white.",
+    },
+  },
+  layers: { remove: ["downs"], add: ["openSea", "swell", "boats"] },
+  camera: SWELL_RIG,
   grade: SWELL_GRADE,
+  floor: "water",
   // The full moon six degrees up over the sea a little left of ahead (the rig faces moonrise), the
   // night just fallen at the autumn equinox (the season's default, the date the sky is staged at:
   // layers.ts); a clear sky, its stars at their densest, since the long lens shows only the low sky
@@ -41,8 +56,6 @@ const preset: ScenePreset = {
   },
   meteors: SWELL_METEORS,
   flyway: SWELL_FLYWAY,
-  floor: "water",
-  layers: ["openSea", "swell", "boats"],
   // Nothing at sea sways in the gusts, so they are off.
   values: { gusts: 0 },
   // The sea: the swell, the wind's sea and its chop tilting a mirror of the World's sky
@@ -51,21 +64,9 @@ const preset: ScenePreset = {
   // the glitter's narrow lobe magnifies the last bits of the moon's direction, which the phase code
   // shifts.
   features: { WATER_TIER: WATER_TIERS.mirror, SKY_MOON_PHASE: 1 },
-  groups: {
-    sky: {
-      ...worldGroups.sky,
-      blurb:
-        "Time of day, whether the days pass, and the night sky over the sea: its stars and the Milky Way, the moon's phase and its path on the water, the odd shooting star glinting in the waves, and the aurora.",
-    },
-    weather: {
-      ...worldGroups.weather,
-      blurb:
-        "Cloud, rain, snow, fog and lightning over the open sea, all mirrored in it, and the wind that raises its chop: a light breeze ruffles it, a gale tops the waves with white.",
-    },
-  },
 };
 
 /** The swell composed (composer/compose.ts): its definition, and what its code is assembled from. */
-export const swellComposed = composeScene(outdoor, preset);
+export const swellComposed = composeScene(outdoor, variantPreset(outdoor.baseline, swellVariant));
 
 export const swellScene: SceneDef = { ...swellComposed.def, code: () => import("./code.ts") };

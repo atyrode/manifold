@@ -5,7 +5,7 @@ import { HeadlessSim } from "../../sims/headless.ts";
 import { glslFloat } from "../../shaders/glsl.ts";
 import { SHORE_BEACH, SHORE_FOCAL } from "./beach.ts";
 import { CAIRN_ROW, CAIRN_SITES, ShoreCairns, type CairnFrame } from "./cairns.ts";
-import { SHORE_RIG } from "./constants.ts";
+import { SHORE_FLYWAY, SHORE_RIG } from "./constants.ts";
 import { shoreComposed } from "./index.ts";
 import { loadScene } from "../index.ts";
 import { shoreSharedGlsl } from "./shader.ts";
@@ -27,6 +27,10 @@ test("the beach the cairns' surf is mirrored from is the shader's", () => {
   ] as const)
     expect(shoreSharedGlsl).toContain(`const float SHORE_${name} = ${glslFloat(value)};`);
   expect(shoreSharedGlsl).toContain(`const int SHORE_WAVES = ${SHORE_BEACH.waves};`);
+});
+
+test("the sea's mirror flies the gulls the composer flies", () => {
+  expect(shoreComposed.preset.flyway).toEqual(SHORE_FLYWAY);
 });
 
 test("an agent stacks a cairn, a big sea topples it, the same every run", () => {

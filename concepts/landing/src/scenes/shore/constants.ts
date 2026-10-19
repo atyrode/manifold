@@ -69,7 +69,8 @@ export const SHORE_GRADE: Grade = { ink: { gain: 1.3, gamma: 0.8 } };
  * The World's gulls: over the surf and the sea 12 to 160 metres out, cruising from just over the
  * horizon to the top of the frame, a swooping party skimming the water at 1.2 metres, drawn half as
  * large again as life; they fade into the mist low over the sea by `ext` per metre. The sea's mirror
- * shows them by the same flyway (shader.ts shoreFlyway).
+ * shows them by the same flyway (shader.ts seaFlyway), whole; the shore's variant (index.ts) holds
+ * all of it but the top, the baseline's.
  */
 export const SHORE_FLYWAY: Flyway = {
   depth: [12, 160],

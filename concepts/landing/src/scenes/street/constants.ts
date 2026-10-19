@@ -56,13 +56,13 @@ export const STREET_RIG: Rig = {
 export const STREET_GRADE: Grade = { ink: { gain: 1.3, gamma: 0.8 } };
 
 /**
- * The World's birds over the street: flights 60 to 400 metres out above the horizon, which the window
- * pitched down never shows at rest (only the passage's tilt brings the skyline into view).
+ * The World's birds over the street, over the baseline's flyway: flights 60 to 400 metres out above
+ * the horizon, which the window pitched down never shows at rest (only the passage's tilt brings the
+ * skyline into view).
  */
-export const STREET_FLYWAY: Flyway = {
+export const STREET_FLYWAY: Partial<Flyway> = {
   depth: [60, 400],
   above: 0.03,
-  top: 0.95,
   seed: 4.7,
   skim: 1e9,
   spread: 1.5,

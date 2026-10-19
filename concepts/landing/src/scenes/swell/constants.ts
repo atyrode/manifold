@@ -88,14 +88,13 @@ float rigShift() {
 export const SWELL_GRADE: Grade = { ink: { gain: 1, gamma: 1 } };
 
 /**
- * The World's gulls: 4.5 to 36 camera heights out, cruising from just over the horizon to the top of
- * the frame, a swooping party skimming the crests 3 m up, drawn twice life size; they fade into the
- * haze by 0.013 a camera height.
+ * The World's gulls over the baseline's flyway: 4.5 to 36 camera heights out, cruising from just
+ * over the horizon to the top of the frame, a swooping party skimming the crests 3 m up, drawn twice
+ * life size; they fade into the haze by 0.013 a camera height.
  */
-export const SWELL_FLYWAY: Flyway = {
+export const SWELL_FLYWAY: Partial<Flyway> = {
   depth: [4.5 * SWELL_METRES, 36 * SWELL_METRES],
   above: 0.03,
-  top: 0.95,
   seed: 7.7,
   skim: 0.2 * SWELL_METRES,
   spread: 2,
