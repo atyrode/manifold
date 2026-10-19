@@ -19,7 +19,19 @@ import { CLOUD_TIERS } from "../../shaders/lib/clouds.ts";
 import { loadScene, type SceneId } from "../index.ts";
 
 const autumnScene = await loadScene("autumn");
-const trainScene = await loadScene("train");
+/** The night train as the page draws it (composed). */
+const trainComposed = await loadScene("train");
+/**
+ * The train without its composed GLSL and feature hooks, which the gates' own GLSL and features
+ * replace (SceneCode.glslFor, SceneDef.featuresFor).
+ */
+const {
+  glslFor: trainGlslFor,
+  featuresFor: _trainFeaturesFor,
+  featuresAllFor: _trainFeaturesAllFor,
+  ...trainScene
+} = trainComposed;
+if (trainGlslFor === undefined) throw new Error("cloud tiers: the train is not composed");
 
 function check(ok: boolean, message: string): void {
   if (!ok) throw new Error(`cloud tiers: ${message}`);
@@ -224,8 +236,8 @@ export async function verifyCloudTiers(
   );
   // The night train draws the calm deck alone: the lit deck is not in its program.
   check(
-    trainScene.features?.["CLOUD_TIER"] === CLOUD_TIERS.flat &&
-      compiles(gl, fragmentSourceFor(trainScene)),
+    sceneFeatures(trainComposed)["CLOUD_TIER"] === CLOUD_TIERS.flat &&
+      compiles(gl, fragmentSourceFor(trainComposed)),
     "the train does not draw at the flat tier",
   );
 

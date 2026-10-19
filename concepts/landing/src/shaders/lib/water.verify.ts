@@ -11,7 +11,9 @@ import type { LoadedScene } from "../../scenes/types.ts";
 import { fragmentSourceFor, vertexSource } from "../index.ts";
 import { WATER_TIERS } from "./water.ts";
 
-const islandScene = await loadScene("island");
+/** The island without its composed GLSL, which the probes' own GLSL replaces (SceneCode.glslFor). */
+const { glslFor, ...islandScene } = await loadScene("island");
+if (glslFor === undefined) throw new Error("water: the island is not composed");
 
 function check(ok: boolean, message: string): void {
   if (!ok) throw new Error(`water: ${message}`);
