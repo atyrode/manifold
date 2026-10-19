@@ -27,11 +27,13 @@ export const barVariant: Variant = {
   passage: PASSAGE,
   // The room shows no World through its window (compose.ts).
   layers: {
-    remove: ["cityWindow", "sill"],
+    remove: ["cityWindow"],
     add: ["storefront", "booth", "backBar", "pendants", "ceilingFan"],
   },
   camera: BAR_RIG,
   room: BAR_ROOM,
+  // Its own shell: none of the baseline's window and lamp.
+  elements: [],
   // The bar's own grade: its soft vignette from half a screen height out, its ink.
   grade: {
     vignette: 0.2,

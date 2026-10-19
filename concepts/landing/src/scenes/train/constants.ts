@@ -35,6 +35,10 @@ export const TRAIN_RIG: Rig = {
  */
 export const TRAIN_ROOM: Room = {
   distance: 0.7,
+  // Its own shell layers cover the composer's wall; it lets no World in through a window element.
+  back: 0.7,
+  facing: 0,
+  material: "plaster",
   wall: [0.03, 0.02, 0.013],
   ambient: [0, 0, 0],
 };

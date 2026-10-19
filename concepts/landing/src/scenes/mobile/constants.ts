@@ -33,6 +33,10 @@ export const MOBILE_RIG: Rig = {
  */
 export const MOBILE_ROOM: Room = {
   distance: 4.4,
+  // Its own shell layers cover the composer's wall; it lets no World in through a window element.
+  back: 4.4,
+  facing: 0,
+  material: "plaster",
   wall: [0.58, 0.53, 0.48],
   ambient: [0, 0, 0],
 };

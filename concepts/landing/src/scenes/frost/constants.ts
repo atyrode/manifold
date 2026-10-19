@@ -32,6 +32,10 @@ export const FROST_RIG: Rig = {
  */
 export const FROST_ROOM: Room = {
   distance: (0.15 * (0.5 / Math.tan(0.5))) / 0.265,
+  // Its own shell layers cover the composer's wall; it lets no World in through a window element.
+  back: (0.15 * (0.5 / Math.tan(0.5))) / 0.265,
+  facing: 0,
+  material: "plaster",
   wall: [0.17, 0.155, 0.14],
   ambient: [0.3, 0.31, 0.34],
 };

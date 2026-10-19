@@ -1,9 +1,10 @@
 // The lava lamp's layers (ADR 0062 Phase 3): their manifests, which load without their code
 // (code.ts).
-//   papered    backdrop: the papered wall, the moonlit pane from a window off to the left, the shelf
-//              of books and a trailing plant; drawn on the lamp's room's frame alone.
-//   sideboard  ground: the teak sideboard's top and front, the lamp's cord, the record sleeve; drawn
-//              on the lamp's room's frame alone.
+//   papered    backdrop: the shelf of books and a trailing plant on the shell's papered wall (the
+//              wall and the moon's pane on it are the shell's: composer/shell.ts); drawn on the
+//              lamp's room's frame alone.
+//   sideboard  ground: the lamp's cord across the shell's sideboard and the record sleeve leaning on
+//              the wall; drawn on the lamp's room's frame alone.
 //   lavaLamp   dressing: the lamp (and its twin), drawn from the room's rig: it stands on any room's
 //              ledge at its anchor, 0.4 m tall at the room's scale there, and its light reaches the
 //              other layers' surfaces (lavaLampLight). Offered to every room.
@@ -16,7 +17,7 @@ import { ON_THE_SIDEBOARD } from "./constants.ts";
 
 export const paperedLayer: LayerDef = {
   id: "papered",
-  title: "Papered wall",
+  title: "Wall shelf",
   composers: ["interior"],
   role: "backdrop",
   bands: ["far"],
@@ -25,18 +26,11 @@ export const paperedLayer: LayerDef = {
   switch: toggle(
     "layers",
     "papered",
-    "papered wall",
+    "wall shelf",
     false,
-    "A wall papered in a seventies pattern of rings and beads, seen only where the lamp's glow and the moonlight fall.",
+    "What stands against the papered wall: a shelf of books and a trailing plant up to the left, lit faintly by the lamp.",
   ),
   params: [
-    range(
-      "room",
-      "moon",
-      "moonlight",
-      0.3,
-      "Cool light from a window off to the left: a pale pane on the wall, a glint down the glass and the metal.",
-    ),
     toggle(
       "room",
       "shelf",
@@ -48,7 +42,7 @@ export const paperedLayer: LayerDef = {
   groups: {
     room: {
       title: "Room",
-      blurb: "The moon at the window, and what stands around the lamp.",
+      blurb: "What stands around the lamp.",
     },
   },
   passes: { far: "paperedFar" },
@@ -56,7 +50,7 @@ export const paperedLayer: LayerDef = {
 
 export const sideboardLayer: LayerDef = {
   id: "sideboard",
-  title: "Sideboard",
+  title: "Cord and record",
   composers: ["interior"],
   role: "ground",
   bands: ["front"],
@@ -65,9 +59,9 @@ export const sideboardLayer: LayerDef = {
   switch: toggle(
     "layers",
     "sideboard",
-    "sideboard",
+    "cord and record",
     false,
-    "A teak sideboard, its oiled top catching the lamp's pool and the glowing wall, its sliding doors in shadow.",
+    "The lamp's cord across the sideboard's top and a record sleeve leaning on the wall.",
   ),
   params: [
     toggle(

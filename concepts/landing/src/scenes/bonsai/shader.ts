@@ -7,8 +7,9 @@
 // light and snow along the tops of branches, foliage tuft by tuft in the season's colour, thinning as
 // it falls; this spring's shoots; leaves, petals and needles in the air; a cut twig falling; the
 // snip's glint; and in winter the snow, in depth (its front veil).
-// Knobs read here: the veranda's K_time, K_cycle, K_light, K_wall, K_lamp; the tree's K_species,
-// K_pot, K_figure, K_breeze, K_mark (TRIGGER_mark: the M gleams). The sim (sim.ts) owns the year, the
+// Knobs read here: the World's K_time and K_cycle (its sun comes in through the room's window behind
+// the eye: roomSun); the veranda's K_wall, K_lamp; the tree's K_species, K_pot, K_figure, K_breeze,
+// K_mark (TRIGGER_mark: the M gleams). The sim (sim.ts) owns the year, the
 // snow, the sway, the shoots and everything that falls; its textures (the tree's fields,
 // bonsaiTreeField0..3) are described there and laid out in geometry.ts.
 import type { SharedGlsl } from "../../composer/types.ts";
@@ -254,9 +255,12 @@ void bonsaiBegin(Ctx x) {
   bonsaiDepth = 2.0 + 1.2 * BONSAI_WALL_Z;
   // Midsummer warm, midwinter cold: the year's chill (src/climate.ts) tints the light.
   bonsaiCold = climateChill(bonsaiYear);
-  Sky sky = skyAt(timeOfDayM(K_time, skyDays()));
-  float az = clamp(K_light * 1.0 + sky.sun.x * 0.5, -1.3, 1.3);
-  float elev = asin(clamp(sky.sun.y, -1.0, 1.0)) * BONSAI_SUN_RISE;
+  // The World's sky at its hour and date, its sun in the room's frame (roomShellBegin: turned by the
+  // way the room faces) coming in through the window behind the eye: its bearing raking the wall,
+  // its height kept at the room's staging share.
+  Sky sky = roomWorld.sky;
+  float az = clamp(atan(roomSun.x, -roomSun.z), -1.3, 1.3);
+  float elev = asin(clamp(roomSun.y, -1.0, 1.0)) * BONSAI_SUN_RISE;
   float ce = cos(max(elev, 0.03));
   bonsaiL = normalize(vec3(sin(az) * ce, sin(max(elev, 0.03)), -cos(az) * ce));
   float overcast = smoothstep(0.0, 0.5, bonsaiFalling);

@@ -998,12 +998,17 @@ out of it (as `Room.lamp` does). In frame it draws a small body of its kind; its
 one packed key, `elements=`, read as `planets=` is. Kind and count are compile-time (adding one
 builds a program, as a layer turn does); place, colour, power and flicker are uniforms.
 `localLight(p, n)` sums the layers' lights and the elements unrolled to the count; a layer is lit by
-elements once it calls it, which every shell layer does and every port adopts. **The cap**: 8 lights
-a program, checked when composed, at most 2 shadowing (the World's key through a window and one
-element, as the bonsai's veranda throws `roomCaster` toward its sun and its lamp), the shadows on
-the back wall and the ledge's top; fixed once the marginal SwiftShader cost of 1, 4 and 8 candles on
-the sill is measured. A framed picture or TV showing a standalone scene fits as a `screen` and waits
-(D23).
+elements once it calls it, which every shell layer does and every port adopts. **The cap**, fixed
+from the marginal SwiftShader cost on the sill (320×200, user-space instructions a draw): 8 lights a
+program with the layers' own, at most 2 of them windows and at most 2 shadowing (the World's key
+through a window and one element, as the bonsai's veranda throws `roomCaster` toward its sun and
+its lamp), the shadows on the back wall and the ledge's top; checked when composed and on a link.
+A point light with its body costs about 31 M (no elements 897 M; 1, 4 and 8 candles 927, 1,018
+and 1,146 M), so 8 add 10% to the sill's default (2,374 M with its window and lamp); a window's
+light about 285 M (a second, on the left wall), as much as 9 point lights, hence its own cap; a
+shadow no more than the noise (about 10 M); two windows and six candles, the most a program holds,
+2,796 M, 18% over the default. A framed picture or TV showing a standalone scene fits as a `screen`
+and waits (D23).
 
 ### Window light, palette and time
 
@@ -1071,6 +1076,34 @@ pins its winter night through its values (`time`, `clouds`, `snow`). Its lab-onl
 them; the eight rooms' default and all-features programs, knobs and lab metadata are byte for byte
 as before; `interior-variants.test.ts` refuses a redundant difference.
 
+**Step 2, built (2026-10-19):** the shell (`composer/shell.ts`) draws the back wall (in plaster,
+papered, shoji, alcove or panel), a back-wall window element's casing, reveal, sash and bars (its
+view a backdrop inside `roomWin`) and the ledge (sill, sideboard, stand or table) from the rig in
+metres; sill, `room` and lava stand on it. Light elements ride in `elements=`, their kinds and count
+compiled in, their values in `uElements`, summed by `localLight`; in frame a lamp, candle, neon tube
+or fire draws its body (a table lamp, a wax pillar and its flame, a tube, tongues over a bowl).
+Each window lets in the World's sun, moon and sky from `Room.facing`, its patches barred and
+dappled, its key throwing `roomCaster`'s shadows, and gives back a soft fill so the wall it stands
+in is lit. Bonsai and incense take the World's sun or moon through a window element in place of
+their `light`, `angle` and `tint` knobs but keep their painted wall and ledge; frost, bar, train
+and mobile keep their own shells. A room with no glass in frame lists and compiles the light-only
+World (time, cycle, moon, rain, snow, lightning, aurora and wind, the lightning's trigger slot
+alone). Every room that lists the World lists its date at 0.62, where the climate is warm, so rain
+stays rain at every default; the frost pins midwinter (its snow in season), and the bonsai's tree
+takes the World's snow, one snow. **The cap** (D17, as above): 8 lights, 2 windows, 1 shadowing
+element, checked in `checkElements` when composed and `fitElements` on a link (`elements.test.ts`).
+Before and after (`ab.ts --base ecbf21d5`, 960×600), cells differing at the default, noon, night
+and in rain: sill 17, 30, 21 and 14%; `room` 13, 22, 14 and 11%; lava 9, 11, 11 and 10%; bonsai
+29, 32, `SAME` and 70%; incense 5, 18, 6 and 5%; frost `SAME` but in rain (6%: midwinter's rain
+falls as snow); bar, train and mobile `SAME`. Changes of character: the sill and the room at noon
+are lit by the sun's patch through the window (in summer the sash's and the bars' shadows lie on
+the sill); the bonsai's shadow falls the other way, its sun now on the World's arc through the
+window behind the eye, and rain greys its room; the lava lamp's moon pane is sheared by the moon's
+slant through the left window, where it was a painted square. SwiftShader counts (M user-space
+instructions a 320×200 draw at the defaults, one run, before → after): sill 2,046 → 2,394, `room`
+1,470 → 1,735, lava 649 → 913, incense 911 → 1,068, bonsai 1,560 → 1,580, frost 1,823 → 1,852,
+bar 4,979 → 4,975, train 4,021 → 4,052, mobile 876 → 887; absolute counts move 5–8% between runs,
+ratios within one run about 1%.
 The lab dishes (the matter shelf) are decided after step 2.
 
 ### Amendments
@@ -1082,20 +1115,20 @@ The lab dishes (the matter shelf) are decided after step 2.
 
 ### Decisions D13–D24
 
-| #   | Question                              | Decision                                                                                                                                                                |
-| --- | ------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| D13 | Is each baseline a scene?             | Yes, lab-only (`room`, `land`, `patch`): outside the tour and the public cycle.                                                                                         |
-| D14 | How deep variants go                  | One level, baseline then variant; saved presets stay queries over a variant.                                                                                            |
-| D15 | What promotion makes                  | A curated variant: its own id, card and thumbnail, `from` provenance; the source preset removed.                                                                        |
-| D16 | The lab's tag on committed presets    | "committed", no longer "baseline".                                                                                                                                      |
-| D17 | Light elements                        | One packed key, `elements=`; kinds and count compiled in, values uniforms; 8 lights, at most 2 shadowing, the cap fixed after measuring 1, 4 and 8 candles on the sill. |
-| D18 | The camera                            | A live pose in `cam=`; spans per layer, a tolerance for painted layers; the camera clamped, guests out of range refused.                                                |
-| D19 | A room's light                        | `facing` on the room, set by a variant; windows on any wall; the World's sun, moon, sky and weather light the room through them.                                        |
-| D20 | The date                              | Every baseline lists the World's date at one anchor; a variant may pin its hour or date; no glass in frame, a light-only World.                                         |
-| D21 | A variant's grade                     | Data in code; grade knobs after the per-program knob layout.                                                                                                            |
-| D22 | The bar's `night`                     | Its evening's schedule, apart from the World's hour; the variant pins the hour at night.                                                                                |
-| D23 | A picture or TV of a standalone scene | Later; the `screen` kind leaves room for it.                                                                                                                            |
-| D24 | Prism and pendula                     | Standalone (D7 and Phase 5 amended).                                                                                                                                    |
+| #   | Question                              | Decision                                                                                                                                                                                                             |
+| --- | ------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| D13 | Is each baseline a scene?             | Yes, lab-only (`room`, `land`, `patch`): outside the tour and the public cycle.                                                                                                                                      |
+| D14 | How deep variants go                  | One level, baseline then variant; saved presets stay queries over a variant.                                                                                                                                         |
+| D15 | What promotion makes                  | A curated variant: its own id, card and thumbnail, `from` provenance; the source preset removed.                                                                                                                     |
+| D16 | The lab's tag on committed presets    | "committed", no longer "baseline".                                                                                                                                                                                   |
+| D17 | Light elements                        | One packed key, `elements=`; kinds and count compiled in, values uniforms; 8 lights, at most 2 windows and 2 shadowing, fixed from 1, 4 and 8 candles on the sill (about 31 M instructions a light, 285 M a window). |
+| D18 | The camera                            | A live pose in `cam=`; spans per layer, a tolerance for painted layers; the camera clamped, guests out of range refused.                                                                                             |
+| D19 | A room's light                        | `facing` on the room, set by a variant; windows on any wall; the World's sun, moon, sky and weather light the room through them.                                                                                     |
+| D20 | The date                              | Every baseline lists the World's date at one anchor; a variant may pin its hour or date; no glass in frame, a light-only World.                                                                                      |
+| D21 | A variant's grade                     | Data in code; grade knobs after the per-program knob layout.                                                                                                                                                         |
+| D22 | The bar's `night`                     | Its evening's schedule, apart from the World's hour; the variant pins the hour at night.                                                                                                                             |
+| D23 | A picture or TV of a standalone scene | Later; the `screen` kind leaves room for it.                                                                                                                                                                         |
+| D24 | Prism and pendula                     | Standalone (D7 and Phase 5 amended).                                                                                                                                                                                 |
 
 ### Open, not yet decided: the countryside behind the bees
 

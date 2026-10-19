@@ -14,7 +14,8 @@
 //                  length)
 //   incenseField3  dust motes
 // Without field 0 (no float render targets) an analytic plume stands in for the fluid.
-// Knobs read here: the shaft wall's K_window, K_angle, K_tint, K_room, K_mark; the incense's K_stick,
+// Knobs read here: the shaft wall's K_window, K_room, K_mark (the shaft's slant and colour are the
+// World's sun or moon through the room's window off to the left: roomSun, roomMoon); the incense's K_stick,
 // K_dust, K_candle. The cell's state (incenseBegin) reads both, as the layers stand in one room.
 import type { SharedGlsl } from "../../composer/types.ts";
 import { incenseLayoutGlsl, incensePassageGlsl, incenseShapesGlsl } from "./sim.ts";
@@ -84,11 +85,15 @@ vec3 incenseWarm;       // the candle's and the ember's light on the wall and th
 vec2 incenseMarkAt;     // the M of light's centre
 float incenseMark;      // the M of light in the air here, times its brightness
 
-// The window's light: moonlight, a pale morning, a low gold sun.
-vec3 incenseLightColor() {
-  if (K_tint < 0.5) return vec3(0.62, 0.74, 1.0);
-  if (K_tint < 1.5) return vec3(1.0, 0.9, 0.74);
-  return vec3(1.0, 0.62, 0.38);
+// The window's light: the World's sun, or once it is down its moon, through the room's window off to
+// the left (roomShellBegin: turned by the way the room faces), its colour at full brightness, faded
+// out as it fails (a new moon, a closed sky); and the way it comes in, toward it.
+vec3 incenseKey(out vec3 toward) {
+  bool sun = dot(roomSunLight, vec3(1.0)) > 0.02;
+  vec3 key = sun ? roomSunLight : roomMoonLight;
+  toward = sun ? roomSun : roomMoon;
+  float peak = max(key.r, max(key.g, key.b));
+  return key / max(peak, 1e-4) * smoothstep(0.0, 0.06, peak);
 }
 
 // The wall: ink, indigo, umber, or pale washi paper.
@@ -261,8 +266,9 @@ void incenseBegin(Ctx x) {
   // The window's light: its colour, the way it travels (down to the right, and on into the room),
   // where it lights the incense's plane (around the plume, a little higher over a stick than over
   // the short burners) and where it lands on the wall, INCENSE_DEPTH further on.
-  incenseLightCol = incenseLightColor() * 2.0 * K_window;
-  float angle = radians(mix(12.0, 64.0, K_angle));
+  vec3 keyAt;
+  incenseLightCol = incenseKey(keyAt) * 2.0 * K_window;
+  float angle = clamp(atan(keyAt.y, max(-keyAt.x, 0.05)), radians(12.0), radians(64.0));
   incenseDir = vec2(cos(angle), -sin(angle));
   incenseCentre = vec2(incenseBase.x, kind < 0.5 ? 0.6 : kind > 2.5 ? 0.42 : 0.5);
   incensePool = incenseCentre + incenseDir * INCENSE_DEPTH;

@@ -86,7 +86,10 @@ describe("a scene's marks", () => {
   test("only where its season sets its climate", () => {
     expect(climateMarks(garden.params)).toBeDefined();
     expect(climateMarks(sceneDefs.pond.params)).toBeUndefined();
-    expect(climateMarks(sceneDefs.bonsai.params)).toBeUndefined();
+    // A room's date is the World's (ADR 0062 D20), so its rain falls as snow in winter as outdoors.
+    expect(climateMarks(sceneDefs.bonsai.params)).toBeDefined();
+    // A room that lists no World has no date, and no climate.
+    expect(climateMarks(sceneDefs.bar.params)).toBeUndefined();
   });
 
   test("follow the season knob: snow in summer is out of season, rain in winter falls as snow", () => {

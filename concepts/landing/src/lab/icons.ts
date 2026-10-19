@@ -204,7 +204,6 @@ const WORD_ICONS: Readonly<Record<string, IconName>> = {
   drips: "rain",
   streaks: "rain",
   snow: "snow",
-  snowfall: "snow",
   frost: "snow",
   ice: "snow",
   cracks: "snow",

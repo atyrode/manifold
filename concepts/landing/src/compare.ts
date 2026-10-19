@@ -24,8 +24,8 @@ export function otherSlot(slot: Slot): Slot {
 
 /** A setup query as the page writes it: normalised and minimal. */
 export function canonicalSetup(query: URLSearchParams): string {
-  const { state, params, planets } = readSetup(query);
-  return serialise(state, params, planets).toString();
+  const { state, params, planets, elements } = readSetup(query);
+  return serialise(state, params, planets, elements).toString();
 }
 
 /** The comparison in a page query, or undefined when it has none. */

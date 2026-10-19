@@ -1,6 +1,6 @@
 // The constants the sill's definition (index.ts, layers.ts) shares with its code (shader.ts), kept
 // apart from that code so that the scene registry loads without it (SceneDef.code).
-import type { Rig, Room } from "../../composer/types.ts";
+import type { LightElement, Rig, Room } from "../../composer/types.ts";
 import type { SkyPlanets } from "../planets.ts";
 
 /**
@@ -30,15 +30,56 @@ export const SILL_RIG: Rig = {
 
 /**
  * The room, the interior baseline's: the sill's seat line 0.28 screen heights under the horizon
- * (shader.ts SILL_SEAT), at 0.8 screen heights a metre; the plum wall; the reading lamp out of frame
- * to the right a little above the sill, its light squashed so it spreads along the sill; a little
- * light all round.
+ * (shader.ts SILL_SEAT), at 0.8 screen heights a metre; the back wall 1.36 m ahead, where the sill
+ * meets the window; facing the staged sky's ahead, so the sun comes in through the back window at
+ * noon and slants across it morning and evening; the plum plaster wall, a little light all round;
+ * the sill's painted wooden top 0.39 m deep, its nosing 2.5 cm, the radiator under it.
  */
 export const SILL_ROOM: Room = {
   distance: (SILL_RIG.eye * SILL_RIG.focal) / 0.28,
+  back: (SILL_RIG.eye * SILL_RIG.focal) / 0.235,
+  facing: 0,
   wall: [0.27, 0.24, 0.29],
+  material: "plaster",
   ambient: [0.05, 0.045, 0.06],
-  lamp: { at: [0.1, -0.2], squash: 1.5, color: [1, 0.66, 0.34], gain: 1.35 },
+  ledge: {
+    kind: "sill",
+    front: (SILL_RIG.eye * SILL_RIG.focal) / 0.33,
+    half: 1.16,
+    thick: 0.025,
+    albedo: [0.46, 0.29, 0.165],
+  },
+};
+
+/**
+ * The baseline's window: a sash window 2.1 m wide across the back wall from the sill up out of
+ * frame, raised (its bottom rail 0.63 m over the sill), three panes across and two up above it,
+ * letting the World in from the way the room faces (composer/shell.ts).
+ */
+export const SILL_WINDOW: LightElement = {
+  kind: "window",
+  at: [0.02, 0.75, SILL_ROOM.back],
+  colour: [1, 1, 1],
+  power: 1,
+  reach: 1.2,
+  flicker: 0,
+  shadow: true,
+  window: { wall: "back", size: [2.1, 1.5], bars: [3, 2], sash: 0.625 },
+};
+
+/**
+ * The reading lamp out of frame to the right, a little above the sill: its warm light at the gain
+ * the sill's lamp always had, its power 1 so `roomLamp` (its reach, which the painted highlights
+ * take) runs 0 .. 1.
+ */
+export const READING_LAMP: LightElement = {
+  kind: "lamp",
+  at: [1.15, 0.14, 1.05],
+  colour: [1.35, 0.89, 0.46],
+  power: 1,
+  reach: 0.65,
+  flicker: 0,
+  shadow: false,
 };
 
 /** The sill's layers are drawn on its frame, through this rig alone (README "Rigs, locking and offering"). */

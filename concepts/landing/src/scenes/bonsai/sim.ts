@@ -24,9 +24,10 @@
 //          twig k (x, y, angle, alpha), (active, -, -, -);
 //          then the shoot grid (up to four shoot indices + 1 per cell).
 // Its "now" slots are its knobs' (the composer numbers them): the breeze's gust, the growth's snip,
-// the leaves' and the snowfall's.
+// the leaves'. Its snow is the World's (one snow, ADR 0062 "The World seen from every camera"): the
+// World's snow knob falling, and its rain falling as snow in the cold of the tree's year.
 import type { LayerFrame, LayerSim } from "../../composer/types.ts";
-import { climateCold, climateLying } from "../../climate.ts";
+import { climateCold, climateLying, fallingSnow } from "../../climate.ts";
 import type { ParamDef } from "../../params.ts";
 import { BuildSlot } from "../../sims/build.ts";
 import { MAX_PRINCIPALS } from "../../principals.ts";
@@ -105,8 +106,8 @@ const NOMINAL_YEAR = 720;
 const SNOW_SETTLE = 0.07;
 const SNOW_MELT_COLD = 0.0015;
 const SNOW_MELT_WARM = 0.03;
-/** A "now" flurry lasts this long (s). */
-const FLURRY = 45;
+/** The World's falling snow (its knobs' amount, 0.5 at their middle) as the tree's fall. */
+const SNOW_FALL_GAIN = 1.2;
 
 // ---- falling things ----
 /** Leaves (petals, needles) coming down over a whole season at the knob's middle. */
@@ -137,7 +138,7 @@ const SLIDE_PUSH = 0.2;
 const SHAKEN_LEAVES = 5;
 
 type KnobKey =
-  "species" | "treeSeed" | "breeze" | "growth" | "season" | "year" | "leaves" | "snowfall";
+  "species" | "treeSeed" | "breeze" | "growth" | "season" | "year" | "leaves" | "rain" | "snow";
 
 export class BonsaiSimError extends Error {}
 
@@ -258,12 +259,11 @@ class BonsaiSim implements SceneSim {
   /** Growing a tree for a new species or seed, on the build worker (sims/build.ts). */
   readonly #growing = new BuildSlot(bonsaiGrowth);
   readonly #knob: Readonly<Record<KnobKey, number>>;
-  /** The trigger slots of the breeze's gust, the growth's snip, the leaves' and the snowfall's "now". */
+  /** The trigger slots of the breeze's gust, the growth's snip and the leaves' "now". */
   readonly #slot: {
     readonly gust: number;
     readonly snip: number;
     readonly leaves: number;
-    readonly snow: number;
   };
 
   #tree: Tree = { nodes: [], pads: [], tufts: [], tip: 0.002 };
@@ -283,7 +283,9 @@ class BonsaiSim implements SceneSim {
   #seasonKnob = Number.NaN;
   #minutes = 3;
   #leafAmount = 0.5;
-  #snowAmount = 0.5;
+  /** The World's rain and snow (their amounts, 0 off). */
+  #rainAmount = 0;
+  #snowAmount = 0;
 
   /** The year: phase = fract(season knob + elapsed), index = floor of it. */
   #elapsed = 0;
@@ -293,7 +295,6 @@ class BonsaiSim implements SceneSim {
   #random = mulberry32(1);
   #lying = 0;
   #falling = 0;
-  #flurryLeft = 0;
   #release = 0;
   #gust = 0;
   #gustAt = Number.NEGATIVE_INFINITY;
@@ -315,7 +316,6 @@ class BonsaiSim implements SceneSim {
   #seenGust = 0;
   #seenSnip = 0;
   #seenLeaves = 0;
-  #seenSnow = 0;
   #mapsDirty = true;
   #atlasDirty = true;
   #atlasWait = 0;
@@ -343,7 +343,8 @@ class BonsaiSim implements SceneSim {
       season: index("season"),
       year: index("year"),
       leaves: index("leaves"),
-      snowfall: index("snowfall"),
+      rain: index("rain"),
+      snow: index("snow"),
     };
     const slot = (key: KnobKey): number => {
       const at = params[index(key)]?.trigger;
@@ -354,7 +355,6 @@ class BonsaiSim implements SceneSim {
       gust: slot("breeze"),
       snip: slot("growth"),
       leaves: slot("leaves"),
-      snow: slot("snowfall"),
     };
     // Bare (one texel of nothing drawn) until the first tree's maps are uploaded.
     this.#woodTexture = new DataTexture(gl, { width: 1, height: 1, format: "rgba16f" });
@@ -510,7 +510,8 @@ class BonsaiSim implements SceneSim {
     this.#growth = (values[k.growth] ?? 1) > 0.5;
     this.#minutes = values[k.year] ?? this.#minutes;
     this.#leafAmount = values[k.leaves] ?? this.#leafAmount;
-    this.#snowAmount = values[k.snowfall] ?? this.#snowAmount;
+    this.#rainAmount = values[k.rain] ?? this.#rainAmount;
+    this.#snowAmount = values[k.snow] ?? this.#snowAmount;
     const season = values[k.season] ?? 0.62;
     // The tree for the species and seed, grown on the build worker while the one on show stays up.
     if (species === this.#species && seed === this.#seed) this.#growing.cancel();
@@ -590,20 +591,17 @@ class BonsaiSim implements SceneSim {
     const gust = triggers[this.#slot.gust] ?? -1e4;
     const snip = triggers[this.#slot.snip] ?? -1e4;
     const leaves = triggers[this.#slot.leaves] ?? -1e4;
-    const snow = triggers[this.#slot.snow] ?? -1e4;
     if (this.#primed) {
       if (gust !== this.#seenGust && gust > -1e3) this.#launchGust(1.3);
       if (snip !== this.#seenSnip && snip > -1e3) this.#gardenerSnip();
       if (leaves !== this.#seenLeaves && leaves > -1e3) {
         for (let k = 0; k < 7; k++) this.#launch(this.#year, true);
       }
-      if (snow !== this.#seenSnow && snow > -1e3 && this.#snowAmount > 0) this.#flurryLeft = FLURRY;
     }
     this.#primed = true;
     this.#seenGust = gust;
     this.#seenSnip = snip;
     this.#seenLeaves = leaves;
-    this.#seenSnow = snow;
   }
 
   /** Every hand in display units; moving over a pad stirs it, a press prunes what is under it. */
@@ -942,33 +940,18 @@ class BonsaiSim implements SceneSim {
   // ---- snow ----
 
   #stepSnow(y: number, dt: number): void {
-    let falling = 0;
-    if (this.#snowAmount > 0) {
-      const rand = mulberry32(0x736e6f77 ^ Math.imul(this.#yearIndex + 77, 0x9e3779b1));
-      const falls: [number, number, number][] = [
-        [0.775 + 0.02 * rand(), 0.035 + 0.015 * rand(), 0.7 + 0.3 * rand()],
-        [0.87 + 0.03 * rand(), 0.03 + 0.02 * rand(), 0.6 + 0.4 * rand()],
-      ];
-      for (const [start, span, strength] of falls)
-        falling +=
-          strength *
-          smoothstep(start, start + 0.006, y) *
-          (1 - smoothstep(start + span - 0.006, start + span, y));
-      if (this.#flurryLeft > 0) {
-        this.#flurryLeft -= dt;
-        const f = this.#flurryLeft / FLURRY;
-        falling = Math.max(falling, 0.75 * smoothstep(0, 0.15, f) * smoothstep(1, 0.85, f));
-      }
-      falling *= this.#snowAmount * 1.2;
-    } else {
-      this.#flurryLeft = 0;
-    }
-    this.#falling = Math.min(1, falling);
-    // Snow keeps while the climate's cold would lay snow of its own (src/climate.ts).
-    const cold = climateLying(climateCold(y)) > 0;
-    const melt = cold ? SNOW_MELT_COLD : SNOW_MELT_WARM;
+    // The World's snow falling, or its rain falling as snow in the cold of the tree's year.
+    const cold = climateCold(y);
+    this.#falling = Math.min(
+      1,
+      fallingSnow(this.#rainAmount, this.#snowAmount, cold) * SNOW_FALL_GAIN,
+    );
+    // Snow keeps while the climate's cold would lay snow of its own, and deep winter lays that much
+    // whatever falls, as it does on every scene's ground (src/climate.ts).
+    const laid = climateLying(cold);
+    const melt = laid > 0 ? SNOW_MELT_COLD : SNOW_MELT_WARM;
     this.#lying += (SNOW_SETTLE * this.#falling * (1 - this.#lying) - melt * this.#lying) * dt;
-    this.#lying = Math.max(0, Math.min(1, this.#lying));
+    this.#lying = Math.max(laid, Math.min(1, this.#lying));
   }
 
   // ---- falling leaves, petals, needles ----

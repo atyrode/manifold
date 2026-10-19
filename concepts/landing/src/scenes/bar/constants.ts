@@ -29,6 +29,10 @@ export const BAR_RIG: Rig = {
  */
 export const BAR_ROOM: Room = {
   distance: 1,
+  // Its own shell layers cover the composer's wall; it lets no World in through a window element.
+  back: 1,
+  facing: 0,
+  material: "plaster",
   wall: [0.02, 0.016, 0.014],
   ambient: [0, 0, 0],
 };

@@ -32,7 +32,7 @@ export const shaftWallLayer: LayerDef = {
     "shaftWall",
     "wall in the light",
     false,
-    "A quiet, dark room: light from a window off to the left crossing it in a hazy shaft and lying on the plaster wall as a tall pane, the shadows of what stands in the room drifting over it.",
+    "A quiet, dark room: the World's light from a window off to the left (the sun, or the moon at night) crossing it in a hazy shaft and lying on the plaster wall as a tall pane, the shadows of what stands in the room drifting over it.",
     { icon: "mountain" },
   ),
   params: [
@@ -43,28 +43,7 @@ export const shaftWallLayer: LayerDef = {
       true,
       "brightness",
       0.7,
-      "Light from a window off to the left, falling across the plume onto the wall behind. The smoke lights up where it drifts through it, brightest in its thinnest wisps, and its shadows curl across the patch of light on the plaster.",
-    ),
-    range(
-      "light",
-      "angle",
-      "light angle",
-      0.4,
-      "Where the light comes from: low and raking from the left, or steep from high up.",
-      { when: "window" },
-    ),
-    choice(
-      "light",
-      "tint",
-      "light colour",
-      [
-        { label: "moon", value: 0 },
-        { label: "morning", value: 1 },
-        { label: "late sun", value: 2 },
-      ],
-      0,
-      "Cool moonlight, a pale morning, or the low gold of a late afternoon.",
-      { when: "window" },
+      "Light from a window off to the left, the World's sun or moon at its hour, falling across the plume onto the wall behind: raking low near sunrise and sunset, steep at noon, gold late in the day, cool by moonlight. The smoke lights up where it drifts through it, brightest in its thinnest wisps, and its shadows curl across the patch of light on the plaster.",
     ),
     choice(
       "light",

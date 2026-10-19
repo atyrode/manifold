@@ -33,11 +33,13 @@ export const trainVariant: Variant = {
   planets: { group: "sky", across: [-64, -35, 18], up: [2, 13, 24] },
   // The room shows no World through its window (compose.ts).
   layers: {
-    remove: ["cityWindow", "sill"],
+    remove: ["cityWindow"],
     add: ["nightLine", "compartment", "teaGlass", "velvetCurtain"],
   },
   camera: TRAIN_RIG,
   room: TRAIN_ROOM,
+  // Its own shell: none of the baseline's window and lamp.
+  elements: [],
   // The train's own grade: its vignette from half a screen height out, its ink.
   grade: {
     vignette: 0.3,

@@ -69,6 +69,7 @@ const uniformNames = [
   "uConMarkLine",
   "uPlanets",
   "uPlanetCount",
+  "uElements",
   "uTriggers",
   "uMotionTriggers",
   "uSim0",
@@ -291,7 +292,7 @@ export class ScenePrograms {
         const values = settingKeyed(def)
           ? Object.fromEntries(def.params.map((knob, index) => [knob.key, s.params[index] ?? 0]))
           : undefined;
-        const features = sceneFeatures(def, values, s.planets, s.agents > 0);
+        const features = sceneFeatures(def, values, s.planets, s.agents > 0, s.elements.list);
         const all = sceneFeaturesAll(def, values);
         const allKey = all === undefined ? undefined : featureKey(all);
         wanted = {

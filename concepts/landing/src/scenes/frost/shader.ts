@@ -471,7 +471,7 @@ World frostWorld;
 // The World now, through the window: the moon in its phase (its disc, halo and light on the land),
 // the snow cloud's overcast and the light under it; the light the frost glints in.
 void frostViewBegin(Ctx x) {
-  frostWorld = worldAt(TRIGGER_meteors, TRIGGER_lightning);
+  frostWorld = roomWorld;
   frostKey = frostKeyLight(x.aspect);
 }
 

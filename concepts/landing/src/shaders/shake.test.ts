@@ -161,16 +161,20 @@ void main() { o = vec4(a()); }
 /**
  * Each scene's shaken program may grow to about 10% past its size when the ceiling was last set,
  * in characters: [default program, all-features program]. A scene past it has grown its compile
- * cost; raise its ceiling on purpose, or find what it pulled in.
+ * cost; raise its ceiling on purpose, or find what it pulled in. The nine rooms' (bar, bonsai,
+ * frost, incense, lava, mobile, room, sill, train) stand 8% over their sizes once the interior's
+ * shell went into every room program (ADR 0062 "Baselines and variants", step 2): its wall, window
+ * and ledge, the World's light through its windows (the light-only World where no glass is in
+ * frame), the eight element slots and their bodies.
  */
 const BUDGET = {
   autumn: [90500, 181500],
   bamboo: [103500, 195000],
   // The all-features program is the composer's (ADR 0062): the one a layer's turn plays in.
-  bar: [122500, 129000],
+  bar: [128500, 131000],
   bees: [114500, 191000],
   // The all-features program is the composer's (ADR 0062): the one a layer's turn plays in.
-  bonsai: [59500, 66500],
+  bonsai: [77000, 81500],
   campfire: [122500, 169000],
   chladni: [23000],
   clouds: [59500, 104500],
@@ -190,23 +194,23 @@ const BUDGET = {
   fractal: [34000],
   // The all-features program is the interior composer's (ADR 0062): the World's every gate (its rain,
   // fog, lightning and cloud parts, new to the frost's window) and the layers' turns.
-  frost: [68000, 139500],
+  frost: [78000, 142000],
   garden: [97000, 127500],
   harmonograph: [17000],
   hyperbolic: [24000],
   // The interior composer's room program (ADR 0062): its context, its layers' passes and the shared
   // cell state; the all-features program is the one a layer's turn plays in.
-  incense: [43000, 46000],
+  incense: [61500, 66000],
   // All features: the World's every part and the layers' turns since its port (171,849 then).
   island: [89500, 189000],
   kelp: [67500],
   lake: [89000, 179500],
   lanterns: [84500, 178500],
-  lava: [39500, 42500],
+  lava: [56500, 60500],
   marble: [20000],
   meadow: [106000, 184000],
   // The all-features program is the composer's (ADR 0062): the one a layer's turn plays in.
-  mobile: [39000, 40000],
+  mobile: [41500, 44000],
   orbit: [21000, 33500],
   pearl: [14000],
   pendula: [25500, 30500],
@@ -215,19 +219,19 @@ const BUDGET = {
   pond: [49000, 52500],
   prism: [23000],
   ripple: [23000, 26500],
-  // The interior composer's baseline (ADR 0062 D13): the sill's window and sill alone; its
+  // The interior composer's baseline (ADR 0062 D13): the shell's window and sill alone; its
   // all-features program hangs the planets in the window's sky, as the sill's does.
-  room: [92500, 158000],
+  room: [103500, 167500],
   // Composed (ADR 0062 Phase 4): its all-features program, new, is the one a layer's turn plays in.
   sandtable: [26000, 29000],
   shanshui: [54000],
   shore: [104000, 182000],
-  sill: [114000, 181000],
+  sill: [126500, 190500],
   skyward: [93000, 176500],
   street: [129500, 212000],
   swell: [82500, 154000],
   tidepool: [53000, 58000],
-  train: [154000, 199000],
+  train: [160500, 211500],
 } as const satisfies Record<SceneId, readonly [number, number?]>;
 
 const loaded = await Promise.all(sceneIds.map(async (id) => ({ id, scene: await loadScene(id) })));

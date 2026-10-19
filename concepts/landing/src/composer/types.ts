@@ -475,6 +475,8 @@ export interface ScenePreset extends PresetBase {
   readonly floor: FloorKind;
   /** The `interior` composer's room (README "The interior composer"); required there, unused outdoors. */
   readonly room?: Room;
+  /** A room's light elements (composer/elements.ts): what a link without `elements=` holds. */
+  readonly elements?: readonly LightElement[];
 }
 
 /**
@@ -488,21 +490,40 @@ export interface ScenePreset extends PresetBase {
 export interface Room {
   /** From the eye to the seat line (m). */
   readonly distance: number;
+  /** From the eye to the back wall (m): the shell's wall stands there (composer/shell.ts). */
+  readonly back: number;
+  /**
+   * The yaw from the staged sky's ahead to the room's forward (radians, as `Rig.turn` outdoors): the
+   * World's sun and moon come in through its windows from there (ADR 0062 D19).
+   */
+  readonly facing: number;
   /** The back wall's albedo, where no backdrop covers it. */
   readonly wall: readonly [number, number, number];
-  /** The room's light all round, beside its lamp, the window's daylight and the layers' lights. */
+  /** What the back wall is (the shell's wall, composer/shell.ts). */
+  readonly material: WallMaterial;
+  /** The room's light all round, beside its elements, the World through its windows and the layers' lights. */
   readonly ambient: readonly [number, number, number];
-  /**
-   * The room's own lamp, out of frame, where it has one (the sill's reading lamp): its colour times
-   * `gain` times `1 / (1 + 6 |d|²)`, d the frame point's offset from the lamp (`at`: x past the
-   * frame's right edge, y up from its centre, screen heights) squashed `squash` times in height.
-   */
-  readonly lamp?: {
-    readonly at: readonly [number, number];
-    readonly squash: number;
-    readonly color: readonly [number, number, number];
-    readonly gain: number;
-  };
+  /** The shell's ledge across the front of the view; none where a ground layer draws its own. */
+  readonly ledge?: Ledge;
+}
+
+/** What the shell's back wall is (ADR 0062 "The interior baseline"). */
+export type WallMaterial = "plaster" | "papered" | "shoji" | "alcove" | "panel";
+
+/** What the shell's ledge is: a window's sill, a sideboard, a stand, a low table. */
+export type LedgeKind = "sill" | "sideboard" | "stand" | "table";
+
+/**
+ * The shell's ledge: its top at the rig's floor (the eye `Rig.eye` over it) from its front edge,
+ * `front` metres ahead of the eye, back to the wall; `half` its half width (m), its top `thick`
+ * metres thick, its wood's albedo.
+ */
+export interface Ledge {
+  readonly kind: LedgeKind;
+  readonly front: number;
+  readonly half: number;
+  readonly thick: number;
+  readonly albedo: readonly [number, number, number];
 }
 
 /** Where the room's seat line stands on the frame (screen heights up from its centre) and its scale. */
@@ -518,10 +539,12 @@ export interface RoomFrame {
 export type ElementKind = "window" | "lamp" | "candle" | "neon" | "fire" | "screen";
 
 /**
- * A placed light (ADR 0062 "Light elements", D17): `at` in metres in the composer's frame, free to
- * stand out of it; its colour, its power, how far it reaches, how much it flickers (on
- * `uMotionTime`), and whether it throws shadows. Elements are drawn from step 2 of the ADR's order
- * of work; until then every preset's list is empty (`variantPreset` refuses any other).
+ * A placed light (ADR 0062 "Light elements", D17): `at` in metres in the room's frame (x across from
+ * the centre line, y up from the ledge's top, z ahead of the eye), free to stand out of frame; its
+ * colour, its power, how far it reaches (m), how much it flickers (on `uMotionTime`), and whether it
+ * throws shadows (`roomCaster` toward it). A window's `at` is its opening's centre on its wall, its
+ * colour a tint on the World's light through it, its `shadow` whether the World's key through it
+ * throws the room's shadows (composer/elements.ts, shell.ts).
  */
 export interface LightElement {
   readonly kind: ElementKind;
@@ -531,6 +554,23 @@ export interface LightElement {
   readonly reach: number;
   readonly flicker: number;
   readonly shadow: boolean;
+  /** A window's frame: required for a window, unused by the other kinds. */
+  readonly window?: WindowFrame;
+}
+
+/** Which wall a window stands in: the back, the left, the right, or the front (behind the eye). */
+export type WindowWall = "back" | "left" | "right" | "front";
+
+/**
+ * A window's frame: its wall, its opening's width and height (m), its glazing bars (panes across
+ * and up), and for a raised sash the height of its bottom rail over the opening's foot (m), open
+ * below it.
+ */
+export interface WindowFrame {
+  readonly wall: WindowWall;
+  readonly size: readonly [width: number, height: number];
+  readonly bars: readonly [across: number, up: number];
+  readonly sash?: number;
 }
 
 /**

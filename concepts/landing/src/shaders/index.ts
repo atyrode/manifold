@@ -12,6 +12,8 @@
 // comments gone and only what `main` reaches, line for line (`fragmentSourceFor`).
 
 import { seasonKnob, yearCycleKnob, yearNowGlsl } from "../climate.ts";
+import { elementFeatures } from "../composer/elements.ts";
+import type { LightElement } from "../composer/types.ts";
 import { effective, MAX_PARAMS, type Widget } from "../params.ts";
 import { phaseDefines } from "../rate-phase.ts";
 import { openingPlanets, planetUniforms, type PlanetUniforms } from "../scenes/planets.ts";
@@ -158,31 +160,35 @@ export function settingKeyed(scene: SceneDef): boolean {
 /**
  * The compile-time features of `scene`'s program for knob values as its shader reads them (keyed by
  * knob key; default: the scene's defaults), the planets it holds as skyGiant takes them (default:
- * those it opens with) and whether other principals' cursors are drawn over it (`cursors`):
- * `features`, its library gates and `featuresFor(values)` over them, and CURSORS_GATE while
- * `cursors`.
+ * those it opens with), whether other principals' cursors are drawn over it (`cursors`) and a room's
+ * light elements (default: those it opens with): `features`, its library gates and
+ * `featuresFor(values)` over them, CURSORS_GATE while `cursors`, and the elements' count and kinds
+ * (composer/elements.ts `elementFeatures`).
  */
 export function sceneFeatures(
   scene: SceneDef,
   values?: Readonly<Record<string, number>>,
   planets?: PlanetUniforms,
   cursors = false,
+  elements?: readonly LightElement[],
 ): Readonly<Record<string, number>> {
   const own = settingKeyed(scene)
     ? keyedFeatures(
         scene,
         values ?? shaderValues(scene),
         planets ?? planetUniforms(scene.planets === undefined ? [] : openingPlanets(scene.planets)),
+        elements,
       )
     : (scene.features ?? {});
   return cursors ? { ...own, [CURSORS_GATE]: 1 } : own;
 }
 
-/** A setting-keyed scene's features for these knob values and planets (see `sceneFeatures`). */
+/** A setting-keyed scene's features for these knob values, planets and elements (see `sceneFeatures`). */
 function keyedFeatures(
   scene: SceneDef,
   knobs: Readonly<Record<string, number>>,
   planets: PlanetUniforms,
+  elements: readonly LightElement[] | undefined,
 ): Readonly<Record<string, number>> {
   return {
     ...scene.features,
@@ -196,6 +202,7 @@ function keyedFeatures(
           [SEVERAL_PLANETS_GATE]: planets.count > 1 ? 1 : 0,
           ...planets.gates,
         }),
+    ...(scene.elements === undefined ? {} : elementFeatures(elements ?? scene.elements.defaults)),
     ...scene.featuresFor?.(knobs),
   };
 }
@@ -224,6 +231,9 @@ export function sceneFeaturesAll(
     ...scene.features,
     ...Object.fromEntries(libraryGates(scene).map(([, gate]) => [gate, 1])),
     ...(scene.planets === undefined ? {} : PLANET_GATES_ALL),
+    // A room's elements are compiled in by count and kind: its all-features program draws those
+    // it opens with, and another list builds its own program.
+    ...(scene.elements === undefined ? {} : elementFeatures(scene.elements.defaults)),
     ...(scene.featuresAllFor?.(values ?? shaderValues(scene)) ?? scene.featuresAll),
     [CURSORS_GATE]: 1,
   };

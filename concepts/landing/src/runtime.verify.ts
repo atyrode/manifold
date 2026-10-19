@@ -331,7 +331,12 @@ export async function verifyRuntime(_gl: WebGL2RenderingContext): Promise<Record
     // being built would throw (temporal dead zone), so the Lab must not.
     let applied = 0;
     new Lab(document.createElement("aside"), document.createElement("button"), {
-      current: () => ({ state: defaultsFor("pond"), params: paramDefaults("pond"), planets: [] }),
+      current: () => ({
+        state: defaultsFor("pond"),
+        params: paramDefaults("pond"),
+        planets: [],
+        elements: [],
+      }),
       apply: () => {
         applied++;
       },

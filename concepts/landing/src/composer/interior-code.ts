@@ -35,7 +35,6 @@ import {
   cityWindowGlsl,
   curtainGlsl,
   propsGlsl,
-  sillGroundGlsl,
   sillSharedGlsl,
 } from "../scenes/sill/shader.ts";
 import { catSim } from "../scenes/sill/sim.ts";
@@ -52,7 +51,6 @@ import type { LayerCode } from "./types.ts";
 export const INTERIOR_CODE: Readonly<Record<string, LayerCode>> = {
   cityWindow: { glsl: () => cityWindowGlsl, shared: [sillSharedGlsl] },
   papered: { glsl: () => paperedGlsl, shared: [lavaSharedGlsl] },
-  sill: { glsl: () => sillGroundGlsl, shared: [sillSharedGlsl] },
   sideboard: { glsl: () => sideboardGlsl, shared: [lavaSharedGlsl] },
   props: { glsl: () => propsGlsl, shared: [sillSharedGlsl] },
   lavaLamp: { glsl: () => lavaLampGlsl, shared: [lavaSharedGlsl], sim: lavaLampSim },

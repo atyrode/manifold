@@ -1,6 +1,6 @@
 // The constants Incense's definition (index.ts, layers.ts) shares with its code (sim.ts, shader.ts),
 // kept apart from that code so that the scene registry loads without it (SceneDef.code).
-import type { Rig, Room } from "../../composer/types.ts";
+import type { LightElement, Rig, Room } from "../../composer/types.ts";
 
 /** What burns, in `stick` knob order. */
 export const incenseKinds = ["stick", "cone", "coil", "waterfall"] as const;
@@ -33,12 +33,30 @@ export const INCENSE_RIG: Rig = {
 /**
  * The room: no wall of its own shows (the shaft wall covers it), no lamp out of frame and no light
  * all round of its own (the shaft wall's dark room keeps its own); a guest's light reaches the wall
- * and the table through roomLight.
+ * and the table through roomLight. It faces a quarter turn left of the staged sky's ahead, so the
+ * World's moon at midnight comes in through the window off to the left about 30 degrees up, and
+ * the sun by day from the same side, low at its ends and steep at noon.
  */
 export const INCENSE_ROOM: Room = {
   distance: 1,
+  // Its own shell layers cover the composer's wall.
+  back: 1,
+  facing: -Math.PI / 2,
+  material: "plaster",
   wall: [0.022, 0.028, 0.052],
   ambient: [0, 0, 0],
+};
+
+/** The window off to the left the shaft comes in through (the shaft wall draws it). */
+export const INCENSE_WINDOW: LightElement = {
+  kind: "window",
+  at: [-1.2, 1.1, 1.2],
+  colour: [1, 1, 1],
+  power: 0.3,
+  reach: 1,
+  flicker: 0,
+  shadow: false,
+  window: { wall: "left", size: [0.6, 0.9], bars: [1, 1] },
 };
 
 /** The incense's layers are drawn on its frame, through this rig alone. */

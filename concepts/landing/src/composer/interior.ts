@@ -1,12 +1,14 @@
 // The `interior` composer (ADR 0062 Phase 3, README "The interior composer"): a room seen by a level
 // eye over a ledge, its baseline (ADR 0062 "The interior baseline": the empty room every room is a
 // variant of) and its layers in canonical order, the order they are placed in and paint in
-// (room.ts). The manifests alone: their code is in interior-code.ts, which a composed scene's code
-// module loads.
-//   backdrops  cityWindow (sill), papered (lava), veranda (bonsai), shaftWall (incense), frostView
-//              (frost), storefront (bar), nightLine (train), quietRoom (mobile)
-//   grounds    sill (sill), sideboard (lava), stand (bonsai), lowTable (incense), booth (bar),
-//              compartment (train)
+// (room.ts). The shell (the back wall, its windows, the ledge, the light elements) is the
+// composer's own, drawn from the rig in metres (shell.ts) from each preset's Room and elements. The
+// manifests alone: their code is in interior-code.ts, which a composed scene's code module loads.
+//   backdrops  cityWindow (sill: the city seen through the shell's window), papered (lava: its shelf),
+//              veranda (bonsai), shaftWall (incense), frostView (frost), storefront (bar), nightLine
+//              (train), quietRoom (mobile)
+//   grounds    sideboard (lava: the lamp's cord and the record on the shell's sideboard), stand
+//              (bonsai), lowTable (incense), booth (bar), compartment (train)
 //   dressings  props (sill), incense (incense; before the lamp, whose `hand` it keeps unqualified),
 //              backBar, pendants, ceilingFan (bar), teaGlass, velvetCurtain (train; before the lamp,
 //              whose `mark` and the like they keep unqualified), solarMobile (mobile; its Sun's
@@ -26,14 +28,8 @@ import { frostGlassLayer, frostViewLayer } from "../scenes/frost/layers.ts";
 import { incenseLayer, lowTableLayer, shaftWallLayer } from "../scenes/incense/layers.ts";
 import { lavaLampLayer, paperedLayer, sideboardLayer } from "../scenes/lava/layers.ts";
 import { quietRoomLayer, solarMobileLayer } from "../scenes/mobile/layers.ts";
-import { SILL_RIG, SILL_ROOM } from "../scenes/sill/constants.ts";
-import {
-  catLayer,
-  cityWindowLayer,
-  curtainLayer,
-  propsLayer,
-  sillLayer,
-} from "../scenes/sill/layers.ts";
+import { READING_LAMP, SILL_RIG, SILL_ROOM, SILL_WINDOW } from "../scenes/sill/constants.ts";
+import { catLayer, cityWindowLayer, curtainLayer, propsLayer } from "../scenes/sill/layers.ts";
 import {
   compartmentLayer,
   nightLineLayer,
@@ -45,10 +41,11 @@ import type { Baseline } from "./types.ts";
 
 export const interior: Composer & { readonly baseline: Baseline } = {
   id: "interior",
-  // An empty room at dusk at the sill's rest pose: the window onto the city over the bare sill, the
-  // plum wall, the reading lamp out of frame, the plainest ink the rooms share (the incense's and
-  // the frost's) and no vignette; no light elements yet (ADR 0062 step 2). Until the shell is one in
-  // metres (step 2), a variant on its own shell layers brings its camera and its room with them.
+  // An empty room at dusk at the sill's rest pose: the shell's plum plaster wall and its sill (Room,
+  // composer/shell.ts), a sash window in the back wall onto the city (its view, `cityWindow`), the
+  // reading lamp out of frame, the plainest ink the rooms share (the incense's and the frost's) and
+  // no vignette. The World lights it through the window (Room.facing), dated at the room's anchor.
+  // A variant on its own shell layers still brings its camera and its room with them.
   // Its own scene is `room`, lab-only (D13).
   baseline: {
     composer: "interior",
@@ -69,9 +66,9 @@ export const interior: Composer & { readonly baseline: Baseline } = {
     meteors: [-0.5, 0.3, 1, 0.12],
     flyway: { depth: [16, 120], above: 0.04, top: 0.9, seed: 3.1, skim: 10, spread: 1, ext: 0.004 },
     floor: "earth",
-    layers: ["cityWindow", "sill"],
+    layers: ["cityWindow"],
     values: {},
-    elements: [],
+    elements: [SILL_WINDOW, READING_LAMP],
   },
   layers: [
     cityWindowLayer,
@@ -82,7 +79,6 @@ export const interior: Composer & { readonly baseline: Baseline } = {
     storefrontLayer,
     nightLineLayer,
     quietRoomLayer,
-    sillLayer,
     sideboardLayer,
     standLayer,
     lowTableLayer,

@@ -1,11 +1,9 @@
 // The window sill's layers (ADR 0062 Phase 3): their manifests, which load without their code
-// (code.ts). Every one is drawn on the sill's frame, through its rig alone (ON_THE_SILL).
-//   cityWindow  backdrop: the sash window in the back wall, raised onto the city at dusk; the World's
-//               sky and weather cross its glass, the city's windows and the neon M across the street.
-//               Its light comes into the room (its daylight); its panes are glass for a frost glass
-//               (its glass, roomGlass).
-//   sill        ground: the sill's wooden top in the reading lamp's pool, its nosing, the wall and the
-//               radiator under it.
+// (code.ts). Every one is drawn on the sill's frame, through its rig alone (ON_THE_SILL). The wall,
+// the sash window's frame and the sill itself are the room's shell (composer/shell.ts).
+//   cityWindow  backdrop: the view through the shell's back window, a city at dusk; the World's sky
+//               and weather cross its glass, the city's windows and the neon M across the street.
+//               Its panes are glass for a frost glass (its glass, roomGlass).
 //   props       dressing: the plant, the mug and the books on the sill, the steam off the mug.
 //   cat         dressing: the cat on the sill, watching the city.
 //   curtain     dressing: the linen curtain at the left of the window.
@@ -30,7 +28,7 @@ export const cityWindowLayer: LayerDef = {
     "cityWindow",
     "window onto the city",
     false,
-    "A sash window raised onto a city at dusk: three rows of skyline with windows switching on and off, a neon M on the roof across the street, the World's sky and weather over it all. Its light comes in onto the room.",
+    "A city at dusk through the window: three rows of skyline with windows switching on and off, a neon M on the roof across the street, the World's sky and weather over it all.",
     { icon: "mountain" },
   ),
   params: [
@@ -70,27 +68,7 @@ export const cityWindowLayer: LayerDef = {
   },
   triggers: ["neon"],
   mark: "neon",
-  passes: { far: "cityWindowFar", daylight: "cityWindowDaylight", glass: "cityWindowGlass" },
-};
-
-export const sillLayer: LayerDef = {
-  id: "sill",
-  title: "Sill",
-  composers: ["interior"],
-  role: "ground",
-  bands: ["front"],
-  space: { anchors: [], claims: [] },
-  camera: ON_THE_SILL,
-  switch: toggle(
-    "layers",
-    "sill",
-    "sill",
-    false,
-    "The window's wooden sill in the reading lamp's pool, wet by the window when rain blows in, and the old radiator under it.",
-  ),
-  params: [],
-  groups: {},
-  passes: { ground: "sillGround" },
+  passes: { far: "cityWindowFar", glass: "cityWindowGlass" },
 };
 
 export const propsLayer: LayerDef = {

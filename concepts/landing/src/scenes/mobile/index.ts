@@ -30,9 +30,11 @@ export const mobileVariant: Variant = {
   // the Sun cools and the mobile is hoisted away.
   passage: MOBILE_PASSAGE,
   // The room shows no World through a window (compose.ts).
-  layers: { remove: ["cityWindow", "sill"], add: ["quietRoom", "solarMobile"] },
+  layers: { remove: ["cityWindow"], add: ["quietRoom", "solarMobile"] },
   camera: MOBILE_RIG,
   room: MOBILE_ROOM,
+  // Its own shell: none of the baseline's window and lamp.
+  elements: [],
   // The mobile's own ink; its night room's falling away is the quiet room's (its front veil).
   grade: { ink: { gain: 1.4, gamma: 0.8 } },
 };

@@ -46,6 +46,7 @@ import {
   worldPatchKnobs,
 } from "../scenes/world.ts";
 import { COMPOSER_CAPS } from "./caps.ts";
+import { checkElements, ElementError, LIGHT_CAP, roomListsWorld } from "./elements.ts";
 import { admits, place, type Placement } from "./place.ts";
 import type {
   AnyPreset,
@@ -185,19 +186,59 @@ function composerKnobs(season: ParamDef | undefined): ParamDef[] {
 }
 
 /**
+ * A room's date (ADR 0062 D20): every room that lists the World lists it, at one anchor, the
+ * interior baseline's (its default: SKY_DATE_ANCHOR stands the staged sky there), so the date moves
+ * the sun through its windows; a variant pins its own through its values.
+ */
+const ROOM_DATE = range(
+  "sky",
+  "season",
+  "date",
+  0.62,
+  "The day of the year, spring at the left end, then summer, autumn and winter: the sun stands higher and longer by summer, lower and shorter by winter, and its light through the room's windows moves with it.",
+  { steady: true, widget: { kind: "sky", part: "season", year: { span: [0, 1] } } },
+);
+
+/**
+ * The World's knobs a room without glass in frame lists (the light-only World): its clock, its moon,
+ * the rain, the snow and the storm that close it over, the aurora's glow; neither its stars, its deck
+ * nor its shooting stars, which no window shows.
+ */
+const LIGHT_ONLY_WORLD: Readonly<Record<string, true>> = {
+  time: true,
+  cycle: true,
+  moon: true,
+  rain: true,
+  snow: true,
+  lightning: true,
+  aurora: true,
+  wind: true,
+};
+
+/** The light-only World's gates: no shooting stars (no window shows them, no slot is held). */
+const LIGHT_ONLY_GATES = { WORLD_METEORS: 0, WORLD_METEOR_RATE: 0 } as const;
+
+/** The light-only World's all-features gates: every setting of its knobs, nothing else compiled. */
+const LIGHT_ONLY_ALL = {
+  ...worldFeatures(
+    { time: 0, cycle: 1, aurora: 1, rain: 1, snow: 1, lightning: 1, moon: 0.5 },
+    true,
+  ),
+  ...LIGHT_ONLY_GATES,
+};
+
+/**
  * The scene preset `variant` makes over `baseline` (ADR 0062 D14): the variant's identity; the
  * baseline's home layers less those it removes, then those it adds; the baseline's values under
  * its own; its camera's rest pose and its room for the baseline's; its grade key by key over the
- * baseline's; the baseline's World, floor, meteors and flyway. A variant over another composer's
- * baseline is a ComposeError, as are light elements until they are drawn (ADR 0062 step 2).
+ * baseline's; its light elements for the baseline's; the baseline's World, floor, meteors and
+ * flyway. A variant over another composer's baseline is a ComposeError.
  */
 export function variantPreset(baseline: Baseline, variant: Variant): ScenePreset {
   if (variant.base !== baseline.composer)
     throw new ComposeError(
       `variant ${variant.id} is over the ${variant.base} baseline, not the ${baseline.composer}`,
     );
-  if ((variant.elements ?? baseline.elements).length > 0)
-    throw new ComposeError(`variant ${variant.id}: light elements are not drawn yet`);
   const remove = new Set(variant.layers?.remove);
   const room = variant.room ?? baseline.room;
   return {
@@ -213,6 +254,7 @@ export function variantPreset(baseline: Baseline, variant: Variant): ScenePreset
     composer: baseline.composer,
     rig: variant.camera ?? baseline.rig,
     ...(room === undefined ? {} : { room }),
+    elements: variant.elements ?? baseline.elements,
     grade: { ...baseline.grade, ...variant.grade },
     world: baseline.world,
     meteors: baseline.meteors,
@@ -248,26 +290,46 @@ export function composeScene<P extends AnyPreset>(composer: Composer, preset: P)
   /** An eye-level preset, under the World; undefined for one seen from above. */
   const kind: AnyPreset = preset;
   const level = kind.composer === "overhead" ? undefined : kind;
-  // A room lists the World only while a window looks out of it, and neither the gusts nor the
+  // A room lists the World while a window looks out of it or a window element lets it in (the
+  // light-only World where no glass is in frame), with its date; never the gusts nor the
   // arrangement: nothing in it sways in the gust field or stands where a seed puts it (README "The
   // interior composer").
   const indoors = composer.id === "interior";
   if (indoors && level?.room === undefined)
     throw new ComposeError(`preset ${preset.id}: an interior preset needs its room`);
+  if (indoors) {
+    const lights = offered
+      .filter((layer) => home.has(layer.id))
+      .reduce((sum, layer) => sum + (layer.lights?.length ?? 0), 0);
+    try {
+      checkElements(level?.elements ?? [], lights);
+    } catch (error) {
+      if (error instanceof ElementError)
+        throw new ComposeError(`preset ${preset.id}: ${error.message}`);
+      throw error;
+    }
+  }
+  const looksOut = offered.some((l) => l.window === true);
 
-  // Trigger slots and keys: a room has no gusts, so its layers' slots follow the World's two while a
-  // window lists the World, and start at 0 in a room without one; a patch seen from above has no
-  // World, so its layers' start at 0. No slot is held for a knob the preset does not list.
-  const listsWorld = level !== undefined && (!indoors || offered.some((l) => l.window === true));
+  // Trigger slots and keys: a room has no gusts, so its layers' slots follow the World's two while
+  // it lists the World (the lightning's alone, at 0, while it lists the light-only World: no
+  // shooting star crosses a room without glass), and start at 0 in a room without; a patch seen
+  // from above has no World, so its layers' start at 0. No slot is held for a knob the preset does
+  // not list.
+  const listsWorld = level !== undefined && (!indoors || roomListsWorld(level, offered));
+  const lightOnly = indoors && !looksOut;
+  const lightning = lightOnly ? 0 : WORLD_TRIGGERS.lightning;
   const triggers: Record<string, number> = !listsWorld
     ? {}
-    : indoors
-      ? { meteors: WORLD_TRIGGERS.meteors, lightning: WORLD_TRIGGERS.lightning }
-      : { ...WORLD_TRIGGERS };
-  let slot = !listsWorld ? 0 : (indoors ? WORLD_TRIGGERS.lightning : WORLD_TRIGGERS.gusts) + 1;
+    : lightOnly
+      ? { lightning }
+      : indoors
+        ? { meteors: WORLD_TRIGGERS.meteors, lightning }
+        : { ...WORLD_TRIGGERS };
+  let slot = !listsWorld ? 0 : (indoors ? lightning : WORLD_TRIGGERS.gusts) + 1;
   // A room's window shows the World's sky and weather; its birds fly no window yet, so a room lists
-  // none of their knobs. A patch seen from above shows the World's rain and wind where it is open
-  // to the sky.
+  // none of their knobs, and a room with no glass in frame lists the light-only World's. A patch
+  // seen from above shows the World's rain and wind where it is open to the sky.
   const open = level === undefined && offered.some((layer) => layer.open === true);
   const world =
     level === undefined
@@ -279,13 +341,26 @@ export function composeScene<P extends AnyPreset>(composer: Composer, preset: P)
         : worldKnobs({
             ...level.world,
             meteors: { trigger: WORLD_TRIGGERS.meteors },
-            lightning: WORLD_TRIGGERS.lightning,
+            lightning,
             groups: { ...level.world.groups, ...(indoors ? {} : { wind: "wind" }) },
-          }).filter((def) => !indoors || !["birds", "birdKind", "birdFormation"].includes(def.key));
+          }).filter(
+            (def) =>
+              !indoors ||
+              (looksOut
+                ? !["birds", "birdKind", "birdFormation"].includes(def.key)
+                : LIGHT_ONLY_WORLD[def.key] === true),
+          );
   const season = offered.find((layer) => layer.season !== undefined)?.season;
   if (season !== undefined && season.key !== "season")
     throw new ComposeError(`preset ${preset.id}: a layer's season knob is keyed ${season.key}`);
-  const own = level === undefined || indoors ? [] : composerKnobs(season);
+  const own =
+    level === undefined
+      ? []
+      : indoors
+        ? listsWorld
+          ? [season ?? ROOM_DATE]
+          : []
+        : composerKnobs(season);
   const taken = new Set([...world, ...own].map((def) => def.key));
   const keys: Record<string, Record<string, string>> = {};
   const switches: ParamDef[] = [];
@@ -493,6 +568,14 @@ export function composeScene<P extends AnyPreset>(composer: Composer, preset: P)
     params,
     groups,
     ...(level?.planets === undefined ? {} : { planets: level.planets }),
+    ...(!indoors
+      ? {}
+      : {
+          elements: {
+            defaults: level?.elements ?? [],
+            cap: LIGHT_CAP - offered.reduce((sum, layer) => sum + (layer.lights?.length ?? 0), 0),
+          },
+        }),
     ...(preset.passage === undefined ? {} : { passage: preset.passage }),
     ...(preset.theme === undefined ? {} : { theme: preset.theme(params) }),
     ...(preset.features === undefined ? {} : { features: preset.features }),
@@ -501,12 +584,18 @@ export function composeScene<P extends AnyPreset>(composer: Composer, preset: P)
         ? open
           ? worldPatchFeatures(values)
           : {}
-        : worldFeatures(values, climate)),
+        : { ...worldFeatures(values, climate), ...(lightOnly ? LIGHT_ONLY_GATES : {}) }),
       ...gatesOf(values, (layer, v) => layer.featuresFor?.(v) ?? {}),
       [TURNS_GATE]: 0,
     }),
     featuresAllFor: (values) => ({
-      ...(level === undefined ? (open ? worldPatchFeatures({ rain: 1 }) : {}) : WORLD_ALL),
+      ...(level === undefined
+        ? open
+          ? worldPatchFeatures({ rain: 1 })
+          : {}
+        : indoors && !looksOut
+          ? LIGHT_ONLY_ALL
+          : WORLD_ALL),
       ...gatesOf(values, (layer) => layer.featuresAll ?? {}),
       [TURNS_GATE]: 1,
     }),

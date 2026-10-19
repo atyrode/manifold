@@ -17,6 +17,7 @@
 //   shaken (src/shaders/shake.ts) to what `main` reaches before it reaches the driver.
 // `uv` is 0..1 with y up, `cell` is the dither cell (gl_FragCoord.xy), `t` the scene clock.
 import type { SceneLayers } from "../composer/compose.ts";
+import type { LightElement } from "../composer/types.ts";
 import type { Blurb, ParamDef } from "../params.ts";
 import type { SkyPlanets } from "./planets.ts";
 
@@ -307,6 +308,12 @@ export interface SceneDef {
    * palettes and dress its planets have (their gates, PlanetUniforms.gates).
    */
   planets?: SkyPlanets;
+  /**
+   * A room's light elements (src/composer/elements.ts): the ones it opens with, which a link
+   * without ELEMENTS_KEY holds (`elements=` holds none), and how many a link may hold beside the
+   * lights its layers declare (`cap`). Their kinds and count are compiled in.
+   */
+  elements?: { readonly defaults: readonly LightElement[]; readonly cap: number };
 }
 
 /** A scene with its code loaded (the registry's `loadScene`): what its program and sim are built from. */

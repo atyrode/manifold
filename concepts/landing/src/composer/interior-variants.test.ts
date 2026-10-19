@@ -92,9 +92,13 @@ describe("the redundancy test", () => {
     expect(
       redundancies({
         ...sillVariant,
-        layers: { add: ["sill", "props", "props"], remove: ["papered"] },
+        layers: { add: ["cityWindow", "props", "props"], remove: ["papered"] },
       }),
-    ).toEqual(["adds sill, on already", "adds props, on already", "removes papered, off already"]);
+    ).toEqual([
+      "adds cityWindow, on already",
+      "adds props, on already",
+      "removes papered, off already",
+    ]);
   });
 
   test("refuses the baseline's camera, room, grade and elements", () => {
@@ -104,7 +108,7 @@ describe("the redundancy test", () => {
         camera: { ...baseline.rig },
         room: { ...SILL_ROOM },
         grade: { ink: { gain: 1.25, gamma: 1 }, vignette: 0.28 },
-        elements: [],
+        elements: [...baseline.elements],
       }),
     ).toEqual([
       "camera: the baseline's",

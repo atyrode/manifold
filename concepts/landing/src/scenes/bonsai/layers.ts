@@ -6,28 +6,21 @@
 //               lamp's warm pool at dusk, the shadows of what stands in the room thrown on it (the
 //               room's roomCaster: the tree's, soft by day and big under the lamp; the pot's and the
 //               stand's below it), and the veranda's floorboards with the stand's shadow. Its knobs
-//               are the light: the hour and its day cycle (its own: a room without a window lists no
-//               World), where the sun comes from, the wall, the lamp.
+//               are the wall and the lamp; its light is the World's, through the window behind the
+//               eye (the light-only World: no glass in frame).
 //   stand       ground: the rosewood stand, slid in and out by the passage, with what falls on it.
 //   bonsaiTree  dressing: the tree in its pot on the stand, the moss, the stone with its kintsugi M,
 //               the clay figure, the season's leaves in the air and on the moss, the stand and the
-//               floor, the winter's snow falling and lying; its silhouette is its caster (the
-//               shadows on the wall). Its sim owns the year, the snow, the sway, the shoots and
-//               everything that falls.
+//               floor, the World's snow falling and lying; its silhouette is its caster (the
+//               shadows on the wall). Its sim owns the year, the snow it lays, the sway, the shoots
+//               and everything that falls.
 // Space: the room is laid out on the frame, so claims and anchors are in shares of the frame's width
 // across (at the rig's minAspect, 1) and metres back from the seat line (README "The interior
 // composer").
 import type { LayerDef } from "../../composer/types.ts";
 import { YEAR_CYCLE_RATE } from "../../climate.ts";
-import { choice, feature, range, seed, toggle, type ParamDef } from "../../params.ts";
-import { atmosphereGroups, skyKnobs } from "../atmosphere.ts";
+import { choice, feature, range, seed, toggle } from "../../params.ts";
 import { ON_THE_VERANDA } from "./constants.ts";
-
-// The day passes slowly by default, so the shadow creeps over the wall: afternoon to dusk to the
-// lamp in about ten minutes.
-const sky = skyKnobs({ time: 0.6 }).map((def): ParamDef =>
-  def.kind === "feature" && def.key === "cycle" ? { ...def, on: true, value: 0.1 } : def,
-);
 
 export const verandaLayer: LayerDef = {
   id: "veranda",
@@ -42,19 +35,10 @@ export const verandaLayer: LayerDef = {
     "veranda",
     "veranda",
     false,
-    "The wall behind the tree and the veranda's floorboards, the window's patch of sun creeping over the wall with the hours and the shadows of what stands in the room thrown on it; a paper lamp lit as the light fails.",
+    "The wall behind the tree and the veranda's floorboards, the World's sun through the window behind you laying its patch on the wall and creeping over it with the hours, the shadows of what stands in the room thrown on it; a paper lamp lit as the light fails.",
     { icon: "mountain" },
   ),
   params: [
-    ...sky,
-    range(
-      "light",
-      "light",
-      "sun from",
-      0.35,
-      "Where the sun comes from: the left, the front or the right. The tree's shadow falls across the wall the other way and creeps as the day goes.",
-      { min: -1, max: 1 },
-    ),
     choice(
       "light",
       "wall",
@@ -78,10 +62,9 @@ export const verandaLayer: LayerDef = {
     ),
   ],
   groups: {
-    sky: atmosphereGroups.sky,
     light: {
       title: "Light",
-      blurb: "Where the sun comes from, what stands behind the tree, and the lamp for the evening.",
+      blurb: "What stands behind the tree, and the lamp for the evening.",
     },
   },
   passes: { far: "verandaFar" },
@@ -188,14 +171,6 @@ export const bonsaiTreeLayer: LayerDef = {
       true,
       "Each spring new shoots reach out beyond the pads (candles on the pine), and an unseen gardener trims them back through the summer to keep the shape. Click a shoot or a twig to snip it yourself; it falls and lies with the leaves, and grows back next spring. Now: a snip.",
     ),
-    range(
-      "seasons",
-      "season",
-      "season",
-      0.58,
-      "Where the year stands: spring at the left end, then summer, autumn and winter.",
-      { steady: true, widget: { kind: "sky", part: "season", year: { span: [0, 1] } } },
-    ),
     feature(
       "seasons",
       "year",
@@ -222,15 +197,6 @@ export const bonsaiTreeLayer: LayerDef = {
       "How much comes down when its time comes: maple and cherry leaves in autumn, cherry petals in spring, old pine needles; they settle on the moss, the stand and the floor and rot away through the season. Now: a few let go.",
     ),
     feature(
-      "seasons",
-      "snowfall",
-      "winter snow",
-      true,
-      "amount",
-      0.5,
-      "Snow falls a few times each winter and lies on the branches, the pads, the pot's rim, the moss and the stand, melting as spring comes. Now: a flurry, whatever the season.",
-    ),
-    feature(
       "manifold",
       "mark",
       "kintsugi M",
@@ -240,6 +206,15 @@ export const bonsaiTreeLayer: LayerDef = {
       "The stone on the moss carries a Manifold M mended into it in gold lacquer, kintsugi style; it catches the sun and the lamp. Now: it gleams.",
     ),
   ],
+  // The year it shows is the room's date (the World's, ADR 0062 D20): the composer lists it once.
+  season: range(
+    "seasons",
+    "season",
+    "season",
+    0.58,
+    "Where the year stands: spring at the left end, then summer, autumn and winter. It is the World's date too: the sun through the window stands higher and longer by summer, lower and shorter by winter.",
+    { steady: true, widget: { kind: "sky", part: "season", year: { span: [0, 1] } } },
+  ),
   groups: {
     tree: {
       title: "Tree",
@@ -248,11 +223,12 @@ export const bonsaiTreeLayer: LayerDef = {
     },
     seasons: {
       title: "Seasons",
-      blurb: "The year turning on the tree: leaves out, colour, leaf fall and winter snow.",
+      blurb:
+        "The year turning on the tree: leaves out, colour and leaf fall; the World's snow lies on it in winter.",
     },
     manifold: { title: "Manifold mark", blurb: "A gold M mended into the stone on the moss." },
   },
-  triggers: ["breeze", "growth", "leaves", "snowfall", "mark"],
+  triggers: ["breeze", "growth", "leaves", "mark"],
   mark: "mark",
   casters: ["bonsaiTreeCaster"],
   data: { fields: 4 },

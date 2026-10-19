@@ -20,6 +20,14 @@ import {
 } from "./renderer.ts";
 import { sceneDefs, sceneIds, type SceneId } from "./scenes/index.ts";
 import {
+  decodeElements,
+  elementUniforms,
+  ELEMENTS_KEY,
+  encodeElements,
+  fitElements,
+} from "./composer/elements.ts";
+import type { LightElement } from "./composer/types.ts";
+import {
   decodePlanets,
   encodePlanets,
   openingPlanets,
@@ -117,6 +125,9 @@ for (const id of sceneIds) {
     }
     if (scene.planets !== undefined && def.key === PLANETS_KEY) {
       throw new KnobKeyError(`landing: ${id}'s knob "${def.key}" collides with its planets`);
+    }
+    if (scene.elements !== undefined && def.key === ELEMENTS_KEY) {
+      throw new KnobKeyError(`landing: ${id}'s knob "${def.key}" collides with its elements`);
     }
   }
 }
@@ -226,16 +237,30 @@ export function readPlanets(scene: SceneId, query: URLSearchParams): SkyPlanet[]
   return value === null ? openingPlanets(spec) : decodePlanets(spec, value);
 }
 
+/**
+ * A room's light elements (none for a scene without SceneDef.elements), from its ELEMENTS_KEY in a
+ * query, as `planets=` is read: without the key, the ones the scene opens with; `elements=` holds
+ * none; past the scene's caps (its lights, WINDOW_CAP windows, SHADOW_CAP shadowing), the first that
+ * fit.
+ */
+export function readElements(scene: SceneId, query: URLSearchParams): LightElement[] {
+  const spec = sceneDefs[scene].elements;
+  if (spec === undefined) return [];
+  const value = query.get(ELEMENTS_KEY);
+  return value === null ? [...spec.defaults] : fitElements(decodeElements(value), spec.cap);
+}
+
 /** Each knob's default, keyed as readParams keys them. */
 export function paramDefaults(scene: SceneId): Params {
   return readParams(scene, new URLSearchParams());
 }
 
-/** A setup: the lab's settings, the scene's knobs and its planets. */
+/** A setup: the lab's settings, the scene's knobs, its planets and a room's light elements. */
 export interface Setup {
   state: LabState;
   params: Params;
   planets: SkyPlanet[];
+  elements: LightElement[];
 }
 
 /** A setup as a link holds it (readSetup). */
@@ -258,18 +283,21 @@ export function readSetup(query: URLSearchParams): LinkSetup {
     state,
     params: readParams(state.scene, query),
     planets: readPlanets(state.scene, query),
+    elements: readElements(state.scene, query),
     unknownScene: named === null || named === "" || named === state.scene ? undefined : named,
   };
 }
 
 /**
  * Minimal query: only values that differ from their defaults, the scene's planets (when they differ
- * from the ones it opens with; `planets=` for none) last, packed under PLANETS_KEY.
+ * from the ones it opens with; `planets=` for none), packed under PLANETS_KEY, and a room's elements
+ * likewise under ELEMENTS_KEY, last.
  */
 export function serialise(
   state: LabState,
   params: Params,
   planets: readonly SkyPlanet[],
+  elements: readonly LightElement[] = readElements(state.scene, new URLSearchParams()),
 ): URLSearchParams {
   const q = new URLSearchParams();
   const base = defaultsFor(state.scene);
@@ -285,14 +313,21 @@ export function serialise(
   const spec = sceneDefs[state.scene].planets;
   if (spec !== undefined && planetsChanged(spec, planets))
     q.set(PLANETS_KEY, encodePlanets(spec, planets));
+  const lights = sceneDefs[state.scene].elements;
+  if (lights !== undefined && encodeElements(elements) !== encodeElements(lights.defaults))
+    q.set(ELEMENTS_KEY, encodeElements(elements));
   return q;
 }
 
-/** What the renderer draws for a setup; the scene's sky as it opens unless `planets` names others. */
+/**
+ * What the renderer draws for a setup; the scene's sky as it opens unless `planets` names others,
+ * and a room's elements as it opens unless `elements` names others.
+ */
 export function renderSettings(
   state: LabState,
   params: Params,
   planets: readonly SkyPlanet[] = readPlanets(state.scene, new URLSearchParams()),
+  elements: readonly LightElement[] = readElements(state.scene, new URLSearchParams()),
 ): RenderSettings {
   const colours = palette(state, params);
   return {
@@ -308,6 +343,7 @@ export function renderSettings(
     params: sceneDefs[state.scene].params.map((def) => effective(def, params)),
     knobs: params,
     planets: planetUniforms(planets),
+    elements: { list: elements, data: elementUniforms(elements) },
     followPointer: state.mouse === "follow",
     agents: state.agents,
     rest: state.rest,

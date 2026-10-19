@@ -31,13 +31,16 @@ export const frostVariant: Variant = {
     },
     weather: atmosphereGroups.weather,
   },
-  layers: { remove: ["cityWindow", "sill"], add: ["frostView", "frostGlass"] },
-  // A winter night, snowing, no fair-weather cloud (the view keeps its own, FROST_COVER). The
+  layers: { remove: ["cityWindow"], add: ["frostView", "frostGlass"] },
+  // A winter night, snowing, no fair-weather cloud (the view keeps its own, FROST_COVER), dated at
+  // midwinter (the room's date, the World's: its snow in season, its rain falling as snow). The
   // baseline's stars thinned over the town (the cabin shows 1.7 times as many), its full moon and
   // no Milky Way are the frost's too.
-  values: { time: 0.9, clouds: 0, snow: 1 },
+  values: { time: 0.9, clouds: 0, snow: 1, season: 0.875 },
   camera: FROST_RIG,
   room: FROST_ROOM,
+  // Its own shell: none of the baseline's window and lamp.
+  elements: [],
   // Lights past 1 roll off softly rather than clipping.
   grade: { rolloff: 1.2 },
 };
