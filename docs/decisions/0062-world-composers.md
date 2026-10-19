@@ -1077,13 +1077,13 @@ every layer on (`composer/falling.ts`, README "Falling things"), in the composed
 - **First user: the waterfall's bank ferns.** Each frame they name drip points under their fronds'
   outer leaflets. Each side's bank top (poolFront's `bankTop`, its CPU twin) is a run of short
   ledges that the drops land on. The shader's `rainDrips` for the ferns is gone. Differences:
-  the defaults are `SAME` (`ab.ts --base 1d9460ef`, 960×600). In rain at 0.7, 10 cells of the
-  still frame differ: beads at drip points the old lanes did not draw. In motion, drops now fall
-  the whole way to the boulders and splash there, where the old streaks faded out at the fronds'
-  roots.
+  the defaults are `SAME` (`ab.ts --base 1d9460ef`, 960×600). In rain at its default amount 0.5,
+  10 cells of the still frame differ: beads at drip points the old lanes did not draw. In motion,
+  drops now fall the whole way to the boulders and splash there, where the old streaks faded out at
+  the fronds' roots.
 - **Cost.** SwiftShader, M user-space instructions per 320×200 draw, median of six rounds, base →
-  head: 2,116 → 2,107 at the defaults, and 2,570 → 2,567 in rain. Composed sim, headless, at
-  480×300 cells: 0.024 → 0.038 ms a frame dry, and 0.024 → 0.049 ms in rain 0.7.
+  head: 2,116 → 2,107 at the defaults, and 2,570 → 2,567 in rain 0.5. Composed sim, headless, at
+  480×300 cells: 0.024 → 0.038 ms a frame dry, and 0.024 → 0.049 ms in rain 0.5.
 - **The drops' light.** A drop is a lens (`fallingSpeck`, at the speck's depth, which the speck pass
   hands it). Its head, a bead and a splash show the brightest light behind and over the eye at its
   own brightness, the brighter of `x.air.drop` and `x.air.deck`, plus 0.4 of the key while it is up
@@ -1093,7 +1093,7 @@ every layer on (`composer/falling.ts`, README "Falling things"), in the composed
   up to 45% and glints with the sky on up to 30% of its cells, both fading as it dries. The first
   rule (heads at 1.1 × the World's rain's drop light) drew them on the palette level of the spray
   behind the ferns. Now, at rain 0.7 and 0.2 (`rain=1&rain-amount=…`; `rain=0.7` alone is the
-  switch, on at the default 0.5, so the "rain at 0.7" above is 0.5, and `rain=0.2` is off), heads
+  switch, on at the default 0.5, and `rain=0.2` is off), heads
   and crowns show light grey under the closed deck and white in sunlit drizzle, and marks a dark
   dash with a glint. The falls' defaults are `SAME` (`ab.ts --base c14f1c9f`); the still frame at
   rain 0.7 differs in 3 cells, a bead's rim. SwiftShader: 2,117 → 2,109 at the defaults and
