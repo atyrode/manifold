@@ -16,6 +16,7 @@
 // the stone's; `pondBed`, `pondWater` and `border` are new switches.
 import type { CameraRange, LayerDef } from "../../composer/types.ts";
 import { choice, counts, feature, range, seed, toggle } from "../../params.ts";
+import { WATER_TIERS } from "../../shaders/lib/water.ts";
 import { plantKnobs } from "../plants.ts";
 
 /** Metres a screen height spans over the pond: a koi 0.11–0.17 of it is a koi of 33–51 cm. */
@@ -231,6 +232,9 @@ export const pondWaterLayer: LayerDef = {
     glint: "pondWaterGlint",
     grade: "pondWaterGrade",
   },
+  // The floor's caustics (causticCells), carried by the current (waterDrift), and the sun's glint on
+  // the rings (waterGlint): the shared water's caustics tier, compiled in over the bare patch too.
+  tiers: { WATER_TIER: WATER_TIERS.caustics },
   data: { fields: 1 },
   // The World's rain rings it and its wind ruffles it (the overhead composer's K_rain, x.wind); the
   // World's hour places the sun over it and lights the pond, its cloud shades it (x.sun, x.keyGain,

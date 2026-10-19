@@ -145,12 +145,16 @@ export const worldGroups: Readonly<Record<"sky" | "weather" | "birds", Blurb>> =
  * every camera"), the very knobs worldKnobs lists, under their keys and meaning: K_rain and K_wind
  * over a patch open to the sky; and where the sky lights it (`sky`: LayerDef.sunlit), first the hour
  * (K_time, K_cycle) and the cloud (K_clouds, K_shadows: its shadows off, as the World's), so
- * time, cycle, clouds, shadows, rain, wind. The hour's default is skyKnobs'; a preset pins its own.
- * Drops fall on the fall clock (uFallTime), the wind and the cloud drift on the motion clock.
+ * time, cycle, clouds, shadows, rain, wind. The hour's default is the preset's World's (`world`,
+ * OverheadPreset.world), else skyKnobs'; a preset pins its own through its values. Drops fall on
+ * the fall clock (uFallTime), the wind and the cloud drift on the motion clock.
  */
-export function worldPatchKnobs(sky = false): ParamDef[] {
+export function worldPatchKnobs(
+  sky = false,
+  world: Partial<Pick<WorldOptions, "time">> = {},
+): ParamDef[] {
   return [
-    ...(sky ? skyKnobs({}) : []),
+    ...(sky ? skyKnobs(world) : []),
     ...weatherKnobs({
       ...(sky ? { clouds: WORLD_DEFAULTS.clouds, shadows: true } : {}),
       rain: true,

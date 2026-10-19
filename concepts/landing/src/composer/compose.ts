@@ -3,8 +3,9 @@
 // the composer's layers. `composeScene` gives the scene's metadata (`def`: everything a SceneDef
 // holds but its code) and what its code is assembled from; the code itself (the GLSL per feature
 // set and the composed sim, composer/code.ts) loads with the scene's `code.ts`, so the metadata
-// carries none of it. A curated variant becomes its scene preset first (`variantPreset`): its
-// differences over its composer's baseline (ADR 0062 "Baselines and variants").
+// carries none of it. A curated variant becomes its scene preset first (`variantPreset`, and
+// `overheadVariantPreset` for one seen from above): its differences over its composer's baseline
+// (ADR 0062 "Baselines and variants").
 //
 //   params            the World's knobs, the gusts' (gusts, gustRate), the time of year (season,
 //                     the first offered layer's that has one) and the arrangement (seed), each
@@ -27,10 +28,12 @@
 //   featuresFor       the World's gates (with the climate where the season sets it: a season knob
 //                     beside the World's snow), LAYER_<ID> for every offered layer (1 where
 //                     placed: in a room at the camera pose it is given), each placed layer's own
-//                     gates (a gate another placed layer suppresses at 0), and every gate of an
-//                     offered layer that is off at 0, so a chunk shared by several layers may test
-//                     any of them with `#if`; a room's POSE_GATE (1 off the rest pose); TURNS_GATE
-//                     at 0: a steady program, which plays no layer's own entrance or exit.
+//                     gates (a gate another placed layer suppresses at 0) and its library tiers
+//                     where the preset's features hold a lower one or none (LayerDef.tiers: the
+//                     pond's water as a guest), and every gate of an offered layer that is off at
+//                     0, so a chunk shared by several layers may test any of them with `#if`; a
+//                     room's POSE_GATE (1 off the rest pose); TURNS_GATE at 0: a steady program,
+//                     which plays no layer's own entrance or exit.
 //   featuresAllFor    the same with every gate of the placed layers on, POSE_GATE in a room, and
 //                     TURNS_GATE: a layer set's all-features program, which draws its layers' turns
 //                     and any camera pose as well.
@@ -40,11 +43,11 @@
 //                     hold, met (home layers that do not meet at the rest pose: a ComposeError).
 // The overhead composer (overhead.ts) lists neither the whole World nor the gusts, season and seed:
 // its presets list the World's rain and wind (worldPatchKnobs, the outdoor keys and meaning) while
-// they offer a layer open to the sky (LayerDef.open), and the World's hour and cloud before them
-// while they offer one the sky lights (LayerDef.sunlit), with WORLD_RAIN (and there WORLD_CLOUDS,
-// WORLD_SHADOWS, CLOUD_TIER) as their only World gates, then their layers' switches and knobs, their
-// trigger slots from 0 (ADR 0062 "The World seen from every camera": its fog, snow and birds over
-// the patch are not built).
+// they offer a layer open to the sky (LayerDef.open), and the World's hour (its default the
+// preset's World's, OverheadPreset.world) and cloud before them while they offer one the sky lights
+// (LayerDef.sunlit), with WORLD_RAIN (and there WORLD_CLOUDS, WORLD_SHADOWS, CLOUD_TIER) as their
+// only World gates, then their layers' switches and knobs, their trigger slots from 0 (ADR 0062
+// "The World seen from every camera": its fog, snow and birds over the patch are not built).
 import { hasClimate } from "../climate.ts";
 import { feature, range, seed, type Blurb, type ParamDef } from "../params.ts";
 import type { SceneDef } from "../scenes/types.ts";
@@ -83,6 +86,9 @@ import type {
   Baseline,
   ComposerId,
   LayerDef,
+  OverheadBaseline,
+  OverheadPreset,
+  OverheadVariant,
   Role,
   ScenePreset,
   Variant,
@@ -95,12 +101,13 @@ export type SceneMeta = Omit<SceneDef, "code">;
 
 /**
  * A composer: its id, its layers in canonical order (the order they are placed in and paint in) and
- * its baseline (ADR 0062 D13), which its variants are stored over: the interior's so far.
+ * its baseline (ADR 0062 D13), which its variants are stored over: an eye-level one, or the
+ * overhead's.
  */
 export interface Composer {
   readonly id: ComposerId;
   readonly layers: readonly LayerDef[];
-  readonly baseline?: Baseline;
+  readonly baseline?: Baseline | OverheadBaseline;
 }
 
 /** A composed scene's layers, for the lab's Layers section (src/lab/layers-model.ts). */
@@ -322,6 +329,47 @@ export function variantPreset(baseline: Baseline, variant: Variant): ScenePreset
 }
 
 /**
+ * The overhead preset `variant` makes over `baseline` (ADR 0062 D14), as `variantPreset` makes an
+ * eye-level one: the variant's identity; the baseline's home layers less those it removes, then
+ * those it adds; the baseline's values under its own; its rig for the baseline's; the baseline's
+ * World over the patch; its painted hour for the baseline's (`false`: none, its layers light
+ * themselves); its compile-time features key by key over the baseline's. A variant over another
+ * composer's baseline is a ComposeError.
+ */
+export function overheadVariantPreset(
+  baseline: OverheadBaseline,
+  variant: OverheadVariant,
+): OverheadPreset {
+  if (variant.base !== baseline.composer)
+    throw new ComposeError(
+      `variant ${variant.id} is over the ${variant.base} baseline, not the ${baseline.composer}`,
+    );
+  const remove = new Set(variant.layers?.remove);
+  const painted = variant.painted ?? baseline.painted;
+  const features =
+    baseline.features === undefined && variant.features === undefined
+      ? undefined
+      : { ...baseline.features, ...variant.features };
+  return {
+    id: variant.id,
+    title: variant.title,
+    blurb: variant.blurb,
+    accent: variant.accent,
+    ...(variant.look === undefined ? {} : { look: variant.look }),
+    ...(variant.theme === undefined ? {} : { theme: variant.theme }),
+    ...(variant.passage === undefined ? {} : { passage: variant.passage }),
+    ...(variant.groups === undefined ? {} : { groups: variant.groups }),
+    composer: baseline.composer,
+    rig: variant.camera ?? baseline.rig,
+    ...(baseline.world === undefined ? {} : { world: baseline.world }),
+    ...(painted === undefined || painted === false ? {} : { painted }),
+    ...(features === undefined ? {} : { features }),
+    layers: [...baseline.layers.filter((id) => !remove.has(id)), ...(variant.layers?.add ?? [])],
+    values: { ...baseline.values, ...variant.values },
+  };
+}
+
+/**
  * The knob caps (ADR 0062 "Budgets and caps"): preset `preset` lists `listed` knobs, at most
  * COMPOSER_CAPS.params, and each of its programs reads the composer's `composer` knobs and those of
  * the layers it holds (`layers`: each offered layer's switch and knobs, by id), at most
@@ -438,7 +486,7 @@ export function composeScene<P extends AnyPreset>(composer: Composer, preset: P)
   const world =
     level === undefined
       ? open
-        ? worldPatchKnobs(sunlit)
+        ? worldPatchKnobs(sunlit, kind.composer === "overhead" ? kind.world : undefined)
         : []
       : !listsWorld
         ? []
@@ -565,7 +613,8 @@ export function composeScene<P extends AnyPreset>(composer: Composer, preset: P)
   };
   /**
    * The layer gates of the layers these values place (in a room, at `pose`), each placed layer's own
-   * (`each`), the rest 0.
+   * (`each`), the rest 0; and each placed layer's library tiers (LayerDef.tiers) where the preset's
+   * features hold a lower tier or none, the highest a placed layer asks.
    */
   const gatesOf = (
     values: Readonly<Record<string, number>>,
@@ -583,8 +632,12 @@ export function composeScene<P extends AnyPreset>(composer: Composer, preset: P)
       if (on.has(layer.id)) Object.assign(out, each(layer, ownValues(layer, values)));
       else for (const gate of Object.keys(layer.featuresAll ?? {})) out[gate] = 0;
     }
-    for (const { layer } of placement.layers)
+    for (const { layer } of placement.layers) {
       for (const rule of layer.suppresses ?? []) if (on.has(rule.layer)) out[rule.gate] = 0;
+      for (const [library, tier] of Object.entries(layer.tiers ?? {}))
+        if (tier > (preset.features?.[library] ?? -1))
+          out[library] = Math.max(out[library] ?? tier, tier);
+    }
     return out;
   };
 

@@ -56,6 +56,7 @@ components"); run `bun concepts/landing/scripts/scene-docs.ts` after a change to
 | `lake`         | Frozen lake      | Water             | `outdoor` preset, 2 layers + 4 offered  | 52    | 2       | Black ice under the aurora: bubbles frozen deep, cracks that sing, snow drifting across; or an open fjord under slow drapes.    |
 | `island`       | Tiny island      | Water             | `outdoor` preset, 5 layers              | 32    | 0       | A small island in a gentle sea: a cottage on a grassy hill, a pier and lantern, a palm, a gull circling, a balloon drifting by. |
 | `tidepool`     | Tide pool        | Water             | `overhead` preset, 4 layers + 1 offered | 39    | 3       | A rock pool from above: waves pour over its rim, its anemones and kelp answer the surge, and the light dances on its floor.     |
+| `patch`        | Patch            | Water             | `overhead` preset, 1 layer + 4 offered  | 57    | 0       | The scenes seen from above: their baseline, a dry pond floor of pebbles, moss and weeds under the afternoon sun.                |
 | `country`      | Countryside      | Land              | `outdoor` preset, 6 layers + 2 offered  | 57    | 12      | A river valley carved by water: fields, woods and pastures, a village, a castle and roads over a bridge.                        |
 | `dunes`        | Dunes            | Land              | `outdoor` preset, 2 layers              | 31    | 0       | Wind over a sand sea: real dunes, slowly marching downwind. Click to drop a heap of sand.                                       |
 | `meadow`       | Meadow           | Land              | `outdoor` preset, 3 layers + 2 offered  | 39    | 0       | Tall grass at golden hour, gusts running across it as waves of light, dandelion seeds adrift.                                   |
@@ -1065,6 +1066,7 @@ planets (`SceneDef.planets`; "at first": the planets it opens with). Generated f
 | `lake`      | 0.822 | 0.7   | 1         | 0.3  | off     | off, now 0 | 0.6    | 0      | off  | off  | 0   | 0.2  | off, now 1 | off        | yes             |
 | `island`    | 0.58  | 0.6   | off       | 1    | off     | off, now 0 | off    | 0.35   | off  | off  | 0   | 0.2  | off, now 1 | off        | yes             |
 | `tidepool`  | 0.42  | —     | —         | —    | —       | —          | —      | 0      | off  | —    | —   | 0    | —          | —          | —               |
+| `patch`     | 0.583 | —     | —         | —    | —       | —          | —      | 0.25   | off  | —    | —   | 0.2  | —          | —          | —               |
 | `country`   | 0.68  | 0.5   | 1         | 1    | off     | off, now 0 | off    | 0.35   | off  | off  | 0   | 0.2  | off, now 1 | off        | yes             |
 | `dunes`     | 0.74  | 1     | 1         | 1    | off     | off, now 0 | off    | 0.25   | off  | off  | 0   | 0.2  | off, now 1 | 0.35       | yes             |
 | `meadow`    | 0.72  | 0.6   | 1         | 1    | off     | off, now 0 | off    | 0.2    | off  | off  | 0   | 0.2  | off, now 1 | 0.35       | yes             |
@@ -2396,16 +2398,17 @@ sill, lava, bonsai, incense, frost, bar, train and mobile as variants of its bas
 layers (ADR 0062 "Baselines and variants", step 1: `Composer.baseline`, `Variant`,
 `variantPreset`), with a lava lamp that stands on the sill and the frost on the sill's panes, and
 the baseline itself as the lab-only scene `room`; the `overhead` composer (Phase 4, "The overhead
-composer" below) runs pond and ripple (its pilot), tidepool, sandtable and delta as presets of its
-19 layers, with koi offered to the ripple tank. The per-program knob layout is built (a preset
-lists up to 512 knobs, one program reads up to 128: "Budgets" below); a composed scene keeps the
-renderer's 8 trigger slots (`src/composer/caps.ts`). The rest of the interiors and of the scenes
-seen from above are the rest of those phases. Not built yet, so still the contract: packed trigger
-slots, the layer costs (`scripts/layer-costs.ts`) with the stack meter and the role's "+" listing,
-the browser checks `composerDepth`, `composerClaims`, `composerWeather` and `layerToggles`, a check
-of the SwiftShader instruction budget, the principals' points in the site, and shelving the Scenes
-view by composer. The ADR keeps the reasoning, the measurements, the decisions (D1–D24) and the
-phases ahead.
+composer" below) runs pond and ripple (its pilot), tidepool, sandtable and delta as variants of its
+baseline over its 19 layers (step 6: `overheadVariantPreset`), with koi offered to the ripple tank,
+and the baseline itself as the lab-only scene `patch`. The per-program knob layout is built (a
+preset lists up to 512 knobs, one program reads up to 128: "Budgets" below); a composed scene
+keeps the renderer's 8 trigger slots (`src/composer/caps.ts`). The rest of the interiors and of
+the scenes seen from above are the rest of those phases. Not built yet, so still the contract:
+packed trigger slots, the layer costs (`scripts/layer-costs.ts`) with the stack meter and the
+role's "+" listing, the browser checks `composerDepth`, `composerClaims`, `composerWeather` and
+`layerToggles`, a check of the SwiftShader instruction budget, the principals' points in the site,
+and shelving the Scenes view by composer. The ADR keeps the reasoning, the measurements, the
+decisions (D1–D24) and the phases ahead.
 
 Most outdoor scenes show the same thing: a camera on the ground at eye level, something in front
 of it, a landscape behind, the sky above. A **composer** makes that shared: one camera rig, one
@@ -2559,12 +2562,35 @@ each layer's passes per cell, with the plain bed under a bed mid-turn.
 
 | Preset      | Layers                                              | Rig                         | Key renames                                                                                                                                        |
 | ----------- | --------------------------------------------------- | --------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `patch`     | `pondBed`; + `pondWater`, `stone`, `border`, `koi`  | 3 m a screen height         | none: the baseline's own scene, new                                                                                                                |
 | `pond`      | `pondBed`, `pondWater`, `border`, `koi`; + `stone`  | 3 m a screen height         | none: `koi` (a count, `koi-amount`) and `stone` became switches; `pondBed`, `pondWater`, `border` new; the border's `wind` is the World's (at 0.4) |
 | `ripple`    | `tank`, `tankWater`; + `koi`                        | 1 m a screen height         | none: `tank`, `tankWater` new                                                                                                                      |
 | `tidepool`  | `rockPool`, `surge`, `fronds`, `anemones`; + `fish` | 3 m a screen height, salt   | none: `fronds`, `anemones` and `fish` (a count, `fish-amount`) became switches; `rockPool`, `surge` new; the bed's `rain` is the World's           |
 | `sandtable` | `sandBed`, `tableLamp`, `ball`; + `pendulum`        | 0.93 m a screen height      | `machine` gone: the `ball` and `pendulum` switches replace it; `sandBed`, `tableLamp` new                                                          |
 | `delta`     | `deltaBed`, `deltaWater`; + `clouds`                | 20 km a screen height, salt | none: `clouds` (a cover, `clouds-amount`) became a switch; `deltaBed`, `deltaWater` new                                                            |
 
+- **The baseline and its variants** (ADR 0062 "Baselines and variants", step 6).
+  `overhead.baseline` (`src/composer/overhead.ts`, an `OverheadBaseline`: what an `OverheadPreset`
+  holds but its identity) is the plainest patch open to the sky: the pond's floor alone
+  (`pondBed`), dry, its frame 3 m tall over fresh water (the pond's span, so the pond's water,
+  stone, border and koi are offered as guests and the World's hour, cloud, rain and wind are its
+  knobs); the World's afternoon (`world: { time: 0.5825 }`, the knob's default where a layer the
+  sky lights is offered) at the hour its colours were painted for (`painted` 0.5825), so it draws
+  as painted and the World's light relights it off that hour; no values. Its own scene, `patch`,
+  is lab-only (`labOnly`, `src/lab/families.ts`). The five scenes are variants of it
+  (`src/composer/overhead-variants.ts`, by scene id, `patch` first), each an `OverheadVariant` (a
+  `Variant`'s identity but its planets) that `overheadVariantPreset` folds: its layers added and
+  removed, its values over the baseline's, its rig (`camera`) in place of the baseline's, its
+  painted hour in place of it (`false`: none, its layers light themselves), its compile-time
+  features key by key over the baseline's. The pond adds its water, border and koi and sets its
+  breeze and its caustics; every other scene removes the pond's floor for its own bed and brings
+  its rig; the tide pool sets `painted: false`. The ripple tank, the sand table and the delta offer
+  no layer the sky lights, so the baseline's hour and painted hour, which they carry, are read by
+  none of their programs. A variant over another composer's baseline is a `ComposeError`;
+  `variants.test.ts` refuses a difference that changes nothing, among them a painted hour no layer
+  the sky lights would read. A layer names the library tiers its GLSL calls into
+  (`LayerDef.tiers`), compiled in wherever it is placed and its preset's features hold a lower
+  tier or none: the pond's water asks for the caustics tier, which the patch does not hold.
 - **The knobs.** The overhead composer lists none of its own (no gusts, season or seed). Of the
   World's it lists, first, while the preset offers a layer open to the sky (`LayerDef.open`: the
   pond's water and border, the tank's water, the tide pool's bed and water), its rain and wind
@@ -2578,8 +2604,9 @@ each layer's passes per cell, with the plain bed under a bed mid-turn.
   World's six). The sand table, under its lamp indoors, is open to no sky and lists 17 (its 14 but
   `machine`, and four switches); the delta, its water not yet open to the sky, lists 18 (its 16 and
   two new switches). Trigger slots count from 0. A preset sets the wind it always had: the pond 0.4
-  (its breeze), the tank and the tide pool 0 (still air); the tide pool pins `time` 0.42 and
-  `clouds` 0, so their defaults draw as before.
+  (its breeze), the tank and the tide pool 0 (still air); the World's hour opens at the preset's
+  World's (`OverheadPreset.world`: the baseline's 0.5825, so the pond's), else at the World's own
+  (0.78); the tide pool pins `time` 0.42 and `clouds` 0, so their defaults draw as before.
 - **The World over the patch.** `overheadWorld` (`composer/overhead-glsl.ts`) works out, once a
   cell, the World's sky at its hour and day cycle looked at straight down (the frame's up the sky's
   ahead): the key, the sun or by night the moon, its colour greyed by the rain's overcast; the
@@ -2588,14 +2615,14 @@ each layer's passes per cell, with the plain bed under a bed mid-turn.
   frame, its caustics and glints going); and where the sun's image stands on the frame
   (`OVERHEAD_SUN_STAGE`), so the koi's, the pads' and the rays' shadows follow the hour. The tide
   pool's water mirrors the World's sky, its cloud deck included (`overheadSkySeen`); the pond's
-  water takes no sky colour. A preset painted for one hour (`OverheadPreset.painted`: the pond at
-  0.5825, the afternoon whose sun stands where its old fixed sun did) is relit by the World's light
-  against that hour's (`x.relight`), its sun's strength scaled the same way (`x.keyGain`, the old
-  `sunPower` its gain), the light wrapped half round its painted shapes; the eye adapts by day (its
-  brightness to the power 0.3 and 0.4 of the light's colour, so the 4-level palette keeps the
-  water's colour at a low sun) and through twilight lets the night fall dark. Not over the patch
-  yet: fog as a veil, snow settling, the wet bed darkening, and the World over the delta (whose own
-  `clouds` switch would meet the World's `clouds` key).
+  water takes no sky colour. A preset painted for one hour (`OverheadPreset.painted`: the
+  baseline's, and so the pond's, 0.5825, the afternoon whose sun stands where the pond's old fixed
+  sun did) is relit by the World's light against that hour's (`x.relight`), its sun's strength
+  scaled the same way (`x.keyGain`, the old `sunPower` its gain), the light wrapped half round its
+  painted shapes; the eye adapts by day (its brightness to the power 0.3 and 0.4 of the light's
+  colour, so the 4-level palette keeps the water's colour at a low sun) and through twilight lets
+  the night fall dark. Not over the patch yet: fog as a veil, snow settling, the wet bed darkening,
+  and the World over the delta (whose own `clouds` switch would meet the World's `clouds` key).
 - **Scale.** The pond and the tank are drawn in the frame's units (screen heights; the tank in
   short sides, its own layout), so their layers are locked to their own span; the koi are drawn at
   the frame's scale at any span from 1 m to the pond's 3 m: 33–51 cm koi in the pond, 11–17 cm fish
@@ -2705,6 +2732,7 @@ interface LayerDef {
   passes: LayerPasses; // the GLSL names of its passes (see "Compositing")
   featuresFor?: (values: Readonly<Record<string, number>>) => Record<string, number>;
   featuresAll?: Readonly<Record<string, number>>; // its own gates, prefixed with its id
+  tiers?: Readonly<Record<string, number>>; // library tiers its GLSL needs (WATER_TIER), at least
   data?: { rows?: number; specks?: number; fields?: number }; // its share of the sim's textures
   overgrowth?: string; // the knob of its share inside shared claims (a cover's)
   excludes?: readonly { layer: string; why: string }[];
@@ -2936,7 +2964,7 @@ generated from a **scene preset** (`src/composer/types.ts`):
 ```ts
 interface ScenePreset {
   id: string;
-  composer: "outdoor" | "interior"; // OverheadPreset: "overhead", rig OverheadRig, no more
+  composer: "outdoor" | "interior"; // OverheadPreset: "overhead", OverheadRig, world, painted
   title: string;
   blurb: string;
   accent: string;

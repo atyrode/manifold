@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { folderVariants, interiorVariants } from "../composer/interior-variants.ts";
 import { outdoorVariants } from "../composer/outdoor-variants.ts";
+import { overheadVariants } from "../composer/overhead-variants.ts";
 import { presets, type Preset } from "../presets.ts";
 import { sceneDefs, sceneIds } from "../scenes/index.ts";
 import { sceneOrder } from "./families.ts";
@@ -19,49 +20,48 @@ describe("the presets' tree", () => {
 
   test("shelves the interior under its baseline, then its variants in the Scenes view's order", () => {
     const rooms = shelf("interior");
-    expect(rooms?.baseline?.scene).toBe("room");
+    expect(rooms?.baseline.scene).toBe("room");
     const variants = Object.keys(interiorVariants).filter((id) => id !== "room");
     expect(rooms?.variants.map((node) => node.scene)).toEqual(
       sceneOrder.filter((id) => variants.includes(id)),
     );
     expect(rooms?.variants.map((node) => node.scene)).toContain("sill");
-    expect(rooms?.scenes).toEqual([]);
     expect(Object.keys(folderVariants)).toContain("room");
   });
 
-  test("shelves the outdoor under its baseline, its variants, then its scenes not yet ported", () => {
+  test("shelves the outdoor under its baseline, then every outdoor scene as its variant", () => {
     const land = shelf("outdoor");
-    expect(land?.baseline?.scene).toBe("land");
+    expect(land?.baseline.scene).toBe("land");
     const variants = Object.keys(outdoorVariants).filter((id) => id !== "land");
     expect(land?.variants.map((node) => node.scene)).toEqual(
       sceneOrder.filter((id) => variants.includes(id)),
     );
-    expect(land?.variants.map((node) => node.scene)).toContain("meadow");
-    const unported = land?.scenes.map((node) => node.scene) ?? [];
-    expect([...variants, ...unported].sort()).toEqual(
+    expect(variants.sort()).toEqual(
       sceneOrder.filter((id) => id !== "land" && sceneComposer(id) === "outdoor").sort(),
     );
-    expect(unported).not.toContain("meadow");
-    for (const scene of unported) {
-      expect(sceneComposer(scene)).toBe("outdoor");
-      expect(variantBaseline(scene)).toBeUndefined();
-    }
     expect(variantBaseline("meadow")).toBe("land");
     expect(variantBaseline("sill")).toBe("room");
     expect(variantBaseline("land")).toBeUndefined();
   });
 
-  test("puts the overhead's scenes on its shelf while it has no baseline", () => {
+  test("shelves the overhead under its baseline, then every scene seen from above as its variant", () => {
     expect(tree.composers.map((composer) => composer.composer)).toEqual([
       "interior",
       "outdoor",
       "overhead",
     ]);
     const patch = shelf("overhead");
-    expect(patch?.baseline).toBeUndefined();
-    expect(patch?.variants).toEqual([]);
-    for (const node of patch?.scenes ?? []) expect(sceneComposer(node.scene)).toBe("overhead");
-    expect(patch?.scenes.map((node) => node.scene)).toContain("pond");
+    expect(patch?.baseline.scene).toBe("patch");
+    const variants = Object.keys(overheadVariants).filter((id) => id !== "patch");
+    expect(patch?.variants.map((node) => node.scene)).toEqual(
+      sceneOrder.filter((id) => variants.includes(id)),
+    );
+    expect(variants.sort()).toEqual(
+      sceneOrder.filter((id) => id !== "patch" && sceneComposer(id) === "overhead").sort(),
+    );
+    for (const { scene } of patch?.variants ?? [])
+      expect({ scene, over: variantBaseline(scene) }).toEqual({ scene, over: "patch" });
+    expect(variantBaseline("patch")).toBeUndefined();
   });
 
   test("stands the scenes of no composer on a shelf apart", () => {
@@ -73,11 +73,7 @@ describe("the presets' tree", () => {
 
   test("holds every scene once, and every committed preset once, under its scene", () => {
     const nodes = [
-      ...tree.composers.flatMap((composer) => [
-        ...(composer.baseline === undefined ? [] : [composer.baseline]),
-        ...composer.variants,
-        ...composer.scenes,
-      ]),
+      ...tree.composers.flatMap((composer) => [composer.baseline, ...composer.variants]),
       ...tree.standalone,
     ];
     expect(nodes.map((node) => node.scene).sort()).toEqual([...sceneIds].sort());
@@ -106,9 +102,8 @@ describe("the presets' tree", () => {
     const branches = presetTree([], local);
     const all = [
       ...branches.composers.flatMap((composer) => [
-        ...(composer.baseline?.presets ?? []),
+        ...composer.baseline.presets,
         ...composer.variants.flatMap((node) => node.presets),
-        ...composer.scenes.flatMap((node) => node.presets),
       ]),
       ...branches.standalone.flatMap((node) => node.presets),
     ];

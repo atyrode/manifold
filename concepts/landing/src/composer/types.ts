@@ -406,6 +406,12 @@ export interface LayerDef {
   readonly featuresFor?: (values: Readonly<Record<string, number>>) => Record<string, number>;
   /** Every gate it can turn on, on. Required with featuresFor. */
   readonly featuresAll?: Readonly<Record<string, number>>;
+  /**
+   * The shared libraries' tiers its GLSL calls into (`WATER_TIER`: shaders/lib/water.ts), at least
+   * these wherever it is placed: compiled in where its preset's features hold a lower tier or none,
+   * so it draws as a guest where its home preset is not (the pond's water over the bare `patch`).
+   */
+  readonly tiers?: Readonly<Record<string, number>>;
   readonly data?: LayerData;
   /** Its covers' share inside shared claims comes from this knob (0..1). */
   readonly overgrowth?: string;
@@ -730,6 +736,12 @@ export interface Baseline extends Omit<ScenePreset, keyof Identity> {
   readonly elements: readonly LightElement[];
 }
 
+/** Layers switched on beyond a baseline's home layers (in canonical order), and home ones off. */
+export interface LayerChanges {
+  readonly add?: readonly string[];
+  readonly remove?: readonly string[];
+}
+
 /**
  * A curated variant (ADR 0062 D14): a scene stored as its differences from its composer's baseline,
  * which `variantPreset` (compose.ts) makes into its scene preset. It keeps its identity and holds
@@ -739,7 +751,7 @@ export interface Variant extends Identity {
   /** Its baseline's composer. */
   readonly base: ComposerId;
   /** Layers switched on beyond the baseline's home layers (in canonical order), and home ones off. */
-  readonly layers?: { readonly add?: readonly string[]; readonly remove?: readonly string[] };
+  readonly layers?: LayerChanges;
   /** Knob values over the baseline's, keyed as in the URL (its hour, its date, the World's weather). */
   readonly values?: Readonly<Record<string, number>>;
   /** Its camera's rest pose. */
@@ -780,12 +792,51 @@ export interface OverheadPreset extends PresetBase {
   readonly composer: "overhead";
   readonly rig: OverheadRig;
   /**
+   * The World over the patch as it opens, where it offers a layer the sky lights: its hour (K_time's
+   * default; skyKnobs' dusk, 0.78, without). A preset pins an hour of its own through its values.
+   */
+  readonly world?: Pick<WorldOptions, "time">;
+  /**
    * The hour (K_time) its layers' own colours were painted for (the pond's), where they take no
    * light of the World's themselves: the patch's light against that hour's relights every cell and
    * scales the sun's strength (x.relight, x.keyGain; 1 at that hour). A preset whose layers light
    * themselves with the patch's World light (the tide pool's) gives none.
    */
   readonly painted?: number;
+}
+
+/** What names a scene seen from above (ADR 0062 D14): an eye-level scene's identity but its planets. */
+export type OverheadIdentity = Pick<OverheadPreset, Exclude<keyof Identity, "planets">>;
+
+/**
+ * The overhead composer's baseline (ADR 0062 D13, `Composer.baseline`): what an overhead preset
+ * holds but its identity: the rig at rest, the World's hour over the patch, the hour its home layers
+ * were painted for, its home layers and values. Its own scene (`patch`) is lab-only.
+ */
+export type OverheadBaseline = Omit<OverheadPreset, keyof OverheadIdentity>;
+
+/**
+ * A curated variant seen from above (ADR 0062 D14): as a `Variant`, a scene stored as its
+ * differences from the overhead baseline, which `overheadVariantPreset` (compose.ts) makes into its
+ * preset; its identity, and only what differs (variants.test.ts).
+ */
+export interface OverheadVariant extends OverheadIdentity {
+  /** Its baseline's composer. */
+  readonly base: ComposerId;
+  /** Layers switched on beyond the baseline's home layers (in canonical order), and home ones off. */
+  readonly layers?: LayerChanges;
+  /** Knob values over the baseline's, keyed as in the URL (its hour, its weather, its layers' knobs). */
+  readonly values?: Readonly<Record<string, number>>;
+  /** Its rig at rest (its span, its narrowest frame, the sea's water), in place of the baseline's. */
+  readonly camera?: OverheadRig;
+  /**
+   * The hour its layers were painted for, in place of the baseline's; `false` where they light
+   * themselves with the World's light (the tide pool's). Read only where a layer the sky lights is
+   * offered (LayerDef.sunlit).
+   */
+  readonly painted?: number | false;
+  /** Compile-time features it holds at every setting (a water tier), key by key over the baseline's. */
+  readonly features?: Readonly<Record<string, number>>;
 }
 
 /** A preset of any composer. */

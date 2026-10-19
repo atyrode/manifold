@@ -14,6 +14,7 @@ test("the cycle is the Scenes view's order less the lab-only scenes", () => {
   expect(sceneCycle).toEqual(sceneOrder.filter((id) => labOnly[id] !== true));
   expect(sceneCycle).not.toContain("room");
   expect(sceneCycle).not.toContain("land");
+  expect(sceneCycle).not.toContain("patch");
 });
 
 test("[ and ] walk the cycle, round from the last scene to the first", () => {

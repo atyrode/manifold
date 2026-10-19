@@ -38,6 +38,7 @@ import { marbleScene } from "./marble/index.ts";
 import { meadowScene } from "./meadow/index.ts";
 import { mobileScene } from "./mobile/index.ts";
 import { orbitScene } from "./orbit/index.ts";
+import { patchScene } from "./patch/index.ts";
 import { pearlScene } from "./pearl/index.ts";
 import { pendulaScene } from "./pendula/index.ts";
 import { petriScene } from "./petri/index.ts";
@@ -110,6 +111,7 @@ export const sceneDefs = {
   mobile: mobileScene,
   room: roomScene,
   land: landScene,
+  patch: patchScene,
   ...promotedScenes,
 } satisfies Record<string, SceneDef>;
 

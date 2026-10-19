@@ -215,6 +215,9 @@ const BUDGET = {
   // The all-features program is the composer's (ADR 0062): the one a layer's turn plays in.
   mobile: [41500, 44000],
   orbit: [21000, 33500],
+  // The overhead composer's baseline (ADR 0062 D13): the pond's floor alone under the World's
+  // afternoon; its all-features program is the one a guest's turn plays in.
+  patch: [19500, 26500],
   pearl: [14000],
   pendula: [25500, 30500],
   petri: [23500],

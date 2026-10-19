@@ -55,19 +55,11 @@ interface Group {
   count: HTMLElement;
 }
 
-/** A composer's shelf: its heading, and what stands on it beside its baseline and variants. */
-const SHELVES: Readonly<Record<ComposerId, { title: string; icon: IconName; note?: string }>> = {
+/** A composer's shelf: its heading. */
+const SHELVES: Readonly<Record<ComposerId, { title: string; icon: IconName }>> = {
   interior: { title: "Interior", icon: "house" },
-  outdoor: {
-    title: "Outdoor",
-    icon: "mountain",
-    note: "Its scenes not yet ported to variants of the land stand after its variants (ADR 0062, step 5).",
-  },
-  overhead: {
-    title: "Overhead",
-    icon: "ripple",
-    note: "No baseline yet: its scenes stand at the top until the overhead baseline (step 6).",
-  },
+  outdoor: { title: "Outdoor", icon: "mountain" },
+  overhead: { title: "Overhead", icon: "ripple" },
 };
 
 /** The command that writes a promotion into the repository, run from its root. */
@@ -182,10 +174,8 @@ export class PresetsView {
     // The tree: a shelf per composer, then the standalone scenes.
     this.#shelves = [
       ...(Object.keys(SHELVES) as ComposerId[]).map((composer) => {
-        const { title, icon: name, note } = SHELVES[composer];
-        const shelf = note
-          ? group(`composer-${composer}`, title, name, h("p", { class: "shelf-note" }, note))
-          : group(`composer-${composer}`, title, name);
+        const { title, icon: name } = SHELVES[composer];
+        const shelf = group(`composer-${composer}`, title, name);
         shelf.list.className = "tree";
         return { ...shelf, composer };
       }),
@@ -290,9 +280,7 @@ export class PresetsView {
     this.#saved.export.disabled = saved.length === 0;
     for (const shelf of this.#shelves) {
       const branch = tree.composers.find((composer) => composer.composer === shelf.composer);
-      const nodes = branch
-        ? [...(branch.baseline ? [branch.baseline] : []), ...branch.variants, ...branch.scenes]
-        : tree.standalone;
+      const nodes = branch ? [branch.baseline, ...branch.variants] : tree.standalone;
       shelf.list.replaceChildren(...nodes.map((node) => this.#node(node, shelf.entry.id, scene)));
       shelf.count.textContent = String(nodes.reduce((sum, node) => sum + node.presets.length, 0));
       shelf.count.title = `${nodes.length} scenes, ${shelf.count.textContent} presets`;

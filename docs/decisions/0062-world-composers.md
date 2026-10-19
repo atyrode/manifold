@@ -1368,6 +1368,52 @@ before, `composerElements` in `localLight` and the body with one lamp). **Remain
 scenes' own lights (autumn's lamp, the campfire, the lanterns, the street lamps) into elements;
 shadows toward an element outdoors.
 
+**Step 6, the overhead baseline, built (2026-10-19):** `overhead.baseline`
+(`composer/overhead.ts`) is the plainest patch open to the sky: the pond's floor alone (`pondBed`),
+dry, its frame 3 m tall over fresh water (`{ span: 3, minAspect: 1 }`, so the pond's water, stone,
+border and koi are offered as guests and the World's `time`, `cycle`, `clouds`, `shadows`, `rain`
+and `wind` are its knobs, 57 in all), the World's afternoon at the hour the pond's colours were
+painted for (`world: { time: 0.5825 }`, `painted: 0.5825`), no values. The hour rides in the
+preset's World, `OverheadPreset.world` (the `time` default `worldPatchKnobs` gives), as outdoors:
+the World's own default, 0.78, is dusk (its sun 0.09 below the horizon), and a baseline value
+`time` would name no knob for the three variants that offer no layer the sky lights (a
+`ComposeError`). The types are a sibling of the eye-level ones: `OverheadBaseline` (an
+`OverheadPreset` less `OverheadIdentity`, `Identity` but its planets), `OverheadVariant` (its
+identity, `base`, `layers` as `LayerChanges`, shared with `Variant`, `values`, `camera` an
+`OverheadRig`, `painted` a number or `false` for none, `features` key by key) and
+`overheadVariantPreset` (`compose.ts`), which refuses a variant over another composer's baseline;
+`Composer.baseline` takes either kind. Its lab-only scene `patch` (`scenes/patch/`, `labOnly`, the
+Water family): at 960×600 a dry pond floor of grey, tan and pink pebbles packed edge to edge,
+green moss patches and a few weeds, lit by the afternoon; at `time=0.9` the same floor dark under
+the moon. The five are variants (`composer/overhead-variants.ts`, `patch` first): the pond adds
+`pondWater`, `border` and `koi`, sets `wind` 0.4 and its caustics tier (its `time` and painted
+hour are the baseline's); the ripple tank removes `pondBed` for `tank` and `tankWater`, its rig 1 m
+tall, `wind` 0; the tide pool removes it for `rockPool`, `surge`, `fronds` and `anemones`, its rig
+3 m and salt, `wind` 0, `time` 0.42, `clouds` 0, `painted: false` and the caustics tier; the sand
+table for `sandBed`, `tableLamp` and `ball`, its rig 0.93 m; the delta for `deltaBed` and
+`deltaWater`, its rig 20 km and salt, its theme kept. The pond's water as a guest over `patch`
+failed to compile (`waterDrift` undefined: the caustics tier was the pond preset's feature), so a
+layer now names the library tiers its GLSL calls into (`LayerDef.tiers`), compiled in where it is
+placed and its preset's features hold a lower tier or none; `pondWater` asks for
+`WATER_TIER` 4. A throwaway dump of the five (the whole `SceneDef`, params, layers, features and
+knobs at the defaults and each layer's turn, placements, gates, triggers, short params, and every
+program `glsl-check` builds: defaults, all-features, each layer's steady and all-features turn,
+each committed preset) came out byte-identical before and after; the folded presets differ only in
+the pond's `time`, now its World's, and the baseline's World and painted hour, which the ripple
+tank, the sand table and the delta carry and none of their programs reads (no layer the sky
+lights), and the tide pool's World under its pinned `time`. `ab.ts --base 289cee24 --size 960x600`
+over the five and their seven committed presets: 12 `SAME`; `scene=patch&pondWater=1` against
+`scene=pond&border=0&koi=0` differs in 18 cells of 144,000 (the World's wind, 0.2 against the
+pond's 0.4). `patch` shakes to 17,464 and 23,953 characters (ceilings 19,500 and 26,500), 17 and
+25 of 224 uniform vectors; with the pond's water 44,483, 38. `variants.test.ts` holds every scene
+seen from above to be a variant composing to its scene's knobs and refuses besides a layer, rig or
+value that changes nothing a painted hour equal to the baseline's or offered where no layer the
+sky lights reads it. The Presets view shelves the overhead under `patch` ("baseline") with the
+five as variants ("Compare with baseline" against `patch`); with every composed scene a variant,
+`ComposerShelf.scenes` and the shelves' "not yet ported" notes are gone and every shelf has its
+baseline. **Remains:** a variant cannot unset a feature the baseline holds (the overhead's holds
+none); the overhead's fog, snow, wet bed, tilt and orbit and the World over the delta, as before.
+
 ### Amendments
 
 - **D7 and Phase 5:** prism and pendula are standalone, full-screen, with fractal, hyperbolic, orbit
