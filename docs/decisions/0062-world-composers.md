@@ -1104,6 +1104,26 @@ instructions a 320×200 draw at the defaults, one run, before → after): sill 2
 1,470 → 1,735, lava 649 → 913, incense 911 → 1,068, bonsai 1,560 → 1,580, frost 1,823 → 1,852,
 bar 4,979 → 4,975, train 4,021 → 4,052, mobile 876 → 887; absolute counts move 5–8% between runs,
 ratios within one run about 1%.
+
+**Step 3, built (2026-10-19):** the camera (`composer/camera.ts`). A pose about the variant's rest
+rig (x, y and z offsets in metres, yaw, pitch, the focal's factor) rides in `cam=` (base64url
+varints of thousandths, read as `elements=`: no key, the rest pose) and reaches the shader as
+`uCamera` (2 vec4) under the gate `ROOM_POSE`, so a room at rest compiles as before and a camera
+off rest builds one program, moving further building nothing. `CameraRange` gains `x`, `z`, `turn`
+and `tolerance`: the shell holds a third of the way to its back wall (`shellPoseRange`); the
+mobile's two layers their room under its ceiling; the lava lamp a turn of 0.3 rad; the city
+through the sill's window any pose (drawn from the cell's direction); every painted layer (sill,
+lava's room, bonsai, incense, frost, bar, train) `PAINTED`, 3 cm across, 2 up, 5 in, about a
+degree. Off rest the shell meets the live ray plane by plane, painted layers read the cell pulled
+back to the seat's plane, the mobile traces from its moved, turned and zoomed eye. The pose is held
+to the intersection of the shell's and the on layers' ranges (a link's to the home layers', the
+lab's Camera section's to every placed layer's, shaded on each slider's track); home layers that do
+not meet at the rest pose are a `ComposeError`, a guest out of range is refused with its reason and
+the camera stays (`camera.test.ts`). `ab.ts --base 36bc94dd`: `SAME` for the nine rooms' defaults,
+dithered and `view=source`, and the ten interior committed presets. SwiftShader counts (M a 320×200
+draw, median of six rounds, one run, before → after at rest → posed): sill 2,388 → 2,382 → 2,406
+(within its tolerance), `room` 1,715 → 1,720 → 1,739 (30 cm left, turned 0.12 rad). The mobile's
+pointer picking (`mobile/sim.ts`) still casts from the rest eye.
 The lab dishes (the matter shelf) are decided after step 2.
 
 **Step 4, built (2026-10-19):** the Presets view is the tree (`src/lab/tree-model.ts`,

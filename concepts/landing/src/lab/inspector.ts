@@ -19,9 +19,19 @@
 // sections: `lend`), which shows open and whole, nothing narrowing it, until given back; so both
 // presentations share these controls and their syncs. Under a search, "Reset what changed"
 // restores only the changes the search shows.
+import {
+  atRest,
+  CAMERA_KEY,
+  clampPose,
+  encodeCamera,
+  POSE_AXES,
+  REST_POSE,
+  type PoseAxis,
+} from "../composer/camera.ts";
 import { formatValue, MAX_SEED, type Option, type ParamDef } from "../params.ts";
 import { colorIds, ditherIds, viewIds } from "../renderer.ts";
 import { sceneDefs, type SceneId } from "../scenes/index.ts";
+import type { SceneDef } from "../scenes/types.ts";
 import {
   encodePlanets,
   openingPlanetsValue,
@@ -409,16 +419,18 @@ export class Inspector {
 
   /**
    * Find what differs from the defaults: the lens's count and head, and the rail's dots. A scene's
-   * planets differ while they are not the ones it opens with (PLANETS_KEY, one knob of their group).
-   * A knob counts whether or not its switch is on: the lens shows it dormant beside that switch.
+   * planets differ while they are not the ones it opens with (PLANETS_KEY, one knob of their group),
+   * a room's camera while it is off its rest pose (CAMERA_KEY, its section's one knob). A knob
+   * counts whether or not its switch is on: the lens shows it dormant beside that switch.
    */
   #syncLens(): void {
-    const { state, params, planets } = this.#ctx.current();
+    const { state, params, planets, camera } = this.#ctx.current();
     const spec = sceneDefs[state.scene].planets;
     this.#changed = new Set([
       ...changedKnobs(sceneDefs[state.scene].params, params, this.#defaults),
       ...changedSettings(SETTING_KEYS, state, this.#base()),
       ...(spec !== undefined && planetsChanged(spec, planets) ? [PLANETS_KEY] : []),
+      ...(atRest(camera) ? [] : [CAMERA_KEY]),
     ]);
     const counts = changedCounts(this.#lensGroups, this.#changed);
     this.#counts = counts;
@@ -449,6 +461,7 @@ export class Inspector {
     for (const key of SETTING_KEYS) if (keys.has(key)) patch[key] = base[key];
     const spec = sceneDefs[this.#ctx.current().state.scene].planets;
     if (spec !== undefined && keys.has(PLANETS_KEY)) patch[PLANETS_KEY] = openingPlanetsValue(spec);
+    if (keys.has(CAMERA_KEY)) patch[CAMERA_KEY] = "";
     this.#ctx.change(patch, true);
   }
 
@@ -701,11 +714,13 @@ export class Inspector {
     for (const def of defs) groups.set(def.group, [...(groups.get(def.group) ?? []), def]);
     gatherAlmanac(groups);
     const planets = sceneDefs[scene].planets;
+    const camera = sceneDefs[scene].camera;
     this.#lensGroups = [
       ...[...groups].map(([group, list]) => ({
         id: `${scene}:${group}`,
         knobs: [...list.map(knobKeys), ...(planets?.group === group ? [[PLANETS_KEY]] : [])],
       })),
+      ...(camera === undefined ? [] : [{ id: `${scene}:camera`, knobs: [[CAMERA_KEY]] }]),
       ...SETTING_GROUPS,
     ];
     const { world, own: sceneOwn } = shelves(sceneDefs[scene]);
@@ -739,7 +754,10 @@ export class Inspector {
         menuLayers.get(layerOf(group) ?? ""),
       );
     const worldSections = world.filter((group) => groups.has(group)).map(section("world"));
-    const ownSections = own.filter((group) => groups.has(group)).map(section("scene"));
+    const ownSections = [
+      ...own.filter((group) => groups.has(group)).map(section("scene")),
+      ...(camera === undefined ? [] : [this.#cameraGroup(scene, camera)]),
+    ];
     this.#sceneSections = [...worldSections, ...ownSections];
     this.#menu = [...this.#sceneSections, ...this.#globalSections];
     // A lent section of the scene left is gone with it: the bar closes its popover (menu.ts).
@@ -755,6 +773,92 @@ export class Inspector {
       ),
     );
     this.#body.scrollTop = 0;
+  }
+
+  /**
+   * A room's camera (composer/camera.ts, ADR 0062 D18): a slider per axis of the pose across the
+   * shell's reach, the poses the layers on allow shaded on its track. A move is held to them: a
+   * painted layer keeps the camera within its tolerance, and a guest out of range stays refused.
+   */
+  #cameraGroup(scene: SceneId, camera: NonNullable<SceneDef["camera"]>): Section {
+    const pose = () => this.#ctx.current().camera;
+    const allowed = () => camera.range(this.#ctx.current().params, pose());
+    const move = (axis: PoseAxis, value: number, commit: boolean) =>
+      this.#ctx.change(
+        { [CAMERA_KEY]: encodeCamera(clampPose({ ...pose(), [axis]: value }, allowed())) },
+        commit,
+      );
+    const metres = (v: number) => `${v >= 0 ? "+" : ""}${v.toFixed(2)} m`;
+    const degrees = (v: number) => `${v >= 0 ? "+" : ""}${((v * 180) / Math.PI).toFixed(1)}°`;
+    const axes: Readonly<
+      Record<PoseAxis, { label: string; help: string; step: number; text: (v: number) => string }>
+    > = {
+      x: { label: "Across", help: "The eye moved right (+) or left.", step: 0.005, text: metres },
+      y: { label: "Height", help: "The eye raised (+) or lowered.", step: 0.005, text: metres },
+      z: { label: "Closer", help: "The eye moved in (+) or back.", step: 0.005, text: metres },
+      yaw: {
+        label: "Turn",
+        help: "The view turned left (+) or right.",
+        step: 0.002,
+        text: degrees,
+      },
+      pitch: { label: "Tilt", help: "The view tilted down (+) or up.", step: 0.002, text: degrees },
+      focal: {
+        label: "Zoom",
+        help: "The lens's focal length over its rest one.",
+        step: 0.01,
+        text: (v) => `×${v.toFixed(2)}`,
+      },
+    };
+    const rows = POSE_AXES.map((axis) => {
+      const { label, help, step, text } = axes[axis];
+      const [lo, hi] = camera.reach[axis];
+      const control = slider(
+        label,
+        lo,
+        hi,
+        step,
+        () => pose()[axis],
+        (value, commit) => move(axis, value, commit),
+        text,
+      );
+      control.el.classList.add("camera-axis");
+      const share = (v: number) => `${((Math.min(Math.max(v, lo), hi) - lo) / (hi - lo)) * 100}%`;
+      const shade = () => {
+        const [from, to] = allowed()[axis];
+        setStyle(control.el, "--lo", share(from));
+        setStyle(control.el, "--hi", share(to));
+      };
+      const built = row({
+        label,
+        help,
+        icon: "camera",
+        block: control.el,
+        readout: () => text(pose()[axis]),
+        modified: () => pose()[axis] !== REST_POSE[axis],
+        reset: () => move(axis, REST_POSE[axis], true),
+      });
+      this.#sceneSyncers.push(control.sync, shade, built.sync);
+      return built;
+    });
+    return this.#section({
+      id: `${scene}:camera`,
+      title: "Camera",
+      blurb:
+        "Where the eye stands in the room and how it looks: the room's shell and what is drawn from the eye follow it anywhere in the room; what is painted on the frame moves a little with it, as with the pointer, and holds it near rest (the shaded part of each track).",
+      icon: "camera",
+      shelf: "scene",
+      open: false,
+      content: rows.map((built) => built.el),
+      summary: () =>
+        atRest(pose())
+          ? ["at rest"]
+          : POSE_AXES.filter((axis) => pose()[axis] !== REST_POSE[axis]).map(
+              (axis) => `${axes[axis].label.toLowerCase()} ${axes[axis].text(pose()[axis])}`,
+            ),
+      modified: () => !atRest(pose()),
+      reset: () => this.#ctx.change({ [CAMERA_KEY]: "" }, true),
+    });
   }
 
   /** The knob a group hinges on: its first switch, when every other knob depends on it. */
@@ -854,7 +958,8 @@ export class Inspector {
     );
     const firstLayer = layerSwitches[0];
     if (layers && firstLayer) {
-      place(firstLayer, holding(layersSection(knobs, layers, layerSwitches), layerSwitches));
+      const pose = () => this.#ctx.current().camera;
+      place(firstLayer, holding(layersSection(knobs, layers, layerSwitches, pose), layerSwitches));
       for (const def of layerSwitches) used.add(def);
     }
 

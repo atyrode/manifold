@@ -1,6 +1,8 @@
 // The window sill's layers (ADR 0062 Phase 3): their manifests, which load without their code
-// (code.ts). Every one is drawn on the sill's frame, through its rig alone (ON_THE_SILL). The wall,
-// the sash window's frame and the sill itself are the room's shell (composer/shell.ts).
+// (code.ts). The props, the cat and the curtain are drawn on the sill's frame, through its rig alone
+// and a live camera's parallax (ON_THE_SILL); the city is drawn from the cell's direction through
+// the shell's window (THROUGH_THE_SILL). The wall, the sash window's frame and the sill itself are
+// the room's shell (composer/shell.ts).
 //   cityWindow  backdrop: the view through the shell's back window, a city at dusk; the World's sky
 //               and weather cross its glass, the city's windows and the neon M across the street.
 //               Its panes are glass for a frost glass (its glass, roomGlass).
@@ -12,7 +14,7 @@
 // composer").
 import type { LayerDef } from "../../composer/types.ts";
 import { feature, range, toggle } from "../../params.ts";
-import { ON_THE_SILL } from "./constants.ts";
+import { ON_THE_SILL, THROUGH_THE_SILL } from "./constants.ts";
 
 export const cityWindowLayer: LayerDef = {
   id: "cityWindow",
@@ -21,7 +23,7 @@ export const cityWindowLayer: LayerDef = {
   role: "backdrop",
   bands: ["far"],
   space: { anchors: [], claims: [] },
-  camera: ON_THE_SILL,
+  camera: THROUGH_THE_SILL,
   window: true,
   switch: toggle(
     "layers",

@@ -5,6 +5,7 @@ import { Lab } from "./lab.ts";
 import { sceneStep } from "./lab/families.ts";
 import { DitherRenderer } from "./renderer.ts";
 import { loadScene, prefetchScene, type SceneId } from "./scenes/index.ts";
+import type { CameraPose } from "./composer/camera.ts";
 import type { LightElement } from "./composer/types.ts";
 import type { SkyPlanet } from "./scenes/planets.ts";
 import {
@@ -37,12 +38,13 @@ let state: LabState = opened.state;
 let params: Params = opened.params;
 let planets: SkyPlanet[] = opened.planets;
 let elements: LightElement[] = opened.elements;
+let camera: CameraPose = opened.camera;
 
 let renderer: DitherRenderer | undefined;
 try {
   renderer = new DitherRenderer(
     stage,
-    renderSettings(state, params, planets, elements),
+    renderSettings(state, params, planets, elements, camera),
     reducedMotion.matches,
   );
   renderer.start();
@@ -131,12 +133,13 @@ function apply(
   params = setup.params;
   planets = setup.planets;
   elements = setup.elements;
+  camera = setup.camera;
   // The lab's session tools (an A/B comparison, a tour) ride beside the setup in the URL.
-  const minimal = serialise(state, params, planets, elements);
+  const minimal = serialise(state, params, planets, elements, camera);
   for (const [key, value] of lab?.sessionQuery() ?? []) minimal.append(key, value);
   const search = minimal.toString();
   showUrl(`${location.pathname}${search ? `?${search}` : ""}`);
-  const settings = renderSettings(state, params, planets, elements);
+  const settings = renderSettings(state, params, planets, elements, camera);
   renderer?.update(options.cut ? { ...settings, passage: false } : settings, {
     keepClocks: options.keepClocks === true,
   });
@@ -176,7 +179,7 @@ function apply(
 // line of this module, and the Lab only calls `host.apply` from user actions, never while it is
 // being built (it reads `host.current()` then).
 const lab = new Lab(element("#lab", HTMLElement), element("#lab-open", HTMLButtonElement), {
-  current: () => ({ state, params, planets, elements }),
+  current: () => ({ state, params, planets, elements, camera }),
   apply,
   renderer: () => renderer,
   build,

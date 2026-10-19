@@ -10,6 +10,7 @@
 //               along the glass's edges, the condensation, the lines a warm fingertip melts and the
 //               traced M; lit by the room's light and by what shows through the glass. Its sim grows
 //               the crystals and melts them, its four textures its fields.
+import { PAINTED } from "../../composer/camera.ts";
 import type { LayerDef } from "../../composer/types.ts";
 import { choice, feature, range, seed, toggle } from "../../params.ts";
 import { AT_THE_PANE } from "./constants.ts";
@@ -65,7 +66,8 @@ export const frostGlassLayer: LayerDef = {
   role: "dressing",
   bands: ["far"],
   space: { anchors: [], claims: [] },
-  camera: {},
+  // Painted on whatever window's glass it lies on: the painted tolerance about any rig.
+  camera: { tolerance: PAINTED },
   glass: true,
   switch: toggle(
     "layers",

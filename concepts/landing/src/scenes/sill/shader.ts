@@ -980,8 +980,10 @@ export const cityWindowGlsl = `
 vec4 cityWindowGlass(Ctx x) {
   return sill.inGlass ? roomWin.pane : vec4(-1.0);
 }
+// The city is far: through a moving camera it turns with the view (roomViewP, the cell's direction),
+// while the window's frame, its glass and what lies on it stand on the back wall (roomWallP).
 void cityWindowFar(Ctx x, inout Cell c) {
-  vec2 p = x.p;
+  vec2 p = roomWallP;
   float aspect = x.aspect;
   float px = x.px;
   float tm = x.tm;
@@ -1001,7 +1003,7 @@ void cityWindowFar(Ctx x, inout Cell c) {
   vec3 wood = vec3(0.42, 0.26, 0.15);
   vec3 wall = vec3(0.27, 0.24, 0.29);
   if (sill.inOpen || sill.inGlass) {
-    vec2 at = p;
+    vec2 at = roomViewP;
     float soft = 0.6 * px + 0.0015 * max(K_rain, K_snow);
     vec3 drop = vec3(0.0);
     vec2 fromCentre = vec2(0.0);
@@ -1009,7 +1011,7 @@ void cityWindowFar(Ctx x, inout Cell c) {
     if (sill.inGlass) {
       soft += 0.0012 + 0.005 * K_rain;
       if (K_drops > 0.5 && K_rain > 0.0) {
-        drop = glassDrops(x.uv, aspect, tm, K_rain);
+        drop = glassDrops(roomWallUv, aspect, tm, K_rain);
         at += drop.xy * vec2(aspect, 1.0);
         if (drop.z > 0.0) {
           // Each drop is a little lens onto the lit city: a small inverted picture of the skyline

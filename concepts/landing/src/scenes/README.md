@@ -2637,7 +2637,7 @@ interface LayerDef {
   subject?: boolean; // a dressing that holds the front band
   bands: readonly Band[]; // "far" (beyond ~60 m), "middle" (6–60 m), "front" (within ~6 m)
   space: { anchors: readonly Anchor[]; claims: readonly Claim[]; stretch?: boolean };
-  camera: CameraRange; // spans of eye, horizon, focal, pitch, or the overhead's span: its rigs
+  camera: CameraRange; // its rigs' spans (eye, horizon, focal, pitch; a room's x, z, turn, tolerance), or the overhead's span
   display?: { scale: number }; // a declared readability cheat: the apiary's hives at 1.5
   switch: ParamDef; // steady: a toggle, or the feature knob it grew from, keyed by its id
   params: readonly ParamDef[]; // hung on the switch with `when` by the composer
@@ -2751,7 +2751,10 @@ of 1 to 2.5 m: ten presets), the murmuration (a level eye of 1.6 to 3 m, horizon
 focal 0.9 to 1.4: it keeps the same shares of the sky above any such rig's horizon) and the valley
 (the bees' garden's rig and the hill's: beyond the lawn's hedge, seen from the vantage's hilltop,
 its hill-only parts left out of the bees' program). Offering costs every preset that offers the
-layer its knobs and its "now" slots, on or off (see "Programs and cost").
+layer its knobs and its "now" slots, on or off (see "Programs and cost"). In a room the same spans,
+with `x`, `z` and `turn`, are the live camera poses a layer drawn from the ray holds, and a layer
+painted on its frame declares a `tolerance` about the rest pose instead (see "The interior
+composer").
 
 ### Compositing
 
@@ -3236,6 +3239,29 @@ frost the sill's panes. Clouds and harmonograph are still scenes of their own.
   `localLight`: every on layer's declared lights and the room's light elements, at the surface's
   point in metres in the room's frame. `roomLamp(p)` is the lamps' reach there (no colour, no
   power), which painted highlights take (the sill's cat and props).
+- **The camera** (ADR 0062 D18, `composer/camera.ts`) moves live about the variant's rest rig
+  (`RIG_*`, compiled in): x, y and z offsets in metres in the room's frame, a yaw (left), a pitch
+  (down) and the focal's factor, in one packed key, `cam=` (base64url varints of thousandths: mm,
+  mrad), read as `elements=` is: no key stands at the rest pose. It reaches the shader as `uCamera`
+  (2 vec4, outside `uParams`), under the gate `ROOM_POSE`: a room at rest compiles as before, a
+  camera off its rest builds one program (as a layer turn does), and moving it further builds
+  nothing. Off rest the shell meets the live ray: the wall and a window at `roomWallP` (the cell on
+  the back wall as the rest rig sees it), each element's body on its own plane (`roomPlaneP`), the
+  ledge's top, its front and the floor along `roomRd` from `roomEye`. A layer painted on the frame
+  reads `x.p`, the cell pulled back to the seat's plane (the parallax the pose gives there, as the
+  pointer's); the city through the sill's window reads `roomViewP`, the cell's direction, and its
+  glass `roomWallP`; a layer with a camera of its own reads `x.q`, the cell's own point, and the
+  pose (the mobile's: its eye moved, turned, pitched and zoomed). Each layer's `camera` says the
+  poses it holds (`layerPoseRange`): drawn from the ray, its `eye`, `x`, `z`, `turn`, `pitch` and
+  `focal` spans (the mobile's under its ceiling and over its floor, the lava lamp's turned 0.3 rad
+  at most, the city's any); painted, the `PAINTED` tolerance about the rest pose (3 cm across, 2
+  up, 5 in, about a degree). The shell holds a third of the way to the back wall
+  (`shellPoseRange`). The pose is held to the intersection of the shell's range and every layer's
+  on (`SceneDef.camera.range`, `clampPose`): a link's to the shell's and its home layers', a drag in
+  the lab's Camera section to every layer's placed, whose range it shades on each axis's track.
+  Home layers whose ranges do not meet at the rest pose are a `ComposeError`; a guest whose range
+  excludes the pose is refused with its reason (`place`: "the camera's x at 0.30 m lies past
+  0.03 m, the most it is drawn at"), and the camera stays.
 - **Light elements** (ADR 0062 D17, `composer/elements.ts`) are placed lights:
   `{ kind, at, colour, power, reach, flicker, shadow }`, a window, lamp, candle, neon tube or fire
   (a `screen` is reserved), `at` in metres in the room's frame, in frame or out of it. Their kinds

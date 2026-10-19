@@ -5,6 +5,7 @@
 // when they do, and a Lab that never applies while it is being built (main.ts declares `const lab`
 // after `apply`, which reads it). One renderer, two scenes: every program compiled costs seconds
 // under software WebGL. A scene enters once its program is built in the background (`arrive`).
+import { REST_POSE } from "./composer/camera.ts";
 import { Lab } from "./lab.ts";
 import { DitherRenderer } from "./renderer.ts";
 import { loadScene } from "./scenes/index.ts";
@@ -336,6 +337,7 @@ export async function verifyRuntime(_gl: WebGL2RenderingContext): Promise<Record
         params: paramDefaults("pond"),
         planets: [],
         elements: [],
+        camera: REST_POSE,
       }),
       apply: () => {
         applied++;

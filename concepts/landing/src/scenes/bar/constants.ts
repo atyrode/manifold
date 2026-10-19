@@ -1,7 +1,8 @@
 // The constants Late bar's definition (index.ts, layers.ts) shares with its code (sim.ts,
 // shader.ts), kept apart from that code so that the scene registry loads without it
 // (SceneDef.code).
-import type { Rig, Room } from "../../composer/types.ts";
+import { PAINTED } from "../../composer/camera.ts";
+import type { CameraRange, Rig, Room } from "../../composer/types.ts";
 
 /** Seconds the scene's entrance and exit take (SceneDef.passage), shared with the shader. */
 export const PASSAGE = { enter: 2.8, exit: 1.7 } as const;
@@ -37,9 +38,13 @@ export const BAR_ROOM: Room = {
   ambient: [0, 0, 0],
 };
 
-/** The bar's layers are drawn through the bar's own camera, by this rig alone. */
-export const IN_THE_BOOTH = {
+/**
+ * The bar's layers are drawn through the bar's own camera, by this rig alone; a live camera moves
+ * them only within the painted tolerance (composer/camera.ts).
+ */
+export const IN_THE_BOOTH: CameraRange = {
   eye: [BAR_RIG.eye, BAR_RIG.eye],
   horizon: [BAR_RIG.horizon, BAR_RIG.horizon],
   focal: [BAR_RIG.focal, BAR_RIG.focal],
-} as const;
+  tolerance: PAINTED,
+};

@@ -1,6 +1,7 @@
 // The constants Frost's definition (index.ts, layers.ts) shares with its code (shader.ts, sim.ts),
 // kept apart from that code so that the scene registry loads without it (SceneDef.code).
-import type { Rig, Room } from "../../composer/types.ts";
+import { PAINTED } from "../../composer/camera.ts";
+import type { CameraRange, Rig, Room } from "../../composer/types.ts";
 
 /**
  * Seconds the scene's entrance and exit take (SceneDef.passage). Entrance: the glass opens clear
@@ -40,9 +41,13 @@ export const FROST_ROOM: Room = {
   ambient: [0.3, 0.31, 0.34],
 };
 
-/** The frost's view is drawn through this rig alone. */
-export const AT_THE_PANE = {
+/**
+ * The frost's view is drawn through this rig alone; a live camera moves it only within the painted
+ * tolerance (composer/camera.ts).
+ */
+export const AT_THE_PANE: CameraRange = {
   eye: [FROST_RIG.eye, FROST_RIG.eye],
   horizon: [FROST_RIG.horizon, FROST_RIG.horizon],
   focal: [FROST_RIG.focal, FROST_RIG.focal],
-} as const;
+  tolerance: PAINTED,
+};

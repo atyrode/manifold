@@ -20,14 +20,18 @@
 //                     knob the preset does not list).
 //   featuresFor       the World's gates (with the climate where the season sets it: a season knob
 //                     beside the World's snow), LAYER_<ID> for every offered layer (1 where
-//                     placed), each placed layer's own gates (a gate another placed layer
-//                     suppresses at 0), and every gate of an offered layer that is off at 0, so a
-//                     chunk shared by several layers may test any of them with `#if`; TURNS_GATE at
-//                     0: a steady program, which plays no layer's own entrance or exit.
-//   featuresAllFor    the same with every gate of the placed layers on, and TURNS_GATE: a layer
-//                     set's all-features program, which draws its layers' turns as well.
+//                     placed: in a room at the camera pose it is given), each placed layer's own
+//                     gates (a gate another placed layer suppresses at 0), and every gate of an
+//                     offered layer that is off at 0, so a chunk shared by several layers may test
+//                     any of them with `#if`; a room's POSE_GATE (1 off the rest pose); TURNS_GATE
+//                     at 0: a steady program, which plays no layer's own entrance or exit.
+//   featuresAllFor    the same with every gate of the placed layers on, POSE_GATE in a room, and
+//                     TURNS_GATE: a layer set's all-features program, which draws its layers' turns
+//                     and any camera pose as well.
 //   structural        the layer switches: turning one builds another program.
 //   layers            what the lab's Layers section reads (SceneLayers).
+//   camera            a room's (composer/camera.ts): the poses the shell and the layers placed
+//                     hold, met (home layers that do not meet at the rest pose: a ComposeError).
 // The overhead composer (overhead.ts) lists neither the whole World nor the gusts, season and seed:
 // its presets list the World's rain and wind (worldPatchKnobs, the outdoor keys and meaning) while
 // they offer a layer open to the sky (LayerDef.open), with WORLD_RAIN as their only World gate, then
@@ -45,6 +49,17 @@ import {
   worldPatchGroup,
   worldPatchKnobs,
 } from "../scenes/world.ts";
+import {
+  AT_REST,
+  atRest,
+  clampPose,
+  disjointAxis,
+  layerPoseRange,
+  meetRanges,
+  shellPoseRange,
+  type CameraPose,
+  type PoseRange,
+} from "./camera.ts";
 import { COMPOSER_CAPS } from "./caps.ts";
 import { checkElements, ElementError, LIGHT_CAP, roomListsWorld } from "./elements.ts";
 import { admits, place, type Placement } from "./place.ts";
@@ -79,8 +94,11 @@ export interface SceneLayers {
   readonly offered: readonly { readonly id: string; readonly title: string; readonly role: Role }[];
   /** The preset's own, on by default. */
   readonly home: readonly string[];
-  /** What these raw knobs (keyed as in the URL) place: the layers kept, and why the others are not. */
-  place(params: Readonly<Record<string, number>>): Placement;
+  /**
+   * What these raw knobs (keyed as in the URL) place at this camera pose (a room's: a guest out of
+   * its range is refused): the layers kept, and why the others are not.
+   */
+  place(params: Readonly<Record<string, number>>, pose?: CameraPose): Placement;
   /** The knob of each layer's Manifold M, by layer id: the lab keeps one on. */
   readonly marks: Readonly<Record<string, string>>;
   /** Each layer's hosts (`requires`), by layer id. */
@@ -111,8 +129,8 @@ export interface ComposedScene<P extends AnyPreset = AnyPreset> {
   readonly shortParams: Readonly<Record<string, readonly ParamDef[]>>;
   /** The placement of the layers in `on` (ids switched on). */
   place(on: ReadonlySet<string>): Placement;
-  /** The placement of the layers these raw knobs (keyed as in the URL) switch on. */
-  placed(params: Readonly<Record<string, number>>): Placement;
+  /** The placement of the layers these raw knobs (keyed as in the URL) switch on, at a room's pose. */
+  placed(params: Readonly<Record<string, number>>, pose?: CameraPose): Placement;
   /** Each layer's GLSL as a program of these layers (on, canonical order) takes it: keys and its M. */
   rewrite(on: readonly LayerDef[]): (layer: LayerDef, glsl: string) => string;
 }
@@ -131,6 +149,14 @@ export function layerGate(id: string): string {
  * for it: SceneSim.turning) and in every all-features program, 0 in a steady one.
  */
 export const TURNS_GATE = "COMPOSER_TURNS";
+
+/**
+ * The gate of a room's program drawn through a camera off its rest pose (composer/camera.ts): 1
+ * where the pose (uCamera) moves, the shell drawn from the live ray and the painted layers pulled
+ * back through it; 0 at rest, the room drawn from the rig as compiled. Moving the camera further
+ * builds nothing; every all-features program holds it.
+ */
+export const POSE_GATE = "ROOM_POSE";
 
 /** The group every layer's Manifold M knob stands in: one section, whose M the composer keeps to one. */
 export const MARK_GROUP = "manifold";
@@ -228,6 +254,15 @@ const LIGHT_ONLY_ALL = {
 };
 
 /**
+ * A light-only room's values as its World reads them: the light-only World's knobs alone. A room
+ * layer may hold a knob under a World key that is its own (the night line's `stars` and `fog`), and
+ * that knob must not open the World's gate the light-only World never lists (LIGHT_ONLY_ALL).
+ */
+function lightOnlyValues(values: Readonly<Record<string, number>>): Record<string, number> {
+  return Object.fromEntries(Object.entries(values).filter(([key]) => LIGHT_ONLY_WORLD[key]));
+}
+
+/**
  * The scene preset `variant` makes over `baseline` (ADR 0062 D14): the variant's identity; the
  * baseline's home layers less those it removes, then those it adds; the baseline's values under
  * its own; its camera's rest pose and its room for the baseline's; its grade key by key over the
@@ -308,6 +343,25 @@ export function composeScene<P extends AnyPreset>(composer: Composer, preset: P)
         throw new ComposeError(`preset ${preset.id}: ${error.message}`);
       throw error;
     }
+  }
+  // A room's camera (composer/camera.ts, ADR 0062 D18): the shell's range and each offered layer's
+  // over the rig. The home layers' must meet the shell's at the rest pose, which a link without the
+  // camera's key shows; a guest's may lie elsewhere (refused until the camera is there: place.ts).
+  const ranges = new Map<string, PoseRange>();
+  let shell: PoseRange | undefined;
+  if (indoors && level?.room !== undefined) {
+    shell = shellPoseRange(level.rig, level.room);
+    for (const layer of offered) ranges.set(layer.id, layerPoseRange(layer.camera, level.rig));
+    const homes = offered.filter((layer) => home.has(layer.id));
+    const axis = disjointAxis([
+      AT_REST,
+      shell,
+      ...homes.flatMap((layer) => ranges.get(layer.id) ?? []),
+    ]);
+    if (axis !== undefined)
+      throw new ComposeError(
+        `preset ${preset.id}: its home layers' camera ranges (${homes.map((layer) => layer.id).join(", ")} and the shell's) do not meet at its rest pose in ${axis}`,
+      );
   }
   const looksOut = offered.some((l) => l.window === true);
 
@@ -416,10 +470,32 @@ export function composeScene<P extends AnyPreset>(composer: Composer, preset: P)
   const gates: Record<string, string> = Object.fromEntries(
     offered.map((layer) => [layerGate(layer.id), layer.id]),
   );
-  const placeOn = (on: ReadonlySet<string>) => place(offered, preset, on);
-  const placed = (values: Readonly<Record<string, number>>) =>
+  const placeOn = (on: ReadonlySet<string>, pose?: CameraPose) => place(offered, preset, on, pose);
+  const switched = (values: Readonly<Record<string, number>>) =>
+    new Set(offered.filter((layer) => (values[layer.id] ?? 0) > 0).map((layer) => layer.id));
+  /**
+   * A room's poses for these values: the shell's range met with every layer's the placement keeps
+   * at `pose` (a guest whose range excludes it is refused), or with the home layers' alone without
+   * one. Never empty: the home layers' meet (checked above), and a kept guest holds the pose.
+   */
+  const poseRange = (values: Readonly<Record<string, number>>, pose?: CameraPose): PoseRange => {
+    const meet = (pose?: CameraPose) =>
+      meetRanges([
+        ...(shell === undefined ? [] : [shell]),
+        ...placeOn(switched(values), pose).layers.flatMap(({ layer }) =>
+          pose === undefined && !home.has(layer.id) ? [] : (ranges.get(layer.id) ?? []),
+        ),
+      ]);
+    const homes = meet();
+    if (homes === undefined)
+      throw new ComposeError(`preset ${preset.id}: no pose holds its layers`);
+    return pose === undefined ? homes : (meet(clampPose(pose, homes)) ?? homes);
+  };
+  /** The placement these values switch on; in a room at `pose`, held to its home layers' range. */
+  const placed = (values: Readonly<Record<string, number>>, pose?: CameraPose) =>
     placeOn(
-      new Set(offered.filter((layer) => (values[layer.id] ?? 0) > 0).map((layer) => layer.id)),
+      switched(values),
+      shell === undefined || pose === undefined ? undefined : clampPose(pose, poseRange(values)),
     );
   /** A layer's values under its own keys (its knobs' qualified keys read back). */
   const ownValues = (layer: LayerDef, values: Readonly<Record<string, number>>) => {
@@ -428,15 +504,19 @@ export function composeScene<P extends AnyPreset>(composer: Composer, preset: P)
     for (const [short, key] of Object.entries(map)) out[short] = values[key] ?? 0;
     return out;
   };
-  /** The layer gates of the layers these values place, each placed layer's own (`each`), the rest 0. */
+  /**
+   * The layer gates of the layers these values place (in a room, at `pose`), each placed layer's own
+   * (`each`), the rest 0.
+   */
   const gatesOf = (
     values: Readonly<Record<string, number>>,
     each: (
       layer: LayerDef,
       values: Readonly<Record<string, number>>,
     ) => Readonly<Record<string, number>>,
+    pose?: CameraPose,
   ) => {
-    const placement = placed(values);
+    const placement = placed(values, pose);
     const on = new Set(placement.layers.map((p) => p.layer.id));
     const out: Record<string, number> = {};
     for (const layer of offered) {
@@ -575,20 +655,24 @@ export function composeScene<P extends AnyPreset>(composer: Composer, preset: P)
             defaults: level?.elements ?? [],
             cap: LIGHT_CAP - offered.reduce((sum, layer) => sum + (layer.lights?.length ?? 0), 0),
           },
+          ...(shell === undefined ? {} : { camera: { range: poseRange, reach: shell } }),
         }),
     ...(preset.passage === undefined ? {} : { passage: preset.passage }),
     ...(preset.theme === undefined ? {} : { theme: preset.theme(params) }),
     ...(preset.features === undefined ? {} : { features: preset.features }),
-    featuresFor: (values) => ({
+    featuresFor: (values, pose) => ({
       ...(level === undefined
         ? open
           ? worldPatchFeatures(values)
           : {}
-        : { ...worldFeatures(values, climate), ...(lightOnly ? LIGHT_ONLY_GATES : {}) }),
-      ...gatesOf(values, (layer, v) => layer.featuresFor?.(v) ?? {}),
+        : lightOnly
+          ? { ...worldFeatures(lightOnlyValues(values), climate), ...LIGHT_ONLY_GATES }
+          : worldFeatures(values, climate)),
+      ...gatesOf(values, (layer, v) => layer.featuresFor?.(v) ?? {}, pose),
+      ...(indoors ? { [POSE_GATE]: pose === undefined || atRest(pose) ? 0 : 1 } : {}),
       [TURNS_GATE]: 0,
     }),
-    featuresAllFor: (values) => ({
+    featuresAllFor: (values, pose) => ({
       ...(level === undefined
         ? open
           ? worldPatchFeatures({ rain: 1 })
@@ -596,7 +680,8 @@ export function composeScene<P extends AnyPreset>(composer: Composer, preset: P)
         : indoors && !looksOut
           ? LIGHT_ONLY_ALL
           : WORLD_ALL),
-      ...gatesOf(values, (layer) => layer.featuresAll ?? {}),
+      ...gatesOf(values, (layer) => layer.featuresAll ?? {}, pose),
+      ...(indoors ? { [POSE_GATE]: 1 } : {}),
       [TURNS_GATE]: 1,
     }),
     structural: offered.map((layer) => layer.id),

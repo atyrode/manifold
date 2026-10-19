@@ -1,6 +1,7 @@
 // The constants Bonsai's definition (index.ts, layers.ts) shares with its code (sim.ts, shader.ts),
 // kept apart from that code so that the scene registry loads without it (SceneDef.code).
-import type { LightElement, Rig, Room } from "../../composer/types.ts";
+import { PAINTED } from "../../composer/camera.ts";
+import type { CameraRange, LightElement, Rig, Room } from "../../composer/types.ts";
 
 // ---- passage ----
 /** Seconds the scene's entrance and exit take (SceneDef.passage). Entrance: the stand glides in from the right along the veranda and comes to rest, the pads leaning on its slowing and springing back; exit: the stand is pushed off to the right, the pads lagging, a gust and a few leaves left behind in the air. */
@@ -52,9 +53,13 @@ export const BONSAI_WINDOW: LightElement = {
   window: { wall: "front", size: [1.6, 1.2], bars: [2, 1] },
 };
 
-/** The bonsai's layers are drawn on its display, through this rig alone. */
-export const ON_THE_VERANDA = {
+/**
+ * The bonsai's layers are drawn on its display, through this rig alone; a live camera moves them
+ * only within the painted tolerance (composer/camera.ts).
+ */
+export const ON_THE_VERANDA: CameraRange = {
   eye: [BONSAI_RIG.eye, BONSAI_RIG.eye],
   horizon: [BONSAI_RIG.horizon, BONSAI_RIG.horizon],
   focal: [BONSAI_RIG.focal, BONSAI_RIG.focal],
-} as const;
+  tolerance: PAINTED,
+};

@@ -12,6 +12,7 @@
 // comments gone and only what `main` reaches, line for line (`fragmentSourceFor`).
 
 import { seasonKnob, yearCycleKnob, yearNowGlsl } from "../climate.ts";
+import type { CameraPose } from "../composer/camera.ts";
 import { elementFeatures } from "../composer/elements.ts";
 import type { LightElement } from "../composer/types.ts";
 import { effective, MAX_PARAMS, type Widget } from "../params.ts";
@@ -160,10 +161,10 @@ export function settingKeyed(scene: SceneDef): boolean {
 /**
  * The compile-time features of `scene`'s program for knob values as its shader reads them (keyed by
  * knob key; default: the scene's defaults), the planets it holds as skyGiant takes them (default:
- * those it opens with), whether other principals' cursors are drawn over it (`cursors`) and a room's
- * light elements (default: those it opens with): `features`, its library gates and
- * `featuresFor(values)` over them, CURSORS_GATE while `cursors`, and the elements' count and kinds
- * (composer/elements.ts `elementFeatures`).
+ * those it opens with), whether other principals' cursors are drawn over it (`cursors`), a room's
+ * light elements (default: those it opens with) and its camera pose (default: the rest pose):
+ * `features`, its library gates and `featuresFor(values, pose)` over them, CURSORS_GATE while
+ * `cursors`, and the elements' count and kinds (composer/elements.ts `elementFeatures`).
  */
 export function sceneFeatures(
   scene: SceneDef,
@@ -171,6 +172,7 @@ export function sceneFeatures(
   planets?: PlanetUniforms,
   cursors = false,
   elements?: readonly LightElement[],
+  pose?: CameraPose,
 ): Readonly<Record<string, number>> {
   const own = settingKeyed(scene)
     ? keyedFeatures(
@@ -178,17 +180,19 @@ export function sceneFeatures(
         values ?? shaderValues(scene),
         planets ?? planetUniforms(scene.planets === undefined ? [] : openingPlanets(scene.planets)),
         elements,
+        pose,
       )
     : (scene.features ?? {});
   return cursors ? { ...own, [CURSORS_GATE]: 1 } : own;
 }
 
-/** A setting-keyed scene's features for these knob values, planets and elements (see `sceneFeatures`). */
+/** A setting-keyed scene's features for these knob values, planets, elements and pose (see `sceneFeatures`). */
 function keyedFeatures(
   scene: SceneDef,
   knobs: Readonly<Record<string, number>>,
   planets: PlanetUniforms,
   elements: readonly LightElement[] | undefined,
+  pose: CameraPose | undefined,
 ): Readonly<Record<string, number>> {
   return {
     ...scene.features,
@@ -203,7 +207,7 @@ function keyedFeatures(
           ...planets.gates,
         }),
     ...(scene.elements === undefined ? {} : elementFeatures(elements ?? scene.elements.defaults)),
-    ...scene.featuresFor?.(knobs),
+    ...scene.featuresFor?.(knobs, pose),
   };
 }
 
@@ -212,13 +216,15 @@ function keyedFeatures(
  * CURSORS_GATE on and `featuresAll` over them, a program that draws every setting of its knobs and
  * planets, with or without cursors, as that setting's own (`sceneFeatures`) program does. A
  * composed scene's (`featuresAllFor`) is its layer set's, for knob values as its shader reads them
- * (default: its defaults): every setting of the same layers. Undefined for a scene whose program
- * does not depend on its setting (`settingKeyed`); throws for one with `featuresFor` but neither
- * `featuresAll` nor `featuresAllFor`.
+ * (default: its defaults) at a room's camera pose (default: the rest pose): every setting of the
+ * same layers. Undefined for a scene whose program does not depend on its setting
+ * (`settingKeyed`); throws for one with `featuresFor` but neither `featuresAll` nor
+ * `featuresAllFor`.
  */
 export function sceneFeaturesAll(
   scene: SceneDef,
   values?: Readonly<Record<string, number>>,
+  pose?: CameraPose,
 ): Readonly<Record<string, number>> | undefined {
   if (!settingKeyed(scene)) return undefined;
   if (
@@ -234,7 +240,7 @@ export function sceneFeaturesAll(
     // A room's elements are compiled in by count and kind: its all-features program draws those
     // it opens with, and another list builds its own program.
     ...(scene.elements === undefined ? {} : elementFeatures(scene.elements.defaults)),
-    ...(scene.featuresAllFor?.(values ?? shaderValues(scene)) ?? scene.featuresAll),
+    ...(scene.featuresAllFor?.(values ?? shaderValues(scene), pose) ?? scene.featuresAll),
     [CURSORS_GATE]: 1,
   };
 }

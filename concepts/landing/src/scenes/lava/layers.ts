@@ -96,7 +96,9 @@ export const lavaLampLayer: LayerDef = {
       },
     ],
   },
-  camera: {},
+  // Drawn from the rig: it stands on the seat's plane, which the room pulls every cell back to, its
+  // cap and base seen from the live eye; any pose but a turn far enough to show its flat side.
+  camera: { turn: [-0.3, 0.3] },
   switch: toggle(
     "layers",
     "lavaLamp",

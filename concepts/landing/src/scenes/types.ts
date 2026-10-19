@@ -16,6 +16,7 @@
 //   + the dithering `main`, which calls the entry;
 //   shaken (src/shaders/shake.ts) to what `main` reaches before it reaches the driver.
 // `uv` is 0..1 with y up, `cell` is the dither cell (gl_FragCoord.xy), `t` the scene clock.
+import type { CameraPose, PoseRange } from "../composer/camera.ts";
 import type { SceneLayers } from "../composer/compose.ts";
 import type { LightElement } from "../composer/types.ts";
 import type { Blurb, ParamDef } from "../params.ts";
@@ -279,7 +280,10 @@ export interface SceneDef {
    * inside it. Name each gate and define it 0 or 1 every time, tested with `#if`; a library feature
    * tested with `#ifdef` is left out instead. See "Composing components" in src/scenes/README.md.
    */
-  featuresFor?: (values: Readonly<Record<string, number>>) => Readonly<Record<string, number>>;
+  featuresFor?: (
+    values: Readonly<Record<string, number>>,
+    pose?: CameraPose,
+  ) => Readonly<Record<string, number>>;
   /**
    * Required with `featuresFor` unless `featuresAllFor` stands in for it (merged over `features`):
    * every gate it can turn on, on, and each tier at the highest it can select. Its program must draw
@@ -289,10 +293,14 @@ export interface SceneDef {
   featuresAll?: Readonly<Record<string, number>>;
   /**
    * A composed scene's all-features set for the layer set these values (as the shader reads them)
-   * switch on (src/composer/compose.ts): every gate of those layers on. Its program draws every
-   * setting of the same layers as that setting's own does; another layer set is another program.
+   * switch on (src/composer/compose.ts), at a room's camera pose: every gate of those layers on. Its
+   * program draws every setting of the same layers as that setting's own does; another layer set is
+   * another program.
    */
-  featuresAllFor?: (values: Readonly<Record<string, number>>) => Readonly<Record<string, number>>;
+  featuresAllFor?: (
+    values: Readonly<Record<string, number>>,
+    pose?: CameraPose,
+  ) => Readonly<Record<string, number>>;
   /**
    * A composed scene's layer switches: turning one changes the layer set, so the program; and a
    * preset's own steady mode that builds another program (the dunes' overhead `camera`).
@@ -314,6 +322,16 @@ export interface SceneDef {
    * lights its layers declare (`cap`). Their kinds and count are compiled in.
    */
   elements?: { readonly defaults: readonly LightElement[]; readonly cap: number };
+  /**
+   * A room's camera (src/composer/camera.ts): the poses about its rest rig that these knobs' layers
+   * hold (`range`), the shell's and every placed layer's met; without a pose, the shell's and its
+   * home layers' alone. `reach`: the shell's own, the most any layer set lets it move (the lab's
+   * camera control spans it). A link without CAMERA_KEY stands at the rest pose.
+   */
+  camera?: {
+    readonly range: (values: Readonly<Record<string, number>>, pose?: CameraPose) => PoseRange;
+    readonly reach: PoseRange;
+  };
 }
 
 /** A scene with its code loaded (the registry's `loadScene`): what its program and sim are built from. */

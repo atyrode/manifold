@@ -5,6 +5,7 @@
 // the backdrop or bed on stays on (a stack has exactly one; another swaps it). Switching a layer on
 // switches off the layers it excludes, or that exclude it (README "Relations between layers"). A
 // layer that needs a host is left refused until its host is on: the chip says which.
+import type { CameraPose } from "../composer/camera.ts";
 import type { SceneLayers } from "../composer/compose.ts";
 import { ROLES, type Role } from "../composer/types.ts";
 
@@ -40,11 +41,17 @@ export interface LayerRow {
 
 /**
  * The Layers section's rows, in role order: every role holding an offered layer, with the layer
- * switches as `value` reads them (a URL key's value, its default filled in).
+ * switches as `value` reads them (a URL key's value, its default filled in), placed at a room's
+ * camera `pose` (a guest out of its range refused).
  */
-export function layerRows(layers: SceneLayers, value: (key: string) => number): LayerRow[] {
+export function layerRows(
+  layers: SceneLayers,
+  value: (key: string) => number,
+  pose?: CameraPose,
+): LayerRow[] {
   const placement = layers.place(
     Object.fromEntries(layers.offered.map((layer) => [layer.id, value(layer.id)])),
+    pose,
   );
   const drawn = new Set(placement.layers.map((placed) => placed.layer.id));
   const reasons = new Map(placement.refused.map((refusal) => [refusal.layer, refusal.reason]));

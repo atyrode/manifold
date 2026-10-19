@@ -170,8 +170,11 @@ const float ROOM_SCALE = ${glslFloat(frame.scale)};
 const float ROOM_DISTANCE = ${glslFloat(room.distance)};
 ${triggers}
 // What every pass is given: the cell, its frame point p (screen heights from the centre, x across),
-// the frame's aspect, a cell's height, the scene clock.
-struct Ctx { vec2 uv; vec2 cell; vec2 p; float aspect; float px; float tm; };
+// the frame's aspect, a cell's height, the scene clock. Off the rest pose (ROOM_POSE, the shell's
+// roomPose) p, uv and px are the cell pulled back to the seat's plane as the rest rig sees it, what
+// a layer painted on the frame reads, and q the cell's own frame point, which a layer drawing its
+// own camera reads (the mobile's); at rest q is p.
+struct Ctx { vec2 uv; vec2 cell; vec2 p; vec2 q; float aspect; float px; float tm; };
 // What a cell shows: its colour, its accent, its shimmer.
 struct Cell { vec3 col; float accent; float shimmer; };
 
@@ -200,6 +203,10 @@ Ctx roomCtx(vec2 uv, vec2 cell) {
   x.px = 1.0 / uRes.y;
   x.tm = uMotionTime;
   x.p = (uv - 0.5) * vec2(x.aspect, 1.0);
+  x.q = x.p;
+#if ROOM_POSE
+  roomPose(x);
+#endif
   return x;
 }
 ${[...shared.values()].join("\n")}

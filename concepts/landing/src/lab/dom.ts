@@ -1,6 +1,7 @@
 // DOM plumbing shared by the lab's panels and widgets: an element factory, the `Built` pair every
 // control returns (its element, and how to reflect the setup into it), write-if-changed setters,
 // reveals, and the gates through which the Controls view shows what hangs on a switch.
+import type { CameraPose } from "../composer/camera.ts";
 import type { DitherRenderer } from "../renderer.ts";
 import type { SkyPlanet } from "../scenes/planets.ts";
 import type { LabState, Params } from "../state.ts";
@@ -86,8 +87,13 @@ export type Patch = Record<string, string | number>;
 
 /** What the lab's panels and widgets reach the setup through. */
 export interface LabContext {
-  /** The setup on screen: its lab settings, its scene's knobs and planets. */
-  current(): { state: LabState; params: Params; planets: readonly SkyPlanet[] };
+  /** The setup on screen: its lab settings, its scene's knobs and planets, a room's camera pose. */
+  current(): {
+    state: LabState;
+    params: Params;
+    planets: readonly SkyPlanet[];
+    camera: CameraPose;
+  };
   /** Apply a patch over the setup on screen; `commit` records it as one undo step. */
   change(patch: Patch, commit: boolean): void;
   /** Whether switch `key` (a toggle or feature) is on; true for no key. */

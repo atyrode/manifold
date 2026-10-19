@@ -1,6 +1,7 @@
 // The constants Incense's definition (index.ts, layers.ts) shares with its code (sim.ts, shader.ts),
 // kept apart from that code so that the scene registry loads without it (SceneDef.code).
-import type { LightElement, Rig, Room } from "../../composer/types.ts";
+import { PAINTED } from "../../composer/camera.ts";
+import type { CameraRange, LightElement, Rig, Room } from "../../composer/types.ts";
 
 /** What burns, in `stick` knob order. */
 export const incenseKinds = ["stick", "cone", "coil", "waterfall"] as const;
@@ -59,9 +60,13 @@ export const INCENSE_WINDOW: LightElement = {
   window: { wall: "left", size: [0.6, 0.9], bars: [1, 1] },
 };
 
-/** The incense's layers are drawn on its frame, through this rig alone. */
-export const ON_THE_TABLE = {
+/**
+ * The incense's layers are drawn on its frame, through this rig alone; a live camera moves them only
+ * within the painted tolerance (composer/camera.ts).
+ */
+export const ON_THE_TABLE: CameraRange = {
   eye: [INCENSE_RIG.eye, INCENSE_RIG.eye],
   horizon: [INCENSE_RIG.horizon, INCENSE_RIG.horizon],
   focal: [INCENSE_RIG.focal, INCENSE_RIG.focal],
-} as const;
+  tolerance: PAINTED,
+};

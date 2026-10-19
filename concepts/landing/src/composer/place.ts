@@ -1,11 +1,13 @@
 // Which layers a setup draws and where they stand (README "Space", ADR "Foreground conflicts"): a
-// pure function of the preset (its rig and home layers) and the layers switched on, never the
-// window's aspect or another knob, so a program's placement is a constant of the program.
+// pure function of the preset (its rig and home layers), the layers switched on and, in a room, the
+// live camera pose, never the window's aspect or another knob, so a program's placement is a
+// constant of the program.
 //
 // Layers are taken in order: the preset's home layers, then the guests, each group in canonical
 // order (the composer's registry order). Each one is kept unless
 //   - its role holds one and has it already (a second backdrop or ground), or a layer kept before
 //     excludes it or it excludes one, or its host (`requires`) is not kept;
+//   - it is a guest in a room whose camera pose its range excludes (composer/camera.ts);
 //   - COMPOSER_CAPS.layers are kept already, or it is a subject and the front band holds
 //     COMPOSER_CAPS.subjects of them, or its textures would take the kept layers' past
 //     COMPOSER_CAPS.fields (the incense's four and the lava lamp's three);
@@ -15,6 +17,7 @@
 // A layer dropped is refused with a reason naming what holds its place. A later layer never moves an
 // earlier one. A preset always has a backdrop (the overhead's: a bed): with none switched on, its
 // home one stands.
+import { layerPoseRange, outside, outsideReason, type CameraPose } from "./camera.ts";
 import { COMPOSER_CAPS } from "./caps.ts";
 import { overlaps, placeClaim } from "./claims.ts";
 import type {
@@ -79,12 +82,15 @@ const ORIGIN: Anchor = { name: "here", at: [0, 0] };
 
 /**
  * Place `on` (layer ids switched on) over `offered` (the composer's layers the rig admits, canonical
- * order) for `preset`: see the header.
+ * order) for `preset`: see the header. In a room, a guest (a layer not among the preset's home ones)
+ * whose camera range excludes `pose` (the live pose, composer/camera.ts) is refused with the axis it
+ * lies past, and the camera stays where it is.
  */
 export function place(
   offered: readonly LayerDef[],
   preset: { readonly rig: Rig | OverheadRig; readonly layers: ScenePreset["layers"] },
   on: ReadonlySet<string>,
+  pose?: CameraPose,
 ): Placement {
   const home = new Set(preset.layers);
   const forced = ALWAYS.flatMap((role) =>
@@ -127,6 +133,14 @@ export function place(
     if (missing !== undefined) {
       refuse(`needs ${offered.find((other) => other.id === missing)?.title ?? missing}`);
       continue;
+    }
+    if (pose !== undefined && !home.has(layer.id) && "eye" in preset.rig) {
+      const range = layerPoseRange(layer.camera, preset.rig);
+      const axis = outside(pose, range);
+      if (axis !== undefined) {
+        refuse(outsideReason(pose, range, axis));
+        continue;
+      }
     }
     if (kept.length >= COMPOSER_CAPS.layers) {
       refuse(`${COMPOSER_CAPS.layers} layers are on: the most a stack holds`);

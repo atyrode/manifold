@@ -81,14 +81,32 @@ float mobileTSurf;  // how far along the ray (m)
 float mobileCw;     // a cell there (m)
 
 // The mobile's own camera, and the room: the wall, or the floor or ceiling where the ray meets them
-// first.
+// first. Off the rest pose (ROOM_POSE: the live camera, composer/camera.ts) the eye moves in the
+// room's frame (its z ahead, the mobile's -z), turns about the up and pitches about its own right,
+// and zooms; it draws through the cell's own frame point (x.q).
 void mobileBegin(Ctx x) {
   vec3 ro = MOBILE_EYE + vec3(MOBILE_SWAY * uPointer, 0.0);
   vec3 fwd = normalize(MOBILE_AIM - ro);
   vec3 right = normalize(cross(fwd, vec3(0.0, 1.0, 0.0)));
   vec3 up = cross(right, fwd);
   float focal = mobileFocal(x.aspect);
-  vec3 rd = normalize(fwd * focal + right * x.p.x + up * x.p.y);
+#if ROOM_POSE
+  vec4 a = uCamera[0];
+  vec4 b = uCamera[1];
+  ro += vec3(a.x, a.y, -a.z);
+  float cy = cos(b.x);
+  float sy = sin(b.x);
+  fwd = vec3(fwd.x * cy + fwd.z * sy, fwd.y, fwd.z * cy - fwd.x * sy);
+  right = vec3(right.x * cy + right.z * sy, right.y, right.z * cy - right.x * sy);
+  up = vec3(up.x * cy + up.z * sy, up.y, up.z * cy - up.x * sy);
+  float cp = cos(b.y);
+  float sp = sin(b.y);
+  vec3 ahead = fwd * cp - up * sp;
+  up = up * cp + fwd * sp;
+  fwd = ahead;
+  focal *= a.w;
+#endif
+  vec3 rd = normalize(fwd * focal + right * x.q.x + up * x.q.y);
   mobileRo = ro;
   mobileRd = rd;
   mobileCellW = dot(fwd, rd) / (focal * uRes.y);
@@ -182,7 +200,7 @@ void quietRoomFar(Ctx x, inout Cell c) {
 
 // At night the room falls away into the dark toward the edges of the picture, the mobile with it.
 void quietRoomFrontVeil(Ctx x, inout Cell c) {
-  if (!mobileDay()) c.col *= 1.0 - 0.3 * smoothstep(0.45, 1.3, length(x.p * vec2(0.75, 1.0)));
+  if (!mobileDay()) c.col *= 1.0 - 0.3 * smoothstep(0.45, 1.3, length(x.q * vec2(0.75, 1.0)));
 }
 `;
 

@@ -1,6 +1,7 @@
 // The lab's state and its URL encoding. Global settings live in `LabState`; the current scene's
 // knobs live in `Params` (a feature also stores `<key>-amount`), and a scene that takes planets
-// (SceneDef.planets) keeps its list of them beside its knobs, under one URL key (`PLANETS_KEY`).
+// (SceneDef.planets) keeps its list of them beside its knobs, under one URL key (`PLANETS_KEY`), as
+// a room keeps its light elements (`ELEMENTS_KEY`) and its camera pose (`CAMERA_KEY`).
 // URLs carry only non-defaults. Every setup enters through readSetup (a link, the lab's history, a
 // preset, a comparison's other slot), which reads this build's keys, ignores any other and reports
 // a scene the link names that this build does not have.
@@ -19,6 +20,15 @@ import {
   type ViewId,
 } from "./renderer.ts";
 import { sceneDefs, sceneIds, type SceneId } from "./scenes/index.ts";
+import {
+  CAMERA_KEY,
+  cameraUniforms,
+  clampPose,
+  decodeCamera,
+  encodeCamera,
+  REST_POSE,
+  type CameraPose,
+} from "./composer/camera.ts";
 import {
   decodeElements,
   elementUniforms,
@@ -128,6 +138,9 @@ for (const id of sceneIds) {
     }
     if (scene.elements !== undefined && def.key === ELEMENTS_KEY) {
       throw new KnobKeyError(`landing: ${id}'s knob "${def.key}" collides with its elements`);
+    }
+    if (scene.camera !== undefined && def.key === CAMERA_KEY) {
+      throw new KnobKeyError(`landing: ${id}'s knob "${def.key}" collides with its camera`);
     }
   }
 }
@@ -250,17 +263,34 @@ export function readElements(scene: SceneId, query: URLSearchParams): LightEleme
   return value === null ? [...spec.defaults] : fitElements(decodeElements(value), spec.cap);
 }
 
+/**
+ * A room's camera pose (the rest pose for a scene without SceneDef.camera), from its CAMERA_KEY in a
+ * query: without the key, the rest pose; held to the poses its shell and its home layers that
+ * `params` switch on allow (a guest whose range excludes it is refused, never moving it).
+ */
+export function readCamera(
+  scene: SceneId,
+  query: URLSearchParams,
+  params: Params = readParams(scene, query),
+): CameraPose {
+  const camera = sceneDefs[scene].camera;
+  const value = query.get(CAMERA_KEY);
+  if (camera === undefined || value === null) return REST_POSE;
+  return clampPose(decodeCamera(value), camera.range(params));
+}
+
 /** Each knob's default, keyed as readParams keys them. */
 export function paramDefaults(scene: SceneId): Params {
   return readParams(scene, new URLSearchParams());
 }
 
-/** A setup: the lab's settings, the scene's knobs, its planets and a room's light elements. */
+/** A setup: the lab's settings, the scene's knobs, its planets and a room's light elements and camera pose. */
 export interface Setup {
   state: LabState;
   params: Params;
   planets: SkyPlanet[];
   elements: LightElement[];
+  camera: CameraPose;
 }
 
 /** A setup as a link holds it (readSetup). */
@@ -279,25 +309,28 @@ export interface LinkSetup extends Setup {
 export function readSetup(query: URLSearchParams): LinkSetup {
   const state = readState(query);
   const named = query.get("scene");
+  const params = readParams(state.scene, query);
   return {
     state,
-    params: readParams(state.scene, query),
+    params,
     planets: readPlanets(state.scene, query),
     elements: readElements(state.scene, query),
+    camera: readCamera(state.scene, query, params),
     unknownScene: named === null || named === "" || named === state.scene ? undefined : named,
   };
 }
 
 /**
  * Minimal query: only values that differ from their defaults, the scene's planets (when they differ
- * from the ones it opens with; `planets=` for none), packed under PLANETS_KEY, and a room's elements
- * likewise under ELEMENTS_KEY, last.
+ * from the ones it opens with; `planets=` for none), packed under PLANETS_KEY, a room's elements
+ * likewise under ELEMENTS_KEY and its camera pose off rest under CAMERA_KEY, last.
  */
 export function serialise(
   state: LabState,
   params: Params,
   planets: readonly SkyPlanet[],
   elements: readonly LightElement[] = readElements(state.scene, new URLSearchParams()),
+  camera: CameraPose = REST_POSE,
 ): URLSearchParams {
   const q = new URLSearchParams();
   const base = defaultsFor(state.scene);
@@ -316,18 +349,22 @@ export function serialise(
   const lights = sceneDefs[state.scene].elements;
   if (lights !== undefined && encodeElements(elements) !== encodeElements(lights.defaults))
     q.set(ELEMENTS_KEY, encodeElements(elements));
+  const pose = encodeCamera(camera);
+  if (sceneDefs[state.scene].camera !== undefined && pose !== "") q.set(CAMERA_KEY, pose);
   return q;
 }
 
 /**
  * What the renderer draws for a setup; the scene's sky as it opens unless `planets` names others,
- * and a room's elements as it opens unless `elements` names others.
+ * a room's elements as it opens unless `elements` names others, and its camera at rest unless
+ * `camera` moves it.
  */
 export function renderSettings(
   state: LabState,
   params: Params,
   planets: readonly SkyPlanet[] = readPlanets(state.scene, new URLSearchParams()),
   elements: readonly LightElement[] = readElements(state.scene, new URLSearchParams()),
+  camera: CameraPose = REST_POSE,
 ): RenderSettings {
   const colours = palette(state, params);
   return {
@@ -344,6 +381,7 @@ export function renderSettings(
     knobs: params,
     planets: planetUniforms(planets),
     elements: { list: elements, data: elementUniforms(elements) },
+    camera: { pose: camera, data: cameraUniforms(camera) },
     followPointer: state.mouse === "follow",
     agents: state.agents,
     rest: state.rest,

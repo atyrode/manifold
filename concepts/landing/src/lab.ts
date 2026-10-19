@@ -54,6 +54,7 @@ import { carryPlanets, carryWorld } from "./lab/world-model.ts";
 import type { ParamDef } from "./params.ts";
 import type { DitherRenderer, SceneFailure } from "./renderer.ts";
 import { prefetchScene, sceneDefs, type SceneId } from "./scenes/index.ts";
+import { CAMERA_KEY, type CameraPose } from "./composer/camera.ts";
 import { ELEMENTS_KEY } from "./composer/elements.ts";
 import type { LightElement } from "./composer/types.ts";
 import { encodePlanets, PLANETS_KEY, type SkyPlanet } from "./scenes/planets.ts";
@@ -74,6 +75,7 @@ export interface LabHost {
     params: Params;
     planets: readonly SkyPlanet[];
     elements: readonly LightElement[];
+    camera: CameraPose;
   };
   /**
    * Replace the whole setup. The host re-renders, then calls `Lab.sync()`. `cut`: switch scenes at
@@ -590,19 +592,20 @@ export class Lab {
     params: Params;
     planets: readonly SkyPlanet[];
     elements: readonly LightElement[];
+    camera: CameraPose;
   } {
     return this.#host.current();
   }
 
   #query(): string {
-    const { state, params, planets, elements } = this.#current();
-    return serialise(state, params, planets, elements).toString();
+    const { state, params, planets, elements, camera } = this.#current();
+    return serialise(state, params, planets, elements, camera).toString();
   }
 
   /** Apply a patch over the current setup; `replace` starts from the patch alone. */
   #change(patch: Patch, commit: boolean, replace = false): void {
-    const { state, params, planets, elements } = this.#current();
-    const q = replace ? new URLSearchParams() : serialise(state, params, planets, elements);
+    const { state, params, planets, elements, camera } = this.#current();
+    const q = replace ? new URLSearchParams() : serialise(state, params, planets, elements, camera);
     for (const [key, value] of Object.entries(patch)) q.set(key, String(value));
     this.#host.apply(q);
     if (commit) this.commit();
@@ -949,7 +952,7 @@ export class Lab {
 
   /**
    * A URL key in words: a lab setting, a knob of one of `scenes` (a feature's amount after its
-   * name), the planets of one that takes them, or a room's light elements.
+   * name), the planets of one that takes them, or a room's light elements or camera.
    */
   #settingLabel(key: string, scenes: readonly SceneId[]): string {
     if (Object.hasOwn(SETTING_LABEL, key)) return SETTING_LABEL[key as keyof LabState];
@@ -957,6 +960,8 @@ export class Lab {
       return "planets";
     if (key === ELEMENTS_KEY && scenes.some((scene) => sceneDefs[scene].elements !== undefined))
       return "light elements";
+    if (key === CAMERA_KEY && scenes.some((scene) => sceneDefs[scene].camera !== undefined))
+      return "camera";
     const amount = key.endsWith("-amount");
     const knob = amount ? key.slice(0, -"-amount".length) : key;
     for (const scene of scenes) {

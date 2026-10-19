@@ -1,6 +1,7 @@
 // The constants the sill's definition (index.ts, layers.ts) shares with its code (shader.ts), kept
 // apart from that code so that the scene registry loads without it (SceneDef.code).
-import type { LightElement, Rig, Room } from "../../composer/types.ts";
+import { PAINTED } from "../../composer/camera.ts";
+import type { CameraRange, LightElement, Rig, Room } from "../../composer/types.ts";
 import type { SkyPlanets } from "../planets.ts";
 
 /**
@@ -82,9 +83,23 @@ export const READING_LAMP: LightElement = {
   shadow: false,
 };
 
-/** The sill's layers are drawn on its frame, through this rig alone (README "Rigs, locking and offering"). */
-export const ON_THE_SILL = {
+/**
+ * The sill's painted layers are drawn on its frame, through this rig alone (README "Rigs, locking
+ * and offering"); a live camera moves them only within the painted tolerance, as parallax
+ * (composer/camera.ts).
+ */
+export const ON_THE_SILL: CameraRange = {
   eye: [SILL_RIG.eye, SILL_RIG.eye],
   horizon: [SILL_RIG.horizon, SILL_RIG.horizon],
   focal: [SILL_RIG.focal, SILL_RIG.focal],
-} as const;
+  tolerance: PAINTED,
+};
+
+/**
+ * The city through the shell's window: offered at the sill's rig (its horizon is no other room's)
+ * and drawn from the cell's direction (the city is far) inside the window the shell draws in metres,
+ * so it holds any pose the room does.
+ */
+export const THROUGH_THE_SILL: CameraRange = {
+  horizon: [SILL_RIG.horizon, SILL_RIG.horizon],
+};

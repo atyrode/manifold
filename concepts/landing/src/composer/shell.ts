@@ -7,7 +7,15 @@
 // eye RIG_EYE over it), z ahead of the eye. The back wall stands ROOM_BACK ahead; a ledge's top runs
 // from its front edge LEDGE_FRONT back to the wall. A frame point p (screen heights from the frame's
 // centre) sees the wall at `roomWallAt(p)` and the ledge's top at `roomTopAt(p)`; `roomFrameOf(P)`
-// takes a point back to the frame.
+// takes a point back to the frame. Frame points are the rest rig's.
+//
+// The live camera (composer/camera.ts, compiled in while ROOM_POSE: the pose in uCamera) moves the
+// eye to `roomEye`, turns and zooms the cell's ray `roomRd`; `roomPose` gives the painted layers the
+// cell pulled back to the seat's plane as the rest rig sees it (x.p; the cell's own point is x.q),
+// and the shell meets each plane it draws along the ray: the wall at `roomWallP` (the cell on the
+// back wall, as the rest rig sees it), a body on its own plane (`roomPlaneP`), the ledge's top and
+// the floor along roomRd. A view through a window (the city's) reads `roomViewP`, the cell's
+// direction as the rest rig sees it, and what lies on its glass `roomWallP` and `roomWallUv`.
 //
 //   wall     the back wall's material (Room.material: plaster, the papered rings, shoji, a dark
 //            alcove, panelling) lit by `roomLightAt`: the ambient, the elements (lamps' pools, the
@@ -71,6 +79,9 @@ const float LEDGE_HALF = ${glslFloat(ledge?.half ?? 0)};
 const float LEDGE_THICK = ${glslFloat(ledge?.thick ?? 0)};
 const vec3 LEDGE_ALBEDO = ${vec3(ledge?.albedo ?? [0, 0, 0])};
 #define ROOM_WORLD ${world ? 1 : 0}
+#ifndef ROOM_POSE
+#define ROOM_POSE 0
+#endif
 
 // Where frame point p sees the back wall, and the plane of the ledge's top (y 0); a point back on
 // the frame.
@@ -85,6 +96,42 @@ vec3 roomTopAt(vec2 p) {
 vec2 roomFrameOf(vec3 P) {
   return vec2(P.x, P.y - RIG_EYE) * (RIG_FOCAL / max(P.z, 1e-3)) + vec2(0.0, ROOM_H0);
 }
+
+// The cell on the back wall and its direction, as the rest rig sees them (x.p at rest), and the
+// first as uv.
+vec2 roomWallP;
+vec2 roomViewP;
+vec2 roomWallUv;
+#if ROOM_POSE
+// The live camera (composer/camera.ts): (x, y, z, focal's factor), (yaw left, pitch down, 0, 0).
+uniform vec4 uCamera[2];
+// The eye (m, the room's frame), the cell's ray (its z the focal along the eye's axis), the zoom.
+vec3 roomEye;
+vec3 roomRd;
+float roomZoom;
+
+// The cell on the plane z = d facing the eye, as the rest rig sees it there.
+vec2 roomPlaneP(float d) {
+  return roomFrameOf(roomEye + roomRd * ((d - roomEye.z) / max(roomRd.z, 1e-4)));
+}
+
+// The camera for this cell: the eye moved, the ray through the cell's own point (x.q) turned and
+// zoomed; what the painted layers see (x.p, x.uv, x.px) the cell pulled back to the seat's plane.
+void roomPose(inout Ctx x) {
+  vec4 a = uCamera[0];
+  vec4 b = uCamera[1];
+  roomEye = vec3(a.x, RIG_EYE + a.y, a.z);
+  roomZoom = a.w;
+  float cy = cos(b.x);
+  float sy = sin(b.x);
+  float cp = cos(b.y);
+  float sp = sin(b.y);
+  roomRd = vec3(cy, 0.0, sy) * x.q.x + vec3(-sp * sy, cp, sp * cy) * (x.q.y - ROOM_H0) + vec3(-cp * sy, -sp, cp * cy) * (RIG_FOCAL * a.w);
+  x.p = roomPlaneP(ROOM_DISTANCE);
+  x.uv = x.p / vec2(x.aspect, 1.0) + 0.5;
+  x.px *= (ROOM_DISTANCE - roomEye.z) / (ROOM_DISTANCE * a.w);
+}
+#endif
 
 // The World in the room, once a cell (roomShellBegin): the sky now, the sun and the moon turned
 // into the room's frame by its facing.
@@ -245,7 +292,7 @@ void roomWindowBegin(Ctx x, int k) {
   roomWin.glass = vec2(lo.x + roomWin.reveal + 0.033 * s, hi.x - roomWin.reveal - 0.033 * s);
   roomWin.bars = max(e.xy, 1.0);
   roomWin.bar = 0.009 * s;
-  vec2 p = x.p;
+  vec2 p = roomWallP;
   roomWin.inOpen = e.z > 0.0 && p.y > lo.y + 0.02 * s && p.y < roomWin.rail && p.x > lo.x + roomWin.reveal && p.x < hi.x - roomWin.reveal;
   // The glazed part: above the rail (or the window's own sill), between the stiles, off the bars.
   vec2 paneSize = vec2(roomWin.glass.y - roomWin.glass.x, hi.y - roomWin.railTop) / roomWin.bars;
@@ -262,6 +309,15 @@ void roomWindowBegin(Ctx x, int k) {
 
 // The shell's state for this cell: the World in the room, the back window on the frame.
 void roomShellBegin(Ctx x) {
+#if ROOM_POSE
+  roomWallP = roomPlaneP(ROOM_BACK);
+  roomViewP = roomRd.xy * (RIG_FOCAL / max(roomRd.z, 1e-4)) + vec2(0.0, ROOM_H0);
+  roomWallUv = roomWallP / vec2(x.aspect, 1.0) + 0.5;
+#else
+  roomWallP = x.p;
+  roomViewP = x.p;
+  roomWallUv = x.uv;
+#endif
   roomTm = x.tm;
   roomRain = 0.0;
   roomSun = vec3(0.0, -1.0, 0.0);
@@ -319,7 +375,7 @@ vec3 roomWallAlbedo(vec3 W) {
 
 // The back wall where nothing covers it.
 void roomShellWall(Ctx x, inout Cell c) {
-  vec3 W = roomWallAt(x.p);
+  vec3 W = roomWallAt(roomWallP);
   c.col = roomWallAlbedo(W) * roomLightAt(W, vec3(0.0, 0.0, -1.0));
 }
 
@@ -332,7 +388,7 @@ vec3 roomPlainSky(vec2 p) {
 // part's stiles and bars; with no view in it (\`view\` false), the World's light seen out of it.
 void roomShellWindow(Ctx x, inout Cell c, bool view) {
   if (!roomWin.on) return;
-  vec2 p = x.p;
+  vec2 p = roomWallP;
   vec4 o = roomWin.open;
   if (p.y < o.z || p.x < o.x - roomWin.casing || p.x > o.y + roomWin.casing) return;
   if (!view && (roomWin.inOpen || roomWin.inGlass)) {
@@ -372,9 +428,16 @@ void roomShellWindow(Ctx x, inout Cell c, bool view) {
 // The ledge: its top from its front edge back to the wall, its front, and what stands under it.
 void roomShellLedge(Ctx x, inout Cell c) {
 #if ROOM_LEDGE > 0
+#if ROOM_POSE
+  // Along the live ray: its top, the plane of its front face, and the wall behind.
+  if (roomRd.y >= 0.0) return;
+  vec3 T = roomEye + roomRd * (-roomEye.y / roomRd.y);
+  vec3 F = roomEye + roomRd * ((LEDGE_FRONT - roomEye.z) / roomRd.z);
+#else
   vec2 p = x.p;
   if (p.y >= ROOM_H0) return;
   vec3 T = roomTopAt(p);
+#endif
   if (T.z > ROOM_BACK) return;
   if (T.z >= LEDGE_FRONT && abs(T.x) < LEDGE_HALF) {
     // The top: its grain running across, lit as everything is, the wall's foot in its shadow.
@@ -394,8 +457,10 @@ void roomShellLedge(Ctx x, inout Cell c) {
     return;
   }
   // The front face, on its plane: the top's thickness, its edge catching the light.
+#if !ROOM_POSE
   float k = LEDGE_FRONT / RIG_FOCAL;
   vec3 F = vec3(p.x * k, RIG_EYE + (p.y - ROOM_H0) * k, LEDGE_FRONT);
+#endif
   bool across = abs(F.x) < LEDGE_HALF + 0.02;
   if (across && F.y > -LEDGE_THICK && T.z < LEDGE_FRONT) {
     float f = 1.0 + F.y / LEDGE_THICK;
@@ -417,7 +482,7 @@ void roomShellLedge(Ctx x, inout Cell c) {
     col = mix(col * 0.6, paint, ribs * smoothfall(-LEDGE_THICK - 0.03, -LEDGE_THICK - 0.045, F.y));
     col = mix(col, paint * 1.1, smoothfall(0.009, 0.0, abs(F.y + LEDGE_THICK + 0.04)));
   }
-  c.col = across ? col : roomWallAlbedo(roomWallAt(p)) * roomLightAt(roomWallAt(p), vec3(0.0, 0.0, -1.0)) * 0.7;
+  c.col = across ? col : roomWallAlbedo(roomWallAt(roomWallP)) * roomLightAt(roomWallAt(roomWallP), vec3(0.0, 0.0, -1.0)) * 0.7;
 #elif ROOM_LEDGE == 2
   // A sideboard's front: sliding doors in its shadow under the top's lit edge, their seams.
   if (!across) return;
@@ -435,13 +500,17 @@ void roomShellLedge(Ctx x, inout Cell c) {
     return;
   }
   // Behind: the wall down to the floor, the floor ahead of it in the ledge's shadow.
-  vec3 W = roomWallAt(p);
+  vec3 W = roomWallAt(roomWallP);
   float floorY = -0.45;
   if (W.y > floorY) {
     c.col = roomWallAlbedo(W) * roomLightAt(W, vec3(0.0, 0.0, -1.0)) * 0.8;
   } else {
+#if ROOM_POSE
+    vec3 G = roomEye + roomRd * ((floorY - roomEye.y) / roomRd.y);
+#else
     float z = RIG_FOCAL * (RIG_EYE - floorY) / max(ROOM_H0 - p.y, 1e-4);
     vec3 G = vec3(p.x * z / RIG_FOCAL, floorY, z);
+#endif
     float shade = 1.0 - 0.5 * smoothfall(LEDGE_HALF + 0.1, LEDGE_HALF - 0.1, abs(G.x)) * step(G.z, ROOM_BACK);
     c.col = vec3(0.32, 0.26, 0.2) * (0.85 + 0.15 * vnoise(G.xz * 6.0)) * roomLightAt(G, vec3(0.0, 1.0, 0.0)) * shade;
   }
@@ -458,8 +527,13 @@ void roomElementBody(Ctx x, inout Cell c, int k, int kind) {
   if (a.z < 0.2) return;
   float s = RIG_FOCAL / a.z;
   // q: metres from the element across and up, at its depth; aa: a cell's width there.
+#if ROOM_POSE
+  vec2 q = (roomPlaneP(a.z) - roomFrameOf(a.xyz)) / s;
+  float aa = (a.z - roomEye.z) / (RIG_FOCAL * roomZoom * uRes.y);
+#else
   vec2 q = (x.p - roomFrameOf(a.xyz)) / s;
   float aa = x.px / s;
+#endif
   float glow = a.w * roomFlicker(e.x, e.y);
   vec3 light = b.rgb * glow;
   if (kind == 2) {

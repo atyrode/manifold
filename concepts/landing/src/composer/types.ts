@@ -11,6 +11,7 @@ import type { SkyPlanets } from "../scenes/planets.ts";
 import type { SceneLook, ScenePoint, SceneTheme, SimFrame } from "../scenes/types.ts";
 import type { WorldOptions } from "../scenes/world.ts";
 import type { LevelCamera } from "../sims/camera.ts";
+import type { PoseTolerance } from "./camera.ts";
 import type { GustField, PassageGustShape } from "./gust.ts";
 
 export type ComposerId = "outdoor" | "interior" | "overhead";
@@ -88,13 +89,24 @@ export interface Anchor {
 
 /**
  * The rigs a layer can be drawn through: a preset whose rig falls outside any span does not offer
- * it (README "Relations between layers").
+ * it (README "Relations between layers"). In a room (composer/camera.ts, ADR 0062 D18) they are also
+ * the live poses it holds: a layer drawn from the ray its `eye`, `x`, `z`, `turn`, `pitch` and
+ * `focal` spans (any where it gives none), a layer painted on its frame its `tolerance` about the
+ * rest pose instead, which it takes as parallax.
  */
 export interface CameraRange {
   readonly eye?: Span;
   readonly horizon?: Span;
   readonly focal?: Span;
   readonly pitch?: Span;
+  /** Across the room's frame (m), the rest rig at 0. */
+  readonly x?: Span;
+  /** Ahead in the room's frame (m), the rest rig at 0. */
+  readonly z?: Span;
+  /** The yaw (rad, left), as `Rig.turn`. */
+  readonly turn?: Span;
+  /** A painted layer's half widths about the rest pose (camera.ts PoseTolerance); held where unset. */
+  readonly tolerance?: PoseTolerance;
   /** Under the overhead rig: the metres a screen height spans (OverheadRig.span). */
   readonly span?: Span;
   /**

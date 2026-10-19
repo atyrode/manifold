@@ -21,6 +21,7 @@
 //   layer; a backdrop's chip swaps for the one on, and the one on stays on; a layer whose host goes
 //   off shows refused with its reason; a layer's sections show while it is on, and in the compact
 //   bar they stand under one chip of the layer's, shown while it is on, lending all of them.
+import { REST_POSE } from "../composer/camera.ts";
 import labCss from "../lab.css" with { type: "text" };
 import { sceneDefs } from "../scenes/index.ts";
 import { encodePlanets, PLANETS_KEY, type SkyPlanet } from "../scenes/planets.ts";
@@ -57,7 +58,7 @@ function view(query: URLSearchParams, sections: Record<string, boolean> = {}): V
   let planets: SkyPlanet[] = readPlanets(state.scene, query);
   const changes: Patch[] = [];
   const ctx: LabContext = {
-    current: () => ({ state, params, planets }),
+    current: () => ({ state, params, planets, camera: REST_POSE }),
     change: (patch) => {
       changes.push(patch);
       const next = serialise(state, params, planets);

@@ -1626,6 +1626,28 @@ body.lab-open .lab-opener {
   background: var(--lab-accent);
   border-radius: 2px;
 }
+/* A room's camera axis: the poses its layers allow shaded on the track (inspector.ts #cameraGroup). */
+.lab input[type="range"].camera-axis::-webkit-slider-runnable-track {
+  background: linear-gradient(
+    to right,
+    var(--lab-lift) var(--lo, 0%),
+    color-mix(in srgb, var(--lab-accent) 55%, var(--lab-lift)) var(--lo, 0%),
+    color-mix(in srgb, var(--lab-accent) 55%, var(--lab-lift)) var(--hi, 100%),
+    var(--lab-lift) var(--hi, 100%)
+  );
+}
+.lab input[type="range"].camera-axis::-moz-range-track {
+  background: linear-gradient(
+    to right,
+    var(--lab-lift) var(--lo, 0%),
+    color-mix(in srgb, var(--lab-accent) 55%, var(--lab-lift)) var(--lo, 0%),
+    color-mix(in srgb, var(--lab-accent) 55%, var(--lab-lift)) var(--hi, 100%),
+    var(--lab-lift) var(--hi, 100%)
+  );
+}
+.lab input[type="range"].camera-axis::-moz-range-progress {
+  background: none;
+}
 .lab input[type="range"]::-webkit-slider-thumb {
   width: 14px;
   height: 14px;

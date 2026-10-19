@@ -34,6 +34,7 @@ import {
   type Wanted,
 } from "./program-cache.ts";
 import { loadedScene, sceneDefs, SceneLoadError, type SceneId } from "./scenes/index.ts";
+import type { CameraPose } from "./composer/camera.ts";
 import type { LightElement } from "./composer/types.ts";
 import type { PlanetUniforms } from "./scenes/planets.ts";
 import type { PrincipalState, SceneSim, SceneTurn } from "./scenes/types.ts";
@@ -78,6 +79,8 @@ export interface RenderSettings {
   planets: PlanetUniforms;
   /** A room's light elements, and as uElements takes them (composer/elements.ts); none elsewhere. */
   elements: { readonly list: readonly LightElement[]; readonly data: Float32Array };
+  /** A room's camera pose, and as uCamera takes it (composer/camera.ts); the rest pose elsewhere. */
+  camera: { readonly pose: CameraPose; readonly data: Float32Array };
   followPointer: boolean;
   /** Agents of the cast present beside the visitor, 0..MAX_AGENTS (src/principals.ts). */
   agents: number;
@@ -1521,6 +1524,7 @@ export class DitherRenderer {
       gl.uniform4fv(u.uPlanets, s.planets.data);
       gl.uniform1i(u.uPlanetCount, s.planets.count);
       gl.uniform4fv(u.uElements, s.elements.data);
+      gl.uniform4fv(u.uCamera, s.camera.data);
       gl.uniform1i(u.uView, viewIds.indexOf(s.view));
     }
     if (sent.motion !== motion) {

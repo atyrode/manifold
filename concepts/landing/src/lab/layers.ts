@@ -5,24 +5,29 @@
 // A backdrop's or a ground's chip swaps for the one of its role, the backdrop on stays on, and
 // switching a layer on switches off what it excludes. Laid out from the scene's metadata
 // (SceneDef.layers), never from scene ids.
+import type { CameraPose } from "../composer/camera.ts";
 import type { SceneLayers } from "../composer/compose.ts";
 import { chipGrid } from "./chips.ts";
 import { h, setHidden, setText, type Built } from "./dom.ts";
 import type { Knobs, SwitchDef } from "./knobs.ts";
 import { layerRows, layerTurn, ROLE_LABEL } from "./layers-model.ts";
 
-/** The Layers section for `switches`, the layer switches of `layers` the group holds. */
+/**
+ * The Layers section for `switches`, the layer switches of `layers` the group holds, placed at the
+ * room's camera pose (`pose`).
+ */
 export function layersSection(
   knobs: Knobs,
   layers: SceneLayers,
   switches: readonly SwitchDef[],
+  pose: () => CameraPose,
 ): Built {
   const value = (key: string) => knobs.value(key);
   const titles = new Map(layers.offered.map((layer) => [layer.id, layer.title]));
   /** Why each layer switched on is not drawn, as the setup stands (worked out once per sync). */
   const refusals = () =>
     new Map(
-      layerRows(layers, value).flatMap((row) =>
+      layerRows(layers, value, pose()).flatMap((row) =>
         row.layers.flatMap(({ id, state }) =>
           state.kind === "refused" ? [[id, state.reason] as const] : [],
         ),
@@ -33,7 +38,7 @@ export function layersSection(
     turn: (def: SwitchDef, on: boolean) => layerTurn(layers, value, def.key, on),
     refusal: (def: SwitchDef) => refused.get(def.key),
   };
-  const rows = layerRows(layers, value).map((row) => {
+  const rows = layerRows(layers, value, pose()).map((row) => {
     const defs = row.layers.flatMap(({ id }) => switches.filter((def) => def.key === id));
     const chips = chipGrid(knobs, defs, options);
     const label = ROLE_LABEL[row.role];

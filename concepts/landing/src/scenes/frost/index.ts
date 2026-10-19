@@ -54,6 +54,6 @@ const { featuresFor } = frostComposed.def;
 // compiled in at every setting, as the scene's own sky held it, not only while it snows or rains.
 export const frostScene: SceneDef = {
   ...frostComposed.def,
-  featuresFor: (values) => ({ ...featuresFor?.(values), WORLD_CLOUDS: 1 }),
+  featuresFor: (values, pose) => ({ ...featuresFor?.(values, pose), WORLD_CLOUDS: 1 }),
   code: () => import("./code.ts"),
 };

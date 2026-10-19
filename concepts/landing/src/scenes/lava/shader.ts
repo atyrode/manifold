@@ -21,11 +21,17 @@ import { lavaLayoutGlsl } from "./sim.ts";
 
 const lavaShared = `
 ${lavaLayoutGlsl}
-// The eye, in lamp units from a lamp's foot: its height and distance (the room's rig). On the
-// sideboard we look down a little on the base and the sideboard and up a little at the cap; the
-// sideboard's depth on screen follows.
+// The eye, in lamp units from a lamp's foot: its height and distance (the room's rig, or the live
+// camera's eye off its rest pose). On the sideboard we look down a little on the base and the
+// sideboard and up a little at the cap; the sideboard's depth on screen follows. The lamp stands on
+// the seat's plane, so the room's painted frame point (x.p) is where the live camera sees it.
+#if ROOM_POSE
+#define LAVA_EYE (roomEye.y / LAVA_HEIGHT)
+#define LAVA_DIST ((ROOM_DISTANCE - roomEye.z) / LAVA_HEIGHT)
+#else
 #define LAVA_EYE (RIG_EYE / LAVA_HEIGHT)
 #define LAVA_DIST (ROOM_DISTANCE / LAVA_HEIGHT)
+#endif
 // Where lamp A stands across the frame (share of its width from the left): the lamp layer's anchor,
 // or with the lamp off its place on the sideboard.
 #if LAYER_LAVA_LAMP
@@ -455,7 +461,7 @@ float lavaSleeveShadow(vec2 p, LavaLamp A) {
 void lavaBegin(Ctx x) {
   float aspect = x.aspect;
   lavaP = vec2(x.uv.x * aspect, x.uv.y);
-  lavaPx = 1.0 / uRes.y;
+  lavaPx = x.px;
   lavaAccent = 0.0;
   lavaCover = 0.0;
   lavaMoonlight = clamp(dot(roomMoonLight, vec3(1.0)) * 0.4, 0.0, 1.0);

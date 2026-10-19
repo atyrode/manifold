@@ -1,7 +1,8 @@
 // The constants Night train's definition (index.ts, layers.ts) shares with its code (sim.ts,
 // shader.ts), kept apart from that code so that the scene registry loads without it
 // (SceneDef.code).
-import type { Rig, Room } from "../../composer/types.ts";
+import { PAINTED } from "../../composer/camera.ts";
+import type { CameraRange, Rig, Room } from "../../composer/types.ts";
 
 /** Seconds the scene's entrance and exit take (SceneDef.passage; shader.ts reads the same): out of a tunnel, into a tunnel. */
 export const TRAIN_PASSAGE = { enter: 2.8, exit: 1.5 } as const;
@@ -43,9 +44,13 @@ export const TRAIN_ROOM: Room = {
   ambient: [0, 0, 0],
 };
 
-/** The train's layers are drawn on its frame and through its view's pinhole, by this rig alone. */
-export const BY_THE_WINDOW = {
+/**
+ * The train's layers are drawn on its frame and through its view's pinhole, by this rig alone; a live
+ * camera moves them only within the painted tolerance (composer/camera.ts).
+ */
+export const BY_THE_WINDOW: CameraRange = {
   eye: [TRAIN_RIG.eye, TRAIN_RIG.eye],
   horizon: [TRAIN_RIG.horizon, TRAIN_RIG.horizon],
   focal: [TRAIN_RIG.focal, TRAIN_RIG.focal],
-} as const;
+  tolerance: PAINTED,
+};
