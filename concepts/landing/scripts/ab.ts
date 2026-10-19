@@ -8,7 +8,10 @@
 // pixels are compared. A setting is a page query (`scene=country&time=0.3`) or a bare scene id; by
 // default every scene at its defaults, dithered and `view=source`, --presets adds every committed
 // preset, and --turns adds, dithered, each gated knob turn (src/knob-turns.ts) of every knob-keyed
-// scene (SceneDef.featuresFor) among the settings: the turns that change a program.
+// scene (SceneDef.featuresFor) among the settings: the turns that change a program. A pair
+// `<head>~<base>` renders one setting on the head and another on the base, always: whether a
+// promoted variant (`scene=silllava`) draws as the query it was promoted from did
+// (`scene=sill&lavaLamp=1`, scripts/promote.ts).
 //
 // A scene whose generated GLSL (its default and all-features programs) and every file its page
 // loads (index.html and its imports, short of other scenes' directories) are byte for byte the same
@@ -529,6 +532,10 @@ try {
   };
   const todo: { readonly setting: string; readonly reason: string }[] = [];
   for (const setting of settings) {
+    if (setting.includes("~")) {
+      todo.push({ setting, reason: "a pair: the head's setting against the base's" });
+      continue;
+    }
     const scene = new URLSearchParams(setting).get("scene");
     const inBase = scene !== null && trees.base.scenes.includes(scene);
     const inHead = scene !== null && trees.head.scenes.includes(scene);
@@ -580,8 +587,9 @@ try {
       if (reply.error !== undefined) throw new AbError(`cdp ${method}: ${reply.error.message}`);
     }
     for (const { setting, reason } of todo) {
-      const { pixels: beforePixels, ...before } = await shoot(`${urls.base}?${setting}`);
-      const { pixels: afterPixels, ...after } = await shoot(`${urls.head}?${setting}`);
+      const [headSetting = "", baseSetting = headSetting] = setting.split("~");
+      const { pixels: beforePixels, ...before } = await shoot(`${urls.base}?${baseSetting}`);
+      const { pixels: afterPixels, ...after } = await shoot(`${urls.head}?${headSetting}`);
       const shots = { base: before, head: after };
       const problems = (["base", "head"] as const).flatMap((side) => {
         const problem = trouble(shots[side]);

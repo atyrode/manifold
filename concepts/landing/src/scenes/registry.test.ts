@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test";
 import { existsSync, readdirSync } from "node:fs";
+import { promotedVariants } from "../composer/interior-variants.ts";
 import { families, sceneFamily, sceneOrder } from "../lab/families.ts";
 import { assembleFragment } from "../shaders/index.ts";
 import { loadedScene, loadScene, sceneDefs, sceneIds } from "./index.ts";
@@ -37,13 +38,16 @@ test("every scene loads its code, which carries the registry's definition unchan
 });
 
 // The registry, its folders, families, thumbnails and docs in step (README "The scenes"): every
-// registered scene has each, and none of them names a scene the registry lacks.
+// registered scene has each, and none of them names a scene the registry lacks; a promoted variant
+// (composer/interior-variants.ts) has no folder.
 test("every scene, and only a registered one, has its folder, family and thumbnail", () => {
   const folders = readdirSync(new URL("./", import.meta.url), { withFileTypes: true })
     .filter((entry) => entry.isDirectory())
     .filter((entry) => existsSync(new URL(`./${entry.name}/index.ts`, import.meta.url)))
     .map((entry) => entry.name);
-  expect(sorted(folders)).toEqual(sorted(sceneIds));
+  const promoted = promotedVariants.map((variant) => variant.id);
+  expect(sorted(folders)).toEqual(sorted(sceneIds.filter((id) => !promoted.includes(id))));
+  expect(promoted.filter((id) => !sceneIds.some((scene) => scene === id))).toEqual([]);
   expect(sorted(Object.keys(sceneFamily))).toEqual(sorted(sceneIds));
   const familyIds = families.map((family) => family.id);
   expect(sceneIds.filter((id) => !familyIds.includes(sceneFamily[id]))).toEqual([]);

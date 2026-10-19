@@ -1,0 +1,98 @@
+import { describe, expect, test } from "bun:test";
+import { folderVariants, interiorVariants } from "../composer/interior-variants.ts";
+import { presets, type Preset } from "../presets.ts";
+import { sceneDefs, sceneIds } from "../scenes/index.ts";
+import { sceneOrder } from "./families.ts";
+import { presetScene, presetTree, sceneComposer } from "./tree-model.ts";
+
+const saved = (name: string, query: string): Preset => ({
+  name,
+  commit: "working-tree",
+  query,
+  savedAt: "2026-10-19",
+});
+
+describe("the presets' tree", () => {
+  const tree = presetTree(presets, []);
+  const shelf = (id: string) => tree.composers.find((composer) => composer.composer === id);
+
+  test("shelves the interior under its baseline, then its variants in the Scenes view's order", () => {
+    const rooms = shelf("interior");
+    expect(rooms?.baseline?.scene).toBe("room");
+    const variants = Object.keys(interiorVariants).filter((id) => id !== "room");
+    expect(rooms?.variants.map((node) => node.scene)).toEqual(
+      sceneOrder.filter((id) => variants.includes(id)),
+    );
+    expect(rooms?.variants.map((node) => node.scene)).toContain("sill");
+    expect(Object.keys(folderVariants)).toContain("room");
+  });
+
+  test("puts the outdoor's and the overhead's scenes at the top while they have no baseline", () => {
+    expect(tree.composers.map((composer) => composer.composer)).toEqual([
+      "interior",
+      "outdoor",
+      "overhead",
+    ]);
+    for (const id of ["outdoor", "overhead"] as const) {
+      expect(shelf(id)?.baseline).toBeUndefined();
+      for (const node of shelf(id)?.variants ?? []) expect(sceneComposer(node.scene)).toBe(id);
+    }
+    expect(shelf("outdoor")?.variants.map((node) => node.scene)).toContain("country");
+    expect(shelf("overhead")?.variants.map((node) => node.scene)).toContain("pond");
+  });
+
+  test("stands the scenes of no composer on a shelf apart", () => {
+    expect(tree.standalone.map((node) => node.scene)).toEqual(
+      sceneOrder.filter((id) => sceneDefs[id].layers === undefined),
+    );
+    expect(tree.standalone.map((node) => node.scene)).toContain("fractal");
+  });
+
+  test("holds every scene once, and every committed preset once, under its scene", () => {
+    const nodes = [
+      ...tree.composers.flatMap((composer) => [
+        ...(composer.baseline === undefined ? [] : [composer.baseline]),
+        ...composer.variants,
+      ]),
+      ...tree.standalone,
+    ];
+    expect(nodes.map((node) => node.scene).sort()).toEqual([...sceneIds].sort());
+    const placed = nodes.flatMap((node) =>
+      node.presets.map((entry) => ({ scene: node.scene, entry })),
+    );
+    expect(placed.map(({ entry }) => entry.preset)).toHaveLength(presets.length);
+    for (const { scene, entry } of placed) {
+      expect(entry.local).toBeUndefined();
+      expect(presetScene(entry.preset)).toBe(scene);
+    }
+  });
+
+  test("lists a scene's committed presets, then the ones saved here, with their local index", () => {
+    const mine = saved("Sill · my rain", "scene=sill&rain=1");
+    const local = [saved("Pond · mine", "scene=pond&koi=0"), mine, saved("Gone", "scene=nowhere")];
+    const sill = presetTree(presets, local).composers[0]?.variants.find(
+      (node) => node.scene === "sill",
+    );
+    const committed = presets.filter((preset) => presetScene(preset) === "sill");
+    expect(sill?.presets).toEqual([
+      ...committed.map((preset) => ({ preset, local: undefined })),
+      { preset: mine, local: 1 },
+    ]);
+    // A preset of a scene this build lacks is in no scene's branch.
+    const branches = presetTree([], local);
+    const all = [
+      ...branches.composers.flatMap((composer) => [
+        ...(composer.baseline?.presets ?? []),
+        ...composer.variants.flatMap((node) => node.presets),
+      ]),
+      ...branches.standalone.flatMap((node) => node.presets),
+    ];
+    expect(all.map((entry) => entry.local).sort()).toEqual([0, 1]);
+  });
+
+  test("reads a preset's scene from its query, the default scene without one", () => {
+    expect(presetScene(saved("x", "scene=sill&rain=1"))).toBe("sill");
+    expect(presetScene(saved("x", "rain=1"))).toBe("pond");
+    expect(presetScene(saved("x", "scene=nowhere"))).toBeUndefined();
+  });
+});

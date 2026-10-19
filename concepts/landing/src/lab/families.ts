@@ -1,8 +1,14 @@
 // The scene families: every scene in exactly one, so the Scenes view reads as a handful of shelves
-// instead of fifty cards (and the Presets view shelves the baseline the same way). `satisfies` makes
-// a new scene without a family a type error. `sceneOrder` is the Scenes view's order, shelf by
+// instead of fifty cards. `satisfies` makes a new scene without a family a type error; a promoted
+// variant (ADR 0062 D15) is in its source room's. `sceneOrder` is the Scenes view's order, shelf by
 // shelf; `sceneCycle` is that order less the lab-only scenes (`labOnly`: the composers' baselines,
 // ADR 0062 D13), which `[` and `]` and the tour follow.
+import {
+  promotedVariants,
+  sourceRoom,
+  type FolderVariantId,
+  type PromotedId,
+} from "../composer/interior-variants.ts";
 import { sceneIds, type SceneId } from "../scenes/index.ts";
 import type { IconName } from "./icons.ts";
 
@@ -15,6 +21,24 @@ export const families = [
 ] as const satisfies readonly { id: string; title: string; icon: IconName }[];
 
 export type FamilyId = (typeof families)[number]["id"];
+
+/** The families of the rooms in their folders. */
+const roomFamily = {
+  sill: "life",
+  incense: "life",
+  lava: "life",
+  bonsai: "life",
+  train: "life",
+  bar: "life",
+  mobile: "life",
+  room: "life",
+  frost: "matter",
+} as const satisfies Record<FolderVariantId, FamilyId>;
+
+/** Each promoted variant's family: its source room's. */
+const promotedFamily = Object.fromEntries(
+  promotedVariants.map((variant) => [variant.id, roomFamily[sourceRoom(variant)]]),
+) as Readonly<Record<PromotedId, FamilyId>>;
 
 export const sceneFamily = {
   orbit: "sky",
@@ -41,7 +65,6 @@ export const sceneFamily = {
   campfire: "land",
   autumn: "land",
   marble: "matter",
-  frost: "matter",
   prism: "matter",
   ferro: "matter",
   chladni: "matter",
@@ -55,18 +78,12 @@ export const sceneFamily = {
   ripple: "matter",
   harmonograph: "matter",
   pendula: "matter",
-  sill: "life",
   fireflies: "life",
   dew: "life",
-  incense: "life",
-  lava: "life",
-  bonsai: "life",
   street: "life",
-  train: "life",
-  bar: "life",
   bees: "life",
-  mobile: "life",
-  room: "life",
+  ...roomFamily,
+  ...promotedFamily,
 } as const satisfies Record<SceneId, FamilyId>;
 
 /** Every scene in the Scenes view's order: family by family, each in the catalogue's order. */

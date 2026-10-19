@@ -1,8 +1,9 @@
 // The scene registry, in lab order (cards, `[` / `]` cycling). A scene is one folder under
 // src/scenes/ (see README.md); adding one is an import and an entry here, keyed by its id. The
-// registry holds every scene's SceneDef, which loads with the page; a scene's code (its GLSL and
-// sim, `SceneDef.code`) loads apart, the first time the scene is needed (`loadScene`), so the
-// page's first load carries the code of the scene it opens on alone.
+// promoted variants (ADR 0062 D15: data in composer/interior-variants.ts, no folder) follow, from
+// promoted/scenes.ts. The registry holds every scene's SceneDef, which loads with the page; a
+// scene's code (its GLSL and sim, `SceneDef.code`) loads apart, the first time the scene is needed
+// (`loadScene`), so the page's first load carries the code of the scene it opens on alone.
 import { autumnScene } from "./autumn/index.ts";
 import { bambooScene } from "./bamboo/index.ts";
 import { barScene } from "./bar/index.ts";
@@ -43,6 +44,7 @@ import { physarumScene } from "./physarum/index.ts";
 import { pondScene } from "./pond/index.ts";
 import { prismScene } from "./prism/index.ts";
 import { rippleScene } from "./ripple/index.ts";
+import { promotedScenes } from "./promoted/scenes.ts";
 import { roomScene } from "./room/index.ts";
 import { sandtableScene } from "./sandtable/index.ts";
 import { shanshuiScene } from "./shanshui/index.ts";
@@ -106,6 +108,7 @@ export const sceneDefs = {
   tidepool: tidepoolScene,
   mobile: mobileScene,
   room: roomScene,
+  ...promotedScenes,
 } satisfies Record<string, SceneDef>;
 
 export type SceneId = keyof typeof sceneDefs;

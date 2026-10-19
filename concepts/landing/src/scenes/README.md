@@ -1,7 +1,9 @@
 # Writing a scene
 
-A scene is one folder, `src/scenes/<id>/`, whose `index.ts` exports a `SceneDef` (see `types.ts`).
-The registry `src/scenes/index.ts` lists scenes in lab order. Everything a scene needs is in its
+A scene is one folder, `src/scenes/<id>/`, whose `index.ts` exports a `SceneDef` (see `types.ts`),
+save a promoted variant (ADR 0062 D15): an entry in `src/composer/interior-variants.ts` that
+`scripts/promote.ts` writes, composed in `src/scenes/promoted/`. The registry `src/scenes/index.ts`
+lists scenes in lab order. Everything a scene needs is in its
 folder; shared pieces live in `src/shaders/common.ts`, `src/shaders/lib/` and `src/shaders/*.ts`
 (GLSL), `src/scenes/atmosphere.ts` (shared knobs, page themes), `src/scenes/plants.ts` and
 `src/scenes/planet.ts` (the plant component's and the giant planet's knobs), `src/params.ts` (knob
@@ -419,7 +421,10 @@ its own that no knob of its scenes may take (`state.ts` checks `planets`).
 The lab (`src/lab.ts`, `src/lab/`) is one menu over the scene in two presentations, a lab
 preference (`presentation` in `src/lab/prefs.ts`): expanded, a floating inspector panel, and
 compact, a bar along the bottom edge. The inspector has three views, picked by the icons in its
-header: Scenes (every scene's thumbnail, shelved by family), Presets (saved setups) and Controls (the
+header: Scenes (every scene's thumbnail, shelved by family), Presets (saved setups: this scene's,
+those saved in this browser, then a tree per composer of its baseline, its variants and their
+presets, the standalone scenes apart; a variant compares with its baseline in the A/B slots, and a
+room's preset promotes to a variant of its own) and Controls (the
 scene's groups, then Look, Motion and Page); a rail beside each view jumps between its families,
 preset groups or control groups. The scene's name in the header opens the Scenes view, and the
 header's last icons minimise the lab to the bar and hide it. The Scenes and Presets views follow the

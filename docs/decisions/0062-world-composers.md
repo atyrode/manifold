@@ -1106,6 +1106,22 @@ bar 4,979 → 4,975, train 4,021 → 4,052, mobile 876 → 887; absolute counts 
 ratios within one run about 1%.
 The lab dishes (the matter shelf) are decided after step 2.
 
+**Step 4, built (2026-10-19):** the Presets view is the tree (`src/lab/tree-model.ts`,
+`src/lab/presets.ts`): a shelf per composer, the interior's baseline room (tagged "baseline") and
+its variants (tagged "variant", or "promoted"), each with its committed presets (tagged
+"committed", D16) and those saved here under it; outdoor and overhead shelve their scenes at the
+top until steps 5 and 6, the standalone scenes on a shelf apart. A variant's "Compare with
+baseline" sets the A/B slots to `a.scene=room` and the variant as B. Promote (D15,
+`src/lab/promote-model.ts`) folds a room's preset that loads as itself (and holds no lab setting,
+planets or pose) into its room's differences, drops the values the baseline holds, checks that the
+variant's defaults are the query's setup, and shows and copies the entry;
+`scripts/promote.ts <query>` writes it into `src/composer/interior-variants.ts` (its scenes in
+`src/scenes/promoted/`, no folder), adds its compile budget to `shake.test.ts`, removes the
+committed preset and regenerates the scene docs. "Sill · lava lamp on the sill", promoted on a
+scratch tree as `silllava`, drew `SAME` as `scene=sill&lavaLamp=1` at `36bc94dd`
+(`ab.ts 'scene=silllava~scene=sill&lavaLamp=1'`, dithered and `view=source`); no preset is promoted
+in the tree yet.
+
 ### Amendments
 
 - **D7 and Phase 5:** prism and pendula are standalone, full-screen, with fractal, hyperbolic, orbit

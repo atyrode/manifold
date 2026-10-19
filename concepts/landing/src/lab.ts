@@ -234,6 +234,7 @@ export class Lab {
         host.apply(new URLSearchParams(query));
         this.commit();
       },
+      compare: (a, b) => this.#compareWith(a, b),
       query: () => this.#query(),
       build: host.build,
     });
@@ -1211,6 +1212,15 @@ export class Lab {
     this.#comparison = { live: "b", other: here };
     this.#hiddenHistory = historyAt(here);
     this.#host.apply(new URLSearchParams(here));
+  }
+
+  /** Compare setup `a` (hidden, with an undo history of its own) with `b`, loaded as B. */
+  #compareWith(a: string, b: string): void {
+    this.commit();
+    this.#comparison = { live: "b", other: a };
+    this.#hiddenHistory = historyAt(a);
+    this.#host.apply(new URLSearchParams(b));
+    this.commit();
   }
 
   #stopCompare(): void {

@@ -1,33 +1,25 @@
 import { describe, expect, test } from "bun:test";
-import { barVariant } from "../scenes/bar/index.ts";
-import { bonsaiVariant } from "../scenes/bonsai/index.ts";
 import { frostVariant } from "../scenes/frost/index.ts";
-import { incenseVariant } from "../scenes/incense/index.ts";
 import { sceneDefs, sceneIds } from "../scenes/index.ts";
-import { lavaVariant } from "../scenes/lava/index.ts";
-import { mobileVariant } from "../scenes/mobile/index.ts";
 import { roomVariant } from "../scenes/room/index.ts";
 import { SILL_ROOM } from "../scenes/sill/constants.ts";
 import { sillVariant } from "../scenes/sill/index.ts";
-import { trainVariant } from "../scenes/train/index.ts";
 import { composeScene, variantPreset } from "./compose.ts";
 import { interior } from "./interior.ts";
+import {
+  folderVariants,
+  interiorVariants,
+  promotedInteriorVariants,
+  promotedVariants,
+  sourceRoom,
+} from "./interior-variants.ts";
 import type { Grade, Variant } from "./types.ts";
 
 // The interior's variants over its baseline (ADR 0062 "Baselines and variants"): every room is one,
-// and none keeps a difference that changes nothing, which would hide a better baseline (D14).
+// the rooms in their folders and the promoted ones (D15), and none keeps a difference that changes
+// nothing, which would hide a better baseline (D14).
 
-const VARIANTS: readonly Variant[] = [
-  roomVariant,
-  sillVariant,
-  lavaVariant,
-  bonsaiVariant,
-  incenseVariant,
-  frostVariant,
-  barVariant,
-  trainVariant,
-  mobileVariant,
-];
+const VARIANTS: readonly Variant[] = Object.values(interiorVariants);
 
 const baseline = interior.baseline;
 
@@ -84,6 +76,31 @@ describe("the interior's variants", () => {
   test("the baseline's own scene is the baseline: its identity, no difference", () => {
     const identity = ["id", "base", "title", "blurb", "accent", "look", "planets"];
     expect(Object.keys(roomVariant).filter((key) => !identity.includes(key))).toEqual([]);
+  });
+
+  test("the promoted ones are keyed by their ids, stem from a room and say where they came from", () => {
+    for (const [key, variant] of Object.entries<Variant>(promotedInteriorVariants))
+      expect({ key, id: variant.id }).toEqual({ key, id: key });
+    for (const variant of promotedVariants) {
+      expect({ id: variant.id, folder: variant.id in folderVariants }).toEqual({
+        id: variant.id,
+        folder: false,
+      });
+      expect(variant.from?.commit).toMatch(/^[0-9a-f]{7,40}$|^working-tree$/);
+      expect(sourceRoom(variant) in folderVariants).toBe(true);
+    }
+  });
+
+  test("a room in its folder stems from itself; a promoted one from the room its query names", () => {
+    expect(sourceRoom(sillVariant)).toBe("sill");
+    const promoted = (id: string, query: string): Variant => ({
+      ...sillVariant,
+      id,
+      from: { commit: "36bc94dd", query },
+    });
+    expect(sourceRoom(promoted("sillcat", "scene=sill&cat=0"))).toBe("sill");
+    expect(() => sourceRoom(promoted("lost", "scene=pond"))).toThrow(/stems from no room/);
+    expect(() => sourceRoom(promoted("self", "scene=self"))).toThrow(/stems from no room/);
   });
 });
 
