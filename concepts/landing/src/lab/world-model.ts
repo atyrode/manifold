@@ -1,7 +1,8 @@
 // The shared world in the lab: which of a scene's knob groups stand on the Controls view's World
-// shelf (`Blurb.shelf`), in the shelf's order, and the world a scene picked with "keep the world" on
-// takes over from the one left (lab.ts #setScene): the World knobs both scenes have, by key, the
-// season through the year it stands at (almanac-model.ts), and the planets of its night sky.
+// shelf (`Blurb.shelf`), in the shelf's order, and the world a scene picked with "keep the world"
+// on, or within one baseline (scene-change-model.ts), takes over from the one left (lab.ts
+// #setScene): the World knobs both scenes have, by key, the season through the year it stands at
+// (almanac-model.ts), and the planets of its night sky.
 import { MAX_SEED, type Blurb, type ParamDef } from "../params.ts";
 import { openingPlanets, readPlanet, type SkyPlanet, type SkyPlanets } from "../scenes/planets.ts";
 import type { Params } from "../state.ts";

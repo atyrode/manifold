@@ -1439,6 +1439,24 @@ shelf and a standalone scene's on Standalone, the search and the cycle. In Chrom
 shelves, a setup saved from the Presets view under Patch as "custom", the search by its name, the
 card loading it, and its deletion in the Presets view clearing it.
 
+**Step 6's blend between variants, built (2026-10-19):** a scene picked by hand (the Scenes view,
+`[` `]`, "Next scene") of the same baseline as the scene left (`shareBaseline`,
+`lab/tree-model.ts`: the baseline's own scene and its variants, any two of them) keeps the World
+whatever the "keep" switch says and crossfades (`sceneChange`, `lab/scene-change-model.ts`): the
+lab carries the World knobs and planets (`carryWorld`, `carryPlanets`), keeps the clocks and asks
+`LabHost.apply` and `DitherRenderer.update` for `crossfade`. The renderer then passes with no exit
+and no entrance (`passageOut()` 0, `passageIn()` 1 from the run ahead on), waits as a passage does
+for the incoming program and sim, and dissolves the incoming scene out of the leaving scene's
+frame, both moving, in the `fade` order over `CROSSFADE`, 0.8 s of the passage clock whatever the
+lab's blend length and pattern; only from the scene the setup showed (a scene still leaving for
+another plays the passage), and a cut with passages off, under reduced motion or at motion 0. A
+scene taking over the clocks now takes over the phases of the rate knobs both have too
+(`RatePhases.adopt`, which nothing called), so a running day cycle goes on at its hour through a
+kept world, an A/B flip and the crossfade instead of falling back to the `time` knob's. Across
+baselines, to or from a standalone scene, and in tours and links the passage plays as before; the
+switch is one undo step as before. `scene-change-model.test.ts` holds room and sill, sill and
+lava, and meadow and land to share a baseline, and sill and meadow, and pond and orbit, not to.
+
 ### Amendments
 
 - **D7 and Phase 5:** prism and pendula are standalone, full-screen, with fractal, hyperbolic, orbit

@@ -118,6 +118,17 @@ export const REVEAL = { blend: "fade", seconds: 0.8 } as const satisfies {
   blend: BlendId;
   seconds: number;
 };
+/**
+ * How a scene takes the screen over in a crossfade (`update`'s `crossfade`: the lab moving between
+ * two scenes of one baseline, which share their world): neither plays its exit or entrance, and
+ * the incoming scene, entered already, comes in out of the leaving scene's frame, both still moving,
+ * cell by cell at full resolution, each cell at its own ordered-dither threshold (the "fade" blend's
+ * order), over this many passage-clock seconds whatever the blend's length and pattern.
+ */
+export const CROSSFADE = { blend: "fade", seconds: 0.8 } as const satisfies {
+  blend: BlendId;
+  seconds: number;
+};
 /** Scene-clock time of a trigger or press that has not happened. */
 const NEVER = -1e4;
 /**
@@ -219,6 +230,12 @@ interface Leaving {
   next: ActiveScene | undefined;
   /** Passage-clock time `next` was created. */
   ahead: number;
+  /**
+   * It gives way in a crossfade (`CROSSFADE`, `update`): no exit, and the incoming scene entered
+   * already, its run ahead too. Settled anew each frame until `woven`, as the scene the setup asks
+   * for may change while it idles.
+   */
+  crossfade: boolean;
   woven: { scene: ActiveScene; into: RenderSettings } | undefined;
 }
 
@@ -471,6 +488,11 @@ export class DitherRenderer {
    */
   #keepClocks: SceneId | undefined;
   /**
+   * The change of scene the setup asked to crossfade (see `update`): from the scene it showed to the
+   * one it changed to, until that one enters. Only the scene on screen being `from` crossfades.
+   */
+  #crossfade: { from: string; to: SceneId } | undefined;
+  /**
    * Scene passage, on the passage clock: real seconds (`requestAnimationFrame` time, so it plays
    * whatever the motion) slowed by `slowmo`. A scene leaves (`#leaving`, see `Leaving`) playing its
    * exit; the next scene, built in the background meanwhile, enters afresh (`#reenter`, even the
@@ -480,7 +502,7 @@ export class DitherRenderer {
    * entrance's first frame (see `#draw`), -Infinity when arrived without one (a cut);
    * `#arrival.entered`: when it entered; `#arrival.from`: the frame it dissolves out of
    * (`SceneDraw.from`); `#arrival.reveal`: it entered from nothing and appears out of the bare page
-   * (`REVEAL`).
+   * (`REVEAL`); `#arrival.crossfade`: it entered in a crossfade (`CROSSFADE`).
    */
   #passageClock = 0;
   #leaving: Leaving | undefined;
@@ -489,7 +511,8 @@ export class DitherRenderer {
     entered: number;
     from: WebGLTexture | undefined;
     reveal: boolean;
-  } = { start: -Infinity, entered: 0, from: undefined, reveal: false };
+    crossfade: boolean;
+  } = { start: -Infinity, entered: 0, from: undefined, reveal: false, crossfade: false };
   #reenter = false;
   readonly #leavingSize = { width: 0, height: 0 };
   /** What the leaving scene's sim and shader see of the triggers: none fire. */
@@ -643,16 +666,25 @@ export class DitherRenderer {
    * Draw with `settings` from the next frame. Pass a new object for every change: a program sends
    * its look and knobs again only when the object differs from the one it last drew with. A change
    * counts as input. Every scene's clocks count from its own start, unless `keepClocks`: the scene
-   * it changes to then takes over those of the scene on screen, so a world kept across scenes (the
-   * lab's "keep the world", an A/B flip) goes on where it stood: its hours under the day cycle, its
-   * passing year, its turning stars.
+   * it changes to then takes over those of the scene on screen, and its rate knobs' phases (src/
+   * rate-phase.ts `adopt`), so a world kept across scenes (the lab's "keep the world", an A/B flip)
+   * goes on where it stood: its hours under the day cycle, its passing year, its turning stars.
+   * `crossfade`: the scene it changes to takes the screen over from the one the setup showed in a
+   * crossfade (`CROSSFADE`) instead of their exit and entrance; where scenes pass at all (`#passing`:
+   * else it is a cut, as any change is), and only from that scene: one on screen still on its way
+   * out to another plays the passage.
    */
-  update(settings: RenderSettings, options: { keepClocks?: boolean } = {}): void {
+  update(
+    settings: RenderSettings,
+    options: { keepClocks?: boolean; crossfade?: boolean } = {},
+  ): void {
     this.#settings = settings;
     this.#governor.rest = settings.rest;
     this.#governor.wake(SETTLE_SECONDS);
     this.#governor.input(SETTLE_SECONDS);
     if (settings.scene !== this.#triggerScene) {
+      this.#crossfade =
+        options.crossfade === true ? { from: this.#triggerScene, to: settings.scene } : undefined;
       this.#triggerScene = settings.scene;
       this.#triggers.fill(NEVER);
       this.#motionTriggers.fill(NEVER);
@@ -857,7 +889,13 @@ export class DitherRenderer {
       scene = this.#create(s, built);
     }
     this.#scene = scene;
-    if (scene?.id === this.#keepClocks) this.#keepClocks = undefined;
+    if (scene !== undefined && scene.id === this.#keepClocks) {
+      // Its rate knobs' phases go on from those of the scene it replaces, taken over as it enters
+      // (a run ahead holds them still), as its clocks do (`#create`).
+      if (current !== undefined && current !== scene) scene.phases.adopt(current.phases);
+      this.#keepClocks = undefined;
+    }
+    if (scene !== undefined && scene.id === this.#crossfade?.to) this.#crossfade = undefined;
     return scene;
   }
 
@@ -1023,7 +1061,8 @@ export class DitherRenderer {
     if (entered) {
       // After a passage it dissolves out of the leaving scene; entering from nothing (the page's
       // first frame, a restored context) it appears out of the bare page (`REVEAL`); after a cut
-      // it is simply there. A passing entrance's clock starts on its second frame: the first one
+      // it is simply there; in a crossfade it is there already and dissolves out of the leaving
+      // scene (`CROSSFADE`). A passing entrance's clock starts on its second frame: the first one
       // compiles the program on the GPU (drivers do it at the first draw), which can take longer
       // than the whole dissolve, so it is shown as the dissolve's start. A scene entering from
       // nothing starts it only once its sim has what it shows (`SceneSim.ready`, at most READY_WAIT
@@ -1031,6 +1070,7 @@ export class DitherRenderer {
       // meanwhile, so the reveal assembles the scene's whole world.
       const passed = this.#reenter;
       arrival.reveal = !passed && current === undefined && this.#passing(s);
+      arrival.crossfade = passed && leaving?.crossfade === true;
       arrival.start = passed || arrival.reveal ? Number.NaN : -Infinity;
       arrival.entered = seconds;
       arrival.from = passed ? this.#gpu.leavingFrame : undefined;
@@ -1042,11 +1082,17 @@ export class DitherRenderer {
     ) {
       arrival.start = seconds;
     }
-    const weave = arrival.reveal ? REVEAL.seconds : Math.max(s.weave, 1e-3);
+    const weave = arrival.reveal
+      ? REVEAL.seconds
+      : arrival.crossfade
+        ? CROSSFADE.seconds
+        : Math.max(s.weave, 1e-3);
     const since = Number.isNaN(arrival.start) ? 0 : Math.max(0, seconds - arrival.start);
     const passage = scene.passage;
     const choreography = sceneDefs[scene.id].passage;
-    passage.enter = Math.min(1, since / Math.max(choreography?.enter ?? weave, 1e-3));
+    passage.enter = arrival.crossfade
+      ? 1
+      : Math.min(1, since / Math.max(choreography?.enter ?? weave, 1e-3));
     passage.exit =
       leaving !== undefined && woven === undefined
         ? this.#exitShare(scene.id, leaving, seconds)
@@ -1131,11 +1177,12 @@ export class DitherRenderer {
         blend: os.blend,
       });
     } else if (leaving?.next !== undefined) {
-      // Running ahead it gets ready without playing: dt 0, entrance not begun (see SimFrame.passage).
+      // Running ahead it gets ready without playing: dt 0, entrance not begun (see
+      // SimFrame.passage), or, ahead of a crossfade, entered already.
       const next = leaving.next;
       const ns = this.#settings;
       const nc = this.#stage.cells(ns.pixel);
-      next.passage.enter = 0;
+      next.passage.enter = leaving.crossfade ? 1 : 0;
       next.passage.exit = 0;
       this.#render(next, ns, next.program, 0, visitor, {
         target: null,
@@ -1191,7 +1238,7 @@ export class DitherRenderer {
       pressedAt: this.#mouse.pressedAt > NEVER ? this.#mouse.pressedAt - lag : NEVER,
       dissolve,
       from: arrival.from,
-      blend: arrival.reveal ? REVEAL.blend : s.blend,
+      blend: arrival.reveal ? REVEAL.blend : arrival.crossfade ? CROSSFADE.blend : s.blend,
     });
     // The blend is done once the incoming scene shows alone (at once if it cannot draw).
     if (leaving !== undefined && woven !== undefined && (!drew || dissolve <= 0)) {
@@ -1212,8 +1259,9 @@ export class DitherRenderer {
    * another scene (passages on; one moving on during a blend leaves when the blend is done). It
    * idles on until the next scene's program is built in the background and drawn once (`#prime`),
    * so whatever the driver still holds the GPU up for comes before anything moves; then it plays
-   * its exit, and the next scene enters once `overlap` of that has played. A leaving scene that
-   * cannot draw gives way as soon as the next scene's program is built.
+   * its exit, and the next scene enters once `overlap` of that has played; in a crossfade it plays
+   * none, and the next scene enters as soon as it is ready. A leaving scene that cannot draw gives
+   * way as soon as the next scene's program is built.
    */
   #pass(seconds: number): Leaving | undefined {
     const scene = this.#scene;
@@ -1229,7 +1277,10 @@ export class DitherRenderer {
     const leaving = this.#leaving;
     if (leaving === undefined || leaving.woven !== undefined || scene === undefined) return leaving;
     const into = this.#settings;
-    const exit = sceneDefs[scene.id].passage?.exit ?? 0;
+    // A crossfade asked for from the scene on screen to the one the setup asks for plays no exit.
+    const fade = this.#crossfade;
+    leaving.crossfade = fade !== undefined && fade.from === scene.id && fade.to === into.scene;
+    const exit = leaving.crossfade ? 0 : (sceneDefs[scene.id].passage?.exit ?? 0);
     // The incoming program, built in the background (a build for a scene passed over, or for a
     // change of the one leaving, finishing aside rather than holding it up).
     const built = this.#programs.entryProgram(into);
@@ -1274,6 +1325,7 @@ export class DitherRenderer {
       primed: undefined,
       next: undefined,
       ahead: 0,
+      crossfade: false,
       woven: undefined,
     };
   }
@@ -1310,8 +1362,12 @@ export class DitherRenderer {
     gl.bindFramebuffer(gl.FRAMEBUFFER, null);
   }
 
-  /** How far `id` has played its exit, 0..1 (1 at once for a scene without one, 0 before it starts). */
+  /**
+   * How far `id` has played its exit, 0..1 (1 at once for a scene without one, 0 before it starts,
+   * and throughout a crossfade, which plays none).
+   */
   #exitShare(id: SceneId, leaving: Leaving, seconds: number): number {
+    if (leaving.crossfade) return 0;
     const exit = sceneDefs[id].passage?.exit ?? 0;
     if (exit <= 0) return 1;
     return Number.isNaN(leaving.start)

@@ -158,11 +158,12 @@ export interface SimFrame {
   weather?: Readonly<{ wet: number; lying: number; rain: number }>;
   /**
    * How far the scene has come in (`enter`, 0→1 over `SceneDef.passage.enter` seconds of real time,
-   * then 1; always 1 when passages are off) and gone out (`exit`, 0 until it leaves, then 0→1), as
-   * the shader's `passageIn()` and `passageOut()`. A sim is built afresh for every entrance, and
-   * during a passage it runs ahead off screen while the leaving scene exits: those frames have
-   * `enter` 0 and `dt` 0, for building and prewarming without starting any clock. A clock keyed to
-   * `time` or wall time should start once `enter` is above 0.
+   * then 1; always 1 when passages are off and in a crossfade between two scenes of one baseline)
+   * and gone out (`exit`, 0 until it leaves, then 0→1; 0 throughout a crossfade), as the shader's
+   * `passageIn()` and `passageOut()`. A sim is built afresh for every entrance, and during a
+   * passage it runs ahead off screen while the leaving scene exits: those frames have `enter` 0
+   * (1 ahead of a crossfade) and `dt` 0, for building and prewarming without starting any clock. A
+   * clock keyed to `time` or wall time should start once `enter` is above 0.
    */
   passage: Readonly<ScenePassageProgress>;
   /**

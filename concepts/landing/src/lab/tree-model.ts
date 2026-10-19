@@ -84,6 +84,19 @@ export function variantBaseline(scene: SceneId): SceneId | undefined {
   return scene !== baseline && VARIANTS[composer][scene] !== undefined ? baseline : undefined;
 }
 
+/** The baseline's own scene `scene` is, or is a curated variant over; undefined if standalone. */
+export function sceneBaseline(scene: SceneId): SceneId | undefined {
+  const composer = sceneComposer(scene);
+  if (composer !== undefined && baselineScene[composer] === scene) return scene;
+  return variantBaseline(scene);
+}
+
+/** Whether two scenes are the same baseline's: the baseline and its variants, any two of them. */
+export function shareBaseline(a: SceneId, b: SceneId): boolean {
+  const baseline = sceneBaseline(a);
+  return baseline !== undefined && baseline === sceneBaseline(b);
+}
+
 /** The scene a preset's query names, or undefined for one this build does not have. */
 export function presetScene(preset: Preset): SceneId | undefined {
   const named = new URLSearchParams(preset.query).get("scene") ?? defaults.scene;

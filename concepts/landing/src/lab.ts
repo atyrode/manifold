@@ -49,6 +49,7 @@ import { fold, Popover } from "./lab/popover.ts";
 import { PREFS_KEY, readPrefs, type Presentation } from "./lab/prefs.ts";
 import { PresetsView } from "./lab/presets.ts";
 import { rollPatch } from "./lab/roll-model.ts";
+import { sceneChange, type SceneChangeBy } from "./lab/scene-change-model.ts";
 import { Views } from "./lab/views.ts";
 import { carryPlanets, carryWorld } from "./lab/world-model.ts";
 import type { ParamDef } from "./params.ts";
@@ -80,9 +81,14 @@ export interface LabHost {
   /**
    * Replace the whole setup. The host re-renders, then calls `Lab.sync()`. `cut`: switch scenes at
    * once, without the passage (an A/B flip). `keepClocks`: the scene switched to takes over the
-   * clocks of the one left, so the world kept goes on where it stood (DitherRenderer.update).
+   * clocks of the one left, so the world kept goes on where it stood. `crossfade`: it takes the
+   * screen over from the one left in a plain crossfade, without their exit and entrance (two scenes
+   * of one baseline: DitherRenderer.update).
    */
-  apply(query: URLSearchParams, options?: { cut?: boolean; keepClocks?: boolean }): void;
+  apply(
+    query: URLSearchParams,
+    options?: { cut?: boolean; keepClocks?: boolean; crossfade?: boolean },
+  ): void;
   renderer(): DitherRenderer | undefined;
   /** Commit the page was built from; empty for a working tree. */
   build: string;
@@ -1327,20 +1333,30 @@ export class Lab {
 
   /**
    * Show `scene` at its own defaults; picked by hand (the Scenes view, [ and ], Next scene) while
-   * "keep the world" is on, under the world of the scene left (world-model.ts `carryWorld`, and its
-   * planets, `carryPlanets`). A playing tour's own `advance` joins the undo step of the advance
-   * before it, so one undo goes back to where the tour began (lab/history-model.ts).
+   * "keep the world" is on, or within one baseline (its own scene and its variants) whatever that
+   * says, under the world of the scene left (world-model.ts `carryWorld`, and its planets,
+   * `carryPlanets`), within one baseline crossfading into it (lab/scene-change-model.ts). A playing
+   * tour's own `advance` joins the undo step of the advance before it, so one undo goes back to
+   * where the tour began (lab/history-model.ts).
    */
-  #setScene(scene: SceneId, by: "hand" | "tour" | "advance"): void {
+  #setScene(scene: SceneId, by: SceneChangeBy): void {
     const { state, params, planets } = this.#current();
     if (scene === state.scene) return;
     const defaults = paramDefaults(scene);
-    const keep = by === "hand" && this.#prefs.keepWorld;
+    const { keepWorld: keep, crossfade } = sceneChange(
+      state.scene,
+      scene,
+      by,
+      this.#prefs.keepWorld,
+    );
     const from = sceneDefs[state.scene];
     const to = sceneDefs[scene];
     const next = keep ? carryWorld(from, params, to, defaults) : defaults;
     const sky = keep ? carryPlanets(from, planets, to) : readPlanets(scene, new URLSearchParams());
-    this.#host.apply(serialise(carryLook(state, scene), next, sky), { keepClocks: keep });
+    this.#host.apply(serialise(carryLook(state, scene), next, sky), {
+      keepClocks: keep,
+      crossfade,
+    });
     this.#commit(by === "advance" ? "advance" : "hand");
   }
 

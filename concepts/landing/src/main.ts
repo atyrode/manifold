@@ -122,11 +122,12 @@ document.addEventListener("visibilitychange", () => {
 /**
  * Show the setup `query` holds (see `LabHost.apply`): `cut` switches scenes without the passage,
  * `keepClocks` lets the scene switched to take over the clocks of the one left (the lab keeping the
- * world, `DitherRenderer.update`).
+ * world), `crossfade` blends it in over the one left without their exit and entrance (the lab
+ * moving within one baseline; `DitherRenderer.update`).
  */
 function apply(
   query: URLSearchParams,
-  options: { cut?: boolean; keepClocks?: boolean } = {},
+  options: { cut?: boolean; keepClocks?: boolean; crossfade?: boolean } = {},
 ): void {
   const setup = readSetup(query);
   state = setup.state;
@@ -142,6 +143,7 @@ function apply(
   const settings = renderSettings(state, params, planets, elements, camera);
   renderer?.update(options.cut ? { ...settings, passage: false } : settings, {
     keepClocks: options.keepClocks === true,
+    crossfade: options.crossfade === true,
   });
   prefetchAround();
 

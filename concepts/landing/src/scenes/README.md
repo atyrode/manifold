@@ -189,9 +189,10 @@ uniforms, `TAU` or `LUMA`) to a pass body.
 The entry's `t` is `uTime`, the scene clock: it stands still while paused, and counts from the
 scene's own start. A scene's clocks start at 0 as it is created, and through a passage the leaving
 and the incoming scene each keep their own, so the float32 clocks stay as small as the scene is
-young however long the page is open. A scene picked with "keep the world", or flipped to in an A/B
-comparison, takes over the clocks of the one it replaces, so the world's hours, year and stars go
-on where they stood. Anything that moves at the lab's motion pace reads `uMotionTime` (a sim:
+young however long the page is open. A scene picked with "keep the world" or within one baseline,
+or flipped to in an A/B comparison, takes over the clocks of the one it replaces, and the phases of
+the rate knobs both have (`RatePhases.adopt`), so the world's hours, year and stars go on where they
+stood. Anything that moves at the lab's motion pace reads `uMotionTime` (a sim:
 `frame.motionTime`): the renderer sums each frame's scene-clock step times `uMotion`, from the
 same origin as `uTime`. It equals `t * uMotion` while the slider stands still, and moving the
 slider changes the pace instead of jumping every phase, as `t * uMotion` does (with the day cycle
@@ -279,6 +280,21 @@ restores after losing it starts over as on first load: the bare page while it is
 the scene builds again, then the same reveal. Nothing ever waits for a build.
 The outgoing frame is sampled in normalized stage coordinates with nearest filtering, so a different
 viewport or pixel size stretches the whole image rather than fetching outside it.
+
+Between two scenes of one baseline (a baseline's own scene, `room`, `land` or `patch`, and its
+variants: `shareBaseline` in `src/lab/tree-model.ts`) picked by hand in the lab (the Scenes view,
+`[` `]`, "Next scene") the switch is a crossfade instead (`sceneChange` in
+`src/lab/scene-change-model.ts`; `crossfade` on `LabHost.apply` and `DitherRenderer.update`). The
+World stays: the next scene opens under the World knobs, planets, clocks and rate phases of the one
+left, whatever the World's "keep" switch says. Neither scene plays its exit or entrance
+(`passageOut()` stays 0, `passageIn()` is 1 from the run ahead on), and once the incoming scene is
+ready (built, drawn once, its sim `ready()`, as above) it takes the screen over out of the leaving
+scene's frame, both still moving, each cell at its own Bayer threshold (the `fade` pattern), over
+0.8 s of the passage clock whatever the blend's length and pattern (`CROSSFADE`,
+`src/renderer.ts`). Only a switch from the scene the setup showed crossfades: a scene still on its
+way out to another plays the passage. With passages off, under reduced motion or at motion 0 it is
+a cut like any switch. Across baselines, to or from a standalone scene, and in tours and links the
+passage plays as above. It is one undo step, as any switch.
 
 Every scene makes the passage its own, in the world rather than by fading:
 
@@ -587,9 +603,10 @@ Global ones; the rail shows the same three. The World divider's "keep" switch (a
 by default) has a scene picked by hand (the Scenes view, `[` `]`, "Next scene") open under the world
 of the one left: each World knob takes the value of the World knob with its key and kind, kept in
 its range (a choice only where offered), and the season goes over through the year (`carryWorld` in
-`src/lab/world-model.ts`); presets, tours and links keep their own. So the sky's knobs, the aurora
-among them (`weatherKnobs` puts it in "sky", or `auroraGroup`), belong in the sky's group, and a
-scene's subject (lake's aurora) in a group of its own.
+`src/lab/world-model.ts`); between two scenes of one baseline it does so whatever the switch says,
+and the two crossfade ("Entrances and exits"); presets, tours and links keep their own. So the
+sky's knobs, the aurora among them (`weatherKnobs` puts it in "sky", or `auroraGroup`), belong in
+the sky's group, and a scene's subject (lake's aurora) in a group of its own.
 
 - The lens beside the Controls search ("n changed") narrows every group to the controls that differ
   from their defaults (Global settings against the scene's own), with the search's words if any;
