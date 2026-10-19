@@ -45,7 +45,7 @@ components"); run `bun concepts/landing/scripts/scene-docs.ts` after a change to
 | `clouds`       | Above the clouds | Sky & space       | its own program                         | 16    | 0       | A window seat at cruise altitude: a sea of cloud below, the day turning overhead.                                               |
 | `flock`        | Murmuration      | Sky & space       | `outdoor` preset, 2 layers              | 32    | 0       | Starlings at dusk, thousands of birds folding into one shape.                                                                   |
 | `skyward`      | Skyward          | Sky & space       | `outdoor` preset, 3 layers              | 33    | 0       | Lying on your back at a crossroads: the buildings lean in, wires cross a strip of sky, pigeons wheel and a plane draws a line.  |
-| `swell`        | Swell            | Water             | `outdoor` preset, 3 layers + 2 offered  | 35    | 2       | A moonlit sea rolling toward the horizon, boats riding at anchor in the moon's path.                                            |
+| `swell`        | Swell            | Water             | `outdoor` preset, 3 layers + 2 offered  | 36    | 2       | A moonlit sea rolling toward the horizon, boats riding at anchor in the moon's path.                                            |
 | `pond`         | Pond             | Water             | `overhead` preset, 4 layers + 1 offered | 55    | 0       | A koi pond from above, light through clear water.                                                                               |
 | `falls`        | Waterfall        | Water             | `outdoor` preset, 5 layers + 5 offered  | 51    | 3       | A waterfall pouring into its pool: spray, a rainbow, ferns on the wet rock.                                                     |
 | `shore`        | Shore            | Water             | `outdoor` preset, 3 layers + 6 offered  | 49    | 0       | Surf on a night beach, flashing blue wherever the water breaks.                                                                 |
@@ -1688,7 +1688,7 @@ never write a day curve of your own.
   moving the pace never jumps the sun or the stars, and switching the cycle on starts it from the
   hour on the knob, as the lab's dial shows it.
 - **Dated skies.** Every scene that keeps a season (a season knob whose default is a time of year:
-  autumn, bonsai, country, falls, garden and tidepool draw a sky with it; pond has none) gets
+  autumn, bonsai, country, falls, garden, swell and tidepool draw a sky with it; pond has none) gets
   `SKY_DATE_ANCHOR`, its own default
   date (`skyAnchor`): there its sky is the staged one, and as the date moves the sun's declination
   moves by Earth's change since that date (23.44 degrees either side of the equinoxes'), the warp

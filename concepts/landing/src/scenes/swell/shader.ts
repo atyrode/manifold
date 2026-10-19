@@ -11,9 +11,11 @@
 // the stars, the clouds, the aurora, shooting stars and lightning) and the moonlit air low over it,
 // and lays the moon's and the sun's glitter paths on it (waterGlint): broad columns of flecks that
 // blaze toward the horizon; the crests glow the scene's blue where the moon or the sun shines
-// through their thin water. By night the ink starts over a black point, so the World's sky stays
-// black and only what is lit over it reads. Lengths are in camera heights (SWELL_METRES metres, the
-// eye over the still sea), the composer's depths in metres.
+// through their thin water. On the night page the ink starts over a black point by night, so the
+// World's night sky stays black and only what is lit over it reads; by day it eases into a gentle
+// curve and the water's light turns the scene's blue. The paper page (a still daylight clock) takes
+// inkOf's dark ink. Lengths are in camera heights (SWELL_METRES metres, the eye over the still sea),
+// the composer's depths in metres.
 //
 // The layers, and what each draws:
 //   shared      (swellSharedGlsl) the sea's trains, the lamps' glow, the headland's and the boats'
@@ -23,8 +25,8 @@
 //               passage), the sky turned to the sea and its light, the air (the haze over the sea, the
 //               rain's grey, the moonlit fog, the drops' light). Its sky: the World's, the M in the
 //               moon's seas, the rain's grey over the deck and its shafts out at sea, the moonlit air
-//               low over the horizon. Its shade: the ink over a black point, the crests' blue the
-//               accent, the glitter's shimmer.
+//               low over the horizon. Its shade: the ink, over a black point by night, the crests'
+//               blue the accent and by day the water's, the glitter's shimmer.
 //   swell       (swellGlsl) the sea where the ray meets it (with `relief`, a bounded march over waves
 //               of real height): the sky, the headland and the boats mirrored in it, the moon's and
 //               the sun's glitter, the crests' glow, the whitecaps, and the lighthouse's and the
@@ -162,8 +164,8 @@ float swellLampReach(float tau) {
 // is, the light on a level surface and the sun's share of it; how dark it is getting (lamps are lit
 // then); the air over the sea (the haze toward this bearing, the rain's grey lit up by the lightning,
 // how thick the rain or snow is for the lamps and the beams, per camera height); the sea's trains
-// now. And what the sea drew here, for the shade: its depth (m; -1 none), the crests' blue and the
-// moon's glitter.
+// now. And what the sea drew here, for the shade: its depth (m; -1 none), the crests' blue, the
+// moon's glitter and how much of the sea shows white (the glitter, the lamps' paths, the foam).
 float swellCamH = 1.0;
 vec3 swellEye = vec3(0.0, 1.0, 0.0);
 vec3 swellRd = vec3(0.0, 0.0, 1.0);
@@ -179,6 +181,7 @@ SwellSea swellNow;
 float swellZ = -1.0;
 vec3 swellGlow = vec3(0.0);
 float swellPath = 0.0;
+float swellWhite = 0.0;
 
 // The depth of what a cell shows (m, the composer's) in camera heights; open sky (c.z exactly
 // WORLD_FAR: the sea far out lies beyond it in metres) as far as it gets.
@@ -395,8 +398,9 @@ export const openSeaGlsl = `
 // ---- the open sea (swell/shader.ts) ----
 // The night palettes' ink: none up to luminance x, so the World's night sky stays black and only
 // what is lit over it reads (the moon, the stars, the moonlit air and sea); above, 1 - exp(-y l),
-// l the luminance over x, so a bright sky still dithers.
-const vec2 OPEN_SEA_INK = vec2(0.115, 3.5);
+// l the luminance over x, so a bright sky still dithers. By day it gives way to inkOf's at gamma z, a
+// gentle curve (shore's grade's), which leaves the sky's bright range room to show (openSeaShade).
+const vec3 OPEN_SEA_INK = vec3(0.115, 3.5, 0.8);
 
 // The Manifold M in the moon's seas (K_mmoon): col darkened where dir (the sky's frame) crosses the
 // mark on the moon's disc, unless cloud hides it.
@@ -469,8 +473,11 @@ void openSeaSky(Ctx x, inout Cell c) {
 
 // The palettes: the crests' blue is the accent (where the sea is what the cell shows, as much as the
 // World's air leaves of it: c.accent, 1 where the sea was drawn), everything else ink: on the paper
-// page dark ink, by night light ink over OPEN_SEA_INK's black point, so the World's night sky stays
-// black; the moon's glitter shimmers.
+// page inkOf's dark ink; on the night page light ink, by night over OPEN_SEA_INK's black point, so
+// the World's night sky stays black. As the day comes up (the sky's day) that gives way to a gentle
+// curve, so the day's sky keeps its gradient, its cloud and the sun, and the water's own light turns
+// the scene's blue as the crests' is, what of it shows white (swellWhite: the glitter, the lamps'
+// paths, the foam) left so: blue water under a light sky. The moon's glitter shimmers.
 void openSeaShade(Ctx x, Cell c, inout Shade o) {
   float clear = c.z == swellZ ? c.accent : 0.0;
   vec3 glow = swellGlow * clear;
@@ -478,7 +485,14 @@ void openSeaShade(Ctx x, Cell c, inout Shade o) {
   vec3 rgb = clamp(c.col, 0.0, 1.0);
   float accent = clamp(dot(glow, LUMA) * 3.5, 0.0, 1.0) * (1.0 - min(path * 2.0, 1.0));
   vec3 inked = max(rgb - glow, 0.0);
-  float ink = pagePaper() ? inkOf(inked, 1.0, 1.0) : 1.0 - exp(-OPEN_SEA_INK.y * max(dot(inked, LUMA) - OPEN_SEA_INK.x, 0.0));
+  float ink = inkOf(inked, 1.0, OPEN_SEA_INK.z);
+  if (!pagePaper()) {
+    float day = swellSky.day;
+    ink = mix(1.0 - exp(-OPEN_SEA_INK.y * max(dot(inked, LUMA) - OPEN_SEA_INK.x, 0.0)), ink, day);
+    float blue = day * clear * (1.0 - swellWhite);
+    accent = max(accent, blue * ink);
+    ink *= 1.0 - blue;
+  }
   o = shadeOf(rgb, ink, accent);
   o.shimmer = min(path, 1.0) * 0.3 * clear;
 }
@@ -789,6 +803,9 @@ void swellGround(Ctx x, inout Cell c) {
   vec3 moonlitAir = sky.moonColor * SWELL_AIR.x * fresnelSchlick(-rd.y, 0.02, 0.0) * (1.0 - hidden);
   vec3 col = mix(body + glow, reflected, water.fresnel) + moonlitAir + moonHue * path + sunHue * sunPath;
   glow *= 1.0 - water.fresnel;
+  // How much of it shows white rather than as the water's own light (the shade's day blue): the
+  // moon's, the sun's and the lamps' glitter, and the whitecaps.
+  float white = min(2.0 * (path + sunPath), 1.0);
   // Whitecaps where the trains stack steep enough to break (and the entrance's roll at its height),
   // ragged along the crest; lit by the sky, the sun and the moon.
   float breaking = smoothstep(SWELL_BREAK.x, SWELL_BREAK.y, wave.w + 6.0 * roll.x);
@@ -796,6 +813,7 @@ void swellGround(Ctx x, inout Cell c) {
   if (hardEdge(foam * 0.9) > 0.5) {
     col = sky.ambient * 2.0 + swellSunLight + sky.moonColor * 1.2;
     glow = vec3(0.0);
+    white = 1.0;
   }
 #if LAYER_LIGHTHOUSE
   // The lighthouse's lamp trembling down the water toward the eye, brighter as a beam sweeps by:
@@ -804,7 +822,9 @@ void swellGround(Ctx x, inout Cell c) {
   float lampWindow = smoothfall(lampReach, 0.6 * lampReach, abs(p.x - swellLampSeen.x));
   if (swellLampLit > 0.0 && lampWindow > 0.0) {
     vec3 toLamp = swellLamp - vec3(hit.x, 0.0, hit.z);
-    col += SWELL_BEAM * lampWindow * waterGlint(water.normal, toEye, normalize(toLamp), rough, SWELL_LAMP_GLINT * swellLampFlash * SWELL_BEAM_FLASH * flicker / dot(toLamp, toLamp));
+    float lampPath = waterGlint(water.normal, toEye, normalize(toLamp), rough, SWELL_LAMP_GLINT * swellLampFlash * SWELL_BEAM_FLASH * flicker / dot(toLamp, toLamp));
+    col += SWELL_BEAM * lampWindow * lampPath;
+    white = max(white, min(2.0 * lampWindow * lampPath, 1.0));
   }
 #endif
 #if BOATS_LANTERNS
@@ -818,7 +838,9 @@ void swellGround(Ctx x, inout Cell c) {
       float window = smoothfall(reach, 0.6 * reach, abs(p.x - seenAt.x));
       if (hit.z >= b.y || window <= 0.0) continue;
       vec3 toLantern = swellLanternAt(swellHull(i, tm, sea, x.w.wind)) - vec3(hit.x, 0.0, hit.z);
-      col += SWELL_LANTERN * window * waterGlint(water.normal, toEye, normalize(toLantern), rough, SWELL_LAMP_GLINT * swellDusk * SWELL_LANTERN_POWER * flicker / dot(toLantern, toLantern));
+      float lanternPath = waterGlint(water.normal, toEye, normalize(toLantern), rough, SWELL_LAMP_GLINT * swellDusk * SWELL_LANTERN_POWER * flicker / dot(toLantern, toLantern));
+      col += SWELL_LANTERN * window * lanternPath;
+      white = max(white, min(2.0 * window * lanternPath, 1.0));
     }
   }
 #endif
@@ -828,6 +850,7 @@ void swellGround(Ctx x, inout Cell c) {
   swellZ = z;
   swellGlow = glow;
   swellPath = path;
+  swellWhite = white;
 }
 `;
 

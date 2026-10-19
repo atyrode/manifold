@@ -27,8 +27,9 @@ const preset: ScenePreset = {
   rig: SWELL_RIG,
   grade: SWELL_GRADE,
   // The full moon six degrees up over the sea a little left of ahead (the rig faces moonrise), the
-  // night just fallen; a clear sky, its stars at their densest, since the long lens shows only the
-  // low sky where they fade; gulls by day.
+  // night just fallen at the autumn equinox (the season's default, the date the sky is staged at:
+  // layers.ts); a clear sky, its stars at their densest, since the long lens shows only the low sky
+  // where they fade; gulls by day.
   world: {
     time: 0.818,
     stars: 1,

@@ -23,8 +23,10 @@ export const SWELL_METRES = 15;
 
 /**
  * How far round from the sky's frame the sea faces (rad), toward moonrise: at the default hour
- * (time 0.818) the full moon stands six degrees up and six left of ahead, its path left of
- * mid-frame.
+ * (time 0.818) and date (the autumn equinox, the season's default) the full moon stands six degrees
+ * up and six left of ahead, its path left of mid-frame. On that date the sun rises at the view's
+ * right edge, toward winter nearer ahead (out of the sea in view), toward summer out of view to the
+ * right; it never sets in view.
  */
 export const SWELL_FACING = 0.81;
 

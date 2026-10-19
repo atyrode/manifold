@@ -5,8 +5,9 @@
 //   openSea     backdrop: the World's sky over the open sea (the M in the moon's seas, the rain's
 //               grey over the deck and its shafts out at sea, the moonlit air low over the horizon);
 //               the camera (the pointer's lens shift); the air (the haze, the moonlit fog, the rain's
-//               grey the far rain fuses into, the drops' light); the picture's ink over a black point,
-//               the crests' blue its accent (its shade pass).
+//               grey the far rain fuses into, the drops' light); the picture's ink, over a black point
+//               by night and a gentle curve by day, the crests' blue its accent and by day the water's
+//               (its shade pass); the time of year (the composer's `season`), which dates the sky.
 //   swell       ground: the sea, its long swell and the wind's sea and chop on it, the whitecaps; the
 //               sky, the headland and the boats mirrored in it, the moon's and the sun's glitter, the
 //               lamps' paths; with relief, waves of real height. It lies under the open sea's air, so it
@@ -27,6 +28,20 @@ const AT_SEA: CameraRange = {
   focal: [SWELL_RIG.focal, SWELL_RIG.focal],
   pitch: [SWELL_RIG.pitch, SWELL_RIG.pitch],
 };
+
+/**
+ * The time of year over the sea, the composer's `season`: it dates the World's sky (the sun's and
+ * the full moon's paths) and its climate. The default, the autumn equinox, is the date the sky is
+ * staged at (skyAnchor), so the moon stands where the swell's rig frames it.
+ */
+const SEASON = range(
+  "sky",
+  "season",
+  "time of year",
+  0.5,
+  "Where the year stands, round from the start of spring; the default is the autumn equinox, the harvest moon rising over the sea at nightfall. Toward summer the sun climbs higher and rises far round to the right, out of view, and the full moon rides lower; toward winter the sun stays low all day and comes up out of the sea ahead, and the full moon rides higher. In deep winter rain falls as snow.",
+  { step: 0.005, widget: { kind: "sky", part: "season", year: { span: [0, 1] } } },
+);
 
 export const openSeaLayer: LayerDef = {
   id: "openSea",
@@ -53,6 +68,7 @@ export const openSeaLayer: LayerDef = {
       "The moon's dark seas form the Manifold M.",
     ),
   ],
+  season: SEASON,
   groups: {
     manifold: { title: "Manifold mark", blurb: "Ways the M can live in this night." },
   },
