@@ -1056,6 +1056,21 @@ weather, is accepted only once it is rendered for every camera that can be in it
 | 5    | The outdoor baseline (the World, `downs`, the plain floor at a standing eye), its presets as variants, `localLight` adopted | each preset's differences attributed, as in Phase 2; budgets hold                                                                                                                          |
 | 6    | The overhead baseline, after the per-program knob layout and the World over the patch                                       | the same, for the overhead presets                                                                                                                                                         |
 
+**Step 1, built (2026-10-19):** `Baseline`, `Variant` and `LightElement` (`types.ts`),
+`Composer.baseline`, `variantPreset` (`compose.ts`) and the interior's baseline (`interior.ts`): an
+empty room at dusk at the sill's rest pose, its window onto the city over the bare sill (`cityWindow`
+and `sill` on), the sill's room, the World at 0.8 over the city, the plainest ink the rooms share
+(the incense's and the frost's, 1.25 and 1) and no vignette, no elements (`variantPreset` refuses
+any until step 2 draws them). The eight rooms are variants in their folders' `index.ts`; every one
+but the sill removes the baseline's window and sill for its own shell layers and brings its camera
+and its room (`Variant.room`, the per-room `Room` until the shell is one in metres), and the frost
+pins its winter night through its values (`time`, `clouds`, `snow`). Its lab-only scene `room`
+(`labOnly`, `sceneCycle` in `src/lab/families.ts`) is in the Scenes view, outside the tour and
+`[` / `]`. `ab.ts --base 214b15ae --presets`: `SAME` for the eight defaults, dithered and
+`view=source`, and all 61 committed presets, the sill's mixes and the rest of the indoor ones among
+them; the eight rooms' default and all-features programs, knobs and lab metadata are byte for byte
+as before; `interior-variants.test.ts` refuses a redundant difference.
+
 The lab dishes (the matter shelf) are decided after step 2.
 
 ### Amendments

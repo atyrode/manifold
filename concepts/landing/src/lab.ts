@@ -19,7 +19,7 @@ import {
   type Comparison,
   type Slot,
 } from "./compare.ts";
-import { sceneOrder, sceneStep } from "./lab/families.ts";
+import { sceneCycle, sceneStep } from "./lab/families.ts";
 import { SceneGallery } from "./lab/gallery.ts";
 import { flash, iconButton, nowButton, row, slider, textButton } from "./lab/controls.ts";
 import {
@@ -568,8 +568,8 @@ export class Lab {
   }
 
   /**
-   * Go to the previous (-1) or next (1) scene in the Scenes view's order (lab/families.ts), as a
-   * scene picked by hand.
+   * Go to the previous (-1) or next (1) scene in the Scenes view's order less the lab-only scenes
+   * (lab/families.ts `sceneCycle`), as a scene picked by hand.
    */
   stepScene(by: -1 | 1): void {
     this.#setScene(sceneStep(this.#current().state.scene, by), "hand");
@@ -958,7 +958,7 @@ export class Lab {
     const picker = h("select", { class: "tour-picker", "aria-label": "Scene to add" });
     let offered = "";
     const add = textButton("plus", "Add", "Add the chosen scene at the end of the tour", () => {
-      const scene = sceneOrder.find((id) => id === picker.value);
+      const scene = sceneCycle.find((id) => id === picker.value);
       if (scene) this.#editTour([...(this.#tour?.tour.steps ?? []), { scene }]);
     });
     const addAll = textButton(
@@ -969,7 +969,7 @@ export class Lab {
         const on = this.#tour?.tour.steps ?? [];
         this.#editTour([
           ...on,
-          ...sceneOrder
+          ...sceneCycle
             .filter((id) => !on.some((step) => step.scene === id))
             .map((scene) => ({ scene })),
         ]);
@@ -1060,7 +1060,7 @@ export class Lab {
         if (index === tour?.index) setAttr(item, "aria-current", "step");
         else item.removeAttribute("aria-current");
       }
-      const available = sceneOrder.filter((id) => !list.some((step) => step.scene === id));
+      const available = sceneCycle.filter((id) => !list.some((step) => step.scene === id));
       const { scene } = this.#current().state;
       if (available.join() !== offered) {
         offered = available.join();

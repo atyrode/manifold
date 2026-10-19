@@ -22,8 +22,8 @@ test("a tour link reads back exactly as the lab writes it", () => {
   expect(plain.toString()).toBe("tour=pond");
 });
 
-test("unknown and repeated scenes are dropped and dwells kept within bounds", () => {
-  expect(tour("tour=pond.nowhere.pond.Forest.lake-x.forest-1.orbit-99999&dwell=abc")).toEqual({
+test("unknown, lab-only and repeated scenes are dropped and dwells kept within bounds", () => {
+  expect(tour("tour=pond.nowhere.room.pond.Forest.lake-x.forest-1.orbit-99999&dwell=abc")).toEqual({
     steps: [
       { scene: "pond" },
       { scene: "forest", dwell: TOUR_DWELL.min },

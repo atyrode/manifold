@@ -512,6 +512,74 @@ export interface RoomFrame {
   readonly scale: number;
 }
 
+// ---- baselines and variants (ADR 0062 "Baselines and variants") ----------------------------------
+
+/** What a light element is (ADR 0062 D17). */
+export type ElementKind = "window" | "lamp" | "candle" | "neon" | "fire" | "screen";
+
+/**
+ * A placed light (ADR 0062 "Light elements", D17): `at` in metres in the composer's frame, free to
+ * stand out of it; its colour, its power, how far it reaches, how much it flickers (on
+ * `uMotionTime`), and whether it throws shadows. Elements are drawn from step 2 of the ADR's order
+ * of work; until then every preset's list is empty (`variantPreset` refuses any other).
+ */
+export interface LightElement {
+  readonly kind: ElementKind;
+  readonly at: readonly [x: number, y: number, z: number];
+  readonly colour: readonly [number, number, number];
+  readonly power: number;
+  readonly reach: number;
+  readonly flicker: number;
+  readonly shadow: boolean;
+}
+
+/**
+ * What names a scene (ADR 0062 D14): a variant's own, never its baseline's. `groups` is the copy of
+ * its own lab headings (the sill's sky over the city), named as the blurb names it.
+ */
+export type Identity = Pick<
+  ScenePreset,
+  "id" | "title" | "blurb" | "accent" | "look" | "theme" | "passage" | "planets" | "groups"
+>;
+
+/**
+ * A composer's baseline (ADR 0062 D13, `Composer.baseline`): what a scene preset holds but its
+ * identity, the camera at rest (`rig`), the grade, the World's options, the floor or the room's
+ * shell, the shell's home layers and values, and its light elements. Its own scene (the interior's
+ * `room`) is lab-only.
+ */
+export interface Baseline extends Omit<ScenePreset, keyof Identity> {
+  readonly elements: readonly LightElement[];
+}
+
+/**
+ * A curated variant (ADR 0062 D14): a scene stored as its differences from its composer's baseline,
+ * which `variantPreset` (compose.ts) makes into its scene preset. It keeps its identity and holds
+ * only what differs; a test refuses a difference that changes nothing (interior-variants.test.ts).
+ */
+export interface Variant extends Identity {
+  /** Its baseline's composer. */
+  readonly base: ComposerId;
+  /** Layers switched on beyond the baseline's home layers (in canonical order), and home ones off. */
+  readonly layers?: { readonly add?: readonly string[]; readonly remove?: readonly string[] };
+  /** Knob values over the baseline's, keyed as in the URL (its hour, its date, the World's weather). */
+  readonly values?: Readonly<Record<string, number>>;
+  /** Its camera's rest pose. */
+  readonly camera?: Rig;
+  /**
+   * Its room's shell, where a variant's own shell layers ask for another (the seat's distance, the
+   * wall, the light all round, the lamp out of frame): until the shell is one in metres (ADR 0062
+   * "Order of work", step 2).
+   */
+  readonly room?: Room;
+  /** Its grade, key by key over the baseline's (D21). */
+  readonly grade?: Partial<Grade>;
+  /** Its light elements, in place of the baseline's. */
+  readonly elements?: readonly LightElement[];
+  /** Where a promoted variant came from (D15): the commit and the saved preset's query. */
+  readonly from?: { readonly commit: string; readonly query: string };
+}
+
 /**
  * A preset of the overhead composer: a patch seen from above. Its light is its layers' (the pond's
  * sun, the tank's lamp); the World over the patch is not built (ADR 0062 Phase 4).

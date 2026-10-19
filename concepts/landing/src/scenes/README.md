@@ -90,6 +90,7 @@ components"); run `bun concepts/landing/scripts/scene-docs.ts` after a change to
 | `bar`          | Late bar         | Rooms & life      | `interior` preset, 5 layers + 1 offered | 33    | 0       | A quiet bar late at night, seen from a corner booth while it rains outside.                                                     |
 | `bees`         | Bees             | Rooms & life      | `outdoor` preset, 5 layers + 6 offered  | 63    | 2       | A summer hillside at an orchard's edge: bees and butterflies at work among the hives and flowers.                               |
 | `mobile`       | Mobile           | Rooms & life      | `interior` preset, 2 layers + 1 offered | 25    | 3       | A solar system hung under a glowing Sun, each planet turning at its own pace, its shadow wheeling across the wall.              |
+| `room`         | Room             | Rooms & life      | `interior` preset, 2 layers + 5 offered | 48    | 0       | The rooms' baseline: an empty room at dusk, a window onto the city over a bare sill.                                            |
 
 <!-- /gen:scenes -->
 
@@ -463,10 +464,11 @@ redo name the step they take ("Undo: crops, dither"). A step is what a person di
 (`src/lab/history-model.ts`): a commit to the same URL keys as the step before it, within a second
 of that step's last commit, grows that step (a held arrow key, a run of clicks on one control), and
 a playing tour's own advances are one step, so one undo goes back to where it began. `[` and `]`
-step through the scenes in the Scenes view's order (`sceneOrder` in `src/lab/families.ts`), as the
-tour's picker and its "All" do. `l` hides the whole lab, and `/` opens the panel at the control
-search: from the bar for this session only (the bar stays the preference), until Escape in the
-search or the lab closes.
+step through the scenes in the Scenes view's order less the lab-only ones (`sceneCycle` in
+`src/lab/families.ts`; `labOnly`: the composers' baselines, ADR 0062 D13), as the tour's picker and
+its "All" do, and a tour link drops a lab-only scene. `l` hides the whole lab, and `/` opens the
+panel at the control search: from the bar for this session only (the bar stays the preference),
+until Escape in the search or the lab closes.
 
 The lab's look (`src/lab.css`): one dark palette with an amber accent that marks only what is on,
 picked or changed; labels in the page's sans, numbers, keys and eyebrows in its mono; three radii
@@ -827,20 +829,20 @@ component carried by another named through it:
 
 <!-- gen:composed-by -->
 
-| String            | File                           | Composed by                                                                                                                                                              | See                                  |
-| ----------------- | ------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------ |
-| `worldGlsl`       | `src/shaders/lib/world.ts`     | flock, skyward, swell, falls, shore, lanterns, lake, island, country, dunes, meadow, bamboo, garden, forest, campfire, autumn, frost, sill, fireflies, dew, street, bees | "World layers"                       |
-| `birdsGlsl`       | `src/shaders/lib/birds.ts`     | train; through `worldGlsl`                                                                                                                                               | "Birds"                              |
-| `milkyWayGlsl`    | `src/shaders/lib/milkyway.ts`  | through `worldGlsl`                                                                                                                                                      | the Milky Way row below              |
-| `canopyGroveGlsl` | `src/shaders/lib/canopy.ts`    | bamboo, forest                                                                                                                                                           | "Shared libraries" (the canopy)      |
-| `plantsGlsl`      | `src/shaders/lib/plants.ts`    | pond, falls, tidepool, country, garden, fireflies                                                                                                                        | "Rooted plants"                      |
-| `planetGlsl`      | `src/shaders/lib/planet.ts`    | orbit, mobile; every sky's `skyGiant`, in `libs` behind its gate (`SKY_PLANETS`)                                                                                         | "The giant planet"                   |
-| `figuresGlsl`     | `src/shaders/lib/figures.ts`   | country                                                                                                                                                                  | "Figures, livestock and buildings"   |
-| `livestockGlsl`   | `src/shaders/lib/livestock.ts` | country                                                                                                                                                                  | "Figures, livestock and buildings"   |
-| `buildingsGlsl`   | `src/shaders/buildings.ts`     | country                                                                                                                                                                  | "Figures, livestock and buildings"   |
-| `terrainGlsl`     | `src/shaders/lib/terrain.ts`   | country                                                                                                                                                                  | `TerrainBuilder` under "Simulations" |
-| `fieldsGlsl`      | `src/shaders/lib/fields.ts`    | country                                                                                                                                                                  | the fields row below                 |
-| `treesGlsl`       | `src/shaders/lib/trees.ts`     | country                                                                                                                                                                  | the trees row below                  |
+| String            | File                           | Composed by                                                                                                                                                                    | See                                  |
+| ----------------- | ------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------ |
+| `worldGlsl`       | `src/shaders/lib/world.ts`     | flock, skyward, swell, falls, shore, lanterns, lake, island, country, dunes, meadow, bamboo, garden, forest, campfire, autumn, frost, sill, fireflies, dew, street, bees, room | "World layers"                       |
+| `birdsGlsl`       | `src/shaders/lib/birds.ts`     | train; through `worldGlsl`                                                                                                                                                     | "Birds"                              |
+| `milkyWayGlsl`    | `src/shaders/lib/milkyway.ts`  | through `worldGlsl`                                                                                                                                                            | the Milky Way row below              |
+| `canopyGroveGlsl` | `src/shaders/lib/canopy.ts`    | bamboo, forest                                                                                                                                                                 | "Shared libraries" (the canopy)      |
+| `plantsGlsl`      | `src/shaders/lib/plants.ts`    | pond, falls, tidepool, country, garden, fireflies                                                                                                                              | "Rooted plants"                      |
+| `planetGlsl`      | `src/shaders/lib/planet.ts`    | orbit, mobile; every sky's `skyGiant`, in `libs` behind its gate (`SKY_PLANETS`)                                                                                               | "The giant planet"                   |
+| `figuresGlsl`     | `src/shaders/lib/figures.ts`   | country                                                                                                                                                                        | "Figures, livestock and buildings"   |
+| `livestockGlsl`   | `src/shaders/lib/livestock.ts` | country                                                                                                                                                                        | "Figures, livestock and buildings"   |
+| `buildingsGlsl`   | `src/shaders/buildings.ts`     | country                                                                                                                                                                        | "Figures, livestock and buildings"   |
+| `terrainGlsl`     | `src/shaders/lib/terrain.ts`   | country                                                                                                                                                                        | `TerrainBuilder` under "Simulations" |
+| `fieldsGlsl`      | `src/shaders/lib/fields.ts`    | country                                                                                                                                                                        | the fields row below                 |
+| `treesGlsl`       | `src/shaders/lib/trees.ts`     | country                                                                                                                                                                        | the trees row below                  |
 
 <!-- /gen:composed-by -->
 
@@ -1075,6 +1077,7 @@ planets (`SceneDef.planets`; "at first": the planets it opens with). Generated f
 | `bar`       | —     | —     | —         | —    | —       | —          | —      | —      | 0.3  | —    | —   | 0.2  | —          | —          | —               |
 | `bees`      | 0.64  | 0.6   | 1         | 1    | off     | off, now 0 | off    | 0.25   | off  | off  | 0   | 0.2  | off, now 1 | 0.35       | yes             |
 | `mobile`    | —     | —     | —         | —    | —       | —          | —      | —      | —    | —    | —   | 0.15 | —          | —          | —               |
+| `room`      | 0.8   | 0.5   | off       | 1    | off     | off, now 0 | off    | 0.35   | off  | off  | 0   | 0.2  | off, now 1 | —          | yes             |
 
 <!-- /gen:knobs -->
 
@@ -2374,8 +2377,10 @@ and `dwell` (`state.ts` refuses to load such a scene).
 **Status.** The `outdoor` composer (`src/composer/`, ADR 0062
 `docs/decisions/0062-world-composers.md`, #1082 item U1) runs the nineteen eye-level scenes and the
 island as presets of its 84 layers; the `interior` composer (Phase 3, "The interior composer") runs
-sill, lava, bonsai, incense and frost as presets of its 16 layers, with a lava lamp that stands on
-the sill and the frost on the sill's panes; the `overhead` composer (Phase 4, "The overhead
+sill, lava, bonsai, incense, frost, bar, train and mobile as variants of its baseline over its 27
+layers (ADR 0062 "Baselines and variants", step 1: `Composer.baseline`, `Variant`,
+`variantPreset`), with a lava lamp that stands on the sill and the frost on the sill's panes, and
+the baseline itself as the lab-only scene `room`; the `overhead` composer (Phase 4, "The overhead
 composer" below) runs pond and ripple (its pilot), tidepool, sandtable and delta as presets of its
 19 layers, with koi offered to the ripple tank. The rest of the interiors and of the scenes seen from
 above are the rest of those phases. Not built yet, so still the contract: the per-program knob
@@ -2384,7 +2389,7 @@ layout (a composed scene keeps the renderer's 64 knobs and 8 trigger slots,
 role's "+" listing, the browser checks `composerDepth`, `composerClaims`, `composerWeather` and
 `layerToggles`, a check of the SwiftShader instruction budget, the principals' points in the site,
 and shelving the Scenes view by composer. The ADR keeps the reasoning, the measurements, the
-decisions (D1–D12) and the phases ahead.
+decisions (D1–D24) and the phases ahead.
 
 Most outdoor scenes show the same thing: a camera on the ground at eye level, something in front
 of it, a landscape behind, the sky above. A **composer** makes that shared: one camera rig, one
@@ -3176,12 +3181,27 @@ agents draws as before. Three chores are not layers:
 
 ### The interior composer
 
-ADR 0062 Phase 3: `src/composer/interior.ts` (its twenty-seven layers in canonical order), `room.ts`
-(the program) and `interior-code.ts` (the layers' code). Its presets are sill, lava, bonsai, incense,
-frost, bar, train and mobile; the committed mixes "Sill · lava lamp on the sill" and "Sill · frost on
-the window" stand the lava lamp on the sill and frost the sill's panes. Clouds and harmonograph are
-still scenes of their own.
+ADR 0062 Phase 3: `src/composer/interior.ts` (its baseline and its twenty-seven layers in canonical
+order), `room.ts` (the program) and `interior-code.ts` (the layers' code). Its scenes are sill, lava,
+bonsai, incense, frost, bar, train and mobile, each a variant of its baseline; the committed mixes
+"Sill · lava lamp on the sill" and "Sill · frost on the window" stand the lava lamp on the sill and
+frost the sill's panes. Clouds and harmonograph are still scenes of their own.
 
+- **The baseline and its variants** (ADR 0062 "Baselines and variants", D13–D14). The baseline
+  (`interior.baseline`, a `Baseline`) holds what a scene preset holds but its identity: an empty
+  room at dusk at the sill's rest pose, the window onto the city over the bare sill, the sill's room
+  (its plum wall, its reading lamp out of frame), the plainest ink the rooms share and no vignette,
+  the World at dusk over the city, no light elements yet. Each room is a `Variant` in its folder's
+  `index.ts`: its identity (id, title, blurb, accent, look, theme, passage, planets and its lab
+  headings' copy) and only its differences, layers added and removed, knob values (the frost's
+  winter night, snowing), its camera's rest pose, its room and a grade over the baseline's, key by
+  key. `variantPreset(baseline, variant)` (compose.ts) makes the `ScenePreset` that `composeScene`
+  takes, so ids, cards, thumbnails and links stay. Until the shell is one in metres (the ADR's step
+  2), every room but the sill brings its own shell layers, camera and room in place of the
+  baseline's. `interior-variants.test.ts` refuses a difference that changes nothing: a layer added
+  that is on or removed that is off, the baseline's camera, room, grade key or elements, a value
+  the knob holds without it. The baseline's own scene, `room`, is lab-only (`labOnly`,
+  `src/lab/families.ts`): shown in the Scenes view, outside the tour and `[` / `]`.
 - **The rig** is a level pinhole in the room (`ScenePreset.rig`), its `eye` measured over the
   ledge's top. The room (`ScenePreset.room`, `Room`) adds `distance`, from the eye to the line things
   on the ledge stand on (the seat). The seat stands at `RIG_HORIZON - RIG_FOCAL · eye / distance`

@@ -1,7 +1,8 @@
 // The scene families: every scene in exactly one, so the Scenes view reads as a handful of shelves
 // instead of fifty cards (and the Presets view shelves the baseline the same way). `satisfies` makes
 // a new scene without a family a type error. `sceneOrder` is the Scenes view's order, shelf by
-// shelf: `[` and `]` and the tour's picker follow it too.
+// shelf; `sceneCycle` is that order less the lab-only scenes (`labOnly`: the composers' baselines,
+// ADR 0062 D13), which `[` and `]` and the tour follow.
 import { sceneIds, type SceneId } from "../scenes/index.ts";
 import type { IconName } from "./icons.ts";
 
@@ -65,6 +66,7 @@ export const sceneFamily = {
   bar: "life",
   bees: "life",
   mobile: "life",
+  room: "life",
 } as const satisfies Record<SceneId, FamilyId>;
 
 /** Every scene in the Scenes view's order: family by family, each in the catalogue's order. */
@@ -72,8 +74,28 @@ export const sceneOrder: readonly SceneId[] = families.flatMap((family) =>
   sceneIds.filter((id) => sceneFamily[id] === family.id),
 );
 
-/** The scene `by` places from `scene` in the Scenes view's order, round from the last to the first. */
+/**
+ * The scenes shown in the lab alone (ADR 0062 D13): the composers' baselines, loaded to compare
+ * their variants against, outside the tour and `[` / `]`.
+ */
+export const labOnly: Readonly<Partial<Record<SceneId, true>>> = { room: true };
+
+/** The Scenes view's order less the lab-only scenes: what `[`, `]` and the tour step through. */
+export const sceneCycle: readonly SceneId[] = sceneOrder.filter((id) => labOnly[id] !== true);
+
+/**
+ * The scene `by` places from `scene` in the cycle (`sceneCycle`), round from the last to the first;
+ * from a lab-only scene, from where it stands in the Scenes view's order.
+ */
 export function sceneStep(scene: SceneId, by: number): SceneId {
-  const count = sceneOrder.length;
-  return sceneOrder[(((sceneOrder.indexOf(scene) + by) % count) + count) % count] ?? scene;
+  const count = sceneCycle.length;
+  const at = sceneCycle.indexOf(scene);
+  // A lab-only scene stands just before the first of the cycle's scenes after it in the Scenes
+  // view's order: one step on is that scene, one step back the one before.
+  const next =
+    at >= 0
+      ? at
+      : sceneCycle.filter((id) => sceneOrder.indexOf(id) < sceneOrder.indexOf(scene)).length;
+  const to = next + by - (at < 0 && by > 0 ? 1 : 0);
+  return sceneCycle[((to % count) + count) % count] ?? scene;
 }

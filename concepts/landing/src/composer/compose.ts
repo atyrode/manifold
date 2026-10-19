@@ -3,7 +3,8 @@
 // the composer's layers. `composeScene` gives the scene's metadata (`def`: everything a SceneDef
 // holds but its code) and what its code is assembled from; the code itself (the GLSL per feature
 // set and the composed sim, composer/code.ts) loads with the scene's `code.ts`, so the metadata
-// carries none of it.
+// carries none of it. A curated variant becomes its scene preset first (`variantPreset`): its
+// differences over its composer's baseline (ADR 0062 "Baselines and variants").
 //
 //   params            the World's knobs, the gusts' (gusts, gustRate), the time of year (season,
 //                     the first offered layer's that has one) and the arrangement (seed), each
@@ -46,17 +47,29 @@ import {
 } from "../scenes/world.ts";
 import { COMPOSER_CAPS } from "./caps.ts";
 import { admits, place, type Placement } from "./place.ts";
-import type { AnyPreset, ComposerId, LayerDef, Role } from "./types.ts";
+import type {
+  AnyPreset,
+  Baseline,
+  ComposerId,
+  LayerDef,
+  Role,
+  ScenePreset,
+  Variant,
+} from "./types.ts";
 
 export class ComposeError extends Error {}
 
 /** A scene's metadata: everything its SceneDef holds but its code module. */
 export type SceneMeta = Omit<SceneDef, "code">;
 
-/** A composer: its id and its layers in canonical order (the order they are placed in and paint in). */
+/**
+ * A composer: its id, its layers in canonical order (the order they are placed in and paint in) and
+ * its baseline (ADR 0062 D13), which its variants are stored over: the interior's so far.
+ */
 export interface Composer {
   readonly id: ComposerId;
   readonly layers: readonly LayerDef[];
+  readonly baseline?: Baseline;
 }
 
 /** A composed scene's layers, for the lab's Layers section (src/lab/layers-model.ts). */
@@ -166,6 +179,46 @@ function composerKnobs(season: ParamDef | undefined): ParamDef[] {
       "Where everything stands and grows, the lie of the land and the shapes of its clouds; re-seed for another view.",
     ),
   ];
+}
+
+/**
+ * The scene preset `variant` makes over `baseline` (ADR 0062 D14): the variant's identity; the
+ * baseline's home layers less those it removes, then those it adds; the baseline's values under
+ * its own; its camera's rest pose and its room for the baseline's; its grade key by key over the
+ * baseline's; the baseline's World, floor, meteors and flyway. A variant over another composer's
+ * baseline is a ComposeError, as are light elements until they are drawn (ADR 0062 step 2).
+ */
+export function variantPreset(baseline: Baseline, variant: Variant): ScenePreset {
+  if (variant.base !== baseline.composer)
+    throw new ComposeError(
+      `variant ${variant.id} is over the ${variant.base} baseline, not the ${baseline.composer}`,
+    );
+  if ((variant.elements ?? baseline.elements).length > 0)
+    throw new ComposeError(`variant ${variant.id}: light elements are not drawn yet`);
+  const remove = new Set(variant.layers?.remove);
+  const room = variant.room ?? baseline.room;
+  return {
+    id: variant.id,
+    title: variant.title,
+    blurb: variant.blurb,
+    accent: variant.accent,
+    ...(variant.look === undefined ? {} : { look: variant.look }),
+    ...(variant.theme === undefined ? {} : { theme: variant.theme }),
+    ...(variant.passage === undefined ? {} : { passage: variant.passage }),
+    ...(variant.planets === undefined ? {} : { planets: variant.planets }),
+    ...(variant.groups === undefined ? {} : { groups: variant.groups }),
+    composer: baseline.composer,
+    rig: variant.camera ?? baseline.rig,
+    ...(room === undefined ? {} : { room }),
+    grade: { ...baseline.grade, ...variant.grade },
+    world: baseline.world,
+    meteors: baseline.meteors,
+    flyway: baseline.flyway,
+    floor: baseline.floor,
+    ...(baseline.features === undefined ? {} : { features: baseline.features }),
+    layers: [...baseline.layers.filter((id) => !remove.has(id)), ...(variant.layers?.add ?? [])],
+    values: { ...baseline.values, ...variant.values },
+  };
 }
 
 /** Compose `preset` from `composer`'s layers (see the header). */

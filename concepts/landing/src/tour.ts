@@ -14,7 +14,8 @@
 //   const player = new TourPlayer(readTour(query) ?? tour, true);
 //   const next = player.tick(frameSeconds, renderer.paused); // a scene to switch to, or undefined
 //   player.follow(state.scene);                              // after every page change
-import { sceneIds, type SceneId } from "./scenes/index.ts";
+import { sceneCycle } from "./lab/families.ts";
+import type { SceneId } from "./scenes/index.ts";
 import { sessionKeys } from "./state.ts";
 
 /** Seconds per step. The floor leaves a moment at rest after the longest exit and the longest
@@ -43,12 +44,15 @@ export function clampDwell(seconds: number): number {
   return Math.min(TOUR_DWELL.max, Math.max(TOUR_DWELL.min, Math.round(seconds)));
 }
 
-/** The tour in a query, or undefined when it has none: unknown and repeated scenes are dropped. */
+/**
+ * The tour in a query, or undefined when it has none: unknown, lab-only (lab/families.ts) and
+ * repeated scenes are dropped.
+ */
 export function readTour(query: URLSearchParams): Tour | undefined {
   const steps: TourStep[] = [];
   for (const part of (query.get(sessionKeys.tour) ?? "").split(".")) {
     const match = /^([a-z]+)(?:-(\d+))?$/.exec(part);
-    const scene = sceneIds.find((id) => id === match?.[1]);
+    const scene = sceneCycle.find((id) => id === match?.[1]);
     if (scene === undefined || steps.some((step) => step.scene === scene)) continue;
     const own = match?.[2];
     steps.push(own === undefined ? { scene } : { scene, dwell: clampDwell(Number(own)) });

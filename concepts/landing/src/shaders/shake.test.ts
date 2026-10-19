@@ -215,6 +215,9 @@ const BUDGET = {
   pond: [49000, 52500],
   prism: [23000],
   ripple: [23000, 26500],
+  // The interior composer's baseline (ADR 0062 D13): the sill's window and sill alone; its
+  // all-features program hangs the planets in the window's sky, as the sill's does.
+  room: [92500, 158000],
   // Composed (ADR 0062 Phase 4): its all-features program, new, is the one a layer's turn plays in.
   sandtable: [26000, 29000],
   shanshui: [54000],

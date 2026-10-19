@@ -1,6 +1,7 @@
 // The constants the sill's definition (index.ts, layers.ts) shares with its code (shader.ts), kept
 // apart from that code so that the scene registry loads without it (SceneDef.code).
 import type { Rig, Room } from "../../composer/types.ts";
+import type { SkyPlanets } from "../planets.ts";
 
 /**
  * Seconds the entrance and the exit take (SceneDef.passage; the shader reads the same). In: the cat
@@ -9,10 +10,14 @@ import type { Rig, Room } from "../../composer/types.ts";
  */
 export const SILL_PASSAGE = { enter: 2.8, exit: 1.6 } as const;
 
+/** Where the night's planets hang in the city window's sky: the sill's and the interior baseline's. */
+export const CITY_PLANETS: SkyPlanets = { group: "sky", across: [-38, -18, 38], up: [4, 20, 32] };
+
 /**
- * The room's rig (README "The interior composer"): a level eye 0.35 m over the sill, its horizon
- * where the city's is (uv 0.47) and the city view's focal (one radian high), so the window's own rig
- * is the same camera 10 m over the street (shader.ts SILL_FOCAL, SILL_EYE).
+ * The room's rig (README "The interior composer"), the interior baseline's rest pose
+ * (composer/interior.ts): a level eye 0.35 m over the sill, its horizon where the city's is (uv 0.47)
+ * and the city view's focal (one radian high), so the window's own rig is the same camera 10 m over
+ * the street (shader.ts SILL_FOCAL, SILL_EYE).
  */
 export const SILL_RIG: Rig = {
   horizon: 0.47,
@@ -24,9 +29,10 @@ export const SILL_RIG: Rig = {
 };
 
 /**
- * The room: the sill's seat line 0.28 screen heights under the horizon (shader.ts SILL_SEAT), at
- * 0.8 screen heights a metre; the plum wall; the reading lamp out of frame to the right a little above
- * the sill, its light squashed so it spreads along the sill; a little light all round.
+ * The room, the interior baseline's: the sill's seat line 0.28 screen heights under the horizon
+ * (shader.ts SILL_SEAT), at 0.8 screen heights a metre; the plum wall; the reading lamp out of frame
+ * to the right a little above the sill, its light squashed so it spreads along the sill; a little
+ * light all round.
  */
 export const SILL_ROOM: Room = {
   distance: (SILL_RIG.eye * SILL_RIG.focal) / 0.28,
