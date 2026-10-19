@@ -44,7 +44,9 @@ import { smoothstep } from "./sims/math.ts";
 import { paramDefaults } from "./state.ts";
 import { check, drawFloats, LAKE_FJORD, link, VerifyError, walk } from "./verify/kit.ts";
 
-const frostScene = await loadScene("frost");
+/** Frost without its composed GLSL, which the probes' own GLSL replaces (SceneCode.glslFor). */
+const { glslFor, ...frostScene } = await loadScene("frost");
+if (glslFor === undefined) throw new VerifyError("night sky: frost is not composed");
 
 /** The shared night knobs with library gates (skyComponentKnobs' constellations). */
 const nightPart = (def: ParamDef): boolean =>

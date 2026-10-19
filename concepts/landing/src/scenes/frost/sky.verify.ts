@@ -1,12 +1,21 @@
 // GPU regressions for the shared sky components (stars, the moon's phase, aurora, meteors) and their
 // composition in Frost, run by concepts/landing/verify-browser.ts on real WebGL output. A probe entry
-// compiled with Frost's knobs evaluates the library functions over grids of directions into a float
-// target; the full Frost program checks the coupling at the rendered picture.
+// compiled with Frost's knobs and its all-features program's gates evaluates the library functions
+// over grids of directions into a float target; the full Frost program checks the coupling at the
+// rendered picture.
 import { defaultsFor, paramDefaults, renderSettings } from "../../state.ts";
-import { fragmentSourceFor, packParams, vertexSource } from "../../shaders/index.ts";
+import {
+  fragmentSourceFor,
+  packParams,
+  sceneFeaturesAll,
+  vertexSource,
+} from "../../shaders/index.ts";
 import { loadScene } from "../index.ts";
 
 const frostScene = await loadScene("frost");
+/** The scene without its composed GLSL, which the probe's own GLSL replaces (SceneCode.glslFor). */
+const { glslFor, ...frostProbeScene } = frostScene;
+if (glslFor === undefined) throw new Error("frost sky: the scene is not composed");
 
 function check(ok: boolean, message: string): void {
   if (!ok) throw new Error(`frost sky: ${message}`);
@@ -183,9 +192,15 @@ export function verifyFrostSky(gl: WebGL2RenderingContext): Record<string, unkno
   check(gl.getExtension("EXT_color_buffer_float") !== null, "float render targets unavailable");
   const result: Record<string, unknown> = {};
   const frost = frostScene;
-  const probeDef = { ...frost, entry: "toolboxProbe", glsl: PROBE };
-  const probe = program(gl, fragmentSourceFor(probeDef));
-  const plain = program(gl, fragmentSourceFor({ ...probeDef, features: {} }));
+  // Frost's all-features program draws every setting of its knobs (the moon's phase, the aurora...);
+  // its own program at the defaults, a full moon with the aurora off, compiles neither in.
+  const all = sceneFeaturesAll(frost);
+  if (all === undefined) throw new Error("frost sky: no all-features program");
+  const { SKY_MOON_PHASE: phased, ...unphased } = all;
+  check(phased === 1, "the all-features program lacks the moon's phase");
+  const probeDef = { ...frostProbeScene, entry: "toolboxProbe", glsl: PROBE };
+  const probe = program(gl, fragmentSourceFor(probeDef, all));
+  const plain = program(gl, fragmentSourceFor(probeDef, unphased));
   const params = frostParams({});
 
   // Stars: a band of sky at midnight, 43-50 degrees up and 69-90 degrees right, far from the moon
@@ -443,7 +458,7 @@ export function verifyFrostSky(gl: WebGL2RenderingContext): Record<string, unkno
   gl.deleteProgram(plain);
 
   // Frost: the components at the rendered picture, night over the street, clear glass (no sim).
-  const scene = program(gl, fragmentSourceFor(frost));
+  const scene = program(gl, fragmentSourceFor(frost, all));
   const FW = 192;
   const FH = 120;
   const render = (over: Record<string, number>, triggers?: number[]): Float32Array =>
@@ -481,10 +496,14 @@ export function verifyFrostSky(gl: WebGL2RenderingContext): Record<string, unkno
     meanLuma(render({ snow: 0, "moon-amount": 0.25 }), ground) < meanLuma(openOff, ground),
     "a crescent lights the street as much as a full moon",
   );
-  // A triggered meteor shows only in the sky above the roofs. A cell counts as changed by more than
-  // float rounding (beside the streak a colour can move by an ulp or so), far less than any shade
-  // the picture shows.
-  const meteorTrigger = Array.from({ length: 8 }, (_, slot) => (slot === 1 ? 40 - 0.4 : -1e4));
+  // A triggered meteor (the meteors knob's "now") shows only in the sky above the roofs. A cell
+  // counts as changed by more than float rounding (beside the streak a colour can move by an ulp or
+  // so), far less than any shade the picture shows.
+  const meteorSlot = frost.params.find((param) => param.key === "meteors")?.trigger;
+  check(meteorSlot !== undefined, "no meteors trigger");
+  const meteorTrigger = Array.from({ length: 8 }, (_, slot) =>
+    slot === meteorSlot ? 40 - 0.4 : -1e4,
+  );
   const changed = (a: Float32Array, b: Float32Array): number[] => {
     const out: number[] = [];
     for (let i = 0; i < FW * FH; i++)

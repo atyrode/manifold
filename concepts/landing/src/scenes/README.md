@@ -2912,7 +2912,11 @@ already holds as `<layerId><Key>` (D2), and a port qualifies by hand in the mani
 layer which may share its rig holds (falls' `mark` as `cliffMark`, the grove's `mist` as
 `groveMist`). Layers that never share a rig may hold the same key (`mark` is the apiary's and the
 beach's). A port keeps its scene's keys wherever they are still unique; a layer's switch is its id;
-keys that move to the composer (the seeds onto `seed`, the gusts, the season) are renamed.
+keys that move to the composer (the seeds onto `seed`, the gusts, the season) are renamed. A
+layer's sim reads its own knobs under their short keys (`Composition.shortParams`, and
+`LayerFrame.params` keyed the same way): a key qualified for it reads its own knob, never another's
+that holds the short key (the frost glass's `mark` is its `frostGlassMark`, not the lava lamp's
+`mark`, which its view holds as `lavaLampMark`).
 
 **Old links** are not carried over (no backward compatibility, operator decision 2026-10-17): a
 port adds no URL steps or aliases, and a setup made before it replays on its own build

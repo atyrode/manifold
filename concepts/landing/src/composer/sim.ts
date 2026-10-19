@@ -222,6 +222,21 @@ class Ground implements LayerGround {
   }
 }
 
+/** The scene's raw knobs under a layer's view keys (Live.renames), written into `out`. */
+function viewParams(
+  params: Readonly<Record<string, number>>,
+  renames: readonly (readonly [string, string])[],
+  out: Record<string, number>,
+): Record<string, number> {
+  Object.assign(out, params);
+  for (const [view, key] of renames) {
+    const value = params[key];
+    if (value === undefined) delete out[view];
+    else out[view] = value;
+  }
+  return out;
+}
+
 /** One layer's sim and what it keeps across frames. */
 interface Live<R> {
   readonly layer: LayerDef;
@@ -231,6 +246,13 @@ interface Live<R> {
   readonly specks: Specks;
   readonly ground: Ground;
   readonly frame: Mutable<LayerFrame<R>>;
+  /**
+   * Where its view's keys (Composition.shortParams) differ from the scene's: each view key, a
+   * feature's `-amount` too, with the scene's key it reads; and the raw knobs (SimFrame.params)
+   * under the view's keys, rewritten each frame while there are any.
+   */
+  readonly renames: readonly (readonly [string, string])[];
+  readonly params: Record<string, number>;
   readonly passage: { enter: number; exit: number };
   /**
    * Wall time (ms) its own entrance began, and its exit; NaN: neither plays (one switched off waits
@@ -503,14 +525,23 @@ class ComposedSim<R> implements SceneSim {
       ...(this.#c.room === undefined ? {} : { room: this.#c.room }),
     };
     const factory = this.#c.sims[layer.id];
+    const view = this.#c.shortParams[layer.id] ?? this.#c.params;
+    const renames: (readonly [string, string])[] = [];
+    view.forEach((def, i) => {
+      const key = this.#c.params[i]?.key;
+      if (key === undefined || key === def.key) return;
+      renames.push([def.key, key], [`${def.key}-amount`, `${key}-amount`]);
+    });
     return {
       layer,
-      sim: factory?.(this.#gl, this.#c.shortParams[layer.id] ?? this.#c.params),
+      sim: factory?.(this.#gl, view),
       records,
       fields,
       specks,
       ground,
       frame: lf,
+      renames,
+      params: {},
       passage,
       arrived: !this.#first && shown && this.#turns ? frame.now : Number.NaN,
       leaving: Number.NaN,
@@ -575,6 +606,7 @@ class ComposedSim<R> implements SceneSim {
     const onScreen = alloc.layers.includes(live.layer.id);
     // The scene's frame over the layer's (every field, whatever SimFrame holds), then its own.
     const lf = Object.assign(live.frame, frame);
+    if (live.renames.length > 0) lf.params = viewParams(frame.params, live.renames, live.params);
     lf.dt = onScreen ? frame.dt : 0;
     lf.passage = live.passage;
     lf.lift = lift;

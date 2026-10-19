@@ -1,4 +1,5 @@
 import { visitorAlone } from "./src/principals.ts";
+import { allocate } from "./src/composer/sim.ts";
 import { LEAVING_UNIT } from "./src/program-cache.ts";
 import { DitherRenderer } from "./src/renderer.ts";
 import { defaultsFor, paramDefaults, renderSettings } from "./src/state.ts";
@@ -9,6 +10,7 @@ import { rippleEdgesVerify } from "./src/scenes/ripple/edges.verify.ts";
 import { verifyHarmonographPrewarm } from "./src/scenes/harmonograph/prewarm.verify.ts";
 import { fragmentSourceFor, packParams, sceneFeatures } from "./src/shaders/index.ts";
 import { verifyFrostSky } from "./src/scenes/frost/sky.verify.ts";
+import { frostComposed } from "./src/scenes/frost/index.ts";
 import { verifyDeltaDig } from "./src/scenes/delta/dig.verify.ts";
 import { GpuCompute } from "./src/sims/gpu.ts";
 import { verifyOrbitRingDepth } from "./src/scenes/orbit/ring-depth.verify.ts";
@@ -191,6 +193,11 @@ function gpuBlend(gl: WebGL2RenderingContext): Record<string, unknown> {
   return { values: blends, resizePreserved: true };
 }
 
+/** Where the composed sim binds the frost glass's field 1 (shader.ts: the melt) at frost's defaults. */
+const FROST_MELT_SLOT = allocate(
+  frostComposed.place(new Set(frostComposed.preset.layers)).layers.map((placed) => placed.layer),
+).fields["frostGlass"]?.[1];
+
 // Frost's real melt sim: a press warms the pane; after a traced mark, reseeding while paused clears
 // every trace of warmth and resuming brings none of it back.
 function frostWarmth(gl: WebGL2RenderingContext): Record<string, boolean> {
@@ -217,7 +224,8 @@ function frostWarmth(gl: WebGL2RenderingContext): Record<string, boolean> {
   };
   function mask(): Uint8Array {
     frame.values = renderSettings(defaultsFor("frost"), knobs).params;
-    const texture = frost?.frame(frame)[1];
+    if (FROST_MELT_SLOT === undefined) throw new Error("Frost glass has no melt field");
+    const texture = frost?.frame(frame)[FROST_MELT_SLOT];
     if (!texture) throw new Error("Missing frost mask");
     // Sample the complete mask through a fullscreen draw onto a fixed-size readable canvas.
     const sampler = link(
@@ -252,7 +260,8 @@ function frostWarmth(gl: WebGL2RenderingContext): Record<string, boolean> {
     warm.some((value, index) => value !== pristine[index]),
     "Frost interaction did not heat the pane",
   );
-  const traceSlot = frostScene.params.find((param) => param.key === "mark")?.trigger;
+  // The frost glass's traced M: `frostGlassMark`, its `mark` qualified (the lava lamp's holds `mark`).
+  const traceSlot = frostScene.params.find((param) => param.key === "frostGlassMark")?.trigger;
   if (traceSlot === undefined) throw new Error("Frost trace trigger unavailable");
   frame.fired = Array.from({ length: 8 }, (_, slot) => slot === traceSlot);
   mask();

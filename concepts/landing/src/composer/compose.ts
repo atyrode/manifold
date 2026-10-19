@@ -103,7 +103,10 @@ export interface ComposedScene<P extends AnyPreset = AnyPreset> {
   readonly gates: Readonly<Record<string, string>>;
   /** Every trigger slot by knob key: the World's, the gusts', each offered layer's. */
   readonly triggers: Readonly<Record<string, number>>;
-  /** Each offered layer's view of the knobs: its own under their short keys, for its sim. */
+  /**
+   * Each offered layer's view of the knobs, for its sim: its own under their short keys, a knob of
+   * another's that one of them shadows qualified by its holder, the rest under the scene's keys.
+   */
   readonly shortParams: Readonly<Record<string, readonly ParamDef[]>>;
   /** The placement of the layers in `on` (ids switched on). */
   place(on: ReadonlySet<string>): Placement;
@@ -371,13 +374,31 @@ export function composeScene<P extends AnyPreset>(composer: Composer, preset: P)
     return out;
   };
 
+  // Each layer's view: its own knobs under their short keys, the rest under the scene's. A knob
+  // another holds under one of the layer's short keys (the lava lamp's `mark` beside the frost
+  // glass's `frostGlassMark`) is keyed there as its holder's, qualified (`lavaLampMark`; the World's,
+  // the composer's and the switches' by `scene`), so a short key reads the layer's own knob and
+  // never another's that comes first.
+  const holders: Record<string, string> = {};
+  for (const [layer, map] of Object.entries(keys))
+    for (const key of Object.values(map)) holders[key] = layer;
   const shortParams: Record<string, readonly ParamDef[]> = {};
   for (const layer of offered) {
-    const back = Object.fromEntries(Object.entries(keys[layer.id] ?? {}).map(([s, q]) => [q, s]));
-    shortParams[layer.id] = params.map((def) => {
+    const map = keys[layer.id] ?? {};
+    const back = Object.fromEntries(Object.entries(map).map(([s, q]) => [q, s]));
+    const view = params.map((def) => {
       const short = back[def.key];
-      return short === undefined ? def : { ...def, key: short };
+      if (short !== undefined) return short === def.key ? def : { ...def, key: short };
+      if (map[def.key] === undefined) return def;
+      return { ...def, key: qualified(holders[def.key] ?? "scene", def.key) };
     });
+    const seen = new Set<string>();
+    for (const def of view) {
+      if (seen.has(def.key))
+        throw new ComposeError(`layer ${layer.id}: its sim's view holds two '${def.key}' knobs`);
+      seen.add(def.key);
+    }
+    shortParams[layer.id] = view;
   }
 
   const groups: Record<string, Blurb> = {

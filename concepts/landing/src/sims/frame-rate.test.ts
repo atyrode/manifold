@@ -65,9 +65,9 @@ const EXEMPT: Partial<
       "the gravel's raked heights (uSim2) are cut by the rake and slump a band of RELAX_ROWS rows once a frame, not on a fixed step, and they and when each spot was last raked (uSim3) go up at most every UPLOAD_EVERY_MS of wall time, so the last upload holds the rake's leading edge from another frame at each rate",
   },
   sandtable: {
-    slots: [0],
+    slots: [2],
     reason:
-      "the sand slumps a band of RELAX_ROWS rows a frame and goes up at most every UPLOAD_MS of wall time",
+      "the sand (the bed's field, uSim2) slumps a band of RELAX_ROWS rows a frame and goes up at most every UPLOAD_MS of wall time",
   },
 };
 
