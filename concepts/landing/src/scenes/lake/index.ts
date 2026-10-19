@@ -8,27 +8,28 @@
 // Milky Way, and the aurora, the shared arcs surging overhead every few minutes or the slow drapes
 // (`drapes`) with their corona, both on the substorm clock, mirrored in the ice or the water.
 //
-// A preset of the `outdoor` composer (src/composer, README "Composers"): the far shore (the night,
-// the land across the water, its view in a mirror) and the lake (the ice or the fjord's water) as
-// layers (layers.ts). The night is the lake's own (ADR 0062 D10): the far shore draws it from its
-// hour and the World's sky knobs and stages it on the World, so the World's rain, snow and fog fall
-// through it at the composed depth, lit by its moon and aurora. On the lake it comes in with the
-// camera tilting down from the aurora onto the ice as a crack sings across, and goes out as a gust of
-// snow streams over the ice and the camera tilts back up; on the fjord the camera comes down from the
-// stars as the chimney's smoke climbs and lifts to them again (LAKE_RIG), and the drapes unfurl
-// coming in and roll up going out.
-import { composeScene } from "../../composer/compose.ts";
+// A variant of the `outdoor` composer's baseline (src/composer, README "The outdoor composer"): for
+// the baseline's downs, the far shore (the night, the land across the water, its view in a mirror)
+// and the lake (the ice or the fjord's water) as layers (layers.ts). The night is the lake's own
+// (ADR 0062 D10): the far shore draws it from its hour and the World's sky knobs and stages it on
+// the World, so the World's rain, snow and fog fall through it at the composed depth, lit by its
+// moon and aurora. On the lake it comes in with the camera tilting down from the aurora onto the
+// ice as a crack sings across, and goes out as a gust of snow streams over the ice and the camera
+// tilts back up; on the fjord the camera comes down from the stars as the chimney's smoke climbs
+// and lifts to them again (LAKE_RIG), and the drapes unfurl coming in and roll up going out.
+import { composeScene, variantPreset } from "../../composer/compose.ts";
 import { outdoor } from "../../composer/outdoor.ts";
-import type { ScenePreset } from "../../composer/types.ts";
+import type { Variant } from "../../composer/types.ts";
 import { CLOUD_TIERS } from "../../shaders/lib/clouds.ts";
 import { WATER_TIERS } from "../../shaders/lib/water.ts";
 import type { SceneDef } from "../types.ts";
 import { worldGroups } from "../world.ts";
 import { LAKE_FLYWAY, LAKE_GRADE, LAKE_METEORS, LAKE_PASSAGE, LAKE_RIG } from "./constants.ts";
 
-const preset: ScenePreset = {
+/** The frozen lake over the outdoor's baseline: its far shore and lake, its night, its aurora. */
+export const lakeVariant: Variant = {
   id: "lake",
-  composer: "outdoor",
+  base: "outdoor",
   title: "Frozen lake",
   blurb:
     "Black ice under the aurora: bubbles frozen deep, cracks that sing, snow drifting across; or an open fjord under slow drapes.",
@@ -36,8 +37,22 @@ const preset: ScenePreset = {
   look: { color: "full", levels: 4 },
   passage: LAKE_PASSAGE,
   planets: { group: "sky", across: [-45, -22, 45], up: [2, 21, 38] },
-  rig: LAKE_RIG,
+  groups: {
+    sky: {
+      ...worldGroups.sky,
+      blurb:
+        "The night sky over the lake or the fjord: the moon's phase, the stars and the Milky Way, the odd shooting star and the aurora, all mirrored in the ice or the water. The lake's night is its own: its hour is the far shore's.",
+    },
+    weather: {
+      ...worldGroups.weather,
+      blurb:
+        "Snow falls from a closing sky, hiding the aurora and slowly burying the ice; rain greys it; mist settles on the lake or the fjord; the wind drives the drifting snow, ruffles the fjord's open water and leans the cabin's smoke.",
+    },
+  },
+  layers: { remove: ["downs"], add: ["farShore", "lake"] },
+  camera: LAKE_RIG,
   grade: LAKE_GRADE,
+  floor: "ice",
   // The night as the lake opens it: the World's clock at the lake's default hour (it reaches the
   // lake's own layers not at all, a backdrop of another scene over the ice in full), a dark northern
   // sky of stars, the Milky Way, a crescent moon, the aurora on, no fair-weather cloud; geese, off.
@@ -56,30 +71,15 @@ const preset: ScenePreset = {
   },
   meteors: LAKE_METEORS,
   flyway: LAKE_FLYWAY,
-  floor: "ice",
-  layers: ["farShore", "lake"],
-  values: {},
   // The moon's and the window's paths down the ice and over the fjord: the water's glint
   // (waterGlint, its mirror tier); the ice's own mirror, bubbles and cracks are the lake's. The
   // fjord's open water: the breeze's cat's-paws breaking up its mirror and widening the paths
   // (windRipples, windMirror: the ripples tier, which the mirror tier includes).
   features: { WATER_TIER: WATER_TIERS.mirror },
-  groups: {
-    sky: {
-      ...worldGroups.sky,
-      blurb:
-        "The night sky over the lake or the fjord: the moon's phase, the stars and the Milky Way, the odd shooting star and the aurora, all mirrored in the ice or the water. The lake's night is its own: its hour is the far shore's.",
-    },
-    weather: {
-      ...worldGroups.weather,
-      blurb:
-        "Snow falls from a closing sky, hiding the aurora and slowly burying the ice; rain greys it; mist settles on the lake or the fjord; the wind drives the drifting snow, ruffles the fjord's open water and leans the cabin's smoke.",
-    },
-  },
 };
 
 /** The frozen lake composed (composer/compose.ts): its definition, and what its code is assembled from. */
-export const lakeComposed = composeScene(outdoor, preset);
+export const lakeComposed = composeScene(outdoor, variantPreset(outdoor.baseline, lakeVariant));
 
 /**
  * The World's gates while the far shore stands (its night is its own): the parts of the World's sky

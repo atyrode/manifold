@@ -98,13 +98,13 @@ export const LAKE_GRADE: Grade = { moonlight: 1, ink: { gain: 1.4, gamma: 0.8 } 
 
 /**
  * The World's birds while another backdrop stands over the ice (the far shore's night flies its own
- * skein, shader.ts): flights 60 to 450 metres out, from just over the horizon to near the top of the
- * frame, geese never swooping, drawn three times life size, fading into the haze by 1 / 1500 a metre.
+ * skein, shader.ts), key by key over the outdoor baseline's (composer/outdoor.ts): flights 60 to
+ * 450 metres out, from just over the horizon to near the top of the frame (the baseline's top),
+ * geese never swooping, drawn three times life size, fading into the haze by 1 / 1500 a metre.
  */
-export const LAKE_FLYWAY: Flyway = {
+export const LAKE_FLYWAY: Partial<Flyway> = {
   depth: [60, 450],
   above: 0.05,
-  top: 0.95,
   seed: 6.1,
   skim: 1e9,
   spread: 3,

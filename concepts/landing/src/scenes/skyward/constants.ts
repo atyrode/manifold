@@ -39,15 +39,13 @@ export const SKYWARD_GRADE: Grade = { ink: { gain: 1.15, gamma: 0.85 } };
  * The World's flyway over the crossing, never flown: its flights cross a level camera's view, and
  * the street's birds are the crossroads' own (wheeling pigeons and looping swifts seen from below, on
  * the World's birds knobs), so the World's are compiled out wherever the crossroads stands
- * (index.ts).
+ * (index.ts). Key by key over the outdoor baseline's (composer/outdoor.ts): its top and spread.
  */
-export const SKYWARD_FLYWAY: Flyway = {
+export const SKYWARD_FLYWAY: Partial<Flyway> = {
   depth: [30, 200],
   above: 0.05,
-  top: 0.95,
   seed: 2.3,
   skim: 1e9,
-  spread: 1,
   ext: 0.002,
 };
 

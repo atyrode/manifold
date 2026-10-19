@@ -7,17 +7,25 @@ import { bambooVariant } from "../scenes/bamboo/index.ts";
 import { campfireVariant } from "../scenes/campfire/index.ts";
 import { fallsVariant } from "../scenes/falls/index.ts";
 import { forestVariant } from "../scenes/forest/index.ts";
+import { dunesVariant } from "../scenes/dunes/index.ts";
+import { gardenVariant } from "../scenes/garden/index.ts";
+import { lakeVariant } from "../scenes/lake/index.ts";
 import { landVariant } from "../scenes/land/index.ts";
 import { meadowVariant } from "../scenes/meadow/index.ts";
+import { skywardVariant } from "../scenes/skyward/index.ts";
 import type { Variant } from "./types.ts";
 
 /** The outdoor scenes stored as variants, by scene id: the baseline's own scene (`land`) first. */
 export const outdoorVariants = {
   land: landVariant,
+  dunes: dunesVariant,
+  garden: gardenVariant,
+  lake: lakeVariant,
   meadow: meadowVariant,
   autumn: autumnVariant,
   bamboo: bambooVariant,
   campfire: campfireVariant,
   forest: forestVariant,
   falls: fallsVariant,
+  skyward: skywardVariant,
 } as const satisfies Readonly<Record<string, Variant>>;

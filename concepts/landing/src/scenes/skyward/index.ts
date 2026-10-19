@@ -3,16 +3,17 @@
 // it overhead, a plane draws its contrail across the clouds, pigeons wheel and swifts scream by, and
 // the traffic below is felt only as light and shadow sliding over the lower floors.
 //
-// A preset of the `outdoor` composer (src/composer, README "Composers"), its rig lying on the road
-// and pitched up toward the zenith: the crossroads (the facades, the World's sky staged over the strip
-// between them, the airliners, the street's birds and the banner), the street tree and the tram wires
-// as layers (layers.ts), everything analytic (shader.ts, no simulation). The sky and the weather are
-// the World's: its rain streams out of the zenith, its snow too with 'snow from overhead'; its birds
-// knobs fly the street's own birds, seen from below, so the World's level flights are compiled out
-// wherever the crossroads stands.
-import { composeScene } from "../../composer/compose.ts";
+// A variant of the `outdoor` composer's baseline (src/composer, README "The outdoor composer"), its
+// rig lying on the road and pitched up toward the zenith: for the baseline's downs, the crossroads
+// (the facades, the World's sky staged over the strip between them, the airliners, the street's
+// birds and the banner), the street tree and the tram wires as layers (layers.ts), everything
+// analytic (shader.ts, no simulation). The sky and the weather are the World's: its rain streams
+// out of the zenith, its snow too with 'snow from overhead'; its birds knobs fly the street's own
+// birds, seen from below, so the World's level flights are compiled out wherever the crossroads
+// stands.
+import { composeScene, variantPreset } from "../../composer/compose.ts";
 import { outdoor } from "../../composer/outdoor.ts";
-import type { ScenePreset } from "../../composer/types.ts";
+import type { Variant } from "../../composer/types.ts";
 import { skyTheme } from "../atmosphere.ts";
 import type { SceneDef } from "../types.ts";
 import { worldGroups } from "../world.ts";
@@ -24,9 +25,10 @@ import {
   SKYWARD_RIG,
 } from "./constants.ts";
 
-const preset: ScenePreset = {
+/** Skyward over the outdoor's baseline: its crossroads, tree and wires, its eye on the road. */
+export const skywardVariant: Variant = {
   id: "skyward",
-  composer: "outdoor",
+  base: "outdoor",
   title: "Skyward",
   blurb:
     "Lying on your back at a crossroads: the buildings lean in, wires cross a strip of sky, pigeons wheel and a plane draws a line.",
@@ -39,8 +41,22 @@ const preset: ScenePreset = {
   planets: { group: "sky", across: [-180, 177, 180], up: [50, 82, 90] },
   // A sunlit sky puts the page in its paper theme (ink dark on light); pagePaper() follows it.
   theme: (params) => skyTheme(params, { from: 0.33, to: 0.67, rainBelow: 0.2 }),
-  rig: SKYWARD_RIG,
+  groups: {
+    sky: {
+      ...worldGroups.sky,
+      blurb:
+        "Time of day, whether the days pass, and the night sky in the strip between the roofs behind the city's glow: its stars and constellations, the moon's phase, its planets, the odd shooting star and the aurora.",
+    },
+    weather: {
+      ...worldGroups.weather,
+      blurb:
+        "Rain comes down out of the strip of sky straight at you, streaks the glass and darkens the stone; snow drifts down, and settles on the ledges.",
+    },
+  },
+  layers: { remove: ["downs"], add: ["crossroads", "streetTree", "tramway"] },
+  camera: SKYWARD_RIG,
   grade: SKYWARD_GRADE,
+  floor: "asphalt",
   // An afternoon over the crossing, a few clouds; no Milky Way over the city's glow; the street's
   // pigeons and swifts by day.
   world: {
@@ -59,26 +75,15 @@ const preset: ScenePreset = {
   },
   meteors: SKYWARD_METEORS,
   flyway: SKYWARD_FLYWAY,
-  floor: "asphalt",
-  layers: ["crossroads", "streetTree", "tramway"],
   // The gusts reach only the street tree, and off: it sways a little in the wind alone.
   values: { gusts: 0 },
-  groups: {
-    sky: {
-      ...worldGroups.sky,
-      blurb:
-        "Time of day, whether the days pass, and the night sky in the strip between the roofs behind the city's glow: its stars and constellations, the moon's phase, its planets, the odd shooting star and the aurora.",
-    },
-    weather: {
-      ...worldGroups.weather,
-      blurb:
-        "Rain comes down out of the strip of sky straight at you, streaks the glass and darkens the stone; snow drifts down, and settles on the ledges.",
-    },
-  },
 };
 
 /** Skyward composed (composer/compose.ts): its definition, and what its code is assembled from. */
-export const skywardComposed = composeScene(outdoor, preset);
+export const skywardComposed = composeScene(
+  outdoor,
+  variantPreset(outdoor.baseline, skywardVariant),
+);
 
 const { featuresFor, featuresAllFor } = skywardComposed.def;
 
