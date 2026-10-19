@@ -450,6 +450,13 @@ export interface LayerDef {
    * while it offers one (README "The overhead composer").
    */
   readonly open?: true;
+  /**
+   * An `overhead` layer the World's sky lights (the pond's water, the tide pool's rock; open too):
+   * an overhead preset that offers one lists the World's hour and cloud besides its rain and wind
+   * (`time`, `cycle`, `clouds`, `shadows`), and its patch takes the World's light (overhead-glsl.ts
+   * `overheadWorld`: x.key, x.keyCol, x.amb, the sun's place from the key).
+   */
+  readonly sunlit?: true;
   /** The kinds of falling things it lets fall, and how they slide (README "Falling things"). */
   readonly falling?: LayerFalling;
 }
@@ -764,12 +771,20 @@ export interface Variant extends Identity {
 }
 
 /**
- * A preset of the overhead composer: a patch seen from above. Its light is its layers' (the pond's
- * sun, the tank's lamp); the World over the patch is not built (ADR 0062 Phase 4).
+ * A preset of the overhead composer: a patch seen from above. Where it offers a layer the World's
+ * sky lights (LayerDef.sunlit), the World's hour places the sun and lights the patch; else its light
+ * is its layers' (the tank's lamp, the sand table's).
  */
 export interface OverheadPreset extends PresetBase {
   readonly composer: "overhead";
   readonly rig: OverheadRig;
+  /**
+   * The hour (K_time) its layers' own colours were painted for (the pond's), where they take no
+   * light of the World's themselves: the patch's light against that hour's relights every cell and
+   * scales the sun's strength (x.relight, x.keyGain; 1 at that hour). A preset whose layers light
+   * themselves with the patch's World light (the tide pool's) gives none.
+   */
+  readonly painted?: number;
 }
 
 /** A preset of any composer. */

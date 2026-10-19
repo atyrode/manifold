@@ -6,10 +6,11 @@
 // grows or swims over them, in the composer's order:
 //   1. The patch (`overheadPatch`): the cell, its point p (screen heights from the frame's centre,
 //      x right, y up), the light (the sun or lamp on the frame, x.sunUV and x.sun, and its strength,
-//      x.power: the pond's sun until a layer's begin says otherwise), the World's wind over it
-//      (x.wind: |K_wind| where a layer is open to the sky, else still air) and a dry, flat surface;
-//      then every shared chunk's and every layer's `begin`, in canonical order (the water's sets
-//      the surface, the light's layer the light).
+//      x.power), the World's wind over it (x.wind: |K_wind| where a layer is open to the sky, else
+//      still air), the World's light where a layer the sky lights is offered (`overheadWorld`: the
+//      key, its colour, the ambient, the sun's place from the key; else a fixed sun until a layer's
+//      begin says otherwise) and a dry, flat surface; then every shared chunk's and every layer's
+//      `begin`, in canonical order (the water's sets the surface, a lamp's layer the light).
 //   2. The bed layer's `bed` (or, under one mid-turn, the plain bed).
 //   3. The water layer's `water`, over it.
 //   4. Every `floor` pass: what lies on the bed, seen through the water (weeds, stems).
@@ -20,15 +21,22 @@
 //   9. Every `cover` pass: the shade of what hangs over the patch (c.shade), the light through it.
 //  10. Every `glint` pass: the sun's glint on open water (not where c.dry).
 //  11. Every `over` pass: over everything (the border's leaves).
-//  12. Every `grade` pass; then the cell's colour is its rgb, and its source where no layer dithered.
+//  12. Where the preset was painted for an hour of its own (OverheadPreset.painted), the World's
+//      light against that hour's (x.relight); every `grade` pass; then the cell's colour is its
+//      rgb, and its source where no layer dithered.
 // A cell (`Spot`) carries the colour, the Shade channels its layers write (ink, accent, shimmer), the
 // cover's shade, whether it is dry, and the undithered colour where a layer dithered it (the tank's
 // lamp ramp). Turns are the outdoor composer's (glsl.ts turnsGlsl, sim.ts): a program that draws
 // them shows each layer's passes in a growing or shrinking share of cells, cut per cell. Of the
-// World over the patch, only its rain and wind are built (compose.ts worldPatchKnobs): the water
-// layers ring under the drops and roughen in the wind; no sky, cloud or birds.
+// World over the patch (compose.ts worldPatchKnobs), its rain and wind ring and roughen the water,
+// and over a patch the sky lights its hour places the sun (or the moon) and lights the patch, the
+// rain's overcast greys that light, and the cloud deck's shadows drift over it with the wind; no
+// fog, snow, wet bed or birds yet.
 import { effective } from "../params.ts";
 import type { SceneCode } from "../scenes/types.ts";
+import { glslFloat } from "../shaders/glsl.ts";
+import { WORLD_CLOUD_BASE } from "../shaders/lib/world.ts";
+import { skyState } from "../world-clock.ts";
 import { TURNS_GATE, type ComposedScene } from "./compose.ts";
 import { accessorsGlsl, begins, passCalls, turnsGlsl, type OnLayer } from "./glsl.ts";
 import { allocate, composedSim, type Allocation } from "./sim.ts";
@@ -53,26 +61,164 @@ interface Assembly {
   readonly turns: boolean;
   /** A layer open to the sky is offered, so the World's rain and wind are knobs (LayerDef.open). */
   readonly open: boolean;
+  /** A layer the sky lights is offered, so the World's hour and cloud light the patch (LayerDef.sunlit). */
+  readonly sunlit: boolean;
 }
 
-/** The prelude's fixed part: what every pass is given, the cell, the patch and the plain bed. */
+/**
+ * Where the sun's image stands on the frame for a key light (overheadWorld: x.sun = this times the
+ * key's run over its rise), in screen heights: as an eye this high over the frame's centre would
+ * see it mirrored, nearer than the pond's own (POND_EYE) would, so that at the pond's painted hour
+ * the sun stands where the pond's own sun stood on a 16:10 frame, uv (0.15, 1.15).
+ */
+const OVERHEAD_SUN_STAGE = 0.563;
+
+/**
+ * How a painted preset follows the World's light against its painted hour's (the eye adapting): by
+ * day its brightness to the power RELIGHT_ADAPT (half the light reads as 0.81 of it), so the
+ * 4-level palette keeps the water's colour through the day; through twilight into the night it
+ * falls with the light, the night dark; and RELIGHT_TINT of the light's colour, so a low sun warms
+ * the patch without greying its water.
+ */
+const RELIGHT_ADAPT = 0.3;
+const RELIGHT_TINT = 0.4;
+
+/** The fixed part of the prelude: what every pass is given and the cell. */
 const PRELUDE = `
 // What every pass is given (composer/overhead-glsl.ts). p: screen heights from the frame's centre,
 // x right, y up. The light: where the sun (or lamp) stands, in uv and in p, on the frame or off it,
-// and its strength; the World's wind over the patch (0 still .. 1). The surface: the water's depth
-// (0 shallow .. 1 deep; 0 with none), its slope here, where the bed is seen through it (p bent by
-// the slope), its current, its own colour, and the light it gathers on the bed.
+// and its strength; the World's wind over the patch (0 still .. 1). The World's light where the sky
+// lights the patch (overheadWorld; neutral elsewhere: a white key straight overhead, no ambient):
+// toward the key (the sun, or the moon by night; x right, y up the frame, z up to the camera), its
+// light here (greyed by the rain's overcast, under the cloud deck's shadow), the sky's ambient, the
+// overcast and the deck's cover; against a painted preset's hour, the key's strength and the light.
+// The surface: the water's depth (0 shallow .. 1 deep; 0 with none), its slope here, where the bed
+// is seen through it (p bent by the slope), its current, its own colour, and the light it gathers
+// on the bed.
 struct Patch {
   vec2 uv; vec2 cell; float aspect; float t; float tm; float m; vec2 p;
   vec2 sunUV; vec2 sun; float power; float wind;
+  vec3 key; vec3 keyCol; vec3 amb; float storm; float cover; float keyGain; vec3 relight;
   float depth; vec2 slope; vec2 floorP; vec2 flow; vec3 waterCol; float caustic;
 };
 // What a cell shows: its colour, its Shade channels (ink, accent, shimmer), the cover's shade over
 // it, whether it is dry (nothing glints on it), and where a layer dithered col, the colour undithered.
 struct Spot { vec3 col; Shade o; float shade; bool dry; bool dithered; vec3 src; };
+`;
 
-// The patch at this cell: the light the pond's sun gives until a layer's begin sets its own, the
-// World's wind (OVERHEAD_WIND), and a dry, flat surface until the water's begin sets it.
+/** The patch's light where no layer the sky lights is offered: the pond's old sun, a neutral World. */
+const FIXED_LIGHT = `
+  x.sunUV = vec2(0.15, 1.15);
+  x.sun = (x.sunUV - 0.5) * vec2(x.aspect, 1.0);
+  x.power = 0.4;
+  x.key = vec3(0.0, 0.0, 1.0);
+  x.keyCol = vec3(1.0);
+  x.amb = vec3(0.0);
+  x.storm = 0.0;
+  x.cover = 0.0;
+  x.keyGain = 1.0;
+  x.relight = vec3(1.0);`;
+
+/** A vec3 literal. */
+function vec3(v: readonly number[]): string {
+  return `vec3(${v.map(glslFloat).join(", ")})`;
+}
+
+/**
+ * The World's light over the patch at a painted hour, as overheadWorld works it out there (dry, no
+ * cloud): the key's light, and the light on the painted things (the ambient and the key wrapped
+ * half round them: leaves, fish, pads and ruffled water face every way, not only up).
+ */
+function paintedLight(hour: number): { key: string; light: string } {
+  const sky = skyState(hour);
+  const moonlit = sky.sun[1] < -0.04;
+  const [bx, by, bz] = moonlit ? sky.moon : sky.sun;
+  const rise = Math.max(by, 0.05);
+  const up = rise / Math.hypot(bx, bz, rise);
+  const key = (moonlit ? sky.moonColor : sky.sunColor).map((c) => c * (moonlit ? 1.4 : 1.15));
+  const light = sky.ambient.map((c, i) => c * 0.9 + (key[i] ?? 0) * (0.5 + 0.5 * up));
+  return { key: vec3(key), light: vec3(light) };
+}
+
+/**
+ * The World over a patch the sky lights (compose.ts worldPatchKnobs: K_time, K_cycle, K_clouds,
+ * K_shadows, K_rain, K_wind), and against a painted preset's hour (`painted`).
+ */
+function worldPatchGlsl(rig: OverheadRig, painted: number | undefined): string {
+  const at = painted === undefined ? undefined : paintedLight(painted);
+  return `
+// The World's sky over the patch now (overheadWorld), for a layer that mirrors it (overheadSkySeen).
+Sky overheadSky;
+
+// The World over the patch at this cell: the sky at the World's hour looked at straight down (the
+// frame's up is the sky's "ahead"); the key, the sun or by night the moon, its light greyed by the
+// rain's overcast (weatherOvercast) and under the cloud deck's shadow here (skyCloudShadow: the
+// World's deck WORLD_CLOUD_BASE metres up, drifting with K_wind as the outdoor sky's does; the
+// patch ${glslFloat(rig.span)} metres tall); the sky's ambient; where the sun's image stands on the
+// frame (OVERHEAD_SUN_STAGE). ${at === undefined ? "Its layers light themselves from these." : `Its layers were painted for the hour ${glslFloat(painted ?? 0)}: the key's strength and the light against that hour's (x.keyGain, x.relight; 1 there).`}
+void overheadWorld(inout Patch x) {
+  Sky sky = skyAt(timeOfDayM(K_time, skyDays()));
+  overheadSky = sky;
+#if WORLD_RAIN
+  float rain = K_rain;
+#else
+  float rain = 0.0;
+#endif
+  x.storm = weatherOvercast(rain, 0.0);
+#if WORLD_CLOUDS
+  x.cover = max(K_clouds, x.storm);
+#else
+  x.cover = 0.0;
+#endif
+  bool moonlit = sky.sun.y < -0.04;
+  vec3 body = moonlit ? sky.moon : sky.sun;
+  x.key = normalize(vec3(body.x, body.z, max(body.y, 0.05)));
+  x.keyCol = (moonlit ? sky.moonColor * 1.4 : sky.sunColor * 1.15) * (1.0 - 0.75 * x.storm);
+  x.amb = greyed(sky.ambient, vec3(0.95, 0.98, 1.04), 0.4 * x.storm) * 0.9;
+#if WORLD_SHADOWS
+  if (K_shadows > 0.0 && x.cover > 0.0) {
+    vec3 ground = vec3(x.p.x, 0.0, x.p.y) * ${glslFloat(rig.span)};
+    x.keyCol *= 1.0 - K_shadows * skyCloudShadow(sky, ground, ${glslFloat(WORLD_CLOUD_BASE)}, 1.0, x.tm, x.cover, cloudDeckDrift(K_wind));
+  }
+#endif
+  x.sun = ${glslFloat(OVERHEAD_SUN_STAGE)} * x.key.xy / x.key.z;
+  x.sunUV = x.sun / vec2(x.aspect, 1.0) + 0.5;
+${
+  at === undefined
+    ? `  x.keyGain = 1.0;
+  x.relight = vec3(1.0);`
+    : `  x.keyGain = dot(x.keyCol, LUMA) / dot(${at.key}, LUMA);
+  // The eye adapts (RELIGHT_ADAPT, RELIGHT_TINT): a low sun, a passing cloud or the night dims the
+  // patch by less than the light falls, and tints it less than the light is tinted; 1 at the
+  // painted hour.
+  vec3 relight = (x.amb + x.keyCol * (0.5 + 0.5 * x.key.z)) / ${at.light};
+  float bright = max(dot(relight, LUMA), 1e-3);
+  float seen = mix(bright, pow(bright, ${glslFloat(RELIGHT_ADAPT)}), smoothstep(-0.06, 0.08, sky.sun.y));
+  x.relight = mix(vec3(1.0), relight / bright, ${glslFloat(RELIGHT_TINT)}) * seen;`
+}
+  // The pond's old sun's strength, at the World's key's against the painted hour's.
+  x.power = 0.4 * x.keyGain;
+}
+
+// The World's sky seen along dir (the sky's frame: x right, y up, z ahead), as open water mirrors
+// it: its dome and the cloud deck drifting over it (while there is cloud: WORLD_CLOUDS).
+vec3 overheadSkySeen(Patch x, vec3 dir) {
+  vec3 col = skyColor(overheadSky, dir);
+#if WORLD_CLOUDS
+  vec4 deck = skyClouds(overheadSky, dir, x.tm, x.cover, cloudDeckDrift(K_wind));
+  col = mix(col, deck.rgb, deck.a);
+#endif
+  return col;
+}
+`;
+}
+
+/** The patch at this cell, and the plain bed. */
+function patchGlsl(sunlit: boolean): string {
+  return `
+// The patch at this cell: the World's light where the sky lights it (overheadWorld), else the pond's
+// sun until a layer's begin sets its own; the World's wind (OVERHEAD_WIND); and a dry, flat surface
+// until the water's begin sets it.
 Patch overheadPatch(vec2 uv, vec2 cell, float t) {
   Patch x;
   x.uv = uv;
@@ -82,9 +228,7 @@ Patch overheadPatch(vec2 uv, vec2 cell, float t) {
   x.tm = uMotionTime;
   x.m = uMotion;
   x.p = (uv - 0.5) * vec2(x.aspect, 1.0);
-  x.sunUV = vec2(0.15, 1.15);
-  x.sun = (x.sunUV - 0.5) * vec2(x.aspect, 1.0);
-  x.power = 0.4;
+${sunlit ? "  overheadWorld(x);" : FIXED_LIGHT}
   x.wind = OVERHEAD_WIND;
   x.depth = 0.0;
   x.slope = vec2(0.0);
@@ -101,10 +245,11 @@ void overheadPlainBed(Patch x, inout Spot c) {
   c.o.ink = 0.12;
 }
 `;
+}
 
 /** The whole overhead program's own GLSL: the prelude, the shared and the layers' GLSL, the entry. */
 function overheadGlsl(a: Assembly): string {
-  const { preset, layers, allocation, turns, open } = a;
+  const { preset, layers, allocation, turns, open, sunlit } = a;
   const rig = preset.rig;
   const bed = layers.findIndex(({ def }) => def.role === "bed" && def.passes.bed !== undefined);
   const shared = new Map<string, string>();
@@ -126,6 +271,8 @@ ${triggers}
 // The World's wind over the patch where a layer is open to the sky (K_wind: its strength either way).
 #define OVERHEAD_WIND ${open ? "abs(K_wind)" : "0.0"}
 ${PRELUDE}
+${sunlit ? worldPatchGlsl(rig, preset.painted) : ""}
+${patchGlsl(sunlit)}
 ${turnsGlsl(turns)}
 ${accessorsGlsl(layers, allocation)}
 ${[...shared.values()].join("\n")}
@@ -155,7 +302,14 @@ ${calls("float")}  // 8. Standing out of the water.
 ${calls("stand")}  // 9. The cover's shade, and the light through it.
 ${calls("cover")}  // 10. The glint on open water.
 ${calls("glint")}  // 11. Over everything.
-${calls("over")}  // 12. The grade.
+${calls("over")}  // 12. ${
+    sunlit && preset.painted !== undefined
+      ? `The World's light against the painted hour's, then the grade.
+  c.col *= x.relight;
+  c.src *= x.relight;
+  c.o.ink *= dot(x.relight, LUMA);`
+      : "The grade."
+  }
 ${calls("grade")}  c.o.rgb = c.col;
   c.o.source = c.dithered ? c.src : c.col;
   return c.o;
@@ -195,6 +349,9 @@ export function overheadCode(
       rewrite: scene.rewrite(layers),
       turns: features[TURNS_GATE] === 1,
       open: scene.offered.some((layer) => layer.open === true),
+      sunlit:
+        scene.offered.some((layer) => layer.open === true) &&
+        scene.offered.some((layer) => layer.sunlit === true),
     });
   };
   const params = scene.def.params;

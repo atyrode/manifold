@@ -123,28 +123,7 @@ export const pondWaterLayer: LayerDef = {
       "sunPower",
       "intensity",
       0.4,
-      "How strong the sunlight is: brighter water and caustics, stronger rays and glare.",
-    ),
-    range(
-      "light",
-      "sunX",
-      "sun across",
-      0.15,
-      "Where the sun is, left to right; beyond the edges puts it off screen.",
-      {
-        min: -0.5,
-        max: 1.5,
-        steady: true,
-        widget: { kind: "position", y: "sunY", screen: [0, 1] },
-      },
-    ),
-    range(
-      "light",
-      "sunY",
-      "sun height",
-      1.15,
-      "Where the sun is, bottom to top; beyond the edges puts it off screen.",
-      { min: -0.5, max: 1.5, steady: true },
+      "How strong the sunlight is: brighter water and caustics, stronger rays and glare. The World's hour places the sun and lights the pond; this scales it.",
     ),
     feature(
       "surface",
@@ -231,7 +210,8 @@ export const pondWaterLayer: LayerDef = {
   groups: {
     light: {
       title: "Light",
-      blurb: "Move the sun, turn it up, and let its rays fall through the leaves.",
+      blurb:
+        "Turn the sun up, and let its rays fall through the leaves; the World's hour places it.",
     },
     surface: {
       title: "Surface",
@@ -252,8 +232,11 @@ export const pondWaterLayer: LayerDef = {
     grade: "pondWaterGrade",
   },
   data: { fields: 1 },
-  // The World's rain rings it and its wind ruffles it (the overhead composer's K_rain, x.wind).
+  // The World's rain rings it and its wind ruffles it (the overhead composer's K_rain, x.wind); the
+  // World's hour places the sun over it and lights the pond, its cloud shades it (x.sun, x.keyGain,
+  // x.relight: the preset's painted hour).
   open: true,
+  sunlit: true,
 };
 
 export const stoneLayer: LayerDef = {

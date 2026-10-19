@@ -29,8 +29,10 @@ const preset: OverheadPreset = {
   rig: { span: TIDEPOOL_SPAN, minAspect: 1, salt: true },
   // The fish are offered, not home: the `fish` switch brings them.
   layers: ["rockPool", "surge", "fronds", "anemones"],
-  // Still air over the pool, as it always stood (the World's wind is 0.2 by default).
-  values: { wind: 0 },
+  // Still air over the pool, as it always stood (the World's wind is 0.2 by default); the World's
+  // hour at the bed's own (`time` 0.42), and a clear sky in its water as it always mirrored (the
+  // World's fair-weather cloud is 0.25).
+  values: { wind: 0, time: 0.42, clouds: 0 },
   // The water: the sim's surface (sims/shallow.ts) with the breeze's ripples and their caustics on
   // the bed (causticRipples, waterCaustic). Seen from straight above, it mirrors the sky its own way.
   features: { WATER_TIER: WATER_TIERS.caustics },

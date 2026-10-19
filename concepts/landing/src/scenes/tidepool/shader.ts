@@ -67,10 +67,10 @@ const vec3 TP_ABSORB = vec3(9.0, 3.0, 2.1);
 // The colour the water scatters back, per unit of light.
 const vec3 TP_WATER = vec3(0.025, 0.13, 0.15);
 
-// The frame's light, set by the bed's begin: toward the sun (or the moon by night) as x right, y up
-// the frame, z up to the camera; its colour; the sky's ambient; the sky itself; the rain and the
-// storm it brings; the rain's splashes on dry rock at this cell.
-Sky tpSky;
+// The frame's light, the World's over the patch (the overhead composer's x.key, x.keyCol, x.amb,
+// x.storm), set by the bed's begin: toward the sun (or the moon by night) as x right, y up the
+// frame, z up to the camera; its colour; the sky's ambient; the rain and the storm it brings; the
+// rain's splashes on dry rock at this cell.
 vec3 tpLight;
 vec3 tpLightCol;
 vec3 tpAmbient;
@@ -339,23 +339,20 @@ TpBed rockPoolAt(vec2 q, vec2 uv, float aspect, float tm, float foot) {
   return b;
 }
 
-// The light: the shared sky, turned to look straight down (the frame's up is the sky's "ahead"),
-// greyed by the World's rain (its storm; WORLD_RAIN compiles it in only while it rains); the rain's
-// splashes on dry rock here.
+// The light: the World over the patch (the overhead composer's overheadWorld: the sky at its hour
+// turned to look straight down, the key and the ambient greyed by the rain's overcast, the cloud's
+// shadows); the rain's splashes on dry rock here.
 void rockPoolBegin(inout Patch x) {
   rockPoolLaid = rockPoolField0On();
-  tpSky = skyAt(timeOfDayM(K_time, skyDays()));
 #if WORLD_RAIN
   tpRain = K_rain;
 #else
   tpRain = 0.0;
 #endif
-  tpStorm = weatherOvercast(tpRain, 0.0);
-  bool moonlit = tpSky.sun.y < -0.04;
-  vec3 body = moonlit ? tpSky.moon : tpSky.sun;
-  tpLight = normalize(vec3(body.x, body.z, max(body.y, 0.05)));
-  tpLightCol = (moonlit ? tpSky.moonColor * 1.4 : tpSky.sunColor * 1.15) * (1.0 - 0.75 * tpStorm);
-  tpAmbient = greyed(tpSky.ambient, vec3(0.95, 0.98, 1.04), 0.4 * tpStorm) * 0.9;
+  tpStorm = x.storm;
+  tpLight = x.key;
+  tpLightCol = x.keyCol;
+  tpAmbient = x.amb;
   vec2 q = x.uv * vec2(x.aspect, 1.0);
 #if WORLD_RAIN
   tpSplash = tpRain > 0.0 ? rainSplashes(q * TP_METRES, uFallTime, tpRain) : 0.0;
@@ -537,7 +534,7 @@ void surgeBegin(inout Patch x) {
   vec3 view = vec3(0.0, 0.0, 1.0);
   vec3 mirror = reflect(-view, sn);
   tpFresnel = fresnelSchlick(dot(sn, view), 0.02, 0.0);
-  tpSkyCol = greyed(skyColor(tpSky, normalize(vec3(mirror.x, mirror.z, mirror.y))), vec3(1.0), tpStorm * 0.6);
+  tpSkyCol = greyed(overheadSkySeen(x, normalize(vec3(mirror.x, mirror.z, mirror.y))), vec3(1.0), tpStorm * 0.6);
   tpGlint = pow(max(dot(sn, normalize(tpLight + view)), 0.0), 900.0) * 6.0 * K_glints * (1.0 - tpStorm);
 }
 
@@ -555,7 +552,7 @@ void surgeFloat(Patch x, inout Spot c) {
     col = mix(col, white, hardEdge(cover * 0.95));
   }
   if (K_glow > 0.0) {
-    float glow = (smoothstep(0.05, 0.6, foam) + 0.6 * surgeCarried.y * step(0.02, surgeWater.x)) * K_glow * tpSky.night;
+    float glow = (smoothstep(0.05, 0.6, foam) + 0.6 * surgeCarried.y * step(0.02, surgeWater.x)) * K_glow * overheadSky.night;
     col += vec3(0.1, 0.55, 1.0) * glow * 0.8;
   }
   c.col = col;

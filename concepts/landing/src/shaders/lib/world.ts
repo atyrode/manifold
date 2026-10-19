@@ -76,6 +76,12 @@ function cumulusFloats(pick: (tower: CumulusTower) => number): string {
  */
 export const WORLD_BIRD_HOURS = [0.22, 0.26, 0.8, 0.84] as const;
 
+/**
+ * The cloud deck's base over the eye, metres (WORLD_CLOUD_BASE): the scale of its shadows and how
+ * fast they cross, the same deck over a patch seen from above (composer/overhead-glsl.ts).
+ */
+export const WORLD_CLOUD_BASE = 1000;
+
 export const worldGlsl = `
 // ---- the world (shaders/lib/world.ts) ----
 #if WORLD_BIRDS
@@ -114,7 +120,7 @@ const float WORLD_GALAXY_MOONLIT = 0.34;
 // Birds set out by day (WORLD_BIRD_HOURS), fewer the harder it rains or snows; lit by the sky.
 const vec4 WORLD_BIRD_HOURS = vec4(${WORLD_BIRD_HOURS.map(glslFloat).join(", ")});
 // The cloud deck's base over the eye, metres: the scale of its shadows and how fast they cross.
-const float WORLD_CLOUD_BASE = 1000.0;
+const float WORLD_CLOUD_BASE = ${glslFloat(WORLD_CLOUD_BASE)};
 // Fog: a distance of z metres is fogAmount's 1 - exp(-z / WORLD_FOG_REACH); the layer is
 // WORLD_FOG_TOP metres deep; the open sky's fog is reckoned out to WORLD_FOG_SKY metres along the
 // ray, so it hugs the horizon.

@@ -5,8 +5,8 @@
 // tank's layers are offered here (the koi live in fresh water), nor these there.
 //   rockPool  bed: the rock platform, laid out per seed (its sim, layout.ts): the reefs, the basin's
 //             rim and notch, the bands of lichen, barnacles, mussels and coralline crust, the sea
-//             lettuce, sea stars and urchins on it, the pebble M; and the shore's sky, by the time
-//             of day and the World's rain (the overhead composer's), that lights the patch
+//             lettuce, sea stars and urchins on it, the pebble M; lit by the World over the patch
+//             (the overhead composer's: its hour's sun or moon, its sky, cloud and rain)
 //   surge     water: the sea on the GPU (its sim: shallow water over the bed's rock), its surface
 //             and the light through it, its white water and night glow, the passage's wash, and the
 //             life's records it streams (life.ts); it runs over the bed's rock, so it needs the bed
@@ -15,11 +15,11 @@
 //   fish      life: rock pool fish idling over the basin's floor
 // The life is the water's records, so each life layer needs the water. Keys kept from the scene,
 // every one: `fronds`, `anemones` and `fish` became their layers' switches; `rockPool` and `surge`
-// are new switches; `rain` is the World's now (the overhead composer lists it with the wind, for
-// the bed and the water are open to the sky), under the same key. The "now" slot is the water's sets.
+// are new switches; `rain`, `time` and `cycle` are the World's now (the overhead composer lists its
+// hour, cloud, rain and wind, for the bed is open to the sky and lit by it), under the same keys.
+// The "now" slot is the water's sets.
 import type { CameraRange, LayerDef } from "../../composer/types.ts";
 import { choice, counts, feature, range, seed, toggle } from "../../params.ts";
-import { atmosphereGroups, skyKnobs } from "../atmosphere.ts";
 import { plantKnobs } from "../plants.ts";
 
 /** Metres a screen height spans over the tide pool: a sea star a hand across, an urchin a fist. */
@@ -50,7 +50,6 @@ export const rockPoolLayer: LayerDef = {
     { icon: "stone" },
   ),
   params: [
-    ...skyKnobs({ time: 0.42 }),
     choice(
       "rock",
       "rockType",
@@ -131,7 +130,6 @@ export const rockPoolLayer: LayerDef = {
     }),
   ],
   groups: {
-    sky: { ...atmosphereGroups.sky, blurb: "The time of day over the shore." },
     rock: { title: "Rock", blurb: "The platform, its bands of shells and crust, and the pool." },
     rockLife: {
       title: "On the rock",
@@ -145,8 +143,10 @@ export const rockPoolLayer: LayerDef = {
   mark: "mark",
   passes: { begin: "rockPoolBegin", bed: "rockPoolBed", grade: "rockPoolGrade" },
   data: { fields: 1 },
-  // The World's rain greys its sky, wets and splashes its rock (shader.ts K_rain).
+  // Lit by the World over the patch (the overhead composer's x.key, x.keyCol, x.amb, overheadSky);
+  // its rain greys that light, wets and splashes the rock (shader.ts K_rain).
   open: true,
+  sunlit: true,
 };
 
 export const surgeLayer: LayerDef = {

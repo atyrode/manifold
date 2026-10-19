@@ -40,9 +40,11 @@
 //                     hold, met (home layers that do not meet at the rest pose: a ComposeError).
 // The overhead composer (overhead.ts) lists neither the whole World nor the gusts, season and seed:
 // its presets list the World's rain and wind (worldPatchKnobs, the outdoor keys and meaning) while
-// they offer a layer open to the sky (LayerDef.open), with WORLD_RAIN as their only World gate, then
-// their layers' switches and knobs, their trigger slots from 0 (ADR 0062 "The World seen from every
-// camera": the rest of the World over the patch is not built).
+// they offer a layer open to the sky (LayerDef.open), and the World's hour and cloud before them
+// while they offer one the sky lights (LayerDef.sunlit), with WORLD_RAIN (and there WORLD_CLOUDS,
+// WORLD_SHADOWS, CLOUD_TIER) as their only World gates, then their layers' switches and knobs, their
+// trigger slots from 0 (ADR 0062 "The World seen from every camera": its fog, snow and birds over
+// the patch are not built).
 import { hasClimate } from "../climate.ts";
 import { feature, range, seed, type Blurb, type ParamDef } from "../params.ts";
 import type { SceneDef } from "../scenes/types.ts";
@@ -52,7 +54,7 @@ import {
   worldGroups,
   worldKnobs,
   worldPatchFeatures,
-  worldPatchGroup,
+  worldPatchGroups,
   worldPatchKnobs,
 } from "../scenes/world.ts";
 import {
@@ -419,12 +421,14 @@ export function composeScene<P extends AnyPreset>(composer: Composer, preset: P)
   let slot = !listsWorld ? 0 : (indoors ? lightning : WORLD_TRIGGERS.gusts) + 1;
   // A room's window shows the World's sky and weather; its birds fly no window yet, so a room lists
   // none of their knobs, and a room with no glass in frame lists the light-only World's. A patch
-  // seen from above shows the World's rain and wind where it is open to the sky.
+  // seen from above shows the World's rain and wind where it is open to the sky, and its hour and
+  // cloud where the sky lights it.
   const open = level === undefined && offered.some((layer) => layer.open === true);
+  const sunlit = open && offered.some((layer) => layer.sunlit === true);
   const world =
     level === undefined
       ? open
-        ? worldPatchKnobs()
+        ? worldPatchKnobs(sunlit)
         : []
       : !listsWorld
         ? []
@@ -615,7 +619,9 @@ export function composeScene<P extends AnyPreset>(composer: Composer, preset: P)
     ...(world.length === 0
       ? {}
       : level === undefined
-        ? { weather: worldPatchGroup }
+        ? sunlit
+          ? worldPatchGroups.lit
+          : { weather: worldPatchGroups.weather }
         : {
             sky: worldGroups.sky,
             weather: worldGroups.weather,
@@ -708,7 +714,7 @@ export function composeScene<P extends AnyPreset>(composer: Composer, preset: P)
     featuresFor: (values, pose) => ({
       ...(level === undefined
         ? open
-          ? worldPatchFeatures(values)
+          ? worldPatchFeatures(values, sunlit)
           : {}
         : lightOnly
           ? { ...worldFeatures(lightOnlyValues(values), climate), ...LIGHT_ONLY_GATES }
@@ -720,7 +726,7 @@ export function composeScene<P extends AnyPreset>(composer: Composer, preset: P)
     featuresAllFor: (values, pose) => ({
       ...(level === undefined
         ? open
-          ? worldPatchFeatures({ rain: 1 })
+          ? worldPatchFeatures(sunlit ? { rain: 1, clouds: 1, shadows: 1 } : { rain: 1 }, sunlit)
           : {}
         : indoors && !looksOut
           ? LIGHT_ONLY_ALL

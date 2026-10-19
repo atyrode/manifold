@@ -281,7 +281,7 @@ vec2 pondWaterPadRoot[${POND_LAYOUT.pads}];
 bool pondWaterPadFlower[${POND_LAYOUT.pads}];
 
 // The surface (the overhead composer's x.slope, x.floorP, x.depth, x.flow, x.waterCol, x.caustic)
-// and the sun over it (x.sunUV, x.sun, x.power); the pads' layout.
+// and the sun's strength over it (x.power); the pads' layout.
 void pondWaterBegin(inout Patch x) {
   float m = x.m;
   float tm = x.tm;
@@ -291,10 +291,10 @@ void pondWaterBegin(inout Patch x) {
   vec2 flow = vec2(cos(K_currentDir * TAU), sin(K_currentDir * TAU)) * K_current;
   float turbulence = K_turbulence;
   bool tethered = K_tether > 0.5;
-  // The sun: placed anywhere (off screen too); its power lifts the water, caustics and rays.
-  x.sunUV = vec2(K_sunX, K_sunY);
-  x.sun = (x.sunUV - 0.5) * vec2(aspect, 1.0);
-  x.power = K_sunPower;
+  // The sun: where the World's hour puts it (the composer's x.sun, x.sunUV), its strength the
+  // knob's against the pond's painted hour's (x.keyGain: dimmer low, at night and under cloud);
+  // it lifts the water, caustics and rays.
+  x.power = K_sunPower * x.keyGain;
   float power = x.power;
   // Passage: the water settles; only while arriving or leaving. At rest every term is exactly 1.
   float pin = passageIn();

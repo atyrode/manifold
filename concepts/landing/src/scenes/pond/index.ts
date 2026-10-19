@@ -27,8 +27,10 @@ const preset: OverheadPreset = {
   rig: { span: POND_SPAN, minAspect: 1 },
   layers: ["pondBed", "pondWater", "border", "koi"],
   // The World's wind over the patch at the pond's own breeze (the border's `wind` before the World
-  // was over the patch).
-  values: { wind: 0.4 },
+  // was over the patch); its hour the afternoon whose sun stands where the pond's own did (its
+  // `sunX`, `sunY` at 0.15, 1.15 on a 16:10 frame), and the hour the pond's colours were painted for.
+  values: { wind: 0.4, time: 0.5825 },
+  painted: 0.5825,
   // The floor's caustics: the shared water's cellular net (causticCells), carried by the current
   // (waterDrift); the sun's glint on the rings (waterGlint).
   features: { WATER_TIER: WATER_TIERS.caustics },

@@ -141,27 +141,72 @@ export const worldGroups: Readonly<Record<"sky" | "weather" | "birds", Blurb>> =
 };
 
 /**
- * The World's weather over a patch seen from above (the overhead composer, ADR 0062 "The World
- * seen from every camera"): K_rain and K_wind, the very knobs worldKnobs lists, under their keys
- * and meaning. Drops fall on the fall clock (uFallTime), the wind blows on the motion clock.
+ * The World over a patch seen from above (the overhead composer, ADR 0062 "The World seen from
+ * every camera"), the very knobs worldKnobs lists, under their keys and meaning: K_rain and K_wind
+ * over a patch open to the sky; and where the sky lights it (`sky`: LayerDef.sunlit), first the hour
+ * (K_time, K_cycle) and the cloud (K_clouds, K_shadows: its shadows off, as the World's), so
+ * time, cycle, clouds, shadows, rain, wind. The hour's default is skyKnobs'; a preset pins its own.
+ * Drops fall on the fall clock (uFallTime), the wind and the cloud drift on the motion clock.
  */
-export function worldPatchKnobs(): ParamDef[] {
-  return weatherKnobs({ rain: true, wind: true });
+export function worldPatchKnobs(sky = false): ParamDef[] {
+  return [
+    ...(sky ? skyKnobs({}) : []),
+    ...weatherKnobs({
+      ...(sky ? { clouds: WORLD_DEFAULTS.clouds, shadows: true } : {}),
+      rain: true,
+      wind: true,
+    }),
+  ];
 }
 
-/** The lab heading of worldPatchKnobs' group, "weather", on the lab's World shelf. */
-export const worldPatchGroup: Blurb = {
-  title: "Weather",
-  shelf: "world",
-  blurb:
-    "The World's rain and wind over the patch: every drop rings the water, the rings run and cross, and the wind roughens the surface.",
+/**
+ * The lab headings of worldPatchKnobs' groups, on the lab's World shelf: "weather" over a patch open
+ * to the sky (`weather`, rain and wind alone), "sky" and "weather" over one the sky lights (`lit`).
+ */
+export const worldPatchGroups: Readonly<{
+  weather: Blurb;
+  lit: Readonly<Record<"sky" | "weather", Blurb>>;
+}> = {
+  weather: {
+    title: "Weather",
+    shelf: "world",
+    blurb:
+      "The World's rain and wind over the patch: every drop rings the water, the rings run and cross, and the wind roughens the surface.",
+  },
+  lit: {
+    sky: {
+      title: "Sky",
+      shelf: "world",
+      blurb:
+        "The World's hour over the patch, and whether the days pass: where the sun stands and how it lights the water, and the moon's light by night.",
+    },
+    weather: {
+      title: "Weather",
+      shelf: "world",
+      blurb:
+        "The World's cloud, rain and wind over the patch: cloud shadows drifting over it with the wind, the rain's grey light, every drop ringing the water, the wind roughening it.",
+    },
+  },
 };
 
-/** worldFeatures' gates for worldPatchKnobs: WORLD_RAIN while it rains, so a dry patch compiles none of it. */
+/**
+ * worldFeatures' gates for worldPatchKnobs: WORLD_RAIN while it rains, so a dry patch compiles none
+ * of it; where the sky lights the patch (`sky`), WORLD_CLOUDS and WORLD_SHADOWS (with CLOUD_TIER)
+ * too, so a clear sky or one without shadows compiles none of the deck's.
+ */
 export function worldPatchFeatures(
   values: Readonly<Record<string, number>>,
+  sky = false,
 ): Record<string, number> {
-  return { WORLD_RAIN: worldFeatures(values)["WORLD_RAIN"] ?? 0 };
+  const world = worldFeatures(values);
+  const rain = { WORLD_RAIN: world["WORLD_RAIN"] ?? 0 };
+  if (!sky) return rain;
+  return {
+    ...rain,
+    WORLD_CLOUDS: world["WORLD_CLOUDS"] ?? 0,
+    WORLD_SHADOWS: world["WORLD_SHADOWS"] ?? 0,
+    CLOUD_TIER: world["CLOUD_TIER"] ?? CLOUD_TIERS.lit,
+  };
 }
 
 /**

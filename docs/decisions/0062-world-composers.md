@@ -927,8 +927,8 @@ full river without tide against the current are `SAME` against e60dc623; its sha
 under SwiftShader wherever it ends, so the gate, off, keeps it out), the `orbit` range, a `height`
 pass and a bed height field shared across layers (the pond's and the tank's beds are flat, the
 tide pool's relief its own layout's; the water's slope is the only relief they share), a material
-at each point, the rest of the World over the patch (its sky, cloud shadows, fog, snow; the
-delta's rain and wind), and the presets after delta: `dunesabove` and `gardenabove`, which retire
+at each point, the rest of the World over the patch (fog, snow, the wet bed; the delta's sky,
+rain and wind), and the presets after delta: `dunesabove` and `gardenabove`, which retire
 the dunes' `camera` and the garden's `gravelCamera` and their own programs. Layers drawn in the
 frame's units are locked to their span; the koi are offered from 1 m to the pond's 3 m, drawn at the
 frame's scale (11–17 cm fish in the 1 m tank), so a bench-scale layer is refused beside the delta's
@@ -1046,8 +1046,10 @@ sky, cloud, rain, snow, fog, lightning and wind. Indoors, the weather is seen th
 glass, the light under overcast, lightning's flash, and the snow's brighter light. From above, the
 rain and the wind are built: every drop rings the water as an impulse in its sim or its analytic
 field (the pond, the ripple tank, the tide pool), the rings crossing, and the wind roughens the
-surface; not yet the wet darkening on the bed, cloud shadows crossing, fog as a veil or snow
-settling, which wait for the rest of the World over the patch.
+surface; and the World's hour and cloud over the pond and the tide pool: its sun or moon as the
+key, the sky's ambient, the rain's overcast, the cloud deck's shadow dimming the patch, the tide
+pool's water mirroring the sky. Not yet the wet darkening on the bed, fog as a veil or snow
+settling.
 Underwater it would show as rain dimpling the surface, the light dimmed by overcast, lightning
 through the water, and the surge of the wind. Each camera a baseline adds, and each new kind of
 weather, is accepted only once it is rendered for every camera that can be in it.
@@ -1243,6 +1245,33 @@ over those twelve presets, `scene=meadow&wildflowers=1`, `scene=pond&canopy=1` a
 committed preset: 75 `SAME`, 0 differ. `knobs.test.ts` holds both caps at their boundaries and
 each composed program's defines (at its defaults and each one-layer turn, steady and
 all-features) against the composer's, its on layers' and the knobs its code names.
+
+**Step 6's World over the patch, built (2026-10-19) for the pond and the tide pool:** a preset
+offering a layer the sky lights (`LayerDef.sunlit`: the pond's water, the tide pool's rock) lists
+the World's `time`, `cycle`, `clouds` and `shadows` before its rain and wind (`worldPatchKnobs`,
+`worldPatchFeatures` for their gates), and `overheadWorld` (`composer/overhead-glsl.ts`) works out
+once a cell the World's sky at its hour looked at straight down: its sun or by night its moon as
+the key, greyed by the rain's overcast (the tide pool's own code, lifted whole), the sky's ambient,
+the cloud deck's shadow (the outdoor World's deck, drifting with the wind; a 3 m patch lies inside
+one shadow, so a passing cloud dims the whole frame), and the sun's image on the frame
+(`OVERHEAD_SUN_STAGE` 0.563), which the koi's, the pads' and the rays' shadows follow. The tide
+pool's water mirrors the World's sky and its deck; the pond's takes no sky colour. The pond lost
+`sunX` and `sunY` (no committed preset set them; `sunPower` is now a gain on the World's sun) and
+pins `time` 0.5825, the afternoon whose sun stands where its fixed sun did; being painted for that
+hour (`OverheadPreset.painted`), it is relit by the World's light against that hour's, wrapped half
+round its shapes, and the eye adapts by day (brightness to the power 0.3, 0.4 of the light's
+colour; through twilight the night falls dark as the light does): without it the 4-level palette
+turned the water grey at any lower sun. The tide pool's `time` and `cycle` are the World's under
+the same keys (its bed's own sky knobs gone) and it pins `time` 0.42, `clouds` 0 and `wind` 0. The
+pond lists 57 knobs (55), the tide pool 39 (37). `ab.ts --base 1611f8f9 --size 960x600`: the
+ripple, the tide pool, the sand table, the delta and their committed presets `SAME`; the pond's
+default differs in 139 scattered cells of 144,000 (the relight and the sun's place a hair off the
+old); the tide pool at `clouds=0.7` in 1,697 (the deck in its mirrored sky). Shaken, before →
+after: the pond 45,196 → 50,418 and 49,678 → 58,580 (ceilings 53,000 and 61,500), the tide pool
+43,731 → 44,225 and 53,126 → 57,464; uniform vectors the pond 35 → 37 and 43 → 45, the tide pool 25
+→ 26 and 33 → 34; the other three about 250 characters more each (the patch's new fields). Not
+counted under SwiftShader. **Remains:** fog as a veil, snow settling, the wet bed, and the World
+over the delta (its own `clouds` switch would meet the World's key).
 
 **Step 5, built (2026-10-19) but for `localLight`:** `outdoor.baseline`
 (`composer/outdoor.ts`) is the plainest land: an eye 1.65 m over the plain floor of lawn, level,

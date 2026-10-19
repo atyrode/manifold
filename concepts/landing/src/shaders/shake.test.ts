@@ -205,9 +205,9 @@ const BUDGET = {
   island: [89500, 189000],
   kelp: [67500],
   lake: [89000, 179500],
-  // The outdoor composer's baseline (ADR 0062 D13): the downs over bare earth; its all-features
-  // program is the one a guest's turn plays in.
-  land: [65500, 106500],
+  // The outdoor composer's baseline (ADR 0062 D13): the downs over a lawn; its all-features
+  // program is the one a guest's turn plays in, the World's planets among its features.
+  land: [65500, 145000],
   lanterns: [84500, 178500],
   lava: [56500, 60500],
   marble: [20000],
@@ -219,7 +219,10 @@ const BUDGET = {
   pendula: [25500, 30500],
   petri: [23500],
   physarum: [27500],
-  pond: [49000, 52500],
+  // The World over the patch (ADR 0062 "The World seen from every camera"): its sky at the World's
+  // hour (the world clock's skyAt) lights the pond (45,196 and 49,678 before); its all-features
+  // program draws the cloud deck's shadows too.
+  pond: [53000, 61500],
   prism: [23000],
   ripple: [23000, 26500],
   // The interior composer's baseline (ADR 0062 D13): the shell's window and sill alone; its
