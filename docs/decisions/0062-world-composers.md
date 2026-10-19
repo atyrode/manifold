@@ -1244,7 +1244,7 @@ committed preset: 75 `SAME`, 0 differ. `knobs.test.ts` holds both caps at their 
 each composed program's defines (at its defaults and each one-layer turn, steady and
 all-features) against the composer's, its on layers' and the knobs its code names.
 
-**Step 5, built (2026-10-19) as far as the baseline and the meadow:** `outdoor.baseline`
+**Step 5, built (2026-10-19) but for `localLight`:** `outdoor.baseline`
 (`composer/outdoor.ts`) is the plainest land: an eye 1.65 m over the plain floor of lawn, level,
 the meadow's lens (horizon 0.4, focal 1.18), turned 0, no passage; `downs` its one home layer, its
 rig admitting the meadow's other three layers and the murmuration as guests; the World at 0.62
@@ -1276,15 +1276,31 @@ all-features programs are byte for byte as at `94463a6a`; `ab.ts --base 94463a6a
 --presets meadow sill room 'scene=meadow&view=source'`: `SAME` for all 65 settings, the meadow's,
 the sill's and the room's defaults among them (the meadow has no committed preset). `land` compiles
 to 59,235 and 96,599 characters shaken (default, all-features; ceilings 65,500 and 106,500), 40
-and 132 of 224 uniform vectors. **Remains:** the other nineteen outdoor scenes, each ported as the
-meadow was with its differences attributed; twelve of them hold compile-time features at every
-setting, now spelled as `features` (`SKY_MOON_PHASE`: autumn, bamboo, bees, falls, forest, garden,
-street; `WATER_TIER`: island, lake, lanterns; both: shore, swell); dunes, garden, lake and skyward
-wrap their composed definition's `featuresFor` (and the dunes' and the garden's `structural`) in
-their folders, as the frost does as a variant. A variant cannot unset a World
-option the baseline sets (only `time` and `birds`, which every outdoor preset sets). Also left:
-`localLight` outdoors, promotion of outdoor presets (`promotedFrom` reads the interior's variants
-alone), and the Scenes view's shelves by baseline (D9, again).
+and 132 of 224 uniform vectors.
+
+**Step 5, the other nineteen (2026-10-19):** autumn, bamboo, bees, campfire, the countryside, dew,
+dunes, the falls, the fireflies, the flock, the forest, the garden, the island, the lake, the
+lanterns, the shore, skyward, the street and the swell are variants of the outdoor baseline
+(`2838d0e6`, `e535fb81`, `243d51b9`, `76a545d6`). Each removes the downs for its own backdrop and
+adds its own layers in their canonical order; each spells its camera, grade, World, meteors and
+the flyway keys that differ, and its floor where not lawn. Twelve hold compile-time features:
+`SKY_MOON_PHASE` (autumn, bamboo, bees, the falls, the forest, the garden, the street), the water
+tier (the island, the lake, the lanterns), both (the shore, the swell). Dunes, garden, lake and
+skyward keep their folders' wrapping of the composed definition (`featuresFor`, `featuresAllFor`,
+`structural`, the lake's night, skyward's birds off), as the frost does indoors. The flyway
+constants only a scene's `index.ts` read became `Partial<Flyway>`s of their differences
+(`CAMPFIRE_FLYWAY` went inline); the shore's stays whole, since its sea's mirror flies the gulls
+by it, and `shore/sim.test.ts` holds the composer's flyway equal to it. The island's
+`exposure: 1` stays: a set exposure adds its clamp to the program. The redundancy test dropped the
+countryside's `moon: 1`, the World's default. A throwaway dump per batch (the whole `SceneDef`,
+params, layers, defaults, every program `glsl-check` builds: defaults, all-features, each layer
+switched, each committed preset) came out byte-identical before and after; the folded presets
+differ from the old only in key order and the baseline's empty `elements`, which the outdoor
+composer does not read. `ab.ts --base f128cf92 --size 960x600 --presets` over the twenty outdoor
+scenes: every default and committed preset `SAME`. **Remains:** `localLight` outdoors (lamps and
+fires as elements); promotion of outdoor presets (`promotedFrom` reads the interior's variants
+alone); a variant cannot unset a World option the baseline sets (only `time` and `birds`, which
+every outdoor scene sets); the Scenes view's shelves by baseline (D9, again).
 
 ### Amendments
 

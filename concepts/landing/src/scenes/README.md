@@ -1075,7 +1075,7 @@ planets (`SceneDef.planets`; "at first": the planets it opens with). Generated f
 | `forest`    | 0.82  | 0.5   | off       | 1    | off     | off, now 0 | off    | 0      | off  | off  | 0   | 0.2  | off, now 1 | off        | yes             |
 | `campfire`  | 0.8   | 0.8   | 1         | off  | off     | 0.8, now 0 | off    | 0      | off  | off  | 0   | 0.2  | off, now 1 | off        | yes, 1 at first |
 | `autumn`    | 0.69  | 0.5   | off       | 1    | off     | off, now 0 | off    | 0.3    | off  | off  | 0   | 0.2  | off, now 1 | off        | yes             |
-| `land`      | 0.62  | 0.6   | 1         | 1    | off     | off, now 0 | off    | 0.25   | off  | off  | 0   | 0.2  | off, now 1 | 0.35       | —               |
+| `land`      | 0.62  | 0.6   | 1         | 1    | off     | off, now 0 | off    | 0.25   | off  | off  | 0   | 0.2  | off, now 1 | 0.35       | yes             |
 | `frost`     | 0.9   | 0.5   | off       | 1    | off     | off, now 0 | off    | 0      | off  | 0.5  | 0   | 0.2  | off, now 1 | —          | yes             |
 | `ripple`    | —     | —     | —         | —    | —       | —          | —      | —      | off  | —    | —   | 0    | —          | —          | —               |
 | `sill`      | 0.8   | 0.5   | off       | 1    | off     | off, now 0 | off    | 0.35   | off  | off  | 0   | 0.2  | off, now 1 | —          | yes             |
@@ -2438,16 +2438,21 @@ mid-afternoon (`time` 0.62, the World's own cloud, 0.25; rooks by day); no tint,
 ink at gain 1.3 and gamma 1 (the meadow's, the gain most outdoor scenes take); the shooting stars from `[-0.5, 0.3, 1, 0.1]`, where
 most presets set them out; a generic flyway (12 to 120 m, 0.04 to 0.95 of the frame, skimming at
 2 m); no light elements. Its own scene, `land`, is lab-only (`labOnly`, `src/lab/families.ts`).
-An outdoor scene ported to a variant (`src/composer/outdoor-variants.ts`, by scene id, `land`
-first) spells its differences as a room does, with four more: its World's options key by key over
-the baseline's (`world`: its hour, its cloud, its birds and its groups' names, each whole), its
-shooting stars' field (`meteors`), its flyway key by key (`flyway`) and its floor's kind (`floor`);
-`variantPreset` folds them. The meadow is the first: the grass and the dandelions added, its rig
-(`MEADOW_RIG`, the eye 2 m in the grass, its drop), its ink, its golden hour (0.72, cloud 0.2,
-swallows), its meteors and five flyway keys. `variants.test.ts` refuses a difference that changes
-nothing for both composers: a World option the scene lists the same knobs without, the baseline's
-meteors, flyway key or floor, besides the room's checks. The other outdoor scenes stay presets of
-their own until ported, on the Presets view's outdoor shelf after the land's variants.
+Every outdoor scene is a variant of it (`src/composer/outdoor-variants.ts`, by scene id, `land`
+first): it spells its differences as a room does, with five more: its World's options key by key
+over the baseline's (`world`: its hour, its cloud, its birds and its groups' names, each whole),
+its shooting stars' field (`meteors`), its flyway key by key (`flyway`), its floor's kind (`floor`)
+and the compile-time features it holds at every setting key by key (`features`: the moon's phase,
+a water tier); `variantPreset` folds them. The meadow adds the grass and the dandelions to the
+downs; every other scene removes the downs for its own backdrop and adds its own layers in their
+canonical order. Their programs and metadata were ported byte for byte; the folded preset differs
+from the old one only in its keys' order and the baseline's empty `elements`, which the outdoor
+composer does not read. A scene keeps a constant whole where its own code reads it too (the shore's
+flyway, which the sea's mirror flies the gulls by; `shore/sim.test.ts` holds the two equal), and
+an `exposure: 1` that looks idle stays, since a set exposure adds its clamp to the program.
+`variants.test.ts` refuses a difference that changes nothing for both composers: a World option
+the scene lists the same knobs without (the World's moon is full by default, so the countryside
+no longer sets it), the baseline's meteors, flyway key or floor, besides the room's checks.
 
 ### Presets
 

@@ -50,10 +50,17 @@ test("campfire opens with its giant as the first of the World's planets, and no 
 
 test("every scene whose stars skyStars draws has the constellations, and no other scene has them", () => {
   // A scene's stars come from skyStars when its own GLSL, or a shared library function it calls,
-  // reads it: skyStarLight, the canopy's gap sky and the world's sky do.
+  // reads it: skyStarLight, the canopy's gap sky and the world's sky do. The World's library is left
+  // out, as below: a composed scene carries it whole, a room with no glass in frame without calling
+  // its sky.
   const drawers = ["skyStars(", "skyStarLight(", "canopyGapSky(", "worldSky("];
+  // Two outdoor scenes list the World's whole sky without drawing it: the dewy web's stars are lost
+  // in the blur behind it (its weather heading says so), the garden's horizon is the frame's top
+  // edge. Their figures stand for the World's night they share, not for stars they draw.
+  const blurred = new Set(["dew", "garden"]);
   for (const { id, ...scene } of scenes) {
-    const stars = drawers.some((call) => scene.glsl.includes(call));
+    const own = scene.glsl.replace(worldGlsl, "");
+    const stars = drawers.some((call) => own.includes(call)) || blurred.has(id);
     const figures = scene.params.some(
       (def) => def.widget?.kind === "night" && def.widget.part === "constellations",
     );

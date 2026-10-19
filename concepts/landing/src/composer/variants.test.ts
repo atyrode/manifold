@@ -157,7 +157,7 @@ describe("the outdoor's variants", () => {
   });
 
   test("the baseline's own scene is the baseline: its identity, no difference", () => {
-    const identity = ["id", "base", "title", "blurb", "accent", "look"];
+    const identity = ["id", "base", "title", "blurb", "accent", "look", "planets"];
     expect(Object.keys(landVariant).filter((key) => !identity.includes(key))).toEqual([]);
   });
 });

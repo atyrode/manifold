@@ -1,9 +1,9 @@
 // The Presets view's tree (ADR 0062 D9 as amended, "Baselines and variants"): a shelf per composer,
 // each its baseline's own scene (D13), then its curated variants, the scenes stored over it, each
 // with its committed presets and then the ones saved in this browser; then the composer's scenes
-// not yet stored as variants (the outdoor's not yet ported, step 5; the overhead's, which has no
-// baseline until step 6). The scenes no composer draws (a program of their own, D24) stand on a
-// shelf apart. A scene's composer is the one whose layers hold every layer it offers.
+// not stored as variants (the overhead's, which has no baseline until step 6). The scenes no
+// composer draws (a program of their own, D24) stand on a shelf apart. A scene's composer is the
+// one whose layers hold every layer it offers.
 import type { Composer } from "../composer/compose.ts";
 import { interior } from "../composer/interior.ts";
 import { interiorVariants } from "../composer/interior-variants.ts";

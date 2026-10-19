@@ -17,6 +17,8 @@ export const landVariant: Variant = {
     "The outdoor scenes' baseline: chalk downs under a fair afternoon sky, an open field underfoot.",
   accent: "#9cb86a",
   look: { color: "full", levels: 4 },
+  // The World's planets over the downs, where the meadow's lens hangs them.
+  planets: { group: "sky", across: [-84, -22, -8], up: [0, 14, 26] },
 };
 
 /** The land composed (composer/compose.ts): its definition, and what its code is assembled from. */
