@@ -1,8 +1,9 @@
 // Bees on the hillside: a painted summer landscape, eye level and warm, with the insects as tiny
-// moving specks you know by their motion. A preset of the `outdoor` composer (src/composer, README
-// "Composers"): the hillside behind (cumulus towers over hazy hills, a farmhouse, a windmill), the
-// lawn, the apiary (an old orchard behind a dry-stone wall, a path and three pastel hives in a garden
-// of lavender rows, poppies, daisies and foxgloves) and its insects (layers.ts). Up to two hundred
+// moving specks you know by their motion. A variant of the `outdoor` composer's baseline
+// (src/composer, README "The outdoor composer"), the baseline's downs off: the hillside behind
+// (cumulus towers over hazy hills, a farmhouse, a windmill), the lawn, the apiary (an old orchard
+// behind a dry-stone wall, a path and three pastel hives in a garden of lavender rows, poppies,
+// daisies and foxgloves) and its insects (layers.ts), through the garden's rig. Up to two hundred
 // bees work the hives (sim.ts, colony.ts): foragers beeline to a flower drift, hop from flower to
 // flower and fly home loaded with pollen, a few of the heaviest laden pollen-drunk; a crowd mills at
 // each entrance and young bees fly orientation loops before it; now and then a swarm pours out of a
@@ -12,18 +13,19 @@
 // through its air. While the cast's agents are about they garden (the gardening chore): they dig
 // beds in the lawn and sow them, the flowers come up over a minute or two, the bees follow them,
 // and the weeds creep back.
-import { composeScene } from "../../composer/compose.ts";
+import { composeScene, variantPreset } from "../../composer/compose.ts";
 import { outdoor } from "../../composer/outdoor.ts";
-import type { ScenePreset } from "../../composer/types.ts";
+import type { Variant } from "../../composer/types.ts";
 import { skyTheme } from "../atmosphere.ts";
 import type { SceneDef } from "../types.ts";
 import { worldGroups } from "../world.ts";
 import { BEES_GRADE, BEES_RIG } from "./constants.ts";
 import { BEES_PASSAGE } from "./layout.ts";
 
-const preset: ScenePreset = {
+/** The bees over the outdoor's baseline: the garden's land and rig, its warm light, its moon. */
+export const beesVariant: Variant = {
   id: "bees",
-  composer: "outdoor",
+  base: "outdoor",
   title: "Bees",
   blurb:
     "A summer hillside at an orchard's edge: bees and butterflies at work among the hives and flowers.",
@@ -38,7 +40,8 @@ const preset: ScenePreset = {
   // A bright afternoon is a light page: dark copy from morning to evening on a still clock, unless
   // steady rain greys it.
   theme: (params) => skyTheme(params, { from: 0.31, to: 0.74, rainBelow: 0.3 }),
-  rig: BEES_RIG,
+  layers: { remove: ["downs"], add: ["hillside", "lawn", "apiary", "insects", "gardening"] },
+  camera: BEES_RIG,
   grade: BEES_GRADE,
   // A summer afternoon under fair-weather cloud, the painted cumulus towers standing over the hills,
   // swallows by day.
@@ -61,9 +64,6 @@ const preset: ScenePreset = {
     spread: 1.5,
     ext: 0.002,
   },
-  floor: "lawn",
-  layers: ["hillside", "lawn", "apiary", "insects", "gardening"],
-  values: {},
   // The moon keys the night's light and the orchard's shadows by its direction: its phase code is
   // compiled in at every setting, a full moon's too (where the World leaves it out), so a full moon's
   // own program draws byte for byte as the all-features one does.
@@ -83,6 +83,6 @@ const preset: ScenePreset = {
 };
 
 /** The bees composed (composer/compose.ts): its definition, and what its code is assembled from. */
-export const beesComposed = composeScene(outdoor, preset);
+export const beesComposed = composeScene(outdoor, variantPreset(outdoor.baseline, beesVariant));
 
 export const beesScene: SceneDef = { ...beesComposed.def, code: () => import("./code.ts") };

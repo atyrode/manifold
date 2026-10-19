@@ -44,16 +44,15 @@ export const DEW_HEDGE_Z = 20;
 export const DEW_GRADE: Grade = { ink: { gain: 1.3, gamma: 0.8, paper: [0.92, 0.8] } };
 
 /**
- * The World's birds behind the web: 30 to 300 metres out, over the hedge's crown up to near the top
- * of the frame, never swooping, life size, fading into the morning haze by 1 / 400 a metre.
+ * The World's birds behind the web, over the outdoor baseline's flyway (its top, its spread): 30 to
+ * 300 metres out, over the hedge's crown up to near the top of the frame, never swooping, life
+ * size, fading into the morning haze by 1 / 400 a metre.
  */
-export const DEW_FLYWAY: Flyway = {
+export const DEW_FLYWAY: Partial<Flyway> = {
   depth: [30, 300],
   above: 0.17,
-  top: 0.95,
   seed: 5.3,
   skim: 1e9,
-  spread: 1,
   ext: 0.0025,
 };
 

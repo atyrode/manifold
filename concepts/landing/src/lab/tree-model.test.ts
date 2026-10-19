@@ -38,7 +38,9 @@ describe("the presets' tree", () => {
     );
     expect(land?.variants.map((node) => node.scene)).toContain("meadow");
     const unported = land?.scenes.map((node) => node.scene) ?? [];
-    expect(unported).toContain("country");
+    expect([...variants, ...unported].sort()).toEqual(
+      sceneOrder.filter((id) => id !== "land" && sceneComposer(id) === "outdoor").sort(),
+    );
     expect(unported).not.toContain("meadow");
     for (const scene of unported) {
       expect(sceneComposer(scene)).toBe("outdoor");

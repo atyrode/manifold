@@ -40,14 +40,13 @@ export const FLOCK_RIG: Rig = {
 export const FLOCK_GRADE: Grade = { ink: { gain: 1.4, gamma: 1 } };
 
 /**
- * The World's birds over the roost (off in the preset): flights 60 to 400 metres out, in front of
- * the skyline and the flock, from just over the skyline to near the top of the frame, never swooping.
+ * The World's birds over the roost (off in the preset), over the outdoor baseline's flyway (its
+ * top, its seed): flights 60 to 400 metres out, in front of the skyline and the flock, from just
+ * over the skyline to near the top of the frame, never swooping.
  */
-export const FLOCK_FLYWAY: Flyway = {
+export const FLOCK_FLYWAY: Partial<Flyway> = {
   depth: [60, 400],
   above: 0.1,
-  top: 0.95,
-  seed: 3.1,
   skim: 1e9,
   spread: 1.5,
   ext: 0.002,

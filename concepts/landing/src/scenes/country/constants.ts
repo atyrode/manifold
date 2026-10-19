@@ -82,16 +82,15 @@ float rigShift() {
 export const COUNTRY_GRADE: Grade = { exposure: 1, ink: { gain: 1.1, gamma: 1 } };
 
 /**
- * The World's birds over the valley (the countryside's own until ADR 0062 Phase 2c): flights 90 to
- * 2400 m out, from just over the horizon to near the top of the frame, a swooping party coming down to
- * 5 m over the ground (25 m under the eye), drawn three times life size, fading into the valley's haze
- * by 1 / 5200 a metre.
+ * The World's birds over the valley (the countryside's own until ADR 0062 Phase 2c), over the
+ * outdoor baseline's flyway (its seed): flights 90 to 2400 m out, from just over the horizon to
+ * near the top of the frame, a swooping party coming down to 5 m over the ground (25 m under the
+ * eye), drawn three times life size, fading into the valley's haze by 1 / 5200 a metre.
  */
-export const COUNTRY_FLYWAY: Flyway = {
+export const COUNTRY_FLYWAY: Partial<Flyway> = {
   depth: [90, 2400],
   above: 0.03,
   top: 0.93,
-  seed: 3.1,
   skim: COUNTRY_EYE - 25,
   spread: 3,
   ext: 1 / 5200,

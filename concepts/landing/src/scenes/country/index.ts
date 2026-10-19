@@ -5,12 +5,13 @@
 // land model (sims/landuse.ts): crops, flower fields, pasture with its herd, woodland, or open
 // grassland. Under the World's sky, clouds and weather.
 //
-// A preset of the `outdoor` composer (src/composer, README "Composers", ADR 0062 Phase 2c): the
-// valley (the backdrop: the land, its sim and every part's drawing), the waterway, the farmland, the
-// settlements, the verges, the herds, the travellers and the starlings, each a layer (layers.ts)
-// drawn through the hill's rig (constants.ts COUNTRY_RIG), the camera coming down out of the sky on
-// the way in and rising back toward the clouds on the way out. The World's sky, rain, snow and birds
-// replace the countryside's own (D10); its valley fog stays its own, on the World's fog knob.
+// A variant of the `outdoor` composer's baseline (src/composer, README "The outdoor composer", ADR
+// 0062 Phase 2c), the baseline's downs off: the valley (the backdrop: the land, its sim and every
+// part's drawing), the waterway, the farmland, the settlements, the verges, the herds, the
+// travellers and the starlings, each a layer (layers.ts) drawn through the hill's rig (constants.ts
+// COUNTRY_RIG), the camera coming down out of the sky on the way in and rising back toward the
+// clouds on the way out. The World's sky, rain, snow and birds replace the countryside's own (D10);
+// its valley fog stays its own, on the World's fog knob.
 //
 // Knobs and what they rebuild (sim.ts): the land's shape, the arrangement (the composer's seed),
 // relief and erosion rebuild the map over a few frames (the last one stays on screen meanwhile); the
@@ -26,9 +27,9 @@
 // verges at the hedges' foot (verges.ts) and the starling murmuration at dusk (murmuration.ts) are
 // compiled in only while on too; the sim grows their plants and flies their flock then, packed beside
 // the terrain's records (atlas.ts).
-import { composeScene } from "../../composer/compose.ts";
+import { composeScene, variantPreset } from "../../composer/compose.ts";
 import { outdoor } from "../../composer/outdoor.ts";
-import type { ScenePreset } from "../../composer/types.ts";
+import type { Variant } from "../../composer/types.ts";
 import type { SceneDef } from "../types.ts";
 import { worldGroups } from "../world.ts";
 import {
@@ -40,9 +41,10 @@ import {
 } from "./constants.ts";
 import { COUNTRY_HOME_LAYERS } from "./layers.ts";
 
-const preset: ScenePreset = {
+/** The countryside over the outdoor's baseline: the valley's layers, the hill's rig, its World. */
+export const countryVariant: Variant = {
   id: "country",
-  composer: "outdoor",
+  base: "outdoor",
   title: "Countryside",
   blurb:
     "A river valley carved by water: fields, woods and pastures, a village, a castle and roads over a bridge.",
@@ -53,14 +55,15 @@ const preset: ScenePreset = {
   // Exit: it rises back toward the clouds.
   passage: COUNTRY_PASSAGE,
   planets: { group: "sky", across: [-33, 14, 33], up: [0, 8, 16] },
-  rig: COUNTRY_RIG,
+  layers: { remove: ["downs"], add: COUNTRY_HOME_LAYERS },
+  camera: COUNTRY_RIG,
   grade: COUNTRY_GRADE,
   // The World as the countryside opens it: a late afternoon, its fair-weather cloud and the deck's
-  // shadows over the land, a full moon, fewer stars; its birds (a mix, mostly rooks) off.
+  // shadows over the land, fewer stars (the moon the World's own, full); its birds (a mix, mostly
+  // rooks) off.
   world: {
     time: 0.68,
     stars: 0.5,
-    moon: 1,
     clouds: 0.35,
     on: { shadows: true },
     birds: {
@@ -73,8 +76,6 @@ const preset: ScenePreset = {
   },
   meteors: COUNTRY_METEORS,
   flyway: COUNTRY_FLYWAY,
-  floor: "lawn",
-  layers: COUNTRY_HOME_LAYERS,
   // No gusts: nothing in the valley moves in the composer's gust field.
   values: { gusts: 0 },
   groups: {
@@ -96,7 +97,10 @@ const preset: ScenePreset = {
 };
 
 /** The countryside composed (composer/compose.ts): its definition, and what its code is assembled from. */
-export const countryComposed = composeScene(outdoor, preset);
+export const countryComposed = composeScene(
+  outdoor,
+  variantPreset(outdoor.baseline, countryVariant),
+);
 
 export const countryScene: SceneDef = {
   ...countryComposed.def,

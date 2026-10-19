@@ -1,21 +1,23 @@
 // Fireflies that fall into step: a mangrove river at night, where thousands of fireflies, each an
 // oscillator nudged by the flashes it sees (sim.ts), drift out of their own rhythms into one, the
-// way Pteroptyx do along Malaysian rivers. A preset of the `outdoor` composer (src/composer, README
-// "Composers"): the mangroves behind (the bank, its trees and the breeze crossing it), the creek
-// mirroring them and the swarm in their crowns, with the lights nearer than the bank and the lantern
-// the pointer carries (layers.ts); shader.ts draws them. The sky, the weather and the birds are the
-// World's: a moonless night, its stars and the odd shooting star over the trees.
-import { composeScene } from "../../composer/compose.ts";
+// way Pteroptyx do along Malaysian rivers. A variant of the `outdoor` composer's baseline
+// (src/composer, README "The outdoor composer"), the baseline's downs off: the mangroves behind (the
+// bank, its trees and the breeze crossing it), the creek mirroring them and the swarm in their
+// crowns, with the lights nearer than the bank and the lantern the pointer carries (layers.ts);
+// shader.ts draws them. The sky, the weather and the birds are the World's: a moonless night, its
+// stars and the odd shooting star over the trees.
+import { composeScene, variantPreset } from "../../composer/compose.ts";
 import { outdoor } from "../../composer/outdoor.ts";
-import type { ScenePreset } from "../../composer/types.ts";
+import type { Variant } from "../../composer/types.ts";
 import { skyTheme } from "../atmosphere.ts";
 import type { SceneDef } from "../types.ts";
 import { worldGroups } from "../world.ts";
 import { FIREFLIES_GRADE, FIREFLIES_PASSAGE, FIREFLIES_RIG } from "./constants.ts";
 
-const preset: ScenePreset = {
+/** The fireflies over the outdoor's baseline: the river's layers and rig, its moonless night. */
+export const firefliesVariant: Variant = {
   id: "fireflies",
-  composer: "outdoor",
+  base: "outdoor",
   title: "Fireflies",
   blurb: "A mangrove river at night: thousands of fireflies falling into step.",
   accent: "#b6f03c",
@@ -31,7 +33,8 @@ const preset: ScenePreset = {
   // A sunlit river is bright water and sky: the copy needs dark ink on it by day; at night, as it
   // opens, the night theme.
   theme: skyTheme,
-  rig: FIREFLIES_RIG,
+  layers: { remove: ["downs"], add: ["mangroves", "creek", "fireflySwarm"] },
+  camera: FIREFLIES_RIG,
   grade: FIREFLIES_GRADE,
   // Deep in the evening, the moon off (the moon knob's off: no moon in the sky), sparse stars, no
   // cloud and no Milky Way (the river's night had neither); swifts over the water by day, off until
@@ -50,18 +53,9 @@ const preset: ScenePreset = {
   // Shooting stars set out high over the trees.
   meteors: [-0.6, 0.35, 1.2, 0.08],
   // The swifts cross 15 to 55 m out, nearer than the far bank, from just over its trees to the top of
-  // the frame; they never come down to the water.
-  flyway: {
-    depth: [15, 55],
-    above: 0.1,
-    top: 0.98,
-    seed: 4.1,
-    skim: 1e9,
-    spread: 1,
-    ext: 0.003,
-  },
+  // the frame, at the baseline's spread; they never come down to the water.
+  flyway: { depth: [15, 55], above: 0.1, top: 0.98, seed: 4.1, skim: 1e9, ext: 0.003 },
   floor: "water",
-  layers: ["mangroves", "creek", "fireflySwarm"],
   // The moon off; the breeze (the composer's gusts) now and then, as the river's own came.
   values: { moon: 0, gustRate: 0.3 },
   groups: {
@@ -79,7 +73,10 @@ const preset: ScenePreset = {
 };
 
 /** The fireflies composed (composer/compose.ts): its definition, and what its code is assembled from. */
-export const firefliesComposed = composeScene(outdoor, preset);
+export const firefliesComposed = composeScene(
+  outdoor,
+  variantPreset(outdoor.baseline, firefliesVariant),
+);
 
 export const firefliesScene: SceneDef = {
   ...firefliesComposed.def,

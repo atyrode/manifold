@@ -1,27 +1,29 @@
 // Murmuration: a starling flock folding over a dusk sky. The birds fly on the CPU as a thin sheet
 // that bends, twists, folds and splits (sim.ts), or, with `emergent` on, as topological boids
 // (sims/boids.ts) whose shape is their own; they are inked from a density field, pale where the
-// flock is stretched and black where it folds. A preset of the `outdoor` composer (src/composer,
-// README "Composers"): the roost (the World's sky and the low skyline it grounds) and the
-// murmuration over it (layers.ts), which any level rig with enough sky offers. The sky, the weather
-// and the birds besides the starlings are the World's.
-import { composeScene } from "../../composer/compose.ts";
+// flock is stretched and black where it folds. A variant of the `outdoor` composer's baseline
+// (src/composer, README "The outdoor composer"), the baseline's downs off: the roost (the World's
+// sky and the low skyline it grounds) and the murmuration over it (layers.ts), which any level rig
+// with enough sky offers. The sky, the weather and the birds besides the starlings are the World's.
+import { composeScene, variantPreset } from "../../composer/compose.ts";
 import { outdoor } from "../../composer/outdoor.ts";
-import type { ScenePreset } from "../../composer/types.ts";
+import type { Variant } from "../../composer/types.ts";
 import type { SceneDef } from "../types.ts";
 import { worldGroups } from "../world.ts";
 import { FLOCK_FLYWAY, FLOCK_GRADE, FLOCK_METEORS, FLOCK_PASSAGE, FLOCK_RIG } from "./constants.ts";
 
-const preset: ScenePreset = {
+/** The murmuration over the outdoor's baseline: its roost and flock, its eye on the bank, dusk. */
+export const flockVariant: Variant = {
   id: "flock",
-  composer: "outdoor",
+  base: "outdoor",
   title: "Murmuration",
   blurb: "Starlings at dusk, thousands of birds folding into one shape.",
   accent: "#ff8a3d",
   look: { color: "full", levels: 4 },
   passage: FLOCK_PASSAGE,
   planets: { group: "sky", across: [-90, -18, 5], up: [3, 24, 44] },
-  rig: FLOCK_RIG,
+  layers: { remove: ["downs"], add: ["roost", "murmuration"] },
+  camera: FLOCK_RIG,
   grade: FLOCK_GRADE,
   // Just after sunset under a clear sky: the stars come out over the flock after dusk, no Milky Way;
   // the World's other birds, off (the starlings are the sky's).
@@ -39,7 +41,6 @@ const preset: ScenePreset = {
   meteors: FLOCK_METEORS,
   flyway: FLOCK_FLYWAY,
   floor: "water",
-  layers: ["roost", "murmuration"],
   // The skyline sways with the wind alone, so the gusts are off.
   values: { gusts: 0 },
   groups: {
@@ -57,6 +58,6 @@ const preset: ScenePreset = {
 };
 
 /** The murmuration composed (composer/compose.ts): its definition, and what its code is assembled from. */
-export const flockComposed = composeScene(outdoor, preset);
+export const flockComposed = composeScene(outdoor, variantPreset(outdoor.baseline, flockVariant));
 
 export const flockScene: SceneDef = { ...flockComposed.def, code: () => import("./code.ts") };
