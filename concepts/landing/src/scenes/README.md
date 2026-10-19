@@ -638,13 +638,12 @@ standalone scenes, a program of their own each, on one shelf in their families' 
 canvas (`src/engine/docs.ts`), drawn as a plan from above and opened in the canvas. Then its curated
 variants in their registry's order (a room's folders, then the promoted ones). The composer's own
 render of a baseline (`room`, `land`, `patch`) is on no shelf: it stays a lab-only scene, what the
-variants are composed over and the A of their Compare. Nor is the canvas scene, the engine's host,
-which the baselines open. A scene's card counts its committed presets (`src/presets.ts`) in its
-corner. Right under the card of the scene on screen, a row of its own (the cards after it fill the
-card's row first), stand what it is, a variant's Compare with the render it is composed over in the
-A/B slots, and its committed presets: a click loads one, its arrow opens it on the build it was made
-on, and a room's preset that loads as itself promotes to a variant of its own
-(`src/lab/preset-rows.ts`). With the canvas on screen, the baseline whose document it holds (by its
+variants are composed over. Nor is the canvas scene, the engine's host, which the baselines open. A
+scene's card counts its committed presets (`src/presets.ts`) in its corner. Right under the card of
+the scene on screen, a row of its own (the cards after it fill the card's row first), stand its
+committed presets: a click loads one, its arrow opens it on the build it was made on, and a room's
+preset that loads as itself promotes to a variant of its own (`src/lab/preset-rows.ts`). With the
+canvas on screen, the baseline whose document it holds (by its
 title) is the card marked. The rail jumps between the shelves, the search matches the scenes' ids and
 titles, their presets' names and the baselines' titles and renders, and the arrow keys roam the cards
 across the shelves, one card in the tab order.

@@ -22,7 +22,7 @@ export type GalleryCard =
   | {
       readonly kind: "canvas";
       readonly doc: EngineDoc;
-      /** The composer's render of the baseline, its variants' A in a compare. */
+      /** The composer's render of the baseline, what its variants are composed over. */
       readonly render: SceneId;
     }
   | { readonly kind: "scene"; readonly scene: SceneId };
@@ -35,7 +35,7 @@ export interface GalleryShelf {
 }
 
 /** Each composer's baseline: its subject's bare canvas. */
-export const baselineCanvas: Readonly<Record<ComposerId, EngineDoc>> = {
+const baselineCanvas: Readonly<Record<ComposerId, EngineDoc>> = {
   interior: roomDoc,
   outdoor: landDoc,
   overhead: topDoc,

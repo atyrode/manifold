@@ -961,7 +961,7 @@ body.lab-open .lab-opener {
   color: var(--lab-accent);
 }
 
-/* under the shelf of the scene on screen: what it is, its compare, its committed presets */
+/* under the card of the scene on screen: its name, how many presets, its committed presets */
 .scene-here {
   display: grid;
   grid-column: 1 / -1;
@@ -990,11 +990,6 @@ body.lab-open .lab-opener {
   color: var(--lab-muted);
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-.scene-here-head .text-button {
-  flex: none;
-  height: 26px;
-  padding-inline: 8px;
 }
 
 /* presets */

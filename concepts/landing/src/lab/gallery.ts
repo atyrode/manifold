@@ -2,40 +2,28 @@
 // what ships: thumbnail cards shelved by baseline (lab/gallery-model.ts) with a rail of the shelves,
 // each shelf's baseline first ("baseline"), its subject's bare canvas drawn as a plan from above and
 // opened in the canvas, then its variants; the standalone scenes apart. A scene's card counts its
-// committed presets; under the card of the scene on screen stand its presets (lab/preset-rows.ts)
-// and, for a variant, its compare with the render it is composed over in the A/B slots
-// (compare.ts). Saved is everything saved in this browser, one list (lab/saved.ts), apart from what
+// committed presets; under the card of the scene on screen stand its presets (lab/preset-rows.ts).
+// Saved is everything saved in this browser, one list (lab/saved.ts), apart from what
 // ships. One search serves the half on screen: the Library by the cards' titles and the scenes'
 // presets' names, Saved by the saved entries'. Arrow keys move between the Library's cards (one card
 // in the tab order), Enter or Space shows the scene or opens the canvas. The lab syncs it while it
 // shows, and as it comes on screen.
 import type { ComposerId } from "../composer/types.ts";
 import type { EngineDoc } from "../engine/types.ts";
-import { canonicalSetup } from "../compare.ts";
 import { sceneDefs, type SceneId } from "../scenes/index.ts";
-import { textButton } from "./controls.ts";
 import { docPlan } from "./doc-plan.ts";
 import { h, setAttr, setHidden, setText, type LabContext } from "./dom.ts";
 import { sceneFamily } from "./families.ts";
-import {
-  baselineCanvas,
-  cardMatches,
-  galleryShelves,
-  scenePresets,
-  type GalleryCard,
-} from "./gallery-model.ts";
+import { cardMatches, galleryShelves, scenePresets, type GalleryCard } from "./gallery-model.ts";
 import { icon, type IconName } from "./icons.ts";
 import { PresetRows } from "./preset-rows.ts";
 import { Rail, type RailEntry } from "./rail.ts";
 import { SavedView, type SavedHost } from "./saved.ts";
 import { standIn, thumbUrl } from "./thumbs.ts";
-import { sceneComposer, variantBaseline } from "./tree-model.ts";
 
 export interface GalleryHost extends SavedHost {
   /** Show `scene` at its defaults, picked by hand. */
   setScene(scene: SceneId): void;
-  /** Compare setup `a`, kept hidden as slot A, with setup `b`, loaded as slot B (compare.ts). */
-  compare(a: string, b: string): void;
 }
 
 /** The view's two halves: what ships, and what is saved in this browser. */
@@ -75,7 +63,7 @@ export class SceneGallery {
   #mode: GalleryMode = "library";
   readonly #shelves: Shelf[] = [];
   readonly #empty = h("p", { class: "lab-empty", hidden: true }, "No scene matches.");
-  /** Under the shelf of the scene on screen: its presets, and its compare with its baseline. */
+  /** Under the card of the scene on screen: its committed presets. */
   readonly #here = h("div", { class: "scene-here" });
   readonly #presetRows: PresetRows;
   /** The card on screen the cards and the presets under it were last set for. */
@@ -276,21 +264,19 @@ export class SceneGallery {
   }
 
   /**
-   * Put the presets of the scene on screen and its compare with its baseline's render right after
-   * its card, a row of its own (the cards after it fill the card's row first: `.cards`); nothing for
-   * a scene with neither (a standalone scene without presets) or a baseline.
+   * Put the committed presets of the scene on screen right after its card, a row of its own (the
+   * cards after it fill the card's row first: `.cards`); nothing for a scene without any or a
+   * baseline.
    */
   #setHere(current: Card | undefined): void {
     this.#presetRows.clear();
     const scene = current?.card.kind === "scene" ? current.card.scene : undefined;
     const committed = scene === undefined ? [] : scenePresets(scene);
-    const over = scene === undefined ? undefined : variantBaseline(scene);
-    if (!current || scene === undefined || (committed.length === 0 && over === undefined)) {
+    if (!current || scene === undefined || committed.length === 0) {
       this.#here.remove();
       return;
     }
     const def = sceneDefs[scene];
-    const composer = sceneComposer(scene);
     const head = h(
       "div",
       { class: "scene-here-head" },
@@ -298,24 +284,9 @@ export class SceneGallery {
       h(
         "span",
         { class: "scene-here-what" },
-        composer !== undefined && over !== undefined
-          ? `a variant of ${baselineCanvas[composer].title}`
-          : "a scene of its own",
+        `${committed.length} preset${committed.length === 1 ? "" : "s"}`,
       ),
     );
-    if (over !== undefined)
-      head.append(
-        textButton(
-          "compare",
-          "Compare",
-          `Compare ${def.title} in the A/B slots with the ${sceneDefs[over].title} render it is composed over (A: ${sceneDefs[over].title}, B: ${def.title})`,
-          () =>
-            this.#host.compare(
-              canonicalSetup(new URLSearchParams({ scene: over })),
-              canonicalSetup(new URLSearchParams({ scene })),
-            ),
-        ),
-      );
     const prefix = `${def.title} · `;
     const list = h(
       "ul",
@@ -329,7 +300,6 @@ export class SceneGallery {
         });
       }),
     );
-    setHidden(list, committed.length === 0);
     this.#here.style.setProperty("--dot", def.accent);
     this.#here.replaceChildren(head, list);
     current.el.after(this.#here);
