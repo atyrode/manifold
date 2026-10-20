@@ -1,6 +1,8 @@
 import type { Terminal } from "@xterm/headless";
+import { TERMINAL_CONTROL_PAYLOAD_BYTES, TERMINAL_GRAPHICS_SIXEL_BYTES } from "@manifold/protocol";
 
-const MAX_PENDING_BYTES = 180000;
+/** xterm's DCS identifier with neither prefix nor intermediates and final `q`: Sixel. */
+const SIXEL_DCS = 0x71;
 type Result = void | Promise<boolean>;
 interface ParserParams {
   toArray(): (number | number[])[];
@@ -33,7 +35,11 @@ export class TerminalParserContinuation {
   private overflow = false;
   private dcsId = 0;
 
-  constructor(terminal: Terminal) {
+  /** `ignoresSixel`: every peer already refused the unfinished Sixel and ignores the rest. */
+  constructor(
+    terminal: Terminal,
+    private readonly ignoresSixel: () => boolean = () => false,
+  ) {
     // The same pinned xterm 6 private seam the graphics addon uses. These hooks
     // receive only bytes that the real parser forwards, including its C0/DEL rules.
     const internal = terminal as unknown as {
@@ -58,7 +64,12 @@ export class TerminalParserContinuation {
       hook(id, params);
     };
     dcs.put = (data, start, end) => {
-      this.append(data, start, end);
+      this.append(
+        data,
+        start,
+        end,
+        this.dcsId === SIXEL_DCS ? TERMINAL_GRAPHICS_SIXEL_BYTES : TERMINAL_CONTROL_PAYLOAD_BYTES,
+      );
       put(data, start, end);
     };
     dcs.unhook = (success, resumed) => {
@@ -74,7 +85,7 @@ export class TerminalParserContinuation {
       start();
     };
     osc.put = (data, first, last) => {
-      this.append(data, first, last);
+      this.append(data, first, last, TERMINAL_CONTROL_PAYLOAD_BYTES);
       oscPut(data, first, last);
     };
     osc.end = (success, resumed) => {
@@ -88,13 +99,13 @@ export class TerminalParserContinuation {
     this.payloadBytes = 0;
     this.overflow = false;
   }
-  private append(data: Uint32Array, start: number, end: number): void {
+  private append(data: Uint32Array, start: number, end: number, limit: number): void {
     if (this.overflow) return;
     for (let i = start; i < end; i++) {
       const code = data[i]!;
+      // The same UTF-8 count as the Sixel gate, so its input refusal and this overflow coincide.
       this.payloadBytes += code < 0x80 ? 1 : code < 0x800 ? 2 : code < 0x10000 ? 3 : 4;
-      // Reserve the bounded numeric header as well as the payload.
-      if (this.payloadBytes > MAX_PENDING_BYTES - 2048) {
+      if (this.payloadBytes > limit) {
         this.payload = "";
         this.overflow = true;
         return;
@@ -146,7 +157,7 @@ export class TerminalParserContinuation {
       case 11:
         return "\x1bP?<";
       case 13:
-        return this.overflow
+        return this.overflow || (this.dcsId === SIXEL_DCS && this.ignoresSixel())
           ? "\x1bP+q"
           : "\x1bP" +
               prefix +
@@ -164,6 +175,11 @@ export class TerminalParserContinuation {
     return this.utf8.interim.slice(0, firstEmpty < 0 ? this.utf8.interim.length : firstEmpty);
   }
   replaysSixel(): boolean {
-    return this.parser.currentState === 13 && (this.dcsId & 255) === 113 && !this.overflow;
+    return (
+      this.parser.currentState === 13 &&
+      this.dcsId === SIXEL_DCS &&
+      !this.overflow &&
+      !this.ignoresSixel()
+    );
   }
 }

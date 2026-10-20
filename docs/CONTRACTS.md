@@ -2780,10 +2780,11 @@ dependency. The bundle's optional `builtAgainst` version map is recorded as
 shared builds also record React/package versions. Admission and boot check that stamp against
 the explicit `PLUGIN_BUNDLE_PROTOCOL_COMPAT_VERSIONS` set and compare React by major. The
 bundle set is independent of session, machine and instance negotiation: sessions still require
-the current wire version. Protocol 57 admits only bundle stamp 57: explicit per-viewport
+the current wire version. Protocol 59 admits bundle stamps 57 and 59: explicit per-viewport
 terminal attach/detach and completion acknowledgement changed the trusted plugin/SDK terminal
-ABI, so earlier stamps require a rebuild. Portable Worker projections still expose no terminal
-byte/snapshot subscriptions. A prior stamp
+ABI, so earlier stamps require a rebuild, while terminal image admission changes no plugin call
+signature. Portable Worker projections still expose no terminal byte/snapshot subscriptions. A
+prior stamp
 may remain only with proof from unchanged released artifacts through candidate assembly and
 loading; an incompatible plugin ABI change resets the set. No numeric range, future version
 or deployment bypass is implied. Known incompatibility refuses fresh admission or holds an
@@ -4074,19 +4075,34 @@ is retained. The terminal host, not competing viewers, answers Sixel and geometr
 The browser renders Sixel and iTerm inline PNG/JPEG/GIF through pinned xterm image-addon
 0.9.0. Kitty graphics and filesystem/URL image sources are not supported.
 
-The authoritative mirror and viewers share canonical 7×14 image cells, bounded FIFO
-admission (64 images, 2,097,152 decoded pixels, 2,048 cells, 180,000 encoded bytes), and
-palette/scrolling state. Lossless palette/run-length storage retains ordinary OMP-sized
-images without reducing color or resolution. Encoded input is limited to 131,072 bytes.
-Over-budget or malformed images produce a browser notice; admitting a new image can evict
-the oldest even if still visible. Raster data is transient PTY state, never persisted.
-Snapshots carry the bounded image cache and cell placements after serialized text, then
-the unfinished parser control and any partial UTF-8 bytes at that exact output watermark.
-This preserves late viewers and reconnections; screen edits/scrolling remove placements,
-and resets/disposal release the cache. See ADR 0031 for bounds and the pinned addon seam.
+The authoritative mirror and viewers share canonical 7×14 image cells, palette/scrolling
+state and one bounded FIFO admission: at most 64 images, 2,097,152 decoded pixels, 2,048
+pixels per side, and a retained snapshot charge of 262,952 bytes. Each image is charged 128
+bytes, plus its base64 data, plus 8 bytes per canonical tile it covers. Lossless
+palette/run-length storage retains ordinary OMP-sized images without reducing color or
+resolution. Sixel input is limited to 393,216 bytes, an iTerm file to 131,072 decoded bytes,
+and its header to 4,096 characters. While an unfinished Sixel payload exceeds 180,000 bytes,
+the oldest images are evicted. Graphics and that control together stay within the 447,000-byte
+reservation of a 449,992-byte snapshot. Every peer counts the same payload bytes, so all agree
+at every watermark.
+
+Raster metadata refuses an impossible image before decoding, upload or readback. A refusal
+names its limiting resource with observed and allowed quantities, at most once per resource
+in each terminal view; malformed raster data has its own notice. Admitting a new
+image can evict the oldest even if it is still visible. Raster data is transient PTY state,
+never persisted. Snapshots carry the bounded image cache and cell placements after serialized
+text, then the unfinished parser control and any partial UTF-8 bytes at that exact output
+watermark. A refused Sixel continues as an ignored marker rather than its payload. This
+preserves late viewers and reconnections; screen edits/scrolling remove placements, and
+resets/disposal release the cache. See ADR 0031 for the pinned addon seam and ADR 0061 for
+admission and budgets.
 
 These features require an updated **terminal host process**. Replacing only the transport
-or browser does not update a host deliberately retained to preserve live PTYs.
+or browser does not update a host deliberately retained to preserve live PTYs. A host from
+before protocol 59 emits version-1 graphics envelopes. Current browsers apply that host's
+former limits to its terminals: 180,000 encoded bytes, 2,048 cells and 131,072 input bytes.
+This lasts until the host is replaced. Rolling the hub and browsers back below protocol 59 while
+a version-2 host is retained requires replacing that host too.
 OMP 18.1.13/18.1.14 also have an upstream bare-launch prepaint defect: the enhanced-paste
 start listener is installed after the first UI start. Automatic bare-launch paste remains
 blocked on an upstream release; an explicit non-prepaint compatibility launch exercises
@@ -4526,8 +4542,8 @@ incumbent continuity mismatch, or `supersession damped`). A name conflict is dec
 same atomic write that would admit the hello; it sends no welcome, changes neither machine row,
 and leaves an incumbent connection untouched. Version acceptance uses
 `MACHINE_PROTOCOL_COMPAT_VERSIONS`, currently
-`{30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 51, 52, 53, 54, 55, 56}`; session/browser joins remain strictly
-current at protocol 56. An unchanged machine
+`{30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 51, 52, 53, 54, 55, 56, 57, 59}`; session/browser joins remain strictly
+current at protocol 59. An unchanged machine
 wire may add a version to the set. A strictly additive-optional change may also add it only
 when old frames still parse and absent fields preserve the old semantics. Other changes
 reset the set and require a coordinated hub/transport upgrade. An admission bound applied
@@ -4576,6 +4592,11 @@ revision. This deliberately weaker contract cannot prove resize/output/snapshot 
 Transport replacement alone cannot upgrade an old owner. The stronger guarantee requires a
 capable owner through independently authorized normal maintenance; no fleet restart, owner
 stop or activation authority follows from this source change.
+
+**Terminal image admission (protocol 59).** Machine frames are byte-identical; only the
+graphics envelope inside VT snapshots changes. The hub accepts transports and retained
+terminal hosts from before protocol 59 unchanged. A retained host keeps its version-1 image
+admission until it is replaced, and current browsers follow it (§Terminal images and color).
 
 **Live physical topology (#939, protocol 48).** The transport observes `physicalCoreCount`
 afresh while constructing each hello, including every reconnect. On Linux it reads
@@ -5894,10 +5915,10 @@ IS the cross-instance reference. `tickets` answers with the subset of the advert
 still live, and the guest drops the rest. Or the host closes: 4401 unauthorized / origin
 mismatch, 4403 revoked, 4409 version, 4002 malformed or first-frame-not-hello or duplicate
 hello, 4008 liveness timeout, 4001 superseded. Version acceptance is
-`INSTANCE_PROTOCOL_COMPAT_VERSIONS` `{53, 54, 55, 56}` — its own wire, its own set, the
+`INSTANCE_PROTOCOL_COMPAT_VERSIONS` `{53, 54, 55, 56, 57, 59}` — its own wire, its own set, the
 same [Protocol and compatibility](#protocol-and-compatibility) discipline the machine channel follows.
 Protocol53 reset instance acceptance for explicit host-recipient admission and finite
-ticket subset/expiry. Protocols 54, 55 and 56 leave that instance wire unchanged and add their
+ticket subset/expiry. Protocols 54, 55, 56, 57 and 59 leave that instance wire unchanged and add their
 versions without another peer reset. Federation compatibility remains independent of
 retained terminal-agent compatibility. This is not an implicit live rollout or authorization to install
 newer agents ahead of their hub.

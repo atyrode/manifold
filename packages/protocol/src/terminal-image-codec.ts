@@ -4,17 +4,34 @@ export interface EncodedTerminalRgba {
   bytes: Uint8Array;
 }
 
-/** Deterministic lossless PackBits; preserves the 256 Sixel colors plus transparent fill. */
+const LITTLE_ENDIAN = new Uint8Array(Uint32Array.of(1).buffer)[0] === 1;
+
+/** Little-endian RGBA words; a zero-copy view whenever the platform and alignment allow. */
+function rgbaWords(bytes: Uint8Array): Uint32Array {
+  if (LITTLE_ENDIAN && bytes.byteOffset % 4 === 0)
+    return new Uint32Array(bytes.buffer, bytes.byteOffset, bytes.length / 4);
+  const source = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  return Uint32Array.from({ length: bytes.length / 4 }, (_, pixel) =>
+    source.getUint32(pixel * 4, true),
+  );
+}
+
+/**
+ * Deterministic lossless PackBits; preserves the 256 Sixel colors plus transparent fill.
+ * Work stops once the output would exceed `maxBytes`; the result never aliases `bytes`.
+ */
 export function encodeTerminalRgba(
   bytes: Uint8Array,
   maxBytes: number,
 ): EncodedTerminalRgba | undefined {
   if (bytes.length === 0 || bytes.length % 4 !== 0) return undefined;
   const pixels = bytes.length / 4;
-  const source = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  const source = rgbaWords(bytes);
   const palette = new Map<number, number>();
   for (let pixel = 0; pixel < pixels; pixel++) {
-    const color = source.getUint32(pixel * 4, true);
+    const color = source[pixel]!;
+    // Screenshots are mostly runs; a repeat cannot add a palette entry.
+    if (pixel > 0 && color === source[pixel - 1]) continue;
     if (!palette.has(color)) palette.set(color, palette.size);
     if (palette.size > 257) break;
   }
@@ -32,20 +49,26 @@ export function encodeTerminalRgba(
   );
   const target = new DataView(output.buffer);
   const rawFallback = (): EncodedTerminalRgba | undefined =>
-    bytes.length <= maxBytes ? { format: "rgba", bytes } : undefined;
+    bytes.length <= maxBytes ? { format: "rgba", bytes: bytes.slice() } : undefined;
   let position = header;
   if (header > output.length) return rawFallback();
   if (indexed) {
     output[0] = palette.size - 1;
     for (const [color, index] of palette) target.setUint32(1 + index * 4, color, true);
   }
+  let lastColor: number | undefined;
+  let lastIndex: number | undefined;
   const writeSample = (color: number): boolean => {
     if (!indexed) {
       if (position + 4 > output.length) return false;
       target.setUint32(position, color, true);
       position += 4;
     } else {
-      const index = palette.get(color);
+      if (color !== lastColor) {
+        lastColor = color;
+        lastIndex = palette.get(color);
+      }
+      const index = lastIndex;
       const escaped = transparent && (color === 0 || index === 255);
       if (position + (escaped ? 2 : 1) > output.length) return false;
       if (escaped) {
@@ -60,13 +83,9 @@ export function encodeTerminalRgba(
   };
   let pixel = 0;
   while (pixel < pixels) {
-    const color = source.getUint32(pixel * 4, true);
+    const color = source[pixel]!;
     let repeated = 1;
-    while (
-      repeated < 128 &&
-      pixel + repeated < pixels &&
-      source.getUint32((pixel + repeated) * 4, true) === color
-    )
+    while (repeated < 128 && pixel + repeated < pixels && source[pixel + repeated] === color)
       repeated++;
     if (position >= output.length) return rawFallback();
     if (repeated >= (indexed ? 3 : 2)) {
@@ -78,22 +97,19 @@ export function encodeTerminalRgba(
     const first = pixel;
     pixel += repeated;
     while (pixel < pixels && pixel - first < 128) {
-      const next = source.getUint32(pixel * 4, true);
+      const next = source[pixel]!;
       let run = 1;
-      while (
-        run < (indexed ? 3 : 2) &&
-        pixel + run < pixels &&
-        source.getUint32((pixel + run) * 4, true) === next
-      )
+      while (run < (indexed ? 3 : 2) && pixel + run < pixels && source[pixel + run] === next)
         run++;
       if (run >= (indexed ? 3 : 2)) break;
       pixel += Math.min(run, 128 - (pixel - first));
     }
     output[position++] = pixel - first - 1;
     for (let index = first; index < pixel; index++)
-      if (!writeSample(source.getUint32(index * 4, true))) return rawFallback();
+      if (!writeSample(source[index]!)) return rawFallback();
   }
-  if (position >= bytes.length && bytes.length <= maxBytes) return { format: "rgba", bytes };
+  if (position >= bytes.length && bytes.length <= maxBytes)
+    return { format: "rgba", bytes: bytes.slice() };
   return {
     format: indexed ? (transparent ? "rgba-indexed-alpha" : "rgba-indexed") : "rgba-rle",
     bytes: output.slice(0, position),

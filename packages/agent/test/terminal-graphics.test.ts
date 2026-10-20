@@ -2,7 +2,10 @@ import { afterEach, expect, test } from "bun:test";
 import { Terminal } from "@xterm/headless";
 import {
   TerminalGraphicsSnapshotSchema,
+  TERMINAL_GRAPHICS_ENVELOPE_BYTES,
+  TERMINAL_GRAPHICS_POLICY,
   TERMINAL_GRAPHICS_PREFIX,
+  TERMINAL_GRAPHICS_SNAPSHOT_BYTES,
   decodeTerminalRgba,
   encodeTerminalRgba,
   inlineImageDimensions,
@@ -11,9 +14,59 @@ import {
 } from "@manifold/protocol";
 import { TerminalGraphicsMirror } from "../src/terminal-graphics.ts";
 import { TerminalParserContinuation } from "../src/terminal-parser-continuation.ts";
-import { PtyTerminal } from "../src/terminal.ts";
+import { MAX_SNAPSHOT_BASE64_CHARS, PtyTerminal } from "../src/terminal.ts";
 
 const RED = '\x1bPq"1;1;7;14#1;2;100;0;0#1!7~-!7~-!7B\x1b\\';
+/** A solid Sixel whose raster attributes declare its exact extent. */
+function solid(width: number, height: number): string {
+  const bands = Array.from(
+    { length: Math.ceil(height / 6) },
+    (_, band) =>
+      `!${String(width)}${String.fromCharCode(63 + ((1 << Math.min(6, height - band * 6)) - 1))}`,
+  ).join("-");
+  return `\x1bPq"1;1;${String(width)};${String(height)}#1;2;100;0;0#1${bands}\x1b\\`;
+}
+/** Deterministic four-color noise: a content-rich image whose lossless encoding stays large. */
+function noise(width: number, height: number, seed: number): string {
+  let state = seed;
+  const colors = Array.from({ length: width * height }, () => {
+    state = (Math.imul(state, 1103515245) + 12345) >>> 0;
+    return state >>> 30;
+  });
+  let body = "";
+  for (let band = 0; band * 6 < height; band++) {
+    for (let color = 0; color < 4; color++) {
+      body += `#${String(color)}`;
+      for (let x = 0; x < width; x++) {
+        let bits = 0;
+        for (let row = 0; row < 6 && band * 6 + row < height; row++)
+          if (colors[(band * 6 + row) * width + x] === color) bits |= 1 << row;
+        body += String.fromCharCode(63 + bits);
+      }
+      body += "$";
+    }
+    body += "-";
+  }
+  const palette = "#0;2;90;10;10#1;2;10;90;10#2;2;10;10;90#3;2;90;90;10";
+  return `\x1bPq"1;1;${String(width)};${String(height)}${palette}${body}\x1b\\`;
+}
+/** Literal 8-pixel stripes: a Sixel input beyond the ordinary control share that encodes small. */
+function stripes(width: number, height: number, layers: number): string {
+  let body = "";
+  for (let band = 0; band * 6 < height; band++) {
+    for (let layer = 0; layer < layers; layer++) {
+      body += `#${String(layer)}`;
+      for (let x = 0; x < width; x++) body += (x >> 3) % layers === layer ? "~" : "?";
+      body += "$";
+    }
+    body += "-";
+  }
+  const palette = Array.from(
+    { length: layers },
+    (_, layer) => `#${String(layer)};2;${String((layer * 37) % 100)};50;50`,
+  ).join("");
+  return `\x1bPq"1;1;${String(width)};${String(height)}${palette}${body}\x1b\\`;
+}
 const resources: { dispose(): void }[] = [];
 afterEach(() => {
   for (const resource of resources.splice(0).reverse()) resource.dispose();
@@ -30,6 +83,28 @@ function write(terminal: Terminal, data: string): Promise<void> {
   const { promise, resolve } = Promise.withResolvers<void>();
   terminal.write(data, resolve);
   return promise;
+}
+/** Feeds bytes through the real PTY terminal's output ingress, as its child process would. */
+function ingest(terminal: PtyTerminal, data: string): void {
+  const target: unknown = terminal;
+  if (
+    typeof target !== "object" ||
+    target === null ||
+    !("ingest" in target) ||
+    typeof target.ingest !== "function"
+  ) {
+    throw new Error("Missing PTY output ingress");
+  }
+  target.ingest.call(target, Buffer.from(data, "latin1"));
+}
+function idlePty(terminalId: string, cols: number, rows: number): PtyTerminal {
+  return new PtyTerminal({
+    terminalId,
+    cols,
+    rows,
+    command: [Bun.which("bash") ?? "/bin/sh", "-c", "read -r line"],
+    onOutput: () => {},
+  });
 }
 type ImageRun = ["normal" | "alternate", number, number, number, number, number];
 interface ObservedGraphics extends TerminalGraphicsSnapshot {
@@ -124,31 +199,145 @@ test("bounded graphics eviction removes the oldest still-visible image rather th
   expect(state.runs.some((run) => run[1] === 0 && run[2] === 64)).toBe(true);
 });
 
-test("an image split at a snapshot watermark completes exactly once from its continuation", async () => {
-  const terminal = new PtyTerminal({
-    terminalId: "graphics-watermark",
-    cols: 20,
-    rows: 5,
-    command: [Bun.which("bash") ?? "/bin/sh", "-c", "read -r line"],
-    onOutput: () => {},
-  });
+test("images past the former 2,048-cell cliff are retained with every placement", async () => {
+  const { terminal, graphics } = mirror(130, 40);
+  for (const [width, height] of [
+    [700, 282],
+    [800, 252],
+    [840, 420],
+  ] as const) {
+    await write(terminal, `\x1bc${solid(width, height)}\r\nAFTER`);
+    const state = decode(graphics.serialize(0));
+    expect(state.images.map((image) => [image.width, image.height])).toEqual([[width, height]]);
+    expect(state.runs.reduce((placed, run) => placed + run[5], 0)).toBe(
+      Math.ceil(width / 7) * Math.ceil(height / 14),
+    );
+    expect(terminal.buffer.active.getLine(Math.ceil(height / 14))?.translateToString(true)).toBe(
+      "AFTER",
+    );
+  }
+});
+
+test("raster attributes refuse an impossible Sixel and its continuation is only the ignored marker", async () => {
+  const terminal = idlePty("graphics-refused-sixel", 40, 8);
   try {
-    const ingest = (data: string): void => {
-      const target: unknown = terminal;
-      if (
-        typeof target !== "object" ||
-        target === null ||
-        !("ingest" in target) ||
-        typeof target.ingest !== "function"
-      ) {
-        throw new Error("Missing PTY output ingress");
-      }
-      target.ingest.call(target, new TextEncoder().encode(data));
-    };
+    ingest(terminal, 'SAFE\r\n\x1bPq"1;1;2100;300#1;2;100;0;0#1!2100~-!2100~');
+    const refused = Buffer.from((await terminal.snapshot()).data).toString("latin1");
+    // Every peer refuses the same raster, so a late viewer needs none of its payload.
+    expect(refused.endsWith("\x1bP+q")).toBe(true);
+    ingest(terminal, `-!2100~\x1b\\NEXT\r\n${RED}`);
+    const recovered = decode(Buffer.from((await terminal.snapshot()).data).toString("latin1"));
+    expect(recovered.images.map((image) => [image.width, image.height])).toEqual([[7, 14]]);
+    expect(recovered.runs).toEqual([["normal", 2, 0, 0, 0, 1]]);
+  } finally {
+    await terminal.kill();
+    terminal.dispose();
+  }
+});
+
+test("an in-flight Sixel beyond the control share displaces the oldest image at the same byte on every peer", async () => {
+  const older = noise(280, 280, 7);
+  const newer = noise(280, 280, 11);
+  const large = stripes(700, 276, 9);
+  const retained = async (stream: string, chunk = stream.length) => {
+    const peer = mirror(120, 60);
+    for (let offset = 0; offset < stream.length; offset += chunk)
+      await write(peer.terminal, stream.slice(offset, offset + chunk));
+    return decode(peer.graphics.serialize(0)).wire.images.map((image) => image.data);
+  };
+  const [olderData] = await retained(older);
+  const [newerData] = await retained(newer);
+  // Within the ordinary control share both content-rich images stay retained.
+  expect(await retained(`${older}\r\n${newer}\r\n${large.slice(0, 150_000)}`)).toEqual([
+    olderData,
+    newerData,
+  ]);
+  const watermark = `${older}\r\n${newer}\r\n${large.slice(0, 250_000)}`;
+  const whole = await retained(watermark);
+  expect(whole).toEqual([newerData]);
+  expect(await retained(watermark, 4093)).toEqual(whole);
+
+  const terminal = idlePty("graphics-joint-reservation", 120, 60);
+  try {
+    ingest(terminal, watermark);
+    const snapshot = Buffer.from((await terminal.snapshot()).data).toString("latin1");
+    expect(Buffer.from(snapshot, "latin1").toString("base64").length).toBeLessThanOrEqual(
+      MAX_SNAPSHOT_BASE64_CHARS,
+    );
+    const envelopeStart = snapshot.indexOf(`\x1b]1337;${TERMINAL_GRAPHICS_PREFIX}`);
+    const envelopeEnd = snapshot.indexOf("\x07", envelopeStart) + 1;
+    expect(envelopeEnd - envelopeStart).toBeLessThanOrEqual(
+      TERMINAL_GRAPHICS_ENVELOPE_BYTES + TERMINAL_GRAPHICS_POLICY.retainedBytes,
+    );
+    // The replayed Sixel prefix and the envelope share one reservation.
+    const continuation = snapshot.length - snapshot.lastIndexOf("\x1bP");
+    expect(continuation).toBeGreaterThan(240_000);
+    expect(envelopeEnd - envelopeStart + continuation).toBeLessThanOrEqual(
+      TERMINAL_GRAPHICS_SNAPSHOT_BYTES,
+    );
+    expect(decode(snapshot).wire.images.map((image) => image.data)).toEqual(whole);
+    ingest(terminal, `${large.slice(250_000)}\r\nDONE`);
+    const complete = decode(Buffer.from((await terminal.snapshot()).data).toString("latin1"));
+    expect(complete.images.map((image) => [image.width, image.height])).toEqual([
+      [280, 280],
+      [700, 276],
+    ]);
+  } finally {
+    await terminal.kill();
+    terminal.dispose();
+  }
+});
+
+test("version-1 envelopes from retained hosts keep their own bounds beside version 2", async () => {
+  const small = mirror();
+  await write(small.terminal, RED);
+  const { wire } = decode(small.graphics.serialize(0));
+  const image = wire.images[0]!;
+  // Two records for a one-tile image: legacy hosts were bounded only by their cell budget.
+  const twice = Buffer.from([0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0]).toString("base64");
+  expect(
+    TerminalGraphicsSnapshotSchema.safeParse({ ...wire, images: [{ ...image, cells: twice }] })
+      .success,
+  ).toBe(false);
+  expect(
+    TerminalGraphicsSnapshotSchema.safeParse({
+      ...wire,
+      version: 1,
+      images: [{ ...image, cells: twice }],
+    }).success,
+  ).toBe(true);
+  const wide = mirror(130, 40);
+  await write(wide.terminal, solid(700, 282));
+  const current = decode(wide.graphics.serialize(0)).wire;
+  expect(TerminalGraphicsSnapshotSchema.safeParse(current).success).toBe(true);
+  // No version-1 host ever retained 2,100 cells, so a claimed legacy envelope is invalid.
+  expect(TerminalGraphicsSnapshotSchema.safeParse({ ...current, version: 1 }).success).toBe(false);
+});
+
+test("encoded rasters never alias reusable decoder memory and ignore buffer alignment", () => {
+  const backing = new Uint8Array(1 + 64 * 64 * 4);
+  let state = 3;
+  for (let index = 0; index < backing.length; index++) {
+    state = (Math.imul(state, 1103515245) + 12345) >>> 0;
+    backing[index] = state >>> 24;
+  }
+  const unaligned = backing.subarray(1);
+  const aligned = unaligned.slice();
+  const fromAligned = encodeTerminalRgba(aligned, aligned.length);
+  expect(encodeTerminalRgba(unaligned, unaligned.length)).toEqual(fromAligned);
+  // Noise stores raw RGBA; the copy must survive the decoder reusing its buffer.
+  expect(fromAligned?.format).toBe("rgba");
+  aligned.fill(0);
+  expect(fromAligned?.bytes).toEqual(unaligned);
+});
+
+test("an image split at a snapshot watermark completes exactly once from its continuation", async () => {
+  const terminal = idlePty("graphics-watermark", 20, 5);
+  try {
     const split = RED.indexOf("!7~") + 2;
-    ingest(RED.slice(0, split));
+    ingest(terminal, RED.slice(0, split));
     const pending = terminal.snapshot();
-    ingest(RED.slice(split));
+    ingest(terminal, RED.slice(split));
     const before = await pending;
     expect(before.seq).toBe(1);
     const beforeText = Buffer.from(before.data).toString();
@@ -175,8 +364,17 @@ test("a split ST does not replay an already-committed image and oversized contro
   expect(continuation.serialize()).toBe("\x1b");
   await write(terminal, "\\");
   expect(continuation.serialize()).toBe("");
-  await write(terminal, "\x1bPq" + "?".repeat(200000));
+  // Sixel payloads carry up to the Sixel input bound; every other control keeps 180,000.
+  await write(terminal, "\x1bPq" + "?".repeat(390_000));
+  const pending = continuation.serialize();
+  expect(pending.startsWith("\x1bP")).toBe(true);
+  expect(pending.slice(pending.indexOf("q") + 1)).toBe("?".repeat(390_000));
+  await write(terminal, "?".repeat(10_000));
   expect(continuation.serialize()).toBe("\x1bP+q");
+  await write(terminal, "\x1b\\\x1bP$q" + "m".repeat(180_001));
+  expect(continuation.serialize()).toBe("\x1bP+q");
+  await write(terminal, "\x1b\\\x1b]0;" + "t".repeat(180_001));
+  expect(continuation.serialize()).toBe("\x1b]99999;");
   await write(terminal, "\x1b\\SAFE");
   expect(continuation.serialize()).toBe("");
 });

@@ -1,18 +1,29 @@
 import { ImageAddon } from "@xterm/addon-image";
 import type { Terminal } from "@xterm/headless";
 import {
-  TERMINAL_GRAPHICS_BYTES,
-  TERMINAL_GRAPHICS_INPUT_BYTES,
-  TERMINAL_GRAPHICS_CELLS,
+  TERMINAL_GRAPHICS_AXIS,
   TERMINAL_GRAPHICS_CELL,
+  TERMINAL_GRAPHICS_ENVELOPE_BYTES,
+  TERMINAL_GRAPHICS_FILE_BYTES,
+  TERMINAL_GRAPHICS_FILE_HEADER,
   TERMINAL_GRAPHICS_PIXELS,
+  TERMINAL_GRAPHICS_POLICY,
   TERMINAL_GRAPHICS_PREFIX,
-  TERMINAL_GRAPHICS_SNAPSHOT_BYTES,
+  TERMINAL_GRAPHICS_SIXEL_BYTES,
   TerminalImageBudget,
+  TerminalSixelGate,
   inlineImageDimensions,
   encodeTerminalRgba,
+  terminalGraphicsFootprint,
+  type EncodedTerminalRgba,
   type TerminalGraphicsSnapshot,
 } from "@manifold/protocol";
+
+/** Decoded Sixels at least this large run in their own task, so bursts stay interleaved. */
+const YIELD_PIXELS = 65_536;
+
+/** A pre-encoded Sixel handed to the next canvas upload, instead of an RGBA copy. */
+let encodedHandoff: EncodedTerminalRgba | undefined;
 
 /** No DOM, native decoder, file, URL, or browser process exists in the terminal host. */
 class MemoryImage {
@@ -23,7 +34,13 @@ class MemoryImage {
   getContext() {
     return {
       putImageData: (image: { data: Uint8ClampedArray }) => {
-        this.bytes = new Uint8Array(image.data);
+        if (encodedHandoff === undefined) {
+          this.bytes = new Uint8Array(image.data);
+          return;
+        }
+        this.format = encodedHandoff.format;
+        this.bytes = encodedHandoff.bytes;
+        encodedHandoff = undefined;
       },
     };
   }
@@ -68,6 +85,7 @@ interface AddonInternals {
         data8?: Uint8Array;
         release(): void;
       };
+      _aborted?: boolean;
       _header?: { size?: number };
       _metrics?: { mime: string };
       _resize?: (width: number, height: number) => [number, number];
@@ -110,7 +128,7 @@ function installMemoryPlatform(): void {
   ) => {
     if (
       !(blob instanceof Blob) ||
-      blob.size > TERMINAL_GRAPHICS_INPUT_BYTES ||
+      blob.size > TERMINAL_GRAPHICS_FILE_BYTES ||
       !["image/png", "image/jpeg", "image/gif"].includes(blob.type)
     ) {
       throw new Error("Invalid inline image bitmap");
@@ -142,6 +160,7 @@ export class TerminalGraphicsMirror {
   private readonly addon: ImageAddon;
   private readonly internals: AddonInternals;
   private readonly budget = new TerminalImageBudget();
+  private readonly sixelGate = new TerminalSixelGate(this.budget);
   private readonly handlers: { dispose(): void }[] = [];
   private disposed = false;
   private pendingSixel:
@@ -159,8 +178,8 @@ export class TerminalGraphicsMirror {
       pixelLimit: TERMINAL_GRAPHICS_PIXELS + 1,
       storageLimit: 0.5,
       showPlaceholder: false,
-      sixelSizeLimit: TERMINAL_GRAPHICS_INPUT_BYTES,
-      iipSizeLimit: TERMINAL_GRAPHICS_INPUT_BYTES,
+      sixelSizeLimit: TERMINAL_GRAPHICS_SIXEL_BYTES,
+      iipSizeLimit: TERMINAL_GRAPHICS_FILE_BYTES,
     });
     terminal.loadAddon(this.addon as unknown as Parameters<Terminal["loadAddon"]>[0]);
     this.internals = this.addon as unknown as AddonInternals;
@@ -202,6 +221,10 @@ export class TerminalGraphicsMirror {
     this.handlers.push(ready);
     terminal.write("\x1b]777;ManifoldGraphicsReady\x07", () => ready.dispose());
     this.internals._report = report;
+    const evict = (id: number): void => {
+      storage._images.get(id)?.marker?.dispose();
+      storage._delImg(id);
+    };
     const iip = this.internals._handlers.get("iip");
     if (iip?.end === undefined) throw new Error("Missing pinned iTerm handler");
     if (iip.start === undefined || iip.put === undefined || iip._resize === undefined)
@@ -221,7 +244,7 @@ export class TerminalGraphicsMirror {
       if (headerRejected) return;
       if (headerOpen) {
         for (let index = first; index < last; index++) {
-          if (++headerChars > 4096) {
+          if (++headerChars > TERMINAL_GRAPHICS_FILE_HEADER) {
             headerRejected = true;
             return;
           }
@@ -238,7 +261,11 @@ export class TerminalGraphicsMirror {
       const bytes = iip._dec?.data8;
       if (bytes === undefined || inlineImageDimensions(bytes, iip._metrics?.mime ?? "") === null)
         return [0, 0];
-      return resizeImage(width, height);
+      const size = resizeImage(width, height).map(Math.floor);
+      // Header dimensions and file bytes already decide admission; viewers refuse here too.
+      return this.budget.refuse(size[0] ?? 0, size[1] ?? 0, bytes.length) === undefined
+        ? [size[0] ?? 0, size[1] ?? 0]
+        : [0, 0];
     };
     const end = iip.end.bind(iip);
     iip.end = (success) => {
@@ -248,11 +275,13 @@ export class TerminalGraphicsMirror {
       return result;
     };
     const sixel = this.internals._handlers.get("sixel");
-    if (sixel?.unhook === undefined || sixel.hook === undefined)
+    if (sixel?.unhook === undefined || sixel.hook === undefined || sixel.put === undefined)
       throw new Error("Missing pinned Sixel decoder");
     const unhook = sixel.unhook.bind(sixel);
     const hook = sixel.hook.bind(sixel);
+    const sixelPut = sixel.put.bind(sixel);
     sixel.hook = (params) => {
+      this.sixelGate.start();
       const palette = sixel._dec?._palette;
       this.pendingSixel =
         palette === undefined
@@ -264,21 +293,60 @@ export class TerminalGraphicsMirror {
             };
       hook(params);
     };
+    sixel.put = (data, first, last) => {
+      const accepted = this.sixelGate.put(data, first, last);
+      // Every peer counts the same payload bytes, so evictions agree at each seq boundary.
+      this.budget.reserve(this.sixelGate.bytes, evict);
+      if (accepted) sixelPut(data, first, last);
+      else if (!sixel._aborted) {
+        // Raster metadata or the input bound refused it: abort before any canvas exists.
+        sixel._aborted = true;
+        sixel._dec?.release();
+      }
+    };
     sixel.unhook = (success) => {
       this.pendingSixel = undefined;
       const decoder = sixel._dec;
-      if (
-        decoder !== undefined &&
-        (decoder.width > 2048 ||
-          decoder.height > 2048 ||
-          decoder.width * decoder.height > TERMINAL_GRAPHICS_PIXELS)
-      ) {
-        // Sparse Sixel bands can be small while their rectangular RGBA expansion
-        // is enormous. Check BEFORE upstream unhook reads decoder.data8.
+      if (!success || sixel._aborted || decoder === undefined || !decoder.width || !decoder.height)
+        return unhook(success);
+      const { width, height } = decoder;
+      // Sparse Sixel bands can be small while their rectangular RGBA expansion is
+      // enormous. Check BEFORE upstream unhook reads decoder.data8.
+      if (this.budget.refuse(width, height, 1) !== undefined) {
         decoder.release();
         return true;
       }
-      return unhook(success);
+      const admit = (): boolean | Promise<boolean> => {
+        if (this.disposed) return true;
+        const rgba = decoder.data8;
+        const encoded =
+          rgba === undefined
+            ? undefined
+            : encodeTerminalRgba(
+                new Uint8Array(rgba.buffer, rgba.byteOffset, rgba.byteLength),
+                this.budget.encodedLimit(width, height),
+              );
+        if (this.budget.refuse(width, height, encoded?.bytes.length) !== undefined) {
+          decoder.release();
+          return true;
+        }
+        encodedHandoff = encoded;
+        try {
+          return unhook(success);
+        } finally {
+          encodedHandoff = undefined;
+        }
+      };
+      if (width * height < YIELD_PIXELS) return admit();
+      const { promise, resolve, reject } = Promise.withResolvers<boolean>();
+      setTimeout(() => {
+        try {
+          resolve(admit());
+        } catch (error) {
+          reject(error);
+        }
+      });
+      return promise;
     };
     const del = storage._delImg.bind(storage);
     storage._delImg = (id) => {
@@ -288,33 +356,21 @@ export class TerminalGraphicsMirror {
     storage._evictOldest = () => 0;
     const advance = storage.advanceCursor.bind(storage);
     storage.advanceCursor = (height) => {
-      if (height > 0 && height <= 2048) advance(height);
+      if (height > 0 && height <= TERMINAL_GRAPHICS_AXIS) advance(height);
     };
     const add = storage.addImage.bind(storage);
     storage.addImage = (image) => {
-      if (
-        Math.ceil(image.width / TERMINAL_GRAPHICS_CELL.width) *
-          Math.ceil(image.height / TERMINAL_GRAPHICS_CELL.height) >
-        TERMINAL_GRAPHICS_CELLS
-      )
-        return;
       if (image.format === "rgba") {
-        const encoded = encodeTerminalRgba(image.bytes, TERMINAL_GRAPHICS_BYTES);
+        const encoded = encodeTerminalRgba(
+          image.bytes,
+          this.budget.encodedLimit(image.width, image.height),
+        );
         if (encoded === undefined) return;
         image.format = encoded.format;
         image.bytes = encoded.bytes;
       }
       if (
-        !this.budget.admit(
-          storage._lastId + 1,
-          image.width,
-          image.height,
-          image.bytes.length,
-          (id) => {
-            storage._images.get(id)?.marker?.dispose();
-            storage._delImg(id);
-          },
-        )
+        !this.budget.admit(storage._lastId + 1, image.width, image.height, image.bytes.length, evict)
       )
         return;
       // Cache lifetime cannot depend on a viewer's truncated scrollback. Cell edits
@@ -328,9 +384,7 @@ export class TerminalGraphicsMirror {
       }
       const spec = storage._images.get(storage._lastId);
       if (spec !== undefined) {
-        const footprint =
-          Math.ceil(image.width / TERMINAL_GRAPHICS_CELL.width) *
-          Math.ceil(image.height / TERMINAL_GRAPHICS_CELL.height);
+        const footprint = terminalGraphicsFootprint(image.width, image.height);
         // Cell edits still remove placements, but cannot evict backing data based
         // on which historical rows this particular viewer happened to receive.
         Object.defineProperty(spec, "tileCount", { get: () => footprint, set: () => {} });
@@ -382,6 +436,11 @@ export class TerminalGraphicsMirror {
     );
   }
 
+  /** A refused Sixel is ignored by every peer; its continuation need not replay its bytes. */
+  refusesPendingSixel(): boolean {
+    return this.sixelGate.refusal !== undefined;
+  }
+
   serialize(scrollback: number, includeCells = true, replayPendingSixel = true): string {
     const { _storage: storage } = this.internals;
     const pending = replayPendingSixel ? this.pendingSixel : undefined;
@@ -390,8 +449,8 @@ export class TerminalGraphicsMirror {
       this.internals._handlers.get("sixel")?._dec?._palette ??
       new Uint32Array(256);
     const buffers = (this.terminal as unknown as MirrorInternals)._core.buffers;
-    const state: TerminalGraphicsSnapshot = {
-      version: 1,
+    const state: Extract<TerminalGraphicsSnapshot, { version: 2 }> = {
+      version: 2,
       scrolling: pending?.scrolling ?? this.internals._opts.sixelScrolling,
       palette: Buffer.from(palette.buffer, palette.byteOffset, 1024).toString("base64"),
       paletteLimit: pending?.paletteLimit ?? this.internals._opts.sixelPaletteLimit,
@@ -437,7 +496,10 @@ export class TerminalGraphicsMirror {
       image.cells = packed.toString("base64");
     }
     const data = `${TERMINAL_GRAPHICS_PREFIX}${JSON.stringify(state)}`;
-    if (Buffer.byteLength(data) + 8 > TERMINAL_GRAPHICS_SNAPSHOT_BYTES)
+    if (
+      Buffer.byteLength(data) + 8 >
+      TERMINAL_GRAPHICS_ENVELOPE_BYTES + TERMINAL_GRAPHICS_POLICY.retainedBytes
+    )
       throw new Error("Terminal graphics exceeded its reserved snapshot budget");
     return `\x1b]1337;${data}\x07`;
   }
