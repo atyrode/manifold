@@ -413,12 +413,20 @@ export function installTerminalGraphics(
   };
   iip.end = (success) => {
     if (headerRejected) {
-      notifyRefusal({ resource: "file-header", observed: undefined, allowed: TERMINAL_GRAPHICS_FILE_HEADER });
+      notifyRefusal({
+        resource: "file-header",
+        observed: undefined,
+        allowed: TERMINAL_GRAPHICS_FILE_HEADER,
+      });
       return true;
     }
     const declared = iip._header?.size ?? 0;
     if (declared > TERMINAL_GRAPHICS_FILE_BYTES) {
-      notifyRefusal({ resource: "file-input", observed: declared, allowed: TERMINAL_GRAPHICS_FILE_BYTES });
+      notifyRefusal({
+        resource: "file-input",
+        observed: declared,
+        allowed: TERMINAL_GRAPHICS_FILE_BYTES,
+      });
       return true;
     }
     pending = undefined;

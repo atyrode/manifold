@@ -84,6 +84,14 @@ async function withGraphicsFixture(run: (browser: Browser) => Promise<void>): Pr
           for (let index = 3; index < data.length; index += 4) if (data[index]) painted += 1;
           return painted;
         },
+        firstColor() {
+          const layer = host.querySelector("canvas.xterm-image-layer");
+          if (!layer || !layer.width || !layer.height) return null;
+          const data = readback.call(layer.getContext("2d"), 0, 0, layer.width, layer.height).data;
+          for (let index = 0; index < data.length; index += 4)
+            if (data[index + 3]) return [data[index], data[index + 1], data[index + 2]];
+          return null;
+        },
         dispose() { graphics.dispose(); terminal.dispose(); },
       };
       await written("");
@@ -140,6 +148,8 @@ const line = (browser: Browser, row: number): Promise<string | null> =>
   browser.evaluate<string | null>(`window.graphicsFixture.line(${String(row)})`);
 const painted = (browser: Browser): Promise<number> =>
   browser.evaluate<number>("window.graphicsFixture.painted()");
+const firstColor = (browser: Browser): Promise<[number, number, number] | null> =>
+  browser.evaluate<[number, number, number] | null>("window.graphicsFixture.firstColor()");
 
 test("images past the former 2,048-cell cliff render without a notice or canvas readback", async () => {
   await withGraphicsFixture(async (browser) => {
@@ -196,6 +206,27 @@ test("a retained version-1 host keeps its own cell admission until a version-2 s
     await until(async () => (await painted(browser)) > 0, 5_000, "the version-2 image painted");
     expect(await line(browser, 22)).toBe("AFTER CURRENT");
     expect(await notices(browser)).toHaveLength(1);
+  });
+});
+
+test("a version-1 host's refused Sixel still updates the shared palette, as that host's decoder did", async () => {
+  await withGraphicsFixture(async (browser) => {
+    await browser.evaluate<void>(
+      `window.graphicsFixture.snapshot(${JSON.stringify(`LEGACY${envelope(1)}`)}, 120, 40)`,
+    );
+    // Entry 1 starts green; the refused 2,100-cell fixture redefines it red before refusal.
+    await write(browser, '\x1bPq"1;1;7;6#1;2;0;100;0#1!7~\x1b\\\r\n');
+    await write(browser, `${sixel(700, 282)}\x1b[2J\x1b[H`);
+    await until(async () => (await painted(browser)) === 0, 5_000, "erasure removed the images");
+    await write(browser, '\x1bPq"1;1;7;6#1!7~\x1b\\\r\nREUSED');
+    await until(
+      async () => (await painted(browser)) > 0,
+      5_000,
+      "the palette-reusing image painted",
+    );
+    const [red = 0, green = 0] = (await firstColor(browser)) ?? [];
+    expect(red).toBeGreaterThan(200);
+    expect(green).toBeLessThan(50);
   });
 });
 

@@ -370,7 +370,13 @@ export class TerminalGraphicsMirror {
         image.bytes = encoded.bytes;
       }
       if (
-        !this.budget.admit(storage._lastId + 1, image.width, image.height, image.bytes.length, evict)
+        !this.budget.admit(
+          storage._lastId + 1,
+          image.width,
+          image.height,
+          image.bytes.length,
+          evict,
+        )
       )
         return;
       // Cache lifetime cannot depend on a viewer's truncated scrollback. Cell edits
@@ -458,10 +464,15 @@ export class TerminalGraphicsMirror {
     };
     const ids = new Map<number, number>();
     const placements: number[][] = [];
+    // The pinned addon's reflow can repeat a source tile on a second row (a shrink/grow
+    // whose text rows stopped wrapping). The envelope carries each tile once, top-most first,
+    // so its size stays within the per-tile charge every peer admitted the image under.
+    const placed: Set<number>[] = [];
     for (const [originalId, spec] of storage._images) {
       const id = ids.size;
       ids.set(originalId, id);
       placements.push([]);
+      placed.push(new Set());
       state.images.push({
         id,
         width: spec.orig.width,
@@ -484,7 +495,8 @@ export class TerminalGraphicsMirror {
           const cell = line._extendedAttrs[x];
           if (cell?.imageId === undefined || cell.tileId === undefined || cell.tileId < 0) continue;
           const id = ids.get(cell.imageId);
-          if (id === undefined) continue;
+          if (id === undefined || placed[id]?.has(cell.tileId) !== false) continue;
+          placed[id]?.add(cell.tileId);
           placements[id]?.push(y - start, x, cell.tileId);
         }
       }

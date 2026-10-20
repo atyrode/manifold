@@ -36,8 +36,10 @@ record per canonical tile. The cell budget is gone because every cell is already
 447,000-byte reservation is unchanged and is split explicitly: 2,000 for the envelope skeleton
 and palette, 180,000 plus a 2,048-byte header for an ordinary unfinished control (a maximal
 iTerm file), and 262,952 for retained images. The 64-image and 2,097,152-pixel limits and the
-2,048-pixel side limit stay. The serializer still fails explicitly if an envelope exceeds its
-share.
+2,048-pixel side limit stay. The pinned addon's reflow can repeat a tile on a second row when
+wrapped text rows are split before a terminal grows again; the host serializes each tile's
+top-most placement once, so an envelope never exceeds that per-tile charge. The serializer
+still fails explicitly if an envelope exceeds its share.
 
 **A Sixel may be larger than an ordinary control.** Sixel input is limited to 393,216 bytes.
 While a Sixel payload `P` is in flight beyond the 180,000-byte control share, the oldest images

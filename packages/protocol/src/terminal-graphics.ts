@@ -54,7 +54,7 @@ export const TERMINAL_GRAPHICS_POLICY: TerminalGraphicsPolicy = {
   cells: undefined,
 };
 
-/** Retained terminal hosts from before protocol 58 emit version 1 envelopes. */
+/** Retained terminal hosts from before protocol 59 emit version 1 envelopes. */
 export const LEGACY_TERMINAL_GRAPHICS_POLICY: TerminalGraphicsPolicy = {
   version: 1,
   sixelBytes: 131_072,
@@ -63,13 +63,7 @@ export const LEGACY_TERMINAL_GRAPHICS_POLICY: TerminalGraphicsPolicy = {
 };
 
 export type TerminalGraphicsResource =
-  | "sixel-input"
-  | "file-input"
-  | "file-header"
-  | "axis"
-  | "pixels"
-  | "retained"
-  | "cells";
+  "sixel-input" | "file-input" | "file-header" | "axis" | "pixels" | "retained" | "cells";
 
 /** The limiting resource of a refused image, with observed and allowed quantities. */
 export interface TerminalGraphicsRefusal {
@@ -101,7 +95,11 @@ const format = z.enum([
   "image/gif",
 ]);
 const palette = z.base64().length(1368).endsWith("==");
-function envelope<const Version extends 1 | 2>(version: Version, dataChars: number, cellChars: number) {
+function envelope<const Version extends 1 | 2>(
+  version: Version,
+  dataChars: number,
+  cellChars: number,
+) {
   return z.strictObject({
     version: z.literal(version),
     scrolling: z.boolean(),
@@ -179,8 +177,7 @@ export const TerminalGraphicsSnapshotSchema = z
         invalid = true;
       }
     }
-    const policy =
-      state.version === 1 ? LEGACY_TERMINAL_GRAPHICS_POLICY : TERMINAL_GRAPHICS_POLICY;
+    const policy = state.version === 1 ? LEGACY_TERMINAL_GRAPHICS_POLICY : TERMINAL_GRAPHICS_POLICY;
     if (
       invalid ||
       charge > policy.retainedBytes ||
@@ -437,6 +434,8 @@ export class TerminalImageBudget {
  * Streaming Sixel payload admission shared by the mirror and every viewer. It counts the
  * UTF-8 bytes a snapshot continuation would carry, and refuses raster attributes that
  * already prove an impossible image before the decoder sees the data it would allocate for.
+ * A version-1 host decoded such a control before refusing it, so under that policy the
+ * decoder still runs and keeps the control's palette updates; refusal waits for unhook.
  */
 export class TerminalSixelGate {
   private counted = 0;
@@ -473,12 +472,10 @@ export class TerminalSixelGate {
         this.counted = limit;
         return false;
       }
-      if (this.raster === undefined) continue;
+      if (this.raster === undefined || legacy) continue;
       // `"Pan;Pad;Ph;Pv` precedes any pixel data; its end commits the decoder's canvas.
       const continues =
-        this.raster.length === 0
-          ? code === 0x22
-          : code === 0x3b || (code >= 0x30 && code <= 0x39);
+        this.raster.length === 0 ? code === 0x22 : code === 0x3b || (code >= 0x30 && code <= 0x39);
       if (continues && this.raster.length < 64) {
         this.raster += String.fromCharCode(code);
         continue;

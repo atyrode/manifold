@@ -107,10 +107,10 @@ function idlePty(terminalId: string, cols: number, rows: number): PtyTerminal {
   });
 }
 type ImageRun = ["normal" | "alternate", number, number, number, number, number];
-interface ObservedGraphics extends TerminalGraphicsSnapshot {
+type ObservedGraphics = TerminalGraphicsSnapshot & {
   wire: TerminalGraphicsSnapshot;
   runs: ImageRun[];
-}
+};
 function decode(serialized: string): ObservedGraphics {
   const start = serialized.indexOf(TERMINAL_GRAPHICS_PREFIX) + TERMINAL_GRAPHICS_PREFIX.length;
   const wire = TerminalGraphicsSnapshotSchema.parse(
@@ -245,8 +245,8 @@ test("an in-flight Sixel beyond the control share displaces the oldest image at 
       await write(peer.terminal, stream.slice(offset, offset + chunk));
     return decode(peer.graphics.serialize(0)).wire.images.map((image) => image.data);
   };
-  const [olderData] = await retained(older);
-  const [newerData] = await retained(newer);
+  const [olderData = ""] = await retained(older);
+  const [newerData = ""] = await retained(newer);
   // Within the ordinary control share both content-rich images stay retained.
   expect(await retained(`${older}\r\n${newer}\r\n${large.slice(0, 150_000)}`)).toEqual([
     olderData,
@@ -455,6 +455,24 @@ test("repeated shrink and grow retains a restorable visible image within its adm
   }
   const state = decode(graphics.serialize(0));
   expect(state.runs).toEqual([["normal", 0, 0, 0, 0, 200]]);
+});
+
+test("a reflow that repeats an image tile on a second row still snapshots one placement per tile", async () => {
+  const { terminal, graphics } = mirror(20, 5);
+  await write(terminal, `${"A".repeat(20)}\r${solid(140, 14)}\r\n\r\n`);
+  terminal.resize(10, 5);
+  // Inserting a line splits the wrapped text rows: growing back no longer rejoins them, while
+  // the addon still extends the first image row, so tiles 10-19 now sit on two rows.
+  await write(terminal, "\x1b[2;1H\x1b[1L");
+  terminal.resize(20, 5);
+  await write(terminal, "");
+  // `decode` parses with the schema a late viewer applies; one record per tile keeps it valid.
+  const tiles = decode(graphics.serialize(0)).runs.flatMap(([, , , , tile, count]) =>
+    Array.from({ length: count }, (_, offset) => tile + offset),
+  );
+  expect(tiles.toSorted((left, right) => left - right)).toEqual(
+    Array.from({ length: 20 }, (_, tile) => tile),
+  );
 });
 
 test("lossless packets retain full-size image colors including 256 colors plus transparency", () => {

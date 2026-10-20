@@ -37,7 +37,10 @@ test("the largest envelope skeleton and image entry the schema admits fit their 
     cells: "",
   };
   const perEntry =
-    (framed({ ...skeleton, images: Array.from({ length: TERMINAL_GRAPHICS_IMAGES }, () => entry) }) -
+    (framed({
+      ...skeleton,
+      images: Array.from({ length: TERMINAL_GRAPHICS_IMAGES }, () => entry),
+    }) -
       framed(skeleton)) /
     TERMINAL_GRAPHICS_IMAGES;
   // A one-tile image may encode exactly what its retained charge leaves after its base64

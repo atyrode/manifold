@@ -99,8 +99,7 @@ export function encodeTerminalRgba(
     while (pixel < pixels && pixel - first < 128) {
       const next = source[pixel]!;
       let run = 1;
-      while (run < (indexed ? 3 : 2) && pixel + run < pixels && source[pixel + run] === next)
-        run++;
+      while (run < (indexed ? 3 : 2) && pixel + run < pixels && source[pixel + run] === next) run++;
       if (run >= (indexed ? 3 : 2)) break;
       pixel += Math.min(run, 128 - (pixel - first));
     }
