@@ -105,7 +105,7 @@ would make other Sixel and iTerm producers wrong.
 
 ## Verification
 
-A disposable hub, spawned terminal host and headless Chromium ran the same probe on the base
+On the original 2026-10-03 base, a disposable hub, spawned terminal host and headless Chromium ran the same probe on the base
 tree and this change. It used real PTYs, viewers that were live, simultaneous, late (attached
 inside a 250,000-byte Sixel prefix) and reconnected, a resize, and FIFO eviction. In both runs
 the viewers agreed on text and image-layer pixels. After the change, cell-cliff images render
@@ -118,3 +118,15 @@ boundary, metadata refusal, the refused-Sixel marker, chunking-independent evict
 watermark, the joint reservation, legacy envelopes and encoder aliasing. A real-browser test
 covers no upload before refusal, named and de-duplicated notices, legacy policy selection and
 version-2 restoration.
+
+On the rebased protocol-59 tree, a development hub and its spawned terminal host served the
+built application to headless Chromium at 152×57. OMP's own TUI renderer drew a photo-like
+490×276 preview as a 351,025-byte Sixel, then streamed twelve lines below it, resending the
+image on each frame. It displayed with no notice, and a later viewer restored it from the
+snapshot. Installed OMP 18.12.3 resumed a session whose dithered screenshot preview the former
+131,072-byte limit refused. It displayed and survived four font-size resizes with no notice.
+Twenty repaints of a 1,550,552-byte Sixel produced exactly one notice naming the 393,216-byte
+input limit, and following text and the shell prompt were intact. The 60-image burst recorded
+no long task; the same observer recorded a deliberate 120 ms control task. Further regressions
+cover a reflow that repeats a tile on a second row, and version-1 palette updates from a
+refused Sixel.
