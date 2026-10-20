@@ -92,6 +92,17 @@ async function withGraphicsFixture(run: (browser: Browser) => Promise<void>): Pr
             if (data[index + 3]) return [data[index], data[index + 1], data[index + 2]];
           return null;
         },
+        resize: (cols, rows) => terminal.resize(cols, rows),
+        placements() {
+          const lines = terminal._core.buffers.normal.lines;
+          const found = [];
+          for (let row = 0; row < lines.length; row++)
+            for (let column = 0; column < terminal.cols; column++) {
+              const tile = lines.get(row)?._extendedAttrs[column]?.tileId;
+              if (typeof tile === "number" && tile >= 0) found.push([row, column, tile]);
+            }
+          return found;
+        },
         dispose() { graphics.dispose(); terminal.dispose(); },
       };
       await written("");
@@ -150,6 +161,25 @@ const painted = (browser: Browser): Promise<number> =>
   browser.evaluate<number>("window.graphicsFixture.painted()");
 const firstColor = (browser: Browser): Promise<[number, number, number] | null> =>
   browser.evaluate<[number, number, number] | null>("window.graphicsFixture.firstColor()");
+const placements = (browser: Browser): Promise<[number, number, number][]> =>
+  browser.evaluate<[number, number, number][]>("window.graphicsFixture.placements()");
+
+test("growing after a split wrap places each image tile once, as the host mirror does", async () => {
+  await withGraphicsFixture(async (browser) => {
+    await browser.evaluate<void>("window.graphicsFixture.resize(20, 5)");
+    await write(browser, `${"A".repeat(20)}\r${sixel(140, 14)}\r\n\r\n`);
+    await browser.evaluate<void>("window.graphicsFixture.resize(10, 5)");
+    // Split the wrapped rows, then grow: the addon would repeat tiles 10-19 on the first row.
+    await write(browser, "\x1b[2;1H\x1b[1L");
+    await browser.evaluate<void>("window.graphicsFixture.resize(20, 5)");
+    await write(browser, "");
+    // The same placements the mirror test asserts live and restores for a late viewer.
+    expect(await placements(browser)).toEqual([
+      ...Array.from({ length: 10 }, (_, tile): [number, number, number] => [0, tile, tile]),
+      ...Array.from({ length: 10 }, (_, tile): [number, number, number] => [2, tile, tile + 10]),
+    ]);
+  });
+});
 
 test("images past the former 2,048-cell cliff render without a notice or canvas readback", async () => {
   await withGraphicsFixture(async (browser) => {

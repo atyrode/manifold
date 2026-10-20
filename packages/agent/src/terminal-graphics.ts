@@ -69,6 +69,8 @@ interface ImageStorage {
   advanceCursor(height: number): void;
   _delImg(id: number): void;
   _evictOldest(room: number): number;
+  viewportResize(metrics: { cols: number; rows: number }): void;
+  _writeToCell(line: ImageLine, x: number, imageId: number, tileId: number): void;
 }
 interface AddonInternals {
   _storage: ImageStorage;
@@ -109,6 +111,25 @@ interface AsyncOscParser {
     id: number,
     handler: (data: string) => boolean | Promise<boolean>,
   ): { dispose(): void };
+}
+
+/** Larger than any image's canonical tile count (293 × 147 at the 2,048-pixel side limit). */
+const TILE_KEY_SPAN = 65_536;
+
+/** Every image tile the buffer places, keyed `imageId * TILE_KEY_SPAN + tileId`. */
+function placedImageTiles(buffer: ImageBuffer, cols: number): Set<number> {
+  const placed = new Set<number>();
+  for (let y = 0; y < buffer.lines.length; y++) {
+    const line = buffer.lines.get(y);
+    if (line === undefined) continue;
+    for (let x = 0; x < cols; x++) {
+      if (!(line.getBg(x) & 0x10000000)) continue;
+      const cell = line._extendedAttrs[x];
+      if (cell?.imageId !== undefined && cell.tileId !== undefined && cell.tileId >= 0)
+        placed.add(cell.imageId * TILE_KEY_SPAN + cell.tileId);
+    }
+  }
+  return placed;
 }
 
 let platformInstalled = false;
@@ -358,6 +379,34 @@ export class TerminalGraphicsMirror {
     storage.advanceCursor = (height) => {
       if (height > 0 && height <= TERMINAL_GRAPHICS_AXIS) advance(height);
     };
+    // On a wider grid the addon extends an image row to the right, assuming its tail was
+    // clipped. When a reflow split that row's wrapped continuation, the tail is still placed
+    // below, and extending would draw those tiles twice. A tile's continuation only ever
+    // lies at or below its row, which every viewer holding that row also holds, so skipping
+    // an already-placed tile is the same decision on every peer.
+    const viewportResize = storage.viewportResize.bind(storage);
+    storage.viewportResize = (metrics) => {
+      const write = storage._writeToCell;
+      let placed: Set<number> | undefined;
+      storage._writeToCell = (line, x, imageId, tileId) => {
+        if (placed === undefined) {
+          const buffer =
+            terminal.buffer.active.type === "normal"
+              ? mirror._core.buffers.normal
+              : mirror._core.buffers.alt;
+          placed = placedImageTiles(buffer, terminal.cols);
+        }
+        const key = imageId * TILE_KEY_SPAN + tileId;
+        if (placed.has(key)) return;
+        placed.add(key);
+        write.call(storage, line, x, imageId, tileId);
+      };
+      try {
+        viewportResize(metrics);
+      } finally {
+        storage._writeToCell = write;
+      }
+    };
     const add = storage.addImage.bind(storage);
     storage.addImage = (image) => {
       if (image.format === "rgba") {
@@ -464,9 +513,9 @@ export class TerminalGraphicsMirror {
     };
     const ids = new Map<number, number>();
     const placements: number[][] = [];
-    // The pinned addon's reflow can repeat a source tile on a second row (a shrink/grow
-    // whose text rows stopped wrapping). The envelope carries each tile once, top-most first,
-    // so its size stays within the per-tile charge every peer admitted the image under.
+    // Growing no longer repeats a tile (see viewportResize above). Should any other edit
+    // repeat one, the envelope still carries each tile once, top-most first, so it stays
+    // within the per-tile charge every peer admitted the image under.
     const placed: Set<number>[] = [];
     for (const [originalId, spec] of storage._images) {
       const id = ids.size;

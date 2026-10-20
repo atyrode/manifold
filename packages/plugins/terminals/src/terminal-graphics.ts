@@ -39,6 +39,8 @@ interface ImageSpec {
 }
 interface ImageLine {
   length: number;
+  _extendedAttrs: Record<number, { imageId?: number; tileId?: number } | undefined>;
+  getBg(x: number): number;
 }
 interface ImageBuffer {
   lines: { length: number; get(y: number): ImageLine | undefined };
@@ -51,6 +53,7 @@ interface ImageStorage {
   _delImg(id: number): void;
   _evictOldest(room: number): number;
   _writeToCell(line: ImageLine, col: number, id: number, tile: number): void;
+  viewportResize(metrics: { cols: number; rows: number }): void;
   render(range: { start: number; end: number }): void;
 }
 interface GraphicsDimensions {
@@ -92,6 +95,25 @@ interface MarkerTerminal {
 }
 interface TerminalInternals {
   _core: { buffers: { normal: ImageBuffer; alt: ImageBuffer } };
+}
+
+/** Larger than any image's canonical tile count (293 × 147 at the 2,048-pixel side limit). */
+const TILE_KEY_SPAN = 65_536;
+
+/** Every image tile the buffer places, keyed `imageId * TILE_KEY_SPAN + tileId`. */
+function placedImageTiles(buffer: ImageBuffer, cols: number): Set<number> {
+  const placed = new Set<number>();
+  for (let y = 0; y < buffer.lines.length; y++) {
+    const line = buffer.lines.get(y);
+    if (line === undefined) continue;
+    for (let x = 0; x < cols; x++) {
+      if (!(line.getBg(x) & 0x10000000)) continue;
+      const cell = line._extendedAttrs[x];
+      if (cell?.imageId !== undefined && cell.tileId !== undefined && cell.tileId >= 0)
+        placed.add(cell.imageId * TILE_KEY_SPAN + cell.tileId);
+    }
+  }
+  return placed;
 }
 
 function decodeBase64(data: string): Uint8Array<ArrayBuffer> {
@@ -475,6 +497,31 @@ export function installTerminalGraphics(
   const advance = storage.advanceCursor.bind(storage);
   storage.advanceCursor = (height) => {
     if (height > 0 && height <= TERMINAL_GRAPHICS_AXIS) advance(height);
+  };
+  // Same rule as the host mirror: growing must not extend a row with tiles that a split
+  // wrapped continuation still places below it, or this viewer would draw them twice.
+  const viewportResize = storage.viewportResize.bind(storage);
+  storage.viewportResize = (metrics) => {
+    const write = storage._writeToCell;
+    let placed: Set<number> | undefined;
+    storage._writeToCell = (line, col, id, tile) => {
+      if (placed === undefined) {
+        const { buffers } = (terminal as unknown as TerminalInternals)._core;
+        placed = placedImageTiles(
+          terminal.buffer.active.type === "normal" ? buffers.normal : buffers.alt,
+          terminal.cols,
+        );
+      }
+      const key = id * TILE_KEY_SPAN + tile;
+      if (placed.has(key)) return;
+      placed.add(key);
+      write.call(storage, line, col, id, tile);
+    };
+    try {
+      viewportResize(metrics);
+    } finally {
+      storage._writeToCell = write;
+    }
   };
   const add = storage.addImage.bind(storage);
   storage.addImage = (image) => {

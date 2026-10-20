@@ -457,22 +457,44 @@ test("repeated shrink and grow retains a restorable visible image within its adm
   expect(state.runs).toEqual([["normal", 0, 0, 0, 0, 200]]);
 });
 
-test("a reflow that repeats an image tile on a second row still snapshots one placement per tile", async () => {
+/** Every live image placement in the normal buffer as [row, column, tile], read from xterm. */
+function livePlacements(terminal: Terminal): [number, number, number][] {
+  const lines: unknown = Reflect.get(
+    Object(Reflect.get(Object(Reflect.get(terminal, "_core")), "buffers")).normal,
+    "lines",
+  );
+  const get: unknown = Reflect.get(Object(lines), "get");
+  if (typeof get !== "function") throw new Error("Missing xterm buffer lines");
+  const placements: [number, number, number][] = [];
+  for (let row = 0; row < Number(Reflect.get(Object(lines), "length")); row++) {
+    const attrs: unknown = Reflect.get(Object(Reflect.apply(get, lines, [row])), "_extendedAttrs");
+    for (let column = 0; column < terminal.cols; column++) {
+      const tile: unknown = Reflect.get(Object(Reflect.get(Object(attrs), column)), "tileId");
+      if (typeof tile === "number" && tile >= 0) placements.push([row, column, tile]);
+    }
+  }
+  return placements;
+}
+
+test("growing after a split wrap places each image tile once, live and in the snapshot", async () => {
   const { terminal, graphics } = mirror(20, 5);
   await write(terminal, `${"A".repeat(20)}\r${solid(140, 14)}\r\n\r\n`);
   terminal.resize(10, 5);
-  // Inserting a line splits the wrapped text rows: growing back no longer rejoins them, while
-  // the addon still extends the first image row, so tiles 10-19 now sit on two rows.
+  // Inserting a line splits the wrapped rows, so growing no longer rejoins them. The pinned
+  // addon would still extend the first image row with tiles 10-19 that remain placed below.
   await write(terminal, "\x1b[2;1H\x1b[1L");
   terminal.resize(20, 5);
   await write(terminal, "");
-  // `decode` parses with the schema a late viewer applies; one record per tile keeps it valid.
-  const tiles = decode(graphics.serialize(0)).runs.flatMap(([, , , , tile, count]) =>
-    Array.from({ length: count }, (_, offset) => tile + offset),
-  );
-  expect(tiles.toSorted((left, right) => left - right)).toEqual(
-    Array.from({ length: 20 }, (_, tile) => tile),
-  );
+  const expected = [
+    ...Array.from({ length: 10 }, (_, tile): [number, number, number] => [0, tile, tile]),
+    ...Array.from({ length: 10 }, (_, tile): [number, number, number] => [2, tile, tile + 10]),
+  ];
+  expect(livePlacements(terminal)).toEqual(expected);
+  // `decode` applies a late viewer's schema; the restored placements equal the live ones.
+  expect(decode(graphics.serialize(0)).runs).toEqual([
+    ["normal", 0, 0, 0, 0, 10],
+    ["normal", 2, 0, 0, 10, 10],
+  ]);
 });
 
 test("lossless packets retain full-size image colors including 256 colors plus transparency", () => {
