@@ -381,13 +381,15 @@ export class TerminalGraphicsMirror {
     };
     // On a wider grid the addon extends an image row to the right, assuming its tail was
     // clipped. When a reflow split that row's wrapped continuation, the tail is still placed
-    // below, and extending would draw those tiles twice. A tile's continuation only ever
-    // lies at or below its row, which every viewer holding that row also holds, so skipping
-    // an already-placed tile is the same decision on every peer.
+    // below, and extending would draw those tiles twice. Expansion of a row stops at its first
+    // tile already placed: the run then never overtakes its continuation, so any copy of the
+    // next tile lies at or below the row, which every viewer holding the row also holds, and
+    // every peer makes the same decision.
     const viewportResize = storage.viewportResize.bind(storage);
     storage.viewportResize = (metrics) => {
       const write = storage._writeToCell;
       let placed: Set<number> | undefined;
+      const stopped = new Set<ImageLine>();
       storage._writeToCell = (line, x, imageId, tileId) => {
         if (placed === undefined) {
           const buffer =
@@ -397,7 +399,10 @@ export class TerminalGraphicsMirror {
           placed = placedImageTiles(buffer, terminal.cols);
         }
         const key = imageId * TILE_KEY_SPAN + tileId;
-        if (placed.has(key)) return;
+        if (stopped.has(line) || placed.has(key)) {
+          stopped.add(line);
+          return;
+        }
         placed.add(key);
         write.call(storage, line, x, imageId, tileId);
       };

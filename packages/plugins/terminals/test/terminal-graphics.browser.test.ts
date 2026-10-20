@@ -164,19 +164,37 @@ const firstColor = (browser: Browser): Promise<[number, number, number] | null> 
 const placements = (browser: Browser): Promise<[number, number, number][]> =>
   browser.evaluate<[number, number, number][]>("window.graphicsFixture.placements()");
 
+/** Writes, shrinks, splits the wrapped rows, then grows the 30-tile split-wrap fixture. */
+async function splitWrapThenGrow(browser: Browser): Promise<[number, number, number][]> {
+  await write(browser, `${"A".repeat(20)}\r${sixel(210, 14)}\r\n\r\n`);
+  await browser.evaluate<void>("window.graphicsFixture.resize(10, 5)");
+  await write(browser, "\x1b[2;1H\x1b[1L");
+  await browser.evaluate<void>("window.graphicsFixture.resize(30, 5)");
+  await write(browser, "");
+  return placements(browser);
+}
+
 test("growing after a split wrap places each image tile once, as the host mirror does", async () => {
   await withGraphicsFixture(async (browser) => {
     await browser.evaluate<void>("window.graphicsFixture.resize(20, 5)");
-    await write(browser, `${"A".repeat(20)}\r${sixel(140, 14)}\r\n\r\n`);
-    await browser.evaluate<void>("window.graphicsFixture.resize(10, 5)");
-    // Split the wrapped rows, then grow: the addon would repeat tiles 10-19 on the first row.
-    await write(browser, "\x1b[2;1H\x1b[1L");
-    await browser.evaluate<void>("window.graphicsFixture.resize(20, 5)");
-    await write(browser, "");
-    // The same placements the mirror test asserts live and restores for a late viewer.
-    expect(await placements(browser)).toEqual([
+    // The same placements the mirror test asserts live and restores for a late viewer: the
+    // first row stops at tile 10, which its continuation below already places.
+    expect(await splitWrapThenGrow(browser)).toEqual([
       ...Array.from({ length: 10 }, (_, tile): [number, number, number] => [0, tile, tile]),
-      ...Array.from({ length: 10 }, (_, tile): [number, number, number] => [2, tile, tile + 10]),
+      ...Array.from({ length: 20 }, (_, tile): [number, number, number] => [2, tile, tile + 10]),
+    ]);
+  });
+});
+
+test("a version-1 host's terminal keeps that host's unrestricted grow expansion", async () => {
+  await withGraphicsFixture(async (browser) => {
+    await browser.evaluate<void>(
+      `window.graphicsFixture.snapshot(${JSON.stringify(envelope(1))}, 20, 5)`,
+    );
+    // The old host extends the first row with every remaining tile, repeating 10-29 there.
+    expect(await splitWrapThenGrow(browser)).toEqual([
+      ...Array.from({ length: 30 }, (_, tile): [number, number, number] => [0, tile, tile]),
+      ...Array.from({ length: 20 }, (_, tile): [number, number, number] => [2, tile, tile + 10]),
     ]);
   });
 });

@@ -478,22 +478,24 @@ function livePlacements(terminal: Terminal): [number, number, number][] {
 
 test("growing after a split wrap places each image tile once, live and in the snapshot", async () => {
   const { terminal, graphics } = mirror(20, 5);
-  await write(terminal, `${"A".repeat(20)}\r${solid(140, 14)}\r\n\r\n`);
+  // 30 source tiles: tiles 20-29 start clipped at 20 columns.
+  await write(terminal, `${"A".repeat(20)}\r${solid(210, 14)}\r\n\r\n`);
   terminal.resize(10, 5);
   // Inserting a line splits the wrapped rows, so growing no longer rejoins them. The pinned
-  // addon would still extend the first image row with tiles 10-19 that remain placed below.
+  // addon would still extend the first row with tiles 10-29, although 10-19 remain placed
+  // below; skipping only those would put 20-29 above their own continuation.
   await write(terminal, "\x1b[2;1H\x1b[1L");
-  terminal.resize(20, 5);
+  terminal.resize(30, 5);
   await write(terminal, "");
   const expected = [
     ...Array.from({ length: 10 }, (_, tile): [number, number, number] => [0, tile, tile]),
-    ...Array.from({ length: 10 }, (_, tile): [number, number, number] => [2, tile, tile + 10]),
+    ...Array.from({ length: 20 }, (_, tile): [number, number, number] => [2, tile, tile + 10]),
   ];
   expect(livePlacements(terminal)).toEqual(expected);
   // `decode` applies a late viewer's schema; the restored placements equal the live ones.
   expect(decode(graphics.serialize(0)).runs).toEqual([
     ["normal", 0, 0, 0, 0, 10],
-    ["normal", 2, 0, 0, 10, 10],
+    ["normal", 2, 0, 0, 10, 20],
   ]);
 });
 

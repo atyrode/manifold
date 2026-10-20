@@ -37,11 +37,13 @@ record per canonical tile. The cell budget is gone because every cell is already
 and palette, 180,000 plus a 2,048-byte header for an ordinary unfinished control (a maximal
 iTerm file), and 262,952 for retained images. The 64-image and 2,097,152-pixel limits and the
 2,048-pixel side limit stay. On a wider grid the pinned addon extends an image row to the
-right; after wrapped rows were split, that would repeat tiles still placed below. Every peer
-skips a tile the buffer already places, and a tile's continuation lies at or below its row, so
-viewers holding the row make the same decision and keep one placement per tile. As a guard,
-the host serializes each tile's top-most placement once. The serializer still fails explicitly
-if an envelope exceeds its share.
+right; after wrapped rows were split, that would repeat tiles still placed below. A row's
+expansion stops at its first tile the buffer already places, so a run never overtakes its
+continuation. Any copy of the next tile therefore lies at or below that row, and viewers
+holding the row make the host's decision and keep one placement per tile. A viewer following a
+version-1 host keeps that host's unrestricted expansion. As a guard, the host serializes each
+tile's top-most placement once. The serializer still fails explicitly if an envelope exceeds
+its share.
 
 **A Sixel may be larger than an ordinary control.** Sixel input is limited to 393,216 bytes.
 While a Sixel payload `P` is in flight beyond the 180,000-byte control share, the oldest images

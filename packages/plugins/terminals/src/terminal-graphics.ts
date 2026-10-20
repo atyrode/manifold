@@ -499,11 +499,17 @@ export function installTerminalGraphics(
     if (height > 0 && height <= TERMINAL_GRAPHICS_AXIS) advance(height);
   };
   // Same rule as the host mirror: growing must not extend a row with tiles that a split
-  // wrapped continuation still places below it, or this viewer would draw them twice.
+  // wrapped continuation still places, and a row's expansion stops at its first placed
+  // tile. A version-1 host never applied the rule, so this viewer follows its old addon.
   const viewportResize = storage.viewportResize.bind(storage);
   storage.viewportResize = (metrics) => {
+    if (budget.policy.version === 1) {
+      viewportResize(metrics);
+      return;
+    }
     const write = storage._writeToCell;
     let placed: Set<number> | undefined;
+    const stopped = new Set<ImageLine>();
     storage._writeToCell = (line, col, id, tile) => {
       if (placed === undefined) {
         const { buffers } = (terminal as unknown as TerminalInternals)._core;
@@ -513,7 +519,10 @@ export function installTerminalGraphics(
         );
       }
       const key = id * TILE_KEY_SPAN + tile;
-      if (placed.has(key)) return;
+      if (stopped.has(line) || placed.has(key)) {
+        stopped.add(line);
+        return;
+      }
       placed.add(key);
       write.call(storage, line, col, id, tile);
     };
