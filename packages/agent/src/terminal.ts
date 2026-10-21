@@ -306,7 +306,9 @@ export class PtyTerminal {
       scrollback: MIRROR_SCROLLBACK_LINES,
       allowProposedApi: true,
     });
-    this.continuation = new TerminalParserContinuation(this.mirror);
+    this.continuation = new TerminalParserContinuation(this.mirror, () =>
+      this.graphics.refusesPendingSixel(),
+    );
     this.serializer = new SerializeAddon();
     this.mirror.loadAddon(this.serializer);
     const readiness = Promise.withResolvers<TerminalReadiness>();

@@ -1,15 +1,16 @@
 /** Wire revision; session joins require the current version (close 4409 otherwise). */
-export const PROTOCOL_VERSION = 57;
+export const PROTOCOL_VERSION = 59;
 
 /**
  * Explicit bundle build compatibility, not session or machine-channel negotiation.
  * Protocol 57 requires independently identified terminal views and completion-only parser credit.
  * The explicit-view attach/detach/ack SDK and plugin ABI requires rebuilt bundles; no shared-view
  * fallback is safe. Machine/instance wires and independent native/enrollment floors are unchanged.
+ * Protocol 59 changes first-party terminal image admission, not a plugin call signature.
  * Retain a prior stamp only after proving its unchanged artifacts against the host;
  * reset on an incompatible plugin ABI change. Do not infer a numeric version range.
  */
-export const PLUGIN_BUNDLE_PROTOCOL_COMPAT_VERSIONS: ReadonlySet<string> = new Set(["57"]);
+export const PLUGIN_BUNDLE_PROTOCOL_COMPAT_VERSIONS: ReadonlySet<string> = new Set(["57", "59"]);
 
 /**
  * Machine-channel acceptance set. Agents are long-lived (they hold PTYs and
@@ -496,10 +497,22 @@ export const PLUGIN_BUNDLE_PROTOCOL_COMPAT_VERSIONS: ReadonlySet<string> = new S
  * must rebuild rather than receive a shared-view or socket-receipt ACK shim. Plugin bundle
  * acceptance resets to 57. Machine, native-owner, hardened, terminal-host and instance messages
  * are unchanged; machine and instance acceptance add 57 without requiring a fleet restart.
+ *
+ * v59: TERMINAL IMAGE ADMISSION (issue #936, ADR 0061). Terminal hosts emit version-2
+ * graphics envelopes: one retained snapshot charge (encoded data plus worst-case cell
+ * records) replaces the separate 180,000-byte/2,048-cell budgets, Sixel input reaches
+ * 393,216 bytes inside the unchanged 447,000-byte graphics/control reservation, and raster
+ * metadata refuses impossible images before allocation. A pre-59 browser would refuse
+ * those envelopes and apply its old admission to live output, misplacing text after an
+ * image it alone refuses, so session joins move to 59 through the protocol-skew reload.
+ * Current viewers follow a retained pre-59 host's version-1 envelope with its own rules.
+ * Machine, instance, native-owner and IPC3 frames are byte-identical, so those sets add
+ * 59. A retained host keeps its old limits until it is replaced; rolling a hub back below
+ * 59 while a version-2 host is retained requires replacing that host too.
  */
 export const MACHINE_PROTOCOL_COMPAT_VERSIONS: ReadonlySet<number> = new Set([
   30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 51, 52, 53, 54, 55,
-  56, 57,
+  56, 57, 59,
 ]);
 
 /**
@@ -563,8 +576,11 @@ export const MACHINE_CREDENTIAL_ENROLLMENT_PROTOCOL_VERSION = 55;
  * v53 requires explicit host-recipient admission and ticket subset/expiry fields; reset
  * the instance set so old ambient-admission peers cannot resume through the new contract.
  * v54 adds scoped session authority and leaves that host-recipient instance wire unchanged.
+ * v59 changes terminal image admission inside VT snapshots; instance frames are unchanged.
  */
-export const INSTANCE_PROTOCOL_COMPAT_VERSIONS: ReadonlySet<number> = new Set([53, 54, 55, 56, 57]);
+export const INSTANCE_PROTOCOL_COMPAT_VERSIONS: ReadonlySet<number> = new Set([
+  53, 54, 55, 56, 57, 59,
+]);
 
 /**
  * Liveness cadence for every DIALED pipe (CONTRACTS.md): the machine channel, the

@@ -4,63 +4,152 @@ import { validTerminalRgba } from "./terminal-image-codec.ts";
 /** Transient graphics state travels inside the existing seq-anchored VT snapshot. */
 export const TERMINAL_GRAPHICS_PREFIX = "ManifoldGraphics=";
 export const TERMINAL_GRAPHICS_CELL = { width: 7, height: 14 } as const;
-export const TERMINAL_GRAPHICS_BYTES = 180000;
-export const TERMINAL_GRAPHICS_INPUT_BYTES = 131072;
-export const TERMINAL_GRAPHICS_PIXELS = 2 * 1024 * 1024;
-export const TERMINAL_GRAPHICS_CELLS = 2048;
 export const TERMINAL_GRAPHICS_IMAGES = 64;
-export const TERMINAL_GRAPHICS_SNAPSHOT_BYTES = 267000;
+export const TERMINAL_GRAPHICS_PIXELS = 2 * 1024 * 1024;
+/** Pixels per side; 293 x 147 canonical tiles keep every tile id inside a uint16 record. */
+export const TERMINAL_GRAPHICS_AXIS = 2048;
+/** An iTerm inline file after base64 decoding, and its streaming header characters. */
+export const TERMINAL_GRAPHICS_FILE_BYTES = 131_072;
+export const TERMINAL_GRAPHICS_FILE_HEADER = 4_096;
+
+/**
+ * The UTF-8 snapshot bytes the graphics envelope and the one unfinished control a parser can
+ * hold share inside the 449,992-byte snapshot payload (ADR 0031, divided by ADR 0061).
+ */
+export const TERMINAL_GRAPHICS_SNAPSHOT_BYTES = 447_000;
+/** Envelope framing, scalars and the 256-entry palette, excluding image entries. */
+export const TERMINAL_GRAPHICS_ENVELOPE_BYTES = 2_000;
+/** An unfinished control's introducer, parameters, intermediates and final byte. */
+const TERMINAL_CONTROL_HEADER_BYTES = 2_048;
+/** Unfinished non-Sixel control payload a continuation carries; covers a maximal iTerm file. */
+export const TERMINAL_CONTROL_PAYLOAD_BYTES = 180_000;
+/** Sixel DCS input; OMP's 9x18 pre-negotiation frames of ordinary screenshots fit within it. */
+export const TERMINAL_GRAPHICS_SIXEL_BYTES = 393_216;
+/** Charged per retained image for its JSON entry, beside its base64 data and cell records. */
+const IMAGE_ENTRY_BYTES = 128;
+
+/** Admission rules of the terminal host that produced a stream; viewers follow its envelope. */
+export interface TerminalGraphicsPolicy {
+  readonly version: 1 | 2;
+  /** UTF-8 payload bytes in v2; retained v1 hosts count parser code points instead. */
+  readonly sixelBytes: number;
+  /** Version 2: snapshot charge of every retained entry. Version 1: retained encoded bytes. */
+  readonly retainedBytes: number;
+  /** Version 1 hosts also cap retained canonical cells; version 2 charges their records. */
+  readonly cells: number | undefined;
+}
+
+/**
+ * Ordinary controls keep their fixed share of the reservation. A Sixel payload beyond that
+ * share displaces retained images, oldest first, instead of enlarging the snapshot.
+ */
+export const TERMINAL_GRAPHICS_POLICY: TerminalGraphicsPolicy = {
+  version: 2,
+  sixelBytes: TERMINAL_GRAPHICS_SIXEL_BYTES,
+  retainedBytes:
+    TERMINAL_GRAPHICS_SNAPSHOT_BYTES -
+    TERMINAL_GRAPHICS_ENVELOPE_BYTES -
+    TERMINAL_CONTROL_PAYLOAD_BYTES -
+    TERMINAL_CONTROL_HEADER_BYTES,
+  cells: undefined,
+};
+
+/** Retained terminal hosts from before protocol 59 emit version 1 envelopes. */
+export const LEGACY_TERMINAL_GRAPHICS_POLICY: TerminalGraphicsPolicy = {
+  version: 1,
+  sixelBytes: 131_072,
+  retainedBytes: 180_000,
+  cells: 2_048,
+};
+
+export type TerminalGraphicsResource =
+  "sixel-input" | "file-input" | "file-header" | "axis" | "pixels" | "retained" | "cells";
+
+/** The limiting resource of a refused image, with observed and allowed quantities. */
+export interface TerminalGraphicsRefusal {
+  readonly resource: TerminalGraphicsResource;
+  /** Absent when work stopped at the bound before the exact quantity was known. */
+  readonly observed: number | undefined;
+  readonly allowed: number;
+  readonly width?: number;
+  readonly height?: number;
+}
+
+/** Canonical 7x14 cells an image covers; also its tile count and worst-case placements. */
+export function terminalGraphicsFootprint(width: number, height: number): number {
+  return (
+    Math.ceil(width / TERMINAL_GRAPHICS_CELL.width) *
+    Math.ceil(height / TERMINAL_GRAPHICS_CELL.height)
+  );
+}
 
 const integer = z.number().int().nonnegative();
-const dimension = z.number().int().min(1).max(2048);
-const image = z.strictObject({
-  id: integer.max(63),
-  width: dimension,
-  height: dimension,
-  format: z.enum([
-    "rgba",
-    "rgba-indexed",
-    "rgba-indexed-alpha",
-    "rgba-rle",
-    "image/png",
-    "image/jpeg",
-    "image/gif",
-  ]),
-  data: z.base64().max(Math.ceil(TERMINAL_GRAPHICS_BYTES / 3) * 4),
-  buffer: z.enum(["normal", "alternate"]),
-  /** Little-endian uint16 triples: buffer row, column, source tile. */
-  cells: z.base64().max(TERMINAL_GRAPHICS_CELLS * 8),
-});
-export const TerminalGraphicsSnapshotSchema = z
-  .strictObject({
-    version: z.literal(1),
+const dimension = z.number().int().min(1).max(TERMINAL_GRAPHICS_AXIS);
+const format = z.enum([
+  "rgba",
+  "rgba-indexed",
+  "rgba-indexed-alpha",
+  "rgba-rle",
+  "image/png",
+  "image/jpeg",
+  "image/gif",
+]);
+const palette = z.base64().length(1368).endsWith("==");
+function envelope<const Version extends 1 | 2>(
+  version: Version,
+  dataChars: number,
+  cellChars: number,
+) {
+  return z.strictObject({
+    version: z.literal(version),
     scrolling: z.boolean(),
-    palette: z.base64().length(1368).endsWith("=="),
+    palette,
     paletteLimit: z.number().int().min(1).max(256),
-    images: z.array(image).max(TERMINAL_GRAPHICS_IMAGES),
-  })
+    images: z
+      .array(
+        z.strictObject({
+          id: integer.max(TERMINAL_GRAPHICS_IMAGES - 1),
+          width: dimension,
+          height: dimension,
+          format,
+          data: z.base64().max(dataChars),
+          buffer: z.enum(["normal", "alternate"]),
+          /** Little-endian uint16 triples: buffer row, column, source tile. */
+          cells: z.base64().max(cellChars),
+        }),
+      )
+      .max(TERMINAL_GRAPHICS_IMAGES),
+  });
+}
+export const TerminalGraphicsSnapshotSchema = z
+  .discriminatedUnion("version", [
+    envelope(
+      1,
+      Math.ceil(LEGACY_TERMINAL_GRAPHICS_POLICY.retainedBytes / 3) * 4,
+      (LEGACY_TERMINAL_GRAPHICS_POLICY.cells ?? 0) * 8,
+    ),
+    envelope(2, TERMINAL_GRAPHICS_POLICY.retainedBytes, TERMINAL_GRAPHICS_POLICY.retainedBytes),
+  ])
   .superRefine((state, context) => {
     const ids = new Set<number>();
-    let bytes = 0;
-    let footprint = 0;
+    let charge = 0;
+    let footprints = 0;
     let pixels = 0;
     let cells = 0;
     let invalid = false;
     for (const entry of state.images) {
       invalid ||= ids.has(entry.id);
       ids.add(entry.id);
-      const columns = Math.ceil(entry.width / TERMINAL_GRAPHICS_CELL.width);
-      const rows = Math.ceil(entry.height / TERMINAL_GRAPHICS_CELL.height);
-      footprint += columns * rows;
+      const footprint = terminalGraphicsFootprint(entry.width, entry.height);
+      footprints += footprint;
       const area = entry.width * entry.height;
       pixels += area;
-      if (entry.data.length > Math.ceil(TERMINAL_GRAPHICS_BYTES / 3) * 4) {
-        invalid = true;
-        continue;
-      }
       try {
         const source = Uint8Array.from(atob(entry.data), (character) => character.charCodeAt(0));
-        bytes += source.length;
+        charge +=
+          state.version === 1
+            ? source.length
+            : IMAGE_ENTRY_BYTES + entry.data.length + entry.cells.length;
         if (
           entry.format === "image/png" ||
           entry.format === "image/jpeg" ||
@@ -72,7 +161,8 @@ export const TerminalGraphicsSnapshotSchema = z
         }
         const packed = Uint8Array.from(atob(entry.cells), (character) => character.charCodeAt(0));
         cells += packed.length / 6;
-        if (packed.length % 6 !== 0) {
+        // Version 2 charges every image for at most one record per canonical tile.
+        if (packed.length % 6 !== 0 || (state.version === 2 && packed.length / 6 > footprint)) {
           invalid = true;
           continue;
         }
@@ -81,18 +171,18 @@ export const TerminalGraphicsSnapshotSchema = z
           invalid ||=
             view.getUint16(offset, true) > 6000 ||
             view.getUint16(offset + 2, true) > 999 ||
-            view.getUint16(offset + 4, true) >= columns * rows;
+            view.getUint16(offset + 4, true) >= footprint;
         }
       } catch {
         invalid = true;
       }
     }
+    const policy = state.version === 1 ? LEGACY_TERMINAL_GRAPHICS_POLICY : TERMINAL_GRAPHICS_POLICY;
     if (
       invalid ||
-      bytes > TERMINAL_GRAPHICS_BYTES ||
+      charge > policy.retainedBytes ||
       pixels > TERMINAL_GRAPHICS_PIXELS ||
-      cells > TERMINAL_GRAPHICS_CELLS ||
-      footprint > TERMINAL_GRAPHICS_CELLS
+      (policy.cells !== undefined && (cells > policy.cells || footprints > policy.cells))
     ) {
       context.addIssue({
         code: "custom",
@@ -197,23 +287,91 @@ export function inlineImageDimensions(data: Uint8Array, format: string): [number
 
 /** Identical stream-local admission in the authoritative mirror and every viewer. */
 export class TerminalImageBudget {
-  private readonly images = new Map<number, { bytes: number; pixels: number; cells: number }>();
-  private bytes = 0;
+  private readonly images = new Map<number, { charge: number; pixels: number; cells: number }>();
+  private charged = 0;
   private pixels = 0;
   private cells = 0;
+  private rules = TERMINAL_GRAPHICS_POLICY;
+
+  get policy(): TerminalGraphicsPolicy {
+    return this.rules;
+  }
 
   remove(id: number): void {
     const value = this.images.get(id);
     if (value === undefined) return;
-    this.bytes -= value.bytes;
+    this.charged -= value.charge;
     this.pixels -= value.pixels;
     this.cells -= value.cells;
     this.images.delete(id);
   }
 
-  clear(): void {
+  /** Releases every admission; a snapshot also adopts its producing host's policy. */
+  clear(policy = this.rules): void {
     this.images.clear();
-    this.bytes = this.pixels = this.cells = 0;
+    this.charged = this.pixels = this.cells = 0;
+    this.rules = policy;
+  }
+
+  /** Largest encoding whose retained charge could still admit an image of this size. */
+  encodedLimit(width: number, height: number): number {
+    if (this.rules.version === 1) return this.rules.retainedBytes;
+    const room =
+      this.rules.retainedBytes - IMAGE_ENTRY_BYTES - 8 * terminalGraphicsFootprint(width, height);
+    return Math.max(0, Math.floor(room / 4) * 3);
+  }
+
+  /**
+   * The per-image refusal, computable before decoding or uploading. One encoded byte checks
+   * what dimensions alone prove; `undefined` means encoding stopped at {@link encodedLimit}.
+   * An image this accepts is always admitted, after evicting older images.
+   */
+  refuse(
+    width: number,
+    height: number,
+    encodedBytes: number | undefined,
+  ): TerminalGraphicsRefusal | undefined {
+    if (
+      !Number.isInteger(width) ||
+      !Number.isInteger(height) ||
+      width < 1 ||
+      height < 1 ||
+      width > TERMINAL_GRAPHICS_AXIS ||
+      height > TERMINAL_GRAPHICS_AXIS
+    ) {
+      return {
+        resource: "axis",
+        observed: Math.max(width, height),
+        allowed: TERMINAL_GRAPHICS_AXIS,
+        width,
+        height,
+      };
+    }
+    if (width * height > TERMINAL_GRAPHICS_PIXELS) {
+      return {
+        resource: "pixels",
+        observed: width * height,
+        allowed: TERMINAL_GRAPHICS_PIXELS,
+        width,
+        height,
+      };
+    }
+    const footprint = terminalGraphicsFootprint(width, height);
+    if (this.rules.cells !== undefined && footprint > this.rules.cells) {
+      return { resource: "cells", observed: footprint, allowed: this.rules.cells, width, height };
+    }
+    const charge =
+      encodedBytes !== undefined && Number.isSafeInteger(encodedBytes) && encodedBytes > 0
+        ? this.charge(width, height, encodedBytes)
+        : undefined;
+    if (charge !== undefined && charge <= this.rules.retainedBytes) return undefined;
+    return {
+      resource: "retained",
+      observed: charge,
+      allowed: this.rules.retainedBytes,
+      width,
+      height,
+    };
   }
 
   admit(
@@ -223,39 +381,110 @@ export class TerminalImageBudget {
     encodedBytes: number,
     evict: (id: number) => void,
   ): boolean {
+    if (this.refuse(width, height, encodedBytes) !== undefined) return false;
     const pixels = width * height;
-    const bytes = encodedBytes;
-    if (!Number.isSafeInteger(bytes) || bytes < 1) return false;
-    const cells =
-      Math.ceil(width / TERMINAL_GRAPHICS_CELL.width) *
-      Math.ceil(height / TERMINAL_GRAPHICS_CELL.height);
-    if (
-      !Number.isInteger(width) ||
-      !Number.isInteger(height) ||
-      width < 1 ||
-      height < 1 ||
-      width > 2048 ||
-      height > 2048 ||
-      pixels > TERMINAL_GRAPHICS_PIXELS ||
-      bytes > TERMINAL_GRAPHICS_BYTES ||
-      cells > TERMINAL_GRAPHICS_CELLS
-    )
-      return false;
+    const cells = terminalGraphicsFootprint(width, height);
+    const charge = this.charge(width, height, encodedBytes);
     while (
       this.images.size >= TERMINAL_GRAPHICS_IMAGES ||
-      this.bytes + bytes > TERMINAL_GRAPHICS_BYTES ||
+      this.charged + charge > this.rules.retainedBytes ||
       this.pixels + pixels > TERMINAL_GRAPHICS_PIXELS ||
-      this.cells + cells > TERMINAL_GRAPHICS_CELLS
+      (this.rules.cells !== undefined && this.cells + cells > this.rules.cells)
     ) {
-      const oldest = this.images.keys().next().value;
-      if (oldest === undefined) break;
-      this.remove(oldest);
-      evict(oldest);
+      if (!this.evictOldest(evict)) break;
     }
-    this.images.set(id, { bytes, pixels, cells });
-    this.bytes += bytes;
+    this.images.set(id, { charge, pixels, cells });
+    this.charged += charge;
     this.pixels += pixels;
     this.cells += cells;
+    return true;
+  }
+
+  /**
+   * An in-flight Sixel payload of `payloadBytes` beyond the ordinary control share
+   * displaces the oldest images. Monotone in its argument, so evaluating it at any parser
+   * chunk boundaries leaves every peer with the same images at the same byte position.
+   */
+  reserve(payloadBytes: number, evict: (id: number) => void): void {
+    if (this.rules.version === 1) return;
+    const limit =
+      this.rules.retainedBytes -
+      Math.max(0, Math.min(payloadBytes, this.rules.sixelBytes) - TERMINAL_CONTROL_PAYLOAD_BYTES);
+    while (this.charged > limit && this.evictOldest(evict));
+  }
+
+  private charge(width: number, height: number, encodedBytes: number): number {
+    return this.rules.version === 1
+      ? encodedBytes
+      : IMAGE_ENTRY_BYTES +
+          Math.ceil(encodedBytes / 3) * 4 +
+          8 * terminalGraphicsFootprint(width, height);
+  }
+
+  private evictOldest(evict: (id: number) => void): boolean {
+    const oldest = this.images.keys().next().value;
+    if (oldest === undefined) return false;
+    this.remove(oldest);
+    evict(oldest);
+    return true;
+  }
+}
+
+/**
+ * Streaming Sixel payload admission shared by the mirror and every viewer. It counts the
+ * UTF-8 bytes a snapshot continuation would carry, and refuses raster attributes that
+ * already prove an impossible image before the decoder sees the data it would allocate for.
+ * A version-1 host decoded such a control before refusing it, so under that policy the
+ * decoder still runs and keeps the control's palette updates; refusal waits for unhook.
+ */
+export class TerminalSixelGate {
+  private counted = 0;
+  private raster: string | undefined = "";
+  private refused: TerminalGraphicsRefusal | undefined;
+
+  constructor(private readonly budget: TerminalImageBudget) {}
+
+  /** Payload charge: UTF-8 bytes in v2, code points in v1; never decreases per control. */
+  get bytes(): number {
+    return this.counted;
+  }
+
+  get refusal(): TerminalGraphicsRefusal | undefined {
+    return this.refused;
+  }
+
+  start(): void {
+    this.counted = 0;
+    this.raster = "";
+    this.refused = undefined;
+  }
+
+  /** Counts one parser chunk. False refuses this chunk and the rest of the control. */
+  put(data: Uint32Array, start: number, end: number): boolean {
+    if (this.refused !== undefined) return false;
+    const limit = this.budget.policy.sixelBytes;
+    const legacy = this.budget.policy.version === 1;
+    for (let index = start; index < end; index++) {
+      const code = data[index]!;
+      this.counted += legacy || code < 0x80 ? 1 : code < 0x800 ? 2 : code < 0x10000 ? 3 : 4;
+      if (this.counted > limit) {
+        this.refused = { resource: "sixel-input", observed: undefined, allowed: limit };
+        this.counted = limit;
+        return false;
+      }
+      if (this.raster === undefined || legacy) continue;
+      // `"Pan;Pad;Ph;Pv` precedes any pixel data; its end commits the decoder's canvas.
+      const continues =
+        this.raster.length === 0 ? code === 0x22 : code === 0x3b || (code >= 0x30 && code <= 0x39);
+      if (continues && this.raster.length < 64) {
+        this.raster += String.fromCharCode(code);
+        continue;
+      }
+      const [, , width = 0, height = 0] = this.raster.slice(1).split(";").map(Number);
+      this.raster = undefined;
+      if (width > 0 && height > 0) this.refused = this.budget.refuse(width, height, 1);
+      if (this.refused !== undefined) return false;
+    }
     return true;
   }
 }
