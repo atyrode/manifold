@@ -1,8 +1,9 @@
 # manifold hub image: one Bun process serving HTTP + both WS endpoints + the web
 # bundle, plus an OPTIONAL in-container PTY agent (`MANIFOLD_SPAWN_AGENT`, machine
 # ${MANIFOLD_MACHINE_NAME:-hub}). Debian-based oven/bun provides bash and PTY support
-# for in-container shells. ADR 0032 updates ADR 0001's Bun pin for descriptor ownership.
-FROM oven/bun:1.4.2@sha256:9114c058aeae42162ee16dd5084b95fe9473970bb6bcb5b232ab1630f0546895 AS build
+# for in-container shells. ADR 0032 sets the >=1.4.2 descriptor-ownership floor; 1.4.4 drops
+# the compromised eMudhra CAs from Bun's root store (CVE-2026-91403).
+FROM oven/bun:1.4.4@sha256:1d22548f177f4ff38e0c15baa3c2c46c6c2060ba2d1bc573bb4720b407548f1d AS build
 WORKDIR /app
 # What this image IS (scripts/build-identity.ts; docs/SELF-HOST.md §Environments): the caller
 # stamps a release as its tag or a development build as `<version>+<distance>.g<sha>`. Left
@@ -25,7 +26,7 @@ RUN bun run build:web
 
 # Runtime ships the workspace source (agent-spawn runs `bun packages/agent/src/main.ts`
 # from source), the installed node_modules, and the built web bundle — no build caches.
-FROM oven/bun:1.4.2@sha256:9114c058aeae42162ee16dd5084b95fe9473970bb6bcb5b232ab1630f0546895
+FROM oven/bun:1.4.4@sha256:1d22548f177f4ff38e0c15baa3c2c46c6c2060ba2d1bc573bb4720b407548f1d
 WORKDIR /app
 
 # Litestream 0.5.16, an OPTIONAL replicator: infra/entrypoint.sh runs it only when
