@@ -127,12 +127,14 @@ test("the writer lock admits one holder across processes and is released by clos
 
   // Another process holds it until the kernel reaps that process, with nothing left to clean up.
   // The child is a separate Bun process, so the module is named in its script, not imported here.
+  // It keeps the lock reachable from a global: a collected lock closes its connection and frees
+  // the directory, and a reference only a no-op closure reads is not retained.
   const child = Bun.spawn(
     [
       process.execPath,
       "-e",
       `const { acquireWriterLock } = await import(${JSON.stringify(join(import.meta.dir, "../src/db.ts"))});
-       await acquireWriterLock(${JSON.stringify(dataDir)}, { waitMs: 0 });
+       globalThis.writerLock = await acquireWriterLock(${JSON.stringify(dataDir)}, { waitMs: 0 });
        console.log("held");
        setInterval(() => {}, 1000);`,
     ],
