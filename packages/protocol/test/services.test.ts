@@ -1,4 +1,7 @@
 import { expect, test } from "bun:test";
+// Enter the protocol graph through its public index, as consumers do: the modules imported
+// below start inside an import cycle that only initializes from there (#1092).
+import "../src/index.ts";
 import {
   compileJsonProjection,
   JsonProjectionError,
