@@ -60,7 +60,7 @@ remote movement visible before the durable transaction commits.
 
 ## Risks & mitigations
 
-1. `Bun.Terminal` regressions — pinned Bun 1.4.2 for borrowed-descriptor ownership
+1. `Bun.Terminal` regressions — pinned Bun 1.4.4; borrowed-descriptor ownership needs >=1.4.2
    ([ADR 0032](decisions/0032-bun-descriptor-ownership.md)); revalidate PTYs when upgrading.
    Fallback: agent package on Node + node-pty (protocol unchanged).
 2. Many-node page cost — React Flow visibility culling plus bounded xterm lifecycle;

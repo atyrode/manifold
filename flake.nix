@@ -109,31 +109,31 @@
           inherit (pkgs.stdenv.hostPlatform) system;
           # Pin the required runtime independently of the package collection;
           # an assertion cannot upgrade its older Bun.
-          # Digests: official bun-v1.4.2 release asset metadata (2026-09-09),
-          # https://api.github.com/repos/oven-sh/bun/releases/tags/bun-v1.4.2
+          # Digests: official bun-v1.4.4 release asset metadata (2026-10-31),
+          # https://api.github.com/repos/oven-sh/bun/releases/tags/bun-v1.4.4
           bunSources = {
             x86_64-linux = {
               archive = "bun-linux-x64-baseline.zip";
-              sha256 = "c678040f14fe0440eb839d37cbd0ce4c051a32da72806ac97de6a6aab6bf728f";
+              sha256 = "e0446eb55995772eb9894bebae9a6be368d985a8b9271ee124486f9946eedd76";
             };
             aarch64-linux = {
               archive = "bun-linux-aarch64.zip";
-              sha256 = "54328bbc2d9c8e0c9f892c544d66c57a83b84139e34909e5ee81758f1ac8fda7";
+              sha256 = "baa6bb36f51d6e58561e02bbea825038a9df454f673d6d776e8bbf86f8c7850e";
             };
             x86_64-darwin = {
               archive = "bun-darwin-x64-baseline.zip";
-              sha256 = "bad5bbd6cf14d0980d115f5954c9ff904df619d5e994d2da1ffccd3f316300b0";
+              sha256 = "d4a155adfbfd09155eb3ba05c9e3a544f39297d7a68616d3c7759f67ab5c47dc";
             };
             aarch64-darwin = {
               archive = "bun-darwin-aarch64.zip";
-              sha256 = "90987a3a16d7db556d886ac3d551e7b6d3edf0a1cf43acaed622e8676be1d12f";
+              sha256 = "c240d7f0ccb90c263a849fcdb09b7ee62630d921348ed6aafda86b9d577bc510";
             };
           };
           bun = pkgs.bun.overrideAttrs (
             _final: previous: {
-              version = "1.4.2";
+              version = "1.4.4";
               src = pkgs.fetchurl {
-                url = "https://github.com/oven-sh/bun/releases/download/bun-v1.4.2/${bunSources.${system}.archive}";
+                url = "https://github.com/oven-sh/bun/releases/download/bun-v1.4.4/${bunSources.${system}.archive}";
                 inherit (bunSources.${system}) sha256;
               };
               meta = previous.meta // {

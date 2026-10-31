@@ -43,7 +43,7 @@ jobs:
         if: github.event_name == 'pull_request'
         uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
         with:
-          bun-version: "1.4.2"
+          bun-version: "1.4.4"
 
       # bun run release opens release: v… PRs as its committer, atyrode, from release/v… in
       # this repository. They publish already-triaged changes, so need no throwaway issue.

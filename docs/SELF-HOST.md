@@ -90,7 +90,7 @@ its old immutable package generation until that owner exits.
 `nixosModules.native` is the supported declarative Linux profile. It is not tied to any
 cloud, hostname or product plugin. It requires Linux x64/arm64, unified cgroup v2 with
 `cpu`, `memory`, `pids`, user namespaces, and systemd 254 or newer. The pinned flake packages
-embed Bun >= 1.4.2 and the web bundle; no source checkout is consulted by a running unit.
+embed Bun 1.4.4 and the web bundle; no source checkout is consulted by a running unit.
 The server package also carries the pinned Bun interpreter for hardened plugin children.
 Its build compiles each composition-root first-party source recipe into a trusted artifact
 beside the binary; the wrapper sets `MANIFOLD_FIRST_PARTY_ARTIFACTS` to that directory.
@@ -101,13 +101,13 @@ Startup checks its advertised switches; actual namespace, cgroup migration, `mem
 `pids.peak`, `memory.swap.max` and `cgroup.kill` enforcement still require disposable-owner
 verification on the target kernel. Missing facilities refuse jobs, never launch a fallback.
 The Bun ZIP digests are pinned from the official
-[1.4.2 release metadata](https://api.github.com/repos/oven-sh/bun/releases/tags/bun-v1.4.2);
+[1.4.4 release metadata](https://api.github.com/repos/oven-sh/bun/releases/tags/bun-v1.4.4);
 the older locked nixpkgs Bun is not used. Vendored dependency trees are pinned for all
 four package targets. Their input includes dependency manifests and declared workspace
 executable targets, so Bun creates the same relative command links as a full-source install
 without making unrelated source changes invalidate dependency vendoring.
 
-Run `bun scripts/verify-nix-packaging.ts` on the target with Nix and Bun 1.4.2;
+Run `bun scripts/verify-nix-packaging.ts` on the target with Nix and Bun 1.4.4;
 it needs no workspace dependency installation. The verifier builds and independently
 rebuilds the fixed-output dependency tree, then builds the compiled agent, hub and terminal
 client packages. From owner-private temporary directories with no inherited operator
@@ -846,8 +846,8 @@ above reads it from the data volume instead; it goes only to your terminal).
 
 Deployment selects each public container through a reviewed immutable multi-platform index.
 Both `Dockerfile` stages and the tooling/default-base literals in `infra/recovery.Dockerfile` share
-`oven/bun:1.4.2@sha256:9114c058aeae42162ee16dd5084b95fe9473970bb6bcb5b232ab1630f0546895`
-from the official [oven/bun metadata](https://hub.docker.com/v2/repositories/oven/bun/tags/1.4.2).
+`oven/bun:1.4.4@sha256:1d22548f177f4ff38e0c15baa3c2c46c6c2060ba2d1bc573bb4720b407548f1d`
+from the official [oven/bun metadata](https://hub.docker.com/v2/repositories/oven/bun/tags/1.4.4).
 Compose uses
 `caddy:2.11.4@sha256:14a9c00d4e833ebc2b65d36515b37bde3b73f0b323a2663aaafc88953d8c4e3f`
 ([official metadata](https://hub.docker.com/v2/repositories/library/caddy/tags/2.11.4)),
@@ -872,7 +872,7 @@ then invoke `"$CLEVER"` directly. The archive contains the executable and its bu
 runtime/dependencies; it needs no npm install, `bunx`, or runner Node resolution.
 The official [binary build targets](https://github.com/CleverCloud/clever-tools/blob/4.10.0/scripts/lib/build-binary.js)
 select Linux x64 with bundled Node 22; both jobs explicitly refuse other runner platforms.
-Manifold's Bun application/build runtime remains 1.4.2. Keep provider tooling and its hash in
+Manifold's Bun application/build runtime is 1.4.4. Keep provider tooling and its hash in
 `.github/workflows/deploy-hub.yml`, not root package dependencies or a generic installer.
 
 To update a container, choose the explicit replacement version, inspect its official index,
@@ -1850,13 +1850,13 @@ exact-CI gates, accountability and the separate production/fleet boundaries.
 
 Workspace package versions are required lock metadata: every `bun.lock` workspace must match
 its package manifest, including the absence of a version for versionless packages.
-The root manifest must remain versionless: Bun 1.4.2 omits the root record's version even
+The root manifest must remain versionless: Bun 1.4.4 omits the root record's version even
 when one is declared, so reinstalling cannot make a versioned root consistent. The assertion
 refuses that unsupported state explicitly rather than suggesting a lock-only repair.
 `bun install --frozen-lockfile` does not enforce that equality. The static CI/gate slice runs
 `bun scripts/workspace-versions.ts`, and release uses the same assertion after regenerating
 the lock, before creating or publishing its commit. If metadata is stale, run ordinary
-`bun install` with the supported Bun runtime and verify the resulting lock; Bun 1.4.2 emits
+`bun install` with the supported Bun runtime and verify the resulting lock; Bun 1.4.4 emits
 workspace-only version updates. Do not hand-edit the lock or treat a successful frozen install
 as evidence of metadata consistency.
 
