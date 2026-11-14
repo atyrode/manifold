@@ -5,16 +5,7 @@
  * Gate polling timing lives in `gate-lib.ts` with the rest of the gate bootstrap; this file is
  * the driver and owns bounded protocol-operation deadlines.
  */
-import {
-  closeSync,
-  constants,
-  existsSync,
-  fstatSync,
-  openSync,
-  opendirSync,
-  readSync,
-  rmSync,
-} from "node:fs";
+import { closeSync, constants, existsSync, fstatSync, openSync, readSync, rmSync } from "node:fs";
 import { reserveLoopbackPort, sleep } from "./gate-lib.ts";
 
 interface CdpFrame {
@@ -65,7 +56,11 @@ function startupText(text: string): string {
   return text
     .replace(/[^\S\n]+/g, " ")
     .replace(
-      /^.*(?:--[a-z][a-z0-9-]*(?:=|\s|$)|\b[A-Z][A-Z0-9_]*=|(?:authorization|cookie|password|secret|token|api[_-]?key)\s*[:=]|^(?:\+ |exec |env )).*$/gim,
+      /^.*(?:--[a-z][a-z0-9-]*(?:=|\s|$)|\b[A-Z][A-Z0-9_]*=|^(?:\+ |exec |env )).*$/gm,
+      "[command/environment/credential line redacted]",
+    )
+    .replace(
+      /^.*(?:authorization|cookie|password|secret|token|api[_-]?key)\s*[:=].*$/gim,
       "[command/environment/credential line redacted]",
     )
     .replace(/\b[a-z][a-z0-9+.-]*:\/\/[^\s"'<>]+/gi, "[url redacted]")
@@ -164,7 +159,7 @@ function versionResponse(body: unknown): string {
   return `JSON ${Array.isArray(body) ? "array" : "object"}; ${fields.join("; ")}`;
 }
 
-/** One nonblocking, size-bounded read; do not follow a substituted profile-file symlink. */
+/** One nonblocking, size-bounded read; do not follow an observation-file symlink. */
 function startupFile(path: string, limit: number): { text: string; truncated: boolean } {
   const fd = openSync(path, constants.O_RDONLY | constants.O_NONBLOCK | constants.O_NOFOLLOW);
   try {
@@ -194,105 +189,75 @@ function startupStat(pid: number): { ppid: number; start: string; state: string 
   return { ppid: Number(fields[1]), start: fields[19] ?? "", state: fields[0] ?? "?" };
 }
 
-/** Failure-only snapshot: inspect owned parent/child edges, never enumerate /proc globally. */
+/** Failure-only snapshot of the owned root and its direct, root-task children. */
 function ownedStartupProcesses(proc: Bun.Subprocess): string {
   if (process.platform !== "linux") return "unavailable (not Linux)";
-  const queue = [{ pid: proc.pid, ppid: process.pid, parentStart: "" }];
-  const seen = new Set<number>();
-  const lines: string[] = [];
-  for (let index = 0; index < queue.length && index < 16; index += 1) {
-    if (proc.exitCode !== null) {
-      lines.push("launch child exited; former/orphaned descendants cannot be attributed");
-      break;
-    }
-    const entry = queue[index];
-    if (entry === undefined || seen.has(entry.pid)) continue;
-    seen.add(entry.pid);
-    const base = `/proc/${String(entry.pid)}`;
+  const scope =
+    "\nbounded/racy direct-child-only snapshot (at most 8 children from root task); other-task children, deeper and orphaned descendants unobserved";
+  const rootPid = proc.pid;
+  const unavailable = `pid=${String(rootPid)} unavailable`;
+  try {
+    if (proc.exitCode !== null)
+      return `${unavailable} (launch child exited; no child attribution)${scope}`;
+    const root = startupStat(rootPid);
+    if (root.ppid !== process.pid || /^[ZXx]$/.test(root.state))
+      return `${unavailable} (root no longer live/owned; no child attribution)${scope}`;
+    const lines: string[] = [];
+    let children: number[] = [];
     try {
-      const stat = startupStat(entry.pid);
-      if (
-        stat.ppid !== entry.ppid ||
-        (entry.parentStart !== "" && startupStat(entry.ppid).start !== entry.parentStart)
-      ) {
-        lines.push(`pid=${String(entry.pid)} unavailable (parent identity changed)`);
-        continue;
-      }
-      const observe = (name: string): string => {
-        try {
-          const data = startupFile(`${base}/${name}`, 128);
-          return data.truncated
-            ? "unavailable(truncated)"
-            : data.text.trim().replace(/[^a-zA-Z0-9_.+-]/g, "?");
-        } catch (error) {
-          return `unavailable(${observationError(error)})`;
-        }
-      };
-      const summary = `pid=${String(entry.pid)} ppid=${String(stat.ppid)} startTicks=${stat.start} state=${stat.state} comm=${observe("comm")} wchan=${observe("wchan")}`;
-      const children = new Set<number>();
-      const notes: string[] = [];
-      try {
-        const tasks = opendirSync(`${base}/task`);
-        try {
-          for (let count = 0; count <= 16; count += 1) {
-            const task = tasks.readSync();
-            if (task === null) break;
-            if (count === 16) {
-              notes.push("task limit reached");
-              break;
-            }
-            if (!/^\d+$/.test(task.name)) continue;
-            try {
-              const data = startupFile(`${base}/task/${task.name}/children`, 2_048);
-              if (data.truncated) notes.push("children read truncated");
-              for (const child of data.text.trim().split(/\s+/)) {
-                if (/^\d+$/.test(child)) children.add(Number(child));
-              }
-            } catch (error) {
-              notes.push(`children unavailable(${observationError(error)})`);
-            }
-          }
-        } finally {
-          tasks.closeSync();
-        }
-      } catch (error) {
-        notes.push(`tasks unavailable(${observationError(error)})`);
-      }
-      const after = startupStat(entry.pid);
-      if (
-        after.start !== stat.start ||
-        after.ppid !== stat.ppid ||
-        proc.exitCode !== null ||
-        (entry.parentStart !== "" && startupStat(entry.ppid).start !== entry.parentStart)
-      ) {
-        lines.push(`pid=${String(entry.pid)} unavailable (identity changed during observation)`);
-        continue;
-      }
-      for (const pid of children) {
-        if (seen.has(pid)) continue;
-        if (queue.length < 16) queue.push({ pid, ppid: entry.pid, parentStart: stat.start });
-        else if (!notes.includes("process limit reached")) notes.push("process limit reached");
-      }
+      const data = startupFile(`/proc/${String(rootPid)}/task/${String(rootPid)}/children`, 2_048);
+      // A truncated final PID is not an attributable child.
+      const text = data.truncated ? data.text.replace(/\S*$/, "") : data.text;
+      children = text
+        .trim()
+        .split(/\s+/)
+        .filter((pid) => /^[1-9]\d*$/.test(pid))
+        .map(Number);
       lines.push(
-        `${summary} childrenObserved=${String(children.size)}${notes.length === 0 ? "" : `; ${notes.join("; ")}`}`,
+        `root-task children listed=${String(children.length)}${data.truncated ? "; children read truncated" : ""}${children.length > 8 ? "; direct-child limit reached (8)" : ""}`,
       );
     } catch (error) {
-      lines.push(`pid=${String(entry.pid)} unavailable(${observationError(error)})`);
+      lines.push(`root-task children unavailable(${observationError(error)})`);
     }
-  }
-  return `${lines.join("\n")}\nbounded/racy snapshot (16 processes, 16 tasks/process); unobserved or orphaned descendants are not ruled out`;
-}
-
-function startupActivePort(profile: string): string {
-  try {
-    const data = startupFile(`${profile}/DevToolsActivePort`, 256);
-    const match = /^([0-9]{1,5})\n(\/devtools\/browser\/[a-zA-Z0-9-]{1,128})\n?$/.exec(data.text);
-    const port = Number(match?.[1]);
-    if (data.truncated || match === null || port < 1 || port > 65_535)
-      return "invalid (contents omitted)";
-    return `port=${String(port)} path=${match[2] ?? ""} (file evidence, not proof of liveness)`;
+    for (const pid of [rootPid, ...children.slice(0, 8)]) {
+      try {
+        const stat = pid === rootPid ? root : startupStat(pid);
+        if (pid !== rootPid && stat.ppid !== rootPid) {
+          lines.push(`pid=${String(pid)} unavailable (parent changed)`);
+          continue;
+        }
+        const observe = (name: string): string => {
+          try {
+            const data = startupFile(`/proc/${String(pid)}/${name}`, 128);
+            return data.truncated
+              ? "unavailable(truncated)"
+              : data.text.trim().replace(/[^a-zA-Z0-9_.+-]/g, "?");
+          } catch (error) {
+            return `unavailable(${observationError(error)})`;
+          }
+        };
+        const summary = `pid=${String(pid)} ppid=${String(stat.ppid)} startTicks=${stat.start} state=${stat.state} comm=${observe("comm")} wchan=${observe("wchan")}`;
+        const after = startupStat(pid);
+        lines.push(
+          after.start === stat.start && after.ppid === stat.ppid
+            ? summary
+            : `pid=${String(pid)} unavailable (identity changed during observation)`,
+        );
+      } catch (error) {
+        lines.push(`pid=${String(pid)} unavailable(${observationError(error)})`);
+      }
+    }
+    const after = startupStat(rootPid);
+    if (
+      after.start !== root.start ||
+      after.ppid !== root.ppid ||
+      /^[ZXx]$/.test(after.state) ||
+      proc.exitCode !== null
+    )
+      return `${unavailable} (root changed/exited during observation; no child attribution)${scope}`;
+    return `${lines.join("\n")}${scope}`;
   } catch (error) {
-    return `unavailable(${observationError(error)})`;
+    return `${unavailable}(${observationError(error)}; no child attribution)${scope}`;
   }
 }
 
@@ -492,7 +457,7 @@ export class Browser {
           }
         }
       }
-      return `${binary} (devtools port ${String(port)}, ${String(Date.now() - launched)}ms after launch)\n${states.join("\n")}\nprofile: ${profile}\nDevToolsActivePort: ${startupActivePort(profile)}\nlast /json/version response: ${lastResponse}\nlast readiness probe: ${lastProbe}\nchromium stdout ${stdout()}\nchromium stderr ${stderr()}${processes}`;
+      return `${binary} (devtools port ${String(port)}, ${String(Date.now() - launched)}ms after launch)\n${states.join("\n")}\nprofile: ${profile}\nlast /json/version response: ${lastResponse}\nlast readiness probe: ${lastProbe}\nchromium stdout ${stdout()}\nchromium stderr ${stderr()}${processes}`;
     };
 
     let endpoint = "";

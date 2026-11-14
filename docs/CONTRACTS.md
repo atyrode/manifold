@@ -6753,12 +6753,20 @@ build target and nothing branches on which instance is being looked at.
   aims at exists. Witnesses wait for that body within the existing remount deadline, then press
   once; the occupant-painted engagement and live seams are still asserted, never retried into
   existence.
-- **Browser teardown** (#1032): the CDP driver waits for Chromium to exit, with its
-  existing five-second SIGKILL bound, before stopping the browser's private D-Bus.
+- **Browser startup evidence** (#1094): the CDP driver keeps the existing 60-second DevTools
+  readiness bound and reports bounded startup output, the last probe, and expected response-field
+  presence rather than arbitrary response bodies. Failure-only Linux snapshots inspect the owned
+  launcher and a bounded set of its observed direct children, using finite reads and identity
+  checks. They are racy observations, not complete descendant or cleanup inventories. Output
+  retention stops after startup while both pipes continue draining.
+- **Browser teardown** (#1032): the CDP driver waits for its Chromium launcher's process handle
+  to exit, with the existing five-second SIGKILL escalation, before stopping the private D-Bus.
   This applies to transient incognito and retained non-incognito profiles: disconnecting
   the bus while Chromium is alive can abort the browser and leave page WebSockets
   connected during a core dump. Transient-profile deletion remains driver-owned;
   non-incognito profile retention and cleanup remain the caller's responsibility.
+  An escalation timer does not guarantee that a kernel-stalled process exits, and a returned close
+  does not establish that every descendant disappeared; verification retains its outer bound.
 - **Risk-selected CI proof**: `bun run ci:plan` is the one impact classification for local work
   and pull requests. Agents inspect its changed files, risk and reasons before editing, run
   `bun run ci:check` for build/types/style/smoke/targeted baseline coverage, and add direct

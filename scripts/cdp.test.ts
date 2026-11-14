@@ -139,18 +139,15 @@ test.each(["invalid JSON", "unexpected fields"])(
           : 'Response.json({ Browser: "fixture-response-secret", "Protocol-Version": "fixture-response-secret" }, { status: 503 })';
       writeFileSync(
         devtools,
-        `import { mkdirSync, writeFileSync } from "node:fs";
-const port = Number(process.argv.find((arg) => arg.startsWith("--remote-debugging-port="))?.split("=")[1]);
-const profile = process.argv.find((arg) => arg.startsWith("--user-data-dir="))?.slice("--user-data-dir=".length);
-if (!profile || !Number.isInteger(port)) process.exit(91);
-mkdirSync(profile, { recursive: true });
-writeFileSync(profile + "/DevToolsActivePort", "54321\\n/devtools/browser/fixture\\n");
+        `const port = Number(process.argv.find((arg) => arg.startsWith("--remote-debugging-port="))?.split("=")[1]);
+if (!Number.isInteger(port)) process.exit(91);
 // Parent fake clocks cannot govern this executable; this timer is a safety bound, not a wait.
 setTimeout(() => process.exit(29), 4_000);
 await Bun.write(Bun.stdout, "fixture stdout first\\nhttps://invalid.example/?token=fixture-url-secret\\n" +
   "startup filler\\n".repeat(16_384) + "fixture stdout last\\n");
 await Bun.write(Bun.stderr, "fixture stderr first\\n+ browser --api-key=fixture-command-secret\\n" +
-  "MANIFOLD_FIXTURE_SECRET=fixture-env-secret\\n" + "startup filler\\n".repeat(16_384) +
+  "MANIFOLD_FIXTURE_SECRET=fixture-env-secret\\n" +
+  "native chrome object_path=/org/freedesktop/DBus exit_code=7\\n" + "startup filler\\n".repeat(16_384) +
   "fixture stderr last\\n");
 const server = Bun.serve({
   hostname: "127.0.0.1",
@@ -209,7 +206,6 @@ finally { await close(); }`,
       if (process.platform === "linux")
         expect(stdout).toMatch(/private bus: pid=\d+ exitCode=not observed/);
       else expect(stdout).toContain("private bus: not present");
-      expect(stdout).toContain("DevToolsActivePort: port=54321 path=/devtools/browser/fixture");
       expect(stdout).toContain("last /json/version response: HTTP 503");
       if (responseKind === "invalid JSON") {
         expect(stdout).toContain("last readiness probe: SyntaxError:");
@@ -222,6 +218,7 @@ finally { await close(); }`,
       for (const marker of ["stdout first", "stdout last", "stderr first", "stderr last"]) {
         expect(stdout).toContain(`fixture ${marker}`);
       }
+      expect(stdout).toContain("native chrome object_path=/org/freedesktop/DBus exit_code=7");
       expect(stdout.length).toBeLessThan(20_000);
       for (const secret of ["url", "command", "env", "inherited", "response"]) {
         expect(stdout).not.toContain(`fixture-${secret}-secret`);
