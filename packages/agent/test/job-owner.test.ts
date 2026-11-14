@@ -1,4 +1,5 @@
 import { describe, expect, spyOn, test, vi } from "bun:test";
+import { spawnSync } from "node:child_process";
 import {
   createHash,
   createPublicKey,
@@ -34,6 +35,7 @@ import { join, dirname, basename } from "node:path";
 import {
   canonicalJobJson,
   jobResourceBindingsFor,
+  jobOwnerMachine,
   JobEventSchema,
   JOB_OWNER_PROTOCOL_VERSION,
   sealServiceCredentialEnrollment,
@@ -43,6 +45,8 @@ import {
   type JobEvent,
   type JobRequest,
   type JobResult,
+  type MachineArtifactFileGroup,
+  type ManagedToolArtifact,
 } from "@manifold/protocol";
 import type { TerminalHostEvent } from "@manifold/protocol";
 import { TerminalHost } from "../src/terminal-host.ts";
@@ -52,7 +56,11 @@ import { MachineJobOwner, type JobOwnerOptions } from "../src/job-owner.ts";
 import { JobOutputScratchStore, JobOutputStore } from "../src/job-outputs.ts";
 import { JobResources } from "../src/job-resources.ts";
 import { JobBoundInputStore } from "../src/job-bound-inputs.ts";
-import { artifactCacheKey } from "../src/job-artifacts.ts";
+import {
+  artifactCacheKey,
+  managedToolGroupCacheKey,
+  type PreparedArtifactArchives,
+} from "../src/job-artifacts.ts";
 import {
   LinuxJobRefusal,
   startLinuxJob,
@@ -668,6 +676,112 @@ test
       await owner?.shutdown();
       outputs?.close();
       for (const directory of held.reverse()) directory.close();
+      rmSync(root, { recursive: true, force: true });
+    }
+  },
+);
+
+test.skipIf(!linux).each([
+  ["missing-hash", "https://artifacts.invalid/archive"],
+  ["uppercase-hash", `https://artifacts.invalid/archive\0${"A".repeat(64)}`],
+  ["unsafe-scheme", `http://artifacts.invalid/archive\0${"a".repeat(64)}`],
+  ["credentials", `https://user@artifacts.invalid/archive\0${"a".repeat(64)}`],
+  ["fragment", `https://artifacts.invalid/archive#fragment\0${"a".repeat(64)}`],
+  ["malformed-url", `https://[\0${"a".repeat(64)}`],
+  ["embedded-nul", `https://artifacts.invalid/arch\0ive\0${"a".repeat(64)}`],
+] as const)("prepared archive custody rejects %s before recovery", async (_name, key) => {
+  const root = mkdtempSync(join(tmpdir(), "owner-prepared-invalid-"));
+  const state = HeldDirectory.openAbsolute(root, { private: true });
+  const journal = new JobJournal(state.openChild("journal", { create: true }));
+  const outputsDirectory = state.openChild("outputs", { create: true });
+  const outputs = JobOutputStore.open(outputsDirectory);
+  const keys = generateKeyPairSync("ed25519");
+  try {
+    await expect(
+      MachineJobOwner.open({
+        machineId: "machine",
+        admissionPublicKey: keys.publicKey.export({ type: "spki", format: "pem" }).toString(),
+        journal,
+        cache: state,
+        managedState: state,
+        outputs,
+        delegatedCgroup: state,
+        bubblewrapFd: -1,
+        anchors: {},
+        runtimeTools: {},
+        protectedDirectories: [state],
+        artifactAuthority: { origins: [], maxRedirects: 0, timeoutMs: 1000 },
+        preparedArtifactArchives: new Map([[key, new Uint8Array()]]),
+      }),
+    ).rejects.toThrow("prepared_artifact_archive_invalid");
+  } finally {
+    journal.close();
+    outputs.close();
+    outputsDirectory.close();
+    state.close();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test.skipIf(!linux).each(["entries", "bytes", "conflicting-duplicate"] as const)(
+  "prepared archive custody bounds %s without copying archive bytes",
+  async (mode) => {
+    const root = mkdtempSync(join(tmpdir(), "owner-prepared-bound-"));
+    const state = HeldDirectory.openAbsolute(root, { private: true });
+    const journal = new JobJournal(state.openChild("journal", { create: true }));
+    const outputsDirectory = state.openChild("outputs", { create: true });
+    const outputs = JobOutputStore.open(outputsDirectory);
+    const keys = generateKeyPairSync("ed25519");
+    const bytes = new Uint8Array(mode === "bytes" ? 8 * 1024 * 1024 : 1);
+    const prepared = new Map<string, Uint8Array>(
+      Array.from(
+        { length: mode === "entries" ? 129 : mode === "bytes" ? 65 : 1 },
+        (_, index): [string, Uint8Array] => [
+          `https://artifacts.invalid/${index}\0${"a".repeat(64)}`,
+          bytes,
+        ],
+      ),
+    );
+    const input =
+      mode === "conflicting-duplicate"
+        ? new Proxy(prepared, {
+            get(target, property) {
+              if (property === Symbol.iterator)
+                return function* () {
+                  yield* target;
+                  yield [target.keys().next().value!, new Uint8Array([1])];
+                };
+              return Reflect.get(target, property, target);
+            },
+          })
+        : prepared;
+    try {
+      await expect(
+        MachineJobOwner.open({
+          machineId: "machine",
+          admissionPublicKey: keys.publicKey.export({ type: "spki", format: "pem" }).toString(),
+          journal,
+          cache: state,
+          managedState: state,
+          outputs,
+          delegatedCgroup: state,
+          bubblewrapFd: -1,
+          anchors: {},
+          runtimeTools: {},
+          protectedDirectories: [state],
+          artifactAuthority: { origins: [], maxRedirects: 0, timeoutMs: 1000 },
+          preparedArtifactArchives: input,
+        }),
+      ).rejects.toThrow(
+        mode === "conflicting-duplicate"
+          ? "prepared_artifact_archive_conflict"
+          : "prepared_artifact_archives_limit",
+      );
+    } finally {
+      journal.close();
+      outputs.close();
+      outputsDirectory.close();
+      state.close();
       rmSync(root, { recursive: true, force: true });
     }
   },
@@ -1964,6 +2078,525 @@ describe.skipIf(!realBackend || !compiledProbe)("real supervised job owner", () 
     30000,
   );
 });
+
+test.skipIf(!realBackend || !compiledProbe).each(["bundled", "prepared"] as const)(
+  "[real-linux] one managed alias owns its 41-member readonly grammar directory through recovery and purge (%s)",
+  async (source) => {
+    const root = mkdtempSync(join(tmpdir(), "owner-managed-group-"));
+    const state = HeldDirectory.openAbsolute(root, { private: true });
+    const cache = state.openChild("cache", { create: true });
+    const managedState = state.openChild("locations", { create: true });
+    const outputsDirectory = state.openChild("outputs", { create: true });
+    const outputs = JobOutputStore.open(outputsDirectory);
+    const delegatedCgroup = HeldDirectory.openAbsolute(cgroupRoot!);
+    const executableParent = HeldDirectory.openAbsolute(dirname(bwrap!));
+    const runtimeParent = HeldDirectory.openAbsolute(dirname(busybox!));
+    const bwrapFd = executableParent.openRuntimeFile(basename(bwrap!));
+    const busyboxFd = runtimeParent.openRuntimeFile(basename(busybox!));
+    executableParent.close();
+    runtimeParent.close();
+    const keys = generateKeyPairSync("ed25519");
+    const hash = (bytes: Uint8Array) => createHash("sha256").update(bytes).digest("hex");
+    const grammarFiles = [
+      { id: "manifest", target: ["manifest.json"], bytes: Buffer.from('{"languages":39}\n') },
+      ...Array.from({ length: 39 }, (_, index) => ({
+        id: `language${index}`,
+        target: ["grammars", `language${index}.wasm`],
+        bytes: Buffer.from(`offline-grammar-${index}\n`),
+      })),
+      { id: "notices", target: ["THIRD_PARTY_NOTICES"], bytes: Buffer.from("grammar notices\n") },
+    ];
+    const archive = Buffer.concat([
+      ...grammarFiles.map((file) => tarMember(`package/${file.target.join("/")}`, file.bytes)),
+      Buffer.alloc(1024),
+    ]);
+    const archiveBytes = gzipSync(archive);
+    const origin = "https://artifacts.example.invalid";
+    const grammarOrigin = "https://grammars.example.invalid";
+    const workerUrl = "HTTPS://artifacts.example.invalid:443/worker";
+    const archiveHash = hash(archiveBytes);
+    const group: MachineArtifactFileGroup = {
+      target: ["omp-grammars"],
+      entryTarget: ["manifest.json"],
+      fileTargets: Object.fromEntries(grammarFiles.slice(1).map((file) => [file.id, file.target])),
+      artifact: {
+        ...(source === "prepared"
+          ? { url: `${grammarOrigin}/grammars.tar.gz` }
+          : { bundleFile: "grammars" }),
+        sha256: archiveHash,
+        format: "tar.gz",
+        entry: ["package", "manifest.json"],
+        entrySha256: hash(grammarFiles[0]!.bytes),
+        maxBytes: archiveBytes.length,
+        maxExpandedBytes: archive.length,
+        maxMembers: grammarFiles.length,
+        files: Object.fromEntries(
+          grammarFiles.slice(1).map((file) => [
+            file.id,
+            { entry: ["package", ...file.target], sha256: hash(file.bytes) },
+          ]),
+        ),
+      },
+    };
+    const script = Buffer.from(
+      [
+        "#!/runtime/bin/busybox sh",
+        "set -eu",
+        'if [ "${1:-}" = independent ]; then printf independent; exit 0; fi',
+        "/runtime/bin/busybox mkdir /tmp/omp-native",
+        "/runtime/bin/busybox ln -s /runtime/bin/omp-grammars /tmp/omp-native/grammars",
+        "printf private > /tmp/omp-native/session",
+        'test "$(/runtime/bin/busybox readlink /tmp/omp-native/grammars)" = /runtime/bin/omp-grammars',
+        'test "$(/runtime/bin/busybox find /tmp/omp-native/grammars/ -type f | /runtime/bin/busybox wc -l)" -eq 41',
+        ...grammarFiles.map(
+          (file) =>
+            `test "$(/runtime/bin/busybox sha256sum /tmp/omp-native/grammars/${file.target.join("/")} | /runtime/bin/busybox cut -d ' ' -f 1)" = ${hash(file.bytes)}`,
+        ),
+        "if ( printf changed > /tmp/omp-native/grammars/manifest.json ) 2>/dev/null; then exit 81; fi",
+        "if ( printf added > /tmp/omp-native/grammars/added.wasm ) 2>/dev/null; then exit 82; fi",
+        "if /runtime/bin/busybox rm /tmp/omp-native/grammars/grammars/language0.wasm 2>/dev/null; then exit 83; fi",
+        "if /runtime/bin/busybox chmod 600 /tmp/omp-native/grammars/manifest.json 2>/dev/null; then exit 84; fi",
+        "printf managed-group:41:",
+        "/runtime/bin/busybox cat /tmp/omp-native/session",
+      ].join("\n"),
+    );
+    const workerHash = hash(script);
+    const binary = readFileSync(compiledProbe!);
+    const binaryHash = hash(binary);
+    const artifact = {
+      ...(source === "prepared" ? { url: workerUrl } : { bundleFile: "worker" }),
+      sha256: workerHash,
+      format: "raw" as const,
+      entry: ["worker"],
+      entrySha256: workerHash,
+      maxBytes: script.length,
+      maxExpandedBytes: script.length,
+      maxMembers: 1,
+    };
+    const omp: ManagedToolArtifact = {
+      ...artifact,
+      ...(source === "prepared" ? { url: `${origin}/omp` } : { bundleFile: "omp" }),
+      sha256: binaryHash,
+      entrySha256: binaryHash,
+      maxBytes: binary.length,
+      maxExpandedBytes: binary.length,
+      fileGroups: [group],
+    };
+    const limits = {
+      timeoutMs: 10_000,
+      memoryBytes: 64 * 1024 * 1024,
+      processes: 16,
+      outputBytes: 4096,
+    };
+    const operation = {
+      argv: [{ literal: "group" }],
+      input: {},
+      runtimeTools: ["omp", "busybox"],
+      locations: [],
+      outputs: [],
+      network: "none" as const,
+      limits,
+    };
+    const install: Extract<JobCommand, { type: "install" }> = {
+      type: "install",
+      pluginId: "fixture.groups",
+      installationRevision: "r1",
+      artifactSha256: workerHash,
+      ...(source === "bundled"
+        ? {
+            artifact: { bundleFile: "worker", data: script.toString("base64") },
+            toolArtifacts: {
+              omp: binary.toString("base64"),
+              grammars: archiveBytes.toString("base64"),
+            },
+          }
+        : {}),
+      machine: {
+        artifacts: { [`linux-${process.arch}`]: artifact },
+        tools: { omp: { [`linux-${process.arch}`]: omp } },
+        locations: {},
+        operations: {
+          "fixture.groups.run": operation,
+          "fixture.groups.native": {
+            ...operation,
+            executable: { runtimeTool: "omp" },
+            runtimeTools: ["omp"],
+            argv: [{ literal: "worker" }],
+          },
+          "fixture.groups.independent": {
+            ...operation,
+            runtimeTools: ["busybox"],
+            argv: [{ literal: "independent" }],
+          },
+        },
+      },
+    };
+    const preparedEntries: Array<[string, Uint8Array]> = [
+      [`${workerUrl}\0${workerHash}`, script],
+      [`${origin}/omp\0${binaryHash}`, binary],
+      [`${grammarOrigin}/grammars.tar.gz\0${archiveHash}`, archiveBytes],
+    ];
+    const groupKey = managedToolGroupCacheKey(group);
+    const groupRoot = join(root, "cache", groupKey);
+    const events: JobEvent[] = [];
+    let owner: MachineJobOwner | undefined;
+    let detach: (() => void) | undefined;
+    let purgeFaultMounted = false;
+    const open = async (
+      origins: string[] = [origin, grammarOrigin],
+      prepared: PreparedArtifactArchives | undefined =
+        source === "prepared" ? new Map(preparedEntries) : undefined,
+    ) => {
+      const journal = new JobJournal(state.openChild("journal", { create: true }));
+      try {
+        const opened = await MachineJobOwner.open({
+          machineId: "machine",
+          admissionPublicKey: keys.publicKey.export({ type: "spki", format: "pem" }).toString(),
+          journal,
+          cache,
+          managedState,
+          outputs,
+          delegatedCgroup,
+          bubblewrapFd: bwrapFd,
+          anchors: {},
+          runtimeTools: {
+            busybox: [{ fd: busyboxFd, target: "/runtime/bin/busybox", writable: false }],
+          },
+          protectedDirectories: [state],
+          artifactAuthority: { origins, maxRedirects: 0, timeoutMs: 10_000 },
+          ...(prepared ? { preparedArtifactArchives: prepared } : {}),
+        });
+        detach = opened.attach((event) => {
+          events.push(JobEventSchema.parse(event));
+          return true;
+        });
+        return opened;
+      } catch (error) {
+        journal.close();
+        throw error;
+      }
+    };
+    const heldCacheDescriptors = () =>
+      readdirSync("/proc/self/fd").flatMap((name) => {
+        try {
+          return readlinkSync(`/proc/self/fd/${name}`).startsWith(`${root}/cache/`)
+            ? [Number(name)]
+            : [];
+        } catch {
+          return [];
+        }
+      });
+    const close = async () => {
+      detach?.();
+      const descriptors = heldCacheDescriptors();
+      await owner?.shutdown();
+      owner = undefined;
+      for (const fd of descriptors) expect(() => fstatSync(fd)).toThrow();
+      expect(heldCacheDescriptors()).toEqual([]);
+    };
+    const resources = () => owner!.installedResources(install.pluginId, install.installationRevision);
+    const purge = async () => {
+      await owner!.execute({
+        ...install,
+        artifact: undefined,
+        toolArtifacts: undefined,
+        action: "purge",
+      });
+      expect(events.at(-1)).toMatchObject({
+        type: "installed",
+        resources: { artifactAvailable: false },
+      });
+      expect(existsSync(groupRoot)).toBe(false);
+      expect(heldCacheDescriptors()).toEqual([]);
+    };
+    const run = async (operationId: string, jobId: string) => {
+      const body = {
+        jobId,
+        machineId: "machine",
+        operationId,
+        pluginId: install.pluginId,
+        installationRevision: install.installationRevision,
+        artifactSha256: workerHash,
+        input: {},
+        limits,
+        outputs: [],
+        parent: null,
+        credential: {
+          principalId: "actor",
+          tokenId: "token",
+          grantId: "grant",
+          caps: [],
+          containerScope: null,
+        },
+        traceId: jobId,
+      };
+      const request: JobRequest = { ...body, requestDigest: jobDigest(body) };
+      const now = Date.now();
+      const unsigned = {
+        permitId: jobId,
+        jobId,
+        requestDigest: request.requestDigest,
+        ownerId: owner!.identity.ownerId,
+        ownerGeneration: owner!.identity.generation,
+        decisionId: jobId,
+        policyRevision: "policy",
+        issuedAt: now,
+        expiresAt: now + 30_000,
+      };
+      await owner!.execute({
+        type: "start",
+        request,
+        permit: {
+          ...unsigned,
+          signature: sign(
+            null,
+            Buffer.from(canonicalJobJson(unsigned)),
+            keys.privateKey,
+          ).toString("base64"),
+        },
+      });
+      await vi.waitFor(
+        () => {
+          expect(
+            events.findLast((event) => event.type === "result" && event.result.jobId === jobId),
+          ).toMatchObject({
+            type: "result",
+            result: { state: "exited", exitCode: 0 },
+          });
+        },
+        { timeout: limits.timeoutMs },
+      );
+      return events
+        .flatMap((event) =>
+          event.type === "output" && event.jobId === jobId && event.outputId === "stdout"
+            ? [Buffer.from(event.data, "base64").toString()]
+            : [],
+        )
+        .join("");
+    };
+    try {
+      if (source === "prepared") {
+        owner = await open([]);
+        await owner.execute(install);
+        expect(events.at(-1)).toMatchObject({
+          type: "refusal",
+          reason: "artifact_destination_not_approved",
+        });
+        expect(cache.names()).toEqual([]);
+        await close();
+        owner = await open([origin]);
+        await owner.execute({ type: "drain", draining: false });
+        await owner.execute(install);
+        expect(resources().artifactAvailable).toBe(true);
+        expect(resources().tools.find((tool) => tool.alias === "omp")).toMatchObject({
+          available: false,
+          reason: "artifact_destination_not_approved",
+        });
+        expect(existsSync(groupRoot)).toBe(false);
+        expect(heldCacheDescriptors()).toHaveLength(1);
+        await purge();
+        await close();
+      }
+      const offered = source === "prepared" ? new Map(preparedEntries) : undefined;
+      owner = await open([origin, grammarOrigin], offered);
+      offered?.clear();
+      await owner.execute({ type: "drain", draining: false });
+      const projected = jobOwnerMachine(JOB_OWNER_PROTOCOL_VERSION, install.machine, 59);
+      if (!projected) throw new Error("missing_compatible_independent_operation");
+      await owner.execute({ ...install, machine: projected, toolArtifacts: undefined });
+      expect(resources().tools.map((tool) => tool.alias)).toEqual(["busybox"]);
+      expect(resources().operations).toEqual([
+        { operationId: "fixture.groups.independent", available: true },
+      ]);
+      expect(await run("fixture.groups.independent", "projected-independent")).toBe("independent");
+      if (source === "bundled") {
+        await owner.execute({
+          ...install,
+          toolArtifacts: { omp: binary.toString("base64") },
+        });
+        expect(resources().tools.find((tool) => tool.alias === "omp")).toMatchObject({
+          available: false,
+        });
+        expect(existsSync(groupRoot)).toBe(false);
+        expect(heldCacheDescriptors()).toHaveLength(1);
+      }
+      await owner.execute(install);
+      expect(resources().tools.map((tool) => tool.alias).sort()).toEqual(["busybox", "omp"]);
+      expect(resources().operations.every((operation) => operation.available)).toBe(true);
+      expect(heldCacheDescriptors()).toHaveLength(3);
+      expect(await run("fixture.groups.run", "group-readonly")).toBe("managed-group:41:private");
+      expect(await run("fixture.groups.native", "group-executable")).toBe("private-once");
+      const primaryCachePath = join(root, "cache", artifactCacheKey(artifact, workerHash));
+      const retiredToolDescriptors = heldCacheDescriptors().filter(
+        (fd) => readlinkSync(`/proc/self/fd/${fd}`) !== primaryCachePath,
+      );
+      await owner.execute(install);
+      for (const fd of retiredToolDescriptors) expect(() => fstatSync(fd)).toThrow();
+      expect(heldCacheDescriptors()).toHaveLength(3);
+      await close();
+      owner = await open();
+      expect(resources().operations.every((operation) => operation.available)).toBe(true);
+      await close();
+
+      // Every selected member is mandatory, not merely the archive's entry/manifest. No
+      // startup may expose the primary or fall back to a host tool after a partial restore.
+      const damagedFiles =
+        source === "prepared" ? grammarFiles : [grammarFiles[0]!, grammarFiles.at(-1)!];
+      for (const file of damagedFiles) {
+        for (const damage of ["absent", "tampered"] as const) {
+          const path = join(groupRoot, ...file.target);
+          const parent = dirname(path);
+          const parentMode = lstatSync(parent).mode & 0o777;
+          chmodSync(parent, 0o700);
+          if (damage === "absent") unlinkSync(path);
+          else {
+            const fileMode = lstatSync(path).mode & 0o777;
+            chmodSync(path, 0o600);
+            const changed = Buffer.from(file.bytes);
+            changed[0] = changed[0]! ^ 1;
+            writeFileSync(path, changed);
+            chmodSync(path, fileMode);
+          }
+          chmodSync(parent, parentMode);
+          owner = await open();
+          expect(resources().artifactAvailable).toBe(true);
+          expect(resources().tools.find((tool) => tool.alias === "omp")).toMatchObject({
+            available: false,
+          });
+          expect(resources().operations).toEqual(
+            expect.arrayContaining([
+              expect.objectContaining({ operationId: "fixture.groups.run", available: false }),
+              expect.objectContaining({ operationId: "fixture.groups.native", available: false }),
+              { operationId: "fixture.groups.independent", available: true },
+            ]),
+          );
+          expect(heldCacheDescriptors()).toHaveLength(1);
+          await purge();
+          await owner.execute({ type: "drain", draining: false });
+          await owner.execute(install);
+          expect(resources().operations.every((operation) => operation.available)).toBe(true);
+          expect(heldCacheDescriptors()).toHaveLength(3);
+          await close();
+        }
+      }
+      owner = await open();
+      if (source === "prepared") {
+        // A real foreign bind mount makes HeldDirectory refuse reclamation without touching
+        // its contents. The native harness already owns this disposable mount namespace.
+        const foreign = state.openChild("purge-foreign", { create: true, exclusive: true });
+        try {
+          foreign.atomicWrite("marker", Buffer.from("foreign bytes"));
+        } finally {
+          foreign.close();
+        }
+        const mount = spawnSync(
+          busybox!,
+          ["mount", "--bind", join(root, "purge-foreign"), groupRoot],
+          { encoding: "utf8" },
+        );
+        purgeFaultMounted = mount.status === 0;
+        expect({ status: mount.status, stderr: mount.stderr }).toEqual({ status: 0, stderr: "" });
+        await owner.execute({
+          ...install,
+          artifact: undefined,
+          toolArtifacts: undefined,
+          action: "purge",
+        });
+        expect(events.at(-1)).toMatchObject({ type: "refusal", reason: "mount_escape" });
+        expect(heldCacheDescriptors()).toEqual([]);
+        expect(readFileSync(join(groupRoot, "marker"), "utf8")).toBe("foreign bytes");
+        await close();
+        owner = await open();
+        expect(resources().artifactAvailable).toBe(false);
+        expect(resources().operations).toHaveLength(3);
+        expect(resources().operations.every((operation) => !operation.available)).toBe(true);
+        expect(heldCacheDescriptors()).toEqual([]);
+        // Recovery neither retries nor forgets the failed purge. Remove only the fixture's
+        // fault, then require a fresh explicit purge of the same retained installation.
+        expect(readFileSync(join(groupRoot, "marker"), "utf8")).toBe("foreign bytes");
+        const unmount = spawnSync(busybox!, ["umount", groupRoot], { encoding: "utf8" });
+        purgeFaultMounted = unmount.status !== 0;
+        expect({ status: unmount.status, stderr: unmount.stderr }).toEqual({ status: 0, stderr: "" });
+        await purge();
+        expect(readFileSync(join(root, "purge-foreign", "marker"), "utf8")).toBe("foreign bytes");
+        await close();
+        owner = await open();
+        expect(resources().operations).toEqual([]);
+        await owner.execute({ type: "drain", draining: false });
+        await owner.execute(install);
+        expect(resources().operations.every((operation) => operation.available)).toBe(true);
+      }
+      await owner.execute({ type: "drain", draining: false });
+      const shared: Extract<JobCommand, { type: "install" }> = {
+        ...install,
+        pluginId: "fixture.shared",
+        machine: {
+          ...install.machine,
+          operations: Object.fromEntries(
+            Object.entries(install.machine.operations).map(([id, operation]) => [
+              id.replace("fixture.groups.", "fixture.shared."),
+              operation,
+            ]),
+          ),
+        },
+      };
+      const unrelated = cache.openChild("unrelated", { create: true });
+      unrelated.close();
+      await owner.execute(shared);
+      expect(heldCacheDescriptors()).toHaveLength(6);
+      await owner.execute({
+        ...install,
+        artifact: undefined,
+        toolArtifacts: undefined,
+        action: "purge",
+      });
+      expect(existsSync(groupRoot)).toBe(true);
+      expect(heldCacheDescriptors()).toHaveLength(3);
+      expect(
+        owner.installedResources(shared.pluginId, shared.installationRevision).operations,
+      ).toEqual(
+        expect.arrayContaining([
+          { operationId: "fixture.shared.run", available: true },
+          { operationId: "fixture.shared.native", available: true },
+        ]),
+      );
+      await owner.execute({
+        ...shared,
+        artifact: undefined,
+        toolArtifacts: undefined,
+        action: "purge",
+      });
+      expect(existsSync(groupRoot)).toBe(false);
+      expect(existsSync(join(root, "cache", "unrelated"))).toBe(true);
+      expect(heldCacheDescriptors()).toEqual([]);
+      const journalText = state.openChild("journal");
+      try {
+        for (const name of journalText.names()) {
+          if (lstatSync(`${journalText.procPath}/${name}`).isDirectory()) continue;
+          const text = readFileSync(`${journalText.procPath}/${name}`, "utf8");
+          expect(text).not.toContain("preparedArtifactArchives");
+          expect(text).not.toContain(script.toString("base64"));
+          expect(text).not.toContain(archiveBytes.toString("base64"));
+        }
+      } finally {
+        journalText.close();
+      }
+    } finally {
+      if (purgeFaultMounted) {
+        const unmount = spawnSync(busybox!, ["umount", groupRoot], { encoding: "utf8" });
+        expect({ status: unmount.status, stderr: unmount.stderr }).toEqual({ status: 0, stderr: "" });
+      }
+      await close();
+      outputs.close();
+      closeSync(bwrapFd);
+      closeSync(busyboxFd);
+      for (const directory of [delegatedCgroup, outputsDirectory, managedState, cache, state])
+        directory.close();
+      rmSync(root, { recursive: true, force: true });
+    }
+  },
+  60_000,
+);
 
 test.skipIf(!realBackend).each(["terminal-ancestors", "live-ancestors"] as const)(
   "[real-linux] deferred child reclamation preserves the %s reopening fence and releases nested authority",

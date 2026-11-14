@@ -40,10 +40,15 @@ import { type HeldDirectory } from "./job-files.ts";
 import { deliveredArtifact } from "@manifold/plugin-kit/artifacts";
 import {
   acquireArtifact,
+  acquireManagedTool,
   openCachedArtifact,
+  openCachedManagedTool,
   artifactCacheKey,
+  managedToolGroupCacheKey,
   type ArtifactAuthority,
   type PinnedArtifact,
+  type PinnedManagedTool,
+  type PreparedArtifactArchives,
 } from "./job-artifacts.ts";
 import type { JobJournal, RetainedJob } from "./job-journal.ts";
 import { jobDigest } from "./job-journal.ts";
@@ -134,6 +139,12 @@ export interface JobOwnerOptions {
   /** Reviewed local runtime closures, not executable/cwd/env RPC fields. */
   runtimeTools: Readonly<Record<string, readonly LinuxJobBind[]>>;
   artifactAuthority: ArtifactAuthority;
+  /**
+   * Trusted constructor-only archive custody, keyed by exact URL + "\0" + SHA256. The caller
+   * relinquishes mutation of these byte views; the owner snapshots the lookup without copying
+   * large archives. This grants no origin authority and is never journaled or sent on the wire.
+   */
+  readonly preparedArtifactArchives?: PreparedArtifactArchives;
   /** Sole-owned declared source capabilities; only refs/origins/availability are advertised. */
   credentialSources?: HeldServiceCredentialRegistry;
   /**
@@ -146,7 +157,7 @@ export interface JobOwnerOptions {
 interface Installation {
   command: Extract<JobCommand, { type: "install" }>;
   artifact: PinnedArtifact | null;
-  tools: Map<string, PinnedArtifact>;
+  tools: Map<string, PinnedManagedTool>;
   toolFailures: Map<string, string>;
   runtimeAliases: Map<string, { tool: string | null; companion: boolean }>;
   enabled: boolean;
@@ -268,6 +279,49 @@ function preparationRefusalCode(error: unknown): string {
   return /^[a-zA-Z0-9_-]{1,128}$/.test(code) ? code : "job_preparation_refused";
 }
 
+function holdPreparedArtifactArchives(
+  prepared: PreparedArtifactArchives | undefined,
+): PreparedArtifactArchives | undefined {
+  if (prepared === undefined) return undefined;
+  const owned = new Map<string, Uint8Array>();
+  let bytes = 0;
+  let entries = 0;
+  for (const [key, archive] of prepared) {
+    if (++entries > 128) throw new Error("prepared_artifact_archives_limit");
+    if (
+      typeof key !== "string" ||
+      key.length > 4096 + 65 ||
+      !/^[^\0]{1,4096}\0[a-f0-9]{64}$/.test(key) ||
+      !(archive instanceof Uint8Array) ||
+      !(archive.buffer instanceof ArrayBuffer)
+    )
+      throw new Error("prepared_artifact_archive_invalid");
+    try {
+      const source = key.slice(0, key.indexOf("\0"));
+      const url = new URL(source);
+      if (url.protocol !== "https:" || url.username || url.password || source.includes("#"))
+        throw new Error("prepared_artifact_archive_invalid");
+    } catch {
+      throw new Error("prepared_artifact_archive_invalid");
+    }
+    const previous = owned.get(key);
+    if (previous !== undefined) {
+      if (
+        previous.byteLength !== archive.byteLength ||
+        !Buffer.from(previous.buffer, previous.byteOffset, previous.byteLength).equals(
+          Buffer.from(archive.buffer, archive.byteOffset, archive.byteLength),
+        )
+      )
+        throw new Error("prepared_artifact_archive_conflict");
+      continue;
+    }
+    bytes += archive.byteLength;
+    if (bytes > 512 * 1024 * 1024) throw new Error("prepared_artifact_archives_limit");
+    owned.set(key, archive);
+  }
+  return owned;
+}
+
 /** Independently supervised machine authority. No workload is owned by the websocket transport. */
 export class MachineJobOwner {
   private readonly installs = new Map<string, Installation>();
@@ -277,6 +331,7 @@ export class MachineJobOwner {
   private readonly challenges = new Set<string>();
   private readonly admissionKey: KeyObject;
   private readonly exclusions: DirectoryExclusions;
+  private readonly preparedArtifactArchives: PreparedArtifactArchives | undefined;
   private sink: ((event: JobEvent) => boolean) | null = null;
   private draining = false;
   private ready = false;
@@ -322,12 +377,19 @@ export class MachineJobOwner {
   /** Unreserved preparations whose refusal could not be recorded either, each with temporary
    * roots nothing ran in: the owner's, never deleted, until a durable refusal of that identity. */
   private readonly unrecordedScratch = new Set<OwnedJob>();
+  private readonly options: JobOwnerOptions;
 
   private constructor(
-    private readonly options: JobOwnerOptions,
+    options: JobOwnerOptions,
     private readonly credentialEnrollmentKey: ServiceCredentialEnrollmentKey,
   ) {
     this.admissionKey = createPublicKey(options.admissionPublicKey);
+    const { preparedArtifactArchives, ...heldOptions } = options;
+    this.preparedArtifactArchives = holdPreparedArtifactArchives(preparedArtifactArchives);
+    this.options =
+      this.preparedArtifactArchives === undefined
+        ? heldOptions
+        : { ...heldOptions, preparedArtifactArchives: this.preparedArtifactArchives };
     if (options.protectedDirectories.length === 0) throw new Error("private_owner_roots_required");
     this.credentialSources = options.credentialSources ?? new HeldServiceCredentialRegistry();
     this.credentialSources.sealDeclarations();
@@ -2034,13 +2096,13 @@ export class MachineJobOwner {
       /* Report unavailable, never ambient fallback. */
     }
     const key = this.installKey(command.pluginId, command.installationRevision);
-    const tools = new Map<string, PinnedArtifact>();
+    const tools = new Map<string, PinnedManagedTool>();
     const toolFailures = new Map<string, string>();
     for (const [alias, platforms] of Object.entries(command.machine.tools ?? {})) {
       const tool = platforms[this.platform()];
       try {
         if (!tool) throw new Error("runtime_tool_platform_unavailable");
-        tools.set(alias, openCachedArtifact(tool, this.options.cache));
+        tools.set(alias, openCachedManagedTool(alias, tool, this.options.cache));
       } catch {
         toolFailures.set(alias, "runtime_tool_cache_unavailable");
       }
@@ -2086,7 +2148,13 @@ export class MachineJobOwner {
               : a[2].localeCompare(b[2]),
       );
     for (const name of Object.keys(toolArtifacts ?? {}))
-      if (!selectedTools.some(([, spec]) => spec?.bundleFile === name))
+      if (
+        !selectedTools.some(
+          ([, spec]) =>
+            spec?.bundleFile === name ||
+            spec?.fileGroups?.some((group) => group.artifact.bundleFile === name),
+        )
+      )
         throw new Error("artifact_unexpected_delivery");
     const archives = new Map<string, Buffer>();
     const decoded = new Map<string, Buffer>();
@@ -2124,8 +2192,16 @@ export class MachineJobOwner {
         affected.some((job) => !job.emptyObserved || job.leases.length > 0)
       )
         throw new Error("installation_active_leases");
-      this.options.journal.append({ kind: "install", command });
-      if (restoresProjection) existing.command = { ...command, action: undefined };
+      // Purge intent remains a recoverable disabled installation until every owned cache
+      // removal succeeds. A failed cleanup must survive owner restart for explicit retry.
+      this.options.journal.append({
+        kind: "install",
+        command: command.action === "purge" ? { ...command, action: "disable" } : command,
+      });
+      if (restoresProjection) {
+        existing.command = { ...command, action: undefined };
+        existing.runtimeAliases = runtimeAliases;
+      }
       existing.enabled = false;
       if (command.action === "disable") {
         for (const installation of this.installs.values()) {
@@ -2152,7 +2228,10 @@ export class MachineJobOwner {
             this.options.outputs.release(jobId, output.outputId);
         existing.artifact?.close();
         for (const tool of existing.tools.values()) tool.close();
-        this.installs.delete(key);
+        existing.artifact = null;
+        existing.tools.clear();
+        // Retain a disabled installation until all owned cache reclamation succeeds, so a
+        // failed removal is reported and a later purge can finish the same obligation.
         const specs = [artifactSpec, ...selectedTools.flatMap(([, spec]) => (spec ? [spec] : []))];
         for (const spec of specs) {
           for (const digest of new Set([
@@ -2161,6 +2240,7 @@ export class MachineJobOwner {
           ])) {
             const name = artifactCacheKey(spec, digest);
             const shared = [...this.installs.values()].some((installation) => {
+              if (installation === existing) return false;
               const machine = installation.command.machine;
               const others = [
                 machine.artifacts[this.platform()],
@@ -2179,6 +2259,30 @@ export class MachineJobOwner {
             }
           }
         }
+        for (const [, spec] of selectedTools) {
+          for (const group of spec?.fileGroups ?? []) {
+            const name = managedToolGroupCacheKey(group);
+            const shared = [...this.installs.values()].some(
+              (installation) =>
+                installation !== existing &&
+                Object.values(installation.command.machine.tools ?? {}).some((platforms) =>
+                  platforms[this.platform()]?.fileGroups?.some(
+                    (other) => managedToolGroupCacheKey(other) === name,
+                  ),
+                ),
+            );
+            if (!shared) {
+              try {
+                this.options.cache.removeTree(name);
+              } catch (error) {
+                if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+              }
+            }
+          }
+        }
+        this.options.cache.sync();
+        this.options.journal.append({ kind: "install", command });
+        this.installs.delete(key);
       }
       this.publishInstallationChange(command);
       return;
@@ -2195,10 +2299,12 @@ export class MachineJobOwner {
           delivery,
           archives,
           decoded,
+          this.preparedArtifactArchives,
         );
       if (!existing.enabled || restoresProjection) {
         this.options.journal.append({ kind: "install", command });
         existing.command = command;
+        existing.runtimeAliases = runtimeAliases;
         existing.enabled = true;
       }
     } else {
@@ -2210,6 +2316,7 @@ export class MachineJobOwner {
         delivery,
         archives,
         decoded,
+        this.preparedArtifactArchives,
       );
       try {
         if (this.draining || this.installs.has(key)) throw new Error("installation_raced");
@@ -2231,21 +2338,18 @@ export class MachineJobOwner {
     for (const [alias, spec] of selectedTools) {
       try {
         if (!spec) throw new Error("runtime_tool_platform_unavailable");
-        const member: JobArtifactDelivery | undefined =
-          spec.bundleFile === undefined
-            ? undefined
-            : delivery?.bundleFile === spec.bundleFile
-              ? delivery
-              : toolArtifacts?.[spec.bundleFile] === undefined
-                ? undefined
-                : { bundleFile: spec.bundleFile, data: toolArtifacts[spec.bundleFile]! };
-        const artifact = await acquireArtifact(
+        const artifact = await acquireManagedTool(
+          alias,
           spec,
           this.options.cache,
           this.options.artifactAuthority,
-          member,
-          archives,
-          decoded,
+          {
+            delivery,
+            toolArtifacts,
+            preparedArtifactArchives: this.preparedArtifactArchives,
+            archives,
+            decoded,
+          },
         );
         installation.tools.get(alias)?.close();
         installation.tools.set(alias, artifact);
@@ -3568,6 +3672,8 @@ export class MachineJobOwner {
   ): readonly LinuxJobBind[] | undefined {
     const source = installation.runtimeAliases.get(alias);
     if (source) {
+      if (!source.companion && source.tool !== null)
+        return installation.tools.get(source.tool)?.binds;
       const artifact =
         source.tool === null ? installation.artifact : installation.tools.get(source.tool);
       const pinned = source.companion ? artifact?.files[alias] : artifact;
