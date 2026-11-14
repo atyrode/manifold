@@ -224,7 +224,6 @@ jobs:
       MANIFOLD_VERSION: ${{ fromJSON(needs.plan.outputs.identity).version }}
       MANIFOLD_BUILD: ${{ fromJSON(needs.plan.outputs.identity).build }}
       MANIFOLD_CHANNEL: ${{ fromJSON(needs.plan.outputs.identity).channel }}
-      MANIFOLD_RUNTIME_PROOF_DIR: ${{ runner.temp }}/e2e-runtime-evidence
     steps:
       - name: Check out
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -235,6 +234,8 @@ jobs:
         with:
           changelog: "true"
       - uses: ./.github/actions/gate-slice
+        env:
+          MANIFOLD_RUNTIME_PROOF_DIR: ${{ runner.temp }}/e2e-runtime-evidence
         with:
           task: e2e (testkit except preview recovery)
           dist: "true"
