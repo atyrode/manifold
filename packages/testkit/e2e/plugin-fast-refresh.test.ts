@@ -101,7 +101,10 @@ function refreshProcText(pid: number, file: "stat" | "status" | "wchan", bound: 
 
 function refreshProcFields(pid: number): string[] {
   const stat = refreshProcText(pid, "stat", 4096);
-  const fields = stat.slice(stat.lastIndexOf(")") + 2).trim().split(/\s+/);
+  const fields = stat
+    .slice(stat.lastIndexOf(")") + 2)
+    .trim()
+    .split(/\s+/);
   if (
     !/^[A-Za-z]$/.test(fields[0] ?? "") ||
     !/^\d+$/.test(fields[1] ?? "") ||
