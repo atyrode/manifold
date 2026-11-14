@@ -1201,7 +1201,7 @@ test("explicit group sources retain archive link, traversal, duplicate and actua
 });
 
 test("legacy companion descriptors remain owned while group roots cannot collide with companion targets", async () => {
-  const { spec, group, prepared } = managedFixture();
+  const { group, prepared } = managedFixture();
   const helperBytes = Buffer.from("legacy helper");
   const primaryArchive = gzipSync(
     Buffer.concat([tarMember(), tarMember("legacy/helper", "0", helperBytes), Buffer.alloc(1024)]),
