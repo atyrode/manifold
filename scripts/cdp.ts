@@ -5,7 +5,7 @@
  * Gate polling timing lives in `gate-lib.ts` with the rest of the gate bootstrap; this file is
  * the driver and owns bounded protocol-operation deadlines.
  */
-import { existsSync, rmSync } from "node:fs";
+import { closeSync, constants, existsSync, fstatSync, openSync, readSync, rmSync } from "node:fs";
 import { reserveLoopbackPort, sleep } from "./gate-lib.ts";
 
 interface CdpFrame {
@@ -50,6 +50,139 @@ const DEVTOOLS_PROBE_MS = 2_000;
  * infinite wait with diagnostics, not to fail a slow-but-progressing launch.
  */
 const CDP_SOCKET_OPEN_MS = 60_000;
+
+/** A bounded token from an error's class or code; never its message or other raw values. */
+const OBSERVATION_TOKEN = /^[A-Za-z0-9_]{1,64}$/;
+
+function observationError(error: unknown): string {
+  if (error !== null && typeof error === "object") {
+    const code: unknown = Reflect.get(error, "code");
+    if (typeof code === "string" && OBSERVATION_TOKEN.test(code)) return code;
+  }
+  return "unavailable";
+}
+
+/** Error messages can echo response bodies, URLs or credentials, so report class and code only. */
+function probeError(error: unknown, depth = 0): string {
+  if (!(error instanceof Error)) return "non-Error exception (value omitted)";
+  const name = OBSERVATION_TOKEN.test(error.name) ? error.name : "Error (name omitted)";
+  const code = observationError(error);
+  return `${name}${code === "unavailable" ? "" : ` [${code}]`}${
+    error instanceof SyntaxError ? ": invalid JSON response (body omitted)" : ""
+  }${depth < 1 && error.cause instanceof Error ? `; cause: ${probeError(error.cause, depth + 1)}` : ""}`;
+}
+
+function versionResponse(body: unknown): string {
+  if (body === null || typeof body !== "object")
+    return `JSON ${body === null ? "null" : typeof body}`;
+  const fields = ["Browser", "Protocol-Version", "webSocketDebuggerUrl"].map((key) => {
+    const value: unknown = Reflect.get(body, key);
+    return `${key}=${typeof value === "string" ? (value === "" ? "empty string" : "string present") : "absent/non-string"}`;
+  });
+  return `JSON ${Array.isArray(body) ? "array" : "object"}; ${fields.join("; ")}`;
+}
+
+/** One nonblocking, size-bounded read; do not follow an observation-file symlink. */
+function startupFile(path: string, limit: number): { text: string; truncated: boolean } {
+  const fd = openSync(path, constants.O_RDONLY | constants.O_NONBLOCK | constants.O_NOFOLLOW);
+  try {
+    if (!fstatSync(fd).isFile()) throw new Error("not a regular observation file");
+    const bytes = Buffer.alloc(limit + 1);
+    const count = readSync(fd, bytes, 0, bytes.length, 0);
+    return { text: bytes.subarray(0, Math.min(count, limit)).toString(), truncated: count > limit };
+  } finally {
+    closeSync(fd);
+  }
+}
+
+function startupStat(pid: number): { ppid: number; start: string; state: string } {
+  const stat = startupFile(`/proc/${String(pid)}/stat`, 4_096);
+  const fields = stat.text
+    .slice(stat.text.lastIndexOf(")") + 2)
+    .trim()
+    .split(/\s+/);
+  if (
+    stat.truncated ||
+    !/^[A-Za-z]$/.test(fields[0] ?? "") ||
+    !/^\d+$/.test(fields[1] ?? "") ||
+    !/^\d+$/.test(fields[19] ?? "")
+  ) {
+    throw new Error("invalid process stat");
+  }
+  return { ppid: Number(fields[1]), start: fields[19] ?? "", state: fields[0] ?? "?" };
+}
+
+/** Timeout-only snapshot of the owned Chromium root and its direct, root-task children. */
+function ownedStartupProcesses(proc: Bun.Subprocess): string {
+  if (process.platform !== "linux") return "unavailable (not Linux)";
+  const scope =
+    "\nbounded/racy direct-child-only snapshot (at most 8 children from root task); other-task children, deeper and orphaned descendants unobserved";
+  const rootPid = proc.pid;
+  const unavailable = `pid=${String(rootPid)} unavailable`;
+  try {
+    if (proc.exitCode !== null)
+      return `${unavailable} (launch child exited; no child attribution)${scope}`;
+    const root = startupStat(rootPid);
+    if (root.ppid !== process.pid || /^[ZXx]$/.test(root.state))
+      return `${unavailable} (root no longer live/owned; no child attribution)${scope}`;
+    const lines: string[] = [];
+    let children: number[] = [];
+    try {
+      const data = startupFile(`/proc/${String(rootPid)}/task/${String(rootPid)}/children`, 2_048);
+      // A truncated final PID is not an attributable child.
+      const text = data.truncated ? data.text.replace(/\S*$/, "") : data.text;
+      children = text
+        .trim()
+        .split(/\s+/)
+        .filter((pid) => /^[1-9]\d*$/.test(pid))
+        .map(Number);
+      lines.push(
+        `root-task children listed=${String(children.length)}${data.truncated ? "; children read truncated" : ""}${children.length > 8 ? "; direct-child limit reached (8)" : ""}`,
+      );
+    } catch (error) {
+      lines.push(`root-task children unavailable(${observationError(error)})`);
+    }
+    for (const pid of [rootPid, ...children.slice(0, 8)]) {
+      try {
+        const stat = pid === rootPid ? root : startupStat(pid);
+        if (pid !== rootPid && stat.ppid !== rootPid) {
+          lines.push(`pid=${String(pid)} unavailable (parent changed)`);
+          continue;
+        }
+        const observe = (name: string): string => {
+          try {
+            const data = startupFile(`/proc/${String(pid)}/${name}`, 128);
+            return data.truncated
+              ? "unavailable(truncated)"
+              : data.text.trim().replace(/[^a-zA-Z0-9_.+-]/g, "?");
+          } catch (error) {
+            return `unavailable(${observationError(error)})`;
+          }
+        };
+        const summary = `pid=${String(pid)} ppid=${String(stat.ppid)} startTicks=${stat.start} state=${stat.state} comm=${observe("comm")} wchan=${observe("wchan")}`;
+        const after = startupStat(pid);
+        lines.push(
+          after.start === stat.start && after.ppid === stat.ppid
+            ? summary
+            : `pid=${String(pid)} unavailable (identity changed during observation)`,
+        );
+      } catch (error) {
+        lines.push(`pid=${String(pid)} unavailable(${observationError(error)})`);
+      }
+    }
+    const after = startupStat(rootPid);
+    if (
+      after.start !== root.start ||
+      after.ppid !== root.ppid ||
+      /^[ZXx]$/.test(after.state) ||
+      proc.exitCode !== null
+    )
+      return `${unavailable} (root changed/exited during observation; no child attribution)${scope}`;
+    return `${lines.join("\n")}${scope}`;
+  } catch (error) {
+    return `${unavailable}(${observationError(error)}; no child attribution)${scope}`;
+  }
+}
 
 /** Renders one CDP `Runtime.RemoteObject` as the text a reader wants in a dump. */
 function describeRemoteObject(value: unknown): string {
@@ -234,8 +367,22 @@ export class Browser {
       }
     })();
     const launched = Date.now();
-    const diagnostics = (): string =>
-      `${binary} (devtools port ${String(port)}, ${String(Date.now() - launched)}ms after launch)${stderrTail === "" ? "" : `\nchromium stderr tail:\n${stderrTail}`}`;
+    let lastProbe = "not attempted";
+    let lastResponse = "none observed";
+    const diagnostics = (timedOut = false): string => {
+      const owned = [
+        ["chromium", proc],
+        ["private bus:", this.privateBus],
+      ] as const;
+      const states = owned.map(([label, child]) =>
+        child === null
+          ? `${label} not present`
+          : `${label} pid=${String(child.pid)} exitCode=${child.exitCode === null ? "not observed" : String(child.exitCode)} signal=${child.signalCode ?? "not observed"}`,
+      );
+      return `${binary} (devtools port ${String(port)}, ${String(Date.now() - launched)}ms after launch)\n${states.join("\n")}\nlast /json/version response: ${lastResponse}\nlast readiness probe: ${lastProbe}\nchromium stderr tail:\n${stderrTail === "" ? "(no stderr observed)" : stderrTail}${
+        timedOut ? `\nowned chromium /proc snapshot:\n${ownedStartupProcesses(proc)}` : ""
+      }`;
+    };
 
     let endpoint = "";
     const deadline = launched + 60_000;
@@ -253,14 +400,18 @@ export class Browser {
             Math.max(1, Math.min(DEVTOOLS_PROBE_MS, deadline - Date.now())),
           ),
         });
+        lastResponse = `HTTP ${String(res.status)} (JSON body not yet decoded)`;
         const body = (await res.json()) as { webSocketDebuggerUrl?: string };
+        lastResponse = `HTTP ${String(res.status)}; ${versionResponse(body)}`;
         endpoint = body.webSocketDebuggerUrl ?? "";
+        lastProbe =
+          endpoint === "" ? "response without a debugger endpoint" : "debugger endpoint advertised";
         if (endpoint !== "") break;
-      } catch {
-        // devtools endpoint not accepting connections yet
+      } catch (error) {
+        lastProbe = probeError(error);
       }
       if (Date.now() > deadline) {
-        throw new Error(`timed out waiting for chromium devtools endpoint: ${diagnostics()}`);
+        throw new Error(`timed out waiting for chromium devtools endpoint: ${diagnostics(true)}`);
       }
       await sleep(150);
     }

@@ -1134,10 +1134,12 @@ export const PLUGIN_BUNDLE_FORMAT = 1;
  * 12 -> 13: Additive-optional harness `resolveModel`, announced by `loaded.harnessResolvesModel`,
  *    and an optional `model` on `identity.reportRunActivityV2`. Hosts never send the verb to
  *    older guests, whose Run model reports refuse as unverifiable.
+ * 13 -> 14: Bounded nonrecursive managed-tool file groups. Group-using bundles require
+ *    this contract; ordinary older bundles retain their complete existing semantics.
  */
-export const HARDENED_CONTRACT_VERSION = 13;
+export const HARDENED_CONTRACT_VERSION = 14;
 export const HARDENED_CONTRACT_COMPAT_VERSIONS: ReadonlySet<number> = new Set([
-  1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13,
+  1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14,
 ]);
 export const HARDENED_CONTRACT_MINIMUM = Math.min(...HARDENED_CONTRACT_COMPAT_VERSIONS);
 
@@ -1213,6 +1215,19 @@ export const PluginBundleSchema = z
   })
   .check((ctx) => {
     const files = ctx.value.files;
+    if (
+      Object.values(ctx.value.manifest.machine?.tools ?? {}).some((platforms) =>
+        Object.values(platforms).some((artifact) => artifact.fileGroups !== undefined),
+      ) &&
+      (ctx.value.hardenedContract ?? 0) < 14
+    ) {
+      ctx.issues.push({
+        code: "custom",
+        input: ctx.value,
+        path: ["hardenedContract"],
+        message: "managed artifact file groups require hardened contract 14",
+      });
+    }
     if (ctx.value.serverBinding !== undefined) {
       if ((ctx.value.hardenedContract ?? 0) < 12 || ctx.value.manifest.entry.server !== true) {
         ctx.issues.push({

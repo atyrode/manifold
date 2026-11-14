@@ -304,13 +304,15 @@ export function parseBundle(bytes: Uint8Array): PluginBundle {
   }
   const parsed = PluginBundleSchema.safeParse(raw);
   if (parsed.success) {
+    const decoded = new Map<string, Buffer>();
     for (const spec of machineArtifacts(parsed.data.manifest.machine)) {
       if (spec.bundleFile === undefined) continue;
       try {
-        deliveredArtifact(spec, {
-          bundleFile: spec.bundleFile,
-          data: parsed.data.files[spec.bundleFile]!,
-        });
+        deliveredArtifact(
+          spec,
+          { bundleFile: spec.bundleFile, data: parsed.data.files[spec.bundleFile]! },
+          decoded,
+        );
       } catch (error) {
         throw new InstallRefusal(
           "artifact_invalid",

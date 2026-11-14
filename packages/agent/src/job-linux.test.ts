@@ -201,6 +201,39 @@ test("runtime executable selection cannot execute a directory closure or an unde
   }
 });
 
+test("managed readonly directories gain no writable-parent or nested-mount exception", () => {
+  const f = fixture();
+  const group = {
+    fd: f.spec.delegatedCgroup.fd,
+    target: "/runtime/bin/omp-grammars",
+    writable: false,
+  };
+  try {
+    for (const target of ["/runtime", "/runtime/bin", "/runtime/bin/omp-grammars/extra"]) {
+      expect(() =>
+        preflightLinuxJob({
+          ...f.spec,
+          artifactFd: -1,
+          runtime: [group],
+          locations: [{ fd: -1, target, writable: true }],
+        }),
+      ).toThrow("overlapping-mounts");
+    }
+    expect(() => preflightLinuxJob({ ...f.spec, runtime: [{ ...group, writable: true }] })).toThrow(
+      "writable-runtime",
+    );
+    expect(() =>
+      preflightLinuxJob({
+        ...f.spec,
+        executableRuntimeTool: "omp",
+        runtime: [group],
+      }),
+    ).toThrow("runtime-executable-unavailable");
+  } finally {
+    f.close();
+  }
+});
+
 test("input files must be immutable anonymous descriptors, not readonly views of mutable host files", () => {
   const f = fixture();
   const fd = privateByteFile(Buffer.from("exact config\n"));
@@ -1599,6 +1632,39 @@ test.skipIf(!realLinux)(
 );
 
 test.skipIf(!realLinux)(
+  "[real-linux] a 41-member runtime directory is one ordinary bind within the unchanged 256-bind ceiling",
+  async () => {
+    await withLinux("exit 0", async (spec) => {
+      const path = mkdtempSync(join(tmpdir(), "job-linux-runtime-group-"));
+      for (let index = 0; index < 41; index++)
+        writeFileSync(join(path, `member${index}`), `selected-${index}`, { mode: 0o400 });
+      const directory = HeldDirectory.openAbsolute(path, { private: true });
+      try {
+        const runtime = [
+          { fd: spec.runtime[0]!.fd, target: "/runtime/bin/omp", writable: false },
+          { fd: directory.fd, target: "/runtime/bin/omp-grammars", writable: false },
+          ...Array.from({ length: 254 }, (_, index) => ({
+            fd: spec.runtime[0]!.fd,
+            target: `/runtime/bin/padding${index}`,
+            writable: false,
+          })),
+        ];
+        expect(preflightLinuxJob({ ...spec, executableRuntimeTool: "omp", runtime })).toBe(0);
+        expect(() =>
+          preflightLinuxJob({
+            ...spec,
+            runtime: [...runtime, { fd: -1, target: "/runtime/bin/overflow", writable: false }],
+          }),
+        ).toThrow("too-many-mounts");
+      } finally {
+        directory.close();
+        rmSync(path, { recursive: true, force: true });
+      }
+    });
+  },
+);
+
+test.skipIf(!realLinux)(
   "[real-linux] a bound input is a readable directory tree at /inputs/<name> that the workload cannot write",
   async () => {
     await withLinux(
@@ -2249,9 +2315,17 @@ test.skipIf(!realLinux || !outputRoot)(
   "[real-linux] named output storage returns ENOSPC during writes while the output-only child is still alive",
   async () => {
     const path = mkdtempSync(join(outputRoot!, "budget-"));
-    const directory = HeldDirectory.openAbsolute(path);
+    const directories: HeldDirectory[] = [];
     const ready = Promise.withResolvers<void>();
     try {
+      let directory = HeldDirectory.openAbsolute(path);
+      directories.push(directory);
+      // Retain only owned handles until every free fd below the child mount band is occupied.
+      // Each reopen consumes one such slot, so at most the eight low descriptors are padded.
+      while (directory.fd < 8) {
+        directory = directory.reopen();
+        directories.push(directory);
+      }
       await withLinux(
         '/bin/busybox dd if=/dev/zero of=/outputs/result/oversized bs=4096 count=64 2>/tmp/error; status=$?; test "$status" -ne 0 || exit 41; printf bounded; read line; test "$line" = release',
         async (spec) => {
@@ -2304,7 +2378,7 @@ test.skipIf(!realLinux || !outputRoot)(
         },
       );
     } finally {
-      directory.close();
+      for (const directory of directories) directory.close();
       rmSync(path, { recursive: true });
     }
   },

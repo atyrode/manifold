@@ -5,8 +5,10 @@ import { Readable } from "node:stream";
 import {
   JobArtifactDeliverySchema,
   MachineArtifactSchema,
+  MachineArtifactFileGroupSourceSchema,
   machineArtifacts,
   type MachineArtifact,
+  type MachineArtifactFileGroupSource,
   type PluginBundle,
   type JobArtifactDelivery,
 } from "@manifold/protocol";
@@ -48,7 +50,7 @@ export function isPublicArtifactAddress(address: string): boolean {
 
 /** Verify transport presence and identity before cache lookup, even for an already installed worker. */
 export function deliveredArtifact(
-  spec: MachineArtifact,
+  spec: MachineArtifact | MachineArtifactFileGroupSource,
   delivery: JobArtifactDelivery | undefined,
   decoded?: Map<string, Buffer>,
 ): Buffer | undefined {
@@ -159,11 +161,12 @@ function zipMetadata(archive: Buffer, start: number, end: number, local: boolean
 /** One bounded archive verifier for packing, hub admission, and native owner acquisition. */
 export async function extractArtifact(
   archive: Buffer,
-  spec: MachineArtifact,
+  spec: MachineArtifact | MachineArtifactFileGroupSource,
   signal: AbortSignal,
   deadline = Infinity,
 ): Promise<ExtractedArtifact> {
-  spec = MachineArtifactSchema.parse(spec);
+  const legacy = MachineArtifactSchema.safeParse(spec);
+  spec = legacy.success ? legacy.data : MachineArtifactFileGroupSourceSchema.parse(spec);
   const checkDeadline = () => {
     signal.throwIfAborted();
     if (performance.now() >= deadline) throw new Error("artifact_deadline");

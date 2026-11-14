@@ -39,6 +39,17 @@ export {
 } from "./terminal-host-listener.ts";
 export { FrameReader, FrameTooLargeError, FrameWriter } from "./ipc-framing.ts";
 export { MachineJobOwner, type JobOwnerOptions } from "./job-owner.ts";
+export {
+  acquireManagedTool,
+  openCachedManagedTool,
+  type ArtifactAuthority,
+  type ManagedToolAcquisitionOptions,
+  type PinnedArtifact,
+  type PinnedManagedTool,
+  type PreparedArtifactArchives,
+} from "./job-artifacts.ts";
+export { HeldDirectory } from "./job-files.ts";
+export { type LinuxJobBind } from "./job-linux.ts";
 export { HeldServiceCredentialRegistry } from "./job-credentials.ts";
 export {
   listenJobOwner,
@@ -47,6 +58,7 @@ export {
   type JobOwnerDialer,
 } from "./job-owner-link.ts";
 export { openConfiguredJobOwner } from "./job-runtime.ts";
+export { runTerminalHost } from "./main.ts";
 export {
   REPOSITORY_CACHE_MAX_ENTRIES,
   REPOSITORY_CACHE_TTL_MS,

@@ -164,6 +164,14 @@ implementation while waiting for the answer.
 
 ## Claims and dispatch
 
+Implementation and queue intake, including work that changes tracked status or resumes
+operational follow-through, use the rules below. Independently authorized nonmutating source
+investigation, diagnosis or audit follows [AGENTS.md §Boundaries](../AGENTS.md#boundaries),
+not the implementation claim and queue-drain requirements.
+[The audit README](audits/README.md#run-protocol) still governs formal brief runs and their
+ledger/publication duties; reading a brief is not a run, and the exception authorizes neither
+ledger writes nor publication.
+
 Claim before the first substantive commit, with a comment on the issue:
 
 ```

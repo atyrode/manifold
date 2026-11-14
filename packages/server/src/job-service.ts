@@ -2822,6 +2822,7 @@ export class JobService {
         live.owner.protocolVersion,
         operation,
         install.machine,
+        live.channel.protocolVersion,
       );
       if (protocolReason) return protocolReason;
     }
@@ -3159,13 +3160,15 @@ export class JobService {
         return "service_runtime_changed";
       prospective = !callee.ready;
     }
-    if (!live?.proved || (!prospective && !callee.ready)) return "service_runtime_unavailable";
+    if (!live?.proved) return "service_runtime_unavailable";
     const protocolReason = jobOwnerOperationRefusal(
       live.owner.protocolVersion,
       callee.machine.operations[runtime.operationId]!,
       callee.machine,
+      live.channel.protocolVersion,
     );
     if (protocolReason) return protocolReason;
+    if (!prospective && !callee.ready) return "service_runtime_unavailable";
     for (const binding of callee.machine.operations[runtime.operationId]?.services ?? []) {
       const dependency = this.policiesFor(machineId, proposed).find(
         (value) => value.serviceId === binding.serviceId,
@@ -4696,6 +4699,7 @@ export class JobService {
     machine: MachineHalf,
     sha256: string,
     platforms?: readonly string[],
+    projectedMachine: MachineHalf = machine,
   ): Pick<Extract<JobCommand, { type: "install" }>, "artifact" | "toolArtifacts"> | null {
     const candidates = Object.entries(machine.artifacts).filter(
       ([platform, artifact]) =>
@@ -4705,7 +4709,7 @@ export class JobService {
     // A primary digest alone cannot choose different platform-specific tool closures.
     const selections = candidates.map(([platform, primary]) => ({
       primary,
-      tools: Object.values(machine.tools ?? {}).flatMap((tools) => {
+      tools: Object.values(projectedMachine.tools ?? {}).flatMap((tools) => {
         const tool = tools[platform as keyof typeof tools];
         return tool ? [tool] : [];
       }),
@@ -4713,7 +4717,10 @@ export class JobService {
     if (selections.some((selection) => digest(selection) !== digest(selections[0])))
       fail("artifact_source_ambiguous");
     const { primary, tools } = selections[0]!;
-    const specs = [primary, ...tools];
+    const specs = [
+      primary,
+      ...tools.flatMap((tool) => [tool, ...(tool.fileGroups ?? []).map((group) => group.artifact)]),
+    ];
     if (!specs.some((spec) => spec.bundleFile !== undefined)) return {};
     const bundle = this.bundleResolver?.(pluginId);
     if (
@@ -4724,12 +4731,13 @@ export class JobService {
       return null;
     let artifact: JobArtifactDelivery | undefined;
     const toolArtifacts: Record<string, string> = Object.create(null);
+    const decoded = new Map<string, Buffer>();
     for (const spec of specs) {
       if (!spec.bundleFile) continue;
       const data = bundle.files[spec.bundleFile];
       if (data === undefined) return null;
       const delivery = { bundleFile: spec.bundleFile, data };
-      deliveredArtifact(spec, delivery);
+      deliveredArtifact(spec, delivery, decoded);
       if (spec === primary) artifact = delivery;
       else if (artifact?.bundleFile !== spec.bundleFile) toolArtifacts[spec.bundleFile] = data;
     }
@@ -5111,6 +5119,7 @@ export class JobService {
           live.owner.protocolVersion,
           operation,
           install.machine,
+          live.channel.protocolVersion,
         );
         if (protocolReason) return protocolReason;
         if (!live.owner.resources) return "resource_owner_unavailable";
@@ -5942,6 +5951,7 @@ export class JobService {
       live.owner.protocolVersion,
       op,
       install.machine,
+      live.channel.protocolVersion,
     );
     if (protocolReason) fail(protocolReason);
     return {
@@ -6566,7 +6576,12 @@ export class JobService {
       protocolReason =
         jobOwnerRequestRefusal(live.owner.protocolVersion, request) ??
         (operation
-          ? jobOwnerOperationRefusal(live.owner.protocolVersion, operation, install.machine)
+          ? jobOwnerOperationRefusal(
+              live.owner.protocolVersion,
+              operation,
+              install.machine,
+              live.channel.protocolVersion,
+            )
           : null);
       if (!install.ready && !protocolReason) return null;
       const operationReason = protocolReason ?? this.operationRefusal(install, request.operationId);
@@ -6945,7 +6960,11 @@ export class JobService {
   private sendInstall(install: JobInstallation): void {
     const live = this.channels.get(install.machineId);
     if (!live?.proved) return;
-    const machine = jobOwnerMachine(live.owner.protocolVersion, install.machine);
+    const machine = jobOwnerMachine(
+      live.owner.protocolVersion,
+      install.machine,
+      live.channel.protocolVersion,
+    );
     if (!machine) return;
     const enabled = install.enabled && !this.heldPlugins.has(install.pluginId);
     const command = JobCommandSchema.parse({
@@ -6962,6 +6981,7 @@ export class JobService {
             install.machine,
             install.artifact,
             live.owner.platforms,
+            machine,
           ) ?? {})
         : {}),
       ...(install.purgeRequested
@@ -8192,17 +8212,6 @@ export class JobService {
         this.replayBytes -= ring.bytes;
       }
     this.jobs.purgeJournal(pluginId);
-    for (const install of installs)
-      this.channels.get(install.machineId)!.channel.send({
-        type: "job_command",
-        command: {
-          type: "install",
-          action: "purge",
-          pluginId,
-          installationRevision: install.revision,
-          artifactSha256: install.artifact,
-          machine: install.machine,
-        },
-      });
+    for (const install of installs) this.sendInstall({ ...install, purgeRequested: true });
   }
 }
