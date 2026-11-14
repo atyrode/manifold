@@ -24,6 +24,7 @@ import {
   type PluginBuildCompatibility,
   type PluginPurgeResult,
   type PluginPurgeTarget,
+  type PluginReceipt,
   type PluginRosterEntry,
   type PluginUpdateMember,
   type PluginUpdateReview,
@@ -70,6 +71,7 @@ import {
   dependencyChanges,
   expandingMembers,
   hasHalf,
+  installReceipt,
   installRefusalWords,
   linkHost,
   listNames,
@@ -77,12 +79,16 @@ import {
   permissionSummary,
   pluginPermissions,
   pluginStatus,
+  receiptAbsence,
+  receiptsFrom,
   reviewStaleness,
+  rowReceipt,
   updateConsent,
   updateOwnership,
   updatePermissions,
   updateRefusalWords,
   type DependencyChange,
+  type PluginReceipts,
   type PluginStatus,
 } from "./status.ts";
 import {
@@ -212,26 +218,41 @@ function Chip({
 }
 
 /**
+ * A PRIVATE FIELD this reader has not read (#402): the reason, in the field's own place, so
+ * "Installed by" never reads as blank and never borrows the public half for an answer.
+ */
+function Unread({ receipts }: { readonly receipts: PluginReceipts }): ReactElement {
+  return (
+    <span className="plugin-manager-unread" data-testid="plugin-manager-private">
+      {receiptAbsence(receipts)}
+    </span>
+  );
+}
+
+/**
  * THE ENABLEMENT TOGGLE, one component for every place it appears (a list row, a child row,
  * the family card), so `data-action`, the gate's test id and the "for everyone" tooltip are
  * written once. `reason` is why it is inert — the door's own refusal in words, or a missing
  * capability — and a toggle with a reason renders DISABLED with that reason on hover rather
- * than as a lock glyph: the shape a reader knows, saying why it will not move.
+ * than as a lock glyph: the shape a reader knows, saying why it will not move. Who last moved
+ * it is the row's private receipt (#402), named on hover only when it was read.
  */
 function EnableToggle({
   entry,
+  receipt,
   reason,
   pending,
   onToggle,
 }: {
   readonly entry: PluginRosterEntry;
+  readonly receipt: PluginReceipt | null;
   readonly reason: string | null;
   readonly pending: boolean;
   readonly onToggle: (enabled: boolean) => void;
 }): ReactElement {
   const verb = entry.enabled ? "Turn off" : "Turn on";
   const attribution =
-    typeof entry.changedBy === "string" ? ` · last changed by ${entry.changedBy}` : "";
+    typeof receipt?.changedBy === "string" ? ` · last changed by ${receipt.changedBy}` : "";
   return (
     <button
       className="plugin-manager-toggle"
@@ -613,11 +634,13 @@ function CompatibilityIssues({
  * is reviewed and applied together. Everything else names its real owner and offers no button:
  * a compiled seat rides the Manifold release it was proven with, and an unpacked row belongs to
  * its source tree. Reviewing is root-only — it admits a stranger's code — so `plugins:manage`
- * sees the observation and the sentence, never the door.
+ * sees the observation and the sentence, never the door. The observation and the build
+ * compatibility are private receipts (#402): unread, the card says so in their place.
  */
 function UpdatesCard({
   entry,
   roster,
+  receipts,
   canInstall,
   busy,
   pluginTitle,
@@ -626,6 +649,7 @@ function UpdatesCard({
 }: {
   readonly entry: PluginRosterEntry;
   readonly roster: readonly PluginRosterEntry[];
+  readonly receipts: PluginReceipts;
   readonly canInstall: boolean;
   readonly busy: boolean;
   readonly pluginTitle: (id: string) => string;
@@ -633,7 +657,7 @@ function UpdatesCard({
   readonly onReviewUpdate: (rootId: string) => void;
 }): ReactElement {
   const ownership = updateOwnership(roster, entry);
-  const compatibility = entry.install?.compatibility;
+  const receipt = installReceipt(receipts, entry);
   let body: ReactElement;
   switch (ownership.kind) {
     case "engine":
@@ -686,7 +710,9 @@ function UpdatesCard({
     }
     case "feed": {
       const rootId = ownership.root.manifest.id;
-      const status = entry.install?.update ?? ownership.root.install?.update;
+      const rootReceipt = installReceipt(receipts, ownership.root);
+      const status = receipt?.update ?? rootReceipt?.update;
+      const unread = receipt === null && rootReceipt === null;
       body = (
         <>
           {rootId === entry.manifest.id ? null : (
@@ -699,8 +725,17 @@ function UpdatesCard({
           <p className="plugin-manager-update-source">
             Release source <code title={ownership.source}>{ownership.source}</code>
           </p>
-          <p className="plugin-manager-update-status" data-state={status?.state ?? "unchecked"}>
-            {updateStatusWords(status)}
+          <p
+            className="plugin-manager-update-status"
+            data-state={unread ? "unread" : (status?.state ?? "unchecked")}
+          >
+            {unread ? (
+              <>
+                Last check: <Unread receipts={receipts} />
+              </>
+            ) : (
+              updateStatusWords(status)
+            )}
           </p>
           {canInstall ? (
             <div>
@@ -736,7 +771,13 @@ function UpdatesCard({
   return (
     <SheetCard title="Updates">
       {body}
-      {compatibility === undefined ? null : <CompatibilityIssues compatibility={compatibility} />}
+      {entry.install === undefined ? null : receipt === null ? (
+        <p className="plugin-manager-sheet-muted">
+          Build compatibility: <Unread receipts={receipts} />
+        </p>
+      ) : receipt.compatibility === undefined ? null : (
+        <CompatibilityIssues compatibility={receipt.compatibility} />
+      )}
     </SheetCard>
   );
 }
@@ -1527,12 +1568,15 @@ function UpdateReviewDialog({
 
 /**
  * THE DETAIL SHEET: roster declarations and composed settings, with machine installation
- * and consent read separately through the public jobs door for the selected machine.
+ * and consent read separately through the public jobs door for the selected machine. Where
+ * the bundle came from, who installed it and when, its grant and its toggle history are the
+ * row's private receipt (#402): each one unread says so in its own place.
  */
 function PluginDetail({
   host,
   entry,
   roster,
+  receipts,
   settings,
   canManage,
   canInstall,
@@ -1554,6 +1598,7 @@ function PluginDetail({
   readonly host: SectionProps["host"];
   readonly entry: PluginRosterEntry;
   readonly roster: readonly PluginRosterEntry[];
+  readonly receipts: PluginReceipts;
   readonly settings: readonly ComposedSetting[];
   readonly canManage: boolean;
   readonly canInstall: boolean;
@@ -1573,8 +1618,11 @@ function PluginDetail({
   readonly onReviewUpdate: (rootId: string) => void;
 }): ReactElement {
   const { manifest } = entry;
-  const status = pluginStatus(roster, entry);
-  const permissions = pluginPermissions(entry);
+  const receipt = rowReceipt(receipts, entry);
+  const install = installReceipt(receipts, entry);
+  const status = pluginStatus(roster, entry, install);
+  const permissions = pluginPermissions(entry, install);
+  const permissionTotal = permissionCount(entry, install);
   const links = manifest.links;
   const parentId = parentOf(roster, entry);
   const children = childrenOf(roster, manifest.id);
@@ -1629,8 +1677,10 @@ function PluginDetail({
         <Chip tone={status.tone} title={status.why ?? undefined}>
           {status.word}
         </Chip>
-        <Chip tone="muted" title={permissionSummary(entry)}>
-          {String(permissionCount(entry))} permission{permissionCount(entry) === 1 ? "" : "s"}
+        <Chip tone="muted" title={permissionSummary(entry, install)}>
+          {permissionTotal === null
+            ? `${String(permissions.length)} declared`
+            : `${String(permissionTotal)} permission${permissionTotal === 1 ? "" : "s"}`}
         </Chip>
       </Cluster>
       <div className="plugin-manager-sheet-source" data-testid="plugin-manager-detail-source">
@@ -1639,8 +1689,10 @@ function PluginDetail({
         ) : entry.install === undefined ? (
           <span>Built-in</span>
         ) : (
-          <span title={entry.install.source}>
-            Installed from <code>{entry.install.source}</code> · sha256{" "}
+          <span title={install?.source}>
+            Installed from{" "}
+            {install === null ? <Unread receipts={receipts} /> : <code>{install.source}</code>} ·
+            sha256{" "}
             <code title={entry.install.sha256}>{entry.install.sha256.slice(0, 12)}</code>{" "}
             <button
               className="plugin-manager-copy"
@@ -1705,6 +1757,7 @@ function PluginDetail({
           {entry.source === "builtin" ? null : (
             <EnableToggle
               entry={entry}
+              receipt={receipt}
               reason={toggleReason}
               pending={pending}
               onToggle={(enabled) => onToggle(entry, enabled)}
@@ -1712,17 +1765,26 @@ function PluginDetail({
           )}
         </div>
         {status.why === null ? null : <p className="plugin-manager-why">{status.why}</p>}
-        {typeof entry.changedBy === "string" ? (
+        {receipt === null ? (
           <p className="plugin-manager-sheet-muted">
-            Last changed by {entry.changedBy}
-            {typeof entry.changedAt === "number" ? ` · ${WHEN.format(entry.changedAt)}` : ""}
+            Last changed by <Unread receipts={receipts} />
+          </p>
+        ) : typeof receipt.changedBy === "string" ? (
+          <p className="plugin-manager-sheet-muted">
+            Last changed by {receipt.changedBy}
+            {typeof receipt.changedAt === "number" ? ` · ${WHEN.format(receipt.changedAt)}` : ""}
           </p>
         ) : (
           <p className="plugin-manager-sheet-muted">Never toggled</p>
         )}
         {entry.install === undefined ? null : (
           <p className="plugin-manager-sheet-muted">
-            Installed by {entry.install.installedBy} · {WHEN.format(entry.install.installedAt)}
+            Installed by{" "}
+            {install === null ? (
+              <Unread receipts={receipts} />
+            ) : (
+              `${install.installedBy} · ${WHEN.format(install.installedAt)}`
+            )}
           </p>
         )}
       </SheetCard>
@@ -1730,6 +1792,7 @@ function PluginDetail({
       <UpdatesCard
         entry={entry}
         roster={roster}
+        receipts={receipts}
         canInstall={canInstall}
         busy={
           pendingIds.has(ENGINE_REVIEW_UPDATE_ACTION) || pendingIds.has(ENGINE_APPLY_UPDATE_ACTION)
@@ -1786,7 +1849,15 @@ function PluginDetail({
         ) : (
           <>
             {entry.install === undefined ? null : (
-              <p className="plugin-manager-sheet-muted">{permissionSummary(entry)}</p>
+              <p className="plugin-manager-sheet-muted">
+                {permissionSummary(entry, install)}
+                {install === null ? (
+                  <>
+                    {" — grant "}
+                    <Unread receipts={receipts} />
+                  </>
+                ) : null}
+              </p>
             )}
             <ul className="plugin-manager-permissions">
               {permissions.map((permission) => (
@@ -1800,7 +1871,9 @@ function PluginDetail({
                       ? "Declared, but withheld by the installer"
                       : permission.state === "governed"
                         ? "Governed: no grant ever carries this one. It is discharged per node, bound to an artifact revision, by consent."
-                        : undefined
+                        : permission.state === "unread"
+                          ? "Declared; whether its installer granted it is a private receipt this reader has not read"
+                          : undefined
                   }
                 >
                   <code>{permission.cap}</code>
@@ -1884,7 +1957,7 @@ function PluginDetail({
           {parentId === null ? (
             <ul className="plugin-manager-family">
               {children.map((child) => {
-                const childStatus = pluginStatus(roster, child);
+                const childStatus = pluginStatus(roster, child, installReceipt(receipts, child));
                 return (
                   <li key={child.manifest.id} className="plugin-manager-family-child">
                     <PluginLink
@@ -1897,6 +1970,7 @@ function PluginDetail({
                     </Chip>
                     <EnableToggle
                       entry={child}
+                      receipt={rowReceipt(receipts, child)}
                       reason={toggleRefusal(roster, child, canManage)}
                       pending={pendingIds.has(child.manifest.id)}
                       onToggle={(enabled) => onToggle(child, enabled)}
@@ -2086,11 +2160,13 @@ function toggleRefusal(
  * focusable and opens the sheet on click or Enter; its controls stop the click so a toggle
  * press never also opens the detail. An installed family's ROOT wears the hub's update
  * observation — the one row a family update is reviewed from — and only a root-capable reader
- * gets it as a button.
+ * gets it as a button. That observation is the root's private receipt (#402), so an unread one
+ * puts no chip on the row; the manager's receipts notice says why, once.
  */
 function PluginRow({
   entry,
   roster,
+  receipts,
   child,
   family,
   expanded,
@@ -2107,6 +2183,7 @@ function PluginRow({
 }: {
   readonly entry: PluginRosterEntry;
   readonly roster: readonly PluginRosterEntry[];
+  readonly receipts: PluginReceipts;
   readonly child: boolean;
   readonly family: readonly PluginRosterEntry[];
   readonly expanded: boolean;
@@ -2122,12 +2199,13 @@ function PluginRow({
   readonly onToggle: (enabled: boolean) => void;
 }): ReactElement {
   const { manifest } = entry;
-  const status = pluginStatus(roster, entry);
-  const permissions = permissionCount(entry);
+  const install = installReceipt(receipts, entry);
+  const status = pluginStatus(roster, entry, install);
+  const permissions = permissionCount(entry, install);
   const ownership = updateOwnership(roster, entry);
   const update =
     ownership.kind === "feed" && ownership.root.manifest.id === manifest.id
-      ? entry.install?.update
+      ? install?.update
       : undefined;
   const links = manifest.links;
   const classes = [
@@ -2203,16 +2281,18 @@ function PluginRow({
         ) : null}
       </span>
       <span className="plugin-manager-chips">
-        {entry.install === undefined ? null : (
+        {/* Effective execution is public and holds for every provenance: an installed row says
+            which, and a trusted first-party build the host hardens says so too. */}
+        {entry.install === undefined && entry.hardened !== true ? null : (
           <Chip
             tone="muted"
             title={
-              entry.install.hardened === true
+              entry.hardened === true
                 ? "Runs in a separate process and browser Worker"
                 : "Runs with React and the full engine API"
             }
           >
-            {entry.install.hardened === true ? "Hardened" : "In-realm"}
+            {entry.hardened === true ? "Hardened" : "In-realm"}
           </Chip>
         )}
         {entry.install?.mode !== "unpacked" ? null : (
@@ -2272,8 +2352,14 @@ function PluginRow({
         <Chip tone={status.tone} title={status.why ?? status.word} testid="plugin-manager-status">
           {status.word}
         </Chip>
-        <Chip tone="muted" title={permissionSummary(entry)} testid="plugin-manager-permissions">
-          {String(permissions)} permission{permissions === 1 ? "" : "s"}
+        <Chip
+          tone="muted"
+          title={permissionSummary(entry, install)}
+          testid="plugin-manager-permissions"
+        >
+          {permissions === null
+            ? `${String(pluginPermissions(entry, install).length)} declared`
+            : `${String(permissions)} permission${permissions === 1 ? "" : "s"}`}
         </Chip>
       </span>
       {entry.source === "builtin" ? (
@@ -2281,6 +2367,7 @@ function PluginRow({
       ) : (
         <EnableToggle
           entry={entry}
+          receipt={rowReceipt(receipts, entry)}
           reason={toggleRefusal(roster, entry, canManage)}
           pending={pending}
           onToggle={onToggle}
@@ -2390,6 +2477,35 @@ export function PluginManagerSection({ host }: SectionProps): ReactElement {
       window.clearTimeout(timer);
     };
   }, [jumpId]);
+
+  /*
+    THE PRIVATE HALF (#402, #430), read only while the manager is open, because nothing else
+    here shows it. Re-read whenever the roster it describes or this credential's authority
+    moves — a toggle changes attribution, an install adds a receipt, a newly held
+    `plugins:read` makes the door answer — and the last answer stays on screen meanwhile.
+    A refusal is the door's sentence, said once at the top and in each field it leaves empty.
+  */
+  const [receipts, setReceipts] = useState<PluginReceipts>({ kind: "loading" });
+  useEffect(() => {
+    if (!open) return;
+    let current = true;
+    void host.client.pluginReceipts().then(
+      (outcome) => {
+        if (current) setReceipts(receiptsFrom(outcome));
+      },
+      (reason: unknown) => {
+        if (current) {
+          setReceipts({
+            kind: "failed",
+            reason: reason instanceof Error ? reason.message : "the receipts door did not answer",
+          });
+        }
+      },
+    );
+    return () => {
+      current = false;
+    };
+  }, [open, host.client, roster, workspaceCaps]);
 
   /**
    * SHOW THIS PLUGIN: select it for the sheet, and make its row visible — clear whatever
@@ -2696,7 +2812,7 @@ export function PluginManagerSection({ host }: SectionProps): ReactElement {
     });
   };
 
-  const sections = pluginCatalog(roster, { query, sort, filters });
+  const sections = pluginCatalog(roster, { query, sort, filters }, receipts);
   const plugins = roster.filter((entry) => entry.source !== "builtin");
   const on = plugins.filter((entry) => entry.enabled).length;
   const selected =
@@ -2718,6 +2834,7 @@ export function PluginManagerSection({ host }: SectionProps): ReactElement {
       key={entry.manifest.id}
       entry={entry}
       roster={roster}
+      receipts={receipts}
       child={child}
       family={family}
       expanded={expandedRow}
@@ -2769,8 +2886,15 @@ export function PluginManagerSection({ host }: SectionProps): ReactElement {
             }}
           >
             {PLUGIN_SORTS.map((value) => (
-              <option key={value} value={value}>
-                {PLUGIN_SORT_LABELS[value]}
+              // Toggle attribution is wholly a private receipt: unread, this order is no order.
+              <option
+                key={value}
+                value={value}
+                disabled={value === "changed" && receipts.kind !== "ready"}
+              >
+                {value === "changed" && receipts.kind === "refused"
+                  ? `${PLUGIN_SORT_LABELS[value]} (needs plugins:read)`
+                  : PLUGIN_SORT_LABELS[value]}
               </option>
             ))}
           </select>
@@ -2802,6 +2926,21 @@ export function PluginManagerSection({ host }: SectionProps): ReactElement {
           Read-only: turning plugins on and off needs the <code>plugins:manage</code> capability.
         </p>
       ) : null}
+      {receipts.kind !== "refused" && receipts.kind !== "failed" ? null : (
+        <p
+          className="plugin-manager-receipts"
+          role="status"
+          data-state={receipts.kind}
+          data-testid="plugin-manager-receipts"
+        >
+          {receipts.kind === "refused"
+            ? `Install receipts are private to this credential: ${receipts.reason}.`
+            : `Install receipts could not be read: ${receipts.reason}.`}{" "}
+          Where a bundle came from, who installed it and when, its grant, who last switched a
+          plugin and build and update checks need <code>plugins:read</code> on a workspace
+          credential; everything else here is the public roster.
+        </p>
+      )}
       {failure === null ? null : (
         <p className="plugin-manager-error" role="alert">
           {failure}
@@ -3045,6 +3184,7 @@ export function PluginManagerSection({ host }: SectionProps): ReactElement {
                         host={host}
                         entry={selected}
                         roster={roster}
+                        receipts={receipts}
                         settings={settings}
                         canManage={canManage}
                         canInstall={canInstall}

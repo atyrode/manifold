@@ -1,23 +1,27 @@
 /** Wire revision; session joins require the current version (close 4409 otherwise). */
-export const PROTOCOL_VERSION = 56;
+export const PROTOCOL_VERSION = 59;
 
 /**
  * Explicit bundle build compatibility, not session or machine-channel negotiation.
  * Protocol 56 adds terminal stream geometry without changing prior plugin call signatures.
  * Private credential entry adds no plugin secret/value interface or hardened contract change.
  * Session authority, correlated scopes and subscription ordering require the current SDK.
+ * Protocol 59 changes the plugin ABI (#402): roster rows lose their receipts (other rows in a
+ * server guest's `host.roster()`, every row in a browser) and toggle attribution, and the
+ * shared `@manifold/protocol` namespace no longer exports `PluginInstallSchema`. That resets
+ * the set. 47 and 48 stay on inspection of the unchanged released OMP, Code and Babel artifacts
+ * at those stamps (no receipt member read; the removed export bound but never used); their
+ * unchanged-artifact assembly and loading proof is not yet recorded for this revision. No
+ * released artifact exists at 51-56, so those stamps are not retained; such a bundle is held
+ * `repack_required` before load. Contract-11/12 guests receive capability hints without the
+ * discovery read capabilities.
  * Retain a prior stamp only after proving its unchanged artifacts against the host;
  * reset on an incompatible plugin ABI change. Do not infer a numeric version range.
  */
 export const PLUGIN_BUNDLE_PROTOCOL_COMPAT_VERSIONS: ReadonlySet<string> = new Set([
   "47",
   "48",
-  "51",
-  "52",
-  "53",
-  "54",
-  "55",
-  "56",
+  "59",
 ]);
 
 /**
@@ -497,10 +501,20 @@ export const PLUGIN_BUNDLE_PROTOCOL_COMPAT_VERSIONS: ReadonlySet<string> = new S
  * Absent capability preserves legacy owners. IPC3 keeps every existing frame unchanged;
  * new-type support and geometry events are ignored by older transports. Instance wire and
  * native-owner RPC are unchanged; their supported peers do not require a fleet restart.
+ *
+ * v59: ALLOWLISTED PLUGIN DISCOVERY AND PRIVATE RECEIPTS (issues #402/#430). The session
+ * `plugins` frame, `GET /api/protocol` and `GET /api/plugins` carry only the public roster;
+ * installation source, installer, consent, toggle attribution and build/update diagnostics
+ * move to `GET /api/plugins/receipts` under the new `plugins:read`. `plugins:load` and
+ * `layouts:read` join the closed capability set, and strict session clients update together.
+ * Every gateway closes a first unknown frame before admission with 4002; after admission an
+ * unknown type is still ignored. Compliant agents and guest hubs send hello first, so the
+ * machine and instance messages, adoption semantics and owner wires are unchanged and both
+ * sets add 59 without a fleet restart. v57 and v58 belong to separately owned revisions.
  */
 export const MACHINE_PROTOCOL_COMPAT_VERSIONS: ReadonlySet<number> = new Set([
   30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 51, 52, 53, 54, 55,
-  56,
+  56, 59,
 ]);
 
 /**
@@ -527,6 +541,12 @@ export const MACHINE_DIRECT_SERVICE_ACCOUNTING_PROTOCOL_VERSION = 52;
 
 /** Older strict machine parsers must never receive sealed-enrollment commands or metadata. */
 export const MACHINE_CREDENTIAL_ENROLLMENT_PROTOCOL_VERSION = 55;
+
+/**
+ * Rosters are the public allowlist from this revision (#402): an older hub's rows still carry
+ * installation receipts and toggle attribution, which a reader of any revision projects away.
+ */
+export const PUBLIC_ROSTER_PROTOCOL_VERSION = 59;
 
 /**
  * Instance-channel acceptance set, and a SEPARATE set on purpose (ADR 0014).
@@ -564,8 +584,14 @@ export const MACHINE_CREDENTIAL_ENROLLMENT_PROTOCOL_VERSION = 55;
  * v53 requires explicit host-recipient admission and ticket subset/expiry fields; reset
  * the instance set so old ambient-admission peers cannot resume through the new contract.
  * v54 adds scoped session authority and leaves that host-recipient instance wire unchanged.
+ * v59 adds capabilities a share never names: minting refuses them and tickets keep the
+ * released V1 set, so welcome and ticket frames are unchanged for older peers. A compliant
+ * guest hub sends hello first, so the pre-admission unknown-frame close changes nothing for
+ * it, and the version is ADDED.
  */
-export const INSTANCE_PROTOCOL_COMPAT_VERSIONS: ReadonlySet<number> = new Set([53, 54, 55, 56]);
+export const INSTANCE_PROTOCOL_COMPAT_VERSIONS: ReadonlySet<number> = new Set([
+  53, 54, 55, 56, 59,
+]);
 
 /**
  * Liveness cadence for every DIALED pipe (CONTRACTS.md): the machine channel, the

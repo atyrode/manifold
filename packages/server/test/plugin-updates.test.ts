@@ -9,6 +9,7 @@ import {
   PROTOCOL_VERSION,
   PluginUpdateApplyResultSchema,
   PluginUpdateReviewResultSchema,
+  PluginReceiptsResponseSchema,
   PluginsResponseSchema,
   TokenGrantSchema,
   defaultRuntime,
@@ -146,6 +147,16 @@ async function fixture() {
         })
       ).json(),
     ).plugins;
+  // The private half beside the roster (#402): what the installer consented to, and the
+  // build/update diagnostics the update coordinator observed.
+  const receipt = async (id: string) => {
+    const response = await fetch(`${running.publicUrl}/api/plugins/receipts`, {
+      headers: { authorization: `Bearer ${OWNER}` },
+    });
+    return PluginReceiptsResponseSchema.parse(await response.json()).receipts.find(
+      (entry) => entry.id === id,
+    )?.install;
+  };
   const review = async (id = "vendor.updates", token = OWNER): Promise<PluginUpdateReview> => {
     const result = PluginUpdateReviewResultSchema.parse(
       await call("engine.plugins.reviewUpdate", { id }, token),
@@ -167,6 +178,7 @@ async function fixture() {
     feed,
     install,
     roster,
+    receipt,
     review,
     web,
     advance: (ms: number) => {
@@ -237,11 +249,9 @@ describe("reviewed plugin updates", () => {
     });
     expect(after.find((entry) => entry.manifest.id === addedChild.id)).toMatchObject({
       enabled: true,
-      install: { hardened: false },
     });
-    expect(after.find((entry) => entry.manifest.id === oldRoot.id)?.install?.grantedCaps).toEqual(
-      root.grantedCaps,
-    );
+    expect(await f.receipt(addedChild.id)).toMatchObject({ hardened: false });
+    expect((await f.receipt(oldRoot.id))?.grantedCaps).toEqual(root.grantedCaps);
   });
 
   test("a review belongs to its exact credential, and revocation cannot apply the next candidate", async () => {
@@ -375,10 +385,13 @@ describe("reviewed plugin updates", () => {
     await f.install(old);
     expect((await f.roster()).find((entry) => entry.manifest.id === old.id)).toMatchObject({
       enabled: true,
-      install: { sha256: old.sha256, compatibility: { status: "compatible", issues: [] } },
+      install: { sha256: old.sha256 },
+    });
+    expect(await f.receipt(old.id)).toMatchObject({
+      sha256: old.sha256,
+      compatibility: { status: "compatible", issues: [] },
     });
     expect(await f.web()).toBe(old.web);
-
     for (const [version, builtAgainst] of [
       ["too-old", { [BUILT_AGAINST_PROTOCOL]: "46" }],
       ["reserved-49", { [BUILT_AGAINST_PROTOCOL]: "49" }],
@@ -405,10 +418,8 @@ describe("reviewed plugin updates", () => {
     const old = f.bundle(f.manifest("vendor.updates", "legacy"), null);
     await f.install(old);
     const incumbent = (await f.roster()).find((entry) => entry.manifest.id === old.id);
-    expect(incumbent).toMatchObject({
-      enabled: true,
-      install: { compatibility: { status: "unknown" } },
-    });
+    expect(incumbent).toMatchObject({ enabled: true });
+    expect(await f.receipt(old.id)).toMatchObject({ compatibility: { status: "unknown" } });
     expect(incumbent?.held).toBeUndefined();
     f.feed(
       f.bundle(f.manifest(old.id, "wrong-wire"), {

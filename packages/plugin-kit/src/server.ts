@@ -77,7 +77,7 @@ import {
   type PlacementDenial,
   type PluginManifest,
   type PluginDataVersion,
-  type PluginRoster,
+  type PluginGuestRoster,
   type Principal,
   type ServiceConfiguration,
   type ServiceReadArgs,
@@ -473,7 +473,12 @@ export interface GuestCtx {
     forgetMachine(machineId: string): Promise<MachineBridgeAnswer<null>>;
   };
   readonly placement: { place(request: PlaceRequest): Promise<GuestPlaceOutcome> };
-  readonly host: { roster(): Promise<PluginRoster>; enabled(id: string): Promise<boolean> };
+  /**
+   * The public roster, except that this plugin's OWN row also carries its own installation
+   * receipt (pin, grant, installer, time) while both describe the same bytes (#402). No other
+   * row's receipt is ever here; read `install` fields as optional.
+   */
+  readonly host: { roster(): Promise<PluginGuestRoster>; enabled(id: string): Promise<boolean> };
 }
 
 /**
@@ -1440,7 +1445,7 @@ export function attachServerGuest(def: ServerPluginDef, transport: ServerGuestTr
         place: async (request) => (await call("placement.place", [request])) as GuestPlaceOutcome,
       },
       host: {
-        roster: async () => (await call("host.roster", [])) as PluginRoster,
+        roster: async () => (await call("host.roster", [])) as PluginGuestRoster,
         enabled: async (id) => (await call("host.enabled", [id])) as boolean,
       },
     };
@@ -1474,7 +1479,7 @@ export function attachServerGuest(def: ServerPluginDef, transport: ServerGuestTr
       ...(metadata
         ? {
             host: {
-              roster: async () => (await call("host.roster", [])) as PluginRoster,
+              roster: async () => (await call("host.roster", [])) as PluginGuestRoster,
               enabled: async (id: string) => (await call("host.enabled", [id])) as boolean,
             },
             services: {

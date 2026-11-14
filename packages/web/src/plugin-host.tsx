@@ -21,6 +21,7 @@ import {
   type RegisteredRenderer,
   type RegisteredTool,
   type TerminalFacet,
+  useNotice,
 } from "@manifold/plugin/hooks";
 import {
   AssemblyError,
@@ -84,7 +85,7 @@ import { requestJson, requestResponse } from "./http.ts";
 import { createRoomPipeRegistry, panelSessionHandle } from "./room-pipes.ts";
 import { ContainerErrorBoundary } from "./error-boundary.tsx";
 import { isolatedPanel, isolatedSection } from "./isolate/index.ts";
-import { webModulePath } from "./isolate/worker-host.ts";
+import { moduleRefusal, webModulePath } from "./isolate/worker-host.ts";
 import { FEED_TOPICS, SPACE_SET_LAYOUT_ACTION, WEB_PLUGIN_DEFS } from "./assembly.ts";
 import type * as PluginDevelopment from "./plugin-development.ts";
 
@@ -574,6 +575,27 @@ const BindingsRefreshContext = createContext<(() => void) | null>(null);
  */
 const SettingsRefreshContext = createContext<(() => void) | null>(null);
 
+/**
+ * INSTALLED CODE THIS CREDENTIAL MAY NOT LOAD (#430): plugin id → the hub's own refusal, for
+ * every wanted in-realm row whose module or sheet answered 403. Its own context because only
+ * the placeholder and the shell's one notice read it, and neither is a reason to recompose.
+ */
+const NO_LOAD_REFUSALS: ReadonlyMap<string, string> = new Map();
+const LoadRefusalsContext = createContext<ReadonlyMap<string, string>>(NO_LOAD_REFUSALS);
+
+/** One row's refusal recorded, replaced or cleared, keeping identity when nothing moved. */
+function withLoadRefusal(
+  current: ReadonlyMap<string, string>,
+  id: string,
+  refusal: string | null,
+): ReadonlyMap<string, string> {
+  if ((current.get(id) ?? null) === refusal) return current;
+  const next = new Map(current);
+  if (refusal === null) next.delete(id);
+  else next.set(id, refusal);
+  return next;
+}
+
 /** Boot knowledge is not contribution availability; only the route gate consumes it. */
 const RosterLoadContext = createContext<{
   readonly status: RosterState["status"];
@@ -979,6 +1001,7 @@ function AssemblyOwner({ identity, children }: AssemblyProviderProps): ReactElem
   const publishLoaded = useCallback(() => {
     setLoadedDefs(snapshotLoadedPlugins(loaded.current));
   }, []);
+  const [loadRefusals, setLoadRefusals] = useState<ReadonlyMap<string, string>>(NO_LOAD_REFUSALS);
   useEffect(() => {
     if (!import.meta.env.DEV || !import.meta.hot) return;
     let active = true;
@@ -1029,6 +1052,12 @@ function AssemblyOwner({ identity, children }: AssemblyProviderProps): ReactElem
       }
     }
     if (pruned) publishLoaded();
+    // A row that is no longer wanted is no longer refused: it asks for nothing.
+    setLoadRefusals((current) => {
+      let next = current;
+      for (const id of current.keys()) if (!wanted.has(id)) next = withLoadRefusal(next, id, null);
+      return next;
+    });
     development.current?.reconcile();
     for (const [id, row] of wanted) {
       if (loaded.current.has(id)) continue;
@@ -1049,12 +1078,20 @@ function AssemblyOwner({ identity, children }: AssemblyProviderProps): ReactElem
             unmountStyles:
               css === null ? null : mountPluginStylesheet<HTMLStyleElement>(id, css, document),
           });
+          setLoadRefusals((current) => withLoadRefusal(current, id, null));
           development.current?.reconcile();
           publishLoaded();
         },
-        () => {
-          // A browser-local import failure leaves this row's named missing-web placeholder.
-          if (!controller.signal.aborted) console.error("evt=plugin_module_import_failed", id);
+        (reason: unknown) => {
+          if (controller.signal.aborted) return;
+          /*
+            A 403 is the hub refusing this credential the code (#430: no `plugins:load`), named
+            on the row's placeholder and in the shell's notice. Anything else is a browser-local
+            import failure, which leaves the row's named missing-web placeholder as it was.
+          */
+          const refusal = moduleRefusal(reason);
+          setLoadRefusals((current) => withLoadRefusal(current, id, refusal));
+          if (refusal === null) console.error("evt=plugin_module_import_failed", id);
         },
       );
     }
@@ -1238,9 +1275,11 @@ function AssemblyOwner({ identity, children }: AssemblyProviderProps): ReactElem
         <SettingsRefreshContext.Provider value={refreshSettings}>
           <ComposedAssemblyProvider value={assembly}>
             <RosterLoadContext.Provider value={rosterLoad}>
-              <EssentialRecovery identity={identity} roster={state.roster} onRestored={publish}>
-                {children}
-              </EssentialRecovery>
+              <LoadRefusalsContext.Provider value={loadRefusals}>
+                <EssentialRecovery identity={identity} roster={state.roster} onRestored={publish}>
+                  {children}
+                </EssentialRecovery>
+              </LoadRefusalsContext.Provider>
             </RosterLoadContext.Provider>
           </ComposedAssemblyProvider>
         </SettingsRefreshContext.Provider>
@@ -1543,6 +1582,31 @@ export function HostServicesGate({
 
   useEffect(() => attachPluginsClient(client), [attachPluginsClient, client]);
 
+  /*
+    INSTALLED CODE THE HUB REFUSED THIS CREDENTIAL (#430), said once for every mount site at the
+    same time: a sidebar row or a canvas element has no detail line of its own, and a panel's
+    placeholder alone would leave the rest guessing. Sticky, keyed, and withdrawn the moment
+    nothing is refused.
+  */
+  const loadRefusals = useContext(LoadRefusalsContext);
+  const { notify, dismiss } = useNotice();
+  const refusalNotice = useMemo(() => {
+    const byReason = new Map<string, string[]>();
+    for (const [id, refusal] of loadRefusals) {
+      byReason.set(refusal, [...(byReason.get(refusal) ?? []), assembly.pluginTitle(id) ?? id]);
+    }
+    return byReason.size === 0
+      ? null
+      : [...byReason]
+          .map(([refusal, names]) => `Not loaded — ${refusal}: ${names.join(", ")}`)
+          .join("; ");
+  }, [loadRefusals, assembly]);
+  useEffect(() => {
+    if (refusalNotice === null) return;
+    const id = notify(refusalNotice, { key: "plugin-load-refused", lifetime: "sticky" });
+    return () => dismiss(id);
+  }, [refusalNotice, notify, dismiss]);
+
   /**
    * One navigation door for plugin code, addressed the way the axioms address everything:
    * a `manifold://` reference, or a plain application path for the routes the browser owns.
@@ -1770,7 +1834,10 @@ const PLACEHOLDER_LABELS: Readonly<Record<PlaceholderState, string>> = {
   missing: "not found",
 };
 
-export type PluginPlaceholderProps = ProjectionPlaceholderProps;
+export interface PluginPlaceholderProps extends ProjectionPlaceholderProps {
+  /** Why an installed plugin's code is absent, in the hub's words: a refused load (#430). */
+  readonly refusal?: string | undefined;
+}
 
 /**
  * The one inert-contribution ref, shared by workspace panes and canvas nodes: it NAMES
@@ -1781,12 +1848,23 @@ export type PluginPlaceholderProps = ProjectionPlaceholderProps;
  * guarantee is also why the seat behind it is `essential` (issue #113): an engine promise may
  * not sit behind a toggle the roster hands to an administrator.
  */
-export function PluginPlaceholder({ name, state, onRemove }: PluginPlaceholderProps): ReactElement {
+export function PluginPlaceholder({
+  name,
+  state,
+  refusal,
+  onRemove,
+}: PluginPlaceholderProps): ReactElement {
   return (
-    <Cover className="plugin-placeholder" data-plugin-state={state}>
+    <Cover
+      className="plugin-placeholder"
+      data-plugin-state={state}
+      data-plugin-refusal={refusal === undefined ? undefined : "load"}
+    >
       <Stack gap="0.3rem" align="center">
         <strong className="plugin-placeholder__name">{name}</strong>
-        <span className="plugin-placeholder__state">{PLACEHOLDER_LABELS[state]}</span>
+        <span className="plugin-placeholder__state">
+          {refusal === undefined ? PLACEHOLDER_LABELS[state] : `not loaded — ${refusal}`}
+        </span>
         {onRemove === undefined ? null : (
           <button
             type="button"
@@ -1821,6 +1899,7 @@ export interface PanelOutletProps {
 export function PanelOutlet({ panelId, tileId, arg, onRemove }: PanelOutletProps): ReactElement {
   const assembly = useAssembly();
   const host = useHostServices();
+  const loadRefusals = useContext(LoadRefusalsContext);
   /*
     THE HOST A PANEL IS HANDED: the workspace's own, with this SEAT bound onto it, because
     `openPanel` opens beside the caller and the caller is the leaf this outlet is painting
@@ -1845,7 +1924,14 @@ export function PanelOutlet({ panelId, tileId, arg, onRemove }: PanelOutletProps
     return <PluginPlaceholder name={name} state="disabled" onRemove={onRemove} />;
   }
   if (panel.Component === null) {
-    return <PluginPlaceholder name={name} state="unavailable" onRemove={onRemove} />;
+    return (
+      <PluginPlaceholder
+        name={name}
+        state="unavailable"
+        refusal={loadRefusals.get(panel.plugin)}
+        onRemove={onRemove}
+      />
+    );
   }
   const Panel = panel.Component;
   return <Panel host={seated} arg={arg} />;

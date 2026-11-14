@@ -22,6 +22,7 @@ import {
   HttpErrorSchema,
   LayoutResponseSchema,
   PROTOCOL_VERSION,
+  PluginReceiptsResponseSchema,
   PluginsResponseSchema,
   ResolveResponseSchema,
   SettingsResponseSchema,
@@ -37,6 +38,7 @@ import {
   PreviewIdentityKeySchema,
   defaultRuntime,
   normalizeInstanceOrigin,
+  projectLegacyCaps,
   type Cap,
   type HttpError,
   type ManifoldRef,
@@ -459,8 +461,9 @@ export class HttpApp {
       }
       if (request.method === "GET" && url.pathname === "/api/protocol") {
         // The description publishes the LIVE vocabulary: every action the assembly holds with
-        // its schemas, and the roster that says which plugin owns each one. A stranger's agent
-        // reads this document and knows every door it may knock on.
+        // its schemas, and the PUBLIC roster that says which plugin owns each one (#402). A
+        // stranger's agent reads this document and knows every door it may knock on; who
+        // installed, sourced or consented to a plugin is a `plugins:read` receipt, never here.
         return jsonResponse(
           buildProtocolJsonSchema({
             actions: this.plugins.roster().flatMap((entry) => entry.actions),
@@ -579,10 +582,13 @@ export class HttpApp {
       const concreteCaps = CAPS.filter(
         (cap): cap is Exclude<Cap, "*"> => cap !== "*" && effectiveCaps.has(cap),
       );
+      // The claim crosses instances of different versions, so it stays in the released V1
+      // vocabulary: a later capability is never claimed, and a non-root holder of one gets the
+      // released subset rather than an unparseable assertion.
       const caps =
         this.auth.holdsRoot(context) && concreteCaps.length === CAPS.length - 1
           ? (["*"] as const)
-          : concreteCaps;
+          : projectLegacyCaps(concreteCaps);
       if (caps.length === 0) {
         throw new RequestError("forbidden", "credential has no workspace authority");
       }
@@ -699,12 +705,11 @@ export class HttpApp {
     }
 
     if (request.method === "GET" && pathname === "/api/plugins") {
-      // Any authenticated token, container-scoped included — the same reasoning that makes
-      // `core.machines.list` a `scope: "container"` read: the roster is VOCABULARY, and a scoped
-      // viewer still has to render panels and know which plugin owns the placeholder it is
-      // looking at.
-      const context = this.authenticate(request);
-      this.requireCap(context, "containers:read");
+      // The PUBLIC roster (#402, #430): the same allowlisted projection anonymous
+      // `/api/protocol` publishes, so any authenticated credential reads it — container-scoped
+      // included, because a scoped viewer still has to render panels and know which plugin owns
+      // the placeholder it is looking at. Receipts are the next door's, never this one's.
+      this.authenticate(request);
       return jsonResponse(
         PluginsResponseSchema.parse({
           plugins: this.plugins.roster(),
@@ -713,19 +718,38 @@ export class HttpApp {
       );
     }
 
+    if (request.method === "GET" && pathname === "/api/plugins/receipts") {
+      /*
+        THE PRIVATE HALF (#402, #430): installation source, installer, consent, toggle
+        attribution and build/update diagnostics, under the dedicated `plugins:read`. Not
+        `containers:read` (a container viewer is not owed the workspace's installation history)
+        and not `plugins:manage` (inspecting who admitted what is not authority to change it).
+        Receipts describe the whole workspace, so a container-scoped credential is refused here
+        exactly as at the container index.
+      */
+      const context = this.authenticate(request);
+      this.requireCap(context, "plugins:read");
+      if (context.containerScope !== null) {
+        throw new RequestError("forbidden", "scoped tokens cannot read plugin receipts");
+      }
+      return jsonResponse(
+        PluginReceiptsResponseSchema.parse({ receipts: this.plugins.receipts() }),
+      );
+    }
+
     /*
       THE WORKER MODULE of an installed plugin (ADR 0016 §8 stage 2): the web half a
       dedicated Worker runs, served from the VERIFIED bundle the host holds in memory rather
       than from disk, so what a browser executes is exactly what re-hashed to the pin at boot.
-      Same authority as the roster read above, for the same reason: the code is vocabulary
-      once it is on the roster, and a scoped viewer still has to draw the panel. `no-store`
-      because an upgrade is a new hash under the same URL, and the ETag IS that hash.
+      `plugins:load` (#430): executing installed code is its own delegated authority, neither
+      implied by discovering the plugin nor by viewing a container. `no-store` because an
+      upgrade is a new hash under the same URL, and the ETag IS that hash.
     */
     const webModuleMatch = /^\/api\/plugins\/([^/]+)\/web\.js$/.exec(pathname);
     if (webModuleMatch !== null && request.method === "GET") {
       const id = decodePathSegment(webModuleMatch[1], "plugin id");
       const context = this.authenticate(request);
-      this.requireCap(context, "containers:read");
+      this.requireCap(context, "plugins:load");
       const module = this.plugins.webModule(id);
       if (module === null) throw new RequestError("not_found", "no installed web module");
       return new Response(module.bytes, {
@@ -740,14 +764,14 @@ export class HttpApp {
     /*
       THE PORTABLE WORKER ENTRY (ADR 0053): a contract-9 bundle's declared `web.worker.js`, for
       an installed plugin or a trusted first-party build this process compiled, on the web
-      module's exact terms — same authority, enabled only, `no-store` with the pin as ETag. One
+      module's exact terms — `plugins:load`, enabled only, `no-store` with the pin as ETag. One
       fixed member name; the route never serves any other file of any bundle.
     */
     const workerModuleMatch = /^\/api\/plugins\/([^/]+)\/web\.worker\.js$/.exec(pathname);
     if (workerModuleMatch !== null && request.method === "GET") {
       const id = decodePathSegment(workerModuleMatch[1], "plugin id");
       const context = this.authenticate(request);
-      this.requireCap(context, "containers:read");
+      this.requireCap(context, "plugins:load");
       const module = this.plugins.webWorkerModule(id);
       if (module === null) throw new RequestError("not_found", "no portable worker module");
       return new Response(module.bytes, {
@@ -762,14 +786,15 @@ export class HttpApp {
     /*
       THE SHEET of an installed plugin (ADR 0025 §7, #258), on the module's exact terms: the
       verified bundle's `styles.css`, admitted under the root-class rule, served only while the
-      row is enabled, `no-store` with the pin as ETag. The loader injects it beside the module
-      and removes it on disable (D4′): a disabled plugin's ink is not fetched by anyone.
+      row is enabled, under `plugins:load`, `no-store` with the pin as ETag. The loader injects
+      it beside the module and removes it on disable (D4′): a disabled plugin's ink is not
+      fetched by anyone.
     */
     const stylesheetMatch = /^\/api\/plugins\/([^/]+)\/styles\.css$/.exec(pathname);
     if (stylesheetMatch !== null && request.method === "GET") {
       const id = decodePathSegment(stylesheetMatch[1], "plugin id");
       const context = this.authenticate(request);
-      this.requireCap(context, "containers:read");
+      this.requireCap(context, "plugins:load");
       const sheet = this.plugins.stylesheet(id);
       if (sheet === null) throw new RequestError("not_found", "no installed stylesheet");
       return new Response(sheet.bytes, {
@@ -783,9 +808,11 @@ export class HttpApp {
 
     if (request.method === "GET" && pathname === "/api/layout") {
       // Self-scoped by construction: a workspace tree belongs to one principal, so the door
-      // takes no id and answers the caller's own — the default until they write one.
+      // takes no id and answers the AUTHENTICATED principal's own — the default until they
+      // write one. `layouts:read` (#430): panel arguments may name sensitive things, and an
+      // attenuated credential is not entitled to its principal's arrangement by default.
       const context = this.authenticate(request);
-      this.requireCap(context, "containers:read");
+      this.requireCap(context, "layouts:read");
       /*
         THE DEFAULT IS COMPOSED, not injected. It used to arrive as a constructor argument,
         because the tree was a floor arrangement filled with two PANEL ids and a panel id names

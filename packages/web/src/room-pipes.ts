@@ -111,6 +111,7 @@ export function panelSessionHandle(
     attendanceByContainer: () => watch.attendanceByContainer(),
     terminalsByContainer: () => watch.terminalsByContainer(),
     resolve: (uri) => watch.resolve(uri),
+    pluginReceipts: () => watch.pluginReceipts(),
     allTerminals: () => watch.allTerminals(),
     renameContainer: (id, name) => watch.renameContainer(id, name),
     deleteContainer: (id) => watch.deleteContainer(id),

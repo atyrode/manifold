@@ -1251,6 +1251,34 @@ describe("floor doors emit at their commit points", () => {
     const fixture = await planeFixture();
     const socket = connect(fixture, "tab");
     subscribe(fixture, "tab", [{ kind: "plugin", pluginId: "engine.plugins" }]);
+    // Who administered the engine is a private receipt (#402): a workspace reader without
+    // `plugins:read` hears the same fact with its actor withheld; a `plugins:read` reader and
+    // root hear who acted.
+    const observe = (id: string, caps: readonly ("containers:read" | "plugins:read")[]) => {
+      const credential = fixture.auth.mintTokenV2(
+        {
+          principal: { name: id, kind: "human" },
+          scope: [{ target: "manifold://", reach: "subtree", caps: [...caps] }],
+          expiresAt: fixture.runtime.now() + 120_000,
+        },
+        fixture.owner,
+      );
+      const observer = new FakeSocket();
+      fixture.gateway.open(id, observer);
+      fixture.gateway.message(
+        id,
+        JSON.stringify({
+          type: "observe",
+          token: credential.token,
+          protocolVersion: PROTOCOL_VERSION,
+        }),
+      );
+      observer.clear();
+      subscribe(fixture, id, [{ kind: "plugin", pluginId: "engine.plugins" }]);
+      return observer;
+    };
+    const reader = observe("reader", ["containers:read"]);
+    const inspector = observe("inspector", ["containers:read", "plugins:read"]);
 
     const outcome = await fixture.host.dispatch(fixture.owner, "engine.plugins.setEnabled", {
       id: "core.canvas.draw",
@@ -1263,6 +1291,11 @@ describe("floor doors emit at their commit points", () => {
     // The toggled plugin is the PAYLOAD, not the topic: a plugin may not be the subject of
     // another plugin's emission, and enablement is the engine's ledger about it.
     expect(heard[0]?.payload["plugin"]).toBe("core.canvas.draw");
+    expect(heard[0]?.actor).toBe(fixture.owner.principal.id);
+    expect(eventsOn(inspector).map((event) => event.actor)).toEqual([fixture.owner.principal.id]);
+    expect(eventsOn(reader).map((event) => [event.kind, event.payload, event.actor])).toEqual([
+      ["plugin_disabled", { plugin: "core.canvas.draw" }, null],
+    ]);
     fixture.gateway.shutdown();
     fixture.store.close();
   });

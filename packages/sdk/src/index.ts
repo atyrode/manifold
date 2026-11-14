@@ -21,6 +21,7 @@ export {
   type AccessOutcome,
   type ConnectionStatus,
   type PlaceOutcome,
+  type PluginReceiptsOutcome,
   type SessionClientOptions,
   type SceneTx,
   type SessionEvents,

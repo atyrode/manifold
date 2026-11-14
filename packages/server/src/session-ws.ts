@@ -394,6 +394,16 @@ export class SessionGateway {
     switch (classified.kind) {
       case "unknown_type":
         this.logger.warn("session_unknown_frame");
+        // Before admission an unknown type is refused like any other non-handshake frame
+        // (#402): no compliant client sends one, so forward compatibility starts at admission.
+        if (connection.subscriber === null) {
+          this.closeSocket(
+            connection,
+            4002,
+            "first frame must be join or observe",
+            "protocol_error",
+          );
+        }
         return;
       case "malformed":
         this.logger.warn("session_malformed_frame", { detail: classified.detail });

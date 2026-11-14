@@ -147,6 +147,49 @@ describe("instance protocol admission", () => {
       }
     },
   );
+
+  test("an unknown frame type closes before hello and is ignored after admission", () => {
+    const dialed = dial(1);
+    try {
+      const later = JSON.stringify({ type: "from_a_later_guest" });
+      // Before admission (#402): a compliant guest hub sends hello first.
+      const cold = new StatusSocket(1);
+      dialed.gateway.open("cold", cold);
+      dialed.gateway.message("cold", later);
+      expect(cold.closed).toEqual({ code: 4002, reason: "first frame must be hello" });
+
+      // After admission the same type is forward-compatible traffic, ignored.
+      dialed.open();
+      dialed.gateway.message("connection", later);
+      expect(dialed.socket.closed).toBeNull();
+      expect(dialed.socket.sent.map((frame) => JSON.parse(frame).type)).toEqual(["welcome"]);
+    } finally {
+      dialed.close();
+    }
+  });
+
+  test("a share never names a discovery read capability an older guest hub cannot parse", () => {
+    const dialed = dial(1);
+    try {
+      const node = { kind: "container" as const, containerId: dialed.container.id };
+      for (const cap of ["plugins:read", "plugins:load", "layouts:read"] as const) {
+        expect(() =>
+          dialed.auth.mintShare(
+            { node, caps: ["containers:read", cap], origin: GUEST_ORIGIN },
+            dialed.root,
+          ),
+        ).toThrow(`cannot share capability ${cap}`);
+      }
+      // An older capability every admitted instance revision parses stays shareable.
+      const shell = dialed.auth.mintShare(
+        { node, caps: ["containers:read", "machines:shell"], origin: GUEST_ORIGIN },
+        dialed.root,
+      );
+      expect(shell.share.caps).toEqual(["containers:read", "machines:shell"]);
+    } finally {
+      dialed.close();
+    }
+  });
 });
 
 const GUEST = { id: "local-guest", kind: "human" as const, name: "guest", color: "#3355cc" };

@@ -23,6 +23,7 @@ import {
   PanelDefSchema,
   PluginManifestSchema,
   PluginPurgeResultSchema,
+  PluginReceiptSchema,
   PluginRosterEntrySchema,
   PluginRosterSchema,
   ServerMessageSchema,
@@ -537,26 +538,32 @@ describe("the plugin roster", () => {
     expect(PluginRosterEntrySchema.parse(entry).refusal).toBeUndefined();
   });
 
-  test("a toggle is ATTRIBUTED, because it changes what other people are looking at", () => {
-    // Enablement is workspace-global and hot: one principal's click empties another's
-    // canvas. Attribution rides the row already being broadcast — no event plane needed —
-    // so a placeholder can say who, and when, rather than reading as a glitch.
-    const attributed = PluginRosterEntrySchema.parse({
-      ...entry,
-      changedBy: "principal-1",
-      changedAt: 1_700_000_000_000,
-    });
-    expect(attributed.changedBy).toBe("principal-1");
-    expect(attributed.changedAt).toBe(1_700_000_000_000);
-    // Never toggled: absent from a composed row, null from a store row that has no value.
-    expect(PluginRosterEntrySchema.parse(entry).changedBy).toBeUndefined();
+  test("a public row allowlists the install pin; attribution and consent are the receipt's", () => {
+    // #402: discovery names what runs, never who admitted or changed it, and a strict row
+    // refuses a receipt member rather than carrying it to an anonymous reader.
+    const sha256 = "a".repeat(64);
+    const install = {
+      sha256,
+      source: "https://example.test/vendor.thing.manifold-plugin.json",
+      grantedCaps: ["containers:read"],
+      installedBy: "principal-1",
+      installedAt: 1,
+    };
+    const pinned = { ...entry, install: { sha256, mode: "unpacked" } };
+    expect(PluginRosterEntrySchema.safeParse(pinned).success).toBe(true);
+    for (const leak of [{ changedBy: "principal-1" }, { changedAt: 1 }, { install }])
+      expect(PluginRosterEntrySchema.safeParse({ ...entry, ...leak }).success).toBe(false);
+    const id = entry.manifest.id;
     expect(
-      PluginRosterEntrySchema.safeParse({ ...entry, changedBy: null, changedAt: null }).success,
-    ).toBe(true);
-    for (const changedAt of [-1, 1.5]) {
-      expect(PluginRosterEntrySchema.safeParse({ ...entry, changedAt }).success).toBe(false);
-    }
-    expect(PluginRosterEntrySchema.safeParse({ ...entry, changedBy: "" }).success).toBe(false);
+      PluginReceiptSchema.parse({ id, changedBy: "principal-1", changedAt: 1, install }),
+    ).toMatchObject({ changedBy: "principal-1", install: { installedBy: "principal-1" } });
+    // Never toggled: absent from a composed receipt, null from a store row that has no value.
+    expect(PluginReceiptSchema.safeParse({ id, changedBy: null, changedAt: null }).success).toBe(
+      true,
+    );
+    for (const changedAt of [-1, 1.5])
+      expect(PluginReceiptSchema.safeParse({ id, changedAt }).success).toBe(false);
+    expect(PluginReceiptSchema.safeParse({ id, changedBy: "" }).success).toBe(false);
   });
 });
 
@@ -980,8 +987,7 @@ describe("a v14 manifest is a v15 manifest", () => {
     });
     expect(row.lifecycle).toBeUndefined();
     expect(row.refusal).toBeUndefined();
-    expect(row.changedBy).toBeUndefined();
-    expect(row.changedAt).toBeUndefined();
+    expect(row).not.toHaveProperty("changedBy");
   });
 });
 

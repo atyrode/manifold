@@ -13,6 +13,7 @@ import {
   MAX_UI_NODES,
   PLUGIN_INSTALL_REFUSALS,
   PluginBundleSchema,
+  PluginInstallReceiptSchema,
   PluginRosterEntrySchema,
   TRACED_DENIAL_RULES,
   TRACE_OUTCOMES,
@@ -23,7 +24,8 @@ import {
   WebIsolateHostFrameSchema,
   WebIsolateWorkerFrameSchema,
   buildProtocolJsonSchema,
-  type PluginInstall,
+  type PluginInstallIdentity,
+  type PluginInstallReceipt,
   type PluginBundle,
   type PluginRosterEntry,
   type UiNode,
@@ -443,19 +445,21 @@ describe("an installed row", () => {
     source: "plugin",
     actions: [],
   };
-  const install: PluginInstall = {
-    sha256: "a".repeat(64),
+  const install: PluginInstallIdentity = { sha256: "a".repeat(64) };
+  const receipt: PluginInstallReceipt = {
+    ...install,
     source: "https://example.test/vendor.thing.manifold-plugin.json",
     grantedCaps: ["containers:read"],
     installedBy: "principal-1",
     installedAt: 1_700_000_000_000,
   };
 
-  test("`install` is present iff installed, and it is what the installer consented to", () => {
-    // ADR 0016 §5: the grant is data on the roster, so an agent sees exactly what a human
-    // sees; §1: presence of the block is what selects the runner, so `source` stays two-valued.
+  test("`install` is present iff installed; what the installer consented to is the receipt", () => {
+    // §1: presence of the block is what selects the runner, so `source` stays two-valued; the
+    // row carries the public pin only (#402) and refuses the receipt's members.
     expect(PluginRosterEntrySchema.parse(entry).install).toBeUndefined();
     expect(PluginRosterEntrySchema.parse({ ...entry, install }).install).toEqual(install);
+    expect(PluginRosterEntrySchema.safeParse({ ...entry, install: receipt }).success).toBe(false);
     expect(PluginRosterEntrySchema.safeParse({ ...entry, source: "installed" }).success).toBe(
       false,
     );
@@ -464,11 +468,9 @@ describe("an installed row", () => {
       PluginRosterEntrySchema.safeParse({ ...entry, install: { ...install, sha256: "abc" } })
         .success,
     ).toBe(false);
+    expect(PluginInstallReceiptSchema.parse(receipt)).toEqual(receipt);
     expect(
-      PluginRosterEntrySchema.safeParse({
-        ...entry,
-        install: { ...install, grantedCaps: ["files:write"] },
-      }).success,
+      PluginInstallReceiptSchema.safeParse({ ...receipt, grantedCaps: ["files:write"] }).success,
     ).toBe(false);
   });
 

@@ -939,7 +939,7 @@ applied to vocabulary: one door onto "what do we call this kind".
     },
     {
       "term": "roster",
-      "means": "the published plugin list: one entry per assembled row, served at GET /api/plugins and pushed on the connection-level plugins frame",
+      "means": "the published plugin list: one entry per assembled row, served at GET /api/plugins and pushed on the connection-level plugins frame. A public allowlist (#402): an installed row names only its pin, packing mode and serving refusal; source, installer, time, grant, toggle attribution and diagnostics are private receipts at GET /api/plugins/receipts under plugins:read",
       "banned": [],
       "allow": []
     },
@@ -1574,7 +1574,7 @@ applied to vocabulary: one door onto "what do we call this kind".
     },
     {
       "term": "isolate",
-      "means": "the runtime a hardened plugin's code lives in and the boundary around it (ADR 0016 §1, re-scoped by ADR 0025): one OS process per plugin on the server, one dedicated Worker per plugin in the browser, reached only through the protocol frame pairs. The installer selects it with install.hardened === true; absent or false runs in-realm",
+      "means": "the runtime a hardened plugin's code lives in and the boundary around it (ADR 0016 §1, re-scoped by ADR 0025): one OS process per plugin on the server, one dedicated Worker per plugin in the browser, reached only through the protocol frame pairs. The installer selects it with install.hardened === true, kept on the row's private receipt, and the public row reports the effective hardened: true; absent or false runs in-realm",
       "banned": [],
       "allow": []
     },
@@ -1610,7 +1610,7 @@ applied to vocabulary: one door onto "what do we call this kind".
     },
     {
       "term": "stylesheet",
-      "means": "a plugin's skin as one CSS file — `src/styles.css` in the tree, imported by the web half and checked by S13 against §cssFamilies; the `styles.css` member of a bundle (`entry.styles: true`, `PLUGIN_BUNDLE_STYLES_FILE`), admitted at load only when every selector is rooted at the plugin's own class `.plugin-<id>` and refused `stylesheet_unscoped` otherwise (ADR 0025 §7), served at GET /api/plugins/:id/styles.css and injected as `<style data-plugin>` while the row is enabled. Ink has one owner; a stylesheet is where that owner writes it",
+      "means": "a plugin's skin as one CSS file — `src/styles.css` in the tree, imported by the web half and checked by S13 against §cssFamilies; the `styles.css` member of a bundle (`entry.styles: true`, `PLUGIN_BUNDLE_STYLES_FILE`), admitted at load only when every selector is rooted at the plugin's own class `.plugin-<id>` and refused `stylesheet_unscoped` otherwise (ADR 0025 §7), served at GET /api/plugins/:id/styles.css under plugins:load and injected as `<style data-plugin>` while the row is enabled. Ink has one owner; a stylesheet is where that owner writes it",
       "banned": [],
       "allow": []
     }

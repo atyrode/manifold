@@ -4,7 +4,12 @@ import { AuthorityScopeSchema } from "./grants.ts";
 import { LegacyCapSchema } from "./legacy-authority.ts";
 import { HEX_COLOR } from "./elements.ts";
 import { ContainerDisciplineSchema, TileLayoutSchema } from "./layout.ts";
-import { BindingOverridesSchema, PluginRosterSchema, PluginSettingValuesSchema } from "./plugin.ts";
+import {
+  BindingOverridesSchema,
+  PluginReceiptSchema,
+  PluginRosterSchema,
+  PluginSettingValuesSchema,
+} from "./plugin.ts";
 import { PrincipalSchema } from "./principal.ts";
 import { ManifoldRefSchema } from "./uri.ts";
 import { InstanceOriginSchema } from "./origin.ts";
@@ -628,10 +633,11 @@ export const ResolveResponseSchema = z.strictObject({
 export type ResolveResponse = z.infer<typeof ResolveResponseSchema>;
 
 /**
- * `GET /api/plugins` — the workspace's assembly as every principal sees it. The same
- * roster arrives unsolicited on the connection-level `plugins` session frame whenever it
- * changes; this door is how a client that has not opened a socket yet (or holds no room to
- * join) learns the vocabulary.
+ * `GET /api/plugins` — the workspace's PUBLIC roster, for any authenticated credential. It is
+ * byte-for-byte the projection anonymous `GET /api/protocol` publishes and the connection-level
+ * `plugins` session frame pushes whenever it changes; this door is how a client that has not
+ * opened a socket yet (or holds no room to join) learns the vocabulary. Installation
+ * provenance, consent and attribution are {@link PluginReceiptsResponseSchema}'s, never here.
  *
  * `developerMode` is the workspace's ONE switch for unpacked plugins (ADR 0025 §4), published
  * beside the roster so an agent and a human read the same value the same way (A2): while it is
@@ -646,8 +652,19 @@ export const PluginsResponseSchema = z.strictObject({
 export type PluginsResponse = z.infer<typeof PluginsResponseSchema>;
 
 /**
- * `GET /api/layout` — the CALLER's workspace tree. Self-scoped by construction: a layout is
- * per principal, so the door takes no id and `core.space.setLayout` writes only the caller's own.
+ * `GET /api/plugins/receipts` — the PRIVATE half beside the public roster (#402, #430): one
+ * receipt per roster row, keyed by plugin id. `plugins:read` on an unscoped credential; a
+ * container-scoped one is refused, because receipts describe the whole workspace.
+ */
+export const PluginReceiptsResponseSchema = z.strictObject({
+  receipts: PluginReceiptSchema.array(),
+});
+export type PluginReceiptsResponse = z.infer<typeof PluginReceiptsResponseSchema>;
+
+/**
+ * `GET /api/layout` — the CALLER's workspace tree, under `layouts:read`. Self-scoped by
+ * construction: a layout is per principal, so the door takes no id and `core.space.setLayout`
+ * writes only the caller's own.
  */
 export const LayoutResponseSchema = z.strictObject({ layout: TileLayoutSchema });
 export type LayoutResponse = z.infer<typeof LayoutResponseSchema>;

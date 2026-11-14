@@ -1014,7 +1014,11 @@ owners ([the plane rule](../AXIOMS.md#the-plane-rule)). Because the parameter is
 may declare only the slice you use — `onDisable: (ctx: { storage: PluginStorage }) => void`
 type-checks — the same sandbox shape action handlers have.
 
-For current dependency identity, use `ctx.host?.roster()` / `ctx.host?.enabled(id)`. For visible
+For current dependency identity, use `ctx.host?.roster()` / `ctx.host?.enabled(id)`. That roster is
+the public projection, except that YOUR row also carries your own installation receipt
+(`source`, `grantedCaps`, `installedBy`, `installedAt`, the installer's `hardened` and the
+build/update diagnostics) while it pins the bytes you run; read those members as optional, and
+expect every other row to show only its pin, packing mode and refusal (#402). For visible
 instance service readiness and `configuration.{revision,policySha256}`, use
 `ctx.services?.listInstances({})`. For the current public fleet inventory use
 `ctx.machines?.inventory()`, which returns the existing success/refusal answer from the same
@@ -1050,8 +1054,9 @@ hook frames and must be repacked only if they want to use this new API.
   `lifecycle: "disable_failed"` (or `"enable_failed"`) and every principal, human or agent, sees
   it at `GET /api/plugins`. A failed teardown is a visible state, never a wedged workspace. The same
   applies to `onPurge`: failing it does not stop the purge.
-- The roster also carries **`changedBy` and `changedAt`**, so the placeholder your contributions
-  leave behind can say who turned you off.
+- Who last turned you on or off (`changedBy`, `changedAt`) is a private receipt (#402), read with
+  `plugins:read` at `GET /api/plugins/receipts`; the public roster and your placeholders name the
+  state, not the person.
 - The purge action answers an exhaustive record —
   `{ id, removed: { storage, elements, ownership } }`, all three keys always present — and it does
   **not** touch documents: your element records belong to the workspace's Yjs document, and what a
@@ -3338,8 +3343,10 @@ Everything above is the in-tree channel: a package in this repository, registere
 A plugin that is NOT compiled into the build is INSTALLED instead (ADR 0016 §8 stage 2), from a
 bundle — one JSON file, `<id>.manifold-plugin.json`, packed by the kit §10 walks through (its
 shape is `docs/CONTRACTS.md` §Hardened plugins). Its roster row is `source: "plugin"` like any
-assembled row, and carries one block no first-party row has: `install`, what the installer
-consented to — including which runner (`install.hardened`).
+assembled row, and carries one block no first-party row has: `install`, the public pin
+(`sha256`), packing `mode` and serving `refusal`. What the installer consented to — source, grant,
+installer, time and runner choice — is the row's private receipt at `GET /api/plugins/receipts`
+(`plugins:read`); the row's own effective `hardened` says which runner it got.
 
 Code-admission doors on the engine's own row are **root only** (`caps: ["*"]`):
 `plugins:manage` lets a principal decide which shipped plugins are on; installing or updating
@@ -3373,7 +3380,7 @@ engine.plugins.uninstall { id, purge? }                                   → {}
   like any refusal, rather than vanishing into `unknown_action`.
 - **`grant`** widens the DEFAULT grant, which is the manifest's declared `capabilities` minus
   `*`, `tokens:mint` and `plugins:manage` — a stranger's plugin never holds those unless an
-  installer names them. The grant is published on the row (`install.grantedCaps`) and enforced at
+  installer names them. The grant is the row's private receipt (`install.grantedCaps`, read with `plugins:read`) and enforced at
   rung 4 BEFORE the caller's own caps: a door needing a cap the installer withheld is `forbidden`
   with `<cap> not granted to plugin <id>`, whoever asked.
   **A governed capability is never in a grant**, named or not: `machines:run`, the `jobs:*`,
@@ -3390,7 +3397,7 @@ engine.plugins.uninstall { id, purge? }                                   → {}
   changed or unverifiable native scope disables execution until a fresh native review.
 - **`hardened: true`** runs the row on ADR 0016's runner — its own Bun process and its own
   `Worker`, against §9's narrower interface — instead of in-realm. Absent or false is in-realm.
-  The installer chooses it, never the manifest; the row publishes it as `install.hardened` and
+  The installer chooses it, never the manifest; the receipt keeps it as `install.hardened`, the row publishes the effective `hardened: true`, and
   the manager's Installed band says **In-realm** or **Hardened** in words. A hardened row needs
   a portable bundle with `entry.worker: true` (§9 Packing); the same React component source
   is linked for the page and compiled into its Worker entry automatically.
@@ -3439,7 +3446,7 @@ GitHub discovery reads its latest-release API: one asset may name the root; mult
 must name `<plugin-id>.manifold-plugin.json`. Every selected asset needs GitHub's `sha256:`
 digest; the hub never downloads arbitrary bytes merely to invent a pin for them.
 
-The hub checks at startup and hourly, exposes `install.update` on each family member, and
+The hub checks at startup and hourly, exposes the observation as each family member's private `install.update` receipt, and
 never installs automatically. A manual review checks immediately. Feeds, candidate bundles and
 external changelogs all use the install door's per-hop public-HTTPS policy. Local feeds and
 artifacts may instead live under `<data>/plugin-uploads/`; remote feeds cannot name local files,
@@ -3794,7 +3801,7 @@ or false at the door is in-realm.
 The manifest names executable halves, not the runner:
 `{ "server": true, "web": "web.js", "worker": true }`. The hash pin, install door,
 capability declaration and refusal ladder apply either way. The roster says which runner a row
-got (`install.hardened`); the plugin manager's Installed band says it in words, **In-realm** or
+got (its effective `hardened`); the plugin manager's Installed band says it in words, **In-realm** or
 **Hardened**.
 
 The server child is a process/API boundary, not an OS filesystem or network confinement
@@ -4276,8 +4283,8 @@ web definition and attaches the guest runtime; authors do not write a separate
 Worker or add `--self-contained` (that flag conflicts with a page-linked portable
 entry). The JSON artifact carries exact-byte SHA-256, base64 members,
 `format: 1`, `hardenedContract: 12` and a protocol stamp. The host serves the
-declared Worker member at `/api/plugins/<id>/web.worker.js` only while enabled,
-with the artifact pin and `no-store`. A Worker cannot import `react-dom` or the
+declared Worker member at `/api/plugins/<id>/web.worker.js` only while enabled and only to a
+credential holding `plugins:load`, with the artifact pin and `no-store`. A Worker cannot import `react-dom` or the
 page's engine objects; unsupported imports/JSX refuse by name. Hardening
 selection never falls back to native when packing, loading or runtime fails.
 `verify --hardened` exercises actual server doors, not browser rendering:
@@ -4656,7 +4663,7 @@ The refusal is `stylesheet_unscoped: styles.css:<line> <why> (<selector>)`, from
 a bundle and from the authoring door or the rebuild loop for an unpacked directory — before anything
 is written, the working row standing — and from `setEnabled` if a stored bundle is ever re-verified
 against a stricter rule. The admitted sheet is served at `GET /api/plugins/<id>/styles.css` (same
-bearer, same `no-store`, same `ETag` as `web.js`) and injected as `<style data-plugin="<id>">`
+`plugins:load` bearer, same `no-store`, same `ETag` as `web.js`) and injected as `<style data-plugin="<id>">`
 while your row is enabled; off, it is removed with your panels (D4′). This is ink ownership, not a
 sandbox: you hold the DOM and could paint from code, and the rule is what makes a second writer
 for a shell family impossible in the one artifact that is declarative. It binds `core.*` too,
@@ -4685,9 +4692,9 @@ import (`zod` above) is inlined into your member, which is why your directory ne
 (`bun add zod` — a `pack` from a directory without it stops at `Could not resolve: "zod"`). The
 floor resolves from your directory first and from the checkout the kit runs in otherwise. The
 bundle records the version of each shared package and the protocol wire version it was built
-against (`builtAgainst`, copied to `install.builtAgainst` on your row). On every boot and
-admission the hub checks the explicit `PLUGIN_BUNDLE_PROTOCOL_COMPAT_VERSIONS` set (47 and 48
-on protocol 48) and the React major; session joins still require the exact current protocol.
+against (`builtAgainst`, kept on your installation's private receipt as `install.builtAgainst`). On every boot and
+admission the hub checks the explicit `PLUGIN_BUNDLE_PROTOCOL_COMPAT_VERSIONS` set (47, 48 and 59
+on protocol 59; 51-56 were not retained across 59's roster narrowing) and the React major; session joins still require the exact current protocol.
 A known incompatibility holds the row before code loads, and the manager names the
 built/current versions. Hardened-contract and digest checks are not relaxed. Legacy missing
 metadata remains visibly unknown. Outside the shell and hub the registry does not exist, and
@@ -4752,26 +4759,33 @@ The first is the assembly refusing at the door, the bundle rolled back, nothing 
 that throws while being imported is the same first shape — `artifact_invalid` naming the error —
 because the hub imports it inside the install and rolls back on failure.
 
-Your row now reads, on `GET /api/plugins`:
+Your row now reads, on `GET /api/plugins` (the public projection every credential and the session
+`plugins` frame share):
 
 ```json
 {
   "manifest": { "id": "example.hello", "…": "…" },
   "enabled": true,
-  "lifecycle": null,
+  "install": { "sha256": "4757261c…" },
+  "actions": [{ "name": "example.hello.greet", "…": "…" }]
+}
+```
+
+and its receipt, on `GET /api/plugins/receipts` with `plugins:read`:
+
+```json
+{
+  "id": "example.hello",
   "install": {
     "sha256": "4757261c…",
     "source": "/…/example.hello.manifold-plugin.json",
     "grantedCaps": ["containers:read"],
+    "installedBy": "…",
+    "installedAt": 1791062351963,
     "hardened": false,
-    "builtAgainst": {
-      "react": "19.2.8",
-      "react-dom": "19.2.8",
-      "@manifold/plugin": "0.10.1",
-      "…": "…"
-    }
-  },
-  "actions": [{ "name": "example.hello.greet", "…": "…" }]
+    "builtAgainst": { "react": "19.2.8", "@manifold/plugin": "…", "…": "…" },
+    "compatibility": { "status": "compatible", "issues": [] }
+  }
 }
 ```
 
@@ -4784,7 +4798,8 @@ POST /api/actions/example.hello.greet   {"name":"alex"}
 
 In every joined browser the roster change arrives over the session, the shell fetches
 `/api/plugins/example.hello/web.js` with the bearer in the Authorization header (`200
-text/javascript`, `cache-control: no-store`), imports it from a Blob URL — credentials never
+text/javascript`, `cache-control: no-store`; a credential without `plugins:load` gets 403 and the
+panel's placeholder says `not loaded — plugins:load capability required`), imports it from a Blob URL — credentials never
 ride a module URL — checks the default export's `id`, and your panel joins the assembly. No
 reload: the leaf a layout already held for `example.hello.hello` stops being the engine's
 placeholder and becomes your component. The plugin manager lists the row in its Installed band

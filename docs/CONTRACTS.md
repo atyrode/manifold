@@ -58,9 +58,17 @@ positive integer `cols`/`rows` and a nonnegative safe-integer or explicit `null`
 revision. The SDK MAY likewise skip
 full zod parsing for the SDK-constructed outbound `cursor` and `terminal_input` hot
 paths. The server still performs full schema validation at the untrusted boundary, and
-every other frame keeps full schema validation on both sides. Unknown message types are
-logged and ignored (forward compatibility); malformed frames of KNOWN types close the
-socket (server: policy close; client: 4002 + reconnect into a fresh init).
+every other frame keeps full schema validation on both sides. Unknown message types AFTER
+admission are logged and ignored (forward compatibility); malformed frames of KNOWN types close the
+socket (server: policy close; client: 4002 + reconnect into a fresh init). BEFORE admission
+(#402) — a session socket that has not completed `join`/`observe`, a machine socket before an
+admitted `hello`, an instance socket before an admitted guest `hello` — the FIRST unknown frame
+closes the socket 4002 with that gateway's existing first-frame reason (`first frame must be join
+or observe`, `first frame must be hello`), so pre-admission parsing and logging stop at one frame.
+Every compliant client, agent and guest hub sends its handshake first. The 1 MiB application
+frame classifier and the 10-second first-frame deadline are unchanged on all three gateways; no
+Origin check, rate budget or new telemetry is added (the bearer, machine or share credential stays
+the admission).
 
 The [SDK topology](#topology) owns the one-client rule and its adversarial-test exemption.
 The [terminal attach contract](#terminals-over-the-session-channel) owns the no-gap
@@ -747,8 +755,9 @@ Reasoning and rejected alternatives: [ADR 0019](decisions/0019-identity-posture.
   this change reduces durable exposure, not the authority of page code while bootstrap runs.
 
 - Caps include `*`, `agents:delegate`, `containers:read`, `containers:write`, `scenes:write`,
-  `terminals:spawn`, `terminals:write`, `tokens:mint`, `machines:mint`, `machines:read` and
-  `plugins:manage`. Reads of scene and presence come with `containers:read`.
+  `terminals:spawn`, `terminals:write`, `tokens:mint`, `machines:mint`, `machines:read`,
+  `plugins:manage`, `plugins:read`, `plugins:load` and `layouts:read`. Reads of scene and
+  presence come with `containers:read`.
   `terminals:write` covers input+resize+kill+take on terminals in scope. `agents:delegate`
   authorizes target-relative child-run creation and human/root standing-grant registration; admission checks the
   requested target, and the retained credential lineage keeps the sponsor waterfall as a live
@@ -757,6 +766,14 @@ Reasoning and rejected alternatives: [ADR 0019](decisions/0019-identity-posture.
   `engine.plugins.purge`. Installing a plugin is NOT administration of the shipped set but
   admission of a stranger's code, so `engine.plugins.install` / `uninstall` are root only
   (`*`; §Hardened plugins).
+  The three discovery read capabilities (#402, #430) are separate from viewing a container and
+  from administering plugins. `plugins:read` reads the private installation receipts
+  (`GET /api/plugins/receipts`) and who administered the plugin engine on its events;
+  `plugins:load` fetches an enabled installed plugin's verified `web.js`, `web.worker.js` and
+  admitted `styles.css`; `layouts:read` reads the AUTHENTICATED principal's own workspace tree
+  (`GET /api/layout`), never another principal's. Root's wildcard holds all three. No credential
+  minted before them holds any, and none is derived from another capability (§Credential
+  transition below).
 - Token scope: optional `containerId` restricts everything to one container. It is a subtree
   grant at `manifold://container/<id>`, which is what it always meant; the field did not move.
 - **Delegated ordinary credentials are issuer-owned, not human-principal ownership** (#389).
@@ -1040,12 +1057,24 @@ The existing Agent exclusions remain (`*`, `tokens:mint`, `machines:mint`, `plug
 Released V1 DTOs retain their strict vocabulary and are explicitly constructed. V1 may preserve
 scope on context/purpose/lifecycle changes but cannot replace it through legacy caps/targets.
 A conservative projection is returned only when every authority-bearing right fits the actual
-V1 vocabulary, anchor and cap/target product. A `machines:shell` leg, empty-minimum or other
-unrepresentable result refuses as `scoped_authority_requires_v2`, including whole authorized
-lists; no omitted rights, rows or sentinel caps. Legacy coarse hints omit `machines:shell`;
-these hints never restore authority. The
+V1 vocabulary, anchor and cap/target product. A `machines:shell` or discovery-read
+(`plugins:read`, `plugins:load`, `layouts:read`) leg, empty-minimum or other unrepresentable
+result refuses as `scoped_authority_requires_v2`, including whole authorized lists; no omitted
+rights, rows or sentinel caps. Legacy coarse hints omit `machines:shell` and the discovery read
+capabilities; these hints never restore authority. The
 coordinated current session protocol requires a matching SDK; V1 payload preservation does not
 make an old SDK binary compatible.
+
+**Credential transition for the discovery read capabilities (#402, #430).** Existing narrow
+grants gain nothing silently: a token, share, Agent, Run or preview identity minted before them
+holds none, and `containers:read` implies none. V1 `core.access.mint` cannot name them; only a
+V2 scope delegates them. `core.access.mintShare` refuses them (`cannot share capability <cap>`)
+because the instance welcome reaches guest hubs whose strict parser predates them;
+`machines:shell` stays shareable exactly as before. A preview identity claims the released V1
+vocabulary (root still claims `*`), so a non-root preview login holds none of them. Root keeps
+its wildcard. A browser on a non-root credential therefore needs `plugins:load` and
+`layouts:read` delegated explicitly to load installed code and its saved tree; without them the
+shell names each refusal and never saves a default over a layout it could not read.
 
 **Ordinary account-shell creation is separate from placement and control.** An ordinary create
 requires `terminals:spawn` at C and `machines:shell` at exact enrolled M. Ordinary restart also
@@ -1143,10 +1172,12 @@ pool entry and no new client (`AXIOMS.md` §The portable lens).
 | GET /api/protocol                    | none                                  | → generated JSON-Schema of all wire messages, plus the published placement, plugin/action, event and grant vocabularies                                                                                                                                                                                                                                                                                                                                                                |
 | GET /api/attendance                  | containers:read                       | → `{ attendance: [{containerId, principals}] }` for currently connected OCCUPANTS; scoped tokens see only their container                                                                                                                                                                                                                                                                                                                                                              |
 | POST /api/actions/:name              | per action (declared)                 | action args → 200 `ActionOutcome`: `{ok:true,result}` or `{ok:false,denial:{rule,message}}`. Refusals are DATA, never non-2xx. THE action door                                                                                                                                                                                                                                                                                                                                         |
-| GET /api/plugins                     | any token                             | → `{ plugins: PluginRoster, developerMode? }` (manifests, `enabled`, `source`, action summaries; the developer-mode switch beside them, absent ≡ off). Container-scoped tokens included: the roster is vocabulary                                                                                                                                                                                                                                                                      |
-| GET /api/plugins/:id/web.js          | any token                             | → the worker module of an installed, ENABLED plugin (`text/javascript`, `cache-control: no-store`, `etag: "<sha256>"`); 404 otherwise. §Hardened plugins                                                                                                                                                                                                                                                                                                                               |
-| GET /api/plugins/:id/styles.css      | any token                             | → the admitted stylesheet of an installed, ENABLED plugin whose `entry.styles` is true (`text/css`, `cache-control: no-store`, `etag: "<sha256>"`); 404 otherwise. §Hardened plugins, S13 at load                                                                                                                                                                                                                                                                                      |
-| GET /api/layout                      | any token                             | → `{ layout }` — the CALLER's workspace `TileLayout`, or the default composed from the roster's seats when unset. Self-scoped by construction                                                                                                                                                                                                                                                                                                                                          |
+| GET /api/plugins                     | any authenticated token               | → `{ plugins: PluginRoster, developerMode? }` — the PUBLIC allowlist (manifests, `enabled`, `source`, action summaries, effective `hardened`, execution state, and for an installed row only `install: { sha256, mode?, refusal? }`), the same projection `/api/protocol` and the session `plugins` frame carry. Container-scoped tokens included. Never a source, installer, time, grant, attribution or diagnostic. §The roster                                                      |
+| GET /api/plugins/receipts            | plugins:read (unscoped credential)    | → `{ receipts: PluginReceipt[] }` — per roster row `{ id, changedBy?, changedAt?, install? }`, the install receipt being `{ sha256, source, grantedCaps, installedBy, installedAt, hardened?, builtAgainst?, compatibility?, update? }`. A container-scoped credential is refused (`scoped tokens cannot read plugin receipts`). §The roster                                                                                                                                           |
+| GET /api/plugins/:id/web.js          | plugins:load                          | → the web module of an installed, ENABLED plugin (`text/javascript`, `cache-control: no-store`, `etag: "<sha256>"`); 404 otherwise. §Hardened plugins                                                                                                                                                                                                                                                                                                                                  |
+| GET /api/plugins/:id/web.worker.js   | plugins:load                          | → the declared portable Worker entry of an ENABLED installed portable bundle or selected trusted first-party build, at its pin (`cache-control: no-store`, `etag`); 404 otherwise. §Hardened plugins                                                                                                                                                                                                                                                                                   |
+| GET /api/plugins/:id/styles.css      | plugins:load                          | → the admitted stylesheet of an installed, ENABLED plugin whose `entry.styles` is true (`text/css`, `cache-control: no-store`, `etag: "<sha256>"`); 404 otherwise. §Hardened plugins, S13 at load                                                                                                                                                                                                                                                                                      |
+| GET /api/layout                      | layouts:read                          | → `{ layout }` — the AUTHENTICATED principal's workspace `TileLayout`, or the default composed from the roster's seats when unset. It takes no principal argument; a container-scoped credential is answered at its own anchor, for its own principal                                                                                                                                                                                                                                  |
 | GET /api/bindings                    | containers:read                       | → `{ overrides }` — the CALLER's key rebindings as binding id → key, self-scoped exactly as the layout read is. `core.keys.setBinding` is the only writer                                                                                                                                                                                                                                                                                                                              |
 | GET /api/settings                    | containers:read                       | → `{ values }` — effective principal and workspace plugin setting deltas as setting ref → boolean or string. `engine.plugins.setSetting` is the only writer                                                                                                                                                                                                                                                                                                                            |
 | GET /api/resolve?uri=                | containers:read                       | → `ResolveResponse { uri, ref, exists, title }`; an unparseable or non-`manifold://` uri is 400 `invalid`                                                                                                                                                                                                                                                                                                                                                                              |
@@ -1194,9 +1225,11 @@ widens its minter's scope), or vacuous when nothing in the answer is container-a
 machine
 list) — but any door whose arguments or payload name a container-addressed node owes the check.
 Conversion may never narrow who may call a door
-(`docs/decisions/0013-plugin-behavioral-contract.md` §15). `GET /api/plugins` and `GET /api/layout`
-are open to scoped tokens by construction: the roster is global vocabulary, and a layout read is
-self-scoped.
+(`docs/decisions/0013-plugin-behavioral-contract.md` §15). `GET /api/plugins` is open to scoped
+tokens by construction: the public roster is global vocabulary. `GET /api/layout`,
+`web.js`, `web.worker.js` and `styles.css` ask their capability at a scoped credential's own
+anchor, so a scoped viewer delegated `layouts:read` and `plugins:load` there reads its own tree and
+loads installed code. The private receipts describe the whole workspace and refuse scoped tokens.
 
 Delegation is attenuation-only: a minted token's caps MUST be a subset of the minter's
 caps (root's `*` covers everything); minting `*` itself requires root-class authority. Violations
@@ -1596,7 +1629,10 @@ across enable/disable is the **behavioral contract**
 
 **The roster.** `GET /api/plugins` returns `{ plugins, developerMode? }` — one entry per assembled
 row, and beside them the workspace's developer-mode switch (ADR 0025 §4; absent ≡ off), which
-rides the connection-level `plugins` frame the same way:
+rides the connection-level `plugins` frame the same way. It is an ALLOWLIST, not a redaction
+(#402): anonymous `GET /api/protocol`, `GET /api/plugins` for any authenticated credential, the
+pre-admission session frame and every later `plugins` broadcast carry exactly this projection,
+and joining never upgrades it:
 
 ```ts
 {
@@ -1607,14 +1643,37 @@ rides the connection-level `plugins` frame the same way:
            | "isolate_starting" | "isolate_crashed",   // absent ≡ ok; the isolate_ pair is the runner's
   refusal?: PluginRefusalReason,              // why this row cannot be toggled right now
   held?: { reason: string, by?: string, minimum?: number }, // assembly quarantine; enabled is false
-  changedBy?: string | null, changedAt?: number | null,    // who last flipped it, and when
-  install?: { sha256, source, grantedCaps, installedBy, installedAt, hardened?, builtAgainst?, mode?, refusal? }  // present iff INSTALLED (§Hardened plugins)
+  hardened?: true,                            // effective execution: supervisor child + Worker
+  install?: { sha256, mode?, refusal? }       // present iff INSTALLED: the pin, packing, serving refusal
 }
 ```
 
 `install.mode` is `"bundle" | "unpacked"` (`PLUGIN_INSTALL_MODES`, absent ≡ `bundle`): who packed
 the bytes — an installer with the kit, or the hub itself from `<data>/authored/<id>/` (§Unpacked
 plugins below).
+
+**Private receipts (#402, #430).** Where installed bytes came from, who admitted them and when,
+what they were granted, the installer's hardening choice, build and update diagnostics, and who
+last flipped a row are RECEIPTS, never roster members. `GET /api/plugins/receipts` (`plugins:read`
+on an unscoped credential; a container-scoped one is refused) answers one per roster row:
+
+```ts
+{
+  id, changedBy?: string | null, changedAt?: number | null,
+  install?: {                                   // present iff INSTALLED, same pin as the row
+    sha256, source, grantedCaps, installedBy, installedAt,
+    hardened?, builtAgainst?, compatibility?, update?
+  }
+}
+```
+
+A reader matches a receipt to a row by id AND `sha256`; a receipt for other bytes describes
+another install. Receipts change without a new roster shape (an update observation, a toggle),
+and the unchanged public `plugins` frame those changes still republish is the cue for a
+`plugins:read` reader to read receipts again. A plugin's OWN server half reads its own row's
+receipt through `host.roster()` (§Read-only lifecycle metadata); no plugin reads another row's.
+`GET /api/protocol` publishes the identity and receipt SHAPES under `pluginContract` as
+vocabulary; it never carries a receipt value.
 
 Assembly problems attributable to non-core manifests quarantine those plugins at boot rather
 than refusing the hub. A held row retains its manifest, install metadata and data, but contributes
@@ -1680,8 +1739,9 @@ Clients switch on the prefix before `": "`; the remainder is identity for displa
 (cap `plugins:manage`) is a **builtin roster row** (`source: "builtin"`), not a plugin action: the
 mechanism that changes the assembly cannot live inside the assembly, or one toggle would make
 it unreachable for every principal (A2). It flips a server-persisted flag (`meta` key
-`plugins:disabled`, a JSON array of ids), records attribution (`meta` key `plugins:attribution`),
-and pushes the new roster to every open socket; clients rebuild live, with no reload. `engine.` is a
+`plugins:disabled`, a JSON array of ids), records attribution (`meta` key `plugins:attribution`,
+read back only as a private receipt's `changedBy`/`changedAt`), and pushes the new public roster to
+every open socket; clients rebuild live, with no reload. `engine.` is a
 reserved namespace (`ENGINE_NAMESPACE_PREFIX`): a plugin claiming it fails assembly, and a
 `setEnabled` aimed at a builtin row is refused with class `builtin`. `core.plugins` is the manager
 **UI only** — a plugin with no actions, whose `essential` flag defends the LEDGER and never the
@@ -1820,7 +1880,10 @@ settled job's credential, even if the installer has different authority or no li
 Each read requires its capability inside the currently admitted manifest and current install
 grant as well as the live credential: `containers:read` for roster/enablement and fleet
 inventory, and `services:read` for instance metadata. Roster results are detached public
-roster data, including installed bundle identity. `machines.inventory()` uses the same live
+roster data, including installed bundle identity; only the calling plugin's own row also carries
+its own installation receipt (`source`, `grantedCaps`, `installedBy`, `installedAt` and the
+diagnostics), and only while that receipt pins the row's current bytes. Every other row is the
+public allowlist. `machines.inventory()` uses the same live
 public fleet projection as dispatch inventory, returning its existing `MachineBridgeAnswer`
 success/refusal shape. It does not expose drain, repository, identity mutation, credential
 or filesystem methods and never caches an earlier dispatch's observations or authority.
@@ -1961,7 +2024,8 @@ replacement still drains already-admitted work against its unchanged old binding
 retirement; it does not lend the replacement's authority to that work.
 
 **Workspace layout.** Each principal has a `TileLayout` of their own, stored under `meta` key
-`layout:<principalId>` and read at `GET /api/layout`. When unset the door answers a DEFAULT that
+`layout:<principalId>` and read at `GET /api/layout` under `layouts:read`, always for the
+AUTHENTICATED principal (the door takes no principal argument). When unset the door answers a DEFAULT that
 is COMPOSED rather than authored: `composeDefaultLayout(roster)` in `@manifold/plugin` lays the
 enabled roster's declared seats (`contributes.seats` — `{ panel, order, ratio? }`, absent ≡ the
 plugin seats nothing) out in one row, in seat order, ties broken by full panel id. It takes the
@@ -1990,6 +2054,12 @@ a panel leaf and nowhere else, refused past `MAX_PANEL_ARG_BYTES` (4 KiB of JSON
 JSON data, absent ≡ none, delivered to the panel as `PanelProps.arg`, travelling with the panel
 when a seat moves, and written by the same one door — `host.openPanel` computes the tree and
 commits it through it, so an opening is an ordinary arrangement write.
+
+**An unread tree is never overwritten (#430).** `core.space.setLayout` needs no read capability,
+so the browser shell guards the write: when `GET /api/layout` fails (403 without `layouts:read`,
+or any other failure) it shows the composed default as a stand-in, says so in a sticky notice
+naming the door's sentence, and refuses every arrangement commit until a read succeeds. Gestures
+on the stand-in change only that view; the principal's stored tree stays exactly as written.
 
 **Container leaves (issue #201).** A workspace container leaf shows that canvas or composition
 inline, so a plugin panel and a live terminal tile tree are one addressable view with no
@@ -2670,9 +2740,10 @@ segment in the URI (ADR 0014).
 
 In-realm is the default for registered and installed plugins (ADR 0025,
 operator-ratified 2026-09-05). An installer may choose hardening for an installed
-row at `engine.plugins.install`; only `install?.hardened === true` runs its server
-half in a separate Bun child and portable web half in a dedicated Worker. The
-manager's Installed band names that row **In-realm** or **Hardened**.
+row at `engine.plugins.install`; only a row whose installer chose it (the private receipt's
+`install.hardened === true`) or a selected trusted first-party build runs its server half in a
+separate Bun child and portable web half in a dedicated Worker, and the public row says so as its
+effective `hardened: true`. The manager's Installed band names that row **In-realm** or **Hardened**.
 
 **Trusted first-party selection (ADR 0053, #259).** A registered first-party
 plugin can also be selected by `MANIFOLD_HARDENED_PLUGINS=<id>[,<id>…]` at
@@ -2726,9 +2797,15 @@ dependency. The bundle's optional `builtAgainst` version map is recorded as
 shared builds also record React/package versions. Admission and boot check that stamp against
 the explicit `PLUGIN_BUNDLE_PROTOCOL_COMPAT_VERSIONS` set and compare React by major. The
 bundle set is independent of session, machine and instance negotiation: sessions still require
-the current wire version. Protocol 56 admits bundle stamps 47, 48, 51, 52, 53, 54, 55 and 56:
-terminal geometry adds a subscription without changing existing plugin call signatures, and
-portable Worker projections expose no terminal byte/snapshot subscriptions. A prior stamp
+the current wire version. Protocol 59 changes the plugin ABI (#402): roster rows lose their
+receipts and toggle attribution (a server guest's own row keeps its own receipt), and the shared
+`@manifold/protocol` namespace no longer exports `PluginInstallSchema`, so the set resets. It
+admits 59, 47 and 48. Keeping 47 and 48 rests on inspecting the unchanged released OMP, Code
+and Babel artifacts at those stamps (no receipt member read; the removed export bound but never
+used); the unchanged-artifact assembly and loading proof the rule below requires is not recorded
+for this revision. Stamps 51-56 have no released artifact and are held
+`repack_required`. Contract-11 and contract-12 guests receive capability hints without the
+discovery read capabilities (`projectHardenedCaps`). A prior stamp
 may remain only with proof from unchanged released artifacts through candidate assembly and
 loading; an incompatible plugin ABI change resets the set. No numeric range, future version
 or deployment bypass is implied. Known incompatibility refuses fresh admission or holds an
@@ -2946,7 +3023,7 @@ explicit, default-off one-time bootstrap exception for an authenticated `unknown
 response from a target predating the export door. The exception emits a target/reason warning
 and step-summary receipt; an existing door always runs the normal gate.
 
-**The install grant (ADR 0016 §5, R4 = option B).** `install.grantedCaps` is what the installer
+**The install grant (ADR 0016 §5, R4 = option B).** The receipt's `install.grantedCaps` is what the installer
 consented to. It defaults to the manifest's declared `capabilities` minus the high-risk set
 `{ "*", "tokens:mint", "plugins:manage" }` **and minus `GOVERNED_CAPS`**, restricted to caps that
 exist in `CAPS`; the install door's `grant` argument may widen it explicitly, and only root may
@@ -2955,8 +3032,9 @@ one extra intersection at rung 4: for a row carrying `install`, every cap the ac
 be in `grantedCaps` or the dispatch is `forbidden` with message `"<cap> not granted to plugin"` —
 checked BEFORE the caller's own caps, so the message names the plugin's grant, not the caller.
 Narrowing a grant later is allowed; its consequence is that same `forbidden`, already a named,
-displayable outcome. `install` also carries `sha256`, `source` (the url or path as given),
-`installedBy` and `installedAt`, so an installed row is attributed exactly as a toggle is.
+displayable outcome. The receipt's `install` also carries `sha256`, `source` (the url or path as
+given), `installedBy` and `installedAt`, so an installed row is attributed exactly as a toggle is,
+and as privately (§The roster).
 
 **A declared capability is in one of three states, and `grantedCaps` alone names only one of
 them.** Granted: in the row's grant, exercisable at rung 4. Withheld: high-risk, and absent
@@ -3145,18 +3223,23 @@ No CSS, markup or arbitrary DOM attribute travels in the frame.
 
 **`GET /api/plugins/:id/web.js`.** Serves `files[entry.web]` of an INSTALLED, ENABLED plugin
 with `Content-Type: text/javascript`, `Cache-Control: no-store` and `ETag` equal to the install's
-`sha256`; 404 otherwise (not installed, disabled, or no web half). Same auth as `GET /api/plugins`.
+`sha256`; 404 otherwise (not installed, disabled, or no web half). It requires `plugins:load`
+(#430): executing installed code is its own delegated authority, implied neither by discovering
+the plugin nor by viewing a container. A refusal is named, never a blank: the in-realm loader
+records the door's sentence for that row, the panel placeholder reads `not loaded — <sentence>`
+(`data-plugin-refusal="load"`), one sticky shell notice lists every refused plugin, and a Worker
+row faults `Not loaded — <sentence>` instead of `web half failed to load`.
 
 **`GET /api/plugins/:id/web.worker.js`.** Serves the declared
 `files["web.worker.js"]` of an ENABLED installed portable bundle or selected
 trusted first-party artifact, at its exact pin (`ETag`, `Cache-Control: no-store`).
-It requires authenticated `containers:read` access like `web.js`; unauthorized
+It requires `plugins:load` exactly like `web.js`; unauthorized
 callers are refused and disabled/missing entries answer 404. Neither route
 serves arbitrary bundle members.
 
 **`GET /api/plugins/:id/styles.css`.** Serves `files["styles.css"]` of an INSTALLED, ENABLED
 plugin whose `entry.styles` is true, with `Content-Type: text/css`, `Cache-Control: no-store` and
-the same `ETag`; 404 otherwise (not installed, disabled, no sheet declared). Same auth. The sheet
+the same `ETag`; 404 otherwise (not installed, disabled, no sheet declared). Same `plugins:load`. The sheet
 is the one admitted under the root-class rule at install and re-verified at enable and boot.
 
 **Proof boundaries.** The `example.counter` reference fixture packs both
@@ -3371,7 +3454,9 @@ room; `observed` acknowledges admission without inventing room state, presence o
 `plugins { roster, developerMode? }` is delivered once when the socket opens (before any
 handshake) and again whenever the roster changes — a developer-mode flip republishes the roster,
 its `developer_mode_off` marks moved, and nothing else — which is what makes enable/disable hot
-for every open tab, including the workspace root. `developerMode` remains additive and optional
+for every open tab, including the workspace root. Its roster is the PUBLIC allowlist (§The
+roster), identical before and after admission and for every credential; an update observation
+that changes only receipts republishes it unchanged, as the cue to re-read receipts. `developerMode` remains additive and optional
 (absent ≡ off, the pre-#257 wire). The SDK pool demultiplexes connection frames to pool-level
 listeners (`SessionClient.onPlugins(roster, developerMode)`, which replays the latest pair to a
 late subscriber) instead of dropping them as frames for an unknown channel.
@@ -3399,6 +3484,11 @@ re-declares every live topic immediately after writing its handshake (`observe` 
 `MAX_SUBSCRIBE_TOPICS` (64) topics per frame, over which the frame is malformed (4002), and
 `MAX_SUBSCRIPTIONS_PER_CONNECTION` (256) per socket, past which further topics are dropped and
 logged with the socket left alone.
+Events on the plugin engine's own node (`plugin_installed`, `plugin_uninstalled`,
+`plugin_enabled`, `plugin_disabled`, `plugin_purged`, `developer_mode_changed`) reach every reader
+of that node, but who administered the engine is a private receipt (#402): `actor` is `null` for a
+subscriber without `plugins:read` and the acting principal for one with it (or root). The payload
+names the plugin and its public pin only.
 Event delivery shares the session channel's send bound (256 queued frames or 1 MiB per
 socket's event queue); past it, the event is dropped and logged as `socket_backpressure`
 with `connectionId` and `topic` while the socket and its subscriptions stay live, and catch-up
@@ -3535,7 +3625,7 @@ untouched — when it concerns one room:
 | 4401      | socket  | bad token                                                                                                               |
 | 4403      | socket  | forbidden, or revoked (a revocation fences every live connection of that principal)                                     |
 | 4409      | socket  | protocol version mismatch                                                                                               |
-| 4002      | socket  | malformed frame of a KNOWN type, non-`join` first frame, duplicate `ch`, or the join deadline elapsing with no channels |
+| 4002      | socket  | malformed KNOWN-type frame, non-`join` first frame or UNKNOWN pre-admission frame, duplicate `ch`, or join deadline     |
 | 4008      | socket  | liveness timeout: the server's `ping` still unanswered as the next fires, or the client's silence deadline elapsing     |
 | 4404      | channel | unknown container at join; a DELETED container closes every channel of its room with the same code                      |
 | 4429      | channel | `MAX_SESSION_CHANNELS_PER_CONNECTION` (64) already held                                                                 |
@@ -4392,7 +4482,8 @@ and fresh on host restart; it is not the machine token or a durable terminal che
 disconnected; absence is equivalent to `null`. Such exited terminals are retained through
 the next `hello`, then forgotten when `welcome` acknowledges it (or when `kill` arrives).
 Server replies `welcome { machineId, serverEpoch }` or closes: 4401 unauthorized,
-4403 revoked, 4409 version, 4002 malformed frame (including a refused hello inventory), or
+4403 revoked, 4409 version, 4002 malformed frame (including a refused hello inventory, and a
+first frame of unknown type before an admitted hello: `first frame must be hello`), or
 4003 admission refused (`machine name already in use`,
 incumbent continuity mismatch, or `supersession damped`). A name conflict is decided by the
 same atomic write that would admit the hello; it sends no welcome, changes neither machine row,
@@ -5716,12 +5807,13 @@ Host replies `welcome { origin, serverEpoch, shareId, ref, caps, title, tickets 
 the shared node in the HOST's address space and `origin` says whose space that is; the pair
 IS the cross-instance reference. `tickets` answers with the subset of the advertised ones
 still live, and the guest drops the rest. Or the host closes: 4401 unauthorized / origin
-mismatch, 4403 revoked, 4409 version, 4002 malformed or first-frame-not-hello or duplicate
-hello, 4008 liveness timeout, 4001 superseded. Version acceptance is
-`INSTANCE_PROTOCOL_COMPAT_VERSIONS` `{53, 54, 55, 56}` — its own wire, its own set, the
+mismatch, 4403 revoked, 4409 version, 4002 malformed or first-frame-not-hello (an unknown frame
+type before admission included) or duplicate hello, 4008 liveness timeout, 4001 superseded.
+After admission an unknown guest frame type is ignored. Version acceptance is
+`INSTANCE_PROTOCOL_COMPAT_VERSIONS` `{53, 54, 55, 56, 59}` — its own wire, its own set, the
 same [Protocol and compatibility](#protocol-and-compatibility) discipline the machine channel follows.
 Protocol53 reset instance acceptance for explicit host-recipient admission and finite
-ticket subset/expiry. Protocols 54, 55 and 56 leave that instance wire unchanged and add their
+ticket subset/expiry. Protocols 54, 55, 56 and 59 leave that instance wire unchanged and add their
 versions without another peer reset. Federation compatibility remains independent of
 retained terminal-agent compatibility. This is not an implicit live rollout or authorization to install
 newer agents ahead of their hub.

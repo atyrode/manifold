@@ -13,7 +13,7 @@ import type {
 import {
   PluginManifestSchema,
   type Principal,
-  type PluginRoster,
+  type PluginGuestRoster,
   type ServiceReadArgs,
   type ServiceReply,
 } from "@manifold/protocol";
@@ -146,7 +146,8 @@ export async function publicationFixture(configure = true) {
       },
     );
   };
-  const roster = (): PluginRoster => [
+  /** The host's guest view: only this plugin's own row, carrying its own receipt (#402). */
+  const roster = (): PluginGuestRoster => [
     {
       manifest: PluginManifestSchema.parse(manifestJson),
       enabled: state.enabled,

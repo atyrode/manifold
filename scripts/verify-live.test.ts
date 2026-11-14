@@ -20,6 +20,7 @@ import {
   JobDescriptionSchema,
   MachinesResponseSchema,
   PROTOCOL_VERSION,
+  PUBLIC_ROSTER_PROTOCOL_VERSION,
   type ActionSummary,
   type InstanceServiceDescription,
   type PluginRosterEntry,
@@ -175,29 +176,45 @@ export function liveFixture(beforeRequest?: () => void) {
         state.nativeInventoryPresent ||
         (!door.name.startsWith("engine.jobs.") && !door.name.startsWith("engine.services.")),
     );
-  const plugin = (): PluginRosterEntry => ({
-    manifest: {
-      id: pluginId,
-      version: "1.0.0",
-      title: "Live fixture",
-      description: "Native parity proof",
-      capabilities: [`${pluginId}:read`, `${pluginId}:write`],
-      contributes: { panels: [], sections: [], elements: [], tools: [], events: [] },
-    },
-    enabled: state.pluginHeld ? false : state.pluginEnabled,
-    source: "plugin",
-    lifecycle: state.pluginLifecycle,
-    ...(state.pluginHeld ? { held: state.pluginHeld } : {}),
-    actions: declarations().filter((door) => door.name.startsWith(`${pluginId}.`)),
-    install: {
-      sha256: hash,
-      source: "https://secret.invalid/private-source",
-      grantedCaps: [],
-      installedBy: "owner",
-      installedAt: 1,
-      ...(state.pluginInstallRefusal ? { refusal: state.pluginInstallRefusal } : {}),
-    },
-  });
+  /*
+    A pre-59 hub publishes the installation receipt and toggle attribution on its row (#402);
+    a current one publishes the allowlist only. The upgrade and rollback tests read both.
+  */
+  const plugin = () => {
+    const row: PluginRosterEntry = {
+      manifest: {
+        id: pluginId,
+        version: "1.0.0",
+        title: "Live fixture",
+        description: "Native parity proof",
+        capabilities: [`${pluginId}:read`, `${pluginId}:write`],
+        contributes: { panels: [], sections: [], elements: [], tools: [], events: [] },
+      },
+      enabled: state.pluginHeld ? false : state.pluginEnabled,
+      source: "plugin",
+      lifecycle: state.pluginLifecycle,
+      ...(state.pluginHeld ? { held: state.pluginHeld } : {}),
+      actions: declarations().filter((door) => door.name.startsWith(`${pluginId}.`)),
+      install: {
+        sha256: hash,
+        ...(state.pluginInstallRefusal ? { refusal: state.pluginInstallRefusal } : {}),
+      },
+    };
+    return state.protocolVersion < PUBLIC_ROSTER_PROTOCOL_VERSION
+      ? {
+          ...row,
+          changedBy: "owner",
+          changedAt: 1,
+          install: {
+            ...row.install,
+            source: "https://secret.invalid/private-source",
+            grantedCaps: [],
+            installedBy: "owner",
+            installedAt: 1,
+          },
+        }
+      : row;
+  };
   const server = Bun.serve({
     hostname: "127.0.0.1",
     port: 0,

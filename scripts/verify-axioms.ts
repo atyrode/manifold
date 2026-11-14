@@ -89,6 +89,7 @@ import {
   ResolveResponseSchema,
   SceneElementSchema,
   TokenGrantSchema,
+  TokenGrantV2Schema,
   UI_NODE_TYPES,
   anchorOf,
   cssRules,
@@ -96,12 +97,14 @@ import {
   formatManifoldUri,
   unscopedRule,
   validateTileLayout,
+  type AskableCap,
   type LogEvent,
   type ManifoldRef,
   type ServerEvent,
   type Tile,
   type TileLayout,
   type TokenGrant,
+  type TokenGrantV2,
 } from "../packages/protocol/src/index.ts";
 import { SERVER_PLUGIN_DEFS, SHIPPED_PLUGIN_IDS } from "../packages/server/src/assembly.ts";
 import { jobDoors } from "../packages/server/src/job-doors.ts";
@@ -1066,8 +1069,9 @@ const ROUTE_ALLOWLIST: readonly string[] = [
   "/api/settings",
   "/api/attendance",
   "/api/plugins",
+  "/api/plugins/receipts",
   "/api/plugins/:id/web.js",
-  // The portable Worker uses the web module's authenticated containers:read door.
+  // The portable Worker uses the web module's authenticated plugins:load door.
   "/api/plugins/:id/web.worker.js",
   "/api/plugins/:id/styles.css",
   "/api/protocol",
@@ -2405,6 +2409,25 @@ try {
     return TokenGrantSchema.parse(outcome.result);
   };
 
+  /**
+   * Mints a workspace-root credential through the V2 door. `layouts:read` (#430) arrived after
+   * V1, so a reader of a principal's own tree is minted with a scope, never a legacy cap list.
+   */
+  const mintScoped = async (
+    who: { readonly principalId: string } | { readonly principal: unknown },
+    caps: readonly AskableCap[],
+  ): Promise<TokenGrantV2> => {
+    const outcome = ActionOutcomeSchema.parse(
+      await dispatch("core.access.mintTokenV2", {
+        ...who,
+        scope: [{ target: "manifold://", reach: "subtree", caps }],
+        expiresAt: Date.now() + 60 * 60_000,
+      }),
+    );
+    if (!outcome.ok) throw new Error(`mint refused: ${outcome.denial.message}`);
+    return TokenGrantV2Schema.parse(outcome.result);
+  };
+
   const setEnabled = async (id: string, enabled: boolean): Promise<boolean> => {
     const outcome = ActionOutcomeSchema.parse(
       await dispatch(ENGINE_SET_ENABLED_ACTION, { id, enabled }),
@@ -3373,10 +3396,7 @@ try {
       at the gate. So the tree this drag edits is read with a token bound to that principal —
       asking as the owner would answer a different workspace and call the drag a no-op.
     */
-    const viewer = await mint({
-      principalId: viewerPrincipalId,
-      caps: ["containers:read", "containers:write", "scenes:write"],
-    });
+    const viewer = await mintScoped({ principalId: viewerPrincipalId }, ["layouts:read"]);
     const before = LayoutResponseSchema.parse(await getJson("/api/layout", viewer.token)).layout;
     const panelLeaves = Object.values(before).filter(
       (node) => node.ref !== null && node.ref.kind === "panel",
@@ -3422,10 +3442,9 @@ try {
         : `ratios ${moved ? "changed" : "unchanged"} after ${String(commits)} core.space.setLayout dispatch(es)`,
     );
 
-    const other = await mint({
-      principal: { name: "axiom-bystander", kind: "human" },
-      caps: ["containers:read"],
-    });
+    const other = await mintScoped({ principal: { name: "axiom-bystander", kind: "human" } }, [
+      "layouts:read",
+    ]);
     const bystander = LayoutResponseSchema.parse(await getJson("/api/layout", other.token)).layout;
     const currentRoster = PluginsResponseSchema.parse(await getJson("/api/plugins")).plugins;
     const untouched =
@@ -5922,7 +5941,10 @@ try {
       is PER PRINCIPAL and the browser is not the owner, so it is read and written with a token
       bound to the browser's principal, exactly as R4 does.
     */
-    const viewer = await mint({ principalId: viewerPrincipalId, caps: ["containers:read"] });
+    const viewer = await mintScoped({ principalId: viewerPrincipalId }, [
+      "containers:read",
+      "layouts:read",
+    ]);
     const before = LayoutResponseSchema.parse(await getJson("/api/layout", viewer.token)).layout;
     const root = before[ROOT_TILE_ID];
     const counterLeaf: Tile = {

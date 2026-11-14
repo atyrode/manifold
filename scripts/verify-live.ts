@@ -10,6 +10,8 @@ import {
   MachinesResponseSchema,
   PluginsResponseSchema,
   PROTOCOL_VERSION,
+  PUBLIC_ROSTER_PROTOCOL_VERSION,
+  type PluginsResponse,
   type ActionProtocol,
   type ActionSummary,
   type InstanceServiceDescription,
@@ -272,9 +274,46 @@ function rosterHealthy(plugin: PluginRosterEntry, item: string): void {
 function unique<T>(rows: T[], key: (row: T) => string, item: string): void {
   if (new Set(rows.map(key)).size !== rows.length) fail(item, "duplicate inventory identity");
 }
+/** What a pre-59 row carried beside the public allowlist, and what its `install` may keep. */
+const RELEASED_ROW_RECEIPTS: Record<string, true> = { changedBy: true, changedAt: true };
+const PUBLIC_INSTALL_MEMBERS: Record<string, true> = { mode: true, sha256: true, refusal: true };
+function publicRow(row: unknown): unknown {
+  if (typeof row !== "object" || row === null) return row;
+  return Object.fromEntries(
+    Object.entries(row)
+      .filter(([key]) => RELEASED_ROW_RECEIPTS[key] !== true)
+      .map(([key, value]) =>
+        key === "install" && typeof value === "object" && value !== null
+          ? [
+              key,
+              Object.fromEntries(
+                Object.entries(value).filter(([member]) => PUBLIC_INSTALL_MEMBERS[member] === true),
+              ),
+            ]
+          : [key, value],
+      ),
+  );
+}
+/**
+ * A hub older than protocol 59 put installation receipts and toggle attribution on its roster
+ * rows (#402). Inspection reads the public allowlist at every revision, so those members are
+ * dropped before the current strict schema rather than parsed and carried.
+ */
+const ReleasedPluginsResponseSchema = z.preprocess(
+  (body) =>
+    typeof body === "object" && body !== null && "plugins" in body && Array.isArray(body.plugins)
+      ? { ...body, plugins: body.plugins.map(publicRow) }
+      : body,
+  PluginsResponseSchema,
+);
 async function discovery(reader: Reader, before?: LiveSnapshot) {
   const protocol = await reader.protocol();
-  const { plugins } = await reader.json("/api/plugins", PluginsResponseSchema);
+  const { plugins } = await reader.json<PluginsResponse>(
+    "/api/plugins",
+    protocol.protocolVersion < PUBLIC_ROSTER_PROTOCOL_VERSION
+      ? ReleasedPluginsResponseSchema
+      : PluginsResponseSchema,
+  );
   if (!plugins.length)
     fail(
       before?.plugins[0] ? `plugin ${before.plugins[0].pluginId}` : "/api/plugins",

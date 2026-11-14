@@ -2,8 +2,9 @@ import { describe, expect, test } from "bun:test";
 import type {
   Cap,
   PluginDependencyMap,
-  PluginInstall,
+  PluginInstallIdentity,
   PluginLifecycleState,
+  PluginReceipt,
   PluginRefusalReason,
   PluginRosterEntry,
   PluginSource,
@@ -20,11 +21,13 @@ import {
   type PluginFilter,
   type PluginSort,
 } from "../src/catalog.ts";
+import type { PluginReceipts } from "../src/status.ts";
 
 /**
  * A roster row, as the server publishes one. Fields a contract below never asserts on stay
  * empty rather than plausible: a test that fills a field it never asserts on invites the next
- * reader to think the field mattered.
+ * reader to think the field mattered. Toggle times and grants are not row fields at all: they
+ * are receipts, beside the roster (#402).
  */
 function row(
   id: string,
@@ -37,8 +40,7 @@ function row(
     readonly capabilities?: readonly Cap[];
     readonly lifecycle?: PluginLifecycleState;
     readonly refusal?: PluginRefusalReason;
-    readonly changedAt?: number;
-    readonly install?: Partial<PluginInstall>;
+    readonly install?: Partial<PluginInstallIdentity>;
     readonly doors?: readonly string[];
   } = {},
 ): PluginRosterEntry {
@@ -64,20 +66,33 @@ function row(
     })),
     ...(options.lifecycle === undefined ? {} : { lifecycle: options.lifecycle }),
     ...(options.refusal === undefined ? {} : { refusal: options.refusal }),
-    ...(options.changedAt === undefined ? {} : { changedAt: options.changedAt }),
-    ...(options.install === undefined
-      ? {}
-      : {
-          install: {
-            sha256: "a".repeat(64),
-            source: "https://plugins.example/bundle.json",
-            grantedCaps: [],
-            installedBy: "alex",
-            installedAt: 1,
-            ...options.install,
-          },
-        }),
+    ...(options.install === undefined ? {} : { install: { sha256: PIN, ...options.install } }),
   };
+}
+
+const PIN = "a".repeat(64);
+
+/** One installed row's private receipt: its grant and, when toggled, when. */
+function installed(
+  id: string,
+  grantedCaps: readonly Cap[] = [],
+  changedAt?: number,
+): PluginReceipt {
+  return {
+    id,
+    ...(changedAt === undefined ? {} : { changedBy: "alex", changedAt }),
+    install: {
+      sha256: PIN,
+      source: "https://plugins.example/bundle.json",
+      grantedCaps: [...grantedCaps],
+      installedBy: "alex",
+      installedAt: 1,
+    },
+  };
+}
+
+function readable(...receipts: readonly PluginReceipt[]): PluginReceipts {
+  return { kind: "ready", byId: new Map(receipts.map((receipt) => [receipt.id, receipt])) };
 }
 
 const door = row("engine.plugins", "Plugin engine", { source: "builtin" });
@@ -92,7 +107,7 @@ const canvas = row("core.canvas", "Canvas", {
   capabilities: ["scenes:write"],
 });
 const space = row("core.space", "Space");
-const notes = row("core.notes", "Notes", { enabled: false, changedAt: 500 });
+const notes = row("core.notes", "Notes", { enabled: false });
 /** The canvas's nested drawing contribution. */
 const draw = row("core.canvas.draw", "Draw", {
   dependencies: { "core.canvas": { type: "required" } },
@@ -100,16 +115,21 @@ const draw = row("core.canvas.draw", "Draw", {
 /** A stranger's family: the baseline, and a part that requires it. */
 const code = row("atyrode.code", "Code", {
   capabilities: ["containers:read", "containers:write", "tokens:mint"],
-  install: { grantedCaps: ["containers:read", "containers:write"] },
-  changedAt: 900,
+  install: {},
 });
 const generator = row("atyrode.code.generator", "Code generator", {
   dependencies: { "atyrode.code": { type: "required" } },
   install: {},
-  changedAt: 700,
 });
 /** Another vendor, so the Installed band has a publisher boundary to draw. */
 const charts = row("acme.charts", "Charts", { install: {}, capabilities: ["containers:read"] });
+/** The private half as a `plugins:read` reader holds it: only Notes and the Code family moved. */
+const receipts = readable(
+  { id: "core.notes", changedBy: "alex", changedAt: 500 },
+  installed("atyrode.code", ["containers:read", "containers:write"], 900),
+  installed("atyrode.code.generator", [], 700),
+  installed("acme.charts"),
+);
 const roster: readonly PluginRosterEntry[] = [
   terminals,
   notes,
@@ -179,7 +199,7 @@ describe("familySummary", () => {
 
 describe("pluginCatalog", () => {
   test("four sections, always present, in Unpacked / Installed / Built-in / Engine order", () => {
-    const sections = pluginCatalog(roster, ask());
+    const sections = pluginCatalog(roster, ask(), receipts);
     expect(sections.map((section) => section.def.kind)).toEqual([
       "unpacked",
       "installed",
@@ -187,7 +207,7 @@ describe("pluginCatalog", () => {
       "engine",
     ]);
     expect(
-      pluginCatalog([], ask()).map((section) => [section.def.kind, section.rows.length]),
+      pluginCatalog([], ask(), receipts).map((section) => [section.def.kind, section.rows.length]),
     ).toEqual([
       ["unpacked", 0],
       ["installed", 0],
@@ -196,13 +216,13 @@ describe("pluginCatalog", () => {
     ]);
     // An unpacked row (ADR 0025 §4) lands in the first band, never among the bundles.
     const mine = row("alex.hello", "Hello", { install: { mode: "unpacked" } });
-    const [unpacked, installed] = pluginCatalog([...roster, mine], ask());
+    const [unpacked, installed] = pluginCatalog([...roster, mine], ask(), receipts);
     expect(ids(unpacked!.rows)).toEqual(["alex.hello"]);
     expect(ids(installed!.rows)).toEqual(["acme.charts", "atyrode.code"]);
   });
 
   test("a child is lifted out of the top level and nested under its parent", () => {
-    const [, installed] = pluginCatalog(roster, ask());
+    const [, installed] = pluginCatalog(roster, ask(), receipts);
     expect(ids(installed!.rows)).toEqual(["acme.charts", "atyrode.code"]);
     const family = installed!.rows.find((candidate) => candidate.entry === code);
     expect(family?.children.map((child) => child.manifest.id)).toEqual(["atyrode.code.generator"]);
@@ -213,35 +233,35 @@ describe("pluginCatalog", () => {
   });
 
   test("canvas is one family while peers with required edges remain independent", () => {
-    const [, , core] = pluginCatalog(roster, ask());
+    const [, , core] = pluginCatalog(roster, ask(), receipts);
     expect(ids(core!.rows)).toEqual(["core.canvas", "core.notes", "core.space", "core.terminals"]);
     expect(core!.rows.find((candidate) => candidate.entry === canvas)?.children).toEqual([draw]);
     expect(core!.rows.find((candidate) => candidate.entry === terminals)?.children).toEqual([]);
   });
 
   test("installed rows group by publisher before the sort applies", () => {
-    const [, installed] = pluginCatalog(roster, ask({ sort: "changed" }));
+    const [, installed] = pluginCatalog(roster, ask({ sort: "changed" }), receipts);
     // By time alone `atyrode.code` (900) would lead; the publisher boundary keeps acme first.
     expect(ids(installed!.rows)).toEqual(["acme.charts", "atyrode.code"]);
     expect(publisherOf("atyrode.code.generator")).toBe("atyrode");
   });
 
   test("a family survives a search through a child, and is marked as opened via the child", () => {
-    const [, installed] = pluginCatalog(roster, ask({ query: "generator" }));
+    const [, installed] = pluginCatalog(roster, ask({ query: "generator" }), receipts);
     expect(ids(installed!.rows)).toEqual(["atyrode.code"]);
     expect(installed!.rows[0]!.viaChild).toBe(true);
     expect(installed!.rows[0]!.children.map((child) => child.manifest.id)).toEqual([
       "atyrode.code.generator",
     ]);
     // A parent that matches itself carries its whole family, unnarrowed.
-    const [, byParent] = pluginCatalog(roster, ask({ query: "atyrode.code" }));
+    const [, byParent] = pluginCatalog(roster, ask({ query: "atyrode.code" }), receipts);
     expect(byParent!.rows[0]!.viaChild).toBe(false);
     expect(byParent!.rows[0]!.children.length).toBe(1);
   });
 
   test("search reads id, title, description and door names, case-insensitively", () => {
     const flat = (query: string): readonly string[] =>
-      pluginCatalog(roster, ask({ query })).flatMap((section) => ids(section.rows));
+      pluginCatalog(roster, ask({ query }), receipts).flatMap((section) => ids(section.rows));
     expect(flat("ENGINE.")).toEqual(["engine.plugins"]);
     expect(flat("erminal")).toEqual(["core.terminals"]);
     expect(flat("FreeForm")).toEqual(["core.canvas"]);
@@ -253,7 +273,9 @@ describe("pluginCatalog", () => {
 
   test("filter chips are AND, and compose with the search", () => {
     const flat = (filters: readonly PluginFilter[], query = ""): readonly string[] =>
-      pluginCatalog(roster, ask({ filters, query })).flatMap((section) => ids(section.rows));
+      pluginCatalog(roster, ask({ filters, query }), receipts).flatMap((section) =>
+        ids(section.rows),
+      );
     expect(flat(["disabled"])).toEqual(["core.notes"]);
     expect(flat(["installed"])).toEqual(["acme.charts", "atyrode.code"]);
     expect(flat(["builtin"])).toEqual([
@@ -267,9 +289,9 @@ describe("pluginCatalog", () => {
     expect(flat(["disabled"], "canvas")).toEqual([]);
     expect(flat(["attention"])).toEqual([]);
     for (const filter of PLUGIN_FILTERS) {
-      expect(pluginCatalog([], ask({ filters: [filter] })).every((s) => s.rows.length === 0)).toBe(
-        true,
-      );
+      expect(
+        pluginCatalog([], ask({ filters: [filter] }), receipts).every((s) => s.rows.length === 0),
+      ).toBe(true);
     }
   });
 
@@ -283,6 +305,7 @@ describe("pluginCatalog", () => {
     const [, installed] = pluginCatalog(
       [...roster, crashed, refused],
       ask({ filters: ["attention"] }),
+      receipts,
     );
     expect(ids(installed!.rows)).toEqual(["acme.broken", "acme.tampered"]);
   });
@@ -291,7 +314,7 @@ describe("pluginCatalog", () => {
     const crashed = row("core.crash", "Crash", { lifecycle: "isolate_crashed" });
     const many = [...roster, crashed];
     const core = (sort: PluginSort): readonly string[] =>
-      ids(pluginCatalog(many, ask({ sort }))[2]!.rows);
+      ids(pluginCatalog(many, ask({ sort }), receipts)[2]!.rows);
     expect(core("name")).toEqual([
       "core.canvas",
       "core.crash",
@@ -315,9 +338,30 @@ describe("pluginCatalog", () => {
       "core.terminals",
     ]);
     expect(core("permissions")[0]).toBe("core.canvas");
-    // An installed row counts its GRANT, not its declaration: two of Code's three caps.
-    const [, installed] = pluginCatalog(many, ask({ sort: "permissions" }));
-    expect(ids(installed!.rows)).toEqual(["acme.charts", "atyrode.code"]);
+  });
+
+  test("the receipt sorts read the private half, and an unread one never stands in a guess", () => {
+    const unread: PluginReceipts = { kind: "refused", reason: "plugins:read capability required" };
+    const core = (sort: PluginSort, held: PluginReceipts): readonly string[] =>
+      ids(pluginCatalog(roster, ask({ sort }), held)[2]!.rows);
+    // Unread toggle times all tie: the order is the name order, not Notes first.
+    expect(core("changed", unread)).toEqual(core("name", unread));
+    // Bands, counts and filters are the public roster's alone.
+    const bands = (held: PluginReceipts) =>
+      pluginCatalog(roster, ask({ filters: ["installed"] }), held).map((section) => [
+        section.def.kind,
+        section.size,
+        section.on,
+        ids(section.rows),
+      ]);
+    expect(bands(unread)).toEqual(bands(receipts));
+    // An installed row counts its GRANT, not its declaration; one whose receipt is unread has
+    // no count at all and sorts after Charts' known zero, though "Alpha" leads by name.
+    const alpha = row("acme.alpha", "Alpha", { install: {}, capabilities: ["containers:read"] });
+    const installed = (sort: PluginSort): readonly string[] =>
+      ids(pluginCatalog([...roster, alpha], ask({ sort }), receipts)[1]!.rows);
+    expect(installed("name")).toEqual(["acme.alpha", "acme.charts", "atyrode.code"]);
+    expect(installed("permissions")).toEqual(["acme.charts", "acme.alpha", "atyrode.code"]);
   });
 });
 

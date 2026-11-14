@@ -3,7 +3,8 @@ import type {
   AuthoredCap,
   Cap,
   PluginDependencyMap,
-  PluginInstall,
+  PluginInstallIdentity,
+  PluginInstallReceipt,
   PluginLifecycleState,
   PluginRefusalReason,
   PluginRosterEntry,
@@ -13,11 +14,13 @@ import type {
 } from "@manifold/protocol";
 import {
   appliedMismatch,
+  installReceipt,
   linkHost,
   needsAttention,
   permissionCount,
   pluginPermissions,
   pluginStatus,
+  receiptsFrom,
   reviewStaleness,
   updateConsent,
   updateOwnership,
@@ -33,7 +36,7 @@ function row(
     readonly capabilities?: readonly Cap[];
     readonly lifecycle?: PluginLifecycleState;
     readonly refusal?: PluginRefusalReason;
-    readonly install?: Partial<PluginInstall>;
+    readonly install?: Partial<PluginInstallIdentity>;
     readonly essential?: boolean;
     readonly releases?: string;
   } = {},
@@ -55,18 +58,18 @@ function row(
     actions: [],
     ...(options.lifecycle === undefined ? {} : { lifecycle: options.lifecycle }),
     ...(options.refusal === undefined ? {} : { refusal: options.refusal }),
-    ...(options.install === undefined
-      ? {}
-      : {
-          install: {
-            sha256: SHA.old,
-            source: "https://plugins.example/bundle.json",
-            grantedCaps: [],
-            installedBy: "alex",
-            installedAt: 1,
-            ...options.install,
-          },
-        }),
+    ...(options.install === undefined ? {} : { install: { sha256: SHA.old, ...options.install } }),
+  };
+}
+
+/** An installed row's private receipt (#402): what `plugins:read` reads beside the roster. */
+function receipt(grantedCaps: readonly AuthoredCap[]): PluginInstallReceipt {
+  return {
+    sha256: SHA.old,
+    source: "https://plugins.example/bundle.json",
+    grantedCaps: [...grantedCaps],
+    installedBy: "alex",
+    installedAt: 1,
   };
 }
 
@@ -252,23 +255,44 @@ describe("pluginStatus", () => {
 describe("permissions", () => {
   test("a first-party row holds what it declares", () => {
     const canvas = row("core.canvas", { capabilities: ["scenes:write", "containers:read"] });
-    expect(pluginPermissions(canvas).map((p) => [p.cap, p.granted])).toEqual([
+    expect(pluginPermissions(canvas, null).map((p) => [p.cap, p.granted])).toEqual([
       ["scenes:write", true],
       ["containers:read", true],
     ]);
-    expect(permissionCount(canvas)).toBe(2);
+    expect(permissionCount(canvas, null)).toBe(2);
   });
 
   test("an installed row holds its grant, and the card greys what the installer withheld", () => {
     const code = row("atyrode.code", {
       capabilities: ["containers:read", "tokens:mint"],
-      install: { grantedCaps: ["containers:read"] },
+      install: {},
     });
-    expect(pluginPermissions(code).map((p) => [p.cap, p.granted])).toEqual([
+    const grant = receipt(["containers:read"]);
+    expect(pluginPermissions(code, grant).map((p) => [p.cap, p.granted])).toEqual([
       ["containers:read", true],
       ["tokens:mint", false],
     ]);
-    expect(permissionCount(code)).toBe(1);
+    expect(permissionCount(code, grant)).toBe(1);
+  });
+
+  test("an unread grant is unread: never the declaration, never a count", () => {
+    const code = row("atyrode.code", {
+      capabilities: ["containers:read", "machines:run"],
+      install: {},
+    });
+    expect(pluginPermissions(code, null).map((p) => [p.cap, p.state, p.granted])).toEqual([
+      ["containers:read", "unread", false],
+      ["machines:run", "governed", false],
+    ]);
+    expect(permissionCount(code, null)).toBeNull();
+    const read = (install: PluginInstallReceipt) =>
+      receiptsFrom({ ok: true, receipts: [{ id: code.manifest.id, install }] });
+    // A receipt for other bytes than the row now runs describes another install.
+    expect(installReceipt(read({ ...receipt([]), sha256: SHA.other }), code)).toBeNull();
+    expect(permissionCount(code, installReceipt(read(receipt(["containers:read"])), code))).toBe(1);
+    const refused = receiptsFrom({ ok: false, refused: "plugins:read capability required" });
+    expect(refused).toEqual({ kind: "refused", reason: "plugins:read capability required" });
+    expect(installReceipt(refused, code)).toBeNull();
   });
 
   test("a governed capability reads as governed, never as one the installer withheld", () => {
@@ -286,15 +310,16 @@ describe("permissions", () => {
         "locations:read",
         "locations:write",
       ],
-      install: { grantedCaps: ["containers:read", "containers:write", "machines:read"] },
+      install: {},
     });
-    const states = new Map(pluginPermissions(babel).map((p) => [p.cap, p.state]));
+    const grant = receipt(["containers:read", "containers:write", "machines:read"]);
+    const states = new Map(pluginPermissions(babel, grant).map((p) => [p.cap, p.state]));
     expect([...states.values()].filter((state) => state === "withheld")).toEqual([]);
     expect(states.get("machines:read")).toBe("granted");
     expect(states.get("machines:run")).toBe("governed");
     expect(states.get("locations:write")).toBe("governed");
     // Governed authority is not exercisable on the grant alone, so the chip still counts three.
-    expect(permissionCount(babel)).toBe(3);
+    expect(permissionCount(babel, grant)).toBe(3);
   });
 
   test("wildcard ceilings expose narrowed grants and preserve previously withheld authority", () => {
@@ -313,11 +338,9 @@ describe("permissions", () => {
     expect(reviewed.get("containers:read")?.added).toBe(false);
     expect(reviewed.get("machines:mint")?.added).toBe(true);
     expect(reviewed.get("tokens:mint")?.added).toBe(false);
-    const installed = row(next.id, {
-      capabilities: ["*"],
-      install: { grantedCaps: next.grantedCaps },
-    });
-    expect(pluginPermissions(installed).map(({ cap, state }) => [cap, state])).toEqual(
+    const installed = row(next.id, { capabilities: ["*"], install: {} });
+    const held = pluginPermissions(installed, receipt(next.grantedCaps));
+    expect(held.map(({ cap, state }) => [cap, state])).toEqual(
       [...reviewed.values()].map(({ cap, state }) => [cap, state]),
     );
   });

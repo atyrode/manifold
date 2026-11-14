@@ -19,6 +19,7 @@ import {
   JobStateSchema,
   PublicJobSchema,
   formatManifoldUri,
+  type AskableCap,
 } from "../packages/protocol/src/index.ts";
 import type { SessionClient } from "../packages/sdk/src/index.ts";
 import { Browser } from "./cdp.ts";
@@ -27,6 +28,7 @@ import {
   connect,
   createContainer,
   mintToken,
+  mintTokenV2,
   ownerAction,
   startServer,
   waitFor,
@@ -172,6 +174,29 @@ async function installPanel(browser: Browser) {
   })()`),
     "fixture panel layout was refused",
   );
+}
+
+/**
+ * A browser identity for an attenuated human: `caps` across the workspace, plus the two reads a
+ * shell needs to draw that principal's own tree and the installed panel (#430). Both are granted
+ * by name because no older narrow grant carries them.
+ */
+function browserGrant(
+  hub: TestServer,
+  principal: { readonly name: string; readonly color: string },
+  caps: readonly AskableCap[],
+) {
+  return mintTokenV2(hub, {
+    principal: { kind: "human", ...principal },
+    scope: [
+      {
+        target: "manifold://",
+        reach: "subtree",
+        caps: [...caps, "layouts:read", "plugins:load"],
+      },
+    ],
+    expiresAt: Date.now() + 60 * 60_000,
+  });
 }
 
 async function screenshot(browser: Browser, name: string) {
@@ -1353,10 +1378,11 @@ async function main() {
       20_000,
       20,
     );
-    const observationGrant = await mintToken(hub, {
-      principal: { kind: "human", name: "runtime-job-observer", color: "#446688" },
-      caps: ["containers:read", "jobs:read"],
-    });
+    const observationGrant = await browserGrant(
+      hub,
+      { name: "runtime-job-observer", color: "#446688" },
+      ["containers:read", "jobs:read"],
+    );
     grants.push(observationGrant.principal.id);
     const observer = new Browser();
     browsers.push(observer);
@@ -1398,10 +1424,10 @@ async function main() {
     assert.deepEqual(runtime.starts(), nativeStarts);
     await runtime.consent("locations:write", true, true);
 
-    const viewer = await mintToken(hub, {
-      principal: { kind: "human", name: "runtime-denied-actor", color: "#336699" },
-      caps: ["containers:read", "containers:write"],
-    });
+    const viewer = await browserGrant(hub, { name: "runtime-denied-actor", color: "#336699" }, [
+      "containers:read",
+      "containers:write",
+    ]);
     grants.push(viewer.principal.id);
     const other = new Browser();
     browsers.push(other);

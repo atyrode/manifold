@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, test, vi } from "bun:test";
+import { afterEach, describe, expect, spyOn, test, vi } from "bun:test";
 import {
   DIAL_LIVENESS_TIMEOUT_MS,
   PROTOCOL_VERSION,
@@ -2454,6 +2454,68 @@ describe("the plugin roster frame", () => {
     expect(messages).toEqual([]);
     expect(client.rev).toBe(revBefore);
     expect(client.status).toBe("open");
+  });
+});
+
+/**
+ * THE PRIVATE HALF BESIDE THE ROSTER (#402, #430). The roster frame above is public; where a
+ * bundle came from, who admitted it and what it was granted are one authed GET under
+ * `plugins:read`, and the refusal a reader without it meets is data a manager names.
+ */
+describe("private plugin receipts", () => {
+  const receipt = {
+    id: "acme.charts",
+    changedBy: "alex",
+    changedAt: 7,
+    install: {
+      sha256: "a".repeat(64),
+      source: "https://plugins.example/charts.json",
+      grantedCaps: ["containers:read"],
+      installedBy: "alex",
+      installedAt: 3,
+    },
+  };
+
+  test("one bearer GET of the receipts door, parsed one receipt per row", async () => {
+    const seen: { url: string; authorization: string | null }[] = [];
+    const fetching = spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
+      seen.push({
+        url: String(input),
+        authorization: new Headers(init?.headers).get("authorization"),
+      });
+      return Response.json({ receipts: [receipt] });
+    });
+    try {
+      const { client } = connected();
+      expect(await client.pluginReceipts()).toEqual({ ok: true, receipts: [receipt] });
+      expect(seen).toEqual([
+        { url: "http://test/api/plugins/receipts", authorization: "Bearer tok" },
+      ]);
+    } finally {
+      fetching.mockRestore();
+    }
+  });
+
+  test("a 403 is the door's refusal as data; any other failure still throws", async () => {
+    let answer = Response.json(
+      { error: { code: "forbidden", message: "plugins:read capability required" } },
+      { status: 403 },
+    );
+    const fetching = spyOn(globalThis, "fetch").mockImplementation(async () => answer);
+    try {
+      const { client } = connected();
+      expect(await client.pluginReceipts()).toEqual({
+        ok: false,
+        refused: "plugins:read capability required",
+      });
+      answer = Response.json(
+        { error: { code: "internal", message: "receipts unavailable" } },
+        { status: 500 },
+      );
+      await expect(client.pluginReceipts()).rejects.toThrow("receipts unavailable");
+    } finally {
+      fetching.mockRestore();
+    }
   });
 });
 

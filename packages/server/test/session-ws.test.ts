@@ -697,6 +697,29 @@ describe("SessionGateway channel multiplexing", () => {
     fixture.store.close();
   });
 
+  test("an unknown frame type closes before admission and is ignored after it", async () => {
+    const fixture = await gatewayFixture();
+    const later = JSON.stringify({ type: "from_a_later_client" });
+    // Before admission (#402): no compliant client sends anything but a handshake first.
+    const cold = new FakeSocket();
+    fixture.gateway.open("cold", cold);
+    fixture.gateway.message("cold", later);
+    expect(cold.closed).toEqual({ code: 4002, reason: "first frame must be join or observe" });
+
+    // After admission the same type is forward-compatible traffic: ignored, rooms intact.
+    const socket = new FakeSocket();
+    fixture.gateway.open("tab", socket);
+    joinChannel(fixture, "tab", socket, { ch: "a" });
+    socket.clear();
+    fixture.gateway.message("tab", later);
+    expect(socket.closed).toBeNull();
+    send(fixture.gateway, "tab", "a", { type: "resync_request" });
+    expect(socket.frames().at(-1)?.type).toBe("resync");
+
+    fixture.gateway.shutdown();
+    fixture.store.close();
+  });
+
   test("liveness is a socket property: the pair carries no channel", async () => {
     const fixture = await gatewayFixture();
     const socket = new FakeSocket();

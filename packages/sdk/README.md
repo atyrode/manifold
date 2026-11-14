@@ -144,6 +144,28 @@ requests by generation, authority epoch and declaration watermark; an earlier re
 interests. False means retain fallback polling. Rebind/disconnect/authority retirement clears
 the proof, and gaining workspace-event access re-declares all retained interests.
 
+## Public roster and private plugin receipts
+
+`onPlugins(roster, developerMode)` replays the PUBLIC roster (#402): the same allowlist
+`GET /api/protocol` and `GET /api/plugins` serve, identical before and after a join and for every
+credential. An installed row carries only `install: { sha256, mode?, refusal? }`; it never names a
+source, installer, install time, grant, toggle attribution or build/update diagnostic.
+
+`await client.pluginReceipts()` reads those private facts from `GET /api/plugins/receipts` with
+the client's bearer and answers `PluginReceiptsOutcome`:
+
+```ts
+| { ok: true; receipts: readonly PluginReceipt[] } // one per roster row, keyed by `id`
+| { ok: false; refused: string } // a 403, in the door's own words
+```
+
+The door needs `plugins:read` on an unscoped credential, so a 403 (`plugins:read capability
+required`, `scoped tokens cannot read plugin receipts`, or `revoked`) is ordinary data a reader
+renders as "private". Any other non-2xx, or a body that is not JSON, throws. Match a receipt's
+`install` to a row by id AND `sha256`: a receipt for other bytes describes another install. A
+receipt can change while the public roster does not (a toggle, an update observation); the
+`plugins` frame the hub republishes then is the cue to read receipts again.
+
 ## Trusted launcher
 
 Use the repository's supported Bun (at least 1.4.2) and installed workspace dependencies:

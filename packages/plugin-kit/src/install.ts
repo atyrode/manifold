@@ -301,9 +301,11 @@ export async function installBundle(options: InstallOptions): Promise<InstallRep
   const row = rows.find((entry) => entry.manifest.id === facts.id);
   if (options.preserveGrant === true && row?.install === undefined)
     throw new Error(`${facts.id}: preserving consent requires an existing installed row`);
+  // The roster's `hardened` is effective execution; the installer's own choice is a private
+  // receipt (#402), and for an installed row the two agree.
   if (
     row?.install?.sha256 === facts.sha256 &&
-    (row.install.hardened === true) === (options.hardened === true)
+    (row.hardened === true) === (options.hardened === true)
   )
     return report("unchanged");
 

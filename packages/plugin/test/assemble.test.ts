@@ -1119,19 +1119,18 @@ describe("assembleRoster reservations, builtins and stored data", () => {
     expect(() => assembleRoster([impostor], NONE)).not.toThrow();
   });
 
-  test("roster rows carry lifecycle state, attribution, and the essential refusal class", () => {
+  test("roster rows carry lifecycle state and the essential refusal class, never attribution", () => {
     // Deliberately WITHOUT the element contribution: `shell` already claims `draw`, and a
     // duplicate claim is its own refusal (D5) with nothing to say about roster fields.
     const bare: PluginDef = { manifest: manifest({ id: "core.ink" }), actions: [] };
     const assembly = assembleRoster([shell, bare], new Set(["core.ink"]), {
       lifecycle: new Map([["core.ink", "disable_failed" as const]]),
-      attribution: new Map([["core.ink", { by: "principal-3", at: 42 }]]),
     });
 
     const draw = assembly.roster.find((entry) => entry.manifest.id === "core.ink");
     expect(draw?.lifecycle).toBe("disable_failed");
-    expect(draw?.changedBy).toBe("principal-3");
-    expect(draw?.changedAt).toBe(42);
+    // Who toggled a plugin is a private receipt (#402); the public row never carries it.
+    expect(draw).not.toHaveProperty("changedBy");
 
     // `essential` is now one named refusal class among several rather than a special case:
     // the UI decides whether to draw a lever from the class, not from a flag it re-reads.

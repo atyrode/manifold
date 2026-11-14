@@ -304,7 +304,11 @@ export async function runPackedPublicationProof(
     );
     const installed = host.roster().find((row) => row.manifest.id === PLUGIN_ID);
     assert.equal(installed?.install?.sha256, packed.sha256);
-    assert.equal(installed?.install?.hardened, hardened);
+    // Effective execution is public; the installer's own choice is the private receipt (#402).
+    assert.equal(installed?.hardened === true, hardened);
+    const receipt = host.receipts().find((row) => row.id === PLUGIN_ID)?.install;
+    assert.equal(receipt?.sha256, packed.sha256);
+    assert.equal(receipt?.hardened, hardened);
     assert.ok(owner.resources);
     jobs.event(channel, {
       type: "resources",

@@ -667,6 +667,62 @@ describe("machine hello reconciliation", () => {
     store.close();
   });
 
+  test("an unknown frame type closes before hello and is ignored after admission", () => {
+    const runtime = new FakeRuntime();
+    const clock = new FakeClock(runtime);
+    const store = testStore();
+    const auth = new AuthService(store, "u".repeat(64), runtime);
+    const enrollment = auth.enrollMachine("agent", auth.authenticate("u".repeat(64)));
+    const rooms = new RoomManager(store, runtime, clock, silentLogger, testTileTrees);
+    const broker = new TerminalBroker(
+      store,
+      auth,
+      rooms,
+      runtime,
+      clock,
+      silentLogger,
+      () => "http://localhost:7777",
+      testTileTrees,
+    );
+    const gateway = new MachineGateway(
+      auth,
+      store,
+      broker,
+      clock,
+      silentLogger,
+      "server-epoch",
+      runtime,
+    );
+    const later = JSON.stringify({ type: "from_a_later_agent" });
+
+    // Before admission (#402): no compliant agent sends anything but hello first.
+    const cold = new FakeSocket();
+    gateway.open("cold", cold);
+    gateway.message("cold", later);
+    expect(cold.closed).toEqual({ code: 4002, reason: "first frame must be hello" });
+
+    // After admission the same type is forward-compatible traffic, ignored.
+    const admitted = new FakeSocket();
+    gateway.open("agent", admitted);
+    gateway.message(
+      "agent",
+      JSON.stringify({
+        type: "hello",
+        token: enrollment.machineToken,
+        name: "agent",
+        agentVersion: "test",
+        protocolVersion: PROTOCOL_VERSION,
+        terminals: [],
+      }),
+    );
+    expect(gateway.isOnline(enrollment.machine.id)).toBe(true);
+    gateway.message("agent", later);
+    expect(admitted.closed).toBeNull();
+    expect(gateway.isOnline(enrollment.machine.id)).toBe(true);
+    gateway.shutdown();
+    store.close();
+  });
+
   test("refuses a duplicate reported name without mutating either machine", () => {
     const runtime = new FakeRuntime();
     const clock = new FakeClock(runtime);

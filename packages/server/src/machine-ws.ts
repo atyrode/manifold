@@ -298,6 +298,9 @@ export class MachineGateway {
     switch (classified.kind) {
       case "unknown_type":
         this.logger.warn("machine_unknown_frame");
+        // Unknown types are forward-compatible only after admission (#402); before it the
+        // first frame must be hello, and a compliant agent always sends hello first.
+        if (connection.channel === null) connection.socket.close(4002, "first frame must be hello");
         return;
       case "malformed":
         this.logger.warn("machine_malformed_frame", { detail: classified.detail });

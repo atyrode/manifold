@@ -58,6 +58,7 @@ import {
   SPACE_SET_LAYOUT_ACTION,
 } from "./assembly.ts";
 import { getContainer, getAttendance, getWorkspaceLayout } from "./api.ts";
+import { HttpRequestError } from "./http.ts";
 import type { StoredIdentity } from "./identity-storage.ts";
 import {
   browserContainerStorage,
@@ -255,9 +256,21 @@ export function WorkspaceHost({
     assemblyRef.current = assembly;
   }, [assembly]);
 
+  /**
+   * WHY THE STORED TREE WAS NOT READ, or null once it was. While set, the tree on screen is a
+   * stand-in the principal never saw saved, and no gesture may write it over the one the door
+   * would not show (#430): `core.space.setLayout` needs no read capability, so this is the only
+   * place that keeps a credential without `layouts:read` from replacing a layout it cannot see.
+   */
+  const unreadLayout = useRef<string | null>(null);
+
   /** Discrete gestures dispatch here; divider frames only update the local tree. */
   const commitLayout = useCallback(
     (next: TileLayout): void => {
+      if (unreadLayout.current !== null) {
+        notify(unreadLayout.current, { key: "layout-set" });
+        return;
+      }
       void host.client
         .action(SPACE_SET_LAYOUT_ACTION, { layout: next })
         .then((outcome) => {
@@ -288,6 +301,7 @@ export function WorkspaceHost({
       .then((stored) => {
         if (cancelled) return;
         layoutRef.current = stored;
+        unreadLayout.current = null;
         setLayout(stored);
       })
       .catch((reason: unknown) => {
@@ -306,8 +320,20 @@ export function WorkspaceHost({
         */
         console.error("evt=workspace_layout_fetch_failed", reason);
         const seeded = composeDefaultLayout(assemblyRef.current.roster);
-        const notice = DEFAULT_LAYOUT_NOTICES[seeded.condition];
-        if (notice !== null) notify(notice, { key: "layout-default" });
+        /*
+          The stand-in is shown, never saved: the principal's stored tree may exist and was not
+          read, so a gesture here edits this view only. A refusal names the capability that
+          would read it (`layouts:read`, the door's own sentence).
+        */
+        const refused = reason instanceof HttpRequestError && reason.status === 403;
+        unreadLayout.current = refused
+          ? `Your saved layout was not read (${reason.message}): this default arrangement is not saved over it.`
+          : "Your saved layout could not be read: this default arrangement is not saved over it.";
+        notify(unreadLayout.current, { key: "layout-default", lifetime: "sticky" });
+        if (!refused) {
+          const notice = DEFAULT_LAYOUT_NOTICES[seeded.condition];
+          if (notice !== null) notify(notice, { key: "layout-default-condition" });
+        }
         layoutRef.current = seeded.layout;
         setLayout(seeded.layout);
       });

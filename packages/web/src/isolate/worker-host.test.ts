@@ -697,6 +697,37 @@ describe("portable Worker compatibility", () => {
     }
   });
 
+  test.each([
+    [12, ["containers:read"]],
+    [HARDENED_CONTRACT_VERSION, ["containers:read", "plugins:read", "plugins:load", "layouts:read"]],
+  ] as const)(
+    "contract %i is hinted only the capabilities its strict parser admits (#402, #430)",
+    (contract, expected) => {
+      const held = ["containers:read", "plugins:read", "plugins:load", "layouts:read"] as const;
+      const client = { ...fakeClient([]), selfCaps: () => held, workspaceCaps: () => held };
+      const { host, worker } = bench(client, true);
+      host.mount(
+        "i1",
+        "main",
+        () => {},
+        () => {},
+      );
+      try {
+        worker.emit({ t: "ready", hardenedContract: contract, panels: ["main"] });
+        const hints = worker.frames().flatMap((frame) =>
+          frame.t === "init" && frame.workspaceCaps !== undefined
+            ? [frame.caps, frame.workspaceCaps]
+            : frame.t === "mount"
+              ? [frame.context.caps, frame.context.workspaceCaps]
+              : [],
+        );
+        expect(hints).toEqual([expected, expected, expected, expected]);
+      } finally {
+        host.stop();
+      }
+    },
+  );
+
   test("legacy projection preserves refusals and leaves unrelated or invalid results untouched", async () => {
     const client = fakeClient([]);
     let result: unknown;

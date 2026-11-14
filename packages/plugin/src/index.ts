@@ -234,6 +234,7 @@ export {
   type PortableSectionProps,
   type PortableSessionHandle,
   type PlaceOutcome,
+  type PluginReceiptsOutcome,
   type SectionProps,
   type SessionHandle,
   type StreamHandle,

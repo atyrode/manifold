@@ -17,6 +17,7 @@ import {
   PlaceResponseSchema,
   PrincipalAccessPauseRequestSchema,
   PrincipalAccessPauseResultSchema,
+  PluginReceiptsResponseSchema,
   RevokeMachineRequestSchema,
   RevokeRequestSchema,
   RevokeResultSchema,
@@ -47,6 +48,7 @@ import {
   type PlacementDenial,
   type PlacementDestination,
   type PlacementRef,
+  type PluginReceipt,
   type PluginRoster,
   type PresencePayload,
   type PresenceState,
@@ -100,6 +102,12 @@ import { type OpenStreamOptions, type StreamHandle } from "./stream.ts";
 
 function isPooledChannel(session: PooledSession): session is PooledChannel {
   return "id" in session && "send" in session;
+}
+
+/** A refused GET in the door's own words, or its status when the body carries none. */
+function failureSentence(path: string, status: number, payload: unknown): string {
+  const failure = HttpErrorSchema.safeParse(payload);
+  return failure.success ? failure.data.error.message : `GET ${path} failed (${status})`;
 }
 
 /**
@@ -236,6 +244,16 @@ export type PlaceOutcome =
  */
 export type AccessOutcome<T> =
   { readonly ok: true; readonly result: T } | { readonly ok: false; readonly denial: ActionDenial };
+
+/**
+ * What the private receipts read answers (#402, #430): one receipt per roster row, or the
+ * door's own refusal sentence. Same shape as `AccessOutcome` and for the same reason — a
+ * credential without `plugins:read`, or a container-scoped one, is an ordinary reader a
+ * manager names, not a broken call.
+ */
+export type PluginReceiptsOutcome =
+  | { readonly ok: true; readonly receipts: readonly PluginReceipt[] }
+  | { readonly ok: false; readonly refused: string };
 
 export interface SessionClientOptions {
   /** ws(s) URL of the session endpoint, e.g. ws://localhost:7777/ws/session */
@@ -1119,22 +1137,46 @@ export class SessionClient {
     web app: one door per concept.
    */
 
-  /** One authed GET; a non-2xx is a failure, never data — these reads have no denials. */
-  private async getJson(path: string): Promise<unknown> {
+  /** One authed GET: its status and JSON body. A non-JSON answer is a broken door and throws. */
+  private async getAnswer(
+    path: string,
+  ): Promise<{ readonly ok: boolean; readonly status: number; readonly payload: unknown }> {
     const response = await fetch(`${this.apiOrigin()}${path}`, {
       headers: { authorization: `Bearer ${this.opts.token}` },
     });
-    let payload: unknown = null;
     try {
-      payload = await response.json();
+      return { ok: response.ok, status: response.status, payload: await response.json() };
     } catch {
       throw new Error(`GET ${path} returned a non-JSON response (${response.status})`);
     }
-    if (response.ok) return payload;
-    const failure = HttpErrorSchema.safeParse(payload);
-    throw new Error(
-      failure.success ? failure.data.error.message : `GET ${path} failed (${response.status})`,
-    );
+  }
+
+  /** One authed GET; a non-2xx is a failure, never data — these reads have no denials. */
+  private async getJson(path: string): Promise<unknown> {
+    const answer = await this.getAnswer(path);
+    if (answer.ok) return answer.payload;
+    throw new Error(failureSentence(path, answer.status, answer.payload));
+  }
+
+  /**
+   * THE PRIVATE HALF beside the roster (`GET /api/plugins/receipts`, #402/#430): per roster
+   * row, who last toggled it and — iff it was installed — where its bytes came from, who
+   * admitted them and when, what they were granted and how their build compares. The roster
+   * `onPlugins` replays never carries any of it.
+   *
+   * The one read here with an ordinary DENIAL: it needs `plugins:read` on a workspace
+   * credential, so a 403 answers `{ ok: false, refused }` with the door's own sentence. Every
+   * other non-2xx is still a broken read and throws.
+   */
+  async pluginReceipts(): Promise<PluginReceiptsOutcome> {
+    const path = "/api/plugins/receipts";
+    const answer = await this.getAnswer(path);
+    if (answer.ok) {
+      return { ok: true, receipts: PluginReceiptsResponseSchema.parse(answer.payload).receipts };
+    }
+    const sentence = failureSentence(path, answer.status, answer.payload);
+    if (answer.status === 403) return { ok: false, refused: sentence };
+    throw new Error(sentence);
   }
 
   /** The enrolled machines with live online state (`core.machines.list`). */

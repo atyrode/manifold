@@ -11,6 +11,8 @@ import {
   projectLegacyAgent,
   projectLegacyRun,
   projectLegacyCaps,
+  LegacyAuthoredCapSchema,
+  DISCOVERY_READ_CAPS,
   projectAgentV2,
   projectRunV2,
   MintTokenV2RequestSchema,
@@ -2273,7 +2275,9 @@ export class AuthService {
             ? null
             : {
                 ...credential.grant,
-                caps: credential.grant.caps.filter((cap) => cap !== "machines:shell"),
+                caps: credential.grant.caps.filter(
+                  (cap) => LegacyAuthoredCapSchema.safeParse(cap).success,
+                ),
               },
       })),
     });
@@ -4428,6 +4432,15 @@ export class AuthService {
       throw new ServiceError("forbidden", "tokens:mint capability required");
     }
     this.requireMintCapabilities(parsed.caps, minter, true, node);
+    // The instance welcome carries these caps to guest hubs that may still speak an earlier
+    // revision, whose strict welcome parser predates the discovery read caps; an older cap such
+    // as `machines:shell` parses there and remains shareable exactly as before.
+    const unshareable = parsed.caps.find((cap) =>
+      (DISCOVERY_READ_CAPS as readonly Cap[]).includes(cap),
+    );
+    if (unshareable !== undefined) {
+      throw new ServiceError("forbidden", `cannot share capability ${unshareable}`);
+    }
     const containerId = parsed.node.containerId;
     if (minter.containerScope !== null && containerId !== minter.containerScope) {
       throw new ServiceError("forbidden", "cannot widen container scope");

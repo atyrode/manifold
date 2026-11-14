@@ -23,7 +23,7 @@ import {
   IsolatePreparationArgsSchemas,
   IsolatePreparationResultSchemas,
   type IsolatePreparationMethod,
-  projectLegacyCaps,
+  projectHardenedCaps,
   projectLegacyAgent,
   projectLegacyRun,
   type IsolateDispatchCtx,
@@ -317,10 +317,10 @@ export class IsolateSupervisor implements IsolateRunner {
       ...((this.isolates.get(pluginId)?.ref.hardenedContract ?? 0) >= 8
         ? { callerPlugin: ctx.callerPlugin }
         : {}),
-      caps:
-        (this.isolates.get(pluginId)?.ref.hardenedContract ?? 1) < 12
-          ? projectLegacyCaps(ctx.auth.caps)
-          : [...ctx.auth.caps],
+      caps: projectHardenedCaps(
+        ctx.auth.caps,
+        this.isolates.get(pluginId)?.ref.hardenedContract ?? 1,
+      ),
       isRoot: ctx.auth.isRoot,
       containerScope: ctx.containerScope,
       ...((this.isolates.get(pluginId)?.ref.hardenedContract ?? 0) >= 6

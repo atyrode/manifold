@@ -1,18 +1,20 @@
 import {
   HttpErrorSchema,
+  PluginReceiptsResponseSchema,
   PluginsResponseSchema,
   type ActionDenialRule,
   type ActionOutcome,
+  type PluginReceipt,
   type PluginRoster,
 } from "@manifold/protocol";
 import { ActionHttpError, invokeAction } from "@manifold/sdk";
 
 /**
- * THE KIT'S VIEW OF A HUB — the three HTTP calls `install`, `dev` and `verify` share, and
- * nothing else: read the roster, knock on an action door, and turn the door's answer into a
- * value or a named refusal. Every response is parsed against the protocol's own schema at
- * the boundary, exactly as the testkit does, so a command never reads unchecked JSON off a
- * hub it did not spawn.
+ * THE KIT'S VIEW OF A HUB — the HTTP calls `install`, `dev` and `verify` share, and nothing
+ * else: read the roster and its private receipts, knock on an action door, and turn the door's
+ * answer into a value or a named refusal. Every response is parsed against the protocol's own
+ * schema at the boundary, exactly as the testkit does, so a command never reads unchecked JSON
+ * off a hub it did not spawn.
  *
  * The owner key travels here as a bearer header and nowhere else: it is never interpolated
  * into a message, a log line or a printed report, which is the discipline the commands
@@ -99,15 +101,31 @@ function failureDetail(body: unknown): string {
     : JSON.stringify(body);
 }
 
-/** `GET /api/plugins` as the owner: every row, parsed against `PluginsResponseSchema`. */
-export async function roster(hub: Hub): Promise<PluginRoster> {
-  const response = await fetch(new URL("/api/plugins", hub.url), {
+/** One owner-authenticated GET; anything outside 2xx is a transport failure, never data. */
+async function ownerRead(hub: Hub, path: string): Promise<unknown> {
+  const response = await fetch(new URL(path, hub.url), {
     headers: { authorization: `Bearer ${hub.ownerKey}`, accept: "application/json" },
     signal: AbortSignal.timeout(HTTP_TIMEOUT_MS),
   });
   const body = await readJson(response);
   if (!response.ok) throw new HubHttpError(response.status, failureDetail(body));
-  return PluginsResponseSchema.parse(body).plugins;
+  return body;
+}
+
+/** `GET /api/plugins` as the owner: every PUBLIC row, parsed against `PluginsResponseSchema`. */
+export async function roster(hub: Hub): Promise<PluginRoster> {
+  return PluginsResponseSchema.parse(await ownerRead(hub, "/api/plugins")).plugins;
+}
+
+/**
+ * `GET /api/plugins/receipts` as the owner (#402, #430): each row's PRIVATE receipt — where an
+ * install came from, what it was granted, who installed it and when, and its build and update
+ * diagnostics — which the public roster above never carries. The owner key is root, so the
+ * door's `plugins:read` holds.
+ */
+export async function receipts(hub: Hub): Promise<readonly PluginReceipt[]> {
+  return PluginReceiptsResponseSchema.parse(await ownerRead(hub, "/api/plugins/receipts"))
+    .receipts;
 }
 
 /**

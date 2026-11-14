@@ -50,6 +50,7 @@ import type {
   MachineHalf,
   ServicePolicy,
   PluginManifest,
+  PluginInstallReceipt,
   PluginRoster,
   TileLayout,
   TileRef,
@@ -877,17 +878,24 @@ describe("PluginHost enablement", () => {
     fixture.store.close();
   });
 
-  test("the roster records WHO changed a plugin and WHEN", async () => {
+  test("the private receipt records WHO changed a plugin and WHEN; the roster does not", async () => {
     const fixture = await hostFixture();
     fixture.runtime.time = 1_700_000_000_000;
 
     await fixture.host.setEnabled("core.canvas.draw", false, "principal-7");
 
+    // Attribution is a receipt (#402): a `plugins:read` reader answers "who switched the drawing
+    // tool off", while the public row every principal reads names only the state.
+    const receipt = fixture.host.receipts().find((row) => row.id === "core.canvas.draw");
+    expect(receipt).toEqual({
+      id: "core.canvas.draw",
+      changedBy: "principal-7",
+      changedAt: 1_700_000_000_000,
+    });
     const entry = fixture.host.roster().find((row) => row.manifest.id === "core.canvas.draw");
-    // Attribution is workspace-global shared state like the flag itself: "the drawing tool
-    // vanished" must be answerable by every principal, not only by whoever reads the logs.
-    expect(entry?.changedBy).toBe("principal-7");
-    expect(entry?.changedAt).toBe(1_700_000_000_000);
+    expect(entry?.enabled).toBe(false);
+    expect(entry).not.toHaveProperty("changedBy");
+    expect(entry).not.toHaveProperty("changedAt");
     fixture.store.close();
   });
 
@@ -3303,6 +3311,13 @@ function installedRow(host: PluginHost, id: string): PluginRoster[number] {
   return row;
 }
 
+/** An installed row's PRIVATE receipt, as `GET /api/plugins/receipts` serves it (#402). */
+function installReceipt(host: PluginHost, id: string): PluginInstallReceipt {
+  const install = host.receipts().find((receipt) => receipt.id === id)?.install;
+  if (install === undefined) throw new Error(`${id} has no installation receipt`);
+  return install;
+}
+
 describe("PluginHost install doors", () => {
   test("in-realm installs use the full context and reload only after disable and enable", async () => {
     const fixture = await installFixture();
@@ -3390,7 +3405,11 @@ describe("PluginHost install doors", () => {
     const row = installedRow(host, SAMPLE_ID);
     expect(row.source).toBe("plugin");
     expect(row.enabled).toBe(true);
-    expect(row.install).toMatchObject({
+    // Public discovery names the pin and the effective execution only (#402); provenance,
+    // consent, attribution and build diagnostics are the private receipt's.
+    expect(row.install).toEqual({ sha256 });
+    expect(row.hardened).toBe(true);
+    expect(installReceipt(host, SAMPLE_ID)).toMatchObject({
       sha256,
       source,
       grantedCaps: ["containers:read"],
@@ -3399,7 +3418,14 @@ describe("PluginHost install doors", () => {
       hardened: true,
     });
     // Unrecorded build metadata is shown as unknown, never invented into a refusal.
-    expect(row.install?.compatibility?.status).toBe("unknown");
+    expect(installReceipt(host, SAMPLE_ID).compatibility?.status).toBe("unknown");
+    // A plugin's own `host.roster()` row carries its own receipt; no other plugin reads it.
+    const own = host.guestRoster(SAMPLE_ID).find((entry) => entry.manifest.id === SAMPLE_ID);
+    expect(own?.install).toMatchObject({ sha256, source, grantedCaps: ["containers:read"] });
+    const bystander = host
+      .guestRoster("core.canvas")
+      .find((entry) => entry.manifest.id === SAMPLE_ID);
+    expect(bystander?.install).toEqual({ sha256 });
     expect(row.actions.map((action) => action.name)).toEqual([
       `${SAMPLE_ID}.ping`,
       `${SAMPLE_ID}.mint`,
@@ -3477,7 +3503,7 @@ describe("PluginHost install doors", () => {
         ).ok,
       ).toBe(true);
       expect(installedRow(host, SAMPLE_ID).install?.sha256).toBe(next.sha256);
-      expect(installedRow(host, SAMPLE_ID).install?.grantedCaps).toEqual(["tokens:mint"]);
+      expect(installReceipt(host, SAMPLE_ID).grantedCaps).toEqual(["tokens:mint"]);
       expect(denial(await host.dispatch(fixture.owner, `${SAMPLE_ID}.ping`, {})).rule).toBe(
         "forbidden",
       );
@@ -3586,7 +3612,7 @@ describe("PluginHost install doors", () => {
       fixture.store.putPluginInstall({ ...current, grantedCaps: ["tokens:mint"] });
       resume.resolve();
       expect((await replacing).ok).toBe(true);
-      expect(installedRow(host, SAMPLE_ID).install?.grantedCaps).toEqual(["tokens:mint"]);
+      expect(installReceipt(host, SAMPLE_ID).grantedCaps).toEqual(["tokens:mint"]);
       expect(denial(await host.dispatch(fixture.owner, `${SAMPLE_ID}.ping`, {})).rule).toBe(
         "forbidden",
       );
@@ -3889,7 +3915,7 @@ describe("PluginHost install doors", () => {
       expect(
         (await host.dispatch(fixture.owner, ENGINE_INSTALL_ACTION, { ...next, replace: true })).ok,
       ).toBe(true);
-      expect(installedRow(host, SAMPLE_ID).install?.grantedCaps).toEqual(["containers:read"]);
+      expect(installReceipt(host, SAMPLE_ID).grantedCaps).toEqual(["containers:read"]);
       const advanced = installedRow(host, SAMPLE_ID);
       expect(
         (
@@ -4293,7 +4319,7 @@ describe("PluginHost install doors", () => {
       ).ok,
     ).toBe(true);
     expect(await host.setEnabled(SAMPLE_ID, false, "admin")).toEqual({ ok: true });
-    expect(installedRow(host, SAMPLE_ID).changedBy).toBe("admin");
+    expect(host.receipts().find((receipt) => receipt.id === SAMPLE_ID)?.changedBy).toBe("admin");
     // Nothing stored, so the plain door goes through — and takes the OFF with it.
     expect(await host.dispatch(fixture.owner, ENGINE_UNINSTALL_ACTION, { id: SAMPLE_ID })).toEqual({
       ok: true,
@@ -4312,7 +4338,7 @@ describe("PluginHost install doors", () => {
     ).toBe(true);
     const row = installedRow(host, SAMPLE_ID);
     expect(row.enabled).toBe(true);
-    expect(row.changedBy).toBeUndefined();
+    expect(host.receipts().find((receipt) => receipt.id === SAMPLE_ID)?.changedBy).toBeUndefined();
     expect(await host.dispatch(fixture.owner, `${SAMPLE_ID}.ping`, {})).toEqual({
       ok: true,
       result: { pong: true },
@@ -5991,8 +6017,8 @@ describe("PluginHost unpacked plugins", () => {
     expect(row.enabled).toBe(true);
     expect(row.install?.mode).toBe("unpacked");
     expect(row.install?.sha256).toBe(authored.sha256);
-    expect(row.install?.source).toBe(bundle);
-    expect(row.install?.installedBy).toBe(fixture.owner.principal.id);
+    expect(installReceipt(host, UNPACKED_ID).source).toBe(bundle);
+    expect(installReceipt(host, UNPACKED_ID).installedBy).toBe(fixture.owner.principal.id);
     expect(fixture.store.pluginInstalls().map((stored) => stored.mode)).toEqual(["unpacked"]);
     expect(hookLog()).toEqual(["enable:1.0.0"]);
     expect(host.webModule(UNPACKED_ID)?.sha256).toBe(authored.sha256);
@@ -6030,7 +6056,7 @@ describe("PluginHost unpacked plugins", () => {
     expect(replaced.enabled).toBe(true);
     expect(replaced.manifest.version).toBe("2.0.0");
     expect(replaced.install?.sha256).toBe(edited.sha256);
-    expect(replaced.install?.installedBy).toBe(fixture.owner.principal.id);
+    expect(installReceipt(host, UNPACKED_ID).installedBy).toBe(fixture.owner.principal.id);
     expect(hookLog()).toEqual(["enable:1.0.0", "disable:1.0.0", "enable:2.0.0"]);
     expect(existsSync(firstBundlePath)).toBe(false);
     expect(host.webModule(UNPACKED_ID)?.sha256).toBe(edited.sha256);
@@ -6259,7 +6285,9 @@ describe("PluginHost unpacked plugins", () => {
     const off = installedRow(host, UNPACKED_ID);
     expect(off.enabled).toBe(false);
     expect(off.refusal).toBe("developer_mode_off");
-    expect(off.changedBy).toBe("flipper");
+    expect(host.receipts().find((receipt) => receipt.id === UNPACKED_ID)?.changedBy).toBe(
+      "flipper",
+    );
     expect(await host.setEnabled(UNPACKED_ID, true, "admin")).toEqual({
       refused: `developer_mode_off: ${UNPACKED_ID}`,
     });
@@ -7108,9 +7136,7 @@ describe("reviewed family updates through the one installer", () => {
         expect(installedRow(rebooted, SAMPLE_ID).held).toMatchObject({
           reason: "repack_required",
         });
-        expect(installedRow(rebooted, SAMPLE_ID).install?.compatibility?.status).toBe(
-          "incompatible",
-        );
+        expect(installReceipt(rebooted, SAMPLE_ID).compatibility?.status).toBe("incompatible");
         expect(globals[Symbol.for(ranKey)]).toBeUndefined();
       } finally {
         delete globals[Symbol.for(ranKey)];

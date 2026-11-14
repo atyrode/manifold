@@ -1320,45 +1320,72 @@ export const PluginUpdateApplyResultSchema = z.strictObject({
 export type PluginUpdateApplyResult = z.infer<typeof PluginUpdateApplyResultSchema>;
 
 /**
- * What an installer CONSENTED TO, on the row (ADR 0016 §5): the artifact pinned by hash, where
- * it came from as the installer spelled it, and the capability set granted — the roster is
- * where every principal reads a grant, so it lives here and nowhere else. `grantedCaps` is
- * intersected with the manifest's declared caps at rung 4, BEFORE the caller's own caps, so a
- * refusal names the plugin's grant rather than the caller. Attribution mirrors `changedBy` /
- * `changedAt` on the row: an install changes what everyone is looking at.
- *
- * `refusal` is why this install cannot SERVE right now, as distinct from the row's own
+ * WHAT RUNS, as public discovery may say it (#402): the artifact pin a loader and a cache key
+ * on, who packed it (`mode`, which decides developer-mode admission) and why it cannot serve
+ * right now. `refusal` is why this install cannot SERVE, as distinct from the row's own
  * `refusal` (why it cannot be toggled): a bundle that no longer hashes to `sha256` at boot is
  * `hash_mismatch` here and `enable_failed` on the row, never loaded (R8, fail-closed).
+ *
+ * An ALLOWLIST, not a redaction: where the bytes came from, who admitted them, when, what they
+ * were granted and how their build compares are the private {@link PluginInstallReceiptSchema},
+ * read only with `plugins:read`.
  */
-export const PluginInstallSchema = z.strictObject({
+export const PluginInstallIdentitySchema = z.strictObject({
   /** Who packed the bytes; absent is `bundle` (ADR 0025 §4). */
   mode: PluginInstallModeSchema.optional(),
-  /** Installer-selected hardening; absent is in-realm (ADR 0025). */
-  hardened: z.boolean().optional(),
-  /** Shared React and floor-package versions used to build the bundle. */
-  builtAgainst: z.record(z.string(), z.string()).optional(),
-  compatibility: PluginBuildCompatibilitySchema.optional(),
-  update: PluginUpdateStatusSchema.optional(),
+  sha256: z.string().length(64),
+  refusal: PluginInstallRefusalSchema.optional(),
+});
+export type PluginInstallIdentity = z.infer<typeof PluginInstallIdentitySchema>;
+
+/**
+ * What an installer CONSENTED TO (ADR 0016 §5), bound to the pin it describes: where the
+ * artifact came from as the installer spelled it, the capability set granted, who installed it
+ * and when, the installer's hardening choice, and the build/update diagnostics observed for
+ * it. `grantedCaps` is intersected with the manifest's declared caps at rung 4, BEFORE the
+ * caller's own caps, so a refusal names the plugin's grant rather than the caller.
+ *
+ * PRIVATE: served only at `GET /api/plugins/receipts` (`plugins:read`, workspace credential),
+ * never on `GET /api/protocol`, `GET /api/plugins` or any session frame (#402).
+ */
+export const PluginInstallReceiptSchema = z.strictObject({
+  /** The same pin as the public identity, so a reader can tell the two describe one install. */
   sha256: z.string().length(64),
   /** The url or path as given, so an operator can tell where a stranger's code came from. */
   source: z.string().max(2048),
   grantedCaps: AuthoredCapSchema.array(),
   installedBy: z.string().min(1).max(128),
   installedAt: z.number().int().min(0),
-  refusal: PluginInstallRefusalSchema.optional(),
+  /**
+   * Installer-selected hardening; absent is in-realm (ADR 0025). The roster's own `hardened`
+   * reports effective execution for every provenance.
+   */
+  hardened: z.boolean().optional(),
+  /** Shared React and floor-package versions used to build the bundle. */
+  builtAgainst: z.record(z.string(), z.string()).optional(),
+  compatibility: PluginBuildCompatibilitySchema.optional(),
+  update: PluginUpdateStatusSchema.optional(),
 });
-export type PluginInstall = z.infer<typeof PluginInstallSchema>;
+export type PluginInstallReceipt = z.infer<typeof PluginInstallReceiptSchema>;
 
 /**
- * A plugin as the roster describes it: everything a client needs to render the plugin, its
- * doors, its state and WHO put it in that state, from one document.
- *
- * Attribution is on the row rather than in an event because enablement is workspace-global
- * and hot — one principal's toggle changes what everyone else is looking at, right now —
- * and a placeholder that can say "disabled by alex" is the difference between a change and
- * a glitch. Both fields are absent (or null, as a store row reads them) until someone
- * actually toggles the plugin.
+ * One roster row's PRIVATE receipt (#402, #430): who last flipped it and when, and — iff it
+ * was installed — its installation receipt. Keyed by plugin id beside the public roster rather
+ * than merged into it, so no public payload ever becomes private by being read later.
+ */
+export const PluginReceiptSchema = z.strictObject({
+  id: PluginIdSchema,
+  changedBy: z.string().min(1).max(128).nullish(),
+  changedAt: z.number().int().min(0).nullish(),
+  install: PluginInstallReceiptSchema.optional(),
+});
+export type PluginReceipt = z.infer<typeof PluginReceiptSchema>;
+
+/**
+ * A plugin as public discovery describes it: everything a client needs to render the plugin,
+ * its doors and its state, from one document, and nothing about who admitted or changed it.
+ * It is the same projection anonymously at `GET /api/protocol`, to any credential at
+ * `GET /api/plugins` and on every session `plugins` frame before and after admission.
  */
 export const PluginRosterEntrySchema = z.strictObject({
   manifest: PluginManifestSchema,
@@ -1382,24 +1409,29 @@ export const PluginRosterEntrySchema = z.strictObject({
       message: "repack_required must name the minimum accepted hardened contract",
     })
     .optional(),
-  changedBy: z.string().min(1).max(128).nullish(),
-  changedAt: z.number().int().min(0).nullish(),
-  /**
-   * Present iff the plugin was installed. Its `hardened` member records the installer's
-   * choice; the roster's own `hardened` reports effective execution for every provenance.
-   * Bundled first-party and builtin rows have no install record.
-   */
-  install: PluginInstallSchema.optional(),
+  /** Present iff the plugin was installed. Bundled first-party and builtin rows have none. */
+  install: PluginInstallIdentitySchema.optional(),
 });
 export type PluginRosterEntry = z.infer<typeof PluginRosterEntrySchema>;
 
 /**
- * The whole assembly, as every principal sees it: server-owned, served at
- * `GET /api/plugins`, and pushed on the connection-level `plugins` session frame whenever
- * it changes. Registration is shared state, never a client's private guess.
+ * The whole assembly, as every reader sees it: server-owned, served at `GET /api/plugins` and
+ * `GET /api/protocol`, and pushed on the connection-level `plugins` session frame whenever it
+ * changes. Registration is shared state, never a client's private guess.
  */
 export const PluginRosterSchema = PluginRosterEntrySchema.array();
 export type PluginRoster = z.infer<typeof PluginRosterSchema>;
+
+/**
+ * The roster as a plugin's OWN server half reads it (`host.roster()`): the public projection,
+ * except that the calling plugin's own row also carries its own installation receipt. A
+ * plugin binds work to its own admission (pin, grant, install time) without any plugin
+ * reading another row's receipt.
+ */
+export type PluginGuestRosterEntry = Omit<PluginRosterEntry, "install"> & {
+  readonly install?: PluginInstallIdentity & Partial<Omit<PluginInstallReceipt, "sha256">>;
+};
+export type PluginGuestRoster = readonly PluginGuestRosterEntry[];
 
 /**
  * THE DISCIPLINE ROSTER: discipline id → the declaration its plugin contributed, derived
@@ -1689,13 +1721,16 @@ export function pluginVocabulary(): Record<string, unknown> {
     lifecycleStates: PLUGIN_LIFECYCLE_STATES,
     refusalReasons: PLUGIN_REFUSAL_REASONS,
     /*
-      The install door's own refusal classes and the block an installed row carries (ADR 0016
-      §5, §8 stage 2): a stranger's agent installing a plugin learns what it may be told and
-      what the roster will then say about the grant, from the same read as everything else.
+      The install door's own refusal classes, the public identity an installed row carries,
+      and the SHAPE of the private receipt beside it (ADR 0016 §5, §8 stage 2; #402): a
+      stranger's agent installing a plugin learns what it may be told and what a `plugins:read`
+      reader will then see about the grant, from the same read as everything else. Shapes are
+      vocabulary; the receipts themselves are never published here.
     */
     installRefusals: PLUGIN_INSTALL_REFUSALS,
     installModes: PLUGIN_INSTALL_MODES,
-    install: z.toJSONSchema(PluginInstallSchema),
+    install: z.toJSONSchema(PluginInstallIdentitySchema),
+    receipt: z.toJSONSchema(PluginReceiptSchema),
     releaseFeed: z.toJSONSchema(PluginReleaseFeedSchema),
     updateReview: z.toJSONSchema(PluginUpdateReviewSchema),
     updateRefusals: PLUGIN_UPDATE_REFUSALS,

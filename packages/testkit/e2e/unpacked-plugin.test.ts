@@ -160,8 +160,10 @@ test("a plugin authored on the instance reaches a joined view, remounts on edit,
     await waitFor(() => rowOf(heard)?.install?.sha256 === first.sha256, 15_000, 20);
     const row = rowOf(heard);
     expect(row?.enabled).toBe(true);
-    expect(row?.install?.mode).toBe("unpacked");
-    expect(row?.install?.hardened).toBe(false);
+    // A joined container viewer's frame is the public projection (#402): the pin and packing
+    // mode, never the receipt; the row's effective execution is in-realm.
+    expect(row?.install).toEqual({ mode: "unpacked", sha256: first.sha256 });
+    expect(row?.hardened).toBeUndefined();
     expect(row?.manifest.contributes.panels.map((panel) => panel.id)).toEqual([PANEL]);
     // What the joined view imports on that frame: the built member at the frame's pin, JSX
     // compiled, React taken from the shell's shared registry rather than carried.

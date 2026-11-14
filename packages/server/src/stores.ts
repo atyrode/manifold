@@ -565,7 +565,7 @@ export interface PluginInstallRow {
   /**
    * The installer's non-secret lineage, kept so a lifecycle hook can act under the authority
    * that consented to this row (#514) — the same thing a job keeps about its own requester,
-   * and never published: `PluginInstall` on the roster carries `installedBy` and no more.
+   * and never published: the private `PluginInstallReceipt` carries `installedBy` and no more.
    * Absent for a row installed before schema 32 and for one the rebuild loop wrote on nobody's
    * behalf; the hook then simply has no job slice.
    */

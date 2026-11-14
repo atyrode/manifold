@@ -1,3 +1,4 @@
+import type { PluginReceiptsOutcome } from "@manifold/plugin";
 import {
   CAPS,
   CORE_NAMESPACE_PREFIX,
@@ -9,8 +10,10 @@ import {
   type Cap,
   type PluginDependency,
   type PluginDependencyMap,
+  type PluginInstallReceipt,
   type PluginInstallRefusal,
   type PluginLifecycleState,
+  type PluginReceipt,
   type PluginRefusalReason,
   type PluginRosterEntry,
   type PluginUpdateApplyRequest,
@@ -140,6 +143,71 @@ export function listNames(names: readonly string[]): string {
   return `${names.slice(0, -1).join(", ")} and ${names[names.length - 1] ?? ""}`;
 }
 
+/**
+ * THE PRIVATE HALF, as this reader holds it (#402, #430). Where a bundle came from, who
+ * admitted it and when, what it was granted, who last toggled a row and the build and update
+ * diagnostics are RECEIPTS, read beside the roster under `plugins:read`
+ * (`client.pluginReceipts()`), never roster fields. `refused` carries the door's own sentence
+ * for a credential without that read and `failed` a read that broke; either way a private
+ * field is said to be private rather than filled with a guess — an installed row whose
+ * receipt is unread has an UNKNOWN grant, never its declaration.
+ */
+export type PluginReceipts =
+  | { readonly kind: "loading" }
+  | { readonly kind: "ready"; readonly byId: ReadonlyMap<string, PluginReceipt> }
+  | { readonly kind: "refused"; readonly reason: string }
+  | { readonly kind: "failed"; readonly reason: string };
+
+/** The receipts door's answer, keyed by plugin id. */
+export function receiptsFrom(outcome: PluginReceiptsOutcome): PluginReceipts {
+  return outcome.ok
+    ? {
+        kind: "ready",
+        byId: new Map(outcome.receipts.map((receipt) => [receipt.id, receipt] as const)),
+      }
+    : { kind: "refused", reason: outcome.refused };
+}
+
+/** One row's receipt — toggle attribution and, iff installed, its install — or null unread. */
+export function rowReceipt(receipts: PluginReceipts, entry: PluginRosterEntry): PluginReceipt | null {
+  return receipts.kind === "ready" ? (receipts.byId.get(entry.manifest.id) ?? null) : null;
+}
+
+/**
+ * One installed row's installation receipt, or null — null too when the receipt pins other
+ * bytes than the row now runs (a replace landed after the read): `sha256` rides both halves
+ * exactly so a reader can tell they describe one install.
+ */
+export function installReceipt(
+  receipts: PluginReceipts,
+  entry: PluginRosterEntry,
+): PluginInstallReceipt | null {
+  const install = rowReceipt(receipts, entry)?.install;
+  return install !== undefined && install.sha256 === entry.install?.sha256 ? install : null;
+}
+
+/**
+ * What a private field says in place of its value while no receipt describes it — why, and
+ * the capability that would read it; never a blank, never the public half dressed up. A
+ * phrase, so it reads inline: "Installed by private (needs plugins:read)".
+ */
+export function receiptAbsence(receipts: PluginReceipts): string {
+  switch (receipts.kind) {
+    case "loading":
+      return "reading…";
+    case "refused":
+      return "private (needs plugins:read)";
+    case "failed":
+      return "unread (the receipt read failed)";
+    case "ready":
+      return "not read yet";
+    default: {
+      const exhaustive: never = receipts;
+      return exhaustive;
+    }
+  }
+}
+
 /** The `required` dependencies of `entry` that are composed but OFF — what an enable must name. */
 export function offDependencies(
   roster: readonly PluginRosterEntry[],
@@ -229,13 +297,17 @@ export function refusalWords(
  * peer) is attention, while a refusal on a DISABLED row (`dependency_disabled`) is merely the
  * reason the toggle is inert — the row is off exactly as its administrator left it, and
  * painting that red would tell everyone something is wrong when nothing is.
+ *
+ * The word and tone are the PUBLIC roster's alone. `receipt` only sharpens a repack hold's
+ * sentence with the build components it names; unread, the hold says what to do without them.
  */
 export function pluginStatus(
   roster: readonly PluginRosterEntry[],
   entry: PluginRosterEntry,
+  receipt: PluginInstallReceipt | null = null,
 ): PluginStatus {
   if (entry.held !== undefined) {
-    const incompatibilities = entry.install?.compatibility?.issues.filter(
+    const incompatibilities = receipt?.compatibility?.issues.filter(
       (issue) => issue.kind === "incompatible",
     );
     return {
@@ -332,6 +404,9 @@ export const CAP_MEANINGS: Readonly<Record<Cap, string>> = {
   "operations:invoke": "Invoke an explicitly admitted operation",
   "network:host": "Use explicitly admitted host networking",
   "plugins:manage": "Turn plugins on and off for everyone",
+  "plugins:read": "Read where installed plugins came from, who admitted them and their grants",
+  "plugins:load": "Load installed plugins' verified browser code and stylesheets",
+  "layouts:read": "Read the holder's own workspace layout, never another principal's",
 };
 
 /**
@@ -350,7 +425,10 @@ export const PLUGIN_CAP_MEANING =
 export interface Permission {
   readonly cap: AuthoredCap;
   readonly meaning: string;
-  /** `withheld` only on an installed row whose installer withheld this declared cap. */
+  /**
+   * `withheld` only on an installed row whose installer withheld this declared cap, and
+   * `unread` only on an installed row whose grant receipt this reader has not read.
+   */
   readonly state: PermissionState;
   /** True only for `granted`: what the row can exercise on its grant alone. */
   readonly granted: boolean;
@@ -360,24 +438,27 @@ export interface Permission {
  * THE PERMISSIONS a row holds, as the chip counts them and the card lists them.
  *
  * A first-party row holds exactly what its manifest declares — the ceiling assembly checks
- * every action against (ADR 0023 §8). An installed row holds its GRANT (`install.grantedCaps`,
- * the installer's consent, enforced at rung 4 before the caller's own caps), and the card
- * shows the declared caps the installer withheld greyed beside it, because "this plugin asked
- * for more than it was given" is the sentence an operator reads a grant for. Wildcard ceilings
- * expand to engine capabilities, so a narrowed named grant is never hidden behind `*`.
+ * every action against (ADR 0023 §8). An installed row holds its GRANT (the receipt's
+ * `grantedCaps`, the installer's consent, enforced at rung 4 before the caller's own caps),
+ * and the card shows the declared caps the installer withheld greyed beside it, because "this
+ * plugin asked for more than it was given" is the sentence an operator reads a grant for.
+ * Wildcard ceilings expand to engine capabilities, so a narrowed named grant is never hidden
+ * behind `*`.
  *
- * THREE STATES, NOT TWO. A governed capability is never in any grant — `grantFor` filters
+ * FOUR STATES, NOT TWO. A governed capability is never in any grant — `grantFor` filters
  * `GOVERNED_CAPS` out of the default grant AND out of an explicit installer grant, because
  * governed authority is discharged per node, bound to an artifact revision, by consent. Shown
  * as `withheld` it reads as an installer's refusal, which is the sentence an operator acted on
  * for a day: nine declared, three granted, and the conclusion that the install had dropped six
- * when in truth six are governed and one door was asking the wrong question (#733, #735).
+ * when in truth six are governed and one door was asking the wrong question (#733, #735). And
+ * the grant is a PRIVATE receipt (#402): a reader who has not read it sees `unread`, never the
+ * declaration standing in for a consent nobody showed them.
  */
-export type PermissionState = "granted" | "withheld" | "governed";
+export type PermissionState = "granted" | "withheld" | "governed" | "unread";
 
 function permissionRows(
   declared: readonly AuthoredCap[],
-  granted: readonly AuthoredCap[] | null,
+  grant: readonly AuthoredCap[] | "declared" | "unread",
 ): Permission[] {
   const domain = new Set(declared);
   if (declared.includes("*")) {
@@ -386,9 +467,11 @@ function permissionRows(
   return [...domain].map((cap) => {
     const state: PermissionState = GOVERNED_CAPS.includes(cap)
       ? "governed"
-      : granted === null || (cap === "*" ? granted.includes("*") : hasCap(granted, cap))
-        ? "granted"
-        : "withheld";
+      : grant === "unread"
+        ? "unread"
+        : grant === "declared" || (cap === "*" ? grant.includes("*") : hasCap(grant, cap))
+          ? "granted"
+          : "withheld";
     return {
       cap,
       meaning: isEngineCap(cap) ? CAP_MEANINGS[cap] : PLUGIN_CAP_MEANING,
@@ -398,38 +481,67 @@ function permissionRows(
   });
 }
 
-export function pluginPermissions(entry: PluginRosterEntry): readonly Permission[] {
-  return permissionRows(entry.manifest.capabilities, entry.install?.grantedCaps ?? null);
+/** `receipt` is the row's own install receipt ({@link installReceipt}); null while unread. */
+export function pluginPermissions(
+  entry: PluginRosterEntry,
+  receipt: PluginInstallReceipt | null,
+): readonly Permission[] {
+  return permissionRows(
+    entry.manifest.capabilities,
+    entry.install === undefined ? "declared" : (receipt?.grantedCaps ?? "unread"),
+  );
 }
 
-/** The chip's number: what the row can actually do — its grant, or its declaration. */
-export function permissionCount(entry: PluginRosterEntry): number {
-  return pluginPermissions(entry).filter((permission) => permission.granted).length;
+/**
+ * The chip's number: what the row can actually do — its grant, or its declaration. Null while
+ * an installed row's grant is unread, because no count of it would be true.
+ */
+export function permissionCount(
+  entry: PluginRosterEntry,
+  receipt: PluginInstallReceipt | null,
+): number | null {
+  const permissions = pluginPermissions(entry, receipt);
+  return permissions.some((permission) => permission.state === "unread")
+    ? null
+    : permissions.filter((permission) => permission.granted).length;
 }
 
 /**
  * The permissions chip's tooltip. Lists the caps rather than counting them, because the count
  * is on the chip already; for an installed row it leads with the declared-versus-granted
  * fraction, which is the one number an installer's consent reduces to — and it names the
- * governed ones separately, because an installer withheld nothing there.
+ * governed ones separately, because an installer withheld nothing there. An unread grant is
+ * said to be unread.
  */
-export function permissionSummary(entry: PluginRosterEntry): string {
-  const permissions = pluginPermissions(entry);
+export function permissionSummary(
+  entry: PluginRosterEntry,
+  receipt: PluginInstallReceipt | null,
+): string {
+  const permissions = pluginPermissions(entry, receipt);
   if (permissions.length === 0) return "Declares no capabilities";
   const named = (state: PermissionState): string[] =>
     permissions.filter((permission) => permission.state === state).map((p) => p.cap);
   const held = named("granted");
   const withheld = named("withheld");
   const governed = named("governed");
-  if (entry.install === undefined)
-    return `Declares ${permissions.map((permission) => permission.cap).join(", ")}`;
+  const declared = `Declares ${permissions.map((permission) => permission.cap).join(", ")}`;
+  if (entry.install === undefined) return declared;
+  const governedClause =
+    governed.length === 0
+      ? []
+      : [`${String(governed.length)} governed by per-node consent: ${governed.join(", ")}`];
+  if (named("unread").length > 0) {
+    return [
+      declared,
+      ...governedClause,
+      "what its installer granted is a private receipt this reader has not read",
+    ].join("; ");
+  }
   const clauses = [
     `Granted ${String(held.length)} of ${String(permissions.length)} declared${
       held.length === 0 ? ": nothing" : `: ${held.join(", ")}`
     }`,
-    ...(governed.length === 0
-      ? []
-      : [`${String(governed.length)} governed by per-node consent: ${governed.join(", ")}`]),
+    ...governedClause,
     ...(withheld.length === 0 ? [] : [`withheld ${withheld.join(", ")}`]),
   ];
   return clauses.join("; ");

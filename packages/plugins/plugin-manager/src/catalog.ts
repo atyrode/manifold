@@ -1,6 +1,13 @@
 import { CORE_NAMESPACE_PREFIX } from "@manifold/protocol";
 import type { PluginRosterEntry } from "@manifold/protocol";
-import { needsAttention, permissionCount, pluginStatus } from "./status.ts";
+import {
+  installReceipt,
+  needsAttention,
+  permissionCount,
+  pluginStatus,
+  rowReceipt,
+  type PluginReceipts,
+} from "./status.ts";
 
 /**
  * THE CATALOG: the roster as a READER navigates it, and nothing more.
@@ -298,6 +305,7 @@ function statusRank(roster: readonly PluginRosterEntry[], entry: PluginRosterEnt
 function comparator(
   roster: readonly PluginRosterEntry[],
   sort: PluginSort,
+  receipts: PluginReceipts,
 ): (left: PluginRosterEntry, right: PluginRosterEntry) => number {
   switch (sort) {
     case "name":
@@ -305,13 +313,19 @@ function comparator(
     case "status":
       return (left, right) =>
         statusRank(roster, left) - statusRank(roster, right) || compareByName(left, right);
-    case "changed":
+    case "changed": {
       // Most recent first; a row nobody ever toggled sorts last, after everything with a time.
-      return (left, right) =>
-        (right.changedAt ?? -1) - (left.changedAt ?? -1) || compareByName(left, right);
-    case "permissions":
-      return (left, right) =>
-        permissionCount(right) - permissionCount(left) || compareByName(left, right);
+      // Toggle attribution is a private receipt, so an unread one ties and falls back to name.
+      const changedAt = (entry: PluginRosterEntry): number =>
+        rowReceipt(receipts, entry)?.changedAt ?? -1;
+      return (left, right) => changedAt(right) - changedAt(left) || compareByName(left, right);
+    }
+    case "permissions": {
+      // An installed row counts its grant; an unread grant sorts after every known count.
+      const count = (entry: PluginRosterEntry): number =>
+        permissionCount(entry, installReceipt(receipts, entry)) ?? -1;
+      return (left, right) => count(right) - count(left) || compareByName(left, right);
+    }
     default: {
       const exhaustive: never = sort;
       return exhaustive;
@@ -362,13 +376,17 @@ export interface CatalogQuery {
  * A `byPublisher` section's rows are grouped by PUBLISHER before the chosen sort applies, so
  * a vendor's plugins read together whatever the sort — the publisher chip on each row is the
  * group's label, and the component draws the boundary where the publisher changes.
+ *
+ * `receipts` is the private half the two receipt-backed sorts order by (#402); nothing else
+ * here reads it, so an unread one changes no row, band or count.
  */
 export function pluginCatalog(
   roster: readonly PluginRosterEntry[],
   asked: CatalogQuery,
+  receipts: PluginReceipts,
 ): readonly PluginSection[] {
   const needle = asked.query.trim().toLowerCase();
-  const compare = comparator(roster, asked.sort);
+  const compare = comparator(roster, asked.sort, receipts);
   const matches = (entry: PluginRosterEntry): boolean =>
     matchesQuery(entry, needle) &&
     [...asked.filters].every((filter) => matchesFilter(roster, entry, filter));

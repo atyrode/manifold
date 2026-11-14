@@ -158,13 +158,16 @@ import type {
   PluginBuildCompatibility,
   PluginBundle,
   PluginId,
-  PluginInstall,
+  PluginGuestRoster,
+  PluginInstallIdentity,
+  PluginInstallReceipt,
   PluginInstallRefusal,
   InstalledPluginStates,
   InstalledPluginsSnapshot,
   PluginLifecycleState,
   PluginPurgeResult,
   PluginRefusalReason,
+  PluginReceipt,
   ReloadAgentPolicyResult,
   RemoveShareRecipientRequest,
   RenewAgentRunRequest,
@@ -734,7 +737,10 @@ export interface HostControl {
     authoredBy: string,
     credential: CredentialReference,
   ): Promise<ActionRefused | PluginAuthorResult>;
+  /** The public roster (#402): what every reader sees, with no receipt in it. */
   roster(): PluginRoster;
+  /** The public roster with only `pluginId`'s own row carrying its own installation receipt. */
+  guestRoster(pluginId: string): PluginGuestRoster;
   enabled(id: string): boolean;
   /**
    * The reviewed family update doors (#238). `authority` names the root caller and its
@@ -2475,11 +2481,13 @@ export class PluginHost {
             now: () => this.runtime.now(),
             host: {
               installed: () => this.installed,
-              // Raw: the coordinator decorates this, so it must never read its own decoration.
+              // The assembly's public rows: which ids the distribution compiled, never receipts.
               roster: () => this.assembled.roster,
               serialize: (run) => this.changeAssembly(run),
               // Invoked by the coordinator INSIDE `serialize`, so it never queues again.
               apply: (members, authority) => this.applyUpdateNow(members, authority),
+              // An observation changes only private receipts; the unchanged public roster frame
+              // is the invalidation a `plugins:read` reader refetches receipts on.
               publish: () => {
                 this.publish();
               },
@@ -3016,16 +3024,11 @@ export class PluginHost {
         applied: await storage.appliedMigrations(),
       });
     }
-    const installs = new Map<string, PluginInstall>();
+    // Only the public identity enters the assembly; receipts are composed at their own read.
+    const installs = new Map<string, PluginInstallIdentity>();
     for (const [id, entry] of this.installed) {
       installs.set(id, {
         sha256: entry.row.sha256,
-        source: entry.row.source,
-        grantedCaps: [...entry.row.grantedCaps],
-        installedBy: entry.row.installedBy,
-        installedAt: entry.row.installedAt,
-        hardened: entry.row.hardened === true,
-        ...(entry.row.builtAgainst === undefined ? {} : { builtAgainst: entry.row.builtAgainst }),
         ...(entry.row.mode === "unpacked" ? { mode: "unpacked" as const } : {}),
         ...(entry.refusal === undefined ? {} : { refusal: entry.refusal }),
       });
@@ -3036,7 +3039,6 @@ export class PluginHost {
       elementOwners: this.store.elementOwners(),
       dataState,
       lifecycle: this.lifecycleStates,
-      attribution: this.store.pluginAttribution(),
       installs,
       developerMode: this.store.developerMode(),
     };
@@ -3399,20 +3401,73 @@ export class PluginHost {
   }
 
   /**
-   * The roster every reader is answered: the assembly's, with the coordinator's observations
-   * and each row's EFFECTIVE execution. `hardened: true` means this host runs the plugin's
-   * server half in the supervisor and serves its browser half for a Worker, whether the
-   * installer chose that (`install.hardened`, which stays the persisted choice) or the operator
-   * selected a trusted first-party build. Absent is in-realm.
+   * The PUBLIC roster every reader is answered (#402): the assembly's allowlisted rows with each
+   * row's EFFECTIVE execution. `hardened: true` means this host runs the plugin's server half in
+   * the supervisor and serves its browser half for a Worker, whether the installer chose that
+   * (the receipt's `install.hardened`, which stays the persisted choice) or the operator
+   * selected a trusted first-party build. Absent is in-realm. No receipt is in it.
    */
   roster(): PluginRoster {
-    const roster = this.updates?.roster(this.assembled.roster) ?? this.assembled.roster;
-    return roster.map((entry) =>
+    return this.assembled.roster.map((entry) =>
       this.trusted.has(entry.manifest.id) ||
       this.installed.get(entry.manifest.id)?.row.hardened === true
         ? { ...entry, hardened: true }
         : entry,
     );
+  }
+
+  /**
+   * THE PRIVATE HALF (#402, #430): per roster row, who last flipped it and — iff installed —
+   * what its installer consented to, with the build/update diagnostics observed for it. The
+   * one reader is `GET /api/plugins/receipts` under `plugins:read`.
+   */
+  receipts(): PluginReceipt[] {
+    const attribution = this.store.pluginAttribution();
+    const installs = this.installReceipts();
+    return this.assembled.roster.map(({ manifest: { id } }) => {
+      const changed = attribution.get(id);
+      const install = installs.get(id);
+      return {
+        id,
+        ...(changed === undefined ? {} : { changedBy: changed.by, changedAt: changed.at }),
+        ...(install === undefined ? {} : { install }),
+      };
+    });
+  }
+
+  /**
+   * What a plugin's OWN server half reads as `host.roster()`: the public roster, with only its
+   * own row carrying its own installation receipt, so a plugin may bind work to its own
+   * admission while no plugin reads another row's receipt. The receipt joins the row only
+   * while both describe the same pin.
+   */
+  guestRoster(pluginId: string): PluginGuestRoster {
+    const own = this.installReceipts(pluginId).get(pluginId);
+    return this.roster().map((entry) =>
+      own === undefined || entry.manifest.id !== pluginId || entry.install?.sha256 !== own.sha256
+        ? entry
+        : { ...entry, install: { ...entry.install, ...own } },
+    );
+  }
+
+  /** Installation receipts by id; `only` composes one plugin's without diagnosing the rest. */
+  private installReceipts(only?: string): Map<string, PluginInstallReceipt> {
+    const diagnostics = this.updates?.diagnostics(only);
+    const receipts = new Map<string, PluginInstallReceipt>();
+    for (const [id, { row }] of this.installed) {
+      if (only !== undefined && id !== only) continue;
+      receipts.set(id, {
+        sha256: row.sha256,
+        source: row.source,
+        grantedCaps: [...row.grantedCaps],
+        installedBy: row.installedBy,
+        installedAt: row.installedAt,
+        hardened: row.hardened === true,
+        ...(row.builtAgainst === undefined ? {} : { builtAgainst: row.builtAgainst }),
+        ...diagnostics?.get(id),
+      });
+    }
+    return receipts;
   }
 
   /** Serialize installed hashes and configured intent with installation and enablement changes. */
@@ -4920,7 +4975,7 @@ export class PluginHost {
             host: {
               roster: () => {
                 metadataAuthority("containers:read");
-                return structuredClone(this.roster());
+                return structuredClone(this.guestRoster(pluginId));
               },
               enabled: (id) => {
                 metadataAuthority("containers:read");

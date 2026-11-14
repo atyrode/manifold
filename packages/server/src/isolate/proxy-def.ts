@@ -808,7 +808,8 @@ export async function serveCtxCall(
       return ctx.placement.place(request.data);
     }
     case "host.roster":
-      return ctx.host.roster();
+      // The public roster; only the dispatching plugin's own row carries its own receipt.
+      return ctx.host.guestRoster(ctx.pluginId);
     case "host.enabled":
       return ctx.host.enabled(stringArg(args, 0, method));
     /*

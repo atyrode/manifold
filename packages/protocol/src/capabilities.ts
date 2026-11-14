@@ -44,10 +44,33 @@ export const CAPS = [
   "network:host",
   /** Enable and disable plugins for the whole workspace: assembly administration. */
   "plugins:manage",
+  /**
+   * READ PRIVATE PLUGIN RECEIPTS: installation source, installer, consent and the diagnostics
+   * beside them (`GET /api/plugins/receipts`). Separate from `plugins:manage` because inspecting
+   * who admitted what is not authority to change it, and from `containers:read` because a
+   * container viewer is not owed the workspace's installation history.
+   */
+  "plugins:read",
+  /** Load an installed plugin's verified browser code and admitted stylesheet. */
+  "plugins:load",
+  /** Read the caller's own workspace layout; never another principal's. */
+  "layouts:read",
 ] as const;
 
 export const CapSchema = z.enum(CAPS);
 export type Cap = z.infer<typeof CapSchema>;
+
+/**
+ * The discovery read capabilities protocol 59 added (#402, #430). Every strict parser released
+ * before them — a V1 credential view, a contract-12 hardened guest, an instance peer at an
+ * earlier revision — predates them, so each of those boundaries projects or refuses exactly
+ * this set.
+ */
+export const DISCOVERY_READ_CAPS = [
+  "plugins:read",
+  "plugins:load",
+  "layouts:read",
+] as const satisfies readonly Cap[];
 
 /**
  * THE ENGINE'S HALF IS CLOSED AND A PLUGIN'S IS OPEN (ADR 0035).

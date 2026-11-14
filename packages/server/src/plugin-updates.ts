@@ -297,13 +297,26 @@ export class PluginUpdates {
     this.options.host.publish();
   }
 
-  roster(rows: readonly PluginRosterEntry[]): PluginRosterEntry[] {
+  /**
+   * The private build/update diagnostics for every installed row whose bytes verified, keyed by
+   * id (#402): the observed release status of its family and its recorded build compatibility.
+   * Receipts carry these; the public roster never does. `only` narrows to one plugin's.
+   */
+  diagnostics(
+    only?: string,
+  ): ReadonlyMap<
+    string,
+    { readonly compatibility: PluginBuildCompatibility; readonly update?: PluginUpdateStatus }
+  > {
     const installed = this.options.host.installed();
     const statuses = new Map<string, PluginUpdateStatus>();
-    return rows.map((entry) => {
-      const current = installed.get(entry.manifest.id);
-      if (entry.install === undefined || current?.bundle == null) return entry;
-      const rootId = this.rootId(entry.manifest.id);
+    const diagnostics = new Map<
+      string,
+      { readonly compatibility: PluginBuildCompatibility; readonly update?: PluginUpdateStatus }
+    >();
+    for (const [id, current] of installed) {
+      if (current.bundle == null || (only !== undefined && id !== only)) continue;
+      const rootId = this.rootId(id);
       const root = installed.get(rootId);
       let update: PluginUpdateStatus | undefined;
       if (root?.bundle?.manifest.releases !== undefined && root.row.mode !== "unpacked") {
@@ -318,15 +331,12 @@ export class PluginUpdates {
           statuses.set(rootId, update);
         }
       }
-      return {
-        ...entry,
-        install: {
-          ...entry.install,
-          compatibility: pluginBuildCompatibility(current.bundle),
-          ...(update === undefined ? {} : { update }),
-        },
-      };
-    });
+      diagnostics.set(id, {
+        compatibility: pluginBuildCompatibility(current.bundle),
+        ...(update === undefined ? {} : { update }),
+      });
+    }
+    return diagnostics;
   }
 
   private discover(rootId: string, signal: AbortSignal): Promise<Discovery> {

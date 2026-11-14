@@ -13,6 +13,7 @@ import type {
   PlacementDestination,
   PlacementRef,
   Principal,
+  PluginReceipt,
   PluginRoster,
   ResolveResponse,
   ServerEvent,
@@ -40,6 +41,14 @@ import type { ComposedSetting } from "./settings.ts";
 export type PlaceOutcome =
   | { readonly ok: true; readonly result: PlaceResponse }
   | { readonly ok: false; readonly denial: PlacementDenial };
+
+/**
+ * What `pluginReceipts()` answers: every roster row's PRIVATE receipt, or the door's refusal.
+ * Restated structurally for the same reason as {@link PlaceOutcome}: the SDK satisfies it.
+ */
+export type PluginReceiptsOutcome =
+  | { readonly ok: true; readonly receipts: readonly PluginReceipt[] }
+  | { readonly ok: false; readonly refused: string };
 
 /**
  * How live the session channel is, restated over the SDK's own five states for the same
@@ -121,6 +130,14 @@ export interface SessionHandle {
    * server's, and this is the one door onto it.
    */
   resolve(uri: string): Promise<ResolveResponse>;
+  /**
+   * `GET /api/plugins/receipts` (#402, #430): one private receipt per roster row — source,
+   * installer, consent, toggle attribution and build/update diagnostics — beside the public
+   * roster. A 403 (no `plugins:read`, or a container-scoped credential) is DATA carrying the
+   * door's message, so a reader without that authority renders a named state; any other
+   * failure throws.
+   */
+  pluginReceipts(): Promise<PluginReceiptsOutcome>;
   allTerminals(): Promise<readonly TerminalSummary[]>;
   /*
     The workspace index's own writes. Every one of them is a `core.index` ACTION — the bespoke

@@ -1,4 +1,4 @@
-import { emissionRefusal, type Assembly } from "@manifold/plugin";
+import { ENGINE_PLUGINS_ID, emissionRefusal, type Assembly } from "@manifold/plugin";
 import {
   CONNECTION_BODIES,
   MAX_SUBSCRIPTIONS_PER_CONNECTION,
@@ -6,6 +6,7 @@ import {
   MANIFOLD_ROOT_URI,
   scopeAdmits,
   topicMatches,
+  type AskableCap,
   type EventKind,
   type EventPayload,
   type ManifoldRef,
@@ -42,7 +43,7 @@ import type { Logger } from "./log.ts";
  * (docs/CONTRACTS.md §One authoritative implementation).
  */
 export interface EventAuthority {
-  allows(context: AuthContext, cap: "containers:read", containerId?: string): boolean;
+  allows(context: AuthContext, cap: AskableCap, containerId?: string): boolean;
   allowsNode(context: AuthContext, cap: "containers:read", node: string): boolean;
   canReadAgentNode(
     context: AuthContext,
@@ -207,6 +208,13 @@ export interface EventHubDeps {
   owners: FloorEventOwners;
   canReadGoverned(auth: AuthContext, node: ManifoldRef): boolean;
 }
+
+/**
+ * WHO ADMINISTERED THE PLUGIN ENGINE is a private receipt (#402): who installed, removed,
+ * purged or flipped a plugin. Those events still reach every reader of the node, with `actor`
+ * withheld unless the reader also holds this capability.
+ */
+const ENGINE_ATTRIBUTION_CAP: AskableCap = "plugins:read";
 
 /** Owns every subscription on every session socket, and every emission's fan-out. */
 export class EventHub {
@@ -497,8 +505,11 @@ export class EventHub {
         audience.add(id);
       }
     }
-    let frame: string | null = null;
-    let bytes = 0;
+    // Serialized once per actor variant: the attribution, or — only when this emitter's
+    // attribution is private — null for a reader lacking the capability to see who acted.
+    const attributionCap =
+      actor !== null && plugin === ENGINE_PLUGINS_ID ? ENGINE_ATTRIBUTION_CAP : null;
+    const serialized = new Map<string | null, { readonly text: string; readonly bytes: number }>();
     for (const id of audience) {
       const entry = this.subscriptions.get(id);
       if (entry === undefined) continue;
@@ -514,13 +525,27 @@ export class EventHub {
       )
         continue;
       reached.add(id);
-      if (frame === null) {
-        frame = JSON.stringify(
-          CONNECTION_BODIES.event.parse({ type: "event", topic, plugin, kind, at, actor, payload }),
+      const shown =
+        attributionCap === null || this.authority.allows(entry.subscriber.auth, attributionCap)
+          ? actor
+          : null;
+      let frame = serialized.get(shown);
+      if (frame === undefined) {
+        const text = JSON.stringify(
+          CONNECTION_BODIES.event.parse({
+            type: "event",
+            topic,
+            plugin,
+            kind,
+            at,
+            actor: shown,
+            payload,
+          }),
         );
-        bytes = Buffer.byteLength(frame);
+        frame = { text, bytes: Buffer.byteLength(text) };
+        serialized.set(shown, frame);
       }
-      if (!entry.subscriber.deliver(frame, bytes)) {
+      if (!entry.subscriber.deliver(frame.text, frame.bytes)) {
         this.logger.warn("socket_backpressure", { connectionId: id, topic });
       }
     }

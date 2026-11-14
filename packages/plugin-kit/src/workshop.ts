@@ -17,7 +17,7 @@ import {
 } from "@manifold/protocol";
 import type { IsolateChildFrame, PluginBundle, PluginManifest } from "@manifold/protocol";
 import { devCycle, discoverPlugins } from "./dev.ts";
-import { roster } from "./hub.ts";
+import { receipts, roster } from "./hub.ts";
 import type { Hub } from "./hub.ts";
 import { BundleOrderError, familyOrder, requiredDependencyIds } from "./install.ts";
 import type { Delivery } from "./install.ts";
@@ -523,6 +523,11 @@ export async function devWorkshop(options: PluginWorkshopOptions): Promise<void>
     const startGeneration = generation;
     const inputs = await pins(graph.local);
     const rows = await roster(options.hub);
+    // The pin and effective execution are public; what the bundle was built against is the
+    // installation's private receipt (#402), read as the owner beside the roster.
+    const installs = new Map(
+      (await receipts(options.hub)).map(({ id, install }) => [id, install] as const),
+    );
     const installation = rows
       .find(({ manifest }) => manifest.id === "engine.plugins")
       ?.actions.find(({ name }) => name === "engine.plugins.install");
@@ -566,8 +571,11 @@ export async function devWorkshop(options: PluginWorkshopOptions): Promise<void>
             const bundle = PluginBundleSchema.parse(await Bun.file(packed.file).json());
             const plugin = plugins.find(({ manifest }) => manifest.id === packed.id)!;
             const row = rows.find(({ manifest }) => manifest.id === packed.id);
+            const install = installs.get(packed.id);
             if (
               !row?.install ||
+              install === undefined ||
+              install.sha256 !== row.install.sha256 ||
               row.enabled !== true ||
               row.held !== undefined ||
               row.install.mode === "unpacked" ||
@@ -576,7 +584,6 @@ export async function devWorkshop(options: PluginWorkshopOptions): Promise<void>
               row.lifecycle === "isolate_starting" ||
               row.lifecycle === "isolate_crashed" ||
               row.hardened === true ||
-              row.install.hardened === true ||
               !isDeepStrictEqual(row.manifest, plugin.manifest) ||
               !isDeepStrictEqual(bundle.manifest, plugin.manifest)
             )
@@ -595,7 +602,7 @@ export async function devWorkshop(options: PluginWorkshopOptions): Promise<void>
             }
             const shape = { manifest: bundle.manifest, builtAgainst: bundle.builtAgainst, native };
             if (
-              !isDeepStrictEqual(row.install.builtAgainst, bundle.builtAgainst) ||
+              !isDeepStrictEqual(install.builtAgainst, bundle.builtAgainst) ||
               (bundleShape.has(packed.id) && !isDeepStrictEqual(bundleShape.get(packed.id), shape))
             )
               throw installationRequired(`${packed.id}: compiled dependency/native shape changed`);

@@ -1,6 +1,6 @@
 import type { HostServices, SessionHandle, StreamHandle } from "@manifold/plugin";
 import { MACHINES_RESOURCE } from "@manifold/plugin/portable-hooks";
-import { requestResponse } from "../http.ts";
+import { HttpRequestError, requestResponse } from "../http.ts";
 import {
   ActionOutcomeSchema,
   ISOLATE_ERROR_TEXT_MAX,
@@ -13,6 +13,7 @@ import {
   TerminalRuntimeSchema,
   WebHostContextSchema,
   StreamOpenSchema,
+  projectHardenedCaps,
   projectLegacyCaps,
   type Cap,
   type MachineSummary,
@@ -80,6 +81,15 @@ export interface WorkerHostDeps {
 export function webModulePath(pluginId: string, worker = false): string {
   const member = worker ? PLUGIN_BUNDLE_WEB_WORKER_FILE : "web.js";
   return `/api/plugins/${encodeURIComponent(pluginId)}/${member}`;
+}
+
+/**
+ * Why the hub would not hand over a plugin's verified code, or null for any other failure. A
+ * 403 from a module, worker-entry or sheet route is a credential without `plugins:load` (#430),
+ * named in place in the door's own words rather than as a load that merely broke.
+ */
+export function moduleRefusal(reason: unknown): string | null {
+  return reason instanceof HttpRequestError && reason.status === 403 ? reason.message : null;
 }
 
 /**
@@ -280,17 +290,21 @@ export class WorkerHost {
         containerId: this.deps.containerId,
       });
     };
+    const loadFailed = (reason: unknown): void => {
+      const refusal = moduleRefusal(reason);
+      this.crash(
+        refusal === null ? `web half failed to load: ${describe(reason)}` : `Not loaded — ${refusal}`,
+      );
+    };
     let made: WorkerLike | Promise<WorkerLike>;
     try {
       made = factory(webModulePath(pluginId, this.deps.portableWorker));
     } catch (reason) {
-      this.crash(`web half failed to load: ${describe(reason)}`);
+      loadFailed(reason);
       return;
     }
     if (made instanceof Promise) {
-      made.then(adopt, (reason: unknown) => {
-        this.crash(`web half failed to load: ${describe(reason)}`);
-      });
+      made.then(adopt, loadFailed);
     } else {
       adopt(made);
     }
@@ -434,11 +448,11 @@ export class WorkerHost {
     const { host } = entry;
     return WebHostContextSchema.parse({
       principal: host.principal,
-      caps: this.contract < 12 ? projectLegacyCaps(host.client.selfCaps()) : host.client.selfCaps(),
+      caps: projectHardenedCaps(host.client.selfCaps(), this.contract),
       ...(this.contract < 12
         ? {}
         : {
-            workspaceCaps: host.client.workspaceCaps(),
+            workspaceCaps: projectHardenedCaps(host.client.workspaceCaps(), this.contract),
             workspaceEvents: host.client.workspaceEventsAvailable(),
             clientEpoch: entry.clientEpoch,
           }),
@@ -541,14 +555,15 @@ export class WorkerHost {
         }
         this.contract = contract;
         if (contract >= 12) {
-          // The common init handshake predates knowing the guest's admitted contract.
+          // The common init handshake predates knowing the guest's admitted contract, and a
+          // contract-12 guest's strict parser predates the #402/#430 caps.
           this.post({
             t: "init",
             pluginId: this.deps.pluginId,
             principal: this.deps.principal,
-            caps: [...this.host.client.selfCaps()],
+            caps: projectHardenedCaps(this.host.client.selfCaps(), contract),
             containerId: this.deps.containerId,
-            workspaceCaps: [...this.host.client.workspaceCaps()],
+            workspaceCaps: projectHardenedCaps(this.host.client.workspaceCaps(), contract),
             workspaceEvents: this.host.client.workspaceEventsAvailable(),
           });
         }

@@ -79,23 +79,28 @@ function digest(value: unknown): string {
   return createHash("sha256").update(canonicalJobJson(value)).digest("hex");
 }
 
+/**
+ * This plugin's admission, from the guest roster's OWN row (#402): the public pin plus the
+ * receipt fields the host joins only to the caller's row and only while both describe the same
+ * bytes. A row without them is an installation this call cannot bind to, never a guess.
+ */
 async function installation(ctx: GuestCtx, cap: AskableCap): Promise<Installation> {
   if (!(await ctx.auth.allows(cap))) throw new Refusal("authority_unavailable");
   const row = (await ctx.host.roster()).find((entry) => entry.manifest.id === PLUGIN_ID);
+  const install = row?.install;
   if (
     !row?.enabled ||
     row.held ||
     row.refusal ||
     (row.lifecycle && row.lifecycle !== "ok") ||
-    !row.install ||
-    row.install.refusal ||
-    !hasCap(row.install.grantedCaps, cap)
+    !install ||
+    install.refusal ||
+    install.grantedCaps === undefined ||
+    install.installedAt === undefined ||
+    !hasCap(install.grantedCaps, cap)
   )
     throw new Refusal("installation_unavailable");
-  return InstallationSchema.parse({
-    sha256: row.install.sha256,
-    installedAt: row.install.installedAt,
-  });
+  return InstallationSchema.parse({ sha256: install.sha256, installedAt: install.installedAt });
 }
 
 async function withCall<I, O>(

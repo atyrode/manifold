@@ -26,14 +26,30 @@ async function readBody(response: Response): Promise<unknown> {
   }
 }
 
+/**
+ * A request the instance answered outside 2xx: its status, the error envelope's class when it
+ * sent one, and the door's own sentence as the message. Most callers only show the message; a
+ * caller that names a refusal in place — a capability this credential lacks — reads `status`.
+ */
+export class HttpRequestError extends Error {
+  constructor(
+    readonly status: number,
+    readonly code: string | null,
+    message: string,
+  ) {
+    super(message);
+    this.name = "HttpRequestError";
+  }
+}
+
 function errorFromBody(
   status: number,
   body: unknown,
   origin: string,
   authorization: string | null,
-): Error {
+): HttpRequestError {
   const parsed = HttpErrorSchema.safeParse(body);
-  if (!parsed.success) return new Error(`Request failed (${status})`);
+  if (!parsed.success) return new HttpRequestError(status, null, `Request failed (${status})`);
   const { code, message } = parsed.data.error;
   // A permission denial is not a dead credential. Only the server's authentication
   // expiry/revocation refusal can return the browser to admission.
@@ -47,7 +63,7 @@ function errorFromBody(
       }
     }
   }
-  return new Error(message);
+  return new HttpRequestError(status, code, message);
 }
 
 /**

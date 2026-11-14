@@ -3,7 +3,7 @@ import { mkdir, mkdtemp, rm, stat, symlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { PluginManifestSchema } from "@manifold/protocol";
-import { dispatch, ownerAction, roster } from "../src/hub.ts";
+import { dispatch, ownerAction, receipts, roster } from "../src/hub.ts";
 import { inspectBundle, installBundle } from "../src/install.ts";
 import { packPlugin } from "../src/pack.ts";
 import { canSpawnServer, startServer } from "../src/verify.ts";
@@ -595,8 +595,10 @@ test.skipIf(!canSpawnServer())(
         replace: true,
         grant: ["tokens:mint"],
       });
-      const grants = (await roster(server)).find((row) => row.manifest.id === ID)!.install!
-        .grantedCaps;
+      // The grant is the installation's private receipt (#402), never a roster field.
+      const grantOf = async (): Promise<readonly string[] | undefined> =>
+        (await receipts(server)).find((receipt) => receipt.id === ID)?.install?.grantedCaps;
+      const grants = await grantOf();
       expect(grants).toContain("tokens:mint");
       expect(await read(server)).toEqual({ label: "original-backend", count: 1 });
       workshop = launch(root, server);
@@ -607,9 +609,7 @@ test.skipIf(!canSpawnServer())(
         JSON.stringify({ label: "retained-authority-backend" }),
       );
       await workshop.event("plugin-workshop-ready", checkpoint);
-      expect(
-        (await roster(server)).find((row) => row.manifest.id === ID)!.install!.grantedCaps,
-      ).toEqual(grants);
+      expect(await grantOf()).toEqual(grants);
       expect(await read(server)).toEqual({ label: "retained-authority-backend", count: 2 });
     } finally {
       await workshop?.stop();

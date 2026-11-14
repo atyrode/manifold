@@ -670,7 +670,10 @@ export const CONNECTION_BODIES = {
     connectionId: z.string().min(1).max(128),
   }),
   ...STREAM_SERVER_BODIES,
-  /** The roster and, beside it, the developer-mode switch (`PluginsResponseSchema`); absent ≡ off. */
+  /**
+   * The PUBLIC roster and, beside it, the developer-mode switch (`PluginsResponseSchema`);
+   * absent ≡ off. The same projection before and after admission: joining never upgrades it.
+   */
   plugins: z.strictObject({
     type: z.literal("plugins"),
     roster: PluginRosterSchema,

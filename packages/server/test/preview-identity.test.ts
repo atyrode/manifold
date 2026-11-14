@@ -134,7 +134,7 @@ describe("production preview identity", () => {
     if (localToken === undefined) throw new Error("preview callback did not deliver a local token");
     expect(
       (
-        await fetch(`${preview.publicUrl}/api/layout`, {
+        await fetch(`${preview.publicUrl}/api/attendance`, {
           headers: { authorization: `Bearer ${localToken}` },
         })
       ).status,
@@ -240,7 +240,7 @@ describe("production preview identity", () => {
     if (rotatedToken === undefined) throw new Error("rotated assertion delivered no local token");
     expect(
       (
-        await fetch(`${preview.publicUrl}/api/layout`, {
+        await fetch(`${preview.publicUrl}/api/attendance`, {
           headers: { authorization: `Bearer ${rotatedToken}` },
         })
       ).status,

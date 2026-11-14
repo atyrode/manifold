@@ -1,5 +1,12 @@
 import { z } from "zod";
-import { CAPS, CapSchema, type AskableCap, type Cap, type AuthoredCap } from "./capabilities.ts";
+import {
+  CAPS,
+  CapSchema,
+  DISCOVERY_READ_CAPS,
+  type AskableCap,
+  type Cap,
+  type AuthoredCap,
+} from "./capabilities.ts";
 import { PluginCapSchema } from "./plugin.ts";
 import {
   canonicalizeAuthorityScope,
@@ -23,21 +30,31 @@ import type {
 import type { Credential, CredentialV2 } from "./http.ts";
 import { MANIFOLD_ROOT_URI, formatManifoldUri } from "./uri.ts";
 
+/**
+ * Ordinary engine capabilities added after V1 was released. A strict V1 parser predates every
+ * one of them, so a V1 hint omits them and a V1 projection whose authority they shape refuses.
+ */
+const POST_V1_CAPS = ["machines:shell", ...DISCOVERY_READ_CAPS] as const;
+
+function postV1(cap: AuthoredCap): boolean {
+  return (POST_V1_CAPS as readonly string[]).includes(cap);
+}
+
 /** Released V1 vocabulary is closed even when the engine adds ordinary capabilities. */
-export const LegacyCapSchema = CapSchema.exclude(["machines:shell"]);
+export const LegacyCapSchema = CapSchema.exclude(POST_V1_CAPS);
 export type LegacyCap = z.infer<typeof LegacyCapSchema>;
 export const LegacyAuthoredCapSchema = z.union([LegacyCapSchema, z.lazy(() => PluginCapSchema)]);
 export type LegacyAuthoredCap = z.infer<typeof LegacyAuthoredCapSchema>;
 
 /** Compatibility discovery hint only; never an authority reconstruction. */
 export function projectLegacyCaps(caps: readonly Cap[]): LegacyCap[] {
-  return caps.filter((cap): cap is LegacyCap => cap !== "machines:shell");
+  return caps.filter((cap): cap is LegacyCap => !postV1(cap));
 }
 
 function supportedCaps(caps: readonly AuthoredCap[]): AgentRunCap[] {
   const supported: AgentRunCap[] = [];
   for (const cap of caps) {
-    if (cap === "machines:shell") return refusesLegacy();
+    if (postV1(cap)) return refusesLegacy();
     const parsed = AgentRunCapSchema.safeParse(cap);
     if (!parsed.success) return refusesLegacy();
     supported.push(parsed.data);
@@ -46,7 +63,7 @@ function supportedCaps(caps: readonly AuthoredCap[]): AgentRunCap[] {
 }
 
 function supportedScope(scope: AuthorityScope): AuthorityScope {
-  if (scope.some((entry) => entry.caps.includes("machines:shell"))) return refusesLegacy();
+  if (scope.some((entry) => entry.caps.some(postV1))) return refusesLegacy();
   return canonicalizeAuthorityScope(scope);
 }
 
@@ -212,7 +229,7 @@ export function projectLegacyRun(run: AgentRunAuthority | AgentRunV2): AgentRun 
     return refusesLegacy();
   }
   const credential = run.authorizationCredential;
-  if (credential.caps.includes("machines:shell")) return refusesLegacy();
+  if (credential.caps.some(postV1)) return refusesLegacy();
   const credentialCaps = projectLegacyCaps(credential.caps);
   if (credential.authorityScope !== undefined) {
     const target =
@@ -220,9 +237,7 @@ export function projectLegacyRun(run: AgentRunAuthority | AgentRunV2): AgentRun 
         ? MANIFOLD_ROOT_URI
         : formatManifoldUri({ kind: "container", containerId: credential.containerScope });
     const expandedCaps = credentialCaps.includes("*")
-      ? CAPS.filter(
-          (cap): cap is Exclude<LegacyCap, "*"> => cap !== "*" && cap !== "machines:shell",
-        )
+      ? CAPS.filter((cap): cap is Exclude<LegacyCap, "*"> => cap !== "*" && !postV1(cap))
       : (credentialCaps as AskableCap[]);
     const rectangle: AuthorityScope =
       expandedCaps.length === 0 ? [] : [{ target, reach: "subtree", caps: expandedCaps }];
@@ -244,7 +259,7 @@ export function projectLegacyRun(run: AgentRunAuthority | AgentRunV2): AgentRun 
 
 /** A V1 inventory row is truthful only if its flat caps describe the entire anchored ceiling. */
 export function projectLegacyCredential(credential: CredentialV2): Credential {
-  if (credential.caps.includes("machines:shell")) return refusesLegacy();
+  if (credential.caps.some(postV1)) return refusesLegacy();
   const caps = projectLegacyCaps(credential.caps);
   if (credential.authorityScope !== undefined) {
     const target =
@@ -252,9 +267,7 @@ export function projectLegacyCredential(credential: CredentialV2): Credential {
         ? MANIFOLD_ROOT_URI
         : formatManifoldUri({ kind: "container", containerId: credential.containerId });
     const expandedCaps = caps.includes("*")
-      ? CAPS.filter(
-          (cap): cap is Exclude<LegacyCap, "*"> => cap !== "*" && cap !== "machines:shell",
-        )
+      ? CAPS.filter((cap): cap is Exclude<LegacyCap, "*"> => cap !== "*" && !postV1(cap))
       : (caps as AskableCap[]);
     const rectangle: AuthorityScope =
       expandedCaps.length === 0 ? [] : [{ target, reach: "subtree", caps: expandedCaps }];

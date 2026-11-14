@@ -133,6 +133,9 @@ export class InstanceGateway {
     switch (classified.kind) {
       case "unknown_type":
         this.logger.warn("instance_unknown_frame");
+        // Unknown types are forward-compatible only after admission (#402); before it the
+        // first frame must be hello, and a compliant guest hub always sends hello first.
+        if (connection.shareId === null) connection.socket.close(4002, "first frame must be hello");
         return;
       case "malformed":
         this.logger.warn("instance_malformed_frame", { detail: classified.detail });

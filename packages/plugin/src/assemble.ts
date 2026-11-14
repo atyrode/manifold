@@ -19,7 +19,7 @@ import {
   type PlacementTraits,
   type PluginDataVersion,
   type PluginDependency,
-  type PluginInstall,
+  type PluginInstallIdentity,
   type PluginLifecycleState,
   type PluginManifest,
   type PluginRefusalReason,
@@ -222,7 +222,7 @@ export interface PluginStoredData {
   readonly applied: readonly string[];
 }
 
-/** Who last changed a plugin's enablement, and when. Published on the roster row. */
+/** Who last changed a plugin's enablement, and when. A private receipt, never a roster field. */
 export interface PluginAttribution {
   readonly by: string;
   readonly at: number;
@@ -264,14 +264,12 @@ export interface AssemblyEnv {
   readonly dataState?: ReadonlyMap<string, PluginStoredData>;
   /** The outcome of the last lifecycle fan-out per plugin; absent means `ok`. */
   readonly lifecycle?: ReadonlyMap<string, PluginLifecycleState>;
-  /** Enablement attribution per plugin, written at the door. */
-  readonly attribution?: ReadonlyMap<string, PluginAttribution>;
   /**
-   * The install block per INSTALLED plugin (ADR 0016 §8 stage 2): what an installer consented
-   * to, published on the row verbatim. Presence is what marks a row as isolated; a first-party
-   * def never has one.
+   * The public install identity per INSTALLED plugin (ADR 0016 §8 stage 2, #402): the pin,
+   * packing mode and serving refusal, published on the row verbatim. Presence is what marks a
+   * row as installed; a first-party def never has one. Receipts never enter the assembly.
    */
-  readonly installs?: ReadonlyMap<string, PluginInstall>;
+  readonly installs?: ReadonlyMap<string, PluginInstallIdentity>;
   /**
    * The workspace's developer-mode switch (ADR 0025 §4). `false` marks every DISABLED row
    * whose install is `mode: "unpacked"` with `developer_mode_off`; absent means unknown, the
@@ -641,7 +639,6 @@ export function assembleRoster(
     for (const { manifest } of defs) {
       const hold = held.get(manifest.id);
       if (hold === undefined) continue;
-      const attribution = env.attribution?.get(manifest.id);
       const install = env.installs?.get(manifest.id);
       rows.set(manifest.id, {
         manifest,
@@ -649,9 +646,6 @@ export function assembleRoster(
         source: "plugin",
         actions: [],
         held: hold,
-        ...(attribution === undefined
-          ? {}
-          : { changedBy: attribution.by, changedAt: attribution.at }),
         ...(install === undefined ? {} : { install }),
       });
     }
@@ -1168,7 +1162,6 @@ function assembleDefinitions(
   const roster: PluginRosterEntry[] = [...manifests].map(([id, manifest]) => {
     const lifecycle = env.lifecycle?.get(id);
     const refusal = rosterRefusal(manifest);
-    const attribution = env.attribution?.get(id);
     const install = env.installs?.get(id);
     return {
       manifest,
@@ -1177,9 +1170,6 @@ function assembleDefinitions(
       actions: summaries.get(id) ?? [],
       ...(lifecycle === undefined || lifecycle === "ok" ? {} : { lifecycle }),
       ...(refusal === null ? {} : { refusal }),
-      ...(attribution === undefined
-        ? {}
-        : { changedBy: attribution.by, changedAt: attribution.at }),
       ...(install === undefined ? {} : { install }),
     };
   });

@@ -33,6 +33,21 @@
   overflow-wrap: anywhere;
 }
 
+/* The private half's one notice (#402): which receipt-backed facts this view cannot show and
+   the capability that reads them. Amber: a limit of this credential, not a fault. */
+.plugin-manager-receipts {
+  margin: 0.35rem 0.25rem;
+  color: #ffd43b;
+  font-size: 0.72rem;
+  overflow-wrap: anywhere;
+}
+
+/* A private field in its own place, unread: the reason reads inline, never as a value. */
+.plugin-manager-unread {
+  color: #adb5bd;
+  font-style: italic;
+}
+
 /* The list box is a layout `Stack` (arrangement lives in the primitive); the class
    remains the section's root hook for the gate contract (R3, R9) and the row family. */
 .plugin-manager {
@@ -945,6 +960,12 @@ a.plugin-manager-chip[data-tone="publisher"]:focus-visible {
    ride on a grant — the row holds it per node, by consent, and the card says which. */
 .plugin-manager-permission.is-governed > small {
   color: #8bb5c9;
+}
+
+/* Unread is neither granted nor withheld: the grant is a private receipt this reader has not
+   read, so the cap is not struck through and its state says only that much. */
+.plugin-manager-permission.is-unread > small {
+  color: #868e96;
 }
 
 .plugin-manager-door {

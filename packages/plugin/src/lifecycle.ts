@@ -1,8 +1,8 @@
 import type {
   MachineBridgeAnswer,
   MachineInventory,
+  PluginGuestRoster,
   PluginId,
-  PluginRoster,
   SettledJob,
 } from "@manifold/protocol";
 import type { EmitEvent } from "./emit.ts";
@@ -58,9 +58,11 @@ export const LIFECYCLE_TIMEOUT_MS = 2_000;
  *
  * `host`, `machines` and `services` share that credential, never the enabling administrator's.
  * Their narrow reads recheck the current manifest, install grant, credential and hook lifetime
- * at use. Roster and fleet inventory require `containers:read`; instance listing requires
- * `services:read` and retains per-service visibility. No machine effect, policy, secret,
- * invocation or configuration handle is exposed. A settled hook uses its job's credential.
+ * at use. Roster and fleet inventory require `containers:read`; the roster is the public
+ * projection, with only this plugin's own row carrying its own installation receipt. Instance
+ * listing requires `services:read` and retains per-service visibility. No machine effect,
+ * policy, secret, invocation or configuration handle is exposed. A settled hook uses its
+ * job's credential.
  *
  * The parameter is contravariant, so a plugin may declare the minimal slice it actually uses
  * (`(ctx: { storage: PluginStorage }) => void`) and still satisfy the hook type. That is the
@@ -82,7 +84,7 @@ export interface LifecycleCtx {
   readonly actions?: PluginActionContext | undefined;
   readonly host?:
     | {
-        roster(): PluginRoster;
+        roster(): PluginGuestRoster;
         enabled(id: string): boolean;
       }
     | undefined;

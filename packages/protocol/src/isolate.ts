@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { CapSchema } from "./capabilities.ts";
+import { CapSchema, DISCOVERY_READ_CAPS, type Cap } from "./capabilities.ts";
 import { EventKindSchema, EventPayloadSchema } from "./events.ts";
 import {
   ActionSummarySchema,
@@ -22,6 +22,7 @@ import { TerminalRuntimeSchema, type TerminalRuntime } from "./jobs.ts";
 import { GrantNodeSchema, GrantReachSchema } from "./grants.ts";
 import { TerminalExecutionSchema } from "./machine.ts";
 import { PanelArgSchema, validPanelArg } from "./layout.ts";
+import { projectLegacyCaps } from "./legacy-authority.ts";
 
 /**
  * THE ISOLATION VOCABULARY (ADR 0016): everything that crosses the boundary between the engine
@@ -1121,12 +1122,28 @@ export const PLUGIN_BUNDLE_FORMAT = 1;
  * 11 -> 12: Live workspace authority, subscription-ordering fences, scoped identity RPC
  *    and sealed read-only action preparation. Older guests retain their released frames
  *    and legacy capability vocabulary.
+ * 12 -> 13: Additive engine capabilities `plugins:read`, `plugins:load` and `layouts:read`
+ *    (protocol 59, issues #402/#430). Hosts project them out of every capability hint sent
+ *    to an older admitted guest, whose strict parser predates them; no frame or method
+ *    changes shape.
  */
-export const HARDENED_CONTRACT_VERSION = 12;
+export const HARDENED_CONTRACT_VERSION = 13;
 export const HARDENED_CONTRACT_COMPAT_VERSIONS: ReadonlySet<number> = new Set([
-  1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12,
+  1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13,
 ]);
 export const HARDENED_CONTRACT_MINIMUM = Math.min(...HARDENED_CONTRACT_COMPAT_VERSIONS);
+
+/**
+ * The capability HINT a guest admitted at `contract` can parse: below 12 the released V1
+ * vocabulary, at 12 everything but contract 13's additions. A hint is never authority; every
+ * question a guest asks is still answered by the host.
+ */
+export function projectHardenedCaps(caps: readonly Cap[], contract: number): Cap[] {
+  if (contract < 12) return projectLegacyCaps(caps);
+  if (contract < 13)
+    return caps.filter((cap) => !(DISCOVERY_READ_CAPS as readonly Cap[]).includes(cap));
+  return [...caps];
+}
 
 /**
  * The file the server guest lives in when `entry.server` is true. A NAME rather than a field
