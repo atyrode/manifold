@@ -1,6 +1,17 @@
 import { expect, test } from "bun:test";
 import { randomBytes } from "node:crypto";
-import { cpSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import {
+  closeSync,
+  cpSync,
+  mkdirSync,
+  mkdtempSync,
+  openSync,
+  readSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
+import { mkdir, open } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { Browser } from "../../../scripts/cdp.ts";
@@ -68,6 +79,70 @@ async function pack(root: string, file: string): Promise<Packed> {
   return JSON.parse(stdout) as Packed;
 }
 
+let refreshStopReceipt: Record<string, unknown> | null = null;
+let refreshStopWrites = Promise.resolve();
+
+function refreshErrorCode(error: unknown): string {
+  const code = error instanceof Error && "code" in error ? String(error.code) : "";
+  return /^[A-Z0-9_]{1,40}$/.test(code) ? code : "unavailable";
+}
+
+function refreshProcText(pid: number, file: "stat" | "status" | "wchan", bound: number): string {
+  const fd = openSync(`/proc/${pid}/${file}`, "r");
+  try {
+    const buffer = Buffer.alloc(bound);
+    const size = readSync(fd, buffer, 0, bound, 0);
+    if (size === bound) throw new Error("proc read bound reached");
+    return buffer.toString("utf8", 0, size);
+  } finally {
+    closeSync(fd);
+  }
+}
+
+function refreshProcFields(pid: number): string[] {
+  const stat = refreshProcText(pid, "stat", 4096);
+  const fields = stat.slice(stat.lastIndexOf(")") + 2).trim().split(/\s+/);
+  if (
+    !/^[A-Za-z]$/.test(fields[0] ?? "") ||
+    !/^\d+$/.test(fields[1] ?? "") ||
+    !/^\d+$/.test(fields[17] ?? "") ||
+    !/^\d+$/.test(fields[19] ?? "")
+  ) {
+    throw new Error("proc stat unavailable");
+  }
+  return fields;
+}
+
+function refreshDeadlineKernel(pid: number, startTicks: string | null): Record<string, unknown> {
+  if (process.platform !== "linux") return { unavailable: "unsupported" };
+  if (startTicks === null) return { unavailable: "spawn-start-identity-unobserved" };
+  try {
+    const fields = refreshProcFields(pid);
+    if (fields[19] !== startTicks) return { unavailable: "pid-start-identity-mismatch" };
+    const status = refreshProcText(pid, "status", 8192);
+    const wchan = refreshProcText(pid, "wchan", 256).trim();
+    if (refreshProcFields(pid)[19] !== startTicks)
+      return { unavailable: "pid-start-identity-mismatch" };
+    return {
+      identity: "verified-before-and-after-probe",
+      pid,
+      startTicks,
+      state: fields[0],
+      ppid: Number(fields[1]),
+      threads: Number(fields[17]),
+      signals: Object.fromEntries(
+        ["SigPnd", "ShdPnd", "SigBlk", "SigIgn", "SigCgt"].map((name) => [
+          name,
+          new RegExp(`^${name}:\\s*([0-9a-f]{1,32})$`, "m").exec(status)?.[1] ?? "unobserved",
+        ]),
+      ),
+      wchan: /^[A-Za-z0-9_]{1,128}$/.test(wchan) ? wchan : "unobserved",
+    };
+  } catch (error) {
+    return { unavailable: refreshErrorCode(error) };
+  }
+}
+
 async function startRefresh(root: string, server: TestServer): Promise<RefreshProcess> {
   // This is the public manifold-dev bin. Spawning it directly makes SIGKILL hit the Vite owner,
   // rather than an intermediate package-script process that could leave its child running.
@@ -81,6 +156,8 @@ async function startRefresh(root: string, server: TestServer): Promise<RefreshPr
       env[key] = value;
     }
   }
+  const spawnStarted = performance.now();
+  const spawnedAt = new Date().toISOString();
   const proc = Bun.spawn(
     [
       "bun",
@@ -94,6 +171,75 @@ async function startRefresh(root: string, server: TestServer): Promise<RefreshPr
     ],
     { cwd: ROOT, env, stdin: "ignore", stdout: "pipe", stderr: "pipe" },
   );
+  const elapsed = (): number => Math.round((performance.now() - spawnStarted) * 1000) / 1000;
+  const spawnReturnedMs = elapsed();
+  let startTicks: string | null = null;
+  let startIdentityUnavailable: string | null = process.platform === "linux" ? null : "unsupported";
+  if (process.platform === "linux") {
+    try {
+      startTicks = refreshProcFields(proc.pid)[19] ?? null;
+    } catch (error) {
+      startIdentityUnavailable = refreshErrorCode(error);
+    }
+  }
+  const events: Record<string, unknown>[] = [{ event: "spawn-returned", atMs: spawnReturnedMs }];
+  const proofDirectory = process.env.MANIFOLD_RUNTIME_PROOF_DIR;
+  const artifact = { requested: Boolean(proofDirectory), lastWriteFailure: null as string | null };
+  const receipt: Record<string, unknown> = {
+    schema: 1,
+    observer: "parent",
+    clock: "monotonic milliseconds since spawn call",
+    spawnedAt,
+    pid: proc.pid,
+    parentPid: process.pid,
+    startIdentity: { atMs: elapsed(), startTicks, unavailable: startIdentityUnavailable },
+    semantics:
+      "Marker times are line arrivals, not cleanup completion; signal-returned means only proc.kill returned; absent events are unobserved.",
+    artifact,
+    events,
+    eventsTruncated: false,
+  };
+  refreshStopReceipt = receipt;
+  const persist = (): void => {
+    if (!proofDirectory) return;
+    const snapshot = `${JSON.stringify(receipt, null, 2)}\n`;
+    // Never put artifact I/O between a timeout and its existing SIGKILL.
+    refreshStopWrites = refreshStopWrites.then(async () => {
+      if (refreshStopReceipt !== receipt) return;
+      try {
+        await mkdir(proofDirectory, { recursive: true, mode: 0o700 });
+        const file = await open(join(proofDirectory, "plugin-fast-refresh-stop.json"), "w", 0o600);
+        try {
+          await file.chmod(0o600);
+          await file.writeFile(snapshot);
+        } finally {
+          await file.close();
+        }
+      } catch (error) {
+        artifact.lastWriteFailure = refreshErrorCode(error);
+      }
+    });
+  };
+  const record = (event: string, fields: Record<string, unknown> = {}): void => {
+    if (events.length < 24) events.push({ event, atMs: elapsed(), ...fields });
+    else if (receipt.eventsTruncated !== true) receipt.eventsTruncated = true;
+    else return;
+    persist();
+  };
+  let markerCount = 0;
+  const observeMarker = (line: string, stdout: boolean, atMs: number): void => {
+    for (const marker of ["plugin-refresh-cancelled", "plugin-refresh-stopped"]) {
+      if (!line.includes(`{"event":"${marker}",`)) continue;
+      if (markerCount < 4) {
+        markerCount++;
+        record("marker-line-arrival", { marker, stream: stdout ? "stdout" : "stderr", atMs });
+      } else if (receipt.markersTruncated !== true) {
+        receipt.markersTruncated = true;
+        persist();
+      }
+    }
+  };
+  persist();
   const output: string[] = [];
   let readyUrl: string | null = null;
   let failure: unknown = null;
@@ -101,12 +247,14 @@ async function startRefresh(root: string, server: TestServer): Promise<RefreshPr
     let pending = "";
     const decoder = new TextDecoder();
     for await (const chunk of stream) {
+      const arrivedAtMs = elapsed();
       pending += decoder.decode(chunk, { stream: true });
       const lines = pending.split("\n");
       pending = lines.pop() ?? "";
       for (const line of lines) {
         output.push(line);
         if (output.length > 100) output.shift();
+        observeMarker(line, stdout, arrivedAtMs);
         if (!stdout || !line.startsWith("{")) continue;
         const value: unknown = JSON.parse(line);
         if (
@@ -123,19 +271,27 @@ async function startRefresh(root: string, server: TestServer): Promise<RefreshPr
     }
     pending += decoder.decode();
     if (pending !== "") output.push(pending);
+    if (pending !== "") observeMarker(pending, stdout, elapsed());
+    record("stream-eof", { stream: stdout ? "stdout" : "stderr" });
   };
   const reads = Promise.all([consume(proc.stdout, true), consume(proc.stderr, false)]);
   void reads.catch((error: unknown) => {
     failure = error;
+    record("reads-rejected", { code: refreshErrorCode(error) });
   });
   void proc.exited.then((code) => {
+    record("proc-exited", { code, exitCode: proc.exitCode, signalCode: proc.signalCode });
     if (readyUrl === null) failure = new Error(`refresh exited before readiness: ${code}`);
   });
   let stopped = false;
   const stop = async (signal: "SIGTERM" | "SIGKILL" = "SIGTERM"): Promise<void> => {
     if (stopped) return;
     stopped = true;
+    record("signal-call", { signal, escalation: false });
     proc.kill(signal);
+    record("signal-returned", { signal, escalation: false });
+    let stage = "exit-poll";
+    record("exit-poll-start", { timeoutMs: 10_000, intervalMs: 25 });
     try {
       const { code } = await waitFor(
         () =>
@@ -143,11 +299,37 @@ async function startRefresh(root: string, server: TestServer): Promise<RefreshPr
         10_000,
         25,
       );
+      record("exit-poll-resolved", { exitCode: proc.exitCode, signalCode: proc.signalCode });
+      stage = "stream-drain";
       await reads;
+      record("reads-drained");
+      stage = "exit-code";
       if (signal === "SIGTERM" && code !== 0) throw new Error(`refresh close failed: ${code}`);
+      record("stop-complete", { code, signalCode: proc.signalCode });
     } catch (error) {
+      const deadline =
+        stage === "exit-poll" &&
+        error instanceof Error &&
+        error.message === "condition not met within 10000ms";
+      record("stop-rejected", {
+        stage,
+        deadline,
+        exitCode: proc.exitCode,
+        signalCode: proc.signalCode,
+      });
+      if (deadline) {
+        const atMs = elapsed();
+        receipt.deadlineKernel = {
+          atMs,
+          ...refreshDeadlineKernel(proc.pid, startTicks),
+          completedAtMs: elapsed(),
+        };
+      }
+      record("signal-call", { signal: "SIGKILL", escalation: true });
       proc.kill("SIGKILL");
+      record("signal-returned", { signal: "SIGKILL", escalation: true });
       await proc.exited;
+      record("sigkill-exit-awaited", { exitCode: proc.exitCode, signalCode: proc.signalCode });
       throw error;
     }
   };
@@ -767,7 +949,9 @@ test("public Fast Refresh preserves React state and leases CSS; cancellation res
     for (const result of cleanup) {
       if (result.status === "rejected") failures.push(result.reason);
     }
+    await refreshStopWrites;
   }
+  if (failures.length > 0) console.error(JSON.stringify({ refreshStop: refreshStopReceipt }));
   if (failures.length === 1) throw failures[0];
   if (failures.length > 1)
     throw new AggregateError(failures, "refresh acceptance and cleanup failed");
