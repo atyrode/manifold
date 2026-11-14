@@ -859,6 +859,8 @@ test("grouped operations and legacy aliases require the actual accepted transpor
       plain: ordinary,
     },
   });
+  const independent = declaration.tools?.independent;
+  if (!independent) throw new Error("independent fixture tool missing");
   const install = (machine: MachineHalf): Extract<JobCommand, { type: "install" }> => ({
     type: "install",
     pluginId: "sample.worker",
@@ -879,7 +881,7 @@ test("grouped operations and legacy aliases require the actual accepted transpor
       ).toBe("managed_artifact_groups_protocol_unsupported");
     const projected = jobOwnerMachine(owner, declaration, transport)!;
     expect(projected.operations).toEqual({ plain: ordinary });
-    expect(projected.tools).toEqual({ independent: declaration.tools!.independent });
+    expect(projected.tools).toEqual({ independent });
     expect(
       jobOwnerMachine(
         owner,

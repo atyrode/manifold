@@ -481,7 +481,7 @@ describe("installArtifact", () => {
               runtimeTools: ["engine"],
               locations: [],
               outputs: [],
-              network: "none",
+              network: "none" as const,
               stdin: false,
               limits: { timeoutMs: 1000, memoryBytes: 1048576, processes: 1, outputBytes: 4096 },
             },

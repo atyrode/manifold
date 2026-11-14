@@ -4019,6 +4019,9 @@ function groupedMachine() {
 
 test("managed groups refuse old transports and owners while independently compatible operations stay installable", () => {
   const { declared, groupedId } = groupedMachine();
+  const operation = declared.operations[operationId];
+  const independent = declared.tools?.independent;
+  if (!operation || !independent) throw new Error("projection fixture declarations missing");
   for (const [owner, transport] of [
     [45, PROTOCOL_VERSION],
     [JOB_OWNER_PROTOCOL_VERSION, 59],
@@ -4032,9 +4035,9 @@ test("managed groups refuse old transports and owners while independently compat
       const projected = f.commands.findLast((command) => command.type === "install");
       if (projected?.type !== "install") throw new Error("projected install missing");
       expect(projected.machine.operations).toEqual({
-        [operationId]: declared.operations[operationId],
+        [operationId]: operation,
       });
-      expect(projected.machine.tools).toEqual({ independent: declared.tools.independent });
+      expect(projected.machine.tools).toEqual({ independent });
       expect(
         f.service.describe(f.root, { machineId: f.machineId, pluginId }).operations?.[groupedId],
       ).toMatchObject({ ready: false, reason: "managed_artifact_groups_protocol_unsupported" });
@@ -4090,6 +4093,9 @@ test("managed groups refuse old transports and owners while independently compat
 
 test("purge uses the full honest managed-group projection for older owners and transports", () => {
   const { declared } = groupedMachine();
+  const operation = declared.operations[operationId];
+  const independent = declared.tools?.independent;
+  if (!operation || !independent) throw new Error("projection fixture declarations missing");
   for (const [owner, transport] of [
     [45, PROTOCOL_VERSION],
     [JOB_OWNER_PROTOCOL_VERSION, 59],
@@ -4109,8 +4115,8 @@ test("purge uses the full honest managed-group projection for older owners and t
       expect(command.action).toBe("purge");
       expect(command.machine).toEqual({
         ...declared,
-        tools: { independent: declared.tools!.independent },
-        operations: { [operationId]: declared.operations[operationId] },
+        tools: { independent },
+        operations: { [operationId]: operation },
       });
       expect(command.artifact).toBeUndefined();
       expect(command.toolArtifacts).toBeUndefined();

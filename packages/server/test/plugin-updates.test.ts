@@ -52,6 +52,7 @@ test("group-using bundles require a capable protocol stamp while accepted ordina
       title: "Grouped",
       description: "",
       capabilities: [],
+      contributes: { panels: [], sections: [], elements: [], tools: [], events: [] },
       entry: {},
       machine: {
         artifacts: { "linux-x64": artifact },
