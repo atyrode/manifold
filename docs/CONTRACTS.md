@@ -6754,11 +6754,12 @@ build target and nothing branches on which instance is being looked at.
   once; the occupant-painted engagement and live seams are still asserted, never retried into
   existence.
 - **Browser startup evidence** (#1094): the CDP driver keeps the existing 60-second DevTools
-  readiness bound and reports bounded startup output, the last probe, and expected response-field
-  presence rather than arbitrary response bodies. Failure-only Linux snapshots inspect the owned
-  launcher and a bounded set of its observed direct children, using finite reads and identity
-  checks. They are racy observations, not complete descendant or cleanup inventories. Output
-  retention stops after startup while both pipes continue draining.
+  readiness bound, ignored stdout and bounded stderr-tail drainer. Probe observations report HTTP
+  status, expected response-field presence and error names/codes, not raw response/error bodies.
+  Timeout-only Linux snapshots inspect the Chromium launcher and at most eight observed direct
+  root-task children, using finite reads and identity checks. These are racy observations, not
+  complete descendant or cleanup inventories. Private-bus evidence is only its PID and observed
+  exit/signal state.
 - **Browser teardown** (#1032): the CDP driver waits for its Chromium launcher's process handle
   to exit, with the existing five-second SIGKILL escalation, before stopping the private D-Bus.
   This applies to transient incognito and retained non-incognito profiles: disconnecting

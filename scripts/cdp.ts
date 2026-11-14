@@ -51,101 +51,24 @@ const DEVTOOLS_PROBE_MS = 2_000;
  */
 const CDP_SOCKET_OPEN_MS = 60_000;
 
-/** Startup evidence is local to a launch and never includes argv, environment or raw URLs. */
-function startupText(text: string): string {
-  return text
-    .replace(/[^\S\n]+/g, " ")
-    .replace(
-      /^.*(?:--[a-z][a-z0-9-]*(?:=|\s|$)|\b[A-Z][A-Z0-9_]*=|^(?:\+ |exec |env )).*$/gm,
-      "[command/environment/credential line redacted]",
-    )
-    .replace(
-      /^.*(?:authorization|cookie|password|secret|token|api[_-]?key)\s*[:=].*$/gim,
-      "[command/environment/credential line redacted]",
-    )
-    .replace(/\b[a-z][a-z0-9+.-]*:\/\/[^\s"'<>]+/gi, "[url redacted]")
-    .replace(/[\x00-\x08\x0b-\x1f\x7f]/g, "?")
-    .slice(0, 4_096);
-}
-
-/** Drain both pipes independently of readiness; retain sanitized first/last 4KiB only. */
-function startupOutput(
-  stream: ReadableStream<Uint8Array>,
-  startup: { capturing: boolean },
-): () => string {
-  let first = "";
-  let last = "";
-  let total = 0;
-  let pending = "";
-  let oversized = false;
-  let state = "draining";
-  const retain = (line: string): void => {
-    const safe = `${startupText(line)}\n`;
-    if (first.length < 4_096) first += safe.slice(0, 4_096 - first.length);
-    last = (last + safe).slice(-4_096);
-    total += safe.length;
-  };
-  void (async () => {
-    const reader = stream.getReader();
-    const decoder = new TextDecoder();
-    try {
-      for (;;) {
-        const chunk = await reader.read();
-        if (!startup.capturing) {
-          if (chunk.done) break;
-          continue;
-        }
-        const text = chunk.done ? decoder.decode() : decoder.decode(chunk.value, { stream: true });
-        for (const part of text.split(/(?<=\n)/)) {
-          if (!oversized) {
-            if (pending.length + part.length > 8_192) {
-              retain("[oversized startup line omitted]");
-              pending = "";
-              oversized = true;
-            } else pending += part;
-          }
-          if (part.endsWith("\n")) {
-            if (!oversized) retain(pending.slice(0, -1));
-            pending = "";
-            oversized = false;
-          }
-        }
-        if (chunk.done) break;
-      }
-      if (pending !== "") retain(pending);
-      pending = "";
-      state = "ended";
-    } catch (error) {
-      state = `read unavailable (${observationError(error)})`;
-    } finally {
-      reader.releaseLock();
-    }
-  })();
-  return () => {
-    const partial = pending === "" ? "" : `${startupText(pending)}\n`;
-    const head = (first + partial).slice(0, 4_096);
-    const tail = (last + partial).slice(-4_096);
-    return `${state}; first:\n${head || "(no output observed)\n"}${
-      total + partial.length > 4_096 ? `last:\n${tail}` : ""
-    }`;
-  };
-}
+/** A bounded token from an error's class or code; never its message or other raw values. */
+const OBSERVATION_TOKEN = /^[A-Za-z0-9_]{1,64}$/;
 
 function observationError(error: unknown): string {
   if (error !== null && typeof error === "object") {
     const code: unknown = Reflect.get(error, "code");
-    if (typeof code === "string" && /^[A-Z0-9_]+$/.test(code)) return code;
+    if (typeof code === "string" && OBSERVATION_TOKEN.test(code)) return code;
   }
   return "unavailable";
 }
 
+/** Error messages can echo response bodies, URLs or credentials, so report class and code only. */
 function probeError(error: unknown, depth = 0): string {
   if (!(error instanceof Error)) return "non-Error exception (value omitted)";
+  const name = OBSERVATION_TOKEN.test(error.name) ? error.name : "Error (name omitted)";
   const code = observationError(error);
-  const message =
-    error instanceof SyntaxError ? "invalid JSON response (body omitted)" : error.message;
-  return `${startupText(`${error.name}: ${message}`).slice(0, 512)}${
-    code === "unavailable" ? "" : ` [${code}]`
+  return `${name}${code === "unavailable" ? "" : ` [${code}]`}${
+    error instanceof SyntaxError ? ": invalid JSON response (body omitted)" : ""
   }${depth < 1 && error.cause instanceof Error ? `; cause: ${probeError(error.cause, depth + 1)}` : ""}`;
 }
 
@@ -189,7 +112,7 @@ function startupStat(pid: number): { ppid: number; start: string; state: string 
   return { ppid: Number(fields[1]), start: fields[19] ?? "", state: fields[0] ?? "?" };
 }
 
-/** Failure-only snapshot of the owned root and its direct, root-task children. */
+/** Timeout-only snapshot of the owned Chromium root and its direct, root-task children. */
 function ownedStartupProcesses(proc: Bun.Subprocess): string {
   if (process.platform !== "linux") return "unavailable (not Linux)";
   const scope =
@@ -427,37 +350,38 @@ export class Browser {
         "--window-size=1440,900",
         "about:blank",
       ],
-      { stdout: "pipe", stderr: "pipe", env },
+      { stdout: "ignore", stderr: "pipe", env },
     );
     this.proc = proc;
 
-    const startup = { capturing: true };
-    const stdout = startupOutput(proc.stdout, startup);
-    const stderr = startupOutput(proc.stderr, startup);
+    // Keep a bounded stderr tail: launch failures on CI runners are
+    // undiagnosable without it (issue #44).
+    let stderrTail = "";
+    void (async () => {
+      const decoder = new TextDecoder();
+      const reader = proc.stderr.getReader();
+      for (;;) {
+        const chunk = await reader.read();
+        if (chunk.done) break;
+        stderrTail = (stderrTail + decoder.decode(chunk.value)).slice(-4096);
+      }
+    })();
     const launched = Date.now();
     let lastProbe = "not attempted";
     let lastResponse = "none observed";
-    const diagnostics = (includeProcesses = false): string => {
-      const states: string[] = [];
-      let processes = "";
-      for (const [label, child] of [
+    const diagnostics = (timedOut = false): string => {
+      const owned = [
         ["chromium", proc],
         ["private bus:", this.privateBus],
-      ] as const) {
-        states.push(
-          child === null
-            ? `${label} not present`
-            : `${label} pid=${String(child.pid)} exitCode=${child.exitCode === null ? "not observed" : String(child.exitCode)} signal=${child.signalCode ?? "not observed"}`,
-        );
-        if (includeProcesses && child !== null) {
-          try {
-            processes += `\nowned ${label} /proc snapshot:\n${ownedStartupProcesses(child)}`;
-          } catch (error) {
-            processes += `\nowned ${label} /proc snapshot unavailable(${observationError(error)})`;
-          }
-        }
-      }
-      return `${binary} (devtools port ${String(port)}, ${String(Date.now() - launched)}ms after launch)\n${states.join("\n")}\nprofile: ${profile}\nlast /json/version response: ${lastResponse}\nlast readiness probe: ${lastProbe}\nchromium stdout ${stdout()}\nchromium stderr ${stderr()}${processes}`;
+      ] as const;
+      const states = owned.map(([label, child]) =>
+        child === null
+          ? `${label} not present`
+          : `${label} pid=${String(child.pid)} exitCode=${child.exitCode === null ? "not observed" : String(child.exitCode)} signal=${child.signalCode ?? "not observed"}`,
+      );
+      return `${binary} (devtools port ${String(port)}, ${String(Date.now() - launched)}ms after launch)\n${states.join("\n")}\nlast /json/version response: ${lastResponse}\nlast readiness probe: ${lastProbe}\nchromium stderr tail:\n${stderrTail === "" ? "(no stderr observed)" : stderrTail}${
+        timedOut ? `\nowned chromium /proc snapshot:\n${ownedStartupProcesses(proc)}` : ""
+      }`;
     };
 
     let endpoint = "";
@@ -542,8 +466,6 @@ export class Browser {
     // Browser-side log entries (blocked requests, failed websockets, CSP refusals) are
     // invisible to `Runtime` yet are exactly what a silent transport failure looks like.
     await this.send("Log.enable", {});
-    // Keep draining Chromium's pipes, but retain no post-startup output.
-    startup.capturing = false;
   }
 
   async send(

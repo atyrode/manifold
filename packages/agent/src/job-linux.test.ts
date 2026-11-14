@@ -2315,9 +2315,17 @@ test.skipIf(!realLinux || !outputRoot)(
   "[real-linux] named output storage returns ENOSPC during writes while the output-only child is still alive",
   async () => {
     const path = mkdtempSync(join(outputRoot!, "budget-"));
-    const directory = HeldDirectory.openAbsolute(path);
+    const directories: HeldDirectory[] = [];
     const ready = Promise.withResolvers<void>();
     try {
+      let directory = HeldDirectory.openAbsolute(path);
+      directories.push(directory);
+      // Retain only owned handles until every free fd below the child mount band is occupied.
+      // Each reopen consumes one such slot, so at most the eight low descriptors are padded.
+      while (directory.fd < 8) {
+        directory = directory.reopen();
+        directories.push(directory);
+      }
       await withLinux(
         '/bin/busybox dd if=/dev/zero of=/outputs/result/oversized bs=4096 count=64 2>/tmp/error; status=$?; test "$status" -ne 0 || exit 41; printf bounded; read line; test "$line" = release',
         async (spec) => {
@@ -2370,7 +2378,7 @@ test.skipIf(!realLinux || !outputRoot)(
         },
       );
     } finally {
-      directory.close();
+      for (const directory of directories) directory.close();
       rmSync(path, { recursive: true });
     }
   },
