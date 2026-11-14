@@ -191,7 +191,10 @@ function errorCode(error: unknown): string {
 function processReceipt(pid: number): Record<string, unknown> {
   try {
     const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
-    const fields = stat.slice(stat.lastIndexOf(")") + 2).trim().split(/\s+/);
+    const fields = stat
+      .slice(stat.lastIndexOf(")") + 2)
+      .trim()
+      .split(/\s+/);
     const status = readFileSync(`/proc/${pid}/status`, "utf8");
     return {
       pid,
@@ -464,8 +467,7 @@ function diagnosticProbe(argv: string[]): Record<string, unknown> {
       stderr: redact(result.stderr.toString().slice(0, Math.max(0, 32_768 - result.stdout.length))),
       timedOut: result.exitedDueToTimeout ?? null,
       outputAtLimit:
-        result.exitedDueToMaxBuffer ??
-        result.stdout.length + result.stderr.length >= 32_768,
+        result.exitedDueToMaxBuffer ?? result.stdout.length + result.stderr.length >= 32_768,
     };
   } catch (error) {
     return { at, elapsedMs: performance.now() - start, unavailable: errorCode(error) };
@@ -2214,9 +2216,7 @@ function cleanup(): Promise<void> {
     try {
       await teardown();
     } catch (error) {
-      cleanupReceipt.failures.push(
-        redact(error instanceof Error ? error.message : String(error)),
-      );
+      cleanupReceipt.failures.push(redact(error instanceof Error ? error.message : String(error)));
     } finally {
       observeOwnedStop("after-cleanup");
       if (ownedStop) {
@@ -2228,7 +2228,10 @@ function cleanup(): Promise<void> {
           "--filter",
           `id=${ownedStop.id}`,
         ]);
-        cleanupReceipt.commands.push({ operation: "confirm-exact-container-retirement", ...retired });
+        cleanupReceipt.commands.push({
+          operation: "confirm-exact-container-retirement",
+          ...retired,
+        });
         ownedStop.retirement =
           retired["code"] === 0 && retired["stdout"] === ""
             ? "confirmed"
@@ -2400,15 +2403,18 @@ async function teardown(): Promise<void> {
     for (const tag of tags) {
       const found = await cleanupDocker(["image", "ls", "--quiet", "--filter", `reference=${tag}`]);
       if (found.code !== 0) failures.push(`could not inspect owned image tag ${tag}`);
-      else if (
-        found.out.trim() !== "" &&
-        (await cleanupDocker(["image", "rm", tag])).code !== 0
-      ) {
+      else if (found.out.trim() !== "" && (await cleanupDocker(["image", "rm", tag])).code !== 0) {
         failures.push(`could not remove owned image tag ${tag}`);
       }
     }
     for (const image of ownedImages) {
-      const found = await cleanupDocker(["image", "inspect", image, "--format", "{{json .RepoTags}}"]);
+      const found = await cleanupDocker([
+        "image",
+        "inspect",
+        image,
+        "--format",
+        "{{json .RepoTags}}",
+      ]);
       if (found.code !== 0) continue;
       // Do not remove an image another consumer has tagged while this fixture was running.
       const tags = JSON.parse(found.out) as string[] | null;
@@ -2418,10 +2424,7 @@ async function teardown(): Promise<void> {
       }
     }
   }
-  if (
-    builder !== "" &&
-    (await cleanupDocker(["buildx", "rm", "--force", builder])).code !== 0
-  )
+  if (builder !== "" && (await cleanupDocker(["buildx", "rm", "--force", builder])).code !== 0)
     failures.push(`could not remove owned Buildx builder ${builder}`);
   rmSync(directory, { recursive: true, force: true });
 }

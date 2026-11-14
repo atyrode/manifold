@@ -321,23 +321,17 @@ export const MachineArtifactFileGroupSourceSchema = z
   .strictObject({
     ...MachineArtifactSchema.shape,
     files: z
-      .record(
-        component,
-        z.strictObject({ entry: z.array(component).min(1).max(16), sha256: hash }),
-      )
+      .record(component, z.strictObject({ entry: z.array(component).min(1).max(16), sha256: hash }))
       .refine((files) => Object.keys(files).length <= 127)
       .optional(),
   })
   .refine((artifact) => (artifact.url === undefined) !== (artifact.bundleFile === undefined), {
     message: "An artifact must name exactly one HTTPS url or bundleFile",
   })
-  .refine(
-    (artifact) => artifact.format !== "raw" || Object.keys(artifact.files ?? {}).length === 0,
-  )
-  .refine(
-    (artifact) => 1 + Object.keys(artifact.files ?? {}).length <= artifact.maxMembers,
-    { message: "Selected group files exceed maxMembers" },
-  )
+  .refine((artifact) => artifact.format !== "raw" || Object.keys(artifact.files ?? {}).length === 0)
+  .refine((artifact) => 1 + Object.keys(artifact.files ?? {}).length <= artifact.maxMembers, {
+    message: "Selected group files exceed maxMembers",
+  })
   .refine(
     (artifact) =>
       !artifactPathsOverlap([
@@ -408,7 +402,9 @@ export const ManagedToolArtifactSchema = MachineArtifactSchema.safeExtend({
     (artifact) =>
       !artifactPathsOverlap([
         ...(artifact.fileGroups ?? []).map((group) => group.target),
-        ...Object.entries(artifact.files ?? {}).map(([alias, file]) => file.relativeTarget ?? [alias]),
+        ...Object.entries(artifact.files ?? {}).map(
+          ([alias, file]) => file.relativeTarget ?? [alias],
+        ),
       ]),
     { message: "Managed group roots and legacy companion targets must not overlap" },
   );
@@ -815,7 +811,8 @@ export function jobOwnerMachine(
   let operations: MachineHalf["operations"] | undefined;
   for (const [id, operation] of Object.entries(machine.operations)) {
     if (
-      jobOwnerOperationRefusal(protocolVersion, operation, machine, transportProtocolVersion) === null
+      jobOwnerOperationRefusal(protocolVersion, operation, machine, transportProtocolVersion) ===
+      null
     )
       continue;
     operations ??= { ...machine.operations };

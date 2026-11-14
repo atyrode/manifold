@@ -663,8 +663,9 @@ describe.skipIf(process.platform !== "linux")("configured terminal host entrypoi
         expect(result.records.some((record) => record.evt === "starting")).toBe(false);
         expect(readdirSync(join(root, "state"))).toEqual([]);
         if (entry === "cli")
-          expect(result.records.find((record) => record.evt === "terminal_host_start_failed"))
-            .toBeDefined();
+          expect(
+            result.records.find((record) => record.evt === "terminal_host_start_failed"),
+          ).toBeDefined();
       });
     },
     30_000,

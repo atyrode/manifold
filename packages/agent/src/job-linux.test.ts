@@ -203,7 +203,11 @@ test("runtime executable selection cannot execute a directory closure or an unde
 
 test("managed readonly directories gain no writable-parent or nested-mount exception", () => {
   const f = fixture();
-  const group = { fd: f.spec.delegatedCgroup.fd, target: "/runtime/bin/omp-grammars", writable: false };
+  const group = {
+    fd: f.spec.delegatedCgroup.fd,
+    target: "/runtime/bin/omp-grammars",
+    writable: false,
+  };
   try {
     for (const target of ["/runtime", "/runtime/bin", "/runtime/bin/omp-grammars/extra"]) {
       expect(() =>
@@ -215,9 +219,9 @@ test("managed readonly directories gain no writable-parent or nested-mount excep
         }),
       ).toThrow("overlapping-mounts");
     }
-    expect(() =>
-      preflightLinuxJob({ ...f.spec, runtime: [{ ...group, writable: true }] }),
-    ).toThrow("writable-runtime");
+    expect(() => preflightLinuxJob({ ...f.spec, runtime: [{ ...group, writable: true }] })).toThrow(
+      "writable-runtime",
+    );
     expect(() =>
       preflightLinuxJob({
         ...f.spec,

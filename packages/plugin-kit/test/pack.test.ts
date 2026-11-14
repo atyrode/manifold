@@ -167,7 +167,13 @@ describe("the artifact", () => {
       header.write("0", 156);
       header.write("ustar\0", 257);
       header.write("00", 263);
-      header.write(`${header.reduce((sum, byte) => sum + byte, 0).toString(8).padStart(6, "0")}\0 `, 148);
+      header.write(
+        `${header
+          .reduce((sum, byte) => sum + byte, 0)
+          .toString(8)
+          .padStart(6, "0")}\0 `,
+        148,
+      );
       return Buffer.concat([header, grammarBytes, Buffer.alloc(512 - grammarBytes.length)]);
     });
     const grammarTar = Buffer.concat([...members, Buffer.alloc(1024)]);
@@ -185,9 +191,9 @@ describe("the artifact", () => {
         maxBytes: grammarArchive.length,
         maxExpandedBytes: grammarTar.length,
         maxMembers: 10,
-        files: Object.fromEntries(companionIds.map((id) => [
-          id, { entry: [`${id}.wasm`], sha256: grammarHash },
-        ])),
+        files: Object.fromEntries(
+          companionIds.map((id) => [id, { entry: [`${id}.wasm`], sha256: grammarHash }]),
+        ),
       },
       entryTarget: ["grammar0.wasm"],
       fileTargets: Object.fromEntries(companionIds.map((id) => [id, [`${id}.wasm`]])),
@@ -229,7 +235,9 @@ describe("the artifact", () => {
       expect(Buffer.from(packed.files.engine!, "base64")).toEqual(bytes);
       expect(Buffer.from(packed.files.grammars!, "base64")).toEqual(grammarArchive);
       await Bun.write(`${source}/grammars`, Buffer.from("substituted grammar bytes"));
-      await expect(packPlugin(source, `${source}/bad-group.json`, { shared: false })).rejects.toThrow();
+      await expect(
+        packPlugin(source, `${source}/bad-group.json`, { shared: false }),
+      ).rejects.toThrow();
       await Bun.write(`${source}/grammars`, grammarArchive);
       await Bun.write(`${source}/engine`, Buffer.from("substituted tool bytes"));
       await expect(packPlugin(source, `${source}/bad.json`, { shared: false })).rejects.toThrow();
@@ -510,17 +518,21 @@ describe("in-memory compilation", () => {
     const generated = supplied();
     const grammar = Buffer.from("generated grammar manifest");
     const tool = generated.manifest.machine!.tools!.engine!["linux-x64"]!;
-    tool.fileGroups = [{
-      target: ["engine-data"],
-      artifact: raw("grammar-data", grammar),
-      entryTarget: ["manifest.json"],
-      fileTargets: {},
-    }];
+    tool.fileGroups = [
+      {
+        target: ["engine-data"],
+        artifact: raw("grammar-data", grammar),
+        entryTarget: ["manifest.json"],
+        fileTargets: {},
+      },
+    ];
     generated.members.set("grammar-data", grammar);
     const result = await compilePlugin(source, { shared: false, generated });
     const compiled = PluginBundleSchema.parse(JSON.parse(new TextDecoder().decode(result.bytes)));
     expect(Buffer.from(compiled.files["grammar-data"]!, "base64")).toEqual(grammar);
-    expect(compiled.manifest.machine!.tools!.engine!["linux-x64"]!.fileGroups).toEqual(tool.fileGroups);
+    expect(compiled.manifest.machine!.tools!.engine!["linux-x64"]!.fileGroups).toEqual(
+      tool.fileGroups,
+    );
     generated.members.delete("grammar-data");
     await expect(compilePlugin(source, { shared: false, generated })).rejects.toThrow();
     generated.members.set("grammar-data", Buffer.from("substituted grammar data"));

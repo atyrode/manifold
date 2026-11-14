@@ -664,10 +664,12 @@ test("managed group sources are strict nonrecursive selections, not legacy compa
   expect(MachineArtifactSchema.safeParse({ ...source, files }).success).toBe(false);
   const legacyFiles = Object.fromEntries(Object.entries(files).slice(0, 8));
   expect(MachineArtifactSchema.safeParse({ ...artifact, files: legacyFiles }).success).toBe(true);
-  expect(MachineArtifactSchema.safeParse({
-    ...artifact,
-    files: { ...legacyFiles, ninth: { entry: ["ninth"], sha256: "c".repeat(64) } },
-  }).success).toBe(false);
+  expect(
+    MachineArtifactSchema.safeParse({
+      ...artifact,
+      files: { ...legacyFiles, ninth: { entry: ["ninth"], sha256: "c".repeat(64) } },
+    }).success,
+  ).toBe(false);
   for (const invalid of [
     { ...source, files: { ...files, overflow: { entry: ["overflow"], sha256: "c".repeat(64) } } },
     { ...source, url: undefined },
@@ -677,7 +679,10 @@ test("managed group sources are strict nonrecursive selections, not legacy compa
     { ...source, fileGroups: [] },
     { ...source, files: { grammar: { ...source.files!.grammar, relativeTarget: ["grammar"] } } },
     { ...source, files: { grammar: { entry: ["manifest.json"], sha256: "c".repeat(64) } } },
-    { ...source, files: { grammar: { entry: ["manifest.json", "child"], sha256: "c".repeat(64) } } },
+    {
+      ...source,
+      files: { grammar: { entry: ["manifest.json", "child"], sha256: "c".repeat(64) } },
+    },
     { ...source, files: { grammar: { entry: ["..", "grammar"], sha256: "c".repeat(64) } } },
   ])
     expect(MachineArtifactFileGroupSourceSchema.safeParse(invalid).success).toBe(false);
@@ -756,10 +761,12 @@ test("managed sources share one alias's selected-file and declared archive budge
 
 test("machine group roots cannot overlap primary aliases, legacy companions or other groups", () => {
   const group = managedGroup();
-  group.artifact.files = Object.fromEntries(Array.from({ length: 10 }, (_, index) => [
-    `member-${index}`,
-    { entry: [`member-${index}`], sha256: "c".repeat(64) },
-  ]));
+  group.artifact.files = Object.fromEntries(
+    Array.from({ length: 10 }, (_, index) => [
+      `member-${index}`,
+      { entry: [`member-${index}`], sha256: "c".repeat(64) },
+    ]),
+  );
   group.artifact.maxMembers = 11;
   group.fileTargets = Object.fromEntries(
     Object.keys(group.artifact.files).map((name) => [name, [name]]),
@@ -790,15 +797,21 @@ test("machine group roots cannot overlap primary aliases, legacy companions or o
   expect(MachineArtifactSchema.safeParse(sources[1]).success).toBe(true);
   expect(MachineArtifactSchema.safeParse(sources[2]).success).toBe(false);
   expect(MachineArtifactFileGroupSourceSchema.safeParse(sources[2]).success).toBe(true);
-  expect(machineArtifacts({ ...parsed, tools: { plain: { "linux-x64": artifact } } })[1])
-    .toBe(artifact);
+  expect(machineArtifacts({ ...parsed, tools: { plain: { "linux-x64": artifact } } })[1]).toBe(
+    artifact,
+  );
   expect(
     MachineHalfSchema.safeParse({
       ...declaration,
       artifacts: { "linux-x64": tool },
     }).success,
   ).toBe(false);
-  for (const target of [["engine"], ["engine", "child"], ["engine-data"], ["engine-data", "child"]]) {
+  for (const target of [
+    ["engine"],
+    ["engine", "child"],
+    ["engine-data"],
+    ["engine-data", "child"],
+  ]) {
     expect(
       MachineHalfSchema.safeParse({
         ...declaration,
@@ -812,7 +825,9 @@ test("machine group roots cannot overlap primary aliases, legacy companions or o
   expect(
     ManagedToolArtifactSchema.safeParse({
       ...tool,
-      files: { helper: { entry: ["helper"], sha256: "c".repeat(64), relativeTarget: group.target } },
+      files: {
+        helper: { entry: ["helper"], sha256: "c".repeat(64), relativeTarget: group.target },
+      },
     }).success,
   ).toBe(false);
 });
@@ -955,10 +970,12 @@ test("group sources do not multiply the eight inline tool archives or aggregate 
 
 test("group metadata retains the ordinary install metadata ceiling", () => {
   const repeated = "x".repeat(128);
-  const files = Object.fromEntries(Array.from({ length: 126 }, (_, index) => [
-    `file-${index}`,
-    { entry: [...Array<string>(15).fill(repeated), `file-${index}`], sha256: "c".repeat(64) },
-  ]));
+  const files = Object.fromEntries(
+    Array.from({ length: 126 }, (_, index) => [
+      `file-${index}`,
+      { entry: [...Array<string>(15).fill(repeated), `file-${index}`], sha256: "c".repeat(64) },
+    ]),
+  );
   const group: MachineArtifactFileGroup = {
     target: ["data"],
     artifact: {
@@ -968,15 +985,16 @@ test("group metadata retains the ordinary install metadata ceiling", () => {
       maxMembers: 127,
     },
     entryTarget: [...Array<string>(12).fill(repeated), "manifest"],
-    fileTargets: Object.fromEntries(Object.keys(files).map((name) => [
-      name,
-      [...Array<string>(12).fill(repeated), name],
-    ])),
+    fileTargets: Object.fromEntries(
+      Object.keys(files).map((name) => [name, [...Array<string>(12).fill(repeated), name]]),
+    ),
   };
-  const tools = Object.fromEntries(Array.from({ length: 8 }, (_, index) => [
-    `engine-${index}`,
-    { "linux-x64": { ...artifact, fileGroups: [{ ...group, target: [`data-${index}`] }] } },
-  ]));
+  const tools = Object.fromEntries(
+    Array.from({ length: 8 }, (_, index) => [
+      `engine-${index}`,
+      { "linux-x64": { ...artifact, fileGroups: [{ ...group, target: [`data-${index}`] }] } },
+    ]),
+  );
   const machine = MachineHalfSchema.parse({
     artifacts: { "linux-x64": artifact },
     tools,
@@ -994,13 +1012,15 @@ test("group metadata retains the ordinary install metadata ceiling", () => {
       },
     },
   });
-  expect(JobCommandSchema.safeParse({
-    type: "install",
-    pluginId: "sample.worker",
-    installationRevision: "r1",
-    artifactSha256: artifact.sha256,
-    machine,
-  }).success).toBe(false);
+  expect(
+    JobCommandSchema.safeParse({
+      type: "install",
+      pluginId: "sample.worker",
+      installationRevision: "r1",
+      artifactSha256: artifact.sha256,
+      machine,
+    }).success,
+  ).toBe(false);
 });
 
 test("owner-retained stdout and stderr cannot be caller-declared or rebound as filesystem outputs", () => {

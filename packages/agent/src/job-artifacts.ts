@@ -592,9 +592,10 @@ function openCachedGroup(
     checkDeadline?.();
     return directory;
   } catch (error) {
-    const failure = (error as NodeJS.ErrnoException).code === "ENOENT"
-      ? new Error("artifact_group_cache_incomplete", { cause: error })
-      : error;
+    const failure =
+      (error as NodeJS.ErrnoException).code === "ENOENT"
+        ? new Error("artifact_group_cache_incomplete", { cause: error })
+        : error;
     return failManagedResources(undefined, [directory], failure);
   }
 }
@@ -653,7 +654,8 @@ async function acquireGroup(
       parent.files.get(target.at(-1)!)!.bytes = bytes;
     }
     assign(group.entryTarget, extracted.executable);
-    for (const [id, bytes] of Object.entries(extracted.files)) assign(group.fileTargets[id]!, bytes);
+    for (const [id, bytes] of Object.entries(extracted.files))
+      assign(group.fileTargets[id]!, bytes);
     try {
       directory = cache.openChild(temporary, { create: true, exclusive: true });
       allocated = true;

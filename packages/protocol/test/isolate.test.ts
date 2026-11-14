@@ -449,12 +449,14 @@ describe("the install artifact", () => {
         "linux-x64": {
           ...source,
           bundleFile: "worker",
-          fileGroups: [{
-            target: ["engine-data"],
-            artifact: source,
-            entryTarget: ["manifest.json"],
-            fileTargets: {},
-          }],
+          fileGroups: [
+            {
+              target: ["engine-data"],
+              artifact: source,
+              entryTarget: ["manifest.json"],
+              fileTargets: {},
+            },
+          ],
         },
       },
     };

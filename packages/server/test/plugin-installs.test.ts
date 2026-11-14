@@ -462,12 +462,14 @@ describe("installArtifact", () => {
             engine: {
               "linux-x64": {
                 ...source("worker", worker),
-                fileGroups: [{
-                  target: ["engine-data"],
-                  artifact: source("grammar-data", grammar),
-                  entryTarget: ["manifest.json"],
-                  fileTargets: {},
-                }],
+                fileGroups: [
+                  {
+                    target: ["engine-data"],
+                    artifact: source("grammar-data", grammar),
+                    entryTarget: ["manifest.json"],
+                    fileTargets: {},
+                  },
+                ],
               },
             },
           },
@@ -496,15 +498,20 @@ describe("installArtifact", () => {
     try {
       const changed = {
         ...definition,
-        files: { ...definition.files, "grammar-data": Buffer.from("substitution").toString("base64") },
+        files: {
+          ...definition.files,
+          "grammar-data": Buffer.from("substitution").toString("base64"),
+        },
       };
       const bytes = Buffer.from(JSON.stringify(changed));
       expect(() => parseBundle(bytes)).toThrow();
-      const denied = await refusal(() => installArtifact({
-        source: drop.upload("bad-group.manifold-plugin.json", bytes),
-        sha256: sha256Hex(bytes),
-        dataDir: drop.dataDir,
-      }));
+      const denied = await refusal(() =>
+        installArtifact({
+          source: drop.upload("bad-group.manifold-plugin.json", bytes),
+          sha256: sha256Hex(bytes),
+          dataDir: drop.dataDir,
+        }),
+      );
       expect(denied.reason).toBe("artifact_invalid");
       expect(existsSync(join(drop.dataDir, "plugins"))).toBe(false);
       const admitted = Buffer.from(JSON.stringify(definition));
@@ -514,7 +521,9 @@ describe("installArtifact", () => {
         dataDir: drop.dataDir,
       });
       expect(readFileSync(join(installed.dir, "grammar-data"))).toEqual(grammar);
-      expect(parseBundle(readFileSync(installed.bundlePath)).manifest.machine).toEqual(definition.manifest.machine);
+      expect(parseBundle(readFileSync(installed.bundlePath)).manifest.machine).toEqual(
+        definition.manifest.machine,
+      );
       const store = new ServerStore(openDatabase(":memory:"));
       try {
         store.putPluginInstall({

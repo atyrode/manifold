@@ -77,12 +77,14 @@ test("group-using bundles require a capable protocol stamp while accepted ordina
     engine: {
       "linux-x64": {
         ...artifact,
-        fileGroups: [{
-          target: ["engine-data"],
-          artifact,
-          entryTarget: ["manifest.json"],
-          fileTargets: {},
-        }],
+        fileGroups: [
+          {
+            target: ["engine-data"],
+            artifact,
+            entryTarget: ["manifest.json"],
+            fileTargets: {},
+          },
+        ],
       },
     },
   };

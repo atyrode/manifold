@@ -2131,10 +2131,12 @@ test.skipIf(!realBackend || !compiledProbe).each(["bundled", "prepared"] as cons
         maxExpandedBytes: archive.length,
         maxMembers: grammarFiles.length,
         files: Object.fromEntries(
-          grammarFiles.slice(1).map((file) => [
-            file.id,
-            { entry: ["package", ...file.target], sha256: hash(file.bytes) },
-          ]),
+          grammarFiles
+            .slice(1)
+            .map((file) => [
+              file.id,
+              { entry: ["package", ...file.target], sha256: hash(file.bytes) },
+            ]),
         ),
       },
     };
@@ -2244,8 +2246,9 @@ test.skipIf(!realBackend || !compiledProbe).each(["bundled", "prepared"] as cons
     let purgeFaultMounted = false;
     const open = async (
       origins: string[] = [origin, grammarOrigin],
-      prepared: PreparedArtifactArchives | undefined =
-        source === "prepared" ? new Map(preparedEntries) : undefined,
+      prepared: PreparedArtifactArchives | undefined = source === "prepared"
+        ? new Map(preparedEntries)
+        : undefined,
     ) => {
       const journal = new JobJournal(state.openChild("journal", { create: true }));
       try {
@@ -2294,7 +2297,8 @@ test.skipIf(!realBackend || !compiledProbe).each(["bundled", "prepared"] as cons
       for (const fd of descriptors) expect(() => fstatSync(fd)).toThrow();
       expect(heldCacheDescriptors()).toEqual([]);
     };
-    const resources = () => owner!.installedResources(install.pluginId, install.installationRevision);
+    const resources = () =>
+      owner!.installedResources(install.pluginId, install.installationRevision);
     const purge = async () => {
       await owner!.execute({
         ...install,
@@ -2348,11 +2352,9 @@ test.skipIf(!realBackend || !compiledProbe).each(["bundled", "prepared"] as cons
         request,
         permit: {
           ...unsigned,
-          signature: sign(
-            null,
-            Buffer.from(canonicalJobJson(unsigned)),
-            keys.privateKey,
-          ).toString("base64"),
+          signature: sign(null, Buffer.from(canonicalJobJson(unsigned)), keys.privateKey).toString(
+            "base64",
+          ),
         },
       });
       await vi.waitFor(
@@ -2421,7 +2423,11 @@ test.skipIf(!realBackend || !compiledProbe).each(["bundled", "prepared"] as cons
         expect(heldCacheDescriptors()).toHaveLength(1);
       }
       await owner.execute(install);
-      expect(resources().tools.map((tool) => tool.alias).sort()).toEqual(["busybox", "omp"]);
+      expect(
+        resources()
+          .tools.map((tool) => tool.alias)
+          .sort(),
+      ).toEqual(["busybox", "omp"]);
       expect(resources().operations.every((operation) => operation.available)).toBe(true);
       expect(heldCacheDescriptors()).toHaveLength(3);
       expect(await run("fixture.groups.run", "group-readonly")).toBe("managed-group:41:private");
@@ -2516,7 +2522,10 @@ test.skipIf(!realBackend || !compiledProbe).each(["bundled", "prepared"] as cons
         expect(readFileSync(join(groupRoot, "marker"), "utf8")).toBe("foreign bytes");
         const unmount = spawnSync(busybox!, ["umount", groupRoot], { encoding: "utf8" });
         purgeFaultMounted = unmount.status !== 0;
-        expect({ status: unmount.status, stderr: unmount.stderr }).toEqual({ status: 0, stderr: "" });
+        expect({ status: unmount.status, stderr: unmount.stderr }).toEqual({
+          status: 0,
+          stderr: "",
+        });
         await purge();
         expect(readFileSync(join(root, "purge-foreign", "marker"), "utf8")).toBe("foreign bytes");
         await close();
@@ -2584,7 +2593,10 @@ test.skipIf(!realBackend || !compiledProbe).each(["bundled", "prepared"] as cons
     } finally {
       if (purgeFaultMounted) {
         const unmount = spawnSync(busybox!, ["umount", groupRoot], { encoding: "utf8" });
-        expect({ status: unmount.status, stderr: unmount.stderr }).toEqual({ status: 0, stderr: "" });
+        expect({ status: unmount.status, stderr: unmount.stderr }).toEqual({
+          status: 0,
+          stderr: "",
+        });
       }
       await close();
       outputs.close();

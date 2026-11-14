@@ -10,7 +10,11 @@ export const PROTOCOL_VERSION = 60;
  * Retain a prior stamp only after proving its unchanged artifacts against the host;
  * reset on an incompatible plugin ABI change. Do not infer a numeric version range.
  */
-export const PLUGIN_BUNDLE_PROTOCOL_COMPAT_VERSIONS: ReadonlySet<string> = new Set(["57", "59", "60"]);
+export const PLUGIN_BUNDLE_PROTOCOL_COMPAT_VERSIONS: ReadonlySet<string> = new Set([
+  "57",
+  "59",
+  "60",
+]);
 
 /**
  * Machine-channel acceptance set. Agents are long-lived (they hold PTYs and

@@ -697,10 +697,9 @@ test("one managed alias pins two independent archives and an exact readonly dire
       "grammar0.wasm",
       "grammar1.wasm",
     ]);
-    expect(cache.names().sort()).toEqual([
-      artifactCacheKey(spec, spec.entrySha256),
-      managedToolGroupCacheKey(group),
-    ].sort());
+    expect(cache.names().sort()).toEqual(
+      [artifactCacheKey(spec, spec.entrySha256), managedToolGroupCacheKey(group)].sort(),
+    );
     expect(prepared.size).toBe(2);
     expect(archives.size).toBe(1);
     pinned.close();
@@ -708,8 +707,9 @@ test("one managed alias pins two independent archives and an exact readonly dire
     expect(() => fstatSync(pinned.fd)).toThrow();
     expect(() => fstatSync(directory)).toThrow();
     const recovered = openCachedManagedTool("tool", spec, cache);
-    expect(readFileSync(`/proc/self/fd/${recovered.binds[1]!.fd}/wasm/grammar0.wasm`, "utf8"))
-      .toBe("wasm grammar 0");
+    expect(readFileSync(`/proc/self/fd/${recovered.binds[1]!.fd}/wasm/grammar0.wasm`, "utf8")).toBe(
+      "wasm grammar 0",
+    );
     recovered.close();
   } finally {
     cache.close();
@@ -737,11 +737,23 @@ test("managed groups share the bundled verifier and support 128 selected files, 
     expect(ManagedToolArtifactSchema.safeParse(maximumSource.spec).success).toBe(false);
     expect(MachineArtifactSchema.safeParse(group.artifact).success).toBe(false);
     for (const field of ["maxBytes", "maxExpandedBytes", "maxMembers"] as const) {
-      const maximum = { maxBytes: 512 * 1024 * 1024, maxExpandedBytes: 1024 * 1024 * 1024, maxMembers: 10000 }[field];
-      await expect(acquireManagedTool("tool", {
-        ...spec,
-        [field]: maximum,
-      }, cache, managedAuthority, { preparedArtifactArchives: prepared })).rejects.toThrow();
+      const maximum = {
+        maxBytes: 512 * 1024 * 1024,
+        maxExpandedBytes: 1024 * 1024 * 1024,
+        maxMembers: 10000,
+      }[field];
+      await expect(
+        acquireManagedTool(
+          "tool",
+          {
+            ...spec,
+            [field]: maximum,
+          },
+          cache,
+          managedAuthority,
+          { preparedArtifactArchives: prepared },
+        ),
+      ).rejects.toThrow();
     }
   } finally {
     cache.close();
@@ -758,31 +770,58 @@ test("prepared archives preserve source authority and validate hash and size bef
       preparedArtifactArchives: prepared,
     });
     installed.close();
-    await expect(acquireManagedTool("tool", spec, cache, { ...managedAuthority, origins: [] }, {
-      preparedArtifactArchives: prepared,
-    })).rejects.toThrow("artifact_destination_not_approved");
+    await expect(
+      acquireManagedTool(
+        "tool",
+        spec,
+        cache,
+        { ...managedAuthority, origins: [] },
+        {
+          preparedArtifactArchives: prepared,
+        },
+      ),
+    ).rejects.toThrow("artifact_destination_not_approved");
     for (const source of [spec, group.artifact]) {
       const key = `${source.url}\0${source.sha256}`;
       const wrong = new Map(prepared);
       wrong.set(key, Buffer.from("wrong"));
-      await expect(acquireManagedTool("tool", spec, cache, managedAuthority, {
-        preparedArtifactArchives: wrong,
-      })).rejects.toThrow("artifact_archive_digest");
+      await expect(
+        acquireManagedTool("tool", spec, cache, managedAuthority, {
+          preparedArtifactArchives: wrong,
+        }),
+      ).rejects.toThrow("artifact_archive_digest");
       wrong.set(key, Buffer.alloc(source.maxBytes + 1));
-      await expect(acquireManagedTool("tool", spec, cache, managedAuthority, {
-        preparedArtifactArchives: wrong,
-      })).rejects.toThrow("artifact_compressed_limit");
+      await expect(
+        acquireManagedTool("tool", spec, cache, managedAuthority, {
+          preparedArtifactArchives: wrong,
+        }),
+      ).rejects.toThrow("artifact_compressed_limit");
     }
-    await expect(acquireManagedTool("tool", {
-      ...spec,
-      fileGroups: [{ ...group, artifact: { ...group.artifact, url: "https://unapproved.invalid/tool" } }],
-    }, cache, managedAuthority, { preparedArtifactArchives: prepared }))
-      .rejects.toThrow("artifact_destination_not_approved");
-    await expect(acquireArtifact(
-      specification(executable, "raw"), cache, managedAuthority,
-      { bundleFile: "url", data: executable.toString("base64") },
-      undefined, undefined, prepared,
-    )).rejects.toThrow("artifact_unexpected_delivery");
+    await expect(
+      acquireManagedTool(
+        "tool",
+        {
+          ...spec,
+          fileGroups: [
+            { ...group, artifact: { ...group.artifact, url: "https://unapproved.invalid/tool" } },
+          ],
+        },
+        cache,
+        managedAuthority,
+        { preparedArtifactArchives: prepared },
+      ),
+    ).rejects.toThrow("artifact_destination_not_approved");
+    await expect(
+      acquireArtifact(
+        specification(executable, "raw"),
+        cache,
+        managedAuthority,
+        { bundleFile: "url", data: executable.toString("base64") },
+        undefined,
+        undefined,
+        prepared,
+      ),
+    ).rejects.toThrow("artifact_unexpected_delivery");
   } finally {
     cache.close();
     rmSync(path, { recursive: true, force: true });
@@ -795,9 +834,12 @@ test("absent prepared archives leave ordinary HTTPS acquisition and address refu
   try {
     const spec = { ...specification(executable, "raw"), url: "https://127.0.0.1/tool" };
     const authority = { ...managedAuthority, origins: ["https://127.0.0.1"] };
-    await expect(acquireArtifact(spec, cache, authority)).rejects.toThrow("artifact_private_destination");
-    await expect(acquireManagedTool("tool", spec, cache, authority))
-      .rejects.toThrow("artifact_private_destination");
+    await expect(acquireArtifact(spec, cache, authority)).rejects.toThrow(
+      "artifact_private_destination",
+    );
+    await expect(acquireManagedTool("tool", spec, cache, authority)).rejects.toThrow(
+      "artifact_private_destination",
+    );
     expect(cache.names()).toEqual([]);
   } finally {
     cache.close();
@@ -811,13 +853,24 @@ test("group member mismatch and absence never make a primary-only alias availabl
   const cache = HeldDirectory.openAbsolute(path, { private: true });
   try {
     for (const files of [
-      { ...group.artifact.files, grammar0: { ...group.artifact.files!.grammar0!, sha256: "0".repeat(64) } },
-      { ...group.artifact.files, grammar0: { ...group.artifact.files!.grammar0!, entry: ["missing"] } },
+      {
+        ...group.artifact.files,
+        grammar0: { ...group.artifact.files!.grammar0!, sha256: "0".repeat(64) },
+      },
+      {
+        ...group.artifact.files,
+        grammar0: { ...group.artifact.files!.grammar0!, entry: ["missing"] },
+      },
     ]) {
-      const changed = { ...spec, fileGroups: [{ ...group, artifact: { ...group.artifact, files } }] };
-      await expect(acquireManagedTool("tool", changed, cache, managedAuthority, {
-        preparedArtifactArchives: prepared,
-      })).rejects.toThrow("artifact_entry_digest");
+      const changed = {
+        ...spec,
+        fileGroups: [{ ...group, artifact: { ...group.artifact, files } }],
+      };
+      await expect(
+        acquireManagedTool("tool", changed, cache, managedAuthority, {
+          preparedArtifactArchives: prepared,
+        }),
+      ).rejects.toThrow("artifact_entry_digest");
       expect(() => openCachedManagedTool("tool", changed, cache)).toThrow();
       expect(cache.names()).toEqual([artifactCacheKey(spec, spec.entrySha256)]);
     }
@@ -825,18 +878,25 @@ test("group member mismatch and absence never make a primary-only alias availabl
       ...spec,
       url: undefined,
       bundleFile: "worker",
-      fileGroups: [{ ...group, artifact: { ...group.artifact, url: undefined, bundleFile: "grammars" } }],
+      fileGroups: [
+        { ...group, artifact: { ...group.artifact, url: undefined, bundleFile: "grammars" } },
+      ],
     };
     const delivery = { bundleFile: "worker", data: executable.toString("base64") };
-    await expect(acquireManagedTool("tool", bundled, cache, managedAuthority, { delivery }))
-      .rejects.toThrow("artifact_bundle_unavailable");
+    await expect(
+      acquireManagedTool("tool", bundled, cache, managedAuthority, { delivery }),
+    ).rejects.toThrow("artifact_bundle_unavailable");
     const pinned = await acquireManagedTool("tool", bundled, cache, managedAuthority, {
-      delivery, toolArtifacts: { grammars: archive.toString("base64") },
+      delivery,
+      toolArtifacts: { grammars: archive.toString("base64") },
     });
     pinned.close();
-    await expect(acquireManagedTool("tool", bundled, cache, managedAuthority, {
-      delivery, toolArtifacts: { grammars: Buffer.from("wrong").toString("base64") },
-    })).rejects.toThrow("artifact_archive_digest");
+    await expect(
+      acquireManagedTool("tool", bundled, cache, managedAuthority, {
+        delivery,
+        toolArtifacts: { grammars: Buffer.from("wrong").toString("base64") },
+      }),
+    ).rejects.toThrow("artifact_archive_digest");
   } finally {
     cache.close();
     rmSync(path, { recursive: true, force: true });
@@ -892,9 +952,11 @@ test("complete-tree recovery refuses tamper, extra entries, absence, modes and l
         chmodSync(root, 0o500);
       }
       expect(() => openCachedManagedTool("tool", spec, cache)).toThrow(reason);
-      await expect(acquireManagedTool("tool", spec, cache, managedAuthority, {
-        preparedArtifactArchives: prepared,
-      })).rejects.toThrow(reason);
+      await expect(
+        acquireManagedTool("tool", spec, cache, managedAuthority, {
+          preparedArtifactArchives: prepared,
+        }),
+      ).rejects.toThrow(reason);
       expect(cache.names().some((name) => name.startsWith(".artifact-group-"))).toBe(false);
     } finally {
       cache.close();
@@ -916,9 +978,11 @@ test("group layouts reject primary, legacy, root and selected-path overlaps and 
       [{ ...group, entryTarget: ["wasm"] }],
       [{ ...group, entryTarget: ["..", "escape"] }],
     ])
-      await expect(acquireManagedTool("tool", { ...spec, fileGroups }, cache, managedAuthority, {
-        preparedArtifactArchives: prepared,
-      })).rejects.toThrow();
+      await expect(
+        acquireManagedTool("tool", { ...spec, fileGroups }, cache, managedAuthority, {
+          preparedArtifactArchives: prepared,
+        }),
+      ).rejects.toThrow();
     expect(cache.names()).toEqual([]);
     const identity = managedToolGroupCacheKey(group);
     for (const changed of [
@@ -926,10 +990,14 @@ test("group layouts reject primary, legacy, root and selected-path overlaps and 
       { ...group, entryTarget: ["other.json"] },
       { ...group, artifact: { ...group.artifact, url: "https://example.com/other" } },
       { ...group, artifact: { ...group.artifact, maxBytes: group.artifact.maxBytes + 1 } },
-      { ...group, artifact: { ...group.artifact, maxExpandedBytes: group.artifact.maxExpandedBytes + 1 } },
+      {
+        ...group,
+        artifact: { ...group.artifact, maxExpandedBytes: group.artifact.maxExpandedBytes + 1 },
+      },
       { ...group, artifact: { ...group.artifact, maxMembers: group.artifact.maxMembers + 1 } },
       { ...group, fileTargets: { ...group.fileTargets, grammar0: ["other.wasm"] } },
-    ]) expect(managedToolGroupCacheKey(changed)).not.toBe(identity);
+    ])
+      expect(managedToolGroupCacheKey(changed)).not.toBe(identity);
   } finally {
     cache.close();
     rmSync(path, { recursive: true, force: true });
@@ -953,9 +1021,11 @@ test("atomic group publication failure closes all alias handles and reclaims the
     publish(temporary, destination, exclusive);
   };
   try {
-    await expect(acquireManagedTool("tool", spec, cache, managedAuthority, {
-      preparedArtifactArchives: prepared,
-    })).rejects.toThrow("publication_fault");
+    await expect(
+      acquireManagedTool("tool", spec, cache, managedAuthority, {
+        preparedArtifactArchives: prepared,
+      }),
+    ).rejects.toThrow("publication_fault");
     expect(cache.names().some((name) => name.startsWith(".artifact-group-"))).toBe(false);
     for (const fd of opened) expect(() => fstatSync(fd)).toThrow();
     cache.publish = publish;
@@ -983,8 +1053,9 @@ test("exclusive publication races recover only the winner's complete tree and re
       }),
     ]);
     for (const pinned of acquired) {
-      expect(readFileSync(`/proc/self/fd/${pinned.binds[1]!.fd}/manifest.json`, "utf8"))
-        .toBe('{"grammars":"offline"}');
+      expect(readFileSync(`/proc/self/fd/${pinned.binds[1]!.fd}/manifest.json`, "utf8")).toBe(
+        '{"grammars":"offline"}',
+      );
       pinned.close();
     }
     expect(cache.names().filter((name) => name.startsWith(".artifact-group-"))).toEqual([]);
@@ -999,10 +1070,16 @@ test("group close failures do not strand primary or sibling descriptors", async 
   const path = mkdtempSync(join(tmpdir(), "managed-close-"));
   const cache = HeldDirectory.openAbsolute(path, { private: true });
   try {
-    const pinned = await acquireManagedTool("tool", {
-      ...spec,
-      fileGroups: [group, { ...group, target: ["second-grammars"] }],
-    }, cache, managedAuthority, { preparedArtifactArchives: prepared });
+    const pinned = await acquireManagedTool(
+      "tool",
+      {
+        ...spec,
+        fileGroups: [group, { ...group, target: ["second-grammars"] }],
+      },
+      cache,
+      managedAuthority,
+      { preparedArtifactArchives: prepared },
+    );
     closeSync(pinned.binds[1]!.fd);
     expect(() => pinned.close()).toThrow();
     expect(() => fstatSync(pinned.fd)).toThrow();
@@ -1024,14 +1101,17 @@ test("durability-fence failure leaves only a complete recoverable group, never p
     if (destination === managedToolGroupCacheKey(group)) throw new Error("durability_fence_fault");
   };
   try {
-    await expect(acquireManagedTool("tool", spec, cache, managedAuthority, {
-      preparedArtifactArchives: prepared,
-    })).rejects.toThrow("durability_fence_fault");
+    await expect(
+      acquireManagedTool("tool", spec, cache, managedAuthority, {
+        preparedArtifactArchives: prepared,
+      }),
+    ).rejects.toThrow("durability_fence_fault");
     expect(cache.names().filter((name) => name.startsWith(".artifact-group-"))).toEqual([]);
     cache.publish = publish;
     const recovered = openCachedManagedTool("tool", spec, cache);
-    expect(readFileSync(`/proc/self/fd/${recovered.binds[1]!.fd}/manifest.json`, "utf8"))
-      .toBe('{"grammars":"offline"}');
+    expect(readFileSync(`/proc/self/fd/${recovered.binds[1]!.fd}/manifest.json`, "utf8")).toBe(
+      '{"grammars":"offline"}',
+    );
     recovered.close();
   } finally {
     cache.close();
@@ -1049,7 +1129,9 @@ test("failed private-tree reclamation preserves the publication failure and repo
     if (destination.startsWith("managed-group-")) throw new Error("publication_fault");
     publish(temporary, destination, exclusive);
   };
-  cache.removeTree = () => { throw new Error("reclamation_fault"); };
+  cache.removeTree = () => {
+    throw new Error("reclamation_fault");
+  };
   try {
     let failure: unknown;
     try {
@@ -1060,12 +1142,15 @@ test("failed private-tree reclamation preserves the publication failure and repo
       failure = error;
     }
     expect(failure).toBeInstanceOf(AggregateError);
-    expect((failure as AggregateError).errors.map((error: Error) => error.message))
-      .toEqual(["publication_fault", "reclamation_fault"]);
+    expect((failure as AggregateError).errors.map((error: Error) => error.message)).toEqual([
+      "publication_fault",
+      "reclamation_fault",
+    ]);
     expect(cache.names().filter((name) => name.startsWith(".artifact-group-")).length).toBe(1);
   } finally {
     cache.removeTree = removeTree;
-    for (const name of cache.names()) if (name.startsWith(".artifact-group-")) cache.removeTree(name);
+    for (const name of cache.names())
+      if (name.startsWith(".artifact-group-")) cache.removeTree(name);
     cache.close();
     rmSync(path, { recursive: true, force: true });
   }
@@ -1080,29 +1165,47 @@ test("explicit group sources retain archive link, traversal, duplicate and actua
     Buffer.concat([tarMember("manifest.json"), tarMember("manifest.json")]),
   ]) {
     const archive = gzipSync(Buffer.concat([member, Buffer.alloc(1024)]));
-    await expect(extractArtifact(archive, {
-      ...group.artifact,
-      sha256: createHash("sha256").update(archive).digest("hex"),
-      maxBytes: archive.length,
-    }, new AbortController().signal)).rejects.toThrow();
+    await expect(
+      extractArtifact(
+        archive,
+        {
+          ...group.artifact,
+          sha256: createHash("sha256").update(archive).digest("hex"),
+          maxBytes: archive.length,
+        },
+        new AbortController().signal,
+      ),
+    ).rejects.toThrow();
   }
   const { archive } = managedFixture();
-  await expect(extractArtifact(archive, {
-    ...group.artifact, maxExpandedBytes: 32,
-  }, new AbortController().signal)).rejects.toThrow("artifact_expanded_limit");
-  await expect(extractArtifact(archive, {
-    ...group.artifact, maxMembers: 1,
-  }, new AbortController().signal)).rejects.toThrow("artifact_member_limit");
+  await expect(
+    extractArtifact(
+      archive,
+      {
+        ...group.artifact,
+        maxExpandedBytes: 32,
+      },
+      new AbortController().signal,
+    ),
+  ).rejects.toThrow("artifact_expanded_limit");
+  await expect(
+    extractArtifact(
+      archive,
+      {
+        ...group.artifact,
+        maxMembers: 1,
+      },
+      new AbortController().signal,
+    ),
+  ).rejects.toThrow("artifact_member_limit");
 });
 
 test("legacy companion descriptors remain owned while group roots cannot collide with companion targets", async () => {
   const { spec, group, prepared } = managedFixture();
   const helperBytes = Buffer.from("legacy helper");
-  const primaryArchive = gzipSync(Buffer.concat([
-    tarMember(),
-    tarMember("legacy/helper", "0", helperBytes),
-    Buffer.alloc(1024),
-  ]));
+  const primaryArchive = gzipSync(
+    Buffer.concat([tarMember(), tarMember("legacy/helper", "0", helperBytes), Buffer.alloc(1024)]),
+  );
   const primary: ManagedToolArtifact = {
     ...specification(primaryArchive, "tar.gz"),
     files: {
@@ -1125,14 +1228,23 @@ test("legacy companion descriptors remain owned while group roots cannot collide
     });
     expect(readFileSync(pinned.files.helper!.fd)).toEqual(helperBytes);
     expect(pinned.binds.map((bind) => bind.target)).toEqual([
-      "/runtime/bin/tool", "/runtime/bin/tool-grammars",
+      "/runtime/bin/tool",
+      "/runtime/bin/tool-grammars",
     ]);
     pinned.close();
     expect(() => fstatSync(pinned.files.helper!.fd)).toThrow();
-    await expect(acquireManagedTool("tool", {
-      ...primary, fileGroups: [{ ...group, target: ["helpers"] }],
-    }, cache, managedAuthority, { preparedArtifactArchives: sources }))
-      .rejects.toThrow("artifact_group_target_collision");
+    await expect(
+      acquireManagedTool(
+        "tool",
+        {
+          ...primary,
+          fileGroups: [{ ...group, target: ["helpers"] }],
+        },
+        cache,
+        managedAuthority,
+        { preparedArtifactArchives: sources },
+      ),
+    ).rejects.toThrow("artifact_group_target_collision");
   } finally {
     cache.close();
     rmSync(path, { recursive: true, force: true });
@@ -1146,9 +1258,9 @@ test("legacy flat acquisition and recovery retain their eight-companion admissio
   const source = group.artifact;
   const prepared = new Map([[`${source.url}\0${source.sha256}`, archive]]);
   try {
-    await expect(acquireArtifact(
-      source, cache, managedAuthority, undefined, undefined, undefined, prepared,
-    )).rejects.toThrow();
+    await expect(
+      acquireArtifact(source, cache, managedAuthority, undefined, undefined, undefined, prepared),
+    ).rejects.toThrow();
     expect(() => openCachedArtifact(source, cache)).toThrow();
     expect(cache.names()).toEqual([]);
   } finally {

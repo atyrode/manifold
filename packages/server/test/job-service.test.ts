@@ -3875,17 +3875,19 @@ test("authenticated owner receives only selected deduplicated machine members; s
       engine: {
         "linux-x64": {
           ...tool,
-          fileGroups: [{
-            target: ["engine-data"],
-            artifact: {
-              ...tool,
-              bundleFile: "grammar-data",
-              sha256: groupHash,
-              entrySha256: groupHash,
+          fileGroups: [
+            {
+              target: ["engine-data"],
+              artifact: {
+                ...tool,
+                bundleFile: "grammar-data",
+                sha256: groupHash,
+                entrySha256: groupHash,
+              },
+              entryTarget: ["manifest.json"],
+              fileTargets: {},
             },
-            entryTarget: ["manifest.json"],
-            fileTargets: {},
-          }],
+          ],
         },
         "linux-arm64": { ...tool, bundleFile: "other-platform" },
       },
@@ -3996,12 +3998,14 @@ function groupedMachine() {
     engine: {
       "linux-x64": {
         ...machine.artifacts["linux-x64"]!,
-        fileGroups: [{
-          target: ["engine-data"],
-          artifact: machine.artifacts["linux-x64"]!,
-          entryTarget: ["manifest.json"],
-          fileTargets: {},
-        }],
+        fileGroups: [
+          {
+            target: ["engine-data"],
+            artifact: machine.artifacts["linux-x64"]!,
+            entryTarget: ["manifest.json"],
+            fileTargets: {},
+          },
+        ],
       },
     },
     independent: { "linux-x64": machine.artifacts["linux-x64"]! },
@@ -4015,7 +4019,10 @@ function groupedMachine() {
 
 test("managed groups refuse old transports and owners while independently compatible operations stay installable", () => {
   const { declared, groupedId } = groupedMachine();
-  for (const [owner, transport] of [[45, PROTOCOL_VERSION], [JOB_OWNER_PROTOCOL_VERSION, 59]] as const) {
+  for (const [owner, transport] of [
+    [45, PROTOCOL_VERSION],
+    [JOB_OWNER_PROTOCOL_VERSION, 59],
+  ] as const) {
     const f = fixture(":memory:", declared);
     try {
       f.owner.protocolVersion = owner;
@@ -4024,27 +4031,38 @@ test("managed groups refuse old transports and owners while independently compat
       prove(f, false, false);
       const projected = f.commands.findLast((command) => command.type === "install");
       if (projected?.type !== "install") throw new Error("projected install missing");
-      expect(projected.machine.operations).toEqual({ [operationId]: declared.operations[operationId] });
+      expect(projected.machine.operations).toEqual({
+        [operationId]: declared.operations[operationId],
+      });
       expect(projected.machine.tools).toEqual({ independent: declared.tools.independent });
-      expect(f.service.describe(f.root, { machineId: f.machineId, pluginId }).operations?.[groupedId])
-        .toMatchObject({ ready: false, reason: "managed_artifact_groups_protocol_unsupported" });
-      expect(() => f.service.execute(f.root, pluginId, "group-refused", {
-        jobId: "group-refused",
-        machineId: f.machineId,
-        operationId: groupedId,
-        input: { value: "safe" },
-        outputs: [],
-      })).toThrow("managed_artifact_groups_protocol_unsupported");
+      expect(
+        f.service.describe(f.root, { machineId: f.machineId, pluginId }).operations?.[groupedId],
+      ).toMatchObject({ ready: false, reason: "managed_artifact_groups_protocol_unsupported" });
+      expect(() =>
+        f.service.execute(f.root, pluginId, "group-refused", {
+          jobId: "group-refused",
+          machineId: f.machineId,
+          operationId: groupedId,
+          input: { value: "safe" },
+          outputs: [],
+        }),
+      ).toThrow("managed_artifact_groups_protocol_unsupported");
       expect(f.service.jobs.get("group-refused")).toBeNull();
-      expect(() => f.service.terminalDemandBinding({
-        machineId: f.machineId,
-        pluginId,
-        operationId: groupedId,
-        installationRevision: "r1",
-        artifactSha256: hash,
-        resourceBindingDigest: createHash("sha256").update("null").digest("hex"),
-        input: { value: "safe" },
-      }, f.machineId, "group-home")).toThrow("managed_artifact_groups_protocol_unsupported");
+      expect(() =>
+        f.service.terminalDemandBinding(
+          {
+            machineId: f.machineId,
+            pluginId,
+            operationId: groupedId,
+            installationRevision: "r1",
+            artifactSha256: hash,
+            resourceBindingDigest: createHash("sha256").update("null").digest("hex"),
+            input: { value: "safe" },
+          },
+          f.machineId,
+          "group-home",
+        ),
+      ).toThrow("managed_artifact_groups_protocol_unsupported");
       f.service.event(f.channel, {
         type: "installed",
         pluginId,
@@ -4072,7 +4090,10 @@ test("managed groups refuse old transports and owners while independently compat
 
 test("purge uses the full honest managed-group projection for older owners and transports", () => {
   const { declared } = groupedMachine();
-  for (const [owner, transport] of [[45, PROTOCOL_VERSION], [JOB_OWNER_PROTOCOL_VERSION, 59]] as const) {
+  for (const [owner, transport] of [
+    [45, PROTOCOL_VERSION],
+    [JOB_OWNER_PROTOCOL_VERSION, 59],
+  ] as const) {
     const f = fixture(":memory:", declared);
     try {
       f.owner.protocolVersion = owner;
