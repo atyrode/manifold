@@ -817,11 +817,7 @@ test("machine group roots cannot overlap primary aliases, legacy companions or o
     ).toBe(false);
   }
   const nestedGroup = { ...group, target: [...group.target, "nested"] };
-  for (const target of [
-    group.target,
-    nestedGroup.target,
-    [...nestedGroup.target, "child"],
-  ]) {
+  for (const target of [group.target, nestedGroup.target, [...nestedGroup.target, "child"]]) {
     const conflicting = { ...tool, fileGroups: [nestedGroup, { ...group, target }] };
     expect(ManagedToolArtifactSchema.safeParse(conflicting).success).toBe(false);
     expect(
@@ -916,8 +912,7 @@ test("legacy alias and target ambiguity stays parseable unless a managed group o
   ]) {
     const conflicting = withGroup(target);
     expect(
-      ManagedToolArtifactSchema.safeParse(conflicting.machine.tools!.engine!["linux-x64"])
-        .success,
+      ManagedToolArtifactSchema.safeParse(conflicting.machine.tools!.engine!["linux-x64"]).success,
     ).toBe(false);
     expect(JobCommandSchema.safeParse(conflicting).success).toBe(false);
   }

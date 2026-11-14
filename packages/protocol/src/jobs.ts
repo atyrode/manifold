@@ -304,8 +304,7 @@ export const MachineArtifactSchema = z
 /** Component-prefix overlap is forbidden for selected files and independent mount roots. */
 function artifactPathOverlaps(path: readonly string[], other: readonly string[]): boolean {
   const commonLength = Math.min(path.length, other.length);
-  for (let index = 0; index < commonLength; index++)
-    if (path[index] !== other[index]) return false;
+  for (let index = 0; index < commonLength; index++) if (path[index] !== other[index]) return false;
   return true;
 }
 
@@ -318,8 +317,7 @@ function artifactPathsOverlap(
     const path = paths[index]!;
     for (let prior = 0; prior < index; prior++)
       if (artifactPathOverlaps(path, paths[prior]!)) return true;
-    for (const reserved of reservedPaths)
-      if (artifactPathOverlaps(path, reserved)) return true;
+    for (const reserved of reservedPaths) if (artifactPathOverlaps(path, reserved)) return true;
   }
   return false;
 }
