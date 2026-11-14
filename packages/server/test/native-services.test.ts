@@ -347,7 +347,7 @@ test.each([
     if (failure === "offline") f.service.offline(f.channel);
     if (failure === "unproved") f.service.online(f.channel, f.owner, "epoch");
     if (failure === "old-owner" || failure === "retired-owner") {
-      f.owner.protocolVersion = failure === "old-owner" ? 44 : 46;
+      f.owner.protocolVersion = failure === "old-owner" ? 44 : JOB_OWNER_PROTOCOL_VERSION + 1;
       if (failure === "old-owner") f.prove();
       else f.service.online(f.channel, f.owner, "epoch");
     }
