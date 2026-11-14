@@ -302,16 +302,24 @@ export const MachineArtifactSchema = z
   );
 
 /** Component-prefix overlap is forbidden for selected files and independent mount roots. */
-function artifactPathsOverlap(paths: readonly (readonly string[])[]): boolean {
+function artifactPathOverlaps(path: readonly string[], other: readonly string[]): boolean {
+  const commonLength = Math.min(path.length, other.length);
+  for (let index = 0; index < commonLength; index++)
+    if (path[index] !== other[index]) return false;
+  return true;
+}
+
+/** Reservations are checked against selected paths, never against one another. */
+function artifactPathsOverlap(
+  paths: readonly (readonly string[])[],
+  reservedPaths: readonly (readonly string[])[] = [],
+): boolean {
   for (let index = 0; index < paths.length; index++) {
     const path = paths[index]!;
-    for (let prior = 0; prior < index; prior++) {
-      const other = paths[prior]!;
-      let common = 0;
-      while (common < Math.min(path.length, other.length) && path[common] === other[common])
-        common++;
-      if (common === Math.min(path.length, other.length)) return true;
-    }
+    for (let prior = 0; prior < index; prior++)
+      if (artifactPathOverlaps(path, paths[prior]!)) return true;
+    for (const reserved of reservedPaths)
+      if (artifactPathOverlaps(path, reserved)) return true;
   }
   return false;
 }
@@ -400,12 +408,10 @@ export const ManagedToolArtifactSchema = MachineArtifactSchema.safeExtend({
   )
   .refine(
     (artifact) =>
-      !artifactPathsOverlap([
-        ...(artifact.fileGroups ?? []).map((group) => group.target),
-        ...Object.entries(artifact.files ?? {}).map(
-          ([alias, file]) => file.relativeTarget ?? [alias],
-        ),
-      ]),
+      !artifactPathsOverlap(
+        (artifact.fileGroups ?? []).map((group) => group.target),
+        Object.entries(artifact.files ?? {}).map(([alias, file]) => file.relativeTarget ?? [alias]),
+      ),
     { message: "Managed group roots and legacy companion targets must not overlap" },
   );
 export type ManagedToolArtifact = z.infer<typeof ManagedToolArtifactSchema>;
@@ -723,21 +729,23 @@ export const MachineHalfSchema = z
   .refine(
     (machine) =>
       platformArtifacts.keyType.options.every((platform) => {
-        const targets: string[][] = [];
+        const groupRoots: string[][] = [];
+        const legacyTargets: string[][] = [];
         for (const [alias, file] of Object.entries(machine.artifacts[platform]?.files ?? {}))
-          if (file.relativeTarget === undefined) targets.push([alias]);
+          if (file.relativeTarget === undefined) legacyTargets.push([alias]);
         for (const [alias, platforms] of Object.entries(machine.tools ?? {})) {
           const artifact = platforms[platform];
           // A managed alias still reserves its runtime name on unsupported platforms.
-          targets.push([alias]);
+          legacyTargets.push([alias]);
           if (!artifact) continue;
           for (const [name, file] of Object.entries(artifact.files ?? {}))
-            targets.push(file.relativeTarget ?? [name]);
-          for (const group of artifact.fileGroups ?? []) targets.push(group.target);
+            legacyTargets.push(file.relativeTarget ?? [name]);
+          for (const group of artifact.fileGroups ?? []) groupRoots.push(group.target);
         }
-        return !artifactPathsOverlap(targets);
+        // Legacy-only ambiguity retains the owner's named refusal and mount-overlap guards.
+        return !artifactPathsOverlap(groupRoots, legacyTargets);
       }),
-    { message: "Managed runtime aliases, companion targets and group roots must not overlap" },
+    { message: "Managed group roots must not overlap other roots or legacy runtime targets" },
   )
   .refine(
     (machine) =>

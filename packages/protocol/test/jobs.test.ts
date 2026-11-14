@@ -816,6 +816,24 @@ test("machine group roots cannot overlap primary aliases, legacy companions or o
       }).success,
     ).toBe(false);
   }
+  const nestedGroup = { ...group, target: [...group.target, "nested"] };
+  for (const target of [
+    group.target,
+    nestedGroup.target,
+    [...nestedGroup.target, "child"],
+  ]) {
+    const conflicting = { ...tool, fileGroups: [nestedGroup, { ...group, target }] };
+    expect(ManagedToolArtifactSchema.safeParse(conflicting).success).toBe(false);
+    expect(
+      MachineHalfSchema.safeParse({
+        ...declaration,
+        tools: {
+          engine: { "linux-x64": { ...tool, fileGroups: [nestedGroup] } },
+          other: { "linux-x64": { ...artifact, fileGroups: [{ ...group, target }] } },
+        },
+      }).success,
+    ).toBe(false);
+  }
   expect(
     ManagedToolArtifactSchema.safeParse({
       ...tool,
@@ -824,6 +842,87 @@ test("machine group roots cannot overlap primary aliases, legacy companions or o
       },
     }).success,
   ).toBe(false);
+});
+
+test("legacy alias and target ambiguity stays parseable unless a managed group overlaps it", () => {
+  const companion = { entry: ["helper"], sha256: "c".repeat(64) };
+  const legacyTool = {
+    ...artifact,
+    files: {
+      helper: companion,
+      duplicate: {
+        ...companion,
+        entry: ["duplicate"],
+        relativeTarget: ["legacy-data", "nested"],
+      },
+      overlapping: {
+        ...companion,
+        entry: ["overlapping"],
+        relativeTarget: ["legacy-data", "nested"],
+      },
+      descendant: {
+        ...companion,
+        entry: ["descendant"],
+        relativeTarget: ["legacy-data", "nested", "child"],
+      },
+    },
+  };
+  const machine: MachineHalf = {
+    artifacts: { "linux-x64": { ...artifact, files: { primary: companion } } },
+    tools: {
+      engine: { "linux-x64": legacyTool },
+      helper: { "linux-x64": { ...artifact, files: { helper: companion } } },
+    },
+    locations: {},
+    operations: {
+      run: {
+        argv: [],
+        input: {},
+        runtimeTools: ["helper"],
+        locations: [],
+        outputs: [],
+        network: "none",
+        stdin: false,
+        limits: { timeoutMs: 1000, memoryBytes: 1048576, processes: 1, outputBytes: 65536 },
+      },
+    },
+  };
+  const command = {
+    type: "install" as const,
+    pluginId: "sample.worker",
+    installationRevision: "r1",
+    artifactSha256: artifact.sha256,
+    machine,
+  };
+  // These legacy ambiguities belong to the owner's named refusal and Linux mount guards.
+  expect(MachineArtifactSchema.parse(legacyTool)).toEqual(legacyTool);
+  expect(ManagedToolArtifactSchema.parse(legacyTool)).toEqual(legacyTool);
+  expect(JobCommandSchema.parse(command)).toEqual(command);
+  const withGroup = (target: string[]) => {
+    const grouped = structuredClone(command);
+    grouped.machine.tools!.engine!["linux-x64"]!.fileGroups = [{ ...managedGroup(), target }];
+    return grouped;
+  };
+  for (const target of [["engine-data"], ["legacy-data-other"]]) {
+    const disjoint = withGroup(target);
+    expect(JobCommandSchema.parse(disjoint)).toEqual(disjoint);
+  }
+  for (const target of [
+    ["helper"],
+    ["helper", "child"],
+    ["legacy-data"],
+    ["legacy-data", "nested"],
+    ["legacy-data", "nested", "child"],
+  ]) {
+    const conflicting = withGroup(target);
+    expect(
+      ManagedToolArtifactSchema.safeParse(conflicting.machine.tools!.engine!["linux-x64"])
+        .success,
+    ).toBe(false);
+    expect(JobCommandSchema.safeParse(conflicting).success).toBe(false);
+  }
+  for (const target of [["primary"], ["primary", "child"], ["engine"], ["engine", "child"]])
+    expect(JobCommandSchema.safeParse(withGroup(target)).success).toBe(false);
 });
 
 test("grouped operations and legacy aliases require the actual accepted transport and owner together", () => {
@@ -888,7 +987,7 @@ test("grouped operations and legacy aliases require the actual accepted transpor
     changed.tools!.independent!["linux-x64"]!.sha256 = "d".repeat(64);
     expect(jobOwnerInstallRestoresProjection(install(projected), install(changed))).toBe(false);
   }
-  expect(jobOwnerMachine(JOB_OWNER_PROTOCOL_VERSION, declaration, floor)).toBe(declaration);
+  expect(jobOwnerMachine(JOB_OWNER_PROTOCOL_VERSION, declaration, floor)).toEqual(declaration);
   expect(
     jobOwnerOperationRefusal(
       JOB_OWNER_PROTOCOL_VERSION,
