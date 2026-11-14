@@ -2781,10 +2781,11 @@ dependency. The bundle's optional `builtAgainst` version map is recorded as
 shared builds also record React/package versions. Admission and boot check that stamp against
 the explicit `PLUGIN_BUNDLE_PROTOCOL_COMPAT_VERSIONS` set and compare React by major. The
 bundle set is independent of session, machine and instance negotiation: sessions still require
-the current wire version. Protocol 59 admits bundle stamps 57 and 59: explicit per-viewport
+the current wire version. Protocol 60 admits bundle stamps 57, 59 and 60: explicit per-viewport
 terminal attach/detach and completion acknowledgement changed the trusted plugin/SDK terminal
-ABI, so earlier stamps require a rebuild, while terminal image admission changes no plugin call
-signature. Portable Worker projections still expose no terminal byte/snapshot subscriptions. A
+ABI, so earlier stamps require a rebuild. Terminal image admission and optional managed artifact
+file groups do not change existing plugin call signatures. Portable Worker projections still
+expose no terminal byte/snapshot subscriptions. A
 prior stamp
 may remain only with proof from unchanged released artifacts through candidate assembly and
 loading; an incompatible plugin ABI change resets the set. No numeric range, future version
@@ -2880,7 +2881,7 @@ nothing. A plugin's own JSX wears the root class on its root element; the engine
 
 **The artifact (`PluginBundleSchema`).** One JSON file, `<id>.manifold-plugin.json`,
 at most `ISOLATE_MAX_ARTIFACT_BYTES` (16 MiB). A portable pack has
-`format: 1`, `hardenedContract: 13`, the validated `PluginManifest`
+`format: 1`, `hardenedContract: 14`, the validated `PluginManifest`
 ([reference](../packages/plugin-kit/test/fixtures/sample/manifest.json), whose
 `entry` declares `{ "server": true, "web": "web.js", "worker": true }`),
 and base64 `files["server.js"]`, `files["web.js"]`,
@@ -2943,8 +2944,8 @@ not a network-policy exemption. This is server-side retrieval admission, not a r
 the kit client's own inspection fetch or a claim that arbitrary plugin code is network-confined.
 
 **Executable bundle compatibility (#602).** Every pack stamps `hardenedContract` independently
-of `format` and the machine/session protocols. `HARDENED_CONTRACT_VERSION` is 13; the hub accepts
-`HARDENED_CONTRACT_COMPAT_VERSIONS = {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13}`, with minimum 1. Add an
+of `format` and the machine/session protocols. `HARDENED_CONTRACT_VERSION` is 14; the hub accepts
+`HARDENED_CONTRACT_COMPAT_VERSIONS = {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14}`, with minimum 1. Add an
 additive-optional contract to that set; reset it for a genuine break. An unstamped or outside-set
 installed artifact is held at assembly with `repack_required` and the minimum, never imported
 or spawned, even if the administrator had it disabled. Fresh incompatible installs are refused
@@ -2984,11 +2985,14 @@ readonly is omitted from frames; true prevents edits but preserves text selectio
 focused controlled updates. A pre-12 declaration of either feature faults only its instance.
 Contract 13 adds the optional harness `resolveModel` (#1071), announced by
 `loaded.harnessResolvesModel`, and an optional `model` on `identity.reportRunActivityV2`. The
-host sends the verb only to a contract-13 guest that announced it, refuses an announcement below
+host sends the verb only to a contract-13-or-later guest that announced it, refuses an announcement below
 13 at load and a respawn that changes it, and refuses any event the guest emits while resolving.
 Older guests and non-announcing harnesses keep their harness fingerprints and have every
 reported Run model refused as `run_model_unverifiable`. Every pack from a contract-13 kit stamps
 13, so its bundles need a hub from the same release or later.
+Contract 14 admits optional managed artifact file groups in machine tool declarations. Older
+cores must reject this packed contract rather than strip a group and run an incomplete tool.
+The new declarations also require the negotiated machine and native-owner feature versions.
 “Isolate answered out of protocol” denotes an internal
 protocol violation, not an SDK-upgrade remedy exposed after version drift.
 
@@ -4543,13 +4547,17 @@ incumbent continuity mismatch, or `supersession damped`). A name conflict is dec
 same atomic write that would admit the hello; it sends no welcome, changes neither machine row,
 and leaves an incumbent connection untouched. Version acceptance uses
 `MACHINE_PROTOCOL_COMPAT_VERSIONS`, currently
-`{30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 51, 52, 53, 54, 55, 56, 57, 59}`; session/browser joins remain strictly
-current at protocol 59. An unchanged machine
+`{30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 51, 52, 53, 54, 55, 56, 57, 59, 60}`; session/browser joins remain strictly
+current at protocol 60. An unchanged machine
 wire may add a version to the set. A strictly additive-optional change may also add it only
 when old frames still parse and absent fields preserve the old semantics. Other changes
 reset the set and require a coordinated hub/transport upgrade. An admission bound applied
 identically at every accepted version, leaving compliant frames byte-identical, changes
 neither the version nor the set.
+
+Protocol 60 adds optional managed artifact file groups. Grouped declarations cross only a
+protocol-60-or-newer accepted machine transport and a native owner with the corresponding
+capability; compatible older transports and owners retain operations that do not use a group.
 
 **Native owner proof on every connection (#1050).** After `welcome`, a hub that admits the
 hello's `jobOwner` challenges it with `owner_challenge` and accepts `owner_proof` only when the
@@ -4654,8 +4662,8 @@ separate native owner proof and admitted resource/runtime bindings.
 
 ### Native job owner RPC
 
-Native owner RPC has its own `JOB_OWNER_PROTOCOL_VERSION`, currently 44, and
-`JOB_OWNER_PROTOCOL_COMPAT_VERSIONS = {34, 35, 36, 37, 40, 41, 42, 43, 44}`. It is independent of machine and session
+Native owner RPC has its own `JOB_OWNER_PROTOCOL_VERSION`, currently 46, and
+`JOB_OWNER_PROTOCOL_COMPAT_VERSIONS = {34, 35, 36, 37, 40, 41, 42, 43, 44, 45, 46}`. It is independent of machine and session
 protocols. An additive-optional change **adds** its new version to the acceptance set; a
 breaking change **resets** the set and requires a coordinated drained owner upgrade.
 Compatibility never substitutes for owner proof, current execution consent or resource
@@ -4675,8 +4683,12 @@ request/cancel/result relay (#769); existing unbound jobs remain unchanged. The 
 change adds signed request `serviceBindings` and operation location `outputOnly`. The additive
 42 → 43 change adds the machine location lifetime `temporary` (#933). The additive
 43 → 44 change adds opt-in owner-quoted direct-service monetary accounting (#937).
+The additive 44 → 45 change adds sealed credential enrollment through a signed,
+per-incarnation recipient and requires machine transport 55. The additive 45 → 46 change adds
+managed artifact file groups and requires machine transport 60. These versions add feature
+capabilities; neither grants live enrollment, installation or owner-restart authority.
 Versions 38 and 39 were reserved by drafts and are never accepted; because capability
-checks compare revisions, a later capability takes a version above 44 rather than reusing them.
+checks compare revisions, a later capability takes a version above 46 rather than reusing them.
 These are optional operations, not permission to orphan every already-running job or instance service.
 
 The hub sends only fields the negotiated owner parses. Private launch and `launchBinding`
@@ -4684,13 +4696,17 @@ require 35; bound inputs require 36; self-provider service runtimes require 37; 
 anchors require 40; Run-bound tools require 41 and machine protocol 43; explicit instance
 references (`serviceBindings`) and output-only backing locations (`outputOnlyLocations`)
 require 42; temporary locations (`temporaryLocations`) require 43; bounded direct-service
-accounting (`directServiceAccounting`) and its new policy fields require 44. An older accepted owner
-keeps serving its compatible jobs and instance services;
+accounting (`directServiceAccounting`) and its new policy fields require 44. Managed artifact
+file groups require owner 46 and machine transport 60. An unsupported grouped operation
+refuses `managed_artifact_groups_protocol_unsupported`; its whole grouped tool declaration is
+omitted from the older owner's projection, never weakened by dropping only the group. An older
+accepted owner keeps serving its compatible jobs and instance services;
 only the newer use is refused by name (`run_launch_protocol_unsupported`,
 `bound_inputs_protocol_unsupported`, `service_runtime_unsupported`,
 `operator_anchors_protocol_unsupported`, `agent_tools_protocol_unsupported`,
 `service_bindings_protocol_unsupported`, `output_only_locations_protocol_unsupported`,
-`temporary_locations_protocol_unsupported` or `service_accounting_protocol_unsupported`).
+`temporary_locations_protocol_unsupported`, `service_accounting_protocol_unsupported` or
+`managed_artifact_groups_protocol_unsupported`).
 Unsupported
 operation declarations are omitted from that owner's install projection rather than
 weakening them, and signed admissions are never rewritten. A location declaration an older
@@ -5237,6 +5253,28 @@ policySha256, jobId }` or null), the expected revision, the resolved policy and 
   ambient credentials, under approved destination/redirect and compressed/expanded/member
   bounds. It verifies archive and executable-entry SHA256 and any declared bundled tool
   files before private atomic publication. Digests must describe actual packaged bytes.
+  A managed tool may additionally declare bounded `fileGroups`: each names an independent
+  artifact, an explicit entry target, an exact companion-key-to-target map and a directory target
+  relative to `/runtime/bin`. These are selected files, not new tool aliases or host resources.
+  The existing alias binds its primary executable plus every verified group directory read-only.
+  Legacy `MachineArtifact.files` retains its eight companion-alias limit and meaning.
+  A group source has no nested groups, aliases or legacy `relativeTarget`; its entry and every
+  selected companion are independently pinned. No undeclared archive member is materialized.
+  The entire alias is limited to 128 selected files and eight groups, with aggregate declared
+  maxima no greater than 512 MiB compressed, 1 GiB expanded and 10,000 archive members.
+  Actual acquisition remains bounded by those declarations. Eight managed aliases, eight
+  operation runtime aliases, the 256 actual-bind limit and existing inline-delivery budgets
+  are unchanged; a verified directory is one bind, while all its files count toward 128.
+  Targets must have exact key coverage and fit the existing combined component-depth bound.
+  Duplicate, ancestor/descendant, primary/group, cross-group and other-mount collisions refuse.
+  The owner writes only verified selected bytes into a private staged tree, then fsyncs and
+  atomically publishes it. Recovery verifies complete membership, hashes, ownership, modes,
+  single-link files and same-mount directory custody; links, extras or substitutions refuse.
+  The canonical installation declaration and cache identity bind every source and target map.
+  A missing or corrupt member makes the whole alias unavailable; no partial group or ambient
+  executable fallback is admitted. Closing or purging a group retains exact owned cleanup
+  obligations. Grouping adds no acquisition origin, host consent, filesystem authority or
+  unrestricted mount-overlap exception.
   Named tools resolve only to reviewed runtime closures or hash-verified bundled files;
   naming a tool grants no host PATH search or package installation. On supported Linux
   architectures, the configured, held bubblewrap executable uses FD-backed mounts,
@@ -5267,6 +5305,19 @@ policySha256, jobId }` or null), the expected revision, the resolved policy and 
   deferring servers receive no proof exception.
   Missing tools, resources, enforcement or unsupported platforms refuse execution;
   there is no unrestricted platform fallback.
+  Privileged owner-host source proofs may supply `preparedArtifactArchives` as a trusted,
+  in-memory constructor option keyed by exact declared HTTPS URL and archive SHA256.
+  It is absent from serialized owner configuration, protocol/RPC, plugin/action arguments,
+  environment and CLI flags. Prepared bytes still pass ordinary URL/origin admission,
+  archive/member hashes, size/member bounds and cache custody; they cannot authorize a
+  destination, replace declarations, fake HTTP success or insert tool-cache files manually.
+  The immutable prepared lookup is separate from the mutable one-source download cache.
+  Ordinary startup without this option uses normal HTTPS. A prepared-byte proof is not
+  publisher/network provenance; immutable public artifacts require separate post-publication proof.
+  The privileged `@manifold/agent` host library exposes the same `runTerminalHost` startup
+  pipeline used by the normal CLI and the actual `acquireManagedTool`/`openCachedManagedTool`
+  acquisition and recovery helpers. Their held read-only bindings and `close()` obligations
+  remain owner-owned, not a public action surface or permission to restart a live owner.
 - **Named output backing and budgets.** Named output directories must already reside on
   bounded tmpfs filesystems; the runtime does not provision them. Preflight counts each
   distinct backing device once and requires positive byte/inode capacity, summed byte
@@ -5916,10 +5967,10 @@ IS the cross-instance reference. `tickets` answers with the subset of the advert
 still live, and the guest drops the rest. Or the host closes: 4401 unauthorized / origin
 mismatch, 4403 revoked, 4409 version, 4002 malformed or first-frame-not-hello or duplicate
 hello, 4008 liveness timeout, 4001 superseded. Version acceptance is
-`INSTANCE_PROTOCOL_COMPAT_VERSIONS` `{53, 54, 55, 56, 57, 59}` — its own wire, its own set, the
+`INSTANCE_PROTOCOL_COMPAT_VERSIONS` `{53, 54, 55, 56, 57, 59, 60}` — its own wire, its own set, the
 same [Protocol and compatibility](#protocol-and-compatibility) discipline the machine channel follows.
 Protocol53 reset instance acceptance for explicit host-recipient admission and finite
-ticket subset/expiry. Protocols 54, 55, 56, 57 and 59 leave that instance wire unchanged and add their
+ticket subset/expiry. Protocols 54, 55, 56, 57, 59 and 60 leave that instance wire unchanged and add their
 versions without another peer reset. Federation compatibility remains independent of
 retained terminal-agent compatibility. This is not an implicit live rollout or authorization to install
 newer agents ahead of their hub.

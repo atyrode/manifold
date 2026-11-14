@@ -1930,6 +1930,31 @@ A runtime tool is a reviewed closure or declared bundled file, not an arbitrary 
 or a request to search host PATH. Do not invent packaging hashes, inherit caller
 environment, provide host paths/cwd, or install packages at execution time. The trusted
 owner acquires and verifies the real artifact privately.
+
+**Group managed files without another alias.** A platform entry under `machine.tools[alias]`
+may add `fileGroups`. Each group names its independent `artifact`, directory `target` relative
+to `/runtime/bin`, `entryTarget` inside that directory, and a `fileTargets` map with exactly
+the keys of `artifact.files`. The group source uses the same HTTPS-or-`bundleFile`, archive
+hash, format, entry hash and extraction budgets as an artifact; every selected companion
+has its own archive entry and hash. Its file keys are not aliases, it has no `relativeTarget`
+or nested groups, and no unselected archive member is extracted into the mounted tree.
+The existing tool alias supplies its primary executable and every complete group directory
+as read-only bindings. Existing `MachineArtifact.files` keeps its eight-file legacy alias
+semantics. A declared group entry may be a data or manifest file, not another executable.
+An alias may select at most 128 files in total, including its primary, legacy companions and
+all group entries/files, across at most eight groups. Its aggregate declared ceilings stay
+within 512 MiB compressed, 1 GiB expanded and 10,000 archive members. Operations still name
+at most eight runtime aliases, and all actual mounts still share the 256-bind limit.
+Use explicit safe component paths within the existing combined depth bound. Duplicate or
+ancestor/descendant file targets, primary/group or cross-group targets, and overlaps with
+other job mounts are refused; no writable-parent exception is implied.
+The owner atomically publishes only verified selected bytes and holds the complete directory.
+Missing, extra, corrupt, linked or substituted files make the whole alias unavailable, including
+after cache recovery. Do not bind application data through an unrelated OS runtime resource.
+Grouped declarations require machine transport 60, native owner capability 46 and a contract-14
+kit/core. Older accepted owners omit whole affected operations and grouped declarations and
+refuse `managed_artifact_groups_protocol_unsupported`; they never run a stripped group.
+Use the semantic core release containing this support, not an unmerged source pin.
 Linux x64/arm64 enforces held-FD mounts, seccomp and owner-controlled cgroup-v2 containment;
 unavailable enforcement or unsupported backends refuse execution, never fall back to an
 unrestricted process. Terminal transports remain usable independently of job availability.
@@ -4297,7 +4322,7 @@ isolated Bun child, `web.js` linked to the page's React/design system, and a
 web definition and attaches the guest runtime; authors do not write a separate
 Worker or add `--self-contained` (that flag conflicts with a page-linked portable
 entry). The JSON artifact carries exact-byte SHA-256, base64 members,
-`format: 1`, `hardenedContract: 13` and a protocol stamp. The host serves the
+`format: 1`, `hardenedContract: 14` and a protocol stamp. The host serves the
 declared Worker member at `/api/plugins/<id>/web.worker.js` only while enabled,
 with the artifact pin and `no-store`. A Worker cannot import `react-dom` or the
 page's engine objects; unsupported imports/JSX refuse by name. Hardening
@@ -4305,7 +4330,7 @@ selection never falls back to native when packing, loading or runtime fails.
 `verify --hardened` exercises actual server doors, not browser rendering:
 exercise the panel in a browser too. The install door and grant remain §7.
 
-Current packs stamp contract 13; the hub admits stamped contracts 1–13 using
+Current packs stamp contract 14; the hub admits stamped contracts 1–14 using
 each artifact's own compatible frames. Contract 8 adds caller-plugin attribution;
 contract 9 adds React frame roots, mounted context/sections, generated portable
 Worker member, event invalidations, authoring and narrow machine bridges. Portable Workers
@@ -4320,6 +4345,9 @@ Agent/Run snapshot refuses as `scoped_authority_requires_v2` before posting; a c
 never used to restore hub authority. Contract 13 adds the optional harness `resolveModel`
 and a `model` on `identity.reportRunActivityV2`; the host sends the verb only to a guest that
 announced it, and a Run whose harness never resolves models has every reported model refused.
+Contract 14 adds bounded managed artifact file groups
+([governed jobs](#governed-jobs-and-continuous-streams));
+group-using tools also require machine transport 60 and owner 46.
 Older admitted artifacts do not acquire new facilities.
 Missing stamps require a genuine repack, not an assumed contract 1;
 `repack_required` holds incompatible incumbents before import or spawn.
