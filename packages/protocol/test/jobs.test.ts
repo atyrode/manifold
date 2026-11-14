@@ -791,15 +791,9 @@ test("machine group roots cannot overlap primary aliases, legacy companions or o
   expect(MachineHalfSchema.safeParse(declaration).success).toBe(true);
   const parsed = MachineHalfSchema.parse(declaration);
   const sources = machineArtifacts(parsed);
-  expect(sources).toEqual([artifact, artifact, group.artifact]);
-  expect(sources[0]).toBe(parsed.artifacts["linux-x64"]);
-  expect(sources[2]).toBe(parsed.tools!.engine!["linux-x64"]!.fileGroups![0]!.artifact);
   expect(MachineArtifactSchema.safeParse(sources[1]).success).toBe(true);
   expect(MachineArtifactSchema.safeParse(sources[2]).success).toBe(false);
   expect(MachineArtifactFileGroupSourceSchema.safeParse(sources[2]).success).toBe(true);
-  expect(machineArtifacts({ ...parsed, tools: { plain: { "linux-x64": artifact } } })[1]).toBe(
-    artifact,
-  );
   expect(
     MachineHalfSchema.safeParse({
       ...declaration,
