@@ -335,11 +335,46 @@ jobs:
           persist-credentials: false
       - uses: ./.github/actions/bun-workspace
       - uses: ./.github/actions/gate-slice
+        id: terminal-proof
         env:
           MANIFOLD_RESTART_SCREENSHOT: ${{ runner.temp }}/terminal-restart.png
         with:
           task: terminal-mirror
           dist: "true"
+      # #1094 diagnostic only; remove after the owning startup cause experiment.
+      - name: Compare installed stable Chrome after terminal proof failure
+        if: failure() && steps.terminal-proof.outcome == 'failure'
+        shell: bash
+        run: |
+          stable_chrome=$(command -v google-chrome) || {
+            echo "::error::no installed google-chrome to compare against"
+            exit 1
+          }
+          MANIFOLD_CHROMIUM="$stable_chrome" bun --eval '
+            import { Browser } from "./scripts/cdp.ts";
+            console.log("Experimental installed stable Chrome startup comparison:", Browser.detect());
+            const results = await Promise.allSettled([1, 2].map(async (index) => {
+              const browser = new Browser();
+              const started = performance.now();
+              try {
+                await browser.launch({ incognito: true });
+                const version = await browser.send("Browser.getVersion", {}, false);
+                console.log(`stable Chrome comparison ${index}: real DevTools attach PASS in ${Math.round(performance.now() - started)}ms`, version.result?.product);
+              } catch (error) {
+                console.error(`stable Chrome comparison ${index}: startup failed`, error);
+                throw error;
+              } finally {
+                await browser.close();
+                console.log(`stable Chrome comparison ${index}: close returned`);
+              }
+            }));
+            for (const [index, result] of results.entries()) {
+              if (result.status === "rejected") {
+                console.error(`stable Chrome comparison ${index + 1}:`, result.reason);
+              }
+            }
+            if (results.some((result) => result.status === "rejected")) process.exit(1);
+          '
       - name: Retain terminal restart screenshot
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4

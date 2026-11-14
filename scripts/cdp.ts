@@ -5,7 +5,16 @@
  * Gate polling timing lives in `gate-lib.ts` with the rest of the gate bootstrap; this file is
  * the driver and owns bounded protocol-operation deadlines.
  */
-import { existsSync, rmSync } from "node:fs";
+import {
+  closeSync,
+  constants,
+  existsSync,
+  fstatSync,
+  openSync,
+  opendirSync,
+  readSync,
+  rmSync,
+} from "node:fs";
 import { reserveLoopbackPort, sleep } from "./gate-lib.ts";
 
 interface CdpFrame {
@@ -50,6 +59,242 @@ const DEVTOOLS_PROBE_MS = 2_000;
  * infinite wait with diagnostics, not to fail a slow-but-progressing launch.
  */
 const CDP_SOCKET_OPEN_MS = 60_000;
+
+/** Startup evidence is local to a launch and never includes argv, environment or raw URLs. */
+function startupText(text: string): string {
+  return text
+    .replace(/[^\S\n]+/g, " ")
+    .replace(
+      /^.*(?:--[a-z][a-z0-9-]*(?:=|\s|$)|\b[A-Z][A-Z0-9_]*=|(?:authorization|cookie|password|secret|token|api[_-]?key)\s*[:=]|^(?:\+ |exec |env )).*$/gim,
+      "[command/environment/credential line redacted]",
+    )
+    .replace(/\b[a-z][a-z0-9+.-]*:\/\/[^\s"'<>]+/gi, "[url redacted]")
+    .replace(/[\x00-\x08\x0b-\x1f\x7f]/g, "?")
+    .slice(0, 4_096);
+}
+
+/** Drain both pipes independently of readiness; retain sanitized first/last 4KiB only. */
+function startupOutput(
+  stream: ReadableStream<Uint8Array>,
+  startup: { capturing: boolean },
+): () => string {
+  let first = "";
+  let last = "";
+  let total = 0;
+  let pending = "";
+  let oversized = false;
+  let state = "draining";
+  const retain = (line: string): void => {
+    const safe = `${startupText(line)}\n`;
+    if (first.length < 4_096) first += safe.slice(0, 4_096 - first.length);
+    last = (last + safe).slice(-4_096);
+    total += safe.length;
+  };
+  void (async () => {
+    const reader = stream.getReader();
+    const decoder = new TextDecoder();
+    try {
+      for (;;) {
+        const chunk = await reader.read();
+        if (!startup.capturing) {
+          if (chunk.done) break;
+          continue;
+        }
+        const text = chunk.done ? decoder.decode() : decoder.decode(chunk.value, { stream: true });
+        for (const part of text.split(/(?<=\n)/)) {
+          if (!oversized) {
+            if (pending.length + part.length > 8_192) {
+              retain("[oversized startup line omitted]");
+              pending = "";
+              oversized = true;
+            } else pending += part;
+          }
+          if (part.endsWith("\n")) {
+            if (!oversized) retain(pending.slice(0, -1));
+            pending = "";
+            oversized = false;
+          }
+        }
+        if (chunk.done) break;
+      }
+      if (pending !== "") retain(pending);
+      pending = "";
+      state = "ended";
+    } catch (error) {
+      state = `read unavailable (${observationError(error)})`;
+    } finally {
+      reader.releaseLock();
+    }
+  })();
+  return () => {
+    const partial = pending === "" ? "" : `${startupText(pending)}\n`;
+    const head = (first + partial).slice(0, 4_096);
+    const tail = (last + partial).slice(-4_096);
+    return `${state}; first:\n${head || "(no output observed)\n"}${
+      total + partial.length > 4_096 ? `last:\n${tail}` : ""
+    }`;
+  };
+}
+
+function observationError(error: unknown): string {
+  if (error !== null && typeof error === "object") {
+    const code: unknown = Reflect.get(error, "code");
+    if (typeof code === "string" && /^[A-Z0-9_]+$/.test(code)) return code;
+  }
+  return "unavailable";
+}
+
+function probeError(error: unknown, depth = 0): string {
+  if (!(error instanceof Error)) return "non-Error exception (value omitted)";
+  const code = observationError(error);
+  const message =
+    error instanceof SyntaxError ? "invalid JSON response (body omitted)" : error.message;
+  return `${startupText(`${error.name}: ${message}`).slice(0, 512)}${
+    code === "unavailable" ? "" : ` [${code}]`
+  }${depth < 1 && error.cause instanceof Error ? `; cause: ${probeError(error.cause, depth + 1)}` : ""}`;
+}
+
+function versionResponse(body: unknown): string {
+  if (body === null || typeof body !== "object")
+    return `JSON ${body === null ? "null" : typeof body}`;
+  const fields = ["Browser", "Protocol-Version", "webSocketDebuggerUrl"].map((key) => {
+    const value: unknown = Reflect.get(body, key);
+    return `${key}=${typeof value === "string" ? (value === "" ? "empty string" : "string present") : "absent/non-string"}`;
+  });
+  return `JSON ${Array.isArray(body) ? "array" : "object"}; ${fields.join("; ")}`;
+}
+
+/** One nonblocking, size-bounded read; do not follow a substituted profile-file symlink. */
+function startupFile(path: string, limit: number): { text: string; truncated: boolean } {
+  const fd = openSync(path, constants.O_RDONLY | constants.O_NONBLOCK | constants.O_NOFOLLOW);
+  try {
+    if (!fstatSync(fd).isFile()) throw new Error("not a regular observation file");
+    const bytes = Buffer.alloc(limit + 1);
+    const count = readSync(fd, bytes, 0, bytes.length, 0);
+    return { text: bytes.subarray(0, Math.min(count, limit)).toString(), truncated: count > limit };
+  } finally {
+    closeSync(fd);
+  }
+}
+
+function startupStat(pid: number): { ppid: number; start: string; state: string } {
+  const stat = startupFile(`/proc/${String(pid)}/stat`, 4_096);
+  const fields = stat.text
+    .slice(stat.text.lastIndexOf(")") + 2)
+    .trim()
+    .split(/\s+/);
+  if (
+    stat.truncated ||
+    !/^[A-Za-z]$/.test(fields[0] ?? "") ||
+    !/^\d+$/.test(fields[1] ?? "") ||
+    !/^\d+$/.test(fields[19] ?? "")
+  ) {
+    throw new Error("invalid process stat");
+  }
+  return { ppid: Number(fields[1]), start: fields[19] ?? "", state: fields[0] ?? "?" };
+}
+
+/** Failure-only snapshot: inspect owned parent/child edges, never enumerate /proc globally. */
+function ownedStartupProcesses(proc: Bun.Subprocess): string {
+  if (process.platform !== "linux") return "unavailable (not Linux)";
+  const queue = [{ pid: proc.pid, ppid: process.pid, parentStart: "" }];
+  const seen = new Set<number>();
+  const lines: string[] = [];
+  for (let index = 0; index < queue.length && index < 16; index += 1) {
+    if (proc.exitCode !== null) {
+      lines.push("launch child exited; former/orphaned descendants cannot be attributed");
+      break;
+    }
+    const entry = queue[index];
+    if (entry === undefined || seen.has(entry.pid)) continue;
+    seen.add(entry.pid);
+    const base = `/proc/${String(entry.pid)}`;
+    try {
+      const stat = startupStat(entry.pid);
+      if (
+        stat.ppid !== entry.ppid ||
+        (entry.parentStart !== "" && startupStat(entry.ppid).start !== entry.parentStart)
+      ) {
+        lines.push(`pid=${String(entry.pid)} unavailable (parent identity changed)`);
+        continue;
+      }
+      const observe = (name: string): string => {
+        try {
+          const data = startupFile(`${base}/${name}`, 128);
+          return data.truncated
+            ? "unavailable(truncated)"
+            : data.text.trim().replace(/[^a-zA-Z0-9_.+-]/g, "?");
+        } catch (error) {
+          return `unavailable(${observationError(error)})`;
+        }
+      };
+      const summary = `pid=${String(entry.pid)} ppid=${String(stat.ppid)} startTicks=${stat.start} state=${stat.state} comm=${observe("comm")} wchan=${observe("wchan")}`;
+      const children = new Set<number>();
+      const notes: string[] = [];
+      try {
+        const tasks = opendirSync(`${base}/task`);
+        try {
+          for (let count = 0; count <= 16; count += 1) {
+            const task = tasks.readSync();
+            if (task === null) break;
+            if (count === 16) {
+              notes.push("task limit reached");
+              break;
+            }
+            if (!/^\d+$/.test(task.name)) continue;
+            try {
+              const data = startupFile(`${base}/task/${task.name}/children`, 2_048);
+              if (data.truncated) notes.push("children read truncated");
+              for (const child of data.text.trim().split(/\s+/)) {
+                if (/^\d+$/.test(child)) children.add(Number(child));
+              }
+            } catch (error) {
+              notes.push(`children unavailable(${observationError(error)})`);
+            }
+          }
+        } finally {
+          tasks.closeSync();
+        }
+      } catch (error) {
+        notes.push(`tasks unavailable(${observationError(error)})`);
+      }
+      const after = startupStat(entry.pid);
+      if (
+        after.start !== stat.start ||
+        after.ppid !== stat.ppid ||
+        proc.exitCode !== null ||
+        (entry.parentStart !== "" && startupStat(entry.ppid).start !== entry.parentStart)
+      ) {
+        lines.push(`pid=${String(entry.pid)} unavailable (identity changed during observation)`);
+        continue;
+      }
+      for (const pid of children) {
+        if (seen.has(pid)) continue;
+        if (queue.length < 16) queue.push({ pid, ppid: entry.pid, parentStart: stat.start });
+        else if (!notes.includes("process limit reached")) notes.push("process limit reached");
+      }
+      lines.push(
+        `${summary} childrenObserved=${String(children.size)}${notes.length === 0 ? "" : `; ${notes.join("; ")}`}`,
+      );
+    } catch (error) {
+      lines.push(`pid=${String(entry.pid)} unavailable(${observationError(error)})`);
+    }
+  }
+  return `${lines.join("\n")}\nbounded/racy snapshot (16 processes, 16 tasks/process); unobserved or orphaned descendants are not ruled out`;
+}
+
+function startupActivePort(profile: string): string {
+  try {
+    const data = startupFile(`${profile}/DevToolsActivePort`, 256);
+    const match = /^([0-9]{1,5})\n(\/devtools\/browser\/[a-zA-Z0-9-]{1,128})\n?$/.exec(data.text);
+    const port = Number(match?.[1]);
+    if (data.truncated || match === null || port < 1 || port > 65_535)
+      return "invalid (contents omitted)";
+    return `port=${String(port)} path=${match[2] ?? ""} (file evidence, not proof of liveness)`;
+  } catch (error) {
+    return `unavailable(${observationError(error)})`;
+  }
+}
 
 /** Renders one CDP `Runtime.RemoteObject` as the text a reader wants in a dump. */
 function describeRemoteObject(value: unknown): string {
@@ -217,25 +462,38 @@ export class Browser {
         "--window-size=1440,900",
         "about:blank",
       ],
-      { stdout: "ignore", stderr: "pipe", env },
+      { stdout: "pipe", stderr: "pipe", env },
     );
     this.proc = proc;
 
-    // Keep a bounded stderr tail: launch failures on CI runners are
-    // undiagnosable without it (issue #44).
-    let stderrTail = "";
-    void (async () => {
-      const decoder = new TextDecoder();
-      const reader = proc.stderr.getReader();
-      for (;;) {
-        const chunk = await reader.read();
-        if (chunk.done) break;
-        stderrTail = (stderrTail + decoder.decode(chunk.value)).slice(-4096);
-      }
-    })();
+    const startup = { capturing: true };
+    const stdout = startupOutput(proc.stdout, startup);
+    const stderr = startupOutput(proc.stderr, startup);
     const launched = Date.now();
-    const diagnostics = (): string =>
-      `${binary} (devtools port ${String(port)}, ${String(Date.now() - launched)}ms after launch)${stderrTail === "" ? "" : `\nchromium stderr tail:\n${stderrTail}`}`;
+    let lastProbe = "not attempted";
+    let lastResponse = "none observed";
+    const diagnostics = (includeProcesses = false): string => {
+      const states: string[] = [];
+      let processes = "";
+      for (const [label, child] of [
+        ["chromium", proc],
+        ["private bus:", this.privateBus],
+      ] as const) {
+        states.push(
+          child === null
+            ? `${label} not present`
+            : `${label} pid=${String(child.pid)} exitCode=${child.exitCode === null ? "not observed" : String(child.exitCode)} signal=${child.signalCode ?? "not observed"}`,
+        );
+        if (includeProcesses && child !== null) {
+          try {
+            processes += `\nowned ${label} /proc snapshot:\n${ownedStartupProcesses(child)}`;
+          } catch (error) {
+            processes += `\nowned ${label} /proc snapshot unavailable(${observationError(error)})`;
+          }
+        }
+      }
+      return `${binary} (devtools port ${String(port)}, ${String(Date.now() - launched)}ms after launch)\n${states.join("\n")}\nprofile: ${profile}\nDevToolsActivePort: ${startupActivePort(profile)}\nlast /json/version response: ${lastResponse}\nlast readiness probe: ${lastProbe}\nchromium stdout ${stdout()}\nchromium stderr ${stderr()}${processes}`;
+    };
 
     let endpoint = "";
     const deadline = launched + 60_000;
@@ -253,14 +511,18 @@ export class Browser {
             Math.max(1, Math.min(DEVTOOLS_PROBE_MS, deadline - Date.now())),
           ),
         });
+        lastResponse = `HTTP ${String(res.status)} (JSON body not yet decoded)`;
         const body = (await res.json()) as { webSocketDebuggerUrl?: string };
+        lastResponse = `HTTP ${String(res.status)}; ${versionResponse(body)}`;
         endpoint = body.webSocketDebuggerUrl ?? "";
+        lastProbe =
+          endpoint === "" ? "response without a debugger endpoint" : "debugger endpoint advertised";
         if (endpoint !== "") break;
-      } catch {
-        // devtools endpoint not accepting connections yet
+      } catch (error) {
+        lastProbe = probeError(error);
       }
       if (Date.now() > deadline) {
-        throw new Error(`timed out waiting for chromium devtools endpoint: ${diagnostics()}`);
+        throw new Error(`timed out waiting for chromium devtools endpoint: ${diagnostics(true)}`);
       }
       await sleep(150);
     }
@@ -315,6 +577,8 @@ export class Browser {
     // Browser-side log entries (blocked requests, failed websockets, CSP refusals) are
     // invisible to `Runtime` yet are exactly what a silent transport failure looks like.
     await this.send("Log.enable", {});
+    // Keep draining Chromium's pipes, but retain no post-startup output.
+    startup.capturing = false;
   }
 
   async send(

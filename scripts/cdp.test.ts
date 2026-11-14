@@ -125,3 +125,114 @@ finally { await browser.close(); }`,
     rmSync(fixture, { recursive: true, force: true });
   }
 }, 20_000);
+
+test.each(["invalid JSON", "unexpected fields"])(
+  "an early Chromium exit retains bounded startup and readiness evidence: %s",
+  async (responseKind) => {
+    const fixture = mkdtempSync(join(tmpdir(), "manifold-cdp-startup-evidence-"));
+    let child: Bun.Subprocess<"ignore", "pipe", "pipe"> | undefined;
+    try {
+      const devtools = join(fixture, "devtools.ts");
+      const response =
+        responseKind === "invalid JSON"
+          ? 'new Response("fixture-response-secret", { status: 503 })'
+          : 'Response.json({ Browser: "fixture-response-secret", "Protocol-Version": "fixture-response-secret" }, { status: 503 })';
+      writeFileSync(
+        devtools,
+        `import { mkdirSync, writeFileSync } from "node:fs";
+const port = Number(process.argv.find((arg) => arg.startsWith("--remote-debugging-port="))?.split("=")[1]);
+const profile = process.argv.find((arg) => arg.startsWith("--user-data-dir="))?.slice("--user-data-dir=".length);
+if (!profile || !Number.isInteger(port)) process.exit(91);
+mkdirSync(profile, { recursive: true });
+writeFileSync(profile + "/DevToolsActivePort", "54321\\n/devtools/browser/fixture\\n");
+// Parent fake clocks cannot govern this executable; this timer is a safety bound, not a wait.
+setTimeout(() => process.exit(29), 4_000);
+await Bun.write(Bun.stdout, "fixture stdout first\\nhttps://invalid.example/?token=fixture-url-secret\\n" +
+  "startup filler\\n".repeat(16_384) + "fixture stdout last\\n");
+await Bun.write(Bun.stderr, "fixture stderr first\\n+ browser --api-key=fixture-command-secret\\n" +
+  "MANIFOLD_FIXTURE_SECRET=fixture-env-secret\\n" + "startup filler\\n".repeat(16_384) +
+  "fixture stderr last\\n");
+const server = Bun.serve({
+  hostname: "127.0.0.1",
+  port,
+  fetch() {
+    // Exit only once the failing HTTP response has actually been written and closed.
+    setImmediate(() => { void server.stop().then(() => process.exit(29)); });
+    return ${response};
+  },
+});
+`,
+      );
+      const chromium = join(fixture, "chromium");
+      writeFileSync(
+        chromium,
+        `#!/bin/sh\nexec ${JSON.stringify(process.execPath)} ${JSON.stringify(devtools)} "$@"\n`,
+        { mode: 0o755 },
+      );
+      const cdp = pathToFileURL(join(import.meta.dir, "cdp.ts")).href;
+      child = Bun.spawn(
+        [
+          process.execPath,
+          "-e",
+          `import { Browser } from ${JSON.stringify(cdp)};
+const browser = new Browser();
+let closing;
+const close = () => (closing ??= browser.close());
+process.once("SIGTERM", () => { void close().finally(() => process.exit(124)); });
+try { await browser.launch({ incognito: true }); console.log("unexpected launch"); }
+catch (error) { console.log(String(error)); }
+finally { await close(); }`,
+        ],
+        {
+          env: {
+            ...process.env,
+            MANIFOLD_CHROMIUM: chromium,
+            MANIFOLD_CDP_TEST_PRIVATE: "fixture-inherited-secret",
+          },
+          stdin: "ignore",
+          stdout: "pipe",
+          stderr: "pipe",
+          timeout: 10_000,
+          killSignal: "SIGTERM",
+        },
+      );
+      const [exitCode, stdout, stderr] = await Promise.all([
+        child.exited,
+        new Response(child.stdout).text(),
+        new Response(child.stderr).text(),
+      ]);
+      expect(exitCode, stderr).toBe(0);
+      expect(stdout).toContain(
+        "chromium exited with code 29 before its devtools endpoint came up:",
+      );
+      expect(stdout).toMatch(/chromium pid=\d+ exitCode=29 signal=not observed/);
+      if (process.platform === "linux")
+        expect(stdout).toMatch(/private bus: pid=\d+ exitCode=not observed/);
+      else expect(stdout).toContain("private bus: not present");
+      expect(stdout).toContain("DevToolsActivePort: port=54321 path=/devtools/browser/fixture");
+      expect(stdout).toContain("last /json/version response: HTTP 503");
+      if (responseKind === "invalid JSON") {
+        expect(stdout).toContain("last readiness probe: SyntaxError:");
+        expect(stdout).toContain("invalid JSON response (body omitted)");
+      } else {
+        expect(stdout).toContain("Browser=string present");
+        expect(stdout).toContain("Protocol-Version=string present");
+        expect(stdout).toContain("last readiness probe: response without a debugger endpoint");
+      }
+      for (const marker of ["stdout first", "stdout last", "stderr first", "stderr last"]) {
+        expect(stdout).toContain(`fixture ${marker}`);
+      }
+      expect(stdout.length).toBeLessThan(20_000);
+      for (const secret of ["url", "command", "env", "inherited", "response"]) {
+        expect(stdout).not.toContain(`fixture-${secret}-secret`);
+      }
+    } finally {
+      if (child !== undefined) {
+        if (child.exitCode === null) child.kill("SIGTERM");
+        await child.exited;
+      }
+      rmSync(fixture, { recursive: true, force: true });
+    }
+  },
+  20_000,
+);
