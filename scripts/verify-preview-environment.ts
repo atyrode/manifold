@@ -137,6 +137,98 @@ const developmentOverlay = join(tooling, "fixture-development.yaml");
 const pinPath = join(tooling, "environment-image.txt");
 const adapterPath = join(tooling, "Dockerfile.environment");
 
+let failure: unknown;
+let interrupted = false;
+const harnessSignals: { signal: string; at: string; processes: unknown[] }[] = [];
+const cleanupReceipt: {
+  startedAt?: string;
+  finishedAt?: string;
+  ok?: boolean;
+  failures: string[];
+  commands: Record<string, unknown>[];
+  processes?: unknown[];
+} = { failures: [], commands: [] };
+interface CommandReceipt {
+  pid?: number;
+  startedAt?: string;
+  deadlineMs?: number;
+  timedOut?: boolean;
+  exited?: { at: string; elapsedMs: number; code: number; signal: string | number | null };
+  drainedAt?: string;
+  output?: { stdout: string; stderr: string; truncated: boolean };
+  signals: Record<string, unknown>[];
+}
+let ownedStop:
+  | {
+      id: string;
+      startedAt: string;
+      command: CommandReceipt;
+      observations: Record<string, unknown>[];
+      failure?: string;
+      retirement?: "confirmed" | "present" | "unknown";
+    }
+  | undefined;
+
+function errorCode(error: unknown): string {
+  const code = error instanceof Error && "code" in error ? String(error.code) : "";
+  return /^[A-Z0-9_]+$/.test(code) ? code : "unavailable";
+}
+/** Only selected kernel fields for exact PIDs; never argv, environment, stacks or terminal data. */
+function processReceipt(pid: number): Record<string, unknown> {
+  try {
+    const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
+    const fields = stat.slice(stat.lastIndexOf(")") + 2).trim().split(/\s+/);
+    const status = readFileSync(`/proc/${pid}/status`, "utf8");
+    return {
+      pid,
+      state: fields[0],
+      ppid: Number(fields[1]),
+      pgid: Number(fields[2]),
+      session: Number(fields[3]),
+      threads: Number(fields[17]),
+      starttime: fields[19],
+      wchan: readFileSync(`/proc/${pid}/wchan`, "utf8").trim().slice(0, 128),
+      signals: Object.fromEntries(
+        [...status.matchAll(/^(SigPnd|ShdPnd|SigBlk|SigIgn|SigCgt):\s*([0-9a-f]+)$/gm)].map(
+          ([, key, value]) => [key, value],
+        ),
+      ),
+    };
+  } catch (error) {
+    return { pid, unavailable: errorCode(error) };
+  }
+}
+function harnessProcesses(): Record<string, unknown>[] {
+  const result: Record<string, unknown>[] = [];
+  let pid = process.pid;
+  for (let depth = 0; depth < 8 && pid > 0; depth++) {
+    const receipt = processReceipt(pid);
+    result.push(receipt);
+    if (typeof receipt["ppid"] !== "number" || receipt["ppid"] === pid) break;
+    pid = receipt["ppid"];
+  }
+  return result;
+}
+/** Write incrementally, and again after cleanup; a secondary failure cannot replace the workload. */
+function persistEvidence(): void {
+  metrics["elapsedMs"] = Date.now() - started;
+  metrics["steps"] = reports;
+  metrics["ok"] = failure === undefined && !interrupted && cleanupReceipt.ok === true;
+  metrics["failure"] =
+    failure === undefined
+      ? null
+      : redact(failure instanceof Error ? failure.message : String(failure));
+  metrics["signals"] = harnessSignals;
+  metrics["cleanup"] = cleanupReceipt;
+  writeFileSync(join(evidence, "command-tail.txt"), redact(commandTail));
+  writeFileSync(join(evidence, "metrics.json"), JSON.stringify(metrics, null, 2) + "\n");
+  if (ownedStop)
+    writeFileSync(
+      join(evidence, "owned-container-stop.json"),
+      redact(JSON.stringify(ownedStop, null, 2)) + "\n",
+    );
+}
+
 function requireThat(ok: unknown, message: string): asserts ok {
   if (!ok) throw new Error(message);
 }
@@ -151,11 +243,13 @@ interface CommandOptions {
   timeoutMs?: number;
   allowFailure?: boolean;
   confidential?: boolean;
+  receipt?: CommandReceipt;
 }
 async function command(
   argv: string[],
   options: CommandOptions = {},
 ): Promise<{ code: number; out: string; err: string }> {
+  const commandStarted = performance.now();
   const proc = Bun.spawn(argv, {
     cwd: options.cwd ?? directory,
     env: options.env ?? env,
@@ -165,17 +259,57 @@ async function command(
     detached: true,
   });
   processes.add(proc);
+  const receipt = options.receipt;
+  if (receipt) {
+    receipt.pid = proc.pid;
+    receipt.startedAt = new Date().toISOString();
+    receipt.deadlineMs = options.timeoutMs ?? 60_000;
+    void proc.exited.then((code) => {
+      receipt.exited = {
+        at: new Date().toISOString(),
+        elapsedMs: performance.now() - commandStarted,
+        code,
+        signal: proc.signalCode,
+      };
+      persistEvidence();
+    });
+    persistEvidence();
+  }
   const stop = (signal: NodeJS.Signals): void => {
     if (proc.exitCode !== null) return;
+    const delivery: Record<string, unknown> = {
+      signal,
+      at: new Date().toISOString(),
+      elapsedMs: performance.now() - commandStarted,
+      process: processReceipt(proc.pid),
+      target: "group",
+    };
+    let signalError: unknown;
     try {
       process.kill(-proc.pid, signal);
-    } catch {
-      proc.kill(signal);
+      delivery["sent"] = true;
+    } catch (error) {
+      delivery["groupError"] = errorCode(error);
+      delivery["target"] = "process";
+      try {
+        proc.kill(signal);
+        delivery["sent"] = true;
+      } catch (error) {
+        delivery["sent"] = false;
+        delivery["error"] = errorCode(error);
+        signalError = error;
+      }
     }
+    if (receipt) {
+      receipt.signals.push(delivery);
+      persistEvidence();
+    }
+    if (signalError !== undefined) throw signalError;
   };
   let timedOut = false;
   const timer = setTimeout(() => {
     timedOut = true;
+    if (receipt) receipt.timedOut = true;
     stop("SIGTERM");
   }, options.timeoutMs ?? 60_000);
   const killTimer = setTimeout(() => stop("SIGKILL"), (options.timeoutMs ?? 60_000) + 5_000);
@@ -185,6 +319,15 @@ async function command(
       new Response(proc.stderr).text(),
       proc.exited,
     ]);
+    if (receipt) {
+      receipt.drainedAt = new Date().toISOString();
+      receipt.output = {
+        stdout: redact(out).slice(0, 4096),
+        stderr: redact(err).slice(0, 4096),
+        truncated: out.length > 4096 || err.length > 4096,
+      };
+      persistEvidence();
+    }
     if (!options.confidential)
       commandTail = (
         commandTail +
@@ -275,6 +418,152 @@ async function inspectContainer(): Promise<{
       ])
     ).out,
   );
+}
+
+/**
+ * Read-only, finite diagnostics for the one failed-candidate stop. Each probe has a 3s SIGKILL
+ * deadline and 32 KiB output ceiling (also truncated on persistence). No daemon-wide logs/events,
+ * complete inspect/config, command arguments, credentials, unrelated containers or service changes.
+ * Use an absolute real systemctl, not the fixture's deliberately successful host-service shim.
+ */
+function diagnosticProbe(argv: string[]): Record<string, unknown> {
+  const at = new Date().toISOString();
+  const start = performance.now();
+  try {
+    const result = Bun.spawnSync(argv, {
+      cwd: evidence,
+      env,
+      stdin: "ignore",
+      stdout: "pipe",
+      stderr: "pipe",
+      timeout: 3_000,
+      killSignal: "SIGKILL",
+      maxBuffer: 32_768,
+    });
+    return {
+      at,
+      elapsedMs: performance.now() - start,
+      code: result.exitCode,
+      signal: result.signalCode,
+      pid: result.pid,
+      stdout: redact(result.stdout.toString().slice(0, 32_768)),
+      stderr: redact(result.stderr.toString().slice(0, Math.max(0, 32_768 - result.stdout.length))),
+      timedOut: result.exitedDueToTimeout ?? null,
+      outputAtLimit:
+        result.exitedDueToMaxBuffer ??
+        result.stdout.length + result.stderr.length >= 32_768,
+    };
+  } catch (error) {
+    return { at, elapsedMs: performance.now() - start, unavailable: errorCode(error) };
+  }
+}
+function observeOwnedStop(phase: string): void {
+  if (!ownedStop) return;
+  const observation: Record<string, unknown> = {
+    phase,
+    at: new Date().toISOString(),
+    harness: harnessProcesses(),
+  };
+  ownedStop.observations.push(observation);
+  persistEvidence();
+  const probe = (name: string, argv: string[]) => {
+    const result = diagnosticProbe(argv);
+    observation[name] = result;
+    persistEvidence();
+    return result;
+  };
+  const inspect = probe("container", [
+    "docker",
+    "inspect",
+    "--type",
+    "container",
+    ownedStop.id,
+    "--format",
+    '{"Id":{{json .Id}},"Project":{{json (index .Config.Labels "com.docker.compose.project")}},"Service":{{json (index .Config.Labels "com.docker.compose.service")}},"State":{"Status":{{json .State.Status}},"Running":{{json .State.Running}},"Paused":{{json .State.Paused}},"Restarting":{{json .State.Restarting}},"Dead":{{json .State.Dead}},"Pid":{{json .State.Pid}},"ExitCode":{{json .State.ExitCode}},"OOMKilled":{{json .State.OOMKilled}},"StartedAt":{{json .State.StartedAt}},"FinishedAt":{{json .State.FinishedAt}},"Health":{{if .State.Health}}{{json .State.Health.Status}}{{else}}null{{end}}},"RestartCount":{{json .RestartCount}},"StopSignal":{{json .Config.StopSignal}},"StopTimeout":{{json .Config.StopTimeout}},"Init":{{json .HostConfig.Init}}}',
+  ]);
+  try {
+    const state = z
+      .object({
+        Id: z.literal(ownedStop.id),
+        Project: z.literal(project()),
+        Service: z.literal("manifold"),
+        State: z.object({ Pid: z.number().int().nonnegative() }),
+      })
+      .parse(JSON.parse(String(inspect["stdout"])));
+    if (inspect["code"] === 0) {
+      if (state.State.Pid > 0) {
+        observation["containerInit"] = processReceipt(state.State.Pid);
+        probe("containerProcesses", [
+          "docker",
+          "top",
+          ownedStop.id,
+          "-eo",
+          "pid,ppid,pgid,sid,stat,wchan:32,etimes",
+        ]);
+      }
+    }
+  } catch {
+    observation["ownershipInspection"] = "unavailable-or-mismatched";
+  }
+  probe("daemon", [
+    "docker",
+    "info",
+    "--format",
+    '{"ServerVersion":{{json .ServerVersion}},"KernelVersion":{{json .KernelVersion}},"OSType":{{json .OSType}},"Architecture":{{json .Architecture}},"Driver":{{json .Driver}},"CgroupVersion":{{json .CgroupVersion}},"SystemTime":{{json .SystemTime}}}',
+  ]);
+  // This service is relevant only for the conventional system-daemon socket. Custom/rootless
+  // sockets still get their actual selected daemon's info, never a different service's processes.
+  if (dockerSocket === "/var/run/docker.sock" || dockerSocket === "/run/docker.sock") {
+    const systemctl = Bun.which("systemctl");
+    if (systemctl) {
+      const service = probe("dockerService", [
+        systemctl,
+        "show",
+        "docker.service",
+        "--no-pager",
+        "--property=MainPID,ActiveState,SubState,Result,ExecMainCode,ExecMainStatus,ExecMainStartTimestampMonotonic,NRestarts",
+      ]);
+      const pid = /^MainPID=(\d+)$/m.exec(String(service["stdout"]));
+      if (service["code"] === 0 && pid && Number(pid[1]) > 0)
+        observation["systemDockerProcess"] = processReceipt(Number(pid[1]));
+    } else observation["dockerService"] = { unavailable: "systemctl-not-installed" };
+  } else observation["dockerService"] = { unavailable: "not-system-daemon-socket" };
+  // Docker's historical event buffer is finite: preserve each window immediately, and never
+  // interpret an empty/failed query as proof that no signal arrived at the daemon.
+  probe("containerEvents", [
+    "docker",
+    "events",
+    "--since",
+    ownedStop.startedAt,
+    "--until",
+    new Date().toISOString(),
+    "--filter",
+    "type=container",
+    "--filter",
+    `container=${ownedStop.id}`,
+    "--format",
+    '{"timeNano":{{json .TimeNano}},"id":{{json .Actor.ID}},"action":{{json .Action}},"signal":{{json (index .Actor.Attributes "signal")}},"exitCode":{{json (index .Actor.Attributes "exitCode")}}}',
+  ]);
+  persistEvidence();
+}
+/** The caller supplies inspectContainer's exact project/service-selected ID, never probe discovery. */
+async function stopOwnedCandidate(id: string): Promise<void> {
+  requireThat(/^[a-f0-9]{64}$/.test(id), "candidate stop requires its exact container ID");
+  ownedStop = {
+    id,
+    startedAt: new Date().toISOString(),
+    command: { signals: [] },
+    observations: [],
+  };
+  observeOwnedStop("before-stop");
+  try {
+    await docker(["stop", id], { receipt: ownedStop.command });
+  } catch (error) {
+    ownedStop.failure = redact(error instanceof Error ? error.message : String(error));
+    throw error;
+  } finally {
+    observeOwnedStop(ownedStop.command.timedOut ? "after-timeout" : "after-stop-command");
+  }
 }
 async function health(): Promise<{ build: string; ok: boolean }> {
   const response = await fetch(`${origin}/healthz`, { signal: AbortSignal.timeout(3_000) });
@@ -1786,38 +2075,152 @@ async function pluginRoster() {
   return PluginsResponseSchema.parse(await response.json()).plugins;
 }
 function cleanup(): Promise<void> {
-  return (cleanupPromise ??= teardown());
+  return (cleanupPromise ??= (async () => {
+    cleanupReceipt.startedAt = new Date().toISOString();
+    persistEvidence();
+    try {
+      await teardown();
+    } catch (error) {
+      cleanupReceipt.failures.push(
+        redact(error instanceof Error ? error.message : String(error)),
+      );
+    } finally {
+      observeOwnedStop("after-cleanup");
+      if (ownedStop) {
+        const retired = diagnosticProbe([
+          "docker",
+          "ps",
+          "-aq",
+          "--no-trunc",
+          "--filter",
+          `id=${ownedStop.id}`,
+        ]);
+        cleanupReceipt.commands.push({ operation: "confirm-exact-container-retirement", ...retired });
+        ownedStop.retirement =
+          retired["code"] === 0 && retired["stdout"] === ""
+            ? "confirmed"
+            : retired["code"] === 0 && String(retired["stdout"]).trim() === ownedStop.id
+              ? "present"
+              : "unknown";
+        if (ownedStop.retirement !== "confirmed")
+          cleanupReceipt.failures.push(
+            `exact candidate container retirement ${ownedStop.retirement}: ${ownedStop.id}`,
+          );
+      }
+      cleanupReceipt.finishedAt = new Date().toISOString();
+      cleanupReceipt.ok = cleanupReceipt.failures.length === 0;
+      persistEvidence();
+    }
+    requireThat(cleanupReceipt.ok, cleanupReceipt.failures.join("; "));
+  })());
+}
+/** Keep every owned cleanup command's outcome, including timeout; continue independent cleanup. */
+async function cleanupDocker(argv: string[]): Promise<{ code: number; out: string; err: string }> {
+  const receipt: CommandReceipt = { signals: [] };
+  const entry: Record<string, unknown> = { argv, receipt };
+  cleanupReceipt.commands.push(entry);
+  persistEvidence();
+  try {
+    const result = await docker(argv, { allowFailure: true, receipt });
+    entry["stderr"] = redact(result.err).slice(0, 4096);
+    return result;
+  } catch (error) {
+    const message = redact(error instanceof Error ? error.message : String(error));
+    entry["failure"] = message;
+    cleanupReceipt.failures.push(message);
+    return { code: -1, out: "", err: message };
+  } finally {
+    persistEvidence();
+  }
 }
 async function teardown(): Promise<void> {
   const running = [...processes];
-  for (const proc of running) {
-    if (proc.exitCode === null)
+  cleanupReceipt.processes = running.map((proc) => processReceipt(proc.pid));
+  const stop = (proc: Bun.Subprocess, signal: NodeJS.Signals) => {
+    if (proc.exitCode !== null) return;
+    const delivery: Record<string, unknown> = {
+      operation: "signal-owned-process",
+      pid: proc.pid,
+      signal,
+      at: new Date().toISOString(),
+      process: processReceipt(proc.pid),
+      target: "group",
+    };
+    try {
+      process.kill(-proc.pid, signal);
+      delivery["sent"] = true;
+    } catch (error) {
+      delivery["groupError"] = errorCode(error);
+      delivery["target"] = "process";
       try {
-        process.kill(-proc.pid, "SIGTERM");
-      } catch {
-        proc.kill("SIGTERM");
+        proc.kill(signal);
+        delivery["sent"] = true;
+      } catch (error) {
+        delivery["sent"] = false;
+        delivery["error"] = errorCode(error);
+        cleanupReceipt.failures.push(`could not signal owned process ${proc.pid}: ${signal}`);
       }
-  }
+    }
+    cleanupReceipt.commands.push(delivery);
+    persistEvidence();
+  };
+  for (const proc of running) stop(proc, "SIGTERM");
   if (running.length > 0) {
     await Promise.race([Promise.all(running.map((proc) => proc.exited)), sleep(5000)]);
-    for (const proc of running) {
-      if (proc.exitCode === null)
-        try {
-          process.kill(-proc.pid, "SIGKILL");
-        } catch {
-          proc.kill("SIGKILL");
-        }
-    }
+    for (const proc of running) stop(proc, "SIGKILL");
     await Promise.all(running.map((proc) => proc.exited));
   }
-  closeClients();
-  nativeOwner?.close();
-  nativeOwner = null;
-  await browser?.close();
-  browser = null;
-  await peerBrowser?.close();
-  peerBrowser = null;
-  const failures: string[] = [];
+  const failures = cleanupReceipt.failures;
+  const closeOwned = async (
+    resource: string,
+    close: () => void | Promise<void>,
+  ): Promise<boolean> => {
+    const receipt: Record<string, unknown> = {
+      operation: "close-owned-resource",
+      resource,
+      startedAt: new Date().toISOString(),
+    };
+    cleanupReceipt.commands.push(receipt);
+    persistEvidence();
+    try {
+      await close();
+      receipt["ok"] = true;
+      return true;
+    } catch (error) {
+      const message = redact(error instanceof Error ? error.message : String(error));
+      receipt["ok"] = false;
+      receipt["failure"] = message;
+      failures.push(`${resource}: ${message}`);
+      return false;
+    } finally {
+      receipt["finishedAt"] = new Date().toISOString();
+      persistEvidence();
+    }
+  };
+  for (const client of [...clients]) {
+    if (await closeOwned("SDK session client", () => client.close())) clients.delete(client);
+  }
+  const closingOwner = nativeOwner;
+  if (
+    closingOwner &&
+    (await closeOwned("native owner", () => closingOwner.close())) &&
+    nativeOwner === closingOwner
+  )
+    nativeOwner = null;
+  const closingBrowser = browser;
+  if (
+    closingBrowser &&
+    (await closeOwned("browser", () => closingBrowser.close())) &&
+    browser === closingBrowser
+  )
+    browser = null;
+  const closingPeerBrowser = peerBrowser;
+  if (
+    closingPeerBrowser &&
+    (await closeOwned("peer browser", () => closingPeerBrowser.close())) &&
+    peerBrowser === closingPeerBrowser
+  )
+    peerBrowser = null;
   if (ownsProject) {
     // Exact project labels are a fallback for partially failed up/down, never a global prune.
     for (const [kind, query, removal] of [
@@ -1840,7 +2243,7 @@ async function teardown(): Promise<void> {
       ],
       ["volume", ["volume", "ls", "-q", "--filter", `name=^${project()}_`], ["volume", "rm"]],
     ] as const) {
-      const found = await docker([...query], { allowFailure: true });
+      const found = await cleanupDocker([...query]);
       if (found.code !== 0) {
         failures.push(`could not list owned ${kind}`);
         continue;
@@ -1854,7 +2257,7 @@ async function teardown(): Promise<void> {
             : []),
       ]);
       for (const id of owned) {
-        if ((await docker([...removal, id], { allowFailure: true })).code !== 0)
+        if ((await cleanupDocker([...removal, id])).code !== 0)
           failures.push(`could not remove owned ${kind} ${id}`);
       }
     }
@@ -1862,42 +2265,46 @@ async function teardown(): Promise<void> {
       ? [finalImage(), `${project()}:candidate`]
       : [baseImage(), finalImage(), `manifold-pr-${number}:local`];
     for (const tag of tags) {
-      const found = await docker(["image", "ls", "--quiet", "--filter", `reference=${tag}`], {
-        allowFailure: true,
-      });
+      const found = await cleanupDocker(["image", "ls", "--quiet", "--filter", `reference=${tag}`]);
       if (found.code !== 0) failures.push(`could not inspect owned image tag ${tag}`);
       else if (
         found.out.trim() !== "" &&
-        (await docker(["image", "rm", tag], { allowFailure: true })).code !== 0
+        (await cleanupDocker(["image", "rm", tag])).code !== 0
       ) {
         failures.push(`could not remove owned image tag ${tag}`);
       }
     }
     for (const image of ownedImages) {
-      const found = await docker(["image", "inspect", image, "--format", "{{json .RepoTags}}"], {
-        allowFailure: true,
-      });
+      const found = await cleanupDocker(["image", "inspect", image, "--format", "{{json .RepoTags}}"]);
       if (found.code !== 0) continue;
       // Do not remove an image another consumer has tagged while this fixture was running.
       const tags = JSON.parse(found.out) as string[] | null;
-      if (!tags || tags.length === 0) await docker(["image", "rm", image], { allowFailure: true });
+      if (!tags || tags.length === 0) {
+        if ((await cleanupDocker(["image", "rm", image])).code !== 0)
+          failures.push(`could not remove owned untagged image ${image}`);
+      }
     }
   }
   if (
     builder !== "" &&
-    (await docker(["buildx", "rm", "--force", builder], { allowFailure: true })).code !== 0
+    (await cleanupDocker(["buildx", "rm", "--force", builder])).code !== 0
   )
     failures.push(`could not remove owned Buildx builder ${builder}`);
   rmSync(directory, { recursive: true, force: true });
-  requireThat(failures.length === 0, failures.join("; "));
 }
-let interrupted = false;
 for (const signal of ["SIGINT", "SIGTERM"] as const)
   process.once(signal, () => {
     interrupted = true;
-    void cleanup().finally(() => process.exit(signal === "SIGINT" ? 130 : 143));
+    harnessSignals.push({ signal, at: new Date().toISOString(), processes: harnessProcesses() });
+    persistEvidence();
+    void cleanup()
+      .catch((error) => {
+        console.error(
+          `preview-environment: cleanup failed\n${redact(error instanceof Error ? error.message : String(error))}`,
+        );
+      })
+      .finally(() => process.exit(signal === "SIGINT" ? 130 : 143));
   });
-let failure: unknown;
 try {
   await step("private fixture prerequisites and local Git origin", setup);
   const initialStorage = await storage("before");
@@ -3199,7 +3606,7 @@ unlinkSync(${JSON.stringify(zombieFifo)});`);
         ).out.trim() === candidate,
         "failed candidate lost its immutable application provenance",
       );
-      await docker(["stop", retained.Id]);
+      await stopOwnedCandidate(retained.Id);
       revision = original;
       const stale = await up({ allowFailure: true });
       requireThat(stale.code === 2, "a stopped newer candidate allowed an ordinary rollback");
@@ -4183,6 +4590,7 @@ console.log(JSON.stringify({
   }
 } catch (error) {
   failure = error;
+  persistEvidence();
   try {
     await capture("failure");
   } catch {
@@ -4193,8 +4601,8 @@ console.log(JSON.stringify({
       join(evidence, "browser-errors.txt"),
       redact(JSON.stringify(browser.drainMessages(), null, 2)),
     );
-  writeFileSync(join(evidence, "command-tail.txt"), redact(commandTail));
-  if (active) {
+  persistEvidence();
+  if (active && !interrupted) {
     try {
       const id = await containerId();
       const logs = await docker(["logs", "--tail", "150", id], { confidential: true });
@@ -4217,10 +4625,7 @@ console.log(JSON.stringify({
     } catch (error) {
       failure ??= error;
     }
-    metrics["elapsedMs"] = Date.now() - started;
-    metrics["steps"] = reports;
-    metrics["ok"] = failure === undefined;
-    writeFileSync(join(evidence, "metrics.json"), JSON.stringify(metrics, null, 2) + "\n");
+    persistEvidence();
     const summary = `## Preview development environment\n\n${failure === undefined ? "PASS" : "FAIL"} — ${((Date.now() - started) / 1000).toFixed(1)} seconds.\n\n${integrated ? "Nonsecret evidence" : "Screenshots and nonsecret evidence"}: \`${evidence}\`.\n\nStorage values are Docker Engine measurements in bytes. Per-image shared/unique sizes and owned volume/container writable bytes are explicit; daemon layer/cache deltas may include concurrent daemon users and are not claimed as exclusively owned. No shared cache or environment-image pruning is performed.\n\n\`\`\`json\n${JSON.stringify(metrics, null, 2)}\n\`\`\`\n`;
     const summaryPath = process.env["GITHUB_STEP_SUMMARY"];
     if (summaryPath) appendFileSync(summaryPath, summary);
