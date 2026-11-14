@@ -1,5 +1,5 @@
 /** Wire revision; session joins require the current version (close 4409 otherwise). */
-export const PROTOCOL_VERSION = 59;
+export const PROTOCOL_VERSION = 60;
 
 /**
  * Explicit bundle build compatibility, not session or machine-channel negotiation.
@@ -10,7 +10,7 @@ export const PROTOCOL_VERSION = 59;
  * Retain a prior stamp only after proving its unchanged artifacts against the host;
  * reset on an incompatible plugin ABI change. Do not infer a numeric version range.
  */
-export const PLUGIN_BUNDLE_PROTOCOL_COMPAT_VERSIONS: ReadonlySet<string> = new Set(["57", "59"]);
+export const PLUGIN_BUNDLE_PROTOCOL_COMPAT_VERSIONS: ReadonlySet<string> = new Set(["57", "59", "60"]);
 
 /**
  * Machine-channel acceptance set. Agents are long-lived (they hold PTYs and
@@ -509,10 +509,15 @@ export const PLUGIN_BUNDLE_PROTOCOL_COMPAT_VERSIONS: ReadonlySet<string> = new S
  * Machine, instance, native-owner and IPC3 frames are byte-identical, so those sets add
  * 59. A retained host keeps its old limits until it is replaced; rolling a hub back below
  * 59 while a version-2 host is retained requires replacing that host too.
+ *
+ * v60: MANAGED ARTIFACT FILE GROUPS (issue #1094). Managed tool slots may declare bounded,
+ * explicitly selected read-only directories. Older machine parsers and owners never receive
+ * these declarations or dependent operations; use requires transport60 and owner46 together.
+ * Ordinary jobs and the instance wire are unchanged, so both acceptance sets add60.
  */
 export const MACHINE_PROTOCOL_COMPAT_VERSIONS: ReadonlySet<number> = new Set([
   30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 51, 52, 53, 54, 55,
-  56, 57, 59,
+  56, 57, 59, 60,
 ]);
 
 /**
@@ -539,6 +544,9 @@ export const MACHINE_DIRECT_SERVICE_ACCOUNTING_PROTOCOL_VERSION = 52;
 
 /** Older strict machine parsers must never receive sealed-enrollment commands or metadata. */
 export const MACHINE_CREDENTIAL_ENROLLMENT_PROTOCOL_VERSION = 55;
+
+/** Grouped managed tools need both this strict machine parser and owner RPC v46. */
+export const MACHINE_MANAGED_ARTIFACT_GROUPS_PROTOCOL_VERSION = 60;
 
 /**
  * Instance-channel acceptance set, and a SEPARATE set on purpose (ADR 0014).
@@ -579,7 +587,7 @@ export const MACHINE_CREDENTIAL_ENROLLMENT_PROTOCOL_VERSION = 55;
  * v59 changes terminal image admission inside VT snapshots; instance frames are unchanged.
  */
 export const INSTANCE_PROTOCOL_COMPAT_VERSIONS: ReadonlySet<number> = new Set([
-  53, 54, 55, 56, 57, 59,
+  53, 54, 55, 56, 57, 59, 60,
 ]);
 
 /**
