@@ -2198,6 +2198,7 @@ test.skipIf(!realBackend || !compiledProbe).each(["bundled", "prepared"] as cons
       outputs: [],
       network: "none" as const,
       limits,
+      stdin: false,
     };
     const install: Extract<JobCommand, { type: "install" }> = {
       type: "install",
@@ -2241,6 +2242,7 @@ test.skipIf(!realBackend || !compiledProbe).each(["bundled", "prepared"] as cons
     const groupKey = managedToolGroupCacheKey(group);
     const groupRoot = join(root, "cache", groupKey);
     const events: JobEvent[] = [];
+    let changed = Promise.withResolvers<void>();
     let owner: MachineJobOwner | undefined;
     let detach: (() => void) | undefined;
     let purgeFaultMounted = false;
@@ -2271,6 +2273,8 @@ test.skipIf(!realBackend || !compiledProbe).each(["bundled", "prepared"] as cons
         });
         detach = opened.attach((event) => {
           events.push(JobEventSchema.parse(event));
+          changed.resolve();
+          changed = Promise.withResolvers<void>();
           return true;
         });
         return opened;
@@ -2357,17 +2361,33 @@ test.skipIf(!realBackend || !compiledProbe).each(["bundled", "prepared"] as cons
           ),
         },
       });
-      await vi.waitFor(
-        () => {
-          expect(
-            events.findLast((event) => event.type === "result" && event.result.jobId === jobId),
-          ).toMatchObject({
-            type: "result",
-            result: { state: "exited", exitCode: 0 },
-          });
-        },
-        { timeout: limits.timeoutMs },
-      );
+      // Native events drive progress; fake timers cannot bound this external process's deadline.
+      let timedOut = false;
+      const timer = setTimeout(() => {
+        timedOut = true;
+        changed.resolve();
+      }, limits.timeoutMs);
+      try {
+        while (
+          !timedOut &&
+          !events.some(
+            (event) =>
+              event.type === "result" &&
+              event.result.jobId === jobId &&
+              event.result.state === "exited" &&
+              event.result.exitCode === 0,
+          )
+        )
+          await changed.promise;
+        expect(
+          events.findLast((event) => event.type === "result" && event.result.jobId === jobId),
+        ).toMatchObject({
+          type: "result",
+          result: { state: "exited", exitCode: 0 },
+        });
+      } finally {
+        clearTimeout(timer);
+      }
       return events
         .flatMap((event) =>
           event.type === "output" && event.jobId === jobId && event.outputId === "stdout"

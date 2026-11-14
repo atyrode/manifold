@@ -33,7 +33,6 @@ import {
   type JobResult,
   type MachineOperation,
   type JobInstallationResources,
-  type JobArtifactDelivery,
   type LogEvent,
 } from "@manifold/protocol";
 import { type HeldDirectory } from "./job-files.ts";
@@ -2344,9 +2343,11 @@ export class MachineJobOwner {
           this.options.cache,
           this.options.artifactAuthority,
           {
-            delivery,
-            toolArtifacts,
-            preparedArtifactArchives: this.preparedArtifactArchives,
+            ...(delivery ? { delivery } : {}),
+            ...(toolArtifacts ? { toolArtifacts } : {}),
+            ...(this.preparedArtifactArchives
+              ? { preparedArtifactArchives: this.preparedArtifactArchives }
+              : {}),
             archives,
             decoded,
           },
