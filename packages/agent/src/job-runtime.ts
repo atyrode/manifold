@@ -5,7 +5,7 @@ import { z } from "zod";
 import { JobOwnerConfigSchema, type JobOwnerConfig, type LogEvent } from "@manifold/protocol";
 import { fdMountReadOnly, HeldDirectory } from "./job-files.ts";
 import { JobJournal } from "./job-journal.ts";
-import { MachineJobOwner } from "./job-owner.ts";
+import { MachineJobOwner, type JobOwnerOptions } from "./job-owner.ts";
 import { JobOutputScratchStore, JobOutputStore } from "./job-outputs.ts";
 import { JobBoundInputStore } from "./job-bound-inputs.ts";
 import { type LinuxJobBind } from "./job-linux.ts";
@@ -139,6 +139,7 @@ export async function openConfiguredJobOwner(
   socketPath: string,
   terminalSocketPath: string,
   log?: (level: "info" | "warn", event: LogEvent, fields: Record<string, unknown>) => void,
+  options?: Pick<JobOwnerOptions, "preparedArtifactArchives">,
 ): Promise<MachineJobOwner> {
   const parent = HeldDirectory.openAbsolute(dirname(configPath), { private: true });
   const configFd = parent.openFile(basename(configPath));
@@ -266,6 +267,9 @@ export async function openConfiguredJobOwner(
       runtimeTools,
       credentialSources,
       artifactAuthority: { origins: config.artifactOrigins, maxRedirects: 5, timeoutMs: 60_000 },
+      ...(options?.preparedArtifactArchives
+        ? { preparedArtifactArchives: options.preparedArtifactArchives }
+        : {}),
       ...(log ? { log } : {}),
     });
   } catch (error) {

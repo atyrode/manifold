@@ -13,6 +13,7 @@ import { unixTerminalHostDialer } from "./terminal-host-link.ts";
 import { listenTerminalHost } from "./terminal-host-listener.ts";
 import { TerminalHost } from "./terminal-host.ts";
 import { listenJobOwner, unixJobOwnerDialer } from "./job-owner-link.ts";
+import type { JobOwnerOptions } from "./job-owner.ts";
 import { openConfiguredJobOwner } from "./job-runtime.ts";
 import { OOM_KILL_SAMPLE_INTERVAL_MS, OomKillWatch, cgroupOomKillCounter } from "./oom-kills.ts";
 
@@ -76,7 +77,10 @@ function onShutdownSignal(stop: () => Promise<void>): void {
   process.on("SIGINT", shutdown);
 }
 
-async function terminalHostMain(): Promise<void> {
+/** Runs the supervised host with optional trusted, constructor-only prepared archives. */
+export async function runTerminalHost(
+  options?: Pick<JobOwnerOptions, "preparedArtifactArchives">,
+): Promise<void> {
   const socketPath = requireEnv(TERMINAL_HOST_SOCKET_ENV);
   const build = process.env.MANIFOLD_BUILD ?? "unknown";
   let listener: { stop(): void } | null = null;
@@ -86,8 +90,12 @@ async function terminalHostMain(): Promise<void> {
     throw new Error("job owner configuration and socket must be configured together");
   const owner =
     jobConfig && jobSocket
-      ? await openConfiguredJobOwner(jobConfig, jobSocket, socketPath, (level, evt, fields) =>
-          stdoutSink({ ts: Date.now(), level, evt, ...fields }),
+      ? await openConfiguredJobOwner(
+          jobConfig,
+          jobSocket,
+          socketPath,
+          (level, evt, fields) => stdoutSink({ ts: Date.now(), level, evt, ...fields }),
+          options,
         )
       : undefined;
   let jobListener: { stop(): void } | undefined;
@@ -182,7 +190,7 @@ function main(): void {
   if (unknown !== undefined) throw new Error(`unknown argument: ${unknown}`);
   if (args.length > 1) throw new Error("only one supervised owner mode may be selected");
   if (args.includes(TERMINAL_HOST_FLAG)) {
-    void terminalHostMain().catch((error: unknown) => {
+    void runTerminalHost().catch((error: unknown) => {
       stdoutSink({
         ts: Date.now(),
         level: "error",

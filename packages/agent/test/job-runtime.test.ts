@@ -486,6 +486,191 @@ function legacyScratch(root: string): void {
   symlinkSync(join(root, "runtime", "keep"), join(legacy, "stale", "escape"));
 }
 
+// Run the real supervised entrypoint in its own process. Only native recovery is replaced;
+// the configured owner, both listeners, socket status and signal cleanup remain production code.
+const hostStartupFixture = `
+  import { spyOn } from "bun:test";
+  import * as linux from ${JSON.stringify(new URL("../src/job-linux.ts", import.meta.url).href)};
+  import { MachineJobOwner } from ${JSON.stringify(new URL("../src/job-owner.ts", import.meta.url).href)};
+  import * as ownerLink from ${JSON.stringify(new URL("../src/job-owner-link.ts", import.meta.url).href)};
+  import * as hostListener from ${JSON.stringify(new URL("../src/terminal-host-listener.ts", import.meta.url).href)};
+  import { unixTerminalHostDialer } from ${JSON.stringify(new URL("../src/terminal-host-link.ts", import.meta.url).href)};
+  const preparedArtifactArchives = new Map([
+    ["https://artifacts.invalid/prepared.tar\\0" + "a".repeat(64), new Uint8Array([1, 2, 3])],
+  ]);
+  export const trustedOptions = {
+    preparedArtifactArchives,
+    machineId: "not-the-configured-machine",
+    artifactAuthority: { origins: ["https://not-configured.invalid"], maxRedirects: 0, timeoutMs: 1 },
+    log: () => { throw new Error("startup options replaced the configured logger"); },
+  };
+  const flow = [];
+  const evidence = { ownerOpened: false };
+  process.once("exit", () => console.log(JSON.stringify({ evt: "startup_fixture", ...evidence, flow })));
+  spyOn(linux, "recoverLinuxJobs").mockResolvedValue(undefined);
+  const open = MachineJobOwner.open;
+  spyOn(MachineJobOwner, "open").mockImplementation(async options => {
+    Object.assign(evidence, {
+      ownerOpened: true,
+      preparedMap: options.preparedArtifactArchives === preparedArtifactArchives,
+      preparedArchiveOptionAbsent: !Object.hasOwn(options, "preparedArtifactArchives"),
+      machineId: options.machineId,
+      artifactAuthority: options.artifactAuthority,
+      loggerPreserved: typeof options.log === "function" && options.log !== trustedOptions.log,
+    });
+    const owner = await open(options);
+    const shutdown = owner.shutdown.bind(owner);
+    spyOn(owner, "shutdown").mockImplementation(async () => {
+      flow.push("owner_shutdown");
+      await shutdown();
+    });
+    return owner;
+  });
+  const listenOwner = ownerLink.listenJobOwner;
+  spyOn(ownerLink, "listenJobOwner").mockImplementation(async (...args) => {
+    const listener = await listenOwner(...args);
+    flow.push("owner_listen");
+    return { stop() { flow.push("owner_stop"); listener.stop(); } };
+  });
+  const listenHost = hostListener.listenTerminalHost;
+  spyOn(hostListener, "listenTerminalHost").mockImplementation(async (host, socketPath, sink) => {
+    const listener = await listenHost(host, socketPath, sink);
+    flow.push("terminal_listen");
+    const shutdown = host.shutdown.bind(host);
+    spyOn(host, "shutdown").mockImplementation(async () => {
+      flow.push("host_shutdown");
+      await shutdown();
+    });
+    void (async () => {
+      const link = await unixTerminalHostDialer(socketPath)({
+        onEvent(event) {
+          if (event.type !== "status") return;
+          evidence.socketHostId = event.terminalHostId;
+          link.close();
+          process.kill(process.pid, "SIGTERM");
+        },
+        onClose() {},
+      });
+      link.send({ type: "status_request" });
+    })().catch(error => { console.error(error); process.exit(1); });
+    return { stop() { flow.push("terminal_stop"); listener.stop(); } };
+  });
+`;
+
+function startConfiguredHost(root: string, entry: "cli" | "trusted") {
+  const preload = join(root, "startup-preload.ts");
+  writeFileSync(preload, hostStartupFixture, { mode: 0o600 });
+  const main = new URL("../src/main.ts", import.meta.url);
+  const child = Bun.spawnSync(
+    [
+      process.execPath,
+      "--preload",
+      preload,
+      ...(entry === "cli"
+        ? [main.pathname, "--terminal-host"]
+        : [
+            "-e",
+            `import { trustedOptions } from ${JSON.stringify(preload)};
+             import { runTerminalHost } from ${JSON.stringify(main.href)};
+             await runTerminalHost(trustedOptions);`,
+          ]),
+    ],
+    {
+      cwd: import.meta.dir,
+      env: {
+        MANIFOLD_TERMINAL_HOST_SOCKET: join(root, "terminal", "host.sock"),
+        MANIFOLD_JOB_OWNER_SOCKET: join(root, "socket", "owner.sock"),
+        MANIFOLD_JOB_OWNER_CONFIG: join(root, "config", "owner.json"),
+        MANIFOLD_BUILD: "startup-fixture",
+      },
+      stdout: "pipe",
+      stderr: "pipe",
+      timeout: 10_000,
+    },
+  );
+  return {
+    code: child.exitCode,
+    stderr: child.stderr.toString(),
+    records: child.stdout
+      .toString()
+      .trim()
+      .split("\n")
+      .filter(Boolean)
+      .map((line): Record<string, unknown> => JSON.parse(line)),
+  };
+}
+
+describe.skipIf(process.platform !== "linux")("configured terminal host entrypoints", () => {
+  test.each(["cli", "trusted"] as const)(
+    "%s entry preserves configured authority, socket identity and signal shutdown order",
+    (entry) => {
+      withScratchRoot((root) => {
+        const configPath = join(root, "config", "owner.json");
+        const config = readFileSync(configPath, "utf8");
+        const result = startConfiguredHost(root, entry);
+        expect(result.code, result.stderr).toBe(0);
+        const starting = result.records.find((record) => record.evt === "starting");
+        expect(starting).toMatchObject({
+          mode: "terminal_host",
+          build: "startup-fixture",
+          terminalHostId: expect.any(String),
+        });
+        expect(result.records.find((record) => record.evt === "startup_fixture")).toEqual({
+          evt: "startup_fixture",
+          ownerOpened: true,
+          preparedMap: entry === "trusted",
+          preparedArchiveOptionAbsent: entry === "cli",
+          machineId: "temporary-output-fixture",
+          artifactAuthority: {
+            origins: ["https://artifacts.invalid"],
+            maxRedirects: 5,
+            timeoutMs: 60_000,
+          },
+          loggerPreserved: true,
+          socketHostId: starting?.terminalHostId,
+          flow: [
+            "owner_listen",
+            "terminal_listen",
+            "host_shutdown",
+            "owner_shutdown",
+            "owner_stop",
+            "terminal_stop",
+          ],
+        });
+        expect(readFileSync(configPath, "utf8")).toBe(config);
+      });
+    },
+    30_000,
+  );
+
+  test.each(["cli", "trusted"] as const)(
+    "%s entry refuses prepared archives in serialized owner configuration",
+    (entry) => {
+      withScratchRoot((root) => {
+        const configPath = join(root, "config", "owner.json");
+        const config = JSON.parse(readFileSync(configPath, "utf8"));
+        writeFileSync(
+          configPath,
+          JSON.stringify({ ...config, preparedArtifactArchives: { archive: [1, 2, 3] } }),
+        );
+        const result = startConfiguredHost(root, entry);
+        expect(result.code).toBe(1);
+        expect(result.records.find((record) => record.evt === "startup_fixture")).toEqual({
+          evt: "startup_fixture",
+          ownerOpened: false,
+          flow: [],
+        });
+        expect(result.records.some((record) => record.evt === "starting")).toBe(false);
+        expect(readdirSync(join(root, "state"))).toEqual([]);
+        if (entry === "cli")
+          expect(result.records.find((record) => record.evt === "terminal_host_start_failed"))
+            .toBeDefined();
+      });
+    },
+    30_000,
+  );
+});
+
 describe.skipIf(process.platform !== "linux")("native temporary output namespace", () => {
   test("a first start records a fresh namespace of its own and never adopts the fixed legacy name", () => {
     withScratchRoot((root) => {
