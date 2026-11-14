@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.37.0] - 2026-11-14
+
+### Added
+
+- A managed native runtime alias can now include explicitly selected, independently hash-verified file groups from pinned artifacts. The executable and complete read-only directories share the existing alias, consent and mount budgets, so offline runtime assets do not require another alias or undeclared downloads. Groups require machine protocol 60, native owner capability 46 and hardened contract 14; older accepted owners keep compatible operations but refuse grouped ones rather than dropping files. Publishing this support does not activate or restart an owner. Trusted source proofs can supply owned prepared archives through the real host-library startup and acquisition paths without changing declarations or the ordinary HTTPS path; prepared-byte proof is distinct from verification of the published artifacts. (#1094, #1095)
+
+### Fixed
+
+- The server image, the recovery image and the Nix packages now run on Bun 1.4.4, whose built-in root store no longer trusts certificates from the compromised eMudhra intermediate authorities (CVE-2026-91403). Under the previous Bun, anyone holding those keys could have impersonated any HTTPS endpoint the hub or its agents reached through Bun's built-in roots. Rebuild or redeploy from this release to pick up the new runtime; already-installed binaries and images keep the Bun they were built with. Source runs still need at least Bun 1.4.2, and Bun 1.4.4 is recommended. (#1090, #1091)
+
 ## [0.36.0] - 2026-10-21
 
 ### Added
