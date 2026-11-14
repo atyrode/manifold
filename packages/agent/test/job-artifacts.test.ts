@@ -1235,6 +1235,7 @@ test("legacy companion descriptors remain owned while group roots cannot collide
     ]);
     pinned.close();
     expect(() => fstatSync(pinned.files.helper!.fd)).toThrow();
+    const cached = cache.names().sort();
     await expect(
       acquireManagedTool(
         "tool",
@@ -1246,7 +1247,8 @@ test("legacy companion descriptors remain owned while group roots cannot collide
         managedAuthority,
         { preparedArtifactArchives: sources },
       ),
-    ).rejects.toThrow("artifact_group_target_collision");
+    ).rejects.toThrow();
+    expect(cache.names().sort()).toEqual(cached);
   } finally {
     removeManagedFixture(cache, path);
   }
