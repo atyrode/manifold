@@ -23,6 +23,7 @@ import {
 } from "./job-resources.ts";
 import {
   MACHINE_DIRECT_SERVICE_ACCOUNTING_PROTOCOL_VERSION,
+  MACHINE_MANAGED_ARTIFACT_GROUPS_PROTOCOL_VERSION,
   MACHINE_PROTOCOL_COMPAT_VERSIONS,
 } from "./version.ts";
 import { canonicalJobJson } from "./canonical-json.ts";
@@ -46,8 +47,10 @@ const TEMPORARY_LOCATIONS_PROTOCOL_VERSION = 43;
 const DIRECT_SERVICE_ACCOUNTING_PROTOCOL_VERSION = 44;
 /** Sealed enrollment requires both this owner RPC and machine transport v55. */
 const CREDENTIAL_ENROLLMENT_PROTOCOL_VERSION = 45;
+/** Read-only managed file groups require machine transport v60 as well as owner RPC v46. */
+const MANAGED_ARTIFACT_GROUPS_PROTOCOL_VERSION = 46;
 /** Native owner RPC changes independently of hub, session, and transport releases. */
-export const JOB_OWNER_PROTOCOL_VERSION = CREDENTIAL_ENROLLMENT_PROTOCOL_VERSION;
+export const JOB_OWNER_PROTOCOL_VERSION = MANAGED_ARTIFACT_GROUPS_PROTOCOL_VERSION;
 
 /**
  * Native owners outlive hub deploys. An unchanged or strictly additive-optional RPC change
@@ -72,6 +75,8 @@ export const JOB_OWNER_PROTOCOL_VERSION = CREDENTIAL_ENROLLMENT_PROTOCOL_VERSION
  * v45 adds an optional signed per-incarnation enrollment key and closed sealed-enrollment
  * commands/events. Only machine transports v55 and owners with this explicit capability
  * receive them; older admitted owners retain ordinary jobs and externally provisioned sources.
+ * v46 adds bounded read-only managed artifact file groups. Group declarations and operations
+ * using their aliases require both owner v46 and the actual machine transport v60.
  * v38 and v39 were reserved by drafts and are never accepted: capability checks compare
  * revisions, so a later change must not reuse them. Revision-pinned policies and ordinary
  * admissions remain unchanged; contextual policies are sent only to owners and machine
@@ -88,6 +93,7 @@ export const JOB_OWNER_PROTOCOL_COMPAT_VERSIONS: ReadonlySet<number> = new Set([
   TEMPORARY_LOCATIONS_PROTOCOL_VERSION,
   DIRECT_SERVICE_ACCOUNTING_PROTOCOL_VERSION,
   CREDENTIAL_ENROLLMENT_PROTOCOL_VERSION,
+  MANAGED_ARTIFACT_GROUPS_PROTOCOL_VERSION,
 ]);
 
 export type JobOwnerCapability =
@@ -101,7 +107,8 @@ export type JobOwnerCapability =
   | "outputOnlyLocations"
   | "temporaryLocations"
   | "directServiceAccounting"
-  | "credentialEnrollment";
+  | "credentialEnrollment"
+  | "managedArtifactGroups";
 const jobOwnerCapabilityVersions: Readonly<Record<JobOwnerCapability, number>> = {
   privateEnv: 35,
   launchBinding: 35,
@@ -114,6 +121,7 @@ const jobOwnerCapabilityVersions: Readonly<Record<JobOwnerCapability, number>> =
   temporaryLocations: TEMPORARY_LOCATIONS_PROTOCOL_VERSION,
   directServiceAccounting: DIRECT_SERVICE_ACCOUNTING_PROTOCOL_VERSION,
   credentialEnrollment: CREDENTIAL_ENROLLMENT_PROTOCOL_VERSION,
+  managedArtifactGroups: MANAGED_ARTIFACT_GROUPS_PROTOCOL_VERSION,
 };
 
 /** Capability support never grants execution authority to an owner outside the accepted set. */
@@ -292,6 +300,119 @@ export const MachineArtifactSchema = z
   .refine(
     (artifact) => artifact.format !== "raw" || Object.keys(artifact.files ?? {}).length === 0,
   );
+
+/** Component-prefix overlap is forbidden for selected files and independent mount roots. */
+function artifactPathsOverlap(paths: readonly (readonly string[])[]): boolean {
+  for (let index = 0; index < paths.length; index++) {
+    const path = paths[index]!;
+    for (let prior = 0; prior < index; prior++) {
+      const other = paths[prior]!;
+      let common = 0;
+      while (common < Math.min(path.length, other.length) && path[common] === other[common])
+        common++;
+      if (common === Math.min(path.length, other.length)) return true;
+    }
+  }
+  return false;
+}
+
+/** A nonrecursive source: companion keys identify files, never runtime aliases. */
+export const MachineArtifactFileGroupSourceSchema = z
+  .strictObject({
+    ...MachineArtifactSchema.shape,
+    files: z
+      .record(
+        component,
+        z.strictObject({ entry: z.array(component).min(1).max(16), sha256: hash }),
+      )
+      .refine((files) => Object.keys(files).length <= 127)
+      .optional(),
+  })
+  .refine((artifact) => (artifact.url === undefined) !== (artifact.bundleFile === undefined), {
+    message: "An artifact must name exactly one HTTPS url or bundleFile",
+  })
+  .refine(
+    (artifact) => artifact.format !== "raw" || Object.keys(artifact.files ?? {}).length === 0,
+  )
+  .refine(
+    (artifact) => 1 + Object.keys(artifact.files ?? {}).length <= artifact.maxMembers,
+    { message: "Selected group files exceed maxMembers" },
+  )
+  .refine(
+    (artifact) =>
+      !artifactPathsOverlap([
+        artifact.entry,
+        ...Object.values(artifact.files ?? {}).map((file) => file.entry),
+      ]),
+    { message: "Selected archive entries must not duplicate or overlap" },
+  );
+export type MachineArtifactFileGroupSource = z.infer<typeof MachineArtifactFileGroupSourceSchema>;
+
+export const MachineArtifactFileGroupSchema = z
+  .strictObject({
+    target: z.array(locationComponent).min(1).max(14),
+    artifact: MachineArtifactFileGroupSourceSchema,
+    entryTarget: z.array(locationComponent).min(1).max(14),
+    fileTargets: z.record(component, z.array(locationComponent).min(1).max(14)),
+  })
+  .refine(
+    (group) => {
+      const files = Object.keys(group.artifact.files ?? {});
+      return (
+        files.length === Object.keys(group.fileTargets).length &&
+        files.every((name) => Object.hasOwn(group.fileTargets, name))
+      );
+    },
+    { message: "fileTargets must exactly cover the group source's companion keys" },
+  )
+  .refine(
+    (group) =>
+      [group.entryTarget, ...Object.values(group.fileTargets)].every(
+        (target) => 2 + group.target.length + target.length <= 16,
+      ),
+    { message: "Combined runtime/bin group destinations exceed the component depth bound" },
+  )
+  .refine(
+    (group) => !artifactPathsOverlap([group.entryTarget, ...Object.values(group.fileTargets)]),
+    { message: "Selected group destinations must not duplicate or overlap" },
+  );
+export type MachineArtifactFileGroup = z.infer<typeof MachineArtifactFileGroupSchema>;
+
+/** Only managed tool slots admit groups; primary machine artifacts retain the legacy shape. */
+export const ManagedToolArtifactSchema = MachineArtifactSchema.safeExtend({
+  fileGroups: z.array(MachineArtifactFileGroupSchema).max(8).optional(),
+})
+  .refine(
+    (artifact) =>
+      1 +
+        Object.keys(artifact.files ?? {}).length +
+        (artifact.fileGroups ?? []).reduce(
+          (count, group) => count + 1 + Object.keys(group.artifact.files ?? {}).length,
+          0,
+        ) <=
+      128,
+    { message: "A managed alias may select at most 128 files in total" },
+  )
+  .refine(
+    (artifact) => {
+      const sources = [artifact, ...(artifact.fileGroups ?? []).map((group) => group.artifact)];
+      return (
+        sources.reduce((sum, source) => sum + source.maxBytes, 0) <= 536870912 &&
+        sources.reduce((sum, source) => sum + source.maxExpandedBytes, 0) <= 1073741824 &&
+        sources.reduce((sum, source) => sum + source.maxMembers, 0) <= 10000
+      );
+    },
+    { message: "Managed sources exceed the whole-alias archive budgets" },
+  )
+  .refine(
+    (artifact) =>
+      !artifactPathsOverlap([
+        ...(artifact.fileGroups ?? []).map((group) => group.target),
+        ...Object.entries(artifact.files ?? {}).map(([alias, file]) => file.relativeTarget ?? [alias]),
+      ]),
+    { message: "Managed group roots and legacy companion targets must not overlap" },
+  );
+export type ManagedToolArtifact = z.infer<typeof ManagedToolArtifactSchema>;
 export const MachineLocationSchema = z
   .strictObject({
     anchor: MachineAnchorSchema,
@@ -541,7 +662,7 @@ export const MachineHalfSchema = z
   .strictObject({
     artifacts: platformArtifacts,
     tools: z
-      .record(component, platformArtifacts)
+      .record(component, z.partialRecord(platformArtifacts.keyType, ManagedToolArtifactSchema))
       .refine((tools) => Object.keys(tools).length <= 8)
       .optional(),
     operations: z
@@ -602,6 +723,41 @@ export const MachineHalfSchema = z
     {
       message: "Temporary locations back output leases only: write access and outputOnly",
     },
+  )
+  .refine(
+    (machine) =>
+      platformArtifacts.keyType.options.every((platform) => {
+        const targets: string[][] = [];
+        for (const [alias, file] of Object.entries(machine.artifacts[platform]?.files ?? {}))
+          if (file.relativeTarget === undefined) targets.push([alias]);
+        for (const [alias, platforms] of Object.entries(machine.tools ?? {})) {
+          const artifact = platforms[platform];
+          // A managed alias still reserves its runtime name on unsupported platforms.
+          targets.push([alias]);
+          if (!artifact) continue;
+          for (const [name, file] of Object.entries(artifact.files ?? {}))
+            targets.push(file.relativeTarget ?? [name]);
+          for (const group of artifact.fileGroups ?? []) targets.push(group.target);
+        }
+        return !artifactPathsOverlap(targets);
+      }),
+    { message: "Managed runtime aliases, companion targets and group roots must not overlap" },
+  )
+  .refine(
+    (machine) =>
+      platformArtifacts.keyType.options.every((platform) => {
+        const primary = machine.artifacts[platform]?.bundleFile;
+        const members = new Set<string>();
+        for (const platforms of Object.values(machine.tools ?? {})) {
+          const tool = platforms[platform];
+          if (!tool) continue;
+          for (const source of [tool, ...(tool.fileGroups ?? []).map((group) => group.artifact)])
+            if (source.bundleFile !== undefined && source.bundleFile !== primary)
+              members.add(source.bundleFile);
+        }
+        return members.size <= 8;
+      }),
+    { message: "A platform may deliver at most eight additional inline tool archives" },
   );
 export type MachineHalf = z.infer<typeof MachineHalfSchema>;
 export type MachineArtifact = z.infer<typeof MachineArtifactSchema>;
@@ -613,8 +769,17 @@ export function jobOwnerOperationRefusal(
   protocolVersion: number,
   operation: MachineOperation,
   machine: MachineHalf,
+  transportProtocolVersion?: number,
 ): string | null {
   if (!JOB_OWNER_PROTOCOL_COMPAT_VERSIONS.has(protocolVersion)) return "owner_protocol_unsupported";
+  if (
+    !managedArtifactGroupsSupported(protocolVersion, transportProtocolVersion) &&
+    operation.runtimeTools.length > 0
+  ) {
+    const grouped = groupedToolAliases(machine);
+    if (operation.runtimeTools.some((alias) => grouped.has(alias)))
+      return "managed_artifact_groups_protocol_unsupported";
+  }
   if (
     !jobOwnerSupports(protocolVersion, "boundInputs") &&
     (operation.inputs !== undefined ||
@@ -641,17 +806,18 @@ export function jobOwnerOperationRefusal(
 }
 
 /** Preserve complete supported declarations; an omitted operation never gains weaker semantics. */
-export function jobOwnerMachine(protocolVersion: number, machine: MachineHalf): MachineHalf | null {
+export function jobOwnerMachine(
+  protocolVersion: number,
+  machine: MachineHalf,
+  transportProtocolVersion?: number,
+): MachineHalf | null {
   if (!JOB_OWNER_PROTOCOL_COMPAT_VERSIONS.has(protocolVersion)) return null;
-  if (
-    jobOwnerSupports(protocolVersion, "operatorAnchors") &&
-    jobOwnerSupports(protocolVersion, "outputOnlyLocations") &&
-    jobOwnerSupports(protocolVersion, "temporaryLocations")
-  )
-    return machine;
   let operations: MachineHalf["operations"] | undefined;
   for (const [id, operation] of Object.entries(machine.operations)) {
-    if (jobOwnerOperationRefusal(protocolVersion, operation, machine) === null) continue;
+    if (
+      jobOwnerOperationRefusal(protocolVersion, operation, machine, transportProtocolVersion) === null
+    )
+      continue;
     operations ??= { ...machine.operations };
     delete operations[id];
   }
@@ -667,17 +833,59 @@ export function jobOwnerMachine(protocolVersion: number, machine: MachineHalf): 
     locations ??= { ...machine.locations };
     delete locations[id];
   }
-  if (!operations && !locations) return machine;
+  let tools: MachineHalf["tools"];
+  if (!managedArtifactGroupsSupported(protocolVersion, transportProtocolVersion)) {
+    for (const [alias, platforms] of Object.entries(machine.tools ?? {})) {
+      if (!Object.values(platforms).some((artifact) => artifact.fileGroups !== undefined)) continue;
+      tools ??= { ...machine.tools };
+      delete tools[alias];
+    }
+  }
+  if (!operations && !locations && !tools) return machine;
   operations ??= machine.operations;
   return Object.keys(operations).length
-    ? { ...machine, operations, locations: locations ?? machine.locations }
+    ? {
+        ...machine,
+        operations,
+        locations: locations ?? machine.locations,
+        ...(tools ? { tools } : {}),
+      }
     : null;
 }
+
+function managedArtifactGroupsSupported(owner: number, transport: number | undefined): boolean {
+  return (
+    jobOwnerSupports(owner, "managedArtifactGroups") &&
+    transport !== undefined &&
+    MACHINE_PROTOCOL_COMPAT_VERSIONS.has(transport) &&
+    transport >= MACHINE_MANAGED_ARTIFACT_GROUPS_PROTOCOL_VERSION
+  );
+}
+
+function groupedToolAliases(machine: MachineHalf): Set<string> {
+  const aliases = new Set<string>();
+  for (const [alias, platforms] of Object.entries(machine.tools ?? {})) {
+    if (!Object.values(platforms).some((artifact) => artifact.fileGroups !== undefined)) continue;
+    aliases.add(alias);
+    // Legacy companion aliases resolve through the same indivisible managed tool.
+    for (const artifact of Object.values(platforms))
+      for (const companion of Object.keys(artifact.files ?? {})) aliases.add(companion);
+  }
+  return aliases;
+}
 /** All declared layouts, including managed tools; callers still select the owner platform. */
-export function machineArtifacts(machine: MachineHalf | undefined): MachineArtifact[] {
+export function machineArtifacts(
+  machine: MachineHalf | undefined,
+): (MachineArtifact | MachineArtifactFileGroupSource)[] {
   return [
     ...Object.values(machine?.artifacts ?? {}),
-    ...Object.values(machine?.tools ?? {}).flatMap((platforms) => Object.values(platforms)),
+    ...Object.values(machine?.tools ?? {}).flatMap((platforms) =>
+      Object.values(platforms).flatMap((artifact) => {
+        if (artifact.fileGroups === undefined) return [artifact];
+        const { fileGroups, ...source } = artifact;
+        return [source, ...fileGroups.map((group) => group.artifact)];
+      }),
+    ),
   ];
 }
 export const JobCredentialSchema = z.strictObject({
@@ -1300,14 +1508,16 @@ export function jobOwnerInstallRestoresProjection(
   delete command.action;
   const pinned = canonicalJobJson(previous);
   for (const protocolVersion of JOB_OWNER_PROTOCOL_COMPAT_VERSIONS) {
-    if (protocolVersion >= JOB_OWNER_PROTOCOL_VERSION) continue;
-    const machine = jobOwnerMachine(protocolVersion, command.machine);
-    if (
-      machine !== null &&
-      machine !== command.machine &&
-      canonicalJobJson({ ...command, machine }) === pinned
-    )
-      return true;
+    // Transport projections have exactly two classes: grouped declarations supported or omitted.
+    for (const transport of [undefined, MACHINE_MANAGED_ARTIFACT_GROUPS_PROTOCOL_VERSION]) {
+      const machine = jobOwnerMachine(protocolVersion, command.machine, transport);
+      if (
+        machine !== null &&
+        machine !== command.machine &&
+        canonicalJobJson({ ...command, machine }) === pinned
+      )
+        return true;
+    }
   }
   return false;
 }

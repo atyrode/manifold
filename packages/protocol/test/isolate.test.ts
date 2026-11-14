@@ -220,7 +220,7 @@ describe("the isolate frames", () => {
       maxArrayItems: 4,
       maxResultBytes: 256,
     };
-    for (const contract of [1, 2, 3, 4, 5, 6, 7, HARDENED_CONTRACT_VERSION]) {
+    for (const contract of [1, 2, 3, 4, 5, 6, 7, 13, HARDENED_CONTRACT_VERSION]) {
       expect(HARDENED_CONTRACT_COMPAT_VERSIONS.has(contract)).toBe(true);
       expect(
         IsolateHostFrameSchema.safeParse({
@@ -405,6 +405,74 @@ describe("the install artifact", () => {
     });
     expect(PluginBundleSchema.safeParse(machineOnly).success).toBe(true);
     expect(PluginBundleSchema.safeParse({ ...machineOnly, files: {} }).success).toBe(false);
+  });
+
+  test("group source members and the new contract are required without weakening older ordinary bundles", () => {
+    const source = {
+      bundleFile: "group",
+      sha256: "b".repeat(64),
+      entrySha256: "c".repeat(64),
+      format: "raw" as const,
+      entry: ["manifest.json"],
+      maxBytes: 2,
+      maxExpandedBytes: 2,
+      maxMembers: 1,
+    };
+    const ordinary = bundle({
+      hardenedContract: 13,
+      manifest: {
+        ...bundle().manifest,
+        machine: {
+          artifacts: { "linux-x64": { ...source, bundleFile: "worker" } },
+          operations: {
+            "vendor.thing.run": {
+              argv: [],
+              input: {},
+              runtimeTools: ["engine"],
+              locations: [],
+              outputs: [],
+              network: "none",
+              limits: { timeoutMs: 1000, memoryBytes: 1024, processes: 1, outputBytes: 1024 },
+              stdin: false,
+            },
+          },
+          locations: {},
+        },
+      },
+      files: { ...bundle().files, worker: "aGk=" },
+    });
+    expect(PluginBundleSchema.safeParse(ordinary).success).toBe(true);
+    const grouped = structuredClone(ordinary);
+    grouped.hardenedContract = HARDENED_CONTRACT_VERSION;
+    grouped.manifest.machine!.tools = {
+      engine: {
+        "linux-x64": {
+          ...source,
+          bundleFile: "worker",
+          fileGroups: [{
+            target: ["engine-data"],
+            artifact: source,
+            entryTarget: ["manifest.json"],
+            fileTargets: {},
+          }],
+        },
+      },
+    };
+    grouped.files.group = "aGk=";
+    expect(PluginBundleSchema.safeParse(grouped).success).toBe(true);
+    expect(PluginBundleSchema.safeParse({ ...grouped, hardenedContract: 13 }).success).toBe(false);
+    expect(
+      PluginBundleSchema.safeParse({
+        ...grouped,
+        files: { ...ordinary.files },
+      }).success,
+    ).toBe(false);
+    expect(
+      PluginBundleSchema.safeParse({
+        ...grouped,
+        files: { ...grouped.files, group: "bG9uZ2Vy" },
+      }).success,
+    ).toBe(false);
   });
 
   test("a declared sheet must be a member, beside a web half to wear it (#258)", () => {

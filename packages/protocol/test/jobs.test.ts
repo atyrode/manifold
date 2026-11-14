@@ -4,11 +4,16 @@ import { expect, test } from "bun:test";
 import "../src/index.ts";
 import {
   MachineArtifactSchema,
+  MachineArtifactFileGroupSourceSchema,
+  MachineArtifactFileGroupSchema,
+  ManagedToolArtifactSchema,
+  machineArtifacts,
   MachineLocationSchema,
   MachineOperationSchema,
   JobCommandSchema,
   JobRequestSchema,
   JobLimitsSchema,
+  MAX_JOB_ARTIFACT_BASE64_BYTES,
   MachineHalfSchema,
   JobDescriptionSchema,
   JobOutputBindingSchema,
@@ -24,6 +29,8 @@ import {
   PublicScheduleOccurrenceSchema,
   type JobCommand,
   type MachineHalf,
+  type MachineArtifactFileGroup,
+  type ManagedToolArtifact,
   type PublicJob,
   type PublicScheduleOccurrence,
 } from "../src/jobs.ts";
@@ -31,6 +38,10 @@ import { canonicalJobJson } from "../src/canonical-json.ts";
 import { JobDeploymentRequestSchema } from "../src/job-deployments.ts";
 import { JobOwnerConfigSchema } from "../src/job-owner-config.ts";
 import { JobResourceInventorySchema, jobResourceRefusal } from "../src/job-resources.ts";
+import {
+  MACHINE_MANAGED_ARTIFACT_GROUPS_PROTOCOL_VERSION,
+  PROTOCOL_VERSION,
+} from "../src/version.ts";
 
 test("deployment scope requires explicit operations and bounded unique destinations", () => {
   const request = {
@@ -417,7 +428,7 @@ const artifact = {
   url: "https://example.invalid/tool",
   sha256: "a".repeat(64),
   entrySha256: "b".repeat(64),
-  format: "tar.gz",
+  format: "tar.gz" as const,
   entry: ["main"],
   maxBytes: 4096,
   maxExpandedBytes: 8192,
@@ -625,6 +636,371 @@ test("machine artifacts select exactly one pinned HTTPS or flat bundle source", 
   for (const bundleFile of ["../worker", "bin/worker", ".worker", "worker\\other"]) {
     expect(MachineArtifactSchema.safeParse({ ...pinned, bundleFile }).success).toBe(false);
   }
+});
+
+function managedGroup(): MachineArtifactFileGroup {
+  return {
+    target: ["engine-data"],
+    artifact: {
+      ...artifact,
+      entry: ["manifest.json"],
+      files: { grammar: { entry: ["wasm", "grammar.wasm"], sha256: "c".repeat(64) } },
+    },
+    entryTarget: ["manifest.json"],
+    fileTargets: { grammar: ["wasm", "grammar.wasm"] },
+  };
+}
+
+test("managed group sources are strict nonrecursive selections, not legacy companion aliases", () => {
+  const source = { ...managedGroup().artifact, maxMembers: 128 };
+  expect(MachineArtifactFileGroupSourceSchema.parse(source)).toEqual(source);
+  const files = Object.fromEntries(
+    Array.from({ length: 127 }, (_, index) => [
+      `file-${index}`,
+      { entry: [`file-${index}`], sha256: "c".repeat(64) },
+    ]),
+  );
+  expect(MachineArtifactFileGroupSourceSchema.safeParse({ ...source, files }).success).toBe(true);
+  expect(MachineArtifactSchema.safeParse({ ...source, files }).success).toBe(false);
+  const legacyFiles = Object.fromEntries(Object.entries(files).slice(0, 8));
+  expect(MachineArtifactSchema.safeParse({ ...artifact, files: legacyFiles }).success).toBe(true);
+  expect(MachineArtifactSchema.safeParse({
+    ...artifact,
+    files: { ...legacyFiles, ninth: { entry: ["ninth"], sha256: "c".repeat(64) } },
+  }).success).toBe(false);
+  for (const invalid of [
+    { ...source, files: { ...files, overflow: { entry: ["overflow"], sha256: "c".repeat(64) } } },
+    { ...source, url: undefined },
+    { ...source, bundleFile: "group" },
+    { ...source, format: "raw" },
+    { ...source, maxMembers: 1 },
+    { ...source, fileGroups: [] },
+    { ...source, files: { grammar: { ...source.files!.grammar, relativeTarget: ["grammar"] } } },
+    { ...source, files: { grammar: { entry: ["manifest.json"], sha256: "c".repeat(64) } } },
+    { ...source, files: { grammar: { entry: ["manifest.json", "child"], sha256: "c".repeat(64) } } },
+    { ...source, files: { grammar: { entry: ["..", "grammar"], sha256: "c".repeat(64) } } },
+  ])
+    expect(MachineArtifactFileGroupSourceSchema.safeParse(invalid).success).toBe(false);
+});
+
+test("group mappings are exact, bounded full guest paths with no overlapping destinations", () => {
+  const group = managedGroup();
+  expect(MachineArtifactFileGroupSchema.parse(group)).toEqual(group);
+  expect(
+    MachineArtifactFileGroupSchema.safeParse({
+      ...group,
+      target: Array.from({ length: 13 }, () => "dir"),
+      entryTarget: ["manifest"],
+      fileTargets: { grammar: ["grammar"] },
+    }).success,
+  ).toBe(true);
+  for (const invalid of [
+    { ...group, fileTargets: {} },
+    { ...group, fileTargets: { grammar: ["grammar"], extra: ["extra"] } },
+    { ...group, fileTargets: { grammar: group.entryTarget } },
+    { ...group, fileTargets: { grammar: [...group.entryTarget, "child"] } },
+    { ...group, entryTarget: ["wasm"], fileTargets: { grammar: ["wasm", "grammar"] } },
+    { ...group, target: [".."] },
+    { ...group, entryTarget: [".."] },
+    { ...group, fileTargets: { grammar: [".."] } },
+    { ...group, target: Array.from({ length: 14 }, () => "dir") },
+    { ...group, fileGroups: [] },
+  ])
+    expect(MachineArtifactFileGroupSchema.safeParse(invalid).success).toBe(false);
+});
+
+test("managed sources share one alias's selected-file and declared archive budgets", () => {
+  const group = managedGroup();
+  const tool: ManagedToolArtifact = { ...artifact, fileGroups: [group] };
+  const maximum = structuredClone(tool);
+  maximum.fileGroups![0]!.artifact.files = Object.fromEntries(
+    // The member budget must also cover every explicitly selected member.
+    Array.from({ length: 126 }, (_, index) => [
+      `file-${index}`,
+      { entry: [`file-${index}`], sha256: "c".repeat(64) },
+    ]),
+  );
+  maximum.fileGroups![0]!.artifact.maxMembers = 127;
+  maximum.fileGroups![0]!.fileTargets = Object.fromEntries(
+    Object.keys(maximum.fileGroups![0]!.artifact.files!).map((name) => [name, [name]]),
+  );
+  expect(ManagedToolArtifactSchema.safeParse(maximum).success).toBe(true);
+  expect(
+    ManagedToolArtifactSchema.safeParse({
+      ...maximum,
+      files: { extra: { entry: ["extra"], sha256: "c".repeat(64) } },
+    }).success,
+  ).toBe(false);
+  for (const [field, limit] of [
+    ["maxBytes", 536870912],
+    ["maxExpandedBytes", 1073741824],
+    ["maxMembers", 10000],
+  ] as const) {
+    const boundary = structuredClone(tool);
+    boundary[field] = limit - group.artifact[field];
+    expect(ManagedToolArtifactSchema.safeParse(boundary).success).toBe(true);
+    boundary[field]++;
+    expect(ManagedToolArtifactSchema.safeParse(boundary).success).toBe(false);
+  }
+  const groups = Array.from({ length: 8 }, (_, index) => ({
+    ...group,
+    target: [`data-${index}`],
+  }));
+  expect(ManagedToolArtifactSchema.safeParse({ ...artifact, fileGroups: groups }).success).toBe(
+    true,
+  );
+  expect(
+    ManagedToolArtifactSchema.safeParse({ ...artifact, fileGroups: [...groups, group] }).success,
+  ).toBe(false);
+});
+
+test("machine group roots cannot overlap primary aliases, legacy companions or other groups", () => {
+  const group = managedGroup();
+  group.artifact.files = Object.fromEntries(Array.from({ length: 10 }, (_, index) => [
+    `member-${index}`,
+    { entry: [`member-${index}`], sha256: "c".repeat(64) },
+  ]));
+  group.artifact.maxMembers = 11;
+  group.fileTargets = Object.fromEntries(
+    Object.keys(group.artifact.files).map((name) => [name, [name]]),
+  );
+  const tool = { ...artifact, fileGroups: [group] };
+  const operation = {
+    argv: [],
+    input: {},
+    runtimeTools: ["engine"],
+    locations: [],
+    outputs: [],
+    network: "none" as const,
+    stdin: false,
+    limits: { timeoutMs: 1000, memoryBytes: 1048576, processes: 1, outputBytes: 65536 },
+  };
+  const declaration = {
+    artifacts: { "linux-x64": artifact },
+    tools: { engine: { "linux-x64": tool } },
+    locations: {},
+    operations: { run: operation },
+  };
+  expect(MachineHalfSchema.safeParse(declaration).success).toBe(true);
+  const parsed = MachineHalfSchema.parse(declaration);
+  const sources = machineArtifacts(parsed);
+  expect(sources).toEqual([artifact, artifact, group.artifact]);
+  expect(sources[0]).toBe(parsed.artifacts["linux-x64"]);
+  expect(sources[2]).toBe(parsed.tools!.engine!["linux-x64"]!.fileGroups![0]!.artifact);
+  expect(MachineArtifactSchema.safeParse(sources[1]).success).toBe(true);
+  expect(MachineArtifactSchema.safeParse(sources[2]).success).toBe(false);
+  expect(MachineArtifactFileGroupSourceSchema.safeParse(sources[2]).success).toBe(true);
+  expect(machineArtifacts({ ...parsed, tools: { plain: { "linux-x64": artifact } } })[1])
+    .toBe(artifact);
+  expect(
+    MachineHalfSchema.safeParse({
+      ...declaration,
+      artifacts: { "linux-x64": tool },
+    }).success,
+  ).toBe(false);
+  for (const target of [["engine"], ["engine", "child"], ["engine-data"], ["engine-data", "child"]]) {
+    expect(
+      MachineHalfSchema.safeParse({
+        ...declaration,
+        tools: {
+          ...declaration.tools,
+          other: { "linux-x64": { ...artifact, fileGroups: [{ ...group, target }] } },
+        },
+      }).success,
+    ).toBe(false);
+  }
+  expect(
+    ManagedToolArtifactSchema.safeParse({
+      ...tool,
+      files: { helper: { entry: ["helper"], sha256: "c".repeat(64), relativeTarget: group.target } },
+    }).success,
+  ).toBe(false);
+});
+
+test("grouped operations and legacy aliases require the actual accepted transport and owner together", () => {
+  const group = managedGroup();
+  const grouped = {
+    ...artifact,
+    files: { helper: { entry: ["helper"], sha256: "c".repeat(64) } },
+    fileGroups: [group],
+  };
+  const ordinary = {
+    argv: [],
+    input: {},
+    runtimeTools: [],
+    locations: [],
+    outputs: [],
+    network: "none" as const,
+    stdin: false,
+    limits: { timeoutMs: 1000, memoryBytes: 1048576, processes: 1, outputBytes: 65536 },
+  };
+  const declaration = MachineHalfSchema.parse({
+    artifacts: { "linux-x64": artifact },
+    tools: { engine: { "linux-x64": grouped }, independent: { "linux-x64": artifact } },
+    locations: {},
+    operations: {
+      grouped: { ...ordinary, runtimeTools: ["engine"] },
+      companion: { ...ordinary, runtimeTools: ["helper"] },
+      plain: ordinary,
+    },
+  });
+  const install = (machine: MachineHalf): Extract<JobCommand, { type: "install" }> => ({
+    type: "install",
+    pluginId: "sample.worker",
+    installationRevision: "r1",
+    artifactSha256: artifact.sha256,
+    machine,
+  });
+  const floor = MACHINE_MANAGED_ARTIFACT_GROUPS_PROTOCOL_VERSION;
+  for (const [owner, transport] of [
+    [45, floor],
+    [JOB_OWNER_PROTOCOL_VERSION, floor - 1],
+    [JOB_OWNER_PROTOCOL_VERSION, undefined],
+    [JOB_OWNER_PROTOCOL_VERSION, PROTOCOL_VERSION + 1],
+  ] as const) {
+    for (const name of ["grouped", "companion"])
+      expect(
+        jobOwnerOperationRefusal(owner, declaration.operations[name]!, declaration, transport),
+      ).toBe("managed_artifact_groups_protocol_unsupported");
+    const projected = jobOwnerMachine(owner, declaration, transport)!;
+    expect(projected.operations).toEqual({ plain: ordinary });
+    expect(projected.tools).toEqual({ independent: declaration.tools!.independent });
+    expect(
+      jobOwnerMachine(
+        owner,
+        { ...declaration, operations: { grouped: declaration.operations.grouped! } },
+        transport,
+      ),
+    ).toBeNull();
+    expect(jobOwnerInstallRestoresProjection(install(projected), install(declaration))).toBe(true);
+    const changed = structuredClone(declaration);
+    changed.tools!.independent!["linux-x64"]!.sha256 = "d".repeat(64);
+    expect(jobOwnerInstallRestoresProjection(install(projected), install(changed))).toBe(false);
+  }
+  expect(jobOwnerMachine(JOB_OWNER_PROTOCOL_VERSION, declaration, floor)).toBe(declaration);
+  expect(
+    jobOwnerOperationRefusal(
+      JOB_OWNER_PROTOCOL_VERSION,
+      declaration.operations.grouped!,
+      declaration,
+      floor,
+    ),
+  ).toBeNull();
+});
+
+test("group sources do not multiply the eight inline tool archives or aggregate base64 budget", () => {
+  const group = managedGroup();
+  const fileGroups = Array.from({ length: 8 }, (_, index) => ({
+    ...group,
+    target: [`data-${index}`],
+    artifact: { ...group.artifact, url: undefined, bundleFile: `group-${index}` },
+  }));
+  const machine = MachineHalfSchema.parse({
+    artifacts: { "linux-x64": artifact },
+    tools: { engine: { "linux-x64": { ...artifact, fileGroups } } },
+    operations: {
+      run: {
+        argv: [],
+        input: {},
+        runtimeTools: ["engine"],
+        locations: [],
+        outputs: [],
+        network: "none",
+        stdin: false,
+        limits: { timeoutMs: 1000, memoryBytes: 1048576, processes: 1, outputBytes: 65536 },
+      },
+    },
+    locations: {},
+  });
+  const ninthSource = structuredClone(machine);
+  ninthSource.tools!.engine!["linux-x64"]!.url = undefined;
+  ninthSource.tools!.engine!["linux-x64"]!.bundleFile = "engine";
+  expect(MachineHalfSchema.safeParse(ninthSource).success).toBe(false);
+  const command = {
+    type: "install",
+    pluginId: "sample.worker",
+    installationRevision: "r1",
+    artifactSha256: artifact.sha256,
+    machine,
+    toolArtifacts: Object.fromEntries(fileGroups.map((item) => [item.artifact.bundleFile, "aGk="])),
+  };
+  expect(JobCommandSchema.safeParse(command).success).toBe(true);
+  expect(
+    JobCommandSchema.safeParse({
+      ...command,
+      toolArtifacts: { ...command.toolArtifacts, ninth: "aGk=" },
+    }).success,
+  ).toBe(false);
+  const half = "AAAA".repeat(MAX_JOB_ARTIFACT_BASE64_BYTES / 8);
+  expect(
+    JobCommandSchema.safeParse({
+      ...command,
+      toolArtifacts: { "group-0": half, "group-1": half },
+    }).success,
+  ).toBe(true);
+  expect(
+    JobCommandSchema.safeParse({
+      ...command,
+      toolArtifacts: { "group-0": half, "group-1": `${half}AAAA` },
+    }).success,
+  ).toBe(false);
+  expect(
+    JobCommandSchema.safeParse({
+      ...command,
+      artifact: { bundleFile: "primary", data: half },
+      toolArtifacts: { "group-0": `${half}AAAA` },
+    }).success,
+  ).toBe(false);
+});
+
+test("group metadata retains the ordinary install metadata ceiling", () => {
+  const repeated = "x".repeat(128);
+  const files = Object.fromEntries(Array.from({ length: 126 }, (_, index) => [
+    `file-${index}`,
+    { entry: [...Array<string>(15).fill(repeated), `file-${index}`], sha256: "c".repeat(64) },
+  ]));
+  const group: MachineArtifactFileGroup = {
+    target: ["data"],
+    artifact: {
+      ...artifact,
+      entry: [...Array<string>(15).fill(repeated), "manifest"],
+      files,
+      maxMembers: 127,
+    },
+    entryTarget: [...Array<string>(12).fill(repeated), "manifest"],
+    fileTargets: Object.fromEntries(Object.keys(files).map((name) => [
+      name,
+      [...Array<string>(12).fill(repeated), name],
+    ])),
+  };
+  const tools = Object.fromEntries(Array.from({ length: 8 }, (_, index) => [
+    `engine-${index}`,
+    { "linux-x64": { ...artifact, fileGroups: [{ ...group, target: [`data-${index}`] }] } },
+  ]));
+  const machine = MachineHalfSchema.parse({
+    artifacts: { "linux-x64": artifact },
+    tools,
+    locations: {},
+    operations: {
+      run: {
+        argv: [],
+        input: {},
+        runtimeTools: ["engine-0"],
+        locations: [],
+        outputs: [],
+        network: "none",
+        stdin: false,
+        limits: { timeoutMs: 1000, memoryBytes: 1048576, processes: 1, outputBytes: 65536 },
+      },
+    },
+  });
+  expect(JobCommandSchema.safeParse({
+    type: "install",
+    pluginId: "sample.worker",
+    installationRevision: "r1",
+    artifactSha256: artifact.sha256,
+    machine,
+  }).success).toBe(false);
 });
 
 test("owner-retained stdout and stderr cannot be caller-declared or rebound as filesystem outputs", () => {

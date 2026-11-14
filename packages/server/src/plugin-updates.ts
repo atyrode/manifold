@@ -8,6 +8,7 @@ import {
   MAX_PLUGIN_UPDATE_FAMILY,
   PLUGIN_BUNDLE_PROTOCOL_COMPAT_VERSIONS,
   PROTOCOL_VERSION,
+  MACHINE_MANAGED_ARTIFACT_GROUPS_PROTOCOL_VERSION,
   canonicalJobJson,
   hasCap,
   isEngineCap,
@@ -40,17 +41,24 @@ const MAX_REVIEW_BYTES = 512 * 1024;
 const MAX_DISCOVERIES = 2;
 const DISCOVERY_TIMEOUT_MS = 60_000;
 
-/** Missing legacy build metadata is a warning, not evidence of an incompatible binary. */
+/** Unstamped ordinary legacy bundles remain unknown; grouped bundles must prove their floor. */
 export function pluginBuildCompatibility(bundle: PluginBundle): PluginBuildCompatibility {
   const issues: PluginBuildCompatibility["issues"] = [];
   const protocol = bundle.builtAgainst?.[BUILT_AGAINST_PROTOCOL];
   const currentProtocol = String(PROTOCOL_VERSION);
-  if (protocol === undefined || !PLUGIN_BUNDLE_PROTOCOL_COMPAT_VERSIONS.has(protocol)) {
+  const grouped = Object.values(bundle.manifest.machine?.tools ?? {}).some((platforms) =>
+    Object.values(platforms).some((artifact) => artifact.fileGroups !== undefined),
+  );
+  if (
+    protocol === undefined ||
+    !PLUGIN_BUNDLE_PROTOCOL_COMPAT_VERSIONS.has(protocol) ||
+    (grouped && Number(protocol) < MACHINE_MANAGED_ARTIFACT_GROUPS_PROTOCOL_VERSION)
+  ) {
     issues.push({
       component: BUILT_AGAINST_PROTOCOL,
       built: protocol?.slice(0, 128) ?? null,
       current: currentProtocol,
-      kind: protocol === undefined ? "unknown" : "incompatible",
+      kind: protocol === undefined && !grouped ? "unknown" : "incompatible",
     });
   }
   const react = bundle.builtAgainst?.react;

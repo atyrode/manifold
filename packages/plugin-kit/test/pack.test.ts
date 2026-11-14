@@ -506,6 +506,31 @@ describe("in-memory compilation", () => {
     };
   };
 
+  test("generated compilation owns every group member and refuses missing, substituted or plugin-entry-colliding sources", async () => {
+    const generated = supplied();
+    const grammar = Buffer.from("generated grammar manifest");
+    const tool = generated.manifest.machine!.tools!.engine!["linux-x64"]!;
+    tool.fileGroups = [{
+      target: ["engine-data"],
+      artifact: raw("grammar-data", grammar),
+      entryTarget: ["manifest.json"],
+      fileTargets: {},
+    }];
+    generated.members.set("grammar-data", grammar);
+    const result = await compilePlugin(source, { shared: false, generated });
+    const compiled = PluginBundleSchema.parse(JSON.parse(new TextDecoder().decode(result.bytes)));
+    expect(Buffer.from(compiled.files["grammar-data"]!, "base64")).toEqual(grammar);
+    expect(compiled.manifest.machine!.tools!.engine!["linux-x64"]!.fileGroups).toEqual(tool.fileGroups);
+    generated.members.delete("grammar-data");
+    await expect(compilePlugin(source, { shared: false, generated })).rejects.toThrow();
+    generated.members.set("grammar-data", Buffer.from("substituted grammar data"));
+    await expect(compilePlugin(source, { shared: false, generated })).rejects.toThrow();
+    tool.fileGroups[0]!.artifact = raw("web.js", grammar);
+    generated.members.delete("grammar-data");
+    generated.members.set("web.js", grammar);
+    await expect(compilePlugin(source, { shared: false, generated })).rejects.toThrow();
+  });
+
   const snapshot = () =>
     [".", ...readdirSync(source, { recursive: true })].sort().map((name) => {
       const descriptor = openSync(`${source}/${name}`, "r");

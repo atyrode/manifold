@@ -431,9 +431,16 @@ export async function compilePlugin(
   }
   const changelog = await changelogMember(pluginDir);
   if (changelog !== undefined) files[PLUGIN_BUNDLE_CHANGELOG_FILE] = changelog;
+  const machineMemberLimits = new Map<string, number>();
   for (const artifact of machineArtifacts(manifest.machine)) {
     const name = artifact.bundleFile;
-    if (name === undefined) continue;
+    if (name !== undefined)
+      machineMemberLimits.set(
+        name,
+        Math.min(machineMemberLimits.get(name) ?? artifact.maxBytes, artifact.maxBytes),
+      );
+  }
+  for (const [name, maxBytes] of machineMemberLimits) {
     if (
       name === PLUGIN_BUNDLE_SERVER_FILE ||
       name === manifest.entry.web ||
@@ -455,7 +462,7 @@ export async function compilePlugin(
       if (
         !stat.isFile() ||
         stat.size <= 0 ||
-        stat.size > artifact.maxBytes ||
+        stat.size > maxBytes ||
         4 * Math.ceil(stat.size / 3) > ISOLATE_MAX_ARTIFACT_BYTES
       )
         throw new Error(`machine member exceeds its byte budget or is not a regular file: ${name}`);

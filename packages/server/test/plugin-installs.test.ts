@@ -13,6 +13,7 @@ import { join } from "node:path";
 import {
   ActionOutcomeSchema,
   ISOLATE_MAX_ARTIFACT_BYTES,
+  HARDENED_CONTRACT_VERSION,
   PluginsResponseSchema,
   type PluginManifest,
 } from "@manifold/protocol";
@@ -27,11 +28,13 @@ import {
   installArtifact,
   installLayout,
   publishArtifact,
+  parseBundle,
   readArtifact,
   removeInstall,
   verifyInstalledBundle,
 } from "../src/plugin-installs.ts";
 import { ServerStore, sha256Hex, type PluginInstallRow } from "../src/stores.ts";
+import { exportInstalledPlugins } from "../src/installed-plugins.ts";
 
 /**
  * THE ARTIFACT'S JOURNEY, fail-closed at every step (ADR 0016 R8). What these cases defend is
@@ -429,6 +432,109 @@ describe("installArtifact", () => {
         dataDir: drop.dataDir,
       });
       expect(readFileSync(join(result.dir, "worker")).toString()).toBe(worker);
+    } finally {
+      rmSync(drop.dataDir, { recursive: true, force: true });
+    }
+  });
+
+  test("group archive admission pins every added source before publication and export", async () => {
+    const drop = box();
+    const worker = Buffer.from("worker executable");
+    const grammar = Buffer.from("grammar manifest");
+    const source = (bundleFile: string, bytes: Buffer) => ({
+      bundleFile,
+      sha256: sha256Hex(bytes),
+      entrySha256: sha256Hex(bytes),
+      format: "raw" as const,
+      entry: [bundleFile],
+      maxBytes: bytes.length,
+      maxExpandedBytes: bytes.length,
+      maxMembers: 1,
+    });
+    const definition = {
+      format: 1,
+      hardenedContract: HARDENED_CONTRACT_VERSION,
+      manifest: {
+        ...MANIFEST,
+        machine: {
+          artifacts: { "linux-x64": source("worker", worker) },
+          tools: {
+            engine: {
+              "linux-x64": {
+                ...source("worker", worker),
+                fileGroups: [{
+                  target: ["engine-data"],
+                  artifact: source("grammar-data", grammar),
+                  entryTarget: ["manifest.json"],
+                  fileTargets: {},
+                }],
+              },
+            },
+          },
+          locations: {},
+          operations: {
+            "vendor.sample.run": {
+              argv: [],
+              input: {},
+              runtimeTools: ["engine"],
+              locations: [],
+              outputs: [],
+              network: "none",
+              stdin: false,
+              limits: { timeoutMs: 1000, memoryBytes: 1048576, processes: 1, outputBytes: 4096 },
+            },
+          },
+        },
+      },
+      files: {
+        "server.js": Buffer.from("export {};").toString("base64"),
+        "web.js": Buffer.from("export {};").toString("base64"),
+        worker: worker.toString("base64"),
+        "grammar-data": grammar.toString("base64"),
+      },
+    };
+    try {
+      const changed = {
+        ...definition,
+        files: { ...definition.files, "grammar-data": Buffer.from("substitution").toString("base64") },
+      };
+      const bytes = Buffer.from(JSON.stringify(changed));
+      expect(() => parseBundle(bytes)).toThrow();
+      const denied = await refusal(() => installArtifact({
+        source: drop.upload("bad-group.manifold-plugin.json", bytes),
+        sha256: sha256Hex(bytes),
+        dataDir: drop.dataDir,
+      }));
+      expect(denied.reason).toBe("artifact_invalid");
+      expect(existsSync(join(drop.dataDir, "plugins"))).toBe(false);
+      const admitted = Buffer.from(JSON.stringify(definition));
+      const installed = await installArtifact({
+        source: drop.upload("group.manifold-plugin.json", admitted),
+        sha256: sha256Hex(admitted),
+        dataDir: drop.dataDir,
+      });
+      expect(readFileSync(join(installed.dir, "grammar-data"))).toEqual(grammar);
+      expect(parseBundle(readFileSync(installed.bundlePath)).manifest.machine).toEqual(definition.manifest.machine);
+      const store = new ServerStore(openDatabase(":memory:"));
+      try {
+        store.putPluginInstall({
+          pluginId: definition.manifest.id,
+          sha256: sha256Hex(admitted),
+          source: installed.bundlePath,
+          bundlePath: installed.bundlePath,
+          grantedCaps: [...definition.manifest.capabilities],
+          installedBy: "p-owner",
+          installedAt: 1,
+          actions: [],
+        });
+        const exported = exportInstalledPlugins(store, drop.dataDir).plugins[0]!;
+        expect(Buffer.from(exported.bytes, "base64")).toEqual(admitted);
+        const restored = parseBundle(Buffer.from(exported.bytes, "base64"));
+        expect(restored.manifest.machine).toEqual(definition.manifest.machine);
+        expect(Buffer.from(restored.files["grammar-data"]!, "base64")).toEqual(grammar);
+      } finally {
+        store.close();
+      }
     } finally {
       rmSync(drop.dataDir, { recursive: true, force: true });
     }

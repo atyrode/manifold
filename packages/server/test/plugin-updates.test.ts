@@ -12,6 +12,7 @@ import {
   PluginsResponseSchema,
   TokenGrantSchema,
   defaultRuntime,
+  type PluginBundle,
   type PluginManifest,
   type PluginUpdateReview,
 } from "@manifold/protocol";
@@ -21,12 +22,77 @@ import { silentLogger } from "../src/log.ts";
 import { startServer } from "../src/main.ts";
 import { PLUGIN_UPLOADS_DIR } from "../src/plugin-installs.ts";
 import { sha256Hex } from "../src/stores.ts";
+import { pluginBuildCompatibility } from "../src/plugin-updates.ts";
 
 const OWNER = "d".repeat(64);
 const cleanups: Array<() => Promise<void>> = [];
 
 afterEach(async () => {
   for (const cleanup of cleanups.splice(0).reverse()) await cleanup();
+});
+
+test("group-using bundles require a capable protocol stamp while accepted ordinary bundles retain compatibility", () => {
+  const artifact = {
+    url: "https://example.invalid/worker",
+    sha256: "a".repeat(64),
+    entrySha256: "b".repeat(64),
+    format: "raw" as const,
+    entry: ["worker"],
+    maxBytes: 1024,
+    maxExpandedBytes: 1024,
+    maxMembers: 1,
+  };
+  const bundle: PluginBundle = {
+    format: 1,
+    hardenedContract: HARDENED_CONTRACT_VERSION,
+    builtAgainst: { [BUILT_AGAINST_PROTOCOL]: "59" },
+    manifest: {
+      id: "vendor.grouped",
+      version: "1.0.0",
+      title: "Grouped",
+      description: "",
+      capabilities: [],
+      entry: {},
+      machine: {
+        artifacts: { "linux-x64": artifact },
+        operations: {
+          "vendor.grouped.run": {
+            argv: [],
+            input: {},
+            runtimeTools: ["engine"],
+            locations: [],
+            outputs: [],
+            network: "none",
+            stdin: false,
+            limits: { timeoutMs: 1000, memoryBytes: 1048576, processes: 1, outputBytes: 4096 },
+          },
+        },
+        locations: {},
+      },
+    },
+    files: {},
+  };
+  expect(pluginBuildCompatibility(bundle).status).toBe("compatible");
+  bundle.manifest.machine!.tools = {
+    engine: {
+      "linux-x64": {
+        ...artifact,
+        fileGroups: [{
+          target: ["engine-data"],
+          artifact,
+          entryTarget: ["manifest.json"],
+          fileTargets: {},
+        }],
+      },
+    },
+  };
+  expect(pluginBuildCompatibility(bundle).status).toBe("incompatible");
+  bundle.builtAgainst![BUILT_AGAINST_PROTOCOL] = String(PROTOCOL_VERSION);
+  expect(pluginBuildCompatibility(bundle).status).toBe("compatible");
+  delete bundle.builtAgainst;
+  expect(pluginBuildCompatibility(bundle).status).toBe("incompatible");
+  delete bundle.manifest.machine!.tools;
+  expect(pluginBuildCompatibility(bundle).status).toBe("unknown");
 });
 
 async function fixture() {

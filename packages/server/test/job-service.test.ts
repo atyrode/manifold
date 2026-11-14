@@ -152,7 +152,7 @@ function fixture(path = ":memory:", manifest: MachineHalf = machine): Fixture {
     privateKey: pair.privateKey,
   });
 }
-function prove(f: Fixture, wrongNonce = false): void {
+function prove(f: Fixture, wrongNonce = false, reportInstallation = true): void {
   f.service.online(f.channel, f.owner, "epoch");
   const challenge = f.commands.at(-1);
   if (challenge?.type !== "owner_challenge") throw new Error("owner challenge missing");
@@ -167,12 +167,13 @@ function prove(f: Fixture, wrongNonce = false): void {
     ...body,
     signature: sign(null, Buffer.from(canonicalJobJson(body)), f.privateKey).toString("base64"),
   });
-  f.service.event(f.channel, {
-    type: "installed",
-    pluginId,
-    installationRevision: "r1",
-    artifactSha256: hash,
-  });
+  if (reportInstallation)
+    f.service.event(f.channel, {
+      type: "installed",
+      pluginId,
+      installationRevision: "r1",
+      artifactSha256: hash,
+    });
 }
 function consent(f: Fixture, cap: Cap, enabled = true): void {
   f.service.consent(f.root, {
@@ -3853,6 +3854,9 @@ test("authenticated owner receives only selected deduplicated machine members; s
   const f = fixture();
   try {
     const bytes = Buffer.from("private worker bytes");
+    f.channel.protocolVersion = PROTOCOL_VERSION;
+    const groupBytes = Buffer.from("private grammar manifest");
+    const groupHash = createHash("sha256").update(groupBytes).digest("hex");
     const sha256 = new Bun.CryptoHasher("sha256").update(bytes).digest("hex");
     const bundled: MachineHalf = {
       ...machine,
@@ -3868,12 +3872,29 @@ test("authenticated owner receives only selected deduplicated machine members; s
     };
     const tool = { ...bundled.artifacts["linux-x64"]!, bundleFile: "engine" };
     bundled.tools = {
-      engine: { "linux-x64": tool, "linux-arm64": { ...tool, bundleFile: "other-platform" } },
+      engine: {
+        "linux-x64": {
+          ...tool,
+          fileGroups: [{
+            target: ["engine-data"],
+            artifact: {
+              ...tool,
+              bundleFile: "grammar-data",
+              sha256: groupHash,
+              entrySha256: groupHash,
+            },
+            entryTarget: ["manifest.json"],
+            fileTargets: {},
+          }],
+        },
+        "linux-arm64": { ...tool, bundleFile: "other-platform" },
+      },
       duplicate: { "linux-x64": tool },
       primaryAlias: { "linux-x64": bundled.artifacts["linux-x64"]! },
     };
     const bundle = PluginBundleSchema.parse({
       format: 1,
+      hardenedContract: 14,
       manifest: {
         id: pluginId,
         version: "1.0.0",
@@ -3888,6 +3909,7 @@ test("authenticated owner receives only selected deduplicated machine members; s
         "web.js": Buffer.from("export {};").toString("base64"),
         worker: bytes.toString("base64"),
         engine: bytes.toString("base64"),
+        "grammar-data": groupBytes.toString("base64"),
         "other-platform": bytes.toString("base64"),
       },
     });
@@ -3908,7 +3930,10 @@ test("authenticated owner receives only selected deduplicated machine members; s
     expect(command.artifactSha256).toBe(sha256);
     expect(command.artifact?.bundleFile).toBe("worker");
     expect(Buffer.from(command.artifact!.data, "base64")).toEqual(bytes);
-    expect(command.toolArtifacts).toEqual({ engine: bytes.toString("base64") });
+    expect(command.toolArtifacts).toEqual({
+      engine: bytes.toString("base64"),
+      "grammar-data": groupBytes.toString("base64"),
+    });
     const priorCommands = f.commands.length;
     for (const source of [
       null,
@@ -3919,6 +3944,10 @@ test("authenticated owner receives only selected deduplicated machine members; s
       {
         ...bundle,
         files: { ...bundle.files, engine: Buffer.from("substitution").toString("base64") },
+      },
+      {
+        ...bundle,
+        files: { ...bundle.files, "grammar-data": Buffer.from("substitution").toString("base64") },
       },
     ]) {
       f.service.setBundleResolver(() => source);
@@ -3934,6 +3963,17 @@ test("authenticated owner receives only selected deduplicated machine members; s
       expect(f.service.jobs.installation(f.machineId, pluginId)?.revision).toBe("bundled");
       expect(f.commands.length).toBe(priorCommands);
     }
+    f.service.setBundleResolver(() => bundle);
+    f.service.offline(f.channel);
+    f.owner.protocolVersion = 45;
+    f.commands.length = 0;
+    prove(f);
+    const projected = f.commands.find((command) => command.type === "install");
+    if (projected?.type !== "install") throw new Error("projected installation missing");
+    expect(projected.machine.tools?.engine).toBeUndefined();
+    expect(projected.toolArtifacts).toEqual({ engine: bytes.toString("base64") });
+    expect(projected.artifact?.bundleFile).toBe("worker");
+    f.owner.protocolVersion = JOB_OWNER_PROTOCOL_VERSION;
     f.service.setBundleResolver(() => null);
     f.service.offline(f.channel);
     f.commands.length = 0;
@@ -3946,6 +3986,121 @@ test("authenticated owner receives only selected deduplicated machine members; s
     expect(f.commands.some((command) => command.type === "drain")).toBe(true);
   } finally {
     f.store.close();
+  }
+});
+
+function groupedMachine() {
+  const groupedId = `${pluginId}.grouped`;
+  const declared = structuredClone(machine);
+  declared.tools = {
+    engine: {
+      "linux-x64": {
+        ...machine.artifacts["linux-x64"]!,
+        fileGroups: [{
+          target: ["engine-data"],
+          artifact: machine.artifacts["linux-x64"]!,
+          entryTarget: ["manifest.json"],
+          fileTargets: {},
+        }],
+      },
+    },
+    independent: { "linux-x64": machine.artifacts["linux-x64"]! },
+  };
+  declared.operations[groupedId] = {
+    ...machine.operations[operationId]!,
+    runtimeTools: ["engine"],
+  };
+  return { declared, groupedId };
+}
+
+test("managed groups refuse old transports and owners while independently compatible operations stay installable", () => {
+  const { declared, groupedId } = groupedMachine();
+  for (const [owner, transport] of [[45, PROTOCOL_VERSION], [JOB_OWNER_PROTOCOL_VERSION, 59]] as const) {
+    const f = fixture(":memory:", declared);
+    try {
+      f.owner.protocolVersion = owner;
+      f.channel.protocolVersion = transport;
+      f.owner.terminalHostId = "grouped-host";
+      prove(f, false, false);
+      const projected = f.commands.findLast((command) => command.type === "install");
+      if (projected?.type !== "install") throw new Error("projected install missing");
+      expect(projected.machine.operations).toEqual({ [operationId]: declared.operations[operationId] });
+      expect(projected.machine.tools).toEqual({ independent: declared.tools.independent });
+      expect(f.service.describe(f.root, { machineId: f.machineId, pluginId }).operations?.[groupedId])
+        .toMatchObject({ ready: false, reason: "managed_artifact_groups_protocol_unsupported" });
+      expect(() => f.service.execute(f.root, pluginId, "group-refused", {
+        jobId: "group-refused",
+        machineId: f.machineId,
+        operationId: groupedId,
+        input: { value: "safe" },
+        outputs: [],
+      })).toThrow("managed_artifact_groups_protocol_unsupported");
+      expect(f.service.jobs.get("group-refused")).toBeNull();
+      expect(() => f.service.terminalDemandBinding({
+        machineId: f.machineId,
+        pluginId,
+        operationId: groupedId,
+        installationRevision: "r1",
+        artifactSha256: hash,
+        resourceBindingDigest: createHash("sha256").update("null").digest("hex"),
+        input: { value: "safe" },
+      }, f.machineId, "group-home")).toThrow("managed_artifact_groups_protocol_unsupported");
+      f.service.event(f.channel, {
+        type: "installed",
+        pluginId,
+        installationRevision: "r1",
+        artifactSha256: hash,
+        resources: {
+          artifactAvailable: true,
+          tools: [{ alias: "independent", managed: true, available: true }],
+          operations: [{ operationId, available: true }],
+        },
+      });
+      expect(execute(f).state).toBe("start-committed");
+      f.owner.protocolVersion = JOB_OWNER_PROTOCOL_VERSION;
+      f.channel.protocolVersion = PROTOCOL_VERSION;
+      f.commands.length = 0;
+      prove(f);
+      const restored = f.commands.findLast((command) => command.type === "install");
+      if (restored?.type !== "install") throw new Error("complete install missing");
+      expect(restored.machine).toEqual(declared);
+    } finally {
+      f.store.close();
+    }
+  }
+});
+
+test("purge uses the full honest managed-group projection for older owners and transports", () => {
+  const { declared } = groupedMachine();
+  for (const [owner, transport] of [[45, PROTOCOL_VERSION], [JOB_OWNER_PROTOCOL_VERSION, 59]] as const) {
+    const f = fixture(":memory:", declared);
+    try {
+      f.owner.protocolVersion = owner;
+      f.channel.protocolVersion = transport;
+      prove(f);
+      expect(() => f.service.purgePlugin(pluginId)).toThrow("disable_before_purge");
+      f.service.disablePlugin(pluginId);
+      f.commands.length = 0;
+      f.service.purgePlugin(pluginId);
+      expect(f.commands).toHaveLength(1);
+      const command = f.commands[0];
+      if (command?.type !== "install") throw new Error("purge install missing");
+      expect(command.action).toBe("purge");
+      expect(command.machine).toEqual({
+        ...declared,
+        tools: { independent: declared.tools!.independent },
+        operations: { [operationId]: declared.operations[operationId] },
+      });
+      expect(command.artifact).toBeUndefined();
+      expect(command.toolArtifacts).toBeUndefined();
+      expect(f.service.jobs.installation(f.machineId, pluginId)).toMatchObject({
+        enabled: false,
+        ready: false,
+        purgeRequested: true,
+      });
+    } finally {
+      f.store.close();
+    }
   }
 });
 
