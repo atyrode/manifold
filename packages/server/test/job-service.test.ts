@@ -4031,6 +4031,7 @@ test("managed groups refuse old transports and owners while independently compat
       f.owner.protocolVersion = owner;
       f.channel.protocolVersion = transport;
       f.owner.terminalHostId = "grouped-host";
+      consent(f, "machines:run");
       prove(f, false, false);
       const projected = f.commands.findLast((command) => command.type === "install");
       if (projected?.type !== "install") throw new Error("projected install missing");
@@ -4077,7 +4078,15 @@ test("managed groups refuse old transports and owners while independently compat
           operations: [{ operationId, available: true }],
         },
       });
-      expect(execute(f).state).toBe("start-committed");
+      const compatible = execute(f);
+      expect({
+        state: compatible.state,
+        refusal: f.service.jobs.authority(compatible).decision?.refusal,
+      }).toEqual({ state: "start-committed", refusal: null });
+      expect(f.commands.findLast((command) => command.type === "start")).toMatchObject({
+        request: { jobId: compatible.request.jobId, operationId },
+        permit: { ownerId: f.owner.ownerId, ownerGeneration: f.owner.generation },
+      });
       f.owner.protocolVersion = JOB_OWNER_PROTOCOL_VERSION;
       f.channel.protocolVersion = PROTOCOL_VERSION;
       f.commands.length = 0;
