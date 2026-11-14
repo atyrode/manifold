@@ -7,16 +7,24 @@ import { isIP } from "node:net";
 import {
   constants,
   closeSync,
+  chmodSync,
   fchmodSync,
   fsyncSync,
   writeSync,
   readSync,
   fstatSync,
+  readdirSync,
+  lstatSync,
 } from "node:fs";
 import {
   MachineArtifactSchema,
+  MachineArtifactFileGroupSchema,
+  ManagedToolArtifactSchema,
   canonicalJobJson,
   type MachineArtifact,
+  type MachineArtifactFileGroupSource,
+  type MachineArtifactFileGroup,
+  type ManagedToolArtifact,
   type JobArtifactDelivery,
 } from "@manifold/protocol";
 import {
@@ -24,7 +32,8 @@ import {
   extractArtifact,
   isPublicArtifactAddress,
 } from "@manifold/plugin-kit/artifacts";
-import type { HeldDirectory } from "./job-files.ts";
+import { safeComponent, type HeldDirectory } from "./job-files.ts";
+import type { LinuxJobBind } from "./job-linux.ts";
 
 export interface ArtifactAuthority {
   /** Explicit installed destination consent, exact HTTPS origins, checked on every hop. */
@@ -45,6 +54,51 @@ export interface PinnedArtifact {
   bytes: number;
   readonly files: Readonly<Record<string, PinnedArtifactFile>>;
   close(): void;
+}
+
+/** Trusted, constructor-only source bytes. Keys are the exact URL, NUL, and archive SHA256. */
+export type PreparedArtifactArchives = ReadonlyMap<string, Uint8Array>;
+
+export interface ManagedToolAcquisitionOptions {
+  delivery?: JobArtifactDelivery;
+  toolArtifacts?: Readonly<Record<string, string>>;
+  preparedArtifactArchives?: PreparedArtifactArchives;
+  archives?: Map<string, Buffer>;
+  decoded?: Map<string, Buffer>;
+}
+
+export interface PinnedManagedTool extends PinnedArtifact {
+  readonly binds: readonly LinuxJobBind[];
+}
+
+type ArtifactSource = MachineArtifact | MachineArtifactFileGroupSource;
+
+/** Prepared bytes never grant URL authority and are checked even when selected files are cached. */
+function preparedArtifact(
+  spec: ArtifactSource,
+  prepared: PreparedArtifactArchives | undefined,
+): Buffer | undefined {
+  if (spec.url === undefined) return undefined;
+  const value = prepared?.get(`${spec.url}\0${spec.sha256}`);
+  if (value === undefined) return undefined;
+  if (!value.byteLength || value.byteLength > spec.maxBytes)
+    throw new Error("artifact_compressed_limit");
+  if (createHash("sha256").update(value).digest("hex") !== spec.sha256)
+    throw new Error("artifact_archive_digest");
+  // Retain the caller-owned storage; do not duplicate large trusted archives.
+  return Buffer.from(value.buffer, value.byteOffset, value.byteLength);
+}
+
+function closeArtifactFds(fds: readonly number[]): void {
+  const errors: unknown[] = [];
+  for (const fd of fds) {
+    try {
+      closeSync(fd);
+    } catch (error) {
+      errors.push(error);
+    }
+  }
+  if (errors.length) throw new AggregateError(errors, "artifact_close_failed");
 }
 
 /** Layout identity is distinct from archive identity: equal bytes do not authorize new entries. */
@@ -72,7 +126,7 @@ function approvedUrl(value: string, authority: ArtifactAuthority): URL {
   return url;
 }
 async function download(
-  artifact: MachineArtifact,
+  artifact: ArtifactSource,
   authority: ArtifactAuthority,
   signal: AbortSignal,
 ): Promise<Buffer> {
@@ -148,6 +202,7 @@ export async function acquireArtifact(
   delivery?: JobArtifactDelivery,
   archives?: Map<string, Buffer>,
   decoded?: Map<string, Buffer>,
+  preparedArtifactArchives?: PreparedArtifactArchives,
 ): Promise<PinnedArtifact> {
   const spec = MachineArtifactSchema.parse(specification);
   if (
@@ -165,6 +220,7 @@ export async function acquireArtifact(
   const deadline = performance.now() + authority.timeoutMs;
   if (spec.url !== undefined) approvedUrl(spec.url, authority);
   const supplied = deliveredArtifact(spec, delivery, decoded);
+  const prepared = preparedArtifact(spec, preparedArtifactArchives);
   try {
     const cached = openCachedArtifact(spec, cache);
     if (performance.now() >= deadline) {
@@ -184,7 +240,10 @@ export async function acquireArtifact(
   try {
     const sourceKey = `${spec.url ?? spec.bundleFile}\0${spec.sha256}`;
     const archive =
-      archives?.get(sourceKey) ?? supplied ?? (await download(spec, authority, controller.signal));
+      prepared ??
+      archives?.get(sourceKey) ??
+      supplied ??
+      (await download(spec, authority, controller.signal));
     if (archive.length > spec.maxBytes) throw new Error("artifact_compressed_limit");
     if (archives && !archives.has(sourceKey)) {
       // The owner groups equal sources. Retain at most one bounded archive, including
@@ -249,7 +308,7 @@ export async function acquireArtifact(
       close() {
         if (!closed) {
           closed = true;
-          for (const fd of held) closeSync(fd);
+          closeArtifactFds(held);
         }
       },
     };
@@ -264,11 +323,17 @@ export async function acquireArtifact(
         if ((cleanup as NodeJS.ErrnoException).code !== "ENOENT") errors.push(cleanup);
       }
     }
+    try {
+      closeArtifactFds(held);
+    } catch (cleanup) {
+      errors.push(cleanup);
+    }
+    held.length = 0;
     if (errors.length > 1) throw new AggregateError(errors, "artifact_cleanup_failed");
     throw error;
   } finally {
     clearTimeout(timer);
-    if (!transferred) for (const fd of held) closeSync(fd);
+    if (!transferred) closeArtifactFds(held);
   }
 }
 
@@ -349,12 +414,468 @@ export function openCachedArtifact(
       close() {
         if (!closed) {
           closed = true;
-          for (const fd of held) closeSync(fd);
+          closeArtifactFds(held);
         }
       },
     };
   } catch (error) {
-    for (const fd of held) closeSync(fd);
+    try {
+      closeArtifactFds(held);
+    } catch (cleanup) {
+      throw new AggregateError([error, cleanup], "artifact_close_failed");
+    }
     throw error;
+  }
+}
+
+/** Seals source authority, selected layout, destinations and budgets into one cache identity. */
+export function managedToolGroupCacheKey(specification: MachineArtifactFileGroup): string {
+  const group = MachineArtifactFileGroupSchema.parse(specification);
+  return `managed-group-${createHash("sha256").update(canonicalJobJson(group)).digest("hex")}`;
+}
+
+interface GroupFile {
+  target: readonly string[];
+  hash: string;
+  bytes?: Buffer;
+}
+interface GroupTree {
+  directories: Map<string, GroupTree>;
+  files: Map<string, GroupFile>;
+}
+
+function groupTree(group: MachineArtifactFileGroup): GroupTree {
+  const tree: GroupTree = { directories: new Map(), files: new Map() };
+  const files: GroupFile[] = [
+    { target: group.entryTarget, hash: group.artifact.entrySha256 },
+    ...Object.entries(group.artifact.files ?? {}).map(([id, file]) => ({
+      target: group.fileTargets[id]!,
+      hash: file.sha256,
+    })),
+  ];
+  for (const file of files) {
+    let parent = tree;
+    for (const component of file.target.slice(0, -1)) {
+      if (parent.files.has(component)) throw new Error("artifact_group_target_collision");
+      let child = parent.directories.get(component);
+      if (!child) {
+        child = { directories: new Map(), files: new Map() };
+        parent.directories.set(component, child);
+      }
+      parent = child;
+    }
+    const name = file.target.at(-1)!;
+    if (parent.files.has(name) || parent.directories.has(name))
+      throw new Error("artifact_group_target_collision");
+    parent.files.set(name, file);
+  }
+  return tree;
+}
+
+function assertGroupDirectory(directory: HeldDirectory): void {
+  const stat = directory.stat();
+  if (stat.uid !== process.getuid?.() || (stat.mode & 0o7777) !== 0o500)
+    throw new Error("artifact_group_cache_identity");
+}
+
+/** Complete-tree recovery never follows a link or tolerates an unselected entry. */
+function verifyGroupTree(
+  directory: HeldDirectory,
+  tree: GroupTree,
+  spec: MachineArtifactFileGroupSource,
+  checkDeadline?: () => void,
+): void {
+  const scratch = Buffer.allocUnsafe(65536);
+  let expanded = 0;
+  function visit(parent: HeldDirectory, expected: GroupTree): void {
+    checkDeadline?.();
+    assertGroupDirectory(parent);
+    const before = parent.stat();
+    let count = 0;
+    for (const name of readdirSync(parent.procPath, { encoding: "buffer" })) {
+      const text = name.toString("utf8");
+      if (
+        !Buffer.from(text).equals(name) ||
+        (!expected.files.has(text) && !expected.directories.has(text))
+      )
+        throw new Error("artifact_group_cache_extra_entry");
+      const stat = lstatSync(Buffer.concat([Buffer.from(`${parent.procPath}/`), name]));
+      if (
+        (expected.files.has(text) && !stat.isFile()) ||
+        (expected.directories.has(text) && !stat.isDirectory())
+      )
+        throw new Error("artifact_group_cache_extra_entry");
+      count++;
+    }
+    if (count !== expected.files.size + expected.directories.size)
+      throw new Error("artifact_group_cache_incomplete");
+    for (const [name, file] of expected.files) {
+      checkDeadline?.();
+      const fd = parent.openFile(name, constants.O_RDONLY);
+      try {
+        const beforeFile = fstatSync(fd);
+        if (
+          beforeFile.uid !== process.getuid?.() ||
+          (beforeFile.mode & 0o7777) !== 0o400 ||
+          beforeFile.size <= 0
+        )
+          throw new Error("artifact_group_cache_identity");
+        expanded += beforeFile.size;
+        if (
+          expanded > spec.maxExpandedBytes ||
+          (spec.format === "raw" && beforeFile.size > spec.maxBytes)
+        )
+          throw new Error("artifact_expanded_limit");
+        const hash = createHash("sha256");
+        let offset = 0;
+        while (offset < beforeFile.size) {
+          checkDeadline?.();
+          const count = readSync(
+            fd,
+            scratch,
+            0,
+            Math.min(scratch.length, beforeFile.size - offset),
+            offset,
+          );
+          if (!count) throw new Error("artifact_cache_changed");
+          hash.update(scratch.subarray(0, count));
+          offset += count;
+        }
+        const after = fstatSync(fd);
+        if (
+          after.size !== beforeFile.size ||
+          after.mtimeMs !== beforeFile.mtimeMs ||
+          after.ctimeMs !== beforeFile.ctimeMs ||
+          after.mode !== beforeFile.mode ||
+          after.uid !== beforeFile.uid ||
+          after.gid !== beforeFile.gid ||
+          after.nlink !== 1
+        )
+          throw new Error("artifact_cache_changed");
+        if (hash.digest("hex") !== file.hash) throw new Error("artifact_entry_digest");
+      } finally {
+        closeSync(fd);
+      }
+    }
+    for (const [name, childTree] of expected.directories) {
+      const child = parent.openDirectoryEntry(Buffer.from(name));
+      try {
+        visit(child, childTree);
+        parent.assertDirectoryEntry(Buffer.from(name), child);
+      } finally {
+        child.close();
+      }
+    }
+    const after = parent.stat();
+    if (
+      after.mtimeMs !== before.mtimeMs ||
+      after.ctimeMs !== before.ctimeMs ||
+      after.mode !== before.mode ||
+      after.uid !== before.uid ||
+      after.gid !== before.gid
+    )
+      throw new Error("artifact_cache_changed");
+  }
+  visit(directory, tree);
+}
+
+function openCachedGroup(
+  group: MachineArtifactFileGroup,
+  cache: HeldDirectory,
+  checkDeadline?: () => void,
+): HeldDirectory {
+  // Only absence of the entire published root permits acquisition, never a partial tree.
+  const directory = cache.openChild(managedToolGroupCacheKey(group));
+  try {
+    verifyGroupTree(directory, groupTree(group), group.artifact, checkDeadline);
+    cache.assertDirectoryEntry(Buffer.from(managedToolGroupCacheKey(group)), directory);
+    checkDeadline?.();
+    return directory;
+  } catch (error) {
+    const failure = (error as NodeJS.ErrnoException).code === "ENOENT"
+      ? new Error("artifact_group_cache_incomplete", { cause: error })
+      : error;
+    return failManagedResources(undefined, [directory], failure);
+  }
+}
+
+function sourceDelivery(
+  spec: ArtifactSource,
+  options: ManagedToolAcquisitionOptions,
+): JobArtifactDelivery | undefined {
+  if (spec.bundleFile === undefined) return undefined;
+  if (options.delivery?.bundleFile === spec.bundleFile) return options.delivery;
+  const data = options.toolArtifacts?.[spec.bundleFile];
+  return data === undefined ? undefined : { bundleFile: spec.bundleFile, data };
+}
+
+async function acquireGroup(
+  group: MachineArtifactFileGroup,
+  cache: HeldDirectory,
+  authority: ArtifactAuthority,
+  options: ManagedToolAcquisitionOptions,
+): Promise<HeldDirectory> {
+  const spec = group.artifact;
+  const deadline = performance.now() + authority.timeoutMs;
+  const checkDeadline = () => {
+    if (performance.now() >= deadline) throw new Error("artifact_deadline");
+  };
+  if (spec.url !== undefined) approvedUrl(spec.url, authority);
+  const supplied = deliveredArtifact(spec, sourceDelivery(spec, options), options.decoded);
+  const prepared = preparedArtifact(spec, options.preparedArtifactArchives);
+  try {
+    return openCachedGroup(group, cache, checkDeadline);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+  }
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), Math.max(0, deadline - performance.now()));
+  const temporary = `.artifact-group-${randomUUID()}`;
+  let allocated = false;
+  let directory: HeldDirectory | undefined;
+  let transferred = false;
+  try {
+    const sourceKey = `${spec.url ?? spec.bundleFile}\0${spec.sha256}`;
+    const archive =
+      prepared ??
+      options.archives?.get(sourceKey) ??
+      supplied ??
+      (await download(spec, authority, controller.signal));
+    const extracted = await extractArtifact(archive, spec, controller.signal, deadline);
+    if (options.archives && !options.archives.has(sourceKey)) {
+      options.archives.clear();
+      options.archives.set(sourceKey, archive);
+    }
+    const tree = groupTree(group);
+    function assign(target: readonly string[], bytes: Buffer): void {
+      let parent = tree;
+      for (const name of target.slice(0, -1)) parent = parent.directories.get(name)!;
+      parent.files.get(target.at(-1)!)!.bytes = bytes;
+    }
+    assign(group.entryTarget, extracted.executable);
+    for (const [id, bytes] of Object.entries(extracted.files)) assign(group.fileTargets[id]!, bytes);
+    try {
+      directory = cache.openChild(temporary, { create: true, exclusive: true });
+      allocated = true;
+    } catch (error) {
+      // openChild closes any fd on failure, but mkdir may already have succeeded.
+      if ((error as NodeJS.ErrnoException).code !== "EEXIST") {
+        try {
+          cache.removeTree(temporary);
+        } catch (cleanup) {
+          if ((cleanup as NodeJS.ErrnoException).code !== "ENOENT")
+            throw new AggregateError([error, cleanup], "artifact_cleanup_failed");
+        }
+      }
+      throw error;
+    }
+    function writeTree(parent: HeldDirectory, node: GroupTree): void {
+      for (const [name, file] of node.files) {
+        checkDeadline();
+        const writable = parent.createFile(name);
+        try {
+          let offset = 0;
+          while (offset < file.bytes!.length) {
+            checkDeadline();
+            const count = writeSync(
+              writable,
+              file.bytes!,
+              offset,
+              Math.min(65536, file.bytes!.length - offset),
+            );
+            if (!count) throw new Error("artifact_short_write");
+            offset += count;
+          }
+          fchmodSync(writable, 0o400);
+          fsyncSync(writable);
+        } finally {
+          closeSync(writable);
+        }
+      }
+      for (const [name, childTree] of node.directories) {
+        checkDeadline();
+        const child = parent.openChild(name, { create: true, exclusive: true });
+        try {
+          writeTree(child, childTree);
+        } finally {
+          child.close();
+        }
+      }
+      chmodSync(parent.procPath, 0o500);
+      parent.sync();
+    }
+    writeTree(directory, tree);
+    verifyGroupTree(directory, tree, spec, checkDeadline);
+    checkDeadline();
+    try {
+      cache.publish(temporary, managedToolGroupCacheKey(group), true);
+      allocated = false;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+      // An atomic winner is usable only after the identical complete-tree verification.
+      const winner = openCachedGroup(group, cache, checkDeadline);
+      try {
+        cache.removeTree(temporary);
+        allocated = false;
+        directory.close();
+        directory = winner;
+      } catch (cleanup) {
+        return failManagedResources(undefined, [winner], cleanup);
+      }
+    }
+    transferred = true;
+    return directory;
+  } catch (error) {
+    const errors: unknown[] = [error];
+    if (allocated) {
+      try {
+        cache.removeTree(temporary);
+      } catch (cleanup) {
+        // publish() can rename successfully and then fail its durability fence.
+        if ((cleanup as NodeJS.ErrnoException).code !== "ENOENT") errors.push(cleanup);
+      }
+    }
+    if (directory) {
+      try {
+        directory.close();
+      } catch (cleanup) {
+        errors.push(cleanup);
+      }
+      directory = undefined;
+    }
+    if (errors.length > 1) throw new AggregateError(errors, "artifact_cleanup_failed");
+    throw error;
+  } finally {
+    clearTimeout(timer);
+    if (!transferred) directory?.close();
+  }
+}
+
+function managedSpecification(
+  alias: string,
+  specification: ManagedToolArtifact,
+): { spec: ManagedToolArtifact; primary: MachineArtifact } {
+  safeComponent(alias);
+  const spec = ManagedToolArtifactSchema.parse(specification);
+  const { fileGroups: _groups, ...primary } = spec;
+  const targets = [
+    [alias],
+    ...Object.entries(primary.files ?? {}).map(([id, file]) => file.relativeTarget ?? [id]),
+    ...(spec.fileGroups ?? []).map((group) => group.target),
+  ].map((target) => target.join("/"));
+  for (let i = 0; i < targets.length; i++)
+    for (let j = 0; j < i; j++)
+      if (
+        targets[i] === targets[j] ||
+        targets[i]!.startsWith(`${targets[j]}/`) ||
+        targets[j]!.startsWith(`${targets[i]}/`)
+      )
+        throw new Error("artifact_group_target_collision");
+  return { spec, primary };
+}
+
+function pinnedManagedTool(
+  alias: string,
+  spec: ManagedToolArtifact,
+  primary: PinnedArtifact,
+  groups: readonly HeldDirectory[],
+): PinnedManagedTool {
+  let closed = false;
+  return {
+    fd: primary.fd,
+    archiveSha256: primary.archiveSha256,
+    entrySha256: primary.entrySha256,
+    bytes: primary.bytes,
+    files: primary.files,
+    binds: Object.freeze([
+      Object.freeze({ fd: primary.fd, target: `/runtime/bin/${alias}`, writable: false }),
+      ...groups.map((group, index) =>
+        Object.freeze({
+          fd: group.fd,
+          target: `/runtime/bin/${spec.fileGroups![index]!.target.join("/")}`,
+          writable: false,
+        }),
+      ),
+    ]),
+    close() {
+      if (closed) return;
+      closed = true;
+      closeManagedResources(primary, groups);
+    },
+  };
+}
+
+function closeManagedResources(
+  primary: PinnedArtifact | undefined,
+  groups: readonly HeldDirectory[],
+): void {
+  const errors: unknown[] = [];
+  for (const resource of [...groups, ...(primary ? [primary] : [])]) {
+    try {
+      resource.close();
+    } catch (error) {
+      errors.push(error);
+    }
+  }
+  if (errors.length === 1) throw errors[0];
+  if (errors.length > 1) throw new AggregateError(errors, "artifact_close_failed");
+}
+
+function failManagedResources(
+  primary: PinnedArtifact | undefined,
+  groups: readonly HeldDirectory[],
+  failure: unknown,
+): never {
+  try {
+    closeManagedResources(primary, groups);
+  } catch (cleanup) {
+    throw new AggregateError([failure, cleanup], "artifact_close_failed");
+  }
+  throw failure;
+}
+
+/** An alias is returned only when its primary, legacy companions and every group are held. */
+export async function acquireManagedTool(
+  alias: string,
+  specification: ManagedToolArtifact,
+  cache: HeldDirectory,
+  authority: ArtifactAuthority,
+  options: ManagedToolAcquisitionOptions = {},
+): Promise<PinnedManagedTool> {
+  const { spec, primary: primarySpec } = managedSpecification(alias, specification);
+  let primary: PinnedArtifact | undefined;
+  const groups: HeldDirectory[] = [];
+  try {
+    primary = await acquireArtifact(
+      primarySpec,
+      cache,
+      authority,
+      sourceDelivery(primarySpec, options),
+      options.archives,
+      options.decoded,
+      options.preparedArtifactArchives,
+    );
+    for (const group of spec.fileGroups ?? [])
+      groups.push(await acquireGroup(group, cache, authority, options));
+    return pinnedManagedTool(alias, spec, primary, groups);
+  } catch (error) {
+    return failManagedResources(primary, groups, error);
+  }
+}
+
+export function openCachedManagedTool(
+  alias: string,
+  specification: ManagedToolArtifact,
+  cache: HeldDirectory,
+): PinnedManagedTool {
+  const { spec, primary: primarySpec } = managedSpecification(alias, specification);
+  let primary: PinnedArtifact | undefined;
+  const groups: HeldDirectory[] = [];
+  try {
+    primary = openCachedArtifact(primarySpec, cache);
+    for (const group of spec.fileGroups ?? []) groups.push(openCachedGroup(group, cache));
+    return pinnedManagedTool(alias, spec, primary, groups);
+  } catch (error) {
+    return failManagedResources(primary, groups, error);
   }
 }

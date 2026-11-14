@@ -46,6 +46,7 @@ import * as Plugin from "@manifold/plugin";
 import * as UI from "@manifold/ui";
 import { createHash, randomUUID } from "node:crypto";
 import { connect } from "node:net";
+import { gzipSync } from "node:zlib";
 
 /**
  * `pack` TURNS THE SAMPLE INTO THE ARTIFACT THE INSTALL DOOR READS — and the artifact runs.
@@ -152,12 +153,54 @@ describe("the artifact", () => {
       maxExpandedBytes: bytes.length,
       maxMembers: 1,
     };
+    const grammarBytes = Buffer.from("offline grammar bytes");
+    const grammarHash = createHash("sha256").update(grammarBytes).digest("hex");
+    const members = Array.from({ length: 10 }, (_, index) => {
+      const header = Buffer.alloc(512);
+      header.write(`grammar${index}.wasm`);
+      header.write("0000644\0", 100);
+      header.write("0000000\0", 108);
+      header.write("0000000\0", 116);
+      header.write(`${grammarBytes.length.toString(8).padStart(11, "0")}\0`, 124);
+      header.write("00000000000\0", 136);
+      header.fill(32, 148, 156);
+      header.write("0", 156);
+      header.write("ustar\0", 257);
+      header.write("00", 263);
+      header.write(`${header.reduce((sum, byte) => sum + byte, 0).toString(8).padStart(6, "0")}\0 `, 148);
+      return Buffer.concat([header, grammarBytes, Buffer.alloc(512 - grammarBytes.length)]);
+    });
+    const grammarTar = Buffer.concat([...members, Buffer.alloc(1024)]);
+    const grammarArchive = gzipSync(grammarTar);
+    const companionIds = Array.from({ length: 9 }, (_, index) => `grammar${index + 1}`);
+    const group = {
+      target: ["engine-grammars"],
+      artifact: {
+        ...pinned,
+        bundleFile: "grammars",
+        format: "tar.gz",
+        entry: ["grammar0.wasm"],
+        sha256: createHash("sha256").update(grammarArchive).digest("hex"),
+        entrySha256: grammarHash,
+        maxBytes: grammarArchive.length,
+        maxExpandedBytes: grammarTar.length,
+        maxMembers: 10,
+        files: Object.fromEntries(companionIds.map((id) => [
+          id, { entry: [`${id}.wasm`], sha256: grammarHash },
+        ])),
+      },
+      entryTarget: ["grammar0.wasm"],
+      fileTargets: Object.fromEntries(companionIds.map((id) => [id, [`${id}.wasm`]])),
+    };
     const manifest = {
       ...bundle.manifest,
       entry: { web: "web.js" },
       machine: {
         artifacts: { "linux-x64": { ...pinned, bundleFile: "worker" } },
-        tools: { engine: { "linux-x64": pinned }, other: { "linux-x64": pinned } },
+        tools: {
+          engine: { "linux-x64": { ...pinned, fileGroups: [group] } },
+          other: { "linux-x64": pinned },
+        },
         locations: {},
         operations: {
           "example.counter.run": {
@@ -179,10 +222,15 @@ describe("the artifact", () => {
       await Bun.write(`${source}/web.ts`, "export const native = true;");
       await Bun.write(`${source}/worker`, bytes);
       await Bun.write(`${source}/engine`, bytes);
+      await Bun.write(`${source}/grammars`, grammarArchive);
       const result = await packPlugin(source, `${source}/bundle.json`, { shared: false });
       const packed = PluginBundleSchema.parse(await Bun.file(result.file).json());
-      expect(Object.keys(packed.files).sort()).toEqual(["engine", "web.js", "worker"]);
+      expect(Object.keys(packed.files).sort()).toEqual(["engine", "grammars", "web.js", "worker"]);
       expect(Buffer.from(packed.files.engine!, "base64")).toEqual(bytes);
+      expect(Buffer.from(packed.files.grammars!, "base64")).toEqual(grammarArchive);
+      await Bun.write(`${source}/grammars`, Buffer.from("substituted grammar bytes"));
+      await expect(packPlugin(source, `${source}/bad-group.json`, { shared: false })).rejects.toThrow();
+      await Bun.write(`${source}/grammars`, grammarArchive);
       await Bun.write(`${source}/engine`, Buffer.from("substituted tool bytes"));
       await expect(packPlugin(source, `${source}/bad.json`, { shared: false })).rejects.toThrow();
     } finally {
