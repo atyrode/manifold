@@ -2618,13 +2618,17 @@ test.skipIf(!realBackend || !compiledProbe).each(["bundled", "prepared"] as cons
           stderr: "",
         });
       }
-      await close();
-      outputs.close();
-      closeSync(bwrapFd);
-      closeSync(busyboxFd);
-      for (const directory of [delegatedCgroup, outputsDirectory, managedState, cache, state])
-        directory.close();
-      rmSync(root, { recursive: true, force: true });
+      try {
+        await close();
+        if (cache.names().includes(groupKey)) cache.removeTree(groupKey);
+      } finally {
+        outputs.close();
+        closeSync(bwrapFd);
+        closeSync(busyboxFd);
+        for (const directory of [delegatedCgroup, outputsDirectory, managedState, cache, state])
+          directory.close();
+        rmSync(root, { recursive: true, force: true });
+      }
     }
   },
   60_000,

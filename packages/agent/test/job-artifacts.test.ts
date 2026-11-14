@@ -628,6 +628,17 @@ test("bundled acquisition pins supplied bytes without network authority and refu
 });
 
 const managedAuthority = { origins: ["https://example.com"], maxRedirects: 0, timeoutMs: 10000 };
+function removeManagedFixture(cache: HeldDirectory, path: string): void {
+  try {
+    for (const name of cache.names())
+      if (name.startsWith("managed-group-") || name.startsWith(".artifact-group-"))
+        cache.removeTree(name);
+  } finally {
+    cache.close();
+    rmSync(path, { recursive: true, force: true });
+  }
+}
+
 function managedFixture(companions = 2) {
   const manifest = Buffer.from('{"grammars":"offline"}');
   const members = [tarMember("manifest.json", "0", manifest)];
@@ -712,8 +723,7 @@ test("one managed alias pins two independent archives and an exact readonly dire
     );
     recovered.close();
   } finally {
-    cache.close();
-    rmSync(path, { recursive: true, force: true });
+    removeManagedFixture(cache, path);
   }
 });
 
@@ -756,8 +766,7 @@ test("managed groups share the bundled verifier and support 128 selected files, 
       ).rejects.toThrow();
     }
   } finally {
-    cache.close();
-    rmSync(path, { recursive: true, force: true });
+    removeManagedFixture(cache, path);
   }
 });
 
@@ -823,8 +832,7 @@ test("prepared archives preserve source authority and validate hash and size bef
       ),
     ).rejects.toThrow("artifact_unexpected_delivery");
   } finally {
-    cache.close();
-    rmSync(path, { recursive: true, force: true });
+    removeManagedFixture(cache, path);
   }
 });
 
@@ -898,8 +906,7 @@ test("group member mismatch and absence never make a primary-only alias availabl
       }),
     ).rejects.toThrow("artifact_archive_digest");
   } finally {
-    cache.close();
-    rmSync(path, { recursive: true, force: true });
+    removeManagedFixture(cache, path);
   }
 });
 
@@ -959,8 +966,7 @@ test("complete-tree recovery refuses tamper, extra entries, absence, modes and l
       ).rejects.toThrow(reason);
       expect(cache.names().some((name) => name.startsWith(".artifact-group-"))).toBe(false);
     } finally {
-      cache.close();
-      rmSync(path, { recursive: true, force: true });
+      removeManagedFixture(cache, path);
     }
   }
 });
@@ -999,8 +1005,7 @@ test("group layouts reject primary, legacy, root and selected-path overlaps and 
     ])
       expect(managedToolGroupCacheKey(changed)).not.toBe(identity);
   } finally {
-    cache.close();
-    rmSync(path, { recursive: true, force: true });
+    removeManagedFixture(cache, path);
   }
 });
 
@@ -1034,8 +1039,9 @@ test("atomic group publication failure closes all alias handles and reclaims the
     });
     retry.close();
   } finally {
-    cache.close();
-    rmSync(path, { recursive: true, force: true });
+    cache.publish = publish;
+    cache.openFile = openFile;
+    removeManagedFixture(cache, path);
   }
 });
 
@@ -1060,8 +1066,7 @@ test("exclusive publication races recover only the winner's complete tree and re
     }
     expect(cache.names().filter((name) => name.startsWith(".artifact-group-"))).toEqual([]);
   } finally {
-    cache.close();
-    rmSync(path, { recursive: true, force: true });
+    removeManagedFixture(cache, path);
   }
 });
 
@@ -1086,8 +1091,7 @@ test("group close failures do not strand primary or sibling descriptors", async 
     expect(() => fstatSync(pinned.binds[2]!.fd)).toThrow();
     pinned.close();
   } finally {
-    cache.close();
-    rmSync(path, { recursive: true, force: true });
+    removeManagedFixture(cache, path);
   }
 });
 
@@ -1114,8 +1118,8 @@ test("durability-fence failure leaves only a complete recoverable group, never p
     );
     recovered.close();
   } finally {
-    cache.close();
-    rmSync(path, { recursive: true, force: true });
+    cache.publish = publish;
+    removeManagedFixture(cache, path);
   }
 });
 
@@ -1149,10 +1153,8 @@ test("failed private-tree reclamation preserves the publication failure and repo
     expect(cache.names().filter((name) => name.startsWith(".artifact-group-")).length).toBe(1);
   } finally {
     cache.removeTree = removeTree;
-    for (const name of cache.names())
-      if (name.startsWith(".artifact-group-")) cache.removeTree(name);
-    cache.close();
-    rmSync(path, { recursive: true, force: true });
+    cache.publish = publish;
+    removeManagedFixture(cache, path);
   }
 });
 
@@ -1246,8 +1248,7 @@ test("legacy companion descriptors remain owned while group roots cannot collide
       ),
     ).rejects.toThrow("artifact_group_target_collision");
   } finally {
-    cache.close();
-    rmSync(path, { recursive: true, force: true });
+    removeManagedFixture(cache, path);
   }
 });
 
