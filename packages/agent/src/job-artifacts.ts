@@ -759,11 +759,11 @@ function managedSpecification(
 ): { spec: ManagedToolArtifact; primary: MachineArtifact } {
   safeComponent(alias);
   const spec = ManagedToolArtifactSchema.parse(specification);
-  const { fileGroups: _groups, ...primary } = spec;
+  const { fileGroups, ...primary } = spec;
   const targets = [
     [alias],
     ...Object.entries(primary.files ?? {}).map(([id, file]) => file.relativeTarget ?? [id]),
-    ...(spec.fileGroups ?? []).map((group) => group.target),
+    ...(fileGroups ?? []).map((group) => group.target),
   ].map((target) => target.join("/"));
   for (let i = 0; i < targets.length; i++)
     for (let j = 0; j < i; j++)
