@@ -158,12 +158,26 @@ interface CommandReceipt {
   output?: { stdout: string; stderr: string; truncated: boolean };
   signals: Record<string, unknown>[];
 }
+interface OwnedContainerState {
+  Status: string;
+  Running: boolean;
+  Pid: number;
+  ExitCode: number;
+  FinishedAt: string;
+}
 let ownedStop:
   | {
       id: string;
       startedAt: string;
+      stopGraceSeconds: number;
       command: CommandReceipt;
       observations: Record<string, unknown>[];
+      termination?: {
+        at: string;
+        id: string;
+        state: OwnedContainerState | null;
+        confirmed: boolean;
+      };
       failure?: string;
       retirement?: "confirmed" | "present" | "unknown";
     }
@@ -457,7 +471,7 @@ function diagnosticProbe(argv: string[]): Record<string, unknown> {
     return { at, elapsedMs: performance.now() - start, unavailable: errorCode(error) };
   }
 }
-function observeOwnedStop(phase: string): void {
+function observeOwnedStop(phase: string): OwnedContainerState | undefined {
   if (!ownedStop) return;
   const observation: Record<string, unknown> = {
     phase,
@@ -479,18 +493,26 @@ function observeOwnedStop(phase: string): void {
     "container",
     ownedStop.id,
     "--format",
-    '{"Id":{{json .Id}},"Project":{{json (index .Config.Labels "com.docker.compose.project")}},"Service":{{json (index .Config.Labels "com.docker.compose.service")}},"State":{"Status":{{json .State.Status}},"Running":{{json .State.Running}},"Paused":{{json .State.Paused}},"Restarting":{{json .State.Restarting}},"Dead":{{json .State.Dead}},"Pid":{{json .State.Pid}},"ExitCode":{{json .State.ExitCode}},"OOMKilled":{{json .State.OOMKilled}},"StartedAt":{{json .State.StartedAt}},"FinishedAt":{{json .State.FinishedAt}},"Health":{{if .State.Health}}{{json .State.Health.Status}}{{else}}null{{end}}},"RestartCount":{{json .RestartCount}},"StopSignal":{{json .Config.StopSignal}},"StopTimeout":{{json .Config.StopTimeout}},"Init":{{json .HostConfig.Init}}}',
+    '{"Id":{{json .Id}},"Project":{{json (index .Config.Labels "com.docker.compose.project")}},"Service":{{json (index .Config.Labels "com.docker.compose.service")}},"State":{"Status":{{json .State.Status}},"Running":{{json .State.Running}},"Paused":{{json .State.Paused}},"Restarting":{{json .State.Restarting}},"Dead":{{json .State.Dead}},"Pid":{{json .State.Pid}},"ExitCode":{{json .State.ExitCode}},"OOMKilled":{{json .State.OOMKilled}},"StartedAt":{{json .State.StartedAt}},"FinishedAt":{{json .State.FinishedAt}},"Health":{{with index .State "Health"}}{{json (index . "Status")}}{{else}}null{{end}}},"RestartCount":{{json .RestartCount}},"StopSignal":{{json (index .Config "StopSignal")}},"StopTimeout":{{json (index .Config "StopTimeout")}},"Init":{{json (index .HostConfig "Init")}}}',
   ]);
+  let containerState: OwnedContainerState | undefined;
   try {
     const state = z
       .object({
         Id: z.literal(ownedStop.id),
         Project: z.literal(project()),
         Service: z.literal("manifold"),
-        State: z.object({ Pid: z.number().int().nonnegative() }),
+        State: z.object({
+          Status: z.string(),
+          Running: z.boolean(),
+          Pid: z.number().int().nonnegative(),
+          ExitCode: z.number().int(),
+          FinishedAt: z.string(),
+        }),
       })
       .parse(JSON.parse(String(inspect["stdout"])));
     if (inspect["code"] === 0) {
+      containerState = state.State;
       if (state.State.Pid > 0) {
         observation["containerInit"] = processReceipt(state.State.Pid);
         probe("containerProcesses", [
@@ -542,9 +564,10 @@ function observeOwnedStop(phase: string): void {
     "--filter",
     `container=${ownedStop.id}`,
     "--format",
-    '{"timeNano":{{json .TimeNano}},"id":{{json .Actor.ID}},"action":{{json .Action}},"signal":{{json (index .Actor.Attributes "signal")}},"exitCode":{{json (index .Actor.Attributes "exitCode")}}}',
+    '{"timeNano":{{json .TimeNano}},"id":{{json .Actor.ID}},"action":{{json (index (split .Action ":") 0)}},"signal":{{json (index .Actor.Attributes "signal")}},"exitCode":{{json (index .Actor.Attributes "exitCode")}}}',
   ]);
   persistEvidence();
+  return containerState;
 }
 /** The caller supplies inspectContainer's exact project/service-selected ID, never probe discovery. */
 async function stopOwnedCandidate(id: string): Promise<void> {
@@ -552,18 +575,41 @@ async function stopOwnedCandidate(id: string): Promise<void> {
   ownedStop = {
     id,
     startedAt: new Date().toISOString(),
+    stopGraceSeconds: 2,
     command: { signals: [] },
     observations: [],
   };
   observeOwnedStop("before-stop");
   try {
-    await docker(["stop", id], { receipt: ownedStop.command });
+    // This exact disposable fixture tests STOPPED deployment authority, not graceful shutdown.
+    // Override the inherited six-minute replication grace, allowing daemon SIGKILL after 2s;
+    // retain the independent 60s command deadline and require an actual terminated receipt.
+    await docker(["stop", "--time", String(ownedStop.stopGraceSeconds), id], {
+      receipt: ownedStop.command,
+    });
   } catch (error) {
     ownedStop.failure = redact(error instanceof Error ? error.message : String(error));
     throw error;
   } finally {
-    observeOwnedStop(ownedStop.command.timedOut ? "after-timeout" : "after-stop-command");
+    const state = observeOwnedStop(
+      ownedStop.command.timedOut ? "after-timeout" : "after-stop-command",
+    );
+    ownedStop.termination = {
+      at: new Date().toISOString(),
+      id,
+      state: state ?? null,
+      confirmed:
+        state?.Status === "exited" &&
+        !state.Running &&
+        state.Pid === 0 &&
+        Date.parse(state.FinishedAt) > 0,
+    };
+    persistEvidence();
   }
+  requireThat(
+    ownedStop.termination?.confirmed,
+    "exact candidate stop did not produce a confirmed terminated container receipt",
+  );
 }
 async function health(): Promise<{ build: string; ok: boolean }> {
   const response = await fetch(`${origin}/healthz`, { signal: AbortSignal.timeout(3_000) });
@@ -1908,6 +1954,21 @@ function stageSet(
   writeFileSync(file, text, { mode: 0o600 });
   return { sha256, set, file };
 }
+interface NativeOwnerConnection {
+  id: number;
+  socket: WebSocket;
+  openedAt?: number;
+  welcome?: { at: number; machineId: string; serverEpoch: string };
+  proof?: {
+    challengeAt: number;
+    sentAt: number;
+    acceptedAt?: number;
+    challengeSha256: string;
+    machineId: string;
+    serverEpoch: string;
+    ownerSha256: string;
+  };
+}
 /**
  * A proved native owner on the real machine socket: it answers the owner challenge with its own
  * key, reports each enabled installation installed unless it withholds readiness, and keeps a
@@ -1920,6 +1981,8 @@ class NativeOwner {
   /** False while the owner withholds its installed reports, as an owner not yet ready does. */
   acknowledges = true;
   private socket: WebSocket | null = null;
+  private connection: NativeOwnerConnection | null = null;
+  private connectionSequence = 0;
   private stopped = false;
   private readonly key = generateKeyPairSync("ed25519");
   readonly owner: JobOwner;
@@ -1943,7 +2006,13 @@ class NativeOwner {
     if (this.stopped) return;
     const socket = new WebSocket(`${origin.replace(/^http/, "ws")}/ws/machine`);
     this.socket = socket;
-    socket.addEventListener("open", () =>
+    const connection: NativeOwnerConnection = {
+      id: ++this.connectionSequence,
+      socket,
+    };
+    this.connection = connection;
+    socket.addEventListener("open", () => {
+      connection.openedAt = Date.now();
       socket.send(
         JSON.stringify({
           type: "hello",
@@ -1954,8 +2023,8 @@ class NativeOwner {
           terminals: [],
           jobOwner: this.owner,
         }),
-      ),
-    );
+      );
+    });
     socket.addEventListener("message", (event) => this.receive(socket, String(event.data)));
     // A hub replacement closes the socket; the owner redials the successor like a real agent.
     socket.addEventListener("close", () => {
@@ -1964,10 +2033,18 @@ class NativeOwner {
   }
   private receive(socket: WebSocket, data: string): void {
     const message = ServerToAgentMessageSchema.parse(JSON.parse(data));
+    const connection = this.connection?.socket === socket ? this.connection : null;
+    if (message.type === "welcome" && connection)
+      connection.welcome = {
+        at: Date.now(),
+        machineId: message.machineId,
+        serverEpoch: message.serverEpoch,
+      };
     if (message.type === "ping") socket.send(JSON.stringify({ type: "pong" }));
     if (message.type !== "job_command") return;
     const command = message.command;
     if (command.type === "owner_challenge") {
+      const challengeAt = Date.now();
       const proof = {
         nonce: command.nonce,
         serverEpoch: command.serverEpoch,
@@ -1988,8 +2065,22 @@ class NativeOwner {
           },
         }),
       );
-    } else if (command.type === "drain") this.proofs += 1;
-    else if (command.type === "install") {
+      if (connection)
+        connection.proof = {
+          challengeAt,
+          sentAt: Date.now(),
+          challengeSha256: createHash("sha256").update(command.nonce).digest("hex"),
+          machineId: command.machineId,
+          serverEpoch: command.serverEpoch,
+          ownerSha256: createHash("sha256").update(canonicalJobJson(this.owner)).digest("hex"),
+        };
+    } else if (command.type === "drain") {
+      this.proofs += 1;
+      // This fixture never requests a drain. JobService.event sends this first drain only
+      // after accepting the challenge's signed owner proof on this same machine channel.
+      if (connection?.proof && connection.proof.acceptedAt === undefined)
+        connection.proof.acceptedAt = Date.now();
+    } else if (command.type === "install") {
       this.commands.push(command);
       if (command.action === "purge") rmSync(join(this.store, "broker.store"), { force: true });
       if (command.action === undefined && this.acknowledges)
@@ -2008,6 +2099,48 @@ class NativeOwner {
   }
   async proved(count: number): Promise<void> {
     await until(() => this.proofs >= count, 60_000, `native owner proof ${count}`);
+  }
+  /** No counters: one open connection, current owner identity, welcome epoch and accepted proof. */
+  proofReceipt(incumbent: { Id: string; State: { StartedAt: string } }) {
+    const connection = this.connection;
+    const proof = connection?.proof;
+    const welcome = connection?.welcome;
+    const ownerSha256 = createHash("sha256").update(canonicalJobJson(this.owner)).digest("hex");
+    const startedAt = Date.parse(incumbent.State.StartedAt);
+    const fresh =
+      !this.stopped &&
+      connection !== null &&
+      connection.socket === this.socket &&
+      connection.socket.readyState === WebSocket.OPEN &&
+      Number.isFinite(startedAt) &&
+      connection.openedAt !== undefined &&
+      connection.openedAt > startedAt &&
+      welcome !== undefined &&
+      welcome.at >= connection.openedAt &&
+      welcome.machineId === this.machineId &&
+      proof !== undefined &&
+      proof.machineId === this.machineId &&
+      proof.serverEpoch === welcome.serverEpoch &&
+      proof.ownerSha256 === ownerSha256 &&
+      proof.challengeAt >= welcome.at &&
+      proof.sentAt >= proof.challengeAt &&
+      proof.acceptedAt !== undefined &&
+      proof.acceptedAt >= proof.sentAt;
+    return {
+      at: new Date().toISOString(),
+      incumbent: { id: incumbent.Id, startedAt: incumbent.State.StartedAt },
+      machineId: this.machineId,
+      ownerId: this.owner.ownerId,
+      ownerGeneration: this.owner.generation,
+      ownerSha256,
+      connectionId: connection?.id ?? null,
+      socketState: this.socket?.readyState ?? null,
+      openedAt: connection?.openedAt ?? null,
+      welcome: welcome ?? null,
+      proof: proof ?? null,
+      acceptance: "post-proof-drain-on-same-connection",
+      fresh,
+    };
   }
   close(): void {
     this.stopped = true;
@@ -3247,9 +3380,59 @@ try {
           targets: [{ machineId: owner().machineId }],
           operationIds: [CROSSING_OPERATION],
         };
+        const reviewingOwner = owner();
+        const incumbent = await inspectContainer();
+        const proofReadiness: Record<string, unknown> = {
+          startedAt: new Date().toISOString(),
+          deadlineMs: 60_000,
+          proof: reviewingOwner.proofReceipt(incumbent),
+        };
+        const reviewReceipt: Record<string, unknown> = { proofReadiness };
+        receipts["replayReview"] = reviewReceipt;
+        persistEvidence();
+        try {
+          await until(
+            () => owner() === reviewingOwner && reviewingOwner.proofReceipt(incumbent).fresh,
+            60_000,
+            "the current incumbent's connected native owner accepted proof",
+          );
+        } finally {
+          proofReadiness["finishedAt"] = new Date().toISOString();
+          proofReadiness["proof"] = reviewingOwner.proofReceipt(incumbent);
+          persistEvidence();
+        }
+        const afterProof = await inspectContainer();
+        proofReadiness["afterWaitIncumbent"] = {
+          id: afterProof.Id,
+          startedAt: afterProof.State.StartedAt,
+        };
+        proofReadiness["incumbentUnchanged"] =
+          afterProof.Id === incumbent.Id &&
+          afterProof.State.StartedAt === incumbent.State.StartedAt;
+        proofReadiness["proof"] = reviewingOwner.proofReceipt(incumbent);
+        persistEvidence();
+        requireThat(
+          proofReadiness["incumbentUnchanged"] &&
+            owner() === reviewingOwner &&
+            reviewingOwner.proofReceipt(incumbent).fresh,
+          "native review prerequisite lost its exact incumbent or fresh owner proof",
+        );
         const review = JobDeploymentReviewSchema.parse(
           await act("engine.jobs.reviewDeployment", request),
         );
+        reviewReceipt["review"] = {
+          approvable: review.approvable,
+          targets: review.targets.map(({ machineId, approvable, reason, connected, platform }) => ({
+            machineId,
+            approvable,
+            reason,
+            connected,
+            platform,
+          })),
+          proof: reviewingOwner.proofReceipt(incumbent),
+        };
+        // Keep one real review/apply, including its real refusal; never poll until approvable.
+        persistEvidence();
         await act("engine.jobs.applyDeployment", { request, reviewDigest: review.reviewDigest });
         await until(
           async () => {
